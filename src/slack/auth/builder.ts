@@ -6,9 +6,11 @@
  *   ├ actions: [llmux] [cct (legacy)] mode buttons        (admin only)
  *   ├ context: llmux server line (version · uptime · port, or ❌ unreachable)
  *   ├ context: settings line (base URL · masked key) + ⚙️ Edit  (admin only)
- *   ├ per-account section: status emoji + name + usage bars (5h/7d + scoped weekly, e.g. 7d-fable)
- *   │   admin: [Switch] [Remove] accessory / readonly: bars only
- *   └ actions: [➕ Add account] [🔄 Refresh]               (Add = admin only)
+ *   ├ provider summary: remaining by window, measurement coverage, next reset
+ *   ├ paged accounts: remaining percent, local reset time, cooldown + usage
+ *   │   explicit admin mode: [Switch] [Remove] / overview: read-only details
+ *   └ navigation: [Refresh] [Previous/Next] [Admin mode/Overview]
+ *       [Add account], settings and backend controls need explicit admin mode
  *
  * Layout (ccp/cct mode): header + mode buttons + hint; the caller appends
  * the existing CCT card blocks below (see `renderAuthCard` in
@@ -24,8 +26,11 @@
  */
 
 import type { AuthRuntimeState } from '../../auth/auth-runtime';
-import type { LlmuxAccount, LlmuxScopedWindow, LlmuxStatus } from '../../auth/llmux-client';
-import { formatScopedUsageBar, formatUsageBar } from '../cct/builder';
+import type { LlmuxAccount, LlmuxStatus } from '../../auth/llmux-client';
+import { accountLines, authText, groupAccounts, groupSummary, providerName } from './capacity';
+
+export { collectScopedWindows } from './capacity';
+
 import type { ZBlock } from '../z/types';
 import { AUTH_ACTION_IDS, AUTH_BLOCK_IDS, AUTH_VIEW_IDS } from './views';
 
@@ -38,6 +43,8 @@ export interface AuthCardInput {
   /** Reachability error detail shown when `llmuxStatus` is null in llmux mode. */
   llmuxError?: string;
   viewerMode: AuthCardViewerMode;
+  canManage?: boolean;
+  page?: number;
   nowMs: number;
 }
 
@@ -56,43 +63,6 @@ const STATUS_EMOJI: Record<string, string> = {
 
 function statusEmoji(status: string): string {
   return STATUS_EMOJI[status] ?? '·';
-}
-
-/** llmux `/llmux/status` windows are 0..1 ratios; card bars take 0..100 percent + ISO reset. */
-function llmuxWindowBar(
-  window: { utilization: number; resets_at: number } | null | undefined,
-  label: '5h' | '7d',
-  nowMs: number,
-): string {
-  if (!window) return formatUsageBar(undefined, undefined, nowMs, label);
-  return formatUsageBar(window.utilization * 100, new Date(window.resets_at * 1000).toISOString(), nowMs, label);
-}
-
-/**
- * Collect an account's model-scoped weekly windows for display, labelled in
- * the existing `7d-<scope>` convention (mirrors the CCT card's `7d-sonnet`).
- *
- * Source preference:
- *   1. `scoped_limits` — the full generic list; each entry carries its
- *      `scope_label` (e.g. "Fable" → `7d-fable`), so future scoped models
- *      show up without a soma-work change.
- *   2. `fable_weekly` — fallback for llmux versions that emit only the
- *      convenience field (it duplicates the Fable entry of `scoped_limits`,
- *      so it is used only when the generic list is absent/empty).
- *
- * Unlike 5h/7d (always rendered, `(no data)` when null), scoped rows are
- * additive — nothing renders when llmux doesn't emit them.
- */
-export function collectScopedWindows(account: LlmuxAccount): { label: string; window: LlmuxScopedWindow }[] {
-  const scoped = account.scoped_limits;
-  if (Array.isArray(scoped) && scoped.length > 0) {
-    return scoped.map((window, i) => ({
-      label: `7d-${(window.scope_label ?? `scoped${i + 1}`).toLowerCase()}`,
-      window,
-    }));
-  }
-  if (account.fable_weekly) return [{ label: '7d-fable', window: account.fable_weekly }];
-  return [];
 }
 
 function formatUptime(uptimeSecs: number | undefined): string {
@@ -139,27 +109,16 @@ export function buildAuthModeHeaderBlocks(runtime: AuthRuntimeState, viewerMode:
 function buildAccountBlocks(account: LlmuxAccount, viewerMode: AuthCardViewerMode, nowMs: number): ZBlock[] {
   const isActive = account.status === 'active';
   // Account identity is viewer-independent — every viewer sees the real name.
-  const name = account.name;
+  const name = authText(account.name);
   const emoji = statusEmoji(account.status);
-  const badges: string[] = [account.type];
-  if (account.group && account.group !== 'claude') badges.push(account.group);
+  const badges: string[] = [authText(account.type)];
   if (isActive) badges.push('active');
-  if (account.status === 'cooldown') badges.push('cooldown');
-  if (account.status === 'auth_failed') badges.push('auth failed');
-  if (account.blocked) badges.push(account.blocked);
-  const barRows = [llmuxWindowBar(account.five_hour, '5h', nowMs), llmuxWindowBar(account.seven_day, '7d', nowMs)];
-  // Model-scoped weekly windows (e.g. Fable) — additive rows below 5h/7d.
-  for (const { label, window } of collectScopedWindows(account)) {
-    barRows.push(
-      formatScopedUsageBar(window.utilization * 100, new Date(window.resets_at * 1000).toISOString(), nowMs, label),
-    );
-  }
-  const bars = barRows.join('\n');
+  const details = accountLines(account, nowMs).join('\n');
   const section: ZBlock = {
     type: 'section',
     text: {
       type: 'mrkdwn',
-      text: `${emoji} *${name}* — ${badges.join(' · ')}\n\`\`\`\n${bars}\n\`\`\``,
+      text: boundedText(`  ${emoji} *${name}* — ${badges.join(' · ')}\n${details}`),
     },
   };
   const blocks: ZBlock[] = [section];
@@ -186,9 +145,38 @@ function buildAccountBlocks(account: LlmuxAccount, viewerMode: AuthCardViewerMod
   return blocks;
 }
 
+/** Eight rows leave room for headers, admin controls and mutation banners. */
+const PAGE_SIZE = 8;
+
+function boundedText(text: string): string {
+  return text.length <= 2900 ? text : `${text.slice(0, 2800)}\n… 상세 정보가 길어 일부 생략되었습니다.`;
+}
+
+export function buildAuthNavigationBlocks(
+  viewerMode: AuthCardViewerMode,
+  canManage: boolean,
+  page = 0,
+  pageCount = 1,
+): ZBlock[] {
+  const button = (id: string, label: string, mode: AuthCardViewerMode, targetPage: number): ZBlock => ({
+    type: 'button',
+    action_id: id,
+    text: { type: 'plain_text', text: label },
+    value: JSON.stringify({ viewerMode: mode, page: targetPage }),
+  });
+  const elements = [button(AUTH_ACTION_IDS.refresh, '🔄 Refresh', viewerMode, page)];
+  if (page > 0) elements.push(button(`${AUTH_ACTION_IDS.page}_prev`, '← 이전', viewerMode, page - 1));
+  if (page + 1 < pageCount) elements.push(button(`${AUTH_ACTION_IDS.page}_next`, '다음 →', viewerMode, page + 1));
+  if (viewerMode === 'admin') elements.push(button(AUTH_ACTION_IDS.viewer, '일반 보기', 'readonly', page));
+  else if (canManage) elements.push(button(AUTH_ACTION_IDS.viewer, '어드민 모드', 'admin', page));
+  return [{ type: 'actions', elements }];
+}
+
 /** Full auth card body for llmux mode (header included). */
 export function buildAuthCardBlocks(input: AuthCardInput): ZBlock[] {
   const { runtime, llmuxStatus, llmuxError, viewerMode, nowMs } = input;
+  const pageCount = Math.max(1, Math.ceil((llmuxStatus?.accounts.length ?? 0) / PAGE_SIZE));
+  const page = Math.max(0, Math.min(pageCount - 1, Number.isFinite(input.page) ? Math.floor(input.page ?? 0) : 0));
   const blocks = buildAuthModeHeaderBlocks(runtime, viewerMode);
 
   if (runtime.mode !== 'llmux') return blocks;
@@ -200,7 +188,7 @@ export function buildAuthCardBlocks(input: AuthCardInput): ZBlock[] {
       elements: [
         {
           type: 'mrkdwn',
-          text: `llmux \`${llmuxStatus.version ?? '?'}\` · up ${formatUptime(llmuxStatus.uptime_secs)} · port ${llmuxStatus.port ?? '?'} · current: *${llmuxStatus.current ?? 'none'}*`,
+          text: `llmux \`${llmuxStatus.version ?? '?'}\` · up ${formatUptime(llmuxStatus.uptime_secs)} · port ${llmuxStatus.port ?? '?'} · current: *${authText(llmuxStatus.current ?? 'none')}*`,
         },
       ],
     });
@@ -209,7 +197,7 @@ export function buildAuthCardBlocks(input: AuthCardInput): ZBlock[] {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `❌ *llmux unreachable* — ${llmuxError ?? 'no response'}\n_Start llmux locally (\`llmux serve\`) or fix the base URL below, then Refresh._`,
+        text: `❌ *llmux unreachable* — ${viewerMode === 'admin' ? authText(llmuxError ?? 'no response') : '상태를 불러오지 못했습니다. 관리자에게 확인하세요.'}\n_Start llmux locally (\`llmux serve\`) or fix the base URL below, then Refresh._`,
       },
     });
   }
@@ -240,12 +228,43 @@ export function buildAuthCardBlocks(input: AuthCardInput): ZBlock[] {
         text: { type: 'mrkdwn', text: '_No accounts in the llmux pool. Add one below or via llmux TUI/islands._' },
       });
     }
-    for (const account of llmuxStatus.accounts) {
-      blocks.push(...buildAccountBlocks(account, viewerMode, nowMs));
+    let offset = 0;
+    for (const [group, accounts] of groupAccounts(llmuxStatus.accounts)) {
+      const visible = accounts.slice(
+        Math.max(0, page * PAGE_SIZE - offset),
+        Math.max(0, (page + 1) * PAGE_SIZE - offset),
+      );
+      offset += accounts.length;
+      // Keep the three requested provider summaries visible on every page;
+      // unknown groups appear on their account page to bound the block count.
+      if (!visible.length && !['claude', 'codex', 'grok'].includes(group)) continue;
+      const current = llmuxStatus.current_by_group?.[group] ?? (group === 'claude' ? llmuxStatus.current : undefined);
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: boundedText(
+            `*${providerName(group)}* · ${accounts.length}계정${current ? ` · current: *${authText(current)}*` : ''}\n${groupSummary(accounts, nowMs).join('\n')}`,
+          ),
+        },
+      });
+      for (const account of visible)
+        blocks.push(
+          ...buildAccountBlocks(
+            { ...account, status: current === account.name && account.status === 'ok' ? 'active' : account.status },
+            viewerMode,
+            nowMs,
+          ),
+        );
     }
     blocks.push({
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: `${llmuxStatus.accounts.length} slot(s)` }],
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `${llmuxStatus.accounts.length} slot(s) · ${page + 1}/${pageCount} 페이지 · 조회 <!date^${Math.floor(nowMs / 1000)}^{date_short_pretty} {time}|${new Date(nowMs).toISOString()}> · 공급자 측정 시각 미제공`,
+        },
+      ],
     });
   }
 
@@ -259,13 +278,8 @@ export function buildAuthCardBlocks(input: AuthCardInput): ZBlock[] {
       value: 'add',
     });
   }
-  footer.push({
-    type: 'button',
-    action_id: AUTH_ACTION_IDS.refresh,
-    text: { type: 'plain_text', text: '🔄 Refresh', emoji: true },
-    value: 'refresh',
-  });
-  blocks.push({ type: 'actions', elements: footer });
+  if (footer.length) blocks.push({ type: 'actions', elements: footer });
+  blocks.push(...buildAuthNavigationBlocks(viewerMode, input.canManage ?? viewerMode === 'admin', page, pageCount));
   if (viewerMode === 'admin') {
     blocks.push({
       type: 'context',
