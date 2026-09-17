@@ -2487,7 +2487,9 @@ describe('SlackHandler — follow-up queue host', () => {
 
       const notice = postSystemMessage.mock.calls.map((call: any[]) => String(call[1])).filter((t) => t.includes('✏️'));
       expect(notice).toHaveLength(1);
-      expect(notice[0]).toBe('✏️ 재시작 전 항목이라 편집이 반영되지 않습니다 — 새 메시지로 다시 보내거나 ⋯ 메뉴의 Retry로 실행하세요.');
+      expect(notice[0]).toBe(
+        '✏️ 재시작 전 항목이라 편집이 반영되지 않습니다 — 새 메시지로 다시 보내거나 ⋯ 메뉴의 Retry로 실행하세요.',
+      );
     });
 
     /**
