@@ -68,7 +68,14 @@ export interface SteerInterruptReceipt {
 export interface TurnSteeringPort {
   steerTurn(sessionKey: string, input: SteerInput): boolean;
   interruptTurn(sessionKey: string): Promise<SteerInterruptReceipt | undefined>;
-  cancelSteeredMessage(sessionKey: string, uuid: string): Promise<boolean>;
+  /**
+   * Three answers, not a boolean: the message was taken back, it had already
+   * left the SDK's queue (the model has it), or the request never reached an
+   * SDK at all. A caller that only needs "is it gone" reads `'withdrawn'`; a
+   * caller that records queue state needs the other two apart, because
+   * "delivered" and "unknown" are different rows.
+   */
+  cancelSteeredMessage(sessionKey: string, uuid: string): Promise<'withdrawn' | 'already-dequeued' | 'unreachable'>;
 }
 
 /** Build the opening message of a streaming-input turn from the prompt text. */
@@ -121,6 +128,7 @@ export class TurnInputChannel implements AsyncIterable<SteerUserMessage> {
    */
   private readonly pushed: string[] = [];
   private closed = false;
+  private sealed = false;
   /** Resolver of the promise a parked consumer is waiting on, if any. */
   private wake?: () => void;
 
@@ -135,11 +143,11 @@ export class TurnInputChannel implements AsyncIterable<SteerUserMessage> {
 
   /**
    * Enqueue a message for the running turn. Returns `false` when the channel is
-   * already closed (the turn ended); the caller must then treat the message as
-   * undelivered rather than assume the agent saw it.
+   * already sealed or closed (the turn is settling / ended); the caller must
+   * then treat the message as undelivered rather than assume the agent saw it.
    */
   push(message: SteerUserMessage): boolean {
-    if (this.closed) return false;
+    if (this.closed || this.sealed) return false;
     this.queue.push(message);
     const uuid = (message as { uuid?: unknown }).uuid;
     if (typeof uuid === 'string' && uuid.length > 0) {
@@ -155,6 +163,23 @@ export class TurnInputChannel implements AsyncIterable<SteerUserMessage> {
    */
   pushedUuids(): string[] {
     return [...this.pushed];
+  }
+
+  /**
+   * Stop accepting new messages WITHOUT ending the stream.
+   *
+   * The host seals the channel at the turn's `result`, before it snapshots
+   * {@link pushedUuids} for settlement: a push accepted while the settlement's
+   * interrupt round-trip is in flight would never appear in that snapshot and
+   * would be silently lost. A sealed push answers `false`, which the host
+   * already handles as "not delivered — keep it queued".
+   *
+   * Sealing deliberately does NOT end the iterator (that is {@link close}'s
+   * job): the CLI must still drain what is queued and must not see stdin close
+   * before the settlement decides what to withdraw. Idempotent.
+   */
+  seal(): void {
+    this.sealed = true;
   }
 
   /**

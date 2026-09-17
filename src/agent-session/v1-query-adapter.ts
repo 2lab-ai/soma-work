@@ -132,11 +132,17 @@ export class V1QueryAdapter implements IAgentSession {
     return this.steering.interruptTurn(key);
   }
 
-  /** Withdraw a steered message that has not run yet. */
+  /**
+   * Withdraw a steered message that has not run yet.
+   *
+   * `true` means WITHDRAWN and nothing else: the port's other two answers
+   * ("already dequeued", "never reached an SDK") both leave a message this
+   * adapter did not take back.
+   */
   async cancelSteered(uuid: string): Promise<boolean> {
     const key = this.steeringKey();
     if (!this.steering || !key) return false;
-    return this.steering.cancelSteeredMessage(key, uuid);
+    return (await this.steering.cancelSteeredMessage(key, uuid)) === 'withdrawn';
   }
 
   private steeringKey(): string | undefined {
