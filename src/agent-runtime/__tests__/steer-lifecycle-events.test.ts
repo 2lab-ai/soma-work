@@ -18,8 +18,11 @@
  * and degrade unknown phases to `observed` rather than guessing.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createSdkMessageMapper } from '../claude-code/sdk-message-to-event';
+import { STEER_SETTLEMENT_SUBTYPE } from '../steer-settlement';
 import type { AgentStreamEvent } from '../stream-types';
 
 const mapper = () => createSdkMessageMapper({ calculateTokenCost: () => 0 });
@@ -118,6 +121,35 @@ describe('steer_lifecycle mapping (user-steering WU1)', () => {
     } as never);
 
     expect(events).toEqual([{ type: 'steer_lifecycle', uuid: 'u-a', phase: 'completed' }]);
+  });
+
+  it('producer and mapper agree on the settlement subtype literal', () => {
+    // The frame is synthetic: `ClaudeHandler` writes the subtype and this
+    // mapper matches on it. Two hand-written string literals would drift
+    // silently (the settlement would stop mapping and every steered item would
+    // hang), so both sides import the same constant — asserted here by mapping
+    // a frame whose subtype comes ONLY from the shared constant, and by
+    // checking neither producer nor mapper spells the literal by hand.
+    const events = mapper().map({
+      type: 'system',
+      subtype: STEER_SETTLEMENT_SUBTYPE,
+      consumed: ['u-a'],
+      discarded: ['u-b'],
+      session_id: 'sess-1',
+      uuid: 'frame-uuid',
+    } as never);
+
+    expect(events).toEqual([
+      { type: 'steer_lifecycle', uuid: 'u-a', phase: 'completed' },
+      { type: 'steer_lifecycle', uuid: 'u-b', phase: 'discarded' },
+    ]);
+
+    const producer = fs.readFileSync(path.join(__dirname, '..', '..', 'claude-handler.ts'), 'utf8');
+    const consumer = fs.readFileSync(path.join(__dirname, '..', 'claude-code', 'sdk-message-to-event.ts'), 'utf8');
+    for (const src of [producer, consumer]) {
+      expect(src).toContain('STEER_SETTLEMENT_SUBTYPE');
+      expect(src).not.toContain("'steer_settlement'");
+    }
   });
 
   it('maps a command_lifecycle system frame to its declared phase', () => {

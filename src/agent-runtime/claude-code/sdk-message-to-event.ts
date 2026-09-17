@@ -35,6 +35,7 @@
  */
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { readUuidList, STEER_SETTLEMENT_SUBTYPE } from '../steer-settlement';
 import type { AgentContent, AgentStopReason, AgentStreamEvent, AgentUsage } from '../stream-types';
 
 /**
@@ -115,13 +116,8 @@ function steerStartedEventsFor(m: Record<string, unknown>): AgentStreamEvent[] {
   return readSteerUuids(m).map((uuid) => ({ type: 'steer_lifecycle', uuid, phase: 'started' }) as AgentStreamEvent);
 }
 
-/** Read a settlement list, skipping anything that is not a non-empty string. */
-function readUuidList(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((u): u is string => typeof u === 'string' && u.length > 0) : [];
-}
-
 /**
- * Map the host's synthetic `steer_settlement` frame (spec §6 item 6).
+ * Map the host's synthetic settlement frame (spec §6 item 6).
  *
  * `ClaudeHandler.streamQuery` computes it at the turn's `result` from
  * `queued_turn_count` + the interrupt receipt and injects it just before that
@@ -413,7 +409,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
     const m = message as unknown as Record<string, unknown>;
     const subtype = typeof m.subtype === 'string' ? m.subtype : undefined;
 
-    if (subtype === 'steer_settlement') {
+    if (subtype === STEER_SETTLEMENT_SUBTYPE) {
       return mapSteerSettlement(m);
     }
 
