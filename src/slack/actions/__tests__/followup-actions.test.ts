@@ -161,9 +161,16 @@ function harness(over: Partial<FollowupActionsDeps> = {}) {
     isBusy: vi.fn((_s: string) => false),
   };
 
+  /** The host's SDK-backed cancel for a steered item — the queue cannot dequeue the SDK copy. */
+  const cancelSteered = vi.fn(async (_s: string, _i: string, _e: number, _u: string) => {
+    order.push('cancelSteered');
+    return 'cancelled' as 'cancelled' | 'already-delivered' | 'failed';
+  });
+
   const deps: FollowupActionsDeps = {
     queue,
     dispatcher,
+    cancelSteered,
     getSessionByKey: vi.fn((_key: string) => session() as FollowupActionSession | undefined),
     canInterrupt: vi.fn(async (_s: string, _u: string) => {
       order.push('canInterrupt');
@@ -191,7 +198,7 @@ function harness(over: Partial<FollowupActionsDeps> = {}) {
     expect(ack).toHaveBeenCalledTimes(1);
   }
 
-  return { app, routes, deps, queue, dispatcher, respond, responses, order, click };
+  return { app, routes, deps, queue, dispatcher, cancelSteered, respond, responses, order, click };
 }
 
 /** Every refusal must read as a refusal — and must never claim the item ran. */
@@ -776,6 +783,88 @@ describe('cancel', () => {
   });
 });
 
+/*
+ * Cancel of a STEERED item (06 §3.4). The message is already sitting in the
+ * SDK's own input queue, so `cancelItem` would only rewrite our row while the
+ * model still reads it — the queue answers `invalid-state` there on purpose.
+ * The only honest cancel goes through the host, which asks the SDK first.
+ */
+describe('cancel — steered item', () => {
+  const steeredItem = () => queuedItem({ state: 'steered', epoch: 1, steerUuid: 'uuid-1' });
+
+  it('routes a steered item through deps.cancelSteered instead of queue.cancelItem', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(steeredItem());
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    expect(h.cancelSteered).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`, 1, 'uuid-1');
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY);
+  });
+
+  it('tells the user it was withdrawn before the model saw it', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(steeredItem());
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    expect(lastEphemeral(h.responses)).toBe('취소했습니다 — 모델에 전달되기 전에 회수했습니다.');
+  });
+
+  it('says the message is already running when the SDK had dequeued it', async () => {
+    const h = harness({ cancelSteered: vi.fn(async () => 'already-delivered' as const) });
+    h.queue.get.mockReturnValue(steeredItem());
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    expect(lastEphemeral(h.responses)).toBe('취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다.');
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the ordinary refusal wording when the cancel itself failed', async () => {
+    const h = harness({ cancelSteered: vi.fn(async () => 'failed' as const) });
+    h.queue.get.mockReturnValue(steeredItem());
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    const text = lastEphemeral(h.responses);
+    expect(text).toContain('취소가 거부되었습니다');
+    expect(text).toContain('failed');
+  });
+
+  it('never claims a cancel when the host hook throws', async () => {
+    const h = harness({
+      cancelSteered: vi.fn(async () => {
+        throw new Error('sdk gone');
+      }),
+    });
+    h.queue.get.mockReturnValue(steeredItem());
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    expect(lastEphemeral(h.responses)).toMatch(/취소|could not/);
+  });
+
+  it('refuses a steered row that carries no uuid — nothing can address the SDK copy', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(queuedItem({ state: 'steered', epoch: 1, steerUuid: undefined }));
+
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 1 })));
+    await tick();
+
+    expect(h.cancelSteered).not.toHaveBeenCalled();
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    expect(lastEphemeral(h.responses)).toContain('취소');
+  });
+});
+
 /* ------------------------------------------------------------------ *
  * Detached failures
  * ------------------------------------------------------------------ */
@@ -897,6 +986,7 @@ describe('against the real queue and dispatcher', () => {
     registerFollowupActions(app, {
       queue,
       dispatcher,
+      cancelSteered: async () => 'failed',
       getSessionByKey: () => session(),
       canInterrupt: () => true,
       refresh,
@@ -926,6 +1016,7 @@ describe('against the real queue and dispatcher', () => {
     const deps: FollowupActionsDeps = {
       queue,
       dispatcher,
+      cancelSteered: async () => 'failed',
       getSessionByKey: () => session(),
       canInterrupt: () => true,
       refresh: () => {},

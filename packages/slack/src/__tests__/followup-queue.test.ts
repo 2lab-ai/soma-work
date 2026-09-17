@@ -1250,3 +1250,92 @@ describe('FollowupQueue cancelSteered (06 §3.4)', () => {
     expect(queue.markConsumed(SESSION, 'uuid-1')).toEqual({ ok: false, reason: 'not-found' });
   });
 });
+
+describe('FollowupQueue editQueued (06 §3.4 Edit)', () => {
+  it('rewrites the stored text of a queued item and bumps its epoch', () => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1', text: '배포 상태 알려줘' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+
+    const edited = queue.editQueued(SESSION, first.item.id, first.item.epoch, '배포 상태 말고 로그 보여줘');
+
+    expect(edited.ok && edited.item.message.text).toBe('배포 상태 말고 로그 보여줘');
+    expect(edited.ok && edited.item.state).toBe('queued');
+    expect(edited.ok && edited.item.stateReason).toBe('편집됨');
+    // A new epoch is what makes a control rendered against the OLD text stale.
+    expect(edited.ok && edited.item.epoch).toBe(first.item.epoch + 1);
+    expect(queue.get(SESSION, first.item.id)?.message.text).toBe('배포 상태 말고 로그 보여줘');
+  });
+
+  it('keeps everything except the text — author, files and seq are the original event (A30)', () => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1', user: 'U_AUTHOR', text: '원문' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+
+    const edited = queue.editQueued(SESSION, first.item.id, first.item.epoch, '편집본');
+
+    expect(edited.ok && edited.item.message.user).toBe('U_AUTHOR');
+    expect(edited.ok && edited.item.message.ts).toBe('1.1');
+    expect(edited.ok && edited.item.seq).toBe(first.item.seq);
+    expect(edited.ok && edited.item.eventKey).toBe(first.item.eventKey);
+  });
+
+  it('is still claimable afterwards — an edit is not a state change', () => {
+    const queue = new FollowupQueue();
+    const first = queue.enqueue(SESSION, event({ ts: '1.1' }));
+    if (first.status !== 'queued') throw new Error('setup failed');
+
+    queue.editQueued(SESSION, first.item.id, first.item.epoch, '편집본');
+
+    const claimed = queue.claimNext(SESSION);
+    expect(claimed.ok && claimed.item.message.text).toBe('편집본');
+  });
+
+  it('refuses a steered item — the SDK already holds the original copy', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1', text: '원문' }));
+    const steered = steerFirst(queue, 'uuid-1');
+
+    expect(queue.editQueued(SESSION, steered.id, steered.epoch, '편집본')).toEqual({
+      ok: false,
+      reason: 'invalid-state',
+    });
+    expect(queue.get(SESSION, steered.id)?.message.text).toBe('원문');
+    expect(queue.get(SESSION, steered.id)?.steerUuid).toBe('uuid-1');
+  });
+
+  it('refuses a dispatched item and a stale epoch', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1', text: '원문' }));
+    const dispatched = dispatchFirst(queue);
+
+    expect(queue.editQueued(SESSION, dispatched.id, dispatched.epoch, '편집본')).toEqual({
+      ok: false,
+      reason: 'invalid-state',
+    });
+    expect(queue.editQueued(SESSION, dispatched.id, dispatched.epoch - 1, '편집본')).toEqual({
+      ok: false,
+      reason: 'stale-epoch',
+    });
+    expect(queue.get(SESSION, dispatched.id)?.message.text).toBe('원문');
+  });
+
+  it('answers not-found for an unknown item', () => {
+    const queue = new FollowupQueue();
+    expect(queue.editQueued(SESSION, `${SESSION}#99`, 0, '편집본')).toEqual({ ok: false, reason: 'not-found' });
+  });
+
+  it('persists the edit before memory — a throwing sink leaves the original text', () => {
+    const save = vi.fn(() => {
+      throw new Error('disk full');
+    });
+    const seed = new FollowupQueue();
+    seed.enqueue(SESSION, event({ ts: '1.1', text: '원문' }));
+    const queue = new FollowupQueue({ snapshot: seed.snapshot(), save });
+    const target = queue.list(SESSION)[0];
+
+    expect(() => queue.editQueued(SESSION, target.id, target.epoch, '편집본')).toThrow('disk full');
+    expect(queue.get(SESSION, target.id)?.message.text).toBe('원문');
+    expect(queue.get(SESSION, target.id)?.epoch).toBe(target.epoch);
+  });
+});

@@ -127,9 +127,32 @@ export interface FollowupActionSession {
   };
 }
 
+/**
+ * What a cancel of a `steered` item could do (06 §3.4). Three outcomes, three
+ * different truths: the SDK withdrew the message, the SDK had already handed it
+ * to the model, or the cancel could not be carried out at all. They are never
+ * collapsed — "이미 전달됨" is not a failure and "실패" is not a cancellation.
+ */
+export type CancelSteeredOutcome = 'cancelled' | 'already-delivered' | 'failed';
+
 export interface FollowupActionsDeps {
   queue: FollowupActionsQueuePort;
   dispatcher: FollowupActionsDispatcherPort;
+  /**
+   * Cancel a STEERED item through the SDK, then record it. Required, not
+   * optional: without it a steered cancel would silently fall back to
+   * `queue.cancelItem`, which answers `invalid-state` — the user would read
+   * "cannot cancel" for the one state that actually has a cancel path.
+   *
+   * The host implements it as `cancel_async_message(uuid)` first, queue write
+   * second; this module never touches the SDK itself.
+   */
+  cancelSteered(
+    sessionKey: string,
+    itemId: string,
+    expectedEpoch: number,
+    steerUuid: string,
+  ): Promise<CancelSteeredOutcome>;
   /** Server-side session lookup. `undefined` = the click is refused outright. */
   getSessionByKey(sessionKey: string): FollowupActionSession | undefined;
   /**
@@ -497,6 +520,10 @@ const IN_FLIGHT_STATES: readonly FollowupItemState[] = ['reserved', 'claimed', '
 const CANCEL_DENIED_TEXT = '취소가 거부되었습니다: 이 세션을 조작할 권한이 없습니다 — 항목은 큐에 그대로 있습니다.';
 const CANCEL_RUNNING_TEXT = '실행 중인 항목은 취소할 수 없습니다 — 패널의 중지 버튼을 쓰세요.';
 const CANCEL_STALE_TEXT = '이미 바뀐 항목입니다 — 패널을 새로고침했습니다.';
+/** The SDK confirmed the withdrawal: the model never saw the message. */
+const CANCEL_STEERED_OK_TEXT = '취소했습니다 — 모델에 전달되기 전에 회수했습니다.';
+/** The SDK had already dequeued it, so the message is part of the running turn. */
+const CANCEL_STEERED_DELIVERED_TEXT = '취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다.';
 
 /**
  * Cancel (menu-only). Authorization is the SAME interrupt policy Resume and
@@ -548,6 +575,13 @@ async function handleCancel(
   // refusal text depends on where the item WAS.
   const previousState = item.state;
   try {
+    // A steered message lives in the SDK's input queue, not only in ours — the
+    // host has to ask the SDK first, so this is a different door, not a
+    // different reason code on the same one.
+    if (previousState === 'steered') {
+      await cancelSteeredItem(deps, respond, value, item.steerUuid);
+      return;
+    }
     const result = deps.queue.cancelItem(
       value.sessionKey,
       value.itemId,
@@ -568,6 +602,39 @@ async function handleCancel(
     // Success or refusal, the surface is now behind the queue.
     await safeRefresh(deps, value.sessionKey);
   }
+}
+
+/**
+ * Cancel of a `steered` item: the SDK decides, this only reports what it said.
+ *
+ * Each outcome gets its own sentence, because they are three different facts
+ * for the user (A29): withdrawn before the model read it, already in the
+ * model's hands, or not carried out at all. A throw is left to the detached
+ * catch — it must not be turned into "cancelled".
+ */
+async function cancelSteeredItem(
+  deps: FollowupActionsDeps,
+  respond: FollowupRespond,
+  value: FollowupItemActionValue,
+  steerUuid: string | undefined,
+): Promise<void> {
+  if (!steerUuid) {
+    // Nothing can name the SDK's copy, so nothing may claim to have cancelled
+    // it — the same refusal a queue `invalid-state` would produce.
+    await refuse(respond, cancelRefusal('invalid-state', 'steered'));
+    return;
+  }
+
+  const outcome = await deps.cancelSteered(value.sessionKey, value.itemId, value.epoch, steerUuid);
+  if (outcome === 'cancelled') {
+    await reply(respond, CANCEL_STEERED_OK_TEXT);
+    return;
+  }
+  if (outcome === 'already-delivered') {
+    await reply(respond, CANCEL_STEERED_DELIVERED_TEXT);
+    return;
+  }
+  await refuse(respond, cancelRefusal(outcome, 'steered'));
 }
 
 /**
@@ -735,8 +802,13 @@ function readThreadTs(body: unknown): string | undefined {
  * Plumbing
  * ------------------------------------------------------------------ */
 
-function refuse(respond: FollowupRespond, text: string): Promise<unknown> {
+/** The one channel a click may answer on: ephemeral, in-thread, never a new post. */
+function reply(respond: FollowupRespond, text: string): Promise<unknown> {
   return respond({ ...EPHEMERAL, text });
+}
+
+function refuse(respond: FollowupRespond, text: string): Promise<unknown> {
+  return reply(respond, text);
 }
 
 /**
