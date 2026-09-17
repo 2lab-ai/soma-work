@@ -94,6 +94,14 @@ export const FOLLOWUP_STEERED_COUNT_LABEL = '전달';
 export const FOLLOWUP_SEND_NOW_ACTION_ID = 'followup_send_now_v1';
 export const FOLLOWUP_RESUME_ACTION_ID = 'followup_resume_v1';
 export const FOLLOWUP_RETRY_ACTION_ID = 'followup_retry_v1';
+/**
+ * Cancel as a BUTTON (A39). It had no button id before, because the panel's
+ * compact layout folded every operation into one overflow menu; the in-thread
+ * item message asks for the two controls by name, so cancel needs an id of its
+ * own. The payload is the ordinary item value — `handleCancel` is reached by a
+ * second transport, never by a second policy.
+ */
+export const FOLLOWUP_CANCEL_ACTION_ID = 'followup_cancel_v1';
 export const FOLLOWUP_PAGE_PREV_ACTION_ID = 'followup_page_prev_v1';
 export const FOLLOWUP_PAGE_NEXT_ACTION_ID = 'followup_page_next_v1';
 /**
@@ -116,6 +124,7 @@ export const FOLLOWUP_ITEM_ACTION_IDS = [
   FOLLOWUP_RESUME_ACTION_ID,
   FOLLOWUP_RETRY_ACTION_ID,
   FOLLOWUP_ITEM_MENU_ACTION_ID,
+  FOLLOWUP_CANCEL_ACTION_ID,
 ] as const;
 
 /** Both pagination action ids. */
@@ -321,6 +330,23 @@ export const FOLLOWUP_STATE_DISPLAY_ORDER = [
   'failed',
   'resolved',
   'cancelled',
+] as const satisfies readonly FollowupItemState[];
+
+/**
+ * The states an item can still be acted on from — what the `queue` command
+ * lists (A40) and, with it, the set this module calls "not processed yet".
+ *
+ * `resolved`/`cancelled` are history (the message ran, or the user dropped it)
+ * and the in-flight trio (`reserved`/`claimed`/`dispatched`) belongs to the turn
+ * that is running it, not to a list of things still waiting. `failed` stays in
+ * because a failed item is still the user's message, awaiting a Retry.
+ */
+export const FOLLOWUP_PENDING_STATES = [
+  'queued',
+  'steered',
+  'paused',
+  'uncertain',
+  'failed',
 ] as const satisfies readonly FollowupItemState[];
 
 /**
@@ -719,21 +745,35 @@ function neutraliseCompactEmphasis(text: string): string {
  * as the state is always the real one, always last on the row.
  */
 function compactItemBlock(item: FollowupItem, parked: boolean, turnEpoch: number): Record<string, unknown> {
-  const preview = neutraliseCompactEmphasis(
-    escapeSlackMrkdwn(previewOf(item, { maxChars: COMPACT_PREVIEW_MAX_CHARS, attachmentBadge: true })),
-  );
-  const label = escapeSlackMrkdwn(compactStateLabel(item));
   const { menu, dropped } = itemMenu(item, parked, turnEpoch);
-  // A control we could not encode is GONE from the row, and a row that silently
-  // lost its only control is indistinguishable from an item that never had one.
-  // Same wording the legacy layout uses on its context line.
-  const line = `${item.seq}. ${preview} · _${label}_${dropped ? ` · _${ACTION_UNAVAILABLE}_` : ''}`;
   const block: Record<string, unknown> = {
     type: 'section',
-    text: { type: 'mrkdwn', text: truncate(line, MAX_SECTION_TEXT), verbatim: true },
+    text: { type: 'mrkdwn', text: compactItemLine(item, item.seq, dropped), verbatim: true },
   };
   if (menu) block.accessory = menu;
   return block;
+}
+
+/**
+ * The compact row's text, shared by the panel layout and the in-thread item
+ * message (A39) so the same item reads the same way wherever it is rendered.
+ *
+ * `dropped` says a control could not be encoded and is GONE from the row — a row
+ * that silently lost its only control is indistinguishable from an item that
+ * never had one, so it says so in the same words the legacy layout uses.
+ */
+function compactItemLine(item: FollowupItem, index: number, dropped: boolean): string {
+  const preview = compactPreview(item);
+  const label = escapeSlackMrkdwn(compactStateLabel(item));
+  const line = `${index}. ${preview} · _${label}_${dropped ? ` · _${ACTION_UNAVAILABLE}_` : ''}`;
+  return truncate(line, MAX_SECTION_TEXT);
+}
+
+/** The message as it appears on a compact row: escaped, emphasis-neutralised, ≤80 chars. */
+function compactPreview(item: FollowupItem): string {
+  return neutraliseCompactEmphasis(
+    escapeSlackMrkdwn(previewOf(item, { maxChars: COMPACT_PREVIEW_MAX_CHARS, attachmentBadge: true })),
+  );
 }
 
 function clampPageSize(requested: number | undefined): number {
@@ -854,11 +894,68 @@ export function buildFollowupQueueBlocks(
  * whether or not the session is frozen.
  */
 function isActionable(item: FollowupItem): boolean {
-  return (
-    item.state === 'queued' ||
-    item.state === 'steered' ||
-    item.state === 'paused' ||
-    item.state === 'failed' ||
-    item.state === 'uncertain'
-  );
+  return (FOLLOWUP_PENDING_STATES as readonly FollowupItemState[]).includes(item.state);
+}
+
+/** One item, as its own Slack message. */
+export interface FollowupItemMessage {
+  /** Slack's fallback/notification text. Escaped — see {@link buildFollowupItemMessage}. */
+  text: string;
+  blocks: unknown[];
+}
+
+/**
+ * ONE queued item as ONE thread message (A39) — the surface that replaced the
+ * panel's Queue section.
+ *
+ * The user asked to read the queue where they typed, with the two controls in
+ * reach ("thread안에 유저가 메세지 쳤을때마다 출력해줘 즉시 send now / cancel 할수
+ * 있도록"), so the host posts this right under the message it parked. Two blocks:
+ * the compact line the panel already used ({@link compactItemLine} — same wording
+ * in both places by construction) and an actions row carrying `Send now` and
+ * `Cancel` as BUTTONS. The overflow menu is not reused here: a one-item message
+ * has room for the real labels, and an overflow gives no visual feedback at all.
+ *
+ * What it keeps from the panel layout, because this payload now reaches Slack on
+ * its own:
+ *   - the message text is escaped BEFORE it touches mrkdwn and its emphasis
+ *     characters are neutralised, so the last italic run on the line is always
+ *     the real state ({@link compactPreview});
+ *   - the button `value`s carry queue coordinates only (A30), with `turnEpoch`
+ *     on `Send now` alone (A12/A28: it targets the LIVE turn, Cancel does not);
+ *   - a control whose value would not fit Slack's cap is DROPPED and said so,
+ *     never truncated into something that no longer parses.
+ *
+ * The fallback `text` deliberately differs from the queue panel's counts-only
+ * one: this message IS one user message, so hiding its text would leave the
+ * notification meaningless. Slack parses that string as mrkdwn, so it is escaped
+ * exactly like the block line — a `<!channel>` in a queued message cannot become
+ * a broadcast ping through either path.
+ *
+ * `index` defaults to the item's `seq` (its FIFO position, what the panel
+ * showed); the `queue` command passes a 1-based list position instead.
+ */
+export function buildFollowupItemMessage(item: FollowupItem, turnEpoch: number, index?: number): FollowupItemMessage {
+  const seq = index ?? item.seq;
+  const sendNow = itemButton(item, FOLLOWUP_SEND_NOW_ACTION_ID, FOLLOWUP_SEND_NOW_LABEL, {
+    style: 'primary',
+    turnEpoch,
+  });
+  // No `turnEpoch`: a cancel acts on an item, not on the running turn, and a
+  // generation fence it does not need would only expire a working control.
+  const cancel = itemButton(item, FOLLOWUP_CANCEL_ACTION_ID, FOLLOWUP_CANCEL_LABEL);
+  const elements = [sendNow, cancel].filter((button): button is Record<string, unknown> => button !== null);
+
+  const blocks: unknown[] = [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: compactItemLine(item, seq, elements.length === 0), verbatim: true },
+    },
+  ];
+  if (elements.length > 0) blocks.push({ type: 'actions', elements });
+
+  return {
+    text: `${FOLLOWUP_QUEUE_TITLE} ${seq}. ${compactPreview(item)} · ${escapeSlackMrkdwn(compactStateLabel(item))}`,
+    blocks,
+  };
 }

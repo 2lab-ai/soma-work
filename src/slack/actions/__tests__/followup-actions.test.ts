@@ -9,6 +9,7 @@ import { type FollowupItem, FollowupQueue } from '@soma/slack/followup-queue';
 import {
   encodeFollowupItemActionValue,
   encodeFollowupPageActionValue,
+  FOLLOWUP_CANCEL_ACTION_ID,
   FOLLOWUP_PAGE_NEXT_ACTION_ID,
   FOLLOWUP_RESUME_ACTION_ID,
   FOLLOWUP_RETRY_ACTION_ID,
@@ -250,6 +251,7 @@ describe('registerFollowupActions — routes', () => {
         'followup_page_next_v1',
         'followup_page_prev_v1',
         MENU_ACTION_ID,
+        FOLLOWUP_CANCEL_ACTION_ID,
         FOLLOWUP_RESUME_ACTION_ID,
         FOLLOWUP_RETRY_ACTION_ID,
         FOLLOWUP_SEND_NOW_ACTION_ID,
@@ -838,6 +840,141 @@ describe('cancel', () => {
     await tick();
     expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY);
     expect(lastEphemeral(h.responses)).toContain('이미 바뀐 항목입니다');
+  });
+});
+
+/*
+ * A39 — the in-thread item message carries `Cancel` as a BUTTON, so the cancel
+ * path has a second TRANSPORT. It must not become a second policy: the button
+ * lands in the same `handleCancel`, with the same thread ACL, the same interrupt
+ * authorization and the same steered detour.
+ */
+describe('cancel — as a button (A39)', () => {
+  it('routes a button click into the same cancel flow as the menu option', async () => {
+    const h = harness();
+
+    await h.click(FOLLOWUP_CANCEL_ACTION_ID, clickBody(itemValue()));
+    await tick();
+
+    expect(h.queue.cancelItem).toHaveBeenCalledWith(
+      SESSION_KEY,
+      `${SESSION_KEY}#1`,
+      0,
+      `<@${CLICKER}> 님이 취소했습니다`,
+    );
+    expect(lastEphemeral(h.responses)).toContain('취소했습니다');
+    expect(h.deps.runDrain).not.toHaveBeenCalled();
+  });
+
+  it('applies the thread ACL to a cancel button too', async () => {
+    const h = harness();
+
+    await h.click(
+      FOLLOWUP_CANCEL_ACTION_ID,
+      clickBody(itemValue(), {
+        channel: { id: 'C-ATTACKER' },
+        container: { channel_id: 'C-ATTACKER', message_ts: SURFACE_TS, thread_ts: THREAD },
+      }),
+    );
+    await tick();
+
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    expectRefusal(h.responses);
+  });
+
+  it('refuses an unreadable button payload without touching the queue', async () => {
+    const h = harness();
+
+    await h.click(FOLLOWUP_CANCEL_ACTION_ID, clickBody('not json'));
+    await tick();
+
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    expectRefusal(h.responses);
+  });
+
+  it('routes a steered item through the SDK detour, button or menu', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(queuedItem({ state: 'steered', epoch: 1, steerUuid: 'uuid-1' }));
+
+    await h.click(FOLLOWUP_CANCEL_ACTION_ID, clickBody(itemValue({ epoch: 1 })));
+    await tick();
+
+    expect(h.cancelSteered).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`, 1, 'uuid-1');
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+  });
+});
+
+/*
+ * A41 — a processed item's thread message is deleted, so the buttons cannot
+ * outlive the item they act on. This module does not delete anything itself (it
+ * owns no Slack client and no message ids); it TELLS the host, once, and only
+ * when the item really left the pending set.
+ */
+describe('onItemProcessed', () => {
+  it('reports a successful cancel so the host can delete the item message', async () => {
+    const onItemProcessed = vi.fn();
+    const h = harness({ onItemProcessed });
+
+    await h.click(FOLLOWUP_CANCEL_ACTION_ID, clickBody(itemValue()));
+    await tick();
+
+    expect(onItemProcessed).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`);
+    expect(onItemProcessed).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays silent when the cancel was refused — the item is still in the queue', async () => {
+    const onItemProcessed = vi.fn();
+    const h = harness({ onItemProcessed, canInterrupt: vi.fn(async () => false) });
+
+    await h.click(FOLLOWUP_CANCEL_ACTION_ID, clickBody(itemValue()));
+    await tick();
+
+    expect(onItemProcessed).not.toHaveBeenCalled();
+  });
+
+  it('stays silent when the queue itself refused the cancel', async () => {
+    const onItemProcessed = vi.fn();
+    const h = harness({ onItemProcessed });
+    h.queue.cancelItem.mockReturnValue({ ok: false, reason: 'invalid-state' } as never);
+
+    await h.click(FOLLOWUP_CANCEL_ACTION_ID, clickBody(itemValue()));
+    await tick();
+
+    expect(onItemProcessed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['cancelled', true],
+    ['already-delivered', true],
+    ['returned-to-queue', false],
+    ['failed', false],
+  ] as const)('reports a steered cancel that ended `%s`: %s', async (outcome, reported) => {
+    const onItemProcessed = vi.fn();
+    const h = harness({
+      onItemProcessed,
+      cancelSteered: vi.fn(async () => outcome) as FollowupActionsDeps['cancelSteered'],
+    });
+    h.queue.get.mockReturnValue(queuedItem({ state: 'steered', epoch: 1, steerUuid: 'uuid-1' }));
+
+    await h.click(FOLLOWUP_CANCEL_ACTION_ID, clickBody(itemValue({ epoch: 1 })));
+    await tick();
+
+    // `returned-to-queue` is the honest "still pending" answer: the row is
+    // clickable again, so its message must stay on screen.
+    expect(onItemProcessed).toHaveBeenCalledTimes(reported ? 1 : 0);
+  });
+
+  it('never turns a completed cancel into a failed click when the hook throws', async () => {
+    const onItemProcessed = vi.fn(() => {
+      throw new Error('delete exploded');
+    });
+    const h = harness({ onItemProcessed });
+
+    await h.click(FOLLOWUP_CANCEL_ACTION_ID, clickBody(itemValue()));
+    await tick();
+
+    expect(lastEphemeral(h.responses)).toContain('취소했습니다');
+    expect(h.deps.reportError).toHaveBeenCalled();
   });
 });
 

@@ -30,6 +30,7 @@ import { OnboardingHandler } from './onboarding-handler';
 import { PersonaHandler } from './persona-handler';
 import { PluginsHandler } from './plugins-handler';
 import { PromptHandler } from './prompt-handler';
+import { QueueHandler } from './queue-handler';
 import { RateHandler } from './rate-handler';
 import { RenewHandler } from './renew-handler';
 import { ReportHandler } from './report-handler';
@@ -130,6 +131,11 @@ setCommandRouterProviders({
         new CloseHandler(deps as any),
         new ReportHandler(getReportDeps()),
         new UsageHandler(deps as any),
+        // `queue`/`큐` (A40). Registered like any other handler so
+        // `classifyText` calls it a `control` through the same `canHandle`
+        // probe — which is what lets it answer WHILE a turn is running, the
+        // only time the follow-up queue is non-empty.
+        new QueueHandler(deps as any),
         new HelpHandler(),
         new SessionHandler(deps as any),
       ],
