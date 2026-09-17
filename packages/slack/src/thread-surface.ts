@@ -3,17 +3,7 @@ import { ActionPanelBuilder, type ActivityState, type PRStatusInfo, type Workflo
 import type { AssistantStatusManager } from './assistant-status-manager';
 import type { CompletionMessageTracker } from './completion-message-tracker';
 import { ContextWindowManager, type SessionUsage } from './context-window-manager';
-import type { FollowupItemState } from './followup-queue';
-import {
-  buildFollowupQueueBlocks,
-  FOLLOWUP_QUEUE_TITLE,
-  FOLLOWUP_STATE_DISPLAY_ORDER,
-  type FollowupQueueView,
-  followupFreezeBannerText,
-  followupQueueCompactCapacity,
-  followupStateCountLabel,
-} from './followup-queue-blocks';
-import { escapeSlackMrkdwn } from './mrkdwn-escape';
+import type { FollowupQueueView } from './followup-queue-blocks';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper, ThreadPostEvent } from './slack-api-helper';
 import {
@@ -1155,13 +1145,9 @@ export class ThreadSurface {
       }
     }
 
-    // Resolve the follow-up queue ONCE per render so the blocks and the
-    // accessible fallback text can never disagree about what is in the queue.
-    const followup = this.resolveFollowup(sessionKey);
-
     // Build combined blocks
-    const blocks = this.buildCombinedBlocks(current, sessionKey, overrides, followup);
-    const text = this.buildFallbackText(current, overrides, followup);
+    const blocks = this.buildCombinedBlocks(current, sessionKey, overrides);
+    const text = this.buildFallbackText(current, overrides);
     const renderKey = JSON.stringify(blocks);
 
     // Skip if nothing changed (unless forced)
@@ -1516,34 +1502,31 @@ export class ThreadSurface {
   /**
    * Build the combined header + panel blocks.
    *
-   * Layout with the U3/U9 embed:
-   *   header · status/metrics · **Queue** · divider · action rows · summary
+   * Layout:
+   *   header · status/metrics · divider · action rows · summary
    *
-   * The Queue goes AFTER the header and BEFORE the existing action rows so the
-   * controls stay anchored at the bottom of the message where users already
-   * look for them, and it is a distinct surface from the autogoal `Goals`
-   * queue (`ssot.md` §3.6 — the two are never merged).
-   *
-   * `followup` is the once-per-render resolution from {@link doRender}; pass
-   * `undefined` to have it resolved here (used by direct unit calls).
+   * The follow-up Queue used to sit between the status block and the action
+   * rows. It does NOT any more (A39): a queued message is posted as its own
+   * message in the thread, right where the user typed it, with its `Send now` /
+   * `Cancel` controls on it (`followup-queue-blocks.ts` `buildFollowupItemMessage`).
+   * The panel keeps everything else it ever had, and it keeps READING the queue
+   * — {@link isStaleWrite} needs the turn epoch — it just renders none of it.
    */
   private buildCombinedBlocks(
     session: ConversationSession,
     sessionKey: string,
     overrides?: { closed?: boolean },
-    followup?: ResolvedFollowup | null,
   ): any[] {
     const isClosed = overrides?.closed || !session.isActive || session.terminated === true;
     const hasActiveRequest = this.deps.requestCoordinator.isRequestActive(sessionKey);
     const panelState = session.actionPanel || {};
     const choiceMessageLink = panelState.choiceMessageLink;
-    const resolvedFollowup = followup === undefined ? this.resolveFollowup(sessionKey) : followup;
 
     // Read PR status from per-session cache (never fetch in render path)
     const prStatusInfo = this.getState(sessionKey).prCache;
 
     if (isClosed) {
-      return this.buildClosedBlocks(session, sessionKey, resolvedFollowup);
+      return this.buildClosedBlocks(session, sessionKey);
     }
 
     const blocks: any[] = [];
@@ -1576,22 +1559,17 @@ export class ThreadSurface {
     });
 
     // ActionPanelBuilder.build() returns full blocks: status/metrics first and
-    // the action rows (plus their divider) last. Split there so the Queue can
-    // sit between them.
+    // the action rows (plus their divider) last. The split is kept so the two
+    // halves stay in that order; nothing is inserted between them any more.
     const panelBlocks = panelPayload.blocks;
     const splitAt = ThreadSurface.actionRowsIndex(panelBlocks);
     blocks.push(...panelBlocks.slice(0, splitAt));
     const actionRows = panelBlocks.slice(splitAt);
 
-    // ── 3. Follow-up Queue (U3/U9) ──
-    blocks.push(
-      ...this.buildFollowupBlocks(sessionKey, MAX_MESSAGE_BLOCKS - blocks.length - actionRows.length, resolvedFollowup),
-    );
-
-    // ── 4. Action rows ──
+    // ── 3. Action rows ──
     blocks.push(...actionRows);
 
-    // ── 5. Summary section ──
+    // ── 4. Summary section ──
     const summaryBlocks =
       session.actionPanel?.summaryBlocks && Array.isArray(session.actionPanel.summaryBlocks)
         ? session.actionPanel.summaryBlocks
@@ -1599,8 +1577,8 @@ export class ThreadSurface {
 
     // Append executive summary blocks if present, but only as far as the
     // 50-block budget allows. The summary is the optional part of the surface;
-    // the header, the Queue and the controls are not, so overflow trims HERE
-    // and never silently drops a button.
+    // the header and the controls are not, so overflow trims HERE and never
+    // silently drops a button.
     // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S3
     if (summaryBlocks.length > 0) {
       blocks.push(...summaryBlocks.slice(0, Math.max(0, MAX_MESSAGE_BLOCKS - blocks.length)));
@@ -1610,12 +1588,14 @@ export class ThreadSurface {
   }
 
   /**
-   * Index of the trailing action rows inside an ActionPanelBuilder payload —
-   * i.e. where the Queue is inserted. Walks back over the contiguous run of
-   * `actions` blocks and includes the divider that introduces them, so the
-   * Queue lands above the separator rather than between it and the buttons.
-   * A payload with no trailing actions (the closed panel) returns its length,
-   * which appends the Queue at the end.
+   * Index of the trailing action rows inside an ActionPanelBuilder payload.
+   * Walks back over the contiguous run of `actions` blocks and includes the
+   * divider that introduces them; a payload with no trailing actions (the
+   * closed panel) returns its length.
+   *
+   * This used to be the Queue's insertion point. Nothing is inserted there any
+   * more (A39) — the split survives because it is what keeps the status half
+   * and the action rows in that order.
    */
   private static actionRowsIndex(blocks: any[]): number {
     let index = blocks.length;
@@ -1634,17 +1614,22 @@ export class ThreadSurface {
   }
 
   /**
-   * Closed state: header + closed panel + Queue.
+   * Closed state: header + closed panel.
    *
-   * The Queue stays on the closed surface on purpose: closing a session
-   * freezes and cancels queue items (`ssot.md` §3.5 / A18), and that outcome
-   * has to remain visible as history instead of disappearing with the panel.
+   * No Queue here either (A39).
+   *
+   * This method RENDERS a closed panel; it is not itself a queue transition and
+   * it does not stand for one. What actually happens to the items is decided
+   * elsewhere, and the two cases differ:
+   *   - a session DELETION (the registry's pre-delete seam,
+   *     `slack-handler.ts` `registerFollowupSessionDeletion`) cancels every
+   *     still-pending item and deletes that item's in-thread message (A41), so
+   *     the thread is left with no controls pointing at a session that is gone;
+   *   - a STOP freezes instead of cancelling (`ssot.md` §3.5 / A18): the parked
+   *     rows keep their messages, which is where their Resume/Retry and the
+   *     freeze notice now live, because this panel no longer carries them.
    */
-  private buildClosedBlocks(
-    session: ConversationSession,
-    sessionKey: string,
-    followup?: ResolvedFollowup | null,
-  ): any[] {
+  private buildClosedBlocks(session: ConversationSession, sessionKey: string): any[] {
     const prStatusInfo = this.getState(sessionKey).prCache;
     const blocks: any[] = [];
 
@@ -1666,36 +1651,23 @@ export class ThreadSurface {
     });
     blocks.push(...panelPayload.blocks);
 
-    const resolvedFollowup = followup === undefined ? this.resolveFollowup(sessionKey) : followup;
-    blocks.push(...this.buildFollowupBlocks(sessionKey, MAX_MESSAGE_BLOCKS - blocks.length, resolvedFollowup));
-
     return blocks;
   }
 
   /**
    * Accessible fallback for clients that cannot render blocks (A22/A23).
    *
-   * Carries the queue's COUNTS, STATES and freeze reason — never the queued
-   * message bodies. Slack parses this string as mrkdwn, so the one
-   * operator-supplied fragment in it (the freeze reason) is entity-escaped: an
-   * unescaped `<!channel>` in a reason would become a real broadcast ping.
-   *
-   * `followup` is the once-per-render resolution from {@link doRender};
-   * omitting it yields the legacy owner/title-only text.
+   * Owner and title only. The queue counts/states breakdown that used to be
+   * appended here is gone with the Queue section itself (A39): a panel that
+   * renders no queue must not describe one in its fallback text either, and the
+   * per-item messages carry their own (escaped) fallback.
    */
-  private buildFallbackText(
-    session: ConversationSession,
-    overrides?: { closed?: boolean },
-    followup?: ResolvedFollowup | null,
-  ): string {
+  private buildFallbackText(session: ConversationSession, overrides?: { closed?: boolean }): string {
     const title = session.title || 'Session';
     const owner = session.ownerName || session.ownerId || '';
     const isClosed = overrides?.closed || !session.isActive || session.terminated === true;
     const closed = isClosed ? ' [종료됨]' : '';
-    const base = `${owner} — ${title}${closed}`;
-
-    const queue = followup ? ThreadSurface.followupFallbackText(followup) : undefined;
-    return queue ? `${base} · ${queue}` : base;
+    return `${owner} — ${title}${closed}`;
   }
 
   // =========================================================================
@@ -1735,99 +1707,6 @@ export class ThreadSurface {
 
     if (!view && !error) return null;
     return { view, error };
-  }
-
-  /**
-   * The queue as the RENDER path sees it: {@link readFollowup} plus one
-   * display rule — an empty, unfrozen queue is the normal case for most
-   * sessions, so it renders nothing instead of a permanent "0 item(s)" row.
-   *
-   * This filtering is display-only and MUST NOT be used for control decisions.
-   * Review round 1 caught exactly that: reading the turn epoch through here
-   * made the A28 guard inert for every ordinary turn with an empty queue,
-   * because "nothing to draw" was indistinguishable from "no epoch known".
-   */
-  private resolveFollowup(sessionKey: string): ResolvedFollowup | null {
-    const resolved = this.readFollowup(sessionKey);
-    if (!resolved) return null;
-    const { view, error } = resolved;
-    if (view && view.items.length === 0 && !view.freeze && !error) return null;
-    return resolved;
-  }
-
-  /**
-   * Queue blocks for the combined message, inside `budget` blocks.
-   *
-   * The page size shrinks with the budget (and pagination grows to match), so
-   * the embed can never push the message past Slack's 50-block cap no matter
-   * how long the backlog or how tall the rest of the surface is.
-   */
-  private buildFollowupBlocks(sessionKey: string, budget: number, followup?: ResolvedFollowup | null): any[] {
-    if (!followup || budget < 2) return [];
-    const { view, error } = followup;
-
-    // Degraded read: say so, visibly, instead of showing an empty queue.
-    if (!view) {
-      return [
-        { type: 'section', text: { type: 'plain_text', text: FOLLOWUP_QUEUE_TITLE } },
-        { type: 'context', elements: [{ type: 'plain_text', text: `unavailable · ${error}` }] },
-      ];
-    }
-
-    // The embed renders the COMPACT layout (one block per item), so the item
-    // capacity comes from the builder itself — a local copy of the accounting
-    // is exactly what drifted: the pre-compact "two blocks per item" halved
-    // every page. The degradation note below is ours, so it is reserved here.
-    const pageSize = Math.min(FOLLOWUP_EMBED_PAGE_SIZE, followupQueueCompactCapacity(budget - (error ? 1 : 0)));
-
-    // Not even one item fits: keep the counts (they are the actionable signal)
-    // and drop the item rows.
-    if (pageSize < 1) {
-      return [
-        { type: 'section', text: { type: 'plain_text', text: FOLLOWUP_QUEUE_TITLE } },
-        {
-          type: 'context',
-          elements: [{ type: 'plain_text', text: ThreadSurface.followupCountsText(view) }],
-        },
-      ];
-    }
-
-    const { blocks } = buildFollowupQueueBlocks(view, {
-      page: this.getState(sessionKey).followupPage,
-      pageSize,
-    });
-    const out = [...blocks];
-    if (error) {
-      out.push({ type: 'context', elements: [{ type: 'plain_text', text: `degraded · ${error}` }] });
-    }
-    return out;
-  }
-
-  /**
-   * `3 item(s) · queued 1 · 전달 1 · paused 1` — counts and states only, never
-   * message bodies. Order and per-state wording come from the queue builder, so
-   * this accessible line and the rendered panel name the same state the same way.
-   */
-  private static followupCountsText(view: FollowupQueueView): string {
-    const counts = new Map<FollowupItemState, number>();
-    for (const item of view.items) counts.set(item.state, (counts.get(item.state) ?? 0) + 1);
-    const breakdown = FOLLOWUP_STATE_DISPLAY_ORDER.filter((state) => counts.has(state))
-      .map((state) => `${followupStateCountLabel(state)} ${counts.get(state)}`)
-      .join(' · ');
-    const parts = [`${view.items.length} item(s)`];
-    if (breakdown) parts.push(breakdown);
-    return parts.join(' · ');
-  }
-
-  /** Queue half of the accessible fallback text. Freeze reason is mrkdwn-escaped. */
-  private static followupFallbackText(followup: ResolvedFollowup): string {
-    const { view, error } = followup;
-    if (!view) return `${FOLLOWUP_QUEUE_TITLE} unavailable · ${escapeSlackMrkdwn(error ?? 'unknown')}`;
-
-    const parts = [`${FOLLOWUP_QUEUE_TITLE} ${ThreadSurface.followupCountsText(view)}`];
-    if (view.freeze) parts.push(escapeSlackMrkdwn(followupFreezeBannerText(view.freeze.reason)));
-    if (error) parts.push(`degraded · ${escapeSlackMrkdwn(error)}`);
-    return parts.join(' · ');
   }
 
   /**
