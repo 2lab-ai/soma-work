@@ -9,8 +9,8 @@ import {
   FOLLOWUP_QUEUE_TITLE,
   FOLLOWUP_STATE_DISPLAY_ORDER,
   type FollowupQueueView,
-  followupQueueCompactCapacity,
   followupFreezeBannerText,
+  followupQueueCompactCapacity,
   followupStateCountLabel,
 } from './followup-queue-blocks';
 import { escapeSlackMrkdwn } from './mrkdwn-escape';
