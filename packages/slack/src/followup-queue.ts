@@ -176,8 +176,15 @@ const CANCELLABLE_STATES: readonly FollowupItemState[] = ['queued', 'paused', 'f
  * confirmed `cancel_async_message`; a plain `cancelItem` keeps answering
  * `invalid-state` so the refusal is explicit instead of a silent lie.
  */
-/** A dispatch is being set up — blocks a competing `Send now` reservation. */
-const PENDING_DISPATCH_STATES: readonly FollowupItemState[] = ['reserved', 'claimed'];
+/**
+ * A dispatch is being set up — blocks a competing `Send now` reservation.
+ *
+ * Exported because the dispatcher asks the same question about a session before
+ * it steers (06 §3.2): while one of these is held, the turn a steer would push
+ * into is the one `Send now` is about to kill. A second, hand-copied list is how
+ * the two sides of that fence quietly drift apart.
+ */
+export const FOLLOWUP_PENDING_DISPATCH_STATES: readonly FollowupItemState[] = ['reserved', 'claimed'];
 /**
  * Anything the executor may still be running — blocks a drain claim.
  *
@@ -189,17 +196,32 @@ const PENDING_DISPATCH_STATES: readonly FollowupItemState[] = ['reserved', 'clai
  */
 const IN_FLIGHT_STATES: readonly FollowupItemState[] = ['reserved', 'claimed', 'dispatched'];
 
+/**
+ * A freeze target: the state to enter, and optionally a note appended to the
+ * freeze reason. The note exists for the one mapping whose STATE understates
+ * what is known (`steered` on restart) — the row itself has to carry the doubt,
+ * because nothing downstream can reconstruct it from `paused`.
+ */
+type FreezeTarget = FollowupItemState | { to: FollowupItemState; note: string };
+
 /** States rewritten when a session is frozen; anything absent is left untouched. */
-type FreezeTransitions = Partial<Record<FollowupItemState, FollowupItemState>>;
+type FreezeTransitions = Partial<Record<FollowupItemState, FreezeTarget>>;
 
 /**
  * stop / session end (`ssot.md:128-129`): a live process witnesses the event,
  * so an un-started `claimed` item is provably un-started → `paused`. Only the
- * item that was really executing is `uncertain`.
+ * items whose outcome nobody witnessed are `uncertain`.
+ *
+ * `steered` is one of them (review round 3). `freeze()` runs SYNCHRONOUSLY
+ * inside the stop path, before the turn's settlement frame arrives, so at this
+ * instant nobody knows whether the model already read the pushed message —
+ * exactly the question `dispatched → uncertain` exists for. Calling it `paused`
+ * would promise the user an un-run message and let `resume` replay it, which is
+ * the double delivery the uuid dedup exists to stop.
  */
 const STOP_TRANSITIONS: FreezeTransitions = {
   queued: 'paused',
-  steered: 'paused',
+  steered: 'uncertain',
   reserved: 'paused',
   claimed: 'paused',
   dispatched: 'uncertain',
@@ -210,15 +232,16 @@ const STOP_TRANSITIONS: FreezeTransitions = {
  * have produced a query. `claimed` and `dispatched` both come back `uncertain`
  * — never blind-replayed.
  *
- * `steered` comes back `paused`, not `uncertain` (06 §4 S7): the SDK process
- * that held the input channel died with the restart, so the message provably
- * never reached a model that could still act on it — but it must not auto-run
- * either, and the uuid it was pushed under is meaningless to the next process.
- * A stop maps it the same way: the channel closes with the turn.
+ * `steered` comes back `paused` (06 §4 S7): the SDK process that held the input
+ * channel died with the restart, so nothing can still act on the message and
+ * the uuid it was pushed under is meaningless to the next process. That is a
+ * statement about the FUTURE, not about the past — the model may well have read
+ * it before the crash — so the pause carries that doubt in its reason and only
+ * an explicit resume puts it back in line.
  */
 const RESTART_TRANSITIONS: FreezeTransitions = {
   queued: 'paused',
-  steered: 'paused',
+  steered: { to: 'paused', note: '모델이 읽었는지 미확인' },
   reserved: 'paused',
   claimed: 'uncertain',
   dispatched: 'uncertain',
@@ -424,7 +447,7 @@ export class FollowupQueue {
       if (session.freeze) return 'frozen';
       if (expectedTurnEpoch !== session.turnEpoch) return 'stale-turn';
       if (item.state !== 'queued') return 'invalid-state';
-      if (session.items.some((other) => PENDING_DISPATCH_STATES.includes(other.state))) return 'busy';
+      if (session.items.some((other) => FOLLOWUP_PENDING_DISPATCH_STATES.includes(other.state))) return 'busy';
       this.enter(item, 'reserved');
       return undefined;
     });
@@ -626,6 +649,34 @@ export class FollowupQueue {
   }
 
   /**
+   * End-of-turn sweep: every item still `steered` in this session goes back to
+   * `queued` (uuid cleared) in ONE transaction, and the moved items are
+   * returned so the caller can report each one.
+   *
+   * Why a sweep exists at all: `steered` is the only state whose exit depends on
+   * a receipt this process does not produce. A settlement frame that never names
+   * an item — a turn killed mid-flight, a frame the SDK dropped — would leave it
+   * `steered` forever, and `steered` is invisible to the drain (`claimNext`
+   * takes `queued` only). The host calls this when the turn it steered into is
+   * over: after that instant no receipt can legitimately arrive, so anything
+   * still holding the state was never witnessed and belongs back in line.
+   *
+   * Not a settlement of its own: it claims nothing about whether the model read
+   * the message — it only restores drainability, which is why the caller passes
+   * the reason the panel will show.
+   */
+  unsteerAll(sessionKey: string, reason: string): FollowupItem[] {
+    const next = cloneJson(this.state);
+    const session = this.findSession(next, sessionKey);
+    if (!session) return [];
+    const moved = session.items.filter((item) => item.state === 'steered');
+    if (moved.length === 0) return []; // nothing to commit — no write, no epoch bump
+    for (const item of moved) this.enter(item, 'queued', reason);
+    this.commit(next);
+    return cloneJson(moved);
+  }
+
+  /**
    * Cancel of a steered item — allowed ONLY once the SDK confirmed
    * `cancel_async_message(uuid)`, which is why it is a separate door from
    * `cancelItem` (06 §3.4). This queue cannot dequeue the SDK's copy, so a
@@ -646,8 +697,10 @@ export class FollowupQueue {
   /**
    * stop / session end / ASK gate: freeze the session and settle each item into
    * a state instead of replaying it. A live process is observing this event, so
-   * a `claimed` item is known not to have started yet → `paused`; only the item
-   * that was actually running becomes `uncertain` (`ssot.md:128-129`, A17/A31).
+   * a `claimed` item is known not to have started yet → `paused`; the items
+   * whose outcome nobody witnessed — the one that was running and the ones
+   * pushed into its input channel — become `uncertain` (`ssot.md:128-129`,
+   * A17/A31). See `STOP_TRANSITIONS`.
    */
   freeze(sessionKey: string, reason: string): void {
     this.freezeSessions(reason, (session) => session.sessionKey === sessionKey, STOP_TRANSITIONS);
@@ -724,7 +777,9 @@ export class FollowupQueue {
       session.freeze = { reason, at };
       for (const item of session.items) {
         const target = transitions[item.state];
-        if (target) this.enter(item, target, reason);
+        if (!target) continue;
+        if (typeof target === 'string') this.enter(item, target, reason);
+        else this.enter(item, target.to, `${reason} — ${target.note}`);
       }
     }
     this.commit(next);

@@ -1160,22 +1160,41 @@ describe('FollowupQueue steered items and the drain', () => {
 });
 
 describe('FollowupQueue steered items under freeze and restart', () => {
-  it('pauses a steered item on stop and clears the uuid — the channel died with the turn', () => {
+  it('marks a steered item uncertain on stop and clears the uuid — nobody saw whether it was read', () => {
     const queue = new FollowupQueue();
     queue.enqueue(SESSION, event({ ts: '1.1' }));
     const steered = steerFirst(queue, 'uuid-1');
 
+    // The stop runs synchronously, BEFORE the turn's settlement frame: at this
+    // instant the model may already have read the pushed message.
     queue.freeze(SESSION, 'stop pressed');
 
-    const paused = queue.get(SESSION, steered.id);
-    expect(paused?.state).toBe('paused');
-    expect(paused?.stateReason).toBe('stop pressed');
-    expect(paused?.steerUuid).toBeUndefined();
+    const stopped = queue.get(SESSION, steered.id);
+    expect(stopped?.state).toBe('uncertain');
+    expect(stopped?.stateReason).toBe('stop pressed');
+    expect(stopped?.steerUuid).toBeUndefined();
     // A receipt arriving after the stop names nothing — it cannot revive the row.
     expect(queue.markConsumed(SESSION, 'uuid-1')).toEqual({ ok: false, reason: 'not-found' });
   });
 
-  it('restores a steered item as paused after a restart, never as uncertain (S7/A16)', () => {
+  it('never auto-replays a stopped steer: resume leaves it uncertain, only retry requeues it (A16)', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    const steered = steerFirst(queue, 'uuid-1');
+    queue.freeze(SESSION, 'stop pressed');
+
+    queue.resume(SESSION);
+
+    const resumed = queue.get(SESSION, steered.id);
+    expect(resumed?.state).toBe('uncertain');
+    expect(queue.claimNext(SESSION)).toEqual({ ok: false, reason: 'empty' }); // not drainable by itself
+    // The explicit user decision is the only door back into the lane.
+    const retried = queue.retry(SESSION, steered.id, resumed?.epoch ?? 0);
+    expect(retried.ok && retried.item.state).toBe('queued');
+    expect(queue.claimNext(SESSION).ok).toBe(true);
+  });
+
+  it('restores a steered item as paused after a restart, with the doubt in its reason (S7/A16)', () => {
     const source = new FollowupQueue();
     source.enqueue(SESSION, event({ ts: '1.1' }));
     source.enqueue(SESSION, event({ ts: '1.2' }));
@@ -1183,24 +1202,93 @@ describe('FollowupQueue steered items under freeze and restart', () => {
     expect(source.list(SESSION)[0].state).toBe('steered');
 
     const restarted = new FollowupQueue({ snapshot: source.snapshot() });
-    restarted.recover('process restart');
+    restarted.recover('재시작');
 
     const byTs = Object.fromEntries(restarted.list(SESSION).map((item) => [item.message.ts, item.state]));
     expect(byTs).toEqual({ '1.1': 'paused', '1.2': 'paused' });
     expect(restarted.list(SESSION)[0].steerUuid).toBeUndefined();
+    // `paused` says the message cannot still run; it must not also claim the
+    // model never read it before the process died.
+    expect(restarted.list(SESSION)[0].stateReason).toBe('재시작 — 모델이 읽었는지 미확인');
+    expect(restarted.list(SESSION)[1].stateReason).toBe('재시작');
   });
 
-  it('brings an ex-steered paused item back to queued on resume, with no uuid attached', () => {
-    const queue = new FollowupQueue();
-    queue.enqueue(SESSION, event({ ts: '1.1' }));
-    steerFirst(queue, 'uuid-1');
-    queue.freeze(SESSION, 'stop pressed');
+  it('brings a restart-paused steered item back to queued on resume, with no uuid attached', () => {
+    const source = new FollowupQueue();
+    source.enqueue(SESSION, event({ ts: '1.1' }));
+    steerFirst(source, 'uuid-1');
+    const queue = new FollowupQueue({ snapshot: source.snapshot() });
+    queue.recover('process restart');
 
     queue.resume(SESSION);
 
     expect(queue.list(SESSION)[0].state).toBe('queued');
     expect(queue.list(SESSION)[0].steerUuid).toBeUndefined();
     expect(queue.claimNext(SESSION).ok).toBe(true);
+  });
+});
+
+describe('FollowupQueue unsteerAll (end-of-turn sweep)', () => {
+  it('returns every steered item of the session to queued, uuid cleared, in one commit', () => {
+    const saved: FollowupQueueSnapshot[] = [];
+    const queue = new FollowupQueue({ save: (snapshot) => saved.push(snapshot) });
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.enqueue(SESSION, event({ ts: '1.2' }));
+    const first = steerFirst(queue, 'uuid-1');
+    const second = steerFirst(queue, 'uuid-2');
+    const writes = saved.length;
+
+    const moved = queue.unsteerAll(SESSION, '턴 종료 — 수신 확인 없음');
+
+    expect(moved.map((item) => item.id)).toEqual([first.id, second.id]);
+    expect(moved.every((item) => item.state === 'queued')).toBe(true);
+    expect(moved.every((item) => item.steerUuid === undefined)).toBe(true);
+    expect(queue.list(SESSION).map((item) => item.stateReason)).toEqual([
+      '턴 종료 — 수신 확인 없음',
+      '턴 종료 — 수신 확인 없음',
+    ]);
+    // One transaction for the whole sweep: a half-written sweep would leave a
+    // row addressable by a uuid no receipt can arrive for.
+    expect(saved.length).toBe(writes + 1);
+    // Both are drainable again, at their original FIFO positions.
+    expect(queue.claimNext(SESSION).ok).toBe(true);
+    expect(queue.list(SESSION).map((item) => item.seq)).toEqual([1, 2]);
+  });
+
+  it('leaves every non-steered item alone and writes nothing when there is none', () => {
+    const saved: FollowupQueueSnapshot[] = [];
+    const queue = new FollowupQueue({ save: (snapshot) => saved.push(snapshot) });
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.enqueue(SESSION, event({ ts: '1.2' }));
+    const steered = steerFirst(queue, 'uuid-1');
+    const dispatched = dispatchFirst(queue);
+    const untouched = queue.get(SESSION, dispatched.id);
+    const writes = saved.length;
+
+    const moved = queue.unsteerAll(SESSION, 'turn ended');
+
+    expect(moved.map((item) => item.id)).toEqual([steered.id]);
+    expect(queue.get(SESSION, dispatched.id)).toEqual(untouched); // no epoch bump, no reason rewrite
+    // A second sweep is a no-op: nothing steered, nothing persisted.
+    expect(queue.unsteerAll(SESSION, 'turn ended')).toEqual([]);
+    expect(saved.length).toBe(writes + 1);
+    expect(queue.unsteerAll('C9:0.0', 'turn ended')).toEqual([]); // unknown session
+  });
+
+  it('does not reach into another session', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.enqueue(OTHER_SESSION, event({ ts: '1.2' }));
+    steerFirst(queue, 'uuid-1');
+    const other = queue.list(OTHER_SESSION)[0];
+    const otherSteered = queue.steer(OTHER_SESSION, other.id, other.epoch, 'uuid-2');
+    if (!otherSteered.ok) throw new Error('setup failed');
+
+    queue.unsteerAll(SESSION, 'turn ended');
+
+    expect(queue.list(SESSION)[0].state).toBe('queued');
+    expect(queue.list(OTHER_SESSION)[0].state).toBe('steered');
+    expect(queue.list(OTHER_SESSION)[0].steerUuid).toBe('uuid-2');
   });
 });
 
