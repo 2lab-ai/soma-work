@@ -101,10 +101,18 @@ function runStart(env: string, extraPath: string): RunResult {
         ...process.env,
         PATH: `${extraPath}:${process.env.PATH ?? ''}`,
         HOME: homeStub,
+        // The overrides are inert without this flag (service.sh resolve_env),
+        // so the suite must opt in explicitly.
+        SOMA_TEST_HARNESS: '1',
         // Isolate the pidfile fallback (service.sh get_pidfile_pid): without
         // this, a data/soma-work.pid left in the checkout by other tests makes
         // is_alive() true and cmd_start exits before ever calling kickstart.
         SOMA_PID_FILE_OVERRIDE: path.join(workDir, 'soma-work.pid'),
+        // …and the tree the rest of cmd_start reads/writes (logs/, data/, the
+        // headless fallback's spawn cwd) must be the temp one too. Without it
+        // PROJECT_DIR resolved to the real /opt/soma-work/dev, so a `start`
+        // test on a deploy host operated on the live deployment.
+        SOMA_PROJECT_DIR_OVERRIDE: path.join(workDir, 'project'),
       },
       encoding: 'utf-8',
     });
