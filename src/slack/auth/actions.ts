@@ -8,6 +8,8 @@
  *   action  auth_llmux_open_remove        → open Remove confirm modal
  *   action  auth_llmux_open_settings      → open Settings modal
  *   action  auth_refresh                  → re-render with fresh /llmux/status
+ *   action  auth_view_mode                → toggle Overview ⟷ Admin mode (T3)
+ *   action  auth_page                     → account-list pagination (T3)
  *   view    auth_llmux_add_account        → POST /llmux/add-account
  *   view    auth_llmux_remove_account     → POST /llmux/remove-account
  *   view    auth_llmux_settings           → setLlmuxSettings (validated probe)
@@ -16,6 +18,15 @@
  * work happens after ack. Mutating routes are admin-gated server-side
  * (`requireAdmin`) — hiding the buttons for readonly viewers is UX, not
  * security.
+ *
+ * Nav-state contract (T3 #auth-capacity-overview): the navigation buttons
+ * (refresh / viewer toggle / paging) carry a JSON `{viewerMode,page}`
+ * value. Handlers RETAIN that encoded card state across re-renders but
+ * RE-CHECK the actor's authorization on every click — the encoded value is
+ * untrusted input, so a forged/stale `viewerMode:'admin'` from a non-admin
+ * actor demotes to `readonly` (renderAuthCard enforces the same server-
+ * side). Mutating routes always re-render the ADMIN card (the actor just
+ * passed `requireAdmin`, and mutations only exist on the admin surface).
  *
  * Card re-render: button actions go through `renderInPlace` (same surface-
  * aware update path as the CCT card, #803). Modal submissions carry the
@@ -37,13 +48,61 @@ import {
 import { Logger } from '../../logger';
 import { renderInPlace } from '../cct/render-in-place';
 import { applyAuthMode, renderAuthCard } from '../z/topics/auth-topic';
-import { buildLlmuxAddAccountModal, buildLlmuxRemoveAccountModal, buildLlmuxSettingsModal } from './builder';
+import {
+  type AuthCardViewerMode,
+  buildLlmuxAddAccountModal,
+  buildLlmuxRemoveAccountModal,
+  buildLlmuxSettingsModal,
+} from './builder';
 import { AUTH_ACTION_IDS, AUTH_BLOCK_IDS, AUTH_VIEW_IDS } from './views';
 
 const logger = new Logger('AuthActions');
 
 function actorId(body: unknown): string | undefined {
   return (body as { user?: { id?: string } })?.user?.id;
+}
+
+function actionValue(body: unknown): string | undefined {
+  return (body as { actions?: Array<{ value?: string }> })?.actions?.[0]?.value;
+}
+
+/** Card-encoded nav-button state: JSON `{viewerMode,page}`. */
+interface AuthNavState {
+  viewerMode: AuthCardViewerMode;
+  page: number;
+}
+
+/**
+ * Decode a nav button value. Fail-safe: legacy plain values (`'refresh'`),
+ * malformed JSON, or out-of-range pages fall back to the readonly
+ * overview at page 0 — never to a wider surface.
+ */
+function parseNavState(raw: string | undefined): AuthNavState {
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as { viewerMode?: unknown; page?: unknown };
+      return {
+        viewerMode: parsed.viewerMode === 'admin' ? 'admin' : 'readonly',
+        page:
+          typeof parsed.page === 'number' && Number.isFinite(parsed.page) && parsed.page >= 0
+            ? Math.floor(parsed.page)
+            : 0,
+      };
+    } catch {
+      // Legacy pre-T3 buttons carry plain strings — fall through.
+    }
+  }
+  return { viewerMode: 'readonly', page: 0 };
+}
+
+/**
+ * Re-check the ACTOR's authorization against the card-encoded mode.
+ * `admin` is honored only for actual admins; everything else renders the
+ * readonly overview. (renderAuthCard enforces this again server-side —
+ * this keeps the handler's intent explicit and testable.)
+ */
+function effectiveViewerMode(requested: AuthCardViewerMode, userId: string): AuthCardViewerMode {
+  return requested === 'admin' && isAdminUser(userId) ? 'admin' : 'readonly';
 }
 
 /** Admin gate — logs and swallows non-admin clicks on mutating routes. */
@@ -73,9 +132,19 @@ async function rerenderCard(args: {
   client: WebClient;
   respond?: (msg: Record<string, unknown>) => Promise<unknown>;
   userId: string;
+  /** EFFECTIVE (post-authorization) viewer mode to render. */
+  viewerMode: AuthCardViewerMode;
+  page?: number;
+  refreshUsage?: boolean;
   banner?: string;
 }): Promise<void> {
-  const { text, blocks } = await renderAuthCard({ userId: args.userId, issuedAt: Date.now() });
+  const { text, blocks } = await renderAuthCard({
+    userId: args.userId,
+    issuedAt: Date.now(),
+    viewerMode: args.viewerMode,
+    page: args.page,
+    refreshUsage: args.refreshUsage,
+  });
   if (args.banner) {
     blocks.unshift({
       type: 'section',
@@ -92,7 +161,11 @@ async function rerenderCard(args: {
   });
 }
 
-/** Re-render the auth card at a known surface (view-submission path). */
+/**
+ * Re-render the auth card at a known surface (view-submission path).
+ * Always renders the ADMIN card: every modal submit is admin-gated, and
+ * the modal was opened from the admin surface.
+ */
 async function rerenderCardAt(
   client: WebClient,
   surface: { channel?: string; ts?: string },
@@ -101,7 +174,7 @@ async function rerenderCardAt(
 ): Promise<void> {
   if (!surface.channel || !surface.ts) return;
   try {
-    const { text, blocks } = await renderAuthCard({ userId, issuedAt: Date.now() });
+    const { text, blocks } = await renderAuthCard({ userId, issuedAt: Date.now(), viewerMode: 'admin' });
     if (banner) blocks.unshift({ type: 'section', text: { type: 'mrkdwn', text: banner } });
     await client.chat.update({ channel: surface.channel, ts: surface.ts, text: text ?? '🔐 Auth', blocks });
   } catch (err) {
@@ -141,6 +214,7 @@ export function registerAuthActions(app: App): void {
         client,
         respond: respond as (msg: Record<string, unknown>) => Promise<unknown>,
         userId,
+        viewerMode: 'admin',
         banner: result.ok ? result.summary : `${result.summary}${result.description ? `\n${result.description}` : ''}`,
       });
     } catch (err) {
@@ -169,6 +243,7 @@ export function registerAuthActions(app: App): void {
         client,
         respond: respond as (msg: Record<string, unknown>) => Promise<unknown>,
         userId,
+        viewerMode: 'admin',
         banner,
       });
     } catch (err) {
@@ -176,22 +251,43 @@ export function registerAuthActions(app: App): void {
     }
   });
 
-  // ── Refresh (allowed for readonly viewers — GET /llmux/status only) ─
-  app.action(AUTH_ACTION_IDS.refresh, async ({ ack, body, client, respond }) => {
-    await ack();
-    try {
-      const userId = actorId(body);
-      if (!userId) return;
-      await rerenderCard({
-        body,
-        client,
-        respond: respond as (msg: Record<string, unknown>) => Promise<unknown>,
-        userId,
-      });
-    } catch (err) {
-      logger.error('auth_refresh failed', err);
-    }
-  });
+  // ── Navigation: Refresh / viewer toggle / paging (T3) ───────────
+  // All three are GET-only re-renders, allowed for readonly viewers.
+  // They retain the card-encoded `{viewerMode,page}` state but re-check
+  // the actor's authorization — forged/stale admin stamps demote to
+  // readonly (see parseNavState / effectiveViewerMode).
+  //
+  // Paging: prev/next live in ONE actions block and Slack requires
+  // unique action_ids per block, so the builder suffixes them as
+  // `auth_page_prev` / `auth_page_next`. The regex also accepts the bare
+  // `auth_page` id for back-compat with already-posted cards. The target
+  // page always comes from the button VALUE, not the id suffix.
+  const navRoutes: Array<{ label: string; pattern: string | RegExp }> = [
+    { label: AUTH_ACTION_IDS.refresh, pattern: AUTH_ACTION_IDS.refresh },
+    { label: AUTH_ACTION_IDS.viewer, pattern: AUTH_ACTION_IDS.viewer },
+    { label: AUTH_ACTION_IDS.page, pattern: new RegExp(`^${AUTH_ACTION_IDS.page}(?:_(?:prev|next))?$`) },
+  ];
+  for (const { label, pattern } of navRoutes) {
+    app.action(pattern, async ({ ack, body, client, respond }) => {
+      await ack();
+      try {
+        const userId = actorId(body);
+        if (!userId) return;
+        const state = parseNavState(actionValue(body));
+        await rerenderCard({
+          body,
+          client,
+          respond: respond as (msg: Record<string, unknown>) => Promise<unknown>,
+          userId,
+          viewerMode: effectiveViewerMode(state.viewerMode, userId),
+          page: state.page,
+          refreshUsage: label === AUTH_ACTION_IDS.refresh,
+        });
+      } catch (err) {
+        logger.error(`${label} failed`, err);
+      }
+    });
+  }
 
   // ── Open modals ─────────────────────────────────────────────────
   app.action(AUTH_ACTION_IDS.settings, async ({ ack, body, client }) => {
