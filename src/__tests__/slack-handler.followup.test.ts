@@ -1418,6 +1418,84 @@ describe('SlackHandler — follow-up queue host', () => {
     }
 
     /**
+     * `/z <instruction>` is the SAME turn with a routing prefix the dispatch
+     * path strips (`command-router.ts:396-399` / `z/strip-z-prefix.ts:24`).
+     * Steering pushes the text UNSTRIPPED, so the model would read the literal
+     * `/z` as part of the instruction.
+     */
+    it('queues a `/z` prefixed message instead of steering the unstripped text', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: '/z 이것도 같이 봐줘' }), say());
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()).toHaveLength(1);
+      expect(items()[0].state).toBe('queued');
+      expect(items()[0].message.text).toBe('/z 이것도 같이 봐줘');
+      await settle();
+    });
+
+    /**
+     * `!{prompt}` is the explicit steer form, and the `!` is stripped by
+     * `parseSteerPrompt` (`slack-handler.ts:2161`) before the dispatcher sees
+     * it. It reaches the AUTO-steer path only through the slot race
+     * (`slack-handler.ts:939`): `handleMessage` saw an idle slot, so the
+     * explicit-steer branch was skipped, and `runInitial` then lost the slot
+     * inside the same tick. Pushed from here the text is unstripped, so the
+     * model would read the leading `!` as prose.
+     */
+    it('queues `!{prompt}` instead of steering it when the slot is lost in the same tick', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+      const dispatcher = handlerAny.followupDispatcher;
+      const realIsBusy = dispatcher.isBusy.bind(dispatcher);
+      // Exactly the race: the ingress check says idle, the dispatch says busy.
+      vi.spyOn(dispatcher, 'isBusy')
+        .mockImplementationOnce(() => false)
+        .mockImplementation(realIsBusy);
+
+      await handler.handleMessage(message({ ts: '333.444', text: '!이것도 같이 봐줘' }), say());
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()).toHaveLength(1);
+      expect(items()[0].state).toBe('queued');
+      expect(items()[0].message.text).toBe('!이것도 같이 봐줘');
+      await settle();
+    });
+
+    /**
+     * The classifier runs AFTER the durable enqueue, so a throw from it used to
+     * escape `trySteerFollowup` entirely — past the receipt, out of
+     * `handleMessage`. The item was stored and the user was told nothing.
+     * Everything after the enqueue is best effort: a throwing classifier is the
+     * plain queue path plus a warning.
+     */
+    it('falls back to the plain queue path when the classifier throws', async () => {
+      const steerTurn = withLiveTurn();
+      const { settle } = await startBusyTurn();
+      // Installed only for the FOLLOW-UP: its call 1 is `isQueueableFollowup`
+      // (before the enqueue, where a throw is still safe), call 2 is
+      // `isSteerableText` — the one that runs after the item is durable.
+      handlerAny.commandRouter.classifyText = vi
+        .fn()
+        .mockReturnValueOnce('instruction')
+        .mockImplementation(() => {
+          throw new Error('classifier exploded');
+        });
+
+      await expect(
+        handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say()),
+      ).resolves.toBeUndefined();
+
+      expect(steerTurn).not.toHaveBeenCalled();
+      expect(items()).toHaveLength(1);
+      expect(items()[0].state).toBe('queued');
+      expect(receipts().join('\n')).toContain('📥 Queue에 넣었습니다');
+      await settle();
+    });
+
+    /**
      * `%model opus 해줘` is a TURN carrying a session directive: the directive is
      * stripped and applied by the dispatch path (`slack-handler.ts:1085`).
      * Steered, the `%model opus` prefix would reach the model as prose and the
@@ -1879,6 +1957,31 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
+     * The protective half of the same guard. The sweep DECLARES that no receipt
+     * can still arrive, which is only true once nothing is in flight: a live
+     * turn may be holding the pushed copy right now, and returning that row to
+     * `queued` would have the drain deliver the same message a second time
+     * (§3.2's double delivery). Every unguarded sweep on a non-boundary path is
+     * routed through this variant for exactly that reason.
+     */
+    it('does not sweep a steered row while a dispatch is still in flight', async () => {
+      const { settle } = await startBusyTurn();
+      const queue = handlerAny.getFollowupQueue();
+      expect(queue.enqueue(SESSION_KEY, message({ ts: '333.444', text: '이것도 같이 봐줘' }), {}).status).toBe(
+        'queued',
+      );
+      const parked = queue.list(SESSION_KEY)[0];
+      expect(queue.steer(SESSION_KEY, parked.id, parked.epoch, 'uuid-live').ok).toBe(true);
+      expect(handlerAny.followupDispatcher.isBusy(SESSION_KEY)).toBe(true);
+
+      await handlerAny.sweepSteerBucketsIfIdle(SESSION_KEY);
+
+      // Still the live turn's: only the turn boundary may declare it stranded.
+      expect(items()[0].state).toBe('steered');
+      await settle();
+    });
+
+    /**
      * A steered item is outstanding follow-up work exactly like a queued one —
      * the autogoal driver must not start a turn on top of it (§3.6).
      */
@@ -2063,6 +2166,34 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    /**
+     * Under a bot-thread migration the steered ROW lives under the SLOT key
+     * (the bucket the push was accepted in, `steer settlement` above) while the
+     * click arrives stamped with the CANONICAL session key. `unreachable`
+     * unsteered the canonical bucket only, so the click read "failed" and the
+     * row stayed `steered` under the slot key — a row no drain can take
+     * (`followup-queue.ts:651-666`) and no receipt can still reach.
+     */
+    it('returns the slot-key row to the queue when the turn migrated to a work thread', async () => {
+      const WORK_KEY = 'C123:999.000';
+      const queue = handlerAny.getFollowupQueue();
+      expect(queue.enqueue(SESSION_KEY, message({ ts: '333.444', text: '이것도 같이 봐줘' }), {}).status).toBe(
+        'queued',
+      );
+      const [parked] = items();
+      // The shape a migrated turn leaves behind: the push was accepted in the
+      // SLOT bucket, while the session runs under the work key.
+      expect(queue.steer(SESSION_KEY, parked.id, parked.epoch, 'uuid-migrated').ok).toBe(true);
+      handlerAny.bindFollowupMigration(SESSION_KEY, WORK_KEY);
+      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue('unreachable');
+
+      const outcome = await handlerAny.cancelSteeredFollowup(WORK_KEY, parked.id, parked.epoch, 'uuid-migrated');
+
+      expect(outcome).toBe('returned-to-queue');
+      expect(items()[0].state).toBe('queued');
+      expect(items()[0].stateReason).toBe('전달 여부를 확인할 수 없어 큐로 되돌림');
+    });
+
     it('reports failure without touching the item when the queue write loses the CAS', async () => {
       const { uuid, itemId, settle } = await steerOne();
       claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue('withdrawn');
@@ -2071,6 +2202,63 @@ describe('SlackHandler — follow-up queue host', () => {
 
       expect(outcome).toBe('failed');
       expect(items()[0].state).toBe('steered');
+      await settle();
+    });
+
+    /**
+     * `already-dequeued` is the branch that RECORDS a delivery, and the record
+     * can fail exactly like the `withdrawn` one does (a settlement raced the
+     * click, a restarted queue). Cleaning up the temp files on a write that did
+     * not land would delete attachments of a row still sitting `steered` under
+     * a uuid whose settlement frame has not arrived yet — and the click would
+     * read "already delivered" for a delivery nothing recorded.
+     */
+    it('reports failure and keeps the steer artifacts when the consumption cannot be recorded', async () => {
+      const cleanupTempFiles = vi.fn().mockResolvedValue(undefined);
+      const processed = [{ name: 'log.txt', path: '/tmp/log.txt', isImage: false }];
+      processFiles.mockResolvedValue({ files: processed, shouldContinue: true });
+      handlerAny.fileHandler = { formatFilePrompt: vi.fn().mockResolvedValue('이 로그 봐줘'), cleanupTempFiles };
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(
+        message({
+          ts: '333.444',
+          text: '이 로그 봐줘',
+          files: [
+            {
+              id: 'F1',
+              name: 'log.txt',
+              mimetype: 'text/plain',
+              filetype: 'text',
+              url_private: 'https://x/1',
+              url_private_download: 'https://x/1d',
+              size: 12,
+            },
+          ],
+        }),
+        say(),
+      );
+      const [item] = items();
+      expect(item.state).toBe('steered');
+      const uuid = steerTurn.mock.calls[0][1].uuid;
+
+      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue('already-dequeued');
+      // Not under this key and not under a slot-key counterpart either.
+      const markConsumed = vi
+        .spyOn(handlerAny.followupDispatcher, 'markConsumed')
+        .mockReturnValue({ ok: false, reason: 'not-found' } as any);
+
+      const outcome = await handlerAny.cancelSteeredFollowup(SESSION_KEY, item.id, item.epoch, uuid);
+
+      expect(outcome).toBe('failed');
+      expect(markConsumed).toHaveBeenCalled();
+      expect(cleanupTempFiles).not.toHaveBeenCalled();
+      // The bookkeeping that finds those files is still there.
+      expect(handlerAny.followupSteerUuids.get(item.id)).toBe(uuid);
+      expect(items()[0].state).toBe('steered');
+
+      markConsumed.mockRestore();
       await settle();
     });
   });

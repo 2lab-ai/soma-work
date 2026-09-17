@@ -168,6 +168,24 @@ export interface FollowupActionsDeps {
   /** The HOST's drain loop. This module never re-enters the dispatcher itself. */
   runDrain(sessionKey: string): void | Promise<void>;
   /**
+   * The host's end-of-turn sweep of rows still sitting in `steered` — the one
+   * state whose exit depends on a receipt no one can produce once the turn is
+   * over (`slack-handler.ts sweepSteerBucketsIfIdle`).
+   *
+   * Needed here because `runDrain` is gated on `canDrain` and the sweep must
+   * NOT be. `canDrain` is false for exactly the turns that strand rows: an
+   * interrupted turn that ended aborted, blocked, errored or parked on a
+   * question got no settlement frame for anything pushed into it, and the drain
+   * — the only other caller that sweeps — is the branch that just did not run.
+   * Those rows would then be invisible to every later drain (`claimNext` takes
+   * `queued` only) until some unrelated message happened to start a turn.
+   *
+   * Optional and best effort, like `onItemLeftSteer`: a host that does not
+   * track steers wires nothing, and a throwing sweep is bookkeeping this module
+   * reports — never a delivered message turned into a failed click.
+   */
+  sweepSteered?(sessionKey: string): void | Promise<void>;
+  /**
    * `Send now` may have pulled the item out of `steered` (the dispatcher does it
    * inside its own transaction, `followup-dispatcher.ts:831-864`), and that is
    * the ONE exit from `steered` the host never sees a uuid for: no settlement
@@ -340,10 +358,15 @@ async function handleSendNow(
     respond,
     async () => {
       try {
-        const report = await run.settled;
+        // The sweep rides the turn's END, not its verdict: whatever this turn
+        // did, no settlement frame can arrive for it any more. It therefore
+        // runs in the `finally` of the settle — before, and independently of,
+        // the `canDrain` gate below — because the drain claims `queued` rows
+        // and a row the sweep has not returned yet is invisible to it.
+        const settled = await run.settled.finally(() => sweepSteered(deps, sessionKey));
         // Only a `safe` outcome opens the next boundary — a blocked/failed turn
         // must not be followed by an automatic drain (A16).
-        if (report.canDrain) await deps.runDrain(sessionKey);
+        if (settled.canDrain) await deps.runDrain(sessionKey);
       } finally {
         await safeRefresh(deps, sessionKey);
       }
@@ -903,6 +926,19 @@ function detach(
       report(deps, `${label} reply`, replyError),
     );
   });
+}
+
+/**
+ * The host's steered-row sweep, best effort. It runs in a `finally`, so a throw
+ * here would REPLACE the settlement's own outcome — including its rejection —
+ * with a bookkeeping failure. Caught and reported instead.
+ */
+async function sweepSteered(deps: FollowupActionsDeps, sessionKey: string): Promise<void> {
+  try {
+    await deps.sweepSteered?.(sessionKey);
+  } catch (error) {
+    report(deps, 'Send now steered sweep', error);
+  }
 }
 
 /** The surface redraw is best-effort: failing to repaint must not undo the act. */
