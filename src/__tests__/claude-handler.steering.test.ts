@@ -119,7 +119,9 @@ function installFakeQuery(): void {
  * advertises it (sdk.d.ts:5000) — that is the handler's feature-detection point
  * for `interrupt_cancel_queued_v1`. `resultOverrides` patches the result frame
  * (error subtype, `terminal_reason`), and `resultCount` replays it, which is how
- * a second `result` reaches the settlement path.
+ * a second `result` reaches the settlement path. `reinitWithoutCapabilities`
+ * replays a bare `system`/`init` mid-turn (a session can re-announce itself),
+ * which is how a frame that carries no `capabilities` reaches the read.
  */
 function installSettlementQuery(opts: {
   queuedTurnCount?: number;
@@ -127,6 +129,7 @@ function installSettlementQuery(opts: {
   capabilities?: string[];
   resultOverrides?: Record<string, unknown>;
   resultCount?: number;
+  reinitWithoutCapabilities?: boolean;
 }): void {
   queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
     const received: unknown[] = [];
@@ -147,6 +150,9 @@ function installSettlementQuery(opts: {
       };
       received.push((await inputs.next()).value);
       yield { type: 'assistant', message: { model: 'claude-test', content: [{ type: 'text', text: 'ack' }] } };
+      if (opts.reinitWithoutCapabilities) {
+        yield { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-test', tools: [] };
+      }
       await gate;
       for (let emitted = 0; emitted < (opts.resultCount ?? 1); emitted++) {
         yield {
@@ -583,6 +589,43 @@ describe('ClaudeHandler steer settlement (spec §6 item 6)', () => {
     expect(frames[2]).toMatchObject({ consumed: [], discarded: ['u1', 'u2'] });
   });
 
+  /**
+   * M3 (cont.) — the health gate outranks the count. `queued_turn_count > 0` is
+   * a leftover count, NOT a certificate that the rest ran: an errored result can
+   * carry one too, and reading it as "backlog minus survivors = consumed" would
+   * mark folded sends consumed on a turn that produced nothing. The receipt that
+   * would name the survivors is worthless on a dead turn (the interrupt targets
+   * a CLI that is already tearing down), so an unhealthy result short-circuits
+   * to "discard everything" without spending a control round-trip.
+   */
+  it('discards every pushed send when an ERRORED result still reports queued_turn_count > 0', async () => {
+    const interrupt = vi.fn(async () => ({ still_queued: ['u2'], cancelled: [] }));
+    installSettlementQuery({
+      queuedTurnCount: 1,
+      interrupt,
+      resultOverrides: { subtype: 'error_during_execution', is_error: true },
+    });
+
+    const frames = await runSteeredTurn(['u1', 'u2']);
+
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(frames[2]).toMatchObject({ consumed: [], discarded: ['u1', 'u2'] });
+  });
+
+  it('discards every pushed send when a terminated result still reports queued_turn_count > 0', async () => {
+    const interrupt = vi.fn(async () => ({ still_queued: ['u2'], cancelled: [] }));
+    installSettlementQuery({
+      queuedTurnCount: 1,
+      interrupt,
+      resultOverrides: { terminal_reason: 'api_error' },
+    });
+
+    const frames = await runSteeredTurn(['u1', 'u2']);
+
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(frames[2]).toMatchObject({ consumed: [], discarded: ['u1', 'u2'] });
+  });
+
   it('discards every pushed send when queued_turn_count is 0 but the session is shutting down', async () => {
     const interrupt = vi.fn(async () => ({ still_queued: [], cancelled: [] }));
     installSettlementQuery({
@@ -635,6 +678,31 @@ describe('ClaudeHandler steer settlement (spec §6 item 6)', () => {
     expect(interrupt).toHaveBeenCalledWith({ cancelQueued: true });
     expect(fake.cancelAsyncMessage).not.toHaveBeenCalled();
     expect(frames[2]).toMatchObject({ consumed: ['u1'], discarded: ['u2'] });
+  });
+
+  /**
+   * `capabilities` is an announcement, not a level that every later frame
+   * re-asserts. A session that re-emits `system`/`init` without the field (the
+   * type marks it optional, sdk.d.ts:5000) says nothing about what the CLI can
+   * do — overwriting the stored list with the empty read would silently demote a
+   * capable CLI back to the per-uuid withdrawal loop mid-turn.
+   */
+  it('keeps the advertised capabilities when a later init frame omits them', async () => {
+    const interrupt = vi.fn(async () => ({ still_queued: [], cancelled: ['u1'] }));
+    installSettlementQuery({
+      queuedTurnCount: 1,
+      interrupt,
+      capabilities: ['interrupt_receipt_v1', 'interrupt_cancel_queued_v1'],
+      reinitWithoutCapabilities: true,
+    });
+
+    const frames = await runSteeredTurn(['u1']);
+
+    expect(interrupt).toHaveBeenCalledWith({ cancelQueued: true });
+    expect(frames.find((f) => (f as { subtype?: string }).subtype === STEER_SETTLEMENT_SUBTYPE)).toMatchObject({
+      consumed: [],
+      discarded: ['u1'],
+    });
   });
 
   it('keeps the per-uuid withdrawal path when the capability is absent', async () => {
