@@ -2502,7 +2502,10 @@ export class SlackHandler {
         `📥 Queue에 보관했습니다 (대기 ${position}건). ⏸️ 자동 실행이 중단된 상태입니다 — ${halted.detail}\n` +
         '_원인을 해소하고 다시 시작해야 실행됩니다._';
     } else {
-      text = `📥 실행 중이라 이 메시지를 Queue에 넣었습니다 (대기 ${position}건). 현재 턴이 끝나면 순서대로 실행합니다.`;
+      // One line: the controls used to be described here, but they now live in
+      // the panel pinned at the tail of the thread — the receipt only has to
+      // say "stored, N waiting" and point at where the buttons actually are.
+      text = `📥 Queue에 넣었습니다 (대기 ${position}건) — 실행·취소는 스레드 맨 아래 패널에서.`;
     }
     await this.slackApi.postSystemMessage(event.channel, text, { threadTs });
     await this.refreshFollowupSurface(sessionKey);

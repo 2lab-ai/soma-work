@@ -78,6 +78,30 @@ function itemValue(over: Partial<{ sessionKey: string; itemId: string; epoch: nu
   });
 }
 
+/**
+ * The overflow menu that replaces the per-item button row (U3 rework). The id
+ * and the `{op,...}` payload are the OTHER side of the contract — this file
+ * writes them by hand on purpose: a test that encoded the value with the
+ * renderer's own helper could only prove the module agrees with itself, not
+ * that it reads what Slack actually delivers.
+ */
+const MENU_ACTION_ID = 'followup_item_menu_v1';
+
+function menuValue(
+  op: string,
+  over: Partial<{ sessionKey: string; itemId: string; epoch: number; turnEpoch: number }> = {},
+): string {
+  return JSON.stringify({ op, sessionKey: SESSION_KEY, itemId: `${SESSION_KEY}#1`, epoch: 0, ...over });
+}
+
+/** An overflow click carries its payload in `selected_option`, not in `value`. */
+function menuBody(value: string | undefined, over: Record<string, unknown> = {}): Record<string, unknown> {
+  return clickBody(undefined, {
+    actions: [{ type: 'overflow', action_id: MENU_ACTION_ID, selected_option: { value } }],
+    ...over,
+  });
+}
+
 function queuedItem(over: Partial<FollowupItem> = {}): FollowupItem {
   return {
     id: `${SESSION_KEY}#1`,
@@ -120,6 +144,10 @@ function harness(over: Partial<FollowupActionsDeps> = {}) {
       order.push('resume');
     }),
     retry: vi.fn((_s: string, _i: string, _e: number) => ({ ok: true as const, item: queuedItem() })),
+    cancelItem: vi.fn((_s: string, _i: string, _e: number, _r?: string) => {
+      order.push('cancelItem');
+      return { ok: true as const, item: queuedItem({ state: 'cancelled' }) };
+    }),
     freezeReason: vi.fn((_s: string) => undefined as string | undefined),
   };
   const dispatcher = {
@@ -178,6 +206,15 @@ function expectRefusal(responses: Array<Record<string, unknown>>): string {
   return text;
 }
 
+/** Shape-only assertion, for the Korean menu replies `expectRefusal` cannot read. */
+function lastEphemeral(responses: Array<Record<string, unknown>>): string {
+  expect(responses.length).toBeGreaterThan(0);
+  const last = responses[responses.length - 1];
+  expect(last.response_type).toBe('ephemeral');
+  expect(last.replace_original).toBe(false);
+  return String(last.text);
+}
+
 /* ------------------------------------------------------------------ *
  * Registration
  * ------------------------------------------------------------------ */
@@ -189,6 +226,7 @@ describe('registerFollowupActions — routes', () => {
       [
         'followup_page_next_v1',
         'followup_page_prev_v1',
+        MENU_ACTION_ID,
         FOLLOWUP_RESUME_ACTION_ID,
         FOLLOWUP_RETRY_ACTION_ID,
         FOLLOWUP_SEND_NOW_ACTION_ID,
@@ -573,6 +611,172 @@ describe('pagination', () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * Overflow menu — one control, four ops
+ * ------------------------------------------------------------------ */
+
+describe('item overflow menu', () => {
+  it('acks before the work, like every other listener', async () => {
+    const h = harness({ canInterrupt: vi.fn(() => new Promise<boolean>(() => {})) });
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel')));
+    await tick();
+    expect(h.order[0]).toBe('ack');
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+  });
+
+  it('routes send_now into the dispatcher transaction, turn epoch and all', async () => {
+    const h = harness();
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('send_now', { turnEpoch: 0 })));
+    await tick();
+    expect(h.dispatcher.sendNow).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`, 0, CLICKER, 0);
+  });
+
+  it('routes send_now through the SAME turn-epoch fence as the button', async () => {
+    const h = harness();
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('send_now')));
+    await tick();
+    expect(h.dispatcher.sendNow).not.toHaveBeenCalled();
+    expectRefusal(h.responses);
+  });
+
+  it('routes retry into the retry flow (halt cleared, drain reopened)', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(queuedItem({ state: 'failed', epoch: 2 }));
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('retry', { epoch: 2 })));
+    await tick();
+    expect(h.queue.retry).toHaveBeenCalledWith(SESSION_KEY, `${SESSION_KEY}#1`, 2);
+    expect(h.dispatcher.clearDrainHalt).toHaveBeenCalledWith(SESSION_KEY, 'retry');
+    expect(h.deps.runDrain).toHaveBeenCalledWith(SESSION_KEY);
+  });
+
+  it('keeps the retry pendingApproval gate when the op arrives through the menu', async () => {
+    const h = harness({
+      getSessionByKey: vi.fn(() => session({ actionPanel: { waitingForChoice: true } })),
+    });
+    h.queue.get.mockReturnValue(queuedItem({ state: 'failed' }));
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('retry')));
+    await tick();
+    expect(h.queue.retry).not.toHaveBeenCalled();
+    const text = expectRefusal(h.responses);
+    expect(text.toLowerCase()).toMatch(/question|pending/);
+  });
+
+  it('routes resume into the resume flow', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(queuedItem({ state: 'paused' }));
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('resume')));
+    await tick();
+    expect(h.queue.resume).toHaveBeenCalledWith(SESSION_KEY);
+    expect(h.dispatcher.clearDrainHalt).toHaveBeenCalledWith(SESSION_KEY, 'resume');
+    expect(h.deps.runDrain).toHaveBeenCalledWith(SESSION_KEY);
+  });
+
+  it('applies the thread ACL to a menu click too', async () => {
+    const h = harness();
+    await h.click(
+      MENU_ACTION_ID,
+      menuBody(menuValue('cancel'), {
+        channel: { id: 'C-ATTACKER' },
+        container: { channel_id: 'C-ATTACKER', message_ts: SURFACE_TS, thread_ts: THREAD },
+      }),
+    );
+    await tick();
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    lastEphemeral(h.responses);
+  });
+
+  it('refuses an unreadable menu payload without touching the queue', async () => {
+    const h = harness();
+    await h.click(MENU_ACTION_ID, menuBody('not-json'));
+    await tick();
+    expect(h.deps.getSessionByKey).not.toHaveBeenCalled();
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    expectRefusal(h.responses);
+  });
+
+  it('refuses an operation it does not implement instead of guessing', async () => {
+    const h = harness();
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('delete_everything')));
+    await tick();
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    expect(h.dispatcher.sendNow).not.toHaveBeenCalled();
+    expect(h.queue.retry).not.toHaveBeenCalled();
+    expect(h.queue.resume).not.toHaveBeenCalled();
+    lastEphemeral(h.responses);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Cancel
+ * ------------------------------------------------------------------ */
+
+describe('cancel', () => {
+  it('cancels with the clicker recorded as the reason, then repaints — and never drains', async () => {
+    const h = harness();
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel')));
+    await tick();
+    expect(h.queue.cancelItem).toHaveBeenCalledWith(
+      SESSION_KEY,
+      `${SESSION_KEY}#1`,
+      0,
+      `<@${CLICKER}> 님이 취소했습니다`,
+    );
+    expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY);
+    expect(h.deps.runDrain).not.toHaveBeenCalled();
+    expect(h.dispatcher.clearDrainHalt).not.toHaveBeenCalled();
+    expect(h.order.indexOf('cancelItem')).toBeLessThan(h.order.indexOf('refresh'));
+  });
+
+  it('denies a clicker the interrupt policy rejects and keeps the item', async () => {
+    const h = harness({ canInterrupt: vi.fn(async () => false) });
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel')));
+    await tick();
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    const text = lastEphemeral(h.responses);
+    expect(text).toContain('권한');
+  });
+
+  it('refuses to cancel a running item and points at the stop button', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(queuedItem({ state: 'dispatched' }));
+    h.queue.cancelItem.mockReturnValue({ ok: false, reason: 'invalid-state' } as never);
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel')));
+    await tick();
+    const text = lastEphemeral(h.responses);
+    expect(text).toContain('실행 중인 항목은 취소할 수 없습니다');
+    expect(text).toContain('중지');
+  });
+
+  it('answers a stale generation with a repaint instead of cancelling the newer item', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(queuedItem({ epoch: 4 }));
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel', { epoch: 0 })));
+    await tick();
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY);
+    expect(lastEphemeral(h.responses)).toContain('이미 바뀐 항목입니다');
+  });
+
+  it('answers an item that is no longer in the queue with a repaint', async () => {
+    const h = harness();
+    h.queue.get.mockReturnValue(undefined);
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel')));
+    await tick();
+    expect(h.queue.cancelItem).not.toHaveBeenCalled();
+    expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY);
+    lastEphemeral(h.responses);
+  });
+
+  it('reports a stale-epoch lost at the queue itself as a repaint too', async () => {
+    const h = harness();
+    h.queue.cancelItem.mockReturnValue({ ok: false, reason: 'stale-epoch' } as never);
+    await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel')));
+    await tick();
+    expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY);
+    expect(lastEphemeral(h.responses)).toContain('이미 바뀐 항목입니다');
+  });
+});
+
+/* ------------------------------------------------------------------ *
  * Detached failures
  * ------------------------------------------------------------------ */
 
@@ -807,5 +1011,50 @@ describe('against the real queue and dispatcher', () => {
 
     expect(h.queue.get(SESSION_KEY, settled.item.id)?.state).toBe('queued');
     expect(h.runDrain).toHaveBeenCalledWith(SESSION_KEY);
+  });
+
+  it('cancel on the real queue moves a queued item to cancelled and repaints', async () => {
+    const h = realHarness();
+    const enqueued = h.queue.enqueue(SESSION_KEY, {
+      user: AUTHOR,
+      channel: CHANNEL,
+      ts: '1700.000100',
+      text: 'cancel me',
+    });
+    if (enqueued.status !== 'queued') throw new Error(`enqueue failed: ${enqueued.status}`);
+
+    await h.click(
+      MENU_ACTION_ID,
+      menuBody(menuValue('cancel', { itemId: enqueued.item.id, epoch: enqueued.item.epoch })),
+    );
+    await tick(4);
+
+    expect(h.queue.get(SESSION_KEY, enqueued.item.id)?.state).toBe('cancelled');
+    expect(h.refresh).toHaveBeenCalledWith(SESSION_KEY);
+    expect(h.runDrain).not.toHaveBeenCalled();
+  });
+
+  it('cancel on the real queue leaves a dispatched item exactly where it is', async () => {
+    const h = realHarness();
+    const enqueued = h.queue.enqueue(SESSION_KEY, {
+      user: AUTHOR,
+      channel: CHANNEL,
+      ts: '1700.000100',
+      text: 'already running',
+    });
+    if (enqueued.status !== 'queued') throw new Error(`enqueue failed: ${enqueued.status}`);
+    const claimed = h.queue.claimNext(SESSION_KEY);
+    if (!claimed.ok) throw new Error('claim failed');
+    const dispatched = h.queue.markDispatched(SESSION_KEY, claimed.item.id, claimed.item.epoch);
+    if (!dispatched.ok) throw new Error('markDispatched failed');
+
+    await h.click(
+      MENU_ACTION_ID,
+      menuBody(menuValue('cancel', { itemId: dispatched.item.id, epoch: dispatched.item.epoch })),
+    );
+    await tick(4);
+
+    expect(h.queue.get(SESSION_KEY, dispatched.item.id)?.state).toBe('dispatched');
+    expect(h.respond).toHaveBeenCalled();
   });
 });
