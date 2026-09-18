@@ -44,13 +44,27 @@ Status: planned · 스펙 = [`../06-user-steering-spec.md`](../06-user-steering-
 
 ## 검증 (관측 기반)
 - 로컬: 위 게이트 + SDK 스트리밍 입력 모의(uuid 프레임) 테스트.
-- 실측: 2lab.ai Slack(fable dev, 단독 인스턴스)에서 S1·S2·S4를 실제 스레드로 1회씩 — 스트림 메시지 수·패널 상태·헤더 문구를 API 덤프로 리시트. iq 워크스페이스는 Socket Mode 이벤트가 work-m64 hot-spare에 고정돼 검증 불가(2026-09-17 실측).
+- 실측: 2lab.ai Slack(dev 봇, 단독 인스턴스)에서 실제 스레드로 — 라운드 3 표 참조(2026-09-18). iq 워크스페이스는 Socket Mode 이벤트가 work-m64 hot-spare에 고정돼 검증 불가(2026-09-17 실측).
 
 ## gap matrix
 | 갭 | 상태 |
 |---|---|
-| 툴 호출 사이 스티어링 | 구현(WU1–WU4), 실측 R1(S1/S3) 미완 |
-| Cancel | queued/paused/failed/uncertain = PR #224; steered 분기 = WU4(`cancelAsyncMessage` 실패 시 "이미 전달됨" + consumed) |
+| 툴 호출 사이 스티어링 | 구현(WU1–WU4). 실측 R3: 디스패처 턴 중 즉시 스티어링 성립; **첫 멘션 턴 중에는 `not-busy`로 미스티어링(#233)** |
+| Cancel | queued/paused/failed/uncertain = PR #224; steered 분기 = WU4. 실측 R3: 이미 소비된 항목 Cancel → "이미 모델에 전달되어 실행 중" ephemeral (already-dequeued) |
 | Edit | 구현(WU4, `message_changed` → `editQueued`), 실측 S5 미완 |
-| 최하단 컴팩트 패널 | main 합류(PR #224) |
-| 배포·실측 | 미완 — 프리뷰 배포는 유저 OK 필요("마음대로 배포하지 말고"), 2lab.ai Slack 로그인 또는 유저 실행 |
+| 최하단 컴팩트 패널 | main 합류(PR #224); 큐 섹션은 인라인 카드 + `queue` 명령으로 이전(#230) |
+| 배포·실측 | 프리뷰 배포 완료(2lab.ai dev 봇 v0.2.1138, work-m16 v0.2.1142). 실측 R3 완료(아래) — 잔여 = #233 수정 후 첫 멘션 턴 재실측 |
+
+## 라운드 3 — 실측 (2026-09-18 13:48–14:01 KST, 2lab.ai Slack `#workspace-soma-work`, Claude in Chrome)
+Status: **partial** — 계약 5건 중 4건 성립, 1건 결함(#233).
+
+| # | 절차 | 관측 | 판정 |
+|---|---|---|---|
+| R3-0 | 채널 루트에 멘션 없이 메시지 | 봇 로그 `MESSAGE event received` 후 무처리 (설계: 루트 메시지는 멘션/스레드만) | n/a |
+| R3-1 (S1) | `@봇 … sleep 90` 턴 시작 → 04:52:43Z 스레드에 "체크1 붙여줘" | 인라인 카드 `1. … · queued` + Send now/Cancel. 봇 로그 `Follow-up not steered — reason: not-busy` (슬롯 키 = 루트 ts `…119.550479`, 큐 행 키 = 봇 스레드 `…132.140939`). 턴 종료(04:54:06Z) 직후 드레인 → `done 체크1`, 카드 삭제 | **FAIL(D1)** → #233 |
+| R3-2 (S1') | 디스패처 턴(goal driver) 중 "sleep 75 … done2", "체크3 붙여줘" | 즉시 `item-steered`(04:57:10Z), 카드 `전달됨 · 모델이 다음 툴 호출에서 읽음`; 같은 턴 응답 `done2 체크1 체크3`; 정산 시 `item-consumed` ×2, 카드 2장 삭제 | PASS |
+| R3-3 (S3) | 소비 직후 카드 Cancel 클릭 | ephemeral `취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다` | PASS (already-dequeued) |
+| R3-4 | `queue` 명령 | `대기 중인 메시지가 없습니다` | PASS |
+| R3-5 | 어떤 시점에도 새 메시지가 freeze 배너/Resume로 막히는지 | 없음 | PASS |
+
+증거: 봇 stdout 04:48–05:00Z 발췌(`Follow-up not steered`, `item-steered`, `item-consumed`, `Routing to handler QueueHandler`), Chrome 스크린샷 6장(세션 scratchpad). 부수 관측: Autogoal이 테스트 지시를 goal로 승격해 eval 루프가 돌았음 — 이 워크스트림 밖.
