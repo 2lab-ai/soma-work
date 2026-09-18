@@ -61,6 +61,14 @@ import { Logger } from '../../logger';
  * `send_now`/`retry`/`resume` are routed into the very handlers the buttons use
  * (same verification, same authorization, same drain rules), and `cancel` is the
  * only op with no button equivalent.
+ *
+ * Since 09 there is a THIRD transport: a reaction on the user's own message
+ * (`slack/followup-reactions.ts`). {@link handleSendNow}, {@link handleCancel}
+ * and {@link handleRetry} are exported for it — with a `preparsed` value and a
+ * `respond` that posts an ephemeral to the reactor — for the same reason the
+ * menu routes into them: the transport may differ, the policy may not. The
+ * reaction surface carries ONE "go" control, so the host maps it to `Send now`
+ * on a waiting row and to `Retry` on a `failed`/`uncertain` one; both land here.
  */
 
 const logger = new Logger('FollowupActions');
@@ -340,7 +348,7 @@ async function handleMenu(deps: FollowupActionsDeps, body: unknown, respond: Fol
  * the queue's persisted counter — the check below only rejects a payload that
  * could not be compared at all.
  */
-async function handleSendNow(
+export async function handleSendNow(
   deps: FollowupActionsDeps,
   body: unknown,
   respond: FollowupRespond,
@@ -533,7 +541,7 @@ async function handleResume(
  * surfaced as a refusal, and it lifts the freeze itself once the last parked row
  * has left (`followup-queue.ts` `settleFreeze`).
  */
-async function handleRetry(
+export async function handleRetry(
   deps: FollowupActionsDeps,
   body: unknown,
   respond: FollowupRespond,
@@ -691,7 +699,7 @@ const CANCEL_STEERED_RETURNED_TEXT =
  *   - it never falls back to "cancel whatever is there now" — a lost race is
  *     answered with a repaint so the user decides against the CURRENT state.
  */
-async function handleCancel(
+export async function handleCancel(
   deps: FollowupActionsDeps,
   body: unknown,
   respond: FollowupRespond,

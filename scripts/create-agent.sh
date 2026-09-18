@@ -111,7 +111,8 @@ cat > "$MANIFEST_FILE" << MANIFEST_EOF
     "event_subscriptions": {
       "bot_events": [
         "app_mention",
-        "message.im"
+        "message.im",
+        "reaction_added"
       ]
     },
     "interactivity": {
