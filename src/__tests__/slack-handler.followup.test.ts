@@ -6,13 +6,7 @@ vi.mock('../slack/autoskill-fire', () => ({
 }));
 
 import type { FollowupQueueSnapshot } from '@soma/slack/followup-queue';
-import {
-  FOLLOWUP_CANCEL_ACTION_ID,
-  FOLLOWUP_RESUME_ACTION_ID,
-  FOLLOWUP_RETRY_ACTION_ID,
-  FOLLOWUP_SEND_NOW_ACTION_ID,
-  FOLLOWUP_STEERED_LABEL,
-} from '@soma/slack/followup-queue-blocks';
+import { FOLLOWUP_CANCEL_ACTION_ID } from '@soma/slack/followup-queue-blocks';
 import { getMetricsEmitter } from '../metrics/event-emitter';
 import { SlackHandler } from '../slack-handler';
 import { userSettingsStore } from '../user-settings-store';
@@ -47,17 +41,20 @@ function deferred<T>(): Deferred<T> {
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /**
- * What a QUEUED message's receipt reads as since A39: the item message's own
- * fallback text — `Queue <seq>. <message> · <state>` — instead of the
- * "📥 Queue에 넣었습니다 (대기 N건) … 패널에서" line that pointed at a panel
- * section which no longer exists.
- *
- * Matched as a pattern, not as a literal, because the state can carry a reason
- * (`queued · interrupt 권한 거부`) and the seq/message differ per test. Anchored
- * on ` · queued` so it is exactly the QUEUED state: a `steered` row renders
- * {@link FOLLOWUP_STEERED_LABEL} instead and must not satisfy it.
+ * What a QUEUED message shows since 09: the receipt and both controls, ON the
+ * user's own message. There is no bot card and no text receipt any more — the
+ * whole surface is the reaction set, so the assertions read it directly.
  */
-const QUEUED_ITEM_RECEIPT = /^Queue \d+\.[^\n]* · queued\b/m;
+const QUEUED_REACTIONS = ['inbox_tray', 'ui_send_now', 'ui_cancel'];
+/** …and what a message the running turn was given shows instead (§2.1). */
+const DELIVERED_REACTIONS = ['white_check_mark'];
+/**
+ * Only the emoji the QUEUE surface owns. A drained message runs through the
+ * ordinary dispatch pipeline too, which paints its own progress reactions
+ * (`:brain:` and friends) on the very same message — reading those as queue
+ * state would make these assertions about a surface this spec does not own.
+ */
+const QUEUE_REACTION_NAMES = ['inbox_tray', 'ui_send_now', 'ui_cancel', 'white_check_mark', 'no_entry_sign', 'warning'];
 
 function message(overrides: Record<string, any> = {}): any {
   return {
@@ -80,6 +77,7 @@ describe('SlackHandler — follow-up queue host', () => {
   let saveError: Error | undefined;
   let postSystemMessage: ReturnType<typeof vi.fn>;
   let addReaction: ReturnType<typeof vi.fn>;
+  let removeReaction: ReturnType<typeof vi.fn>;
   let deleteMessage: ReturnType<typeof vi.fn>;
   let processFiles: ReturnType<typeof vi.fn>;
   let routeCommand: ReturnType<typeof vi.fn>;
@@ -132,14 +130,20 @@ describe('SlackHandler — follow-up queue host', () => {
     handlerAny = handler as any;
 
     addReaction = vi.fn().mockResolvedValue(undefined);
+    removeReaction = vi.fn().mockResolvedValue(undefined);
     postSystemMessage = vi.fn().mockResolvedValue({ ts: 'm' });
     deleteMessage = vi.fn().mockResolvedValue(undefined);
     handlerAny.slackApi = {
+      // Deliberately the BOOLEAN seam only, with no `addReactionResult`: a host
+      // whose client predates the coded variant still has to paint (it just
+      // cannot detect `invalid_name`), and that degradation is worth pinning on
+      // the real handler rather than only in the surface's own unit test.
       addReaction,
-      removeReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction,
       postMessage: vi.fn().mockResolvedValue({ ts: 'm' }),
       postSystemMessage,
       deleteMessage,
+      postEphemeral: vi.fn().mockResolvedValue({ ts: 'eph' }),
     };
 
     // Setup assistant status (main `0987345`) fires on every non-synthetic
@@ -214,6 +218,44 @@ describe('SlackHandler — follow-up queue host', () => {
 
   const items = () => handlerAny.getFollowupQueue().list(SESSION_KEY);
 
+  /**
+   * The bot reactions STANDING on one message — the whole queue UI since 09.
+   *
+   * Replayed from the add/remove calls in the order they were made
+   * (`invocationCallOrder` interleaves the two mocks) rather than asserted call
+   * by call: what the user sees is the end state, and a transition that adds and
+   * removes the same emoji is not a difference they can observe.
+   */
+  function reactionsOn(ts: string): string[] {
+    const ops = [
+      ...addReaction.mock.calls.map((call: any[], index: number) => ({
+        order: addReaction.mock.invocationCallOrder[index],
+        ts: call[1],
+        name: call[2],
+        add: true,
+      })),
+      ...removeReaction.mock.calls.map((call: any[], index: number) => ({
+        order: removeReaction.mock.invocationCallOrder[index],
+        ts: call[1],
+        name: call[2],
+        add: false,
+      })),
+    ]
+      .filter((op) => op.ts === ts && QUEUE_REACTION_NAMES.includes(op.name))
+      .sort((a, b) => a.order - b.order);
+
+    const standing: string[] = [];
+    for (const op of ops) {
+      const at = standing.indexOf(op.name);
+      if (op.add) {
+        if (at < 0) standing.push(op.name);
+      } else if (at >= 0) {
+        standing.splice(at, 1);
+      }
+    }
+    return standing;
+  }
+
   it('parks an active-session follow-up BEFORE any transform, download or abort', async () => {
     const { settle } = await startBusyTurn();
 
@@ -254,8 +296,7 @@ describe('SlackHandler — follow-up queue host', () => {
 
     // Durable first, receipt second — the snapshot exists before the UI claim.
     expect(saved[saved.length - 1].sessions[0].items).toHaveLength(1);
-    const receipt = postSystemMessage.mock.calls.find((call: any[]) => String(call[1]).includes('Queue'));
-    expect(receipt, 'a visible receipt is posted after the durable write').toBeDefined();
+    expect(reactionsOn('333.444'), 'a visible receipt is painted after the durable write').toEqual(QUEUED_REACTIONS);
 
     await settle();
   });
@@ -1174,9 +1215,8 @@ describe('SlackHandler — follow-up queue host', () => {
       // live message went into the running turn like any other follow-up.
       expect(queueOf(booted).freezeReason(SESSION_KEY)).toBeUndefined();
       expect(steerTurn).toHaveBeenCalledTimes(1);
-      const text = receipts().join('\n');
-      expect(text).toContain(FOLLOWUP_STEERED_LABEL);
-      expect(text).not.toContain('큐가 멈춰');
+      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      expect(receipts().join('\n')).not.toContain('큐가 멈춰');
       await settle();
     });
 
@@ -1195,7 +1235,7 @@ describe('SlackHandler — follow-up queue host', () => {
       // The restored row is the one the freeze is for: still parked, still
       // waiting for the user's Resume.
       expect(stored.find((item: any) => item.message.ts === RESTORED_TS).state).toBe('paused');
-      expect(receipts().join('\n')).toContain(FOLLOWUP_STEERED_LABEL);
+      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
       await settle();
     });
 
@@ -1271,9 +1311,8 @@ describe('SlackHandler — follow-up queue host', () => {
 
       await booted.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
 
-      const text = receipts().join('\n');
-      expect(text).toMatch(QUEUED_ITEM_RECEIPT);
-      expect(text).not.toContain('큐가 멈춰');
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
+      expect(receipts().join('\n')).not.toContain('큐가 멈춰');
       // And it is drainable: the freeze holds the restored row, not this one.
       await settle();
       expect(
@@ -1532,7 +1571,7 @@ describe('SlackHandler — follow-up queue host', () => {
       const workItems = handlerAny.getFollowupQueue().list(WORK_KEY);
       expect(workItems).toHaveLength(1);
       expect(workItems[0].state).toBe('steered');
-      expect(receipts().join('\n')).toContain(FOLLOWUP_STEERED_LABEL);
+      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
 
       gate.resolve({ hasPendingChoice: false });
       await first;
@@ -1548,7 +1587,8 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(queued).toHaveLength(1);
       expect(queued[0].state).toBe('steered');
       expect(queued[0].steerUuid).toBeTruthy();
-      expect(receipts().join('\n')).toContain(FOLLOWUP_STEERED_LABEL);
+      // §2.1 — the receipt and both controls come down, 전달완료 goes up.
+      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
       await settle();
     });
 
@@ -1596,9 +1636,7 @@ describe('SlackHandler — follow-up queue host', () => {
       const queued = items();
       expect(queued).toHaveLength(1);
       expect(queued[0].state).toBe('queued');
-      const text = receipts().join('\n');
-      expect(text).toMatch(QUEUED_ITEM_RECEIPT);
-      expect(text).not.toContain(FOLLOWUP_STEERED_LABEL);
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
       await settle();
     });
 
@@ -1644,7 +1682,7 @@ describe('SlackHandler — follow-up queue host', () => {
       const queued = items();
       expect(queued).toHaveLength(1);
       expect(queued[0].state).toBe('queued');
-      expect(receipts().join('\n')).toMatch(QUEUED_ITEM_RECEIPT);
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
       await settle();
     });
 
@@ -1663,9 +1701,8 @@ describe('SlackHandler — follow-up queue host', () => {
 
       expect(steerTurn).toHaveBeenCalledTimes(1);
       expect(items()[0].state).toBe('steered');
-      const text = receipts().join('\n');
-      expect(text).toContain(FOLLOWUP_STEERED_LABEL);
-      expect(text).not.toContain('큐가 멈춰');
+      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      expect(receipts().join('\n')).not.toContain('큐가 멈춰');
       await settle();
     });
 
@@ -1687,7 +1724,7 @@ describe('SlackHandler — follow-up queue host', () => {
         expect(steerTurn).not.toHaveBeenCalled();
         expect(items()).toHaveLength(1);
         expect(items()[0].state).toBe('queued');
-        expect(receipts().join('\n')).toMatch(QUEUED_ITEM_RECEIPT);
+        expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
         await settle();
       });
     }
@@ -1766,7 +1803,7 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(steerTurn).not.toHaveBeenCalled();
       expect(items()).toHaveLength(1);
       expect(items()[0].state).toBe('queued');
-      expect(receipts().join('\n')).toMatch(QUEUED_ITEM_RECEIPT);
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
       await settle();
     });
 
@@ -1806,7 +1843,7 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(steerTurn).not.toHaveBeenCalled();
       expect(items()).toHaveLength(1);
       expect(items()[0].state).toBe('queued');
-      expect(receipts().join('\n')).toMatch(QUEUED_ITEM_RECEIPT);
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
       await settle();
     });
 
@@ -1832,9 +1869,12 @@ describe('SlackHandler — follow-up queue host', () => {
       store.save = realSave;
 
       expect(items()[0].state).toBe('steered');
-      const text = receipts().join('\n');
-      expect(text).toContain('⚠️ 전달 중 오류로 항목 상태를 확정하지 못했습니다');
-      expect(text).not.toMatch(QUEUED_ITEM_RECEIPT);
+      // The ONE thing still said in words — the state could not be determined —
+      // because no reaction can carry it (§2.1 has no entry for "unknown").
+      expect(receipts().join('\n')).toContain('⚠️ 전달 중 오류로 항목 상태를 확정하지 못했습니다');
+      // …and the message does not keep offering controls for a row nobody can
+      // describe: it is `steered`, so it reads 전달완료.
+      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
       await settle();
     });
 
@@ -2694,170 +2734,13 @@ describe('SlackHandler — follow-up queue host', () => {
   });
 
   /* ---------------------------------------------------------------- *
-   * A39/A41 — the receipt IS the queue item, and it dies with it.
+   * 09 — the state and the controls ARE reactions on the user's message.
    * ---------------------------------------------------------------- */
 
-  describe('in-thread item messages', () => {
+  describe('reaction surface', () => {
     /** Every `postSystemMessage` call, as `(text, options)`. */
     const posts = () =>
       postSystemMessage.mock.calls.map((call: any[]) => ({ text: String(call[1]), options: call[2] ?? {} }));
-
-    /** The LAST post carrying queue item blocks. */
-    function itemPost(): { text: string; options: any } {
-      const post = posts()
-        .reverse()
-        .find((entry) => JSON.stringify(entry.options.blocks ?? []).includes(FOLLOWUP_SEND_NOW_ACTION_ID));
-      expect(post, 'an item message was posted').toBeDefined();
-      return post as { text: string; options: any };
-    }
-
-    function itemButtons(): Array<Record<string, any>> {
-      const found: Array<Record<string, any>> = [];
-      const walk = (node: unknown) => {
-        if (Array.isArray(node)) {
-          for (const child of node) walk(child);
-          return;
-        }
-        if (node && typeof node === 'object') {
-          const record = node as Record<string, any>;
-          if (record.type === 'button') found.push(record);
-          for (const value of Object.values(record)) walk(value);
-        }
-      };
-      walk(itemPost().options.blocks ?? []);
-      return found;
-    }
-
-    it('posts the queued message as its own item message, with both controls', async () => {
-      const { settle } = await startBusyTurn();
-      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
-
-      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
-
-      const post = itemPost();
-      expect(post.options.threadTs).toBe(THREAD_TS);
-      // The message itself, not a "N건 대기" count, is what the user reads.
-      expect(JSON.stringify(post.options.blocks)).toContain('이것도 같이 봐줘');
-      expect(itemButtons().map((button) => button.action_id)).toEqual([
-        FOLLOWUP_SEND_NOW_ACTION_ID,
-        FOLLOWUP_CANCEL_ACTION_ID,
-      ]);
-      // …and the old panel-pointing text receipt is gone.
-      expect(posts().map((entry) => entry.text)).not.toContain(
-        '📥 Queue에 넣었습니다 (대기 1건) — 실행·취소는 스레드 맨 아래 패널에서.',
-      );
-      await settle();
-    });
-
-    it('stamps the CURRENT item generation on the controls, after the steer moved it', async () => {
-      // The enqueue snapshot is one generation old by the time the receipt is
-      // posted (the steer bumps the item's epoch), and a button minted from the
-      // stale one is refused by `verifyItem` on the very first click.
-      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
-      const { settle } = await startBusyTurn();
-
-      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
-
-      const live = items()[0];
-      expect(live.state).toBe('steered');
-      const [sendNow, cancel] = itemButtons().map((button) => JSON.parse(String(button.value)));
-      expect(sendNow).toEqual({
-        sessionKey: SESSION_KEY,
-        itemId: live.id,
-        epoch: live.epoch,
-        turnEpoch: handlerAny.getFollowupView(SESSION_KEY).turnEpoch,
-      });
-      expect(cancel).toEqual({ sessionKey: SESSION_KEY, itemId: live.id, epoch: live.epoch });
-      // The state the user reads is the steered sentence, not the enum.
-      expect(JSON.stringify(itemPost().options.blocks)).toContain(FOLLOWUP_STEERED_LABEL);
-      await settle();
-    });
-
-    it('still says a halted drain will not run it, on the same item message', async () => {
-      const { settle } = await startBusyTurn();
-      vi.spyOn(handlerAny.followupDispatcher, 'drainHalt').mockReturnValue({
-        reason: 'error',
-        detail: '큐 저장 실패',
-      } as never);
-
-      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
-
-      const post = itemPost();
-      expect(JSON.stringify(post.options.blocks)).toContain('큐 저장 실패');
-      expect(itemButtons()).toHaveLength(2);
-      await settle();
-    });
-
-    it('deletes the item message when the model consumes the steered item (A41)', async () => {
-      const steerTurn = vi.fn().mockReturnValue(true);
-      claudeHandler.steerTurn = steerTurn;
-      postSystemMessage.mockResolvedValue({ ts: 'item-ts-1', channel: CHANNEL });
-      const { settle } = await startBusyTurn();
-      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
-
-      await handlerAny.streamExecutor.deps.onSteerLifecycle({
-        sessionKey: SESSION_KEY,
-        uuid: steerTurn.mock.calls[0][1].uuid,
-        phase: 'completed',
-      });
-
-      expect(items()[0].state).toBe('resolved');
-      expect(deleteMessage).toHaveBeenCalledWith(CHANNEL, 'item-ts-1');
-      await settle();
-    });
-
-    it('keeps the item message when the turn ends without consuming it', async () => {
-      // `discarded` returns the row to `queued` — it is pending again, so its
-      // controls must stay on screen.
-      const steerTurn = vi.fn().mockReturnValue(true);
-      claudeHandler.steerTurn = steerTurn;
-      postSystemMessage.mockResolvedValue({ ts: 'item-ts-2', channel: CHANNEL });
-      const { settle } = await startBusyTurn();
-      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
-
-      await handlerAny.streamExecutor.deps.onSteerLifecycle({
-        sessionKey: SESSION_KEY,
-        uuid: steerTurn.mock.calls[0][1].uuid,
-        phase: 'discarded',
-      });
-
-      expect(items()[0].state).toBe('queued');
-      expect(deleteMessage).not.toHaveBeenCalled();
-      await settle();
-    });
-
-    it('deletes the item message when the ordinary drain resolves the item', async () => {
-      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
-      postSystemMessage.mockResolvedValue({ ts: 'item-ts-3', channel: CHANNEL });
-      const { settle } = await startBusyTurn();
-      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
-      expect(items()[0].state).toBe('queued');
-
-      await settle();
-
-      expect(items()[0].state).toBe('resolved');
-      expect(deleteMessage).toHaveBeenCalledWith(CHANNEL, 'item-ts-3');
-    });
-
-    it('survives a delete Slack refuses — the item is settled either way', async () => {
-      const steerTurn = vi.fn().mockReturnValue(true);
-      claudeHandler.steerTurn = steerTurn;
-      postSystemMessage.mockResolvedValue({ ts: 'item-ts-4', channel: CHANNEL });
-      deleteMessage.mockRejectedValue(new Error('message_not_found'));
-      const { settle } = await startBusyTurn();
-      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
-
-      await expect(
-        handlerAny.streamExecutor.deps.onSteerLifecycle({
-          sessionKey: SESSION_KEY,
-          uuid: steerTurn.mock.calls[0][1].uuid,
-          phase: 'completed',
-        }),
-      ).resolves.toBeUndefined();
-
-      expect(items()[0].state).toBe('resolved');
-      await settle();
-    });
 
     /**
      * A SECOND handler on a different app double, sharing this test's fakes.
@@ -2883,12 +2766,133 @@ describe('SlackHandler — follow-up queue host', () => {
       return { spawned, spawnedAny };
     }
 
+    it('paints the receipt and both controls on the user message, and posts NOTHING', async () => {
+      const { settle } = await startBusyTurn();
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const before = postSystemMessage.mock.calls.length;
+
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
+      // The whole point of 09: no bot card, no text receipt, no reply at all.
+      expect(postSystemMessage.mock.calls.length).toBe(before);
+      await settle();
+    });
+
     /**
-     * End to end through the REAL button wiring: the click lands on the module's
-     * registered listener, which runs the host's `onItemProcessed`. Only an app
-     * that has `app.action` registers them, so this test builds one.
+     * §3.1 — the receipt lands in ONE call, before the steer is even attempted,
+     * so a message going straight into the running turn never flashes a
+     * `Send now` the user could press into a refusal.
      */
-    it('deletes the item message when the Cancel button is clicked', async () => {
+    it('paints the receipt before the steer, and only then the state', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      const painted = addReaction.mock.calls.filter((call: any[]) => call[1] === '333.444').map((call) => call[2]);
+      expect(painted).toEqual(['inbox_tray', 'white_check_mark']);
+      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      await settle();
+    });
+
+    it('still says a halted drain will not run it — the one thing a reaction cannot carry', async () => {
+      const { settle } = await startBusyTurn();
+      vi.spyOn(handlerAny.followupDispatcher, 'drainHalt').mockReturnValue({
+        reason: 'error',
+        detail: '큐 저장 실패',
+      } as never);
+
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      expect(posts().some((entry) => entry.text.includes('큐 저장 실패'))).toBe(true);
+      // …and the controls stay, because the item is still `queued`.
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
+      await settle();
+    });
+
+    it('keeps 전달완료 when the model consumes the steered item', async () => {
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+
+      await handlerAny.streamExecutor.deps.onSteerLifecycle({
+        sessionKey: SESSION_KEY,
+        uuid: steerTurn.mock.calls[0][1].uuid,
+        phase: 'completed',
+      });
+
+      expect(items()[0].state).toBe('resolved');
+      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      await settle();
+    });
+
+    it('brings the controls back when the turn ends without consuming it', async () => {
+      // `discarded` returns the row to `queued` — it is pending again, so its
+      // controls must come back on screen and 전달완료 must go.
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+
+      await handlerAny.streamExecutor.deps.onSteerLifecycle({
+        sessionKey: SESSION_KEY,
+        uuid: steerTurn.mock.calls[0][1].uuid,
+        phase: 'discarded',
+      });
+      await tick();
+
+      expect(items()[0].state).toBe('queued');
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
+      await settle();
+    });
+
+    it('ends on 전달완료 when the ordinary drain resolves the item', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
+
+      await settle();
+
+      expect(items()[0].state).toBe('resolved');
+      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+    });
+
+    it('survives a Slack that refuses a reaction — the item is settled either way', async () => {
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const { settle } = await startBusyTurn();
+      // Only the QUEUE's own emoji fail — the progress reactions the dispatch
+      // pipeline paints are a different surface and not what this pins.
+      addReaction.mockImplementation(async (_channel: string, _ts: string, name: string) => {
+        if (QUEUE_REACTION_NAMES.includes(name)) throw new Error('rate_limited');
+      });
+      removeReaction.mockRejectedValue(new Error('rate_limited'));
+
+      await expect(
+        handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say()),
+      ).resolves.toBeUndefined();
+      await expect(
+        handlerAny.streamExecutor.deps.onSteerLifecycle({
+          sessionKey: SESSION_KEY,
+          uuid: steerTurn.mock.calls[0][1].uuid,
+          phase: 'completed',
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(items()[0].state).toBe('resolved');
+      await settle();
+    });
+
+    /**
+     * End to end through the REAL button wiring: the click lands on the
+     * module's registered listener, which runs the host's `onItemProcessed`.
+     * Only an app that has `app.action` registers them, so this test builds one.
+     */
+    it('repaints the message as 캔슬완료 when the Cancel button is clicked', async () => {
       const listeners = new Map<string, any>();
       const app = {
         client: {},
@@ -2897,7 +2901,6 @@ describe('SlackHandler — follow-up queue host', () => {
       } as any;
       const { spawned: clickable, spawnedAny: clickableAny } = spawnHandler(app);
       claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
-      postSystemMessage.mockResolvedValue({ ts: 'item-ts-5', channel: CHANNEL });
 
       const gate = deferred<any>();
       startWithContinuation.mockImplementationOnce(() => gate.promise);
@@ -2929,7 +2932,7 @@ describe('SlackHandler — follow-up queue host', () => {
       await tick();
 
       expect(clickableAny.getFollowupQueue().list(SESSION_KEY)[0].state).toBe('cancelled');
-      expect(deleteMessage).toHaveBeenCalledWith(CHANNEL, 'item-ts-5');
+      expect(reactionsOn('333.444')).toEqual(['no_entry_sign']);
 
       gate.resolve({ hasPendingChoice: false });
       await first;
@@ -2937,12 +2940,12 @@ describe('SlackHandler — follow-up queue host', () => {
 
     /**
      * M2 — a session deletion cancels every pending item (`ssot.md:157-158`),
-     * and until now their in-thread messages stayed: a `Send now` on a message
-     * whose session no longer exists, in a thread that is otherwise finished.
-     * The pending list is captured BEFORE the cancel, because afterwards every
-     * row reads `cancelled` and nothing says which ones this act moved.
+     * and their messages must stop offering a control that points at a session
+     * which no longer exists. The pending list is captured BEFORE the cancel,
+     * because afterwards every row reads `cancelled` and nothing says which ones
+     * this act moved.
      */
-    it('deletes the item messages of the items a session deletion cancels', async () => {
+    it('repaints the messages of the items a session deletion cancels', async () => {
       let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
       claudeHandler.getSessionRegistry = () => ({
         setBeforeSessionDelete: (cb: any) => {
@@ -2951,7 +2954,6 @@ describe('SlackHandler — follow-up queue host', () => {
       });
       const { spawned, spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
       claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
-      postSystemMessage.mockResolvedValue({ ts: 'item-ts-6', channel: CHANNEL });
 
       const gate = deferred<any>();
       startWithContinuation.mockImplementationOnce(() => gate.promise);
@@ -2966,93 +2968,19 @@ describe('SlackHandler — follow-up queue host', () => {
       await tick();
 
       expect(spawnedAny.getFollowupQueue().list(SESSION_KEY)[0].state).toBe('cancelled');
-      expect(deleteMessage).toHaveBeenCalledWith(CHANNEL, 'item-ts-6');
+      expect(reactionsOn('333.444')).toEqual(['no_entry_sign']);
 
       gate.resolve({ hasPendingChoice: false });
       await first;
     });
 
     /**
-     * M3 — the settlement can win the race against the POST of the very message
-     * it would delete. `deleteFollowupItemMessages` then finds nothing, the ts
-     * is registered a tick later, and that message keeps its buttons forever.
-     * The registration itself re-reads the item and deletes on the spot.
+     * MF1 — a stop parks every pending row. `paused` and `queued` share a
+     * surface (§2.1: `Send now` is the parked row's Resume), so what this pins
+     * is that the stop does not strip the message of its controls.
      */
-    it('deletes an item message that finished posting after the item settled', async () => {
-      const steerTurn = vi.fn().mockReturnValue(true);
-      claudeHandler.steerTurn = steerTurn;
-      const postGate = deferred<any>();
-      postSystemMessage.mockImplementation(async (_channel: string, text: string) =>
-        String(text).startsWith('Queue') ? postGate.promise : { ts: 'other-ts', channel: CHANNEL },
-      );
-      const { settle } = await startBusyTurn();
-
-      const parked = handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
-      await tick();
-      const itemId = items()[0].id;
-      // The model consumes it while its receipt is still being posted.
-      await handlerAny.streamExecutor.deps.onSteerLifecycle({
-        sessionKey: SESSION_KEY,
-        uuid: steerTurn.mock.calls[0][1].uuid,
-        phase: 'completed',
-      });
-      expect(items()[0].state).toBe('resolved');
-      expect(deleteMessage).not.toHaveBeenCalled();
-
-      postGate.resolve({ ts: 'late-ts', channel: CHANNEL });
-      await parked;
-      await tick();
-
-      expect(deleteMessage).toHaveBeenCalledWith(CHANNEL, 'late-ts');
-      // …and nothing is left behind pointing at a message that is gone.
-      expect(handlerAny.followupItemMessages?.get(itemId)).toBeUndefined();
-      await settle();
-    });
-
-    /**
-     * S2 — an item that changes state without leaving the queue keeps its
-     * message, so the message must be re-rendered. A `steered` row returned to
-     * `queued` otherwise keeps reading 전달됨 for a message the model never saw.
-     */
-    it('updates the item message when the item changes state inside the queue', async () => {
-      const steerTurn = vi.fn().mockReturnValue(true);
-      claudeHandler.steerTurn = steerTurn;
-      postSystemMessage.mockResolvedValue({ ts: 'item-ts-7', channel: CHANNEL });
-      const updateMessage = vi.fn().mockResolvedValue(undefined);
-      handlerAny.slackApi.updateMessage = updateMessage;
-      const { settle } = await startBusyTurn();
-      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
-      expect(items()[0].state).toBe('steered');
-
-      await handlerAny.streamExecutor.deps.onSteerLifecycle({
-        sessionKey: SESSION_KEY,
-        uuid: steerTurn.mock.calls[0][1].uuid,
-        phase: 'discarded',
-      });
-      await tick();
-
-      expect(items()[0].state).toBe('queued');
-      expect(deleteMessage).not.toHaveBeenCalled();
-      expect(updateMessage).toHaveBeenCalled();
-      const [channel, ts, text, blocks] = updateMessage.mock.calls[updateMessage.mock.calls.length - 1];
-      expect(channel).toBe(CHANNEL);
-      expect(ts).toBe('item-ts-7');
-      expect(String(text)).not.toContain(FOLLOWUP_STEERED_LABEL);
-      expect(JSON.stringify(blocks)).toContain(FOLLOWUP_SEND_NOW_ACTION_ID);
-      await settle();
-    });
-
-    /**
-     * MF1 — a stop parks every pending row, and until now their messages were
-     * not touched: a `paused` row kept offering the `Send now` the freeze can
-     * only answer with `frozen`, and the freeze notice — which since A39 lives
-     * on the row, not on a panel — was never written anywhere the user looks.
-     */
-    it('re-renders every row a stop parked, with its own control and the freeze notice', async () => {
+    it('leaves the controls on every row a stop parked', async () => {
       claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
-      postSystemMessage.mockResolvedValue({ ts: 'item-ts-9', channel: CHANNEL });
-      const updateMessage = vi.fn().mockResolvedValue(undefined);
-      handlerAny.slackApi.updateMessage = updateMessage;
 
       // The turn ends waiting for a user choice, so the drain stays shut and the
       // item is still `queued` when the stop lands (`central stop wiring`).
@@ -3069,27 +2997,17 @@ describe('SlackHandler — follow-up queue host', () => {
       await tick();
 
       expect(items()[0].state).toBe('paused');
-      expect(deleteMessage).not.toHaveBeenCalled();
-      const updated = updateMessage.mock.calls.find((call: any[]) => call[1] === 'item-ts-9');
-      expect(updated, 'the parked row was re-rendered').toBeDefined();
-      const [, , text, blocks] = updated as any[];
-      expect(JSON.stringify(blocks)).toContain(FOLLOWUP_RESUME_ACTION_ID);
-      expect(JSON.stringify(blocks)).not.toContain(FOLLOWUP_SEND_NOW_ACTION_ID);
-      expect(String(text)).toContain('보류된 항목이 있습니다');
-      expect(String(text)).toContain('실행이 중단되었습니다');
+      expect(reactionsOn('444.555')).toEqual(QUEUED_REACTIONS);
     });
 
     /**
-     * MF2 — the drain settles the item it ran, and a `failed` one KEEPS its
-     * message (it is still the user's message, awaiting a Retry). The delete
-     * path correctly walks past it; nothing re-rendered it, so the row that was
-     * `dispatched` on screen kept a `Send now` the dispatcher now refuses.
+     * MF2 — the drain settles the item it ran, and a `failed` one is still the
+     * user's message: it ends on the warning, with no control, because neither
+     * `Send now` nor `Cancel` is answerable from `failed` (the door out is the
+     * `queue` command's Retry).
      */
-    it('re-renders a drained item the run left `failed` instead of deleting it', async () => {
+    it('paints the warning on a drained item the run left `failed`', async () => {
       claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
-      postSystemMessage.mockResolvedValue({ ts: 'item-ts-10', channel: CHANNEL });
-      const updateMessage = vi.fn().mockResolvedValue(undefined);
-      handlerAny.slackApi.updateMessage = updateMessage;
       const { settle } = await startBusyTurn();
       await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
       expect(items()[0].state).toBe('queued');
@@ -3101,32 +3019,167 @@ describe('SlackHandler — follow-up queue host', () => {
       await tick();
 
       expect(items()[0].state).toBe('failed');
-      expect(deleteMessage).not.toHaveBeenCalled();
-      const updated = updateMessage.mock.calls.find((call: any[]) => call[1] === 'item-ts-10');
-      expect(updated, 'the failed row was re-rendered').toBeDefined();
-      expect(JSON.stringify((updated as any[])[3])).toContain(FOLLOWUP_RETRY_ACTION_ID);
+      expect(reactionsOn('333.444')).toEqual(['warning']);
+    });
+  });
+
+  /* ---------------------------------------------------------------- *
+   * 09 §2.2 — the reaction is the CONTROL, through the button's policy.
+   * ---------------------------------------------------------------- */
+
+  describe('reaction controls', () => {
+    /** What the reacting user was told, if anything. */
+    const ephemerals = () => handlerAny.slackApi.postEphemeral.mock.calls.map((call: any[]) => String(call[2]));
+
+    const react = (over: Record<string, unknown> = {}) =>
+      handlerAny.handleFollowupReactionControl({
+        channel: CHANNEL,
+        ts: '333.444',
+        reaction: 'ui_cancel',
+        user: 'U_OWNER',
+        ...over,
+      });
+
+    /** A queued follow-up sitting under a live turn, with its controls painted. */
+    async function queuedFollowup(): Promise<{ settle: () => Promise<void> }> {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const started = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
+      return started;
+    }
+
+    it('cancels the item the reacted message belongs to', async () => {
+      const { settle } = await queuedFollowup();
+
+      await react();
+      await tick();
+
+      expect(items()[0].state).toBe('cancelled');
+      // The bot takes its own copy of every control down and says how it ended;
+      // the user's `ui_cancel` is theirs and stays (2→1).
+      expect(reactionsOn('333.444')).toEqual(['no_entry_sign']);
+      expect(ephemerals().join('\n')).toContain('취소했습니다');
+      await settle();
     });
 
-    it('survives a host whose Slack client cannot update messages', async () => {
-      // The default double has no `updateMessage` — a refresh that assumed one
-      // would turn every state change into a thrown bookkeeping error.
-      const steerTurn = vi.fn().mockReturnValue(true);
-      claudeHandler.steerTurn = steerTurn;
-      postSystemMessage.mockResolvedValue({ ts: 'item-ts-8', channel: CHANNEL });
-      expect(handlerAny.slackApi.updateMessage).toBeUndefined();
-      const { settle } = await startBusyTurn();
-      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+    /**
+     * The reaction is a TRANSPORT: `Send now` still goes through the
+     * dispatcher's own transaction with the SAME coordinates a button would
+     * carry — the clicker as `requestedBy`, the item's live epoch, and the
+     * session's turn generation.
+     */
+    it('hands Send now to the dispatcher with the clicker and both generations', async () => {
+      const { settle } = await queuedFollowup();
+      const sendNow = vi
+        .spyOn(handlerAny.followupDispatcher, 'sendNow')
+        .mockResolvedValue({ status: 'rejected', reason: 'not-busy', detail: '실행 중인 턴이 없습니다' } as never);
+      const live = items()[0];
 
-      await expect(
-        handlerAny.streamExecutor.deps.onSteerLifecycle({
-          sessionKey: SESSION_KEY,
-          uuid: steerTurn.mock.calls[0][1].uuid,
-          phase: 'discarded',
-        }),
-      ).resolves.toBeUndefined();
+      await react({ reaction: 'ui_send_now' });
+      await tick();
+
+      expect(sendNow).toHaveBeenCalledWith(
+        SESSION_KEY,
+        live.id,
+        live.epoch,
+        'U_OWNER',
+        handlerAny.getFollowupView(SESSION_KEY).turnEpoch,
+      );
+      // A refusal reaches the REACTOR, ephemerally — never the thread.
+      expect(ephemerals().join('\n')).toContain('Send now rejected');
+      await settle();
+    });
+
+    it('refuses a reactor the interrupt policy does not trust, and changes nothing', async () => {
+      const { settle } = await queuedFollowup();
+      claudeHandler.canInterrupt.mockImplementation(
+        (_channel: string, _threadTs: string, user: string) => user === 'U_OWNER',
+      );
+
+      await react({ user: 'U_STRANGER' });
+      await tick();
 
       expect(items()[0].state).toBe('queued');
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
+      expect(ephemerals().join('\n')).toContain('권한이 없습니다');
       await settle();
+    });
+
+    it('ignores a control the state does not offer — a steered item has no Send now', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      expect(items()[0].state).toBe('steered');
+      const sendNow = vi.spyOn(handlerAny.followupDispatcher, 'sendNow');
+
+      await react({ reaction: 'ui_send_now' });
+      await tick();
+
+      expect(sendNow).not.toHaveBeenCalled();
+      expect(ephemerals()).toEqual([]);
+      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      await settle();
+    });
+
+    /**
+     * A `steered` row's Cancel is the one control that outlives the paint: the
+     * bot's copy is coming down, but the user may already have pressed it, and
+     * there IS a real path for it (the SDK withdraws the pushed message).
+     */
+    it('still routes a cancel of a steered item through the SDK path', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      expect(items()[0].state).toBe('steered');
+      const cancelSteered = vi
+        .spyOn(handlerAny, 'cancelSteeredFollowup')
+        .mockResolvedValue('already-delivered' as never);
+
+      await react();
+      await tick();
+
+      expect(cancelSteered).toHaveBeenCalled();
+      expect(ephemerals().join('\n')).toContain('이미 모델에 전달되어');
+      await settle();
+    });
+
+    it('does nothing for a message this process never painted', async () => {
+      const { settle } = await queuedFollowup();
+
+      await react({ ts: '999.999' });
+      await tick();
+
+      expect(items()[0].state).toBe('queued');
+      expect(ephemerals()).toEqual([]);
+      await settle();
+    });
+
+    it('does nothing for a reaction that is not a control', async () => {
+      const { settle } = await queuedFollowup();
+
+      await react({ reaction: '+1' });
+      await tick();
+
+      expect(items()[0].state).toBe('queued');
+      expect(ephemerals()).toEqual([]);
+      await settle();
+    });
+
+    /**
+     * A settled message stops being addressable at all — its controls are gone,
+     * so a late reaction on it has nothing to run and nothing to say.
+     */
+    it('forgets a message whose item resolved', async () => {
+      const { settle } = await queuedFollowup();
+      await settle();
+      expect(items()[0].state).toBe('resolved');
+
+      await react();
+      await tick();
+
+      expect(ephemerals()).toEqual([]);
+      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
     });
   });
 });

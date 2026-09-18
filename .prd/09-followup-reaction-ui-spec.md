@@ -1,6 +1,6 @@
 # 09 — 큐/스티어링 컨트롤을 유저 메시지의 이모지 리액션으로
 
-Status: **in-progress** (2026-09-18) · 기준 커밋 main `3229521d` · 유저 원문 = [`reaction-ui/ssot.md`](reaction-ui/ssot.md) · 선행 계약 = [`06-user-steering-spec.md`](06-user-steering-spec.md)
+Status: **in-progress** (2026-09-18, 구현 완료·실측 전) · 기준 커밋 main `3229521d` · 유저 원문 = [`reaction-ui/ssot.md`](reaction-ui/ssot.md) · 선행 계약 = [`06-user-steering-spec.md`](06-user-steering-spec.md)
 
 ## 0. 한 줄 정의
 미드턴 유저 메시지의 상태·컨트롤(Send now / Cancel)을 봇이 게시하는 카드가 아니라 **그 메시지에 붙는 리액션**으로 표현하고, 유저가 컨트롤 리액션을 눌러 카운트를 2로 만들면 봇이 `reaction_added`로 받아 실행한다.

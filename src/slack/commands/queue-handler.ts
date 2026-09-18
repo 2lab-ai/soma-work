@@ -20,8 +20,7 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
  * `failed`). `resolved`/`cancelled` are history and the in-flight trio belongs
  * to the turn running it, so neither is something the user is still waiting on.
  * Each row is rendered by {@link buildFollowupItemMessage}, the SAME builder the
- * in-thread item message uses, so a row reads and behaves identically in both
- * places — one item, one wording, one pair of controls.
+ * queue's own surface uses, so a row reads identically wherever it appears.
  *
  * Three properties it is built for:
  *
@@ -30,18 +29,22 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
  *    (`command-router.ts:413`, via this handler's `canHandle`) is what lets it
  *    run live while a turn is in flight — which is the only time the queue has
  *    anything in it.
- *  - it posts ONE MESSAGE PER ROW, not one message carrying every row. A41
- *    deletes the messages of ONE item, and a shared message cannot be deleted
- *    for one item without taking the other nine rows' controls with it — the
- *    first item to be processed would silently disarm the rest of the listing.
- *    Ten rows is the page ({@link FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE}); a longer
- *    backlog gets a final `…외 N건` line instead of more messages, and the
- *    controls for an item past the tenth are still on that item's own message.
- *  - every posted row is REGISTERED with the host
- *    ({@link QueueHandlerDeps.rememberFollowupItemMessage}) under its OWN ts, so
- *    A41 deletes this listing's buttons when that item is processed, exactly as
- *    it deletes the item's own message. A listing that outlived its items would
- *    be a second surface of stale buttons — the thing A41 exists to prevent.
+ *  - it is READ-ONLY (09). The controls are reactions on the user's own message
+ *    now, so this listing renders `controls: false` and carries no buttons at
+ *    all. A row here with its own `Send now` would be a SECOND copy of a control
+ *    the item already has, on a message nothing takes down when the item settles
+ *    — exactly the stale-button surface the reaction UI removed. Instead each
+ *    row that still offers a control says WHERE it is ({@link REACTION_HINT}),
+ *    and only the rows that really offer one: `steered`/`failed`/`uncertain`
+ *    accept neither reaction (09 §2.1), and pointing at a control they do not
+ *    have would be the dead end this listing used to be.
+ *  - it posts ONE MESSAGE PER ROW, not one message carrying every row: a packed
+ *    message could not say which line belongs to which item, and its freeze
+ *    notice would be about the whole listing rather than about the row it
+ *    parked (A29). Ten rows is the page
+ *    ({@link FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE}); a longer backlog gets a final
+ *    `…외 N건` line instead of more messages, and an item past the tenth is read
+ *    on its own message, where its reactions are.
  */
 export class QueueHandler implements CommandHandler {
   /**
@@ -53,6 +56,17 @@ export class QueueHandler implements CommandHandler {
 
   /** `대기 중인 메시지가 없습니다` — A40's one line for an empty queue. */
   static readonly EMPTY_TEXT = '대기 중인 메시지가 없습니다';
+
+  /**
+   * Where the controls are, said on the rows that have them (09 §2.1: `queued`
+   * and `paused`). A listing that showed a state and no way to act on it would
+   * leave the user looking for a button that is now three lines above, on their
+   * own message.
+   */
+  static readonly REACTION_HINT = '메시지의 리액션으로 Send now / Cancel';
+
+  /** The states whose message carries the two control reactions (09 §2.1). */
+  private static readonly REACTION_CONTROL_STATES: readonly FollowupItemState[] = ['queued', 'paused'];
 
   constructor(private deps: QueueHandlerDeps = {}) {}
 
@@ -83,21 +97,31 @@ export class QueueHandler implements CommandHandler {
         // it is not running, and a row that arrived after the freeze says
         // nothing (the builder scopes it per item, A29).
         freeze: view?.freeze,
+        // Read-only — see the class note. `turnEpoch` is still passed because
+        // the builder takes it; with no buttons to stamp, nothing is minted
+        // from it.
+        controls: false,
       });
-      const posted = await this.post(ctx, rendered.text, rendered.blocks);
-      // Where THIS row landed — see the class note on A41.
-      this.deps.rememberFollowupItemMessage?.(item.id, {
-        channel: posted?.channel ?? ctx.channel,
-        ts: posted?.ts,
-      });
+      await this.post(ctx, rendered.text, this.withReactionHint(rendered.blocks, item));
     }
 
     const hidden = items.length - shown.length;
-    // Its own message, and deliberately without controls or a registration: it
-    // stands for items this listing did not render, so there is nothing on it
-    // for A41 to delete and nothing to click.
+    // Its own message, and deliberately bare: it stands for items this listing
+    // did not render, so there is nothing on it to read or to act on.
     if (hidden > 0) await this.post(ctx, `…외 ${hidden}건`, undefined);
     return { handled: true };
+  }
+
+  /**
+   * Append "the controls are on your message" to a row that HAS controls.
+   *
+   * After the row, not before it: the freeze notice the builder puts on top
+   * explains why the row is not running, and this one says what to do about it
+   * — question first, answer second.
+   */
+  private withReactionHint(blocks: unknown[], item: FollowupItem): unknown[] {
+    if (!QueueHandler.REACTION_CONTROL_STATES.includes(item.state)) return blocks;
+    return [...blocks, { type: 'context', elements: [{ type: 'plain_text', text: QueueHandler.REACTION_HINT }] }];
   }
 
   /** The session's unprocessed items, in FIFO order. Empty when there is no queue. */
@@ -129,11 +153,10 @@ export class QueueHandler implements CommandHandler {
   /**
    * Post the listing into the thread.
    *
-   * Through `slackApi` when it is wired, so this message is the same kind of
-   * message as the item messages it mirrors (a ⚡ system post, rate-limit
-   * queued) and its `ts` comes back for A41. `ctx.say` is the fallback for
-   * compositions that pass no `slackApi` — an answer through the ordinary
-   * handler path beats silence.
+   * Through `slackApi` when it is wired, so this listing is the same kind of
+   * message as the rest of the queue's own writes (a ⚡ system post, rate-limit
+   * queued). `ctx.say` is the fallback for compositions that pass no `slackApi`
+   * — an answer through the ordinary handler path beats silence.
    */
   private async post(
     ctx: CommandContext,
@@ -165,6 +188,4 @@ export interface QueueHandlerDeps {
   };
   /** The live queue view for a session key (`SlackHandler.getFollowupView`). */
   getFollowupView?(sessionKey: string): FollowupQueueView | undefined;
-  /** Register a posted message against an item, for A41 deletion. */
-  rememberFollowupItemMessage?(itemId: string, ref: { channel: string; ts?: string }): void;
 }

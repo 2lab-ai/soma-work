@@ -945,6 +945,21 @@ export class SlackApiHelper {
    * @returns true if successful or already exists, false on actual failure
    */
   async addReaction(channel: string, ts: string, emoji: string): Promise<boolean> {
+    return (await this.addReactionResult(channel, ts, emoji)).ok;
+  }
+
+  /**
+   * {@link addReaction} with the Slack error CODE kept.
+   *
+   * The boolean form cannot answer "why", and one caller has to: a queue-control
+   * reaction whose custom emoji is not installed in the workspace comes back as
+   * `invalid_name`, and that is the one failure with a repair (fall back to a
+   * standard emoji, 09 §2.3). Every other failure is still just a failure.
+   *
+   * One code path, two shapes — the boolean form delegates here, so a caller
+   * that does not care about the code cannot drift from one that does.
+   */
+  async addReactionResult(channel: string, ts: string, emoji: string): Promise<{ ok: boolean; error?: string }> {
     try {
       await this.enqueue(() =>
         this.app.client.reactions.add({
@@ -953,14 +968,15 @@ export class SlackApiHelper {
           name: emoji,
         }),
       );
-      return true;
+      return { ok: true };
     } catch (error: any) {
+      const code = typeof error?.data?.error === 'string' ? error.data.error : undefined;
       // 이미 추가된 리액션은 성공으로 간주
-      if (error?.data?.error === 'already_reacted') {
-        return true;
+      if (code === 'already_reacted') {
+        return { ok: true };
       }
       this.logger.warn('Failed to add reaction', { channel, ts, emoji, error });
-      return false;
+      return { ok: false, error: code };
     }
   }
 

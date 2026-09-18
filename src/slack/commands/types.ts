@@ -63,12 +63,6 @@ export interface CommandDependencies {
    * 메시지가 없습니다" rather than failing.
    */
   getFollowupView?: (sessionKey: string) => FollowupQueueView | undefined;
-  /**
-   * Register a posted Slack message against a queue item, so A41 deletes it
-   * when the item is processed. The `queue` listing needs it for the same
-   * reason the in-thread item message does: it carries that item's buttons.
-   */
-  rememberFollowupItemMessage?: (itemId: string, ref: { channel: string; ts?: string }) => void;
 }
 
 /**
