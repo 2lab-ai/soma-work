@@ -76,17 +76,28 @@ export const FOLLOWUP_REACTION_FALLBACKS: { sendNow: string; cancel: string } = 
  * message the model has been given shows only that it was delivered, and a
  * terminal message shows how it ended.
  *
- * Three readings this table is deliberate about:
+ * The check mark means READ, not sent. That is the correction of 2026-09-18:
+ * a `steered` message has been pushed into the running turn's input channel and
+ * is WAITING there for the model to pick it up at its next tool-call boundary —
+ * so it is still the user's to take back. Painting 전달완료 on it took both
+ * controls away during exactly the window where they are most wanted.
  *
- *  - `reserved`/`claimed` are NOT a delivery. They sit between the drain's
- *    decision and the dispatch, and `rollback` puts either of them straight
- *    back to `queued` (`followup-queue.ts:558-565`), so a check mark there
- *    would claim something the model may never see. They show the receipt and
- *    nothing else: no controls, because the queue refuses a cancel of anything
- *    in flight (`followup-queue.ts:164-170`), and no check mark, because
- *    nothing has been handed over yet.
- *  - `steered`/`dispatched`/`resolved` DO claim delivery: the message is in the
- *    SDK's input channel, in a running turn, or confirmed consumed.
+ * Four readings this table is deliberate about:
+ *
+ *  - `steered` is WAITING, and shows the same three as `queued`. Both controls
+ *    really work there: `Send now` is handled by the dispatcher's own steered
+ *    pre-step (unsteer at the steered epoch, then reserve —
+ *    `followup-dispatcher.ts:847-905`), and Cancel goes through the SDK
+ *    (`cancelSteered`). The check mark arrives when the model actually reads
+ *    the message and the row becomes `resolved`.
+ *  - `reserved`/`claimed` are NOT a delivery either, and carry no controls.
+ *    They sit between the drain's decision and the dispatch, and `rollback`
+ *    puts either of them straight back to `queued`
+ *    (`followup-queue.ts:558-565`), so a check mark would claim something the
+ *    model may never see — while the queue refuses to cancel anything in
+ *    flight (`followup-queue.ts:164-170`), so there is nothing to offer.
+ *  - `dispatched`/`resolved` DO claim delivery: the message is running as a
+ *    turn of its own, or the model confirmed it read it.
  *  - `failed`/`uncertain` keep BOTH controls next to the warning. They really
  *    are actionable: the queue cancels them (`CANCELLABLE_STATES`,
  *    `followup-queue.ts:164-170`) and `retry` is their one non-terminal exit
@@ -99,11 +110,12 @@ export function rolesForFollowupState(state: FollowupItemState): FollowupReactio
   switch (state) {
     case 'queued':
     case 'paused':
+    // Still waiting, just waiting in the SDK's queue instead of ours.
+    case 'steered':
       return ['queued', 'sendNow', 'cancel'];
     case 'reserved':
     case 'claimed':
       return ['queued'];
-    case 'steered':
     case 'dispatched':
     case 'resolved':
       return ['delivered'];
@@ -149,9 +161,10 @@ export function diffFollowupReactionRoles(
  * emoji are reports, and reacting `white_check_mark` to your own message must
  * not run anything.
  *
- * `sendNow` is the ROLE, not the operation: on a `failed`/`uncertain` row the
- * host routes it into Retry (09 C1). Which operation a control means is a
- * question about the item's state, and this module does not read items.
+ * `sendNow` is the ROLE, not the operation: on a `queued`/`paused`/`steered`
+ * row the host routes it into `Send now`, on a `failed`/`uncertain` one into
+ * Retry (09 C1). Which operation a control means is a question about the item's
+ * state, and this module does not read items.
  */
 export function followupControlRole(reaction: string, names: FollowupReactionNames): 'sendNow' | 'cancel' | undefined {
   if (reaction === names.sendNow || reaction === FOLLOWUP_REACTION_FALLBACKS.sendNow) return 'sendNow';
