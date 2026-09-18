@@ -180,6 +180,11 @@ function run(
         // /opt/soma-work/main — the exact host contact this file exists to
         // prevent.
         SOMA_TEST_HARNESS: '1',
+        // Same reason, for the one thing the harness flag does not cover: the
+        // real /Library/LaunchDaemons/<label>.plist (and an inherited
+        // SOMA_LAUNCHD_SYSTEM=1) would put a `main stop` here into the system
+        // domain and fire `sudo -n /bin/launchctl` at the host's daemon.
+        SOMA_LAUNCHD_SYSTEM: '0',
         SOMA_PROJECT_DIR_OVERRIDE: host.projectDir,
         SOMA_PID_FILE_OVERRIDE: host.pidFile,
         SOMA_PROCESS_SCAN_OVERRIDE: host.scan,

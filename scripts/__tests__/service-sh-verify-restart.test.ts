@@ -122,6 +122,13 @@ function runVerify(
         ...process.env,
         PATH: `${extraPath}:${process.env.PATH ?? ''}`,
         HOME: homeStub,
+        // Force system-daemon mode OFF for every run in this suite, harness
+        // flag or not. The harness gate hides SOMA_SYSTEM_DAEMON_PLIST_OVERRIDE
+        // but not the real /Library/LaunchDaemons/<label>.plist, so on a host
+        // that actually carries it the withoutHarnessFlag case below would fire
+        // `sudo -n /bin/launchctl print system/<label>` at real root from a
+        // unit test (and exit 1 before verify-restart ever ran).
+        SOMA_LAUNCHD_SYSTEM: '0',
         ...harness,
         SOMA_PROJECT_DIR_OVERRIDE: projectDir,
         SOMA_PID_FILE_OVERRIDE: path.join(workDir, 'nonexistent.pid'),

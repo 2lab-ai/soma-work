@@ -239,6 +239,10 @@ function runStop(extraPath: string, extraEnv: Record<string, string> = {}, opts:
         // (service.sh resolve_env) — a production shell that happens to carry
         // them must still operate on the real tree.
         SOMA_TEST_HARNESS: '1',
+        // Force system-daemon mode off so no case here can reach the host's
+        // real LaunchDaemon through `sudo -n /bin/launchctl` (the system-domain
+        // stop path has its own suite, with a fake sudo).
+        SOMA_LAUNCHD_SYSTEM: '0',
         SOMA_PROJECT_DIR_OVERRIDE: projectDir,
         SOMA_PID_FILE_OVERRIDE: path.join(workDir, 'nonexistent.pid'),
         ...extraEnv,

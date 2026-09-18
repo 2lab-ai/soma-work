@@ -113,6 +113,18 @@ resolve_env() {
 # /Library/LaunchDaemons path is never consulted at all (a deploy host HAS that
 # plist, and the contract tests must not flip into system mode because of the
 # machine they happen to run on), so the tests point detection at a temp file.
+#
+# SOMA_LAUNCHD_SYSTEM declares the mode outright and is NOT gated by the harness
+# flag, in either direction:
+#   1 — force system mode on even where the plist is absent (the operator is
+#       about to create it; install/start then fail naming the exact path);
+#   0 — force it OFF even where the plist exists.
+# The force-off is not a redirect and cannot aim a command at the wrong tree —
+# it only takes control paths AWAY (no sudo, no system domain), which is the one
+# thing the harness gate exists to prevent the other overrides from doing. It is
+# what lets a unit test — or an operator debugging a host that really carries
+# /Library/LaunchDaemons/<label>.plist — exercise the user-domain path without
+# firing `sudo -n /bin/launchctl` at the live daemon.
 resolve_system_daemon() {
     local env="$1"
 
@@ -122,7 +134,9 @@ resolve_system_daemon() {
     fi
 
     SYSTEM_DAEMON_MODE=0
-    if [[ -f "$SYSTEM_DAEMON_PLIST" || "${SOMA_LAUNCHD_SYSTEM:-}" == "1" ]]; then
+    if [[ "${SOMA_LAUNCHD_SYSTEM:-}" == "0" ]]; then
+        SYSTEM_DAEMON_MODE=0
+    elif [[ -f "$SYSTEM_DAEMON_PLIST" || "${SOMA_LAUNCHD_SYSTEM:-}" == "1" ]]; then
         SYSTEM_DAEMON_MODE=1
     fi
 
@@ -667,6 +681,27 @@ generate_plist() {
 EOF
 }
 
+# The WorkingDirectory a LaunchDaemon plist declares, or nothing.
+#
+# PlistBuddy is the correct reader — /Library/LaunchDaemons files are routinely
+# BINARY plists, which no grep can read — and it ships with macOS, the only OS
+# that has a launchd system domain at all. The XML fallback is for reading a
+# plain-text plist where PlistBuddy is absent (a Linux CI runner over a
+# fixture): `<key>WorkingDirectory</key>` followed by its `<string>`.
+system_daemon_working_dir() {
+    local plist="$1" wd=""
+    [[ -f "$plist" ]] || return 1
+    if [[ -x /usr/libexec/PlistBuddy ]]; then
+        wd="$(/usr/libexec/PlistBuddy -c 'Print :WorkingDirectory' "$plist" 2>/dev/null)" || wd=""
+    fi
+    if [[ -z "$wd" ]]; then
+        wd="$(grep -A1 '<key>WorkingDirectory</key>' "$plist" 2>/dev/null \
+            | sed -n 's|.*<string>\(.*\)</string>.*|\1|p' | head -1)"
+    fi
+    [[ -n "$wd" ]] || return 1
+    printf '%s\n' "$wd"
+}
+
 # --- Commands ---
 cmd_status() {
     local env_label="${ENV_ARG:-local}"
@@ -722,6 +757,23 @@ cmd_status() {
         echo "Plist file: EXISTS"
     else
         print_warning "Plist file: NOT FOUND"
+    fi
+
+    # The daemon's own cwd. Everything else this status prints — Project, Logs,
+    # the pidfile, the stray-process scan `stop` uses — describes $PROJECT_DIR,
+    # so a root-owned plist still pointing at an older tree means the status and
+    # the supervisor are talking about two different deployments: the daemon
+    # keeps serving the old code while a deploy verifies the new tree's logs.
+    if is_system_mode; then
+        local daemon_wd
+        if daemon_wd="$(system_daemon_working_dir "$status_plist")"; then
+            echo "WorkDir: $daemon_wd"
+            if [[ "$daemon_wd" != "$PROJECT_DIR" ]]; then
+                print_warning "LaunchDaemon WorkingDirectory ($daemon_wd) differs from this env's project dir ($PROJECT_DIR) — the daemon runs in a different tree than this status describes"
+            fi
+        elif [[ -f "$status_plist" ]]; then
+            print_warning "$status_plist declares no WorkingDirectory — the daemon's cwd is not pinned to $PROJECT_DIR"
+        fi
     fi
 
     # A user LaunchAgent beside a system LaunchDaemon is the double-registration

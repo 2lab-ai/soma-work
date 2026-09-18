@@ -32,7 +32,13 @@
  *      double registration in the first place;
  *   5. install in system mode never writes or loads the user LaunchAgent, and
  *      fails with the exact plist path when the LaunchDaemon is absent
- *      (creating one needs root and is the operator's job).
+ *      (creating one needs root and is the operator's job);
+ *   6. `SOMA_LAUNCHD_SYSTEM=0` forces system mode OFF even where the plist
+ *      exists — the escape hatch that keeps a unit test (and an operator
+ *      debugging a deploy host) from firing real `sudo -n /bin/launchctl`;
+ *   7. status reads the daemon plist's WorkingDirectory and warns when it is a
+ *      different tree than $PROJECT_DIR (the logs/scan every other line of the
+ *      status describes).
  *
  * Strategy is the sibling suites': a fake `launchctl` AND a fake `sudo` on
  * PATH (the fake sudo records its full argv and dispatches to the fake
@@ -114,6 +120,13 @@ interface FakeOptions {
   bootoutWorks?: boolean;
   /** `bootstrap system <plist>` answers 37 (already bootstrapped). */
   bootstrapAlready?: boolean;
+  /**
+   * `WorkingDirectory` the LaunchDaemon plist declares. Defaults to the tree
+   * SOMA_PROJECT_DIR_OVERRIDE points at (the agreeing case); pass a different
+   * path to get the disagreement `status` must warn about, or `null` for a
+   * plist that declares no WorkingDirectory at all.
+   */
+  daemonWorkingDir?: string | null;
 }
 
 interface Fakes {
@@ -229,10 +242,30 @@ FAKE_SUDO=1 exec "${launchctl}" "$@"
   chmodSync(sudo, 0o755);
 
   // Existence of this file is what turns system mode on (detection override).
+  // It is a real XML plist because `status` reads its WorkingDirectory back —
+  // through /usr/libexec/PlistBuddy where that exists (macOS) and a grep
+  // fallback elsewhere, so the same fixture has to satisfy both readers.
   const systemPlist = path.join(workDir, `${LABEL}.plist`);
-  writeFileSync(systemPlist, '<plist></plist>');
+  const daemonWorkingDir = opts.daemonWorkingDir === undefined ? path.join(workDir, 'project') : opts.daemonWorkingDir;
+  writeFileSync(systemPlist, systemPlistXml(daemonWorkingDir));
 
   return { bin: fakeBin, callsLog, sudoCallsLog, systemPlist };
+}
+
+/** A LaunchDaemon plist, optionally declaring WorkingDirectory. */
+function systemPlistXml(workingDir: string | null): string {
+  const workingDirKeys = workingDir === null ? '' : `  <key>WorkingDirectory</key>\n  <string>${workingDir}</string>\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LABEL}</string>
+${workingDirKeys}  <key>UserName</key>
+  <string>dd</string>
+</dict>
+</plist>
+`;
 }
 
 /** Where run() would put the user LaunchAgent plist for this test's temp HOME. */
@@ -320,7 +353,11 @@ describe('scripts/service.sh — system LaunchDaemon domain (headless runner, su
     expect(result.calls).not.toContain(`gui/${UID}/${LABEL}`);
     expect(result.calls).not.toContain(`user/${UID}/${LABEL}`);
     expect(result.stdout).not.toMatch(/headless/i);
-  });
+    // 30s, not the 5s default: cmd_start deliberately sleeps 2s after the
+    // kickstart before it reads liveness, and under the whole service-sh suite
+    // running in parallel that lands close enough to 5s to fail as a flake
+    // (measured: 2.8–3.0s alone, >5s in a 7-file parallel run).
+  }, 30_000);
 
   it('tolerates an already-bootstrapped daemon (bootstrap exits 37) and still kickstarts', () => {
     // The normal answer on every start after the first: the label is already in
@@ -336,7 +373,7 @@ describe('scripts/service.sh — system LaunchDaemon domain (headless runner, su
     expect(result.stdout).toMatch(/Service started \(PID: \d+\)/);
     // 37 is expected, not a failure to shout about.
     expect(result.stdout).not.toMatch(/bootstrap system .* failed/);
-  });
+  }, 30_000);
 
   it('status reports RUNNING with the pid from the sudo print, and Domain: system', () => {
     const fakes = installFakes({ alreadyRunning: true });
@@ -348,6 +385,64 @@ describe('scripts/service.sh — system LaunchDaemon domain (headless runner, su
     expect(result.stdout).toMatch(/RUNNING/);
     expect(result.stdout).toContain(String(process.pid));
     expect(result.stdout).toContain('Domain:  system');
+  });
+
+  it('status prints the daemon plist WorkingDirectory and stays quiet when it agrees', () => {
+    // The daemon's cwd is what the supervised process actually runs in; every
+    // other line of `status` (logs, the stray-process scan) describes
+    // $PROJECT_DIR. Agreement is the boring case — print it, do not warn.
+    const fakes = installFakes({ alreadyRunning: true });
+
+    const result = run(['status'], fakes);
+
+    expect(result.stdout).toContain(`WorkDir: ${path.join(workDir, 'project')}`);
+    expect(result.stdout).not.toMatch(/WorkingDirectory .* differs/);
+  });
+
+  it('status warns when the daemon WorkingDirectory is a different tree than PROJECT_DIR', () => {
+    // A LaunchDaemon left pointing at an older tree keeps serving that tree
+    // while this status reports the new one's logs — the shape that makes a
+    // deploy look green against code nobody is running.
+    const fakes = installFakes({ alreadyRunning: true, daemonWorkingDir: '/opt/soma-work/dev-old' });
+
+    const result = run(['status'], fakes);
+
+    expect(result.stdout).toContain('WorkDir: /opt/soma-work/dev-old');
+    expect(result.stdout).toContain('/opt/soma-work/dev-old');
+    expect(result.stdout).toMatch(/WorkingDirectory .* differs/);
+    expect(result.stdout).toContain(path.join(workDir, 'project'));
+  });
+
+  it('status says so when the daemon plist declares no WorkingDirectory at all', () => {
+    const fakes = installFakes({ alreadyRunning: true, daemonWorkingDir: null });
+
+    const result = run(['status'], fakes);
+
+    expect(result.stdout).toMatch(/no WorkingDirectory/);
+    expect(result.stdout).toContain(fakes.systemPlist);
+  });
+
+  it('SOMA_LAUNCHD_SYSTEM=0 forces the user-domain path even with the daemon plist present', () => {
+    // The force-off exists so a unit test (or an operator debugging a host that
+    // HAS /Library/LaunchDaemons/<label>.plist) can drive the old path without
+    // a single `sudo -n /bin/launchctl` reaching real root. It is honoured
+    // regardless of SOMA_TEST_HARNESS — an override that turns something OFF
+    // cannot redirect a production command at the wrong tree, which is what the
+    // harness gate protects the other overrides from.
+    const fakes = installFakes({ alreadyRunning: true });
+
+    const result = run(['status'], fakes, { SOMA_LAUNCHD_SYSTEM: '0' });
+
+    // Not one sudo invocation, so nothing here can touch the system domain.
+    expect(sudoLines(result)).toEqual([]);
+    // …and the user domains ARE probed, i.e. it really is the old path.
+    expect(result.calls).toContain(`print gui/${UID}/${LABEL}`);
+    expect(result.stdout).not.toContain('Domain:  system');
+    expect(result.stdout).toContain(`Plist:   ${agentPlistPath()}`);
+    // Only the system domain holds the label in this fixture, so the
+    // user-domain path correctly finds nothing.
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toMatch(/STOPPED/);
   });
 
   it('stop boots the label out through sudo and reports a clean stop', () => {
@@ -410,7 +505,7 @@ describe('scripts/service.sh — system LaunchDaemon domain (headless runner, su
     expect(result.sudoCalls).toContain(`-n /bin/launchctl kickstart -k system/${LABEL}`);
     expect(result.status).toBe(0);
     expect(result.stdout).toMatch(/Service installed and started \(PID: \d+\)/);
-  });
+  }, 30_000);
 
   it('install fails with the exact plist path when the LaunchDaemon is missing', () => {
     const fakes = installFakes();
