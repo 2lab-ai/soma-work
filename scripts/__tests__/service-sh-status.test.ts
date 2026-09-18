@@ -49,26 +49,28 @@ afterEach(() => {
 });
 
 /**
- * Drop a fake `launchctl` binary on PATH. `listLine` is the exact line
- * `launchctl list` should print when grepping for the service label (or
- * empty string to simulate "not registered").
+ * Drop a fake `launchctl` binary on PATH. `listLines` is what `launchctl list`
+ * should print (a single line, several lines for a host that runs more than one
+ * env, or an empty string to simulate "not registered").
  *
  * Real macOS output format (3 columns, tab-separated):
  *   <PID>\t<LastExitStatus>\t<Label>
  * where PID is numeric for live, `-` for dead.
  */
-function installFakeLaunchctl(listLine: string): string {
+function installFakeLaunchctl(listLines: string | string[]): string {
   const fakeBin = path.join(workDir, 'bin');
   const launchctl = path.join(fakeBin, 'launchctl');
+  const lines = (Array.isArray(listLines) ? listLines : [listLines]).filter((l) => l.length > 0);
+  const printLines = lines.map((l) => `printf '%s\\n' "${l.replace(/"/g, '\\"')}"`).join('\n    ');
   // Bash heredoc handles quoting + control over what `list` prints. Other
   // subcommands (load/unload/print/kickstart) are stubbed to exit 0 so we
-  // don't need separate fixtures for them.
+  // don't need separate fixtures for them. `print` answering 0 with NO body is
+  // read by service.sh as "no job here" (domain_registered requires a
+  // dictionary), so these fixtures describe `launchctl list` alone.
   const script = `#!/bin/bash
 case "$1" in
   list)
-    if [[ -n "${listLine.replace(/"/g, '\\"')}" ]]; then
-      printf '%s\\n' "${listLine.replace(/"/g, '\\"')}"
-    fi
+    ${printLines || ':'}
     exit 0
     ;;
   *)
@@ -83,7 +85,11 @@ esac
   return fakeBin;
 }
 
-function runStatus(env: string, extraPath: string, pidFileOverride?: string): RunResult {
+/**
+ * `env` is the `main`/`dev` argument, or null for the LOCAL env (no argument at
+ * all — label `ai.2lab.soma-work`, which is a PREFIX of the other two).
+ */
+function runStatus(env: string | null, extraPath: string, pidFileOverride?: string): RunResult {
   // PATH prepended with fake bin so service.sh sees our launchctl first.
   // HOME points at workDir so plist path lookups don't hit the real
   // ~/Library/LaunchAgents and pollute the test machine.
@@ -93,8 +99,12 @@ function runStatus(env: string, extraPath: string, pidFileOverride?: string): Ru
   // so the headless-fallback liveness check can't read the real /opt tree and
   // make these contract tests depend on the host's running services.
   const pidFile = pidFileOverride ?? path.join(workDir, 'nonexistent.pid');
+  // Same reason for the project dir: in the LOCAL env it defaults to this
+  // checkout, and status would read the repo's own logs/ tree.
+  const projectDir = path.join(workDir, 'project');
+  execFileSync('mkdir', ['-p', projectDir]);
   try {
-    const stdout = execFileSync('bash', [SERVICE_SH, env, 'status'], {
+    const stdout = execFileSync('bash', [SERVICE_SH, ...(env ? [env] : []), 'status'], {
       env: {
         ...process.env,
         PATH: `${extraPath}:${process.env.PATH ?? ''}`,
@@ -104,6 +114,7 @@ function runStatus(env: string, extraPath: string, pidFileOverride?: string): Ru
         // production command at a test tree.
         SOMA_TEST_HARNESS: '1',
         SOMA_PID_FILE_OVERRIDE: pidFile,
+        SOMA_PROJECT_DIR_OVERRIDE: projectDir,
       },
       encoding: 'utf-8',
     });
@@ -172,6 +183,38 @@ describe('scripts/service.sh status — exit-code contract', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toMatch(/RUNNING/);
     expect(result.stdout).toContain(String(livePid));
+  });
+
+  it('LOCAL env does not adopt the dev row, it reads its own (label prefix collision)', () => {
+    // `ai.2lab.soma-work` is a PREFIX of `ai.2lab.soma-work.dev`, so the old
+    // `launchctl list | grep "$SERVICE_NAME"` matched BOTH rows on any host
+    // that runs the deployed services — the local env then reported another
+    // env's pid (or, with two matching rows, nothing at all). Column 3 must be
+    // compared exactly.
+    const localPid = process.pid; // live
+    const bin = installFakeLaunchctl([`${localPid}\t0\tai.2lab.soma-work`, `999999\t0\tai.2lab.soma-work.dev`]);
+
+    const result = runStatus(null, bin);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/RUNNING/);
+    expect(result.stdout).toContain(String(localPid));
+    expect(result.stdout).not.toContain('999999');
+  });
+
+  it('LOCAL env with only the dev label registered → STOPPED, not the dev PID', () => {
+    // The same collision seen from the other side: nothing is registered for
+    // this checkout, so status must say STOPPED instead of reporting the dev
+    // service's live pid as if it were ours.
+    const devPid = process.pid; // live, and must NOT be adopted
+    const bin = installFakeLaunchctl(`${devPid}\t0\tai.2lab.soma-work.dev`);
+
+    const result = runStatus(null, bin);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toMatch(/STOPPED/);
+    expect(result.stdout).not.toMatch(/RUNNING/);
+    expect(result.stdout).not.toContain(String(devPid));
   });
 
   it('HEADLESS stale: launchd dead AND PID lock points at a dead process → exit non-zero', () => {
