@@ -49,14 +49,14 @@ Status: planned · 스펙 = [`../06-user-steering-spec.md`](../06-user-steering-
 ## gap matrix
 | 갭 | 상태 |
 |---|---|
-| 툴 호출 사이 스티어링 | 구현(WU1–WU4). 실측 R3: 디스패처 턴 중 즉시 스티어링 성립; **첫 멘션 턴 중에는 `not-busy`로 미스티어링(#233)** |
+| 툴 호출 사이 스티어링 | 구현(WU1–WU4). 실측 R3: 디스패처 턴 중 즉시 스티어링 성립; 첫 멘션 턴 결함(#233)은 PR #235로 수정, v0.2.1143 재실측 PASS(R3b) |
 | Cancel | queued/paused/failed/uncertain = PR #224; steered 분기 = WU4. 실측 R3: 이미 소비된 항목 Cancel → "이미 모델에 전달되어 실행 중" ephemeral (already-dequeued) |
 | Edit | 구현(WU4, `message_changed` → `editQueued`), 실측 S5 미완 |
 | 최하단 컴팩트 패널 | main 합류(PR #224); 큐 섹션은 인라인 카드 + `queue` 명령으로 이전(#230) |
-| 배포·실측 | 프리뷰 배포 완료(2lab.ai dev 봇 v0.2.1138, work-m16 v0.2.1142). 실측 R3 완료(아래) — 잔여 = #233 수정 후 첫 멘션 턴 재실측 |
+| 배포·실측 | 프리뷰 배포 완료(양 대상 v0.2.1143, run 35310146716). 실측 R3·R3b 완료 — 잔여 없음 |
 
 ## 라운드 3 — 실측 (2026-09-18 13:48–14:01 KST, 2lab.ai Slack `#workspace-soma-work`, Claude in Chrome)
-Status: **partial** — 계약 5건 중 4건 성립, 1건 결함(#233).
+Status: **shipped** — R3에서 4/5 성립 + 결함 1건(#233) → R3b에서 수정 후 5/5 성립.
 
 | # | 절차 | 관측 | 판정 |
 |---|---|---|---|
@@ -68,3 +68,10 @@ Status: **partial** — 계약 5건 중 4건 성립, 1건 결함(#233).
 | R3-5 | 어떤 시점에도 새 메시지가 freeze 배너/Resume로 막히는지 | 없음 | PASS |
 
 증거: 봇 stdout 04:48–05:00Z 발췌(`Follow-up not steered`, `item-steered`, `item-consumed`, `Routing to handler QueueHandler`), Chrome 스크린샷 6장(세션 scratchpad). 부수 관측: Autogoal이 테스트 지시를 goal로 승격해 eval 루프가 돌았음 — 이 워크스트림 밖.
+
+## 라운드 3b — #233 수정 후 재실측 (2026-09-18 14:38–14:41 KST, v0.2.1143 = PR #235 머지 3229521, 양 대상 배포)
+| # | 절차 | 관측 | 판정 |
+|---|---|---|---|
+| R3b-1 (S1) | `@봇 … sleep 90` 새 세션 첫 턴(슬롯 = 루트 키 `…908.321219`, 마이그레이션 바인딩 로그) 중 스레드에 "체크A 붙여줘" | 봇 로그 `item-steered`(05:39:35Z, 행 키 = 스레드 `…923.402809`), 카드 `1. … · 전달됨 · 모델이 다음 툴 호출에서 읽음`; 같은 턴 응답 `done` + `체크A`; `item-consumed`(05:40:34Z) → 카드 삭제; `run-settled`는 루트 키(05:40:35Z) — 정산이 마이그레이션 양 버킷을 가로질러 성립 | PASS |
+
+리시트: 코더 TDD(디스패처 2건 + 호스트 1건 RED→GREEN), 게이트 재실행 181/181 + lint clean, gpt6 이원 리뷰 merge-with-nits(주석 nit 반영), 배포 Verify `Restart verified` 양 대상 + `bot is running! [v0.2.1143 (3229521)]`.
