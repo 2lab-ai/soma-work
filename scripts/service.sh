@@ -272,8 +272,20 @@ domain_pid() {
     printf '%s\n' "$pid"
 }
 
+# `launchctl list` prints one TAB-separated row per job: "<pid>\t<last exit>\t<label>".
+# The three labels this script manages are PREFIXES of one another —
+# `ai.2lab.soma-work` (local checkout) ⊂ `ai.2lab.soma-work.dev` ⊂ … — so
+# `grep "$SERVICE_NAME"` run from a local checkout matches the dev/main rows of
+# a host that runs the deployed services, and the local env then adopts a
+# FOREIGN pid: `status` reports RUNNING for a service that was never started
+# here, and `stop` would target another env's supervisor. Match column 3
+# exactly. Empty output = this label has no row; `-` = a row with no live pid.
+launchctl_list_pid() {
+    launchctl list 2>/dev/null | awk -v l="$SERVICE_NAME" '$3 == l {print $1}'
+}
+
 is_registered() {
-    launchctl list 2>/dev/null | grep -q "$SERVICE_NAME" && return 0
+    [[ -n "$(launchctl_list_pid)" ]] && return 0
     registered_domain >/dev/null
 }
 
@@ -299,7 +311,7 @@ get_pidfile_pid() {
 # status/start verification.
 get_pid() {
     local lpid domain dpid
-    lpid=$(launchctl list 2>/dev/null | grep "$SERVICE_NAME" | awk '{print $1}')
+    lpid=$(launchctl_list_pid)
     if [[ "$lpid" =~ ^[0-9]+$ ]]; then
         echo "$lpid"
         return 0
@@ -353,6 +365,13 @@ is_alive() {
 # gui domain is tried first (the normal path on a logged-in Mac) and
 # `user/<uid>` is the fallback; success in EITHER domain means launchd manages
 # the service and the headless direct-spawn is not needed.
+
+# Which domain load_and_kickstart actually got the job into ("gui/<uid>" /
+# "user/<uid>"), empty when neither took it. Deliberately a global: it is
+# load_and_kickstart's second return value, read by the callers' success lines
+# so a CI log says WHICH domain is managing the service, not just that one is.
+LAUNCHD_DOMAIN_USED=""
+
 load_and_kickstart() {
     local uid load_err kick_err kick_status boot_err boot_status try_user
     uid="$(id -u)"
@@ -389,6 +408,12 @@ load_and_kickstart() {
         boot_err="$(launchctl bootstrap "user/$uid" "$PLIST_PATH" 2>&1 >/dev/null)" || boot_status=$?
         # 37 / 17 = the label is already bootstrapped in this domain — the
         # normal answer on every deploy after the first, and not a failure.
+        # ASSERTED, NOT MEASURED: these two codes come from launchd's
+        # EALREADY/EEXIST convention, not from a captured run on the headless
+        # host (the 2026-09-17 measurement only covered the FIRST bootstrap,
+        # which exited 0). A different code on a re-bootstrap is therefore a
+        # lead to go read, not proof the domain refused — the kickstart below
+        # is the verdict either way.
         if [[ "$boot_status" -ne 0 && "$boot_status" -ne 37 && "$boot_status" -ne 17 ]]; then
             print_warning "launchctl bootstrap user/$uid $PLIST_PATH failed (exit $boot_status): ${boot_err:-<no stderr>}"
         fi
@@ -658,7 +683,12 @@ cmd_start() {
     sleep 2
 
     if is_alive; then
-        print_success "Service started (PID: $(get_pid))"
+        # Name the domain that took the job: "started" on a headless host means
+        # something different from "started" on a logged-in Mac, and the CI log
+        # is the only place that difference is ever read.
+        local domain_note=""
+        [[ -n "$LAUNCHD_DOMAIN_USED" ]] && domain_note=" (launchd: $LAUNCHD_DOMAIN_USED)"
+        print_success "Service started (PID: $(get_pid))$domain_note"
     else
         # launchd path failed (no live process). On a host with no GUI/Aqua
         # session this is expected and permanent — fall back to a direct spawn.
@@ -903,8 +933,16 @@ cmd_stop() {
 
     # Capture the launchd-reported PID BEFORE unloading: if the unload fails we
     # still know which process launchd was supervising.
+    #
+    # get_pid, not a raw `launchctl list` read: on a headless host the label
+    # lives in `user/<uid>` and does not show up in the runner session's `list`
+    # at all, so the old read returned nothing and the supervisor survived the
+    # stop with no target and no complaint (the 35184945142 shape). get_pid asks
+    # each domain's job dictionary too, and falls back to the app's pidfile —
+    # which is added to targets separately below; a duplicate pid is harmless
+    # (terminate_pid exits 0 on a pid that is already gone).
     local launchd_pid
-    launchd_pid="$(launchctl list 2>/dev/null | grep "$SERVICE_NAME" | awk '{print $1}')"
+    launchd_pid="$(get_pid)"
 
     # `unload` operates on the launchd registration, not on liveness — so use
     # is_registered (alive-or-dead) here. Otherwise a STALE service couldn't
@@ -1218,16 +1256,25 @@ cmd_install() {
 cmd_uninstall() {
     print_status "Uninstalling $SERVICE_NAME..."
 
-    if is_registered; then
-        launchctl unload "$PLIST_PATH"
-        sleep 2
-    fi
+    # `launchctl unload <plist>` reaches at most the one domain the caller's
+    # session resolves to, and it cannot touch a `user/<uid>` bootstrap at all —
+    # so on a headless host uninstall used to delete the plist while leaving the
+    # label registered, i.e. a registration with no file left to unload it with.
+    # Boot the label out of EVERY domain, and only claim the service is gone
+    # when none of them still holds it.
+    bootout_all_domains
 
     if [[ -f "$PLIST_PATH" ]]; then
         rm "$PLIST_PATH"
         print_success "Plist removed"
     else
         print_warning "Plist not found"
+    fi
+
+    if [[ ${#STOP_DOMAINS_HELD[@]} -gt 0 ]]; then
+        print_error "Service NOT fully uninstalled — label still registered in: ${STOP_DOMAINS_HELD[*]}"
+        print_status "Logs preserved at: $LOGS_DIR"
+        return 1
     fi
 
     print_success "Service uninstalled"
@@ -1307,17 +1354,19 @@ cmd_reinstall() {
 
     # Step 1: Stop
     print_status "[1/4] Stopping service..."
-    if is_registered; then
-        launchctl unload "$PLIST_PATH"
-        sleep 2
-        if ! is_registered; then
-            print_success "Service stopped"
-        else
-            print_error "Failed to stop service"
-            return 1
-        fi
+    # `launchctl unload` + is_registered was a two-domain lie: unload cannot
+    # reach a `user/<uid>` bootstrap — the only domain a headless host has — so
+    # the registration survived, is_registered stayed true, and reinstall
+    # aborted at step 1 on exactly the hosts the user-domain fallback exists
+    # for. cmd_stop is the one implementation of "stop": bootout in every
+    # domain, pidfile + cwd survivors killed, non-zero when anything is left.
+    # Same gate cmd_restart uses — building and starting on top of a stop that
+    # left a supervisor alive is how a host ends up serving two trees.
+    if cmd_stop; then
+        print_success "Service stopped"
     else
-        print_warning "Service was not running"
+        print_error "Failed to stop service — refusing to reinstall on top of it."
+        return 1
     fi
 
     # Step 2: Build
@@ -1348,7 +1397,10 @@ cmd_reinstall() {
         echo "  Check logs: ./scripts/service.sh ${ENV_ARG:+$ENV_ARG }logs follow"
     elif is_registered; then
         print_error "Reinstall: label registered but no live PID."
-        print_error "Likely Aqua-session mismatch. Try: launchctl kickstart -k gui/\$(id -u)/$SERVICE_NAME"
+        print_error "  Likely Aqua-session mismatch. Try: launchctl kickstart -k gui/\$(id -u)/$SERVICE_NAME"
+        print_error "  On a host with no GUI/Aqua session use the per-user domain:"
+        print_error "    launchctl bootstrap user/\$(id -u) $PLIST_PATH"
+        print_error "    launchctl kickstart -k user/\$(id -u)/$SERVICE_NAME"
         return 1
     else
         print_error "Service failed to start. Check: tail -f $LOGS_DIR/stderr.log"
