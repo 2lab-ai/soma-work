@@ -3116,13 +3116,14 @@ export class SlackHandler {
           ? dispatcher.markConsumed(key, uuid)
           : dispatcher.unsteer(key, uuid, phase === 'cancelled' ? '취소됨' : '모델이 읽기 전에 턴이 끝나 큐로 되돌림');
 
-      // The frame carries the SESSION key the executor ran under. Under a
-      // bot-thread migration the ROW lives under the SLOT key instead: a steer
-      // is only accepted by the key that owns the live slot
-      // (`followup-dispatcher.ts:497-500`), and that is the source key while the
-      // session is the work-thread one. The session key is tried first (every
-      // ordinary turn), and the slot key only when the queue says it holds no
-      // such row — so the fallback can never settle a different session's item.
+      // The frame carries the SESSION key the executor ran under (the canonical
+      // work-thread key under a bot-thread migration). Since #233 a steer
+      // resolves the slot owner separately, so a migrated row usually lives
+      // under this very key (a reply in the work thread); a reply posted in the
+      // SOURCE thread after the migration is still stored under the slot key.
+      // The session key is tried first (every ordinary turn), and the slot key
+      // only when the queue says it holds no such row — so the fallback can
+      // never settle a different session's item.
       let queueKey = sessionKey;
       let settled = settle(queueKey);
       const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
@@ -3171,11 +3172,11 @@ export class SlackHandler {
 
   /**
    * Run a uuid-addressed settlement against the bucket that really HOLDS the
-   * row. The session key is tried first (every ordinary turn); under a
-   * bot-thread migration the row lives under the SLOT key instead, because a
-   * steer is only accepted by the key that owns the live slot
-   * (`followup-dispatcher.ts:497-500`). The fallback fires only on
-   * `not-found` — so it can never settle a different session's item.
+   * row. The session (canonical) key is tried first — every ordinary turn, and
+   * since #233 also a work-thread reply steered across a bot-thread migration;
+   * the SLOT (source) key is the fallback for a reply posted in the source
+   * thread after the migration. The fallback fires only on `not-found` — so it
+   * can never settle a different session's item.
    */
   private settleUnderOwningKey(sessionKey: string, settle: (key: string) => FollowupOpResult): FollowupOpResult {
     const result = settle(sessionKey);
