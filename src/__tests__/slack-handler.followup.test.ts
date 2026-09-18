@@ -1215,7 +1215,8 @@ describe('SlackHandler — follow-up queue host', () => {
       // live message went into the running turn like any other follow-up.
       expect(queueOf(booted).freezeReason(SESSION_KEY)).toBeUndefined();
       expect(steerTurn).toHaveBeenCalledTimes(1);
-      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      // Steered is still WAITING, so the controls stay (2026-09-18 correction).
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
       expect(receipts().join('\n')).not.toContain('큐가 멈춰');
       await settle();
     });
@@ -1235,7 +1236,7 @@ describe('SlackHandler — follow-up queue host', () => {
       // The restored row is the one the freeze is for: still parked, still
       // waiting for the user's Resume.
       expect(stored.find((item: any) => item.message.ts === RESTORED_TS).state).toBe('paused');
-      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
       await settle();
     });
 
@@ -1571,7 +1572,7 @@ describe('SlackHandler — follow-up queue host', () => {
       const workItems = handlerAny.getFollowupQueue().list(WORK_KEY);
       expect(workItems).toHaveLength(1);
       expect(workItems[0].state).toBe('steered');
-      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
 
       gate.resolve({ hasPendingChoice: false });
       await first;
@@ -1587,8 +1588,9 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(queued).toHaveLength(1);
       expect(queued[0].state).toBe('steered');
       expect(queued[0].steerUuid).toBeTruthy();
-      // §2.1 — the receipt and both controls come down, 전달완료 goes up.
-      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      // §2.1 — a steered message is waiting in the SDK's input channel, so the
+      // receipt and BOTH controls stay until the model actually reads it.
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
       await settle();
     });
 
@@ -1701,7 +1703,7 @@ describe('SlackHandler — follow-up queue host', () => {
 
       expect(steerTurn).toHaveBeenCalledTimes(1);
       expect(items()[0].state).toBe('steered');
-      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
       expect(receipts().join('\n')).not.toContain('큐가 멈춰');
       await settle();
     });
@@ -1872,9 +1874,10 @@ describe('SlackHandler — follow-up queue host', () => {
       // The ONE thing still said in words — the state could not be determined —
       // because no reaction can carry it (§2.1 has no entry for "unknown").
       expect(receipts().join('\n')).toContain('⚠️ 전달 중 오류로 항목 상태를 확정하지 못했습니다');
-      // …and the message does not keep offering controls for a row nobody can
-      // describe: it is `steered`, so it reads 전달완료.
-      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      // …and the row keeps its controls: it is `steered`, which is still
+      // waiting, and the notice above is the only thing that says the state
+      // could not be confirmed.
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
       await settle();
     });
 
@@ -2781,18 +2784,19 @@ describe('SlackHandler — follow-up queue host', () => {
 
     /**
      * §3.1 — the receipt lands in ONE call, before the steer is even attempted,
-     * so a message going straight into the running turn never flashes a
-     * `Send now` the user could press into a refusal.
+     * so the user sees the message was taken within one API call. The steer
+     * then adds the controls: a steered row is still waiting, so it carries the
+     * same three as a queued one.
      */
-    it('paints the receipt before the steer, and only then the state', async () => {
+    it('paints the receipt before the steer, and the controls after it', async () => {
       claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
       const { settle } = await startBusyTurn();
 
       await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
 
       const painted = addReaction.mock.calls.filter((call: any[]) => call[1] === '333.444').map((call) => call[2]);
-      expect(painted).toEqual(['inbox_tray', 'white_check_mark']);
-      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      expect(painted).toEqual(['inbox_tray', 'ui_send_now', 'ui_cancel']);
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
       await settle();
     });
 
@@ -2811,7 +2815,7 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
-    it('keeps 전달완료 when the model consumes the steered item', async () => {
+    it('replaces the controls with 전달완료 when the model CONSUMES the steered item', async () => {
       const steerTurn = vi.fn().mockReturnValue(true);
       claudeHandler.steerTurn = steerTurn;
       const { settle } = await startBusyTurn();
@@ -2822,20 +2826,25 @@ describe('SlackHandler — follow-up queue host', () => {
         uuid: steerTurn.mock.calls[0][1].uuid,
         phase: 'completed',
       });
+      // The settlement's repaint is deliberately detached from the stream loop
+      // (`settleSteeredFollowup`), so it lands on the next ticks.
+      await tick();
+      await tick();
 
       expect(items()[0].state).toBe('resolved');
+      // The receipt and BOTH controls come down; only the check mark is left.
       expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
       await settle();
     });
 
-    it('brings the controls back when the turn ends without consuming it', async () => {
-      // `discarded` returns the row to `queued` — it is pending again, so its
-      // controls must come back on screen and 전달완료 must go.
+    it('keeps the controls when the turn ends without consuming it', async () => {
+      // `discarded` returns the row to `queued`. It was already showing the
+      // waiting set while `steered`, so nothing on the message changes.
       const steerTurn = vi.fn().mockReturnValue(true);
       claudeHandler.steerTurn = steerTurn;
       const { settle } = await startBusyTurn();
       await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
-      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
 
       await handlerAny.streamExecutor.deps.onSteerLifecycle({
         sessionKey: SESSION_KEY,
@@ -3450,19 +3459,55 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(reactionsOn('333.444')).toEqual(['no_entry_sign']);
     });
 
-    it('ignores a control the state does not offer — a steered item has no Send now', async () => {
+    /**
+     * 2026-09-18 correction: a steered message is still WAITING in the SDK's
+     * input channel, so `Send now` on it is a real operation — the dispatcher
+     * has its own pre-step for that row (unsteer at the steered epoch, then
+     * reserve, `followup-dispatcher.ts:847-905`). It goes through the same
+     * `handleSendNow` the card button used.
+     */
+    it('hands Send now to the dispatcher for a steered item too', async () => {
       claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
       const { settle } = await startBusyTurn();
       await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
       expect(items()[0].state).toBe('steered');
-      const sendNow = vi.spyOn(handlerAny.followupDispatcher, 'sendNow');
+      expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
+      const live = items()[0];
+      const sendNow = vi
+        .spyOn(handlerAny.followupDispatcher, 'sendNow')
+        .mockResolvedValue({ status: 'rejected', reason: 'not-busy', detail: '실행 중인 턴이 없습니다' } as never);
 
       await react({ reaction: 'ui_send_now' });
       await tick();
 
+      expect(sendNow).toHaveBeenCalledWith(
+        SESSION_KEY,
+        live.id,
+        live.epoch,
+        'U_OWNER',
+        handlerAny.getFollowupView(SESSION_KEY).turnEpoch,
+      );
+      await settle();
+    });
+
+    /** …and a state that really offers nothing is still ignored in silence. */
+    it('ignores a control the state does not offer — a reserved item has neither', async () => {
+      const { settle } = await queuedFollowup();
+      const queue = handlerAny.getFollowupQueue();
+      const live = items()[0];
+      queue.reserve(SESSION_KEY, live.id, live.epoch, handlerAny.getFollowupView(SESSION_KEY).turnEpoch);
+      expect(items()[0].state).toBe('reserved');
+      await handlerAny.syncFollowupReactions(SESSION_KEY, live.id);
+      const sendNow = vi.spyOn(handlerAny.followupDispatcher, 'sendNow');
+
+      await react({ reaction: 'ui_send_now' });
+      await react();
+      await tick();
+
       expect(sendNow).not.toHaveBeenCalled();
       expect(ephemerals()).toEqual([]);
-      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+      // The receipt alone: in flight, no delivery claimed and nothing to press.
+      expect(reactionsOn('333.444')).toEqual(['inbox_tray']);
       await settle();
     });
 

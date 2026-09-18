@@ -20,14 +20,15 @@ Status: **shipped** (2026-09-18, PR #237 → v0.2.1144 프리뷰; 실측 = `reac
 |---|---|
 | `queued` (턴 종료 후 드레인 대기, 또는 halt) | `:inbox_tray:` `:ui_send_now:` `:ui_cancel:` |
 | `reserved` / `claimed` (드레인이 집었지만 아직 디스패치 전) | `:inbox_tray:`만 — 컨트롤 제거, 체크 없음 (rollback으로 `queued`로 되돌아갈 수 있으므로 전달 주장 금지, `followup-queue.ts:558-565`) |
-| `steered` (실행 중 턴에 전달됨) | 위 3개 제거 → `:white_check_mark:` (전달완료) |
-| `resolved`(소비/드레인 완료) | `:white_check_mark:` 유지 |
+| `steered` (실행 중 턴의 입력 큐에 밀어넣었지만 **모델이 아직 읽지 않음**) | `:inbox_tray:` `:ui_send_now:` `:ui_cancel:` — `queued`와 동일. 아직 대기 중이므로 컨트롤을 유지한다 (`:ui_send_now:` = 디스패처의 steered 전처리 unsteer→reserve `followup-dispatcher.ts:847-905`, `:ui_cancel:` = `cancelSteered`) |
+| `dispatched` (독립 턴으로 실행 중) | `:white_check_mark:` |
+| `resolved`(모델이 읽음 / 드레인 완료) | 위 3개 제거 → `:white_check_mark:` (전달완료) |
 | `cancelled` | `:inbox_tray:` `:ui_send_now:` 제거, 봇의 `:ui_cancel:` 제거(2→1, 유저 것만 남음) → `:no_entry_sign:` (캔슬완료) |
 | Send now로 디스패치 | `:inbox_tray:` `:ui_cancel:` 제거, 봇의 `:ui_send_now:` 제거(2→1) → `:white_check_mark:` |
 | `failed` / `uncertain` / 거부 | `:warning:` `:ui_send_now:` `:ui_cancel:` — 이 두 상태에서 `:ui_send_now:`는 **Retry**로 라우팅된다(`retry`가 유일한 비종결 출구, 큐도 취소를 허용 `CANCELLABLE_STATES`). 컨트롤 없는 warning-only는 막다른 길이라 금지 |
 | `paused` (재시작 후 parked) | `:inbox_tray:` `:ui_send_now:` `:ui_cancel:` (Send now = Resume 대용) — 패널의 Resume/Retry는 그대로 |
 
-가정 A1: 유저 원문 "스티어링되면 이모지를 제거… 처리됐다는 이모지로 변경"을 `steered` 시점으로 해석한다. steered 항목의 Cancel은 실측상 거의 항상 "이미 전달됨"이므로 컨트롤을 내리고 `queue` 명령/기존 경로에 맡긴다.
+**steered = 대기 중, 컨트롤 유지.** `:white_check_mark:`는 "보냈다"가 아니라 "모델이 **읽었다**"를 뜻한다 — 유저 원문의 "처리 됐다는 이모지"는 `resolved`(소비 수신) 시점이다. steered는 SDK 입력 큐에서 다음 tool-call 경계를 기다리는 상태이고, 그 구간이야말로 Send now/Cancel이 가장 필요한 구간이므로 컨트롤을 내리지 않는다. (2026-09-18 유저 정정: 이전 판의 "가정 A1 = steered 시점에 전달완료"는 오독이었고 폐기.)
 
 ### 2.2 리액션 = 컨트롤
 - 봇 이외의 사용자가 M에 `:ui_send_now:` 또는 `:ui_cancel:`을 추가(`reaction_added`, item.user ≠ bot) → 해당 항목에 대해 버튼과 **같은 핸들러**(`handleSendNow` / `handleCancel`의 정책: 권한 `canInterrupt`·항목 CAS·상태 검사)를 실행한다. 리액션은 두 번째 트랜스포트다(A39의 카드 버튼과 동일 원칙).
