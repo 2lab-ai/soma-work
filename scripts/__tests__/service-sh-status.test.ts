@@ -113,6 +113,11 @@ function runStatus(env: string | null, extraPath: string, pidFileOverride?: stri
         // set, so a stray export in an operator's shell cannot redirect a
         // production command at a test tree.
         SOMA_TEST_HARNESS: '1',
+        // Force system-daemon mode off: this suite asserts the user-domain
+        // status path, and an inherited SOMA_LAUNCHD_SYSTEM=1 (or a real
+        // /Library/LaunchDaemons/<label>.plist) would route it through
+        // `sudo -n /bin/launchctl` against the host's real daemon.
+        SOMA_LAUNCHD_SYSTEM: '0',
         SOMA_PID_FILE_OVERRIDE: pidFile,
         SOMA_PROJECT_DIR_OVERRIDE: projectDir,
       },

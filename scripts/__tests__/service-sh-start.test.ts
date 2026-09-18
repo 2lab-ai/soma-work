@@ -104,6 +104,10 @@ function runStart(env: string, extraPath: string): RunResult {
         // The overrides are inert without this flag (service.sh resolve_env),
         // so the suite must opt in explicitly.
         SOMA_TEST_HARNESS: '1',
+        // Force the user-domain path: an inherited SOMA_LAUNCHD_SYSTEM=1 (or a
+        // real /Library/LaunchDaemons/<label>.plist on a deploy host) would
+        // otherwise send this unit test through `sudo -n /bin/launchctl`.
+        SOMA_LAUNCHD_SYSTEM: '0',
         // Isolate the pidfile fallback (service.sh get_pidfile_pid): without
         // this, a data/soma-work.pid left in the checkout by other tests makes
         // is_alive() true and cmd_start exits before ever calling kickstart.

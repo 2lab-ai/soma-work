@@ -271,6 +271,11 @@ function run(
         HOME: homeStub,
         // The overrides are inert without this flag (service.sh resolve_env).
         SOMA_TEST_HARNESS: '1',
+        // This suite is about the gui/user domains. Force system-daemon mode
+        // off so an inherited SOMA_LAUNCHD_SYSTEM=1 (or, without the harness
+        // flag, a real /Library/LaunchDaemons/<label>.plist) can never make a
+        // unit test shell out to `sudo -n /bin/launchctl`.
+        SOMA_LAUNCHD_SYSTEM: '0',
         SOMA_PID_FILE_OVERRIDE: path.join(workDir, 'soma-work.pid'),
         SOMA_PROJECT_DIR_OVERRIDE: projectDir ?? path.join(workDir, 'project'),
         ...extraEnv,
