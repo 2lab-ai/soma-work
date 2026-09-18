@@ -32,10 +32,14 @@ describe('rolesForFollowupState — 09 §2.1', () => {
     expect(rolesForFollowupState('paused')).toEqual(['queued', 'sendNow', 'cancel']);
   });
 
-  it('replaces everything with 전달완료 once the item is steered', () => {
-    // A1: a steered message is in the SDK's hands, so the controls come down
-    // and the `queue` command owns whatever is left to do with it.
-    expect(rolesForFollowupState('steered')).toEqual(['delivered']);
+  /**
+   * 2026-09-18 user correction: `steered` is WAITING, not delivered. The message
+   * sits in the SDK's input channel until the model picks it up at its next
+   * tool-call boundary, and that window is exactly when the user still wants
+   * both controls — the previous table took them away there.
+   */
+  it('keeps the receipt and BOTH controls on a steered item — it is still waiting', () => {
+    expect(rolesForFollowupState('steered')).toEqual(['queued', 'sendNow', 'cancel']);
   });
 
   it('claims delivery only once there IS one — dispatched and resolved', () => {
@@ -81,10 +85,17 @@ describe('diffFollowupReactionRoles', () => {
     });
   });
 
-  it('takes the receipt and both controls down when the item is steered', () => {
-    expect(diffFollowupReactionRoles(['queued', 'sendNow', 'cancel'], rolesForFollowupState('steered'))).toEqual({
+  it('takes the receipt and both controls down when the model has READ the item', () => {
+    expect(diffFollowupReactionRoles(['queued', 'sendNow', 'cancel'], rolesForFollowupState('resolved'))).toEqual({
       add: ['delivered'],
       remove: ['queued', 'sendNow', 'cancel'],
+    });
+  });
+
+  it('changes nothing when a queued item is merely steered', () => {
+    expect(diffFollowupReactionRoles(['queued', 'sendNow', 'cancel'], rolesForFollowupState('steered'))).toEqual({
+      add: [],
+      remove: [],
     });
   });
 
@@ -99,7 +110,7 @@ describe('diffFollowupReactionRoles', () => {
     });
   });
 
-  it('re-paints the controls when a swept item goes back to queued', () => {
+  it('re-paints the controls when a consumed-looking row goes back to queued', () => {
     expect(diffFollowupReactionRoles(['delivered'], rolesForFollowupState('queued'))).toEqual({
       add: ['queued', 'sendNow', 'cancel'],
       remove: ['delivered'],
@@ -180,7 +191,7 @@ describe('FollowupReactionSurface', () => {
       order.push(`-${name}`);
     });
 
-    await surface.applyState(TARGET, 'steered', ['queued', 'sendNow', 'cancel']);
+    await surface.applyState(TARGET, 'resolved', ['queued', 'sendNow', 'cancel']);
 
     expect(order).toEqual(['-inbox_tray', '-ui_send_now', '-ui_cancel', '+white_check_mark']);
   });
@@ -225,7 +236,7 @@ describe('FollowupReactionSurface', () => {
     );
     await surface.applyState(TARGET, 'queued', undefined);
 
-    await surface.applyState(TARGET, 'steered', ['queued', 'sendNow', 'cancel']);
+    await surface.applyState(TARGET, 'resolved', ['queued', 'sendNow', 'cancel']);
 
     expect(removed()).toContain(FOLLOWUP_REACTION_FALLBACKS.cancel);
     expect(removed()).not.toContain('ui_cancel');
@@ -327,12 +338,12 @@ describe('FollowupReactionSurface', () => {
   it('a failed remove does not block an add of a role that is not contradicted — after it succeeds', async () => {
     // First sync: the remove fails, so nothing is added.
     remove.mockResolvedValueOnce({ ok: false, error: 'ratelimited' });
-    const first = await surface.applyState(TARGET, 'steered', ['queued']);
+    const first = await surface.applyState(TARGET, 'resolved', ['queued']);
     expect(first.painted).toEqual(['queued']);
     expect(added()).toEqual([]);
 
     // Second sync, same target state, remove works this time.
-    const second = await surface.applyState(TARGET, 'steered', first.painted);
+    const second = await surface.applyState(TARGET, 'resolved', first.painted);
 
     expect(removed()).toEqual(['inbox_tray', 'inbox_tray']);
     expect(added()).toEqual(['white_check_mark']);
