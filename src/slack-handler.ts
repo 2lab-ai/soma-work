@@ -3409,13 +3409,16 @@ export class SlackHandler {
    *    logged, which is the right answer: its controls are not there any more.
    * 2. WHICH OPERATION the control means, and whether the state offers it. The
    *    surface paints ONE "go" control, and what it does is a question about the
-   *    row: on `queued`/`paused` it is `Send now`, on `failed`/`uncertain` it is
-   *    `Retry` — the one door out of those two states (`followup-queue.ts`
-   *    `retry`), and the reason they keep a control at all. Cancel is accepted
-   *    wherever the queue accepts it (`CANCELLABLE_STATES` =
-   *    `queued`/`paused`/`failed`/`uncertain`) plus `steered`, which has its own
-   *    path through the SDK (`cancelSteered`). Everything else is a reaction on
-   *    a message whose controls are gone, and it does nothing.
+   *    row: on `queued`/`paused`/`steered` it is `Send now` — a steered message
+   *    is still WAITING in the SDK's input channel, and the dispatcher has a
+   *    documented pre-step for exactly that row
+   *    (`followup-dispatcher.ts:847-905`) — and on `failed`/`uncertain` it is
+   *    `Retry`, the one door out of those two states (`followup-queue.ts`
+   *    `retry`). Cancel is accepted wherever the queue accepts it
+   *    (`CANCELLABLE_STATES` = `queued`/`paused`/`failed`/`uncertain`) plus
+   *    `steered`, which has its own path through the SDK (`cancelSteered`).
+   *    Everything else is a reaction on a message whose controls are gone, and
+   *    it does nothing.
    * 3. WHERE THE ANSWER GOES. A click has a `response_url`; a reaction has
    *    none. The refusals and receipts therefore go out as an ephemeral in the
    *    item's own thread, visible to the reactor only — the same audience a
@@ -3519,15 +3522,21 @@ export class SlackHandler {
    * what decides whether "go" means running a waiting message early
    * (`Send now`) or re-running one whose dispatch went wrong (`Retry`).
    *
-   * `steered` accepts only the stop: its Send-now equivalent already happened,
-   * and the cancel has a real path through the SDK (`cancelSteered`).
+   * `steered` takes BOTH, because a steered message is still waiting — it sits
+   * in the SDK's input channel until the model reads it at its next tool-call
+   * boundary. `Send now` on it is the dispatcher's own documented pre-step
+   * (unsteer at the steered epoch, then reserve —
+   * `followup-dispatcher.ts:847-905`), and the stop goes through the SDK
+   * (`cancelSteered`). This was wrong until 2026-09-18: the row showed
+   * 전달완료 and offered nothing, in exactly the window where the user still
+   * wants both.
    */
   private static followupReactionOperation(
     role: 'sendNow' | 'cancel',
     state: FollowupItem['state'],
   ): 'send-now' | 'retry' | 'cancel' | undefined {
     if (role === 'sendNow') {
-      if (state === 'queued' || state === 'paused') return 'send-now';
+      if (state === 'queued' || state === 'paused' || state === 'steered') return 'send-now';
       if (state === 'failed' || state === 'uncertain') return 'retry';
       return undefined;
     }
