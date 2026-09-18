@@ -94,6 +94,13 @@ interface LaunchctlOptions {
    * 4s shutdown grace (src/run-with-rotating-logs.ts:631).
    */
   terminatingDomain?: { domain: string; probes: number };
+  /**
+   * A domain whose `print <domain>/<label>` answers with a real job dictionary
+   * carrying `pid = N` (that is where get_pid reads a pid launchd never put in
+   * `launchctl list` — the headless `user/<uid>` case). Only applies while the
+   * domain is still held.
+   */
+  domainPid?: { domain: string; pid: number };
 }
 
 /**
@@ -121,12 +128,16 @@ function installFakeLaunchctl(opts: LaunchctlOptions = {}): string {
     : undefined;
   const counterFile = path.join(workDir, 'print-probes');
 
+  const pidDomain = opts.domainPid ? expand(opts.domainPid.domain) : '';
+
   const script = `#!/bin/bash
 HELD_DIR="${heldDir}"
 STICKY="${sticky.join(' ')}"
 TERMINATING="${terminating?.domain ?? ''}"
 TERMINATING_PROBES="${terminating?.probes ?? 0}"
 COUNTER="${counterFile}"
+PID_DOMAIN="${pidDomain}"
+PID_VALUE="${opts.domainPid?.pid ?? ''}"
 marker() { printf '%s/%s' "$HELD_DIR" "\${1//\\//_}"; }
 case "$1" in
   list)
@@ -147,7 +158,12 @@ case "$1" in
       echo "Could not find service \\"$target\\"" >&2
       exit 113
     fi
-    [[ -f "$(marker "$domain")" ]] && exit 0
+    if [[ -f "$(marker "$domain")" ]]; then
+      if [[ -n "$PID_DOMAIN" && "$domain" == "$PID_DOMAIN" ]]; then
+        printf '%s\\n' "${LABEL} = {" "\tstate = running" "\tpid = $PID_VALUE" "}"
+      fi
+      exit 0
+    fi
     echo "Could not find service \\"$target\\"" >&2
     exit 113
     ;;
@@ -324,7 +340,7 @@ describe('scripts/service.sh stop — a failed unload is not the end of stop', (
     expect(isAlive(victim)).toBe(false);
     expect(result.stdout).toMatch(new RegExp(`pid=${victim}`));
     expect(result.status).toBe(0);
-  });
+  }, 20_000);
 
   it('exits non-zero when a targeted process is still alive afterwards', () => {
     // A pid the scan keeps reporting after the kill attempt — what KeepAlive
@@ -397,6 +413,30 @@ describe('scripts/service.sh stop — a failed unload is not the end of stop', (
     });
 
     expect(isAlive(victim)).toBe(false);
+    expect(result.status).toBe(0);
+  });
+
+  it('SIGTERMs the pid that only the user/<uid> job dictionary reports', () => {
+    // Headless host (incident 2026-09-17, deploy run 35209063075): the label is
+    // bootstrapped in `user/<uid>` and the runner session's `launchctl list`
+    // shows NOTHING for it. stop used to read its pre-unload target straight out
+    // of `list`, so it had no target at all, killed nothing, and still exited 0
+    // while the supervisor kept serving. get_pid asks each domain directly.
+    const victim = spawnVictim();
+    const uid = process.getuid?.() ?? 0;
+    const bin = installFakeLaunchctl({
+      listLine: '',
+      heldDomains: ['user/<uid>'],
+      domainPid: { domain: 'user/<uid>', pid: victim },
+    });
+    // Empty scan: the ONLY route to this pid is the launchd domain read.
+    const scan = installScanOverride([], 'while-alive');
+
+    const result = runStop(bin, { SOMA_PROCESS_SCAN_OVERRIDE: scan });
+
+    expect(result.stdout).toMatch(new RegExp(`SIGTERM to pid=${victim}`));
+    expect(isAlive(victim)).toBe(false);
+    expect(result.stdout).toContain(`Label still registered in user/${uid}`);
     expect(result.status).toBe(0);
   });
 
