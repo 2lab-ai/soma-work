@@ -58,15 +58,22 @@ export class QueueHandler implements CommandHandler {
   static readonly EMPTY_TEXT = '대기 중인 메시지가 없습니다';
 
   /**
-   * Where the controls are, said on the rows that have them (09 §2.1: `queued`
-   * and `paused`). A listing that showed a state and no way to act on it would
-   * leave the user looking for a button that is now three lines above, on their
-   * own message.
+   * Where the controls are, said on the rows that have them. A listing that
+   * showed a state and no way to act on it would leave the user looking for a
+   * button that is now a few lines above, on their own message.
+   *
+   * Two wordings, because the same two reactions MEAN different operations per
+   * state (09 §2.1/C1): a waiting row runs early or drops, a `failed`/
+   * `uncertain` one re-runs or drops. Naming the wrong operation would be the
+   * dead end this listing used to be.
    */
   static readonly REACTION_HINT = '메시지의 리액션으로 Send now / Cancel';
+  static readonly REACTION_RETRY_HINT = '메시지의 리액션으로 Retry / Cancel';
 
-  /** The states whose message carries the two control reactions (09 §2.1). */
+  /** The states whose message carries `Send now` + `Cancel` (09 §2.1). */
   private static readonly REACTION_CONTROL_STATES: readonly FollowupItemState[] = ['queued', 'paused'];
+  /** …and the ones whose identical pair of reactions means Retry + Cancel. */
+  private static readonly REACTION_RETRY_STATES: readonly FollowupItemState[] = ['failed', 'uncertain'];
 
   constructor(private deps: QueueHandlerDeps = {}) {}
 
@@ -120,8 +127,13 @@ export class QueueHandler implements CommandHandler {
    * — question first, answer second.
    */
   private withReactionHint(blocks: unknown[], item: FollowupItem): unknown[] {
-    if (!QueueHandler.REACTION_CONTROL_STATES.includes(item.state)) return blocks;
-    return [...blocks, { type: 'context', elements: [{ type: 'plain_text', text: QueueHandler.REACTION_HINT }] }];
+    const hint = QueueHandler.REACTION_CONTROL_STATES.includes(item.state)
+      ? QueueHandler.REACTION_HINT
+      : QueueHandler.REACTION_RETRY_STATES.includes(item.state)
+        ? QueueHandler.REACTION_RETRY_HINT
+        : undefined;
+    if (!hint) return blocks;
+    return [...blocks, { type: 'context', elements: [{ type: 'plain_text', text: hint }] }];
   }
 
   /** The session's unprocessed items, in FIFO order. Empty when there is no queue. */

@@ -3002,11 +3002,12 @@ describe('SlackHandler — follow-up queue host', () => {
 
     /**
      * MF2 — the drain settles the item it ran, and a `failed` one is still the
-     * user's message: it ends on the warning, with no control, because neither
-     * `Send now` nor `Cancel` is answerable from `failed` (the door out is the
-     * `queue` command's Retry).
+     * user's message: it ends on the warning and KEEPS both controls, because
+     * the queue really does accept both from `failed` (`CANCELLABLE_STATES`,
+     * and `retry` is its one non-terminal exit). What the "go" reaction MEANS on
+     * this row is Retry — pinned in the reaction-controls suite below.
      */
-    it('paints the warning on a drained item the run left `failed`', async () => {
+    it('paints the warning and both controls on a drained item the run left `failed`', async () => {
       claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
       const { settle } = await startBusyTurn();
       await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
@@ -3019,7 +3020,165 @@ describe('SlackHandler — follow-up queue host', () => {
       await tick();
 
       expect(items()[0].state).toBe('failed');
-      expect(reactionsOn('333.444')).toEqual(['warning']);
+      // In the order they were applied: both controls were already standing from
+      // `queued` and the diff leaves them alone, so only `inbox_tray` comes down
+      // and only the warning goes up.
+      expect(reactionsOn('333.444')).toEqual(['ui_send_now', 'ui_cancel', 'warning']);
+      expect(
+        removeReaction.mock.calls
+          .filter((call: any[]) => call[1] === '333.444' && QUEUE_REACTION_NAMES.includes(call[2]))
+          .map((call: any[]) => call[2]),
+      ).toEqual(['inbox_tray']);
+    });
+  });
+
+  /* ---------------------------------------------------------------- *
+   * 09 A1/A2 — the paints of one message are ordered, and the index
+   * that addresses them outlives nothing but the item itself.
+   * ---------------------------------------------------------------- */
+
+  describe('reaction bookkeeping', () => {
+    const indexOf = () => handlerAny.followupReactionIndex as Map<string, any> | undefined;
+
+    /**
+     * A1 — every paint reads the item and then awaits Slack, so without a chain
+     * per message the enqueue's paint can finish AFTER a cancellation that
+     * overtook it and re-add the controls it captured. The user is then looking
+     * at `ui_send_now` next to `no_entry_sign`, and nothing in the system is
+     * wrong enough to ever correct it.
+     */
+    it('lets a cancellation that overtakes the controls paint win', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+
+      // Hold the enqueue's CONTROLS paint mid-flight: it has already resolved
+      // `queued` and is adding the first control when the cancellation lands.
+      const held = deferred<void>();
+      const reached = deferred<void>();
+      let holding = false;
+      addReaction.mockImplementation(async (_channel: string, _ts: string, name: string) => {
+        if (name === 'ui_send_now' && !holding) {
+          holding = true;
+          reached.resolve();
+          await held.promise;
+        }
+      });
+
+      const parked = handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      await reached.promise;
+
+      // The item is durable already, so the cancel is real — and its own paint
+      // runs to completion while the older one is still suspended.
+      const live = items()[0];
+      handlerAny.getFollowupQueue().cancelItem(SESSION_KEY, live.id, live.epoch, '테스트가 취소했습니다');
+      const cancelled = handlerAny.syncFollowupReactions(SESSION_KEY, live.id);
+
+      held.resolve();
+      await parked;
+      await cancelled;
+      await tick();
+
+      expect(items()[0].state).toBe('cancelled');
+      // Unserialized, the suspended paint finishes LAST and re-adds the two
+      // controls next to `no_entry_sign` — a row that says "cancelled" and
+      // "press Send now" at the same time, with nothing left to correct it.
+      expect(reactionsOn('333.444')).toEqual(['no_entry_sign']);
+      await settle();
+    });
+
+    /**
+     * A2 — the index is what makes a reaction addressable AND what tells the
+     * next paint which reactions to take down. Evicting a live entry breaks
+     * both, so nothing but the item's own death may remove one.
+     */
+    it('keeps an entry for every live message, however many there are', async () => {
+      // Its own handler: the queue's capacity is read at construction, and what
+      // this pins is that the INDEX adds no second, smaller limit of its own.
+      const capacity = process.env.SOMA_FOLLOWUP_QUEUE_CAPACITY;
+      process.env.SOMA_FOLLOWUP_QUEUE_CAPACITY = '1000';
+      const spawned = new SlackHandler({ client: {}, assistant: vi.fn() } as any, claudeHandler as any, {} as any, {
+        followupQueueStore: { load: () => undefined, save: () => undefined, recoveryWarning: undefined },
+      });
+      if (capacity === undefined) delete process.env.SOMA_FOLLOWUP_QUEUE_CAPACITY;
+      else process.env.SOMA_FOLLOWUP_QUEUE_CAPACITY = capacity;
+      const spawnedAny = spawned as any;
+      spawnedAny.slackApi = handlerAny.slackApi;
+      const queue = spawnedAny.getFollowupQueue();
+
+      for (let seq = 0; seq < 600; seq += 1) {
+        const ts = `900.${String(seq).padStart(4, '0')}`;
+        const enqueued = queue.enqueue(SESSION_KEY, message({ ts, text: `지시 ${seq}` }), {});
+        expect(enqueued.status, `enqueue ${seq}`).toBe('queued');
+        await spawnedAny.syncFollowupReactions(SESSION_KEY, enqueued.item.id);
+      }
+
+      const index = spawnedAny.followupReactionIndex as Map<string, any>;
+      expect(index.size).toBe(600);
+      // The OLDEST one is still addressable — an LRU would have dropped it, and
+      // its message would then keep controls no paint could ever take down.
+      expect(index.get(`${CHANNEL}:900.0000`)).toMatchObject({ sessionKey: SESSION_KEY });
+    });
+
+    it('drops the entry of an item that can never move again', async () => {
+      const queue = handlerAny.getFollowupQueue();
+      queue.enqueue(SESSION_KEY, message({ ts: '901.111', text: '종결될 지시' }), {});
+      const item = queue.list(SESSION_KEY)[0];
+      await handlerAny.syncFollowupReactions(SESSION_KEY, item.id);
+      expect(indexOf()?.has(`${CHANNEL}:901.111`)).toBe(true);
+
+      queue.cancelItem(SESSION_KEY, item.id, item.epoch, '테스트가 취소했습니다');
+      await handlerAny.syncFollowupReactions(SESSION_KEY, item.id);
+
+      expect(indexOf()?.has(`${CHANNEL}:901.111`)).toBe(false);
+    });
+
+    /**
+     * …but a terminal paint that did NOT converge keeps its entry: the next
+     * sync is the only thing that can finish it, and it needs to know what is
+     * still standing.
+     */
+    it('keeps a terminal entry whose paint failed, for the next sync to finish', async () => {
+      const queue = handlerAny.getFollowupQueue();
+      queue.enqueue(SESSION_KEY, message({ ts: '902.222', text: '실패하는 지시' }), {});
+      const item = queue.list(SESSION_KEY)[0];
+      await handlerAny.syncFollowupReactions(SESSION_KEY, item.id);
+
+      addReaction.mockImplementation(async (_channel: string, _ts: string, name: string) => {
+        if (name === 'no_entry_sign') throw new Error('ratelimited');
+      });
+      queue.cancelItem(SESSION_KEY, item.id, item.epoch, '테스트가 취소했습니다');
+      await handlerAny.syncFollowupReactions(SESSION_KEY, item.id);
+
+      expect(indexOf()?.get(`${CHANNEL}:902.222`)?.painted).toEqual([]);
+    });
+
+    it('forgets every entry of a session that went away', async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const spawned = new SlackHandler({ client: {}, assistant: vi.fn() } as any, claudeHandler as any, {} as any, {
+        followupQueueStore: { load: () => undefined, save: () => undefined, recoveryWarning: undefined },
+      });
+      const spawnedAny = spawned as any;
+      spawnedAny.slackApi = handlerAny.slackApi;
+      const queue = spawnedAny.getFollowupQueue();
+      queue.enqueue(SESSION_KEY, message({ ts: '903.333', text: '세션과 함께 사라질 지시' }), {});
+      const item = queue.list(SESSION_KEY)[0];
+      await spawnedAny.syncFollowupReactions(SESSION_KEY, item.id);
+      // A `failed` row is the one the session cancel does NOT move, so it is the
+      // one an index cleanup has to catch by itself.
+      queue.settle(SESSION_KEY, item.id, item.epoch, 'failed', '테스트');
+      await spawnedAny.syncFollowupReactions(SESSION_KEY, item.id);
+      expect((spawnedAny.followupReactionIndex as Map<string, any>).size).toBe(1);
+
+      beforeDelete?.(SESSION_KEY, registrySession, 'expired');
+      await tick();
+      await tick();
+
+      expect((spawnedAny.followupReactionIndex as Map<string, any>).size).toBe(0);
     });
   });
 
@@ -3104,6 +3263,52 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
       expect(ephemerals().join('\n')).toContain('권한이 없습니다');
       await settle();
+    });
+
+    /**
+     * C1 — `failed`/`uncertain` keep the "go" control, and on those two rows it
+     * means RETRY: `retry` is their one non-terminal exit (`followup-queue.ts`),
+     * and `Send now` would be refused by the dispatcher. Same handler the panel
+     * button uses, same authorization.
+     */
+    it('routes the go control into Retry on a failed item', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      startWithContinuation.mockImplementationOnce(() => Promise.reject(new Error('CLI died')));
+      await settle();
+      await tick();
+      expect(items()[0].state).toBe('failed');
+      const sendNow = vi.spyOn(handlerAny.followupDispatcher, 'sendNow');
+      const retry = vi.spyOn(handlerAny.getFollowupQueue(), 'retry');
+
+      await react({ reaction: 'ui_send_now' });
+      await tick();
+
+      expect(sendNow).not.toHaveBeenCalled();
+      expect(retry).toHaveBeenCalledTimes(1);
+      // Retry requeues AND reopens the drain (`handleRetry` → `runDrain`), so
+      // the row runs then and there: the message ends on 전달완료 with the
+      // controls gone, exactly as any drained row does.
+      expect(items()[0].state).toBe('resolved');
+      expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+    });
+
+    /** …and the stop control still cancels one, which the queue also allows. */
+    it('cancels a failed item through the same handler as the button', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      startWithContinuation.mockImplementationOnce(() => Promise.reject(new Error('CLI died')));
+      await settle();
+      await tick();
+      expect(items()[0].state).toBe('failed');
+
+      await react();
+      await tick();
+
+      expect(items()[0].state).toBe('cancelled');
+      expect(reactionsOn('333.444')).toEqual(['no_entry_sign']);
     });
 
     it('ignores a control the state does not offer — a steered item has no Send now', async () => {

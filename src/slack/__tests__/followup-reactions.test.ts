@@ -3,6 +3,7 @@ import {
   DEFAULT_FOLLOWUP_REACTION_NAMES,
   diffFollowupReactionRoles,
   FOLLOWUP_REACTION_FALLBACKS,
+  FOLLOWUP_REACTION_SKIPPED_AFTER_FAILED_REMOVE,
   FollowupReactionSurface,
   followupControlRole,
   rolesForFollowupState,
@@ -37,9 +38,22 @@ describe('rolesForFollowupState — 09 §2.1', () => {
     expect(rolesForFollowupState('steered')).toEqual(['delivered']);
   });
 
-  it('keeps 전달완료 through the in-flight states and on resolved', () => {
-    for (const state of ['reserved', 'claimed', 'dispatched', 'resolved'] as const) {
+  it('claims delivery only once there IS one — dispatched and resolved', () => {
+    for (const state of ['dispatched', 'resolved'] as const) {
       expect(rolesForFollowupState(state), state).toEqual(['delivered']);
+    }
+  });
+
+  /**
+   * `reserved`/`claimed` sit between the drain's decision and the dispatch, and
+   * `rollback` (`followup-queue.ts:558-565`) puts either straight back to
+   * `queued`. A check mark there would claim a delivery that may never happen —
+   * and the controls stay down because the queue refuses to cancel anything in
+   * flight.
+   */
+  it('shows the receipt ALONE while an item is reserved or claimed — no delivery, no controls', () => {
+    for (const state of ['reserved', 'claimed'] as const) {
+      expect(rolesForFollowupState(state), state).toEqual(['queued']);
     }
   });
 
@@ -47,9 +61,15 @@ describe('rolesForFollowupState — 09 §2.1', () => {
     expect(rolesForFollowupState('cancelled')).toEqual(['cancelled']);
   });
 
-  it('shows the warning alone on failed and uncertain — neither control applies', () => {
-    expect(rolesForFollowupState('failed')).toEqual(['failed']);
-    expect(rolesForFollowupState('uncertain')).toEqual(['failed']);
+  /**
+   * Both states are actionable in the domain: the queue cancels them
+   * (`CANCELLABLE_STATES`) and `retry` is their one non-terminal exit. The
+   * `sendNow` role is the "go" control — the host routes it into Retry here
+   * (09 C1) — so a parked row is never left with a warning and no way out.
+   */
+  it('keeps BOTH controls next to the warning on failed and uncertain', () => {
+    expect(rolesForFollowupState('failed')).toEqual(['failed', 'sendNow', 'cancel']);
+    expect(rolesForFollowupState('uncertain')).toEqual(['failed', 'sendNow', 'cancel']);
   });
 });
 
@@ -166,8 +186,10 @@ describe('FollowupReactionSurface', () => {
   });
 
   it('reports which reactions are standing, so the next transition can undo them', async () => {
-    expect(await surface.applyState(TARGET, 'queued', undefined)).toEqual(['queued', 'sendNow', 'cancel']);
-    expect(await surface.applyState(TARGET, 'cancelled', ['queued', 'sendNow', 'cancel'])).toEqual(['cancelled']);
+    expect((await surface.applyState(TARGET, 'queued', undefined)).painted).toEqual(['queued', 'sendNow', 'cancel']);
+    expect((await surface.applyState(TARGET, 'cancelled', ['queued', 'sendNow', 'cancel'])).painted).toEqual([
+      'cancelled',
+    ]);
   });
 
   it('falls back to a standard emoji when the custom one is not in the workspace', async () => {
@@ -175,9 +197,12 @@ describe('FollowupReactionSurface', () => {
       name === 'ui_send_now' ? { ok: false, error: 'invalid_name' } : { ok: true },
     );
 
-    await surface.applyState(TARGET, 'queued', undefined);
+    const result = await surface.applyState(TARGET, 'queued', undefined);
 
     expect(added()).toEqual(['inbox_tray', 'ui_send_now', FOLLOWUP_REACTION_FALLBACKS.sendNow, 'ui_cancel']);
+    // The fallback WORKED, so the role is standing and nothing is outstanding.
+    expect(result.painted).toEqual(['queued', 'sendNow', 'cancel']);
+    expect(result.failed).toEqual([]);
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
@@ -212,16 +237,166 @@ describe('FollowupReactionSurface', () => {
     await surface.applyState(TARGET, 'queued', undefined);
 
     expect(added()).toEqual(['inbox_tray', 'ui_send_now', 'ui_cancel']);
-    expect(warn).not.toHaveBeenCalled();
   });
 
-  it('keeps going when one op throws — a painted surface is best effort', async () => {
-    remove.mockRejectedValueOnce(new Error('no_reaction'));
+  /* ---------------------------------------------------------------- *
+   * Failure accounting — a refused call must never look like a paint.
+   * ---------------------------------------------------------------- */
 
-    await expect(surface.applyState(TARGET, 'cancelled', ['queued', 'sendNow', 'cancel'])).resolves.toEqual([
-      'cancelled',
-    ]);
+  it('reads `no_reaction` on a remove as success — the reaction not being there IS the goal', async () => {
+    remove.mockResolvedValue({ ok: false, error: 'no_reaction' });
+
+    const result = await surface.applyState(TARGET, 'cancelled', ['queued', 'sendNow', 'cancel']);
+
+    expect(result.painted).toEqual(['cancelled']);
+    expect(result.failed).toEqual([]);
     expect(added()).toEqual(['no_entry_sign']);
+  });
+
+  it('reads `already_reacted` on an add as success', async () => {
+    add.mockResolvedValue({ ok: false, error: 'already_reacted' });
+
+    const result = await surface.applyState(TARGET, 'queued', undefined);
+
+    expect(result.painted).toEqual(['queued', 'sendNow', 'cancel']);
+    expect(result.failed).toEqual([]);
+  });
+
+  /**
+   * The bug this pins: recording a role as painted when its add was refused
+   * means the next identical sync computes an EMPTY diff and the reaction is
+   * missing forever, with nothing left to notice it.
+   */
+  it('does not record a failed add as painted, and says which one failed', async () => {
+    add.mockImplementation(async (_c: string, _t: string, name: string) =>
+      name === 'ui_cancel' ? { ok: false, error: 'ratelimited' } : { ok: true },
+    );
+
+    const result = await surface.applyState(TARGET, 'queued', undefined);
+
+    expect(result.painted).toEqual(['queued', 'sendNow']);
+    expect(result.failed).toEqual([{ role: 'cancel', op: 'add', error: 'ratelimited' }]);
+  });
+
+  it('reports a fallback add that fails too', async () => {
+    add.mockImplementation(async (_c: string, _t: string, name: string) =>
+      name === 'ui_send_now'
+        ? { ok: false, error: 'invalid_name' }
+        : name === 'arrow_forward'
+          ? { ok: false, error: 'ratelimited' }
+          : { ok: true },
+    );
+
+    const result = await surface.applyState(TARGET, 'queued', undefined);
+
+    expect(result.painted).toEqual(['queued', 'cancel']);
+    expect(result.failed).toEqual([{ role: 'sendNow', op: 'add', error: 'ratelimited' }]);
+  });
+
+  it('keeps a role whose removal failed as painted, so the next sync takes it down again', async () => {
+    remove.mockImplementation(async (_c: string, _t: string, name: string) =>
+      name === 'ui_cancel' ? { ok: false, error: 'ratelimited' } : { ok: true },
+    );
+
+    const result = await surface.applyState(TARGET, 'cancelled', ['queued', 'sendNow', 'cancel']);
+
+    expect(result.painted).toEqual(['cancel']);
+    expect(result.failed).toContainEqual({ role: 'cancel', op: 'remove', error: 'ratelimited' });
+  });
+
+  /**
+   * Remove-before-add exists so the message never shows two states at once.
+   * A failed remove therefore cancels the adds as well: `no_entry_sign` next to
+   * a `ui_send_now` that would not come down is exactly the picture the order
+   * was protecting against.
+   */
+  it('skips the adds when a remove failed, and reports them as not attempted', async () => {
+    remove.mockResolvedValue({ ok: false, error: 'ratelimited' });
+
+    const result = await surface.applyState(TARGET, 'cancelled', ['queued', 'sendNow', 'cancel']);
+
+    expect(added()).toEqual([]);
+    expect(result.painted).toEqual(['queued', 'sendNow', 'cancel']);
+    expect(result.failed).toContainEqual({
+      role: 'cancelled',
+      op: 'add',
+      error: FOLLOWUP_REACTION_SKIPPED_AFTER_FAILED_REMOVE,
+    });
+  });
+
+  it('a failed remove does not block an add of a role that is not contradicted — after it succeeds', async () => {
+    // First sync: the remove fails, so nothing is added.
+    remove.mockResolvedValueOnce({ ok: false, error: 'ratelimited' });
+    const first = await surface.applyState(TARGET, 'steered', ['queued']);
+    expect(first.painted).toEqual(['queued']);
+    expect(added()).toEqual([]);
+
+    // Second sync, same target state, remove works this time.
+    const second = await surface.applyState(TARGET, 'steered', first.painted);
+
+    expect(removed()).toEqual(['inbox_tray', 'inbox_tray']);
+    expect(added()).toEqual(['white_check_mark']);
+    expect(second.painted).toEqual(['delivered']);
+    expect(second.failed).toEqual([]);
+  });
+
+  /**
+   * Reconciliation: the next sync repaints exactly what is missing and removes
+   * exactly what is extra — which is only possible because `painted` describes
+   * the message rather than the request.
+   */
+  it('repaints exactly the missing roles on the next identical sync', async () => {
+    add
+      .mockImplementationOnce(async () => ({ ok: true }))
+      .mockImplementationOnce(async () => ({
+        ok: false,
+        error: 'ratelimited',
+      }));
+    const first = await surface.applyState(TARGET, 'queued', undefined);
+    expect(first.painted).toEqual(['queued', 'cancel']);
+    add.mockClear();
+
+    const second = await surface.applyState(TARGET, 'queued', first.painted);
+
+    expect(added()).toEqual(['ui_send_now']);
+    expect(removed()).toEqual([]);
+    expect(second.painted).toEqual(['queued', 'sendNow', 'cancel']);
+    expect(second.failed).toEqual([]);
+  });
+
+  it('reads the Slack code out of a thrown error, and tolerates the harmless one', async () => {
+    remove.mockRejectedValueOnce(Object.assign(new Error('boom'), { data: { error: 'no_reaction' } }));
+    add.mockRejectedValueOnce(Object.assign(new Error('boom'), { data: { error: 'ratelimited' } }));
+
+    const result = await surface.applyState(TARGET, 'cancelled', ['queued']);
+
+    expect(result.failed).toEqual([{ role: 'cancelled', op: 'add', error: 'ratelimited' }]);
+    expect(result.painted).toEqual([]);
+  });
+
+  it('never throws out of a paint — the queue transition it describes is already durable', async () => {
+    remove.mockRejectedValue(new Error('network down'));
+
+    const result = await surface.applyState(TARGET, 'cancelled', ['queued']);
+
+    // A throw with no Slack code is reported by its message, and the add it
+    // blocked is reported too — the row has not converged either way.
+    expect(result.failed).toContainEqual({ role: 'queued', op: 'remove', error: 'network down' });
+    expect(result.painted).toEqual(['queued']);
+  });
+
+  it('warns once per message, role and error', async () => {
+    add.mockResolvedValue({ ok: false, error: 'ratelimited' });
+
+    await surface.applyState(TARGET, 'queued', undefined);
+    const afterFirst = warn.mock.calls.length;
+    await surface.applyState(TARGET, 'queued', undefined);
+
+    expect(afterFirst).toBe(3); // one per role
+    expect(warn.mock.calls.length).toBe(afterFirst);
+    // A different message is a different fact and is reported again.
+    await surface.applyState({ channel: 'C1', ts: '999.999' }, 'queued', undefined);
+    expect(warn.mock.calls.length).toBe(afterFirst + 3);
   });
 
   it('answers whether a reaction name is a control, for the router filter', () => {

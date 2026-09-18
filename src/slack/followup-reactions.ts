@@ -76,25 +76,34 @@ export const FOLLOWUP_REACTION_FALLBACKS: { sendNow: string; cancel: string } = 
  * message the model has been given shows only that it was delivered, and a
  * terminal message shows how it ended.
  *
- * The three in-flight states are folded into `delivered` because they are the
- * same fact for the reader (the message left the queue into a run) and because
- * a control on them could only ever be refused — the queue rejects a cancel of
- * anything in flight (`followup-actions.ts` `IN_FLIGHT_STATES`).
+ * Three readings this table is deliberate about:
  *
- * `failed`/`uncertain` show the warning and NO control, which is the honest
- * reading of "컨트롤은 상태에 맞게 유지": neither state accepts `Send now` or
- * `Cancel` through this transport, and painting a control that can only answer
- * with a refusal is the one thing this surface must not do. Their door out is
- * Retry, which lives on the `queue` command's rows (§4 keeps that surface).
+ *  - `reserved`/`claimed` are NOT a delivery. They sit between the drain's
+ *    decision and the dispatch, and `rollback` puts either of them straight
+ *    back to `queued` (`followup-queue.ts:558-565`), so a check mark there
+ *    would claim something the model may never see. They show the receipt and
+ *    nothing else: no controls, because the queue refuses a cancel of anything
+ *    in flight (`followup-queue.ts:164-170`), and no check mark, because
+ *    nothing has been handed over yet.
+ *  - `steered`/`dispatched`/`resolved` DO claim delivery: the message is in the
+ *    SDK's input channel, in a running turn, or confirmed consumed.
+ *  - `failed`/`uncertain` keep BOTH controls next to the warning. They really
+ *    are actionable: the queue cancels them (`CANCELLABLE_STATES`,
+ *    `followup-queue.ts:164-170`) and `retry` is their one non-terminal exit
+ *    (`:809-816`). The host routes the `sendNow` reaction on these two into
+ *    Retry rather than `Send now` — one reaction, the control that state
+ *    actually has (09 C1). A parked row with no control at all was the dead end
+ *    the reaction UI was supposed to remove, not create.
  */
 export function rolesForFollowupState(state: FollowupItemState): FollowupReactionRole[] {
   switch (state) {
     case 'queued':
     case 'paused':
       return ['queued', 'sendNow', 'cancel'];
-    case 'steered':
     case 'reserved':
     case 'claimed':
+      return ['queued'];
+    case 'steered':
     case 'dispatched':
     case 'resolved':
       return ['delivered'];
@@ -102,7 +111,7 @@ export function rolesForFollowupState(state: FollowupItemState): FollowupReactio
       return ['cancelled'];
     case 'failed':
     case 'uncertain':
-      return ['failed'];
+      return ['failed', 'sendNow', 'cancel'];
     default: {
       // A state this build does not know is left alone rather than painted as
       // something it might not be.
@@ -135,10 +144,14 @@ export function diffFollowupReactionRoles(
  * Which control does this emoji name stand for, if any?
  *
  * Both the configured name AND its fallback are accepted: a workspace that
- * refused the custom emoji shows the fallback, and the user clicking THAT is
+ * refused the custom emoji shows the fallback, and the user pressing THAT is
  * pressing the same control. Only the two controls are answerable — the state
  * emoji are reports, and reacting `white_check_mark` to your own message must
  * not run anything.
+ *
+ * `sendNow` is the ROLE, not the operation: on a `failed`/`uncertain` row the
+ * host routes it into Retry (09 C1). Which operation a control means is a
+ * question about the item's state, and this module does not read items.
  */
 export function followupControlRole(reaction: string, names: FollowupReactionNames): 'sendNow' | 'cancel' | undefined {
   if (reaction === names.sendNow || reaction === FOLLOWUP_REACTION_FALLBACKS.sendNow) return 'sendNow';
@@ -146,15 +159,66 @@ export function followupControlRole(reaction: string, names: FollowupReactionNam
   return undefined;
 }
 
-/** `reactions.add` with the Slack error code kept — see `slack-api-helper.ts` `addReactionResult`. */
+/** One `reactions.add`/`reactions.remove`, with the Slack error CODE kept. */
+export interface FollowupReactionOpResult {
+  ok: boolean;
+  /** The Slack error code (`invalid_name`, `no_reaction`, …) when `ok` is false. */
+  error?: string;
+}
+
+/**
+ * The two Slack calls this surface makes — see `slack-api-helper.ts`
+ * `addReactionResult`/`removeReactionResult` for the production pair.
+ *
+ * `remove` may answer `void`, which is read as success: a client that predates
+ * the coded variant (the unit doubles, an older host) still paints, it just
+ * cannot distinguish a swallowed failure from a real removal.
+ */
 export interface FollowupReactionPort {
-  add(channel: string, ts: string, name: string): Promise<{ ok: boolean; error?: string }>;
-  remove(channel: string, ts: string, name: string): Promise<void>;
+  add(channel: string, ts: string, name: string): Promise<FollowupReactionOpResult>;
+  remove(channel: string, ts: string, name: string): Promise<FollowupReactionOpResult | void>;
 }
 
 export interface FollowupReactionTarget {
   channel: string;
   ts: string;
+}
+
+/** `add` on a reaction that is already there is the state we wanted. */
+const TOLERATED_ADD_ERROR = 'already_reacted';
+/** `remove` of a reaction the bot never got on is also the state we wanted. */
+const TOLERATED_REMOVE_ERROR = 'no_reaction';
+/**
+ * Not a Slack code: the add never happened, because a remove in the same sync
+ * failed and adding the new state on top of the old one would show two states
+ * at once. Reported so the caller retries rather than recording a paint that
+ * was never attempted.
+ */
+export const FOLLOWUP_REACTION_SKIPPED_AFTER_FAILED_REMOVE = 'skipped_after_failed_remove';
+
+export type FollowupReactionOp = 'add' | 'remove';
+
+export interface FollowupReactionFailure {
+  role: FollowupReactionRole;
+  op: FollowupReactionOp;
+  /** Slack's code when there is one, the thrown message otherwise. */
+  error: string;
+}
+
+/**
+ * What a paint actually achieved.
+ *
+ * `painted` is the caller's record for the NEXT diff and it is what this
+ * surface BELIEVES is standing, which is not the same as what it asked for:
+ * a role whose add failed is not in it (so the next identical sync adds it
+ * again), and a role whose REMOVE failed still is (so the next sync removes it
+ * again). Recording the request instead would turn one refused API call into a
+ * permanently wrong picture that nothing ever reconciles.
+ */
+export interface FollowupReactionApplyResult {
+  painted: FollowupReactionRole[];
+  /** Empty on a clean paint. Non-empty means this message has not converged. */
+  failed: FollowupReactionFailure[];
 }
 
 export interface FollowupReactionSurfaceOptions {
@@ -177,6 +241,14 @@ export class FollowupReactionSurface {
    * standing when the next transition tried to remove the other one.
    */
   private readonly fellBack = new Set<FollowupReactionRole>();
+  /** Failures already reported, keyed by message+role+op+code. */
+  private readonly warned = new Set<string>();
+  /**
+   * How many distinct failures stay remembered. Bounded because the key carries
+   * a message ts: an unbounded set would hold one entry per message this
+   * process ever failed to paint.
+   */
+  private static readonly WARN_MEMORY = 200;
 
   constructor(options: FollowupReactionSurfaceOptions) {
     this.port = options.port;
@@ -210,7 +282,7 @@ export class FollowupReactionSurface {
     target: FollowupReactionTarget,
     state: FollowupItemState,
     previous: readonly FollowupReactionRole[] | undefined,
-  ): Promise<FollowupReactionRole[]> {
+  ): Promise<FollowupReactionApplyResult> {
     return this.applyRoles(target, rolesForFollowupState(state), previous);
   }
 
@@ -219,58 +291,148 @@ export class FollowupReactionSurface {
    * paints `queued` ALONE before the steer attempt, so the user sees the message
    * was taken within one API call instead of after three.
    *
-   * Best effort throughout: this is bookkeeping on top of an item that is
-   * already durable, so a refused op is logged by the port and the remaining
-   * ops still run. The returned roles are what was REQUESTED — a reaction that
-   * could not be added is one this surface will try to remove later, and
-   * `reactions.remove` treats a missing reaction as a no-op.
+   * Never throws: this is bookkeeping on top of an item that is already durable,
+   * so a refused call must not roll a queue transition back. It is NOT
+   * "best effort" in the sense of being forgotten, though — every failure comes
+   * back in {@link FollowupReactionApplyResult.failed} and is kept out of
+   * `painted`, so the caller can retain the row and the next sync repaints
+   * exactly what is missing.
+   *
+   * Ordering is remove-before-add, and a FAILED remove stops the adds: the
+   * whole point of that order is that the message never shows the old state and
+   * the new one together, and adding `no_entry_sign` next to a `ui_send_now`
+   * that would not come down is precisely that picture. The sync leaves the row
+   * unconverged instead, and says so.
    */
   async applyRoles(
     target: FollowupReactionTarget,
     roles: readonly FollowupReactionRole[],
     previous: readonly FollowupReactionRole[] | undefined,
-  ): Promise<FollowupReactionRole[]> {
+  ): Promise<FollowupReactionApplyResult> {
+    const standing = previous ?? [];
     const ops = diffFollowupReactionRoles(previous, roles);
-    // Remove first: the old state must be gone before the new one appears.
+    // Untouched roles: asked for AND already there, so nothing was attempted
+    // and nothing can have failed.
+    const painted = new Set<FollowupReactionRole>(roles.filter((role) => standing.includes(role)));
+    const failed: FollowupReactionFailure[] = [];
+
+    let removeFailed = false;
     for (const role of ops.remove) {
-      try {
-        await this.port.remove(target.channel, target.ts, this.nameFor(role));
-      } catch {
-        // `no_reaction` is the common case (the bot never got this one on) and
-        // every other failure is equally none of the user's business.
-      }
+      const result = await this.runOp(
+        () => this.port.remove(target.channel, target.ts, this.nameFor(role)),
+        TOLERATED_REMOVE_ERROR,
+      );
+      if (result.ok) continue;
+      removeFailed = true;
+      // Still on the message as far as anyone knows — recorded as painted so
+      // the next diff tries to take it down again.
+      painted.add(role);
+      failed.push({ role, op: 'remove', error: result.error ?? 'unknown' });
+      this.warnFailure(target, role, 'remove', result.error ?? 'unknown');
     }
+
+    if (removeFailed) {
+      for (const role of ops.add) {
+        failed.push({ role, op: 'add', error: FOLLOWUP_REACTION_SKIPPED_AFTER_FAILED_REMOVE });
+      }
+      return { painted: this.order(roles, painted), failed };
+    }
+
     for (const role of ops.add) {
-      try {
-        await this.add(target, role);
-      } catch {
-        // Same: a reaction that could not be painted is not worth failing the
-        // act it was describing.
+      const result = await this.add(target, role);
+      if (result.ok) {
+        painted.add(role);
+        continue;
       }
+      failed.push({ role, op: 'add', error: result.error ?? 'unknown' });
+      this.warnFailure(target, role, 'add', result.error ?? 'unknown');
     }
-    return [...roles];
+    return { painted: this.order(roles, painted), failed };
   }
 
   /**
    * One add, with the §2.3 fallback. `invalid_name` means the workspace has no
-   * such emoji — the ONE failure with a repair. Everything else is reported by
-   * the port and left alone: a rate limit or a missing scope is not fixed by
-   * painting a different picture.
+   * such emoji — the ONE failure with a repair. Everything else is answered as
+   * it came: a rate limit or a missing scope is not fixed by painting a
+   * different picture.
+   *
+   * A fallback that fails too is reported as a failure, not swallowed: the
+   * control is not on the message, and pretending otherwise is what would make
+   * the next sync skip it.
    */
-  private async add(target: FollowupReactionTarget, role: FollowupReactionRole): Promise<void> {
+  private async add(target: FollowupReactionTarget, role: FollowupReactionRole): Promise<FollowupReactionOpResult> {
     const name = this.nameFor(role);
-    const result = await this.port.add(target.channel, target.ts, name);
-    if (result.ok || result.error !== 'invalid_name') return;
+    const result = await this.runOp(() => this.port.add(target.channel, target.ts, name), TOLERATED_ADD_ERROR);
+    if (result.ok || result.error !== 'invalid_name') return result;
 
     const fallback = FOLLOWUP_REACTION_FALLBACKS[role as 'sendNow' | 'cancel'];
-    if (!fallback || this.fellBack.has(role)) return;
-    this.fellBack.add(role);
-    this.onWarn?.('Queue control emoji is not installed in this workspace — falling back', {
+    if (!fallback) return result;
+    // Once this is set, `nameFor` answers the fallback, so a later paint never
+    // spends a call on the refused name again — this branch is reached once.
+    if (!this.fellBack.has(role)) {
+      this.fellBack.add(role);
+      this.onWarn?.('Queue control emoji is not installed in this workspace — falling back', {
+        role,
+        configured: name,
+        fallback,
+      });
+    }
+    return await this.runOp(() => this.port.add(target.channel, target.ts, fallback), TOLERATED_ADD_ERROR);
+  }
+
+  /**
+   * Run one port call and normalise every way it can answer into one result:
+   * a resolved `void` (the uncoded client) is success, `ok` is success, the
+   * tolerated code is success, and a throw is read for a Slack code before
+   * falling back to its message. Nothing propagates.
+   */
+  private async runOp(
+    call: () => Promise<FollowupReactionOpResult | void>,
+    tolerated: string,
+  ): Promise<FollowupReactionOpResult> {
+    try {
+      const result = await call();
+      if (!result || result.ok) return { ok: true };
+      if (result.error === tolerated) return { ok: true };
+      return { ok: false, error: result.error ?? 'unknown' };
+    } catch (error) {
+      const code = errorCodeOf(error);
+      return code === tolerated ? { ok: true } : { ok: false, error: code };
+    }
+  }
+
+  /**
+   * One WARN per (message, role, op, error). A rate-limited workspace produces
+   * the same failure on every paint of every transition, and a log line per
+   * attempt would bury the first one — which is the only one that says
+   * something new.
+   */
+  private warnFailure(
+    target: FollowupReactionTarget,
+    role: FollowupReactionRole,
+    op: FollowupReactionOp,
+    error: string,
+  ): void {
+    const key = `${target.channel}:${target.ts}|${role}|${op}|${error}`;
+    if (this.warned.has(key)) return;
+    this.warned.add(key);
+    while (this.warned.size > FollowupReactionSurface.WARN_MEMORY) {
+      const oldest = this.warned.values().next();
+      if (oldest.done) break;
+      this.warned.delete(oldest.value);
+    }
+    this.onWarn?.('Queue reaction could not be applied — the row is left for the next sync', {
+      channel: target.channel,
+      ts: target.ts,
       role,
-      configured: name,
-      fallback,
+      op,
+      error,
     });
-    await this.port.add(target.channel, target.ts, fallback);
+  }
+
+  /** Requested roles first, then anything that refused to leave — stable to read. */
+  private order(roles: readonly FollowupReactionRole[], painted: Set<FollowupReactionRole>): FollowupReactionRole[] {
+    return [...roles.filter((role) => painted.has(role)), ...[...painted].filter((role) => !roles.includes(role))];
   }
 
   /** The emoji actually in use for a role right now (configured, or its fallback). */
@@ -281,4 +443,12 @@ export class FollowupReactionSurface {
     }
     return this.names[role];
   }
+}
+
+/** Slack puts its code in `error.data.error`; anything else is read as prose. */
+function errorCodeOf(error: unknown): string {
+  const data = (error as { data?: { error?: unknown } })?.data;
+  if (typeof data?.error === 'string' && data.error) return data.error;
+  if (error instanceof Error && error.message) return error.message;
+  return String(error);
 }

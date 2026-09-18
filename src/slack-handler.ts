@@ -67,6 +67,7 @@ import {
   type FollowupActionsDeps,
   type FollowupRespond,
   handleCancel as handleFollowupCancel,
+  handleRetry as handleFollowupRetry,
   handleSendNow as handleFollowupSendNow,
   registerFollowupActions,
 } from './slack/actions/followup-actions';
@@ -280,21 +281,26 @@ export class SlackHandler {
    *   - the painted set. The surface only removes reactions it put there itself,
    *     and the message does not tell it which those were.
    *
-   * In memory only, and bounded ({@link SlackHandler.FOLLOWUP_REACTION_INDEX_MAX}),
-   * exactly like the item-message map it replaces: losing it on a restart costs
-   * one stale set of reactions on an old message, whose controls then do
-   * nothing — while persisting it would buy another durable file to reconcile.
-   * Terminal items drop out of it: their controls are gone, so a reaction on one
-   * has nothing to run.
+   * In memory only, exactly like the item-message map it replaces: losing it on
+   * a restart costs one stale set of reactions on an old message, whose controls
+   * then do nothing — while persisting it would buy another durable file to
+   * reconcile.
+   *
+   * There is deliberately NO size cap. An entry leaves only when its item
+   * reaches a state it cannot come back from (`resolved`/`cancelled`) or when
+   * the whole session goes away ({@link forgetFollowupReactionsForSession}), and
+   * that is not an oversight: evicting a LIVE entry is strictly harmful twice
+   * over — the message's controls stop resolving to anything, and the next
+   * paint of that message diffs against `undefined` and so never removes the
+   * reactions that are still on it. The live set is already bounded by the
+   * queue's own per-session capacity times the sessions in flight.
    */
   private followupReactionIndex?: Map<string, { sessionKey: string; itemId: string; painted: FollowupReactionRole[] }>;
   /**
-   * How many reacted messages stay addressable. The live set is bounded by the
-   * queue's own per-session capacity times the sessions in flight; this cap is
-   * the backstop that keeps a long-lived process from growing one entry per
-   * message it ever parked. Oldest first, insertion order.
+   * One in-flight paint chain per message ({@link serializeFollowupReactions}).
+   * Entries live only while a paint of that message is queued or running.
    */
-  private static readonly FOLLOWUP_REACTION_INDEX_MAX = 500;
+  private followupReactionChains?: Map<string, Promise<void>>;
   /**
    * The action module's dependency object, kept because a control has TWO
    * transports now: the buttons register against it once, and every control
@@ -826,7 +832,13 @@ export class SlackHandler {
       const pending = queue
         .list(sessionKey)
         .filter((item) => !['resolved', 'failed', 'cancelled'].includes(item.state));
-      if (pending.length === 0) return;
+      if (pending.length === 0) {
+        // Nothing to repaint, but the session is still gone — its `failed` rows
+        // (the ones the cancel never touches) would otherwise keep index
+        // entries for a session nothing can read any more.
+        this.forgetFollowupReactionsForSession(sessionKey);
+        return;
+      }
       queue.cancelSession(sessionKey, `세션이 종료되었습니다 (${reason})`);
       // Captured BEFORE the cancel, because afterwards every row in the session
       // reads `cancelled` and nothing says which ones this act moved. Without it
@@ -836,7 +848,11 @@ export class SlackHandler {
       // A `failed` row is deliberately NOT in that list: the cancel does not
       // move it either (`followup-queue.ts:826` skips the terminal states), so
       // repainting it would say something the queue did not do.
-      this.syncFollowupReactionsFor(pending);
+      //
+      // The index is dropped AFTER those repaints, never before: each paint
+      // needs its entry to know which reactions to take down, and dropping the
+      // session's entries first would leave every control standing.
+      void this.syncFollowupReactionsFor(pending).then(() => this.forgetFollowupReactionsForSession(sessionKey));
       void this.renderFollowupFor(session, sessionKey).catch((error) => {
         this.logger.warn('Follow-up cancellation render failed', {
           sessionKey,
@@ -916,7 +932,8 @@ export class SlackHandler {
       // every state, so the list of what it moved has to be taken beforehand.
       const pending = session.items.filter((item) => !['resolved', 'failed', 'cancelled'].includes(item.state));
       queue.cancelSession(session.sessionKey, '세션이 없어져 실행할 수 없습니다 (프로세스 재시작 중 종료)');
-      this.syncFollowupReactionsFor(pending);
+      const orphanKey = session.sessionKey;
+      void this.syncFollowupReactionsFor(pending).then(() => this.forgetFollowupReactionsForSession(orphanKey));
       this.logger.warn('Follow-up items cancelled — session no longer exists', {
         sessionKey: session.sessionKey,
         items: session.items.length,
@@ -2680,13 +2697,12 @@ export class SlackHandler {
     // the running turn, and a `Send now` that appeared for 200ms before being
     // removed again is a control the user cannot trust (09 §3.1). What the
     // message shows next is decided once, by the state, below.
-    const painted = await this.paintFollowupReactions(
-      { channel: event.channel, ts: event.ts },
+    await this.paintFollowupReactions({ channel: event.channel, ts: event.ts }, () => ({
       sessionKey,
-      result.item.id,
-      ['queued'],
-      undefined,
-    );
+      itemId: result.item.id,
+      roles: ['queued'],
+      retain: true,
+    }));
     // A freeze is deliberately NOT consulted here (2026-09-17 live report). It
     // parks the items the session already held — restored rows after a restart,
     // stopped rows after a stop — and this message is neither: it has not run,
@@ -2704,18 +2720,11 @@ export class SlackHandler {
     // running instead of making the user wait for it.
     const steered = halted ? 'queued' : await this.trySteerFollowup(sessionKey, event, result.item);
 
-    // Re-read before painting: `result.item` is the enqueue-time snapshot and
-    // the steer above moved the item, so the state the user sees has to come
-    // from the queue rather than from what this path hoped would happen.
-    const current = queue.get(sessionKey, result.item.id) ?? result.item;
-    await this.paintFollowupReactions(
-      { channel: event.channel, ts: event.ts },
-      sessionKey,
-      current.id,
-      rolesForFollowupState(current.state),
-      painted,
-      SlackHandler.followupReactionsCanChange(current.state),
-    );
+    // Re-read INSIDE the paint: `result.item` is the enqueue-time snapshot, the
+    // steer above moved the item, and a cancellation can land while this very
+    // paint is queued — so the state the user ends up seeing is resolved in the
+    // serialized section, not here.
+    await this.syncFollowupReactions(sessionKey, result.item.id);
     // The two facts a reaction cannot carry, and only these two: a halted lane
     // (nothing will drain while it stands — about the LANE, not this item) and
     // an undetermined state after a failed rollback. Everything the old item
@@ -2750,68 +2759,98 @@ export class SlackHandler {
           typeof this.slackApi?.addReactionResult === 'function'
             ? this.slackApi.addReactionResult(channel, ts, name)
             : Promise.resolve(this.slackApi?.addReaction?.(channel, ts, name)).then((ok) => ({ ok: ok !== false })),
-        remove: async (channel, ts, name) => {
-          await this.slackApi?.removeReaction?.(channel, ts, name);
-        },
+        remove: (channel, ts, name) =>
+          typeof this.slackApi?.removeReactionResult === 'function'
+            ? this.slackApi.removeReactionResult(channel, ts, name)
+            : Promise.resolve(this.slackApi?.removeReaction?.(channel, ts, name)),
       },
       onWarn: (message, detail) => this.logger.warn(message, detail),
     }));
   }
 
   /**
-   * Paint one set of reactions onto one message and record what is standing.
+   * Paint one message, SERIALIZED against every other paint of that message.
    *
-   * The record is the index ({@link followupReactionIndex}) and it is what makes
-   * the NEXT transition possible at all: this surface removes only what it put
-   * there, and Slack never tells it what that was. It is also the reverse index
-   * the reaction transport resolves an item through.
+   * The serialization is the whole point of this method. Every caller reads an
+   * item and then awaits Slack, so without a chain per message the enqueue's
+   * first paint and a cancellation arriving mid-flight interleave: the older
+   * paint finishes last and re-adds the controls it captured, leaving
+   * `ui_send_now` standing next to `no_entry_sign` with nothing left to correct
+   * it. So the STATE is resolved inside the critical section (`resolve` runs
+   * there, not at the call site) and the diff is taken against the index as it
+   * is at that moment — never against a snapshot from before the await.
    *
-   * `retain: false` drops the entry — the item reached a state it can never
-   * leave, so there is nothing left to press and nothing left to repaint.
+   * The index ({@link followupReactionIndex}) is what makes the next transition
+   * possible at all: the surface removes only what it put there, and Slack never
+   * tells it what that was. It is also the reverse index the reaction transport
+   * resolves an item through.
+   *
+   * An entry leaves the index only when the item can never move again
+   * ({@link followupReactionsCanChange}) AND the paint converged — a partially
+   * failed terminal paint is kept precisely so the next sync can finish it.
    * `steered` and `failed` are deliberately NOT such states: a swept steer goes
-   * back to `queued` and a Retry re-queues a failure, and both transitions have
-   * to know what this paint left standing in order to take it back down.
+   * back to `queued`, a Retry re-queues a failure, and both transitions have to
+   * know what is standing in order to take it down.
    *
-   * Best effort, never throws: the item is durable before any of this runs, so
-   * a refused `reactions.add` is a worse-looking message and nothing more.
+   * Never throws: the item is durable before any of this runs, so a refused
+   * `reactions.add` is a worse-looking message and nothing more.
    */
-  private async paintFollowupReactions(
+  private paintFollowupReactions(
     target: { channel: string; ts: string },
-    sessionKey: string,
-    itemId: string,
-    roles: readonly FollowupReactionRole[],
-    previous: readonly FollowupReactionRole[] | undefined,
-    retain = true,
-  ): Promise<FollowupReactionRole[]> {
+    resolve: () =>
+      | { sessionKey: string; itemId: string; roles: readonly FollowupReactionRole[]; retain: boolean }
+      | undefined,
+  ): Promise<void> {
     const key = `${target.channel}:${target.ts}`;
-    try {
-      const painted = await this.followupReactions().applyRoles(target, roles, previous);
-      const index = (this.followupReactionIndex ??= new Map());
-      if (!retain) {
-        index.delete(key);
-      } else {
-        // Re-inserted so the eviction order below is least-recently-painted.
-        index.delete(key);
-        index.set(key, { sessionKey, itemId, painted });
-        while (index.size > SlackHandler.FOLLOWUP_REACTION_INDEX_MAX) {
-          const oldest = index.keys().next();
-          if (oldest.done) break;
-          index.delete(oldest.value);
+    return this.serializeFollowupReactions(key, async () => {
+      try {
+        const plan = resolve();
+        if (!plan) return;
+        const index = (this.followupReactionIndex ??= new Map());
+        const previous = index.get(key)?.painted;
+        const result = await this.followupReactions().applyRoles(target, plan.roles, previous);
+        // Re-read: `applyRoles` awaited, and only this chain writes the key, so
+        // what is here now is what this paint started from.
+        if (plan.retain || result.failed.length > 0) {
+          index.set(key, { sessionKey: plan.sessionKey, itemId: plan.itemId, painted: result.painted });
+        } else {
+          index.delete(key);
         }
+      } catch (error) {
+        this.logger.warn('Queue item reactions could not be applied', {
+          key,
+          error: (error as Error)?.message ?? String(error),
+        });
       }
-      return painted;
-    } catch (error) {
-      this.logger.warn('Queue item reactions could not be applied', {
-        itemId,
-        error: (error as Error)?.message ?? String(error),
-      });
-      return [...roles];
-    }
+    });
+  }
+
+  /**
+   * One paint at a time per message.
+   *
+   * A promise chain rather than a lock: the jobs are short, ordered, and must
+   * not be dropped. The chain continues through a rejected predecessor (a paint
+   * that threw must not wedge the message forever) and the map entry is deleted
+   * once the tail is the last one standing, so an idle process holds no chains.
+   */
+  private serializeFollowupReactions(key: string, job: () => Promise<void>): Promise<void> {
+    const chains = (this.followupReactionChains ??= new Map<string, Promise<void>>());
+    const previous = chains.get(key) ?? Promise.resolve();
+    const run = previous.then(job, job);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    chains.set(key, tail);
+    void tail.then(() => {
+      if (chains.get(key) === tail) chains.delete(key);
+    });
+    return run;
   }
 
   /** The reaction surface for a LIST of items — the shape the session-wide transitions hold. */
-  private syncFollowupReactionsFor(items: readonly FollowupItem[]): void {
-    for (const item of items) void this.syncFollowupReactions(item.sessionKey, item.id);
+  private syncFollowupReactionsFor(items: readonly FollowupItem[]): Promise<void> {
+    return Promise.all(items.map((item) => this.syncFollowupReactions(item.sessionKey, item.id))).then(() => undefined);
   }
 
   /**
@@ -2821,7 +2860,8 @@ export class SlackHandler {
    * to delete any more, so "the item settled" and "the item changed" are the
    * same act — read the item, paint its state. Re-read from the queue, never
    * from the caller: a caller knows a transition happened, not what the item IS
-   * now.
+   * now, and the re-read happens INSIDE the paint's critical section so two
+   * transitions of the same message cannot resolve to two different truths.
    *
    * An item this process cannot find in either bucket is left ALONE rather than
    * cleared: "not in the bucket I asked" is not evidence that it is gone, and a
@@ -2830,20 +2870,39 @@ export class SlackHandler {
   private async syncFollowupReactions(sessionKey: string, itemId: string): Promise<void> {
     const queue = this.followupQueue;
     if (!queue) return;
-    const item = queue.get(sessionKey, itemId) ?? this.itemUnderCounterpartKey(sessionKey, itemId);
-    if (!item) return;
-    const channel = item.message?.channel;
-    const ts = item.message?.ts;
+    const read = () => queue.get(sessionKey, itemId) ?? this.itemUnderCounterpartKey(sessionKey, itemId);
+    // Only for the message COORDINATES, which no transition can change — the
+    // state this paint renders is read again inside the lock.
+    const known = read();
+    const channel = known?.message?.channel;
+    const ts = known?.message?.ts;
     if (!channel || !ts) return;
-    const previous = this.followupReactionIndex?.get(`${channel}:${ts}`)?.painted;
-    await this.paintFollowupReactions(
-      { channel, ts },
-      item.sessionKey,
-      item.id,
-      rolesForFollowupState(item.state),
-      previous,
-      SlackHandler.followupReactionsCanChange(item.state),
-    );
+    await this.paintFollowupReactions({ channel, ts }, () => {
+      const item = read();
+      if (!item) return undefined;
+      return {
+        sessionKey: item.sessionKey,
+        itemId: item.id,
+        roles: rolesForFollowupState(item.state),
+        retain: SlackHandler.followupReactionsCanChange(item.state),
+      };
+    });
+  }
+
+  /**
+   * Forget every message of a session (A2). Called when the session itself is
+   * gone: its rows can no longer be read, so an entry for one is a reverse-index
+   * hit that resolves to nothing and a painted set nothing will ever diff again.
+   *
+   * Only ever after the session's rows have been repainted — the paint needs the
+   * entry to know what to take down.
+   */
+  private forgetFollowupReactionsForSession(sessionKey: string): void {
+    const index = this.followupReactionIndex;
+    if (!index) return;
+    for (const [key, entry] of [...index]) {
+      if (entry.sessionKey === sessionKey) index.delete(key);
+    }
   }
 
   /**
@@ -3294,13 +3353,17 @@ export class SlackHandler {
    *    else — no thread, therefore no session key — so the item is resolved
    *    through {@link followupReactionIndex}, the map this host maintains as it
    *    paints. A reaction on a message this process never painted (a restart, a
-   *    message older than the cap, a settled item) resolves to nothing and is
+   *    settled item, a session that has gone away) resolves to nothing and is
    *    logged, which is the right answer: its controls are not there any more.
-   * 2. WHETHER THE STATE OFFERS IT. Only the states that PAINT a control accept
-   *    it, plus `steered` for cancel — that one has a real cancel path through
-   *    the SDK (`cancelSteered`) and a leftover reaction can still be pressed
-   *    while the bot's copy is coming down. Everything else is a reaction on a
-   *    message whose controls are gone, and it does nothing.
+   * 2. WHICH OPERATION the control means, and whether the state offers it. The
+   *    surface paints ONE "go" control, and what it does is a question about the
+   *    row: on `queued`/`paused` it is `Send now`, on `failed`/`uncertain` it is
+   *    `Retry` — the one door out of those two states (`followup-queue.ts`
+   *    `retry`), and the reason they keep a control at all. Cancel is accepted
+   *    wherever the queue accepts it (`CANCELLABLE_STATES` =
+   *    `queued`/`paused`/`failed`/`uncertain`) plus `steered`, which has its own
+   *    path through the SDK (`cancelSteered`). Everything else is a reaction on
+   *    a message whose controls are gone, and it does nothing.
    * 3. WHERE THE ANSWER GOES. A click has a `response_url`; a reaction has
    *    none. The refusals and receipts therefore go out as an ephemeral in the
    *    item's own thread, visible to the reactor only — the same audience a
@@ -3340,13 +3403,8 @@ export class SlackHandler {
       });
       return;
     }
-    // `paused` accepts `Send now` as its Resume (§2.1); `steered` accepts only
-    // the cancel, which goes through the SDK inside `handleCancel`.
-    const accepted =
-      op === 'sendNow'
-        ? item.state === 'queued' || item.state === 'paused'
-        : item.state === 'queued' || item.state === 'paused' || item.state === 'steered';
-    if (!accepted) {
+    const operation = SlackHandler.followupReactionOperation(op, item.state);
+    if (!operation) {
       this.logger.debug('Queue control reaction ignored — the state does not offer it', {
         itemId: item.id,
         state: item.state,
@@ -3385,17 +3443,45 @@ export class SlackHandler {
     };
 
     try {
-      if (op === 'sendNow') await handleFollowupSendNow(deps, body, respond, value);
+      if (operation === 'send-now') await handleFollowupSendNow(deps, body, respond, value);
+      else if (operation === 'retry') await handleFollowupRetry(deps, body, respond, value);
       else await handleFollowupCancel(deps, body, respond, value);
     } catch (error) {
       // The handlers answer the user themselves; a throw escaping one is this
       // host's bookkeeping, and it must not break the event listener.
       this.logger.error('Queue control reaction failed', {
         itemId: item.id,
-        op,
+        operation,
         error: (error as Error)?.message ?? String(error),
       });
     }
+  }
+
+  /**
+   * Which queue operation a control reaction means on THIS state, or `undefined`
+   * when the state offers no such control.
+   *
+   * The table is the one the surface paints (`followup-reactions.ts`
+   * `rolesForFollowupState`) read the other way round, and it is small on
+   * purpose: the reaction UI carries one "go" and one "stop", so the state is
+   * what decides whether "go" means running a waiting message early
+   * (`Send now`) or re-running one whose dispatch went wrong (`Retry`).
+   *
+   * `steered` accepts only the stop: its Send-now equivalent already happened,
+   * and the cancel has a real path through the SDK (`cancelSteered`).
+   */
+  private static followupReactionOperation(
+    role: 'sendNow' | 'cancel',
+    state: FollowupItem['state'],
+  ): 'send-now' | 'retry' | 'cancel' | undefined {
+    if (role === 'sendNow') {
+      if (state === 'queued' || state === 'paused') return 'send-now';
+      if (state === 'failed' || state === 'uncertain') return 'retry';
+      return undefined;
+    }
+    // `CANCELLABLE_STATES` (`followup-queue.ts:164-170`) plus the steered path.
+    if (state === 'queued' || state === 'paused' || state === 'failed' || state === 'uncertain') return 'cancel';
+    return state === 'steered' ? 'cancel' : undefined;
   }
 
   /**
