@@ -35,7 +35,16 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => voi
 }
 
 function enqueue(queue: FollowupQueue, message: MessageEvent): FollowupItem {
-  const result = queue.enqueue(SESSION, message);
+  return enqueueUnder(queue, SESSION, message);
+}
+
+/**
+ * Enqueue into an EXPLICIT bucket. After a bot-thread migration the row and the
+ * slot live under two different keys, so a test of that seam cannot use the one
+ * session constant.
+ */
+function enqueueUnder(queue: FollowupQueue, sessionKey: string, message: MessageEvent): FollowupItem {
+  const result = queue.enqueue(sessionKey, message);
   if (result.status !== 'queued') throw new Error(`enqueue failed: ${result.status}`);
   return result.item;
 }
@@ -1336,6 +1345,60 @@ describe('FollowupDispatcher auto-steering (06 §3.2)', () => {
     expect(push).toHaveBeenCalledTimes(1);
     expect(h.queue.get(SESSION, fresh.id)?.state).toBe('steered');
     expect(h.queue.get(SESSION, parked.id)?.state).toBe('paused');
+  });
+
+  /**
+   * Bot-thread migration (#233): the first turn of a mention session opens its
+   * slot under the ROOT key the mention arrived on, while the reply the user
+   * types in the work thread — and therefore the queue ROW — lands under the
+   * work-thread key. One key answers "is a turn live", the other owns the row,
+   * so the steer has to be told both instead of assuming they are the same.
+   */
+  it('steers a row in the migrated bucket through the slot-owning key', () => {
+    const h = harness();
+    const ROW_KEY = 'C1:1700.000900';
+    const start = h.dispatcher.runInitial(SESSION, event({ ts: '1.0', text: 'mention turn' }));
+    if (start.status !== 'dispatched') throw new Error('expected dispatch');
+    const item = enqueueUnder(h.queue, ROW_KEY, event({ ts: '1.1' }));
+    const push = vi.fn(() => true);
+
+    const result = h.dispatcher.steer(ROW_KEY, item.id, item.epoch, push, SESSION);
+
+    if (result.status !== 'steered') throw new Error(`steer rejected: ${result.reason}`);
+    expect(push).toHaveBeenCalledWith(result.uuid);
+    const stored = h.queue.get(ROW_KEY, item.id);
+    expect(stored?.state).toBe('steered');
+    expect(stored?.steerUuid).toBe(result.uuid);
+    // Same as the unmigrated push: no new turn, no abort, no second slot.
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    expect(h.interrupt).not.toHaveBeenCalled();
+    expect(h.notices).toContainEqual({ type: 'item-steered', sessionKey: ROW_KEY, itemId: item.id, uuid: result.uuid });
+  });
+
+  /**
+   * The `Send now` reservation that makes the live turn a dead man walking sits
+   * in the SLOT key's bucket under a migration — scanning only the row bucket
+   * would clear the fence and push into a turn about to be replaced.
+   */
+  it('refuses to steer while a Send now is setting up in the slot key’s bucket', async () => {
+    const h = harness();
+    const ROW_KEY = 'C1:1700.000900';
+    h.dispatcher.runInitial(SESSION, event({ ts: '1.0' }));
+    const jumper = enqueue(h.queue, event({ ts: '1.1' })); // reserved under the SLOT key
+    const item = enqueueUnder(h.queue, ROW_KEY, event({ ts: '1.2' }));
+    const sending = click(h, jumper.id);
+    await tick();
+    expect(h.queue.get(SESSION, jumper.id)?.state).toBe('reserved');
+    const push = vi.fn(() => true);
+
+    const result = h.dispatcher.steer(ROW_KEY, item.id, item.epoch, push, SESSION);
+
+    expect(result).toEqual({ status: 'rejected', reason: 'busy', detail: expect.stringContaining(jumper.id) });
+    expect(push).not.toHaveBeenCalled();
+    expect(h.queue.get(ROW_KEY, item.id)).toEqual(item); // untouched — the drain still owns it
+
+    h.pending[0].settle({ result: 'interrupted', reason: 'send-now' });
+    await sending;
   });
 
   it('rejects a second push of the same item by its stale item epoch', () => {

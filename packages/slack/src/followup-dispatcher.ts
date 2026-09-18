@@ -484,6 +484,16 @@ export class FollowupDispatcher {
    * the answer is `not-busy` and the host drains normally (a steer into a dead
    * channel would strand the item in `steered` with no receipt ever coming).
    *
+   * TWO keys, because after a bot-thread migration they are not the same string
+   * (#233): `sessionKey` is the bucket the ROW lives in (the key the message was
+   * enqueued under), `slotKey` is the key the running turn holds its slot under
+   * — the source key of a mention whose first turn migrated into a work thread.
+   * The liveness question is asked of `slotKey` and every queue write is
+   * addressed to `sessionKey`; they default to the same value, which is every
+   * ordinary session. Asking the row key whether a turn is live answered
+   * `not-busy` on the first turn of every @mention session, so auto-steering
+   * never fired there.
+   *
    * And only while NOTHING is setting up a dispatch (`reserved`/`claimed`,
    * review round 3): during a `Send now` the slot is already held by the
    * replacement run BEFORE the interrupt lands, so a steer in that window
@@ -502,13 +512,23 @@ export class FollowupDispatcher {
    * only case that walks it back, and it walks it back all the way to `queued`
    * at the same seq — never to a state that hides the item from the drain.
    */
-  steer(sessionKey: string, itemId: string, expectedEpoch: number, push: (uuid: string) => boolean): SteerResult {
-    if (!this.slots.has(sessionKey)) {
+  steer(
+    sessionKey: string,
+    itemId: string,
+    expectedEpoch: number,
+    push: (uuid: string) => boolean,
+    slotKey: string = sessionKey,
+  ): SteerResult {
+    if (!this.slots.has(slotKey)) {
       return { status: 'rejected', reason: 'not-busy', detail: 'no live turn to steer into' };
     }
     let pending: FollowupItem[];
     try {
+      // BOTH buckets: the `Send now` reservation that makes the live turn a dead
+      // man walking is written under the key its click addressed, which under a
+      // migration can be either the row's or the slot's.
       pending = this.deps.queue.list(sessionKey);
+      if (slotKey !== sessionKey) pending = pending.concat(this.deps.queue.list(slotKey));
     } catch (error) {
       // Unreadable queue state cannot clear the fence: fail closed rather than
       // push into a turn we cannot prove is staying alive.

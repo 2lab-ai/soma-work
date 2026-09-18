@@ -1489,6 +1489,55 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    /**
+     * #233: the FIRST turn of a session started by a channel @mention opens its
+     * slot under the ROOT key, and the bot then migrates into its work thread.
+     * The reply the user types there is enqueued under the WORK key, so the row
+     * key and the slot key differ. Addressed with the row key alone the
+     * dispatcher answered `not-busy` and the message waited for the turn to end
+     * — auto-steering never fired on a mention's first turn (live 2026-09-18).
+     */
+    it('steers a work-thread reply whose slot is held under the pre-migration key', async () => {
+      const WORK_KEY = 'C123:999.000';
+      const steerTurn = withLiveTurn();
+      claudeHandler.getSessionKey.mockImplementation(
+        (channel: string, threadTs?: string) => `${channel}:${threadTs ?? ''}`,
+      );
+      const workSession = { ...registrySession, threadTs: '999.000', threadRootTs: '999.000' };
+      claudeHandler.getSessionByKey.mockImplementation((key: string) =>
+        key === WORK_KEY ? workSession : registrySession,
+      );
+      initialize.mockImplementation(async () => ({
+        session: workSession,
+        sessionKey: WORK_KEY,
+        isNewSession: true,
+        userName: 'Owner',
+        workingDirectory: '/tmp/work',
+        abortController: new AbortController(),
+        halted: false,
+      }));
+
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      // Ingress key = source thread; the slot is opened under it.
+      const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+
+      await handler.handleMessage(message({ ts: '333.444', thread_ts: '999.000', text: '이것도 같이 봐줘' }), say());
+
+      expect(steerTurn).toHaveBeenCalledTimes(1);
+      // Pushed through the CANONICAL key — the one the executor runs under.
+      expect(steerTurn.mock.calls[0][0]).toBe(WORK_KEY);
+      expect(steerTurn.mock.calls[0][1]).toMatchObject({ text: '이것도 같이 봐줘' });
+      const workItems = handlerAny.getFollowupQueue().list(WORK_KEY);
+      expect(workItems).toHaveLength(1);
+      expect(workItems[0].state).toBe('steered');
+      expect(receipts().join('\n')).toContain(FOLLOWUP_STEERED_LABEL);
+
+      gate.resolve({ hasPendingChoice: false });
+      await first;
+    });
+
     it('marks the item steered and says the running turn got it', async () => {
       withLiveTurn();
       const { settle } = await startBusyTurn();
