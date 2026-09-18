@@ -1,11 +1,5 @@
 import type { FollowupItem } from '@soma/slack/followup-queue';
-import {
-  FOLLOWUP_CANCEL_ACTION_ID,
-  FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE,
-  FOLLOWUP_RETRY_ACTION_ID,
-  FOLLOWUP_SEND_NOW_ACTION_ID,
-  FOLLOWUP_STEERED_LABEL,
-} from '@soma/slack/followup-queue-blocks';
+import { FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE, FOLLOWUP_STEERED_LABEL } from '@soma/slack/followup-queue-blocks';
 import { describe, expect, it, vi } from 'vitest';
 import { CommandRouter } from '../command-router';
 import { QueueHandler } from '../queue-handler';
@@ -14,11 +8,12 @@ import type { CommandContext } from '../types';
 /**
  * `queue` / `큐` — the follow-up queue's read command (A40).
  *
- * What these pin: WHICH items it lists (unprocessed only), that each row keeps
- * the A39 controls, that a long backlog is summarised instead of truncated in
- * silence, that every posted row is registered for A41 deletion — and that the
- * router classifies it as a `control`, without which the command could not run
- * at the one moment it is useful (a turn is running, so the queue is non-empty).
+ * What these pin: WHICH items it lists (unprocessed only), that a row is TEXT
+ * (09 — the controls are reactions on the user's own message, so a listing that
+ * carried buttons would be a second, untracked copy of them), that a long
+ * backlog is summarised instead of truncated in silence — and that the router
+ * classifies it as a `control`, without which the command could not run at the
+ * one moment it is useful (a turn is running, so the queue is non-empty).
  */
 
 const SESSION_KEY = 'C1:111.222';
@@ -43,25 +38,21 @@ function item(over: Partial<FollowupItem> = {}): FollowupItem {
 }
 
 function build(items: FollowupItem[], over: Record<string, any> = {}) {
-  // A ts PER call: A41 deletes an item's own message, so two rows sharing one
-  // ts would have the first processed item delete the second one's controls.
   let postCount = 0;
   const postSystemMessage = vi.fn().mockImplementation(async () => {
     postCount += 1;
     return { ts: `queue-ts-${postCount}`, channel: CHANNEL };
   });
-  const rememberFollowupItemMessage = vi.fn();
   const handler = new QueueHandler({
     claudeHandler: { getSessionKey: (channel: string, threadTs: string) => `${channel}:${threadTs}` },
     slackApi: { postSystemMessage },
     getFollowupView: (sessionKey: string) =>
       sessionKey === SESSION_KEY ? { sessionKey, items, turnEpoch: 4 } : undefined,
-    rememberFollowupItemMessage,
     ...over,
   });
   const say = vi.fn().mockResolvedValue({ ts: 'say-ts', channel: CHANNEL });
   const ctx: CommandContext = { user: 'U1', channel: CHANNEL, threadTs: THREAD_TS, text: 'queue', say };
-  return { handler, ctx, postSystemMessage, rememberFollowupItemMessage, say };
+  return { handler, ctx, postSystemMessage, say };
 }
 
 /** Every post the command made, as `(text, blocks)` in order. */
@@ -87,10 +78,13 @@ function sectionTexts(blocks: any[]): string[] {
   return blocks.filter((block) => block.type === 'section').map((block) => String(block.text?.text ?? ''));
 }
 
-function actionIds(blocks: any[]): string[] {
-  return blocks
-    .filter((block) => block.type === 'actions')
-    .flatMap((block) => (block.elements as any[]).map((element) => String(element.action_id)));
+/** Every context line across every posted message, in post order. */
+function allContextTexts(postSystemMessage: ReturnType<typeof vi.fn>): string[] {
+  return allPosts(postSystemMessage).flatMap((post) =>
+    post.blocks
+      .filter((block) => block.type === 'context')
+      .flatMap((block) => (block.elements as any[]).map((element) => String(element.text ?? ''))),
+  );
 }
 
 describe('QueueHandler.canHandle', () => {
@@ -112,7 +106,7 @@ describe('QueueHandler.canHandle', () => {
 });
 
 describe('QueueHandler.execute', () => {
-  it('posts ONE message per pending row, each with its own controls', async () => {
+  it('posts ONE message per pending row, each reading as the item it is', async () => {
     const { handler, ctx, postSystemMessage } = build([
       item({ seq: 1 }),
       item({ seq: 2, state: 'steered', stateReason: 'steered', steerUuid: 'u2' }),
@@ -127,7 +121,8 @@ describe('QueueHandler.execute', () => {
     for (const call of postSystemMessage.mock.calls) {
       expect(call[0]).toBe(CHANNEL);
       expect(call[2].threadTs).toBe(THREAD_TS);
-      // One row per message: a shared message could not be deleted per item.
+      // One row per message, same as before — a listing that packed every row
+      // into one message could not say which line is which item's.
       expect(sectionTexts(call[2].blocks)).toHaveLength(1);
     }
     expect(allSectionTexts(postSystemMessage)).toEqual([
@@ -135,23 +130,51 @@ describe('QueueHandler.execute', () => {
       `2. 2번 메시지 · _${FOLLOWUP_STEERED_LABEL}_`,
       '3. 3번 메시지 · _failed_',
     ]);
-    // The controls follow each row's own state (M4), not one fixed pair.
-    expect(actionIds(posts[0].blocks)).toEqual([FOLLOWUP_SEND_NOW_ACTION_ID, FOLLOWUP_CANCEL_ACTION_ID]);
-    expect(actionIds(posts[1].blocks)).toEqual([FOLLOWUP_SEND_NOW_ACTION_ID, FOLLOWUP_CANCEL_ACTION_ID]);
-    expect(actionIds(posts[2].blocks)).toEqual([FOLLOWUP_RETRY_ACTION_ID, FOLLOWUP_CANCEL_ACTION_ID]);
     // Each message's fallback is that item's own line, not a queue-wide count.
     expect(posts[0].text).toBe('Queue 1. 1번 메시지 · queued');
   });
 
-  it('registers each row under its OWN ts so A41 deletes one row at a time', async () => {
-    const { handler, ctx, rememberFollowupItemMessage } = build([item({ seq: 1 }), item({ seq: 2 })]);
+  /**
+   * 09 — the controls are reactions on the user's own message. A listing that
+   * rendered its own `Send now`/`Cancel` would be a SECOND copy of them, on a
+   * message nothing takes down when the item settles: the stale-button surface
+   * the reaction UI exists to remove.
+   */
+  it('carries no buttons at all — the controls are on the user message', async () => {
+    const { handler, ctx, postSystemMessage } = build([
+      item({ seq: 1 }),
+      item({ seq: 2, state: 'paused' }),
+      item({ seq: 3, state: 'failed' }),
+    ]);
 
     await handler.execute(ctx);
 
-    expect(rememberFollowupItemMessage.mock.calls).toEqual([
-      [`${SESSION_KEY}#1`, { channel: CHANNEL, ts: 'queue-ts-1' }],
-      [`${SESSION_KEY}#2`, { channel: CHANNEL, ts: 'queue-ts-2' }],
+    for (const post of allPosts(postSystemMessage)) {
+      expect(post.blocks.some((block) => block.type === 'actions')).toBe(false);
+      expect(JSON.stringify(post.blocks)).not.toContain('action_id');
+    }
+  });
+
+  /**
+   * …and where the controls ARE is said out loud, but only on the rows that
+   * have them: a `failed`/`steered` row offers neither reaction (09 §2.1), so
+   * pointing at them there would be the dead end this listing used to be.
+   */
+  it('points at the reactions on the rows that offer them, and only those', async () => {
+    const { handler, ctx, postSystemMessage } = build([
+      item({ seq: 1 }),
+      item({ seq: 2, state: 'paused' }),
+      item({ seq: 3, state: 'failed' }),
+      item({ seq: 4, state: 'steered' }),
     ]);
+
+    await handler.execute(ctx);
+
+    const posts = allPosts(postSystemMessage);
+    expect(JSON.stringify(posts[0].blocks)).toContain(QueueHandler.REACTION_HINT);
+    expect(JSON.stringify(posts[1].blocks)).toContain(QueueHandler.REACTION_HINT);
+    expect(JSON.stringify(posts[2].blocks)).not.toContain(QueueHandler.REACTION_HINT);
+    expect(JSON.stringify(posts[3].blocks)).not.toContain(QueueHandler.REACTION_HINT);
   });
 
   it('carries the freeze notice on a row the freeze parked, and only there', async () => {
@@ -172,6 +195,9 @@ describe('QueueHandler.execute', () => {
     const posts = allPosts(postSystemMessage);
     expect(JSON.stringify(posts[0].blocks)).not.toContain('재시작 전에 남아 있던 항목입니다');
     expect(JSON.stringify(posts[1].blocks)).toContain('재시작 전에 남아 있던 항목입니다');
+    // The freeze notice and the reaction hint are two different facts on the
+    // same parked row, and both are context lines.
+    expect(allContextTexts(postSystemMessage)).toContain(QueueHandler.REACTION_HINT);
   });
 
   it('lists only what is still waiting — history and in-flight rows are not', async () => {
@@ -202,9 +228,7 @@ describe('QueueHandler.execute', () => {
   });
 
   it('says one line when nothing is waiting', async () => {
-    const { handler, ctx, postSystemMessage, rememberFollowupItemMessage } = build([
-      item({ seq: 1, state: 'resolved' }),
-    ]);
+    const { handler, ctx, postSystemMessage } = build([item({ seq: 1, state: 'resolved' })]);
 
     await handler.execute(ctx);
 
@@ -212,7 +236,6 @@ describe('QueueHandler.execute', () => {
     expect(text).toBe('대기 중인 메시지가 없습니다');
     expect(blocks).toEqual([]);
     expect(postSystemMessage.mock.calls[0][2].blocks).toBeUndefined();
-    expect(rememberFollowupItemMessage).not.toHaveBeenCalled();
   });
 
   it('says the same line when the thread has no queue at all', async () => {
@@ -230,41 +253,13 @@ describe('QueueHandler.execute', () => {
     await handler.execute(ctx);
 
     const posts = allPosts(postSystemMessage);
-    // Ten row messages + one tail message; the tail carries no controls, so a
-    // row past the tenth is reached through its own item message instead.
+    // Ten row messages + one tail message; a row past the tenth is read on its
+    // own message, where its reactions are.
     expect(posts).toHaveLength(FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE + 1);
     expect(allSectionTexts(postSystemMessage)).toHaveLength(FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE);
     expect(posts[posts.length - 1].text).toBe('…외 3건');
     expect(posts[posts.length - 1].blocks).toEqual([]);
     for (const post of posts) expect(post.blocks.length).toBeLessThanOrEqual(50);
-  });
-
-  it('registers every posted row for A41 deletion, and only the posted ones', async () => {
-    const many = Array.from({ length: 11 }, (_, index) => item({ seq: index + 1 }));
-    const { handler, ctx, rememberFollowupItemMessage } = build(many);
-
-    await handler.execute(ctx);
-
-    expect(rememberFollowupItemMessage).toHaveBeenCalledTimes(FOLLOWUP_QUEUE_DEFAULT_PAGE_SIZE);
-    expect(rememberFollowupItemMessage.mock.calls[0]).toEqual([
-      `${SESSION_KEY}#1`,
-      { channel: CHANNEL, ts: 'queue-ts-1' },
-    ]);
-    // The 11th item got no message, so nothing here can delete for it.
-    expect(rememberFollowupItemMessage.mock.calls.map((call: any[]) => call[0])).not.toContain(`${SESSION_KEY}#11`);
-  });
-
-  it('falls back to the channel of the request when Slack reports none', async () => {
-    const { handler, ctx, rememberFollowupItemMessage } = build([item({ seq: 1 })], {
-      slackApi: { postSystemMessage: vi.fn().mockResolvedValue({ ts: 'queue-ts' }) },
-    });
-
-    await handler.execute(ctx);
-
-    expect(rememberFollowupItemMessage).toHaveBeenCalledWith(`${SESSION_KEY}#1`, {
-      channel: CHANNEL,
-      ts: 'queue-ts',
-    });
   });
 
   it('answers through `say` when no slackApi is wired', async () => {

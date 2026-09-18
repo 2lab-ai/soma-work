@@ -84,6 +84,7 @@
         "message.channels",
         "message.groups",
         "message.im",
+        "reaction_added",
         "assistant_thread_started",
         "assistant_thread_context_changed"
       ]

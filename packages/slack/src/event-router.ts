@@ -146,6 +146,18 @@ export interface MessageEditEvent {
   text: string;
 }
 
+/** One reaction added to one message, flattened out of the `reaction_added` envelope. */
+export interface ReactionAddedEvent {
+  channel: string;
+  /** The REACTED message's ts (not the envelope's `event_ts`) — the queue's key. */
+  ts: string;
+  /** The emoji NAME, without colons, exactly as Slack reports it. */
+  reaction: string;
+  /** Who reacted. Never the bot — this router drops its own reactions. */
+  user: string;
+  eventTs: string;
+}
+
 export interface EventRouterDeps {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeSessionEventRouter;
@@ -159,6 +171,22 @@ export interface EventRouterDeps {
    * unconfigured host keeps today's behavior, which is to drop the event.
    */
   onMessageEdited?: (edit: MessageEditEvent) => Promise<void> | void;
+  /**
+   * A user added a queue-control reaction to a message (09 §2.2: the reaction
+   * IS the control). Routing only, like {@link onMessageEdited} — resolving the
+   * item, the authorization and the state gate are the host's.
+   */
+  onReactionAdded?: (event: ReactionAddedEvent) => Promise<void> | void;
+  /**
+   * Is this emoji name one of the queue controls? Supplied by the host because
+   * the names are configurable (09 §2.3) and only the host reads that config.
+   *
+   * Required for anything to be forwarded at all: without it this router cannot
+   * tell a control from a 👍, and forwarding every reaction in every channel
+   * would put a queue lookup behind each one. An unwired host therefore keeps
+   * today's behavior, which is to drop the event.
+   */
+  isFollowupControlReaction?: (name: string) => boolean;
 }
 
 /**
@@ -292,11 +320,80 @@ export class EventRouter {
    */
   setup(): void {
     this.setupMessageHandlers();
+    this.setupReactionHandlers();
     this.setupSlashCommands();
     this.setupMemberJoinHandler();
     this.deps.actionHandlers.registerHandlers(this.app);
     this.setupSessionExpiryCallbacks();
     this.setupSessionCleanup();
+  }
+
+  /**
+   * `reaction_added` — the second control transport (09 §2.2).
+   *
+   * Everything here is a FILTER; the one thing it does is hand the surviving
+   * events to the host. The order of the filters is the point:
+   *
+   * 1. the emoji name, because a 👍 must cost nothing at all — no queue lookup,
+   *    and above all no `auth.test` round trip per reaction in every channel
+   *    the bot sits in;
+   * 2. the item type, because only a message can be a queue item;
+   * 3. the reactor, last, because it is the only check that needs the network.
+   *
+   * The bot's own reactions are dropped and the drop is FAIL-CLOSED: the bot
+   * paints `ui_send_now`/`ui_cancel` on the user's message itself, so every one
+   * of those comes back as a `reaction_added`, and a host that cannot say who
+   * the bot is would answer its own controls. An unreadable bot identity is
+   * therefore a dropped event, never a forwarded one.
+   */
+  private setupReactionHandlers(): void {
+    this.app.event('reaction_added', async ({ event }) => {
+      const reaction = event as unknown as {
+        user?: unknown;
+        reaction?: unknown;
+        event_ts?: unknown;
+        item?: { type?: unknown; channel?: unknown; ts?: unknown };
+      };
+      const name = typeof reaction.reaction === 'string' ? reaction.reaction : undefined;
+      if (!name || !this.deps.isFollowupControlReaction?.(name)) return;
+
+      const item = reaction.item;
+      if (item?.type !== 'message') return;
+      const channel = typeof item.channel === 'string' ? item.channel : undefined;
+      const ts = typeof item.ts === 'string' ? item.ts : undefined;
+      const user = typeof reaction.user === 'string' ? reaction.user : undefined;
+      if (!channel || !ts || !user) return;
+
+      let botUserId: string | undefined;
+      try {
+        botUserId = await this.deps.slackApi.getBotUserId();
+      } catch (error) {
+        this.logger.warn('reaction_added dropped — bot identity unavailable', {
+          channel,
+          error: (error as Error)?.message ?? String(error),
+        });
+        return;
+      }
+      if (!botUserId || user === botUserId) return;
+
+      try {
+        await this.deps.onReactionAdded?.({
+          channel,
+          ts,
+          reaction: name,
+          user,
+          eventTs: typeof reaction.event_ts === 'string' ? reaction.event_ts : '',
+        });
+      } catch (error) {
+        // A control the host could not carry out must not break the listener —
+        // the host answers the reactor itself, this is bookkeeping only.
+        this.logger.warn('reaction_added hook failed', {
+          channel,
+          ts,
+          error: (error as Error)?.message ?? String(error),
+        });
+      }
+    });
   }
 
   /**

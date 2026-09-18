@@ -918,6 +918,18 @@ export interface FollowupItemMessageOptions {
    * after the freeze drains normally and says nothing about it (A29).
    */
   freeze?: { reason: string; at: number };
+  /**
+   * Render the buttons? Default `true`. The `queue` command passes `false`
+   * since 09: the controls live as reactions on the user's own message, so a
+   * LISTING that carried its own `Send now` would be a second copy of a control
+   * the item already has — and one nothing takes down when the item settles.
+   *
+   * It suppresses the `action unavailable` suffix along with the buttons, and
+   * that is why this is an option here rather than a `blocks.filter` at the
+   * call site: "a control was DROPPED" is only true of a row that was trying to
+   * render one.
+   */
+  controls?: boolean;
 }
 
 /**
@@ -997,7 +1009,8 @@ export function buildFollowupItemMessage(
   options: FollowupItemMessageOptions = {},
 ): FollowupItemMessage {
   const seq = options.index ?? item.seq;
-  const { elements, dropped } = itemMessageControls(item, turnEpoch);
+  const { elements, dropped } =
+    options.controls === false ? { elements: [], dropped: false } : itemMessageControls(item, turnEpoch);
   // Per ITEM, never per session (A29): a freeze holds back exactly the rows it
   // parked, and a `queued` row in a frozen session arrived after it and drains
   // normally. Printing the notice on that row is the 2026-09-17 live misreading.
