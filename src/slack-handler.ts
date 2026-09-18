@@ -2995,14 +2995,33 @@ export class SlackHandler {
         return 'queued';
       }
 
-      const steered = dispatcher.steer(sessionKey, item.id, item.epoch, (uuid) =>
-        // The steering registry is keyed by the session that is really running,
-        // which after a bot-thread migration is the CANONICAL key.
-        this.claudeHandler.steerTurn(this.canonicalFollowupKey(sessionKey), { uuid, text }),
+      // WHICH key owns the live slot, resolved exactly like the ingress fence
+      // (`:949-957`): a mention's first turn opens its slot under the SOURCE key
+      // and then migrates into a work thread, so the reply that lands here is
+      // keyed on the work thread while the running turn is not. Asking the row
+      // key answered `not-busy` and the message waited for the turn to end
+      // (#233). Neither busy → pass the row key through and let the dispatcher
+      // say `not-busy` itself.
+      const migratedSlotKey = this.followupMigration?.byCanonical.get(sessionKey);
+      const slotKey = dispatcher.isBusy(sessionKey)
+        ? sessionKey
+        : migratedSlotKey !== undefined && dispatcher.isBusy(migratedSlotKey)
+          ? migratedSlotKey
+          : sessionKey;
+      const steered = dispatcher.steer(
+        sessionKey,
+        item.id,
+        item.epoch,
+        (uuid) =>
+          // The steering registry is keyed by the session that is really running,
+          // which after a bot-thread migration is the CANONICAL key.
+          this.claudeHandler.steerTurn(this.canonicalFollowupKey(sessionKey), { uuid, text }),
+        slotKey,
       );
       if (steered.status !== 'steered') {
         this.logger.debug('Follow-up not steered — left for the drain', {
           sessionKey,
+          slotKey,
           itemId: item.id,
           reason: steered.reason,
         });
