@@ -156,16 +156,18 @@ describe('QueueHandler.execute', () => {
   });
 
   /**
-   * …and where the controls ARE is said out loud, but only on the rows that
-   * have them: a `failed`/`steered` row offers neither reaction (09 §2.1), so
-   * pointing at them there would be the dead end this listing used to be.
+   * …and where the controls ARE is said out loud, naming the operation that
+   * state actually has (09 C1): a waiting row runs early or drops, a `failed`/
+   * `uncertain` one re-runs or drops, and a `steered` row — whose controls came
+   * down — is told nothing at all.
    */
-  it('points at the reactions on the rows that offer them, and only those', async () => {
+  it('points at the reactions on the rows that offer them, naming the right operation', async () => {
     const { handler, ctx, postSystemMessage } = build([
       item({ seq: 1 }),
       item({ seq: 2, state: 'paused' }),
       item({ seq: 3, state: 'failed' }),
       item({ seq: 4, state: 'steered' }),
+      item({ seq: 5, state: 'uncertain' }),
     ]);
 
     await handler.execute(ctx);
@@ -173,8 +175,12 @@ describe('QueueHandler.execute', () => {
     const posts = allPosts(postSystemMessage);
     expect(JSON.stringify(posts[0].blocks)).toContain(QueueHandler.REACTION_HINT);
     expect(JSON.stringify(posts[1].blocks)).toContain(QueueHandler.REACTION_HINT);
+    expect(JSON.stringify(posts[2].blocks)).toContain(QueueHandler.REACTION_RETRY_HINT);
+    expect(JSON.stringify(posts[3].blocks)).not.toContain('리액션으로');
+    expect(JSON.stringify(posts[4].blocks)).toContain(QueueHandler.REACTION_RETRY_HINT);
+    // …and the two wordings are never mixed up on one row.
     expect(JSON.stringify(posts[2].blocks)).not.toContain(QueueHandler.REACTION_HINT);
-    expect(JSON.stringify(posts[3].blocks)).not.toContain(QueueHandler.REACTION_HINT);
+    expect(JSON.stringify(posts[0].blocks)).not.toContain(QueueHandler.REACTION_RETRY_HINT);
   });
 
   it('carries the freeze notice on a row the freeze parked, and only there', async () => {

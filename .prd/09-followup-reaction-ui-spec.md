@@ -19,11 +19,12 @@ Status: **in-progress** (2026-09-18, 구현 완료·실측 전) · 기준 커밋
 | 항목 상태 | M의 봇 리액션 |
 |---|---|
 | `queued` (턴 종료 후 드레인 대기, 또는 halt) | `:inbox_tray:` `:ui_send_now:` `:ui_cancel:` |
+| `reserved` / `claimed` (드레인이 집었지만 아직 디스패치 전) | `:inbox_tray:`만 — 컨트롤 제거, 체크 없음 (rollback으로 `queued`로 되돌아갈 수 있으므로 전달 주장 금지, `followup-queue.ts:558-565`) |
 | `steered` (실행 중 턴에 전달됨) | 위 3개 제거 → `:white_check_mark:` (전달완료) |
 | `resolved`(소비/드레인 완료) | `:white_check_mark:` 유지 |
 | `cancelled` | `:inbox_tray:` `:ui_send_now:` 제거, 봇의 `:ui_cancel:` 제거(2→1, 유저 것만 남음) → `:no_entry_sign:` (캔슬완료) |
 | Send now로 디스패치 | `:inbox_tray:` `:ui_cancel:` 제거, 봇의 `:ui_send_now:` 제거(2→1) → `:white_check_mark:` |
-| `failed` / 거부 | `:warning:` 추가, 컨트롤은 상태에 맞게 유지 |
+| `failed` / `uncertain` / 거부 | `:warning:` `:ui_send_now:` `:ui_cancel:` — 이 두 상태에서 `:ui_send_now:`는 **Retry**로 라우팅된다(`retry`가 유일한 비종결 출구, 큐도 취소를 허용 `CANCELLABLE_STATES`). 컨트롤 없는 warning-only는 막다른 길이라 금지 |
 | `paused` (재시작 후 parked) | `:inbox_tray:` `:ui_send_now:` `:ui_cancel:` (Send now = Resume 대용) — 패널의 Resume/Retry는 그대로 |
 
 가정 A1: 유저 원문 "스티어링되면 이모지를 제거… 처리됐다는 이모지로 변경"을 `steered` 시점으로 해석한다. steered 항목의 Cancel은 실측상 거의 항상 "이미 전달됨"이므로 컨트롤을 내리고 `queue` 명령/기존 경로에 맡긴다.

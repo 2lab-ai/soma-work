@@ -154,6 +154,40 @@ describe('EventRouter — reaction_added', () => {
     expect(h.onReactionAdded).not.toHaveBeenCalled();
   });
 
+  /**
+   * The real helper does NOT throw on a failed `auth.test` — it answers `''`
+   * (`slack-api-helper.ts` `getBotUserId`). An empty id compares equal to
+   * nothing, so a router that only guarded against a throw would forward the
+   * bot's own reactions and let the surface answer its own controls.
+   */
+  it('drops the event when the bot identity comes back empty', async () => {
+    const h = harness({
+      slackApi: { getBotUserId: vi.fn().mockResolvedValue(''), getClient: vi.fn() } as any,
+    } as Partial<EventRouterDeps>);
+
+    await h.fire(reactionEvent());
+
+    expect(h.onReactionAdded).not.toHaveBeenCalled();
+  });
+
+  /** …and a bad answer poisons nothing: the next event asks again. */
+  it('recovers on the next event after an identity failure', async () => {
+    const getBotUserId = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('auth.test failed'))
+      .mockResolvedValueOnce('')
+      .mockResolvedValue('U_BOT');
+    const h = harness({ slackApi: { getBotUserId, getClient: vi.fn() } as any } as Partial<EventRouterDeps>);
+
+    await h.fire(reactionEvent());
+    await h.fire(reactionEvent());
+    expect(h.onReactionAdded).not.toHaveBeenCalled();
+
+    await h.fire(reactionEvent());
+
+    expect(h.onReactionAdded).toHaveBeenCalledTimes(1);
+  });
+
   it('forwards nothing when the host declared no control reactions', async () => {
     const h = harness({ isFollowupControlReaction: undefined } as Partial<EventRouterDeps>);
 
