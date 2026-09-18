@@ -3152,6 +3152,100 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(indexOf()?.get(`${CHANNEL}:902.222`)?.painted).toEqual([]);
     });
 
+    /**
+     * The forget FENCE. A `failed` row is not in the pending list a session
+     * deletion repaints, so the cleanup reaches its index entry while that
+     * row's own paint is still suspended in Slack. Without a fence the paint
+     * resumes afterwards and writes the entry back — a reverse-index hit for a
+     * session that no longer exists, which nothing will ever clean up again.
+     */
+    it('does not let a suspended paint resurrect the entry of a deleted session', async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const spawned = new SlackHandler({ client: {}, assistant: vi.fn() } as any, claudeHandler as any, {} as any, {
+        followupQueueStore: { load: () => undefined, save: () => undefined, recoveryWarning: undefined },
+      });
+      const spawnedAny = spawned as any;
+      spawnedAny.slackApi = handlerAny.slackApi;
+      const queue = spawnedAny.getFollowupQueue();
+      const enqueued = queue.enqueue(SESSION_KEY, message({ ts: '904.444', text: '실패한 지시' }), {});
+      await spawnedAny.syncFollowupReactions(SESSION_KEY, enqueued.item.id);
+
+      // Drive the row to `failed` — the state a session cancel does NOT move.
+      const live = queue.get(SESSION_KEY, enqueued.item.id);
+      queue.reserve(SESSION_KEY, live.id, live.epoch, spawnedAny.getFollowupView(SESSION_KEY).turnEpoch);
+      queue.promote(SESSION_KEY, live.id, queue.get(SESSION_KEY, live.id).epoch);
+      queue.markDispatched(SESSION_KEY, live.id, queue.get(SESSION_KEY, live.id).epoch);
+      queue.settle(SESSION_KEY, live.id, queue.get(SESSION_KEY, live.id).epoch, 'failed', '테스트');
+      expect(queue.get(SESSION_KEY, live.id).state).toBe('failed');
+
+      // Suspend that row's paint inside Slack…
+      const held = deferred<void>();
+      const reached = deferred<void>();
+      let holding = false;
+      addReaction.mockImplementation(async (_channel: string, _ts: string, name: string) => {
+        if (name === 'warning' && !holding) {
+          holding = true;
+          reached.resolve();
+          await held.promise;
+        }
+      });
+      const suspended = spawnedAny.syncFollowupReactions(SESSION_KEY, live.id);
+      await reached.promise;
+
+      // …and delete the session while it hangs. `pending` is empty (the only
+      // row is `failed`), so the cleanup runs the forget on the spot.
+      beforeDelete?.(SESSION_KEY, registrySession, 'expired');
+      await tick();
+
+      held.resolve();
+      await suspended;
+      await tick();
+      await tick();
+
+      const index = spawnedAny.followupReactionIndex as Map<string, any>;
+      expect([...index.keys()]).toEqual([]);
+      // …and a reaction on that message is not routed anywhere.
+      const sendNow = vi.spyOn(spawnedAny.followupDispatcher, 'sendNow');
+      await spawnedAny.handleFollowupReactionControl({
+        channel: CHANNEL,
+        ts: '904.444',
+        reaction: 'ui_cancel',
+        user: 'U_OWNER',
+      });
+      expect(sendNow).not.toHaveBeenCalled();
+      expect(queue.get(SESSION_KEY, live.id).state).toBe('failed');
+    });
+
+    it('keeps painting a message after one paint of it threw', async () => {
+      const ran: string[] = [];
+      const first = handlerAny.serializeFollowupReactions('C1:1.1', async () => {
+        ran.push('first');
+        throw new Error('paint exploded');
+      });
+
+      await expect(first).rejects.toThrow('paint exploded');
+      await handlerAny.serializeFollowupReactions('C1:1.1', async () => {
+        ran.push('second');
+      });
+
+      expect(ran).toEqual(['first', 'second']);
+    });
+
+    it('holds no chain once the last paint of a message has settled', async () => {
+      const chained = handlerAny.serializeFollowupReactions('C1:2.2', async () => {});
+      expect((handlerAny.followupReactionChains as Map<string, unknown>).size).toBe(1);
+
+      await chained;
+      await tick();
+
+      expect((handlerAny.followupReactionChains as Map<string, unknown>).size).toBe(0);
+    });
+
     it('forgets every entry of a session that went away', async () => {
       let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
       claudeHandler.getSessionRegistry = () => ({
@@ -3303,6 +3397,51 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
       await tick();
       expect(items()[0].state).toBe('failed');
+
+      await react();
+      await tick();
+
+      expect(items()[0].state).toBe('cancelled');
+      expect(reactionsOn('333.444')).toEqual(['no_entry_sign']);
+    });
+
+    /**
+     * An `uncertain` row is the other half of C1: the turn was torn down
+     * mid-flight so nobody knows whether it ran, and §3.5/R6 says only an
+     * explicit act may re-run it. The reaction IS that explicit act, and it
+     * lands on the same Retry the panel's button uses.
+     */
+    async function uncertainFollowup(): Promise<string> {
+      const queue = handlerAny.getFollowupQueue();
+      const enqueued = queue.enqueue(SESSION_KEY, message({ ts: '333.444', text: '중단된 지시' }), {});
+      await handlerAny.syncFollowupReactions(SESSION_KEY, enqueued.item.id);
+      const id = enqueued.item.id;
+      const epoch = () => queue.get(SESSION_KEY, id).epoch;
+      queue.reserve(SESSION_KEY, id, epoch(), handlerAny.getFollowupView(SESSION_KEY).turnEpoch);
+      queue.promote(SESSION_KEY, id, epoch());
+      queue.markDispatched(SESSION_KEY, id, epoch());
+      queue.markInterrupted(SESSION_KEY, id, epoch(), '턴이 중단되었습니다');
+      expect(queue.get(SESSION_KEY, id).state).toBe('uncertain');
+      await handlerAny.syncFollowupReactions(SESSION_KEY, id);
+      expect(reactionsOn('333.444')).toEqual(['ui_send_now', 'ui_cancel', 'warning']);
+      return id;
+    }
+
+    it('routes the go control into Retry on an uncertain item', async () => {
+      const id = await uncertainFollowup();
+      const retry = vi.spyOn(handlerAny.getFollowupQueue(), 'retry');
+      const sendNow = vi.spyOn(handlerAny.followupDispatcher, 'sendNow');
+
+      await react({ reaction: 'ui_send_now' });
+      await tick();
+
+      expect(sendNow).not.toHaveBeenCalled();
+      expect(retry).toHaveBeenCalledTimes(1);
+      expect(retry.mock.calls[0][1]).toBe(id);
+    });
+
+    it('cancels an uncertain item through the stop control', async () => {
+      await uncertainFollowup();
 
       await react();
       await tick();

@@ -302,6 +302,13 @@ export class SlackHandler {
    */
   private followupReactionChains?: Map<string, Promise<void>>;
   /**
+   * How many times each session has been forgotten
+   * ({@link forgetFollowupReactionsForSession}). Read by every paint before and
+   * after its Slack calls: a session that went away mid-paint must not get its
+   * index entry written back.
+   */
+  private followupForgetGenerations?: Map<string, number>;
+  /**
    * The action module's dependency object, kept because a control has TWO
    * transports now: the buttons register against it once, and every control
    * reaction enters through it too ({@link buildFollowupActionDeps}).
@@ -835,8 +842,10 @@ export class SlackHandler {
       if (pending.length === 0) {
         // Nothing to repaint, but the session is still gone — its `failed` rows
         // (the ones the cancel never touches) would otherwise keep index
-        // entries for a session nothing can read any more.
-        this.forgetFollowupReactionsForSession(sessionKey);
+        // entries for a session nothing can read any more. Detached: the
+        // registry callback is synchronous and the removals queue behind
+        // whatever paint holds each message.
+        void this.forgetFollowupReactionsForSession(sessionKey);
         return;
       }
       queue.cancelSession(sessionKey, `세션이 종료되었습니다 (${reason})`);
@@ -2806,11 +2815,26 @@ export class SlackHandler {
       try {
         const plan = resolve();
         if (!plan) return;
+        // The session's forget FENCE, read before the await and again after it
+        // ({@link forgetFollowupReactionsForSession}). The chain alone cannot
+        // carry this: a session is forgotten as a whole, and a message whose
+        // FIRST paint is still in flight has no index entry for the forget to
+        // queue behind — so that paint would create one for a session that is
+        // already gone.
+        const generation = this.followupForgetGenerationOf(plan.sessionKey);
         const index = (this.followupReactionIndex ??= new Map());
         const previous = index.get(key)?.painted;
         const result = await this.followupReactions().applyRoles(target, plan.roles, previous);
-        // Re-read: `applyRoles` awaited, and only this chain writes the key, so
-        // what is here now is what this paint started from.
+        if (this.followupForgetGenerationOf(plan.sessionKey) !== generation) {
+          // The session went away while this paint was in flight. Its reactions
+          // are already off the message (this paint just ran); what must not
+          // survive is the BOOKKEEPING, which would otherwise resolve a later
+          // reaction to an item nobody can read.
+          index.delete(key);
+          return;
+        }
+        // Only this chain writes the key, so what is in the index now is what
+        // this paint started from.
         if (plan.retain || result.failed.length > 0) {
           index.set(key, { sessionKey: plan.sessionKey, itemId: plan.itemId, painted: result.painted });
         } else {
@@ -2896,13 +2920,41 @@ export class SlackHandler {
    *
    * Only ever after the session's rows have been repainted — the paint needs the
    * entry to know what to take down.
+   *
+   * Two mechanisms, because a plain `delete` here loses a race it cannot see:
+   *
+   *  1. the FENCE, bumped synchronously on the first line. A paint suspended
+   *     mid-Slack-call resumes after this method has returned and would write
+   *     its entry back — the generation it captured before the await no longer
+   *     matches, so it drops the write instead. This also covers the message
+   *     whose FIRST paint is in flight, which has no entry to find below.
+   *  2. the QUEUED removal, per key, through the same chain the paints use — so
+   *     the delete lands after whatever paint is holding that message rather
+   *     than racing it, and the caller can await the whole thing.
+   *
+   * A generation counter, not a tombstone set: `sessionKey` is `channel:thread`
+   * and a new session in the same thread reuses it, so "forgotten" has to be a
+   * point in time rather than a permanent verdict.
    */
-  private forgetFollowupReactionsForSession(sessionKey: string): void {
+  private forgetFollowupReactionsForSession(sessionKey: string): Promise<void> {
+    const generations = (this.followupForgetGenerations ??= new Map<string, number>());
+    generations.set(sessionKey, (generations.get(sessionKey) ?? 0) + 1);
+
     const index = this.followupReactionIndex;
-    if (!index) return;
-    for (const [key, entry] of [...index]) {
-      if (entry.sessionKey === sessionKey) index.delete(key);
-    }
+    if (!index) return Promise.resolve();
+    const keys = [...index].filter(([, entry]) => entry.sessionKey === sessionKey).map(([key]) => key);
+    return Promise.all(
+      keys.map((key) =>
+        this.serializeFollowupReactions(key, async () => {
+          this.followupReactionIndex?.delete(key);
+        }),
+      ),
+    ).then(() => undefined);
+  }
+
+  /** How many times this session has been forgotten — the paint's fence value. */
+  private followupForgetGenerationOf(sessionKey: string): number {
+    return this.followupForgetGenerations?.get(sessionKey) ?? 0;
   }
 
   /**
