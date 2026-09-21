@@ -54,3 +54,26 @@
 | R2-3 | 유저(Z)가 "1234" 후 `ui_send_now` 클릭(08:39:43Z), 다시 "체크E" 후 클릭(08:40:30Z) | 봇 로그 각각 `reaction_added` → `item-unsteered` → `Aborted session user-interrupted` → `run-started`; 응답 `done 체크E`; 큐 행 `#3 resolved`. 첫 항목(#2 "1234")은 두 번째 Send now가 그 실행을 끊어 `uncertain user-interrupted` → `⚠️ + Retry/Cancel` 표시 | PASS (Send now 전송로·정산 규칙대로) |
 | R2-4 | 같은 계정으로 이미 눌린 `ui_send_now` 재클릭 | `reaction_removed`만 발생(무시) — 이벤트 없음. 봇 결함 아님 | n/a |
 증거: 스크린샷 `reaction-ui-live-2026-09-18/` 45–52, 봇 로그 08:37–08:41Z, 큐 스토어 rows.
+
+## 라운드 3 — 유저 정정(취소 지연·컨트롤 분리 도착) → 재출하 (2026-09-21 12:40–13:30)
+- 정정 원문: "미드턴에 메세지보내고 바로 취소 눌러도 취소가 안되네 … 지금 취소 이모지가 좇나 늦게 떠 … 왜 지금 실행 이모지랑 취소 이모지가 서로 다른 시간에 추가됨?" / "스티어링시에 서로 다른 메세지를 한번에 합쳐서 보내? … 1 보내고 2 보내면 12로 보내짐?"
+- 원인(블랙박스 트레이스 `docs/debugging/reaction-latency-202609211240/trace.md`): A) enqueue 직후 `📥`만 칠하고 `trySteerFollowup` 뒤에 두 번째 paint에서 `ui_send_now`·`ui_cancel`을 추가 → 컨트롤이 두 시점에 도착. B) `reactions.add`가 스트리밍 `chat.update`와 같은 토큰버킷 FIFO를 공유해 큐 뒤에서 대기 → 수 초~수십 초 지연. 그 사이 클릭은 항목이 이미 읽힌 뒤라 조용히 무시.
+- PR #241 머지(263870dd): enqueue 시 `rolesForFollowupState('queued')` 3종을 한 번의 paint로, 컨트롤 리액션은 API 헬퍼 priority lane(버스트 3 뒤 일반 1 양보, 재시도는 자기 레인 유지), 이미 읽힌 항목의 클릭은 ephemeral 피드백. 프리뷰 run 35559906707 재디스패치 → 양 대상 `bot is running! [v0.2.1147 (263870d)]`(work-m16 PID 23234, fable-m5max PID 15136).
+- 합침 여부: 코드상 각 메시지는 `buildSteerUserMessage`로 별도 SDK user 메시지(uuid 별개)로 push되고 drain은 한 번에 1건만 claim(`src/agent-runtime/turn-input-channel.ts`). 실측 R3-3·R5-3으로 확인.
+
+## 실측 R3 (2026-09-21 16:22–16:36 KST, 2lab.ai `#workspace-soma-work`, Claude in Chrome, v0.2.1147, 처리 호스트 fable-m5max)
+| # | 절차 | 관측 | 판정 |
+|---|---|---|---|
+| R3-1 | `@봇 포그라운드 sleep 150` 턴(root 1789975334.797969) 중 스레드에 "하나"(07:24:57Z) → "둘"(07:24:58Z) | 두 메시지 모두 보내자마자 `📥 1` `ui_send_now 1` `ui_cancel 1` 3종이 **동시에** 표시(07:25:00Z 캡처). 봇 로그 `item-steered` 07:24:58.8Z / 07:24:59.9Z | PASS (컨트롤 분리 도착 해소) |
+| R3-2 | sleep 종료(07:25:11Z) 3초 뒤 "둘"에 `ui_cancel` 클릭(07:25:14Z) | 봇 로그 `reaction_added` 07:25:15.3Z → `item-consumed` → ephemeral `취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다`; 리액션 `✅ 1` + 유저 `ui_cancel 1` | PASS (이미 읽힌 항목 피드백) |
+| R3-3 | 최종 응답 | `["하나", "둘"]` + done. 모델 Outcome: "유저가 보낸 추가 메시지 2건(하나, 둘)을 수신" (별개 항목) | PASS (12로 합쳐지지 않음) |
+| R4 | 같은 절차(root 1789975666.072149), 스레드 조회 금지 조건 추가; "하나" 07:29:20Z 큐 → sleep 종료 07:30:28Z 2초 뒤 취소 클릭(07:30:30Z) | 큐 리액션 3종 정상, 취소는 `item-consumed`(이미 읽힘) ephemeral. Slack 웹 스레드 패널이 내 메시지를 늦게 렌더해 큐 창을 놓침(봇 결함 아님) | n/a (취소 창 미확보) |
+
+## 실측 R5 (2026-09-21 16:32–16:36 KST, 같은 조건, root 1789975949.370489)
+| # | 절차 | 관측 | 판정 |
+|---|---|---|---|
+| R5-1 | 턴 중 "하나" 전송(07:33:24Z) | 3초 안에 `📥`·`ui_send_now`·`ui_cancel` 동시 표시; 봇 로그 `item-steered` 07:33:25.2Z | PASS |
+| R5-2 | 13초 뒤 `ui_cancel` 클릭(07:33:37Z, sleep 종료 07:35:10Z보다 93초 전) | 1.5초 안에 `📥`·`ui_send_now` 제거, 봇 `ui_cancel` 제거(2→1), `🚫 1` 추가; ephemeral `취소했습니다 — 모델에 전달되기 전에 회수했습니다`; 봇 로그 `reaction_added` 07:33:37.7Z | PASS (전송 직후 취소 성립) |
+| R5-3 | "둘" 전송(07:34:00Z) 후 방치 → sleep 종료 | `item-steered` 07:34:01.1Z → 모델 소비 `steer_lifecycle`/`item-consumed` 07:35:13.9Z → `✅ 1`. 최종 응답 `["둘"]` + done — 취소한 "하나"는 전달되지 않음 | PASS |
+증거: 스크린샷 `reaction-ui-live-2026-09-21/`, 봇 로그 발췌 `bot-log-excerpt-fable-m5max.txt`(07:22–07:36Z).
+잔여: iq 워크스페이스 전제(이모지 2종 + 앱 `reaction_added`)는 유저 측 미완(open-loop 65). 소비 감지는 SDK `steer_lifecycle` 도착 시점이라 모델이 읽은 뒤 `✅`로 바뀌기까지 수 초 창이 있고, 그 창의 클릭은 ephemeral로 안내된다.
