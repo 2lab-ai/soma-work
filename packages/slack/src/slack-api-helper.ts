@@ -62,6 +62,27 @@ export interface EnqueueOptions {
   priority?: boolean;
 }
 
+/** One waiting call. The queue is a priority PREFIX followed by the ordinary segment. */
+interface QueuedCall {
+  execute: () => Promise<any>;
+  resolve: (value: any) => void;
+  reject: (error: any) => void;
+  /** {@link EnqueueOptions.priority} — carried so the queue can see its own lanes. */
+  priority: boolean;
+}
+
+/**
+ * How many priority calls may be served in a row while ordinary ones wait.
+ *
+ * Strict priority has no progress guarantee, and this lane is fed by something
+ * that never goes quiet on a busy session: every queue paint is 1–3 reaction
+ * calls. Without a bound, a session that keeps parking messages would hold the
+ * streaming `chat.update`s behind it indefinitely. After this many the next
+ * slot belongs to the ordinary queue — the control still arrives inside one
+ * extra call, which is nothing like the seconds the shared FIFO cost it.
+ */
+const PRIORITY_BURST_LIMIT = 3;
+
 interface UpdateMessageOptions {
   unfurlLinks?: boolean;
   unfurlMedia?: boolean;
@@ -297,13 +318,13 @@ export class SlackApiHelper {
   private tokens: number;
   private lastRefill: number;
   private lastRequest: number = 0;
-  private queue: Array<{
-    execute: () => Promise<any>;
-    resolve: (value: any) => void;
-    reject: (error: any) => void;
-    /** {@link EnqueueOptions.priority} — carried so the overflow drop can see it. */
-    priority: boolean;
-  }> = [];
+  private queue: QueuedCall[] = [];
+  /**
+   * Priority calls served back-to-back while ordinary ones were waiting. Reset
+   * the moment an ordinary call is served, or whenever none is waiting — it
+   * measures STARVATION, not traffic. See {@link PRIORITY_BURST_LIMIT}.
+   */
+  private priorityBurst = 0;
   private processing = false;
   private rateLimit: RateLimitConfig;
 
@@ -381,7 +402,8 @@ export class SlackApiHelper {
    * priority item is inserted at the FRONT instead (FIFO among priority items,
    * so a control SET still paints in the order it was asked for). It is a
    * queue-position change only: the token bucket and `minInterval` still apply,
-   * because Slack's limits are not ours to skip.
+   * because Slack's limits are not ours to skip — and the lane is bounded
+   * ({@link PRIORITY_BURST_LIMIT}), so ordinary calls keep making progress.
    */
   private async enqueue<T>(execute: () => Promise<T>, options?: EnqueueOptions): Promise<T> {
     const priority = options?.priority === true;
@@ -392,10 +414,8 @@ export class SlackApiHelper {
         // the priority lane first — it sits at the front — which is the exact
         // inversion this lane exists to prevent. An all-priority queue falls
         // back to the front, so the drop always makes room.
-        const victim = Math.max(
-          0,
-          this.queue.findIndex((item) => !item.priority),
-        );
+        const boundary = this.priorityPrefixLength();
+        const victim = boundary < this.queue.length ? boundary : 0;
         const dropped = this.queue.splice(victim, 1)[0]!;
         // `data.error` is the evidence shape every caller already reads for
         // "nothing was created" (see `DEFINITIVE_POST_REJECTIONS` in
@@ -411,16 +431,35 @@ export class SlackApiHelper {
         });
       }
 
-      const item = { execute, resolve, reject, priority };
-      if (priority) {
-        // After the priority items already waiting, before every ordinary one.
-        const firstOrdinary = this.queue.findIndex((queued) => !queued.priority);
-        this.queue.splice(firstOrdinary === -1 ? this.queue.length : firstOrdinary, 0, item);
-      } else {
-        this.queue.push(item);
-      }
+      this.insert({ execute, resolve, reject, priority });
       this.processQueue();
     });
+  }
+
+  /** Where the priority prefix ends — also the index of the first ordinary call. */
+  private priorityPrefixLength(): number {
+    const firstOrdinary = this.queue.findIndex((queued) => !queued.priority);
+    return firstOrdinary === -1 ? this.queue.length : firstOrdinary;
+  }
+
+  /**
+   * Put a call in its LANE. The queue invariant lives here and only here: every
+   * priority call sits before every ordinary one, and within each lane the
+   * order is the order they arrived.
+   *
+   * `front` is for a call that is re-entering after a `ratelimited` retry — it
+   * has already waited its turn, so it goes to the head of its own lane rather
+   * than the head of the queue. A plain `unshift` broke the invariant both
+   * ways: an ordinary retry overtook every waiting control, and it left the
+   * prefix out of order for the next insert to read.
+   */
+  private insert(item: QueuedCall, options?: { front?: boolean }): void {
+    const boundary = this.priorityPrefixLength();
+    if (item.priority) {
+      this.queue.splice(options?.front ? 0 : boundary, 0, item);
+      return;
+    }
+    this.queue.splice(options?.front ? boundary : this.queue.length, 0, item);
   }
 
   /**
@@ -454,8 +493,15 @@ export class SlackApiHelper {
         await this.sleep(this.rateLimit.minInterval - elapsed);
       }
 
-      // 요청 실행
-      const item = this.queue.shift()!;
+      // 요청 실행 — the priority prefix first, UNLESS it has had its burst and
+      // ordinary work is waiting (see PRIORITY_BURST_LIMIT).
+      const boundary = this.priorityPrefixLength();
+      const ordinaryWaiting = boundary < this.queue.length;
+      const servePriority = boundary > 0 && (!ordinaryWaiting || this.priorityBurst < PRIORITY_BURST_LIMIT);
+      const item = this.queue.splice(servePriority ? 0 : boundary, 1)[0]!;
+      // The counter measures an ordinary call being HELD UP: it advances only
+      // while one is waiting, and an ordinary call getting served clears it.
+      this.priorityBurst = ordinaryWaiting && item.priority ? this.priorityBurst + 1 : 0;
       this.tokens--;
       this.lastRequest = Date.now();
 
@@ -469,8 +515,8 @@ export class SlackApiHelper {
           this.logger.warn('Slack rate limited, waiting', { retryAfter });
           this.tokens = 0; // 토큰 비우기
           await this.sleep(retryAfter * 1000);
-          // 다시 큐에 넣기
-          this.queue.unshift(item);
+          // 다시 큐에 넣기 — at the head of its OWN lane, not of the queue.
+          this.insert(item, { front: true });
         } else {
           item.reject(error);
         }
