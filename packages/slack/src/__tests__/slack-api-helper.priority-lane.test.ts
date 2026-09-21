@@ -109,6 +109,101 @@ describe('SlackApiHelper — the priority lane', () => {
   });
 
   /**
+   * A lane with no bound is a lane that can starve the rest of the app: a busy
+   * session paints reactions continuously, and STRICT priority would leave the
+   * streaming updates behind them waiting for a quiet moment that a busy
+   * session never has. Three priority calls in a row while ordinary work waits
+   * is the burst; the fourth slot belongs to the ordinary queue.
+   */
+  it('gives an ordinary call every fourth slot while priority work keeps arriving', async () => {
+    const { order, blocker, helper } = harness();
+
+    const inFlight = helper.postMessage('C1', 'blocker');
+    const ordinary = [1, 2].map((n) => helper.postMessage('C1', `update-${n}`));
+    const controls = [1, 2, 3, 4, 5, 6, 7, 8].map((n) =>
+      helper.addReactionResult('C1', '111.222', `p${n}`, { priority: true }),
+    );
+    blocker.resolve();
+    await Promise.all([inFlight, ...ordinary, ...controls]);
+
+    expect(order).toEqual([
+      'blocker',
+      '+p1',
+      '+p2',
+      '+p3',
+      'update-1',
+      '+p4',
+      '+p5',
+      '+p6',
+      'update-2',
+      // Nothing ordinary is waiting any more, so the bound stops applying.
+      '+p7',
+      '+p8',
+    ]);
+  });
+
+  it('serves priority calls back-to-back when nothing ordinary is waiting', async () => {
+    const { order, blocker, helper } = harness();
+
+    const inFlight = helper.postMessage('C1', 'blocker');
+    const controls = [1, 2, 3, 4, 5].map((n) => helper.addReactionResult('C1', '111.222', `p${n}`, { priority: true }));
+    blocker.resolve();
+    await Promise.all([inFlight, ...controls]);
+
+    expect(order).toEqual(['blocker', '+p1', '+p2', '+p3', '+p4', '+p5']);
+  });
+
+  /**
+   * Slack answered `ratelimited`, so the call is put BACK. It used to go to the
+   * very front of the queue, which broke the lane twice over: an ordinary retry
+   * overtook every waiting control, and a control that arrived later overtook
+   * the ones already waiting. A retry re-enters its OWN lane, at the front of
+   * it — it has waited longest within that lane, and nothing more.
+   */
+  it('puts a rate-limited ordinary retry behind the priority lane, not in front of it', async () => {
+    const order: string[] = [];
+    const gate = deferred();
+    let attempts = 0;
+    const app = {
+      client: {
+        chat: {
+          postMessage: vi.fn(async (payload: any) => {
+            attempts += 1;
+            order.push(`${payload.text}#${attempts}`);
+            if (attempts > 1) return { ok: true, ts: '111.222' };
+            await gate.promise;
+            throw Object.assign(new Error('ratelimited'), {
+              data: { error: 'ratelimited', headers: { 'retry-after': '0' } },
+            });
+          }),
+        },
+        reactions: {
+          add: vi.fn(async (payload: any) => {
+            order.push(`+${payload.name}`);
+            return { ok: true };
+          }),
+        },
+      },
+    };
+    // A fast refill: the retry path empties the bucket on purpose, and this test
+    // is about ORDER, not about how long a token takes.
+    const helper = new SlackApiHelper(app as any, { minInterval: 0, refillRate: 1000 });
+
+    // Runs first and is still in flight when it is rate-limited.
+    const ordinary = helper.postMessage('C1', 'update');
+    const p1 = helper.addReactionResult('C1', '111.222', 'p1', { priority: true });
+    gate.resolve();
+    // One macrotask: the ordinary call has now thrown and is waiting out its
+    // `retry-after` — this is the window in which a second control arrives.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const p2 = helper.addReactionResult('C1', '111.222', 'p2', { priority: true });
+
+    await Promise.all([ordinary, p1, p2]);
+
+    expect(order).toEqual(['update#1', '+p1', '+p2', 'update#2']);
+  });
+
+  /**
    * Overflow drops the OLDEST waiting request. With a lane at the front of the
    * queue that would drop a control first — inverting the whole point — so the
    * drop looks for the oldest ordinary item instead.

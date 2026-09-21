@@ -300,9 +300,10 @@ export class FollowupReactionSurface {
   }
 
   /**
-   * The same, for a set of roles the caller chose itself — the enqueue receipt
-   * paints `queued` ALONE before the steer attempt, so the user sees the message
-   * was taken within one API call instead of after three.
+   * The same, for a set of roles the caller chose itself — the enqueue paints
+   * the receipt AND both controls as ONE set before the steer attempt
+   * (2026-09-21), so everything the user can press is on the message from the
+   * first paint instead of arriving a steer later.
    *
    * Never throws: this is bookkeeping on top of an item that is already durable,
    * so a refused call must not roll a queue transition back. It is NOT
