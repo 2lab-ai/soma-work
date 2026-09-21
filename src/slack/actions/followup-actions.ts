@@ -670,8 +670,20 @@ const CANCEL_RUNNING_TEXT = '실행 중인 항목은 취소할 수 없습니다 
 const CANCEL_STALE_TEXT = '이미 바뀐 항목입니다 — 이 메시지의 버튼을 최신 상태로 갱신했습니다. 다시 눌러주세요.';
 /** The SDK confirmed the withdrawal: the model never saw the message. */
 const CANCEL_STEERED_OK_TEXT = '취소했습니다 — 모델에 전달되기 전에 회수했습니다.';
+/**
+ * The one fact behind every "you were too late": the model has the message.
+ *
+ * Shared so the two transports say it identically. The reaction transport
+ * reaches this state by a route the button never did — the control was painted
+ * while the row was still `queued` and the item moved before the press landed
+ * (2026-09-21) — and answering that with a second, slightly different sentence
+ * would be the same act described two ways.
+ */
+const ALREADY_DELIVERED_TEXT = '이미 모델에 전달되어 실행 중입니다.';
 /** The SDK had already dequeued it, so the message is part of the running turn. */
-const CANCEL_STEERED_DELIVERED_TEXT = '취소하지 못했습니다 — 이미 모델에 전달되어 실행 중입니다.';
+export const CANCEL_STEERED_DELIVERED_TEXT = `취소하지 못했습니다 — ${ALREADY_DELIVERED_TEXT}`;
+/** The same fact, answering the "go" control instead of the "stop" one. */
+export const SEND_NOW_ALREADY_DELIVERED_TEXT = `먼저 보낼 것이 없습니다 — ${ALREADY_DELIVERED_TEXT}`;
 /**
  * The SDK could not be asked, so delivery is unknown. The item is back in the
  * queue, which is both the honest state and a working control: the next click

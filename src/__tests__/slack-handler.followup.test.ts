@@ -2783,19 +2783,31 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
-     * §3.1 — the receipt lands in ONE call, before the steer is even attempted,
-     * so the user sees the message was taken within one API call. The steer
-     * then adds the controls: a steered row is still waiting, so it carries the
-     * same three as a queued one.
+     * §3.1, corrected 2026-09-21 — the receipt AND both controls land in ONE
+     * paint, BEFORE the steer is attempted. The controls used to wait for the
+     * steer to come back, which cost them a second trip through the shared
+     * rate-limit queue behind the running turn's `chat.update` stream: by the
+     * time `ui_cancel` appeared the model had often consumed the item, and the
+     * user's Cancel could only be refused. The old rationale (a `Send now` that
+     * flashes for 200ms) died with PR #239 — a `steered` row carries the same
+     * three reactions, so the post-steer sync has nothing to add.
      */
-    it('paints the receipt before the steer, and the controls after it', async () => {
-      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+    it('paints all three reactions BEFORE the steer, and the sync after it adds nothing', async () => {
+      const paintedOn = () =>
+        addReaction.mock.calls.filter((call: any[]) => call[1] === '333.444').map((call: any[]) => call[2]);
+      const atSteerTime: string[] = [];
+      claudeHandler.steerTurn = vi.fn().mockImplementation(() => {
+        atSteerTime.push(...paintedOn());
+        return true;
+      });
       const { settle } = await startBusyTurn();
 
       await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
 
-      const painted = addReaction.mock.calls.filter((call: any[]) => call[1] === '333.444').map((call) => call[2]);
-      expect(painted).toEqual(['inbox_tray', 'ui_send_now', 'ui_cancel']);
+      // Everything the user can press was on the message before the steer ran…
+      expect(atSteerTime).toEqual(['inbox_tray', 'ui_send_now', 'ui_cancel']);
+      // …and the post-steer sync added nothing on top of it (no second trip).
+      expect(paintedOn()).toEqual(['inbox_tray', 'ui_send_now', 'ui_cancel']);
       expect(reactionsOn('333.444')).toEqual(QUEUED_REACTIONS);
       await settle();
     });
@@ -3490,7 +3502,58 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
-    /** …and a state that really offers nothing is still ignored in silence. */
+    /**
+     * The 2026-09-21 report, end to end: the controls arrived late, the user
+     * pressed Cancel anyway, and the model had consumed the item in between
+     * (`Queue control reaction ignored — the state does not offer it
+     * {state:"resolved",op:"cancel"}`). Nothing was said to the user at all —
+     * the same click on the BUTTON had always been answered. A press that lost
+     * the race gets the answer, not silence.
+     *
+     * The message is still addressable here for the same reason it was live:
+     * the terminal repaint that forgets it is queued behind the turn's own
+     * Slack traffic, so the reaction lands first.
+     */
+    async function raceLostFollowup(state: 'dispatched' | 'resolved'): Promise<void> {
+      await queuedFollowup();
+      const queue = handlerAny.getFollowupQueue();
+      const id = items()[0].id;
+      const epoch = () => queue.get(SESSION_KEY, id).epoch;
+      queue.reserve(SESSION_KEY, id, epoch(), handlerAny.getFollowupView(SESSION_KEY).turnEpoch);
+      queue.promote(SESSION_KEY, id, epoch());
+      queue.markDispatched(SESSION_KEY, id, epoch());
+      if (state === 'resolved') queue.settle(SESSION_KEY, id, epoch(), 'resolved', 'consumed');
+      expect(queue.get(SESSION_KEY, id).state).toBe(state);
+    }
+
+    it('tells the reactor a cancel lost the race to the model, instead of staying silent', async () => {
+      await raceLostFollowup('resolved');
+
+      await react();
+      await tick();
+
+      expect(ephemerals().join('\n')).toContain('이미 모델에 전달되어 실행 중입니다');
+    });
+
+    it('says the same about the go control on an item already handed over', async () => {
+      await raceLostFollowup('dispatched');
+      const sendNow = vi.spyOn(handlerAny.followupDispatcher, 'sendNow');
+
+      await react({ reaction: 'ui_send_now' });
+      await tick();
+
+      // Nothing is re-run — the answer is the whole act.
+      expect(sendNow).not.toHaveBeenCalled();
+      expect(ephemerals().join('\n')).toContain('이미 모델에 전달되어 실행 중입니다');
+    });
+
+    /**
+     * …and a state that really offers nothing is still ignored in silence:
+     * `reserved`/`claimed` sit between the drain's decision and the dispatch,
+     * where NOTHING has been handed to the model and `rollback` can still put
+     * the row back — so "이미 전달되어 실행 중" would be a lie, and there is no
+     * other act to name.
+     */
     it('ignores a control the state does not offer — a reserved item has neither', async () => {
       const { settle } = await queuedFollowup();
       const queue = handlerAny.getFollowupQueue();

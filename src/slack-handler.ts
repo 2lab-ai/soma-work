@@ -64,6 +64,8 @@ import {
 } from './slack';
 import {
   type CancelSteeredOutcome,
+  CANCEL_STEERED_DELIVERED_TEXT as FOLLOWUP_CANCEL_ALREADY_DELIVERED_TEXT,
+  SEND_NOW_ALREADY_DELIVERED_TEXT as FOLLOWUP_SEND_NOW_ALREADY_DELIVERED_TEXT,
   type FollowupActionsDeps,
   type FollowupRespond,
   handleCancel as handleFollowupCancel,
@@ -128,6 +130,16 @@ interface DmDeleteThreadActionValue {
 
 /** States that no longer occupy the queue — excluded from the reported depth. */
 const TERMINAL_FOLLOWUP_STATES: readonly string[] = ['resolved', 'failed', 'cancelled'];
+
+/**
+ * Queue-control reactions jump the api helper's rate-limit queue
+ * (`slack-api-helper.ts` `enqueue`). They are the one Slack call a human is
+ * waiting on WHILE the turn they control is streaming, and that stream keeps
+ * the shared FIFO queue 5–8 deep — so ordinary position meant `ui_cancel`
+ * landed seconds late, after the model had consumed the item (2026-09-21).
+ * The token bucket still applies; only the position changes.
+ */
+const QUEUE_CONTROL_REACTION_PRIORITY = { priority: true } as const;
 
 /**
  * Recorded as the item's `stateReason` when the author's working directory
@@ -2701,15 +2713,19 @@ export class SlackHandler {
       return;
     }
 
-    // The receipt, in ONE call: the message was taken. The controls are not
-    // painted yet on purpose — the steer below usually takes the message into
-    // the running turn, and a `Send now` that appeared for 200ms before being
-    // removed again is a control the user cannot trust (09 §3.1). What the
-    // message shows next is decided once, by the state, below.
+    // The receipt AND both controls, in ONE paint, BEFORE the steer (09 §3.1,
+    // corrected 2026-09-21). The controls used to wait for the steer to answer,
+    // which cost them a second trip through the shared rate-limit queue behind
+    // the running turn's `chat.update` stream — measured seconds, after which
+    // the model had already consumed the item and the user's Cancel could only
+    // be refused ("취소 이모지가 좇나 늦게 떠"). The old rationale (a `Send now`
+    // that flashes for 200ms before the steer removes it) died with PR #239:
+    // a `steered` row is still waiting and carries these same three, so the
+    // sync below has nothing to take away.
     await this.paintFollowupReactions({ channel: event.channel, ts: event.ts }, () => ({
       sessionKey,
       itemId: result.item.id,
-      roles: ['queued'],
+      roles: rolesForFollowupState('queued'),
       retain: true,
     }));
     // A freeze is deliberately NOT consulted here (2026-09-17 live report). It
@@ -2757,6 +2773,13 @@ export class SlackHandler {
    * (and by every unit double), and a surface that captured the constructor's
    * client would paint into a client nobody reads. The port therefore resolves
    * `this.slackApi` per call.
+   *
+   * Every op rides the api helper's PRIORITY lane
+   * ({@link QUEUE_CONTROL_REACTION_PRIORITY}): these calls are a live control
+   * on a message the user is looking at right now, and the shared rate-limit
+   * queue is 5–8 `chat.update` deep during the very turn they are meant to
+   * interrupt (2026-09-21). Waiting in that line is what made Cancel arrive
+   * after the model had read the message.
    */
   private followupReactions(): FollowupReactionSurface {
     return (this.followupReactionSurface ??= new FollowupReactionSurface({
@@ -2766,12 +2789,14 @@ export class SlackHandler {
           // just cannot tell `invalid_name` from any other refusal, so it never
           // falls back. Degrading, not throwing.
           typeof this.slackApi?.addReactionResult === 'function'
-            ? this.slackApi.addReactionResult(channel, ts, name)
-            : Promise.resolve(this.slackApi?.addReaction?.(channel, ts, name)).then((ok) => ({ ok: ok !== false })),
+            ? this.slackApi.addReactionResult(channel, ts, name, QUEUE_CONTROL_REACTION_PRIORITY)
+            : Promise.resolve(this.slackApi?.addReaction?.(channel, ts, name, QUEUE_CONTROL_REACTION_PRIORITY)).then(
+                (ok) => ({ ok: ok !== false }),
+              ),
         remove: (channel, ts, name) =>
           typeof this.slackApi?.removeReactionResult === 'function'
-            ? this.slackApi.removeReactionResult(channel, ts, name)
-            : Promise.resolve(this.slackApi?.removeReaction?.(channel, ts, name)),
+            ? this.slackApi.removeReactionResult(channel, ts, name, QUEUE_CONTROL_REACTION_PRIORITY)
+            : Promise.resolve(this.slackApi?.removeReaction?.(channel, ts, name, QUEUE_CONTROL_REACTION_PRIORITY)),
       },
       onWarn: (message, detail) => this.logger.warn(message, detail),
     }));
@@ -3458,29 +3483,7 @@ export class SlackHandler {
       });
       return;
     }
-    const operation = SlackHandler.followupReactionOperation(op, item.state);
-    if (!operation) {
-      this.logger.debug('Queue control reaction ignored — the state does not offer it', {
-        itemId: item.id,
-        state: item.state,
-        op,
-      });
-      return;
-    }
-
     const threadTs = item.message?.thread_ts || item.message?.ts;
-    const value = {
-      sessionKey: found.sessionKey,
-      itemId: item.id,
-      epoch: item.epoch,
-      turnEpoch: this.getFollowupView(found.sessionKey)?.turnEpoch ?? 0,
-    };
-    const body = {
-      user: { id: reaction.user },
-      channel: { id: reaction.channel },
-      container: { channel_id: reaction.channel, message_ts: reaction.ts, thread_ts: threadTs },
-      message: { ts: reaction.ts, thread_ts: threadTs },
-    };
     const respond: FollowupRespond = async (message) => {
       const text = typeof message?.text === 'string' ? message.text : '';
       if (!text) return undefined;
@@ -3495,6 +3498,36 @@ export class SlackHandler {
         });
         return undefined;
       }
+    };
+
+    const operation = SlackHandler.followupReactionOperation(op, item.state);
+    if (!operation) {
+      this.logger.debug('Queue control reaction ignored — the state does not offer it', {
+        itemId: item.id,
+        state: item.state,
+        op,
+      });
+      // A press the state cannot serve is still a press. 2026-09-21: the
+      // controls arrived late, the user pressed Cancel anyway, the model had
+      // consumed the item in between — and the user got NOTHING, while the same
+      // click on a button had always been answered. Where there is something
+      // true to say, say it here.
+      const refusal = SlackHandler.followupReactionRefusal(op, item.state);
+      if (refusal) await respond({ text: refusal });
+      return;
+    }
+
+    const value = {
+      sessionKey: found.sessionKey,
+      itemId: item.id,
+      epoch: item.epoch,
+      turnEpoch: this.getFollowupView(found.sessionKey)?.turnEpoch ?? 0,
+    };
+    const body = {
+      user: { id: reaction.user },
+      channel: { id: reaction.channel },
+      container: { channel_id: reaction.channel, message_ts: reaction.ts, thread_ts: threadTs },
+      message: { ts: reaction.ts, thread_ts: threadTs },
     };
 
     try {
@@ -3543,6 +3576,29 @@ export class SlackHandler {
     // `CANCELLABLE_STATES` (`followup-queue.ts:164-170`) plus the steered path.
     if (state === 'queued' || state === 'paused' || state === 'failed' || state === 'uncertain') return 'cancel';
     return state === 'steered' ? 'cancel' : undefined;
+  }
+
+  /**
+   * What to tell a reactor whose control the state cannot serve — or
+   * `undefined` when there is nothing TRUE to say.
+   *
+   * There is exactly one state class with an answer: the item has been handed
+   * over (`dispatched`) or the model has confirmed reading it (`resolved`).
+   * That is the race the user actually loses — the press was right, it just
+   * arrived after the item moved — and it is the same fact the steered-consumed
+   * Cancel already reports, so it reuses that wording rather than inventing a
+   * second voice for it.
+   *
+   * The silent states are silent on purpose:
+   *   - `reserved`/`claimed` — nothing was handed to the model (a `rollback`
+   *     can still put the row back, `followup-queue.ts:558-565`), so "이미
+   *     전달되어 실행 중" would be a lie and there is no other act to name;
+   *   - `cancelled` — the message already carries `no_entry_sign`, which says
+   *     the whole story; an ephemeral would only repeat what is on screen.
+   */
+  private static followupReactionRefusal(role: 'sendNow' | 'cancel', state: FollowupItem['state']): string | undefined {
+    if (state !== 'dispatched' && state !== 'resolved') return undefined;
+    return role === 'cancel' ? FOLLOWUP_CANCEL_ALREADY_DELIVERED_TEXT : FOLLOWUP_SEND_NOW_ALREADY_DELIVERED_TEXT;
   }
 
   /**
