@@ -49,6 +49,19 @@ interface RateLimitConfig {
   maxQueueSize: number; // 최대 큐 크기 (초과 시 oldest drop)
 }
 
+/**
+ * How one call rides the rate-limit queue. Only the queue POSITION is
+ * negotiable — see {@link SlackApiHelper.enqueue}.
+ */
+export interface EnqueueOptions {
+  /**
+   * Put this call at the front of the queue. For calls a human is waiting on
+   * RIGHT NOW (the queue-control reactions), not for anything a background
+   * loop emits.
+   */
+  priority?: boolean;
+}
+
 interface UpdateMessageOptions {
   unfurlLinks?: boolean;
   unfurlMedia?: boolean;
@@ -288,6 +301,8 @@ export class SlackApiHelper {
     execute: () => Promise<any>;
     resolve: (value: any) => void;
     reject: (error: any) => void;
+    /** {@link EnqueueOptions.priority} — carried so the overflow drop can see it. */
+    priority: boolean;
   }> = [];
   private processing = false;
   private rateLimit: RateLimitConfig;
@@ -357,12 +372,31 @@ export class SlackApiHelper {
 
   /**
    * Rate limit 큐에 API 호출 추가
+   *
+   * `priority` is the INTERACTIVE lane (2026-09-21). Everything this helper
+   * sends shares one FIFO queue, so a queue-control reaction used to wait
+   * behind the streaming `chat.update` calls of the turn it is trying to
+   * control — measured at 5–8 deep, seconds of delay, by which time the model
+   * had consumed the item and the user's Cancel could only be refused. A
+   * priority item is inserted at the FRONT instead (FIFO among priority items,
+   * so a control SET still paints in the order it was asked for). It is a
+   * queue-position change only: the token bucket and `minInterval` still apply,
+   * because Slack's limits are not ours to skip.
    */
-  private async enqueue<T>(execute: () => Promise<T>): Promise<T> {
+  private async enqueue<T>(execute: () => Promise<T>, options?: EnqueueOptions): Promise<T> {
+    const priority = options?.priority === true;
     return new Promise<T>((resolve, reject) => {
       // Drop oldest if queue exceeds maxQueueSize
       if (this.queue.length >= this.rateLimit.maxQueueSize) {
-        const dropped = this.queue.shift()!;
+        // The oldest ORDINARY waiter. Dropping the literal oldest would evict
+        // the priority lane first — it sits at the front — which is the exact
+        // inversion this lane exists to prevent. An all-priority queue falls
+        // back to the front, so the drop always makes room.
+        const victim = Math.max(
+          0,
+          this.queue.findIndex((item) => !item.priority),
+        );
+        const dropped = this.queue.splice(victim, 1)[0]!;
         // `data.error` is the evidence shape every caller already reads for
         // "nothing was created" (see `DEFINITIVE_POST_REJECTIONS` in
         // thread-surface.ts). A dropped item provably never ran `execute()`, so
@@ -377,7 +411,14 @@ export class SlackApiHelper {
         });
       }
 
-      this.queue.push({ execute, resolve, reject });
+      const item = { execute, resolve, reject, priority };
+      if (priority) {
+        // After the priority items already waiting, before every ordinary one.
+        const firstOrdinary = this.queue.findIndex((queued) => !queued.priority);
+        this.queue.splice(firstOrdinary === -1 ? this.queue.length : firstOrdinary, 0, item);
+      } else {
+        this.queue.push(item);
+      }
       this.processQueue();
     });
   }
@@ -944,8 +985,8 @@ export class SlackApiHelper {
    * 리액션 추가
    * @returns true if successful or already exists, false on actual failure
    */
-  async addReaction(channel: string, ts: string, emoji: string): Promise<boolean> {
-    return (await this.addReactionResult(channel, ts, emoji)).ok;
+  async addReaction(channel: string, ts: string, emoji: string, options?: EnqueueOptions): Promise<boolean> {
+    return (await this.addReactionResult(channel, ts, emoji, options)).ok;
   }
 
   /**
@@ -958,15 +999,25 @@ export class SlackApiHelper {
    *
    * One code path, two shapes — the boolean form delegates here, so a caller
    * that does not care about the code cannot drift from one that does.
+   *
+   * `options.priority` is for the reactions a human is waiting on — the queue
+   * controls, which are useless once the turn they control has moved on.
    */
-  async addReactionResult(channel: string, ts: string, emoji: string): Promise<{ ok: boolean; error?: string }> {
+  async addReactionResult(
+    channel: string,
+    ts: string,
+    emoji: string,
+    options?: EnqueueOptions,
+  ): Promise<{ ok: boolean; error?: string }> {
     try {
-      await this.enqueue(() =>
-        this.app.client.reactions.add({
-          channel,
-          timestamp: ts,
-          name: emoji,
-        }),
+      await this.enqueue(
+        () =>
+          this.app.client.reactions.add({
+            channel,
+            timestamp: ts,
+            name: emoji,
+          }),
+        options,
       );
       return { ok: true };
     } catch (error: any) {
@@ -983,8 +1034,8 @@ export class SlackApiHelper {
   /**
    * 리액션 제거
    */
-  async removeReaction(channel: string, ts: string, emoji: string): Promise<void> {
-    await this.removeReactionResult(channel, ts, emoji);
+  async removeReaction(channel: string, ts: string, emoji: string, options?: EnqueueOptions): Promise<void> {
+    await this.removeReactionResult(channel, ts, emoji, options);
   }
 
   /**
@@ -997,14 +1048,21 @@ export class SlackApiHelper {
    * the code it is — the caller reads that one as success, because the reaction
    * not being there IS the state it asked for.
    */
-  async removeReactionResult(channel: string, ts: string, emoji: string): Promise<{ ok: boolean; error?: string }> {
+  async removeReactionResult(
+    channel: string,
+    ts: string,
+    emoji: string,
+    options?: EnqueueOptions,
+  ): Promise<{ ok: boolean; error?: string }> {
     try {
-      await this.enqueue(() =>
-        this.app.client.reactions.remove({
-          channel,
-          timestamp: ts,
-          name: emoji,
-        }),
+      await this.enqueue(
+        () =>
+          this.app.client.reactions.remove({
+            channel,
+            timestamp: ts,
+            name: emoji,
+          }),
+        options,
       );
       return { ok: true };
     } catch (error: any) {

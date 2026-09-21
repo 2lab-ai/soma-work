@@ -329,12 +329,25 @@ export class FollowupReactionSurface {
     const painted = new Set<FollowupReactionRole>(roles.filter((role) => standing.includes(role)));
     const failed: FollowupReactionFailure[] = [];
 
+    // Issued CONCURRENTLY, accounted in order. One paint is one picture, and
+    // serializing it made the user watch that picture assemble emoji by emoji
+    // across the shared rate-limit queue (2026-09-21). The two orderings that
+    // matter are untouched: every remove still COMPLETES before any add is
+    // issued (the `await` below covers all of them), and the results are folded
+    // in `ops` order, so `failed`/`painted` read exactly as when this was
+    // serial.
+    const removeResults = await Promise.all(
+      ops.remove.map(async (role) => ({
+        role,
+        result: await this.runOp(
+          () => this.port.remove(target.channel, target.ts, this.nameFor(role)),
+          TOLERATED_REMOVE_ERROR,
+        ),
+      })),
+    );
+
     let removeFailed = false;
-    for (const role of ops.remove) {
-      const result = await this.runOp(
-        () => this.port.remove(target.channel, target.ts, this.nameFor(role)),
-        TOLERATED_REMOVE_ERROR,
-      );
+    for (const { role, result } of removeResults) {
       if (result.ok) continue;
       removeFailed = true;
       // Still on the message as far as anyone knows — recorded as painted so
@@ -351,8 +364,8 @@ export class FollowupReactionSurface {
       return { painted: this.order(roles, painted), failed };
     }
 
-    for (const role of ops.add) {
-      const result = await this.add(target, role);
+    const addResults = await Promise.all(ops.add.map(async (role) => ({ role, result: await this.add(target, role) })));
+    for (const { role, result } of addResults) {
       if (result.ok) {
         painted.add(role);
         continue;

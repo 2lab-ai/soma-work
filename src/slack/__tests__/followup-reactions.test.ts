@@ -196,6 +196,59 @@ describe('FollowupReactionSurface', () => {
     expect(order).toEqual(['-inbox_tray', '-ui_send_now', '-ui_cancel', '+white_check_mark']);
   });
 
+  /**
+   * 2026-09-21 — the three queued reactions used to be added one `await` at a
+   * time, so each one paid a full round trip through the shared rate-limit
+   * queue and the controls appeared seconds apart ("왜 지금 실행 이모지랑 취소
+   * 이모지가 서로 다른 시간에 추가됨?"). They are one picture, so they are
+   * issued as one: all three calls are in flight before the first answers.
+   */
+  it('issues the adds of one paint concurrently — the three controls are one picture', async () => {
+    const inFlight: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    add.mockImplementation(async (_c: string, _t: string, name: string) => {
+      inFlight.push(name);
+      await gate;
+      return { ok: true };
+    });
+
+    const paint = surface.applyState(TARGET, 'queued', undefined);
+    await Promise.resolve();
+
+    // Nothing has answered yet, and all three are already asked.
+    expect(inFlight).toEqual(['inbox_tray', 'ui_send_now', 'ui_cancel']);
+    release();
+    expect((await paint).painted).toEqual(['queued', 'sendNow', 'cancel']);
+  });
+
+  /** The same for the removes of a transition — still strictly before the adds. */
+  it('issues the removes concurrently, and still finishes all of them before any add', async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    remove.mockImplementation(async (_c: string, _t: string, name: string) => {
+      order.push(`-${name}`);
+      await gate;
+    });
+    add.mockImplementation(async (_c: string, _t: string, name: string) => {
+      order.push(`+${name}`);
+      return { ok: true };
+    });
+
+    const paint = surface.applyState(TARGET, 'resolved', ['queued', 'sendNow', 'cancel']);
+    await Promise.resolve();
+
+    expect(order).toEqual(['-inbox_tray', '-ui_send_now', '-ui_cancel']);
+    release();
+    await paint;
+    expect(order).toEqual(['-inbox_tray', '-ui_send_now', '-ui_cancel', '+white_check_mark']);
+  });
+
   it('reports which reactions are standing, so the next transition can undo them', async () => {
     expect((await surface.applyState(TARGET, 'queued', undefined)).painted).toEqual(['queued', 'sendNow', 'cancel']);
     expect((await surface.applyState(TARGET, 'cancelled', ['queued', 'sendNow', 'cancel'])).painted).toEqual([
@@ -210,7 +263,10 @@ describe('FollowupReactionSurface', () => {
 
     const result = await surface.applyState(TARGET, 'queued', undefined);
 
-    expect(added()).toEqual(['inbox_tray', 'ui_send_now', FOLLOWUP_REACTION_FALLBACKS.sendNow, 'ui_cancel']);
+    // The three roles are ISSUED first (one concurrent paint), so the repair
+    // for the refused one lands after them rather than in its place — the
+    // fallback is a second call on the same role either way.
+    expect(added()).toEqual(['inbox_tray', 'ui_send_now', 'ui_cancel', FOLLOWUP_REACTION_FALLBACKS.sendNow]);
     // The fallback WORKED, so the role is standing and nothing is outstanding.
     expect(result.painted).toEqual(['queued', 'sendNow', 'cancel']);
     expect(result.failed).toEqual([]);
