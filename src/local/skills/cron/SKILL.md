@@ -1,6 +1,6 @@
 ---
 name: cron
-description: "Cron/schedule manager UI. Trigger when the user types cron, schedule, scheduler, 크론, 스케줄, 스케쥴, 스케줄러, 스케쥴러 — or asks to see/change their cron jobs' model or output target. Lists all visible cron jobs (admins see every user's jobs with owner; non-admins see their own), then offers one-tap changes for the per-job model (default = creator's current model / fast / a specific model) and the output target (channel/thread/dm) via structured choice buttons."
+description: "Cron/schedule manager UI. Trigger when the user types cron, schedule, scheduler, 크론, 스케줄, 스케쥴, 스케줄러, 스케쥴러 — or asks to see/change their cron jobs' model or output target. Lists all visible cron jobs (admins see every user's jobs with owner; non-admins see their own), then offers one-tap changes for the per-job model (default = creator's current model / opus / fable / fast / a specific model) and the output target (channel/thread/dm) via structured choice buttons."
 ---
 
 # cron — 크론잡 관리 UI
@@ -21,7 +21,7 @@ description: "Cron/schedule manager UI. Trigger when the user types cron, schedu
 `mcp__cron__cron_list`를 호출하고 결과를 그대로 가공해 보여준다. 잡마다 반드시 표기:
 
 - 이름, 스케줄(`0 9 * * 1-5` + 사람이 읽는 설명, KST 변환 포함 — cron은 UTC 평가)
-- **모델**: `model:default(creator current model)` → "만든 사람(오너)의 현재 기본 모델을 실행 시점에 사용" / `fast` → sonnet / `custom(<id>)` → 고정 모델
+- **모델**: `model:default(creator current model)` → "만든 사람(오너)의 현재 기본 모델을 실행 시점에 사용" / `opus(latest)` · `fable(latest)` → 실행 시점의 최신 opus·fable(1M) / `fast` → sonnet / `custom(<id>)` → 고정 모델
 - **출력 대상**: `target:channel`(채널에 새 메시지) / `thread(ts:...)`(스레드 답글) / `dm`(오너에게 DM) — 기본값도 생략하지 말고 명시
 - admin 뷰면 owner(`<@U...>`)도 표기
 
@@ -41,16 +41,17 @@ description: "Cron/schedule manager UI. Trigger when the user types cron, schedu
 
 **모델 변경** 선택 시 — Slack 버튼은 **질문당 최대 4개**(+자동 `✏️ Other`)이므로 2단계로 나눈다:
 
-1단계 (recommended = default, 옵션 3개):
+1단계 (recommended = default, 옵션 4개 — 상한 꽉 참):
 
 - `default` — 만든 사람의 **현재** 기본 모델을 실행 시점에 사용 (override 해제, 추천) → 즉시 적용
-- `fast` — sonnet 고정 (가벼운 정기 작업용) → 즉시 적용
-- `특정 모델 선택` → 2단계 질문으로 진행
+- `opus` — 실행 시점의 최신 opus(1M) (`model_type=opus`) → 즉시 적용
+- `fable` — 실행 시점의 최신 fable(1M) (`model_type=fable`) → 즉시 적용
+- `다른 모델 선택` → 2단계 질문으로 진행
 
 2단계 (특정 모델, 옵션 4개 + `✏️ Other`):
 
-- `claude-fable-5` / `claude-opus-4-8[1m]` / `claude-sonnet-4-6` / `gpt-5.5` (canonical id는 `src/user-settings-store.ts` AVAILABLE_MODELS 기준 — drift 주의)
-- 그 외 모델(haiku 등)은 렌더러가 자동으로 붙이는 `✏️ Other` 입력으로 받아 `model_type=custom, model_name=<입력>`으로 전달 (5번째 이후 옵션은 잘리므로 절대 4개를 넘기지 말 것)
+- `fast` — sonnet (`model_type=fast`) / `claude-sonnet-4-6` / `gpt-5.6-sol` / `gpt-6-astra[1m]` (고정 id는 `model_type=custom`; canonical id는 `src/user-settings-store.ts` AVAILABLE_MODELS 기준 — drift 주의)
+- 그 외 모델(버전 고정 opus/fable, haiku 등)은 렌더러가 자동으로 붙이는 `✏️ Other` 입력으로 받아 `model_type=custom, model_name=<입력>`으로 전달 (5번째 이후 옵션은 잘리므로 절대 4개를 넘기지 말 것)
 
 **출력 대상 변경** 선택 시:
 
@@ -62,7 +63,7 @@ description: "Cron/schedule manager UI. Trigger when the user types cron, schedu
 
 `mcp__cron__cron_update`로 적용한다 (부분 업데이트 — 바꿀 필드만 전달):
 
-- 모델: `{name, model_type: 'default'}` (해제) / `{name, model_type: 'custom', model_name: 'gpt-5.5'}`
+- 모델: `{name, model_type: 'default'}` (해제) / `{name, model_type: 'opus'}` · `{name, model_type: 'fable'}` (최신 추종) / `{name, model_type: 'fast'}` / `{name, model_type: 'custom', model_name: 'gpt-5.5'}`
 - 출력: `{name, target: 'dm'}` / `{name, target: 'thread', threadTs: '...'}` / `{name, target: 'channel'}`
 - admin이 타인 잡 수정: `{name, owner: 'U...', ...}`
 - 삭제 선택 시엔 `mcp__cron__cron_delete` (`admin`은 owner 명시)

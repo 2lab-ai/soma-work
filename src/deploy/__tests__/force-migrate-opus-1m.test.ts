@@ -8,7 +8,7 @@
  * narrower and is the only behaviour left:
  *
  *   - OPUS-FAMILY defaults only (`claude-opus-*`, bare and `[1m]`, including a
- *     bare `claude-opus-5`) converge on `claude-opus-5[1m]`.
+ *     bare `claude-opus-5`) converge on `claude-opus-5-5[1m]`.
  *   - Every non-opus user is left byte-identical.
  *   - `sessions.json` is never touched — active sessions keep their model.
  *
@@ -56,7 +56,7 @@ function writeMarker(dataDir: string, target: string): void {
   );
 }
 
-/** A mixed population: 7 opus-family rows + 3 controls that must not move. */
+/** A mixed population: 8 opus-family rows + 3 controls that must not move. */
 const MIXED_POPULATION: Record<string, Record<string, unknown>> = {
   U_OPUS_45: { userId: 'U_OPUS_45', defaultModel: 'claude-opus-4-5-20251101', accepted: true },
   U_OPUS_46: { userId: 'U_OPUS_46', defaultModel: 'claude-opus-4-6', accepted: true },
@@ -65,17 +65,27 @@ const MIXED_POPULATION: Record<string, Record<string, unknown>> = {
   U_OPUS_48_1M: { userId: 'U_OPUS_48_1M', defaultModel: 'claude-opus-4-8[1m]', accepted: true },
   U_OPUS_5: { userId: 'U_OPUS_5', defaultModel: 'claude-opus-5', accepted: true },
   U_OPUS_5_1M: { userId: 'U_OPUS_5_1M', defaultModel: 'claude-opus-5[1m]', accepted: true },
+  U_OPUS_55_1M: { userId: 'U_OPUS_55_1M', defaultModel: 'claude-opus-5-5[1m]', accepted: true },
   U_SONNET: { userId: 'U_SONNET', defaultModel: 'claude-sonnet-4-6', accepted: true },
   U_SOL: { userId: 'U_SOL', defaultModel: 'gpt-5.6-sol', accepted: true },
   U_FABLE: { userId: 'U_FABLE', defaultModel: 'claude-fable-5[1m]', accepted: true },
 };
 
-const OPUS_ROWS = ['U_OPUS_45', 'U_OPUS_46', 'U_OPUS_46_1M', 'U_OPUS_47', 'U_OPUS_48_1M', 'U_OPUS_5', 'U_OPUS_5_1M'];
+const OPUS_ROWS = [
+  'U_OPUS_45',
+  'U_OPUS_46',
+  'U_OPUS_46_1M',
+  'U_OPUS_47',
+  'U_OPUS_48_1M',
+  'U_OPUS_5',
+  'U_OPUS_5_1M',
+  'U_OPUS_55_1M',
+];
 const CONTROL_ROWS = ['U_SONNET', 'U_SOL', 'U_FABLE'];
 
 describe('forceMigrateOpus1m — target and marker name', () => {
-  it('targets claude-opus-5[1m] and shares the store transform target', () => {
-    expect(OPUS_MIGRATION_TARGET).toBe('claude-opus-5[1m]');
+  it('targets claude-opus-5-5[1m] and shares the store transform target', () => {
+    expect(OPUS_MIGRATION_TARGET).toBe('claude-opus-5-5[1m]');
     // Drift guard: the deploy module declares the literal (it must stay
     // import-lean) but it may never disagree with the store's constant.
     expect(OPUS_MIGRATION_TARGET).toBe(OPUS_DEFAULT_MIGRATION_TARGET);
@@ -116,13 +126,14 @@ describe('forceMigrateOpus1m — first run is Opus-family selective', () => {
     const result = forceMigrateOpus1m({ dataDir });
 
     expect(result.status).toBe('applied');
-    // 7 opus rows, but `U_OPUS_5_1M` is already on target → 6 changed.
-    expect(result.migrated).toBe(6);
-    expect(result.total).toBe(10);
+    // 8 opus rows, but `U_OPUS_55_1M` is already on target → 7 changed
+    // (`U_OPUS_5_1M` moves too: Opus 5 is no longer the latest).
+    expect(result.migrated).toBe(7);
+    expect(result.total).toBe(11);
 
     const after = readSettings(dataDir);
     for (const u of OPUS_ROWS) {
-      expect(after[u]?.defaultModel).toBe('claude-opus-5[1m]');
+      expect(after[u]?.defaultModel).toBe('claude-opus-5-5[1m]');
     }
   });
 
@@ -147,7 +158,7 @@ describe('forceMigrateOpus1m — first run is Opus-family selective', () => {
     expect(result.status).toBe('applied');
 
     const marker = JSON.parse(fs.readFileSync(path.join(dataDir, OPUS_1M_MIGRATION_MARKER), 'utf8'));
-    expect(marker.target).toBe('claude-opus-5[1m]');
+    expect(marker.target).toBe('claude-opus-5-5[1m]');
     expect(marker.migrated).toBe(1);
     expect(marker.total).toBe(1);
     expect(marker.migratedAt).toBe('2026-08-26T03:00:00.000Z');
@@ -169,7 +180,7 @@ describe('forceMigrateOpus1m — first run is Opus-family selective', () => {
     forceMigrateOpus1m({ dataDir });
     expect(readSettings(dataDir).U1).toEqual({
       userId: 'U1',
-      defaultModel: 'claude-opus-5[1m]',
+      defaultModel: 'claude-opus-5-5[1m]',
       persona: 'engineer',
       accepted: true,
       defaultDirectory: '/repos/foo',
@@ -193,7 +204,7 @@ describe('forceMigrateOpus1m — first run is Opus-family selective', () => {
     const dataDir = path.join(makeTempDir(), 'data');
     writeSettings(dataDir, {
       U1: { userId: 'U1', defaultModel: 'gpt-5.6-sol' },
-      U2: { userId: 'U2', defaultModel: 'claude-opus-5[1m]' },
+      U2: { userId: 'U2', defaultModel: 'claude-opus-5-5[1m]' },
     });
     const file = path.join(dataDir, 'user-settings.json');
     const before = fs.readFileSync(file, 'utf8');
@@ -243,7 +254,7 @@ describe('forceMigrateOpus1m — target-aware, idempotent re-runs', () => {
     expect(rerun.status).toBe('applied');
     const after = readSettings(dataDir);
     for (const u of OPUS_ROWS) {
-      expect(after[u]?.defaultModel).toBe('claude-opus-5[1m]');
+      expect(after[u]?.defaultModel).toBe('claude-opus-5-5[1m]');
     }
     for (const u of CONTROL_ROWS) {
       expect(after[u]).toEqual(MIXED_POPULATION[u]);
@@ -258,7 +269,7 @@ describe('forceMigrateOpus1m — target-aware, idempotent re-runs', () => {
     writeMarker(dataDir, HISTORICAL_OPUS_1M_TARGET);
 
     expect(forceMigrateOpus1m({ dataDir }).status).toBe('applied');
-    expect(readSettings(dataDir).U1?.defaultModel).toBe('claude-opus-5[1m]');
+    expect(readSettings(dataDir).U1?.defaultModel).toBe('claude-opus-5-5[1m]');
     expect(forceMigrateOpus1m({ dataDir }).status).toBe('skipped');
   });
 
@@ -273,7 +284,7 @@ describe('forceMigrateOpus1m — target-aware, idempotent re-runs', () => {
 
     const result = forceMigrateOpus1m({ dataDir });
     expect(result.status).toBe('applied');
-    expect(readSettings(dataDir).U1?.defaultModel).toBe('claude-opus-5[1m]');
+    expect(readSettings(dataDir).U1?.defaultModel).toBe('claude-opus-5-5[1m]');
     // A corrupt marker used to mean "rewrite EVERY user" — now the blast
     // radius of that fail-open is bounded to the opus family.
     expect(readSettings(dataDir).U2?.defaultModel).toBe('claude-sonnet-4-6');
