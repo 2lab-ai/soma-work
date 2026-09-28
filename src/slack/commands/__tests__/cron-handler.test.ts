@@ -203,6 +203,16 @@ describe('model change', () => {
     expect(storage.getJobsByOwner('U_ALICE')[0].modelConfig).toEqual({ type: 'fast' });
   });
 
+  it('bare opus / fable store the floating alias type, not a pinned id', async () => {
+    seed({ modelConfig: { type: 'custom', model: 'gpt-5.5' } });
+    for (const type of ['opus', 'fable'] as const) {
+      const ctx = makeCtx({ text: `cron model daily-report ${type.toUpperCase()}` });
+      await handler.execute(ctx);
+      expect(storage.getJobsByOwner('U_ALICE')[0].modelConfig).toEqual({ type });
+      expect(saidText(ctx)).toContain(`최신 ${type}`);
+    }
+  });
+
   it('unknown model is rejected', async () => {
     seed();
     const ctx = makeCtx({ text: 'cron model daily-report not-a-model' });

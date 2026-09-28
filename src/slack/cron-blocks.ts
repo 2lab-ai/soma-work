@@ -38,6 +38,8 @@ export function parseCronActionId(actionId: string): { kind: CronActionKind; own
 
 /** static_select option values for the model select. */
 export const CRON_MODEL_DEFAULT = 'default';
+export const CRON_MODEL_OPUS = 'opus';
+export const CRON_MODEL_FABLE = 'fable';
 export const CRON_MODEL_FAST = 'fast';
 
 /** Slack plain_text_input.max_length hard cap (1..3000). */
@@ -85,6 +87,8 @@ const MAX_CARD_JOBS = 15;
 function modelOptions(): { text: { type: 'plain_text'; text: string }; value: string }[] {
   return [
     { text: { type: 'plain_text' as const, text: 'default — 만든 사람의 현재 모델' }, value: CRON_MODEL_DEFAULT },
+    { text: { type: 'plain_text' as const, text: 'opus — 최신 opus(1M)' }, value: CRON_MODEL_OPUS },
+    { text: { type: 'plain_text' as const, text: 'fable — 최신 fable(1M)' }, value: CRON_MODEL_FABLE },
     { text: { type: 'plain_text' as const, text: 'fast — sonnet' }, value: CRON_MODEL_FAST },
     ...AVAILABLE_MODELS.map((m) => ({ text: { type: 'plain_text' as const, text: m }, value: `custom:${m}` })),
   ];
@@ -93,6 +97,8 @@ function modelOptions(): { text: { type: 'plain_text'; text: string }; value: st
 function currentModelValue(job: CronJob): string {
   const c = job.modelConfig;
   if (!c || c.type === 'default') return CRON_MODEL_DEFAULT;
+  if (c.type === 'opus') return CRON_MODEL_OPUS;
+  if (c.type === 'fable') return CRON_MODEL_FABLE;
   if (c.type === 'fast') return CRON_MODEL_FAST;
   return `custom:${c.model ?? ''}`;
 }
@@ -115,6 +121,8 @@ function modeOptions(): { text: { type: 'plain_text'; text: string }; value: str
 function describeModelShort(job: CronJob): string {
   const c = job.modelConfig;
   if (!c || c.type === 'default') return 'default(만든 사람의 현재 모델)';
+  if (c.type === 'opus') return 'opus(최신)';
+  if (c.type === 'fable') return 'fable(최신)';
   if (c.type === 'fast') return 'fast';
   return `custom(${c.model ?? '?'})`;
 }
@@ -337,7 +345,7 @@ export function buildCronCard(args: { jobs: CronJob[]; isAdmin: boolean }): { te
       {
         type: 'mrkdwn',
         text:
-          '드롭다운으로 모델/출력 대상을 바로 변경합니다. 텍스트 명령: `cron model <name> <default|fast|모델>` · `cron target <name> <channel|dm|thread>` · `cron delete <name>`' +
+          '드롭다운으로 모델/출력 대상을 바로 변경합니다. 텍스트 명령: `cron model <name> <default|opus|fable|fast|모델>` · `cron target <name> <channel|dm|thread>` · `cron delete <name>`' +
           (isAdmin ? ' (admin: 끝에 `<@owner>`)' : ''),
       },
     ],

@@ -316,10 +316,24 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {
+    modelId: 'claude-opus-5-5[1m]',
+    contextWindow: 1_000_000,
+    sdkBlockingLimit: ONE_M_SDK_BLOCKING_LIMIT,
+    autoCompactTokens: 750_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
     modelId: 'claude-opus-5[1m]',
     contextWindow: 1_000_000,
     sdkBlockingLimit: ONE_M_SDK_BLOCKING_LIMIT,
     autoCompactTokens: 750_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
+    // Bare opus-5-5 keeps the same 200k opt-in contract as bare opus-5.
+    modelId: 'claude-opus-5-5',
+    contextWindow: FALLBACK_CONTEXT_WINDOW,
+    sdkBlockingLimit: sdkBlockingLimitFor(FALLBACK_CONTEXT_WINDOW),
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {
