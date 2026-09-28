@@ -1,6 +1,7 @@
 import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_NAMES } from '@soma/slack/output-flags';
 import fs from 'fs';
 import path from 'path';
+import { SDK_EFFORT_LEVELS as EFFORT_LEVELS, type SdkEffortLevel as EffortLevel } from 'soma-lib';
 import {
   DEFAULT_PERMISSION_MODE,
   isPermissionMode,
@@ -291,9 +292,10 @@ export function coerceToAvailableModel(raw: string | null | undefined): string {
   return DEFAULT_MODEL;
 }
 
-// Effort levels
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+export type { SdkEffortLevel as EffortLevel } from 'soma-lib';
+// Effort levels — this store's menu is the SDK subset (no `ultra`, which only
+// some llmux codex tiers offer): soma-lib `SDK_EFFORT_LEVELS`.
+export { SDK_EFFORT_LEVELS as EFFORT_LEVELS } from 'soma-lib';
 export const DEFAULT_EFFORT: EffortLevel = 'xhigh';
 
 /** Coerce arbitrary stored input to a known EffortLevel, falling back to DEFAULT_EFFORT. */
