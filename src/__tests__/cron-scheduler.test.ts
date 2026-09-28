@@ -16,6 +16,7 @@ import {
 } from '../cron-scheduler';
 import { SessionRegistry } from '../session-registry';
 import { ConversationSession } from '../types';
+import { MODEL_ALIASES } from '../user-settings-store';
 
 function createTestJob(overrides: Partial<CronJob> = {}): CronJob {
   return {
@@ -730,6 +731,37 @@ describe('CronScheduler — Model Override', () => {
 
     expect(injectedMessages).toHaveLength(1);
     expect(injectedMessages[0].modelOverride).toBe('claude-sonnet-4-20250514');
+  });
+
+  it('opus / fable alias types resolve to the latest MODEL_ALIASES target at fire time', async () => {
+    for (const [type, expected] of [
+      ['opus', MODEL_ALIASES.opus],
+      ['fable', MODEL_ALIASES.fable],
+    ] as const) {
+      const storage = new CronStorage(`${tmpFile}-${type}`);
+      storage.addJob({
+        name: `${type}-model`,
+        expression: '* * * * *',
+        prompt: 'Alias task',
+        owner: 'U123',
+        channel: 'C456',
+        threadTs: null,
+        modelConfig: { type },
+      });
+
+      const { deps, injectedMessages } = createMockDeps(storage);
+      deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+      deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+      deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
+
+      const scheduler = new CronScheduler(deps);
+      await scheduler.tick();
+
+      expect(injectedMessages).toHaveLength(1);
+      expect(injectedMessages[0].modelOverride).toBe(expected);
+    }
+    expect(resolveModelOverride({ type: 'opus' })).toBe('claude-opus-5-5[1m]');
+    expect(resolveModelOverride({ type: 'fable' })).toBe('claude-fable-5-1[1m]');
   });
 
   it('custom model type sets modelOverride to specified model', async () => {

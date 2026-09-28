@@ -75,6 +75,8 @@ import {
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
+import { migrateAllUsersOpusOnce } from './deploy/migrate-all-users-opus-once';
+import { migrateCronOpusOnce } from './deploy/migrate-cron-opus-once';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
@@ -162,7 +164,7 @@ async function start() {
     timing('TokenManager initialized');
 
     // One-shot OPUS-FAMILY migration: user defaults on any `claude-opus-*`
-    // generation (bare or `[1m]`) are rewritten to `claude-opus-5[1m]`. Every
+    // generation (bare or `[1m]`) are rewritten to `claude-opus-5-5[1m]`. Every
     // other user is left untouched — the all-user rewrite this used to
     // perform was retired on 2026-08-26. Gated by a TARGET-AWARE marker in
     // DATA_DIR, so a host carrying the retired `gpt-5.6-sol` marker re-runs
@@ -182,6 +184,52 @@ async function start() {
       logger.info(`reloaded user settings after opus migration (migrated=${opusDefaultMigration.migrated})`);
     }
     timing('opus default-model migration evaluated');
+
+    // 2026-09-28 one-time ALL-USER rewrite: every user's default → the latest
+    // opus (`MODEL_ALIASES.opus`). Unlike the opus-family migration above,
+    // the marker is PRESENCE-only and written BEFORE the data, so this never
+    // runs twice on a host and a user who switches back afterwards keeps their
+    // choice. A throw before the marker (unreadable / mis-shaped file) wrote
+    // nothing and is retried next boot; a throw after it is a missed one-shot
+    // (logged below), never a replay. Either way it must not stop the boot.
+    // The singleton loaded at import time may be stale whenever the migration
+    // got past the marker check, so reload unless it was a clean skip —
+    // including after a throw.
+    let allUsersOpusStatus: 'skipped' | 'applied' | 'failed' = 'failed';
+    try {
+      const allUsersOpus = migrateAllUsersOpusOnce({ dataDir: DATA_DIR });
+      allUsersOpusStatus = allUsersOpus.status;
+      logger.info(
+        `all-users opus one-time migration: ${allUsersOpus.status} (target=${allUsersOpus.target}, migrated=${allUsersOpus.migrated}/${allUsersOpus.total}, marker=${allUsersOpus.markerFile})`,
+      );
+    } catch (error) {
+      logger.error('all-users opus one-time migration FAILED — check the marker before assuming a retry', error);
+    } finally {
+      if (allUsersOpusStatus !== 'skipped') {
+        try {
+          userSettingsStore.reloadSettings();
+          logger.info(`reloaded user settings after all-users opus migration (status=${allUsersOpusStatus})`);
+        } catch (error) {
+          logger.error('reloadSettings after all-users opus migration failed', error);
+        }
+      }
+    }
+    timing('all-users opus migration evaluated');
+
+    // 2026-09-28 one-time cron rewrite: every job's model → `{type:'opus'}`
+    // (resolved to the latest opus at fire time). Same presence-only,
+    // marker-first contract as above. Runs here — BEFORE `app.start()` — so no
+    // Slack event can have spawned a session whose cron MCP subprocess writes
+    // cron-jobs.json concurrently. Own try/catch: a failure never blocks boot.
+    try {
+      const cronOpus = migrateCronOpusOnce({ cronFile: path.join(DATA_DIR, 'cron-jobs.json'), dataDir: DATA_DIR });
+      logger.info(
+        `cron opus one-time migration: ${cronOpus.status} (migrated=${cronOpus.migrated}/${cronOpus.total}, marker=${cronOpus.markerFile})`,
+      );
+    } catch (error) {
+      logger.error('cron opus one-time migration FAILED — check the marker before assuming a retry', error);
+    }
+    timing('cron opus migration evaluated');
 
     // llmux-dependent boot steps (codex pin sync + model-catalog fetch) run
     // AFTER initAuthRuntimeDefault below — gating them on the static

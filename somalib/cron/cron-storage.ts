@@ -23,7 +23,12 @@ export type CronTarget = 'channel' | 'thread' | 'dm';
 
 /** Model override config attached to a cron job. */
 export interface CronModelConfig {
-  type: 'default' | 'fast' | 'custom';
+  /**
+   * `opus` / `fable` are floating aliases: the job stores only the type and
+   * the scheduler resolves it to the latest generation at FIRE time, so a
+   * model bump never needs a data migration. `custom` pins `model`.
+   */
+  type: 'default' | 'opus' | 'fable' | 'fast' | 'custom';
   /** Model identifier for custom type (e.g. "claude-sonnet-4-20250514") */
   model?: string;
   /** Reasoning effort for custom type */

@@ -286,7 +286,9 @@ source of truth for any model not listed here:
 |---|---|---|
 | `claude-fable-5-1[1m]` (aliases `fable`, `fable[1m]`, `fable-5-1`) | 1,000,000 | 750,000 |
 | `claude-fable-5[1m]` (version-pinned alias `fable-5`) | 1,000,000 | 750,000 |
-| `claude-opus-5[1m]` (alias `opus`) | 1,000,000 | 750,000 |
+| `claude-opus-5-5[1m]` (aliases `opus`, `opus[1m]`, `opus-5-5`) | 1,000,000 | 750,000 |
+| `claude-opus-5[1m]` (version-pinned alias `opus-5[1m]`) | 1,000,000 | 750,000 |
+| `claude-opus-5-5` (bare, no `[1m]`) | 200,000 | none — falls back to the legacy per-user percentage below |
 | `claude-opus-5` (bare, no `[1m]`) | 200,000 | none — falls back to the legacy per-user percentage below |
 | `gpt-5.6-sol[1m]` (alias `sol[1m]`) | 1,000,000 | 600,000 |
 | `gpt-5.6-sol` (bare) | 372,000 | 340,000 |
@@ -362,7 +364,7 @@ A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Sour
 | `key` · `auth key` | DM yourself your personal llmux client key + local Claude Code setup (`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`). Same user always gets the same key; llmux meters bot + local usage as one tenant. Works for every user (it is your own key) |
 | `cct` · `cct set <n>` · `cct next` · `cct usage [<n>]` · `cct auto [dry]` | CCT token status / rotation; `auto` = admin-only manual auto-rotate (token mutation is card-only since #569) |
 | `cron` · `schedule` (also `크론` · `스케줄`) | Interactive cron card — per-job model/output-target dropdowns + delete button; routed as a command so autogoal can never swallow it; admins see all users' jobs with the owner shown |
-| `cron model <name> <default\|fast\|model>` · `cron target <name> <channel\|dm\|thread>` · `cron delete <name>` | Change a job's model (`default` = creator's current model at fire time) / delivery target / delete; admins address another user's job by appending `<@owner>` |
+| `cron model <name> <default\|opus\|fable\|fast\|model>` · `cron target <name> <channel\|dm\|thread>` · `cron delete <name>` | Change a job's model (`default` = creator's current model at fire time; `opus`/`fable` = latest opus/fable resolved at fire time) / delivery target / delete; admins address another user's job by appending `<@owner>` |
 | `$` · `$model <v>` · `$verbosity <v>` · `$effort <v>` · `$thinking <v>` · `$thinking_summary <v>` | **Legacy** session prefix during deprecation grace period (emits one-line notice, use `%` going forward) |
 
 Any free-form text not matching the whitelist is treated as a chat / workflow dispatch prompt.
