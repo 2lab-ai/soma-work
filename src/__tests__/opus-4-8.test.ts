@@ -36,7 +36,7 @@ describe('opus-4.8 — release wiring', () => {
     // explicitly chose 4.8 must not be rolled forward with them.
     expect(MODEL_ALIASES['opus-4.8']).toBe('claude-opus-4-8');
     expect(MODEL_ALIASES['opus-4.8[1m]']).toBe('claude-opus-4-8[1m]');
-    expect(MODEL_ALIASES['opus[1m]']).toBe('claude-opus-5[1m]');
+    expect(MODEL_ALIASES['opus[1m]']).toBe('claude-opus-5-5[1m]');
     expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
   });
 

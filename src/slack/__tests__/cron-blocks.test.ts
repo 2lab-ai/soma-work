@@ -64,6 +64,31 @@ describe('buildCronCard', () => {
     expect(actions.elements[3].confirm).toBeUndefined();
   });
 
+  it('model select leads with default, opus, fable, fast — then the concrete models', () => {
+    const { blocks } = buildCronCard({ jobs: [job()], isAdmin: false });
+    const modelSelect = blocks.find((b: any) => b.type === 'actions').elements[0];
+    const values = modelSelect.options.map((o: any) => o.value);
+    expect(values.slice(0, 4)).toEqual(['default', 'opus', 'fable', 'fast']);
+    expect(values.slice(4)).toEqual(AVAILABLE_MODELS.map((m) => `custom:${m}`));
+    const labels = modelSelect.options.slice(0, 4).map((o: any) => o.text.text);
+    expect(labels).toEqual([
+      'default — 만든 사람의 현재 모델',
+      'opus — 최신 opus(1M)',
+      'fable — 최신 fable(1M)',
+      'fast — sonnet',
+    ]);
+  });
+
+  it('preselects and describes the floating opus / fable alias types', () => {
+    for (const type of ['opus', 'fable'] as const) {
+      const { blocks } = buildCronCard({ jobs: [job({ modelConfig: { type } })], isAdmin: false });
+      const actions = blocks.find((b: any) => b.type === 'actions');
+      expect(actions.elements[0].initial_option.value).toBe(type);
+      const section = blocks.find((b: any) => b.type === 'section' && b.text.text.includes('daily-report'));
+      expect(section.text.text).toContain(`${type}(최신)`);
+    }
+  });
+
   it('preselects the current model and target', () => {
     const { blocks } = buildCronCard({
       jobs: [job({ modelConfig: { type: 'custom', model: 'gpt-5.5' }, target: 'dm' })],

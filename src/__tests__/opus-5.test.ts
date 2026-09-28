@@ -70,8 +70,8 @@ describe('opus-5 — release wiring', () => {
     // the requested 750k auto-compact default because Claude Code sizes it at
     // 200k. The version-pinned `opus-5` alias still selects the bare id for a
     // user who deliberately wants the 200k profile for this one session.
-    expect(MODEL_ALIASES.opus).toBe('claude-opus-5[1m]');
-    expect(MODEL_ALIASES['opus[1m]']).toBe('claude-opus-5[1m]');
+    expect(MODEL_ALIASES.opus).toBe('claude-opus-5-5[1m]');
+    expect(MODEL_ALIASES['opus[1m]']).toBe('claude-opus-5-5[1m]');
     expect(MODEL_ALIASES['opus-5']).toBe('claude-opus-5');
     expect(MODEL_ALIASES['opus-5[1m]']).toBe('claude-opus-5[1m]');
   });
@@ -90,7 +90,7 @@ describe('opus-5 — release wiring', () => {
 
   it('resolves and coerces both spellings', () => {
     const store = makeStore();
-    expect(store.resolveModelInput('opus')).toBe('claude-opus-5[1m]');
+    expect(store.resolveModelInput('opus')).toBe('claude-opus-5-5[1m]');
     expect(store.resolveModelInput('claude-opus-5')).toBe('claude-opus-5');
     expect(store.resolveModelInput('claude-opus-5[1m]')).toBe('claude-opus-5[1m]');
     expect(coerceToAvailableModel('claude-opus-5')).toBe('claude-opus-5');
@@ -141,8 +141,8 @@ describe('opus-5 — context profile (suffix is the 1M opt-in)', () => {
 });
 
 describe('migrateOpusDefaultModel — the pure transform', () => {
-  it('maps every opus-family spelling to claude-opus-5[1m]', () => {
-    expect(OPUS_DEFAULT_MIGRATION_TARGET).toBe('claude-opus-5[1m]');
+  it('maps every opus-family spelling to claude-opus-5-5[1m]', () => {
+    expect(OPUS_DEFAULT_MIGRATION_TARGET).toBe('claude-opus-5-5[1m]');
     for (const id of [
       'claude-opus-4-5-20251101',
       'claude-opus-4-6',
@@ -153,8 +153,10 @@ describe('migrateOpusDefaultModel — the pure transform', () => {
       'claude-opus-4-8[1m]',
       'claude-opus-5',
       'claude-opus-5[1m]',
+      'claude-opus-5-5',
+      'claude-opus-5-5[1m]',
     ]) {
-      expect(migrateOpusDefaultModel(id)).toBe('claude-opus-5[1m]');
+      expect(migrateOpusDefaultModel(id)).toBe('claude-opus-5-5[1m]');
     }
   });
 
@@ -168,7 +170,7 @@ describe('migrateOpusDefaultModel — the pure transform', () => {
   });
 
   it('is idempotent and total (non-string input passes through)', () => {
-    expect(migrateOpusDefaultModel(migrateOpusDefaultModel('claude-opus-4-7'))).toBe('claude-opus-5[1m]');
+    expect(migrateOpusDefaultModel(migrateOpusDefaultModel('claude-opus-4-7'))).toBe('claude-opus-5-5[1m]');
     expect(migrateOpusDefaultModel(undefined as unknown as string)).toBeUndefined();
   });
 });
@@ -210,16 +212,16 @@ describe('opus-5 — disk-backed user-default migration (startup one-shot, then 
     return dir;
   }
 
-  it('lands every opus-family default on claude-opus-5[1m]', () => {
+  it('lands every opus-family default on claude-opus-5-5[1m]', () => {
     const dir = seed();
     forceMigrateOpus1m({ dataDir: dir });
     const store = new UserSettingsStore(dir);
     for (const u of OPUS_USERS) {
-      expect(store.getUserDefaultModel(u)).toBe('claude-opus-5[1m]');
+      expect(store.getUserDefaultModel(u)).toBe('claude-opus-5-5[1m]');
     }
     const onDisk = readSettings(dir);
     for (const u of OPUS_USERS) {
-      expect(onDisk[u]?.defaultModel).toBe('claude-opus-5[1m]');
+      expect(onDisk[u]?.defaultModel).toBe('claude-opus-5-5[1m]');
     }
   });
 
@@ -243,7 +245,7 @@ describe('opus-5 — disk-backed user-default migration (startup one-shot, then 
     for (const u of OPUS_USERS) {
       const before = { ...SEEDED[u as keyof typeof SEEDED] } as Record<string, unknown>;
       const after = { ...onDisk[u] };
-      expect(after.defaultModel).toBe('claude-opus-5[1m]');
+      expect(after.defaultModel).toBe('claude-opus-5-5[1m]');
       delete before.defaultModel;
       delete after.defaultModel;
       expect(after).toEqual(before);
@@ -282,7 +284,7 @@ describe('opus-5 — disk-backed user-default migration (startup one-shot, then 
 
     forceMigrateOpus1m({ dataDir: dir }); // main() migration — disk only
 
-    expect(readSettings(dir).U_OPUS_47?.defaultModel).toBe('claude-opus-5[1m]');
+    expect(readSettings(dir).U_OPUS_47?.defaultModel).toBe('claude-opus-5-5[1m]');
     // The defect being fixed: disk and memory disagree inside one process.
     expect(store.getUserDefaultModel('U_OPUS_47')).toBe('claude-opus-4-7');
   });
@@ -296,7 +298,7 @@ describe('opus-5 — disk-backed user-default migration (startup one-shot, then 
     store.reloadSettings();
 
     for (const u of OPUS_USERS) {
-      expect(store.getUserDefaultModel(u)).toBe('claude-opus-5[1m]');
+      expect(store.getUserDefaultModel(u)).toBe('claude-opus-5-5[1m]');
     }
     for (const u of NON_OPUS_USERS) {
       expect(store.getUserDefaultModel(u)).toBe(SEEDED[u as keyof typeof SEEDED].defaultModel);
