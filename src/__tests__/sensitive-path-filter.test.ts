@@ -1,6 +1,6 @@
 import * as os from 'os';
 import * as path from 'path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   checkBashSensitivePaths,
   checkSensitiveGlob,
@@ -115,6 +115,29 @@ describe('checkSensitivePath', () => {
       expect(result.isSensitive).toBe(false);
     });
   });
+
+  // Regression: `.`, `..` and empty segments used to reach the checks unresolved, so any such
+  // spelling of a sensitive path was allowed; `$HOME` and `${HOME}` were not expanded like `~`.
+  describe('checks every spelling of a sensitive path', () => {
+    it.each([
+      [`${HOME}/work/../.ssh/id_rsa`, 'parent segment'],
+      [`${HOME}/./.ssh/id_rsa`, 'current-directory segment'],
+      [`${HOME}//.ssh/id_rsa`, 'empty segment'],
+      [`/tmp/..${HOME}/.aws/credentials`, 'parent segment above home'],
+      ['/../etc/shadow', 'parent segment at the root'],
+      ['/etc//shadow', 'empty segment outside home'],
+      ['/opt/soma-work/./dev/config.json', 'current-directory segment in a service config'],
+      ['$HOME/.ssh/id_rsa', '$HOME'],
+      [`\${HOME}/.aws/credentials`, `\${HOME}`],
+    ])('blocks: %s (%s)', (filePath) => {
+      const result = checkSensitivePath(filePath);
+      expect(result.isSensitive).toBe(true);
+    });
+
+    it('allows a sibling that only shares a name prefix with a sensitive directory', () => {
+      expect(checkSensitivePath(`${HOME}/.sshx/key`).isSensitive).toBe(false);
+    });
+  });
 });
 
 describe('checkBashSensitivePaths', () => {
@@ -157,6 +180,29 @@ describe('checkBashSensitivePaths', () => {
       expect(result.isSensitive).toBe(false);
     });
   });
+
+  // Regression: the extraction regexes only captured paths starting with `/`, so a home-relative
+  // path lost its `~` and was checked as `/.ssh/...`; dot segments were never resolved.
+  describe('blocks home-relative and dot-segment spellings', () => {
+    it.each([
+      ['cat ~/.ssh/id_rsa', 'cat with ~'],
+      ['cat $HOME/.ssh/id_rsa', 'cat with $HOME'],
+      [`cat \${HOME}/.aws/credentials`, `cat with \${HOME}`],
+      ['head -1 ~/.netrc', 'head with ~'],
+      [`cat ${HOME}/proj/../.ssh/id_rsa`, 'cat with a parent segment'],
+      ['cat < ~/.ssh/id_rsa', 'input redirect after a read command'],
+      ['wc -c < ~/.ssh/id_rsa', 'input redirect without a read command'],
+      ['cp ~/.ssh/id_rsa /tmp/x ', 'cp with ~'],
+      ['source ~/.env', 'source with ~'],
+    ])('blocks: %s (%s)', (command) => {
+      const result = checkBashSensitivePaths(command);
+      expect(result.isSensitive).toBe(true);
+    });
+
+    it('allows a home-relative path that is not sensitive', () => {
+      expect(checkBashSensitivePaths('cat ~/project/README.md').isSensitive).toBe(false);
+    });
+  });
 });
 
 describe('checkSensitiveGlob', () => {
@@ -178,6 +224,32 @@ describe('checkSensitiveGlob', () => {
   it('allows glob in user workspace', () => {
     const result = checkSensitiveGlob('**/*.ts', '/tmp/U094E5L4A15/soma-work');
     expect(result.isSensitive).toBe(false);
+  });
+
+  it('blocks a pattern whose concrete prefix reaches .ssh through a parent segment', () => {
+    const result = checkSensitiveGlob(`${HOME}/work/../.ssh/*`);
+    expect(result.isSensitive).toBe(true);
+  });
+});
+
+// Regression: checked paths have /private/tmp rewritten to /tmp, but the tables were built from
+// HOME as os.homedir() returned it, so under a HOME in /private/tmp no path ever matched them.
+describe('with HOME under /private/tmp', () => {
+  it.each([
+    ['~/.ssh/id_rsa', '~'],
+    ['/private/tmp/soma-home/.ssh/id_rsa', '/private/tmp spelling'],
+    ['/tmp/soma-home/.ssh/id_rsa', '/tmp spelling'],
+    ['/private/tmp/soma-home/.gitconfig', 'exact file'],
+  ])('blocks: %s (%s)', async (filePath) => {
+    vi.stubEnv('HOME', '/private/tmp/soma-home');
+    vi.resetModules();
+    try {
+      const filter = await import('../sensitive-path-filter');
+      expect(filter.checkSensitivePath(filePath).isSensitive).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
   });
 });
 
