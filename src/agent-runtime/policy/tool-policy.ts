@@ -79,7 +79,9 @@ export interface ToolPolicyContext {
    *   • `legacy` → `pass` (defer to the SDK per-tool prompt).
    *   • `bypass` → `allow` Bash and the native tools (unsafe — even dangerous Bash).
    *   • `auto`   → allow non-dangerous; a dangerous-rule hit → `classify`.
-   * Other tools (`mcp__` …) get `pass`, so the SDK's allowedTools gate still applies.
+   * Other tools (`mcp__` …) get `pass`: no opinion beyond the deny tier. In `auto` and `bypass`
+   * the SDK runs with `bypassPermissions`, so a passed call runs; MCP grants are checked, for
+   * non-admins, by the deny tier's `checkMcpToolPermission` guard.
    */
   mode: PermissionMode;
   /** Live abort state at fire time (`abortController?.signal.aborted ?? false`). */
@@ -128,7 +130,9 @@ export function evaluateToolPolicy(
   const input = toolInput ?? {};
   const command = asStr(input.command);
 
-  // ── DENY tier (any one wins; the order only picks which guard's reason is reported) ──
+  // ── DENY tier ──
+  // Any guard that fires denies, and the first to fire returns its whole result: reordering
+  // the guards never changes the decision, but can change the reported reason and denyMessage.
 
   // 1. Abort guard (Bash only): deny all Bash after session abort to stop
   //    SDK fire-and-forget writes.
@@ -147,8 +151,9 @@ export function evaluateToolPolicy(
     if (sensitive?.isSensitive) {
       return { decision: 'deny', reason: `sensitive-path: ${sensitive.reason ?? 'sensitive location'}` };
     }
-    // 4. MCP tool permission (mcp__ tools) — catches mid-session grant expiry
-    //    that the query-start allowedTools snapshot cannot.
+    // 4. MCP tool permission (mcp__ tools): checks the user's grants on every
+    //    call, so a grant that expires mid-session is denied. The query-start
+    //    `allowedTools` list only decides which tools run without a prompt.
     if (toolName.startsWith('mcp__')) {
       const denied = ctx.checkMcpToolPermission(toolName);
       if (denied !== null) {
@@ -199,7 +204,8 @@ export function evaluateToolPolicy(
   }
 
   // 9. Native tools run in bypass and auto mode alike. `mcp__` tools get no
-  //    opinion here, so the SDK's allowedTools gate still applies to them.
+  //    opinion here (`pass`); in auto and bypass the SDK runs with
+  //    `bypassPermissions`, so a passed call runs (grants are checked in step 4).
   if (ctx.mode !== 'legacy' && NATIVE_BYPASS_TOOLS.includes(toolName)) {
     return { decision: 'allow', reason: `${ctx.mode}: native tool` };
   }
