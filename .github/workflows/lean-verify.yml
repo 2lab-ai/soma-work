@@ -28,8 +28,15 @@ jobs:
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, fable-m5max]
-    timeout-minutes: 20
+    # `--check` plus `--selftest` come close to 20 minutes on a loaded runner.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Rebuild proofs, audit axioms, check vector drift
+      - name: Rebuild proofs, audit declarations, replay the kernel, check vector drift
         run: bash scripts/verification/lean-verify.sh --check
+      # Plants each forbidden construct in a scratch copy. Soundness escapes must be rejected
+      # with and without the textual checks; an invisible character, by the source gate only;
+      # a clean module must pass. A gate that silently stopped catching something would
+      # otherwise stay green.
+      - name: Self-test the gate against planted forbidden constructs
+        run: bash scripts/verification/lean-verify.sh --selftest
