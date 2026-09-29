@@ -5,7 +5,9 @@
  * `verification/lean/SomaVerify/ToolPolicy/Model.lean` transcribes the policy with the guard
  * primitives (`isSshCommand`, the sensitive-path checks, `isCrossUserAccess`,
  * `checkMcpToolPermission`, `handlePrIssuePrecondition`, `bypassBashPermissionDecision`) as
- * inputs, and `Proofs.lean` proves its documented invariants. This suite ties that model to the
+ * inputs. `Proofs.lean` proves the documented invariants of the phase-1 policy
+ * (`ModelOriginal.lean`) and `Simplification.lean` proves they hold for `Model.lean` too, which
+ * returns the phase-1 result for every input (`evaluate_toOriginal`). This suite ties the model to the
  * code: it mocks every primitive module the policy imports, and for each vector row feeds the
  * row's primitive results to the REAL `evaluateToolPolicy`, once per call of the row, requiring
  * the model's result exactly. The `table` rows are the full truth table: every mode, context

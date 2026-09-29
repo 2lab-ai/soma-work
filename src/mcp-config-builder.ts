@@ -189,7 +189,8 @@ export class McpConfigBuilder {
 
     // `legacy` → SDK prompts the user for every tool (the old accept/reject).
     // `auto` / `bypass` → the SDK runs without its own prompt; the unified
-    // PreToolUse policy hook decides allow / ask / classify per `somaPermissionMode`.
+    // PreToolUse policy hook decides allow / deny / classify / pass per `somaPermissionMode`
+    // (a `classify` the classifier escalates reaches the user as an SDK `ask`).
     // (`auto` still gets the permission-prompt server below — the classifier may
     // escalate a dangerous command to the Slack UI.)
     const userBypass = somaPermissionMode !== 'legacy';
