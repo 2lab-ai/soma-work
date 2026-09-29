@@ -147,7 +147,7 @@ def targetedArgvs : List (List String) :=
     ["setup", "--profile", "préview"],
     ["setup", "—json"],
     ["doctor", "--json", "😀"],
-    ["service", "stop", "--profile", "production", " "],
+    ["service", "stop", "--profile", "production", "\u00a0"],
     -- empty strings
     [""],
     ["setup", ""],
