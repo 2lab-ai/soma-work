@@ -1,4 +1,5 @@
 import SomaVerify.WebhookSsrf.Model
+import SomaVerify.WebhookSsrf.ModelOriginal
 import SomaVerify.WebhookSsrf.Spec
 
 /-!
@@ -16,21 +17,21 @@ open SomaVerify.WebhookSsrf Spec
 
 /-! ## Bit operations -/
 
-/-- TS `inBlock` (ts:182) compares `address >> k` with `base >> k`: integer division by 2^k. -/
+/-- TS `inBlock` (ts:181) compares `address >> k` with `base >> k`: integer division by 2^k. -/
 theorem shiftRight_eq_div (a k : Nat) : a >>> k = a / 2 ^ k :=
   Nat.shiftRight_eq_div_pow a k
 
-/-- ts:226: the IPv4 address a NAT64 address carries, `address & 0xffffffffn`, is its low 32
+/-- ts:222: the IPv4 address a NAT64 address carries, `address & 0xffffffffn`, is its low 32
 bits. -/
 theorem nat64_low32_eq (a : Nat) : a &&& 0xffffffff = a % 2 ^ 32 := by
   rw [show (0xffffffff : Nat) = 2 ^ 32 - 1 from rfl, Nat.and_two_pow_sub_one_eq_mod]
 
-/-- ts:161: `parseIpv6` accumulates `(value << 16n) | BigInt(group)`; for a 16-bit group that is
+/-- ts:160: `parseIpv6` accumulates `(value << 16n) | BigInt(group)`; for a 16-bit group that is
 `value * 65536 + group`. -/
 theorem shiftLeft_or_eq (v g : Nat) (hg : g < 2 ^ 16) : (v <<< 16) ||| g = v * 65536 + g := by
   rw [← Nat.shiftLeft_add_eq_or_of_lt hg, Nat.shiftLeft_eq]
 
-/-- ts:140: a dotted-quad tail becomes the groups `ipv4 >> 16n` and `ipv4 & 0xffffn`, its high
+/-- ts:139: a dotted-quad tail becomes the groups `ipv4 >> 16n` and `ipv4 & 0xffffn`, its high
 and low 16 bits, which `shiftLeft_or_eq` puts back together. -/
 theorem dotted_tail_split (v : Nat) :
     v >>> 16 = v / 65536 ∧ v &&& 0xffff = v % 65536 ∧ (v >>> 16) * 65536 + (v &&& 0xffff) = v := by
@@ -52,7 +53,7 @@ theorem mapped_hex_decomposition (hi : Nat) (h : hi < 65536) :
 
 /-! ## Blocks -/
 
-/-- For an aligned block, TS `inBlock` (ts:180-183) holds exactly between the block's first and
+/-- For an aligned block, TS `inBlock` (ts:179-182) holds exactly between the block's first and
 last address. -/
 theorem contains_iff_mem {bits : Nat} {b : Block} {a : Nat} (h : b.base % 2 ^ (bits - b.len) = 0) :
     b.contains bits a = true ↔ Mem bits b a := by
@@ -80,27 +81,32 @@ theorem contains_iff_mem {bits : Nat} {b : Block} {a : Nat} (h : b.base % 2 ^ (b
       omega
     · exact Nat.div_le_div_right h1
 
-/-! ## The registry loop -/
+/-! ## The registry verdict
+
+The simplified TS `registryBlocks` (ts:204-211) states rule (i) directly. The original was a
+longest-prefix loop (`Original.registryLoop`); the loop lemmas below are about it, and
+`registryBlocks_eq_original` joins the two. -/
 
 /-- Rows that contain `address` and have the same prefix length agree on reachability. -/
 def SameLengthSameReach (bits address : Nat) (rows : List RegistryBlock) : Prop :=
   ∀ r1 ∈ rows, ∀ r2 ∈ rows, r1.toBlock.contains bits address = true →
     r2.toBlock.contains bits address = true → r1.len = r2.len → r1.reach = r2.reach
 
-/-- The loop of TS `registryBlocks` (ts:205-215), from any state `(bestLength, blocked)`: it ends
+/-- The loop of the original TS `registryBlocks` (ts:205-215 at a8d2e7ca), from any state
+`(bestLength, blocked)`: it ends
 with `true` iff no row beats `bestLength` and `blocked` already holds, or a row of maximal length
 among those containing the address beats `bestLength` and is not `True`. -/
 theorem registryLoop_iff (bits address : Nat) : ∀ (rows : List RegistryBlock) (best : Int)
     (blocked : Bool), SameLengthSameReach bits address rows →
-    (registryLoop address bits rows best blocked = true ↔
+    (Original.registryLoop address bits rows best blocked = true ↔
       ((blocked = true ∧ ∀ r ∈ rows, r.toBlock.contains bits address = true → (r.len : Int) ≤ best) ∨
         ∃ r ∈ rows, r.toBlock.contains bits address = true ∧ best < r.len ∧ r.reach ≠ .yes ∧
           ∀ r' ∈ rows, r'.toBlock.contains bits address = true → r'.len ≤ r.len))
-  | [], best, blocked, _ => by simp [registryLoop]
+  | [], best, blocked, _ => by simp [Original.registryLoop]
   | r :: rest, best, blocked, hwf => by
     have hwf' : SameLengthSameReach bits address rest := fun r1 h1 r2 h2 =>
       hwf r1 (List.mem_cons_of_mem _ h1) r2 (List.mem_cons_of_mem _ h2)
-    unfold registryLoop
+    unfold Original.registryLoop
     by_cases hc : (r.len : Int) > best ∧ r.toBlock.contains bits address = true
     · have hcond : (decide ((r.len : Int) > best) && r.toBlock.contains bits address) = true := by
         simp [hc.1, hc.2]
@@ -191,13 +197,14 @@ theorem exists_max_len (P : RegistryBlock → Prop) :
       · exact Nat.le_refl _
       · exact absurd ⟨r', hr', hp'⟩ hxs
 
-/-- TS `registryBlocks` meets rule (i) for every address, on any table whose blocks are aligned
-and whose same-length blocks with the same prefix agree on reachability. -/
-theorem registryBlocks_iff (address bits : Nat) (rows : List RegistryBlock)
+/-- The original loop (`Original.registryBlocks`) meets rule (i) for every address, on any table
+whose blocks are aligned and whose same-length blocks with the same prefix agree on
+reachability. -/
+theorem registryLoop_blocks_iff (address bits : Nat) (rows : List RegistryBlock)
     (hal : ∀ r ∈ rows, r.base % 2 ^ (bits - r.len) = 0)
     (hwf : ∀ r1 ∈ rows, ∀ r2 ∈ rows, r1.len = r2.len →
       r1.base >>> (bits - r1.len) = r2.base >>> (bits - r2.len) → r1.reach = r2.reach) :
-    registryBlocks address rows bits = true ↔ RegistryBlocked bits rows address := by
+    Original.registryBlocks address rows bits = true ↔ RegistryBlocked bits rows address := by
   have hsame : SameLengthSameReach bits address rows := by
     intro r1 h1 r2 h2 hc1 hc2 hlen
     apply hwf r1 h1 r2 h2 hlen
@@ -206,7 +213,7 @@ theorem registryBlocks_iff (address bits : Nat) (rows : List RegistryBlock)
     exact hc1.symm.trans (hlen ▸ hc2)
   have hmem : ∀ r ∈ rows, r.toBlock.contains bits address = true ↔ Mem bits r.toBlock address :=
     fun r hr => contains_iff_mem (hal r hr)
-  unfold registryBlocks
+  unfold Original.registryBlocks
   rw [registryLoop_iff bits address rows (-1) false hsame]
   constructor
   · rintro (⟨h, _⟩ | ⟨r, hr, hc, _, hre, hmax⟩)
@@ -226,6 +233,36 @@ theorem registryBlocks_iff (address bits : Nat) (rows : List RegistryBlock)
       rw [this]
       exact hre
 
+/-- TS `registryBlocks` (ts:204-211) is rule (i) itself: on any table whose blocks are aligned it
+blocks exactly the addresses `RegistryBlocked` describes. Unlike the loop, it needs no agreement
+between same-length blocks. -/
+theorem registryBlocks_iff (address bits : Nat) (rows : List RegistryBlock)
+    (hal : ∀ r ∈ rows, r.base % 2 ^ (bits - r.len) = 0) :
+    registryBlocks address rows bits = true ↔ RegistryBlocked bits rows address := by
+  have hmem : ∀ r ∈ rows, r.toBlock.contains bits address = true ↔ Mem bits r.toBlock address :=
+    fun r hr => contains_iff_mem (hal r hr)
+  unfold registryBlocks RegistryBlocked
+  simp only [List.any_eq_true, List.mem_filter, Bool.and_eq_true, bne_iff_ne, ne_eq,
+    Bool.not_eq_true', List.any_eq_false, decide_eq_true_eq, beq_iff_eq, not_and]
+  constructor
+  · rintro ⟨r, ⟨hr, hc⟩, hre, hno⟩
+    refine ⟨r, hr, (hmem r hr).1 hc, hre, fun r' hr' hm' hlt hy => ?_⟩
+    exact hno r' ⟨hr', (hmem r' hr').2 hm'⟩ hlt hy
+  · rintro ⟨r, hr, hm, hre, hmore⟩
+    refine ⟨r, ⟨hr, (hmem r hr).2 hm⟩, hre, fun r' ⟨hr', hc'⟩ hlt hy => ?_⟩
+    exact hmore r' hr' ((hmem r' hr').1 hc') hlt hy
+
+/-- The declarative `registryBlocks` equals the original loop at every address, on any aligned table
+whose same-length blocks with the same prefix agree on reachability, as both registry tables do
+(`ipv4Special_consistent`, `ipv6Special_consistent`). -/
+theorem registryBlocks_eq_original (address bits : Nat) (rows : List RegistryBlock)
+    (hal : ∀ r ∈ rows, r.base % 2 ^ (bits - r.len) = 0)
+    (hwf : ∀ r1 ∈ rows, ∀ r2 ∈ rows, r1.len = r2.len →
+      r1.base >>> (bits - r1.len) = r2.base >>> (bits - r2.len) → r1.reach = r2.reach) :
+    registryBlocks address rows bits = Original.registryBlocks address rows bits :=
+  Bool.eq_iff_iff.2
+    ((registryBlocks_iff address bits rows hal).trans (registryLoop_blocks_iff address bits rows hal hwf).symm)
+
 /-! ## Table facts, decided by computation on the finite tables -/
 
 /-- Every IPv4 registry block starts on a multiple of its size. -/
@@ -244,13 +281,13 @@ theorem ipv6Special_consistent : ∀ r1 ∈ ipv6Special, ∀ r2 ∈ ipv6Special,
 
 /-! ## Specified blocks, and the TS constants that hold them -/
 
-/-- TS `IPV4_EXTRA` (ts:96, ts:197) is the multicast block of the spec. -/
+/-- TS `IPV4_EXTRA` (ts:95, ts:196) is the multicast block of the spec. -/
 theorem ipv4Extra_eq : ipv4Extra = [ipv4Multicast] := rfl
 
-/-- TS `IPV6_GLOBAL_UNICAST` (ts:104, ts:198) is the spec's 2000::/3. -/
+/-- TS `IPV6_GLOBAL_UNICAST` (ts:103, ts:197) is the spec's 2000::/3. -/
 theorem ipv6GlobalUnicast_eq : ipv6GlobalUnicast = globalUnicast := rfl
 
-/-- TS `NAT64_WELL_KNOWN` (ts:110, ts:199) is the spec's 64:ff9b::/96. -/
+/-- TS `NAT64_WELL_KNOWN` (ts:109, ts:198) is the spec's 64:ff9b::/96. -/
 theorem nat64WellKnown_eq : nat64WellKnown = nat64 := rfl
 
 /-- The spec's own blocks are aligned, so `inBlock` on them is range membership. -/
@@ -266,21 +303,21 @@ theorem nat64_outside_globalUnicast (a : Nat) (h : Mem 128 nat64 a) : ¬ Mem 128
 
 /-! ## (a) and (b): the classifier meets the spec at every address -/
 
-/-- (a) ts:217-219 meets ts:6-7, ts:95 and ts:202-203 at every IPv4 address: `isBlockedIpv4`
+/-- (a) ts:213-215 meets ts:6-7, ts:94 and ts:201-202 at every IPv4 address: `isBlockedIpv4`
 blocks exactly the addresses whose most specific IPv4 registry block is not `True`, plus
 multicast. -/
 theorem isBlockedIpv4_iff (a : Nat) : isBlockedIpv4 a = true ↔ Blocked4 a := by
   unfold isBlockedIpv4 Blocked4
   rw [ipv4Extra_eq, Bool.or_eq_true,
-    registryBlocks_iff a 32 ipv4Special ipv4Special_aligned ipv4Special_consistent]
+    registryBlocks_iff a 32 ipv4Special ipv4Special_aligned]
   simp only [List.any_cons, List.any_nil, Bool.or_false, contains_iff_mem spec_blocks_aligned.1]
 
-/-- (b) ts:225-228 meets ts:99-102 and ts:107-108 at every IPv6 address: `isBlockedIpv6` allows
+/-- (b) ts:221-224 meets ts:98-101 and ts:106-107 at every IPv6 address: `isBlockedIpv6` allows
 exactly the addresses of 2000::/3 that the IPv6 registry does not block, and the NAT64 addresses
 whose low 32 bits are an allowed IPv4 address. -/
 theorem isBlockedIpv6_iff (a : Nat) : isBlockedIpv6 a = true ↔ Blocked6 a := by
   obtain ⟨_, hgu, hnat⟩ := spec_blocks_aligned
-  have hreg := registryBlocks_iff a 128 ipv6Special ipv6Special_aligned ipv6Special_consistent
+  have hreg := registryBlocks_iff a 128 ipv6Special ipv6Special_aligned
   unfold isBlockedIpv6 Blocked6 Allowed6
   rw [nat64WellKnown_eq, ipv6GlobalUnicast_eq]
   by_cases hn : nat64.contains 128 a = true
@@ -298,7 +335,7 @@ theorem isBlockedIpv6_iff (a : Nat) : isBlockedIpv6 a = true ↔ Blocked6 a := b
       simp only [Bool.not_eq_true] at hc
       simp [hc, hm', hm]
 
-/-- TS `ipVerdict` (ts:240-248) says `some false` exactly for the answers the spec calls safe:
+/-- TS `ipVerdict` (ts:236-244) says `some false` exactly for the answers the spec calls safe:
 addresses it does not block. Unreadable text gets `some true` (with a `:`) or `none`. -/
 theorem ipVerdict_eq_some_false_iff (ip : String) : ipVerdict ip = some false ↔ AnswerSafe ip := by
   unfold ipVerdict AnswerSafe
@@ -316,7 +353,7 @@ theorem ipVerdict_eq_some_false_iff (ip : String) : ipVerdict ip = some false �
       simp
     | none => simp
 
-/-- `isBlockedIp` (ts:255-257) meets ts:251-253: a hostname is blocked iff it is an IPv4 or IPv6
+/-- `isBlockedIp` (ts:251-253) meets ts:247-249: a hostname is blocked iff it is an IPv4 or IPv6
 address, brackets allowed, that the spec blocks, or text with a `:` that is neither. -/
 theorem isBlockedIp_iff (hostname : String) : isBlockedIp hostname = true ↔ HostnameBlocked hostname := by
   unfold isBlockedIp ipVerdict HostnameBlocked
@@ -330,12 +367,12 @@ theorem isBlockedIp_iff (hostname : String) : isBlockedIp hostname = true ↔ Ho
 
 /-! ## URLs -/
 
-/-- ts:5 and ts:287: a URL that is not https is rejected with the HTTPS message. -/
+/-- ts:5 and ts:283: a URL that is not https is rejected with the HTTPS message. -/
 theorem httpsOnly : HttpsOnly := by
   intro url h
   simp [validateWebhookUrl, h]
 
-/-- ts:292 and ts:260: `localhost`, `metadata.google.internal`, in any case and with any number of
+/-- ts:288 and ts:256: `localhost`, `metadata.google.internal`, in any case and with any number of
 trailing dots, are rejected. -/
 theorem blockedNamesRejected : BlockedNamesRejected := by
   intro url hp hn
@@ -345,13 +382,13 @@ theorem blockedNamesRejected : BlockedNamesRejected := by
     simp [blockedHostnames] at hn
   simp [validateWebhookUrl, hp, hn, hne]
 
-/-- ts:294-297: an https URL whose host is only dots has nothing left to check and is rejected as
+/-- ts:290-293: an https URL whose host is only dots has nothing left to check and is rejected as
 malformed. -/
 theorem emptyHostRejected : EmptyHostRejected := by
   intro url hp he
   simp [validateWebhookUrl, hp, he]
 
-/-- ts:263-268: the checked hostname never ends in a dot, however many the URL had. -/
+/-- ts:259-264: the checked hostname never ends in a dot, however many the URL had. -/
 theorem noTrailingDot : NoTrailingDot := by
   intro hostname
   unfold checkedHostname
@@ -369,8 +406,8 @@ theorem noTrailingDot : NoTrailingDot := by
 /-- The empty hostname is not a blocked address. -/
 theorem isBlockedIp_empty : isBlockedIp "" = false := by decide
 
-/-- ts:303: an https URL whose hostname is a blocked address is rejected. The empty hostname is
-never a blocked address (`isBlockedIp_empty`), so the ts:295 branch does not intercept. -/
+/-- ts:299: an https URL whose hostname is a blocked address is rejected. The empty hostname is
+never a blocked address (`isBlockedIp_empty`), so the ts:291 branch does not intercept. -/
 theorem blockedAddressesRejected : BlockedAddressesRejected := by
   intro url hp hb
   have hne : checkedHostname url.hostname ≠ "" := by
@@ -384,21 +421,131 @@ theorem blockedAddressesRejected : BlockedAddressesRejected := by
   rw [ite_eq_right (by simp [hp]), ite_eq_right (by simpa using hne)]
   split <;> rfl
 
-/-- ts:332-339: an IP-literal URL, brackets included (the BUG A case), gets exactly the first
+/-! ## Simplification: every changed function equals its original
+
+The registry verdict changed (`registryBlocks_eq_original`), so every function above it is compared
+with its copy in `Original`: same result for every input. -/
+
+/-- `isBlockedIpv4` equals the original at every address. -/
+theorem isBlockedIpv4_eq_original (a : Nat) : isBlockedIpv4 a = Original.isBlockedIpv4 a := by
+  unfold isBlockedIpv4 Original.isBlockedIpv4
+  rw [registryBlocks_eq_original a 32 ipv4Special ipv4Special_aligned ipv4Special_consistent]
+
+/-- `isBlockedIpv6` equals the original at every address. -/
+theorem isBlockedIpv6_eq_original (a : Nat) : isBlockedIpv6 a = Original.isBlockedIpv6 a := by
+  unfold isBlockedIpv6 Original.isBlockedIpv6
+  rw [isBlockedIpv4_eq_original,
+    registryBlocks_eq_original a 128 ipv6Special ipv6Special_aligned ipv6Special_consistent]
+
+/-- `ipVerdict` equals the original on every string. -/
+theorem ipVerdict_eq_original (hostname : String) :
+    ipVerdict hostname = Original.ipVerdict hostname := by
+  unfold ipVerdict Original.ipVerdict
+  dsimp only
+  cases parseIpv4 (stripBrackets hostname) with
+  | some v => simp only [isBlockedIpv4_eq_original]
+  | none =>
+    cases parseIpv6 (stripBrackets hostname) with
+    | some v => simp only [isBlockedIpv6_eq_original]
+    | none => rfl
+
+/-- `isBlockedIp` equals the original on every string. -/
+theorem isBlockedIp_eq_original (hostname : String) :
+    isBlockedIp hostname = Original.isBlockedIp hostname := by
+  unfold isBlockedIp Original.isBlockedIp
+  rw [ipVerdict_eq_original]
+
+/-- `validateWebhookUrl` equals the original for every URL: same verdict, same error text. -/
+theorem validateWebhookUrl_eq_original (url : Option ParsedUrl) :
+    validateWebhookUrl url = Original.validateWebhookUrl url := by
+  cases url with
+  | none => rfl
+  | some u =>
+    unfold validateWebhookUrl Original.validateWebhookUrl
+    simp only [isBlockedIp_eq_original]
+
+/-- The two callees of `Original.validateWebhookUrlWithDns` that changed, as functions. -/
+theorem original_callees_eq :
+    Original.validateWebhookUrl = validateWebhookUrl ∧ Original.ipVerdict = ipVerdict :=
+  ⟨funext fun u => (validateWebhookUrl_eq_original u).symm,
+    funext fun h => (ipVerdict_eq_original h).symm⟩
+
+/-! ## Simplification: the DNS pass recognises an IP literal by the first pass's classification
+
+`validateWebhookUrlWithDns` asked Node's `net.isIP` whether the bracket-stripped hostname is an IP
+address (`Original.validateWebhookUrlWithDns`, where `isIpLiteral` stands in for `net.isIP`). It now
+asks `ipVerdict(checked) === false`, the classification the first pass already made. -/
+
+/-- A URL the first pass accepts has a checked hostname that `isBlockedIp` does not block. -/
+theorem not_blocked_of_valid (u : ParsedUrl) (h : validateWebhookUrl (some u) = .valid) :
+    isBlockedIp (checkedHostname u.hostname) = false := by
+  cases hb : isBlockedIp (checkedHostname u.hostname)
+  · rfl
+  · exfalso
+    unfold validateWebhookUrl at h
+    dsimp only at h
+    repeat' split at h
+    all_goals first | exact absurd h (by simp) | simp_all
+
+/-- Once `isBlockedIp` has let a hostname through, `ipVerdict` says "an allowed address" exactly
+when the bracket-stripped hostname parses as an address: the text with a `:` that does not parse
+is the one case `ipVerdict` blocks, and the first pass has excluded it. -/
+theorem ipVerdict_allowed_eq_isIpLiteral (c : String) (h : isBlockedIp c = false) :
+    (ipVerdict c == some false) = isIpLiteral (stripBrackets c) := by
+  unfold isBlockedIp at h
+  unfold ipVerdict isIpLiteral at *
+  dsimp only at *
+  cases h4 : parseIpv4 (stripBrackets c) with
+  | some v =>
+    rw [h4] at h
+    cases hb : isBlockedIpv4 v <;> simp_all
+  | none =>
+    rw [h4] at h
+    cases h6 : parseIpv6 (stripBrackets c) with
+    | some v =>
+      rw [h6] at h
+      cases hb : isBlockedIpv6 v <;> simp_all
+    | none =>
+      rw [h6] at h
+      cases hc : (stripBrackets c).toList.contains ':' <;> simp_all
+
+/-- `validateWebhookUrlWithDns` (ts:322-359) equals the original for every URL and every pair of
+resolver answers: same verdict, same error text, same resolver hostname or no call. -/
+theorem validateWebhookUrlWithDns_eq_original (url : Option ParsedUrl) (answers4 answers6 : List String) :
+    validateWebhookUrlWithDns url answers4 answers6 =
+      Original.validateWebhookUrlWithDns url answers4 answers6 := by
+  unfold validateWebhookUrlWithDns Original.validateWebhookUrlWithDns
+  rw [original_callees_eq.1, original_callees_eq.2]
+  cases hv : validateWebhookUrl url with
+  | invalid e => rfl
+  | valid =>
+    cases url with
+    | none => rfl
+    | some u =>
+      dsimp only
+      rw [ipVerdict_allowed_eq_isIpLiteral _ (not_blocked_of_valid u hv)]
+
+/-- ts:327-329: an IP-literal URL, brackets included (the BUG A case), gets exactly the first
 pass's verdict and the resolvers are not called. Before the fix the brackets reached `net.isIP`,
-so every IPv6 literal went to DNS and failed. -/
+so every IPv6 literal went to DNS and failed. Proved for the original, carried over by
+`validateWebhookUrlWithDns_eq_original`. -/
 theorem ipLiteralsSkipDns : IpLiteralsSkipDns := by
   intro url a4 a6 h
-  unfold validateWebhookUrlWithDns
+  rw [validateWebhookUrlWithDns_eq_original]
+  unfold Original.validateWebhookUrlWithDns
+  rw [original_callees_eq.1, original_callees_eq.2]
   cases hv : validateWebhookUrl (some url) with
   | invalid e => rfl
   | valid => simp [h]
 
-/-- ts:8, ts:314 and ts:358: once the resolvers are called, the URL is accepted iff they answered
-and every answer is an address the spec allows; an unreadable answer blocks (fail closed). -/
+/-- ts:8, ts:310 and ts:350: once the resolvers are called, the URL is accepted iff they answered
+and every answer is an address the spec allows; an unreadable answer blocks (fail closed). Proved
+for the original, carried over by `validateWebhookUrlWithDns_eq_original`. -/
 theorem resolvedIpsChecked : ResolvedIpsChecked := by
   intro url a4 a6 hq
-  unfold validateWebhookUrlWithDns at hq ⊢
+  rw [validateWebhookUrlWithDns_eq_original] at hq ⊢
+  unfold Original.validateWebhookUrlWithDns at hq ⊢
+  rw [original_callees_eq.1, original_callees_eq.2] at hq ⊢
   cases hv : validateWebhookUrl url with
   | invalid e => rw [hv] at hq; simp at hq
   | valid =>
@@ -429,10 +576,13 @@ theorem resolvedIpsChecked : ResolvedIpsChecked := by
             intro hbad
             exact ha (List.any_eq_true.2 ⟨ip, hip, by simpa [bne_iff_ne] using hbad⟩)
 
-/-- ts:332-334: the resolvers are called with the checked hostname, brackets stripped. -/
+/-- ts:330-331: the resolvers are called with the checked hostname, brackets stripped. Proved for
+the original, carried over by `validateWebhookUrlWithDns_eq_original`. -/
 theorem resolversGetCheckedHostname : ResolversGetCheckedHostname := by
   intro url a4 a6 q hq
-  unfold validateWebhookUrlWithDns at hq
+  rw [validateWebhookUrlWithDns_eq_original] at hq
+  unfold Original.validateWebhookUrlWithDns at hq
+  rw [original_callees_eq.1, original_callees_eq.2] at hq
   cases hv : validateWebhookUrl (some url) with
   | invalid e => simp [hv] at hq
   | valid =>
@@ -471,10 +621,10 @@ theorem ipv6_true_rows (n : Nat)
   omega
 
 /-- `isPrivateIpv4` of the replaced code (lines 21-29 at 60d74c71), as a disjunction. -/
-theorem original_isPrivateIpv4_iff (a b : Nat) : Original.isPrivateIpv4 a b = true ↔
+theorem original_isPrivateIpv4_iff (a b : Nat) : Legacy.isPrivateIpv4 a b = true ↔
     (a = 127 ∨ a = 10 ∨ a = 0) ∨ (a = 172 ∧ 16 ≤ b ∧ b ≤ 31) ∨ (a = 192 ∧ b = 168) ∨
       (a = 169 ∧ b = 254) ∨ (a = 100 ∧ 64 ≤ b ∧ b ≤ 127) ∨ (a = 198 ∧ (b = 18 ∨ b = 19)) := by
-  unfold Original.isPrivateIpv4
+  unfold Legacy.isPrivateIpv4
   simp only [Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq]
   repeat' split
   all_goals first
@@ -485,10 +635,10 @@ theorem original_isPrivateIpv4_iff (a b : Nat) : Original.isPrivateIpv4 a b = tr
 ranges (0/8, 10/8, 127/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10, 198.18/15) is an IPv4
 registry row that is not `True`, and no `True` row meets it. -/
 theorem original_blocked4_still_blocked (n : Nat) (hn : n < 2 ^ 32)
-    (h : Original.blocked4 n = true) : isBlockedIpv4 n = true := by
+    (h : Legacy.blocked4 n = true) : isBlockedIpv4 n = true := by
   rw [isBlockedIpv4_iff]
   left
-  unfold Original.blocked4 at h
+  unfold Legacy.blocked4 at h
   rw [original_isPrivateIpv4_iff] at h
   have hyes := ipv4_true_rows n (by omega)
   rcases h with (h | h | h) | h | h | h | h | h
@@ -520,39 +670,39 @@ theorem hexDigit_values : ∀ x < 16,
 first piece written without leading zeros: fc00::/7 and fe80::/10 as intended, and also the
 pieces 0xfc, 0xfd, 0xfc0-0xfdf and 0xfe8-0xfeb, whose short spellings begin the same way. -/
 theorem original_prefixHit_iff (g : Nat) (hg : g < 0x10000) :
-    Original.prefixHit (hexText g ++ [':']) = true ↔
+    Legacy.prefixHit (hexText g ++ [':']) = true ↔
       g = 0xfc ∨ g = 0xfd ∨ (0xfc0 ≤ g ∧ g ≤ 0xfdf) ∨ (0xfe8 ≤ g ∧ g ≤ 0xfeb) ∨
         (0xfc00 ≤ g ∧ g ≤ 0xfdff) ∨ (0xfe80 ≤ g ∧ g ≤ 0xfebf) := by
   unfold hexText
   by_cases h1 : g < 0x10
   · have d0 := hexDigit_values g (by omega)
-    simp [h1, Original.prefixHit, List.isPrefixOf]
+    simp [h1, Legacy.prefixHit, List.isPrefixOf]
     omega
   · by_cases h2 : g < 0x100
     · have d1 := hexDigit_values (g / 0x10) (by omega)
       have d0 := hexDigit_values (g % 0x10) (by omega)
-      simp [h1, h2, Original.prefixHit, List.isPrefixOf, d1, d0]
+      simp [h1, h2, Legacy.prefixHit, List.isPrefixOf, d1, d0]
       omega
     · by_cases h3 : g < 0x1000
       · have d2 := hexDigit_values (g / 0x100) (by omega)
         have d1 := hexDigit_values (g / 0x10 % 0x10) (by omega)
         have d0 := hexDigit_values (g % 0x10) (by omega)
-        simp [h1, h2, h3, Original.prefixHit, List.isPrefixOf, d2, d1, d0]
+        simp [h1, h2, h3, Legacy.prefixHit, List.isPrefixOf, d2, d1, d0]
         omega
       · have d3 := hexDigit_values (g / 0x1000 % 0x10) (by omega)
         have d2 := hexDigit_values (g / 0x100 % 0x10) (by omega)
         have d1 := hexDigit_values (g / 0x10 % 0x10) (by omega)
-        simp [h1, h2, h3, Original.prefixHit, List.isPrefixOf, d3, d2, d1]
+        simp [h1, h2, h3, Legacy.prefixHit, List.isPrefixOf, d3, d2, d1]
         omega
 
 /-- In the replaced code's mapped branch (lines 49-55 at 60d74c71), `a` and `b` are the first two
 octets of the mapped IPv4 address: `mapped_hex_decomposition` applied to its `hi` piece. -/
 theorem original_mapped_octets (n : Nat) (hm : n / 2 ^ 32 = 0xffff) :
-    Original.blocked6 n = Original.isPrivateIpv4 (n / 2 ^ 24 % 256) (n / 2 ^ 16 % 256) := by
+    Legacy.blocked6 n = Legacy.isPrivateIpv4 (n / 2 ^ 24 % 256) (n / 2 ^ 16 % 256) := by
   have hhi := mapped_hex_decomposition (n / 2 ^ 16 % 0x10000) (Nat.mod_lt _ (by decide))
   have ha : n / 2 ^ 16 % 0x10000 / 256 = n / 2 ^ 24 % 256 := by omega
   have hb : n / 2 ^ 16 % 0x10000 % 256 = n / 2 ^ 16 % 256 := by omega
-  unfold Original.blocked6
+  unfold Legacy.blocked6
   have hc1 : (n == 0 || n == 1) = false := by
     simp only [Bool.or_eq_false_iff, beq_eq_false_iff_ne, ne_eq]
     omega
@@ -572,8 +722,8 @@ them (`::`, `::1`, ::ffff:0:0/96, and every first piece its text prefixes matche
 fe80::/10, and the short spellings 0xfc, 0xfd, 0xfc0-0xfdf, 0xfe8-0xfeb) lie outside 2000::/3 and
 outside 64:ff9b::/96. -/
 theorem original_blocked6_still_blocked (n : Nat) (hn : n < 2 ^ 128)
-    (h : Original.blocked6 n = true) : isBlockedIpv6 n = true := by
-  unfold Original.blocked6 at h
+    (h : Legacy.blocked6 n = true) : isBlockedIpv6 n = true := by
+  unfold Legacy.blocked6 at h
   split at h
   · rename_i h01
     simp only [Bool.or_eq_true, beq_iff_eq] at h01
@@ -589,7 +739,7 @@ theorem original_blocked6_still_blocked (n : Nat) (hn : n < 2 ^ 128)
 
 /-! ## What the rule covers without entries of its own -/
 
-/-- ts:101-102: every block of `coveredOutsideGlobalUnicast` (::/96, ::ffff:0:0/96, fc00::/7,
+/-- ts:100-101: every block of `coveredOutsideGlobalUnicast` (::/96, ::ffff:0:0/96, fc00::/7,
 fe80::/10, fec0::/10, ff00::/8) lies outside 2000::/3 and 64:ff9b::/96, so every address in it is
 blocked; none needs a table entry. -/
 theorem covered_blocked : ∀ b ∈ coveredOutsideGlobalUnicast, ∀ n, Mem 128 b n →
@@ -634,8 +784,10 @@ theorem probe_addresses :
 /-- The text rules on concrete hostnames, evaluated by the kernel: a zone ID (which Node's
 `net.isIP` calls an IP address) and other unreadable text with a `:` are blocked; a name, the
 empty string and a non-address like `127.0.0.256` are not addresses and not blocked; bracketed and
-dotted-tail spellings of blocked addresses are blocked. -/
+dotted-tail spellings of blocked addresses are blocked. The two `BLOCKED_HOSTNAMES` entries are
+names, which the address path does not block: that list is not redundant. -/
 theorem probe_hostnames :
+    isBlockedIp "localhost" = false ∧ isBlockedIp "metadata.google.internal" = false ∧
     isBlockedIp "fe80::1%eth0" = true ∧ isBlockedIp "1:2:3:4:5:6:7:8:9" = true ∧
     isBlockedIp ":::" = true ∧ isBlockedIp "example.com" = false ∧ isBlockedIp "" = false ∧
     isBlockedIp "127.0.0.256" = false ∧ isBlockedIp "[::1]" = true ∧
