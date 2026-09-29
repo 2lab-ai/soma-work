@@ -108,7 +108,7 @@ def DenyDominance (ev : Input → Result) : Prop :=
   ∀ i : Input, DenyCond i → (ev i).decision = .deny
 
 /-- (c) permission-mode.ts:23-25: "The hard-deny tier in `evaluateToolPolicy` is
-mode-independent and always runs first; mode only governs the allow / ask / classify decision
+mode-independent and always runs first; mode only governs the allow / classify / pass decision
 that follows." Under a met deny condition the whole result, reason included, ignores the mode. -/
 def DenyTierModeIndependent (ev : Input → Result) : Prop :=
   ∀ (i : Input) (mode : Mode), DenyCond i → ev { i with mode := mode } = ev i
@@ -194,8 +194,8 @@ classifier instead of asking the human outright"). -/
 def NeverAsk (ev : Input → Result) : Prop :=
   ∀ i : Input, (ev i).decision ≠ .ask
 
-/-- 80: "`bypass` → `allow` everything governed (… even dangerous Bash)"; 183-184: "allow every
-governed tool with no prompt — including a dangerous Bash". The code allows Bash and the native
+/-- 80: "`bypass` → `allow` everything governed (unsafe — even dangerous Bash)"; 183-184: "allow
+every governed tool with no prompt — including a dangerous Bash". The code allows Bash and the native
 tools only and passes `mcp__` tools, so phase 2 reworded both comments to say so. -/
 def BypassAllowsGoverned (ev : Input → Result) : Prop :=
   ∀ i : Input, i.mode = .bypass → ¬DenyCond i → Governed i.toolName →

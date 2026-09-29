@@ -164,11 +164,6 @@ def nativeBypassTools : List String :=
   ["Write", "Edit", "NotebookEdit", "TodoWrite", "Read", "Glob", "Grep", "Task", "WebFetch",
     "WebSearch", "KillShell"]
 
-/-- The reason step 7 returns (line 187). The TS text contains a word the source gate rejects
-anywhere in a `.lean` file, strings included, so it is assembled from two pieces; the value is the
-TS string exactly (the vectors compare it byte for byte). -/
-def bypassBashReason : String := "bypass: un" ++ "safe allow-all Bash"
-
 /-- `TOOL_POLICY_MATCHERS` — line 212: `['Bash', NATIVE_BYPASS_TOOLS.join('|'), 'mcp__']`. -/
 def toolPolicyMatchers : List String :=
   ["Bash", "|".intercalate nativeBypassTools, "mcp__"]
@@ -268,7 +263,7 @@ def prIssueGuard (i : Input) : Option Result :=
 /-- Steps 7-9 and the default return. -/
 def modeTier (i : Input) : Result :=
   if i.mode = .bypass ∧ i.toolName = "Bash" then                    -- 7. lines 186-188
-    { decision := .allow, reason := bypassBashReason }
+    { decision := .allow, reason := "bypass: unsafe allow-all Bash" }
   else if i.mode = .auto ∧ i.toolName = "Bash" then                 -- 8. line 192
     match i.prims.bash.decision with                                -- 193-194
     | .ask =>                                                       -- 196
