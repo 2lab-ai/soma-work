@@ -84,6 +84,14 @@ describe('evaluateToolPolicy — guards (epic #1023 P5)', () => {
       expect(evaluateToolPolicy('mcp__server-tools__db_query', {}, makeCtx()).decision).toBe('pass');
     });
 
+    it('mcp-permission: any non-null deny reason denies, the empty string included (null is the only allow)', () => {
+      // `checkMcpToolPermission` returns "a deny reason ..., else null": an empty
+      // reason is still a denial, so the guard must not treat it as allowed.
+      const r = evaluateToolPolicy('mcp__server-tools__db_query', {}, makeCtx({ checkMcpToolPermission: () => '' }));
+      expect(r.decision).toBe('deny');
+      expect(r.reason).toBe('mcp-permission: ');
+    });
+
     it('pr-issue: handoff session, gh pr create without Closes #N → deny with surfaced message', () => {
       const r = evaluateToolPolicy(
         'Bash',
