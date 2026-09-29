@@ -203,6 +203,40 @@ describe('checkBashSensitivePaths', () => {
       expect(checkBashSensitivePaths('cat ~/project/README.md').isSensitive).toBe(false);
     });
   });
+
+  // Regression: `.` was only seen after a word character, a read command's arguments after the
+  // first path were never checked, `cd` was not checked at all, and a double-quoted `$HOME` kept
+  // its quotes, so the path was checked as `/.ssh/...`.
+  describe('blocks dot-source, every argument, cd and quoted $HOME', () => {
+    it.each([
+      ['. ~/.env', 'dot-source at the start'],
+      ['. /opt/soma-work/dev/.env', 'dot-source of a service env'],
+      ['cd /tmp && . ~/.env', 'dot-source after &&'],
+      ['if true; then . ~/.env; fi', 'dot-source after then'],
+      ['cat /tmp/a ~/.ssh/id_rsa', 'second argument'],
+      ['head -n 5 /tmp/a /tmp/b /opt/soma-work/prod/config.json', 'third argument'],
+      ['cd ~/.ssh && cat id_rsa', 'cd into .ssh'],
+      ['pushd ~/.aws', 'pushd into .aws'],
+      ['cat "$HOME"/.ssh/id_rsa', 'quoted $HOME'],
+      [`cat "\${HOME}"/.aws/credentials`, `quoted \${HOME}`],
+      ['cp "$HOME"/.ssh/id_rsa /tmp/x ', 'cp with quoted $HOME'],
+      ['wc -c < "$HOME"/.netrc', 'redirect with quoted $HOME'],
+      [`source "\${HOME}"/.env`, `source with quoted \${HOME}`],
+    ])('blocks: %s (%s)', (command) => {
+      const result = checkBashSensitivePaths(command);
+      expect(result.isSensitive).toBe(true);
+    });
+
+    it.each([
+      ['cat /tmp/a /tmp/b', 'several safe arguments'],
+      ['cd /tmp/U094E5L4A15/soma-work && npm test', 'cd into a workspace'],
+      ['cat "$HOME"/project/README.md', 'quoted $HOME, safe path'],
+      ['. /tmp/U094E5L4A15/setup.sh', 'dot-source of a safe script'],
+    ])('allows: %s (%s)', (command) => {
+      const result = checkBashSensitivePaths(command);
+      expect(result.isSensitive).toBe(false);
+    });
+  });
 });
 
 describe('checkSensitiveGlob', () => {
