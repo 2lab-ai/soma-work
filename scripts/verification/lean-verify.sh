@@ -11,10 +11,11 @@
 #
 # Stages, each fail-closed:
 #
-#   1. source gate        Textual and fail-fast: no escape hatch spelled out in
-#                         SomaVerify/**/*.lean (FORBIDDEN below), and no invisible or non-ASCII
-#                         white-space character, since those make source say something other
-#                         than what it shows.
+#   1. source gate        Textual and fail-fast: no escape hatch spelled out in the code of
+#                         SomaVerify/**/*.lean (FORBIDDEN below; comments and string and char
+#                         literals are skipped, so prose may use any word), and no invisible or
+#                         non-ASCII white-space character anywhere, since those make source say
+#                         something other than what it shows.
 #   2. lake build         Every module, by the lakefile's glob. "Nothing to build" is a failure.
 #   3. declaration audit  Per declaration, however it was spelled:
 #                         - no axiom beyond propext, Classical.choice and Quot.sound;
@@ -41,10 +42,16 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LEAN_ROOT="$REPO_ROOT/verification/lean"
 VECTORS_DIR="$REPO_ROOT/verification/vectors"
 
-# Matched per line, as words, against SomaVerify/**/*.lean, comments included, so keep these
-# words out of comments. The declaration audit and the kernel replay do not rely on this list
-# (--selftest shows each construct is caught without it); it fails fast and names the line.
-FORBIDDEN='\bsorry\b|\badmit\b|\baxiom\b|\bnative|\bimplemented_by\b|\bextern\b|\bpartial\b|\bunsafe\b|\bopaque\b|_unsafe_rec|\bskipKernelTC\b'
+# A Perl regex matched per line against the code of SomaVerify/**/*.lean, with comments and
+# string and char literals blanked out by lean_code_scan. The declaration audit and the kernel
+# replay do not rely on it (--selftest shows each construct is caught without it); it fails fast
+# and names the line. In code, `sorry`, `axiom`, `partial`, `unsafe` and `opaque` are keywords,
+# never identifiers; `extern` and `implemented_by` are attribute names. `native` and `admit` can
+# be ordinary identifiers (a model may well have a `native` field), so only their escape-hatch
+# forms are matched: `native_decide`, `+native`, `decide (native := ..)`,
+# `decide (config := {native := ..})`, and `admit` in tactic position. `opaque` is matched as a
+# declaration only, since a constructor may be named `opaque`.
+FORBIDDEN='\bsorry\b|(?:^|\bby\b|\btry\b|\ball_goals\b|\bany_goals\b|\brepeat\b|\bfocus\b|;|<;>|\x{B7}|\||=>|\()\s*admit\b|\baxiom\b|native_decide|\+native\b|\bdecide\s*\(\s*(?:native\s*:=|config\s*:=[^)]*\bnative\b)|\bimplemented_by\b|\bextern\b|\bpartial\b|\bunsafe\b|(?:^|\bin\b)\s*(?:(?:@\[[^\]]*\]|private|protected|noncomputable|nonrec|unsafe|partial)\s+)*opaque\b|_unsafe_rec|\bskipKernelTC\b'
 
 # Layer switches, all on except inside --selftest, which turns layers off to show that each
 # construct is caught by the declaration audit or the kernel alone.
@@ -115,18 +122,126 @@ invisible_characters() {
   ' "$@"
 }
 
+# lean_code_scan forbidden <perl regex> <file>...   prints file:line: <source line> for every
+#                                                   line whose code matches the regex
+# lean_code_scan code <file>...                     prints the code of the files
+#
+# "Code" is the source with comment text and string and char literal text blanked out, newlines
+# kept so line numbers hold. The lexer follows Lean's: nested /- -/ comments (doc comments are
+# comments), -- to end of line, strings with escapes, raw strings r"..." and r#"..."#, char
+# literals (a '"' opens no string; a prime inside an identifier opens no char), guillemet names
+# (whatever they hold), and interpolated strings: after `!` (s!"..", s! ".."), text between
+# braces is code, so nothing hides there.
+lean_code_scan() {
+  perl -CS - "$@" <<'PERL'
+use strict;
+use warnings;
+
+my ($src, $code);
+
+sub blank { my $text = shift; $text =~ tr/\n/ /c; return $text }
+
+sub span_from { my $start = shift; return substr $src, $start, pos($src) - $start }
+
+# Code until end of input, or until the brace that closes an interpolation.
+sub lex_code {
+  my ($in_braces) = @_;
+  my $depth = 0;
+  while (pos($src) < length $src) {
+    my $start = pos($src);
+    if ($src =~ /\G\/-/gc) {
+      my $open = 1;
+      while ($open && pos($src) < length $src) {
+        if    ($src =~ /\G\/-/gc) { $open++ }
+        elsif ($src =~ /\G-\//gc) { $open-- }
+        else                      { $src =~ /\G./gcs }
+      }
+      $code .= blank(span_from($start));
+    } elsif ($src =~ /\G--[^\n]*/gc) {
+      $code .= blank(span_from($start));
+    } elsif ($src =~ /\Gr(#*)"/gc) {
+      my $close = '"' . $1;
+      $src =~ /\G.*?\Q$close\E/gcs or $src =~ /\G.*/gcs;
+      $code .= blank(span_from($start));
+    } elsif ($src =~ /\G"/gc) {
+      # Interpolated when the code before it ends in `!`, spaces allowed: s!"..", s! "..".
+      my $k = length($code) - 1;
+      $k-- while $k >= 0 && substr($code, $k, 1) =~ /\s/;
+      my $interpolated = $k >= 0 && substr($code, $k, 1) eq '!';
+      $code .= ' ';
+      lex_string($interpolated);
+    } elsif ($src =~ /\G'(?:\\(?:x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|.)|[^'\\\n])'/gc) {
+      $code .= blank(span_from($start));
+    } elsif ($src =~ /\G\x{AB}[^\x{BB}]*\x{BB}/gc) {
+      # A guillemet name may hold any text, `--` and quotes included: one token.
+      $code .= blank(span_from($start));
+    } elsif ($src =~ /\G[\p{L}\p{N}_][\p{L}\p{N}_'!?]*/gc) {
+      $code .= span_from($start);
+    } elsif ($in_braces && $src =~ /\G\{/gc) {
+      $depth++;
+      $code .= '{';
+    } elsif ($in_braces && $src =~ /\G\}/gc) {
+      $code .= '}';
+      return if $depth-- == 0;
+    } else {
+      $src =~ /\G(.)/gcs;
+      $code .= $1;
+    }
+  }
+}
+
+sub lex_string {
+  my ($interpolated) = @_;
+  while (pos($src) < length $src) {
+    my $start = pos($src);
+    if ($src =~ /\G\\./gcs) {
+      $code .= blank(span_from($start));
+    } elsif ($src =~ /\G"/gc) {
+      $code .= ' ';
+      return;
+    } elsif ($interpolated && $src =~ /\G\{/gc) {
+      $code .= '{';
+      lex_code(1);
+    } else {
+      $src =~ /\G(.)/gcs;
+      $code .= $1 eq "\n" ? "\n" : ' ';
+    }
+  }
+}
+
+my $mode = shift @ARGV;
+my $pattern = $mode eq 'forbidden' ? shift @ARGV : undef;
+my $forbidden = defined $pattern ? qr/$pattern/ : undef;
+for my $file (@ARGV) {
+  open my $fh, '<:encoding(UTF-8)', $file or die "$file: $!\n";
+  $src = do { local $/; <$fh> };
+  close $fh;
+  $code = '';
+  pos($src) = 0;
+  lex_code(0);
+  my @source_lines = split /\n/, $src, -1;
+  my @code_lines = split /\n/, $code, -1;
+  die "$file: lexer lost track of lines\n" unless @source_lines == @code_lines;
+  if ($mode eq 'code') {
+    print $code;
+    print "\n" if length $code && $code !~ /\n\z/;
+    next;
+  }
+  for my $i (0 .. $#code_lines) {
+    print "$file:", $i + 1, ": $source_lines[$i]\n" if $code_lines[$i] =~ $forbidden;
+  }
+}
+PERL
+}
+
 source_gate() {
   stage "source gate"
-  local hits status=0
-  hits="$(grep -HnE -e "$FORBIDDEN" "${FILES[@]}")" || status=$?
-  case "$status" in
-    0)
-      printf '%s\n' "$hits" >&2
-      die "forbidden construct (lines above)"
-      ;;
-    1) ;;
-    *) die "grep failed with status $status" ;;
-  esac
+  local hits
+  hits="$(lean_code_scan forbidden "$FORBIDDEN" "${FILES[@]}")" || die "the source scan failed"
+  if [ -n "$hits" ]; then
+    printf '%s\n' "$hits" >&2
+    die "forbidden construct (lines above)"
+  fi
   hits="$(invisible_characters "${FILES[@]}")" || die "the invisible-character scan failed"
   if [ -n "$hits" ]; then
     printf '%s\n' "$hits" >&2
@@ -188,17 +303,22 @@ def auditImportAllowed (m : Name) : Bool :=
   let mut problems : Array String := #[]
   let mut decls : Nat := 0
   let mut theorems : Nat := 0
+  -- Each audited module's own declarations, straight from its module data: walking every
+  -- constant of every loaded module (all of Lean, for the metaprogramming API) would cost
+  -- seconds per run to find the same ones.
+  let mut audited : Array ConstantInfo := #[]
   for m in auditTargets do
     match env.getModuleIdx? m with
     | none => problems := problems.push s!"{m}: module not loaded"
     | some idx =>
-      for imp in env.header.moduleData[idx.toNat]!.imports do
+      let data := env.header.moduleData[idx.toNat]!
+      for imp in data.imports do
         unless auditImportAllowed imp.module do
           problems := problems.push
             s!"{m}: imports {imp.module}; only Init and SomaVerify modules may be imported"
-  for (n, ci) in env.constants.toList do
-    let some idx := env.getModuleIdxFor? n | continue
-    unless auditTargets.contains env.header.moduleNames[idx.toNat]! do continue
+      audited := audited ++ data.constants
+  for ci in audited do
+    let n := ci.name
     decls := decls + 1
     if ci matches .thmInfo _ then
       theorems := theorems + 1
@@ -240,8 +360,11 @@ run_audit() {
 # Theorem declarations as written: `theorem`/`lemma` at the start of a line, after any
 # attribute and modifiers. What the kernel checks also includes lemmas Lean generates.
 count_handwritten() {
-  { grep -hE '^[[:space:]]*(@\[[^]]*\][[:space:]]*)?((private|protected|nonrec)[[:space:]]+)*(theorem|lemma)[[:space:]]' "${FILES[@]}" || true; } |
-    wc -l | tr -d ' '
+  local code
+  code="$(lean_code_scan code "${FILES[@]}")" || die "the source scan failed"
+  printf '%s\n' "$code" |
+    grep -cE '^[[:space:]]*(@\[[^]]*\][[:space:]]*)?((private|protected|nonrec)[[:space:]]+)*(theorem|lemma)[[:space:]]' ||
+    true
 }
 
 declaration_audit() {
@@ -365,8 +488,11 @@ run_pipeline() {
 # --selftest: each probe is one module planted in a scratch copy of verification/lean.
 
 SELFTEST_PROBES=(sorry admit axiom axiom-indented axiom-private native_decide decide-native
-  implemented_by extern-first-attribute extern-second-attribute extern-multiline-attribute
-  partial-def unsafe-def opaque unsafe-rec-override forged-theorem invisible-character clean)
+  decide-native-config decide-native-option implemented_by extern-first-attribute
+  extern-second-attribute extern-multiline-attribute partial-def unsafe-def opaque
+  unsafe-rec-override forged-theorem module-private-axiom sorry-in-interpolation
+  sorry-in-spaced-interpolation sorry-after-literals sorry-after-guillemet-name
+  invisible-character clean)
 
 # Expected outcomes, "gate|without textual checks|kernel replay alone": each is "accepted" or
 # the stage that rejects the probe, and "-" means the mode is not run.
@@ -392,6 +518,36 @@ probe_source() {
       ;;
     native_decide) echo 'theorem SomaVerify.SelfTest.probe : 10 * 10 = 100 := by native_decide' ;;
     decide-native) echo 'theorem SomaVerify.SelfTest.probe : 10 * 10 = 100 := by decide +native' ;;
+    decide-native-config)
+      echo 'theorem SomaVerify.SelfTest.probe : 10 * 10 = 100 := by decide (config := { native := true })'
+      ;;
+    decide-native-option)
+      echo 'theorem SomaVerify.SelfTest.probe : 10 * 10 = 100 := by decide (native := true)'
+      ;;
+    module-private-axiom)
+      # The module system (a `module` header) splits a module's data by visibility; the audit
+      # must still see a private axiom behind a public theorem.
+      printf '%s\n' 'module' '' 'private axiom bogus : 1 = 2' \
+        'public theorem SomaVerify.SelfTest.probe : 1 = 2 := bogus'
+      ;;
+    sorry-in-interpolation)
+      # Braces in an interpolated string are code: the lexer must not treat them as text.
+      echo 'def SomaVerify.SelfTest.msg : String := s!"{(sorry : Nat)}"'
+      ;;
+    sorry-in-spaced-interpolation)
+      echo 'def SomaVerify.SelfTest.msg : String := s! "{(sorry : Nat)}"'
+      ;;
+    sorry-after-guillemet-name)
+      # A guillemet name (UTF-8 C2 AB .. C2 BB) holding a comment marker, then real code.
+      printf 'theorem SomaVerify.SelfTest.\302\253a -- b\302\273 : 1 = 2 := by sorry\n'
+      ;;
+    sorry-after-literals)
+      # A quote in a char literal and comment markers in a string, then real code on the
+      # same line: a lexer that loses its place here would hide the sorry.
+      cat <<'PROBE'
+def SomaVerify.SelfTest.q : Char := '"' def SomaVerify.SelfTest.d : String := "-- /-" theorem SomaVerify.SelfTest.probe : 1 = 2 := by sorry
+PROBE
+      ;;
     implemented_by)
       printf '%s\n' 'def SomaVerify.SelfTest.fast (n : Nat) : Nat := n + 1' \
         '@[implemented_by SomaVerify.SelfTest.fast] def SomaVerify.SelfTest.slow (n : Nat) : Nat := n'
@@ -431,14 +587,34 @@ probe_source() {
       printf 'def SomaVerify.SelfTest.label : String := "a\302\240b"\n'
       ;;
     clean)
-      printf '%s\n' 'namespace SomaVerify.SelfTest' \
-        'def double (n : Nat) : Nat := n + n' \
-        'theorem double_two : double 2 = 4 := rfl' \
-        'def sumTo : Nat -> Nat' \
-        '  | 0 => 0' \
-        '  | n + 1 => (n + 1) + sumTo n' \
-        'theorem sumTo_three : sumTo 3 = 6 := by decide' \
-        'end SomaVerify.SelfTest'
+      # Every forbidden word as prose, in comments and in literals, plus a `native` field and
+      # identifiers that merely contain the words: all of it must pass.
+      cat <<'PROBE'
+namespace SomaVerify.SelfTest
+/-- Reason strings a tool-policy model quotes verbatim: native tools, a partial match, an
+opaque token, an unsafe input, the axiom of choice, sorry, admit, extern, implemented_by,
+decide +native, (native := true), _unsafe_rec, skipKernelTC. -/
+def bypassReason : String := "bypass: native tool"
+def autoReason : String := "auto: native tool"
+def prose : String := "sorry, admit: partial, opaque, unsafe, axiom, extern (native := true)"
+-- native tools, a partial update, an opaque id, unsafe paths: comments are prose
+def raw : String := r#"sorry "partial" unsafe"#
+def quote : Char := '"'
+def dashes : String := "-- not a comment /- nor this -/"
+structure Tool where
+  name : String
+  native : Bool
+def read : Tool := { name := "Read", native := true }
+def nativeTools : List Tool := [read]
+def isNative (t : Tool) : Bool := t.native
+def double (n : Nat) : Nat := n + n
+theorem double_two : double 2 = 4 := rfl
+def sumTo : Nat -> Nat
+  | 0 => 0
+  | n + 1 => (n + 1) + sumTo n
+theorem sumTo_three : sumTo 3 = 6 := by decide
+end SomaVerify.SelfTest
+PROBE
       ;;
     *) die "no probe named $1" ;;
   esac
@@ -481,8 +657,13 @@ describe_outcome() {
   esac
 }
 
+# The scratch copy lives in ${TMPDIR:-/tmp}/lean-verify-selftest.XXXXXX and is removed on exit.
+# A run killed outright (SIGKILL, a CI timeout) skips the EXIT trap and leaves its copy behind,
+# so each run first removes copies older than a day: old enough that no live run owns them.
 selftest() {
   stage "selftest"
+  find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'lean-verify-selftest.*' -mmin +1440 \
+    -exec rm -rf {} + 2>/dev/null || true
   SELFTEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/lean-verify-selftest.XXXXXX")"
   trap 'rm -rf "$SELFTEST_ROOT"' EXIT
   mkdir "$SELFTEST_ROOT/lean" "$SELFTEST_ROOT/vectors"
