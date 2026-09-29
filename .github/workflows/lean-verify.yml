@@ -1,0 +1,35 @@
+name: Lean Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only, at the top level so it applies to every job present and future.
+# The job rebuilds the Lean proofs, audits them and regenerates the conformance
+# vectors only to compare them with the commit; it writes nothing back. Same
+# reasoning as `.github/workflows/ci.yml`.
+permissions:
+  contents: read
+
+jobs:
+  lean-verify:
+    # Same allow-list guard as `.github/workflows/ci.yml`; the rationale is in
+    # the comment there. In short: the repository is public, `pull_request`
+    # fires for forks, and this job runs pull-request code (the gate script and
+    # everything Lean elaborates) on a persistent self-hosted machine, so a fork
+    # PR must be refused before dispatch, not after checkout.
+    #
+    # Kept flat (no continuation line indented further than the first): a
+    # more-indented line in a folded scalar is preserved verbatim, which would
+    # put a literal newline inside the expression GitHub has to parse.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, fable-m5max]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rebuild proofs, audit axioms, check vector drift
+        run: bash scripts/verification/lean-verify.sh --check
