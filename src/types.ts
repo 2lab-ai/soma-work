@@ -750,8 +750,8 @@ export interface ConversationSession {
   lastAssistantTurnId?: string;
 
   // Session-scoped disabled dangerous-rule ids. Populated via the Slack
-  // "Approve & disable rule for this session" button (see
-  // src/dangerous-command-filter.ts for the rule catalog).
+  // "Approve & disable rule for this session" button. The rule catalog is
+  // soma-lib's `DANGEROUS_RULES`, re-exported by somalib/permission/dangerous-rules.ts.
   //
   // Runtime-only — intentionally NOT serialized to disk so a restart always
   // re-prompts the user (safety default). Mirrors the `pendingRetryTimer`

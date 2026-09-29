@@ -317,10 +317,10 @@ describe('rule catalog', () => {
  *      ids — naive `rulesByIds` would have leaked them.
  *   2. Every existing lockdown rule is automatically isolated, and any future
  *      lockdown rule added to the catalog inherits that isolation.
- *   3. The bypass-mode Bash hook (`bypassBashPermissionDecision`) NEVER
- *      escalates lockdown matches. Parent-side helpers (`isCrossUserAccess`,
- *      `isSshCommand`) still detect them — they enforce on dedicated
- *      pre-hooks in `claude-handler.ts`, not through the bypass escalation.
+ *   3. `bypassBashPermissionDecision` NEVER escalates lockdown matches.
+ *      Parent-side helpers (`isCrossUserAccess`, `isSshCommand`) still detect
+ *      them — they enforce in the deny tier of `evaluateToolPolicy`
+ *      (`src/agent-runtime/policy/tool-policy.ts`), not through this escalation.
  */
 describe('lockdown isolation invariants', () => {
   it('overridableRulesByIds([only lockdown ids]) returns empty array — never leaks lockdown rules through the overridable surface', () => {
@@ -370,10 +370,10 @@ describe('lockdown isolation invariants', () => {
   });
 
   it('cross-user / ssh isolation: bypass hook returns "allow", parent-path helpers still detect the offence', () => {
-    // Bypass-mode Bash gate consults only the overridable subset, so lockdown
-    // matches MUST degrade to 'allow' here. The parent process enforces them
-    // via dedicated pre-hooks in claude-handler.ts (`isCrossUserAccess` and
-    // `isSshCommand`), independent of bypass state.
+    // bypassBashPermissionDecision consults only the overridable subset, so
+    // lockdown matches MUST degrade to 'allow' here. The parent process denies
+    // them in the deny tier of evaluateToolPolicy (`isCrossUserAccess` always,
+    // `isSshCommand` for non-admins), before the permission mode is consulted.
     const crossUserCmd = 'cat /tmp/U09F1M5MML1/file.txt';
     expect(bypassBashPermissionDecision(crossUserCmd)).toEqual({
       decision: 'allow',
