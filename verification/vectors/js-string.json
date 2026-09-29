@@ -1,1113 +1,2803 @@
-{"module":"js-string","generator":"SomaVerify.JsString.Vectors.cases","lean":"4.34.1","count":1111,"cases":[
-{"input":"","expect":{"length":0,"trim":""}},
-{"input":"a","expect":{"length":1,"trim":"a"}},
-{"input":" ","expect":{"length":1,"trim":""}},
-{"input":"\u0009","expect":{"length":1,"trim":""}},
-{"input":"\u000a","expect":{"length":1,"trim":""}},
-{"input":" ","expect":{"length":1,"trim":""}},
-{"input":"﻿","expect":{"length":1,"trim":""}},
-{"input":" ","expect":{"length":1,"trim":""}},
-{"input":"　","expect":{"length":1,"trim":""}},
-{"input":"😀","expect":{"length":2,"trim":"😀"}},
-{"input":"b","expect":{"length":1,"trim":"b"}},
-{"input":"aa","expect":{"length":2,"trim":"aa"}},
-{"input":"a ","expect":{"length":2,"trim":"a"}},
-{"input":"a\u0009","expect":{"length":2,"trim":"a"}},
-{"input":"a\u000a","expect":{"length":2,"trim":"a"}},
-{"input":"a ","expect":{"length":2,"trim":"a"}},
-{"input":"a﻿","expect":{"length":2,"trim":"a"}},
-{"input":"a ","expect":{"length":2,"trim":"a"}},
-{"input":"a　","expect":{"length":2,"trim":"a"}},
-{"input":"a😀","expect":{"length":3,"trim":"a😀"}},
-{"input":"ab","expect":{"length":2,"trim":"ab"}},
-{"input":" a","expect":{"length":2,"trim":"a"}},
-{"input":"  ","expect":{"length":2,"trim":""}},
-{"input":" \u0009","expect":{"length":2,"trim":""}},
-{"input":" \u000a","expect":{"length":2,"trim":""}},
-{"input":"  ","expect":{"length":2,"trim":""}},
-{"input":" ﻿","expect":{"length":2,"trim":""}},
-{"input":"  ","expect":{"length":2,"trim":""}},
-{"input":" 　","expect":{"length":2,"trim":""}},
-{"input":" 😀","expect":{"length":3,"trim":"😀"}},
-{"input":" b","expect":{"length":2,"trim":"b"}},
-{"input":"\u0009a","expect":{"length":2,"trim":"a"}},
-{"input":"\u0009 ","expect":{"length":2,"trim":""}},
-{"input":"\u0009\u0009","expect":{"length":2,"trim":""}},
-{"input":"\u0009\u000a","expect":{"length":2,"trim":""}},
-{"input":"\u0009 ","expect":{"length":2,"trim":""}},
-{"input":"\u0009﻿","expect":{"length":2,"trim":""}},
-{"input":"\u0009 ","expect":{"length":2,"trim":""}},
-{"input":"\u0009　","expect":{"length":2,"trim":""}},
-{"input":"\u0009😀","expect":{"length":3,"trim":"😀"}},
-{"input":"\u0009b","expect":{"length":2,"trim":"b"}},
-{"input":"\u000aa","expect":{"length":2,"trim":"a"}},
-{"input":"\u000a ","expect":{"length":2,"trim":""}},
-{"input":"\u000a\u0009","expect":{"length":2,"trim":""}},
-{"input":"\u000a\u000a","expect":{"length":2,"trim":""}},
-{"input":"\u000a ","expect":{"length":2,"trim":""}},
-{"input":"\u000a﻿","expect":{"length":2,"trim":""}},
-{"input":"\u000a ","expect":{"length":2,"trim":""}},
-{"input":"\u000a　","expect":{"length":2,"trim":""}},
-{"input":"\u000a😀","expect":{"length":3,"trim":"😀"}},
-{"input":"\u000ab","expect":{"length":2,"trim":"b"}},
-{"input":" a","expect":{"length":2,"trim":"a"}},
-{"input":"  ","expect":{"length":2,"trim":""}},
-{"input":" \u0009","expect":{"length":2,"trim":""}},
-{"input":" \u000a","expect":{"length":2,"trim":""}},
-{"input":"  ","expect":{"length":2,"trim":""}},
-{"input":" ﻿","expect":{"length":2,"trim":""}},
-{"input":"  ","expect":{"length":2,"trim":""}},
-{"input":" 　","expect":{"length":2,"trim":""}},
-{"input":" 😀","expect":{"length":3,"trim":"😀"}},
-{"input":" b","expect":{"length":2,"trim":"b"}},
-{"input":"﻿a","expect":{"length":2,"trim":"a"}},
-{"input":"﻿ ","expect":{"length":2,"trim":""}},
-{"input":"﻿\u0009","expect":{"length":2,"trim":""}},
-{"input":"﻿\u000a","expect":{"length":2,"trim":""}},
-{"input":"﻿ ","expect":{"length":2,"trim":""}},
-{"input":"﻿﻿","expect":{"length":2,"trim":""}},
-{"input":"﻿ ","expect":{"length":2,"trim":""}},
-{"input":"﻿　","expect":{"length":2,"trim":""}},
-{"input":"﻿😀","expect":{"length":3,"trim":"😀"}},
-{"input":"﻿b","expect":{"length":2,"trim":"b"}},
-{"input":" a","expect":{"length":2,"trim":"a"}},
-{"input":"  ","expect":{"length":2,"trim":""}},
-{"input":" \u0009","expect":{"length":2,"trim":""}},
-{"input":" \u000a","expect":{"length":2,"trim":""}},
-{"input":"  ","expect":{"length":2,"trim":""}},
-{"input":" ﻿","expect":{"length":2,"trim":""}},
-{"input":"  ","expect":{"length":2,"trim":""}},
-{"input":" 　","expect":{"length":2,"trim":""}},
-{"input":" 😀","expect":{"length":3,"trim":"😀"}},
-{"input":" b","expect":{"length":2,"trim":"b"}},
-{"input":"　a","expect":{"length":2,"trim":"a"}},
-{"input":"　 ","expect":{"length":2,"trim":""}},
-{"input":"　\u0009","expect":{"length":2,"trim":""}},
-{"input":"　\u000a","expect":{"length":2,"trim":""}},
-{"input":"　 ","expect":{"length":2,"trim":""}},
-{"input":"　﻿","expect":{"length":2,"trim":""}},
-{"input":"　 ","expect":{"length":2,"trim":""}},
-{"input":"　　","expect":{"length":2,"trim":""}},
-{"input":"　😀","expect":{"length":3,"trim":"😀"}},
-{"input":"　b","expect":{"length":2,"trim":"b"}},
-{"input":"😀a","expect":{"length":3,"trim":"😀a"}},
-{"input":"😀 ","expect":{"length":3,"trim":"😀"}},
-{"input":"😀\u0009","expect":{"length":3,"trim":"😀"}},
-{"input":"😀\u000a","expect":{"length":3,"trim":"😀"}},
-{"input":"😀 ","expect":{"length":3,"trim":"😀"}},
-{"input":"😀﻿","expect":{"length":3,"trim":"😀"}},
-{"input":"😀 ","expect":{"length":3,"trim":"😀"}},
-{"input":"😀　","expect":{"length":3,"trim":"😀"}},
-{"input":"😀😀","expect":{"length":4,"trim":"😀😀"}},
-{"input":"😀b","expect":{"length":3,"trim":"😀b"}},
-{"input":"ba","expect":{"length":2,"trim":"ba"}},
-{"input":"b ","expect":{"length":2,"trim":"b"}},
-{"input":"b\u0009","expect":{"length":2,"trim":"b"}},
-{"input":"b\u000a","expect":{"length":2,"trim":"b"}},
-{"input":"b ","expect":{"length":2,"trim":"b"}},
-{"input":"b﻿","expect":{"length":2,"trim":"b"}},
-{"input":"b ","expect":{"length":2,"trim":"b"}},
-{"input":"b　","expect":{"length":2,"trim":"b"}},
-{"input":"b😀","expect":{"length":3,"trim":"b😀"}},
-{"input":"bb","expect":{"length":2,"trim":"bb"}},
-{"input":"aaa","expect":{"length":3,"trim":"aaa"}},
-{"input":"aa ","expect":{"length":3,"trim":"aa"}},
-{"input":"aa\u0009","expect":{"length":3,"trim":"aa"}},
-{"input":"aa\u000a","expect":{"length":3,"trim":"aa"}},
-{"input":"aa ","expect":{"length":3,"trim":"aa"}},
-{"input":"aa﻿","expect":{"length":3,"trim":"aa"}},
-{"input":"aa ","expect":{"length":3,"trim":"aa"}},
-{"input":"aa　","expect":{"length":3,"trim":"aa"}},
-{"input":"aa😀","expect":{"length":4,"trim":"aa😀"}},
-{"input":"aab","expect":{"length":3,"trim":"aab"}},
-{"input":"a a","expect":{"length":3,"trim":"a a"}},
-{"input":"a  ","expect":{"length":3,"trim":"a"}},
-{"input":"a \u0009","expect":{"length":3,"trim":"a"}},
-{"input":"a \u000a","expect":{"length":3,"trim":"a"}},
-{"input":"a  ","expect":{"length":3,"trim":"a"}},
-{"input":"a ﻿","expect":{"length":3,"trim":"a"}},
-{"input":"a  ","expect":{"length":3,"trim":"a"}},
-{"input":"a 　","expect":{"length":3,"trim":"a"}},
-{"input":"a 😀","expect":{"length":4,"trim":"a 😀"}},
-{"input":"a b","expect":{"length":3,"trim":"a b"}},
-{"input":"a\u0009a","expect":{"length":3,"trim":"a\u0009a"}},
-{"input":"a\u0009 ","expect":{"length":3,"trim":"a"}},
-{"input":"a\u0009\u0009","expect":{"length":3,"trim":"a"}},
-{"input":"a\u0009\u000a","expect":{"length":3,"trim":"a"}},
-{"input":"a\u0009 ","expect":{"length":3,"trim":"a"}},
-{"input":"a\u0009﻿","expect":{"length":3,"trim":"a"}},
-{"input":"a\u0009 ","expect":{"length":3,"trim":"a"}},
-{"input":"a\u0009　","expect":{"length":3,"trim":"a"}},
-{"input":"a\u0009😀","expect":{"length":4,"trim":"a\u0009😀"}},
-{"input":"a\u0009b","expect":{"length":3,"trim":"a\u0009b"}},
-{"input":"a\u000aa","expect":{"length":3,"trim":"a\u000aa"}},
-{"input":"a\u000a ","expect":{"length":3,"trim":"a"}},
-{"input":"a\u000a\u0009","expect":{"length":3,"trim":"a"}},
-{"input":"a\u000a\u000a","expect":{"length":3,"trim":"a"}},
-{"input":"a\u000a ","expect":{"length":3,"trim":"a"}},
-{"input":"a\u000a﻿","expect":{"length":3,"trim":"a"}},
-{"input":"a\u000a ","expect":{"length":3,"trim":"a"}},
-{"input":"a\u000a　","expect":{"length":3,"trim":"a"}},
-{"input":"a\u000a😀","expect":{"length":4,"trim":"a\u000a😀"}},
-{"input":"a\u000ab","expect":{"length":3,"trim":"a\u000ab"}},
-{"input":"a a","expect":{"length":3,"trim":"a a"}},
-{"input":"a  ","expect":{"length":3,"trim":"a"}},
-{"input":"a \u0009","expect":{"length":3,"trim":"a"}},
-{"input":"a \u000a","expect":{"length":3,"trim":"a"}},
-{"input":"a  ","expect":{"length":3,"trim":"a"}},
-{"input":"a ﻿","expect":{"length":3,"trim":"a"}},
-{"input":"a  ","expect":{"length":3,"trim":"a"}},
-{"input":"a 　","expect":{"length":3,"trim":"a"}},
-{"input":"a 😀","expect":{"length":4,"trim":"a 😀"}},
-{"input":"a b","expect":{"length":3,"trim":"a b"}},
-{"input":"a﻿a","expect":{"length":3,"trim":"a﻿a"}},
-{"input":"a﻿ ","expect":{"length":3,"trim":"a"}},
-{"input":"a﻿\u0009","expect":{"length":3,"trim":"a"}},
-{"input":"a﻿\u000a","expect":{"length":3,"trim":"a"}},
-{"input":"a﻿ ","expect":{"length":3,"trim":"a"}},
-{"input":"a﻿﻿","expect":{"length":3,"trim":"a"}},
-{"input":"a﻿ ","expect":{"length":3,"trim":"a"}},
-{"input":"a﻿　","expect":{"length":3,"trim":"a"}},
-{"input":"a﻿😀","expect":{"length":4,"trim":"a﻿😀"}},
-{"input":"a﻿b","expect":{"length":3,"trim":"a﻿b"}},
-{"input":"a a","expect":{"length":3,"trim":"a a"}},
-{"input":"a  ","expect":{"length":3,"trim":"a"}},
-{"input":"a \u0009","expect":{"length":3,"trim":"a"}},
-{"input":"a \u000a","expect":{"length":3,"trim":"a"}},
-{"input":"a  ","expect":{"length":3,"trim":"a"}},
-{"input":"a ﻿","expect":{"length":3,"trim":"a"}},
-{"input":"a  ","expect":{"length":3,"trim":"a"}},
-{"input":"a 　","expect":{"length":3,"trim":"a"}},
-{"input":"a 😀","expect":{"length":4,"trim":"a 😀"}},
-{"input":"a b","expect":{"length":3,"trim":"a b"}},
-{"input":"a　a","expect":{"length":3,"trim":"a　a"}},
-{"input":"a　 ","expect":{"length":3,"trim":"a"}},
-{"input":"a　\u0009","expect":{"length":3,"trim":"a"}},
-{"input":"a　\u000a","expect":{"length":3,"trim":"a"}},
-{"input":"a　 ","expect":{"length":3,"trim":"a"}},
-{"input":"a　﻿","expect":{"length":3,"trim":"a"}},
-{"input":"a　 ","expect":{"length":3,"trim":"a"}},
-{"input":"a　　","expect":{"length":3,"trim":"a"}},
-{"input":"a　😀","expect":{"length":4,"trim":"a　😀"}},
-{"input":"a　b","expect":{"length":3,"trim":"a　b"}},
-{"input":"a😀a","expect":{"length":4,"trim":"a😀a"}},
-{"input":"a😀 ","expect":{"length":4,"trim":"a😀"}},
-{"input":"a😀\u0009","expect":{"length":4,"trim":"a😀"}},
-{"input":"a😀\u000a","expect":{"length":4,"trim":"a😀"}},
-{"input":"a😀 ","expect":{"length":4,"trim":"a😀"}},
-{"input":"a😀﻿","expect":{"length":4,"trim":"a😀"}},
-{"input":"a😀 ","expect":{"length":4,"trim":"a😀"}},
-{"input":"a😀　","expect":{"length":4,"trim":"a😀"}},
-{"input":"a😀😀","expect":{"length":5,"trim":"a😀😀"}},
-{"input":"a😀b","expect":{"length":4,"trim":"a😀b"}},
-{"input":"aba","expect":{"length":3,"trim":"aba"}},
-{"input":"ab ","expect":{"length":3,"trim":"ab"}},
-{"input":"ab\u0009","expect":{"length":3,"trim":"ab"}},
-{"input":"ab\u000a","expect":{"length":3,"trim":"ab"}},
-{"input":"ab ","expect":{"length":3,"trim":"ab"}},
-{"input":"ab﻿","expect":{"length":3,"trim":"ab"}},
-{"input":"ab ","expect":{"length":3,"trim":"ab"}},
-{"input":"ab　","expect":{"length":3,"trim":"ab"}},
-{"input":"ab😀","expect":{"length":4,"trim":"ab😀"}},
-{"input":"abb","expect":{"length":3,"trim":"abb"}},
-{"input":" aa","expect":{"length":3,"trim":"aa"}},
-{"input":" a ","expect":{"length":3,"trim":"a"}},
-{"input":" a\u0009","expect":{"length":3,"trim":"a"}},
-{"input":" a\u000a","expect":{"length":3,"trim":"a"}},
-{"input":" a ","expect":{"length":3,"trim":"a"}},
-{"input":" a﻿","expect":{"length":3,"trim":"a"}},
-{"input":" a ","expect":{"length":3,"trim":"a"}},
-{"input":" a　","expect":{"length":3,"trim":"a"}},
-{"input":" a😀","expect":{"length":4,"trim":"a😀"}},
-{"input":" ab","expect":{"length":3,"trim":"ab"}},
-{"input":"  a","expect":{"length":3,"trim":"a"}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  \u0009","expect":{"length":3,"trim":""}},
-{"input":"  \u000a","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  ﻿","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  　","expect":{"length":3,"trim":""}},
-{"input":"  😀","expect":{"length":4,"trim":"😀"}},
-{"input":"  b","expect":{"length":3,"trim":"b"}},
-{"input":" \u0009a","expect":{"length":3,"trim":"a"}},
-{"input":" \u0009 ","expect":{"length":3,"trim":""}},
-{"input":" \u0009\u0009","expect":{"length":3,"trim":""}},
-{"input":" \u0009\u000a","expect":{"length":3,"trim":""}},
-{"input":" \u0009 ","expect":{"length":3,"trim":""}},
-{"input":" \u0009﻿","expect":{"length":3,"trim":""}},
-{"input":" \u0009 ","expect":{"length":3,"trim":""}},
-{"input":" \u0009　","expect":{"length":3,"trim":""}},
-{"input":" \u0009😀","expect":{"length":4,"trim":"😀"}},
-{"input":" \u0009b","expect":{"length":3,"trim":"b"}},
-{"input":" \u000aa","expect":{"length":3,"trim":"a"}},
-{"input":" \u000a ","expect":{"length":3,"trim":""}},
-{"input":" \u000a\u0009","expect":{"length":3,"trim":""}},
-{"input":" \u000a\u000a","expect":{"length":3,"trim":""}},
-{"input":" \u000a ","expect":{"length":3,"trim":""}},
-{"input":" \u000a﻿","expect":{"length":3,"trim":""}},
-{"input":" \u000a ","expect":{"length":3,"trim":""}},
-{"input":" \u000a　","expect":{"length":3,"trim":""}},
-{"input":" \u000a😀","expect":{"length":4,"trim":"😀"}},
-{"input":" \u000ab","expect":{"length":3,"trim":"b"}},
-{"input":"  a","expect":{"length":3,"trim":"a"}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  \u0009","expect":{"length":3,"trim":""}},
-{"input":"  \u000a","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  ﻿","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  　","expect":{"length":3,"trim":""}},
-{"input":"  😀","expect":{"length":4,"trim":"😀"}},
-{"input":"  b","expect":{"length":3,"trim":"b"}},
-{"input":" ﻿a","expect":{"length":3,"trim":"a"}},
-{"input":" ﻿ ","expect":{"length":3,"trim":""}},
-{"input":" ﻿\u0009","expect":{"length":3,"trim":""}},
-{"input":" ﻿\u000a","expect":{"length":3,"trim":""}},
-{"input":" ﻿ ","expect":{"length":3,"trim":""}},
-{"input":" ﻿﻿","expect":{"length":3,"trim":""}},
-{"input":" ﻿ ","expect":{"length":3,"trim":""}},
-{"input":" ﻿　","expect":{"length":3,"trim":""}},
-{"input":" ﻿😀","expect":{"length":4,"trim":"😀"}},
-{"input":" ﻿b","expect":{"length":3,"trim":"b"}},
-{"input":"  a","expect":{"length":3,"trim":"a"}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  \u0009","expect":{"length":3,"trim":""}},
-{"input":"  \u000a","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  ﻿","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  　","expect":{"length":3,"trim":""}},
-{"input":"  😀","expect":{"length":4,"trim":"😀"}},
-{"input":"  b","expect":{"length":3,"trim":"b"}},
-{"input":" 　a","expect":{"length":3,"trim":"a"}},
-{"input":" 　 ","expect":{"length":3,"trim":""}},
-{"input":" 　\u0009","expect":{"length":3,"trim":""}},
-{"input":" 　\u000a","expect":{"length":3,"trim":""}},
-{"input":" 　 ","expect":{"length":3,"trim":""}},
-{"input":" 　﻿","expect":{"length":3,"trim":""}},
-{"input":" 　 ","expect":{"length":3,"trim":""}},
-{"input":" 　　","expect":{"length":3,"trim":""}},
-{"input":" 　😀","expect":{"length":4,"trim":"😀"}},
-{"input":" 　b","expect":{"length":3,"trim":"b"}},
-{"input":" 😀a","expect":{"length":4,"trim":"😀a"}},
-{"input":" 😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀\u0009","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀\u000a","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀﻿","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀　","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀😀","expect":{"length":5,"trim":"😀😀"}},
-{"input":" 😀b","expect":{"length":4,"trim":"😀b"}},
-{"input":" ba","expect":{"length":3,"trim":"ba"}},
-{"input":" b ","expect":{"length":3,"trim":"b"}},
-{"input":" b\u0009","expect":{"length":3,"trim":"b"}},
-{"input":" b\u000a","expect":{"length":3,"trim":"b"}},
-{"input":" b ","expect":{"length":3,"trim":"b"}},
-{"input":" b﻿","expect":{"length":3,"trim":"b"}},
-{"input":" b ","expect":{"length":3,"trim":"b"}},
-{"input":" b　","expect":{"length":3,"trim":"b"}},
-{"input":" b😀","expect":{"length":4,"trim":"b😀"}},
-{"input":" bb","expect":{"length":3,"trim":"bb"}},
-{"input":"\u0009aa","expect":{"length":3,"trim":"aa"}},
-{"input":"\u0009a ","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009a\u0009","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009a\u000a","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009a ","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009a﻿","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009a ","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009a　","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009a😀","expect":{"length":4,"trim":"a😀"}},
-{"input":"\u0009ab","expect":{"length":3,"trim":"ab"}},
-{"input":"\u0009 a","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009  ","expect":{"length":3,"trim":""}},
-{"input":"\u0009 \u0009","expect":{"length":3,"trim":""}},
-{"input":"\u0009 \u000a","expect":{"length":3,"trim":""}},
-{"input":"\u0009  ","expect":{"length":3,"trim":""}},
-{"input":"\u0009 ﻿","expect":{"length":3,"trim":""}},
-{"input":"\u0009  ","expect":{"length":3,"trim":""}},
-{"input":"\u0009 　","expect":{"length":3,"trim":""}},
-{"input":"\u0009 😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009 b","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009\u0009a","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009\u0009 ","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u0009\u0009","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u0009\u000a","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u0009 ","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u0009﻿","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u0009 ","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u0009　","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u0009😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009\u0009b","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009\u000aa","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009\u000a ","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u000a\u0009","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u000a\u000a","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u000a ","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u000a﻿","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u000a ","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u000a　","expect":{"length":3,"trim":""}},
-{"input":"\u0009\u000a😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009\u000ab","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009 a","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009  ","expect":{"length":3,"trim":""}},
-{"input":"\u0009 \u0009","expect":{"length":3,"trim":""}},
-{"input":"\u0009 \u000a","expect":{"length":3,"trim":""}},
-{"input":"\u0009  ","expect":{"length":3,"trim":""}},
-{"input":"\u0009 ﻿","expect":{"length":3,"trim":""}},
-{"input":"\u0009  ","expect":{"length":3,"trim":""}},
-{"input":"\u0009 　","expect":{"length":3,"trim":""}},
-{"input":"\u0009 😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009 b","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009﻿a","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009﻿ ","expect":{"length":3,"trim":""}},
-{"input":"\u0009﻿\u0009","expect":{"length":3,"trim":""}},
-{"input":"\u0009﻿\u000a","expect":{"length":3,"trim":""}},
-{"input":"\u0009﻿ ","expect":{"length":3,"trim":""}},
-{"input":"\u0009﻿﻿","expect":{"length":3,"trim":""}},
-{"input":"\u0009﻿ ","expect":{"length":3,"trim":""}},
-{"input":"\u0009﻿　","expect":{"length":3,"trim":""}},
-{"input":"\u0009﻿😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009﻿b","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009 a","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009  ","expect":{"length":3,"trim":""}},
-{"input":"\u0009 \u0009","expect":{"length":3,"trim":""}},
-{"input":"\u0009 \u000a","expect":{"length":3,"trim":""}},
-{"input":"\u0009  ","expect":{"length":3,"trim":""}},
-{"input":"\u0009 ﻿","expect":{"length":3,"trim":""}},
-{"input":"\u0009  ","expect":{"length":3,"trim":""}},
-{"input":"\u0009 　","expect":{"length":3,"trim":""}},
-{"input":"\u0009 😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009 b","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009　a","expect":{"length":3,"trim":"a"}},
-{"input":"\u0009　 ","expect":{"length":3,"trim":""}},
-{"input":"\u0009　\u0009","expect":{"length":3,"trim":""}},
-{"input":"\u0009　\u000a","expect":{"length":3,"trim":""}},
-{"input":"\u0009　 ","expect":{"length":3,"trim":""}},
-{"input":"\u0009　﻿","expect":{"length":3,"trim":""}},
-{"input":"\u0009　 ","expect":{"length":3,"trim":""}},
-{"input":"\u0009　　","expect":{"length":3,"trim":""}},
-{"input":"\u0009　😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009　b","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009😀a","expect":{"length":4,"trim":"😀a"}},
-{"input":"\u0009😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009😀\u0009","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009😀\u000a","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009😀﻿","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009😀　","expect":{"length":4,"trim":"😀"}},
-{"input":"\u0009😀😀","expect":{"length":5,"trim":"😀😀"}},
-{"input":"\u0009😀b","expect":{"length":4,"trim":"😀b"}},
-{"input":"\u0009ba","expect":{"length":3,"trim":"ba"}},
-{"input":"\u0009b ","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009b\u0009","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009b\u000a","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009b ","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009b﻿","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009b ","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009b　","expect":{"length":3,"trim":"b"}},
-{"input":"\u0009b😀","expect":{"length":4,"trim":"b😀"}},
-{"input":"\u0009bb","expect":{"length":3,"trim":"bb"}},
-{"input":"\u000aaa","expect":{"length":3,"trim":"aa"}},
-{"input":"\u000aa ","expect":{"length":3,"trim":"a"}},
-{"input":"\u000aa\u0009","expect":{"length":3,"trim":"a"}},
-{"input":"\u000aa\u000a","expect":{"length":3,"trim":"a"}},
-{"input":"\u000aa ","expect":{"length":3,"trim":"a"}},
-{"input":"\u000aa﻿","expect":{"length":3,"trim":"a"}},
-{"input":"\u000aa ","expect":{"length":3,"trim":"a"}},
-{"input":"\u000aa　","expect":{"length":3,"trim":"a"}},
-{"input":"\u000aa😀","expect":{"length":4,"trim":"a😀"}},
-{"input":"\u000aab","expect":{"length":3,"trim":"ab"}},
-{"input":"\u000a a","expect":{"length":3,"trim":"a"}},
-{"input":"\u000a  ","expect":{"length":3,"trim":""}},
-{"input":"\u000a \u0009","expect":{"length":3,"trim":""}},
-{"input":"\u000a \u000a","expect":{"length":3,"trim":""}},
-{"input":"\u000a  ","expect":{"length":3,"trim":""}},
-{"input":"\u000a ﻿","expect":{"length":3,"trim":""}},
-{"input":"\u000a  ","expect":{"length":3,"trim":""}},
-{"input":"\u000a 　","expect":{"length":3,"trim":""}},
-{"input":"\u000a 😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a b","expect":{"length":3,"trim":"b"}},
-{"input":"\u000a\u0009a","expect":{"length":3,"trim":"a"}},
-{"input":"\u000a\u0009 ","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u0009\u0009","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u0009\u000a","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u0009 ","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u0009﻿","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u0009 ","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u0009　","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u0009😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a\u0009b","expect":{"length":3,"trim":"b"}},
-{"input":"\u000a\u000aa","expect":{"length":3,"trim":"a"}},
-{"input":"\u000a\u000a ","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u000a\u0009","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u000a\u000a","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u000a ","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u000a﻿","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u000a ","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u000a　","expect":{"length":3,"trim":""}},
-{"input":"\u000a\u000a😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a\u000ab","expect":{"length":3,"trim":"b"}},
-{"input":"\u000a a","expect":{"length":3,"trim":"a"}},
-{"input":"\u000a  ","expect":{"length":3,"trim":""}},
-{"input":"\u000a \u0009","expect":{"length":3,"trim":""}},
-{"input":"\u000a \u000a","expect":{"length":3,"trim":""}},
-{"input":"\u000a  ","expect":{"length":3,"trim":""}},
-{"input":"\u000a ﻿","expect":{"length":3,"trim":""}},
-{"input":"\u000a  ","expect":{"length":3,"trim":""}},
-{"input":"\u000a 　","expect":{"length":3,"trim":""}},
-{"input":"\u000a 😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a b","expect":{"length":3,"trim":"b"}},
-{"input":"\u000a﻿a","expect":{"length":3,"trim":"a"}},
-{"input":"\u000a﻿ ","expect":{"length":3,"trim":""}},
-{"input":"\u000a﻿\u0009","expect":{"length":3,"trim":""}},
-{"input":"\u000a﻿\u000a","expect":{"length":3,"trim":""}},
-{"input":"\u000a﻿ ","expect":{"length":3,"trim":""}},
-{"input":"\u000a﻿﻿","expect":{"length":3,"trim":""}},
-{"input":"\u000a﻿ ","expect":{"length":3,"trim":""}},
-{"input":"\u000a﻿　","expect":{"length":3,"trim":""}},
-{"input":"\u000a﻿😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a﻿b","expect":{"length":3,"trim":"b"}},
-{"input":"\u000a a","expect":{"length":3,"trim":"a"}},
-{"input":"\u000a  ","expect":{"length":3,"trim":""}},
-{"input":"\u000a \u0009","expect":{"length":3,"trim":""}},
-{"input":"\u000a \u000a","expect":{"length":3,"trim":""}},
-{"input":"\u000a  ","expect":{"length":3,"trim":""}},
-{"input":"\u000a ﻿","expect":{"length":3,"trim":""}},
-{"input":"\u000a  ","expect":{"length":3,"trim":""}},
-{"input":"\u000a 　","expect":{"length":3,"trim":""}},
-{"input":"\u000a 😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a b","expect":{"length":3,"trim":"b"}},
-{"input":"\u000a　a","expect":{"length":3,"trim":"a"}},
-{"input":"\u000a　 ","expect":{"length":3,"trim":""}},
-{"input":"\u000a　\u0009","expect":{"length":3,"trim":""}},
-{"input":"\u000a　\u000a","expect":{"length":3,"trim":""}},
-{"input":"\u000a　 ","expect":{"length":3,"trim":""}},
-{"input":"\u000a　﻿","expect":{"length":3,"trim":""}},
-{"input":"\u000a　 ","expect":{"length":3,"trim":""}},
-{"input":"\u000a　　","expect":{"length":3,"trim":""}},
-{"input":"\u000a　😀","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a　b","expect":{"length":3,"trim":"b"}},
-{"input":"\u000a😀a","expect":{"length":4,"trim":"😀a"}},
-{"input":"\u000a😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a😀\u0009","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a😀\u000a","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a😀﻿","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a😀　","expect":{"length":4,"trim":"😀"}},
-{"input":"\u000a😀😀","expect":{"length":5,"trim":"😀😀"}},
-{"input":"\u000a😀b","expect":{"length":4,"trim":"😀b"}},
-{"input":"\u000aba","expect":{"length":3,"trim":"ba"}},
-{"input":"\u000ab ","expect":{"length":3,"trim":"b"}},
-{"input":"\u000ab\u0009","expect":{"length":3,"trim":"b"}},
-{"input":"\u000ab\u000a","expect":{"length":3,"trim":"b"}},
-{"input":"\u000ab ","expect":{"length":3,"trim":"b"}},
-{"input":"\u000ab﻿","expect":{"length":3,"trim":"b"}},
-{"input":"\u000ab ","expect":{"length":3,"trim":"b"}},
-{"input":"\u000ab　","expect":{"length":3,"trim":"b"}},
-{"input":"\u000ab😀","expect":{"length":4,"trim":"b😀"}},
-{"input":"\u000abb","expect":{"length":3,"trim":"bb"}},
-{"input":" aa","expect":{"length":3,"trim":"aa"}},
-{"input":" a ","expect":{"length":3,"trim":"a"}},
-{"input":" a\u0009","expect":{"length":3,"trim":"a"}},
-{"input":" a\u000a","expect":{"length":3,"trim":"a"}},
-{"input":" a ","expect":{"length":3,"trim":"a"}},
-{"input":" a﻿","expect":{"length":3,"trim":"a"}},
-{"input":" a ","expect":{"length":3,"trim":"a"}},
-{"input":" a　","expect":{"length":3,"trim":"a"}},
-{"input":" a😀","expect":{"length":4,"trim":"a😀"}},
-{"input":" ab","expect":{"length":3,"trim":"ab"}},
-{"input":"  a","expect":{"length":3,"trim":"a"}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  \u0009","expect":{"length":3,"trim":""}},
-{"input":"  \u000a","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  ﻿","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  　","expect":{"length":3,"trim":""}},
-{"input":"  😀","expect":{"length":4,"trim":"😀"}},
-{"input":"  b","expect":{"length":3,"trim":"b"}},
-{"input":" \u0009a","expect":{"length":3,"trim":"a"}},
-{"input":" \u0009 ","expect":{"length":3,"trim":""}},
-{"input":" \u0009\u0009","expect":{"length":3,"trim":""}},
-{"input":" \u0009\u000a","expect":{"length":3,"trim":""}},
-{"input":" \u0009 ","expect":{"length":3,"trim":""}},
-{"input":" \u0009﻿","expect":{"length":3,"trim":""}},
-{"input":" \u0009 ","expect":{"length":3,"trim":""}},
-{"input":" \u0009　","expect":{"length":3,"trim":""}},
-{"input":" \u0009😀","expect":{"length":4,"trim":"😀"}},
-{"input":" \u0009b","expect":{"length":3,"trim":"b"}},
-{"input":" \u000aa","expect":{"length":3,"trim":"a"}},
-{"input":" \u000a ","expect":{"length":3,"trim":""}},
-{"input":" \u000a\u0009","expect":{"length":3,"trim":""}},
-{"input":" \u000a\u000a","expect":{"length":3,"trim":""}},
-{"input":" \u000a ","expect":{"length":3,"trim":""}},
-{"input":" \u000a﻿","expect":{"length":3,"trim":""}},
-{"input":" \u000a ","expect":{"length":3,"trim":""}},
-{"input":" \u000a　","expect":{"length":3,"trim":""}},
-{"input":" \u000a😀","expect":{"length":4,"trim":"😀"}},
-{"input":" \u000ab","expect":{"length":3,"trim":"b"}},
-{"input":"  a","expect":{"length":3,"trim":"a"}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  \u0009","expect":{"length":3,"trim":""}},
-{"input":"  \u000a","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  ﻿","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  　","expect":{"length":3,"trim":""}},
-{"input":"  😀","expect":{"length":4,"trim":"😀"}},
-{"input":"  b","expect":{"length":3,"trim":"b"}},
-{"input":" ﻿a","expect":{"length":3,"trim":"a"}},
-{"input":" ﻿ ","expect":{"length":3,"trim":""}},
-{"input":" ﻿\u0009","expect":{"length":3,"trim":""}},
-{"input":" ﻿\u000a","expect":{"length":3,"trim":""}},
-{"input":" ﻿ ","expect":{"length":3,"trim":""}},
-{"input":" ﻿﻿","expect":{"length":3,"trim":""}},
-{"input":" ﻿ ","expect":{"length":3,"trim":""}},
-{"input":" ﻿　","expect":{"length":3,"trim":""}},
-{"input":" ﻿😀","expect":{"length":4,"trim":"😀"}},
-{"input":" ﻿b","expect":{"length":3,"trim":"b"}},
-{"input":"  a","expect":{"length":3,"trim":"a"}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  \u0009","expect":{"length":3,"trim":""}},
-{"input":"  \u000a","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  ﻿","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  　","expect":{"length":3,"trim":""}},
-{"input":"  😀","expect":{"length":4,"trim":"😀"}},
-{"input":"  b","expect":{"length":3,"trim":"b"}},
-{"input":" 　a","expect":{"length":3,"trim":"a"}},
-{"input":" 　 ","expect":{"length":3,"trim":""}},
-{"input":" 　\u0009","expect":{"length":3,"trim":""}},
-{"input":" 　\u000a","expect":{"length":3,"trim":""}},
-{"input":" 　 ","expect":{"length":3,"trim":""}},
-{"input":" 　﻿","expect":{"length":3,"trim":""}},
-{"input":" 　 ","expect":{"length":3,"trim":""}},
-{"input":" 　　","expect":{"length":3,"trim":""}},
-{"input":" 　😀","expect":{"length":4,"trim":"😀"}},
-{"input":" 　b","expect":{"length":3,"trim":"b"}},
-{"input":" 😀a","expect":{"length":4,"trim":"😀a"}},
-{"input":" 😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀\u0009","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀\u000a","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀﻿","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀　","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀😀","expect":{"length":5,"trim":"😀😀"}},
-{"input":" 😀b","expect":{"length":4,"trim":"😀b"}},
-{"input":" ba","expect":{"length":3,"trim":"ba"}},
-{"input":" b ","expect":{"length":3,"trim":"b"}},
-{"input":" b\u0009","expect":{"length":3,"trim":"b"}},
-{"input":" b\u000a","expect":{"length":3,"trim":"b"}},
-{"input":" b ","expect":{"length":3,"trim":"b"}},
-{"input":" b﻿","expect":{"length":3,"trim":"b"}},
-{"input":" b ","expect":{"length":3,"trim":"b"}},
-{"input":" b　","expect":{"length":3,"trim":"b"}},
-{"input":" b😀","expect":{"length":4,"trim":"b😀"}},
-{"input":" bb","expect":{"length":3,"trim":"bb"}},
-{"input":"﻿aa","expect":{"length":3,"trim":"aa"}},
-{"input":"﻿a ","expect":{"length":3,"trim":"a"}},
-{"input":"﻿a\u0009","expect":{"length":3,"trim":"a"}},
-{"input":"﻿a\u000a","expect":{"length":3,"trim":"a"}},
-{"input":"﻿a ","expect":{"length":3,"trim":"a"}},
-{"input":"﻿a﻿","expect":{"length":3,"trim":"a"}},
-{"input":"﻿a ","expect":{"length":3,"trim":"a"}},
-{"input":"﻿a　","expect":{"length":3,"trim":"a"}},
-{"input":"﻿a😀","expect":{"length":4,"trim":"a😀"}},
-{"input":"﻿ab","expect":{"length":3,"trim":"ab"}},
-{"input":"﻿ a","expect":{"length":3,"trim":"a"}},
-{"input":"﻿  ","expect":{"length":3,"trim":""}},
-{"input":"﻿ \u0009","expect":{"length":3,"trim":""}},
-{"input":"﻿ \u000a","expect":{"length":3,"trim":""}},
-{"input":"﻿  ","expect":{"length":3,"trim":""}},
-{"input":"﻿ ﻿","expect":{"length":3,"trim":""}},
-{"input":"﻿  ","expect":{"length":3,"trim":""}},
-{"input":"﻿ 　","expect":{"length":3,"trim":""}},
-{"input":"﻿ 😀","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿ b","expect":{"length":3,"trim":"b"}},
-{"input":"﻿\u0009a","expect":{"length":3,"trim":"a"}},
-{"input":"﻿\u0009 ","expect":{"length":3,"trim":""}},
-{"input":"﻿\u0009\u0009","expect":{"length":3,"trim":""}},
-{"input":"﻿\u0009\u000a","expect":{"length":3,"trim":""}},
-{"input":"﻿\u0009 ","expect":{"length":3,"trim":""}},
-{"input":"﻿\u0009﻿","expect":{"length":3,"trim":""}},
-{"input":"﻿\u0009 ","expect":{"length":3,"trim":""}},
-{"input":"﻿\u0009　","expect":{"length":3,"trim":""}},
-{"input":"﻿\u0009😀","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿\u0009b","expect":{"length":3,"trim":"b"}},
-{"input":"﻿\u000aa","expect":{"length":3,"trim":"a"}},
-{"input":"﻿\u000a ","expect":{"length":3,"trim":""}},
-{"input":"﻿\u000a\u0009","expect":{"length":3,"trim":""}},
-{"input":"﻿\u000a\u000a","expect":{"length":3,"trim":""}},
-{"input":"﻿\u000a ","expect":{"length":3,"trim":""}},
-{"input":"﻿\u000a﻿","expect":{"length":3,"trim":""}},
-{"input":"﻿\u000a ","expect":{"length":3,"trim":""}},
-{"input":"﻿\u000a　","expect":{"length":3,"trim":""}},
-{"input":"﻿\u000a😀","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿\u000ab","expect":{"length":3,"trim":"b"}},
-{"input":"﻿ a","expect":{"length":3,"trim":"a"}},
-{"input":"﻿  ","expect":{"length":3,"trim":""}},
-{"input":"﻿ \u0009","expect":{"length":3,"trim":""}},
-{"input":"﻿ \u000a","expect":{"length":3,"trim":""}},
-{"input":"﻿  ","expect":{"length":3,"trim":""}},
-{"input":"﻿ ﻿","expect":{"length":3,"trim":""}},
-{"input":"﻿  ","expect":{"length":3,"trim":""}},
-{"input":"﻿ 　","expect":{"length":3,"trim":""}},
-{"input":"﻿ 😀","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿ b","expect":{"length":3,"trim":"b"}},
-{"input":"﻿﻿a","expect":{"length":3,"trim":"a"}},
-{"input":"﻿﻿ ","expect":{"length":3,"trim":""}},
-{"input":"﻿﻿\u0009","expect":{"length":3,"trim":""}},
-{"input":"﻿﻿\u000a","expect":{"length":3,"trim":""}},
-{"input":"﻿﻿ ","expect":{"length":3,"trim":""}},
-{"input":"﻿﻿﻿","expect":{"length":3,"trim":""}},
-{"input":"﻿﻿ ","expect":{"length":3,"trim":""}},
-{"input":"﻿﻿　","expect":{"length":3,"trim":""}},
-{"input":"﻿﻿😀","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿﻿b","expect":{"length":3,"trim":"b"}},
-{"input":"﻿ a","expect":{"length":3,"trim":"a"}},
-{"input":"﻿  ","expect":{"length":3,"trim":""}},
-{"input":"﻿ \u0009","expect":{"length":3,"trim":""}},
-{"input":"﻿ \u000a","expect":{"length":3,"trim":""}},
-{"input":"﻿  ","expect":{"length":3,"trim":""}},
-{"input":"﻿ ﻿","expect":{"length":3,"trim":""}},
-{"input":"﻿  ","expect":{"length":3,"trim":""}},
-{"input":"﻿ 　","expect":{"length":3,"trim":""}},
-{"input":"﻿ 😀","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿ b","expect":{"length":3,"trim":"b"}},
-{"input":"﻿　a","expect":{"length":3,"trim":"a"}},
-{"input":"﻿　 ","expect":{"length":3,"trim":""}},
-{"input":"﻿　\u0009","expect":{"length":3,"trim":""}},
-{"input":"﻿　\u000a","expect":{"length":3,"trim":""}},
-{"input":"﻿　 ","expect":{"length":3,"trim":""}},
-{"input":"﻿　﻿","expect":{"length":3,"trim":""}},
-{"input":"﻿　 ","expect":{"length":3,"trim":""}},
-{"input":"﻿　　","expect":{"length":3,"trim":""}},
-{"input":"﻿　😀","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿　b","expect":{"length":3,"trim":"b"}},
-{"input":"﻿😀a","expect":{"length":4,"trim":"😀a"}},
-{"input":"﻿😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿😀\u0009","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿😀\u000a","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿😀﻿","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿😀　","expect":{"length":4,"trim":"😀"}},
-{"input":"﻿😀😀","expect":{"length":5,"trim":"😀😀"}},
-{"input":"﻿😀b","expect":{"length":4,"trim":"😀b"}},
-{"input":"﻿ba","expect":{"length":3,"trim":"ba"}},
-{"input":"﻿b ","expect":{"length":3,"trim":"b"}},
-{"input":"﻿b\u0009","expect":{"length":3,"trim":"b"}},
-{"input":"﻿b\u000a","expect":{"length":3,"trim":"b"}},
-{"input":"﻿b ","expect":{"length":3,"trim":"b"}},
-{"input":"﻿b﻿","expect":{"length":3,"trim":"b"}},
-{"input":"﻿b ","expect":{"length":3,"trim":"b"}},
-{"input":"﻿b　","expect":{"length":3,"trim":"b"}},
-{"input":"﻿b😀","expect":{"length":4,"trim":"b😀"}},
-{"input":"﻿bb","expect":{"length":3,"trim":"bb"}},
-{"input":" aa","expect":{"length":3,"trim":"aa"}},
-{"input":" a ","expect":{"length":3,"trim":"a"}},
-{"input":" a\u0009","expect":{"length":3,"trim":"a"}},
-{"input":" a\u000a","expect":{"length":3,"trim":"a"}},
-{"input":" a ","expect":{"length":3,"trim":"a"}},
-{"input":" a﻿","expect":{"length":3,"trim":"a"}},
-{"input":" a ","expect":{"length":3,"trim":"a"}},
-{"input":" a　","expect":{"length":3,"trim":"a"}},
-{"input":" a😀","expect":{"length":4,"trim":"a😀"}},
-{"input":" ab","expect":{"length":3,"trim":"ab"}},
-{"input":"  a","expect":{"length":3,"trim":"a"}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  \u0009","expect":{"length":3,"trim":""}},
-{"input":"  \u000a","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  ﻿","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  　","expect":{"length":3,"trim":""}},
-{"input":"  😀","expect":{"length":4,"trim":"😀"}},
-{"input":"  b","expect":{"length":3,"trim":"b"}},
-{"input":" \u0009a","expect":{"length":3,"trim":"a"}},
-{"input":" \u0009 ","expect":{"length":3,"trim":""}},
-{"input":" \u0009\u0009","expect":{"length":3,"trim":""}},
-{"input":" \u0009\u000a","expect":{"length":3,"trim":""}},
-{"input":" \u0009 ","expect":{"length":3,"trim":""}},
-{"input":" \u0009﻿","expect":{"length":3,"trim":""}},
-{"input":" \u0009 ","expect":{"length":3,"trim":""}},
-{"input":" \u0009　","expect":{"length":3,"trim":""}},
-{"input":" \u0009😀","expect":{"length":4,"trim":"😀"}},
-{"input":" \u0009b","expect":{"length":3,"trim":"b"}},
-{"input":" \u000aa","expect":{"length":3,"trim":"a"}},
-{"input":" \u000a ","expect":{"length":3,"trim":""}},
-{"input":" \u000a\u0009","expect":{"length":3,"trim":""}},
-{"input":" \u000a\u000a","expect":{"length":3,"trim":""}},
-{"input":" \u000a ","expect":{"length":3,"trim":""}},
-{"input":" \u000a﻿","expect":{"length":3,"trim":""}},
-{"input":" \u000a ","expect":{"length":3,"trim":""}},
-{"input":" \u000a　","expect":{"length":3,"trim":""}},
-{"input":" \u000a😀","expect":{"length":4,"trim":"😀"}},
-{"input":" \u000ab","expect":{"length":3,"trim":"b"}},
-{"input":"  a","expect":{"length":3,"trim":"a"}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  \u0009","expect":{"length":3,"trim":""}},
-{"input":"  \u000a","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  ﻿","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  　","expect":{"length":3,"trim":""}},
-{"input":"  😀","expect":{"length":4,"trim":"😀"}},
-{"input":"  b","expect":{"length":3,"trim":"b"}},
-{"input":" ﻿a","expect":{"length":3,"trim":"a"}},
-{"input":" ﻿ ","expect":{"length":3,"trim":""}},
-{"input":" ﻿\u0009","expect":{"length":3,"trim":""}},
-{"input":" ﻿\u000a","expect":{"length":3,"trim":""}},
-{"input":" ﻿ ","expect":{"length":3,"trim":""}},
-{"input":" ﻿﻿","expect":{"length":3,"trim":""}},
-{"input":" ﻿ ","expect":{"length":3,"trim":""}},
-{"input":" ﻿　","expect":{"length":3,"trim":""}},
-{"input":" ﻿😀","expect":{"length":4,"trim":"😀"}},
-{"input":" ﻿b","expect":{"length":3,"trim":"b"}},
-{"input":"  a","expect":{"length":3,"trim":"a"}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  \u0009","expect":{"length":3,"trim":""}},
-{"input":"  \u000a","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  ﻿","expect":{"length":3,"trim":""}},
-{"input":"   ","expect":{"length":3,"trim":""}},
-{"input":"  　","expect":{"length":3,"trim":""}},
-{"input":"  😀","expect":{"length":4,"trim":"😀"}},
-{"input":"  b","expect":{"length":3,"trim":"b"}},
-{"input":" 　a","expect":{"length":3,"trim":"a"}},
-{"input":" 　 ","expect":{"length":3,"trim":""}},
-{"input":" 　\u0009","expect":{"length":3,"trim":""}},
-{"input":" 　\u000a","expect":{"length":3,"trim":""}},
-{"input":" 　 ","expect":{"length":3,"trim":""}},
-{"input":" 　﻿","expect":{"length":3,"trim":""}},
-{"input":" 　 ","expect":{"length":3,"trim":""}},
-{"input":" 　　","expect":{"length":3,"trim":""}},
-{"input":" 　😀","expect":{"length":4,"trim":"😀"}},
-{"input":" 　b","expect":{"length":3,"trim":"b"}},
-{"input":" 😀a","expect":{"length":4,"trim":"😀a"}},
-{"input":" 😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀\u0009","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀\u000a","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀﻿","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀　","expect":{"length":4,"trim":"😀"}},
-{"input":" 😀😀","expect":{"length":5,"trim":"😀😀"}},
-{"input":" 😀b","expect":{"length":4,"trim":"😀b"}},
-{"input":" ba","expect":{"length":3,"trim":"ba"}},
-{"input":" b ","expect":{"length":3,"trim":"b"}},
-{"input":" b\u0009","expect":{"length":3,"trim":"b"}},
-{"input":" b\u000a","expect":{"length":3,"trim":"b"}},
-{"input":" b ","expect":{"length":3,"trim":"b"}},
-{"input":" b﻿","expect":{"length":3,"trim":"b"}},
-{"input":" b ","expect":{"length":3,"trim":"b"}},
-{"input":" b　","expect":{"length":3,"trim":"b"}},
-{"input":" b😀","expect":{"length":4,"trim":"b😀"}},
-{"input":" bb","expect":{"length":3,"trim":"bb"}},
-{"input":"　aa","expect":{"length":3,"trim":"aa"}},
-{"input":"　a ","expect":{"length":3,"trim":"a"}},
-{"input":"　a\u0009","expect":{"length":3,"trim":"a"}},
-{"input":"　a\u000a","expect":{"length":3,"trim":"a"}},
-{"input":"　a ","expect":{"length":3,"trim":"a"}},
-{"input":"　a﻿","expect":{"length":3,"trim":"a"}},
-{"input":"　a ","expect":{"length":3,"trim":"a"}},
-{"input":"　a　","expect":{"length":3,"trim":"a"}},
-{"input":"　a😀","expect":{"length":4,"trim":"a😀"}},
-{"input":"　ab","expect":{"length":3,"trim":"ab"}},
-{"input":"　 a","expect":{"length":3,"trim":"a"}},
-{"input":"　  ","expect":{"length":3,"trim":""}},
-{"input":"　 \u0009","expect":{"length":3,"trim":""}},
-{"input":"　 \u000a","expect":{"length":3,"trim":""}},
-{"input":"　  ","expect":{"length":3,"trim":""}},
-{"input":"　 ﻿","expect":{"length":3,"trim":""}},
-{"input":"　  ","expect":{"length":3,"trim":""}},
-{"input":"　 　","expect":{"length":3,"trim":""}},
-{"input":"　 😀","expect":{"length":4,"trim":"😀"}},
-{"input":"　 b","expect":{"length":3,"trim":"b"}},
-{"input":"　\u0009a","expect":{"length":3,"trim":"a"}},
-{"input":"　\u0009 ","expect":{"length":3,"trim":""}},
-{"input":"　\u0009\u0009","expect":{"length":3,"trim":""}},
-{"input":"　\u0009\u000a","expect":{"length":3,"trim":""}},
-{"input":"　\u0009 ","expect":{"length":3,"trim":""}},
-{"input":"　\u0009﻿","expect":{"length":3,"trim":""}},
-{"input":"　\u0009 ","expect":{"length":3,"trim":""}},
-{"input":"　\u0009　","expect":{"length":3,"trim":""}},
-{"input":"　\u0009😀","expect":{"length":4,"trim":"😀"}},
-{"input":"　\u0009b","expect":{"length":3,"trim":"b"}},
-{"input":"　\u000aa","expect":{"length":3,"trim":"a"}},
-{"input":"　\u000a ","expect":{"length":3,"trim":""}},
-{"input":"　\u000a\u0009","expect":{"length":3,"trim":""}},
-{"input":"　\u000a\u000a","expect":{"length":3,"trim":""}},
-{"input":"　\u000a ","expect":{"length":3,"trim":""}},
-{"input":"　\u000a﻿","expect":{"length":3,"trim":""}},
-{"input":"　\u000a ","expect":{"length":3,"trim":""}},
-{"input":"　\u000a　","expect":{"length":3,"trim":""}},
-{"input":"　\u000a😀","expect":{"length":4,"trim":"😀"}},
-{"input":"　\u000ab","expect":{"length":3,"trim":"b"}},
-{"input":"　 a","expect":{"length":3,"trim":"a"}},
-{"input":"　  ","expect":{"length":3,"trim":""}},
-{"input":"　 \u0009","expect":{"length":3,"trim":""}},
-{"input":"　 \u000a","expect":{"length":3,"trim":""}},
-{"input":"　  ","expect":{"length":3,"trim":""}},
-{"input":"　 ﻿","expect":{"length":3,"trim":""}},
-{"input":"　  ","expect":{"length":3,"trim":""}},
-{"input":"　 　","expect":{"length":3,"trim":""}},
-{"input":"　 😀","expect":{"length":4,"trim":"😀"}},
-{"input":"　 b","expect":{"length":3,"trim":"b"}},
-{"input":"　﻿a","expect":{"length":3,"trim":"a"}},
-{"input":"　﻿ ","expect":{"length":3,"trim":""}},
-{"input":"　﻿\u0009","expect":{"length":3,"trim":""}},
-{"input":"　﻿\u000a","expect":{"length":3,"trim":""}},
-{"input":"　﻿ ","expect":{"length":3,"trim":""}},
-{"input":"　﻿﻿","expect":{"length":3,"trim":""}},
-{"input":"　﻿ ","expect":{"length":3,"trim":""}},
-{"input":"　﻿　","expect":{"length":3,"trim":""}},
-{"input":"　﻿😀","expect":{"length":4,"trim":"😀"}},
-{"input":"　﻿b","expect":{"length":3,"trim":"b"}},
-{"input":"　 a","expect":{"length":3,"trim":"a"}},
-{"input":"　  ","expect":{"length":3,"trim":""}},
-{"input":"　 \u0009","expect":{"length":3,"trim":""}},
-{"input":"　 \u000a","expect":{"length":3,"trim":""}},
-{"input":"　  ","expect":{"length":3,"trim":""}},
-{"input":"　 ﻿","expect":{"length":3,"trim":""}},
-{"input":"　  ","expect":{"length":3,"trim":""}},
-{"input":"　 　","expect":{"length":3,"trim":""}},
-{"input":"　 😀","expect":{"length":4,"trim":"😀"}},
-{"input":"　 b","expect":{"length":3,"trim":"b"}},
-{"input":"　　a","expect":{"length":3,"trim":"a"}},
-{"input":"　　 ","expect":{"length":3,"trim":""}},
-{"input":"　　\u0009","expect":{"length":3,"trim":""}},
-{"input":"　　\u000a","expect":{"length":3,"trim":""}},
-{"input":"　　 ","expect":{"length":3,"trim":""}},
-{"input":"　　﻿","expect":{"length":3,"trim":""}},
-{"input":"　　 ","expect":{"length":3,"trim":""}},
-{"input":"　　　","expect":{"length":3,"trim":""}},
-{"input":"　　😀","expect":{"length":4,"trim":"😀"}},
-{"input":"　　b","expect":{"length":3,"trim":"b"}},
-{"input":"　😀a","expect":{"length":4,"trim":"😀a"}},
-{"input":"　😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":"　😀\u0009","expect":{"length":4,"trim":"😀"}},
-{"input":"　😀\u000a","expect":{"length":4,"trim":"😀"}},
-{"input":"　😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":"　😀﻿","expect":{"length":4,"trim":"😀"}},
-{"input":"　😀 ","expect":{"length":4,"trim":"😀"}},
-{"input":"　😀　","expect":{"length":4,"trim":"😀"}},
-{"input":"　😀😀","expect":{"length":5,"trim":"😀😀"}},
-{"input":"　😀b","expect":{"length":4,"trim":"😀b"}},
-{"input":"　ba","expect":{"length":3,"trim":"ba"}},
-{"input":"　b ","expect":{"length":3,"trim":"b"}},
-{"input":"　b\u0009","expect":{"length":3,"trim":"b"}},
-{"input":"　b\u000a","expect":{"length":3,"trim":"b"}},
-{"input":"　b ","expect":{"length":3,"trim":"b"}},
-{"input":"　b﻿","expect":{"length":3,"trim":"b"}},
-{"input":"　b ","expect":{"length":3,"trim":"b"}},
-{"input":"　b　","expect":{"length":3,"trim":"b"}},
-{"input":"　b😀","expect":{"length":4,"trim":"b😀"}},
-{"input":"　bb","expect":{"length":3,"trim":"bb"}},
-{"input":"😀aa","expect":{"length":4,"trim":"😀aa"}},
-{"input":"😀a ","expect":{"length":4,"trim":"😀a"}},
-{"input":"😀a\u0009","expect":{"length":4,"trim":"😀a"}},
-{"input":"😀a\u000a","expect":{"length":4,"trim":"😀a"}},
-{"input":"😀a ","expect":{"length":4,"trim":"😀a"}},
-{"input":"😀a﻿","expect":{"length":4,"trim":"😀a"}},
-{"input":"😀a ","expect":{"length":4,"trim":"😀a"}},
-{"input":"😀a　","expect":{"length":4,"trim":"😀a"}},
-{"input":"😀a😀","expect":{"length":5,"trim":"😀a😀"}},
-{"input":"😀ab","expect":{"length":4,"trim":"😀ab"}},
-{"input":"😀 a","expect":{"length":4,"trim":"😀 a"}},
-{"input":"😀  ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 \u0009","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 \u000a","expect":{"length":4,"trim":"😀"}},
-{"input":"😀  ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 ﻿","expect":{"length":4,"trim":"😀"}},
-{"input":"😀  ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 　","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 😀","expect":{"length":5,"trim":"😀 😀"}},
-{"input":"😀 b","expect":{"length":4,"trim":"😀 b"}},
-{"input":"😀\u0009a","expect":{"length":4,"trim":"😀\u0009a"}},
-{"input":"😀\u0009 ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u0009\u0009","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u0009\u000a","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u0009 ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u0009﻿","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u0009 ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u0009　","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u0009😀","expect":{"length":5,"trim":"😀\u0009😀"}},
-{"input":"😀\u0009b","expect":{"length":4,"trim":"😀\u0009b"}},
-{"input":"😀\u000aa","expect":{"length":4,"trim":"😀\u000aa"}},
-{"input":"😀\u000a ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u000a\u0009","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u000a\u000a","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u000a ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u000a﻿","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u000a ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u000a　","expect":{"length":4,"trim":"😀"}},
-{"input":"😀\u000a😀","expect":{"length":5,"trim":"😀\u000a😀"}},
-{"input":"😀\u000ab","expect":{"length":4,"trim":"😀\u000ab"}},
-{"input":"😀 a","expect":{"length":4,"trim":"😀 a"}},
-{"input":"😀  ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 \u0009","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 \u000a","expect":{"length":4,"trim":"😀"}},
-{"input":"😀  ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 ﻿","expect":{"length":4,"trim":"😀"}},
-{"input":"😀  ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 　","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 😀","expect":{"length":5,"trim":"😀 😀"}},
-{"input":"😀 b","expect":{"length":4,"trim":"😀 b"}},
-{"input":"😀﻿a","expect":{"length":4,"trim":"😀﻿a"}},
-{"input":"😀﻿ ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀﻿\u0009","expect":{"length":4,"trim":"😀"}},
-{"input":"😀﻿\u000a","expect":{"length":4,"trim":"😀"}},
-{"input":"😀﻿ ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀﻿﻿","expect":{"length":4,"trim":"😀"}},
-{"input":"😀﻿ ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀﻿　","expect":{"length":4,"trim":"😀"}},
-{"input":"😀﻿😀","expect":{"length":5,"trim":"😀﻿😀"}},
-{"input":"😀﻿b","expect":{"length":4,"trim":"😀﻿b"}},
-{"input":"😀 a","expect":{"length":4,"trim":"😀 a"}},
-{"input":"😀  ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 \u0009","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 \u000a","expect":{"length":4,"trim":"😀"}},
-{"input":"😀  ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 ﻿","expect":{"length":4,"trim":"😀"}},
-{"input":"😀  ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 　","expect":{"length":4,"trim":"😀"}},
-{"input":"😀 😀","expect":{"length":5,"trim":"😀 😀"}},
-{"input":"😀 b","expect":{"length":4,"trim":"😀 b"}},
-{"input":"😀　a","expect":{"length":4,"trim":"😀　a"}},
-{"input":"😀　 ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀　\u0009","expect":{"length":4,"trim":"😀"}},
-{"input":"😀　\u000a","expect":{"length":4,"trim":"😀"}},
-{"input":"😀　 ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀　﻿","expect":{"length":4,"trim":"😀"}},
-{"input":"😀　 ","expect":{"length":4,"trim":"😀"}},
-{"input":"😀　　","expect":{"length":4,"trim":"😀"}},
-{"input":"😀　😀","expect":{"length":5,"trim":"😀　😀"}},
-{"input":"😀　b","expect":{"length":4,"trim":"😀　b"}},
-{"input":"😀😀a","expect":{"length":5,"trim":"😀😀a"}},
-{"input":"😀😀 ","expect":{"length":5,"trim":"😀😀"}},
-{"input":"😀😀\u0009","expect":{"length":5,"trim":"😀😀"}},
-{"input":"😀😀\u000a","expect":{"length":5,"trim":"😀😀"}},
-{"input":"😀😀 ","expect":{"length":5,"trim":"😀😀"}},
-{"input":"😀😀﻿","expect":{"length":5,"trim":"😀😀"}},
-{"input":"😀😀 ","expect":{"length":5,"trim":"😀😀"}},
-{"input":"😀😀　","expect":{"length":5,"trim":"😀😀"}},
-{"input":"😀😀😀","expect":{"length":6,"trim":"😀😀😀"}},
-{"input":"😀😀b","expect":{"length":5,"trim":"😀😀b"}},
-{"input":"😀ba","expect":{"length":4,"trim":"😀ba"}},
-{"input":"😀b ","expect":{"length":4,"trim":"😀b"}},
-{"input":"😀b\u0009","expect":{"length":4,"trim":"😀b"}},
-{"input":"😀b\u000a","expect":{"length":4,"trim":"😀b"}},
-{"input":"😀b ","expect":{"length":4,"trim":"😀b"}},
-{"input":"😀b﻿","expect":{"length":4,"trim":"😀b"}},
-{"input":"😀b ","expect":{"length":4,"trim":"😀b"}},
-{"input":"😀b　","expect":{"length":4,"trim":"😀b"}},
-{"input":"😀b😀","expect":{"length":5,"trim":"😀b😀"}},
-{"input":"😀bb","expect":{"length":4,"trim":"😀bb"}},
-{"input":"baa","expect":{"length":3,"trim":"baa"}},
-{"input":"ba ","expect":{"length":3,"trim":"ba"}},
-{"input":"ba\u0009","expect":{"length":3,"trim":"ba"}},
-{"input":"ba\u000a","expect":{"length":3,"trim":"ba"}},
-{"input":"ba ","expect":{"length":3,"trim":"ba"}},
-{"input":"ba﻿","expect":{"length":3,"trim":"ba"}},
-{"input":"ba ","expect":{"length":3,"trim":"ba"}},
-{"input":"ba　","expect":{"length":3,"trim":"ba"}},
-{"input":"ba😀","expect":{"length":4,"trim":"ba😀"}},
-{"input":"bab","expect":{"length":3,"trim":"bab"}},
-{"input":"b a","expect":{"length":3,"trim":"b a"}},
-{"input":"b  ","expect":{"length":3,"trim":"b"}},
-{"input":"b \u0009","expect":{"length":3,"trim":"b"}},
-{"input":"b \u000a","expect":{"length":3,"trim":"b"}},
-{"input":"b  ","expect":{"length":3,"trim":"b"}},
-{"input":"b ﻿","expect":{"length":3,"trim":"b"}},
-{"input":"b  ","expect":{"length":3,"trim":"b"}},
-{"input":"b 　","expect":{"length":3,"trim":"b"}},
-{"input":"b 😀","expect":{"length":4,"trim":"b 😀"}},
-{"input":"b b","expect":{"length":3,"trim":"b b"}},
-{"input":"b\u0009a","expect":{"length":3,"trim":"b\u0009a"}},
-{"input":"b\u0009 ","expect":{"length":3,"trim":"b"}},
-{"input":"b\u0009\u0009","expect":{"length":3,"trim":"b"}},
-{"input":"b\u0009\u000a","expect":{"length":3,"trim":"b"}},
-{"input":"b\u0009 ","expect":{"length":3,"trim":"b"}},
-{"input":"b\u0009﻿","expect":{"length":3,"trim":"b"}},
-{"input":"b\u0009 ","expect":{"length":3,"trim":"b"}},
-{"input":"b\u0009　","expect":{"length":3,"trim":"b"}},
-{"input":"b\u0009😀","expect":{"length":4,"trim":"b\u0009😀"}},
-{"input":"b\u0009b","expect":{"length":3,"trim":"b\u0009b"}},
-{"input":"b\u000aa","expect":{"length":3,"trim":"b\u000aa"}},
-{"input":"b\u000a ","expect":{"length":3,"trim":"b"}},
-{"input":"b\u000a\u0009","expect":{"length":3,"trim":"b"}},
-{"input":"b\u000a\u000a","expect":{"length":3,"trim":"b"}},
-{"input":"b\u000a ","expect":{"length":3,"trim":"b"}},
-{"input":"b\u000a﻿","expect":{"length":3,"trim":"b"}},
-{"input":"b\u000a ","expect":{"length":3,"trim":"b"}},
-{"input":"b\u000a　","expect":{"length":3,"trim":"b"}},
-{"input":"b\u000a😀","expect":{"length":4,"trim":"b\u000a😀"}},
-{"input":"b\u000ab","expect":{"length":3,"trim":"b\u000ab"}},
-{"input":"b a","expect":{"length":3,"trim":"b a"}},
-{"input":"b  ","expect":{"length":3,"trim":"b"}},
-{"input":"b \u0009","expect":{"length":3,"trim":"b"}},
-{"input":"b \u000a","expect":{"length":3,"trim":"b"}},
-{"input":"b  ","expect":{"length":3,"trim":"b"}},
-{"input":"b ﻿","expect":{"length":3,"trim":"b"}},
-{"input":"b  ","expect":{"length":3,"trim":"b"}},
-{"input":"b 　","expect":{"length":3,"trim":"b"}},
-{"input":"b 😀","expect":{"length":4,"trim":"b 😀"}},
-{"input":"b b","expect":{"length":3,"trim":"b b"}},
-{"input":"b﻿a","expect":{"length":3,"trim":"b﻿a"}},
-{"input":"b﻿ ","expect":{"length":3,"trim":"b"}},
-{"input":"b﻿\u0009","expect":{"length":3,"trim":"b"}},
-{"input":"b﻿\u000a","expect":{"length":3,"trim":"b"}},
-{"input":"b﻿ ","expect":{"length":3,"trim":"b"}},
-{"input":"b﻿﻿","expect":{"length":3,"trim":"b"}},
-{"input":"b﻿ ","expect":{"length":3,"trim":"b"}},
-{"input":"b﻿　","expect":{"length":3,"trim":"b"}},
-{"input":"b﻿😀","expect":{"length":4,"trim":"b﻿😀"}},
-{"input":"b﻿b","expect":{"length":3,"trim":"b﻿b"}},
-{"input":"b a","expect":{"length":3,"trim":"b a"}},
-{"input":"b  ","expect":{"length":3,"trim":"b"}},
-{"input":"b \u0009","expect":{"length":3,"trim":"b"}},
-{"input":"b \u000a","expect":{"length":3,"trim":"b"}},
-{"input":"b  ","expect":{"length":3,"trim":"b"}},
-{"input":"b ﻿","expect":{"length":3,"trim":"b"}},
-{"input":"b  ","expect":{"length":3,"trim":"b"}},
-{"input":"b 　","expect":{"length":3,"trim":"b"}},
-{"input":"b 😀","expect":{"length":4,"trim":"b 😀"}},
-{"input":"b b","expect":{"length":3,"trim":"b b"}},
-{"input":"b　a","expect":{"length":3,"trim":"b　a"}},
-{"input":"b　 ","expect":{"length":3,"trim":"b"}},
-{"input":"b　\u0009","expect":{"length":3,"trim":"b"}},
-{"input":"b　\u000a","expect":{"length":3,"trim":"b"}},
-{"input":"b　 ","expect":{"length":3,"trim":"b"}},
-{"input":"b　﻿","expect":{"length":3,"trim":"b"}},
-{"input":"b　 ","expect":{"length":3,"trim":"b"}},
-{"input":"b　　","expect":{"length":3,"trim":"b"}},
-{"input":"b　😀","expect":{"length":4,"trim":"b　😀"}},
-{"input":"b　b","expect":{"length":3,"trim":"b　b"}},
-{"input":"b😀a","expect":{"length":4,"trim":"b😀a"}},
-{"input":"b😀 ","expect":{"length":4,"trim":"b😀"}},
-{"input":"b😀\u0009","expect":{"length":4,"trim":"b😀"}},
-{"input":"b😀\u000a","expect":{"length":4,"trim":"b😀"}},
-{"input":"b😀 ","expect":{"length":4,"trim":"b😀"}},
-{"input":"b😀﻿","expect":{"length":4,"trim":"b😀"}},
-{"input":"b😀 ","expect":{"length":4,"trim":"b😀"}},
-{"input":"b😀　","expect":{"length":4,"trim":"b😀"}},
-{"input":"b😀😀","expect":{"length":5,"trim":"b😀😀"}},
-{"input":"b😀b","expect":{"length":4,"trim":"b😀b"}},
-{"input":"bba","expect":{"length":3,"trim":"bba"}},
-{"input":"bb ","expect":{"length":3,"trim":"bb"}},
-{"input":"bb\u0009","expect":{"length":3,"trim":"bb"}},
-{"input":"bb\u000a","expect":{"length":3,"trim":"bb"}},
-{"input":"bb ","expect":{"length":3,"trim":"bb"}},
-{"input":"bb﻿","expect":{"length":3,"trim":"bb"}},
-{"input":"bb ","expect":{"length":3,"trim":"bb"}},
-{"input":"bb　","expect":{"length":3,"trim":"bb"}},
-{"input":"bb😀","expect":{"length":4,"trim":"bb😀"}},
-{"input":"bbb","expect":{"length":3,"trim":"bbb"}}
+{"module":"js-string","generator":"SomaVerify.JsString.Vectors.cases","lean":"4.34.1","count":2801,"cases":[
+{"fn":"length","args":[""],"expect":0},
+{"fn":"trim","args":[""],"expect":""},
+{"fn":"length","args":["a"],"expect":1},
+{"fn":"trim","args":["a"],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["\u0009"],"expect":1},
+{"fn":"trim","args":["\u0009"],"expect":""},
+{"fn":"length","args":["\u000a"],"expect":1},
+{"fn":"trim","args":["\u000a"],"expect":""},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["﻿"],"expect":1},
+{"fn":"trim","args":["﻿"],"expect":""},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["　"],"expect":1},
+{"fn":"trim","args":["　"],"expect":""},
+{"fn":"length","args":["😀"],"expect":2},
+{"fn":"trim","args":["😀"],"expect":"😀"},
+{"fn":"length","args":["b"],"expect":1},
+{"fn":"trim","args":["b"],"expect":"b"},
+{"fn":"length","args":["aa"],"expect":2},
+{"fn":"trim","args":["aa"],"expect":"aa"},
+{"fn":"length","args":["a "],"expect":2},
+{"fn":"trim","args":["a "],"expect":"a"},
+{"fn":"length","args":["a\u0009"],"expect":2},
+{"fn":"trim","args":["a\u0009"],"expect":"a"},
+{"fn":"length","args":["a\u000a"],"expect":2},
+{"fn":"trim","args":["a\u000a"],"expect":"a"},
+{"fn":"length","args":["a "],"expect":2},
+{"fn":"trim","args":["a "],"expect":"a"},
+{"fn":"length","args":["a﻿"],"expect":2},
+{"fn":"trim","args":["a﻿"],"expect":"a"},
+{"fn":"length","args":["a "],"expect":2},
+{"fn":"trim","args":["a "],"expect":"a"},
+{"fn":"length","args":["a　"],"expect":2},
+{"fn":"trim","args":["a　"],"expect":"a"},
+{"fn":"length","args":["a😀"],"expect":3},
+{"fn":"trim","args":["a😀"],"expect":"a😀"},
+{"fn":"length","args":["ab"],"expect":2},
+{"fn":"trim","args":["ab"],"expect":"ab"},
+{"fn":"length","args":[" a"],"expect":2},
+{"fn":"trim","args":[" a"],"expect":"a"},
+{"fn":"length","args":["  "],"expect":2},
+{"fn":"trim","args":["  "],"expect":""},
+{"fn":"length","args":[" \u0009"],"expect":2},
+{"fn":"trim","args":[" \u0009"],"expect":""},
+{"fn":"length","args":[" \u000a"],"expect":2},
+{"fn":"trim","args":[" \u000a"],"expect":""},
+{"fn":"length","args":["  "],"expect":2},
+{"fn":"trim","args":["  "],"expect":""},
+{"fn":"length","args":[" ﻿"],"expect":2},
+{"fn":"trim","args":[" ﻿"],"expect":""},
+{"fn":"length","args":["  "],"expect":2},
+{"fn":"trim","args":["  "],"expect":""},
+{"fn":"length","args":[" 　"],"expect":2},
+{"fn":"trim","args":[" 　"],"expect":""},
+{"fn":"length","args":[" 😀"],"expect":3},
+{"fn":"trim","args":[" 😀"],"expect":"😀"},
+{"fn":"length","args":[" b"],"expect":2},
+{"fn":"trim","args":[" b"],"expect":"b"},
+{"fn":"length","args":["\u0009a"],"expect":2},
+{"fn":"trim","args":["\u0009a"],"expect":"a"},
+{"fn":"length","args":["\u0009 "],"expect":2},
+{"fn":"trim","args":["\u0009 "],"expect":""},
+{"fn":"length","args":["\u0009\u0009"],"expect":2},
+{"fn":"trim","args":["\u0009\u0009"],"expect":""},
+{"fn":"length","args":["\u0009\u000a"],"expect":2},
+{"fn":"trim","args":["\u0009\u000a"],"expect":""},
+{"fn":"length","args":["\u0009 "],"expect":2},
+{"fn":"trim","args":["\u0009 "],"expect":""},
+{"fn":"length","args":["\u0009﻿"],"expect":2},
+{"fn":"trim","args":["\u0009﻿"],"expect":""},
+{"fn":"length","args":["\u0009 "],"expect":2},
+{"fn":"trim","args":["\u0009 "],"expect":""},
+{"fn":"length","args":["\u0009　"],"expect":2},
+{"fn":"trim","args":["\u0009　"],"expect":""},
+{"fn":"length","args":["\u0009😀"],"expect":3},
+{"fn":"trim","args":["\u0009😀"],"expect":"😀"},
+{"fn":"length","args":["\u0009b"],"expect":2},
+{"fn":"trim","args":["\u0009b"],"expect":"b"},
+{"fn":"length","args":["\u000aa"],"expect":2},
+{"fn":"trim","args":["\u000aa"],"expect":"a"},
+{"fn":"length","args":["\u000a "],"expect":2},
+{"fn":"trim","args":["\u000a "],"expect":""},
+{"fn":"length","args":["\u000a\u0009"],"expect":2},
+{"fn":"trim","args":["\u000a\u0009"],"expect":""},
+{"fn":"length","args":["\u000a\u000a"],"expect":2},
+{"fn":"trim","args":["\u000a\u000a"],"expect":""},
+{"fn":"length","args":["\u000a "],"expect":2},
+{"fn":"trim","args":["\u000a "],"expect":""},
+{"fn":"length","args":["\u000a﻿"],"expect":2},
+{"fn":"trim","args":["\u000a﻿"],"expect":""},
+{"fn":"length","args":["\u000a "],"expect":2},
+{"fn":"trim","args":["\u000a "],"expect":""},
+{"fn":"length","args":["\u000a　"],"expect":2},
+{"fn":"trim","args":["\u000a　"],"expect":""},
+{"fn":"length","args":["\u000a😀"],"expect":3},
+{"fn":"trim","args":["\u000a😀"],"expect":"😀"},
+{"fn":"length","args":["\u000ab"],"expect":2},
+{"fn":"trim","args":["\u000ab"],"expect":"b"},
+{"fn":"length","args":[" a"],"expect":2},
+{"fn":"trim","args":[" a"],"expect":"a"},
+{"fn":"length","args":["  "],"expect":2},
+{"fn":"trim","args":["  "],"expect":""},
+{"fn":"length","args":[" \u0009"],"expect":2},
+{"fn":"trim","args":[" \u0009"],"expect":""},
+{"fn":"length","args":[" \u000a"],"expect":2},
+{"fn":"trim","args":[" \u000a"],"expect":""},
+{"fn":"length","args":["  "],"expect":2},
+{"fn":"trim","args":["  "],"expect":""},
+{"fn":"length","args":[" ﻿"],"expect":2},
+{"fn":"trim","args":[" ﻿"],"expect":""},
+{"fn":"length","args":["  "],"expect":2},
+{"fn":"trim","args":["  "],"expect":""},
+{"fn":"length","args":[" 　"],"expect":2},
+{"fn":"trim","args":[" 　"],"expect":""},
+{"fn":"length","args":[" 😀"],"expect":3},
+{"fn":"trim","args":[" 😀"],"expect":"😀"},
+{"fn":"length","args":[" b"],"expect":2},
+{"fn":"trim","args":[" b"],"expect":"b"},
+{"fn":"length","args":["﻿a"],"expect":2},
+{"fn":"trim","args":["﻿a"],"expect":"a"},
+{"fn":"length","args":["﻿ "],"expect":2},
+{"fn":"trim","args":["﻿ "],"expect":""},
+{"fn":"length","args":["﻿\u0009"],"expect":2},
+{"fn":"trim","args":["﻿\u0009"],"expect":""},
+{"fn":"length","args":["﻿\u000a"],"expect":2},
+{"fn":"trim","args":["﻿\u000a"],"expect":""},
+{"fn":"length","args":["﻿ "],"expect":2},
+{"fn":"trim","args":["﻿ "],"expect":""},
+{"fn":"length","args":["﻿﻿"],"expect":2},
+{"fn":"trim","args":["﻿﻿"],"expect":""},
+{"fn":"length","args":["﻿ "],"expect":2},
+{"fn":"trim","args":["﻿ "],"expect":""},
+{"fn":"length","args":["﻿　"],"expect":2},
+{"fn":"trim","args":["﻿　"],"expect":""},
+{"fn":"length","args":["﻿😀"],"expect":3},
+{"fn":"trim","args":["﻿😀"],"expect":"😀"},
+{"fn":"length","args":["﻿b"],"expect":2},
+{"fn":"trim","args":["﻿b"],"expect":"b"},
+{"fn":"length","args":[" a"],"expect":2},
+{"fn":"trim","args":[" a"],"expect":"a"},
+{"fn":"length","args":["  "],"expect":2},
+{"fn":"trim","args":["  "],"expect":""},
+{"fn":"length","args":[" \u0009"],"expect":2},
+{"fn":"trim","args":[" \u0009"],"expect":""},
+{"fn":"length","args":[" \u000a"],"expect":2},
+{"fn":"trim","args":[" \u000a"],"expect":""},
+{"fn":"length","args":["  "],"expect":2},
+{"fn":"trim","args":["  "],"expect":""},
+{"fn":"length","args":[" ﻿"],"expect":2},
+{"fn":"trim","args":[" ﻿"],"expect":""},
+{"fn":"length","args":["  "],"expect":2},
+{"fn":"trim","args":["  "],"expect":""},
+{"fn":"length","args":[" 　"],"expect":2},
+{"fn":"trim","args":[" 　"],"expect":""},
+{"fn":"length","args":[" 😀"],"expect":3},
+{"fn":"trim","args":[" 😀"],"expect":"😀"},
+{"fn":"length","args":[" b"],"expect":2},
+{"fn":"trim","args":[" b"],"expect":"b"},
+{"fn":"length","args":["　a"],"expect":2},
+{"fn":"trim","args":["　a"],"expect":"a"},
+{"fn":"length","args":["　 "],"expect":2},
+{"fn":"trim","args":["　 "],"expect":""},
+{"fn":"length","args":["　\u0009"],"expect":2},
+{"fn":"trim","args":["　\u0009"],"expect":""},
+{"fn":"length","args":["　\u000a"],"expect":2},
+{"fn":"trim","args":["　\u000a"],"expect":""},
+{"fn":"length","args":["　 "],"expect":2},
+{"fn":"trim","args":["　 "],"expect":""},
+{"fn":"length","args":["　﻿"],"expect":2},
+{"fn":"trim","args":["　﻿"],"expect":""},
+{"fn":"length","args":["　 "],"expect":2},
+{"fn":"trim","args":["　 "],"expect":""},
+{"fn":"length","args":["　　"],"expect":2},
+{"fn":"trim","args":["　　"],"expect":""},
+{"fn":"length","args":["　😀"],"expect":3},
+{"fn":"trim","args":["　😀"],"expect":"😀"},
+{"fn":"length","args":["　b"],"expect":2},
+{"fn":"trim","args":["　b"],"expect":"b"},
+{"fn":"length","args":["😀a"],"expect":3},
+{"fn":"trim","args":["😀a"],"expect":"😀a"},
+{"fn":"length","args":["😀 "],"expect":3},
+{"fn":"trim","args":["😀 "],"expect":"😀"},
+{"fn":"length","args":["😀\u0009"],"expect":3},
+{"fn":"trim","args":["😀\u0009"],"expect":"😀"},
+{"fn":"length","args":["😀\u000a"],"expect":3},
+{"fn":"trim","args":["😀\u000a"],"expect":"😀"},
+{"fn":"length","args":["😀 "],"expect":3},
+{"fn":"trim","args":["😀 "],"expect":"😀"},
+{"fn":"length","args":["😀﻿"],"expect":3},
+{"fn":"trim","args":["😀﻿"],"expect":"😀"},
+{"fn":"length","args":["😀 "],"expect":3},
+{"fn":"trim","args":["😀 "],"expect":"😀"},
+{"fn":"length","args":["😀　"],"expect":3},
+{"fn":"trim","args":["😀　"],"expect":"😀"},
+{"fn":"length","args":["😀😀"],"expect":4},
+{"fn":"trim","args":["😀😀"],"expect":"😀😀"},
+{"fn":"length","args":["😀b"],"expect":3},
+{"fn":"trim","args":["😀b"],"expect":"😀b"},
+{"fn":"length","args":["ba"],"expect":2},
+{"fn":"trim","args":["ba"],"expect":"ba"},
+{"fn":"length","args":["b "],"expect":2},
+{"fn":"trim","args":["b "],"expect":"b"},
+{"fn":"length","args":["b\u0009"],"expect":2},
+{"fn":"trim","args":["b\u0009"],"expect":"b"},
+{"fn":"length","args":["b\u000a"],"expect":2},
+{"fn":"trim","args":["b\u000a"],"expect":"b"},
+{"fn":"length","args":["b "],"expect":2},
+{"fn":"trim","args":["b "],"expect":"b"},
+{"fn":"length","args":["b﻿"],"expect":2},
+{"fn":"trim","args":["b﻿"],"expect":"b"},
+{"fn":"length","args":["b "],"expect":2},
+{"fn":"trim","args":["b "],"expect":"b"},
+{"fn":"length","args":["b　"],"expect":2},
+{"fn":"trim","args":["b　"],"expect":"b"},
+{"fn":"length","args":["b😀"],"expect":3},
+{"fn":"trim","args":["b😀"],"expect":"b😀"},
+{"fn":"length","args":["bb"],"expect":2},
+{"fn":"trim","args":["bb"],"expect":"bb"},
+{"fn":"length","args":["aaa"],"expect":3},
+{"fn":"trim","args":["aaa"],"expect":"aaa"},
+{"fn":"length","args":["aa "],"expect":3},
+{"fn":"trim","args":["aa "],"expect":"aa"},
+{"fn":"length","args":["aa\u0009"],"expect":3},
+{"fn":"trim","args":["aa\u0009"],"expect":"aa"},
+{"fn":"length","args":["aa\u000a"],"expect":3},
+{"fn":"trim","args":["aa\u000a"],"expect":"aa"},
+{"fn":"length","args":["aa "],"expect":3},
+{"fn":"trim","args":["aa "],"expect":"aa"},
+{"fn":"length","args":["aa﻿"],"expect":3},
+{"fn":"trim","args":["aa﻿"],"expect":"aa"},
+{"fn":"length","args":["aa "],"expect":3},
+{"fn":"trim","args":["aa "],"expect":"aa"},
+{"fn":"length","args":["aa　"],"expect":3},
+{"fn":"trim","args":["aa　"],"expect":"aa"},
+{"fn":"length","args":["aa😀"],"expect":4},
+{"fn":"trim","args":["aa😀"],"expect":"aa😀"},
+{"fn":"length","args":["aab"],"expect":3},
+{"fn":"trim","args":["aab"],"expect":"aab"},
+{"fn":"length","args":["a a"],"expect":3},
+{"fn":"trim","args":["a a"],"expect":"a a"},
+{"fn":"length","args":["a  "],"expect":3},
+{"fn":"trim","args":["a  "],"expect":"a"},
+{"fn":"length","args":["a \u0009"],"expect":3},
+{"fn":"trim","args":["a \u0009"],"expect":"a"},
+{"fn":"length","args":["a \u000a"],"expect":3},
+{"fn":"trim","args":["a \u000a"],"expect":"a"},
+{"fn":"length","args":["a  "],"expect":3},
+{"fn":"trim","args":["a  "],"expect":"a"},
+{"fn":"length","args":["a ﻿"],"expect":3},
+{"fn":"trim","args":["a ﻿"],"expect":"a"},
+{"fn":"length","args":["a  "],"expect":3},
+{"fn":"trim","args":["a  "],"expect":"a"},
+{"fn":"length","args":["a 　"],"expect":3},
+{"fn":"trim","args":["a 　"],"expect":"a"},
+{"fn":"length","args":["a 😀"],"expect":4},
+{"fn":"trim","args":["a 😀"],"expect":"a 😀"},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":["a\u0009a"],"expect":3},
+{"fn":"trim","args":["a\u0009a"],"expect":"a\u0009a"},
+{"fn":"length","args":["a\u0009 "],"expect":3},
+{"fn":"trim","args":["a\u0009 "],"expect":"a"},
+{"fn":"length","args":["a\u0009\u0009"],"expect":3},
+{"fn":"trim","args":["a\u0009\u0009"],"expect":"a"},
+{"fn":"length","args":["a\u0009\u000a"],"expect":3},
+{"fn":"trim","args":["a\u0009\u000a"],"expect":"a"},
+{"fn":"length","args":["a\u0009 "],"expect":3},
+{"fn":"trim","args":["a\u0009 "],"expect":"a"},
+{"fn":"length","args":["a\u0009﻿"],"expect":3},
+{"fn":"trim","args":["a\u0009﻿"],"expect":"a"},
+{"fn":"length","args":["a\u0009 "],"expect":3},
+{"fn":"trim","args":["a\u0009 "],"expect":"a"},
+{"fn":"length","args":["a\u0009　"],"expect":3},
+{"fn":"trim","args":["a\u0009　"],"expect":"a"},
+{"fn":"length","args":["a\u0009😀"],"expect":4},
+{"fn":"trim","args":["a\u0009😀"],"expect":"a\u0009😀"},
+{"fn":"length","args":["a\u0009b"],"expect":3},
+{"fn":"trim","args":["a\u0009b"],"expect":"a\u0009b"},
+{"fn":"length","args":["a\u000aa"],"expect":3},
+{"fn":"trim","args":["a\u000aa"],"expect":"a\u000aa"},
+{"fn":"length","args":["a\u000a "],"expect":3},
+{"fn":"trim","args":["a\u000a "],"expect":"a"},
+{"fn":"length","args":["a\u000a\u0009"],"expect":3},
+{"fn":"trim","args":["a\u000a\u0009"],"expect":"a"},
+{"fn":"length","args":["a\u000a\u000a"],"expect":3},
+{"fn":"trim","args":["a\u000a\u000a"],"expect":"a"},
+{"fn":"length","args":["a\u000a "],"expect":3},
+{"fn":"trim","args":["a\u000a "],"expect":"a"},
+{"fn":"length","args":["a\u000a﻿"],"expect":3},
+{"fn":"trim","args":["a\u000a﻿"],"expect":"a"},
+{"fn":"length","args":["a\u000a "],"expect":3},
+{"fn":"trim","args":["a\u000a "],"expect":"a"},
+{"fn":"length","args":["a\u000a　"],"expect":3},
+{"fn":"trim","args":["a\u000a　"],"expect":"a"},
+{"fn":"length","args":["a\u000a😀"],"expect":4},
+{"fn":"trim","args":["a\u000a😀"],"expect":"a\u000a😀"},
+{"fn":"length","args":["a\u000ab"],"expect":3},
+{"fn":"trim","args":["a\u000ab"],"expect":"a\u000ab"},
+{"fn":"length","args":["a a"],"expect":3},
+{"fn":"trim","args":["a a"],"expect":"a a"},
+{"fn":"length","args":["a  "],"expect":3},
+{"fn":"trim","args":["a  "],"expect":"a"},
+{"fn":"length","args":["a \u0009"],"expect":3},
+{"fn":"trim","args":["a \u0009"],"expect":"a"},
+{"fn":"length","args":["a \u000a"],"expect":3},
+{"fn":"trim","args":["a \u000a"],"expect":"a"},
+{"fn":"length","args":["a  "],"expect":3},
+{"fn":"trim","args":["a  "],"expect":"a"},
+{"fn":"length","args":["a ﻿"],"expect":3},
+{"fn":"trim","args":["a ﻿"],"expect":"a"},
+{"fn":"length","args":["a  "],"expect":3},
+{"fn":"trim","args":["a  "],"expect":"a"},
+{"fn":"length","args":["a 　"],"expect":3},
+{"fn":"trim","args":["a 　"],"expect":"a"},
+{"fn":"length","args":["a 😀"],"expect":4},
+{"fn":"trim","args":["a 😀"],"expect":"a 😀"},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":["a﻿a"],"expect":3},
+{"fn":"trim","args":["a﻿a"],"expect":"a﻿a"},
+{"fn":"length","args":["a﻿ "],"expect":3},
+{"fn":"trim","args":["a﻿ "],"expect":"a"},
+{"fn":"length","args":["a﻿\u0009"],"expect":3},
+{"fn":"trim","args":["a﻿\u0009"],"expect":"a"},
+{"fn":"length","args":["a﻿\u000a"],"expect":3},
+{"fn":"trim","args":["a﻿\u000a"],"expect":"a"},
+{"fn":"length","args":["a﻿ "],"expect":3},
+{"fn":"trim","args":["a﻿ "],"expect":"a"},
+{"fn":"length","args":["a﻿﻿"],"expect":3},
+{"fn":"trim","args":["a﻿﻿"],"expect":"a"},
+{"fn":"length","args":["a﻿ "],"expect":3},
+{"fn":"trim","args":["a﻿ "],"expect":"a"},
+{"fn":"length","args":["a﻿　"],"expect":3},
+{"fn":"trim","args":["a﻿　"],"expect":"a"},
+{"fn":"length","args":["a﻿😀"],"expect":4},
+{"fn":"trim","args":["a﻿😀"],"expect":"a﻿😀"},
+{"fn":"length","args":["a﻿b"],"expect":3},
+{"fn":"trim","args":["a﻿b"],"expect":"a﻿b"},
+{"fn":"length","args":["a a"],"expect":3},
+{"fn":"trim","args":["a a"],"expect":"a a"},
+{"fn":"length","args":["a  "],"expect":3},
+{"fn":"trim","args":["a  "],"expect":"a"},
+{"fn":"length","args":["a \u0009"],"expect":3},
+{"fn":"trim","args":["a \u0009"],"expect":"a"},
+{"fn":"length","args":["a \u000a"],"expect":3},
+{"fn":"trim","args":["a \u000a"],"expect":"a"},
+{"fn":"length","args":["a  "],"expect":3},
+{"fn":"trim","args":["a  "],"expect":"a"},
+{"fn":"length","args":["a ﻿"],"expect":3},
+{"fn":"trim","args":["a ﻿"],"expect":"a"},
+{"fn":"length","args":["a  "],"expect":3},
+{"fn":"trim","args":["a  "],"expect":"a"},
+{"fn":"length","args":["a 　"],"expect":3},
+{"fn":"trim","args":["a 　"],"expect":"a"},
+{"fn":"length","args":["a 😀"],"expect":4},
+{"fn":"trim","args":["a 😀"],"expect":"a 😀"},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":["a　a"],"expect":3},
+{"fn":"trim","args":["a　a"],"expect":"a　a"},
+{"fn":"length","args":["a　 "],"expect":3},
+{"fn":"trim","args":["a　 "],"expect":"a"},
+{"fn":"length","args":["a　\u0009"],"expect":3},
+{"fn":"trim","args":["a　\u0009"],"expect":"a"},
+{"fn":"length","args":["a　\u000a"],"expect":3},
+{"fn":"trim","args":["a　\u000a"],"expect":"a"},
+{"fn":"length","args":["a　 "],"expect":3},
+{"fn":"trim","args":["a　 "],"expect":"a"},
+{"fn":"length","args":["a　﻿"],"expect":3},
+{"fn":"trim","args":["a　﻿"],"expect":"a"},
+{"fn":"length","args":["a　 "],"expect":3},
+{"fn":"trim","args":["a　 "],"expect":"a"},
+{"fn":"length","args":["a　　"],"expect":3},
+{"fn":"trim","args":["a　　"],"expect":"a"},
+{"fn":"length","args":["a　😀"],"expect":4},
+{"fn":"trim","args":["a　😀"],"expect":"a　😀"},
+{"fn":"length","args":["a　b"],"expect":3},
+{"fn":"trim","args":["a　b"],"expect":"a　b"},
+{"fn":"length","args":["a😀a"],"expect":4},
+{"fn":"trim","args":["a😀a"],"expect":"a😀a"},
+{"fn":"length","args":["a😀 "],"expect":4},
+{"fn":"trim","args":["a😀 "],"expect":"a😀"},
+{"fn":"length","args":["a😀\u0009"],"expect":4},
+{"fn":"trim","args":["a😀\u0009"],"expect":"a😀"},
+{"fn":"length","args":["a😀\u000a"],"expect":4},
+{"fn":"trim","args":["a😀\u000a"],"expect":"a😀"},
+{"fn":"length","args":["a😀 "],"expect":4},
+{"fn":"trim","args":["a😀 "],"expect":"a😀"},
+{"fn":"length","args":["a😀﻿"],"expect":4},
+{"fn":"trim","args":["a😀﻿"],"expect":"a😀"},
+{"fn":"length","args":["a😀 "],"expect":4},
+{"fn":"trim","args":["a😀 "],"expect":"a😀"},
+{"fn":"length","args":["a😀　"],"expect":4},
+{"fn":"trim","args":["a😀　"],"expect":"a😀"},
+{"fn":"length","args":["a😀😀"],"expect":5},
+{"fn":"trim","args":["a😀😀"],"expect":"a😀😀"},
+{"fn":"length","args":["a😀b"],"expect":4},
+{"fn":"trim","args":["a😀b"],"expect":"a😀b"},
+{"fn":"length","args":["aba"],"expect":3},
+{"fn":"trim","args":["aba"],"expect":"aba"},
+{"fn":"length","args":["ab "],"expect":3},
+{"fn":"trim","args":["ab "],"expect":"ab"},
+{"fn":"length","args":["ab\u0009"],"expect":3},
+{"fn":"trim","args":["ab\u0009"],"expect":"ab"},
+{"fn":"length","args":["ab\u000a"],"expect":3},
+{"fn":"trim","args":["ab\u000a"],"expect":"ab"},
+{"fn":"length","args":["ab "],"expect":3},
+{"fn":"trim","args":["ab "],"expect":"ab"},
+{"fn":"length","args":["ab﻿"],"expect":3},
+{"fn":"trim","args":["ab﻿"],"expect":"ab"},
+{"fn":"length","args":["ab "],"expect":3},
+{"fn":"trim","args":["ab "],"expect":"ab"},
+{"fn":"length","args":["ab　"],"expect":3},
+{"fn":"trim","args":["ab　"],"expect":"ab"},
+{"fn":"length","args":["ab😀"],"expect":4},
+{"fn":"trim","args":["ab😀"],"expect":"ab😀"},
+{"fn":"length","args":["abb"],"expect":3},
+{"fn":"trim","args":["abb"],"expect":"abb"},
+{"fn":"length","args":[" aa"],"expect":3},
+{"fn":"trim","args":[" aa"],"expect":"aa"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" a\u0009"],"expect":3},
+{"fn":"trim","args":[" a\u0009"],"expect":"a"},
+{"fn":"length","args":[" a\u000a"],"expect":3},
+{"fn":"trim","args":[" a\u000a"],"expect":"a"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" a﻿"],"expect":3},
+{"fn":"trim","args":[" a﻿"],"expect":"a"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" a　"],"expect":3},
+{"fn":"trim","args":[" a　"],"expect":"a"},
+{"fn":"length","args":[" a😀"],"expect":4},
+{"fn":"trim","args":[" a😀"],"expect":"a😀"},
+{"fn":"length","args":[" ab"],"expect":3},
+{"fn":"trim","args":[" ab"],"expect":"ab"},
+{"fn":"length","args":["  a"],"expect":3},
+{"fn":"trim","args":["  a"],"expect":"a"},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  \u0009"],"expect":3},
+{"fn":"trim","args":["  \u0009"],"expect":""},
+{"fn":"length","args":["  \u000a"],"expect":3},
+{"fn":"trim","args":["  \u000a"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  ﻿"],"expect":3},
+{"fn":"trim","args":["  ﻿"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  　"],"expect":3},
+{"fn":"trim","args":["  　"],"expect":""},
+{"fn":"length","args":["  😀"],"expect":4},
+{"fn":"trim","args":["  😀"],"expect":"😀"},
+{"fn":"length","args":["  b"],"expect":3},
+{"fn":"trim","args":["  b"],"expect":"b"},
+{"fn":"length","args":[" \u0009a"],"expect":3},
+{"fn":"trim","args":[" \u0009a"],"expect":"a"},
+{"fn":"length","args":[" \u0009 "],"expect":3},
+{"fn":"trim","args":[" \u0009 "],"expect":""},
+{"fn":"length","args":[" \u0009\u0009"],"expect":3},
+{"fn":"trim","args":[" \u0009\u0009"],"expect":""},
+{"fn":"length","args":[" \u0009\u000a"],"expect":3},
+{"fn":"trim","args":[" \u0009\u000a"],"expect":""},
+{"fn":"length","args":[" \u0009 "],"expect":3},
+{"fn":"trim","args":[" \u0009 "],"expect":""},
+{"fn":"length","args":[" \u0009﻿"],"expect":3},
+{"fn":"trim","args":[" \u0009﻿"],"expect":""},
+{"fn":"length","args":[" \u0009 "],"expect":3},
+{"fn":"trim","args":[" \u0009 "],"expect":""},
+{"fn":"length","args":[" \u0009　"],"expect":3},
+{"fn":"trim","args":[" \u0009　"],"expect":""},
+{"fn":"length","args":[" \u0009😀"],"expect":4},
+{"fn":"trim","args":[" \u0009😀"],"expect":"😀"},
+{"fn":"length","args":[" \u0009b"],"expect":3},
+{"fn":"trim","args":[" \u0009b"],"expect":"b"},
+{"fn":"length","args":[" \u000aa"],"expect":3},
+{"fn":"trim","args":[" \u000aa"],"expect":"a"},
+{"fn":"length","args":[" \u000a "],"expect":3},
+{"fn":"trim","args":[" \u000a "],"expect":""},
+{"fn":"length","args":[" \u000a\u0009"],"expect":3},
+{"fn":"trim","args":[" \u000a\u0009"],"expect":""},
+{"fn":"length","args":[" \u000a\u000a"],"expect":3},
+{"fn":"trim","args":[" \u000a\u000a"],"expect":""},
+{"fn":"length","args":[" \u000a "],"expect":3},
+{"fn":"trim","args":[" \u000a "],"expect":""},
+{"fn":"length","args":[" \u000a﻿"],"expect":3},
+{"fn":"trim","args":[" \u000a﻿"],"expect":""},
+{"fn":"length","args":[" \u000a "],"expect":3},
+{"fn":"trim","args":[" \u000a "],"expect":""},
+{"fn":"length","args":[" \u000a　"],"expect":3},
+{"fn":"trim","args":[" \u000a　"],"expect":""},
+{"fn":"length","args":[" \u000a😀"],"expect":4},
+{"fn":"trim","args":[" \u000a😀"],"expect":"😀"},
+{"fn":"length","args":[" \u000ab"],"expect":3},
+{"fn":"trim","args":[" \u000ab"],"expect":"b"},
+{"fn":"length","args":["  a"],"expect":3},
+{"fn":"trim","args":["  a"],"expect":"a"},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  \u0009"],"expect":3},
+{"fn":"trim","args":["  \u0009"],"expect":""},
+{"fn":"length","args":["  \u000a"],"expect":3},
+{"fn":"trim","args":["  \u000a"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  ﻿"],"expect":3},
+{"fn":"trim","args":["  ﻿"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  　"],"expect":3},
+{"fn":"trim","args":["  　"],"expect":""},
+{"fn":"length","args":["  😀"],"expect":4},
+{"fn":"trim","args":["  😀"],"expect":"😀"},
+{"fn":"length","args":["  b"],"expect":3},
+{"fn":"trim","args":["  b"],"expect":"b"},
+{"fn":"length","args":[" ﻿a"],"expect":3},
+{"fn":"trim","args":[" ﻿a"],"expect":"a"},
+{"fn":"length","args":[" ﻿ "],"expect":3},
+{"fn":"trim","args":[" ﻿ "],"expect":""},
+{"fn":"length","args":[" ﻿\u0009"],"expect":3},
+{"fn":"trim","args":[" ﻿\u0009"],"expect":""},
+{"fn":"length","args":[" ﻿\u000a"],"expect":3},
+{"fn":"trim","args":[" ﻿\u000a"],"expect":""},
+{"fn":"length","args":[" ﻿ "],"expect":3},
+{"fn":"trim","args":[" ﻿ "],"expect":""},
+{"fn":"length","args":[" ﻿﻿"],"expect":3},
+{"fn":"trim","args":[" ﻿﻿"],"expect":""},
+{"fn":"length","args":[" ﻿ "],"expect":3},
+{"fn":"trim","args":[" ﻿ "],"expect":""},
+{"fn":"length","args":[" ﻿　"],"expect":3},
+{"fn":"trim","args":[" ﻿　"],"expect":""},
+{"fn":"length","args":[" ﻿😀"],"expect":4},
+{"fn":"trim","args":[" ﻿😀"],"expect":"😀"},
+{"fn":"length","args":[" ﻿b"],"expect":3},
+{"fn":"trim","args":[" ﻿b"],"expect":"b"},
+{"fn":"length","args":["  a"],"expect":3},
+{"fn":"trim","args":["  a"],"expect":"a"},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  \u0009"],"expect":3},
+{"fn":"trim","args":["  \u0009"],"expect":""},
+{"fn":"length","args":["  \u000a"],"expect":3},
+{"fn":"trim","args":["  \u000a"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  ﻿"],"expect":3},
+{"fn":"trim","args":["  ﻿"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  　"],"expect":3},
+{"fn":"trim","args":["  　"],"expect":""},
+{"fn":"length","args":["  😀"],"expect":4},
+{"fn":"trim","args":["  😀"],"expect":"😀"},
+{"fn":"length","args":["  b"],"expect":3},
+{"fn":"trim","args":["  b"],"expect":"b"},
+{"fn":"length","args":[" 　a"],"expect":3},
+{"fn":"trim","args":[" 　a"],"expect":"a"},
+{"fn":"length","args":[" 　 "],"expect":3},
+{"fn":"trim","args":[" 　 "],"expect":""},
+{"fn":"length","args":[" 　\u0009"],"expect":3},
+{"fn":"trim","args":[" 　\u0009"],"expect":""},
+{"fn":"length","args":[" 　\u000a"],"expect":3},
+{"fn":"trim","args":[" 　\u000a"],"expect":""},
+{"fn":"length","args":[" 　 "],"expect":3},
+{"fn":"trim","args":[" 　 "],"expect":""},
+{"fn":"length","args":[" 　﻿"],"expect":3},
+{"fn":"trim","args":[" 　﻿"],"expect":""},
+{"fn":"length","args":[" 　 "],"expect":3},
+{"fn":"trim","args":[" 　 "],"expect":""},
+{"fn":"length","args":[" 　　"],"expect":3},
+{"fn":"trim","args":[" 　　"],"expect":""},
+{"fn":"length","args":[" 　😀"],"expect":4},
+{"fn":"trim","args":[" 　😀"],"expect":"😀"},
+{"fn":"length","args":[" 　b"],"expect":3},
+{"fn":"trim","args":[" 　b"],"expect":"b"},
+{"fn":"length","args":[" 😀a"],"expect":4},
+{"fn":"trim","args":[" 😀a"],"expect":"😀a"},
+{"fn":"length","args":[" 😀 "],"expect":4},
+{"fn":"trim","args":[" 😀 "],"expect":"😀"},
+{"fn":"length","args":[" 😀\u0009"],"expect":4},
+{"fn":"trim","args":[" 😀\u0009"],"expect":"😀"},
+{"fn":"length","args":[" 😀\u000a"],"expect":4},
+{"fn":"trim","args":[" 😀\u000a"],"expect":"😀"},
+{"fn":"length","args":[" 😀 "],"expect":4},
+{"fn":"trim","args":[" 😀 "],"expect":"😀"},
+{"fn":"length","args":[" 😀﻿"],"expect":4},
+{"fn":"trim","args":[" 😀﻿"],"expect":"😀"},
+{"fn":"length","args":[" 😀 "],"expect":4},
+{"fn":"trim","args":[" 😀 "],"expect":"😀"},
+{"fn":"length","args":[" 😀　"],"expect":4},
+{"fn":"trim","args":[" 😀　"],"expect":"😀"},
+{"fn":"length","args":[" 😀😀"],"expect":5},
+{"fn":"trim","args":[" 😀😀"],"expect":"😀😀"},
+{"fn":"length","args":[" 😀b"],"expect":4},
+{"fn":"trim","args":[" 😀b"],"expect":"😀b"},
+{"fn":"length","args":[" ba"],"expect":3},
+{"fn":"trim","args":[" ba"],"expect":"ba"},
+{"fn":"length","args":[" b "],"expect":3},
+{"fn":"trim","args":[" b "],"expect":"b"},
+{"fn":"length","args":[" b\u0009"],"expect":3},
+{"fn":"trim","args":[" b\u0009"],"expect":"b"},
+{"fn":"length","args":[" b\u000a"],"expect":3},
+{"fn":"trim","args":[" b\u000a"],"expect":"b"},
+{"fn":"length","args":[" b "],"expect":3},
+{"fn":"trim","args":[" b "],"expect":"b"},
+{"fn":"length","args":[" b﻿"],"expect":3},
+{"fn":"trim","args":[" b﻿"],"expect":"b"},
+{"fn":"length","args":[" b "],"expect":3},
+{"fn":"trim","args":[" b "],"expect":"b"},
+{"fn":"length","args":[" b　"],"expect":3},
+{"fn":"trim","args":[" b　"],"expect":"b"},
+{"fn":"length","args":[" b😀"],"expect":4},
+{"fn":"trim","args":[" b😀"],"expect":"b😀"},
+{"fn":"length","args":[" bb"],"expect":3},
+{"fn":"trim","args":[" bb"],"expect":"bb"},
+{"fn":"length","args":["\u0009aa"],"expect":3},
+{"fn":"trim","args":["\u0009aa"],"expect":"aa"},
+{"fn":"length","args":["\u0009a "],"expect":3},
+{"fn":"trim","args":["\u0009a "],"expect":"a"},
+{"fn":"length","args":["\u0009a\u0009"],"expect":3},
+{"fn":"trim","args":["\u0009a\u0009"],"expect":"a"},
+{"fn":"length","args":["\u0009a\u000a"],"expect":3},
+{"fn":"trim","args":["\u0009a\u000a"],"expect":"a"},
+{"fn":"length","args":["\u0009a "],"expect":3},
+{"fn":"trim","args":["\u0009a "],"expect":"a"},
+{"fn":"length","args":["\u0009a﻿"],"expect":3},
+{"fn":"trim","args":["\u0009a﻿"],"expect":"a"},
+{"fn":"length","args":["\u0009a "],"expect":3},
+{"fn":"trim","args":["\u0009a "],"expect":"a"},
+{"fn":"length","args":["\u0009a　"],"expect":3},
+{"fn":"trim","args":["\u0009a　"],"expect":"a"},
+{"fn":"length","args":["\u0009a😀"],"expect":4},
+{"fn":"trim","args":["\u0009a😀"],"expect":"a😀"},
+{"fn":"length","args":["\u0009ab"],"expect":3},
+{"fn":"trim","args":["\u0009ab"],"expect":"ab"},
+{"fn":"length","args":["\u0009 a"],"expect":3},
+{"fn":"trim","args":["\u0009 a"],"expect":"a"},
+{"fn":"length","args":["\u0009  "],"expect":3},
+{"fn":"trim","args":["\u0009  "],"expect":""},
+{"fn":"length","args":["\u0009 \u0009"],"expect":3},
+{"fn":"trim","args":["\u0009 \u0009"],"expect":""},
+{"fn":"length","args":["\u0009 \u000a"],"expect":3},
+{"fn":"trim","args":["\u0009 \u000a"],"expect":""},
+{"fn":"length","args":["\u0009  "],"expect":3},
+{"fn":"trim","args":["\u0009  "],"expect":""},
+{"fn":"length","args":["\u0009 ﻿"],"expect":3},
+{"fn":"trim","args":["\u0009 ﻿"],"expect":""},
+{"fn":"length","args":["\u0009  "],"expect":3},
+{"fn":"trim","args":["\u0009  "],"expect":""},
+{"fn":"length","args":["\u0009 　"],"expect":3},
+{"fn":"trim","args":["\u0009 　"],"expect":""},
+{"fn":"length","args":["\u0009 😀"],"expect":4},
+{"fn":"trim","args":["\u0009 😀"],"expect":"😀"},
+{"fn":"length","args":["\u0009 b"],"expect":3},
+{"fn":"trim","args":["\u0009 b"],"expect":"b"},
+{"fn":"length","args":["\u0009\u0009a"],"expect":3},
+{"fn":"trim","args":["\u0009\u0009a"],"expect":"a"},
+{"fn":"length","args":["\u0009\u0009 "],"expect":3},
+{"fn":"trim","args":["\u0009\u0009 "],"expect":""},
+{"fn":"length","args":["\u0009\u0009\u0009"],"expect":3},
+{"fn":"trim","args":["\u0009\u0009\u0009"],"expect":""},
+{"fn":"length","args":["\u0009\u0009\u000a"],"expect":3},
+{"fn":"trim","args":["\u0009\u0009\u000a"],"expect":""},
+{"fn":"length","args":["\u0009\u0009 "],"expect":3},
+{"fn":"trim","args":["\u0009\u0009 "],"expect":""},
+{"fn":"length","args":["\u0009\u0009﻿"],"expect":3},
+{"fn":"trim","args":["\u0009\u0009﻿"],"expect":""},
+{"fn":"length","args":["\u0009\u0009 "],"expect":3},
+{"fn":"trim","args":["\u0009\u0009 "],"expect":""},
+{"fn":"length","args":["\u0009\u0009　"],"expect":3},
+{"fn":"trim","args":["\u0009\u0009　"],"expect":""},
+{"fn":"length","args":["\u0009\u0009😀"],"expect":4},
+{"fn":"trim","args":["\u0009\u0009😀"],"expect":"😀"},
+{"fn":"length","args":["\u0009\u0009b"],"expect":3},
+{"fn":"trim","args":["\u0009\u0009b"],"expect":"b"},
+{"fn":"length","args":["\u0009\u000aa"],"expect":3},
+{"fn":"trim","args":["\u0009\u000aa"],"expect":"a"},
+{"fn":"length","args":["\u0009\u000a "],"expect":3},
+{"fn":"trim","args":["\u0009\u000a "],"expect":""},
+{"fn":"length","args":["\u0009\u000a\u0009"],"expect":3},
+{"fn":"trim","args":["\u0009\u000a\u0009"],"expect":""},
+{"fn":"length","args":["\u0009\u000a\u000a"],"expect":3},
+{"fn":"trim","args":["\u0009\u000a\u000a"],"expect":""},
+{"fn":"length","args":["\u0009\u000a "],"expect":3},
+{"fn":"trim","args":["\u0009\u000a "],"expect":""},
+{"fn":"length","args":["\u0009\u000a﻿"],"expect":3},
+{"fn":"trim","args":["\u0009\u000a﻿"],"expect":""},
+{"fn":"length","args":["\u0009\u000a "],"expect":3},
+{"fn":"trim","args":["\u0009\u000a "],"expect":""},
+{"fn":"length","args":["\u0009\u000a　"],"expect":3},
+{"fn":"trim","args":["\u0009\u000a　"],"expect":""},
+{"fn":"length","args":["\u0009\u000a😀"],"expect":4},
+{"fn":"trim","args":["\u0009\u000a😀"],"expect":"😀"},
+{"fn":"length","args":["\u0009\u000ab"],"expect":3},
+{"fn":"trim","args":["\u0009\u000ab"],"expect":"b"},
+{"fn":"length","args":["\u0009 a"],"expect":3},
+{"fn":"trim","args":["\u0009 a"],"expect":"a"},
+{"fn":"length","args":["\u0009  "],"expect":3},
+{"fn":"trim","args":["\u0009  "],"expect":""},
+{"fn":"length","args":["\u0009 \u0009"],"expect":3},
+{"fn":"trim","args":["\u0009 \u0009"],"expect":""},
+{"fn":"length","args":["\u0009 \u000a"],"expect":3},
+{"fn":"trim","args":["\u0009 \u000a"],"expect":""},
+{"fn":"length","args":["\u0009  "],"expect":3},
+{"fn":"trim","args":["\u0009  "],"expect":""},
+{"fn":"length","args":["\u0009 ﻿"],"expect":3},
+{"fn":"trim","args":["\u0009 ﻿"],"expect":""},
+{"fn":"length","args":["\u0009  "],"expect":3},
+{"fn":"trim","args":["\u0009  "],"expect":""},
+{"fn":"length","args":["\u0009 　"],"expect":3},
+{"fn":"trim","args":["\u0009 　"],"expect":""},
+{"fn":"length","args":["\u0009 😀"],"expect":4},
+{"fn":"trim","args":["\u0009 😀"],"expect":"😀"},
+{"fn":"length","args":["\u0009 b"],"expect":3},
+{"fn":"trim","args":["\u0009 b"],"expect":"b"},
+{"fn":"length","args":["\u0009﻿a"],"expect":3},
+{"fn":"trim","args":["\u0009﻿a"],"expect":"a"},
+{"fn":"length","args":["\u0009﻿ "],"expect":3},
+{"fn":"trim","args":["\u0009﻿ "],"expect":""},
+{"fn":"length","args":["\u0009﻿\u0009"],"expect":3},
+{"fn":"trim","args":["\u0009﻿\u0009"],"expect":""},
+{"fn":"length","args":["\u0009﻿\u000a"],"expect":3},
+{"fn":"trim","args":["\u0009﻿\u000a"],"expect":""},
+{"fn":"length","args":["\u0009﻿ "],"expect":3},
+{"fn":"trim","args":["\u0009﻿ "],"expect":""},
+{"fn":"length","args":["\u0009﻿﻿"],"expect":3},
+{"fn":"trim","args":["\u0009﻿﻿"],"expect":""},
+{"fn":"length","args":["\u0009﻿ "],"expect":3},
+{"fn":"trim","args":["\u0009﻿ "],"expect":""},
+{"fn":"length","args":["\u0009﻿　"],"expect":3},
+{"fn":"trim","args":["\u0009﻿　"],"expect":""},
+{"fn":"length","args":["\u0009﻿😀"],"expect":4},
+{"fn":"trim","args":["\u0009﻿😀"],"expect":"😀"},
+{"fn":"length","args":["\u0009﻿b"],"expect":3},
+{"fn":"trim","args":["\u0009﻿b"],"expect":"b"},
+{"fn":"length","args":["\u0009 a"],"expect":3},
+{"fn":"trim","args":["\u0009 a"],"expect":"a"},
+{"fn":"length","args":["\u0009  "],"expect":3},
+{"fn":"trim","args":["\u0009  "],"expect":""},
+{"fn":"length","args":["\u0009 \u0009"],"expect":3},
+{"fn":"trim","args":["\u0009 \u0009"],"expect":""},
+{"fn":"length","args":["\u0009 \u000a"],"expect":3},
+{"fn":"trim","args":["\u0009 \u000a"],"expect":""},
+{"fn":"length","args":["\u0009  "],"expect":3},
+{"fn":"trim","args":["\u0009  "],"expect":""},
+{"fn":"length","args":["\u0009 ﻿"],"expect":3},
+{"fn":"trim","args":["\u0009 ﻿"],"expect":""},
+{"fn":"length","args":["\u0009  "],"expect":3},
+{"fn":"trim","args":["\u0009  "],"expect":""},
+{"fn":"length","args":["\u0009 　"],"expect":3},
+{"fn":"trim","args":["\u0009 　"],"expect":""},
+{"fn":"length","args":["\u0009 😀"],"expect":4},
+{"fn":"trim","args":["\u0009 😀"],"expect":"😀"},
+{"fn":"length","args":["\u0009 b"],"expect":3},
+{"fn":"trim","args":["\u0009 b"],"expect":"b"},
+{"fn":"length","args":["\u0009　a"],"expect":3},
+{"fn":"trim","args":["\u0009　a"],"expect":"a"},
+{"fn":"length","args":["\u0009　 "],"expect":3},
+{"fn":"trim","args":["\u0009　 "],"expect":""},
+{"fn":"length","args":["\u0009　\u0009"],"expect":3},
+{"fn":"trim","args":["\u0009　\u0009"],"expect":""},
+{"fn":"length","args":["\u0009　\u000a"],"expect":3},
+{"fn":"trim","args":["\u0009　\u000a"],"expect":""},
+{"fn":"length","args":["\u0009　 "],"expect":3},
+{"fn":"trim","args":["\u0009　 "],"expect":""},
+{"fn":"length","args":["\u0009　﻿"],"expect":3},
+{"fn":"trim","args":["\u0009　﻿"],"expect":""},
+{"fn":"length","args":["\u0009　 "],"expect":3},
+{"fn":"trim","args":["\u0009　 "],"expect":""},
+{"fn":"length","args":["\u0009　　"],"expect":3},
+{"fn":"trim","args":["\u0009　　"],"expect":""},
+{"fn":"length","args":["\u0009　😀"],"expect":4},
+{"fn":"trim","args":["\u0009　😀"],"expect":"😀"},
+{"fn":"length","args":["\u0009　b"],"expect":3},
+{"fn":"trim","args":["\u0009　b"],"expect":"b"},
+{"fn":"length","args":["\u0009😀a"],"expect":4},
+{"fn":"trim","args":["\u0009😀a"],"expect":"😀a"},
+{"fn":"length","args":["\u0009😀 "],"expect":4},
+{"fn":"trim","args":["\u0009😀 "],"expect":"😀"},
+{"fn":"length","args":["\u0009😀\u0009"],"expect":4},
+{"fn":"trim","args":["\u0009😀\u0009"],"expect":"😀"},
+{"fn":"length","args":["\u0009😀\u000a"],"expect":4},
+{"fn":"trim","args":["\u0009😀\u000a"],"expect":"😀"},
+{"fn":"length","args":["\u0009😀 "],"expect":4},
+{"fn":"trim","args":["\u0009😀 "],"expect":"😀"},
+{"fn":"length","args":["\u0009😀﻿"],"expect":4},
+{"fn":"trim","args":["\u0009😀﻿"],"expect":"😀"},
+{"fn":"length","args":["\u0009😀 "],"expect":4},
+{"fn":"trim","args":["\u0009😀 "],"expect":"😀"},
+{"fn":"length","args":["\u0009😀　"],"expect":4},
+{"fn":"trim","args":["\u0009😀　"],"expect":"😀"},
+{"fn":"length","args":["\u0009😀😀"],"expect":5},
+{"fn":"trim","args":["\u0009😀😀"],"expect":"😀😀"},
+{"fn":"length","args":["\u0009😀b"],"expect":4},
+{"fn":"trim","args":["\u0009😀b"],"expect":"😀b"},
+{"fn":"length","args":["\u0009ba"],"expect":3},
+{"fn":"trim","args":["\u0009ba"],"expect":"ba"},
+{"fn":"length","args":["\u0009b "],"expect":3},
+{"fn":"trim","args":["\u0009b "],"expect":"b"},
+{"fn":"length","args":["\u0009b\u0009"],"expect":3},
+{"fn":"trim","args":["\u0009b\u0009"],"expect":"b"},
+{"fn":"length","args":["\u0009b\u000a"],"expect":3},
+{"fn":"trim","args":["\u0009b\u000a"],"expect":"b"},
+{"fn":"length","args":["\u0009b "],"expect":3},
+{"fn":"trim","args":["\u0009b "],"expect":"b"},
+{"fn":"length","args":["\u0009b﻿"],"expect":3},
+{"fn":"trim","args":["\u0009b﻿"],"expect":"b"},
+{"fn":"length","args":["\u0009b "],"expect":3},
+{"fn":"trim","args":["\u0009b "],"expect":"b"},
+{"fn":"length","args":["\u0009b　"],"expect":3},
+{"fn":"trim","args":["\u0009b　"],"expect":"b"},
+{"fn":"length","args":["\u0009b😀"],"expect":4},
+{"fn":"trim","args":["\u0009b😀"],"expect":"b😀"},
+{"fn":"length","args":["\u0009bb"],"expect":3},
+{"fn":"trim","args":["\u0009bb"],"expect":"bb"},
+{"fn":"length","args":["\u000aaa"],"expect":3},
+{"fn":"trim","args":["\u000aaa"],"expect":"aa"},
+{"fn":"length","args":["\u000aa "],"expect":3},
+{"fn":"trim","args":["\u000aa "],"expect":"a"},
+{"fn":"length","args":["\u000aa\u0009"],"expect":3},
+{"fn":"trim","args":["\u000aa\u0009"],"expect":"a"},
+{"fn":"length","args":["\u000aa\u000a"],"expect":3},
+{"fn":"trim","args":["\u000aa\u000a"],"expect":"a"},
+{"fn":"length","args":["\u000aa "],"expect":3},
+{"fn":"trim","args":["\u000aa "],"expect":"a"},
+{"fn":"length","args":["\u000aa﻿"],"expect":3},
+{"fn":"trim","args":["\u000aa﻿"],"expect":"a"},
+{"fn":"length","args":["\u000aa "],"expect":3},
+{"fn":"trim","args":["\u000aa "],"expect":"a"},
+{"fn":"length","args":["\u000aa　"],"expect":3},
+{"fn":"trim","args":["\u000aa　"],"expect":"a"},
+{"fn":"length","args":["\u000aa😀"],"expect":4},
+{"fn":"trim","args":["\u000aa😀"],"expect":"a😀"},
+{"fn":"length","args":["\u000aab"],"expect":3},
+{"fn":"trim","args":["\u000aab"],"expect":"ab"},
+{"fn":"length","args":["\u000a a"],"expect":3},
+{"fn":"trim","args":["\u000a a"],"expect":"a"},
+{"fn":"length","args":["\u000a  "],"expect":3},
+{"fn":"trim","args":["\u000a  "],"expect":""},
+{"fn":"length","args":["\u000a \u0009"],"expect":3},
+{"fn":"trim","args":["\u000a \u0009"],"expect":""},
+{"fn":"length","args":["\u000a \u000a"],"expect":3},
+{"fn":"trim","args":["\u000a \u000a"],"expect":""},
+{"fn":"length","args":["\u000a  "],"expect":3},
+{"fn":"trim","args":["\u000a  "],"expect":""},
+{"fn":"length","args":["\u000a ﻿"],"expect":3},
+{"fn":"trim","args":["\u000a ﻿"],"expect":""},
+{"fn":"length","args":["\u000a  "],"expect":3},
+{"fn":"trim","args":["\u000a  "],"expect":""},
+{"fn":"length","args":["\u000a 　"],"expect":3},
+{"fn":"trim","args":["\u000a 　"],"expect":""},
+{"fn":"length","args":["\u000a 😀"],"expect":4},
+{"fn":"trim","args":["\u000a 😀"],"expect":"😀"},
+{"fn":"length","args":["\u000a b"],"expect":3},
+{"fn":"trim","args":["\u000a b"],"expect":"b"},
+{"fn":"length","args":["\u000a\u0009a"],"expect":3},
+{"fn":"trim","args":["\u000a\u0009a"],"expect":"a"},
+{"fn":"length","args":["\u000a\u0009 "],"expect":3},
+{"fn":"trim","args":["\u000a\u0009 "],"expect":""},
+{"fn":"length","args":["\u000a\u0009\u0009"],"expect":3},
+{"fn":"trim","args":["\u000a\u0009\u0009"],"expect":""},
+{"fn":"length","args":["\u000a\u0009\u000a"],"expect":3},
+{"fn":"trim","args":["\u000a\u0009\u000a"],"expect":""},
+{"fn":"length","args":["\u000a\u0009 "],"expect":3},
+{"fn":"trim","args":["\u000a\u0009 "],"expect":""},
+{"fn":"length","args":["\u000a\u0009﻿"],"expect":3},
+{"fn":"trim","args":["\u000a\u0009﻿"],"expect":""},
+{"fn":"length","args":["\u000a\u0009 "],"expect":3},
+{"fn":"trim","args":["\u000a\u0009 "],"expect":""},
+{"fn":"length","args":["\u000a\u0009　"],"expect":3},
+{"fn":"trim","args":["\u000a\u0009　"],"expect":""},
+{"fn":"length","args":["\u000a\u0009😀"],"expect":4},
+{"fn":"trim","args":["\u000a\u0009😀"],"expect":"😀"},
+{"fn":"length","args":["\u000a\u0009b"],"expect":3},
+{"fn":"trim","args":["\u000a\u0009b"],"expect":"b"},
+{"fn":"length","args":["\u000a\u000aa"],"expect":3},
+{"fn":"trim","args":["\u000a\u000aa"],"expect":"a"},
+{"fn":"length","args":["\u000a\u000a "],"expect":3},
+{"fn":"trim","args":["\u000a\u000a "],"expect":""},
+{"fn":"length","args":["\u000a\u000a\u0009"],"expect":3},
+{"fn":"trim","args":["\u000a\u000a\u0009"],"expect":""},
+{"fn":"length","args":["\u000a\u000a\u000a"],"expect":3},
+{"fn":"trim","args":["\u000a\u000a\u000a"],"expect":""},
+{"fn":"length","args":["\u000a\u000a "],"expect":3},
+{"fn":"trim","args":["\u000a\u000a "],"expect":""},
+{"fn":"length","args":["\u000a\u000a﻿"],"expect":3},
+{"fn":"trim","args":["\u000a\u000a﻿"],"expect":""},
+{"fn":"length","args":["\u000a\u000a "],"expect":3},
+{"fn":"trim","args":["\u000a\u000a "],"expect":""},
+{"fn":"length","args":["\u000a\u000a　"],"expect":3},
+{"fn":"trim","args":["\u000a\u000a　"],"expect":""},
+{"fn":"length","args":["\u000a\u000a😀"],"expect":4},
+{"fn":"trim","args":["\u000a\u000a😀"],"expect":"😀"},
+{"fn":"length","args":["\u000a\u000ab"],"expect":3},
+{"fn":"trim","args":["\u000a\u000ab"],"expect":"b"},
+{"fn":"length","args":["\u000a a"],"expect":3},
+{"fn":"trim","args":["\u000a a"],"expect":"a"},
+{"fn":"length","args":["\u000a  "],"expect":3},
+{"fn":"trim","args":["\u000a  "],"expect":""},
+{"fn":"length","args":["\u000a \u0009"],"expect":3},
+{"fn":"trim","args":["\u000a \u0009"],"expect":""},
+{"fn":"length","args":["\u000a \u000a"],"expect":3},
+{"fn":"trim","args":["\u000a \u000a"],"expect":""},
+{"fn":"length","args":["\u000a  "],"expect":3},
+{"fn":"trim","args":["\u000a  "],"expect":""},
+{"fn":"length","args":["\u000a ﻿"],"expect":3},
+{"fn":"trim","args":["\u000a ﻿"],"expect":""},
+{"fn":"length","args":["\u000a  "],"expect":3},
+{"fn":"trim","args":["\u000a  "],"expect":""},
+{"fn":"length","args":["\u000a 　"],"expect":3},
+{"fn":"trim","args":["\u000a 　"],"expect":""},
+{"fn":"length","args":["\u000a 😀"],"expect":4},
+{"fn":"trim","args":["\u000a 😀"],"expect":"😀"},
+{"fn":"length","args":["\u000a b"],"expect":3},
+{"fn":"trim","args":["\u000a b"],"expect":"b"},
+{"fn":"length","args":["\u000a﻿a"],"expect":3},
+{"fn":"trim","args":["\u000a﻿a"],"expect":"a"},
+{"fn":"length","args":["\u000a﻿ "],"expect":3},
+{"fn":"trim","args":["\u000a﻿ "],"expect":""},
+{"fn":"length","args":["\u000a﻿\u0009"],"expect":3},
+{"fn":"trim","args":["\u000a﻿\u0009"],"expect":""},
+{"fn":"length","args":["\u000a﻿\u000a"],"expect":3},
+{"fn":"trim","args":["\u000a﻿\u000a"],"expect":""},
+{"fn":"length","args":["\u000a﻿ "],"expect":3},
+{"fn":"trim","args":["\u000a﻿ "],"expect":""},
+{"fn":"length","args":["\u000a﻿﻿"],"expect":3},
+{"fn":"trim","args":["\u000a﻿﻿"],"expect":""},
+{"fn":"length","args":["\u000a﻿ "],"expect":3},
+{"fn":"trim","args":["\u000a﻿ "],"expect":""},
+{"fn":"length","args":["\u000a﻿　"],"expect":3},
+{"fn":"trim","args":["\u000a﻿　"],"expect":""},
+{"fn":"length","args":["\u000a﻿😀"],"expect":4},
+{"fn":"trim","args":["\u000a﻿😀"],"expect":"😀"},
+{"fn":"length","args":["\u000a﻿b"],"expect":3},
+{"fn":"trim","args":["\u000a﻿b"],"expect":"b"},
+{"fn":"length","args":["\u000a a"],"expect":3},
+{"fn":"trim","args":["\u000a a"],"expect":"a"},
+{"fn":"length","args":["\u000a  "],"expect":3},
+{"fn":"trim","args":["\u000a  "],"expect":""},
+{"fn":"length","args":["\u000a \u0009"],"expect":3},
+{"fn":"trim","args":["\u000a \u0009"],"expect":""},
+{"fn":"length","args":["\u000a \u000a"],"expect":3},
+{"fn":"trim","args":["\u000a \u000a"],"expect":""},
+{"fn":"length","args":["\u000a  "],"expect":3},
+{"fn":"trim","args":["\u000a  "],"expect":""},
+{"fn":"length","args":["\u000a ﻿"],"expect":3},
+{"fn":"trim","args":["\u000a ﻿"],"expect":""},
+{"fn":"length","args":["\u000a  "],"expect":3},
+{"fn":"trim","args":["\u000a  "],"expect":""},
+{"fn":"length","args":["\u000a 　"],"expect":3},
+{"fn":"trim","args":["\u000a 　"],"expect":""},
+{"fn":"length","args":["\u000a 😀"],"expect":4},
+{"fn":"trim","args":["\u000a 😀"],"expect":"😀"},
+{"fn":"length","args":["\u000a b"],"expect":3},
+{"fn":"trim","args":["\u000a b"],"expect":"b"},
+{"fn":"length","args":["\u000a　a"],"expect":3},
+{"fn":"trim","args":["\u000a　a"],"expect":"a"},
+{"fn":"length","args":["\u000a　 "],"expect":3},
+{"fn":"trim","args":["\u000a　 "],"expect":""},
+{"fn":"length","args":["\u000a　\u0009"],"expect":3},
+{"fn":"trim","args":["\u000a　\u0009"],"expect":""},
+{"fn":"length","args":["\u000a　\u000a"],"expect":3},
+{"fn":"trim","args":["\u000a　\u000a"],"expect":""},
+{"fn":"length","args":["\u000a　 "],"expect":3},
+{"fn":"trim","args":["\u000a　 "],"expect":""},
+{"fn":"length","args":["\u000a　﻿"],"expect":3},
+{"fn":"trim","args":["\u000a　﻿"],"expect":""},
+{"fn":"length","args":["\u000a　 "],"expect":3},
+{"fn":"trim","args":["\u000a　 "],"expect":""},
+{"fn":"length","args":["\u000a　　"],"expect":3},
+{"fn":"trim","args":["\u000a　　"],"expect":""},
+{"fn":"length","args":["\u000a　😀"],"expect":4},
+{"fn":"trim","args":["\u000a　😀"],"expect":"😀"},
+{"fn":"length","args":["\u000a　b"],"expect":3},
+{"fn":"trim","args":["\u000a　b"],"expect":"b"},
+{"fn":"length","args":["\u000a😀a"],"expect":4},
+{"fn":"trim","args":["\u000a😀a"],"expect":"😀a"},
+{"fn":"length","args":["\u000a😀 "],"expect":4},
+{"fn":"trim","args":["\u000a😀 "],"expect":"😀"},
+{"fn":"length","args":["\u000a😀\u0009"],"expect":4},
+{"fn":"trim","args":["\u000a😀\u0009"],"expect":"😀"},
+{"fn":"length","args":["\u000a😀\u000a"],"expect":4},
+{"fn":"trim","args":["\u000a😀\u000a"],"expect":"😀"},
+{"fn":"length","args":["\u000a😀 "],"expect":4},
+{"fn":"trim","args":["\u000a😀 "],"expect":"😀"},
+{"fn":"length","args":["\u000a😀﻿"],"expect":4},
+{"fn":"trim","args":["\u000a😀﻿"],"expect":"😀"},
+{"fn":"length","args":["\u000a😀 "],"expect":4},
+{"fn":"trim","args":["\u000a😀 "],"expect":"😀"},
+{"fn":"length","args":["\u000a😀　"],"expect":4},
+{"fn":"trim","args":["\u000a😀　"],"expect":"😀"},
+{"fn":"length","args":["\u000a😀😀"],"expect":5},
+{"fn":"trim","args":["\u000a😀😀"],"expect":"😀😀"},
+{"fn":"length","args":["\u000a😀b"],"expect":4},
+{"fn":"trim","args":["\u000a😀b"],"expect":"😀b"},
+{"fn":"length","args":["\u000aba"],"expect":3},
+{"fn":"trim","args":["\u000aba"],"expect":"ba"},
+{"fn":"length","args":["\u000ab "],"expect":3},
+{"fn":"trim","args":["\u000ab "],"expect":"b"},
+{"fn":"length","args":["\u000ab\u0009"],"expect":3},
+{"fn":"trim","args":["\u000ab\u0009"],"expect":"b"},
+{"fn":"length","args":["\u000ab\u000a"],"expect":3},
+{"fn":"trim","args":["\u000ab\u000a"],"expect":"b"},
+{"fn":"length","args":["\u000ab "],"expect":3},
+{"fn":"trim","args":["\u000ab "],"expect":"b"},
+{"fn":"length","args":["\u000ab﻿"],"expect":3},
+{"fn":"trim","args":["\u000ab﻿"],"expect":"b"},
+{"fn":"length","args":["\u000ab "],"expect":3},
+{"fn":"trim","args":["\u000ab "],"expect":"b"},
+{"fn":"length","args":["\u000ab　"],"expect":3},
+{"fn":"trim","args":["\u000ab　"],"expect":"b"},
+{"fn":"length","args":["\u000ab😀"],"expect":4},
+{"fn":"trim","args":["\u000ab😀"],"expect":"b😀"},
+{"fn":"length","args":["\u000abb"],"expect":3},
+{"fn":"trim","args":["\u000abb"],"expect":"bb"},
+{"fn":"length","args":[" aa"],"expect":3},
+{"fn":"trim","args":[" aa"],"expect":"aa"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" a\u0009"],"expect":3},
+{"fn":"trim","args":[" a\u0009"],"expect":"a"},
+{"fn":"length","args":[" a\u000a"],"expect":3},
+{"fn":"trim","args":[" a\u000a"],"expect":"a"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" a﻿"],"expect":3},
+{"fn":"trim","args":[" a﻿"],"expect":"a"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" a　"],"expect":3},
+{"fn":"trim","args":[" a　"],"expect":"a"},
+{"fn":"length","args":[" a😀"],"expect":4},
+{"fn":"trim","args":[" a😀"],"expect":"a😀"},
+{"fn":"length","args":[" ab"],"expect":3},
+{"fn":"trim","args":[" ab"],"expect":"ab"},
+{"fn":"length","args":["  a"],"expect":3},
+{"fn":"trim","args":["  a"],"expect":"a"},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  \u0009"],"expect":3},
+{"fn":"trim","args":["  \u0009"],"expect":""},
+{"fn":"length","args":["  \u000a"],"expect":3},
+{"fn":"trim","args":["  \u000a"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  ﻿"],"expect":3},
+{"fn":"trim","args":["  ﻿"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  　"],"expect":3},
+{"fn":"trim","args":["  　"],"expect":""},
+{"fn":"length","args":["  😀"],"expect":4},
+{"fn":"trim","args":["  😀"],"expect":"😀"},
+{"fn":"length","args":["  b"],"expect":3},
+{"fn":"trim","args":["  b"],"expect":"b"},
+{"fn":"length","args":[" \u0009a"],"expect":3},
+{"fn":"trim","args":[" \u0009a"],"expect":"a"},
+{"fn":"length","args":[" \u0009 "],"expect":3},
+{"fn":"trim","args":[" \u0009 "],"expect":""},
+{"fn":"length","args":[" \u0009\u0009"],"expect":3},
+{"fn":"trim","args":[" \u0009\u0009"],"expect":""},
+{"fn":"length","args":[" \u0009\u000a"],"expect":3},
+{"fn":"trim","args":[" \u0009\u000a"],"expect":""},
+{"fn":"length","args":[" \u0009 "],"expect":3},
+{"fn":"trim","args":[" \u0009 "],"expect":""},
+{"fn":"length","args":[" \u0009﻿"],"expect":3},
+{"fn":"trim","args":[" \u0009﻿"],"expect":""},
+{"fn":"length","args":[" \u0009 "],"expect":3},
+{"fn":"trim","args":[" \u0009 "],"expect":""},
+{"fn":"length","args":[" \u0009　"],"expect":3},
+{"fn":"trim","args":[" \u0009　"],"expect":""},
+{"fn":"length","args":[" \u0009😀"],"expect":4},
+{"fn":"trim","args":[" \u0009😀"],"expect":"😀"},
+{"fn":"length","args":[" \u0009b"],"expect":3},
+{"fn":"trim","args":[" \u0009b"],"expect":"b"},
+{"fn":"length","args":[" \u000aa"],"expect":3},
+{"fn":"trim","args":[" \u000aa"],"expect":"a"},
+{"fn":"length","args":[" \u000a "],"expect":3},
+{"fn":"trim","args":[" \u000a "],"expect":""},
+{"fn":"length","args":[" \u000a\u0009"],"expect":3},
+{"fn":"trim","args":[" \u000a\u0009"],"expect":""},
+{"fn":"length","args":[" \u000a\u000a"],"expect":3},
+{"fn":"trim","args":[" \u000a\u000a"],"expect":""},
+{"fn":"length","args":[" \u000a "],"expect":3},
+{"fn":"trim","args":[" \u000a "],"expect":""},
+{"fn":"length","args":[" \u000a﻿"],"expect":3},
+{"fn":"trim","args":[" \u000a﻿"],"expect":""},
+{"fn":"length","args":[" \u000a "],"expect":3},
+{"fn":"trim","args":[" \u000a "],"expect":""},
+{"fn":"length","args":[" \u000a　"],"expect":3},
+{"fn":"trim","args":[" \u000a　"],"expect":""},
+{"fn":"length","args":[" \u000a😀"],"expect":4},
+{"fn":"trim","args":[" \u000a😀"],"expect":"😀"},
+{"fn":"length","args":[" \u000ab"],"expect":3},
+{"fn":"trim","args":[" \u000ab"],"expect":"b"},
+{"fn":"length","args":["  a"],"expect":3},
+{"fn":"trim","args":["  a"],"expect":"a"},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  \u0009"],"expect":3},
+{"fn":"trim","args":["  \u0009"],"expect":""},
+{"fn":"length","args":["  \u000a"],"expect":3},
+{"fn":"trim","args":["  \u000a"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  ﻿"],"expect":3},
+{"fn":"trim","args":["  ﻿"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  　"],"expect":3},
+{"fn":"trim","args":["  　"],"expect":""},
+{"fn":"length","args":["  😀"],"expect":4},
+{"fn":"trim","args":["  😀"],"expect":"😀"},
+{"fn":"length","args":["  b"],"expect":3},
+{"fn":"trim","args":["  b"],"expect":"b"},
+{"fn":"length","args":[" ﻿a"],"expect":3},
+{"fn":"trim","args":[" ﻿a"],"expect":"a"},
+{"fn":"length","args":[" ﻿ "],"expect":3},
+{"fn":"trim","args":[" ﻿ "],"expect":""},
+{"fn":"length","args":[" ﻿\u0009"],"expect":3},
+{"fn":"trim","args":[" ﻿\u0009"],"expect":""},
+{"fn":"length","args":[" ﻿\u000a"],"expect":3},
+{"fn":"trim","args":[" ﻿\u000a"],"expect":""},
+{"fn":"length","args":[" ﻿ "],"expect":3},
+{"fn":"trim","args":[" ﻿ "],"expect":""},
+{"fn":"length","args":[" ﻿﻿"],"expect":3},
+{"fn":"trim","args":[" ﻿﻿"],"expect":""},
+{"fn":"length","args":[" ﻿ "],"expect":3},
+{"fn":"trim","args":[" ﻿ "],"expect":""},
+{"fn":"length","args":[" ﻿　"],"expect":3},
+{"fn":"trim","args":[" ﻿　"],"expect":""},
+{"fn":"length","args":[" ﻿😀"],"expect":4},
+{"fn":"trim","args":[" ﻿😀"],"expect":"😀"},
+{"fn":"length","args":[" ﻿b"],"expect":3},
+{"fn":"trim","args":[" ﻿b"],"expect":"b"},
+{"fn":"length","args":["  a"],"expect":3},
+{"fn":"trim","args":["  a"],"expect":"a"},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  \u0009"],"expect":3},
+{"fn":"trim","args":["  \u0009"],"expect":""},
+{"fn":"length","args":["  \u000a"],"expect":3},
+{"fn":"trim","args":["  \u000a"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  ﻿"],"expect":3},
+{"fn":"trim","args":["  ﻿"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  　"],"expect":3},
+{"fn":"trim","args":["  　"],"expect":""},
+{"fn":"length","args":["  😀"],"expect":4},
+{"fn":"trim","args":["  😀"],"expect":"😀"},
+{"fn":"length","args":["  b"],"expect":3},
+{"fn":"trim","args":["  b"],"expect":"b"},
+{"fn":"length","args":[" 　a"],"expect":3},
+{"fn":"trim","args":[" 　a"],"expect":"a"},
+{"fn":"length","args":[" 　 "],"expect":3},
+{"fn":"trim","args":[" 　 "],"expect":""},
+{"fn":"length","args":[" 　\u0009"],"expect":3},
+{"fn":"trim","args":[" 　\u0009"],"expect":""},
+{"fn":"length","args":[" 　\u000a"],"expect":3},
+{"fn":"trim","args":[" 　\u000a"],"expect":""},
+{"fn":"length","args":[" 　 "],"expect":3},
+{"fn":"trim","args":[" 　 "],"expect":""},
+{"fn":"length","args":[" 　﻿"],"expect":3},
+{"fn":"trim","args":[" 　﻿"],"expect":""},
+{"fn":"length","args":[" 　 "],"expect":3},
+{"fn":"trim","args":[" 　 "],"expect":""},
+{"fn":"length","args":[" 　　"],"expect":3},
+{"fn":"trim","args":[" 　　"],"expect":""},
+{"fn":"length","args":[" 　😀"],"expect":4},
+{"fn":"trim","args":[" 　😀"],"expect":"😀"},
+{"fn":"length","args":[" 　b"],"expect":3},
+{"fn":"trim","args":[" 　b"],"expect":"b"},
+{"fn":"length","args":[" 😀a"],"expect":4},
+{"fn":"trim","args":[" 😀a"],"expect":"😀a"},
+{"fn":"length","args":[" 😀 "],"expect":4},
+{"fn":"trim","args":[" 😀 "],"expect":"😀"},
+{"fn":"length","args":[" 😀\u0009"],"expect":4},
+{"fn":"trim","args":[" 😀\u0009"],"expect":"😀"},
+{"fn":"length","args":[" 😀\u000a"],"expect":4},
+{"fn":"trim","args":[" 😀\u000a"],"expect":"😀"},
+{"fn":"length","args":[" 😀 "],"expect":4},
+{"fn":"trim","args":[" 😀 "],"expect":"😀"},
+{"fn":"length","args":[" 😀﻿"],"expect":4},
+{"fn":"trim","args":[" 😀﻿"],"expect":"😀"},
+{"fn":"length","args":[" 😀 "],"expect":4},
+{"fn":"trim","args":[" 😀 "],"expect":"😀"},
+{"fn":"length","args":[" 😀　"],"expect":4},
+{"fn":"trim","args":[" 😀　"],"expect":"😀"},
+{"fn":"length","args":[" 😀😀"],"expect":5},
+{"fn":"trim","args":[" 😀😀"],"expect":"😀😀"},
+{"fn":"length","args":[" 😀b"],"expect":4},
+{"fn":"trim","args":[" 😀b"],"expect":"😀b"},
+{"fn":"length","args":[" ba"],"expect":3},
+{"fn":"trim","args":[" ba"],"expect":"ba"},
+{"fn":"length","args":[" b "],"expect":3},
+{"fn":"trim","args":[" b "],"expect":"b"},
+{"fn":"length","args":[" b\u0009"],"expect":3},
+{"fn":"trim","args":[" b\u0009"],"expect":"b"},
+{"fn":"length","args":[" b\u000a"],"expect":3},
+{"fn":"trim","args":[" b\u000a"],"expect":"b"},
+{"fn":"length","args":[" b "],"expect":3},
+{"fn":"trim","args":[" b "],"expect":"b"},
+{"fn":"length","args":[" b﻿"],"expect":3},
+{"fn":"trim","args":[" b﻿"],"expect":"b"},
+{"fn":"length","args":[" b "],"expect":3},
+{"fn":"trim","args":[" b "],"expect":"b"},
+{"fn":"length","args":[" b　"],"expect":3},
+{"fn":"trim","args":[" b　"],"expect":"b"},
+{"fn":"length","args":[" b😀"],"expect":4},
+{"fn":"trim","args":[" b😀"],"expect":"b😀"},
+{"fn":"length","args":[" bb"],"expect":3},
+{"fn":"trim","args":[" bb"],"expect":"bb"},
+{"fn":"length","args":["﻿aa"],"expect":3},
+{"fn":"trim","args":["﻿aa"],"expect":"aa"},
+{"fn":"length","args":["﻿a "],"expect":3},
+{"fn":"trim","args":["﻿a "],"expect":"a"},
+{"fn":"length","args":["﻿a\u0009"],"expect":3},
+{"fn":"trim","args":["﻿a\u0009"],"expect":"a"},
+{"fn":"length","args":["﻿a\u000a"],"expect":3},
+{"fn":"trim","args":["﻿a\u000a"],"expect":"a"},
+{"fn":"length","args":["﻿a "],"expect":3},
+{"fn":"trim","args":["﻿a "],"expect":"a"},
+{"fn":"length","args":["﻿a﻿"],"expect":3},
+{"fn":"trim","args":["﻿a﻿"],"expect":"a"},
+{"fn":"length","args":["﻿a "],"expect":3},
+{"fn":"trim","args":["﻿a "],"expect":"a"},
+{"fn":"length","args":["﻿a　"],"expect":3},
+{"fn":"trim","args":["﻿a　"],"expect":"a"},
+{"fn":"length","args":["﻿a😀"],"expect":4},
+{"fn":"trim","args":["﻿a😀"],"expect":"a😀"},
+{"fn":"length","args":["﻿ab"],"expect":3},
+{"fn":"trim","args":["﻿ab"],"expect":"ab"},
+{"fn":"length","args":["﻿ a"],"expect":3},
+{"fn":"trim","args":["﻿ a"],"expect":"a"},
+{"fn":"length","args":["﻿  "],"expect":3},
+{"fn":"trim","args":["﻿  "],"expect":""},
+{"fn":"length","args":["﻿ \u0009"],"expect":3},
+{"fn":"trim","args":["﻿ \u0009"],"expect":""},
+{"fn":"length","args":["﻿ \u000a"],"expect":3},
+{"fn":"trim","args":["﻿ \u000a"],"expect":""},
+{"fn":"length","args":["﻿  "],"expect":3},
+{"fn":"trim","args":["﻿  "],"expect":""},
+{"fn":"length","args":["﻿ ﻿"],"expect":3},
+{"fn":"trim","args":["﻿ ﻿"],"expect":""},
+{"fn":"length","args":["﻿  "],"expect":3},
+{"fn":"trim","args":["﻿  "],"expect":""},
+{"fn":"length","args":["﻿ 　"],"expect":3},
+{"fn":"trim","args":["﻿ 　"],"expect":""},
+{"fn":"length","args":["﻿ 😀"],"expect":4},
+{"fn":"trim","args":["﻿ 😀"],"expect":"😀"},
+{"fn":"length","args":["﻿ b"],"expect":3},
+{"fn":"trim","args":["﻿ b"],"expect":"b"},
+{"fn":"length","args":["﻿\u0009a"],"expect":3},
+{"fn":"trim","args":["﻿\u0009a"],"expect":"a"},
+{"fn":"length","args":["﻿\u0009 "],"expect":3},
+{"fn":"trim","args":["﻿\u0009 "],"expect":""},
+{"fn":"length","args":["﻿\u0009\u0009"],"expect":3},
+{"fn":"trim","args":["﻿\u0009\u0009"],"expect":""},
+{"fn":"length","args":["﻿\u0009\u000a"],"expect":3},
+{"fn":"trim","args":["﻿\u0009\u000a"],"expect":""},
+{"fn":"length","args":["﻿\u0009 "],"expect":3},
+{"fn":"trim","args":["﻿\u0009 "],"expect":""},
+{"fn":"length","args":["﻿\u0009﻿"],"expect":3},
+{"fn":"trim","args":["﻿\u0009﻿"],"expect":""},
+{"fn":"length","args":["﻿\u0009 "],"expect":3},
+{"fn":"trim","args":["﻿\u0009 "],"expect":""},
+{"fn":"length","args":["﻿\u0009　"],"expect":3},
+{"fn":"trim","args":["﻿\u0009　"],"expect":""},
+{"fn":"length","args":["﻿\u0009😀"],"expect":4},
+{"fn":"trim","args":["﻿\u0009😀"],"expect":"😀"},
+{"fn":"length","args":["﻿\u0009b"],"expect":3},
+{"fn":"trim","args":["﻿\u0009b"],"expect":"b"},
+{"fn":"length","args":["﻿\u000aa"],"expect":3},
+{"fn":"trim","args":["﻿\u000aa"],"expect":"a"},
+{"fn":"length","args":["﻿\u000a "],"expect":3},
+{"fn":"trim","args":["﻿\u000a "],"expect":""},
+{"fn":"length","args":["﻿\u000a\u0009"],"expect":3},
+{"fn":"trim","args":["﻿\u000a\u0009"],"expect":""},
+{"fn":"length","args":["﻿\u000a\u000a"],"expect":3},
+{"fn":"trim","args":["﻿\u000a\u000a"],"expect":""},
+{"fn":"length","args":["﻿\u000a "],"expect":3},
+{"fn":"trim","args":["﻿\u000a "],"expect":""},
+{"fn":"length","args":["﻿\u000a﻿"],"expect":3},
+{"fn":"trim","args":["﻿\u000a﻿"],"expect":""},
+{"fn":"length","args":["﻿\u000a "],"expect":3},
+{"fn":"trim","args":["﻿\u000a "],"expect":""},
+{"fn":"length","args":["﻿\u000a　"],"expect":3},
+{"fn":"trim","args":["﻿\u000a　"],"expect":""},
+{"fn":"length","args":["﻿\u000a😀"],"expect":4},
+{"fn":"trim","args":["﻿\u000a😀"],"expect":"😀"},
+{"fn":"length","args":["﻿\u000ab"],"expect":3},
+{"fn":"trim","args":["﻿\u000ab"],"expect":"b"},
+{"fn":"length","args":["﻿ a"],"expect":3},
+{"fn":"trim","args":["﻿ a"],"expect":"a"},
+{"fn":"length","args":["﻿  "],"expect":3},
+{"fn":"trim","args":["﻿  "],"expect":""},
+{"fn":"length","args":["﻿ \u0009"],"expect":3},
+{"fn":"trim","args":["﻿ \u0009"],"expect":""},
+{"fn":"length","args":["﻿ \u000a"],"expect":3},
+{"fn":"trim","args":["﻿ \u000a"],"expect":""},
+{"fn":"length","args":["﻿  "],"expect":3},
+{"fn":"trim","args":["﻿  "],"expect":""},
+{"fn":"length","args":["﻿ ﻿"],"expect":3},
+{"fn":"trim","args":["﻿ ﻿"],"expect":""},
+{"fn":"length","args":["﻿  "],"expect":3},
+{"fn":"trim","args":["﻿  "],"expect":""},
+{"fn":"length","args":["﻿ 　"],"expect":3},
+{"fn":"trim","args":["﻿ 　"],"expect":""},
+{"fn":"length","args":["﻿ 😀"],"expect":4},
+{"fn":"trim","args":["﻿ 😀"],"expect":"😀"},
+{"fn":"length","args":["﻿ b"],"expect":3},
+{"fn":"trim","args":["﻿ b"],"expect":"b"},
+{"fn":"length","args":["﻿﻿a"],"expect":3},
+{"fn":"trim","args":["﻿﻿a"],"expect":"a"},
+{"fn":"length","args":["﻿﻿ "],"expect":3},
+{"fn":"trim","args":["﻿﻿ "],"expect":""},
+{"fn":"length","args":["﻿﻿\u0009"],"expect":3},
+{"fn":"trim","args":["﻿﻿\u0009"],"expect":""},
+{"fn":"length","args":["﻿﻿\u000a"],"expect":3},
+{"fn":"trim","args":["﻿﻿\u000a"],"expect":""},
+{"fn":"length","args":["﻿﻿ "],"expect":3},
+{"fn":"trim","args":["﻿﻿ "],"expect":""},
+{"fn":"length","args":["﻿﻿﻿"],"expect":3},
+{"fn":"trim","args":["﻿﻿﻿"],"expect":""},
+{"fn":"length","args":["﻿﻿ "],"expect":3},
+{"fn":"trim","args":["﻿﻿ "],"expect":""},
+{"fn":"length","args":["﻿﻿　"],"expect":3},
+{"fn":"trim","args":["﻿﻿　"],"expect":""},
+{"fn":"length","args":["﻿﻿😀"],"expect":4},
+{"fn":"trim","args":["﻿﻿😀"],"expect":"😀"},
+{"fn":"length","args":["﻿﻿b"],"expect":3},
+{"fn":"trim","args":["﻿﻿b"],"expect":"b"},
+{"fn":"length","args":["﻿ a"],"expect":3},
+{"fn":"trim","args":["﻿ a"],"expect":"a"},
+{"fn":"length","args":["﻿  "],"expect":3},
+{"fn":"trim","args":["﻿  "],"expect":""},
+{"fn":"length","args":["﻿ \u0009"],"expect":3},
+{"fn":"trim","args":["﻿ \u0009"],"expect":""},
+{"fn":"length","args":["﻿ \u000a"],"expect":3},
+{"fn":"trim","args":["﻿ \u000a"],"expect":""},
+{"fn":"length","args":["﻿  "],"expect":3},
+{"fn":"trim","args":["﻿  "],"expect":""},
+{"fn":"length","args":["﻿ ﻿"],"expect":3},
+{"fn":"trim","args":["﻿ ﻿"],"expect":""},
+{"fn":"length","args":["﻿  "],"expect":3},
+{"fn":"trim","args":["﻿  "],"expect":""},
+{"fn":"length","args":["﻿ 　"],"expect":3},
+{"fn":"trim","args":["﻿ 　"],"expect":""},
+{"fn":"length","args":["﻿ 😀"],"expect":4},
+{"fn":"trim","args":["﻿ 😀"],"expect":"😀"},
+{"fn":"length","args":["﻿ b"],"expect":3},
+{"fn":"trim","args":["﻿ b"],"expect":"b"},
+{"fn":"length","args":["﻿　a"],"expect":3},
+{"fn":"trim","args":["﻿　a"],"expect":"a"},
+{"fn":"length","args":["﻿　 "],"expect":3},
+{"fn":"trim","args":["﻿　 "],"expect":""},
+{"fn":"length","args":["﻿　\u0009"],"expect":3},
+{"fn":"trim","args":["﻿　\u0009"],"expect":""},
+{"fn":"length","args":["﻿　\u000a"],"expect":3},
+{"fn":"trim","args":["﻿　\u000a"],"expect":""},
+{"fn":"length","args":["﻿　 "],"expect":3},
+{"fn":"trim","args":["﻿　 "],"expect":""},
+{"fn":"length","args":["﻿　﻿"],"expect":3},
+{"fn":"trim","args":["﻿　﻿"],"expect":""},
+{"fn":"length","args":["﻿　 "],"expect":3},
+{"fn":"trim","args":["﻿　 "],"expect":""},
+{"fn":"length","args":["﻿　　"],"expect":3},
+{"fn":"trim","args":["﻿　　"],"expect":""},
+{"fn":"length","args":["﻿　😀"],"expect":4},
+{"fn":"trim","args":["﻿　😀"],"expect":"😀"},
+{"fn":"length","args":["﻿　b"],"expect":3},
+{"fn":"trim","args":["﻿　b"],"expect":"b"},
+{"fn":"length","args":["﻿😀a"],"expect":4},
+{"fn":"trim","args":["﻿😀a"],"expect":"😀a"},
+{"fn":"length","args":["﻿😀 "],"expect":4},
+{"fn":"trim","args":["﻿😀 "],"expect":"😀"},
+{"fn":"length","args":["﻿😀\u0009"],"expect":4},
+{"fn":"trim","args":["﻿😀\u0009"],"expect":"😀"},
+{"fn":"length","args":["﻿😀\u000a"],"expect":4},
+{"fn":"trim","args":["﻿😀\u000a"],"expect":"😀"},
+{"fn":"length","args":["﻿😀 "],"expect":4},
+{"fn":"trim","args":["﻿😀 "],"expect":"😀"},
+{"fn":"length","args":["﻿😀﻿"],"expect":4},
+{"fn":"trim","args":["﻿😀﻿"],"expect":"😀"},
+{"fn":"length","args":["﻿😀 "],"expect":4},
+{"fn":"trim","args":["﻿😀 "],"expect":"😀"},
+{"fn":"length","args":["﻿😀　"],"expect":4},
+{"fn":"trim","args":["﻿😀　"],"expect":"😀"},
+{"fn":"length","args":["﻿😀😀"],"expect":5},
+{"fn":"trim","args":["﻿😀😀"],"expect":"😀😀"},
+{"fn":"length","args":["﻿😀b"],"expect":4},
+{"fn":"trim","args":["﻿😀b"],"expect":"😀b"},
+{"fn":"length","args":["﻿ba"],"expect":3},
+{"fn":"trim","args":["﻿ba"],"expect":"ba"},
+{"fn":"length","args":["﻿b "],"expect":3},
+{"fn":"trim","args":["﻿b "],"expect":"b"},
+{"fn":"length","args":["﻿b\u0009"],"expect":3},
+{"fn":"trim","args":["﻿b\u0009"],"expect":"b"},
+{"fn":"length","args":["﻿b\u000a"],"expect":3},
+{"fn":"trim","args":["﻿b\u000a"],"expect":"b"},
+{"fn":"length","args":["﻿b "],"expect":3},
+{"fn":"trim","args":["﻿b "],"expect":"b"},
+{"fn":"length","args":["﻿b﻿"],"expect":3},
+{"fn":"trim","args":["﻿b﻿"],"expect":"b"},
+{"fn":"length","args":["﻿b "],"expect":3},
+{"fn":"trim","args":["﻿b "],"expect":"b"},
+{"fn":"length","args":["﻿b　"],"expect":3},
+{"fn":"trim","args":["﻿b　"],"expect":"b"},
+{"fn":"length","args":["﻿b😀"],"expect":4},
+{"fn":"trim","args":["﻿b😀"],"expect":"b😀"},
+{"fn":"length","args":["﻿bb"],"expect":3},
+{"fn":"trim","args":["﻿bb"],"expect":"bb"},
+{"fn":"length","args":[" aa"],"expect":3},
+{"fn":"trim","args":[" aa"],"expect":"aa"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" a\u0009"],"expect":3},
+{"fn":"trim","args":[" a\u0009"],"expect":"a"},
+{"fn":"length","args":[" a\u000a"],"expect":3},
+{"fn":"trim","args":[" a\u000a"],"expect":"a"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" a﻿"],"expect":3},
+{"fn":"trim","args":[" a﻿"],"expect":"a"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" a　"],"expect":3},
+{"fn":"trim","args":[" a　"],"expect":"a"},
+{"fn":"length","args":[" a😀"],"expect":4},
+{"fn":"trim","args":[" a😀"],"expect":"a😀"},
+{"fn":"length","args":[" ab"],"expect":3},
+{"fn":"trim","args":[" ab"],"expect":"ab"},
+{"fn":"length","args":["  a"],"expect":3},
+{"fn":"trim","args":["  a"],"expect":"a"},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  \u0009"],"expect":3},
+{"fn":"trim","args":["  \u0009"],"expect":""},
+{"fn":"length","args":["  \u000a"],"expect":3},
+{"fn":"trim","args":["  \u000a"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  ﻿"],"expect":3},
+{"fn":"trim","args":["  ﻿"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  　"],"expect":3},
+{"fn":"trim","args":["  　"],"expect":""},
+{"fn":"length","args":["  😀"],"expect":4},
+{"fn":"trim","args":["  😀"],"expect":"😀"},
+{"fn":"length","args":["  b"],"expect":3},
+{"fn":"trim","args":["  b"],"expect":"b"},
+{"fn":"length","args":[" \u0009a"],"expect":3},
+{"fn":"trim","args":[" \u0009a"],"expect":"a"},
+{"fn":"length","args":[" \u0009 "],"expect":3},
+{"fn":"trim","args":[" \u0009 "],"expect":""},
+{"fn":"length","args":[" \u0009\u0009"],"expect":3},
+{"fn":"trim","args":[" \u0009\u0009"],"expect":""},
+{"fn":"length","args":[" \u0009\u000a"],"expect":3},
+{"fn":"trim","args":[" \u0009\u000a"],"expect":""},
+{"fn":"length","args":[" \u0009 "],"expect":3},
+{"fn":"trim","args":[" \u0009 "],"expect":""},
+{"fn":"length","args":[" \u0009﻿"],"expect":3},
+{"fn":"trim","args":[" \u0009﻿"],"expect":""},
+{"fn":"length","args":[" \u0009 "],"expect":3},
+{"fn":"trim","args":[" \u0009 "],"expect":""},
+{"fn":"length","args":[" \u0009　"],"expect":3},
+{"fn":"trim","args":[" \u0009　"],"expect":""},
+{"fn":"length","args":[" \u0009😀"],"expect":4},
+{"fn":"trim","args":[" \u0009😀"],"expect":"😀"},
+{"fn":"length","args":[" \u0009b"],"expect":3},
+{"fn":"trim","args":[" \u0009b"],"expect":"b"},
+{"fn":"length","args":[" \u000aa"],"expect":3},
+{"fn":"trim","args":[" \u000aa"],"expect":"a"},
+{"fn":"length","args":[" \u000a "],"expect":3},
+{"fn":"trim","args":[" \u000a "],"expect":""},
+{"fn":"length","args":[" \u000a\u0009"],"expect":3},
+{"fn":"trim","args":[" \u000a\u0009"],"expect":""},
+{"fn":"length","args":[" \u000a\u000a"],"expect":3},
+{"fn":"trim","args":[" \u000a\u000a"],"expect":""},
+{"fn":"length","args":[" \u000a "],"expect":3},
+{"fn":"trim","args":[" \u000a "],"expect":""},
+{"fn":"length","args":[" \u000a﻿"],"expect":3},
+{"fn":"trim","args":[" \u000a﻿"],"expect":""},
+{"fn":"length","args":[" \u000a "],"expect":3},
+{"fn":"trim","args":[" \u000a "],"expect":""},
+{"fn":"length","args":[" \u000a　"],"expect":3},
+{"fn":"trim","args":[" \u000a　"],"expect":""},
+{"fn":"length","args":[" \u000a😀"],"expect":4},
+{"fn":"trim","args":[" \u000a😀"],"expect":"😀"},
+{"fn":"length","args":[" \u000ab"],"expect":3},
+{"fn":"trim","args":[" \u000ab"],"expect":"b"},
+{"fn":"length","args":["  a"],"expect":3},
+{"fn":"trim","args":["  a"],"expect":"a"},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  \u0009"],"expect":3},
+{"fn":"trim","args":["  \u0009"],"expect":""},
+{"fn":"length","args":["  \u000a"],"expect":3},
+{"fn":"trim","args":["  \u000a"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  ﻿"],"expect":3},
+{"fn":"trim","args":["  ﻿"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  　"],"expect":3},
+{"fn":"trim","args":["  　"],"expect":""},
+{"fn":"length","args":["  😀"],"expect":4},
+{"fn":"trim","args":["  😀"],"expect":"😀"},
+{"fn":"length","args":["  b"],"expect":3},
+{"fn":"trim","args":["  b"],"expect":"b"},
+{"fn":"length","args":[" ﻿a"],"expect":3},
+{"fn":"trim","args":[" ﻿a"],"expect":"a"},
+{"fn":"length","args":[" ﻿ "],"expect":3},
+{"fn":"trim","args":[" ﻿ "],"expect":""},
+{"fn":"length","args":[" ﻿\u0009"],"expect":3},
+{"fn":"trim","args":[" ﻿\u0009"],"expect":""},
+{"fn":"length","args":[" ﻿\u000a"],"expect":3},
+{"fn":"trim","args":[" ﻿\u000a"],"expect":""},
+{"fn":"length","args":[" ﻿ "],"expect":3},
+{"fn":"trim","args":[" ﻿ "],"expect":""},
+{"fn":"length","args":[" ﻿﻿"],"expect":3},
+{"fn":"trim","args":[" ﻿﻿"],"expect":""},
+{"fn":"length","args":[" ﻿ "],"expect":3},
+{"fn":"trim","args":[" ﻿ "],"expect":""},
+{"fn":"length","args":[" ﻿　"],"expect":3},
+{"fn":"trim","args":[" ﻿　"],"expect":""},
+{"fn":"length","args":[" ﻿😀"],"expect":4},
+{"fn":"trim","args":[" ﻿😀"],"expect":"😀"},
+{"fn":"length","args":[" ﻿b"],"expect":3},
+{"fn":"trim","args":[" ﻿b"],"expect":"b"},
+{"fn":"length","args":["  a"],"expect":3},
+{"fn":"trim","args":["  a"],"expect":"a"},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  \u0009"],"expect":3},
+{"fn":"trim","args":["  \u0009"],"expect":""},
+{"fn":"length","args":["  \u000a"],"expect":3},
+{"fn":"trim","args":["  \u000a"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  ﻿"],"expect":3},
+{"fn":"trim","args":["  ﻿"],"expect":""},
+{"fn":"length","args":["   "],"expect":3},
+{"fn":"trim","args":["   "],"expect":""},
+{"fn":"length","args":["  　"],"expect":3},
+{"fn":"trim","args":["  　"],"expect":""},
+{"fn":"length","args":["  😀"],"expect":4},
+{"fn":"trim","args":["  😀"],"expect":"😀"},
+{"fn":"length","args":["  b"],"expect":3},
+{"fn":"trim","args":["  b"],"expect":"b"},
+{"fn":"length","args":[" 　a"],"expect":3},
+{"fn":"trim","args":[" 　a"],"expect":"a"},
+{"fn":"length","args":[" 　 "],"expect":3},
+{"fn":"trim","args":[" 　 "],"expect":""},
+{"fn":"length","args":[" 　\u0009"],"expect":3},
+{"fn":"trim","args":[" 　\u0009"],"expect":""},
+{"fn":"length","args":[" 　\u000a"],"expect":3},
+{"fn":"trim","args":[" 　\u000a"],"expect":""},
+{"fn":"length","args":[" 　 "],"expect":3},
+{"fn":"trim","args":[" 　 "],"expect":""},
+{"fn":"length","args":[" 　﻿"],"expect":3},
+{"fn":"trim","args":[" 　﻿"],"expect":""},
+{"fn":"length","args":[" 　 "],"expect":3},
+{"fn":"trim","args":[" 　 "],"expect":""},
+{"fn":"length","args":[" 　　"],"expect":3},
+{"fn":"trim","args":[" 　　"],"expect":""},
+{"fn":"length","args":[" 　😀"],"expect":4},
+{"fn":"trim","args":[" 　😀"],"expect":"😀"},
+{"fn":"length","args":[" 　b"],"expect":3},
+{"fn":"trim","args":[" 　b"],"expect":"b"},
+{"fn":"length","args":[" 😀a"],"expect":4},
+{"fn":"trim","args":[" 😀a"],"expect":"😀a"},
+{"fn":"length","args":[" 😀 "],"expect":4},
+{"fn":"trim","args":[" 😀 "],"expect":"😀"},
+{"fn":"length","args":[" 😀\u0009"],"expect":4},
+{"fn":"trim","args":[" 😀\u0009"],"expect":"😀"},
+{"fn":"length","args":[" 😀\u000a"],"expect":4},
+{"fn":"trim","args":[" 😀\u000a"],"expect":"😀"},
+{"fn":"length","args":[" 😀 "],"expect":4},
+{"fn":"trim","args":[" 😀 "],"expect":"😀"},
+{"fn":"length","args":[" 😀﻿"],"expect":4},
+{"fn":"trim","args":[" 😀﻿"],"expect":"😀"},
+{"fn":"length","args":[" 😀 "],"expect":4},
+{"fn":"trim","args":[" 😀 "],"expect":"😀"},
+{"fn":"length","args":[" 😀　"],"expect":4},
+{"fn":"trim","args":[" 😀　"],"expect":"😀"},
+{"fn":"length","args":[" 😀😀"],"expect":5},
+{"fn":"trim","args":[" 😀😀"],"expect":"😀😀"},
+{"fn":"length","args":[" 😀b"],"expect":4},
+{"fn":"trim","args":[" 😀b"],"expect":"😀b"},
+{"fn":"length","args":[" ba"],"expect":3},
+{"fn":"trim","args":[" ba"],"expect":"ba"},
+{"fn":"length","args":[" b "],"expect":3},
+{"fn":"trim","args":[" b "],"expect":"b"},
+{"fn":"length","args":[" b\u0009"],"expect":3},
+{"fn":"trim","args":[" b\u0009"],"expect":"b"},
+{"fn":"length","args":[" b\u000a"],"expect":3},
+{"fn":"trim","args":[" b\u000a"],"expect":"b"},
+{"fn":"length","args":[" b "],"expect":3},
+{"fn":"trim","args":[" b "],"expect":"b"},
+{"fn":"length","args":[" b﻿"],"expect":3},
+{"fn":"trim","args":[" b﻿"],"expect":"b"},
+{"fn":"length","args":[" b "],"expect":3},
+{"fn":"trim","args":[" b "],"expect":"b"},
+{"fn":"length","args":[" b　"],"expect":3},
+{"fn":"trim","args":[" b　"],"expect":"b"},
+{"fn":"length","args":[" b😀"],"expect":4},
+{"fn":"trim","args":[" b😀"],"expect":"b😀"},
+{"fn":"length","args":[" bb"],"expect":3},
+{"fn":"trim","args":[" bb"],"expect":"bb"},
+{"fn":"length","args":["　aa"],"expect":3},
+{"fn":"trim","args":["　aa"],"expect":"aa"},
+{"fn":"length","args":["　a "],"expect":3},
+{"fn":"trim","args":["　a "],"expect":"a"},
+{"fn":"length","args":["　a\u0009"],"expect":3},
+{"fn":"trim","args":["　a\u0009"],"expect":"a"},
+{"fn":"length","args":["　a\u000a"],"expect":3},
+{"fn":"trim","args":["　a\u000a"],"expect":"a"},
+{"fn":"length","args":["　a "],"expect":3},
+{"fn":"trim","args":["　a "],"expect":"a"},
+{"fn":"length","args":["　a﻿"],"expect":3},
+{"fn":"trim","args":["　a﻿"],"expect":"a"},
+{"fn":"length","args":["　a "],"expect":3},
+{"fn":"trim","args":["　a "],"expect":"a"},
+{"fn":"length","args":["　a　"],"expect":3},
+{"fn":"trim","args":["　a　"],"expect":"a"},
+{"fn":"length","args":["　a😀"],"expect":4},
+{"fn":"trim","args":["　a😀"],"expect":"a😀"},
+{"fn":"length","args":["　ab"],"expect":3},
+{"fn":"trim","args":["　ab"],"expect":"ab"},
+{"fn":"length","args":["　 a"],"expect":3},
+{"fn":"trim","args":["　 a"],"expect":"a"},
+{"fn":"length","args":["　  "],"expect":3},
+{"fn":"trim","args":["　  "],"expect":""},
+{"fn":"length","args":["　 \u0009"],"expect":3},
+{"fn":"trim","args":["　 \u0009"],"expect":""},
+{"fn":"length","args":["　 \u000a"],"expect":3},
+{"fn":"trim","args":["　 \u000a"],"expect":""},
+{"fn":"length","args":["　  "],"expect":3},
+{"fn":"trim","args":["　  "],"expect":""},
+{"fn":"length","args":["　 ﻿"],"expect":3},
+{"fn":"trim","args":["　 ﻿"],"expect":""},
+{"fn":"length","args":["　  "],"expect":3},
+{"fn":"trim","args":["　  "],"expect":""},
+{"fn":"length","args":["　 　"],"expect":3},
+{"fn":"trim","args":["　 　"],"expect":""},
+{"fn":"length","args":["　 😀"],"expect":4},
+{"fn":"trim","args":["　 😀"],"expect":"😀"},
+{"fn":"length","args":["　 b"],"expect":3},
+{"fn":"trim","args":["　 b"],"expect":"b"},
+{"fn":"length","args":["　\u0009a"],"expect":3},
+{"fn":"trim","args":["　\u0009a"],"expect":"a"},
+{"fn":"length","args":["　\u0009 "],"expect":3},
+{"fn":"trim","args":["　\u0009 "],"expect":""},
+{"fn":"length","args":["　\u0009\u0009"],"expect":3},
+{"fn":"trim","args":["　\u0009\u0009"],"expect":""},
+{"fn":"length","args":["　\u0009\u000a"],"expect":3},
+{"fn":"trim","args":["　\u0009\u000a"],"expect":""},
+{"fn":"length","args":["　\u0009 "],"expect":3},
+{"fn":"trim","args":["　\u0009 "],"expect":""},
+{"fn":"length","args":["　\u0009﻿"],"expect":3},
+{"fn":"trim","args":["　\u0009﻿"],"expect":""},
+{"fn":"length","args":["　\u0009 "],"expect":3},
+{"fn":"trim","args":["　\u0009 "],"expect":""},
+{"fn":"length","args":["　\u0009　"],"expect":3},
+{"fn":"trim","args":["　\u0009　"],"expect":""},
+{"fn":"length","args":["　\u0009😀"],"expect":4},
+{"fn":"trim","args":["　\u0009😀"],"expect":"😀"},
+{"fn":"length","args":["　\u0009b"],"expect":3},
+{"fn":"trim","args":["　\u0009b"],"expect":"b"},
+{"fn":"length","args":["　\u000aa"],"expect":3},
+{"fn":"trim","args":["　\u000aa"],"expect":"a"},
+{"fn":"length","args":["　\u000a "],"expect":3},
+{"fn":"trim","args":["　\u000a "],"expect":""},
+{"fn":"length","args":["　\u000a\u0009"],"expect":3},
+{"fn":"trim","args":["　\u000a\u0009"],"expect":""},
+{"fn":"length","args":["　\u000a\u000a"],"expect":3},
+{"fn":"trim","args":["　\u000a\u000a"],"expect":""},
+{"fn":"length","args":["　\u000a "],"expect":3},
+{"fn":"trim","args":["　\u000a "],"expect":""},
+{"fn":"length","args":["　\u000a﻿"],"expect":3},
+{"fn":"trim","args":["　\u000a﻿"],"expect":""},
+{"fn":"length","args":["　\u000a "],"expect":3},
+{"fn":"trim","args":["　\u000a "],"expect":""},
+{"fn":"length","args":["　\u000a　"],"expect":3},
+{"fn":"trim","args":["　\u000a　"],"expect":""},
+{"fn":"length","args":["　\u000a😀"],"expect":4},
+{"fn":"trim","args":["　\u000a😀"],"expect":"😀"},
+{"fn":"length","args":["　\u000ab"],"expect":3},
+{"fn":"trim","args":["　\u000ab"],"expect":"b"},
+{"fn":"length","args":["　 a"],"expect":3},
+{"fn":"trim","args":["　 a"],"expect":"a"},
+{"fn":"length","args":["　  "],"expect":3},
+{"fn":"trim","args":["　  "],"expect":""},
+{"fn":"length","args":["　 \u0009"],"expect":3},
+{"fn":"trim","args":["　 \u0009"],"expect":""},
+{"fn":"length","args":["　 \u000a"],"expect":3},
+{"fn":"trim","args":["　 \u000a"],"expect":""},
+{"fn":"length","args":["　  "],"expect":3},
+{"fn":"trim","args":["　  "],"expect":""},
+{"fn":"length","args":["　 ﻿"],"expect":3},
+{"fn":"trim","args":["　 ﻿"],"expect":""},
+{"fn":"length","args":["　  "],"expect":3},
+{"fn":"trim","args":["　  "],"expect":""},
+{"fn":"length","args":["　 　"],"expect":3},
+{"fn":"trim","args":["　 　"],"expect":""},
+{"fn":"length","args":["　 😀"],"expect":4},
+{"fn":"trim","args":["　 😀"],"expect":"😀"},
+{"fn":"length","args":["　 b"],"expect":3},
+{"fn":"trim","args":["　 b"],"expect":"b"},
+{"fn":"length","args":["　﻿a"],"expect":3},
+{"fn":"trim","args":["　﻿a"],"expect":"a"},
+{"fn":"length","args":["　﻿ "],"expect":3},
+{"fn":"trim","args":["　﻿ "],"expect":""},
+{"fn":"length","args":["　﻿\u0009"],"expect":3},
+{"fn":"trim","args":["　﻿\u0009"],"expect":""},
+{"fn":"length","args":["　﻿\u000a"],"expect":3},
+{"fn":"trim","args":["　﻿\u000a"],"expect":""},
+{"fn":"length","args":["　﻿ "],"expect":3},
+{"fn":"trim","args":["　﻿ "],"expect":""},
+{"fn":"length","args":["　﻿﻿"],"expect":3},
+{"fn":"trim","args":["　﻿﻿"],"expect":""},
+{"fn":"length","args":["　﻿ "],"expect":3},
+{"fn":"trim","args":["　﻿ "],"expect":""},
+{"fn":"length","args":["　﻿　"],"expect":3},
+{"fn":"trim","args":["　﻿　"],"expect":""},
+{"fn":"length","args":["　﻿😀"],"expect":4},
+{"fn":"trim","args":["　﻿😀"],"expect":"😀"},
+{"fn":"length","args":["　﻿b"],"expect":3},
+{"fn":"trim","args":["　﻿b"],"expect":"b"},
+{"fn":"length","args":["　 a"],"expect":3},
+{"fn":"trim","args":["　 a"],"expect":"a"},
+{"fn":"length","args":["　  "],"expect":3},
+{"fn":"trim","args":["　  "],"expect":""},
+{"fn":"length","args":["　 \u0009"],"expect":3},
+{"fn":"trim","args":["　 \u0009"],"expect":""},
+{"fn":"length","args":["　 \u000a"],"expect":3},
+{"fn":"trim","args":["　 \u000a"],"expect":""},
+{"fn":"length","args":["　  "],"expect":3},
+{"fn":"trim","args":["　  "],"expect":""},
+{"fn":"length","args":["　 ﻿"],"expect":3},
+{"fn":"trim","args":["　 ﻿"],"expect":""},
+{"fn":"length","args":["　  "],"expect":3},
+{"fn":"trim","args":["　  "],"expect":""},
+{"fn":"length","args":["　 　"],"expect":3},
+{"fn":"trim","args":["　 　"],"expect":""},
+{"fn":"length","args":["　 😀"],"expect":4},
+{"fn":"trim","args":["　 😀"],"expect":"😀"},
+{"fn":"length","args":["　 b"],"expect":3},
+{"fn":"trim","args":["　 b"],"expect":"b"},
+{"fn":"length","args":["　　a"],"expect":3},
+{"fn":"trim","args":["　　a"],"expect":"a"},
+{"fn":"length","args":["　　 "],"expect":3},
+{"fn":"trim","args":["　　 "],"expect":""},
+{"fn":"length","args":["　　\u0009"],"expect":3},
+{"fn":"trim","args":["　　\u0009"],"expect":""},
+{"fn":"length","args":["　　\u000a"],"expect":3},
+{"fn":"trim","args":["　　\u000a"],"expect":""},
+{"fn":"length","args":["　　 "],"expect":3},
+{"fn":"trim","args":["　　 "],"expect":""},
+{"fn":"length","args":["　　﻿"],"expect":3},
+{"fn":"trim","args":["　　﻿"],"expect":""},
+{"fn":"length","args":["　　 "],"expect":3},
+{"fn":"trim","args":["　　 "],"expect":""},
+{"fn":"length","args":["　　　"],"expect":3},
+{"fn":"trim","args":["　　　"],"expect":""},
+{"fn":"length","args":["　　😀"],"expect":4},
+{"fn":"trim","args":["　　😀"],"expect":"😀"},
+{"fn":"length","args":["　　b"],"expect":3},
+{"fn":"trim","args":["　　b"],"expect":"b"},
+{"fn":"length","args":["　😀a"],"expect":4},
+{"fn":"trim","args":["　😀a"],"expect":"😀a"},
+{"fn":"length","args":["　😀 "],"expect":4},
+{"fn":"trim","args":["　😀 "],"expect":"😀"},
+{"fn":"length","args":["　😀\u0009"],"expect":4},
+{"fn":"trim","args":["　😀\u0009"],"expect":"😀"},
+{"fn":"length","args":["　😀\u000a"],"expect":4},
+{"fn":"trim","args":["　😀\u000a"],"expect":"😀"},
+{"fn":"length","args":["　😀 "],"expect":4},
+{"fn":"trim","args":["　😀 "],"expect":"😀"},
+{"fn":"length","args":["　😀﻿"],"expect":4},
+{"fn":"trim","args":["　😀﻿"],"expect":"😀"},
+{"fn":"length","args":["　😀 "],"expect":4},
+{"fn":"trim","args":["　😀 "],"expect":"😀"},
+{"fn":"length","args":["　😀　"],"expect":4},
+{"fn":"trim","args":["　😀　"],"expect":"😀"},
+{"fn":"length","args":["　😀😀"],"expect":5},
+{"fn":"trim","args":["　😀😀"],"expect":"😀😀"},
+{"fn":"length","args":["　😀b"],"expect":4},
+{"fn":"trim","args":["　😀b"],"expect":"😀b"},
+{"fn":"length","args":["　ba"],"expect":3},
+{"fn":"trim","args":["　ba"],"expect":"ba"},
+{"fn":"length","args":["　b "],"expect":3},
+{"fn":"trim","args":["　b "],"expect":"b"},
+{"fn":"length","args":["　b\u0009"],"expect":3},
+{"fn":"trim","args":["　b\u0009"],"expect":"b"},
+{"fn":"length","args":["　b\u000a"],"expect":3},
+{"fn":"trim","args":["　b\u000a"],"expect":"b"},
+{"fn":"length","args":["　b "],"expect":3},
+{"fn":"trim","args":["　b "],"expect":"b"},
+{"fn":"length","args":["　b﻿"],"expect":3},
+{"fn":"trim","args":["　b﻿"],"expect":"b"},
+{"fn":"length","args":["　b "],"expect":3},
+{"fn":"trim","args":["　b "],"expect":"b"},
+{"fn":"length","args":["　b　"],"expect":3},
+{"fn":"trim","args":["　b　"],"expect":"b"},
+{"fn":"length","args":["　b😀"],"expect":4},
+{"fn":"trim","args":["　b😀"],"expect":"b😀"},
+{"fn":"length","args":["　bb"],"expect":3},
+{"fn":"trim","args":["　bb"],"expect":"bb"},
+{"fn":"length","args":["😀aa"],"expect":4},
+{"fn":"trim","args":["😀aa"],"expect":"😀aa"},
+{"fn":"length","args":["😀a "],"expect":4},
+{"fn":"trim","args":["😀a "],"expect":"😀a"},
+{"fn":"length","args":["😀a\u0009"],"expect":4},
+{"fn":"trim","args":["😀a\u0009"],"expect":"😀a"},
+{"fn":"length","args":["😀a\u000a"],"expect":4},
+{"fn":"trim","args":["😀a\u000a"],"expect":"😀a"},
+{"fn":"length","args":["😀a "],"expect":4},
+{"fn":"trim","args":["😀a "],"expect":"😀a"},
+{"fn":"length","args":["😀a﻿"],"expect":4},
+{"fn":"trim","args":["😀a﻿"],"expect":"😀a"},
+{"fn":"length","args":["😀a "],"expect":4},
+{"fn":"trim","args":["😀a "],"expect":"😀a"},
+{"fn":"length","args":["😀a　"],"expect":4},
+{"fn":"trim","args":["😀a　"],"expect":"😀a"},
+{"fn":"length","args":["😀a😀"],"expect":5},
+{"fn":"trim","args":["😀a😀"],"expect":"😀a😀"},
+{"fn":"length","args":["😀ab"],"expect":4},
+{"fn":"trim","args":["😀ab"],"expect":"😀ab"},
+{"fn":"length","args":["😀 a"],"expect":4},
+{"fn":"trim","args":["😀 a"],"expect":"😀 a"},
+{"fn":"length","args":["😀  "],"expect":4},
+{"fn":"trim","args":["😀  "],"expect":"😀"},
+{"fn":"length","args":["😀 \u0009"],"expect":4},
+{"fn":"trim","args":["😀 \u0009"],"expect":"😀"},
+{"fn":"length","args":["😀 \u000a"],"expect":4},
+{"fn":"trim","args":["😀 \u000a"],"expect":"😀"},
+{"fn":"length","args":["😀  "],"expect":4},
+{"fn":"trim","args":["😀  "],"expect":"😀"},
+{"fn":"length","args":["😀 ﻿"],"expect":4},
+{"fn":"trim","args":["😀 ﻿"],"expect":"😀"},
+{"fn":"length","args":["😀  "],"expect":4},
+{"fn":"trim","args":["😀  "],"expect":"😀"},
+{"fn":"length","args":["😀 　"],"expect":4},
+{"fn":"trim","args":["😀 　"],"expect":"😀"},
+{"fn":"length","args":["😀 😀"],"expect":5},
+{"fn":"trim","args":["😀 😀"],"expect":"😀 😀"},
+{"fn":"length","args":["😀 b"],"expect":4},
+{"fn":"trim","args":["😀 b"],"expect":"😀 b"},
+{"fn":"length","args":["😀\u0009a"],"expect":4},
+{"fn":"trim","args":["😀\u0009a"],"expect":"😀\u0009a"},
+{"fn":"length","args":["😀\u0009 "],"expect":4},
+{"fn":"trim","args":["😀\u0009 "],"expect":"😀"},
+{"fn":"length","args":["😀\u0009\u0009"],"expect":4},
+{"fn":"trim","args":["😀\u0009\u0009"],"expect":"😀"},
+{"fn":"length","args":["😀\u0009\u000a"],"expect":4},
+{"fn":"trim","args":["😀\u0009\u000a"],"expect":"😀"},
+{"fn":"length","args":["😀\u0009 "],"expect":4},
+{"fn":"trim","args":["😀\u0009 "],"expect":"😀"},
+{"fn":"length","args":["😀\u0009﻿"],"expect":4},
+{"fn":"trim","args":["😀\u0009﻿"],"expect":"😀"},
+{"fn":"length","args":["😀\u0009 "],"expect":4},
+{"fn":"trim","args":["😀\u0009 "],"expect":"😀"},
+{"fn":"length","args":["😀\u0009　"],"expect":4},
+{"fn":"trim","args":["😀\u0009　"],"expect":"😀"},
+{"fn":"length","args":["😀\u0009😀"],"expect":5},
+{"fn":"trim","args":["😀\u0009😀"],"expect":"😀\u0009😀"},
+{"fn":"length","args":["😀\u0009b"],"expect":4},
+{"fn":"trim","args":["😀\u0009b"],"expect":"😀\u0009b"},
+{"fn":"length","args":["😀\u000aa"],"expect":4},
+{"fn":"trim","args":["😀\u000aa"],"expect":"😀\u000aa"},
+{"fn":"length","args":["😀\u000a "],"expect":4},
+{"fn":"trim","args":["😀\u000a "],"expect":"😀"},
+{"fn":"length","args":["😀\u000a\u0009"],"expect":4},
+{"fn":"trim","args":["😀\u000a\u0009"],"expect":"😀"},
+{"fn":"length","args":["😀\u000a\u000a"],"expect":4},
+{"fn":"trim","args":["😀\u000a\u000a"],"expect":"😀"},
+{"fn":"length","args":["😀\u000a "],"expect":4},
+{"fn":"trim","args":["😀\u000a "],"expect":"😀"},
+{"fn":"length","args":["😀\u000a﻿"],"expect":4},
+{"fn":"trim","args":["😀\u000a﻿"],"expect":"😀"},
+{"fn":"length","args":["😀\u000a "],"expect":4},
+{"fn":"trim","args":["😀\u000a "],"expect":"😀"},
+{"fn":"length","args":["😀\u000a　"],"expect":4},
+{"fn":"trim","args":["😀\u000a　"],"expect":"😀"},
+{"fn":"length","args":["😀\u000a😀"],"expect":5},
+{"fn":"trim","args":["😀\u000a😀"],"expect":"😀\u000a😀"},
+{"fn":"length","args":["😀\u000ab"],"expect":4},
+{"fn":"trim","args":["😀\u000ab"],"expect":"😀\u000ab"},
+{"fn":"length","args":["😀 a"],"expect":4},
+{"fn":"trim","args":["😀 a"],"expect":"😀 a"},
+{"fn":"length","args":["😀  "],"expect":4},
+{"fn":"trim","args":["😀  "],"expect":"😀"},
+{"fn":"length","args":["😀 \u0009"],"expect":4},
+{"fn":"trim","args":["😀 \u0009"],"expect":"😀"},
+{"fn":"length","args":["😀 \u000a"],"expect":4},
+{"fn":"trim","args":["😀 \u000a"],"expect":"😀"},
+{"fn":"length","args":["😀  "],"expect":4},
+{"fn":"trim","args":["😀  "],"expect":"😀"},
+{"fn":"length","args":["😀 ﻿"],"expect":4},
+{"fn":"trim","args":["😀 ﻿"],"expect":"😀"},
+{"fn":"length","args":["😀  "],"expect":4},
+{"fn":"trim","args":["😀  "],"expect":"😀"},
+{"fn":"length","args":["😀 　"],"expect":4},
+{"fn":"trim","args":["😀 　"],"expect":"😀"},
+{"fn":"length","args":["😀 😀"],"expect":5},
+{"fn":"trim","args":["😀 😀"],"expect":"😀 😀"},
+{"fn":"length","args":["😀 b"],"expect":4},
+{"fn":"trim","args":["😀 b"],"expect":"😀 b"},
+{"fn":"length","args":["😀﻿a"],"expect":4},
+{"fn":"trim","args":["😀﻿a"],"expect":"😀﻿a"},
+{"fn":"length","args":["😀﻿ "],"expect":4},
+{"fn":"trim","args":["😀﻿ "],"expect":"😀"},
+{"fn":"length","args":["😀﻿\u0009"],"expect":4},
+{"fn":"trim","args":["😀﻿\u0009"],"expect":"😀"},
+{"fn":"length","args":["😀﻿\u000a"],"expect":4},
+{"fn":"trim","args":["😀﻿\u000a"],"expect":"😀"},
+{"fn":"length","args":["😀﻿ "],"expect":4},
+{"fn":"trim","args":["😀﻿ "],"expect":"😀"},
+{"fn":"length","args":["😀﻿﻿"],"expect":4},
+{"fn":"trim","args":["😀﻿﻿"],"expect":"😀"},
+{"fn":"length","args":["😀﻿ "],"expect":4},
+{"fn":"trim","args":["😀﻿ "],"expect":"😀"},
+{"fn":"length","args":["😀﻿　"],"expect":4},
+{"fn":"trim","args":["😀﻿　"],"expect":"😀"},
+{"fn":"length","args":["😀﻿😀"],"expect":5},
+{"fn":"trim","args":["😀﻿😀"],"expect":"😀﻿😀"},
+{"fn":"length","args":["😀﻿b"],"expect":4},
+{"fn":"trim","args":["😀﻿b"],"expect":"😀﻿b"},
+{"fn":"length","args":["😀 a"],"expect":4},
+{"fn":"trim","args":["😀 a"],"expect":"😀 a"},
+{"fn":"length","args":["😀  "],"expect":4},
+{"fn":"trim","args":["😀  "],"expect":"😀"},
+{"fn":"length","args":["😀 \u0009"],"expect":4},
+{"fn":"trim","args":["😀 \u0009"],"expect":"😀"},
+{"fn":"length","args":["😀 \u000a"],"expect":4},
+{"fn":"trim","args":["😀 \u000a"],"expect":"😀"},
+{"fn":"length","args":["😀  "],"expect":4},
+{"fn":"trim","args":["😀  "],"expect":"😀"},
+{"fn":"length","args":["😀 ﻿"],"expect":4},
+{"fn":"trim","args":["😀 ﻿"],"expect":"😀"},
+{"fn":"length","args":["😀  "],"expect":4},
+{"fn":"trim","args":["😀  "],"expect":"😀"},
+{"fn":"length","args":["😀 　"],"expect":4},
+{"fn":"trim","args":["😀 　"],"expect":"😀"},
+{"fn":"length","args":["😀 😀"],"expect":5},
+{"fn":"trim","args":["😀 😀"],"expect":"😀 😀"},
+{"fn":"length","args":["😀 b"],"expect":4},
+{"fn":"trim","args":["😀 b"],"expect":"😀 b"},
+{"fn":"length","args":["😀　a"],"expect":4},
+{"fn":"trim","args":["😀　a"],"expect":"😀　a"},
+{"fn":"length","args":["😀　 "],"expect":4},
+{"fn":"trim","args":["😀　 "],"expect":"😀"},
+{"fn":"length","args":["😀　\u0009"],"expect":4},
+{"fn":"trim","args":["😀　\u0009"],"expect":"😀"},
+{"fn":"length","args":["😀　\u000a"],"expect":4},
+{"fn":"trim","args":["😀　\u000a"],"expect":"😀"},
+{"fn":"length","args":["😀　 "],"expect":4},
+{"fn":"trim","args":["😀　 "],"expect":"😀"},
+{"fn":"length","args":["😀　﻿"],"expect":4},
+{"fn":"trim","args":["😀　﻿"],"expect":"😀"},
+{"fn":"length","args":["😀　 "],"expect":4},
+{"fn":"trim","args":["😀　 "],"expect":"😀"},
+{"fn":"length","args":["😀　　"],"expect":4},
+{"fn":"trim","args":["😀　　"],"expect":"😀"},
+{"fn":"length","args":["😀　😀"],"expect":5},
+{"fn":"trim","args":["😀　😀"],"expect":"😀　😀"},
+{"fn":"length","args":["😀　b"],"expect":4},
+{"fn":"trim","args":["😀　b"],"expect":"😀　b"},
+{"fn":"length","args":["😀😀a"],"expect":5},
+{"fn":"trim","args":["😀😀a"],"expect":"😀😀a"},
+{"fn":"length","args":["😀😀 "],"expect":5},
+{"fn":"trim","args":["😀😀 "],"expect":"😀😀"},
+{"fn":"length","args":["😀😀\u0009"],"expect":5},
+{"fn":"trim","args":["😀😀\u0009"],"expect":"😀😀"},
+{"fn":"length","args":["😀😀\u000a"],"expect":5},
+{"fn":"trim","args":["😀😀\u000a"],"expect":"😀😀"},
+{"fn":"length","args":["😀😀 "],"expect":5},
+{"fn":"trim","args":["😀😀 "],"expect":"😀😀"},
+{"fn":"length","args":["😀😀﻿"],"expect":5},
+{"fn":"trim","args":["😀😀﻿"],"expect":"😀😀"},
+{"fn":"length","args":["😀😀 "],"expect":5},
+{"fn":"trim","args":["😀😀 "],"expect":"😀😀"},
+{"fn":"length","args":["😀😀　"],"expect":5},
+{"fn":"trim","args":["😀😀　"],"expect":"😀😀"},
+{"fn":"length","args":["😀😀😀"],"expect":6},
+{"fn":"trim","args":["😀😀😀"],"expect":"😀😀😀"},
+{"fn":"length","args":["😀😀b"],"expect":5},
+{"fn":"trim","args":["😀😀b"],"expect":"😀😀b"},
+{"fn":"length","args":["😀ba"],"expect":4},
+{"fn":"trim","args":["😀ba"],"expect":"😀ba"},
+{"fn":"length","args":["😀b "],"expect":4},
+{"fn":"trim","args":["😀b "],"expect":"😀b"},
+{"fn":"length","args":["😀b\u0009"],"expect":4},
+{"fn":"trim","args":["😀b\u0009"],"expect":"😀b"},
+{"fn":"length","args":["😀b\u000a"],"expect":4},
+{"fn":"trim","args":["😀b\u000a"],"expect":"😀b"},
+{"fn":"length","args":["😀b "],"expect":4},
+{"fn":"trim","args":["😀b "],"expect":"😀b"},
+{"fn":"length","args":["😀b﻿"],"expect":4},
+{"fn":"trim","args":["😀b﻿"],"expect":"😀b"},
+{"fn":"length","args":["😀b "],"expect":4},
+{"fn":"trim","args":["😀b "],"expect":"😀b"},
+{"fn":"length","args":["😀b　"],"expect":4},
+{"fn":"trim","args":["😀b　"],"expect":"😀b"},
+{"fn":"length","args":["😀b😀"],"expect":5},
+{"fn":"trim","args":["😀b😀"],"expect":"😀b😀"},
+{"fn":"length","args":["😀bb"],"expect":4},
+{"fn":"trim","args":["😀bb"],"expect":"😀bb"},
+{"fn":"length","args":["baa"],"expect":3},
+{"fn":"trim","args":["baa"],"expect":"baa"},
+{"fn":"length","args":["ba "],"expect":3},
+{"fn":"trim","args":["ba "],"expect":"ba"},
+{"fn":"length","args":["ba\u0009"],"expect":3},
+{"fn":"trim","args":["ba\u0009"],"expect":"ba"},
+{"fn":"length","args":["ba\u000a"],"expect":3},
+{"fn":"trim","args":["ba\u000a"],"expect":"ba"},
+{"fn":"length","args":["ba "],"expect":3},
+{"fn":"trim","args":["ba "],"expect":"ba"},
+{"fn":"length","args":["ba﻿"],"expect":3},
+{"fn":"trim","args":["ba﻿"],"expect":"ba"},
+{"fn":"length","args":["ba "],"expect":3},
+{"fn":"trim","args":["ba "],"expect":"ba"},
+{"fn":"length","args":["ba　"],"expect":3},
+{"fn":"trim","args":["ba　"],"expect":"ba"},
+{"fn":"length","args":["ba😀"],"expect":4},
+{"fn":"trim","args":["ba😀"],"expect":"ba😀"},
+{"fn":"length","args":["bab"],"expect":3},
+{"fn":"trim","args":["bab"],"expect":"bab"},
+{"fn":"length","args":["b a"],"expect":3},
+{"fn":"trim","args":["b a"],"expect":"b a"},
+{"fn":"length","args":["b  "],"expect":3},
+{"fn":"trim","args":["b  "],"expect":"b"},
+{"fn":"length","args":["b \u0009"],"expect":3},
+{"fn":"trim","args":["b \u0009"],"expect":"b"},
+{"fn":"length","args":["b \u000a"],"expect":3},
+{"fn":"trim","args":["b \u000a"],"expect":"b"},
+{"fn":"length","args":["b  "],"expect":3},
+{"fn":"trim","args":["b  "],"expect":"b"},
+{"fn":"length","args":["b ﻿"],"expect":3},
+{"fn":"trim","args":["b ﻿"],"expect":"b"},
+{"fn":"length","args":["b  "],"expect":3},
+{"fn":"trim","args":["b  "],"expect":"b"},
+{"fn":"length","args":["b 　"],"expect":3},
+{"fn":"trim","args":["b 　"],"expect":"b"},
+{"fn":"length","args":["b 😀"],"expect":4},
+{"fn":"trim","args":["b 😀"],"expect":"b 😀"},
+{"fn":"length","args":["b b"],"expect":3},
+{"fn":"trim","args":["b b"],"expect":"b b"},
+{"fn":"length","args":["b\u0009a"],"expect":3},
+{"fn":"trim","args":["b\u0009a"],"expect":"b\u0009a"},
+{"fn":"length","args":["b\u0009 "],"expect":3},
+{"fn":"trim","args":["b\u0009 "],"expect":"b"},
+{"fn":"length","args":["b\u0009\u0009"],"expect":3},
+{"fn":"trim","args":["b\u0009\u0009"],"expect":"b"},
+{"fn":"length","args":["b\u0009\u000a"],"expect":3},
+{"fn":"trim","args":["b\u0009\u000a"],"expect":"b"},
+{"fn":"length","args":["b\u0009 "],"expect":3},
+{"fn":"trim","args":["b\u0009 "],"expect":"b"},
+{"fn":"length","args":["b\u0009﻿"],"expect":3},
+{"fn":"trim","args":["b\u0009﻿"],"expect":"b"},
+{"fn":"length","args":["b\u0009 "],"expect":3},
+{"fn":"trim","args":["b\u0009 "],"expect":"b"},
+{"fn":"length","args":["b\u0009　"],"expect":3},
+{"fn":"trim","args":["b\u0009　"],"expect":"b"},
+{"fn":"length","args":["b\u0009😀"],"expect":4},
+{"fn":"trim","args":["b\u0009😀"],"expect":"b\u0009😀"},
+{"fn":"length","args":["b\u0009b"],"expect":3},
+{"fn":"trim","args":["b\u0009b"],"expect":"b\u0009b"},
+{"fn":"length","args":["b\u000aa"],"expect":3},
+{"fn":"trim","args":["b\u000aa"],"expect":"b\u000aa"},
+{"fn":"length","args":["b\u000a "],"expect":3},
+{"fn":"trim","args":["b\u000a "],"expect":"b"},
+{"fn":"length","args":["b\u000a\u0009"],"expect":3},
+{"fn":"trim","args":["b\u000a\u0009"],"expect":"b"},
+{"fn":"length","args":["b\u000a\u000a"],"expect":3},
+{"fn":"trim","args":["b\u000a\u000a"],"expect":"b"},
+{"fn":"length","args":["b\u000a "],"expect":3},
+{"fn":"trim","args":["b\u000a "],"expect":"b"},
+{"fn":"length","args":["b\u000a﻿"],"expect":3},
+{"fn":"trim","args":["b\u000a﻿"],"expect":"b"},
+{"fn":"length","args":["b\u000a "],"expect":3},
+{"fn":"trim","args":["b\u000a "],"expect":"b"},
+{"fn":"length","args":["b\u000a　"],"expect":3},
+{"fn":"trim","args":["b\u000a　"],"expect":"b"},
+{"fn":"length","args":["b\u000a😀"],"expect":4},
+{"fn":"trim","args":["b\u000a😀"],"expect":"b\u000a😀"},
+{"fn":"length","args":["b\u000ab"],"expect":3},
+{"fn":"trim","args":["b\u000ab"],"expect":"b\u000ab"},
+{"fn":"length","args":["b a"],"expect":3},
+{"fn":"trim","args":["b a"],"expect":"b a"},
+{"fn":"length","args":["b  "],"expect":3},
+{"fn":"trim","args":["b  "],"expect":"b"},
+{"fn":"length","args":["b \u0009"],"expect":3},
+{"fn":"trim","args":["b \u0009"],"expect":"b"},
+{"fn":"length","args":["b \u000a"],"expect":3},
+{"fn":"trim","args":["b \u000a"],"expect":"b"},
+{"fn":"length","args":["b  "],"expect":3},
+{"fn":"trim","args":["b  "],"expect":"b"},
+{"fn":"length","args":["b ﻿"],"expect":3},
+{"fn":"trim","args":["b ﻿"],"expect":"b"},
+{"fn":"length","args":["b  "],"expect":3},
+{"fn":"trim","args":["b  "],"expect":"b"},
+{"fn":"length","args":["b 　"],"expect":3},
+{"fn":"trim","args":["b 　"],"expect":"b"},
+{"fn":"length","args":["b 😀"],"expect":4},
+{"fn":"trim","args":["b 😀"],"expect":"b 😀"},
+{"fn":"length","args":["b b"],"expect":3},
+{"fn":"trim","args":["b b"],"expect":"b b"},
+{"fn":"length","args":["b﻿a"],"expect":3},
+{"fn":"trim","args":["b﻿a"],"expect":"b﻿a"},
+{"fn":"length","args":["b﻿ "],"expect":3},
+{"fn":"trim","args":["b﻿ "],"expect":"b"},
+{"fn":"length","args":["b﻿\u0009"],"expect":3},
+{"fn":"trim","args":["b﻿\u0009"],"expect":"b"},
+{"fn":"length","args":["b﻿\u000a"],"expect":3},
+{"fn":"trim","args":["b﻿\u000a"],"expect":"b"},
+{"fn":"length","args":["b﻿ "],"expect":3},
+{"fn":"trim","args":["b﻿ "],"expect":"b"},
+{"fn":"length","args":["b﻿﻿"],"expect":3},
+{"fn":"trim","args":["b﻿﻿"],"expect":"b"},
+{"fn":"length","args":["b﻿ "],"expect":3},
+{"fn":"trim","args":["b﻿ "],"expect":"b"},
+{"fn":"length","args":["b﻿　"],"expect":3},
+{"fn":"trim","args":["b﻿　"],"expect":"b"},
+{"fn":"length","args":["b﻿😀"],"expect":4},
+{"fn":"trim","args":["b﻿😀"],"expect":"b﻿😀"},
+{"fn":"length","args":["b﻿b"],"expect":3},
+{"fn":"trim","args":["b﻿b"],"expect":"b﻿b"},
+{"fn":"length","args":["b a"],"expect":3},
+{"fn":"trim","args":["b a"],"expect":"b a"},
+{"fn":"length","args":["b  "],"expect":3},
+{"fn":"trim","args":["b  "],"expect":"b"},
+{"fn":"length","args":["b \u0009"],"expect":3},
+{"fn":"trim","args":["b \u0009"],"expect":"b"},
+{"fn":"length","args":["b \u000a"],"expect":3},
+{"fn":"trim","args":["b \u000a"],"expect":"b"},
+{"fn":"length","args":["b  "],"expect":3},
+{"fn":"trim","args":["b  "],"expect":"b"},
+{"fn":"length","args":["b ﻿"],"expect":3},
+{"fn":"trim","args":["b ﻿"],"expect":"b"},
+{"fn":"length","args":["b  "],"expect":3},
+{"fn":"trim","args":["b  "],"expect":"b"},
+{"fn":"length","args":["b 　"],"expect":3},
+{"fn":"trim","args":["b 　"],"expect":"b"},
+{"fn":"length","args":["b 😀"],"expect":4},
+{"fn":"trim","args":["b 😀"],"expect":"b 😀"},
+{"fn":"length","args":["b b"],"expect":3},
+{"fn":"trim","args":["b b"],"expect":"b b"},
+{"fn":"length","args":["b　a"],"expect":3},
+{"fn":"trim","args":["b　a"],"expect":"b　a"},
+{"fn":"length","args":["b　 "],"expect":3},
+{"fn":"trim","args":["b　 "],"expect":"b"},
+{"fn":"length","args":["b　\u0009"],"expect":3},
+{"fn":"trim","args":["b　\u0009"],"expect":"b"},
+{"fn":"length","args":["b　\u000a"],"expect":3},
+{"fn":"trim","args":["b　\u000a"],"expect":"b"},
+{"fn":"length","args":["b　 "],"expect":3},
+{"fn":"trim","args":["b　 "],"expect":"b"},
+{"fn":"length","args":["b　﻿"],"expect":3},
+{"fn":"trim","args":["b　﻿"],"expect":"b"},
+{"fn":"length","args":["b　 "],"expect":3},
+{"fn":"trim","args":["b　 "],"expect":"b"},
+{"fn":"length","args":["b　　"],"expect":3},
+{"fn":"trim","args":["b　　"],"expect":"b"},
+{"fn":"length","args":["b　😀"],"expect":4},
+{"fn":"trim","args":["b　😀"],"expect":"b　😀"},
+{"fn":"length","args":["b　b"],"expect":3},
+{"fn":"trim","args":["b　b"],"expect":"b　b"},
+{"fn":"length","args":["b😀a"],"expect":4},
+{"fn":"trim","args":["b😀a"],"expect":"b😀a"},
+{"fn":"length","args":["b😀 "],"expect":4},
+{"fn":"trim","args":["b😀 "],"expect":"b😀"},
+{"fn":"length","args":["b😀\u0009"],"expect":4},
+{"fn":"trim","args":["b😀\u0009"],"expect":"b😀"},
+{"fn":"length","args":["b😀\u000a"],"expect":4},
+{"fn":"trim","args":["b😀\u000a"],"expect":"b😀"},
+{"fn":"length","args":["b😀 "],"expect":4},
+{"fn":"trim","args":["b😀 "],"expect":"b😀"},
+{"fn":"length","args":["b😀﻿"],"expect":4},
+{"fn":"trim","args":["b😀﻿"],"expect":"b😀"},
+{"fn":"length","args":["b😀 "],"expect":4},
+{"fn":"trim","args":["b😀 "],"expect":"b😀"},
+{"fn":"length","args":["b😀　"],"expect":4},
+{"fn":"trim","args":["b😀　"],"expect":"b😀"},
+{"fn":"length","args":["b😀😀"],"expect":5},
+{"fn":"trim","args":["b😀😀"],"expect":"b😀😀"},
+{"fn":"length","args":["b😀b"],"expect":4},
+{"fn":"trim","args":["b😀b"],"expect":"b😀b"},
+{"fn":"length","args":["bba"],"expect":3},
+{"fn":"trim","args":["bba"],"expect":"bba"},
+{"fn":"length","args":["bb "],"expect":3},
+{"fn":"trim","args":["bb "],"expect":"bb"},
+{"fn":"length","args":["bb\u0009"],"expect":3},
+{"fn":"trim","args":["bb\u0009"],"expect":"bb"},
+{"fn":"length","args":["bb\u000a"],"expect":3},
+{"fn":"trim","args":["bb\u000a"],"expect":"bb"},
+{"fn":"length","args":["bb "],"expect":3},
+{"fn":"trim","args":["bb "],"expect":"bb"},
+{"fn":"length","args":["bb﻿"],"expect":3},
+{"fn":"trim","args":["bb﻿"],"expect":"bb"},
+{"fn":"length","args":["bb "],"expect":3},
+{"fn":"trim","args":["bb "],"expect":"bb"},
+{"fn":"length","args":["bb　"],"expect":3},
+{"fn":"trim","args":["bb　"],"expect":"bb"},
+{"fn":"length","args":["bb😀"],"expect":4},
+{"fn":"trim","args":["bb😀"],"expect":"bb😀"},
+{"fn":"length","args":["bbb"],"expect":3},
+{"fn":"trim","args":["bbb"],"expect":"bbb"},
+{"fn":"length","args":["\u000b"],"expect":1},
+{"fn":"trim","args":["\u000b"],"expect":""},
+{"fn":"length","args":["a\u000bb"],"expect":3},
+{"fn":"trim","args":["a\u000bb"],"expect":"a\u000bb"},
+{"fn":"length","args":["\u000ba\u000b"],"expect":3},
+{"fn":"trim","args":["\u000ba\u000b"],"expect":"a"},
+{"fn":"length","args":["\u000c"],"expect":1},
+{"fn":"trim","args":["\u000c"],"expect":""},
+{"fn":"length","args":["a\u000cb"],"expect":3},
+{"fn":"trim","args":["a\u000cb"],"expect":"a\u000cb"},
+{"fn":"length","args":["\u000ca\u000c"],"expect":3},
+{"fn":"trim","args":["\u000ca\u000c"],"expect":"a"},
+{"fn":"length","args":["\u000d"],"expect":1},
+{"fn":"trim","args":["\u000d"],"expect":""},
+{"fn":"length","args":["a\u000db"],"expect":3},
+{"fn":"trim","args":["a\u000db"],"expect":"a\u000db"},
+{"fn":"length","args":["\u000da\u000d"],"expect":3},
+{"fn":"trim","args":["\u000da\u000d"],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[" "],"expect":1},
+{"fn":"trim","args":[" "],"expect":""},
+{"fn":"length","args":["a b"],"expect":3},
+{"fn":"trim","args":["a b"],"expect":"a b"},
+{"fn":"length","args":[" a "],"expect":3},
+{"fn":"trim","args":[" a "],"expect":"a"},
+{"fn":"length","args":[""],"expect":1},
+{"fn":"trim","args":[""],"expect":""},
+{"fn":"length","args":["ab"],"expect":3},
+{"fn":"trim","args":["ab"],"expect":"ab"},
+{"fn":"length","args":["a"],"expect":3},
+{"fn":"trim","args":["a"],"expect":"a"},
+{"fn":"length","args":["᠎"],"expect":1},
+{"fn":"trim","args":["᠎"],"expect":"᠎"},
+{"fn":"length","args":["a᠎b"],"expect":3},
+{"fn":"trim","args":["a᠎b"],"expect":"a᠎b"},
+{"fn":"length","args":["᠎a᠎"],"expect":3},
+{"fn":"trim","args":["᠎a᠎"],"expect":"᠎a᠎"},
+{"fn":"length","args":["​"],"expect":1},
+{"fn":"trim","args":["​"],"expect":"​"},
+{"fn":"length","args":["a​b"],"expect":3},
+{"fn":"trim","args":["a​b"],"expect":"a​b"},
+{"fn":"length","args":["​a​"],"expect":3},
+{"fn":"trim","args":["​a​"],"expect":"​a​"},
+{"fn":"length","args":["é"],"expect":1},
+{"fn":"trim","args":["é"],"expect":"é"},
+{"fn":"length","args":["aéb"],"expect":3},
+{"fn":"trim","args":["aéb"],"expect":"aéb"},
+{"fn":"length","args":["éaé"],"expect":3},
+{"fn":"trim","args":["éaé"],"expect":"éaé"},
+{"fn":"length","args":["中"],"expect":1},
+{"fn":"trim","args":["中"],"expect":"中"},
+{"fn":"length","args":["a中b"],"expect":3},
+{"fn":"trim","args":["a中b"],"expect":"a中b"},
+{"fn":"length","args":["中a中"],"expect":3},
+{"fn":"trim","args":["中a中"],"expect":"中a中"},
+{"fn":"startsWith","args":["",""],"expect":true},
+{"fn":"startsWith","args":["","a"],"expect":false},
+{"fn":"startsWith","args":["","b"],"expect":false},
+{"fn":"startsWith","args":["","😀"],"expect":false},
+{"fn":"startsWith","args":["","😁"],"expect":false},
+{"fn":"startsWith","args":["","aa"],"expect":false},
+{"fn":"startsWith","args":["","ab"],"expect":false},
+{"fn":"startsWith","args":["","a😀"],"expect":false},
+{"fn":"startsWith","args":["","a😁"],"expect":false},
+{"fn":"startsWith","args":["","ba"],"expect":false},
+{"fn":"startsWith","args":["","bb"],"expect":false},
+{"fn":"startsWith","args":["","b😀"],"expect":false},
+{"fn":"startsWith","args":["","b😁"],"expect":false},
+{"fn":"startsWith","args":["","😀a"],"expect":false},
+{"fn":"startsWith","args":["","😀b"],"expect":false},
+{"fn":"startsWith","args":["","😀😀"],"expect":false},
+{"fn":"startsWith","args":["","😀😁"],"expect":false},
+{"fn":"startsWith","args":["","😁a"],"expect":false},
+{"fn":"startsWith","args":["","😁b"],"expect":false},
+{"fn":"startsWith","args":["","😁😀"],"expect":false},
+{"fn":"startsWith","args":["","😁😁"],"expect":false},
+{"fn":"startsWith","args":["a",""],"expect":true},
+{"fn":"startsWith","args":["a","a"],"expect":true},
+{"fn":"startsWith","args":["a","b"],"expect":false},
+{"fn":"startsWith","args":["a","😀"],"expect":false},
+{"fn":"startsWith","args":["a","😁"],"expect":false},
+{"fn":"startsWith","args":["a","aa"],"expect":false},
+{"fn":"startsWith","args":["a","ab"],"expect":false},
+{"fn":"startsWith","args":["a","a😀"],"expect":false},
+{"fn":"startsWith","args":["a","a😁"],"expect":false},
+{"fn":"startsWith","args":["a","ba"],"expect":false},
+{"fn":"startsWith","args":["a","bb"],"expect":false},
+{"fn":"startsWith","args":["a","b😀"],"expect":false},
+{"fn":"startsWith","args":["a","b😁"],"expect":false},
+{"fn":"startsWith","args":["a","😀a"],"expect":false},
+{"fn":"startsWith","args":["a","😀b"],"expect":false},
+{"fn":"startsWith","args":["a","😀😀"],"expect":false},
+{"fn":"startsWith","args":["a","😀😁"],"expect":false},
+{"fn":"startsWith","args":["a","😁a"],"expect":false},
+{"fn":"startsWith","args":["a","😁b"],"expect":false},
+{"fn":"startsWith","args":["a","😁😀"],"expect":false},
+{"fn":"startsWith","args":["a","😁😁"],"expect":false},
+{"fn":"startsWith","args":["b",""],"expect":true},
+{"fn":"startsWith","args":["b","a"],"expect":false},
+{"fn":"startsWith","args":["b","b"],"expect":true},
+{"fn":"startsWith","args":["b","😀"],"expect":false},
+{"fn":"startsWith","args":["b","😁"],"expect":false},
+{"fn":"startsWith","args":["b","aa"],"expect":false},
+{"fn":"startsWith","args":["b","ab"],"expect":false},
+{"fn":"startsWith","args":["b","a😀"],"expect":false},
+{"fn":"startsWith","args":["b","a😁"],"expect":false},
+{"fn":"startsWith","args":["b","ba"],"expect":false},
+{"fn":"startsWith","args":["b","bb"],"expect":false},
+{"fn":"startsWith","args":["b","b😀"],"expect":false},
+{"fn":"startsWith","args":["b","b😁"],"expect":false},
+{"fn":"startsWith","args":["b","😀a"],"expect":false},
+{"fn":"startsWith","args":["b","😀b"],"expect":false},
+{"fn":"startsWith","args":["b","😀😀"],"expect":false},
+{"fn":"startsWith","args":["b","😀😁"],"expect":false},
+{"fn":"startsWith","args":["b","😁a"],"expect":false},
+{"fn":"startsWith","args":["b","😁b"],"expect":false},
+{"fn":"startsWith","args":["b","😁😀"],"expect":false},
+{"fn":"startsWith","args":["b","😁😁"],"expect":false},
+{"fn":"startsWith","args":["😀",""],"expect":true},
+{"fn":"startsWith","args":["😀","a"],"expect":false},
+{"fn":"startsWith","args":["😀","b"],"expect":false},
+{"fn":"startsWith","args":["😀","😀"],"expect":true},
+{"fn":"startsWith","args":["😀","😁"],"expect":false},
+{"fn":"startsWith","args":["😀","aa"],"expect":false},
+{"fn":"startsWith","args":["😀","ab"],"expect":false},
+{"fn":"startsWith","args":["😀","a😀"],"expect":false},
+{"fn":"startsWith","args":["😀","a😁"],"expect":false},
+{"fn":"startsWith","args":["😀","ba"],"expect":false},
+{"fn":"startsWith","args":["😀","bb"],"expect":false},
+{"fn":"startsWith","args":["😀","b😀"],"expect":false},
+{"fn":"startsWith","args":["😀","b😁"],"expect":false},
+{"fn":"startsWith","args":["😀","😀a"],"expect":false},
+{"fn":"startsWith","args":["😀","😀b"],"expect":false},
+{"fn":"startsWith","args":["😀","😀😀"],"expect":false},
+{"fn":"startsWith","args":["😀","😀😁"],"expect":false},
+{"fn":"startsWith","args":["😀","😁a"],"expect":false},
+{"fn":"startsWith","args":["😀","😁b"],"expect":false},
+{"fn":"startsWith","args":["😀","😁😀"],"expect":false},
+{"fn":"startsWith","args":["😀","😁😁"],"expect":false},
+{"fn":"startsWith","args":["😁",""],"expect":true},
+{"fn":"startsWith","args":["😁","a"],"expect":false},
+{"fn":"startsWith","args":["😁","b"],"expect":false},
+{"fn":"startsWith","args":["😁","😀"],"expect":false},
+{"fn":"startsWith","args":["😁","😁"],"expect":true},
+{"fn":"startsWith","args":["😁","aa"],"expect":false},
+{"fn":"startsWith","args":["😁","ab"],"expect":false},
+{"fn":"startsWith","args":["😁","a😀"],"expect":false},
+{"fn":"startsWith","args":["😁","a😁"],"expect":false},
+{"fn":"startsWith","args":["😁","ba"],"expect":false},
+{"fn":"startsWith","args":["😁","bb"],"expect":false},
+{"fn":"startsWith","args":["😁","b😀"],"expect":false},
+{"fn":"startsWith","args":["😁","b😁"],"expect":false},
+{"fn":"startsWith","args":["😁","😀a"],"expect":false},
+{"fn":"startsWith","args":["😁","😀b"],"expect":false},
+{"fn":"startsWith","args":["😁","😀😀"],"expect":false},
+{"fn":"startsWith","args":["😁","😀😁"],"expect":false},
+{"fn":"startsWith","args":["😁","😁a"],"expect":false},
+{"fn":"startsWith","args":["😁","😁b"],"expect":false},
+{"fn":"startsWith","args":["😁","😁😀"],"expect":false},
+{"fn":"startsWith","args":["😁","😁😁"],"expect":false},
+{"fn":"startsWith","args":["aa",""],"expect":true},
+{"fn":"startsWith","args":["aa","a"],"expect":true},
+{"fn":"startsWith","args":["aa","b"],"expect":false},
+{"fn":"startsWith","args":["aa","😀"],"expect":false},
+{"fn":"startsWith","args":["aa","😁"],"expect":false},
+{"fn":"startsWith","args":["aa","aa"],"expect":true},
+{"fn":"startsWith","args":["aa","ab"],"expect":false},
+{"fn":"startsWith","args":["aa","a😀"],"expect":false},
+{"fn":"startsWith","args":["aa","a😁"],"expect":false},
+{"fn":"startsWith","args":["aa","ba"],"expect":false},
+{"fn":"startsWith","args":["aa","bb"],"expect":false},
+{"fn":"startsWith","args":["aa","b😀"],"expect":false},
+{"fn":"startsWith","args":["aa","b😁"],"expect":false},
+{"fn":"startsWith","args":["aa","😀a"],"expect":false},
+{"fn":"startsWith","args":["aa","😀b"],"expect":false},
+{"fn":"startsWith","args":["aa","😀😀"],"expect":false},
+{"fn":"startsWith","args":["aa","😀😁"],"expect":false},
+{"fn":"startsWith","args":["aa","😁a"],"expect":false},
+{"fn":"startsWith","args":["aa","😁b"],"expect":false},
+{"fn":"startsWith","args":["aa","😁😀"],"expect":false},
+{"fn":"startsWith","args":["aa","😁😁"],"expect":false},
+{"fn":"startsWith","args":["ab",""],"expect":true},
+{"fn":"startsWith","args":["ab","a"],"expect":true},
+{"fn":"startsWith","args":["ab","b"],"expect":false},
+{"fn":"startsWith","args":["ab","😀"],"expect":false},
+{"fn":"startsWith","args":["ab","😁"],"expect":false},
+{"fn":"startsWith","args":["ab","aa"],"expect":false},
+{"fn":"startsWith","args":["ab","ab"],"expect":true},
+{"fn":"startsWith","args":["ab","a😀"],"expect":false},
+{"fn":"startsWith","args":["ab","a😁"],"expect":false},
+{"fn":"startsWith","args":["ab","ba"],"expect":false},
+{"fn":"startsWith","args":["ab","bb"],"expect":false},
+{"fn":"startsWith","args":["ab","b😀"],"expect":false},
+{"fn":"startsWith","args":["ab","b😁"],"expect":false},
+{"fn":"startsWith","args":["ab","😀a"],"expect":false},
+{"fn":"startsWith","args":["ab","😀b"],"expect":false},
+{"fn":"startsWith","args":["ab","😀😀"],"expect":false},
+{"fn":"startsWith","args":["ab","😀😁"],"expect":false},
+{"fn":"startsWith","args":["ab","😁a"],"expect":false},
+{"fn":"startsWith","args":["ab","😁b"],"expect":false},
+{"fn":"startsWith","args":["ab","😁😀"],"expect":false},
+{"fn":"startsWith","args":["ab","😁😁"],"expect":false},
+{"fn":"startsWith","args":["a😀",""],"expect":true},
+{"fn":"startsWith","args":["a😀","a"],"expect":true},
+{"fn":"startsWith","args":["a😀","b"],"expect":false},
+{"fn":"startsWith","args":["a😀","😀"],"expect":false},
+{"fn":"startsWith","args":["a😀","😁"],"expect":false},
+{"fn":"startsWith","args":["a😀","aa"],"expect":false},
+{"fn":"startsWith","args":["a😀","ab"],"expect":false},
+{"fn":"startsWith","args":["a😀","a😀"],"expect":true},
+{"fn":"startsWith","args":["a😀","a😁"],"expect":false},
+{"fn":"startsWith","args":["a😀","ba"],"expect":false},
+{"fn":"startsWith","args":["a😀","bb"],"expect":false},
+{"fn":"startsWith","args":["a😀","b😀"],"expect":false},
+{"fn":"startsWith","args":["a😀","b😁"],"expect":false},
+{"fn":"startsWith","args":["a😀","😀a"],"expect":false},
+{"fn":"startsWith","args":["a😀","😀b"],"expect":false},
+{"fn":"startsWith","args":["a😀","😀😀"],"expect":false},
+{"fn":"startsWith","args":["a😀","😀😁"],"expect":false},
+{"fn":"startsWith","args":["a😀","😁a"],"expect":false},
+{"fn":"startsWith","args":["a😀","😁b"],"expect":false},
+{"fn":"startsWith","args":["a😀","😁😀"],"expect":false},
+{"fn":"startsWith","args":["a😀","😁😁"],"expect":false},
+{"fn":"startsWith","args":["a😁",""],"expect":true},
+{"fn":"startsWith","args":["a😁","a"],"expect":true},
+{"fn":"startsWith","args":["a😁","b"],"expect":false},
+{"fn":"startsWith","args":["a😁","😀"],"expect":false},
+{"fn":"startsWith","args":["a😁","😁"],"expect":false},
+{"fn":"startsWith","args":["a😁","aa"],"expect":false},
+{"fn":"startsWith","args":["a😁","ab"],"expect":false},
+{"fn":"startsWith","args":["a😁","a😀"],"expect":false},
+{"fn":"startsWith","args":["a😁","a😁"],"expect":true},
+{"fn":"startsWith","args":["a😁","ba"],"expect":false},
+{"fn":"startsWith","args":["a😁","bb"],"expect":false},
+{"fn":"startsWith","args":["a😁","b😀"],"expect":false},
+{"fn":"startsWith","args":["a😁","b😁"],"expect":false},
+{"fn":"startsWith","args":["a😁","😀a"],"expect":false},
+{"fn":"startsWith","args":["a😁","😀b"],"expect":false},
+{"fn":"startsWith","args":["a😁","😀😀"],"expect":false},
+{"fn":"startsWith","args":["a😁","😀😁"],"expect":false},
+{"fn":"startsWith","args":["a😁","😁a"],"expect":false},
+{"fn":"startsWith","args":["a😁","😁b"],"expect":false},
+{"fn":"startsWith","args":["a😁","😁😀"],"expect":false},
+{"fn":"startsWith","args":["a😁","😁😁"],"expect":false},
+{"fn":"startsWith","args":["ba",""],"expect":true},
+{"fn":"startsWith","args":["ba","a"],"expect":false},
+{"fn":"startsWith","args":["ba","b"],"expect":true},
+{"fn":"startsWith","args":["ba","😀"],"expect":false},
+{"fn":"startsWith","args":["ba","😁"],"expect":false},
+{"fn":"startsWith","args":["ba","aa"],"expect":false},
+{"fn":"startsWith","args":["ba","ab"],"expect":false},
+{"fn":"startsWith","args":["ba","a😀"],"expect":false},
+{"fn":"startsWith","args":["ba","a😁"],"expect":false},
+{"fn":"startsWith","args":["ba","ba"],"expect":true},
+{"fn":"startsWith","args":["ba","bb"],"expect":false},
+{"fn":"startsWith","args":["ba","b😀"],"expect":false},
+{"fn":"startsWith","args":["ba","b😁"],"expect":false},
+{"fn":"startsWith","args":["ba","😀a"],"expect":false},
+{"fn":"startsWith","args":["ba","😀b"],"expect":false},
+{"fn":"startsWith","args":["ba","😀😀"],"expect":false},
+{"fn":"startsWith","args":["ba","😀😁"],"expect":false},
+{"fn":"startsWith","args":["ba","😁a"],"expect":false},
+{"fn":"startsWith","args":["ba","😁b"],"expect":false},
+{"fn":"startsWith","args":["ba","😁😀"],"expect":false},
+{"fn":"startsWith","args":["ba","😁😁"],"expect":false},
+{"fn":"startsWith","args":["bb",""],"expect":true},
+{"fn":"startsWith","args":["bb","a"],"expect":false},
+{"fn":"startsWith","args":["bb","b"],"expect":true},
+{"fn":"startsWith","args":["bb","😀"],"expect":false},
+{"fn":"startsWith","args":["bb","😁"],"expect":false},
+{"fn":"startsWith","args":["bb","aa"],"expect":false},
+{"fn":"startsWith","args":["bb","ab"],"expect":false},
+{"fn":"startsWith","args":["bb","a😀"],"expect":false},
+{"fn":"startsWith","args":["bb","a😁"],"expect":false},
+{"fn":"startsWith","args":["bb","ba"],"expect":false},
+{"fn":"startsWith","args":["bb","bb"],"expect":true},
+{"fn":"startsWith","args":["bb","b😀"],"expect":false},
+{"fn":"startsWith","args":["bb","b😁"],"expect":false},
+{"fn":"startsWith","args":["bb","😀a"],"expect":false},
+{"fn":"startsWith","args":["bb","😀b"],"expect":false},
+{"fn":"startsWith","args":["bb","😀😀"],"expect":false},
+{"fn":"startsWith","args":["bb","😀😁"],"expect":false},
+{"fn":"startsWith","args":["bb","😁a"],"expect":false},
+{"fn":"startsWith","args":["bb","😁b"],"expect":false},
+{"fn":"startsWith","args":["bb","😁😀"],"expect":false},
+{"fn":"startsWith","args":["bb","😁😁"],"expect":false},
+{"fn":"startsWith","args":["b😀",""],"expect":true},
+{"fn":"startsWith","args":["b😀","a"],"expect":false},
+{"fn":"startsWith","args":["b😀","b"],"expect":true},
+{"fn":"startsWith","args":["b😀","😀"],"expect":false},
+{"fn":"startsWith","args":["b😀","😁"],"expect":false},
+{"fn":"startsWith","args":["b😀","aa"],"expect":false},
+{"fn":"startsWith","args":["b😀","ab"],"expect":false},
+{"fn":"startsWith","args":["b😀","a😀"],"expect":false},
+{"fn":"startsWith","args":["b😀","a😁"],"expect":false},
+{"fn":"startsWith","args":["b😀","ba"],"expect":false},
+{"fn":"startsWith","args":["b😀","bb"],"expect":false},
+{"fn":"startsWith","args":["b😀","b😀"],"expect":true},
+{"fn":"startsWith","args":["b😀","b😁"],"expect":false},
+{"fn":"startsWith","args":["b😀","😀a"],"expect":false},
+{"fn":"startsWith","args":["b😀","😀b"],"expect":false},
+{"fn":"startsWith","args":["b😀","😀😀"],"expect":false},
+{"fn":"startsWith","args":["b😀","😀😁"],"expect":false},
+{"fn":"startsWith","args":["b😀","😁a"],"expect":false},
+{"fn":"startsWith","args":["b😀","😁b"],"expect":false},
+{"fn":"startsWith","args":["b😀","😁😀"],"expect":false},
+{"fn":"startsWith","args":["b😀","😁😁"],"expect":false},
+{"fn":"startsWith","args":["b😁",""],"expect":true},
+{"fn":"startsWith","args":["b😁","a"],"expect":false},
+{"fn":"startsWith","args":["b😁","b"],"expect":true},
+{"fn":"startsWith","args":["b😁","😀"],"expect":false},
+{"fn":"startsWith","args":["b😁","😁"],"expect":false},
+{"fn":"startsWith","args":["b😁","aa"],"expect":false},
+{"fn":"startsWith","args":["b😁","ab"],"expect":false},
+{"fn":"startsWith","args":["b😁","a😀"],"expect":false},
+{"fn":"startsWith","args":["b😁","a😁"],"expect":false},
+{"fn":"startsWith","args":["b😁","ba"],"expect":false},
+{"fn":"startsWith","args":["b😁","bb"],"expect":false},
+{"fn":"startsWith","args":["b😁","b😀"],"expect":false},
+{"fn":"startsWith","args":["b😁","b😁"],"expect":true},
+{"fn":"startsWith","args":["b😁","😀a"],"expect":false},
+{"fn":"startsWith","args":["b😁","😀b"],"expect":false},
+{"fn":"startsWith","args":["b😁","😀😀"],"expect":false},
+{"fn":"startsWith","args":["b😁","😀😁"],"expect":false},
+{"fn":"startsWith","args":["b😁","😁a"],"expect":false},
+{"fn":"startsWith","args":["b😁","😁b"],"expect":false},
+{"fn":"startsWith","args":["b😁","😁😀"],"expect":false},
+{"fn":"startsWith","args":["b😁","😁😁"],"expect":false},
+{"fn":"startsWith","args":["😀a",""],"expect":true},
+{"fn":"startsWith","args":["😀a","a"],"expect":false},
+{"fn":"startsWith","args":["😀a","b"],"expect":false},
+{"fn":"startsWith","args":["😀a","😀"],"expect":true},
+{"fn":"startsWith","args":["😀a","😁"],"expect":false},
+{"fn":"startsWith","args":["😀a","aa"],"expect":false},
+{"fn":"startsWith","args":["😀a","ab"],"expect":false},
+{"fn":"startsWith","args":["😀a","a😀"],"expect":false},
+{"fn":"startsWith","args":["😀a","a😁"],"expect":false},
+{"fn":"startsWith","args":["😀a","ba"],"expect":false},
+{"fn":"startsWith","args":["😀a","bb"],"expect":false},
+{"fn":"startsWith","args":["😀a","b😀"],"expect":false},
+{"fn":"startsWith","args":["😀a","b😁"],"expect":false},
+{"fn":"startsWith","args":["😀a","😀a"],"expect":true},
+{"fn":"startsWith","args":["😀a","😀b"],"expect":false},
+{"fn":"startsWith","args":["😀a","😀😀"],"expect":false},
+{"fn":"startsWith","args":["😀a","😀😁"],"expect":false},
+{"fn":"startsWith","args":["😀a","😁a"],"expect":false},
+{"fn":"startsWith","args":["😀a","😁b"],"expect":false},
+{"fn":"startsWith","args":["😀a","😁😀"],"expect":false},
+{"fn":"startsWith","args":["😀a","😁😁"],"expect":false},
+{"fn":"startsWith","args":["😀b",""],"expect":true},
+{"fn":"startsWith","args":["😀b","a"],"expect":false},
+{"fn":"startsWith","args":["😀b","b"],"expect":false},
+{"fn":"startsWith","args":["😀b","😀"],"expect":true},
+{"fn":"startsWith","args":["😀b","😁"],"expect":false},
+{"fn":"startsWith","args":["😀b","aa"],"expect":false},
+{"fn":"startsWith","args":["😀b","ab"],"expect":false},
+{"fn":"startsWith","args":["😀b","a😀"],"expect":false},
+{"fn":"startsWith","args":["😀b","a😁"],"expect":false},
+{"fn":"startsWith","args":["😀b","ba"],"expect":false},
+{"fn":"startsWith","args":["😀b","bb"],"expect":false},
+{"fn":"startsWith","args":["😀b","b😀"],"expect":false},
+{"fn":"startsWith","args":["😀b","b😁"],"expect":false},
+{"fn":"startsWith","args":["😀b","😀a"],"expect":false},
+{"fn":"startsWith","args":["😀b","😀b"],"expect":true},
+{"fn":"startsWith","args":["😀b","😀😀"],"expect":false},
+{"fn":"startsWith","args":["😀b","😀😁"],"expect":false},
+{"fn":"startsWith","args":["😀b","😁a"],"expect":false},
+{"fn":"startsWith","args":["😀b","😁b"],"expect":false},
+{"fn":"startsWith","args":["😀b","😁😀"],"expect":false},
+{"fn":"startsWith","args":["😀b","😁😁"],"expect":false},
+{"fn":"startsWith","args":["😀😀",""],"expect":true},
+{"fn":"startsWith","args":["😀😀","a"],"expect":false},
+{"fn":"startsWith","args":["😀😀","b"],"expect":false},
+{"fn":"startsWith","args":["😀😀","😀"],"expect":true},
+{"fn":"startsWith","args":["😀😀","😁"],"expect":false},
+{"fn":"startsWith","args":["😀😀","aa"],"expect":false},
+{"fn":"startsWith","args":["😀😀","ab"],"expect":false},
+{"fn":"startsWith","args":["😀😀","a😀"],"expect":false},
+{"fn":"startsWith","args":["😀😀","a😁"],"expect":false},
+{"fn":"startsWith","args":["😀😀","ba"],"expect":false},
+{"fn":"startsWith","args":["😀😀","bb"],"expect":false},
+{"fn":"startsWith","args":["😀😀","b😀"],"expect":false},
+{"fn":"startsWith","args":["😀😀","b😁"],"expect":false},
+{"fn":"startsWith","args":["😀😀","😀a"],"expect":false},
+{"fn":"startsWith","args":["😀😀","😀b"],"expect":false},
+{"fn":"startsWith","args":["😀😀","😀😀"],"expect":true},
+{"fn":"startsWith","args":["😀😀","😀😁"],"expect":false},
+{"fn":"startsWith","args":["😀😀","😁a"],"expect":false},
+{"fn":"startsWith","args":["😀😀","😁b"],"expect":false},
+{"fn":"startsWith","args":["😀😀","😁😀"],"expect":false},
+{"fn":"startsWith","args":["😀😀","😁😁"],"expect":false},
+{"fn":"startsWith","args":["😀😁",""],"expect":true},
+{"fn":"startsWith","args":["😀😁","a"],"expect":false},
+{"fn":"startsWith","args":["😀😁","b"],"expect":false},
+{"fn":"startsWith","args":["😀😁","😀"],"expect":true},
+{"fn":"startsWith","args":["😀😁","😁"],"expect":false},
+{"fn":"startsWith","args":["😀😁","aa"],"expect":false},
+{"fn":"startsWith","args":["😀😁","ab"],"expect":false},
+{"fn":"startsWith","args":["😀😁","a😀"],"expect":false},
+{"fn":"startsWith","args":["😀😁","a😁"],"expect":false},
+{"fn":"startsWith","args":["😀😁","ba"],"expect":false},
+{"fn":"startsWith","args":["😀😁","bb"],"expect":false},
+{"fn":"startsWith","args":["😀😁","b😀"],"expect":false},
+{"fn":"startsWith","args":["😀😁","b😁"],"expect":false},
+{"fn":"startsWith","args":["😀😁","😀a"],"expect":false},
+{"fn":"startsWith","args":["😀😁","😀b"],"expect":false},
+{"fn":"startsWith","args":["😀😁","😀😀"],"expect":false},
+{"fn":"startsWith","args":["😀😁","😀😁"],"expect":true},
+{"fn":"startsWith","args":["😀😁","😁a"],"expect":false},
+{"fn":"startsWith","args":["😀😁","😁b"],"expect":false},
+{"fn":"startsWith","args":["😀😁","😁😀"],"expect":false},
+{"fn":"startsWith","args":["😀😁","😁😁"],"expect":false},
+{"fn":"startsWith","args":["😁a",""],"expect":true},
+{"fn":"startsWith","args":["😁a","a"],"expect":false},
+{"fn":"startsWith","args":["😁a","b"],"expect":false},
+{"fn":"startsWith","args":["😁a","😀"],"expect":false},
+{"fn":"startsWith","args":["😁a","😁"],"expect":true},
+{"fn":"startsWith","args":["😁a","aa"],"expect":false},
+{"fn":"startsWith","args":["😁a","ab"],"expect":false},
+{"fn":"startsWith","args":["😁a","a😀"],"expect":false},
+{"fn":"startsWith","args":["😁a","a😁"],"expect":false},
+{"fn":"startsWith","args":["😁a","ba"],"expect":false},
+{"fn":"startsWith","args":["😁a","bb"],"expect":false},
+{"fn":"startsWith","args":["😁a","b😀"],"expect":false},
+{"fn":"startsWith","args":["😁a","b😁"],"expect":false},
+{"fn":"startsWith","args":["😁a","😀a"],"expect":false},
+{"fn":"startsWith","args":["😁a","😀b"],"expect":false},
+{"fn":"startsWith","args":["😁a","😀😀"],"expect":false},
+{"fn":"startsWith","args":["😁a","😀😁"],"expect":false},
+{"fn":"startsWith","args":["😁a","😁a"],"expect":true},
+{"fn":"startsWith","args":["😁a","😁b"],"expect":false},
+{"fn":"startsWith","args":["😁a","😁😀"],"expect":false},
+{"fn":"startsWith","args":["😁a","😁😁"],"expect":false},
+{"fn":"startsWith","args":["😁b",""],"expect":true},
+{"fn":"startsWith","args":["😁b","a"],"expect":false},
+{"fn":"startsWith","args":["😁b","b"],"expect":false},
+{"fn":"startsWith","args":["😁b","😀"],"expect":false},
+{"fn":"startsWith","args":["😁b","😁"],"expect":true},
+{"fn":"startsWith","args":["😁b","aa"],"expect":false},
+{"fn":"startsWith","args":["😁b","ab"],"expect":false},
+{"fn":"startsWith","args":["😁b","a😀"],"expect":false},
+{"fn":"startsWith","args":["😁b","a😁"],"expect":false},
+{"fn":"startsWith","args":["😁b","ba"],"expect":false},
+{"fn":"startsWith","args":["😁b","bb"],"expect":false},
+{"fn":"startsWith","args":["😁b","b😀"],"expect":false},
+{"fn":"startsWith","args":["😁b","b😁"],"expect":false},
+{"fn":"startsWith","args":["😁b","😀a"],"expect":false},
+{"fn":"startsWith","args":["😁b","😀b"],"expect":false},
+{"fn":"startsWith","args":["😁b","😀😀"],"expect":false},
+{"fn":"startsWith","args":["😁b","😀😁"],"expect":false},
+{"fn":"startsWith","args":["😁b","😁a"],"expect":false},
+{"fn":"startsWith","args":["😁b","😁b"],"expect":true},
+{"fn":"startsWith","args":["😁b","😁😀"],"expect":false},
+{"fn":"startsWith","args":["😁b","😁😁"],"expect":false},
+{"fn":"startsWith","args":["😁😀",""],"expect":true},
+{"fn":"startsWith","args":["😁😀","a"],"expect":false},
+{"fn":"startsWith","args":["😁😀","b"],"expect":false},
+{"fn":"startsWith","args":["😁😀","😀"],"expect":false},
+{"fn":"startsWith","args":["😁😀","😁"],"expect":true},
+{"fn":"startsWith","args":["😁😀","aa"],"expect":false},
+{"fn":"startsWith","args":["😁😀","ab"],"expect":false},
+{"fn":"startsWith","args":["😁😀","a😀"],"expect":false},
+{"fn":"startsWith","args":["😁😀","a😁"],"expect":false},
+{"fn":"startsWith","args":["😁😀","ba"],"expect":false},
+{"fn":"startsWith","args":["😁😀","bb"],"expect":false},
+{"fn":"startsWith","args":["😁😀","b😀"],"expect":false},
+{"fn":"startsWith","args":["😁😀","b😁"],"expect":false},
+{"fn":"startsWith","args":["😁😀","😀a"],"expect":false},
+{"fn":"startsWith","args":["😁😀","😀b"],"expect":false},
+{"fn":"startsWith","args":["😁😀","😀😀"],"expect":false},
+{"fn":"startsWith","args":["😁😀","😀😁"],"expect":false},
+{"fn":"startsWith","args":["😁😀","😁a"],"expect":false},
+{"fn":"startsWith","args":["😁😀","😁b"],"expect":false},
+{"fn":"startsWith","args":["😁😀","😁😀"],"expect":true},
+{"fn":"startsWith","args":["😁😀","😁😁"],"expect":false},
+{"fn":"startsWith","args":["😁😁",""],"expect":true},
+{"fn":"startsWith","args":["😁😁","a"],"expect":false},
+{"fn":"startsWith","args":["😁😁","b"],"expect":false},
+{"fn":"startsWith","args":["😁😁","😀"],"expect":false},
+{"fn":"startsWith","args":["😁😁","😁"],"expect":true},
+{"fn":"startsWith","args":["😁😁","aa"],"expect":false},
+{"fn":"startsWith","args":["😁😁","ab"],"expect":false},
+{"fn":"startsWith","args":["😁😁","a😀"],"expect":false},
+{"fn":"startsWith","args":["😁😁","a😁"],"expect":false},
+{"fn":"startsWith","args":["😁😁","ba"],"expect":false},
+{"fn":"startsWith","args":["😁😁","bb"],"expect":false},
+{"fn":"startsWith","args":["😁😁","b😀"],"expect":false},
+{"fn":"startsWith","args":["😁😁","b😁"],"expect":false},
+{"fn":"startsWith","args":["😁😁","😀a"],"expect":false},
+{"fn":"startsWith","args":["😁😁","😀b"],"expect":false},
+{"fn":"startsWith","args":["😁😁","😀😀"],"expect":false},
+{"fn":"startsWith","args":["😁😁","😀😁"],"expect":false},
+{"fn":"startsWith","args":["😁😁","😁a"],"expect":false},
+{"fn":"startsWith","args":["😁😁","😁b"],"expect":false},
+{"fn":"startsWith","args":["😁😁","😁😀"],"expect":false},
+{"fn":"startsWith","args":["😁😁","😁😁"],"expect":true}
 ]}
