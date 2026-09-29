@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { isBlockedIp, validateWebhookUrl, validateWebhookUrlWithDns } from '../webhook-url-validator';
 
 describe('validateWebhookUrl', () => {
@@ -137,14 +137,66 @@ describe('validateWebhookUrl', () => {
     const result = validateWebhookUrl('https://[::ffff:192.168.1.1]/hook');
     expect(result.valid).toBe(false);
   });
+
+  // Addresses outside the old private/loopback list that are still not globally reachable:
+  // broadcast, multicast, IETF protocol assignments, and IPv6 forms that carry a blocked IPv4.
+  it.each([
+    'https://255.255.255.255/x', // limited broadcast
+    'https://224.0.0.1/x', // IPv4 multicast
+    'https://192.0.0.1/x', // IETF protocol assignments (192.0.0.0/24)
+    'https://[::127.0.0.1]/x', // IPv4-compatible loopback, hostname [::7f00:1]
+    'https://[64:ff9b::7f00:1]/x', // NAT64 of 127.0.0.1
+    'https://[2002:7f00:1::]/x', // 6to4 of 127.0.0.1
+    'https://[ff02::1]/x', // IPv6 multicast
+    'https://[fec0::1]/x', // deprecated site-local
+  ])('rejects %s', (url) => {
+    expect(validateWebhookUrl(url)).toEqual({ valid: false, error: '내부 네트워크 주소는 등록할 수 없습니다.' });
+  });
+
+  // Every trailing dot is stripped before the name check, not just one.
+  it.each([
+    'https://localhost../x',
+    'https://localhost.../x',
+    'https://metadata.google.internal../computeMetadata/v1/',
+  ])('rejects %s (trailing dots)', (url) => {
+    expect(validateWebhookUrl(url)).toEqual({ valid: false, error: '내부 네트워크 주소는 등록할 수 없습니다.' });
+  });
+
+  // A host made only of dots leaves nothing to check once the trailing dots are stripped.
+  it.each(['https://./x', 'https://.../x', 'https://%2e/x'])('rejects %s (no host left)', (url) => {
+    expect(validateWebhookUrl(url)).toEqual({ valid: false, error: '올바른 URL 형식이 아닙니다.' });
+  });
 });
 
 describe('isBlockedIp', () => {
   it('blocks ::1', () => expect(isBlockedIp('::1')).toBe(true));
   it('blocks ::ffff:127.0.0.1', () => expect(isBlockedIp('::ffff:127.0.0.1')).toBe(true));
   it('blocks ::ffff:10.0.0.1', () => expect(isBlockedIp('::ffff:10.0.0.1')).toBe(true));
-  it('allows ::ffff:8.8.8.8', () => expect(isBlockedIp('::ffff:8.8.8.8')).toBe(false));
+  // The IANA IPv6 registry marks all of ::ffff:0:0/96 "Globally Reachable: False".
+  it('blocks ::ffff:8.8.8.8 (IPv4-mapped, not globally reachable)', () =>
+    expect(isBlockedIp('::ffff:8.8.8.8')).toBe(true));
   it('blocks ::', () => expect(isBlockedIp('::')).toBe(true));
+
+  // Resolvers print IPv4-compatible addresses with a dotted tail.
+  it('blocks ::127.0.0.1 (IPv4-compatible loopback)', () => expect(isBlockedIp('::127.0.0.1')).toBe(true));
+  // NAT64 (64:ff9b::/96) is globally reachable: the embedded IPv4 decides.
+  it('allows 64:ff9b::808:808 (NAT64 of a public IPv4)', () => expect(isBlockedIp('64:ff9b::808:808')).toBe(false));
+  it('blocks 64:ff9b::a00:1 (NAT64 of 10.0.0.1)', () => expect(isBlockedIp('64:ff9b::a00:1')).toBe(true));
+  // IPv6 outside 2000::/3 (the only Global Unicast allocation) is blocked, NAT64 aside.
+  // `fc::1` is 00fc::1 and `fe8::1` is 0fe8::1: reserved space, not ULA or link-local.
+  it('blocks fc::1 (reserved, outside 2000::/3)', () => expect(isBlockedIp('fc::1')).toBe(true));
+  it('blocks fe8::1 (reserved, outside 2000::/3)', () => expect(isBlockedIp('fe8::1')).toBe(true));
+  it('blocks ::808:808 (IPv4-compatible, outside 2000::/3)', () => expect(isBlockedIp('::808:808')).toBe(true));
+  it('allows 2001:4860:4860::8888 (global unicast, no special-purpose row)', () =>
+    expect(isBlockedIp('2001:4860:4860::8888')).toBe(false));
+
+  // Only an IPv6 literal contains ':' (DNS names never do). One this parser cannot read is blocked:
+  // Node's net.isIP calls `fe80::1%eth0` an IP address.
+  it('blocks fe80::1%eth0 (zone ID: an IPv6 literal it cannot read)', () =>
+    expect(isBlockedIp('fe80::1%eth0')).toBe(true));
+  it('blocks 1:2:3:4:5:6:7:8:9 (colon text that is not an address)', () =>
+    expect(isBlockedIp('1:2:3:4:5:6:7:8:9')).toBe(true));
+  it('allows example.com (a name, not an IP address)', () => expect(isBlockedIp('example.com')).toBe(false));
 
   // IPv6 ULA (fc00::/7)
   it('blocks fd00::1 (ULA)', () => expect(isBlockedIp('fd00::1')).toBe(true));
@@ -203,5 +255,69 @@ describe('validateWebhookUrlWithDns', () => {
     expect(result.valid).toBe(false);
 
     vi.restoreAllMocks();
+  });
+});
+
+describe('validateWebhookUrlWithDns hostname handling', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function spyOnResolvers(v4: string[] | Error, v6: string[] | Error) {
+    const dns = await import('node:dns');
+    const stub = (answer: string[] | Error) =>
+      answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
+    return {
+      resolve4: vi.spyOn(dns.promises, 'resolve4').mockImplementation(() => stub(v4)),
+      resolve6: vi.spyOn(dns.promises, 'resolve6').mockImplementation(() => stub(v6)),
+    };
+  }
+
+  it('accepts a public IPv6 literal without resolving it', async () => {
+    const noDns = new Error('IP literals must not reach DNS');
+    const { resolve4, resolve6 } = await spyOnResolvers(noDns, noDns);
+
+    expect(await validateWebhookUrlWithDns('https://[2606:4700:4700::1111]/hook')).toEqual({ valid: true });
+    expect(resolve4).not.toHaveBeenCalled();
+    expect(resolve6).not.toHaveBeenCalled();
+  });
+
+  it('resolves the hostname the static check examined (trailing dot removed)', async () => {
+    const { resolve4, resolve6 } = await spyOnResolvers(['93.184.216.34'], []);
+
+    expect(await validateWebhookUrlWithDns('https://example.com./hook')).toEqual({ valid: true });
+    expect(resolve4).toHaveBeenCalledWith('example.com');
+    expect(resolve6).toHaveBeenCalledWith('example.com');
+  });
+
+  it('resolves the hostname without any of its trailing dots', async () => {
+    const { resolve4, resolve6 } = await spyOnResolvers(['93.184.216.34'], []);
+
+    expect(await validateWebhookUrlWithDns('https://example.com../hook')).toEqual({ valid: true });
+    expect(resolve4).toHaveBeenCalledWith('example.com');
+    expect(resolve6).toHaveBeenCalledWith('example.com');
+  });
+
+  // An answer that is not an IP address cannot be checked, so it blocks (fail closed).
+  it.each([
+    [['not-an-ip'], []],
+    [[], ['fe80::1%eth0']],
+    [['93.184.216.34'], ['2606:4700:4700::1111', '']],
+  ])('blocks when a resolver answer is unreadable (%j, %j)', async (v4, v6) => {
+    await spyOnResolvers(v4, v6);
+
+    expect(await validateWebhookUrlWithDns('https://garbage.example.com/hook')).toEqual({
+      valid: false,
+      error: '내부 네트워크 주소로 확인되는 도메인은 등록할 수 없습니다.',
+    });
+  });
+
+  it('blocks a domain whose AAAA record is ::127.0.0.1 (IPv4-compatible loopback)', async () => {
+    await spyOnResolvers([], ['::127.0.0.1']);
+
+    expect(await validateWebhookUrlWithDns('https://rebind.example.com/hook')).toEqual({
+      valid: false,
+      error: '내부 네트워크 주소로 확인되는 도메인은 등록할 수 없습니다.',
+    });
   });
 });
