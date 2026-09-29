@@ -273,6 +273,11 @@ theorem reason_order_dependent :
     Original.ReasonOrderDependent (fun i => (evaluate i).toOriginal) :=
   transfer Original.reason_order_dependent
 
+/-- (d) Some reordering of the deny tier changes the simplified deny message. -/
+theorem denyMessage_order_dependent :
+    Original.DenyMessageOrderDependent (fun i => (evaluate i).toOriginal) :=
+  transfer Original.denyMessage_order_dependent
+
 /-- (e) Legacy mode never allows, classifies or asks. -/
 theorem legacy_never_allows : Original.LegacyNeverAllows (fun i => (evaluate i).toOriginal) :=
   transfer Original.legacy_never_allows
@@ -339,5 +344,11 @@ theorem mcp_deny_reason_denies :
 theorem opinion_only_on_matched_tools :
     Original.OpinionOnlyOnMatchedTools (fun i => (evaluate i).toOriginal) :=
   transfer Original.opinion_only_on_matched_tools
+
+/-- The simplified decision reads `command`, `file_path` and `pattern` only through the primitive
+values in `prims`. -/
+theorem decision_ignores_call_arguments :
+    Original.DecisionIgnoresCallArguments (fun i => (evaluate i).toOriginal) :=
+  transfer Original.decision_ignores_call_arguments
 
 end SomaVerify.ToolPolicy

@@ -6,8 +6,9 @@
  * dangerous `rm -rf`, a safe `ls`, a denied MCP tool, a PR creation in a handoff session, ...).
  * It lists the primitive calls the policy makes for it with the values the model was given; this
  * suite first checks those values against the real primitives, then requires the real
- * `evaluateToolPolicy` to return the model's result. The `constants` vector pins the tool lists
- * the model hardcodes.
+ * `evaluateToolPolicy` to return the model's result. The sensitive-path entry, arguments
+ * included, is the model's own `sensitiveCall` for the case's input. The `constants` vector pins
+ * the tool lists the model hardcodes.
  *
  * `{{HOME}}` in a vector stands for `os.homedir()` and is substituted before anything runs, so
  * the committed file names no home directory. The mocked, exhaustive counterpart is
@@ -31,10 +32,12 @@ const repoRoot = path.resolve(__dirname, '../../..');
 
 type PrimitiveCall =
   | {
-      fn: 'isSshCommand' | 'checkBashSensitivePaths' | 'checkSensitivePath' | 'checkSensitiveGlob';
+      fn: 'isSshCommand' | 'checkBashSensitivePaths' | 'checkSensitivePath';
       args: [string];
       result: unknown;
     }
+  /** A base path that is `undefined` is written `null`. */
+  | { fn: 'checkSensitiveGlob'; args: [string, string | null]; result: unknown }
   | { fn: 'isCrossUserAccess'; args: [string, string]; result: unknown }
   | { fn: 'handlePrIssuePrecondition'; args: [PrIssueGuardInput]; result: unknown }
   | { fn: 'bypassBashPermissionDecision'; args: [string]; disabledRules: string[]; result: unknown };
@@ -97,13 +100,16 @@ function call(pre: PrimitiveCall): unknown {
     case 'checkSensitivePath':
       return checkSensitivePath(pre.args[0]);
     case 'checkSensitiveGlob':
-      return checkSensitiveGlob(pre.args[0]);
+      return checkSensitiveGlob(pre.args[0], pre.args[1] ?? undefined);
     case 'isCrossUserAccess':
       return isCrossUserAccess(pre.args[0], pre.args[1]);
     case 'handlePrIssuePrecondition':
       return handlePrIssuePrecondition(pre.args[0]);
     case 'bypassBashPermissionDecision':
       return bypassBashPermissionDecision(pre.args[0], (id) => pre.disabledRules.includes(id));
+    default:
+      // e.g. `no-sensitive-call`: a case that lists a sensitive-path check the model never makes.
+      throw new Error(`unknown primitive call ${JSON.stringify(pre)}`);
   }
 }
 

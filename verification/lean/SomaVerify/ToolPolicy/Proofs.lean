@@ -4,9 +4,9 @@ import SomaVerify.ToolPolicy.Spec
 # Proofs of the `evaluateToolPolicy` invariants
 
 Every statement in `Spec.lean` is proved here for the phase-1 model `Original.evaluate`
-(`ModelOriginal.lean`), for all inputs: every tool name, the `path` property of every tool input,
-every context, and every combination of primitive values. `Simplification.lean` carries each one
-over to the simplified model.
+(`ModelOriginal.lean`), for all inputs: every tool name, every value of the tool-input properties
+the policy reads (`command`, `file_path`, `pattern`, `path`), every context, and every combination
+of primitive values. `Simplification.lean` carries each one over to the simplified model.
 
 The route: each guard fires exactly under its condition and only ever denies
 (`denyTier_result`), so `evaluate` is either the denial of the first guard that fires or, when
@@ -47,6 +47,27 @@ theorem checkSensitiveForTool_eq (t : String) (p : Field) (s : SensitivePathResu
       · simp [hG]
       · by_cases hP : t = "Grep"
         · by_cases hn : p.isNonEmptyString = true
+          · simp [hP, hn]
+          · simp [hP, hn]
+        · simp [hB, hR, hG, hP]
+
+/-- The dispatch uses the sensitive-path check's value exactly when it makes the call
+`sensitiveCall` describes; without a call it returns the Grep default `{ isSensitive: false }` or,
+for any other tool, `undefined`. -/
+theorem checkSensitiveForTool_eq_call (i : Input) (s : SensitivePathResult) :
+    checkSensitiveForTool i.toolName i.path s =
+      if (sensitiveCall i).isSome then some s
+      else if i.toolName = "Grep" then some { isSensitive := false }
+      else none := by
+  unfold checkSensitiveForTool sensitiveCall
+  by_cases hB : i.toolName = "Bash"
+  · simp [hB]
+  · by_cases hR : i.toolName = "Read"
+    · simp [hR]
+    · by_cases hG : i.toolName = "Glob"
+      · simp [hG]
+      · by_cases hP : i.toolName = "Grep"
+        · by_cases hn : i.path.isNonEmptyString = true
           · simp [hP, hn]
           · simp [hP, hn]
         · simp [hB, hR, hG, hP]
@@ -311,13 +332,36 @@ theorem decision_order_invariant : DecisionOrderInvariant evaluate := by
 `ssh` Bash call is reported as an SSH ban instead of an abort. -/
 theorem reason_order_dependent : ReasonOrderDependent evaluate := by
   refine ⟨[sshGuard, abortGuard, sensitiveGuard, crossUserGuard, mcpGuard, prIssueGuard],
-    { toolName := "Bash", path := .absent, isAdmin := false, mode := .auto, aborted := true,
-      handoff := false,
+    { toolName := "Bash", command := .absent, filePath := .absent, pattern := .absent,
+      path := .absent, isAdmin := false, mode := .auto, aborted := true, handoff := false,
       prims := { ssh := true, sensitive := { isSensitive := false }, crossUser := false,
                  mcpDenied := none, prIssue := { blocked := false },
                  bash := { decision := .allow, matchedRuleIds := [] } } },
     List.Perm.swap _ _ _, ?_⟩
   decide
+
+/-- (d) The deny message is not order-independent either. An aborted Bash call in a handoff
+session whose PR-issue check blocks is, in source order, an abort denial with no message; with the
+PR-issue guard moved first it is the PR-issue denial, carrying the guard's message. -/
+theorem denyMessage_order_dependent : DenyMessageOrderDependent evaluate := by
+  refine ⟨[prIssueGuard, abortGuard, sshGuard, sensitiveGuard, crossUserGuard, mcpGuard],
+    { toolName := "Bash", command := .absent, filePath := .absent, pattern := .absent,
+      path := .absent, isAdmin := false, mode := .auto, aborted := true, handoff := true,
+      prims := { ssh := false, sensitive := { isSensitive := false }, crossUser := false,
+                 mcpDenied := none,
+                 prIssue := { blocked := true, reason := some "missing-closes-issue",
+                              message := some "pr-message" },
+                 bash := { decision := .allow, matchedRuleIds := [] } } },
+    ?_, ?_⟩
+  · exact List.perm_append_comm (l₁ := [prIssueGuard])
+      (l₂ := [abortGuard, sshGuard, sensitiveGuard, crossUserGuard, mcpGuard])
+  · decide
+
+/-- `command`, `file_path` and `pattern` reach the decision only through the primitive values in
+`prims` (for the sensitive-path check, the value of the call they select): changing them alone
+changes nothing. -/
+theorem decision_ignores_call_arguments : DecisionIgnoresCallArguments evaluate :=
+  fun _ _ _ _ => rfl
 
 
 /-- (e) Legacy mode never allows, classifies or asks: its only outcomes are `deny` and `pass`. -/

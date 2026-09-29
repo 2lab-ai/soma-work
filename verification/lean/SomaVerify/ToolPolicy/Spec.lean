@@ -33,7 +33,15 @@ def SshCond (i : Input) : Prop :=
 
 /-- 143: "Sensitive-path (non-admin; Bash/Read/Glob/Grep)."; 99-101: "Bash→command,
 Read→file_path, Glob→pattern+path, Grep→path (only when present)". A Grep path is present when
-`typeof input.path === 'string' && input.path` (112). -/
+`typeof input.path === 'string' && input.path` (112).
+
+What is modelled: `i.prims.sensitive` is the value the sensitive-path check returns for the one
+call the dispatch makes, `sensitiveCall i`: `checkBashSensitivePaths(asStr(command))`,
+`checkSensitivePath(asStr(file_path))`, `checkSensitiveGlob(asStr(pattern), path when a string)`,
+or, for a Grep with a present path, `checkSensitivePath(path)`. The condition is about that
+value. That the TS makes exactly that call, arguments included, is what the mocked replay checks
+(its mocks answer only that call); `checkSensitiveForTool_eq_call` shows the model uses the value
+exactly when the call is made. -/
 def SensitiveCond (i : Input) : Prop :=
   i.isAdmin = false ∧ i.prims.sensitive.isSensitive = true ∧
     (i.toolName = "Bash" ∨ i.toolName = "Read" ∨ i.toolName = "Glob" ∨
@@ -135,6 +143,14 @@ def ReasonOrderDependent (ev : Input → Result) : Prop :=
   ∃ (guards : List (Input → Option Result)) (i : Input),
     guards.Perm denyTier ∧ (evaluateWith guards i).reason ≠ (ev i).reason
 
+/-- (d) The first guard that fires returns its whole result, and the PR-issue guard's result
+carries a `denyMessage` (54-57: "Only set for the PR-issue deny"), so a reordering can change the
+message as well as the reason. The current comment (tool-policy.ts:134-135): "reordering the
+guards never changes the decision, but can change the reported reason and denyMessage". -/
+def DenyMessageOrderDependent (ev : Input → Result) : Prop :=
+  ∃ (guards : List (Input → Option Result)) (i : Input),
+    guards.Perm denyTier ∧ (evaluateWith guards i).denyMessage ≠ (ev i).denyMessage
+
 /-- (e) 79: "`legacy` → `pass` (defer to the SDK per-tool prompt)"; 180-181: "`legacy` falls
 through to `pass` below so the SDK runs its own per-tool permission prompt". -/
 def LegacyNeverAllows (ev : Input → Result) : Prop :=
@@ -225,5 +241,15 @@ tool name is SDK behavior, outside the model. -/
 def OpinionOnlyOnMatchedTools (ev : Input → Result) : Prop :=
   ∀ i : Input, (ev i).decision ≠ .pass →
     i.toolName = "Bash" ∨ i.toolName ∈ nativeBypassTools ∨ jsStartsWith i.toolName "mcp__" = true
+
+/-- 105-110: `input.command`, `input.file_path` and `input.pattern` are passed to primitives and
+never tested by the policy itself: they select the sensitive-path call (`sensitiveCall`), and
+`command` is also the argument of `isSshCommand`, `isCrossUserAccess` and
+`bypassBashPermissionDecision` (128). The decision therefore sees them only through the primitive
+values in `prims`, so changing them alone leaves the result unchanged. (`path` also decides
+whether a Grep is checked at all, so it is not among them.) -/
+def DecisionIgnoresCallArguments (ev : Input → Result) : Prop :=
+  ∀ (i : Input) (command filePath pattern : Field),
+    ev { i with command := command, filePath := filePath, pattern := pattern } = ev i
 
 end SomaVerify.ToolPolicy.Original
