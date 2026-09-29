@@ -191,7 +191,7 @@ theorem eq_renderAbs_segmentsOf (n : List Char) (h : n.head? = some '/') :
   have hs := (splitSlash_eq_nil_cons_iff n).2 (Or.inr h)
   rw [renderAbs_eq_joinSlash, ← hs, joinSlash_splitSlash]
 
-/-- `n` is the directory `renderAbs d` or lies below it, in the sense of line 78, exactly when
+/-- `n` is the directory `renderAbs d` or lies below it, in the sense of line 90, exactly when
 `n`'s split extends `d`'s. -/
 theorem underDirectory_renderAbs_iff (n : List Char) (d : List Seg) (hd : ∀ w ∈ d, '/' ∉ w) :
     underDirectory n (renderAbs d) = true ↔ ∃ t, splitSlash n = [] :: (d ++ t) := by
@@ -834,24 +834,19 @@ theorem verdict_nil (home : List Char) : verdict home [] = notSensitive := by
       simp only [sensitiveExactFiles, List.mem_cons, List.mem_nil_iff, or_false] at hmem
       rcases hmem with h1 | h1 | h1 | h1 <;> exact pathJoin_ne_nil _ h1.symm
   have hservice : serviceConfigRule [] = false := by
-    simp only [serviceConfigRule, serviceConfigs, List.any_cons, List.any_nil, Bool.or_false]
-    simp only [serviceConfigHit]
-    simp
-    exact ⟨⟨pathJoin_ne_nil _, pathJoin_ne_nil _⟩, pathJoin_ne_nil _, pathJoin_ne_nil _⟩
+    simp [serviceConfigRule, serviceConfigs, serviceConfigHit]
   unfold verdict
   rw [hdirs]
   simp only [hexact, Bool.false_eq_true, ite_false, hservice]
   have hb : basename [] = [] := rfl
   simp [hb, basenamePatterns, matchesEnv, matchesCredentials, matchesSecrets]
 
-/-- `checkSensitivePath` is the verdict on the normal form, the empty path included: the early
-return of line 73 gives what the rules give for `""`. -/
+/-- `checkSensitivePath` is the verdict on the normal form, the empty path included (by
+definition; `checkSensitivePath_eq_original` shows the phase-1 early return for `""` gave the
+same). -/
 theorem checkSensitivePath_eq_verdict (home p : List Char) :
-    checkSensitivePath home p = verdict home (normalizePath home p) := by
-  unfold checkSensitivePath
-  cases p with
-  | nil => simp [normalizePath_nil, verdict_nil]
-  | cons c cs => simp
+    checkSensitivePath home p = verdict home (normalizePath home p) :=
+  rfl
 
 /-- (b) Checking a path is checking its normal form. -/
 theorem check_invariant_under_normalize (home : List Char) (hh : home.head? = some '/') :
@@ -860,7 +855,7 @@ theorem check_invariant_under_normalize (home : List Char) (hh : home.head? = so
   rw [checkSensitivePath_eq_verdict, checkSensitivePath_eq_verdict, normalizePath_idempotent home hh]
 
 /-- Normalization leaves no empty, `.` or `..` segment in an absolute path: the segments of an
-absolute normal form are all proper. This is what the resolution step of lines 156-161 adds. -/
+absolute normal form are all proper. This is what the resolution step of lines 166-171 adds. -/
 theorem normalizePath_segments_proper (home : List Char) (hh : home.head? = some '/') (p : List Char)
     (hp : (normalizePath home p).head? = some '/') : ∀ w ∈ segmentsOf (normalizePath home p), Proper w := by
   rcases normalizePath_cases home p hh with ⟨R, hN, hR⟩ | ⟨_, hx, hN⟩
@@ -950,7 +945,7 @@ theorem matchesSecrets_iff (b : List Char) : matchesSecrets b = true ↔ Secrets
     simp only [List.cons_append, List.nil_append]
     rintro ((hb | hb | hb | hb) | hb | hb | hb | hb) <;> exact h _ hb
 
-/-- (e) The basename rule of lines 87-92 flags exactly the names `.env` or `.env.` followed by
+/-- (e) The basename rule of lines 99-104 flags exactly the names `.env` or `.env.` followed by
 characters other than line terminators, `credentials.json`, and `secret` or `secrets` with the
 extension `.json`, `.yaml`, `.yml` or `.toml`. -/
 theorem basename_rule_described : BasenameRuleDescribed := by
@@ -1074,7 +1069,7 @@ theorem sensitiveDirSegs_wf (hs : List Seg) (hh : HomeCanonical hs) :
   rcases hd with rfl | rfl | rfl | rfl | rfl | rfl | rfl
   all_goals first | exact hwf _ (by simp) (by decide) | decide
 
-/-- (c) The directory rule (lines 77-81) is segment-aligned: it matches exactly the absolute
+/-- (c) The directory rule (lines 89-93) is segment-aligned: it matches exactly the absolute
 strings whose segments begin with a sensitive directory's segments. -/
 theorem dir_rule_segment_aligned (hs : List Seg) (hh : HomeCanonical hs) : DirectoryRuleSegmentAligned hs := by
   intro n
@@ -1314,101 +1309,7 @@ theorem glob_flagged_where_prefix_named : GlobFlaggedWherePrefixNamed := by
 
 /-! ## (f) Service configs -/
 
-theorem length_two_iff (l : List Seg) (f : Seg) :
-    (l.length == 2 && l[1]? == some f) = true ↔ ∃ m, l = [m, f] := by
-  constructor
-  · intro h
-    match l with
-    | [] => simp at h
-    | [_] => simp at h
-    | [m, g] => simp at h; exact ⟨m, by rw [h]⟩
-    | _ :: _ :: _ :: _ => simp at h
-  · rintro ⟨m, rfl⟩; simp
-
-/-- One service-config entry matches exactly the absolute paths `dir/file` and `dir/m/file`. -/
-theorem serviceConfigHit_iff (n : List Char) (d : List Seg) (file : Seg) (hd : HomeCanonical d) (hf : Proper file) :
-    serviceConfigHit n (renderAbs d) file = true ↔
-      n.head? = some '/' ∧ (segmentsOf n = d ++ [file] ∨ ∃ m, segmentsOf n = d ++ [m, file]) := by
-  have hjoin : pathJoin [renderAbs d, file] = renderAbs (d ++ [file]) :=
-    pathJoin_renderAbs d [file] hd (by simp [hf])
-  have hdsf : ∀ w ∈ d, '/' ∉ w := proper_slashFree hd.2
-  have hfsf : '/' ∉ file := hf.2.1
-  have hdf : ∀ w ∈ d ++ [file], '/' ∉ w := by
-    intro w hw
-    rcases List.mem_append.1 hw with h | h
-    · exact hdsf w h
-    · simp at h; subst h; exact hfsf
-  have hdne : d ≠ [] := hd.1
-  unfold serviceConfigHit
-  rw [hjoin]
-  by_cases h1 : n = renderAbs (d ++ [file])
-  · subst h1
-    simp only [beq_self_eq_true, ite_true, true_iff]
-    exact ⟨head_renderAbs _ (by simp), Or.inl (segmentsOf_renderAbs _ hdf)⟩
-  · have hb : (n == renderAbs (d ++ [file])) = false := by simp [h1]
-    rw [hb]
-    simp only [Bool.false_eq_true, ite_false]
-    constructor
-    · intro h
-      split at h
-      · rename_i hcond
-        simp only [Bool.and_eq_true, List.isPrefixOf_iff_prefix] at hcond
-        obtain ⟨⟨y, hy⟩, _⟩ := hcond
-        subst hy
-        have hdrop : ((renderAbs d ++ ['/']) ++ y).drop ((renderAbs d).length + 1) = y :=
-          List.drop_left' (by simp)
-        rw [hdrop] at h
-        obtain ⟨m, hm⟩ := (length_two_iff _ _).1 h
-        have hsplit : splitSlash ((renderAbs d ++ ['/']) ++ y) = [] :: (d ++ splitSlash y) := by
-          rw [List.append_assoc, List.singleton_append, splitSlash_append_slash, splitSlash_renderAbs d hdsf]
-          simp
-        refine ⟨?_, Or.inr ⟨m, ?_⟩⟩
-        · have hh := head_renderAbs d hdne
-          cases hx : renderAbs d with
-          | nil => rw [hx] at hh; simp at hh
-          | cons c cs => rw [hx] at hh; simpa using hh
-        · unfold segmentsOf; rw [hsplit, hm]; rfl
-      · contradiction
-    · rintro ⟨hhead, h | ⟨m, hm⟩⟩
-      · exact absurd (by rw [eq_renderAbs_segmentsOf n hhead, h]) h1
-      · have hmsf : '/' ∉ m := by
-          have hmem : m ∈ segmentsOf n := by rw [hm]; simp
-          exact slashFree_of_mem_splitSlash n m (List.mem_of_mem_tail hmem)
-        have hn : n = (renderAbs d ++ ['/']) ++ (m ++ '/' :: file) := by
-          rw [eq_renderAbs_segmentsOf n hhead, hm, renderAbs_append]
-          simp [renderAbs]
-        have hcond : ((renderAbs d ++ ['/']).isPrefixOf n && ('/' :: file).isSuffixOf n) = true := by
-          simp only [Bool.and_eq_true, List.isPrefixOf_iff_prefix, List.isSuffixOf_iff_suffix]
-          refine ⟨⟨_, hn.symm⟩, ⟨renderAbs d ++ '/' :: m, ?_⟩⟩
-          rw [hn]; simp
-        rw [ite_eq_left hcond]
-        have hdrop : n.drop ((renderAbs d).length + 1) = m ++ '/' :: file := by
-          rw [hn]; exact List.drop_left' (by simp)
-        rw [hdrop, length_two_iff]
-        exact ⟨m, by rw [splitSlash_append_slash, splitSlash_of_slashFree m hmsf,
-          splitSlash_of_slashFree file hfsf]; rfl⟩
-
-/-- `SENSITIVE_SERVICE_CONFIGS` renders `serviceDirSegs` × `serviceFileNames`. -/
-theorem serviceConfigs_eq : serviceConfigs = serviceDirSegs.map (fun d => (renderAbs d, serviceFileNames)) := by
-  decide
-
-/-- (f) The service-config rule (lines 94-108) matches exactly `.env` and `config.json` directly
-in `/opt/soma-work` or `/opt/soma`, or in exactly one directory below one of them. -/
-theorem service_rule_described : ServiceRuleDescribed := by
-  intro n
-  have hdirs : ∀ d ∈ serviceDirSegs, HomeCanonical d := by decide
-  have hfiles : ∀ f ∈ serviceFileNames, Proper f := by decide
-  rw [serviceConfigRule, serviceConfigs_eq, List.any_map, List.any_eq_true]
-  simp only [Function.comp_def, List.any_eq_true]
-  constructor
-  · rintro ⟨d, hd, f, hf, hhit⟩
-    have := (serviceConfigHit_iff n d f (hdirs d hd) (hfiles f hf)).1 hhit
-    exact ⟨this.1, d, hd, f, hf, this.2⟩
-  · rintro ⟨hhead, d, hd, f, hf, h⟩
-    exact ⟨d, hd, f, hf, (serviceConfigHit_iff n d f (hdirs d hd) (hfiles f hf)).2 ⟨hhead, h⟩⟩
-
-/-! ## Facts behind the simplification candidates -/
-
+/-- The basename of a rendered path is its last segment. -/
 theorem basename_renderAbs_append (r : List Seg) (f : Seg) (hr : ∀ w ∈ r, '/' ∉ w) (hne : f ≠ [])
     (hf : '/' ∉ f) : basename (renderAbs (r ++ [f])) = f := by
   have hlast : (renderAbs (r ++ [f])).getLast? ≠ some '/' := by
@@ -1424,28 +1325,110 @@ theorem basename_renderAbs_append (r : List Seg) (f : Seg) (hr : ∀ w ∈ r, '/
     List.getLast?_concat]
   rfl
 
-/-- The `.env` entries of `SENSITIVE_SERVICE_CONFIGS` never decide a result: whenever one
-matches, the basename rule, which runs first, has already matched. -/
-theorem service_env_entry_shadowed (n : List Char) (d : List Seg) (hd : d ∈ serviceDirSegs)
-    (h : serviceConfigHit n (renderAbs d) ".env".toList = true) :
-    basenamePatterns.any (fun test => test (basename n)) = true := by
-  have hdirs : ∀ d ∈ serviceDirSegs, HomeCanonical d := by decide
-  obtain ⟨hhead, hsegs⟩ := (serviceConfigHit_iff n d _ (hdirs d hd) (by decide)).1 h
-  have hsf : ∀ w ∈ segmentsOf n, '/' ∉ w := fun w hw =>
-    slashFree_of_mem_splitSlash n w (List.mem_of_mem_tail hw)
-  have hb : basename n = ".env".toList := by
-    rw [eq_renderAbs_segmentsOf n hhead]
-    rcases hsegs with hs | ⟨m, hs⟩
-    · rw [hs] at hsf ⊢
-      exact basename_renderAbs_append d _ (fun w hw => hsf w (List.mem_append_left _ hw)) (by decide)
-        (by decide)
-    · rw [hs] at hsf ⊢
-      rw [show d ++ [m, ".env".toList] = (d ++ [m]) ++ [".env".toList] by simp]
-      refine basename_renderAbs_append _ _ (fun w hw => hsf w ?_) (by decide) (by decide)
-      rcases List.mem_append.1 hw with h | h
-      · exact List.mem_append_left _ h
-      · simp at h; subst h; simp
-  rw [hb]
+/-- One service-config entry matches exactly the absolute paths `dir/f` and `dir/m/f` for a file
+name `f` it lists. -/
+theorem serviceConfigHit_iff (n : List Char) (d : List Seg) (files : List Seg) (hd : HomeCanonical d) :
+    serviceConfigHit n (renderAbs d) files = true ↔
+      n.head? = some '/' ∧ ∃ f ∈ files, segmentsOf n = d ++ [f] ∨ ∃ m, segmentsOf n = d ++ [m, f] := by
+  have hdsf : ∀ w ∈ d, '/' ∉ w := proper_slashFree hd.2
+  have hhead_d : (renderAbs d).head? = some '/' := head_renderAbs d hd.1
+  unfold serviceConfigHit
+  by_cases hpre : (renderAbs d ++ ['/']).isPrefixOf n = true
+  · obtain ⟨y, hy⟩ := List.isPrefixOf_iff_prefix.1 hpre
+    subst hy
+    have hdrop : ((renderAbs d ++ ['/']) ++ y).drop ((renderAbs d).length + 1) = y :=
+      List.drop_left' (by simp)
+    have hsplit : splitSlash ((renderAbs d ++ ['/']) ++ y) = [] :: (d ++ splitSlash y) := by
+      rw [List.append_assoc, List.singleton_append, splitSlash_append_slash, splitSlash_renderAbs d hdsf]
+      simp
+    have hsegs : segmentsOf ((renderAbs d ++ ['/']) ++ y) = d ++ splitSlash y := by
+      unfold segmentsOf; rw [hsplit]; rfl
+    have hhead : ((renderAbs d ++ ['/']) ++ y).head? = some '/' := by
+      cases hx : renderAbs d with
+      | nil => rw [hx] at hhead_d; simp at hhead_d
+      | cons c cs => rw [hx] at hhead_d; simpa using hhead_d
+    rw [hpre, hdrop, hsegs, hhead]
+    have hne := splitSlash_ne_nil y
+    generalize splitSlash y = parts at hne ⊢
+    match parts, hne with
+    | [f], _ => simp
+    | [m, f], _ => simp
+    | _ :: _ :: _ :: _, _ => simp
+  · have hfalse : ¬ (n.head? = some '/' ∧ ∃ f ∈ files, segmentsOf n = d ++ [f] ∨ ∃ m, segmentsOf n = d ++ [m, f]) := by
+      rintro ⟨hhead, f, _, hs⟩
+      apply hpre
+      rw [List.isPrefixOf_iff_prefix, eq_renderAbs_segmentsOf n hhead]
+      rcases hs with hs | ⟨m, hs⟩ <;> rw [hs, renderAbs_append] <;> simp [renderAbs]
+    simp only [Bool.not_eq_true] at hpre
+    simp only [hpre, Bool.not_false, ite_true, Bool.false_eq_true, false_iff]
+    exact hfalse
+
+/-- `SENSITIVE_SERVICE_CONFIGS` renders `serviceDirSegs`, each with `serviceTableFileNames`. -/
+theorem serviceConfigs_eq : serviceConfigs = serviceDirSegs.map (fun d => (renderAbs d, serviceTableFileNames)) := by
   decide
 
+/-- (f) The service-config rule matches exactly `config.json` directly in `/opt/soma-work` or
+`/opt/soma`, or in exactly one directory below one of them. -/
+theorem service_rule_described : ServiceRuleDescribed := by
+  intro n
+  have hdirs : ∀ d ∈ serviceDirSegs, HomeCanonical d := by decide
+  rw [serviceConfigRule, serviceConfigs_eq, List.any_map, List.any_eq_true]
+  simp only [Function.comp_def]
+  constructor
+  · rintro ⟨d, hd, hhit⟩
+    obtain ⟨hhead, f, hf, hs⟩ := (serviceConfigHit_iff n d _ (hdirs d hd)).1 hhit
+    exact ⟨hhead, d, hd, f, hf, hs⟩
+  · rintro ⟨hhead, d, hd, f, hf, hs⟩
+    exact ⟨d, hd, (serviceConfigHit_iff n d _ (hdirs d hd)).2 ⟨hhead, f, hf, hs⟩⟩
+
+/-- The verdict is sensitive whenever the basename rule or the service-config rule matches: every
+rule that can return before them returns a sensitive result too. -/
+theorem verdict_isSensitive_of (home n : List Char)
+    (h : basenamePatterns.any (fun test => test (basename n)) = true ∨ serviceConfigRule n = true) :
+    (verdict home n).isSensitive = true := by
+  unfold verdict
+  split
+  · rfl
+  · split
+    · rfl
+    · split
+      · rfl
+      · rename_i hb
+        rcases h with h | h
+        · exact absurd h hb
+        · simp [h]
+
+/-- The basename of an absolute path whose last segment is `.env` is `.env`. -/
+theorem basename_of_segments_env (n : List Char) (dir : List Seg) (hhead : n.head? = some '/')
+    (hs : segmentsOf n = dir ++ [".env".toList] ∨ ∃ m, segmentsOf n = dir ++ [m, ".env".toList]) :
+    basename n = ".env".toList := by
+  have hsf : ∀ w ∈ segmentsOf n, '/' ∉ w := fun w hw =>
+    slashFree_of_mem_splitSlash n w (List.mem_of_mem_tail hw)
+  rw [eq_renderAbs_segmentsOf n hhead]
+  rcases hs with hs | ⟨m, hs⟩
+  · rw [hs] at hsf ⊢
+    exact basename_renderAbs_append dir _ (fun w hw => hsf w (List.mem_append_left _ hw)) (by decide)
+      (by decide)
+  · rw [hs] at hsf ⊢
+    rw [show dir ++ [m, ".env".toList] = (dir ++ [m]) ++ [".env".toList] by simp]
+    refine basename_renderAbs_append _ _ (fun w hw => hsf w ?_) (by decide) (by decide)
+    rcases List.mem_append.1 hw with h | h
+    · exact List.mem_append_left _ h
+    · simp at h; subst h; simp
+
+/-- (f) Every service config file, `.env` or `config.json`, directly in a service directory or
+one directory below it, is reported sensitive: `.env` by the basename rule, `config.json` by the
+service-config rule. -/
+theorem service_configs_flagged (home : List Char) : ServiceConfigsFlagged home := by
+  intro p hhead hsvc
+  rw [checkSensitivePath_eq_verdict]
+  apply verdict_isSensitive_of
+  obtain ⟨dir, hdir, f, hf, hs⟩ := hsvc
+  simp only [serviceFileNames, List.mem_cons, List.mem_nil_iff, or_false] at hf
+  rcases hf with rfl | rfl
+  · left
+    rw [basename_of_segments_env _ dir hhead hs]
+    decide
+  · right
+    exact (service_rule_described _).2 ⟨hhead, dir, hdir, "config.json".toList, by simp [serviceTableFileNames], hs⟩
 end SomaVerify.SensitivePath.Proofs

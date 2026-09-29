@@ -1,7 +1,7 @@
--- models: src/sensitive-path-filter.ts:21-56 (HOME, SENSITIVE_* tables, HOME_ALIASES)
--- models: src/sensitive-path-filter.ts:72-111 (checkSensitivePath)
--- models: src/sensitive-path-filter.ts:124-129 (checkSensitiveGlob)
--- models: src/sensitive-path-filter.ts:144-164 (normalizePath)
+-- models: src/sensitive-path-filter.ts:19-59 (HOME, SENSITIVE_* tables, HOME_ALIASES)
+-- models: src/sensitive-path-filter.ts:86-116 (checkSensitivePath)
+-- models: src/sensitive-path-filter.ts:129-134 (checkSensitiveGlob)
+-- models: src/sensitive-path-filter.ts:154-174 (normalizePath)
 -- models: packages/common/src/path-utils.ts:28-38 (normalizeTmpPath)
 
 /-!
@@ -116,7 +116,7 @@ def normalizeTmpPath (inputPath : List Char) : List Char :=
     if rest != [] && !(['/'].isPrefixOf rest) then inputPath
     else "/tmp".toList ++ rest
 
-/-! ## The rule tables (lines 21-56) -/
+/-! ## The rule tables (lines 19-59) -/
 
 /-- `HOME` (line 21): `os.homedir()`, with `/private/tmp` written `/tmp` as `normalizePath`
 writes checked paths. -/
@@ -180,18 +180,19 @@ def matchesSecrets (b : List Char) : Bool :=
 def basenamePatterns : List (List Char → Bool) :=
   [matchesEnv, matchesCredentials, matchesSecrets]
 
-/-- `SENSITIVE_SERVICE_CONFIGS` (lines 50-53), in order. -/
+/-- `SENSITIVE_SERVICE_CONFIGS` (lines 53-56), in order. No `.env`: the basename patterns catch
+every `.env` first. -/
 def serviceConfigs : List (List Char × List (List Char)) :=
-  [("/opt/soma-work".toList, [".env".toList, "config.json".toList]),
-   ("/opt/soma".toList, [".env".toList, "config.json".toList])]
+  [("/opt/soma-work".toList, ["config.json".toList]),
+   ("/opt/soma".toList, ["config.json".toList])]
 
-/-- `HOME_ALIASES` (line 56), in order. -/
+/-- `HOME_ALIASES` (line 59), in order. -/
 def homeAliases : List (List Char) :=
   ["~".toList, "$HOME".toList, "${HOME}".toList]
 
-/-! ## `normalizePath` (lines 144-164) -/
+/-! ## `normalizePath` (lines 154-174) -/
 
-/-- The `HOME_ALIASES` loop (lines 146-155): the first alias that `filePath` starts with,
+/-- The `HOME_ALIASES` loop (lines 156-165): the first alias that `filePath` starts with,
 followed by `/`, is replaced through `path.join(HOME, rest)`; a path equal to an alias becomes
 `HOME`; otherwise the path is unchanged. -/
 def expandHome (home filePath : List Char) : List (List Char) → List Char
@@ -202,13 +203,13 @@ def expandHome (home filePath : List Char) : List (List Char) → List Char
     else expandHome home filePath aliases
 
 /-- `normalizePath`: expand a home alias, resolve an absolute path's `.`, `..` and empty
-segments (lines 159-161), map `/private/tmp` to `/tmp`, drop trailing slashes. -/
+segments (lines 169-171), map `/private/tmp` to `/tmp`, drop trailing slashes. -/
 def normalizePath (home filePath : List Char) : List Char :=
   let expanded := expandHome home filePath homeAliases
   let resolved := if ['/'].isPrefixOf expanded then posixNormalize expanded else expanded
   stripTrailingSlashes (normalizeTmpPath resolved)
 
-/-! ## `checkSensitivePath` (lines 72-111) -/
+/-! ## `checkSensitivePath` (lines 86-116) -/
 
 /-- `SensitivePathResult`: `reason` is `none` where the source leaves it `undefined`. -/
 structure Result where
@@ -218,26 +219,25 @@ structure Result where
 /-- `{ isSensitive: false }`. -/
 def notSensitive : Result := ⟨false, none⟩
 
-/-- The directory test of line 78: the path is the directory or lies below it. -/
+/-- The directory test of line 90: the path is the directory or lies below it. -/
 def underDirectory (normalized dir : List Char) : Bool :=
   normalized == dir || (dir ++ ['/']).isPrefixOf normalized
 
-/-- The body of the inner service-config loop (lines 96-106) for one `dir` and `file`: true
-where the source returns. -/
-def serviceConfigHit (normalized dir file : List Char) : Bool :=
-  if normalized == pathJoin [dir, file] then true
-  else if (dir ++ ['/']).isPrefixOf normalized && ('/' :: file).isSuffixOf normalized then
-    let relative := normalized.drop (dir.length + 1)
-    let parts := splitSlash relative
-    parts.length == 2 && parts[1]? == some file
-  else false
+/-- The body of the service-config loop (lines 108-112) for one entry: below `dir`, at most two
+segments, the last one of `files`. `split` never returns an empty list, so the last segment
+always exists. -/
+def serviceConfigHit (normalized dir : List Char) (files : List (List Char)) : Bool :=
+  if !(dir ++ ['/']).isPrefixOf normalized then false
+  else
+    let parts := splitSlash (normalized.drop (dir.length + 1))
+    parts.length ≤ 2 && files.contains (parts.getLast?.getD [])
 
-/-- Whether the service-config loop (lines 94-108) returns. Every return there carries the same
+/-- Whether the service-config loop (lines 107-113) returns. Every return there carries the same
 reason, so which entry matched first does not matter. -/
 def serviceConfigRule (normalized : List Char) : Bool :=
-  serviceConfigs.any (fun entry => entry.2.any (fun file => serviceConfigHit normalized entry.1 file))
+  serviceConfigs.any (fun entry => serviceConfigHit normalized entry.1 entry.2)
 
-/-- Lines 77-110, the checks on the normalized path, in source order; each returns on the
+/-- Lines 89-115, the checks on the normalized path, in source order; each returns on the
 first rule that matches. -/
 def verdict (home normalized : List Char) : Result :=
   match (sensitiveDirectories home).find? (underDirectory normalized) with
@@ -251,25 +251,24 @@ def verdict (home normalized : List Char) : Result :=
       ⟨true, some ("Service config " ++ String.ofList normalized ++ " is restricted")⟩
     else notSensitive
 
-/-- `checkSensitivePath(filePath)`: the empty path is not sensitive (line 73); anything else is
-normalized and checked. -/
+/-- `checkSensitivePath(filePath)`: the path, normalized and checked. -/
 def checkSensitivePath (home filePath : List Char) : Result :=
-  if filePath.isEmpty then notSensitive else verdict home (normalizePath home filePath)
+  verdict home (normalizePath home filePath)
 
-/-! ## `checkSensitiveGlob` (lines 124-129) -/
+/-! ## `checkSensitiveGlob` (lines 129-134) -/
 
-/-- The characters `resolved.split(/[*?{}[\]]/)` splits on (line 127). -/
+/-- The characters `resolved.split(/[*?{}[\]]/)` splits on (line 132). -/
 def isGlobMeta (c : Char) : Bool :=
   c == '*' || c == '?' || c == '{' || c == '}' || c == '[' || c == ']'
 
-/-- Line 125: `basePath ? path.resolve(basePath, pattern) : pattern`. `path.resolve` falls back
+/-- Line 130: `basePath ? path.resolve(basePath, pattern) : pattern`. `path.resolve` falls back
 to the working directory `cwd` only when neither argument is absolute. -/
 def globResolved (cwd pattern : List Char) (basePath : Option (List Char)) : List Char :=
   match basePath with
   | some b => if b.isEmpty then pattern else pathResolve [cwd, b, pattern]
   | none => pattern
 
-/-- Line 127: the text before the first glob metacharacter, without trailing slashes. -/
+/-- Line 132: the text before the first glob metacharacter, without trailing slashes. -/
 def globPrefix (resolved : List Char) : List Char :=
   stripTrailingSlashes (resolved.takeWhile (fun c => !isGlobMeta c))
 
