@@ -216,8 +216,8 @@ function validateSession(value: unknown, where: string): string {
 
   // Required, not optional. `FollowupQueue`'s own constructor rejects a restored
   // session whose turnEpoch is not a non-negative integer
-  // (`followup-queue.ts:221-223`) and `ensureSession` always writes one
-  // (`:576`), so accepting a file without it would hand the queue a snapshot it
+  // (`followup-queue.ts:326-327`) and `ensureSession` always writes one
+  // (`:969`), so accepting a file without it would hand the queue a snapshot it
   // refuses. The format has never shipped — there is no legacy generation to
   // migrate, and defaulting a missing value to 0 would silently mint a turn
   // generation that makes stale button clicks look current (A12/A28).
