@@ -41,8 +41,8 @@ def allFlags : List String :=
       (sessionsGrammar "list").flags ++ (sessionsGrammar "show").flags).map (·.1)).eraseDups
 
 /-- Tokens that are neither commands nor flags: both profile names, a stray word, a value word,
-a lone `-` (a positional, args.ts:133), `-x` (an option token, but accepted as a value,
-args.ts:150) and `--` (an option token, refused as a value). -/
+a lone `-` (a positional, args.ts:131), `-x` (an option token, but accepted as a value,
+args.ts:148) and `--` (an option token, refused as a value). -/
 def edgeTokens : List String :=
   PROFILE_NAMES ++ ["extra", "U1", "-", "-x", "--"]
 
