@@ -13,11 +13,12 @@ to the real `parseFollowupQueueSnapshot` and requires the same outcome.
 Documents are built from one valid item, session and snapshot, then varied:
 
 * every field of the snapshot, session, item, message, `routeContext`, file and context, each
-  removed, set to an explicit `undefined`, and replaced by one value of every JSON type (null, a
-  boolean, a number, the empty and a non-empty string, an array, an object) plus a few values
-  specific to it (a mismatching id or eventKey, an unknown state, `false`); the number fields
-  also get the boundary numbers (0, -0, -1, 1, 1.0, 1.5, -0.5, 2^53 - 1, 2^53, NaN, ±Infinity, the
-  string "1");
+  removed, set to an explicit `undefined`, and replaced by one value of every JSON type (null,
+  `true`, the number 7, the empty and a non-empty string, an empty array, an empty object) plus a
+  few values specific to it (a mismatching id or eventKey, an unknown state, `false`); the nine
+  number fields (`version`, `nextSeq`, `turnEpoch`, `freeze.at`, `seq`, `epoch`, `enqueuedAt`,
+  `updatedAt` and a file's `size`) also get the boundary numbers (0, -0, -1, 1, 1.0, 1.5, -0.5,
+  2^53 - 1, 2^53, NaN, ±Infinity, the string "1");
 * exhaustively: every pair of the 10 item states in a two-item session, every triple of the four
   dispatch-related states (`queued`, `reserved`, `claimed`, `dispatched`) in a three-item session,
   and every `nextSeq` in 1..6 against eight seq sets;
@@ -29,9 +30,14 @@ Documents are built from one valid item, session and snapshot, then varied:
 ## Encoding
 
 JSON cannot write `undefined`, NaN, the infinities or -0, and `Support/Json` numbers are integers.
-Those values, non-integers, and integers beyond 2^53 are written as `{"$js":"<JS literal>"}` and the
-test decodes them with `Number(literal)` (or to `undefined`). `main` refuses to print a document with
-a repeated key (a JS object has distinct keys, and the model's property read takes the first) or
+A safe integer is written as a plain JSON number; every other number, and `undefined`, as
+`{"$js":"<JS literal>"}`, a finite number as a decimal without exponent. The model reads a number
+as the exact decimal it is (`JsNum`) and the code gets the Number the parser rounds its literal
+to, so a vector compares the two only if every number in it is a Number's value. Both ends check
+it: `main` refuses to print a document carrying a number that is not (`JsNum.isNumberValue`), and
+the test decodes a plain number only if it is a safe integer and a marker only if its literal is
+exactly the Number it parses to (compared in BigInt). `main` also refuses a document with a
+repeated key (a JS object has distinct keys, and the model's property read takes the first) or
 with a real `$js` key, and refuses repeated case names.
 -/
 
@@ -41,10 +47,6 @@ open SomaVerify SomaVerify.FollowupSnapshot
 
 /-! ## Encoding model values as vector JSON -/
 
-/-- 2^53: every integer up to this magnitude is a binary64 value, so `JSON.parse` reads it
-exactly. -/
-def exactIntegerLimit : Nat := 9007199254740992
-
 /-- The JS literal of the finite decimal `(-1)^neg * m / 10^k`, e.g. `1.5`, `-0`, `1.0`. -/
 def decimalLiteral (neg : Bool) (m k : Nat) : String :=
   let digits := (toString m).toList
@@ -53,13 +55,16 @@ def decimalLiteral (neg : Bool) (m k : Nat) : String :=
   let body := if k = 0 then whole else whole ++ "." ++ String.ofList (padded.drop (padded.length - k))
   (if neg then "-" else "") ++ body
 
-/-- A value JSON cannot carry, as its JS literal. -/
+/-- A value as its JS literal: one JSON cannot carry, or a number other than a safe integer. -/
 def marker (literal : String) : Json :=
   .obj [("$js", .str literal)]
 
+/-- A plain JSON number for a safe integer, and a marker for every other number. The test reads a
+plain number exactly when it comes back a safe integer (an integer literal parses to one only when
+it is one), so it can check that every plain number was read exactly; 2^53 goes in a marker. -/
 def encodeNum : JsNum → Json
   | .dec neg m k =>
-    if k = 0 ∧ m ≤ exactIntegerLimit ∧ ¬(neg = true ∧ m = 0) then
+    if k = 0 ∧ m ≤ JsNum.maxSafeInteger ∧ ¬(neg = true ∧ m = 0) then
       .num (if neg then -(m : Int) else (m : Int))
     else marker (decimalLiteral neg m k)
   | .posInf => marker "Infinity"
@@ -101,6 +106,23 @@ def wellFormedItems : List JsVal → Bool
 def wellFormedFields : List (String × JsVal) → Bool
   | [] => true
   | (_, v) :: rest => wellFormed v && wellFormedFields rest
+end
+
+mutual
+/-- Every number in the value is the value of a Number (`JsNum.isNumberValue`). -/
+def numberValues : JsVal → Bool
+  | .num x => x.isNumberValue
+  | .arr items => numberValuesItems items
+  | .obj fields => numberValuesFields fields
+  | _ => true
+
+def numberValuesItems : List JsVal → Bool
+  | [] => true
+  | v :: rest => numberValues v && numberValuesItems rest
+
+def numberValuesFields : List (String × JsVal) → Bool
+  | [] => true
+  | (_, v) :: rest => numberValues v && numberValuesFields rest
 end
 
 /-! ## Building documents -/
@@ -192,8 +214,10 @@ def boundaryNumbers : List (String × Option JsVal) :=
     ("2^53-1", some maxSafe), ("2^53", some twoPow53), ("NaN", some nan), ("Infinity", some inf),
     ("-Infinity", some negInf), ("string 1", some (str "1"))]
 
+/-- A number field: the boundary numbers, then every JSON type, removal and an explicit
+`undefined`. -/
 def numberField : List (String × Option JsVal) :=
-  boundaryNumbers ++ [("absent", none), ("undefined", some .undef), ("null", some .null)]
+  boundaryNumbers ++ anyType
 
 def optionalStringField : List (String × Option JsVal) :=
   anyType ++ [("string 5", some (str "5"))]
@@ -406,10 +430,19 @@ def checked : Bool :=
   all.all (fun c => wellFormed c.2.1) &&
     ((all.map (·.1)).eraseDups.length == all.length)
 
+/-- The cases whose document carries a number that is no Number's value. On such a number the
+model judges the exact decimal and the code the Number `JSON.parse` rounds it to, so the vector
+would compare two different inputs (see `JsNum`). -/
+def notNumberValues : List String :=
+  all.filterMap fun c => if numberValues c.2.1 then none else some c.1
+
 end SomaVerify.FollowupSnapshot.Vectors
 
 def main : IO Unit := do
   unless SomaVerify.FollowupSnapshot.Vectors.checked do
     throw (IO.userError "followup-snapshot vectors: a document repeats a key or uses $js, or a name repeats")
+  let inexact := SomaVerify.FollowupSnapshot.Vectors.notNumberValues
+  unless inexact.isEmpty do
+    throw (IO.userError s!"followup-snapshot vectors: a number is not the value of any JS Number (JsNum.isNumberValue) in: {"; ".intercalate inexact}")
   IO.print (SomaVerify.Vectors.render "followup-snapshot" ``SomaVerify.FollowupSnapshot.Vectors.cases
     SomaVerify.FollowupSnapshot.Vectors.cases)
