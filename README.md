@@ -522,7 +522,7 @@ cp config.example.json config.json
 
 #### 5. Inject env vars into the Claude Agent SDK (optional)
 
-The SDK is pinned to `0.3.251` (native Claude Code `2.1.251`) for Fable 5.1 support. Streaming turns force `CLAUDE_CODE_ENABLE_TASKS=false` and `MCP_CONNECTION_NONBLOCKING=0` to preserve the Slack TodoWrite snapshot adapter and first-turn MCP initialization. These compatibility settings are owned by the stream-options builder; they are not operator overrides.
+The SDK is pinned to `0.3.284` (native Claude Code `2.1.284`) for Fable 5.1 and Opus 5.5 (`claude-opus-5-5`, requires Claude Code ≥ 2.1.280) support. Streaming turns force `CLAUDE_CODE_ENABLE_TASKS=false` and `MCP_CONNECTION_NONBLOCKING=0` to preserve the Slack TodoWrite snapshot adapter and first-turn MCP initialization. These compatibility settings are owned by the stream-options builder; they are not operator overrides.
 
 Sometimes you need to set env vars on the SDK subprocess only (not on the
 host process), for example to disable a built-in MCP server bundled with the

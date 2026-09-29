@@ -13,8 +13,8 @@
  * interrupt receipt and handed to this mapper as a synthetic
  * `system/steer_settlement` frame (`claude-handler.ts` streamQuery).
  *
- * `command_lifecycle` is duck-typed on purpose: SDK 0.3.251 documents the frame
- * in prose (sdk.d.ts:3932) but declares NO type for it, so we match structurally
+ * `command_lifecycle` is duck-typed on purpose: SDK 0.3.284 documents the frame
+ * in prose (sdk.d.ts:4547) but declares NO type for it, so we match structurally
  * and degrade unknown phases to `observed` rather than guessing.
  */
 

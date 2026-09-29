@@ -137,8 +137,8 @@ function mapSteerSettlement(m: Record<string, unknown>): AgentStreamEvent[] {
 /**
  * Map a `command_lifecycle`-shaped system frame (user steering).
  *
- * Duck-typed on purpose: SDK 0.3.251 describes these frames in prose
- * (sdk.d.ts:3932/3942) but declares no type for them, so matching a declared
+ * Duck-typed on purpose: SDK 0.3.284 describes these frames in prose
+ * (sdk.d.ts:4547) but declares no type for them, so matching a declared
  * shape is impossible. The frame's OWN `uuid` is deliberately NOT used as the
  * send id — that field identifies the frame, not the message whose lifecycle it
  * reports; reading it would fabricate transitions for uuids the host never sent.
