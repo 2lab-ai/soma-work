@@ -2,12 +2,14 @@
  * Conformance of the snapshot gate with its Lean model.
  *
  * `verification/lean/SomaVerify/FollowupSnapshot/Model.lean` transcribes
- * `parseFollowupQueueSnapshot` (`../followup-queue-store.ts:47-281`) check by
+ * `parseFollowupQueueSnapshot` (`../followup-queue-store.ts:47-284`) check by
  * check, and `Proofs.lean` proves properties of that transcription: it accepts
  * exactly the snapshots the declarative `ValidSnapshot` describes, it returns
- * its input unchanged, and the duplicate-seq check can never be the one that
- * fires. Those theorems are about the model; this suite ties the model to the
- * code. `SomaVerify/FollowupSnapshot/Vectors.lean` varies one valid snapshot
+ * its input unchanged, and it answers every input exactly as the gate did
+ * before its proof-backed simplification (`ModelOriginal.lean`, whose
+ * duplicate-seq check could never fire). Those theorems are about the model;
+ * this suite ties the model to the code.
+ * `SomaVerify/FollowupSnapshot/Vectors.lean` varies one valid snapshot
  * field by field, adds exhaustive state and `nextSeq` grids, and records what
  * the model does with each document: return it, or throw which message. Every
  * case is replayed here against the real exported function.

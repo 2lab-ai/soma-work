@@ -1,17 +1,17 @@
 -- models: packages/slack/src/followup-queue-store.ts:47-64 (ITEM_STATES, PENDING_DISPATCH_STATES)
 -- models: packages/slack/src/followup-queue-store.ts:66-68 (fail)
 -- models: packages/slack/src/followup-queue-store.ts:70-73 (record)
--- models: packages/slack/src/followup-queue-store.ts:75-78 (array)
--- models: packages/slack/src/followup-queue-store.ts:80-83 (text)
--- models: packages/slack/src/followup-queue-store.ts:85-88 (optionalText)
--- models: packages/slack/src/followup-queue-store.ts:90-92 (optionalBool)
--- models: packages/slack/src/followup-queue-store.ts:94-99 (integer)
--- models: packages/slack/src/followup-queue-store.ts:101-104 (timestamp)
--- models: packages/slack/src/followup-queue-store.ts:106-108 (number)
--- models: packages/slack/src/followup-queue-store.ts:119-153 (validateMessage)
--- models: packages/slack/src/followup-queue-store.ts:155-198 (validateItem)
--- models: packages/slack/src/followup-queue-store.ts:200-263 (validateSession)
--- models: packages/slack/src/followup-queue-store.ts:265-281 (parseFollowupQueueSnapshot)
+-- models: packages/slack/src/followup-queue-store.ts:75-84 (array)
+-- models: packages/slack/src/followup-queue-store.ts:86-89 (text)
+-- models: packages/slack/src/followup-queue-store.ts:91-94 (optionalText)
+-- models: packages/slack/src/followup-queue-store.ts:96-98 (optionalBool)
+-- models: packages/slack/src/followup-queue-store.ts:100-105 (integer)
+-- models: packages/slack/src/followup-queue-store.ts:107-110 (timestamp)
+-- models: packages/slack/src/followup-queue-store.ts:112-114 (number)
+-- models: packages/slack/src/followup-queue-store.ts:125-159 (validateMessage)
+-- models: packages/slack/src/followup-queue-store.ts:161-204 (validateItem)
+-- models: packages/slack/src/followup-queue-store.ts:206-266 (validateSession)
+-- models: packages/slack/src/followup-queue-store.ts:268-284 (parseFollowupQueueSnapshot)
 import SomaVerify.Support.JsString
 
 /-!
@@ -21,20 +21,23 @@ import SomaVerify.Support.JsString
 checks, in the same order, failing with the same message. Each definition names the TS lines it
 transcribes. Where the TS inlines a block (the `routeContext`, `files` and `freeze` blocks, the
 state check), the model gives it a name and calls it at the same point, so the order of checks is
-unchanged.
+unchanged. The gate before the proof-backed simplification is kept in `ModelOriginal.lean`.
 
 ## Which values
 
 The gate reads `unknown`. In production that is always a `JSON.parse` result: `load()` parses the
-file (`readJsonWithBackup`, TS 331), and `save()` (TS 344) receives the queue's commit, which
+file (`readJsonWithBackup`, TS 334), and `save()` (TS 347) receives the queue's commit, which
 `FollowupQueue.commit` passes as `cloneJson(next)`, i.e. `JSON.parse(JSON.stringify(next))`
 (packages/slack/src/followup-queue.ts:274-276, 957-958). `JsVal` is those values plus the two that
 a caller outside that path can add and the TS tests do add: an explicit `undefined` and `NaN`.
 
-Not modeled, because neither entry point can produce them: sparse arrays, accessors, objects with
-a prototype other than `Object.prototype`, and objects with repeated keys (a JS object has
-distinct keys; `JSON.parse` keeps the last of repeated ones). No key the gate reads exists on
-`Object.prototype`, so a property read never reaches an inherited property.
+A hole in a sparse array is modeled as an `.undef` item: the gate walks arrays with `for…of`
+(TS 75-80), which reads a hole as the `undefined` it holds.
+
+Not modeled, because neither entry point can produce them: accessors, objects with a prototype
+other than `Object.prototype`, and objects with repeated keys (a JS object has distinct keys;
+`JSON.parse` keeps the last of repeated ones). No key the gate reads exists on `Object.prototype`,
+so a property read never reaches an inherited property.
 -/
 
 namespace SomaVerify.FollowupSnapshot
@@ -119,7 +122,7 @@ def isOne : JsVal → Bool
   | .num x => x.isOne
   | _ => false
 
-/-- `value as string | undefined` after `optionalText` accepted it (TS 193): the string, if
+/-- `value as string | undefined` after `optionalText` accepted it (TS 199): the string, if
 any. -/
 def asString? : JsVal → Option String
   | .str s => some s
@@ -133,7 +136,7 @@ def get : List (String × JsVal) → String → JsVal
   | [], _ => .undef
   | (k, v) :: rest, key => if k = key then v else get rest key
 
-/-- TS 47-61, in declaration order (the order matters: TS 170 prints it with `join('/')`). -/
+/-- TS 47-61, in declaration order (the order matters: TS 176 prints it with `join('/')`). -/
 def itemStates : List String :=
   ["queued", "steered", "reserved", "claimed", "dispatched", "resolved", "failed", "uncertain",
     "paused", "cancelled"]
@@ -141,7 +144,7 @@ def itemStates : List String :=
 /-- TS 64. -/
 def pendingDispatchStates : List String := ["reserved", "claimed"]
 
-/-- The field lists of the loops in TS 125, 128, 134, 137 and 145. -/
+/-- The field lists of the loops in TS 131, 134, 140, 143 and 151. -/
 def messageOptionalTextFields : List String :=
   ["team", "thread_ts", "text", "inlineDirectiveRawText", "modelOverride"]
 def messageOptionalBoolFields : List String := ["synthetic", "skipDispatch"]
@@ -162,32 +165,32 @@ def record (value : JsVal) (where_ : String) : Except String (List (String × Js
   | .obj fields => pure fields
   | _ => fail where_ "is not an object"
 
-/-- TS 75-78. -/
+/-- TS 75-84. The array itself; the loops walk it with `for…of`, visiting every index. -/
 def array (value : JsVal) (where_ : String) : Except String (List JsVal) :=
   match value with
   | .arr items => pure items
   | _ => fail where_ "is not an array"
 
-/-- TS 80-83: `typeof value !== 'string' || value.length === 0` fails. `.length` counts UTF-16
+/-- TS 86-89: `typeof value !== 'string' || value.length === 0` fails. `.length` counts UTF-16
 code units (`Support/JsString`). -/
 def text (value : JsVal) (where_ : String) : Except String String :=
   match value with
   | .str s => if utf16Length s = 0 then fail where_ "is not a non-empty string" else pure s
   | _ => fail where_ "is not a non-empty string"
 
-/-- TS 85-88: `value !== undefined && typeof value !== 'string'` fails. -/
+/-- TS 91-94: `value !== undefined && typeof value !== 'string'` fails. -/
 def optionalText (value : JsVal) (where_ : String) : Except String Unit :=
   match value with
   | .undef | .str _ => pure ()
   | _ => fail where_ "is not a string"
 
-/-- TS 90-92: `value !== undefined && typeof value !== 'boolean'` fails. -/
+/-- TS 96-98: `value !== undefined && typeof value !== 'boolean'` fails. -/
 def optionalBool (value : JsVal) (where_ : String) : Except String Unit :=
   match value with
   | .undef | .bool _ => pure ()
   | _ => fail where_ "is not a boolean"
 
-/-- TS 94-99: `typeof value !== 'number' || !Number.isSafeInteger(value) || value < min` fails,
+/-- TS 100-105: `typeof value !== 'number' || !Number.isSafeInteger(value) || value < min` fails,
 the three disjuncts in that order, each with the same message. Returns the integer, which is
 `≥ min ≥ 0`. -/
 def integer (value : JsVal) (where_ : String) (min : Nat) : Except String Nat :=
@@ -199,7 +202,7 @@ def integer (value : JsVal) (where_ : String) (min : Nat) : Except String Nat :=
     | none => fail where_ s!"is not a safe integer >= {min}"
   | _ => fail where_ s!"is not a safe integer >= {min}"
 
-/-- TS 101-104: `typeof value !== 'number' || !Number.isFinite(value) || value < 0` fails. -/
+/-- TS 107-110: `typeof value !== 'number' || !Number.isFinite(value) || value < 0` fails. -/
 def timestamp (value : JsVal) (where_ : String) : Except String Unit :=
   match value with
   | .num x =>
@@ -207,13 +210,13 @@ def timestamp (value : JsVal) (where_ : String) : Except String Unit :=
     else pure ()
   | _ => fail where_ "is not a non-negative finite number"
 
-/-- TS 106-108: `typeof value !== 'number' || !Number.isFinite(value)` fails. -/
+/-- TS 112-114: `typeof value !== 'number' || !Number.isFinite(value)` fails. -/
 def number (value : JsVal) (where_ : String) : Except String Unit :=
   match value with
   | .num x => if !x.isFinite then fail where_ "is not a finite number" else pure ()
   | _ => fail where_ "is not a finite number"
 
-/-- TS 132-140, the `routeContext` block of `validateMessage`; `value` is
+/-- TS 138-146, the `routeContext` block of `validateMessage`; `value` is
 `message.routeContext`. -/
 def validateRouteContext (value : JsVal) (where_ : String) : Except String Unit := do
   unless value.isUndefined do
@@ -223,7 +226,7 @@ def validateRouteContext (value : JsVal) (where_ : String) : Except String Unit 
     routeOptionalBoolFields.forM fun field =>
       optionalBool (get route field) s!"{where_}.routeContext.{field}"
 
-/-- TS 143-149, the `forEach` over `message.files` from entry `index` on. -/
+/-- TS 149-155, the `for…of` over `message.files` from entry `index` on. -/
 def validateFileEntries (where_ : String) : Nat → List JsVal → Except String Unit
   | _, [] => pure ()
   | index, entry :: rest => do
@@ -234,13 +237,13 @@ def validateFileEntries (where_ : String) : Nat → List JsVal → Except String
     number (get file "size") s!"{where_}.files[{index}].size"
     validateFileEntries where_ (index + 1) rest
 
-/-- TS 142-150, the `files` block of `validateMessage`; `value` is `message.files`. -/
+/-- TS 148-156, the `files` block of `validateMessage`; `value` is `message.files`. -/
 def validateFiles (value : JsVal) (where_ : String) : Except String Unit := do
   unless value.isUndefined do
     let entries ← array value s!"{where_}.files"
     validateFileEntries where_ 0 entries
 
-/-- TS 119-153. Returns `(channel, ts)`. -/
+/-- TS 125-159. Returns `(channel, ts)`. -/
 def validateMessage (value : JsVal) (where_ : String) : Except String (String × String) := do
   let message ← record value where_
   let _ ← text (get message "user") s!"{where_}.user"
@@ -254,7 +257,7 @@ def validateMessage (value : JsVal) (where_ : String) : Except String (String ×
   validateFiles (get message "files") where_
   pure (channel, ts)
 
-/-- What `validateItem` returns (TS 160). -/
+/-- What `validateItem` returns (TS 166). -/
 structure ItemRow where
   id : String
   seq : Nat
@@ -263,12 +266,12 @@ structure ItemRow where
   steerUuid : Option String
   deriving DecidableEq, Repr
 
-/-- `id` as TS 167 builds it: the template literal `${sessionKey}#${seq}`. A safe integer
+/-- `id` as TS 173 builds it: the template literal `${sessionKey}#${seq}`. A safe integer
 `>= 1` prints in decimal without exponent, which is `toString` on `Nat`. -/
 def itemId (sessionKey : String) (seq : Nat) : String :=
   sessionKey ++ "#" ++ toString seq
 
-/-- TS 169-170: `const state = item.state`; `ITEM_STATES.includes(state)` is true only for one of
+/-- TS 175-176: `const state = item.state`; `ITEM_STATES.includes(state)` is true only for one of
 the listed strings. -/
 def itemState (value : JsVal) (where_ : String) : Except String String :=
   match value with
@@ -277,18 +280,12 @@ def itemState (value : JsVal) (where_ : String) : Except String String :=
     else fail s!"{where_}.state" ("is not one of " ++ "/".intercalate itemStates)
   | _ => fail s!"{where_}.state" ("is not one of " ++ "/".intercalate itemStates)
 
-/-- TS 194, `steerUuid !== undefined && steerUuid.length === 0`. -/
+/-- TS 200, `steerUuid !== undefined && steerUuid.length === 0`. -/
 def emptyText : Option String → Bool
   | some s => utf16Length s == 0
   | none => false
 
-/-- TS 195, `!steerUuid`: `undefined` and the empty string are falsy, every other string is
-truthy (ECMA-262 section 7.1.2, ToBoolean). -/
-def falsy : Option String → Bool
-  | some s => utf16Length s == 0
-  | none => true
-
-/-- TS 155-198. -/
+/-- TS 161-204. -/
 def validateItem (value : JsVal) (sessionKey where_ : String) : Except String ItemRow := do
   let item ← record value where_
   let id ← text (get item "id") s!"{where_}.id"
@@ -311,31 +308,28 @@ def validateItem (value : JsVal) (sessionKey where_ : String) : Except String It
   optionalText (get item "steerUuid") s!"{where_}.steerUuid"
   let steerUuid := (get item "steerUuid").asString?
   if emptyText steerUuid then fail s!"{where_}.steerUuid" "is empty"
-  if state == "steered" && falsy steerUuid then
+  if state == "steered" && steerUuid.isNone then
     fail s!"{where_}.steerUuid" "is missing on a steered item"
   pure { id, seq, eventKey, state, steerUuid }
 
-/-- The accumulators of `validateSession` (TS 220-226). The lists stand for the `Set`s: `has` is
+/-- The accumulators of `validateSession` (TS 226-231). The lists stand for the `Set`s: `has` is
 membership, and `add` only ever receives an element the preceding `has` rejected, so appending
 keeps each list free of duplicates. -/
 structure Acc where
   ids : List String
-  seqs : List Nat
   eventKeys : List String
   steerUuids : List String
   maxSeq : Nat
   pendingDispatch : Nat
   dispatched : Nat
 
-/-- TS 220-226, before the first item. -/
-def Acc.empty : Acc := ⟨[], [], [], [], 0, 0, 0⟩
+/-- TS 226-231, before the first item. -/
+def Acc.empty : Acc := ⟨[], [], [], 0, 0, 0⟩
 
-/-- TS 230-250: one `forEach` step after `validateItem` returned `item` for entry `index`. -/
+/-- TS 235-253: one loop step after `validateItem` returned `item` for entry `index`. -/
 def step (where_ : String) (index : Nat) (item : ItemRow) (acc : Acc) : Except String Acc := do
   if acc.ids.contains item.id then
     fail s!"{where_}.items[{index}].id" s!"is a duplicate ({item.id})"
-  if acc.seqs.contains item.seq then
-    fail s!"{where_}.items[{index}].seq" s!"is a duplicate ({item.seq})"
   if acc.eventKeys.contains item.eventKey then
     fail s!"{where_}.items[{index}].eventKey" s!"is a duplicate ({item.eventKey})"
   let steerUuids ← match item.steerUuid with
@@ -346,15 +340,14 @@ def step (where_ : String) (index : Nat) (item : ItemRow) (acc : Acc) : Except S
     | none => pure acc.steerUuids
   pure {
     ids := acc.ids ++ [item.id]
-    seqs := acc.seqs ++ [item.seq]
     eventKeys := acc.eventKeys ++ [item.eventKey]
     steerUuids := steerUuids
     maxSeq := max acc.maxSeq item.seq
     pendingDispatch := acc.pendingDispatch + (if pendingDispatchStates.contains item.state then 1 else 0)
     dispatched := acc.dispatched + (if item.state == "dispatched" then 1 else 0) }
 
-/-- TS 228-251: `array(session.items, …).forEach((entry, index) => …)` from entry `index` on. Each
-entry is validated (TS 229) before its duplicate checks run, so an invalid entry after a
+/-- TS 233-254: `for (const [index, entry] of array(session.items, …).entries())` from entry `index`
+on. Each entry is validated (TS 234) before its duplicate checks run, so an invalid entry after a
 duplicate is never reached. -/
 def itemsLoop (sessionKey where_ : String) : Nat → List JsVal → Acc → Except String Acc
   | _, [], acc => pure acc
@@ -363,14 +356,14 @@ def itemsLoop (sessionKey where_ : String) : Nat → List JsVal → Acc → Exce
     let acc ← step where_ index item acc
     itemsLoop sessionKey where_ (index + 1) rest acc
 
-/-- TS 205-209, the `freeze` block of `validateSession`; `value` is `session.freeze`. -/
+/-- TS 211-215, the `freeze` block of `validateSession`; `value` is `session.freeze`. -/
 def validateFreeze (value : JsVal) (where_ : String) : Except String Unit := do
   unless value.isUndefined do
     let freeze ← record value s!"{where_}.freeze"
     let _ ← text (get freeze "reason") s!"{where_}.freeze.reason"
     timestamp (get freeze "at") s!"{where_}.freeze.at"
 
-/-- TS 200-263. Returns the session key. -/
+/-- TS 206-266. Returns the session key. -/
 def validateSession (value : JsVal) (where_ : String) : Except String String := do
   let session ← record value where_
   let sessionKey ← text (get session "sessionKey") s!"{where_}.sessionKey"
@@ -387,7 +380,7 @@ def validateSession (value : JsVal) (where_ : String) : Except String String := 
     fail s!"{where_}.items" s!"has {acc.dispatched} items in dispatched (max 1)"
   pure sessionKey
 
-/-- TS 273-278: the `forEach` over `snapshot.sessions` from entry `index` on; `keys` is the `Set`
+/-- TS 276-281: the `for…of` over `snapshot.sessions` from entry `index` on; `keys` is the `Set`
 of the keys seen so far. -/
 def sessionsLoop : Nat → List JsVal → List String → Except String Unit
   | _, [], _ => pure ()
@@ -397,7 +390,7 @@ def sessionsLoop : Nat → List JsVal → List String → Except String Unit
       fail s!"snapshot.sessions[{index}].sessionKey" s!"is a duplicate ({sessionKey})"
     sessionsLoop (index + 1) rest (keys ++ [sessionKey])
 
-/-- TS 269-281. `record` returns its argument itself (TS 72), so `return snapshot` returns
+/-- TS 268-284. `record` returns its argument itself (TS 72), so `return snapshot` returns
 `raw`. -/
 def parseFollowupQueueSnapshot (raw : JsVal) : Except String JsVal := do
   let snapshot ← record raw "snapshot"
