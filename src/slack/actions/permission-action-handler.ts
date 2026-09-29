@@ -45,8 +45,9 @@ export class PermissionActionHandler {
    * Looks up the pending approval in the shared-store to recover the
    * (channel, thread_ts, rule_ids) triple the permission-mcp-server persisted,
    * maps the first two to a session key, and mutates the session's
-   * `disabledDangerousRules` set so subsequent bypass-mode hook invocations
-   * short-circuit to allow. The disable is in-memory only — restarting the
+   * `disabledDangerousRules` set so subsequent auto-mode Bash commands matching
+   * only those rules no longer escalate (evaluateToolPolicy reads the set through
+   * `isDangerousRuleDisabled`). The disable is in-memory only — restarting the
    * bot or ending the session drops it (intentional; re-enable UI is out of
    * scope for this PR).
    */
