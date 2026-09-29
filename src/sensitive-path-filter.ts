@@ -57,11 +57,22 @@ const HOME_ALIASES: ReadonlyArray<string> = ['~', '$HOME', `\${HOME}`];
 
 // Regexes for extracting file paths from bash commands — hoisted to avoid per-call recompilation.
 // A captured path may start with a HOME_ALIASES spelling, which normalizePath expands.
+// Known limits of this text-level check: `~user/...` is not expanded; a glob in a Bash path
+// (`cat ~/.ss*/id_rsa`) is checked as written; checkSensitiveGlob checks the text before the first
+// glob metacharacter, which need not end at a segment boundary (`~/.ss*`); relative paths and a
+// relative Glob base resolve against a working directory this module never sees. Only an OS-level
+// read deny list (see getSensitiveReadDenyPaths) covers every shell spelling.
+// A read command's arguments run to the next `|`, `;` or `&`; RE_PATH picks every path among them.
 const RE_READ_COMMANDS =
-  /\b(?:cat|head|tail|less|more|bat|xxd|hexdump|strings|base64|nano|vi|vim|code|open)\b[^|;&]*?((?:~|\$HOME|\$\{HOME\})?(?:\/[\w.\-~]+)+(?:\/[\w.\-~*]+)?)/g;
+  /\b(?:cat|head|tail|less|more|bat|xxd|hexdump|strings|base64|nano|vi|vim|code|open)\b([^|;&]*)/g;
+const RE_PATH = /(?:~|\$HOME|\$\{HOME\})?(?:\/[\w.\-~]+)+(?:\/[\w.\-~*]+)?/g;
 const RE_INPUT_REDIRECT = /<\s*((?:~|\$HOME|\$\{HOME\})?(?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
 const RE_COPY_COMMANDS = /\b(?:cp|mv|rsync)\b[^|;&]*?\s+((?:~|\$HOME|\$\{HOME\})?(?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)\s/g;
-const RE_SOURCE_CMD = /\b(?:source|\.)\s+((?:~|\$HOME|\$\{HOME\})?(?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
+// `.` sources a file where a command starts: at the start, or after white space or a separator.
+const RE_SOURCE_CMD =
+  /(?:\bsource|(?<![^\w\s;&|(){}`])\.)\s+((?:~|\$HOME|\$\{HOME\})?(?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
+// Changing into a directory is an access to it.
+const RE_CHANGE_DIR = /\b(?:cd|pushd)\b[^|;&]*?((?:~|\$HOME|\$\{HOME\})?(?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
 
 export interface SensitivePathResult {
   readonly isSensitive: boolean;
@@ -133,11 +144,16 @@ function collectMatches(pattern: RegExp, text: string): string[] {
 }
 
 function extractPathsFromCommand(command: string): string[] {
+  // The shell reads `"$HOME"/x` as `$HOME/x`; without the quotes the regexes see one path.
+  const text = command.replace(/"(\$HOME|\$\{HOME\})"/g, '$1');
   const paths: string[] = [];
-  paths.push(...collectMatches(RE_READ_COMMANDS, command));
-  paths.push(...collectMatches(RE_INPUT_REDIRECT, command));
-  paths.push(...collectMatches(RE_COPY_COMMANDS, command));
-  paths.push(...collectMatches(RE_SOURCE_CMD, command));
+  for (const args of collectMatches(RE_READ_COMMANDS, text)) {
+    paths.push(...(args.match(RE_PATH) ?? []));
+  }
+  paths.push(...collectMatches(RE_INPUT_REDIRECT, text));
+  paths.push(...collectMatches(RE_COPY_COMMANDS, text));
+  paths.push(...collectMatches(RE_SOURCE_CMD, text));
+  paths.push(...collectMatches(RE_CHANGE_DIR, text));
   return paths.map(normalizePath);
 }
 
