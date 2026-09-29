@@ -12,7 +12,10 @@ sensitive-path and MCP guards were grouped under one `!ctx.isAdmin` test, and th
 native-tool allow branches were merged. Line numbers below refer to that commit.
 
 The input side did not change, so this file reuses `Input`, `Primitives`, `Mode`, the constants
-and `checkSensitiveForTool` from `Model.lean`. It keeps its own `Decision`, which still has
+and `checkSensitiveForTool` from `Model.lean`. `Input` has since gained the tool-input
+properties that select the sensitive-path call (`sensitiveCall`), which the phase-1 code
+selected the same way; this model reads them only through the primitive values in `prims`
+(`Original.decision_ignores_call_arguments`). It keeps its own `Decision`, which still has
 `ask`, and its own `Result`. `Proofs.lean` proves the documented invariants for this model.
 -/
 

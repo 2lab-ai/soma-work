@@ -13,6 +13,11 @@
  * the model's result exactly. The `table` rows are the full truth table: every mode, context
  * flag and primitive result, for every path through the policy's tool-name tests.
  *
+ * The sensitive-path checks are held to their arguments as well: each call carries the check
+ * and arguments the model says the policy passes (`sensitiveCall`), and the mocked checks answer
+ * only that exact call, throwing on any other check or argument list. A slip in how the policy
+ * picks those arguments from the tool input therefore fails the replay.
+ *
  * Real inputs through the real primitives are replayed by
  * `tool-policy.concrete.lean-conformance.test.ts` (`vi.mock` is file-scoped, hence two files).
  * The vector file is regenerated and drift-checked by the "Lean Verify" workflow
@@ -67,15 +72,24 @@ interface Primitives {
   bash: BypassBashPermissionResult;
 }
 
+/** A sensitive-path check call: the check and its arguments. */
+interface SensitiveCall {
+  fn: 'checkBashSensitivePaths' | 'checkSensitivePath' | 'checkSensitiveGlob';
+  /** A Glob base path that is `undefined` is written `null`. */
+  args: Array<string | null>;
+}
+
 interface MockedCall {
   tool: string;
   /** `null` stands for an undefined `toolInput`. */
   input: Record<string, unknown> | null;
+  /** The sensitive-path call the model says the policy makes; `null`: none. */
+  sensitiveCall: SensitiveCall | null;
   expect: Record<string, unknown>;
 }
 
 interface MockedRow {
-  kind: 'table' | 'tool-names' | 'boundary';
+  kind: 'table' | 'tool-names' | 'boundary' | 'arguments';
   mode: PermissionMode;
   isAdmin: boolean;
   aborted: boolean;
@@ -96,7 +110,7 @@ const vectors = JSON.parse(
   fs.readFileSync(path.join(repoRoot, 'verification/vectors/tool-policy.json'), 'utf8'),
 ) as VectorFile;
 
-const MOCKED_KINDS = ['table', 'tool-names', 'boundary'];
+const MOCKED_KINDS = ['table', 'tool-names', 'boundary', 'arguments'];
 const rows = vectors.cases.filter((c) => MOCKED_KINDS.includes(c.kind)) as MockedRow[];
 
 /**
@@ -114,11 +128,33 @@ const HANDOFF: HandoffContext = {
   hopBudget: 1,
 };
 
+/**
+ * The sensitive-path checks answer only `expected`, with `value`, and throw on any other check or
+ * argument list, so the policy's choice of arguments is replayed along with its logic.
+ */
+function mockSensitiveChecks(expected: SensitiveCall | null, value: SensitivePathResult): void {
+  const answer = (fn: SensitiveCall['fn'], args: Array<string | undefined>): SensitivePathResult => {
+    if (
+      expected !== null &&
+      expected.fn === fn &&
+      isDeepStrictEqual(
+        args,
+        expected.args.map((a) => a ?? undefined),
+      )
+    ) {
+      return value;
+    }
+    throw new Error(`unexpected ${fn}(${JSON.stringify(args)}); the model calls ${JSON.stringify(expected)}`);
+  };
+  vi.mocked(checkBashSensitivePaths).mockImplementation((command) => answer('checkBashSensitivePaths', [command]));
+  vi.mocked(checkSensitivePath).mockImplementation((filePath) => answer('checkSensitivePath', [filePath]));
+  vi.mocked(checkSensitiveGlob).mockImplementation((pattern, basePath) =>
+    answer('checkSensitiveGlob', [pattern, basePath]),
+  );
+}
+
 function mockPrimitives(prims: Primitives): void {
   vi.mocked(isSshCommand).mockReturnValue(prims.ssh);
-  vi.mocked(checkBashSensitivePaths).mockReturnValue(prims.sensitive);
-  vi.mocked(checkSensitivePath).mockReturnValue(prims.sensitive);
-  vi.mocked(checkSensitiveGlob).mockReturnValue(prims.sensitive);
   vi.mocked(isCrossUserAccess).mockReturnValue(prims.crossUser);
   vi.mocked(handlePrIssuePrecondition).mockReturnValue(prims.prIssue as PrIssueGuardResult);
   vi.mocked(bypassBashPermissionDecision).mockReturnValue(prims.bash);
@@ -145,8 +181,14 @@ function replay(selected: MockedRow[]): { mismatches: string[]; calls: number } 
     const ctx = contextOf(row);
     for (const call of row.calls) {
       calls += 1;
-      // A JSON round trip drops `undefined` properties, which the vector file cannot hold.
-      const actual = JSON.parse(JSON.stringify(evaluateToolPolicy(call.tool, call.input ?? undefined, ctx)));
+      mockSensitiveChecks(call.sensitiveCall, row.prims.sensitive);
+      let actual: unknown;
+      try {
+        // A JSON round trip drops `undefined` properties, which the vector file cannot hold.
+        actual = JSON.parse(JSON.stringify(evaluateToolPolicy(call.tool, call.input ?? undefined, ctx)));
+      } catch (error) {
+        actual = { threw: error instanceof Error ? error.message : String(error) };
+      }
       if (!isDeepStrictEqual(actual, call.expect)) {
         const { calls: _calls, ...context } = row;
         mismatches.push(

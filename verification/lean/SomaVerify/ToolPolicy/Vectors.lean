@@ -5,10 +5,13 @@ import SomaVerify.ToolPolicy.Model
 /-!
 # Conformance vectors for `SomaVerify.ToolPolicy`
 
-`verification/vectors/tool-policy.json` holds five kinds of case, told apart by `kind`.
+`verification/vectors/tool-policy.json` holds six kinds of case, told apart by `kind`.
 
 Replayed by `tool-policy.lean-conformance.test.ts`, which mocks the guard primitives with each
-row's `prims` and calls the real `evaluateToolPolicy` once per entry of `calls`:
+row's `prims` and calls the real `evaluateToolPolicy` once per entry of `calls`. Every call also
+carries `sensitiveCall`, the sensitive-path check and arguments the model says the policy passes
+it (`sensitiveCall`, `null` for none); the mocked checks answer only that exact call and throw on
+any other, so a wrong argument or a wrong check fails the replay.
 
 * `table`: the truth table. Every combination of mode, `isAdmin`, `aborted`, handoff presence
   and the six primitive values, each either silent or firing with a fixed payload:
@@ -22,13 +25,18 @@ row's `prims` and calls the real `evaluateToolPolicy` once per entry of `calls`:
   an empty one, an empty MCP deny reason, PR-issue results without a reason or a message,
   empty and longer rule-id lists, Grep `path` values that are empty, blank, not strings or
   missing, and undefined tool inputs.
+* `arguments`: Glob, Read, Bash and Grep inputs that differ only in the properties the
+  sensitive-path call takes its arguments from (a string, the empty string, other values, a
+  missing property), with the other candidate properties present, so an argument read from the
+  wrong property changes the call.
 
 Replayed by `tool-policy.concrete.lean-conformance.test.ts` against the real modules, no mocks:
 
 * `constants`: `NATIVE_BYPASS_TOOLS` and `TOOL_POLICY_MATCHERS` as the model has them.
 * `concrete`: real tool calls. Each lists the primitive calls the policy makes for it, with the
   values the test first checks against the real primitives; the model's input is built from
-  the same values, so a vector cannot assert one thing and model another.
+  the same values, so a vector cannot assert one thing and model another. The sensitive-path
+  entry is the model's `sensitiveCall` for the case's input, not written by hand.
 
 Run by `scripts/verification/lean-verify.sh` (`lake env lean --run`); the output is
 `verification/vectors/tool-policy.json`.
@@ -81,6 +89,15 @@ def mcpJson : Option String → Json
   | some s => .str s
   | none => .null
 
+/-- A sensitive-path call as the tests expect it: the check's name and its arguments, a Glob base
+path that is `undefined` written as `null`; `null` for no call. -/
+def sensitiveCallJson : Option SensitiveCall → Json
+  | some (.bash command) => .obj [("fn", .str "checkBashSensitivePaths"), ("args", strs [command])]
+  | some (.path filePath) => .obj [("fn", .str "checkSensitivePath"), ("args", strs [filePath])]
+  | some (.glob pattern basePath) =>
+    .obj [("fn", .str "checkSensitiveGlob"), ("args", .arr [.str pattern, (basePath.map .str).getD .null])]
+  | none => .null
+
 def primsJson (p : Primitives) : Json :=
   .obj [("ssh", .bool p.ssh), ("sensitive", sensitiveJson p.sensitive),
     ("crossUser", .bool p.crossUser), ("mcpDenied", mcpJson p.mcpDenied),
@@ -102,11 +119,14 @@ structure Call where
   input : Option Json
 
 def Row.toInput (r : Row) (c : Call) : Input :=
-  { toolName := c.tool, path := pathField c.input, isAdmin := r.isAdmin, mode := r.mode,
+  { toolName := c.tool, command := jsonField "command" c.input,
+    filePath := jsonField "file_path" c.input, pattern := jsonField "pattern" c.input,
+    path := jsonField "path" c.input, isAdmin := r.isAdmin, mode := r.mode,
     aborted := r.aborted, handoff := r.handoff, prims := r.prims }
 
 def callJson (r : Row) (c : Call) : Json :=
   .obj [("tool", .str c.tool), ("input", c.input.getD .null),
+    ("sensitiveCall", sensitiveCallJson (sensitiveCall (r.toInput c))),
     ("expect", resultJson (evaluate (r.toInput c)))]
 
 def rowJson (kind : String) (calls : List Call) (r : Row) : Json :=
@@ -246,6 +266,47 @@ def boundaryRows : List (Row × List Call) :=
   [(autoRow { quiet with sensitive := sensitiveHit }, pathCalls),
     ({ autoRow { quiet with sensitive := sensitiveHit } with isAdmin := true }, pathCalls)]
 
+/-- A tool input with the given properties. -/
+def inputOf (props : List (String × Json)) : Option Json :=
+  some (.obj props)
+
+/-- Inputs that differ only in the properties the sensitive-path call takes its arguments from:
+a string, the empty string, other values and a missing property, often with the other candidate
+properties present, so an argument read from the wrong property changes the call. The first two
+Glob inputs are the pair a reviewer found the phase-1 model could not tell apart. -/
+def argumentCalls : List Call :=
+  [⟨"Glob", inputOf [("pattern", .str "*"), ("path", .str "SECRETBASE")]⟩,
+    ⟨"Glob", inputOf [("pattern", .str "*"), ("path", .str "/tmp")]⟩,
+    ⟨"Glob", inputOf [("pattern", .str "*"), ("path", .str "")]⟩,
+    ⟨"Glob", inputOf [("pattern", .str "*"), ("path", .num 7)]⟩,
+    ⟨"Glob", inputOf [("pattern", .str "*"), ("path", .null)]⟩,
+    ⟨"Glob", inputOf [("pattern", .str "*"), ("path", .obj [])]⟩,
+    ⟨"Glob", inputOf [("pattern", .str "*")]⟩,
+    ⟨"Glob", inputOf [("pattern", .str ""), ("path", .str "/tmp")]⟩,
+    ⟨"Glob", inputOf [("pattern", .num 7), ("path", .str "/tmp")]⟩,
+    ⟨"Glob", inputOf [("path", .str "/tmp")]⟩,
+    ⟨"Glob", inputOf [("pattern", .str "*"), ("path", .str "/tmp"), ("file_path", .str "/x"),
+      ("command", .str "cat /y")]⟩,
+    ⟨"Read", inputOf [("file_path", .str "/a")]⟩,
+    ⟨"Read", inputOf [("file_path", .str "/a"), ("path", .str "/b"), ("pattern", .str "/c")]⟩,
+    ⟨"Read", inputOf [("file_path", .str "")]⟩,
+    ⟨"Read", inputOf [("file_path", .num 7)]⟩,
+    ⟨"Read", inputOf [("file_path", .null)]⟩,
+    ⟨"Read", inputOf [("path", .str "/b")]⟩,
+    ⟨"Bash", inputOf [("command", .str "cat /a")]⟩,
+    ⟨"Bash", inputOf [("command", .str "cat /a"), ("file_path", .str "/b"), ("path", .str "/c")]⟩,
+    ⟨"Bash", inputOf [("command", .str "")]⟩,
+    ⟨"Bash", inputOf [("command", .num 7)]⟩,
+    ⟨"Bash", inputOf [("command", .obj [])]⟩,
+    ⟨"Bash", inputOf [("file_path", .str "/b")]⟩,
+    ⟨"Grep", inputOf [("path", .str "/a"), ("file_path", .str "/b"), ("pattern", .str "TODO")]⟩,
+    ⟨"Grep", inputOf [("file_path", .str "/b"), ("pattern", .str "TODO")]⟩]
+
+/-- The argument calls, for a non-admin whose sensitive-path check comes back clear and one whose
+check comes back sensitive. -/
+def argumentRows : List Row :=
+  [autoRow quiet, autoRow { quiet with sensitive := sensitiveHit }]
+
 /-! ## Constants -/
 
 def constantsJson : Json :=
@@ -258,9 +319,9 @@ def constantsJson : Json :=
 the same values the model input is built from. -/
 inductive Pre where
   | isSshCommand (command : String)
-  | checkBashSensitivePaths (command : String)
-  | checkSensitivePath (path : String)
-  | checkSensitiveGlob (pattern : String)
+  /-- the sensitive-path call the model says the policy makes for the case's input
+  (`sensitiveCall`); a case lists it only when there is one -/
+  | sensitive
   | isCrossUserAccess (command user : String)
   /-- called with the case's tool name, tool input and handoff context -/
   | handlePrIssuePrecondition
@@ -287,21 +348,23 @@ structure Concrete where
   pre : List Pre
 
 def Concrete.toInput (c : Concrete) : Input :=
-  { toolName := c.tool, path := pathField (some c.input), isAdmin := c.isAdmin, mode := c.mode,
+  { toolName := c.tool, command := jsonField "command" (some c.input),
+    filePath := jsonField "file_path" (some c.input), pattern := jsonField "pattern" (some c.input),
+    path := jsonField "path" (some c.input), isAdmin := c.isAdmin, mode := c.mode,
     aborted := c.aborted, handoff := c.handoff.isSome, prims := c.prims }
+
+/-- The model's sensitive-path call for a concrete case, with the value the case gives it. A case
+that lists `.sensitive` without making a call gets `fn: "no-sensitive-call"`, which the test
+rejects. -/
+def sensitivePreJson (c : Concrete) : Json :=
+  match sensitiveCallJson (sensitiveCall c.toInput) with
+  | .obj fields => .obj (fields ++ [("result", sensitiveJson c.prims.sensitive)])
+  | _ => .obj [("fn", .str "no-sensitive-call")]
 
 def preJson (c : Concrete) : Pre → Json
   | .isSshCommand command =>
     .obj [("fn", .str "isSshCommand"), ("args", strs [command]), ("result", .bool c.prims.ssh)]
-  | .checkBashSensitivePaths command =>
-    .obj [("fn", .str "checkBashSensitivePaths"), ("args", strs [command]),
-      ("result", sensitiveJson c.prims.sensitive)]
-  | .checkSensitivePath path =>
-    .obj [("fn", .str "checkSensitivePath"), ("args", strs [path]),
-      ("result", sensitiveJson c.prims.sensitive)]
-  | .checkSensitiveGlob pattern =>
-    .obj [("fn", .str "checkSensitiveGlob"), ("args", strs [pattern]),
-      ("result", sensitiveJson c.prims.sensitive)]
+  | .sensitive => sensitivePreJson c
   | .isCrossUserAccess command user =>
     .obj [("fn", .str "isCrossUserAccess"), ("args", strs [command, user]),
       ("result", .bool c.prims.crossUser)]
@@ -329,7 +392,7 @@ def bashInput (command : String) : Json :=
 
 /-- The primitives a Bash call consults, in the order the policy consults them. -/
 def bashPre (command : String) : List Pre :=
-  [.isSshCommand command, .checkBashSensitivePaths command, .isCrossUserAccess command sessionUser,
+  [.isSshCommand command, .sensitive, .isCrossUserAccess command sessionUser,
     .bypassBashPermissionDecision command]
 
 def issueUrl : String := "https://github.com/2lab-ai/soma-work/issues/696"
@@ -390,19 +453,25 @@ def rmRules : List String := ["rm-recursive", "rm-force"]
 def concreteCases : List Concrete :=
   [{ name := "read-sensitive-nonadmin-auto", tool := "Read",
      input := .obj [("file_path", .str sshKey)], mode := .auto,
-     prims := { quiet with sensitive := sshKeySensitive }, pre := [.checkSensitivePath sshKey] },
+     prims := { quiet with sensitive := sshKeySensitive }, pre := [.sensitive] },
    { name := "read-sensitive-admin-bypass", tool := "Read",
      input := .obj [("file_path", .str sshKey)], isAdmin := true, mode := .bypass,
-     prims := { quiet with sensitive := sshKeySensitive }, pre := [.checkSensitivePath sshKey] },
+     prims := { quiet with sensitive := sshKeySensitive }, pre := [.sensitive] },
    { name := "read-safe-legacy", tool := "Read",
      input := .obj [("file_path", .str ("/tmp/" ++ sessionUser ++ "/notes.txt"))],
-     mode := .legacy, pre := [.checkSensitivePath ("/tmp/" ++ sessionUser ++ "/notes.txt")] },
+     mode := .legacy, pre := [.sensitive] },
    { name := "grep-sensitive-nonadmin-auto", tool := "Grep",
      input := .obj [("pattern", .str "BEGIN"), ("path", .str sshKey)], mode := .auto,
-     prims := { quiet with sensitive := sshKeySensitive }, pre := [.checkSensitivePath sshKey] },
+     prims := { quiet with sensitive := sshKeySensitive }, pre := [.sensitive] },
    { name := "glob-sensitive-nonadmin-bypass", tool := "Glob",
      input := .obj [("pattern", .str sshKey)], mode := .bypass,
-     prims := { quiet with sensitive := sshKeySensitive }, pre := [.checkSensitiveGlob sshKey] },
+     prims := { quiet with sensitive := sshKeySensitive }, pre := [.sensitive] },
+   { name := "glob-sensitive-base-nonadmin-auto", tool := "Glob",
+     input := .obj [("pattern", .str "*"), ("path", .str (home ++ "/.ssh"))], mode := .auto,
+     prims := { quiet with sensitive := sshKeySensitive }, pre := [.sensitive] },
+   { name := "glob-safe-base-nonadmin-auto", tool := "Glob",
+     input := .obj [("pattern", .str "*"), ("path", .str "/tmp")], mode := .auto,
+     pre := [.sensitive] },
    { name := "bash-ssh-nonadmin-bypass", tool := "Bash", input := bashInput "ssh prod-host",
      mode := .bypass, prims := { quiet with ssh := true }, pre := bashPre "ssh prod-host" },
    { name := "bash-ssh-admin-auto", tool := "Bash", input := bashInput "ssh prod-host",
@@ -453,6 +522,7 @@ def cases : List Json :=
   tableRows.map (rowJson "table" tableCalls) ++
   namesRows.map (rowJson "tool-names" toolNames) ++
   boundaryRows.map (fun (r, calls) => rowJson "boundary" calls r) ++
+  argumentRows.map (rowJson "arguments" argumentCalls) ++
   [constantsJson] ++
   concreteCases.map concreteJson
 

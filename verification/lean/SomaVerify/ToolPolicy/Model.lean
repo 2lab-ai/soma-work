@@ -1,9 +1,10 @@
 -- models: src/agent-runtime/policy/tool-policy.ts:39 (PR_CREATE_MCP_TOOL)
 -- models: src/agent-runtime/policy/tool-policy.ts:47-64 (ToolPolicyDecision, ToolPolicyResult)
--- models: src/agent-runtime/policy/tool-policy.ts:71-93 (ToolPolicyContext: the fields the policy reads)
--- models: src/agent-runtime/policy/tool-policy.ts:104-117 (checkSensitiveForTool)
--- models: src/agent-runtime/policy/tool-policy.ts:123-209 (evaluateToolPolicy)
--- models: src/agent-runtime/policy/tool-policy.ts:212 (TOOL_POLICY_MATCHERS)
+-- models: src/agent-runtime/policy/tool-policy.ts:71-95 (ToolPolicyContext: the fields the policy reads)
+-- models: src/agent-runtime/policy/tool-policy.ts:97-99 (asStr)
+-- models: src/agent-runtime/policy/tool-policy.ts:106-119 (checkSensitiveForTool: the call it makes and its result)
+-- models: src/agent-runtime/policy/tool-policy.ts:125-215 (evaluateToolPolicy)
+-- models: src/agent-runtime/policy/tool-policy.ts:218 (TOOL_POLICY_MATCHERS)
 -- models: src/agent-runtime/policy/permission-mode.ts:28 (PermissionMode)
 -- models: src/hooks/bypass-permission-guard.ts:56-68 (NATIVE_BYPASS_TOOLS)
 import SomaVerify.Support.Json
@@ -19,7 +20,7 @@ This file transcribes it branch by branch; line numbers refer to
 
 The guard primitives are inputs of the model, not part of it. `isSshCommand`,
 `isCrossUserAccess`, `bypassBashPermissionDecision`, the three sensitive-path checks,
-`handlePrIssuePrecondition` and `ctx.checkMcpToolPermission` appear only through the values they
+`handlePrIssuePrecondition` and `ctx.checkMcpToolPermission` appear through the values they
 return (`Primitives`). The model is about how the policy combines those values, which is also
 what `tool-policy.lean-conformance.test.ts` exercises: it mocks the primitives and feeds each
 vector's values to the real function.
@@ -28,15 +29,23 @@ What the policy reads itself, and the model therefore transcribes:
 
 * the tool name, through `=== 'Bash'`, the `switch` in `checkSensitiveForTool`,
   `startsWith('mcp__')`, `=== PR_CREATE_MCP_TOOL` and `NATIVE_BYPASS_TOOLS.includes`;
-* `toolInput.path`, for Grep only (line 113), after line 128 replaces an undefined `toolInput`
-  with `{}`;
+* `toolInput.command`, `toolInput.file_path`, `toolInput.pattern` and `toolInput.path`, after
+  line 130 replaces an undefined `toolInput` with `{}`. `checkSensitiveForTool` picks the
+  arguments of its sensitive-path check from them (lines 109-115), and `toolInput.path` also
+  decides whether a Grep is checked at all (line 115). `sensitiveCall` is that call, arguments
+  included;
 * `ctx.isAdmin`, `ctx.mode`, `ctx.aborted`, and whether `ctx.handoffContext` is defined.
 
-`ctx.user` and `ctx.isDangerousRuleDisabled` are only passed on to primitives, and `command`
-(line 129) only feeds primitives, so none of them appears here. The model takes every primitive
-value as given, including those the TS never asks for on the path it takes (`&&` skips the call);
-a skipped call's value cannot reach the result, and the proofs show which values each result
-depends on.
+The arguments of the sensitive-path checks are modelled; those of the other primitives are not.
+`Primitives.sensitive` is the value of the call `sensitiveCall` describes, and the mocked replay
+answers only that exact call, throwing on any other, so a wrong argument or a wrong check makes
+it fail. The other primitives receive `command` (line 131, also `asStr(input.command)`),
+`ctx.user`, `ctx.isDangerousRuleDisabled`, the tool name or the tool input; the model takes
+their values as given and does not describe those arguments.
+
+The model takes every primitive value as given, including those the TS never asks for on the
+path it takes (`&&` skips the call); a value that is never asked for cannot reach the result,
+and the proofs show which values each result depends on.
 
 This is the model of the code after the proof-backed simplification. `ModelOriginal.lean` keeps
 the phase-1 model of the code before it, `Proofs.lean` proves the documented invariants for that
@@ -55,7 +64,7 @@ inductive Mode where
   | legacy
   deriving DecidableEq, Repr
 
-/-- The string a `PermissionMode` is (permission-mode.ts:28), which `${ctx.mode}` renders (line 204). -/
+/-- The string a `PermissionMode` is (permission-mode.ts:28), which `${ctx.mode}` renders (line 210). -/
 def Mode.name : Mode → String
   | .auto => "auto"
   | .bypass => "bypass"
@@ -106,22 +115,23 @@ structure BashPermission where
 
 /-- What the guard primitives return for one call. -/
 structure Primitives where
-  /-- `isSshCommand(command)` — line 142. -/
+  /-- `isSshCommand(command)` — line 146. -/
   ssh : Bool
-  /-- The value of the sensitive-path check that `checkSensitiveForTool` calls for the tool:
-  `checkBashSensitivePaths`, `checkSensitivePath` or `checkSensitiveGlob` (lines 107-113). -/
+  /-- The value the sensitive-path check returns for the one call `checkSensitiveForTool` makes,
+  `sensitiveCall` (lines 109-115). Not used when it makes none. -/
   sensitive : SensitivePathResult
-  /-- `isCrossUserAccess(command, ctx.user)` — line 161. -/
+  /-- `isCrossUserAccess(command, ctx.user)` — line 166. -/
   crossUser : Bool
-  /-- `ctx.checkMcpToolPermission(toolName)` — line 153; `null` is `none`. -/
+  /-- `ctx.checkMcpToolPermission(toolName)` — line 158; `null` is `none`. -/
   mcpDenied : Option String
-  /-- `handlePrIssuePrecondition({ toolName, toolInput: input, handoffContext })` — line 169. -/
+  /-- `handlePrIssuePrecondition({ toolName, toolInput: input, handoffContext })` — line 174. -/
   prIssue : PrIssueGuardResult
-  /-- `bypassBashPermissionDecision(command, ctx.isDangerousRuleDisabled)` — line 193. -/
+  /-- `bypassBashPermissionDecision(command, ctx.isDangerousRuleDisabled)` — line 198. -/
   bash : BashPermission
   deriving DecidableEq, Repr
 
-/-- A property value, as far as `typeof v === 'string' && v` (line 113) can tell values apart. -/
+/-- A property value, as far as `typeof v === 'string'` and `typeof v === 'string' && v` (lines
+98, 113, 115) can tell values apart. -/
 inductive Field where
   /-- no such property -/
   | absent
@@ -131,17 +141,35 @@ inductive Field where
   | other
   deriving DecidableEq, Repr
 
+/-- `asStr(v)` — lines 97-99: the string, or `''` for any other value. -/
+def Field.asStr : Field → String
+  | .str s => s
+  | _ => ""
+
+/-- `typeof v === 'string' ? v : undefined` — line 113, where `none` is `undefined`. The empty
+string counts: `typeof '' === 'string'`. -/
+def Field.string? : Field → Option String
+  | .str s => some s
+  | _ => none
+
 /-- `typeof v === 'string' && v` is truthy: `v` is a string, and a string is truthy exactly when
 it is not empty. -/
 def Field.isNonEmptyString : Field → Bool
   | .str s => s != ""
   | _ => false
 
-/-- One call of `evaluateToolPolicy(toolName, toolInput, ctx)`. -/
+/-- One call of `evaluateToolPolicy(toolName, toolInput, ctx)`. The four tool-input properties are
+read from `input = toolInput ?? {}` (line 130). -/
 structure Input where
   /-- `toolName` -/
   toolName : String
-  /-- `input.path`, where `input = toolInput ?? {}` (line 128) -/
+  /-- `input.command`: the argument of the Bash sensitive-path check (line 109) -/
+  command : Field
+  /-- `input.file_path`: the argument of the Read sensitive-path check (line 111) -/
+  filePath : Field
+  /-- `input.pattern`: the first argument of the Glob sensitive-path check (line 113) -/
+  pattern : Field
+  /-- `input.path`: the Glob base (line 113) and the Grep path (line 115) -/
   path : Field
   /-- `ctx.isAdmin` -/
   isAdmin : Bool
@@ -150,10 +178,20 @@ structure Input where
   /-- `ctx.aborted` -/
   aborted : Bool
   /-- `ctx.handoffContext` is defined. A `HandoffContext` is an object, so defined means truthy
-  (line 168). -/
+  (line 173). -/
   handoff : Bool
   /-- the primitives' values -/
   prims : Primitives
+  deriving DecidableEq, Repr
+
+/-- A call of one of the three sensitive-path checks, with the arguments it receives. -/
+inductive SensitiveCall where
+  /-- `checkBashSensitivePaths(command)` -/
+  | bash (command : String)
+  /-- `checkSensitivePath(filePath)` -/
+  | path (filePath : String)
+  /-- `checkSensitiveGlob(pattern, basePath)`; `none` is an `undefined` base path -/
+  | glob (pattern : String) (basePath : Option String)
   deriving DecidableEq, Repr
 
 /-- `PR_CREATE_MCP_TOOL` — line 39. -/
@@ -164,52 +202,63 @@ def nativeBypassTools : List String :=
   ["Write", "Edit", "NotebookEdit", "TodoWrite", "Read", "Glob", "Grep", "Task", "WebFetch",
     "WebSearch", "KillShell"]
 
-/-- `TOOL_POLICY_MATCHERS` — line 212: `['Bash', NATIVE_BYPASS_TOOLS.join('|'), 'mcp__']`. -/
+/-- `TOOL_POLICY_MATCHERS` — line 218: `['Bash', NATIVE_BYPASS_TOOLS.join('|'), 'mcp__']`. -/
 def toolPolicyMatchers : List String :=
   ["Bash", "|".intercalate nativeBypassTools, "mcp__"]
 
-/-- `(toolInput ?? {}).path` (lines 113 and 128) for a tool input written as JSON, where `none`
-is an undefined `toolInput`. The vector generator derives `Input.path` with it from the exact
-input it hands to the TS function. A JSON object in a vector never repeats a key, so the first
-match is the only one. -/
-def pathField : Option Json → Field
+/-- `(toolInput ?? {})[key]` (line 130) for a tool input written as JSON, where `none` is an
+undefined `toolInput`. The vector generator derives the four tool-input fields of `Input` with it
+from the exact input it hands to the TS function. A JSON object in a vector never repeats a key,
+so the first match is the only one. -/
+def jsonField (key : String) : Option Json → Field
   | some (.obj fields) =>
-    match fields.lookup "path" with
+    match fields.lookup key with
     | none => .absent
     | some (.str s) => .str s
     | some _ => .other
   | _ => .absent
 
-/-- `checkSensitiveForTool(toolName, input)` — lines 104-117. `sensitive` is the value of the
-sensitive-path check the `switch` calls; `none` is the `undefined` of the `default` arm. -/
+/-- The sensitive-path check `checkSensitiveForTool` (lines 106-119) calls, with its arguments;
+`none` when it calls none. -/
+def sensitiveCall (i : Input) : Option SensitiveCall :=
+  if i.toolName = "Bash" then some (.bash i.command.asStr)              -- 109: asStr(input.command)
+  else if i.toolName = "Read" then some (.path i.filePath.asStr)         -- 111: asStr(input.file_path)
+  else if i.toolName = "Glob" then                                       -- 113: asStr(input.pattern),
+    some (.glob i.pattern.asStr i.path.string?)                          --   the path when a string
+  else if i.toolName = "Grep" then                                       -- 115: input.path, when
+    if i.path.isNonEmptyString then some (.path i.path.asStr) else none  --   a non-empty string
+  else none                                                              -- 116-117: no call
+
+/-- `checkSensitiveForTool(toolName, input)` — lines 106-119. `sensitive` is the value of the call
+`sensitiveCall` describes; `none` is the `undefined` of the `default` arm. -/
 def checkSensitiveForTool (toolName : String) (path : Field) (sensitive : SensitivePathResult) :
     Option SensitivePathResult :=
-  if toolName = "Bash" then some sensitive          -- 106-107: checkBashSensitivePaths(command)
-  else if toolName = "Read" then some sensitive     -- 108-109: checkSensitivePath(file_path)
-  else if toolName = "Glob" then some sensitive     -- 110-111: checkSensitiveGlob(pattern, path)
-  else if toolName = "Grep" then                    -- 112-113
+  if toolName = "Bash" then some sensitive          -- 108-109: checkBashSensitivePaths(...)
+  else if toolName = "Read" then some sensitive     -- 110-111: checkSensitivePath(...)
+  else if toolName = "Glob" then some sensitive     -- 112-113: checkSensitiveGlob(...)
+  else if toolName = "Grep" then                    -- 114-115
     if path.isNonEmptyString then some sensitive    --   checkSensitivePath(input.path)
     else some { isSensitive := false }              --   { isSensitive: false }
-  else none                                         -- 114-115: undefined
+  else none                                         -- 116-117: undefined
 
-/-! ## The deny tier (lines 131-177)
+/-! ## The deny tier (lines 133-182)
 
 Each step is a function: `some r` is the `return r` it executes, `none` falls through to the next
 step. Steps 2-4 sit inside one `if (!ctx.isAdmin)` block, so they test the admin flag once. -/
 
-/-- 1. Abort guard (Bash only) — lines 133-137. -/
+/-- 1. Abort guard (Bash only) — lines 137-141. -/
 def abortGuard (i : Input) : Option Result :=
   if i.toolName = "Bash" ∧ i.aborted = true then
     some { decision := .deny, reason := "abort-guard: session aborted" }
   else none
 
-/-- 2. SSH ban (Bash) — lines 141-144. -/
+/-- 2. SSH ban (Bash) — lines 145-148. -/
 def sshCheck (i : Input) : Option Result :=
   if i.toolName = "Bash" ∧ i.prims.ssh = true then
     some { decision := .deny, reason := "ssh-ban: ssh command for non-admin user" }
   else none
 
-/-- 3. Sensitive path — lines 145-149. `sensitive?.isSensitive` is falsy when the dispatch
+/-- 3. Sensitive path — lines 149-153. `sensitive?.isSensitive` is falsy when the dispatch
 returns `undefined`. -/
 def sensitiveCheck (i : Input) : Option Result :=
   match checkSensitiveForTool i.toolName i.path i.prims.sensitive with
@@ -220,7 +269,7 @@ def sensitiveCheck (i : Input) : Option Result :=
     else none
   | none => none
 
-/-- 4. MCP tool permission (`mcp__` tools) — lines 150-157. Any non-null value is a deny reason
+/-- 4. MCP tool permission (`mcp__` tools) — lines 154-162. Any non-null value is a deny reason
 (`denied !== null`), the empty string included. -/
 def mcpCheck (i : Input) : Option Result :=
   if jsStartsWith i.toolName "mcp__" = true then
@@ -229,7 +278,7 @@ def mcpCheck (i : Input) : Option Result :=
     | none => none
   else none
 
-/-- Steps 2-4, `if (!ctx.isAdmin) { … }` — lines 139-158: for a non-admin, the first of the three
+/-- Steps 2-4, `if (!ctx.isAdmin) { … }` — lines 143-163: for a non-admin, the first of the three
 checks that returns. -/
 def adminExemptGuards (i : Input) : Option Result :=
   if i.isAdmin = false then
@@ -241,13 +290,13 @@ def adminExemptGuards (i : Input) : Option Result :=
     | none => mcpCheck i
   else none
 
-/-- 5. Cross-user directory isolation (Bash, always) — lines 160-163. -/
+/-- 5. Cross-user directory isolation (Bash, always) — lines 165-168. -/
 def crossUserGuard (i : Input) : Option Result :=
   if i.toolName = "Bash" ∧ i.prims.crossUser = true then
     some { decision := .deny, reason := "cross-user: another user directory" }
   else none
 
-/-- 6. PR-issue precondition — lines 165-177. `denyMessage: result.message` sets the property to
+/-- 6. PR-issue precondition — lines 170-182. `denyMessage: result.message` sets the property to
 `undefined` when the guard gives no message, which is `none` here as well. -/
 def prIssueGuard (i : Input) : Option Result :=
   if i.handoff = true ∧ (i.toolName = "Bash" ∨ i.toolName = prCreateMcpTool) then
@@ -258,24 +307,24 @@ def prIssueGuard (i : Input) : Option Result :=
     else none
   else none
 
-/-! ## The mode tier (lines 179-208), reached only when no deny step returned -/
+/-! ## The mode tier (lines 184-214), reached only when no deny step returned -/
 
 /-- Steps 7-9 and the default return. -/
 def modeTier (i : Input) : Result :=
-  if i.mode = .bypass ∧ i.toolName = "Bash" then                    -- 7. lines 186-188
+  if i.mode = .bypass ∧ i.toolName = "Bash" then                    -- 7. lines 191-193
     { decision := .allow, reason := "bypass: unsafe allow-all Bash" }
-  else if i.mode = .auto ∧ i.toolName = "Bash" then                 -- 8. line 192
-    match i.prims.bash.decision with                                -- 193-194
-    | .ask =>                                                       -- 196
+  else if i.mode = .auto ∧ i.toolName = "Bash" then                 -- 8. line 197
+    match i.prims.bash.decision with                                -- 198-199
+    | .ask =>                                                       -- 201
       { decision := .classify,
         reason := "auto-classify: " ++ ",".intercalate i.prims.bash.matchedRuleIds,
         matchedRuleIds := some i.prims.bash.matchedRuleIds }
-    | .allow => { decision := .allow, reason := "auto: non-dangerous Bash" }  -- 198
-  else if i.mode ≠ .legacy ∧ nativeBypassTools.contains i.toolName then  -- 9. lines 203-204
+    | .allow => { decision := .allow, reason := "auto: non-dangerous Bash" }  -- 203
+  else if i.mode ≠ .legacy ∧ nativeBypassTools.contains i.toolName then  -- 9. lines 209-210
     { decision := .allow, reason := i.mode.name ++ ": native tool" }
-  else { decision := .pass, reason := "no policy opinion" }          -- 208
+  else { decision := .pass, reason := "no policy opinion" }          -- 214
 
-/-- `evaluateToolPolicy` — lines 123-209: the abort guard, the non-admin block, the cross-user and
+/-- `evaluateToolPolicy` — lines 125-215: the abort guard, the non-admin block, the cross-user and
 PR-issue guards, in that order; the first that returns decides. If none does, the mode tier decides. -/
 def evaluate (i : Input) : Result :=
   match abortGuard i with
