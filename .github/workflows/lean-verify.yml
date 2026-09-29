@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+# One run per ref: a newer push cancels the run it supersedes instead of
+# queueing behind it on the single self-hosted runner, close to 20 minutes a
+# run. Named apart from CI's group (`.github/workflows/ci.yml`) because groups
+# span workflows: a shared name would have each cancel the other's run.
+concurrency:
+  group: lean-verify-${{ github.ref }}
+  cancel-in-progress: true
+
 # Read-only, at the top level so it applies to every job present and future.
 # The job rebuilds the Lean proofs, audits them and regenerates the conformance
 # vectors only to compare them with the commit; it writes nothing back. Same
