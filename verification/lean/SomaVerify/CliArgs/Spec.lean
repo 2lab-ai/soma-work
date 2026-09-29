@@ -28,7 +28,7 @@ def FlagValue.kind : FlagValue → FlagKind
   | .present => .boolean
   | .str _ => .value
 
-/-- The grammars `parseCli` passes to `parseArguments` (args.ts:262, 267, 272, 277, 287-291;
+/-- The grammars `parseCli` passes to `parseArguments` (args.ts:257, 262, 267, 272, 282-286;
 `sessions` reaches `sessionsGrammar` only with an action `readAction` accepted). -/
 def grammarsUsed : List Grammar :=
   [COMMAND_GRAMMAR.setup, COMMAND_GRAMMAR.doctor, COMMAND_GRAMMAR.status, COMMAND_GRAMMAR.service,
@@ -39,29 +39,8 @@ def removeFlagPair (flag : String) : List String → List String
   | [] => []
   | token :: rest => if token = flag then rest.drop 1 else token :: removeFlagPair flag rest
 
-/-- `readProfile` with the body of args.ts:174 (`if (value === true) throw …`) replaced by an
-arbitrary `outcome`. -/
-def readProfileReplacing174 (outcome : Except String (Option String)) (parsed : Parsed) :
-    Except String (Option String) :=
-  match parsed.get PROFILE_FLAG with
-  | none => .ok none
-  | some .present => outcome
-  | some (.str value) =>
-    if !isProfileName value then .error (invalidProfileMessage value) else .ok (some value)
-
-/-- `parseArguments` without args.ts:164-166 (the `minPositionals` check). -/
-def parseArgumentsWithoutMinCheck (tokens : List String) (grammar : Grammar) (command : String) :
-    Except String Parsed :=
-  match walk grammar command tokens { flags := [], positionals := [] } with
-  | .error message => .error message
-  | .ok parsed =>
-    if parsed.positionals.length > grammar.maxPositionals then
-      .error (unexpectedArgumentMessage (parsed.positionals.getD grammar.maxPositionals "") command)
-    else
-      .ok parsed
-
 /-- The argv heads whose tail `parseCli` parses with no positional allowed, each with the grammar
-and the command label it uses (args.ts:261-279, 288-289). -/
+and the command label it uses (args.ts:256-274, 284). -/
 def zeroPositionalHeads : List (List String × Grammar × String) :=
   [(["setup"], COMMAND_GRAMMAR.setup, "setup"),
    (["doctor"], COMMAND_GRAMMAR.doctor, "doctor"),
@@ -117,14 +96,14 @@ def CliCommand.canonicalArgv : CliCommand → List String
 
 /-! ## (a) Every token is consumed exactly once -/
 
-/-- args.ts:4 "Every token is consumed exactly once"; args.ts:120 "Walk `tokens` against
+/-- args.ts:4 "Every token is consumed exactly once"; args.ts:118 "Walk `tokens` against
 `grammar`, consuming every one exactly once." -/
 def ConsumesEveryTokenOnce : Prop :=
   ∀ tokens grammar command parsed, parseArguments tokens grammar command = .ok parsed →
     (parsed.positionals ++ flagTokens parsed.flags).Perm tokens
 
 /-- args.ts:4 at the level of `parseCli`: a successful result, written back out, is the argv up to
-order. `help` and `version` have three spellings each (args.ts:62-63). -/
+order. `help` and `version` have three spellings each (args.ts:63-64). -/
 def CliConsumesEveryTokenOnce : Prop :=
   ∀ argv command, parseCli argv = .ok command →
     (command = .help ∧ ∃ token ∈ HELP_TOKENS, argv = [token]) ∨
@@ -133,7 +112,7 @@ def CliConsumesEveryTokenOnce : Prop :=
 
 /-! ## (b) No flag twice -/
 
-/-- args.ts:15 "a repeated flag … [is a] `CliArgError`"; args.ts:10-11 "`--profile preview
+/-- args.ts:16 "a repeated flag … [is a] `CliArgError`"; args.ts:10-11 "`--profile preview
 --profile production` silently kept the first and dropped the second". -/
 def NoFlagTwice : Prop :=
   ∀ tokens grammar command parsed, parseArguments tokens grammar command = .ok parsed →
@@ -141,34 +120,29 @@ def NoFlagTwice : Prop :=
 
 /-! ## (c) Every flag is declared, with its kind -/
 
-/-- args.ts:14-16 "an unrecognised flag, a flag valid for a *different* command, … a missing
+/-- args.ts:15-17 "an unrecognised flag, a flag valid for a *different* command, … a missing
 value … are all `CliArgError`". -/
 def FlagsDeclared : Prop :=
   ∀ tokens grammar command parsed, parseArguments tokens grammar command = .ok parsed →
     ∀ entry ∈ parsed.flags, grammar.flags.lookup entry.1 = some entry.2.kind
 
-/-! ## (d) `--profile` is a value flag everywhere, so args.ts:174 is dead -/
+/-! ## (d) `--profile` is a value flag everywhere -/
 
-/-- args.ts:75 `const PROFILE_ONLY = { [PROFILE_FLAG]: 'value' }`, and args.ts:283 "The handler's
+/-- args.ts:75 `const PROFILE_ONLY = { [PROFILE_FLAG]: 'value' }`, and args.ts:278 "The handler's
 own flags, plus `--profile`, which this layer consumes." -/
 def ProfileIsValueFlag : Prop :=
   ∀ grammar ∈ grammarsUsed, grammar.flags.lookup PROFILE_FLAG = some .value
 
-/-- args.ts:289-290 `{ ...handlerFlags, ...PROFILE_ONLY }`: spread last, `--profile` is a value
+/-- args.ts:283 `{ ...handlerFlags, ...PROFILE_ONLY }`: spread last, `--profile` is a value
 flag whatever the handler's table says about it. -/
 def ProfileSpreadLastWins : Prop :=
   ∀ handlerFlags : FlagTable, (spread handlerFlags PROFILE_ONLY).lookup PROFILE_FLAG = some .value
 
-/-- args.ts:174 `if (value === true) throw …` is unreachable from `parseCli`: whatever that line
-did instead, `parseCli` would return the same thing for every argv. -/
-def ReadProfileTrueBranchDead : Prop :=
-  ∀ outcome argv, parseCliWith (readProfileReplacing174 outcome) argv = parseCli argv
-
 /-! ## (e) The sessions tail is a re-ordering -/
 
-/-- args.ts:202-204 "This is re-ordering, not re-interpretation: only tokens the operator
+/-- args.ts:197-199 "This is re-ordering, not re-interpretation: only tokens the operator
 actually typed are emitted, `--profile` (consumed by this layer) is dropped, and every flag keeps
-its value."; args.ts:207 "Positional first". Every flag stays next to its own value. -/
+its value."; args.ts:202 "Positional first". Every flag stays next to its own value. -/
 def SessionsTailReordered : Prop :=
   ∀ action tail command parsed,
     parseArguments tail (sessionsGrammar action) command = .ok parsed →
@@ -176,7 +150,7 @@ def SessionsTailReordered : Prop :=
       normalizeSessionsArgv parsed (sessionsHandlerFlags action) =
         parsed.positionals ++ flagTokens entries
 
-/-- args.ts:202-203, as a statement about the typed tail: the handler receives a permutation of
+/-- args.ts:197-198, as a statement about the typed tail: the handler receives a permutation of
 the tail with the `--profile <value>` pair taken out. -/
 def SessionsTailIsTailWithoutProfile : Prop :=
   ∀ action tail command parsed,
@@ -186,11 +160,11 @@ def SessionsTailIsTailWithoutProfile : Prop :=
 
 /-! ## (f) The session key is `args[0]` -/
 
-/-- args.ts:195-200 "The handler's `parseShowArgs` reads the session key as `args[0]` … The strict
+/-- args.ts:190-195 "The handler's `parseShowArgs` reads the session key as `args[0]` … The strict
 parser already knows which token was the positional, so it emits the key first and the flags
-after it."; args.ts:207-208 "an absent key still yields an empty lead, so the handler reaches
+after it."; args.ts:202-203 "an absent key still yields an empty lead, so the handler reaches
 its historical usage line". The handler treats a leading `-` as "no key"
-(src/cli/sessions.ts:426). -/
+(src/cli/sessions.ts:429). -/
 def SessionsShowKeyFirst : Prop :=
   ∀ tail profile rest,
     parseCli ("sessions" :: "show" :: tail) = .ok (.sessions "show" profile rest) →
@@ -202,12 +176,12 @@ def SessionsShowKeyFirst : Prop :=
 
 /-! ## (g) Stray positionals are refused -/
 
-/-- args.ts:161-163: a successful parse never holds more positionals than the grammar allows. -/
+/-- args.ts:159-161: a successful parse never holds more positionals than the grammar allows. -/
 def PositionalsWithinMax : Prop :=
   ∀ tokens grammar command parsed, parseArguments tokens grammar command = .ok parsed →
     parsed.positionals.length ≤ grammar.maxPositionals
 
-/-- args.ts:16 "a stray positional … [is a] `CliArgError`": for every command that takes no
+/-- args.ts:17 "a stray positional … [is a] `CliArgError`": for every command that takes no
 positional, a non-option token where an option could start makes `parseCli` fail, whatever
 precedes and follows it. -/
 def StrayPositionalRejected : Prop :=
@@ -218,8 +192,8 @@ def StrayPositionalRejected : Prop :=
 
 /-! ## (h) `help` and `version` stand alone -/
 
-/-- args.ts:239-240 "somawork help | --help | -h", "somawork version | --version | -V", and
-args.ts:252, 256 `assertNoExtraTokens`. -/
+/-- args.ts:234-235 "somawork help | --help | -h", "somawork version | --version | -V", and
+args.ts:247, 251 `assertNoExtraTokens`. -/
 def HelpVersionStandAlone : Prop :=
   (∀ token ∈ HELP_TOKENS, parseCli [token] = .ok .help ∧
     ∀ extra more,
@@ -230,11 +204,10 @@ def HelpVersionStandAlone : Prop :=
 
 /-! ## (i) Messages name the offending token and nothing else -/
 
-/-- args.ts:122-124 "no other argv token is ever echoed except the offending one itself": each
+/-- args.ts:120-122 "no other argv token is ever echoed except the offending one itself": each
 `parseArguments` error names one token of the tail, and that token is the offender. -/
 def ParseErrorNamesOffender : Prop :=
   ∀ tokens grammar command message, parseArguments tokens grammar command = .error message →
-    message = needsMoreMessage command grammar.minPositionals ∨
     ∃ token ∈ tokens,
       (isOptionToken token = true ∧ grammar.flags.lookup token = none ∧
         message = unknownOptionMessage token grammar command) ∨
@@ -242,24 +215,10 @@ def ParseErrorNamesOffender : Prop :=
       (grammar.flags.lookup token = some .value ∧ message = requiresValueMessage token) ∨
       (isOptionToken token = false ∧ message = unexpectedArgumentMessage token command)
 
-/-- args.ts:16-17 "Messages name the offending flag or value and nothing else from the argv":
+/-- args.ts:17-18 "Messages name the offending flag or value and nothing else from the argv":
 every `parseCli` error repeats at most one argv token. -/
 def CliErrorNamesOneToken : Prop :=
   ∀ argv message, parseCli argv = .error message →
     message ∈ cliErrorsNamingNothing ∨ ∃ token ∈ argv, message ∈ cliErrorsNaming token
-
-/-! ## Dead code the proofs expose (simplification candidates) -/
-
-/-- args.ts:164-166: no grammar `parseCli` uses requires a positional, so removing the
-`minPositionals` check changes no `parseArguments` result for them. -/
-def MinPositionalCheckDead : Prop :=
-  ∀ grammar ∈ grammarsUsed, ∀ tokens command,
-    parseArgumentsWithoutMinCheck tokens grammar command = parseArguments tokens grammar command
-
-/-- args.ts:137: every grammar `parseCli` uses declares a flag, so `|| 'no options'` never
-applies. -/
-def NoOptionsFallbackDead : Prop :=
-  ∀ grammar ∈ grammarsUsed,
-    expectedOptions grammar = ", ".intercalate (grammar.flags.map (·.1))
 
 end SomaVerify.CliArgs

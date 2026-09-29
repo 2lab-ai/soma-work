@@ -5,7 +5,7 @@ import SomaVerify.CliArgs.Spec
 
 Every proposition of `Spec.lean` is proved here, about the model in `Model.lean`. The walker
 lemmas go by the functional induction principle Lean derives for `walk` (`walk.induct`), one
-case per branch of the loop in args.ts:130-159. A bare `args.ts:N` means `src/cli/args.ts:N`.
+case per branch of the loop in args.ts:128-157. A bare `args.ts:N` means `src/cli/args.ts:N`.
 -/
 
 namespace SomaVerify.CliArgs
@@ -127,18 +127,18 @@ theorem getD_mem {α : Type} {d : α} :
     simp only [List.getD_cons_succ]
     exact List.mem_cons_of_mem _ (getD_mem h)
 
-/-! ## The walker (args.ts:130-159) -/
+/-! ## The walker (args.ts:128-157) -/
 
 section Walk
 
 variable {grammar : Grammar} {command : String}
 
-/-! One lemma per branch of the loop body (args.ts:133-158). -/
+/-! One lemma per branch of the loop body (args.ts:131-156). -/
 
 theorem walk_nil (acc : Parsed) : walk grammar command [] acc = .ok acc := by
   rw [walk.eq_def]
 
-/-- args.ts:158: a token that is not an option is a positional. -/
+/-- args.ts:156: a token that is not an option is a positional. -/
 theorem walk_positional {token : String} {tokens : List String} {acc : Parsed}
     (hopt : ¬isOptionToken token = true) :
     walk grammar command (token :: tokens) acc =
@@ -147,7 +147,7 @@ theorem walk_positional {token : String} {tokens : List String} {acc : Parsed}
   rw [walk.eq_def]
   simp only [hopt, Bool.false_eq_true, ↓reduceIte]
 
-/-- args.ts:135-139 -/
+/-- args.ts:133-137 -/
 theorem walk_unknown {token : String} {tokens : List String} {acc : Parsed}
     (hopt : isOptionToken token = true) (hlook : grammar.flags.lookup token = none) :
     walk grammar command (token :: tokens) acc =
@@ -155,7 +155,7 @@ theorem walk_unknown {token : String} {tokens : List String} {acc : Parsed}
   rw [walk.eq_def]
   simp only [hopt, hlook, ↓reduceIte]
 
-/-- args.ts:140-142 -/
+/-- args.ts:138-140 -/
 theorem walk_repeated {token : String} {tokens : List String} {acc : Parsed} {kind : FlagKind}
     (hopt : isOptionToken token = true) (hlook : grammar.flags.lookup token = some kind)
     (hhas : acc.has token = true) :
@@ -163,7 +163,7 @@ theorem walk_repeated {token : String} {tokens : List String} {acc : Parsed} {ki
   rw [walk.eq_def]
   simp only [hopt, hlook, hhas, ↓reduceIte]
 
-/-- args.ts:143-146 -/
+/-- args.ts:141-144 -/
 theorem walk_boolean {token : String} {tokens : List String} {acc : Parsed}
     (hopt : isOptionToken token = true) (hhas : ¬acc.has token = true)
     (hlook : grammar.flags.lookup token = some .boolean) :
@@ -173,7 +173,7 @@ theorem walk_boolean {token : String} {tokens : List String} {acc : Parsed}
   rw [walk.eq_def]
   simp only [hopt, hlook, hhas, Bool.false_eq_true, ↓reduceIte]
 
-/-- args.ts:147-152, the value is missing. -/
+/-- args.ts:145-150, the value is missing. -/
 theorem walk_value_missing {token : String} {acc : Parsed}
     (hopt : isOptionToken token = true) (hhas : ¬acc.has token = true)
     (hlook : grammar.flags.lookup token = some .value) :
@@ -181,7 +181,7 @@ theorem walk_value_missing {token : String} {acc : Parsed}
   rw [walk.eq_def]
   simp only [hopt, hlook, hhas, Bool.false_eq_true, ↓reduceIte]
 
-/-- args.ts:147-152, the next token starts with `--`. -/
+/-- args.ts:145-150, the next token starts with `--`. -/
 theorem walk_value_dash {token value : String} {tokens : List String} {acc : Parsed}
     (hopt : isOptionToken token = true) (hhas : ¬acc.has token = true)
     (hstart : jsStartsWith value "--" = true) (hlook : grammar.flags.lookup token = some .value) :
@@ -189,7 +189,7 @@ theorem walk_value_dash {token value : String} {tokens : List String} {acc : Par
   rw [walk.eq_def]
   simp only [hopt, hlook, hhas, hstart, Bool.false_eq_true, ↓reduceIte]
 
-/-- args.ts:153-155 -/
+/-- args.ts:151-153 -/
 theorem walk_value {token value : String} {tokens : List String} {acc : Parsed}
     (hopt : isOptionToken token = true) (hhas : ¬acc.has token = true)
     (hstart : ¬jsStartsWith value "--" = true) (hlook : grammar.flags.lookup token = some .value) :
@@ -410,7 +410,7 @@ theorem walk_append : ∀ (before : List String) (acc mid : Parsed) (after : Lis
 
 end Walk
 
-/-! ## `parseArguments` (args.ts:126-169) -/
+/-! ## `parseArguments` (args.ts:124-164) -/
 
 /-- A successful `parseArguments` is a successful walk within the positional bounds. -/
 theorem parseArguments_ok {tokens : List String} {grammar : Grammar} {command : String}
@@ -423,28 +423,26 @@ theorem parseArguments_ok {tokens : List String} {grammar : Grammar} {command : 
   · rename_i result hwalk
     split at h
     · simp at h
-    · split at h
-      · simp at h
-      · simp only [Except.ok.injEq] at h
-        subst h
-        exact ⟨hwalk, by omega⟩
+    · simp only [Except.ok.injEq] at h
+      subst h
+      exact ⟨hwalk, by omega⟩
 
-/-- (a) args.ts:4, 120: every token of the tail is consumed exactly once. -/
+/-- (a) args.ts:4, 118: every token of the tail is consumed exactly once. -/
 theorem consumesEveryTokenOnce : ConsumesEveryTokenOnce := by
   intro tokens grammar command parsed h
   simpa using walk_perm tokens _ parsed (parseArguments_ok h).1
 
-/-- (b) args.ts:15: no flag is stored twice. -/
+/-- (b) args.ts:16: no flag is stored twice. -/
 theorem noFlagTwice : NoFlagTwice := by
   intro tokens grammar command parsed h
   exact walk_nodup tokens _ parsed (parseArguments_ok h).1 List.nodup_nil
 
-/-- (c) args.ts:14-16: every stored flag is declared by the grammar with the matching kind. -/
+/-- (c) args.ts:15-17: every stored flag is declared by the grammar with the matching kind. -/
 theorem flagsDeclared : FlagsDeclared := by
   intro tokens grammar command parsed h
   exact walk_declared tokens _ parsed (parseArguments_ok h).1 (by simp)
 
-/-- (g) args.ts:161-163: a successful parse holds no more positionals than the grammar allows. -/
+/-- (g) args.ts:159-161: a successful parse holds no more positionals than the grammar allows. -/
 theorem positionalsWithinMax : PositionalsWithinMax := by
   intro tokens grammar command parsed h
   exact (parseArguments_ok h).2
@@ -470,12 +468,11 @@ theorem bind_eq_error {α β : Type} {m : Except String α} {f : α → Except S
   | error e' => exact Or.inl (by simpa [error_bind] using h)
   | ok a => exact Or.inr ⟨a, rfl, h⟩
 
-/-! ## `parseCli` dispatch (args.ts:242-304) -/
+/-! ## `parseCli` dispatch (args.ts:237-299) -/
 
-/-- The `switch` of args.ts:260-303 as a chain of string comparisons, in the same order. -/
-theorem parseCliWith_cons (rp : Parsed → Except String (Option String)) (command : String)
-    (rest : List String) :
-    parseCliWith rp (command :: rest) =
+/-- The `switch` of args.ts:255-298 as a chain of string comparisons, in the same order. -/
+theorem parseCli_cons (command : String) (rest : List String) :
+    parseCli (command :: rest) =
       if HELP_TOKENS.contains command then do
         assertNoExtraTokens rest "help"
         pure .help
@@ -484,36 +481,37 @@ theorem parseCliWith_cons (rp : Parsed → Except String (Option String)) (comma
         pure .version
       else if command = "setup" then do
         let parsed ← parseArguments rest COMMAND_GRAMMAR.setup "setup"
-        let profile ← rp parsed
+        let profile ← readProfile parsed
         pure (.setup profile (parsed.has "--resume"))
       else if command = "doctor" then do
         let parsed ← parseArguments rest COMMAND_GRAMMAR.doctor "doctor"
-        let profile ← rp parsed
+        let profile ← readProfile parsed
         pure (.doctor profile (parsed.has "--json"))
       else if command = "status" then do
         let parsed ← parseArguments rest COMMAND_GRAMMAR.status "status"
-        let profile ← rp parsed
+        let profile ← readProfile parsed
         pure (.status profile (parsed.has "--json"))
       else if command = "service" then do
         let action ← readAction rest "service" SERVICE_ACTIONS
         let parsed ← parseArguments (rest.drop 1) COMMAND_GRAMMAR.service "service"
-        let profile ← rp parsed
+        let profile ← readProfile parsed
         pure (.service action profile)
       else if command = "profile" then do
         let action ← readAction rest "profile" PROFILE_ACTIONS
         let parsed ← parseArguments (rest.drop 1) COMMAND_GRAMMAR.profile "profile"
-        let profile ← rp parsed
+        let profile ← readProfile parsed
         pure (.profile action profile (parsed.has "--json"))
       else if command = "sessions" then do
         let action ← readAction rest "sessions" SESSIONS_ACTIONS
         let parsed ← parseArguments (rest.drop 1) (sessionsGrammar action) s!"sessions {action}"
-        let profile ← rp parsed
-        pure (.sessions action profile (normalizeSessionsArgv parsed (sessionsHandlerFlags action)))
+        let profile ← readProfile parsed
+        pure (.sessions action profile
+          (normalizeSessionsArgv parsed (sessionsHandlerFlags action)))
       else .error (unknownCommandMessage command) := by
   by_cases hh : HELP_TOKENS.contains command = true
-  · simp only [parseCliWith, hh, ↓reduceIte]
+  · simp only [parseCli, hh, ↓reduceIte]
   by_cases hv : VERSION_TOKENS.contains command = true
-  · simp only [parseCliWith, hh, hv, Bool.false_eq_true, ↓reduceIte]
+  · simp only [parseCli, hh, hv, Bool.false_eq_true, ↓reduceIte]
   by_cases h1 : command = "setup"
   · subst h1; rfl
   by_cases h2 : command = "doctor"
@@ -526,7 +524,7 @@ theorem parseCliWith_cons (rp : Parsed → Except String (Option String)) (comma
   · subst h5; rfl
   by_cases h6 : command = "sessions"
   · subst h6; rfl
-  simp only [parseCliWith, hh, hv, h1, h2, h3, h4, h5, h6, Bool.false_eq_true, ↓reduceIte]
+  simp only [parseCli, hh, hv, h1, h2, h3, h4, h5, h6, Bool.false_eq_true, ↓reduceIte]
 
 theorem contains_of_mem {a : String} {l : List String} (h : a ∈ l) : l.contains a = true := by
   simpa using h
@@ -578,7 +576,7 @@ theorem parseCli_sessions_show (tail : List String) :
         readProfile parsed >>= fun profile =>
           pure (.sessions "show" profile (normalizeSessionsArgv parsed SESSIONS_SHOW_FLAGS))) := rfl
 
-/-! ## (d) `--profile` is a value flag everywhere; args.ts:174 is dead -/
+/-! ## (d) `--profile` is a value flag everywhere -/
 
 theorem lookup_none_of_not_any {table : FlagTable} {k : String}
     (h : ¬table.any (fun e => e.1 == k) = true) : table.lookup k = none := by
@@ -610,22 +608,21 @@ theorem lookup_defineEntry_self (table : FlagTable) (k : String) (v : FlagKind) 
     rw [List.lookup_append, lookup_none_of_not_any h]
     simp [List.lookup]
 
-/-- (d) args.ts:289-290: spread last, `PROFILE_ONLY` makes `--profile` a value flag whatever the
+/-- (d) args.ts:283: spread last, `PROFILE_ONLY` makes `--profile` a value flag whatever the
 handler's table says. -/
 theorem profileSpreadLastWins : ProfileSpreadLastWins := by
   intro handlerFlags
   unfold spread PROFILE_ONLY
   exact lookup_defineEntry_self _ _ _
 
-/-- (d) args.ts:75, 283: `--profile` is a value flag in every grammar `parseCli` uses. -/
+/-- (d) args.ts:75, 278: `--profile` is a value flag in every grammar `parseCli` uses. -/
 theorem profileIsValueFlag : ProfileIsValueFlag := by
   unfold ProfileIsValueFlag
   decide
 
 theorem sessionsGrammar_profile (action : String) :
-    (sessionsGrammar action).flags.lookup PROFILE_FLAG = some .value := by
-  unfold sessionsGrammar
-  split <;> exact profileSpreadLastWins _
+    (sessionsGrammar action).flags.lookup PROFILE_FLAG = some .value :=
+  profileSpreadLastWins (sessionsHandlerFlags action)
 
 /-- After a parse against a grammar where `--profile` is a value flag, `--profile` is never
 stored as `true`. -/
@@ -637,64 +634,9 @@ theorem get_profile_ne_present {tokens : List String} {grammar : Grammar} {comma
   have := flagsDeclared tokens grammar command parsed h _ (mem_of_lookup_eq_some hp)
   simp [hg, FlagValue.kind] at this
 
-theorem readProfileReplacing174_eq (outcome : Except String (Option String)) {parsed : Parsed}
-    (h : parsed.get PROFILE_FLAG ≠ some .present) :
-    readProfileReplacing174 outcome parsed = readProfile parsed := by
-  unfold readProfileReplacing174 readProfile
-  cases hv : parsed.get PROFILE_FLAG with
-  | none => rfl
-  | some value =>
-    cases value with
-    | present => exact absurd hv h
-    | str value => rfl
-
-theorem bind_readProfileReplacing174 {α : Type} (outcome : Except String (Option String))
-    {tokens : List String} {grammar : Grammar} {command : String}
-    (hg : grammar.flags.lookup PROFILE_FLAG = some .value)
-    (k : Parsed → Option String → Except String α) :
-    (parseArguments tokens grammar command >>= fun parsed =>
-        readProfileReplacing174 outcome parsed >>= fun profile => k parsed profile) =
-      (parseArguments tokens grammar command >>= fun parsed =>
-        readProfile parsed >>= fun profile => k parsed profile) := by
-  cases h : parseArguments tokens grammar command with
-  | error message => rfl
-  | ok parsed =>
-    rw [ok_bind, ok_bind, readProfileReplacing174_eq outcome (get_profile_ne_present hg h)]
-
-/-- (d) args.ts:174 is unreachable from `parseCli`: with any other body there, `parseCli`
-returns the same result for every argv. -/
-theorem readProfileTrueBranchDead : ReadProfileTrueBranchDead := by
-  intro outcome argv
-  rcases argv with _ | ⟨command, rest⟩
-  · rfl
-  rw [parseCli, parseCliWith_cons, parseCliWith_cons]
-  split
-  · rfl
-  split
-  · rfl
-  split
-  · exact bind_readProfileReplacing174 outcome (by decide) _
-  split
-  · exact bind_readProfileReplacing174 outcome (by decide) _
-  split
-  · exact bind_readProfileReplacing174 outcome (by decide) _
-  split
-  · congr 1
-    funext action
-    exact bind_readProfileReplacing174 outcome (by decide) _
-  split
-  · congr 1
-    funext action
-    exact bind_readProfileReplacing174 outcome (by decide) _
-  split
-  · congr 1
-    funext action
-    exact bind_readProfileReplacing174 outcome (sessionsGrammar_profile action) _
-  · rfl
-
 /-! ## (h) `help` and `version` stand alone -/
 
-/-- (h) args.ts:239-240, 252, 256: each help and version spelling parses alone, and any extra
+/-- (h) args.ts:234-235, 247, 251: each help and version spelling parses alone, and any extra
 token is refused by name. -/
 theorem helpVersionStandAlone : HelpVersionStandAlone := by
   refine ⟨?_, ?_⟩
@@ -745,7 +687,7 @@ theorem parseArguments_ok_of_parseCli {head : List String × Grammar × String}
   · obtain ⟨parsed, hp, _⟩ := bind_eq_ok (by simpa [parseCli_sessions_list] using h)
     exact ⟨parsed, hp⟩
 
-/-- (g) args.ts:16: for every command that takes no positional, a stray positional makes
+/-- (g) args.ts:17: for every command that takes no positional, a stray positional makes
 `parseCli` fail, wherever it stands after a complete prefix. -/
 theorem strayPositionalRejected : StrayPositionalRejected := by
   intro head hhead before stray after done result hdone hstray hresult
@@ -757,24 +699,6 @@ theorem strayPositionalRejected : StrayPositionalRejected := by
     rcases hhead with
       (((rfl | rfl | rfl) | ⟨action, _, rfl⟩) | ⟨action, _, rfl⟩) | rfl <;> rfl
   exact parseArguments_stray hmax hdone hstray parsed hp
-
-/-! ## Dead code -/
-
-/-- args.ts:164-166 never fires for a grammar `parseCli` uses. -/
-theorem minPositionalCheckDead : MinPositionalCheckDead := by
-  intro grammar hgrammar tokens command
-  have hmin : grammar.minPositionals = 0 := by
-    simp only [grammarsUsed, List.mem_cons, List.not_mem_nil, or_false] at hgrammar
-    rcases hgrammar with rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> rfl
-  unfold parseArgumentsWithoutMinCheck parseArguments
-  cases walk grammar command tokens { flags := [], positionals := [] } with
-  | error message => rfl
-  | ok parsed => simp only [hmin, Nat.not_lt_zero, ↓reduceIte]
-
-/-- args.ts:137: the `|| 'no options'` fallback never applies to a grammar `parseCli` uses. -/
-theorem noOptionsFallbackDead : NoOptionsFallbackDead := by
-  unfold NoOptionsFallbackDead
-  decide
 
 /-! ## (e) The sessions tail is a re-ordering -/
 
@@ -798,7 +722,7 @@ theorem flagTokens_perm {l₁ l₂ : List (String × FlagValue)} (h : l₁.Perm 
     (flagTokens l₁).Perm (flagTokens l₂) :=
   h.flatMap_right _
 
-/-- `normalizeSessionsArgv` (args.ts:206-217) is the positionals, then the flag tokens of the
+/-- `normalizeSessionsArgv` (args.ts:201-212) is the positionals, then the flag tokens of the
 handler's keys in table order. -/
 theorem normalize_eq (parsed : Parsed) (handlerFlags : FlagTable) :
     normalizeSessionsArgv parsed handlerFlags =
@@ -908,7 +832,7 @@ theorem sessions_flag_is_handlerKey {action : String} {tail : List String} {comm
   | none => simp [hl] at hdecl
   | some kind => exact mem_keys_of_lookup_eq_some hl
 
-/-- (e) args.ts:202-204, 207: the handler's tail is the positionals, then a re-ordering of the
+/-- (e) args.ts:197-199, 202: the handler's tail is the positionals, then a re-ordering of the
 parsed flags without `--profile`, each flag next to its own value. -/
 theorem sessionsTailReordered : SessionsTailReordered := by
   intro action tail command parsed h
@@ -1045,7 +969,7 @@ theorem walk_perm_before (hPopt : isOptionToken P = true) (hPdash : jsStartsWith
 
 end Remove
 
-/-- (e) args.ts:202-203: the handler receives a permutation of the typed tail with the
+/-- (e) args.ts:197-198: the handler receives a permutation of the typed tail with the
 `--profile <value>` pair taken out. -/
 theorem sessionsTailIsTailWithoutProfile : SessionsTailIsTailWithoutProfile := by
   intro action tail command parsed h
@@ -1070,7 +994,7 @@ theorem stored_present_of_boolean {tokens : List String} {grammar : Grammar} {co
   | present => rfl
   | str s => simp [FlagValue.kind] at hdecl
 
-/-- (f) args.ts:195-200, 207-208: for `sessions show`, the handler's `args[0]` is the session key
+/-- (f) args.ts:190-195, 202-203: for `sessions show`, the handler's `args[0]` is the session key
 when one was given, and a flag (so, for the handler, no key) when none was. -/
 theorem sessionsShowKeyFirst : SessionsShowKeyFirst := by
   intro tail profile rest h
@@ -1169,7 +1093,7 @@ theorem walk_error {grammar : Grammar} {command : String} :
     obtain ⟨t, ht, hcase⟩ := ih message h
     exact ⟨t, List.mem_cons_of_mem _ ht, hcase⟩
 
-/-- The positional args.ts:162 names is a non-option token of the tail. -/
+/-- The positional args.ts:160 names is a non-option token of the tail. -/
 theorem unexpected_token {tokens : List String} {grammar : Grammar} {command : String}
     {parsed : Parsed}
     (hwalk : walk grammar command tokens { flags := [], positionals := [] } = .ok parsed)
@@ -1185,11 +1109,9 @@ theorem unexpected_token {tokens : List String} {grammar : Grammar} {command : S
     simp only [List.nil_append] at hmore
     exact hopts _ (hmore ▸ hmem)
 
-/-- Every `parseArguments` error: the `minPositionals` message, or a message naming one
-offending token of the tail. -/
+/-- Every `parseArguments` error names one offending token of the tail. -/
 theorem parseArguments_error {tokens : List String} {grammar : Grammar} {command message : String}
     (h : parseArguments tokens grammar command = .error message) :
-    (message = needsMoreMessage command grammar.minPositionals ∧ 0 < grammar.minPositionals) ∨
     ∃ token ∈ tokens,
       (isOptionToken token = true ∧ grammar.flags.lookup token = none ∧
         message = unknownOptionMessage token grammar command) ∨
@@ -1202,7 +1124,6 @@ theorem parseArguments_error {tokens : List String} {grammar : Grammar} {command
     rw [Except.error.injEq] at h
     subst h
     obtain ⟨token, htoken, hcase⟩ := walk_error tokens _ msg hwalk
-    right
     refine ⟨token, htoken, ?_⟩
     rcases hcase with hc | hc | hc
     · exact Or.inl hc
@@ -1214,35 +1135,27 @@ theorem parseArguments_error {tokens : List String} {grammar : Grammar} {command
       rw [Except.error.injEq] at h
       subst h
       obtain ⟨hmem, hopt⟩ := unexpected_token hwalk hgt
-      right
       exact ⟨_, hmem, Or.inr (Or.inr (Or.inr ⟨hopt, rfl⟩))⟩
-    · split at h
-      · rw [Except.error.injEq] at h
-        exact Or.inl ⟨h.symm, by omega⟩
-      · cases h
+    · cases h
 
-/-- (i) args.ts:122-124: each `parseArguments` error names one token of the tail, the offender. -/
+/-- (i) args.ts:120-122: each `parseArguments` error names one token of the tail, the offender. -/
 theorem parseErrorNamesOffender : ParseErrorNamesOffender := by
   intro tokens grammar command message h
-  rcases parseArguments_error h with ⟨hm, _⟩ | hex
-  · exact Or.inl hm
-  · exact Or.inr hex
+  exact parseArguments_error h
 
 theorem parse_error_in_cliErrors {tokens : List String} {grammar : Grammar} {label message : String}
-    (hlabeled : (grammar, label) ∈ labeledGrammars) (hmin : grammar.minPositionals = 0)
+    (hlabeled : (grammar, label) ∈ labeledGrammars)
     (h : parseArguments tokens grammar label = .error message) :
     ∃ token ∈ tokens, message ∈ cliErrorsNaming token := by
-  rcases parseArguments_error h with ⟨_, hpos⟩ | ⟨token, htoken, hcase⟩
-  · omega
-  · refine ⟨token, htoken, ?_⟩
-    simp only [cliErrorsNaming, List.mem_append, List.mem_flatMap]
-    right
-    refine ⟨(grammar, label), hlabeled, ?_⟩
-    rcases hcase with ⟨_, _, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩ <;> simp
+  obtain ⟨token, htoken, hcase⟩ := parseArguments_error h
+  refine ⟨token, htoken, ?_⟩
+  simp only [cliErrorsNaming, List.mem_append, List.mem_flatMap]
+  right
+  refine ⟨(grammar, label), hlabeled, ?_⟩
+  rcases hcase with ⟨_, _, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩ | ⟨_, rfl⟩ <;> simp
 
 theorem readProfile_error_in_cliErrors {tokens : List String} {grammar : Grammar}
     {command message : String} {parsed : Parsed}
-    (hg : grammar.flags.lookup PROFILE_FLAG = some .value)
     (hp : parseArguments tokens grammar command = .ok parsed)
     (h : readProfile parsed = .error message) :
     ∃ token ∈ tokens, message ∈ cliErrorsNaming token := by
@@ -1253,7 +1166,9 @@ theorem readProfile_error_in_cliErrors {tokens : List String} {grammar : Grammar
     cases h
   | some value =>
     cases value with
-    | present => exact absurd hv (get_profile_ne_present hg hp)
+    | present =>
+      rw [hv] at h
+      cases h
     | str value =>
       rw [hv] at h
       simp only at h
@@ -1315,9 +1230,7 @@ theorem mem_of_head? {α : Type} {l : List α} {a : α} (h : l.head? = some a) :
 theorem action_command_error {command : String} {rest : List String} {parent label message : String}
     {allowed : List String} {grammar : String → Grammar}
     {mk : String → Option String → Parsed → CliCommand}
-    (hlabeled : ∀ action ∈ allowed, (grammar action, label) ∈ labeledGrammars ∧
-      (grammar action).minPositionals = 0 ∧
-      (grammar action).flags.lookup PROFILE_FLAG = some .value)
+    (hlabeled : ∀ action ∈ allowed, (grammar action, label) ∈ labeledGrammars)
     (hmissing : missingActionMessage parent allowed ∈ cliErrorsNamingNothing)
     (hunknown : ∀ first, unknownActionMessage parent first allowed ∈ cliErrorsNaming first)
     (h : (readAction rest parent allowed >>= fun action =>
@@ -1330,29 +1243,27 @@ theorem action_command_error {command : String} {rest : List String} {parent lab
     · exact Or.inl hmissing
     · exact Or.inr ⟨first, List.mem_cons_of_mem _ (mem_of_head? hfirst), hunknown first⟩
   · obtain ⟨hmem, _⟩ := readAction_ok ha
-    obtain ⟨hl, hmin, hg⟩ := hlabeled action hmem
     right
     rcases bind_eq_error h with h | ⟨parsed, hp, h⟩
-    · obtain ⟨token, htoken, hmsg⟩ := parse_error_in_cliErrors hl hmin h
+    · obtain ⟨token, htoken, hmsg⟩ := parse_error_in_cliErrors (hlabeled action hmem) h
       exact ⟨token, List.mem_cons_of_mem _ (List.mem_of_mem_drop htoken), hmsg⟩
     · rcases bind_eq_error h with h | ⟨_, _, h⟩
-      · obtain ⟨token, htoken, hmsg⟩ := readProfile_error_in_cliErrors hg hp h
+      · obtain ⟨token, htoken, hmsg⟩ := readProfile_error_in_cliErrors hp h
         exact ⟨token, List.mem_cons_of_mem _ (List.mem_of_mem_drop htoken), hmsg⟩
       · cases h
 
 /-- The error branches of a command that parses its whole tail. -/
 theorem plain_command_error {command : String} {rest : List String} {label message : String}
     {grammar : Grammar} {mk : Option String → Parsed → CliCommand}
-    (hl : (grammar, label) ∈ labeledGrammars) (hmin : grammar.minPositionals = 0)
-    (hg : grammar.flags.lookup PROFILE_FLAG = some .value)
+    (hl : (grammar, label) ∈ labeledGrammars)
     (h : (parseArguments rest grammar label >>= fun parsed =>
           readProfile parsed >>= fun profile => pure (mk profile parsed)) = .error message) :
     ∃ token ∈ command :: rest, message ∈ cliErrorsNaming token := by
   rcases bind_eq_error h with h | ⟨parsed, hp, h⟩
-  · obtain ⟨token, htoken, hmsg⟩ := parse_error_in_cliErrors hl hmin h
+  · obtain ⟨token, htoken, hmsg⟩ := parse_error_in_cliErrors hl h
     exact ⟨token, List.mem_cons_of_mem _ htoken, hmsg⟩
   · rcases bind_eq_error h with h | ⟨_, _, h⟩
-    · obtain ⟨token, htoken, hmsg⟩ := readProfile_error_in_cliErrors hg hp h
+    · obtain ⟨token, htoken, hmsg⟩ := readProfile_error_in_cliErrors hp h
       exact ⟨token, List.mem_cons_of_mem _ htoken, hmsg⟩
     · cases h
 
@@ -1371,33 +1282,33 @@ theorem stand_alone_error {command : String} {rest : List String} {label message
       exact ⟨first, by simp, hlabel first⟩
   · cases h
 
-/-- (i) args.ts:16-17: every `parseCli` error repeats at most one argv token. -/
+/-- (i) args.ts:17-18: every `parseCli` error repeats at most one argv token. -/
 theorem cliErrorNamesOneToken : CliErrorNamesOneToken := by
   intro argv message h
   rcases argv with _ | ⟨command, rest⟩
   · left
     have h' : missingCommandMessage = message := by
-      simpa [parseCli, parseCliWith] using h
+      simpa [parseCli] using h
     subst h'
     simp [cliErrorsNamingNothing]
-  rw [parseCli, parseCliWith_cons] at h
+  rw [parseCli_cons] at h
   split at h
   · exact Or.inr (stand_alone_error (fun _ => by simp [cliErrorsNaming]) h)
   split at h
   · exact Or.inr (stand_alone_error (fun _ => by simp [cliErrorsNaming]) h)
   split at h
-  · exact Or.inr (plain_command_error (by simp [labeledGrammars]) (by decide) (by decide) h)
+  · exact Or.inr (plain_command_error (by simp [labeledGrammars]) h)
   split at h
-  · exact Or.inr (plain_command_error (by simp [labeledGrammars]) (by decide) (by decide) h)
+  · exact Or.inr (plain_command_error (by simp [labeledGrammars]) h)
   split at h
-  · exact Or.inr (plain_command_error (by simp [labeledGrammars]) (by decide) (by decide) h)
+  · exact Or.inr (plain_command_error (by simp [labeledGrammars]) h)
   split at h
   · refine action_command_error (grammar := fun _ => COMMAND_GRAMMAR.service)
-      (fun _ _ => ⟨by simp [labeledGrammars], by decide, by decide⟩)
+      (fun _ _ => by simp [labeledGrammars])
       (by simp [cliErrorsNamingNothing]) (fun _ => by simp [cliErrorsNaming]) h
   split at h
   · refine action_command_error (grammar := fun _ => COMMAND_GRAMMAR.profile)
-      (fun _ _ => ⟨by simp [labeledGrammars], by decide, by decide⟩)
+      (fun _ _ => by simp [labeledGrammars])
       (by simp [cliErrorsNamingNothing]) (fun _ => by simp [cliErrorsNaming]) h
   split at h
   · rcases bind_eq_error h with h' | ⟨action, ha, h'⟩
@@ -1413,7 +1324,7 @@ theorem cliErrorNamesOneToken : CliErrorNamesOneToken := by
         have := plain_command_error (command := command) (rest := rest.drop 1)
           (mk := fun profile parsed => CliCommand.sessions "list" profile
             (normalizeSessionsArgv parsed (sessionsHandlerFlags "list")))
-          (by simp [labeledGrammars]) (by decide) (by decide) h'
+          (by simp [labeledGrammars]) h'
         obtain ⟨token, htoken, hmsg⟩ := this
         refine ⟨token, ?_, hmsg⟩
         rcases List.mem_cons.mp htoken with rfl | htoken
@@ -1423,7 +1334,7 @@ theorem cliErrorNamesOneToken : CliErrorNamesOneToken := by
         have := plain_command_error (command := command) (rest := rest.drop 1)
           (mk := fun profile parsed => CliCommand.sessions "show" profile
             (normalizeSessionsArgv parsed (sessionsHandlerFlags "show")))
-          (by simp [labeledGrammars]) (by decide) (by decide) h'
+          (by simp [labeledGrammars]) h'
         obtain ⟨token, htoken, hmsg⟩ := this
         refine ⟨token, ?_, hmsg⟩
         rcases List.mem_cons.mp htoken with rfl | htoken
@@ -1442,7 +1353,7 @@ theorem select_cons (flags : List (String × FlagValue)) (k : String) (ks : List
 
 /-- The `--profile` entry of a parse is exactly what `readProfile` returned. -/
 theorem flagTokens_select_profile {parsed : Parsed} {profile : Option String}
-    (h : readProfile parsed = .ok profile) :
+    (hnp : parsed.get PROFILE_FLAG ≠ some .present) (h : readProfile parsed = .ok profile) :
     flagTokens (select parsed.flags [PROFILE_FLAG]) = profileTokens profile := by
   unfold readProfile at h
   simp only [select, List.filterMap_cons, List.filterMap_nil]
@@ -1453,7 +1364,7 @@ theorem flagTokens_select_profile {parsed : Parsed} {profile : Option String}
     simp [profileTokens]
   | some value =>
     cases value with
-    | present => simp [Parsed.get, hv] at h
+    | present => exact absurd hv hnp
     | str v =>
       simp only [Parsed.get, hv] at h
       split at h
@@ -1502,12 +1413,14 @@ theorem profile_boolean_perm {tokens : List String} {grammar : Grammar} {command
     {parsed : Parsed} {profile : Option String}
     (hp : parseArguments tokens grammar command = .ok parsed)
     (hrp : readProfile parsed = .ok profile)
+    (hg : grammar.flags.lookup PROFILE_FLAG = some .value)
     (hkeys : grammar.flags.map (·.1) = [PROFILE_FLAG, flag])
     (hkind : grammar.flags.lookup flag = some .boolean) (hnd : [PROFILE_FLAG, flag].Nodup)
     (hmax : grammar.maxPositionals = 0) :
     (profileTokens profile ++ flagIf flag (parsed.has flag)).Perm tokens := by
   have hsel := flagTokens_select_grammar hp (hkeys ▸ hnd)
-  rw [hkeys, select_cons, flagTokens_append, flagTokens_select_profile hrp,
+  rw [hkeys, select_cons, flagTokens_append,
+    flagTokens_select_profile (get_profile_ne_present hg hp) hrp,
     flagTokens_select_boolean hp hkind] at hsel
   exact hsel.trans (tail_perm_flags hp hmax)
 
@@ -1517,7 +1430,7 @@ theorem cliConsumesEveryTokenOnce : CliConsumesEveryTokenOnce := by
   intro argv result h
   rcases argv with _ | ⟨command, rest⟩
   · cases h
-  rw [parseCli, parseCliWith_cons] at h
+  rw [parseCli_cons] at h
   split at h
   · rename_i hhelp
     left
@@ -1541,7 +1454,7 @@ theorem cliConsumesEveryTokenOnce : CliConsumesEveryTokenOnce := by
     have hresult := ok_pure_inj h
     subst hresult
     exact List.Perm.cons _
-      (profile_boolean_perm hp hrp (by decide) (by decide) (by decide) (by decide))
+      (profile_boolean_perm hp hrp (by decide) (by decide) (by decide) (by decide) (by decide))
   split at h
   · rename_i hcmd
     subst hcmd
@@ -1550,7 +1463,7 @@ theorem cliConsumesEveryTokenOnce : CliConsumesEveryTokenOnce := by
     have hresult := ok_pure_inj h
     subst hresult
     exact List.Perm.cons _
-      (profile_boolean_perm hp hrp (by decide) (by decide) (by decide) (by decide))
+      (profile_boolean_perm hp hrp (by decide) (by decide) (by decide) (by decide) (by decide))
   split at h
   · rename_i hcmd
     subst hcmd
@@ -1559,7 +1472,7 @@ theorem cliConsumesEveryTokenOnce : CliConsumesEveryTokenOnce := by
     have hresult := ok_pure_inj h
     subst hresult
     exact List.Perm.cons _
-      (profile_boolean_perm hp hrp (by decide) (by decide) (by decide) (by decide))
+      (profile_boolean_perm hp hrp (by decide) (by decide) (by decide) (by decide) (by decide))
   split at h
   · rename_i hcmd
     subst hcmd
@@ -1578,7 +1491,7 @@ theorem cliConsumesEveryTokenOnce : CliConsumesEveryTokenOnce := by
       refine List.Perm.cons _ (List.Perm.cons _ ?_)
       have hsel := flagTokens_select_grammar hp (by decide)
       rw [show COMMAND_GRAMMAR.service.flags.map (·.1) = [PROFILE_FLAG] by decide,
-        flagTokens_select_profile hrp] at hsel
+        flagTokens_select_profile (get_profile_ne_present (by decide) hp) hrp] at hsel
       exact hsel.trans (tail_perm_flags hp (by decide))
   split at h
   · rename_i hcmd
@@ -1596,7 +1509,7 @@ theorem cliConsumesEveryTokenOnce : CliConsumesEveryTokenOnce := by
       subst hresult
       simp only [List.drop_succ_cons, List.drop_zero] at hp
       exact List.Perm.cons _ (List.Perm.cons _
-        (profile_boolean_perm hp hrp (by decide) (by decide) (by decide) (by decide)))
+        (profile_boolean_perm hp hrp (by decide) (by decide) (by decide) (by decide) (by decide)))
   split at h
   · rename_i hcmd
     subst hcmd
@@ -1626,7 +1539,9 @@ theorem cliConsumesEveryTokenOnce : CliConsumesEveryTokenOnce := by
         subst hab
         exact profile_not_handlerKey first ha
       have hsel := flagTokens_select_grammar hp (hkeys ▸ hnd)
-      rw [hkeys, select_append, flagTokens_append, flagTokens_select_profile hrp] at hsel
+      rw [hkeys, select_append, flagTokens_append,
+        flagTokens_select_profile (get_profile_ne_present (sessionsGrammar_profile first) hp) hrp]
+        at hsel
       have hall := consumesEveryTokenOnce tail _ _ parsed hp
       rw [normalize_eq]
       refine List.Perm.trans ?_ ((List.Perm.append_left _ hsel).trans hall)
