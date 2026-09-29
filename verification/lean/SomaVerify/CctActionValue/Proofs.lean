@@ -99,6 +99,11 @@ theorem blank_iff (s : String) :
   rw [redundant_length_disjunct]
   simp [utf16Length_eq_zero_iff]
 
+/-- The payload test of line 125, `payload.trim().length === 0`, holds exactly when the payload
+trims to empty. -/
+theorem trim_blank_iff (s : String) : (utf16Length (jsTrim s) == 0) = true ↔ jsTrim s = "" := by
+  simp [utf16Length_eq_zero_iff]
+
 /-- `VALID_MODES.has(m)` is membership. -/
 theorem contains_VALID_MODES (m : String) : VALID_MODES.contains m = true ↔ m ∈ VALID_MODES :=
   List.contains_iff_mem
@@ -165,7 +170,7 @@ theorem decode_str_of_prefixed {s : String} {t : List Char}
       | none => .invalid (.str s)
       | some i =>
         if utf16Length (String.ofList (t.take i)) == 0 then .invalid (.str s)
-        else if utf16Length (String.ofList (t.drop (i + 1))) == 0 then .invalid (.str s)
+        else if utf16Length (jsTrim (String.ofList (t.drop (i + 1)))) == 0 then .invalid (.str s)
         else if !VALID_MODES.contains (String.ofList (t.take i)) then .invalid (.str s)
         else .tagged (String.ofList (t.take i)) (String.ofList (t.drop (i + 1))) := by
   have hne : jsTrim s ≠ "" := by
@@ -190,21 +195,21 @@ and applies lines 124-126 to that mode and payload. -/
 theorem decode_wire (mode payload : String) (hm : SEP ∉ mode.toList) :
     decodeCctActionValue (.str (wire mode payload)) =
       if utf16Length mode == 0 then .invalid (.str (wire mode payload))
-      else if utf16Length payload == 0 then .invalid (.str (wire mode payload))
+      else if utf16Length (jsTrim payload) == 0 then .invalid (.str (wire mode payload))
       else if !VALID_MODES.contains mode then .invalid (.str (wire mode payload))
       else .tagged mode payload := by
   rw [decode_str_of_prefixed (wire_toList mode payload), indexOfSep_append _ _ hm]
   simp [String.ofList_toList]
 
-/-- The wire form of a valid mode and a non-empty payload decodes to that mode and payload,
-whatever the payload contains. -/
+/-- The wire form of a valid mode and a payload that is not blank decodes to that mode and
+payload, whatever the payload contains. -/
 theorem decode_wire_valid {mode payload : String} (hm : mode ∈ VALID_MODES)
-    (hp : payload ≠ "") :
+    (hp : jsTrim payload ≠ "") :
     decodeCctActionValue (.str (wire mode payload)) = .tagged mode payload := by
   rw [decode_wire _ _ (SEP_not_mem_of_valid hm)]
   have h1 : (utf16Length mode == 0) = false := by
     simp [utf16Length_eq_zero_iff, ne_empty_of_valid hm]
-  have h2 : (utf16Length payload == 0) = false := by
+  have h2 : (utf16Length (jsTrim payload) == 0) = false := by
     simp [utf16Length_eq_zero_iff, hp]
   simp [h1, h2, hm]
 
@@ -231,10 +236,10 @@ theorem prefixed_toList {s : String} (h : jsStartsWith s PREFIX = true) :
   exact ⟨t, ht.symm⟩
 
 /-- A string that starts with `cm:` decodes to `invalid`, or to `tagged` when it is the wire form
-of a valid mode and a non-empty payload. -/
+of a valid mode and a payload that is not blank. -/
 theorem decode_prefixed {s : String} (hst : jsStartsWith s PREFIX = true) :
     decodeCctActionValue (.str s) = .invalid (.str s) ∨
-      ∃ mode payload, s = wire mode payload ∧ mode ∈ VALID_MODES ∧ payload ≠ "" ∧
+      ∃ mode payload, s = wire mode payload ∧ mode ∈ VALID_MODES ∧ jsTrim payload ≠ "" ∧
         decodeCctActionValue (.str s) = .tagged mode payload := by
   obtain ⟨t, hs⟩ := prefixed_toList hst
   rw [decode_str_of_prefixed hs]
@@ -245,7 +250,7 @@ theorem decode_prefixed {s : String} (hst : jsStartsWith s PREFIX = true) :
     by_cases h1 : (utf16Length (String.ofList (t.take i)) == 0) = true
     · exact Or.inl (ite_eq_left h1)
     · rw [ite_eq_right h1]
-      by_cases h2 : (utf16Length (String.ofList (t.drop (i + 1))) == 0) = true
+      by_cases h2 : (utf16Length (jsTrim (String.ofList (t.drop (i + 1)))) == 0) = true
       · exact Or.inl (ite_eq_left h2)
       · rw [ite_eq_right h2]
         by_cases h3 : (!VALID_MODES.contains (String.ofList (t.take i))) = true
@@ -257,21 +262,18 @@ theorem decode_prefixed {s : String} (hst : jsStartsWith s PREFIX = true) :
               ← indexOfSep_eq_some hi]
           · rw [← contains_VALID_MODES]
             simpa using h3
-          · intro he
-            apply h2
-            rw [he]
-            decide
+          · exact fun he => h2 ((trim_blank_iff _).mpr he)
 
 /-- Every string decodes in one of four ways: blank and invalid; not blank, not prefixed and
-legacy; prefixed and invalid; prefixed, the wire form of a valid mode and a non-empty payload,
-and tagged. -/
+legacy; prefixed and invalid; prefixed, the wire form of a valid mode and a payload that is not
+blank, and tagged. -/
 theorem decode_str_cases (s : String) :
     (jsTrim s = "" ∧ decodeCctActionValue (.str s) = .invalid (.str s)) ∨
     (jsTrim s ≠ "" ∧ jsStartsWith s PREFIX = false ∧
       decodeCctActionValue (.str s) = .legacy s) ∨
     (jsStartsWith s PREFIX = true ∧ decodeCctActionValue (.str s) = .invalid (.str s)) ∨
     (jsStartsWith s PREFIX = true ∧ ∃ mode payload, s = wire mode payload ∧
-      mode ∈ VALID_MODES ∧ payload ≠ "" ∧
+      mode ∈ VALID_MODES ∧ jsTrim payload ≠ "" ∧
       decodeCctActionValue (.str s) = .tagged mode payload) := by
   by_cases hb : jsTrim s = ""
   · exact Or.inl ⟨hb, decode_blank hb⟩
@@ -376,9 +378,7 @@ was built from. -/
 theorem round_trip : RoundTrip := by
   intro mode payload encoded h
   obtain ⟨hm, hp, -, rfl⟩ := (encode_ok mode payload encoded).mp h
-  refine decode_wire_valid hm fun he => hp ?_
-  rw [he]
-  exact jsTrim_empty
+  exact decode_wire_valid hm hp
 
 /-- `RoundTripOfValid`: for either mode and any payload that is not blank and fits the cap, the
 encoder returns the wire form and the decoder gives the mode and payload back. -/
@@ -410,7 +410,14 @@ theorem utf16Length_empty : utf16Length "" = 0 := by
 theorem empty_payload_invalid : EmptyPayloadInvalid := by
   intro mode hm
   rw [decode_wire _ _ hm]
-  simp [utf16Length_empty]
+  simp [jsTrim_empty, utf16Length_empty]
+
+/-- `BlankPayloadInvalid`: `cm:<mode>|<payload>` with a payload that is empty or white space
+only is invalid. -/
+theorem blank_payload_invalid : BlankPayloadInvalid := by
+  intro mode payload hm hp
+  rw [decode_wire _ _ hm]
+  simp [hp, utf16Length_empty]
 
 /-- `EmptyModeInvalid`: `cm:|<payload>` is invalid, whatever the payload. -/
 theorem empty_mode_invalid : EmptyModeInvalid := by
@@ -427,20 +434,23 @@ theorem unknown_mode_invalid : UnknownModeInvalid := by
 
 /-- `InvalidMatrix`: every entry of the doc comment's invalid matrix (lines 25-33) decodes to
 `invalid`, carrying the input: a non-string, `''`, any white-space-only string, `cm:`,
-`cm:admin`, `cm:admin|`, `cm:|abc` and `cm:bad|abc`. -/
+`cm:admin`, `cm:admin|`, `cm:admin| `, `cm:|abc` and `cm:bad|abc`. -/
 theorem invalid_matrix : InvalidMatrix := by
   have e1 : ("cm:" : String) = PREFIX ++ "" := by decide
   have e2 : ("cm:admin" : String) = PREFIX ++ "admin" := by decide
   have e3 : ("cm:admin|" : String) = wire "admin" "" := by decide
+  have e6 : ("cm:admin| " : String) = wire "admin" " " := by decide
   have e4 : ("cm:|abc" : String) = wire "" "abc" := by decide
   have e5 : ("cm:bad|abc" : String) = wire "bad" "abc" := by decide
-  refine ⟨rfl, decode_blank jsTrim_empty, fun s h => decode_blank h, ?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨rfl, decode_blank jsTrim_empty, fun s h => decode_blank h, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · rw [e1]
     exact no_separator_invalid "" (by decide)
   · rw [e2]
     exact no_separator_invalid "admin" (by decide)
   · rw [e3]
     exact empty_payload_invalid "admin" (by decide)
+  · rw [e6]
+    exact blank_payload_invalid "admin" " " (by decide) (by decide)
   · rw [e4]
     exact empty_mode_invalid "abc"
   · rw [e5]
@@ -487,7 +497,7 @@ theorem prefixed_never_legacy : PrefixedNeverLegacy := by
   simp [hst] at hst'
 
 /-- `TaggedIff`: the decoder returns `tagged mode payload` exactly for the wire form of a valid
-mode and a non-empty payload; the split is at the first `|`. -/
+mode and a payload that is not blank; the split is at the first `|`. -/
 theorem tagged_iff : TaggedIff := by
   intro raw mode payload
   constructor
@@ -502,12 +512,34 @@ theorem tagged_iff : TaggedIff := by
   · rintro ⟨rfl, hm, hp⟩
     exact decode_wire_valid hm hp
 
-/-- `TaggedSound`: a tagged result always has mode `admin` or `readonly` and a non-empty payload.
--/
+/-- `TaggedSound`: a tagged result always has mode `admin` or `readonly` and a payload that is
+not empty or white space only. -/
 theorem tagged_sound : TaggedSound := by
   intro raw mode payload h
   have := (tagged_iff raw mode payload).mp h
   exact ⟨this.2.1, this.2.2⟩
+
+/-- `TaggedIffEncoded`: within the 2000-unit cap, the decoder returns `tagged mode payload` for a
+value exactly when encoding `mode` and `payload` returns that value. -/
+theorem tagged_iff_encoded : TaggedIffEncoded := by
+  intro s mode payload hs
+  rw [tagged_iff, encode_ok]
+  constructor
+  · rintro ⟨he, hm, hp⟩
+    cases he
+    exact ⟨hm, hp, hs, rfl⟩
+  · rintro ⟨hm, hp, -, rfl⟩
+    exact ⟨rfl, hm, hp⟩
+
+/-- `TaggedImage`: within the cap, the values decoded as tagged are exactly the values the encoder
+returns. -/
+theorem tagged_image : TaggedImage := by
+  intro s hs
+  constructor
+  · rintro ⟨mode, payload, h⟩
+    exact ⟨mode, payload, (tagged_iff_encoded s mode payload hs).mp h⟩
+  · rintro ⟨mode, payload, h⟩
+    exact ⟨mode, payload, (tagged_iff_encoded s mode payload hs).mpr h⟩
 
 /-! ## readCctActionPayload -/
 
@@ -553,14 +585,15 @@ theorem redundant_raw_length_check : RedundantRawLengthCheck := by
     simp only [decodeVariant, Bool.false_and, Bool.false_or, Bool.true_and,
       redundant_length_disjunct]
 
-/-- Lines 124-127 give the same result as lines 125-127: an empty mode fails `VALID_MODES.has`
-on line 126, and lines 124, 125 and 126 all return the same `invalid`. -/
-theorem mode_check_redundant (raw : RawValue) (mode payload : String) :
+/-- Lines 124-127 give the same result as lines 125-127, whatever line 125 tests (`blank`): an
+empty mode fails `VALID_MODES.has` on line 126, and lines 124, 125 and 126 all return the same
+`invalid`. -/
+theorem mode_check_redundant (raw : RawValue) (mode payload : String) (blank : Bool) :
     (if utf16Length mode == 0 then Decoded.invalid raw
-      else if utf16Length payload == 0 then .invalid raw
+      else if blank then .invalid raw
       else if !VALID_MODES.contains mode then .invalid raw
       else .tagged mode payload) =
-    (if utf16Length payload == 0 then .invalid raw
+    (if blank then .invalid raw
       else if !VALID_MODES.contains mode then .invalid raw
       else .tagged mode payload) := by
   by_cases hm : (utf16Length mode == 0) = true
@@ -599,19 +632,5 @@ theorem redundant_checks :
   refine ⟨fun raw => ?_, fun mode payload => ?_⟩
   · rw [redundant_raw_length_check, redundant_mode_length_check, decode_variant_is_model]
   · rw [redundant_payload_length_check, encode_variant_is_model]
-
-/-! ## Observation (not a documented invariant) -/
-
-/-- The decoder accepts a tagged value whose payload is white space only, which the encoder
-refuses to produce: `cm:admin| ` decodes to mode `admin`, payload one space, while encoding that
-mode and payload throws. The doc comment lists only the empty payload `cm:admin|` as invalid, so
-this is recorded rather than changed; `tagged_iff` and `encode_ok` give the general shape. -/
-theorem blank_payload_asymmetry :
-    decodeCctActionValue (.str "cm:admin| ") = .tagged "admin" " " ∧
-      ∃ msg, encodeCctActionValue "admin" " " = .error msg := by
-  have e : ("cm:admin| " : String) = wire "admin" " " := by decide
-  refine ⟨?_, (encode_failure_set "admin" " ").mpr (Or.inr (Or.inl (by decide)))⟩
-  rw [e]
-  exact decode_wire_valid (by decide) (by decide)
 
 end SomaVerify.CctActionValue.Proofs

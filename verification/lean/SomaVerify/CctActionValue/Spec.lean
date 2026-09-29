@@ -63,9 +63,9 @@ def EncodeOk : Prop :=
 
 /-- packages/slack/src/cct/action-value.ts:25-33: "Invalid matrix (decoder rejects all of these
 — NO legacy fallback): `null` / `undefined` / non-string; empty string `''`; whitespace-only;
-`'cm:'` (no mode, no `|`); `'cm:admin'` (no `|`); `'cm:admin|'` (empty payload); `'cm:|abc'`
-(empty mode); `'cm:bad|abc'` (unknown mode)". Each listed value decodes to `invalid`, carrying
-the value. -/
+`'cm:'` (no mode, no `|`); `'cm:admin'` (no `|`); `'cm:admin|'` / `'cm:admin| '` (empty /
+whitespace-only payload); `'cm:|abc'` (empty mode); `'cm:bad|abc'` (unknown mode)". Each listed
+value decodes to `invalid`, carrying the value. -/
 def InvalidMatrix : Prop :=
   decodeCctActionValue .nonString = .invalid .nonString ∧
   decodeCctActionValue (.str "") = .invalid (.str "") ∧
@@ -73,6 +73,7 @@ def InvalidMatrix : Prop :=
   decodeCctActionValue (.str "cm:") = .invalid (.str "cm:") ∧
   decodeCctActionValue (.str "cm:admin") = .invalid (.str "cm:admin") ∧
   decodeCctActionValue (.str "cm:admin|") = .invalid (.str "cm:admin|") ∧
+  decodeCctActionValue (.str "cm:admin| ") = .invalid (.str "cm:admin| ") ∧
   decodeCctActionValue (.str "cm:|abc") = .invalid (.str "cm:|abc") ∧
   decodeCctActionValue (.str "cm:bad|abc") = .invalid (.str "cm:bad|abc")
 
@@ -88,6 +89,13 @@ position without a separator in it. -/
 def EmptyPayloadInvalid : Prop :=
   ∀ mode, SEP ∉ mode.toList →
     decodeCctActionValue (.str (wire mode "")) = .invalid (.str (wire mode ""))
+
+/-- packages/slack/src/cct/action-value.ts:31, "`'cm:admin| '` (whitespace-only payload)", for
+every mode position without a separator and every payload that trims to empty (checked on
+packages/slack/src/cct/action-value.ts:125). -/
+def BlankPayloadInvalid : Prop :=
+  ∀ mode payload, SEP ∉ mode.toList → jsTrim payload = "" →
+    decodeCctActionValue (.str (wire mode payload)) = .invalid (.str (wire mode payload))
 
 /-- packages/slack/src/cct/action-value.ts:32, "`'cm:|abc'` (empty mode)", for every payload. -/
 def EmptyModeInvalid : Prop :=
@@ -121,19 +129,38 @@ def PrefixedNeverLegacy : Prop :=
   ∀ s payload, jsStartsWith s PREFIX = true → decodeCctActionValue (.str s) ≠ .legacy payload
 
 /-- packages/slack/src/cct/action-value.ts:61, "`{ kind: 'tagged'; mode: CctCardMode; payload:
-string }`", with packages/slack/src/cct/action-value.ts:31-33 (empty payload, empty mode and
-unknown mode are invalid): a tagged result never has an empty payload or a mode outside the
-two. -/
+string }`", with packages/slack/src/cct/action-value.ts:31-33 (empty or whitespace-only payload,
+empty mode and unknown mode are invalid): a tagged result never has a mode outside the two or a
+payload that is empty or white space only. -/
 def TaggedSound : Prop :=
   ∀ raw mode payload, decodeCctActionValue raw = .tagged mode payload →
-    mode ∈ VALID_MODES ∧ payload ≠ ""
+    mode ∈ VALID_MODES ∧ jsTrim payload ≠ ""
 
 /-- packages/slack/src/cct/action-value.ts:104-105: "split on the FIRST `|` only. So
 `cm:admin|abc|def` → `{ mode: 'admin', payload: 'abc|def' }`". The decoder returns
-`tagged mode payload` exactly for the wire form of a valid mode and a non-empty payload. -/
+`tagged mode payload` exactly for the wire form of a valid mode and a payload that is not
+blank. -/
 def TaggedIff : Prop :=
   ∀ raw mode payload, decodeCctActionValue raw = .tagged mode payload ↔
-    (raw = .str (wire mode payload) ∧ mode ∈ VALID_MODES ∧ payload ≠ "")
+    (raw = .str (wire mode payload) ∧ mode ∈ VALID_MODES ∧ jsTrim payload ≠ "")
+
+/-- packages/slack/src/cct/action-value.ts:97-98: "Decoder is INTENTIONALLY conservative: a
+malformed `cm:`-prefixed value is `invalid`"; packages/slack/src/cct/action-value.ts:68-71, the
+encoder "Throws on: unknown mode; empty / whitespace-only payload; encoded result exceeds Slack's
+2000-char button-value cap". A value the encoder cannot produce is malformed: for every value
+within the cap, the decoder returns `tagged mode payload` exactly when encoding `mode` and
+`payload` returns that value. -/
+def TaggedIffEncoded : Prop :=
+  ∀ s mode payload, utf16Length s ≤ SLACK_BUTTON_VALUE_MAX →
+    (decodeCctActionValue (.str s) = .tagged mode payload ↔
+      encodeCctActionValue mode payload = .ok s)
+
+/-- `TaggedIffEncoded` as sets: within the cap, the values the decoder reads as tagged are
+exactly the values the encoder returns. -/
+def TaggedImage : Prop :=
+  ∀ s, utf16Length s ≤ SLACK_BUTTON_VALUE_MAX →
+    ((∃ mode payload, decodeCctActionValue (.str s) = .tagged mode payload) ↔
+      ∃ mode payload, encodeCctActionValue mode payload = .ok s)
 
 /-! ## readCctActionPayload -/
 
@@ -175,7 +202,7 @@ def decodeVariant (keep111 keep124 : Bool) : RawValue → Decoded
         let mode := String.ofList (tail.take sepIdx)
         let payload := String.ofList (tail.drop (sepIdx + 1))
         if keep124 && utf16Length mode == 0 then .invalid (.str raw)
-        else if utf16Length payload == 0 then .invalid (.str raw)
+        else if utf16Length (jsTrim payload) == 0 then .invalid (.str raw)
         else if !VALID_MODES.contains mode then .invalid (.str raw)
         else .tagged mode payload
 
@@ -210,7 +237,8 @@ def RedundantRawLengthCheck : Prop :=
 
 /-- packages/slack/src/cct/action-value.ts:124: an empty mode fails `VALID_MODES.has` on
 packages/slack/src/cct/action-value.ts:126, which returns the same `{ kind: 'invalid', raw }` (as
-does line 125 in between), so dropping the check changes no result. -/
+does the payload check of line 125 in between, whatever it tests), so dropping the check changes
+no result. -/
 def RedundantModeLengthCheck : Prop :=
   ∀ keep111 raw, decodeVariant keep111 false raw = decodeVariant keep111 true raw
 

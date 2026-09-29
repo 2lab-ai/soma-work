@@ -143,7 +143,7 @@ def decodeCctActionValue : RawValue → Decoded
         -- line 124
         if utf16Length mode == 0 then .invalid (.str raw)
         -- line 125
-        else if utf16Length payload == 0 then .invalid (.str raw)
+        else if utf16Length (jsTrim payload) == 0 then .invalid (.str raw)
         -- line 126
         else if !VALID_MODES.contains mode then .invalid (.str raw)
         -- line 127
