@@ -102,7 +102,7 @@ def modeTier (i : Input) : Result :=
   match i.mode with
   | .bypass =>                                                -- 186
     if i.toolName = "Bash" then                               -- 187-189
-      { decision := .allow, reason := bypassBashReason }
+      { decision := .allow, reason := "bypass: unsafe allow-all Bash" }
     else if nativeBypassTools.contains i.toolName then        -- 190-192
       { decision := .allow, reason := "bypass: native tool" }
     else { decision := .pass, reason := "no policy opinion" }  -- 212
