@@ -1,4 +1,5 @@
 import SomaVerify.SensitivePath.Model
+import SomaVerify.SensitivePath.ModelOriginal
 
 /-!
 # Invariants of the sensitive-path filter
@@ -8,23 +9,25 @@ What `src/sensitive-path-filter.ts` documents, stated over the model in `Model.l
 * `src/sensitive-path-filter.ts:4-5`: "Blocks non-admin users from reading sensitive host files
   via Claude tools (Read, Bash cat/head/tail, Glob, Grep)."
 * `src/sensitive-path-filter.ts:23`: "Directories where any path underneath is blocked."
-* `src/sensitive-path-filter.ts:71`: "Check if an absolute path points to a sensitive location."
+* `src/sensitive-path-filter.ts:85`: "Check if an absolute path points to a sensitive location."
 * `src/sensitive-path-filter.ts:42`: "Regex patterns for sensitive basenames."
-* `src/sensitive-path-filter.ts:49`: "Service config files containing secrets. Only specific files
+* `src/sensitive-path-filter.ts:50`: "Service config files containing secrets. Only specific files
   are blocked, not the whole directory."
-* `src/sensitive-path-filter.ts:99`: "Match subdirectories: /opt/soma-work/*/{file}"
+* `src/sensitive-path-filter.ts:106`: "A service config sits in its directory or one directory below
+  it: /opt/soma-work/{,*/}{file}" (at 168903e8, line 99: "Match subdirectories:
+  /opt/soma-work/*/{file}").
 * `packages/common/src/path-utils.ts:11-21`: `/private/tmp` and `/tmp` name the same directory
   on macOS, and the module writes both as `/tmp`.
 
 A "path" is what a Read, Grep or Glob call names: blocking every file underneath a directory
 means blocking every spelling of those files, so the statements below quantify over spellings.
-`src/sensitive-path-filter.ts:156-161` is where the model's spelling-independence comes from
+`src/sensitive-path-filter.ts:166-171` is where the model's spelling-independence comes from
 (the fix for `.`, `..` and empty segments); it is not the source of any statement here.
 
 Outside these statements (trust boundary):
 
 * Bash. `checkBashSensitivePaths` pulls paths out of shell text with regular expressions
-  (`src/sensitive-path-filter.ts:58-64, 131-142`). Which files a shell command reads is not
+  (`src/sensitive-path-filter.ts:61-78, 136-152`). Which files a shell command reads is not
   decidable from its text (variables, quoting, globbing, command substitution, the working
   directory), so no statement here is about Bash commands; regression tests in
   `src/__tests__/sensitive-path-filter.test.ts` cover them.
@@ -111,32 +114,44 @@ def SecretsName (b : List Char) : Prop :=
   ∃ stem ∈ ["secret".toList, "secrets".toList],
     ∃ ext ∈ ["json".toList, "yaml".toList, "yml".toList, "toml".toList], b = stem ++ '.' :: ext
 
-/-- The service directories of `SENSITIVE_SERVICE_CONFIGS` (`src/sensitive-path-filter.ts:50-53`)
+/-- The service directories of `SENSITIVE_SERVICE_CONFIGS` (`src/sensitive-path-filter.ts:53-56`)
 as segment lists. -/
 def serviceDirSegs : List (List Seg) :=
   [["opt".toList, "soma-work".toList], ["opt".toList, "soma".toList]]
 
-/-- The file names of `SENSITIVE_SERVICE_CONFIGS`. -/
+/-- The service config files, the ones line 50 documents: `.env` and `config.json`. -/
 def serviceFileNames : List Seg :=
   [".env".toList, "config.json".toList]
+
+/-- The file names `SENSITIVE_SERVICE_CONFIGS` lists since the simplification: `config.json`.
+The basename patterns catch every `.env` before the table is consulted. -/
+def serviceTableFileNames : List Seg :=
+  ["config.json".toList]
+
+/-- A service-config rule that matches exactly the files named `files` directly in a service
+directory or exactly one directory below it. -/
+def ServiceRuleMatches (rule : List Char → Bool) (files : List Seg) : Prop :=
+  ∀ n, rule n = true ↔
+    n.head? = some '/' ∧ ∃ dir ∈ serviceDirSegs, ∃ f ∈ files,
+      segmentsOf n = dir ++ [f] ∨ ∃ m, segmentsOf n = dir ++ [m, f]
 
 /-! ## The invariants -/
 
 /-- (a) `normalizePath` returns a normal form: normalizing twice is normalizing once.
 `packages/common/src/path-utils.ts:14-15`: "We standardize on the shorter /tmp form";
-`src/sensitive-path-filter.ts:71`: "Check if an absolute path points to a sensitive location."
+`src/sensitive-path-filter.ts:85`: "Check if an absolute path points to a sensitive location."
 A check keyed on where a path points needs one form per location, and a form that is stable. -/
 def NormalizeIdempotent (home : List Char) : Prop :=
   ∀ p, normalizePath home (normalizePath home p) = normalizePath home p
 
 /-- (b) Checking a path and checking its normal form give the same result.
-`src/sensitive-path-filter.ts:71`: "Check if an absolute path points to a sensitive
+`src/sensitive-path-filter.ts:85`: "Check if an absolute path points to a sensitive
 location." -/
 def CheckInvariantUnderNormalize (home : List Char) : Prop :=
   ∀ p, checkSensitivePath home p = checkSensitivePath home (normalizePath home p)
 
 /-- (b') Two absolute spellings of the same location get the same result, whatever `.`, `..`
-and empty segments they are spelled with. `src/sensitive-path-filter.ts:71`: "Check if an
+and empty segments they are spelled with. `src/sensitive-path-filter.ts:85`: "Check if an
 absolute path points to a sensitive location." -/
 def SameLocationSameResult (home : List Char) : Prop :=
   ∀ p q loc, Names p loc → Names q loc → checkSensitivePath home p = checkSensitivePath home q
@@ -149,7 +164,7 @@ def AliasesSpellHome (home : List Char) : Prop :=
   ∀ a ∈ homeAliases, checkSensitivePath home a = checkSensitivePath home home ∧
     ∀ rest, checkSensitivePath home (a ++ '/' :: rest) = checkSensitivePath home (home ++ '/' :: rest)
 
-/-- (c) The directory test of `src/sensitive-path-filter.ts:78` is segment-aligned: a string is
+/-- (c) The directory test of `src/sensitive-path-filter.ts:90` is segment-aligned: a string is
 at or below a sensitive directory exactly when it is absolute and that directory's segments
 begin its segments. So a directory never covers a sibling whose name merely starts with its
 name (`.sshx` next to `.ssh`). `src/sensitive-path-filter.ts:23`: "Directories where any path
@@ -182,8 +197,8 @@ def FlaggedWhereverNamedAtLoad : Prop :=
     (checkSensitivePath (moduleHome (renderAbs hs)) p).isSensitive = true
 
 /-- (d'') For the module as loaded: a glob is reported sensitive when its concrete prefix (the text before the first glob
-metacharacter, `src/sensitive-path-filter.ts:126`) names a location at or below a sensitive
-directory. `src/sensitive-path-filter.ts:123`: "Check if a glob pattern targets a sensitive
+metacharacter, `src/sensitive-path-filter.ts:131`) names a location at or below a sensitive
+directory. `src/sensitive-path-filter.ts:128`: "Check if a glob pattern targets a sensitive
 directory." -/
 def GlobFlaggedWherePrefixNamed : Prop :=
   ∀ hs, HomeCanonical hs → ∀ cwd pattern basePath loc d,
@@ -196,13 +211,29 @@ def BasenameRuleDescribed : Prop :=
   ∀ b, basenamePatterns.any (fun test => test b) = true ↔
     EnvName b ∨ CredentialsName b ∨ SecretsName b
 
-/-- (f) The service-config rule matches exactly the service files directly in a service
-directory or exactly one directory below it. `src/sensitive-path-filter.ts:49`: "Service config
-files containing secrets. Only specific files are blocked, not the whole directory.";
-`src/sensitive-path-filter.ts:99`: "Match subdirectories: /opt/soma-work/*/{file}". -/
+/-- (f) The service-config rule matches exactly the files its table lists, directly in a
+service directory or exactly one directory below it. `src/sensitive-path-filter.ts:50`: "Service
+config files containing secrets. Only specific files are blocked, not the whole directory."; the
+comment above the loop: "A service config sits in its directory or one directory below it". -/
 def ServiceRuleDescribed : Prop :=
-  ∀ n, serviceConfigRule n = true ↔
-    n.head? = some '/' ∧ ∃ dir ∈ serviceDirSegs, ∃ f ∈ serviceFileNames,
-      segmentsOf n = dir ++ [f] ∨ ∃ m, segmentsOf n = dir ++ [m, f]
+  ServiceRuleMatches serviceConfigRule serviceTableFileNames
+
+/-- (f) What the service rule is for, observed through `checkSensitivePath`: every service config
+file, `.env` or `config.json`, directly in a service directory or one directory below it, is
+reported sensitive. `src/sensitive-path-filter.ts:50`: "Service config files containing
+secrets." -/
+def ServiceConfigsFlagged (home : List Char) : Prop :=
+  ∀ p, (normalizePath home p).head? = some '/' →
+    (∃ dir ∈ serviceDirSegs, ∃ f ∈ serviceFileNames,
+      segmentsOf (normalizePath home p) = dir ++ [f] ∨ ∃ m, segmentsOf (normalizePath home p) = dir ++ [m, f]) →
+    (checkSensitivePath home p).isSensitive = true
+
+/-- The simplification changed no answer: `checkSensitivePath` and `checkSensitiveGlob` return
+exactly what the phase-1 model returned (`ModelOriginal.lean`), for every HOME, path, glob
+pattern and base path. -/
+def SimplifiedEqualsOriginal : Prop :=
+  (∀ home p, checkSensitivePath home p = Original.checkSensitivePath home p) ∧
+  (∀ home cwd pattern basePath,
+    checkSensitiveGlob home cwd pattern basePath = Original.checkSensitiveGlob home cwd pattern basePath)
 
 end SomaVerify.SensitivePath.Spec

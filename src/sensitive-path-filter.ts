@@ -46,10 +46,13 @@ const SENSITIVE_BASENAME_PATTERNS: ReadonlyArray<RegExp> = [
   /^secrets?\.(json|ya?ml|toml)$/,
 ];
 
-/** Service config files containing secrets. Only specific files are blocked, not the whole directory. */
+/**
+ * Service config files containing secrets. Only specific files are blocked, not the whole directory.
+ * Their `.env` files are not listed: SENSITIVE_BASENAME_PATTERNS, checked first, blocks every `.env`.
+ */
 const SENSITIVE_SERVICE_CONFIGS: ReadonlyArray<{ dir: string; files: ReadonlyArray<string> }> = [
-  { dir: '/opt/soma-work', files: ['.env', 'config.json'] },
-  { dir: '/opt/soma', files: ['.env', 'config.json'] },
+  { dir: '/opt/soma-work', files: ['config.json'] },
+  { dir: '/opt/soma', files: ['config.json'] },
 ];
 
 /** Shell spellings of the home directory; normalizePath expands each of them like `~`. */
@@ -81,8 +84,6 @@ export interface SensitivePathResult {
 
 /** Check if an absolute path points to a sensitive location. */
 export function checkSensitivePath(filePath: string): SensitivePathResult {
-  if (!filePath) return { isSensitive: false };
-
   const normalized = normalizePath(filePath);
 
   for (const dir of SENSITIVE_DIRECTORIES) {
@@ -102,19 +103,12 @@ export function checkSensitivePath(filePath: string): SensitivePathResult {
     }
   }
 
+  // A service config sits in its directory or one directory below it: /opt/soma-work/{,*/}{file}
   for (const { dir, files } of SENSITIVE_SERVICE_CONFIGS) {
-    for (const file of files) {
-      if (normalized === path.join(dir, file)) {
-        return { isSensitive: true, reason: `Service config ${normalized} is restricted` };
-      }
-      // Match subdirectories: /opt/soma-work/*/{file}
-      if (normalized.startsWith(dir + '/') && normalized.endsWith('/' + file)) {
-        const relative = normalized.slice(dir.length + 1);
-        const parts = relative.split('/');
-        if (parts.length === 2 && parts[1] === file) {
-          return { isSensitive: true, reason: `Service config ${normalized} is restricted` };
-        }
-      }
+    if (!normalized.startsWith(dir + '/')) continue;
+    const parts = normalized.slice(dir.length + 1).split('/');
+    if (parts.length <= 2 && files.includes(parts[parts.length - 1])) {
+      return { isSensitive: true, reason: `Service config ${normalized} is restricted` };
     }
   }
 
