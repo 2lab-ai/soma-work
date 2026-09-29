@@ -79,9 +79,9 @@ export interface ToolPolicyContext {
    *   • `legacy` → `pass` (defer to the SDK per-tool prompt).
    *   • `bypass` → `allow` Bash and the native tools (unsafe — even dangerous Bash).
    *   • `auto`   → allow non-dangerous; a dangerous-rule hit → `classify`.
-   * Other tools (`mcp__` …) get `pass`: no opinion beyond the deny tier. In `auto` and `bypass`
-   * the SDK runs with `bypassPermissions`, so a passed call runs; MCP grants are checked, for
-   * non-admins, by the deny tier's `checkMcpToolPermission` guard.
+   * Other tools (`mcp__` …) get `pass`: no opinion beyond the deny tier. `pass` defers to the SDK,
+   * which in `auto` and `bypass` runs with `bypassPermissions`, not an `allowedTools` restriction;
+   * MCP grants are checked, for non-admins, by the deny tier's `checkMcpToolPermission` guard.
    */
   mode: PermissionMode;
   /** Live abort state at fire time (`abortController?.signal.aborted ?? false`). */
@@ -204,8 +204,8 @@ export function evaluateToolPolicy(
   }
 
   // 9. Native tools run in bypass and auto mode alike. `mcp__` tools get no
-  //    opinion here (`pass`); in auto and bypass the SDK runs with
-  //    `bypassPermissions`, so a passed call runs (grants are checked in step 4).
+  //    opinion here: `pass` defers to the SDK, which in auto and bypass runs with
+  //    `bypassPermissions`, not an `allowedTools` restriction (grants: step 4).
   if (ctx.mode !== 'legacy' && NATIVE_BYPASS_TOOLS.includes(toolName)) {
     return { decision: 'allow', reason: `${ctx.mode}: native tool` };
   }
