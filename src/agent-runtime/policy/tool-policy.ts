@@ -16,10 +16,10 @@
  *   • ACP mode (P9, later): the ACP `requestPermission` handler calls the same
  *     function and maps the decision onto an ACP `PermissionOption`.
  *
- * Precedence (highest wins): **deny > ask > allow > pass**. `pass` means "no
- * policy opinion" — in SDK mode it maps to `{ continue: true }` (defer to the
- * SDK's own permission logic), NOT to `ask`; conflating the two would force a
- * Slack permission prompt where today the SDK silently proceeds.
+ * Precedence (highest wins): **deny > classify/allow > pass**. `pass` means
+ * "no policy opinion" — in SDK mode it maps to `{ continue: true }` (defer to
+ * the SDK's own permission logic), NOT to an SDK `ask`; conflating the two
+ * would force a Slack permission prompt where today the SDK silently proceeds.
  *
  * SDK-agnostic: this file imports only the pure guard primitives (no SDK type).
  */
@@ -44,7 +44,7 @@ const PR_CREATE_MCP_TOOL = 'mcp__github__create_pull_request';
  * consult the async safety classifier (guardian). The async PreToolUse hook
  * maps `classify` onto `allow` / `ask`; it never reaches the SDK directly.
  */
-export type ToolPolicyDecision = 'allow' | 'deny' | 'ask' | 'classify' | 'pass';
+export type ToolPolicyDecision = 'allow' | 'deny' | 'classify' | 'pass';
 
 export interface ToolPolicyResult {
   decision: ToolPolicyDecision;
@@ -75,10 +75,11 @@ export interface ToolPolicyContext {
   isAdmin: boolean;
   /**
    * The session's permission mode (`mcpConfig.somaPermissionMode`). Governs the
-   * allow / ask / classify decision after the (mode-independent) hard-deny tier:
+   * allow / classify / pass decision after the (mode-independent) hard-deny tier:
    *   • `legacy` → `pass` (defer to the SDK per-tool prompt).
-   *   • `bypass` → `allow` everything governed (unsafe — even dangerous Bash).
+   *   • `bypass` → `allow` Bash and the native tools (unsafe — even dangerous Bash).
    *   • `auto`   → allow non-dangerous; a dangerous-rule hit → `classify`.
+   * Other tools (`mcp__` …) get `pass`, so the SDK's allowedTools gate still applies.
    */
   mode: PermissionMode;
   /** Live abort state at fire time (`abortController?.signal.aborted ?? false`). */
@@ -117,7 +118,7 @@ function checkSensitiveForTool(toolName: string, input: Record<string, unknown>)
 
 /**
  * Evaluate the policy for a single tool call. Pure — same inputs always yield
- * the same decision. Precedence: deny > ask > allow > pass.
+ * the same decision. Precedence: deny > classify/allow > pass.
  */
 export function evaluateToolPolicy(
   toolName: string,
@@ -127,7 +128,7 @@ export function evaluateToolPolicy(
   const input = toolInput ?? {};
   const command = asStr(input.command);
 
-  // ── DENY tier (any one wins; order within the tier is immaterial) ──
+  // ── DENY tier (any one wins; the order only picks which guard's reason is reported) ──
 
   // 1. Abort guard (Bash only): deny all Bash after session abort to stop
   //    SDK fire-and-forget writes.
@@ -135,31 +136,30 @@ export function evaluateToolPolicy(
     return { decision: 'deny', reason: 'abort-guard: session aborted' };
   }
 
-  // 2. SSH ban (Bash, non-admin).
-  if (toolName === 'Bash' && !ctx.isAdmin && isSshCommand(command)) {
-    return { decision: 'deny', reason: 'ssh-ban: ssh command for non-admin user' };
-  }
-
-  // 3. Sensitive-path (non-admin; Bash/Read/Glob/Grep).
+  // 2-4. Admins bypass the ssh / sensitive / mcp guards.
   if (!ctx.isAdmin) {
+    // 2. SSH ban (Bash).
+    if (toolName === 'Bash' && isSshCommand(command)) {
+      return { decision: 'deny', reason: 'ssh-ban: ssh command for non-admin user' };
+    }
+    // 3. Sensitive-path (Bash/Read/Glob/Grep).
     const sensitive = checkSensitiveForTool(toolName, input);
     if (sensitive?.isSensitive) {
       return { decision: 'deny', reason: `sensitive-path: ${sensitive.reason ?? 'sensitive location'}` };
     }
+    // 4. MCP tool permission (mcp__ tools) — catches mid-session grant expiry
+    //    that the query-start allowedTools snapshot cannot.
+    if (toolName.startsWith('mcp__')) {
+      const denied = ctx.checkMcpToolPermission(toolName);
+      if (denied !== null) {
+        return { decision: 'deny', reason: `mcp-permission: ${denied}` };
+      }
+    }
   }
 
-  // 4. Cross-user directory isolation (Bash, always — even in bypass mode).
+  // 5. Cross-user directory isolation (Bash, always — even in bypass mode).
   if (toolName === 'Bash' && isCrossUserAccess(command, ctx.user)) {
     return { decision: 'deny', reason: 'cross-user: another user directory' };
-  }
-
-  // 5. MCP tool permission (mcp__ tools, non-admin) — catches mid-session grant
-  //    expiry that the query-start allowedTools snapshot cannot.
-  if (toolName.startsWith('mcp__') && !ctx.isAdmin) {
-    const denied = ctx.checkMcpToolPermission(toolName);
-    if (denied !== null) {
-      return { decision: 'deny', reason: `mcp-permission: ${denied}` };
-    }
   }
 
   // 6. PR-issue precondition (#696) — handoff sessions must link a source issue
@@ -176,41 +176,37 @@ export function evaluateToolPolicy(
     }
   }
 
-  // ── ALLOW / ASK / CLASSIFY tier (only reached when no deny fired) ──
+  // ── ALLOW / CLASSIFY tier (only reached when no deny fired) ──
   // Mode governs the outcome. Note `legacy` falls through to `pass` below so
   // the SDK runs its own per-tool permission prompt (the old accept/reject).
 
-  // 7. Bypass mode (unsafe): allow every governed tool with no prompt —
-  //    including a dangerous Bash. The hard-deny tier above still protects
-  //    multi-tenant isolation (cross-user / ssh / sensitive / mcp grant).
-  if (ctx.mode === 'bypass') {
-    if (toolName === 'Bash') {
-      return { decision: 'allow', reason: 'bypass: unsafe allow-all Bash' };
-    }
-    if (NATIVE_BYPASS_TOOLS.includes(toolName)) {
-      return { decision: 'allow', reason: 'bypass: native tool' };
-    }
+  // 7. Bypass mode (unsafe): allow Bash with no prompt — even a dangerous one.
+  //    The hard-deny tier above still protects multi-tenant isolation
+  //    (cross-user / ssh / sensitive / mcp grant).
+  if (ctx.mode === 'bypass' && toolName === 'Bash') {
+    return { decision: 'allow', reason: 'bypass: unsafe allow-all Bash' };
   }
 
-  // 8. Auto mode (default): non-dangerous Bash + native tools run; a
-  //    dangerous-rule hit is handed to the safety classifier via `classify`.
-  if (ctx.mode === 'auto') {
-    if (toolName === 'Bash') {
-      const { decision, matchedRuleIds } = bypassBashPermissionDecision(command, ctx.isDangerousRuleDisabled);
-      if (decision === 'ask') {
-        // Defer to the guardian classifier instead of asking the human outright.
-        return { decision: 'classify', reason: `auto-classify: ${matchedRuleIds.join(',')}`, matchedRuleIds };
-      }
-      return { decision: 'allow', reason: 'auto: non-dangerous Bash' };
+  // 8. Auto mode (default): non-dangerous Bash runs; a dangerous-rule hit is
+  //    handed to the safety classifier via `classify`.
+  if (ctx.mode === 'auto' && toolName === 'Bash') {
+    const { decision, matchedRuleIds } = bypassBashPermissionDecision(command, ctx.isDangerousRuleDisabled);
+    if (decision === 'ask') {
+      // Defer to the guardian classifier instead of asking the human outright.
+      return { decision: 'classify', reason: `auto-classify: ${matchedRuleIds.join(',')}`, matchedRuleIds };
     }
-    if (NATIVE_BYPASS_TOOLS.includes(toolName)) {
-      return { decision: 'allow', reason: 'auto: native tool' };
-    }
+    return { decision: 'allow', reason: 'auto: non-dangerous Bash' };
+  }
+
+  // 9. Native tools run in bypass and auto mode alike. `mcp__` tools get no
+  //    opinion here, so the SDK's allowedTools gate still applies to them.
+  if (ctx.mode !== 'legacy' && NATIVE_BYPASS_TOOLS.includes(toolName)) {
+    return { decision: 'allow', reason: `${ctx.mode}: native tool` };
   }
 
   // ── default: no policy opinion (legacy mode, or an ungoverned tool) → defer ──
   return { decision: 'pass', reason: 'no policy opinion' };
 }
 
-/** The matchers a SDK PreToolUse hook must register to cover every governed tool. */
+/** Hook matchers covering every tool the policy decides on: Bash, the native tools, `mcp__` (deny tier only). */
 export const TOOL_POLICY_MATCHERS: readonly string[] = ['Bash', NATIVE_BYPASS_TOOLS.join('|'), 'mcp__'];

@@ -48,7 +48,6 @@ def modeName : Mode → String
 def decisionName : Decision → String
   | .allow => "allow"
   | .deny => "deny"
-  | .ask => "ask"
   | .classify => "classify"
   | .pass => "pass"
 
