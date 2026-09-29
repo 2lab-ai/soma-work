@@ -86,8 +86,9 @@ def NoSeparatorInvalid : Prop :=
   ∀ t, SEP ∉ t.toList →
     decodeCctActionValue (.str (PREFIX ++ t)) = .invalid (.str (PREFIX ++ t))
 
-/-- packages/slack/src/cct/action-value.ts:31, "`'cm:admin|'` (empty payload)", for every mode
-position without a separator in it. -/
+/-- packages/slack/src/cct/action-value.ts:31, "`'cm:admin|'` / `'cm:admin| '` (empty / whitespace-only
+payload)", the empty half, for every mode position without a separator in it (the whitespace-only
+half is `BlankPayloadInvalid`). -/
 def EmptyPayloadInvalid : Prop :=
   ∀ mode, SEP ∉ mode.toList →
     decodeCctActionValue (.str (wire mode "")) = .invalid (.str (wire mode ""))

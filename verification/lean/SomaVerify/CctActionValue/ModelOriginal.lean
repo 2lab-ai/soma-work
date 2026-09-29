@@ -1,6 +1,6 @@
--- models: packages/slack/src/cct/action-value.ts:77-92 (encodeCctActionValue, pre-simplification)
--- models: packages/slack/src/cct/action-value.ts:109-128 (decodeCctActionValue, pre-simplification)
--- models: packages/slack/src/cct/action-value.ts:138-142 (readCctActionPayload, pre-simplification)
+-- models: packages/slack/src/cct/action-value.ts at 7ddccae1, lines 77-92 (encodeCctActionValue)
+-- models: packages/slack/src/cct/action-value.ts at 7ddccae1, lines 109-128 (decodeCctActionValue)
+-- models: packages/slack/src/cct/action-value.ts at 7ddccae1, lines 138-142 (readCctActionPayload)
 import SomaVerify.CctActionValue.Model
 
 /-!
