@@ -1,13 +1,14 @@
 /**
  * The self-hosted workflows' own contract: who may run them, and what they run.
  *
- * Two workflows execute pull-request code on a persistent machine we own —
- * `.github/workflows/ci.yml` (the merge gate) and
- * `.github/workflows/sanitize-gate.yml` (the forbidden-pattern scan). The
- * repository is public and `pull_request` fires for forks, so each of them
- * carries a job-level `if` admitting pushes and same-repository PRs only.
- * They are asserted here independently, because a guard added to one and
- * forgotten on the other leaves the host just as reachable:
+ * Three workflows execute pull-request code on a persistent machine we own —
+ * `.github/workflows/ci.yml` (the merge gate),
+ * `.github/workflows/sanitize-gate.yml` (the forbidden-pattern scan) and
+ * `.github/workflows/lean-verify.yml` (the Lean proof and conformance-vector
+ * gate). The repository is public and `pull_request` fires for forks, so each
+ * of them carries a job-level `if` admitting pushes and same-repository PRs
+ * only. They are asserted here independently, because a guard added to one and
+ * forgotten on another leaves the host just as reachable:
  *
  * 1. **Job-level matters.** The guard is evaluated before the job is dispatched,
  *    so an untrusted head commit is never checked out onto the host and no
@@ -42,6 +43,7 @@ import { describe, expect, it } from 'vitest';
 const repoRoot = path.resolve(__dirname, '..', '..');
 const CI_WORKFLOW = '.github/workflows/ci.yml';
 const SANITIZE_WORKFLOW = '.github/workflows/sanitize-gate.yml';
+const LEAN_WORKFLOW = '.github/workflows/lean-verify.yml';
 
 /** The one expression both jobs must carry, as GitHub receives it: a single line. */
 const SAME_REPO_GUARD =
@@ -257,5 +259,49 @@ describe('sanitize gate workflow contract', () => {
     // the combination the same-repo guard exists to keep away from forks;
     // narrowing the token means the guard is not the only thing standing there.
     expectContentsReadOnly(SANITIZE_WORKFLOW, ['scan']);
+  });
+});
+
+describe('Lean verification workflow contract', () => {
+  it('still runs pull-request code on the self-hosted runner — the premise of the guard below', () => {
+    // Every step here runs code the pull request controls: the gate script, and
+    // whatever Lean elaborates while building the proofs, which can include
+    // arbitrary IO at build time. Same premise, same necessity, as ci.yml.
+    expect(jobBlock(LEAN_WORKFLOW, 'lean-verify')).toContain('runs-on: [self-hosted, fable-m5max]');
+
+    const workflow = read(LEAN_WORKFLOW);
+    // Still reachable from a pull request: a guard that works by dropping the
+    // trigger would pass every check below while deleting the gate itself.
+    expect(workflow).toMatch(/^on:$/m);
+    expect(workflow).toMatch(/^ {2}pull_request:$/m);
+    expect(workflow).toMatch(/^ {2}push:$/m);
+  });
+
+  it('admits pushes and same-repository PRs only, before any step can run', () => {
+    expectSameRepoGuard(LEAN_WORKFLOW, 'lean-verify');
+  });
+
+  it('runs the drift-checking gate and its self-test, with nothing interpolated into a shell body', () => {
+    // `--check` is what makes the committed vectors trustworthy (a regenerated
+    // file that differs fails the job), and `--selftest` is what shows the gate
+    // still rejects each forbidden construct. Dropping either leaves a green job
+    // that proves less.
+    const steps = runSteps(LEAN_WORKFLOW, 'lean-verify');
+    // `npm ci` first: the import-graph extractor (stage 0) compiles the sources with the
+    // repository's own TypeScript, so it needs the dependencies.
+    expect(steps.map((step) => step.run)).toEqual([
+      'npm ci',
+      'bash scripts/verification/lean-verify.sh --check',
+      'bash scripts/verification/lean-verify.sh --selftest',
+    ]);
+    for (const step of steps) {
+      expect(step.run.includes('${{'), `${step.name} interpolates an expression into a shell body`).toBe(false);
+    }
+  });
+
+  it('runs the gate with a read-only token', () => {
+    // Nothing in this workflow publishes: the vectors are regenerated only to be
+    // compared with the commit.
+    expectContentsReadOnly(LEAN_WORKFLOW, ['lean-verify']);
   });
 });
