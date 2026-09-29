@@ -108,3 +108,9 @@ __pycache__/
 # step around. Bytecode is covered by the __pycache__/*.pyc rules above.
 services/**/.venv/
 services/**/venv/
+
+# Lean verification layer (scripts/verification/lean-verify.sh). Lake's build
+# tree and the gate's generated audit files are rebuilt on every run; the Lake
+# trace files record absolute paths of the machine that built them.
+verification/lean/.lake/
+verification/lean/.generated/
