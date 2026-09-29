@@ -657,9 +657,9 @@ describe('ClaudeHandler steer settlement (spec §6 item 6)', () => {
   });
 
   /**
-   * M2 — the "0.3.251 interrupt takes no argument" premise holds for the TYPE
+   * M2 — the "0.3.284 interrupt takes no argument" premise holds for the TYPE
    * only. `sdk.mjs` forwards `cancel_queued:true` when the caller passes
-   * `{cancelQueued:true}`, and sdk.d.ts:3932/3946 describe it sweeping every
+   * `{cancelQueued:true}`, and sdk.d.ts:4547/4561 describe it sweeping every
    * uuid-stamped survivor SYNCHRONOUSLY with the abort (listed under
    * `cancelled`, `still_queued` then empty). A CLI that advertises
    * `interrupt_cancel_queued_v1` on `system`/`init` therefore needs no per-uuid
