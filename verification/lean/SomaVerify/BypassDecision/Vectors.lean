@@ -1,26 +1,22 @@
 import SomaVerify.Support.Json
 import SomaVerify.Support.Vectors
 import SomaVerify.BypassDecision.Model
-import SomaVerify.BypassDecision.Spec
 
 /-!
 # Conformance vectors for `src/dangerous-command-filter.ts`
 
-Six groups, one JSON object per case, replayed against the exported TS functions by
+Four groups, one JSON object per case, replayed against the exported
+`bypassBashPermissionDecision` by
 `src/__tests__/dangerous-command-filter.lean-conformance.test.ts`:
 
 * `bypass-exhaustive`: every catalog of 0 to 4 rules in which each rule is overridable or
   lockdown, matching or not, and disabled or not. Ids are `r1`..`r4` by position; the disabled
-  ones form the case's `disabled` list. Expected: `bypassBashPermissionDecision`.
+  ones form the case's `disabled` list.
 * `bypass-targeted`: repeated ids, disable lists that name no catalog id or miss one by case,
   white space or emptiness, and a catalog longer than four rules.
-* `check-exhaustive`: every catalog of 0 to 4 rules, each overridable or lockdown and matching
-  or not. Expected: `checkDangerousCommand` and `isDangerousCommand`.
-* `check-legacy-ids`: one matching overridable rule per `legacyDescriptionFor` label, and ids
-  that miss every label, so each `switch` branch is taken.
 * `real-catalog-rules`: soma-lib's catalog as (`id`, `sessionOverridable`), in order.
 * `real-catalog`: commands run on soma-lib's real catalog, each with the ids of the rules whose
-  matcher fires on it (with the empty context the TS passes), and the model's results for that
+  matcher fires on it (with the empty context the TS passes), and the model's result for that
   catalog under no disable predicate and under several disable lists.
 
 Abstract cases carry their catalog, which the test substitutes for soma-lib's. Real-catalog
@@ -59,12 +55,6 @@ def bypassJson (result : BypassBashPermissionResult) : Json :=
   .obj [("decision", decisionJson result.decision),
     ("matchedRuleIds", stringsJson result.matchedRuleIds)]
 
-/-- `DangerousCommandResult`, with the TS field names. -/
-def checkJson (result : DangerousCommandResult) : Json :=
-  .obj [("isDangerous", .bool result.isDangerous),
-    ("matchedPatterns", stringsJson result.matchedPatterns),
-    ("matchedRuleIds", stringsJson result.matchedRuleIds)]
-
 /-- The disable predicate a `disabled` list stands for: membership, as the test's
 `(ruleId) => new Set(disabled).has(ruleId)`. -/
 def disabledBy (disabled : List String) (ruleId : String) : Bool :=
@@ -87,22 +77,11 @@ def bools : List Bool := [false, true]
 def bypassKinds : List (Bool × Bool × Bool) :=
   bools.flatMap fun so => bools.flatMap fun m => bools.map fun dis => (so, m, dis)
 
-/-- A rule kind for the legacy helpers, which take no disable predicate: (`sessionOverridable`,
-matched). -/
-def checkKinds : List (Bool × Bool) :=
-  bools.flatMap fun so => bools.map fun m => (so, m)
-
 /-- One bypass case: the catalog, the disabled ids, and the model's decision. -/
 def bypassCase (group : String) (catalog : List Rule) (disabled : List String) : Json :=
   .obj [("group", .str group), ("catalog", .arr (catalog.map ruleJson)),
     ("disabled", stringsJson disabled),
     ("expect", bypassJson (bypassBashPermissionDecision catalog (disabledBy disabled)))]
-
-/-- One legacy-helper case: the catalog and the model's two results. -/
-def checkCase (group : String) (catalog : List Rule) : Json :=
-  .obj [("group", .str group), ("catalog", .arr (catalog.map ruleJson)),
-    ("expect", .obj [("checkDangerousCommand", checkJson (checkDangerousCommand catalog)),
-      ("isDangerousCommand", .bool (isDangerousCommand catalog))])]
 
 /-- Every catalog of 0 to 4 rules over the eight bypass kinds: 1 + 8 + 64 + 512 + 4096 cases. -/
 def bypassExhaustive : List Json :=
@@ -133,28 +112,6 @@ def bypassTargeted : List Json :=
   groups.flatMap fun (catalog, disabledLists) =>
     disabledLists.map (bypassCase "bypass-targeted" catalog)
 
-/-- Every catalog of 0 to 4 rules over the four legacy-helper kinds: 1 + 4 + 16 + 64 + 256
-cases. -/
-def checkExhaustive : List Json :=
-  ((List.range 5).flatMap (words checkKinds)).map fun kinds =>
-    checkCase "check-exhaustive" ((kinds.zip slotIds).map fun ((so, m), id) => rule id so m)
-
-/-- Ids with no `legacyDescriptionFor` label: another catalog id, the empty string, and near
-misses of `kill`, `rm-force` and `dd-if` by case, white space, punctuation, prefix and label
-text. -/
-def unlabelledIds : List String :=
-  ["pipe-to-interpreter", "", "KILL", "kill ", " kill", "rm_force", "dd", "kill process"]
-
-/-- Every `switch` branch of `legacyDescriptionFor`, reached through `checkDangerousCommand`. -/
-def checkLegacyIds : List Json :=
-  ((Spec.legacyLabelledIds ++ unlabelledIds).map fun id =>
-      checkCase "check-legacy-ids" [rule id true true]) ++
-    [checkCase "check-legacy-ids" [rule "kill" false true],
-      checkCase "check-legacy-ids" [rule "kill" true false],
-      checkCase "check-legacy-ids"
-        (Spec.legacyLabelledIds.map (fun id => rule id true true) ++
-          [rule "ssh-remote" false true, rule "pipe-to-interpreter" true true])]
-
 /-! ## soma-lib's real catalog -/
 
 /-- soma-lib's `DANGEROUS_RULES` as (`id`, `sessionOverridable`), in catalog order. The test
@@ -176,7 +133,7 @@ theorem realCatalog_ids_distinct : (realCatalog.map Prod.fst).Nodup := by
 /-- Commands, each with the ids of the rules whose matcher fires on it with an empty context, in
 catalog order. The lists were read off soma-lib's matchers; the test re-observes each one before
 replaying the command. `cross-user-access` never fires here: its matcher needs `ctx.userId`,
-which the TS functions do not pass. -/
+which the TS function does not pass. -/
 def realCommands : List (String × List String) :=
   [("", []),
     ("ls", []),
@@ -240,7 +197,7 @@ def realVariants (matchedIds : List String) : List (Option (List String)) :=
       (unrelated.take 1).map (fun id => some [id]) ++ [some realIds]).eraseDups
 
 /-- One real-catalog case: the command, its matching ids, the disable setting, and the model's
-three results on the real catalog. -/
+result on the real catalog. -/
 def realCommandCase (command : String) (matchedIds : List String)
     (disabled : Option (List String)) : Json :=
   let catalog := realRules matchedIds
@@ -252,9 +209,7 @@ def realCommandCase (command : String) (matchedIds : List String)
     ("disabled", match disabled with
       | none => .null
       | some ids => stringsJson ids),
-    ("expect", .obj [("bypassBashPermissionDecision", bypassJson bypass),
-      ("checkDangerousCommand", checkJson (checkDangerousCommand catalog)),
-      ("isDangerousCommand", .bool (isDangerousCommand catalog))])]
+    ("expect", .obj [("bypassBashPermissionDecision", bypassJson bypass)])]
 
 /-- The real catalog's shape, checked once by the test. -/
 def realCatalogRulesCase : Json :=
@@ -269,8 +224,7 @@ def realCatalogCases : List Json :=
 
 /-- The cases written to `verification/vectors/bypass-decision.json`. -/
 def cases : List Json :=
-  bypassExhaustive ++ bypassTargeted ++ checkExhaustive ++ checkLegacyIds ++
-    [realCatalogRulesCase] ++ realCatalogCases
+  bypassExhaustive ++ bypassTargeted ++ [realCatalogRulesCase] ++ realCatalogCases
 
 end SomaVerify.BypassDecision.Vectors
 
