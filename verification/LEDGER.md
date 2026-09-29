@@ -10,7 +10,7 @@ current file set on every run.
 | Status | Meaning |
 |---|---|
 | `T2:<Module>` | Semantically modeled. `verification/lean/SomaVerify/<Module>/` proves properties of a Lean model of the file, and conformance vectors replayed against its real exports tie the model to the code. |
-| `T1` | Structural only. The file is a node of the ImportGraph theorems: rules/packaging.md rule 4 layering, the controller CLI never loading env-paths, and coverage of every production file. Nothing about its behavior is proven. |
+| `T1` | Structural only. The file is a node of the ImportGraph theorems: rules/packaging.md rule 4 layering, neither the controller CLI nor any stdio MCP server ever loading env-paths, and coverage of every production file. Nothing about its behavior is proven. |
 
 ## Summary
 

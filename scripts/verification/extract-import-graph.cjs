@@ -57,6 +57,13 @@ const DEFAULT_LEAN_OUT = 'verification/lean/SomaVerify/ImportGraph/Generated.lea
 const CLI_ROOT = 'src/cli/index.ts';
 
 /**
+ * Where the MCP server packages live. The daemon spawns each one's `bin` with `node`
+ * (src/internal-mcp-server-resolver.ts) and speaks MCP with it over the child's stdio, so every
+ * `bin` target of a workspace package in here is a stdio MCP server entry.
+ */
+const MCP_SERVERS_DIR = 'packages/mcp-servers/';
+
+/**
  * The two env-paths files. `packages/common/src/env-paths.ts` spawns `git`, calls
  * `dotenv.config()` and prints a banner when it loads; `src/env-paths.ts` re-exports it, so
  * loading either loads the banner.
@@ -274,9 +281,10 @@ function resolveExports(exportsField, subpath) {
 }
 
 /**
- * Resolves specifiers from production files. `node` results carry the repository-relative path
- * of a production file; `json` is a tracked JSON file (a leaf); `external` is a Node built-in or
- * an npm dependency; `error` is fatal.
+ * `resolve` resolves specifiers from production files: `node` results carry the
+ * repository-relative path of a production file; `json` is a tracked JSON file (a leaf);
+ * `external` is a Node built-in or an npm dependency; `error` is fatal. `packageFile` maps a file
+ * a package names directly (a `bin` target) to its production source, the same way.
  */
 function createResolver(repoRoot, productionSet, trackedSet, workspaces) {
   const rootName = readJson(path.join(repoRoot, 'package.json')).name;
@@ -340,7 +348,7 @@ function createResolver(repoRoot, productionSet, trackedSet, workspaces) {
     );
   }
 
-  return function resolve(specifier, fromFile) {
+  function resolve(specifier, fromFile) {
     if (specifier.startsWith('./') || specifier.startsWith('../') || specifier === '.' || specifier === '..') {
       const base = path.resolve(path.dirname(path.join(repoRoot, fromFile)), specifier);
       return loadAsFileOrDirectory(base, sourceOf) || { kind: 'error', reason: 'no such production file' };
@@ -356,7 +364,13 @@ function createResolver(repoRoot, productionSet, trackedSet, workspaces) {
     if (pkg) return resolveWorkspace(pkg, segments.slice(scoped ? 2 : 1).join('/'));
     if (name === rootName) return { kind: 'error', reason: 'the root package is not importable by name' };
     return { kind: 'external' };
-  };
+  }
+
+  function packageFile(pkg, target) {
+    return viaCompileDirs(pkg)(path.join(pkg.dir, target));
+  }
+
+  return { resolve, packageFile };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -461,12 +475,37 @@ function emitAll(repoRoot, files, resolve) {
   return emitted;
 }
 
-/** Breadth-first closure of `root` over `edges` (`{ src, dst }` ids), as sorted ids. */
-function closureOf(nodeCount, edges, root) {
+/**
+ * The stdio MCP server entries: the `bin` targets of every workspace package under
+ * MCP_SERVERS_DIR, as production sources, in path order. A package in there without a `bin`, or
+ * a `bin` without a production source, is fatal: an entry left out would be a server no theorem
+ * covers.
+ */
+function listMcpServerEntries(repoRoot, workspaces, packageFile) {
+  const entries = new Set();
+  for (const pkg of workspaces.values()) {
+    if (!`${toPosix(path.relative(repoRoot, pkg.dir))}/`.startsWith(MCP_SERVERS_DIR)) continue;
+    const { bin } = pkg.pkg;
+    const targets = typeof bin === 'string' ? [bin] : Object.values(bin || {});
+    if (targets.length === 0) fail([`extract-import-graph: ${pkg.name} is under ${MCP_SERVERS_DIR} but has no bin`]);
+    for (const target of targets) {
+      const hit = packageFile(pkg, target);
+      if (!hit || hit.kind !== 'node') {
+        fail([`extract-import-graph: bin ${target} of ${pkg.name} has no production source`]);
+      }
+      entries.add(hit.target);
+    }
+  }
+  if (entries.size === 0) fail([`extract-import-graph: no workspace package under ${MCP_SERVERS_DIR}`]);
+  return [...entries].sort(byString);
+}
+
+/** Breadth-first closure of `roots` over `edges` (`{ src, dst }` ids), as sorted ids. */
+function closureOf(nodeCount, edges, roots) {
   const out = Array.from({ length: nodeCount }, () => []);
   for (const edge of edges) out[edge.src].push(edge.dst);
-  const seen = new Set([root]);
-  const queue = [root];
+  const seen = new Set(roots);
+  const queue = [...roots];
   while (queue.length > 0) {
     for (const next of out[queue.shift()]) {
       if (!seen.has(next)) {
@@ -487,7 +526,8 @@ function extractGraph(repoRoot = REPO_ROOT) {
   const files = listProductionFiles(repoRoot);
   const absent = files.filter((file) => !fs.existsSync(path.join(repoRoot, file)));
   if (absent.length > 0) fail(['extract-import-graph: tracked production files missing from the checkout:', ...absent]);
-  const resolve = createResolver(repoRoot, new Set(files), new Set(tracked), loadWorkspaces(repoRoot));
+  const workspaces = loadWorkspaces(repoRoot);
+  const { resolve, packageFile } = createResolver(repoRoot, new Set(files), new Set(tracked), workspaces);
   const emitted = emitAll(repoRoot, files, resolve);
 
   const nodes = [...emitted.keys()].sort(byString);
@@ -530,6 +570,7 @@ function extractGraph(repoRoot = REPO_ROOT) {
   for (const anchor of [CLI_ROOT, ...ENV_PATHS]) {
     if (!id.has(anchor)) fail([`extract-import-graph: ${anchor} is not a production file`]);
   }
+  const mcpServerEntries = listMcpServerEntries(repoRoot, workspaces, packageFile).map((file) => id.get(file));
 
   const edges = [...edgeMap.values()].sort((a, b) => a.src - b.src || a.dst - b.dst);
   const root = id.get(CLI_ROOT);
@@ -539,7 +580,9 @@ function extractGraph(repoRoot = REPO_ROOT) {
     edges,
     root,
     envPaths: ENV_PATHS.map((file) => id.get(file)),
-    closure: closureOf(nodes.length, edges, root),
+    closure: closureOf(nodes.length, edges, [root]),
+    mcpServerEntries,
+    mcpServerClosure: closureOf(nodes.length, edges, mcpServerEntries),
     stats,
     unresolved: problems,
   };
@@ -551,16 +594,20 @@ function extractGraph(repoRoot = REPO_ROOT) {
 
 /**
  * A path as a Lean string literal. lean-verify.sh's source gate matches words textually in every
- * .lean file under SomaVerify/, so a word it forbids is written with its first letter as a `\x`
- * escape: the string's value is unchanged and a file name cannot trip the gate.
+ * .lean file under SomaVerify/, comments and strings included, so a word it forbids is written
+ * with its first letter as a `\x` escape: the string's value is unchanged and a file name cannot
+ * trip the gate. The list covers every word the gate names (`native` stands for its `native_*`
+ * forms, `unsafe` for `_unsafe_rec`) and escapes each wherever it occurs, inside longer words too.
+ * Only printable ASCII is accepted, so no invisible or non-ASCII white space reaches the file.
  */
 function leanString(file) {
   if (!/^[\x20-\x7e]*$/.test(file) || /["\\]/.test(file)) {
     fail([`extract-import-graph: path needs escaping this renderer does not do: ${JSON.stringify(file)}`]);
   }
-  const neutral = file.replace(/sorry|admit|axiom|native|implemented|extern/g, (word) => {
-    return `\\x${word.charCodeAt(0).toString(16)}${word.slice(1)}`;
-  });
+  const neutral = file.replace(
+    /sorry|admit|axiom|native|implemented|extern|partial|unsafe|opaque|skipKernelTC/g,
+    (word) => `\\x${word.charCodeAt(0).toString(16)}${word.slice(1)}`,
+  );
   return `"${neutral}"`;
 }
 
@@ -632,6 +679,15 @@ function renderLean(graph) {
     leanRows(graph.closure.map(String), 20),
     ']',
     '',
+    `/-- Node ids of the stdio MCP server entries: the \`bin\` target of every package under`,
+    `\`${MCP_SERVERS_DIR}\`, as its source file. -/`,
+    `def mcpServerEntries : List Nat := [${graph.mcpServerEntries.join(', ')}]`,
+    '',
+    '/-- The nodes reachable from any of `mcpServerEntries`: their shared closure certificate. -/',
+    'def mcpServerClosure : List Nat := [',
+    leanRows(graph.mcpServerClosure.map(String), 20),
+    ']',
+    '',
     '/-- The repository path of each node, by node id. -/',
     'def paths : Array String := #[',
     leanRows(
@@ -675,7 +731,8 @@ function main() {
     if (args.json) writeAtomically(args.json, `${JSON.stringify(graph, null, 2)}\n`);
     console.log(
       `extract-import-graph: ${graph.nodes.length} nodes, ${graph.edges.length} edges, ` +
-        `${graph.closure.length} nodes reachable from ${CLI_ROOT}`,
+        `${graph.closure.length} nodes reachable from ${CLI_ROOT}, ` +
+        `${graph.mcpServerClosure.length} from the ${graph.mcpServerEntries.length} MCP server entries`,
     );
   } catch (error) {
     if (!error.extractFailure) throw error;

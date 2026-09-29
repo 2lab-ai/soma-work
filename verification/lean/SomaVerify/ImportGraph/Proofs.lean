@@ -55,6 +55,16 @@ theorem neverLoads_of_certificate {g : Graph} {root : Nat} {S targets : List Nat
   rw [List.contains_iff_mem.mpr (closureOk_sound hS hreach)] at hout
   contradiction
 
+/-- One certificate for several entries: if `S` contains every entry, is closed under the edges
+and excludes every target, then no entry loads a target. -/
+theorem noEntryLoads_of_certificate {g : Graph} {entries S targets : List Nat}
+    (hE : (entries.all fun r => S.contains r) = true) (hC : closedUnder g S = true)
+    (hT : excludes S targets = true) : NoEntryLoads g entries targets := by
+  intro r hr
+  refine neverLoads_of_certificate ?_ hT
+  simp only [closureOk, Bool.and_eq_true]
+  exact ⟨List.all_eq_true.mp hE r hr, hC⟩
+
 /-! ## On the repository -/
 
 /-- Rule 4 holds for the production code: every runtime load between `packages/common`,
@@ -80,13 +90,42 @@ theorem repo_covered : Covers Generated.graph Generated.productionFileCount := b
   unfold Covers
   decide +kernel
 
+/-- No stdio MCP server loads env-paths: `mcpServerEntries` are these eight server entry files,
+and no chain of runtime loads from any of them reaches `src/env-paths.ts` or
+`packages/common/src/env-paths.ts`, whose load-time banner would be written to the server's
+stdout, its JSON-RPC channel. A new server fails the first conjunct until it is added to this
+list, so the list is the reviewed set. The mcp-tool-permission server does load
+`packages/process-shared/src/env-paths.ts`, which prints nothing: turning that file into a
+re-export of `@soma/common/env-paths`, as rules/packaging.md:38 plans, fails this theorem. -/
+theorem mcp_servers_never_load_env_paths :
+    Generated.mcpServerEntries.map (Generated.paths[·]?) =
+        [some "packages/mcp-servers/agent/agent-mcp-server.ts",
+          some "packages/mcp-servers/cron/cron-mcp-server.ts",
+          some "packages/mcp-servers/llm/llm-mcp-server.ts",
+          some "packages/mcp-servers/mcp-tool-permission/mcp-tool-permission-mcp-server.ts",
+          some "packages/mcp-servers/model-command/model-command-mcp-server.ts",
+          some "packages/mcp-servers/permission/permission-mcp-server.ts",
+          some "packages/mcp-servers/server-tools/server-tools-mcp-server.ts",
+          some "packages/mcp-servers/slack-mcp/slack-mcp-server.ts"] ∧
+      Generated.envPaths.map (Generated.paths[·]?) =
+        [some "src/env-paths.ts", some "packages/common/src/env-paths.ts"] ∧
+      NoEntryLoads Generated.graph Generated.mcpServerEntries Generated.envPaths :=
+  ⟨by decide +kernel, by decide +kernel,
+    noEntryLoads_of_certificate (S := Generated.mcpServerClosure) (by decide +kernel)
+      (by decide +kernel) (by decide +kernel)⟩
+
 end SomaVerify.ImportGraph
 
--- One line in the build log, for a reader of the gate's output: the size of the graph, and of
--- the closure certificate (an upper bound on what the CLI can load; the theorem uses only that).
+-- One line in the build log, for a reader of the gate's output: the size of the graph and of the
+-- closure certificates (upper bounds on what the CLI and the MCP servers can load; the theorems
+-- use only that), and the env-paths files each certificate contains, computed rather than
+-- asserted, so the line stays true when a theorem above fails.
 open SomaVerify.ImportGraph in
 #eval
   let g := Generated.graph
+  let envPathsIn (S : List Nat) := (Generated.envPaths.filter S.contains).map (Generated.paths[·]!)
   s!"import graph: {g.nodeCount} production files, {g.edges.length} runtime edges; \
-    {Generated.paths[Generated.cliRoot]!} loads at most {Generated.cliClosure.length} of them, \
-    none of {Generated.envPaths.map (Generated.paths[·]!)}"
+    {Generated.paths[Generated.cliRoot]!} loads at most {Generated.cliClosure.length} of them and \
+    the {Generated.mcpServerEntries.length} MCP servers at most {Generated.mcpServerClosure.length}; \
+    env-paths files among those: {envPathsIn Generated.cliClosure} and \
+    {envPathsIn Generated.mcpServerClosure}"
