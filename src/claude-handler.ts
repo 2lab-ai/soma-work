@@ -1303,10 +1303,10 @@ export class ClaudeHandler implements TurnSteeringPort {
    * Two paths, chosen by what the CLI advertised on `system`/`init`:
    *   • `interrupt_cancel_queued_v1` → one round-trip with
    *     `{cancelQueued:true}`. The type of `interrupt` omits the argument in
-   *     0.3.251, but the runtime forwards it (`sdk.mjs`:
+   *     0.3.284 (sdk.d.ts:2847), but the runtime forwards it (`sdk.mjs`:
    *     `...e?.cancelQueued===!0&&{cancel_queued:!0}`), and the CLI then sweeps
    *     every uuid-stamped survivor synchronously with the abort and lists it
-   *     under `cancelled` (sdk.d.ts:3932/3946). No per-uuid loop — and no
+   *     under `cancelled` (sdk.d.ts:4547/4561). No per-uuid loop — and no
    *     window in which a survivor is dequeued between receipt and withdrawal.
    *   • otherwise → plain `interrupt()`, then withdraw each `still_queued`
    *     survivor individually with `cancelAsyncMessage` (best effort).
@@ -1382,7 +1382,7 @@ export class ClaudeHandler implements TurnSteeringPort {
    * Best-effort withdrawal of one send that survived the turn's interrupt.
    *
    * Same structural reach as {@link cancelSteeredMessage} (`cancelAsyncMessage`
-   * ships in `sdk.mjs` but is absent from the 0.3.251 `Query` type). A `false`
+   * ships in `sdk.mjs` but is absent from the 0.3.284 `Query` type). A `false`
    * answer is normal — the send may already have left the queue — and a throw
    * is not fatal here, so both are logged and swallowed: the caller has already
    * decided this uuid is `discarded`.
@@ -1483,7 +1483,7 @@ export class ClaudeHandler implements TurnSteeringPort {
    *    is running for this key, or this runtime predates `cancelAsyncMessage`).
    *    Nothing is known about the message, so nothing may be claimed about it.
    *
-   * `cancelAsyncMessage` ships in `sdk.mjs` but is absent from the 0.3.251
+   * `cancelAsyncMessage` ships in `sdk.mjs` but is absent from the 0.3.284
    * `Query` type, so it is reached structurally rather than by import.
    */
   async cancelSteeredMessage(
