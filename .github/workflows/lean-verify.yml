@@ -31,5 +31,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Rebuild proofs, audit axioms, check vector drift
+      - name: Rebuild proofs, audit declarations, replay the kernel, check vector drift
         run: bash scripts/verification/lean-verify.sh --check
+      # Plants each forbidden construct in a scratch copy. Soundness escapes must be rejected
+      # with and without the textual checks; an invisible character, by the source gate only;
+      # a clean module must pass. A gate that silently stopped catching something would
+      # otherwise stay green.
+      - name: Self-test the gate against planted forbidden constructs
+        run: bash scripts/verification/lean-verify.sh --selftest
