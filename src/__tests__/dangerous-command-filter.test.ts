@@ -1,18 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
   bypassBashPermissionDecision,
-  checkDangerousCommand,
   DANGEROUS_RULES,
-  getOverridableRule,
   isCrossUserAccess,
-  isDangerousCommand,
   isSshCommand,
   matchRules,
   overridableMatchedRuleIds,
   overridableRulesByIds,
 } from '../dangerous-command-filter';
 
-describe('isDangerousCommand', () => {
+// With no session, bypassBashPermissionDecision asks exactly for the commands
+// an overridable rule matches.
+describe('dangerous-command detection (bypassBashPermissionDecision, no session)', () => {
   describe('detects dangerous patterns', () => {
     it.each([
       ['kill 1234', 'kill with PID'],
@@ -35,7 +34,7 @@ describe('isDangerousCommand', () => {
       ['mkfs.ext4 /dev/sda1', 'mkfs'],
       ['dd if=/dev/zero of=/dev/sda', 'dd with if='],
     ])('detects: %s (%s)', (command) => {
-      expect(isDangerousCommand(command)).toBe(true);
+      expect(bypassBashPermissionDecision(command).decision).toBe('ask');
     });
   });
 
@@ -58,7 +57,7 @@ describe('isDangerousCommand', () => {
       ['chmod 644 file.txt', 'safe chmod'],
       ['dd --version', 'dd version (no if=)'],
     ])('allows: %s (%s)', (command) => {
-      expect(isDangerousCommand(command)).toBe(false);
+      expect(bypassBashPermissionDecision(command).decision).toBe('allow');
     });
   });
 });
@@ -105,24 +104,12 @@ describe('isSshCommand', () => {
   });
 });
 
-describe('checkDangerousCommand', () => {
-  it('returns matched pattern descriptions', () => {
-    const result = checkDangerousCommand('kill -9 1234');
-    expect(result.isDangerous).toBe(true);
-    expect(result.matchedPatterns).toContain('kill process');
-  });
-
-  it('returns multiple matches for compound commands', () => {
-    const result = checkDangerousCommand('kill 1234 && rm -rf /tmp');
-    expect(result.isDangerous).toBe(true);
-    expect(result.matchedPatterns).toContain('kill process');
-    expect(result.matchedPatterns).toContain('recursive delete');
-  });
-
-  it('returns empty matchedPatterns for safe commands', () => {
-    const result = checkDangerousCommand('git status');
-    expect(result.isDangerous).toBe(false);
-    expect(result.matchedPatterns).toHaveLength(0);
+describe('bypassBashPermissionDecision on compound commands', () => {
+  it('returns the ids of every overridable rule the parts match', () => {
+    const result = bypassBashPermissionDecision('kill 1234 && rm -rf /tmp');
+    expect(result.decision).toBe('ask');
+    expect(result.matchedRuleIds).toContain('kill');
+    expect(result.matchedRuleIds).toContain('rm-recursive');
   });
 });
 
@@ -314,18 +301,9 @@ describe('rule catalog', () => {
     });
   });
 
-  describe('getOverridableRule', () => {
-    it('returns the rule object for a known overridable id', () => {
-      expect(getOverridableRule('kill')?.id).toBe('kill');
-    });
-
-    it('returns undefined for lockdown ids', () => {
-      expect(getOverridableRule('cross-user-access')).toBeUndefined();
-      expect(getOverridableRule('ssh-remote')).toBeUndefined();
-    });
-
-    it('returns undefined for unknown ids', () => {
-      expect(getOverridableRule('nonexistent')).toBeUndefined();
+  describe('overridableRulesByIds', () => {
+    it('drops unknown ids', () => {
+      expect(overridableRulesByIds(['nonexistent'])).toEqual([]);
     });
   });
 });

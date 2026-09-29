@@ -2,25 +2,25 @@
  * Conformance of `src/dangerous-command-filter.ts` with its Lean model.
  *
  * `verification/lean/SomaVerify/BypassDecision/Model.lean` transcribes
- * `bypassBashPermissionDecision`, `checkDangerousCommand`, `isDangerousCommand`
- * and the private `legacyDescriptionFor` over an abstract catalog in which
- * each rule already carries what its matcher returned. `Proofs.lean` proves
- * the documented invariants of that model: lockdown rules never take part,
- * disabling only silences, an `allow` carries no ids. `Vectors.lean` writes
- * `verification/vectors/bypass-decision.json`, and this suite replays every
- * case against the exported functions.
+ * `bypassBashPermissionDecision` over an abstract catalog in which each rule
+ * already carries what its matcher returned. `Proofs.lean` proves the
+ * documented invariants of that model (lockdown rules never take part,
+ * disabling only silences, an `allow` carries no ids) and its equality with
+ * the model of the function before its simplification (`ModelOriginal.lean`).
+ * `Vectors.lean` writes `verification/vectors/bypass-decision.json`, and this
+ * suite replays every case against the exported function.
  *
- * The functions read soma-lib's catalog through a module import, so the cases
- * reach them in two ways:
+ * The function reads soma-lib's catalog through a module import, so the cases
+ * reach it in two ways:
  *
- * - Abstract cases (`bypass-*`, `check-*`) bring their own catalog. A second
- *   instance of `../dangerous-command-filter` is loaded with the imported
- *   `DANGEROUS_RULES` replaced by an array this suite refills before each
- *   case. Each rule's matcher returns the case's `matches` flag. The function
- *   bodies are the real ones; only the catalog they iterate is substituted.
+ * - Abstract cases (`bypass-*`) bring their own catalog. A second instance of
+ *   `../dangerous-command-filter` is loaded with the imported `DANGEROUS_RULES`
+ *   replaced by an array this suite refills before each case. Each rule's
+ *   matcher returns the case's `matches` flag. The function body is the real
+ *   one; only the catalog it iterates is substituted.
  * - Real-catalog cases run the statically imported module, unmocked, on
  *   soma-lib's catalog. A case records which matchers fire on its command
- *   with the empty context the functions pass. The suite first checks that
+ *   with the empty context the function passes. The suite first checks that
  *   they still do, so the model saw exactly what the real catalog reports,
  *   then compares the results.
  *
@@ -49,23 +49,11 @@ interface BypassResult {
   matchedRuleIds: string[];
 }
 
-interface CheckResult {
-  isDangerous: boolean;
-  matchedPatterns: string[];
-  matchedRuleIds: string[];
-}
-
 interface BypassCase {
   group: 'bypass-exhaustive' | 'bypass-targeted';
   catalog: RuleInput[];
   disabled: string[];
   expect: BypassResult;
-}
-
-interface CheckCase {
-  group: 'check-exhaustive' | 'check-legacy-ids';
-  catalog: RuleInput[];
-  expect: { checkDangerousCommand: CheckResult; isDangerousCommand: boolean };
 }
 
 interface RealRulesCase {
@@ -79,14 +67,10 @@ interface RealCommandCase {
   matches: string[];
   /** `null`: no predicate, i.e. the default `() => false`. */
   disabled: string[] | null;
-  expect: {
-    bypassBashPermissionDecision: BypassResult;
-    checkDangerousCommand: CheckResult;
-    isDangerousCommand: boolean;
-  };
+  expect: { bypassBashPermissionDecision: BypassResult };
 }
 
-type Case = BypassCase | CheckCase | RealRulesCase | RealCommandCase;
+type Case = BypassCase | RealRulesCase | RealCommandCase;
 
 interface VectorFile {
   module: string;
@@ -102,9 +86,6 @@ const vectors = JSON.parse(
 
 const bypassCases = vectors.cases.filter(
   (c): c is BypassCase => c.group === 'bypass-exhaustive' || c.group === 'bypass-targeted',
-);
-const checkCases = vectors.cases.filter(
-  (c): c is CheckCase => c.group === 'check-exhaustive' || c.group === 'check-legacy-ids',
 );
 const realRulesCases = vectors.cases.filter((c): c is RealRulesCase => c.group === 'real-catalog-rules');
 const realCommandCases = vectors.cases.filter((c): c is RealCommandCase => c.group === 'real-catalog');
@@ -151,28 +132,21 @@ describe('bypass-decision Lean conformance vectors', () => {
   it('carry exactly the cases they declare, each in a group replayed below', () => {
     expect(vectors.module).toBe('bypass-decision');
     expect(vectors.count).toBe(vectors.cases.length);
-    expect(bypassCases.length + checkCases.length + realRulesCases.length + realCommandCases.length).toBe(
-      vectors.count,
-    );
+    expect(bypassCases.length + realRulesCases.length + realCommandCases.length).toBe(vectors.count);
     expect(realRulesCases).toHaveLength(1);
   });
 
   it('cover every catalog of up to four rules, each once', () => {
     const exhaustiveBypass = bypassCases.filter((c) => c.group === 'bypass-exhaustive');
-    const exhaustiveCheck = checkCases.filter((c) => c.group === 'check-exhaustive');
     expect(exhaustiveBypass).toHaveLength(exhaustiveCount(8));
-    expect(exhaustiveCheck).toHaveLength(exhaustiveCount(4));
     // Inside the domain (ids r1..rn by position, disabled ids among them) and
-    // distinct: with the counts above, that is every catalog of the domain.
-    for (const c of [...exhaustiveBypass, ...exhaustiveCheck]) {
-      expect(c.catalog.map((rule) => rule.id)).toEqual(['r1', 'r2', 'r3', 'r4'].slice(0, c.catalog.length));
-    }
+    // distinct: with the count above, that is every catalog of the domain.
     for (const c of exhaustiveBypass) {
+      expect(c.catalog.map((rule) => rule.id)).toEqual(['r1', 'r2', 'r3', 'r4'].slice(0, c.catalog.length));
       expect(c.disabled.every((id) => c.catalog.some((rule) => rule.id === id))).toBe(true);
     }
     const distinct = (keys: string[]) => new Set(keys).size === keys.length;
     expect(distinct(bypassCases.map((c) => JSON.stringify([c.catalog, c.disabled])))).toBe(true);
-    expect(distinct(checkCases.map((c) => JSON.stringify(c.catalog)))).toBe(true);
     expect(distinct(realCommandCases.map((c) => JSON.stringify([c.command, c.disabled])))).toBe(true);
   });
 
@@ -182,7 +156,7 @@ describe('bypass-decision Lean conformance vectors', () => {
   });
 });
 
-describe('abstract catalogs: the exported functions over a substituted catalog', () => {
+describe('abstract catalogs: the exported function over a substituted catalog', () => {
   beforeAll(async () => {
     vi.resetModules();
     vi.doMock('somalib/permission/dangerous-rules', async (importOriginal) => ({
@@ -213,25 +187,6 @@ describe('abstract catalogs: the exported functions over a substituted catalog',
     expect(unexpectedMatchCalls).toEqual([]);
     expect(mismatches).toEqual([]);
   });
-
-  it('checkDangerousCommand and isDangerousCommand return the model results on every check case', () => {
-    unexpectedMatchCalls.length = 0;
-    const mismatches: string[] = [];
-    for (const c of checkCases) {
-      loadCatalog(c.catalog);
-      const actual = {
-        checkDangerousCommand: substituted.checkDangerousCommand(ABSTRACT_COMMAND),
-        isDangerousCommand: substituted.isDangerousCommand(ABSTRACT_COMMAND),
-      };
-      if (!isDeepStrictEqual(actual, c.expect)) {
-        mismatches.push(
-          `[${c.group}] catalog ${JSON.stringify(c.catalog)}: TS ${JSON.stringify(actual)}, model ${JSON.stringify(c.expect)}`,
-        );
-      }
-    }
-    expect(unexpectedMatchCalls).toEqual([]);
-    expect(mismatches).toEqual([]);
-  });
 });
 
 describe('real catalog: the unmocked module on soma-lib DANGEROUS_RULES', () => {
@@ -251,7 +206,7 @@ describe('real catalog: the unmocked module on soma-lib DANGEROUS_RULES', () => 
     expect(drift).toEqual([]);
   });
 
-  it('returns the model results on every command and disable setting', () => {
+  it('returns the model result on every command and disable setting', () => {
     const mismatches: string[] = [];
     for (const c of realCommandCases) {
       const disabled = c.disabled === null ? null : new Set(c.disabled);
@@ -264,11 +219,7 @@ describe('real catalog: the unmocked module on soma-lib DANGEROUS_RULES', () => 
             ]
           : [unmocked.bypassBashPermissionDecision(c.command, (ruleId) => disabled.has(ruleId))];
       for (const bypass of bypassResults) {
-        const actual = {
-          bypassBashPermissionDecision: bypass,
-          checkDangerousCommand: unmocked.checkDangerousCommand(c.command),
-          isDangerousCommand: unmocked.isDangerousCommand(c.command),
-        };
+        const actual = { bypassBashPermissionDecision: bypass };
         if (!isDeepStrictEqual(actual, c.expect)) {
           mismatches.push(
             `${JSON.stringify(c.command)} disabled ${JSON.stringify(c.disabled)}: ` +
