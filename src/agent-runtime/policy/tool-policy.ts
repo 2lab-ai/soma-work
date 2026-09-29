@@ -157,7 +157,7 @@ export function evaluateToolPolicy(
   //    expiry that the query-start allowedTools snapshot cannot.
   if (toolName.startsWith('mcp__') && !ctx.isAdmin) {
     const denied = ctx.checkMcpToolPermission(toolName);
-    if (denied) {
+    if (denied !== null) {
       return { decision: 'deny', reason: `mcp-permission: ${denied}` };
     }
   }
