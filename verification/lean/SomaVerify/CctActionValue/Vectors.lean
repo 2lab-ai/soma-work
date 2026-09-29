@@ -1,4 +1,3 @@
-import Std.Data.HashSet
 import SomaVerify.Support.Json
 import SomaVerify.Support.JsString
 import SomaVerify.Support.Vectors
@@ -183,14 +182,35 @@ def precedence : List (String × String) :=
   [("bad", ""), ("bad", " "), ("bad", rep 2001 "x"), ("", "\u3000"),
    ("admin", rep 2001 " "), ("readonly", rep 1995 "\uFEFF")]
 
-/-- `xs` without repeats, first occurrences kept, in order. -/
-def dedupe {α : Type} [BEq α] [Hashable α] (xs : List α) : List α :=
-  (xs.foldl (init := (({} : Std.HashSet α), (#[] : Array α))) fun acc x =>
-    if acc.1.contains x then acc else (acc.1.insert x, acc.2.push x)).2.toList
+/-- The first entry of each run of entries with equal values, in a list of `(value, position)`
+entries; tail-recursive, since the lists here have tens of thousands of entries. -/
+def firstOfRuns {α : Type} [BEq α] : List (α × Nat) → List (α × Nat)
+  | [] => []
+  | x :: rest => go x.1 rest [x]
+where
+  go (prev : α) : List (α × Nat) → List (α × Nat) → List (α × Nat)
+    | [], acc => acc.reverse
+    | y :: ys, acc => if y.1 == prev then go prev ys acc else go y.1 ys (y :: acc)
+
+/-- `xs` without repeats, first occurrences kept, in order. `lt` is a strict total order on
+values, `==` its equality. Sorting the entries by value, then position, puts each value's first
+occurrence at the head of its run of equal values; the survivors are put back in position
+order. -/
+def dedupe {α : Type} [BEq α] (lt : α → α → Bool) (xs : List α) : List α :=
+  let byValue := xs.zipIdx.mergeSort fun a b => lt a.1 b.1 || (a.1 == b.1 && a.2 ≤ b.2)
+  ((firstOfRuns byValue).mergeSort fun a b => a.2 ≤ b.2).map (·.1)
+
+/-- The strict order on strings: lexicographic by code point. -/
+def stringLt (a b : String) : Bool :=
+  decide (a < b)
+
+/-- The strict order on pairs of strings: by the first, then the second. -/
+def pairLt (a b : String × String) : Bool :=
+  stringLt a.1 b.1 || (a.1 == b.1 && stringLt a.2 b.2)
 
 /-- The decode inputs, families 1 to 6 in order. -/
 def decodeInputs : List String :=
-  dedupe <|
+  dedupe stringLt <|
     wordsBetween alphabet 0 3 ++
     (wordsBetween alphabet 1 2).map (PREFIX ++ ·) ++
     wordsBetween core 4 5 ++
@@ -200,7 +220,7 @@ def decodeInputs : List String :=
 
 /-- The encode inputs as `(mode, payload)`. -/
 def encodeInputs : List (String × String) :=
-  dedupe <|
+  dedupe pairLt <|
     (VALID_MODES.flatMap fun m => payloadLike.map (m, ·)) ++
     unknownModes.map (·, "x") ++
     precedence ++
