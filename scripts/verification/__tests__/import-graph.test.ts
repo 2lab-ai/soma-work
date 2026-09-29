@@ -24,6 +24,7 @@ interface Graph {
   productionFileCount: number;
   nodes: { id: number; path: string; layer: string }[];
   edges: { src: number; dst: number; specifiers: string[] }[];
+  mcpServerEntries: number[];
   unresolved: string[];
 }
 
@@ -105,6 +106,38 @@ describe('import-graph extractor on this repository', () => {
 
   it('left no in-repo specifier unresolved', () => {
     expect(graph.unresolved).toEqual([]);
+  });
+
+  it('takes as MCP server entries the bin of every MCP server package, which covers every server the daemon launches', () => {
+    // Read off the package.json files: each package's bin, mapped to its source by these
+    // packages' layout (tsconfig rootDir '.', outDir 'dist').
+    const serversDir = path.join(repoRoot, 'packages/mcp-servers');
+    const binSources = new Map<string, string[]>();
+    for (const dir of fs.readdirSync(serversDir)) {
+      const manifest = path.join(serversDir, dir, 'package.json');
+      if (!fs.existsSync(manifest)) continue;
+      const pkg = JSON.parse(fs.readFileSync(manifest, 'utf8')) as {
+        name: string;
+        bin?: string | Record<string, string>;
+      };
+      const targets = typeof pkg.bin === 'string' ? [pkg.bin] : Object.values(pkg.bin ?? {});
+      binSources.set(
+        pkg.name,
+        targets.map((target) =>
+          path.posix.join('packages/mcp-servers', dir, target.replace(/^\.\/dist\//, '').replace(/\.js$/, '.ts')),
+        ),
+      );
+    }
+    const entries = graph.mcpServerEntries.map((id) => graph.nodes[id].path);
+    expect(entries).toEqual([...binSources.values()].flat().sort());
+
+    // src/internal-mcp-server-resolver.ts names each server it spawns by `<package>/bin`.
+    const launcher = fs.readFileSync(path.join(repoRoot, 'src/internal-mcp-server-resolver.ts'), 'utf8');
+    const launched = [...launcher.matchAll(/packageBinSpecifier: '(@soma\/[^']+)\/bin'/g)].map((match) => match[1]);
+    expect(launched.length).toBeGreaterThan(0);
+    for (const name of launched) {
+      expect(binSources.get(name)?.every((source) => entries.includes(source))).toBe(true);
+    }
   });
 });
 

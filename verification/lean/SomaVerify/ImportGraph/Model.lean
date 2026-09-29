@@ -1,6 +1,7 @@
--- models: scripts/verification/extract-import-graph.cjs:482-546 (extractGraph: nodes, edges, CLI root, certificate)
--- models: scripts/verification/extract-import-graph.cjs:370-406 (collectLoads: an edge is a `require` in the emit)
--- models: scripts/verification/extract-import-graph.cjs:66-98 (GROUPS, layerOf: the layer of each node)
+-- models: scripts/verification/extract-import-graph.cjs:521-589 (extractGraph: nodes, edges, roots, certificates)
+-- models: scripts/verification/extract-import-graph.cjs:384-420 (collectLoads: an edge is a `require` in the emit)
+-- models: scripts/verification/extract-import-graph.cjs:484-501 (listMcpServerEntries: the MCP server roots)
+-- models: scripts/verification/extract-import-graph.cjs:73-105 (GROUPS, layerOf: the layer of each node)
 -- models: rules/packaging.md:26 (rule 4's order, as `Layer.rank`)
 
 /-!
@@ -8,8 +9,8 @@
 
 `scripts/verification/extract-import-graph.cjs` writes one `Graph` to `Generated.lean`: a node for
 each production TypeScript file, numbered from 0 in path order and tagged with the `Layer` its
-path prefix puts it in, and an `Edge` for each (importer, imported) pair such that compiling the
-importer to CommonJS emits a `require` that loads the imported file.
+path prefix puts it in, and an `Edge` for each (importer, imported) pair such that compiling
+the importer to CommonJS emits a `require` that loads the imported file.
 
 The checkers are Boolean functions, so the kernel can evaluate them on that concrete graph
 (`decide +kernel` in `Proofs.lean`), which also shows that each checker implies the declarative

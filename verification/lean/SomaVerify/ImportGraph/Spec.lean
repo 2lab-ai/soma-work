@@ -24,6 +24,9 @@ only as far as the graph is the repository's. It guarantees (its header has the 
 - completeness: an in-repo specifier that reaches no production file, a load whose specifier is
   not a string literal, and a production file the compiler did not emit each stop the extractor
   before it writes anything.
+- MCP server entries: `mcpServerEntries` are the source files of the `bin` targets of every
+  workspace package under `packages/mcp-servers/`; a package there without one stops the
+  extractor.
 
 Not modeled. The graph is the output of tsc, which is what `dist/` runs. Runners that compile one
 file at a time with esbuild (tsx, vitest) cannot tell a re-exported type (`export { T } from`)
@@ -32,7 +35,8 @@ graph has no edge to. Anything that is not a module load (a child process, a wor
 at run time) is not an edge.
 
 `scripts/verification/__tests__/import-graph.test.ts` checks the extractor's output against facts
-read off the sources, and that it fails on a specifier it cannot resolve.
+read off the sources, including that its MCP server entries are the servers the daemon launches,
+and that it fails on a specifier it cannot resolve.
 
 ## Proven (`Proofs.lean`)
 
@@ -79,6 +83,18 @@ the `somawork` bin entry, so it covers what that entry can load; a file under `s
 entry never loads is outside it. -/
 def NeverLoads (g : Graph) (r : Nat) (targets : List Nat) : Prop :=
   ∀ t ∈ targets, ¬Reaches g r t
+
+/-- packages/process-shared/src/mcp/base-mcp-server.ts:72: `const transport = new
+StdioServerTransport();` (packages/mcp-servers/cron/cron-mcp-server.ts:675 constructs one
+directly): an MCP server speaks JSON-RPC on its own stdout, which is how this repository's client
+reads a server too (packages/process-shared/src/mcp/mcp-client.ts:114: "Handle stdout - JSON-RPC
+messages"). packages/common/src/env-paths.ts:94 writes its banner with `console.log`, to stdout,
+when the module loads.
+
+`NoEntryLoads g entries targets`: no entry loads a target, directly or through any chain of
+loads, so no target's load-time output is written by an entry's process. -/
+def NoEntryLoads (g : Graph) (entries targets : List Nat) : Prop :=
+  ∀ r ∈ entries, NeverLoads g r targets
 
 /-- Coverage: the graph has exactly `fileCount` nodes, the number of production TypeScript files
 the extractor counted in `git ls-files` before compiling anything. -/
