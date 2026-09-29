@@ -31,5 +31,19 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+
+      # The gate first runs scripts/verification/extract-*.cjs, which compiles the sources with
+      # the repository's own TypeScript: it needs Node and the dependencies. It needs no
+      # workspace build: the import-graph extractor maps each package's `exports` back to
+      # `src/` and never reads `dist/`.
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Rebuild proofs, audit axioms, check vector drift
         run: bash scripts/verification/lean-verify.sh --check
