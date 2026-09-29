@@ -28,7 +28,7 @@
  *   - whitespace-only
  *   - `'cm:'` (no mode, no `|`)
  *   - `'cm:admin'` (no `|`)
- *   - `'cm:admin|'` (empty payload)
+ *   - `'cm:admin|'` / `'cm:admin| '` (empty / whitespace-only payload)
  *   - `'cm:|abc'` (empty mode)
  *   - `'cm:bad|abc'` (unknown mode)
  *
@@ -122,7 +122,7 @@ export function decodeCctActionValue(raw: unknown): DecodedCctActionValue {
   const mode = tail.slice(0, sepIdx);
   const payload = tail.slice(sepIdx + 1);
   if (mode.length === 0) return { kind: 'invalid', raw };
-  if (payload.length === 0) return { kind: 'invalid', raw };
+  if (payload.trim().length === 0) return { kind: 'invalid', raw };
   if (!VALID_MODES.has(mode)) return { kind: 'invalid', raw };
   return { kind: 'tagged', mode: mode as CctCardMode, payload };
 }
