@@ -3,8 +3,10 @@ import SomaVerify.ToolPolicy.Spec
 /-!
 # Proofs of the `evaluateToolPolicy` invariants
 
-Every statement in `Spec.lean` is proved here for `evaluate`, for all inputs: every tool name, the
-`path` property of every tool input, every context, and every combination of primitive values.
+Every statement in `Spec.lean` is proved here for the phase-1 model `Original.evaluate`
+(`ModelOriginal.lean`), for all inputs: every tool name, the `path` property of every tool input,
+every context, and every combination of primitive values. `Simplification.lean` carries each one
+over to the simplified model.
 
 The route: each guard fires exactly under its condition and only ever denies
 (`denyTier_result`), so `evaluate` is either the denial of the first guard that fires or, when
@@ -12,7 +14,7 @@ no deny condition holds, the mode tier's result (`evaluate_cases`). Most invaria
 to a case analysis of `modeTier`.
 -/
 
-namespace SomaVerify.ToolPolicy
+namespace SomaVerify.ToolPolicy.Original
 
 open SomaVerify.JsString
 
@@ -246,7 +248,7 @@ theorem guard_conditions : GuardConditions := fun i =>
 
 /-- A call is denied exactly when one of the six deny conditions holds: the mode tier never
 denies. -/
-theorem deny_exactly : DenyExactly := by
+theorem deny_exactly : DenyExactly evaluate := by
   intro i
   rcases evaluate_cases i with ⟨hc, g, hg, he⟩ | ⟨hc, he⟩
   · exact ⟨fun _ => hc, fun _ => (denyTier_result hg he).1⟩
@@ -254,11 +256,11 @@ theorem deny_exactly : DenyExactly := by
     exact ⟨fun hd => absurd hd (modeTier_decision_ne_deny i), fun h => absurd h hc⟩
 
 /-- (c) Deny dominance: when any deny condition holds the decision is `deny`, in every mode. -/
-theorem deny_dominance : DenyDominance := fun i h => (deny_exactly i).mpr h
+theorem deny_dominance : DenyDominance evaluate := fun i h => (deny_exactly i).mpr h
 
 /-- (a) A Bash call after the session was aborted is denied, by the abort guard itself (its
 reason is the abort reason). -/
-theorem abort_denies : AbortDenies := by
+theorem abort_denies : AbortDenies evaluate := by
   intro i h
   have hg : abortGuard i = some { decision := .deny, reason := "abort-guard: session aborted" } := by
     unfold abortGuard
@@ -268,13 +270,13 @@ theorem abort_denies : AbortDenies := by
 
 /-- (b) Cross-user isolation: a Bash call that touches another user's directory is denied in
 every mode, for admins and non-admins alike. -/
-theorem cross_user_isolation : CrossUserIsolation := by
+theorem cross_user_isolation : CrossUserIsolation evaluate := by
   intro i h mode isAdmin
   exact deny_dominance _ (.inr (.inr (.inr (.inl h))))
 
 /-- (c) The deny tier does not read the mode: when a deny condition holds, changing the mode
 changes nothing in the result, reason included. -/
-theorem deny_tier_mode_independent : DenyTierModeIndependent := by
+theorem deny_tier_mode_independent : DenyTierModeIndependent evaluate := by
   intro i mode h
   have hf : denyTier.findSome? (fun g => g { i with mode := mode }) =
       denyTier.findSome? (fun g => g i) := rfl
@@ -286,12 +288,12 @@ theorem deny_tier_mode_independent : DenyTierModeIndependent := by
   | none => exact absurd h ((denyTier_silent_iff i).mp (List.findSome?_eq_none_iff.mp hr))
 
 /-- Running the deny tier in source order is `evaluate`. -/
-theorem evaluateWith_source_order : EvaluateWithSourceOrder := fun i =>
+theorem evaluateWith_source_order : EvaluateWithSourceOrder evaluate := fun i =>
   (evaluate_eq_evaluateWith i).symm
 
 /-- (d) Any reordering of the deny tier yields the same decision (the comment at line 130:
 "order within the tier is immaterial"). -/
-theorem decision_order_invariant : DecisionOrderInvariant := by
+theorem decision_order_invariant : DecisionOrderInvariant evaluate := by
   intro guards i hp
   have hmem : ∀ g, g ∈ guards ↔ g ∈ denyTier := fun g => hp.mem_iff
   by_cases hc : DenyCond i
@@ -307,7 +309,7 @@ theorem decision_order_invariant : DecisionOrderInvariant := by
 
 /-- (d) The reason is not order-independent: with two guards swapped, an aborted non-admin
 `ssh` Bash call is reported as an SSH ban instead of an abort. -/
-theorem reason_order_dependent : ReasonOrderDependent := by
+theorem reason_order_dependent : ReasonOrderDependent evaluate := by
   refine ⟨[sshGuard, abortGuard, sensitiveGuard, crossUserGuard, mcpGuard, prIssueGuard],
     { toolName := "Bash", path := .absent, isAdmin := false, mode := .auto, aborted := true,
       handoff := false,
@@ -319,7 +321,7 @@ theorem reason_order_dependent : ReasonOrderDependent := by
 
 
 /-- (e) Legacy mode never allows, classifies or asks: its only outcomes are `deny` and `pass`. -/
-theorem legacy_never_allows : LegacyNeverAllows := by
+theorem legacy_never_allows : LegacyNeverAllows evaluate := by
   intro i hm
   rcases evaluate_cases i with ⟨_, g, hg, he⟩ | ⟨_, he⟩
   · rw [(denyTier_result hg he).1]
@@ -329,7 +331,7 @@ theorem legacy_never_allows : LegacyNeverAllows := by
     split <;> simp_all
 
 /-- (e) Legacy mode passes every call it does not deny. -/
-theorem legacy_passes : LegacyPasses := by
+theorem legacy_passes : LegacyPasses evaluate := by
   intro i hm hc
   rw [evaluate_of_not_denyCond hc]
   unfold modeTier
@@ -337,7 +339,7 @@ theorem legacy_passes : LegacyPasses := by
 
 /-- (f) `classify` is returned exactly for a Bash call in auto mode that no deny condition stops
 and that `bypassBashPermissionDecision` answers with `ask`. -/
-theorem classify_iff : ClassifyIff := by
+theorem classify_iff : ClassifyIff evaluate := by
   intro i
   rcases evaluate_cases i with ⟨hc, g, hg, he⟩ | ⟨hc, he⟩
   · rw [(denyTier_result hg he).1]
@@ -346,7 +348,7 @@ theorem classify_iff : ClassifyIff := by
     simp [hc]
 
 /-- (f) A result carries rule ids exactly when its decision is `classify`. -/
-theorem matched_rule_ids_only_classify : MatchedRuleIdsOnlyClassify := by
+theorem matched_rule_ids_only_classify : MatchedRuleIdsOnlyClassify evaluate := by
   intro i
   rcases evaluate_cases i with ⟨_, g, hg, he⟩ | ⟨_, he⟩
   · have hr := denyTier_result hg he
@@ -356,7 +358,7 @@ theorem matched_rule_ids_only_classify : MatchedRuleIdsOnlyClassify := by
 
 /-- (f) A `classify` result carries the rule ids `bypassBashPermissionDecision` matched, and its
 reason lists them comma-separated. -/
-theorem classify_carries_rule_ids : ClassifyCarriesRuleIds := by
+theorem classify_carries_rule_ids : ClassifyCarriesRuleIds evaluate := by
   intro i h
   rcases evaluate_cases i with ⟨_, g, hg, he⟩ | ⟨_, he⟩
   · rw [(denyTier_result hg he).1] at h
@@ -375,7 +377,7 @@ theorem evaluate_congr {i j : Input} (h1 : abortGuard i = abortGuard j)
 
 /-- (g) Being an admin has exactly the effect of the ssh, sensitive-path and MCP checks all
 coming back clear for a non-admin: those three guards are skipped, nothing else changes. -/
-theorem admin_skips_exactly_ssh_sensitive_mcp : AdminSkipsExactlySshSensitiveMcp := by
+theorem admin_skips_exactly_ssh_sensitive_mcp : AdminSkipsExactlySshSensitiveMcp evaluate := by
   intro i
   apply evaluate_congr
   · rfl
@@ -388,7 +390,7 @@ theorem admin_skips_exactly_ssh_sensitive_mcp : AdminSkipsExactlySshSensitiveMcp
   · rfl
 
 /-- (g) Admins are still denied by the abort, cross-user and PR-issue guards. -/
-theorem admin_keeps_abort_cross_user_pr_issue : AdminKeepsAbortCrossUserPrIssue := by
+theorem admin_keeps_abort_cross_user_pr_issue : AdminKeepsAbortCrossUserPrIssue evaluate := by
   intro i _ h
   apply deny_dominance
   rcases h with h | h | h
@@ -398,7 +400,7 @@ theorem admin_keeps_abort_cross_user_pr_issue : AdminKeepsAbortCrossUserPrIssue 
 
 /-- (h) `pass` (no policy opinion) is returned exactly when nothing denies and either the mode
 is legacy or the tool is neither Bash nor a native tool. -/
-theorem pass_iff : PassIff := by
+theorem pass_iff : PassIff evaluate := by
   intro i
   rcases evaluate_cases i with ⟨hc, g, hg, he⟩ | ⟨hc, he⟩
   · rw [(denyTier_result hg he).1]
@@ -407,7 +409,7 @@ theorem pass_iff : PassIff := by
     simp [hc]
 
 /-- (i) `ask` is never returned, although the result type allows it. -/
-theorem never_ask : NeverAsk := by
+theorem never_ask : NeverAsk evaluate := by
   intro i
   rcases evaluate_cases i with ⟨_, g, hg, he⟩ | ⟨_, he⟩
   · rw [(denyTier_result hg he).1]
@@ -417,7 +419,7 @@ theorem never_ask : NeverAsk := by
 
 /-- Bypass mode allows every Bash and native-tool call that nothing denies, a dangerous Bash
 included. -/
-theorem bypass_allows_governed : BypassAllowsGoverned := by
+theorem bypass_allows_governed : BypassAllowsGoverned evaluate := by
   intro i hm hc hg
   rw [evaluate_of_not_denyCond hc]
   unfold modeTier
@@ -426,7 +428,7 @@ theorem bypass_allows_governed : BypassAllowsGoverned := by
 
 /-- Auto mode allows every native-tool call that nothing denies, and every such Bash call that
 `bypassBashPermissionDecision` does not flag. -/
-theorem auto_allows_non_dangerous : AutoAllowsNonDangerous := by
+theorem auto_allows_non_dangerous : AutoAllowsNonDangerous evaluate := by
   intro i hm hc hg hb
   rw [evaluate_of_not_denyCond hc]
   unfold modeTier
@@ -435,7 +437,7 @@ theorem auto_allows_non_dangerous : AutoAllowsNonDangerous := by
 
 /-- `denyMessage` is set only by the PR-issue guard: whenever a result has one, it is the
 PR-issue guard's own result. -/
-theorem deny_message_only_pr_issue : DenyMessageOnlyPrIssue := by
+theorem deny_message_only_pr_issue : DenyMessageOnlyPrIssue evaluate := by
   intro i hmsg
   rcases evaluate_cases i with ⟨_, g, hg, he⟩ | ⟨_, he⟩
   · by_cases hp : g = prIssueGuard
@@ -452,7 +454,7 @@ theorem ne_of_mcp {t : String} (h : jsStartsWith t "mcp__" = true) :
 
 /-- Every non-null value of `checkMcpToolPermission` denies a non-admin `mcp__` call, with that
 value as the reason, the empty string included. -/
-theorem mcp_deny_reason_denies : McpDenyReasonDenies := by
+theorem mcp_deny_reason_denies : McpDenyReasonDenies evaluate := by
   intro i denied hmcp hadm hd
   obtain ⟨hB, hR, hG, hP⟩ := ne_of_mcp hmcp
   have e1 : abortGuard i = none := (abortGuard_eq_none_iff i).mpr fun h => hB h.1
@@ -471,7 +473,7 @@ theorem mcp_deny_reason_denies : McpDenyReasonDenies := by
 
 /-- The policy has an opinion only on calls one of `TOOL_POLICY_MATCHERS` covers: Bash, a
 native tool, or an `mcp__` tool. -/
-theorem opinion_only_on_matched_tools : OpinionOnlyOnMatchedTools := by
+theorem opinion_only_on_matched_tools : OpinionOnlyOnMatchedTools evaluate := by
   intro i hne
   rcases evaluate_cases i with ⟨hc, _⟩ | ⟨hc, he⟩
   · rcases hc with h | h | h | h | h | h
@@ -494,4 +496,4 @@ theorem opinion_only_on_matched_tools : OpinionOnlyOnMatchedTools := by
     · exact .inl h
     · exact .inr (.inl h)
 
-end SomaVerify.ToolPolicy
+end SomaVerify.ToolPolicy.Original

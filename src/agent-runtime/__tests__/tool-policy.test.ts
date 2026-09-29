@@ -2,9 +2,9 @@
  * Unified ToolPolicy precedence tests (epic #1023 P5).
  *
  * `evaluateToolPolicy` collapses the prior per-matcher PreToolUse hooks into one
- * decision with `deny > ask > allow > pass` precedence. These tests pin every
+ * decision with `deny > classify/allow > pass` precedence. These tests pin every
  * guard AND the cross-guard precedence (a deny must always beat a bypass allow /
- * a dangerous-Bash ask), which is what the old SDK multi-hook `deny>allow` merge
+ * a dangerous-Bash classify), which is what the old SDK multi-hook `deny>allow` merge
  * guaranteed. The guard primitives themselves have their own unit tests; here we
  * verify the *composition*.
  */
@@ -32,8 +32,8 @@ function makeCtx(overrides: Partial<ToolPolicyContext> = {}): ToolPolicyContext 
 
 // A handoff context that requires a linked source issue → `gh pr create`
 // without a `Closes #N` marker is blocked.
-const BLOCKING_HANDOFF = {
-  handoffKind: 'issue',
+const BLOCKING_HANDOFF: HandoffContext = {
+  handoffKind: 'plan-to-work',
   sourceIssueUrl: 'https://github.com/2lab-ai/soma-work/issues/696',
   escapeEligible: false,
   tier: null,
@@ -41,7 +41,7 @@ const BLOCKING_HANDOFF = {
   parentEpicUrl: null,
   chainId: 'chain-1',
   hopBudget: 3,
-} as unknown as HandoffContext;
+};
 
 const SENSITIVE_READ = `${os.homedir()}/.ssh/id_rsa`;
 const SAFE_READ = `/tmp/${USER}/notes.txt`;
@@ -113,7 +113,7 @@ describe('evaluateToolPolicy — guards (epic #1023 P5)', () => {
     });
   });
 
-  describe('ask / allow tier', () => {
+  describe('allow / pass tier', () => {
     it('bypass-bash: non-dangerous AND dangerous both → allow (unsafe allow-all)', () => {
       expect(evaluateToolPolicy('Bash', { command: 'ls -la' }, makeCtx({ mode: 'bypass' })).decision).toBe('allow');
       // Unsafe bypass no longer asks on a dangerous rule — it just runs.
@@ -135,7 +135,7 @@ describe('evaluateToolPolicy — guards (epic #1023 P5)', () => {
     });
   });
 
-  describe('precedence: deny > ask > allow', () => {
+  describe('precedence: deny > allow', () => {
     it('sensitive deny beats native-bypass allow (Read sensitive + bypass)', () => {
       expect(evaluateToolPolicy('Read', { file_path: SENSITIVE_READ }, makeCtx({ mode: 'bypass' })).decision).toBe(
         'deny',
