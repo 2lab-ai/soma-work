@@ -1,4 +1,5 @@
 import SomaVerify.CctActionValue.Model
+import SomaVerify.CctActionValue.ModelOriginal
 import SomaVerify.CctActionValue.Spec
 
 /-!
@@ -80,9 +81,9 @@ theorem jsTrim_eq_empty_iff (s : String) :
     jsTrim s = "" ↔ ∀ c ∈ s.toList, jsIsWhitespace c = true := by
   rw [jsTrim, String.ofList_eq_empty_iff, jsTrimList_eq_nil_iff]
 
-/-- Lines 82 and 111 share the test `x.length === 0 || x.trim().length === 0`. Its first
-disjunct is redundant, because the empty string trims to the empty string: the test and its
-second disjunct are the same Boolean for every string. -/
+/-- Lines 82 and 111 used to test `x.length === 0 || x.trim().length === 0`. The first disjunct
+is redundant, because the empty string trims to the empty string: the test and its second
+disjunct are the same Boolean for every string. This is what allowed deleting it. -/
 theorem redundant_length_disjunct (s : String) :
     (utf16Length s == 0 || utf16Length (jsTrim s) == 0) = (utf16Length (jsTrim s) == 0) := by
   by_cases h : s = ""
@@ -92,15 +93,8 @@ theorem redundant_length_disjunct (s : String) :
       simp [utf16Length_eq_zero_iff, h]
     simp [this]
 
-/-- The test of lines 82 and 111 holds exactly when the string trims to empty ("empty /
-whitespace-only"). -/
-theorem blank_iff (s : String) :
-    (utf16Length s == 0 || utf16Length (jsTrim s) == 0) = true ↔ jsTrim s = "" := by
-  rw [redundant_length_disjunct]
-  simp [utf16Length_eq_zero_iff]
-
-/-- The payload test of line 125, `payload.trim().length === 0`, holds exactly when the payload
-trims to empty. -/
+/-- The test `x.trim().length === 0` (lines 82, 111 and 124) holds exactly when `x` trims to
+empty. -/
 theorem trim_blank_iff (s : String) : (utf16Length (jsTrim s) == 0) = true ↔ jsTrim s = "" := by
   simp [utf16Length_eq_zero_iff]
 
@@ -114,11 +108,6 @@ theorem mem_VALID_MODES (m : String) : m ∈ VALID_MODES ↔ m = "admin" ∨ m =
 
 /-- No valid mode contains `|`, so the first `|` of a wire form ends the mode. -/
 theorem SEP_not_mem_of_valid {m : String} (h : m ∈ VALID_MODES) : SEP ∉ m.toList := by
-  rw [mem_VALID_MODES] at h
-  rcases h with rfl | rfl <;> decide
-
-/-- No valid mode is empty. -/
-theorem ne_empty_of_valid {m : String} (h : m ∈ VALID_MODES) : m ≠ "" := by
   rw [mem_VALID_MODES] at h
   rcases h with rfl | rfl <;> decide
 
@@ -162,25 +151,24 @@ theorem indexOfSep_eq_some {l : List Char} {i : Nat} (h : indexOfSep l = some i)
 /-! ## The decoder, branch by branch -/
 
 /-- On a string that starts with `cm:`, the decoder passes lines 111 and 112 and runs lines
-116-127 on the rest of the string. -/
+116-126 on the rest of the string. -/
 theorem decode_str_of_prefixed {s : String} {t : List Char}
     (hs : s.toList = 'c' :: 'm' :: ':' :: t) :
     decodeCctActionValue (.str s) =
       match indexOfSep t with
       | none => .invalid (.str s)
       | some i =>
-        if utf16Length (String.ofList (t.take i)) == 0 then .invalid (.str s)
-        else if utf16Length (jsTrim (String.ofList (t.drop (i + 1)))) == 0 then .invalid (.str s)
+        if utf16Length (jsTrim (String.ofList (t.drop (i + 1)))) == 0 then .invalid (.str s)
         else if !VALID_MODES.contains (String.ofList (t.take i)) then .invalid (.str s)
         else .tagged (String.ofList (t.take i)) (String.ofList (t.drop (i + 1))) := by
   have hne : jsTrim s ≠ "" := by
     rw [ne_eq, jsTrim_eq_empty_iff, hs]
     intro h
     exact absurd (h 'c' List.mem_cons_self) (by decide)
-  have hblank : (utf16Length s == 0 || utf16Length (jsTrim s) == 0) = false := by
+  have hblank : (utf16Length (jsTrim s) == 0) = false := by
     rw [Bool.eq_false_iff]
     intro h
-    exact hne ((blank_iff s).mp h)
+    exact hne ((trim_blank_iff s).mp h)
   have hstart : jsStartsWith s PREFIX = true := by
     simp [jsStartsWith, hs, PREFIX_toList]
   have htail : s.toList.drop PREFIX.length = t := by
@@ -191,11 +179,10 @@ theorem decode_str_of_prefixed {s : String} {t : List Char}
   cases indexOfSep t <;> rfl
 
 /-- On the wire form of a mode without `|`, the decoder splits at the separator after the mode
-and applies lines 124-126 to that mode and payload. -/
+and applies lines 124-125 to that mode and payload. -/
 theorem decode_wire (mode payload : String) (hm : SEP ∉ mode.toList) :
     decodeCctActionValue (.str (wire mode payload)) =
-      if utf16Length mode == 0 then .invalid (.str (wire mode payload))
-      else if utf16Length (jsTrim payload) == 0 then .invalid (.str (wire mode payload))
+      if utf16Length (jsTrim payload) == 0 then .invalid (.str (wire mode payload))
       else if !VALID_MODES.contains mode then .invalid (.str (wire mode payload))
       else .tagged mode payload := by
   rw [decode_str_of_prefixed (wire_toList mode payload), indexOfSep_append _ _ hm]
@@ -207,25 +194,23 @@ theorem decode_wire_valid {mode payload : String} (hm : mode ∈ VALID_MODES)
     (hp : jsTrim payload ≠ "") :
     decodeCctActionValue (.str (wire mode payload)) = .tagged mode payload := by
   rw [decode_wire _ _ (SEP_not_mem_of_valid hm)]
-  have h1 : (utf16Length mode == 0) = false := by
-    simp [utf16Length_eq_zero_iff, ne_empty_of_valid hm]
   have h2 : (utf16Length (jsTrim payload) == 0) = false := by
     simp [utf16Length_eq_zero_iff, hp]
-  simp [h1, h2, hm]
+  simp [h2, hm]
 
 /-- Line 111: a string that trims to empty (the empty string included) is invalid. -/
 theorem decode_blank {s : String} (h : jsTrim s = "") :
     decodeCctActionValue (.str s) = .invalid (.str s) := by
-  simp [decodeCctActionValue, (blank_iff s).mpr h]
+  simp [decodeCctActionValue, (trim_blank_iff s).mpr h]
 
 /-- Lines 112-115: a string that is not blank and does not start with `cm:` is legacy, carrying the
 whole string. -/
 theorem decode_unprefixed {s : String} (hb : jsTrim s ≠ "")
     (hst : jsStartsWith s PREFIX = false) :
     decodeCctActionValue (.str s) = .legacy s := by
-  have hblank : (utf16Length s == 0 || utf16Length (jsTrim s) == 0) = false := by
+  have hblank : (utf16Length (jsTrim s) == 0) = false := by
     rw [Bool.eq_false_iff]
-    exact fun h => hb ((blank_iff s).mp h)
+    exact fun h => hb ((trim_blank_iff s).mp h)
   simp [decodeCctActionValue, hblank, hst]
 
 /-- A string that starts with `cm:` is `c m :` followed by the rest. -/
@@ -247,22 +232,19 @@ theorem decode_prefixed {s : String} (hst : jsStartsWith s PREFIX = true) :
   | none => exact Or.inl rfl
   | some i =>
     dsimp only
-    by_cases h1 : (utf16Length (String.ofList (t.take i)) == 0) = true
-    · exact Or.inl (ite_eq_left h1)
-    · rw [ite_eq_right h1]
-      by_cases h2 : (utf16Length (jsTrim (String.ofList (t.drop (i + 1)))) == 0) = true
-      · exact Or.inl (ite_eq_left h2)
-      · rw [ite_eq_right h2]
-        by_cases h3 : (!VALID_MODES.contains (String.ofList (t.take i))) = true
-        · exact Or.inl (ite_eq_left h3)
-        · rw [ite_eq_right h3]
-          refine Or.inr ⟨_, _, ?_, ?_, ?_, rfl⟩
-          · apply String.ext
-            rw [wire_toList, String.toList_ofList, String.toList_ofList, hs,
-              ← indexOfSep_eq_some hi]
-          · rw [← contains_VALID_MODES]
-            simpa using h3
-          · exact fun he => h2 ((trim_blank_iff _).mpr he)
+    by_cases h2 : (utf16Length (jsTrim (String.ofList (t.drop (i + 1)))) == 0) = true
+    · exact Or.inl (ite_eq_left h2)
+    · rw [ite_eq_right h2]
+      by_cases h3 : (!VALID_MODES.contains (String.ofList (t.take i))) = true
+      · exact Or.inl (ite_eq_left h3)
+      · rw [ite_eq_right h3]
+        refine Or.inr ⟨_, _, ?_, ?_, ?_, rfl⟩
+        · apply String.ext
+          rw [wire_toList, String.toList_ofList, String.toList_ofList, hs,
+            ← indexOfSep_eq_some hi]
+        · rw [← contains_VALID_MODES]
+          simpa using h3
+        · exact fun he => h2 ((trim_blank_iff _).mpr he)
 
 /-- Every string decodes in one of four ways: blank and invalid; not blank, not prefixed and
 legacy; prefixed and invalid; prefixed, the wire form of a valid mode and a payload that is not
@@ -319,14 +301,14 @@ theorem encode_ok : EncodeOk := by
     have hm := valid_of_not_not_contains h
     split
     · rename_i hb
-      have hp := (blank_iff payload).mp hb
+      have hp := (trim_blank_iff payload).mp hb
       constructor
       · intro he
         cases he
       · rintro ⟨-, hp', -⟩
         exact absurd hp hp'
     · rename_i hb
-      have hp : jsTrim payload ≠ "" := fun hp => hb ((blank_iff payload).mpr hp)
+      have hp : jsTrim payload ≠ "" := fun hp => hb ((trim_blank_iff payload).mpr hp)
       dsimp only
       split
       · rename_i hl
@@ -355,9 +337,9 @@ theorem encode_failure_set : EncodeFailureSet := by
     have hm := valid_of_not_not_contains h
     split
     · rename_i hb
-      exact ⟨fun _ => Or.inr (Or.inl ((blank_iff payload).mp hb)), fun _ => ⟨_, rfl⟩⟩
+      exact ⟨fun _ => Or.inr (Or.inl ((trim_blank_iff payload).mp hb)), fun _ => ⟨_, rfl⟩⟩
     · rename_i hb
-      have hp : jsTrim payload ≠ "" := fun hp => hb ((blank_iff payload).mpr hp)
+      have hp : jsTrim payload ≠ "" := fun hp => hb ((trim_blank_iff payload).mpr hp)
       dsimp only
       split
       · rename_i hl
@@ -423,7 +405,7 @@ theorem blank_payload_invalid : BlankPayloadInvalid := by
 theorem empty_mode_invalid : EmptyModeInvalid := by
   intro payload
   rw [decode_wire _ _ (by simp)]
-  simp [utf16Length_empty]
+  simp [VALID_MODES]
 
 /-- `UnknownModeInvalid`: `cm:<mode>|<payload>` with a mode that is not `admin` or `readonly` is
 invalid, whatever the payload. -/
@@ -563,30 +545,11 @@ theorem read_some_iff : ReadSomeIff := by
   | tagged m p => simp [eq_comm]
   | legacy p => simp [eq_comm]
 
-/-! ## Simplification candidates -/
+/-! ## The simplification changes no result -/
 
-/-- `DecodeVariantIsModel`: with both checks kept, `decodeVariant` is the decoder as written. -/
-theorem decode_variant_is_model : DecodeVariantIsModel := by
-  intro raw
-  cases raw <;> rfl
-
-/-- `EncodeVariantIsModel`: with the check kept, `encodeVariant` is the encoder as written. -/
-theorem encode_variant_is_model : EncodeVariantIsModel := by
-  intro mode payload
-  rfl
-
-/-- `RedundantRawLengthCheck`: deleting `raw.length === 0 ||` from line 111 changes no decoder
-result, whether or not line 124 is kept. -/
-theorem redundant_raw_length_check : RedundantRawLengthCheck := by
-  intro keep124 raw
-  cases raw with
-  | nonString => rfl
-  | str s =>
-    simp only [decodeVariant, Bool.false_and, Bool.false_or, Bool.true_and,
-      redundant_length_disjunct]
-
-/-- Lines 124-127 give the same result as lines 125-127, whatever line 125 tests (`blank`): an
-empty mode fails `VALID_MODES.has` on line 126, and lines 124, 125 and 126 all return the same
+/-- Placing the deleted check `if (mode.length === 0) return { kind: 'invalid', raw };` in front
+of lines 124-126 changes nothing, whatever line 124 tests (`blank`): an empty mode fails
+`VALID_MODES.has` on line 125, and the deleted check, line 124 and line 125 all return the same
 `invalid`. -/
 theorem mode_check_redundant (raw : RawValue) (mode payload : String) (blank : Bool) :
     (if utf16Length mode == 0 then Decoded.invalid raw
@@ -606,31 +569,30 @@ theorem mode_check_redundant (raw : RawValue) (mode payload : String) (blank : B
     simp
   · rw [ite_eq_right hm]
 
-/-- `RedundantModeLengthCheck`: deleting line 124 changes no decoder result, whether or not the
-length disjunct of line 111 is kept. -/
-theorem redundant_mode_length_check : RedundantModeLengthCheck := by
-  intro keep111 raw
+/-- `EncodeEqOriginal`: deleting `payload.length === 0 ||` from line 82 changes no encoder result,
+error messages included (`redundant_length_disjunct`). -/
+theorem encode_eq_original : EncodeEqOriginal := by
+  intro mode payload
+  simp only [encodeCctActionValue, Original.encodeCctActionValue, redundant_length_disjunct]
+
+/-- `DecodeEqOriginal`: deleting `raw.length === 0 ||` from line 111
+(`redundant_length_disjunct`) and the check `mode.length === 0` (`mode_check_redundant`) changes
+no decoder result. -/
+theorem decode_eq_original : DecodeEqOriginal := by
+  intro raw
   cases raw with
   | nonString => rfl
   | str s =>
-    simp only [decodeVariant, Bool.false_and, Bool.true_and, Bool.false_eq_true, ↓reduceIte,
+    simp only [decodeCctActionValue, Original.decodeCctActionValue, redundant_length_disjunct,
       mode_check_redundant]
+    -- The two sides now differ only in the name of their auxiliary `match` function.
+    split <;> rfl
 
-/-- `RedundantPayloadLengthCheck`: deleting `payload.length === 0 ||` from line 82 changes no
-encoder result, error messages included. -/
-theorem redundant_payload_length_check : RedundantPayloadLengthCheck := by
-  intro mode payload
-  simp only [encodeVariant, Bool.false_and, Bool.false_or, Bool.true_and,
-    redundant_length_disjunct]
-
-/-- All three deletions at once: the decoder without the length disjunct of line 111 and without
-line 124, and the encoder without the length disjunct of line 82, return exactly what the TS
-returns now. -/
-theorem redundant_checks :
-    (∀ raw, decodeVariant false false raw = decodeCctActionValue raw) ∧
-      ∀ mode payload, encodeVariant false mode payload = encodeCctActionValue mode payload := by
-  refine ⟨fun raw => ?_, fun mode payload => ?_⟩
-  · rw [redundant_raw_length_check, redundant_mode_length_check, decode_variant_is_model]
-  · rw [redundant_payload_length_check, encode_variant_is_model]
+/-- `ReadEqOriginal`: `readCctActionPayload` returns what it returned before the deletions. -/
+theorem read_eq_original : ReadEqOriginal := by
+  intro raw
+  unfold readCctActionPayload Original.readCctActionPayload
+  rw [decode_eq_original raw]
+  cases Original.decodeCctActionValue raw <;> rfl
 
 end SomaVerify.CctActionValue.Proofs

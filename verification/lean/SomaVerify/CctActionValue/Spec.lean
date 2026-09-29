@@ -1,4 +1,5 @@
 import SomaVerify.CctActionValue.Model
+import SomaVerify.CctActionValue.ModelOriginal
 
 /-!
 # What the CCT button-value codec promises
@@ -7,8 +8,9 @@ The invariants its doc comments state, as propositions about the model. Each cit
 it formalizes as `path:line` and quotes it. `Proofs.lean` proves each one under the same name in
 snake case (`RoundTrip` as `round_trip`).
 
-The last section is not about the TS as written: it defines the simplifications the proofs
-allow, for the next phase, and states that they change no result.
+The last section compares the current functions with the ones in `ModelOriginal.lean`, the
+functions before three redundant checks were deleted, and states that the deletions change no
+result.
 -/
 
 namespace SomaVerify.CctActionValue.Spec
@@ -92,7 +94,7 @@ def EmptyPayloadInvalid : Prop :=
 
 /-- packages/slack/src/cct/action-value.ts:31, "`'cm:admin| '` (whitespace-only payload)", for
 every mode position without a separator and every payload that trims to empty (checked on
-packages/slack/src/cct/action-value.ts:125). -/
+packages/slack/src/cct/action-value.ts:124). -/
 def BlankPayloadInvalid : Prop :=
   ∀ mode payload, SEP ∉ mode.toList → jsTrim payload = "" →
     decodeCctActionValue (.str (wire mode payload)) = .invalid (.str (wire mode payload))
@@ -164,12 +166,12 @@ def TaggedImage : Prop :=
 
 /-! ## readCctActionPayload -/
 
-/-- packages/slack/src/cct/action-value.ts:132: "Returns null on `invalid`". The reader returns
+/-- packages/slack/src/cct/action-value.ts:131: "Returns null on `invalid`". The reader returns
 `null` exactly when the decoder returns `invalid`. -/
 def ReadNoneIff : Prop :=
   ∀ raw, readCctActionPayload raw = none ↔ decodeCctActionValue raw = .invalid raw
 
-/-- packages/slack/src/cct/action-value.ts:131-132: "pull the inner payload from a button value,
+/-- packages/slack/src/cct/action-value.ts:130-131: "pull the inner payload from a button value,
 regardless of `tagged` vs `legacy` form". The reader returns a payload exactly when the decoder
 returns it, tagged or legacy. -/
 def ReadSomeIff : Prop :=
@@ -177,75 +179,32 @@ def ReadSomeIff : Prop :=
     ((∃ mode, decodeCctActionValue raw = .tagged mode payload) ∨
       decodeCctActionValue raw = .legacy payload)
 
-/-! ## Simplification candidates (not the TS as written)
+/-! ## The simplification changes no result
 
-`decodeVariant keep111 keep124` is `decodeCctActionValue` with two checks made optional:
-`keep111` keeps `raw.length === 0 ||` on packages/slack/src/cct/action-value.ts:111, `keep124`
-keeps packages/slack/src/cct/action-value.ts:124 (`mode.length === 0`). `encodeVariant keep82`
-is `encodeCctActionValue` with `payload.length === 0 ||` on
-packages/slack/src/cct/action-value.ts:82 optional. The `true` instances are the model
-(`DecodeVariantIsModel`, `EncodeVariantIsModel`); the `Redundant*` propositions say that
-dropping a check changes no result, for any setting of the other. -/
+`Original.encodeCctActionValue`, `Original.decodeCctActionValue` and
+`Original.readCctActionPayload` (`ModelOriginal.lean`) are the functions before three checks
+were deleted: `payload.length === 0 ||` from packages/slack/src/cct/action-value.ts:82,
+`raw.length === 0 ||` from packages/slack/src/cct/action-value.ts:111, and
+`if (mode.length === 0) return { kind: 'invalid', raw };`, which stood between the current
+lines 123 and 124. Each proposition says the current function returns exactly what the earlier
+one returned, on every input: the same value, the same error message, the same `raw`. -/
 
-/-- `decodeCctActionValue` with the length disjunct of packages/slack/src/cct/action-value.ts:111
-and the check of packages/slack/src/cct/action-value.ts:124 optional. -/
-def decodeVariant (keep111 keep124 : Bool) : RawValue → Decoded
-  | .nonString => .invalid .nonString
-  | .str raw =>
-    if (keep111 && utf16Length raw == 0) || utf16Length (jsTrim raw) == 0 then .invalid (.str raw)
-    else if !jsStartsWith raw PREFIX then .legacy raw
-    else
-      let tail := raw.toList.drop PREFIX.length
-      match indexOfSep tail with
-      | none => .invalid (.str raw)
-      | some sepIdx =>
-        let mode := String.ofList (tail.take sepIdx)
-        let payload := String.ofList (tail.drop (sepIdx + 1))
-        if keep124 && utf16Length mode == 0 then .invalid (.str raw)
-        else if utf16Length (jsTrim payload) == 0 then .invalid (.str raw)
-        else if !VALID_MODES.contains mode then .invalid (.str raw)
-        else .tagged mode payload
+/-- The encoder without `payload.length === 0 ||` on packages/slack/src/cct/action-value.ts:82
+behaves as before: `payload.trim().length === 0` already holds for the empty payload, and both
+disjuncts threw the same message. -/
+def EncodeEqOriginal : Prop :=
+  ∀ mode payload, encodeCctActionValue mode payload = Original.encodeCctActionValue mode payload
 
-/-- `encodeCctActionValue` with the length disjunct of packages/slack/src/cct/action-value.ts:82
-optional. -/
-def encodeVariant (keep82 : Bool) (mode payload : String) : Except String String :=
-  if !VALID_MODES.contains mode then
-    .error ("encodeCctActionValue: unknown mode " ++ jsonStringify mode)
-  else if (keep82 && utf16Length payload == 0) || utf16Length (jsTrim payload) == 0 then
-    .error "encodeCctActionValue: payload must be a non-empty, non-whitespace string"
-  else
-    let encoded := PREFIX ++ mode ++ SEP.toString ++ payload
-    if utf16Length encoded > SLACK_BUTTON_VALUE_MAX then
-      .error ("encodeCctActionValue: encoded value " ++ toString (utf16Length encoded) ++
-        " chars exceeds Slack cap " ++ toString SLACK_BUTTON_VALUE_MAX)
-    else
-      .ok encoded
+/-- The decoder without `raw.length === 0 ||` on packages/slack/src/cct/action-value.ts:111 and
+without the check `mode.length === 0` behaves as before: the empty string trims to the empty
+string, and an empty mode fails `VALID_MODES.has` on packages/slack/src/cct/action-value.ts:125,
+which returns the same `{ kind: 'invalid', raw }`. -/
+def DecodeEqOriginal : Prop :=
+  ∀ raw, decodeCctActionValue raw = Original.decodeCctActionValue raw
 
-/-- With every check kept, `decodeVariant` is the model, so the propositions below are about the
-TS as written. -/
-def DecodeVariantIsModel : Prop :=
-  ∀ raw, decodeVariant true true raw = decodeCctActionValue raw
-
-/-- With the check kept, `encodeVariant` is the model. -/
-def EncodeVariantIsModel : Prop :=
-  ∀ mode payload, encodeVariant true mode payload = encodeCctActionValue mode payload
-
-/-- packages/slack/src/cct/action-value.ts:111: `raw.length === 0` is implied by
-`raw.trim().length === 0`, so dropping it changes no result. -/
-def RedundantRawLengthCheck : Prop :=
-  ∀ keep124 raw, decodeVariant false keep124 raw = decodeVariant true keep124 raw
-
-/-- packages/slack/src/cct/action-value.ts:124: an empty mode fails `VALID_MODES.has` on
-packages/slack/src/cct/action-value.ts:126, which returns the same `{ kind: 'invalid', raw }` (as
-does the payload check of line 125 in between, whatever it tests), so dropping the check changes
-no result. -/
-def RedundantModeLengthCheck : Prop :=
-  ∀ keep111 raw, decodeVariant keep111 false raw = decodeVariant keep111 true raw
-
-/-- packages/slack/src/cct/action-value.ts:82: `payload.length === 0` is implied by
-`payload.trim().length === 0`, and both throw the same message, so dropping it changes no
-result. Strings only: the `typeof payload !== 'string'` disjunct before it stays. -/
-def RedundantPayloadLengthCheck : Prop :=
-  ∀ mode payload, encodeVariant false mode payload = encodeVariant true mode payload
+/-- `readCctActionPayload` (packages/slack/src/cct/action-value.ts:137-141, unchanged) calls the
+decoder, so it behaves as before as well. -/
+def ReadEqOriginal : Prop :=
+  ∀ raw, readCctActionPayload raw = Original.readCctActionPayload raw
 
 end SomaVerify.CctActionValue.Spec
