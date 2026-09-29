@@ -71,7 +71,7 @@ inductive Reaches (g : Graph) (r : Nat) : Nat → Prop where
   | refl : Reaches g r r
   | step {u v : Nat} : Reaches g r u → ⟨u, v⟩ ∈ g.edges → Reaches g r v
 
-/-- CLAUDE.md:99: "`src/cli/`가 import하는 모듈은 **module load 시 부수효과가 없어야** 한다.
+/-- CLAUDE.md:102: "`src/cli/`가 import하는 모듈은 **module load 시 부수효과가 없어야** 한다.
 `@soma/common/env-paths`는 로드 시 `git`을 실행하고 배너를 출력하므로, 순수 리졸버는
 `@soma/common/soma-paths`에 있다. 여기서 실수하면 `--json` 첫 바이트가 배너가 된다." (Modules the
 controller CLI imports must not have load-time side effects; env-paths runs `git` and prints a

@@ -11,6 +11,7 @@ vectors; vitest replays the vectors against the TypeScript (`npm run test:releas
 | The model has property P | a theorem in `lean/SomaVerify/<Module>/`, checked by Lean's kernel on standard axioms only | proven |
 | The TS function behaves like the model | `vectors/<module>.json` replayed against the real exported function by a `*.lean-conformance.test.ts` | tested, on the vector domain |
 | The vectors are the model's current output | the CI job **Lean Verify** regenerates them and fails on any difference | checked on pushes to `main` and same-repository PRs |
+| Every production file obeys a structural rule (layering, what the CLI and the MCP servers load) | an `ImportGraph` theorem over the graph the extractor writes from the checked-out sources | proven over that graph; the extractor is trusted |
 
 - Lean proves properties of a **model**, a Lean transcription of a TypeScript function. The model
   generates **conformance vectors** (inputs and its outputs), committed under
@@ -39,6 +40,20 @@ Trusted or tested, not proven:
 The gate is not a sandbox: a same-repository PR can edit the gate script itself, and a Lean
 module can run IO while it builds. It relies on the same fork guard and code review as `ci.yml`.
 
+## Whole-code layer: the import graph
+
+Besides the per-module models, `SomaVerify/ImportGraph/` proves facts about every production
+TypeScript file at once. Stage 0 of the gate runs `scripts/verification/extract-import-graph.cjs`,
+which compiles the repository with its own TypeScript and writes the runtime import graph (one node
+per production file `git ls-files` lists, one edge per emitted `require`) to
+`ImportGraph/Generated.lean`, gitignored and rebuilt on every run. The kernel then checks, over
+that graph: `rules/packaging.md` rule 4 layering (`repo_respects_rule4`), that neither the
+controller CLI nor any stdio MCP server loads an env-paths module (`cli_never_loads_env_paths`,
+`mcp_servers_never_load_env_paths`), and that the graph covers every production file
+(`repo_covered`). The extractor is trusted, not verified; `ImportGraph/Spec.lean` states what it
+guarantees. `verification/LEDGER.md` (written by `scripts/verification/ledger.cjs`) records, per
+production file, whether it also has a semantic model (`T2`) or only these theorems (`T1`).
+
 ## Method
 
 Verification-guided development as AWS describes it for Cedar ("How We Built Cedar: A
@@ -53,8 +68,11 @@ verification/
     lean-toolchain        pinned toolchain; lakefile.toml builds SomaVerify/** by glob
     SomaVerify/Support/   shared helpers: Json (serializer), JsString (JS semantics), Vectors (file format)
     SomaVerify/<Module>/  one folder per verified module
+    SomaVerify/ImportGraph/  whole-code theorems; Generated.lean is written by the extractor
   vectors/<module>.json   generated, committed, drift-checked in CI
+  LEDGER.md               per production file: T2 (semantic model) or T1 (import-graph theorems)
 scripts/verification/lean-verify.sh   the gate, locally and in CI
+scripts/verification/extract-*.cjs    stage 0: generated Lean data (the import graph)
 ```
 
 ## Adding a module
