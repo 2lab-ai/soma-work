@@ -16,7 +16,9 @@ import * as os from 'os';
 import * as path from 'path';
 import { normalizeTmpPath } from './path-utils';
 
-const HOME = os.homedir();
+// Written the way normalizePath writes checked paths (/private/tmp as /tmp), or the tables below
+// could never match them.
+const HOME = normalizeTmpPath(os.homedir());
 
 /** Directories where any path underneath is blocked. */
 const SENSITIVE_DIRECTORIES: ReadonlyArray<string> = [
@@ -50,12 +52,16 @@ const SENSITIVE_SERVICE_CONFIGS: ReadonlyArray<{ dir: string; files: ReadonlyArr
   { dir: '/opt/soma', files: ['.env', 'config.json'] },
 ];
 
+/** Shell spellings of the home directory; normalizePath expands each of them like `~`. */
+const HOME_ALIASES: ReadonlyArray<string> = ['~', '$HOME', `\${HOME}`];
+
 // Regexes for extracting file paths from bash commands — hoisted to avoid per-call recompilation.
+// A captured path may start with a HOME_ALIASES spelling, which normalizePath expands.
 const RE_READ_COMMANDS =
-  /\b(?:cat|head|tail|less|more|bat|xxd|hexdump|strings|base64|nano|vi|vim|code|open)\b[^|;&]*?((?:\/[\w.\-~]+)+(?:\/[\w.\-~*]+)?)/g;
-const RE_INPUT_REDIRECT = /<\s*((?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
-const RE_COPY_COMMANDS = /\b(?:cp|mv|rsync)\b[^|;&]*?\s+((?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)\s/g;
-const RE_SOURCE_CMD = /\b(?:source|\.)\s+((?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
+  /\b(?:cat|head|tail|less|more|bat|xxd|hexdump|strings|base64|nano|vi|vim|code|open)\b[^|;&]*?((?:~|\$HOME|\$\{HOME\})?(?:\/[\w.\-~]+)+(?:\/[\w.\-~*]+)?)/g;
+const RE_INPUT_REDIRECT = /<\s*((?:~|\$HOME|\$\{HOME\})?(?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
+const RE_COPY_COMMANDS = /\b(?:cp|mv|rsync)\b[^|;&]*?\s+((?:~|\$HOME|\$\{HOME\})?(?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)\s/g;
+const RE_SOURCE_CMD = /\b(?:source|\.)\s+((?:~|\$HOME|\$\{HOME\})?(?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
 
 export interface SensitivePathResult {
   readonly isSensitive: boolean;
@@ -137,10 +143,21 @@ function extractPathsFromCommand(command: string): string[] {
 
 function normalizePath(filePath: string): string {
   let normalized = filePath;
-  if (normalized.startsWith('~/')) {
-    normalized = path.join(HOME, normalized.slice(2));
-  } else if (normalized === '~') {
-    normalized = HOME;
+  for (const alias of HOME_ALIASES) {
+    if (normalized.startsWith(alias + '/')) {
+      normalized = path.join(HOME, normalized.slice(alias.length + 1));
+      break;
+    }
+    if (normalized === alias) {
+      normalized = HOME;
+      break;
+    }
+  }
+  // Resolve `.`, `..` and empty segments of an absolute path (`..` at the root stays there), so
+  // every spelling of a path is checked as that path. This runs before the /private/tmp mapping:
+  // resolving after it would let `//private/tmp/x` through as `/private/tmp/x`, unmapped.
+  if (normalized.startsWith('/')) {
+    normalized = path.posix.normalize(normalized);
   }
   normalized = normalizeTmpPath(normalized);
   return normalized.replace(/\/+$/, '');
