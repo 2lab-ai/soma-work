@@ -11,7 +11,7 @@ The documented behaviour as propositions over address numbers (IPv4 below 2^32, 
 
 `ipv4Special` and `ipv6Special` (Model.lean) transcribe the IANA special-purpose registries
 vendored in `verification/iana/`. The TS holds the same rows as text, in the exported
-`IPV4_SPECIAL_PURPOSE` and `IPV6_SPECIAL_PURPOSE` (ts:37-93). Both copies come from the same
+`IPV4_SPECIAL_PURPOSE` and `IPV6_SPECIAL_PURPOSE` (ts:36-92). Both copies come from the same
 vendored CSV files (fetched 2026-09-29), in registry order, footnote markers dropped, with the one
 row that lists two blocks split in two. Three checks tie them together:
 
@@ -23,7 +23,7 @@ row that lists two blocks split in two. Three checks tie them together:
   row fails there directly.
 * The conformance vectors probe the first and last address of every row, and the neighbour on
   each side, in both families (dotted quads, compressed IPv6 as the engine writes it, bracketed),
-  against the real `isBlockedIp`. TS `parseBlock` (ts:170-178) parses the TS copy when the module
+  against the real `isBlockedIp`. TS `parseBlock` (ts:169-177) parses the TS copy when the module
   loads, and a row it parses differently changes a verdict at one of those addresses.
 
 The spec reads the tables; it does not re-derive them. The theorems (Proofs.lean) show that the TS
@@ -43,15 +43,15 @@ def Mem (bits : Nat) (block : Block) (address : Nat) : Prop :=
 
 /-! ## Addresses -/
 
-/-- (i) ts:201-203: "the most specific block containing `address` decides, and it blocks unless it
-says "Globally Reachable: True" (so N/A and the empty cell fail closed)". Stated without an
-algorithm: some block containing the address is not `True`, and no more specific block containing
-it says `True`. -/
+/-- (i) ts:201-202: "blocked when a block containing `address` is not "Globally Reachable: True" (N/A
+and the empty cell fail closed) and no more specific block containing it is". Stated over address
+ranges: some block containing the address is not `True`, and no more specific block containing it
+says `True`. -/
 def RegistryBlocked (bits : Nat) (registry : List RegistryBlock) (address : Nat) : Prop :=
   ∃ r ∈ registry, Mem bits r.toBlock address ∧ r.reach ≠ .yes ∧
     ∀ r' ∈ registry, Mem bits r'.toBlock address → r.len < r'.len → r'.reach ≠ .yes
 
-/-- ts:95: "IPv4 multicast (RFC 5771): blocked although the registry does not list it" —
+/-- ts:94: "IPv4 multicast (RFC 5771): blocked although the registry does not list it" —
 224.0.0.0/4. -/
 def ipv4Multicast : Block := ⟨"224.0.0.0/4", 0xe0000000, 4⟩
 
@@ -60,16 +60,16 @@ endpoints blocked". For IPv4 that is rule (i) on the IPv4 registry, plus multica
 def Blocked4 (address : Nat) : Prop :=
   RegistryBlocked 32 ipv4Special address ∨ Mem 32 ipv4Multicast address
 
-/-- ts:99: "2000::/3, the only "Global Unicast" allocation of the IANA IPv6 Address Space
+/-- ts:98: "2000::/3, the only "Global Unicast" allocation of the IANA IPv6 Address Space
 registry". -/
 def globalUnicast : Block := ⟨"2000::/3", 0x20000000000000000000000000000000, 3⟩
 
-/-- ts:107: "NAT64 well-known prefix (RFC 6052), outside 2000::/3 and "Globally Reachable: True". It
+/-- ts:106: "NAT64 well-known prefix (RFC 6052), outside 2000::/3 and "Globally Reachable: True". It
 carries an IPv4 address in its low 32 bits". -/
 def nat64 : Block := ⟨"64:ff9b::/96", 0x0064ff9b000000000000000000000000, 96⟩
 
-/-- ts:100-102: "IPv6 outside it is blocked, NAT64 aside ... Inside it, the special-purpose
-registry decides"; ts:107-108: NAT64 "is blocked when that address is". An IPv6 address is allowed
+/-- ts:99-101: "IPv6 outside it is blocked, NAT64 aside ... Inside it, the special-purpose
+registry decides"; ts:106-107: NAT64 "is blocked when that address is". An IPv6 address is allowed
 iff it is in 2000::/3 and the most specific registry row containing it, if any, says `True` (no
 `RegistryBlocked`), or it is in 64:ff9b::/96 and the IPv4 address in its low 32 bits is allowed. -/
 def Allowed6 (address : Nat) : Prop :=
@@ -80,7 +80,7 @@ def Allowed6 (address : Nat) : Prop :=
 def Blocked6 (address : Nat) : Prop :=
   ¬ Allowed6 address
 
-/-- ts:101-102: "that covers ::, ::1, IPv4-compatible and IPv4-mapped addresses, fc00::/7,
+/-- ts:100-101: "that covers ::, ::1, IPv4-compatible and IPv4-mapped addresses, fc00::/7,
 fe80::/10, fec0::/10, ff00::/8". The blocks the old code, the brief and the registries name as not
 reachable, listed to state that the rule blocks all of them without a table entry of its own. -/
 def coveredOutsideGlobalUnicast : List Block := [
@@ -94,7 +94,7 @@ def coveredOutsideGlobalUnicast : List Block := [
 /-- 6to4, 2002::/16 (RFC 3056): inside 2000::/3, blocked by its registry row (`N/A`). -/
 def sixToFour : Block := ⟨"2002::/16", 0x20020000000000000000000000000000, 16⟩
 
-/-- ts:251-253: "Check if a hostname is a blocked IP address ... IPv6 brackets are allowed. A
+/-- ts:247-249: "Check if a hostname is a blocked IP address ... IPv6 brackets are allowed. A
 hostname that is not an IP address is not blocked here; text with a ':' that does not parse counts
 as an unreadable IPv6 literal and is blocked."
 
@@ -108,7 +108,7 @@ unfold it explicitly. -/
     | some ipv6 => Blocked6 ipv6
     | none => (stripBrackets hostname).toList.contains ':' = true
 
-/-- ts:358: "An answer that is not an IP address cannot be checked, so it blocks too (fail
+/-- ts:350: "An answer that is not an IP address cannot be checked, so it blocks too (fail
 closed)." A resolver answer is safe iff it is an address the spec does not block. -/
 def AnswerSafe (answer : String) : Prop :=
   match parseIpv4 (stripBrackets answer) with
@@ -120,45 +120,45 @@ def AnswerSafe (answer : String) : Prop :=
 
 /-! ## URLs -/
 
-/-- ts:5: "1. Only HTTPS URLs allowed"; ts:287: "HTTPS only". -/
+/-- ts:5: "1. Only HTTPS URLs allowed"; ts:283: "HTTPS only". -/
 def HttpsOnly : Prop :=
   ∀ url : ParsedUrl, url.protocol ≠ "https:" →
     validateWebhookUrl (some url) = .invalid "HTTPS URL만 등록 가능합니다."
 
-/-- ts:292: "Blocked hostnames — strip trailing dots (FQDN normalization: `localhost.` →
-`localhost`)"; ts:260: "lower-cased, every trailing dot stripped". -/
+/-- ts:288: "Blocked hostnames — strip trailing dots (FQDN normalization: `localhost.` →
+`localhost`)"; ts:256: "lower-cased, every trailing dot stripped". -/
 def BlockedNamesRejected : Prop :=
   ∀ url : ParsedUrl, url.protocol = "https:" →
     checkedHostname url.hostname ∈ blockedHostnames →
       validateWebhookUrl (some url) = .invalid "내부 네트워크 주소는 등록할 수 없습니다."
 
-/-- ts:260: "every trailing dot stripped": the checked hostname never ends in a dot. -/
+/-- ts:256: "every trailing dot stripped": the checked hostname never ends in a dot. -/
 def NoTrailingDot : Prop :=
   ∀ hostname : String, (checkedHostname hostname).toList.getLast? ≠ some '.'
 
-/-- ts:294: "A host made only of dots leaves nothing to check": such an https URL is rejected as
+/-- ts:290: "A host made only of dots leaves nothing to check": such an https URL is rejected as
 malformed. -/
 def EmptyHostRejected : Prop :=
   ∀ url : ParsedUrl, url.protocol = "https:" → checkedHostname url.hostname = "" →
     validateWebhookUrl (some url) = .invalid "올바른 URL 형식이 아닙니다."
 
-/-- ts:303: "Blocked IP ranges": an https URL whose hostname is a blocked address is rejected. -/
+/-- ts:299: "Blocked IP ranges": an https URL whose hostname is a blocked address is rejected. -/
 def BlockedAddressesRejected : Prop :=
   ∀ url : ParsedUrl, url.protocol = "https:" →
     HostnameBlocked (checkedHostname url.hostname) →
       validateWebhookUrl (some url) = .invalid "내부 네트워크 주소는 등록할 수 없습니다."
 
-/-- ts:332-333: "The hostname the first pass examined, without IPv6 brackets: net.isIP and the
-resolvers take a bare address or name"; ts:336: "Skip DNS resolution for IP literals — already
-checked by isBlockedIp". An IP-literal URL gets the first pass's verdict, whatever DNS would say,
+/-- ts:327: "Skip DNS resolution for IP literals — already checked by isBlockedIp, which let this
+one through"; ts:330: "The resolvers take the hostname the first pass examined, without IPv6
+brackets". An IP-literal URL gets the first pass's verdict, whatever DNS would say,
 and the resolvers are not called. -/
 def IpLiteralsSkipDns : Prop :=
   ∀ (url : ParsedUrl) (answers4 answers6 : List String),
     isIpLiteral (stripBrackets (checkedHostname url.hostname)) = true →
       validateWebhookUrlWithDns (some url) answers4 answers6 = (validateWebhookUrl (some url), none)
 
-/-- ts:8: "4. DNS resolution validates resolved IPs (anti-rebinding)"; ts:314: "Resolves the
-hostname and checks all returned IPs against blocked ranges"; ts:358 (unreadable answers block).
+/-- ts:8: "4. DNS resolution validates resolved IPs (anti-rebinding)"; ts:310: "Resolves the
+hostname and checks all returned IPs against blocked ranges"; ts:350 (unreadable answers block).
 Whenever the resolvers are called, the URL is accepted iff they answered something and every answer
 is safe. -/
 def ResolvedIpsChecked : Prop :=
@@ -167,7 +167,7 @@ def ResolvedIpsChecked : Prop :=
       ((validateWebhookUrlWithDns url answers4 answers6).1 = .valid ↔
         (answers4 ++ answers6 ≠ [] ∧ ∀ ip ∈ answers4 ++ answers6, AnswerSafe ip))
 
-/-- ts:332-334 with ts:260: the resolvers get the hostname the first pass examined, lower-cased,
+/-- ts:330-331 with ts:256: the resolvers get the hostname the first pass examined, lower-cased,
 without its trailing dots and without IPv6 brackets. -/
 def ResolversGetCheckedHostname : Prop :=
   ∀ (url : ParsedUrl) (answers4 answers6 : List String) (queried : String),

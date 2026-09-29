@@ -198,7 +198,10 @@ describe('webhook-ssrf Lean conformance vectors', () => {
     expect(mismatches).toEqual([]);
   });
 
-  it('agree with net.isIP on which hostnames are IP literals (premise)', () => {
+  // The DNS pass used to ask net.isIP whether the hostname is an IP literal; it now uses the first
+  // pass's own classification, which the Lean theorem validateWebhookUrlWithDns_eq_original proves
+  // equal to `ipLiteral` below. This test keeps the other half: net.isIP agreed on every URL here.
+  it('agree with net.isIP, which the DNS pass asked before, on which hostnames are IP literals', () => {
     const mismatches = urlCases
       .filter((c) => c.dnsHost !== undefined && (net.isIP(c.dnsHost) !== 0) !== c.ipLiteral)
       .map((c) => `${JSON.stringify(c.dnsHost)}: model ${c.ipLiteral}`);

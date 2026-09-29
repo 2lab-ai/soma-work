@@ -1,26 +1,26 @@
--- models: src/webhook-url-validator.ts:24 (GloballyReachable)
--- models: src/webhook-url-validator.ts:37-64 (IPV4_SPECIAL_PURPOSE)
--- models: src/webhook-url-validator.ts:67-93 (IPV6_SPECIAL_PURPOSE)
--- models: src/webhook-url-validator.ts:96 (IPV4_ALSO_BLOCKED)
--- models: src/webhook-url-validator.ts:104, 110 (IPV6_GLOBAL_UNICAST_CIDR, NAT64_WELL_KNOWN_CIDR)
--- models: src/webhook-url-validator.ts:113-124 (parseIpv4)
--- models: src/webhook-url-validator.ts:130-146 (parseGroups)
--- models: src/webhook-url-validator.ts:152-162 (parseIpv6)
--- models: src/webhook-url-validator.ts:164-167, 185-187 (Block, RegistryBlock)
--- models: src/webhook-url-validator.ts:170-178, 189-199 (parseBlock and the parsed tables)
--- models: src/webhook-url-validator.ts:180-183 (inBlock)
--- models: src/webhook-url-validator.ts:205-215 (registryBlocks)
--- models: src/webhook-url-validator.ts:217-219 (isBlockedIpv4)
--- models: src/webhook-url-validator.ts:225-228 (isBlockedIpv6)
--- models: src/webhook-url-validator.ts:231-233 (stripBrackets)
--- models: src/webhook-url-validator.ts:240-248 (ipVerdict)
--- models: src/webhook-url-validator.ts:255-257 (isBlockedIp)
--- models: src/webhook-url-validator.ts:263-268 (checkedHostname)
--- models: src/webhook-url-validator.ts:279-310 (validateWebhookUrl)
--- models: src/webhook-url-validator.ts:326-367 (validateWebhookUrlWithDns; the resolvers' answers
+-- models: src/webhook-url-validator.ts:23 (GloballyReachable)
+-- models: src/webhook-url-validator.ts:36-63 (IPV4_SPECIAL_PURPOSE)
+-- models: src/webhook-url-validator.ts:66-92 (IPV6_SPECIAL_PURPOSE)
+-- models: src/webhook-url-validator.ts:95 (IPV4_ALSO_BLOCKED)
+-- models: src/webhook-url-validator.ts:103, 109 (IPV6_GLOBAL_UNICAST_CIDR, NAT64_WELL_KNOWN_CIDR)
+-- models: src/webhook-url-validator.ts:112-123 (parseIpv4)
+-- models: src/webhook-url-validator.ts:129-145 (parseGroups)
+-- models: src/webhook-url-validator.ts:151-161 (parseIpv6)
+-- models: src/webhook-url-validator.ts:163-166, 184-186 (Block, RegistryBlock)
+-- models: src/webhook-url-validator.ts:169-177, 188-198 (parseBlock and the parsed tables)
+-- models: src/webhook-url-validator.ts:179-182 (inBlock)
+-- models: src/webhook-url-validator.ts:204-211 (registryBlocks)
+-- models: src/webhook-url-validator.ts:213-215 (isBlockedIpv4)
+-- models: src/webhook-url-validator.ts:221-224 (isBlockedIpv6)
+-- models: src/webhook-url-validator.ts:227-229 (stripBrackets)
+-- models: src/webhook-url-validator.ts:236-244 (ipVerdict)
+-- models: src/webhook-url-validator.ts:251-253 (isBlockedIp)
+-- models: src/webhook-url-validator.ts:259-264 (checkedHostname)
+-- models: src/webhook-url-validator.ts:275-306 (validateWebhookUrl)
+-- models: src/webhook-url-validator.ts:322-359 (validateWebhookUrlWithDns; the resolvers' answers
 --         are inputs)
 -- models: src/webhook-url-validator.ts:21-29, 34-73 at commit 60d74c71 (the replaced
---         isPrivateIpv4 and isBlockedIp; section `Original`, for the no-regression theorems)
+--         isPrivateIpv4 and isBlockedIp; section `Legacy`, for the no-regression theorems)
 
 import SomaVerify.Support.Json
 
@@ -148,20 +148,13 @@ def nat64WellKnown : Block := ⟨"64:ff9b::/96", 0x0064ff9b000000000000000000000
 def Block.contains (bits : Nat) (block : Block) (address : Nat) : Bool :=
   address >>> (bits - block.len) == block.base >>> (bits - block.len)
 
-/-- The `for (const block of registry)` loop of TS `registryBlocks`, from the state
-`(bestLength, blocked)`. -/
-def registryLoop (address bits : Nat) : List RegistryBlock → Int → Bool → Bool
-  | [], _, blocked => blocked
-  | block :: rest, bestLength, blocked =>
-    if decide ((block.len : Int) > bestLength) && block.toBlock.contains bits address then
-      registryLoop address bits rest block.len (block.reach != .yes)
-    else
-      registryLoop address bits rest bestLength blocked
-
-/-- TS `registryBlocks`: the most specific block containing `address` decides; it blocks unless
-it says `True`. `bestLength = -1, blocked = false` before the loop. -/
+/-- TS `registryBlocks`: blocked when a block containing `address` is not `True` and no more
+specific block containing it is. `containing` is `registry.filter(...)`; `any` is `some`. -/
 def registryBlocks (address : Nat) (registry : List RegistryBlock) (bits : Nat) : Bool :=
-  registryLoop address bits registry (-1) false
+  let containing := registry.filter fun block => block.toBlock.contains bits address
+  containing.any fun block =>
+    block.reach != .yes &&
+      !containing.any fun other => decide (other.len > block.len) && other.reach == .yes
 
 /-- TS `isBlockedIpv4`. -/
 def isBlockedIpv4 (address : Nat) : Bool :=
@@ -331,16 +324,19 @@ def validateWebhookUrl : Option ParsedUrl → Validation
       else if isBlockedIp hostname then .invalid "내부 네트워크 주소는 등록할 수 없습니다."
       else .valid
 
-/-- `net.isIP(hostname) !== 0`. Node's `net.isIP` is trusted, not modeled: on the hostnames the
-URL parser produces it agrees with this model's parsers, which the URL vectors check case by
-case against the engine. -/
+/-- `net.isIP(hostname) !== 0`, which the DNS pass asked before the simplification
+(`Original.validateWebhookUrlWithDns`). Node's `net.isIP` is trusted, not modeled: on the hostnames
+the URL parser produces it agrees with this model's parsers, which the URL vectors check case by
+case against the engine. `Spec.IpLiteralsSkipDns` states the documented behaviour with it. -/
 def isIpLiteral (hostname : String) : Bool :=
   (parseIpv4 hostname).isSome || (parseIpv6 hostname).isSome
 
 /-- TS `validateWebhookUrlWithDns`, with DNS as input: `answers4` and `answers6` are what
 `dns.resolve4(hostname)` and `dns.resolve6(hostname)` yield, a rejection being `[]` as the TS
 `.catch` makes it. An answer that is not an address blocks, like a blocked one. The second
-component is the hostname the resolvers are called with, `none` when they are not called. -/
+component is the hostname the resolvers are called with, `none` when they are not called. An IP
+literal is recognised by the first pass's own classification, `ipVerdict(checked) === false`
+(`Original.validateWebhookUrlWithDns`, the version before, asked Node's `net.isIP`). -/
 def validateWebhookUrlWithDns (url : Option ParsedUrl) (answers4 answers6 : List String) :
     Validation × Option String :=
   match validateWebhookUrl url with
@@ -349,9 +345,10 @@ def validateWebhookUrlWithDns (url : Option ParsedUrl) (answers4 answers6 : List
     match url with
     | none => (.valid, none)
     | some url =>
-      let hostname := stripBrackets (checkedHostname url.hostname)
-      if isIpLiteral hostname then (.valid, none)
+      let checked := checkedHostname url.hostname
+      if ipVerdict checked == some false then (.valid, none)
       else
+        let hostname := stripBrackets checked
         let allIps := answers4 ++ answers6
         if allIps.isEmpty then (.invalid "DNS 확인 실패: 호스트를 찾을 수 없습니다.", some hostname)
         else if allIps.any (fun ip => ipVerdict ip != some false) then
@@ -409,12 +406,14 @@ def serializePieces (compress : Option Nat) : List Nat → Nat → Bool → Stri
 def render6 (n : Nat) : String :=
   serializePieces (compressAt (pieces n)) (pieces n) 0 false
 
-/-! ## Original
+/-! ## Legacy
 
-The code this change replaces (src/webhook-url-validator.ts at commit 60d74c71), on the text the
-engine writes for an address. Only the no-regression theorems use it. -/
+The code the security fix replaced (src/webhook-url-validator.ts at commit 60d74c71), on the text
+the engine writes for an address: the "original code" of the no-regression theorems
+(`original_blocked4_still_blocked`, `original_blocked6_still_blocked`). Only those use it. (Namespace
+`Original` is the model before the proof-backed simplification, in `ModelOriginal.lean`.) -/
 
-namespace Original
+namespace Legacy
 
 /-- `isPrivateIpv4(a, b)` at 60d74c71, lines 21-29. -/
 def isPrivateIpv4 (a b : Nat) : Bool :=
@@ -452,6 +451,6 @@ def blocked6 (n : Nat) : Bool :=
   else if n / 2 ^ 32 == 0xffff then isPrivateIpv4 ((hi >>> 8) &&& 0xff) (hi &&& 0xff)
   else first != 0 && prefixHit (hexText first ++ [':'])
 
-end Original
+end Legacy
 
 end SomaVerify.WebhookSsrf

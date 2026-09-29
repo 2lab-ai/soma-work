@@ -9,7 +9,6 @@
  */
 
 import { promises as dns } from 'node:dns';
-import net from 'node:net';
 import { Logger } from './logger.js';
 
 const logger = new Logger('WebhookUrlValidator');
@@ -199,19 +198,16 @@ const IPV6_GLOBAL_UNICAST = parseBlock(IPV6_GLOBAL_UNICAST_CIDR, 128);
 const NAT64_WELL_KNOWN = parseBlock(NAT64_WELL_KNOWN_CIDR, 128);
 
 /**
- * Registry verdict: the most specific block containing `address` decides, and it blocks unless it
- * says "Globally Reachable: True" (so N/A and the empty cell fail closed). No block, no verdict.
+ * Registry verdict: blocked when a block containing `address` is not "Globally Reachable: True" (N/A
+ * and the empty cell fail closed) and no more specific block containing it is. No block, no verdict.
  */
 function registryBlocks(address: bigint, registry: readonly RegistryBlock[], bits: number): boolean {
-  let bestLength = -1;
-  let blocked = false;
-  for (const block of registry) {
-    if (block.length > bestLength && inBlock(address, block, bits)) {
-      bestLength = block.length;
-      blocked = block.globallyReachable !== 'True';
-    }
-  }
-  return blocked;
+  const containing = registry.filter((block) => inBlock(address, block, bits));
+  return containing.some(
+    (block) =>
+      block.globallyReachable !== 'True' &&
+      !containing.some((other) => other.length > block.length && other.globallyReachable === 'True'),
+  );
 }
 
 function isBlockedIpv4(address: bigint): boolean {
@@ -328,15 +324,11 @@ export async function validateWebhookUrlWithDns(raw: string): Promise<WebhookUrl
   const staticCheck = validateWebhookUrl(raw);
   if (!staticCheck.valid) return staticCheck;
 
-  const parsed = new URL(raw);
-  // The hostname the first pass examined, without IPv6 brackets: net.isIP and the resolvers
-  // take a bare address or name.
-  const hostname = stripBrackets(checkedHostname(parsed));
-
-  // Skip DNS resolution for IP literals — already checked by isBlockedIp
-  if (net.isIP(hostname) !== 0) {
-    return { valid: true };
-  }
+  // Skip DNS resolution for IP literals — already checked by isBlockedIp, which let this one through
+  const checked = checkedHostname(new URL(raw));
+  if (ipVerdict(checked) === false) return { valid: true };
+  // The resolvers take the hostname the first pass examined, without IPv6 brackets
+  const hostname = stripBrackets(checked);
 
   // Resolve DNS and validate all returned IPs
   const [ipv4s, ipv6s] = await Promise.all([
