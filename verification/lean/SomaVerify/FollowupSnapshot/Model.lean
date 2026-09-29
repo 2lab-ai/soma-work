@@ -44,11 +44,19 @@ namespace SomaVerify.FollowupSnapshot
 
 open SomaVerify.JsString
 
-/-- A JavaScript Number (ECMA-262 section 6.1.6.1), described by what the gate can observe of
-it. `dec neg m k` is the finite value `(-1)^neg * m / 10^k`, i.e. the Number a decimal literal
-denotes; `dec true 0 0` is -0. The conformance vectors only use literals whose binary64 value has
-the same integrality, sign and magnitude class as the decimal (small integers, 2^53 - 1, 2^53,
-halves), so the decimal reading and the engine's reading agree on every predicate below. -/
+/-- A JavaScript Number (ECMA-262 section 6.1.6.1), by its value. `dec neg m k` is the exact
+decimal `(-1)^neg * m / 10^k`, and the predicates below judge that exact value: no binary64
+rounding, overflow or underflow is modeled. `dec true 0 k` is -0.
+
+A `dec` corresponds to a JS Number exactly when that Number's value equals the decimal (the sign
+too, for a zero), and every finite Number has such a `dec`: its value is `c * 2^e` for integers
+`c` and `e ≥ -1074`, which is `c * 5^(-e) / 10^(-e)` when `e < 0`. A `dec` that is no Number's
+value (`1.0000000000000001`, `10^400`) corresponds to no Number; `isNumberValue` tells the two
+kinds apart. The gate's inputs
+are values `JSON.parse` produced (see above), so a literal the parser rounds is represented by the
+Number it rounds to, not by its text: the literal `1.0000000000000001` in a file is the Number 1,
+a `dec` whose value is 1, and `1e400` is `posInf`. The conformance vectors carry Number values
+only: their generator refuses a document with any other `dec` (`Vectors.lean`). -/
 inductive JsNum where
   | dec (neg : Bool) (m : Nat) (k : Nat)
   | posInf
@@ -88,6 +96,20 @@ def isNegative : JsNum → Bool
 def isOne : JsNum → Bool
   | .dec neg m k => !neg && m == 10 ^ k
   | _ => false
+
+/-- Whether this is a Number's value. The infinities and NaN are Numbers; the finite Numbers are
+`s * c * 2^e` for a sign `s`, an integer `0 ≤ c < 2^53` and an integer `-1074 ≤ e ≤ 971`
+(ECMA-262 section 6.1.6.1: the normalized and denormalized values, and ±0). So `dec _ m k` is one
+exactly when `m / 10^k` scaled by `2^1074` is an integer `n = c * 2^j` with `c < 2^53` and
+`j = e + 1074 ≤ 2045`. The least `j` with `n / 2^j < 2^53` is `log2 n - 52` (0 when `n < 2^53`),
+so that is the `j` tested (`Proofs.isNumberValue_iff`). The gate does not use this: it bounds the
+values the conformance vectors may carry. -/
+def isNumberValue : JsNum → Bool
+  | .dec _ m k =>
+    let n := m * 2 ^ 1074 / 10 ^ k
+    let j := n.log2 - 52
+    m * 2 ^ 1074 % 10 ^ k == 0 && j ≤ 2045 && n % 2 ^ j == 0 && n / 2 ^ j < 2 ^ 53
+  | _ => true
 
 end JsNum
 

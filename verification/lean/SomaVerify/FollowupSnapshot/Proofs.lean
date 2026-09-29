@@ -22,6 +22,12 @@ phase-1 proofs about the original; this file carries them over:
   it with the duplicate-id message, as the original did.
 * **(d)** `parse_returns_input`: what the gate returns is its input.
 
+And one result about the conformance vectors rather than the gate:
+
+* **(e)** `isNumberValue_iff`: the check the vector generator applies to every number accepts a
+  decimal exactly when it is the value of a finite Number; `isNumberValue_rounded_literals` and
+  `isNumberValue_range` evaluate it on literals `JSON.parse` rounds and at the ends of the range.
+
 The field- and payload-level lemmas (`record_ok_iff`, `validateMessage_ok_iff`, …) are about
 functions both models share, so the ones in `ProofsOriginal.lean` apply to this gate as they stand.
 -/
@@ -452,5 +458,67 @@ theorem step_repeated_seq_reports_id {key w : String} {i : Nat} {acc : Acc} {row
   have hc : acc.ids.contains row.id = true := List.contains_iff_mem.2 hin
   unfold step
   simp only [hc, ↓reduceIte, fail_bind]
+
+/-! ## (e) The numbers the conformance vectors carry -/
+
+/-- **(e)** `isNumberValue` accepts a decimal exactly when it is the value of a finite Number:
+`(-1)^neg * m / 10^k = ±c * 2^(j - 1074)` for integers `0 ≤ c < 2^53` and `0 ≤ j ≤ 2045`, i.e. an
+exponent from -1074 to 971 (ECMA-262 section 6.1.6.1), with both sides multiplied by
+`2^1074 * 10^k` to stay in `Nat`. -/
+theorem isNumberValue_iff {neg : Bool} {m k : Nat} :
+    (JsNum.dec neg m k).isNumberValue = true ↔
+      ∃ c j, c < 2 ^ 53 ∧ j ≤ 2045 ∧ m * 2 ^ 1074 = c * 2 ^ j * 10 ^ k := by
+  have hd : 0 < 10 ^ k := Nat.pow_pos (by decide)
+  simp only [JsNum.isNumberValue, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq]
+  -- The scaled value and the power of ten stay symbols: nothing evaluates 2^1074.
+  generalize m * 2 ^ 1074 = a
+  generalize 10 ^ k = d at hd ⊢
+  constructor
+  · rintro ⟨⟨⟨hten, hj⟩, htwo⟩, hc⟩
+    refine ⟨_, _, hc, hj, ?_⟩
+    rw [Nat.div_mul_cancel (Nat.dvd_of_mod_eq_zero htwo),
+      Nat.div_mul_cancel (Nat.dvd_of_mod_eq_zero hten)]
+  · rintro ⟨c, j, hc, hj, rfl⟩
+    rw [Nat.mul_div_cancel _ hd]
+    -- The exponent tested, `log2 (c * 2^j) - 52`, is at most `j`, since `c * 2^j < 2^(53 + j)`.
+    have hle : (c * 2 ^ j).log2 - 52 ≤ j := by
+      rcases Nat.eq_zero_or_pos c with rfl | hpos
+      · simp
+      · have hne : c * 2 ^ j ≠ 0 := Nat.ne_of_gt (Nat.mul_pos hpos (Nat.pow_pos (by decide)))
+        have hlt : c * 2 ^ j < 2 ^ (53 + j) := by
+          rw [Nat.pow_add]
+          exact Nat.mul_lt_mul_of_pos_right hc (Nat.pow_pos (by decide))
+        have := (Nat.log2_lt hne).2 hlt
+        omega
+    refine ⟨⟨⟨Nat.mul_mod_left _ _, by omega⟩, ?_⟩, ?_⟩
+    · exact Nat.mod_eq_zero_of_dvd (Nat.dvd_trans (Nat.pow_dvd_pow 2 hle) (Nat.dvd_mul_left _ _))
+    · rw [Nat.div_lt_iff_lt_mul (Nat.pow_pos (by decide)), ← Nat.pow_add]
+      exact Nat.lt_of_lt_of_le Nat.lt_log2_self (Nat.pow_le_pow_right (by decide) (by omega))
+
+/-- **(e)** Literals `JSON.parse` rounds to another Number are refused: `1.0000000000000001` and
+`0.99999999999999999` (both 1), `-1e-400` (-0), `10^400` (Infinity) and `0.1`. -/
+theorem isNumberValue_rounded_literals :
+    (JsNum.dec false 10000000000000001 16).isNumberValue = false ∧
+    (JsNum.dec false 99999999999999999 17).isNumberValue = false ∧
+    (JsNum.dec true 1 400).isNumberValue = false ∧
+    (JsNum.dec false (10 ^ 400) 0).isNumberValue = false ∧
+    (JsNum.dec false 1 1).isNumberValue = false := by
+  decide +kernel
+
+/-- **(e)** The ends of the finite Numbers: 2^-1074 and (2^53 - 1) * 2^971 are Number values,
+2^-1075 and 2^1024 are not. The boundary numbers of the vectors are Number values: -0, 1.0, 1.5,
+-0.5, 2^53 - 1 and 2^53. -/
+theorem isNumberValue_range :
+    (JsNum.dec false (5 ^ 1074) 1074).isNumberValue = true ∧
+    (JsNum.dec false (5 ^ 1075) 1075).isNumberValue = false ∧
+    (JsNum.dec false ((2 ^ 53 - 1) * 2 ^ 971) 0).isNumberValue = true ∧
+    (JsNum.dec false (2 ^ 1024) 0).isNumberValue = false ∧
+    (JsNum.dec true 0 0).isNumberValue = true ∧
+    (JsNum.dec false 10 1).isNumberValue = true ∧
+    (JsNum.dec false 15 1).isNumberValue = true ∧
+    (JsNum.dec true 5 1).isNumberValue = true ∧
+    (JsNum.dec false 9007199254740991 0).isNumberValue = true ∧
+    (JsNum.dec false 9007199254740992 0).isNumberValue = true := by
+  decide +kernel
 
 end SomaVerify.FollowupSnapshot.Proofs
