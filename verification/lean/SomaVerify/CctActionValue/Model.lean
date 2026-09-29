@@ -1,8 +1,8 @@
 -- models: packages/slack/src/cct/action-value.ts:43-52 (constants)
 -- models: packages/slack/src/cct/action-value.ts:60-63 (DecodedCctActionValue)
 -- models: packages/slack/src/cct/action-value.ts:77-92 (encodeCctActionValue)
--- models: packages/slack/src/cct/action-value.ts:109-128 (decodeCctActionValue)
--- models: packages/slack/src/cct/action-value.ts:138-142 (readCctActionPayload)
+-- models: packages/slack/src/cct/action-value.ts:109-127 (decodeCctActionValue)
+-- models: packages/slack/src/cct/action-value.ts:137-141 (readCctActionPayload)
 import SomaVerify.Support.Json
 import SomaVerify.Support.JsString
 
@@ -58,8 +58,8 @@ inductive RawValue where
   deriving DecidableEq, Repr
 
 /-- `DecodedCctActionValue` (lines 60-63). `mode` is a `String`, as it is at run time: the TS
-narrows it with a cast (line 127) after the `VALID_MODES` check (line 126), and that it is one
-of the two modes is a theorem (`decode_tagged_sound`), not a type. -/
+narrows it with a cast (line 126) after the `VALID_MODES` check (line 125), and that it is one
+of the two modes is a theorem (`Proofs.tagged_sound`), not a type. -/
 inductive Decoded where
   | tagged (mode payload : String)
   | legacy (payload : String)
@@ -98,7 +98,7 @@ def encodeCctActionValue (mode payload : String) : Except String String :=
     -- line 80
     .error ("encodeCctActionValue: unknown mode " ++ jsonStringify mode)
   -- line 82
-  else if utf16Length payload == 0 || utf16Length (jsTrim payload) == 0 then
+  else if utf16Length (jsTrim payload) == 0 then
     -- line 83
     .error "encodeCctActionValue: payload must be a non-empty, non-whitespace string"
   else
@@ -119,13 +119,13 @@ def indexOfSep : List Char → Option Nat
   | [] => none
   | c :: cs => if c == SEP then some 0 else (indexOfSep cs).map (· + 1)
 
-/-- `decodeCctActionValue(raw)` (lines 109-128). -/
+/-- `decodeCctActionValue(raw)` (lines 109-127). -/
 def decodeCctActionValue : RawValue → Decoded
   -- line 110
   | .nonString => .invalid .nonString
   | .str raw =>
     -- line 111
-    if utf16Length raw == 0 || utf16Length (jsTrim raw) == 0 then .invalid (.str raw)
+    if utf16Length (jsTrim raw) == 0 then .invalid (.str raw)
     -- lines 112-115
     else if !jsStartsWith raw PREFIX then .legacy raw
     else
@@ -141,21 +141,19 @@ def decodeCctActionValue : RawValue → Decoded
         -- line 123
         let payload := String.ofList (tail.drop (sepIdx + 1))
         -- line 124
-        if utf16Length mode == 0 then .invalid (.str raw)
+        if utf16Length (jsTrim payload) == 0 then .invalid (.str raw)
         -- line 125
-        else if utf16Length (jsTrim payload) == 0 then .invalid (.str raw)
-        -- line 126
         else if !VALID_MODES.contains mode then .invalid (.str raw)
-        -- line 127
+        -- line 126
         else .tagged mode payload
 
-/-- `readCctActionPayload(raw)` (lines 138-142); `none` is `null`. -/
+/-- `readCctActionPayload(raw)` (lines 137-141); `none` is `null`. -/
 def readCctActionPayload (raw : RawValue) : Option String :=
-  -- line 139
+  -- line 138
   match decodeCctActionValue raw with
-  -- line 140
+  -- line 139
   | .invalid _ => none
-  -- line 141
+  -- line 140
   | .tagged _ payload => some payload
   | .legacy payload => some payload
 
