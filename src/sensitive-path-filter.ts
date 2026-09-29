@@ -64,7 +64,7 @@ const HOME_ALIASES: ReadonlyArray<string> = ['~', '$HOME', `\${HOME}`];
 // (`cat ~/.ss*/id_rsa`) is checked as written; checkSensitiveGlob checks the text before the first
 // glob metacharacter, which need not end at a segment boundary (`~/.ss*`); relative paths and a
 // relative Glob base resolve against a working directory this module never sees. Only an OS-level
-// read deny list (see getSensitiveReadDenyPaths) covers every shell spelling.
+// read deny list covers every shell spelling (getSensitiveReadDenyPaths builds one; nothing applies it).
 // A read command's arguments run to the next `|`, `;` or `&`; RE_PATH picks every path among them.
 const RE_READ_COMMANDS =
   /\b(?:cat|head|tail|less|more|bat|xxd|hexdump|strings|base64|nano|vi|vim|code|open)\b([^|;&]*)/g;
