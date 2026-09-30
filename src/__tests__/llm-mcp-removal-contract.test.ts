@@ -175,8 +175,7 @@ describe('T3b — the subagent dispatch path is one tool name, wired end to end'
       const text = fs.readFileSync(f, 'utf8');
       for (const m of text.matchAll(/subagent_type:\s*"([^"]+)"/g)) {
         const id = m[1];
-        if (/^zworkflow:<[a-z]+>
-.test(id)) continue; // documentation placeholder (llm-dispatch / autoz), filled by the caller
+        if (/^zworkflow:<[a-z]+>$/.test(id)) continue; // documentation placeholder (llm-dispatch / autoz), filled by the caller
         const agent = id.startsWith('zworkflow:') ? id.slice('zworkflow:'.length) : undefined;
         if (!agent || !fs.existsSync(path.join(agentsDir, `${agent}.md`))) {
           unresolved.push(`${path.relative(repoRoot, f)}: ${id}`);
