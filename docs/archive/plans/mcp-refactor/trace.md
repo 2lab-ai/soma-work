@@ -1,7 +1,8 @@
 # MCP Servers Refactoring — Vertical Trace
 
 > STV Trace | Created: 2026-03-28
-> Spec: docs/current/plans/mcp-refactor/spec.md
+> **Status (2026-09-30, PR #254): archived.** Implemented as planned (see `packages/mcp-servers/*`, `packages/process-shared/src/mcp/`); the `llm` MCP server this document lists as in-scope was later removed in PR #254 (engine reach path is now zworkflow subagents via `local:trinity`). Do not use this document to re-create `packages/mcp-servers/llm/`.
+> Spec: docs/archive/plans/mcp-refactor/spec.md
 
 ## Table of Contents
 1. [Scenario 1 — BaseMcpServer extraction](#scenario-1)

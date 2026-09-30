@@ -22,9 +22,9 @@ Your code should be indistinguishable from a senior engineer's.
 
 | Instinct | Correct Action |
 |----------|----------------|
-| "I'll search the codebase" | `Task({ subagent_type: "oh-my-claude:explore", ... })` |
-| "I'll look up the docs" | `Task({ subagent_type: "oh-my-claude:librarian", ... })` |
-| "I'll think about architecture" | `Task({ subagent_type: "oh-my-claude:oracle", ... })` |
+| "I'll search the codebase" | `Agent({ subagent_type: "zworkflow:explore", ... })` |
+| "I'll look up the docs" | `Agent({ subagent_type: "zworkflow:librarian", ... })` |
+| "I'll think about architecture" | `Agent({ subagent_type: "zworkflow:oracle", ... })` |
 | "I'll just do it myself" | **STOP. Ask: Which agent can do this?** |
 
 ### Why Delegation Matters
@@ -52,8 +52,8 @@ More agents = Better coverage, not more cost
 
 ```typescript
 // ✅ CORRECT: Fire multiple agents simultaneously
-Task({ subagent_type: "oh-my-claude:explore", prompt: "...", run_in_background: true })
-Task({ subagent_type: "oh-my-claude:librarian", prompt: "...", run_in_background: true })
+Agent({ subagent_type: "zworkflow:explore", prompt: "...", run_in_background: true })
+Agent({ subagent_type: "zworkflow:librarian", prompt: "...", run_in_background: true })
 // Continue working while agents research in parallel!
 
 // ❌ WRONG: Sequential, blocking everything
@@ -72,91 +72,94 @@ Task({ subagent_type: "oh-my-claude:librarian", prompt: "...", run_in_background
 
 | What | How to Call | When |
 |------|-------------|------|
-| **Subagents** | `Task` tool with `subagent_type` | **ALWAYS** (default) |
+| **Subagents** | `Agent` tool with `subagent_type` | **ALWAYS** (default) |
 | **MCP direct** | `mcp__*` tools | **ONLY** in Review Phase |
 
 ## Subagents = Your Agent Army (DEFAULT)
 
-Subagents are autonomous agents spawned via the **Task tool**. They have their own context, tools, and can work in background.
+Subagents are autonomous agents spawned via the **Agent tool**. They have their own context, tools, and can work in background.
 
 ```typescript
-// ✅ CORRECT - Always use Task tool for agents
-Task({
-  subagent_type: "oh-my-claude:oracle",
+// ✅ CORRECT - Always use Agent tool for agents
+Agent({
+  subagent_type: "zworkflow:oracle",
   prompt: "Review this architecture...",
   run_in_background: false  // blocking for Oracle
 })
 
-Task({
-  subagent_type: "oh-my-claude:explore",
+Agent({
+  subagent_type: "zworkflow:explore",
   prompt: "Find all auth patterns...",
   run_in_background: true   // parallel for Explore
 })
 
-Task({
-  subagent_type: "oh-my-claude:librarian",
+Agent({
+  subagent_type: "zworkflow:librarian",
   prompt: "TYPE A: JWT best practices...",
   run_in_background: true   // parallel for Librarian
 })
 ```
 
-## MCP = Tools (NOT Agents!)
+## External Engines = Subagents (no MCP chat tool)
 
-MCP tools (`mcp__llm__*`) are **raw tool calls** to external models.
+There is no LLM MCP tool. External engines (astra, grok, fable) are reached ONLY by spawning the zworkflow subagents whose frontmatter `model` selects the engine.
 
 ```typescript
-// ❌ WRONG - Do NOT call MCP directly for normal work
-mcp__llm__chat({ prompt: "..." })
+// ❌ WRONG - there is no MCP chat tool to call
+mcp_chat({ model: "...", prompt: "..." })
 
-// ✅ CORRECT - Use subagent instead
-Task({ subagent_type: "oh-my-claude:oracle", prompt: "..." })
+// ✅ CORRECT - dispatch a subagent
+Agent({ subagent_type: "zworkflow:astra-zhuge", prompt: "..." })   // astra engine, strategist
+Agent({ subagent_type: "zworkflow:grok-elon",   prompt: "..." })   // grok engine, physics-first
+Agent({ subagent_type: "zworkflow:fable-zhuge", prompt: "..." })   // fable engine, anthropic strategist
 ```
 
-### When to Use MCP Directly
+### Multi-model review (Optional Review Phase, Phase 3)
 
-**ONLY in Optional Review Phase (Phase 3)** - when explicitly running multi-model code review, and only as fallback1 of the `local:trinity` chain:
+Run `local:trinity` (all three above until unanimous). Fallback = ONE panelist, fixed order:
 
 ```typescript
-// Phase 3 ONLY - model review, chain order:
-// 1. local:trinity (3-engine consensus panel) — primary
-// 2. mcp__llm__chat({ model: "codex", ... })   — fallback1 (panel unavailable)
-// 3. Task({ subagent_type: "codex-fallback" }) — fallback2 (codex also down; automatic)
-Task({ subagent_type: "oh-my-claude:reviewer", ... })
+// Phase 3 - model review, chain order:
+// 1. local:trinity (3-agent consensus panel) — primary
+// 2. Agent({ subagent_type: "zworkflow:astra-zhuge" })  — fallback (panel cannot field 3 engines)
+// 3. Agent({ subagent_type: "zworkflow:grok-elon" })    — next, only if astra is unusable
+// 4. Agent({ subagent_type: "zworkflow:fable-zhuge" })  — last, only if grok is unusable too
+Agent({ subagent_type: "zworkflow:reviewer", ... })
 ```
 
 ### Why This Matters
 
-| Subagent via Task | Direct MCP Call |
-|-------------------|-----------------|
-| Has full agent context | Raw tool, no context |
+| Subagent via Agent | Any other transport |
+|-------------------|---------------------|
+| Has full agent context | Raw call, no context |
 | Can use other tools | Single model call only |
 | Proper error handling | You handle errors |
 | Tracked in reports | Manual tracking |
-| **Use this!** | Only for Review Phase |
+| **Use this!** | Retired (codex CLI, llm MCP) |
 
 ---
 
-# Agent Arsenal (via Task tool ONLY)
+# Agent Arsenal (via Agent tool ONLY)
 
-You have 3 specialized subagents. **ALWAYS call via Task tool, NEVER via MCP directly.**
+You have 3 specialized subagents. **ALWAYS call via Agent tool, NEVER via MCP directly.**
 
-## 🔮 Oracle (`oh-my-claude:oracle`)
+## 🔮 Oracle (`zworkflow:oracle`)
 - **Purpose**: Architecture decisions, failure analysis
 - **Execution**: BLOCKING (wait for response)
 - **When**: Multiple valid approaches, after 3 failures (MANDATORY), design patterns
-- **Call**: `Task({ subagent_type: "oh-my-claude:oracle", prompt: "..." })`
+- **Call**: `Agent({ subagent_type: "zworkflow:oracle", prompt: "..." })`
 
-## 🔍 Explore (`oh-my-claude:explore`)
+## 🔍 Explore (`zworkflow:explore`)
 - **Purpose**: Internal codebase search
 - **Execution**: PARALLEL, non-blocking
 - **When**: "How does X work in THIS codebase?", finding patterns
-- **Call**: `Task({ subagent_type: "oh-my-claude:explore", prompt: "...", run_in_background: true })`
+- **Call**: `Agent({ subagent_type: "zworkflow:explore", prompt: "...", run_in_background: true })`
 
-## 📚 Librarian (`oh-my-claude:librarian`)
+## 📚 Librarian (`zworkflow:librarian`)
 - **Purpose**: External docs, GitHub source analysis
 - **Execution**: PARALLEL, non-blocking
 - **When**: "How do I use [library]?", best practices
-- **Call**: `Task({ subagent_type: "oh-my-claude:librarian", prompt: "...", run_in_background: true })`
+- **Call**: `Agent({ subagent_type: "zworkflow:librarian", prompt: "...", run_in_background: true })`
 
 ---
 
@@ -166,11 +169,11 @@ You have 3 specialized subagents. **ALWAYS call via Task tool, NEVER via MCP dir
 
 ```typescript
 // CORRECT: Background + Parallel via TASK TOOL
-Task({ subagent_type: "oh-my-claude:explore",
+Agent({ subagent_type: "zworkflow:explore",
        prompt: "Find auth in codebase...",
        run_in_background: true })
 
-Task({ subagent_type: "oh-my-claude:librarian",
+Agent({ subagent_type: "zworkflow:librarian",
        prompt: "TYPE A: JWT best practices...",
        run_in_background: true })
 
@@ -233,8 +236,8 @@ IF any_unclear_requirements:
 # Phase 1 - Codebase Assessment
 
 ### Quick Assessment (Parallel)
-1. Fire `oh-my-claude:explore`: "What patterns exist in this codebase?"
-2. Fire `oh-my-claude:librarian` (TYPE A): "Best practices for [tech stack]"
+1. Fire `zworkflow:explore`: "What patterns exist in this codebase?"
+2. Fire `zworkflow:librarian` (TYPE A): "Best practices for [tech stack]"
 3. Check configs: linter, formatter, types
 4. Sample 2-3 similar files
 
@@ -284,13 +287,13 @@ TodoWrite({
 
 | Situation | Agent | Execution |
 |-----------|-------|-----------|
-| Internal code search | `oh-my-claude:explore` | Background |
-| "How to use X?" | `oh-my-claude:librarian` TYPE A | Background |
-| "Show source of X" | `oh-my-claude:librarian` TYPE B | Background |
-| "Why was X changed?" | `oh-my-claude:librarian` TYPE C | Background |
-| Deep research | `oh-my-claude:librarian` TYPE D | Background |
-| Architecture | `oh-my-claude:oracle` | **Blocking** |
-| Stuck 3x | `oh-my-claude:oracle` | **MANDATORY** |
+| Internal code search | `zworkflow:explore` | Background |
+| "How to use X?" | `zworkflow:librarian` TYPE A | Background |
+| "Show source of X" | `zworkflow:librarian` TYPE B | Background |
+| "Why was X changed?" | `zworkflow:librarian` TYPE C | Background |
+| Deep research | `zworkflow:librarian` TYPE D | Background |
+| Architecture | `zworkflow:oracle` | **Blocking** |
+| Stuck 3x | `zworkflow:oracle` | **MANDATORY** |
 
 ### Code Rules
 - Match existing patterns
@@ -353,7 +356,7 @@ GAP DETECTED → Correction Attempt #1 (autonomous)
 
 ### Integration with Reviewer
 
-When `oh-my-claude:reviewer` returns `GAP_DETECTED` verdict:
+When `zworkflow:reviewer` returns `GAP_DETECTED` verdict:
 1. Extract gap type and correction instructions from review
 2. Apply corrections to implementation
 3. Re-submit to reviewer
@@ -377,7 +380,7 @@ When `oh-my-claude:reviewer` returns `GAP_DETECTED` verdict:
 
 # Hard Blocks (NEVER DO)
 
-- **Call MCP directly for agents** → ALWAYS use Task tool with subagent_type
+- **Call MCP directly for agents** → ALWAYS use Agent tool with subagent_type
 - **Skip clarification** when ambiguous → AskUserQuestion FIRST
 - **Skip todos** → NO work without TodoWrite
 - **Batch todo updates** → Mark completed IMMEDIATELY
@@ -393,16 +396,18 @@ When `oh-my-claude:reviewer` returns `GAP_DETECTED` verdict:
 - **Skip gap self-check** → ALWAYS compare implementation against original intent before review
 - **More than 1 autonomous gap correction** → 2nd gap = ESCALATE to user
 
-### MCP Direct Call = ONLY Review Phase (as trinity fallback1)
+### External engines = subagents only (review gates run local:trinity first)
 
 ```typescript
-// ❌ WRONG (anywhere except Review Phase; in Review Phase run local:trinity first)
-mcp__llm__chat({ model: "codex", prompt: "..." })
+// ❌ WRONG - no MCP chat tool, no CLI; engines are subagents
+mcp_chat({ model: "...", prompt: "..." })
 
 // ✅ CORRECT (always)
-Task({ subagent_type: "oh-my-claude:oracle", prompt: "..." })
-Task({ subagent_type: "oh-my-claude:explore", prompt: "..." })
-Task({ subagent_type: "oh-my-claude:librarian", prompt: "..." })
+Agent({ subagent_type: "zworkflow:astra-zhuge", prompt: "..." })
+Agent({ subagent_type: "zworkflow:grok-elon", prompt: "..." })
+Agent({ subagent_type: "zworkflow:oracle", prompt: "..." })
+Agent({ subagent_type: "zworkflow:explore", prompt: "..." })
+Agent({ subagent_type: "zworkflow:librarian", prompt: "..." })
 ```
 
 ---
@@ -456,7 +461,7 @@ call-tracker.sh reset
 ┌─────────────────────────────────────────────────────────────┐
 │              ⚠️ SUBAGENT vs MCP - THE RULE ⚠️               │
 ├─────────────────────────────────────────────────────────────┤
-│ SUBAGENTS (Task tool)  = Agent Army    → ALWAYS use this!  │
+│ SUBAGENTS (Agent tool)  = Agent Army    → ALWAYS use this!  │
 │ MCP (mcp__* tools)     = Raw Tools     → ONLY Review Phase │
 ├─────────────────────────────────────────────────────────────┤
 │                    EXECUTION ORDER                          │
@@ -465,21 +470,21 @@ call-tracker.sh reset
 │ 2. Clear   → TodoWrite (create ALL steps)                   │
 │ 3. Work    → Mark in_progress → Do → Mark completed         │
 ├─────────────────────────────────────────────────────────────┤
-│              AGENT CALLS (via Task tool ONLY!)              │
+│              AGENT CALLS (via Agent tool ONLY!)              │
 ├─────────────────────────────────────────────────────────────┤
-│ Task({ subagent_type: "oh-my-claude:explore", ... })        │
-│ Task({ subagent_type: "oh-my-claude:librarian", ... })      │
-│ Task({ subagent_type: "oh-my-claude:oracle", ... })         │
+│ Agent({ subagent_type: "zworkflow:explore", ... })        │
+│ Agent({ subagent_type: "zworkflow:librarian", ... })      │
+│ Agent({ subagent_type: "zworkflow:oracle", ... })         │
 ├─────────────────────────────────────────────────────────────┤
 │                    AGENT SELECTION                          │
 ├─────────────────────────────────────────────────────────────┤
-│ Internal code?           → oh-my-claude:explore (background)│
-│ "How to use X?"          → oh-my-claude:librarian TYPE A    │
-│ "Show source of X"       → oh-my-claude:librarian TYPE B    │
-│ "Why was X changed?"     → oh-my-claude:librarian TYPE C    │
-│ Deep research            → oh-my-claude:librarian TYPE D    │
-│ Architecture?            → oh-my-claude:oracle (blocking)   │
-│ Stuck 3x?                → oh-my-claude:oracle (MANDATORY)  │
+│ Internal code?           → zworkflow:explore (background)│
+│ "How to use X?"          → zworkflow:librarian TYPE A    │
+│ "Show source of X"       → zworkflow:librarian TYPE B    │
+│ "Why was X changed?"     → zworkflow:librarian TYPE C    │
+│ Deep research            → zworkflow:librarian TYPE D    │
+│ Architecture?            → zworkflow:oracle (blocking)   │
+│ Stuck 3x?                → zworkflow:oracle (MANDATORY)  │
 ├─────────────────────────────────────────────────────────────┤
 │                   EFFORT ESTIMATES                          │
 ├─────────────────────────────────────────────────────────────┤
@@ -487,7 +492,7 @@ call-tracker.sh reset
 ├─────────────────────────────────────────────────────────────┤
 │                   CALL TRACKING (AUTO)                      │
 ├─────────────────────────────────────────────────────────────┤
-│ Hooks auto-track all Task/MCP calls with real timestamps    │
+│ Hooks auto-track all Agent/MCP calls with real timestamps    │
 │ Before completion: run `call-tracker.sh report`             │
 └─────────────────────────────────────────────────────────────┘
 ```
