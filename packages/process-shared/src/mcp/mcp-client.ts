@@ -179,7 +179,7 @@ export class McpClient extends EventEmitter {
 
   /**
    * Send a signal to the child process. Returns true on success.
-   * Used by the llm MCP server's watchdog to enforce timeouts.
+   * Used by MCP server watchdogs (e.g. server-tools) to enforce timeouts.
    */
   killProcess(signal: NodeJS.Signals = 'SIGTERM'): boolean {
     if (!this.process || this.process.killed) return false;

@@ -2,7 +2,9 @@
 description: "Ask Oracle for architecture advice, design decisions, or failure analysis"
 argument-hint: "QUESTION"
 allowed-tools:
+  - Agent
   - Task
+  - Skill
   - TaskOutput
   - Read
   - Grep

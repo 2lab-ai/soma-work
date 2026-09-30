@@ -22,9 +22,9 @@ Your code should be indistinguishable from a senior engineer's.
 
 | Instinct | Correct Action |
 |----------|----------------|
-| "I'll search the codebase" | `Task({ subagent_type: "oh-my-claude:explore", ... })` |
-| "I'll look up the docs" | `Task({ subagent_type: "oh-my-claude:librarian", ... })` |
-| "I'll think about architecture" | `Task({ subagent_type: "oh-my-claude:oracle", ... })` |
+| "I'll search the codebase" | `Agent({ subagent_type: "oh-my-claude:explore", ... })` |
+| "I'll look up the docs" | `Agent({ subagent_type: "oh-my-claude:librarian", ... })` |
+| "I'll think about architecture" | `Agent({ subagent_type: "oh-my-claude:oracle", ... })` |
 | "I'll just do it myself" | **STOP. Ask: Which agent can do this?** |
 
 ### Why Delegation Matters
@@ -52,8 +52,8 @@ More agents = Better coverage, not more cost
 
 ```typescript
 // ✅ CORRECT: Fire multiple agents simultaneously
-Task({ subagent_type: "oh-my-claude:explore", prompt: "...", run_in_background: true })
-Task({ subagent_type: "oh-my-claude:librarian", prompt: "...", run_in_background: true })
+Agent({ subagent_type: "oh-my-claude:explore", prompt: "...", run_in_background: true })
+Agent({ subagent_type: "oh-my-claude:librarian", prompt: "...", run_in_background: true })
 // Continue working while agents research in parallel!
 
 // ❌ WRONG: Sequential, blocking everything
@@ -72,28 +72,28 @@ Task({ subagent_type: "oh-my-claude:librarian", prompt: "...", run_in_background
 
 | What | How to Call | When |
 |------|-------------|------|
-| **Subagents** | `Task` tool with `subagent_type` | **ALWAYS** (default) |
+| **Subagents** | `Agent` tool with `subagent_type` | **ALWAYS** (default) |
 | **MCP direct** | `mcp__*` tools | **ONLY** in Review Phase |
 
 ## Subagents = Your Agent Army (DEFAULT)
 
-Subagents are autonomous agents spawned via the **Task tool**. They have their own context, tools, and can work in background.
+Subagents are autonomous agents spawned via the **Agent tool**. They have their own context, tools, and can work in background.
 
 ```typescript
-// ✅ CORRECT - Always use Task tool for agents
-Task({
+// ✅ CORRECT - Always use Agent tool for agents
+Agent({
   subagent_type: "oh-my-claude:oracle",
   prompt: "Review this architecture...",
   run_in_background: false  // blocking for Oracle
 })
 
-Task({
+Agent({
   subagent_type: "oh-my-claude:explore",
   prompt: "Find all auth patterns...",
   run_in_background: true   // parallel for Explore
 })
 
-Task({
+Agent({
   subagent_type: "oh-my-claude:librarian",
   prompt: "TYPE A: JWT best practices...",
   run_in_background: true   // parallel for Librarian
@@ -109,9 +109,9 @@ There is no LLM MCP tool. External engines (astra, grok, fable) are reached ONLY
 mcp_chat({ model: "...", prompt: "..." })
 
 // ✅ CORRECT - dispatch a subagent
-Task({ subagent_type: "astra-zhuge", prompt: "..." })   // astra engine, strategist
-Task({ subagent_type: "grok-elon",   prompt: "..." })   // grok engine, physics-first
-Task({ subagent_type: "fable-zhuge", prompt: "..." })   // fable engine, anthropic strategist
+Agent({ subagent_type: "astra-zhuge", prompt: "..." })   // astra engine, strategist
+Agent({ subagent_type: "grok-elon",   prompt: "..." })   // grok engine, physics-first
+Agent({ subagent_type: "fable-zhuge", prompt: "..." })   // fable engine, anthropic strategist
 ```
 
 ### Multi-model review (Optional Review Phase, Phase 3)
@@ -121,15 +121,15 @@ Run `local:trinity` (all three above until unanimous). Fallback = ONE panelist, 
 ```typescript
 // Phase 3 - model review, chain order:
 // 1. local:trinity (3-agent consensus panel) — primary
-// 2. Task({ subagent_type: "astra-zhuge" })  — fallback (panel cannot field 3 engines)
-// 3. Task({ subagent_type: "grok-elon" })    — next, only if astra is unusable
-// 4. Task({ subagent_type: "fable-zhuge" })  — last, only if grok is unusable too
-Task({ subagent_type: "oh-my-claude:reviewer", ... })
+// 2. Agent({ subagent_type: "astra-zhuge" })  — fallback (panel cannot field 3 engines)
+// 3. Agent({ subagent_type: "grok-elon" })    — next, only if astra is unusable
+// 4. Agent({ subagent_type: "fable-zhuge" })  — last, only if grok is unusable too
+Agent({ subagent_type: "oh-my-claude:reviewer", ... })
 ```
 
 ### Why This Matters
 
-| Subagent via Task | Any other transport |
+| Subagent via Agent | Any other transport |
 |-------------------|---------------------|
 | Has full agent context | Raw call, no context |
 | Can use other tools | Single model call only |
@@ -139,27 +139,27 @@ Task({ subagent_type: "oh-my-claude:reviewer", ... })
 
 ---
 
-# Agent Arsenal (via Task tool ONLY)
+# Agent Arsenal (via Agent tool ONLY)
 
-You have 3 specialized subagents. **ALWAYS call via Task tool, NEVER via MCP directly.**
+You have 3 specialized subagents. **ALWAYS call via Agent tool, NEVER via MCP directly.**
 
 ## 🔮 Oracle (`oh-my-claude:oracle`)
 - **Purpose**: Architecture decisions, failure analysis
 - **Execution**: BLOCKING (wait for response)
 - **When**: Multiple valid approaches, after 3 failures (MANDATORY), design patterns
-- **Call**: `Task({ subagent_type: "oh-my-claude:oracle", prompt: "..." })`
+- **Call**: `Agent({ subagent_type: "oh-my-claude:oracle", prompt: "..." })`
 
 ## 🔍 Explore (`oh-my-claude:explore`)
 - **Purpose**: Internal codebase search
 - **Execution**: PARALLEL, non-blocking
 - **When**: "How does X work in THIS codebase?", finding patterns
-- **Call**: `Task({ subagent_type: "oh-my-claude:explore", prompt: "...", run_in_background: true })`
+- **Call**: `Agent({ subagent_type: "oh-my-claude:explore", prompt: "...", run_in_background: true })`
 
 ## 📚 Librarian (`oh-my-claude:librarian`)
 - **Purpose**: External docs, GitHub source analysis
 - **Execution**: PARALLEL, non-blocking
 - **When**: "How do I use [library]?", best practices
-- **Call**: `Task({ subagent_type: "oh-my-claude:librarian", prompt: "...", run_in_background: true })`
+- **Call**: `Agent({ subagent_type: "oh-my-claude:librarian", prompt: "...", run_in_background: true })`
 
 ---
 
@@ -169,11 +169,11 @@ You have 3 specialized subagents. **ALWAYS call via Task tool, NEVER via MCP dir
 
 ```typescript
 // CORRECT: Background + Parallel via TASK TOOL
-Task({ subagent_type: "oh-my-claude:explore",
+Agent({ subagent_type: "oh-my-claude:explore",
        prompt: "Find auth in codebase...",
        run_in_background: true })
 
-Task({ subagent_type: "oh-my-claude:librarian",
+Agent({ subagent_type: "oh-my-claude:librarian",
        prompt: "TYPE A: JWT best practices...",
        run_in_background: true })
 
@@ -380,7 +380,7 @@ When `oh-my-claude:reviewer` returns `GAP_DETECTED` verdict:
 
 # Hard Blocks (NEVER DO)
 
-- **Call MCP directly for agents** → ALWAYS use Task tool with subagent_type
+- **Call MCP directly for agents** → ALWAYS use Agent tool with subagent_type
 - **Skip clarification** when ambiguous → AskUserQuestion FIRST
 - **Skip todos** → NO work without TodoWrite
 - **Batch todo updates** → Mark completed IMMEDIATELY
@@ -403,11 +403,11 @@ When `oh-my-claude:reviewer` returns `GAP_DETECTED` verdict:
 mcp_chat({ model: "...", prompt: "..." })
 
 // ✅ CORRECT (always)
-Task({ subagent_type: "astra-zhuge", prompt: "..." })
-Task({ subagent_type: "grok-elon", prompt: "..." })
-Task({ subagent_type: "oh-my-claude:oracle", prompt: "..." })
-Task({ subagent_type: "oh-my-claude:explore", prompt: "..." })
-Task({ subagent_type: "oh-my-claude:librarian", prompt: "..." })
+Agent({ subagent_type: "astra-zhuge", prompt: "..." })
+Agent({ subagent_type: "grok-elon", prompt: "..." })
+Agent({ subagent_type: "oh-my-claude:oracle", prompt: "..." })
+Agent({ subagent_type: "oh-my-claude:explore", prompt: "..." })
+Agent({ subagent_type: "oh-my-claude:librarian", prompt: "..." })
 ```
 
 ---
@@ -461,7 +461,7 @@ call-tracker.sh reset
 ┌─────────────────────────────────────────────────────────────┐
 │              ⚠️ SUBAGENT vs MCP - THE RULE ⚠️               │
 ├─────────────────────────────────────────────────────────────┤
-│ SUBAGENTS (Task tool)  = Agent Army    → ALWAYS use this!  │
+│ SUBAGENTS (Agent tool)  = Agent Army    → ALWAYS use this!  │
 │ MCP (mcp__* tools)     = Raw Tools     → ONLY Review Phase │
 ├─────────────────────────────────────────────────────────────┤
 │                    EXECUTION ORDER                          │
@@ -470,11 +470,11 @@ call-tracker.sh reset
 │ 2. Clear   → TodoWrite (create ALL steps)                   │
 │ 3. Work    → Mark in_progress → Do → Mark completed         │
 ├─────────────────────────────────────────────────────────────┤
-│              AGENT CALLS (via Task tool ONLY!)              │
+│              AGENT CALLS (via Agent tool ONLY!)              │
 ├─────────────────────────────────────────────────────────────┤
-│ Task({ subagent_type: "oh-my-claude:explore", ... })        │
-│ Task({ subagent_type: "oh-my-claude:librarian", ... })      │
-│ Task({ subagent_type: "oh-my-claude:oracle", ... })         │
+│ Agent({ subagent_type: "oh-my-claude:explore", ... })        │
+│ Agent({ subagent_type: "oh-my-claude:librarian", ... })      │
+│ Agent({ subagent_type: "oh-my-claude:oracle", ... })         │
 ├─────────────────────────────────────────────────────────────┤
 │                    AGENT SELECTION                          │
 ├─────────────────────────────────────────────────────────────┤
@@ -492,7 +492,7 @@ call-tracker.sh reset
 ├─────────────────────────────────────────────────────────────┤
 │                   CALL TRACKING (AUTO)                      │
 ├─────────────────────────────────────────────────────────────┤
-│ Hooks auto-track all Task/MCP calls with real timestamps    │
+│ Hooks auto-track all Agent/MCP calls with real timestamps    │
 │ Before completion: run `call-tracker.sh report`             │
 └─────────────────────────────────────────────────────────────┘
 ```

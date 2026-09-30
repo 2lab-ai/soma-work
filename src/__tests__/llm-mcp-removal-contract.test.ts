@@ -20,6 +20,8 @@ vi.mock('../env-paths', async (importOriginal) => {
   };
 });
 
+import { NATIVE_BYPASS_TOOLS } from '../hooks/bypass-permission-guard';
+import { shouldTrackTool } from '../hooks/hook-policy';
 import { McpConfigBuilder } from '../mcp-config-builder';
 import type { McpManager } from '../mcp-manager';
 
@@ -134,5 +136,62 @@ describe('T3 — zworkflow assets no longer call the llm MCP tool or retired age
       /mcp__llm__|llm_chat\(|llm_chat\b|gpt56-zhuge|grok45-elon|gpt56-elon|codex-fallback|codex exec|model:\s*"codex"/,
     );
     expect(offenders.map((f) => path.relative(repoRoot, f))).toEqual([]);
+  });
+});
+
+describe('T3b — the subagent dispatch path is one tool name, wired end to end', () => {
+  const assetFiles = ['skills', 'agents', 'commands', '.commands-body', 'prompts']
+    .flatMap((d) => walk(path.join(pluginRoot, d)))
+    .filter((f) => f.endsWith('.md'));
+
+  it('sees the plugin assets', () => {
+    expect(assetFiles.length).toBeGreaterThan(20);
+  });
+
+  it('keeps every asset multi-line with a parseable frontmatter (guards against newline collapse)', () => {
+    const broken: string[] = [];
+    for (const f of assetFiles) {
+      const text = fs.readFileSync(f, 'utf8');
+      const rel = path.relative(repoRoot, f);
+      const lines = text.split('\n').length;
+      if (text.length > 1000 && lines < 3) broken.push(`${rel}: ${lines} line(s) for ${text.length} bytes`);
+      if (text.startsWith('---') && !/^---\n[\s\S]+?\n---(\n|$)/.test(text))
+        broken.push(`${rel}: unparseable frontmatter`);
+    }
+    expect(broken).toEqual([]);
+  });
+
+  it('spawns subagents with the Agent tool — never the retired Task( syntax', () => {
+    const offenders = grepFiles(assetFiles, /\bTask\(/);
+    expect(offenders.map((f) => path.relative(repoRoot, f))).toEqual([]);
+  });
+
+  it('commands that run local:trinity or spawn subagents allow-list Skill / Agent', () => {
+    const cmdDir = path.join(pluginRoot, 'commands');
+    const bodyDir = path.join(pluginRoot, '.commands-body');
+    const gaps: string[] = [];
+    for (const name of fs.readdirSync(cmdDir).filter((n) => n.endsWith('.md'))) {
+      const cmd = fs.readFileSync(path.join(cmdDir, name), 'utf8');
+      const fm = cmd.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '';
+      if (!/allowed-tools/.test(fm)) continue;
+      const bodyFile = path.join(bodyDir, name);
+      const body = cmd + (fs.existsSync(bodyFile) ? fs.readFileSync(bodyFile, 'utf8') : '');
+      const allows = (tool: string) => new RegExp(`^\\s*- ${tool}\\s*$|"${tool}"`, 'm').test(fm);
+      if (/local:trinity/.test(body) && !allows('Skill'))
+        gaps.push(`${name}: runs local:trinity but does not allow Skill`);
+      if (/Agent\(\{|subagent/.test(body) && !allows('Agent'))
+        gaps.push(`${name}: spawns subagents but does not allow Agent`);
+    }
+    expect(gaps).toEqual([]);
+  });
+
+  it('host hooks track the Agent tool (ts predicate + both shell mirrors + bypass allow-list)', () => {
+    expect(shouldTrackTool('Agent')).toBe(true);
+    expect(shouldTrackTool('Task')).toBe(true);
+    expect(NATIVE_BYPASS_TOOLS).toContain('Agent');
+    for (const sh of ['call-tracker.sh', 'hook-proxy.sh']) {
+      const text = fs.readFileSync(path.join(pluginRoot, 'hooks', sh), 'utf8');
+      expect(text, sh).toMatch(/Task\|Agent\|mcp__\*/);
+    }
   });
 });

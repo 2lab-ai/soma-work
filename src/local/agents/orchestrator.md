@@ -2,6 +2,7 @@
 description: "Multi-agent work coordinator. Delegates to Oracle/Explore/Librarian. Use as subagent for autonomous task execution. NO user interaction."
 model: opus
 tools:
+  - Agent
   - Task
   - TaskOutput
   - TodoWrite

@@ -143,7 +143,7 @@ zexplore는 **결론을 내기 전에 사실을 쌓는** 스킬이다. 의견·�
 
 ## Operating Limits
 
-- Phase 1-C background job: per-model timeout 10분. 1회 재실행(새 chat) 허용. 둘 다 실패해도 Brief는 A+B만으로 완성되어야 하며 Decision Inputs confidence 상한 M.
+- Phase 1-C background job: per-model timeout 10분. 1회 재실행(새 dispatch) 허용. 둘 다 실패해도 Brief는 A+B만으로 완성되어야 하며 Decision Inputs confidence 상한 M.
 - Phase 4 external lint: 3회 미만에 pass 못하면 lint 실패로 기록. Primary gate 통과 시 Brief 반환 계속. caller가 추가 검토를 결정.
 
 **Authoring constraint (CI / review에서 체크):** SKILL.md ≤ 10KB (user-skill-store.ts 강제 한계). Headroom preferred. Runtime hard rule 아님.
