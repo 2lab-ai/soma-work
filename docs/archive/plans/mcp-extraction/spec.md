@@ -1,7 +1,7 @@
 # MCP Server Extraction + server-tools-mcp — Spec
 
 > STV Spec | Created: 2026-03-27
-> **Status (2026-09-30, PR #254): historical.** Implemented as planned; the `llm` MCP server this document lists as in-scope was later removed in PR #254 (engine reach path is now zworkflow subagents via `local:trinity`). Do not use this document to re-create `packages/mcp-servers/llm/`.
+> **Status (2026-09-30, PR #254): archived.** Implemented as planned (see `packages/mcp-servers/*`, `packages/process-shared/src/mcp/`); the `llm` MCP server this document lists as in-scope was later removed in PR #254 (engine reach path is now zworkflow subagents via `local:trinity`). Do not use this document to re-create `packages/mcp-servers/llm/`.
 
 ## 1. Overview
 
@@ -221,4 +221,4 @@ None.
 
 ## 9. Next Step
 
-→ Proceed with Vertical Trace via `stv:trace docs/current/plans/mcp-extraction/spec.md`
+→ Proceed with Vertical Trace via `stv:trace docs/archive/plans/mcp-extraction/spec.md`

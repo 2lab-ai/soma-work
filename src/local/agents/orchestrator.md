@@ -7,6 +7,7 @@ tools:
   - Skill
   - SendMessage
   - TaskStop
+  - Monitor
   - TaskOutput
   - TodoWrite
   - TaskCreate

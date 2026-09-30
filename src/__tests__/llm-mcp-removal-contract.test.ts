@@ -100,6 +100,14 @@ describe('T1 — llm MCP server is fully removed', () => {
     const offenders = grepFiles(files, /mcp__llm|llm_chat|llm-mcp-server|mcp-server-llm|buildLlmServer/);
     expect(offenders.map((f) => path.relative(repoRoot, f))).toEqual([]);
   });
+
+  it('leaves no llm-mcp reference in current docs (history lives under docs/archive only)', () => {
+    const offenders = grepFiles(
+      walk(path.join(repoRoot, 'docs', 'current')),
+      /mcp__llm|llm_chat|llm-mcp-server|mcp-servers\/llm|mcp-server-llm|LLM_SERVER_BASENAME/,
+    );
+    expect(offenders.map((f) => path.relative(repoRoot, f))).toEqual([]);
+  });
 });
 
 describe('T2 — trinity panel roster is astra-zhuge / grok-elon / fable-zhuge', () => {
