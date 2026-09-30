@@ -60,8 +60,8 @@ Mechanical rename across all layers. No behavior change.
 - `src/auto-resume.test.ts`: RESUME_PROMPT constant
 
 #### 3e. Documentation (6 files)
-- `docs/current/plans/mcp-extraction/spec.md` → directory tree refs
-- `docs/current/plans/mcp-extraction/trace.md` → file path refs
+- `docs/archive/plans/mcp-extraction/spec.md` → directory tree refs
+- `docs/archive/plans/mcp-extraction/trace.md` → file path refs
 - `docs/current/plans/auto-resume/spec.md` → resume prompt ref
 - `docs/current/plans/auto-resume/trace.md` → resume prompt ref
 - `docs/archive/features/issue64-midthread-fix-v2/spec.md` → file path refs

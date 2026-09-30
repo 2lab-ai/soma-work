@@ -163,7 +163,7 @@ export interface AgentQueryResult {
 
 ### 5.6 Agent MCP Server
 
-공유 internal MCP server 패턴(`packages/mcp-servers/*`, 원래 `llm-mcp-server.ts`를 본뜸 — 그 서버는 이후 제거됨)을 미러링:
+공유 internal MCP server 패턴(`packages/mcp-servers/*` + `BaseMcpServer`; 원형이던 llm 서버는 PR #254에서 제거됨)을 미러링:
 
 ```typescript
 // Tools:
