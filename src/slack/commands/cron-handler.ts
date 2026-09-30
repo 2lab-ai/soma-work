@@ -33,7 +33,7 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
  * natural sentences like "크론 잡 하나 만들어줘" still reach the LLM flow):
  * - `cron` | `schedule` | `크론` | `스케줄` | ...      → list (admin: all users + owner)
  * - `cron list`                                        → same as bare
- * - `cron model <name> <default|fast|모델|별칭> [<@owner>]`
+ * - `cron model <name> <default|opus|fable|fast|모델|별칭> [<@owner>]`
  * - `cron target <name> <channel|dm|thread> [threadTs] [<@owner>]`
  * - `cron run <name> [<@owner>]`                       → fire now (see below)
  * - `cron allow|revoke <name> <@user> [<@owner>]`      → run allowlist
@@ -158,7 +158,7 @@ export class CronCommandHandler implements CommandHandler {
     const value = rest[0];
     if (!name || !value) {
       await ctx.say({
-        text: `사용법: \`cron model <name> <default|fast|모델>\`\n${usageText()}`,
+        text: `사용법: \`cron model <name> <default|opus|fable|fast|모델>\`\n${usageText()}`,
         thread_ts: ctx.threadTs,
       });
       return;
@@ -176,6 +176,12 @@ export class CronCommandHandler implements CommandHandler {
     if (lower === 'default') {
       patch = { modelConfig: null };
       desc = 'default — 만든 사람의 현재 기본 모델을 실행 시점에 사용';
+    } else if (lower === 'opus' || lower === 'fable') {
+      // Bare `opus` / `fable` store the floating alias type — resolved to the
+      // latest generation at fire time. Pinned spellings (`opus-5`,
+      // `claude-opus-5-5[1m]`, …) fall through to a fixed custom id.
+      patch = { modelConfig: { type: lower } };
+      desc = `${lower} — 실행 시점의 최신 ${lower}(1M)`;
     } else if (lower === 'fast') {
       patch = { modelConfig: { type: 'fast' } };
       desc = 'fast (sonnet)';
@@ -184,7 +190,7 @@ export class CronCommandHandler implements CommandHandler {
       const modelId = await userSettingsStore.resolveModelInputWithRefresh(value);
       if (!modelId) {
         await ctx.say({
-          text: `❌ 알 수 없는 모델: \`${value}\`\n\`default\` / \`fast\` / 모델 별칭(예: fable, opus, sonnet, haiku, gpt) 또는 canonical id를 쓰세요.`,
+          text: `❌ 알 수 없는 모델: \`${value}\`\n\`default\` / \`opus\` / \`fable\` / \`fast\` / 모델 별칭(예: sonnet, haiku, gpt) 또는 canonical id를 쓰세요.`,
           thread_ts: ctx.threadTs,
         });
         return;
@@ -597,6 +603,8 @@ function describeOwner(job: CronJob): string {
 function describeModel(job: CronJob): string {
   const c = job.modelConfig;
   if (!c || c.type === 'default') return 'default(만든 사람의 현재 모델)';
+  if (c.type === 'opus') return 'opus(최신)';
+  if (c.type === 'fable') return 'fable(최신)';
   if (c.type === 'fast') return 'fast';
   return `custom(${c.model ?? '?'})`;
 }
@@ -630,7 +638,7 @@ function splitOwnerArg(args: string[]): { name?: string; rest: string[]; owner?:
 function usageText(): string {
   return [
     '수정 명령 (카드 버튼/드롭다운 또는 텍스트):',
-    '• `cron model <name> <default|fast|모델>` — 모델 (default = 만든 사람의 현재 모델)',
+    '• `cron model <name> <default|opus|fable|fast|모델>` — 모델 (default = 만든 사람의 현재 모델, opus/fable = 실행 시점 최신)',
     '• `cron target <name> <channel|dm|thread>` — 출력 대상',
     '• `cron mode <name> <default|fastlane>` — 실행 모드',
     '• `cron channel <name> <#채널>` · `cron schedule <name> <5-field cron>` · `cron prompt <name> <텍스트>` · `cron rename <name> <새이름>`',

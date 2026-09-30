@@ -1,6 +1,6 @@
 ---
 name: autoz
-description: "Autonomous z-pipeline driver. Triggered by `autoz` or `$autoz`. Builds SSOT-LIST + SSOT-TASK-TREE (per `local:using-ssot`), maps unknowns, runs a code-based multi-tier Analysis step with an HTML problem-analysis artifact, reproduces the instruction as a RED test, then drives the full local:using-z / local:z pipeline end-to-end without user questions. Open decisions resolve by the local:trinity consensus chain (trinity 3-engine panel → mcp__llm__chat model=codex → codex-fallback opus, each downgrade with a visible warning). A trinity-chain code review of the final PR diff is a mandatory gate before approve — the chain degrades automatically tier by tier and never approves/merges/deploys on an empty review gate. After approval, posts the SSOT success proof to the source issue and ships the final ES report as a second HTML artifact."
+description: "Autonomous z-pipeline driver. Triggered by `autoz` or `$autoz`. Builds SSOT-LIST + SSOT-TASK-TREE (per `local:using-ssot`), maps unknowns, runs a code-based multi-tier Analysis step with an HTML problem-analysis artifact, reproduces the instruction as a RED test, then drives the full local:using-z / local:z pipeline end-to-end without user questions. Open decisions resolve by the local:trinity consensus chain (trinity 3-agent panel astra-zhuge / grok-elon / fable-zhuge → single-panelist fallback in that order, each downgrade with a visible warning). A trinity-chain code review of the final PR diff is a mandatory gate before approve — the chain degrades automatically tier by tier and never approves/merges/deploys on an empty review gate. After approval, posts the SSOT success proof to the source issue and ships the final ES report as a second HTML artifact."
 ---
 
 # autoz — Autonomous z-pipeline
@@ -44,14 +44,14 @@ autoz
 │       ├── local:zreflect            — drift handler (using-ssot Hook 2)
 │       ├── local:UIAskUserQuestion   — interactive gates (SUPPRESSED under autoz, Rule 4)
 │       └── local:es                  — terminal report (using-ssot Hook 4)
-└── local:trinity chain (trinity panel → mcp__llm__chat codex → codex-fallback opus) — decision consult + mandatory review gate
+└── local:trinity chain (trinity panel → single-panelist fallback astra-zhuge → grok-elon → fable-zhuge) — decision consult + mandatory review gate
 ```
 
 ## Hard Rules
 
 1. **SSOT contract.** Apply `local:using-ssot` at every lifecycle hook (Intake / Drift / Resume / Report), with two autoz overrides:
    - (a) **Never pause for user confirmation** at any hook. Output the tree, then proceed — the SSOT-TASK-TREE is a visible work plan, not a question.
-   - (b) **Review-chain consult is bounded** by switching cost. Skip the consult only when the operation is trivial: Intake with `ssot-task` count == 1 and depth == 1, or a Drift diff that is `added`-only with ≤ 1 node. Otherwise run the `local:trinity` chain (trinity consensus → `mcp__llm__chat` `model: codex` → `codex-fallback` opus) and log the verdict/transcript reference in the PR body. A split consult follows the same terminal as Rule 8: adopt the union of panelists' MUST-FIX as constraints, re-run the consult once; a second split is a Hard Blocker. This trivial-skip covers **SSOT-shaping consults only** — it never exempts the Rule 8 review gate.
+   - (b) **Review-chain consult is bounded** by switching cost. Skip the consult only when the operation is trivial: Intake with `ssot-task` count == 1 and depth == 1, or a Drift diff that is `added`-only with ≤ 1 node. Otherwise run the `local:trinity` chain (trinity consensus → single-panelist fallback) and log the verdict/transcript reference in the PR body. A split consult follows the same terminal as Rule 8: adopt the union of panelists' MUST-FIX as constraints, re-run the consult once; a second split is a Hard Blocker. This trivial-skip covers **SSOT-shaping consults only** — it never exempts the Rule 8 review gate.
 
 2. **Explore → Analysis → RED, in that order, before any implementation.**
    - **Explore.** Run `local:explore-unknowns` in Autonomous Mode on the SSOT-TASK-TREE scope. The four-quadrant unknowns map is a mandatory pre-RED artifact attached to the PR body. Never enter the interactive quadrant walk — no user questions; high-risk unknown-unknowns escalate to a trinity-chain consult, never to the user. The map always carries all four quadrants — a trivial tree (1 `ssot-task`, depth 1) may compress each quadrant to a line (including explicit `none` / `closed by <file>` entries); depth shrinks, quadrants never disappear.
@@ -74,9 +74,8 @@ autoz
 
 8. **Mandatory review gate (trinity chain, never empty).** Before `gh pr review --approve`, the final PR diff MUST receive a code review through the `local:trinity` fallback chain. Runs on **every** autoz run — "obvious", "trivial", and security must-fix changes included.
    - **Primary — `local:trinity`.** Send the full PR diff + SSOT-TASK-TREE + RED→GREEN evidence as a self-contained brief to the trinity panel and require a unanimous verdict (concrete findings, or an explicit "no blocking findings"). Log the verdict + round log in the PR body.
-   - **Fallback1 — codex.** Panel cannot field 3 engines (llmux down, panel agents unavailable; 1 retry first) → emit `⚠️ TRINITY DEGRADED → fallback1 llm_chat(codex) — <reason>` and send the same payload to `mcp__llm__chat` `model: codex`. Log the transcript reference in the PR body.
-   - **Fallback2 — `codex-fallback` (opus, automatic).** codex also unusable (quota, API error, timeout, empty output; retry once) → emit `⚠️ TRINITY DEGRADED → fallback2 codex-fallback(opus) — <reason>` and spawn `codex-fallback` (`Agent` tool, `subagent_type: codex-fallback`) with the **exact payload destined for codex**; treat its verdict as the review, logged in the PR body labelled `trinity-fallback2 (opus)`. This tier is automatic — no user question (2026-07-16 directive; supersedes the old opt-in contract).
-   - **Fast-fail on total absence.** All three tiers failed → DO NOT approve/merge/deploy. Emit: `⚠️ REVIEW GATE UNAVAILABLE — auto-approve halted. <reason>`.
+   - **Fallback — single panelist (automatic).** Panel cannot field 3 engines (llmux down, panel agents unavailable; 1 retry first) → emit `⚠️ TRINITY DEGRADED → fallback single-panelist(<agent>) — <reason>` and send the **exact same payload** to ONE panelist subagent (`Agent` tool), in fixed order `zworkflow:astra-zhuge` → `zworkflow:grok-elon` → `zworkflow:fable-zhuge` (advance only when the previous one is unusable after one retry: spawn failure, timeout, empty output). Treat its verdict as the review, logged in the PR body labelled `trinity-fallback (<agent>)`. This tier is automatic — no user question.
+   - **Fast-fail on total absence.** Panel and all three single panelists failed → DO NOT approve/merge/deploy. Emit: `⚠️ REVIEW GATE UNAVAILABLE — auto-approve halted. <reason>`.
    - **Split terminal (panel valid but not unanimous after max rounds).** A split is NOT a fallback trigger — the panel stood. Treat the union of all panelists' MUST-FIX items as blocking findings, resolve them, and re-run the gate once; a second split is a Hard Blocker: stop and report the split axes (never ask, never approve on a split).
    - **Findings are blocking.** Resolve blocking findings (re-loop GREEN → zcheck → review) before approve.
 
@@ -96,7 +95,7 @@ Runs after Explore, before RED (pipeline step 5); its terminal counterpart runs 
 
 ## Rationale — why the review gate is mandatory
 
-> **2026-06-23, dev2 full outage.** Security must-fix work (incl. #5006) went through autoz without a codex review (codex quota exhausted) and deployed to dev2. Every service failed to boot; recovery took a rollback, a revert, and a monitored re-deploy. An **empty review gate during autonomous deploy is a live hazard** — the trinity chain fills the review (panel, codex, or the automatic opus fallback2 — each tier logged in the PR body), or autoz stops. There is no fourth option.
+> **2026-06-23, dev2 full outage.** Security must-fix work (incl. #5006) went through autoz without a codex review (codex quota exhausted) and deployed to dev2. Every service failed to boot; recovery took a rollback, a revert, and a monitored re-deploy. An **empty review gate during autonomous deploy is a live hazard** — the trinity chain fills the review (panel or the automatic single-panelist fallback — each tier logged in the PR body), or autoz stops. There is no fourth option.
 
 ## Hard Blockers (when stopping is allowed)
 
@@ -105,7 +104,7 @@ Stop and report — never silently fail — only when:
 - Repo/branch literally cannot be accessed (auth, disk, network) **after** the 5-retry protocol: (a) different headers (Bearer↔token), (b) different tokens in env, (c) raw curl bypass, (d) alternative trigger paths (PR close+reopen, empty commit, force push), (e) a real fix attempt. "Permission insufficient" alone never justifies delegating to the user.
 - The user's intent is genuinely incoherent (mutually contradictory requirements). Present the review-chain's diagnosis as a SSOT-TASK-TREE that cannot be made acyclic, not an open-ended question.
 - A drift instruction retracts already-merged work and the retraction is non-revertible (e.g. a destructive migration already ran in prod) — surface the irreversibility.
-- Any REQUIRED trinity consult cannot be filled — all three chain tiers failed (trinity panel, codex, codex-fallback). This covers the Rule 1(b) nontrivial decision consult and the Rule 2 high-risk escalation exactly as it covers the Rule 8 review gate: identical failure semantics wherever the chain is required. Report with `⚠️ REVIEW GATE UNAVAILABLE — <which consult> halted. <reason>` — never proceed on an unfilled required consult, never ask.
+- Any REQUIRED trinity consult cannot be filled — every chain tier failed (trinity panel, then `astra-zhuge`, `grok-elon`, `fable-zhuge` as single panelists). This covers the Rule 1(b) nontrivial decision consult and the Rule 2 high-risk escalation exactly as it covers the Rule 8 review gate: identical failure semantics wherever the chain is required. Report with `⚠️ REVIEW GATE UNAVAILABLE — <which consult> halted. <reason>` — never proceed on an unfilled required consult, never ask.
 - Any REQUIRED trinity consult split twice (Rule 1(b) decision consult or the Rule 8 review gate): a valid panel stayed non-unanimous after max rounds, the MUST-FIX union was adopted/resolved, and the one permitted re-run split again. Report the split axes per `local:trinity` §종결 — never ask, never proceed on a split.
 - **Oversized scope** — `local:decision-gate` judges the tree xxlarge (Case C). The interactive flow would ask for decomposition approval; autoz cannot ask, so it stops and reports the SSOT-TASK-TREE-based decomposition proposal (epic candidates + the `ssot-task` IDs each covers). The user relaunches per epic; autoz never starts an xxlarge tree on its own.
 
@@ -149,6 +148,5 @@ The Skill Tree above shows structure; this table records the contracts that are 
 | `local:z` | z phase0 reuses the SSOT-TASK-TREE autoz built — no rebuild. autoz never re-implements z phases. |
 | `local:zcheck` | Runs before approve; blocking findings must be fixed first. Its persuasion step ties findings to `ssot-task` IDs. |
 | `local:decision-gate` | z phase0 runs it for tier selection (tree shape is a tier signal). autoz itself never gates on user input. |
-| `local:trinity` | Consult channel for would-be user questions + the Rule 8 review gate. Chain = trinity panel → `mcp__llm__chat` (codex) → `codex-fallback` (opus); the tier that produced the verdict is logged in the PR body. |
-| `mcp__llm__chat` (codex) | Fallback1 of the trinity chain — single-engine consult/review when the panel cannot field 3 engines. Transcript references logged in PR body. |
-| `codex-fallback` (Opus agent) | Automatic fallback2 of the trinity chain (`src/local/agents/codex-fallback.md`), spawned when both the panel and codex are unavailable. Verdict logged as `trinity-fallback2 (opus)`. |
+| `local:trinity` | Consult channel for would-be user questions + the Rule 8 review gate. Chain = trinity panel (`astra-zhuge` / `grok-elon` / `fable-zhuge`) → single-panelist fallback in that order; the tier that produced the verdict is logged in the PR body. |
+| `astra-zhuge` / `grok-elon` / `fable-zhuge` (subagents) | The panel engines, reached directly via the `Agent` tool (`subagent_type: "zworkflow:<name>"`; frontmatter `model`: astra / grok / fable). Also the ordered single-panelist fallback when the panel cannot field 3 engines — verdict logged as `trinity-fallback (<agent>)`. No LLM MCP tool exists. |

@@ -202,11 +202,60 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z onboarding` | Run onboarding workflow |
 | `/z admin [accept\|deny\|users\|config\|llmchat\|session list]` | Admin commands |
 | `/z cct [set <name>\|next]` | CCT token status / manual switch |
-| `/z auth [llmux\|cct\|switch <name>\|key]` | Auth backend card: runtime mode switch (llmux default / cct legacy), llmux pool usage, account switch/add/remove; `key` DMs your personal llmux client key |
+| `/z auth [llmux\|cct\|switch <name>\|key]` | Auth backend card: read-only capacity overview by provider (see [Auth capacity overview](#auth-capacity-overview)) + runtime mode switch (llmux default / cct legacy) and account switch/add/remove behind explicit Admin mode; `key` DMs your personal llmux client key |
 | `/z marketplace [add <x>]` | Plugin marketplace |
 | `/z plugin [add\|update\|remove\|rollback\|backups]` | Manage installed plugins |
 | `/z skill [list\|download]` | Skills directory |
 | `/z report [today\|daily\|weekly]` | Usage reports |
+
+### Auth capacity overview
+
+In llmux mode the `auth` card is first and foremost a **read-only capacity
+overview** of the llmux account pool (`GET /llmux/status`), rendered the same
+for everyone — admins included:
+
+- **Grouped by provider** — Claude → Codex → Grok, then any other groups
+  alphabetically; within a group, accounts follow the scheduler's selection
+  order.
+- **Normalized account equivalents, not tokens** — per-group totals sum the
+  remaining `5h` / `7d` (and scoped weekly, e.g. `7d-fable`) window ratios as
+  account equivalents: 100% of one account = 1, with no plan weighting. The
+  llmux status contract carries only utilization ratios and reset times — no
+  token denominators exist, so a token balance is never shown or implied, and
+  cumulative token totals are labelled as consumption, not remaining budget.
+- **Reset planning** — every known reset renders as a Slack-local absolute
+  timestamp plus relative time remaining, and each group summary names the
+  next upcoming reset: which window, which account, and the normalized
+  percentage points it recovers (valid only with no further usage; other
+  windows, cooldowns and auth failures stay as reported).
+- **Unknown stays unknown** — missing, expired or out-of-range windows render
+  as "not supplied / re-query needed", never as 0% or 100%; model-scoped
+  windows are listed separately from the shared limits, and cold/null values
+  are excluded from totals with the measured coverage shown (`measured n/m`).
+- **Grok / API-key accounts** — upstream llmux collapses raw request/token
+  counts into a utilization ratio and attaches a synthetic short reset horizon
+  to Grok's reset-less burst limits; the card shows the rate-limit ratio but
+  suppresses that synthetic reset instead of presenting it as a real quota
+  window with a countdown.
+- **Codex manual resets** — observed `usage_control` counters (owned /
+  currently applicable) display read-only; soma-work never redeems them
+  automatically.
+- **Admin is explicit opt-in** — every entry point renders readonly; eligible
+  admins get an [Admin mode] button, and only that opens the mode switch /
+  settings / add / remove / switch controls. A forged or stale admin click
+  from a non-admin is demoted to readonly server-side.
+- **Pagination** — large pools page at a fixed size with prev/next buttons so
+  every account is reachable; Refresh and paging preserve the chosen view and
+  page. The legacy CCT view embedded in `auth` also pages slots; its management
+  buttons and modal submissions return to the same auth view and page. The
+  separate `cct` command keeps its existing behavior.
+
+Wiring: [`src/slack/z/topics/auth-topic.ts`](./src/slack/z/topics/auth-topic.ts)
+→ [`src/auth/llmux-client.ts`](./src/auth/llmux-client.ts) →
+[`src/slack/auth/capacity.ts`](./src/slack/auth/capacity.ts) →
+[`src/slack/auth/builder.ts`](./src/slack/auth/builder.ts). Details and pinned
+upstream source verification:
+[`.prd/07-auth-capacity-spec.md`](./.prd/07-auth-capacity-spec.md).
 
 ### Auto-compact thresholds (`autocompact` / `compact-threshold`)
 
@@ -237,7 +286,9 @@ source of truth for any model not listed here:
 |---|---|---|
 | `claude-fable-5-1[1m]` (aliases `fable`, `fable[1m]`, `fable-5-1`) | 1,000,000 | 750,000 |
 | `claude-fable-5[1m]` (version-pinned alias `fable-5`) | 1,000,000 | 750,000 |
-| `claude-opus-5[1m]` (alias `opus`) | 1,000,000 | 750,000 |
+| `claude-opus-5-5[1m]` (aliases `opus`, `opus[1m]`, `opus-5-5`) | 1,000,000 | 750,000 |
+| `claude-opus-5[1m]` (version-pinned alias `opus-5[1m]`) | 1,000,000 | 750,000 |
+| `claude-opus-5-5` (bare, no `[1m]`) | 200,000 | none — falls back to the legacy per-user percentage below |
 | `claude-opus-5` (bare, no `[1m]`) | 200,000 | none — falls back to the legacy per-user percentage below |
 | `gpt-5.6-sol[1m]` (alias `sol[1m]`) | 1,000,000 | 600,000 |
 | `gpt-5.6-sol` (bare) | 372,000 | 340,000 |
@@ -309,11 +360,11 @@ A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Sour
 | `theme` · `theme <name>` · `theme set <name>` · `theme=<name>` | Theme get/set (both `set`-prefixed and bare-value forms accepted) |
 | `sessions theme [<name>]` · `sessions theme=<name>` | Session-scoped theme |
 | `new [<prompt>]` · `renew [<prompt>]` | Reset / renew session, optional prompt carries over |
-| `auth` · `auth llmux\|cct` · `set auth <mode>` · `auth switch <name>` | Auth backend card / runtime mode switch (#1189; mutations admin-only) |
+| `auth` · `auth llmux\|cct` · `set auth <mode>` · `auth switch <name>` | Auth backend card / runtime mode switch (#1189; defaults to the read-only [capacity overview](#auth-capacity-overview) for everyone, mutations admin-only behind Admin mode) |
 | `key` · `auth key` | DM yourself your personal llmux client key + local Claude Code setup (`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`). Same user always gets the same key; llmux meters bot + local usage as one tenant. Works for every user (it is your own key) |
 | `cct` · `cct set <n>` · `cct next` · `cct usage [<n>]` · `cct auto [dry]` | CCT token status / rotation; `auto` = admin-only manual auto-rotate (token mutation is card-only since #569) |
 | `cron` · `schedule` (also `크론` · `스케줄`) | Interactive cron card — per-job model/output-target dropdowns + delete button; routed as a command so autogoal can never swallow it; admins see all users' jobs with the owner shown |
-| `cron model <name> <default\|fast\|model>` · `cron target <name> <channel\|dm\|thread>` · `cron delete <name>` | Change a job's model (`default` = creator's current model at fire time) / delivery target / delete; admins address another user's job by appending `<@owner>` |
+| `cron model <name> <default\|opus\|fable\|fast\|model>` · `cron target <name> <channel\|dm\|thread>` · `cron delete <name>` | Change a job's model (`default` = creator's current model at fire time; `opus`/`fable` = latest opus/fable resolved at fire time) / delivery target / delete; admins address another user's job by appending `<@owner>` |
 | `$` · `$model <v>` · `$verbosity <v>` · `$effort <v>` · `$thinking <v>` · `$thinking_summary <v>` | **Legacy** session prefix during deprecation grace period (emits one-line notice, use `%` going forward) |
 
 Any free-form text not matching the whitelist is treated as a chat / workflow dispatch prompt.
@@ -471,7 +522,7 @@ cp config.example.json config.json
 
 #### 5. Inject env vars into the Claude Agent SDK (optional)
 
-The SDK is pinned to `0.3.251` (native Claude Code `2.1.251`) for Fable 5.1 support. Streaming turns force `CLAUDE_CODE_ENABLE_TASKS=false` and `MCP_CONNECTION_NONBLOCKING=0` to preserve the Slack TodoWrite snapshot adapter and first-turn MCP initialization. These compatibility settings are owned by the stream-options builder; they are not operator overrides.
+The SDK is pinned to `0.3.284` (native Claude Code `2.1.284`) for Fable 5.1 and Opus 5.5 (`claude-opus-5-5`, requires Claude Code ≥ 2.1.280) support. Streaming turns force `CLAUDE_CODE_ENABLE_TASKS=false` and `MCP_CONNECTION_NONBLOCKING=0` to preserve the Slack TodoWrite snapshot adapter and first-turn MCP initialization. These compatibility settings are owned by the stream-options builder; they are not operator overrides.
 
 Sometimes you need to set env vars on the SDK subprocess only (not on the
 host process), for example to disable a built-in MCP server bundled with the
@@ -652,7 +703,6 @@ src/                                # TypeScript source
 packages/                           # Workspace packages
 ├── mcp-servers/                    # Internal MCP servers
 │   ├── agent/                      # agent_chat / agent_reply tools
-│   ├── llm/                        # LLM aggregate (codex)
 │   ├── model-command/              # Session/UI model commands
 │   ├── slack-mcp/                  # Thread context + file upload
 │   ├── cron/                       # Cron job management

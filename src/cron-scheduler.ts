@@ -17,6 +17,7 @@ import { Logger } from './logger';
 import { buildWorkSessionKey } from './session-identity';
 import type { SessionRegistry } from './session-registry';
 import type { ConversationSession } from './types';
+import { MODEL_ALIASES } from './user-settings-store';
 
 const logger = new Logger('CronScheduler');
 const POLL_INTERVAL_MS = 60_000; // 1 minute
@@ -74,9 +75,15 @@ function currentMinuteStr(): string {
 
 const FAST_MODEL = 'claude-sonnet-4-20250514';
 
-/** Resolve model override string from CronModelConfig. undefined = use session default. */
+/**
+ * Resolve model override string from CronModelConfig. undefined = use session default.
+ * `opus` / `fable` read MODEL_ALIASES on every fire, so they follow the latest
+ * generation without rewriting stored jobs.
+ */
 export function resolveModelOverride(config?: CronModelConfig): string | undefined {
   if (!config || config.type === 'default') return undefined;
+  if (config.type === 'opus') return MODEL_ALIASES.opus;
+  if (config.type === 'fable') return MODEL_ALIASES.fable;
   if (config.type === 'fast') return FAST_MODEL;
   if (config.type === 'custom' && config.model) return config.model;
   return undefined;

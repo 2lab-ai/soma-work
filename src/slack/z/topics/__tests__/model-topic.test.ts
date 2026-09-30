@@ -100,17 +100,17 @@ describe('model-topic.applyModel', () => {
   it('resolves opus[1m] alias to the current-latest 1M variant', async () => {
     const r = await applyModel({ userId: 'U1', value: 'opus[1m]' });
     expect(r.ok).toBe(true);
-    // The bare `opus[1m]` alias follows "latest opus" — currently Opus 5.
+    // The bare `opus[1m]` alias follows "latest opus" — currently Opus 5.5.
     // When a new opus generation lands the alias flips here too; that's the
     // single point of update. Version-pinned aliases are covered separately
     // below (opus-4.7[1m], opus-4.6[1m]).
-    expect(r.description).toContain('claude-opus-5[1m]');
+    expect(r.description).toContain('claude-opus-5-5[1m]');
   });
 
-  it('resolves bare `opus` to the 1M Opus 5 id', async () => {
+  it('resolves bare `opus` to the 1M Opus 5.5 id', async () => {
     const r = await applyModel({ userId: 'U1', value: 'opus' });
     expect(r.ok).toBe(true);
-    expect(r.description).toContain('claude-opus-5[1m]');
+    expect(r.description).toContain('claude-opus-5-5[1m]');
   });
 
   it('resolves and persists `fable` as the literal claude-fable-5-1[1m]', async () => {

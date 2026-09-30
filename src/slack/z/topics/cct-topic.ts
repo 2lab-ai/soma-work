@@ -17,9 +17,78 @@ import { config } from '../../../config';
 import { Logger } from '../../../logger';
 import { getTokenManager, type TokenSummary } from '../../../token-manager';
 import type { ApplyResult, RenderResult, ZTopicBinding } from '../../actions/z-settings-actions';
+import { decodeCctActionValue, encodeCctActionValue } from '../../cct/action-value';
+import { encodeAuthOriginPayload } from '../../cct/auth-origin';
 import { appendStoreReadFailureBanner, buildCctCardBlocks, type CctCardViewerMode } from '../../cct/builder';
+import { CCT_ACTION_IDS } from '../../cct/views';
+import type { ZBlock } from '../types';
 
 const logger = new Logger('CctTopic');
+
+/**
+ * Compositional input for an EMBEDDING wrapper (the `auth` card in ccp
+ * mode, T3 #auth-capacity-overview follow-up). Absent → direct `cct`
+ * rendering, unchanged.
+ *
+ * When present:
+ *   - slot rows are WINDOWED to `page`/`pageSize` (slot pagination, not
+ *     block truncation — every slot stays reachable via the wrapper's
+ *     paging nav; out-of-range pages clamp to the last page).
+ *   - the card-level [Refresh] (`cct_refresh_card`) is removed: its
+ *     handler re-renders the BARE CCT card in place, which would wipe
+ *     the wrapper (header / admin toggle / nav). The wrapper's own
+ *     Refresh re-renders the full composition instead. All other legacy
+ *     controls (Activate / Add / Remove / Attach / Detach / Next rotate /
+ *     Refresh-All-OAuth) are kept as-is.
+ */
+export interface CctCardEmbed {
+  /** Requested 0-based slot page; clamped into [0, pageCount-1]. */
+  page: number;
+  /** Slot rows per page (>= 1). */
+  pageSize: number;
+}
+
+/**
+ * Remove the card-level Refresh control for embedded rendering. Only the
+ * card-level actions row carries `cct_refresh_card` (per-slot Refresh was
+ * removed in card v2); an actions block left empty is dropped entirely —
+ * Slack rejects actions blocks with zero elements (readonly cards have a
+ * refresh-only row).
+ */
+function stripCardLevelRefresh(blocks: ZBlock[]): void {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i] as { type?: string; elements?: Array<{ action_id?: string }> };
+    if (block.type !== 'actions' || !Array.isArray(block.elements)) continue;
+    const kept = block.elements.filter((el) => el.action_id !== CCT_ACTION_IDS.refresh_card);
+    if (kept.length === block.elements.length) continue;
+    if (kept.length === 0) blocks.splice(i, 1);
+    else block.elements = kept;
+  }
+}
+
+/**
+ * Stamp the auth-origin page onto every `cm:`-tagged button value of an
+ * embedded card: `cm:<mode>|<inner>` → `cm:<mode>|ao:<page>|<inner>`.
+ * Mutation handlers in `cct/actions.ts` peel the marker and re-render
+ * the AUTH WRAPPER (at that page) instead of the bare CCT card, so the
+ * admin toggle / pagination survive mutations. Non-tagged values (the
+ * cancel button, auth nav JSON) are untouched, and direct cards never
+ * pass through here.
+ */
+function stampAuthOriginOnActionValues(blocks: ZBlock[], page: number): void {
+  for (const block of blocks) {
+    const b = block as { type?: string; elements?: Array<{ value?: unknown }> };
+    if (b.type !== 'actions' || !Array.isArray(b.elements)) continue;
+    for (const el of b.elements) {
+      const decoded = decodeCctActionValue(el.value);
+      if (decoded.kind !== 'tagged') continue;
+      el.value = encodeCctActionValue({
+        mode: decoded.mode,
+        payload: encodeAuthOriginPayload(page, decoded.payload),
+      });
+    }
+  }
+}
 
 /**
  * Pull the latest `CctStoreSnapshot` via the public `getSnapshot()` API so
@@ -78,8 +147,10 @@ export async function renderCctCard(args: {
   issuedAt: number;
   viewerMode?: CctCardViewerMode;
   skipOnOpenFetch?: boolean;
-}): Promise<RenderResult> {
-  const { userId, viewerMode: viewerModeOverride, skipOnOpenFetch } = args;
+  /** Embedding-wrapper composition (auth ccp card). Absent = direct card, unchanged. */
+  embed?: CctCardEmbed;
+}): Promise<RenderResult & { embedSlotPage?: number; embedSlotPageCount?: number }> {
+  const { userId, viewerMode: viewerModeOverride, skipOnOpenFetch, embed } = args;
   const effectiveViewerMode: CctCardViewerMode = viewerModeOverride ?? (isAdminUser(userId) ? 'admin' : 'readonly');
 
   // Admin viewer triggers the on-open fan-out unless the caller has
@@ -105,13 +176,46 @@ export async function renderCctCard(args: {
   // so operators can still see the api_key slots exist.
   const visibleSlots = slots.filter((s) => s.kind === 'cct');
   const hiddenApiKeyCount = slots.length - visibleSlots.length;
+
+  // ── Embed slot pagination (auth ccp wrapper, T3 follow-up) ─────────
+  // Window the SLOTS, never the built blocks: every legacy slot stays
+  // reachable through the wrapper's paging nav, and the builder's own
+  // overflow trimmer never needs to fire for a page-sized window.
+  let renderSlots = visibleSlots;
+  let embedSlotPage: number | undefined;
+  let embedSlotPageCount: number | undefined;
+  if (embed) {
+    const pageSize = Math.max(1, Math.floor(embed.pageSize));
+    embedSlotPageCount = Math.max(1, Math.ceil(visibleSlots.length / pageSize));
+    // Stale cards may carry an out-of-range page (slots removed since
+    // render) — clamp to the last page instead of rendering empty.
+    embedSlotPage = Math.min(embedSlotPageCount - 1, Math.max(0, Math.floor(embed.page) || 0));
+    renderSlots = visibleSlots.slice(embedSlotPage * pageSize, (embedSlotPage + 1) * pageSize);
+  }
+
   const blocks = buildCctCardBlocks({
-    slots: visibleSlots,
+    slots: renderSlots,
     states,
     activeKeyId,
     nowMs: Date.now(),
     viewerMode: effectiveViewerMode,
   });
+
+  if (embed) {
+    stripCardLevelRefresh(blocks);
+    stampAuthOriginOnActionValues(blocks, embedSlotPage ?? 0);
+    if ((embedSlotPageCount ?? 1) > 1) {
+      blocks.push({
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `${visibleSlots.length} slot(s) · ${(embedSlotPage ?? 0) + 1}/${embedSlotPageCount} 페이지`,
+          },
+        ],
+      });
+    }
+  }
 
   // #644 review P3 — surface store-read failures as a visible warning
   // banner instead of an indistinguishable-from-empty card. Operators
@@ -150,7 +254,11 @@ export async function renderCctCard(args: {
   });
 
   const active = visibleSlots.find((s) => s.keyId === activeKeyId);
-  return { text: `🔑 CCT (active: ${active?.name ?? 'none'})`, blocks };
+  return {
+    text: `🔑 CCT (active: ${active?.name ?? 'none'})`,
+    blocks,
+    ...(embed ? { embedSlotPage, embedSlotPageCount } : {}),
+  };
 }
 
 export async function applyCct(args: { userId: string; value: string }): Promise<ApplyResult> {

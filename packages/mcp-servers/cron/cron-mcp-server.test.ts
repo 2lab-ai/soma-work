@@ -197,7 +197,7 @@ describe('handleCreate', () => {
       storage,
     );
     expect(r.isError).toBe(true);
-    expect(r.text).toBe("Error: Invalid model_type 'wizard'. Use 'default', 'fast', or 'custom'");
+    expect(r.text).toBe("Error: Invalid model_type 'wizard'. Use 'default', 'opus', 'fable', 'fast', or 'custom'");
   });
 
   it('rejects model_type=custom without model_name', () => {
@@ -286,6 +286,20 @@ describe('handleCreate', () => {
     expect(r.isError).toBe(false);
     expect(r.text).toContain(' | model: fast');
     expect(r.text).not.toContain(' | model: fast(');
+  });
+
+  it('creates job with the floating model_type=opus / fable (no pinned model id stored)', () => {
+    for (const type of ['opus', 'fable'] as const) {
+      const r = handleCreate(
+        { name: `alias-${type}`, expression: '* * * * *', prompt: 'hi', channel: 'C100', model_type: type },
+        baseContext,
+        storage,
+      );
+      expect(r.isError).toBe(false);
+      expect(r.text).toContain(` | model: ${type}`);
+      const job = storage.getAll().find((j) => j.name === `alias-${type}`);
+      expect(job?.modelConfig).toEqual({ type });
+    }
   });
 
   it('creates job with model_type=custom + model_name (modelStr includes model)', () => {
@@ -462,6 +476,14 @@ describe('handleUpdate', () => {
     const r = handleUpdate({ name: 'daily', model_type: 'custom', model_name: 'gpt-5.5' }, ownerContext, storage);
     expect(r.isError).toBe(false);
     expect(storage.getJobsByOwner('U_OWNER')[0].modelConfig).toEqual({ type: 'custom', model: 'gpt-5.5' });
+  });
+
+  it('changes model to the floating opus alias (model_type=opus) and lists it as opus(latest)', () => {
+    seedJob(storage, { modelConfig: { type: 'custom', model: 'gpt-5.5' } });
+    const r = handleUpdate({ name: 'daily', model_type: 'opus' }, ownerContext, storage);
+    expect(r.isError).toBe(false);
+    expect(storage.getJobsByOwner('U_OWNER')[0].modelConfig).toEqual({ type: 'opus' });
+    expect(handleList(ownerContext, storage).text).toContain('model:opus(latest)');
   });
 
   it('model_type=default clears override → creator current model at fire time', () => {

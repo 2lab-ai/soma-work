@@ -45,11 +45,7 @@ Apply **pragmatic minimalism** in all recommendations:
 ## Execution Protocol
 
 1. **Read context** provided in the prompt thoroughly
-2. **Use Codex** for deep reasoning:
-   ```
-   mcp__llm__chat:
-     model: "codex"
-   ```
+2. **Reason deeply on your own engine** — you run directly on the engine set by your agent frontmatter (astra for `oracle` / `astra-zhuge`, grok for `grok-elon`, fable for `fable-zhuge`). There is no external model to call and no MCP chat tool; do not spawn agents or panels.
 3. **Synthesize** findings into the response structure above
 4. **Be decisive** - give ONE clear recommendation
 

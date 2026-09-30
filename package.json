@@ -21,6 +21,7 @@
     "test": "vitest run",
     "test:release": "vitest run --pool=forks --isolate --maxWorkers=1 --testTimeout=30000 --hookTimeout=120000",
     "test:watch": "vitest",
+    "verify:lean": "bash scripts/verification/lean-verify.sh",
     "smoke:mcp-bins": "node scripts/smoke/mcp-bins.js",
     "smoke:assets": "npm run smoke:assets --workspaces --if-present",
     "smoke:deploy-bundle": "node scripts/smoke/deploy-bundle.js",
@@ -53,7 +54,7 @@
     "vitest": "^4.0.15"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.251",
+    "@anthropic-ai/claude-agent-sdk": "0.3.284",
     "@clickhouse/client": "^1.18.2",
     "@fastify/formbody": "^8.0.2",
     "@fastify/websocket": "^11.2.0",
@@ -75,7 +76,7 @@
     "playwright": "^1.60.0",
     "proper-lockfile": "^4.1.2",
     "rotating-file-stream": "^3.2.9",
-    "soma-lib": "https://github.com/2lab-ai/soma-lib/releases/download/v0.6.0/soma-lib-0.6.0.tgz",
+    "soma-lib": "https://github.com/2lab-ai/soma-lib/releases/download/v0.7.0/soma-lib-0.7.0.tgz",
     "ulid": "^3.0.2",
     "zod": "^4.3.6"
   }

@@ -13,7 +13,7 @@
  * choice. What remains is the narrow migration that was actually requested:
  *
  *   - opus-family defaults (`claude-opus-*`, bare or `[1m]`, including a bare
- *     `claude-opus-5`) converge on `claude-opus-5[1m]`;
+ *     `claude-opus-5`) converge on `claude-opus-5-5[1m]`;
  *   - every other user is left byte-identical;
  *   - `sessions.json` is never opened — active sessions keep their model.
  *

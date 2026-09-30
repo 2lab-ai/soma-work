@@ -78,6 +78,17 @@ describe('authorization', () => {
     expect(updateMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('opus / fable dropdown values store the floating alias type', async () => {
+    seed();
+    for (const selected of ['opus', 'fable'] as const) {
+      await handler.handleAction(
+        body({ actionId: 'cron_model::U_ALICE::daily-report', user: 'U_ALICE', selected }),
+        vi.fn(),
+      );
+      expect(storage.getJobsByOwner('U_ALICE')[0].modelConfig).toEqual({ type: selected });
+    }
+  });
+
   it("admin can change another user's job", async () => {
     seed();
     const respond = vi.fn();

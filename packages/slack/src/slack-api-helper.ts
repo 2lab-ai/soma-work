@@ -19,6 +19,27 @@ export interface MessageOptions {
 }
 
 /**
+ * A bot message that landed INSIDE a thread.
+ *
+ * `threadTs` is where Slack actually put it, not necessarily where the caller
+ * asked for it (a dead `thread_ts` is silently dropped — see
+ * {@link SlackApiHelper.postMessage}). `kind` separates an ordinary
+ * `chat.postMessage` from a `chat.startStream` message, which is posted by
+ * `TurnSurface` through the raw client and therefore reports itself, and from
+ * `user` — an INBOUND human reply, which this helper never sends and which the
+ * message ingress therefore reports on its behalf (a user's own reply pushes
+ * the panel up exactly like a bot message does).
+ */
+export interface ThreadPostEvent {
+  channel: string;
+  threadTs: string;
+  ts: string;
+  kind: 'post' | 'stream' | 'user';
+}
+
+export type ThreadPostListener = (event: ThreadPostEvent) => void;
+
+/**
  * Rate limiting 설정
  */
 interface RateLimitConfig {
@@ -28,9 +49,252 @@ interface RateLimitConfig {
   maxQueueSize: number; // 최대 큐 크기 (초과 시 oldest drop)
 }
 
+/**
+ * How one call rides the rate-limit queue. Only the queue POSITION is
+ * negotiable — see {@link SlackApiHelper.enqueue}.
+ */
+export interface EnqueueOptions {
+  /**
+   * Put this call at the front of the queue. For calls a human is waiting on
+   * RIGHT NOW (the queue-control reactions), not for anything a background
+   * loop emits.
+   */
+  priority?: boolean;
+}
+
+/** One waiting call. The queue is a priority PREFIX followed by the ordinary segment. */
+interface QueuedCall {
+  execute: () => Promise<any>;
+  resolve: (value: any) => void;
+  reject: (error: any) => void;
+  /** {@link EnqueueOptions.priority} — carried so the queue can see its own lanes. */
+  priority: boolean;
+}
+
+/**
+ * How many priority calls may be served in a row while ordinary ones wait.
+ *
+ * Strict priority has no progress guarantee, and this lane is fed by something
+ * that never goes quiet on a busy session: every queue paint is 1–3 reaction
+ * calls. Without a bound, a session that keeps parking messages would hold the
+ * streaming `chat.update`s behind it indefinitely. After this many the next
+ * slot belongs to the ordinary queue — the control still arrives inside one
+ * extra call, which is nothing like the seconds the shared FIFO cost it.
+ */
+const PRIORITY_BURST_LIMIT = 3;
+
 interface UpdateMessageOptions {
   unfurlLinks?: boolean;
   unfurlMedia?: boolean;
+}
+
+/** Max length of a DERIVED fallback. Caller-supplied text is never truncated. */
+const DERIVED_FALLBACK_MAX_LENGTH = 300;
+
+/** Payload shape the rendered-empty guard inspects (post + update share it). */
+export interface RenderedMessagePayload {
+  text?: string;
+  blocks?: unknown[];
+  attachments?: unknown[];
+}
+
+/** Read-only view of the few named fields the guard is allowed to look at. */
+type RenderedNode = Record<string, unknown>;
+
+/** Collapse whitespace; `undefined` when the value is missing or whitespace-only. */
+function meaningful(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const collapsed = value.replace(/\s+/g, ' ').trim();
+  return collapsed.length > 0 ? collapsed : undefined;
+}
+
+/** `undefined` for anything that is not a plain object node. */
+function asNode(value: unknown): RenderedNode | undefined {
+  return value && typeof value === 'object' ? (value as RenderedNode) : undefined;
+}
+
+/** Text of a Slack text object (`{type:'mrkdwn'|'plain_text', text}`) at a known position. */
+function textObject(value: unknown): string | undefined {
+  return meaningful(asNode(value)?.text);
+}
+
+/**
+ * Text carried by `rich_text` children. Only `text` fields authored for display
+ * are read — `url`/`user_id`/`channel_id` and friends are never echoed.
+ */
+function richTextContent(elements: unknown): string | undefined {
+  if (!Array.isArray(elements)) {
+    return undefined;
+  }
+  for (const element of elements) {
+    const node = asNode(element);
+    if (!node) {
+      continue;
+    }
+    const own = meaningful(node.text);
+    if (own) {
+      return own;
+    }
+    const nested = richTextContent(node.elements);
+    if (nested) {
+      return nested;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * First human-meaningful string in a block list, in document order.
+ *
+ * Deliberately narrow: only the block types that actually carry prose are
+ * recognized. `divider`/`actions`/`input` carry no message content (a button
+ * label is a control, not the message), and no arbitrary metadata
+ * (`url`, `image_url`, `value`, `block_id`, …) is traversed or echoed.
+ */
+function blocksContent(blocks: unknown): string | undefined {
+  if (!Array.isArray(blocks)) {
+    return undefined;
+  }
+  for (const block of blocks) {
+    const node = asNode(block);
+    if (!node) {
+      continue;
+    }
+    switch (typeof node.type === 'string' ? node.type : '') {
+      case 'section': {
+        const body = textObject(node.text);
+        if (body) {
+          return body;
+        }
+        if (Array.isArray(node.fields)) {
+          for (const field of node.fields) {
+            const fieldText = textObject(field);
+            if (fieldText) {
+              return fieldText;
+            }
+          }
+        }
+        break;
+      }
+      case 'header': {
+        const header = textObject(node.text);
+        if (header) {
+          return header;
+        }
+        break;
+      }
+      case 'context': {
+        if (Array.isArray(node.elements)) {
+          for (const element of node.elements) {
+            // context elements are text objects or image elements (alt_text).
+            const elementText = textObject(element) || meaningful(asNode(element)?.alt_text);
+            if (elementText) {
+              return elementText;
+            }
+          }
+        }
+        break;
+      }
+      case 'markdown': {
+        const markdown = meaningful(node.text);
+        if (markdown) {
+          return markdown;
+        }
+        break;
+      }
+      case 'image': {
+        const alt = meaningful(node.alt_text) || textObject(node.title);
+        if (alt) {
+          return alt;
+        }
+        break;
+      }
+      case 'rich_text': {
+        const rich = richTextContent(node.elements);
+        if (rich) {
+          return rich;
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return undefined;
+}
+
+/** First human-meaningful string in an attachment list, in document order. */
+function attachmentsContent(attachments: unknown): string | undefined {
+  if (!Array.isArray(attachments)) {
+    return undefined;
+  }
+  for (const attachment of attachments) {
+    const node = asNode(attachment);
+    if (!node) {
+      continue;
+    }
+    // `fallback` is Slack's own accessibility string — prefer it when present.
+    const direct =
+      meaningful(node.fallback) || meaningful(node.text) || meaningful(node.title) || meaningful(node.pretext);
+    if (direct) {
+      return direct;
+    }
+    if (Array.isArray(node.fields)) {
+      for (const field of node.fields) {
+        const fieldNode = asNode(field);
+        const fieldText = meaningful(fieldNode?.title) || meaningful(fieldNode?.value);
+        if (fieldText) {
+          return fieldText;
+        }
+      }
+    }
+    const nested = blocksContent(node.blocks);
+    if (nested) {
+      return nested;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Central rendered-empty guard (U11 / A23) — the ONE place that decides what
+ * top-level `text` a Slack message carries.
+ *
+ * - Non-blank caller text is returned unchanged, byte for byte.
+ * - Blank text + meaningful blocks/attachments derives an accessibility
+ *   fallback from the first prose the message actually renders (section /
+ *   header / context / markdown / image alt_text / rich_text text, attachment
+ *   fallback / text / title / pretext / fields / nested blocks), collapsed to a
+ *   single line and capped at {@link DERIVED_FALLBACK_MAX_LENGTH}. Attachment-only
+ *   messages are ALLOWED — `docs/misc/reference/slack-block-kit.md:83` only
+ *   requires that a top-level `text` fallback exist.
+ * - A payload with nothing meaningful to render (no text, empty blocks, or only
+ *   controls such as `divider`/`actions`) is rejected here, before the API call,
+ *   with an explicit Error. Nothing is silently dropped: the original blocks and
+ *   attachments are never rewritten or sanitized, only read.
+ *
+ * An update whose text is blank AND whose blocks/attachments render nothing is
+ * rejected too — clearing a message is done by `deleteMessage` or by updating to
+ * an explicit marker text (e.g. `actions/click-classifier.ts` STALE_CLICK_TEXT),
+ * never by pushing a message the reader sees as empty.
+ */
+export function resolveRenderedMessageText(payload: RenderedMessagePayload, apiMethod: string): string {
+  if (typeof payload.text === 'string' && payload.text.trim().length > 0) {
+    return payload.text;
+  }
+
+  const derived = blocksContent(payload.blocks) || attachmentsContent(payload.attachments);
+  if (derived) {
+    return derived.length > DERIVED_FALLBACK_MAX_LENGTH
+      ? `${derived.slice(0, DERIVED_FALLBACK_MAX_LENGTH - 1)}…`
+      : derived;
+  }
+
+  throw new Error(
+    `${apiMethod}: refusing to send a rendered-empty message — text is blank and blocks/attachments carry no meaningful content`,
+  );
 }
 
 const DEFAULT_RATE_LIMIT: RateLimitConfig = {
@@ -54,13 +318,23 @@ export class SlackApiHelper {
   private tokens: number;
   private lastRefill: number;
   private lastRequest: number = 0;
-  private queue: Array<{
-    execute: () => Promise<any>;
-    resolve: (value: any) => void;
-    reject: (error: any) => void;
-  }> = [];
+  private queue: QueuedCall[] = [];
+  /**
+   * Priority calls served back-to-back while ordinary ones were waiting. Reset
+   * the moment an ordinary call is served, or whenever none is waiting — it
+   * measures STARVATION, not traffic. See {@link PRIORITY_BURST_LIMIT}.
+   */
+  private priorityBurst = 0;
   private processing = false;
   private rateLimit: RateLimitConfig;
+
+  /**
+   * The HOST's single thread-post hook. Set by whoever composes the app; kept
+   * separate from {@link addThreadPostListener} so a component that subscribes
+   * (the thread panel) can never clobber the host's assignment, and vice versa.
+   */
+  onThreadPost?: ThreadPostListener;
+  private threadPostListeners = new Set<ThreadPostListener>();
 
   constructor(
     private app: App,
@@ -79,23 +353,113 @@ export class SlackApiHelper {
   }
 
   /**
-   * Rate limit 큐에 API 호출 추가
+   * Subscribe to thread posts. Returns the unsubscribe function.
+   *
+   * Exists because the thread panel has to learn that something was posted
+   * BELOW it (it can only stay at the tail by re-posting itself), and a
+   * per-sender notification would miss whichever sender is added next. Every
+   * message that goes through this helper reports itself here, once.
    */
-  private async enqueue<T>(execute: () => Promise<T>): Promise<T> {
+  addThreadPostListener(listener: ThreadPostListener): () => void {
+    this.threadPostListeners.add(listener);
+    return () => {
+      this.threadPostListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Announce a thread message. Public because `TurnSurface` posts its B1 stream
+   * through the raw client (`chat.startStream`), so the only component that can
+   * report that message is that one.
+   *
+   * A listener fault is swallowed: the post has already happened, and letting a
+   * UI subscriber's exception propagate would fail the send that succeeded.
+   */
+  notifyThreadPost(event: ThreadPostEvent): void {
+    if (!event.threadTs || !event.ts) {
+      return;
+    }
+    for (const listener of [this.onThreadPost, ...this.threadPostListeners]) {
+      if (!listener) {
+        continue;
+      }
+      try {
+        listener(event);
+      } catch (error) {
+        this.logger.warn('thread-post listener failed', { channel: event.channel, ts: event.ts, error });
+      }
+    }
+  }
+
+  /**
+   * Rate limit 큐에 API 호출 추가
+   *
+   * `priority` is the INTERACTIVE lane (2026-09-21). Everything this helper
+   * sends shares one FIFO queue, so a queue-control reaction used to wait
+   * behind the streaming `chat.update` calls of the turn it is trying to
+   * control — measured at 5–8 deep, seconds of delay, by which time the model
+   * had consumed the item and the user's Cancel could only be refused. A
+   * priority item is inserted at the FRONT instead (FIFO among priority items,
+   * so a control SET still paints in the order it was asked for). It is a
+   * queue-position change only: the token bucket and `minInterval` still apply,
+   * because Slack's limits are not ours to skip — and the lane is bounded
+   * ({@link PRIORITY_BURST_LIMIT}), so ordinary calls keep making progress.
+   */
+  private async enqueue<T>(execute: () => Promise<T>, options?: EnqueueOptions): Promise<T> {
+    const priority = options?.priority === true;
     return new Promise<T>((resolve, reject) => {
       // Drop oldest if queue exceeds maxQueueSize
       if (this.queue.length >= this.rateLimit.maxQueueSize) {
-        const dropped = this.queue.shift()!;
-        dropped.reject(new Error('Queue overflow: dropped oldest request'));
+        // The oldest ORDINARY waiter. Dropping the literal oldest would evict
+        // the priority lane first — it sits at the front — which is the exact
+        // inversion this lane exists to prevent. An all-priority queue falls
+        // back to the front, so the drop always makes room.
+        const boundary = this.priorityPrefixLength();
+        const victim = boundary < this.queue.length ? boundary : 0;
+        const dropped = this.queue.splice(victim, 1)[0]!;
+        // `data.error` is the evidence shape every caller already reads for
+        // "nothing was created" (see `DEFINITIVE_POST_REJECTIONS` in
+        // thread-surface.ts). A dropped item provably never ran `execute()`, so
+        // it deserves that shape — a bare Error is indistinguishable from a
+        // socket reset, which callers must treat as "the message may exist".
+        dropped.reject(
+          Object.assign(new Error('Queue overflow: dropped oldest request'), { data: { error: 'queue_overflow' } }),
+        );
         this.logger.warn('Queue overflow: dropped oldest request', {
           queueLength: this.queue.length,
           maxQueueSize: this.rateLimit.maxQueueSize,
         });
       }
 
-      this.queue.push({ execute, resolve, reject });
+      this.insert({ execute, resolve, reject, priority });
       this.processQueue();
     });
+  }
+
+  /** Where the priority prefix ends — also the index of the first ordinary call. */
+  private priorityPrefixLength(): number {
+    const firstOrdinary = this.queue.findIndex((queued) => !queued.priority);
+    return firstOrdinary === -1 ? this.queue.length : firstOrdinary;
+  }
+
+  /**
+   * Put a call in its LANE. The queue invariant lives here and only here: every
+   * priority call sits before every ordinary one, and within each lane the
+   * order is the order they arrived.
+   *
+   * `front` is for a call that is re-entering after a `ratelimited` retry — it
+   * has already waited its turn, so it goes to the head of its own lane rather
+   * than the head of the queue. A plain `unshift` broke the invariant both
+   * ways: an ordinary retry overtook every waiting control, and it left the
+   * prefix out of order for the next insert to read.
+   */
+  private insert(item: QueuedCall, options?: { front?: boolean }): void {
+    const boundary = this.priorityPrefixLength();
+    if (item.priority) {
+      this.queue.splice(options?.front ? 0 : boundary, 0, item);
+      return;
+    }
+    this.queue.splice(options?.front ? boundary : this.queue.length, 0, item);
   }
 
   /**
@@ -129,8 +493,15 @@ export class SlackApiHelper {
         await this.sleep(this.rateLimit.minInterval - elapsed);
       }
 
-      // 요청 실행
-      const item = this.queue.shift()!;
+      // 요청 실행 — the priority prefix first, UNLESS it has had its burst and
+      // ordinary work is waiting (see PRIORITY_BURST_LIMIT).
+      const boundary = this.priorityPrefixLength();
+      const ordinaryWaiting = boundary < this.queue.length;
+      const servePriority = boundary > 0 && (!ordinaryWaiting || this.priorityBurst < PRIORITY_BURST_LIMIT);
+      const item = this.queue.splice(servePriority ? 0 : boundary, 1)[0]!;
+      // The counter measures an ordinary call being HELD UP: it advances only
+      // while one is waiting, and an ordinary call getting served clears it.
+      this.priorityBurst = ordinaryWaiting && item.priority ? this.priorityBurst + 1 : 0;
       this.tokens--;
       this.lastRequest = Date.now();
 
@@ -144,8 +515,8 @@ export class SlackApiHelper {
           this.logger.warn('Slack rate limited, waiting', { retryAfter });
           this.tokens = 0; // 토큰 비우기
           await this.sleep(retryAfter * 1000);
-          // 다시 큐에 넣기
-          this.queue.unshift(item);
+          // 다시 큐에 넣기 — at the head of its OWN lane, not of the queue.
+          this.insert(item, { front: true });
         } else {
           item.reject(error);
         }
@@ -396,6 +767,9 @@ export class SlackApiHelper {
   /**
    * 시스템 메시지 전송 (⚡ zap 리액션으로 모델 응답과 구분)
    * 프로그램에서 직접 보내는 메시지에 사용
+   *
+   * Thread-post notification comes from the delegated {@link postMessage} —
+   * one message, one notification.
    */
   async postSystemMessage(
     channel: string,
@@ -417,9 +791,14 @@ export class SlackApiHelper {
     text: string,
     options?: MessageOptions,
   ): Promise<{ ts?: string; channel?: string; threadTs?: string; echoedMessage?: boolean }> {
+    // Central rendered-empty guard (U11/A23) — runs BEFORE the API call so an
+    // empty message is rejected, not posted. Attachment-only stays allowed.
     const payload: any = {
       channel,
-      text,
+      text: resolveRenderedMessageText(
+        { text, blocks: options?.blocks, attachments: options?.attachments },
+        'chat.postMessage',
+      ),
       thread_ts: options?.threadTs,
       blocks: options?.blocks,
       attachments: options?.attachments,
@@ -434,16 +813,7 @@ export class SlackApiHelper {
 
     try {
       const result = await this.enqueue(() => this.app.client.chat.postMessage(payload));
-      // `threadTs` is what Slack ACTUALLY threaded the message under, which is not
-      // always what we asked for: a dead `thread_ts` is silently dropped and the
-      // message becomes a top-level channel post. Surfacing it lets callers detect
-      // that and undo it. See getThreadRootState() for the measured behaviour.
-      return {
-        ts: result.ts,
-        channel: result.channel,
-        threadTs: (result.message as any)?.thread_ts,
-        echoedMessage: !!result.message,
-      };
+      return this.completePost(channel, options?.threadTs, result);
     } catch (error) {
       // 2026-07-09 incident: an over-limit goal-status section (3000-char cap)
       // made chat.postMessage fail with `invalid_blocks`, the throw crashed
@@ -457,16 +827,40 @@ export class SlackApiHelper {
         const fallback = { ...payload };
         fallback.blocks = undefined;
         const result = await this.enqueue(() => this.app.client.chat.postMessage(fallback));
-        return {
-          ts: result.ts,
-          channel: result.channel,
-          threadTs: (result.message as any)?.thread_ts,
-          echoedMessage: !!result.message,
-        };
+        return this.completePost(channel, options?.threadTs, result);
       }
       this.logger.error('Failed to post message', { channel, error });
       throw error;
     }
+  }
+
+  /**
+   * Shape a `chat.postMessage` result and announce it if it landed in a thread.
+   *
+   * `threadTs` is what Slack ACTUALLY threaded the message under, which is not
+   * always what we asked for: a dead `thread_ts` is silently dropped and the
+   * message becomes a top-level channel post. Surfacing it lets callers detect
+   * that and undo it (see getThreadRootState() for the measured behaviour), and
+   * it is also the ONLY honest anchor for the notification — reporting the
+   * requested thread would tell the panel to re-anchor inside a thread that did
+   * not receive the message.
+   */
+  private completePost(
+    channel: string,
+    requestedThreadTs: string | undefined,
+    result: { ts?: string; channel?: string; message?: unknown },
+  ): { ts?: string; channel?: string; threadTs?: string; echoedMessage?: boolean } {
+    const threadTs = (result.message as any)?.thread_ts as string | undefined;
+    const anchor = result.message ? threadTs : requestedThreadTs;
+    if (anchor && result.ts) {
+      this.notifyThreadPost({ channel: result.channel ?? channel, threadTs: anchor, ts: result.ts, kind: 'post' });
+    }
+    return {
+      ts: result.ts,
+      channel: result.channel,
+      threadTs,
+      echoedMessage: !!result.message,
+    };
   }
 
   /**
@@ -480,11 +874,15 @@ export class SlackApiHelper {
     attachments?: any[],
     options?: UpdateMessageOptions,
   ): Promise<void> {
+    // Same central guard as postMessage, resolved outside the try so a
+    // rendered-empty rejection is not mislabeled as a Slack API failure.
+    const resolvedText = resolveRenderedMessageText({ text, blocks, attachments }, 'chat.update');
+
     try {
       const payload: any = {
         channel,
         ts,
-        text,
+        text: resolvedText,
         blocks,
         attachments,
       };
@@ -633,43 +1031,93 @@ export class SlackApiHelper {
    * 리액션 추가
    * @returns true if successful or already exists, false on actual failure
    */
-  async addReaction(channel: string, ts: string, emoji: string): Promise<boolean> {
+  async addReaction(channel: string, ts: string, emoji: string, options?: EnqueueOptions): Promise<boolean> {
+    return (await this.addReactionResult(channel, ts, emoji, options)).ok;
+  }
+
+  /**
+   * {@link addReaction} with the Slack error CODE kept.
+   *
+   * The boolean form cannot answer "why", and one caller has to: a queue-control
+   * reaction whose custom emoji is not installed in the workspace comes back as
+   * `invalid_name`, and that is the one failure with a repair (fall back to a
+   * standard emoji, 09 §2.3). Every other failure is still just a failure.
+   *
+   * One code path, two shapes — the boolean form delegates here, so a caller
+   * that does not care about the code cannot drift from one that does.
+   *
+   * `options.priority` is for the reactions a human is waiting on — the queue
+   * controls, which are useless once the turn they control has moved on.
+   */
+  async addReactionResult(
+    channel: string,
+    ts: string,
+    emoji: string,
+    options?: EnqueueOptions,
+  ): Promise<{ ok: boolean; error?: string }> {
     try {
-      await this.enqueue(() =>
-        this.app.client.reactions.add({
-          channel,
-          timestamp: ts,
-          name: emoji,
-        }),
+      await this.enqueue(
+        () =>
+          this.app.client.reactions.add({
+            channel,
+            timestamp: ts,
+            name: emoji,
+          }),
+        options,
       );
-      return true;
+      return { ok: true };
     } catch (error: any) {
+      const code = typeof error?.data?.error === 'string' ? error.data.error : undefined;
       // 이미 추가된 리액션은 성공으로 간주
-      if (error?.data?.error === 'already_reacted') {
-        return true;
+      if (code === 'already_reacted') {
+        return { ok: true };
       }
       this.logger.warn('Failed to add reaction', { channel, ts, emoji, error });
-      return false;
+      return { ok: false, error: code };
     }
   }
 
   /**
    * 리액션 제거
    */
-  async removeReaction(channel: string, ts: string, emoji: string): Promise<void> {
+  async removeReaction(channel: string, ts: string, emoji: string, options?: EnqueueOptions): Promise<void> {
+    await this.removeReactionResult(channel, ts, emoji, options);
+  }
+
+  /**
+   * {@link removeReaction} with the Slack error CODE kept.
+   *
+   * The `void` form cannot answer "is it gone?", and one caller has to know:
+   * the queue's reaction surface adds the NEW state only after the old one came
+   * down, so a swallowed removal failure would leave a message showing two
+   * states at once with nothing to reconcile it. `no_reaction` comes back as
+   * the code it is — the caller reads that one as success, because the reaction
+   * not being there IS the state it asked for.
+   */
+  async removeReactionResult(
+    channel: string,
+    ts: string,
+    emoji: string,
+    options?: EnqueueOptions,
+  ): Promise<{ ok: boolean; error?: string }> {
     try {
-      await this.enqueue(() =>
-        this.app.client.reactions.remove({
-          channel,
-          timestamp: ts,
-          name: emoji,
-        }),
+      await this.enqueue(
+        () =>
+          this.app.client.reactions.remove({
+            channel,
+            timestamp: ts,
+            name: emoji,
+          }),
+        options,
       );
+      return { ok: true };
     } catch (error: any) {
+      const code = typeof error?.data?.error === 'string' ? error.data.error : undefined;
       // 존재하지 않는 리액션 에러는 무시
-      if (error?.data?.error !== 'no_reaction') {
+      if (code !== 'no_reaction') {
         this.logger.debug('Failed to remove reaction (might not exist)', { channel, ts, emoji });
       }
+      return { ok: false, error: code };
     }
   }
 

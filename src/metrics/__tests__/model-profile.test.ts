@@ -54,6 +54,13 @@ interface TableRow {
 /** The requested policy table, verbatim from the plan's global constraints. */
 const POLICY_TABLE: TableRow[] = [
   { modelId: 'claude-fable-5[1m]', contextWindow: 1_000_000, sdkBlockingLimit: 977_000, autoCompactTokens: 750_000 },
+  {
+    modelId: 'claude-opus-5-5[1m]',
+    contextWindow: 1_000_000,
+    sdkBlockingLimit: 977_000,
+    autoCompactTokens: 750_000,
+  },
+  { modelId: 'claude-opus-5-5', contextWindow: 200_000, sdkBlockingLimit: 177_000, autoCompactTokens: undefined },
   { modelId: 'claude-opus-5[1m]', contextWindow: 1_000_000, sdkBlockingLimit: 977_000, autoCompactTokens: 750_000 },
   { modelId: 'claude-opus-5', contextWindow: 200_000, sdkBlockingLimit: 177_000, autoCompactTokens: undefined },
   { modelId: 'gpt-5.6-sol[1m]', contextWindow: 1_000_000, sdkBlockingLimit: 977_000, autoCompactTokens: 600_000 },
