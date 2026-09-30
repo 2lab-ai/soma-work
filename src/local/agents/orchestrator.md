@@ -4,6 +4,9 @@ model: opus
 tools:
   - Agent
   - Task
+  - Skill
+  - SendMessage
+  - TaskStop
   - TaskOutput
   - TodoWrite
   - TaskCreate

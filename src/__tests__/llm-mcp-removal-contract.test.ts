@@ -204,6 +204,30 @@ describe('T3b — the subagent dispatch path is one tool name, wired end to end'
     expect(gaps).toEqual([]);
   });
 
+  it('agents whose body (incl. @includes) uses llm-dispatch / TaskStop / SendMessage list the tool', () => {
+    const gaps: string[] = [];
+    for (const name of fs.readdirSync(agentsDir).filter((n) => n.endsWith('.md'))) {
+      const agent = fs.readFileSync(path.join(agentsDir, name), 'utf8');
+      const fm = agent.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '';
+      if (!/^tools:/m.test(fm)) continue; // no explicit tool surface → inherits everything
+      const includes = [...agent.matchAll(/@include\(\$\{CLAUDE_PLUGIN_ROOT\}\/([^)]+)\)/g)]
+        .map((m) => path.join(pluginRoot, m[1]))
+        .filter((p) => fs.existsSync(p))
+        .map((p) => fs.readFileSync(p, 'utf8'));
+      const body = [agent, ...includes].join('\n');
+      const allows = (tool: string) => new RegExp(`^\\s*- ${tool}\\s*$`, 'm').test(fm);
+      const needs: Array<[RegExp, string]> = [
+        [/local:llm-dispatch/, 'Skill'],
+        [/\bTaskStop\b/, 'TaskStop'],
+        [/\bSendMessage\b/, 'SendMessage'],
+      ];
+      for (const [re, tool] of needs) {
+        if (re.test(body) && !allows(tool)) gaps.push(`${name}: body uses ${tool} but tools: omits it`);
+      }
+    }
+    expect(gaps).toEqual([]);
+  });
+
   it('host hooks track the Agent tool (ts predicate + both shell mirrors + bypass allow-list)', () => {
     expect(shouldTrackTool('Agent')).toBe(true);
     expect(shouldTrackTool('Task')).toBe(true);
