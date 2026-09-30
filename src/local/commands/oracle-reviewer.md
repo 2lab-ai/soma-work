@@ -2,7 +2,9 @@
 description: "Oracle code reviewer — trinity chain (astra-zhuge / grok-elon / fable-zhuge)"
 argument-hint: "[review task or diff description]"
 allowed-tools:
+  - Agent
   - Task
+  - Skill
   - TaskOutput
   - Read
   - Grep
@@ -24,7 +26,7 @@ unanimous VERDICT + MUST-FIX is the review; log the round log alongside.
 
 **Fallback — single panelist (panel cannot field 3 engines; emit
 `⚠️ TRINITY DEGRADED → fallback single-panelist(<agent>) — <reason>`):**
-use the **Task tool** to spawn ONE panelist subagent with the prompt below, in fixed order
+use the **Agent tool** to spawn ONE panelist subagent with the prompt below, in fixed order
 `astra-zhuge` → `grok-elon` → `fable-zhuge` (advance only when the previous agent is
 unusable after one retry: spawn failure, timeout, empty output). Its verdict fills the
 review, labelled `trinity-fallback (<agent>)`. Do NOT answer the review yourself.
@@ -33,7 +35,7 @@ review, labelled `trinity-fallback (<agent>)`. Do NOT answer the review yourself
 Never approve/merge on an empty review.
 
 ```
-Task tool parameters:
+Agent tool parameters:
   subagent_type: "astra-zhuge"        # → "grok-elon" → "fable-zhuge"
   description: "Oracle code review (single panelist)"
   prompt: <see below — combine the caller's task + oracle persona + review prompt>
@@ -43,7 +45,7 @@ Task tool parameters:
 
 ## Subagent Prompt Template
 
-Assemble the following into a single prompt for the Task tool:
+Assemble the following into a single prompt for the Agent tool:
 
 ### Part 1: Execution Instructions
 

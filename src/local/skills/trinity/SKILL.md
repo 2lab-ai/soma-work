@@ -98,7 +98,7 @@ Agent({ subagent_type: "fable-zhuge", prompt: <brief>, run_in_background: true }
 
 1. **Primary — trinity 패널.** 패널리스트 하나가 죽거나 형식 위반이면 같은 라운드에서 1회 재요청. 그래도 3-엔진 패널이 성립 불가(예: llmux 다운으로 astra·grok 둘 다 불능)면 ↓
    `⚠️ TRINITY DEGRADED → fallback single-panelist(<agent>) — <이유>` 를 가시 출력하고 강등.
-2. **Fallback — 단일 패널리스트, 고정 순서 `astra-zhuge` → `grok-elon` → `fable-zhuge`.** 동일 브리프 + 동일 답변 계약 (브리프가 점수 등 추가 필드를 요구하면 fallback tier도 그 필드를 반드시 포함한다 — pass/fail 판정 기준은 tier와 무관하게 caller 브리프가 정의한 하나여야 한다). 앞 에이전트가 불능(스폰 실패·타임아웃·빈 출력; 1회 회복 재시도 후)이면 다음 에이전트로. 장기 실행이면 `local:llm-dispatch`(background 서브에이전트 디스패치)로 구동. 판정은 `trinity-fallback (<agent>)` 라벨로 기록. 이 tier는 자동이다 — 유저 승인 게이트가 아니다.
+2. **Fallback — 단일 패널리스트, 고정 순서 `astra-zhuge` → `grok-elon` → `fable-zhuge`.** 동일 브리프 + 동일 답변 계약 (브리프가 점수 등 추가 필드를 요구하면 fallback tier도 그 필드를 반드시 포함한다 — pass/fail 판정 기준은 tier와 무관하게 caller 브리프가 정의한 하나여야 한다). 앞 에이전트가 불능(스폰 실패·타임아웃·빈 출력; 1회 회복 재시도 후)이면 다음 에이전트로. Primary 라운드에서 이미 엔진 불능(스폰 실패·llmux 다운)으로 죽은 에이전트는 재시도 없이 건너뛴다 — astra·grok이 둘 다 llmux 불능이면 곧장 `fable-zhuge`(유일한 non-llmux 엔진)로 간다. 장기 실행이면 `local:llm-dispatch`(background 서브에이전트 디스패치)로 구동. 판정은 `trinity-fallback (<agent>)` 라벨로 기록. 이 tier는 자동이다 — 유저 승인 게이트가 아니다.
 3. **세 패널리스트 전부 실패** → 게이트 미충족. 진행 중단하고 caller/유저에 보고. 리뷰 없는 approve/merge/deploy는 어떤 tier에서도 금지.
 
 ## Guardrails

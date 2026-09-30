@@ -2,7 +2,9 @@
 description: "Search THIS codebase using the Explore agent (astra engine). Find implementations, patterns, code flow."
 argument-hint: "QUESTION"
 allowed-tools:
+  - Agent
   - Task
+  - Skill
   - TaskOutput
   - Read
   - Grep
