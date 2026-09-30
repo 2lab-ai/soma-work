@@ -24,17 +24,12 @@ Grep("login", path="src/")
 Glob("**/auth*.ts")
 ```
 
-### Step 2: Use Codex for Complex Questions
-When simple grep isn't enough:
-```
-mcp__llm__chat:
-  model: "codex"
-  prompt: |
-    Analyze this codebase structure:
-    [relevant files/code]
-
-    Question: [specific internal question]
-```
+### Step 2: Reason on the Evidence for Complex Questions
+When simple grep isn't enough, read the relevant files in full and reason on your own
+engine (astra, per the `explore` agent frontmatter) — there is no external model to call
+from inside this agent and no MCP chat tool. If the question turns out to be a judgment
+call (design / review), say so and return the evidence for the caller's `local:trinity`
+consult instead of guessing.
 
 ### Step 3: Report Findings
 Format:

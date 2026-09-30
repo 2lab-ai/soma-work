@@ -1,5 +1,5 @@
 ---
-description: "Oracle Codex code reviewer"
+description: "Oracle code reviewer — trinity chain (astra-zhuge / grok-elon / fable-zhuge)"
 argument-hint: "[review task or diff description]"
 allowed-tools:
   - Task
@@ -12,7 +12,7 @@ allowed-tools:
 
 # Oracle Reviewer — trinity chain
 
-Review code changes via the `local:trinity` chain (trinity 3-engine consensus → codex via `mcp__llm__chat` → `codex-fallback` opus).
+Review code changes via the `local:trinity` chain (trinity 3-agent consensus `astra-zhuge` / `grok-elon` / `fable-zhuge` → single-panelist fallback in that order). External engines are reached only by spawning these subagents — there is no LLM MCP tool.
 
 ## Task: "$ARGUMENTS"
 
@@ -22,20 +22,20 @@ Review code changes via the `local:trinity` chain (trinity 3-engine consensus �
 self-contained brief and run the trinity consensus panel per `local:trinity`. The
 unanimous VERDICT + MUST-FIX is the review; log the round log alongside.
 
-**Fallback1 — codex (panel cannot field 3 engines; emit
-`⚠️ TRINITY DEGRADED → fallback1 llm_chat(codex) — <reason>`):**
-use the **Task tool** to spawn a `general-purpose` subagent with the prompt below.
-The subagent MUST call `mcp__llm__chat` with `model: "codex"` — do NOT answer the review yourself.
+**Fallback — single panelist (panel cannot field 3 engines; emit
+`⚠️ TRINITY DEGRADED → fallback single-panelist(<agent>) — <reason>`):**
+use the **Task tool** to spawn ONE panelist subagent with the prompt below, in fixed order
+`astra-zhuge` → `grok-elon` → `fable-zhuge` (advance only when the previous agent is
+unusable after one retry: spawn failure, timeout, empty output). Its verdict fills the
+review, labelled `trinity-fallback (<agent>)`. Do NOT answer the review yourself.
 
-**Fallback2 — codex also unavailable (1 retry first; emit
-`⚠️ TRINITY DEGRADED → fallback2 codex-fallback(opus) — <reason>`):**
-spawn the `codex-fallback` agent with the exact same payload; its verdict fills the
-review, labelled `trinity-fallback2 (opus)`.
+**All three unavailable:** the gate is unfilled — report the raw failures and stop.
+Never approve/merge on an empty review.
 
 ```
 Task tool parameters:
-  subagent_type: "general-purpose"
-  description: "Oracle Codex code review"
+  subagent_type: "astra-zhuge"        # → "grok-elon" → "fable-zhuge"
+  description: "Oracle code review (single panelist)"
   prompt: <see below — combine the caller's task + oracle persona + review prompt>
 ```
 
@@ -48,30 +48,26 @@ Assemble the following into a single prompt for the Task tool:
 ### Part 1: Execution Instructions
 
 ```
-You are Oracle gateway. Your ONLY job is to call mcp__llm__chat and relay its response.
+You are ONE reviewer on your own engine. Do not spawn other agents, panels, or skills —
+consensus, if any, is built by the caller's trinity rounds, not inside you.
 
-Step 1 — Call mcp__llm__chat:
+Step 1 — Review:
 
-Assemble the review task + oracle persona + review prompt into one prompt, then invoke:
+Read the changed files directly with Read/Grep/Glob from the working path below, apply the
+oracle persona + review prompt, and produce the findings in the required output format.
 
-mcp__llm__chat(
-  model: "codex",
-  prompt: <the assembled prompt below>,
-  cwd: <absolute workspace path>
-)
+Working path: <absolute workspace/repo root>   ← critical: read the source from here.
 
-cwd is critical. The Oracle reads files directly via its shell tool. Without correct cwd, it cannot access the source code.
+Step 2 — Return:
 
-Step 2 — Relay response:
-
-Return the Oracle's response verbatim. Do not summarize, reformat, or add commentary.
+Return the review verbatim in the OUTPUT FORMAT below. Do not summarize, reformat, or add
+commentary outside it.
 
 RULES:
-- NEVER read source files yourself. The Oracle reads them via cwd.
-- NEVER answer the review question yourself. You are a gateway, not the Oracle.
-- NEVER output MCP call as text/JSON. Always use the actual tool invocation.
-- ALWAYS pass cwd — the absolute path to the workspace/repo root.
-- If the Oracle's response is empty or errored, report the raw error and retry once.
+- READ the actual source at the working path — never judge from the diff summary alone.
+- NEVER output tool calls as text/JSON. Always use the actual tool invocation.
+- If you cannot complete the review (engine error, empty output, unreadable repo), report
+  the raw failure and stop — the caller owns the fallback order.
 ```
 
 ### Part 2: Oracle Persona

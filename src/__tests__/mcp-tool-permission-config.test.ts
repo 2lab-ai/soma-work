@@ -166,7 +166,7 @@ describe('resolveGatedTool', () => {
   });
 
   it('returns null for mcp tool not in gated servers', () => {
-    expect(resolveGatedTool('mcp__llm__chat', gatedServers)).toBeNull();
+    expect(resolveGatedTool('mcp__cron__cron_list', gatedServers)).toBeNull();
   });
 
   it('returns null for prefix-only match (no tool function)', () => {

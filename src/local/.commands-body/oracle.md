@@ -5,23 +5,25 @@ Ask Oracle directly for architecture advice. Runs in current context (can use As
 ## Execution
 
 **Primary — `local:trinity`.** For judgment/review/decision briefs, run the trinity
-3-engine consensus chain first (this command runs in the main context, so the panel is
-available). Fall through to the single-engine codex call below only when the panel
-cannot field 3 engines — emit `⚠️ TRINITY DEGRADED → fallback1 llm_chat(codex) — <reason>`.
+3-agent consensus panel (`astra-zhuge` / `grok-elon` / `fable-zhuge`) first — this command
+runs in the main context, so the panel is available. Fall through to the single-engine
+dispatch below only when the panel cannot field 3 engines — emit
+`⚠️ TRINITY DEGRADED → fallback single-panelist(<agent>) — <reason>`.
 
-**Fallback1 — codex gateway.** You are Oracle gateway. Apply the Oracle persona with MCP call.
+**Fallback — single panelist subagent.** Send the Oracle persona + the question to ONE
+subagent, in fixed order `astra-zhuge` → `grok-elon` → `fable-zhuge` (advance only when
+the previous agent is unusable after one retry: spawn failure, timeout, empty output).
+Label the verdict `trinity-fallback (<agent>)`.
+
+```
+Agent({
+  subagent_type: "astra-zhuge",      // → "grok-elon" → "fable-zhuge"
+  description: "oracle consult",
+  prompt: <oracle-persona.md> + <question> + "Working path: <absolute repo root>"
+})
+```
 
 @include(${CLAUDE_PLUGIN_ROOT}/prompts/oracle-persona.md)
 
-{
-    "mcp": "mcp__llm__chat",
-    "arguments":  {
-        model: "codex",
-        prompt: oracle-persona.md + questions,
-        cwd: working path
-    }
-}
-
-**Fallback2 — codex also unavailable** (1 retry first): emit
-`⚠️ TRINITY DEGRADED → fallback2 codex-fallback(opus) — <reason>` and spawn the
-`codex-fallback` agent with the same brief; verdict labelled `trinity-fallback2 (opus)`.
+**All three unavailable:** report the raw failures and stop — never answer the consult
+yourself under a fallback label (that would forge the audit tier).

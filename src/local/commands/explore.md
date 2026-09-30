@@ -1,5 +1,5 @@
 ---
-description: "Search THIS codebase using Explore agent (Codex). Find implementations, patterns, code flow."
+description: "Search THIS codebase using the Explore agent (astra engine). Find implementations, patterns, code flow."
 argument-hint: "QUESTION"
 allowed-tools:
   - Task
@@ -8,7 +8,6 @@ allowed-tools:
   - Grep
   - Glob
   - AskUserQuestion
-  - mcp__llm__chat
 ---
 
 **Always read commands body** even if you knew it.**

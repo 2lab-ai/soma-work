@@ -100,39 +100,42 @@ Task({
 })
 ```
 
-## MCP = Tools (NOT Agents!)
+## External Engines = Subagents (no MCP chat tool)
 
-MCP tools (`mcp__llm__*`) are **raw tool calls** to external models.
+There is no LLM MCP tool. External engines (astra, grok, fable) are reached ONLY by spawning the zworkflow subagents whose frontmatter `model` selects the engine.
 
 ```typescript
-// ❌ WRONG - Do NOT call MCP directly for normal work
-mcp__llm__chat({ prompt: "..." })
+// ❌ WRONG - there is no MCP chat tool to call
+mcp_chat({ model: "...", prompt: "..." })
 
-// ✅ CORRECT - Use subagent instead
-Task({ subagent_type: "oh-my-claude:oracle", prompt: "..." })
+// ✅ CORRECT - dispatch a subagent
+Task({ subagent_type: "astra-zhuge", prompt: "..." })   // astra engine, strategist
+Task({ subagent_type: "grok-elon",   prompt: "..." })   // grok engine, physics-first
+Task({ subagent_type: "fable-zhuge", prompt: "..." })   // fable engine, anthropic strategist
 ```
 
-### When to Use MCP Directly
+### Multi-model review (Optional Review Phase, Phase 3)
 
-**ONLY in Optional Review Phase (Phase 3)** - when explicitly running multi-model code review, and only as fallback1 of the `local:trinity` chain:
+Run `local:trinity` (all three above until unanimous). Fallback = ONE panelist, fixed order:
 
 ```typescript
-// Phase 3 ONLY - model review, chain order:
-// 1. local:trinity (3-engine consensus panel) — primary
-// 2. mcp__llm__chat({ model: "codex", ... })   — fallback1 (panel unavailable)
-// 3. Task({ subagent_type: "codex-fallback" }) — fallback2 (codex also down; automatic)
+// Phase 3 - model review, chain order:
+// 1. local:trinity (3-agent consensus panel) — primary
+// 2. Task({ subagent_type: "astra-zhuge" })  — fallback (panel cannot field 3 engines)
+// 3. Task({ subagent_type: "grok-elon" })    — next, only if astra is unusable
+// 4. Task({ subagent_type: "fable-zhuge" })  — last, only if grok is unusable too
 Task({ subagent_type: "oh-my-claude:reviewer", ... })
 ```
 
 ### Why This Matters
 
-| Subagent via Task | Direct MCP Call |
-|-------------------|-----------------|
-| Has full agent context | Raw tool, no context |
+| Subagent via Task | Any other transport |
+|-------------------|---------------------|
+| Has full agent context | Raw call, no context |
 | Can use other tools | Single model call only |
 | Proper error handling | You handle errors |
 | Tracked in reports | Manual tracking |
-| **Use this!** | Only for Review Phase |
+| **Use this!** | Retired (codex CLI, llm MCP) |
 
 ---
 
@@ -393,13 +396,15 @@ When `oh-my-claude:reviewer` returns `GAP_DETECTED` verdict:
 - **Skip gap self-check** → ALWAYS compare implementation against original intent before review
 - **More than 1 autonomous gap correction** → 2nd gap = ESCALATE to user
 
-### MCP Direct Call = ONLY Review Phase (as trinity fallback1)
+### External engines = subagents only (review gates run local:trinity first)
 
 ```typescript
-// ❌ WRONG (anywhere except Review Phase; in Review Phase run local:trinity first)
-mcp__llm__chat({ model: "codex", prompt: "..." })
+// ❌ WRONG - no MCP chat tool, no CLI; engines are subagents
+mcp_chat({ model: "...", prompt: "..." })
 
 // ✅ CORRECT (always)
+Task({ subagent_type: "astra-zhuge", prompt: "..." })
+Task({ subagent_type: "grok-elon", prompt: "..." })
 Task({ subagent_type: "oh-my-claude:oracle", prompt: "..." })
 Task({ subagent_type: "oh-my-claude:explore", prompt: "..." })
 Task({ subagent_type: "oh-my-claude:librarian", prompt: "..." })
