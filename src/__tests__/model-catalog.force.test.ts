@@ -118,7 +118,7 @@ describe('userSettingsStore.resolveModelInputWithRefresh (T2)', () => {
     const fetcher = vi.fn(async () => [GROK]);
     modelCatalog.setFetcher(fetcher);
     const resolved = await userSettingsStore.resolveModelInputWithRefresh('opus');
-    expect(resolved).toBe('claude-opus-5[1m]');
+    expect(resolved).toBe('claude-opus-5-5[1m]');
     expect(fetcher).not.toHaveBeenCalled();
   });
 

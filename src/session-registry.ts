@@ -203,6 +203,55 @@ export interface SessionExpiryCallbacks {
 }
 
 /**
+ * Why a session is about to be deleted from the registry.
+ * `terminated` = explicit `terminateSession()`; `sleep-expired` = the sleeping
+ * session outlived MAX_SLEEP_DURATION during `cleanupInactiveSessions()`.
+ */
+export type SessionDeletionReason = 'terminated' | 'sleep-expired';
+
+/**
+ * Observer invoked immediately BEFORE a session is destroyed (archive +
+ * source-dir cleanup + Map delete), while the session object is still
+ * reachable and still registered.
+ *
+ * Contract:
+ * - Synchronous. The host does its durable work here (e.g. persisting the
+ *   cancellation of that session's queued follow-ups); anything it wants to
+ *   render afterwards it must detach itself.
+ * - Throwing is fail-closed: the registry keeps the session instead of
+ *   deleting it, so host state keyed by this session is never orphaned.
+ */
+export type BeforeSessionDeleteCallback = (
+  sessionKey: string,
+  session: ConversationSession,
+  reason: SessionDeletionReason,
+) => void;
+
+/**
+ * Thrown by `terminateSession` when the deletion observer refused (threw): the
+ * session is still live and registered.
+ *
+ * Refusal is a throw rather than a `false` return because callers routinely
+ * ignore the boolean (e.g. `slack/actions/channel-route-action-handler.ts`
+ * terminates and then routes on regardless), which would leave a live session
+ * behind a UI that claims it was closed. `false` keeps its one existing
+ * meaning: no session by that key.
+ */
+export class SessionDeleteRefusedError extends Error {
+  public readonly sessionKey: string;
+  public readonly reason: SessionDeletionReason;
+  public readonly cause: unknown;
+
+  constructor(sessionKey: string, reason: SessionDeletionReason, cause: unknown) {
+    super(`Session deletion refused by beforeSessionDelete observer (${reason}): ${sessionKey}`);
+    this.name = 'SessionDeleteRefusedError';
+    this.sessionKey = sessionKey;
+    this.reason = reason;
+    this.cause = cause;
+  }
+}
+
+/**
  * SessionRegistry manages all conversation sessions
  * - Session CRUD operations
  * - Session persistence (save/load)
@@ -235,6 +284,7 @@ export class SessionRegistry {
   private sessions: Map<string, ConversationSession> = new Map();
   private logger = new Logger('SessionRegistry');
   private expiryCallbacks?: SessionExpiryCallbacks;
+  private beforeSessionDelete?: BeforeSessionDeleteCallback;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
 
   /**
@@ -298,6 +348,41 @@ export class SessionRegistry {
    */
   setExpiryCallbacks(callbacks: SessionExpiryCallbacks): void {
     this.expiryCallbacks = callbacks;
+  }
+
+  /**
+   * Register the deletion-lifecycle observer. Deliberately a slot of its own:
+   * `setExpiryCallbacks` is a single slot already owned by the EventRouter, and
+   * this seam fires on the `terminateSession` path too, which has no expiry
+   * callback at all.
+   */
+  setBeforeSessionDelete(callback: BeforeSessionDeleteCallback): void {
+    this.beforeSessionDelete = callback;
+  }
+
+  /**
+   * Run the deletion observer. Throws `SessionDeleteRefusedError` when the
+   * observer refused (threw), in which case the caller MUST leave the session
+   * untouched — the host's durable state for this session could not be settled,
+   * and deleting anyway would orphan it. The session stays deletable by the
+   * next attempt/sweep.
+   */
+  private fireBeforeSessionDelete(
+    sessionKey: string,
+    session: ConversationSession,
+    reason: SessionDeletionReason,
+  ): void {
+    if (!this.beforeSessionDelete) return;
+    try {
+      this.beforeSessionDelete(sessionKey, session, reason);
+    } catch (error) {
+      this.logger.error('beforeSessionDelete hook refused deletion — session retained (fail-closed)', {
+        sessionKey,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new SessionDeleteRefusedError(sessionKey, reason, error);
+    }
   }
 
   /**
@@ -1607,6 +1692,13 @@ export class SessionRegistry {
       return false;
     }
 
+    // Deletion-lifecycle seam: the host settles its per-session durable state
+    // before ANY destructive step (incl. the terminated flag). Fail-closed — a
+    // refusal throws `SessionDeleteRefusedError` and leaves the session exactly
+    // as it was. It is NOT reported as `false`: callers treat false as "already
+    // gone" and route on, which would strand a still-live session.
+    this.fireBeforeSessionDelete(sessionKey, session, 'terminated');
+
     // Ghost Session Fix #99: set terminated flag BEFORE deleting from Map.
     // In-flight code holding a reference to this session object will see the flag
     // and self-terminate, even though the Map entry is gone.
@@ -1655,6 +1747,18 @@ export class SessionRegistry {
         const sleepAge = session.sleepStartedAt ? now - session.sleepStartedAt.getTime() : MAX_SLEEP_DURATION + 1; // Force expire if no sleepStartedAt
 
         if (sleepAge >= MAX_SLEEP_DURATION) {
+          // Same seam as terminateSession, before notification and deletion.
+          // A refusal is per-session here: the sweep keeps that session and
+          // moves on, so one host failure cannot stall everyone else's expiry.
+          try {
+            this.fireBeforeSessionDelete(key, session, 'sleep-expired');
+          } catch (error) {
+            this.logger.warn('Sleep-expiry deletion refused — session kept for the next sweep', {
+              sessionKey: key,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            continue;
+          }
           if (this.expiryCallbacks) {
             try {
               await this.expiryCallbacks.onExpiry(session);

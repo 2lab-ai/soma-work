@@ -1222,8 +1222,8 @@ describe('CommandParser', () => {
       expect(CommandParser.isShowPromptCommand('show prompt extra')).toBe(false);
     });
 
-    it('should not match "show llm_chat"', () => {
-      expect(CommandParser.isShowPromptCommand('show llm_chat')).toBe(false);
+    it('should not match "show astra"', () => {
+      expect(CommandParser.isShowPromptCommand('show astra')).toBe(false);
     });
   });
 

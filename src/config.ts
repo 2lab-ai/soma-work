@@ -102,6 +102,41 @@ export function parseUnitIntervalEnv(name: string, fallback: number, minimum: nu
 }
 
 /**
+ * Default per-session cap on pending follow-up items (`.prd/slack-agent-ui/ssot.md:93-96`).
+ * 100 is a reversible choice with no measured basis (ssot §8 R1), not a limit
+ * derived from Slack or storage.
+ */
+export const FOLLOWUP_QUEUE_CAPACITY_DEFAULT = 100;
+
+/**
+ * Typed accessor for `SOMA_FOLLOWUP_QUEUE_CAPACITY` — the ONLY read of that
+ * variable in the process (`rules/config.md` §절대규칙 1, `:12` `SOMA_` prefix).
+ * The follow-up queue and its host import this; neither touches `process.env`.
+ *
+ * A function rather than a field on {@link config} because the queue is built
+ * per `SlackHandler` instance: reading at construction time keeps the value
+ * correct for an agent constructed after the env is loaded, and lets the unit
+ * test move the knob without re-importing this module.
+ *
+ * Safe integer, not merely integer: `Number.isInteger(1e21)` is `true`, and a
+ * capacity of 1e21 would silently disable the visible overflow rejection the
+ * contract requires (ssot §3.1) instead of raising the cap.
+ */
+export function getFollowupQueueCapacity(): number {
+  const raw = process.env.SOMA_FOLLOWUP_QUEUE_CAPACITY;
+  if (raw === undefined || raw.trim() === '') return FOLLOWUP_QUEUE_CAPACITY_DEFAULT;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    logger.warn(
+      `SOMA_FOLLOWUP_QUEUE_CAPACITY="${raw}" invalid (expected positive safe integer); ` +
+        `falling back to ${FOLLOWUP_QUEUE_CAPACITY_DEFAULT}`,
+    );
+    return FOLLOWUP_QUEUE_CAPACITY_DEFAULT;
+  }
+  return parsed;
+}
+
+/**
  * Backend auth backend selector (#llmux). See {@link config.auth}.
  */
 export type AuthMode = 'ccp' | 'llmux';

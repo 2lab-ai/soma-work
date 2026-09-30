@@ -41,14 +41,14 @@ if [[ "${HOOKS_PROXY_ENABLED:-false}" != "true" ]]; then
     pre_tool_use)
       TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
       case "$TOOL_NAME" in
-        Task|mcp__*) echo "$HOOK_INPUT" | "$SCRIPT_DIR/call-tracker.sh" pre ;;
+        Task|Agent|mcp__*) echo "$HOOK_INPUT" | "$SCRIPT_DIR/call-tracker.sh" pre ;;
       esac
       exit 0
       ;;
     post_tool_use)
       TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
       case "$TOOL_NAME" in
-        Task|mcp__*) echo "$HOOK_INPUT" | "$SCRIPT_DIR/call-tracker.sh" post ;;
+        Task|Agent|mcp__*) echo "$HOOK_INPUT" | "$SCRIPT_DIR/call-tracker.sh" post ;;
       esac
       exit 0
       ;;
@@ -68,13 +68,13 @@ else
 fi
 
 # ── Skip the roundtrip for untracked tools ──
-# The service only logs Task / MCP calls; every other pre/post event would be a
+# The service only logs Agent (legacy Task) / MCP calls; every other pre/post event would be a
 # no-op POST on a hook that fires for EVERY tool call. `cleanup` carries no
 # tool_name and must always be forwarded.
 if [[ "$EVENT" != "cleanup" ]]; then
   TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
   case "$TOOL_NAME" in
-    Task|mcp__*) ;;
+    Task|Agent|mcp__*) ;;
     *) exit 0 ;;
   esac
 fi

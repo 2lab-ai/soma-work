@@ -26,8 +26,17 @@ import { Logger } from '../../logger';
 import type { OAuthCredentials } from '../../oauth/refresher';
 import { hasRequiredScopes } from '../../oauth/scope-check';
 import type { TokenManager } from '../../token-manager';
+// Topic imports are acyclic: actions → topics only (auth-topic pulls in
+// cct-topic, neither imports back into cct/actions).
+import { renderAuthCard } from '../z/topics/auth-topic';
 import { renderCctCard } from '../z/topics/cct-topic';
 import { type CctCardMode, decodeCctActionValue } from './action-value';
+import {
+  type CctAuthOrigin,
+  decodeAuthOriginMetadata,
+  decodeAuthOriginPayload,
+  encodeAuthOriginMetadata,
+} from './auth-origin';
 import {
   type AddSlotFormKind,
   appendStoreReadFailureBanner,
@@ -132,13 +141,24 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         logger.warn('cct_open_add: missing trigger_id');
         return;
       }
-      await client.views.open({ trigger_id: triggerId, view: buildAddSlotModal('setup_token') as any });
+      const view = buildAddSlotModal('setup_token') as Record<string, unknown>;
+      // Auth-origin (T3 follow-up): an Add click on the embedded card
+      // stamps the wrapper's origin + surface into the modal so the
+      // submit can re-render the auth wrapper in place.
+      const decoded = decodeActionButtonValue(body);
+      if (decoded?.authOrigin) {
+        view.private_metadata = encodeAuthOriginMetadata({ ...decoded.authOrigin, ...cardSurfaceOf(body) }, 'add');
+      }
+      await client.views.open({ trigger_id: triggerId, view: view as any });
     } catch (err) {
       logger.error('cct_open_add failed', err);
     }
   });
 
   // Kind radio flip — update the open Add modal with conditional blocks.
+  // `views.update` replaces the whole view, so the existing
+  // private_metadata (auth-origin marker, when present) must be carried
+  // over or the submit would lose the wrapper origin.
   app.action(CCT_ACTION_IDS.kind_radio, async ({ ack, body, client }) => {
     await ack();
     try {
@@ -147,10 +167,15 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       const selected = (body as any)?.actions?.[0]?.selected_option?.value as string | undefined;
       const kind: AddSlotFormKind =
         selected === 'oauth_credentials' || selected === 'api_key' ? selected : 'setup_token';
+      const nextView = buildAddSlotModal(kind) as Record<string, unknown>;
+      const priorMetadata = view.private_metadata;
+      if (typeof priorMetadata === 'string' && priorMetadata.length > 0) {
+        nextView.private_metadata = priorMetadata;
+      }
       await client.views.update({
         view_id: view.id,
         hash: view.hash,
-        view: buildAddSlotModal(kind) as any,
+        view: nextView as any,
       });
     } catch (err) {
       logger.error('cct_kind_radio update failed', err);
@@ -180,9 +205,16 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         return;
       }
       const hasActiveLeases = (snap.state[target.keyId]?.activeLeases.length ?? 0) > 0;
+      const view = buildRemoveSlotModal(target, hasActiveLeases) as Record<string, unknown>;
+      if (decoded.authOrigin) {
+        view.private_metadata = encodeAuthOriginMetadata(
+          { ...decoded.authOrigin, ...cardSurfaceOf(body) },
+          targetKeyId,
+        );
+      }
       await client.views.open({
         trigger_id: triggerId,
-        view: buildRemoveSlotModal(target, hasActiveLeases) as any,
+        view: view as any,
       });
     } catch (err) {
       logger.error('cct_open_remove failed', err);
@@ -219,9 +251,16 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         });
         return;
       }
+      const view = buildAttachOAuthModal(target) as Record<string, unknown>;
+      if (decoded.authOrigin) {
+        view.private_metadata = encodeAuthOriginMetadata(
+          { ...decoded.authOrigin, ...cardSurfaceOf(body) },
+          targetKeyId,
+        );
+      }
       await client.views.open({
         trigger_id: triggerId,
-        view: buildAttachOAuthModal(target) as any,
+        view: view as any,
       });
     } catch (err) {
       logger.error('cct_open_attach failed', err);
@@ -248,7 +287,17 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       const targetKeyId = decoded.payload;
       const renderMode = resolveRenderMode(decoded.cardMode, actorUserId(body));
       await tokenManager.detachOAuth(targetKeyId);
-      await renderCardInPlace({ tokenManager, body, client, respond, viewerMode: renderMode });
+      if (decoded.authOrigin) {
+        await renderAuthWrapperInPlace({
+          body,
+          client,
+          respond,
+          viewerMode: renderMode,
+          page: decoded.authOrigin.page,
+        });
+      } else {
+        await renderCardInPlace({ tokenManager, body, client, respond, viewerMode: renderMode });
+      }
     } catch (err) {
       logger.error('cct_detach failed', err);
     }
@@ -267,7 +316,17 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       const decoded = decodeActionButtonValue(body);
       const renderMode = resolveRenderMode(decoded?.cardMode ?? null, actorUserId(body));
       await tokenManager.rotateToNext();
-      await renderCardInPlace({ tokenManager, body, client, respond, viewerMode: renderMode });
+      if (decoded?.authOrigin) {
+        await renderAuthWrapperInPlace({
+          body,
+          client,
+          respond,
+          viewerMode: renderMode,
+          page: decoded.authOrigin.page,
+        });
+      } else {
+        await renderCardInPlace({ tokenManager, body, client, respond, viewerMode: renderMode });
+      }
     } catch (err) {
       logger.error('cct_next failed', err);
     }
@@ -306,7 +365,17 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         return;
       }
       await tokenManager.applyToken(targetKeyId);
-      await renderCardInPlace({ tokenManager, body, client, respond, viewerMode: renderMode });
+      if (decoded.authOrigin) {
+        await renderAuthWrapperInPlace({
+          body,
+          client,
+          respond,
+          viewerMode: renderMode,
+          page: decoded.authOrigin.page,
+        });
+      } else {
+        await renderCardInPlace({ tokenManager, body, client, respond, viewerMode: renderMode });
+      }
     } catch (err) {
       logger.error('cct_activate_slot failed', err);
     }
@@ -400,14 +469,23 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         banner = buildPartialFailureBanner(failures, effectiveTotal);
       }
 
-      const result = await renderCardInPlace({
-        tokenManager,
-        body,
-        client,
-        respond,
-        viewerMode: renderMode,
-        prependBanner: banner,
-      });
+      const result = decoded?.authOrigin
+        ? await renderAuthWrapperInPlace({
+            body,
+            client,
+            respond,
+            viewerMode: renderMode,
+            page: decoded.authOrigin.page,
+            prependBanner: banner,
+          })
+        : await renderCardInPlace({
+            tokenManager,
+            body,
+            client,
+            respond,
+            viewerMode: renderMode,
+            prependBanner: banner,
+          });
       if (result.surface === 'unknown' || !result.ok) {
         // Couldn't update the surface — surface the banner via
         // ephemeral fallback so we at least don't drop the failure
@@ -591,7 +669,14 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
         await tokenManager.addSlot({ name, kind: 'setup_token', value });
       }
       await ack();
-      await postEphemeralCard(tokenManager, client, body);
+      // Auth-origin (T3 follow-up): Add opened from the embedded card
+      // re-renders the auth wrapper in place of a bare ephemeral card.
+      const addMeta = decodeAuthOriginMetadata(((body as any)?.view?.private_metadata ?? '') as string);
+      if (addMeta.origin) {
+        await rerenderAuthWrapperAt(client, addMeta.origin, (body as any)?.user?.id ?? '');
+      } else {
+        await postEphemeralCard(tokenManager, client, body);
+      }
     } catch (err) {
       // Surface CAS-level name collisions (lost a race with a parallel Add
       // for the same name) as a modal-level validation error.
@@ -623,7 +708,11 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     }
     await ack();
     try {
-      const keyId = ((body as any)?.view?.private_metadata ?? '') as string;
+      // Auth-origin (T3 follow-up): embedded-card modals carry the auth
+      // wrapper origin + surface in JSON metadata; direct-card modals
+      // keep the bare keyId string.
+      const meta = decodeAuthOriginMetadata(((body as any)?.view?.private_metadata ?? '') as string);
+      const keyId = meta.payload;
       if (!keyId) return;
       const result = await tokenManager.removeSlot(keyId);
       if (result.pendingDrain) {
@@ -636,7 +725,11 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
           });
         }
       }
-      await postEphemeralCard(tokenManager, client, body);
+      if (meta.origin) {
+        await rerenderAuthWrapperAt(client, meta.origin, (body as any)?.user?.id ?? '');
+      } else {
+        await postEphemeralCard(tokenManager, client, body);
+      }
     } catch (err) {
       logger.error('cct view_submission remove failed', err);
     }
@@ -681,7 +774,8 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
       await ack({ response_action: 'errors', errors });
       return;
     }
-    const keyId = ((body as any)?.view?.private_metadata ?? '') as string;
+    const attachMeta = decodeAuthOriginMetadata(((body as any)?.view?.private_metadata ?? '') as string);
+    const keyId = attachMeta.payload;
     if (!keyId) {
       await ack();
       return;
@@ -692,7 +786,11 @@ export function registerCctActions(app: App, tokenManager: TokenManager): void {
     await ack();
     try {
       await tokenManager.attachOAuth(keyId, creds!, true);
-      await postEphemeralCard(tokenManager, client, body);
+      if (attachMeta.origin) {
+        await rerenderAuthWrapperAt(client, attachMeta.origin, (body as any)?.user?.id ?? '');
+      } else {
+        await postEphemeralCard(tokenManager, client, body);
+      }
     } catch (err) {
       logger.error('cct view_submission attach failed', err);
       // Modal is already closed — surface failure via ephemeral DM so the
@@ -749,14 +847,102 @@ function decodeActionButtonValue(body: unknown): {
   payload: string;
   cardMode: CctCardMode | null;
   isLegacy: boolean;
+  /**
+   * Non-null when the button came from a CCT card EMBEDDED in the auth
+   * ccp wrapper (T3 follow-up) — the payload was `ao:<page>|<inner>`.
+   * Handlers must re-render the AUTH WRAPPER at that page instead of
+   * the bare CCT card.
+   */
+  authOrigin: CctAuthOrigin | null;
 } | null {
   const raw = (body as { actions?: Array<{ value?: unknown }> })?.actions?.[0]?.value;
   const decoded = decodeCctActionValue(raw);
   if (decoded.kind === 'invalid') return null;
   if (decoded.kind === 'legacy') {
-    return { payload: decoded.payload, cardMode: null, isLegacy: true };
+    return { payload: decoded.payload, cardMode: null, isLegacy: true, authOrigin: null };
   }
-  return { payload: decoded.payload, cardMode: decoded.mode, isLegacy: false };
+  const unwrapped = decodeAuthOriginPayload(decoded.payload);
+  return {
+    payload: unwrapped.payload,
+    cardMode: decoded.mode,
+    isLegacy: false,
+    authOrigin: unwrapped.origin,
+  };
+}
+
+/** Card surface (channel/ts) off a block_action body, for modal metadata. */
+function cardSurfaceOf(body: unknown): { channel?: string; ts?: string } {
+  const b = body as {
+    container?: { channel_id?: string; message_ts?: string };
+    channel?: { id?: string };
+    message?: { ts?: string };
+  };
+  return {
+    channel: b?.container?.channel_id ?? b?.channel?.id,
+    ts: b?.container?.message_ts ?? b?.message?.ts,
+  };
+}
+
+/**
+ * Re-render the AUTH WRAPPER (header + admin toggle + embedded CCT page +
+ * nav) in place of the clicked surface — the auth-origin sibling of
+ * `renderCardInPlace`. `renderAuthCard` re-checks the actor's
+ * authorization server-side (a forged admin mode demotes to readonly)
+ * and clamps the page, so stale origins degrade safely.
+ */
+async function renderAuthWrapperInPlace(opts: {
+  body: unknown;
+  client: WebClient;
+  respond?: (msg: any) => Promise<unknown>;
+  viewerMode: CctCardViewerMode;
+  page: number;
+  prependBanner?: string;
+}): Promise<{ surface: 'message' | 'ephemeral' | 'unknown'; ok: boolean }> {
+  const userId = actorUserId(opts.body) ?? '';
+  const render = async (): Promise<Record<string, unknown>[]> => {
+    const rendered = await renderAuthCard({
+      userId,
+      issuedAt: Date.now(),
+      viewerMode: opts.viewerMode,
+      page: opts.page,
+    });
+    return withBannerPrefix(opts.prependBanner, rendered.blocks as Record<string, unknown>[]);
+  };
+  return renderInPlace({
+    body: opts.body as Parameters<typeof renderInPlace>[0]['body'],
+    client: opts.client,
+    respond: opts.respond,
+    text: '🔐 Auth',
+    renderMessageBlocks: render,
+    renderEphemeralBlocks: render,
+    logger,
+  });
+}
+
+/**
+ * Re-render the AUTH WRAPPER at the surface stored in modal metadata
+ * (view submissions carry no container). Always admin mode: every
+ * mutating modal is admin-gated and only exists on the admin wrapper;
+ * `renderAuthCard` re-checks anyway.
+ */
+async function rerenderAuthWrapperAt(client: WebClient, origin: CctAuthOrigin, userId: string): Promise<void> {
+  if (!origin.channel || !origin.ts) return;
+  try {
+    const rendered = await renderAuthCard({
+      userId,
+      issuedAt: Date.now(),
+      viewerMode: 'admin',
+      page: origin.page,
+    });
+    await client.chat.update({
+      channel: origin.channel,
+      ts: origin.ts,
+      text: rendered.text ?? '🔐 Auth',
+      blocks: rendered.blocks as any,
+    });
+  } catch (err) {
+    logger.warn('rerenderAuthWrapperAt: auth wrapper update failed', { err: (err as Error).message });
+  }
 }
 
 /**
