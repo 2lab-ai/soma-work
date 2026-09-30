@@ -8,7 +8,6 @@ allowed-tools:
   - Grep
   - Glob
   - AskUserQuestion
-  - mcp__llm__chat
 ---
 
 **Always read commands body** even if you knew it.**

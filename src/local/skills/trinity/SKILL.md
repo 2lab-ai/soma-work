@@ -1,23 +1,23 @@
 ---
 name: trinity
-description: "Use when a brief (code review, plan review, decision, tie-break) needs the 3-engine consensus panel run until unanimous — the PRIMARY vehicle for every review/consult gate that previously called mcp__llm__chat model:codex directly (z phase1 plan review, zwork RED-coverage review, zreflect evaluation, zexplore secondary lint, autoz Rule 1(b) consults + Rule 8 review gate, oracle-reviewer). Triggers on 'trinity', '트리니티', '3엔진 합의', 'trinity로 리뷰/판단해줘'. Args — the brief to adjudicate (required; text, file path, or PR/diff reference); optional --max-rounds N (default 5). Degrades via the Fallback chain (llm_chat codex → codex-fallback opus), never by silently skipping the gate."
+description: "Use when a brief (code review, plan review, decision, tie-break) needs the 3-agent consensus panel run until unanimous — the PRIMARY vehicle for every review/consult gate (z phase1 plan review, zwork RED-coverage review, zreflect evaluation, zexplore secondary lint, autoz Rule 1(b) consults + Rule 8 review gate, oracle-reviewer). Panel = `astra-zhuge` (astra) / `grok-elon` (grok) / `fable-zhuge` (fable), dispatched directly as subagents — no LLM MCP tool. Triggers on 'trinity', '트리니티', '3엔진 합의', 'trinity로 리뷰/판단해줘'. Args — the brief to adjudicate (required; text, file path, or PR/diff reference); optional --max-rounds N (default 5). Degrades to a single panelist (astra-zhuge → grok-elon → fable-zhuge), never by silently skipping the gate."
 ---
 
-# trinity — 3-engine consensus loop
+# trinity — 3-agent consensus loop
 
-같은 브리프를 서로 다른 엔진 3개에 병렬로 주고, **전원 합의(unanimous)** 까지 상호 반박 라운드를 돈다. 최대 라운드 도달 시 분열 보고로 종결 — dispatcher가 조용히 승자를 고르지 않는다.
+같은 브리프를 서로 다른 엔진의 서브에이전트 3개에 병렬로 주고, **전원 합의(unanimous)** 까지 상호 반박 라운드를 돈다. 최대 라운드 도달 시 분열 보고로 종결 — dispatcher가 조용히 승자를 고르지 않는다.
 
-기존에 `mcp__llm__chat model:codex` 단일 엔진으로 돌던 모든 리뷰·자문 게이트의 **primary**가 이 스킬이다. codex 단일 호출은 이제 이 스킬의 fallback1이다 (§Fallback chain).
+모든 리뷰·자문 게이트의 **primary**가 이 스킬이다. 외부 엔진(astra·grok)은 `Agent` 툴로 서브에이전트를 직접 스폰해 도달한다 — LLM MCP 툴은 존재하지 않는다 (2026-09-30 제거). 단일 엔진 호출은 이 스킬의 fallback이다 (§Fallback chain).
 
 ## Panel (고정 로스터)
 
-| 슬롯 | 에이전트 | 엔진 |
+| 슬롯 | 에이전트 | 엔진 (frontmatter `model`) |
 |---|---|---|
-| physics-first | `grok45-elon` | grok-4.5 (llmux 경유) |
-| 책사 | `gpt56-zhuge` | gpt-5.6-sol (llmux 경유) |
-| 합성 전략가 | `strategist` | anthropic (model 미지정 → 세션 상속) |
+| physics-first | `grok-elon` | grok (llmux 경유) |
+| 책사 | `astra-zhuge` | astra (llmux 경유) |
+| 책사 · anthropic | `fable-zhuge` | fable |
 
-세 엔진이 서로 달라야 의미가 있다 — 로스터 교체는 유저 지시가 있을 때만. **엔진 대체 금지**: 한 엔진이라도 불능이면 그 라운드의 패널은 성립하지 않은 것이고(2-엔진 결과를 primary 합의로 세지 않는다), §Fallback chain의 fallback1로 강등한다. (`gpt56-elon`은 단독 자문용 에이전트다 — 패널 대타가 아니다.)
+세 엔진이 서로 달라야 의미가 있다 — 로스터 교체는 유저 지시가 있을 때만. **엔진 대체 금지**: 한 엔진이라도 불능이면 그 라운드의 패널은 성립하지 않은 것이고(2-엔진 결과를 primary 합의로 세지 않는다), §Fallback chain으로 강등한다. (`astra-elon` · `strategist`는 단독 자문용 에이전트다 — 패널 대타가 아니다.)
 
 ## Protocol
 
@@ -49,7 +49,13 @@ MUST-FIX: <차단 항목 목록, 없으면 "none">
 
 ### 1. Round 1 — 병렬 디스패치
 
-한 메시지에 Agent/Task 3콜 (`grok45-elon` / `gpt56-zhuge` / `strategist`), 동일 브리프, background 실행. 셋 다 도착할 때까지 대기. dispatcher는 자기 의견을 브리프에 싣지 않는다 — 중재자다.
+한 메시지에 `Agent` 3콜 (`subagent_type`: `grok-elon` / `astra-zhuge` / `fable-zhuge`), 동일 브리프, background 실행. 셋 다 도착할 때까지 대기. dispatcher는 자기 의견을 브리프에 싣지 않는다 — 중재자다.
+
+```
+Agent({ subagent_type: "grok-elon",   prompt: <brief>, run_in_background: true })
+Agent({ subagent_type: "astra-zhuge", prompt: <brief>, run_in_background: true })
+Agent({ subagent_type: "fable-zhuge", prompt: <brief>, run_in_background: true })
+```
 
 ### 2. 합의 판정 (기계적)
 
@@ -58,11 +64,11 @@ MUST-FIX: <차단 항목 목록, 없으면 "none">
 
 ### 3. Round 2..N — 상호 반박
 
-불합의면 **같은 세 에이전트**(컨텍스트 유지, SendMessage/resume)에 나머지 두 명의 입장 전문을 엔진 라벨과 함께 전달:
+불합의면 **같은 세 에이전트**(컨텍스트 유지, `SendMessage`로 resume)에 나머지 두 명의 입장 전문을 엔진 라벨과 함께 전달:
 
 ```
 다른 두 패널리스트의 입장이다 (라벨: 엔진명).
-[grok-4.5] ... / [gpt-5.6-sol] ... (전문)
+[grok] ... / [astra] ... / [fable] ... (전문)
 각 논점에 대해 반박하거나 네 입장을 갱신하라. 동의로 바꾸면 무엇이 설득했는지 명시.
 동일한 VERDICT/MUST-FIX/근거 형식으로 끝내라.
 ```
@@ -79,23 +85,21 @@ MUST-FIX: <차단 항목 목록, 없으면 "none">
 
 ```
 ## trinity: <브리프 한 줄>
-- 결과: 합의 (round K/N) | 분열 | DEGRADED(fallback1|fallback2)
+- 결과: 합의 (round K/N) | 분열 | DEGRADED(fallback: <agent>)
 - 합의문: <VERDICT + 통합 MUST-FIX>   ← 합의 시
 - 분열 축: <무엇에서 갈렸나>            ← 분열 시
-- 패널: [grok-4.5] V / [gpt-5.6-sol] V / [anthropic] V
+- 패널: [grok] V / [astra] V / [fable] V
 - 라운드 로그: R1 3-way split → R2 2:1 → R3 unanimous
 ```
 
 ## Fallback chain (게이트는 절대 조용히 스킵되지 않는다)
 
-비-anthropic 엔진은 llmux를 경유한다 — llmux 데몬 다운/모델 미노출이면 패널이 성립하지 않을 수 있다. 강등 순서는 고정이며, 어느 tier가 판정을 냈는지 **반드시 산출물(PR body·리포트)에 기록**한다:
+비-anthropic 엔진(astra·grok)은 llmux를 경유한다 — llmux 데몬 다운/모델 미노출이면 패널이 성립하지 않을 수 있다. 강등 순서는 고정이며, 어느 tier가 판정을 냈는지 **반드시 산출물(PR body·리포트)에 기록**한다:
 
-1. **Primary — trinity 패널.** 패널리스트 하나가 죽거나 형식 위반이면 같은 라운드에서 1회 재요청. 그래도 3-엔진 패널이 성립 불가(예: llmux 다운으로 grok·gpt 둘 다 불능)면 ↓
-   `⚠️ TRINITY DEGRADED → fallback1 llm_chat(codex) — <이유>` 를 가시 출력하고 강등.
-2. **Fallback1 — `mcp__llm__chat` `model: codex` 단일 엔진.** 동일 브리프 + 동일 답변 계약 (브리프가 점수 등 추가 필드를 요구하면 fallback tier도 그 필드를 반드시 포함한다 — pass/fail 판정 기준은 tier와 무관하게 caller 브리프가 정의한 하나여야 한다). 장기 실행이면 `local:llm-dispatch` 프로토콜로 구동. 사용/쿼터 소진·API 에러·타임아웃·빈 출력이면 1회 회복 재시도 후 ↓
-   `⚠️ TRINITY DEGRADED → fallback2 codex-fallback(opus) — <이유>` 를 가시 출력하고 강등.
-3. **Fallback2 — `codex-fallback` opus 서브에이전트 (자동).** 동일 브리프 전달, 판정은 `trinity-fallback2 (opus)` 라벨로 기록. 이 tier는 자동이다 — 유저 승인 게이트가 아니다 (2026-07-16 지시로 기존 opt-in 계약 대체).
-4. **Fallback2까지 실패** → 게이트 미충족. 진행 중단하고 caller/유저에 보고. 리뷰 없는 approve/merge/deploy는 어떤 tier에서도 금지.
+1. **Primary — trinity 패널.** 패널리스트 하나가 죽거나 형식 위반이면 같은 라운드에서 1회 재요청. 그래도 3-엔진 패널이 성립 불가(예: llmux 다운으로 astra·grok 둘 다 불능)면 ↓
+   `⚠️ TRINITY DEGRADED → fallback single-panelist(<agent>) — <이유>` 를 가시 출력하고 강등.
+2. **Fallback — 단일 패널리스트, 고정 순서 `astra-zhuge` → `grok-elon` → `fable-zhuge`.** 동일 브리프 + 동일 답변 계약 (브리프가 점수 등 추가 필드를 요구하면 fallback tier도 그 필드를 반드시 포함한다 — pass/fail 판정 기준은 tier와 무관하게 caller 브리프가 정의한 하나여야 한다). 앞 에이전트가 불능(스폰 실패·타임아웃·빈 출력; 1회 회복 재시도 후)이면 다음 에이전트로. 장기 실행이면 `local:llm-dispatch`(background 서브에이전트 디스패치)로 구동. 판정은 `trinity-fallback (<agent>)` 라벨로 기록. 이 tier는 자동이다 — 유저 승인 게이트가 아니다.
+3. **세 패널리스트 전부 실패** → 게이트 미충족. 진행 중단하고 caller/유저에 보고. 리뷰 없는 approve/merge/deploy는 어떤 tier에서도 금지.
 
 ## Guardrails
 
@@ -103,6 +107,7 @@ MUST-FIX: <차단 항목 목록, 없으면 "none">
 - 이 스킬의 산출은 판단/리뷰다 — 합의 결과의 실행(코드 수정·머지·배포)은 caller의 몫.
 - 강등 사유를 지어내서 fallback으로 도망가지 마라 — primary 실패의 원문 에러를 강등 경고에 포함한다.
 - 패널리스트가 서브에이전트/스킬을 스폰한 흔적이 보이면 그 응답은 무효 — 같은 라운드에서 격리 계약을 재강조해 1회 재요청.
+- 엔진 도달 경로는 서브에이전트 frontmatter `model` 하나뿐이다 — 별도 MCP·CLI 경로를 만들지 마라.
 
 ## Call sites (이 체인을 쓰는 게이트)
 
@@ -115,4 +120,5 @@ MUST-FIX: <차단 항목 목록, 없으면 "none">
 | `local:autoz` Rule 1(b) | SSOT-shaping 자문 (trivial-skip 유지) |
 | `local:autoz` Rule 8 | **머지 전 필수 코드리뷰 게이트** |
 | `local:oracle-reviewer` | 코드 리뷰 커맨드 |
+| `local:oracle` | 단독 자문 커맨드 (판단 브리프) |
 | `local:explore-unknowns` Stage 2/4 | 영토가 침묵할 때의 bounded consult |

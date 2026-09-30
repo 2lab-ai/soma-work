@@ -703,7 +703,6 @@ src/                                # TypeScript source
 packages/                           # Workspace packages
 ├── mcp-servers/                    # Internal MCP servers
 │   ├── agent/                      # agent_chat / agent_reply tools
-│   ├── llm/                        # LLM aggregate (codex)
 │   ├── model-command/              # Session/UI model commands
 │   ├── slack-mcp/                  # Thread context + file upload
 │   ├── cron/                       # Cron job management
