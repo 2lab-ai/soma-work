@@ -36,7 +36,7 @@ Never approve/merge on an empty review.
 
 ```
 Agent tool parameters:
-  subagent_type: "astra-zhuge"        # → "grok-elon" → "fable-zhuge"
+  subagent_type: "zworkflow:astra-zhuge"        # → "zworkflow:grok-elon" → "zworkflow:fable-zhuge"
   description: "Oracle code review (single panelist)"
   prompt: <see below — combine the caller's task + oracle persona + review prompt>
 ```

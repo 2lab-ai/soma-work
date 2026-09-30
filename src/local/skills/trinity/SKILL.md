@@ -52,10 +52,12 @@ MUST-FIX: <차단 항목 목록, 없으면 "none">
 한 메시지에 `Agent` 3콜 (`subagent_type`: `grok-elon` / `astra-zhuge` / `fable-zhuge`), 동일 브리프, background 실행. 셋 다 도착할 때까지 대기. dispatcher는 자기 의견을 브리프에 싣지 않는다 — 중재자다.
 
 ```
-Agent({ subagent_type: "grok-elon",   prompt: <brief>, run_in_background: true })
-Agent({ subagent_type: "astra-zhuge", prompt: <brief>, run_in_background: true })
-Agent({ subagent_type: "fable-zhuge", prompt: <brief>, run_in_background: true })
+Agent({ subagent_type: "zworkflow:grok-elon",   prompt: <brief>, run_in_background: true })
+Agent({ subagent_type: "zworkflow:astra-zhuge", prompt: <brief>, run_in_background: true })
+Agent({ subagent_type: "zworkflow:fable-zhuge", prompt: <brief>, run_in_background: true })
 ```
+
+> 런타임 에이전트 id는 플러그인 네임스페이스를 포함한 `zworkflow:<name>`이다 — bare `<name>`은 `Agent type not found`로 실패한다. 표·프로즈의 `astra-zhuge` 같은 표기는 표시명이고, `Agent()` 호출에는 항상 `zworkflow:` 접두를 붙인다.
 
 ### 2. 합의 판정 (기계적)
 

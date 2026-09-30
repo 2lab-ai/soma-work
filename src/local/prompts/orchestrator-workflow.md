@@ -22,9 +22,9 @@ Your code should be indistinguishable from a senior engineer's.
 
 | Instinct | Correct Action |
 |----------|----------------|
-| "I'll search the codebase" | `Agent({ subagent_type: "oh-my-claude:explore", ... })` |
-| "I'll look up the docs" | `Agent({ subagent_type: "oh-my-claude:librarian", ... })` |
-| "I'll think about architecture" | `Agent({ subagent_type: "oh-my-claude:oracle", ... })` |
+| "I'll search the codebase" | `Agent({ subagent_type: "zworkflow:explore", ... })` |
+| "I'll look up the docs" | `Agent({ subagent_type: "zworkflow:librarian", ... })` |
+| "I'll think about architecture" | `Agent({ subagent_type: "zworkflow:oracle", ... })` |
 | "I'll just do it myself" | **STOP. Ask: Which agent can do this?** |
 
 ### Why Delegation Matters
@@ -52,8 +52,8 @@ More agents = Better coverage, not more cost
 
 ```typescript
 // ✅ CORRECT: Fire multiple agents simultaneously
-Agent({ subagent_type: "oh-my-claude:explore", prompt: "...", run_in_background: true })
-Agent({ subagent_type: "oh-my-claude:librarian", prompt: "...", run_in_background: true })
+Agent({ subagent_type: "zworkflow:explore", prompt: "...", run_in_background: true })
+Agent({ subagent_type: "zworkflow:librarian", prompt: "...", run_in_background: true })
 // Continue working while agents research in parallel!
 
 // ❌ WRONG: Sequential, blocking everything
@@ -82,19 +82,19 @@ Subagents are autonomous agents spawned via the **Agent tool**. They have their 
 ```typescript
 // ✅ CORRECT - Always use Agent tool for agents
 Agent({
-  subagent_type: "oh-my-claude:oracle",
+  subagent_type: "zworkflow:oracle",
   prompt: "Review this architecture...",
   run_in_background: false  // blocking for Oracle
 })
 
 Agent({
-  subagent_type: "oh-my-claude:explore",
+  subagent_type: "zworkflow:explore",
   prompt: "Find all auth patterns...",
   run_in_background: true   // parallel for Explore
 })
 
 Agent({
-  subagent_type: "oh-my-claude:librarian",
+  subagent_type: "zworkflow:librarian",
   prompt: "TYPE A: JWT best practices...",
   run_in_background: true   // parallel for Librarian
 })
@@ -109,9 +109,9 @@ There is no LLM MCP tool. External engines (astra, grok, fable) are reached ONLY
 mcp_chat({ model: "...", prompt: "..." })
 
 // ✅ CORRECT - dispatch a subagent
-Agent({ subagent_type: "astra-zhuge", prompt: "..." })   // astra engine, strategist
-Agent({ subagent_type: "grok-elon",   prompt: "..." })   // grok engine, physics-first
-Agent({ subagent_type: "fable-zhuge", prompt: "..." })   // fable engine, anthropic strategist
+Agent({ subagent_type: "zworkflow:astra-zhuge", prompt: "..." })   // astra engine, strategist
+Agent({ subagent_type: "zworkflow:grok-elon",   prompt: "..." })   // grok engine, physics-first
+Agent({ subagent_type: "zworkflow:fable-zhuge", prompt: "..." })   // fable engine, anthropic strategist
 ```
 
 ### Multi-model review (Optional Review Phase, Phase 3)
@@ -121,10 +121,10 @@ Run `local:trinity` (all three above until unanimous). Fallback = ONE panelist, 
 ```typescript
 // Phase 3 - model review, chain order:
 // 1. local:trinity (3-agent consensus panel) — primary
-// 2. Agent({ subagent_type: "astra-zhuge" })  — fallback (panel cannot field 3 engines)
-// 3. Agent({ subagent_type: "grok-elon" })    — next, only if astra is unusable
-// 4. Agent({ subagent_type: "fable-zhuge" })  — last, only if grok is unusable too
-Agent({ subagent_type: "oh-my-claude:reviewer", ... })
+// 2. Agent({ subagent_type: "zworkflow:astra-zhuge" })  — fallback (panel cannot field 3 engines)
+// 3. Agent({ subagent_type: "zworkflow:grok-elon" })    — next, only if astra is unusable
+// 4. Agent({ subagent_type: "zworkflow:fable-zhuge" })  — last, only if grok is unusable too
+Agent({ subagent_type: "zworkflow:reviewer", ... })
 ```
 
 ### Why This Matters
@@ -143,23 +143,23 @@ Agent({ subagent_type: "oh-my-claude:reviewer", ... })
 
 You have 3 specialized subagents. **ALWAYS call via Agent tool, NEVER via MCP directly.**
 
-## 🔮 Oracle (`oh-my-claude:oracle`)
+## 🔮 Oracle (`zworkflow:oracle`)
 - **Purpose**: Architecture decisions, failure analysis
 - **Execution**: BLOCKING (wait for response)
 - **When**: Multiple valid approaches, after 3 failures (MANDATORY), design patterns
-- **Call**: `Agent({ subagent_type: "oh-my-claude:oracle", prompt: "..." })`
+- **Call**: `Agent({ subagent_type: "zworkflow:oracle", prompt: "..." })`
 
-## 🔍 Explore (`oh-my-claude:explore`)
+## 🔍 Explore (`zworkflow:explore`)
 - **Purpose**: Internal codebase search
 - **Execution**: PARALLEL, non-blocking
 - **When**: "How does X work in THIS codebase?", finding patterns
-- **Call**: `Agent({ subagent_type: "oh-my-claude:explore", prompt: "...", run_in_background: true })`
+- **Call**: `Agent({ subagent_type: "zworkflow:explore", prompt: "...", run_in_background: true })`
 
-## 📚 Librarian (`oh-my-claude:librarian`)
+## 📚 Librarian (`zworkflow:librarian`)
 - **Purpose**: External docs, GitHub source analysis
 - **Execution**: PARALLEL, non-blocking
 - **When**: "How do I use [library]?", best practices
-- **Call**: `Agent({ subagent_type: "oh-my-claude:librarian", prompt: "...", run_in_background: true })`
+- **Call**: `Agent({ subagent_type: "zworkflow:librarian", prompt: "...", run_in_background: true })`
 
 ---
 
@@ -169,11 +169,11 @@ You have 3 specialized subagents. **ALWAYS call via Agent tool, NEVER via MCP di
 
 ```typescript
 // CORRECT: Background + Parallel via TASK TOOL
-Agent({ subagent_type: "oh-my-claude:explore",
+Agent({ subagent_type: "zworkflow:explore",
        prompt: "Find auth in codebase...",
        run_in_background: true })
 
-Agent({ subagent_type: "oh-my-claude:librarian",
+Agent({ subagent_type: "zworkflow:librarian",
        prompt: "TYPE A: JWT best practices...",
        run_in_background: true })
 
@@ -236,8 +236,8 @@ IF any_unclear_requirements:
 # Phase 1 - Codebase Assessment
 
 ### Quick Assessment (Parallel)
-1. Fire `oh-my-claude:explore`: "What patterns exist in this codebase?"
-2. Fire `oh-my-claude:librarian` (TYPE A): "Best practices for [tech stack]"
+1. Fire `zworkflow:explore`: "What patterns exist in this codebase?"
+2. Fire `zworkflow:librarian` (TYPE A): "Best practices for [tech stack]"
 3. Check configs: linter, formatter, types
 4. Sample 2-3 similar files
 
@@ -287,13 +287,13 @@ TodoWrite({
 
 | Situation | Agent | Execution |
 |-----------|-------|-----------|
-| Internal code search | `oh-my-claude:explore` | Background |
-| "How to use X?" | `oh-my-claude:librarian` TYPE A | Background |
-| "Show source of X" | `oh-my-claude:librarian` TYPE B | Background |
-| "Why was X changed?" | `oh-my-claude:librarian` TYPE C | Background |
-| Deep research | `oh-my-claude:librarian` TYPE D | Background |
-| Architecture | `oh-my-claude:oracle` | **Blocking** |
-| Stuck 3x | `oh-my-claude:oracle` | **MANDATORY** |
+| Internal code search | `zworkflow:explore` | Background |
+| "How to use X?" | `zworkflow:librarian` TYPE A | Background |
+| "Show source of X" | `zworkflow:librarian` TYPE B | Background |
+| "Why was X changed?" | `zworkflow:librarian` TYPE C | Background |
+| Deep research | `zworkflow:librarian` TYPE D | Background |
+| Architecture | `zworkflow:oracle` | **Blocking** |
+| Stuck 3x | `zworkflow:oracle` | **MANDATORY** |
 
 ### Code Rules
 - Match existing patterns
@@ -356,7 +356,7 @@ GAP DETECTED → Correction Attempt #1 (autonomous)
 
 ### Integration with Reviewer
 
-When `oh-my-claude:reviewer` returns `GAP_DETECTED` verdict:
+When `zworkflow:reviewer` returns `GAP_DETECTED` verdict:
 1. Extract gap type and correction instructions from review
 2. Apply corrections to implementation
 3. Re-submit to reviewer
@@ -403,11 +403,11 @@ When `oh-my-claude:reviewer` returns `GAP_DETECTED` verdict:
 mcp_chat({ model: "...", prompt: "..." })
 
 // ✅ CORRECT (always)
-Agent({ subagent_type: "astra-zhuge", prompt: "..." })
-Agent({ subagent_type: "grok-elon", prompt: "..." })
-Agent({ subagent_type: "oh-my-claude:oracle", prompt: "..." })
-Agent({ subagent_type: "oh-my-claude:explore", prompt: "..." })
-Agent({ subagent_type: "oh-my-claude:librarian", prompt: "..." })
+Agent({ subagent_type: "zworkflow:astra-zhuge", prompt: "..." })
+Agent({ subagent_type: "zworkflow:grok-elon", prompt: "..." })
+Agent({ subagent_type: "zworkflow:oracle", prompt: "..." })
+Agent({ subagent_type: "zworkflow:explore", prompt: "..." })
+Agent({ subagent_type: "zworkflow:librarian", prompt: "..." })
 ```
 
 ---
@@ -472,19 +472,19 @@ call-tracker.sh reset
 ├─────────────────────────────────────────────────────────────┤
 │              AGENT CALLS (via Agent tool ONLY!)              │
 ├─────────────────────────────────────────────────────────────┤
-│ Agent({ subagent_type: "oh-my-claude:explore", ... })        │
-│ Agent({ subagent_type: "oh-my-claude:librarian", ... })      │
-│ Agent({ subagent_type: "oh-my-claude:oracle", ... })         │
+│ Agent({ subagent_type: "zworkflow:explore", ... })        │
+│ Agent({ subagent_type: "zworkflow:librarian", ... })      │
+│ Agent({ subagent_type: "zworkflow:oracle", ... })         │
 ├─────────────────────────────────────────────────────────────┤
 │                    AGENT SELECTION                          │
 ├─────────────────────────────────────────────────────────────┤
-│ Internal code?           → oh-my-claude:explore (background)│
-│ "How to use X?"          → oh-my-claude:librarian TYPE A    │
-│ "Show source of X"       → oh-my-claude:librarian TYPE B    │
-│ "Why was X changed?"     → oh-my-claude:librarian TYPE C    │
-│ Deep research            → oh-my-claude:librarian TYPE D    │
-│ Architecture?            → oh-my-claude:oracle (blocking)   │
-│ Stuck 3x?                → oh-my-claude:oracle (MANDATORY)  │
+│ Internal code?           → zworkflow:explore (background)│
+│ "How to use X?"          → zworkflow:librarian TYPE A    │
+│ "Show source of X"       → zworkflow:librarian TYPE B    │
+│ "Why was X changed?"     → zworkflow:librarian TYPE C    │
+│ Deep research            → zworkflow:librarian TYPE D    │
+│ Architecture?            → zworkflow:oracle (blocking)   │
+│ Stuck 3x?                → zworkflow:oracle (MANDATORY)  │
 ├─────────────────────────────────────────────────────────────┤
 │                   EFFORT ESTIMATES                          │
 ├─────────────────────────────────────────────────────────────┤

@@ -7,7 +7,7 @@ description: "Harness-side long-running external-model dispatch. Spawns one zwor
 
 One path, one contract:
 
-- **Transport** — `Agent({ subagent_type: <agent>, prompt, run_in_background: true })`. `<agent>` is one of `astra-zhuge` (astra) / `grok-elon` (grok) / `fable-zhuge` (fable) / `astra-elon` (astra) / `strategist` (session model). The caller picks the agent; this skill never substitutes engines.
+- **Transport** — `Agent({ subagent_type: "zworkflow:<agent>", prompt, run_in_background: true })`. `<agent>` is one of `astra-zhuge` (astra) / `grok-elon` (grok) / `fable-zhuge` (fable) / `astra-elon` (astra) / `strategist` (session model). The caller picks the agent; this skill never substitutes engines.
 - **Continuation** — `SendMessage({ to: <agent-name>, message })` on a prior **completed** turn (context preserved).
 - **Cancellation** — `TaskStop({ task_id: <agent-name or id> })`.
 
@@ -34,7 +34,7 @@ Run once per session and memoize. Binary PASS / FAIL each.
 |---|---|---|
 | G-agent | `<agent>.md` exists in the zworkflow agents dir (`${CLAUDE_PLUGIN_ROOT}/agents/`) | `status=failed`, `error_code=UNKNOWN_AGENT`. Never substitute. |
 | G-engine | non-anthropic agent (astra / grok, served via llmux): a one-line probe turn (`reply PONG`) returns non-empty | `status=failed`, `error_code=ENGINE_UNAVAILABLE` → caller degrades per the trinity chain. |
-| G-bash-bg | `Bash(echo ok, run_in_background:true)` returns `task_id` and a completion notification | Non-fatal — only auxiliary monitors are affected. |
+| G-bash-bg | `Bash(echo ok, run_in_background:true)` returns `task_id` and a completion notification | `status=failed`, `error_code=NO_WATCHDOG` — without a background timer `timeout_min` cannot be enforced (see Phase 1 step 4). |
 | G-gh | `gh auth status` shows logged-in account | Dispatch proceeds; PR/issue side-effects are caller's concern. |
 
 ## Process
@@ -56,16 +56,17 @@ resume:        false                   # continue a previous COMPLETED turn of t
 1. Persist the prompt at `{artifact_path%.raw.md}__prompt.md`.
 2. Append the **artifact clause** to the prompt (mandatory): `Write your complete final answer — and nothing else — to <artifact_path> with the Write tool, then reply with the single line "DONE <artifact_path>".` The agent writes the artifact itself; its chat reply is only a signal.
 3. Launch:
-   - First turn: `Agent({ subagent_type: <agent>, description: "<skill>: <slug>", prompt, run_in_background: true })` → capture the agent name / id from the result.
+   - First turn: `Agent({ subagent_type: "zworkflow:<agent>", description: "<skill>: <slug>", prompt, run_in_background: true })` → capture the agent name / id from the result.
    - Continuation (`resume:true`, only after a prior **completed** turn): `SendMessage({ to: <agent-name>, message: prompt })`.
-4. Record `{agent_id, artifact_path, agent, started_at, timeout_min}` for Phase 2.
+4. **Start the timeout watchdog in the same message** (the `Agent` tool has no timeout argument, and polling / `ScheduleWakeup` are forbidden — this timer is the ONLY thing that wakes the caller on a hung agent): `Bash("sleep " + timeout_min*60 + "; echo LLM_DISPATCH_TIMEOUT <agent_id>", run_in_background: true)` → capture `watchdog_task_id`.
+5. Record `{agent_id, watchdog_task_id, artifact_path, agent, started_at, timeout_min}` for Phase 2.
 
 ### Phase 2: Collect
 
-1. Wait for the background-task completion notification. Do not sleep in a poll loop — the notification fires on its own. (`ScheduleWakeup` 금지 — 불러도 미복귀.)
+1. Wait for whichever background notification arrives first: the agent's completion or the watchdog's `LLM_DISPATCH_TIMEOUT`. Do not sleep in a poll loop — notifications fire on their own. (`ScheduleWakeup` 금지 — 불러도 미복귀.) On agent completion, `TaskStop({ task_id: watchdog_task_id })` so the timer cannot fire later.
 2. On completion, declare `status=completed` iff BOTH: the notification reports success, and `<artifact_path>` exists and is non-empty. If the agent answered but did not write the artifact, write its final message to `<artifact_path>` yourself (artifact purity: final text only, no progress chatter).
 3. Notification reports failure, or the reply is empty / a raw engine error → `status=failed`, surface the agent's error text as `error_code=AGENT_FAILED`.
-4. `timeout_min` elapsed without a notification → `TaskStop({task_id})` and mark `status=timeout`. **Timeout is terminal — do NOT continue via `resume`.** Retry is a fresh dispatch with a NEW `artifact_path`; the caller decides whether to retry.
+4. Watchdog fires first (agent still running) → `TaskStop({ task_id: agent_id })` and mark `status=timeout`. **Timeout is terminal — do NOT continue via `resume`.** Retry is a fresh dispatch with a NEW `artifact_path`; the caller decides whether to retry.
 
 ### Phase 3: Return
 
@@ -75,7 +76,7 @@ resume:        false                   # continue a previous COMPLETED turn of t
   agent:              "<the agent passed in>",
   artifact_path:      "<absolute path to final text>",
   task_or_session_id: "<agent name / id>",
-  error_code:         "UNKNOWN_AGENT" | "ENGINE_UNAVAILABLE" | "AGENT_FAILED"   // failure only; omit on success
+  error_code:         "UNKNOWN_AGENT" | "ENGINE_UNAVAILABLE" | "NO_WATCHDOG" | "AGENT_FAILED"   // failure only; omit on success
   started_at:         "<iso>",
   ended_at:           "<iso>"
 }

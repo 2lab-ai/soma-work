@@ -5,7 +5,7 @@ with the Explore persona + the question:
 
 ```
 Agent({
-  subagent_type: "explore",
+  subagent_type: "zworkflow:explore",
   description: "explore: <question slug>",
   prompt: <explore-persona.md> + <questions> + "Repo root: <absolute path>"
 })

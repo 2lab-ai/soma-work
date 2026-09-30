@@ -15,7 +15,7 @@ raw 모델 출력은 artifact로 저장하고, 호출자에겐 **요약(정규�
 
 ## When NOT to use
 
-- 단답 질의 → `Agent({ subagent_type: "astra-zhuge" })` foreground 직접 호출.
+- 단답 질의 → `Agent({ subagent_type: "zworkflow:astra-zhuge" })` foreground 직접 호출.
 - 코드베이스 스캔 → `local:explore`.
 - 외부 문서 수집 → `local:librarian`.
 - 리서치 전체 오케스트레이션 → **`local:zexplore`를 쓴다**. 이 스킬은 부품.

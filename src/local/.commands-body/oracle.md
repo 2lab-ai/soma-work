@@ -17,7 +17,7 @@ Label the verdict `trinity-fallback (<agent>)`.
 
 ```
 Agent({
-  subagent_type: "astra-zhuge",      // → "grok-elon" → "fable-zhuge"
+  subagent_type: "zworkflow:astra-zhuge",      // → "zworkflow:grok-elon" → "zworkflow:fable-zhuge"
   description: "oracle consult",
   prompt: <oracle-persona.md> + <question> + "Working path: <absolute repo root>"
 })
