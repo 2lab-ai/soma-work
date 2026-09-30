@@ -16,6 +16,8 @@
 | Work | Status | Evidence |
 |------|--------|----------|
 | Refactoring hotspots (delete-first, 4 PRs) | Archived / Completed | [archive/plans/refactoring-hotspots/spec.md](./plans/refactoring-hotspots/spec.md) — PRs #1208 #1209 #1213 #1219 merged; follow-ups #1220-#1223 |
+| MCP server extraction + server-tools-mcp (2026-03) | Archived / Completed | [archive/plans/mcp-extraction/trace.md](./plans/mcp-extraction/trace.md) — implemented: `packages/mcp-servers/*` populated, `mcp-client` moved to `packages/process-shared/src/mcp/`; the `llm` server it extracted was later removed in PR #254 |
+| MCP servers refactoring (BaseMcpServer / ConfigCache, 2026-03) | Archived / Completed | [archive/plans/mcp-refactor/trace.md](./plans/mcp-refactor/trace.md) — implemented: `packages/process-shared/src/mcp/{base-mcp-server,config-cache}.ts`; llm-server consumer removed in PR #254 |
 
 ## Documentation Cleanup
 

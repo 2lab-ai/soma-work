@@ -1,9 +1,9 @@
 {
   "$schema": "https://github.com/2lab-ai/soma-work/blob/main/somalib/model-commands/types.ts",
-  "_comment": "Reference template for local:zcheck Step 4 approve handoff (readiness verdict → local:z phase4 approve gate). 4 options matching zcheck/SKILL.md spec (RATE +1 / -2 / -3 / -5). zcheck itself never merges — progression after approve belongs to local:z phase4/5 (and under autoz, the Rule 8 codex review gate must pass first). Passes validateModelCommandRunArgs + checkAskUserQuestionQuality.",
+  "_comment": "Reference template for local:zcheck Step 4 approve handoff (readiness verdict → local:z phase4 approve gate). 4 options matching zcheck/SKILL.md spec (RATE +1 / -2 / -3 / -5). zcheck itself never merges — progression after approve belongs to local:z phase4/5 (and under autoz, the Rule 8 trinity review gate must pass first). Passes validateModelCommandRunArgs + checkAskUserQuestionQuality.",
   "type": "user_choice",
   "question": "[small] PR #{pr_number} 승인할까? (zcheck READY)",
-  "context": "CI: {ci_status} (run {ci_run_id}, {ci_duration}). 리뷰 스레드: {unresolved_threads} unresolved. 머지 상태: {merge_state} · {mergeable}. 변경 범위: {files_changed} 파일, {loc_add}/{loc_del} LoC. Approve 선택 시 머지 → local:es → 다음 phase는 z phase4/5 절차가 수행한다 (autoz에서는 codex 리뷰 게이트 통과 후).",
+  "context": "CI: {ci_status} (run {ci_run_id}, {ci_duration}). 리뷰 스레드: {unresolved_threads} unresolved. 머지 상태: {merge_state} · {mergeable}. 변경 범위: {files_changed} 파일, {loc_add}/{loc_del} LoC. Approve 선택 시 머지 → local:es → 다음 phase는 z phase4/5 절차가 수행한다 (autoz에서는 trinity 리뷰 게이트 통과 후).",
   "choices": [
     {
       "id": "a",

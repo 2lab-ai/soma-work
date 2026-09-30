@@ -1,7 +1,7 @@
 /**
  * Hook tracking policy — single source of truth.
  *
- * Only agent (`Task`) and MCP calls are worth timing in the call log; every
+ * Only agent (`Agent`, legacy `Task`) and MCP calls are worth timing in the call log; every
  * other tool is ignored. There is no exemption list any more — the hook routes
  * observe, they never block, so nothing needs exempting.
  *
@@ -13,5 +13,5 @@
  * Both copies are covered by src/__tests__/hook-proxy-forwarding.test.ts.
  */
 export function shouldTrackTool(toolName: string): boolean {
-  return toolName === 'Task' || toolName.startsWith('mcp__');
+  return toolName === 'Task' || toolName === 'Agent' || toolName.startsWith('mcp__');
 }
