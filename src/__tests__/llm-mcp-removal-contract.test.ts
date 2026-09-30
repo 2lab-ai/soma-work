@@ -120,7 +120,10 @@ describe('T2 — trinity panel roster is astra-zhuge / grok-elon / fable-zhuge',
   it('trinity SKILL.md dispatches exactly the three panel agents', () => {
     const skill = fs.readFileSync(path.join(pluginRoot, 'skills', 'trinity', 'SKILL.md'), 'utf8');
     const dispatched = [...skill.matchAll(/subagent_type:\s*"([^"]+)"/g)].map((m) => m[1]);
-    expect(new Set(dispatched)).toEqual(new Set(['grok-elon', 'astra-zhuge', 'fable-zhuge']));
+    // Plugin agents are namespaced at runtime: a bare "grok-elon" is `Agent type not found`.
+    expect(new Set(dispatched)).toEqual(
+      new Set(['zworkflow:grok-elon', 'zworkflow:astra-zhuge', 'zworkflow:fable-zhuge']),
+    );
     // Panel table rows carry the agent id in backticks.
     for (const agent of ['astra-zhuge', 'grok-elon', 'fable-zhuge']) {
       expect(skill).toMatch(new RegExp(`^\\|[^\\n]*\`${agent}\`[^\\n]*\\|$`, 'm'));
@@ -164,6 +167,22 @@ describe('T3b — the subagent dispatch path is one tool name, wired end to end'
   it('spawns subagents with the Agent tool — never the retired Task( syntax', () => {
     const offenders = grepFiles(assetFiles, /\bTask\(/);
     expect(offenders.map((f) => path.relative(repoRoot, f))).toEqual([]);
+  });
+
+  it('every subagent_type resolves: zworkflow:<agent> with an existing agents/<agent>.md (no bare / stale prefix)', () => {
+    const unresolved: string[] = [];
+    for (const f of assetFiles) {
+      const text = fs.readFileSync(f, 'utf8');
+      for (const m of text.matchAll(/subagent_type:\s*"([^"]+)"/g)) {
+        const id = m[1];
+        if (id === 'zworkflow:<agent>') continue; // llm-dispatch placeholder, filled by the caller
+        const agent = id.startsWith('zworkflow:') ? id.slice('zworkflow:'.length) : undefined;
+        if (!agent || !fs.existsSync(path.join(agentsDir, `${agent}.md`))) {
+          unresolved.push(`${path.relative(repoRoot, f)}: ${id}`);
+        }
+      }
+    }
+    expect(unresolved).toEqual([]);
   });
 
   it('commands that run local:trinity or spawn subagents allow-list Skill / Agent', () => {
