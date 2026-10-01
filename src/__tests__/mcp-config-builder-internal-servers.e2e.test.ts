@@ -60,7 +60,6 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
     expect(Object.keys(config.mcpServers ?? {}).sort()).toEqual([
       'agent',
       'cron',
-      'llm',
       'mcp-tool-permission',
       'model-command',
       'permission-prompt',
@@ -72,7 +71,6 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
         'Skill',
         'mcp__agent',
         'mcp__cron',
-        'mcp__llm',
         'mcp__mcp-tool-permission',
         'mcp__model-command',
         'mcp__permission-prompt__permission_prompt',
@@ -87,7 +85,6 @@ describe('McpConfigBuilder internal MCP servers e2e', () => {
     if (!servers) {
       throw new Error('Expected internal MCP servers to be configured');
     }
-    expect(path.basename(executablePath(servers.llm))).toMatch(/^llm-mcp-server\.(ts|js)$/);
     expect(path.basename(executablePath(servers.agent))).toMatch(/^agent-mcp-server\.(ts|js)$/);
     expect(path.basename(executablePath(servers.cron))).toMatch(/^cron-mcp-server\.(ts|js)$/);
     expect(path.basename(executablePath(servers['model-command']))).toMatch(/^model-command-mcp-server\.(ts|js)$/);
