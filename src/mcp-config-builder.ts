@@ -36,7 +36,6 @@ import { userSettingsStore } from './user-settings-store';
 
 const PERMISSION_SERVER_BASENAME = 'permission-mcp-server';
 const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
-const LLM_SERVER_BASENAME = 'llm-mcp-server';
 const SLACK_MCP_SERVER_BASENAME = 'slack-mcp-server';
 const SERVER_TOOLS_BASENAME = 'server-tools-mcp-server';
 const CRON_SERVER_BASENAME = 'cron-mcp-server';
@@ -207,9 +206,6 @@ export class McpConfigBuilder {
     const mcpServers = await this.mcpManager.getServerConfiguration();
     const internalServers: Record<string, any> = {};
 
-    // Always add LLM aggregate server (wraps codex + gemini)
-    internalServers['llm'] = this.buildLlmServer();
-
     // Add agent MCP server when agents are configured (Trace: docs/current/plans/multi-agent/trace.md, S4)
     if (this.agentConfigs && Object.keys(this.agentConfigs).length > 0) {
       internalServers['agent'] = this.buildAgentServer();
@@ -296,19 +292,20 @@ export class McpConfigBuilder {
       }
     }
 
-    // Build allowed tools list
-    if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
-      config.allowedTools = this.buildAllowedTools(slackContext, userBypass);
+    // Build allowed tools list. Always — it also carries native tools (Skill,
+    // EnterPlanMode/ExitPlanMode, bypass allow-list), so it must not depend on
+    // whether any MCP server happened to be registered (the retired `llm`
+    // server used to make that condition unconditionally true).
+    config.allowedTools = this.buildAllowedTools(slackContext, userBypass);
 
-      this.logger.debug('Added MCP configuration', {
-        serverCount: Object.keys(config.mcpServers).length,
-        servers: Object.keys(config.mcpServers),
-        allowedTools: config.allowedTools,
-        hasSlackContext: !!slackContext,
-        userBypass,
-        permissionMode: config.permissionMode,
-      });
-    }
+    this.logger.debug('Added MCP configuration', {
+      serverCount: Object.keys(config.mcpServers ?? {}).length,
+      servers: Object.keys(config.mcpServers ?? {}),
+      allowedTools: config.allowedTools,
+      hasSlackContext: !!slackContext,
+      userBypass,
+      permissionMode: config.permissionMode,
+    });
 
     // Disallow native interactive tools and SDK cron tools in Slack context
     // Interactive tools expect terminal input; cron tools conflict with soma's CronScheduler
@@ -491,10 +488,6 @@ export class McpConfigBuilder {
     return this.getServerPath('Slack-mcp', SLACK_MCP_SERVER_BASENAME, 'slack-mcp');
   }
 
-  private getLlmServerPath(): string {
-    return this.getServerPath('LLM', LLM_SERVER_BASENAME, 'llm');
-  }
-
   private getServerToolsServerPath(): string {
     return this.getServerPath('Server-tools', SERVER_TOOLS_BASENAME, 'server-tools');
   }
@@ -533,17 +526,6 @@ export class McpConfigBuilder {
       env: {
         SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',
         SLACK_MCP_CONTEXT: JSON.stringify(threadContext),
-      },
-    };
-  }
-
-  private buildLlmServer(): Record<string, any> {
-    const command = this.getInternalServerCommand('llm');
-    return {
-      command: command.command,
-      args: command.args,
-      env: {
-        SOMA_CONFIG_FILE: CONFIG_FILE,
       },
     };
   }
@@ -591,9 +573,6 @@ export class McpConfigBuilder {
 
     // Add Skill tool for local plugins
     allowedTools.push('Skill');
-
-    // Always allow LLM aggregate tools
-    allowedTools.push('mcp__llm');
 
     // Allow agent tools when agents are configured
     if (this.agentConfigs && Object.keys(this.agentConfigs).length > 0) {
