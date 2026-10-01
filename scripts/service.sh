@@ -805,7 +805,9 @@ cmd_status() {
 # step's status check passes in a race window but the service is dead moments
 # later). setsid makes the supervisor a session leader in a brand-new
 # session/process-group that the job teardown cannot signal, so the freshly
-# deployed code keeps running.
+# deployed code keeps running. That covers the group kill only: the runner's
+# end-of-job orphan cleanup matches on the environment instead, which is why the
+# spawn below also clears RUNNER_TRACKING_ID.
 #
 # macOS has no setsid(1), so prefer the binary when present (Linux) and fall back
 # to perl's POSIX::setsid (always available on macOS). The spawned command
@@ -822,10 +824,17 @@ start_headless_fallback() {
 
     local daemon_cmd="cd '$PROJECT_DIR'; exec node dist/run-with-rotating-logs.js dist/index.js"
 
+    # RUNNER_TRACKING_ID="": the runner's end-of-job orphan cleanup
+    # (actions/runner JobExtension, "Cleaning up orphan processes") kills every
+    # process that was not alive at job start and whose environment carries the
+    # job's RUNNER_TRACKING_ID — read with `ps e` on macOS, so a new session does
+    # not escape it. Inherited, that id lets the deploy go green and then has the
+    # runner kill the service it just started. An empty value matches no job.
     if command -v setsid >/dev/null 2>&1; then
         PATH="$NODE_PATH:$TOOL_PATHS:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
         HOME="$USER_HOME" \
         SOMA_CONFIG_DIR="$PROJECT_DIR" \
+        RUNNER_TRACKING_ID="" \
             setsid bash -c "$daemon_cmd" \
             >> "$LOGS_DIR/launchd.out.log" 2>&1 < /dev/null &
     else
@@ -834,6 +843,7 @@ start_headless_fallback() {
         PATH="$NODE_PATH:$TOOL_PATHS:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
         HOME="$USER_HOME" \
         SOMA_CONFIG_DIR="$PROJECT_DIR" \
+        RUNNER_TRACKING_ID="" \
             nohup perl -e 'use POSIX qw(setsid); setsid(); exec("/bin/bash","-c",$ARGV[0]) or die "exec failed: $!";' "$daemon_cmd" \
             >> "$LOGS_DIR/launchd.out.log" 2>&1 < /dev/null &
     fi
