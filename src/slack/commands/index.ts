@@ -3,4 +3,4 @@
  */
 
 export { CommandRouter } from './command-router';
-export { CommandDependencies } from './types';
+export type { CommandDependencies } from './types';
