@@ -12,8 +12,8 @@ Eagle-eye 알림 스레드에서 봇이 **무인(unattended) 인시던트 시도
 
 | 변수 | 의미 | 읽는 곳 |
 |---|---|---|
-| `SOMA_INCIDENT_TRUSTED_SOURCE` | 신뢰 발신자 앵커(JSON object) | `getIncidentTrustedSource()` — `src/config.ts:184` |
-| `SOMA_INCIDENT_EVIDENCE_BASE_URL` | evidence collector origin | `getIncidentEvidenceConfig()` — `src/config.ts:233` |
+| `SOMA_INCIDENT_TRUSTED_SOURCE` | 신뢰 발신자 앵커(JSON object) | `getIncidentTrustedSource()` — `src/config.ts:246` |
+| `SOMA_INCIDENT_EVIDENCE_BASE_URL` | evidence collector origin | `getIncidentEvidenceConfig()` — `src/config.ts:295` |
 
 `SOMA_INCIDENT_TRUSTED_SOURCE` 필수 필드: `teamId`, `appId`, `botUserId`, `botId`, `channelIds` (비어있지 않은 배열,
 각 항목은 정확한 Slack 채널 id, 와일드카드 금지). 형식 예시 — **아래 값은 자리표시자이며 실제 자격증명이 아니다**:
@@ -49,7 +49,7 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
 - 도구는 인자 없는 `mcp__incident_evidence__collect` **하나**. `tools: []`, `plugins: []`, `settingSources: []`,
   `strictMcpConfig: true`, `allowedTools`는 그 한 개.
 - `PreToolUse` 훅과 `canUseTool` 둘 다 기존 `evaluateToolPolicy`를 `incidentReadOnly` 컨텍스트로 호출한다.
-  이 tier는 mode/admin과 무관하게 단독 결정하며(`src/agent-runtime/policy/tool-policy.ts:235`),
+  이 tier는 mode/admin과 무관하게 단독 결정하며(`src/agent-runtime/policy/tool-policy.ts:240`),
   `allow`가 아닌 모든 결과는 deny — 무인 스레드에서 `ask`는 불가능하다.
 - 쉘·파일·네트워크 없음, `persistSession: false`, `resume/continue` 없음,
   `maxTurns = 4`, wall-clock 상한 10분(`INCIDENT_MAX_WALL_CLOCK_MS`, 타이머는 stream owner가 건다).
@@ -58,13 +58,18 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
 ## 4. 스레드와 attempt 수명
 
 - 요청은 **알림 원본 스레드 안에서** 처리된다. `skipAutoBotThread: true`라 봇 전용 루트 스레드를 새로 만들지 않는다
-  (`packages/slack/src/event-router.ts:448`).
+  (`packages/slack/src/event-router.ts:531`).
 - 원문 마커 텍스트는 모델에 도달하지 않는다. 고정된 host prompt만 전달된다(`buildIncidentHostPrompt`).
 - 같은 `(lifecycle_id, attempt_id)` 재전달은 `duplicate_attempt`.
 - **재시도 admission**은 ①host가 쓴 완료 마커 `incidentAttemptFinishedId`가 현재 소유 attempt와 일치하고
-  ②세션이 `idle`일 때만 (`packages/slack/src/event-router.ts:415`). 아니면 `attempt_in_progress` / `session_busy`.
+  ②세션이 `idle`일 때만 (`packages/slack/src/event-router.ts:495`). 아니면 `attempt_in_progress` / `session_busy`.
 - 이미 일반 세션이 있는 스레드는 절대 인수하지 않는다(`ordinary_session_conflict`).
   인시던트 소유 표시는 해제되지 않는다 — 재시도 시 교체될 뿐이다.
+- 실행 중인 시도는 **스티어링 대상이 아니다.** 시도는 스티어링 레지스트리에 등록되지 않으므로
+  `steerTurn`/`interruptTurn`/`cancelSteeredMessage`는 "실행 중인 턴 없음"으로 답한다 (`src/claude-handler.ts:1245`).
+- 백그라운드 에이전트 keepalive는 시도에서 **꺼져 있다**(`0`) — 시도는 답하는 result에서 끝난다 (`src/claude-handler.ts:1300`).
+- 인시던트 소유 스레드의 일반 메시지(파일 업로드 포함)는 후속 큐 펜스 **앞에서** 버려진다 — 큐에 쌓이거나
+  스레드에 큐 표시가 붙거나 시도에 주입되지 않는다 (`src/slack-handler.ts:992`).
 
 ## 5. 산출물의 출처 — collector snapshot
 
