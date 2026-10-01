@@ -105,13 +105,15 @@ const EXACT_FILE_KEYS: ReadonlySet<string> = new Set(Array.from(SENSITIVE_EXACT_
 // shell keeps them, so a quoted `~` or `$HOME` still counts as HOME (a `~` written as an escape in
 // `$'...'`, `\x7e`, does not). Other variables, command substitution (a `$'...'` inside
 // `"$(...)"` stays literal) and paths with white space or control characters are not understood,
-// and only the commands below are read, every word of their arguments taken as a path (a grep
-// pattern `.env` counts as the file `.env`). An OS-level read deny list would cover every
-// spelling (getSensitiveReadDenyPaths builds one; nothing applies it).
+// and only the commands below are read. Every word of their arguments is taken as a path but the
+// pattern or program of PATTERN_FIRST, found from white-space-separated words: a quoted pattern
+// with white space in it (`grep "load .env" docs/`) counts as several words, the first of them
+// the pattern. An OS-level read deny list would cover every spelling (getSensitiveReadDenyPaths
+// builds one; nothing applies it).
 // A read or copy command's arguments run to the next `|`, `;` or `&`; RE_PATH picks every path
 // among them, and RE_RELATIVE_ARG every relative one. `\/+`: the shell reads `//` as `/`.
 const RE_READ_COMMANDS =
-  /\b(?:cat|head|tail|less|more|bat|xxd|hexdump|strings|base64|nano|vi|vim|code|open|wc|grep|egrep|fgrep|rg|awk|sed|sort|uniq|tac|nl|od|cmp|diff|jq|cp|mv|rsync|scp)\b([^|;&]*)/g;
+  /\b(cat|head|tail|less|more|bat|xxd|hexdump|strings|base64|nano|vi|vim|code|open|wc|grep|egrep|fgrep|rg|awk|sed|sort|uniq|tac|nl|od|cmp|diff|jq|cp|mv|rsync|scp)\b([^|;&]*)/g;
 const RE_PATH = /(?:~|\$HOME|\$\{HOME\})?(?:\/+[\w.\-~]+)+(?:\/+[\w.\-~*]+)?/g;
 const RE_INPUT_REDIRECT = /<\s*((?:~|\$HOME|\$\{HOME\})?(?:\/+[\w.\-~]+)+(?:\/+[\w.\-~]+)?)/g;
 // `.` sources a file where a command starts: at the start, or after white space or a separator.
@@ -124,8 +126,73 @@ const RE_RELATIVE_ARG = /(?<![^\s=])[\w.][\w.\-~]*(?:\/+[\w.\-~]+)*/g;
 const RE_RELATIVE_REDIRECT = /<\s*([\w.][\w.\-~]*(?:\/+[\w.\-~]+)*)/g;
 // Here `.` needs the start, white space or a separator before it: `Done. notes` sources nothing.
 const RE_RELATIVE_SOURCE = /(?:\bsource|(?<![^\s;&|(){}`])\.)\s+([\w.][\w.\-~]*(?:\/+[\w.\-~]+)*)/g;
-// Changing into a directory is an access to it.
+// Changing into a directory is an access to it. RE_RELATIVE_ARG reads the relative ones from the
+// arguments RE_CHANGE_DIR_ARGS takes (`cd .env`).
 const RE_CHANGE_DIR = /\b(?:cd|pushd)\b[^|;&]*?((?:~|\$HOME|\$\{HOME\})?(?:\/+[\w.\-~]+)+(?:\/+[\w.\-~]+)?)/g;
+const RE_CHANGE_DIR_ARGS = /\b(?:cd|pushd)\b([^|;&]*)/g;
+
+/**
+ * How a reader's options take their arguments, for PATTERN_FIRST: the argument of a `pattern`
+ * option is the pattern or program, so every operand is a file (`grep -e PATTERN FILE`); that of a
+ * `patternFile` option is a file the pattern or program is read from, a path, and every operand is
+ * a file (`grep -f FILE`); that of a `path` option names files read (`--include=GLOB`), a path; and
+ * that of a `value` option is skipped (`-m NUM`). A `patternless` option has no argument and makes
+ * every operand a file (`rg --files`).
+ */
+interface OptionTable {
+  readonly pattern?: ReadonlyArray<string>;
+  readonly patternFile?: ReadonlyArray<string>;
+  readonly path?: ReadonlyArray<string>;
+  readonly value?: ReadonlyArray<string>;
+  readonly patternless?: ReadonlyArray<string>;
+}
+type OptionKind = keyof OptionTable;
+const OPTION_KINDS: ReadonlyArray<OptionKind> = ['pattern', 'patternFile', 'path', 'value', 'patternless'];
+
+const GREP_OPTIONS: OptionTable = {
+  pattern: ['-e', '--regexp'],
+  patternFile: ['-f', '--file'],
+  path: ['--include', '--exclude', '--include-dir', '--exclude-dir', '--include-from', '--exclude-from'],
+  value: ['-A', '-B', '-C', '-d', '-D', '-m', '--after-context', '--before-context', '--max-count'],
+};
+
+/**
+ * The readers whose first operand is a pattern or program, not a file (`grep PATTERN FILE...`),
+ * and their options as the GNU, macOS and ripgrep manuals give them. The first operand is not
+ * checked unless an option gave the pattern. An option not listed is taken to have no argument:
+ * if it has one, that argument is taken for the pattern and the pattern is checked as a file, a
+ * block too many but never a file unchecked, as long as every option whose argument gives the
+ * pattern or names a file read is listed. So a `value` or `path` option is listed only where GNU
+ * and macOS both take a separate argument: not sed's `-i`, whose argument GNU attaches, or `-l`, a
+ * flag on macOS. awk on macOS ignores gawk's `-e`, `-E`, `-i` and `-l` (`unknown option -i
+ * ignored`), so the last three are `patternFile`, which checks every word after them. jq's `-e` is
+ * `--exit-status`.
+ */
+const PATTERN_FIRST: ReadonlyMap<string, OptionTable> = new Map([
+  ['grep', GREP_OPTIONS],
+  ['egrep', GREP_OPTIONS],
+  ['fgrep', GREP_OPTIONS],
+  [
+    'rg',
+    {
+      pattern: ['-e', '--regexp'],
+      patternFile: ['-f', '--file'],
+      path: ['-g', '--glob', '--iglob', '--ignore-file'],
+      value: ['-A', '-B', '-C', '-d', '-E', '-j', '-m', '-M', '-r', '-t', '-T', '--max-count', '--replace', '--type'],
+      patternless: ['--files', '--type-list'],
+    },
+  ],
+  ['sed', { pattern: ['-e', '--expression'], patternFile: ['-f', '--file'] }],
+  [
+    'awk',
+    {
+      pattern: ['-e', '--source'],
+      patternFile: ['-f', '--file', '-E', '--exec', '-i', '--include', '-l', '--load'],
+      value: ['-F', '-v', '--field-separator', '--assign'],
+    },
+  ],
+  ['jq', { patternFile: ['-f', '--from-file', '--run-tests'], path: ['-L'], value: ['--indent'] }],
+]);
 /** The quote and backslash characters the shell removes from a word. */
 const QUOTING = /["'\\]/g;
 /** White space and the metacharacters `|&;()<>`: unquoted, each ends a word. */
@@ -246,17 +313,83 @@ function extractPathsFromCommand(command: string): string[] {
   ]);
   const paths: string[] = [];
   for (const text of readings) {
-    for (const args of collectMatches(RE_READ_COMMANDS, text)) {
-      paths.push(...(args.match(RE_PATH) ?? []));
-      paths.push(...(args.match(RE_RELATIVE_ARG) ?? []));
+    for (const [, reader, args] of text.matchAll(RE_READ_COMMANDS)) {
+      const options = PATTERN_FIRST.get(reader);
+      for (const words of options ? fileWords(args.split(/\s+/).filter(Boolean), options) : [args]) {
+        paths.push(...(words.match(RE_PATH) ?? []));
+        paths.push(...(words.match(RE_RELATIVE_ARG) ?? []));
+      }
     }
     paths.push(...collectMatches(RE_INPUT_REDIRECT, text));
     paths.push(...collectMatches(RE_RELATIVE_REDIRECT, text));
     paths.push(...collectMatches(RE_SOURCE_CMD, text));
     paths.push(...collectMatches(RE_RELATIVE_SOURCE, text));
     paths.push(...collectMatches(RE_CHANGE_DIR, text));
+    for (const args of collectMatches(RE_CHANGE_DIR_ARGS, text)) {
+      paths.push(...(args.match(RE_RELATIVE_ARG) ?? []));
+    }
   }
   return paths;
+}
+
+/**
+ * The words among a PATTERN_FIRST reader's arguments that may name files: every operand but the
+ * pattern, the first one unless an option gave the pattern, and the argument of every option that
+ * names a file. Option words are kept too, for a path attached with `=` (`--include=.env`), but not
+ * one that gives the pattern (`--regexp=.env`). `--` ends the options.
+ */
+function fileWords(words: ReadonlyArray<string>, options: OptionTable): string[] {
+  const files: string[] = [];
+  let patternGiven = false;
+  let optionsEnded = false;
+  for (let i = 0; i < words.length; i += 1) {
+    const word = words[i];
+    if (optionsEnded || word === '-' || !word.startsWith('-')) {
+      if (patternGiven) files.push(word);
+      patternGiven = true;
+    } else if (word === '--') {
+      optionsEnded = true;
+    } else {
+      const { kind, argument } = readOption(word, options);
+      if (kind !== 'pattern') files.push(word);
+      if (kind === 'pattern' || kind === 'patternFile' || kind === 'patternless') patternGiven = true;
+      if (kind === undefined || kind === 'patternless') continue;
+      let value = argument;
+      if (value === undefined) {
+        i += 1;
+        value = words[i];
+      }
+      if (value !== undefined && (kind === 'patternFile' || kind === 'path')) files.push(value);
+    }
+  }
+  return files;
+}
+
+/**
+ * The kind of an option word and the argument attached to it: `--name=argument`, or the rest of a
+ * cluster of short options after the first one that takes an argument (`-rne`, `-fFILE`, `-A3`). A
+ * long option may be abbreviated, as GNU allows: a word that begins a listed name giving the pattern
+ * or naming a file counts as `patternFile` when it may name a file, which checks every word after it.
+ */
+function readOption(word: string, options: OptionTable): { kind?: OptionKind; argument?: string } {
+  const kindOf = (name: string) => OPTION_KINDS.find((kind) => options[kind]?.includes(name));
+  if (word.startsWith('--')) {
+    const eq = word.indexOf('=');
+    const name = eq < 0 ? word : word.slice(0, eq);
+    const argument = eq < 0 ? undefined : word.slice(eq + 1);
+    const begun = (kind: OptionKind) => options[kind]?.some((listed) => listed.startsWith(name)) ?? false;
+    let kind = kindOf(name);
+    if (kind === undefined && name.length > 2) {
+      if (begun('patternFile') || begun('path')) kind = 'patternFile';
+      else if (begun('pattern')) kind = 'pattern';
+    }
+    return { kind, argument };
+  }
+  for (let j = 1; j < word.length; j += 1) {
+    const kind = kindOf(`-${word[j]}`);
+    if (kind !== undefined) return { kind, argument: j + 1 < word.length ? word.slice(j + 1) : undefined };
+  }
+  return {};
 }
 
 /**

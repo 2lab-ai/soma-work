@@ -397,8 +397,14 @@ describe('checkBashSensitivePaths', () => {
       expect(checkBashSensitivePaths(command).isSensitive).toBe(true);
     });
 
-    const otherReaders = ['egrep', 'fgrep', 'awk', 'sed', 'sort', 'uniq', 'tac', 'nl', 'od', 'cmp', 'diff', 'jq'];
+    const otherReaders = ['sort', 'uniq', 'tac', 'nl', 'od', 'cmp', 'diff'];
     it.each(otherReaders)('blocks: %s ~/.ssh/id_rsa', (reader) => {
+      expect(checkBashSensitivePaths(`${reader} ~/.ssh/id_rsa`).isSensitive).toBe(true);
+    });
+
+    // The pattern or program comes first: `grep PATTERN FILE`.
+    const patternFirst = ['egrep x', 'fgrep x', 'awk 1', 'sed -n p', 'jq .'];
+    it.each(patternFirst)('blocks: %s ~/.ssh/id_rsa', (reader) => {
       expect(checkBashSensitivePaths(`${reader} ~/.ssh/id_rsa`).isSensitive).toBe(true);
     });
 
@@ -411,6 +417,88 @@ describe('checkBashSensitivePaths', () => {
     ])('allows: %s (%s)', (command) => {
       expect(checkBashSensitivePaths(command).isSensitive).toBe(false);
     });
+  });
+});
+
+// Regression: every word after grep, sed, awk or jq was taken as a file, the pattern or program
+// included, so an ordinary search for `.env` was blocked; and a relative `cd .env` was never read.
+describe('checkBashSensitivePaths: pattern operands and relative cd', () => {
+  it.each([
+    ['grep -f .env x', 'patterns read from .env'],
+    ['grep -e foo .env', 'the pattern given by -e'],
+    ['sed -n 1p .env', 'sed script, then the file'],
+    ['awk 1 .env', 'awk program, then the file'],
+    ['jq . .env', 'jq filter, then the file'],
+    ['cd .env', 'relative cd'],
+    ['pushd .env', 'relative pushd'],
+    ['cd -P .env', 'cd with an option'],
+    ['grep -rne foo .env', '-e at the end of a cluster of options'],
+    ['grep -epattern .env', '-e with its pattern attached'],
+    ['grep -fpatterns.txt .env', '-f with its file attached'],
+    ['grep -f.env x', '-f with .env attached'],
+    ['grep --file=.env x', '--file=.env'],
+    ['grep --file .env x', '--file .env'],
+    ['grep --fil .env x', 'an abbreviated --file'],
+    ['grep --regexp foo .env', '--regexp'],
+    ['grep -A 2 x .env', 'an option with a number before the pattern'],
+    ['grep -m1 x .env', 'an option with its number attached'],
+    ['grep x -- .env', 'a file after --'],
+    ['grep -- -x .env', 'a pattern after --'],
+    ['grep -r --include .env TODO .', '--include names the files read'],
+    ['rg -g .env TODO .', 'rg -g names the files read'],
+    ['rg --files ~/.ssh', 'rg --files takes no pattern'],
+    ['sed -f .env x', 'sed script read from .env'],
+    ['sed -e p -e p .env', 'sed scripts given by -e'],
+    ['awk -f prog.awk .env', 'awk program read from a file'],
+    ['awk -F: 1 .env', 'awk -F with its separator attached'],
+    ['awk -v x=1 1 .env', 'awk -v with its assignment'],
+    ['jq -f filter.jq .env', 'jq filter read from a file'],
+    ['git grep -n foo -- .env', 'git grep with a file'],
+    ['grep x ~/.aws/credentials', 'an absolute file after the pattern'],
+  ])('blocks: %s (%s)', (command) => {
+    expect(checkBashSensitivePaths(command).isSensitive).toBe(true);
+  });
+
+  it.each([
+    ['grep -rn "\\.env" src/', 'a search for .env'],
+    ['grep -rn id_rsa docs/', 'a search for id_rsa'],
+    ['rg "\\.env" .', 'rg search for .env'],
+    ['jq .env config.json', 'a jq filter named like .env'],
+    ['sed s/.env/x/ notes.txt', 'a sed script that mentions .env'],
+    ['grep -m 1 "\\.env" src/', 'an option with a number before the pattern'],
+    ['grep -rn "~/.ssh" docs/', 'a search for ~/.ssh'],
+    ['grep -rn /etc/shadow docs/', 'a search for /etc/shadow'],
+    ['grep -rn -e "\\.env" -e secrets.json src/', 'patterns given by -e'],
+    ['cd ..', 'cd to the parent'],
+  ])('allows: %s (%s)', (command) => {
+    expect(checkBashSensitivePaths(command).isSensitive).toBe(false);
+  });
+});
+
+// Developer commands that search for or mention sensitive names without opening those files.
+const DEVELOPER_COMMANDS: ReadonlyArray<string> = [
+  'grep -rn "\\.env" src/',
+  'git grep -n "\\.env"',
+  'rg -n id_rsa docs/',
+  "rg -g '!.env' TODO",
+  'rg --files | grep "\\.env"',
+  "sed -n '/credentials.json/p' docs/setup.md",
+  "awk '/\\.env/ {print FILENAME}' src/index.ts",
+  "jq '.env' package.json",
+  'grep -c .env .gitignore',
+  'grep -m 1 "\\.env" src/',
+  'grep -rn "~/.ssh" docs/',
+  'grep -rln secrets.yaml k8s/',
+  'grep -rn "aws/credentials" README.md',
+  'git ls-files | grep -E "(^|/)\\.env"',
+  'find . -name .env',
+  'git log -p -- .env',
+  'ls -la ~/.ssh',
+];
+
+describe('checkBashSensitivePaths: developer commands that only mention sensitive names', () => {
+  it.each(DEVELOPER_COMMANDS)('allows: %s', (command) => {
+    expect(checkBashSensitivePaths(command).isSensitive).toBe(false);
   });
 });
 
