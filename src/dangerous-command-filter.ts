@@ -5,25 +5,20 @@
  * (`matchRules`, `overridableMatchedRuleIds`,
  * `overridableRulesByIds`, `isCrossUserAccess`, `isSshCommand`) live in
  * `somalib/permission/dangerous-rules.ts` so the permission MCP child can
- * import them without duplicating the catalog. This file re-exports them so
- * existing parent-process callers (`src/claude-handler.ts`, tests) keep
- * working unchanged.
+ * import them without duplicating the catalog. This file re-exports them; its
+ * production importer is `src/agent-runtime/policy/tool-policy.ts`.
  *
  * Parent-only logic that stays here:
- *   - `bypassBashPermissionDecision` — the bypass-mode Bash escalation.
- *     Lives outside somalib because it consults `SessionRegistry`-style
- *     `isRuleDisabled` predicates that are parent-side concepts.
- *   - `checkDangerousCommand` / `isDangerousCommand` — legacy helpers used
- *     by parent-process audit / logging.
- *   - `getOverridableRule` — convenience lookup for parent-side payload
- *     handlers; returns undefined for lockdown ids by design.
+ *   - `bypassBashPermissionDecision` — the dangerous-rule check that
+ *     `evaluateToolPolicy` runs on Bash commands in auto mode. Lives outside
+ *     somalib because it consults `SessionRegistry`-style `isRuleDisabled`
+ *     predicates that are parent-side concepts.
  *
  * See `somalib/permission/dangerous-rules.ts` for the file-header notes on
  * lockdown isolation invariants and the architecture of the rule catalog.
  */
 
-import type { DangerousRule } from 'somalib/permission/dangerous-rules';
-import { DANGEROUS_RULES, overridableRulesByIds } from 'somalib/permission/dangerous-rules';
+import { DANGEROUS_RULES } from 'somalib/permission/dangerous-rules';
 
 export type { DangerousRule, DangerousRuleContext } from 'somalib/permission/dangerous-rules';
 export {
@@ -36,50 +31,15 @@ export {
 } from 'somalib/permission/dangerous-rules';
 
 /**
- * Legacy result type — preserved for backward compat with pre-catalog callers/tests.
- * `matchedRuleIds` is the new authoritative field; `matchedPatterns` is the
- * legacy label list kept for existing assertions.
- */
-export interface DangerousCommandResult {
-  readonly isDangerous: boolean;
-  readonly matchedPatterns: ReadonlyArray<string>;
-  readonly matchedRuleIds: ReadonlyArray<string>;
-}
-
-/**
- * Check if a bash command matches any dangerous pattern.
- * Returns labels (legacy) + rule ids.
+ * Result of `bypassBashPermissionDecision`.
  *
- * Note: legacy callers only looked at pattern-based rules. To avoid a behaviour
- * change, this function (like `isDangerousCommand`) considers ONLY
- * `sessionOverridable=true` rules — i.e. the classic DANGEROUS_PATTERNS set.
- * Lockdown rules are checked on their own enforcement paths.
- */
-export function checkDangerousCommand(command: string): DangerousCommandResult {
-  const matches = DANGEROUS_RULES.filter((rule) => rule.sessionOverridable && rule.match(command, {}));
-  return {
-    isDangerous: matches.length > 0,
-    matchedPatterns: matches.map((r) => legacyDescriptionFor(r.id)),
-    matchedRuleIds: matches.map((r) => r.id),
-  };
-}
-
-/**
- * Simple boolean check for dangerous commands. Legacy-compatible scope:
- * only considers overridable (pattern-based) rules — NOT cross-user/ssh.
- */
-export function isDangerousCommand(command: string): boolean {
-  return DANGEROUS_RULES.some((rule) => rule.sessionOverridable && rule.match(command, {}));
-}
-
-/**
- * Result of the bypass-mode Bash permission decision.
- *
- * `decision`: hook return value — 'allow' skips the Slack prompt, 'ask' escalates
- * to the permission MCP tool which renders the Slack permission UI.
+ * `decision`: 'allow' when no active dangerous rule matches, else 'ask'. In auto
+ * mode `evaluateToolPolicy` turns 'ask' into `classify`, which hands the command
+ * to the safety classifier.
  * `matchedRuleIds`: overridable rules that are currently *active* (not session-disabled).
- * Empty when decision is 'allow'. Passed end-to-end to the Slack UI so the
- * "Approve & disable rule for this session" button knows what to disable.
+ * Empty when decision is 'allow', non-empty when it is 'ask'. The safety classifier
+ * receives them as context; the Slack permission prompt re-derives its own ids in
+ * the permission MCP child.
  */
 export interface BypassBashPermissionResult {
   readonly decision: 'allow' | 'ask';
@@ -87,15 +47,14 @@ export interface BypassBashPermissionResult {
 }
 
 /**
- * Bypass mode permission decision for Bash commands.
+ * Dangerous-rule decision for a Bash command.
  *
  * Returns 'allow' for non-dangerous commands, 'ask' for dangerous ones
  * (subject to the session-scoped disable set).
  *
- * CRITICAL: This returns explicit decisions ('allow'/'ask') instead of deferring.
- * When permissionPromptToolName is set (always in Slack context), a deferred
- * decision causes the SDK to route through the permission MCP tool, triggering
- * Slack permission prompts even in bypass mode. Explicit decisions prevent this.
+ * Despite the name, bypass mode does not call this: `evaluateToolPolicy`
+ * allows every Bash command in bypass mode and calls this function only in auto
+ * mode (`src/agent-runtime/policy/tool-policy.ts`).
  *
  * @param command  The bash command string.
  * @param isRuleDisabled
@@ -111,61 +70,6 @@ export function bypassBashPermissionDecision(
   // (cross-user, ssh) have their own enforcement paths and must not be
   // silenced here even if a user previously approved them for the session.
   const matches = DANGEROUS_RULES.filter((rule) => rule.sessionOverridable && rule.match(command, {}));
-  if (matches.length === 0) {
-    return { decision: 'allow', matchedRuleIds: [] };
-  }
-  const effective = matches.filter((rule) => !isRuleDisabled(rule.id));
-  if (effective.length === 0) {
-    return { decision: 'allow', matchedRuleIds: [] };
-  }
-  return { decision: 'ask', matchedRuleIds: effective.map((rule) => rule.id) };
-}
-
-/**
- * Look up an overridable rule by id. Returns undefined for unknown or
- * lockdown-only rule ids. Callers must tolerate undefined — stale button
- * payloads (e.g. old pending approvals after a rule rename) reach here.
- *
- * Delegates to `overridableRulesByIds` so the "drop lockdown ids" rule lives
- * in exactly one place — adding a new lockdown rule to the catalog
- * automatically excludes it here too.
- */
-export function getOverridableRule(ruleId: string): DangerousRule | undefined {
-  return overridableRulesByIds([ruleId])[0];
-}
-
-/**
- * Legacy description strings — kept stable so downstream log parsers or
- * existing test assertions (`matchedPatterns`) do not need to change.
- * New code should prefer `label` / `description` on the rule object.
- */
-function legacyDescriptionFor(ruleId: string): string {
-  switch (ruleId) {
-    case 'kill':
-      return 'kill process';
-    case 'pkill':
-      return 'pkill process';
-    case 'killall':
-      return 'killall process';
-    case 'rm-recursive':
-      return 'recursive delete';
-    case 'rm-force':
-      return 'force delete';
-    case 'rm-force-long':
-      return 'force delete (--force)';
-    case 'shutdown':
-      return 'system shutdown';
-    case 'reboot':
-      return 'system reboot';
-    case 'halt':
-      return 'system halt';
-    case 'mkfs':
-      return 'format filesystem';
-    case 'dd-if':
-      return 'disk copy (dd)';
-    case 'chmod-world-recursive':
-      return 'recursive world-writable chmod';
-    default:
-      return ruleId;
-  }
+  const matchedRuleIds = matches.map((rule) => rule.id).filter((ruleId) => !isRuleDisabled(ruleId));
+  return { decision: matchedRuleIds.length === 0 ? 'allow' : 'ask', matchedRuleIds };
 }

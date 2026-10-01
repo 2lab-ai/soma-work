@@ -836,12 +836,12 @@ function actorUserId(body: unknown): string | null {
 }
 
 /**
- * Decode a button's `value` into `{ payload, cardMode, isLegacy }`.
+ * Decode a button's `value` into `{ payload, cardMode, isLegacy }`; null when the value is invalid.
  *
- * Returns null when the value is invalid — handler must ack and refuse
- * the action. Legacy values surface as `{ isLegacy: true, cardMode: null }`
- * so the caller can force `force=false` and fall back to the actor's
- * render mode. Tagged values surface the encoded mode verbatim.
+ * On null, remove / attach / detach / activate_slot (which act on the payload's key) log and return;
+ * add, next and refresh_usage_all go on without an auth origin, the latter two with the actor's render mode.
+ * Legacy values surface as `{ isLegacy: true, cardMode: null }` so the caller can force `force=false`
+ * and fall back to the actor's render mode. Tagged values surface the encoded mode verbatim.
  */
 function decodeActionButtonValue(body: unknown): {
   payload: string;
