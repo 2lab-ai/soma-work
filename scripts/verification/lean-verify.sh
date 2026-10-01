@@ -11,6 +11,10 @@
 #
 # Stages, each fail-closed:
 #
+#   0. extract            Each scripts/verification/extract-*.cjs writes the generated Lean data a
+#                         module proves things about (gitignored; rebuilt from the checkout on
+#                         every run, once, before any other stage and before --selftest copies
+#                         the tree), so every stage below covers its output.
 #   1. source gate        Textual and fail-fast: no escape hatch spelled out in the code of
 #                         SomaVerify/**/*.lean (FORBIDDEN below; comments and string and char
 #                         literals are skipped, so prose may use any word), and no invisible or
@@ -87,6 +91,17 @@ module_of() {
 # JsString -> js-string, CliArgs -> cli-args, JSONPath -> json-path
 kebab() {
   printf '%s' "$1" | sed -E 's/([A-Z]+)([A-Z][a-z])/\1-\2/g; s/([a-z0-9])([A-Z])/\1-\2/g' | tr '[:upper:]' '[:lower:]'
+}
+
+extract() {
+  stage "extract"
+  local script count=0
+  for script in "$REPO_ROOT"/scripts/verification/extract-*.cjs; do
+    [ -e "$script" ] || continue
+    node "$script" || die "extract: ${script#"$REPO_ROOT"/} failed"
+    count=$((count + 1))
+  done
+  echo "extract: $count extractor(s)"
 }
 
 discover() {
@@ -671,6 +686,12 @@ selftest() {
   # shellcheck disable=SC2031
   cd "$LEAN_ROOT"
   cp -R SomaVerify lakefile.toml lean-toolchain "$SELFTEST_ROOT/lean/"
+  # Generators run from lean/ and may read data vendored beside it (verification/iana/): copy
+  # every sibling of lean/ except vectors/, which the scratch run writes itself.
+  local sibling
+  for sibling in ../*; do
+    case "${sibling#../}" in lean | vectors) ;; *) cp -R "$sibling" "$SELFTEST_ROOT/" ;; esac
+  done
   if [ -f lake-manifest.json ]; then cp lake-manifest.json "$SELFTEST_ROOT/lean/"; fi
   local probe_dir="$SELFTEST_ROOT/lean/SomaVerify/SelfTest"
   [ ! -e "$probe_dir" ] || die "SomaVerify/SelfTest is reserved for --selftest"
@@ -735,6 +756,7 @@ main() {
     die "lake not found; install elan (the toolchain is pinned by verification/lean/lean-toolchain)"
   command -v perl >/dev/null 2>&1 || die "perl not found; the source gate needs it"
 
+  extract
   if [ "$mode" = selftest ]; then
     selftest
     return
