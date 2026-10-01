@@ -146,7 +146,7 @@ export class IncidentOptionsError extends Error {
  * Field bounds, mirrored from the parser that admits a request
  * (`packages/slack/src/incident-contract.ts`). They are re-applied here because
  * the value reaching this module did not necessarily come from that parser:
- * `session-registry.ts:2075` restores `incidentRequest` verbatim for any
+ * `session-registry.ts:2202` restores `incidentRequest` verbatim for any
  * non-null object, so a truncated write, a hand-edited sessions file or an older
  * schema arrives unparsed.
  *
