@@ -227,6 +227,77 @@ function startTurn(handler: ClaudeHandler): AsyncIterator<unknown> {
 
 const typeOf = (f: unknown) => (f as { type: string }).type;
 
+/**
+ * A drained `completed` background-task notification can make the model run a
+ * turn of its own. That turn really ran (`num_turns: 1`) but answers no host
+ * send, so it echoes no `user_message_uuid`.
+ */
+const BG_TURN_NOTIFICATION = {
+  ...ORPHAN_NOTIFICATION,
+  task_id: 'task-bg',
+  status: 'completed',
+  summary: 'Background agent finished',
+  uuid: 'bg-notification-uuid',
+};
+const BG_TURN_RESULT = {
+  type: 'result',
+  subtype: 'success',
+  is_error: false,
+  result: 'bg agent finished',
+  duration_ms: 400,
+  duration_api_ms: 380,
+  num_turns: 1,
+  stop_reason: 'end_turn',
+  session_id: 'sess-1',
+  uuid: 'bg-result-uuid',
+};
+
+/** A metadata-only frame: proof the CLI is alive, with nothing to render. */
+const TASK_PROGRESS = {
+  type: 'system',
+  subtype: 'task_progress',
+  task_id: 'task-bg',
+  description: 'still working',
+  session_id: 'sess-1',
+  uuid: 'progress-uuid',
+};
+
+const SKIP_TIMEOUT_LOG = 'No frame after a skipped result';
+
+/**
+ * Install a fake `query()` that runs `script` — for streams the canned
+ * orphan-drain replay above does not cover. `script` gets the input iterator.
+ */
+function installScriptedQuery(
+  script: (inputs: AsyncIterator<unknown>) => AsyncGenerator<unknown, void, unknown>,
+): void {
+  queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+    const inputs = (prompt as AsyncIterable<unknown>)[Symbol.asyncIterator]();
+    return Object.assign(script(inputs), {
+      interrupt: vi.fn(async () => ({ still_queued: [], cancelled: [] })),
+      cancelAsyncMessage: vi.fn(async () => true),
+    });
+  });
+}
+
+/** Read the turn's opening send into `cli.opening`. */
+async function readOpening(inputs: AsyncIterator<unknown>, cli: FakeCli): Promise<void> {
+  cli.opening = (await inputs.next()).value as Record<string, unknown>;
+  cli.received.push(cli.opening);
+}
+
+/** Start a read that sets `cli.inputEnded` the moment the input ends. */
+function watchInputEnd(inputs: AsyncIterator<unknown>, cli: FakeCli): Promise<unknown> {
+  const probe = inputs.next();
+  probe.then((r) => {
+    cli.inputEnded = r.done === true;
+  });
+  return probe;
+}
+
+const skipTimeoutWarnings = (warn: { mock: { calls: unknown[][] } }) =>
+  warn.mock.calls.filter(([message]) => String(message).includes(SKIP_TIMEOUT_LOG));
+
 describe('ClaudeHandler turn-result attribution (#257)', () => {
   beforeEach(() => {
     queryMock.mockReset();
@@ -379,6 +450,176 @@ describe('ClaudeHandler turn-result attribution (#257)', () => {
       expect(tail[0]).toMatchObject({ result: 'PONG', user_message_uuid: cli.opening?.uuid });
       expect(cli.inputEnded).toBe(true);
       expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('closing the input'), expect.anything());
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * Ran a turn, echoes no uuid: a `num_turns > 0` exemption for uuid-less
+   * results would end the turn here — the same failure as the orphan drain,
+   * one notification later.
+   */
+  it('skips a notification-driven turn result (num_turns 1, no uuid) and ends on the answer', async () => {
+    const cli = newFakeCli();
+    installScriptedQuery(async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield BG_TURN_NOTIFICATION;
+      yield BG_TURN_RESULT;
+      const probe = watchInputEnd(inputs, cli);
+      cli.inputOpenAfterOrphan = await isPending(probe);
+      yield INIT;
+      yield PONG;
+      yield answerResult(cli.opening?.uuid);
+      await probe;
+    });
+
+    const frames = await collect(startTurn(newHandler()));
+
+    expect(cli.inputOpenAfterOrphan).toBe(true);
+    expect(cli.inputEnded).toBe(true);
+    const results = frames.filter((f) => typeOf(f) === 'result');
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'PONG', user_message_uuid: cli.opening?.uuid });
+    expect(frames).toContainEqual(PONG);
+  });
+
+  it('disarms the bound on a metadata-only frame after a skipped result', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      installScriptedQuery(async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield ORPHAN_RESULT;
+        const probe = watchInputEnd(inputs, cli);
+        yield TASK_PROGRESS;
+        cli.markPulledPastOrphan();
+        await cli.gate;
+        yield answerResult(cli.opening?.uuid);
+        await probe;
+      });
+      const it = startTurn(newHandler());
+
+      expect((await it.next()).value).toEqual(TASK_PROGRESS);
+      const pending = it.next();
+      // The handler is now waiting on the SDK again, with only a metadata frame
+      // since the skipped result.
+      await cli.pulledPastOrphan;
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS * 2);
+
+      expect(cli.inputEnded).toBe(false);
+      expect(skipTimeoutWarnings(warn)).toHaveLength(0);
+
+      cli.openGate();
+      expect((await pending).value).toMatchObject({ type: 'result', user_message_uuid: cli.opening?.uuid });
+      expect((await it.next()).done).toBe(true);
+      expect(cli.inputEnded).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * The bound is armed only while the generator waits on the SDK — never at a
+   * `yield` — so a consumer's `return()` queues behind the pending pull and
+   * takes effect when the stream ends. The timer must die with the turn, not
+   * fire into a finished one.
+   */
+  it('clears the bound when the consumer returns while it is armed and the stream then ends', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      installScriptedQuery(async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield ORPHAN_RESULT;
+        cli.markPulledPastOrphan();
+        // The CLI exits on its own: no further frame.
+        await cli.gate;
+      });
+      // The generator itself (not a bare AsyncIterator): `return()` is the
+      // consumer action under test.
+      const it = newHandler().streamQuery('ping', undefined, undefined, undefined, undefined, SESSION_KEY);
+
+      const pending = it.next();
+      await cli.pulledPastOrphan; // the bound is armed now
+      const returned = it.return(undefined);
+      cli.openGate();
+
+      expect((await pending).done).toBe(true);
+      expect((await returned).done).toBe(true);
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS * 2);
+      expect(skipTimeoutWarnings(warn)).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('clears the bound when the stream throws while it is armed', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      installScriptedQuery(async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield ORPHAN_RESULT;
+        cli.markPulledPastOrphan();
+        await cli.gate;
+        throw new Error('aborted by the host');
+      });
+      const it = startTurn(newHandler());
+
+      const pending = it.next();
+      await cli.pulledPastOrphan; // the bound is armed now
+      cli.openGate();
+
+      await expect(pending).rejects.toThrow('aborted by the host');
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS * 2);
+      expect(skipTimeoutWarnings(warn)).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('re-arms the bound on a second skipped result and fires once, timed from the second', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      let markSecondPulled: () => void = () => {};
+      const secondPulled = new Promise<void>((resolve) => {
+        markSecondPulled = resolve;
+      });
+      installScriptedQuery(async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield ORPHAN_RESULT;
+        cli.markPulledPastOrphan();
+        await cli.gate;
+        yield { ...ORPHAN_RESULT, uuid: 'orphan-result-uuid-2' };
+        markSecondPulled();
+        cli.inputEnded = (await inputs.next()).done === true;
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      await cli.pulledPastOrphan;
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS / 2);
+      cli.openGate();
+      await secondPulled;
+
+      // The first result's deadline is half a bound away now; it must be gone.
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS - 1);
+      expect(cli.inputEnded).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const frames = await framesPromise;
+
+      expect(cli.inputEnded).toBe(true);
+      expect(frames.filter((f) => typeOf(f) === 'result')).toHaveLength(0);
+      expect(skipTimeoutWarnings(warn)).toHaveLength(1);
     } finally {
       warn.mockRestore();
     }
