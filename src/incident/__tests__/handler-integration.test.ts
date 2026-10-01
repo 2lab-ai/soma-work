@@ -438,9 +438,9 @@ describe('ClaudeHandler.streamQuery — incident attempt, real wiring', () => {
 });
 
 describe('ClaudeHandler.streamQuery — incident failures terminate, never retry', () => {
-  // Reachable, not hypothetical: `session-registry.ts:2075` restores any
+  // Reachable, not hypothetical: `session-registry.ts:2202` restores any
   // non-null object verbatim ("any present value keeps the session restricted"),
-  // and `claude-handler.ts:944` enters the incident wrapper on a truthy field.
+  // and `claude-handler.ts:1144` enters the incident wrapper on a truthy field.
   // A half-shaped value from a truncated sessions file must end as a host
   // terminal — never as an ordinary full-tool session in an unattended thread.
   it('refuses a restored request with a bad version, without ever reaching the SDK', async () => {
@@ -478,7 +478,7 @@ describe('ClaudeHandler.streamQuery — incident failures terminate, never retry
     const { payload } = markerOf(messages);
     // `{}` carries no correlation ids, so the result contract cannot render a
     // valid wire result for it and the host failure degrades to `inconclusive`
-    // (`attempt-output.ts:633` → `tooLargeToFrame`). What this test owns is the
+    // (`attempt-output.ts:689` → `tooLargeToFrame`). What this test owns is the
     // property above it: a bounded host terminal, never a model conclusion and
     // never an ordinary session.
     expect(['failed', 'inconclusive', 'interrupted']).toContain(payload.status);
