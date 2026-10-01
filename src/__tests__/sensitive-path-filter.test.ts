@@ -324,6 +324,33 @@ describe('checkBashSensitivePaths', () => {
       expect(checkBashSensitivePaths(command).isSensitive).toBe(true);
     });
   });
+
+  // Regression: quote removal glued a `$'...'` escape onto the path (`$'/etc/shadow\x00'` was
+  // checked as /etc/shadowx00), and escapes were never decoded. A NUL ends the `$'...'` in bash
+  // (`$'/etc/sha\0'dow` opens /etc/shadow) and the whole word in zsh (`$'/etc/shadow\0'junk` does).
+  describe("reads $'...' as the shell decodes it", () => {
+    it.each([
+      [String.raw`cat $'/etc/shadow\x00'`, 'NUL written \\x00'],
+      [String.raw`head $'/opt/soma-work/dev/.env\0'`, 'NUL written \\0'],
+      [String.raw`cat < $'/etc/shadow\000'`, 'NUL written \\000, redirect'],
+      [String.raw`cat $'/etc/sha\x64ow'`, 'hex escape inside a name'],
+      [String.raw`cat $'/etc/shadow\x00junk'`, 'text after the NUL'],
+      [String.raw`source $'/opt/soma/prod/.env\0'`, 'source'],
+      [String.raw`cat $'/etc/sha\0'dow`, 'bash: the word goes on after the NUL'],
+      [String.raw`cat $'/etc/shadow\0'junk`, 'zsh: the NUL ends the word'],
+      [String.raw`source $'\x7e/.env'`, 'a decoded ~ is a directory named ~, and .env is sensitive anywhere'],
+    ])('blocks: %s (%s)', (command) => {
+      expect(checkBashSensitivePaths(command).isSensitive).toBe(true);
+    });
+
+    it.each([
+      [String.raw`cat $'\x7e/.ssh/id_rsa'`, 'a decoded ~ is not expanded: bash opens ./~/.ssh/id_rsa'],
+      [String.raw`cat $'/tmp/x\x00'`, 'a safe path before a NUL'],
+      [String.raw`cat "$'/etc/sha\x64ow'"`, "$'...' inside double quotes is literal"],
+    ])('allows: %s (%s)', (command) => {
+      expect(checkBashSensitivePaths(command).isSensitive).toBe(false);
+    });
+  });
 });
 
 describe('checkSensitiveGlob', () => {
