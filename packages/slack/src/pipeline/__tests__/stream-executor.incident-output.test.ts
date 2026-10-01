@@ -54,13 +54,13 @@ const SESSION_KEY = `${CHANNEL}:${THREAD}`;
 
 const REQUEST: IncidentRequest = {
   version: 1,
-  incident_id: 'HOST-gucci-dev2-api-unreachable',
+  incident_id: 'HOST-projalpha-dev2-api-unreachable',
   lifecycle_id: 'LC-2026-09-11-0007',
   attempt_id: 'AT-2026-09-11-0007-1',
   channel_id: CHANNEL,
   parent_ts: THREAD,
   env: 'dev2',
-  summary: 'gucci-dev2-api is unreachable',
+  summary: 'projalpha-dev2-api is unreachable',
 };
 
 /**

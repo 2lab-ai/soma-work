@@ -45,7 +45,7 @@ function payload(overrides: Record<string, unknown> = {}): Record<string, unknow
     channel_id: 'C01INCIDENTS',
     parent_ts: PARENT_TS,
     env: 'stage2',
-    summary: 'gucci stage2 deploy failed on the migration step',
+    summary: 'projalpha stage2 deploy failed on the migration step',
     ...overrides,
   };
 }
@@ -418,7 +418,7 @@ describe('classifyIncidentRequest — v1 schema', () => {
         channel_id: 'C01INCIDENTS',
         parent_ts: '1757500000.000100',
         env: 'stage2',
-        summary: 'gucci stage2 deploy failed on the migration step',
+        summary: 'projalpha stage2 deploy failed on the migration step',
       },
     });
   });
@@ -494,7 +494,7 @@ describe('classifyIncidentRequest — accepted result', () => {
         channel_id: 'C01INCIDENTS',
         parent_ts: PARENT_TS,
         env: 'stage2',
-        summary: 'gucci stage2 deploy failed on the migration step',
+        summary: 'projalpha stage2 deploy failed on the migration step',
       },
     });
     if (result.kind !== 'accepted') throw new Error('expected accepted');

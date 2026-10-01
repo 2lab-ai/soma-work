@@ -43,7 +43,7 @@ const REQUEST: IncidentRequest = {
   channel_id: 'C01INCIDENTS',
   parent_ts: '1757500000.000100',
   env: 'stage2',
-  summary: 'gucci stage2 deploy failed on the migration step',
+  summary: 'projalpha stage2 deploy failed on the migration step',
 };
 
 const HOST_EVIDENCE: IncidentEvidenceRecord[] = [

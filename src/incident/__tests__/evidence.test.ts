@@ -86,7 +86,7 @@ function externalService(over: Record<string, unknown> = {}): Record<string, unk
 /** One http `Check` row (src/collect/http.rs). */
 function httpCheck(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    name: 'gucci-dev2-api',
+    name: 'projalpha-dev2-api',
     url: 'https://api.dev2.example.com/health?apikey=Ab3kQz9mLp2Xq7Rt4Vw8',
     ok: false,
     status: 503,
@@ -380,19 +380,19 @@ describe('collectIncidentEvidence — snapshot record selection', () => {
         triageIssue({
           cat: 'CHECK',
           key: undefined,
-          text: 'gucci-dev2-api',
+          text: 'projalpha-dev2-api',
           detail: 'HTTP 503',
-          id: 'CHECK|gucci-dev2-api',
+          id: 'CHECK|projalpha-dev2-api',
         }),
       ]),
     );
     routes['/api/snapshot'] = json(snapshot());
 
-    const evidence = await collect({ incident_id: 'CHECK|gucci-dev2-api' });
+    const evidence = await collect({ incident_id: 'CHECK|projalpha-dev2-api' });
 
     expect(evidence.snapshot?.check).toEqual({
-      ref: 'eagle:/api/snapshot#http_checks[name=gucci-dev2-api]',
-      name: 'gucci-dev2-api',
+      ref: 'eagle:/api/snapshot#http_checks[name=projalpha-dev2-api]',
+      name: 'projalpha-dev2-api',
       ok: false,
       status: 503,
       latency_ms: 91,
@@ -440,7 +440,7 @@ describe('collectIncidentEvidence — observation freshness', () => {
       triageReport([
         triageIssue(),
         triageIssue({ cat: 'EXT', key: 'ext:github', text: 'GITHUB OUTAGE', id: 'ext-id' }),
-        triageIssue({ cat: 'CHECK', key: undefined, text: 'gucci-dev2-api', id: 'check-id' }),
+        triageIssue({ cat: 'CHECK', key: undefined, text: 'projalpha-dev2-api', id: 'check-id' }),
       ]),
     );
     const freshBatch = {
@@ -490,7 +490,7 @@ describe('collectIncidentEvidence — observation freshness', () => {
       triageReport([
         triageIssue(),
         triageIssue({ cat: 'EXT', key: 'ext:github', text: 'GITHUB OUTAGE', id: 'ext-id' }),
-        triageIssue({ cat: 'CHECK', key: undefined, text: 'gucci-dev2-api', id: 'check-id' }),
+        triageIssue({ cat: 'CHECK', key: undefined, text: 'projalpha-dev2-api', id: 'check-id' }),
       ]),
     );
     const absent = { state: 'absent', observed_at: null, age_seconds: null };
