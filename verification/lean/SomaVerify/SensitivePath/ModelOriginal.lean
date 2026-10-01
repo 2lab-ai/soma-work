@@ -1,21 +1,40 @@
 -- models: src/sensitive-path-filter.ts at 168903e8, lines 50-53 (SENSITIVE_SERVICE_CONFIGS)
 -- models: src/sensitive-path-filter.ts at 168903e8, lines 72-111 (checkSensitivePath)
 -- models: src/sensitive-path-filter.ts at 168903e8, lines 124-129 (checkSensitiveGlob)
+-- models: src/sensitive-path-filter.ts at 168903e8, lines 144-164 (normalizePath)
 import SomaVerify.SensitivePath.Model
 
 /-!
 # The phase-1 model, kept as the original
 
-The model as verified at 168903e8, for the definitions the simplification changed:
-`checkSensitivePath` lost its early return for the empty path, and the service-config table and
-loop took the form that `service_rule_described` proves they had. Everything else is shared
-with `Model.lean` unchanged. `ProofsOriginal.lean` proves each simplified function equal to its
-original here, so every theorem about the original carries over.
+The model as verified at 168903e8, for the definitions that have changed since: the alias
+expansion through `path.join`, the service-config table and loop, the early return for the empty
+path, the directory, exact-file, basename and service rules compared without case folding and
+only on the normalized path, and the glob check through the concrete prefix alone. Everything
+else is shared with `Model.lean` unchanged. `ProofsOriginal.lean` proves that the current model
+reports sensitive everything this one does (`StricterThanOriginal`).
 -/
 
 namespace SomaVerify.SensitivePath.Original
 
 open SomaVerify.SensitivePath
+
+/-- The `HOME_ALIASES` loop (lines 145-154): the first alias that `filePath` starts with,
+followed by `/`, is replaced through `path.join(HOME, rest)`; a path equal to an alias becomes
+`HOME`; otherwise the path is unchanged. -/
+def expandHome (home filePath : List Char) : List (List Char) → List Char
+  | [] => filePath
+  | a :: aliases =>
+    if (a ++ ['/']).isPrefixOf filePath then pathJoin [home, filePath.drop (a.length + 1)]
+    else if filePath == a then home
+    else expandHome home filePath aliases
+
+/-- `normalizePath` (lines 144-164): expand a home alias, resolve an absolute path's `.`, `..` and
+empty segments, map `/private/tmp` to `/tmp`, drop trailing slashes. -/
+def normalizePath (home filePath : List Char) : List Char :=
+  let expanded := expandHome home filePath homeAliases
+  let resolved := if ['/'].isPrefixOf expanded then posixNormalize expanded else expanded
+  stripTrailingSlashes (normalizeTmpPath resolved)
 
 /-- `SENSITIVE_SERVICE_CONFIGS` (lines 50-53), in order. -/
 def serviceConfigs : List (List Char × List (List Char)) :=
@@ -55,6 +74,12 @@ def verdict (home normalized : List Char) : Result :=
 normalized and checked. -/
 def checkSensitivePath (home filePath : List Char) : Result :=
   if filePath.isEmpty then notSensitive else verdict home (normalizePath home filePath)
+
+/-- Line 125: `basePath ? path.resolve(basePath, pattern) : pattern`. -/
+def globResolved (cwd pattern : List Char) (basePath : Option (List Char)) : List Char :=
+  match basePath with
+  | some b => if b.isEmpty then pattern else pathResolve [cwd, b, pattern]
+  | none => pattern
 
 /-- `checkSensitiveGlob(pattern, basePath)` (lines 124-129): the concrete prefix, checked as a
 path. -/

@@ -6,9 +6,10 @@
  * invariants, and `Vectors.lean` records the model's answer for every path and glob of a small
  * alphabet. This suite asks the real module the same questions.
  *
- * The model runs with a stand-in HOME that the vector file writes as `<HOME>`. Each case gets
- * the real `os.homedir()` in its place, which is the HOME the module captured when it loaded;
- * reasons are compared with that HOME written back as `<HOME>`.
+ * The model runs with a stand-in HOME that the vector file writes as `<HOME>`. Each case gets the
+ * module's HOME in its place, computed as the module computes it when it loads (`os.homedir()`
+ * resolved, with `/private/tmp` written `/tmp`); reasons are compared with that HOME written back
+ * as `<HOME>`.
  *
  * The vector file is regenerated and drift-checked by the "Lean Verify" workflow
  * (`scripts/verification/lean-verify.sh --check`), so it cannot fall behind the model unnoticed.
@@ -18,11 +19,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { normalizeTmpPath } from '../path-utils';
 import { checkSensitiveGlob, checkSensitivePath, type SensitivePathResult } from '../sensitive-path-filter';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const PLACEHOLDER = '<HOME>';
-const HOME = os.homedir();
+const HOME = normalizeTmpPath(path.resolve(os.homedir()));
 
 interface Expected {
   isSensitive: boolean;
@@ -94,14 +96,20 @@ describe('sensitive-path Lean conformance vectors', () => {
     expect(HOME.startsWith('/')).toBe(true);
     expect(homeSegments.length).toBeGreaterThan(0);
     expect(homeSegments.filter((s) => s === '' || s === '.' || s === '..')).toEqual([]);
+    // HOME is not sensitive, so no directory on the way to it is: the module's walk passes through
+    // them, the model's single-segment HOME has none.
+    expect(checkSensitivePath(HOME).isSensitive).toBe(false);
     // No path spelled from the alphabet may reach HOME without the placeholder (so at least one
     // HOME segment lies outside the alphabet), and no text in the file may contain HOME, or
-    // writing HOME back as the placeholder would be ambiguous.
+    // writing HOME back as the placeholder would be ambiguous. The module compares names without
+    // regard to case, so neither may in any case.
     const alphabet = new Set(
-      vectors.cases.flatMap((c) => ('path' in c ? [c.path] : [c.glob, c.basePath ?? ''])).flatMap((p) => p.split('/')),
+      vectors.cases
+        .flatMap((c) => ('path' in c ? [c.path] : [c.glob, c.basePath ?? '']))
+        .flatMap((p) => p.toLowerCase().split('/')),
     );
-    expect(homeSegments.every((s) => alphabet.has(s))).toBe(false);
-    expect(vectorText.includes(HOME)).toBe(false);
+    expect(homeSegments.every((s) => alphabet.has(s.toLowerCase()))).toBe(false);
+    expect(vectorText.toLowerCase().includes(HOME.toLowerCase())).toBe(false);
   });
 
   it('agree with checkSensitivePath and checkSensitiveGlob on every case', () => {
