@@ -2900,18 +2900,37 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(twoSync).toBeGreaterThanOrEqual(0);
       await syncSpy.mock.results[twoSync].value;
       fetchOAuthProfileMock.mockClear();
-      // Release the held fetch at the coalescing decision itself: the moment
-      // refreshOAuthProfile finds slot one's existing in-flight promise.
+      // Signal the coalescing decision itself: the moment refreshOAuthProfile
+      // finds slot one's existing in-flight promise. The held fetch stays held.
+      let signalJoined: () => void = () => {};
+      const joined = new Promise<void>((r) => {
+        signalJoined = r;
+      });
       const inflight = (tm as unknown as { profileInflight: Map<string, Promise<unknown>> }).profileInflight;
       const realGet = inflight.get.bind(inflight);
       vi.spyOn(inflight, 'get').mockImplementation((key: string) => {
         const hit = realGet(key);
-        if (hit !== undefined && key.startsWith(`${one.keyId}:`)) {
-          releaseHeld({ fetchedAt: Date.now(), email: 'held-one@example.com' });
-        }
+        if (hit !== undefined && key.startsWith(`${one.keyId}:`)) signalJoined();
         return hit;
       });
-      const results = await tm.refreshAllAttachedOAuthTokens({ timeoutMs: 5_000, awaitProfile: true });
+      let returned = false;
+      const call = tm.refreshAllAttachedOAuthTokens({ timeoutMs: 5_000, awaitProfile: true });
+      void call.then(() => {
+        returned = true;
+      });
+      await joined;
+      // Let everything except the joined sync finish: slot two's awaited leg,
+      // then a macrotask turn so any continuation of refreshAll queued behind
+      // it has run. refreshAll must still be waiting on slot one's joined
+      // sync. If the joined promise were not awaited, it would have returned.
+      const keyIds = syncSpy.mock.calls.map(([keyId]) => keyId);
+      const twoAwaited = keyIds.lastIndexOf(two.keyId);
+      expect(twoAwaited).toBeGreaterThan(twoSync);
+      await syncSpy.mock.results[twoAwaited].value;
+      await new Promise((r) => setImmediate(r));
+      expect(returned).toBe(false);
+      releaseHeld({ fetchedAt: Date.now(), email: 'held-one@example.com' });
+      const results = await call;
       expect(results).toEqual({ [one.keyId]: 'ok', [two.keyId]: 'ok' });
       // Slot one's awaited leg joined the held sync, so only slot two fetched,
       // with its refreshed token.
