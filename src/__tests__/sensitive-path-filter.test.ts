@@ -577,6 +577,89 @@ describe('with HOME under /private/tmp', () => {
   });
 });
 
+// Regression: macOS firmlinks every top-level entry of /usr/share/firmlinks (Users, opt, private,
+// ...) to the same name under /System/Volumes/Data, so /System/Volumes/Data/Users/<u>/.ssh is
+// ~/.ssh (one inode), but only the short spelling was checked.
+describe('writes /System/Volumes/Data/<firmlink> as /<firmlink>', () => {
+  const DATA = '/System/Volumes/Data';
+  it.each([
+    [`${DATA}/private/etc/shadow`, '/etc/shadow through /private/etc'],
+    [`${DATA}/opt/soma-work/dev/config.json`, 'a service config'],
+    [`${DATA}/opt/soma/prod/.env`, 'a service .env'],
+    ['/system/volumes/data/PRIVATE/ETC/shadow', 'in another case'],
+    ['/SYSTEM/VOLUMES/DATA/private/etc/shadow/../x', 'a walk through it'],
+    [`//System/./Volumes/Data//private/etc/shadow`, 'with empty and current-directory segments'],
+  ])('blocks: %s (%s)', (filePath) => {
+    expect(checkSensitivePath(filePath).isSensitive).toBe(true);
+  });
+
+  it.each([
+    `cat ${DATA}/private/etc/shadow`,
+    `wc -l < ${DATA}/private/etc/shadow`,
+    `cp ${DATA}/opt/soma-work/dev/config.json /tmp/x`,
+  ])('blocks: %s', (command) => {
+    expect(checkBashSensitivePaths(command).isSensitive).toBe(true);
+  });
+
+  it.each([
+    [`${DATA}/private/etc/shadow*`, undefined],
+    ['config.json', `${DATA}/opt/soma-work/dev`],
+    ['*', `${DATA}/private/etc/shadow`],
+  ])('blocks the glob %s in %s', (pattern, basePath) => {
+    expect(checkSensitiveGlob(pattern, basePath).isSensitive).toBe(true);
+  });
+
+  it.each([
+    `${DATA}/tmp-not-a-firmlink/x`,
+    DATA,
+    `${DATA}/private`,
+    `${DATA}/private/etc`,
+    `${DATA}/etc/shadow`,
+    '/System/Volumes/Datax/private/etc/shadow',
+    `${DATA}/private/etcetera/x`,
+  ])('allows: %s', (filePath) => {
+    expect(checkSensitivePath(filePath).isSensitive).toBe(false);
+  });
+
+  it.each([
+    [`${DATA}/Users/soma-home/.ssh/id_rsa`, 'Read'],
+    [`cat ${DATA}/Users/soma-home/.ssh/id_rsa`, 'Bash'],
+    [`${DATA}/Users/soma-home/.ssh/*`, 'Glob'],
+  ])('blocks %s (%s) under HOME /Users/soma-home', async (input, tool) => {
+    vi.stubEnv('HOME', '/Users/soma-home');
+    vi.resetModules();
+    try {
+      const filter = await import('../sensitive-path-filter');
+      const check =
+        tool === 'Read'
+          ? filter.checkSensitivePath(input)
+          : tool === 'Bash'
+            ? filter.checkBashSensitivePaths(input)
+            : filter.checkSensitiveGlob(input);
+      expect(check.isSensitive).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it.each([
+    '~/.ssh/id_rsa',
+    '/Users/soma-home/.ssh/id_rsa',
+    `${DATA}/Users/soma-home/.gitconfig`,
+  ])('blocks %s under HOME /System/Volumes/Data/Users/soma-home', async (filePath) => {
+    vi.stubEnv('HOME', `${DATA}/Users/soma-home`);
+    vi.resetModules();
+    try {
+      const filter = await import('../sensitive-path-filter');
+      expect(filter.checkSensitivePath(filePath).isSensitive).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+});
+
 // Regression: os.homedir() returns $HOME as it is set; a relative HOME gave relative tables, so
 // the absolute path of a file under it was not recognized.
 describe('with a relative HOME', () => {

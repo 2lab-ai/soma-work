@@ -13,12 +13,13 @@ phase-1 service-rule theorems for them, and then `StricterThanOriginal`: every p
 phase-1 checks report sensitive, the current checks report sensitive too.
 
 For an absolute HOME both models normalize a path to the same place: the same string, or the same
-resolved segments, phase 1 writing `/private/tmp` as `/tmp` and the current model `/private/etc` as
-`/etc` too, so the two normal forms have the same key (`foldKey`) and basename. Each phase-1 rule
-then has a current rule that keeps its matches: the directory and exact-file rules compare keys (`foldKey`)
-where phase 1 compared the strings, the basename patterns see the folded basename, the dropped
-`.env` service entries are caught by the basename rule, and the glob check still checks the
-concrete prefix of the resolved pattern, among other candidates.
+resolved segments, phase 1 writing `/private/tmp` as `/tmp` and the current model writing every
+link (`/private/etc`, `/System/Volumes/Data/<firmlink>`) too, so the two normal forms have the
+same key (`foldKey`) and basename. Each phase-1 rule then has a current rule that keeps its
+matches: the directory and exact-file rules compare keys (`foldKey`) where phase 1 compared the
+strings, the basename patterns see the folded basename, the dropped `.env` service entries are
+caught by the basename rule, and the glob check still checks the concrete prefix of the resolved
+pattern, among other candidates.
 
 The HOME must be absolute: with HOME `foo`, phase 1 sends `~/.ssh/x` through `path.join`, which
 makes it `/foo/.ssh/x`, below its `/foo/.ssh`, while the current model keeps the relative
@@ -237,14 +238,14 @@ theorem originalResolve_rel (x : List Char) (hx : x.head? ≠ some '/') :
 
 /-- For an absolute HOME, the phase-1 `normalizePath` and the current one take every path to the
 same place: they return the same string, or both render the same resolved segments, phase 1 with
-`/private/tmp` mapped and the current model with `/private/tmp` and `/private/etc` mapped. Their
+`/private/tmp` mapped and the current model with every link mapped. Their
 expansions differ only on an alias followed by `/`, which phase 1 sends through
 `path.join(HOME, rest)` and the current model writes as `HOME + '/' + rest`; both resolve to the
 same segments. -/
 theorem original_normalizePath_cases (home p : List Char) (hh : home.head? = some '/') :
     Original.normalizePath home p = normalizePath home p ∨
       ∃ L : List Seg, (∀ w ∈ L, Proper w) ∧ Original.normalizePath home p = renderAbs (tmpMapSegs L) ∧
-        normalizePath home p = renderAbs (privateMapSegs L) := by
+        normalizePath home p = renderAbs (aliasMapSegs L) := by
   rw [original_normalizePath_eq]
   by_cases hm : MatchesAlias p
   · right
@@ -285,10 +286,10 @@ theorem original_normalizePath_key (home p : List Char) (hh : home.head? = some 
     have hsf := proper_slashFree hL
     refine ⟨?_, ?_⟩
     · rw [foldKey_renderAbs _ (proper_slashFree (tmpMapSegs_proper _ hL)),
-        foldKey_renderAbs _ (privateMapSegs_slashFree _ hsf), canon_tmpMapSegs, canon_privateMapSegs]
+        foldKey_renderAbs _ (aliasMapSegs_slashFree _ hsf), canon_tmpMapSegs, canon_aliasMapSegs]
     · rw [basename_renderAbs_proper _ (tmpMapSegs_proper _ hL),
-        basename_renderAbs_proper _ (privateMapSegs_proper _ hL), getLast?_tmpMapSegs,
-        getLast?_privateMapSegs]
+        basename_renderAbs_proper _ (aliasMapSegs_proper _ hL), getLast?_tmpMapSegs,
+        getLast?_aliasMapSegs]
 
 /-! ## Each phase-1 rule is kept -/
 
@@ -341,35 +342,30 @@ theorem verdict_isSensitive_of (home n : List Char) (walk : List (List Char))
           · exact absurd h hs
 
 /-- For an absolute HOME, every entry of `SENSITIVE_DIRECTORIES` is the rendering of a non-empty
-list of proper segments other than a lone `private`. -/
+list of proper segments that, folded, is no open start of a link. -/
 theorem sensitiveDirectories_renderAbs (home : List Char) (hh : home.head? = some '/') :
     ∀ dir ∈ sensitiveDirectories home, ∃ D : List Seg, dir = renderAbs D ∧ D ≠ [] ∧
-      (∀ w ∈ D, Proper w) ∧ D.map fold ≠ [privateSeg] := by
+      (∀ w ∈ D, Proper w) ∧ ¬ OpenStart (D.map fold) := by
   have hsd : sensitiveDirectories home =
       homeDirSuffixes.map (fun e => pathJoin (home :: e)) ++ ["/etc/shadow".toList] := rfl
   intro dir hdir
   rw [hsd, List.mem_append] at hdir
   rcases hdir with hdir | hdir
   · obtain ⟨e, he, rfl⟩ := List.mem_map.1 hdir
-    obtain ⟨hne, hproper, hpriv⟩ := homeDirSuffixes_props e he
+    obtain ⟨hne, hproper, hlast⟩ := homeDirSuffixes_props e he
     have hH := proper_of_mem_resolveSegs (splitSlash home) (slashFree_of_mem_splitSlash home)
     refine ⟨resolveSegs (splitSlash home) ++ e, pathJoin_abs home e hh hne hproper, by simp [hne], ?_, ?_⟩
     · intro w hw
       rcases List.mem_append.1 hw with hw | hw
       · exact hH w hw
       · exact hproper w hw
-    · intro heq
-      rw [List.map_append] at heq
-      cases hR : resolveSegs (splitSlash home) with
-      | nil => rw [hR] at heq; simp only [List.map_nil, List.nil_append] at heq; exact hpriv heq
-      | cons x xs =>
-        rw [hR] at heq
-        cases e with
-        | nil => exact hne rfl
-        | cons y ys => simp at heq
+    · apply not_openStart_of_last
+      rw [List.map_append, getLast?_append_ne_nil _ _ (by simpa using hne)]
+      exact hlast
   · simp only [List.mem_singleton] at hdir
     subst hdir
-    exact ⟨["etc".toList, "shadow".toList], renderAbs_etc_shadow, by decide, by decide, by decide⟩
+    exact ⟨["etc".toList, "shadow".toList], renderAbs_etc_shadow, by decide, by decide,
+      not_openStart_of_last _ (by decide)⟩
 
 /-- The directory rule: for an absolute HOME, a path phase 1 finds at or below a sensitive
 directory has its key at or below that directory's key. -/
@@ -381,7 +377,7 @@ theorem underDirectory_foldKey (home n dir : List Char) (hh : home.head? = some 
   obtain ⟨hhead, U, hU⟩ := (underDirectory_renderAbs_iff_prefix n D hDsf hne).1 hu
   have hsf : ∀ w ∈ segmentsOf n, '/' ∉ w := fun w hw =>
     slashFree_of_mem_splitSlash n w (List.mem_of_mem_tail hw)
-  have hcne : canon D ≠ [] := privateMapSegs_ne_nil _ (by simpa using hne)
+  have hcne : canon D ≠ [] := aliasMapSegs_ne_nil _ (by simpa using hne)
   rw [foldKey_abs n hhead, foldKey_renderAbs D hDsf,
     underDirectory_renderAbs_iff_prefix _ _ (canon_slashFree D hDsf) hcne,
     segmentsOf_renderAbs _ (canon_slashFree _ hsf), ← hU, canon_append D U hne hpriv]
@@ -424,13 +420,12 @@ theorem basename_rule_fold (b : List Char) (h : basenamePatterns.any (fun test =
 theorem serviceConfigRule_foldKey (n : List Char) (h : serviceConfigRule n = true) :
     serviceConfigRule (foldKey n) = true := by
   obtain ⟨hhead, dir, hdir, f, hf, hs⟩ := (service_rule_described n).1 h
-  have hdirs : ∀ d ∈ serviceDirSegs, d.map fold = d ∧ privateMapSegs d = d ∧ d.length = 2 := by decide
-  obtain ⟨hdf, hdt, hdl⟩ := hdirs dir hdir
+  have hdirs : ∀ d ∈ serviceDirSegs, d ≠ [] ∧ canon d = d ∧
+      ∀ y ∈ dataVolumeSegs ++ [privateSeg], (d.map fold).getLast? ≠ some y := by decide
+  obtain ⟨hdne, hdt, hdl⟩ := hdirs dir hdir
   have hcanon : ∀ X : List Seg, canon (dir ++ X) = dir ++ X.map fold := by
     intro X
-    unfold canon
-    rw [List.map_append, hdf, privateMapSegs_append_left dir _ (by intro e; simp [e] at hdl)
-      (by intro e; rw [hdl] at e; simp at e), hdt]
+    rw [canon_append dir X hdne (not_openStart_of_last _ hdl), hdt]
   have hf' : fold f = f := by
     simp only [serviceTableFileNames, List.mem_singleton] at hf
     subst hf; decide

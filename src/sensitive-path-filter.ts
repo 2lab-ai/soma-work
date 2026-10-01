@@ -16,6 +16,25 @@ import * as os from 'os';
 import * as path from 'path';
 
 /**
+ * The top-level entries of /usr/share/firmlinks: macOS keeps each on the data volume and firmlinks
+ * it to the root, so /System/Volumes/Data/Users/x is /Users/x (one inode). The module writes them
+ * through the firmlink. Written folded, with DATA_VOLUME, since the rules compare folded keys
+ * (foldKey). The nested entries (/System/Library/Caches, /usr/local, ...) hold no table entry.
+ */
+const DATA_VOLUME = '/system/volumes/data';
+const FIRMLINKS: ReadonlyArray<string> = [
+  'appleinternal',
+  'applications',
+  'library',
+  'users',
+  'volumes',
+  'cores',
+  'opt',
+  'pkg',
+  'private',
+];
+
+/**
  * The directories macOS keeps in /private and links from the root (`/etc -> private/etc`) that the
  * module writes through their links: /tmp, as the rest of soma-work writes it (normalizeTmpPath),
  * and /etc, which holds /etc/shadow. /var, the third, is not: no table entry lies under it unless
@@ -24,9 +43,9 @@ import * as path from 'path';
 const PRIVATE_LINKS: ReadonlyArray<string> = ['tmp', 'etc'];
 
 // os.homedir() returns $HOME as it is set, so it is resolved to an absolute path, and written the
-// way normalizePath writes checked paths (/private/tmp as /tmp, /private/etc as /etc), or the
-// tables below could never match them.
-const HOME = normalizePrivatePath(path.resolve(os.homedir()));
+// way normalizePath writes checked paths (through the links of normalizeLinks), or the tables
+// below could never match them.
+const HOME = normalizeLinks(path.resolve(os.homedir()));
 
 /** Directories where any path underneath is blocked. */
 const SENSITIVE_DIRECTORIES: ReadonlyArray<string> = [
@@ -95,8 +114,8 @@ const EXACT_FILE_KEYS: ReadonlySet<string> = new Set(Array.from(SENSITIVE_EXACT_
 // against a working directory this module never sees, so they are checked as written: only the
 // basename patterns can match them. `..` is resolved lexically, while after a symbolic link the
 // OS climbs from the link's target: the check follows a walk into the sensitive directories, not
-// through links outside them. Of the macOS links into /private, only PRIVATE_LINKS are written
-// through, and the firmlinked spellings under /System/Volumes/Data are not mapped at all.
+// through links outside them, but for the macOS links of normalizeLinks, which it writes through:
+// the top-level firmlinks and, of the links into /private, PRIVATE_LINKS.
 // `~user/...` is not expanded. A glob's partial segment is not matched against names
 // (`~/.ss*/id_rsa` checks HOME). Names are compared case-folded, not Unicode-normalized (every
 // sensitive name is ASCII).
@@ -493,21 +512,30 @@ function normalizePath(filePath: string): string {
 
 function resolvePath(expanded: string): string {
   // Resolve `.`, `..` and empty segments of an absolute path (`..` at the root stays there), so
-  // every spelling of a path is checked as that path. This runs before the /private mapping:
+  // every spelling of a path is checked as that path. This runs before the link mapping:
   // resolving after it would let `//private/tmp/x` through as `/private/tmp/x`, unmapped.
   const resolved = expanded.startsWith('/') ? path.posix.normalize(expanded) : expanded;
-  return normalizePrivatePath(resolved).replace(/\/+$/, '');
+  return normalizeLinks(resolved).replace(/\/+$/, '');
 }
 
 /**
- * A path at or below one of PRIVATE_LINKS in /private, written through the link: `/private/etc/x`
- * as `/etc/x`, `/private/tmp` as `/tmp`. Any other path, a false prefix such as
- * `/private/etcetera` included, is returned unchanged.
+ * A path written through the macOS links it starts with: `/system/volumes/data/<firmlink>` as
+ * `/<firmlink>`, then `/private/tmp` and `/private/etc` as `/tmp` and `/etc`, so
+ * `/system/volumes/data/private/etc/x` is `/etc/x`. FIRMLINKS are written folded, so they match
+ * the folded keys (foldKey) whatever the case of the path.
  */
-function normalizePrivatePath(filePath: string): string {
-  for (const name of PRIVATE_LINKS) {
-    const target = `/private/${name}`;
-    if (filePath === target || filePath.startsWith(`${target}/`)) return filePath.slice('/private'.length);
+function normalizeLinks(filePath: string): string {
+  return dropLinkPrefix(dropLinkPrefix(filePath, DATA_VOLUME, FIRMLINKS), '/private', PRIVATE_LINKS);
+}
+
+/**
+ * A path at or below `${prefix}/${name}` for one of `names`, without `prefix`. Any other path, a
+ * false prefix such as `/private/etcetera` included, is returned unchanged.
+ */
+function dropLinkPrefix(filePath: string, prefix: string, names: ReadonlyArray<string>): string {
+  for (const name of names) {
+    const target = `${prefix}/${name}`;
+    if (filePath === target || filePath.startsWith(`${target}/`)) return filePath.slice(prefix.length);
   }
   return filePath;
 }
@@ -525,11 +553,11 @@ function fold(text: string): string {
 
 /**
  * A normalized path as the rules compare it: folded, since APFS compares names without regard to
- * case, and with /private/tmp and /private/etc written through their links again, since folding
- * can spell them (`/PRIVATE/etc`).
+ * case, and written through the links of normalizeLinks again, since folding can spell them
+ * (`/PRIVATE/etc`, `/System/Volumes/Data/Users`).
  */
 function foldKey(normalized: string): string {
-  return normalizePrivatePath(fold(normalized));
+  return normalizeLinks(fold(normalized));
 }
 
 /**

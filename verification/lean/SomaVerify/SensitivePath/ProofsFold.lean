@@ -297,20 +297,45 @@ theorem proper_fold (s : Seg) (h : Proper s) : Proper (fold s) := by
 theorem map_fold_fold (l : List Seg) : (l.map fold).map fold = l.map fold := by
   simp [fold_fold]
 
-/-- `/private` mapping and folding: mapping before folding changes nothing `canon` sees. -/
+/-- Folding keeps the segments the links read. -/
+theorem fold_linked : ∀ x ∈ linkedSegs, fold x = x := by decide
+theorem fold_firmlink : ∀ x ∈ firmlinkSegs, fold x = x := by decide
+theorem fold_private : fold privateSeg = privateSeg := by decide
+theorem map_fold_dataVolume : dataVolumeSegs.map fold = dataVolumeSegs := by decide
+
+/-- The `/private` links before folding change nothing `canon` sees. -/
 theorem canon_privateMapSegs (l : List Seg) : canon (privateMapSegs l) = canon l := by
-  unfold canon
-  by_cases hpt : ∃ x ∈ linkedSegs, ∃ t, l = privateSeg :: x :: t
-  · obtain ⟨x, hx, t, rfl⟩ := hpt
-    obtain ⟨-, hxp, hxf⟩ := linkedSegs_props x hx
-    rw [privateMapSegs_link x hx]
-    have hp : fold privateSeg = privateSeg := by decide
-    simp only [List.map_cons, hp, hxf]
-    rw [privateMapSegs_link x hx, privateMapSegs_of_ne]
-    intro y _ rest h
-    simp only [List.cons.injEq] at h
-    exact hxp h.1
-  · rw [privateMapSegs_of_ne l (fun x hx t e => hpt ⟨x, hx, t, e⟩)]
+  unfold privateMapSegs
+  rcases linkMapSegs_cases [privateSeg] linkedSegs l with ⟨x, hx, rest, rfl, he⟩ | ⟨-, he⟩
+  · rw [he]
+    obtain ⟨hxp, hxs, -, -⟩ := linkedSegs_props x hx
+    unfold canon
+    simp only [List.map_cons, List.cons_append, List.nil_append, fold_private, fold_linked x hx]
+    rw [aliasMapSegs_of_head x _ hxs hxp]
+    unfold aliasMapSegs
+    rw [show firmlinkMapSegs (privateSeg :: x :: rest.map fold) = privateSeg :: x :: rest.map fold from
+      linkMapSegs_of_head _ _ _ "system".toList rfl (by simp only [List.head?_cons]; decide),
+      privateMapSegs_link x hx]
+  · rw [he]
+
+/-- The firmlinks before folding change nothing `canon` sees. -/
+theorem canon_firmlinkMapSegs (l : List Seg) : canon (firmlinkMapSegs l) = canon l := by
+  unfold firmlinkMapSegs
+  rcases linkMapSegs_cases dataVolumeSegs firmlinkSegs l with ⟨x, hx, rest, rfl, he⟩ | ⟨-, he⟩
+  · rw [he]
+    obtain ⟨hxs, -, -⟩ := firmlinkSegs_props x hx
+    unfold canon
+    rw [List.map_cons, List.map_append, map_fold_dataVolume, List.map_cons, fold_firmlink x hx]
+    unfold aliasMapSegs
+    rw [firmlinkMapSegs_link x hx,
+      show firmlinkMapSegs (x :: rest.map fold) = x :: rest.map fold from
+        linkMapSegs_of_head _ _ _ "system".toList rfl (by simpa using hxs)]
+  · rw [he]
+
+/-- Writing a path through its links before folding changes nothing `canon` sees. -/
+theorem canon_aliasMapSegs (l : List Seg) : canon (aliasMapSegs l) = canon l := by
+  unfold aliasMapSegs
+  rw [canon_privateMapSegs, canon_firmlinkMapSegs]
 
 /-- The phase-1 `/private/tmp` mapping changes nothing `canon` sees either. -/
 theorem canon_tmpMapSegs (l : List Seg) : canon (tmpMapSegs l) = canon l := by
@@ -324,15 +349,11 @@ theorem canon_tmpMapSegs (l : List Seg) : canon (tmpMapSegs l) = canon l := by
 theorem canon_map_fold (l : List Seg) : canon (l.map fold) = canon l := by
   unfold canon; rw [map_fold_fold]
 
-/-- The last segment survives the `/private` mapping. -/
-theorem getLast?_privateMapSegs (l : List Seg) : (privateMapSegs l).getLast? = l.getLast? := by
-  by_cases hpt : ∃ x ∈ linkedSegs, ∃ t, l = privateSeg :: x :: t
-  · obtain ⟨x, hx, t, rfl⟩ := hpt
-    rw [privateMapSegs_link x hx]
-    cases t with
-    | nil => rfl
-    | cons u us => simp [List.getLast?_cons]
-  · rw [privateMapSegs_of_ne l (fun x hx t e => hpt ⟨x, hx, t, e⟩)]
+/-- The last segment of `canon`: the folded last segment. -/
+theorem getLast?_canon (l : List Seg) : (canon l).getLast? = (l.map fold).getLast? :=
+  getLast?_aliasMapSegs _
+
+theorem canon_nil : canon [] = [] := by decide
 
 /-- The last segment survives the phase-1 `/private/tmp` mapping. -/
 theorem getLast?_tmpMapSegs (l : List Seg) : (tmpMapSegs l).getLast? = l.getLast? := by
@@ -344,33 +365,16 @@ theorem getLast?_tmpMapSegs (l : List Seg) : (tmpMapSegs l).getLast? = l.getLast
     | cons u us => simp [List.getLast?_cons]
   · rw [tmpMapSegs_of_ne l (fun t e => hpt ⟨t, e⟩)]
 
-theorem privateMapSegs_ne_nil (l : List Seg) (h : l ≠ []) : privateMapSegs l ≠ [] := by
-  by_cases hpt : ∃ x ∈ linkedSegs, ∃ t, l = privateSeg :: x :: t
-  · obtain ⟨x, hx, t, rfl⟩ := hpt; rw [privateMapSegs_link x hx]; simp
-  · rw [privateMapSegs_of_ne l (fun x hx t e => hpt ⟨x, hx, t, e⟩)]; exact h
-
-/-- `privateMapSegs` keeps segments free of `/`. -/
-theorem privateMapSegs_slashFree (l : List Seg) (h : ∀ w ∈ l, '/' ∉ w) : ∀ w ∈ privateMapSegs l, '/' ∉ w := by
-  by_cases hpt : ∃ x ∈ linkedSegs, ∃ t, l = privateSeg :: x :: t
-  · obtain ⟨x, hx, t, rfl⟩ := hpt
-    rw [privateMapSegs_link x hx]
-    intro w hw
-    simp only [List.mem_cons] at hw
-    rcases hw with rfl | hw
-    · exact (linkedSegs_props w hx).1.2.1
-    · exact h w (by simp [hw])
-  · rw [privateMapSegs_of_ne l (fun x hx t e => hpt ⟨x, hx, t, e⟩)]; exact h
-
 /-- `canon` keeps segments free of `/`. -/
 theorem canon_slashFree (l : List Seg) (h : ∀ w ∈ l, '/' ∉ w) : ∀ w ∈ canon l, '/' ∉ w := by
-  apply privateMapSegs_slashFree
+  apply aliasMapSegs_slashFree
   intro w hw
   obtain ⟨v, hv, rfl⟩ := List.mem_map.1 hw
   exact slashFree_fold v (h v hv)
 
 /-- `canon` keeps segments proper. -/
 theorem canon_proper (l : List Seg) (h : ∀ w ∈ l, Proper w) : ∀ w ∈ canon l, Proper w := by
-  apply privateMapSegs_proper
+  apply aliasMapSegs_proper
   intro w hw
   obtain ⟨v, hv, rfl⟩ := List.mem_map.1 hw
   exact proper_fold v (h v hv)
@@ -378,7 +382,7 @@ theorem canon_proper (l : List Seg) (h : ∀ w ∈ l, Proper w) : ∀ w ∈ cano
 /-- The key of a rendered path is the rendering of its segments' `canon`. -/
 theorem foldKey_renderAbs (r : List Seg) (h : ∀ w ∈ r, '/' ∉ w) : foldKey (renderAbs r) = renderAbs (canon r) := by
   unfold foldKey canon
-  rw [← renderAbs_map_fold, normalizePrivatePath_renderAbs]
+  rw [← renderAbs_map_fold, normalizeLinks_renderAbs]
   intro w hw
   obtain ⟨v, hv, rfl⟩ := List.mem_map.1 hw
   exact slashFree_fold v (h v hv)
@@ -387,24 +391,13 @@ theorem foldKey_renderAbs (r : List Seg) (h : ∀ w ∈ r, '/' ∉ w) : foldKey 
 theorem foldKey_rel (x : List Char) (hx : x.head? ≠ some '/') : (foldKey x).head? ≠ some '/' := by
   unfold foldKey
   have : (fold x).head? ≠ some '/' := fun h => hx ((head_fold x).1 h)
-  rw [normalizePrivatePath_rel _ this]
+  rw [normalizeLinks_rel _ this]
   exact this
 
-/-- `privateMapSegs` of a list and of a list extended by a segment that is neither a linked
-directory nor `private` agree on the part they share. -/
-theorem privateMapSegs_append_cons (F R : List Seg) (x : Seg) (hx1 : x ∉ linkedSegs) (hx2 : x ≠ privateSeg) :
-    privateMapSegs (F ++ x :: R) = privateMapSegs F ++ x :: R := by
-  match F with
-  | [] =>
-    simp only [List.nil_append]
-    rw [privateMapSegs_of_ne _ (fun y _ t h => hx2 (List.cons.inj h).1), privateMapSegs_of_ne [] (by simp)]
-    rfl
-  | [f] =>
-    simp only [List.cons_append, List.nil_append]
-    rw [privateMapSegs_of_ne _ (fun y hy t h => hx1 (by simp only [List.cons.injEq] at h; rw [h.2.1]; exact hy)),
-      privateMapSegs_of_ne [f] (by simp)]
-    rfl
-  | f1 :: f2 :: fs =>
-    exact privateMapSegs_append_left (f1 :: f2 :: fs) (x :: R) (by simp) (by simp)
+/-- `aliasMapSegs` of a list and of a list extended by a segment that no link reads agree on the
+part they share. -/
+theorem aliasMapSegs_append_cons (F R : List Seg) (x : Seg) (hx : x ∉ aliasHeads) :
+    aliasMapSegs (F ++ x :: R) = aliasMapSegs F ++ x :: R :=
+  aliasMapSegs_append_head F (x :: R) (fun y hy => by simp only [List.head?_cons, Option.some.injEq] at hy; exact hy ▸ hx)
 
 end SomaVerify.SensitivePath.Proofs
