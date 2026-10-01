@@ -1666,7 +1666,10 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       //       reattach default future), so a regression keyed on
       //       expiresAtMs would still pass.
       // The creds are expired, so the fresh generation's own attachOAuth legs
-      // also refresh it (legitimately). That refresh is held until the stale
+      // also refresh it (legitimately). Its usage fetch (a bucket of its own:
+      // the usage dedupe is per attachment generation) and its profile sync
+      // both resolve the token through the fresh generation's refresh dedupe,
+      // so they share one refresh. That refresh is held until the stale
       // refresh's persist decision is made, so at that decision the slot
       // still carries the identical credentials and only `attachedAt` tells
       // the generations apart. A guard keyed on the access token fails here.
@@ -1711,6 +1714,26 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       });
       const syncSpy = vi.spyOn(tm, 'refreshOAuthProfile');
       const usageSpy = vi.spyOn(tm, 'fetchAndStoreUsage');
+      // Record each entry into refreshAccessToken by the attachment generation
+      // it was called for. A caller enters once its own store read is done;
+      // the first per generation starts that generation's refresh and the rest
+      // join it. Waiting on these entries pins which generation each leg read
+      // before any gate opens.
+      type RefreshEntry = (slot: { oauthAttachment: { attachedAt?: number } }) => Promise<string>;
+      const internals = tm as unknown as { refreshAccessToken: RefreshEntry };
+      const refreshAccessToken = internals.refreshAccessToken.bind(tm);
+      const refreshEntries: Array<number | undefined> = [];
+      const entryWaiters: Array<() => void> = [];
+      vi.spyOn(internals, 'refreshAccessToken').mockImplementation((target) => {
+        refreshEntries.push(target.oauthAttachment.attachedAt);
+        for (const wake of entryWaiters.splice(0)) wake();
+        return refreshAccessToken(target);
+      });
+      const untilRefreshEntries = async (match: (attachedAt: number | undefined) => boolean, count: number) => {
+        while (refreshEntries.filter(match).length < count) {
+          await new Promise<void>((r) => entryWaiters.push(r));
+        }
+      };
       await tm.attachOAuth(slot.keyId, identicalCreds, true);
       // Capture the stale generation BEFORE detach so we can later assert the
       // fresh generation differs from it only in `attachedAt`.
@@ -1720,6 +1743,10 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(typeof staleAttachedAt).toBe('number');
       const staleRefreshPromise = tm.refreshCredentialsIfNeeded(slot.keyId);
       await startedPromise;
+      // All three stale callers (both attach legs and refreshCredentialsIfNeeded)
+      // have read the stale generation and joined its held refresh, so none of
+      // them can read the fresh generation after the re-attach below.
+      await untilRefreshEntries((attachedAt) => attachedAt === staleAttachedAt, 3);
       // Handle on the stale refresh itself, whichever caller started it. It
       // settles after its persist decision.
       const refreshInFlight = (tm as unknown as { refreshInFlight: Map<string, Promise<string>> }).refreshInFlight;
@@ -1733,6 +1760,15 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       await tm.detachOAuth(slot.keyId);
       // Reattach with the IDENTICAL creds payload — only attachedAt differs.
       await tm.attachOAuth(slot.keyId, identicalCreds, true);
+      // Both fresh legs (usage fetch, profile sync) reach the fresh refresh
+      // while the stale refresh is still held: the first starts it, the second
+      // joins it. A fresh usage leg that shared the stale generation's
+      // in-flight usage fetch would wait on the stale gate and never get here.
+      // A leg still reading the store when the fresh refresh persists could
+      // otherwise start a second refresh off its pre-persist read.
+      await untilRefreshEntries((attachedAt) => attachedAt !== staleAttachedAt, 2);
+      // One stale refresh plus one fresh refresh that both fresh legs share.
+      expect(refreshClaudeCredentialsMock).toHaveBeenCalledTimes(2);
       const postReattachSnap = await store.load();
       const freshAttachment = structuredClone((postReattachSnap.registry.slots[0] as any).oauthAttachment);
       const freshAttachedAt: number | undefined = freshAttachment.attachedAt;
