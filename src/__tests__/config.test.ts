@@ -286,11 +286,11 @@ describe('getBgKeepaliveMaxMs (#257)', () => {
     expect(loggerWarn).toHaveBeenCalledWith(expect.stringContaining(`SOMA_BG_KEEPALIVE_MAX_MS="${raw}" invalid`));
   });
 
-  it('above the largest timer delay → clamped, with a warn', () => {
+  it('above the largest timer delay → default (warn-and-fallback), never an overflowing timer', () => {
     process.env[ENV_NAME] = '99999999999';
-    expect(getBgKeepaliveMaxMs()).toBe(2_147_483_647);
+    expect(getBgKeepaliveMaxMs()).toBe(1_800_000);
     expect(loggerWarn).toHaveBeenCalledTimes(1);
-    expect(loggerWarn).toHaveBeenCalledWith(expect.stringContaining('clamping to 2147483647'));
+    expect(loggerWarn).toHaveBeenCalledWith(expect.stringContaining('SOMA_BG_KEEPALIVE_MAX_MS="99999999999" invalid'));
   });
 
   it('reads the env on every call (an operator change applies to the next turn)', () => {

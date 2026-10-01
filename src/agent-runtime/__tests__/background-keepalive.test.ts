@@ -73,7 +73,7 @@ describe('liveAgentIds (#257)', () => {
 });
 
 describe('parseBgKeepaliveMaxMs (#257)', () => {
-  const ok = (value: number) => ({ value, invalid: false, clamped: false });
+  const ok = (value: number) => ({ value, invalid: false });
 
   it('defaults to 30 minutes when unset, empty or whitespace', () => {
     expect(DEFAULT_BG_KEEPALIVE_MAX_MS).toBe(1_800_000);
@@ -91,7 +91,7 @@ describe('parseBgKeepaliveMaxMs (#257)', () => {
     '-1',
     '-60000',
   ])('falls back to the default and flags %s as invalid', (raw) => {
-    expect(parseBgKeepaliveMaxMs(raw)).toEqual({ value: 1_800_000, invalid: true, clamped: false });
+    expect(parseBgKeepaliveMaxMs(raw)).toEqual({ value: 1_800_000, invalid: true });
   });
 
   it('treats 0 as disabled', () => {
@@ -106,8 +106,9 @@ describe('parseBgKeepaliveMaxMs (#257)', () => {
     expect(parseBgKeepaliveMaxMs('0.5')).toEqual(ok(1));
   });
 
-  it('clamps a value above the largest setTimeout delay instead of letting the timer overflow', () => {
+  it('rejects a value above the largest setTimeout delay instead of letting the timer overflow', () => {
     expect(parseBgKeepaliveMaxMs('2147483647')).toEqual(ok(2_147_483_647));
-    expect(parseBgKeepaliveMaxMs('99999999999')).toEqual({ value: 2_147_483_647, invalid: false, clamped: true });
+    expect(parseBgKeepaliveMaxMs('2147483648')).toEqual({ value: 1_800_000, invalid: true });
+    expect(parseBgKeepaliveMaxMs('99999999999')).toEqual({ value: 1_800_000, invalid: true });
   });
 });
