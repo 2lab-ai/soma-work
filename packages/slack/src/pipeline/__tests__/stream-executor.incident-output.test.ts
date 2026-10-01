@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IncidentRequest } from '../../incident-contract';
 import { buildHostFailureResult, renderIncidentResult } from '../../incident-result';
 import { LOG_DETAIL } from '../../output-flags';
+import { AgentStreamProcessor, type StreamContext } from '../../stream-processor';
 import { StreamExecutor, setStreamExecutorProviders } from '../stream-executor';
 
 setStreamExecutorProviders({
@@ -297,6 +298,33 @@ describe('StreamExecutor — an incident turn publishes the host text and interp
 
     expect(deps.threadPanel.beginTurn.mock.calls[0][0].noStream).toBeFalsy();
     expect(deps.threadPanel.appendText.mock.calls.map((call) => call[1])).toEqual(['an ordinary answer']);
+  });
+});
+
+/**
+ * The one place a `StreamContext` is built for a live turn. The type makes the
+ * flag impossible to omit; this pins the value the executor actually hands the
+ * processor, for both kinds of session.
+ */
+describe('StreamExecutor — the context it hands the processor carries the incident flag', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function contextFor(session: ReturnType<typeof createSession>): Promise<StreamContext> {
+    const process = vi.spyOn(AgentStreamProcessor.prototype, 'process');
+    await new StreamExecutor(createDeps()).execute(createParams(session));
+    await settle();
+    expect(process).toHaveBeenCalledTimes(1);
+    return process.mock.calls[0][1];
+  }
+
+  it('an incident session yields incidentAttempt === true', async () => {
+    expect((await contextFor(createSession(REQUEST))).incidentAttempt).toBe(true);
+  });
+
+  it('an ordinary session yields incidentAttempt === false', async () => {
+    expect((await contextFor(createSession())).incidentAttempt).toBe(false);
   });
 });
 
