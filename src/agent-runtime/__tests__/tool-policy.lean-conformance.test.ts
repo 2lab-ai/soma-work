@@ -11,7 +11,10 @@
  * code: it mocks every primitive module the policy imports, and for each vector row feeds the
  * row's primitive results to the REAL `evaluateToolPolicy`, once per call of the row, requiring
  * the model's result exactly. The `table` rows are the full truth table: every mode, context
- * flag and primitive result, for every path through the policy's tool-name tests.
+ * flag and primitive result, for every path through the policy's tool-name tests. The `incident`
+ * rows are the only ones with `ctx.incidentReadOnly` set: allowlists, near misses of them and
+ * every deny condition, in every mode, for admins and non-admins (`ProofsIncident.lean` proves
+ * what the incident tier does).
  *
  * The sensitive-path checks are held to their arguments as well: each call carries the check
  * and arguments the model says the policy passes (`sensitiveCall`), and the mocked checks answer
@@ -58,7 +61,7 @@ import {
 } from '../../sensitive-path-filter';
 import type { HandoffContext } from '../../types';
 import type { PermissionMode } from '../policy/permission-mode';
-import { evaluateToolPolicy, type ToolPolicyContext } from '../policy/tool-policy';
+import { evaluateToolPolicy, type IncidentReadOnlyContext, type ToolPolicyContext } from '../policy/tool-policy';
 
 const repoRoot = path.resolve(__dirname, '../../..');
 
@@ -89,12 +92,14 @@ interface MockedCall {
 }
 
 interface MockedRow {
-  kind: 'table' | 'tool-names' | 'boundary' | 'arguments';
+  kind: 'table' | 'tool-names' | 'boundary' | 'arguments' | 'incident';
   mode: PermissionMode;
   isAdmin: boolean;
   aborted: boolean;
   handoff: boolean;
   prims: Primitives;
+  /** Present only on `incident` rows; absent means `ctx.incidentReadOnly` stays undefined. */
+  incidentReadOnly?: IncidentReadOnlyContext;
   calls: MockedCall[];
 }
 
@@ -110,7 +115,7 @@ const vectors = JSON.parse(
   fs.readFileSync(path.join(repoRoot, 'verification/vectors/tool-policy.json'), 'utf8'),
 ) as VectorFile;
 
-const MOCKED_KINDS = ['table', 'tool-names', 'boundary', 'arguments'];
+const MOCKED_KINDS = ['table', 'tool-names', 'boundary', 'arguments', 'incident'];
 const rows = vectors.cases.filter((c) => MOCKED_KINDS.includes(c.kind)) as MockedRow[];
 
 /**
@@ -169,6 +174,7 @@ function contextOf(row: MockedRow): ToolPolicyContext {
     isDangerousRuleDisabled: () => false,
     handoffContext: row.handoff ? HANDOFF : undefined,
     checkMcpToolPermission: () => row.prims.mcpDenied,
+    ...(row.incidentReadOnly ? { incidentReadOnly: row.incidentReadOnly } : {}),
   };
 }
 
@@ -231,6 +237,15 @@ describe('tool-policy Lean conformance vectors (mocked primitives)', () => {
     const tools = JSON.stringify(table[0].calls.map((c) => [c.tool, c.input]));
     expect(table.every((row) => JSON.stringify(row.calls.map((c) => [c.tool, c.input])) === tools)).toBe(true);
     expect(table[0].calls).toHaveLength(9);
+  });
+
+  it('set incidentReadOnly on exactly the incident rows, in every mode, for admins and non-admins', () => {
+    expect(rows.filter((row) => (row.incidentReadOnly !== undefined) !== (row.kind === 'incident'))).toEqual([]);
+    const incident = rowsOf('incident');
+    expect(new Set(incident.map((row) => `${row.mode}/${row.isAdmin}`)).size).toBe(6);
+    // The incident tier only allows or denies, and the rows reach both outcomes.
+    const decisions = new Set(incident.flatMap((row) => row.calls.map((call) => call.expect.decision)));
+    expect([...decisions].sort()).toEqual(['allow', 'deny']);
   });
 
   for (const kind of MOCKED_KINDS as MockedRow['kind'][]) {
