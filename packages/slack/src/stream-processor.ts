@@ -94,6 +94,17 @@ export interface StreamContext {
    * goal continuation, renew, …) must never present as user input.
    */
   isUserInputTurn?: boolean;
+  /**
+   * The turn is an Eagle incident attempt (the session owns an
+   * `incidentRequest`). Its text is the host's own conclusion
+   * (`src/incident/attempt-output.ts`), and that conclusion echoes validated
+   * MODEL strings — the summary and the proposal's action. So it is published
+   * verbatim and read for nothing: no response directives (a `channel_message`
+   * JSON in a summary would post to the channel root), no choice UI, and none of
+   * the transport-error guards that hold back a short error-looking text (a
+   * summary quoting one would silence the only line eagle-eye is waiting for).
+   */
+  incidentAttempt?: boolean;
 }
 
 /**
@@ -1260,6 +1271,16 @@ export class AgentStreamProcessor {
     let textContent = this.extractTextContent(content);
     if (!textContent) return;
 
+    // Host-authored incident conclusion: published as is, interpreted not at
+    // all (see `StreamContext.incidentAttempt`). Recorded unmodified, so the
+    // identical SDK result that follows dedupes against it.
+    if (context.incidentAttempt) {
+      if (!textContent.trim()) return;
+      currentMessages.push(textContent);
+      await this.publishIncidentText(textContent, context);
+      return;
+    }
+
     textContent = await this.extractAndDispatchDirectives(textContent, context);
 
     if (!textContent.trim()) {
@@ -1708,6 +1729,14 @@ export class AgentStreamProcessor {
     usage?: UsageData,
     durationMs?: number,
   ): Promise<void> {
+    // An incident conclusion reaches here only when no identical assistant text
+    // preceded it. Same rule as `handleTextMessage`: the host's bytes, nothing
+    // read out of them and nothing (not even the footer) added after the marker.
+    if (context.incidentAttempt) {
+      if (result.trim()) await this.publishIncidentText(result, context);
+      return;
+    }
+
     // Extract response directives before user choice
     const processedResult = await this.extractAndDispatchDirectives(result, context);
 
@@ -1854,6 +1883,26 @@ export class AgentStreamProcessor {
       delivered: false,
       failure: { length: pending.length, ...(code ? { code } : {}) },
     };
+  }
+
+  /**
+   * Publish an incident attempt's conclusion byte for byte.
+   *
+   * Not `sayWithBlockKit`: that re-renders text as mrkdwn for the message's
+   * `text` field (`**x**` → `*x*`), and `text` is exactly what eagle-eye reads
+   * back from the thread — the validated marker line would be rewritten after
+   * validation (caller obligation 2 in `incident-result.ts`). The PHASE>=1
+   * stream already appends text untouched; the legacy path posts the raw text
+   * with no blocks and no verbosity tag. The conclusion is bounded (one wire
+   * line of at most 16384 bytes plus a few short lines), so it needs no
+   * overflow splitting.
+   */
+  private async publishIncidentText(text: string, context: StreamContext): Promise<void> {
+    if (context.turnId && context.threadPanel?.isTurnSurfaceActive()) {
+      const delivered = await context.threadPanel.appendText(context.turnId, text);
+      if (delivered) return;
+    }
+    await context.say({ text, thread_ts: context.threadTs });
   }
 
   /**
