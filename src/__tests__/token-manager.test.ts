@@ -43,10 +43,62 @@ async function makeTmp(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'tm-test-'));
 }
 
+// Every fire-and-forget leg in TokenManager (the addSlot / attachOAuth /
+// forceRefreshOAuth profile syncs and the attachOAuth usage fetch) enters
+// through `refreshOAuthProfile` or `fetchAndStoreUsage`. importSut records each
+// call's promise here, and afterEach settles them before deleting the tmp
+// store. If a leftover write still holds the store lock when its directory is
+// removed, a second leftover can recreate the directory and take the same lock
+// path. proper-lockfile tracks held locks per path, so the first release then
+// clears the second holder's entry, and the first holder's mtime-update timer
+// fires 5s later into a missing directory: an uncaught ECOMPROMISED during
+// some later test.
+const backgroundWork: Promise<unknown>[] = [];
+
+function recordBackgroundWork(TokenManager: typeof import('../token-manager').TokenManager): void {
+  const proto = TokenManager.prototype;
+  const refreshOAuthProfile = proto.refreshOAuthProfile;
+  proto.refreshOAuthProfile = function (this: typeof proto, ...args: Parameters<typeof refreshOAuthProfile>) {
+    const p = refreshOAuthProfile.apply(this, args);
+    backgroundWork.push(p);
+    return p;
+  };
+  const fetchAndStoreUsage = proto.fetchAndStoreUsage;
+  proto.fetchAndStoreUsage = function (this: typeof proto, ...args: Parameters<typeof fetchAndStoreUsage>) {
+    const p = fetchAndStoreUsage.apply(this, args);
+    backgroundWork.push(p);
+    return p;
+  };
+}
+
+async function settleBackgroundWork(): Promise<void> {
+  // Settling one call can start another (the 401 retry paths), so loop until
+  // nothing new was recorded.
+  while (backgroundWork.length > 0) {
+    await Promise.allSettled(backgroundWork.splice(0));
+  }
+}
+
+// Mock gates a test holds closed. A test that fails or times out before its
+// own release would leave a recorded call waiting on the gate, and the settle
+// in afterEach would then hang until the hook timeout, hiding the real
+// failure and skipping the tmp cleanup. afterEach opens every gate first.
+const gateTeardowns: Array<() => void> = [];
+
+function holdGate<T>(teardownValue: T): { promise: Promise<T>; release: (value: T) => void } {
+  let release!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    release = r;
+  });
+  gateTeardowns.push(() => release(teardownValue));
+  return { promise, release };
+}
+
 async function importSut() {
   vi.resetModules();
   const mod = await import('../token-manager');
   const storeMod = await import('../cct-store');
+  recordBackgroundWork(mod.TokenManager);
   return { mod, storeMod };
 }
 
@@ -115,22 +167,15 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
 
   afterEach(async () => {
     process.env = originalEnv;
-    // Card v2 fire-and-forget profile syncs (attachOAuth / addSlot /
-    // forceRefreshOAuth) can still be in flight when the test body returns,
-    // plus the (pre-existing) fetchAndStoreUsage fire-and-forget on attach.
-    // Drain a few macrotask ticks before nuking the tmpdir; retry the rm
-    // loop so a stray `fs.writeFile` landing mid-cleanup doesn't surface as
-    // a flaky ENOTEMPTY.
-    await new Promise((r) => setTimeout(r, 50));
-    for (let i = 0; i < 5; i++) {
-      try {
-        await fs.rm(tmp, { recursive: true, force: true });
-        return;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOTEMPTY') throw err;
-        await new Promise((r) => setTimeout(r, 40));
-      }
-    }
+    // A test that times out inside a fake-timer block never reaches its own
+    // useRealTimers; the settle below needs real timers.
+    vi.useRealTimers();
+    // Open any gate the test left closed (see holdGate), then settle the
+    // fire-and-forget profile syncs and usage fetches that can still be
+    // running (see recordBackgroundWork) before deleting the store they
+    // write to.
+    for (const open of gateTeardowns.splice(0)) open();
+    await settleBackgroundWork();
     await fs.rm(tmp, { recursive: true, force: true });
   });
 
@@ -1285,10 +1330,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       });
       // Block the upstream until we signal, so 5 concurrent calls observe
       // the dedupe map (all queue on the same in-flight Promise).
-      let resolveFetch: (v: any) => void = () => {};
-      const upstream = new Promise<any>((r) => {
-        resolveFetch = r;
-      });
+      const { promise: upstream, release: resolveFetch } = holdGate<unknown>(null);
       fetchUsageMock.mockReset();
       fetchUsageMock.mockImplementation(async () => upstream);
       const parallel = Promise.all(Array.from({ length: 5 }, () => tm.fetchAndStoreUsage(s.keyId)));
@@ -1318,15 +1360,18 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         credentials: makeOAuthCreds(),
         acknowledgedConsumerTosRisk: true,
       });
-      // Make the upstream never resolve within the test window.
+      // Make the upstream never resolve within the test window. It is released
+      // after the assertions so afterEach can settle the per-slot fetch.
+      const { promise: usageHeld, release: releaseUsage } = holdGate<null>(null);
       fetchUsageMock.mockReset();
-      fetchUsageMock.mockImplementation(async () => new Promise(() => {}));
+      fetchUsageMock.mockImplementation(async () => usageHeld);
       const t0 = Date.now();
       const results = await tm.fetchUsageForAllAttached({ timeoutMs: 60 });
       const elapsed = Date.now() - t0;
       expect(elapsed).toBeLessThan(500); // did NOT block indefinitely
       // Best-effort: no keys will have landed yet.
       expect(Object.keys(results).length === 0 || Object.values(results).every((v) => v === null)).toBe(true);
+      releaseUsage(null);
     });
   });
 
@@ -1491,10 +1536,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       // Explicit two-promise handshake: the mock signals `started` on entry
       // so the test can await it before proceeding to detach, and stalls on
       // `fetchGate` so the race window is large and deterministic.
-      let releaseFetch!: () => void;
-      const fetchGate = new Promise<void>((r) => {
-        releaseFetch = r;
-      });
+      const { promise: fetchGate, release: releaseFetch } = holdGate<void>(undefined);
       let signalStarted!: () => void;
       const startedPromise = new Promise<void>((r) => {
         signalStarted = r;
@@ -1545,10 +1587,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       await tm.init();
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
       await tm.attachOAuth(slot.keyId, makeOAuthCreds({ expiresAtMs: Date.now() - 60_000 }), true);
-      let releaseRefresh!: () => void;
-      const refreshGate = new Promise<void>((r) => {
-        releaseRefresh = r;
-      });
+      const { promise: refreshGate, release: releaseRefresh } = holdGate<void>(undefined);
       let signalStarted!: () => void;
       const startedPromise = new Promise<void>((r) => {
         signalStarted = r;
@@ -1626,8 +1665,11 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       //   (b) v3 still had asymmetric expiresAtMs (first attach expired,
       //       reattach default future), so a regression keyed on
       //       expiresAtMs would still pass.
-      // Here only `attachedAt` differs, and we explicitly capture both
-      // generations' fingerprints to assert they are strictly unequal.
+      // The creds are expired, so the fresh generation's own attachOAuth legs
+      // also refresh it (legitimately). That refresh is held until the stale
+      // refresh's persist decision is made, so at that decision the slot
+      // still carries the identical credentials and only `attachedAt` tells
+      // the generations apart. A guard keyed on the access token fails here.
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
@@ -1635,28 +1677,22 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
       // Single creds literal reused for BOTH attaches → identical payload
       // across generations; `attachedAt` is the only thing that differs.
-      // The creds are expired so the stale `refreshCredentialsIfNeeded`
-      // fires; the fresh reattach does not trigger another refresh
-      // because we do not call refreshCredentialsIfNeeded on the fresh gen.
       const identicalCreds = makeOAuthCreds({
         accessToken: 'oat-SHARED',
         expiresAtMs: Date.now() - 60_000,
       });
-      await tm.attachOAuth(slot.keyId, identicalCreds, true);
-      // Capture the stale generation's fingerprint BEFORE detach so we can
-      // later assert the fresh generation minted a strictly different one.
-      const postAttachStaleSnap = await store.load();
-      const staleAttachedAt: number | undefined = (postAttachStaleSnap.registry.slots[0] as any).oauthAttachment
-        ?.attachedAt;
-      let releaseRefresh!: () => void;
-      const refreshGate = new Promise<void>((r) => {
-        releaseRefresh = r;
-      });
+      const { promise: refreshGate, release: releaseRefresh } = holdGate<void>(undefined);
+      const { promise: freshRefreshGate, release: releaseFreshRefresh } = holdGate<void>(undefined);
       let signalStarted!: () => void;
       const startedPromise = new Promise<void>((r) => {
         signalStarted = r;
       });
-      refreshClaudeCredentialsMock.mockImplementationOnce(async (current: any) => {
+      // The first refresh is the stale generation's. It is gated, and every
+      // stale caller (both attach legs and refreshCredentialsIfNeeded) joins
+      // it through the refresh dedupe. Installed before the first attach so
+      // no leg can refresh the stale generation ahead of the gate.
+      type OAuthCredentials = import('../oauth/refresher').OAuthCredentials;
+      refreshClaudeCredentialsMock.mockImplementationOnce(async (current: OAuthCredentials) => {
         signalStarted();
         await refreshGate;
         return {
@@ -1667,34 +1703,69 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
           expiresAtMs: Date.now() + 10 * 60 * 60 * 1000,
         };
       });
+      // Any later refresh is the fresh generation refreshing itself. It waits
+      // for its own gate and returns a distinct token.
+      refreshClaudeCredentialsMock.mockImplementation(async (current: OAuthCredentials) => {
+        await freshRefreshGate;
+        return { ...current, accessToken: 'oat-FRESH-GEN', expiresAtMs: Date.now() + 10 * 60 * 60 * 1000 };
+      });
+      const syncSpy = vi.spyOn(tm, 'refreshOAuthProfile');
+      const usageSpy = vi.spyOn(tm, 'fetchAndStoreUsage');
+      await tm.attachOAuth(slot.keyId, identicalCreds, true);
+      // Capture the stale generation BEFORE detach so we can later assert the
+      // fresh generation differs from it only in `attachedAt`.
+      const postAttachStaleSnap = await store.load();
+      const staleAttachment = structuredClone((postAttachStaleSnap.registry.slots[0] as any).oauthAttachment);
+      const staleAttachedAt: number | undefined = staleAttachment.attachedAt;
+      expect(typeof staleAttachedAt).toBe('number');
       const staleRefreshPromise = tm.refreshCredentialsIfNeeded(slot.keyId);
       await startedPromise;
-      // Force a wall-clock gap so the fresh reattach gets a strictly
-      // different `attachedAt` (Date.now() resolution is 1ms).
-      await new Promise((r) => setTimeout(r, 5));
+      // Handle on the stale refresh itself, whichever caller started it. It
+      // settles after its persist decision.
+      const refreshInFlight = (tm as unknown as { refreshInFlight: Map<string, Promise<string>> }).refreshInFlight;
+      const staleRefresh = refreshInFlight.get(`${slot.keyId}:${staleAttachedAt}`);
+      expect(staleRefresh).toBeDefined();
+      // Let the clock pass the stale fingerprint so the reattach mints a
+      // strictly different `attachedAt` (Date.now() resolution is 1ms).
+      while (Date.now() <= (staleAttachedAt as number)) {
+        await new Promise((r) => setImmediate(r));
+      }
       await tm.detachOAuth(slot.keyId);
       // Reattach with the IDENTICAL creds payload — only attachedAt differs.
       await tm.attachOAuth(slot.keyId, identicalCreds, true);
       const postReattachSnap = await store.load();
       const freshAttachment = structuredClone((postReattachSnap.registry.slots[0] as any).oauthAttachment);
       const freshAttachedAt: number | undefined = freshAttachment.attachedAt;
-      // The two generations minted DIFFERENT fingerprints — this is the
-      // single distinguisher the guard has to work with. If this ever
-      // becomes equal, the test would stop exercising the guard at all.
-      expect(typeof staleAttachedAt).toBe('number');
+      // The two generations minted DIFFERENT fingerprints, and nothing else
+      // differs. If the fingerprints ever become equal, the test would stop
+      // exercising the guard at all.
       expect(typeof freshAttachedAt).toBe('number');
       expect(freshAttachedAt).not.toBe(staleAttachedAt);
+      expect({ ...freshAttachment, attachedAt: 0 }).toEqual({ ...staleAttachment, attachedAt: 0 });
+      // Decide the stale write now. The fresh generation's refresh is still
+      // held, so the slot holds the identical credentials.
       releaseRefresh();
+      await staleRefresh;
+      const afterStaleSnap = await store.load();
+      // Pure-generation guard: the stale write was dropped although only
+      // `attachedAt` differed.
+      expect((afterStaleSnap.registry.slots[0] as { oauthAttachment?: unknown }).oauthAttachment).toEqual(
+        freshAttachment,
+      );
+      // Let the fresh generation refresh itself, then settle every remaining
+      // leg of both generations.
+      releaseFreshRefresh();
       await staleRefreshPromise;
+      await Promise.all([...syncSpy.mock.results, ...usageSpy.mock.results].map((r) => r.value));
+      expect(refreshClaudeCredentialsMock).toHaveBeenCalledTimes(2);
       const finalSnap = await store.load();
       const finalAttachment = (finalSnap.registry.slots[0] as any).oauthAttachment;
-      // Pure-generation guard: fresh attachment survives byte-for-byte
-      // (minus the async profile sync — see stripProfile).
-      expect(stripProfile(finalAttachment)).toEqual(stripProfile(freshAttachment));
-      expectProfileBelongsToFreshGeneration(finalAttachment, freshAttachedAt);
-      expect(finalAttachment.accessToken).toBe('oat-SHARED');
-      expect(finalAttachment.accessToken).not.toBe('oat-SHARED-refreshed');
+      // Only the fresh generation's own refresh and profile sync landed.
       expect(finalAttachment.attachedAt).toBe(freshAttachedAt);
+      expect(finalAttachment.accessToken).toBe('oat-FRESH-GEN');
+      expect(finalAttachment.accessToken).not.toBe('oat-SHARED-refreshed');
+      expect(finalAttachment.profile).toBeDefined();
+      expectProfileBelongsToFreshGeneration(finalAttachment, freshAttachedAt);
     });
 
     it('T5j: stale usage fetch does NOT write state onto a freshly re-attached generation (pure-generation guard)', async () => {
@@ -1710,10 +1781,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       // Pin the CI ordering instead of hoping for it: the fire-and-forget
       // profile sync is gated so it lands strictly BETWEEN `postReattachSnap`
       // and `finalSnap` — the exact window that made run 30681106933 red.
-      let releaseProfile!: () => void;
-      const profileGate = new Promise<void>((r) => {
-        releaseProfile = r;
-      });
+      const { promise: profileGate, release: releaseProfile } = holdGate<void>(undefined);
       fetchOAuthProfileMock.mockImplementation(async () => {
         await profileGate;
         return { fetchedAt: Date.now(), email: 'test@example.com', rateLimitTier: 'default_claude_max_20x' };
@@ -1724,10 +1792,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const postAttachStaleSnap = await store.load();
       const staleAttachedAt: number | undefined = (postAttachStaleSnap.registry.slots[0] as any).oauthAttachment
         ?.attachedAt;
-      let releaseFetch!: () => void;
-      const fetchGate = new Promise<void>((r) => {
-        releaseFetch = r;
-      });
+      const { promise: fetchGate, release: releaseFetch } = holdGate<void>(undefined);
       let signalStarted!: () => void;
       const startedPromise = new Promise<void>((r) => {
         signalStarted = r;
@@ -2027,10 +2092,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
       const sharedCreds = makeOAuthCreds({ accessToken: 'oat-FORCED' });
       await tm.attachOAuth(slot.keyId, sharedCreds, true);
-      let releaseFetch!: () => void;
-      const fetchGate = new Promise<void>((r) => {
-        releaseFetch = r;
-      });
+      const { promise: fetchGate, release: releaseFetch } = holdGate<void>(undefined);
       let signalStarted!: () => void;
       const startedPromise = new Promise<void>((r) => {
         signalStarted = r;
@@ -2080,10 +2142,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(attachedAtV1).toBeGreaterThan(0);
 
       // Suspend the fetch so we can flip attachedAt between dispatch and commit.
-      let releaseFetch!: () => void;
-      const fetchGate = new Promise<void>((r) => {
-        releaseFetch = r;
-      });
+      const { promise: fetchGate, release: releaseFetch } = holdGate<void>(undefined);
       let signalStarted!: () => void;
       const started = new Promise<void>((r) => {
         signalStarted = r;
@@ -2358,10 +2417,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         acknowledgedConsumerTosRisk: true,
       });
       fetchOAuthProfileMock.mockReset();
-      let resolve: (v: any) => void = () => {};
-      const gate = new Promise<any>((r) => {
-        resolve = r;
-      });
+      const { promise: gate, release: resolve } = holdGate<unknown>({ fetchedAt: 0 });
       fetchOAuthProfileMock.mockImplementation(async () => gate);
       const p1 = tm.refreshOAuthProfile(slot.keyId);
       const p2 = tm.refreshOAuthProfile(slot.keyId);
@@ -2404,10 +2460,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       });
       // Now set up the gated mock for the explicit in-flight call.
       fetchOAuthProfileMock.mockReset();
-      let resolveGated: (v: any) => void = () => {};
-      const gate = new Promise<any>((r) => {
-        resolveGated = r;
-      });
+      const { promise: gate, release: resolveGated } = holdGate<unknown>({ fetchedAt: 0 });
       fetchOAuthProfileMock.mockImplementation(async () => gate);
       const inFlight = tm.refreshOAuthProfile(slot.keyId);
       // Detach, then re-attach under a new generation. We swap the mock to a
@@ -2508,28 +2561,34 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
+      // Hold the fetch so the sync is provably still running when addSlot
+      // returns. A poll on the fetch count plus a short sleep raced the
+      // profile write (the fetch is counted before #writeProfile lands).
+      type OAuthProfile = import('../oauth/profile').OAuthProfile;
+      const { promise: fetched, release: releaseFetch } = holdGate<OAuthProfile>({ fetchedAt: 0 });
       fetchOAuthProfileMock.mockReset();
-      fetchOAuthProfileMock.mockResolvedValue({ fetchedAt: 1, email: 'created@example.com' });
+      fetchOAuthProfileMock.mockImplementation(async () => fetched);
+      const syncSpy = vi.spyOn(tm, 'refreshOAuthProfile');
       const slot = await tm.addSlot({
         name: 'legacy-att',
         kind: 'oauth_credentials',
         credentials: makeOAuthCreds(),
         acknowledgedConsumerTosRisk: true,
       });
-      // Allow the fire-and-forget chain to land. Poll up to ~500ms so this
-      // isn't flaky under loaded runners (the chain spans addSlot →
-      // refreshOAuthProfile → getValidAccessToken → store.mutate → persist,
-      // which can take 50+ms with the tmp-store fs overhead).
-      for (let i = 0; i < 50; i++) {
-        if ((fetchOAuthProfileMock.mock.calls.length ?? 0) >= 1) break;
-        await new Promise((r) => setTimeout(r, 10));
-      }
-      // And another short drain for the persist step after the mock resolved.
-      await new Promise((r) => setTimeout(r, 20));
+      const profileOf = async () =>
+        (
+          (await tm.getSnapshot()).registry.slots.find((s) => s.keyId === slot.keyId) as {
+            oauthAttachment?: { profile?: OAuthProfile };
+          }
+        )?.oauthAttachment?.profile;
+      // addSlot started the sync and returned without awaiting it.
+      expect(syncSpy).toHaveBeenCalledTimes(1);
+      expect(syncSpy).toHaveBeenCalledWith(slot.keyId);
+      expect(await profileOf()).toBeUndefined();
+      releaseFetch({ fetchedAt: 1, email: 'created@example.com' });
+      await syncSpy.mock.results[0].value;
       expect(fetchOAuthProfileMock).toHaveBeenCalledTimes(1);
-      const snap = await tm.getSnapshot();
-      const after = snap.registry.slots.find((s: any) => s.keyId === slot.keyId) as any;
-      expect(after.oauthAttachment.profile?.email).toBe('created@example.com');
+      expect((await profileOf())?.email).toBe('created@example.com');
     });
 
     it('attachOAuth on a setup-source slot fires a one-shot profile sync', async () => {
@@ -2540,6 +2599,8 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const slot = await tm.addSlot({ name: 's', kind: 'setup_token', value: 'sk-ant-oat01-zz' });
       fetchOAuthProfileMock.mockReset();
       fetchOAuthProfileMock.mockResolvedValue({ fetchedAt: 2, email: 'attach@example.com' });
+      const syncSpy = vi.spyOn(tm, 'refreshOAuthProfile');
+      const usageSpy = vi.spyOn(tm, 'fetchAndStoreUsage');
       await tm.attachOAuth(
         slot.keyId,
         {
@@ -2550,8 +2611,17 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         },
         true,
       );
-      await new Promise((r) => setTimeout(r, 10));
+      // attachOAuth started one profile sync and one usage fetch without
+      // awaiting them. Settle both through their own promises.
+      expect(syncSpy).toHaveBeenCalledTimes(1);
+      expect(usageSpy).toHaveBeenCalledTimes(1);
+      await Promise.all([syncSpy.mock.results[0].value, usageSpy.mock.results[0].value]);
       expect(fetchOAuthProfileMock).toHaveBeenCalledTimes(1);
+      const snap = await tm.getSnapshot();
+      const after = snap.registry.slots.find((s) => s.keyId === slot.keyId) as {
+        oauthAttachment?: { profile?: { email?: string } };
+      };
+      expect(after.oauthAttachment?.profile?.email).toBe('attach@example.com');
     });
 
     it('forceRefreshOAuth chains the profile sync by default; syncProfile=false isolates the token leg', async () => {
@@ -2559,36 +2629,39 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
+      const syncSpy = vi.spyOn(tm, 'refreshOAuthProfile');
       const slot = await tm.addSlot({
         name: 'f1',
         kind: 'oauth_credentials',
         credentials: makeOAuthCreds(),
         acknowledgedConsumerTosRisk: true,
       });
-      // Wait for the addSlot-driven fire-and-forget profile sync to land BEFORE
-      // resetting the mock — same poll pattern as the addSlot test above. The
-      // bare `setTimeout(5ms)` was tight enough to race under loaded CI runners
-      // (#737 PR — observed 2 vs 1 expected calls because the addSlot sync
-      // landed AFTER the reset, then forceRefreshOAuth fired its own).
-      for (let i = 0; i < 50; i++) {
-        if ((fetchOAuthProfileMock.mock.calls.length ?? 0) >= 1) break;
-        await new Promise((r) => setTimeout(r, 10));
-      }
-      await new Promise((r) => setTimeout(r, 20));
+      // Settle the addSlot sync first. While it is still registered in
+      // profileInflight, the chained sync below joins it instead of fetching
+      // (the poll-then-reset version could see 0 fetches that way).
+      expect(syncSpy).toHaveBeenCalledTimes(1);
+      await syncSpy.mock.results[0].value;
+      syncSpy.mockClear();
       fetchOAuthProfileMock.mockReset();
       fetchOAuthProfileMock.mockResolvedValue({ fetchedAt: 3, email: 'chained@example.com' });
       await tm.forceRefreshOAuth(slot.keyId);
-      // Same poll pattern for the chained sync — drain up to 500ms.
-      for (let i = 0; i < 50; i++) {
-        if ((fetchOAuthProfileMock.mock.calls.length ?? 0) >= 1) break;
-        await new Promise((r) => setTimeout(r, 10));
-      }
-      await new Promise((r) => setTimeout(r, 20));
+      // forceRefreshOAuth starts the profile sync before it resolves, without
+      // awaiting it.
+      expect(syncSpy).toHaveBeenCalledTimes(1);
+      await syncSpy.mock.results[0].value;
       expect(fetchOAuthProfileMock).toHaveBeenCalledTimes(1);
+      const snap = await tm.getSnapshot();
+      const after = snap.registry.slots.find((s) => s.keyId === slot.keyId) as {
+        oauthAttachment?: { profile?: { email?: string } };
+      };
+      expect(after.oauthAttachment?.profile?.email).toBe('chained@example.com');
 
+      syncSpy.mockClear();
       fetchOAuthProfileMock.mockReset();
       await tm.forceRefreshOAuth(slot.keyId, { syncProfile: false });
-      await new Promise((r) => setTimeout(r, 50));
+      // A chained sync would have started before forceRefreshOAuth resolved,
+      // so checking right after the await is enough.
+      expect(syncSpy).not.toHaveBeenCalled();
       expect(fetchOAuthProfileMock).not.toHaveBeenCalled();
     });
 
@@ -2706,12 +2779,16 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
+      const syncSpy = vi.spyOn(tm, 'refreshOAuthProfile');
       await tm.addSlot({
         name: 'ok',
         kind: 'oauth_credentials',
         credentials: makeOAuthCreds(),
         acknowledgedConsumerTosRisk: true,
       });
+      // Settle the addSlot sync so nothing else contends for the store lock
+      // once setTimeout is faked below (lock retries and CAS backoff use it).
+      await syncSpy.mock.results[0].value;
       // Token refresh resolves fast; profile fetch hangs forever. Under
       // awaitProfile: true the second leg must also be bounded by the
       // shared deadline — otherwise the call never returns.
@@ -2721,17 +2798,42 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         accessToken: `${current.accessToken}-refreshed`,
         expiresAtMs: Date.now() + 8 * 60 * 60 * 1000,
       }));
+      // The hung fetch is released after the assertions so afterEach can
+      // settle the profile sync.
+      type OAuthProfile = import('../oauth/profile').OAuthProfile;
+      const { promise: profileHeld, release: releaseProfile } = holdGate<OAuthProfile>({ fetchedAt: 0 });
+      let signalFetching: () => void = () => {};
+      const fetching = new Promise<void>((r) => {
+        signalFetching = r;
+      });
       fetchOAuthProfileMock.mockReset();
-      fetchOAuthProfileMock.mockImplementation(async () => new Promise(() => {}));
-      const t0 = Date.now();
-      const results = await tm.refreshAllAttachedOAuthTokens({ timeoutMs: 200, awaitProfile: true });
-      const elapsed = Date.now() - t0;
-      // Bounded by the shared deadline (200ms + a little scheduler slack).
-      expect(elapsed).toBeLessThan(1500);
-      // Token result landed even though the profile leg hung.
-      const outcomes = Object.values(results);
-      expect(outcomes.length).toBe(1);
-      expect(outcomes[0]).toBe('ok');
+      fetchOAuthProfileMock.mockImplementation(async () => {
+        signalFetching();
+        return profileHeld;
+      });
+      // The shared deadline runs on fake setTimeout. A real 200ms budget let a
+      // loaded runner's store I/O in the token leg miss the deadline (results
+      // came back empty), so wall-clock time is taken out of the test.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        let returned = false;
+        const call = tm.refreshAllAttachedOAuthTokens({ timeoutMs: 60_000, awaitProfile: true });
+        void call.then(() => {
+          returned = true;
+        });
+        // The token leg finished and the profile leg is hung on its fetch.
+        await fetching;
+        await new Promise((r) => setImmediate(r));
+        expect(returned).toBe(false);
+        // Firing the shared deadline ends the call while the fetch still hangs.
+        vi.advanceTimersByTime(60_000);
+        const results = await call;
+        // Token result landed even though the profile leg hung.
+        expect(Object.values(results)).toEqual(['ok']);
+      } finally {
+        vi.useRealTimers();
+      }
+      releaseProfile({ fetchedAt: Date.now(), email: 'late@example.com' });
     });
 
     it('awaitProfile: true suppresses the fire-and-forget profile leg (one profile fetch per slot, not two)', async () => {
@@ -2739,6 +2841,11 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
+      // Every profile sync enters through refreshOAuthProfile, so the spy's
+      // recorded return values are handles on the addSlot fire-and-forget
+      // syncs. Each handle settles only after its profileInflight entry is
+      // cleared.
+      const syncSpy = vi.spyOn(tm, 'refreshOAuthProfile');
       await tm.addSlot({
         name: 'one',
         kind: 'oauth_credentials',
@@ -2757,27 +2864,112 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         accessToken: `${current.accessToken}-refreshed`,
         expiresAtMs: Date.now() + 8 * 60 * 60 * 1000,
       }));
-      // Drain the fire-and-forget profile syncs that the two addSlot calls
-      // fire (one each). Bare setTimeout(20ms) raced under loaded CI runners
-      // and let one of the addSlot profile calls land AFTER the reset, then
-      // counted against the fan-out assertion (#737 PR observed 1 vs 2 expected).
-      // Poll up to 3000ms for both calls to land before resetting — bumped from
-      // 500ms because PR #810 CI saw the same race on a slower hosted runner.
-      for (let i = 0; i < 300; i++) {
-        if ((fetchOAuthProfileMock.mock.calls.length ?? 0) >= 2) break;
-        await new Promise((r) => setTimeout(r, 10));
-      }
-      await new Promise((r) => setTimeout(r, 50));
-      fetchOAuthProfileMock.mockReset();
-      fetchOAuthProfileMock.mockImplementation(async () => ({
-        fetchedAt: Date.now(),
-        email: 'test@example.com',
-        rateLimitTier: 'default_claude_max_20x',
-      }));
+      // Drain the two addSlot syncs through their own promises. Waiting for
+      // the fetch count (#737, #810) was not enough: a fetch is counted while
+      // its sync is still registered in profileInflight (#writeProfile waits
+      // on the store lock), and the awaited leg below then joins that sync
+      // instead of fetching — 1 call instead of 2 (see the next test).
+      expect(syncSpy).toHaveBeenCalledTimes(2);
+      await Promise.all(syncSpy.mock.results.map((r) => r.value));
+      syncSpy.mockClear();
+      fetchOAuthProfileMock.mockClear();
       await tm.refreshAllAttachedOAuthTokens({ timeoutMs: 5_000, awaitProfile: true });
-      // Exactly one profile fetch per slot (awaited leg). The fire-and-forget
-      // leg inside forceRefreshOAuth is suppressed by syncProfile:false.
+      // One sync per slot: only the awaited leg enters refreshOAuthProfile,
+      // because forceRefreshOAuth's fire-and-forget leg is suppressed by
+      // syncProfile:false. The fetch count alone is a timing-dependent signal
+      // for this: an unsuppressed fire-and-forget sync that is still in
+      // flight is coalesced with the awaited one and adds no fetch.
+      expect(syncSpy).toHaveBeenCalledTimes(2);
       expect(fetchOAuthProfileMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('awaitProfile: true joins a profile sync still in flight (no duplicate fetch, settles before return)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      // Hold slot one's addSlot profile fetch so its profileInflight entry is
+      // provably still registered when the fan-out runs. Every other fetch
+      // resolves immediately.
+      type OAuthProfile = import('../oauth/profile').OAuthProfile;
+      const { promise: held, release: releaseHeld } = holdGate<OAuthProfile>({ fetchedAt: 0 });
+      let heldStarted: () => void = () => {};
+      const heldStartedGate = new Promise<void>((r) => {
+        heldStarted = r;
+      });
+      fetchOAuthProfileMock.mockImplementation(async (token: string) => {
+        if (token === 'a1') {
+          heldStarted();
+          return held;
+        }
+        return { fetchedAt: Date.now(), email: `${token}@example.com` };
+      });
+      const syncSpy = vi.spyOn(tm, 'refreshOAuthProfile');
+      const one = await tm.addSlot({
+        name: 'one',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ accessToken: 'a1', refreshToken: 'r1' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      const two = await tm.addSlot({
+        name: 'two',
+        kind: 'oauth_credentials',
+        credentials: makeOAuthCreds({ accessToken: 'a2', refreshToken: 'r2' }),
+        acknowledgedConsumerTosRisk: true,
+      });
+      await heldStartedGate;
+      // Settle slot two's addSlot sync completely; slot one's stays in flight.
+      // This is the state a loaded runner leaves behind when the addSlot
+      // fetch has been counted but its #writeProfile is still waiting on the
+      // store lock.
+      const twoSync = syncSpy.mock.calls.findIndex(([keyId]) => keyId === two.keyId);
+      expect(twoSync).toBeGreaterThanOrEqual(0);
+      await syncSpy.mock.results[twoSync].value;
+      fetchOAuthProfileMock.mockClear();
+      // Signal the coalescing decision itself: the moment refreshOAuthProfile
+      // finds slot one's existing in-flight promise. The held fetch stays held.
+      let signalJoined: () => void = () => {};
+      const joined = new Promise<void>((r) => {
+        signalJoined = r;
+      });
+      const inflight = (tm as unknown as { profileInflight: Map<string, Promise<unknown>> }).profileInflight;
+      const realGet = inflight.get.bind(inflight);
+      vi.spyOn(inflight, 'get').mockImplementation((key: string) => {
+        const hit = realGet(key);
+        if (hit !== undefined && key.startsWith(`${one.keyId}:`)) signalJoined();
+        return hit;
+      });
+      let returned = false;
+      const call = tm.refreshAllAttachedOAuthTokens({ timeoutMs: 5_000, awaitProfile: true });
+      void call.then(() => {
+        returned = true;
+      });
+      await joined;
+      // Let everything except the joined sync finish: slot two's awaited leg,
+      // then a macrotask turn so any continuation of refreshAll queued behind
+      // it has run. refreshAll must still be waiting on slot one's joined
+      // sync. If the joined promise were not awaited, it would have returned.
+      const keyIds = syncSpy.mock.calls.map(([keyId]) => keyId);
+      const twoAwaited = keyIds.lastIndexOf(two.keyId);
+      expect(twoAwaited).toBeGreaterThan(twoSync);
+      await syncSpy.mock.results[twoAwaited].value;
+      await new Promise((r) => setImmediate(r));
+      expect(returned).toBe(false);
+      releaseHeld({ fetchedAt: Date.now(), email: 'held-one@example.com' });
+      const results = await call;
+      expect(results).toEqual({ [one.keyId]: 'ok', [two.keyId]: 'ok' });
+      // Slot one's awaited leg joined the held sync, so only slot two fetched,
+      // with its refreshed token.
+      expect(fetchOAuthProfileMock).toHaveBeenCalledTimes(1);
+      expect(fetchOAuthProfileMock).toHaveBeenCalledWith('a2-refreshed', expect.anything());
+      // The joined sync is still awaited: its profile is persisted before
+      // refreshAllAttachedOAuthTokens returns.
+      const snap = await tm.getSnapshot();
+      const profileOf = (keyId: string) =>
+        (snap.registry.slots.find((s) => s.keyId === keyId) as { oauthAttachment?: { profile?: OAuthProfile } })
+          ?.oauthAttachment?.profile;
+      expect(profileOf(one.keyId)?.email).toBe('held-one@example.com');
+      expect(profileOf(two.keyId)?.email).toBe('a2-refreshed@example.com');
     });
   });
 
