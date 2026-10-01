@@ -15,6 +15,7 @@
  * reaches the session through the read-only MCP server instead.
  */
 
+import { homedir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import { evaluateToolPolicy, type IncidentReadOnlyContext, type ToolPolicyContext } from '../policy/tool-policy';
 
@@ -159,6 +160,34 @@ describe('evaluateToolPolicy — incident READ-ONLY mode', () => {
       const r = evaluateToolPolicy(ALLOWED_MCP, {}, revoked);
       expect(r.decision).toBe('deny');
       expect(r.reason).toContain('mcp-permission');
+    });
+  });
+
+  describe('an incident session gets no admin privilege', () => {
+    it('an admin is denied an allowlisted MCP tool whose grant guard rejects it', () => {
+      const r = evaluateToolPolicy(ALLOWED_MCP, {}, widestCtx({ checkMcpToolPermission: () => 'grant expired' }));
+      expect(r).toEqual({ decision: 'deny', reason: 'mcp-permission: grant expired' });
+    });
+
+    it("the grant guard is consulted for an admin's MCP call", () => {
+      const spy = vi.fn(() => null);
+      expect(evaluateToolPolicy(ALLOWED_MCP, {}, widestCtx({ checkMcpToolPermission: spy })).decision).toBe('allow');
+      expect(spy).toHaveBeenCalledWith(ALLOWED_MCP);
+    });
+
+    it('an admin gets exactly the result of the same call made by a non-admin', () => {
+      const calls: ReadonlyArray<[string, Record<string, unknown>]> = [
+        [ALLOWED_MCP, {}],
+        ['Bash', { command: 'ssh prod-host' }],
+        ['Read', { file_path: `${homedir()}/.ssh/id_rsa` }],
+        ['Write', { file_path: EVIDENCE_FILE }],
+      ];
+      const revoked = { checkMcpToolPermission: () => 'grant expired' };
+      for (const [tool, input] of calls) {
+        expect(evaluateToolPolicy(tool, input, widestCtx(revoked))).toEqual(
+          evaluateToolPolicy(tool, input, widestCtx({ ...revoked, isAdmin: false })),
+        );
+      }
     });
   });
 
