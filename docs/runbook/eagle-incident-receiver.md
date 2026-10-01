@@ -86,19 +86,22 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
   (`src/incident/attempt-output.ts`).
 - 그 결론은 모델 문자열(summary, proposal action)을 되싣지만 **해석되지 않는다.** 인시던트 세션의 턴은
   directive(`channel_message` 등)·선택지 JSON·전송 오류 가드 없이 그대로 한 번 게시된다
-  (`packages/slack/src/pipeline/stream-executor.ts:1004`, `packages/slack/src/stream-processor.ts:1282`).
+  (`packages/slack/src/pipeline/stream-executor.ts:1004`, `packages/slack/src/stream-processor.ts:1289`).
   그 스위치 `StreamContext.incidentAttempt`는 기본값 없는 **필수** 필드다
   (`packages/slack/src/stream-processor.ts:112`) — 새 생성 지점이 빠뜨리면 타입 검사가 실패한다.
-- 결론은 **항상 blocks 없는 평문 게시**(`say({ text, thread_ts })`)로 나간다 — 턴 스트림의 `markdown_text`
-  청크로는 절대 나가지 않는다 (`packages/slack/src/stream-processor.ts:1907`). 그 청크는 Slack이 서버에서
-  해석하므로, eagle-eye가 읽어 가는 `text`가 검증된 마커 줄과 같은지 보장할 수 없다.
+- 결론은 **항상 blocks 없는 평문 게시**(`say({ text, thread_ts, unfurl_links: false, unfurl_media: false })`)로
+  나간다 — 턴 스트림의 `markdown_text` 청크로는 절대 나가지 않는다 (`packages/slack/src/stream-processor.ts:1916`).
+  그 청크는 Slack이 서버에서 해석하므로, eagle-eye가 읽어 가는 `text`가 검증된 마커 줄과 같은지 보장할 수 없다.
+  링크·미디어 unfurl도 끈다(`incident-result.ts` caller obligation 2). 두 플래그는 executor의 `say` 래퍼
+  (`packages/slack/src/pipeline/stream-executor.ts:1401`)와 `SlackHandler`의 `wrappedSay`(`src/slack-handler.ts:1347`)를
+  거쳐 Bolt `say`가 `chat.postMessage`에 그대로 펼친다. 다른 게시에는 플래그가 붙지 않는다.
   그래서 인시던트 턴은 B1 스트림 메시지를 **열지 않는다** (`TurnContext.noStream`,
   `packages/slack/src/turn-surface.ts:556`) — 아무것도 붙지 않은 빈 스트림 메시지가 남지 않는다.
   턴 상태(네이티브 상태 표시·supersede·완료 카드)는 그대로 열고 닫는다. 그 결과 evidence 도구 결과 줄은
   스트림 대신 별도 메시지로, 완료 카드도 스트림에 붙지 않고 **결론 뒤의 별도 메시지**로 게시된다.
 - 턴이 끝난 뒤 수집 텍스트를 "내용으로 위장한 전송 오류"(사용량 한도·풀 rate-limit·prompt too long·
   빈 블록 400·compaction 실패)로 읽는 5개 가드도 인시던트 세션에는 적용되지 않는다
-  (`packages/slack/src/pipeline/stream-executor.ts:1953`). summary가 그 문구를 인용해도 자격증명 회전이나
+  (`packages/slack/src/pipeline/stream-executor.ts:1957`). summary가 그 문구를 인용해도 자격증명 회전이나
   재시도가 일어나지 않는다. 실제 전송 오류는 시도 안에서 이미 host 결과(`failed`/`inconclusive`)가 된다.
 - 도구 호출은 evidence 도구 이름일 때만 host가 `input: {}`로 다시 써서 보인다. 다른 도구 호출과 모델이 쓴
   인자는 스레드에 나가지 않는다 (`src/incident/attempt-output.ts:493`). 그 호출의 결과도 버려진다 — 도구 결과는
@@ -147,6 +150,7 @@ npx tsc --noEmit
 npx vitest run src/incident/__tests__ \
   src/slack/__tests__/incident-ingress.test.ts \
   src/slack/__tests__/turn-surface.test.ts \
+  src/__tests__/slack-handler.test.ts \
   src/agent-runtime/__tests__/tool-policy-incident.test.ts \
   packages/slack/src/__tests__/incident-contract.test.ts \
   packages/slack/src/__tests__/incident-result.test.ts \
