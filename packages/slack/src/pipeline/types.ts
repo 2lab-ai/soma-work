@@ -1,3 +1,5 @@
+import type { IncidentRequest } from '../incident-contract';
+
 export interface ProcessedFile {
   path: string;
   name: string;
@@ -14,6 +16,22 @@ export interface ConversationSession {
   channelId: string;
   threadTs?: string;
   threadRootTs?: string;
+  /**
+   * Set once, at session init, from `routeContext.incidentRequest` of a
+   * verified Eagle incident request (see `incident-contract.ts`). Its presence
+   * makes the session incident-owned: the ingress refuses ordinary traffic in
+   * that thread and the runtime restricts the turn. Never set from message
+   * text, and deliberately NOT cleared by a session reset — a reset must not
+   * become the way to turn a restricted session into an unrestricted one.
+   */
+  incidentRequest?: IncidentRequest;
+  /**
+   * `attempt_id` of the incident attempt the HOST observed finish. Written only
+   * by the completion path — never by the model, message text, or a command —
+   * and cleared when the ingress hands the session to the next attempt. Without
+   * it, a retry on the same incident parent is denied.
+   */
+  incidentAttemptFinishedId?: string;
   actionPanel?: {
     waitingForChoice?: boolean;
     [key: string]: any;
@@ -74,6 +92,13 @@ export interface MessageEvent {
      * turn wins), not aborted. See `GoalLoopController` (M2).
      */
     goalContinuation?: boolean;
+    /**
+     * Present ONLY on a turn the incident ingress itself built after the
+     * contract accepted it (`event-router.ts` → `evaluateIncidentIngress`).
+     * Internal: it never survives a round-trip through Slack, so a message
+     * body cannot forge it. `SessionInitializer` copies it onto the session.
+     */
+    incidentRequest?: IncidentRequest;
   };
   files?: Array<{
     id: string;

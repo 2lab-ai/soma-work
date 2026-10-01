@@ -533,6 +533,88 @@ describe('SlackHandler — follow-up queue host', () => {
     expect(handlerAny.getFollowupQueue().list(WORK_KEY)[0].state).toBe('resolved');
   });
 
+  /**
+   * An incident-owned thread is a bot-to-bot surface: an ordinary message in
+   * it is dropped, never run. The package router drops mentions and plain
+   * replies there, but a file upload into an existing session reaches this
+   * ingress, and the fence would otherwise park it, paint a queue receipt into
+   * the thread and offer it to the running attempt as a steer.
+   */
+  describe('incident-owned thread', () => {
+    const INCIDENT_REQUEST = {
+      version: 1,
+      incident_id: 'host:mac-mini-dev',
+      lifecycle_id: 'lc-1',
+      attempt_id: 'att-1',
+      channel_id: CHANNEL,
+      parent_ts: THREAD_TS,
+      env: 'dev2',
+      summary: 'mac-mini-dev unreachable',
+    };
+
+    it('drops an ordinary upload while the attempt runs: not parked, painted, downloaded or steered', async () => {
+      registrySession.incidentRequest = INCIDENT_REQUEST;
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+      const notifyThreadPost = vi.fn();
+      handlerAny.slackApi.notifyThreadPost = notifyThreadPost;
+
+      // The verified incident turn holds the slot.
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const attempt = handler.handleMessage(
+        message({
+          user: 'U_EAGLE',
+          text: 'host-built incident prompt',
+          routeContext: { skipAutoBotThread: true, incidentRequest: INCIDENT_REQUEST },
+        }),
+        say(),
+      );
+      await tick();
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+
+      await handler.handleMessage(
+        message({
+          ts: '333.444',
+          text: '이 로그도 봐줘',
+          files: [
+            {
+              id: 'F1',
+              name: 'log.txt',
+              mimetype: 'text/plain',
+              filetype: 'text',
+              url_private: 'https://x/1',
+              url_private_download: 'https://x/1d',
+              size: 12,
+            },
+          ],
+        }),
+        say(),
+      );
+
+      expect(items()).toHaveLength(0);
+      expect(reactionsOn('333.444')).toEqual([]);
+      expect(claudeHandler.steerTurn).not.toHaveBeenCalled();
+      expect(processFiles).toHaveBeenCalledTimes(1); // the incident turn only
+      expect(notifyThreadPost).not.toHaveBeenCalledWith(expect.objectContaining({ ts: '333.444' }));
+      expect(abortSession).not.toHaveBeenCalled();
+
+      gate.resolve({ hasPendingChoice: false });
+      await attempt;
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(items()).toHaveLength(0);
+    });
+
+    it('drops an ordinary message in an idle incident thread without dispatching it', async () => {
+      registrySession.incidentRequest = INCIDENT_REQUEST;
+
+      await handler.handleMessage(message({ ts: '333.444', text: '다시 해줘' }), say());
+
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(items()).toHaveLength(0);
+      expect(processFiles).not.toHaveBeenCalled();
+    });
+  });
+
   describe('explicit steer `!{prompt}` (U6)', () => {
     it('never overlaps the running turn: the new dispatch waits for the teardown', async () => {
       const { settle } = await startBusyTurn();

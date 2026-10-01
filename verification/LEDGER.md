@@ -18,14 +18,14 @@ current file set on every run.
 |---|---:|---:|---:|
 | `packages/common/` | 13 | 0 | 13 |
 | `packages/process-shared/` | 26 | 0 | 26 |
-| `packages/slack/` | 95 | 2 | 93 |
-| `src/` | 403 | 5 | 398 |
+| `packages/slack/` | 97 | 2 | 95 |
+| `src/` | 406 | 5 | 401 |
 | `somalib/` | 17 | 0 | 17 |
 | `packages/test-utils/` | 4 | 0 | 4 |
 | `packages/mcp-servers/` | 11 | 0 | 11 |
 | `scripts/` | 6 | 0 | 6 |
 | other | 1 | 0 | 1 |
-| **total** | **576** | **7** | **569** |
+| **total** | **581** | **7** | **574** |
 
 ## Files
 
@@ -117,6 +117,8 @@ current file set on every run.
 | `packages/slack/src/formatters/index.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/formatters/markdown-to-blocks.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/handoff-budget.ts` | `packages/slack/` | T1 |
+| `packages/slack/src/incident-contract.ts` | `packages/slack/` | T1 |
+| `packages/slack/src/incident-result.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/index.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/instruction-confirm-blocks.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/mcp-health-monitor.ts` | `packages/slack/` | T1 |
@@ -315,6 +317,9 @@ current file set on every run.
 | `src/hooks/hook-state.ts` | `src/` | T1 |
 | `src/hooks/index.ts` | `src/` | T1 |
 | `src/hooks/pr-issue-guard.ts` | `src/` | T1 |
+| `src/incident/attempt-output.ts` | `src/` | T1 |
+| `src/incident/evidence.ts` | `src/` | T1 |
+| `src/incident/sdk-options.ts` | `src/` | T1 |
 | `src/index.ts` | `src/` | T1 |
 | `src/internal-mcp-server-resolver.ts` | `src/` | T1 |
 | `src/link-metadata-fetcher.ts` | `src/` | T1 |
