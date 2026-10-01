@@ -98,8 +98,8 @@ export interface StreamContext {
    * The turn is an Eagle incident attempt (the session owns an
    * `incidentRequest`). Its text is the host's own conclusion
    * (`src/incident/attempt-output.ts`), and that conclusion echoes validated
-   * MODEL strings — the summary and the proposal's action. So it is published
-   * verbatim, as a plain post, and read for nothing: no response directives (a
+   * MODEL strings — the summary and the proposal's action. So it is handed to
+   * `say` verbatim, as a plain post, and read for nothing: no response directives (a
    * `channel_message` JSON in a summary would post to the channel root), no
    * choice UI, and none of the transport-error guards that hold back a short
    * error-looking text (a summary quoting one would silence the only line
@@ -1926,12 +1926,17 @@ export class AgentStreamProcessor {
   }
 
   /**
-   * Publish an incident attempt's conclusion byte for byte.
+   * Publish an incident attempt's conclusion — byte-for-byte up to the `say`
+   * call.
    *
    * Always a plain post of the raw text — no blocks, no verbosity tag — on
-   * every phase. `text` is exactly what eagle-eye reads back from the thread,
-   * and the validated marker line must arrive unchanged (caller obligation 2
-   * in `incident-result.ts`). Neither alternative can show that:
+   * every phase. The `text` Slack stores is what eagle-eye reads back from the
+   * thread, and the validated marker line must arrive unchanged (caller
+   * obligation 2 in `incident-result.ts`). This method controls only what it
+   * hands to `say`; whether Slack stores that `text` unchanged is NOT shown by
+   * any test here — it is the pre-activation receipt in
+   * docs/runbook/eagle-incident-receiver.md §6. Neither alternative can even
+   * get the line to `say` intact:
    * `sayWithBlockKit` re-renders the text as mrkdwn (`**x**` → `*x*`), and the
    * PHASE>=1 turn stream sends it as a `markdown_text` chunk that Slack
    * interprets server-side. The executor opens no stream for an incident turn
