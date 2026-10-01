@@ -45,64 +45,98 @@ theorem foldKey_abs (n : List Char) (hhead : n.head? = some '/') :
   have h := foldKey_renderAbs _ (segmentsOf_slashFree n)
   rwa [← eq_renderAbs_segmentsOf n hhead] at h
 
-/-- Extending a location keeps its `canon` as a prefix, unless the location is a lone segment
-that folds to `private` (which `/private/tmp` or `/private/etc` would rewrite). -/
-theorem canon_append (D U : List Seg) (hD : D ≠ []) (hp : D.map fold ≠ [privateSeg]) :
-    canon (D ++ U) = canon D ++ U.map fold := by
-  unfold canon
-  rw [List.map_append]
-  apply privateMapSegs_append_left
-  · simpa using hD
-  · rintro ⟨hlen, hhead, -⟩
-    apply hp
-    generalize D.map fold = a at hlen hhead
-    match a with
-    | [] => simp at hlen
-    | [x] => simp at hhead; rw [hhead]
-    | _ :: _ :: _ => simp at hlen
+/-- The starts of a location that a link may rewrite once the location is extended: a start of
+`/system/volumes/data/private`, or a lone `private`. -/
+def OpenStart (a : List Seg) : Prop :=
+  a ≠ [] ∧ (a <+: dataVolumeSegs ++ [privateSeg] ∨ a = [privateSeg])
 
-/-- Only a lone segment folding to `private` has `canon` equal to `[private]`. -/
-theorem map_fold_of_canon_private (d : List Seg) (h : canon d = [privateSeg]) : d.map fold = [privateSeg] := by
-  unfold canon at h
-  generalize d.map fold = a at h ⊢
-  match a with
-  | [] => exact absurd h (by decide)
-  | [x] => exact h
-  | x :: y :: r =>
-    by_cases hc : x = privateSeg ∧ y ∈ linkedSegs
-    · rw [show privateMapSegs (x :: y :: r) = y :: r from ite_eq_left hc] at h
-      simp only [List.cons.injEq] at h
-      exact absurd h.1 (linkedSegs_props y hc.2).2.1
-    · rw [show privateMapSegs (x :: y :: r) = x :: y :: r from ite_eq_right hc] at h
-      simp at h
+/-- Every segment of an open start is one of `system`, `volumes`, `data` and `private`. -/
+theorem mem_of_openStart {a : List Seg} (h : OpenStart a) : ∀ w ∈ a, w ∈ dataVolumeSegs ++ [privateSeg] := by
+  intro w hw
+  rcases h.2 with ⟨t, ht⟩ | rfl
+  · rw [← ht]; exact List.mem_append_left _ hw
+  · simp at hw; simp [hw]
+
+/-- A list whose last segment is none of those is no open start. -/
+theorem not_openStart_of_last (a : List Seg) (h : ∀ y ∈ dataVolumeSegs ++ [privateSeg], a.getLast? ≠ some y) :
+    ¬ OpenStart a := by
+  intro ho
+  obtain ⟨y, hy⟩ : ∃ y, a.getLast? = some y := by
+    cases hl : a.getLast? with
+    | none => exact absurd (List.getLast?_eq_none_iff.1 hl) ho.1
+    | some y => exact ⟨y, rfl⟩
+  exact h y (mem_of_openStart ho y (List.mem_of_getLast? hy)) hy
+
+/-- Extending a location keeps its `canon` as a prefix, unless the folded location is an open
+start, which a link would rewrite (`/private` then `etc`). -/
+theorem canon_append (D U : List Seg) (hD : D ≠ []) (hp : ¬ OpenStart (D.map fold)) :
+    canon (D ++ U) = canon D ++ U.map fold := by
+  unfold canon aliasMapSegs privateMapSegs firmlinkMapSegs
+  rw [List.map_append]
+  generalize ha : D.map fold = a at hp
+  have hane : a ≠ [] := by rw [← ha]; simpa using hD
+  rw [linkMapSegs_append_closed dataVolumeSegs firmlinkSegs a _ (by
+      intro x _ z zs h
+      apply hp
+      refine ⟨hane, Or.inl ?_⟩
+      rcases List.append_eq_append_iff.1 h.symm with ⟨as, h1, -⟩ | ⟨bs, h1, h2⟩
+      · exact ⟨as ++ [privateSeg], by rw [h1]; simp⟩
+      · cases bs with
+        | nil => exact ⟨[privateSeg], by rw [h1]; simp⟩
+        | cons b bs' => simp at h2),
+    linkMapSegs_append_closed [privateSeg] linkedSegs _ _ (by
+      intro x _ z zs h
+      apply hp
+      refine ⟨hane, ?_⟩
+      have hf : linkMapSegs dataVolumeSegs firmlinkSegs a = [privateSeg] := by
+        cases hf : linkMapSegs dataVolumeSegs firmlinkSegs a with
+        | nil => exact absurd hf (linkMapSegs_ne_nil _ _ _ hane)
+        | cons f fs =>
+          rw [hf] at h
+          cases fs with
+          | nil =>
+            simp only [List.cons_append, List.nil_append, List.cons.injEq] at h
+            rw [← h.1]
+          | cons g gs => simp at h
+      rcases linkMapSegs_cases dataVolumeSegs firmlinkSegs a with ⟨y, -, rest, rfl, he⟩ | ⟨-, he⟩
+      · rw [he] at hf
+        simp only [List.cons.injEq] at hf
+        obtain ⟨rfl, rfl⟩ := hf
+        exact Or.inl ⟨[], by simp⟩
+      · rw [he] at hf
+        exact Or.inr hf)]
 
 /-! ## The rule tables -/
 
-/-- The sensitive HOME directories add a non-empty run of proper segments to HOME, and none of
-them is a lone segment that folds to `private`. -/
+/-- The last segment of a list extended by a non-empty one is the extension's last. -/
+theorem getLast?_append_ne_nil (l m : List Seg) (hm : m ≠ []) : (l ++ m).getLast? = m.getLast? := by
+  rw [List.getLast?_append]
+  cases h : m.getLast? with
+  | none => exact absurd (List.getLast?_eq_none_iff.1 h) hm
+  | some y => rfl
+
+/-- The sensitive HOME directories add a non-empty run of proper segments to HOME, whose folded
+last segment starts no link. -/
 theorem homeDirSuffixes_props :
-    ∀ e ∈ homeDirSuffixes, e ≠ [] ∧ (∀ w ∈ e, Proper w) ∧ e.map fold ≠ [privateSeg] := by
+    ∀ e ∈ homeDirSuffixes, e ≠ [] ∧ (∀ w ∈ e, Proper w) ∧
+      ∀ y ∈ dataVolumeSegs ++ [privateSeg], (e.map fold).getLast? ≠ some y := by
   decide
 
 /-- For a HOME of proper segments, every sensitive directory is a non-empty list of proper
-segments other than a lone segment folding to `private`. -/
+segments whose folded last segment starts no link. -/
 theorem sensitiveDirSegs_wf (hloc : List Seg) (hh : ∀ w ∈ hloc, Proper w) :
-    ∀ d ∈ sensitiveDirSegs hloc, d ≠ [] ∧ (∀ w ∈ d, Proper w) ∧ d.map fold ≠ [privateSeg] := by
+    ∀ d ∈ sensitiveDirSegs hloc, d ≠ [] ∧ (∀ w ∈ d, Proper w) ∧
+      ∀ y ∈ dataVolumeSegs ++ [privateSeg], (d.map fold).getLast? ≠ some y := by
   intro d hd
   rcases (mem_sensitiveDirSegs_iff hloc d).1 hd with ⟨e, he, rfl⟩ | rfl
-  · obtain ⟨hne, hproper, hpriv⟩ := homeDirSuffixes_props e he
+  · obtain ⟨hne, hproper, hlast⟩ := homeDirSuffixes_props e he
     refine ⟨by simp [hne], ?_, ?_⟩
     · intro w hw
       rcases List.mem_append.1 hw with hw | hw
       · exact hh w hw
       · exact hproper w hw
-    · rw [List.map_append]
-      cases hloc with
-      | nil => simpa using hpriv
-      | cons x xs =>
-        cases e with
-        | nil => exact absurd rfl hne
-        | cons y ys => simp
+    · rw [List.map_append, getLast?_append_ne_nil _ _ (by simpa using hne)]
+      exact hlast
   · decide
 
 /-- For a HOME that names `hloc`, `SENSITIVE_DIRECTORIES` renders `sensitiveDirSegs hloc`. -/
@@ -120,21 +154,16 @@ theorem sensitiveDirectories_eq (home : List Char) (hloc : List Seg) (hn : Names
     obtain ⟨hne, hproper, -⟩ := homeDirSuffixes_props e he
     rw [Function.comp_apply, pathJoin_abs home e hn.1 hne hproper, hR]
 
-/-- A location below a sensitive directory of HOME, written with `/private/tmp` as `/tmp` and
-`/private/etc` as `/etc` in HOME, is below the matching directory of that HOME. -/
-theorem insideSensitive_privateMapSegs (hloc v : List Seg) (h : InsideSensitive hloc v) :
-    InsideSensitive (privateMapSegs hloc) v := by
+/-- A location below a sensitive directory of HOME, with HOME written through its links, is below
+the matching directory of that HOME. -/
+theorem insideSensitive_aliasMapSegs (hloc v : List Seg) (h : InsideSensitive hloc v) :
+    InsideSensitive (aliasMapSegs hloc) v := by
   obtain ⟨d, hd, hpre⟩ := h
   rcases (mem_sensitiveDirSegs_iff hloc d).1 hd with ⟨e, he, rfl⟩ | rfl
-  · refine ⟨privateMapSegs hloc ++ e, (mem_sensitiveDirSegs_iff _ _).2 (Or.inl ⟨e, he, rfl⟩), ?_⟩
+  · refine ⟨aliasMapSegs hloc ++ e, (mem_sensitiveDirSegs_iff _ _).2 (Or.inl ⟨e, he, rfl⟩), ?_⟩
     obtain ⟨-, hehead⟩ := homeDirSuffixes_wf e he
-    cases hloc with
-    | nil => exact hpre
-    | cons x xs =>
-      rw [← privateMapSegs_append_left (x :: xs) e (by simp) (by
-        rintro ⟨-, -, y, hy, h⟩
-        exact hehead y hy h), canon_privateMapSegs]
-      exact hpre
+    rw [← aliasMapSegs_append_head hloc e (fun y hy hmem => hehead y hmem hy), canon_aliasMapSegs]
+    exact hpre
   · exact ⟨_, (mem_sensitiveDirSegs_iff _ _).2 (Or.inr rfl), hpre⟩
 
 /-- Being at or below a sensitive directory survives extending the location. -/
@@ -143,24 +172,28 @@ theorem insideSensitive_of_prefix (hloc : List Seg) (hh : ∀ w ∈ hloc, Proper
   obtain ⟨d, hd, hpre⟩ := h
   obtain ⟨U, rfl⟩ := hp
   obtain ⟨hdne, -, hdpriv⟩ := sensitiveDirSegs_wf hloc hh d hd
-  have hcne : canon d ≠ [] := privateMapSegs_ne_nil _ (by simpa using hdne)
+  have hcne : canon d ≠ [] := aliasMapSegs_ne_nil _ (by simpa using hdne)
   refine ⟨d, hd, ?_⟩
   have hvne : v ≠ [] := by
     rintro rfl
-    exact hcne (List.prefix_nil.1 (by simpa [canon, privateMapSegs] using hpre))
-  by_cases hpv : v.map fold = [privateSeg]
-  · exfalso
-    have hcv : canon v = [privateSeg] := by unfold canon; rw [hpv]; rfl
-    rw [hcv] at hpre
+    rw [canon_nil] at hpre
+    exact hcne (List.prefix_nil.1 hpre)
+  by_cases hpv : OpenStart (v.map fold)
+  · -- Every segment of `canon v` is one of an open start's, and the last of `canon d`, a segment
+    -- of `canon v`, is the folded last segment of `d`, which is none of those.
+    exfalso
+    obtain ⟨y, hy⟩ : ∃ y, (canon d).getLast? = some y := by
+      cases hl : (canon d).getLast? with
+      | none => exact absurd (List.getLast?_eq_none_iff.1 hl) hcne
+      | some y => exact ⟨y, rfl⟩
     obtain ⟨t, ht⟩ := hpre
-    apply hdpriv
-    apply map_fold_of_canon_private
-    generalize canon d = c at ht hcne
-    match c, ht with
-    | [], _ => exact absurd rfl hcne
-    | y :: ys, ht =>
-      simp only [List.cons_append, List.cons.injEq, List.append_eq_nil_iff] at ht
-      rw [ht.1, ht.2.1]
+    have hyv : y ∈ v.map fold := by
+      apply mem_of_mem_aliasMapSegs (r := v.map fold)
+      show y ∈ canon v
+      rw [← ht]
+      exact List.mem_append_left _ (List.mem_of_getLast? hy)
+    rw [getLast?_canon] at hy
+    exact hdpriv y (mem_of_openStart hpv y hyv) hy
   · rw [canon_append v U hvne hpv]
     exact hpre.trans (List.prefix_append _ _)
 
@@ -211,7 +244,7 @@ theorem dir_rule_segment_aligned (home : List Char) (hloc : List Seg) (hn : Name
     intro d hd
     obtain ⟨hne, hproper, -⟩ := hwf d hd
     have hdsf := proper_slashFree hproper
-    have hcne : canon d ≠ [] := privateMapSegs_ne_nil _ (by simpa using hne)
+    have hcne : canon d ≠ [] := aliasMapSegs_ne_nil _ (by simpa using hne)
     rw [foldKey_renderAbs d hdsf, underDirectory_renderAbs_iff_prefix _ _ (canon_slashFree d hdsf) hcne]
     by_cases hhead : n.head? = some '/'
     · rw [foldKey_abs n hhead, segmentsOf_renderAbs _ (canon_slashFree _ (segmentsOf_slashFree n))]
@@ -242,21 +275,22 @@ theorem directoryHit_rel (home : List Char) (hh : home.head? = some '/') (x : Li
     have := (dir_rule_segment_aligned home _ (names_resolveSegs home hh) x).1 (by simp [h])
     exact absurd this.1 hx
 
-/-- The rendering of a location, `/private/tmp` and `/private/etc` written `/tmp` and `/etc`, is at
-or below a sensitive directory exactly when the location is inside one. -/
-theorem directoryHit_privateMap_iff (home : List Char) (hloc : List Seg) (hn : Names home hloc)
+/-- The rendering of a location, written through its links, is at or below a sensitive directory
+exactly when the location is inside one. -/
+theorem directoryHit_aliasMap_iff (home : List Char) (hloc : List Seg) (hn : Names home hloc)
     (v : List Seg) (hv : ∀ w ∈ v, '/' ∉ w) :
-    (directoryHit home (renderAbs (privateMapSegs v))).isSome = true ↔ InsideSensitive hloc v := by
-  have hsf := privateMapSegs_slashFree v hv
-  rw [dir_rule_segment_aligned home hloc hn, segmentsOf_renderAbs _ hsf, canon_privateMapSegs]
+    (directoryHit home (renderAbs (aliasMapSegs v))).isSome = true ↔ InsideSensitive hloc v := by
+  have hsf := aliasMapSegs_slashFree v hv
+  rw [dir_rule_segment_aligned home hloc hn, segmentsOf_renderAbs _ hsf, canon_aliasMapSegs]
   constructor
   · rintro ⟨-, d, hd, hp⟩; exact ⟨d, hd, hp⟩
   · rintro ⟨d, hd, hp⟩
-    refine ⟨head_renderAbs _ (privateMapSegs_ne_nil _ ?_), d, hd, hp⟩
+    refine ⟨head_renderAbs _ (aliasMapSegs_ne_nil _ ?_), d, hd, hp⟩
     rintro rfl
     obtain ⟨hne, -, -⟩ := sensitiveDirSegs_wf hloc (names_proper hn) d hd
-    have hcne : canon d ≠ [] := privateMapSegs_ne_nil _ (by simpa using hne)
-    exact hcne (List.prefix_nil.1 (by simpa [canon, privateMapSegs] using hp))
+    have hcne : canon d ≠ [] := aliasMapSegs_ne_nil _ (by simpa using hne)
+    rw [canon_nil] at hp
+    exact hcne (List.prefix_nil.1 hp)
 
 /-- (d) For a HOME naming `hloc`, every path whose normal form is at or below a sensitive
 directory is reported sensitive. -/
@@ -269,10 +303,10 @@ theorem flagged_when_normalized_under (home : List Char) (hloc : List Seg) (hn :
 
 /-! ## Walk points and the locations a walk visits -/
 
-/-- `resolvePath` of a rendered list of slash-free segments: their resolution, `/private/tmp` and
-`/private/etc` written `/tmp` and `/etc`. -/
+/-- `resolvePath` of a rendered list of slash-free segments: their resolution, written through the
+links. -/
 theorem resolvePath_renderAbs (P : List Seg) (hP : ∀ w ∈ P, '/' ∉ w) :
-    resolvePath (renderAbs P) = renderAbs (privateMapSegs (resolveSegs P)) := by
+    resolvePath (renderAbs P) = renderAbs (aliasMapSegs (resolveSegs P)) := by
   cases P with
   | nil => rfl
   | cons s ss =>
@@ -283,10 +317,10 @@ theorem splitSlash_abs (p : List Char) (hp : p.head? = some '/') : splitSlash p 
   (splitSlash_eq_nil_cons_iff p).2 (Or.inr hp)
 
 /-- The walk points of an absolute path: the location reached after each number of its segments,
-`/private/tmp` and `/private/etc` written `/tmp` and `/etc`. -/
+written through the links. -/
 theorem walkPoints_abs (home p : List Char) (hp : p.head? = some '/') :
     walkPoints home p = (List.range ((segmentsOf p).length + 1)).map
-      (fun j => renderAbs (privateMapSegs (resolveSegs ((segmentsOf p).take j)))) := by
+      (fun j => renderAbs (aliasMapSegs (resolveSegs ((segmentsOf p).take j)))) := by
   unfold walkPoints
   dsimp only
   rw [expandHome_of_not_matchesAlias home p (not_matchesAlias_of_head p hp), splitSlash_abs p hp,
@@ -311,7 +345,7 @@ theorem visits_slashFree {p : List Char} {v : List Seg} (hv : Visits p v) : ∀ 
 
 /-- Every location the walk of a path visits is, rendered, one of its walk points. -/
 theorem visits_point (home p : List Char) (v : List Seg) (hv : Visits p v) :
-    renderAbs (privateMapSegs v) ∈ walkPoints home p := by
+    renderAbs (aliasMapSegs v) ∈ walkPoints home p := by
   obtain ⟨hp, i, hw⟩ := (visits_iff p v).1 hv
   rw [walkPoints_abs home p hp, List.mem_map]
   rw [splitSlash_abs p hp] at hw
@@ -330,7 +364,7 @@ theorem visits_point (home p : List Char) (v : List Seg) (hv : Visits p v) :
 the rendering of a location its walk visits. -/
 theorem point_visits (home p x : List Char) (hp : p.head? = some '/')
     (hx : x ∈ normalizePath home p :: walkPoints home p) :
-    ∃ v, Visits p v ∧ x = renderAbs (privateMapSegs v) := by
+    ∃ v, Visits p v ∧ x = renderAbs (aliasMapSegs v) := by
   rcases List.mem_cons.1 hx with rfl | hx
   · exact ⟨resolveSegs (splitSlash p), (visits_iff p _).2 ⟨hp, (splitSlash p).length, by rw [List.take_length]⟩,
       normalizePath_abs home p hp⟩
@@ -347,10 +381,10 @@ theorem findSome_none_of_not_visits (home : List Char) (hloc : List Seg) (hn : N
   rw [List.findSome?_eq_none_iff]
   intro x hx
   obtain ⟨v, hv, rfl⟩ := point_visits home p x hp hx
-  cases hd : directoryHit home (renderAbs (privateMapSegs v)) with
+  cases hd : directoryHit home (renderAbs (aliasMapSegs v)) with
   | none => rfl
   | some d =>
-    exact absurd ((directoryHit_privateMap_iff home hloc hn v (visits_slashFree hv)).1 (by simp [hd])) (h v hv)
+    exact absurd ((directoryHit_aliasMap_iff home hloc hn v (visits_slashFree hv)).1 (by simp [hd])) (h v hv)
 
 /-! ## (b'), (b'') and (d'): walks and locations -/
 
@@ -360,7 +394,7 @@ theorem walk_through_sensitive_flagged (home : List Char) : WalkThroughSensitive
   intro hloc hn p v hv hin
   rw [checkSensitivePath_eq_verdict]
   exact verdict_isSensitive_of_hit home _ _ _ (List.mem_cons_of_mem _ (visits_point home p v hv))
-    ((directoryHit_privateMap_iff home hloc hn v (visits_slashFree hv)).2 hin)
+    ((directoryHit_aliasMap_iff home hloc hn v (visits_slashFree hv)).2 hin)
 
 /-- (b') Two absolute spellings of one location whose walks pass through no sensitive directory
 get the same result. -/
@@ -428,27 +462,26 @@ theorem names_renderDir (L : List Seg) (hL : ∀ w ∈ L, Proper w) : Names (ren
     show resolveSegs (splitSlash (renderAbs (s :: ss))) = s :: ss
     rw [splitSlash_renderAbs _ (proper_slashFree hL), resolveSegs_nil_cons, resolveSegs_of_proper _ hL]
 
-/-- `normalizePrivatePath` on a directory as `path.resolve` spells it. -/
-theorem normalizePrivatePath_renderDir (L : List Seg) (hL : ∀ w ∈ L, '/' ∉ w) :
-    normalizePrivatePath (renderDir L) = renderDir (privateMapSegs L) := by
+/-- `normalizeLinks` on a directory as `path.resolve` spells it. -/
+theorem normalizeLinks_renderDir (L : List Seg) (hL : ∀ w ∈ L, '/' ∉ w) :
+    normalizeLinks (renderDir L) = renderDir (aliasMapSegs L) := by
   cases L with
   | nil => rfl
   | cons s ss =>
-    rw [show renderDir (s :: ss) = renderAbs (s :: ss) from rfl, normalizePrivatePath_renderAbs _ hL]
-    cases h : privateMapSegs (s :: ss) with
-    | nil => exact absurd h (privateMapSegs_ne_nil _ (by simp))
+    rw [show renderDir (s :: ss) = renderAbs (s :: ss) from rfl, normalizeLinks_renderAbs _ hL]
+    cases h : aliasMapSegs (s :: ss) with
+    | nil => exact absurd h (aliasMapSegs_ne_nil _ (by simp))
     | cons t ts => rfl
 
-/-- The module's `HOME` names the location of `os.homedir()`, `/private/tmp` and `/private/etc`
-written `/tmp` and `/etc`. -/
+/-- The module's `HOME` names the location of `os.homedir()`, written through the links. -/
 theorem moduleHome_names (cwd homedir : List Char) (hloc : List Seg) (hcwd : cwd.head? = some '/')
-    (h : HomeNames cwd homedir hloc) : Names (moduleHome cwd homedir) (privateMapSegs hloc) := by
+    (h : HomeNames cwd homedir hloc) : Names (moduleHome cwd homedir) (aliasMapSegs hloc) := by
   have hR := resolveSegs_pathResolve cwd homedir hloc hcwd h
   have hproper : ∀ w ∈ hloc, Proper w := by
     rw [← hR]; exact proper_of_mem_resolveSegs _ (slashFree_of_mem_splitSlash _)
   unfold moduleHome pathResolve
-  rw [hR, normalizePrivatePath_renderDir _ (proper_slashFree hproper)]
-  exact names_renderDir _ (privateMapSegs_proper _ hproper)
+  rw [hR, normalizeLinks_renderDir _ (proper_slashFree hproper)]
+  exact names_renderDir _ (aliasMapSegs_proper _ hproper)
 
 /-- (d') For the module as loaded, whatever `os.homedir()` returns and wherever it points: every
 absolute path whose walk passes through a sensitive directory of that home directory is reported
@@ -456,7 +489,7 @@ sensitive. -/
 theorem flagged_wherever_named_at_load : FlaggedWhereverNamedAtLoad := by
   intro cwd homedir hloc hcwd hhome p v hv hin
   exact walk_through_sensitive_flagged _ _ (moduleHome_names cwd homedir hloc hcwd hhome) p v hv
-    (insideSensitive_privateMapSegs hloc v hin)
+    (insideSensitive_aliasMapSegs hloc v hin)
 
 /-! ## (b) The normal form, and the HOME aliases -/
 
@@ -465,7 +498,7 @@ theorem not_matchesAlias_normalizePath (home p : List Char) (hh : home.head? = s
     ¬ MatchesAlias (normalizePath home p) := by
   rcases normalizePath_cases home p hh with ⟨R, hN, -⟩ | ⟨hm, -, hN⟩
   · rw [hN]
-    cases privateMapSegs (resolveSegs R) with
+    cases aliasMapSegs (resolveSegs R) with
     | nil => exact not_matchesAlias_nil
     | cons s ss => exact not_matchesAlias_of_head _ (by simp [renderAbs])
   · rw [hN]; exact not_matchesAlias_strip p hm
@@ -501,7 +534,7 @@ theorem walkPoints_normalizePath_hit (home p x : List Char) (hh : home.head? = s
   have hn := names_resolveSegs home hh
   by_cases hN : (normalizePath home p).head? = some '/'
   · obtain ⟨v, hv, rfl⟩ := point_visits home _ x hN (List.mem_cons_of_mem _ hx)
-    have hin := (directoryHit_privateMap_iff home _ hn v (visits_slashFree hv)).1 hit
+    have hin := (directoryHit_aliasMap_iff home _ hn v (visits_slashFree hv)).1 hit
     have hproper := normalizePath_segments_proper home hh p hN
     have hpre : v <+: segmentsOf (normalizePath home p) := by
       obtain ⟨-, i, hw⟩ := (visits_iff _ v).1 hv
@@ -568,7 +601,7 @@ theorem normalizePath_abs_form (home p : List Char) (h : (normalizePath home p).
     ∃ L : List Seg, (∀ w ∈ L, Proper w) ∧ normalizePath home p = renderAbs L := by
   unfold normalizePath at h ⊢
   by_cases hE : (expandHome home p homeAliases).head? = some '/'
-  · exact ⟨_, privateMapSegs_proper _ (proper_of_mem_resolveSegs _ (slashFree_of_mem_splitSlash _)),
+  · exact ⟨_, aliasMapSegs_proper _ (proper_of_mem_resolveSegs _ (slashFree_of_mem_splitSlash _)),
       resolvePath_abs _ hE⟩
   · rw [resolvePath_rel _ hE] at h
     exact absurd h (head_strip _ hE)
@@ -599,7 +632,7 @@ theorem service_configs_flagged (home : List Char) : ServiceConfigsFlagged home 
     have hb : fold (basename (normalizePath home p)) = ".env".toList := by
       rw [hN, basename_renderAbs_proper L hL]
       unfold canon at hlast
-      rw [getLast?_privateMapSegs, List.getLast?_map] at hlast
+      rw [getLast?_aliasMapSegs, List.getLast?_map] at hlast
       cases h : L.getLast? with
       | none => rw [h] at hlast; simp at hlast
       | some w => rw [h] at hlast; simpa using hlast
@@ -718,9 +751,9 @@ theorem foldKey_resolvePath_fold (x : List Char) : foldKey (resolvePath (fold x)
     have hRf : ∀ w ∈ (resolveSegs (splitSlash x)).map fold, Proper w := fun w hw => by
       obtain ⟨v, hv, rfl⟩ := List.mem_map.1 hw; exact proper_fold v (hR v hv)
     rw [resolvePath_abs _ hfx, resolvePath_abs _ hx, splitSlash_fold, resolveSegs_map_fold,
-      foldKey_renderAbs _ (privateMapSegs_slashFree _ (proper_slashFree hRf)),
-      foldKey_renderAbs _ (privateMapSegs_slashFree _ (proper_slashFree hR)),
-      canon_privateMapSegs, canon_privateMapSegs, canon_map_fold]
+      foldKey_renderAbs _ (aliasMapSegs_slashFree _ (proper_slashFree hRf)),
+      foldKey_renderAbs _ (aliasMapSegs_slashFree _ (proper_slashFree hR)),
+      canon_aliasMapSegs, canon_aliasMapSegs, canon_map_fold]
   · have hfx : (fold x).head? ≠ some '/' := fun h => hx ((head_fold x).1 h)
     rw [resolvePath_rel _ hfx, resolvePath_rel _ hx]
     unfold foldKey
@@ -735,8 +768,8 @@ theorem fold_basename_resolvePath_fold (x : List Char) :
     have hRf : ∀ w ∈ (resolveSegs (splitSlash x)).map fold, Proper w := fun w hw => by
       obtain ⟨v, hv, rfl⟩ := List.mem_map.1 hw; exact proper_fold v (hR v hv)
     rw [resolvePath_abs _ hfx, resolvePath_abs _ hx, splitSlash_fold, resolveSegs_map_fold,
-      basename_renderAbs_proper _ (privateMapSegs_proper _ hRf), basename_renderAbs_proper _ (privateMapSegs_proper _ hR),
-      getLast?_privateMapSegs, getLast?_privateMapSegs, List.getLast?_map]
+      basename_renderAbs_proper _ (aliasMapSegs_proper _ hRf), basename_renderAbs_proper _ (aliasMapSegs_proper _ hR),
+      getLast?_aliasMapSegs, getLast?_aliasMapSegs, List.getLast?_map]
     cases (resolveSegs (splitSlash x)).getLast? with
     | none => rfl
     | some w => exact fold_fold w
@@ -898,28 +931,9 @@ theorem renderDir_head (r : List Seg) : (renderDir r).head? = some '/' := by
   | nil => rfl
   | cons s ss => simp [renderDir, renderAbs]
 
-/-- `normalizePrivatePath` keeps a path absolute. -/
-theorem normalizePrivatePath_head (x : List Char) (hx : x.head? = some '/') :
-    (normalizePrivatePath x).head? = some '/' := by
-  unfold normalizePrivatePath
-  split
-  · rename_i hany
-    obtain ⟨name, -, hm⟩ := List.any_eq_true.1 hany
-    have hx' : ∃ R, x = privatePrefix ++ '/' :: R := by
-      unfold privateLinkMatches at hm
-      simp only [Bool.or_eq_true, beq_iff_eq] at hm
-      rcases hm with heq | hpre
-      · exact ⟨name, heq⟩
-      · obtain ⟨R, hR⟩ := List.isPrefixOf_iff_prefix.1 hpre
-        exact ⟨name ++ '/' :: R, by rw [← hR]; simp⟩
-    obtain ⟨R, rfl⟩ := hx'
-    rw [List.drop_left' rfl]
-    rfl
-  · exact hx
-
 /-- The HOME the module computes when it loads is absolute, whatever `os.homedir()` returns. -/
 theorem moduleHome_absolute (cwd homedir : List Char) : (moduleHome cwd homedir).head? = some '/' :=
-  normalizePrivatePath_head _ (renderDir_head _)
+  normalizeLinks_head _ (renderDir_head _)
 
 /-- (a) for the module as loaded. -/
 theorem normalizePath_idempotent_at_load (cwd homedir : List Char) :
@@ -936,18 +950,16 @@ theorem aliases_spell_home_at_load (cwd homedir : List Char) :
     AliasesSpellHome (moduleHome cwd homedir) :=
   aliases_spell_home _ (moduleHome_absolute cwd homedir)
 
-/-- (c) for the module as loaded, with the location of `os.homedir()`, `/private/tmp` and
-`/private/etc` written `/tmp` and `/etc`. -/
+/-- (c) for the module as loaded, with the location of `os.homedir()` written through the links. -/
 theorem dir_rule_segment_aligned_at_load (cwd homedir : List Char) (hloc : List Seg)
     (hcwd : cwd.head? = some '/') (h : HomeNames cwd homedir hloc) :
-    DirectoryRuleSegmentAligned (moduleHome cwd homedir) (privateMapSegs hloc) :=
+    DirectoryRuleSegmentAligned (moduleHome cwd homedir) (aliasMapSegs hloc) :=
   dir_rule_segment_aligned _ _ (moduleHome_names cwd homedir hloc hcwd h)
 
-/-- (d) for the module as loaded, with the location of `os.homedir()`, `/private/tmp` and
-`/private/etc` written `/tmp` and `/etc`. -/
+/-- (d) for the module as loaded, with the location of `os.homedir()` written through the links. -/
 theorem flagged_when_normalized_under_at_load (cwd homedir : List Char) (hloc : List Seg)
     (hcwd : cwd.head? = some '/') (h : HomeNames cwd homedir hloc) :
-    FlaggedWhenNormalizedUnder (moduleHome cwd homedir) (privateMapSegs hloc) :=
+    FlaggedWhenNormalizedUnder (moduleHome cwd homedir) (aliasMapSegs hloc) :=
   flagged_when_normalized_under _ _ (moduleHome_names cwd homedir hloc hcwd h)
 
 end SomaVerify.SensitivePath.Proofs
