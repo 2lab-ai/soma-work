@@ -49,9 +49,9 @@ export interface LlmuxScopedWindow extends LlmuxWindow {
 
 export interface LlmuxAccount {
   name: string;
-  /** Credential kind: 'oauth' | 'apikey' | 'codex'. */
+  /** Credential kind: 'oauth' | 'apikey' | 'codex' | 'grok' | 'openrouter'. */
   type: string;
-  /** Backend group: 'claude' | 'codex'. */
+  /** Backend group: 'claude' | 'codex' | 'grok' | 'openrouter' (extensible). */
   group?: string;
   /** 'active' | 'ok' | 'cooldown' | 'auth_failed'. */
   status: string;
@@ -69,6 +69,14 @@ export interface LlmuxAccount {
    */
   fable_weekly?: LlmuxScopedWindow | null;
   scoped_limits?: LlmuxScopedWindow[];
+  /** Observed Codex manual reset entitlements; absent counters mean unknown. Read-only here. */
+  usage_control?: {
+    available_resets?: number;
+    applicable_resets?: number;
+    last_refresh_ms?: number;
+    last_error?: string;
+    pending_request_id?: string;
+  } | null;
   cooldown_until?: number | null;
   in_flight?: number;
   totals?: { requests: number; input_tokens: number; output_tokens: number };

@@ -2,6 +2,7 @@ import { Logger } from '@soma/common/logger';
 import { buildMarkerBlocks, FORM_BUILD_FAILED_TEXT } from './actions/click-classifier';
 import type { AssistantStatusManager } from './assistant-status-manager';
 import type { CompletionMessageTracker } from './completion-message-tracker';
+import type { FollowupQueueView } from './followup-queue-blocks';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper } from './slack-api-helper';
 import type { Todo } from './task-list-block-builder';
@@ -9,7 +10,9 @@ import {
   type ConversationSession,
   type EndTurnInfo,
   ThreadSurface,
+  type ThreadSurfaceOutbox,
   type ThreadSurfaceTodoManager,
+  type ThreadSurfaceWriteOptions,
 } from './thread-surface';
 import type { TurnCompletionEvent } from './turn-notifier';
 import {
@@ -62,6 +65,25 @@ export interface ThreadPanelDeps {
    * same object. Undefined → capability reports inactive (legacy path).
    */
   slackBlockKitChannel?: ThreadPanelCompletionChannel;
+  /**
+   * U3/U9 — follow-up queue read model, threaded straight through to
+   * `ThreadSurface` so the `Queue` section can render inside the existing
+   * combined header message. Supplied by the HOST at ThreadPanel construction
+   * (no module singleton — `ssot.md` §3.5). Omitted → no Queue section and the
+   * surface renders exactly as before.
+   */
+  getFollowupView?: (sessionKey: string) => FollowupQueueView | undefined;
+  /** U3/U9 — degraded-read reason for the same queue. See ThreadSurfaceDeps. */
+  getFollowupError?: (sessionKey: string) => string | undefined;
+  /**
+   * A24b — durable delivery-intent store for the combined panel, threaded
+   * through to `ThreadSurface`. The HOST constructs it and MUST call `load()`
+   * before handing it over (an unloaded store throws on every operation, which
+   * is the intended fail-closed behaviour).
+   *
+   * Omitted → the panel posts exactly as it does today (ts in memory only).
+   */
+  surfaceOutbox?: ThreadSurfaceOutbox;
 }
 
 // Keeps TurnSurface `@internal` while exposing the public type contract.
@@ -103,6 +125,17 @@ export class ThreadPanel {
     await this.surface.initialize(session, sessionKey);
   }
 
+  /**
+   * `options.expectedTurnEpoch` is optional and defaults to "no gate", so every
+   * existing caller is unaffected. A caller that owns a turn (host / stream
+   * executor) passes its epoch to have late writes from a superseded turn
+   * dropped (A28).
+   *
+   * `patch.lastProgressAt` (U9) is supplied ONLY by a caller that witnessed
+   * real work moving (StreamProcessor / follow-up worker). Omitting it leaves
+   * the recorded progress untouched — the header must never turn a lifecycle
+   * call into a fake "마지막 활동" time.
+   */
   async setStatus(
     session: ConversationSession,
     sessionKey: string,
@@ -110,9 +143,12 @@ export class ThreadPanel {
       agentPhase?: string;
       activeTool?: string;
       waitingForChoice?: boolean;
+      lastProgressAt?: number;
+      lastSignalAt?: number;
     },
+    options?: ThreadSurfaceWriteOptions,
   ): Promise<void> {
-    await this.surface.setStatus(session, sessionKey, patch);
+    await this.surface.setStatus(session, sessionKey, patch, options);
   }
 
   async updateHeader(session: ConversationSession): Promise<void> {
@@ -133,22 +169,54 @@ export class ThreadPanel {
     await this.surface.clearChoice(sessionKey);
   }
 
-  async updatePanel(session: ConversationSession, sessionKey: string): Promise<void> {
-    await this.surface.updatePanel(session, sessionKey);
+  async updatePanel(
+    session: ConversationSession,
+    sessionKey: string,
+    options?: ThreadSurfaceWriteOptions,
+  ): Promise<void> {
+    await this.surface.updatePanel(session, sessionKey, options);
+  }
+
+  /**
+   * U3/U9 — the host calls this whenever the follow-up queue changed (enqueue,
+   * state transition, freeze/resume, drain) to repaint the `Queue` section of
+   * the combined message. Forced, so a queue-only change always lands.
+   *
+   * `page` is optional; when given it also moves the view to that page.
+   */
+  async updateFollowup(session: ConversationSession, sessionKey: string, page?: number): Promise<void> {
+    await this.surface.updateFollowup(session, sessionKey, page);
+  }
+
+  /**
+   * U3/U9 — Prev/Next click entry point. Validates and clamps `page`, then
+   * re-renders using the latest known session for `sessionKey`. Returns the
+   * page actually applied.
+   */
+  async setFollowupPage(sessionKey: string, page: number): Promise<number> {
+    return this.surface.setFollowupPage(sessionKey, page);
   }
 
   async close(session: ConversationSession, sessionKey: string): Promise<void> {
     await this.surface.close(session, sessionKey);
   }
 
-  /** TurnRunner용 — endTurn 기반 최종 상태 설정 (Issue #87) */
+  /**
+   * TurnRunner용 — endTurn 기반 최종 상태 설정 (Issue #87).
+   *
+   * `options.expectedTurnEpoch` is optional; a caller that owns the turn (e.g.
+   * TurnRunner holding `DispatchRequest.turnEpoch`) supplies it so this
+   * post-teardown write cannot repaint a turn that `Send now` already
+   * superseded (A28). Omitted → legacy behaviour, unchanged.
+   */
   async finalizeOnEndTurn(
     session: ConversationSession,
     sessionKey: string,
     endTurnInfo: EndTurnInfo,
     hasPendingChoice: boolean,
+    options?: ThreadSurfaceWriteOptions,
   ): Promise<void> {
-    await this.surface.finalizeOnEndTurn(session, sessionKey, endTurnInfo, hasPendingChoice);
+    await this.surface.finalizeOnEndTurn(session, sessionKey, endTurnInfo, hasPendingChoice, options);
   }
 
   // =========================================================================

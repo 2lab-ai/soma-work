@@ -1,0 +1,11 @@
+name = "soma_verify"
+# Without a default target a bare `lake build` reports "Nothing to build" and
+# exits 0 — a vacuous green. scripts/verification/lean-verify.sh also refuses
+# that output, so dropping this line fails the gate instead of skipping it.
+defaultTargets = ["SomaVerify"]
+
+# Every module under SomaVerify/ is built by glob: adding a module never
+# requires editing this file or a root import file.
+[[lean_lib]]
+name = "SomaVerify"
+globs = ["SomaVerify.+"]

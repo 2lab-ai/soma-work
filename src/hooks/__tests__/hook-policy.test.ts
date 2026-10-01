@@ -3,8 +3,12 @@ import { shouldTrackTool } from '../hook-policy';
 
 describe('hook-policy', () => {
   describe('shouldTrackTool', () => {
-    it('should track Task', () => {
+    it('should track Task (legacy agent tool name)', () => {
       expect(shouldTrackTool('Task')).toBe(true);
+    });
+
+    it('should track Agent (current SDK agent tool name)', () => {
+      expect(shouldTrackTool('Agent')).toBe(true);
     });
 
     it('should track mcp__ prefixed tools', () => {

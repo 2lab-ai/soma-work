@@ -62,6 +62,7 @@ export const NATIVE_BYPASS_TOOLS: ReadonlyArray<string> = [
   'Glob',
   'Grep',
   'Task',
+  'Agent',
   'WebFetch',
   'WebSearch',
   'KillShell',

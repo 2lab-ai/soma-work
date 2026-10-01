@@ -157,6 +157,23 @@ require_staged_file packages/mcp-servers/permission/dist/permission-mcp-server.j
 require_staged_file dist/cli/index.js
 require_staged_file dist/run-with-rotating-logs.js
 require_staged_file dist/index.js
+# The deploy's Verify step reads the shipped version out of dist/version.json
+# and then demands that exact version's startup line from the restarted daemon,
+# so a bundle that lost the file cannot be verified at all.
+#
+# Conditional, unlike the pins above, because only ONE of this script's callers
+# produces the file: the deploy workflow runs `scripts/version-bump.sh` (which
+# writes it, version-bump.sh:267) before staging, while the release path
+# (.github/workflows/release-preview.yml:128-140 and
+# scripts/release/package-somawork.sh:365) stages straight off `npm run build`,
+# which does not — and the runtime treats it as optional
+# (packages/slack/src/release-notifier.ts:34 skips when absent). So the contract
+# asserted here is the one that can actually regress: staging must not DROP a
+# version.json the build produced (a future prune rule or copy-list edit),
+# which is exactly how the deploy's Verify step would get silently disarmed.
+if [[ -f dist/version.json ]]; then
+  require_staged_file dist/version.json
+fi
 require_staged_file config.default.json
 require_staged_file .system.prompt.example
 require_staged_file infra/slack/slack-app-manifest.json

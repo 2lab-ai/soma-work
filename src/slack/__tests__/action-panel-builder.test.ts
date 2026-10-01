@@ -111,7 +111,7 @@ describe('ActionPanelBuilder', () => {
     expect(actionIds).not.toContain('panel_pr_merge');
   });
 
-  it('renders structural layout with hero section + context blocks', () => {
+  it('renders the status area as one section carrying badge and metrics', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-3',
       workflow: 'jira-brainstorming',
@@ -121,16 +121,15 @@ describe('ActionPanelBuilder', () => {
       logVerbosity: LOG_DETAIL,
     });
 
-    // Hero section (badge + italic subtitle) — single section, no fields (no PR)
+    // Hero section (badge + step/progress) — single section, no fields (no PR)
     const statusText = getStatusSectionText(payload);
     expect(statusText).toContain('🟢 *작업 중*');
     expect(statusText).not.toContain('📦');
 
-    // Metrics context (verbosity label)
-    const ctxBlock = payload.blocks.find(
-      (block) => block.type === 'context' && block.elements?.some((el: any) => /detail/.test(String(el?.text || ''))),
-    );
-    expect(ctxBlock).toBeDefined();
+    // Metrics (verbosity label) moved into line 2 of that same section
+    // (2026-09-17 compact panel) — no separate context block any more.
+    expect(statusText).toMatch(/detail/);
+    expect(payload.blocks.some((block) => block.type === 'context')).toBe(false);
   });
 
   // Context percentage tests removed — context is now displayed in thread header badge only.
@@ -299,7 +298,7 @@ describe('ActionPanelBuilder', () => {
     expect(stopButton.text.text).toBe('⏸ 중지');
   });
 
-  it('block order: hero section → metrics context → actions', () => {
+  it('block order: status section (badge + metrics) → divider → actions', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-8',
       workflow: 'default',
@@ -310,11 +309,13 @@ describe('ActionPanelBuilder', () => {
 
     const types = payload.blocks.map((b) => b.type);
     const heroIdx = types.indexOf('section');
-    const contextIdx = types.indexOf('context');
+    const dividerIdx = types.indexOf('divider');
     const actionsIdx = types.indexOf('actions');
 
-    expect(heroIdx).toBeLessThan(contextIdx);
-    expect(contextIdx).toBeLessThan(actionsIdx);
+    expect(heroIdx).toBe(0);
+    expect(heroIdx).toBeLessThan(dividerIdx);
+    expect(dividerIdx).toBeLessThan(actionsIdx);
+    expect(getStatusSectionText(payload)).toContain('⏱ 1:30 · 🛠 5');
   });
 
   it('renders PR status in 2-column layout beside status badge', () => {

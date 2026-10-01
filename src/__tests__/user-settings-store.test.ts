@@ -70,6 +70,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     expect([...AVAILABLE_MODELS]).toEqual([
       'claude-fable-5-1',
       'claude-fable-5',
+      'claude-opus-5-5',
       'claude-opus-5',
       'claude-opus-4-8',
       'claude-opus-4-7',
@@ -80,6 +81,7 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'claude-haiku-4-5-20251001',
       'claude-fable-5-1[1m]',
       'claude-fable-5[1m]',
+      'claude-opus-5-5[1m]',
       'claude-opus-5[1m]',
       'claude-opus-4-8[1m]',
       'claude-opus-4-7[1m]',
@@ -106,9 +108,9 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5');
   });
 
-  it('MODEL_ALIASES has exactly the 32 expected key→value mappings', () => {
+  it('MODEL_ALIASES has exactly the 34 expected key→value mappings', () => {
     // `fable` / `fable[1m]` → the literal 1M id. `opus` / `opus[1m]` follow
-    // "latest opus" semantics → Opus 5, and both land on the `[1m]` variant
+    // "latest opus" semantics → Opus 5.5, and both land on the `[1m]` variant
     // because that is the id whose client-side denominator is 1M. Version-
     // pinned aliases (`opus-4.8`, `opus-4.7`, ...) remain pinned.
     expect(MODEL_ALIASES).toEqual({
@@ -121,7 +123,8 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       sonnet: 'claude-sonnet-4-6',
       'sonnet-4.6': 'claude-sonnet-4-6',
       'sonnet-4.5': 'claude-sonnet-4-5-20250929',
-      opus: 'claude-opus-5[1m]',
+      opus: 'claude-opus-5-5[1m]',
+      'opus-5-5': 'claude-opus-5-5[1m]',
       'opus-5': 'claude-opus-5',
       'opus-4.8': 'claude-opus-4-8',
       'opus-4.7': 'claude-opus-4-7',
@@ -149,7 +152,8 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'astra[1m]': 'gpt-6-astra[1m]',
       'gpt-6': 'gpt-6-astra[1m]',
       gpt6: 'gpt-6-astra[1m]',
-      'opus[1m]': 'claude-opus-5[1m]',
+      'opus[1m]': 'claude-opus-5-5[1m]',
+      'opus-5-5[1m]': 'claude-opus-5-5[1m]',
       'opus-5[1m]': 'claude-opus-5[1m]',
       'opus-4.8[1m]': 'claude-opus-4-8[1m]',
       'opus-4.7[1m]': 'claude-opus-4-7[1m]',
@@ -493,7 +497,7 @@ describe('llmux model catalog overlay (grok-4.5 selection)', () => {
   it('static ids/aliases still win over the catalog', () => {
     modelCatalog.__testSeed([GROK]);
     const store = makeStore();
-    expect(store.resolveModelInput('opus')).toBe('claude-opus-5[1m]');
+    expect(store.resolveModelInput('opus')).toBe('claude-opus-5-5[1m]');
     expect(store.resolveModelInput('gpt-5.6-sol')).toBe('gpt-5.6-sol');
   });
 
@@ -556,8 +560,8 @@ describe('model input resolution — accepted / rejected / unknown', () => {
     const store = makeStore();
     expect(store.resolveModelInput('fable')).toBe('claude-fable-5-1[1m]');
     expect(store.resolveModelInput('fable[1m]')).toBe('claude-fable-5-1[1m]');
-    expect(store.resolveModelInput('opus')).toBe('claude-opus-5[1m]');
-    expect(store.resolveModelInput('opus[1m]')).toBe('claude-opus-5[1m]');
+    expect(store.resolveModelInput('opus')).toBe('claude-opus-5-5[1m]');
+    expect(store.resolveModelInput('opus[1m]')).toBe('claude-opus-5-5[1m]');
     expect(store.resolveModelInput('opus-5')).toBe('claude-opus-5');
     expect(store.resolveModelInput('sol[1m]')).toBe('gpt-5.6-sol[1m]');
     expect(store.resolveModelInput('grok-4.6')).toBe('grok-4.6');

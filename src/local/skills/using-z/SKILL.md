@@ -93,7 +93,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 
 **Prompt-only fields** (host parser는 아직 모른다 — 수신 세션이 raw `<z-handoff>` 블록에서 직접 복원; host 강제는 §Enforcement Status follow-up):
 
-- `## Pipeline Mode` — `interactive` (기본) 또는 `autoz`. `autoz`면 수신 세션은 z 플로우의 interactive gate를 전부 억제한다 (`local:autoz` Rule 4가 단일 진실원 — plan confirm/approve 질문/decision-gate user-ask 전부 codex consult 또는 자율 수행으로 대체).
+- `## Pipeline Mode` — `interactive` (기본) 또는 `autoz`. `autoz`면 수신 세션은 z 플로우의 interactive gate를 전부 억제한다 (`local:autoz` Rule 4가 단일 진실원 — plan confirm/approve 질문/decision-gate user-ask 전부 trinity consult 또는 자율 수행으로 대체).
 - `## Analysis Artifact` / `## Analysis Summary` / `## RED Mapping` — autoz Analysis Step carriage (optional; `local:autoz` §Analysis Step 정의). `Analysis Summary`와 `RED Mapping`은 **Protocol Rule 6의 구현-토큰 금지에서 예외** — 콜스택/파일 수준 토큰이 이 두 섹션 안에서만 허용된다 (SSOT-LIST의 raw-quote 예외와 동일한 논리). 수신 zwork 세션은 이 필드의 RED 테스트를 재사용·확장하고 artifact URL을 PR body에 링크한다.
 
 세 typed-metadata field(`Tier` / `Escape Eligible` / `Issue Required By User`)와 prompt-only field 전부 optional — 누락 시 conservative defaults (tier=null, escapeEligible=false, issueRequiredByUser=true, pipelineMode=interactive, analysis=none). 명시할수록 downstream guards가 신뢰할 수 있는 상태를 본다. SSOT 두 section은 optional이 아니다.
@@ -101,7 +101,7 @@ z 컨트롤러의 phase 전환 중 **세션 경계**를 넘는 것은 두 지점
 **새 세션 z phase0 동작**:
 
 1. prompt에서 `<z-handoff type="plan-to-work">` 탐지
-2. clarify / new-task / codex 리뷰 단계 **스킵**
+2. clarify / new-task / trinity 리뷰 단계 **스킵**
 3. Task List를 TodoWrite로 등록
 4. Issue URL + Parent Epic을 세션 전역 SSOT로 보관 (phase5에서 재사용)
 5. **SSOT-LIST + SSOT-TASK-TREE를 세션 전역 SSOT로 복원** (`local:using-ssot` Hook 3). 이후 drift는 이 트리 위에서 Hook 2로 처리.
