@@ -7,7 +7,10 @@
  * "only supported when streaming input/output is used"). This suite pins the
  * switch to streaming input: the prompt is a `TurnInputChannel`, mid-turn
  * pushes reach the CLI before the turn's `result`, and the channel closes on
- * `result` so "one turn per query()" is preserved.
+ * the `result` that answers the turn's opening message (attributed by the uuid
+ * stamped on it, not by arriving first — #257, pinned in
+ * `claude-handler.turn-attribution.test.ts`) so "one turn per query()" is
+ * preserved.
  *
  * The SDK is mocked at the module boundary (same style as
  * `agent-runtime/__tests__/runner.test.ts`) together with the credential /
@@ -423,19 +426,25 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
   });
 
   it('streamAgentEvents surfaces steer_lifecycle through the neutral stream', async () => {
-    queryMock.mockImplementation(() => {
+    // The CLI echoes the uuid the host stamped on the opening send — on the
+    // turn's first reply frame and on its result — so the fake reads that uuid
+    // off the prompt channel instead of inventing one.
+    let openingUuid: unknown;
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+      const inputs = (prompt as AsyncIterable<unknown>)[Symbol.asyncIterator]();
       const gen = (async function* () {
+        openingUuid = ((await inputs.next()).value as { uuid?: unknown }).uuid;
         yield { type: 'system', subtype: 'init', session_id: 'sess-2', model: 'claude-test', tools: [] };
         yield {
           type: 'assistant',
-          user_message_uuid: 'u-steer-1',
+          user_message_uuid: openingUuid,
           message: { model: 'claude-test', content: [{ type: 'text', text: 'on it' }] },
         };
         yield {
           type: 'result',
           subtype: 'success',
           result: 'done',
-          user_message_uuid: 'u-steer-1',
+          user_message_uuid: openingUuid,
           duration_ms: 1,
           is_error: false,
           num_turns: 1,
@@ -445,18 +454,35 @@ describe('ClaudeHandler streaming-input turn (user-steering WU1)', () => {
       return Object.assign(gen, { interrupt: vi.fn(), cancelAsyncMessage: vi.fn() });
     });
 
-    const handler = newHandler();
-    const events = [];
-    for await (const e of handler.streamAgentEvents('hello', undefined, undefined, undefined, undefined, SESSION_KEY)) {
-      events.push(e);
-    }
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const handler = newHandler();
+      const events = [];
+      for await (const e of handler.streamAgentEvents(
+        'hello',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        SESSION_KEY,
+      )) {
+        events.push(e);
+      }
 
-    // Only `started`: nothing was pushed into this turn, so there is no
-    // settlement frame — and the result's echoed uuid no longer fabricates a
-    // `completed` (it names the send that started the turn, not a steered one).
-    expect(events.filter((e) => e.type === 'steer_lifecycle')).toEqual([
-      { type: 'steer_lifecycle', uuid: 'u-steer-1', phase: 'started' },
-    ]);
+      // Only `started`: nothing was pushed into this turn, so there is no
+      // settlement frame — and the result's echoed uuid no longer fabricates a
+      // `completed` (it names the send that started the turn, not a steered one).
+      expect(typeof openingUuid).toBe('string');
+      expect(events.filter((e) => e.type === 'steer_lifecycle')).toEqual([
+        { type: 'steer_lifecycle', uuid: openingUuid, phase: 'started' },
+      ]);
+      // The echoed opening uuid attributes the result to this turn: it ends the
+      // turn exactly once and is never skipped as someone else's.
+      expect(events.filter((e) => e.type === 'result')).toHaveLength(1);
+      expect(info).not.toHaveBeenCalledWith('Skipping a result that does not answer this turn', expect.anything());
+    } finally {
+      info.mockRestore();
+    }
   });
 });
 

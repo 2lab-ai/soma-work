@@ -3,6 +3,7 @@
  * Refactored to use SessionRegistry, PromptBuilder, and McpConfigBuilder (Phase 5)
  */
 
+import { randomUUID } from 'node:crypto';
 import {
   type HookInput,
   type HookJSONOutput,
@@ -26,6 +27,7 @@ import {
   TurnInputChannel,
   type TurnSteeringPort,
 } from './agent-runtime/turn-input-channel';
+import { classifyTurnResult } from './agent-runtime/turn-result-attribution';
 import { ensureTenantKey } from './auth/llmux-tenant-keys';
 import { buildQueryEnv } from './auth/query-env-builder';
 import { Logger } from './logger';
@@ -318,6 +320,19 @@ export type CompactHookBuilder = (args: { session: ConversationSession; channel:
  * round-trip while staying inside a user's patience for the turn to end.
  */
 export const STEER_SETTLEMENT_BOUND_MS = 2000;
+
+/**
+ * How long a turn may stay silent after a `result` that does NOT answer it
+ * before the host gives up and closes the input channel (#257).
+ *
+ * A skipped result leaves the channel open on purpose: the CLI still has the
+ * host's prompt to answer. But if nothing follows, an open channel strands the
+ * CLI on stdin and the Slack consumer waits out its own idle timeout (2 h,
+ * `stream-processor.ts`) — so the handler bounds the wait itself. Any SDK frame
+ * disarms the bound; 60s of total silence right after a result is far beyond a
+ * live CLI's gap between the drain and its next frame.
+ */
+export const NON_TURN_RESULT_IDLE_MS = 60_000;
 
 /**
  * `system`/`init` capability announcing that `interrupt` honours
@@ -979,8 +994,14 @@ export class ClaudeHandler implements TurnSteeringPort {
    * `cancel_async_message` are "only supported when streaming input/output is
    * used" (sdk.d.ts:2522-2536).
    *
-   * "One turn per `query()`" is unchanged: the channel is closed on the turn's
-   * `result` frame, which ends the input stream and lets the CLI child exit.
+   * "One turn per `query()`" is unchanged: the channel is closed on the
+   * `result` that answers this turn's opening message, which ends the input
+   * stream and lets the CLI child exit. That result is identified by the uuid
+   * minted per turn and stamped on the opening message (echoed back as
+   * `user_message_uuid`), not by arriving first: a resumed session can drain an
+   * orphan background-task notification and close it with a `result` of its
+   * own before it reads the prompt (#257). Such a result is dropped, and
+   * {@link NON_TURN_RESULT_IDLE_MS} bounds the silence after it.
    * `options.abortController` stays the hard-kill fallback — `interruptTurn`
    * deliberately does not touch it.
    *
@@ -1056,7 +1077,11 @@ export class ClaudeHandler implements TurnSteeringPort {
 
       this.logger.debug('Claude query options', options);
 
-      const channel = new TurnInputChannel(buildInitialUserMessage(prompt));
+      // Minted per turn: the CLI echoes it as `user_message_uuid` on the result
+      // that answers this prompt, which is how that result is told apart from
+      // one closing an orphan drain (#257).
+      const openingUuid = randomUUID();
+      const channel = new TurnInputChannel(buildInitialUserMessage(prompt, openingUuid));
       const activeQuery = query({ prompt: channel, options });
       const steerKey = sessionKey;
       if (steerKey) {
@@ -1072,8 +1097,17 @@ export class ClaudeHandler implements TurnSteeringPort {
       // Protocol capabilities this CLI advertised on `system`/`init`
       // (sdk.d.ts:5000). Read once, consumed by the settlement below.
       let capabilities: string[] = [];
+      // Armed after a `result` that does not answer this turn, disarmed by the
+      // next SDK frame (see NON_TURN_RESULT_IDLE_MS).
+      let nonTurnResultTimer: NodeJS.Timeout | undefined;
+      const disarmNonTurnResultTimer = () => {
+        if (nonTurnResultTimer) clearTimeout(nonTurnResultTimer);
+        nonTurnResultTimer = undefined;
+      };
       try {
         for await (const message of activeQuery) {
+          disarmNonTurnResultTimer();
+
           // Issue #661 — convert SDK's "1M context unavailable" assistant
           // message into a throw so the existing error path can auto-fallback.
           // No-op unless options.model ends with `[1m]` AND the message
@@ -1099,12 +1133,44 @@ export class ClaudeHandler implements TurnSteeringPort {
             }
           }
 
-          // The turn is over: settle whatever was steered into it, then close
-          // the input stream so the CLI child exits. Closed BEFORE the yield so
-          // a consumer that stops iterating here (the processor's bounded
-          // iterator-return after `result`) still leaves no process waiting on
-          // stdin.
           if (message.type === 'result') {
+            // Attribute FIRST, before any side effect: only the result that
+            // answers this turn's opening message (uuid-attributed) ends it. A
+            // resumed session can first drain an orphan background-task
+            // notification and close it with a `result` of its own (#257);
+            // ending the turn there would close the channel before the prompt
+            // was answered, and the consumer — which finalizes on the first
+            // result it sees — would never read the answer. Such a result is
+            // dropped: no settlement, no seal/close, not yielded.
+            const raw = message as unknown as Record<string, unknown>;
+            const attribution = classifyTurnResult(raw, openingUuid, channel.pushedUuids());
+            if (!attribution.terminal) {
+              this.logger.info('Skipping a result that does not answer this turn', {
+                subtype: raw.subtype,
+                num_turns: raw.num_turns,
+                user_message_uuid: raw.user_message_uuid,
+                reason: attribution.reason,
+                sessionKey: steerKey,
+              });
+              // The prompt is still owed an answer, so the channel stays open —
+              // but not forever: a CLI that goes silent here would otherwise
+              // sit on stdin until the consumer's own (hours-long) idle timeout.
+              nonTurnResultTimer = setTimeout(() => {
+                nonTurnResultTimer = undefined;
+                this.logger.warn('No frame after a skipped result; closing the input so the CLI can exit', {
+                  idleMs: NON_TURN_RESULT_IDLE_MS,
+                  sessionKey: steerKey,
+                });
+                channel.close();
+              }, NON_TURN_RESULT_IDLE_MS);
+              continue;
+            }
+
+            // The turn is over: settle whatever was steered into it, then close
+            // the input stream so the CLI child exits. Closed BEFORE the yield
+            // so a consumer that stops iterating here (the processor's bounded
+            // iterator-return after `result`) still leaves no process waiting
+            // on stdin.
             let settlement: SDKMessage | undefined;
             if (!steerSettled) {
               settlement = await this.settleSteeredSends(activeQuery, message, channel, capabilities);
@@ -1146,6 +1212,7 @@ export class ClaudeHandler implements TurnSteeringPort {
             });
           }
         }
+        disarmNonTurnResultTimer();
         channel.close();
         if (steerKey && this.activeQueries.get(steerKey)?.query === activeQuery) {
           this.activeQueries.delete(steerKey);
