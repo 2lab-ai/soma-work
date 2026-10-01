@@ -75,8 +75,8 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
 - 이미 일반 세션이 있는 스레드는 절대 인수하지 않는다(`ordinary_session_conflict`).
   인시던트 소유 표시는 해제되지 않는다 — 재시도 시 교체될 뿐이다.
 - 실행 중인 시도는 **스티어링 대상이 아니다.** 시도는 스티어링 레지스트리에 등록되지 않으므로
-  `steerTurn`/`interruptTurn`/`cancelSteeredMessage`는 "실행 중인 턴 없음"으로 답한다 (`src/claude-handler.ts:1245`).
-- 백그라운드 에이전트 keepalive는 시도에서 **꺼져 있다**(`0`) — 시도는 답하는 result에서 끝난다 (`src/claude-handler.ts:1300`).
+  `steerTurn`/`interruptTurn`/`cancelSteeredMessage`는 "실행 중인 턴 없음"으로 답한다 (`src/claude-handler.ts:1265`).
+- 백그라운드 에이전트 keepalive는 시도에서 **꺼져 있다**(`0`) — 시도는 답하는 result에서 끝난다 (`src/claude-handler.ts:1320`).
 - 인시던트 소유 스레드의 일반 메시지(파일 업로드 포함)는 후속 큐 펜스 **앞에서** 버려진다 — 큐에 쌓이거나
   스레드에 큐 표시가 붙거나 시도에 주입되지 않는다 (`src/slack-handler.ts:992`).
 
@@ -112,6 +112,13 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
   원인 확정이나 장애 해소를 뜻하지 않는다.
 - 인용은 host가 기록한 evidence 레코드와 대조되며, 수집되지 않은 참조는 결론 전체를 거부시킨다.
 - abort·budget 만료·전송 실패·마커 누락/거부에서도 host가 자기 결과 줄을 써서 **항상 종결**된다.
+- 결론마다 `Incident attempt concluded` info 로그가 한 줄 남는다 (`src/claude-handler.ts:1714`):
+  `end`·`status`·`rejected`(거부 사유, 예: `missing_marker`) 옆에 **모델 텍스트의 길이**(`modelTextChars`,
+  버퍼 상한을 넘어 버려진 부분까지 센다)와 **거친 분류**(`modelTextClass`)가 붙는다. 분류는 콘텐츠 가드가 쓰는
+  감지 함수를 그대로 재사용한다 — `pool_rate_limit` / `usage_limit` / `prompt_too_long` / `empty` /
+  `unmatched`(어느 감지기에도 안 걸림) (`src/claude-handler.ts:143`). 그래서 `missing_marker`가
+  "모델이 마커를 안 썼다"(`unmatched`)인지 "SDK가 사용량 한도 안내를 assistant 텍스트로 봉인했다"(`usage_limit`)인지
+  로그만으로 구분된다. **모델 텍스트 자체는 로그에 남지 않는다.**
 - **자동 실행은 없다.** 시도는 제안(proposal)만 쓴다. 실제 조치는 사람이 한다.
 
 ## 6. Rollout
@@ -121,7 +128,8 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
 3. **일반 deploy 워크플로를 그대로 쓰지 않는다.** 그 워크플로가 어떤 인스턴스들로 fan-out 되는지 먼저 확인하고,
    의도한 대상 하나에만 적용되는지 확인한 뒤 진행한다(다중 노드 동시 활성화 금지).
 4. 활성 후 확인 지점: ingress 거부 사유 로그(`receiver_disabled` / `user_not_accepted` / `runtime_not_ready`),
-   `Built isolated incident attempt options` info 로그.
+   `Built isolated incident attempt options` info 로그, 시도가 끝나면 `Incident attempt concluded` info 로그
+   (`rejected`가 있으면 `modelTextClass`로 원인을 먼저 가른다 — §5).
 
 ## 7. Rollback
 

@@ -895,6 +895,27 @@ describe('incident stream, end to end over a fake SDK stream', () => {
     expect(finalText).not.toContain('xxxxxxxxxx');
   });
 
+  it('hands onConclusion the text it decided from, and the length of everything written', async () => {
+    const seen: Array<{ end: string; text: string; chars: number }> = [];
+    const { hooks: wiring } = hooks({
+      onConclusion: (_output, end, modelText) => seen.push({ end: end.kind, ...modelText }),
+    });
+    const kept = 'y'.repeat(MAX_MODEL_TEXT_CHARS - 10);
+    const dropped = 'z'.repeat(20);
+
+    await drain(
+      stream(
+        assistantMessage([{ type: 'text', text: kept }]),
+        assistantMessage([{ type: 'text', text: dropped }]),
+        resultMessage(),
+      ),
+      wiring,
+    );
+
+    // The buffer keeps only what fit; the length still counts what did not.
+    expect(seen).toEqual([{ end: 'oversize', text: kept, chars: kept.length + dropped.length }]);
+  });
+
   it('reports a budget expiry as interrupted, whatever the stream managed to say', async () => {
     const { hooks: wiring } = hooks({ observe: () => ({ budgetExpired: true, aborted: true }) });
 

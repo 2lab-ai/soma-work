@@ -869,8 +869,19 @@ export interface IncidentStreamHooks {
   readonly identity: () => { readonly sessionId: string; readonly model?: string };
   /** The stream threw. The caller logs it — the error text never enters the thread. */
   readonly onStreamError?: (error: unknown) => void;
-  /** The decided conclusion, before the terminal pair is yielded. Logging seam. */
-  readonly onConclusion?: (output: IncidentAttemptOutput, end: IncidentAttemptEnd) => void;
+  /**
+   * The decided conclusion, before the terminal pair is yielded. Logging seam.
+   *
+   * `modelText` is what the decision was made from, handed over so the caller
+   * can tell a refused conclusion's causes apart (a model that wrote no marker,
+   * or a cap / rate-limit notice the SDK sealed as assistant text). It is model
+   * output: measure and classify it, never log or publish it.
+   */
+  readonly onConclusion?: (
+    output: IncidentAttemptOutput,
+    end: IncidentAttemptEnd,
+    modelText: IncidentModelText,
+  ) => void;
   /**
    * The attempt has actually stopped — including when the consumer abandoned the
    * generator. This is where a completion marker belongs; anywhere earlier would
@@ -878,6 +889,14 @@ export interface IncidentStreamHooks {
    */
   readonly onFinished?: () => void;
   readonly uuid?: () => string;
+}
+
+/** The assistant prose an attempt wrote, as `onConclusion` receives it. */
+export interface IncidentModelText {
+  /** The buffered prose, at most `MAX_MODEL_TEXT_CHARS`: an oversize run keeps only what fit. */
+  readonly text: string;
+  /** Every UTF-16 unit the attempt wrote, including what did not fit the buffer. */
+  readonly chars: number;
 }
 
 /**
@@ -898,6 +917,8 @@ export async function* screenIncidentStream(
   hooks: IncidentStreamHooks,
 ): AsyncGenerator<SDKMessage, void, unknown> {
   let modelText = '';
+  /** Everything written, past the buffer's cap too — the log's length. */
+  let modelTextChars = 0;
   let oversize = false;
   let threw = false;
   let sdkResult: SDKMessage | null = null;
@@ -909,6 +930,7 @@ export async function* screenIncidentStream(
       for await (const message of source) {
         const screened = screenIncidentMessage(message, evidenceCallIds);
         if (screened.text) {
+          modelTextChars += screened.text.length;
           if (modelText.length + screened.text.length > MAX_MODEL_TEXT_CHARS) {
             oversize = true;
           } else {
@@ -936,7 +958,7 @@ export async function* screenIncidentStream(
       modelText,
     });
     const output = buildIncidentAttemptOutput(hooks.request, end, hooks.verifiedEvidence(), hooks.sourceCaveat());
-    hooks.onConclusion?.(output, end);
+    hooks.onConclusion?.(output, end, { text: modelText, chars: modelTextChars });
 
     const identity = hooks.identity();
     const messages = buildIncidentTerminalMessages(output, {
