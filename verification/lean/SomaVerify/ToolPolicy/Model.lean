@@ -98,7 +98,7 @@ structure Result where
   matchedRuleIds : Option (List String) := none
   deriving DecidableEq, Repr
 
-/-- `SensitivePathResult` — sensitive-path-filter.ts:60-63. -/
+/-- `SensitivePathResult` — sensitive-path-filter.ts:139-142. -/
 structure SensitivePathResult where
   isSensitive : Bool
   reason : Option String := none
