@@ -33,8 +33,9 @@
  *               workspace package name resolves through that package's `exports` the way Node's
  *               CommonJS loader does (the exact subpath, else the `*` pattern with the longest
  *               prefix; the target file must exist as written), or through the package directory
- *               when it has no `exports`; the file reached is mapped back to its source through
- *               the package's tsconfig rootDir/outDir. No `dist/` output is read. Not followed: a
+ *               when it has no `exports`, where a subpath names a directory the same way; the
+ *               file reached is mapped back to its source through the package's tsconfig
+ *               rootDir/outDir. No `dist/` output is read. Not followed: a
  *               `#` specifier (package.json `imports`), and a directory with a package.json on
  *               disk, whose "main" Node reads before the directory's index.
  *   failure     Node built-ins and npm dependencies are dropped. Everything else is fatal, and
@@ -326,13 +327,15 @@ function resolveExports(exportsField, subpath) {
 }
 
 /**
- * Whether a relative specifier names a directory outright. Checked on Node v26.9.0:
- * `Module._findPath` sets `trailingSlash` for a request that is `.` or `..` or ends in `/`, `/.`
- * or `/..`, and then skips the file lookup (the exact file, then each extension) and resolves the
- * path only as a directory (`tryPackage`: package.json "main", else the index), so with both
- * `x.js` and `x/index.js` present `require('./x')` loads the file and `require('./x/')`,
- * `require('./x/.')`, `require('.')` and `require('..')` load the index. path.resolve drops the
- * trailing part, so it is read off the specifier.
+ * Whether a relative specifier, or the subpath of a workspace package without `exports`, names a
+ * directory outright. Checked on Node v26.9.0: `Module._findPath` sets `trailingSlash` for a
+ * request that is `.` or `..` or ends in `/`, `/.` or `/..`, and then skips the file lookup (the
+ * exact file, then each extension) and resolves the path only as a directory (`tryPackage`:
+ * package.json "main", else the index), so with both `x.js` and `x/index.js` present
+ * `require('./x')` loads the file and `require('./x/')`, `require('./x/.')`, `require('.')` and
+ * `require('..')` load the index, and `require('pkg/dist/x/.')` loads `dist/x/index.js`.
+ * path.resolve and path.join drop the trailing part, so it is read off the specifier. False for
+ * the empty subpath (the package itself): Node probes its "main" as a file whatever it ends in.
  */
 const namesDirectory = (specifier) => /(?:^|\/)\.\.?$|\/$/.test(specifier);
 
@@ -415,9 +418,13 @@ function createResolver(repoRoot, productionSet, trackedSet, workspaces) {
       const hit = viaCompileDirs(pkg)(path.join(pkg.dir, target));
       return hit || { kind: 'error', reason: `exports target ${target} of ${pkg.name} has no production source` };
     }
-    const base = path.join(pkg.dir, subpath === '' ? pkg.pkg.main || 'index.js' : subpath);
+    // A subpath names a directory as a relative specifier does (namesDirectory: Node reads the
+    // whole request, package name included), and path.join drops a trailing `/.` or `/..`.
+    // "main" is no specifier: Node's tryPackage takes path.resolve of it, which drops a trailing
+    // `/` as well, and tries that as a file before as a directory.
+    const base = subpath === '' ? path.resolve(pkg.dir, pkg.pkg.main || 'index.js') : path.join(pkg.dir, subpath);
     return (
-      loadAsFileOrDirectory(base, sourcePathVia(pkg)) || {
+      loadAsFileOrDirectory(base, sourcePathVia(pkg), namesDirectory(subpath)) || {
         kind: 'error',
         reason: `no production source for ${subpath === '' ? pkg.name : `${pkg.name}/${subpath}`}`,
       }
