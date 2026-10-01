@@ -114,3 +114,6 @@ services/**/venv/
 # trace files record absolute paths of the machine that built them.
 verification/lean/.lake/
 verification/lean/.generated/
+# Written by scripts/verification/extract-import-graph.cjs on every lean-verify.sh
+# run, from the checked-out sources: committing it could only let it go stale.
+verification/lean/SomaVerify/ImportGraph/Generated.lean

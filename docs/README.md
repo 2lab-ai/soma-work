@@ -63,6 +63,7 @@
 - repo-wide 결정은 `docs/adr/`로 승격한다.
 - 운영자가 순서대로 실행하는 절차서는 `docs/runbook/`에 둔다.
 - Slack UI/API payload를 건드릴 때는 [Slack Block Kit reference](./misc/reference/slack-block-kit.md)를 먼저 확인한다.
+- [verification/LEDGER.md](../verification/LEDGER.md)에서 `T2:<Module>`인 파일의 동작을 바꿀 때는 `verification/lean/SomaVerify/<Module>/`의 모델·증명을 함께 고치고 `npm run verify:lean`으로 벡터를 재생성한다 (방법: [verification/README.md](../verification/README.md)).
 
 ### Active onboarding design
 - [somawork setup onboarding](superpowers/specs/2026-08-23-somawork-setup-onboarding-design.md) — brew/xbrew install → terminal setup wizard → Slack + local llmux Claude/Codex → service receipt.
