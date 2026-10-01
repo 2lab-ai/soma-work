@@ -19,7 +19,10 @@
  * `doctorReportToJson` serializes correctly, but correctness of the *string* is
  * not purity of the *stream*: the default doctor seams lazily import
  * `src/config`, `src/config-loader` and the llmux client, and those modules log
- * on import (`[env-paths] …`) and during use. A consumer running
+ * on import (`src/config` warns about malformed env values as it builds its
+ * config) and during use. The `[env-paths]` banner is not one of them: CI's Lean
+ * Verify theorem `cli_never_loads_env_paths` proves that nothing this file loads,
+ * eagerly or lazily, loads `@soma/common/env-paths`. A consumer running
  * `somawork doctor --json | jq` gets a parse error from output nobody wrote on
  * purpose. So the JSON path runs inside {@link captureAmbientOutput}, which
  * redirects `process.stdout`, `process.stderr` and every `console` method — the
