@@ -30,6 +30,7 @@ function baseContext(overrides: Partial<StreamContext> = {}): StreamContext {
     threadTs: 'T1',
     sessionKey: 'C1:T1',
     sessionId: 's1',
+    incidentAttempt: false,
     say: vi.fn().mockResolvedValue({ ts: 'm' }) as unknown as StreamContext['say'],
     ...overrides,
   };

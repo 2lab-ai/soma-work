@@ -590,7 +590,7 @@ function attachStderrCapture(options: Options, logger: BuildStreamOptionsDeps['l
  * `types.ts`).
  *
  * **Absent is the only answer that means "ordinary session".** Anything present
- * must be a complete v1 request or the build throws: `session-registry.ts:2075`
+ * must be a complete v1 request or the build throws: `session-registry.ts:2202`
  * restores `incidentRequest` verbatim for any non-null object — "any present
  * value keeps the session restricted (fail closed)" — so a truncated write or a
  * hand-edited sessions file really can present `{}` here. Answering "not an

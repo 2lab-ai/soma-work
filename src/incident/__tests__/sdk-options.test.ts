@@ -485,7 +485,7 @@ describe('buildIncidentSdkOptions — fails closed', () => {
 
 /**
  * The request reaching this builder is NOT necessarily the one the contract
- * parsed: `session-registry.ts:2075` restores `incidentRequest` verbatim from
+ * parsed: `session-registry.ts:2202` restores `incidentRequest` verbatim from
  * disk for any non-null object ("any present value keeps the session
  * restricted"). So a truncated write, a hand-edited sessions file, or an older
  * schema can hand this builder a `{}`. Every field the attempt depends on is
@@ -666,9 +666,9 @@ describe('buildStreamOptions — incident sessions leave the ordinary builder un
 /**
  * A malformed `incidentRequest` must never buy the FULL tool surface.
  *
- * `session-registry.ts:2075` restores any non-null object verbatim, so a
+ * `session-registry.ts:2202` restores any non-null object verbatim, so a
  * truncated or hand-edited sessions file can put `{}` on a session that the
- * handler still treats as incident-owned (`claude-handler.ts:944` is a truthy
+ * handler still treats as incident-owned (`claude-handler.ts:1144` is a truthy
  * check). A reader that answers "not an incident" for that value would assemble
  * the ordinary options — project settings, plugins, skills, every MCP server,
  * Bash — for a thread nobody is watching. Present-but-malformed therefore

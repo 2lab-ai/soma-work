@@ -129,6 +129,26 @@ class UsageLimitDispatchError extends Error {
 }
 
 /**
+ * Coarse class of an incident attempt's model text, for the conclusion log only.
+ *
+ * A refused conclusion (`missing_marker`, …) means either that the model wrote
+ * no marker or that the SDK sealed a transport notice as assistant text on a
+ * successful result — the shapes the stream-executor content guards look for.
+ * The same detectors decide here (no phrase is restated), in the guards' order:
+ * pool rate limit before usage cap, so a pool rejection is not read as a cap.
+ * `unmatched` means no detector fired, not that a human-quality answer arrived.
+ */
+type IncidentModelTextClass = 'empty' | 'pool_rate_limit' | 'usage_limit' | 'prompt_too_long' | 'unmatched';
+
+function classifyIncidentModelText(text: string): IncidentModelTextClass {
+  if (text.trim().length === 0) return 'empty';
+  if (textIndicatesRetryableRateLimit(text)) return 'pool_rate_limit';
+  if (textIndicatesUsageLimit(text)) return 'usage_limit';
+  if (textIndicatesPromptTooLongContent(text)) return 'prompt_too_long';
+  return 'unmatched';
+}
+
+/**
  * Naming/contact hints for a user's llmux client key, so the key is legible in
  * llmux's own admin surfaces. Both fields are optional — an unknown user still
  * gets a key (named by Slack id alone).
@@ -1690,7 +1710,7 @@ export class ClaudeHandler implements TurnSteeringPort {
             error: error instanceof Error ? error.message : String(error),
           });
         },
-        onConclusion: (output, end) => {
+        onConclusion: (output, end, modelText) => {
           this.logger.info('Incident attempt concluded', {
             incident_id: request.incident_id,
             attempt_id: request.attempt_id,
@@ -1699,6 +1719,10 @@ export class ClaudeHandler implements TurnSteeringPort {
             rejected: output.rejected?.reason,
             downgraded: output.downgraded?.reason,
             evidenceCited: output.result.evidence.length,
+            // Length and class only — the text itself is model output and is
+            // never logged.
+            modelTextChars: modelText.chars,
+            modelTextClass: classifyIncidentModelText(modelText.text),
             ...registry.stats(),
           });
         },
