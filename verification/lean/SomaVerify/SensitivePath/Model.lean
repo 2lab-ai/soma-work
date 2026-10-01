@@ -1,7 +1,7 @@
--- models: src/sensitive-path-filter.ts:19-83 (HOME, SENSITIVE_* tables, HOME_ALIASES, FOLDED_LETTERS, keys)
--- models: src/sensitive-path-filter.ts:144-182 (checkSensitivePath)
--- models: src/sensitive-path-filter.ts:194-211 (checkSensitiveGlob)
--- models: src/sensitive-path-filter.ts:328-365 (expandHome, normalizePath, resolvePath, walkPoints, fold, foldKey)
+-- models: src/sensitive-path-filter.ts:18-90 (PRIVATE_LINKS, HOME, SENSITIVE_* tables, HOME_ALIASES, FOLDED_LETTERS, keys)
+-- models: src/sensitive-path-filter.ts:162-200 (checkSensitivePath)
+-- models: src/sensitive-path-filter.ts:212-229 (checkSensitiveGlob)
+-- models: src/sensitive-path-filter.ts:349-400 (expandHome, normalizePath, resolvePath, normalizePrivatePath, walkPoints, fold, foldKey)
 -- models: packages/common/src/path-utils.ts:28-38 (normalizeTmpPath)
 
 /-!
@@ -9,9 +9,10 @@
 
 `src/sensitive-path-filter.ts` decides whether a non-admin Read, Grep or Glob call names a
 sensitive host file; `src/agent-runtime/policy/tool-policy.ts` denies the call when it does.
-This file transcribes the path side of the module: `normalizePath`, `walkPoints`, `fold`,
-`checkSensitivePath` and `checkSensitiveGlob`, together with the JS string and Node `path.posix`
-operations they call. `checkBashSensitivePaths` is not modeled: it pulls paths out of shell text
+This file transcribes the path side of the module: `normalizePath`, `normalizePrivatePath`,
+`walkPoints`, `fold`, `checkSensitivePath` and `checkSensitiveGlob`, together with the JS string and
+Node `path.posix` operations they call. `normalizeTmpPath`, which the module no longer calls, is
+kept for the phase-1 model (`ModelOriginal.lean`). `checkBashSensitivePaths` is not modeled: it pulls paths out of shell text
 with regular expressions, a heuristic that stays outside the proofs (see `Spec.lean`).
 
 Strings are `List Char`. A Lean string denotes a well-formed JS string (see
@@ -119,15 +120,36 @@ def normalizeTmpPath (inputPath : List Char) : List Char :=
     if rest != [] && !(['/'].isPrefixOf rest) then inputPath
     else "/tmp".toList ++ rest
 
-/-! ## The rule tables (lines 19-83) -/
+/-! ## The rule tables (lines 18-90) -/
 
-/-- `HOME` (line 22): `os.homedir()` resolved against the working directory, with `/private/tmp`
-written `/tmp` as `normalizePath` writes checked paths. It is absolute whatever `os.homedir()`
-returns. -/
+/-- `PRIVATE_LINKS` (line 24): the directories in `/private` written through the links macOS keeps
+from the root, `/tmp` and `/etc`. -/
+def privateLinks : List (List Char) :=
+  ["tmp".toList, "etc".toList]
+
+/-- The prefix `normalizePrivatePath` drops, `/private`. -/
+def privatePrefix : List Char := "/private".toList
+
+/-- The test in the loop of `normalizePrivatePath` (line 377) for one entry: the path is
+`/private/<name>` or lies below it. -/
+def privateLinkMatches (p name : List Char) : Bool :=
+  let target := privatePrefix ++ '/' :: name
+  p == target || (target ++ ['/']).isPrefixOf p
+
+/-- `normalizePrivatePath` (lines 369-380): a path at or below `/private/tmp` or `/private/etc`
+without its `/private`; any other path, a false prefix such as `/private/etcetera` included,
+unchanged. Every entry that matches returns the same slice, so which one matched first does not
+matter. -/
+def normalizePrivatePath (p : List Char) : List Char :=
+  if privateLinks.any (privateLinkMatches p) then p.drop privatePrefix.length else p
+
+/-- `HOME` (line 29): `os.homedir()` resolved against the working directory, with `/private/tmp`
+and `/private/etc` written `/tmp` and `/etc` as `normalizePath` writes checked paths. It is
+absolute whatever `os.homedir()` returns. -/
 def moduleHome (cwd homedir : List Char) : List Char :=
-  normalizeTmpPath (pathResolve [cwd, homedir])
+  normalizePrivatePath (pathResolve [cwd, homedir])
 
-/-- `SENSITIVE_DIRECTORIES` (lines 25-33), in order. -/
+/-- `SENSITIVE_DIRECTORIES` (lines 32-40), in order. -/
 def sensitiveDirectories (home : List Char) : List (List Char) :=
   [pathJoin [home, ".ssh".toList],
    pathJoin [home, ".gnupg".toList],
@@ -137,8 +159,8 @@ def sensitiveDirectories (home : List Char) : List (List Char) :=
    pathJoin [home, "Library".toList, "Keychains".toList],
    "/etc/shadow".toList]
 
-/-- `SENSITIVE_EXACT_FILES` (lines 36-41). The source holds them in a `Set` and only asks
-membership (of their keys, line 83), so the order is immaterial. -/
+/-- `SENSITIVE_EXACT_FILES` (lines 43-48). The source holds them in a `Set` and only asks
+membership (of their keys, line 90), so the order is immaterial. -/
 def sensitiveExactFiles (home : List Char) : List (List Char) :=
   [pathJoin [home, ".gitconfig".toList],
    pathJoin [home, ".netrc".toList],
@@ -150,7 +172,7 @@ regular expression without the `s` flag does not match. -/
 def isLineTerminator (c : Char) : Bool :=
   c == '\n' || c == '\r' || c == '\u2028' || c == '\u2029'
 
-/-- `/^\.env(\..+)?$/` (line 45): `.env`, or `.env.` followed by one or more characters none of
+/-- `/^\.env(\..+)?$/` (line 52): `.env`, or `.env.` followed by one or more characters none of
 which is a line terminator. -/
 def matchesEnv (b : List Char) : Bool :=
   match b with
@@ -161,15 +183,15 @@ def matchesEnv (b : List Char) : Bool :=
     | _ => false
   | _ => false
 
-/-- `/^credentials\.json$/` (line 46). -/
+/-- `/^credentials\.json$/` (line 53). -/
 def matchesCredentials (b : List Char) : Bool :=
   b == "credentials.json".toList
 
-/-- The alternation `(json|ya?ml|toml)` after the `.` of line 47. -/
+/-- The alternation `(json|ya?ml|toml)` after the `.` of line 54. -/
 def isSecretsExtension (e : List Char) : Bool :=
   e == "json".toList || e == "yaml".toList || e == "yml".toList || e == "toml".toList
 
-/-- `/^secrets?\.(json|ya?ml|toml)$/` (line 47): `secret`, an optional `s`, `.`, and one of the
+/-- `/^secrets?\.(json|ya?ml|toml)$/` (line 54): `secret`, an optional `s`, `.`, and one of the
 extensions. -/
 def matchesSecrets (b : List Char) : Bool :=
   match b with
@@ -180,28 +202,28 @@ def matchesSecrets (b : List Char) : Bool :=
     | _ => false
   | _ => false
 
-/-- `SENSITIVE_BASENAME_PATTERNS` (lines 44-48), in order. -/
+/-- `SENSITIVE_BASENAME_PATTERNS` (lines 51-55), in order. -/
 def basenamePatterns : List (List Char → Bool) :=
   [matchesEnv, matchesCredentials, matchesSecrets]
 
-/-- `SENSITIVE_SERVICE_CONFIGS` (lines 54-57), in order. No `.env`: the basename patterns catch
+/-- `SENSITIVE_SERVICE_CONFIGS` (lines 61-64), in order. No `.env`: the basename patterns catch
 every `.env` first. -/
 def serviceConfigs : List (List Char × List (List Char)) :=
   [("/opt/soma-work".toList, ["config.json".toList]),
    ("/opt/soma".toList, ["config.json".toList])]
 
-/-- `HOME_ALIASES` (line 60), in order. -/
+/-- `HOME_ALIASES` (line 67), in order. -/
 def homeAliases : List (List Char) :=
   ["~".toList, "$HOME".toList, "${HOME}".toList]
 
-/-- `FOLDED_LETTERS` (lines 67-79): the code points other than A-Z that `fold` rewrites, with what
+/-- `FOLDED_LETTERS` (lines 74-86): the code points other than A-Z that `fold` rewrites, with what
 it writes for each. -/
 def foldedLetters : List (Char × List Char) :=
   [('ß', "ss".toList), ('ſ', "s".toList), ('ẞ', "ss".toList), ('K', "k".toList),
    ('ﬀ', "ff".toList), ('ﬁ', "fi".toList), ('ﬂ', "fl".toList), ('ﬃ', "ffi".toList),
    ('ﬄ', "ffl".toList), ('ﬅ', "st".toList), ('ﬆ', "st".toList)]
 
-/-! ## `expandHome`, `normalizePath`, `resolvePath`, `walkPoints`, `fold`, `foldKey` (lines 328-365) -/
+/-! ## `expandHome`, `normalizePath`, `resolvePath`, `walkPoints`, `fold`, `foldKey` (lines 349-400) -/
 
 /-- `expandHome`: the first alias that `filePath` equals, or starts with followed by `/`, is
 replaced by `HOME`; any other path is unchanged. -/
@@ -211,11 +233,11 @@ def expandHome (home filePath : List Char) : List (List Char) → List Char
     if filePath == a || (a ++ ['/']).isPrefixOf filePath then home ++ filePath.drop a.length
     else expandHome home filePath aliases
 
-/-- `resolvePath`: resolve an absolute path's `.`, `..` and empty segments, map `/private/tmp` to
-`/tmp`, drop trailing slashes. -/
+/-- `resolvePath`: resolve an absolute path's `.`, `..` and empty segments, map `/private/tmp` and
+`/private/etc` to `/tmp` and `/etc`, drop trailing slashes. -/
 def resolvePath (expanded : List Char) : List Char :=
   let resolved := if ['/'].isPrefixOf expanded then posixNormalize expanded else expanded
-  stripTrailingSlashes (normalizeTmpPath resolved)
+  stripTrailingSlashes (normalizePrivatePath resolved)
 
 /-- `normalizePath`: expand a home alias, then `resolvePath`. -/
 def normalizePath (home filePath : List Char) : List Char :=
@@ -240,11 +262,12 @@ def foldChar (c : Char) : List Char :=
 def fold (s : List Char) : List Char :=
   s.flatMap foldChar
 
-/-- `foldKey(normalized)`: folded, then `/private/tmp` written `/tmp` again. -/
+/-- `foldKey(normalized)`: folded, then `/private/tmp` and `/private/etc` written `/tmp` and `/etc`
+again. -/
 def foldKey (normalized : List Char) : List Char :=
-  normalizeTmpPath (fold normalized)
+  normalizePrivatePath (fold normalized)
 
-/-! ## `checkSensitivePath` (lines 144-182) -/
+/-! ## `checkSensitivePath` (lines 162-200) -/
 
 /-- `SensitivePathResult`: `reason` is `none` where the source leaves it `undefined`. -/
 structure Result where
@@ -254,16 +277,16 @@ structure Result where
 /-- `{ isSensitive: false }`. -/
 def notSensitive : Result := ⟨false, none⟩
 
-/-- The directory test of line 153, on keys: the path is the directory or lies below it. -/
+/-- The directory test of line 171, on keys: the path is the directory or lies below it. -/
 def underDirectory (normalized dir : List Char) : Bool :=
   normalized == dir || (dir ++ ['/']).isPrefixOf normalized
 
-/-- Lines 122-123 for one point: the first sensitive directory whose key the point's key is at or
+/-- Lines 170-171 for one point: the first sensitive directory whose key the point's key is at or
 below (`DIRECTORY_KEYS` holds the keys in table order). -/
 def directoryHit (home point : List Char) : Option (List Char) :=
   (sensitiveDirectories home).find? (fun dir => underDirectory (foldKey point) (foldKey dir))
 
-/-- The body of the service-config loop (lines 174-178) for one entry: below `dir`, at most two
+/-- The body of the service-config loop (lines 192-196) for one entry: below `dir`, at most two
 segments, the last one of `files`. `split` never returns an empty list, so the last segment
 always exists. -/
 def serviceConfigHit (key dir : List Char) (files : List (List Char)) : Bool :=
@@ -272,12 +295,12 @@ def serviceConfigHit (key dir : List Char) (files : List (List Char)) : Bool :=
     let parts := splitSlash (key.drop (dir.length + 1))
     parts.length ≤ 2 && files.contains (parts.getLast?.getD [])
 
-/-- Whether the service-config loop (lines 173-179) returns. Every return there carries the same
+/-- Whether the service-config loop (lines 191-197) returns. Every return there carries the same
 reason, so which entry matched first does not matter. -/
 def serviceConfigRule (key : List Char) : Bool :=
   serviceConfigs.any (fun entry => serviceConfigHit key entry.1 entry.2)
 
-/-- Lines 121-151, in source order, each returning on the first rule that matches: the directory
+/-- Lines 164-199, in source order, each returning on the first rule that matches: the directory
 rule on the normalized path and then on each walk point, then the exact files, the basename
 patterns and the service configs on the normalized path. -/
 def verdict (home normalized : List Char) (walk : List (List Char)) : Result :=
@@ -296,13 +319,13 @@ def verdict (home normalized : List Char) (walk : List (List Char)) : Result :=
 def checkSensitivePath (home filePath : List Char) : Result :=
   verdict home (normalizePath home filePath) (walkPoints home filePath)
 
-/-! ## `checkSensitiveGlob` (lines 194-211) -/
+/-! ## `checkSensitiveGlob` (lines 212-229) -/
 
-/-- The characters `spelling.split(/[*?{}[\]]/)` splits on (line 204). -/
+/-- The characters `spelling.split(/[*?{}[\]]/)` splits on (line 222). -/
 def isGlobMeta (c : Char) : Bool :=
   c == '*' || c == '?' || c == '{' || c == '}' || c == '[' || c == ']'
 
-/-- Lines 168-170: with a base path (a non-empty one: `''` is falsy), `path.resolve(basePath,
+/-- Lines 216-218: with a base path (a non-empty one: `''` is falsy), `path.resolve(basePath,
 pattern)` and the pattern written after the base (the pattern alone when absolute); without
 one, the pattern. `path.resolve` falls back to the working directory `cwd` only when neither
 argument is absolute. -/
@@ -313,25 +336,25 @@ def globSpellings (cwd pattern : List Char) (basePath : Option (List Char)) : Li
     else [pathResolve [cwd, b, pattern], if ['/'].isPrefixOf pattern then pattern else b ++ '/' :: pattern]
   | none => [pattern]
 
-/-- Line 174: the text before the first glob metacharacter. -/
+/-- Line 222: the text before the first glob metacharacter. -/
 def globConcrete (spelling : List Char) : List Char :=
   spelling.takeWhile (fun c => !isGlobMeta c)
 
-/-- `concrete.replace(/\/+$/, '')` (line 205): the concrete text without trailing slashes. -/
+/-- `concrete.replace(/\/+$/, '')` (line 223): the concrete text without trailing slashes. -/
 def globPrefix (spelling : List Char) : List Char :=
   stripTrailingSlashes (globConcrete spelling)
 
-/-- `s.slice(0, s.lastIndexOf('/') + 1)` (line 205): `s` up to and including its last `/`, and
+/-- `s.slice(0, s.lastIndexOf('/') + 1)` (line 223): `s` up to and including its last `/`, and
 `""` when it has none. -/
 def cutToLastSlash (s : List Char) : List Char :=
   (s.reverse.dropWhile (· != '/')).reverse
 
-/-- The directory the glob lists (line 205): the concrete text cut back to its last `/`, since the
+/-- The directory the glob lists (line 223): the concrete text cut back to its last `/`, since the
 segment the metacharacter is in is a pattern, not a directory. -/
 def globListed (spelling : List Char) : List Char :=
   cutToLastSlash (globConcrete spelling)
 
-/-- The two paths line 205 checks for one spelling: the concrete text without trailing slashes,
+/-- The two paths line 223 checks for one spelling: the concrete text without trailing slashes,
 and the directory the glob lists. -/
 def globCandidates (spelling : List Char) : List (List Char) :=
   [globPrefix spelling, globListed spelling]

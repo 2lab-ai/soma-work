@@ -188,6 +188,26 @@ describe('checkSensitivePath', () => {
       expect(checkSensitivePath(`${HOME}/.SSHX/key`).isSensitive).toBe(false);
     });
   });
+
+  // Regression: macOS links /etc to /private/etc, but only /private/tmp was written through its
+  // link, so /private/etc/shadow opened /etc/shadow unchecked.
+  describe('writes /private/etc as /etc', () => {
+    it.each([
+      ['/private/etc/shadow', '/private/etc'],
+      ['/PRIVATE/ETC/shadow', 'in upper case'],
+      ['//private/./etc/shadow', 'with empty and current-directory segments'],
+      ['/private/etc/shadow/../x', 'a walk through it'],
+    ])('blocks: %s (%s)', (filePath) => {
+      expect(checkSensitivePath(filePath).isSensitive).toBe(true);
+    });
+
+    it.each([
+      ['/private/etcetera/x', 'a sibling that only shares a name prefix'],
+      ['/private/etc/hosts', 'a file in /etc that is not sensitive'],
+    ])('allows: %s (%s)', (filePath) => {
+      expect(checkSensitivePath(filePath).isSensitive).toBe(false);
+    });
+  });
 });
 
 describe('checkBashSensitivePaths', () => {
@@ -351,6 +371,47 @@ describe('checkBashSensitivePaths', () => {
       expect(checkBashSensitivePaths(command).isSensitive).toBe(false);
     });
   });
+
+  // Regression: only cat, head, tail and the other commands then listed were read, so wc, grep,
+  // scp and the other file readers reached a sensitive file unchecked; a path was only taken from
+  // its first `/`, so a relative `.env` without one was never checked; and /private/etc was not
+  // written as /etc.
+  describe('reads the other file readers, relative paths and /private/etc', () => {
+    it.each([
+      ['wc -c ~/.ssh/id_rsa', 'wc'],
+      ['grep x ~/.aws/credentials', 'grep'],
+      ['rg . /etc/shadow', 'rg'],
+      ['rg x /etc/shadow', 'rg with a pattern'],
+      ['scp ~/.ssh/id_rsa h:', 'scp source'],
+      ['scp h:x ~/.ssh/authorized_keys', 'scp destination'],
+      ['cat .env', 'relative .env'],
+      ['source ./.env', 'source of a relative .env'],
+      ['source .env', 'source of a bare .env'],
+      ['. ./.env', 'dot-source of a relative .env'],
+      ['wc -l < ./.env', 'redirect from a relative .env'],
+      ['wc -l <.env', 'redirect from a bare .env'],
+      ['grep -r x . --include=.env', 'a relative path after ='],
+      ['jq . config/secrets.json', 'relative path with a directory'],
+      ['cat /private/etc/shadow', '/private/etc'],
+    ])('blocks: %s (%s)', (command) => {
+      expect(checkBashSensitivePaths(command).isSensitive).toBe(true);
+    });
+
+    const otherReaders = ['egrep', 'fgrep', 'awk', 'sed', 'sort', 'uniq', 'tac', 'nl', 'od', 'cmp', 'diff', 'jq'];
+    it.each(otherReaders)('blocks: %s ~/.ssh/id_rsa', (reader) => {
+      expect(checkBashSensitivePaths(`${reader} ~/.ssh/id_rsa`).isSensitive).toBe(true);
+    });
+
+    it.each([
+      ['grep x README.md', 'grep, safe relative path'],
+      ['wc -l src/a.ts', 'wc, safe relative path'],
+      ['cat ./notes.txt', 'cat, safe relative path'],
+      ['source ./setup.sh', 'source of a safe relative script'],
+      ['echo Done. secrets.json', 'a sentence end is not a dot-source'],
+    ])('allows: %s (%s)', (command) => {
+      expect(checkBashSensitivePaths(command).isSensitive).toBe(false);
+    });
+  });
 });
 
 describe('checkSensitiveGlob', () => {
@@ -392,6 +453,18 @@ describe('checkSensitiveGlob', () => {
 
   it('allows a glob over the files directly in HOME', () => {
     expect(checkSensitiveGlob(`${HOME}/*.txt`).isSensitive).toBe(false);
+  });
+
+  // Regression: /private/etc was not written as /etc (macOS links one to the other).
+  it.each([
+    ['/private/etc/shadow*', undefined],
+    ['*', '/private/etc/shadow'],
+  ])('blocks a glob through /private/etc: %s in %s', (pattern, basePath) => {
+    expect(checkSensitiveGlob(pattern, basePath).isSensitive).toBe(true);
+  });
+
+  it('answers a glob over /private/etc as it answers one over /etc', () => {
+    expect(checkSensitiveGlob('/private/etc/*')).toEqual(checkSensitiveGlob('/etc/*'));
   });
 });
 
