@@ -59,8 +59,8 @@ map is still the deliverable; only the sources change:
   touches; cite files.
 - **Stage 2 (known unknowns)** — close every question **by the territory**
   (read the code/tests/docs/git history) or by a bounded external consult via
-  the `local:trinity` chain (trinity consensus → `mcp__llm__chat` model codex
-  → `codex-fallback` opus) when the territory is silent. A question
+  the `local:trinity` chain (trinity consensus → single-panelist fallback
+  `astra-zhuge` → `grok-elon` → `fable-zhuge`) when the territory is silent. A question
   neither can close is recorded OPEN with the conservative default you chose
   and why — a logged decision, not a question.
 - **Stage 3 (unknown knowns)** — extract tacit context from the repo instead
@@ -97,7 +97,7 @@ gamble visible; it does not stop the pipeline.
 - Interactive mode: stop at every stage boundary that needs the user's
   reaction. Never barrel into implementation on unconfirmed guesses —
   implementing is a separate task that begins after the map is delivered.
-- Autonomous mode: never ask; close by territory, codex consult, or a logged
+- Autonomous mode: never ask; close by territory, trinity consult, or a logged
   conservative default. The map is attached to the run's artifacts.
 
 ## Attribution

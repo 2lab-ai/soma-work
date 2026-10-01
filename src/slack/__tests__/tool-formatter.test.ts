@@ -505,13 +505,13 @@ describe('ToolFormatter', () => {
         {
           type: 'tool_use',
           id: 'id1',
-          name: 'mcp__llm__chat',
+          name: 'mcp__agent__chat',
           input: { model: 'opus' },
         },
       ];
       const result = ToolFormatter.formatToolUseCompact(content);
       expect(result).toContain('⏳');
-      expect(result).toContain('MCP: llm → chat');
+      expect(result).toContain('MCP: agent → chat');
       expect(result).toContain('model: opus');
     });
 
@@ -556,8 +556,8 @@ describe('ToolFormatter', () => {
 
   describe('formatOneLineToolUse — MCP params', () => {
     it('should include params for MCP tools', () => {
-      const result = ToolFormatter.formatOneLineToolUse('mcp__llm__chat', { model: 'opus', prompt: 'hello world' });
-      expect(result).toContain('MCP: llm → chat');
+      const result = ToolFormatter.formatOneLineToolUse('mcp__agent__chat', { model: 'opus', prompt: 'hello world' });
+      expect(result).toContain('MCP: agent → chat');
       expect(result).toContain('model: opus');
     });
 
@@ -589,9 +589,9 @@ describe('ToolFormatter', () => {
     });
 
     it('should include duration when provided', () => {
-      const result = ToolFormatter.formatOneLineToolComplete('mcp__llm__chat', { model: 'opus' }, false, 5000);
+      const result = ToolFormatter.formatOneLineToolComplete('mcp__agent__chat', { model: 'opus' }, false, 5000);
       expect(result).toContain('🟢');
-      expect(result).toContain('MCP: llm → chat');
+      expect(result).toContain('MCP: agent → chat');
       expect(result).toContain('— 5.0s');
     });
 

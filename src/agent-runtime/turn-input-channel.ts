@@ -12,8 +12,12 @@
  * both: it yields the turn's opening user message, then anything the host
  * `push()`es while the turn runs (the CLI delivers those at the next tool-call
  * boundary, inside the SAME turn), and it ends only when the host `close()`s
- * it. `ClaudeHandler` closes it on the turn's `result` frame, so "one turn per
- * `query()`" is preserved — the CLI process still dies with the turn.
+ * it. `ClaudeHandler` closes it on the `result` that answers the turn's opening
+ * message — attributed by the uuid stamped on that message, NOT the first
+ * `result` to arrive (a resumed session can first drain an orphan
+ * background-task notification and close it with a `result` of its own,
+ * #257) — so "one turn per `query()`" is preserved: the CLI process still
+ * dies with the turn.
  *
  * Backpressure: none by design. The queue is an unbounded array because the
  * producer is a human typing into Slack; a bounded queue would drop or block a
@@ -78,13 +82,23 @@ export interface TurnSteeringPort {
   cancelSteeredMessage(sessionKey: string, uuid: string): Promise<'withdrawn' | 'already-dequeued' | 'unreachable'>;
 }
 
-/** Build the opening message of a streaming-input turn from the prompt text. */
-export function buildInitialUserMessage(prompt: string): SteerUserMessage {
-  return {
+/**
+ * Build the opening message of a streaming-input turn from the prompt text.
+ *
+ * `uuid` is the turn's attribution key: the CLI echoes it as the
+ * `user_message_uuid` of the `result` that answers this message, which is how
+ * the host tells that result apart from one the CLI emits for something else
+ * (an orphan background-task notification drained on resume, #257).
+ * Omitted → the message carries no uuid, as before.
+ */
+export function buildInitialUserMessage(prompt: string, uuid?: string): SteerUserMessage {
+  const message: SteerUserMessage = {
     type: 'user',
     message: { role: 'user', content: prompt },
     parent_tool_use_id: null,
   };
+  if (uuid) message.uuid = uuid as SteerUserMessage['uuid'];
+  return message;
 }
 
 /**
