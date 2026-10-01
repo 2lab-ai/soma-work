@@ -32,7 +32,16 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
 
 ## 2. 기본 비활성 + 3중 게이트
 
-세 게이트가 모두 통과해야 시도가 디스패치된다. 하나라도 없으면 요청은 거부되고 스레드는 평소대로 동작한다.
+세 게이트가 모두 통과해야 시도가 디스패치된다. 하나라도 실패하면 그 요청 메시지는 **버려진다** — 일반 핸들러로
+넘어가 평범한 턴이 되지 않는다. 마커 줄이 없는 다른 메시지는 이 게이트와 무관하게 평소대로 처리된다.
+
+> **수신기가 꺼진 상태(기본값)에서도 같다.** `app_mention`에서 선행 멘션을 떼어낸 어느 줄이
+> `EAGLE_INCIDENT_REQUEST:`로 시작하면, 신뢰 앵커가 없어도 분류기가 `receiver_disabled`로 거부하고
+> (`packages/slack/src/incident-contract.ts:209`), ingress는 `Incident request denied` warn 로그
+> (`reason: receiver_disabled`)를 남긴 뒤 이벤트를 버린다 (`packages/slack/src/event-router.ts:676`).
+> 통과(pass-through)시키지 않는다 — 통과시키면 마커 메시지가 평범한 턴으로 실행된다.
+> 마커가 줄 중간에만 있는 메시지는 요청이 아니므로 평소대로 처리된다 (`packages/slack/src/incident-contract.ts:203`).
+> 회귀 테스트: `src/slack/__tests__/incident-ingress.test.ts:252`.
 
 1. **Trust** — `SOMA_INCIDENT_TRUSTED_SOURCE` 미설정/JSON 파손/필드 누락 ⇒ `null` ⇒ 분류기가 `receiver_disabled`
    (`packages/slack/src/incident-contract.ts:209`). 발신 봇/팀/앱/유저/채널이 앵커와 정확히 일치해야 하고,
@@ -75,6 +84,13 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
 
 - 모델 텍스트는 **스트리밍되지 않는다.** 누적 → 검증 → host가 렌더한 한 줄만 스레드에 올라간다
   (`src/incident/attempt-output.ts`).
+- 그 결론은 모델 문자열(summary, proposal action)을 되싣지만 **해석되지 않는다.** 인시던트 세션의 턴은
+  directive(`channel_message` 등)·선택지 JSON·전송 오류 가드 없이 그대로 한 번 게시된다
+  (`packages/slack/src/pipeline/stream-executor.ts:1387`, `packages/slack/src/stream-processor.ts:1277`).
+- 도구 호출은 evidence 도구 이름일 때만 host가 `input: {}`로 다시 써서 보인다. 다른 도구 호출과 모델이 쓴
+  인자는 스레드에 나가지 않는다 (`src/incident/attempt-output.ts:476`).
+- 결론의 `status`는 종결 상태만 가능하다. `running`(eagle-eye에서 진행 표시)은 결론으로 거부되고 host가
+  `inconclusive`(cause `non_terminal_status`)를 쓴다.
 - evidence의 provenance는 `eagle_eye_collector_snapshot`이다. 즉 **수집기가 언제 무엇을 관측했는지**이며,
   지금 시스템이 어떤 상태인지에 대한 **독립 재측정(reprobe)이 아니고, 근본원인 확정도 아니다.**
   결과의 `uncertainties`에는 이 caveat이 항상 포함된다(`INCIDENT_SOURCE_CAVEAT`).
