@@ -1778,6 +1778,144 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect((finalSnap.registry.slots[0] as any).oauthAttachment?.attachedAt).toBe(freshAttachedAt);
       expect((finalSnap.registry.slots[0] as any).oauthAttachment?.accessToken).toBe('oat-SHARED');
     });
+
+    // ── T5k / T5l / T5m: usage dedupe is keyed by attachment generation ──
+    //
+    // The generation guard drops a stale generation's usage write. If the
+    // fresh generation's attach-time usage leg shared the stale generation's
+    // in-flight fetch, the fresh attachment would get no usage at all until
+    // the next card open.
+    const usageSnapshot = (utilization: number) => ({
+      fetchedAt: '2026-04-19T00:00:00Z',
+      fiveHour: { utilization, resetsAt: '2026-04-19T05:00:00Z' },
+    });
+    const STALE_USAGE = usageSnapshot(11);
+    const FRESH_USAGE = usageSnapshot(22);
+    const attachedAtOf = (snap: { registry: { slots: unknown[] } }): number | undefined =>
+      (snap.registry.slots[0] as { oauthAttachment?: { attachedAt?: number } } | undefined)?.oauthAttachment
+        ?.attachedAt;
+
+    /**
+     * Attach a stale generation, hold its attach-time usage fetch upstream,
+     * then detach and re-attach. Returns both attach-time usage legs; the
+     * stale one stays held until `releaseStale()`.
+     */
+    const reattachWhileStaleUsageHeld = async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      let releaseStale!: () => void;
+      const staleGate = new Promise<void>((r) => {
+        releaseStale = r;
+      });
+      let signalStaleStarted!: () => void;
+      const staleStarted = new Promise<void>((r) => {
+        signalStaleStarted = r;
+      });
+      // Keyed on the token: each generation's fetch is told apart by the
+      // credentials it was issued with.
+      fetchUsageMock.mockImplementation(async (token: string) => {
+        if (token === 'oat-STALE') {
+          signalStaleStarted();
+          await staleGate;
+          return { snapshot: STALE_USAGE, nextFetchAllowedAtMs: Date.now() + 60_000 };
+        }
+        return { snapshot: FRESH_USAGE, nextFetchAllowedAtMs: Date.now() + 60_000 };
+      });
+      const usageSpy = vi.spyOn(tm, 'fetchAndStoreUsage');
+      const profileSpy = vi.spyOn(tm, 'refreshOAuthProfile');
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: 'oat-STALE' }), true);
+      const staleAttachedAt = attachedAtOf(await store.load());
+      expect(typeof staleAttachedAt).toBe('number');
+      // The stale generation's attach-time usage fetch is now held upstream.
+      await staleStarted;
+      // Let the clock pass the stale fingerprint so the re-attach mints a
+      // strictly different `attachedAt` (Date.now() resolution is 1ms).
+      while (Date.now() <= (staleAttachedAt as number)) {
+        await new Promise((r) => setImmediate(r));
+      }
+      await tm.detachOAuth(slot.keyId);
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: 'oat-FRESH' }), true);
+      const freshAttachedAt = attachedAtOf(await store.load());
+      expect(typeof freshAttachedAt).toBe('number');
+      expect(freshAttachedAt).not.toBe(staleAttachedAt);
+      expect(usageSpy).toHaveBeenCalledTimes(2);
+      const [staleLeg, freshLeg] = usageSpy.mock.results.map((r) => r.value as Promise<unknown>);
+      const settleProfileLegs = () => Promise.allSettled(profileSpy.mock.results.map((r) => r.value));
+      return { store, slot, staleLeg, freshLeg, releaseStale, freshAttachedAt, settleProfileLegs };
+    };
+
+    it('T5k: re-attach while the stale usage fetch is held — the fresh generation fetches and persists its own usage', async () => {
+      const { store, slot, staleLeg, freshLeg, releaseStale, freshAttachedAt, settleProfileLegs } =
+        await reattachWhileStaleUsageHeld();
+      releaseStale();
+      const [, freshResult] = await Promise.all([staleLeg, freshLeg]);
+      // The fresh attach-time leg made its own round-trip with the fresh token.
+      expect(fetchUsageMock.mock.calls.map((c) => c[0])).toEqual(['oat-STALE', 'oat-FRESH']);
+      // It returned the fresh generation's numbers, not the stale ones.
+      expect(freshResult).toEqual(FRESH_USAGE);
+      // The fresh usage persisted; the stale write was dropped by the guard.
+      const finalSnap = await store.load();
+      expect(finalSnap.state[slot.keyId]?.usage).toEqual(FRESH_USAGE);
+      expect(attachedAtOf(finalSnap)).toBe(freshAttachedAt);
+      await settleProfileLegs();
+    });
+
+    it('T5l: the fresh generation usage leg settles, persisted, while the stale fetch is still held', async () => {
+      const { store, slot, staleLeg, freshLeg, releaseStale, settleProfileLegs } = await reattachWhileStaleUsageHeld();
+      // The stale fetch is NOT released yet. A fresh leg that shared it could
+      // not settle here.
+      const freshResult = await freshLeg;
+      expect(fetchUsageMock.mock.calls.map((c) => c[0])).toEqual(['oat-STALE', 'oat-FRESH']);
+      expect(freshResult).toEqual(FRESH_USAGE);
+      expect((await store.load()).state[slot.keyId]?.usage).toEqual(FRESH_USAGE);
+      // Releasing the stale fetch afterwards must not overwrite it.
+      releaseStale();
+      await staleLeg;
+      expect((await store.load()).state[slot.keyId]?.usage).toEqual(FRESH_USAGE);
+      await settleProfileLegs();
+    });
+
+    it('T5m: two concurrent fetches for the same generation still make one network call (control)', async () => {
+      const { mod, storeMod } = await importSut();
+      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
+      const tm = new mod.TokenManager(store);
+      await tm.init();
+      const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
+      const profileSpy = vi.spyOn(tm, 'refreshOAuthProfile');
+      const usageSpy = vi.spyOn(tm, 'fetchAndStoreUsage');
+      // The attach-time usage leg gets no upstream result, so it settles
+      // without a write; settle it before the concurrent pair starts.
+      fetchUsageMock.mockImplementation(async () => null);
+      await tm.attachOAuth(slot.keyId, makeOAuthCreds({ accessToken: 'oat-ONE-GEN' }), true);
+      await usageSpy.mock.results[0].value;
+      fetchUsageMock.mockClear();
+      let releaseFetch!: () => void;
+      const fetchGate = new Promise<void>((r) => {
+        releaseFetch = r;
+      });
+      fetchUsageMock.mockImplementation(async () => {
+        await fetchGate;
+        return { snapshot: FRESH_USAGE, nextFetchAllowedAtMs: Date.now() + 60_000 };
+      });
+      const loadSpy = vi.spyOn(store, 'load');
+      const loadsBefore = loadSpy.mock.results.length;
+      const first = tm.fetchAndStoreUsage(slot.keyId);
+      const second = tm.fetchAndStoreUsage(slot.keyId, { force: true });
+      // Each call reads the store on entry to learn the slot's generation.
+      // Once those reads settle, both calls have passed the in-flight lookup,
+      // so releasing the upstream cannot let the second call miss the first.
+      await Promise.all(loadSpy.mock.results.slice(loadsBefore).map((r) => r.value));
+      releaseFetch();
+      const results = await Promise.all([first, second]);
+      expect(fetchUsageMock).toHaveBeenCalledTimes(1);
+      expect(fetchUsageMock).toHaveBeenCalledWith('oat-ONE-GEN');
+      expect(results).toEqual([FRESH_USAGE, FRESH_USAGE]);
+      expect((await store.load()).state[slot.keyId]?.usage).toEqual(FRESH_USAGE);
+      await Promise.allSettled(profileSpy.mock.results.map((r) => r.value));
+    });
   });
 
   // ── T10/T10b: api_key runtime fence (Z3) ───────────────────
