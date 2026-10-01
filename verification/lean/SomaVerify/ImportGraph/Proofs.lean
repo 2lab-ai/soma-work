@@ -90,7 +90,7 @@ theorem repo_covered : Covers Generated.graph Generated.productionFileCount := b
   unfold Covers
   decide +kernel
 
-/-- No stdio MCP server loads env-paths: `mcpServerEntries` are these eight server entry files,
+/-- No stdio MCP server loads env-paths: `mcpServerEntries` are these seven server entry files,
 and no chain of runtime loads from any of them reaches `src/env-paths.ts` or
 `packages/common/src/env-paths.ts`, whose load-time banner would be written to the server's
 stdout, its JSON-RPC channel. A new server fails the first conjunct until it is added to this
@@ -101,7 +101,6 @@ theorem mcp_servers_never_load_env_paths :
     Generated.mcpServerEntries.map (Generated.paths[·]?) =
         [some "packages/mcp-servers/agent/agent-mcp-server.ts",
           some "packages/mcp-servers/cron/cron-mcp-server.ts",
-          some "packages/mcp-servers/llm/llm-mcp-server.ts",
           some "packages/mcp-servers/mcp-tool-permission/mcp-tool-permission-mcp-server.ts",
           some "packages/mcp-servers/model-command/model-command-mcp-server.ts",
           some "packages/mcp-servers/permission/permission-mcp-server.ts",
