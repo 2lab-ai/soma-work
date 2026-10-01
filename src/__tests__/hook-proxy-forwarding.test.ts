@@ -63,6 +63,8 @@ describe('hook-proxy.sh proxy mode', () => {
   it.each([
     ['Task', 'pre_tool_use'],
     ['Task', 'post_tool_use'],
+    ['Agent', 'pre_tool_use'],
+    ['Agent', 'post_tool_use'],
     ['mcp__slack-mcp__send_thread_message', 'pre_tool_use'],
     ['mcp__anything', 'post_tool_use'],
   ])('forwards %s on %s', async (toolName, event) => {

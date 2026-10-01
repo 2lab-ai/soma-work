@@ -12,12 +12,14 @@
 ## GitHub Workflows
 - Bot tokens cannot modify `.github/workflows/`. Use `gh` CLI instead.
 
-## Smart Subordinate Model (MCP)
-Delegate to a subordinate model only when the user explicitly requests it or when task complexity clearly justifies it.
+## Smart Subordinate Models (subagents)
+Delegate to a subordinate model only when the user explicitly requests it or when task complexity clearly justifies it. External engines are reached by spawning the zworkflow subagents directly (`Agent` tool, `subagent_type: "zworkflow:<name>"` — the plugin namespace is mandatory, bare names do not resolve) — there is no LLM MCP tool.
 
-Available subordinate MCPs:
-- `llm_chat(model: codex)` — strongest option
-- `subagent (opus)` — secondary / tiebreaker option (gemini is not used in workflows)
+Available subordinate subagents:
+- `zworkflow:astra-zhuge` (model: astra) — strategist, strongest option for review / decision briefs
+- `zworkflow:grok-elon` (model: grok) — physics-first / cost-structure counterpart
+- `zworkflow:fable-zhuge` (model: fable) — anthropic-engine strategist, tiebreaker
+- Consensus on a brief → `local:trinity` (runs all three until unanimous)
 
 ## Slack Output Formatting
 Your replies are rendered as Slack messages (streamed `markdown_text`, or Block Kit on fallback). Slack's renderer is NOT full GitHub Markdown — write so it renders cleanly:

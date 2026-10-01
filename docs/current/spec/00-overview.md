@@ -89,7 +89,6 @@ Claude Code Slack Bot은 Slack 워크스페이스 내에서 Claude Code SDK를 �
 | Claude Usage | `claude-usage.ts` | 토큰 사용량 추적 |
 | Credential Alert | `credential-alert.ts` | 자격증명 경고 |
 | Link Metadata Fetcher | `link-metadata-fetcher.ts` | 링크 프리뷰 메타데이터 |
-| LLM MCP Server | `llm-mcp-server.ts` | LLM을 MCP 서버로 노출 |
 | Model Command MCP Server | `model-command-mcp-server.ts` | 모델 전환 MCP |
 | Release Notifier | `release-notifier.ts` | 릴리스 알림 |
 
@@ -252,7 +251,6 @@ soma-work/
 │   ├── channel-registry.ts           # Channel management
 │   ├── claude-usage.ts               # Token usage tracking
 │   ├── link-metadata-fetcher.ts      # Link preview
-│   ├── llm-mcp-server.ts            # LLM as MCP server
 │   ├── model-command-mcp-server.ts   # Model switching MCP
 │   ├── release-notifier.ts           # Release notifications
 │   ├── [other utilities]
