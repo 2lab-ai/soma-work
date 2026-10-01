@@ -1,3 +1,4 @@
+import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import type { ClaudeHandler } from '../../claude-handler';
 import type { McpManager } from '../../mcp-manager';
 import type { WorkflowType } from '../../types';
@@ -55,6 +56,13 @@ export interface CommandDependencies {
   contextWindowManager: ContextWindowManager;
   // Compaction Tracking (#617): required by /compact-threshold handler for per-user persistence.
   userSettingsStore: UserSettingsStore;
+  /**
+   * Live follow-up queue view for a session key (A40 `queue`/`큐`). Optional:
+   * only the host wires it (`slack-handler.ts` passes its own
+   * `getFollowupView`), and a router built without it answers "대기 중인
+   * 메시지가 없습니다" rather than failing.
+   */
+  getFollowupView?: (sessionKey: string) => FollowupQueueView | undefined;
 }
 
 /**

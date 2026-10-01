@@ -17,8 +17,17 @@ export const AUTH_ACTION_IDS = {
   remove: 'auth_llmux_open_remove',
   /** Open the llmux Settings modal (base URL / API key). */
   settings: 'auth_llmux_open_settings',
-  /** Re-render the card with a fresh /llmux/status fetch. */
+  /** Re-render the card with a fresh /llmux/status fetch. Value: JSON `{viewerMode,page}` (legacy `'refresh'` tolerated). */
   refresh: 'auth_refresh',
+  /**
+   * Viewer-mode toggle: [Admin mode] on the readonly overview (admins
+   * only) ⟷ [Overview] on the admin card. Value: JSON `{viewerMode,page}`
+   * where `viewerMode` is the TARGET mode. The handler re-checks the
+   * actor's authorization — a forged `admin` demotes to readonly.
+   */
+  viewer: 'auth_view_mode',
+  /** Account-list pagination. Value: JSON `{viewerMode,page}` (target page). */
+  page: 'auth_page',
   /** Dismiss the card (shared ZSettings chrome semantics). */
   cancel: 'z_setting_auth_cancel',
 } as const;

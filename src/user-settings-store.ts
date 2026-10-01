@@ -1,6 +1,7 @@
 import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_NAMES } from '@soma/slack/output-flags';
 import fs from 'fs';
 import path from 'path';
+import { SDK_EFFORT_LEVELS as EFFORT_LEVELS, type SdkEffortLevel as EffortLevel } from 'soma-lib';
 import {
   DEFAULT_PERMISSION_MODE,
   isPermissionMode,
@@ -101,6 +102,7 @@ const fireSettingsInvalidate = invalidator.fire;
 export const AVAILABLE_MODELS = [
   'claude-fable-5-1',
   'claude-fable-5',
+  'claude-opus-5-5',
   'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
@@ -111,6 +113,7 @@ export const AVAILABLE_MODELS = [
   'claude-haiku-4-5-20251001',
   'claude-fable-5-1[1m]',
   'claude-fable-5[1m]',
+  'claude-opus-5-5[1m]',
   'claude-opus-5[1m]',
   'claude-opus-4-8[1m]',
   'claude-opus-4-7[1m]',
@@ -161,10 +164,12 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'sonnet-4.5': 'claude-sonnet-4-5-20250929',
   // `opus` / `opus[1m]` follow the current latest opus — bump these two rows
   // (plus AVAILABLE_MODELS) when a new generation lands. Both point at the
-  // `[1m]` variant: bare Opus 5 is a 200k profile, so the shorthand would
+  // `[1m]` variant: bare Opus 5.5 is a 200k profile, so the shorthand would
   // otherwise silently hand the user a fifth of the window they asked for.
-  // `opus-5` stays available for someone who explicitly wants the 200k id.
-  opus: 'claude-opus-5[1m]',
+  // The llmux catalog maps its `opus` alias to the same `claude-opus-5-5[1m]`.
+  // `opus-5-5` pins 5.5 (1M); `opus-5` stays on the bare 200k Opus 5 id.
+  opus: 'claude-opus-5-5[1m]',
+  'opus-5-5': 'claude-opus-5-5[1m]',
   'opus-5': 'claude-opus-5',
   'opus-4.8': 'claude-opus-4-8',
   'opus-4.7': 'claude-opus-4-7',
@@ -209,7 +214,8 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'gpt-6': 'gpt-6-astra[1m]',
   gpt6: 'gpt-6-astra[1m]',
   // 1M-context opt-in variants.
-  'opus[1m]': 'claude-opus-5[1m]',
+  'opus[1m]': 'claude-opus-5-5[1m]',
+  'opus-5-5[1m]': 'claude-opus-5-5[1m]',
   'opus-5[1m]': 'claude-opus-5[1m]',
   'opus-4.8[1m]': 'claude-opus-4-8[1m]',
   'opus-4.7[1m]': 'claude-opus-4-7[1m]',
@@ -223,7 +229,7 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
  * imports the same literal. That eager import constructs the settings singleton
  * before `main()`, so `src/index.ts` reloads it after an applied migration.
  */
-export const OPUS_DEFAULT_MIGRATION_TARGET: ModelId = 'claude-opus-5[1m]';
+export const OPUS_DEFAULT_MIGRATION_TARGET: ModelId = 'claude-opus-5-5[1m]';
 
 /** Every claude opus generation, bare or `[1m]`, dated or not. */
 const OPUS_FAMILY_RE = /^claude-opus-/i;
@@ -232,7 +238,7 @@ const OPUS_FAMILY_RE = /^claude-opus-/i;
  * Migrate ONE persisted user-default model id to the current opus target.
  *
  * Scope is deliberately narrow — user DEFAULTS only, opus family only:
- *   - `claude-opus-*` (4.5 … 4.8 and 5, bare or `[1m]`) → `claude-opus-5[1m]`;
+ *   - `claude-opus-*` (4.5 … 5.5, bare or `[1m]`) → `claude-opus-5-5[1m]`;
  *   - anything else is returned BYTE-identical, including whitespace/case
  *     oddities (normalisation is `coerceToAvailableModel`'s job, and a
  *     migration that "tidied" a non-opus value would be indistinguishable
@@ -291,9 +297,10 @@ export function coerceToAvailableModel(raw: string | null | undefined): string {
   return DEFAULT_MODEL;
 }
 
-// Effort levels
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+export type { SdkEffortLevel as EffortLevel } from 'soma-lib';
+// Effort levels — this store's menu is the SDK subset (no `ultra`, which only
+// some llmux codex tiers offer): soma-lib `SDK_EFFORT_LEVELS`.
+export { SDK_EFFORT_LEVELS as EFFORT_LEVELS } from 'soma-lib';
 export const DEFAULT_EFFORT: EffortLevel = 'xhigh';
 
 /** Coerce arbitrary stored input to a known EffortLevel, falling back to DEFAULT_EFFORT. */
@@ -1302,6 +1309,10 @@ export class UserSettingsStore {
         return 'Fable 5';
       case 'claude-fable-5[1m]':
         return 'Fable 5 (1M)';
+      case 'claude-opus-5-5':
+        return 'Opus 5.5';
+      case 'claude-opus-5-5[1m]':
+        return 'Opus 5.5 (1M)';
       case 'claude-opus-5':
         return 'Opus 5';
       case 'claude-opus-5[1m]':

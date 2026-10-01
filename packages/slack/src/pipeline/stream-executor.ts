@@ -9,6 +9,7 @@ import {
 import type { ActionHandlers } from '../actions';
 import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
 import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
+import type { AgentStreamEventOf } from '../agent-stream-types';
 import type { AssistantStatusManager } from '../assistant-status-manager';
 import { type CompactStateSession, promotePendingToDispatchQueue } from '../compact-state';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
@@ -35,6 +36,7 @@ import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
 import {
   AgentStreamProcessor,
+  type InterruptFlushFailure,
   readIdleTimeoutMs,
   type StreamCallbacks,
   type StreamContext,
@@ -42,7 +44,7 @@ import {
 } from '../stream-processor';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer';
-import type { ThreadPanel, TurnAddress, TurnContext } from '../thread-panel';
+import type { ThreadPanel, TurnAddress, TurnContext, TurnEndReason } from '../thread-panel';
 import type { TodoDisplayManager } from '../todo-display-manager';
 import type { ToolEventProcessor } from '../tool-event-processor';
 import type { ToolTracker } from '../tool-tracker';
@@ -345,6 +347,22 @@ interface StreamExecutorDeps {
    * and passed to both `StreamExecutor` here and `ActionHandlers`.
    */
   pendingInstructionConfirmStore?: PendingInstructionConfirmStore;
+  /**
+   * User-steering lifecycle sink. Fires once per `steer_lifecycle` frame the
+   * running turn emits, stamped with the SAME `sessionKey` the host queued the
+   * follow-up under and the same key `streamAgentEvents` receives as its 6th
+   * argument — that triple (key, uuid, phase) is the join the host needs to
+   * answer "did my queued message land in this turn?".
+   *
+   * Optional: hosts that do not run the follow-up queue omit it. Must be cheap
+   * and must not throw — the processor swallows throws so a registry bug
+   * cannot kill the user's turn.
+   */
+  onSteerLifecycle?: (args: {
+    sessionKey: string;
+    uuid: string;
+    phase: AgentStreamEventOf<'steer_lifecycle'>['phase'];
+  }) => void | Promise<void>;
 }
 
 interface StreamExecuteParams {
@@ -374,6 +392,19 @@ interface StreamExecuteParams {
   sourceChannel?: string;
   /** True when the prompt originates from a real user message (not auto-resume, continuation, /renew load, etc.) */
   isUserInput?: boolean;
+  /**
+   * A28 — the session's follow-up turn generation at the moment the host
+   * dispatched THIS run. Captured once at `execute()` entry and carried
+   * explicitly into every turn-owned header write (status, panel, cleanup,
+   * error rail), so a late write from a turn that `Send now` already
+   * superseded is dropped by the surface instead of repainting the new turn.
+   *
+   * Explicitly a per-execution VALUE, not a lookup: reading the session's
+   * current generation at callback time would always match and gate nothing.
+   * Optional — a host that does not run the follow-up queue omits it and the
+   * surface keeps its legacy ungated behaviour.
+   */
+  followupTurnEpoch?: number;
 }
 
 /**
@@ -446,12 +477,42 @@ const KNOWN_ABORT_REASONS: ReadonlySet<RequestAbortReason> = new Set([
   'session-close',
   'shutdown',
   'stall-timeout',
+  // user-interrupted — explicit `Send now` interrupt (U6/A11). Trusted so the
+  // turn end can carry the literal tag; an untrusted collapse to
+  // UNKNOWN_ABORT_REASON would surface a 🔴 card for an action the user just
+  // took deliberately.
+  'user-interrupted',
   // ghost-session — onToolUse / onToolResult observed `session.terminated`
   // mid-stream and aborted the local controller. Surface a terminal card
   // because the session died out-of-band; the user has no other signal.
   // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-1.
   'ghost-session',
 ]);
+
+/**
+ * Turn-end tag for an explicit user interrupt (U6 `Send now`, A11). The turn
+ * surface marks the preserved partial output with this literal instead of the
+ * generic `'aborted'`, so a later reader can tell "the user cut this short on
+ * purpose" from "the turn died". Consumer of the `TurnEndReason` arm declared
+ * in `turn-surface.ts` — a narrowed alias here keeps the executor's call site
+ * honest if that union ever widens further.
+ */
+const USER_INTERRUPTED_TURN_END: TurnEndReason = 'user-interrupted';
+
+/**
+ * Header phase for an explicit user interrupt. '요청 취소됨' reads as "your
+ * request was dropped"; a `Send now` is a deliberate handoff and the partial
+ * output stays on the thread.
+ */
+const USER_INTERRUPTED_PHASE = '사용자 요청으로 중단';
+
+/**
+ * A11 — appended to {@link USER_INTERRUPTED_PHASE} when the interrupt rescue
+ * could not be delivered. Without it the turn reads as a clean interrupt while
+ * its last paragraph is silently missing, which is the worse failure: the user
+ * cannot tell that anything is gone, so they never ask for it again.
+ */
+const PARTIAL_OUTPUT_LOST_NOTE = '⚠️ 중단 시점의 일부 출력을 전송하지 못했습니다';
 
 /**
  * Internal sentinel for the B-2 defense-in-depth path. NOT exported and NOT
@@ -819,6 +880,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // on different threads don't clobber each other.
     const epoch = this.deps.assistantStatusManager.bumpEpoch(channel, threadTs);
 
+    // A28 — capture the follow-up turn generation ONCE, here, and pass this
+    // value (never a fresh read of `session`) to every turn-owned header
+    // write below, including the ones that run after teardown. Function-scope
+    // like `epoch`: an instance Map keyed by sessionKey would race between
+    // concurrent executions on the same key, which is exactly the window
+    // `Send now` opens.
+    const turnEpochToken = params.followupTurnEpoch;
+
     // Cancel summary timer on new user input
     // Trace: docs/archive/features/turn-summary-lifecycle/trace.md, S2
     if (this.deps.summaryTimer) {
@@ -1005,6 +1074,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-1.
     const idleTimeoutMs = readIdleTimeoutMs();
 
+    // A11 — set when the processor could not deliver the text an explicit
+    // interrupt left buffered. Declared OUTSIDE the try because the abort path
+    // leaves through `throw` → catch → handleError, and the header write that
+    // must name the loss lives on the far side of that boundary.
+    let interruptFlushFailed: InterruptFlushFailure | undefined;
+
     try {
       if (this.deps.threadPanel) {
         await runWithTimeout(() => this.deps.threadPanel!.beginTurn(turnContext), 5_000, {
@@ -1013,11 +1088,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
       }
       this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
-      await this.updateRuntimeStatus(session, sessionKey, {
-        agentPhase: '생각 중',
-        activeTool: undefined,
-        waitingForChoice: false,
-      });
+      // Epoch-scoped like every other status write on this turn (#688): a
+      // superseded turn's late working-state write must not overwrite the
+      // newer turn's status.
+      await this.updateRuntimeStatus(
+        session,
+        sessionKey,
+        {
+          agentPhase: '생각 중',
+          activeTool: undefined,
+          waitingForChoice: false,
+        },
+        turnEpochToken,
+      );
 
       // #617 followup: Claude Agent SDK only recognizes local slash commands
       // (/compact, /clear, /model, etc.) when the prompt STARTS with the /cmd
@@ -1321,8 +1404,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       // Create stream callbacks
       const streamCallbacks: StreamCallbacks = {
+        // HEARTBEAT. The transport spoke — that is all this proves, so it
+        // advances `lastSignalAt` and nothing else. Advancing the progress
+        // clock here is exactly the lie U9 removes: a session emitting usage
+        // frames while producing nothing would read as "working".
         onSdkActivity: () => {
           this.deps.requestCoordinator.touchSession(sessionKey);
+          this.recordLiveness(session, sessionKey, { lastSignalAt: Date.now() }, turnEpochToken);
+        },
+        // REAL PROGRESS (U9). Model output / tool call / tool result / plan /
+        // background-task lifecycle. Progress is also a signal, so both clocks
+        // move; the header can then show the divergence when only the
+        // heartbeat is alive.
+        onProgress: ({ at }) => {
+          this.recordLiveness(session, sessionKey, { lastSignalAt: at, lastProgressAt: at }, turnEpochToken);
         },
         // Fires from inside `StreamProcessor.process` when the SDK
         // iterator has been silent for `idleTimeoutMs`. Tag the LOCAL
@@ -1351,10 +1446,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             );
           }
           const toolName = toolUses[0]?.name;
-          await this.updateRuntimeStatus(session, ctx.sessionKey, {
-            agentPhase: toolName ? '도구 실행 중' : '작업 중',
-            activeTool: toolName,
-          });
+          await this.updateRuntimeStatus(
+            session,
+            ctx.sessionKey,
+            {
+              agentPhase: toolName ? '도구 실행 중' : '작업 중',
+              activeTool: toolName,
+            },
+            turnEpochToken,
+          );
           // Track tool start times for per-request stats
           for (const tu of toolUses) {
             toolStartTimes.set(tu.id, Date.now());
@@ -1395,10 +1495,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             toolStats[name].count++;
             toolStats[name].totalDurationMs += duration;
           }
-          await this.updateRuntimeStatus(session, ctx.sessionKey, {
-            agentPhase: '결과 반영 중',
-            activeTool: undefined,
-          });
+          await this.updateRuntimeStatus(
+            session,
+            ctx.sessionKey,
+            {
+              agentPhase: '결과 반영 중',
+              activeTool: undefined,
+            },
+            turnEpochToken,
+          );
           await this.deps.toolEventProcessor.handleToolResult(toolResults, {
             channel: ctx.channel,
             threadTs: ctx.threadTs,
@@ -1420,7 +1525,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
             },
           );
-          const commandResult = await this.handleModelCommandToolResults(toolResults, session, ctx);
+          const commandResult = await this.handleModelCommandToolResults(toolResults, session, ctx, turnEpochToken);
           if (commandResult.hasPendingChoice) {
             toolChoicePending = true;
           }
@@ -1448,6 +1553,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           // resume guard reads — replaces the old heuristic (spawn-ack text +
           // the model polling TaskOutput/BashOutput).
           this.deps.toolEventProcessor.handleAgentTaskLifecycle(event, ctx.sessionKey);
+        },
+        onSteerLifecycle: async (event, ctx) => {
+          // Forward the backend's answer ("this turn consumed uuid X") to the
+          // host queue, keyed by the session the follow-up was queued under.
+          // `ctx.sessionKey` is the same value passed to `streamAgentEvents`
+          // below, so both ends of the join use one string.
+          await this.deps.onSteerLifecycle?.({
+            sessionKey: ctx.sessionKey,
+            uuid: event.uuid,
+            phase: event.phase,
+          });
         },
         onTodoUpdate: async (input, ctx) => {
           // Task list is part of thread header — always update regardless of verbosity.
@@ -1541,7 +1657,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
           // Keep action panel context percentage in sync with latest usage.
           try {
-            await this.deps.threadPanel?.updatePanel(session, sessionKey);
+            await this.deps.threadPanel?.updatePanel(session, sessionKey, { expectedTurnEpoch: turnEpochToken });
           } catch (error) {
             this.logger.debug('Failed to update action panel from usage callback', {
               sessionKey,
@@ -1550,11 +1666,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onChoiceCreated: async (payload, ctx, sourceMessageTs) => {
-          await this.updateRuntimeStatus(session, ctx.sessionKey, {
-            agentPhase: '입력 대기',
-            activeTool: undefined,
-            waitingForChoice: true,
-          });
+          await this.updateRuntimeStatus(
+            session,
+            ctx.sessionKey,
+            {
+              agentPhase: '입력 대기',
+              activeTool: undefined,
+              waitingForChoice: true,
+            },
+            turnEpochToken,
+          );
           await this.deps.threadPanel?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
           // Issue #42 S3: observer — 선택 대기 상태 수집
           turnCollector.onPhaseChange('입력 대기');
@@ -1793,10 +1914,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           abortController,
           workingDirectory,
           slackContext,
+          // 6th arg: the steering registry key. The handler stamps the uuids it
+          // mints for messages pushed into THIS turn under this key, so the
+          // `steer_lifecycle` frames it emits join back to the host's queue for
+          // the same session.
+          sessionKey,
         ),
         streamContext,
         abortController.signal,
       );
+
+      interruptFlushFailed = streamResult.interruptFlushFailed;
 
       if (streamResult.aborted) {
         const abortError = new Error('Request was aborted');
@@ -2003,11 +2131,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       const hasContinuation = Boolean(toolContinuation);
       if (!hasContinuation) {
         this.deps.claudeHandler.setActivityState(channel, threadTs, hasPendingChoice ? 'waiting' : 'idle');
-        await this.updateRuntimeStatus(session, sessionKey, {
-          agentPhase: hasPendingChoice ? '입력 대기' : '사용자 액션 대기',
-          activeTool: undefined,
-          waitingForChoice: hasPendingChoice,
-        });
+        await this.updateRuntimeStatus(
+          session,
+          sessionKey,
+          {
+            agentPhase: hasPendingChoice ? '입력 대기' : '사용자 액션 대기',
+            activeTool: undefined,
+            waitingForChoice: hasPendingChoice,
+          },
+          turnEpochToken,
+        );
       }
 
       // Update action panel with turn summary and latest response permalink
@@ -2447,7 +2580,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // than losing the stream-close log line.
       try {
         if (requestAborted) {
-          await this.deps.threadPanel?.endTurn(turnId, 'aborted');
+          // A11: an explicit `Send now` interrupt closes the turn with its own
+          // literal tag so the surface keeps the partial output marked
+          // `user-interrupted`. Every other abort reason keeps the generic
+          // `'aborted'` tag (unchanged).
+          await this.deps.threadPanel?.endTurn(
+            turnId,
+            abortReason === 'user-interrupted' ? USER_INTERRUPTED_TURN_END : 'aborted',
+          );
         } else {
           await this.deps.threadPanel?.failTurn(turnId, error as Error);
         }
@@ -2481,6 +2621,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         requestAborted,
         activeSlotSnapshot,
         abortReason,
+        turnEpochToken,
+        interruptFlushFailed,
       );
       // `handleError()` ran to completion — it either dispatched a user-facing
       // Exception card (turnNotifier), reset status/reaction, or both.
@@ -2590,7 +2732,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           error: (err as Error)?.message ?? String(err),
         });
       }
-      await this.cleanup(session, sessionKey, abortController, turnId);
+      // A28: the LAST write this turn makes, and the one most likely to land
+      // after `Send now` has already started a new turn — it carries the
+      // captured token.
+      await this.cleanup(session, sessionKey, abortController, turnId, turnEpochToken);
       // Deferred post-compact re-dispatch (compact re-loop fix). When a
       // compact cycle sealed during THIS turn, `postCompactCompleteIfNeeded`
       // parked the intercepted user message on the session instead of
@@ -2730,6 +2875,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // non-abort error path; `'__unknown'` triggers the defense-in-depth
     // notify-worthy branch below.
     abortReason?: CoercedAbortReason,
+    /**
+     * A28 — turn generation captured at `execute()` entry. The error rail's
+     * status writes are late by construction (they run after the turn died),
+     * so they carry the token like every other turn-owned write.
+     */
+    expectedTurnEpoch?: number,
+    /**
+     * A11 — present only when an explicit interrupt left partial answer text
+     * that Slack refused twice. The abort branch below names it on the turn's
+     * own header: an interrupted turn that silently swallowed the last
+     * paragraph is indistinguishable from a model that just stopped writing.
+     */
+    interruptFlushFailed?: InterruptFlushFailure,
   ): Promise<number | undefined> {
     this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
 
@@ -2802,11 +2960,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         reason,
       });
 
-      await this.updateRuntimeStatus(session, sessionKey, {
-        agentPhase: '오류 발생',
-        activeTool: undefined,
-        waitingForChoice: false,
-      });
+      await this.updateRuntimeStatus(
+        session,
+        sessionKey,
+        {
+          agentPhase: '오류 발생',
+          activeTool: undefined,
+          waitingForChoice: false,
+        },
+        expectedTurnEpoch,
+      );
       await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('error'));
 
       const restoreNote = hadFallback && restoredModel ? ` 모델을 \`${restoredModel}\`로 복원했습니다.` : '';
@@ -2865,15 +3028,21 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     //     card so the turn doesn't vanish silently. Trace: §B-2.
     // Silent abort reasons (user already knows the turn ended):
     //   - `supersede` (active mid-turn steering), `user-stop`,
-    //   - `session-close` (explicit Close action), `shutdown`.
+    //   - `session-close` (explicit Close action), `shutdown`,
+    //   - `user-interrupted` (explicit `Send now`, A11): the user authorized
+    //     the interrupt and the next dispatch follows immediately. An
+    //     Exception/Stalled card here would report a deliberate action as a
+    //     failure — the exact heuristic downgrade A11 forbids.
     const stallTimeoutAbort = isAbort && abortReason === 'stall-timeout';
     const ghostSessionAbort = isAbort && abortReason === 'ghost-session';
+    const userInterruptedAbort = isAbort && abortReason === 'user-interrupted';
     const knownSilentAbort =
       isAbort &&
       (abortReason === 'supersede' ||
         abortReason === 'user-stop' ||
         abortReason === 'session-close' ||
-        abortReason === 'shutdown');
+        abortReason === 'shutdown' ||
+        userInterruptedAbort);
     const unknownAbort = isAbort && !stallTimeoutAbort && !ghostSessionAbort && !knownSilentAbort;
     const notifyWorthyAbort = stallTimeoutAbort || ghostSessionAbort || unknownAbort;
     const shouldNotifyException =
@@ -2935,11 +3104,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Trace: docs/current/plans/api-error-status/trace.md, Scenario 5, Section 3a
       const statusPromise = isApiLikeError(error) ? fetchClaudeStatus().catch(() => null) : Promise.resolve(null);
 
-      await this.updateRuntimeStatus(session, sessionKey, {
-        agentPhase: '오류 발생',
-        activeTool: undefined,
-        waitingForChoice: false,
-      });
+      await this.updateRuntimeStatus(
+        session,
+        sessionKey,
+        {
+          agentPhase: '오류 발생',
+          activeTool: undefined,
+          waitingForChoice: false,
+        },
+        expectedTurnEpoch,
+      );
 
       // Clear session only when current conversation context is no longer reusable.
       // Prompt-too-long is recoverable when the emergency fallback-compact path
@@ -3184,11 +3358,33 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     } else {
       // AbortError - preserve session history for conversation continuity
       this.logger.debug('Request was aborted, preserving session history', { sessionKey });
-      await this.updateRuntimeStatus(session, sessionKey, {
-        agentPhase: '요청 취소됨',
-        activeTool: undefined,
-        waitingForChoice: false,
-      });
+      // A11: when the rescue was lost, say so ON THE HEADER the interrupt
+      // already writes. A separate post would land on a turn that just closed
+      // (and, after a `Send now`, under the turn the user just started); the
+      // header is the one surface still owned by the dying turn.
+      const interruptPhase = interruptFlushFailed
+        ? `${USER_INTERRUPTED_PHASE} · ${PARTIAL_OUTPUT_LOST_NOTE}`
+        : USER_INTERRUPTED_PHASE;
+      if (interruptFlushFailed) {
+        this.logger.warn('Explicit interrupt lost part of the partial output', {
+          sessionKey,
+          length: interruptFlushFailed.length,
+          ...(interruptFlushFailed.code ? { code: interruptFlushFailed.code } : {}),
+        });
+      }
+      await this.updateRuntimeStatus(
+        session,
+        sessionKey,
+        {
+          // A11: name the explicit interrupt for what it is. '요청 취소됨' reads as
+          // "your request was dropped"; a `Send now` interrupt is a deliberate
+          // handoff to the next item, and the partial output stays on the thread.
+          agentPhase: userInterruptedAbort ? interruptPhase : '요청 취소됨',
+          activeTool: undefined,
+          waitingForChoice: false,
+        },
+        expectedTurnEpoch,
+      );
 
       await this.deps.reactionManager.updateReaction(sessionKey, this.deps.statusReporter.getStatusEmoji('cancelled'));
     }
@@ -3761,6 +3957,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     sessionKey: string,
     abortController?: AbortController,
     turnId?: string,
+    /**
+     * A28 — the turn generation captured at `execute()` entry. Cleanup runs
+     * after teardown, so by the time its panel render lands a `Send now` may
+     * already own the surface; the token lets that render be dropped instead
+     * of repainting the new turn with this turn's state.
+     */
+    expectedTurnEpoch?: number,
   ): Promise<void> {
     // Ghost Session Fix #99: CAS guard — only remove if this request's controller is still registered
     this.deps.requestCoordinator.removeController(sessionKey, abortController);
@@ -3797,7 +4000,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
 
     try {
-      await this.deps.threadPanel?.updatePanel(session, sessionKey);
+      await this.deps.threadPanel?.updatePanel(session, sessionKey, { expectedTurnEpoch });
     } catch (error) {
       this.logger.debug('Failed to update action panel during cleanup', {
         sessionKey,
@@ -4057,6 +4260,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     return lines.join('\n');
   }
 
+  /**
+   * Single writer for this turn's header status.
+   *
+   * `expectedTurnEpoch` (A28) is the token captured at `execute()` entry and
+   * threaded down explicitly — callers must NOT read the session's current
+   * generation here, because a late write's whole problem is that the session
+   * has already moved on. `undefined` = ungated (legacy callers, hosts without
+   * a follow-up queue).
+   */
   private async updateRuntimeStatus(
     session: ConversationSession,
     sessionKey: string,
@@ -4064,9 +4276,51 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       agentPhase?: string;
       activeTool?: string;
       waitingForChoice?: boolean;
+      /** U9 — only set by a caller that WITNESSED work move (onProgress). */
+      lastProgressAt?: number;
+      /** U9 — heartbeat: the transport spoke (onSdkActivity or real progress). */
+      lastSignalAt?: number;
     },
+    expectedTurnEpoch?: number,
   ): Promise<void> {
-    await this.deps.threadPanel?.setStatus(session, sessionKey, patch);
+    await this.deps.threadPanel?.setStatus(session, sessionKey, patch, { expectedTurnEpoch });
+  }
+
+  /**
+   * U9 — record liveness without touching the phase the turn is displaying.
+   *
+   * `ThreadSurface.setStatus` assigns `agentPhase`/`activeTool` from the patch
+   * unconditionally (thread-surface.ts), so a liveness-only patch would blank
+   * the header. Re-supplying the CURRENT panel values keeps this call a pure
+   * timestamp write. That read is of the render state, not of the turn
+   * generation — the A28 gate still uses the captured `expectedTurnEpoch`, so
+   * a superseded turn's heartbeat is dropped whole.
+   *
+   * Fire-and-forget: both callbacks are synchronous `void` hooks on the stream
+   * loop and must not be blocked by a Slack render.
+   */
+  private recordLiveness(
+    session: ConversationSession,
+    sessionKey: string,
+    liveness: { lastSignalAt: number; lastProgressAt?: number },
+    expectedTurnEpoch?: number,
+  ): void {
+    const panel = session.actionPanel;
+    void this.updateRuntimeStatus(
+      session,
+      sessionKey,
+      {
+        agentPhase: panel?.agentPhase,
+        activeTool: panel?.activeTool,
+        ...liveness,
+      },
+      expectedTurnEpoch,
+    ).catch((err) => {
+      this.logger.debug('liveness status write failed — ignored', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    });
   }
 
   /**
@@ -4499,6 +4753,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     toolResults: Array<{ toolUseId: string; toolName?: string; result: any; isError?: boolean }>,
     session: ConversationSession,
     context: StreamContext,
+    /** A28 — turn generation captured at `execute()` entry (ASK render writes the header). */
+    expectedTurnEpoch?: number,
   ): Promise<{ hasPendingChoice: boolean; continuation?: Continuation; modelCommandResults?: ModelCommandResult[] }> {
     let hasPendingChoice = false;
     let continuation: Continuation | undefined;
@@ -4819,7 +5075,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // ASK render so button payloads + PendingFormStore entries carry the
       // same identity as `pendingChoice.turnId`. `context.turnId` is populated
       // by stream-executor's `execute()` for every turn.
-      await this.renderAskUserQuestionFromCommand(context.turnId, lastQuestion, session, context);
+      await this.renderAskUserQuestionFromCommand(context.turnId, lastQuestion, session, context, expectedTurnEpoch);
     }
 
     return { hasPendingChoice, continuation, modelCommandResults };
@@ -4935,6 +5191,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     question: UserChoice | UserChoices,
     session: ConversationSession,
     context: StreamContext,
+    /** A28 — turn generation captured at `execute()` entry. */
+    expectedTurnEpoch?: number,
   ): Promise<void> {
     try {
       if (question.type === 'user_choices') {
@@ -4959,11 +5217,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
 
     this.deps.claudeHandler.setActivityState(context.channel, context.threadTs, 'waiting');
-    await this.updateRuntimeStatus(session, context.sessionKey, {
-      agentPhase: '입력 대기',
-      activeTool: undefined,
-      waitingForChoice: true,
-    });
+    await this.updateRuntimeStatus(
+      session,
+      context.sessionKey,
+      {
+        agentPhase: '입력 대기',
+        activeTool: undefined,
+        waitingForChoice: true,
+      },
+      expectedTurnEpoch,
+    );
 
     // P3 (parity fix) — pendingQuestion was historically in-memory only. With
     // P3's pendingChoice living on the session + broadcast to the dashboard,

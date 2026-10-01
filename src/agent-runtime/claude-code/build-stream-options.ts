@@ -202,11 +202,11 @@ export async function buildStreamOptions(
   if (slackContext) {
     // PreToolUse: a single unified policy hook (epic #1023 P5). All tool guards
     // — abort, ssh-ban, sensitive-path, cross-user, MCP grant, PR-issue
-    // precondition, bypass-mode allow/ask — collapse into `evaluateToolPolicy`,
-    // whose deny>ask>allow precedence reproduces the prior multi-hook SDK merge
-    // exactly (deny from any guard wins over the bypass allow; dangerous-Bash
-    // escalates to ask). Live state (abort signal, handoff context) is resolved
-    // per call so mid-session aborts and handoff changes are honored.
+    // precondition, mode allow/classify — collapse into `evaluateToolPolicy`,
+    // whose deny > classify/allow > pass precedence reproduces the prior multi-hook
+    // SDK merge (deny from any guard wins over the bypass allow; a dangerous Bash
+    // in auto mode goes to the safety classifier). Live state (abort signal, handoff
+    // context) is resolved per call so mid-session aborts and handoff changes are honored.
     const policyUser = slackContext.user;
     const policyIsAdmin = isAdminUser(slackContext.user);
     const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
@@ -240,13 +240,6 @@ export async function buildStreamOptions(
               ...(result.denyMessage ? { permissionDecisionReason: result.denyMessage } : {}),
             },
           };
-        case 'ask':
-          logger.warn('Tool policy escalating to Slack permission UI', {
-            tool: toolName,
-            user: policyUser,
-            reason: result.reason,
-          });
-          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } };
         case 'classify': {
           // Auto mode: a dangerous-rule hit. Consult the guardian classifier;
           // fail closed to `ask` when no classifier is wired or it errors.

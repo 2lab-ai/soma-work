@@ -75,7 +75,7 @@ Branches are evaluated top-down; the bands are exhaustive — every decision lan
 | Reviewer | Role |
 |----------|------|
 | Yourself | 1 vote — Judgment based on codebase context |
-| `oracle-reviewer` Skill | 1 vote — Review from architecture/pattern perspective (codex) |
+| `oracle-reviewer` Skill | 1 vote — Review from architecture/pattern perspective (trinity chain: astra-zhuge / grok-elon / fable-zhuge) |
 | `subagent (opus)` | 1 vote — Independent review from an Opus subagent (tiebreaker / alternative perspective) |
 
 **Making decisions or asking questions without review is prohibited.**

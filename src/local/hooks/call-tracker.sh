@@ -41,7 +41,7 @@ get_tool_name() {
 get_description() {
   local tool_name="$1"
   local desc
-  if [[ "$tool_name" == "Task" ]]; then
+  if [[ "$tool_name" == "Task" || "$tool_name" == "Agent" ]]; then
     desc=$(echo "$HOOK_INPUT" | jq -r '.tool_input.description // "agent call"' 2>/dev/null)
   else
     desc=$(echo "$tool_name" | sed 's/mcp__plugin_oh-my-claude_//' | sed 's/__/:/g')
@@ -49,11 +49,11 @@ get_description() {
   echo "$desc"
 }
 
-# Only track Task and MCP calls
+# Only track agent (Agent / legacy Task) and MCP calls
 should_track() {
   local tool_name="$1"
   case "$tool_name" in
-    Task|mcp__*) return 0 ;;
+    Task|Agent|mcp__*) return 0 ;;
     *) return 1 ;;
   esac
 }

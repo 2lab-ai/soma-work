@@ -8,7 +8,9 @@ import {
   buildCronCard,
   buildCronEditModal,
   CRON_MODEL_DEFAULT,
+  CRON_MODEL_FABLE,
   CRON_MODEL_FAST,
+  CRON_MODEL_OPUS,
   parseCronActionId,
 } from '../cron-blocks';
 import {
@@ -291,6 +293,8 @@ function buildModePatch(selected: string): CronJobPatch | null {
 /** Map a model select value to a CronJobPatch. */
 function buildModelPatch(selected: string): CronJobPatch | null {
   if (selected === CRON_MODEL_DEFAULT) return { modelConfig: null };
+  if (selected === CRON_MODEL_OPUS) return { modelConfig: { type: 'opus' } };
+  if (selected === CRON_MODEL_FABLE) return { modelConfig: { type: 'fable' } };
   if (selected === CRON_MODEL_FAST) return { modelConfig: { type: 'fast' } };
   if (selected.startsWith('custom:')) {
     const model = selected.slice('custom:'.length);

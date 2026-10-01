@@ -84,6 +84,51 @@ describe('TurnFeedbackActionHandler', () => {
     expect(slackApi.updateMessage).not.toHaveBeenCalled();
   });
 
+  // A32 — on the consolidated surface the feedback row lives on the STREAMED
+  // answer message. `chat.update` there would overwrite the answer, so the ack
+  // must be an ephemeral respond() and the host message must stay untouched.
+  describe('stream-hosted feedback row (A32)', () => {
+    function makeStreamHostBody(userId = 'U1') {
+      const turnId = 'C1-1.2:1700:abc';
+      const body = makeBody({ userId });
+      body.message.blocks = [
+        { type: 'section', text: { type: 'mrkdwn', text: '스트리밍된 답변 본문' } },
+        buildFeedbackContextActions(turnId, userId, { includeDismiss: false, streamHosted: true }) as any,
+      ];
+      return body;
+    }
+
+    it('persists and acks ephemerally WITHOUT touching the host message', async () => {
+      const respond = vi.fn().mockResolvedValue(undefined);
+      await handler().handleFeedback(makeStreamHostBody(), respond);
+
+      expect(store.get('C1-1.2:1700:abc', 'U1')?.sentiment).toBe('positive');
+      expect(slackApi.updateMessage).not.toHaveBeenCalled();
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(respond).toHaveBeenCalledWith({
+        response_type: 'ephemeral',
+        replace_original: false,
+        text: '🙏 피드백 감사합니다',
+      });
+    });
+
+    it('still persists when the ephemeral ack throws', async () => {
+      const respond = vi.fn().mockRejectedValue(new Error('expired_trigger'));
+      await handler().handleFeedback(makeStreamHostBody(), respond);
+
+      expect(store.get('C1-1.2:1700:abc', 'U1')?.sentiment).toBe('positive');
+      expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('legacy card (no marker block_id) keeps the chat.update ack', async () => {
+      const respond = vi.fn().mockResolvedValue(undefined);
+      await handler().handleFeedback(makeBody(), respond);
+
+      expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
+      expect(respond).not.toHaveBeenCalled();
+    });
+  });
+
   it('still persists when the cosmetic update throws', async () => {
     slackApi.updateMessage.mockRejectedValueOnce(new Error('cant_update_message'));
     await handler().handleFeedback(makeBody(), vi.fn());

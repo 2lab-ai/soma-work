@@ -1,5 +1,5 @@
 ---
-description: "zhuge(책사) + elon(physics-first) 두 관점을 한 dispatch 안에서 모두 적용 + 합성 — trinity 패널의 anthropic 슬롯(모델 미지정 = 세션 상속), 또는 '애매하다 / 두 관점 다 보고 싶다'의 단독 default"
+description: "zhuge(책사) + elon(physics-first) 두 관점을 한 dispatch 안에서 모두 적용 + 합성 — '애매하다 / 두 관점 다 보고 싶다'의 단독 default (모델 미지정 = 세션 상속). trinity 패널 슬롯이 아니다 — 패널은 astra-zhuge / grok-elon / fable-zhuge 고정"
 color: "#00CED1"
 ---
 <!-- ported from zbrain .claude/agents/strategist.md for the soma-work zworkflow plugin, 2026-07-16 -->

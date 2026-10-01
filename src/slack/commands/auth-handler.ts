@@ -24,9 +24,9 @@ export interface AuthHandlerDeps {
 /**
  * Handles auth backend commands (#llmux runtime switch):
  *   - `auth`                     — show the auth card (mode + llmux pool /
- *                                  legacy cct card). Non-admin sees the
- *                                  readonly variant: same account info, no
- *                                  mutating buttons, no settings line.
+ *                                  legacy cct card). Everyone starts with
+ *                                  the readonly overview; admins can open
+ *                                  management controls via Admin mode.
  *   - `auth llmux` / `auth cct`  — flip the runtime auth mode (admin only).
  *     (`set auth llmux|cct` is an accepted alias.)
  *   - `auth switch <name>`       — llmux manual account switch (admin only).
@@ -78,9 +78,8 @@ export class AuthHandler implements CommandHandler {
       return { handled: true };
     }
 
-    // status — card render. Viewer mode (admin/readonly) is derived inside
-    // renderAuthCard; readonly only strips mutating affordances + the
-    // settings line, account info renders for everyone.
+    // Status always starts in overview, including for admins. Management
+    // controls require the renderer's explicit, authorized Admin mode action.
     const { text: fallback, blocks } = await renderAuthCard({ userId: user, issuedAt: Date.now() });
     await say({ text: fallback ?? '🔐 Auth', blocks, thread_ts: threadTs });
     return { handled: true };

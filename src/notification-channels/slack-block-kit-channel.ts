@@ -79,8 +79,23 @@ export class SlackBlockKitChannel implements NotificationChannel {
     return true; // Always enabled — core UX
   }
 
-  async send(event: TurnCompletionEvent): Promise<void> {
-    const color = getCategoryColor(event.category);
+  /**
+   * A32 — the completion card composition as a PURE function, so the
+   * consolidated turn surface can append the very same blocks to the streamed
+   * answer via `chat.stopStream` instead of posting a second message.
+   * `send()` renders through this same function, so the two surfaces can never
+   * drift apart.
+   *
+   * `usedConfigDerivedBlocks` is an extra field only `send()` needs (it gates
+   * the `invalid_blocks` retry-with-defaults rail); consumers destructure the
+   * documented `{ blocks, fallbackText, withFeedback }` triple.
+   */
+  buildCompletionBlocks(event: TurnCompletionEvent): {
+    blocks: any[];
+    fallbackText: string;
+    withFeedback: boolean;
+    usedConfigDerivedBlocks: boolean;
+  } {
     const emoji = getCategoryEmoji(event.category);
     const label = getCategoryLabel(event.category);
 
@@ -117,6 +132,27 @@ export class SlackBlockKitChannel implements NotificationChannel {
     // WorkflowComplete gets feedback — feedback on Exception/Stalled/Ask cards
     // is noise. Requires a turnId to key the feedback record on.
     const withFeedback = event.category === 'WorkflowComplete' && typeof event.turnId === 'string' && !!event.turnId;
+
+    return { blocks, fallbackText, withFeedback, usedConfigDerivedBlocks };
+  }
+
+  /**
+   * A32 — mark a message ts as never-deletable for this session. The
+   * consolidated surface hosts the completion blocks on the STREAMED answer
+   * message; tracking that ts would make a later `deleteAll` erase the answer
+   * itself, so the surface protects it instead of tracking it.
+   */
+  protectMessageTs(event: TurnCompletionEvent, messageTs: string): void {
+    this.completionMessageTracker?.protect(`${event.channel}-${event.threadTs}`, messageTs);
+  }
+
+  async send(event: TurnCompletionEvent): Promise<void> {
+    const color = getCategoryColor(event.category);
+    const emoji = getCategoryEmoji(event.category);
+    const label = getCategoryLabel(event.category);
+
+    const { blocks, fallbackText, withFeedback, usedConfigDerivedBlocks } = this.buildCompletionBlocks(event);
+
     const buildPostOptions = (blks: any[]) =>
       withFeedback
         ? { threadTs: event.threadTs, blocks: [...blks, buildFeedbackContextActions(event.turnId!, event.userId)] }
