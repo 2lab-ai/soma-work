@@ -167,6 +167,9 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
 
   afterEach(async () => {
     process.env = originalEnv;
+    // A test that times out inside a fake-timer block never reaches its own
+    // useRealTimers; the settle below needs real timers.
+    vi.useRealTimers();
     // Open any gate the test left closed (see holdGate), then settle the
     // fire-and-forget profile syncs and usage fetches that can still be
     // running (see recordBackgroundWork) before deleting the store they
@@ -2776,12 +2779,16 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
       const tm = new mod.TokenManager(store);
       await tm.init();
+      const syncSpy = vi.spyOn(tm, 'refreshOAuthProfile');
       await tm.addSlot({
         name: 'ok',
         kind: 'oauth_credentials',
         credentials: makeOAuthCreds(),
         acknowledgedConsumerTosRisk: true,
       });
+      // Settle the addSlot sync so nothing else contends for the store lock
+      // once setTimeout is faked below (lock retries and CAS backoff use it).
+      await syncSpy.mock.results[0].value;
       // Token refresh resolves fast; profile fetch hangs forever. Under
       // awaitProfile: true the second leg must also be bounded by the
       // shared deadline — otherwise the call never returns.
@@ -2793,20 +2800,39 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       }));
       // The hung fetch is released after the assertions so afterEach can
       // settle the profile sync.
-      const { promise: profileHeld, release: releaseProfile } = holdGate<import('../oauth/profile').OAuthProfile>({
-        fetchedAt: 0,
+      type OAuthProfile = import('../oauth/profile').OAuthProfile;
+      const { promise: profileHeld, release: releaseProfile } = holdGate<OAuthProfile>({ fetchedAt: 0 });
+      let signalFetching: () => void = () => {};
+      const fetching = new Promise<void>((r) => {
+        signalFetching = r;
       });
       fetchOAuthProfileMock.mockReset();
-      fetchOAuthProfileMock.mockImplementation(async () => profileHeld);
-      const t0 = Date.now();
-      const results = await tm.refreshAllAttachedOAuthTokens({ timeoutMs: 200, awaitProfile: true });
-      const elapsed = Date.now() - t0;
-      // Bounded by the shared deadline (200ms + a little scheduler slack).
-      expect(elapsed).toBeLessThan(1500);
-      // Token result landed even though the profile leg hung.
-      const outcomes = Object.values(results);
-      expect(outcomes.length).toBe(1);
-      expect(outcomes[0]).toBe('ok');
+      fetchOAuthProfileMock.mockImplementation(async () => {
+        signalFetching();
+        return profileHeld;
+      });
+      // The shared deadline runs on fake setTimeout. A real 200ms budget let a
+      // loaded runner's store I/O in the token leg miss the deadline (results
+      // came back empty), so wall-clock time is taken out of the test.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        let returned = false;
+        const call = tm.refreshAllAttachedOAuthTokens({ timeoutMs: 60_000, awaitProfile: true });
+        void call.then(() => {
+          returned = true;
+        });
+        // The token leg finished and the profile leg is hung on its fetch.
+        await fetching;
+        await new Promise((r) => setImmediate(r));
+        expect(returned).toBe(false);
+        // Firing the shared deadline ends the call while the fetch still hangs.
+        vi.advanceTimersByTime(60_000);
+        const results = await call;
+        // Token result landed even though the profile leg hung.
+        expect(Object.values(results)).toEqual(['ok']);
+      } finally {
+        vi.useRealTimers();
+      }
       releaseProfile({ fetchedAt: Date.now(), email: 'late@example.com' });
     });
 
