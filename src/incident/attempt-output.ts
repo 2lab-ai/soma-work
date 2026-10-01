@@ -368,11 +368,20 @@ const DROP: IncidentScreenResult = { text: '', forward: null, terminal: false };
  * read and found to carry no model claim". Runtime signal (usage, which tool ran,
  * what the host's own tool returned, session init) is preserved so the attempt
  * stays observable and billable; prose is captured for validation and dropped.
+ *
+ * `evidenceCallIds` is the attempt's one piece of state: the ids of the evidence
+ * calls this screen forwarded. An assistant message adds to it, and a tool result
+ * is forwarded only for an id in it. Pass the same set for every message of one
+ * attempt (`screenIncidentStream` does). Omitted, nothing correlates and every
+ * tool result is dropped — fail closed.
  */
-export function screenIncidentMessage(message: SDKMessage): IncidentScreenResult {
+export function screenIncidentMessage(
+  message: SDKMessage,
+  evidenceCallIds: Set<string> = new Set(),
+): IncidentScreenResult {
   switch (message.type) {
     case 'assistant':
-      return screenAssistant(message as Extract<SDKMessage, { type: 'assistant' }>);
+      return screenAssistant(message as Extract<SDKMessage, { type: 'assistant' }>, evidenceCallIds);
 
     // Token-level deltas. There is nothing to validate yet and no way to hold
     // half a sentence back, so the whole partial channel is dropped.
@@ -382,7 +391,7 @@ export function screenIncidentMessage(message: SDKMessage): IncidentScreenResult
     // Tool results and the replayed prompt. Neither is a model claim, but both
     // are rebuilt rather than forwarded — see `screenUser`.
     case 'user':
-      return screenUser(message as Extract<SDKMessage, { type: 'user' }>);
+      return screenUser(message as Extract<SDKMessage, { type: 'user' }>, evidenceCallIds);
 
     case 'system':
       return FORWARDED_SYSTEM_SUBTYPES.has((message as { subtype?: string }).subtype ?? '')
@@ -423,18 +432,27 @@ const EVIDENCE_TOOL_RESULT_ERROR = '증거 조회 실패 — 결론에 반영되
  *
  * `tool_use_id` and `is_error` are preserved verbatim so the thread's tool
  * lifecycle (which call, and whether it failed) stays legible and correlatable.
+ *
+ * Only a result for a call this attempt forwarded as an evidence call
+ * (`evidenceCallIds`) is kept. The fixed lines describe an evidence lookup; the
+ * result of a dropped call — a denied, hallucinated or marker-named tool — would
+ * otherwise tell the thread that a lookup failed when none ran.
  */
-function screenUser(message: Extract<SDKMessage, { type: 'user' }>): IncidentScreenResult {
+function screenUser(
+  message: Extract<SDKMessage, { type: 'user' }>,
+  evidenceCallIds: ReadonlySet<string>,
+): IncidentScreenResult {
   const inner = message.message as unknown as { content?: unknown };
   const content = Array.isArray(inner?.content) ? (inner.content as Array<Record<string, unknown>>) : [];
 
   const kept: Array<Record<string, unknown>> = [];
   for (const block of content) {
     if (block.type !== 'tool_result') continue;
+    if (typeof block.tool_use_id !== 'string' || !evidenceCallIds.has(block.tool_use_id)) continue;
     const failed = block.is_error === true;
     kept.push({
       type: 'tool_result',
-      tool_use_id: typeof block.tool_use_id === 'string' ? block.tool_use_id : '',
+      tool_use_id: block.tool_use_id,
       // Absence is preserved: the mapper distinguishes `undefined` from `false`.
       ...(typeof block.is_error === 'boolean' ? { is_error: block.is_error } : {}),
       content: [{ type: 'text', text: failed ? EVIDENCE_TOOL_RESULT_ERROR : EVIDENCE_TOOL_RESULT_OK }],
@@ -469,9 +487,8 @@ function screenUser(message: Extract<SDKMessage, { type: 'user' }>): IncidentScr
  *
  * An allow-list, not a deny-list. Any other block — `thinking`, a server-tool
  * block, a call to any other tool (denied by policy, hallucinated, or named like
- * a marker) — is dropped whole, because its name and input are model text too.
- * A dropped call's tool result still arrives, reduced by `screenUser` to its
- * fixed line.
+ * a marker) — is dropped whole, because its name and input are model text too,
+ * and `screenUser` drops its result with it.
  */
 function rebuildEvidenceToolUse(block: Record<string, unknown>): Record<string, unknown> | null {
   if (block.type !== 'tool_use' || block.name !== INCIDENT_EVIDENCE_TOOL) return null;
@@ -480,7 +497,10 @@ function rebuildEvidenceToolUse(block: Record<string, unknown>): Record<string, 
   return { type: 'tool_use', id: block.id, name: INCIDENT_EVIDENCE_TOOL, input: {} };
 }
 
-function screenAssistant(message: Extract<SDKMessage, { type: 'assistant' }>): IncidentScreenResult {
+function screenAssistant(
+  message: Extract<SDKMessage, { type: 'assistant' }>,
+  evidenceCallIds: Set<string>,
+): IncidentScreenResult {
   const inner = message.message as unknown as { content?: unknown };
   const content = Array.isArray(inner?.content) ? (inner.content as Array<Record<string, unknown>>) : [];
 
@@ -496,6 +516,7 @@ function screenAssistant(message: Extract<SDKMessage, { type: 'assistant' }>): I
     const rebuilt = rebuildEvidenceToolUse(block);
     if (rebuilt !== null) {
       kept.push(rebuilt);
+      evidenceCallIds.add(rebuilt.id as string);
     }
   }
 
@@ -880,11 +901,13 @@ export async function* screenIncidentStream(
   let oversize = false;
   let threw = false;
   let sdkResult: SDKMessage | null = null;
+  /** This attempt's forwarded evidence calls — the only results the thread may see. */
+  const evidenceCallIds = new Set<string>();
 
   try {
     try {
       for await (const message of source) {
-        const screened = screenIncidentMessage(message);
+        const screened = screenIncidentMessage(message, evidenceCallIds);
         if (screened.text) {
           if (modelText.length + screened.text.length > MAX_MODEL_TEXT_CHARS) {
             oversize = true;

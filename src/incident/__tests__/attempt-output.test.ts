@@ -426,6 +426,7 @@ describe('incident stream screening', () => {
     // every ref, timestamp and error inside it.
     const screened = screenIncidentMessage(
       userMessage([{ type: 'tool_result', tool_use_id: 'tu_1', is_error: false, content: RAW_EVIDENCE_SENTINEL }]),
+      new Set(['tu_1']),
     );
 
     const blocks = (screened.forward as unknown as { message: { content: Array<Record<string, unknown>> } }).message
@@ -448,6 +449,7 @@ describe('incident stream screening', () => {
           content: `collector said ${RAW_EVIDENCE_SENTINEL}`,
         },
       ]),
+      new Set(['tu_2']),
     );
 
     const blocks = (screened.forward as unknown as { message: { content: Array<Record<string, unknown>> } }).message
@@ -461,11 +463,46 @@ describe('incident stream screening', () => {
   it('preserves the absence of is_error, which the mapper distinguishes from false', () => {
     const screened = screenIncidentMessage(
       userMessage([{ type: 'tool_result', tool_use_id: 'tu_3', content: RAW_EVIDENCE_SENTINEL }]),
+      new Set(['tu_3']),
     );
 
     const blocks = (screened.forward as unknown as { message: { content: Array<Record<string, unknown>> } }).message
       .content;
     expect('is_error' in blocks[0]).toBe(false);
+  });
+
+  // The fixed lines above describe an EVIDENCE lookup. A result for any call the
+  // screen did not forward — a denied, hallucinated or marker-named tool — would
+  // otherwise read as "evidence lookup failed" for a lookup that never ran.
+  it('drops a tool result whose call was not a forwarded evidence call', () => {
+    const forwardedCalls = new Set<string>();
+    screenIncidentMessage(
+      assistantMessage([
+        { type: 'tool_use', id: 'tu_ev', name: 'mcp__incident_evidence__collect', input: {} },
+        { type: 'tool_use', id: 'tu_bash', name: 'Bash', input: { command: 'ls' } },
+      ]),
+      forwardedCalls,
+    );
+
+    // Only the evidence call is on record for this attempt.
+    expect([...forwardedCalls]).toEqual(['tu_ev']);
+    expect(
+      screenIncidentMessage(
+        userMessage([{ type: 'tool_result', tool_use_id: 'tu_bash', is_error: true, content: 'No such tool' }]),
+        forwardedCalls,
+      ).forward,
+    ).toBeNull();
+    // A mixed message keeps only the evidence result.
+    const mixed = screenIncidentMessage(
+      userMessage([
+        { type: 'tool_result', tool_use_id: 'tu_bash', is_error: true, content: 'No such tool' },
+        { type: 'tool_result', tool_use_id: 'tu_ev', is_error: false, content: RAW_EVIDENCE_SENTINEL },
+      ]),
+      forwardedCalls,
+    );
+    const blocks = (mixed.forward as unknown as { message: { content: Array<Record<string, unknown>> } }).message
+      .content;
+    expect(blocks.map((block) => block.tool_use_id)).toEqual(['tu_ev']);
   });
 
   it('treats the SDK result as terminal and forwards none of it', () => {
