@@ -7,11 +7,13 @@ Every incident statement of `Spec.lean` is proved here for `evaluateToolPolicy`,
 allowlist and every input: every tool name, tool input, mode, admin flag, abort and handoff state,
 and every combination of primitive values.
 
-The route: the deny steps of `evaluateToolPolicy` are all silent exactly when no deny condition
-holds (`denyStepsSilent_iff`). When one returns, the incident context changes nothing and the
-result is `evaluate`'s, a denial (`Simplification.deny_exactly`); when none does, the result is
-the incident tier's (`incident_cases`). Each statement is then a case analysis of
-`evaluateIncidentReadOnly`.
+The route: with an incident context no step reads the mode or the admin flag, since the non-admin
+block runs for everyone and the incident tier replaces the mode tier
+(`evaluateToolPolicy_some_mode_admin`). So an incident call is decided as the same call made by a
+non-admin, and for a non-admin the deny steps are those of `evaluate`, all silent exactly when no
+deny condition holds (`denyStepsSilent_iff`). When one returns, the result is `evaluate`'s, a
+denial (`Simplification.deny_exactly`); when none does, it is the incident tier's
+(`incident_cases`). Each statement is then a case analysis of `evaluateIncidentReadOnly`.
 
 `evaluate` is `evaluateToolPolicy none`, so (e) holds by definition, and `evaluate_toOriginal`
 (`Simplification.lean`) still proves that function equal to the phase-1 model on every input.
@@ -37,20 +39,46 @@ theorem evaluateIncidentReadOnly_allow_or_deny (t : String) (inc : IncidentReadO
   unfold evaluateIncidentReadOnly
   split <;> simp
 
-/-! ## The deny steps, silent or not -/
+/-! ## Mode and admin flag never reach an incident call -/
 
-/-- No deny step of `evaluateToolPolicy` returns. -/
+/-- With an incident context, no step reads the mode or the admin flag: the non-admin block runs
+whatever the flag, and the incident tier stands where the mode tier would. -/
+theorem evaluateToolPolicy_some_mode_admin (inc : IncidentReadOnly) (i : Input) (mode : Mode)
+    (isAdmin : Bool) :
+    evaluateToolPolicy (some inc) { i with mode := mode, isAdmin := isAdmin } =
+      evaluateToolPolicy (some inc) i := by
+  have h1 : abortGuard { i with mode := mode, isAdmin := isAdmin } = abortGuard i := rfl
+  have hs : sshCheck { i with mode := mode, isAdmin := isAdmin } = sshCheck i := rfl
+  have hp : sensitiveCheck { i with mode := mode, isAdmin := isAdmin } = sensitiveCheck i := rfl
+  have hm : mcpCheck { i with mode := mode, isAdmin := isAdmin } = mcpCheck i := rfl
+  have h2 : adminExemptGuards (some inc) { i with mode := mode, isAdmin := isAdmin } =
+      adminExemptGuards (some inc) i := by
+    simp [adminExemptGuards, hs, hp, hm]
+  have h3 : crossUserGuard { i with mode := mode, isAdmin := isAdmin } = crossUserGuard i := rfl
+  have h4 : prIssueGuard { i with mode := mode, isAdmin := isAdmin } = prIssueGuard i := rfl
+  unfold evaluateToolPolicy
+  rw [h1, h2, h3, h4]
+
+/-! ## The deny steps of a non-admin call, silent or not -/
+
+/-- No deny step of `evaluate` returns. -/
 def DenyStepsSilent (i : Input) : Prop :=
-  abortGuard i = none ∧ adminExemptGuards i = none ∧ crossUserGuard i = none ∧
+  abortGuard i = none ∧ adminExemptGuards none i = none ∧ crossUserGuard i = none ∧
     prIssueGuard i = none
 
-/-- When no deny step returns and an incident context is set, the incident tier decides. -/
-theorem evaluateToolPolicy_some_of_silent {i : Input} (h : DenyStepsSilent i)
-    (inc : IncidentReadOnly) :
+/-- For a non-admin, the non-admin block runs with or without an incident context. -/
+theorem adminExemptGuards_some_of_nonadmin (inc : IncidentReadOnly) {i : Input}
+    (ha : i.isAdmin = false) : adminExemptGuards (some inc) i = adminExemptGuards none i := by
+  simp [adminExemptGuards, ha]
+
+/-- For a non-admin call on which no deny step returns, an incident context hands the call to the
+incident tier. -/
+theorem evaluateToolPolicy_some_of_silent {i : Input} (ha : i.isAdmin = false)
+    (h : DenyStepsSilent i) (inc : IncidentReadOnly) :
     evaluateToolPolicy (some inc) i = evaluateIncidentReadOnly i.toolName inc := by
   obtain ⟨h1, h2, h3, h4⟩ := h
   unfold evaluateToolPolicy
-  rw [h1, h2, h3, h4]
+  rw [adminExemptGuards_some_of_nonadmin inc ha, h1, h2, h3, h4]
 
 /-- When no deny step returns and no incident context is set, the mode tier decides. -/
 theorem evaluate_of_silent {i : Input} (h : DenyStepsSilent i) : evaluate i = modeTier i := by
@@ -58,13 +86,16 @@ theorem evaluate_of_silent {i : Input} (h : DenyStepsSilent i) : evaluate i = mo
   unfold evaluate evaluateToolPolicy
   rw [h1, h2, h3, h4]
 
-/-- When a deny step returns, the incident context changes nothing: the result is `evaluate`'s. -/
-theorem evaluateToolPolicy_of_not_silent {i : Input} (h : ¬DenyStepsSilent i)
-    (inc : Option IncidentReadOnly) : evaluateToolPolicy inc i = evaluate i := by
+/-- For a non-admin call on which a deny step returns, the incident context changes nothing: the
+result is `evaluate`'s. -/
+theorem evaluateToolPolicy_some_of_not_silent {i : Input} (ha : i.isAdmin = false)
+    (h : ¬DenyStepsSilent i) (inc : IncidentReadOnly) :
+    evaluateToolPolicy (some inc) i = evaluate i := by
   unfold DenyStepsSilent at h
   unfold evaluate evaluateToolPolicy
-  cases h1 : abortGuard i <;> cases h2 : adminExemptGuards i <;> cases h3 : crossUserGuard i <;>
-    cases h4 : prIssueGuard i <;> simp_all
+  rw [adminExemptGuards_some_of_nonadmin inc ha]
+  cases h1 : abortGuard i <;> cases h2 : adminExemptGuards none i <;>
+    cases h3 : crossUserGuard i <;> cases h4 : prIssueGuard i <;> simp_all
 
 /-- The mode tier never denies. -/
 theorem modeTier_decision_ne_deny (i : Input) : (modeTier i).decision ≠ .deny := by
@@ -83,7 +114,7 @@ theorem evaluate_deny_iff (i : Input) : (evaluate i).decision = .deny ↔ Origin
   rw [← Result.toOriginal_deny_iff]
   exact deny_exactly i
 
-/-- The deny steps are all silent exactly when no deny condition holds. -/
+/-- The deny steps of `evaluate` are all silent exactly when no deny condition holds. -/
 theorem denyStepsSilent_iff (i : Input) : DenyStepsSilent i ↔ ¬Original.DenyCond i := by
   constructor
   · intro hs hc
@@ -97,27 +128,42 @@ theorem denyStepsSilent_iff (i : Input) : DenyStepsSilent i ↔ ¬Original.DenyC
     have e1 : abortGuard i = none := Classical.byContradiction fun h => cA (g1.mp h)
     have e3 : crossUserGuard i = none := Classical.byContradiction fun h => cX (g5.mp h)
     have e4 : prIssueGuard i = none := Classical.byContradiction fun h => cR (g6.mp h)
-    have e2 : adminExemptGuards i = none := by
-      unfold adminExemptGuards
+    have e2 : adminExemptGuards none i = none := by
       cases ha : i.isAdmin
       · have hs : sshCheck i = none := Classical.byContradiction fun h => cS (g2.mp ⟨ha, h⟩)
         have hp : sensitiveCheck i = none := Classical.byContradiction fun h => cP (g3.mp ⟨ha, h⟩)
         have hm : mcpCheck i = none := Classical.byContradiction fun h => cM (g4.mp ⟨ha, h⟩)
-        simp [hs, hp, hm]
-      · simp
+        simp [adminExemptGuards, ha, hs, hp, hm]
+      · simp [adminExemptGuards, ha]
     exact ⟨e1, e2, e3, e4⟩
 
-/-- With an incident context, the result is either `evaluate`'s denial (a deny condition holds) or
-the incident tier's (none holds). -/
+/-- Whatever a session without an incident context hard-denies, for an admin or not, an incident
+session hard-denies too: dropping the admin flag only adds deny conditions. -/
+theorem denyCond_incidentDenyCond (i : Input) : Original.DenyCond i → IncidentDenyCond i := by
+  intro h
+  rcases h with h | h | h | h | h | h
+  · exact .inl h
+  · exact .inr (.inl ⟨h.1, rfl, h.2.2⟩)
+  · exact .inr (.inr (.inl ⟨rfl, h.2.1, h.2.2⟩))
+  · exact .inr (.inr (.inr (.inl h)))
+  · exact .inr (.inr (.inr (.inr (.inl ⟨h.1, rfl, h.2.2⟩))))
+  · exact .inr (.inr (.inr (.inr (.inr h))))
+
+/-- With an incident context, the result is either the denial `evaluate` gives the same call made
+by a non-admin (a deny condition of that call holds) or the incident tier's (none holds). -/
 theorem incident_cases (inc : IncidentReadOnly) (i : Input) :
-    (Original.DenyCond i ∧ evaluateToolPolicy (some inc) i = evaluate i ∧
-        (evaluate i).decision = .deny) ∨
-      (¬Original.DenyCond i ∧
+    (IncidentDenyCond i ∧ evaluateToolPolicy (some inc) i = evaluate { i with isAdmin := false } ∧
+        (evaluate { i with isAdmin := false }).decision = .deny) ∨
+      (¬IncidentDenyCond i ∧
         evaluateToolPolicy (some inc) i = evaluateIncidentReadOnly i.toolName inc) := by
-  by_cases hc : Original.DenyCond i
-  · exact .inl ⟨hc, evaluateToolPolicy_of_not_silent (fun hs => (denyStepsSilent_iff i).mp hs hc) _,
-      (evaluate_deny_iff i).mpr hc⟩
-  · exact .inr ⟨hc, evaluateToolPolicy_some_of_silent ((denyStepsSilent_iff i).mpr hc) inc⟩
+  have hj : evaluateToolPolicy (some inc) { i with isAdmin := false } =
+      evaluateToolPolicy (some inc) i :=
+    evaluateToolPolicy_some_mode_admin inc i i.mode false
+  rw [← hj]
+  by_cases hc : IncidentDenyCond i
+  · refine .inl ⟨hc, evaluateToolPolicy_some_of_not_silent rfl
+      (fun hs => (denyStepsSilent_iff _).mp hs hc) inc, (evaluate_deny_iff _).mpr hc⟩
+  · exact .inr ⟨hc, evaluateToolPolicy_some_of_silent rfl ((denyStepsSilent_iff _).mpr hc) inc⟩
 
 /-! ## The invariants of `Spec.lean` -/
 
@@ -136,8 +182,8 @@ theorem incident_never_pass : IncidentNeverPass evaluateToolPolicy := by
   intro inc i
   rcases incident_allow_or_deny inc i with h | h <;> rw [h] <;> decide
 
-/-- (b) With an incident context, a call is allowed exactly when no deny condition holds and the
-tool is an `mcp__` tool named in the allowlist. -/
+/-- (b) With an incident context, a call is allowed exactly when no deny condition of the same
+call made by a non-admin holds and the tool is an `mcp__` tool named in the allowlist. -/
 theorem incident_allow_iff : IncidentAllowIff evaluateToolPolicy := by
   intro inc i
   rcases incident_cases inc i with ⟨hc, he, hd⟩ | ⟨hc, he⟩
@@ -154,17 +200,19 @@ theorem incident_denies_off_allow_list : IncidentDeniesOffAllowList evaluateTool
   · exact absurd ((incident_allow_iff inc i).mp h).2 hn
   · exact h
 
-/-- (c) With an incident context, the mode changes nothing in the result, reason included. -/
-theorem incident_mode_independent : IncidentModeIndependent evaluateToolPolicy := by
-  intro inc i mode
-  have hc : Original.DenyCond { i with mode := mode } ↔ Original.DenyCond i := Iff.rfl
-  rcases incident_cases inc i with ⟨hc1, he1, _⟩ | ⟨hc1, he1⟩ <;>
-    rcases incident_cases inc { i with mode := mode } with ⟨hc2, he2, _⟩ | ⟨hc2, he2⟩
-  · rw [he1, he2]
-    exact Result.toOriginal_injective (deny_tier_mode_independent i mode hc1)
-  · exact absurd (hc.mpr hc1) hc2
-  · exact absurd (hc.mp hc2) hc1
-  · rw [he1, he2]
+/-- (c) With an incident context, the mode and the admin flag change nothing in the result, reason
+included. -/
+theorem incident_mode_admin_independent : IncidentModeAdminIndependent evaluateToolPolicy :=
+  evaluateToolPolicy_some_mode_admin
+
+/-- (c) With an incident context, the admin flag changes nothing in the result: an admin gets no
+privilege. -/
+theorem incident_admin_independent : IncidentAdminIndependent evaluateToolPolicy :=
+  fun inc i isAdmin => evaluateToolPolicy_some_mode_admin inc i i.mode isAdmin
+
+/-- (c) With an incident context, the mode changes nothing in the result. -/
+theorem incident_mode_independent : IncidentModeIndependent evaluateToolPolicy :=
+  fun inc i mode => evaluateToolPolicy_some_mode_admin inc i mode i.isAdmin
 
 /-- (c) With an incident context, when no deny condition holds the incident tier decides, on the
 tool name and the allowlist alone. -/
@@ -174,85 +222,8 @@ theorem incident_tier_decides : IncidentTierDecides evaluateToolPolicy := by
   · exact absurd h hc
   · exact he
 
-/-- (c) With an incident context, mode and admin flag change nothing as long as no deny condition
-holds. -/
-theorem incident_mode_admin_independent_without_deny :
-    IncidentModeAdminIndependentWithoutDeny evaluateToolPolicy := by
-  intro inc i mode isAdmin h1 h2
-  rw [incident_tier_decides inc _ h1, incident_tier_decides inc _ h2]
-
-/-- The sensitive-path check stays silent when the sensitive-path primitive comes back clear. -/
-theorem sensitiveCheck_of_not_sensitive {i : Input} (h : i.prims.sensitive.isSensitive = false) :
-    sensitiveCheck i = none := by
-  unfold sensitiveCheck
-  cases hc : checkSensitiveForTool i.toolName i.path i.prims.sensitive with
-  | none => rfl
-  | some s =>
-    have hs : s.isSensitive = false := by
-      rw [Original.checkSensitiveForTool_eq] at hc
-      split at hc
-      · cases hc
-        exact h
-      · split at hc
-        · cases hc
-          rfl
-        · cases hc
-    simp [hs]
-
-/-- Being an admin has exactly the effect of the ssh, sensitive-path and MCP checks all coming back
-clear for a non-admin, with or without an incident context. -/
-theorem evaluateToolPolicy_admin (incident : Option IncidentReadOnly) (i : Input) :
-    evaluateToolPolicy incident { i with isAdmin := true } =
-      evaluateToolPolicy incident { i with
-        isAdmin := false,
-        prims := { i.prims with ssh := false, sensitive := { isSensitive := false },
-                                mcpDenied := none } } := by
-  have e2 : adminExemptGuards { i with isAdmin := true } = none := by
-    simp [adminExemptGuards]
-  have hs : sshCheck { i with
-      isAdmin := false,
-      prims := { i.prims with ssh := false, sensitive := { isSensitive := false },
-                              mcpDenied := none } } = none := by
-    simp [sshCheck]
-  have hp : sensitiveCheck { i with
-      isAdmin := false,
-      prims := { i.prims with ssh := false, sensitive := { isSensitive := false },
-                              mcpDenied := none } } = none :=
-    sensitiveCheck_of_not_sensitive rfl
-  have hm : mcpCheck { i with
-      isAdmin := false,
-      prims := { i.prims with ssh := false, sensitive := { isSensitive := false },
-                              mcpDenied := none } } = none := by
-    simp [mcpCheck]
-  have e2' : adminExemptGuards { i with
-      isAdmin := false,
-      prims := { i.prims with ssh := false, sensitive := { isSensitive := false },
-                              mcpDenied := none } } = none := by
-    simp [adminExemptGuards, hs, hp, hm]
-  unfold evaluateToolPolicy
-  rw [e2, e2']
-  cases abortGuard i <;> cases crossUserGuard i <;> cases prIssueGuard i <;> cases incident <;> rfl
-
-/-- (c) With an incident context, an admin's call gets exactly the result of a non-admin's whose
-ssh, sensitive-path and MCP checks come back clear. -/
-theorem incident_admin_skips_exactly_ssh_sensitive_mcp :
-    IncidentAdminSkipsExactlySshSensitiveMcp evaluateToolPolicy :=
-  fun inc i => evaluateToolPolicy_admin (some inc) i
-
-/-- (c) The admin flag alone can change an incident call's decision: the allow-listed evidence
-tool, with an MCP grant check that fails, is denied to a non-admin (`mcp-permission`) and allowed
-to an admin, who skips that check. -/
-theorem incident_admin_dependent : IncidentAdminDependent evaluateToolPolicy := by
-  refine ⟨{ allowedMcpTools := ["mcp__x__y"] },
-    { toolName := "mcp__x__y", command := .absent, filePath := .absent, pattern := .absent,
-      path := .absent, isAdmin := false, mode := .legacy, aborted := false, handoff := false,
-      prims := { ssh := false, sensitive := { isSensitive := false }, crossUser := false,
-                 mcpDenied := some "grant expired", prIssue := { blocked := false },
-                 bash := { decision := .allow, matchedRuleIds := [] } } }, ?_⟩
-  decide
-
-/-- (d) With an incident context, a met deny condition decides as it does without one: a denial,
-with the deny guard's own reason, even for an allow-listed tool. -/
+/-- (d) With an incident context, a met deny condition decides as it does for a non-admin without
+one: a denial, with the deny guard's own reason, even for an allow-listed tool. -/
 theorem incident_hard_deny_wins : IncidentHardDenyWins evaluateToolPolicy := by
   intro inc i hc
   rcases incident_cases inc i with ⟨_, he, hd⟩ | ⟨h, _⟩

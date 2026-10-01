@@ -75,7 +75,7 @@ export interface ToolPolicyResult {
 export interface ToolPolicyContext {
   /** Slack user id of the session owner/initiator. */
   user: string;
-  /** `isAdminUser(user)` — admins bypass the ssh / sensitive / mcp guards. */
+  /** `isAdminUser(user)` — admins bypass the ssh / sensitive / mcp guards, except in an incident session. */
   isAdmin: boolean;
   /**
    * The session's permission mode (`mcpConfig.somaPermissionMode`). Governs the
@@ -98,9 +98,9 @@ export interface ToolPolicyContext {
   checkMcpToolPermission: (toolName: string) => string | null;
   /**
    * Incident READ-ONLY mode. **Absent (the default) → nothing changes.**
-   * Present → the session is an incident receiver and every tool call is
-   * decided by the incident tier alone: `mode` and `isAdmin` can no longer
-   * widen anything (see `evaluateIncidentReadOnly`).
+   * Present → the session is an incident receiver: `isAdmin` is ignored (the
+   * deny tier checks every caller as a non-admin) and the incident tier alone
+   * decides what it lets through, so `mode` is never read either.
    */
   incidentReadOnly?: IncidentReadOnlyContext;
 }
@@ -194,8 +194,8 @@ export function evaluateToolPolicy(
     return { decision: 'deny', reason: 'abort-guard: session aborted' };
   }
 
-  // 2-4. Admins bypass the ssh / sensitive / mcp guards.
-  if (!ctx.isAdmin) {
+  // 2-4. Admins bypass the ssh / sensitive / mcp guards; an incident session gets no admin privilege.
+  if (!ctx.isAdmin || ctx.incidentReadOnly) {
     // 2. SSH ban (Bash).
     if (toolName === 'Bash' && isSshCommand(command)) {
       return { decision: 'deny', reason: 'ssh-ban: ssh command for non-admin user' };
