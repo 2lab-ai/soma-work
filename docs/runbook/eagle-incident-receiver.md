@@ -78,7 +78,7 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
   `steerTurn`/`interruptTurn`/`cancelSteeredMessage`는 "실행 중인 턴 없음"으로 답한다 (`src/claude-handler.ts:1265`).
 - 백그라운드 에이전트 keepalive는 시도에서 **꺼져 있다**(`0`) — 시도는 답하는 result에서 끝난다 (`src/claude-handler.ts:1320`).
 - 인시던트 소유 스레드의 일반 메시지(파일 업로드 포함)는 후속 큐 펜스 **앞에서** 버려진다 — 큐에 쌓이거나
-  스레드에 큐 표시가 붙거나 시도에 주입되지 않는다 (`src/slack-handler.ts:992`).
+  스레드에 큐 표시가 붙거나 시도에 주입되지 않는다 (`src/slack-handler.ts:993`).
 
 ## 5. 산출물의 출처 — collector snapshot
 
@@ -86,15 +86,28 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
   (`src/incident/attempt-output.ts`).
 - 그 결론은 모델 문자열(summary, proposal action)을 되싣지만 **해석되지 않는다.** 인시던트 세션의 턴은
   directive(`channel_message` 등)·선택지 JSON·전송 오류 가드 없이 그대로 한 번 게시된다
-  (`packages/slack/src/pipeline/stream-executor.ts:1004`, `packages/slack/src/stream-processor.ts:1289`).
+  (`packages/slack/src/pipeline/stream-executor.ts:1005`, `packages/slack/src/stream-processor.ts:1317`).
   그 스위치 `StreamContext.incidentAttempt`는 기본값 없는 **필수** 필드다
   (`packages/slack/src/stream-processor.ts:112`) — 새 생성 지점이 빠뜨리면 타입 검사가 실패한다.
-- 결론은 **항상 blocks 없는 평문 게시**(`say({ text, thread_ts, unfurl_links: false, unfurl_media: false })`)로
-  나간다 — 턴 스트림의 `markdown_text` 청크로는 절대 나가지 않는다 (`packages/slack/src/stream-processor.ts:1916`).
-  그 청크는 Slack이 서버에서 해석하므로, eagle-eye가 읽어 가는 `text`가 검증된 마커 줄과 같은지 보장할 수 없다.
-  링크·미디어 unfurl도 끈다(`incident-result.ts` caller obligation 2). 두 플래그는 executor의 `say` 래퍼
-  (`packages/slack/src/pipeline/stream-executor.ts:1401`)와 `SlackHandler`의 `wrappedSay`(`src/slack-handler.ts:1347`)를
-  거쳐 Bolt `say`가 `chat.postMessage`에 그대로 펼친다. 다른 게시에는 플래그가 붙지 않는다.
+- 결론은 **항상 blocks 없는 평문 게시**로 나간다 — 턴 스트림의 `markdown_text` 청크로는 절대 나가지 않는다
+  (`packages/slack/src/stream-processor.ts:1944`). 그 청크는 Slack이 서버에서 해석하므로, eagle-eye가 읽어 가는
+  `text`가 검증된 마커 줄과 같은지 보장할 수 없다.
+  게시 인자는 `{ text, thread_ts, unfurl_links: false, unfurl_media: false, parse: 'none', mrkdwn: false }` —
+  `text`에 대한 Slack 자체 처리를 끄는 문서화된 `chat.postMessage` 스위치 전부다(`incident-result.ts` caller
+  obligation 2). 근거: `@slack/web-api` 7.15.1 `dist/types/request/chat.d.ts`와 Slack 문서
+  (chat.postMessage, "Formatting message text"):
+  - `unfurl_links`/`unfurl_media` — `false`면 링크·미디어 unfurl을 끈다 (chat.d.ts:139-144).
+  - `parse` — 타입 주석은 기본값 `none`(chat.d.ts:31), chat.postMessage 문서는 "By default, URLs will be
+    hyperlinked. Set parse to none to remove the hyperlinks"라고 해 **서로 다르다**. 어느 쪽이든 `none`을
+    명시하면 bare URL 자동 링크가 꺼진다고 formatting 문서가 적는다.
+  - `mrkdwn` — 기본값 `true`, `false`면 최상위 `text`의 마크업 처리를 끈다 (chat.d.ts:170-171).
+  - `link_names` — 일부러 **보내지 않는다.** formatting 문서: 최상위 `text`는 `link_names`를 빼면 이름 자동 링크가
+    기본으로 꺼진다.
+
+  스위치는 `SayPostSwitches`/`sayPostSwitches`(`packages/slack/src/stream-processor.ts:138`)로 정의되고,
+  executor의 `say` 래퍼(`packages/slack/src/pipeline/stream-executor.ts:1402`)와 `SlackHandler`의
+  `wrappedSay`(`src/slack-handler.ts:1348`)가 설정된 것만 넘겨 Bolt `say`가 `chat.postMessage`에 그대로 펼친다.
+  다른 게시에는 스위치가 하나도 붙지 않는다.
   그래서 인시던트 턴은 B1 스트림 메시지를 **열지 않는다** (`TurnContext.noStream`,
   `packages/slack/src/turn-surface.ts:556`) — 아무것도 붙지 않은 빈 스트림 메시지가 남지 않는다.
   턴 상태(네이티브 상태 표시·supersede·완료 카드)는 그대로 열고 닫는다. 그 결과 evidence 도구 결과 줄은

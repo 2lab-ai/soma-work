@@ -124,21 +124,49 @@ export interface ThreadPanelFacade {
 }
 
 /**
- * Slack say function type
+ * `chat.postMessage` switches that turn Slack's own processing of `text` off.
+ * Set only by the incident conclusion (`publishIncidentText`); every other post
+ * leaves them unset and gets Slack's defaults. Meanings, from the
+ * `@slack/web-api` 7.15.1 types (`dist/types/request/chat.d.ts`) and the
+ * chat.postMessage / message-formatting docs:
+ *   - `unfurl_links` / `unfurl_media` — `false` disables link / media unfurls.
+ *   - `parse` — `'none'` stops Slack auto-linking bare URLs.
+ *   - `mrkdwn` — `false` disables markup parsing of the top-level `text`.
+ * `link_names` is deliberately absent: leaving it out is what keeps name
+ * linking off.
  */
-export type SayFunction = (message: {
-  text: string;
-  thread_ts: string;
-  blocks?: any[];
-  attachments?: any[];
-  /**
-   * `chat.postMessage` unfurl switches. Sent only by the incident conclusion
-   * (`publishIncidentText`), which must reach the thread with no unfurl in
-   * place of its marker line; every other post leaves them unset (Slack default).
-   */
+export interface SayPostSwitches {
   unfurl_links?: boolean;
   unfurl_media?: boolean;
-}) => Promise<{ ts?: string }>;
+  parse?: 'full' | 'none';
+  mrkdwn?: boolean;
+}
+
+/**
+ * The switches `message` sets, and no others. `say` wrappers spread this into
+ * the payload they forward, so a post that sets none sends exactly the keys it
+ * always did.
+ */
+export function sayPostSwitches(message: SayPostSwitches): SayPostSwitches {
+  const switches: SayPostSwitches = {};
+  if (message.unfurl_links !== undefined) switches.unfurl_links = message.unfurl_links;
+  if (message.unfurl_media !== undefined) switches.unfurl_media = message.unfurl_media;
+  if (message.parse !== undefined) switches.parse = message.parse;
+  if (message.mrkdwn !== undefined) switches.mrkdwn = message.mrkdwn;
+  return switches;
+}
+
+/**
+ * Slack say function type
+ */
+export type SayFunction = (
+  message: {
+    text: string;
+    thread_ts: string;
+    blocks?: any[];
+    attachments?: any[];
+  } & SayPostSwitches,
+) => Promise<{ ts?: string }>;
 
 function textIndicatesPromptTooLong(text: unknown): boolean {
   if (typeof text !== 'string') return false;
@@ -1908,13 +1936,20 @@ export class AgentStreamProcessor {
    * PHASE>=1 turn stream sends it as a `markdown_text` chunk that Slack
    * interprets server-side. The executor opens no stream for an incident turn
    * (`TurnContext.noStream`), so there is no empty stream message left behind
-   * either. Link and media unfurling are off, as the same obligation asks: an
-   * unfurl is Slack rendering something in the line's place. The conclusion is
-   * bounded (one wire line of at most 16384 bytes plus a few short lines), so it
-   * needs no overflow splitting.
+   * either. Every documented switch that turns Slack's own processing of `text`
+   * off is set (`SayPostSwitches`): no unfurls, no automatic URL linking, no
+   * markup parsing. The conclusion is bounded (one wire line of at most 16384
+   * bytes plus a few short lines), so it needs no overflow splitting.
    */
   private async publishIncidentText(text: string, context: StreamContext): Promise<void> {
-    await context.say({ text, thread_ts: context.threadTs, unfurl_links: false, unfurl_media: false });
+    await context.say({
+      text,
+      thread_ts: context.threadTs,
+      unfurl_links: false,
+      unfurl_media: false,
+      parse: 'none',
+      mrkdwn: false,
+    });
   }
 
   /**
