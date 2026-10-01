@@ -5,7 +5,7 @@ import SomaVerify.ToolPolicy.Model
 /-!
 # Conformance vectors for `SomaVerify.ToolPolicy`
 
-`verification/vectors/tool-policy.json` holds six kinds of case, told apart by `kind`.
+`verification/vectors/tool-policy.json` holds seven kinds of case, told apart by `kind`.
 
 Replayed by `tool-policy.lean-conformance.test.ts`, which mocks the guard primitives with each
 row's `prims` and calls the real `evaluateToolPolicy` once per entry of `calls`. Every call also
@@ -29,14 +29,22 @@ any other, so a wrong argument or a wrong check fails the replay.
   sensitive-path call takes its arguments from (a string, the empty string, other values, a
   missing property), with the other candidate properties present, so an argument read from the
   wrong property changes the call.
+* `incident`: the only rows with an `incidentReadOnly` context. Every allowlist of
+  `incidentAllowLists` (the live one, exact names, an empty list, a wildcard-looking entry, a
+  prefix, native tool names, the PR-create tool) with every pattern of `patterns` (nothing
+  firing, each deny condition alone, a dangerous Bash, everything at once), in every mode, for
+  admins and non-admins. Each row calls the allow-listed tools, near misses of them, native tools
+  including `Task` and `Agent`, and tools the policy has never heard of.
 
 Replayed by `tool-policy.concrete.lean-conformance.test.ts` against the real modules, no mocks:
 
-* `constants`: `NATIVE_BYPASS_TOOLS` and `TOOL_POLICY_MATCHERS` as the model has them.
-* `concrete`: real tool calls. Each lists the primitive calls the policy makes for it, with the
-  values the test first checks against the real primitives; the model's input is built from
-  the same values, so a vector cannot assert one thing and model another. The sensitive-path
-  entry is the model's `sensitiveCall` for the case's input, not written by hand.
+* `constants`: `NATIVE_BYPASS_TOOLS`, `TOOL_POLICY_MATCHERS` and
+  `INCIDENT_TOOL_POLICY_MATCHERS` as the model has them.
+* `concrete`: real tool calls, some in an incident session. Each lists the primitive calls the
+  policy makes for it, with the values the test first checks against the real primitives; the
+  model's input is built from the same values, so a vector cannot assert one thing and model
+  another. The sensitive-path entry is the model's `sensitiveCall` for the case's input, not
+  written by hand.
 
 Run by `scripts/verification/lean-verify.sh` (`lake env lean --run`); the output is
 `verification/vectors/tool-policy.json`.
@@ -98,6 +106,15 @@ def sensitiveCallJson : Option SensitiveCall → Json
     .obj [("fn", .str "checkSensitiveGlob"), ("args", .arr [.str pattern, (basePath.map .str).getD .null])]
   | none => .null
 
+/-- `IncidentReadOnlyContext`, with the TS field name. -/
+def incidentJson (inc : IncidentReadOnly) : Json :=
+  .obj [("allowedMcpTools", strs inc.allowedMcpTools)]
+
+/-- The `incidentReadOnly` property: present with its value, or left out. -/
+def incidentProp : Option IncidentReadOnly → List (String × Json)
+  | some inc => [("incidentReadOnly", incidentJson inc)]
+  | none => []
+
 def primsJson (p : Primitives) : Json :=
   .obj [("ssh", .bool p.ssh), ("sensitive", sensitiveJson p.sensitive),
     ("crossUser", .bool p.crossUser), ("mcpDenied", mcpJson p.mcpDenied),
@@ -112,6 +129,8 @@ structure Row where
   aborted : Bool
   handoff : Bool
   prims : Primitives
+  /-- `ctx.incidentReadOnly`; `none` leaves it undefined -/
+  incident : Option IncidentReadOnly := none
 
 /-- A call: the tool name and the exact `toolInput` handed to the TS (`none` is `undefined`). -/
 structure Call where
@@ -127,12 +146,13 @@ def Row.toInput (r : Row) (c : Call) : Input :=
 def callJson (r : Row) (c : Call) : Json :=
   .obj [("tool", .str c.tool), ("input", c.input.getD .null),
     ("sensitiveCall", sensitiveCallJson (sensitiveCall (r.toInput c))),
-    ("expect", resultJson (evaluate (r.toInput c)))]
+    ("expect", resultJson (evaluateToolPolicy r.incident (r.toInput c)))]
 
 def rowJson (kind : String) (calls : List Call) (r : Row) : Json :=
-  .obj [("kind", .str kind), ("mode", .str (modeName r.mode)), ("isAdmin", .bool r.isAdmin),
-    ("aborted", .bool r.aborted), ("handoff", .bool r.handoff), ("prims", primsJson r.prims),
-    ("calls", .arr (calls.map (callJson r)))]
+  .obj ([("kind", .str kind), ("mode", .str (modeName r.mode)), ("isAdmin", .bool r.isAdmin),
+    ("aborted", .bool r.aborted), ("handoff", .bool r.handoff), ("prims", primsJson r.prims)] ++
+    incidentProp r.incident ++
+    [("calls", .arr (calls.map (callJson r)))])
 
 /-- Every primitive silent: nothing sensitive, no deny reason, not blocked, not dangerous. -/
 def quiet : Primitives :=
@@ -307,11 +327,59 @@ check comes back sensitive. -/
 def argumentRows : List Row :=
   [autoRow quiet, autoRow { quiet with sensitive := sensitiveHit }]
 
+/-- The one tool an incident attempt may call, `INCIDENT_EVIDENCE_TOOL`
+(src/incident/sdk-options.ts:66). -/
+def evidenceTool : String := "mcp__incident_evidence__collect"
+
+/-- The live allowlist (src/incident/sdk-options.ts:389), two exact names, and lists that must
+allow nothing beyond the exact `mcp__` names they hold: empty, a wildcard-looking entry, a prefix
+of the evidence tool, native tool names with the bare `mcp__` prefix, and the PR-create tool,
+which the PR-issue guard still checks first. -/
+def incidentAllowLists : List IncidentReadOnly :=
+  [{ allowedMcpTools := [evidenceTool] },
+    { allowedMcpTools := [evidenceTool, "mcp__server-tools__db_query"] },
+    { allowedMcpTools := [] },
+    { allowedMcpTools := ["mcp__incident_evidence__*"] },
+    { allowedMcpTools := ["mcp__incident_evidence"] },
+    { allowedMcpTools := ["Bash", "Read", "Glob", "Grep", "Write", "Task", "Agent", "Skill",
+        "mcp__"] },
+    { allowedMcpTools := [prCreateMcpTool] }]
+
+/-- The allow-listed tools, near misses of them (a prefix, an extension, another tool of the same
+server, case, a trailing space, the wildcard entry's own name, the bare prefix), the PR-create
+tool, native tools including the subagent tools `Task` and `Agent`, and tools the policy does not
+know. -/
+def incidentCalls : List Call :=
+  [⟨evidenceTool, some (.obj [("incident", .str "INC-42")])⟩,
+    ⟨"mcp__server-tools__db_query", empty⟩,
+    ⟨"mcp__incident_evidence__*", empty⟩,
+    ⟨"mcp__incident_evidence", empty⟩,
+    ⟨"mcp__incident_evidence__", empty⟩,
+    ⟨"mcp__incident_evidence__collect_all", empty⟩,
+    ⟨"mcp__incident_evidence__restart", empty⟩,
+    ⟨"MCP__incident_evidence__collect", empty⟩,
+    ⟨"mcp__incident_evidence__collect ", empty⟩,
+    ⟨"mcp__", empty⟩,
+    ⟨prCreateMcpTool, empty⟩,
+    ⟨"Bash", empty⟩, ⟨"Read", empty⟩, ⟨"Glob", empty⟩, ⟨"Grep", grepPath⟩, ⟨"Write", empty⟩,
+    ⟨"Task", empty⟩, ⟨"Agent", empty⟩, ⟨"Skill", empty⟩, ⟨"WebFetch", empty⟩,
+    ⟨"SomeFutureTool", empty⟩, ⟨"", empty⟩]
+
+/-- Every incident allowlist × `patterns` × mode × `isAdmin`. -/
+def incidentRows : List Row :=
+  incidentAllowLists.flatMap fun inc =>
+  modes.flatMap fun mode =>
+  bools.flatMap fun isAdmin =>
+  patterns.map fun (aborted, handoff, prims) =>
+    { mode, isAdmin, aborted, handoff, prims, incident := some inc }
+
 /-! ## Constants -/
 
 def constantsJson : Json :=
   .obj [("kind", .str "constants"), ("nativeBypassTools", strs nativeBypassTools),
-    ("toolPolicyMatchers", strs toolPolicyMatchers)]
+    ("toolPolicyMatchers", strs toolPolicyMatchers),
+    ("incidentToolPolicyMatchers",
+      .arr (incidentToolPolicyMatchers.map fun m => (m.map .str).getD .null))]
 
 /-! ## Concrete calls, replayed without mocks -/
 
@@ -345,6 +413,8 @@ structure Concrete where
   handoff : Option Json := none
   disabledRules : List String := []
   prims : Primitives := quiet
+  /-- `ctx.incidentReadOnly`; `none` leaves it undefined -/
+  incident : Option IncidentReadOnly := none
   pre : List Pre
 
 def Concrete.toInput (c : Concrete) : Input :=
@@ -380,12 +450,12 @@ def preJson (c : Concrete) : Pre → Json
 def concreteJson (c : Concrete) : Json :=
   .obj [("kind", .str "concrete"), ("name", .str c.name), ("tool", .str c.tool),
     ("input", c.input),
-    ("ctx", .obj [("user", .str sessionUser), ("isAdmin", .bool c.isAdmin),
+    ("ctx", .obj ([("user", .str sessionUser), ("isAdmin", .bool c.isAdmin),
       ("mode", .str (modeName c.mode)), ("aborted", .bool c.aborted),
       ("handoffContext", c.handoff.getD .null), ("mcpDenied", mcpJson c.prims.mcpDenied),
-      ("disabledRules", strs c.disabledRules)]),
+      ("disabledRules", strs c.disabledRules)] ++ incidentProp c.incident)),
     ("pre", .arr (c.pre.map (preJson c))),
-    ("expect", resultJson (evaluate c.toInput))]
+    ("expect", resultJson (evaluateToolPolicy c.incident c.toInput))]
 
 def bashInput (command : String) : Json :=
   .obj [("command", .str command)]
@@ -394,6 +464,12 @@ def bashInput (command : String) : Json :=
 def bashPre (command : String) : List Pre :=
   [.isSshCommand command, .sensitive, .isCrossUserAccess command sessionUser,
     .bypassBashPermissionDecision command]
+
+/-- The primitives a Bash call consults before the incident tier, in that order:
+`bypassBashPermissionDecision` belongs to the mode tier, which an incident session never
+reaches. -/
+def incidentBashPre (command : String) : List Pre :=
+  [.isSshCommand command, .sensitive, .isCrossUserAccess command sessionUser]
 
 def issueUrl : String := "https://github.com/2lab-ai/soma-work/issues/696"
 
@@ -449,6 +525,10 @@ def sshKeySensitive : SensitivePathResult :=
   { isSensitive := true, reason := some ("Access to " ++ home ++ "/.ssh/ is restricted") }
 
 def rmRules : List String := ["rm-recursive", "rm-force"]
+
+/-- The incident context of a live incident attempt (src/incident/sdk-options.ts:389). -/
+def liveIncident : IncidentReadOnly :=
+  { allowedMcpTools := [evidenceTool] }
 
 def concreteCases : List Concrete :=
   [{ name := "read-sensitive-nonadmin-auto", tool := "Read",
@@ -515,7 +595,29 @@ def concreteCases : List Concrete :=
      input := .obj [("title", .str "x")], mode := .auto, handoff := some blockingHandoff,
      prims := { quiet with prIssue := { blocked := true, reason := some "unknown-tool-shape",
                                         message := some unknownShapeMessage } },
-     pre := [.handlePrIssuePrecondition] }]
+     pre := [.handlePrIssuePrecondition] },
+   { name := "incident-evidence-tool-legacy", tool := evidenceTool,
+     input := .obj [("incident", .str "INC-42")], mode := .legacy, incident := some liveIncident,
+     pre := [] },
+   { name := "incident-evidence-tool-grant-denied", tool := evidenceTool, input := .obj [],
+     mode := .legacy, incident := some liveIncident,
+     prims := { quiet with mcpDenied := some "no active grant" }, pre := [] },
+   { name := "incident-bash-ls-admin-bypass", tool := "Bash", input := bashInput "ls",
+     isAdmin := true, mode := .bypass, incident := some liveIncident,
+     pre := incidentBashPre "ls" },
+   { name := "incident-read-safe-legacy", tool := "Read",
+     input := .obj [("file_path", .str ("/tmp/" ++ sessionUser ++ "/notes.txt"))],
+     mode := .legacy, incident := some liveIncident, pre := [.sensitive] },
+   { name := "incident-read-sensitive-nonadmin-auto", tool := "Read",
+     input := .obj [("file_path", .str sshKey)], mode := .auto, incident := some liveIncident,
+     prims := { quiet with sensitive := sshKeySensitive }, pre := [.sensitive] },
+   { name := "incident-bash-cross-user-admin-bypass", tool := "Bash",
+     input := bashInput "cat /tmp/U0OTHERUSR9/secret", isAdmin := true, mode := .bypass,
+     incident := some liveIncident, prims := { quiet with crossUser := true },
+     pre := incidentBashPre "cat /tmp/U0OTHERUSR9/secret" },
+   { name := "incident-agent-admin-bypass", tool := "Agent",
+     input := .obj [("prompt", .str "read evidence")], isAdmin := true, mode := .bypass,
+     incident := some liveIncident, pre := [] }]
 
 /-- The cases written to `verification/vectors/tool-policy.json`. -/
 def cases : List Json :=
@@ -523,6 +625,7 @@ def cases : List Json :=
   namesRows.map (rowJson "tool-names" toolNames) ++
   boundaryRows.map (fun (r, calls) => rowJson "boundary" calls r) ++
   argumentRows.map (rowJson "arguments" argumentCalls) ++
+  incidentRows.map (rowJson "incident" incidentCalls) ++
   [constantsJson] ++
   concreteCases.map concreteJson
 
