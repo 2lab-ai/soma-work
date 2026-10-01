@@ -262,7 +262,17 @@ const TASK_PROGRESS = {
   uuid: 'progress-uuid',
 };
 
-const SKIP_TIMEOUT_LOG = 'No frame after a skipped result';
+/**
+ * A subagent's own message: model output, but stamped with the tool_use that
+ * spawned the subagent — progress on that subagent, not on the host's prompt.
+ */
+const SUBAGENT_ASSISTANT = {
+  type: 'assistant',
+  parent_tool_use_id: 'toolu_x',
+  message: { model: 'claude-test', content: [{ type: 'text', text: 'subagent working' }] },
+};
+
+const SKIP_TIMEOUT_LOG = 'No turn progress after a skipped result; closing the input so the CLI can exit';
 
 /**
  * Install a fake `query()` that runs `script` — for streams the canned
@@ -296,7 +306,7 @@ function watchInputEnd(inputs: AsyncIterator<unknown>, cli: FakeCli): Promise<un
 }
 
 const skipTimeoutWarnings = (warn: { mock: { calls: unknown[][] } }) =>
-  warn.mock.calls.filter(([message]) => String(message).includes(SKIP_TIMEOUT_LOG));
+  warn.mock.calls.filter(([message]) => message === SKIP_TIMEOUT_LOG);
 
 describe('ClaudeHandler turn-result attribution (#257)', () => {
   beforeEach(() => {
@@ -429,7 +439,7 @@ describe('ClaudeHandler turn-result attribution (#257)', () => {
     }
   });
 
-  it('disarms the bound on the next frame and ends normally when the answer arrives later', async () => {
+  it("disarms the bound on turn-progress frames (the answering turn's init and assistant) and ends normally when the answer arrives later", async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
     try {
@@ -485,7 +495,13 @@ describe('ClaudeHandler turn-result attribution (#257)', () => {
     expect(frames).toContainEqual(PONG);
   });
 
-  it('disarms the bound on a metadata-only frame after a skipped result', async () => {
+  /**
+   * A side-band frame proves the CLI is alive, not that the prompt is being
+   * answered: a background agent keeps reporting progress whether or not the
+   * host's turn ever starts. If such a frame disarmed the bound, "skipped result
+   * → task_progress → silence" would leave the channel open forever.
+   */
+  it('keeps the bound armed across a metadata-only frame and closes the input after NON_TURN_RESULT_IDLE_MS', async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
     try {
@@ -496,16 +512,56 @@ describe('ClaudeHandler turn-result attribution (#257)', () => {
         const probe = watchInputEnd(inputs, cli);
         yield TASK_PROGRESS;
         cli.markPulledPastOrphan();
+        // No turn ever starts. The CLI exits once its input ends, and never
+        // yields a result that answers the prompt.
+        await probe;
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      // The handler has yielded the metadata frame and waits on the SDK again.
+      await cli.pulledPastOrphan;
+
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS - 1);
+      expect(cli.inputEnded).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(cli.inputEnded).toBe(true);
+      expect(skipTimeoutWarnings(warn)).toHaveLength(1);
+
+      const frames = await framesPromise;
+      expect(frames.filter((f) => typeOf(f) === 'result')).toHaveLength(0);
+      // The metadata frame itself still flows to the consumer.
+      expect(frames).toContainEqual(TASK_PROGRESS);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * The CLI opens every turn with `system`/`init` in streaming input mode, the
+   * one right after an orphan drain included: the prompt's turn has started,
+   * so the bound is off however long the model then takes.
+   */
+  it('disarms the bound on a system/init frame after a skipped result', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      installScriptedQuery(async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield ORPHAN_RESULT;
+        const probe = watchInputEnd(inputs, cli);
+        yield INIT;
+        cli.markPulledPastOrphan();
         await cli.gate;
         yield answerResult(cli.opening?.uuid);
         await probe;
       });
       const it = startTurn(newHandler());
 
-      expect((await it.next()).value).toEqual(TASK_PROGRESS);
+      expect((await it.next()).value).toEqual(INIT);
       const pending = it.next();
-      // The handler is now waiting on the SDK again, with only a metadata frame
-      // since the skipped result.
+      // The handler is now waiting on the SDK again, with the turn opened.
       await cli.pulledPastOrphan;
       await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS * 2);
 
@@ -522,10 +578,51 @@ describe('ClaudeHandler turn-result attribution (#257)', () => {
   });
 
   /**
-   * The bound is armed only while the generator waits on the SDK — never at a
-   * `yield` — so a consumer's `return()` queues behind the pending pull and
-   * takes effect when the stream ends. The timer must die with the turn, not
-   * fire into a finished one.
+   * A background subagent's own messages flow through the main stream, stamped
+   * with its `parent_tool_use_id`. They are model output, but not the host's
+   * turn: they must not hold the channel open after a skipped result.
+   */
+  it('keeps the bound armed across a subagent assistant frame and closes the input after NON_TURN_RESULT_IDLE_MS', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      installScriptedQuery(async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield ORPHAN_RESULT;
+        const probe = watchInputEnd(inputs, cli);
+        yield SUBAGENT_ASSISTANT;
+        cli.markPulledPastOrphan();
+        // No turn ever starts. The CLI exits once its input ends, and never
+        // yields a result that answers the prompt.
+        await probe;
+      });
+
+      const framesPromise = collect(startTurn(newHandler()));
+      // The handler has yielded the subagent frame and waits on the SDK again.
+      await cli.pulledPastOrphan;
+
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS - 1);
+      expect(cli.inputEnded).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(cli.inputEnded).toBe(true);
+      expect(skipTimeoutWarnings(warn)).toHaveLength(1);
+
+      const frames = await framesPromise;
+      expect(frames.filter((f) => typeOf(f) === 'result')).toHaveLength(0);
+      // The subagent frame itself still flows to the consumer.
+      expect(frames).toContainEqual(SUBAGENT_ASSISTANT);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * Here the bound is armed while the generator waits on the SDK, so a
+   * consumer's `return()` queues behind the pending pull and takes effect when
+   * the stream ends. The timer must die with the turn, not fire into a finished
+   * one.
    */
   it('clears the bound when the consumer returns while it is armed and the stream then ends', async () => {
     vi.useFakeTimers();
@@ -552,6 +649,50 @@ describe('ClaudeHandler turn-result attribution (#257)', () => {
       expect((await returned).done).toBe(true);
       await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS * 2);
       expect(skipTimeoutWarnings(warn)).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * A metadata frame leaves the bound armed, so the generator can sit at that
+   * frame's `yield` with the timer running. A consumer's `return()` there runs
+   * the handler's cleanup at once: the input ends because the turn ended, and
+   * the timer dies with it instead of firing into a finished turn.
+   */
+  it('clears the bound when the consumer returns at the yield of a metadata frame while it is armed', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      let inputEnd: Promise<unknown> | undefined;
+      installScriptedQuery(async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield ORPHAN_RESULT;
+        inputEnd = watchInputEnd(inputs, cli);
+        yield TASK_PROGRESS;
+        // Never resumed: the consumer returns while the handler sits at the
+        // yield of the frame above.
+        await cli.gate;
+      });
+      const timersBeforeTurn = vi.getTimerCount();
+      // The generator itself (not a bare AsyncIterator): `return()` is the
+      // consumer action under test.
+      const it = newHandler().streamQuery('ping', undefined, undefined, undefined, undefined, SESSION_KEY);
+
+      // The handler is suspended at the metadata frame's yield, bound armed.
+      expect((await it.next()).value).toEqual(TASK_PROGRESS);
+      expect((await it.return(undefined)).done).toBe(true);
+
+      // Ended by the cleanup before any fake time passed — not by the bound —
+      // and no timer of the turn survives it.
+      await inputEnd;
+      expect(cli.inputEnded).toBe(true);
+      expect(vi.getTimerCount()).toBe(timersBeforeTurn);
+
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS * 2);
+      expect(warn).not.toHaveBeenCalled();
+      expect((await it.next()).done).toBe(true);
     } finally {
       warn.mockRestore();
     }
