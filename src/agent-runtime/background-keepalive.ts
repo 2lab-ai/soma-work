@@ -67,37 +67,28 @@ export function liveAgentIds(frame: Record<string, unknown>): string[] | undefin
   return ids;
 }
 
-/**
- * A parsed keepalive cap, plus what the caller should tell the operator:
- * `invalid` → the value was ignored for the default; `clamped` → it was cut to
- * the largest delay `setTimeout` honours.
- */
+/** A parsed keepalive cap; `invalid` → the raw value was ignored for the default. */
 export interface BgKeepaliveMaxMsParse {
   value: number;
   invalid: boolean;
-  clamped: boolean;
 }
 
 /**
  * Parse a raw `SOMA_BG_KEEPALIVE_MAX_MS` value. Operator contract:
  *  - unset, empty or whitespace → {@link DEFAULT_BG_KEEPALIVE_MAX_MS}
- *  - non-numeric or negative → {@link DEFAULT_BG_KEEPALIVE_MAX_MS}, `invalid`
+ *  - non-numeric, negative, or above the largest delay `setTimeout` honours →
+ *    {@link DEFAULT_BG_KEEPALIVE_MAX_MS}, `invalid`
  *  - `0` → `0` = keepalive disabled (a turn ends on its answering result)
- *  - positive → that many ms (floored, at least 1); above the largest delay
- *    `setTimeout` honours → that delay, `clamped`
+ *  - positive → that many ms (floored, at least 1)
  */
 export function parseBgKeepaliveMaxMs(raw: string | undefined): BgKeepaliveMaxMsParse {
   const trimmed = raw?.trim();
   // `Number('')` is 0: an empty (or whitespace-only) value must not read as "disabled".
-  if (trimmed === undefined || trimmed === '') {
-    return { value: DEFAULT_BG_KEEPALIVE_MAX_MS, invalid: false, clamped: false };
-  }
+  if (trimmed === undefined || trimmed === '') return { value: DEFAULT_BG_KEEPALIVE_MAX_MS, invalid: false };
   const parsed = Number(trimmed);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return { value: DEFAULT_BG_KEEPALIVE_MAX_MS, invalid: true, clamped: false };
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > MAX_TIMER_DELAY_MS) {
+    return { value: DEFAULT_BG_KEEPALIVE_MAX_MS, invalid: true };
   }
-  if (parsed === 0) return { value: 0, invalid: false, clamped: false };
-  const ms = Math.max(1, Math.floor(parsed));
-  if (ms > MAX_TIMER_DELAY_MS) return { value: MAX_TIMER_DELAY_MS, invalid: false, clamped: true };
-  return { value: ms, invalid: false, clamped: false };
+  if (parsed === 0) return { value: 0, invalid: false };
+  return { value: Math.max(1, Math.floor(parsed)), invalid: false };
 }

@@ -57,7 +57,7 @@ vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({
 }));
 
 import { STEER_SETTLEMENT_SUBTYPE } from '../agent-runtime/steer-settlement';
-import { ClaudeHandler, NON_TURN_RESULT_IDLE_MS } from '../claude-handler';
+import { BG_FOLLOWUP_GRACE_MS, ClaudeHandler, NON_TURN_RESULT_IDLE_MS } from '../claude-handler';
 import { Logger } from '../logger';
 import type { McpManager } from '../mcp-manager';
 
@@ -169,10 +169,16 @@ function openingTurnHead(tasks: Array<Record<string, unknown>>): Record<string, 
 /** A drain's own result: success, no turn run, no uuid echoed (SDK 0.3.284). */
 const ORPHAN_RESULT = successResult({ result: '', num_turns: 0, uuid: 'orphan-result-uuid', stop_reason: null });
 
+/** Per-process cumulative billing, the shape the CLI reports on every result. */
+const modelUsage = (outputTokens: number, cacheReadInputTokens: number, costUSD: number) => ({
+  'claude-test': { inputTokens: 12, outputTokens, cacheReadInputTokens, cacheCreationInputTokens: 0, costUSD },
+});
+
 const SKIP_LOG = 'Skipping a result that does not answer this turn';
 const SETTLED_SILENCE_LOG =
   'No turn progress after the background agents settled; closing the input so the CLI can exit';
 const BACKSTOP_LOG = 'The deferred turn did not end after the keepalive cap; closing the query';
+const GRACE_LOG = 'No follow-up turn after a background agent settled mid-turn; ending the held turn';
 
 const callsOf = (spy: { mock: { calls: unknown[][] } }, message: string) =>
   spy.mock.calls.filter(([logged]) => logged === message);
@@ -446,9 +452,6 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
    * whole turn's spend, and yielding the earlier one too would double-count.
    */
   it('yields only the latest result of a held turn, carrying the cumulative modelUsage', async () => {
-    const modelUsage = (outputTokens: number, cacheReadInputTokens: number, costUSD: number) => ({
-      'claude-test': { inputTokens: 12, outputTokens, cacheReadInputTokens, cacheCreationInputTokens: 0, costUSD },
-    });
     const install = (cli: FakeCli, emitted: Record<string, unknown>[]) =>
       installScriptedQuery(cli, async function* (inputs) {
         await readOpening(inputs, cli);
@@ -588,27 +591,108 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
     expect(cli.stopTask).not.toHaveBeenCalled();
   });
 
-  it('ends a held turn with the held result once the live set is empty, even on a num_turns 0 result', async () => {
+  /**
+   * Zero parent turns is not zero spend: while the parent waited, the
+   * subagent's work kept accumulating in the per-process `modelUsage` and
+   * `total_cost_usd`. A `num_turns: 0` result answers nothing, so the text of
+   * the turn stays the held answer's — but its accounting is the freshest.
+   */
+  it('finalizes on a zero-turn result with its cumulative accounting and the held answer text', async () => {
+    const install = (cli: FakeCli) =>
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield {
+          ...openingResult(cli.opening?.uuid),
+          modelUsage: modelUsage(354, 163_938, 0.196),
+          total_cost_usd: 0.196,
+        };
+        const probe = watchInputEnd(inputs, cli);
+        yield level([]);
+        yield taskNotification(AGENT_ID, 'completed');
+        yield INIT;
+        // Ran no parent turn, but the subagent's spend accumulated.
+        yield {
+          ...ORPHAN_RESULT,
+          uuid: 'zero-turn-result-uuid',
+          modelUsage: modelUsage(500, 435_235, 0.227),
+          total_cost_usd: 0.227,
+        };
+        await probe;
+      });
+
+    // The raw stream: one result — the latest accounting, the answer's text.
     const cli = newFakeCli();
-    installScriptedQuery(cli, async function* (inputs) {
-      await readOpening(inputs, cli);
-      yield* openingTurnHead([agentTask(AGENT_ID)]);
-      yield openingResult(cli.opening?.uuid);
-      const probe = watchInputEnd(inputs, cli);
-      yield level([]);
-      yield taskNotification(AGENT_ID, 'completed');
-      yield INIT;
-      // Ran nothing: it does not supersede the held answer.
-      yield ORPHAN_RESULT;
-      await probe;
-    });
-
+    install(cli);
     const frames = await collect(startTurn(newHandler()));
-
     expect(cli.inputEnded).toBe(true);
     const results = resultsOf(frames);
     expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({ result: 'WAITING', user_message_uuid: cli.opening?.uuid });
+    expect(results[0]).toMatchObject({
+      result: 'WAITING',
+      stop_reason: 'end_turn',
+      uuid: 'zero-turn-result-uuid',
+      total_cost_usd: 0.227,
+      modelUsage: { 'claude-test': { outputTokens: 500, cacheReadInputTokens: 435_235, costUSD: 0.227 } },
+    });
+
+    // The neutral stream bills the latest cumulative values once, and shows the answer.
+    install(newFakeCli());
+    const events = await collect(
+      newHandler()
+        .streamAgentEvents('ping', undefined, undefined, undefined, undefined, SESSION_KEY)
+        [Symbol.asyncIterator](),
+    );
+    const usageEvents = events.filter((e) => typeOf(e) === 'usage');
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]).toMatchObject({
+      usage: { outputTokens: 500, cacheReadInputTokens: 435_235, totalCostUsd: 0.227 },
+    });
+    const resultEvents = events.filter((e) => typeOf(e) === 'result');
+    expect(resultEvents).toHaveLength(1);
+    expect(resultEvents[0]).toMatchObject({ finalText: 'WAITING' });
+  });
+
+  /**
+   * The settlement reads `queued_turn_count`, so it must read the freshest
+   * result: here the steer is still queued when a zero-turn result ends the
+   * held turn, while the held answer (captured before the steer) says nothing
+   * is queued. Settling against the answer would claim the steer ran.
+   */
+  it('settles a held turn against the latest result, whose queue state is the freshest', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastOpening = deferred();
+      const steerGate = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        pulledPastOpening.resolve();
+        await steerGate.promise;
+        // The steer sits in the CLI's queue, unread, when the zero-turn result comes.
+        yield level([]);
+        yield taskNotification(AGENT_ID, 'completed');
+        yield INIT;
+        yield { ...ORPHAN_RESULT, uuid: 'zero-turn-result-uuid', queued_turn_count: 1 };
+      });
+      const handler = newHandler();
+
+      const framesPromise = collect(startTurn(handler));
+      await pulledPastOpening.promise;
+      expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-queued', text: 'and this' })).toBe(true);
+      steerGate.resolve();
+      const frames = await framesPromise;
+
+      const settlement = frames.find((f) => (f as { subtype?: unknown }).subtype === STEER_SETTLEMENT_SUBTYPE);
+      expect(settlement).toMatchObject({ consumed: [], discarded: ['u-queued'] });
+      const results = resultsOf(frames);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({ result: 'WAITING', queued_turn_count: 1 });
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('closes the query when the CLI stays silent past the cap backstop, then yields the held result and discards a later steer', async () => {
@@ -779,6 +863,339 @@ describe('ClaudeHandler background-agent keepalive (#257)', () => {
       info.mockRestore();
       warn.mockRestore();
     }
+  });
+
+  /**
+   * An agent can settle DURING a later turn (real CLI, SDK 0.3.284). If that
+   * turn then crosses a tool boundary, the CLI folds the notification into it
+   * and runs no follow-up turn. If it only generates text, the CLI runs a
+   * separate notification turn right after that turn's result (9 ms later) —
+   * and the result says `queued_turn_count: 0` either way. So a result that
+   * comes after the agent settled within its own turn does not end the held
+   * turn: the handler gives the follow-up turn a short grace.
+   */
+  const STEER_RESULT = successResult({
+    result: 'one two three',
+    num_turns: 1,
+    uuid: 'steer-result-uuid',
+    user_message_uuid: 'u-steer',
+    queued_turn_count: 0,
+  });
+
+  interface SettleGates {
+    pulledPastOpening: Deferred;
+    steerGate: Deferred;
+    pulledPastLastResult: Deferred;
+    inputOpenAfterLastResult?: boolean;
+  }
+
+  const newGates = (): SettleGates => ({
+    pulledPastOpening: deferred(),
+    steerGate: deferred(),
+    pulledPastLastResult: deferred(),
+  });
+
+  /**
+   * A held turn whose agent settles inside the steered turn; `followUp` = the
+   * CLI then runs a notification turn. `afterSettle` frames come between the
+   * settle and the steered result.
+   */
+  function installSettleDuringSteer(
+    cli: FakeCli,
+    gates: SettleGates,
+    followUp: boolean,
+    afterSettle: Record<string, unknown>[] = [],
+  ): void {
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield* openingTurnHead([agentTask(AGENT_ID)]);
+      yield openingResult(cli.opening?.uuid);
+      gates.pulledPastOpening.resolve();
+      await gates.steerGate.promise;
+      cli.received.push((await inputs.next()).value);
+      // The steer's turn starts; the agent settles while it runs.
+      yield INIT;
+      yield SUBAGENT_ASSISTANT;
+      yield level([]);
+      yield taskUpdated(AGENT_ID);
+      yield taskNotification(AGENT_ID, 'completed');
+      yield* afterSettle;
+      yield assistantText('one two three');
+      yield STEER_RESULT;
+      const probe = watchInputEnd(inputs, cli);
+      gates.pulledPastLastResult.resolve();
+      if (followUp) {
+        gates.inputOpenAfterLastResult = await isPending(probe);
+        yield INIT;
+        yield NOTIFIED;
+        yield notifiedResult({ queued_turn_count: 0 });
+      }
+      await probe;
+    });
+  }
+
+  /** The agent starts AND settles inside the opening turn, before its answer. */
+  function installSettleInsideOpening(cli: FakeCli, gates: SettleGates, followUp: boolean): void {
+    installScriptedQuery(cli, async function* (inputs) {
+      await readOpening(inputs, cli);
+      yield INIT;
+      yield TOOL_USE_AGENT;
+      yield level([agentTask(AGENT_ID)]);
+      yield taskStarted(AGENT_ID);
+      yield TOOL_RESULT;
+      yield SUBAGENT_ASSISTANT;
+      yield level([]);
+      yield taskUpdated(AGENT_ID);
+      yield taskNotification(AGENT_ID, 'completed');
+      yield WAITING;
+      yield openingResult(cli.opening?.uuid);
+      const probe = watchInputEnd(inputs, cli);
+      gates.pulledPastLastResult.resolve();
+      if (followUp) {
+        gates.inputOpenAfterLastResult = await isPending(probe);
+        yield INIT;
+        yield NOTIFIED;
+        yield notifiedResult();
+      }
+      await probe;
+    });
+  }
+
+  it('waits for the follow-up turn of an agent that settled during a steered turn, and ends on its result', async () => {
+    const cli = newFakeCli();
+    const gates = newGates();
+    installSettleDuringSteer(cli, gates, true);
+    const handler = newHandler();
+
+    const framesPromise = collect(startTurn(handler));
+    await gates.pulledPastOpening.promise;
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'count to ten' })).toBe(true);
+    gates.steerGate.resolve();
+    const frames = await framesPromise;
+
+    // The steered result did not end the turn ...
+    expect(gates.inputOpenAfterLastResult).toBe(true);
+    // ... the follow-up turn's did.
+    const results = resultsOf(frames);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'NOTIFIED' });
+    const settlement = frames.find((f) => (f as { subtype?: unknown }).subtype === STEER_SETTLEMENT_SUBTYPE);
+    expect(settlement).toMatchObject({ consumed: ['u-steer'], discarded: [] });
+    expect(cli.inputEnded).toBe(true);
+  });
+
+  it("does not count a subagent's system/init as the start of a turn", async () => {
+    const cli = newFakeCli();
+    const gates = newGates();
+    installSettleDuringSteer(cli, gates, true, [{ ...INIT, parent_tool_use_id: 'toolu_agent' }]);
+    const handler = newHandler();
+
+    const framesPromise = collect(startTurn(handler));
+    await gates.pulledPastOpening.promise;
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'count to ten' })).toBe(true);
+    gates.steerGate.resolve();
+    const frames = await framesPromise;
+
+    expect(gates.inputOpenAfterLastResult).toBe(true);
+    const results = resultsOf(frames);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'NOTIFIED' });
+  });
+
+  it('ends on the steered result when no follow-up turn starts within the grace (the CLI folded the report in)', async () => {
+    vi.useFakeTimers();
+    const cli = newFakeCli();
+    const gates = newGates();
+    installSettleDuringSteer(cli, gates, false);
+    const handler = newHandler();
+
+    const framesPromise = collect(startTurn(handler));
+    await gates.pulledPastOpening.promise;
+    expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'count to ten' })).toBe(true);
+    gates.steerGate.resolve();
+    await gates.pulledPastLastResult.promise;
+
+    await vi.advanceTimersByTimeAsync(BG_FOLLOWUP_GRACE_MS - 1);
+    expect(cli.inputEnded).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const frames = await framesPromise;
+
+    expect(cli.inputEnded).toBe(true);
+    const results = resultsOf(frames);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'one two three', user_message_uuid: 'u-steer' });
+    const settlement = frames.find((f) => (f as { subtype?: unknown }).subtype === STEER_SETTLEMENT_SUBTYPE);
+    expect(settlement).toMatchObject({ consumed: ['u-steer'], discarded: [] });
+  });
+
+  /**
+   * The silence bound is for an idle CLI. While a turn runs, its own result
+   * bounds the wait: here the steered turn generates text for longer than
+   * NON_TURN_RESULT_IDLE_MS after the agent settled inside it, and closing the
+   * input then would make the CLI exit after that turn — before the agent's
+   * notification turn could run.
+   */
+  it('does not arm the silence bound when the live set empties while a turn is running', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastOpening = deferred();
+      const steerGate = deferred();
+      const pulledPastSettle = deferred();
+      const longGeneration = deferred();
+      const pulledPastSteerResult = deferred();
+      const followUpGate = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        pulledPastOpening.resolve();
+        await steerGate.promise;
+        cli.received.push((await inputs.next()).value);
+        yield INIT;
+        // The agent settles inside the steered turn ...
+        yield level([]);
+        const probe = watchInputEnd(inputs, cli);
+        pulledPastSettle.resolve();
+        // ... which then generates for a long time with no main-thread frame.
+        await longGeneration.promise;
+        yield assistantText('one two three');
+        yield STEER_RESULT;
+        pulledPastSteerResult.resolve();
+        await followUpGate.promise;
+        yield INIT;
+        yield NOTIFIED;
+        yield notifiedResult();
+        await probe;
+      });
+      const handler = newHandler();
+
+      const framesPromise = collect(startTurn(handler));
+      await pulledPastOpening.promise;
+      expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'count to a thousand' })).toBe(true);
+      steerGate.resolve();
+      await pulledPastSettle.promise;
+
+      await vi.advanceTimersByTimeAsync(NON_TURN_RESULT_IDLE_MS * 2);
+      expect(cli.inputEnded).toBe(false);
+
+      const timersBeforeSteerResult = vi.getTimerCount();
+      longGeneration.resolve();
+      await pulledPastSteerResult.promise;
+      // Not ended by the steered result: the follow-up grace is armed instead.
+      expect(cli.inputEnded).toBe(false);
+      expect(vi.getTimerCount()).toBe(timersBeforeSteerResult + 1);
+
+      followUpGate.resolve();
+      const frames = await framesPromise;
+
+      const results = resultsOf(frames);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({ result: 'NOTIFIED' });
+      expect(cli.inputEnded).toBe(true);
+      expect(callsOf(warn, SETTLED_SILENCE_LOG)).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("disarms the follow-up grace on the follow-up turn's system/init, however long that turn then runs", async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    try {
+      const cli = newFakeCli();
+      const pulledPastOpening = deferred();
+      const steerGate = deferred();
+      const pulledPastSteerResult = deferred();
+      const followUpGate = deferred();
+      const pulledPastFollowUpInit = deferred();
+      const finishGate = deferred();
+      installScriptedQuery(cli, async function* (inputs) {
+        await readOpening(inputs, cli);
+        yield* openingTurnHead([agentTask(AGENT_ID)]);
+        yield openingResult(cli.opening?.uuid);
+        pulledPastOpening.resolve();
+        await steerGate.promise;
+        cli.received.push((await inputs.next()).value);
+        yield INIT;
+        yield level([]);
+        yield taskNotification(AGENT_ID, 'completed');
+        yield assistantText('one two three');
+        yield STEER_RESULT;
+        const probe = watchInputEnd(inputs, cli);
+        pulledPastSteerResult.resolve();
+        await followUpGate.promise;
+        yield INIT;
+        pulledPastFollowUpInit.resolve();
+        // The follow-up turn outlasts the grace.
+        await finishGate.promise;
+        yield NOTIFIED;
+        yield notifiedResult();
+        await probe;
+      });
+      const handler = newHandler();
+
+      const framesPromise = collect(startTurn(handler));
+      await pulledPastOpening.promise;
+      expect(handler.steerTurn(SESSION_KEY, { uuid: 'u-steer', text: 'count to ten' })).toBe(true);
+      steerGate.resolve();
+      await pulledPastSteerResult.promise; // the grace is armed now
+
+      await vi.advanceTimersByTimeAsync(BG_FOLLOWUP_GRACE_MS - 1);
+      followUpGate.resolve();
+      await pulledPastFollowUpInit.promise;
+
+      await vi.advanceTimersByTimeAsync(BG_FOLLOWUP_GRACE_MS * 2);
+      expect(cli.inputEnded).toBe(false);
+      expect(callsOf(info, GRACE_LOG)).toHaveLength(0);
+
+      finishGate.resolve();
+      const frames = await framesPromise;
+
+      const results = resultsOf(frames);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({ result: 'NOTIFIED' });
+      expect(cli.inputEnded).toBe(true);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('holds the answer of a turn whose agent started and settled inside it, and ends on the follow-up turn', async () => {
+    const cli = newFakeCli();
+    const gates = newGates();
+    installSettleInsideOpening(cli, gates, true);
+
+    const frames = await collect(startTurn(newHandler()));
+
+    expect(gates.inputOpenAfterLastResult).toBe(true);
+    expect(cli.inputEnded).toBe(true);
+    const results = resultsOf(frames);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'NOTIFIED' });
+  });
+
+  it('ends on the answer of a turn whose agent settled inside it when no follow-up turn starts within the grace', async () => {
+    vi.useFakeTimers();
+    const cli = newFakeCli();
+    const gates = newGates();
+    installSettleInsideOpening(cli, gates, false);
+
+    const framesPromise = collect(startTurn(newHandler()));
+    await gates.pulledPastLastResult.promise;
+
+    await vi.advanceTimersByTimeAsync(BG_FOLLOWUP_GRACE_MS - 1);
+    expect(cli.inputEnded).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const frames = await framesPromise;
+
+    expect(cli.inputEnded).toBe(true);
+    const results = resultsOf(frames);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ result: 'WAITING', user_message_uuid: cli.opening?.uuid });
   });
 
   it('clears every timer and warns nothing when the consumer returns while the turn is held', async () => {

@@ -349,6 +349,22 @@ export const STEER_SETTLEMENT_BOUND_MS = 2000;
 export const NON_TURN_RESULT_IDLE_MS = 60_000;
 
 /**
+ * How long a held turn waits for a follow-up turn after a result that came
+ * AFTER a background agent settled inside that result's own turn (#257).
+ *
+ * An agent can settle while a turn is running (real CLI, SDK 0.3.284). If that
+ * turn then crosses a tool boundary, the CLI folds the agent's notification
+ * into it and runs no follow-up turn. If it only generates text, the CLI runs a
+ * separate notification turn right after the result: its `system`/`init` came
+ * 9 ms after the result, measured. Both results say `queued_turn_count: 0`
+ * (pending notifications are not counted), so the result cannot tell the two
+ * apart. The handler waits this long for the follow-up turn instead: a
+ * turn-progress frame disarms the wait, and on expiry the input closes and the
+ * turn ends on what it has. Only turns whose agent settled mid-turn pay it.
+ */
+export const BG_FOLLOWUP_GRACE_MS = 5_000;
+
+/**
  * `system`/`init` capability announcing that `interrupt` honours
  * `cancel_queued:true` (sdk.d.ts:5000).
  *
@@ -381,6 +397,40 @@ function isHealthyTurnResult(raw: Record<string, unknown>): boolean {
   if (raw.subtype !== 'success' || raw.is_error === true) return false;
   const terminalReason = raw.terminal_reason;
   return terminalReason === undefined || terminalReason === HEALTHY_TERMINAL_REASON;
+}
+
+/** Did this result's turn actually run (`num_turns > 0`)? A drain's result ran nothing. */
+function resultRanATurn(raw: Record<string, unknown>): boolean {
+  return typeof raw.num_turns === 'number' && raw.num_turns > 0;
+}
+
+/**
+ * A turn held open for its background agents (#257).
+ *
+ * `answer` = the latest result whose turn ran, starting with the turn's own
+ * answer. `latest` = the latest success result of any kind: its cumulative
+ * `modelUsage` / `total_cost_usd` (per process, the subagents' spend included)
+ * and its `queued_turn_count` / `terminal_reason` are the freshest — a
+ * `num_turns: 0` result ran no parent turn, but the subagents kept spending.
+ * `pushedCount` = sends pushed when `latest` was captured: a later send is not
+ * reflected in its `queued_turn_count`, so the settlement discards it rather
+ * than claim it ran.
+ */
+interface HeldTurn {
+  answer: SDKMessage;
+  latest: SDKMessage;
+  pushedCount: number;
+}
+
+/**
+ * The result a held turn ends with: `latest` when its turn ran (it is then also
+ * `answer`); otherwise `latest`'s accounting with the answer's text.
+ */
+function heldTurnResult(held: HeldTurn): SDKMessage {
+  const latest = held.latest as unknown as Record<string, unknown>;
+  if (resultRanATurn(latest)) return held.latest;
+  const answer = held.answer as unknown as Record<string, unknown>;
+  return { ...latest, result: answer.result, stop_reason: answer.stop_reason } as unknown as SDKMessage;
 }
 
 export class ClaudeHandler implements TurnSteeringPort {
@@ -1115,22 +1165,35 @@ export class ClaudeHandler implements TurnSteeringPort {
       // Protocol capabilities this CLI advertised on `system`/`init`
       // (sdk.d.ts:5000). Read once, consumed by the settlement below.
       let capabilities: string[] = [];
-      // Armed after a `result` that does not answer this turn, disarmed only by
-      // a frame that shows a turn running (see NON_TURN_RESULT_IDLE_MS).
+      // Armed after a `result` that leaves the turn waiting for more — one that
+      // does not answer it (NON_TURN_RESULT_IDLE_MS), or a held turn's
+      // (BG_FOLLOWUP_GRACE_MS) — and disarmed only by a frame that shows a turn
+      // running. On fire it closes the input.
       let nonTurnResultTimer: NodeJS.Timeout | undefined;
       const disarmNonTurnResultTimer = () => {
         if (nonTurnResultTimer) clearTimeout(nonTurnResultTimer);
         nonTurnResultTimer = undefined;
       };
       // Cleared first: the deadline always counts from the latest arming.
-      const armNonTurnResultTimer = (warning: string) => {
+      const armTurnProgressBound = (delayMs: number, onFire: () => void) => {
         disarmNonTurnResultTimer();
         nonTurnResultTimer = setTimeout(() => {
           nonTurnResultTimer = undefined;
-          this.logger.warn(warning, { idleMs: NON_TURN_RESULT_IDLE_MS, sessionKey: steerKey });
+          onFire();
           channel.close();
-        }, NON_TURN_RESULT_IDLE_MS);
+        }, delayMs);
       };
+      const armSilenceBound = (warning: string) =>
+        armTurnProgressBound(NON_TURN_RESULT_IDLE_MS, () =>
+          this.logger.warn(warning, { idleMs: NON_TURN_RESULT_IDLE_MS, sessionKey: steerKey }),
+        );
+      const awaitFollowUpTurn = () =>
+        armTurnProgressBound(BG_FOLLOWUP_GRACE_MS, () =>
+          this.logger.info('No follow-up turn after a background agent settled mid-turn; ending the held turn', {
+            graceMs: BG_FOLLOWUP_GRACE_MS,
+            sessionKey: steerKey,
+          }),
+        );
 
       // Background-agent keepalive (#257). Closing the input ends the CLI, and
       // a `run_in_background` agent dies with it before it reports back — so
@@ -1140,10 +1203,18 @@ export class ClaudeHandler implements TurnSteeringPort {
       // is per process and starts empty.
       const keepaliveMaxMs = getBgKeepaliveMaxMs();
       let liveAgents = new Set<string>();
-      // `pushedCount` = sends pushed when `result` was captured. A send pushed
-      // later is not reflected in that result's `queued_turn_count`, so the
-      // settlement discards it rather than claim it ran.
-      let held: { result: SDKMessage; pushedCount: number } | undefined;
+      // Frame sequence numbers, not wall time: did the latest agent settle (a
+      // level frame that removed a live agent) come after the latest turn start
+      // (a main-thread `system`/`init`)? Then that turn's result may still be
+      // followed by the agent's notification turn (BG_FOLLOWUP_GRACE_MS). A
+      // turn is running while its start is newer than the latest result.
+      let frameSeq = 0;
+      let turnStartSeq = 0;
+      let agentSettledSeq = 0;
+      let lastResultSeq = 0;
+      const agentSettledDuringTurn = () => agentSettledSeq > turnStartSeq;
+      const turnRunning = () => turnStartSeq > lastResultSeq;
+      let held: HeldTurn | undefined;
       let deferredAt = 0;
       let keepaliveCapTimer: NodeJS.Timeout | undefined;
       let keepaliveBackstopTimer: NodeJS.Timeout | undefined;
@@ -1197,17 +1268,21 @@ export class ClaudeHandler implements TurnSteeringPort {
         }, keepaliveMaxMs);
       };
       // End a held turn the way the terminal path ends any turn — settle, then
-      // close — with `result` as its result. The caller yields the returned
-      // settlement (if any) and then `result`.
-      const endDeferredTurn = async (result: SDKMessage): Promise<SDKMessage | undefined> => {
-        const pushedCount = held?.pushedCount ?? 0;
+      // close. An `errorResult` ends it as that error; otherwise it ends on
+      // `heldTurnResult`, settled against `latest` (the freshest queue state).
+      // The caller yields the returned settlement (if any), then `result`.
+      const endHeldTurn = async (
+        turn: HeldTurn,
+        errorResult?: SDKMessage,
+      ): Promise<{ settlement: SDKMessage | undefined; result: SDKMessage }> => {
         held = undefined;
         disarmKeepaliveTimers();
         disarmNonTurnResultTimer();
         let settlement: SDKMessage | undefined;
         if (!steerSettled) {
-          const forceDiscard = channel.pushedUuids().slice(pushedCount);
-          settlement = await this.settleSteeredSends(activeQuery, result, channel, capabilities, forceDiscard);
+          const forceDiscard = channel.pushedUuids().slice(turn.pushedCount);
+          const settleWith = errorResult ?? turn.latest;
+          settlement = await this.settleSteeredSends(activeQuery, settleWith, channel, capabilities, forceDiscard);
           if (settlement) steerSettled = true;
         }
         channel.close();
@@ -1215,11 +1290,12 @@ export class ClaudeHandler implements TurnSteeringPort {
           deferredMs: Date.now() - deferredAt,
           sessionKey: steerKey,
         });
-        return settlement;
+        return { settlement, result: errorResult ?? heldTurnResult(turn) };
       };
       try {
         for await (const message of activeQuery) {
           const raw = message as unknown as Record<string, unknown>;
+          frameSeq += 1;
           // A side-band frame (background task progress, a subagent's own
           // messages, rate limits, ...) leaves the bound running: the CLI is
           // alive, but nothing says the prompt is being answered.
@@ -1242,6 +1318,10 @@ export class ClaudeHandler implements TurnSteeringPort {
             // withdrawal loop for the rest of the turn.
             const advertised = readUuidList(raw.capabilities);
             if (advertised.length > 0) capabilities = advertised;
+            // The CLI opens every main-thread turn with `system`/`init`.
+            if (raw.parent_tool_use_id === undefined || raw.parent_tool_use_id === null) {
+              turnStartSeq = frameSeq;
+            }
             if (session) {
               session.sessionId = message.session_id;
               this.logger.info('Session initialized', {
@@ -1252,19 +1332,30 @@ export class ClaudeHandler implements TurnSteeringPort {
             }
           }
 
-          // The live background set: REPLACE on every level frame. Once a held
-          // turn's set empties, the CLI owes it a notification turn; if none
+          // The live background set: REPLACE on every level frame. A frame that
+          // removes a live agent marks a settle. Once a held turn's set empties
+          // with the CLI idle, the CLI owes it a notification turn; if none
           // starts, the silence bound closes the input and the turn ends on the
-          // held result after the stream does.
+          // held result after the stream does. While a turn runs, its own result
+          // bounds the wait (and the keepalive cap bounds a hung turn): closing
+          // the input mid-turn would make the CLI exit after that turn, before
+          // the agent's notification turn could run.
           const announcedAgents = liveAgentIds(raw);
           if (announcedAgents) {
-            liveAgents = new Set(announcedAgents);
-            if (held && liveAgents.size === 0) {
-              armNonTurnResultTimer(
-                'No turn progress after the background agents settled; closing the input so the CLI can exit',
-              );
+            const announced = new Set(announcedAgents);
+            const settled = [...liveAgents].some((taskId) => !announced.has(taskId));
+            liveAgents = announced;
+            if (settled) {
+              agentSettledSeq = frameSeq;
+              if (held && liveAgents.size === 0 && !turnRunning()) {
+                armSilenceBound(
+                  'No turn progress after the background agents settled; closing the input so the CLI can exit',
+                );
+              }
             }
           }
+
+          if (message.type === 'result') lastResultSeq = frameSeq;
 
           if (message.type === 'result' && held) {
             // A held turn: attribution no longer applies. Every result from
@@ -1273,22 +1364,27 @@ export class ClaudeHandler implements TurnSteeringPort {
             // them reaches the consumer until the turn ends.
             if (raw.subtype !== 'success' || raw.is_error === true) {
               // An error ends the turn at once, and is its result.
-              const settlement = await endDeferredTurn(message);
+              const { settlement, result } = await endHeldTurn(held, message);
               if (settlement) yield settlement;
-              yield message;
+              yield result;
               continue;
             }
-            // A turn that ran supersedes the held result; a `num_turns: 0`
-            // result ran nothing and answers nothing.
-            if (typeof raw.num_turns === 'number' && raw.num_turns > 0) {
-              held = { result: message, pushedCount: channel.pushedUuids().length };
+            held = {
+              answer: resultRanATurn(raw) ? message : held.answer,
+              latest: message,
+              pushedCount: channel.pushedUuids().length,
+            };
+            if (liveAgents.size > 0) continue;
+            // The agent settled inside the turn this result closes: its report
+            // was either folded into that turn or is about to run as a turn of
+            // its own, and the result cannot tell which.
+            if (agentSettledDuringTurn()) {
+              awaitFollowUpTurn();
+              continue;
             }
-            if (liveAgents.size === 0) {
-              const final = held.result;
-              const settlement = await endDeferredTurn(final);
-              if (settlement) yield settlement;
-              yield final;
-            }
+            const { settlement, result } = await endHeldTurn(held);
+            if (settlement) yield settlement;
+            yield result;
             continue;
           }
 
@@ -1313,23 +1409,27 @@ export class ClaudeHandler implements TurnSteeringPort {
               // The prompt is still owed an answer, so the channel stays open —
               // but not forever: a CLI that goes silent here would otherwise
               // sit on stdin until the consumer's own (hours-long) idle timeout.
-              armNonTurnResultTimer('No turn progress after a skipped result; closing the input so the CLI can exit');
+              armSilenceBound('No turn progress after a skipped result; closing the input so the CLI can exit');
               continue;
             }
 
-            // The turn answered while background agents still run: hold the
-            // result and keep the input open, so the agents can report back to
-            // this same CLI. Only from a healthy answer — an error ends the
-            // turn now — and only while the input is open (a closed input
+            // The turn answered while background agents still run — or after
+            // one settled inside it, whose notification turn may still follow:
+            // hold the result and keep the input open, so the agents can report
+            // back to this same CLI. Only from a healthy answer — an error ends
+            // the turn now — and only while the input is open (a closed input
             // already ends the CLI, agents included).
-            if (keepaliveMaxMs > 0 && liveAgents.size > 0 && isHealthyTurnResult(raw) && !channel.isClosed) {
-              held = { result: message, pushedCount: channel.pushedUuids().length };
+            const agentsOwed = liveAgents.size > 0 || agentSettledDuringTurn();
+            if (keepaliveMaxMs > 0 && agentsOwed && isHealthyTurnResult(raw) && !channel.isClosed) {
+              held = { answer: message, latest: message, pushedCount: channel.pushedUuids().length };
               deferredAt = Date.now();
               this.logger.info('Deferring the turn end while background agents run', {
                 count: liveAgents.size,
+                awaitingFollowUp: liveAgents.size === 0,
                 sessionKey: steerKey,
               });
               armKeepaliveCap();
+              if (liveAgents.size === 0) awaitFollowUpTurn();
               continue;
             }
 
@@ -1351,13 +1451,13 @@ export class ClaudeHandler implements TurnSteeringPort {
           yield message;
         }
         // The stream ended with a result still held: the keepalive cap or its
-        // backstop ended the CLI, the silence bound closed the input, or the
-        // CLI exited on its own. The held result is still this turn's answer.
+        // backstop ended the CLI, the silence bound or the follow-up grace closed
+        // the input, or the CLI exited on its own. The held result is still this
+        // turn's answer.
         if (held) {
-          const final = held.result;
-          const settlement = await endDeferredTurn(final);
+          const { settlement, result } = await endHeldTurn(held);
           if (settlement) yield settlement;
-          yield final;
+          yield result;
         }
       } catch (error) {
         // Attach stderr content to error so downstream handlers can inspect it

@@ -148,17 +148,16 @@ export function getFollowupQueueCapacity(): number {
  * operator change applies to the next turn and a test can move the knob
  * without re-importing this module. Parsing is the pure
  * `parseBgKeepaliveMaxMs` (`agent-runtime/background-keepalive.ts`); this
- * accessor only reads the value and reports a rejected or clamped one.
+ * accessor only reads the value and reports a rejected one.
  */
 export function getBgKeepaliveMaxMs(): number {
   const raw = process.env.SOMA_BG_KEEPALIVE_MAX_MS;
-  const { value, invalid, clamped } = parseBgKeepaliveMaxMs(raw);
+  const { value, invalid } = parseBgKeepaliveMaxMs(raw);
   if (invalid) {
     logger.warn(
-      `SOMA_BG_KEEPALIVE_MAX_MS="${raw}" invalid (expected 0 or a positive number of ms); falling back to ${value}`,
+      `SOMA_BG_KEEPALIVE_MAX_MS="${raw}" invalid (expected 0 or a positive number of ms up to 2147483647); ` +
+        `falling back to ${value}`,
     );
-  } else if (clamped) {
-    logger.warn(`SOMA_BG_KEEPALIVE_MAX_MS="${raw}" above the largest timer delay; clamping to ${value}`);
   }
   return value;
 }
