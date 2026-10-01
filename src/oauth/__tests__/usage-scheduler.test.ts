@@ -164,8 +164,9 @@ describe('UsageRefreshScheduler (M1-S1)', () => {
     // Scheduler contract (see UsageRefreshScheduler docstring):
     //   "if a previous tick's async work has not yet resolved when the
     //    next interval fires, the scheduler simply kicks off another one
-    //    — the TM already de-dupes per-keyId in-flight fetches via
-    //    `usageFetchInFlight`."
+    //    — the TM already de-dupes in-flight fetches per keyId and
+    //    attachment generation via `usageFetchInFlight`, so a re-attached
+    //    slot gets its own fetch."
     // Lock that behavior: the scheduler does NOT guard re-entry itself;
     // it pumps the TM on every tick and relies on the TM dedupe.
     const { clock, fireTick } = makeFakeClock();
