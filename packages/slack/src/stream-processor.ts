@@ -131,6 +131,13 @@ export type SayFunction = (message: {
   thread_ts: string;
   blocks?: any[];
   attachments?: any[];
+  /**
+   * `chat.postMessage` unfurl switches. Sent only by the incident conclusion
+   * (`publishIncidentText`), which must reach the thread with no unfurl in
+   * place of its marker line; every other post leaves them unset (Slack default).
+   */
+  unfurl_links?: boolean;
+  unfurl_media?: boolean;
 }) => Promise<{ ts?: string }>;
 
 function textIndicatesPromptTooLong(text: unknown): boolean {
@@ -1901,11 +1908,13 @@ export class AgentStreamProcessor {
    * PHASE>=1 turn stream sends it as a `markdown_text` chunk that Slack
    * interprets server-side. The executor opens no stream for an incident turn
    * (`TurnContext.noStream`), so there is no empty stream message left behind
-   * either. The conclusion is bounded (one wire line of at most 16384 bytes
-   * plus a few short lines), so it needs no overflow splitting.
+   * either. Link and media unfurling are off, as the same obligation asks: an
+   * unfurl is Slack rendering something in the line's place. The conclusion is
+   * bounded (one wire line of at most 16384 bytes plus a few short lines), so it
+   * needs no overflow splitting.
    */
   private async publishIncidentText(text: string, context: StreamContext): Promise<void> {
-    await context.say({ text, thread_ts: context.threadTs });
+    await context.say({ text, thread_ts: context.threadTs, unfurl_links: false, unfurl_media: false });
   }
 
   /**

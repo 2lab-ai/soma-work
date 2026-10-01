@@ -1350,6 +1350,10 @@ export class SlackHandler {
         thread_ts: args.thread_ts,
         blocks: args.blocks,
         attachments: args.attachments,
+        // Set only by the incident conclusion (unfurling off); Bolt's `say`
+        // spreads these into `chat.postMessage`. Other posts are unchanged.
+        ...(args.unfurl_links !== undefined ? { unfurl_links: args.unfurl_links } : {}),
+        ...(args.unfurl_media !== undefined ? { unfurl_media: args.unfurl_media } : {}),
       });
       return { ts: result?.ts };
     };

@@ -221,31 +221,51 @@ describe('incident conclusion → real Slack stream processor', () => {
         expect(Buffer.from(surface.postTexts[0], 'utf8').equals(Buffer.from(output.text, 'utf8'))).toBe(true);
         const postedLines = surface.postTexts[0].split('\n');
         expect(postedLines[postedLines.length - 1]).toBe(output.line);
+        // Link unfurling off (caller obligation 2 in `incident-result.ts`): an
+        // unfurl is Slack rendering something in place of the marker line.
         const posted = JSON.parse(surface.posts[0]) as Record<string, unknown>;
-        expect(Object.keys(posted).sort()).toEqual(['text', 'thread_ts']);
+        expect(posted).toEqual({
+          text: output.text,
+          thread_ts: REQUEST.parent_ts,
+          unfurl_links: false,
+          unfurl_media: false,
+        });
       });
     }
+  }
+
+  function ordinaryReply(text: string): SDKMessage {
+    return {
+      type: 'assistant',
+      uuid: 'uuid-assistant',
+      session_id: 'sdk-session',
+      parent_tool_use_id: null,
+      message: { id: 'msg_1', type: 'message', role: 'assistant', content: [{ type: 'text', text }] },
+    } as unknown as SDKMessage;
   }
 
   // Control: the switch is the incident flag, not the phase. An ordinary
   // session's text still streams into the PHASE>=1 turn surface.
   it('[PHASE>=1 stream] control: an ordinary turn still streams its text', async () => {
     const reply = 'an *ordinary* answer';
-    const surface = await run(
-      [
-        {
-          type: 'assistant',
-          uuid: 'uuid-assistant',
-          session_id: 'sdk-session',
-          parent_tool_use_id: null,
-          message: { id: 'msg_1', type: 'message', role: 'assistant', content: [{ type: 'text', text: reply }] },
-        } as unknown as SDKMessage,
-      ],
-      { phase1: true, incidentAttempt: false },
-    );
+    const surface = await run([ordinaryReply(reply)], { phase1: true, incidentAttempt: false });
 
     expect(surface.appends).toEqual([reply]);
     expect(surface.posts).toEqual([]);
+  });
+
+  // Control: the unfurl flags belong to the incident post only. An ordinary
+  // post keeps Slack's default unfurling — no flag is sent at all.
+  it('[legacy say] control: an ordinary post carries no unfurl flags', async () => {
+    const surface = await run([ordinaryReply('see https://example.com/run/1')], {
+      phase1: false,
+      incidentAttempt: false,
+    });
+
+    expect(surface.posts).toHaveLength(1);
+    const posted = JSON.parse(surface.posts[0]) as Record<string, unknown>;
+    expect(posted).not.toHaveProperty('unfurl_links');
+    expect(posted).not.toHaveProperty('unfurl_media');
   });
 });
 
