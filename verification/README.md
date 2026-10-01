@@ -46,13 +46,18 @@ Besides the per-module models, `SomaVerify/ImportGraph/` proves facts about ever
 TypeScript file at once. Stage 0 of the gate runs `scripts/verification/extract-import-graph.cjs`,
 which compiles the repository with its own TypeScript and writes the runtime import graph (one node
 per production file `git ls-files` lists, one edge per emitted `require`) to
-`ImportGraph/Generated.lean`, gitignored and rebuilt on every run. The kernel then checks, over
-that graph: `rules/packaging.md` rule 4 layering (`repo_respects_rule4`), that neither the
-controller CLI nor any stdio MCP server loads an env-paths module (`cli_never_loads_env_paths`,
-`mcp_servers_never_load_env_paths`), and that the graph covers every production file
-(`repo_covered`). The extractor is trusted, not verified; `ImportGraph/Spec.lean` states what it
-guarantees. `verification/LEDGER.md` (written by `scripts/verification/ledger.cjs`) records, per
-production file, whether it also has a semantic model (`T2`) or only these theorems (`T1`).
+`ImportGraph/Generated.lean`, gitignored and rebuilt on every run. A load it cannot follow (a
+non-literal or `#` specifier, `createRequire`, `module.require` and the other loader shapes
+`ImportGraph/Spec.lean` lists, a tsconfig that makes the build keep imports its compile erases)
+stops it instead of becoming a missing edge. The kernel then checks, over that graph:
+`rules/packaging.md` rule 4 layering (`repo_respects_rule4`), that neither the controller CLI nor
+any stdio MCP server loads an env-paths module (`cli_never_loads_env_paths`,
+`mcp_servers_never_load_env_paths`), that the graph covers every production file
+(`repo_covered`), and, since all of those hold of a graph without edges, that it has the edge from
+`src/cli/index.ts` to `src/cli/args.ts` (`cli_loads_args`). The extractor is trusted, not
+verified; `ImportGraph/Spec.lean` states what it guarantees. `verification/LEDGER.md` (written by
+`scripts/verification/ledger.cjs`) records, per production file, whether it also has a semantic
+model (`T2`) or only these theorems (`T1`).
 
 ## Method
 
