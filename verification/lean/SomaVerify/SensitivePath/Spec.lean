@@ -9,14 +9,14 @@ What `src/sensitive-path-filter.ts` documents, stated over the model in `Model.l
 * `src/sensitive-path-filter.ts:4-5`: "Blocks non-admin users from reading sensitive host files
   via Claude tools (Read, Bash cat/head/tail, Glob, Grep)."
 * `src/sensitive-path-filter.ts:31`: "Directories where any path underneath is blocked."
-* `src/sensitive-path-filter.ts:162`: "Check if an absolute path points to a sensitive location."
+* `src/sensitive-path-filter.ts:229`: "Check if an absolute path points to a sensitive location."
 * `src/sensitive-path-filter.ts:50`: "Regex patterns for sensitive basenames."
 * `src/sensitive-path-filter.ts:58`: "Service config files containing secrets. Only specific files
   are blocked, not the whole directory."
-* `src/sensitive-path-filter.ts:189`: "A service config sits in its directory or one directory below
+* `src/sensitive-path-filter.ts:256`: "A service config sits in its directory or one directory below
   it: /opt/soma-work/{,*/}{file}" (at 168903e8, line 99: "Match subdirectories:
   /opt/soma-work/*/{file}").
-* `src/sensitive-path-filter.ts:212`: "Check if a glob pattern targets a sensitive directory."
+* `src/sensitive-path-filter.ts:279`: "Check if a glob pattern targets a sensitive directory."
 * `packages/common/src/path-utils.ts:11-21`: `/private/tmp` and `/tmp` name the same directory
   on macOS, and the module writes both as `/tmp`.
 * `src/sensitive-path-filter.ts:18-24`: macOS keeps `/tmp` and `/etc` in `/private` and links them
@@ -34,11 +34,12 @@ Outside these statements (trust boundary):
 * Bash. `checkBashSensitivePaths` pulls paths out of shell text with regular expressions, run
   over several readings of the command: as written, with quotes and backslashes removed, and
   with `$'...'` decoded twice, a NUL ending the `$'...'` (bash) or the word (zsh)
-  (`src/sensitive-path-filter.ts:92-155, 231-347`). Which files a shell command reads is not
+  (`src/sensitive-path-filter.ts:92-222, 298-480`). Which files a shell command reads is not
   decidable from its text (variables, quoting, globbing, command substitution, the working
   directory), so no statement here is about Bash commands; regression tests in
   `src/__tests__/sensitive-path-filter.test.ts` cover them. Commands other than the listed
-  readers are not examined at all, and every word among a reader's arguments is taken as a path.
+  readers are not examined at all, and every word among a reader's arguments is taken as a path
+  but the pattern or program of a reader that takes one first (`grep PATTERN FILE`).
 * Relative paths and the working directory. The tools resolve relative paths, and a Glob's
   relative base, against a working directory the module never sees, so the module checks them
   as written; the statements below are about absolute paths and HOME aliases.
@@ -186,14 +187,14 @@ def ServiceRuleMatches (rule : List Char → Bool) (files : List Seg) : Prop :=
 
 /-- (a) `normalizePath` returns a normal form: normalizing twice is normalizing once.
 `packages/common/src/path-utils.ts:14-15`: "We standardize on the shorter /tmp form";
-`src/sensitive-path-filter.ts:162`: "Check if an absolute path points to a sensitive location."
+`src/sensitive-path-filter.ts:229`: "Check if an absolute path points to a sensitive location."
 A check keyed on where a path points needs one form per location, and a form that is stable. -/
 def NormalizeIdempotent (home : List Char) : Prop :=
   ∀ p, normalizePath home (normalizePath home p) = normalizePath home p
 
 /-- (b) Checking a path gives what checking its normal form gives, or flags the path: the only
 answer the path's own spelling can change is to block it (a walk through a sensitive
-directory). `src/sensitive-path-filter.ts:162`: "Check if an absolute path points to a sensitive
+directory). `src/sensitive-path-filter.ts:229`: "Check if an absolute path points to a sensitive
 location." -/
 def CheckRefinesNormalForm (home : List Char) : Prop :=
   ∀ p, checkSensitivePath home p = checkSensitivePath home (normalizePath home p) ∨
@@ -201,7 +202,7 @@ def CheckRefinesNormalForm (home : List Char) : Prop :=
 
 /-- (b') Two absolute spellings of the same location whose walks pass through no sensitive
 directory get the same result, whatever `.`, `..` and empty segments they are spelled with: the
-verdict depends only on the location. `src/sensitive-path-filter.ts:162`: "Check if an absolute
+verdict depends only on the location. `src/sensitive-path-filter.ts:229`: "Check if an absolute
 path points to a sensitive location." -/
 def SameLocationSameResult (home : List Char) : Prop :=
   ∀ hloc, Names home hloc → ∀ p q loc, Names p loc → Names q loc →
@@ -231,7 +232,7 @@ def AliasesSpellHome (home : List Char) : Prop :=
   ∀ a ∈ homeAliases, checkSensitivePath home a = checkSensitivePath home home ∧
     ∀ rest, checkSensitivePath home (a ++ '/' :: rest) = checkSensitivePath home (home ++ '/' :: rest)
 
-/-- (c) The directory test of `src/sensitive-path-filter.ts:171` is segment-aligned: a point is at
+/-- (c) The directory test of `src/sensitive-path-filter.ts:238` is segment-aligned: a point is at
 or below a sensitive directory exactly when it is absolute and that directory's segments begin
 its segments, compared as `canon` compares them. So a directory never covers a sibling whose
 name merely starts with its name (`.sshx` next to `.ssh`). `src/sensitive-path-filter.ts:31`:
@@ -266,7 +267,7 @@ def FlaggedWhereverNamedAtLoad : Prop :=
 
 /-- (d'') A glob is reported sensitive whenever one of the paths it is checked through is: the
 concrete prefix and the listed directory of the pattern resolved against its base, and of the
-pattern written after its base. `src/sensitive-path-filter.ts:212`: "Check if a glob pattern
+pattern written after its base. `src/sensitive-path-filter.ts:279`: "Check if a glob pattern
 targets a sensitive directory." -/
 def GlobChecksItsDirectories (home : List Char) : Prop :=
   ∀ cwd pattern basePath, ∀ s ∈ globSpellings cwd pattern basePath, ∀ t ∈ globCandidates s,
