@@ -41,6 +41,7 @@ describe('StreamProcessor', () => {
       threadTs: 'thread_ts',
       sessionKey: 'session_key',
       sessionId: 'session_id',
+      incidentAttempt: false,
       say: mockSay,
     };
   });
@@ -881,6 +882,7 @@ describe('compaction-error leak suppression', () => {
       threadTs: 'thread_ts',
       sessionKey: 'session_key',
       sessionId: 'session_id',
+      incidentAttempt: false,
       say: mockSay,
     };
   });

@@ -114,7 +114,7 @@ async function run(messages: readonly SDKMessage[], options: RunOptions): Promis
     channel: REQUEST.channel_id,
     threadTs: REQUEST.parent_ts,
     sessionKey: `${REQUEST.channel_id}:${REQUEST.parent_ts}`,
-    ...(options.incidentAttempt ? { incidentAttempt: true } : {}),
+    incidentAttempt: options.incidentAttempt ?? false,
     ...(options.logVerbosity === undefined ? {} : { logVerbosity: options.logVerbosity }),
     say: async (message) => {
       surface.posts.push(JSON.stringify(message));
@@ -415,4 +415,30 @@ describe('incident tool result → real Slack stream processor', () => {
       });
     }
   }
+});
+
+/**
+ * Every suite above depends on the processor being TOLD the turn is an incident
+ * attempt. A construction site that left the flag out would publish the
+ * conclusion as ordinary assistant text: directives honored, choice UI built,
+ * the text streamed. So the flag has no default — this block is checked by
+ * `npx tsc --noEmit` (the root project includes `src/**`), and fails the build
+ * the day `incidentAttempt` becomes optional again.
+ */
+describe('StreamContext — the incident flag cannot be left out', () => {
+  const address = {
+    channel: REQUEST.channel_id,
+    threadTs: REQUEST.parent_ts,
+    sessionKey: `${REQUEST.channel_id}:${REQUEST.parent_ts}`,
+    say: async () => ({ ts: '1757500001.000100' }),
+  };
+
+  it('a context without incidentAttempt does not type-check', () => {
+    // @ts-expect-error — `incidentAttempt` is required: each construction site decides it.
+    const forgotten: StreamContext = { ...address };
+    const decided: StreamContext = { ...address, incidentAttempt: true };
+
+    expect(forgotten.incidentAttempt).toBeUndefined();
+    expect(decided.incidentAttempt).toBe(true);
+  });
 });
