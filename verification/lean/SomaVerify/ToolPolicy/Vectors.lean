@@ -198,7 +198,7 @@ def toolNames : List Call :=
     "mcp__github__create_pull_requests", "mcp__github__create_pull_reques", "bash", "BASH",
     "Bash ", " Bash", "BashOutput", "Bаsh", "read", "WRITE", "Grep2", "Web Fetch", "mcp_",
     "mcp_github_create_pull_request", "MCP__x__y", "xmcp__y", "", "Skill", "ExitPlanMode",
-    "AskUserQuestion", "Agent"].map (fun t => ⟨t, empty⟩)
+    "AskUserQuestion"].map (fun t => ⟨t, empty⟩)
 
 def allFiring : Primitives :=
   { ssh := true, sensitive := sensitiveHit, crossUser := true, mcpDenied := some mcpReason,

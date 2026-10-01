@@ -6,7 +6,7 @@
 -- models: src/agent-runtime/policy/tool-policy.ts:125-215 (evaluateToolPolicy)
 -- models: src/agent-runtime/policy/tool-policy.ts:218 (TOOL_POLICY_MATCHERS)
 -- models: src/agent-runtime/policy/permission-mode.ts:28 (PermissionMode)
--- models: src/hooks/bypass-permission-guard.ts:56-68 (NATIVE_BYPASS_TOOLS)
+-- models: src/hooks/bypass-permission-guard.ts:56-69 (NATIVE_BYPASS_TOOLS)
 import SomaVerify.Support.Json
 import SomaVerify.Support.JsString
 
@@ -197,10 +197,10 @@ inductive SensitiveCall where
 /-- `PR_CREATE_MCP_TOOL` — line 39. -/
 def prCreateMcpTool : String := "mcp__github__create_pull_request"
 
-/-- `NATIVE_BYPASS_TOOLS` — bypass-permission-guard.ts:56-68, in source order. -/
+/-- `NATIVE_BYPASS_TOOLS` — bypass-permission-guard.ts:56-69, in source order. -/
 def nativeBypassTools : List String :=
-  ["Write", "Edit", "NotebookEdit", "TodoWrite", "Read", "Glob", "Grep", "Task", "WebFetch",
-    "WebSearch", "KillShell"]
+  ["Write", "Edit", "NotebookEdit", "TodoWrite", "Read", "Glob", "Grep", "Task", "Agent",
+    "WebFetch", "WebSearch", "KillShell"]
 
 /-- `TOOL_POLICY_MATCHERS` — line 218: `['Bash', NATIVE_BYPASS_TOOLS.join('|'), 'mcp__']`. -/
 def toolPolicyMatchers : List String :=
