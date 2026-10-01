@@ -263,13 +263,19 @@ undefined). `ProofsIncident.lean` proves each one for `evaluateToolPolicy`. Unli
 above, a bare line number here refers to `src/agent-runtime/policy/tool-policy.ts` as it is now,
 the lines `Model.lean` cites.
 
-"No hard deny fired" is `¬Original.DenyCond i`: the six deny conditions written from the comments
-above, not the early returns of the code.
+An incident session gets no admin privilege, so "no hard deny fired" is `¬IncidentDenyCond i`:
+the six deny conditions written from the comments above, for the same call made by a non-admin.
 -/
 
 namespace SomaVerify.ToolPolicy
 
 open SomaVerify.JsString
+
+/-- 101-102: "`isAdmin` is ignored (the deny tier checks every caller as a non-admin)"; 197: "an
+incident session gets no admin privilege". The deny conditions of an incident call are those of
+the same call made by a non-admin. -/
+def IncidentDenyCond (i : Input) : Prop :=
+  Original.DenyCond { i with isAdmin := false }
 
 /-- (a) 157-160: "Never returns `pass` or falls through: an unknown tool (a future native tool, a
 browser tool, a subagent) lands on the final deny, because `pass` would hand an unattended session
@@ -289,7 +295,7 @@ can never reach this branch"; 162-163: the tier "Runs *after* the hard-deny tier
 def IncidentAllowIff (ev : Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ (inc : IncidentReadOnly) (i : Input),
     (ev (some inc) i).decision = .allow ↔
-      ¬Original.DenyCond i ∧ jsStartsWith i.toolName "mcp__" = true ∧
+      ¬IncidentDenyCond i ∧ jsStartsWith i.toolName "mcp__" = true ∧
         i.toolName ∈ inc.allowedMcpTools
 
 /-- (b) 109-111 again, as deny-by-default: a call that is not an allow-listed `mcp__` tool is
@@ -299,52 +305,36 @@ def IncidentDeniesOffAllowList (ev : Option IncidentReadOnly → Input → Resul
     ¬(jsStartsWith i.toolName "mcp__" = true ∧ i.toolName ∈ inc.allowedMcpTools) →
       (ev (some inc) i).decision = .deny
 
-/-- (c) 102-103: "`mode` and `isAdmin` can no longer widen anything"; 238: "(hard, mode- and
-admin-independent)". For the mode it holds of the whole result, reason included. -/
+/-- (c) 101-103: "`isAdmin` is ignored ... so `mode` is never read either"; 238: "(hard, mode- and
+admin-independent)". Changing the mode and the admin flag together changes nothing in the result,
+reason included. -/
+def IncidentModeAdminIndependent (ev : Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (inc : IncidentReadOnly) (i : Input) (mode : Mode) (isAdmin : Bool),
+    ev (some inc) { i with mode := mode, isAdmin := isAdmin } = ev (some inc) i
+
+/-- (c) The admin flag alone: 101-102, "`isAdmin` is ignored". -/
+def IncidentAdminIndependent (ev : Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (inc : IncidentReadOnly) (i : Input) (isAdmin : Bool),
+    ev (some inc) { i with isAdmin := isAdmin } = ev (some inc) i
+
+/-- (c) The mode alone: 103, "`mode` is never read". -/
 def IncidentModeIndependent (ev : Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ (inc : IncidentReadOnly) (i : Input) (mode : Mode),
     ev (some inc) { i with mode := mode } = ev (some inc) i
 
-/-- (c) 101-102: "every tool call is decided by the incident tier alone". When no hard deny fires,
+/-- (c) 102-103: "the incident tier alone decides what it lets through". When no hard deny fires,
 the result is the incident tier's, which takes only the tool name and the allowlist. -/
 def IncidentTierDecides (ev : Option IncidentReadOnly → Input → Result) : Prop :=
-  ∀ (inc : IncidentReadOnly) (i : Input), ¬Original.DenyCond i →
+  ∀ (inc : IncidentReadOnly) (i : Input), ¬IncidentDenyCond i →
     ev (some inc) i = evaluateIncidentReadOnly i.toolName inc
 
-/-- (c) For both flags: two calls that differ only in mode and admin flag, neither of which a hard
-deny stops, get the same result. -/
-def IncidentModeAdminIndependentWithoutDeny (ev : Option IncidentReadOnly → Input → Result) :
-    Prop :=
-  ∀ (inc : IncidentReadOnly) (i : Input) (mode : Mode) (isAdmin : Bool),
-    ¬Original.DenyCond { i with mode := mode, isAdmin := isAdmin } → ¬Original.DenyCond i →
-      ev (some inc) { i with mode := mode, isAdmin := isAdmin } = ev (some inc) i
-
-/-- (c) What `isAdmin` still does: the deny tier runs first and an admin skips its ssh,
-sensitive-path and MCP-grant checks (78: "admins bypass the ssh / sensitive / mcp guards"), so an
-admin's incident call gets exactly the result of a non-admin whose three checks come back clear. -/
-def IncidentAdminSkipsExactlySshSensitiveMcp (ev : Option IncidentReadOnly → Input → Result) :
-    Prop :=
-  ∀ (inc : IncidentReadOnly) (i : Input),
-    ev (some inc) { i with isAdmin := true } =
-      ev (some inc) { i with
-        isAdmin := false,
-        prims := { i.prims with ssh := false, sensitive := { isSensitive := false },
-                                mcpDenied := none } }
-
-/-- (c) The limit of 102-103 for `isAdmin`: some incident call's decision changes with the admin
-flag alone. (An allow-listed tool whose MCP grant check fails is denied to a non-admin and allowed
-to an admin.) -/
-def IncidentAdminDependent (ev : Option IncidentReadOnly → Input → Result) : Prop :=
-  ∃ (inc : IncidentReadOnly) (i : Input),
-    (ev (some inc) { i with isAdmin := true }).decision ≠
-      (ev (some inc) { i with isAdmin := false }).decision
-
 /-- (d) 162-163: "Runs *after* the hard-deny tier, so a revoked MCP grant or an aborted session
-still wins over an allow-listed evidence tool". Under a met deny condition the result is the one
-without an incident context: a denial, with the hard-deny guard's own reason. -/
+still wins over an allow-listed evidence tool". Under a met deny condition the result is that of
+the same call by a non-admin without an incident context: a denial, with the hard-deny guard's own
+reason. -/
 def IncidentHardDenyWins (ev : Option IncidentReadOnly → Input → Result) : Prop :=
-  ∀ (inc : IncidentReadOnly) (i : Input), Original.DenyCond i →
-    ev (some inc) i = ev none i ∧ (ev (some inc) i).decision = .deny
+  ∀ (inc : IncidentReadOnly) (i : Input), IncidentDenyCond i →
+    ev (some inc) i = ev none { i with isAdmin := false } ∧ (ev (some inc) i).decision = .deny
 
 /-- (e) 100: "**Absent (the default) → nothing changes.**" Without an incident context the result
 is `evaluate`'s, the function `Simplification.lean` carries every statement above over to. -/

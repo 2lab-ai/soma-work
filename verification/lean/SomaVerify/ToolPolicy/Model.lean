@@ -268,7 +268,8 @@ def checkSensitiveForTool (toolName : String) (path : Field) (sensitive : Sensit
 /-! ## The deny tier (lines 187-236)
 
 Each step is a function: `some r` is the `return r` it executes, `none` falls through to the next
-step. Steps 2-4 sit inside one `if (!ctx.isAdmin)` block, so they test the admin flag once. -/
+step. Steps 2-4 sit inside one `if (!ctx.isAdmin || ctx.incidentReadOnly)` block, so they test the
+admin flag and the incident context once. -/
 
 /-- 1. Abort guard (Bash only) — lines 191-195. -/
 def abortGuard (i : Input) : Option Result :=
@@ -302,10 +303,11 @@ def mcpCheck (i : Input) : Option Result :=
     | none => none
   else none
 
-/-- Steps 2-4, `if (!ctx.isAdmin) { … }` — lines 197-217: for a non-admin, the first of the three
-checks that returns. -/
-def adminExemptGuards (i : Input) : Option Result :=
-  if i.isAdmin = false then
+/-- Steps 2-4, `if (!ctx.isAdmin || ctx.incidentReadOnly) { … }` — lines 197-217: for a non-admin,
+or for anyone in an incident session (an `IncidentReadOnlyContext` is an object, so set means
+truthy), the first of the three checks that returns. `incident` is `ctx.incidentReadOnly`. -/
+def adminExemptGuards (incident : Option IncidentReadOnly) (i : Input) : Option Result :=
+  if i.isAdmin = false ∨ incident.isSome = true then
     match sshCheck i with
     | some r => some r
     | none =>
@@ -362,15 +364,15 @@ def modeTier (i : Input) : Result :=
   else { decision := .pass, reason := "no policy opinion" }          -- 274
 
 /-- `evaluateToolPolicy` — lines 179-275, where `incident` is `ctx.incidentReadOnly` (`none` when
-undefined): the abort guard, the non-admin block, the cross-user and PR-issue guards, in that
-order; the first that returns decides. If none does, a set incident context hands the call to the
-incident tier (lines 240-241: an `IncidentReadOnlyContext` is an object, so set means truthy) and
+undefined): the abort guard, the non-admin block (which an incident context makes apply to admins
+as well), the cross-user and PR-issue guards, in that order; the first that returns decides. If
+none does, a set incident context hands the call to the incident tier (lines 240-241) and
 otherwise the mode tier decides. -/
 def evaluateToolPolicy (incident : Option IncidentReadOnly) (i : Input) : Result :=
   match abortGuard i with
   | some r => r
   | none =>
-  match adminExemptGuards i with
+  match adminExemptGuards incident i with
   | some r => r
   | none =>
   match crossUserGuard i with
