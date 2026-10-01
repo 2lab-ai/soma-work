@@ -276,18 +276,34 @@ describe('decodeIncidentConclusion — success is earned, never claimed', () => 
     expect(decoded.ok && decoded.downgrade).toEqual({ from: 'succeeded', reason: 'missing_proposal' });
   });
 
-  it('leaves a non-success status alone when evidence and proposal are absent', () => {
-    const decoded = decode(conclusion({ status: 'running', evidence: [], proposal: null }));
+  it('leaves a non-success terminal status alone when evidence and proposal are absent', () => {
+    const decoded = decode(conclusion({ status: 'failed', evidence: [], proposal: null }));
     const result = expectOk(decoded);
-    expect(result.status).toBe('running');
+    expect(result.status).toBe('failed');
     expect(result.proposal).toBeNull();
     expect(decoded.ok && decoded.downgrade).toBeUndefined();
   });
 
-  it('accepts every status in the contract', () => {
-    for (const status of ['running', 'failed', 'interrupted', 'inconclusive'] as const) {
+  it('accepts every terminal status in the contract', () => {
+    for (const status of ['failed', 'interrupted', 'inconclusive'] as const) {
       expect(expectOk(decode(conclusion({ status }))).status).toBe(status);
     }
+  });
+
+  // The two tests above used to ACCEPT `running` as a conclusion. The wire
+  // contract carries it, but as progress only: eagle-eye skips a `running` line
+  // and keeps the attempt pending (eagle-eye 14924788, src/incident.rs:864
+  // "`Running` is progress, not a conclusion", and :1157). This decoder reads the
+  // attempt's ONE final message, after which the host marks the attempt finished,
+  // so a `running` conclusion would leave eagle-eye waiting on an attempt the host
+  // has already closed. It is refused, and the host authors the terminal result.
+  it('refuses running as a conclusion — it is progress, not an answer', () => {
+    expectError(decode(conclusion({ status: 'running' })), 'non_terminal_status', 'status');
+    expectError(
+      decode(conclusion({ status: 'running', evidence: [], proposal: null })),
+      'non_terminal_status',
+      'status',
+    );
   });
 
   it('rejects a status outside the contract', () => {
