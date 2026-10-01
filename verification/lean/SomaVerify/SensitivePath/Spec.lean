@@ -133,7 +133,7 @@ def HomeNames (cwd homedir : List Char) (hloc : List Seg) : Prop :=
 
 /-- ECMAScript LineTerminator (ECMA-262 section 12.3, Table 37). -/
 def lineTerminators : List Char :=
-  ['\n', '\r', ' ', ' ']
+  ['\n', '\r', '\u2028', '\u2029']
 
 /-- `/^\.env(\..+)?$/`: `.env`, or `.env.` and then at least one character, none of them a line
 terminator (`.` does not match those without the `s` flag). -/

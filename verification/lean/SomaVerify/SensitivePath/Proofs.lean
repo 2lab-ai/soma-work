@@ -4,10 +4,12 @@ import SomaVerify.SensitivePath.Spec
 /-!
 # Proofs of the sensitive-path invariants: strings, segments and normal forms
 
-The invariants are stated in `Spec.lean`; this file and `ProofsFold.lean`, `ProofsCheck.lean`
-prove them for the model in `Model.lean`. The work here is in relating string operations (prefix
-tests, `split('/')`, slicing) to segment lists: once a path is written as `renderAbs segs`,
-every rule of the module is a statement about `segs`.
+The invariants are stated in `Spec.lean`, for the model in `Model.lean`. The work here is in
+relating string operations (prefix tests, `split('/')`, slicing) to segment lists: once a path is
+written as `renderAbs segs`, every rule of the module is a statement about `segs`. This file
+proves (a) `NormalizeIdempotent`, (e) `BasenameRuleDescribed` and (f) `ServiceRuleDescribed`;
+`ProofsFold.lean` proves what case folding keeps, and `ProofsOriginal.lean` proves
+`StricterThanOriginal`. The other invariants of `Spec.lean` are stated without a proof here.
 -/
 
 namespace SomaVerify.SensitivePath.Proofs
