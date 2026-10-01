@@ -67,6 +67,19 @@ const MAX_ESCAPED_FIELD_CHARS = 1000;
 const MAX_EVIDENCE_ITEMS = 10;
 const MAX_UNCERTAINTY_ITEMS = 10;
 
+/**
+ * The bounds a caller assembling part of a result must respect, exported so the
+ * host-side builder (`src/incident/attempt-output.ts`) reads these numbers
+ * instead of re-declaring them.
+ */
+export const INCIDENT_RESULT_LIMITS = {
+  /** Inbound model conclusion message, in UTF-16 units (`string.length`). */
+  messageChars: MAX_MESSAGE_CHARS,
+  /** Any string field other than `summary`. */
+  stringChars: MAX_STRING_CHARS,
+  uncertaintyItems: MAX_UNCERTAINTY_ITEMS,
+} as const;
+
 const ISO_INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?Z$/;
 
 /**
