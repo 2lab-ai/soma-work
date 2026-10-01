@@ -40,6 +40,7 @@ import {
   readIdleTimeoutMs,
   type StreamCallbacks,
   type StreamContext,
+  sayPostSwitches,
   type UsageData,
 } from '../stream-processor';
 import type { SummaryService } from '../summary-service';
@@ -1405,9 +1406,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             blocks: msg.blocks,
             attachments: msg.attachments,
             // Only the incident conclusion sets these; any other post keeps
-            // Slack's default unfurling and its payload unchanged.
-            ...(msg.unfurl_links !== undefined ? { unfurl_links: msg.unfurl_links } : {}),
-            ...(msg.unfurl_media !== undefined ? { unfurl_media: msg.unfurl_media } : {}),
+            // Slack's defaults and its payload unchanged.
+            ...sayPostSwitches(msg),
           });
           if (result?.ts) {
             latestResponseTs = result.ts;

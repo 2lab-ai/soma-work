@@ -221,14 +221,19 @@ describe('incident conclusion → real Slack stream processor', () => {
         expect(Buffer.from(surface.postTexts[0], 'utf8').equals(Buffer.from(output.text, 'utf8'))).toBe(true);
         const postedLines = surface.postTexts[0].split('\n');
         expect(postedLines[postedLines.length - 1]).toBe(output.line);
-        // Link unfurling off (caller obligation 2 in `incident-result.ts`): an
-        // unfurl is Slack rendering something in place of the marker line.
+        // Every documented `chat.postMessage` switch that turns Slack's own
+        // processing of `text` off (caller obligation 2 in `incident-result.ts`):
+        // no unfurl, no automatic URL linking (`parse: 'none'`), no markup
+        // parsing (`mrkdwn: false`). `link_names` is absent on purpose — leaving
+        // it out is what keeps name linking off.
         const posted = JSON.parse(surface.posts[0]) as Record<string, unknown>;
         expect(posted).toEqual({
           text: output.text,
           thread_ts: REQUEST.parent_ts,
           unfurl_links: false,
           unfurl_media: false,
+          parse: 'none',
+          mrkdwn: false,
         });
       });
     }
@@ -254,9 +259,9 @@ describe('incident conclusion → real Slack stream processor', () => {
     expect(surface.posts).toEqual([]);
   });
 
-  // Control: the unfurl flags belong to the incident post only. An ordinary
-  // post keeps Slack's default unfurling — no flag is sent at all.
-  it('[legacy say] control: an ordinary post carries no unfurl flags', async () => {
+  // Control: the switches belong to the incident post only. An ordinary post
+  // keeps Slack's defaults — no switch is sent at all.
+  it('[legacy say] control: an ordinary post carries none of the switches', async () => {
     const surface = await run([ordinaryReply('see https://example.com/run/1')], {
       phase1: false,
       incidentAttempt: false,
@@ -264,8 +269,9 @@ describe('incident conclusion → real Slack stream processor', () => {
 
     expect(surface.posts).toHaveLength(1);
     const posted = JSON.parse(surface.posts[0]) as Record<string, unknown>;
-    expect(posted).not.toHaveProperty('unfurl_links');
-    expect(posted).not.toHaveProperty('unfurl_media');
+    for (const option of ['unfurl_links', 'unfurl_media', 'parse', 'mrkdwn', 'link_names']) {
+      expect(posted, option).not.toHaveProperty(option);
+    }
   });
 });
 

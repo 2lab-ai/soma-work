@@ -1,4 +1,5 @@
 import type { IncidentRequest } from '../incident-contract';
+import type { SayPostSwitches } from '../stream-processor';
 
 export interface ProcessedFile {
   path: string;
@@ -111,15 +112,15 @@ export interface MessageEvent {
   }>;
 }
 
-export type SayFn = (args: {
-  text: string;
-  thread_ts?: string;
-  blocks?: any[];
-  attachments?: any[];
-  /** Set only by the incident conclusion post (see `SayFunction` in stream-processor.ts). */
-  unfurl_links?: boolean;
-  unfurl_media?: boolean;
-}) => Promise<{ ts?: string }>;
+/** `SayPostSwitches` are set only by the incident conclusion post (see stream-processor.ts). */
+export type SayFn = (
+  args: {
+    text: string;
+    thread_ts?: string;
+    blocks?: any[];
+    attachments?: any[];
+  } & SayPostSwitches,
+) => Promise<{ ts?: string }>;
 
 export interface InputProcessResult {
   processedFiles: ProcessedFile[];

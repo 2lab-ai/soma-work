@@ -20,6 +20,7 @@ import {
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
+import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
@@ -1350,10 +1351,10 @@ export class SlackHandler {
         thread_ts: args.thread_ts,
         blocks: args.blocks,
         attachments: args.attachments,
-        // Set only by the incident conclusion (unfurling off); Bolt's `say`
-        // spreads these into `chat.postMessage`. Other posts are unchanged.
-        ...(args.unfurl_links !== undefined ? { unfurl_links: args.unfurl_links } : {}),
-        ...(args.unfurl_media !== undefined ? { unfurl_media: args.unfurl_media } : {}),
+        // Set only by the incident conclusion (Slack's own processing of its
+        // text off); Bolt's `say` spreads these into `chat.postMessage`. Other
+        // posts are unchanged.
+        ...sayPostSwitches(args),
       });
       return { ts: result?.ts };
     };

@@ -294,11 +294,12 @@ describe('SlackHandler', () => {
     expect(create).toHaveBeenCalledWith(sessionResult.session, sessionResult.sessionKey);
   });
 
-  // The incident conclusion asks for link unfurling off (caller obligation 2 in
-  // `incident-result.ts`). The `say` handed to the executor is this handler's
-  // wrapper around Bolt's, which spreads its argument into `chat.postMessage`;
-  // the wrapper must forward the two flags and add nothing to any other post.
-  it('forwards the unfurl flags through the say it hands the executor, and adds none to an ordinary post', async () => {
+  // The incident conclusion turns Slack's own processing of its text off
+  // (caller obligation 2 in `incident-result.ts`). The `say` handed to the
+  // executor is this handler's wrapper around Bolt's, which spreads its argument
+  // into `chat.postMessage`; the wrapper must forward those switches and add
+  // nothing to any other post.
+  it('forwards the post switches through the say it hands the executor, and adds none to an ordinary post', async () => {
     const app = { client: {}, assistant: vi.fn() };
     const handler = new SlackHandler(app as never, {} as never, {} as never);
     const handlerAny = handler as unknown as Record<string, unknown>;
@@ -333,7 +334,14 @@ describe('SlackHandler', () => {
     const executorSay = execute.mock.calls[0][0].say;
     say.mockClear();
 
-    await executorSay({ text: 'conclusion', thread_ts: 't1', unfurl_links: false, unfurl_media: false });
+    await executorSay({
+      text: 'conclusion',
+      thread_ts: 't1',
+      unfurl_links: false,
+      unfurl_media: false,
+      parse: 'none',
+      mrkdwn: false,
+    });
     await executorSay({ text: 'ordinary', thread_ts: 't1' });
 
     expect(say.mock.calls[0][0]).toMatchObject({
@@ -341,6 +349,8 @@ describe('SlackHandler', () => {
       thread_ts: 't1',
       unfurl_links: false,
       unfurl_media: false,
+      parse: 'none',
+      mrkdwn: false,
     });
     expect(Object.keys(say.mock.calls[1][0]).sort()).toEqual(['attachments', 'blocks', 'text', 'thread_ts']);
   });
