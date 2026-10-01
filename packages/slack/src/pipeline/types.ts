@@ -116,6 +116,9 @@ export type SayFn = (args: {
   thread_ts?: string;
   blocks?: any[];
   attachments?: any[];
+  /** Set only by the incident conclusion post (see `SayFunction` in stream-processor.ts). */
+  unfurl_links?: boolean;
+  unfurl_media?: boolean;
 }) => Promise<{ ts?: string }>;
 
 export interface InputProcessResult {

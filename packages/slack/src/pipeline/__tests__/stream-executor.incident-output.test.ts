@@ -259,6 +259,10 @@ describe('StreamExecutor — an incident turn publishes the host text and interp
     expect(published[0].thread_ts).toBe(THREAD);
     expect(published[0].blocks).toBeUndefined();
     expect(published[0].attachments).toBeUndefined();
+    // Link unfurling off — the executor's `say` wrapper must carry the flags
+    // through to the caller's `say`, not drop them.
+    expect(published[0].unfurl_links).toBe(false);
+    expect(published[0].unfurl_media).toBe(false);
   });
 
   // The turn surface is still begun and ended (native status, supersede and the
@@ -298,6 +302,23 @@ describe('StreamExecutor — an incident turn publishes the host text and interp
 
     expect(deps.threadPanel.beginTurn.mock.calls[0][0].noStream).toBeFalsy();
     expect(deps.threadPanel.appendText.mock.calls.map((call) => call[1])).toEqual(['an ordinary answer']);
+  });
+
+  it('control: an ordinary post through the same say carries no unfurl flags', async () => {
+    const deps = createDeps('see https://example.com/run/1');
+    // The stream refuses the chunk, so the answer falls back to a post.
+    deps.threadPanel.appendText.mockResolvedValue(false);
+    const params = createParams(createSession());
+
+    await new StreamExecutor(deps).execute(params);
+    await settle();
+
+    const posted = params.say.mock.calls
+      .map((call) => call[0])
+      .filter((message: { text?: string }) => message.text?.includes('example.com'));
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).not.toHaveProperty('unfurl_links');
+    expect(posted[0]).not.toHaveProperty('unfurl_media');
   });
 });
 
