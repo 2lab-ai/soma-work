@@ -13,6 +13,8 @@
  * - `succeeded` is earned: at least one host-verified evidence record plus a
  *   complete action proposal. A bare claim is downgraded to an explicit
  *   `inconclusive` result — never silently passed through as success.
+ * - A conclusion is terminal. `running` is a wire value for progress, and a
+ *   conclusion carrying it is refused rather than published.
  *
  * No Slack I/O and no logging: the caller posts, logs and applies policy.
  *
@@ -67,7 +69,17 @@ const MAX_UNCERTAINTY_ITEMS = 10;
 
 const ISO_INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?Z$/;
 
+/**
+ * Every status on the wire. `running` is in the contract for PROGRESS lines:
+ * eagle-eye skips one and keeps the attempt pending (eagle-eye
+ * `src/incident.rs`, `ResultStatus::Running`, "progress, not a conclusion").
+ * This host publishes one line per attempt — its conclusion — so it never emits
+ * `running`; the value stays here so the decoder can recognise and refuse it.
+ */
 export type IncidentResultStatus = 'running' | 'succeeded' | 'failed' | 'interrupted' | 'inconclusive';
+
+/** Statuses a published result may carry: a conclusion ends the attempt. */
+export type IncidentConclusionStatus = Exclude<IncidentResultStatus, 'running'>;
 
 /** Statuses the host itself may emit when no model conclusion is usable. */
 export type IncidentTerminalStatus = 'failed' | 'interrupted' | 'inconclusive';
@@ -100,7 +112,7 @@ export interface IncidentResult {
   readonly incident_id: string;
   readonly lifecycle_id: string;
   readonly attempt_id: string;
-  readonly status: IncidentResultStatus;
+  readonly status: IncidentConclusionStatus;
   readonly summary: string;
   readonly evidence: readonly IncidentEvidenceRecord[];
   readonly proposal: IncidentProposal | null;
@@ -118,6 +130,7 @@ export type IncidentResultErrorReason =
   | 'missing_field'
   | 'unsupported_version'
   | 'unknown_status'
+  | 'non_terminal_status'
   | 'invalid_field_type'
   | 'invalid_field_value'
   | 'invalid_field_format'
@@ -351,6 +364,13 @@ export function decodeIncidentConclusion(
     return fail('unknown_status', 'status');
   }
   const status = raw.status as IncidentResultStatus;
+  // A conclusion is the attempt's last word: the host marks the attempt finished
+  // right after it. `running` is progress to eagle-eye, which would keep waiting
+  // on an attempt this side has already closed — so it is refused, and the
+  // caller authors a terminal result in its place.
+  if (status === 'running') {
+    return fail('non_terminal_status', 'status');
+  }
 
   const summary = checkString(raw.summary, 'summary', MAX_SUMMARY_CHARS);
   if (!summary.ok) {

@@ -870,6 +870,35 @@ describe('incident stream, end to end over a fake SDK stream', () => {
     expect(finalText).toContain('model_timeout');
     expect(finalText).toContain('"status":"interrupted"');
   });
+
+  // eagle-eye reads `running` as progress and keeps waiting (eagle-eye 14924788,
+  // src/incident.rs:864, :1157), while `onFinished` writes the host's completion
+  // marker. A finished attempt whose only line says `running` is a contradiction
+  // the two sides would never resolve.
+  it('ends a successful run whose conclusion says running with a terminal status', async () => {
+    const { hooks: wiring, finished } = hooks();
+
+    const emitted = await drain(
+      stream(assistantMessage([{ type: 'text', text: markerPayload({ status: 'running' }) }]), resultMessage()),
+      wiring,
+    );
+
+    const assistantText = (emitted[emitted.length - 2] as unknown as { message: { content: Array<{ text: string }> } })
+      .message.content[0].text;
+    const finalText = (emitted[emitted.length - 1] as unknown as { result: string }).result;
+    expect(assistantText).toBe(finalText);
+
+    const lines = markerLines(finalText);
+    expect(lines).toHaveLength(1);
+    const wire = JSON.parse(lines[0].slice(INCIDENT_RESULT_MARKER.length)) as { status: string; summary: string };
+    expect(['succeeded', 'failed', 'interrupted', 'inconclusive']).toContain(wire.status);
+    expect(wire.status).toBe('inconclusive');
+    expect(wire.summary).toContain('non_terminal_status');
+    // The human header states the same terminal status the marker carries.
+    expect(finalText.split('\n')[0]).toMatch(/— inconclusive$/);
+    // ...and the host's completion marker was written for this, the only conclusion.
+    expect(finished).toEqual(['finished']);
+  });
 });
 
 // ------------------------------------------------------------- SDK terminal
