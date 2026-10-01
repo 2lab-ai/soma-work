@@ -108,7 +108,7 @@ unfold it explicitly. -/
     | some ipv6 => Blocked6 ipv6
     | none => (stripBrackets hostname).toList.contains ':' = true
 
-/-- ts:350: "An answer that is not an IP address cannot be checked, so it blocks too (fail
+/-- ts:353: "An answer that is not an IP address cannot be checked, so it blocks too (fail
 closed)." A resolver answer is safe iff it is an address the spec does not block. -/
 def AnswerSafe (answer : String) : Prop :=
   match parseIpv4 (stripBrackets answer) with
@@ -148,17 +148,36 @@ def BlockedAddressesRejected : Prop :=
     HostnameBlocked (checkedHostname url.hostname) →
       validateWebhookUrl (some url) = .invalid "내부 네트워크 주소는 등록할 수 없습니다."
 
-/-- ts:327: "Skip DNS resolution for IP literals — already checked by isBlockedIp, which let this
-one through"; ts:330: "The resolvers take the hostname the first pass examined, without IPv6
-brackets". An IP-literal URL gets the first pass's verdict, whatever DNS would say,
-and the resolvers are not called. -/
+/-- ts:327: "Skip DNS resolution only when the URL parser itself produced an IP literal, and an
+allowed one". An IP-literal URL, one whose hostname as the URL parser produced it is an IPv4
+address or a bracketed IPv6 address, gets the first pass's verdict, whatever DNS would say, and
+the resolvers are not called.
+
+Stated for a hostname in the form the first pass examines, lower-case and without a trailing dot
+(`checkedHostname url.hostname = url.hostname`), which is how the URL parser writes every IP host:
+`Vectors.lean` requires it of every URL vector whose hostname is an IP literal, and the
+conformance test checks each vector's hostname against the engine. That `ipVerdict` ignores ASCII
+case, which would shrink the hypothesis to "no trailing dot", is not proven. -/
 def IpLiteralsSkipDns : Prop :=
   ∀ (url : ParsedUrl) (answers4 answers6 : List String),
-    isIpLiteral (stripBrackets (checkedHostname url.hostname)) = true →
+    checkedHostname url.hostname = url.hostname → isIpLiteral (stripBrackets url.hostname) = true →
       validateWebhookUrlWithDns (some url) answers4 answers6 = (validateWebhookUrl (some url), none)
 
+/-- ts:327-330: DNS is skipped only for an IP literal the URL parser itself produced, and "a
+dotted quad followed by two or more dots stays a DNS name (`1.2.3.4..`) and is resolved"; ts:333:
+"The resolvers take the hostname the first pass examined, without IPv6 brackets". Whenever the
+first pass accepts a URL whose hostname, as the URL parser produced it, is not an address the spec
+allows (`AnswerSafe`, the test every resolver answer must pass), the resolvers are called with the
+checked hostname, brackets stripped. A DNS name is never accepted without DNS, not even one the
+first pass examined, dots stripped, as an allowed address. -/
+def DnsNamesResolved : Prop :=
+  ∀ (url : ParsedUrl) (answers4 answers6 : List String),
+    validateWebhookUrl (some url) = .valid → ¬ AnswerSafe url.hostname →
+      (validateWebhookUrlWithDns (some url) answers4 answers6).2 =
+        some (stripBrackets (checkedHostname url.hostname))
+
 /-- ts:8: "4. DNS resolution validates resolved IPs (anti-rebinding)"; ts:310: "Resolves the
-hostname and checks all returned IPs against blocked ranges"; ts:350 (unreadable answers block).
+hostname and checks all returned IPs against blocked ranges"; ts:353 (unreadable answers block).
 Whenever the resolvers are called, the URL is accepted iff they answered something and every answer
 is safe. -/
 def ResolvedIpsChecked : Prop :=
@@ -167,7 +186,7 @@ def ResolvedIpsChecked : Prop :=
       ((validateWebhookUrlWithDns url answers4 answers6).1 = .valid ↔
         (answers4 ++ answers6 ≠ [] ∧ ∀ ip ∈ answers4 ++ answers6, AnswerSafe ip))
 
-/-- ts:330-331 with ts:256: the resolvers get the hostname the first pass examined, lower-cased,
+/-- ts:333-334 with ts:256: the resolvers get the hostname the first pass examined, lower-cased,
 without its trailing dots and without IPv6 brackets. -/
 def ResolversGetCheckedHostname : Prop :=
   ∀ (url : ParsedUrl) (answers4 answers6 : List String) (queried : String),

@@ -12,7 +12,10 @@ Before writing anything, the generator checks the model's tables:
   vendored registries `verification/iana/*.csv`, in file order (footnote markers dropped, the one
   two-block row split);
 * every block's `cidr` text parses, with the model's own parser, to exactly its `base` and `len`;
-* every address written below parses back to itself.
+* every address written below parses back to itself;
+* every URL case whose hostname is an IP literal has it in the form the first pass examines,
+  lower-case and without a trailing dot, as `Spec.IpLiteralsSkipDns` and
+  `Proofs.validateWebhookUrlWithDns_eq_original` assume of the IP hosts the URL parser writes.
 
 Any failure stops the run with an error, so `lean-verify.sh` writes no vector file. The paths are
 relative to `verification/lean`, where `lean-verify.sh` runs the generators.
@@ -27,7 +30,9 @@ Two kinds of case follow, one per line of `verification/vectors/webhook-ssrf.jso
   text prefixes matched; malformed and non-canonical text. Canonical texts (`canonical: true`) are `render4`/`render6` output, which
   the conformance test also checks against the engine's own serializer.
 * `url`: a URL for `validateWebhookUrl` and `validateWebhookUrlWithDns`, with the `protocol` and
-  `hostname` the model assumes `new URL` returns (`url: null` when it throws), and one or more DNS
+  `hostname` the model assumes `new URL` returns (`url: null` when it throws); that hostname
+  without IPv6 brackets (`parsedHost`) and whether `isIpLiteral` reads it as an address
+  (`ipLiteral`), which the conformance test compares with `net.isIP`; and one or more DNS
   scenarios: resolver answers (unreadable ones included), the hostname the resolvers must be
   called with (`null`: not called), and the result.
 
@@ -257,6 +262,12 @@ def namedUrls : List UrlInput := [
   ⟨"https://[64:ff9b::808:808]/x", some ⟨"https:", "[64:ff9b::808:808]"⟩⟩,
   ⟨"https://127.0.0.1./x", some ⟨"https:", "127.0.0.1"⟩⟩,
   ⟨"https://10.0.0.1./", some ⟨"https:", "10.0.0.1"⟩⟩,
+  ⟨"https://1.2.3.4./", some ⟨"https:", "1.2.3.4"⟩⟩,
+  ⟨"https://1.2.3.4../", some ⟨"https:", "1.2.3.4.."⟩⟩,
+  ⟨"https://01.2.3.4../", some ⟨"https:", "01.2.3.4.."⟩⟩,
+  ⟨"https://012.0.0.1../", some ⟨"https:", "012.0.0.1.."⟩⟩,
+  ⟨"https://127.0.0.1../", some ⟨"https:", "127.0.0.1.."⟩⟩,
+  ⟨"https://0x7f.1../", some ⟨"https:", "0x7f.1.."⟩⟩,
   ⟨"https://0x7f.1/", some ⟨"https:", "127.0.0.1"⟩⟩,
   ⟨"https://2130706433/", some ⟨"https:", "127.0.0.1"⟩⟩,
   ⟨"https://127.1/", some ⟨"https:", "127.0.0.1"⟩⟩,
@@ -327,8 +338,8 @@ def urlCase (u : UrlInput) : Json :=
   let premise := match u.url with
     | none => []
     | some p =>
-      let host := stripBrackets (checkedHostname p.hostname)
-      [("dnsHost", Json.str host), ("ipLiteral", .bool (isIpLiteral host))]
+      let host := stripBrackets p.hostname
+      [("parsedHost", Json.str host), ("ipLiteral", .bool (isIpLiteral host))]
   let dns := (scenarios u.url).map fun (answers4, answers6) =>
     let (result, queried) := validateWebhookUrlWithDns u.url answers4 answers6
     Json.obj [("resolve4", strings answers4), ("resolve6", strings answers6),
@@ -352,10 +363,22 @@ def checkRoundTrips : IO Unit := do
     for (t, n) in dottedTails v do
       require (parseIpv6 t == some n) s!"{t} does not parse to {n}"
 
+/-- Every URL case whose hostname, brackets stripped, is an IP literal has it in the form the first
+pass examines (`checkedHostname` leaves it unchanged), the hypothesis under which
+`Spec.IpLiteralsSkipDns` and `Proofs.validateWebhookUrlWithDns_eq_original` speak of IP hosts. The
+conformance test checks each case's hostname against the engine's. -/
+def checkIpHosts : IO Unit := do
+  for u in urlInputs do
+    if let some p := u.url then
+      if isIpLiteral (stripBrackets p.hostname) then
+        require (checkedHostname p.hostname == p.hostname)
+          s!"{u.input}: IP host {p.hostname} is not in the form the first pass examines"
+
 end SomaVerify.WebhookSsrf.Vectors
 
 def main : IO Unit := do
   SomaVerify.WebhookSsrf.Vectors.checkTables
   SomaVerify.WebhookSsrf.Vectors.checkRoundTrips
+  SomaVerify.WebhookSsrf.Vectors.checkIpHosts
   IO.print (SomaVerify.Vectors.render "webhook-ssrf" ``SomaVerify.WebhookSsrf.Vectors.cases
     SomaVerify.WebhookSsrf.Vectors.cases)

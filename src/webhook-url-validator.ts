@@ -324,11 +324,14 @@ export async function validateWebhookUrlWithDns(raw: string): Promise<WebhookUrl
   const staticCheck = validateWebhookUrl(raw);
   if (!staticCheck.valid) return staticCheck;
 
-  // Skip DNS resolution for IP literals — already checked by isBlockedIp, which let this one through
-  const checked = checkedHostname(new URL(raw));
-  if (ipVerdict(checked) === false) return { valid: true };
+  // Skip DNS resolution only when the URL parser itself produced an IP literal, and an allowed one.
+  // The parser canonicalizes IP hosts (`https://012.0.0.1./` has the hostname `10.0.0.1`), but a
+  // dotted quad followed by two or more dots stays a DNS name (`1.2.3.4..`) and is resolved, even
+  // though the first pass, which strips every trailing dot, examined it as an address.
+  const parsed = new URL(raw);
+  if (ipVerdict(parsed.hostname) === false) return { valid: true };
   // The resolvers take the hostname the first pass examined, without IPv6 brackets
-  const hostname = stripBrackets(checked);
+  const hostname = stripBrackets(checkedHostname(parsed));
 
   // Resolve DNS and validate all returned IPs
   const [ipv4s, ipv6s] = await Promise.all([

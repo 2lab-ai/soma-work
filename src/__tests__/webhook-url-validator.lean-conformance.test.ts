@@ -115,7 +115,9 @@ interface UrlCase {
   kind: 'url';
   input: string;
   url: { protocol: string; hostname: string } | null;
-  dnsHost?: string;
+  /** `url.hostname` without IPv6 brackets. */
+  parsedHost?: string;
+  /** Whether the model's `isIpLiteral` reads `parsedHost` as an IP address. */
   ipLiteral?: boolean;
   expect: { static: Validation; dns: DnsScenario[] };
 }
@@ -198,13 +200,16 @@ describe('webhook-ssrf Lean conformance vectors', () => {
     expect(mismatches).toEqual([]);
   });
 
-  // The DNS pass used to ask net.isIP whether the hostname is an IP literal; it now uses the first
-  // pass's own classification, which the Lean theorem validateWebhookUrlWithDns_eq_original proves
-  // equal to `ipLiteral` below. This test keeps the other half: net.isIP agreed on every URL here.
-  it('agree with net.isIP, which the DNS pass asked before, on which hostnames are IP literals', () => {
+  // The model's isIpLiteral stands in for net.isIP, which the DNS pass asked of the checked hostname
+  // before the simplification. On the hostnames the URL parser produced, brackets stripped, the two
+  // agree on every URL here: tested, not proven, and not true of all text (net.isIP('01.2.3.4') is
+  // 0, while the model reads it as an address). So the Lean theorem
+  // validateWebhookUrlWithDns_eq_original compares the current model with the one before only on
+  // hostnames the first pass examines unchanged, where the checked hostname is the parser's own.
+  it('agree with net.isIP on which hostnames the URL parser produced are IP literals (premise)', () => {
     const mismatches = urlCases
-      .filter((c) => c.dnsHost !== undefined && (net.isIP(c.dnsHost) !== 0) !== c.ipLiteral)
-      .map((c) => `${JSON.stringify(c.dnsHost)}: model ${c.ipLiteral}`);
+      .filter((c) => c.parsedHost !== undefined && (net.isIP(c.parsedHost) !== 0) !== c.ipLiteral)
+      .map((c) => `${JSON.stringify(c.parsedHost)}: model ${c.ipLiteral}`);
     expect(mismatches).toEqual([]);
   });
 
