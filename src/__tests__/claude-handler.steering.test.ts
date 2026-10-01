@@ -66,6 +66,16 @@ interface FakeQuery {
 let fake: FakeQuery;
 
 /**
+ * The uuid the host stamped on the turn's opening send (`received[0]`). The
+ * real CLI echoes it as `user_message_uuid` on the result that answers that
+ * send, and the handler ends the turn only on such a result (#257) — a fake
+ * result without the echo would be skipped as answering something else.
+ */
+function openingUuidOf(received: unknown[]): unknown {
+  return (received[0] as { uuid?: unknown } | undefined)?.uuid;
+}
+
+/**
  * Install a fake `query()` that behaves like a streaming-input session:
  * it reads one input message, replies, parks on a gate the test opens after
  * steering, reads the injected message, then emits the turn `result`.
@@ -93,6 +103,7 @@ function installFakeQuery(): void {
         is_error: false,
         num_turns: 1,
         stop_reason: 'end_turn',
+        user_message_uuid: openingUuidOf(received),
       };
       // The turn is over: the handler must have closed the channel, so this
       // read completes instead of hanging the CLI forever.
@@ -169,6 +180,7 @@ function installSettlementQuery(opts: {
           queued_turn_count: opts.queuedTurnCount,
           session_id: 'sess-1',
           uuid: 'result-frame-uuid',
+          user_message_uuid: openingUuidOf(received),
           ...opts.resultOverrides,
         };
       }

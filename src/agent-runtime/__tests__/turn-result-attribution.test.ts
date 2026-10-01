@@ -59,13 +59,21 @@ describe('classifyTurnResult (#257)', () => {
     expect(verdict.terminal).toBe(true);
   });
 
-  it('is terminal for a legacy producer that echoes no uuid but ran a turn', () => {
-    const verdict = classifyTurnResult(success({ num_turns: 1 }), OPENING, []);
-    expect(verdict.terminal).toBe(true);
+  /**
+   * The host always stamps the opening uuid and the CLI echoes it on the result
+   * that answers it, so a uuid-less result answers something else — whatever
+   * `num_turns` says. A drained orphan `completed` notification can make the
+   * model run a turn of its own (`num_turns >= 1`, no uuid); ending the turn
+   * there would re-create #257.
+   */
+  it('is NOT terminal for a uuid-less result even when it ran a turn (notification-driven turn)', () => {
+    const verdict = classifyTurnResult(success({ num_turns: 1, result: 'bg agent finished' }), OPENING, []);
+    expect(verdict.terminal).toBe(false);
+    expect(classifyTurnResult(success({ num_turns: 5 }), OPENING, []).terminal).toBe(false);
   });
 
   it('treats an empty user_message_uuid like an absent one', () => {
-    expect(classifyTurnResult(success({ num_turns: 2, user_message_uuid: '' }), OPENING, []).terminal).toBe(true);
+    expect(classifyTurnResult(success({ num_turns: 2, user_message_uuid: '' }), OPENING, []).terminal).toBe(false);
     expect(classifyTurnResult(success({ num_turns: 0, user_message_uuid: '' }), OPENING, []).terminal).toBe(false);
   });
 
@@ -94,11 +102,14 @@ describe('classifyTurnResult (#257)', () => {
       classifyTurnResult({ subtype: 'error_max_turns', is_error: true }, OPENING, []).reason,
       classifyTurnResult(success({ user_message_uuid: OPENING }), OPENING, []).reason,
       classifyTurnResult(success({ user_message_uuid: 'u-1' }), OPENING, ['u-1']).reason,
-      classifyTurnResult(success({ num_turns: 1 }), OPENING, []).reason,
       classifyTurnResult(success({ num_turns: 0 }), OPENING, []).reason,
       classifyTurnResult(success({ user_message_uuid: 'x' }), OPENING, []).reason,
     ];
     for (const reason of reasons) expect(reason).toMatch(/\S/);
     expect(new Set(reasons).size).toBe(reasons.length);
+    // `num_turns` no longer splits the uuid-less branch.
+    expect(classifyTurnResult(success({ num_turns: 1 }), OPENING, []).reason).toBe(
+      classifyTurnResult(success({ num_turns: 0 }), OPENING, []).reason,
+    );
   });
 });

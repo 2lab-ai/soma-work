@@ -12,12 +12,16 @@
  *
  * The join key is the uuid the host stamps on the turn's opening message: the
  * CLI echoes it as the result's `user_message_uuid` (the send that STARTED the
- * turn). `num_turns: 0` alone is NOT the orphan signature — an opening
- * `/compact` also reports 0, but echoes the opening uuid.
+ * turn). `num_turns` is no signature either way — an opening `/compact` reports
+ * 0 but echoes the opening uuid, and a drained `completed` notification can
+ * make the model run a turn of its own (`num_turns >= 1`) that echoes nothing.
+ * Since the host ALWAYS stamps the opening uuid and the CLI echoes it on the
+ * result that answers it (measured, `/compact` included), a result without the
+ * echo answers something else and never ends the turn.
  *
  * Pure and duck-typed on the raw frame, like `isHealthyTurnResult` in
  * `claude-handler.ts`: it reads whatever actually arrived rather than trusting
- * a declared shape, because older producers echo no uuid at all.
+ * a declared shape.
  */
 
 /** The verdict plus the branch that produced it (for the skip log). */
@@ -34,10 +38,9 @@ export interface TurnResultAttribution {
  *   2. echoes the opening uuid → terminal.
  *   3. echoes a uuid pushed into this turn → terminal (defensive — a steered
  *      send that started a turn of its own is still this turn's business).
- *   4. echoes no uuid but `num_turns > 0` → terminal: a legacy producer that
- *      does not echo uuids but did run a turn.
- *   5. anything else (no uuid with `num_turns` 0/absent, or a foreign uuid) →
- *      NOT terminal.
+ *   4. anything else → NOT terminal: no uuid (whatever `num_turns` says — an
+ *      orphan drain or a notification-driven turn) or a foreign uuid. The
+ *      handler skips it and bounds the silence after it.
  */
 export function classifyTurnResult(
   raw: Record<string, unknown>,
@@ -55,11 +58,5 @@ export function classifyTurnResult(
     return { terminal: true, reason: 'pushed-uuid' };
   }
   const hasEcho = typeof echoed === 'string' && echoed.length > 0;
-  if (!hasEcho) {
-    if (typeof raw.num_turns === 'number' && raw.num_turns > 0) {
-      return { terminal: true, reason: 'legacy-no-uuid' };
-    }
-    return { terminal: false, reason: 'no-uuid-no-turns' };
-  }
-  return { terminal: false, reason: 'foreign-uuid' };
+  return { terminal: false, reason: hasEcho ? 'foreign-uuid' : 'no-uuid' };
 }
