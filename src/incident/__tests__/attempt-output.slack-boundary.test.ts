@@ -183,6 +183,10 @@ const INSTRUCTION_SHAPED_SUMMARIES: ReadonlyArray<readonly [string, string]> = [
   // `text` field is what eagle-eye reads back, so that would rewrite the marker
   // line after it was validated.
   ['markdown emphasis', 'the **api** host is down'],
+  // Every character Slack's markdown or entity handling acts on. A
+  // `markdown_text` stream chunk is interpreted server-side, so none of these
+  // may ever reach the thread that way.
+  ['Slack-active characters', 'a *b* _c_ ~d~ &amp; <@U0ADMIN> <!channel> 1 < 2 > 0 `e` ```f```'],
 ];
 
 describe('incident conclusion → real Slack stream processor', () => {
@@ -204,15 +208,45 @@ describe('incident conclusion → real Slack stream processor', () => {
 
         // Exactly one publication — the assistant message and the SDK result
         // carry the same text, and the second must dedupe against the first.
-        const publications = [...surface.postTexts, ...surface.appends];
-        expect(publications).toHaveLength(1);
-        expect(countOccurrences(publications[0], INCIDENT_RESULT_MARKER)).toBe(1);
-        // On either path the host's text goes out as is: nothing stripped,
-        // nothing added, nothing re-rendered.
-        expect(publications).toEqual([output.text]);
+        // On BOTH paths it is a plain post: a `markdown_text` stream chunk is
+        // interpreted by Slack, so the text eagle-eye reads back would no
+        // longer be provably the validated line.
+        expect(surface.appends).toEqual([]);
+        expect(surface.postTexts).toHaveLength(1);
+        expect(countOccurrences(surface.postTexts[0], INCIDENT_RESULT_MARKER)).toBe(1);
+        // The host's text goes out as is: nothing stripped, nothing added,
+        // nothing re-rendered — and no blocks or attachments for Slack to
+        // render in its place.
+        expect(surface.postTexts).toEqual([output.text]);
+        expect(Buffer.from(surface.postTexts[0], 'utf8').equals(Buffer.from(output.text, 'utf8'))).toBe(true);
+        const postedLines = surface.postTexts[0].split('\n');
+        expect(postedLines[postedLines.length - 1]).toBe(output.line);
+        const posted = JSON.parse(surface.posts[0]) as Record<string, unknown>;
+        expect(Object.keys(posted).sort()).toEqual(['text', 'thread_ts']);
       });
     }
   }
+
+  // Control: the switch is the incident flag, not the phase. An ordinary
+  // session's text still streams into the PHASE>=1 turn surface.
+  it('[PHASE>=1 stream] control: an ordinary turn still streams its text', async () => {
+    const reply = 'an *ordinary* answer';
+    const surface = await run(
+      [
+        {
+          type: 'assistant',
+          uuid: 'uuid-assistant',
+          session_id: 'sdk-session',
+          parent_tool_use_id: null,
+          message: { id: 'msg_1', type: 'message', role: 'assistant', content: [{ type: 'text', text: reply }] },
+        } as unknown as SDKMessage,
+      ],
+      { phase1: true, incidentAttempt: false },
+    );
+
+    expect(surface.appends).toEqual([reply]);
+    expect(surface.posts).toEqual([]);
+  });
 });
 
 describe('incident tool call → real Slack stream processor', () => {

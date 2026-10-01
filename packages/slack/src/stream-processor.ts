@@ -1888,20 +1888,18 @@ export class AgentStreamProcessor {
   /**
    * Publish an incident attempt's conclusion byte for byte.
    *
-   * Not `sayWithBlockKit`: that re-renders text as mrkdwn for the message's
-   * `text` field (`**x**` → `*x*`), and `text` is exactly what eagle-eye reads
-   * back from the thread — the validated marker line would be rewritten after
-   * validation (caller obligation 2 in `incident-result.ts`). The PHASE>=1
-   * stream already appends text untouched; the legacy path posts the raw text
-   * with no blocks and no verbosity tag. The conclusion is bounded (one wire
-   * line of at most 16384 bytes plus a few short lines), so it needs no
-   * overflow splitting.
+   * Always a plain post of the raw text — no blocks, no verbosity tag — on
+   * every phase. `text` is exactly what eagle-eye reads back from the thread,
+   * and the validated marker line must arrive unchanged (caller obligation 2
+   * in `incident-result.ts`). Neither alternative can show that:
+   * `sayWithBlockKit` re-renders the text as mrkdwn (`**x**` → `*x*`), and the
+   * PHASE>=1 turn stream sends it as a `markdown_text` chunk that Slack
+   * interprets server-side. The executor opens no stream for an incident turn
+   * (`TurnContext.noStream`), so there is no empty stream message left behind
+   * either. The conclusion is bounded (one wire line of at most 16384 bytes
+   * plus a few short lines), so it needs no overflow splitting.
    */
   private async publishIncidentText(text: string, context: StreamContext): Promise<void> {
-    if (context.turnId && context.threadPanel?.isTurnSurfaceActive()) {
-      const delivered = await context.threadPanel.appendText(context.turnId, text);
-      if (delivered) return;
-    }
     await context.say({ text, thread_ts: context.threadTs });
   }
 

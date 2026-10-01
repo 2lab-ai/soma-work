@@ -247,8 +247,33 @@ describe('StreamExecutor — an incident turn publishes the host text and interp
     expect(deps.slackApi.postMessage).not.toHaveBeenCalled();
     expect(deps.claudeHandler.setSessionLinks).not.toHaveBeenCalled();
     expect(deps.claudeHandler.addSourceWorkingDir).not.toHaveBeenCalled();
-    // One publication, carrying the host's text untouched.
-    expect(deps.threadPanel.appendText.mock.calls.map((call: any[]) => call[1])).toEqual([HOST_OUTPUT]);
+    // One publication, carrying the host's text untouched, as a plain post:
+    // nothing goes into the turn stream as a `markdown_text` chunk.
+    expect(deps.threadPanel.appendText).not.toHaveBeenCalled();
+    const published = params.say.mock.calls
+      .map((call) => call[0])
+      .filter((message: { text?: string }) => message.text?.includes('EAGLE_INCIDENT_RESULT:'));
+    expect(published).toHaveLength(1);
+    expect(published[0].text).toBe(HOST_OUTPUT);
+    expect(published[0].thread_ts).toBe(THREAD);
+    expect(published[0].blocks).toBeUndefined();
+    expect(published[0].attachments).toBeUndefined();
+  });
+
+  // The turn surface is still begun and ended (native status, supersede and the
+  // completion card ride on it), but it opens no stream message: nothing is
+  // ever appended to one, so it would be left behind empty.
+  it('begins and ends its turn surface without opening a stream', async () => {
+    const deps = createDeps();
+    const params = createParams(createSession(REQUEST));
+
+    await new StreamExecutor(deps).execute(params);
+    await settle();
+
+    expect(deps.threadPanel.beginTurn).toHaveBeenCalledTimes(1);
+    expect(deps.threadPanel.beginTurn.mock.calls[0][0]).toMatchObject({ noStream: true });
+    const turnId = deps.threadPanel.beginTurn.mock.calls[0][0].turnId;
+    expect(deps.threadPanel.endTurn).toHaveBeenCalledWith(turnId, 'completed');
   });
 
   // Control: the same text on an ordinary session still drives the directive —
@@ -261,6 +286,17 @@ describe('StreamExecutor — an incident turn publishes the host text and interp
     await settle();
 
     expect(deps.slackApi.postMessage).toHaveBeenCalledWith(CHANNEL, 'review-canary', {});
+  });
+
+  it('control: an ordinary session opens its stream and streams its text', async () => {
+    const deps = createDeps('an ordinary answer');
+    const params = createParams(createSession());
+
+    await new StreamExecutor(deps).execute(params);
+    await settle();
+
+    expect(deps.threadPanel.beginTurn.mock.calls[0][0].noStream).toBeFalsy();
+    expect(deps.threadPanel.appendText.mock.calls.map((call) => call[1])).toEqual(['an ordinary answer']);
   });
 });
 
