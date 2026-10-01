@@ -3,6 +3,7 @@ import SomaVerify.SensitivePath.ModelOriginal
 import SomaVerify.SensitivePath.Spec
 import SomaVerify.SensitivePath.Proofs
 import SomaVerify.SensitivePath.ProofsFold
+import SomaVerify.SensitivePath.ProofsCheck
 
 /-!
 # The current model is stricter than the phase-1 model
@@ -272,12 +273,6 @@ theorem verdict_isSensitive_of (home n : List Char) (walk : List (List Char))
           · exact absurd h hb
           · exact absurd h hs
 
-/-- The sensitive HOME directories add a non-empty run of proper segments to HOME, and none of
-them is a lone segment that folds to `private`. -/
-theorem homeDirSuffixes_props :
-    ∀ e ∈ homeDirSuffixes, e ≠ [] ∧ (∀ w ∈ e, Proper w) ∧ e.map fold ≠ [privateSeg] := by
-  decide
-
 /-- For an absolute HOME, every entry of `SENSITIVE_DIRECTORIES` is the rendering of a non-empty
 list of proper segments other than a lone `private`. -/
 theorem sensitiveDirectories_renderAbs (home : List Char) (hh : home.head? = some '/') :
@@ -308,30 +303,6 @@ theorem sensitiveDirectories_renderAbs (home : List Char) (hh : home.head? = som
   · simp only [List.mem_singleton] at hdir
     subst hdir
     exact ⟨["etc".toList, "shadow".toList], renderAbs_etc_shadow, by decide, by decide, by decide⟩
-
-/-- Extending a location keeps its `canon` as a prefix, unless the location is a lone segment
-that folds to `private` (which `/private/tmp` would rewrite). -/
-theorem canon_append (D U : List Seg) (hD : D ≠ []) (hp : D.map fold ≠ [privateSeg]) :
-    canon (D ++ U) = canon D ++ U.map fold := by
-  unfold canon
-  rw [List.map_append]
-  apply tmpMapSegs_append_left
-  · simpa using hD
-  · rintro ⟨hlen, hhead, -⟩
-    apply hp
-    generalize D.map fold = a at hlen hhead
-    match a with
-    | [] => simp at hlen
-    | [x] => simp at hhead; rw [hhead]
-    | _ :: _ :: _ => simp at hlen
-
-/-- The key of an absolute path is the rendering of its segments' `canon`. -/
-theorem foldKey_abs (n : List Char) (hhead : n.head? = some '/') :
-    foldKey n = renderAbs (canon (segmentsOf n)) := by
-  have hsf : ∀ w ∈ segmentsOf n, '/' ∉ w := fun w hw =>
-    slashFree_of_mem_splitSlash n w (List.mem_of_mem_tail hw)
-  have h := foldKey_renderAbs _ hsf
-  rwa [← eq_renderAbs_segmentsOf n hhead] at h
 
 /-- The directory rule: for an absolute HOME, a path phase 1 finds at or below a sensitive
 directory has its key at or below that directory's key. -/
@@ -448,19 +419,6 @@ theorem checkSensitivePath_stricter (home p : List Char) (hh : home.head? = some
     rw [checkSensitivePath_eq_verdict]
     exact verdict_stricter home _ _ hh h
 
-/-- `checkSensitiveGlob` reports a glob sensitive whenever one of the paths it checks is. -/
-theorem checkSensitiveGlob_of_candidate (home cwd pattern : List Char) (basePath : Option (List Char))
-    (t : List Char) (ht : t ∈ (globSpellings cwd pattern basePath).flatMap globCandidates)
-    (hs : (checkSensitivePath home t).isSensitive = true) :
-    (checkSensitiveGlob home cwd pattern basePath).isSensitive = true := by
-  unfold checkSensitiveGlob
-  have hsome : ((((globSpellings cwd pattern basePath).flatMap globCandidates).map
-      (checkSensitivePath home)).find? (fun r => r.isSensitive)).isSome = true :=
-    List.find?_isSome.2 ⟨_, List.mem_map.2 ⟨t, ht, rfl⟩, hs⟩
-  obtain ⟨r, hr⟩ := Option.isSome_iff_exists.1 hsome
-  rw [hr]
-  simpa using List.find?_some hr
-
 /-- The path phase 1 checks for a glob, the concrete prefix of the pattern resolved against its
 base, is one of the paths the current check checks. -/
 theorem original_glob_candidate (cwd pattern : List Char) (basePath : Option (List Char)) :
@@ -481,27 +439,6 @@ theorem stricter_than_original (home : List Char) (hh : home.head? = some '/') :
    fun cwd pattern basePath h =>
      checkSensitiveGlob_of_candidate home cwd pattern basePath _ (original_glob_candidate cwd pattern basePath)
        (checkSensitivePath_stricter home _ hh h)⟩
-
-/-- `path.resolve` returns an absolute path. -/
-theorem renderDir_head (r : List Seg) : (renderDir r).head? = some '/' := by
-  cases r with
-  | nil => rfl
-  | cons s ss => simp [renderDir, renderAbs]
-
-/-- `normalizeTmpPath` keeps a path absolute. -/
-theorem normalizeTmpPath_head (x : List Char) (hx : x.head? = some '/') :
-    (normalizeTmpPath x).head? = some '/' := by
-  unfold normalizeTmpPath
-  split
-  · exact hx
-  · dsimp only
-    split
-    · exact hx
-    · rfl
-
-/-- The HOME the module computes when it loads is absolute, whatever `os.homedir()` returns. -/
-theorem moduleHome_absolute (cwd homedir : List Char) : (moduleHome cwd homedir).head? = some '/' :=
-  normalizeTmpPath_head _ (renderDir_head _)
 
 /-- For the module as loaded, whatever the working directory and `os.homedir()`: the current
 checks report sensitive every path and glob the phase-1 checks do. -/
