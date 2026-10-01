@@ -25,6 +25,7 @@ function streamingContext(appendText = vi.fn().mockResolvedValue(true)) {
     threadTs: 'T1',
     sessionKey: 'C1:T1',
     sessionId: 's1',
+    incidentAttempt: false,
     turnId: 'C1:T1:turn-1',
     threadPanel: {
       isTurnSurfaceActive: () => true,

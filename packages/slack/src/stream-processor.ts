@@ -98,13 +98,18 @@ export interface StreamContext {
    * The turn is an Eagle incident attempt (the session owns an
    * `incidentRequest`). Its text is the host's own conclusion
    * (`src/incident/attempt-output.ts`), and that conclusion echoes validated
-   * MODEL strings — the summary and the proposal's action. So it is published
-   * verbatim and read for nothing: no response directives (a `channel_message`
-   * JSON in a summary would post to the channel root), no choice UI, and none of
-   * the transport-error guards that hold back a short error-looking text (a
-   * summary quoting one would silence the only line eagle-eye is waiting for).
+   * MODEL strings — the summary and the proposal's action. So it is handed to
+   * `say` verbatim, as a plain post, and read for nothing: no response directives (a
+   * `channel_message` JSON in a summary would post to the channel root), no
+   * choice UI, and none of the transport-error guards that hold back a short
+   * error-looking text (a summary quoting one would silence the only line
+   * eagle-eye is waiting for).
+   *
+   * Required, with no default: a construction site that forgot it would turn
+   * every one of those protections off without a sound. Set it from the session
+   * (`session.incidentRequest !== undefined`), never from a literal.
    */
-  incidentAttempt?: boolean;
+  incidentAttempt: boolean;
 }
 
 /**
@@ -119,14 +124,49 @@ export interface ThreadPanelFacade {
 }
 
 /**
+ * `chat.postMessage` switches that turn Slack's own processing of `text` off.
+ * Set only by the incident conclusion (`publishIncidentText`); every other post
+ * leaves them unset and gets Slack's defaults. Meanings, from the
+ * `@slack/web-api` 7.15.1 types (`dist/types/request/chat.d.ts`) and the
+ * chat.postMessage / message-formatting docs:
+ *   - `unfurl_links` / `unfurl_media` — `false` disables link / media unfurls.
+ *   - `parse` — `'none'` stops Slack auto-linking bare URLs.
+ *   - `mrkdwn` — `false` disables markup parsing of the top-level `text`.
+ * `link_names` is deliberately absent: leaving it out is what keeps name
+ * linking off.
+ */
+export interface SayPostSwitches {
+  unfurl_links?: boolean;
+  unfurl_media?: boolean;
+  parse?: 'full' | 'none';
+  mrkdwn?: boolean;
+}
+
+/**
+ * The switches `message` sets, and no others. `say` wrappers spread this into
+ * the payload they forward, so a post that sets none sends exactly the keys it
+ * always did.
+ */
+export function sayPostSwitches(message: SayPostSwitches): SayPostSwitches {
+  const switches: SayPostSwitches = {};
+  if (message.unfurl_links !== undefined) switches.unfurl_links = message.unfurl_links;
+  if (message.unfurl_media !== undefined) switches.unfurl_media = message.unfurl_media;
+  if (message.parse !== undefined) switches.parse = message.parse;
+  if (message.mrkdwn !== undefined) switches.mrkdwn = message.mrkdwn;
+  return switches;
+}
+
+/**
  * Slack say function type
  */
-export type SayFunction = (message: {
-  text: string;
-  thread_ts: string;
-  blocks?: any[];
-  attachments?: any[];
-}) => Promise<{ ts?: string }>;
+export type SayFunction = (
+  message: {
+    text: string;
+    thread_ts: string;
+    blocks?: any[];
+    attachments?: any[];
+  } & SayPostSwitches,
+) => Promise<{ ts?: string }>;
 
 function textIndicatesPromptTooLong(text: unknown): boolean {
   if (typeof text !== 'string') return false;
@@ -1886,23 +1926,35 @@ export class AgentStreamProcessor {
   }
 
   /**
-   * Publish an incident attempt's conclusion byte for byte.
+   * Publish an incident attempt's conclusion — byte-for-byte up to the `say`
+   * call.
    *
-   * Not `sayWithBlockKit`: that re-renders text as mrkdwn for the message's
-   * `text` field (`**x**` → `*x*`), and `text` is exactly what eagle-eye reads
-   * back from the thread — the validated marker line would be rewritten after
-   * validation (caller obligation 2 in `incident-result.ts`). The PHASE>=1
-   * stream already appends text untouched; the legacy path posts the raw text
-   * with no blocks and no verbosity tag. The conclusion is bounded (one wire
-   * line of at most 16384 bytes plus a few short lines), so it needs no
-   * overflow splitting.
+   * Always a plain post of the raw text — no blocks, no verbosity tag — on
+   * every phase. The `text` Slack stores is what eagle-eye reads back from the
+   * thread, and the validated marker line must arrive unchanged (caller
+   * obligation 2 in `incident-result.ts`). This method controls only what it
+   * hands to `say`; whether Slack stores that `text` unchanged is NOT shown by
+   * any test here — it is the pre-activation receipt in
+   * docs/runbook/eagle-incident-receiver.md §6. Neither alternative can even
+   * get the line to `say` intact:
+   * `sayWithBlockKit` re-renders the text as mrkdwn (`**x**` → `*x*`), and the
+   * PHASE>=1 turn stream sends it as a `markdown_text` chunk that Slack
+   * interprets server-side. The executor opens no stream for an incident turn
+   * (`TurnContext.noStream`), so there is no empty stream message left behind
+   * either. Every documented switch that turns Slack's own processing of `text`
+   * off is set (`SayPostSwitches`): no unfurls, no automatic URL linking, no
+   * markup parsing. The conclusion is bounded (one wire line of at most 16384
+   * bytes plus a few short lines), so it needs no overflow splitting.
    */
   private async publishIncidentText(text: string, context: StreamContext): Promise<void> {
-    if (context.turnId && context.threadPanel?.isTurnSurfaceActive()) {
-      const delivered = await context.threadPanel.appendText(context.turnId, text);
-      if (delivered) return;
-    }
-    await context.say({ text, thread_ts: context.threadTs });
+    await context.say({
+      text,
+      thread_ts: context.threadTs,
+      unfurl_links: false,
+      unfurl_media: false,
+      parse: 'none',
+      mrkdwn: false,
+    });
   }
 
   /**

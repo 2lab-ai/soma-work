@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IncidentRequest } from '../../incident-contract';
 import { buildHostFailureResult, renderIncidentResult } from '../../incident-result';
 import { LOG_DETAIL } from '../../output-flags';
+import { AgentStreamProcessor, type StreamContext } from '../../stream-processor';
 import { StreamExecutor, setStreamExecutorProviders } from '../stream-executor';
 
 setStreamExecutorProviders({
@@ -247,8 +248,37 @@ describe('StreamExecutor — an incident turn publishes the host text and interp
     expect(deps.slackApi.postMessage).not.toHaveBeenCalled();
     expect(deps.claudeHandler.setSessionLinks).not.toHaveBeenCalled();
     expect(deps.claudeHandler.addSourceWorkingDir).not.toHaveBeenCalled();
-    // One publication, carrying the host's text untouched.
-    expect(deps.threadPanel.appendText.mock.calls.map((call: any[]) => call[1])).toEqual([HOST_OUTPUT]);
+    // One publication, carrying the host's text untouched, as a plain post:
+    // nothing goes into the turn stream as a `markdown_text` chunk.
+    expect(deps.threadPanel.appendText).not.toHaveBeenCalled();
+    const published = params.say.mock.calls
+      .map((call) => call[0])
+      .filter((message: { text?: string }) => message.text?.includes('EAGLE_INCIDENT_RESULT:'));
+    expect(published).toHaveLength(1);
+    expect(published[0].text).toBe(HOST_OUTPUT);
+    expect(published[0].thread_ts).toBe(THREAD);
+    expect(published[0].blocks).toBeUndefined();
+    expect(published[0].attachments).toBeUndefined();
+    // Slack's own processing off — the executor's `say` wrapper must carry the
+    // switches through to the caller's `say`, not drop them.
+    expect(published[0]).toMatchObject({ unfurl_links: false, unfurl_media: false, parse: 'none', mrkdwn: false });
+    expect(published[0]).not.toHaveProperty('link_names');
+  });
+
+  // The turn surface is still begun and ended (native status, supersede and the
+  // completion card ride on it), but it opens no stream message: nothing is
+  // ever appended to one, so it would be left behind empty.
+  it('begins and ends its turn surface without opening a stream', async () => {
+    const deps = createDeps();
+    const params = createParams(createSession(REQUEST));
+
+    await new StreamExecutor(deps).execute(params);
+    await settle();
+
+    expect(deps.threadPanel.beginTurn).toHaveBeenCalledTimes(1);
+    expect(deps.threadPanel.beginTurn.mock.calls[0][0]).toMatchObject({ noStream: true });
+    const turnId = deps.threadPanel.beginTurn.mock.calls[0][0].turnId;
+    expect(deps.threadPanel.endTurn).toHaveBeenCalledWith(turnId, 'completed');
   });
 
   // Control: the same text on an ordinary session still drives the directive —
@@ -261,6 +291,62 @@ describe('StreamExecutor — an incident turn publishes the host text and interp
     await settle();
 
     expect(deps.slackApi.postMessage).toHaveBeenCalledWith(CHANNEL, 'review-canary', {});
+  });
+
+  it('control: an ordinary session opens its stream and streams its text', async () => {
+    const deps = createDeps('an ordinary answer');
+    const params = createParams(createSession());
+
+    await new StreamExecutor(deps).execute(params);
+    await settle();
+
+    expect(deps.threadPanel.beginTurn.mock.calls[0][0].noStream).toBeFalsy();
+    expect(deps.threadPanel.appendText.mock.calls.map((call) => call[1])).toEqual(['an ordinary answer']);
+  });
+
+  it('control: an ordinary post through the same say carries none of the switches', async () => {
+    const deps = createDeps('see https://example.com/run/1');
+    // The stream refuses the chunk, so the answer falls back to a post.
+    deps.threadPanel.appendText.mockResolvedValue(false);
+    const params = createParams(createSession());
+
+    await new StreamExecutor(deps).execute(params);
+    await settle();
+
+    const posted = params.say.mock.calls
+      .map((call) => call[0])
+      .filter((message: { text?: string }) => message.text?.includes('example.com'));
+    expect(posted).toHaveLength(1);
+    for (const option of ['unfurl_links', 'unfurl_media', 'parse', 'mrkdwn', 'link_names']) {
+      expect(posted[0], option).not.toHaveProperty(option);
+    }
+  });
+});
+
+/**
+ * The one place a `StreamContext` is built for a live turn. The type makes the
+ * flag impossible to omit; this pins the value the executor actually hands the
+ * processor, for both kinds of session.
+ */
+describe('StreamExecutor — the context it hands the processor carries the incident flag', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function contextFor(session: ReturnType<typeof createSession>): Promise<StreamContext> {
+    const process = vi.spyOn(AgentStreamProcessor.prototype, 'process');
+    await new StreamExecutor(createDeps()).execute(createParams(session));
+    await settle();
+    expect(process).toHaveBeenCalledTimes(1);
+    return process.mock.calls[0][1];
+  }
+
+  it('an incident session yields incidentAttempt === true', async () => {
+    expect((await contextFor(createSession(REQUEST))).incidentAttempt).toBe(true);
+  });
+
+  it('an ordinary session yields incidentAttempt === false', async () => {
+    expect((await contextFor(createSession())).incidentAttempt).toBe(false);
   });
 });
 

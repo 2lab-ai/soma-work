@@ -114,7 +114,7 @@ async function run(messages: readonly SDKMessage[], options: RunOptions): Promis
     channel: REQUEST.channel_id,
     threadTs: REQUEST.parent_ts,
     sessionKey: `${REQUEST.channel_id}:${REQUEST.parent_ts}`,
-    ...(options.incidentAttempt ? { incidentAttempt: true } : {}),
+    incidentAttempt: options.incidentAttempt ?? false,
     ...(options.logVerbosity === undefined ? {} : { logVerbosity: options.logVerbosity }),
     say: async (message) => {
       surface.posts.push(JSON.stringify(message));
@@ -183,6 +183,10 @@ const INSTRUCTION_SHAPED_SUMMARIES: ReadonlyArray<readonly [string, string]> = [
   // `text` field is what eagle-eye reads back, so that would rewrite the marker
   // line after it was validated.
   ['markdown emphasis', 'the **api** host is down'],
+  // Every character Slack's markdown or entity handling acts on. A
+  // `markdown_text` stream chunk is interpreted server-side, so none of these
+  // may ever reach the thread that way.
+  ['Slack-active characters', 'a *b* _c_ ~d~ &amp; <@U0ADMIN> <!channel> 1 < 2 > 0 `e` ```f```'],
 ];
 
 describe('incident conclusion → real Slack stream processor', () => {
@@ -204,15 +208,71 @@ describe('incident conclusion → real Slack stream processor', () => {
 
         // Exactly one publication — the assistant message and the SDK result
         // carry the same text, and the second must dedupe against the first.
-        const publications = [...surface.postTexts, ...surface.appends];
-        expect(publications).toHaveLength(1);
-        expect(countOccurrences(publications[0], INCIDENT_RESULT_MARKER)).toBe(1);
-        // On either path the host's text goes out as is: nothing stripped,
-        // nothing added, nothing re-rendered.
-        expect(publications).toEqual([output.text]);
+        // On BOTH paths it is a plain post: a `markdown_text` stream chunk is
+        // interpreted by Slack, so the text eagle-eye reads back would no
+        // longer be provably the validated line.
+        expect(surface.appends).toEqual([]);
+        expect(surface.postTexts).toHaveLength(1);
+        expect(countOccurrences(surface.postTexts[0], INCIDENT_RESULT_MARKER)).toBe(1);
+        // The host's text goes out as is: nothing stripped, nothing added,
+        // nothing re-rendered — and no blocks or attachments for Slack to
+        // render in its place.
+        expect(surface.postTexts).toEqual([output.text]);
+        expect(Buffer.from(surface.postTexts[0], 'utf8').equals(Buffer.from(output.text, 'utf8'))).toBe(true);
+        const postedLines = surface.postTexts[0].split('\n');
+        expect(postedLines[postedLines.length - 1]).toBe(output.line);
+        // Every documented `chat.postMessage` switch that turns Slack's own
+        // processing of `text` off (caller obligation 2 in `incident-result.ts`):
+        // no unfurl, no automatic URL linking (`parse: 'none'`), no markup
+        // parsing (`mrkdwn: false`). `link_names` is absent on purpose — leaving
+        // it out is what keeps name linking off.
+        const posted = JSON.parse(surface.posts[0]) as Record<string, unknown>;
+        expect(posted).toEqual({
+          text: output.text,
+          thread_ts: REQUEST.parent_ts,
+          unfurl_links: false,
+          unfurl_media: false,
+          parse: 'none',
+          mrkdwn: false,
+        });
       });
     }
   }
+
+  function ordinaryReply(text: string): SDKMessage {
+    return {
+      type: 'assistant',
+      uuid: 'uuid-assistant',
+      session_id: 'sdk-session',
+      parent_tool_use_id: null,
+      message: { id: 'msg_1', type: 'message', role: 'assistant', content: [{ type: 'text', text }] },
+    } as unknown as SDKMessage;
+  }
+
+  // Control: the switch is the incident flag, not the phase. An ordinary
+  // session's text still streams into the PHASE>=1 turn surface.
+  it('[PHASE>=1 stream] control: an ordinary turn still streams its text', async () => {
+    const reply = 'an *ordinary* answer';
+    const surface = await run([ordinaryReply(reply)], { phase1: true, incidentAttempt: false });
+
+    expect(surface.appends).toEqual([reply]);
+    expect(surface.posts).toEqual([]);
+  });
+
+  // Control: the switches belong to the incident post only. An ordinary post
+  // keeps Slack's defaults — no switch is sent at all.
+  it('[legacy say] control: an ordinary post carries none of the switches', async () => {
+    const surface = await run([ordinaryReply('see https://example.com/run/1')], {
+      phase1: false,
+      incidentAttempt: false,
+    });
+
+    expect(surface.posts).toHaveLength(1);
+    const posted = JSON.parse(surface.posts[0]) as Record<string, unknown>;
+    for (const option of ['unfurl_links', 'unfurl_media', 'parse', 'mrkdwn', 'link_names']) {
+      expect(posted, option).not.toHaveProperty(option);
+    }
+  });
 });
 
 describe('incident tool call → real Slack stream processor', () => {
@@ -381,4 +441,30 @@ describe('incident tool result → real Slack stream processor', () => {
       });
     }
   }
+});
+
+/**
+ * Every suite above depends on the processor being TOLD the turn is an incident
+ * attempt. A construction site that left the flag out would publish the
+ * conclusion as ordinary assistant text: directives honored, choice UI built,
+ * the text streamed. So the flag has no default — this block is checked by
+ * `npx tsc --noEmit` (the root project includes `src/**`), and fails the build
+ * the day `incidentAttempt` becomes optional again.
+ */
+describe('StreamContext — the incident flag cannot be left out', () => {
+  const address = {
+    channel: REQUEST.channel_id,
+    threadTs: REQUEST.parent_ts,
+    sessionKey: `${REQUEST.channel_id}:${REQUEST.parent_ts}`,
+    say: async () => ({ ts: '1757500001.000100' }),
+  };
+
+  it('a context without incidentAttempt does not type-check', () => {
+    // @ts-expect-error — `incidentAttempt` is required: each construction site decides it.
+    const forgotten: StreamContext = { ...address };
+    const decided: StreamContext = { ...address, incidentAttempt: true };
+
+    expect(forgotten.incidentAttempt).toBeUndefined();
+    expect(decided.incidentAttempt).toBe(true);
+  });
 });

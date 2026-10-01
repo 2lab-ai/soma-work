@@ -294,6 +294,67 @@ describe('SlackHandler', () => {
     expect(create).toHaveBeenCalledWith(sessionResult.session, sessionResult.sessionKey);
   });
 
+  // The incident conclusion turns Slack's own processing of its text off
+  // (caller obligation 2 in `incident-result.ts`). The `say` handed to the
+  // executor is this handler's wrapper around Bolt's, which spreads its argument
+  // into `chat.postMessage`; the wrapper must forward those switches and add
+  // nothing to any other post.
+  it('forwards the post switches through the say it hands the executor, and adds none to an ordinary post', async () => {
+    const app = { client: {}, assistant: vi.fn() };
+    const handler = new SlackHandler(app as never, {} as never, {} as never);
+    const handlerAny = handler as unknown as Record<string, unknown>;
+    handlerAny.slackApi = {
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+    handlerAny.inputProcessor = {
+      processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+      routeCommand: vi.fn().mockResolvedValue({ handled: false, continueWithPrompt: undefined }),
+    };
+    handlerAny.sessionInitializer = {
+      validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+      initialize: vi.fn().mockResolvedValue({
+        session: { ownerId: 'U123' },
+        sessionKey: 'C123:thread123',
+        isNewSession: true,
+        userName: 'Test User',
+        workingDirectory: '/tmp',
+        abortController: new AbortController(),
+        halted: false,
+      }),
+    };
+    const execute = vi.fn().mockResolvedValue({ success: true, messageCount: 1 });
+    handlerAny.streamExecutor = { execute };
+    handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: 'hello' } as never, say);
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    const executorSay = execute.mock.calls[0][0].say;
+    say.mockClear();
+
+    await executorSay({
+      text: 'conclusion',
+      thread_ts: 't1',
+      unfurl_links: false,
+      unfurl_media: false,
+      parse: 'none',
+      mrkdwn: false,
+    });
+    await executorSay({ text: 'ordinary', thread_ts: 't1' });
+
+    expect(say.mock.calls[0][0]).toMatchObject({
+      text: 'conclusion',
+      thread_ts: 't1',
+      unfurl_links: false,
+      unfurl_media: false,
+      parse: 'none',
+      mrkdwn: false,
+    });
+    expect(Object.keys(say.mock.calls[1][0]).sort()).toEqual(['attachments', 'blocks', 'text', 'thread_ts']);
+  });
+
   it('passes deferSkillFire on a fresh context and fires the deferred forced $skill banner', async () => {
     const app = { client: {}, assistant: vi.fn() } as any;
     // No pre-route session → fresh context → deferSkillFire must be true.
