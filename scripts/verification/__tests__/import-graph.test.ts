@@ -322,6 +322,33 @@ describe('import-graph extractor on a complete fixture repository', () => {
     expect(failure).toContain(excerpt);
   });
 
+  // A loader built-in loaded by a plain require("…"), its handle under a name no other check
+  // refuses: only the LOADER_BUILTINS check stands between these and a dropped dependency.
+  it.each([
+    ['vm', "declare const code: string;\nconst vm = require('vm');\nvm.runInThisContext(code);\n", "require('vm')"],
+    [
+      'node:vm',
+      "declare const code: string;\nimport * as vm from 'node:vm';\nvm.runInThisContext(code);\n",
+      'require("node:vm")',
+    ],
+    [
+      'module',
+      "const { Module: Loader } = require('module');\nLoader._load('../env-paths', null, false);\n",
+      "require('module')",
+    ],
+    [
+      'node:module',
+      "import * as loader from 'node:module';\nloader.Module._load('../env-paths', null, false);\n",
+      'require("node:module")',
+    ],
+  ])('stops on a load of the built-in %s, whose exports load modules or run code', (builtin, load, excerpt) => {
+    const failure = failureOf(extract({ 'src/cli/index.ts': `${cliPrelude}${load}` }));
+    expect(failure).toContain('src/cli/index.ts (emitted line ');
+    expect(failure).toContain(
+      `loads ${builtin}, whose exports load modules or run code no require("…") names: ${excerpt}`,
+    );
+  });
+
   it.each([
     ['require', "require('#env');\n"],
     ['import', "import { env } from '#env';\nparse(env);\n"],
@@ -395,6 +422,86 @@ describe('import-graph extractor on a complete fixture repository', () => {
     expect(failure).toMatch(
       /src\/cli\/index\.ts \(emitted line \d+\): '\.\/x\/' resolves to directory src\/cli\/x\/, whose package\.json/,
     );
+  });
+
+  // The same through a workspace package without "exports", which Node resolves through the
+  // package directory: Module._findPath reads the trailing `/`, `/.` or `/..` off the whole
+  // request, package name included (Node v26.9.0, checked: '@soma/lib/dist/x/.' loads
+  // dist/x/index.js though dist/x.js is beside it).
+  const workspaceFileAndDirectory = {
+    'package.json': json({ ...rootPackage, workspaces: [...rootPackage.workspaces, 'packages/lib'] }),
+    'packages/lib/package.json': json({ name: '@soma/lib' }),
+    'packages/lib/tsconfig.json': json({ compilerOptions: { module: 'commonjs', rootDir: 'src', outDir: 'dist' } }),
+    'packages/lib/src/x.ts': 'export const file = 1;\n',
+    'packages/lib/src/x/index.ts': 'export const index = 1;\n',
+  };
+
+  it("follows '@soma/lib/dist/x' to the file x.ts, not to the directory x/ beside it", () => {
+    const edges = edgesOf(
+      extract({ ...workspaceFileAndDirectory, 'src/cli/index.ts': `${cliPrelude}require('@soma/lib/dist/x');\n` }),
+    );
+    expect(edges).toContain('src/cli/index.ts -> packages/lib/src/x.ts');
+    expect(edges).not.toContain('src/cli/index.ts -> packages/lib/src/x/index.ts');
+  });
+
+  it.each([
+    ["'@soma/lib/dist/x/'", '@soma/lib/dist/x/'],
+    ["'@soma/lib/dist/x/.'", '@soma/lib/dist/x/.'],
+    ["'@soma/lib/dist/x/y/..'", '@soma/lib/dist/x/y/..'],
+  ])('follows %s to the directory index x/index.ts, as Node does, not to the file x.ts', (_shown, specifier) => {
+    const edges = edgesOf(
+      extract({ ...workspaceFileAndDirectory, 'src/cli/index.ts': `${cliPrelude}require('${specifier}');\n` }),
+    );
+    expect(edges).toContain('src/cli/index.ts -> packages/lib/src/x/index.ts');
+    expect(edges).not.toContain('src/cli/index.ts -> packages/lib/src/x.ts');
+  });
+
+  it.each([
+    ["'@soma/lib/dist/x/'", '@soma/lib/dist/x/'],
+    ["'@soma/lib/dist/x/.'", '@soma/lib/dist/x/.'],
+  ])('stops on %s when x/ has a package.json, though a file x.ts is beside it', (_shown, specifier) => {
+    const failure = failureOf(
+      extract({
+        ...workspaceFileAndDirectory,
+        'packages/lib/src/x/package.json': json({ main: '../../../../src/env-paths.js' }),
+        'src/cli/index.ts': `${cliPrelude}require('${specifier}');\n`,
+      }),
+    );
+    expect(failure).toMatch(/src\/cli\/index\.ts \(emitted line \d+\): '@soma\/lib\/dist\/x\//);
+    expect(failure).toContain(`'${specifier}' resolves to directory packages/lib/src/x/, whose package.json`);
+  });
+
+  // A package's "main" is no specifier: Node's tryPackage resolves it with path.resolve, which
+  // drops a trailing `/` or `/.`, and tries it as a file before as a directory (Node v26.9.0,
+  // checked: "main": "dist/x/" loads dist/x.js beside dist/x/, and dist/x/index.js without it).
+  it.each([
+    ['dist/x/'],
+    ['dist/x/.'],
+  ])('follows "main": "%s" to the file x.ts, as Node does, not to the directory x/', (main) => {
+    const edges = edgesOf(
+      extract({
+        ...workspaceFileAndDirectory,
+        'packages/lib/package.json': json({ name: '@soma/lib', main }),
+        'src/cli/index.ts': `${cliPrelude}require('@soma/lib');\n`,
+      }),
+    );
+    expect(edges).toContain('src/cli/index.ts -> packages/lib/src/x.ts');
+    expect(edges).not.toContain('src/cli/index.ts -> packages/lib/src/x/index.ts');
+  });
+
+  it.each([
+    ['dist/x/'],
+    ['dist/x/.'],
+  ])('follows "main": "%s" to the directory index x/index.ts when no file x.ts is beside it', (main) => {
+    const { 'packages/lib/src/x.ts': _file, ...directoryOnly } = workspaceFileAndDirectory;
+    const edges = edgesOf(
+      extract({
+        ...directoryOnly,
+        'packages/lib/package.json': json({ name: '@soma/lib', main }),
+        'src/cli/index.ts': `${cliPrelude}require('@soma/lib');\n`,
+      }),
+    );
+    expect(edges).toContain('src/cli/index.ts -> packages/lib/src/x/index.ts');
   });
 
   // Each of these makes the real build keep `require("../env-paths")` for a const enum that the
