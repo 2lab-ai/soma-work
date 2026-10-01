@@ -1,7 +1,7 @@
 ---
 description: "Comprehensive PR review using specialized agents"
 argument-hint: "[review-aspects]"
-allowed-tools: ["Bash", "Glob", "Grep", "Read", "Task", "TaskOutput", "Skill"]
+allowed-tools: ["Bash", "Glob", "Grep", "Read", "Agent", "Task", "TaskOutput", "Skill"]
 ---
 
 # Comprehensive PR Review
@@ -35,7 +35,7 @@ Run a comprehensive pull request review using multiple specialized agents, each 
 4. **Determine Applicable Reviews**
 
    Based on changes:
-   - **Always applicable**: code-reviewer (general quality), `oracle-reviewer` Skill (codex), `subagent (opus)` reviewer
+   - **Always applicable**: code-reviewer (general quality), `oracle-reviewer` Skill (trinity chain: astra-zhuge / grok-elon / fable-zhuge), `subagent (opus)` reviewer
    - **If test files changed**: pr-test-analyzer
    - **If comments/docs added**: comment-analyzer
    - **If error handling changed**: silent-failure-hunter
@@ -43,7 +43,7 @@ Run a comprehensive pull request review using multiple specialized agents, each 
    - **After passing review**: `local:simplify` (fix mode — cut over-engineering, polish)
 
    **IMPORTANT — Oracle reviewers**:
-   Use `oracle-reviewer` Skill (codex) plus a `subagent (opus)` reviewer as the second/tiebreaker reviewer
+   Use `oracle-reviewer` Skill (trinity chain) plus a `subagent (opus)` reviewer as the second/tiebreaker reviewer
 
 5. **Launch Review Agents**
 
@@ -118,7 +118,7 @@ Run a comprehensive pull request review using multiple specialized agents, each 
 ## Agent Descriptions:
 
 **oracle-reviewer** SKILL(not subagent):
-- Reviews general code quality with high intelligent (codex)
+- Reviews general code quality with the trinity chain (astra-zhuge / grok-elon / fable-zhuge)
 
 **subagent (opus)** reviewer:
 - Independent Opus-subagent review — second opinion / tiebreaker (replaces the former gemini reviewer)

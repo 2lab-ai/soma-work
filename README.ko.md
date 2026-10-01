@@ -446,7 +446,7 @@ src/                                # TypeScript 소스
 └── local/                          # Claude Code SDK 확장 (skills/, agents/, hooks/)
 
 packages/                           # 워크스페이스 패키지
-├── mcp-servers/                    # 내장 MCP 서버 (agent, cron, llm, model-command, ...)
+├── mcp-servers/                    # 내장 MCP 서버 (agent, cron, model-command, ...)
 ├── common/ · slack/ · process-shared/ · test-utils/
 
 somalib/                            # soma 계열 공유 라이브러리
