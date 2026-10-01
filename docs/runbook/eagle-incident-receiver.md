@@ -99,6 +99,9 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
   `packages/slack/src/turn-surface.ts:556`) — 아무것도 붙지 않은 빈 스트림 메시지가 남지 않는다.
   턴 상태(네이티브 상태 표시·supersede·완료 카드)는 그대로 열고 닫는다. 그 결과 evidence 도구 결과 줄은
   스트림 대신 별도 메시지로, 완료 카드도 스트림에 붙지 않고 **결론 뒤의 별도 메시지**로 게시된다.
+  결론 뒤에 다른 메시지가 와도 eagle-eye는 결론을 놓치지 않는다. `classify_investigation`은 조사자가 쓴 메시지를
+  최신순으로 모두 훑어 결과 마커 줄을 최우선 등급으로 찾는다
+  (eagle-eye `feat/41-incident-inbox` @149247880388, `src/incident.rs:719-733`).
 - 턴이 끝난 뒤 수집 텍스트를 "내용으로 위장한 전송 오류"(사용량 한도·풀 rate-limit·prompt too long·
   빈 블록 400·compaction 실패)로 읽는 5개 가드도 인시던트 세션에는 적용되지 않는다
   (`packages/slack/src/pipeline/stream-executor.ts:1957`). summary가 그 문구를 인용해도 자격증명 회전이나
