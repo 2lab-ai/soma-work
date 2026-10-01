@@ -180,7 +180,7 @@ end Original
 block is the ssh, sensitive-path and MCP guards, each silent for admins. -/
 theorem evaluate_toOriginal_newOrder (i : Input) :
     (evaluate i).toOriginal = Original.evaluateWith Original.newOrder i := by
-  unfold Original.evaluateWith Original.newOrder evaluate adminExemptGuards
+  unfold Original.evaluateWith Original.newOrder evaluate evaluateToolPolicy adminExemptGuards
   simp only [List.findSome?]
   rw [abortGuard_toOriginal, crossUserGuard_toOriginal, prIssueGuard_toOriginal,
     modeTier_toOriginal]

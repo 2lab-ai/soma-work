@@ -347,6 +347,26 @@ export class SessionInitializer {
       ? this.deps.claudeHandler.createSession(user, userName, channel, threadTs, event.modelOverride)
       : existingSession;
 
+    // Incident ownership is stamped BEFORE anything can query the model, so
+    // the restriction is in place for the session's very first turn. Only the
+    // ingress can supply `routeContext.incidentRequest` (it is internal and
+    // never round-trips through Slack), and it is never unset here: a session
+    // that started restricted stays restricted.
+    // A retry admitted by the ingress arrives with a NEWER attempt for the same
+    // incident, so the stamp replaces rather than skips — and drops the host
+    // completion marker that belonged to the finished attempt. Replacement is
+    // always incident→incident: the restriction is never lifted here.
+    const incidentRequest = event.routeContext?.incidentRequest;
+    if (incidentRequest && session.incidentRequest?.attempt_id !== incidentRequest.attempt_id) {
+      session.incidentRequest = incidentRequest;
+      session.incidentAttemptFinishedId = undefined;
+      this.logger.info('Session marked incident-owned', {
+        sessionKey,
+        incidentId: incidentRequest.incident_id,
+        attemptId: incidentRequest.attempt_id,
+      });
+    }
+
     // Apply model override to existing sessions too (cron may inject into idle session)
     if (!isNewSession && event.modelOverride && session.model !== event.modelOverride) {
       session.model = event.modelOverride;
