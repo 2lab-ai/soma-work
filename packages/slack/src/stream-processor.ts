@@ -94,6 +94,17 @@ export interface StreamContext {
    * goal continuation, renew, …) must never present as user input.
    */
   isUserInputTurn?: boolean;
+  /**
+   * The turn is an Eagle incident attempt (the session owns an
+   * `incidentRequest`). Its text is the host's own conclusion
+   * (`src/incident/attempt-output.ts`), and that conclusion echoes validated
+   * MODEL strings — the summary and the proposal's action. So it is published
+   * verbatim and read for nothing: no response directives (a `channel_message`
+   * JSON in a summary would post to the channel root), no choice UI, and none of
+   * the transport-error guards that hold back a short error-looking text (a
+   * summary quoting one would silence the only line eagle-eye is waiting for).
+   */
+  incidentAttempt?: boolean;
 }
 
 /**
@@ -1260,6 +1271,16 @@ export class AgentStreamProcessor {
     let textContent = this.extractTextContent(content);
     if (!textContent) return;
 
+    // Host-authored incident conclusion: published as is, interpreted not at
+    // all (see `StreamContext.incidentAttempt`). Recorded unmodified, so the
+    // identical SDK result that follows dedupes against it.
+    if (context.incidentAttempt) {
+      if (!textContent.trim()) return;
+      currentMessages.push(textContent);
+      await this.sayWithBlockKit(textContent, context);
+      return;
+    }
+
     textContent = await this.extractAndDispatchDirectives(textContent, context);
 
     if (!textContent.trim()) {
@@ -1708,6 +1729,14 @@ export class AgentStreamProcessor {
     usage?: UsageData,
     durationMs?: number,
   ): Promise<void> {
+    // An incident conclusion reaches here only when no identical assistant text
+    // preceded it. Same rule as `handleTextMessage`: the host's bytes, nothing
+    // read out of them and nothing (not even the footer) added after the marker.
+    if (context.incidentAttempt) {
+      if (result.trim()) await this.sayWithBlockKit(result, context);
+      return;
+    }
+
     // Extract response directives before user choice
     const processedResult = await this.extractAndDispatchDirectives(result, context);
 
