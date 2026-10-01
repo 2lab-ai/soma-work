@@ -16,7 +16,7 @@
  *
  *   launchctl bootstrap user/<uid> <plist>  +  kickstart -k user/<uid>/<label>
  *
- * These tests pin the six things that follow from that:
+ * These tests pin the seven things that follow from that:
  *   1. gui first, then user/<uid> on a 125 (or when `print gui/<uid>` itself
  *      fails) — and a user-domain start counts as launchd-managed, not headless;
  *   2. status/get_pid see a user-domain registration (`launchctl print
@@ -28,7 +28,9 @@
  *      the label out of every domain — instead of `launchctl unload <plist>`,
  *      which reaches no domain at all here and made reinstall abort at step 1;
  *   6. uninstall reports the domains that refused instead of printing success
- *      over a registration that outlived its plist.
+ *      over a registration that outlived its plist;
+ *   7. the headless fallback's spawn does not inherit the deploy job's
+ *      RUNNER_TRACKING_ID, which the runner's end-of-job orphan cleanup kills by.
  *
  * Strategy is the one the sibling service-sh-* suites use: a fake `launchctl`
  * (and, where verify-restart needs it, a fake `ps`) on PATH, a temp HOME, and
@@ -249,6 +251,41 @@ function installEmptyScan(): string {
   return scan;
 }
 
+/**
+ * Fake `node` for the headless direct-spawn. service.sh resolves NODE_PATH from
+ * `which node` and puts it first on the spawn's PATH, so a `node` in the fake
+ * bin is what `exec node dist/run-with-rotating-logs.js …` reaches. It records
+ * the RUNNER_TRACKING_ID it was handed, takes the PID lock the way the app does
+ * ("<pid>:<ts>"), and stays alive AS that pid (`exec`), so the fallback's wait
+ * loop ends on its first poll instead of paying the 25s budget.
+ */
+function installFakeNode(bin: string): { trackingIdRecord: string; pidFile: string } {
+  const trackingIdRecord = path.join(workDir, 'node-runner-tracking-id');
+  // Same path run() hands service.sh as SOMA_PID_FILE_OVERRIDE.
+  const pidFile = path.join(workDir, 'soma-work.pid');
+  const script = `#!/bin/bash
+printf '%s' "$RUNNER_TRACKING_ID" > "${trackingIdRecord}"
+printf '%s:%s' "$$" "$(date +%s)" > "${pidFile}"
+exec sleep 300
+`;
+  const node = path.join(bin, 'node');
+  writeFileSync(node, script);
+  chmodSync(node, 0o755);
+  return { trackingIdRecord, pidFile };
+}
+
+/**
+ * `setsid(1)` stand-in, so the setsid branch of the fallback runs on a host
+ * (macOS) that has no setsid binary. The marker proves that branch was taken.
+ */
+function installFakeSetsid(bin: string): string {
+  const marker = path.join(workDir, 'setsid-used.marker');
+  const setsid = path.join(bin, 'setsid');
+  writeFileSync(setsid, `#!/bin/bash\n: > "${marker}"\nexec "$@"\n`);
+  chmodSync(setsid, 0o755);
+  return marker;
+}
+
 function run(
   args: string[],
   bin: string,
@@ -435,6 +472,38 @@ describe('scripts/service.sh — launchd domain fallback (headless host, no Aqua
     expect(result.stdout).not.toMatch(/\[SUCCESS\] Service uninstalled/);
     expect(result.stdout).toContain(`still registered in: user/${UID}/${LABEL}`);
   }, 40_000);
+
+  // A deploy job runs service.sh inside a GitHub Actions runner job, and at job
+  // end the runner kills every process started during the job whose environment
+  // carries the job's RUNNER_TRACKING_ID. A bot the headless fallback starts
+  // with that id inherited lets the deploy go green and then dies at job end.
+  // setsid does not help: the cleanup matches on the environment, not the
+  // process group. The first row takes whichever branch the host has — perl
+  // POSIX::setsid on macOS, which ships no setsid(1); the second forces setsid(1).
+  it.each([
+    { branch: 'the host-native detach', fakeSetsid: false },
+    { branch: 'setsid(1)', fakeSetsid: true },
+  ])('headless fallback via $branch hands the bot an empty RUNNER_TRACKING_ID', ({ fakeSetsid }) => {
+    const { bin, callsLog } = installFakeLaunchctl({ userDomainWorks: false });
+    const { trackingIdRecord, pidFile } = installFakeNode(bin);
+    const setsidMarker = fakeSetsid ? installFakeSetsid(bin) : undefined;
+
+    const result = run(['start'], bin, callsLog, undefined, { RUNNER_TRACKING_ID: 'github_test_123' });
+
+    // Hand the spawned stand-in to afterEach before any assertion can throw.
+    if (existsSync(pidFile)) {
+      const pid = Number(readFileSync(pidFile, 'utf-8').split(':')[0]);
+      if (Number.isInteger(pid) && pid > 0) victims.push(pid);
+    }
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/Service started via headless fallback \(PID: \d+\)/);
+    if (setsidMarker) expect(existsSync(setsidMarker)).toBe(true);
+    // The bot actually ran and reported what it was handed…
+    expect(existsSync(trackingIdRecord)).toBe(true);
+    // …and it was not the job's id, so the orphan cleanup leaves it alone.
+    expect(readFileSync(trackingIdRecord, 'utf-8')).toBe('');
+  }, 30_000);
 
   // Pays the headless fallback's real 25s pidfile wait: that loop is the
   // production timing, and faking it would test something else.

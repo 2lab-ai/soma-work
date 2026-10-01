@@ -287,7 +287,10 @@ describe('Lean verification workflow contract', () => {
     // still rejects each forbidden construct. Dropping either leaves a green job
     // that proves less.
     const steps = runSteps(LEAN_WORKFLOW, 'lean-verify');
+    // `npm ci` first: the import-graph extractor (stage 0) compiles the sources with the
+    // repository's own TypeScript, so it needs the dependencies.
     expect(steps.map((step) => step.run)).toEqual([
+      'npm ci',
       'bash scripts/verification/lean-verify.sh --check',
       'bash scripts/verification/lean-verify.sh --selftest',
     ]);
@@ -300,5 +303,33 @@ describe('Lean verification workflow contract', () => {
     // Nothing in this workflow publishes: the vectors are regenerated only to be
     // compared with the commit.
     expectContentsReadOnly(LEAN_WORKFLOW, ['lean-verify']);
+  });
+
+  it('cancels the run a newer push supersedes, in a concurrency group apart from CI', () => {
+    // One self-hosted runner, close to 20 minutes a run: without a group, every
+    // push queued another full run behind the ones it had already made stale.
+    const concurrency = (workflowPath: string): Record<string, string> => {
+      const block = read(workflowPath).match(/^concurrency:\n((?: {2}\S.*\n)+)/m);
+      expect(block, `${workflowPath} has no top-level \`concurrency:\` block`).not.toBeNull();
+      return Object.fromEntries(
+        (block?.[1] ?? '')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => line.trim().split(/:\s*/) as [string, string]),
+      );
+    };
+
+    const lean = concurrency(LEAN_WORKFLOW);
+    expect(lean['cancel-in-progress'], `${LEAN_WORKFLOW} cancel-in-progress`).toBe('true');
+    // Per ref, so a push cancels only its own branch's or PR's stale run. (Regex,
+    // not a string literal, for the Biome reason given in the sanitize suite.)
+    expect(lean.group, `${LEAN_WORKFLOW} concurrency group`).toMatch(/\$\{\{ github\.ref \}\}/);
+
+    // Groups are shared across the repository's workflows, so reusing CI's would
+    // have each workflow cancel the other's run on the same ref. CI's group must
+    // exist for "not the same" to mean anything.
+    const ci = concurrency(CI_WORKFLOW);
+    expect(ci.group, `${CI_WORKFLOW} concurrency group`).toBeTruthy();
+    expect(lean.group, `${LEAN_WORKFLOW} shares its concurrency group with ${CI_WORKFLOW}`).not.toBe(ci.group);
   });
 });
