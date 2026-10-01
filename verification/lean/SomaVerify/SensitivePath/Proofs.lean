@@ -2,12 +2,12 @@ import SomaVerify.SensitivePath.Model
 import SomaVerify.SensitivePath.Spec
 
 /-!
-# Proofs of the sensitive-path invariants
+# Proofs of the sensitive-path invariants: strings, segments and normal forms
 
-The invariants are stated in `Spec.lean`; this file proves them for the model in `Model.lean`.
-The work is in relating string operations (prefix tests, `split('/')`, slicing) to segment
-lists: once a path is written as `renderAbs segs`, every rule of the module is a statement
-about `segs`.
+The invariants are stated in `Spec.lean`; this file and `ProofsFold.lean`, `ProofsCheck.lean`
+prove them for the model in `Model.lean`. The work here is in relating string operations (prefix
+tests, `split('/')`, slicing) to segment lists: once a path is written as `renderAbs segs`,
+every rule of the module is a statement about `segs`.
 -/
 
 namespace SomaVerify.SensitivePath.Proofs
@@ -370,41 +370,72 @@ theorem posixNormalize_renderAbs (r : List Seg) (hne : r ≠ []) (hr : ∀ w ∈
     have h := getLast?_renderAbs_ne_slash (s :: ss) hr
     simp only [h, ite_false, List.append_nil]
 
-/-- `path.join(HOME, s₁, …)` of a canonical HOME and proper segments is their rendering. -/
-theorem pathJoin_renderAbs (hs segs : List Seg) (hhome : HomeCanonical hs) (hsegs : ∀ w ∈ segs, Proper w) :
-    pathJoin (renderAbs hs :: segs) = renderAbs (hs ++ segs) := by
-  obtain ⟨hne, hproper⟩ := hhome
-  have hall : ∀ w ∈ hs ++ segs, Proper w := by
-    intro w hw
-    rcases List.mem_append.1 hw with h | h
-    · exact hproper w h
-    · exact hsegs w h
-  have hfilter : (renderAbs hs :: segs).filter (fun a => !a.isEmpty) = renderAbs hs :: segs := by
+/-- A non-empty list of proper segments: the location of a directory other than the root. -/
+def Canonical (hs : List Seg) : Prop :=
+  hs ≠ [] ∧ ∀ s ∈ hs, Proper s
+
+instance (s : Seg) : Decidable (Proper s) :=
+  inferInstanceAs (Decidable (s ≠ [] ∧ '/' ∉ s ∧ s ≠ ['.'] ∧ s ≠ ['.', '.']))
+
+instance (hs : List Seg) : Decidable (Canonical hs) :=
+  inferInstanceAs (Decidable (hs ≠ [] ∧ ∀ s ∈ hs, Proper s))
+
+/-- Resolving a list that ends in proper segments resolves the rest and keeps them. -/
+theorem resolveSegs_append_proper (l segs : List Seg) (hsegs : ∀ w ∈ segs, Proper w) :
+    resolveSegs (l ++ segs) = resolveSegs l ++ segs := by
+  unfold resolveSegs
+  rw [List.foldl_append, foldl_resolveStep_of_proper segs _ hsegs]
+  simp
+
+/-- `path.join(HOME, s₁, …)` of an absolute HOME and proper segments: the location HOME resolves
+to, followed by the segments. -/
+theorem pathJoin_abs (home : List Char) (segs : List Seg) (hh : home.head? = some '/') (hne : segs ≠ [])
+    (hsegs : ∀ w ∈ segs, Proper w) :
+    pathJoin (home :: segs) = renderAbs (resolveSegs (splitSlash home) ++ segs) := by
+  have hfilter : (home :: segs).filter (fun a => !a.isEmpty) = home :: segs := by
     rw [List.filter_eq_self]
     intro a ha
     simp only [List.mem_cons] at ha
     rcases ha with rfl | ha
-    · cases hs with
-      | nil => exact absurd rfl hne
-      | cons s ss => simp [renderAbs]
+    · cases a with
+      | nil => simp at hh
+      | cons c cs => simp
     · simpa using (hsegs a ha).1
-  unfold pathJoin
-  rw [hfilter, joinSlash_cons_eq, ← renderAbs_append]
-  exact posixNormalize_renderAbs _ (by simp [hne]) hall
+  have hsplit : splitSlash (joinSlash (home :: segs)) = splitSlash home ++ segs := by
+    rw [joinSlash_cons_eq]
+    cases segs with
+    | nil => exact absurd rfl hne
+    | cons t ts =>
+      rw [show renderAbs (t :: ts) = '/' :: (t ++ renderAbs ts) by rfl, splitSlash_append_slash,
+        ← joinSlash_cons_eq, splitSlash_joinSlash _ (by simp) (proper_slashFree hsegs)]
+  have hlast : (joinSlash (home :: segs)).getLast? ≠ some '/' := by
+    obtain ⟨r', s, hrs⟩ : ∃ r' s, segs = r' ++ [s] := by
+      rcases List.eq_nil_or_concat segs with h | ⟨r', s, h⟩
+      · exact absurd h hne
+      · exact ⟨r', s, by simpa using h⟩
+    have hs : Proper s := hsegs s (by rw [hrs]; simp)
+    rw [joinSlash_cons_eq, hrs, renderAbs_append, show renderAbs [s] = ['/'] ++ s by simp [renderAbs],
+      ← List.append_assoc, ← List.append_assoc]
+    exact getLast?_append_ne_slash _ s hs.1 hs.2.1
+  have hres : resolveSegs (splitSlash (joinSlash (home :: segs))) = resolveSegs (splitSlash home) ++ segs := by
+    rw [hsplit, resolveSegs_append_proper _ _ hsegs]
+  have hne' : resolveSegs (splitSlash home) ++ segs ≠ [] := by simp [hne]
+  unfold pathJoin posixNormalize
+  rw [hfilter]
+  generalize hx : resolveSegs (splitSlash (joinSlash (home :: segs))) = x at hres
+  subst hres
+  cases hx' : resolveSegs (splitSlash home) ++ segs with
+  | nil => exact absurd hx' hne'
+  | cons r rs => simp [hlast]
+
+/-- `path.join(HOME, s₁, …)` of a canonical HOME and proper segments is their rendering. -/
+theorem pathJoin_renderAbs (hs segs : List Seg) (hhome : Canonical hs) (hne : segs ≠ [])
+    (hsegs : ∀ w ∈ segs, Proper w) :
+    pathJoin (renderAbs hs :: segs) = renderAbs (hs ++ segs) := by
+  rw [pathJoin_abs _ _ (head_renderAbs hs hhome.1) hne hsegs, splitSlash_renderAbs hs (proper_slashFree hhome.2),
+    resolveSegs_nil_cons, resolveSegs_of_proper hs hhome.2]
 
 /-! ## `normalizeTmpPath` -/
-
-/-- The segment `private`. -/
-def privateSeg : Seg := "private".toList
-
-/-- The segment `tmp`. -/
-def tmpSeg : Seg := "tmp".toList
-
-/-- `/private/tmp` rewritten to `/tmp` on segments. -/
-def tmpMapSegs (r : List Seg) : List Seg :=
-  match r with
-  | s :: t :: rest => if s = privateSeg ∧ t = tmpSeg then tmpSeg :: rest else r
-  | _ => r
 
 theorem tmpMapSegs_of_ne (r : List Seg) (h : ∀ rest, r ≠ privateSeg :: tmpSeg :: rest) :
     tmpMapSegs r = r := by
@@ -566,30 +597,29 @@ theorem stripTrailingSlashes_idem (s : List Char) :
     · simp [hc, ih]
     · simp [hc]
 
+
 /-! ## `normalizePath` -/
 
 theorem homeAliases_eq :
     homeAliases = [['~'], ['$', 'H', 'O', 'M', 'E'], ['$', '{', 'H', 'O', 'M', 'E', '}']] := rfl
 
-/-- `s` is an alias followed by `/`, or equal to one. -/
+/-- `s` is an alias, or an alias followed by `/`. -/
 def MatchesAlias (s : List Char) : Prop :=
-  ∃ a ∈ homeAliases, (a ++ ['/']) <+: s ∨ s = a
+  ∃ a ∈ homeAliases, s = a ∨ (a ++ ['/']) <+: s
 
 theorem expandHome_of_not_matches (home s : List Char) (aliases : List (List Char))
-    (h : ∀ a ∈ aliases, ¬ ((a ++ ['/']) <+: s ∨ s = a)) : expandHome home s aliases = s := by
+    (h : ∀ a ∈ aliases, ¬ (s = a ∨ (a ++ ['/']) <+: s)) : expandHome home s aliases = s := by
   induction aliases with
   | nil => rfl
   | cons a as ih =>
     have ha := h a (by simp)
-    have hpre : (a ++ ['/']).isPrefixOf s = false := by
-      cases e : (a ++ ['/']).isPrefixOf s
-      · rfl
-      · exact absurd (Or.inl (List.isPrefixOf_iff_prefix.1 e)) ha
-    have heq : (s == a) = false := by
-      cases e : (s == a)
-      · rfl
-      · exact absurd (Or.inr (beq_iff_eq.1 e)) ha
-    simp only [expandHome, hpre, heq, Bool.false_eq_true, ite_false]
+    have hcond : (s == a || (a ++ ['/']).isPrefixOf s) = false := by
+      cases e1 : (s == a)
+      · cases e2 : (a ++ ['/']).isPrefixOf s
+        · rfl
+        · exact absurd (Or.inr (List.isPrefixOf_iff_prefix.1 e2)) ha
+      · exact absurd (Or.inl (beq_iff_eq.1 e1)) ha
+    simp only [expandHome, hcond, Bool.false_eq_true, ite_false]
     exact ih (fun a' ha' => h a' (by simp [ha']))
 
 /-- No alias matches an absolute path: every alias starts with `~` or `$`. -/
@@ -597,10 +627,10 @@ theorem not_matchesAlias_of_head (s : List Char) (h : s.head? = some '/') : ¬ M
   rintro ⟨a, ha, hm⟩
   rw [homeAliases_eq] at ha
   simp only [List.mem_cons, List.mem_nil_iff, or_false] at ha
-  rcases hm with ⟨t, ht⟩ | rfl
+  rcases hm with rfl | ⟨t, ht⟩
+  · rcases ha with rfl | rfl | rfl <;> simp at h
   · subst ht
     rcases ha with rfl | rfl | rfl <;> simp at h
-  · rcases ha with rfl | rfl | rfl <;> simp at h
 
 /-- No alias matches the empty string. -/
 theorem not_matchesAlias_nil : ¬ MatchesAlias [] := by
@@ -616,21 +646,21 @@ theorem expandHome_of_not_matchesAlias (home s : List Char) (h : ¬ MatchesAlias
     expandHome home s homeAliases = s :=
   expandHome_of_not_matches home s homeAliases (fun a ha hm => h ⟨a, ha, hm⟩)
 
-/-- An alias followed by `/` expands through `path.join(HOME, rest)`. -/
+/-- An alias followed by `/` is HOME followed by `/`. -/
 theorem expandHome_alias_slash (home rest a : List Char) (ha : a ∈ homeAliases) :
-    expandHome home (a ++ '/' :: rest) homeAliases = pathJoin [home, rest] := by
+    expandHome home (a ++ '/' :: rest) homeAliases = home ++ '/' :: rest := by
   rw [homeAliases_eq] at ha ⊢
   simp only [List.mem_cons, List.mem_nil_iff, or_false] at ha
   rcases ha with rfl | rfl | rfl <;> simp [expandHome, List.isPrefixOf]
 
-/-- An alias alone expands to HOME. -/
+/-- An alias alone is HOME. -/
 theorem expandHome_alias (home a : List Char) (ha : a ∈ homeAliases) :
     expandHome home a homeAliases = home := by
   rw [homeAliases_eq] at ha ⊢
   simp only [List.mem_cons, List.mem_nil_iff, or_false] at ha
   rcases ha with rfl | rfl | rfl <;> simp [expandHome, List.isPrefixOf]
 
-/-- What `normalizePath` does after `path.posix.normalize`: `/private/tmp` mapping and trailing
+/-- What `resolvePath` does after `path.posix.normalize`: `/private/tmp` mapping and trailing
 slashes leave the resolved segments, with `/private/tmp` written `/tmp`. -/
 theorem finish_posixNormalize (z : List Char) :
     stripTrailingSlashes (normalizeTmpPath (posixNormalize z)) =
@@ -645,42 +675,56 @@ theorem finish_posixNormalize (z : List Char) :
       show renderAbs ([[]] : List Seg) = ['/'] by rfl, stripTrailingSlashes_append_slash,
       stripTrailingSlashes_renderAbs _ (tmpMapSegs_proper _ hproper)]
 
-/-- An absolute path normalizes to its resolved segments, `/private/tmp` written `/tmp`. -/
-theorem normalizePath_abs (home x : List Char) (hx : x.head? = some '/') :
-    normalizePath home x = renderAbs (tmpMapSegs (resolveSegs (splitSlash x))) := by
+/-- `resolvePath` of an absolute path: its resolved segments, `/private/tmp` written `/tmp`. -/
+theorem resolvePath_abs (x : List Char) (hx : x.head? = some '/') :
+    resolvePath x = renderAbs (tmpMapSegs (resolveSegs (splitSlash x))) := by
   have hpre : ['/'].isPrefixOf x = true := by
     cases x with
     | nil => simp at hx
     | cons c cs => simp at hx; subst hx; simp [List.isPrefixOf]
-  unfold normalizePath
-  rw [expandHome_of_not_matchesAlias home x (not_matchesAlias_of_head x hx)]
+  unfold resolvePath
   simp only [hpre, ite_true]
   exact finish_posixNormalize x
 
-/-- A path that is neither absolute nor starts with a HOME alias only loses trailing slashes. -/
-theorem normalizePath_rel (home x : List Char) (hm : ¬ MatchesAlias x) (hx : x.head? ≠ some '/') :
-    normalizePath home x = stripTrailingSlashes x := by
+/-- A string that is not absolute is not under `/private/tmp`. -/
+theorem normalizeTmpPath_rel (x : List Char) (hx : x.head? ≠ some '/') : normalizeTmpPath x = x := by
+  apply normalizeTmpPath_of_ne
+  intro t ht
+  cases x with
+  | nil => simp [splitSlash] at ht
+  | cons c cs =>
+    have hc : c ≠ '/' := fun e => hx (by simp [e])
+    simp only [splitSlash, hc, ite_false] at ht
+    cases hs : splitSlash cs with
+    | nil => exact splitSlash_ne_nil cs hs
+    | cons v vs => rw [hs] at ht; simp [consHead] at ht
+
+/-- `resolvePath` of a string that is not absolute only drops trailing slashes. -/
+theorem resolvePath_rel (x : List Char) (hx : x.head? ≠ some '/') :
+    resolvePath x = stripTrailingSlashes x := by
   have hpre : ['/'].isPrefixOf x = false := by
     cases x with
     | nil => rfl
     | cons c cs =>
       have hc : ('/' = c) = False := propext ⟨fun e => hx (by simp [← e]), False.elim⟩
       simp [List.isPrefixOf, hc]
-  have htmp : normalizeTmpPath x = x := by
-    apply normalizeTmpPath_of_ne
-    intro t ht
-    cases x with
-    | nil => simp [splitSlash] at ht
-    | cons c cs =>
-      have hc : c ≠ '/' := fun e => hx (by simp [e])
-      simp only [splitSlash, hc, ite_false] at ht
-      cases hs : splitSlash cs with
-      | nil => exact splitSlash_ne_nil cs hs
-      | cons v vs => rw [hs] at ht; simp [consHead] at ht
+  unfold resolvePath
+  simp only [hpre, Bool.false_eq_true, ite_false]
+  rw [normalizeTmpPath_rel x hx]
+
+/-- An absolute path normalizes to its resolved segments, `/private/tmp` written `/tmp`. -/
+theorem normalizePath_abs (home x : List Char) (hx : x.head? = some '/') :
+    normalizePath home x = renderAbs (tmpMapSegs (resolveSegs (splitSlash x))) := by
+  unfold normalizePath
+  rw [expandHome_of_not_matchesAlias home x (not_matchesAlias_of_head x hx)]
+  exact resolvePath_abs x hx
+
+/-- A path that is neither absolute nor starts with a HOME alias only loses trailing slashes. -/
+theorem normalizePath_rel (home x : List Char) (hm : ¬ MatchesAlias x) (hx : x.head? ≠ some '/') :
+    normalizePath home x = stripTrailingSlashes x := by
   unfold normalizePath
   rw [expandHome_of_not_matchesAlias home x hm]
-  simp only [hpre, Bool.false_eq_true, ite_false]
-  rw [htmp]
+  exact resolvePath_rel x hx
 
 /-- The join `path.join(HOME, rest)` builds for an absolute HOME. -/
 theorem pathJoin_home (home rest : List Char) (hh : home.head? = some '/') :
@@ -691,42 +735,47 @@ theorem pathJoin_home (home rest : List Char) (hh : home.head? = some '/') :
   | nil => simp [hne, joinSlash]
   | cons c cs => simp [hne, joinSlash]
 
+/-- HOME followed by `/` and anything is absolute. -/
+theorem head_home_slash (home rest : List Char) (hh : home.head? = some '/') :
+    (home ++ '/' :: rest).head? = some '/' := by
+  cases home <;> simp_all
+
+/-- For an absolute HOME, a path expands to an absolute path, or to itself when it is neither
+absolute nor an alias. -/
+theorem expandHome_cases (home p : List Char) (hh : home.head? = some '/') :
+    (expandHome home p homeAliases).head? = some '/' ∨
+      (¬ MatchesAlias p ∧ p.head? ≠ some '/' ∧ expandHome home p homeAliases = p) := by
+  by_cases hm : MatchesAlias p
+  · left
+    obtain ⟨a, ha, heq | ⟨t, ht⟩⟩ := hm
+    · rw [heq, expandHome_alias home a ha]; exact hh
+    · subst ht
+      rw [List.append_assoc, List.singleton_append, expandHome_alias_slash home t a ha]
+      exact head_home_slash home t hh
+  · by_cases hx : p.head? = some '/'
+    · left; rw [expandHome_of_not_matchesAlias home p hm]; exact hx
+    · right; exact ⟨hm, hx, expandHome_of_not_matchesAlias home p hm⟩
+
+/-- For an absolute HOME, expanding twice is expanding once. -/
+theorem expandHome_idem (home p : List Char) (hh : home.head? = some '/') :
+    expandHome home (expandHome home p homeAliases) homeAliases = expandHome home p homeAliases := by
+  rcases expandHome_cases home p hh with habs | ⟨hm, _, heq⟩
+  · exact expandHome_of_not_matchesAlias home _ (not_matchesAlias_of_head _ habs)
+  · rw [heq]; exact expandHome_of_not_matchesAlias home p hm
+
 /-- An alias followed by `/` normalizes like HOME followed by `/`. -/
 theorem normalizePath_alias_slash (home rest a : List Char) (hh : home.head? = some '/')
     (ha : a ∈ homeAliases) :
     normalizePath home (a ++ '/' :: rest) = normalizePath home (home ++ '/' :: rest) := by
-  have hhead : (home ++ '/' :: rest).head? = some '/' := by cases home <;> simp_all
-  rw [normalizePath_abs home _ hhead]
   unfold normalizePath
-  rw [expandHome_alias_slash home rest a ha, pathJoin_home home rest hh]
-  have hpre : ['/'].isPrefixOf (posixNormalize (if rest.isEmpty then home else home ++ '/' :: rest)) = true := by
-    have := posixNormalize_head (if rest.isEmpty then home else home ++ '/' :: rest)
-    revert this
-    generalize posixNormalize _ = y
-    intro hy
-    cases y with
-    | nil => simp at hy
-    | cons c cs => simp at hy; subst hy; simp [List.isPrefixOf]
-  simp only [hpre, ite_true]
-  rw [finish_posixNormalize, resolveSegs_splitSlash_posixNormalize]
-  cases rest with
-  | nil =>
-    simp only [List.isEmpty_nil, ite_true]
-    rw [splitSlash_append_slash, show splitSlash ([] : List Char) = [[]] by rfl, resolveSegs_append_nil]
-  | cons c cs => simp
+  rw [expandHome_alias_slash home rest a ha,
+    expandHome_of_not_matchesAlias home _ (not_matchesAlias_of_head _ (head_home_slash home rest hh))]
 
 /-- An alias alone normalizes like HOME. -/
 theorem normalizePath_alias (home a : List Char) (hh : home.head? = some '/') (ha : a ∈ homeAliases) :
     normalizePath home a = normalizePath home home := by
-  have hpre : ['/'].isPrefixOf home = true := by
-    cases home with
-    | nil => simp at hh
-    | cons c cs => simp at hh; subst hh; simp [List.isPrefixOf]
-  rw [normalizePath_abs home home hh]
   unfold normalizePath
-  rw [expandHome_alias home a ha]
-  simp only [hpre, ite_true]
-  exact finish_posixNormalize home
+  rw [expandHome_alias home a ha, expandHome_of_not_matchesAlias home home (not_matchesAlias_of_head home hh)]
 
 /-- The empty string normalizes to itself. -/
 theorem normalizePath_nil (home : List Char) : normalizePath home [] = [] := by
@@ -741,16 +790,16 @@ theorem stripTrailingSlashes_prefix (s : List Char) : stripTrailingSlashes s <+:
 /-- Stripping trailing slashes cannot make a path match an alias. -/
 theorem not_matchesAlias_strip (s : List Char) (hm : ¬ MatchesAlias s) :
     ¬ MatchesAlias (stripTrailingSlashes s) := by
-  rintro ⟨a, ha, hpre | heq⟩
-  · exact hm ⟨a, ha, Or.inl (hpre.trans (stripTrailingSlashes_prefix s))⟩
+  rintro ⟨a, ha, heq | hpre⟩
   · obtain ⟨w, hw, hslash⟩ := eq_stripTrailingSlashes_append s
     rw [heq] at hw
     cases w with
-    | nil => exact hm ⟨a, ha, Or.inr (by simpa using hw)⟩
+    | nil => exact hm ⟨a, ha, Or.inl (by simpa using hw)⟩
     | cons c cs =>
       have hc : c = '/' := hslash c (by simp)
       subst hc
-      exact hm ⟨a, ha, Or.inl ⟨cs, by rw [hw]; simp⟩⟩
+      exact hm ⟨a, ha, Or.inr ⟨cs, by rw [hw]; simp⟩⟩
+  · exact hm ⟨a, ha, Or.inr (hpre.trans (stripTrailingSlashes_prefix s))⟩
 
 /-- Stripping trailing slashes cannot make a relative path absolute. -/
 theorem head_strip (s : List Char) (hx : s.head? ≠ some '/') :
@@ -768,22 +817,13 @@ theorem head_strip (s : List Char) (hx : s.head? ≠ some '/') :
 theorem normalizePath_cases (home p : List Char) (hh : home.head? = some '/') :
     (∃ R : List Seg, normalizePath home p = renderAbs (tmpMapSegs (resolveSegs R)) ∧ ∀ w ∈ R, '/' ∉ w) ∨
     (¬ MatchesAlias p ∧ p.head? ≠ some '/' ∧ normalizePath home p = stripTrailingSlashes p) := by
-  by_cases hm : MatchesAlias p
+  rcases expandHome_cases home p hh with habs | ⟨hm, hx, _⟩
   · left
-    obtain ⟨a, ha, ⟨t, ht⟩ | heq⟩ := hm
-    · subst ht
-      have hhead : (home ++ '/' :: t).head? = some '/' := by cases home <;> simp_all
-      refine ⟨splitSlash (home ++ '/' :: t), ?_, slashFree_of_mem_splitSlash _⟩
-      rw [List.append_assoc, List.singleton_append, normalizePath_alias_slash home t a hh ha,
-        normalizePath_abs home _ hhead]
-    · rw [heq]
-      exact ⟨splitSlash home, by rw [normalizePath_alias home a hh ha, normalizePath_abs home home hh],
-        slashFree_of_mem_splitSlash _⟩
-  · by_cases hx : p.head? = some '/'
-    · left
-      exact ⟨splitSlash p, normalizePath_abs home p hx, slashFree_of_mem_splitSlash _⟩
-    · right
-      exact ⟨hm, hx, normalizePath_rel home p hm hx⟩
+    refine ⟨splitSlash (expandHome home p homeAliases), ?_, slashFree_of_mem_splitSlash _⟩
+    unfold normalizePath
+    exact resolvePath_abs _ habs
+  · right
+    exact ⟨hm, hx, normalizePath_rel home p hm hx⟩
 
 /-- `normalizePath` on a rendered absolute path whose segments are proper and already mapped. -/
 theorem normalizePath_renderAbs_tmpMap (home : List Char) (R : List Seg) (hR : ∀ w ∈ R, '/' ∉ w) :
@@ -814,48 +854,13 @@ theorem ne_nil_of_head (x : List Char) (h : x.head? = some '/') : x ≠ [] := by
 theorem pathJoin_ne_nil (args : List (List Char)) : pathJoin args ≠ [] :=
   ne_nil_of_head _ (posixNormalize_head _)
 
-/-- The empty string passes every rule. -/
-theorem verdict_nil (home : List Char) : verdict home [] = notSensitive := by
-  have hdirs : (sensitiveDirectories home).find? (underDirectory []) = none := by
-    rw [List.find?_eq_none]
-    intro dir hdir
-    have hne : dir ≠ [] := by
-      simp only [sensitiveDirectories, List.mem_cons, List.mem_nil_iff, or_false] at hdir
-      rcases hdir with rfl | rfl | rfl | rfl | rfl | rfl | rfl
-      all_goals first | exact pathJoin_ne_nil _ | decide
-    cases dir with
-    | nil => exact absurd rfl hne
-    | cons c cs => simp [underDirectory]
-  have hexact : (sensitiveExactFiles home).contains [] = false := by
-    cases h : (sensitiveExactFiles home).contains []
-    · rfl
-    · exfalso
-      have hmem := List.contains_iff_mem.1 h
-      simp only [sensitiveExactFiles, List.mem_cons, List.mem_nil_iff, or_false] at hmem
-      rcases hmem with h1 | h1 | h1 | h1 <;> exact pathJoin_ne_nil _ h1.symm
-  have hservice : serviceConfigRule [] = false := by
-    simp [serviceConfigRule, serviceConfigs, serviceConfigHit]
-  unfold verdict
-  rw [hdirs]
-  simp only [hexact, Bool.false_eq_true, ite_false, hservice]
-  have hb : basename [] = [] := rfl
-  simp [hb, basenamePatterns, matchesEnv, matchesCredentials, matchesSecrets]
-
-/-- `checkSensitivePath` is the verdict on the normal form, the empty path included (by
-definition; `checkSensitivePath_eq_original` shows the phase-1 early return for `""` gave the
-same). -/
+/-- `checkSensitivePath` is the verdict on the normal form and the walk points. -/
 theorem checkSensitivePath_eq_verdict (home p : List Char) :
-    checkSensitivePath home p = verdict home (normalizePath home p) :=
+    checkSensitivePath home p = verdict home (normalizePath home p) (walkPoints home p) :=
   rfl
 
-/-- (b) Checking a path is checking its normal form. -/
-theorem check_invariant_under_normalize (home : List Char) (hh : home.head? = some '/') :
-    CheckInvariantUnderNormalize home := by
-  intro p
-  rw [checkSensitivePath_eq_verdict, checkSensitivePath_eq_verdict, normalizePath_idempotent home hh]
-
 /-- Normalization leaves no empty, `.` or `..` segment in an absolute path: the segments of an
-absolute normal form are all proper. This is what the resolution step of lines 166-171 adds. -/
+absolute normal form are all proper. -/
 theorem normalizePath_segments_proper (home : List Char) (hh : home.head? = some '/') (p : List Char)
     (hp : (normalizePath home p).head? = some '/') : ∀ w ∈ segmentsOf (normalizePath home p), Proper w := by
   rcases normalizePath_cases home p hh with ⟨R, hN, hR⟩ | ⟨_, hx, hN⟩
@@ -864,6 +869,7 @@ theorem normalizePath_segments_proper (home : List Char) (hh : home.head? = some
     exact hproper
   · rw [hN] at hp
     exact absurd hp (head_strip p hx)
+
 
 /-! ## (e) Basename patterns -/
 
@@ -1020,183 +1026,17 @@ theorem normalizePath_of_names (home p : List Char) (loc : List Seg) (h : Names 
     normalizePath home p = renderAbs (tmpMapSegs loc) := by
   rw [normalizePath_abs home p h.1, (walk_iff_resolveSegs _ _).1 h.2]
 
-/-- (b') Two absolute spellings of one location get the same result: `.`, `..` and empty
-segments cannot change what `checkSensitivePath` answers. This is the property the unresolved
-segments broke. -/
-theorem same_location_same_result (home : List Char) : SameLocationSameResult home := by
-  intro p q loc hp hq
-  rw [checkSensitivePath_eq_verdict, checkSensitivePath_eq_verdict, normalizePath_of_names home p loc hp,
-    normalizePath_of_names home q loc hq]
-
-/-- `~`, `$HOME` and `${HOME}`, alone or followed by `/`, are checked as HOME spelled out. -/
-theorem aliases_spell_home (home : List Char) (hh : home.head? = some '/') : AliasesSpellHome home := by
-  intro a ha
-  refine ⟨?_, fun rest => ?_⟩
-  · rw [checkSensitivePath_eq_verdict, checkSensitivePath_eq_verdict, normalizePath_alias home a hh ha]
-  · rw [checkSensitivePath_eq_verdict, checkSensitivePath_eq_verdict, normalizePath_alias_slash home rest a hh ha]
-
-/-! ## (c) and (d): the directory rule -/
-
-instance (s : Seg) : Decidable (Proper s) :=
-  inferInstanceAs (Decidable (s ≠ [] ∧ '/' ∉ s ∧ s ≠ ['.'] ∧ s ≠ ['.', '.']))
-
-instance (hs : List Seg) : Decidable (HomeCanonical hs) :=
-  inferInstanceAs (Decidable (hs ≠ [] ∧ ∀ s ∈ hs, Proper s))
+/-- Walks compose: walking `a` and then `b` is walking `a ++ b`. -/
+theorem walk_append {here mid there : List Seg} {a b : List Seg} (ha : Walk here a mid) (hb : Walk mid b there) :
+    Walk here (a ++ b) there := by
+  induction ha with
+  | done _ => exact hb
+  | stay here c rest _ hc _ ih => exact Walk.stay here c _ there hc (ih hb)
+  | up here rest _ _ ih => exact Walk.up here _ there (ih hb)
+  | down here c rest _ h1 h2 h3 _ ih => exact Walk.down here c _ there h1 h2 h3 (ih hb)
 
 /-- `/etc/shadow` is the rendering of its segments. -/
 theorem renderAbs_etc_shadow : "/etc/shadow".toList = renderAbs ["etc".toList, "shadow".toList] := by decide
-
-/-- For a canonical HOME, `SENSITIVE_DIRECTORIES` renders `sensitiveDirSegs`. -/
-theorem sensitiveDirectories_eq (hs : List Seg) (hh : HomeCanonical hs) :
-    sensitiveDirectories (renderAbs hs) = (sensitiveDirSegs hs).map renderAbs := by
-  unfold sensitiveDirectories sensitiveDirSegs
-  simp only [List.map_cons, List.map_nil]
-  rw [pathJoin_renderAbs hs _ hh (by decide), pathJoin_renderAbs hs _ hh (by decide),
-    pathJoin_renderAbs hs _ hh (by decide), pathJoin_renderAbs hs _ hh (by decide),
-    pathJoin_renderAbs hs _ hh (by decide), pathJoin_renderAbs hs _ hh (by decide), renderAbs_etc_shadow]
-
-/-- Each sensitive directory has at least one segment, all proper. -/
-theorem sensitiveDirSegs_wf (hs : List Seg) (hh : HomeCanonical hs) :
-    ∀ d ∈ sensitiveDirSegs hs, d ≠ [] ∧ ∀ w ∈ d, Proper w := by
-  have hwf : ∀ e : List Seg, e ≠ [] → (∀ w ∈ e, Proper w) → (hs ++ e) ≠ [] ∧ ∀ w ∈ hs ++ e, Proper w := by
-    intro e hne he
-    refine ⟨by simp [hne], fun w hw => ?_⟩
-    rcases List.mem_append.1 hw with h | h
-    · exact hh.2 w h
-    · exact he w h
-  intro d hd
-  simp only [sensitiveDirSegs, List.mem_cons, List.mem_nil_iff, or_false] at hd
-  rcases hd with rfl | rfl | rfl | rfl | rfl | rfl | rfl
-  all_goals first | exact hwf _ (by simp) (by decide) | decide
-
-/-- (c) The directory rule (lines 89-93) is segment-aligned: it matches exactly the absolute
-strings whose segments begin with a sensitive directory's segments. -/
-theorem dir_rule_segment_aligned (hs : List Seg) (hh : HomeCanonical hs) : DirectoryRuleSegmentAligned hs := by
-  intro n
-  rw [sensitiveDirectories_eq hs hh, List.any_map, List.any_eq_true]
-  constructor
-  · rintro ⟨d, hd, hu⟩
-    obtain ⟨hne, hproper⟩ := sensitiveDirSegs_wf hs hh d hd
-    have := (underDirectory_renderAbs_iff_prefix n d (proper_slashFree hproper) hne).1 hu
-    exact ⟨this.1, d, hd, this.2⟩
-  · rintro ⟨hhead, d, hd, hpre⟩
-    obtain ⟨hne, hproper⟩ := sensitiveDirSegs_wf hs hh d hd
-    exact ⟨d, hd, (underDirectory_renderAbs_iff_prefix n d (proper_slashFree hproper) hne).2 ⟨hhead, hpre⟩⟩
-
-/-- (c) A directory never covers a sibling that merely shares a name prefix: `HOME/.ssh` does
-not cover `HOME/.sshx/…`. -/
-theorem ssh_does_not_cover_sshx (hs rest : List Seg) (hh : HomeCanonical hs) (hrest : ∀ w ∈ rest, Proper w) :
-    underDirectory (renderAbs (hs ++ ".sshx".toList :: rest)) (renderAbs (hs ++ [".ssh".toList])) = false := by
-  have hsf : ∀ w ∈ hs ++ ".sshx".toList :: rest, '/' ∉ w := by
-    intro w hw
-    rcases List.mem_append.1 hw with h | h
-    · exact (hh.2 w h).2.1
-    · simp only [List.mem_cons] at h
-      rcases h with rfl | h
-      · decide
-      · exact (hrest w h).2.1
-  cases hu : underDirectory (renderAbs (hs ++ ".sshx".toList :: rest)) (renderAbs (hs ++ [".ssh".toList]))
-  · rfl
-  · obtain ⟨_, hpre⟩ := (underDirectory_renderAbs_iff_prefix _ _
-      (fun w hw => ((sensitiveDirSegs_wf hs hh _ (by simp [sensitiveDirSegs])).2 w hw).2.1) (by simp)).1 hu
-    rw [segmentsOf_renderAbs _ hsf, List.prefix_append_right_inj, List.cons_prefix_cons] at hpre
-    exact absurd hpre.1 (by decide)
-
-/-- (c) For a HOME outside `/etc/shadow`, the whole directory rule leaves `HOME/.sshx/…` alone. -/
-theorem dir_rule_ignores_sshx (hs rest : List Seg) (hh : HomeCanonical hs) (hrest : ∀ w ∈ rest, Proper w)
-    (hetc : ¬ (["etc".toList, "shadow".toList] <+: hs)) :
-    (sensitiveDirectories (renderAbs hs)).any (underDirectory (renderAbs (hs ++ ".sshx".toList :: rest))) = false := by
-  have hsf : ∀ w ∈ hs ++ ".sshx".toList :: rest, '/' ∉ w := by
-    intro w hw
-    rcases List.mem_append.1 hw with h | h
-    · exact (hh.2 w h).2.1
-    · simp only [List.mem_cons] at h
-      rcases h with rfl | h
-      · decide
-      · exact (hrest w h).2.1
-  cases hany : (sensitiveDirectories (renderAbs hs)).any (underDirectory (renderAbs (hs ++ ".sshx".toList :: rest)))
-  · rfl
-  · obtain ⟨_, d, hd, hpre⟩ := (dir_rule_segment_aligned hs hh _).1 hany
-    rw [segmentsOf_renderAbs _ hsf] at hpre
-    exfalso
-    simp only [sensitiveDirSegs, List.mem_cons, List.mem_nil_iff, or_false] at hd
-    rcases hd with rfl | rfl | rfl | rfl | rfl | rfl | rfl
-    all_goals first
-      | (rw [List.prefix_append_right_inj, List.cons_prefix_cons] at hpre; exact absurd hpre.1 (by decide))
-      | skip
-    -- `/etc/shadow`: HOME would have to start with it
-    obtain ⟨hne, _⟩ := hh
-    match hs, hne, hetc, hpre with
-    | [h1], _, _, hpre =>
-      simp only [List.cons_append, List.nil_append, List.cons_prefix_cons] at hpre
-      exact absurd hpre.2.1 (by decide)
-    | h1 :: h2 :: hr, _, hetc, hpre =>
-      simp only [List.cons_append, List.cons_prefix_cons] at hpre
-      exact hetc (by rw [hpre.1, hpre.2.1]; exact ⟨hr, rfl⟩)
-
-/-- (d) Every path whose normal form lies at or below a sensitive directory is reported
-sensitive. -/
-theorem flagged_when_normalized_under (hs : List Seg) (hh : HomeCanonical hs) : FlaggedWhenNormalizedUnder hs := by
-  intro p d hhead hd hpre
-  rw [checkSensitivePath_eq_verdict]
-  have hany := (dir_rule_segment_aligned hs hh _).2 ⟨hhead, d, hd, hpre⟩
-  unfold verdict
-  cases hf : (sensitiveDirectories (renderAbs hs)).find? (underDirectory (normalizePath (renderAbs hs) p)) with
-  | none =>
-    rw [List.find?_eq_none] at hf
-    obtain ⟨x, hx, hux⟩ := List.any_eq_true.1 hany
-    exact absurd hux (hf x hx)
-  | some dir => rfl
-
-/-- A directory `HOME/e…` is not a prefix of a `/private/tmp` location when HOME is outside `/private/tmp` and `e` does not start with `tmp`. -/
-theorem not_prefix_private_tmp (hs e t : List Seg) (hne : hs ≠ []) (ht : HomeOutsidePrivateTmp hs)
-    (hene : e ≠ []) (he : ∀ rest, e ≠ tmpSeg :: rest) : ¬ (hs ++ e <+: privateSeg :: tmpSeg :: t) := by
-  intro h
-  match hs, hne, ht, h with
-  | [h1], _, _, h =>
-    simp only [List.cons_append, List.nil_append, List.cons_prefix_cons] at h
-    obtain ⟨rest, hrest⟩ := h.2
-    cases e with
-    | nil => exact hene rfl
-    | cons e1 es =>
-      simp only [List.cons_append, List.cons.injEq] at hrest
-      exact he es (by rw [hrest.1])
-  | h1 :: h2 :: hr, _, ht, h =>
-    simp only [List.cons_append, List.cons_prefix_cons] at h
-    exact ht (by rw [h.1, h.2.1]; exact ⟨hr, rfl⟩)
-
-/-- A location at or below a sensitive directory is not under `/private/tmp`, for a HOME outside
-it, so the `/private/tmp` mapping leaves it alone. -/
-theorem tmpMapSegs_of_under_dir (hs loc d : List Seg) (hh : HomeCanonical hs) (ht : HomeOutsidePrivateTmp hs)
-    (hd : d ∈ sensitiveDirSegs hs) (hpre : d <+: loc) : tmpMapSegs loc = loc := by
-  apply tmpMapSegs_of_ne
-  intro t hloc
-  subst hloc
-  have hne := hh.1
-  simp only [sensitiveDirSegs, List.mem_cons, List.mem_nil_iff, or_false] at hd
-  rcases hd with rfl | rfl | rfl | rfl | rfl | rfl | rfl
-  all_goals first
-    | exact not_prefix_private_tmp hs _ t hne ht (by simp) (fun rest h => absurd h (by simp [tmpSeg])) hpre
-    | (simp only [List.cons_prefix_cons] at hpre; exact absurd hpre.1 (by decide))
-
-/-- (d') Every absolute spelling of a location at or below a sensitive directory is reported
-sensitive, whatever `.`, `..` and empty segments it uses (for a HOME outside `/private/tmp`). -/
-theorem flagged_wherever_named (hs : List Seg) (hh : HomeCanonical hs) (ht : HomeOutsidePrivateTmp hs) :
-    FlaggedWhereverNamed hs := by
-  intro p loc d hnames hd hpre
-  have hN := normalizePath_of_names (renderAbs hs) p loc hnames
-  rw [tmpMapSegs_of_under_dir hs loc d hh ht hd hpre] at hN
-  have hloc : ∀ w ∈ loc, Proper w := by
-    rw [← (walk_iff_resolveSegs _ _).1 hnames.2]
-    exact proper_of_mem_resolveSegs _ (slashFree_of_mem_splitSlash _)
-  have hlocne : loc ≠ [] := by
-    rintro rfl
-    exact (sensitiveDirSegs_wf hs hh d hd).1 (List.prefix_nil.1 hpre)
-  apply flagged_when_normalized_under hs hh p d _ hd _
-  · rw [hN]; exact head_renderAbs loc hlocne
-  · rw [hN, segmentsOf_renderAbs loc (proper_slashFree hloc)]; exact hpre
-
-/-! ## (d') for the module as loaded -/
 
 /-- The directory names a sensitive HOME directory adds to HOME. -/
 def homeDirSuffixes : List (List Seg) :=
@@ -1233,80 +1073,6 @@ theorem tmpMapSegs_append_left (a b : List Seg) (ha : a ≠ []) (hb : ¬ (a.leng
     simp only [List.cons_append, tmpMapSegs]
     split <;> simp
 
-/-- The module's `HOME` for a canonical `os.homedir()` is the home directory with `/private/tmp`
-written `/tmp`. -/
-theorem moduleHome_renderAbs (hs : List Seg) (h : ∀ w ∈ hs, '/' ∉ w) :
-    moduleHome (renderAbs hs) = renderAbs (tmpMapSegs hs) :=
-  normalizeTmpPath_renderAbs hs h
-
-/-- The module's `HOME` is canonical whenever `os.homedir()` is. -/
-theorem homeCanonical_tmpMapSegs (hs : List Seg) (h : HomeCanonical hs) : HomeCanonical (tmpMapSegs hs) := by
-  refine ⟨?_, tmpMapSegs_proper hs h.2⟩
-  by_cases hpt : ∃ t, hs = privateSeg :: tmpSeg :: t
-  · obtain ⟨t, rfl⟩ := hpt; rw [tmpMapSegs_private_tmp]; simp
-  · rw [tmpMapSegs_of_ne hs (fun t e => hpt ⟨t, e⟩)]; exact h.1
-
-/-- The module's `HOME` never lies under `/private/tmp`. -/
-theorem homeOutsidePrivateTmp_tmpMapSegs (hs : List Seg) : HomeOutsidePrivateTmp (tmpMapSegs hs) := by
-  rintro ⟨t, ht⟩
-  by_cases hpt : ∃ t', hs = privateSeg :: tmpSeg :: t'
-  · obtain ⟨t', rfl⟩ := hpt
-    rw [tmpMapSegs_private_tmp] at ht
-    simp only [List.cons_append, List.cons.injEq] at ht
-    exact absurd ht.1 (by decide)
-  · rw [tmpMapSegs_of_ne hs (fun t e => hpt ⟨t, e⟩)] at ht
-    exact hpt ⟨t, ht.symm⟩
-
-/-- A location at or below a sensitive directory of `os.homedir()`, once `/private/tmp` is written
-`/tmp`, lies at or below the matching sensitive directory of the module's `HOME`. -/
-theorem under_dir_tmpMapSegs (hs loc d : List Seg) (hh : HomeCanonical hs) (hd : d ∈ sensitiveDirSegs hs)
-    (hpre : d <+: loc) : ∃ d' ∈ sensitiveDirSegs (tmpMapSegs hs), d' <+: tmpMapSegs loc := by
-  obtain ⟨rest, rfl⟩ := hpre
-  rcases (mem_sensitiveDirSegs_iff hs d).1 hd with ⟨e, he, rfl⟩ | rfl
-  · obtain ⟨hene, hehead⟩ := homeDirSuffixes_wf e he
-    refine ⟨tmpMapSegs hs ++ e, (mem_sensitiveDirSegs_iff _ _).2 (Or.inl ⟨e, he, rfl⟩), ?_⟩
-    rw [List.append_assoc, tmpMapSegs_append_left hs (e ++ rest) hh.1 (by
-      rintro ⟨-, -, h⟩
-      cases e with
-      | nil => exact hene rfl
-      | cons e1 es => exact hehead (by simpa using h))]
-    exact ⟨rest, by simp⟩
-  · refine ⟨["etc".toList, "shadow".toList], (mem_sensitiveDirSegs_iff _ _).2 (Or.inr rfl), ?_⟩
-    have hmap : tmpMapSegs (["etc".toList, "shadow".toList] ++ rest) = ["etc".toList, "shadow".toList] ++ rest := by
-      apply tmpMapSegs_of_ne
-      intro t h
-      simp only [List.cons_append, List.nil_append, List.cons.injEq] at h
-      exact absurd h.1 (by decide)
-    rw [hmap]
-    exact ⟨rest, rfl⟩
-
-/-- (d') For the module as loaded, whatever canonical path `os.homedir()` returns (including one
-under `/private/tmp`): every absolute spelling of a location at or below a sensitive directory
-of that home directory is reported sensitive. -/
-theorem flagged_wherever_named_at_load : FlaggedWhereverNamedAtLoad := by
-  intro hs hh p loc d hnames hd hpre
-  rw [moduleHome_renderAbs hs (proper_slashFree hh.2)]
-  have hh' := homeCanonical_tmpMapSegs hs hh
-  obtain ⟨d', hd', hpre'⟩ := under_dir_tmpMapSegs hs loc d hh hd hpre
-  have hN := normalizePath_of_names (renderAbs (tmpMapSegs hs)) p loc hnames
-  have hloc : ∀ w ∈ loc, Proper w := by
-    rw [← (walk_iff_resolveSegs _ _).1 hnames.2]
-    exact proper_of_mem_resolveSegs _ (slashFree_of_mem_splitSlash _)
-  have hmapped := tmpMapSegs_proper loc hloc
-  have hne : tmpMapSegs loc ≠ [] := by
-    rintro h
-    rw [h] at hpre'
-    exact (sensitiveDirSegs_wf _ hh' d' hd').1 (List.prefix_nil.1 hpre')
-  apply flagged_when_normalized_under (tmpMapSegs hs) hh' p d' _ hd' _
-  · rw [hN]; exact head_renderAbs _ hne
-  · rw [hN, segmentsOf_renderAbs _ (proper_slashFree hmapped)]; exact hpre'
-
-/-- (d'') For the module as loaded: a glob whose concrete prefix names a location at or below a
-sensitive directory is reported sensitive. -/
-theorem glob_flagged_where_prefix_named : GlobFlaggedWherePrefixNamed := by
-  intro hs hh cwd pattern basePath loc d hnames hd hpre
-  exact flagged_wherever_named_at_load hs hh _ loc d hnames hd hpre
-
 /-! ## (f) Service configs -/
 
 /-- The basename of a rendered path is its last segment. -/
@@ -1327,7 +1093,7 @@ theorem basename_renderAbs_append (r : List Seg) (f : Seg) (hr : ∀ w ∈ r, '/
 
 /-- One service-config entry matches exactly the absolute paths `dir/f` and `dir/m/f` for a file
 name `f` it lists. -/
-theorem serviceConfigHit_iff (n : List Char) (d : List Seg) (files : List Seg) (hd : HomeCanonical d) :
+theorem serviceConfigHit_iff (n : List Char) (d : List Seg) (files : List Seg) (hd : Canonical d) :
     serviceConfigHit n (renderAbs d) files = true ↔
       n.head? = some '/' ∧ ∃ f ∈ files, segmentsOf n = d ++ [f] ∨ ∃ m, segmentsOf n = d ++ [m, f] := by
   have hdsf : ∀ w ∈ d, '/' ∉ w := proper_slashFree hd.2
@@ -1371,7 +1137,7 @@ theorem serviceConfigs_eq : serviceConfigs = serviceDirSegs.map (fun d => (rende
 `/opt/soma`, or in exactly one directory below one of them. -/
 theorem service_rule_described : ServiceRuleDescribed := by
   intro n
-  have hdirs : ∀ d ∈ serviceDirSegs, HomeCanonical d := by decide
+  have hdirs : ∀ d ∈ serviceDirSegs, Canonical d := by decide
   rw [serviceConfigRule, serviceConfigs_eq, List.any_map, List.any_eq_true]
   simp only [Function.comp_def]
   constructor
@@ -1380,23 +1146,6 @@ theorem service_rule_described : ServiceRuleDescribed := by
     exact ⟨hhead, d, hd, f, hf, hs⟩
   · rintro ⟨hhead, d, hd, f, hf, hs⟩
     exact ⟨d, hd, (serviceConfigHit_iff n d _ (hdirs d hd)).2 ⟨hhead, f, hf, hs⟩⟩
-
-/-- The verdict is sensitive whenever the basename rule or the service-config rule matches: every
-rule that can return before them returns a sensitive result too. -/
-theorem verdict_isSensitive_of (home n : List Char)
-    (h : basenamePatterns.any (fun test => test (basename n)) = true ∨ serviceConfigRule n = true) :
-    (verdict home n).isSensitive = true := by
-  unfold verdict
-  split
-  · rfl
-  · split
-    · rfl
-    · split
-      · rfl
-      · rename_i hb
-        rcases h with h | h
-        · exact absurd h hb
-        · simp [h]
 
 /-- The basename of an absolute path whose last segment is `.env` is `.env`. -/
 theorem basename_of_segments_env (n : List Char) (dir : List Seg) (hhead : n.head? = some '/')
@@ -1416,19 +1165,4 @@ theorem basename_of_segments_env (n : List Char) (dir : List Seg) (hhead : n.hea
     · exact List.mem_append_left _ h
     · simp at h; subst h; simp
 
-/-- (f) Every service config file, `.env` or `config.json`, directly in a service directory or
-one directory below it, is reported sensitive: `.env` by the basename rule, `config.json` by the
-service-config rule. -/
-theorem service_configs_flagged (home : List Char) : ServiceConfigsFlagged home := by
-  intro p hhead hsvc
-  rw [checkSensitivePath_eq_verdict]
-  apply verdict_isSensitive_of
-  obtain ⟨dir, hdir, f, hf, hs⟩ := hsvc
-  simp only [serviceFileNames, List.mem_cons, List.mem_nil_iff, or_false] at hf
-  rcases hf with rfl | rfl
-  · left
-    rw [basename_of_segments_env _ dir hhead hs]
-    decide
-  · right
-    exact (service_rule_described _).2 ⟨hhead, dir, hdir, "config.json".toList, by simp [serviceTableFileNames], hs⟩
 end SomaVerify.SensitivePath.Proofs
