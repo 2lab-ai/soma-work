@@ -1142,7 +1142,10 @@ export class ClaudeHandler implements TurnSteeringPort {
    * wiring the isolated option surface needs (`build-stream-options.ts` consults
    * both deps solely on the incident branch) and suppresses the options debug
    * dump, which would otherwise print `options.env` — the lease's access token —
-   * for an unattended machine-to-machine turn.
+   * for an unattended machine-to-machine turn. It also takes the attempt out of
+   * the turn machinery that assumes a person on the other end: no steering
+   * registration and no background-agent keepalive (see the two `incident`
+   * checks below).
    */
   private async *streamSdkQuery(
     prompt: string,
@@ -1234,7 +1237,12 @@ export class ClaudeHandler implements TurnSteeringPort {
       const openingUuid = randomUUID();
       const channel = new TurnInputChannel(buildInitialUserMessage(prompt, openingUuid));
       const activeQuery = query({ prompt: channel, options });
-      const steerKey = sessionKey;
+      // An incident attempt is never registered, whatever key reaches here: its
+      // only input is the fixed host prompt. Unregistered, `steerTurn` answers
+      // `false` (the host keeps the message queued), `interruptTurn` answers
+      // `undefined` and `cancelSteeredMessage` answers `unreachable`. The
+      // caller's abort controller and the wall-clock budget still stop it.
+      const steerKey = incident ? undefined : sessionKey;
       if (steerKey) {
         this.activeQueries.set(steerKey, { query: activeQuery, channel });
       }
@@ -1284,7 +1292,12 @@ export class ClaudeHandler implements TurnSteeringPort {
       // sealed, closed or yielded) and the turn ends on the result that follows
       // the agent's report. `liveAgents` is replaced on every level frame; it
       // is per process and starts empty.
-      const keepaliveMaxMs = getBgKeepaliveMaxMs();
+      //
+      // Off (`0`) for an incident attempt: its surface has no Agent tool
+      // (`tools: []`), so no agent of its own can be live, and holding its
+      // answer for one would trade the host's result for the wall-clock abort
+      // (`INCIDENT_MAX_WALL_CLOCK_MS`). The turn ends on its answering result.
+      const keepaliveMaxMs = incident ? 0 : getBgKeepaliveMaxMs();
       let liveAgents = new Set<string>();
       // Frame sequence numbers, not wall time: did the latest agent settle (a
       // level frame that removed a live agent) come after the latest turn start

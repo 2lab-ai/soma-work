@@ -983,6 +983,21 @@ export class SlackHandler {
     // startup reconcile has run against the registry.
     this.warnIfReconcileSkipped();
 
+    // Dropped HERE, ahead of the fence: past it, a message in a busy
+    // incident thread would be parked, get a queue receipt painted into the
+    // bot-to-bot thread and be offered to the running attempt as a steer. The
+    // package router already drops mentions and plain replies in these
+    // threads; a file upload into an existing session reaches this ingress
+    // unchecked (`handleFileUpload`).
+    if (this.isOrdinaryMessageInIncidentThread(event)) {
+      this.logger.info('Ignoring non-incident message in an incident-owned thread', {
+        channel: event.channel,
+        threadTs: event.thread_ts || event.ts,
+        user: event.user,
+      });
+      return;
+    }
+
     // Shutdown has begun recording its state: DISPATCHING now would start a
     // turn the process is about to kill. The instruction itself is still
     // parked durably — see below.
@@ -1121,6 +1136,23 @@ export class SlackHandler {
   }
 
   /**
+   * Is this an ordinary message in an incident-owned thread?
+   *
+   * Such a thread is a bot-to-bot surface: ordinary messages are dropped
+   * rather than executed, so an incident session can never be steered into
+   * arbitrary work. Users act through the Eagle-eye API. Only the verified
+   * incident turn (`routeContext.incidentRequest`, set by the ingress after the
+   * contract verified the sender — the cast is deliberate, root `src/`
+   * typechecks `MessageEvent` against the package's compiled `dist/`) and
+   * host-synthetic turns pass.
+   */
+  private isOrdinaryMessageInIncidentThread(event: MessageEvent): boolean {
+    if (event.synthetic) return false;
+    if ((event.routeContext as { incidentRequest?: SessionIncidentRequest } | undefined)?.incidentRequest) return false;
+    return Boolean(this.claudeHandler.getSession?.(event.channel, event.thread_ts || event.ts)?.incidentRequest);
+  }
+
+  /**
    * The message pipeline itself (formerly the body of `handleMessage`).
    *
    * Returns the outcome the dispatcher needs to decide whether the next safe
@@ -1144,11 +1176,10 @@ export class SlackHandler {
     // workspace package's compiled `dist/`, which may predate the field.
     const incidentTurn = (event.routeContext as { incidentRequest?: SessionIncidentRequest } | undefined)
       ?.incidentRequest;
-    const incidentOwnedThread = this.claudeHandler.getSession?.(channel, originalThreadTs)?.incidentRequest;
-    if (incidentOwnedThread && !incidentTurn && !event.synthetic) {
-      // An incident thread is a bot-to-bot surface: ordinary follow-ups are
-      // dropped rather than executed, so an incident session can never be
-      // steered into arbitrary work. Users act through the Eagle-eye API.
+    if (this.isOrdinaryMessageInIncidentThread(event)) {
+      // `handleMessage` drops these before the fence; this is the backstop for
+      // a message parked before its thread became incident-owned and replayed
+      // by a drain or `Send now` afterwards.
       this.logger.info('Ignoring non-incident message in an incident-owned thread', {
         channel,
         threadTs: originalThreadTs,
