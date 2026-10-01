@@ -330,6 +330,125 @@ describe('TurnSurface', () => {
       expect(channel.buildCompletionBlocks).not.toHaveBeenCalled();
       expect(channel.send).toHaveBeenCalledWith(evt);
     });
+
+    // The two non-success exits. Driven through the REAL status manager so
+    // "epoch-safe" is the manager's own verdict on the clear, not a mock's
+    // record of the arguments it was handed.
+    describe('fail() and supersede', () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+
+      afterEach(() => {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      });
+
+      function makeHarness() {
+        const client = makeClient();
+        let remoteStatus = '';
+        const slackApi = Object.assign(makeSlackApi(client), {
+          setAssistantStatus: vi.fn(async (_channelId: string, _threadTs: string, status: string) => {
+            remoteStatus = status;
+          }),
+          setAssistantTitle: vi.fn().mockResolvedValue(undefined),
+        });
+        const manager = new AssistantStatusManager(slackApi);
+        const channel = {
+          send: vi.fn().mockResolvedValue(undefined),
+          buildCompletionBlocks: vi.fn().mockReturnValue({ blocks: [], fallbackText: 'done', withFeedback: false }),
+        };
+        const surface = new TurnSurface({
+          slackApi,
+          assistantStatusManager: manager,
+          slackBlockKitChannel: channel,
+          isCompletionMarkerActive: () => true,
+        });
+        return { client, manager, channel, surface, remoteStatus: () => remoteStatus };
+      }
+
+      const cardFor = (turn: string) => ({ category: 'WorkflowComplete', turn }) as unknown as TurnCompletionEvent;
+
+      it('fail() closes a noStream turn: state removed, status cleared once, no stream call, no card', async () => {
+        const { client, manager, channel, surface, remoteStatus } = makeHarness();
+        const clearStatus = vi.spyOn(manager, 'clearStatus');
+        await surface.begin({ ...ctx, buildCompletionEvent: () => Promise.resolve(cardFor('A')) });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(remoteStatus()).toBe('is thinking...');
+        expect(clearStatus).not.toHaveBeenCalled();
+
+        await surface.fail(ctx.turnId, new Error('boom'));
+        // A late end() after fail() is a no-op: it must not post a card.
+        await surface.end(ctx.turnId, 'completed');
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
+        expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+        expect(clearStatus).toHaveBeenCalledTimes(1);
+        expect(clearStatus).toHaveBeenCalledWith('C1', 't1.0', { expectedEpoch: 1 });
+        expect(remoteStatus()).toBe('');
+        expect(client.chat.startStream).not.toHaveBeenCalled();
+        expect(client.chat.appendStream).not.toHaveBeenCalled();
+        expect(client.chat.stopStream).not.toHaveBeenCalled();
+        expect(channel.send).not.toHaveBeenCalled();
+        expect(channel.buildCompletionBlocks).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['another noStream turn (an incident retry)', true],
+        ['a streaming turn', false],
+      ] as const)('a replacement by %s closes the open noStream turn without touching the new one', async (_shape, replacementNoStream) => {
+        const { client, manager, channel, surface, remoteStatus } = makeHarness();
+        const clearStatus = vi.spyOn(manager, 'clearStatus');
+        const ctxA = { ...ctx, turnId: 'C1:t1.0:A', buildCompletionEvent: () => Promise.resolve(cardFor('A')) };
+        const ctxB = {
+          ...ctx,
+          turnId: 'C1:t1.0:B',
+          noStream: replacementNoStream,
+          buildCompletionEvent: () => Promise.resolve(cardFor('B')),
+        };
+
+        await surface.begin(ctxA);
+        await vi.advanceTimersByTimeAsync(0);
+        await surface.begin(ctxB);
+        await vi.advanceTimersByTimeAsync(0);
+
+        // A is gone; B owns the session.
+        expect(surface._getTurnStateSnapshot(ctxA.turnId)).toBeUndefined();
+        expect(surface._getActiveTurnId(ctx.sessionKey)).toBe(ctxB.turnId);
+        // A's clear carried A's epoch and the manager dropped it as stale: the
+        // spinner B set is still up.
+        expect(clearStatus).toHaveBeenCalledTimes(1);
+        expect(clearStatus).toHaveBeenCalledWith('C1', 't1.0', { expectedEpoch: 1 });
+        expect(remoteStatus()).toBe('is thinking...');
+        // A had no stream, so the supersede stopped nothing; only a streaming
+        // B opens one.
+        expect(client.chat.stopStream).not.toHaveBeenCalled();
+        expect(client.chat.startStream).toHaveBeenCalledTimes(replacementNoStream ? 0 : 1);
+        expect(client.chat.appendStream).not.toHaveBeenCalled();
+        // A superseded turn posts no card.
+        expect(channel.send).not.toHaveBeenCalled();
+        expect(channel.buildCompletionBlocks).not.toHaveBeenCalled();
+
+        await surface.end(ctxB.turnId, 'completed');
+        await vi.advanceTimersByTimeAsync(0);
+
+        // Exactly one card, and it is B's: detached for a noStream B, appended
+        // to the stream by stopStream for a streaming B.
+        if (replacementNoStream) {
+          expect(channel.send.mock.calls).toEqual([[cardFor('B')]]);
+          expect(channel.buildCompletionBlocks).not.toHaveBeenCalled();
+          expect(client.chat.stopStream).not.toHaveBeenCalled();
+        } else {
+          expect(channel.send).not.toHaveBeenCalled();
+          expect(channel.buildCompletionBlocks.mock.calls).toEqual([[cardFor('B')]]);
+          expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
+        }
+        expect(clearStatus).toHaveBeenLastCalledWith('C1', 't1.0', { expectedEpoch: 2 });
+        expect(remoteStatus()).toBe('');
+        expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+      });
+    });
   });
 
   // -------------------------------------------------------------------------
