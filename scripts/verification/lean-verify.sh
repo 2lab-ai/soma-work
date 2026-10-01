@@ -671,6 +671,12 @@ selftest() {
   # shellcheck disable=SC2031
   cd "$LEAN_ROOT"
   cp -R SomaVerify lakefile.toml lean-toolchain "$SELFTEST_ROOT/lean/"
+  # Generators run from lean/ and may read data vendored beside it (verification/iana/): copy
+  # every sibling of lean/ except vectors/, which the scratch run writes itself.
+  local sibling
+  for sibling in ../*; do
+    case "${sibling#../}" in lean | vectors) ;; *) cp -R "$sibling" "$SELFTEST_ROOT/" ;; esac
+  done
   if [ -f lake-manifest.json ]; then cp lake-manifest.json "$SELFTEST_ROOT/lean/"; fi
   local probe_dir="$SELFTEST_ROOT/lean/SomaVerify/SelfTest"
   [ ! -e "$probe_dir" ] || die "SomaVerify/SelfTest is reserved for --selftest"
