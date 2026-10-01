@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseAuthMode, parseBool, parsePositiveIntEnv, parseUnitIntervalEnv } from '../config';
+import { getBgKeepaliveMaxMs, parseAuthMode, parseBool, parsePositiveIntEnv, parseUnitIntervalEnv } from '../config';
 
-// Silence the warn path; we're testing the fallback value, not the log side-effect.
+// One shared spy for every Logger instance, so a getter's warn can be asserted.
+const { loggerWarn } = vi.hoisted(() => ({ loggerWarn: vi.fn() }));
+
+// Silence the warn path; most suites test the fallback value, not the log side-effect.
 vi.mock('../logger', () => ({
   Logger: class {
-    warn = vi.fn();
+    warn = loggerWarn;
     info = vi.fn();
     debug = vi.fn();
     error = vi.fn();
@@ -231,6 +234,70 @@ describe('parseBool (#666)', () => {
       expect(parseBool(' 1 ', false)).toBe(true);
       expect(parseBool(' false ', true)).toBe(false);
     });
+  });
+});
+
+// #257 — `getBgKeepaliveMaxMs` is the only read of `SOMA_BG_KEEPALIVE_MAX_MS`:
+// how long a turn stays open for the background agents it launched. A typo must
+// fall back to the 30-minute default with a warn — never read as `0`, which
+// disables the keepalive and lets the agents die with the turn.
+describe('getBgKeepaliveMaxMs (#257)', () => {
+  const ENV_NAME = 'SOMA_BG_KEEPALIVE_MAX_MS';
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env[ENV_NAME];
+    delete process.env[ENV_NAME];
+    loggerWarn.mockClear();
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env[ENV_NAME];
+    else process.env[ENV_NAME] = saved;
+  });
+
+  it('unset → 30-minute default, no warn', () => {
+    expect(getBgKeepaliveMaxMs()).toBe(1_800_000);
+    expect(loggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('empty / whitespace-only → default, no warn', () => {
+    process.env[ENV_NAME] = '';
+    expect(getBgKeepaliveMaxMs()).toBe(1_800_000);
+    process.env[ENV_NAME] = '   ';
+    expect(getBgKeepaliveMaxMs()).toBe(1_800_000);
+    expect(loggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('0 → 0 (keepalive disabled), no warn', () => {
+    process.env[ENV_NAME] = '0';
+    expect(getBgKeepaliveMaxMs()).toBe(0);
+    expect(loggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('positive → that many ms, no warn', () => {
+    process.env[ENV_NAME] = '600000';
+    expect(getBgKeepaliveMaxMs()).toBe(600_000);
+    expect(loggerWarn).not.toHaveBeenCalled();
+  });
+
+  it.each(['30m', 'abc', '-1'])('invalid "%s" → default (warn-and-fallback)', (raw) => {
+    process.env[ENV_NAME] = raw;
+    expect(getBgKeepaliveMaxMs()).toBe(1_800_000);
+    expect(loggerWarn).toHaveBeenCalledTimes(1);
+    expect(loggerWarn).toHaveBeenCalledWith(expect.stringContaining(`SOMA_BG_KEEPALIVE_MAX_MS="${raw}" invalid`));
+  });
+
+  it('above the largest timer delay → clamped, with a warn', () => {
+    process.env[ENV_NAME] = '99999999999';
+    expect(getBgKeepaliveMaxMs()).toBe(2_147_483_647);
+    expect(loggerWarn).toHaveBeenCalledTimes(1);
+    expect(loggerWarn).toHaveBeenCalledWith(expect.stringContaining('clamping to 2147483647'));
+  });
+
+  it('reads the env on every call (an operator change applies to the next turn)', () => {
+    process.env[ENV_NAME] = '60000';
+    expect(getBgKeepaliveMaxMs()).toBe(60_000);
+    process.env[ENV_NAME] = '0';
+    expect(getBgKeepaliveMaxMs()).toBe(0);
   });
 });
 
