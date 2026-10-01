@@ -43,10 +43,47 @@ async function makeTmp(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'tm-test-'));
 }
 
+// Every fire-and-forget leg in TokenManager (the addSlot / attachOAuth /
+// forceRefreshOAuth profile syncs and the attachOAuth usage fetch) enters
+// through `refreshOAuthProfile` or `fetchAndStoreUsage`. importSut records each
+// call's promise here, and afterEach settles them before deleting the tmp
+// store. If a leftover write still holds the store lock when its directory is
+// removed, a second leftover can recreate the directory and take the same lock
+// path. proper-lockfile tracks held locks per path, so the first release then
+// clears the second holder's entry, and the first holder's mtime-update timer
+// fires 5s later into a missing directory: an uncaught ECOMPROMISED during
+// some later test.
+const backgroundWork: Promise<unknown>[] = [];
+
+function recordBackgroundWork(TokenManager: typeof import('../token-manager').TokenManager): void {
+  const proto = TokenManager.prototype;
+  const refreshOAuthProfile = proto.refreshOAuthProfile;
+  proto.refreshOAuthProfile = function (this: typeof proto, ...args: Parameters<typeof refreshOAuthProfile>) {
+    const p = refreshOAuthProfile.apply(this, args);
+    backgroundWork.push(p);
+    return p;
+  };
+  const fetchAndStoreUsage = proto.fetchAndStoreUsage;
+  proto.fetchAndStoreUsage = function (this: typeof proto, ...args: Parameters<typeof fetchAndStoreUsage>) {
+    const p = fetchAndStoreUsage.apply(this, args);
+    backgroundWork.push(p);
+    return p;
+  };
+}
+
+async function settleBackgroundWork(): Promise<void> {
+  // Settling one call can start another (the 401 retry paths), so loop until
+  // nothing new was recorded.
+  while (backgroundWork.length > 0) {
+    await Promise.allSettled(backgroundWork.splice(0));
+  }
+}
+
 async function importSut() {
   vi.resetModules();
   const mod = await import('../token-manager');
   const storeMod = await import('../cct-store');
+  recordBackgroundWork(mod.TokenManager);
   return { mod, storeMod };
 }
 
@@ -115,22 +152,10 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
 
   afterEach(async () => {
     process.env = originalEnv;
-    // Card v2 fire-and-forget profile syncs (attachOAuth / addSlot /
-    // forceRefreshOAuth) can still be in flight when the test body returns,
-    // plus the (pre-existing) fetchAndStoreUsage fire-and-forget on attach.
-    // Drain a few macrotask ticks before nuking the tmpdir; retry the rm
-    // loop so a stray `fs.writeFile` landing mid-cleanup doesn't surface as
-    // a flaky ENOTEMPTY.
-    await new Promise((r) => setTimeout(r, 50));
-    for (let i = 0; i < 5; i++) {
-      try {
-        await fs.rm(tmp, { recursive: true, force: true });
-        return;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOTEMPTY') throw err;
-        await new Promise((r) => setTimeout(r, 40));
-      }
-    }
+    // Fire-and-forget profile syncs and usage fetches can still be running
+    // when the test body returns. Settle them (see recordBackgroundWork)
+    // before deleting the store they write to.
+    await settleBackgroundWork();
     await fs.rm(tmp, { recursive: true, force: true });
   });
 
@@ -1318,15 +1343,21 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         credentials: makeOAuthCreds(),
         acknowledgedConsumerTosRisk: true,
       });
-      // Make the upstream never resolve within the test window.
+      // Make the upstream never resolve within the test window. It is released
+      // after the assertions so afterEach can settle the per-slot fetch.
+      let releaseUsage: (v: null) => void = () => {};
+      const usageHeld = new Promise<null>((r) => {
+        releaseUsage = r;
+      });
       fetchUsageMock.mockReset();
-      fetchUsageMock.mockImplementation(async () => new Promise(() => {}));
+      fetchUsageMock.mockImplementation(async () => usageHeld);
       const t0 = Date.now();
       const results = await tm.fetchUsageForAllAttached({ timeoutMs: 60 });
       const elapsed = Date.now() - t0;
       expect(elapsed).toBeLessThan(500); // did NOT block indefinitely
       // Best-effort: no keys will have landed yet.
       expect(Object.keys(results).length === 0 || Object.values(results).every((v) => v === null)).toBe(true);
+      releaseUsage(null);
     });
   });
 
@@ -2721,8 +2752,14 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         accessToken: `${current.accessToken}-refreshed`,
         expiresAtMs: Date.now() + 8 * 60 * 60 * 1000,
       }));
+      // The hung fetch is released after the assertions so afterEach can
+      // settle the profile sync.
+      let releaseProfile: (v: import('../oauth/profile').OAuthProfile) => void = () => {};
+      const profileHeld = new Promise<import('../oauth/profile').OAuthProfile>((r) => {
+        releaseProfile = r;
+      });
       fetchOAuthProfileMock.mockReset();
-      fetchOAuthProfileMock.mockImplementation(async () => new Promise(() => {}));
+      fetchOAuthProfileMock.mockImplementation(async () => profileHeld);
       const t0 = Date.now();
       const results = await tm.refreshAllAttachedOAuthTokens({ timeoutMs: 200, awaitProfile: true });
       const elapsed = Date.now() - t0;
@@ -2732,6 +2769,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const outcomes = Object.values(results);
       expect(outcomes.length).toBe(1);
       expect(outcomes[0]).toBe('ok');
+      releaseProfile({ fetchedAt: Date.now(), email: 'late@example.com' });
     });
 
     it('awaitProfile: true suppresses the fire-and-forget profile leg (one profile fetch per slot, not two)', async () => {
