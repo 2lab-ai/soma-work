@@ -40,6 +40,7 @@ import {
   readIdleTimeoutMs,
   type StreamCallbacks,
   type StreamContext,
+  sayPostSwitches,
   type UsageData,
 } from '../stream-processor';
 import type { SummaryService } from '../summary-service';
@@ -995,6 +996,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     let terminalNotified = false;
     let fallbackArgsForTurnSurface: (TurnCompletionEvent & { sessionKey?: string; turnId?: string }) | undefined;
 
+    // An incident-owned session's turn text is the host's validated
+    // conclusion (`src/incident/attempt-output.ts`), echoing model strings.
+    // It is published as a plain post and never interpreted — not streamed
+    // (`turnContext.noStream`), not read by the stream processor
+    // (`streamContext.incidentAttempt`), not read by the content guards after
+    // the stream. One value, decided here, feeds all three.
+    const incidentAttempt = session.incidentRequest !== undefined;
+
     const turnContext: TurnContext = {
       channelId: channel,
       threadTs: threadTs || undefined,
@@ -1009,6 +1018,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       recipientUserId: user || undefined,
       recipientTeamId: params.teamId || undefined,
       buildCompletionEvent,
+      noStream: incidentAttempt,
     };
     // C-3: bound `beginTurn` so a hung thread-panel implementation cannot
     // block the outer try-block entry — pre-fix, a `beginTurn` hang meant
@@ -1359,13 +1369,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         confluenceUrl: channelInfo?.confluenceUrl,
       };
 
-      // An incident-owned session's turn text is the host's validated
-      // conclusion (`src/incident/attempt-output.ts`), echoing model strings.
-      // It is published and never interpreted — neither by the stream
-      // processor (`streamContext.incidentAttempt`) nor by the content guards
-      // after the stream.
-      const incidentAttempt = session.incidentRequest !== undefined;
-
       // Create stream context — logVerbosity/showThinking are getters so mid-stream changes apply
       const streamContext: StreamContext = {
         channel,
@@ -1402,6 +1405,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             thread_ts: msg.thread_ts,
             blocks: msg.blocks,
             attachments: msg.attachments,
+            // Only the incident conclusion sets these; any other post keeps
+            // Slack's defaults and its payload unchanged.
+            ...sayPostSwitches(msg),
           });
           if (result?.ts) {
             latestResponseTs = result.ts;
