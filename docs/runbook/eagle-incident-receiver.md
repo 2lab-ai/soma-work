@@ -86,7 +86,11 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
   (`src/incident/attempt-output.ts`).
 - 그 결론은 모델 문자열(summary, proposal action)을 되싣지만 **해석되지 않는다.** 인시던트 세션의 턴은
   directive(`channel_message` 등)·선택지 JSON·전송 오류 가드 없이 그대로 한 번 게시된다
-  (`packages/slack/src/pipeline/stream-executor.ts:1387`, `packages/slack/src/stream-processor.ts:1277`).
+  (`packages/slack/src/pipeline/stream-executor.ts:1367`, `packages/slack/src/stream-processor.ts:1277`).
+- 턴이 끝난 뒤 수집 텍스트를 "내용으로 위장한 전송 오류"(사용량 한도·풀 rate-limit·prompt too long·
+  빈 블록 400·compaction 실패)로 읽는 5개 가드도 인시던트 세션에는 적용되지 않는다
+  (`packages/slack/src/pipeline/stream-executor.ts:1951`). summary가 그 문구를 인용해도 자격증명 회전이나
+  재시도가 일어나지 않는다. 실제 전송 오류는 시도 안에서 이미 host 결과(`failed`/`inconclusive`)가 된다.
 - 도구 호출은 evidence 도구 이름일 때만 host가 `input: {}`로 다시 써서 보인다. 다른 도구 호출과 모델이 쓴
   인자는 스레드에 나가지 않는다 (`src/incident/attempt-output.ts:476`).
 - 결론의 `status`는 종결 상태만 가능하다. `running`(eagle-eye에서 진행 표시)은 결론으로 거부되고 host가
@@ -126,7 +130,8 @@ npx vitest run src/incident/__tests__ \
   src/slack/__tests__/incident-ingress.test.ts \
   src/agent-runtime/__tests__/tool-policy-incident.test.ts \
   packages/slack/src/__tests__/incident-contract.test.ts \
-  packages/slack/src/__tests__/incident-result.test.ts
+  packages/slack/src/__tests__/incident-result.test.ts \
+  packages/slack/src/pipeline/__tests__/stream-executor.incident-output.test.ts
 ```
 
 이 문서 작성 시점에 위 명령의 결과는 **기록되지 않았다** — 통과 주장 없음.
