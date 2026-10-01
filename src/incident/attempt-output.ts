@@ -26,8 +26,9 @@
  *
  * 2. **Screening** (`screenIncidentMessage`) — decides what each SDK message may
  *    contribute. Assistant text and thinking are captured and never forwarded;
- *    partial stream events are dropped whole; usage, tool calls, tool results
- *    and session lifecycle messages pass through so the run stays observable.
+ *    partial stream events are dropped whole; usage, session lifecycle messages
+ *    and the evidence tool's calls and results pass through so the run stays
+ *    observable — the tool blocks rebuilt by the host, carrying no model text.
  *    Unknown message types are dropped rather than forwarded: an SDK message
  *    type we have not read must not become a leak by default.
  *
@@ -58,7 +59,7 @@ import {
 } from '@soma/slack/incident-result';
 import { escapeSlackMrkdwn } from '@soma/slack/mrkdwn-escape';
 import type { EvidenceCheck, EvidenceExternal, EvidenceHost, IncidentEvidence, SanitizedText } from './evidence';
-import type { IncidentRequestLike } from './sdk-options';
+import { INCIDENT_EVIDENCE_TOOL, type IncidentRequestLike } from './sdk-options';
 
 /**
  * Default observation window, mirroring `DEFAULT_MAX_OBSERVATION_AGE_SECONDS` in
@@ -453,15 +454,30 @@ function screenUser(message: Extract<SDKMessage, { type: 'user' }>): IncidentScr
 }
 
 /**
- * The only content block an incident attempt may put in front of a human.
+ * The only content block an incident attempt may put in front of a human: a
+ * call to the evidence tool — rebuilt by the host, never forwarded.
  *
- * An allow-list, not a deny-list: the attempt has exactly one tool, so
- * `tool_use` is the complete set of blocks worth showing. Any other block —
- * `thinking`, a server-tool block, something a later SDK adds — is model-shaped
- * content that a future mapper could decide to render, and the whole point of
- * this path is that no such decision gets made downstream.
+ * A `tool_use` block is model-authored end to end. Its `input` is whatever the
+ * model typed, and so is its `name`. The Slack tool renderers print string input
+ * verbatim (`tool-formatter.ts` `formatMcpInput`) and the host's tool callback
+ * receives it, so forwarding the block published a marker line written into a
+ * tool argument before anything had validated it. Only the exact evidence tool
+ * name survives, and the host writes everything else: that name, the call id the
+ * tool result is correlated by, and `input: {}`. The tool takes no arguments
+ * (`sdk-options.ts`), so `{}` is the whole truth about any legitimate call.
+ *
+ * An allow-list, not a deny-list. Any other block — `thinking`, a server-tool
+ * block, a call to any other tool (denied by policy, hallucinated, or named like
+ * a marker) — is dropped whole, because its name and input are model text too.
+ * A dropped call's tool result still arrives, reduced by `screenUser` to its
+ * fixed line.
  */
-const FORWARDED_CONTENT_BLOCKS: ReadonlySet<string> = new Set(['tool_use']);
+function rebuildEvidenceToolUse(block: Record<string, unknown>): Record<string, unknown> | null {
+  if (block.type !== 'tool_use' || block.name !== INCIDENT_EVIDENCE_TOOL) return null;
+  // The mapper renders nothing without an id; neither does this.
+  if (typeof block.id !== 'string' || block.id.length === 0) return null;
+  return { type: 'tool_use', id: block.id, name: INCIDENT_EVIDENCE_TOOL, input: {} };
+}
 
 function screenAssistant(message: Extract<SDKMessage, { type: 'assistant' }>): IncidentScreenResult {
   const inner = message.message as unknown as { content?: unknown };
@@ -476,8 +492,9 @@ function screenAssistant(message: Extract<SDKMessage, { type: 'assistant' }>): I
       text += block.text;
       continue;
     }
-    if (typeof block.type === 'string' && FORWARDED_CONTENT_BLOCKS.has(block.type)) {
-      kept.push(block);
+    const rebuilt = rebuildEvidenceToolUse(block);
+    if (rebuilt !== null) {
+      kept.push(rebuilt);
     }
   }
 
