@@ -1,4 +1,5 @@
 import { WebClient } from '@slack/web-api';
+import { parseBgKeepaliveMaxMs } from './agent-runtime/background-keepalive';
 import { Logger } from './logger';
 import { normalizeSigningSecret, SIGNING_SECRET_MIN_LENGTH } from './slack-signing-secret';
 
@@ -134,6 +135,31 @@ export function getFollowupQueueCapacity(): number {
     return FOLLOWUP_QUEUE_CAPACITY_DEFAULT;
   }
   return parsed;
+}
+
+/**
+ * Typed accessor for `SOMA_BG_KEEPALIVE_MAX_MS` — the ONLY read of that
+ * variable in the process (`rules/config.md` §절대규칙 1, `:12` `SOMA_` prefix).
+ * The longest a turn may stay open for the background agents it launched
+ * (#257); `0` disables the keepalive. `ClaudeHandler` imports this and never
+ * touches `process.env`.
+ *
+ * A function rather than a field on {@link config}, read once per turn, so an
+ * operator change applies to the next turn and a test can move the knob
+ * without re-importing this module. Parsing is the pure
+ * `parseBgKeepaliveMaxMs` (`agent-runtime/background-keepalive.ts`); this
+ * accessor only reads the value and reports a rejected one.
+ */
+export function getBgKeepaliveMaxMs(): number {
+  const raw = process.env.SOMA_BG_KEEPALIVE_MAX_MS;
+  const { value, invalid } = parseBgKeepaliveMaxMs(raw);
+  if (invalid) {
+    logger.warn(
+      `SOMA_BG_KEEPALIVE_MAX_MS="${raw}" invalid (expected 0 or a positive number of ms up to 2147483647); ` +
+        `falling back to ${value}`,
+    );
+  }
+  return value;
 }
 
 /**
