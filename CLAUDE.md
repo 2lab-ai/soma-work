@@ -22,6 +22,9 @@ Slack에서 Claude Code SDK를 통해 AI 코딩 어시스턴트를 제공하는 
 - `rules/permission.md` — **인가(도구 허용/거부)** 단일 결정 파이프라인. (인증≠인가)
 - `rules/config.md` — **설정(env·파일) 단일 출처** + **상태 저장 원자성**.
 - `rules/packaging.md` — **`@soma/*` 패키지 경계**. 추출은 이동(복사 금지), 이중 출처 해소.
+- `verification/LEDGER.md` — **Lean 검증 대장**. `T2:<Module>` 파일은 Lean 모델이 있다: 동작을 바꾸면
+  `verification/lean/SomaVerify/<Module>/Model.lean`(+증명)을 함께 고치고 `npm run verify:lean`으로 벡터를 재생성한다.
+  전체 import 그래프 정리(레이어링·CLI 로드 순수성·MCP stdio 순수성)는 CI **Lean Verify**가 매번 다시 증명한다.
 
 config·permission·packaging 횡단 부채 맵: `docs/current/spec/architecture-map.md` (전체 와이어링 SSOT는 `docs/misc/reference/architecture.md`).
 
