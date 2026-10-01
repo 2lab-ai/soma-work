@@ -1359,6 +1359,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         confluenceUrl: channelInfo?.confluenceUrl,
       };
 
+      // An incident-owned session's turn text is the host's validated
+      // conclusion (`src/incident/attempt-output.ts`), echoing model strings.
+      // It is published and never interpreted — neither by the stream
+      // processor (`streamContext.incidentAttempt`) nor by the content guards
+      // after the stream.
+      const incidentAttempt = session.incidentRequest !== undefined;
+
       // Create stream context — logVerbosity/showThinking are getters so mid-stream changes apply
       const streamContext: StreamContext = {
         channel,
@@ -1382,9 +1389,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         currentUserText: text,
         isCompactTurn: (isSlashCommand && trimmedText.startsWith('/compact')) || Boolean(session.fallbackCompactActive),
         isUserInputTurn: params.isUserInput === true,
-        // An incident-owned session's turn text is the host's validated
-        // conclusion, echoing model strings: publish it, never interpret it.
-        incidentAttempt: session.incidentRequest !== undefined,
+        incidentAttempt,
         get logVerbosity() {
           return session.logVerbosity ?? LOG_DETAIL;
         },
@@ -1935,6 +1940,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         throw abortError;
       }
 
+      // The five content guards below read the turn's text as a transport
+      // error in disguise and throw, so `handleError` rotates the credential
+      // and/or schedules a retry. An incident turn's text is never SDK output:
+      // it is the host's conclusion, which already turns a real transport
+      // failure into a host-authored result, and which echoes the model's
+      // validated summary. Read as content, a summary QUOTING a cap notice
+      // rotated a credential and re-ran an unattended attempt. One decision,
+      // so none of the five applies to it.
+      const textMayBeTransportError = !toolContinuation && !incidentAttempt;
+
       // Compaction-failure-as-content guard (field incident 2026-07-07,
       // session ccee16e0). The SDK seals a FAILED `/compact` as a successful
       // turn (`end_turn`, `isError=false`) whose content is the stderr line
@@ -1961,7 +1976,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // this PR fixes).
       const compactCommandTurn = isSlashCommand && trimmedText.startsWith('/compact');
       if (
-        !toolContinuation &&
+        textMayBeTransportError &&
         (compactCommandTurn || session.fallbackCompactActive) &&
         textIndicatesCompactionFailure(streamResult.collectedText)
       ) {
@@ -2008,7 +2023,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // delay so `handleError` schedules the timed retry. Checked BEFORE the
       // usage-limit guard so the retry-after hint is honored rather than
       // triggering a futile rotation.
-      if (!toolContinuation && textIndicatesRetryableRateLimit(streamResult.collectedText)) {
+      if (textMayBeTransportError && textIndicatesRetryableRateLimit(streamResult.collectedText)) {
         const delayMs = boundRateLimitDelayMs(parseRetryAfterMs(streamResult.collectedText));
         this.logger.warn('Pool rate-limit surfaced as turn content — converting to timed-retry path', {
           sessionKey,
@@ -2038,7 +2053,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // (isRateLimitError → tryRotateToken) and schedule a retry
       // (isRecoverableClaudeSdkError), so the next attempt runs on a fresh
       // credential instead of replaying the cap notice to the user.
-      if (!toolContinuation && textIndicatesUsageLimit(streamResult.collectedText)) {
+      if (textMayBeTransportError && textIndicatesUsageLimit(streamResult.collectedText)) {
         this.logger.warn('Usage limit surfaced as turn content — converting to rotation path', {
           sessionKey,
           preview: String(streamResult.collectedText).slice(0, 120),
@@ -2066,7 +2081,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // is recorded/posted. `isContextOverflowError` matches the message, so
       // handleError arms the fallback (stash model → switch to the 1M compact
       // model → `/compact` retry → restore at the boundary).
-      if (!toolContinuation && textIndicatesPromptTooLong(streamResult.collectedText)) {
+      if (textMayBeTransportError && textIndicatesPromptTooLong(streamResult.collectedText)) {
         this.logger.warn('Prompt-too-long surfaced as turn content — converting to fallback-compact path', {
           sessionKey,
           preview: String(streamResult.collectedText).slice(0, 120),
@@ -2082,7 +2097,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // let the recoverable-error rail retry; if the repair already ran and
       // the 400 persists, fall through to the generic throw so
       // `shouldClearSessionOnError` policy decides.
-      if (!toolContinuation && textIndicatesEmptyContentBlock400(streamResult.collectedText)) {
+      if (textMayBeTransportError && textIndicatesEmptyContentBlock400(streamResult.collectedText)) {
         const collected = String(streamResult.collectedText);
         const repairRecentlyAttempted =
           typeof session.transcriptRepairAttemptedAtMs === 'number' &&
