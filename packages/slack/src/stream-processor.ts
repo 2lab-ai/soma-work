@@ -1277,7 +1277,7 @@ export class AgentStreamProcessor {
     if (context.incidentAttempt) {
       if (!textContent.trim()) return;
       currentMessages.push(textContent);
-      await this.sayWithBlockKit(textContent, context);
+      await this.publishIncidentText(textContent, context);
       return;
     }
 
@@ -1733,7 +1733,7 @@ export class AgentStreamProcessor {
     // preceded it. Same rule as `handleTextMessage`: the host's bytes, nothing
     // read out of them and nothing (not even the footer) added after the marker.
     if (context.incidentAttempt) {
-      if (result.trim()) await this.sayWithBlockKit(result, context);
+      if (result.trim()) await this.publishIncidentText(result, context);
       return;
     }
 
@@ -1883,6 +1883,26 @@ export class AgentStreamProcessor {
       delivered: false,
       failure: { length: pending.length, ...(code ? { code } : {}) },
     };
+  }
+
+  /**
+   * Publish an incident attempt's conclusion byte for byte.
+   *
+   * Not `sayWithBlockKit`: that re-renders text as mrkdwn for the message's
+   * `text` field (`**x**` → `*x*`), and `text` is exactly what eagle-eye reads
+   * back from the thread — the validated marker line would be rewritten after
+   * validation (caller obligation 2 in `incident-result.ts`). The PHASE>=1
+   * stream already appends text untouched; the legacy path posts the raw text
+   * with no blocks and no verbosity tag. The conclusion is bounded (one wire
+   * line of at most 16384 bytes plus a few short lines), so it needs no
+   * overflow splitting.
+   */
+  private async publishIncidentText(text: string, context: StreamContext): Promise<void> {
+    if (context.turnId && context.threadPanel?.isTurnSurfaceActive()) {
+      const delivered = await context.threadPanel.appendText(context.turnId, text);
+      if (delivered) return;
+    }
+    await context.say({ text, thread_ts: context.threadTs });
   }
 
   /**

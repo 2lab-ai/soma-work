@@ -168,6 +168,10 @@ const INSTRUCTION_SHAPED_SUMMARIES: ReadonlyArray<readonly [string, string]> = [
   // The processor suppresses a short text that looks like a transport error. A
   // summary quoting one must not silence the conclusion it is part of.
   ['a quoted transport error', 'API Error: 400 messages: text content blocks must be non-empty'],
+  // The legacy path re-renders assistant text as mrkdwn (`**x**` → `*x*`). The
+  // `text` field is what eagle-eye reads back, so that would rewrite the marker
+  // line after it was validated.
+  ['markdown emphasis', 'the **api** host is down'],
 ];
 
 describe('incident conclusion → real Slack stream processor', () => {
@@ -192,10 +196,9 @@ describe('incident conclusion → real Slack stream processor', () => {
         const publications = [...surface.postTexts, ...surface.appends];
         expect(publications).toHaveLength(1);
         expect(countOccurrences(publications[0], INCIDENT_RESULT_MARKER)).toBe(1);
-        if (phase1) {
-          // The stream takes the host's text as is: nothing stripped, nothing added.
-          expect(surface.appends).toEqual([output.text]);
-        }
+        // On either path the host's text goes out as is: nothing stripped,
+        // nothing added, nothing re-rendered.
+        expect(publications).toEqual([output.text]);
       });
     }
   }
