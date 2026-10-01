@@ -541,6 +541,66 @@ describe('ClaudeHandler.streamQuery — incident failures terminate, never retry
   });
 });
 
+/**
+ * A refused conclusion (`missing_marker` and the rest) has two very different
+ * causes: the model never wrote a marker, or the SDK sealed a usage-cap /
+ * rate-limit / overflow notice as assistant text on a successful result. The
+ * conclusion log line has to tell them apart — from the text's length and the
+ * content guards' own detectors — without ever carrying the text.
+ */
+describe('ClaudeHandler.streamQuery — the conclusion log classifies the model text', () => {
+  const CONCLUDED_LOG = 'Incident attempt concluded';
+  const CAP_NOTICE = "You've hit your limit · resets 9pm (Asia/Seoul)";
+
+  async function concludedLogFor(modelText: string): Promise<Record<string, unknown>> {
+    installEagleEye(new Date().toISOString());
+    const info = vi.spyOn(Logger.prototype, 'info');
+    try {
+      harness.runQuery = async function* run({ prompt }) {
+        const openingUuid = await readOpeningUuid(prompt);
+        yield systemInit();
+        yield assistantText(modelText);
+        yield sdkSuccessResult(openingUuid);
+      };
+      const handler = new ClaudeHandler(makeMcpManager());
+      const messages = await drain(
+        handler.streamQuery('incident attempt', makeSession(), undefined, undefined, SLACK_CONTEXT as never),
+      );
+      expect(markerOf(messages).payload.status).toBe('inconclusive');
+
+      const logged = info.mock.calls.filter(([message]) => message === CONCLUDED_LOG);
+      expect(logged).toHaveLength(1);
+      return logged[0][1] as Record<string, unknown>;
+    } finally {
+      info.mockRestore();
+    }
+  }
+
+  it('marks a sealed usage-cap notice as usage_limit, with its length and without its text', async () => {
+    const fields = await concludedLogFor(CAP_NOTICE);
+
+    expect(fields).toMatchObject({
+      end: 'model_final',
+      rejected: 'missing_marker',
+      modelTextChars: CAP_NOTICE.length,
+      modelTextClass: 'usage_limit',
+    });
+    expect(JSON.stringify(fields)).not.toContain('hit your limit');
+  });
+
+  it('marks plain prose without a marker as unmatched, with its length and without its text', async () => {
+    const fields = await concludedLogFor(MODEL_PROSE);
+
+    expect(fields).toMatchObject({
+      end: 'model_final',
+      rejected: 'missing_marker',
+      modelTextChars: MODEL_PROSE.length,
+      modelTextClass: 'unmatched',
+    });
+    expect(JSON.stringify(fields)).not.toContain(MODEL_PROSE);
+  });
+});
+
 describe('ClaudeHandler.streamQuery — the ordinary path is untouched', () => {
   it('builds ordinary options and forwards the model stream verbatim', async () => {
     const assistant = assistantText('ordinary answer, streamed as written');
