@@ -79,7 +79,7 @@ src/
 └── local/           # Claude Code SDK 로컬 플러그인 (skills/, agents/, hooks/)
 
 packages/            # 워크스페이스 패키지
-├── mcp-servers/     # 내장 MCP 서버 (agent, cron, llm, model-command, permission, ...)
+├── mcp-servers/     # 내장 MCP 서버 (agent, cron, model-command, permission, ...)
 ├── common/ · slack/ · process-shared/ · test-utils/
 
 somalib/             # soma 계열 공유 라이브러리 (model-commands, permission, cron)
