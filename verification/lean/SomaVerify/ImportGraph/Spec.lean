@@ -17,13 +17,21 @@ only as far as the graph is the repository's. It guarantees (its header has the 
 - edges: `⟨i, j⟩` exactly when compiling node `i` to CommonJS with the repository's TypeScript
   emits a `require` that loads node `j`. `import()` compiles to a `require`, so lazy loads are
   edges; `import type`, and imports whose bindings are used only as types, are erased by the
-  compiler and are not.
+  compiler and are not. Every `tsconfig*.json` in the repository must agree with that compile on
+  each option that decides what the emit keeps (the module format, `isolatedModules`,
+  `verbatimModuleSyntax`, `preserveConstEnums`, `emitDecoratorMetadata`), or the extractor stops.
 - resolution: a specifier resolves the way Node's CommonJS loader resolves it in the compiled
   layout, a workspace package name through that package's `exports`, and the file reached is
   mapped back to its source. Node built-ins and npm dependencies are dropped.
-- completeness: an in-repo specifier that reaches no production file, a load whose specifier is
-  not a string literal, and a production file the compiler did not emit each stop the extractor
-  before it writes anything.
+- completeness: an in-repo specifier that reaches no production file (a `#` specifier, which
+  package.json `imports` can point anywhere, and a directory with a package.json, whose "main"
+  can, included), a load whose specifier is not a string literal, any other hold on the module
+  loader in the emitted code (`require` used other than as `require("…")`, `typeof require`,
+  `require.resolve` or `require.main === module`; `module.require`, `createRequire`,
+  `node:module`, the module wrapper's `arguments`, …), what runs a string as code (`eval` and
+  `Function` as a variable, a member or a key, a `.constructor` called with arguments,
+  `node:vm`), and a production file the compiler did not emit each stop the extractor before it
+  writes anything.
 - MCP server entries: `mcpServerEntries` are the source files of the `bin` targets of every
   workspace package under `packages/mcp-servers/`; a package there without one stops the
   extractor.
@@ -32,7 +40,9 @@ Not modeled. The graph is the output of tsc, which is what `dist/` runs. Runners
 file at a time with esbuild (tsx, vitest) cannot tell a re-exported type (`export { T } from`)
 from a value, so under them a module may also load the file such a re-export names, which the
 graph has no edge to. Anything that is not a module load (a child process, a worker, a file read
-at run time) is not an edge.
+at run time) is not an edge. Nor is a load the code does not spell out: one built from strings by
+means the extractor does not refuse (a function's `.constructor` taken as a value and called
+later, say), or one an npm package makes on its caller's behalf.
 
 `scripts/verification/__tests__/import-graph.test.ts` checks the extractor's output against facts
 read off the sources, including that its MCP server entries are the servers the daemon launches,
@@ -42,7 +52,7 @@ and that it fails on a specifier it cannot resolve.
 
 For every graph, each checker of `Model.lean` implies the statement below that it stands for.
 The kernel evaluates the checkers on `Generated.graph`, which yields the statements for the
-repository.
+repository. `HasEdge` has no checker: the kernel decides it on `Generated.graph` directly.
 -/
 
 namespace SomaVerify.ImportGraph
@@ -100,5 +110,10 @@ def NoEntryLoads (g : Graph) (entries targets : List Nat) : Prop :=
 the extractor counted in `git ls-files` before compiling anything. -/
 def Covers (g : Graph) (fileCount : Nat) : Prop :=
   g.nodeCount = fileCount
+
+/-- `HasEdge g paths a b`: some runtime edge of `g` goes from the node at path `a` to the node at
+path `b`. Unlike the statements above, a graph with no edges does not satisfy it. -/
+def HasEdge (g : Graph) (paths : Array String) (a b : String) : Prop :=
+  ∃ e ∈ g.edges, paths[e.src]? = some a ∧ paths[e.dst]? = some b
 
 end SomaVerify.ImportGraph

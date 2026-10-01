@@ -1,7 +1,7 @@
--- models: scripts/verification/extract-import-graph.cjs:521-589 (extractGraph: nodes, edges, roots, certificates)
--- models: scripts/verification/extract-import-graph.cjs:384-420 (collectLoads: an edge is a `require` in the emit)
--- models: scripts/verification/extract-import-graph.cjs:484-501 (listMcpServerEntries: the MCP server roots)
--- models: scripts/verification/extract-import-graph.cjs:73-105 (GROUPS, layerOf: the layer of each node)
+-- models: scripts/verification/extract-import-graph.cjs:735-804 (extractGraph: nodes, edges, roots, certificates)
+-- models: scripts/verification/extract-import-graph.cjs:547-635 (collectLoads: an edge is a `require` in the emit)
+-- models: scripts/verification/extract-import-graph.cjs:698-715 (listMcpServerEntries: the MCP server roots)
+-- models: scripts/verification/extract-import-graph.cjs:81-113 (GROUPS, layerOf: the layer of each node)
 -- models: rules/packaging.md:26 (rule 4's order, as `Layer.rank`)
 
 /-!

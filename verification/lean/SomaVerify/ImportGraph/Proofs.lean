@@ -114,6 +114,14 @@ theorem mcp_servers_never_load_env_paths :
     noEntryLoads_of_certificate (S := Generated.mcpServerClosure) (by decide +kernel)
       (by decide +kernel) (by decide +kernel)⟩
 
+/-- The floor: `src/cli/index.ts` loads `src/cli/args.ts`, whose `parseCli` it calls on every run.
+The theorems above all hold of a graph without edges; one written by an extractor that stopped
+seeing loads fails here instead. -/
+theorem cli_loads_args :
+    HasEdge Generated.graph Generated.paths "src/cli/index.ts" "src/cli/args.ts" := by
+  unfold HasEdge
+  decide +kernel
+
 end SomaVerify.ImportGraph
 
 -- One line in the build log, for a reader of the gate's output: the size of the graph and of the

@@ -18,28 +18,38 @@
  *               under __tests__/, __fixtures__/ or node_modules/. Numbered in path order, one
  *               path each.
  *   edges       runtime loads only. Every node is compiled by the repository's own TypeScript to
- *               CommonJS, the module format of every tsconfig here, and each `require("…")` in
- *               the emitted JavaScript is one load; `import("…")` compiles to a `require` too,
- *               so lazy loads are edges as well. The compiler erases `import type`, and
- *               value-syntax imports whose bindings are used only as types, so neither becomes
- *               an edge.
+ *               CommonJS, and each `require("…")` in the emitted JavaScript is one load;
+ *               `import("…")` compiles to a `require` too, so lazy loads are edges as well. The
+ *               compiler erases `import type`, and value-syntax imports whose bindings are used
+ *               only as types or as a const enum it inlines, so neither becomes an edge. What the
+ *               emit keeps is decided by ELISION below, and every tsconfig*.json git lists,
+ *               `extends` applied, must set the same, so the real build keeps nothing more.
  *   resolution  A relative specifier resolves against the importing file's directory, the way
  *               Node's CommonJS loader resolves it next to the compiled file (each package
  *               compiles its tree to its outDir unchanged): the exact file, then `.js`, `.json`,
- *               then `/index.js`, each compiled file mapped back to its `.ts`/`.tsx` source. A
+ *               then `/index.js`, each compiled file mapped back to its `.ts`/`.tsx` source; a
+ *               specifier that is `.` or `..` or ends in `/`, `/.` or `/..` names the directory
+ *               only, so its `/index.js` (namesDirectory). A
  *               workspace package name resolves through that package's `exports` the way Node's
  *               CommonJS loader does (the exact subpath, else the `*` pattern with the longest
  *               prefix; the target file must exist as written), or through the package directory
  *               when it has no `exports`; the file reached is mapped back to its source through
- *               the package's tsconfig rootDir/outDir. No `dist/` output is read.
+ *               the package's tsconfig rootDir/outDir. No `dist/` output is read. Not followed: a
+ *               `#` specifier (package.json `imports`), and a directory with a package.json on
+ *               disk, whose "main" Node reads before the directory's index.
  *   failure     Node built-ins and npm dependencies are dropped. Everything else is fatal, and
- *               nothing is written: a relative or workspace specifier that does not resolve to a
- *               production file (a tracked `.json` file is the one allowed non-code target, and
- *               a leaf), a load whose specifier is not a string literal, a `require` used as a
- *               value, a `createRequire` call, a production file the compiler did not emit, a
- *               tsconfig option under which the real build keeps imports this compile erases
- *               (verbatimModuleSyntax, emitDecoratorMetadata, …). The graph is complete or
- *               there is no graph.
+ *               nothing is written: a relative, workspace or `#` specifier that does not resolve
+ *               to a production file (a tracked `.json` file is the one allowed non-code target,
+ *               and a leaf), a load whose specifier is not a string literal, any other hold on
+ *               the module loader in the emitted JavaScript (collectLoads lists them: `require`
+ *               other than `require("…")`, `typeof require`, `require.resolve` and
+ *               `require.main === module`; `module.require`, `createRequire`, `node:module`, …),
+ *               what runs a string as code (`eval` and `Function` as a variable, a member or a
+ *               key, a `.constructor` called with arguments, `node:vm`), a production file the
+ *               compiler did not emit, a tsconfig that differs from ELISION. The graph is
+ *               complete or there is no graph, as far as loads are spelled out in the code: code
+ *               built from strings by other means, and npm packages that load files on a caller's
+ *               behalf, are beyond this analysis.
  */
 'use strict';
 
@@ -130,36 +140,73 @@ function readJson(file) {
 }
 
 /**
- * The compiler options of `config`, `extends` applied. The graph compiles every file with
- * import elision as tsc does it by default; an option that makes the real build keep an import
- * whose bindings are only used as types would make that build load modules the graph has no
- * edge to, so such an option is fatal rather than ignored.
+ * The compiler options that decide which loads the emit keeps, as the graph's compile sets them:
+ * CommonJS, and tsc's default import elision, which erases an import whose bindings are used
+ * only as types or as a const enum it inlines. Under isolatedModules or verbatimModuleSyntax tsc
+ * keeps such imports, and under preserveConstEnums a re-exported const enum's, and under
+ * emitDecoratorMetadata the imports a decorated signature names as types
+ * (markAliasReferenced in TypeScript's checker). A build under any of them loads modules the
+ * graph has no edge to, so every tsconfig must set these as they are set here.
  */
+const ELISION = {
+  module: ts.ModuleKind.CommonJS,
+  isolatedModules: false,
+  verbatimModuleSyntax: false,
+  preserveConstEnums: false,
+  emitDecoratorMetadata: false,
+};
+
+/** The compiler options of `config`, `extends` applied. Only options: no directory is scanned. */
 function readCompilerOptions(config) {
-  const parsed = ts.getParsedCommandLineOfConfigFile(
+  return ts.getParsedCommandLineOfConfigFile(
     config,
     {},
     {
       ...ts.sys,
+      readDirectory: () => [],
       onUnRecoverableConfigFileDiagnostic: (diagnostic) =>
         fail([`extract-import-graph: ${config}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`]),
     },
-  );
-  const options = parsed.options;
-  const keepsTypeImports = [
-    options.verbatimModuleSyntax && 'verbatimModuleSyntax',
-    options.preserveValueImports && 'preserveValueImports',
-    options.emitDecoratorMetadata && 'emitDecoratorMetadata',
-    options.importsNotUsedAsValues !== undefined &&
-      options.importsNotUsedAsValues !== ts.ImportsNotUsedAsValues.Remove &&
-      'importsNotUsedAsValues',
-  ].filter(Boolean);
-  if (keepsTypeImports.length > 0) {
+  ).options;
+}
+
+/** The options of `options` that differ from ELISION, as `name value` for the message. */
+function elisionDrift(options) {
+  const drift = [];
+  // The module format tsc emits, with its default applied when a config leaves `module` out.
+  const moduleKind = ts.getEmitModuleKind(options);
+  if (moduleKind !== ELISION.module) drift.push(`module ${ts.ModuleKind[moduleKind]}`);
+  for (const [name, value] of Object.entries(ELISION)) {
+    if (name !== 'module' && Boolean(options[name]) !== value) drift.push(`${name} ${options[name]}`);
+  }
+  // Deprecated in TypeScript 5.0 and removed in 5.5; while read, both kept imports the default
+  // elision erases. A config that still sets them is refused rather than guessed at.
+  if (options.preserveValueImports) drift.push('preserveValueImports true');
+  if (options.importsNotUsedAsValues !== undefined && options.importsNotUsedAsValues !== ts.ImportsNotUsedAsValues.Remove) {
+    drift.push(`importsNotUsedAsValues ${ts.ImportsNotUsedAsValues[options.importsNotUsedAsValues]}`);
+  }
+  return drift;
+}
+
+/**
+ * Holds every tsconfig*.json `git ls-files` lists to ELISION. Whichever of them builds a
+ * production file, the root one or a package's (package.json runs `tsc -p` on each), and
+ * whatever it extends, it then keeps no load the graph's compile erases. Options given to tsc
+ * on a command line are not seen.
+ */
+function checkTsconfigs(repoRoot, tracked) {
+  const drifted = [];
+  for (const file of tracked.filter((name) => /^tsconfig.*\.json$/.test(path.posix.basename(name)))) {
+    const drift = elisionDrift(readCompilerOptions(path.join(repoRoot, file)));
+    if (drift.length > 0) drifted.push(`  ${file}: ${drift.join(', ')}`);
+  }
+  if (drifted.length > 0) {
     fail([
-      `extract-import-graph: ${config} sets ${keepsTypeImports.join(', ')}; the graph assumes tsc's default elision`,
+      'extract-import-graph: tsconfig options under which tsc keeps loads the graph does not have',
+      `(the graph compiles with ${JSON.stringify({ ...ELISION, module: 'CommonJS' })}):`,
+      ...drifted,
     ]);
   }
-  return options;
 }
 
 /**
@@ -177,8 +224,6 @@ function compileDirs(dir) {
 
 /** Every workspace package of the root package.json, by package name. */
 function loadWorkspaces(repoRoot) {
-  // The root project (src/) is not a workspace, but its options decide what src/ loads too.
-  if (fs.existsSync(path.join(repoRoot, 'tsconfig.json'))) readCompilerOptions(path.join(repoRoot, 'tsconfig.json'));
   const dirs = [];
   for (const pattern of readJson(path.join(repoRoot, 'package.json')).workspaces || []) {
     if (pattern.endsWith('/*') && !pattern.slice(0, -2).includes('*')) {
@@ -281,6 +326,17 @@ function resolveExports(exportsField, subpath) {
 }
 
 /**
+ * Whether a relative specifier names a directory outright. Checked on Node v26.9.0:
+ * `Module._findPath` sets `trailingSlash` for a request that is `.` or `..` or ends in `/`, `/.`
+ * or `/..`, and then skips the file lookup (the exact file, then each extension) and resolves the
+ * path only as a directory (`tryPackage`: package.json "main", else the index), so with both
+ * `x.js` and `x/index.js` present `require('./x')` loads the file and `require('./x/')`,
+ * `require('./x/.')`, `require('.')` and `require('..')` load the index. path.resolve drops the
+ * trailing part, so it is read off the specifier.
+ */
+const namesDirectory = (specifier) => /(?:^|\/)\.\.?$|\/$/.test(specifier);
+
+/**
  * `resolve` resolves specifiers from production files: `node` results carry the
  * repository-relative path of a production file; `json` is a tracked JSON file (a leaf);
  * `external` is a Node built-in or an npm dependency; `error` is fatal. `packageFile` maps a file
@@ -307,27 +363,47 @@ function createResolver(repoRoot, productionSet, trackedSet, workspaces) {
     return null;
   }
 
-  /** Node's LOAD_AS_FILE, then LOAD_AS_DIRECTORY's index, for a runtime path. */
-  function loadAsFileOrDirectory(runtimeBase, toSource) {
-    for (const candidate of [
-      runtimeBase,
-      `${runtimeBase}.js`,
-      `${runtimeBase}.json`,
-      path.join(runtimeBase, 'index.js'),
-    ]) {
+  /** sourceOf for runtime files, through `toSourcePath` (runtime path → source-tree path or null). */
+  const sourceVia = (toSourcePath) => (runtimeFile) => {
+    const sourcePath = toSourcePath(runtimeFile);
+    return sourcePath === null ? null : sourceOf(sourcePath);
+  };
+
+  /**
+   * Node's LOAD_AS_FILE, then LOAD_AS_DIRECTORY, for a runtime path; `toSourcePath` maps a
+   * runtime path to its place in the source tree (null: none). With `directoryOnly` the
+   * LOAD_AS_FILE step is skipped (see namesDirectory). LOAD_AS_DIRECTORY reads the directory's
+   * package.json before its index and follows its "main", which can name any file and which this
+   * resolver does not follow: a directory with a package.json on disk, tracked or not, is an
+   * error. Without one, the directory's index.
+   */
+  function loadAsFileOrDirectory(runtimeBase, toSourcePath, directoryOnly = false) {
+    const toSource = sourceVia(toSourcePath);
+    for (const candidate of directoryOnly ? [] : [runtimeBase, `${runtimeBase}.js`, `${runtimeBase}.json`]) {
       const hit = toSource(candidate);
       if (hit) return hit;
     }
-    return null;
+    const directory = toSourcePath(runtimeBase);
+    if (directory !== null && fs.existsSync(path.join(directory, 'package.json'))) {
+      return {
+        kind: 'error',
+        reason: `resolves to directory ${rel(directory) || '.'}/, whose package.json Node reads for "main", which this resolver does not follow`,
+      };
+    }
+    return toSource(path.join(runtimeBase, 'index.js'));
   }
 
-  /** Maps a runtime path inside a package's outDir back to its source tree. */
-  function viaCompileDirs(pkg) {
-    return (runtimeFile) => {
-      const inOut = path.relative(pkg.outDir, runtimeFile);
-      if (inOut.startsWith('..') || path.isAbsolute(inOut)) return null;
-      return sourceOf(path.join(pkg.rootDir, inOut));
+  /** Maps a runtime path inside a package's outDir to its place in the package's source tree. */
+  function sourcePathVia(pkg) {
+    return (runtimePath) => {
+      const inOut = path.relative(pkg.outDir, runtimePath);
+      return inOut.startsWith('..') || path.isAbsolute(inOut) ? null : path.join(pkg.rootDir, inOut);
     };
+  }
+
+  /** Maps a runtime file inside a package's outDir back to its source. */
+  function viaCompileDirs(pkg) {
+    return sourceVia(sourcePathVia(pkg));
   }
 
   function resolveWorkspace(pkg, subpath) {
@@ -341,7 +417,7 @@ function createResolver(repoRoot, productionSet, trackedSet, workspaces) {
     }
     const base = path.join(pkg.dir, subpath === '' ? pkg.pkg.main || 'index.js' : subpath);
     return (
-      loadAsFileOrDirectory(base, viaCompileDirs(pkg)) || {
+      loadAsFileOrDirectory(base, sourcePathVia(pkg)) || {
         kind: 'error',
         reason: `no production source for ${subpath === '' ? pkg.name : `${pkg.name}/${subpath}`}`,
       }
@@ -351,7 +427,17 @@ function createResolver(repoRoot, productionSet, trackedSet, workspaces) {
   function resolve(specifier, fromFile) {
     if (specifier.startsWith('./') || specifier.startsWith('../') || specifier === '.' || specifier === '..') {
       const base = path.resolve(path.dirname(path.join(repoRoot, fromFile)), specifier);
-      return loadAsFileOrDirectory(base, sourceOf) || { kind: 'error', reason: 'no such production file' };
+      // Each package compiles its tree to its outDir unchanged: the runtime path is the source's.
+      return (
+        loadAsFileOrDirectory(base, (runtimePath) => runtimePath, namesDirectory(specifier)) || {
+          kind: 'error',
+          reason: 'no such production file',
+        }
+      );
+    }
+    // Node resolves `#…` through the nearest package.json's `imports`, which can name any file.
+    if (specifier.startsWith('#')) {
+      return { kind: 'error', reason: 'is a package.json "imports" specifier, which this resolver does not follow' };
     }
     if (path.isAbsolute(specifier)) return { kind: 'error', reason: 'absolute specifier' };
     if (specifier.startsWith('node:') || builtins.has(specifier) || builtins.has(specifier.split('/')[0])) {
@@ -378,40 +464,186 @@ function createResolver(repoRoot, productionSet, trackedSet, workspaces) {
 // ---------------------------------------------------------------------------------------------
 
 /**
+ * Names that reach the module loader, or run a string as code (which could reach it unseen),
+ * refused wherever they appear in the emitted JavaScript: as a variable, a member (`x.name`,
+ * `x['name']`, so `globalThis.eval` too) or a key. `require` as a member or key is
+ * `module.require` and its kind (every module object has one); `require` and `module` as
+ * variables are the loader's own handles and have their harmless forms (see collectLoads).
+ */
+const REFUSED_NAMES = new Map([
+  ['require', 'a require other than the module\'s own require("…")'],
+  ['createRequire', 'createRequire, a require for any directory'],
+  ['mainModule', 'process.mainModule, a module object with its own require'],
+  ['getBuiltinModule', 'process.getBuiltinModule, which hands out node:module'],
+  ['eval', 'eval, which runs a string as code'],
+  ['Function', 'the Function constructor, which runs a string as code'],
+]);
+
+/** Built-in modules whose exports load modules (`Module._load`, `createRequire`) or run code. */
+const LOADER_BUILTINS = new Set(['module', 'node:module', 'vm', 'node:vm']);
+
+const EQUALITY = new Set([
+  ts.SyntaxKind.EqualsEqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsEqualsToken,
+  ts.SyntaxKind.EqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsToken,
+]);
+
+const isEqualityOperand = (node) => ts.isBinaryExpression(node.parent) && EQUALITY.has(node.parent.operatorToken.kind);
+
+/** Whether `node` names a property (`x.name`, `x['name']`, `{ name: … }`, a class member, a destructured key). */
+function isPropertyName(node) {
+  const parent = node.parent;
+  return (
+    ((ts.isPropertyAccessExpression(parent) ||
+      ts.isPropertyAssignment(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isPropertyDeclaration(parent) ||
+      ts.isGetAccessorDeclaration(parent) ||
+      ts.isSetAccessorDeclaration(parent)) &&
+      parent.name === node) ||
+    (ts.isElementAccessExpression(parent) && parent.argumentExpression === node) ||
+    (ts.isBindingElement(parent) && parent.propertyName === node) ||
+    ts.isComputedPropertyName(parent)
+  );
+}
+
+/** Whether `node` is the name a declaration binds (a variable, a parameter, a function, a class). */
+function isDeclaredName(node) {
+  const parent = node.parent;
+  return (
+    (ts.isVariableDeclaration(parent) ||
+      ts.isParameter(parent) ||
+      ts.isBindingElement(parent) ||
+      ts.isFunctionDeclaration(parent) ||
+      ts.isFunctionExpression(parent) ||
+      ts.isClassDeclaration(parent) ||
+      ts.isClassExpression(parent)) &&
+    parent.name === node
+  );
+}
+
+/** Whether `node` lies outside every function with its own `arguments` (an arrow function has none). */
+function atModuleScope(node) {
+  for (let up = node.parent; up; up = up.parent) {
+    if (ts.isFunctionLike(up) && !ts.isArrowFunction(up)) return false;
+  }
+  return true;
+}
+
+/** The member a callee reads (`x.name`, `x['name']`), past parentheses and tsc's `(0, f)` form. */
+function calleeMemberName(callee) {
+  let inner = callee;
+  while (
+    ts.isParenthesizedExpression(inner) ||
+    (ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.CommaToken)
+  ) {
+    inner = ts.isParenthesizedExpression(inner) ? inner.expression : inner.right;
+  }
+  if (ts.isPropertyAccessExpression(inner)) return inner.name.text;
+  if (ts.isElementAccessExpression(inner) && ts.isStringLiteralLike(inner.argumentExpression)) {
+    return inner.argumentExpression.text;
+  }
+  return undefined;
+}
+
+/**
  * The loads in one emitted file: `{ specifier, line }` for each `require("…")` and
- * `import("…")`, and `{ problem, line }` for anything this analysis cannot follow.
+ * `import("…")`, and `{ problem, line }` for anything this analysis cannot follow, one per
+ * construct.
+ *
+ * A CommonJS module is handed the loader as `require` and `module` (the wrapper's `arguments`
+ * hold both), so each use of those is checked. `require` may only be called on one string
+ * literal, probed with `typeof`, or used as `require.resolve` (a path, not a load) and
+ * `require.main === module`; `module` only as `module.exports`, `typeof module` or an operand of
+ * `===`. Everything else that leads to a loader is a problem: the names in REFUSED_NAMES as a
+ * variable, a member or a key (`module.require`, `require.main.require`, `createRequire`,
+ * `globalThis.eval`, …), a load of a LOADER_BUILTINS module, `arguments` at module scope, and a
+ * `.constructor` called with arguments (a function's constructor is Function).
  */
 function collectLoads(fileName, text) {
   const sourceFile = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   const loads = [];
+  const reported = new Set();
   const lineOf = (node) => sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+  // The expression `node` begins, up through member accesses, calls, and the `(0, f)` form tsc
+  // emits for a call to an imported function: `module.require('x')` for `module`. A name that
+  // begins nothing (`const load = require`, `f(require)`) is shown with what holds it.
+  const excerptOf = (node) => {
+    let top = node;
+    for (let up = top.parent; up; top = up, up = up.parent) {
+      const climbs =
+        ts.isPropertyAccessExpression(up) ||
+        ts.isElementAccessExpression(up) ||
+        ts.isParenthesizedExpression(up) ||
+        ((ts.isCallExpression(up) || ts.isNewExpression(up)) && up.expression === top) ||
+        (ts.isBinaryExpression(up) && up.operatorToken.kind === ts.SyntaxKind.CommaToken && up.right === top);
+      if (!climbs) break;
+    }
+    if (top === node && ts.isIdentifier(node)) {
+      while (top.parent && !ts.isSourceFile(top.parent) && top.getText(sourceFile) === node.text) top = top.parent;
+    }
+    const excerpt = top.getText(sourceFile).replace(/\s+/g, ' ');
+    return excerpt.length > 160 ? `${excerpt.slice(0, 157)}...` : excerpt;
+  };
+  const problem = (node, reason) => {
+    const line = lineOf(node);
+    const excerpt = excerptOf(node);
+    if (reported.has(`${line} ${excerpt}`)) return;
+    reported.add(`${line} ${excerpt}`);
+    loads.push({ problem: `${reason}: ${excerpt}`, line });
+  };
+  const checkRequire = (node) => {
+    const parent = node.parent;
+    const harmless =
+      (ts.isCallExpression(parent) && parent.expression === node) ||
+      ts.isTypeOfExpression(parent) ||
+      (ts.isPropertyAccessExpression(parent) &&
+        parent.expression === node &&
+        (parent.name.text === 'resolve' || (parent.name.text === 'main' && isEqualityOperand(parent))));
+    if (!harmless) {
+      problem(node, 'require other than require("…"), typeof require, require.resolve or require.main === module');
+    }
+  };
+  const checkModule = (node) => {
+    const parent = node.parent;
+    const harmless =
+      isPropertyName(node) ||
+      isDeclaredName(node) ||
+      (ts.isPropertyAccessExpression(parent) && parent.expression === node && parent.name.text === 'exports') ||
+      ts.isTypeOfExpression(parent) ||
+      isEqualityOperand(node);
+    if (!harmless) problem(node, 'module other than module.exports, typeof module or require.main === module');
+  };
   const visit = (node) => {
-    if (ts.isCallExpression(node)) {
-      const callee = node.expression;
-      const isRequire = ts.isIdentifier(callee) && callee.text === 'require';
-      const isImport = callee.kind === ts.SyntaxKind.ImportKeyword;
-      if (isRequire || isImport) {
-        const [argument] = node.arguments;
-        if (node.arguments.length === 1 && ts.isStringLiteralLike(argument)) {
-          loads.push({ specifier: argument.text, line: lineOf(node) });
-        } else {
-          loads.push({ problem: `load with a non-literal specifier: ${node.getText(sourceFile)}`, line: lineOf(node) });
-        }
-      } else if (
-        (ts.isIdentifier(callee) && callee.text === 'createRequire') ||
-        (ts.isPropertyAccessExpression(callee) && callee.name.text === 'createRequire')
-      ) {
-        loads.push({ problem: `createRequire: ${node.getText(sourceFile)}`, line: lineOf(node) });
+    if (
+      ts.isCallExpression(node) &&
+      ((ts.isIdentifier(node.expression) && node.expression.text === 'require') ||
+        node.expression.kind === ts.SyntaxKind.ImportKeyword)
+    ) {
+      const [argument] = node.arguments;
+      if (node.arguments.length !== 1 || !ts.isStringLiteralLike(argument)) {
+        problem(node, 'load with a non-literal specifier');
+      } else if (LOADER_BUILTINS.has(argument.text)) {
+        problem(node, `loads ${argument.text}, whose exports load modules or run code no require("…") names`);
+      } else {
+        loads.push({ specifier: argument.text, line: lineOf(node) });
       }
-    } else if (ts.isIdentifier(node) && node.text === 'require') {
-      const parent = node.parent;
-      const called = ts.isCallExpression(parent) && parent.expression === node;
-      const member = ts.isPropertyAccessExpression(parent) && parent.expression === node;
-      const probed = ts.isTypeOfExpression(parent);
-      const named = ts.isPropertyAccessExpression(parent) && parent.name === node;
-      if (!called && !member && !probed && !named) {
-        loads.push({ problem: `require used as a value: ${parent.getText(sourceFile)}`, line: lineOf(node) });
+    } else if (
+      (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
+      (node.arguments || []).length > 0 &&
+      calleeMemberName(node.expression) === 'constructor'
+    ) {
+      problem(node, "a constructor called with arguments: a function's is Function, which runs a string as code");
+    } else if (ts.isIdentifier(node)) {
+      if (node.text === 'require') checkRequire(node);
+      else if (node.text === 'module') checkModule(node);
+      else if (REFUSED_NAMES.has(node.text)) problem(node, REFUSED_NAMES.get(node.text));
+      else if (node.text === 'arguments' && !isPropertyName(node) && atModuleScope(node)) {
+        problem(node, "the module wrapper's arguments, which hold require and module");
       }
+    } else if (ts.isStringLiteralLike(node) && isPropertyName(node) && REFUSED_NAMES.has(node.text)) {
+      problem(node, REFUSED_NAMES.get(node.text));
     }
     ts.forEachChild(node, visit);
   };
@@ -431,7 +663,8 @@ function collectLoads(fileName, text) {
  */
 function emitAll(repoRoot, files, resolve) {
   const options = {
-    module: ts.ModuleKind.CommonJS,
+    // module and what the emit erases: the options every tsconfig is held to.
+    ...ELISION,
     target: ts.ScriptTarget.ES2020,
     esModuleInterop: true,
     resolveJsonModule: true,
@@ -441,8 +674,6 @@ function emitAll(repoRoot, files, resolve) {
     declaration: false,
     sourceMap: false,
     noEmitOnError: false,
-    isolatedModules: false,
-    verbatimModuleSyntax: false,
     rootDir: repoRoot,
     outDir: path.join(repoRoot, '.import-graph-emit'),
   };
@@ -526,6 +757,7 @@ function extractGraph(repoRoot = REPO_ROOT) {
   const files = listProductionFiles(repoRoot);
   const absent = files.filter((file) => !fs.existsSync(path.join(repoRoot, file)));
   if (absent.length > 0) fail(['extract-import-graph: tracked production files missing from the checkout:', ...absent]);
+  checkTsconfigs(repoRoot, tracked);
   const workspaces = loadWorkspaces(repoRoot);
   const { resolve, packageFile } = createResolver(repoRoot, new Set(files), new Set(tracked), workspaces);
   const emitted = emitAll(repoRoot, files, resolve);
@@ -544,7 +776,7 @@ function extractGraph(repoRoot = REPO_ROOT) {
       stats.loads += 1;
       const result = resolve(load.specifier, file);
       if (result.kind === 'error') {
-        problems.push(`${file}: '${load.specifier}' ${result.reason}`);
+        problems.push(`${file} (emitted line ${load.line}): '${load.specifier}' ${result.reason}`);
       } else if (result.kind === 'external') {
         stats.externalLoads += 1;
       } else if (result.kind === 'json') {
@@ -593,22 +825,16 @@ function extractGraph(repoRoot = REPO_ROOT) {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * A path as a Lean string literal. lean-verify.sh's source gate matches words textually in every
- * .lean file under SomaVerify/, comments and strings included, so a word it forbids is written
- * with its first letter as a `\x` escape: the string's value is unchanged and a file name cannot
- * trip the gate. The list covers every word the gate names (`native` stands for its `native_*`
- * forms, `unsafe` for `_unsafe_rec`) and escapes each wherever it occurs, inside longer words too.
- * Only printable ASCII is accepted, so no invisible or non-ASCII white space reaches the file.
+ * A path as a Lean string literal, written as it is. Only printable ASCII without `"` or `\` is
+ * accepted, so nothing needs escaping and no invisible or non-ASCII white space reaches the file.
+ * lean-verify.sh's source gate reads code only (it blanks comments and string literals), so a
+ * path may contain any word the gate forbids in code.
  */
 function leanString(file) {
   if (!/^[\x20-\x7e]*$/.test(file) || /["\\]/.test(file)) {
     fail([`extract-import-graph: path needs escaping this renderer does not do: ${JSON.stringify(file)}`]);
   }
-  const neutral = file.replace(
-    /sorry|admit|axiom|native|implemented|extern|partial|unsafe|opaque|skipKernelTC/g,
-    (word) => `\\x${word.charCodeAt(0).toString(16)}${word.slice(1)}`,
-  );
-  return `"${neutral}"`;
+  return `"${file}"`;
 }
 
 /** `items` rendered `perLine` to a line, indented, comma-separated. */
@@ -741,6 +967,6 @@ function main() {
   }
 }
 
-module.exports = { GROUPS, OTHER, extractGraph, isProductionTs, layerOf, listProductionFiles };
+module.exports = { GROUPS, OTHER, extractGraph, isProductionTs, layerOf, listProductionFiles, renderLean };
 
 if (require.main === module) main();
