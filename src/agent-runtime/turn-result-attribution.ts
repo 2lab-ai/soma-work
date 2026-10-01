@@ -60,3 +60,31 @@ export function classifyTurnResult(
   const hasEcho = typeof echoed === 'string' && echoed.length > 0;
   return { terminal: false, reason: hasEcho ? 'foreign-uuid' : 'no-uuid' };
 }
+
+/** Message frames a turn produces — unless a subagent produced them. */
+const TURN_MESSAGE_TYPES: ReadonlySet<unknown> = new Set(['assistant', 'user', 'stream_event']);
+
+/**
+ * Does this raw frame show a turn actually running? Only such a frame disarms
+ * the silence bound armed after a skipped result (`NON_TURN_RESULT_IDLE_MS`).
+ *
+ * Model output (`assistant`, `stream_event`) and tool round-trips (`user`) on
+ * the main thread and a `result` are produced by a turn; `system`/`init` opens
+ * one — in streaming input mode the CLI emits it at the start of every turn,
+ * the one right after an orphan drain included (measured). Everything else is
+ * side-band: a message stamped with a `parent_tool_use_id` is a subagent's (a
+ * background subagent's own `user`/`assistant` frames flow through the same
+ * stream), `system`/`task_*` and `background_tasks_changed` come from
+ * background agents, `system`/`status`, `rate_limit_event` and
+ * `command_lifecycle` from the CLI itself, and an unknown type is unknown —
+ * none of them proves the host's prompt is being answered, so none of them may
+ * keep the channel open.
+ *
+ * Duck-typed on the raw frame, like `classifyTurnResult`.
+ */
+export function isTurnProgressFrame(raw: Record<string, unknown>): boolean {
+  if (raw.type === 'result') return true;
+  if (raw.type === 'system') return raw.subtype === 'init';
+  if (!TURN_MESSAGE_TYPES.has(raw.type)) return false;
+  return raw.parent_tool_use_id === undefined || raw.parent_tool_use_id === null;
+}

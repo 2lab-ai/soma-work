@@ -14,7 +14,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { classifyTurnResult } from '../turn-result-attribution';
+import { classifyTurnResult, isTurnProgressFrame } from '../turn-result-attribution';
 
 const OPENING = 'opening-uuid';
 
@@ -111,5 +111,46 @@ describe('classifyTurnResult (#257)', () => {
     expect(classifyTurnResult(success({ num_turns: 1 }), OPENING, []).reason).toBe(
       classifyTurnResult(success({ num_turns: 0 }), OPENING, []).reason,
     );
+  });
+});
+
+/**
+ * Which frames disarm the silence bound after a skipped result. Only a frame
+ * that shows a turn running may: a side-band frame (background task progress,
+ * a subagent's own messages, rate limits, ...) arrives just as well when the
+ * prompt is never answered.
+ */
+describe('isTurnProgressFrame (#257)', () => {
+  const ASSISTANT = { type: 'assistant', message: { content: [{ type: 'text', text: 'PONG' }] } };
+  const USER = { type: 'user', message: { role: 'user', content: [] } };
+  const STREAM_EVENT = { type: 'stream_event', event: { type: 'content_block_delta' } };
+
+  it.each([
+    ['assistant (no parent_tool_use_id)', ASSISTANT],
+    ['assistant (parent_tool_use_id null)', { ...ASSISTANT, parent_tool_use_id: null }],
+    ['user (no parent_tool_use_id)', USER],
+    ['user (parent_tool_use_id null)', { ...USER, parent_tool_use_id: null }],
+    ['stream_event (parent_tool_use_id null)', { ...STREAM_EVENT, parent_tool_use_id: null }],
+    ['result', { type: 'result', subtype: 'success', is_error: false }],
+    ['system/init', { type: 'system', subtype: 'init', session_id: 'sess-1' }],
+  ])('is true for %s', (_kind, frame) => {
+    expect(isTurnProgressFrame(frame)).toBe(true);
+  });
+
+  it.each([
+    ['a subagent assistant frame (parent_tool_use_id set)', { ...ASSISTANT, parent_tool_use_id: 'toolu_bg' }],
+    ['a subagent user frame (parent_tool_use_id set)', { ...USER, parent_tool_use_id: 'toolu_bg' }],
+    ['a subagent stream_event (parent_tool_use_id set)', { ...STREAM_EVENT, parent_tool_use_id: 'toolu_bg' }],
+    ['system/task_progress', { type: 'system', subtype: 'task_progress', task_id: 'task-bg' }],
+    ['system/task_notification', { type: 'system', subtype: 'task_notification', status: 'stopped' }],
+    ['system/background_tasks_changed', { type: 'system', subtype: 'background_tasks_changed' }],
+    ['system/status', { type: 'system', subtype: 'status', status: 'compacting' }],
+    ['system without a subtype', { type: 'system' }],
+    ['rate_limit_event', { type: 'rate_limit_event', rate_limit_info: {} }],
+    ['command_lifecycle', { type: 'command_lifecycle' }],
+    ['an unknown type', { type: 'something_new', subtype: 'init' }],
+    ['a frame without a type', { subtype: 'init' }],
+  ])('is false for %s', (_kind, frame) => {
+    expect(isTurnProgressFrame(frame)).toBe(false);
   });
 });

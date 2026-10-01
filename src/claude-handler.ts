@@ -27,7 +27,7 @@ import {
   TurnInputChannel,
   type TurnSteeringPort,
 } from './agent-runtime/turn-input-channel';
-import { classifyTurnResult } from './agent-runtime/turn-result-attribution';
+import { classifyTurnResult, isTurnProgressFrame } from './agent-runtime/turn-result-attribution';
 import { ensureTenantKey } from './auth/llmux-tenant-keys';
 import { buildQueryEnv } from './auth/query-env-builder';
 import { Logger } from './logger';
@@ -326,11 +326,19 @@ export const STEER_SETTLEMENT_BOUND_MS = 2000;
  * before the host gives up and closes the input channel (#257).
  *
  * A skipped result leaves the channel open on purpose: the CLI still has the
- * host's prompt to answer. But if nothing follows, an open channel strands the
- * CLI on stdin and the Slack consumer waits out its own idle timeout (2 h,
- * `stream-processor.ts`) — so the handler bounds the wait itself. Any SDK frame
- * disarms the bound; 60s of total silence right after a result is far beyond a
- * live CLI's gap between the drain and its next frame.
+ * host's prompt to answer. But if that turn never starts, an open channel
+ * strands the CLI on stdin and the Slack consumer waits out its own idle
+ * timeout (2 h, `stream-processor.ts`) — so the handler bounds the wait itself.
+ * Only a turn-progress frame disarms the bound (`isTurnProgressFrame`; the CLI
+ * opens every turn with `system`/`init`): a side-band frame such as a
+ * background agent's `system`/`task_progress` proves nothing about the prompt
+ * being answered. 60s without a turn starting right after a result is far
+ * beyond a live CLI's gap between the drain and its next turn.
+ *
+ * A false fire is cheap: closing the input during a live turn does not abort
+ * it — the CLI finishes that turn and its result still arrives (measured, SDK
+ * 0.3.284). It only costs steering: later steers are refused by the closed
+ * channel and the host keeps them queued.
  */
 export const NON_TURN_RESULT_IDLE_MS = 60_000;
 
@@ -1097,8 +1105,8 @@ export class ClaudeHandler implements TurnSteeringPort {
       // Protocol capabilities this CLI advertised on `system`/`init`
       // (sdk.d.ts:5000). Read once, consumed by the settlement below.
       let capabilities: string[] = [];
-      // Armed after a `result` that does not answer this turn, disarmed by the
-      // next SDK frame (see NON_TURN_RESULT_IDLE_MS).
+      // Armed after a `result` that does not answer this turn, disarmed only by
+      // a frame that shows a turn running (see NON_TURN_RESULT_IDLE_MS).
       let nonTurnResultTimer: NodeJS.Timeout | undefined;
       const disarmNonTurnResultTimer = () => {
         if (nonTurnResultTimer) clearTimeout(nonTurnResultTimer);
@@ -1106,7 +1114,12 @@ export class ClaudeHandler implements TurnSteeringPort {
       };
       try {
         for await (const message of activeQuery) {
-          disarmNonTurnResultTimer();
+          // A side-band frame (background task progress, a subagent's own
+          // messages, rate limits, ...) leaves the bound running: the CLI is
+          // alive, but nothing says the prompt is being answered.
+          if (isTurnProgressFrame(message as unknown as Record<string, unknown>)) {
+            disarmNonTurnResultTimer();
+          }
 
           // Issue #661 — convert SDK's "1M context unavailable" assistant
           // message into a throw so the existing error path can auto-fallback.
@@ -1155,9 +1168,11 @@ export class ClaudeHandler implements TurnSteeringPort {
               // The prompt is still owed an answer, so the channel stays open —
               // but not forever: a CLI that goes silent here would otherwise
               // sit on stdin until the consumer's own (hours-long) idle timeout.
+              // Cleared first: the deadline always counts from the latest skip.
+              disarmNonTurnResultTimer();
               nonTurnResultTimer = setTimeout(() => {
                 nonTurnResultTimer = undefined;
-                this.logger.warn('No frame after a skipped result; closing the input so the CLI can exit', {
+                this.logger.warn('No turn progress after a skipped result; closing the input so the CLI can exit', {
                   idleMs: NON_TURN_RESULT_IDLE_MS,
                   sessionKey: steerKey,
                 });
