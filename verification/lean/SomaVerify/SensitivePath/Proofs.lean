@@ -194,7 +194,7 @@ theorem eq_renderAbs_segmentsOf (n : List Char) (h : n.head? = some '/') :
   have hs := (splitSlash_eq_nil_cons_iff n).2 (Or.inr h)
   rw [renderAbs_eq_joinSlash, ← hs, joinSlash_splitSlash]
 
-/-- `n` is the directory `renderAbs d` or lies below it, in the sense of line 90, exactly when
+/-- `n` is the directory `renderAbs d` or lies below it, in the sense of line 153, exactly when
 `n`'s split extends `d`'s. -/
 theorem underDirectory_renderAbs_iff (n : List Char) (d : List Seg) (hd : ∀ w ∈ d, '/' ∉ w) :
     underDirectory n (renderAbs d) = true ↔ ∃ t, splitSlash n = [] :: (d ++ t) := by
@@ -954,7 +954,7 @@ theorem matchesSecrets_iff (b : List Char) : matchesSecrets b = true ↔ Secrets
     simp only [List.cons_append, List.nil_append]
     rintro ((hb | hb | hb | hb) | hb | hb | hb | hb) <;> exact h _ hb
 
-/-- (e) The basename rule of lines 99-104 flags exactly the names `.env` or `.env.` followed by
+/-- (e) The basename rule of lines 164-169 flags exactly the names `.env` or `.env.` followed by
 characters other than line terminators, `credentials.json`, and `secret` or `secrets` with the
 extension `.json`, `.yaml`, `.yml` or `.toml`. -/
 theorem basename_rule_described : BasenameRuleDescribed := by
