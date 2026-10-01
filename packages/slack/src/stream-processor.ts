@@ -99,12 +99,17 @@ export interface StreamContext {
    * `incidentRequest`). Its text is the host's own conclusion
    * (`src/incident/attempt-output.ts`), and that conclusion echoes validated
    * MODEL strings — the summary and the proposal's action. So it is published
-   * verbatim and read for nothing: no response directives (a `channel_message`
-   * JSON in a summary would post to the channel root), no choice UI, and none of
-   * the transport-error guards that hold back a short error-looking text (a
-   * summary quoting one would silence the only line eagle-eye is waiting for).
+   * verbatim, as a plain post, and read for nothing: no response directives (a
+   * `channel_message` JSON in a summary would post to the channel root), no
+   * choice UI, and none of the transport-error guards that hold back a short
+   * error-looking text (a summary quoting one would silence the only line
+   * eagle-eye is waiting for).
+   *
+   * Required, with no default: a construction site that forgot it would turn
+   * every one of those protections off without a sound. Set it from the session
+   * (`session.incidentRequest !== undefined`), never from a literal.
    */
-  incidentAttempt?: boolean;
+  incidentAttempt: boolean;
 }
 
 /**

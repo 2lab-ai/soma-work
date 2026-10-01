@@ -86,9 +86,11 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
   (`src/incident/attempt-output.ts`).
 - 그 결론은 모델 문자열(summary, proposal action)을 되싣지만 **해석되지 않는다.** 인시던트 세션의 턴은
   directive(`channel_message` 등)·선택지 JSON·전송 오류 가드 없이 그대로 한 번 게시된다
-  (`packages/slack/src/pipeline/stream-executor.ts:1004`, `packages/slack/src/stream-processor.ts:1277`).
+  (`packages/slack/src/pipeline/stream-executor.ts:1004`, `packages/slack/src/stream-processor.ts:1282`).
+  그 스위치 `StreamContext.incidentAttempt`는 기본값 없는 **필수** 필드다
+  (`packages/slack/src/stream-processor.ts:112`) — 새 생성 지점이 빠뜨리면 타입 검사가 실패한다.
 - 결론은 **항상 blocks 없는 평문 게시**(`say({ text, thread_ts })`)로 나간다 — 턴 스트림의 `markdown_text`
-  청크로는 절대 나가지 않는다 (`packages/slack/src/stream-processor.ts:1902`). 그 청크는 Slack이 서버에서
+  청크로는 절대 나가지 않는다 (`packages/slack/src/stream-processor.ts:1907`). 그 청크는 Slack이 서버에서
   해석하므로, eagle-eye가 읽어 가는 `text`가 검증된 마커 줄과 같은지 보장할 수 없다.
   그래서 인시던트 턴은 B1 스트림 메시지를 **열지 않는다** (`TurnContext.noStream`,
   `packages/slack/src/turn-surface.ts:556`) — 아무것도 붙지 않은 빈 스트림 메시지가 남지 않는다.
