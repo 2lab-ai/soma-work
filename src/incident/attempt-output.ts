@@ -48,6 +48,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import {
   buildHostFailureResult,
   decodeIncidentConclusion,
+  INCIDENT_RESULT_LIMITS,
   type IncidentConclusionDowngrade,
   type IncidentEvidenceRecord,
   type IncidentFailureCause,
@@ -70,11 +71,11 @@ import { INCIDENT_EVIDENCE_TOOL, type IncidentRequestLike } from './sdk-options'
  */
 export const INCIDENT_EVIDENCE_MAX_AGE_SECONDS = 180;
 
-/** `MAX_STRING_CHARS` of the result contract — the bound a `fact` must fit. */
-const MAX_FACT_CHARS = 1000;
+/** The result contract's string bound — the bound a `fact` must fit. */
+const MAX_FACT_CHARS = INCIDENT_RESULT_LIMITS.stringChars;
 
-/** `MAX_UNCERTAINTY_ITEMS` of the result contract. */
-const MAX_UNCERTAINTY_ITEMS = 10;
+/** The result contract's uncertainty-count bound. */
+const MAX_UNCERTAINTY_ITEMS = INCIDENT_RESULT_LIMITS.uncertaintyItems;
 
 /**
  * Defensive ceiling on the registry. One incident reaches at most three snapshot
@@ -535,7 +536,7 @@ export type IncidentAttemptEnd =
  * Past it the decoder would refuse the text anyway (`message_too_large`), so the
  * host stops buffering rather than growing a string an unattended loop controls.
  */
-export const MAX_MODEL_TEXT_CHARS = 16000;
+export const MAX_MODEL_TEXT_CHARS = INCIDENT_RESULT_LIMITS.messageChars;
 
 /** Everything the host observed about how the stream behaved. */
 export interface IncidentStreamOutcome {
