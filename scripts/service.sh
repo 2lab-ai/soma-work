@@ -17,6 +17,34 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # --- Environment resolution ---
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 
+# The four SOMA_*_OVERRIDE variables below are a TEST harness, and each of them
+# redirects something destructive: PROJECT_DIR decides which tree `stop` hunts
+# live processes in, PID_FILE decides which pid the fallback kills, the scan
+# override replaces process discovery outright, and the system-daemon-plist
+# override decides whether the script drives the SYSTEM launchd domain (through
+# sudo) instead of the user domains. An operator shell that inherited
+# one of them (a sourced .env, an exported leftover from a test run) would then
+# quietly aim a production command at the wrong tree — so honouring them takes a
+# deliberate second signal, SOMA_TEST_HARNESS=1, and without it they are ignored
+# with one warning on stderr.
+#
+# Plain `echo` rather than print_warning: resolve_env runs before the print_*
+# helpers are defined.
+SOMA_TEST_OVERRIDES=0
+SOMA_TEST_OVERRIDES_WARNED=0
+resolve_test_overrides() {
+    if [[ "${SOMA_TEST_HARNESS:-}" == "1" ]]; then
+        SOMA_TEST_OVERRIDES=1
+        return 0
+    fi
+    SOMA_TEST_OVERRIDES=0
+    if [[ -n "${SOMA_PROJECT_DIR_OVERRIDE:-}${SOMA_PID_FILE_OVERRIDE:-}${SOMA_PROCESS_SCAN_OVERRIDE:-}${SOMA_SYSTEM_DAEMON_PLIST_OVERRIDE:-}" && "$SOMA_TEST_OVERRIDES_WARNED" != "1" ]]; then
+        SOMA_TEST_OVERRIDES_WARNED=1
+        echo "[WARNING] SOMA_PROJECT_DIR_OVERRIDE / SOMA_PID_FILE_OVERRIDE / SOMA_PROCESS_SCAN_OVERRIDE / SOMA_SYSTEM_DAEMON_PLIST_OVERRIDE are test-only and were IGNORED (set SOMA_TEST_HARNESS=1 to honour them)" >&2
+    fi
+    return 0
+}
+
 resolve_env() {
     local env="$1"
     case "$env" in
@@ -34,6 +62,16 @@ resolve_env() {
             ;;
     esac
 
+    resolve_test_overrides
+
+    # SOMA_PROJECT_DIR_OVERRIDE exists only so the contract tests can point the
+    # whole project tree (logs/, data/, the process-cwd scan) at a hermetic temp
+    # directory instead of the real /opt tree. Same role as
+    # SOMA_PID_FILE_OVERRIDE below; never set in production.
+    if [[ "$SOMA_TEST_OVERRIDES" == "1" && -n "${SOMA_PROJECT_DIR_OVERRIDE:-}" ]]; then
+        PROJECT_DIR="$SOMA_PROJECT_DIR_OVERRIDE"
+    fi
+
     PLIST_PATH="$LAUNCH_AGENTS_DIR/$SERVICE_NAME.plist"
     LOGS_DIR="$PROJECT_DIR/logs"
     # PID lock file written by the app itself (dist/index.js) as "<pid>:<ts>".
@@ -41,11 +79,71 @@ resolve_env() {
     # (start_headless_fallback) on hosts with no GUI/Aqua login session.
     # SOMA_PID_FILE_OVERRIDE exists only so the contract tests can point the
     # pidfile probe at a hermetic temp path instead of the real /opt tree.
-    PID_FILE="${SOMA_PID_FILE_OVERRIDE:-$PROJECT_DIR/data/soma-work.pid}"
+    PID_FILE="$PROJECT_DIR/data/soma-work.pid"
+    if [[ "$SOMA_TEST_OVERRIDES" == "1" && -n "${SOMA_PID_FILE_OVERRIDE:-}" ]]; then
+        PID_FILE="$SOMA_PID_FILE_OVERRIDE"
+    fi
     NODE_PATH="$(dirname "$(which node 2>/dev/null || echo "$HOME/.nvm/versions/node/v25.2.1/bin/node")")"
     USER_HOME="$HOME"
 
+    resolve_system_daemon "$env"
+
     resolve_tool_paths
+}
+
+# --- system LaunchDaemon domain -------------------------------------------
+#
+# Measured 2026-09-18 on the headless Mac mini whose GitHub runner is itself a
+# System-session LaunchDaemon running as user `dd`: `kickstart -k gui/<uid>`
+# answers 125, `bootstrap user/<uid>` exits 5 (no permission), and a direct
+# headless spawn dies with `spawn node EAGAIN` (the runner's coalition). The bot
+# is therefore supervised as a SYSTEM daemon — /Library/LaunchDaemons/<label>.plist
+# with UserName dd, which is what the `main` env already runs — and the leftover
+# user LaunchAgent beside it is exactly what produced two supervisors for one
+# label.
+#
+# So: when that plist exists (or SOMA_LAUNCHD_SYSTEM=1 declares it), every
+# launchd interaction with the label goes through `sudo -n /bin/launchctl …` in
+# one of the four argv forms the host's /etc/sudoers.d/soma-work-<env> rule
+# allows, and NOTHING falls back to gui/user/headless — a silent downgrade is
+# what put two supervisors on the host in the first place.
+#
+# SOMA_SYSTEM_DAEMON_PLIST_OVERRIDE is the harness equivalent of the other
+# SOMA_*_OVERRIDE variables: under SOMA_TEST_HARNESS=1 the real
+# /Library/LaunchDaemons path is never consulted at all (a deploy host HAS that
+# plist, and the contract tests must not flip into system mode because of the
+# machine they happen to run on), so the tests point detection at a temp file.
+#
+# SOMA_LAUNCHD_SYSTEM declares the mode outright and is NOT gated by the harness
+# flag, in either direction:
+#   1 — force system mode on even where the plist is absent (the operator is
+#       about to create it; install/start then fail naming the exact path);
+#   0 — force it OFF even where the plist exists.
+# The force-off is not a redirect and cannot aim a command at the wrong tree —
+# it only takes control paths AWAY (no sudo, no system domain), which is the one
+# thing the harness gate exists to prevent the other overrides from doing. It is
+# what lets a unit test — or an operator debugging a host that really carries
+# /Library/LaunchDaemons/<label>.plist — exercise the user-domain path without
+# firing `sudo -n /bin/launchctl` at the live daemon.
+resolve_system_daemon() {
+    local env="$1"
+
+    SYSTEM_DAEMON_PLIST="/Library/LaunchDaemons/$SERVICE_NAME.plist"
+    if [[ "$SOMA_TEST_OVERRIDES" == "1" ]]; then
+        SYSTEM_DAEMON_PLIST="${SOMA_SYSTEM_DAEMON_PLIST_OVERRIDE:-$PROJECT_DIR/.no-system-daemon-plist}"
+    fi
+
+    SYSTEM_DAEMON_MODE=0
+    if [[ "${SOMA_LAUNCHD_SYSTEM:-}" == "0" ]]; then
+        SYSTEM_DAEMON_MODE=0
+    elif [[ -f "$SYSTEM_DAEMON_PLIST" || "${SOMA_LAUNCHD_SYSTEM:-}" == "1" ]]; then
+        SYSTEM_DAEMON_MODE=1
+    fi
+
+    # The rule file the operator carries, named after the env: dev →
+    # soma-work-dev, main → soma-work-main. Only used in error messages, which
+    # is the one moment an operator needs to know where to look.
+    SYSTEM_SUDOERS_FILE="/etc/sudoers.d/soma-work${env:+-$env}"
 }
 
 # Discover paths for essential CLI tools (git, gh, aws, dotnet)
@@ -175,6 +273,75 @@ print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 
+# --- system-domain (sudo) helpers -----------------------------------------
+#
+# The sudoers rule the host carries is deliberately narrow: it lists four exact
+# argv forms and nothing else (no other flags, no `enable`, no other paths).
+# Every sudo call in this script therefore goes through sudo_launchctl with one
+# of the four argument lists below, byte-for-byte:
+#
+#   sudo -n /bin/launchctl print     system/<label>
+#   sudo -n /bin/launchctl bootout   system/<label>
+#   sudo -n /bin/launchctl bootstrap system /Library/LaunchDaemons/<label>.plist
+#   sudo -n /bin/launchctl kickstart -k system/<label>
+#
+# `/bin/launchctl` is spelled absolutely on purpose: sudoers matches the command
+# path, so a PATH-resolved `launchctl` would not match the rule.
+is_system_mode() {
+    [[ "$SYSTEM_DAEMON_MODE" == "1" ]]
+}
+
+sudo_launchctl() {
+    sudo -n /bin/launchctl "$@"
+}
+
+# Is this stderr sudo REFUSING (no rule / needs a password), as opposed to
+# launchctl answering about the job? Only sudo's own diagnostics count: a
+# `Could not find service` from launchctl is a normal, expected answer.
+sudo_refusal_text() {
+    printf '%s\n' "$1" | grep -qE '^sudo:|a password is required|not allowed to execute|may not run|no tty present'
+}
+
+# One probe, in an argv form the rule already allows, that answers "can this
+# process reach root for this label at all". Called once per run, before any
+# command that touches launchd, so a refusal is reported as itself instead of
+# surfacing later as an unexplained launchctl failure — and never as a fallback
+# to gui/user/headless, which is the downgrade that produced two supervisors.
+require_system_sudo() {
+    is_system_mode || return 0
+    local err status=0
+    err="$(sudo -n /bin/launchctl print "system/$SERVICE_NAME" 2>&1 >/dev/null)" || status=$?
+    if [[ "$status" -ne 0 ]] && sudo_refusal_text "$err"; then
+        print_error "system daemon mode, but 'sudo -n /bin/launchctl' was refused: ${err:-<no stderr>}"
+        print_error "  this host must carry $SYSTEM_SUDOERS_FILE with exactly:"
+        print_error "    $(whoami) ALL=(root) NOPASSWD: /bin/launchctl print system/$SERVICE_NAME, /bin/launchctl bootout system/$SERVICE_NAME, /bin/launchctl bootstrap system $SYSTEM_DAEMON_PLIST, /bin/launchctl kickstart -k system/$SERVICE_NAME"
+        print_error "  refusing to fall back to gui/user/headless: a second supervisor is worse than a failed command."
+        return 1
+    fi
+    return 0
+}
+
+# `launchctl print <domain>/<label>`, through sudo for the system domain.
+# stdout is the job dictionary the callers parse; stderr stays stderr.
+launchctl_print_job() {
+    local target="$1"
+    if is_system_mode && [[ "$target" == "system/"* ]]; then
+        sudo_launchctl print "$target"
+        return $?
+    fi
+    launchctl print "$target"
+}
+
+# `launchctl bootout <domain>/<label>`, through sudo for the system domain.
+launchctl_bootout_job() {
+    local target="$1"
+    if is_system_mode && [[ "$target" == "system/"* ]]; then
+        sudo_launchctl bootout "$target"
+        return $?
+    fi
+    launchctl bootout "$target"
+}
+
 # --- Service helpers ---
 # `launchctl list | grep <label>` only proves the LaunchAgent is REGISTERED in
 # launchd's user domain. macOS prints `-` in the PID column when the agent is
@@ -186,8 +353,81 @@ print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 #   * `is_alive`      — there is a real running process (status/start verify
 #                       must require this, otherwise CI marks a dead deploy
 #                       as green; see PR #988).
+#
+# `launchctl list` is not the whole answer either. Incident 2026-09-17 (deploy
+# run 35209063075, a headless Mac mini): the GitHub runner is a System-session
+# LaunchDaemon running as user `dd` and the host has NO Aqua/GUI session, so the
+# agent can only be registered in the PER-USER domain (`user/<uid>`) — which the
+# runner's `launchctl list` does not necessarily report. Every read-side probe
+# therefore also asks each domain directly.
+#
+# Order matters: `gui/<uid>` is the normal path on a logged-in Mac, `user/<uid>`
+# is what exists when there is no GUI seat.
+#
+# In system-daemon mode there is exactly one domain the label may live in, and
+# asking the user domains would be asking about the leftover LaunchAgent.
+service_domains() {
+    if is_system_mode; then
+        printf '%s\n' "system"
+        return 0
+    fi
+    local uid
+    uid="$(id -u)"
+    printf '%s\n' "gui/$uid" "user/$uid"
+}
+
+# `launchctl print <domain>/<label>` prints the job dictionary on success, so a
+# registration is exit 0 *with a body*. An exit-0 answer that says nothing
+# describes no job and is treated as "not visible here" — the same conservative
+# reading domain_holds_label() documents for 113/125 further down.
+domain_registered() {
+    local out
+    out="$(launchctl_print_job "$1/$SERVICE_NAME" 2>/dev/null)" || return 1
+    [[ -n "$out" ]]
+}
+
+# First domain that holds the label, or nothing.
+registered_domain() {
+    local domain
+    while read -r domain; do
+        if domain_registered "$domain"; then
+            printf '%s\n' "$domain"
+            return 0
+        fi
+    done < <(service_domains)
+    return 1
+}
+
+# PID out of a domain's job dictionary ("\tpid = 4242").
+domain_pid() {
+    local out pid
+    out="$(launchctl_print_job "$1/$SERVICE_NAME" 2>/dev/null)" || return 1
+    pid="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\).*$/\1/p' | head -1)"
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$pid"
+}
+
+# `launchctl list` prints one TAB-separated row per job: "<pid>\t<last exit>\t<label>".
+# The three labels this script manages are PREFIXES of one another —
+# `ai.2lab.soma-work` (local checkout) ⊂ `ai.2lab.soma-work.dev` ⊂ … — so
+# `grep "$SERVICE_NAME"` run from a local checkout matches the dev/main rows of
+# a host that runs the deployed services, and the local env then adopts a
+# FOREIGN pid: `status` reports RUNNING for a service that was never started
+# here, and `stop` would target another env's supervisor. Match column 3
+# exactly. Empty output = this label has no row; `-` = a row with no live pid.
+#
+# In system-daemon mode `launchctl list` is the wrong question entirely: run by
+# a non-root user it describes that user's domain, so it can only ever report
+# the leftover LaunchAgent (or nothing). The sudo `print` below is the only
+# reader there.
+launchctl_list_pid() {
+    is_system_mode && return 0
+    launchctl list 2>/dev/null | awk -v l="$SERVICE_NAME" '$3 == l {print $1}'
+}
+
 is_registered() {
-    launchctl list 2>/dev/null | grep -q "$SERVICE_NAME"
+    [[ -n "$(launchctl_list_pid)" ]] && return 0
+    registered_domain >/dev/null
 }
 
 # PID from the app's own lock file ("<pid>:<ts>"), validated as a live process.
@@ -204,16 +444,25 @@ get_pidfile_pid() {
     echo "$pid"
 }
 
-# Prefer the launchd-reported PID (normal path, GUI hosts). Fall back to the
-# app PID lock file so a headless direct-spawn is still reported as a real,
-# live process by status/start verification.
+# Prefer the launchd-reported PID (normal path, GUI hosts), then the PID each
+# launchd domain reports for the label — `launchctl list` does not show a
+# user/<uid> registration to every session, and on a headless host that is the
+# only domain the agent can live in. Fall back to the app PID lock file so a
+# headless direct-spawn is still reported as a real, live process by
+# status/start verification.
 get_pid() {
-    local lpid
-    lpid=$(launchctl list 2>/dev/null | grep "$SERVICE_NAME" | awk '{print $1}')
+    local lpid domain dpid
+    lpid=$(launchctl_list_pid)
     if [[ "$lpid" =~ ^[0-9]+$ ]]; then
         echo "$lpid"
         return 0
     fi
+    while read -r domain; do
+        if dpid="$(domain_pid "$domain")"; then
+            echo "$dpid"
+            return 0
+        fi
+    done < <(service_domains)
     get_pidfile_pid
 }
 
@@ -236,9 +485,134 @@ is_alive() {
 # tolerant (|| true) because against an already-registered label it is a no-op
 # error — kickstart still does the right thing, and is_alive remains the gate.
 # Real incident: a dev-channel deploy run on 2026-06-15.
+#
+# Both calls used to end in `2>/dev/null || true`, which is how deploy run
+# 35184945142 (2026-09-17, work-m16) lost its only signal: kickstart failed,
+# nothing was printed, and the Verify step then read the PREVIOUS deploy's PID
+# out of `launchctl list` and called it green. Stderr is now surfaced and a
+# failed kickstart returns non-zero; callers (cmd_start / cmd_install /
+# cmd_reinstall) still fall through to start_headless_fallback, which is the
+# direct-spawn path for hosts with no GUI/Aqua seat, and only report success
+# when is_alive agrees.
+#
+# The gui domain is not always there. Incident 2026-09-17, deploy run
+# 35209063075 on a headless Mac mini: the runner is a System-session
+# LaunchDaemon running as `dd`, the host has no Aqua/GUI login session at all,
+# and so `kickstart -k gui/<uid>/<label>` answers
+# `125: Domain does not support specified action` while `load` registers
+# nothing. Measured from an ssh (Background) session on that same host,
+# `launchctl bootstrap user/<uid> <plist>` + `kickstart -k user/<uid>/<label>`
+# brings the agent up — the per-user domain exists without a GUI seat. So the
+# gui domain is tried first (the normal path on a logged-in Mac) and
+# `user/<uid>` is the fallback; success in EITHER domain means launchd manages
+# the service and the headless direct-spawn is not needed.
+
+# Which domain load_and_kickstart actually got the job into ("gui/<uid>" /
+# "user/<uid>"), empty when neither took it. Deliberately a global: it is
+# load_and_kickstart's second return value, read by the callers' success lines
+# so a CI log says WHICH domain is managing the service, not just that one is.
+LAUNCHD_DOMAIN_USED=""
+
+# System-daemon start: bootstrap the LaunchDaemon into the system domain and
+# force the spawn — the same two steps as the user path, in the two argv forms
+# the sudoers rule allows. There is no fallback: if this fails the operator gets
+# the failure, not a second supervisor somewhere else.
+system_bootstrap_and_kickstart() {
+    local boot_err boot_status=0 kick_err kick_status=0
+
+    if [[ ! -f "$SYSTEM_DAEMON_PLIST" ]]; then
+        print_error "System LaunchDaemon plist not found: $SYSTEM_DAEMON_PLIST"
+        print_error "  creating it needs root and is the operator's job (it must declare UserName)."
+        return 1
+    fi
+
+    boot_err="$(sudo_launchctl bootstrap system "$SYSTEM_DAEMON_PLIST" 2>&1 >/dev/null)" || boot_status=$?
+    # 37 / 17 = the label is already bootstrapped in this domain — the normal
+    # answer on every start after the first, and not a failure. The kickstart
+    # below is the verdict either way.
+    if [[ "$boot_status" -ne 0 && "$boot_status" -ne 37 && "$boot_status" -ne 17 ]]; then
+        print_warning "launchctl bootstrap system $SYSTEM_DAEMON_PLIST failed (exit $boot_status): ${boot_err:-<no stderr>}"
+    fi
+
+    kick_err="$(sudo_launchctl kickstart -k "system/$SERVICE_NAME" 2>&1 >/dev/null)" || kick_status=$?
+    if [[ "$kick_status" -eq 0 ]]; then
+        LAUNCHD_DOMAIN_USED="system"
+        print_status "Service is launchd-managed in the system domain (LaunchDaemon $SYSTEM_DAEMON_PLIST)"
+        return 0
+    fi
+
+    print_error "launchctl kickstart -k system/$SERVICE_NAME failed (exit $kick_status): ${kick_err:-<no stderr>}"
+    return 1
+}
+
 load_and_kickstart() {
-    launchctl load "$PLIST_PATH" 2>/dev/null || true
-    launchctl kickstart -k "gui/$(id -u)/$SERVICE_NAME" 2>/dev/null || true
+    local uid load_err kick_err kick_status boot_err boot_status try_user
+
+    # System mode owns the whole start path: no `load` of the user LaunchAgent
+    # (that plist is the double-registration source), no gui/user kickstart, no
+    # headless spawn.
+    if is_system_mode; then
+        LAUNCHD_DOMAIN_USED=""
+        system_bootstrap_and_kickstart
+        return $?
+    fi
+
+    uid="$(id -u)"
+    LAUNCHD_DOMAIN_USED=""
+
+    if ! load_err="$(launchctl load "$PLIST_PATH" 2>&1 >/dev/null)"; then
+        # Against an already-registered label this is an expected no-op error;
+        # print it instead of swallowing it so the CI log keeps the evidence.
+        print_warning "launchctl load $PLIST_PATH: ${load_err:-<no stderr>}"
+    fi
+
+    try_user=0
+    if ! launchctl print "gui/$uid" >/dev/null 2>&1; then
+        print_warning "launchctl print gui/$uid failed — no GUI/Aqua domain on this host; trying user/$uid"
+        try_user=1
+    else
+        kick_status=0
+        kick_err="$(launchctl kickstart -k "gui/$uid/$SERVICE_NAME" 2>&1 >/dev/null)" || kick_status=$?
+        if [[ "$kick_status" -eq 0 ]]; then
+            LAUNCHD_DOMAIN_USED="gui/$uid"
+            return 0
+        fi
+        print_warning "launchctl kickstart -k gui/$uid/$SERVICE_NAME failed (exit $kick_status): ${kick_err:-<no stderr>}"
+        # 125 = "Domain does not support specified action", i.e. this host has
+        # no GUI seat to spawn into. Any other failure is about the job, not
+        # the domain, so the headless path is the honest next step.
+        if [[ "$kick_status" -eq 125 ]]; then
+            try_user=1
+        fi
+    fi
+
+    if [[ "$try_user" -eq 1 ]]; then
+        boot_status=0
+        boot_err="$(launchctl bootstrap "user/$uid" "$PLIST_PATH" 2>&1 >/dev/null)" || boot_status=$?
+        # 37 / 17 = the label is already bootstrapped in this domain — the
+        # normal answer on every deploy after the first, and not a failure.
+        # ASSERTED, NOT MEASURED: these two codes come from launchd's
+        # EALREADY/EEXIST convention, not from a captured run on the headless
+        # host (the 2026-09-17 measurement only covered the FIRST bootstrap,
+        # which exited 0). A different code on a re-bootstrap is therefore a
+        # lead to go read, not proof the domain refused — the kickstart below
+        # is the verdict either way.
+        if [[ "$boot_status" -ne 0 && "$boot_status" -ne 37 && "$boot_status" -ne 17 ]]; then
+            print_warning "launchctl bootstrap user/$uid $PLIST_PATH failed (exit $boot_status): ${boot_err:-<no stderr>}"
+        fi
+
+        kick_status=0
+        kick_err="$(launchctl kickstart -k "user/$uid/$SERVICE_NAME" 2>&1 >/dev/null)" || kick_status=$?
+        if [[ "$kick_status" -eq 0 ]]; then
+            LAUNCHD_DOMAIN_USED="user/$uid"
+            print_status "Service is launchd-managed in the user/$uid domain (no GUI/Aqua session on this host)"
+            return 0
+        fi
+        print_warning "launchctl kickstart -k user/$uid/$SERVICE_NAME failed (exit $kick_status): ${kick_err:-<no stderr>}"
+    fi
+
+    print_warning "Falling back to the headless direct-spawn path if the agent does not come up."
+    return 1
 }
 
 generate_plist() {
@@ -307,6 +681,27 @@ generate_plist() {
 EOF
 }
 
+# The WorkingDirectory a LaunchDaemon plist declares, or nothing.
+#
+# PlistBuddy is the correct reader — /Library/LaunchDaemons files are routinely
+# BINARY plists, which no grep can read — and it ships with macOS, the only OS
+# that has a launchd system domain at all. The XML fallback is for reading a
+# plain-text plist where PlistBuddy is absent (a Linux CI runner over a
+# fixture): `<key>WorkingDirectory</key>` followed by its `<string>`.
+system_daemon_working_dir() {
+    local plist="$1" wd=""
+    [[ -f "$plist" ]] || return 1
+    if [[ -x /usr/libexec/PlistBuddy ]]; then
+        wd="$(/usr/libexec/PlistBuddy -c 'Print :WorkingDirectory' "$plist" 2>/dev/null)" || wd=""
+    fi
+    if [[ -z "$wd" ]]; then
+        wd="$(grep -A1 '<key>WorkingDirectory</key>' "$plist" 2>/dev/null \
+            | sed -n 's|.*<string>\(.*\)</string>.*|\1|p' | head -1)"
+    fi
+    [[ -n "$wd" ]] || return 1
+    printf '%s\n' "$wd"
+}
+
 # --- Commands ---
 cmd_status() {
     local env_label="${ENV_ARG:-local}"
@@ -331,9 +726,17 @@ cmd_status() {
     elif is_registered; then
         local pid=$(get_pid)
         print_error "Service is STALE (registered but no live PID: '$pid')"
-        echo "  Likely cause: plist 'LimitLoadToSessionType=Aqua' loaded from"
-        echo "  a non-GUI session (SSH, CI), or the process crashed at startup."
-        echo "  Try: launchctl kickstart -k gui/\$(id -u)/$SERVICE_NAME"
+        if is_system_mode; then
+            echo "  The LaunchDaemon is bootstrapped in the system domain but has no live process."
+            echo "  Try: sudo -n /bin/launchctl kickstart -k system/$SERVICE_NAME"
+        else
+            echo "  Likely cause: plist 'LimitLoadToSessionType=Aqua' loaded from"
+            echo "  a non-GUI session (SSH, CI), or the process crashed at startup."
+            echo "  Try: launchctl kickstart -k gui/\$(id -u)/$SERVICE_NAME"
+            echo "  On a host with no GUI/Aqua session use the per-user domain:"
+            echo "    launchctl bootstrap user/\$(id -u) $PLIST_PATH"
+            echo "    launchctl kickstart -k user/\$(id -u)/$SERVICE_NAME"
+        fi
         exit_code=1
     else
         print_warning "Service is STOPPED"
@@ -342,14 +745,41 @@ cmd_status() {
 
     echo ""
     echo "Service: $SERVICE_NAME"
+    local holder
+    holder="$(registered_domain)" && echo "Domain:  $holder"
     echo "Project: $PROJECT_DIR"
-    echo "Plist:   $PLIST_PATH"
+    local status_plist="$PLIST_PATH"
+    is_system_mode && status_plist="$SYSTEM_DAEMON_PLIST"
+    echo "Plist:   $status_plist"
     echo "Logs:    $LOGS_DIR"
 
-    if [[ -f "$PLIST_PATH" ]]; then
+    if [[ -f "$status_plist" ]]; then
         echo "Plist file: EXISTS"
     else
         print_warning "Plist file: NOT FOUND"
+    fi
+
+    # The daemon's own cwd. Everything else this status prints — Project, Logs,
+    # the pidfile, the stray-process scan `stop` uses — describes $PROJECT_DIR,
+    # so a root-owned plist still pointing at an older tree means the status and
+    # the supervisor are talking about two different deployments: the daemon
+    # keeps serving the old code while a deploy verifies the new tree's logs.
+    if is_system_mode; then
+        local daemon_wd
+        if daemon_wd="$(system_daemon_working_dir "$status_plist")"; then
+            echo "WorkDir: $daemon_wd"
+            if [[ "$daemon_wd" != "$PROJECT_DIR" ]]; then
+                print_warning "LaunchDaemon WorkingDirectory ($daemon_wd) differs from this env's project dir ($PROJECT_DIR) — the daemon runs in a different tree than this status describes"
+            fi
+        elif [[ -f "$status_plist" ]]; then
+            print_warning "$status_plist declares no WorkingDirectory — the daemon's cwd is not pinned to $PROJECT_DIR"
+        fi
+    fi
+
+    # A user LaunchAgent beside a system LaunchDaemon is the double-registration
+    # shape the 2026-09-18 investigation found; say so where an operator reads it.
+    if is_system_mode && [[ -f "$PLIST_PATH" ]]; then
+        print_warning "Leftover user LaunchAgent present: $PLIST_PATH (remove it — the system LaunchDaemon is the supervisor)"
     fi
 
     echo ""
@@ -420,6 +850,47 @@ start_headless_fallback() {
     return 1
 }
 
+# Why the start failed, in the words of the check that actually failed.
+#
+# Incident 2026-09-17, deploy run 35209063075: the headless fallback failed on a
+# host with no GUI session and printed nothing but "Failed to start service" —
+# no reason, no log tail — so the operator had to ssh in to learn anything at
+# all. The three ways the fallback can end without a live service each get their
+# own sentence here.
+start_failure_reason() {
+    local raw pid
+    if [[ ! -f "$PID_FILE" ]]; then
+        echo "no pidfile at $PID_FILE — the supervisor never acquired its PID lock"
+        return 0
+    fi
+    raw="$(cat "$PID_FILE" 2>/dev/null)"
+    pid="${raw%%:*}"
+    if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
+        echo "pidfile $PID_FILE holds a non-numeric lock ('$raw')"
+    elif ! kill -0 "$pid" 2>/dev/null; then
+        echo "pidfile pid=$pid is dead — the supervisor exited right after start"
+    else
+        echo "is_alive false although pidfile pid=$pid looks live"
+    fi
+}
+
+# The two logs a pre-init crash lands in (the supervisor's own rotated
+# stdout/stderr never get written when node dies before it starts).
+print_start_diagnostics() {
+    print_error "  reason: $(start_failure_reason)"
+    local log
+    for log in "$LOGS_DIR/launchd.out.log" "$LOGS_DIR/stderr.log"; do
+        echo ""
+        if [[ -f "$log" ]]; then
+            echo "Last 20 lines of $log:"
+            echo "---"
+            tail -20 "$log" 2>/dev/null
+        else
+            echo "No $log to read."
+        fi
+    done
+}
+
 cmd_start() {
     print_status "Starting $SERVICE_NAME..."
 
@@ -430,14 +901,22 @@ cmd_start() {
 
     # Registered-but-dead means a prior load left the label in launchd without
     # a live process. `launchctl load` against an already-loaded plist is a
-    # no-op, so unload first before retrying.
-    if is_registered; then
+    # no-op, so unload first before retrying. In system mode there is nothing to
+    # unload — `kickstart -k` restarts a bootstrapped job in place, and the only
+    # plist `unload` could reach is the leftover LaunchAgent.
+    if ! is_system_mode && is_registered; then
         print_warning "Service is registered but dead — unloading stale plist first"
         launchctl unload "$PLIST_PATH" 2>/dev/null || true
         sleep 1
     fi
 
-    if [[ ! -f "$PLIST_PATH" ]]; then
+    if is_system_mode; then
+        if [[ ! -f "$SYSTEM_DAEMON_PLIST" ]]; then
+            print_error "System LaunchDaemon plist not found: $SYSTEM_DAEMON_PLIST"
+            print_error "  creating it needs root and is the operator's job."
+            return 1
+        fi
+    elif [[ ! -f "$PLIST_PATH" ]]; then
         print_error "Plist not found. Run './scripts/service.sh ${ENV_ARG:+$ENV_ARG }install' first."
         return 1
     fi
@@ -446,7 +925,20 @@ cmd_start() {
     sleep 2
 
     if is_alive; then
-        print_success "Service started (PID: $(get_pid))"
+        # Name the domain that took the job: "started" on a headless host means
+        # something different from "started" on a logged-in Mac, and the CI log
+        # is the only place that difference is ever read.
+        local domain_note=""
+        [[ -n "$LAUNCHD_DOMAIN_USED" ]] && domain_note=" (launchd: $LAUNCHD_DOMAIN_USED)"
+        print_success "Service started (PID: $(get_pid))$domain_note"
+    elif is_system_mode; then
+        # No headless fallback here, by design: a direct spawn next to a
+        # bootstrapped LaunchDaemon is a second supervisor for one label.
+        print_error "Failed to start service in the system domain (no live PID after bootstrap + kickstart)."
+        print_error "  inspect: sudo -n /bin/launchctl print system/$SERVICE_NAME"
+        print_start_diagnostics
+        print_error "Check: tail -f $LOGS_DIR/stderr.log"
+        return 1
     else
         # launchd path failed (no live process). On a host with no GUI/Aqua
         # session this is expected and permanent — fall back to a direct spawn.
@@ -454,66 +946,526 @@ cmd_start() {
             print_success "Service started via headless fallback (PID: $(get_pid))"
         else
             print_error "Failed to start service (launchd + headless fallback both failed)."
+            print_start_diagnostics
             print_error "Check: tail -f $LOGS_DIR/stderr.log"
             return 1
         fi
     fi
 }
 
+# --- stop: the three things that can keep old code running ---------------
+#
+# Incident 2026-09-17, deploy run 35184945142, target work-m16. `service.sh main
+# stop` printed "Failed to stop service via LaunchAgent", the pidfile fallback
+# matched nothing, the deploy step swallowed the failure with `|| true`, and the
+# supervisor from the PREVIOUS deploy (pid 61554, started 4h earlier) kept
+# serving while the job went green. Two supervisor trees were alive on the host.
+#
+# So stop now attacks all three holders and REPORTS honestly:
+#   1. the launchd registration — in EVERY domain, not just the one the plist
+#      path happens to resolve to (`launchctl unload <plist>` in the runner's
+#      session removes at most one; KeepAlive respawns from the others);
+#   2. the app's own PID lock file (headless direct-spawn path);
+#   3. any live supervisor/daemon process whose cwd is $PROJECT_DIR, whatever
+#      started it (orphan from an earlier start, second domain, manual run).
+# Exit is non-zero when anything survives — deploy.yml no longer hides it.
+
+# Domains a LaunchAgent label can be registered in on macOS. `system` needs
+# root to boot out; we still probe it, because a registration we cannot remove
+# is exactly the thing the operator must be told about.
+launchd_domains() {
+    local uid
+    uid="$(id -u)"
+    printf '%s\n' "system" "gui/$uid" "user/$uid"
+}
+
+# "Held" means `launchctl print` SAW the job — exit 0 and nothing else.
+#
+# Measured 2026-09-17: as the runner user on fable-m5max, `launchctl print
+# system/<label>` exits 113 for BOTH a registered and a non-existent label —
+# a non-root process cannot see into the system domain at all. On work-m16 (admin
+# user) the same probe exits 0 for a registered label and 113 for a missing one,
+# and `gui/<uid>/<label>` exits 0 where registered, 125 where not. So 113/125
+# (and any other non-zero) can only be read as "not visible to me", never as
+# "held" — treating them as held would fail every deploy run by a non-root
+# runner.
+#
+# The residual: a system-domain registration that a non-root runner cannot see
+# is not caught here. Its PROCESS is caught by the cwd scan below — unless that
+# process is root-owned too, which a non-root `lsof` also cannot see. That last
+# case is left to verify-restart, which fails the deploy when the live PID is
+# older than the deploy or logs a different version.
+#
+# In system-daemon mode the system probe is not blind any more: it goes through
+# `sudo -n /bin/launchctl print system/<label>`, so a registration this script is
+# responsible for is both visible and removable. gui/user are still probed
+# non-root — a stray LaunchAgent is precisely what must be found there.
+domain_holds_label() {
+    launchctl_print_job "$1/$SERVICE_NAME" >/dev/null 2>&1
+}
+
+# How long a domain may take to drop the label after a bootout before stop calls
+# it stuck. A single 1s probe was shorter than the teardown a healthy host
+# performs: the supervisor holds a SIGTERM'd child for DEFAULT_SHUTDOWN_GRACE_MS
+# = 4s (src/run-with-rotating-logs.ts:631) before escalating, and `launchctl
+# bootout` on a job that is already terminating returns non-zero. Both signals
+# say "still here" while the correct thing is happening, so the old code failed
+# the deploy on exactly the hosts that were shutting down properly.
+STOP_BOOTOUT_WAIT_SECONDS=15
+
+# Boot the label out of every domain that still holds it.
+# Sets STOP_DOMAINS_HELD to the domains that refused.
+bootout_all_domains() {
+    STOP_DOMAINS_HELD=()
+    local domain err i still_held
+    while read -r domain; do
+        domain_holds_label "$domain" || continue
+        print_status "Label still registered in $domain — booting out"
+        if ! err="$(launchctl_bootout_job "$domain/$SERVICE_NAME" 2>&1)"; then
+            # Not proof of failure: a job inside its shutdown grace answers
+            # "Operation now in progress". The poll below is the real verdict.
+            print_warning "launchctl bootout $domain/$SERVICE_NAME returned non-zero: ${err:-<no stderr>} — polling for the registration to drop"
+        fi
+        still_held=1
+        for ((i = 0; i < STOP_BOOTOUT_WAIT_SECONDS; i++)); do
+            if ! domain_holds_label "$domain"; then
+                still_held=0
+                break
+            fi
+            sleep 1
+        done
+        if [[ "$still_held" -eq 1 ]]; then
+            print_error "Domain still holds the label after ${STOP_BOOTOUT_WAIT_SECONDS}s: $domain/$SERVICE_NAME"
+            if [[ "$domain" == "system" ]] && ! is_system_mode; then
+                print_error "  the system domain needs root: sudo launchctl bootout system/$SERVICE_NAME"
+            fi
+            STOP_DOMAINS_HELD+=("$domain/$SERVICE_NAME")
+        fi
+    done < <(launchd_domains)
+}
+
+# PIDs of live supervisor/daemon processes whose cwd is $PROJECT_DIR, regardless
+# of which launchd domain (or none) started them.
+#
+# `lsof -a -d cwd -c node -Fpn` is the macOS-portable way to read a process's
+# cwd (no /proc). The argv filter is load-bearing: without it a local
+# `service.sh stop` (PROJECT_DIR == the checkout) would target any node process
+# sitting in the repo — the test runner, an editor server. Only the two commands
+# the plist and the headless fallback actually launch are ever killed.
+#
+# SOMA_PROCESS_SCAN_OVERRIDE points the scan at a fake script (invoked with
+# $PROJECT_DIR as $1, printing one PID per line) so the contract tests can drive
+# stop without any real process discovery. Never set in production.
+# stdout of this function is a LIST OF PIDS — the caller reads it with
+# `done < <(scan_project_pids)`. Every diagnostic therefore goes to stderr;
+# a warning printed on stdout was silently eaten by the caller's numeric guard.
+#
+# The scan can also fail to produce an answer at all (no lsof, permission
+# denied). "No answer" is not "clean": it is the one state in which stop knows
+# least, so it records the failure through SCAN_UNAVAILABLE_FLAG (a marker file,
+# because this function runs in a process substitution — a subshell — where a
+# plain variable assignment could never reach cmd_stop) and cmd_stop refuses to
+# report a clean stop.
+SCAN_UNAVAILABLE_FLAG=""
+
+mark_scan_unavailable() {
+    if [[ -n "$SCAN_UNAVAILABLE_FLAG" ]]; then
+        printf '1\n' > "$SCAN_UNAVAILABLE_FLAG" 2>/dev/null
+    fi
+    return 0
+}
+
+scan_project_pids() {
+    if [[ "$SOMA_TEST_OVERRIDES" == "1" && -n "${SOMA_PROCESS_SCAN_OVERRIDE:-}" ]]; then
+        local scan_status=0
+        bash "$SOMA_PROCESS_SCAN_OVERRIDE" "$PROJECT_DIR" || scan_status=$?
+        if [[ "$scan_status" -ne 0 ]]; then
+            print_warning "process-scan override exited $scan_status — stray-process scan unavailable" >&2
+            mark_scan_unavailable
+        fi
+        return 0
+    fi
+
+    if ! command -v lsof >/dev/null 2>&1; then
+        print_warning "lsof not found — cannot scan for stray processes under $PROJECT_DIR" >&2
+        mark_scan_unavailable
+        return 0
+    fi
+
+    # lsof reports the RESOLVED cwd, so the raw $PROJECT_DIR string is not
+    # enough: /opt/soma-work/* and every macOS temp path are routinely reached
+    # through a symlink (/var → /private/var). Compare against both forms.
+    local project_dir_real=""
+    project_dir_real="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -P)"
+
+    local err_file lsof_out lsof_status=0
+    err_file="$(mktemp "${TMPDIR:-/tmp}/soma-stop-lsof.XXXXXX")" || err_file=""
+    if [[ -z "$err_file" ]]; then
+        # Without a place to capture stderr the scan cannot tell a clean host
+        # from a failed probe — refuse to answer rather than fail open.
+        print_warning "cannot create a temp file for the lsof scan — scan unavailable" >&2
+        mark_scan_unavailable
+        return 0
+    fi
+    lsof_out="$(lsof -a -d cwd -c node -Fpn 2>"$err_file")" || lsof_status=$?
+
+    # Exit 1 with nothing on stderr is lsof's ordinary "no file matched" — a
+    # clean host. Any non-zero exit that ALSO wrote a diagnostic (missing
+    # permissions, a broken install) means the question went unanswered.
+    # macOS lsof also prints "lsof: WARNING: can't stat() ..." for unstat-able
+    # volumes while still answering the question — drop those lines before
+    # deciding whether stderr carries a real failure.
+    if [[ -n "$err_file" && -s "$err_file" ]]; then
+        grep -v '^lsof: WARNING:' "$err_file" > "$err_file.filtered" 2>/dev/null || true
+        mv -f "$err_file.filtered" "$err_file" 2>/dev/null || true
+    fi
+    if [[ "$lsof_status" -ne 0 && -n "$err_file" && -s "$err_file" ]]; then
+        print_warning "lsof failed (exit $lsof_status): $(tr '\n' ' ' < "$err_file" | cut -c1-200)" >&2
+        mark_scan_unavailable
+        rm -f "$err_file"
+        return 0
+    fi
+    [[ -n "$err_file" ]] && rm -f "$err_file"
+
+    local line pid="" argv cwd
+    while IFS= read -r line; do
+        case "$line" in
+            p*)
+                pid="${line#p}"
+                ;;
+            n*)
+                cwd="${line#n}"
+                if [[ "$cwd" != "$PROJECT_DIR" ]]; then
+                    [[ -n "$project_dir_real" && "$cwd" == "$project_dir_real" ]] || continue
+                fi
+                [[ "$pid" =~ ^[0-9]+$ ]] || continue
+                [[ "$pid" == "$$" || "$pid" == "$PPID" ]] && continue
+                # -ww: without it ps truncates at the terminal width and the
+                # argv markers below (which sit at the end of the supervisor's
+                # command line) disappear, so a real survivor reads as no match.
+                argv="$(ps -ww -p "$pid" -o command= 2>/dev/null)"
+                case "$argv" in
+                    *dist/run-with-rotating-logs.js*|*dist/index.js*) echo "$pid" ;;
+                esac
+                ;;
+        esac
+    done <<< "$lsof_out"
+}
+
+# SIGTERM, wait up to 5s, SIGKILL. Returns non-zero if the pid outlives both.
+terminate_pid() {
+    local pid="$1" i
+    kill -0 "$pid" 2>/dev/null || return 0
+
+    print_status "Sending SIGTERM to pid=$pid"
+    kill "$pid" 2>/dev/null
+    for i in 1 2 3 4 5; do
+        kill -0 "$pid" 2>/dev/null || { print_success "Process stopped (pid=$pid)"; return 0; }
+        sleep 1
+    done
+
+    print_warning "pid=$pid still alive, sending SIGKILL..."
+    kill -9 "$pid" 2>/dev/null
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+        print_error "Failed to kill process (pid=$pid)"
+        return 1
+    fi
+    print_success "Process killed (pid=$pid)"
+    return 0
+}
+
 cmd_stop() {
     print_status "Stopping $SERVICE_NAME..."
+
+    # Marker the (subshell) scan writes into when it could not answer.
+    local scan_flag_dir scan_unavailable=0
+    scan_flag_dir="$(mktemp -d "${TMPDIR:-/tmp}/soma-stop.XXXXXX")" || {
+        print_error "cannot create the scan marker dir under ${TMPDIR:-/tmp} — refusing to report a clean stop"
+        return 1
+    }
+    SCAN_UNAVAILABLE_FLAG="$scan_flag_dir/scan-unavailable"
+
+    # Capture the launchd-reported PID BEFORE unloading: if the unload fails we
+    # still know which process launchd was supervising.
+    #
+    # get_pid, not a raw `launchctl list` read: on a headless host the label
+    # lives in `user/<uid>` and does not show up in the runner session's `list`
+    # at all, so the old read returned nothing and the supervisor survived the
+    # stop with no target and no complaint (the 35184945142 shape). get_pid asks
+    # each domain's job dictionary too, and falls back to the app's pidfile —
+    # which is added to targets separately below; a duplicate pid is harmless
+    # (terminate_pid exits 0 on a pid that is already gone).
+    local launchd_pid
+    launchd_pid="$(get_pid)"
 
     # `unload` operates on the launchd registration, not on liveness — so use
     # is_registered (alive-or-dead) here. Otherwise a STALE service couldn't
     # be cleaned up, which is exactly the situation we want stop to handle.
-    if ! is_registered; then
+    #
+    # System mode skips it entirely: `launchctl unload <plist>` cannot reach the
+    # system domain from a non-root session, and the only plist it could reach is
+    # the leftover LaunchAgent. The per-domain bootout below (sudo for system) is
+    # the whole stop there.
+    if is_system_mode; then
+        print_status "System daemon mode — stopping via sudo launchctl bootout system/$SERVICE_NAME"
+    elif ! is_registered; then
         print_warning "Service is not running (LaunchAgent)"
     else
-        launchctl unload "$PLIST_PATH"
+        local unload_err
+        if ! unload_err="$(launchctl unload "$PLIST_PATH" 2>&1 >/dev/null)"; then
+            # `unload` only reaches the domain the caller's session resolves to,
+            # and it cannot reach a `user/<uid>` registration made by bootstrap
+            # at all — so its failure says nothing about whether the service
+            # stopped. The per-domain bootout below is the verdict.
+            print_warning "launchctl unload $PLIST_PATH failed: ${unload_err:-<no stderr>} — the per-domain bootout below decides"
+        fi
         sleep 2
 
         if ! is_registered; then
             print_success "Service stopped (LaunchAgent)"
         else
-            print_error "Failed to stop service via LaunchAgent"
+            # NOT the end of the road any more: fall through to the domain
+            # bootout, the pidfile kill and the cwd process scan below.
+            print_warning "unload did not drop the registration — falling through to the per-domain bootout"
         fi
+    fi
+
+    # Every domain, not just whichever one the plist unload reached.
+    bootout_all_domains
+
+    local targets=() pid raw
+
+    if [[ "$launchd_pid" =~ ^[0-9]+$ ]]; then
+        targets+=("$launchd_pid")
     fi
 
     # Fallback: kill any process tracked by PID lock file (Issue #152)
     # Catches processes started outside LaunchAgent (e.g., manual node execution)
-    local pid_file="$PROJECT_DIR/data/soma-work.pid"
-    if [[ -f "$pid_file" ]]; then
-        local pid raw
+    if [[ -f "$PID_FILE" ]]; then
         # The app writes the lock as "<pid>:<ts>"; strip the timestamp suffix.
         # Without this, kill -0 sees a non-numeric arg and the fallback never
         # actually terminates a process started outside launchd (e.g. the
         # headless direct-spawn), which would orphan it across deploys.
-        raw=$(cat "$pid_file" 2>/dev/null)
+        raw=$(cat "$PID_FILE" 2>/dev/null)
         pid="${raw%%:*}"
-        if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-            print_status "Found running process via PID file (pid=$pid), sending SIGTERM..."
-            kill "$pid" 2>/dev/null
-            sleep 2
-            if kill -0 "$pid" 2>/dev/null; then
-                print_warning "Process still alive, sending SIGKILL..."
-                kill -9 "$pid" 2>/dev/null
-                sleep 1
-            fi
-            if kill -0 "$pid" 2>/dev/null; then
-                print_error "Failed to kill process (pid=$pid)"
-            else
-                print_success "Process killed (pid=$pid)"
-            fi
+        if [[ "$pid" =~ ^[0-9]+$ ]]; then
+            print_status "Found process via PID file (pid=$pid)"
+            targets+=("$pid")
         fi
-        rm -f "$pid_file"
     fi
+
+    # Anything still running out of the project dir, whatever started it.
+    while read -r pid; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        print_status "Found process with cwd=$PROJECT_DIR (pid=$pid)"
+        targets+=("$pid")
+    done < <(scan_project_pids)
+
+    local kill_failed=0
+    for pid in "${targets[@]+"${targets[@]}"}"; do
+        terminate_pid "$pid" || kill_failed=1
+    done
+
+    # Drop the lock only once nothing holds it, so a failed stop keeps the
+    # handle an operator (or the next stop) needs.
+    if [[ -f "$PID_FILE" ]]; then
+        raw=$(cat "$PID_FILE" 2>/dev/null)
+        pid="${raw%%:*}"
+        if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$PID_FILE"
+        fi
+    fi
+
+    # Re-scan: the authoritative "is anything still running out of this tree"
+    # answer. KeepAlive in a second domain shows up here as a NEW pid, which is
+    # precisely the failure the old code reported as success.
+    local survivors=()
+    for pid in "${targets[@]+"${targets[@]}"}"; do
+        kill -0 "$pid" 2>/dev/null && survivors+=("$pid")
+    done
+    while read -r pid; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        survivors+=("$pid")
+    done < <(scan_project_pids)
+
+    if [[ -n "$SCAN_UNAVAILABLE_FLAG" && -f "$SCAN_UNAVAILABLE_FLAG" ]]; then
+        scan_unavailable=1
+    fi
+    SCAN_UNAVAILABLE_FLAG=""
+    [[ -n "$scan_flag_dir" ]] && rm -rf "$scan_flag_dir"
+
+    if [[ ${#survivors[@]} -gt 0 || ${#STOP_DOMAINS_HELD[@]} -gt 0 || "$kill_failed" -eq 1 || "$scan_unavailable" -eq 1 ]]; then
+        print_error "stop did not reach a clean state:"
+        if [[ ${#survivors[@]} -gt 0 ]]; then
+            print_error "  still-live process(es) under $PROJECT_DIR: ${survivors[*]}"
+        fi
+        if [[ ${#STOP_DOMAINS_HELD[@]} -gt 0 ]]; then
+            print_error "  label still registered in: ${STOP_DOMAINS_HELD[*]}"
+        fi
+        if [[ "$scan_unavailable" -eq 1 ]]; then
+            print_error "  stray-process scan unavailable — refusing to report a clean stop"
+        fi
+        return 1
+    fi
+
+    print_success "Stopped: no live process under $PROJECT_DIR, no launchd domain holds $SERVICE_NAME"
+    return 0
 }
 
 cmd_restart() {
     print_status "Restarting $SERVICE_NAME..."
-    cmd_stop
+    # Starting on top of a stop that left something alive is how a host ends up
+    # with two supervisor trees (incident 2026-09-17, work-m16).
+    if ! cmd_stop; then
+        print_error "Refusing to start on top of a failed stop."
+        return 1
+    fi
     sleep 1
     cmd_start
+}
+
+# --- verify-restart: proof that THIS deploy's code is the one running -----
+#
+# `status` answers "a process is alive". After the 2026-09-17 incident that is
+# not enough: the alive process was the previous deploy's, 4 hours old, and CI
+# read it as success. verify-restart demands two independent pieces of evidence
+# that the restart actually happened with the version we just shipped:
+#   (a) the live PID's start time is at/after --since (the deploy's own clock
+#       reading, taken before the stop), and
+#   (b) logs/stdout.log carries this version's startup line
+#       "⚡️ Claude Code Slack bot is running! [v<version> (<sha>)]"
+#       (src/index.ts) with a log timestamp at/after --since.
+# Both are polled, because the line is only written after the Slack socket
+# connects, which takes tens of seconds.
+
+# Epoch seconds from `ps -o lstart=` ("Thu Sep 17 14:25:29 2026", local time).
+# BSD date first (macOS targets), GNU date second (Linux runners).
+#
+# `tr -s ' '` first: BSD ps space-pads single-digit days ("Wed Sep  3 …"), and a
+# strict "%a %b %d %T %Y" reader that stumbles on the double space would report
+# "could not read start time" for every deploy on days 1–9.
+lstart_to_epoch() {
+    local lstart="$1"
+    [[ -n "$lstart" ]] || return 1
+    lstart="$(printf '%s' "$lstart" | tr -s ' ')"
+    date -j -f "%a %b %d %T %Y" "$lstart" +%s 2>/dev/null && return 0
+    date -d "$lstart" +%s 2>/dev/null && return 0
+    return 1
+}
+
+# Epoch seconds from a log line's leading ISO timestamp, written by the shared
+# logger as "[2026-09-17T05:25:29.123Z] [INFO ] [Index] …" (UTC).
+log_line_epoch() {
+    local line="$1" ts
+    ts="${line#\[}"
+    ts="${ts%%]*}"
+    ts="${ts%%.*}"
+    ts="${ts%Z}"
+    [[ "$ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]] || return 1
+    date -j -u -f "%Y-%m-%dT%H:%M:%S" "$ts" +%s 2>/dev/null && return 0
+    date -u -d "$ts" +%s 2>/dev/null && return 0
+    return 1
+}
+
+cmd_verify_restart() {
+    # 180s, not 60: measured on fable-m5max 2026-09-17, the supervisor took 5–8s
+    # to log "bot is running" on a warm start but 88s and 129s on two cold
+    # starts. A 60s budget fails deploys that actually restarted correctly.
+    local since="" want_version="" timeout=180
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --since)   since="${2:-}";        shift 2 || return 2 ;;
+            --version) want_version="${2:-}"; shift 2 || return 2 ;;
+            --timeout) timeout="${2:-}";      shift 2 || return 2 ;;
+            *)
+                print_error "verify-restart: unknown argument '$1'"
+                return 2
+                ;;
+        esac
+    done
+
+    if [[ ! "$since" =~ ^[0-9]+$ ]]; then
+        print_error "verify-restart requires --since <epoch-seconds>"
+        return 2
+    fi
+    if [[ -z "$want_version" ]]; then
+        print_error "verify-restart requires --version <version> (e.g. 0.26.1 or v0.26.1)"
+        return 2
+    fi
+    if [[ ! "$timeout" =~ ^[0-9]+$ ]]; then
+        print_error "verify-restart: --timeout must be seconds"
+        return 2
+    fi
+
+    # Accept the tag form; the log prints "[v<version> (" from version.json.
+    want_version="${want_version#v}"
+    local log_file="$LOGS_DIR/stdout.log"
+    local pattern="bot is running! [v$want_version ("
+
+    print_status "Verifying restart of $SERVICE_NAME (version $want_version, since epoch $since, timeout ${timeout}s)"
+
+    local deadline=$(( $(date +%s) + timeout ))
+    local pid start_time start_epoch log_line log_epoch
+    local pid_reason="" log_reason=""
+
+    while :; do
+        local pid_ok=0 log_ok=0
+        pid_reason=""
+        log_reason=""
+        start_time=""
+        log_line=""
+
+        pid="$(get_pid)"
+        if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+            start_time="$(ps -p "$pid" -o lstart= 2>/dev/null)"
+            start_epoch="$(lstart_to_epoch "$start_time")" || start_epoch=""
+            if [[ ! "$start_epoch" =~ ^[0-9]+$ ]]; then
+                pid_reason="could not read start time of pid=$pid (ps lstart: '$start_time')"
+            elif [[ "$start_epoch" -ge "$since" ]]; then
+                pid_ok=1
+            else
+                pid_reason="pid=$pid started $start_time (epoch $start_epoch) — BEFORE --since $since, i.e. this is the OLD process"
+            fi
+        else
+            pid_reason="no live process (status reports STALE or STOPPED)"
+        fi
+
+        log_line="$(grep -F "$pattern" "$log_file" 2>/dev/null | tail -1)"
+        if [[ -z "$log_line" ]]; then
+            # No ellipsis/em-dash straight after a $var here: bash 3.2 (macOS)
+            # swallows "$pattern…" as one identifier and the text vanishes.
+            log_reason="no '$pattern' line in $log_file"
+        else
+            log_epoch="$(log_line_epoch "$log_line")" || log_epoch=""
+            if [[ ! "$log_epoch" =~ ^[0-9]+$ ]]; then
+                log_reason="could not read the timestamp of the matched line: $log_line"
+            elif [[ "$log_epoch" -ge "$since" ]]; then
+                log_ok=1
+            else
+                log_reason="the only matching startup line predates --since $since (epoch $log_epoch): $log_line"
+            fi
+        fi
+
+        if [[ "$pid_ok" -eq 1 && "$log_ok" -eq 1 ]]; then
+            print_success "Restart verified (PID: $pid, started $start_time)"
+            echo "  matched: $log_line"
+            return 0
+        fi
+
+        [[ "$(date +%s)" -ge "$deadline" ]] && break
+        sleep 2
+    done
+
+    print_error "Restart NOT verified (version $want_version, --since $since, waited ${timeout}s)"
+    [[ -n "$pid_reason" ]] && print_error "  process: $pid_reason"
+    [[ -n "$log_reason" ]] && print_error "  log: $log_reason"
+    echo ""
+    echo "Last 10 lines of $log_file:"
+    echo "---"
+    tail -10 "$log_file" 2>/dev/null || echo "  (no logs)"
+    return 1
 }
 
 warn_missing_tools() {
@@ -539,16 +1491,35 @@ cmd_install() {
     fi
 
     mkdir -p "$LOGS_DIR"
-    mkdir -p "$LAUNCH_AGENTS_DIR"
 
-    generate_plist > "$PLIST_PATH"
-    print_success "Plist created: $PLIST_PATH"
+    # System mode installs NOTHING into ~/Library/LaunchAgents. Writing that
+    # plist next to a bootstrapped LaunchDaemon is the double-registration
+    # source the 2026-09-18 investigation traced; the daemon plist itself needs
+    # root, so an absent one is an operator task, not something to improvise.
+    if is_system_mode; then
+        if [[ ! -f "$SYSTEM_DAEMON_PLIST" ]]; then
+            print_error "System LaunchDaemon plist not found: $SYSTEM_DAEMON_PLIST"
+            print_error "  creating it needs root and is the operator's job (Label $SERVICE_NAME, UserName = the service account)."
+            return 1
+        fi
+        print_status "System daemon mode — using $SYSTEM_DAEMON_PLIST (no user LaunchAgent is written)"
+    else
+        mkdir -p "$LAUNCH_AGENTS_DIR"
+        generate_plist > "$PLIST_PATH"
+        print_success "Plist created: $PLIST_PATH"
+    fi
 
     load_and_kickstart
     sleep 2
 
     if is_alive; then
         print_success "Service installed and started (PID: $(get_pid))"
+    elif is_system_mode; then
+        print_error "Service bootstrapped in the system domain but not running (no live PID)."
+        print_error "  inspect: sudo -n /bin/launchctl print system/$SERVICE_NAME"
+        print_start_diagnostics
+        print_error "Check: tail -f $LOGS_DIR/stderr.log"
+        return 1
     else
         # No live process via launchd — on a GUI-less host fall back to a
         # direct spawn so the freshly deployed code actually runs.
@@ -556,6 +1527,7 @@ cmd_install() {
             print_success "Service installed and started via headless fallback (PID: $(get_pid))"
         else
             print_error "Service installed but not running (launchd + headless fallback both failed)."
+            print_start_diagnostics
             print_error "Check: tail -f $LOGS_DIR/stderr.log"
             return 1
         fi
@@ -565,16 +1537,31 @@ cmd_install() {
 cmd_uninstall() {
     print_status "Uninstalling $SERVICE_NAME..."
 
-    if is_registered; then
-        launchctl unload "$PLIST_PATH"
-        sleep 2
-    fi
+    # `launchctl unload <plist>` reaches at most the one domain the caller's
+    # session resolves to, and it cannot touch a `user/<uid>` bootstrap at all —
+    # so on a headless host uninstall used to delete the plist while leaving the
+    # label registered, i.e. a registration with no file left to unload it with.
+    # Boot the label out of EVERY domain, and only claim the service is gone
+    # when none of them still holds it.
+    bootout_all_domains
 
     if [[ -f "$PLIST_PATH" ]]; then
         rm "$PLIST_PATH"
         print_success "Plist removed"
     else
         print_warning "Plist not found"
+    fi
+
+    # The LaunchDaemon is root-owned; removing it is an operator action, so say
+    # where it is instead of pretending the uninstall took it away.
+    if is_system_mode && [[ -f "$SYSTEM_DAEMON_PLIST" ]]; then
+        print_status "System LaunchDaemon left in place (root-owned): $SYSTEM_DAEMON_PLIST"
+    fi
+
+    if [[ ${#STOP_DOMAINS_HELD[@]} -gt 0 ]]; then
+        print_error "Service NOT fully uninstalled — label still registered in: ${STOP_DOMAINS_HELD[*]}"
+        print_status "Logs preserved at: $LOGS_DIR"
+        return 1
     fi
 
     print_success "Service uninstalled"
@@ -654,17 +1641,19 @@ cmd_reinstall() {
 
     # Step 1: Stop
     print_status "[1/4] Stopping service..."
-    if is_registered; then
-        launchctl unload "$PLIST_PATH"
-        sleep 2
-        if ! is_registered; then
-            print_success "Service stopped"
-        else
-            print_error "Failed to stop service"
-            return 1
-        fi
+    # `launchctl unload` + is_registered was a two-domain lie: unload cannot
+    # reach a `user/<uid>` bootstrap — the only domain a headless host has — so
+    # the registration survived, is_registered stayed true, and reinstall
+    # aborted at step 1 on exactly the hosts the user-domain fallback exists
+    # for. cmd_stop is the one implementation of "stop": bootout in every
+    # domain, pidfile + cwd survivors killed, non-zero when anything is left.
+    # Same gate cmd_restart uses — building and starting on top of a stop that
+    # left a supervisor alive is how a host ends up serving two trees.
+    if cmd_stop; then
+        print_success "Service stopped"
     else
-        print_warning "Service was not running"
+        print_error "Failed to stop service — refusing to reinstall on top of it."
+        return 1
     fi
 
     # Step 2: Build
@@ -680,9 +1669,15 @@ cmd_reinstall() {
     # Step 3: Update plist
     print_status "[3/4] Updating service configuration..."
     mkdir -p "$LOGS_DIR"
-    mkdir -p "$LAUNCH_AGENTS_DIR"
-    generate_plist > "$PLIST_PATH"
-    print_success "Service configuration updated"
+    if is_system_mode; then
+        # Same reason as cmd_install: the LaunchDaemon is the supervisor and is
+        # root-owned, so there is no plist for this command to rewrite.
+        print_status "System daemon mode — $SYSTEM_DAEMON_PLIST is owned by the operator, nothing to rewrite"
+    else
+        mkdir -p "$LAUNCH_AGENTS_DIR"
+        generate_plist > "$PLIST_PATH"
+        print_success "Service configuration updated"
+    fi
 
     # Step 4: Start
     print_status "[4/4] Starting service..."
@@ -695,7 +1690,14 @@ cmd_reinstall() {
         echo "  Check logs: ./scripts/service.sh ${ENV_ARG:+$ENV_ARG }logs follow"
     elif is_registered; then
         print_error "Reinstall: label registered but no live PID."
-        print_error "Likely Aqua-session mismatch. Try: launchctl kickstart -k gui/\$(id -u)/$SERVICE_NAME"
+        if is_system_mode; then
+            print_error "  System domain. Inspect: sudo -n /bin/launchctl print system/$SERVICE_NAME"
+        else
+            print_error "  Likely Aqua-session mismatch. Try: launchctl kickstart -k gui/\$(id -u)/$SERVICE_NAME"
+            print_error "  On a host with no GUI/Aqua session use the per-user domain:"
+            print_error "    launchctl bootstrap user/\$(id -u) $PLIST_PATH"
+            print_error "    launchctl kickstart -k user/\$(id -u)/$SERVICE_NAME"
+        fi
         return 1
     else
         print_error "Service failed to start. Check: tail -f $LOGS_DIR/stderr.log"
@@ -766,6 +1768,10 @@ cmd_setup() {
 cmd_status_all() {
     for env in main dev; do
         resolve_env "$env"
+        # Each env resolves its own domain, so the one-shot probe in Main (which
+        # ran for the invoking env) does not cover them; re-probe per env so a
+        # refusal is explained here instead of surfacing as an empty status.
+        require_system_sudo || true
         echo ""
         cmd_status
         echo ""
@@ -848,6 +1854,19 @@ cmd_check_env() {
 }
 
 # --- Main ---
+#
+# One sudo reachability probe per run, before any command that talks to launchd.
+# Doing it here rather than inside each helper keeps the refusal message where an
+# operator sees it: the helpers run inside command substitutions, whose stdout is
+# parsed, so an error printed there would be swallowed by its caller.
+if is_system_mode; then
+    case "$COMMAND" in
+        status|status-all|start|stop|restart|install|uninstall|reinstall|verify-restart)
+            require_system_sudo || exit 1
+            ;;
+    esac
+fi
+
 case "$COMMAND" in
     status)
         cmd_status
@@ -863,6 +1882,9 @@ case "$COMMAND" in
         ;;
     restart)
         cmd_restart
+        ;;
+    verify-restart)
+        cmd_verify_restart "$@"
         ;;
     install)
         cmd_install
@@ -896,8 +1918,10 @@ case "$COMMAND" in
         echo "  status       Show service status"
         echo "  status-all   Show all environments"
         echo "  start        Start the service"
-        echo "  stop         Stop the service"
+        echo "  stop         Stop the service (non-zero if anything survives)"
         echo "  restart      Restart (no rebuild)"
+        echo "  verify-restart --since <epoch-seconds> --version <ver> [--timeout <sec>]"
+        echo "               Prove the RUNNING process is this version and started after <epoch>"
         echo "  reinstall    Stop, rebuild, start (after code changes)"
         echo "  install      Install as LaunchAgent"
         echo "  uninstall    Remove LaunchAgent"
@@ -910,6 +1934,7 @@ case "$COMMAND" in
         echo "  ./scripts/service.sh main status          # Production status"
         echo "  ./scripts/service.sh dev setup            # Initialize dev config dir"
         echo "  ./scripts/service.sh main logs follow     # Stream production logs (rotation-safe)"
+        echo "  ./scripts/service.sh main verify-restart --since 1789622729 --version 0.26.1"
         echo "  ./scripts/service.sh main logs history ERROR  # Search live + rotated logs"
         echo "  ./scripts/service.sh status-all           # All environments"
         echo ""

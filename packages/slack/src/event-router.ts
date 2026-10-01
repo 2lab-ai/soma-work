@@ -246,12 +246,57 @@ export function setEventRouterProviders(providers: EventRouterProviders): void {
   };
 }
 
+/** One user edit of one existing message, flattened out of the `message_changed` envelope. */
+export interface MessageEditEvent {
+  channel: string;
+  /** The EDITED message's own ts (not the envelope's) — the identity the queue stored. */
+  ts: string;
+  threadTs: string;
+  user: string;
+  text: string;
+}
+
+/** One reaction added to one message, flattened out of the `reaction_added` envelope. */
+export interface ReactionAddedEvent {
+  channel: string;
+  /** The REACTED message's ts (not the envelope's `event_ts`) — the queue's key. */
+  ts: string;
+  /** The emoji NAME, without colons, exactly as Slack reports it. */
+  reaction: string;
+  /** Who reacted. Never the bot — this router drops its own reactions. */
+  user: string;
+  eventTs: string;
+}
+
 export interface EventRouterDeps {
   slackApi: SlackApiHelper;
   claudeHandler: ClaudeSessionEventRouter;
   sessionManager: SessionUiEventManager;
   actionHandlers: ActionHandlers;
   commandDeps?: unknown;
+  /**
+   * A user edited a message in a thread (06 §3.4 D3: the Slack edit IS the
+   * Edit control). Routing only — this router does not know what the edit means
+   * for the queue and never answers the user about it. Optional: an
+   * unconfigured host keeps today's behavior, which is to drop the event.
+   */
+  onMessageEdited?: (edit: MessageEditEvent) => Promise<void> | void;
+  /**
+   * A user added a queue-control reaction to a message (09 §2.2: the reaction
+   * IS the control). Routing only, like {@link onMessageEdited} — resolving the
+   * item, the authorization and the state gate are the host's.
+   */
+  onReactionAdded?: (event: ReactionAddedEvent) => Promise<void> | void;
+  /**
+   * Is this emoji name one of the queue controls? Supplied by the host because
+   * the names are configurable (09 §2.3) and only the host reads that config.
+   *
+   * Required for anything to be forwarded at all: without it this router cannot
+   * tell a control from a 👍, and forwarding every reaction in every channel
+   * would put a queue lookup behind each one. An unwired host therefore keeps
+   * today's behavior, which is to drop the event.
+   */
+  isFollowupControlReaction?: (name: string) => boolean;
 }
 
 /**
@@ -515,11 +560,80 @@ export class EventRouter {
    */
   setup(): void {
     this.setupMessageHandlers();
+    this.setupReactionHandlers();
     this.setupSlashCommands();
     this.setupMemberJoinHandler();
     this.deps.actionHandlers.registerHandlers(this.app);
     this.setupSessionExpiryCallbacks();
     this.setupSessionCleanup();
+  }
+
+  /**
+   * `reaction_added` — the second control transport (09 §2.2).
+   *
+   * Everything here is a FILTER; the one thing it does is hand the surviving
+   * events to the host. The order of the filters is the point:
+   *
+   * 1. the emoji name, because a 👍 must cost nothing at all — no queue lookup,
+   *    and above all no `auth.test` round trip per reaction in every channel
+   *    the bot sits in;
+   * 2. the item type, because only a message can be a queue item;
+   * 3. the reactor, last, because it is the only check that needs the network.
+   *
+   * The bot's own reactions are dropped and the drop is FAIL-CLOSED: the bot
+   * paints `ui_send_now`/`ui_cancel` on the user's message itself, so every one
+   * of those comes back as a `reaction_added`, and a host that cannot say who
+   * the bot is would answer its own controls. An unreadable bot identity is
+   * therefore a dropped event, never a forwarded one.
+   */
+  private setupReactionHandlers(): void {
+    this.app.event('reaction_added', async ({ event }) => {
+      const reaction = event as unknown as {
+        user?: unknown;
+        reaction?: unknown;
+        event_ts?: unknown;
+        item?: { type?: unknown; channel?: unknown; ts?: unknown };
+      };
+      const name = typeof reaction.reaction === 'string' ? reaction.reaction : undefined;
+      if (!name || !this.deps.isFollowupControlReaction?.(name)) return;
+
+      const item = reaction.item;
+      if (item?.type !== 'message') return;
+      const channel = typeof item.channel === 'string' ? item.channel : undefined;
+      const ts = typeof item.ts === 'string' ? item.ts : undefined;
+      const user = typeof reaction.user === 'string' ? reaction.user : undefined;
+      if (!channel || !ts || !user) return;
+
+      let botUserId: string | undefined;
+      try {
+        botUserId = await this.deps.slackApi.getBotUserId();
+      } catch (error) {
+        this.logger.warn('reaction_added dropped — bot identity unavailable', {
+          channel,
+          error: (error as Error)?.message ?? String(error),
+        });
+        return;
+      }
+      if (!botUserId || user === botUserId) return;
+
+      try {
+        await this.deps.onReactionAdded?.({
+          channel,
+          ts,
+          reaction: name,
+          user,
+          eventTs: typeof reaction.event_ts === 'string' ? reaction.event_ts : '',
+        });
+      } catch (error) {
+        // A control the host could not carry out must not break the listener —
+        // the host answers the reactor itself, this is bookkeeping only.
+        this.logger.warn('reaction_added hook failed', {
+          channel,
+          ts,
+          error: (error as Error)?.message ?? String(error),
+        });
+      }
+    });
   }
 
   /**
@@ -655,6 +769,38 @@ export class EventRouter {
     // 스레드 메시지 처리 (멘션 없이도 세션이 있으면 응답)
     this.app.event('message', async ({ event, say }) => {
       const messageEvent = event as any;
+
+      // 메시지 편집(`message_changed`)은 다른 모든 분기보다 먼저 본다: 이 envelope은
+      // 최상위에 `user`가 없어(작성자는 `event.message` 안에 있다) 바로 아래의 봇
+      // 메시지 가드에 걸려 버려진다. 새 턴을 만들지 않고 호스트 훅으로만 넘긴다.
+      if (messageEvent.subtype === 'message_changed') {
+        const edited = messageEvent.message as
+          | { user?: unknown; bot_id?: unknown; ts?: unknown; thread_ts?: unknown; text?: unknown }
+          | undefined;
+        const user = typeof edited?.user === 'string' ? edited.user : undefined;
+        const ts = typeof edited?.ts === 'string' ? edited.ts : undefined;
+        const threadTs = typeof edited?.thread_ts === 'string' ? edited.thread_ts : undefined;
+        // 봇이 자기 메시지(패널·스트림)를 갱신하는 것도 `message_changed`다 —
+        // 유저 편집만 통과시킨다. 스레드 밖 편집은 큐 세션 자체가 없다.
+        if (!user || edited?.bot_id !== undefined || !ts || !threadTs) return;
+        try {
+          await this.deps.onMessageEdited?.({
+            channel: messageEvent.channel,
+            ts,
+            threadTs,
+            user,
+            text: typeof edited?.text === 'string' ? edited.text : '',
+          });
+        } catch (error) {
+          // 편집 반영 실패가 메시지 리스너를 깨서는 안 된다 — 항목은 원문 그대로 남는다.
+          this.logger.warn('message_changed hook failed', {
+            channel: messageEvent.channel,
+            ts,
+            error: (error as Error)?.message ?? String(error),
+          });
+        }
+        return;
+      }
 
       // 봇 메시지 스킵
       if ('bot_id' in event || !('user' in event)) {

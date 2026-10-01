@@ -28,27 +28,26 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type { CatalogModel } from 'soma-lib';
+import { clampEffortToSupported, normalizeCatalogEntries } from 'soma-lib';
 import type { LlmuxModelEntry } from './auth/llmux-client';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 
 const logger = new Logger('ModelCatalog');
 
-/** Normalized catalog entry (aliases/efforts lowercased, `max_context` → `maxContext`). */
-export interface CatalogModel {
-  id: string;
-  aliases: string[];
-  name: string;
-  efforts: string[];
-  maxContext: number | null;
-  group: string;
-}
+// Normalized catalog entry (aliases/efforts lowercased, `max_context` →
+// `maxContext`). The row shape is the SHARED soma-lib one — soma and soma-work
+// must agree on what a `/llmux/models` row is once it crosses the wire, so a
+// snapshot written by one is loadable by the other. Store policy stays here.
+export type { CatalogModel } from 'soma-lib';
 
 /**
- * Canonical effort ordering used by {@link clampEffortToModel}. Superset of
- * the store's EFFORT_LEVELS (`ultra` exists upstream on some codex tiers).
+ * Canonical effort ordering used by {@link clampEffortToModel}: soma-lib's
+ * `EFFORT_LEVELS`. Superset of the store's EFFORT_LEVELS (`ultra` exists
+ * upstream on some codex tiers).
  */
-export const CANONICAL_EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+export { EFFORT_LEVELS as CANONICAL_EFFORT_ORDER } from 'soma-lib';
 
 const SNAPSHOT_FILE_NAME = 'model-catalog.json';
 /** Min gap between two llmux fetch attempts (success or failure). */
@@ -88,39 +87,10 @@ interface SnapshotShape {
 }
 
 function normalizeEntries(raw: unknown[]): CatalogModel[] {
-  const out: CatalogModel[] = [];
-  const seen = new Set<string>();
-  for (const entry of raw) {
-    if (!entry || typeof entry !== 'object') continue;
-    const e = entry as Record<string, unknown>;
-    const id = typeof e.id === 'string' ? e.id.trim() : '';
-    if (id.length === 0) continue;
-    const key = id.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const aliases = Array.isArray(e.aliases)
-      ? e.aliases
-          .filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
-          .map((a) => a.trim().toLowerCase())
-      : [];
-    const efforts = Array.isArray(e.efforts)
-      ? e.efforts
-          .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
-          .map((x) => x.trim().toLowerCase())
-      : [];
-    // Accept both wire (`max_context`) and snapshot (`maxContext`) spellings.
-    const rawWindow = e.max_context ?? e.maxContext;
-    const maxContext = typeof rawWindow === 'number' && Number.isFinite(rawWindow) && rawWindow > 0 ? rawWindow : null;
-    out.push({
-      id,
-      aliases,
-      name: typeof e.name === 'string' && e.name.trim().length > 0 ? e.name.trim() : id,
-      efforts,
-      maxContext,
-      group: typeof e.group === 'string' ? e.group.trim().toLowerCase() : '',
-    });
-  }
-  return out;
+  // Shared defensive normalization (wire `max_context` and snapshot
+  // `maxContext` both accepted, ids deduped case-insensitively first-wins).
+  // No `fallbackGroup` — soma-work's convention is `''` for an undeclared group.
+  return normalizeCatalogEntries(raw);
 }
 
 class ModelCatalog {
@@ -352,22 +322,9 @@ modelCatalog.loadSnapshotSync();
  *   supported effort. (grok: xhigh→high, max→high, low→low.)
  *
  * Pure read over catalog state — never mutates session/user settings.
+ * Clamp rule lives in soma-lib `clampEffortToSupported`; this wrapper only
+ * supplies the catalog lookup.
  */
 export function clampEffortToModel(modelId: string, effort: string): string {
-  const supported = modelCatalog.getEffortsFor(modelId);
-  if (!supported || supported.length === 0) return effort;
-  const normalized = effort.trim().toLowerCase();
-  if (supported.includes(normalized)) return normalized === effort ? effort : normalized;
-
-  const order = CANONICAL_EFFORT_ORDER as readonly string[];
-  const requestedIdx = order.indexOf(normalized);
-  if (requestedIdx === -1) return effort;
-
-  const ranked = supported.filter((e) => order.includes(e)).sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  if (ranked.length === 0) return effort;
-  for (let i = requestedIdx; i >= 0; i--) {
-    const candidate = order[i];
-    if (ranked.includes(candidate)) return candidate;
-  }
-  return ranked[0];
+  return clampEffortToSupported(modelCatalog.getEffortsFor(modelId), effort);
 }

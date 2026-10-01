@@ -46,6 +46,11 @@ describe('decodeCctActionValue — invalid matrix', () => {
     expect(decodeCctActionValue('cm:admin|')).toEqual({ kind: 'invalid', raw: 'cm:admin|' });
   });
 
+  it('returns invalid for "cm:admin| " (whitespace-only payload — the encoder never produces one)', () => {
+    expect(decodeCctActionValue('cm:admin| ')).toEqual({ kind: 'invalid', raw: 'cm:admin| ' });
+    expect(decodeCctActionValue('cm:readonly|\t　')).toEqual({ kind: 'invalid', raw: 'cm:readonly|\t　' });
+  });
+
   it('returns invalid for "cm:|abc" (empty mode)', () => {
     expect(decodeCctActionValue('cm:|abc')).toEqual({ kind: 'invalid', raw: 'cm:|abc' });
   });

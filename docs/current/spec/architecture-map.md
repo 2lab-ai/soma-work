@@ -41,7 +41,7 @@ soma-work (Slack ⇄ Claude Code SDK 에이전트 호스트)
 │   └─ somalib/ ─ ⚠ packages/ 밖 top-level 변칙 · process-shared의 re-export shim 타깃 + cron
 │
 ├─ [5] MCP 서버  (packages/mcp-servers/*)
-│   ├─ llm/ (codex/gemini 라우팅) · permission/ ─┐  ⚠ 권한 MCP 서버가 둘
+│   ├─ agent/ · cron/ · model-command/ · permission/ ─┐  ⚠ 권한 MCP 서버가 둘
 │   └─ mcp-tool-permission/ ───────────────────┘
 │
 └─ [6] 배포/운영

@@ -9,6 +9,11 @@ on:
         description: 'Type "deploy" to confirm deployment'
         required: true
         type: string
+      targets:
+        description: 'Runner labels to deploy to (comma-separated). Empty = every configured target for the channel. Unknown labels fail the run.'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: deploy-${{ github.ref_name }}
@@ -42,13 +47,21 @@ jobs:
       # per line in the form  {runner-name}:{target-dir} :
       #   PREVIEW_DEPLOY_TARGETS    — preview channel  (deploy/dev, main dispatch)
       #   PRODUCTION_DEPLOY_TARGETS — production channel (deploy/prod)
-      # Entries get neutral job names (t1, t2, ...) so run logs stay topology-free.
+      # Entries get neutral job names (t1, t2, ...) so the run list and job graph
+      # stay topology-free (step logs do print the resolved entries).
+      #
+      # A manual run may narrow the set with the `targets` input (comma-separated
+      # runner labels). The variable stays the single source of truth: the input
+      # can only SELECT from it, never add to it, and a label that is not
+      # configured fails the run instead of being ignored — a typo must not turn
+      # into "deployed everywhere" or "deployed nowhere" silently.
       - name: Resolve deploy targets
         id: targets
         env:
           RAW: ${{ github.ref_name == 'deploy/prod' && vars.PRODUCTION_DEPLOY_TARGETS || vars.PREVIEW_DEPLOY_TARGETS }}
           GITHUB_ENV_NAME: ${{ github.ref_name == 'deploy/prod' && 'production' || 'development' }}
           DEPLOY_ENV_NAME: ${{ github.ref_name == 'deploy/prod' && 'main' || 'dev' }}
+          SELECT: ${{ github.event_name == 'workflow_dispatch' && inputs.targets || '' }}
         run: |
           matrix=$(jq -R -s -c --arg ge "$GITHUB_ENV_NAME" --arg de "$DEPLOY_ENV_NAME" '
             split("\n")
@@ -62,6 +75,19 @@ jobs:
                    github_env: $ge,
                    deploy_env: $de})
             | {include: .}' <<< "$RAW")
+          # Normalize once: drop ALL whitespace (spaces, tabs, newlines) so the
+          # emptiness check and the split see the same string.
+          SELECT_NORM="$(tr -d '[:space:]' <<< "$SELECT")"
+          if [[ -n "$SELECT_NORM" ]]; then
+            selected=$(jq -R -c 'split(",") | map(select(length > 0)) | unique' <<< "$SELECT_NORM")
+            unknown=$(jq -c --argjson sel "$selected" '[.include[].runner_label] as $known | $sel | map(select(. as $s | ($known | index($s)) == null))' <<< "$matrix")
+            if [[ "$(jq 'length' <<< "$unknown")" -ne 0 ]]; then
+              echo "::error::Requested targets are not configured for this channel: $(jq -r 'join(",")' <<< "$unknown")"
+              exit 1
+            fi
+            matrix=$(jq -c --argjson sel "$selected" '{include: [.include[] | select(.runner_label as $l | ($sel | index($l)) != null)]}' <<< "$matrix")
+            echo "targets narrowed by input to $(jq 'length' <<< "$selected") of the configured set"
+          fi
           count=$(jq '.include | length' <<< "$matrix")
           if [[ "$count" -eq 0 ]]; then
             echo "::error::No deploy targets configured for this channel (check repo Actions variables)."
@@ -118,7 +144,7 @@ jobs:
     name: Deploy ${{ matrix.name }}
     needs: prepare
     runs-on: [self-hosted, "${{ matrix.runner_label }}"]
-    timeout-minutes: 10
+    timeout-minutes: 15
     environment: ${{ matrix.github_env }}
     strategy:
       fail-fast: false
@@ -158,6 +184,15 @@ jobs:
           echo "::add-mask::$TARGET"
           echo "Deploying target ${{ matrix.name }}..."
 
+          # Clock reading taken BEFORE anything is stopped. The Verify step
+          # requires the live process to have started after this instant, which
+          # is what deploy run 35184945142 could not tell: `status` reported the
+          # PREVIOUS deploy's pid (61554, 4h old) as RUNNING and the job went
+          # green while the old bundle kept serving.
+          DEPLOY_STARTED=$(date +%s)
+          echo "DEPLOY_STARTED=$DEPLOY_STARTED" >> "$GITHUB_ENV"
+          echo "Deploy started at epoch $DEPLOY_STARTED"
+
           # Self-hosted runners launch non-login shells; nvm-installed node
           # is not on PATH until we source nvm.sh. Without this, the
           # `npm ci --omit=dev` and resvg smoke test below would fail with
@@ -195,6 +230,23 @@ jobs:
           }
           echo "Using node: $(node -v) at $(command -v node)"
 
+          # The version the prepare job bumped, as written into the bundle by
+          # scripts/version-bump.sh. This is the exact string the daemon prints
+          # at startup (src/index.ts: "bot is running! [v<version> (<sha>)]"),
+          # so the Verify step can demand THIS version's startup line.
+          # `node -p` prints the literal string "undefined" when the file parses
+          # but carries no `version` key, and that string would then be passed
+          # to verify-restart as if it were a version — a grep for
+          # "[vundefined (" that can never match, i.e. a deploy that fails for
+          # the wrong reason. Treat it exactly like the missing-file case.
+          DEPLOY_VERSION="$(node -p "require('./dist/version.json').version" 2>/dev/null || true)"
+          if [[ -z "$DEPLOY_VERSION" || "$DEPLOY_VERSION" == "undefined" || "$DEPLOY_VERSION" == "null" ]]; then
+            echo "::error::dist/version.json missing or has no version field in the deploy bundle — the restart cannot be verified."
+            exit 1
+          fi
+          echo "DEPLOY_VERSION=$DEPLOY_VERSION" >> "$GITHUB_ENV"
+          echo "Deploying version $DEPLOY_VERSION"
+
           if [[ "$ENV" == "main" ]]; then
             DEV_SOURCE="/opt/soma-work/dev" \
             LEGACY_ROOT="/Users/dd/app.claude-code-slack-bot" \
@@ -202,7 +254,11 @@ jobs:
             node dist/deploy/main-env-bootstrap.js
           fi
 
-          bash scripts/service.sh "$ENV" stop || true
+          # No `|| true`: a stop that leaves the old supervisor alive (failed
+          # unload, a second launchd domain, an orphan tree) must fail the
+          # deploy here instead of rsyncing a new bundle under a running old
+          # process and calling it green.
+          bash scripts/service.sh "$ENV" stop
           bash scripts/deploy/sync-bundle.sh "$TARGET" "."
           bash scripts/deploy/install-target.sh "$TARGET" "$ENV" "${{ matrix.name }}"
 
@@ -217,7 +273,19 @@ jobs:
           # review (P1 finding #2).
           cd bundle/root
           sleep 3
+          # Liveness: a process exists at all.
           bash scripts/service.sh "$ENV" status
+          # Identity: that process started during THIS deploy and logged THIS
+          # version's startup line. Without it the step is satisfied by any
+          # leftover process — run 35184945142 passed on a 4h-old one.
+          # 180s: measured on fable-m5max 2026-09-17, the startup line landed
+          # 5–8s after the supervisor came up on warm starts but 88s and 129s
+          # on two cold ones. Passed explicitly so the budget this job depends
+          # on is visible here, not only in the script's default.
+          bash scripts/service.sh "$ENV" verify-restart \
+            --since "$DEPLOY_STARTED" \
+            --version "$DEPLOY_VERSION" \
+            --timeout 180
 
   cleanup-bundle:
     name: Cleanup deploy bundle release

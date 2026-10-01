@@ -230,13 +230,6 @@ describe('McpConfigBuilder server-tools wiring', () => {
     expect(config.allowedTools).toContain('EnterPlanMode');
     expect(config.allowedTools).toContain('ExitPlanMode');
   });
-
-  it('always includes mcp__llm in allowedTools', async () => {
-    const builder = new McpConfigBuilder(createMockMcpManager());
-    const config = await builder.buildConfig({ channel: 'C1', user: 'U1' });
-
-    expect(config.allowedTools).toContain('mcp__llm');
-  });
 });
 
 describe('McpConfigBuilder', () => {
