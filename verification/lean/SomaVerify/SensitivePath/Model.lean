@@ -148,7 +148,7 @@ def sensitiveExactFiles (home : List Char) : List (List Char) :=
 /-- ECMAScript LineTerminator (ECMA-262 section 12.3, Table 37): the characters that `.` in a
 regular expression without the `s` flag does not match. -/
 def isLineTerminator (c : Char) : Bool :=
-  c == '\n' || c == '\r' || c == ' ' || c == ' '
+  c == '\n' || c == '\r' || c == '\u2028' || c == '\u2029'
 
 /-- `/^\.env(\..+)?$/` (line 45): `.env`, or `.env.` followed by one or more characters none of
 which is a line terminator. -/
