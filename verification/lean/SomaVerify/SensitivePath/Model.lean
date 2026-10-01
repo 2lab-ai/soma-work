@@ -1,7 +1,7 @@
 -- models: src/sensitive-path-filter.ts:19-83 (HOME, SENSITIVE_* tables, HOME_ALIASES, FOLDED_LETTERS, keys)
--- models: src/sensitive-path-filter.ts:114-152 (checkSensitivePath)
--- models: src/sensitive-path-filter.ts:164-181 (checkSensitiveGlob)
--- models: src/sensitive-path-filter.ts:201-238 (expandHome, normalizePath, resolvePath, walkPoints, fold, foldKey)
+-- models: src/sensitive-path-filter.ts:144-182 (checkSensitivePath)
+-- models: src/sensitive-path-filter.ts:194-211 (checkSensitiveGlob)
+-- models: src/sensitive-path-filter.ts:328-365 (expandHome, normalizePath, resolvePath, walkPoints, fold, foldKey)
 -- models: packages/common/src/path-utils.ts:28-38 (normalizeTmpPath)
 
 /-!
@@ -201,7 +201,7 @@ def foldedLetters : List (Char × List Char) :=
    ('ﬀ', "ff".toList), ('ﬁ', "fi".toList), ('ﬂ', "fl".toList), ('ﬃ', "ffi".toList),
    ('ﬄ', "ffl".toList), ('ﬅ', "st".toList), ('ﬆ', "st".toList)]
 
-/-! ## `expandHome`, `normalizePath`, `resolvePath`, `walkPoints`, `fold`, `foldKey` (lines 201-238) -/
+/-! ## `expandHome`, `normalizePath`, `resolvePath`, `walkPoints`, `fold`, `foldKey` (lines 328-365) -/
 
 /-- `expandHome`: the first alias that `filePath` equals, or starts with followed by `/`, is
 replaced by `HOME`; any other path is unchanged. -/
@@ -244,7 +244,7 @@ def fold (s : List Char) : List Char :=
 def foldKey (normalized : List Char) : List Char :=
   normalizeTmpPath (fold normalized)
 
-/-! ## `checkSensitivePath` (lines 114-152) -/
+/-! ## `checkSensitivePath` (lines 144-182) -/
 
 /-- `SensitivePathResult`: `reason` is `none` where the source leaves it `undefined`. -/
 structure Result where
@@ -254,7 +254,7 @@ structure Result where
 /-- `{ isSensitive: false }`. -/
 def notSensitive : Result := ⟨false, none⟩
 
-/-- The directory test of line 123, on keys: the path is the directory or lies below it. -/
+/-- The directory test of line 153, on keys: the path is the directory or lies below it. -/
 def underDirectory (normalized dir : List Char) : Bool :=
   normalized == dir || (dir ++ ['/']).isPrefixOf normalized
 
@@ -263,7 +263,7 @@ below (`DIRECTORY_KEYS` holds the keys in table order). -/
 def directoryHit (home point : List Char) : Option (List Char) :=
   (sensitiveDirectories home).find? (fun dir => underDirectory (foldKey point) (foldKey dir))
 
-/-- The body of the service-config loop (lines 144-148) for one entry: below `dir`, at most two
+/-- The body of the service-config loop (lines 174-178) for one entry: below `dir`, at most two
 segments, the last one of `files`. `split` never returns an empty list, so the last segment
 always exists. -/
 def serviceConfigHit (key dir : List Char) (files : List (List Char)) : Bool :=
@@ -272,7 +272,7 @@ def serviceConfigHit (key dir : List Char) (files : List (List Char)) : Bool :=
     let parts := splitSlash (key.drop (dir.length + 1))
     parts.length ≤ 2 && files.contains (parts.getLast?.getD [])
 
-/-- Whether the service-config loop (lines 143-149) returns. Every return there carries the same
+/-- Whether the service-config loop (lines 173-179) returns. Every return there carries the same
 reason, so which entry matched first does not matter. -/
 def serviceConfigRule (key : List Char) : Bool :=
   serviceConfigs.any (fun entry => serviceConfigHit key entry.1 entry.2)
@@ -296,9 +296,9 @@ def verdict (home normalized : List Char) (walk : List (List Char)) : Result :=
 def checkSensitivePath (home filePath : List Char) : Result :=
   verdict home (normalizePath home filePath) (walkPoints home filePath)
 
-/-! ## `checkSensitiveGlob` (lines 164-181) -/
+/-! ## `checkSensitiveGlob` (lines 194-211) -/
 
-/-- The characters `spelling.split(/[*?{}[\]]/)` splits on (line 174). -/
+/-- The characters `spelling.split(/[*?{}[\]]/)` splits on (line 204). -/
 def isGlobMeta (c : Char) : Bool :=
   c == '*' || c == '?' || c == '{' || c == '}' || c == '[' || c == ']'
 
@@ -317,21 +317,21 @@ def globSpellings (cwd pattern : List Char) (basePath : Option (List Char)) : Li
 def globConcrete (spelling : List Char) : List Char :=
   spelling.takeWhile (fun c => !isGlobMeta c)
 
-/-- `concrete.replace(/\/+$/, '')` (line 175): the concrete text without trailing slashes. -/
+/-- `concrete.replace(/\/+$/, '')` (line 205): the concrete text without trailing slashes. -/
 def globPrefix (spelling : List Char) : List Char :=
   stripTrailingSlashes (globConcrete spelling)
 
-/-- `s.slice(0, s.lastIndexOf('/') + 1)` (line 175): `s` up to and including its last `/`, and
+/-- `s.slice(0, s.lastIndexOf('/') + 1)` (line 205): `s` up to and including its last `/`, and
 `""` when it has none. -/
 def cutToLastSlash (s : List Char) : List Char :=
   (s.reverse.dropWhile (· != '/')).reverse
 
-/-- The directory the glob lists (line 175): the concrete text cut back to its last `/`, since the
+/-- The directory the glob lists (line 205): the concrete text cut back to its last `/`, since the
 segment the metacharacter is in is a pattern, not a directory. -/
 def globListed (spelling : List Char) : List Char :=
   cutToLastSlash (globConcrete spelling)
 
-/-- The two paths line 175 checks for one spelling: the concrete text without trailing slashes,
+/-- The two paths line 205 checks for one spelling: the concrete text without trailing slashes,
 and the directory the glob lists. -/
 def globCandidates (spelling : List Char) : List (List Char) :=
   [globPrefix spelling, globListed spelling]

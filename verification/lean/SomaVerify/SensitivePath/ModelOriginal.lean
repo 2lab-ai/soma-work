@@ -19,7 +19,7 @@ namespace SomaVerify.SensitivePath.Original
 
 open SomaVerify.SensitivePath
 
-/-- The `HOME_ALIASES` loop (lines 145-154): the first alias that `filePath` starts with,
+/-- The `HOME_ALIASES` loop (lines 146-155): the first alias that `filePath` starts with,
 followed by `/`, is replaced through `path.join(HOME, rest)`; a path equal to an alias becomes
 `HOME`; otherwise the path is unchanged. -/
 def expandHome (home filePath : List Char) : List (List Char) → List Char
