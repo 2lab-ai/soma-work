@@ -92,7 +92,8 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
   (`packages/slack/src/pipeline/stream-executor.ts:1951`). summary가 그 문구를 인용해도 자격증명 회전이나
   재시도가 일어나지 않는다. 실제 전송 오류는 시도 안에서 이미 host 결과(`failed`/`inconclusive`)가 된다.
 - 도구 호출은 evidence 도구 이름일 때만 host가 `input: {}`로 다시 써서 보인다. 다른 도구 호출과 모델이 쓴
-  인자는 스레드에 나가지 않는다 (`src/incident/attempt-output.ts:476`).
+  인자는 스레드에 나가지 않는다 (`src/incident/attempt-output.ts:493`). 그 호출의 결과도 버려진다 — 도구 결과는
+  이 시도에서 보인 evidence 호출의 id일 때만 고정 문구(조회 완료/실패)로 보인다 (`src/incident/attempt-output.ts:441`).
 - 결론의 `status`는 종결 상태만 가능하다. `running`(eagle-eye에서 진행 표시)은 결론으로 거부되고 host가
   `inconclusive`(cause `non_terminal_status`)를 쓴다.
 - evidence의 provenance는 `eagle_eye_collector_snapshot`이다. 즉 **수집기가 언제 무엇을 관측했는지**이며,

@@ -25,7 +25,12 @@ import { getVerbosityFlags, VERBOSITY_NAMES } from '@soma/slack/output-flags';
 import { describe, expect, it } from 'vitest';
 import { createSdkMessageMapper } from '../../agent-runtime/claude-code/sdk-message-to-event';
 import { AgentStreamProcessor, type StreamContext } from '../../slack/stream-processor';
-import { buildIncidentAttemptOutput, buildIncidentTerminalMessages, screenIncidentMessage } from '../attempt-output';
+import {
+  buildIncidentAttemptOutput,
+  buildIncidentTerminalMessages,
+  screenIncidentMessage,
+  screenIncidentStream,
+} from '../attempt-output';
 import type { IncidentRequestLike } from '../sdk-options';
 
 const REQUEST: IncidentRequestLike = {
@@ -56,6 +61,8 @@ interface Surface {
   readonly choices: unknown[];
   /** What the host's tool-use callback was handed (the PHASE>=1 render path). */
   readonly toolUses: unknown[];
+  /** What the host's tool-result callback was handed (where results are rendered). */
+  readonly toolResults: unknown[];
 }
 
 interface RunOptions {
@@ -75,6 +82,7 @@ async function run(messages: readonly SDKMessage[], options: RunOptions): Promis
     workingDirs: [],
     choices: [],
     toolUses: [],
+    toolResults: [],
   };
   const mapper = createSdkMessageMapper({ calculateTokenCost: () => 0 });
   async function* events() {
@@ -97,6 +105,9 @@ async function run(messages: readonly SDKMessage[], options: RunOptions): Promis
     },
     onToolUse: async (toolUses) => {
       surface.toolUses.push(...toolUses);
+    },
+    onToolResult: async (toolResults) => {
+      surface.toolResults.push(...toolResults);
     },
   });
   const context: StreamContext = {
@@ -261,4 +272,113 @@ describe('incident tool call → real Slack stream processor', () => {
 
     expect(surface.toolUses).toEqual([{ id: 'toolu_01', name: EVIDENCE_TOOL, input: {} }]);
   });
+});
+
+describe('incident tool result → real Slack stream processor', () => {
+  const EVIDENCE_OK = '증거 조회 완료 — 검증된 결론에 포함됩니다';
+  const EVIDENCE_ERROR = '증거 조회 실패 — 결론에 반영되지 않습니다';
+
+  function sdkAssistant(content: Array<Record<string, unknown>>): SDKMessage {
+    return {
+      type: 'assistant',
+      uuid: 'uuid-assistant',
+      session_id: 'sdk-session',
+      parent_tool_use_id: null,
+      message: {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        content,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    } as unknown as SDKMessage;
+  }
+
+  function sdkToolResult(toolUseId: string, isError: boolean, content: string): SDKMessage {
+    return {
+      type: 'user',
+      uuid: 'uuid-user',
+      session_id: 'sdk-session',
+      parent_tool_use_id: null,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, is_error: isError, content }] },
+    } as unknown as SDKMessage;
+  }
+
+  const SDK_RESULT = {
+    type: 'result',
+    subtype: 'success',
+    uuid: 'uuid-result',
+    session_id: 'sdk-session',
+    is_error: false,
+    result: 'raw model final text',
+  } as unknown as SDKMessage;
+
+  /**
+   * One whole attempt through the REAL per-attempt screen, minus the host's
+   * terminal pair: what the thread shows while the attempt runs.
+   */
+  async function runtimeMessagesOf(...messages: SDKMessage[]): Promise<SDKMessage[]> {
+    async function* source() {
+      for (const message of messages) yield message;
+    }
+    const out: SDKMessage[] = [];
+    for await (const message of screenIncidentStream(source(), {
+      request: REQUEST,
+      verifiedEvidence: () => [],
+      sourceCaveat: () => '',
+      observe: () => ({ budgetExpired: false, aborted: false }),
+      identity: () => ({ sessionId: 'sdk-session' }),
+      uuid: () => 'uuid-fixed',
+    })) {
+      out.push(message);
+    }
+    // The last two are the host's conclusion (assistant + result).
+    expect(out.slice(-2).map((message) => message.type)).toEqual(['assistant', 'result']);
+    return out.slice(0, -2);
+  }
+
+  for (const phase1 of [false, true]) {
+    const mode = phase1 ? 'PHASE>=1 stream' : 'legacy say';
+
+    // The model called a tool it does not have. The call was dropped by the
+    // screen, so its (denied) result must go with it: rendering it as an
+    // evidence failure would tell the thread a lookup failed that never ran.
+    it(`[${mode}] a non-evidence call and its result put nothing in the thread`, async () => {
+      const runtime = await runtimeMessagesOf(
+        sdkAssistant([{ type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: { command: 'ls' } }]),
+        sdkToolResult('toolu_bash', true, '<tool_use_error>No such tool available: Bash</tool_use_error>'),
+        SDK_RESULT,
+      );
+
+      const surface = await run(runtime, { phase1 });
+
+      expect(surface.toolUses).toEqual([]);
+      expect(surface.toolResults).toEqual([]);
+      expect(surface.posts).toEqual([]);
+      expect(surface.appends).toEqual([]);
+      expect(JSON.stringify(surface)).not.toContain('증거 조회');
+    });
+
+    // Control: the evidence tool's own result still shows, as its fixed line.
+    for (const [outcome, isError, line] of [
+      ['succeeded', false, EVIDENCE_OK],
+      ['failed', true, EVIDENCE_ERROR],
+    ] as const) {
+      it(`[${mode}] control: an evidence lookup that ${outcome} still shows its fixed line`, async () => {
+        const runtime = await runtimeMessagesOf(
+          sdkAssistant([{ type: 'tool_use', id: 'toolu_ev', name: EVIDENCE_TOOL, input: {} }]),
+          sdkToolResult('toolu_ev', isError, '{"__raw_evidence__":true}'),
+          SDK_RESULT,
+        );
+
+        const surface = await run(runtime, { phase1 });
+
+        expect(surface.toolUses).toEqual([{ id: 'toolu_ev', name: EVIDENCE_TOOL, input: {} }]);
+        expect(surface.toolResults).toEqual([
+          { toolUseId: 'toolu_ev', result: [{ type: 'text', text: line }], isError, toolName: undefined },
+        ]);
+        expect(JSON.stringify(surface)).not.toContain('__raw_evidence__');
+      });
+    }
+  }
 });
