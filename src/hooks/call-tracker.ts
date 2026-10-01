@@ -16,7 +16,7 @@ interface HookInput {
  */
 
 function getDescription(toolName: string, toolInput?: { description?: string }): string {
-  if (toolName === 'Task') return toolInput?.description || 'agent call';
+  if (toolName === 'Task' || toolName === 'Agent') return toolInput?.description || 'agent call';
   return toolName.replace(/^mcp__plugin_oh-my-claude_/, '').replace(/__/g, ':');
 }
 
