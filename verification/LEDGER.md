@@ -19,13 +19,13 @@ current file set on every run.
 | `packages/common/` | 13 | 0 | 13 |
 | `packages/process-shared/` | 26 | 0 | 26 |
 | `packages/slack/` | 97 | 2 | 95 |
-| `src/` | 406 | 4 | 402 |
+| `src/` | 406 | 5 | 401 |
 | `somalib/` | 17 | 0 | 17 |
 | `packages/test-utils/` | 4 | 0 | 4 |
 | `packages/mcp-servers/` | 11 | 0 | 11 |
 | `scripts/` | 6 | 0 | 6 |
 | other | 1 | 0 | 1 |
-| **total** | **581** | **6** | **575** |
+| **total** | **581** | **7** | **574** |
 
 ## Files
 
@@ -390,7 +390,7 @@ current file set on every run.
 | `src/release-notifier.ts` | `src/` | T1 |
 | `src/run-with-rotating-logs.ts` | `src/` | T1 |
 | `src/sandbox/dev-domain-allowlist.ts` | `src/` | T1 |
-| `src/sensitive-path-filter.ts` | `src/` | T1 |
+| `src/sensitive-path-filter.ts` | `src/` | T2:SensitivePath |
 | `src/service-readiness.ts` | `src/` | T1 |
 | `src/session-archive.ts` | `src/` | T1 |
 | `src/session-identity.ts` | `src/` | T1 |

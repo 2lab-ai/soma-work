@@ -33,6 +33,7 @@ const MODELED = new Map([
   ['packages/slack/src/cct/action-value.ts', 'CctActionValue'],
   ['packages/slack/src/followup-queue-store.ts', 'FollowupSnapshot'],
   ['src/dangerous-command-filter.ts', 'BypassDecision'],
+  ['src/sensitive-path-filter.ts', 'SensitivePath'],
 ]);
 
 /**
