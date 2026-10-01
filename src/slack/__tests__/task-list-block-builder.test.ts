@@ -28,7 +28,7 @@ describe('TaskListBlockBuilder — Checklist mode (default)', () => {
         content: 'types.ts 수정',
         status: 'in_progress',
         priority: 'medium',
-        activeForm: 'llm_chat(codex) 진행중',
+        activeForm: 'astra-zhuge 리뷰 진행중',
       },
       { id: '3', content: '테스트 추가', status: 'pending', priority: 'low' },
     ];
@@ -230,7 +230,7 @@ describe('TaskListBlockBuilder — Queue mode (compact)', () => {
   it('footer shows done count and active sub-status', () => {
     const todos: Todo[] = [
       { id: '1', content: 'done', status: 'completed', priority: 'medium' },
-      { id: '2', content: 'working', status: 'in_progress', priority: 'medium', activeForm: 'llm_chat(codex)' },
+      { id: '2', content: 'working', status: 'in_progress', priority: 'medium', activeForm: 'astra-zhuge 리뷰' },
       { id: '3', content: 'next', status: 'pending', priority: 'medium' },
     ];
 
@@ -240,7 +240,7 @@ describe('TaskListBlockBuilder — Queue mode (compact)', () => {
     expect(footer).toBeDefined();
     const footerText = footer.elements[0].text;
     expect(footerText).toContain('✓ 1 done');
-    expect(footerText).toContain('llmˍchat(codex)');
+    expect(footerText).toContain('astra-zhuge 리뷰');
   });
 });
 
@@ -261,7 +261,7 @@ describe('TaskListBlockBuilder — Pulse mode (minimal)', () => {
     const todos: Todo[] = [
       { id: '1', content: 'done1', status: 'completed', priority: 'medium' },
       { id: '2', content: 'done2', status: 'completed', priority: 'medium' },
-      { id: '3', content: '구현', status: 'in_progress', priority: 'medium', activeForm: 'llm_chat(codex)' },
+      { id: '3', content: '구현', status: 'in_progress', priority: 'medium', activeForm: 'astra-zhuge 리뷰' },
       { id: '4', content: 'PR 올리기', status: 'pending', priority: 'medium' },
       { id: '5', content: '리뷰', status: 'pending', priority: 'low', dependencies: ['4'] },
     ];
@@ -279,7 +279,7 @@ describe('TaskListBlockBuilder — Pulse mode (minimal)', () => {
     // Active task name
     expect(text).toContain('구현');
     // Sub-status
-    expect(text).toContain('llmˍchat(codex)');
+    expect(text).toContain('astra-zhuge 리뷰');
     // Blocked count
     expect(text).toContain(':lock: 1 blocked');
   });

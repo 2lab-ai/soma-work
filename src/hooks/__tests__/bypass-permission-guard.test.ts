@@ -73,6 +73,7 @@ describe('buildBypassPermissionHookEntry — matcher contract', () => {
       'Glob',
       'Grep',
       'Task',
+      'Agent',
       'WebFetch',
       'WebSearch',
       'KillShell',
