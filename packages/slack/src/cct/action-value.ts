@@ -28,7 +28,7 @@
  *   - whitespace-only
  *   - `'cm:'` (no mode, no `|`)
  *   - `'cm:admin'` (no `|`)
- *   - `'cm:admin|'` (empty payload)
+ *   - `'cm:admin|'` / `'cm:admin| '` (empty / whitespace-only payload)
  *   - `'cm:|abc'` (empty mode)
  *   - `'cm:bad|abc'` (unknown mode)
  *
@@ -79,7 +79,7 @@ export function encodeCctActionValue(opts: { mode: CctCardMode; payload: string 
   if (!VALID_MODES.has(mode)) {
     throw new Error(`encodeCctActionValue: unknown mode ${JSON.stringify(mode)}`);
   }
-  if (typeof payload !== 'string' || payload.length === 0 || payload.trim().length === 0) {
+  if (typeof payload !== 'string' || payload.trim().length === 0) {
     throw new Error('encodeCctActionValue: payload must be a non-empty, non-whitespace string');
   }
   const encoded = `${PREFIX}${mode}${SEP}${payload}`;
@@ -108,7 +108,7 @@ export function encodeCctActionValue(opts: { mode: CctCardMode; payload: string 
  */
 export function decodeCctActionValue(raw: unknown): DecodedCctActionValue {
   if (typeof raw !== 'string') return { kind: 'invalid', raw };
-  if (raw.length === 0 || raw.trim().length === 0) return { kind: 'invalid', raw };
+  if (raw.trim().length === 0) return { kind: 'invalid', raw };
   if (!raw.startsWith(PREFIX)) {
     // Legacy: any non-empty, non-whitespace string with no `cm:` prefix.
     return { kind: 'legacy', payload: raw };
@@ -121,8 +121,7 @@ export function decodeCctActionValue(raw: unknown): DecodedCctActionValue {
   }
   const mode = tail.slice(0, sepIdx);
   const payload = tail.slice(sepIdx + 1);
-  if (mode.length === 0) return { kind: 'invalid', raw };
-  if (payload.length === 0) return { kind: 'invalid', raw };
+  if (payload.trim().length === 0) return { kind: 'invalid', raw };
   if (!VALID_MODES.has(mode)) return { kind: 'invalid', raw };
   return { kind: 'tagged', mode: mode as CctCardMode, payload };
 }

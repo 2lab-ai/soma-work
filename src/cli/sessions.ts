@@ -418,7 +418,10 @@ interface ShowSessionArgs {
  *
  * The controller's parser already normalizes an out-of-order key to the front,
  * so this rule and that ordering agree: whatever the operator typed,
- * `args[0]` is the key when there is one.
+ * `args[0]` is the key when there is one, unless that key itself begins with
+ * `-`. The controller accepts a lone `-` as the key, but this rule reads any
+ * `-`-prefixed first token, `-` included, as "no key", and the caller prints the
+ * usage line.
  */
 function parseShowArgs(args: string[]): ShowSessionArgs {
   const first = args[0];
