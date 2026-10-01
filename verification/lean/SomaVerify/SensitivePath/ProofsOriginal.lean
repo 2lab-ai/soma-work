@@ -12,8 +12,10 @@ import SomaVerify.SensitivePath.ProofsCheck
 phase-1 service-rule theorems for them, and then `StricterThanOriginal`: every path and glob the
 phase-1 checks report sensitive, the current checks report sensitive too.
 
-For an absolute HOME both models normalize a path to the same string. Each phase-1 rule then has a
-current rule that keeps its matches: the directory and exact-file rules compare keys (`foldKey`)
+For an absolute HOME both models normalize a path to the same place: the same string, or the same
+resolved segments, phase 1 writing `/private/tmp` as `/tmp` and the current model `/private/etc` as
+`/etc` too, so the two normal forms have the same key (`foldKey`) and basename. Each phase-1 rule
+then has a current rule that keeps its matches: the directory and exact-file rules compare keys (`foldKey`)
 where phase 1 compared the strings, the basename patterns see the folded basename, the dropped
 `.env` service entries are caught by the basename rule, and the glob check still checks the
 concrete prefix of the resolved pattern, among other candidates.
@@ -199,29 +201,94 @@ theorem original_expandHome_alias (home a : List Char) (ha : a ∈ homeAliases) 
   simp only [List.mem_cons, List.mem_nil_iff, or_false] at ha
   rcases ha with rfl | rfl | rfl <;> simp [Original.expandHome, List.isPrefixOf]
 
-/-- For an absolute HOME, the phase-1 `normalizePath` and the current one return the same string
-for every path. They differ only on an alias followed by `/`, which phase 1 sends through
+/-- Phase 1's `resolvePath`: the current one with `/private/tmp` mapped alone. -/
+def originalResolve (expanded : List Char) : List Char :=
+  let resolved := if ['/'].isPrefixOf expanded then posixNormalize expanded else expanded
+  stripTrailingSlashes (normalizeTmpPath resolved)
+
+/-- Phase 1 normalizes a path by expanding an alias, then `originalResolve`. -/
+theorem original_normalizePath_eq (home p : List Char) :
+    Original.normalizePath home p = originalResolve (Original.expandHome home p homeAliases) :=
+  rfl
+
+/-- Phase 1 resolves an absolute path to its resolved segments, `/private/tmp` written `/tmp`. -/
+theorem originalResolve_abs (x : List Char) (hx : x.head? = some '/') :
+    originalResolve x = renderAbs (tmpMapSegs (resolveSegs (splitSlash x))) := by
+  have hpre : ['/'].isPrefixOf x = true := by
+    cases x with
+    | nil => simp at hx
+    | cons c cs => simp at hx; subst hx; simp [List.isPrefixOf]
+  unfold originalResolve
+  simp only [hpre, ite_true]
+  exact finish_posixNormalize_tmp x
+
+/-- Phase 1 only drops the trailing slashes of a string that is not absolute. -/
+theorem originalResolve_rel (x : List Char) (hx : x.head? ≠ some '/') :
+    originalResolve x = stripTrailingSlashes x := by
+  have hpre : ['/'].isPrefixOf x = false := by
+    cases x with
+    | nil => rfl
+    | cons c cs =>
+      have hc : ('/' = c) = False := propext ⟨fun e => hx (by simp [← e]), False.elim⟩
+      simp [List.isPrefixOf, hc]
+  unfold originalResolve
+  simp only [hpre, Bool.false_eq_true, ite_false]
+  rw [normalizeTmpPath_rel x hx]
+
+/-- For an absolute HOME, the phase-1 `normalizePath` and the current one take every path to the
+same place: they return the same string, or both render the same resolved segments, phase 1 with
+`/private/tmp` mapped and the current model with `/private/tmp` and `/private/etc` mapped. Their
+expansions differ only on an alias followed by `/`, which phase 1 sends through
 `path.join(HOME, rest)` and the current model writes as `HOME + '/' + rest`; both resolve to the
 same segments. -/
-theorem original_normalizePath (home p : List Char) (hh : home.head? = some '/') :
-    Original.normalizePath home p = normalizePath home p := by
-  show resolvePath (Original.expandHome home p homeAliases) = resolvePath (expandHome home p homeAliases)
+theorem original_normalizePath_cases (home p : List Char) (hh : home.head? = some '/') :
+    Original.normalizePath home p = normalizePath home p ∨
+      ∃ L : List Seg, (∀ w ∈ L, Proper w) ∧ Original.normalizePath home p = renderAbs (tmpMapSegs L) ∧
+        normalizePath home p = renderAbs (privateMapSegs L) := by
+  rw [original_normalizePath_eq]
   by_cases hm : MatchesAlias p
-  · obtain ⟨a, ha, heq | ⟨t, ht⟩⟩ := hm
-    · rw [heq, original_expandHome_alias home a ha, expandHome_alias home a ha]
+  · right
+    obtain ⟨a, ha, heq | ⟨t, ht⟩⟩ := hm
+    · refine ⟨resolveSegs (splitSlash home), proper_of_mem_resolveSegs _ (slashFree_of_mem_splitSlash _), ?_, ?_⟩
+      · rw [heq, original_expandHome_alias home a ha, originalResolve_abs home hh]
+      · rw [heq, normalizePath_alias home a hh ha, normalizePath_abs home home hh]
     · subst ht
-      rw [List.append_assoc, List.singleton_append, original_expandHome_alias_slash home t a ha,
-        expandHome_alias_slash home t a ha, pathJoin_home home t hh,
-        resolvePath_abs _ (posixNormalize_head _), resolveSegs_splitSlash_posixNormalize,
-        resolvePath_abs _ (head_home_slash home t hh)]
-      cases t with
-      | nil =>
-        simp only [List.isEmpty_nil, ite_true]
-        rw [splitSlash_append_slash, show splitSlash ([] : List Char) = [[]] from rfl,
-          resolveSegs_append_nil]
-      | cons c cs => simp
-  · rw [original_expandHome_of_not_matches home p homeAliases (fun a ha hm' => hm ⟨a, ha, hm'⟩),
-      expandHome_of_not_matchesAlias home p hm]
+      refine ⟨resolveSegs (splitSlash (home ++ '/' :: t)),
+        proper_of_mem_resolveSegs _ (slashFree_of_mem_splitSlash _), ?_, ?_⟩
+      · rw [List.append_assoc, List.singleton_append, original_expandHome_alias_slash home t a ha,
+          pathJoin_home home t hh, originalResolve_abs _ (posixNormalize_head _),
+          resolveSegs_splitSlash_posixNormalize]
+        cases t with
+        | nil =>
+          simp only [List.isEmpty_nil, ite_true]
+          rw [splitSlash_append_slash, show splitSlash ([] : List Char) = [[]] from rfl,
+            resolveSegs_append_nil]
+        | cons c cs => simp
+      · rw [List.append_assoc, List.singleton_append, normalizePath_alias_slash home t a hh ha,
+          normalizePath_abs _ _ (head_home_slash home t hh)]
+  · rw [original_expandHome_of_not_matches home p homeAliases (fun a ha hm' => hm ⟨a, ha, hm'⟩)]
+    by_cases hx : p.head? = some '/'
+    · right
+      exact ⟨resolveSegs (splitSlash p), proper_of_mem_resolveSegs _ (slashFree_of_mem_splitSlash _),
+        originalResolve_abs p hx, normalizePath_abs home p hx⟩
+    · left
+      rw [originalResolve_rel p hx, normalizePath_rel home p hm hx]
+
+/-- For an absolute HOME, the phase-1 and current normal forms of a path have the same key and
+the same basename, which is all the rules of either `verdict` read of them. -/
+theorem original_normalizePath_key (home p : List Char) (hh : home.head? = some '/') :
+    foldKey (Original.normalizePath home p) = foldKey (normalizePath home p) ∧
+      basename (Original.normalizePath home p) = basename (normalizePath home p) := by
+  rcases original_normalizePath_cases home p hh with h | ⟨L, hL, hO, hN⟩
+  · rw [h]; exact ⟨rfl, rfl⟩
+  · rw [hO, hN]
+    have hsf := proper_slashFree hL
+    refine ⟨?_, ?_⟩
+    · rw [foldKey_renderAbs _ (proper_slashFree (tmpMapSegs_proper _ hL)),
+        foldKey_renderAbs _ (privateMapSegs_slashFree _ hsf), canon_tmpMapSegs, canon_privateMapSegs]
+    · rw [basename_renderAbs_proper _ (tmpMapSegs_proper _ hL),
+        basename_renderAbs_proper _ (privateMapSegs_proper _ hL), getLast?_tmpMapSegs,
+        getLast?_privateMapSegs]
 
 /-! ## Each phase-1 rule is kept -/
 
@@ -314,7 +381,7 @@ theorem underDirectory_foldKey (home n dir : List Char) (hh : home.head? = some 
   obtain ⟨hhead, U, hU⟩ := (underDirectory_renderAbs_iff_prefix n D hDsf hne).1 hu
   have hsf : ∀ w ∈ segmentsOf n, '/' ∉ w := fun w hw =>
     slashFree_of_mem_splitSlash n w (List.mem_of_mem_tail hw)
-  have hcne : canon D ≠ [] := tmpMapSegs_ne_nil _ (by simpa using hne)
+  have hcne : canon D ≠ [] := privateMapSegs_ne_nil _ (by simpa using hne)
   rw [foldKey_abs n hhead, foldKey_renderAbs D hDsf,
     underDirectory_renderAbs_iff_prefix _ _ (canon_slashFree D hDsf) hcne,
     segmentsOf_renderAbs _ (canon_slashFree _ hsf), ← hU, canon_append D U hne hpriv]
@@ -357,12 +424,12 @@ theorem basename_rule_fold (b : List Char) (h : basenamePatterns.any (fun test =
 theorem serviceConfigRule_foldKey (n : List Char) (h : serviceConfigRule n = true) :
     serviceConfigRule (foldKey n) = true := by
   obtain ⟨hhead, dir, hdir, f, hf, hs⟩ := (service_rule_described n).1 h
-  have hdirs : ∀ d ∈ serviceDirSegs, d.map fold = d ∧ tmpMapSegs d = d ∧ d.length = 2 := by decide
+  have hdirs : ∀ d ∈ serviceDirSegs, d.map fold = d ∧ privateMapSegs d = d ∧ d.length = 2 := by decide
   obtain ⟨hdf, hdt, hdl⟩ := hdirs dir hdir
   have hcanon : ∀ X : List Seg, canon (dir ++ X) = dir ++ X.map fold := by
     intro X
     unfold canon
-    rw [List.map_append, hdf, tmpMapSegs_append_left dir _ (by intro e; simp [e] at hdl)
+    rw [List.map_append, hdf, privateMapSegs_append_left dir _ (by intro e; simp [e] at hdl)
       (by intro e; rw [hdl] at e; simp at e), hdt]
   have hf' : fold f = f := by
     simp only [serviceTableFileNames, List.mem_singleton] at hf
@@ -390,11 +457,14 @@ theorem serviceConfigRule_of_original (n : List Char) (h : Original.serviceConfi
     rw [← serviceConfigRule_eq_original n (by simpa using hb)] at h
     exact serviceConfigRule_foldKey n h
 
-/-- For an absolute HOME, the current `verdict` reports sensitive every normalized path the
-phase-1 `verdict` does. -/
-theorem verdict_stricter (home n : List Char) (walk : List (List Char)) (hh : home.head? = some '/')
-    (h : (Original.verdict home n).isSensitive = true) : (verdict home n walk).isSensitive = true := by
+/-- For an absolute HOME, the current `verdict` reports sensitive every normalized path with the
+key and basename of one the phase-1 `verdict` reports sensitive. -/
+theorem verdict_stricter (home n m : List Char) (walk : List (List Char)) (hh : home.head? = some '/')
+    (hk : foldKey n = foldKey m) (hb : basename n = basename m)
+    (h : (Original.verdict home n).isSensitive = true) : (verdict home m walk).isSensitive = true := by
   apply verdict_isSensitive_of
+  have hdir : directoryHit home n = directoryHit home m := by unfold directoryHit; rw [hk]
+  rw [← hdir, ← hk, ← hb]
   rcases original_verdict_cases home n h with ⟨dir, hdir, hu⟩ | he | hb | hs
   · left
     unfold directoryHit
@@ -415,9 +485,9 @@ theorem checkSensitivePath_stricter (home p : List Char) (hh : home.head? = some
   unfold Original.checkSensitivePath at h
   split at h
   · simp [notSensitive] at h
-  · rw [original_normalizePath home p hh] at h
+  · obtain ⟨hk, hb⟩ := original_normalizePath_key home p hh
     rw [checkSensitivePath_eq_verdict]
-    exact verdict_stricter home _ _ hh h
+    exact verdict_stricter home _ _ _ hh hk hb h
 
 /-- The path phase 1 checks for a glob, the concrete prefix of the pattern resolved against its
 base, is one of the paths the current check checks. -/

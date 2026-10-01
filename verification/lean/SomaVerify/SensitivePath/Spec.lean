@@ -8,35 +8,37 @@ What `src/sensitive-path-filter.ts` documents, stated over the model in `Model.l
 
 * `src/sensitive-path-filter.ts:4-5`: "Blocks non-admin users from reading sensitive host files
   via Claude tools (Read, Bash cat/head/tail, Glob, Grep)."
-* `src/sensitive-path-filter.ts:24`: "Directories where any path underneath is blocked."
-* `src/sensitive-path-filter.ts:144`: "Check if an absolute path points to a sensitive location."
-* `src/sensitive-path-filter.ts:43`: "Regex patterns for sensitive basenames."
-* `src/sensitive-path-filter.ts:51`: "Service config files containing secrets. Only specific files
+* `src/sensitive-path-filter.ts:31`: "Directories where any path underneath is blocked."
+* `src/sensitive-path-filter.ts:162`: "Check if an absolute path points to a sensitive location."
+* `src/sensitive-path-filter.ts:50`: "Regex patterns for sensitive basenames."
+* `src/sensitive-path-filter.ts:58`: "Service config files containing secrets. Only specific files
   are blocked, not the whole directory."
-* `src/sensitive-path-filter.ts:171`: "A service config sits in its directory or one directory below
+* `src/sensitive-path-filter.ts:189`: "A service config sits in its directory or one directory below
   it: /opt/soma-work/{,*/}{file}" (at 168903e8, line 99: "Match subdirectories:
   /opt/soma-work/*/{file}").
-* `src/sensitive-path-filter.ts:194`: "Check if a glob pattern targets a sensitive directory."
+* `src/sensitive-path-filter.ts:212`: "Check if a glob pattern targets a sensitive directory."
 * `packages/common/src/path-utils.ts:11-21`: `/private/tmp` and `/tmp` name the same directory
   on macOS, and the module writes both as `/tmp`.
+* `src/sensitive-path-filter.ts:18-24`: macOS keeps `/tmp` and `/etc` in `/private` and links them
+  from the root (`/etc -> private/etc`), and the module writes `/private/etc` as `/etc` too.
 * `README.md:398`: the service runs on macOS, whose default file system (APFS) compares names
   case-insensitively.
 
 A "path" is what a Read, Grep or Glob call names: blocking every file underneath a directory
 means blocking every spelling of those files, so the statements below quantify over spellings,
 and compare names the way the file system does (`canon`: case-folded, `/private/tmp` the same
-as `/tmp`). A HOME is an absolute path, as the module's always is (`moduleHome_absolute`).
+as `/tmp` and `/private/etc` the same as `/etc`). A HOME is an absolute path, as the module's always is (`moduleHome_absolute`).
 
 Outside these statements (trust boundary):
 
 * Bash. `checkBashSensitivePaths` pulls paths out of shell text with regular expressions, run
   over several readings of the command: as written, with quotes and backslashes removed, and
   with `$'...'` decoded twice, a NUL ending the `$'...'` (bash) or the word (zsh)
-  (`src/sensitive-path-filter.ts:85-137, 213-326`). Which files a shell command reads is not
+  (`src/sensitive-path-filter.ts:92-155, 231-347`). Which files a shell command reads is not
   decidable from its text (variables, quoting, globbing, command substitution, the working
   directory), so no statement here is about Bash commands; regression tests in
   `src/__tests__/sensitive-path-filter.test.ts` cover them. Commands other than the listed
-  readers are not examined at all.
+  readers are not examined at all, and every word among a reader's arguments is taken as a path.
 * Relative paths and the working directory. The tools resolve relative paths, and a Glob's
   relative base, against a working directory the module never sees, so the module checks them
   as written; the statements below are about absolute paths and HOME aliases.
@@ -73,20 +75,28 @@ def privateSeg : Seg := "private".toList
 /-- The segment `tmp`. -/
 def tmpSeg : Seg := "tmp".toList
 
-/-- `/private/tmp` rewritten to `/tmp`, on segments. -/
-def tmpMapSegs (r : List Seg) : List Seg :=
+/-- The segment `etc`. -/
+def etcSeg : Seg := "etc".toList
+
+/-- The directories macOS keeps in `/private` and links from the root that the module writes
+through their links: `/tmp -> private/tmp` and `/etc -> private/etc`. -/
+def linkedSegs : List Seg := [tmpSeg, etcSeg]
+
+/-- `/private/tmp` and `/private/etc` rewritten to `/tmp` and `/etc`, on segments. -/
+def privateMapSegs (r : List Seg) : List Seg :=
   match r with
-  | s :: t :: rest => if s = privateSeg ∧ t = tmpSeg then tmpSeg :: rest else r
+  | s :: t :: rest => if s = privateSeg ∧ t ∈ linkedSegs then t :: rest else r
   | _ => r
 
 /-- Where a location is on the file system the module guards: every name case-folded (APFS
-compares names that way, `README.md:398`), and `/private/tmp` the same directory as `/tmp`
-(`packages/common/src/path-utils.ts:11-21`). Two locations are the same directory there when
-`canon` makes them equal. -/
+compares names that way, `README.md:398`), `/private/tmp` the same directory as `/tmp`
+(`packages/common/src/path-utils.ts:11-21`) and `/private/etc` the same as `/etc`
+(`src/sensitive-path-filter.ts:18-24`). Two locations are the same directory there when `canon`
+makes them equal. -/
 def canon (l : List Seg) : List Seg :=
-  tmpMapSegs (l.map fold)
+  privateMapSegs (l.map fold)
 
-/-- `SENSITIVE_DIRECTORIES` (`src/sensitive-path-filter.ts:25-33`) as locations, for a HOME at
+/-- `SENSITIVE_DIRECTORIES` (`src/sensitive-path-filter.ts:32-40`) as locations, for a HOME at
 the location `hloc`. -/
 def sensitiveDirSegs (hloc : List Seg) : List (List Seg) :=
   [hloc ++ [".ssh".toList],
@@ -151,7 +161,7 @@ def SecretsName (b : List Char) : Prop :=
   ∃ stem ∈ ["secret".toList, "secrets".toList],
     ∃ ext ∈ ["json".toList, "yaml".toList, "yml".toList, "toml".toList], b = stem ++ '.' :: ext
 
-/-- The service directories of `SENSITIVE_SERVICE_CONFIGS` (`src/sensitive-path-filter.ts:54-57`)
+/-- The service directories of `SENSITIVE_SERVICE_CONFIGS` (`src/sensitive-path-filter.ts:61-64`)
 as segment lists. -/
 def serviceDirSegs : List (List Seg) :=
   [["opt".toList, "soma-work".toList], ["opt".toList, "soma".toList]]
@@ -176,14 +186,14 @@ def ServiceRuleMatches (rule : List Char → Bool) (files : List Seg) : Prop :=
 
 /-- (a) `normalizePath` returns a normal form: normalizing twice is normalizing once.
 `packages/common/src/path-utils.ts:14-15`: "We standardize on the shorter /tmp form";
-`src/sensitive-path-filter.ts:144`: "Check if an absolute path points to a sensitive location."
+`src/sensitive-path-filter.ts:162`: "Check if an absolute path points to a sensitive location."
 A check keyed on where a path points needs one form per location, and a form that is stable. -/
 def NormalizeIdempotent (home : List Char) : Prop :=
   ∀ p, normalizePath home (normalizePath home p) = normalizePath home p
 
 /-- (b) Checking a path gives what checking its normal form gives, or flags the path: the only
 answer the path's own spelling can change is to block it (a walk through a sensitive
-directory). `src/sensitive-path-filter.ts:144`: "Check if an absolute path points to a sensitive
+directory). `src/sensitive-path-filter.ts:162`: "Check if an absolute path points to a sensitive
 location." -/
 def CheckRefinesNormalForm (home : List Char) : Prop :=
   ∀ p, checkSensitivePath home p = checkSensitivePath home (normalizePath home p) ∨
@@ -191,7 +201,7 @@ def CheckRefinesNormalForm (home : List Char) : Prop :=
 
 /-- (b') Two absolute spellings of the same location whose walks pass through no sensitive
 directory get the same result, whatever `.`, `..` and empty segments they are spelled with: the
-verdict depends only on the location. `src/sensitive-path-filter.ts:144`: "Check if an absolute
+verdict depends only on the location. `src/sensitive-path-filter.ts:162`: "Check if an absolute
 path points to a sensitive location." -/
 def SameLocationSameResult (home : List Char) : Prop :=
   ∀ hloc, Names home hloc → ∀ p q loc, Names p loc → Names q loc →
@@ -200,7 +210,7 @@ def SameLocationSameResult (home : List Char) : Prop :=
 
 /-- (b'') Every absolute path whose walk passes through a sensitive directory is reported
 sensitive, wherever the walk ends: after a symbolic link inside the directory, `..` climbs from
-the link's target, so the walk may end anywhere below it. `src/sensitive-path-filter.ts:24`:
+the link's target, so the walk may end anywhere below it. `src/sensitive-path-filter.ts:31`:
 "Directories where any path underneath is blocked." -/
 def WalkThroughSensitiveFlagged (home : List Char) : Prop :=
   ∀ hloc, Names home hloc → ∀ p v, Visits p v → InsideSensitive hloc v →
@@ -221,17 +231,17 @@ def AliasesSpellHome (home : List Char) : Prop :=
   ∀ a ∈ homeAliases, checkSensitivePath home a = checkSensitivePath home home ∧
     ∀ rest, checkSensitivePath home (a ++ '/' :: rest) = checkSensitivePath home (home ++ '/' :: rest)
 
-/-- (c) The directory test of `src/sensitive-path-filter.ts:123` is segment-aligned: a point is at
+/-- (c) The directory test of `src/sensitive-path-filter.ts:171` is segment-aligned: a point is at
 or below a sensitive directory exactly when it is absolute and that directory's segments begin
 its segments, compared as `canon` compares them. So a directory never covers a sibling whose
-name merely starts with its name (`.sshx` next to `.ssh`). `src/sensitive-path-filter.ts:24`:
+name merely starts with its name (`.sshx` next to `.ssh`). `src/sensitive-path-filter.ts:31`:
 "Directories where any path underneath is blocked." -/
 def DirectoryRuleSegmentAligned (home : List Char) (hloc : List Seg) : Prop :=
   ∀ n, (directoryHit home n).isSome = true ↔
     n.head? = some '/' ∧ ∃ d ∈ sensitiveDirSegs hloc, canon d <+: canon (segmentsOf n)
 
 /-- (d) Every path whose normal form lies at or below a sensitive directory is reported
-sensitive. `src/sensitive-path-filter.ts:24`: "Directories where any path underneath is
+sensitive. `src/sensitive-path-filter.ts:31`: "Directories where any path underneath is
 blocked." -/
 def FlaggedWhenNormalizedUnder (home : List Char) (hloc : List Seg) : Prop :=
   ∀ p d, (normalizePath home p).head? = some '/' → d ∈ sensitiveDirSegs hloc →
@@ -239,7 +249,7 @@ def FlaggedWhenNormalizedUnder (home : List Char) (hloc : List Seg) : Prop :=
     (checkSensitivePath home p).isSensitive = true
 
 /-- (d') Every absolute spelling of a location at or below a sensitive directory is reported
-sensitive. `src/sensitive-path-filter.ts:24`: "Directories where any path underneath is
+sensitive. `src/sensitive-path-filter.ts:31`: "Directories where any path underneath is
 blocked." -/
 def FlaggedWhereverNamed (home : List Char) : Prop :=
   ∀ hloc, Names home hloc → ∀ p loc, Names p loc → InsideSensitive hloc loc →
@@ -247,7 +257,7 @@ def FlaggedWhereverNamed (home : List Char) : Prop :=
 
 /-- (d') For the module as loaded, whatever `os.homedir()` returns and wherever it points: every
 absolute path whose walk passes through a sensitive directory of that home directory is reported
-sensitive. `src/sensitive-path-filter.ts:24`: "Directories where any path underneath is
+sensitive. `src/sensitive-path-filter.ts:31`: "Directories where any path underneath is
 blocked." -/
 def FlaggedWhereverNamedAtLoad : Prop :=
   ∀ cwd homedir hloc, cwd.head? = some '/' → HomeNames cwd homedir hloc →
@@ -256,7 +266,7 @@ def FlaggedWhereverNamedAtLoad : Prop :=
 
 /-- (d'') A glob is reported sensitive whenever one of the paths it is checked through is: the
 concrete prefix and the listed directory of the pattern resolved against its base, and of the
-pattern written after its base. `src/sensitive-path-filter.ts:194`: "Check if a glob pattern
+pattern written after its base. `src/sensitive-path-filter.ts:212`: "Check if a glob pattern
 targets a sensitive directory." -/
 def GlobChecksItsDirectories (home : List Char) : Prop :=
   ∀ cwd pattern basePath, ∀ s ∈ globSpellings cwd pattern basePath, ∀ t ∈ globCandidates s,
@@ -269,14 +279,14 @@ a directory). `globListed_spec` shows the model's `globListed` is this directory
 def ListedDirectory (spelling listed : List Char) : Prop :=
   ∃ w, globConcrete spelling = listed ++ w ∧ '/' ∉ w ∧ (listed = [] ∨ listed.getLast? = some '/')
 
-/-- (e) The basename rule is the union of the three patterns of lines 45-47.
-`src/sensitive-path-filter.ts:43`: "Regex patterns for sensitive basenames." -/
+/-- (e) The basename rule is the union of the three patterns of lines 52-54.
+`src/sensitive-path-filter.ts:50`: "Regex patterns for sensitive basenames." -/
 def BasenameRuleDescribed : Prop :=
   ∀ b, basenamePatterns.any (fun test => test b) = true ↔
     EnvName b ∨ CredentialsName b ∨ SecretsName b
 
 /-- (f) The service-config rule matches exactly the files its table lists, directly in a
-service directory or exactly one directory below it. `src/sensitive-path-filter.ts:51`: "Service
+service directory or exactly one directory below it. `src/sensitive-path-filter.ts:58`: "Service
 config files containing secrets. Only specific files are blocked, not the whole directory."; the
 comment above the loop: "A service config sits in its directory or one directory below it". -/
 def ServiceRuleDescribed : Prop :=
@@ -284,7 +294,7 @@ def ServiceRuleDescribed : Prop :=
 
 /-- (f) What the service rule is for, observed through `checkSensitivePath`: every service config
 file, `.env` or `config.json` in any case, directly in a service directory or one directory below
-it, is reported sensitive. `src/sensitive-path-filter.ts:51`: "Service config files containing
+it, is reported sensitive. `src/sensitive-path-filter.ts:58`: "Service config files containing
 secrets." -/
 def ServiceConfigsFlagged (home : List Char) : Prop :=
   ∀ p, (normalizePath home p).head? = some '/' →

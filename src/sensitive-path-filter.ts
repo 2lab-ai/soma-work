@@ -14,12 +14,19 @@
 
 import * as os from 'os';
 import * as path from 'path';
-import { normalizeTmpPath } from './path-utils';
+
+/**
+ * The directories macOS keeps in /private and links from the root (`/etc -> private/etc`) that the
+ * module writes through their links: /tmp, as the rest of soma-work writes it (normalizeTmpPath),
+ * and /etc, which holds /etc/shadow. /var, the third, is not: no table entry lies under it unless
+ * HOME does (root's is /var/root).
+ */
+const PRIVATE_LINKS: ReadonlyArray<string> = ['tmp', 'etc'];
 
 // os.homedir() returns $HOME as it is set, so it is resolved to an absolute path, and written the
-// way normalizePath writes checked paths (/private/tmp as /tmp), or the tables below could never
-// match them.
-const HOME = normalizeTmpPath(path.resolve(os.homedir()));
+// way normalizePath writes checked paths (/private/tmp as /tmp, /private/etc as /etc), or the
+// tables below could never match them.
+const HOME = normalizePrivatePath(path.resolve(os.homedir()));
 
 /** Directories where any path underneath is blocked. */
 const SENSITIVE_DIRECTORIES: ReadonlyArray<string> = [
@@ -85,27 +92,38 @@ const EXACT_FILE_KEYS: ReadonlySet<string> = new Set(Array.from(SENSITIVE_EXACT_
 // Regexes for extracting file paths from bash commands — hoisted to avoid per-call recompilation.
 // A captured path may start with a HOME_ALIASES spelling, which expandHome replaces.
 // Known limits of this text-level check. Relative paths, and a Glob with a relative base, resolve
-// against a working directory this module never sees, so they are checked as written. `..` is
-// resolved lexically, while after a symbolic link the OS climbs from the link's target: the check
-// follows a walk into the sensitive directories, not through links outside them. `~user/...` is
-// not expanded. A glob's partial segment is not matched against names (`~/.ss*/id_rsa` checks
-// HOME). Names are compared case-folded, not Unicode-normalized (every sensitive name is ASCII).
+// against a working directory this module never sees, so they are checked as written: only the
+// basename patterns can match them. `..` is resolved lexically, while after a symbolic link the
+// OS climbs from the link's target: the check follows a walk into the sensitive directories, not
+// through links outside them. Of the macOS links into /private, only PRIVATE_LINKS are written
+// through, and the firmlinked spellings under /System/Volumes/Data are not mapped at all.
+// `~user/...` is not expanded. A glob's partial segment is not matched against names
+// (`~/.ss*/id_rsa` checks HOME). Names are compared case-folded, not Unicode-normalized (every
+// sensitive name is ASCII).
 // In Bash, HOME is the only variable expanded, and quoting, `$'...'` and `$"..."` included, the
 // only other shell rule applied (extractPathsFromCommand). Quotes count as removed even where the
 // shell keeps them, so a quoted `~` or `$HOME` still counts as HOME (a `~` written as an escape in
 // `$'...'`, `\x7e`, does not). Other variables, command substitution (a `$'...'` inside
 // `"$(...)"` stays literal) and paths with white space or control characters are not understood,
-// and only the commands below are read. An OS-level read deny list would cover every spelling
-// (getSensitiveReadDenyPaths builds one; nothing applies it).
+// and only the commands below are read, every word of their arguments taken as a path (a grep
+// pattern `.env` counts as the file `.env`). An OS-level read deny list would cover every
+// spelling (getSensitiveReadDenyPaths builds one; nothing applies it).
 // A read or copy command's arguments run to the next `|`, `;` or `&`; RE_PATH picks every path
-// among them. `\/+`: the shell reads `//` as `/`.
+// among them, and RE_RELATIVE_ARG every relative one. `\/+`: the shell reads `//` as `/`.
 const RE_READ_COMMANDS =
-  /\b(?:cat|head|tail|less|more|bat|xxd|hexdump|strings|base64|nano|vi|vim|code|open|cp|mv|rsync)\b([^|;&]*)/g;
+  /\b(?:cat|head|tail|less|more|bat|xxd|hexdump|strings|base64|nano|vi|vim|code|open|wc|grep|egrep|fgrep|rg|awk|sed|sort|uniq|tac|nl|od|cmp|diff|jq|cp|mv|rsync|scp)\b([^|;&]*)/g;
 const RE_PATH = /(?:~|\$HOME|\$\{HOME\})?(?:\/+[\w.\-~]+)+(?:\/+[\w.\-~*]+)?/g;
 const RE_INPUT_REDIRECT = /<\s*((?:~|\$HOME|\$\{HOME\})?(?:\/+[\w.\-~]+)+(?:\/+[\w.\-~]+)?)/g;
 // `.` sources a file where a command starts: at the start, or after white space or a separator.
 const RE_SOURCE_CMD =
   /(?:\bsource|(?<![^\w\s;&|(){}`])\.)\s+((?:~|\$HOME|\$\{HOME\})?(?:\/+[\w.\-~]+)+(?:\/+[\w.\-~]+)?)/g;
+// Relative paths, which the patterns above take only from their first `/` (`./.env` as `/.env`),
+// or miss when they have none (`.env`). A relative path starts with neither `/`, `~` nor `$`; an
+// argument, not with `-` either (a flag), and it may follow a `=` (`--include=.env`).
+const RE_RELATIVE_ARG = /(?<![^\s=])[\w.][\w.\-~]*(?:\/+[\w.\-~]+)*/g;
+const RE_RELATIVE_REDIRECT = /<\s*([\w.][\w.\-~]*(?:\/+[\w.\-~]+)*)/g;
+// Here `.` needs the start, white space or a separator before it: `Done. notes` sources nothing.
+const RE_RELATIVE_SOURCE = /(?:\bsource|(?<![^\s;&|(){}`])\.)\s+([\w.][\w.\-~]*(?:\/+[\w.\-~]+)*)/g;
 // Changing into a directory is an access to it.
 const RE_CHANGE_DIR = /\b(?:cd|pushd)\b[^|;&]*?((?:~|\$HOME|\$\{HOME\})?(?:\/+[\w.\-~]+)+(?:\/+[\w.\-~]+)?)/g;
 /** The quote and backslash characters the shell removes from a word. */
@@ -230,9 +248,12 @@ function extractPathsFromCommand(command: string): string[] {
   for (const text of readings) {
     for (const args of collectMatches(RE_READ_COMMANDS, text)) {
       paths.push(...(args.match(RE_PATH) ?? []));
+      paths.push(...(args.match(RE_RELATIVE_ARG) ?? []));
     }
     paths.push(...collectMatches(RE_INPUT_REDIRECT, text));
+    paths.push(...collectMatches(RE_RELATIVE_REDIRECT, text));
     paths.push(...collectMatches(RE_SOURCE_CMD, text));
+    paths.push(...collectMatches(RE_RELATIVE_SOURCE, text));
     paths.push(...collectMatches(RE_CHANGE_DIR, text));
   }
   return paths;
@@ -339,10 +360,23 @@ function normalizePath(filePath: string): string {
 
 function resolvePath(expanded: string): string {
   // Resolve `.`, `..` and empty segments of an absolute path (`..` at the root stays there), so
-  // every spelling of a path is checked as that path. This runs before the /private/tmp mapping:
+  // every spelling of a path is checked as that path. This runs before the /private mapping:
   // resolving after it would let `//private/tmp/x` through as `/private/tmp/x`, unmapped.
   const resolved = expanded.startsWith('/') ? path.posix.normalize(expanded) : expanded;
-  return normalizeTmpPath(resolved).replace(/\/+$/, '');
+  return normalizePrivatePath(resolved).replace(/\/+$/, '');
+}
+
+/**
+ * A path at or below one of PRIVATE_LINKS in /private, written through the link: `/private/etc/x`
+ * as `/etc/x`, `/private/tmp` as `/tmp`. Any other path, a false prefix such as
+ * `/private/etcetera` included, is returned unchanged.
+ */
+function normalizePrivatePath(filePath: string): string {
+  for (const name of PRIVATE_LINKS) {
+    const target = `/private/${name}`;
+    if (filePath === target || filePath.startsWith(`${target}/`)) return filePath.slice('/private'.length);
+  }
+  return filePath;
 }
 
 /** Where the walk of a path is after each of its segments, normalized. */
@@ -358,10 +392,11 @@ function fold(text: string): string {
 
 /**
  * A normalized path as the rules compare it: folded, since APFS compares names without regard to
- * case, and with /private/tmp written /tmp again, since folding can spell it (`/PRIVATE/tmp`).
+ * case, and with /private/tmp and /private/etc written through their links again, since folding
+ * can spell them (`/PRIVATE/etc`).
  */
 function foldKey(normalized: string): string {
-  return normalizeTmpPath(fold(normalized));
+  return normalizePrivatePath(fold(normalized));
 }
 
 /**

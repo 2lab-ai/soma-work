@@ -166,6 +166,7 @@ def casePaths : List String :=
    "/app/Credentials.Json", "/app/SECRETS.YAML", "/app/Secret.Toml", "/app/SECRETS.YAMLL",
    "/OPT/SOMA-WORK/dev/CONFIG.JSON", "/opt/Soma/PROD/Config.json", "/OPT/soma-work/a/b/config.json",
    "/OPT/SOMA-WORKX/dev/config.json", "/PRIVATE/TMP/x", "/Private/Tmp/.env", "/PRIVATE/tmp/../x",
+   "/PRIVATE/ETC/shadow", "/Private/Etc/Shadow/x", "/private/ETC", "/PRIVATE/ETCX/shadow",
    "/private/TMP", "/PRIVATE/TMPX/x", "~/.SSH/id_rsa", "$HOME/.AWS/credentials", "${HOME}/.Gnupg",
    "$home/.ssh/id_rsa", "<HOME>/.\u017Fsh/x", "<HOME>/.doc\u212Aer/config.json", "<HOME>/.\u00DFh/x",
    "<HOME>/.\u1E9Eh", "<HOME>/.\u00DFhx/k", "<HOME>/.gitcon\uFB01g", "<HOME>/.con\uFB01g/gh/x",
@@ -175,7 +176,8 @@ def casePaths : List String :=
 
 /-- Boundary cases outside the families: every table entry and a near miss of it, the edges of
 each basename pattern (line terminators, which `.` does not match, and a character outside the
-BMP, which it does), `/private/tmp` spellings, alias near misses, and non-ASCII segments. -/
+BMP, which it does), `/private/tmp` and `/private/etc` spellings, alias near misses, and non-ASCII
+segments. -/
 def targetedPaths : List String :=
   ["<HOME>/.config/gh/hosts.yml", "<HOME>/.config/ghx", "<HOME>/.config/g", "<HOME>/.gnupg",
    "<HOME>/.gnupg/private-keys-v1.d", "<HOME>/.docker/config.json", "<HOME>/.dockerx",
@@ -192,6 +194,9 @@ def targetedPaths : List String :=
    "/app/credentials.jsonx", "/app/xcredentials.json", "/app/credentials.json/",
    "/private/tmp/", "/private/tmpdata/x", "/private/tmp/../etc/shadow", "//private/tmp/x",
    "/private/./tmp/x", "/private/tmp//x/", "/tmp/../private/tmp/x",
+   "/private/etc/shadow", "/private/etc", "/private/etc/", "/private/etcetera/x", "/private/etcx/shadow",
+   "//private/etc/shadow", "/private/./etc/shadow", "/private/etc//shadow/", "/etc/../private/etc/shadow",
+   "/private/etc/shadow/../x", "/private/etc/hosts", "/private/var/x", "/private",
    "/opt/soma-work/a/b/config.json", "/opt/soma-workx/dev/config.json",
    "/opt/soma-work/dev/config.jsonx", "/opt/soma-work/dev/xconfig.json",
    "/opt/soma-work/dev/../config.json", "/opt/soma/prod/config.json", "/x/../opt/soma/dev/.env",
@@ -231,7 +236,7 @@ def globPatterns : List String :=
 /-- Base paths: the empty string (falsy, so ignored) and absolute paths. -/
 def basePaths : List String :=
   ["", placeholder, "<HOME>/.ssh", "<HOME>/work", "/", "/etc", "/opt/soma-work", "/tmp",
-   "<HOME>/.aws/link", "<HOME>/.SSH"]
+   "<HOME>/.aws/link", "<HOME>/.SSH", "/private/etc", "/PRIVATE/etc/shadow"]
 
 /-- Patterns resolved against each base path, relative and absolute. -/
 def basedPatterns : List String :=
