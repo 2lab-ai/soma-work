@@ -298,6 +298,24 @@ describe('validateWebhookUrlWithDns hostname handling', () => {
     expect(resolve6).toHaveBeenCalledWith('example.com');
   });
 
+  // The URL parser reads a dotted quad as IPv4 only with at most one trailing dot: with two or
+  // more it stays a DNS name. The first pass strips every trailing dot and reads what is left as
+  // an address it allows, but the name must still be resolved.
+  it.each([
+    ['https://1.2.3.4../', '1.2.3.4'],
+    ['https://01.2.3.4../', '01.2.3.4'],
+    ['https://012.0.0.1../', '012.0.0.1'],
+  ])('resolves %s, a DNS name that reads as an address once its dots are stripped', async (url, stripped) => {
+    const { resolve4, resolve6 } = await spyOnResolvers([], []);
+
+    expect(await validateWebhookUrlWithDns(url)).toEqual({
+      valid: false,
+      error: 'DNS 확인 실패: 호스트를 찾을 수 없습니다.',
+    });
+    expect(resolve4).toHaveBeenCalledWith(stripped);
+    expect(resolve6).toHaveBeenCalledWith(stripped);
+  });
+
   // An answer that is not an IP address cannot be checked, so it blocks (fail closed).
   it.each([
     [['not-an-ip'], []],

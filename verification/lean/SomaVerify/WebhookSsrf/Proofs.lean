@@ -8,7 +8,8 @@ import SomaVerify.WebhookSsrf.Spec
 `ts:N` is `src/webhook-url-validator.ts:N`. The address theorems quantify over every natural
 number; none of them enumerates an address range. `decide` settles only facts about finite,
 concrete objects: the tables (alignment, agreement of same-length rows), the sixteen hex digits,
-the addresses 0 and 1, and the named probe addresses of `probe_addresses`.
+the addresses 0 and 1, the named probe addresses and hostnames of `probe_addresses` and
+`probe_hostnames`, and the three hostnames of `dotted_quad_names_resolved`.
 -/
 
 namespace SomaVerify.WebhookSsrf.Proofs
@@ -470,11 +471,15 @@ theorem original_callees_eq :
   ⟨funext fun u => (validateWebhookUrl_eq_original u).symm,
     funext fun h => (ipVerdict_eq_original h).symm⟩
 
-/-! ## Simplification: the DNS pass recognises an IP literal by the first pass's classification
+/-! ## The DNS pass
 
-`validateWebhookUrlWithDns` asked Node's `net.isIP` whether the bracket-stripped hostname is an IP
-address (`Original.validateWebhookUrlWithDns`, where `isIpLiteral` stands in for `net.isIP`). It now
-asks `ipVerdict(checked) === false`, the classification the first pass already made. -/
+`validateWebhookUrlWithDns` skips DNS only when `ipVerdict` allows the hostname the URL parser
+produced (ts:327-332). Its properties are proved on the model itself, for every URL. The code at
+a8d2e7ca asked Node's `net.isIP` about the checked hostname instead
+(`Original.validateWebhookUrlWithDns`, where `isIpLiteral` stands in for `net.isIP`). The two agree
+on every hostname the first pass examines unchanged, as the URL parser writes every IP host
+(`validateWebhookUrlWithDns_eq_original`), and differ on DNS names that end in two or more dots and
+read as an allowed address once the dots are stripped (`dotted_quad_names_resolved`). -/
 
 /-- A URL the first pass accepts has a checked hostname that `isBlockedIp` does not block. -/
 theorem not_blocked_of_valid (u : ParsedUrl) (h : validateWebhookUrl (some u) = .valid) :
@@ -509,43 +514,56 @@ theorem ipVerdict_allowed_eq_isIpLiteral (c : String) (h : isBlockedIp c = false
       rw [h6] at h
       cases hc : (stripBrackets c).toList.contains ':' <;> simp_all
 
-/-- `validateWebhookUrlWithDns` (ts:322-359) equals the original for every URL and every pair of
-resolver answers: same verdict, same error text, same resolver hostname or no call. -/
-theorem validateWebhookUrlWithDns_eq_original (url : Option ParsedUrl) (answers4 answers6 : List String) :
-    validateWebhookUrlWithDns url answers4 answers6 =
-      Original.validateWebhookUrlWithDns url answers4 answers6 := by
-  unfold validateWebhookUrlWithDns Original.validateWebhookUrlWithDns
-  rw [original_callees_eq.1, original_callees_eq.2]
-  cases hv : validateWebhookUrl url with
-  | invalid e => rfl
-  | valid =>
-    cases url with
-    | none => rfl
-    | some u =>
-      dsimp only
-      rw [ipVerdict_allowed_eq_isIpLiteral _ (not_blocked_of_valid u hv)]
-
-/-- ts:327-329: an IP-literal URL, brackets included (the BUG A case), gets exactly the first
-pass's verdict and the resolvers are not called. Before the fix the brackets reached `net.isIP`,
-so every IPv6 literal went to DNS and failed. Proved for the original, carried over by
-`validateWebhookUrlWithDns_eq_original`. -/
+/-- ts:327-332: an IP-literal URL, brackets included (the BUG A case), gets exactly the first
+pass's verdict and the resolvers are not called, for a hostname in the form the URL parser writes
+an IP host (`Spec.IpLiteralsSkipDns`). Before BUG A was fixed the brackets reached `net.isIP`, so
+every IPv6 literal went to DNS and failed. -/
 theorem ipLiteralsSkipDns : IpLiteralsSkipDns := by
-  intro url a4 a6 h
-  rw [validateWebhookUrlWithDns_eq_original]
-  unfold Original.validateWebhookUrlWithDns
-  rw [original_callees_eq.1, original_callees_eq.2]
+  intro url a4 a6 hform hlit
+  unfold validateWebhookUrlWithDns
   cases hv : validateWebhookUrl (some url) with
   | invalid e => rfl
-  | valid => simp [h]
+  | valid =>
+    have hb : isBlockedIp url.hostname = false := hform ▸ not_blocked_of_valid url hv
+    have hskip : (ipVerdict url.hostname == some false) = true := by
+      rw [ipVerdict_allowed_eq_isIpLiteral _ hb, hlit]
+    simp only [hskip, ↓reduceIte]
 
-/-- ts:8, ts:310 and ts:350: once the resolvers are called, the URL is accepted iff they answered
-and every answer is an address the spec allows; an unreadable answer blocks (fail closed). Proved
-for the original, carried over by `validateWebhookUrlWithDns_eq_original`. -/
+/-- ts:327-334: whenever the first pass accepts a URL whose hostname, as the URL parser produced
+it, is not an address the spec allows, the resolvers are called, with the checked hostname
+brackets stripped (`Spec.DnsNamesResolved`). -/
+theorem dnsNamesResolved : DnsNamesResolved := by
+  intro url a4 a6 hv hns
+  have hne : (ipVerdict url.hostname == some false) = false := by
+    cases h : (ipVerdict url.hostname == some false)
+    · rfl
+    · exact absurd ((ipVerdict_eq_some_false_iff _).1 (by simpa using h)) hns
+  unfold validateWebhookUrlWithDns
+  rw [hv]
+  simp only [hne, Bool.false_eq_true, ↓reduceIte]
+  split <;> (try split) <;> rfl
+
+/-- DNS is never skipped for a DNS name: when the first pass accepts a URL whose hostname, as the
+URL parser produced it and brackets stripped, is no IP address at all, the resolvers are called
+with the checked hostname. `1.2.3.4..` is such a hostname, though its checked hostname `1.2.3.4`
+is an address. -/
+theorem resolved_of_not_isIpLiteral (url : ParsedUrl) (answers4 answers6 : List String)
+    (hv : validateWebhookUrl (some url) = .valid)
+    (hname : isIpLiteral (stripBrackets url.hostname) = false) :
+    (validateWebhookUrlWithDns (some url) answers4 answers6).2 =
+      some (stripBrackets (checkedHostname url.hostname)) := by
+  apply dnsNamesResolved url answers4 answers6 hv
+  unfold isIpLiteral at hname
+  simp only [Bool.or_eq_false_iff, Option.isSome_eq_false_iff, Option.isNone_iff_eq_none] at hname
+  unfold AnswerSafe
+  rw [hname.1, hname.2]
+  exact id
+
+/-- ts:8, ts:310 and ts:353: once the resolvers are called, the URL is accepted iff they answered
+and every answer is an address the spec allows; an unreadable answer blocks (fail closed). -/
 theorem resolvedIpsChecked : ResolvedIpsChecked := by
   intro url a4 a6 hq
-  rw [validateWebhookUrlWithDns_eq_original] at hq ⊢
-  unfold Original.validateWebhookUrlWithDns at hq ⊢
-  rw [original_callees_eq.1, original_callees_eq.2] at hq ⊢
+  unfold validateWebhookUrlWithDns at hq ⊢
   cases hv : validateWebhookUrl url with
   | invalid e => rw [hv] at hq; simp at hq
   | valid =>
@@ -554,7 +572,7 @@ theorem resolvedIpsChecked : ResolvedIpsChecked := by
     | none => simp at hq
     | some u =>
       simp only at hq ⊢
-      by_cases hl : isIpLiteral (stripBrackets (checkedHostname u.hostname)) = true
+      by_cases hl : (ipVerdict u.hostname == some false) = true
       · simp [hl] at hq
       · simp only [hl, Bool.false_eq_true, ↓reduceIte]
         by_cases he : a4 ++ a6 = []
@@ -576,21 +594,61 @@ theorem resolvedIpsChecked : ResolvedIpsChecked := by
             intro hbad
             exact ha (List.any_eq_true.2 ⟨ip, hip, by simpa [bne_iff_ne] using hbad⟩)
 
-/-- ts:330-331: the resolvers are called with the checked hostname, brackets stripped. Proved for
-the original, carried over by `validateWebhookUrlWithDns_eq_original`. -/
+/-- ts:333-334: the resolvers are called with the checked hostname, brackets stripped. -/
 theorem resolversGetCheckedHostname : ResolversGetCheckedHostname := by
   intro url a4 a6 q hq
-  rw [validateWebhookUrlWithDns_eq_original] at hq
-  unfold Original.validateWebhookUrlWithDns at hq
-  rw [original_callees_eq.1, original_callees_eq.2] at hq
+  unfold validateWebhookUrlWithDns at hq
   cases hv : validateWebhookUrl (some url) with
   | invalid e => simp [hv] at hq
   | valid =>
     simp only [hv] at hq
-    by_cases hl : isIpLiteral (stripBrackets (checkedHostname url.hostname)) = true
+    by_cases hl : (ipVerdict url.hostname == some false) = true
     · simp [hl] at hq
     · simp only [hl, Bool.false_eq_true, ↓reduceIte] at hq
       split at hq <;> (try split at hq) <;> simp_all
+
+/-- `validateWebhookUrlWithDns` (ts:322-362) equals the original, for every pair of resolver
+answers, on every URL whose hostname the first pass examines unchanged: lower-case, no trailing dot
+(`checkedHostname u.hostname = u.hostname`), as the URL parser writes every IP host (tested, see
+`Spec.IpLiteralsSkipDns`). Same verdict, same error text, same resolver hostname or no call. It does
+not hold for every URL (`dotted_quad_names_resolved`). Where it holds, the original is the code at
+a8d2e7ca as far as `isIpLiteral` agrees with `net.isIP` on the URL parser's hostnames, which the URL
+vectors test (ModelOriginal.lean). -/
+theorem validateWebhookUrlWithDns_eq_original (url : Option ParsedUrl) (answers4 answers6 : List String)
+    (hform : ∀ u ∈ url, checkedHostname u.hostname = u.hostname) :
+    validateWebhookUrlWithDns url answers4 answers6 =
+      Original.validateWebhookUrlWithDns url answers4 answers6 := by
+  unfold validateWebhookUrlWithDns Original.validateWebhookUrlWithDns
+  rw [original_callees_eq.1, original_callees_eq.2]
+  cases hv : validateWebhookUrl url with
+  | invalid e => rfl
+  | valid =>
+    cases url with
+    | none => rfl
+    | some u =>
+      have hu : checkedHostname u.hostname = u.hostname := hform u rfl
+      have hb : isBlockedIp u.hostname = false := hu ▸ not_blocked_of_valid u hv
+      dsimp only
+      rw [hu, ipVerdict_allowed_eq_isIpLiteral _ hb]
+
+/-- The behaviour change, on the three hostnames that exposed it (ts:327-332). The URL parser keeps
+`1.2.3.4..`, `01.2.3.4..` and `012.0.0.1..` as DNS names, since it reads a dotted quad as IPv4 only
+with at most one trailing dot. The model resolves each under the name the first pass examined and
+rejects it when nothing answers; the original accepted each without DNS, because `isIpLiteral`
+reads its checked hostname as an address. So `validateWebhookUrlWithDns_eq_original` needs its
+hypothesis. The code at a8d2e7ca itself skipped DNS only for `1.2.3.4..`: its `net.isIP` returns 0
+for `01.2.3.4` and `012.0.0.1`, where `isIpLiteral` does not model it (ModelOriginal.lean). -/
+theorem dotted_quad_names_resolved :
+    validateWebhookUrlWithDns (some ⟨"https:", "1.2.3.4.."⟩) [] [] =
+      (.invalid "DNS 확인 실패: 호스트를 찾을 수 없습니다.", some "1.2.3.4") ∧
+    validateWebhookUrlWithDns (some ⟨"https:", "01.2.3.4.."⟩) [] [] =
+      (.invalid "DNS 확인 실패: 호스트를 찾을 수 없습니다.", some "01.2.3.4") ∧
+    validateWebhookUrlWithDns (some ⟨"https:", "012.0.0.1.."⟩) [] [] =
+      (.invalid "DNS 확인 실패: 호스트를 찾을 수 없습니다.", some "012.0.0.1") ∧
+    Original.validateWebhookUrlWithDns (some ⟨"https:", "1.2.3.4.."⟩) [] [] = (.valid, none) ∧
+    Original.validateWebhookUrlWithDns (some ⟨"https:", "01.2.3.4.."⟩) [] [] = (.valid, none) ∧
+    Original.validateWebhookUrlWithDns (some ⟨"https:", "012.0.0.1.."⟩) [] [] = (.valid, none) := by
+  decide +kernel
 
 /-! ## (d) No regression against the replaced code -/
 

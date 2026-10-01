@@ -17,7 +17,7 @@
 -- models: src/webhook-url-validator.ts:251-253 (isBlockedIp)
 -- models: src/webhook-url-validator.ts:259-264 (checkedHostname)
 -- models: src/webhook-url-validator.ts:275-306 (validateWebhookUrl)
--- models: src/webhook-url-validator.ts:322-359 (validateWebhookUrlWithDns; the resolvers' answers
+-- models: src/webhook-url-validator.ts:322-362 (validateWebhookUrlWithDns; the resolvers' answers
 --         are inputs)
 -- models: src/webhook-url-validator.ts:21-29, 34-73 at commit 60d74c71 (the replaced
 --         isPrivateIpv4 and isBlockedIp; section `Legacy`, for the no-regression theorems)
@@ -324,19 +324,34 @@ def validateWebhookUrl : Option ParsedUrl → Validation
       else if isBlockedIp hostname then .invalid "내부 네트워크 주소는 등록할 수 없습니다."
       else .valid
 
-/-- `net.isIP(hostname) !== 0`, which the DNS pass asked before the simplification
-(`Original.validateWebhookUrlWithDns`). Node's `net.isIP` is trusted, not modeled: on the hostnames
-the URL parser produces it agrees with this model's parsers, which the URL vectors check case by
-case against the engine. `Spec.IpLiteralsSkipDns` states the documented behaviour with it. -/
+/-- `net.isIP(hostname) !== 0`, which the DNS pass asked of the checked hostname, brackets
+stripped, at commit a8d2e7ca (`Original.validateWebhookUrlWithDns`). Node's `net.isIP` is trusted,
+not modeled. On the hostnames the URL parser produces, brackets stripped, it agrees with this
+model's parsers: the URL vectors test that case by case against the engine (`ipLiteral`), and
+nothing proves it. On other text the two can differ. The parsers read `01.2.3.4` as an address
+(leading zeros allowed) where `net.isIP` returns 0, and `checkedHostname` makes exactly that text
+out of the DNS name `01.2.3.4..` the URL parser produces. `Spec.IpLiteralsSkipDns` applies it to
+the URL parser's own hostname. -/
 def isIpLiteral (hostname : String) : Bool :=
   (parseIpv4 hostname).isSome || (parseIpv6 hostname).isSome
 
 /-- TS `validateWebhookUrlWithDns`, with DNS as input: `answers4` and `answers6` are what
 `dns.resolve4(hostname)` and `dns.resolve6(hostname)` yield, a rejection being `[]` as the TS
 `.catch` makes it. An answer that is not an address blocks, like a blocked one. The second
-component is the hostname the resolvers are called with, `none` when they are not called. An IP
-literal is recognised by the first pass's own classification, `ipVerdict(checked) === false`
-(`Original.validateWebhookUrlWithDns`, the version before, asked Node's `net.isIP`). -/
+component is the hostname the resolvers are called with, `none` when they are not called.
+
+DNS is skipped only when the hostname the URL parser produced is itself an address that
+`ipVerdict` allows (`ipVerdict(parsed.hostname) === false`). The resolvers get the hostname the
+first pass examined, brackets stripped.
+
+This changes the result for hostnames that end in two or more dots and, once the dots are
+stripped, read as an address the first pass allows, such as `1.2.3.4..`, `01.2.3.4..` and
+`012.0.0.1..`. The URL parser reads a dotted quad as IPv4 only with at most one trailing dot, so it
+keeps these as DNS names, and they are now resolved (rejected when nothing answers). The version
+before asked `ipVerdict(checked) === false` of the checked hostname and accepted all three without
+DNS, as does `Original.validateWebhookUrlWithDns` (`Proofs.dotted_quad_names_resolved`). The code
+at a8d2e7ca, whose `net.isIP` returns 0 for `01.2.3.4` and `012.0.0.1`, skipped DNS only for
+`1.2.3.4..`. -/
 def validateWebhookUrlWithDns (url : Option ParsedUrl) (answers4 answers6 : List String) :
     Validation × Option String :=
   match validateWebhookUrl url with
@@ -345,10 +360,9 @@ def validateWebhookUrlWithDns (url : Option ParsedUrl) (answers4 answers6 : List
     match url with
     | none => (.valid, none)
     | some url =>
-      let checked := checkedHostname url.hostname
-      if ipVerdict checked == some false then (.valid, none)
+      if ipVerdict url.hostname == some false then (.valid, none)
       else
-        let hostname := stripBrackets checked
+        let hostname := stripBrackets (checkedHostname url.hostname)
         let allIps := answers4 ++ answers6
         if allIps.isEmpty then (.invalid "DNS 확인 실패: 호스트를 찾을 수 없습니다.", some hostname)
         else if allIps.any (fun ip => ipVerdict ip != some false) then

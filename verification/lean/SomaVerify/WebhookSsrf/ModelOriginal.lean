@@ -21,6 +21,16 @@ Two definitions changed (`registryBlocks`, with its loop `registryLoop`, and
 so that inside `Original` every name still means what it meant before. Names not defined here
 (`parseIpv4`, `stripBrackets`, `checkedHostname`, the tables, ...) resolve to the shared
 definitions of `Model.lean`, which the simplification did not touch.
+
+What the copy of `validateWebhookUrlWithDns` models is narrower than the code at a8d2e7ca. That code
+asked Node's `net.isIP` whether the checked hostname, brackets stripped, is an IP address; the copy
+asks `isIpLiteral`. The two agree on the hostnames the URL parser produces (the URL vectors test
+this against the engine), not on every checked hostname: `checkedHostname` turns the DNS name
+`01.2.3.4..` into `01.2.3.4`, an address to `isIpLiteral` but not to `net.isIP`, so the copy skips
+DNS there where the code at a8d2e7ca resolved it. On a hostname the first pass examines unchanged,
+the checked hostname is the parser's own, so there the copy is the code at a8d2e7ca as far as that
+tested agreement goes; that is where `Proofs.validateWebhookUrlWithDns_eq_original` compares it with
+the current model.
 -/
 
 namespace SomaVerify.WebhookSsrf.Original
