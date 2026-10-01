@@ -37,19 +37,19 @@ import type { IncidentRequestLike } from '../sdk-options';
 
 const REQUEST: IncidentRequestLike = {
   version: 1,
-  incident_id: 'HOST-gucci-dev2-api-unreachable',
+  incident_id: 'HOST-projalpha-dev2-api-unreachable',
   lifecycle_id: 'LC-2026-09-11-0007',
   attempt_id: 'AT-2026-09-11-0007-1',
   channel_id: 'C0EAGLE123',
   parent_ts: '1757500000.000100',
   env: 'dev2',
-  summary: 'gucci-dev2-api is unreachable',
+  summary: 'projalpha-dev2-api is unreachable',
 };
 
 const OBSERVED_AT = '2026-09-11T10:30:00Z';
 const NOW = new Date('2026-09-11T10:31:00Z');
-const HOST_REF = 'eagle:/api/snapshot#hosts[id=gucci-dev2-api]';
-const CHECK_REF = 'eagle:/api/snapshot#http_checks[name=gucci-dev2-api-health]';
+const HOST_REF = 'eagle:/api/snapshot#hosts[id=projalpha-dev2-api]';
+const CHECK_REF = 'eagle:/api/snapshot#http_checks[name=projalpha-dev2-api-health]';
 
 function sanitized(text: string | null, extra: Partial<SanitizedText> = {}): SanitizedText {
   return { text, redacted: false, truncated: false, ...extra };
@@ -58,7 +58,7 @@ function sanitized(text: string | null, extra: Partial<SanitizedText> = {}): San
 function hostRow(overrides: Partial<EvidenceHost> = {}): EvidenceHost {
   return {
     ref: HOST_REF,
-    id: 'gucci-dev2-api',
+    id: 'projalpha-dev2-api',
     env: 'dev2',
     reachable: false,
     best_effort: true,
@@ -88,10 +88,10 @@ function evidenceFixture(overrides: Partial<IncidentEvidence> = {}): IncidentEvi
       generated_at: '2026-09-11T10:30:04Z',
       freshness: { state: 'fresh', observed_at: '2026-09-11T10:30:04Z', age_seconds: 1 },
       issue: {
-        ref: 'eagle:/api/triage#issues[id=HOST-gucci-dev2-api-unreachable]',
+        ref: 'eagle:/api/triage#issues[id=HOST-projalpha-dev2-api-unreachable]',
         id: REQUEST.incident_id,
         cat: 'HOST',
-        key: 'host:gucci-dev2-api',
+        key: 'host:projalpha-dev2-api',
         text: sanitized('host unreachable'),
         detail: sanitized('ssh probe failed'),
         envs: ['dev2'],
@@ -168,7 +168,7 @@ function markerPayload(overrides: Record<string, unknown> = {}): string {
   return `${INCIDENT_RESULT_MARKER} ${JSON.stringify({
     version: 1,
     status: 'succeeded',
-    summary: 'gucci-dev2-api has been unreachable since 10:30Z.',
+    summary: 'projalpha-dev2-api has been unreachable since 10:30Z.',
     evidence: [{ id: HOST_REF, observed_at: OBSERVED_AT }],
     proposal: {
       id: 'P1',
@@ -207,7 +207,7 @@ describe('incident evidence registry', () => {
     expect(records[0].id).toBe(HOST_REF);
     expect(records[0].observed_at).toBe(OBSERVED_AT);
     expect(records[0].fact).toBe(
-      'host gucci-dev2-api env=dev2 reachable=false best_effort=true error=connection refused',
+      'host projalpha-dev2-api env=dev2 reachable=false best_effort=true error=connection refused',
     );
   });
 
@@ -573,7 +573,7 @@ describe('incident conclusion validation', () => {
 
     expect(output.result.evidence).toHaveLength(1);
     expect(output.result.evidence[0].fact).toBe(
-      'host gucci-dev2-api env=dev2 reachable=false best_effort=true error=connection refused',
+      'host projalpha-dev2-api env=dev2 reachable=false best_effort=true error=connection refused',
     );
     expect(output.text).not.toContain('restarted successfully');
   });

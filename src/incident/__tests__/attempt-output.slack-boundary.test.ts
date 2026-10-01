@@ -35,13 +35,13 @@ import type { IncidentRequestLike } from '../sdk-options';
 
 const REQUEST: IncidentRequestLike = {
   version: 1,
-  incident_id: 'HOST-gucci-dev2-api-unreachable',
+  incident_id: 'HOST-projalpha-dev2-api-unreachable',
   lifecycle_id: 'LC-2026-09-11-0007',
   attempt_id: 'AT-2026-09-11-0007-1',
   channel_id: 'C0EAGLE123',
   parent_ts: '1757500000.000100',
   env: 'dev2',
-  summary: 'gucci-dev2-api is unreachable',
+  summary: 'projalpha-dev2-api is unreachable',
 };
 
 const EVIDENCE_TOOL = 'mcp__incident_evidence__collect';
