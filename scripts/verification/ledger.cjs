@@ -19,9 +19,14 @@ const { GROUPS, OTHER, layerOf, listProductionFiles } = require('./extract-impor
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const OUT = 'verification/LEDGER.md';
 
-/** The semantically modeled files, and the `verification/lean/SomaVerify/<Module>` of each. */
+const LEAN_ROOT = 'verification/lean/SomaVerify';
+
+/**
+ * The semantically modeled files, and the `verification/lean/SomaVerify/<Module>` of each. One
+ * primary file per module, named by hand: a module's `-- models:` lines may also cite files it
+ * models only in part, which stay T1.
+ */
 const MODELED = new Map([
-  ['src/sensitive-path-filter.ts', 'SensitivePath'],
   ['src/webhook-url-validator.ts', 'WebhookSsrf'],
   ['src/agent-runtime/policy/tool-policy.ts', 'ToolPolicy'],
   ['src/cli/args.ts', 'CliArgs'],
@@ -29,6 +34,27 @@ const MODELED = new Map([
   ['packages/slack/src/followup-queue-store.ts', 'FollowupSnapshot'],
   ['src/dangerous-command-filter.ts', 'BypassDecision'],
 ]);
+
+/**
+ * The entries of `modeled` that the Lean tree under `root` does not back: the module has no
+ * `Model.lean`, or its `Model.lean` has no `-- models: <file>:` line for the mapped file.
+ */
+function unbackedEntries(root, modeled) {
+  const problems = [];
+  for (const [file, module] of modeled) {
+    const model = `${LEAN_ROOT}/${module}/Model.lean`;
+    const modelPath = path.join(root, model);
+    if (!fs.existsSync(modelPath)) {
+      problems.push(`${file} -> ${model} does not exist`);
+      continue;
+    }
+    const lines = fs.readFileSync(modelPath, 'utf8').split('\n');
+    if (!lines.some((line) => line.startsWith(`-- models: ${file}:`))) {
+      problems.push(`${file} -> ${model} has no \`-- models: ${file}:\` line`);
+    }
+  }
+  return problems;
+}
 
 function fail(message) {
   console.error(`ledger: ${message}`);
@@ -103,8 +129,12 @@ function main() {
   const production = new Set(files);
   const stale = [...MODELED.keys()].filter((file) => !production.has(file));
   if (stale.length > 0) fail(`modeled files that are no longer production files: ${stale.join(', ')}`);
+  const unbacked = unbackedEntries(REPO_ROOT, MODELED);
+  if (unbacked.length > 0) fail(`modeled files without a Lean model naming them: ${unbacked.join('; ')}`);
   fs.writeFileSync(path.join(REPO_ROOT, OUT), render(date, files));
   console.log(`ledger: ${files.length} files (${MODELED.size} T2) -> ${OUT}`);
 }
 
-main();
+module.exports = { MODELED, unbackedEntries };
+
+if (require.main === module) main();
