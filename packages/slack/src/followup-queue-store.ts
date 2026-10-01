@@ -72,6 +72,12 @@ function record(value: unknown, where: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+/**
+ * Walk the result with `for…of`, never `forEach`. `forEach` skips a hole, but
+ * `JSON.stringify` writes one as `null`, which `load()` rejects, so `save()`
+ * would accept a file it cannot read back. `for…of` reads a hole as the
+ * `undefined` it holds, and that fails where the `null` would.
+ */
 function array(value: unknown, where: string): unknown[] {
   if (!Array.isArray(value)) fail(where, 'is not an array');
   return value;
@@ -140,13 +146,13 @@ function validateMessage(value: unknown, where: string): { channel: string; ts: 
   }
 
   if (message.files !== undefined) {
-    array(message.files, `${where}.files`).forEach((entry, index) => {
+    for (const [index, entry] of array(message.files, `${where}.files`).entries()) {
       const file = record(entry, `${where}.files[${index}]`);
       for (const field of ['id', 'name', 'mimetype', 'filetype', 'url_private', 'url_private_download']) {
         text(file[field], `${where}.files[${index}].${field}`);
       }
       number(file.size, `${where}.files[${index}].size`);
-    });
+    }
   }
 
   return { channel, ts };
@@ -192,7 +198,7 @@ function validateItem(
   optionalText(item.steerUuid, `${where}.steerUuid`);
   const steerUuid = item.steerUuid as string | undefined;
   if (steerUuid !== undefined && steerUuid.length === 0) fail(`${where}.steerUuid`, 'is empty');
-  if (state === 'steered' && !steerUuid) fail(`${where}.steerUuid`, 'is missing on a steered item');
+  if (state === 'steered' && steerUuid === undefined) fail(`${where}.steerUuid`, 'is missing on a steered item');
 
   return { id, seq, eventKey, state, steerUuid };
 }
@@ -210,25 +216,23 @@ function validateSession(value: unknown, where: string): string {
 
   // Required, not optional. `FollowupQueue`'s own constructor rejects a restored
   // session whose turnEpoch is not a non-negative integer
-  // (`followup-queue.ts:221-223`) and `ensureSession` always writes one
-  // (`:576`), so accepting a file without it would hand the queue a snapshot it
+  // (`followup-queue.ts:326-327`) and `ensureSession` always writes one
+  // (`:969`), so accepting a file without it would hand the queue a snapshot it
   // refuses. The format has never shipped — there is no legacy generation to
   // migrate, and defaulting a missing value to 0 would silently mint a turn
   // generation that makes stale button clicks look current (A12/A28).
   integer(session.turnEpoch, `${where}.turnEpoch`, 0);
 
   const ids = new Set<string>();
-  const seqs = new Set<number>();
   const eventKeys = new Set<string>();
   const steerUuids = new Set<string>();
   let maxSeq = 0;
   let pendingDispatch = 0;
   let dispatched = 0;
 
-  array(session.items, `${where}.items`).forEach((entry, index) => {
+  for (const [index, entry] of array(session.items, `${where}.items`).entries()) {
     const item = validateItem(entry, sessionKey, `${where}.items[${index}]`);
     if (ids.has(item.id)) fail(`${where}.items[${index}].id`, `is a duplicate (${item.id})`);
-    if (seqs.has(item.seq)) fail(`${where}.items[${index}].seq`, `is a duplicate (${item.seq})`);
     // Two rows for one Slack event means the dedup key (A3) was already broken
     // on disk — running both is exactly the double-answer this queue prevents.
     if (eventKeys.has(item.eventKey)) fail(`${where}.items[${index}].eventKey`, `is a duplicate (${item.eventKey})`);
@@ -243,12 +247,11 @@ function validateSession(value: unknown, where: string): string {
       steerUuids.add(item.steerUuid);
     }
     ids.add(item.id);
-    seqs.add(item.seq);
     eventKeys.add(item.eventKey);
     maxSeq = Math.max(maxSeq, item.seq);
     if (PENDING_DISPATCH_STATES.includes(item.state)) pendingDispatch += 1;
     if (item.state === 'dispatched') dispatched += 1;
-  });
+  }
 
   // A reused nextSeq would hand a later enqueue an id that already exists.
   if (nextSeq <= maxSeq) fail(`${where}.nextSeq`, `(${nextSeq}) collides with an existing seq (max ${maxSeq})`);
@@ -271,11 +274,11 @@ export function parseFollowupQueueSnapshot(raw: unknown): FollowupQueueSnapshot 
   if (snapshot.version !== 1) fail('snapshot.version', 'is not 1');
 
   const keys = new Set<string>();
-  array(snapshot.sessions, 'snapshot.sessions').forEach((entry, index) => {
+  for (const [index, entry] of array(snapshot.sessions, 'snapshot.sessions').entries()) {
     const sessionKey = validateSession(entry, `snapshot.sessions[${index}]`);
     if (keys.has(sessionKey)) fail(`snapshot.sessions[${index}].sessionKey`, `is a duplicate (${sessionKey})`);
     keys.add(sessionKey);
-  });
+  }
 
   return snapshot as unknown as FollowupQueueSnapshot;
 }
