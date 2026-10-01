@@ -29,7 +29,9 @@ as `/tmp`). A HOME is an absolute path, as the module's always is (`moduleHome_a
 
 Outside these statements (trust boundary):
 
-* Bash. `checkBashSensitivePaths` pulls paths out of shell text with regular expressions
+* Bash. `checkBashSensitivePaths` pulls paths out of shell text with regular expressions, run
+  over several readings of the command: as written, with quotes and backslashes removed, and
+  with `$'...'` decoded twice, a NUL ending the `$'...'` (bash) or the word (zsh)
   (`src/sensitive-path-filter.ts:85-137, 213-326`). Which files a shell command reads is not
   decidable from its text (variables, quoting, globbing, command substitution, the working
   directory), so no statement here is about Bash commands; regression tests in
