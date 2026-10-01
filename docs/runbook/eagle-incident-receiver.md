@@ -90,8 +90,12 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
   그 스위치 `StreamContext.incidentAttempt`는 기본값 없는 **필수** 필드다
   (`packages/slack/src/stream-processor.ts:112`) — 새 생성 지점이 빠뜨리면 타입 검사가 실패한다.
 - 결론은 **항상 blocks 없는 평문 게시**로 나간다 — 턴 스트림의 `markdown_text` 청크로는 절대 나가지 않는다
-  (`packages/slack/src/stream-processor.ts:1944`). 그 청크는 Slack이 서버에서 해석하므로, eagle-eye가 읽어 가는
-  `text`가 검증된 마커 줄과 같은지 보장할 수 없다.
+  (`packages/slack/src/stream-processor.ts:1949`). 그 청크는 Slack이 서버에서 해석하기 때문이다.
+  **보장 범위는 byte-for-byte up to the `say` call — `say` 호출까지다.** 코드와 테스트가 증명하는 것은 host가
+  렌더한 텍스트가 한 바이트도 바뀌지 않고 `say` 인자의 `text`가 된다는 것까지다. Slack이 **저장한** `text`
+  (eagle-eye가 `conversations.replies`로 읽어 가는 값)가 마커 줄과 같다는 것은 **검증되지 않았다** — bare URL
+  자동 링크, 엔티티(`&amp;` 등) 처리, 멘션 모양 문자열이 서버에서 바뀔 수 있다. 끝단(end-to-end) 동일성은
+  §6의 활성화 전 필수 리시트가 통과하기 전에는 주장하지 않는다.
   게시 인자는 `{ text, thread_ts, unfurl_links: false, unfurl_media: false, parse: 'none', mrkdwn: false }` —
   `text`에 대한 Slack 자체 처리를 끄는 문서화된 `chat.postMessage` 스위치 전부다(`incident-result.ts` caller
   obligation 2). 근거: `@slack/web-api` 7.15.1 `dist/types/request/chat.d.ts`와 Slack 문서
@@ -142,11 +146,23 @@ SOMA_INCIDENT_EVIDENCE_BASE_URL=https://<eagle-eye-host>
 
 ## 6. Rollout
 
-1. 대상 호스트에 위 두 env를 주입한다(시크릿 저장소 경유, 문서/PR에 실값 금지).
-2. **봇 재시작은 유저 게이트다.** 에이전트가 임의로 재시작하지 않고 유저 승인 후 수행한다.
-3. **일반 deploy 워크플로를 그대로 쓰지 않는다.** 그 워크플로가 어떤 인스턴스들로 fan-out 되는지 먼저 확인하고,
+1. **활성화 전 필수 리시트 — Slack 저장 text 되읽기 (아직 실행되지 않았다).** 이것이 통과하기 전에는 env를
+   주입하지 않는다.
+   - 대상 봇 토큰으로, 인시던트 채널의 스크래치 스레드에 결론 1건을 **실제로** 게시한다. 게시 인자는
+     `publishIncidentText`와 같아야 한다: `{ text, thread_ts, unfurl_links: false, unfurl_media: false,
+     parse: 'none', mrkdwn: false }`, blocks 없음.
+   - `text`는 host 렌더 결과(`buildIncidentAttemptOutput(...).text`)여야 하고, summary에 다음을 **모두** 넣는다:
+     bare URL(예: `https://example.com/run/1`), `&`, `<`, `>`, 멘션 모양 문자열(예: `<@U0ADMIN>`, `<!here>`, `@here`).
+   - eagle-eye와 같은 경로인 `conversations.replies`로 그 메시지를 되읽는다.
+   - 판정: 되읽은 `text`에서 `EAGLE_INCIDENT_RESULT:`로 시작하는 줄이 보낸 마커 줄(`output.line`)과
+     **정확히 같아야** 한다(문자열 동일, 정규화 없음). 한 글자라도 다르면 활성화하지 않고, 차이를 기록한 뒤
+     게시 경로를 고친다.
+   - 리시트(보낸 줄, 되읽은 줄, 비교 결과, 메시지 ts)는 활성화 기록에 남긴다.
+2. 대상 호스트에 위 두 env를 주입한다(시크릿 저장소 경유, 문서/PR에 실값 금지).
+3. **봇 재시작은 유저 게이트다.** 에이전트가 임의로 재시작하지 않고 유저 승인 후 수행한다.
+4. **일반 deploy 워크플로를 그대로 쓰지 않는다.** 그 워크플로가 어떤 인스턴스들로 fan-out 되는지 먼저 확인하고,
    의도한 대상 하나에만 적용되는지 확인한 뒤 진행한다(다중 노드 동시 활성화 금지).
-4. 활성 후 확인 지점: ingress 거부 사유 로그(`receiver_disabled` / `user_not_accepted` / `runtime_not_ready`),
+5. 활성 후 확인 지점: ingress 거부 사유 로그(`receiver_disabled` / `user_not_accepted` / `runtime_not_ready`),
    `Built isolated incident attempt options` info 로그, 시도가 끝나면 `Incident attempt concluded` info 로그
    (`rejected`가 있으면 `modelTextClass`로 원인을 먼저 가른다 — §5).
 
