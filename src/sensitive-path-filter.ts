@@ -90,10 +90,13 @@ const EXACT_FILE_KEYS: ReadonlySet<string> = new Set(Array.from(SENSITIVE_EXACT_
 // follows a walk into the sensitive directories, not through links outside them. `~user/...` is
 // not expanded. A glob's partial segment is not matched against names (`~/.ss*/id_rsa` checks
 // HOME). Names are compared case-folded, not Unicode-normalized (every sensitive name is ASCII).
-// In Bash, HOME is the only variable expanded and quote removal the only other shell rule applied
-// (`$'...'`, other variables, command substitution and paths with white space are not
-// understood), and only the commands below are read. An OS-level read deny list would cover every
-// spelling (getSensitiveReadDenyPaths builds one; nothing applies it).
+// In Bash, HOME is the only variable expanded, and quoting, `$'...'` and `$"..."` included, the
+// only other shell rule applied (extractPathsFromCommand). Quotes count as removed even where the
+// shell keeps them, so a quoted `~` or `$HOME` still counts as HOME (a `~` written as an escape in
+// `$'...'`, `\x7e`, does not). Other variables, command substitution (a `$'...'` inside
+// `"$(...)"` stays literal) and paths with white space or control characters are not understood,
+// and only the commands below are read. An OS-level read deny list would cover every spelling
+// (getSensitiveReadDenyPaths builds one; nothing applies it).
 // A read or copy command's arguments run to the next `|`, `;` or `&`; RE_PATH picks every path
 // among them. `\/+`: the shell reads `//` as `/`.
 const RE_READ_COMMANDS =
@@ -105,6 +108,33 @@ const RE_SOURCE_CMD =
   /(?:\bsource|(?<![^\w\s;&|(){}`])\.)\s+((?:~|\$HOME|\$\{HOME\})?(?:\/+[\w.\-~]+)+(?:\/+[\w.\-~]+)?)/g;
 // Changing into a directory is an access to it.
 const RE_CHANGE_DIR = /\b(?:cd|pushd)\b[^|;&]*?((?:~|\$HOME|\$\{HOME\})?(?:\/+[\w.\-~]+)+(?:\/+[\w.\-~]+)?)/g;
+/** The quote and backslash characters the shell removes from a word. */
+const QUOTING = /["'\\]/g;
+/** White space and the metacharacters `|&;()<>`: unquoted, each ends a word. */
+const WORD_END = /[\s|&;()<>]/;
+/** A character RE_PATH continues a path with. */
+const PATH_CHAR = /[\w.\-~/]/;
+/**
+ * The numeric escapes of `$'...'` after their backslash: \nnn, 1-3 octal digits, taken modulo 256
+ * (`\400` is a NUL); \xHH, 1-2 hex digits; \uHHHH, 1-4; \UHHHHHHHH, 1-8: at most 9 characters.
+ */
+const ANSI_C_NUMERIC = /^(?:[0-7]{1,3}|x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8})/;
+/** The one-letter escapes of `$'...'` and their values. */
+const ANSI_C_ESCAPES: ReadonlyMap<string, string> = new Map([
+  ['a', '\x07'],
+  ['b', '\b'],
+  ['e', '\x1b'],
+  ['E', '\x1b'],
+  ['f', '\f'],
+  ['n', '\n'],
+  ['r', '\r'],
+  ['t', '\t'],
+  ['v', '\v'],
+  ['\\', '\\'],
+  ["'", "'"],
+  ['"', '"'],
+  ['?', '?'],
+]);
 
 export interface SensitivePathResult {
   readonly isSensitive: boolean;
@@ -185,17 +215,114 @@ function collectMatches(pattern: RegExp, text: string): string[] {
 }
 
 function extractPathsFromCommand(command: string): string[] {
-  // The shell removes quotes and backslashes before it opens a file (`"$HOME/.env"`, `~/.s""sh`,
-  // `~/.s\sh`). Removing them everywhere, even where the shell keeps them, only adds paths.
-  const text = command.replace(/["'\\]/g, '');
+  // The command is read four ways and every path any reading shows is checked, so each reading
+  // only adds paths: as written, where a path stops at a quote or backslash; with every quote and
+  // backslash removed, as the shell removes them before it opens a file (`"$HOME/.env"`,
+  // `~/.s""sh`, `~/.s\sh`), even where it keeps them; and with `$'...'` decoded (decodeQuoting),
+  // once with a NUL ending the `$'...'`, as in bash, and once ending the word, as in zsh.
+  const readings = new Set([
+    command,
+    command.replace(QUOTING, ''),
+    decodeQuoting(command, false),
+    decodeQuoting(command, true),
+  ]);
   const paths: string[] = [];
-  for (const args of collectMatches(RE_READ_COMMANDS, text)) {
-    paths.push(...(args.match(RE_PATH) ?? []));
+  for (const text of readings) {
+    for (const args of collectMatches(RE_READ_COMMANDS, text)) {
+      paths.push(...(args.match(RE_PATH) ?? []));
+    }
+    paths.push(...collectMatches(RE_INPUT_REDIRECT, text));
+    paths.push(...collectMatches(RE_SOURCE_CMD, text));
+    paths.push(...collectMatches(RE_CHANGE_DIR, text));
   }
-  paths.push(...collectMatches(RE_INPUT_REDIRECT, text));
-  paths.push(...collectMatches(RE_SOURCE_CMD, text));
-  paths.push(...collectMatches(RE_CHANGE_DIR, text));
   return paths;
+}
+
+/**
+ * The command with its quoting read as the shell reads it, quote and backslash characters then
+ * removed: each `$'...'` outside quotes becomes its value (decodeAnsiC) and `$"..."` is read as
+ * `"..."`. With nulEndsWord, a NUL in a `$'...'` drops the rest of its word, up to the next unquoted
+ * white space or metacharacter, as zsh does; otherwise it ends only the `$'...'`, as bash does. The
+ * shell never expands a quoted `~`, so a decoded `~` starting a path is written `/~`, a directory
+ * named `~`: `$'\x7e/.ssh/id_rsa'` is checked as `/~/.ssh/id_rsa`, not as a file in HOME.
+ */
+function decodeQuoting(command: string, nulEndsWord: boolean): string {
+  let text = '';
+  let quote = '';
+  let dropping = false;
+  const keep = (chars: string) => {
+    if (!dropping) text += chars.replace(QUOTING, '');
+  };
+  for (let i = 0; i < command.length; ) {
+    const c = command[i];
+    if (quote === "'") {
+      if (c === "'") quote = '';
+      keep(c);
+      i += 1;
+    } else if (c === '\\') {
+      keep(command.slice(i, i + 2));
+      i += 2;
+    } else if (quote === '"') {
+      if (c === '"') quote = '';
+      keep(c);
+      i += 1;
+    } else if (command.startsWith('$$', i)) {
+      // The shell's process ID: the `$` after it does not start a `$'` or `$"`.
+      keep('$$');
+      i += 2;
+    } else if (command.startsWith('$"', i)) {
+      quote = '"';
+      i += 2;
+    } else if (command.startsWith("$'", i)) {
+      let end = i + 2;
+      while (end < command.length && command[end] !== "'") end += command[end] === '\\' ? 2 : 1;
+      const { value, nul } = decodeAnsiC(command.slice(i + 2, end));
+      for (const ch of value) keep(ch === '~' && !PATH_CHAR.test(text.slice(-1)) ? '/~' : ch);
+      if (nul && nulEndsWord) dropping = true;
+      i = end + 1;
+    } else {
+      if (c === "'" || c === '"') quote = c;
+      else if (WORD_END.test(c)) dropping = false;
+      keep(c);
+      i += 1;
+    }
+  }
+  return text;
+}
+
+/**
+ * The value bash gives the body of a `$'...'`, up to the first NUL, and whether one cut it short.
+ * An escape bash does not know keeps its backslash (`\z` stays `\z`).
+ */
+function decodeAnsiC(body: string): { value: string; nul: boolean } {
+  let value = '';
+  for (let i = 0; i < body.length; ) {
+    let ch = body[i];
+    let next = i + 1;
+    if (ch === '\\' && i + 1 < body.length) {
+      const letter = body[i + 1];
+      const simple = ANSI_C_ESCAPES.get(letter);
+      const digits = ANSI_C_NUMERIC.exec(body.slice(i + 1, i + 10))?.[0];
+      next = i + 2;
+      if (simple !== undefined) {
+        ch = simple;
+      } else if (digits) {
+        const code = letter <= '7' ? parseInt(digits, 8) & 0xff : parseInt(digits.slice(1), 16);
+        ch = code <= 0x10ffff ? String.fromCodePoint(code) : body.slice(i, i + 1 + digits.length);
+        next = i + 1 + digits.length;
+      } else if (letter === 'c' && i + 2 < body.length) {
+        // \cX: the control character of X.
+        ch = String.fromCharCode(body[i + 2] === '?' ? 0x7f : body[i + 2].toUpperCase().charCodeAt(0) & 0x1f);
+        next = i + 3;
+      } else {
+        ch = body.slice(i, i + 2);
+      }
+    }
+    if (ch === '\0') return { value, nul: true };
+    value += ch;
+    i = next;
+  }
+  return { value, nul: false };
 }
 
 /** A path starting with a HOME_ALIASES spelling, alone or before `/`, with HOME in its place. */
