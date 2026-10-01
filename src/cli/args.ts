@@ -11,6 +11,7 @@
  * the second without a word.
  *
  * So every command now declares its exact grammar in {@link COMMAND_GRAMMAR}
+ * (`sessions` per action, from the handler's own tables)
  * and {@link parseArguments} walks the tail token by token: an unrecognised
  * flag, a flag valid for a *different* command, a repeated flag, a missing
  * value, and a stray positional are all `CliArgError`. Messages name the
@@ -68,20 +69,17 @@ type FlagKind = SessionsFlagKind;
 
 interface Grammar {
   flags: Readonly<Record<string, FlagKind>>;
-  minPositionals: number;
   maxPositionals: number;
 }
 
 const PROFILE_ONLY: Readonly<Record<string, FlagKind>> = { [PROFILE_FLAG]: 'value' };
 
-const COMMAND_GRAMMAR: Readonly<Record<(typeof PUBLIC_COMMANDS)[number], Grammar>> = {
-  setup: { flags: { ...PROFILE_ONLY, '--resume': 'boolean' }, minPositionals: 0, maxPositionals: 0 },
-  doctor: { flags: { ...PROFILE_ONLY, '--json': 'boolean' }, minPositionals: 0, maxPositionals: 0 },
-  status: { flags: { ...PROFILE_ONLY, '--json': 'boolean' }, minPositionals: 0, maxPositionals: 0 },
-  service: { flags: PROFILE_ONLY, minPositionals: 0, maxPositionals: 0 },
-  profile: { flags: { ...PROFILE_ONLY, '--json': 'boolean' }, minPositionals: 0, maxPositionals: 0 },
-  // Replaced per-action below; `sessions` never uses this entry directly.
-  sessions: { flags: PROFILE_ONLY, minPositionals: 0, maxPositionals: 0 },
+const COMMAND_GRAMMAR: Readonly<Record<Exclude<(typeof PUBLIC_COMMANDS)[number], 'sessions'>, Grammar>> = {
+  setup: { flags: { ...PROFILE_ONLY, '--resume': 'boolean' }, maxPositionals: 0 },
+  doctor: { flags: { ...PROFILE_ONLY, '--json': 'boolean' }, maxPositionals: 0 },
+  status: { flags: { ...PROFILE_ONLY, '--json': 'boolean' }, maxPositionals: 0 },
+  service: { flags: PROFILE_ONLY, maxPositionals: 0 },
+  profile: { flags: { ...PROFILE_ONLY, '--json': 'boolean' }, maxPositionals: 0 },
 };
 
 /** One-line summaries, rendered by `index.ts`'s help route from this same table. */
@@ -134,7 +132,7 @@ function parseArguments(tokens: readonly string[], grammar: Grammar, command: st
       const kind = grammar.flags[token];
       if (kind === undefined) {
         throw new CliArgError(
-          `Unknown option "${token}" for "${command}". Expected one of: ${Object.keys(grammar.flags).join(', ') || 'no options'}.`,
+          `Unknown option "${token}" for "${command}". Expected one of: ${Object.keys(grammar.flags).join(', ')}.`,
         );
       }
       if (flags.has(token)) {
@@ -161,17 +159,14 @@ function parseArguments(tokens: readonly string[], grammar: Grammar, command: st
   if (positionals.length > grammar.maxPositionals) {
     throw new CliArgError(`Unexpected argument "${positionals[grammar.maxPositionals]}" for "${command}".`);
   }
-  if (positionals.length < grammar.minPositionals) {
-    throw new CliArgError(`"${command}" needs ${grammar.minPositionals} more argument(s).`);
-  }
 
   return { flags, positionals };
 }
 
 function readProfile(parsed: ParsedArguments): ProfileName | undefined {
   const value = parsed.flags.get(PROFILE_FLAG);
-  if (value === undefined) return undefined;
-  if (value === true) throw new CliArgError(`Option "${PROFILE_FLAG}" requires a value.`);
+  // Never `true`: every grammar declares `--profile` as a value flag (via PROFILE_ONLY).
+  if (typeof value !== 'string') return undefined;
   if (!isProfileName(value)) {
     throw new CliArgError(`Invalid --profile value "${value}". Expected one of: preview, production.`);
   }
@@ -284,10 +279,10 @@ export function parseCli(argv: string[]): CliCommand {
       // `sessions show` takes an optional session key: omitting it must reach
       // the handler so it prints its historical usage line, not a parse error.
       const handlerFlags = action === 'list' ? SESSIONS_LIST_FLAGS : SESSIONS_SHOW_FLAGS;
-      const grammar: Grammar =
-        action === 'list'
-          ? { flags: { ...handlerFlags, ...PROFILE_ONLY }, minPositionals: 0, maxPositionals: 0 }
-          : { flags: { ...handlerFlags, ...PROFILE_ONLY }, minPositionals: 0, maxPositionals: 1 };
+      const grammar: Grammar = {
+        flags: { ...handlerFlags, ...PROFILE_ONLY },
+        maxPositionals: action === 'list' ? 0 : 1,
+      };
       const parsed = parseArguments(tail, grammar, `sessions ${action}`);
       return {
         command: 'sessions',
