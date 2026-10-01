@@ -79,6 +79,21 @@ async function settleBackgroundWork(): Promise<void> {
   }
 }
 
+// Mock gates a test holds closed. A test that fails or times out before its
+// own release would leave a recorded call waiting on the gate, and the settle
+// in afterEach would then hang until the hook timeout, hiding the real
+// failure and skipping the tmp cleanup. afterEach opens every gate first.
+const gateTeardowns: Array<() => void> = [];
+
+function holdGate<T>(teardownValue: T): { promise: Promise<T>; release: (value: T) => void } {
+  let release!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    release = r;
+  });
+  gateTeardowns.push(() => release(teardownValue));
+  return { promise, release };
+}
+
 async function importSut() {
   vi.resetModules();
   const mod = await import('../token-manager');
@@ -152,9 +167,11 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
 
   afterEach(async () => {
     process.env = originalEnv;
-    // Fire-and-forget profile syncs and usage fetches can still be running
-    // when the test body returns. Settle them (see recordBackgroundWork)
-    // before deleting the store they write to.
+    // Open any gate the test left closed (see holdGate), then settle the
+    // fire-and-forget profile syncs and usage fetches that can still be
+    // running (see recordBackgroundWork) before deleting the store they
+    // write to.
+    for (const open of gateTeardowns.splice(0)) open();
     await settleBackgroundWork();
     await fs.rm(tmp, { recursive: true, force: true });
   });
@@ -1310,10 +1327,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       });
       // Block the upstream until we signal, so 5 concurrent calls observe
       // the dedupe map (all queue on the same in-flight Promise).
-      let resolveFetch: (v: any) => void = () => {};
-      const upstream = new Promise<any>((r) => {
-        resolveFetch = r;
-      });
+      const { promise: upstream, release: resolveFetch } = holdGate<unknown>(null);
       fetchUsageMock.mockReset();
       fetchUsageMock.mockImplementation(async () => upstream);
       const parallel = Promise.all(Array.from({ length: 5 }, () => tm.fetchAndStoreUsage(s.keyId)));
@@ -1345,10 +1359,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       });
       // Make the upstream never resolve within the test window. It is released
       // after the assertions so afterEach can settle the per-slot fetch.
-      let releaseUsage: (v: null) => void = () => {};
-      const usageHeld = new Promise<null>((r) => {
-        releaseUsage = r;
-      });
+      const { promise: usageHeld, release: releaseUsage } = holdGate<null>(null);
       fetchUsageMock.mockReset();
       fetchUsageMock.mockImplementation(async () => usageHeld);
       const t0 = Date.now();
@@ -1522,10 +1533,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       // Explicit two-promise handshake: the mock signals `started` on entry
       // so the test can await it before proceeding to detach, and stalls on
       // `fetchGate` so the race window is large and deterministic.
-      let releaseFetch!: () => void;
-      const fetchGate = new Promise<void>((r) => {
-        releaseFetch = r;
-      });
+      const { promise: fetchGate, release: releaseFetch } = holdGate<void>(undefined);
       let signalStarted!: () => void;
       const startedPromise = new Promise<void>((r) => {
         signalStarted = r;
@@ -1576,10 +1584,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       await tm.init();
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
       await tm.attachOAuth(slot.keyId, makeOAuthCreds({ expiresAtMs: Date.now() - 60_000 }), true);
-      let releaseRefresh!: () => void;
-      const refreshGate = new Promise<void>((r) => {
-        releaseRefresh = r;
-      });
+      const { promise: refreshGate, release: releaseRefresh } = holdGate<void>(undefined);
       let signalStarted!: () => void;
       const startedPromise = new Promise<void>((r) => {
         signalStarted = r;
@@ -1673,10 +1678,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         accessToken: 'oat-SHARED',
         expiresAtMs: Date.now() - 60_000,
       });
-      let releaseRefresh!: () => void;
-      const refreshGate = new Promise<void>((r) => {
-        releaseRefresh = r;
-      });
+      const { promise: refreshGate, release: releaseRefresh } = holdGate<void>(undefined);
       let signalStarted!: () => void;
       const startedPromise = new Promise<void>((r) => {
         signalStarted = r;
@@ -1766,10 +1768,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       // Pin the CI ordering instead of hoping for it: the fire-and-forget
       // profile sync is gated so it lands strictly BETWEEN `postReattachSnap`
       // and `finalSnap` — the exact window that made run 30681106933 red.
-      let releaseProfile!: () => void;
-      const profileGate = new Promise<void>((r) => {
-        releaseProfile = r;
-      });
+      const { promise: profileGate, release: releaseProfile } = holdGate<void>(undefined);
       fetchOAuthProfileMock.mockImplementation(async () => {
         await profileGate;
         return { fetchedAt: Date.now(), email: 'test@example.com', rateLimitTier: 'default_claude_max_20x' };
@@ -1780,10 +1779,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const postAttachStaleSnap = await store.load();
       const staleAttachedAt: number | undefined = (postAttachStaleSnap.registry.slots[0] as any).oauthAttachment
         ?.attachedAt;
-      let releaseFetch!: () => void;
-      const fetchGate = new Promise<void>((r) => {
-        releaseFetch = r;
-      });
+      const { promise: fetchGate, release: releaseFetch } = holdGate<void>(undefined);
       let signalStarted!: () => void;
       const startedPromise = new Promise<void>((r) => {
         signalStarted = r;
@@ -2083,10 +2079,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       const slot = await tm.addSlot({ name: 'cct1', kind: 'setup_token', value: 'sk-ant-oat01-aaa' });
       const sharedCreds = makeOAuthCreds({ accessToken: 'oat-FORCED' });
       await tm.attachOAuth(slot.keyId, sharedCreds, true);
-      let releaseFetch!: () => void;
-      const fetchGate = new Promise<void>((r) => {
-        releaseFetch = r;
-      });
+      const { promise: fetchGate, release: releaseFetch } = holdGate<void>(undefined);
       let signalStarted!: () => void;
       const startedPromise = new Promise<void>((r) => {
         signalStarted = r;
@@ -2136,10 +2129,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(attachedAtV1).toBeGreaterThan(0);
 
       // Suspend the fetch so we can flip attachedAt between dispatch and commit.
-      let releaseFetch!: () => void;
-      const fetchGate = new Promise<void>((r) => {
-        releaseFetch = r;
-      });
+      const { promise: fetchGate, release: releaseFetch } = holdGate<void>(undefined);
       let signalStarted!: () => void;
       const started = new Promise<void>((r) => {
         signalStarted = r;
@@ -2414,10 +2404,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
         acknowledgedConsumerTosRisk: true,
       });
       fetchOAuthProfileMock.mockReset();
-      let resolve: (v: any) => void = () => {};
-      const gate = new Promise<any>((r) => {
-        resolve = r;
-      });
+      const { promise: gate, release: resolve } = holdGate<unknown>({ fetchedAt: 0 });
       fetchOAuthProfileMock.mockImplementation(async () => gate);
       const p1 = tm.refreshOAuthProfile(slot.keyId);
       const p2 = tm.refreshOAuthProfile(slot.keyId);
@@ -2460,10 +2447,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       });
       // Now set up the gated mock for the explicit in-flight call.
       fetchOAuthProfileMock.mockReset();
-      let resolveGated: (v: any) => void = () => {};
-      const gate = new Promise<any>((r) => {
-        resolveGated = r;
-      });
+      const { promise: gate, release: resolveGated } = holdGate<unknown>({ fetchedAt: 0 });
       fetchOAuthProfileMock.mockImplementation(async () => gate);
       const inFlight = tm.refreshOAuthProfile(slot.keyId);
       // Detach, then re-attach under a new generation. We swap the mock to a
@@ -2568,10 +2552,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       // returns. A poll on the fetch count plus a short sleep raced the
       // profile write (the fetch is counted before #writeProfile lands).
       type OAuthProfile = import('../oauth/profile').OAuthProfile;
-      let releaseFetch: (v: OAuthProfile) => void = () => {};
-      const fetched = new Promise<OAuthProfile>((r) => {
-        releaseFetch = r;
-      });
+      const { promise: fetched, release: releaseFetch } = holdGate<OAuthProfile>({ fetchedAt: 0 });
       fetchOAuthProfileMock.mockReset();
       fetchOAuthProfileMock.mockImplementation(async () => fetched);
       const syncSpy = vi.spyOn(tm, 'refreshOAuthProfile');
@@ -2802,9 +2783,8 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       }));
       // The hung fetch is released after the assertions so afterEach can
       // settle the profile sync.
-      let releaseProfile: (v: import('../oauth/profile').OAuthProfile) => void = () => {};
-      const profileHeld = new Promise<import('../oauth/profile').OAuthProfile>((r) => {
-        releaseProfile = r;
+      const { promise: profileHeld, release: releaseProfile } = holdGate<import('../oauth/profile').OAuthProfile>({
+        fetchedAt: 0,
       });
       fetchOAuthProfileMock.mockReset();
       fetchOAuthProfileMock.mockImplementation(async () => profileHeld);
@@ -2876,10 +2856,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       // provably still registered when the fan-out runs. Every other fetch
       // resolves immediately.
       type OAuthProfile = import('../oauth/profile').OAuthProfile;
-      let releaseHeld: (v: OAuthProfile) => void = () => {};
-      const held = new Promise<OAuthProfile>((r) => {
-        releaseHeld = r;
-      });
+      const { promise: held, release: releaseHeld } = holdGate<OAuthProfile>({ fetchedAt: 0 });
       let heldStarted: () => void = () => {};
       const heldStartedGate = new Promise<void>((r) => {
         heldStarted = r;
