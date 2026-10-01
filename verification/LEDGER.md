@@ -1,6 +1,6 @@
 # Verification ledger
 
-Snapshot of 2026-09-29. Every production TypeScript file (the set the ImportGraph extractor reads
+Snapshot of 2026-10-01. Every production TypeScript file (the set the ImportGraph extractor reads
 from `git ls-files`: `*.ts`, `*.tsx`, `*.mts`, `*.cts`, minus declaration files, tests, specs
 and fixtures), and how far `verification/` covers it. Written by
 `node scripts/verification/ledger.cjs`. Nothing checks this file against the tree; the live
@@ -19,13 +19,13 @@ current file set on every run.
 | `packages/common/` | 13 | 0 | 13 |
 | `packages/process-shared/` | 26 | 0 | 26 |
 | `packages/slack/` | 95 | 2 | 93 |
-| `src/` | 401 | 5 | 396 |
+| `src/` | 403 | 5 | 398 |
 | `somalib/` | 17 | 0 | 17 |
 | `packages/test-utils/` | 4 | 0 | 4 |
-| `packages/mcp-servers/` | 18 | 0 | 18 |
+| `packages/mcp-servers/` | 11 | 0 | 11 |
 | `scripts/` | 6 | 0 | 6 |
 | other | 1 | 0 | 1 |
-| **total** | **581** | **7** | **574** |
+| **total** | **576** | **7** | **569** |
 
 ## Files
 
@@ -46,13 +46,6 @@ current file set on every run.
 | `packages/common/src/utils/dir-size.ts` | `packages/common/` | T1 |
 | `packages/mcp-servers/agent/agent-mcp-server.ts` | `packages/mcp-servers/` | T1 |
 | `packages/mcp-servers/cron/cron-mcp-server.ts` | `packages/mcp-servers/` | T1 |
-| `packages/mcp-servers/llm/llm-mcp-server.ts` | `packages/mcp-servers/` | T1 |
-| `packages/mcp-servers/llm/runtime/base-runtime.ts` | `packages/mcp-servers/` | T1 |
-| `packages/mcp-servers/llm/runtime/codex-runtime.ts` | `packages/mcp-servers/` | T1 |
-| `packages/mcp-servers/llm/runtime/errors.ts` | `packages/mcp-servers/` | T1 |
-| `packages/mcp-servers/llm/runtime/gemini-runtime.ts` | `packages/mcp-servers/` | T1 |
-| `packages/mcp-servers/llm/runtime/types.ts` | `packages/mcp-servers/` | T1 |
-| `packages/mcp-servers/llm/runtime/watchdog.ts` | `packages/mcp-servers/` | T1 |
 | `packages/mcp-servers/mcp-tool-permission/mcp-tool-permission-mcp-server.ts` | `packages/mcp-servers/` | T1 |
 | `packages/mcp-servers/model-command/model-command-mcp-server.ts` | `packages/mcp-servers/` | T1 |
 | `packages/mcp-servers/permission/permission-mcp-server.ts` | `packages/mcp-servers/` | T1 |
@@ -216,6 +209,7 @@ current file set on every run.
 | `src/agent-instance.ts` | `src/` | T1 |
 | `src/agent-manager.ts` | `src/` | T1 |
 | `src/agent-runtime/agent-runner.ts` | `src/` | T1 |
+| `src/agent-runtime/background-keepalive.ts` | `src/` | T1 |
 | `src/agent-runtime/claude-child-process-registry.ts` | `src/` | T1 |
 | `src/agent-runtime/claude-code-runner.ts` | `src/` | T1 |
 | `src/agent-runtime/claude-code/build-stream-options.ts` | `src/` | T1 |
@@ -231,6 +225,7 @@ current file set on every run.
 | `src/agent-runtime/steer-settlement.ts` | `src/` | T1 |
 | `src/agent-runtime/stream-types.ts` | `src/` | T1 |
 | `src/agent-runtime/turn-input-channel.ts` | `src/` | T1 |
+| `src/agent-runtime/turn-result-attribution.ts` | `src/` | T1 |
 | `src/agent-session/agent-session-types.ts` | `src/` | T1 |
 | `src/agent-session/agent-session.ts` | `src/` | T1 |
 | `src/agent-session/derive-status.ts` | `src/` | T1 |

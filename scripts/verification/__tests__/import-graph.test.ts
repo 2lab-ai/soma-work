@@ -392,7 +392,9 @@ describe('import-graph extractor on a complete fixture repository', () => {
         'src/cli/index.ts': `${cliPrelude}require('./x/');\n`,
       }),
     );
-    expect(failure).toMatch(/src\/cli\/index\.ts \(emitted line \d+\): '\.\/x\/' resolves to directory src\/cli\/x\/, whose package\.json/);
+    expect(failure).toMatch(
+      /src\/cli\/index\.ts \(emitted line \d+\): '\.\/x\/' resolves to directory src\/cli\/x\/, whose package\.json/,
+    );
   });
 
   // Each of these makes the real build keep `require("../env-paths")` for a const enum that the
