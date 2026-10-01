@@ -402,13 +402,15 @@ describe('FollowupQueueStore', () => {
         'items[0].updatedAt is not a non-negative finite number',
       ],
       [
+        // Same seq twice with honest ids: the id is `<sessionKey>#<seq>`, so a
+        // reused seq is a reused id and is reported as one.
         'duplicate item id',
         snapshot([item({ seq: 1 }), item({ seq: 1, message: message({ ts: '1.2' }) })], { nextSeq: 2 }),
         'items[1].id is a duplicate',
       ],
       [
         // A reused seq hidden behind a hand-edited id: the identity rule catches
-        // it before the duplicate-seq check ever sees two rows.
+        // it before the duplicate checks see the row.
         'a duplicate seq behind a tampered id',
         snapshot([item({ seq: 1 }), item({ seq: 1, id: `${SESSION}#1-dup`, message: message({ ts: '1.2' }) })], {
           nextSeq: 2,
@@ -568,6 +570,40 @@ describe('FollowupQueueStore', () => {
       const bad = snapshot([item({ state: 'exploded' as never })]);
 
       expect(() => store().save(bad)).toThrow();
+      expect(fs.existsSync(file)).toBe(false);
+    });
+
+    /** `values` plus one hole at the end: `length` grows past the last element without assigning it. */
+    function withHole<T>(values: T[]): T[] {
+      const sparse = [...values];
+      sparse.length += 1;
+      return sparse;
+    }
+
+    function thrownMessage(run: () => unknown): string | undefined {
+      try {
+        run();
+      } catch (error) {
+        return (error as Error).message;
+      }
+      return undefined;
+    }
+
+    // `forEach` skips a hole, but `JSON.stringify` writes it as `null`, which
+    // the reload rejects: a hole `save()` let through is a file it can never
+    // read back. Every array the gate walks must fail on its hole with the
+    // message the reload gives for that `null`.
+    it.each([
+      ['snapshot.sessions', () => ({ version: 1, sessions: withHole<unknown>([]) })],
+      ['session.items', () => snapshot(withHole([item()]))],
+      ['message.files', () => snapshot([item({ message: message({ files: withHole<unknown>([]) as never }) })])],
+    ])('rejects a hole in %s exactly as it rejects the null the hole is saved as', (_label, build) => {
+      const sparse = build();
+      const onReload = thrownMessage(() => parseFollowupQueueSnapshot(JSON.parse(JSON.stringify(sparse))));
+
+      expect(onReload).toBeDefined();
+      expect(thrownMessage(() => parseFollowupQueueSnapshot(sparse))).toBe(onReload);
+      expect(thrownMessage(() => store().save(sparse as never))).toBe(onReload);
       expect(fs.existsSync(file)).toBe(false);
     });
 

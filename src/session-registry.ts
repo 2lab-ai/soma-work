@@ -1321,9 +1321,10 @@ export class SessionRegistry {
   //
   // When a user clicks "Approve & disable rule for this session" in the Slack
   // permission prompt, the rule id(s) are added to `session.disabledDangerousRules`
-  // so subsequent bypass-mode bash commands matching only those rules no longer
+  // so subsequent auto-mode Bash commands matching only those rules no longer
   // escalate. In-memory only — a process restart clears the set intentionally.
-  // See `src/dangerous-command-filter.ts` for the rule catalog.
+  // The rule catalog is soma-lib's `DANGEROUS_RULES`, re-exported by
+  // `somalib/permission/dangerous-rules.ts`.
   // ---------------------------------------------------------------------------
 
   /**
