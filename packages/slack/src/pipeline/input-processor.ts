@@ -26,6 +26,10 @@ export interface CommandRouteResult {
   setGoalObjective?: string;
   /** Deferred forced `$skill` (banner + block) for a fresh-context start. */
   deferredSkillFire?: DeferredSkillFireResult;
+  /** Router-caught handler crash (the failure notice is already posted). */
+  error?: string;
+  /** A cross-user `$skill` parked until its owner answers the permission request. */
+  awaitingPermission?: boolean;
 }
 
 export interface CommandRouterReader {
@@ -129,6 +133,8 @@ export class InputProcessor {
     forceWorkflow?: WorkflowType;
     setGoalObjective?: string;
     deferredSkillFire?: DeferredSkillFireResult;
+    error?: string;
+    awaitingPermission?: boolean;
   }> {
     const { user, channel, thread_ts, ts, text } = event;
 
@@ -213,6 +219,11 @@ export class InputProcessor {
       setGoalObjective: commandResult.setGoalObjective,
       // Deferred forced `$skill` — fired by slack-handler after autoskill.
       deferredSkillFire: commandResult.deferredSkillFire,
+      // Outcome qualifiers for a message the command consumed WITHOUT a
+      // prompt: slack-handler maps a crash to `error` and a pending
+      // permission to `blocked`; everything else consumed is `safe`.
+      error: commandResult.error,
+      awaitingPermission: commandResult.awaitingPermission,
     };
   }
 }

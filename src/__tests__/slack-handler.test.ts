@@ -1434,6 +1434,33 @@ describe('SlackHandler', () => {
       });
     });
 
+    // Goal-loop stall fix — a terminal `/z` result is mapped to the dispatch
+    // outcome the follow-up queue records: a full answer is `safe`, a crashed
+    // legacy handler (`handled: true` + `error`) is `error`, and a cross-user
+    // `$skill` parked on permission is `blocked`. Reporting the last two as
+    // `safe` would resolve a queued DM command that never ran.
+    for (const [label, dispatchResult, expected] of [
+      ['full answer', { handled: true, consumed: true }, { result: 'safe' }],
+      [
+        'crashed legacy handler',
+        { handled: true, error: 'invalid_blocks' },
+        { result: 'error', reason: 'invalid_blocks' },
+      ],
+      ['permission pending', { handled: true, awaitingPermission: true }, { result: 'blocked' }],
+    ] as const) {
+      it(`maps an admin DM \`/z\` terminal result (${label}) to its dispatch outcome`, async () => {
+        await withAdmins(async () => {
+          const { handlerAny } = buildHandler({ dispatchResult });
+          const event = { user: 'U_ADMIN', channel: 'D123', ts: '9.9', text: '/z goal 다음 목표' };
+
+          const outcome = await handlerAny.processMessage(event, vi.fn());
+
+          expect(outcome).toMatchObject(expected);
+          expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+        });
+      });
+    }
+
     // T2 — Non-admin plain text DM is rejected by Gate A.
     it('T2: non-admin DM plain text is rejected by Gate A (ephemeral + ❎)', async () => {
       await withAdmins(async () => {
