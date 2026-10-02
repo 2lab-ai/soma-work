@@ -93,6 +93,28 @@ describe('ActionHandlers', () => {
       expect(mockApp.view).toHaveBeenCalledWith('custom_input_submit', expect.any(Function));
     });
 
+    it('registers native poll routes (any-user vote regex + creator close/cancel) and delegates after ack', async () => {
+      const mockApp = { action: vi.fn(), view: vi.fn() };
+      handlers.registerHandlers(mockApp as any);
+
+      const voteCall = mockApp.action.mock.calls.find(
+        (c: any[]) => c[0] instanceof RegExp && c[0].source === '^poll_v1_vote_\\d+$',
+      );
+      expect(voteCall).toBeDefined();
+      expect(mockApp.action).toHaveBeenCalledWith('poll_v1_close', expect.any(Function));
+      expect(mockApp.action).toHaveBeenCalledWith('poll_v1_cancel', expect.any(Function));
+
+      const pollHandler = (handlers as any).delegates.pollHandler;
+      expect(pollHandler).toBeDefined();
+      const spy = vi.spyOn(pollHandler, 'handleVote').mockResolvedValue(undefined);
+      const ack = vi.fn().mockResolvedValue(undefined);
+      const respond = vi.fn();
+      const body = { actions: [{ action_id: 'poll_v1_vote_0', value: 'poll_x' }] };
+      await voteCall?.[1]({ ack, body, respond });
+      expect(ack).toHaveBeenCalled();
+      expect(spy).toHaveBeenCalledWith(body, respond);
+    });
+
     it('should register /z Block Kit settings action + view regexes (#507)', () => {
       const mockApp = {
         action: vi.fn(),

@@ -4039,6 +4039,22 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
     expect(ctx.isUserInputTurn).toBe(true);
   });
 
+  it('poll: threads params.user → currentUserId (the turn speaker, not the session owner) into the model-command context', async () => {
+    const deps = createDepsForToolFlow();
+    const executor = new StreamExecutor(deps);
+    const spy = vi
+      .spyOn(executor as any, 'handleModelCommandToolResults')
+      .mockResolvedValue({ hasPendingChoice: false });
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const params = { ...createToolFlowParams(say), user: 'U_SPEAKER', isUserInput: true };
+
+    await executor.execute(params);
+
+    expect(spy).toHaveBeenCalled();
+    const ctx = spy.mock.calls[0][2] as Record<string, unknown>;
+    expect(ctx.currentUserId).toBe('U_SPEAKER');
+  });
+
   it('#1082: synthetic turns (isUserInput: false) reach the model-command context with isUserInputTurn !== true', async () => {
     const deps = createDepsForToolFlow();
     const executor = new StreamExecutor(deps);
@@ -6722,5 +6738,150 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     expect(say).not.toHaveBeenCalled();
     expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * POLL_CREATE host-apply branch (native button poll).
+ *
+ * The MCP layer only validates + echoes. The host:
+ *   - refuses on synthetic turns (isUserInputTurn !== true),
+ *   - fails closed without the turn speaker id (never falls back to the owner),
+ *   - creates the poll through the active PollService with the speaker as
+ *     creator and the tool_use id as invocation id,
+ *   - turns every failure reason into a distinct user-visible ⚠️ message.
+ */
+describe('POLL_CREATE host-apply', () => {
+  function createExecutorDeps() {
+    return {
+      getPollService: () => currentService,
+      claudeHandler: { setActivityState: vi.fn(), saveSessions: vi.fn(), getSessionByKey: vi.fn() },
+      fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
+      toolEventProcessor: {},
+      statusReporter: {
+        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
+        getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
+      },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
+      contextWindowManager: { handlePromptTooLong: vi.fn().mockResolvedValue(undefined) },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: { cleanup: vi.fn(), cleanupSession: vi.fn() },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn() },
+      slackApi: { updateMessage: vi.fn().mockResolvedValue(undefined) },
+      assistantStatusManager: {
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+      },
+    } as any;
+  }
+
+  const session: any = { ownerId: 'U_OWNER', userId: 'U_OWNER', channelId: 'C1', threadTs: '171.100' };
+
+  function pollToolResult(payload: Record<string, unknown> = {}) {
+    return {
+      toolUseId: 'toolu_poll_1',
+      toolName: 'mcp__model-command__run',
+      result: JSON.stringify({
+        type: 'model_command_result',
+        commandId: 'POLL_CREATE',
+        ok: true,
+        payload: {
+          title: '점심 팀 편성',
+          options: ['김치찌개', '된장찌개'],
+          closesAt: '2026-10-02T12:50:00+09:00',
+          ...payload,
+        },
+      }),
+    };
+  }
+
+  function makeContext(overrides: Record<string, unknown> = {}) {
+    return {
+      channel: 'C1',
+      threadTs: '171.100',
+      sessionKey: 'C1-171.100',
+      say: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
+      isUserInputTurn: true,
+      currentUserId: 'U_SPEAKER',
+      ...overrides,
+    };
+  }
+
+  // The poll service is injected through deps (no reliance on module identity).
+  let currentService: any;
+  async function withService(service: any, fn: () => Promise<void>) {
+    currentService = service;
+    await fn();
+  }
+
+  const sayTexts = (ctx: any) => (ctx.say as ReturnType<typeof vi.fn>).mock.calls.map((c: any[]) => c[0]?.text ?? '');
+
+  it('creates the poll with the turn speaker as creator and the tool_use id as invocation id', async () => {
+    const service = { createPoll: vi.fn(async () => ({ ok: true, poll: { id: 'p1' } })) };
+    await withService(service, async () => {
+      const executor = new StreamExecutor(createExecutorDeps());
+      const ctx = makeContext();
+      await (executor as any).handleModelCommandToolResults([pollToolResult()], session, ctx);
+      expect(service.createPoll).toHaveBeenCalledWith({
+        invocationId: 'toolu_poll_1',
+        channel: 'C1',
+        threadTs: '171.100',
+        creatorId: 'U_SPEAKER',
+        title: '점심 팀 편성',
+        options: ['김치찌개', '된장찌개'],
+        closesAt: Date.UTC(2026, 9, 2, 3, 50, 0),
+      });
+      expect(sayTexts(ctx).some((t: string) => t.includes('⚠️'))).toBe(false);
+    });
+  });
+
+  it('refuses on a synthetic turn and without a speaker id (no owner fallback)', async () => {
+    const service = { createPoll: vi.fn() };
+    await withService(service, async () => {
+      const executor = new StreamExecutor(createExecutorDeps());
+      const synthetic = makeContext({ isUserInputTurn: false });
+      await (executor as any).handleModelCommandToolResults([pollToolResult()], session, synthetic);
+      const noSpeaker = makeContext({ currentUserId: undefined });
+      await (executor as any).handleModelCommandToolResults([pollToolResult()], session, noSpeaker);
+      expect(service.createPoll).not.toHaveBeenCalled();
+      expect(sayTexts(synthetic)[0]).toContain('⚠️');
+      expect(sayTexts(noSpeaker)[0]).toContain('⚠️');
+    });
+  });
+
+  it('tells the user when the poll feature is not initialized', async () => {
+    await withService(undefined, async () => {
+      const executor = new StreamExecutor(createExecutorDeps());
+      const ctx = makeContext();
+      await (executor as any).handleModelCommandToolResults([pollToolResult()], session, ctx);
+      expect(sayTexts(ctx)[0]).toContain('사용할 수 없습니다');
+    });
+  });
+
+  it('maps each failure reason to a distinct ⚠️ message (unknown outcome says the card is invalid)', async () => {
+    const cases: Array<[string, string]> = [
+      ['post_outcome_unknown', '카드가 보이더라도 무효'],
+      ['misthreaded', '스레드 밖'],
+      ['post_failed', '올리지 못했습니다'],
+      ['thread_has_open_poll', '이미 열린 투표'],
+      ['closes_at_out_of_range', '마감 시각'],
+      ['store_failed', '저장하지 못했습니다'],
+    ];
+    const seen = new Set<string>();
+    for (const [reason, fragment] of cases) {
+      const service = { createPoll: vi.fn(async () => ({ ok: false, reason })) };
+      await withService(service, async () => {
+        const executor = new StreamExecutor(createExecutorDeps());
+        const ctx = makeContext();
+        await (executor as any).handleModelCommandToolResults([pollToolResult()], session, ctx);
+        const text = sayTexts(ctx)[0];
+        expect(text).toContain('⚠️');
+        expect(text).toContain(fragment);
+        seen.add(text);
+      });
+    }
+    expect(seen.size).toBe(cases.length);
   });
 });

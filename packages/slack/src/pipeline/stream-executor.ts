@@ -20,6 +20,7 @@ import {
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
 import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flags';
+import { type CreatePollFailure, getActivePollService, type PollService } from '../poll/poll-service';
 import type { ReactionManager } from '../reaction-manager';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
 // Issue #1082 T2: shared goal-apply helpers (same pair T1's slack-handler
@@ -310,7 +311,31 @@ export interface ExecuteResult {
   handled?: boolean;
 }
 
+interface PollCreatePayload {
+  title: string;
+  options: string[];
+  closesAt: string;
+}
+
+/** User-facing text per POLL_CREATE failure reason (every reason distinct). */
+const POLL_CREATE_FAILURE_TEXT: Record<CreatePollFailure, string | undefined> = {
+  invalid_input: '투표 입력이 올바르지 않습니다 (제목·메뉴 개수·길이를 확인해 주세요).',
+  duplicate_invocation: undefined, // the same tool call was already applied — nothing to tell the user
+  closes_at_out_of_range:
+    '마감 시각은 지금부터 1분 이후, 7일 이내여야 합니다. 시각을 HH:MM으로 지정해 다시 실행해 주세요.',
+  thread_has_open_poll: '이 스레드에는 이미 열린 투표가 있습니다. 새 투표는 새 스레드에서 시작해 주세요.',
+  post_failed: '투표 카드를 올리지 못했습니다. 다시 실행해 주세요.',
+  post_outcome_unknown: '투표 생성을 완료하지 못했습니다. 카드가 보이더라도 무효입니다 — 다시 실행해 주세요.',
+  misthreaded: '투표 카드가 스레드 밖에 올라가 삭제했습니다. 다시 실행해 주세요.',
+  store_failed: '투표를 저장하지 못했습니다. 다시 실행해 주세요.',
+};
+
 interface StreamExecutorDeps {
+  /**
+   * Resolves the native poll service for POLL_CREATE. Defaults to the
+   * process-wide singleton; injectable so tests do not depend on module identity.
+   */
+  getPollService?: () => Pick<PollService, 'createPoll'> | undefined;
   claudeHandler: ClaudeHandler;
   fileHandler: FileHandler;
   toolEventProcessor: ToolEventProcessor;
@@ -1390,6 +1415,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // evidence quote against the ACTUAL current user message and refuses
         // on synthetic/continuation turns (fail closed when text is absent).
         currentUserText: text,
+        // Native polls: the turn speaker (not the session owner) creates the poll.
+        currentUserId: user,
         isCompactTurn: (isSlashCommand && trimmedText.startsWith('/compact')) || Boolean(session.fallbackCompactActive),
         isUserInputTurn: params.isUserInput === true,
         incidentAttempt,
@@ -4773,6 +4800,45 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
   }
 
+  private async applyPollCreate(payload: PollCreatePayload, toolUseId: string, context: StreamContext): Promise<void> {
+    const warn = (text: string) => context.say({ text: `⚠️ ${text}`, thread_ts: context.threadTs });
+    if (context.isUserInputTurn !== true) {
+      await warn('투표를 만들 수 없습니다: 사용자가 직접 요청한 메시지에서만 투표를 시작할 수 있습니다.');
+      return;
+    }
+    const creatorId = context.currentUserId;
+    if (!creatorId) {
+      await warn('투표를 만들 수 없습니다: 요청한 사용자를 확인하지 못했습니다.');
+      return;
+    }
+    const service = (this.deps.getPollService ?? getActivePollService)();
+    if (!service) {
+      await warn('지금은 투표 기능을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.');
+      return;
+    }
+    const closesAt = Date.parse(typeof payload?.closesAt === 'string' ? payload.closesAt : '');
+    if (!Number.isFinite(closesAt)) {
+      await warn('투표 마감 시각을 읽지 못했습니다. 시각을 HH:MM으로 지정해 다시 실행해 주세요.');
+      return;
+    }
+    const result = await service.createPoll({
+      invocationId: toolUseId,
+      channel: context.channel,
+      threadTs: context.threadTs,
+      creatorId,
+      title: payload.title,
+      options: payload.options,
+      closesAt,
+    });
+    if (result.ok) {
+      this.logger.info('Poll created via POLL_CREATE', { sessionKey: context.sessionKey, pollId: result.poll.id });
+      return;
+    }
+    this.logger.warn('POLL_CREATE refused/failed on host', { sessionKey: context.sessionKey, reason: result.reason });
+    const message = POLL_CREATE_FAILURE_TEXT[result.reason];
+    if (message) await warn(message);
+  }
+
   private async handleModelCommandToolResults(
     toolResults: Array<{ toolUseId: string; toolName?: string; result: any; isError?: boolean }>,
     session: ConversationSession,
@@ -5018,6 +5084,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             : `📋 Goal queued by model at position ${applied.position}: ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`,
           thread_ts: context.threadTs,
         });
+        continue;
+      }
+
+      // POLL_CREATE host-apply — the MCP layer only validated and echoed. The
+      // host posts the card through the active PollService with the turn's
+      // real speaker as creator (fail-closed, never the session owner) and
+      // turns every failure into a user-visible ⚠️ message.
+      if (parsed.commandId === 'POLL_CREATE') {
+        await this.applyPollCreate(parsed.payload as PollCreatePayload, toolResult.toolUseId, context);
         continue;
       }
 

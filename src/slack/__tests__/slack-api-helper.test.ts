@@ -531,6 +531,25 @@ describe('SlackApiHelper', () => {
       expect(retryPayload.thread_ts).toBe('111.222');
     });
 
+    it('strictBlocks: invalid_blocks is rethrown instead of degrading to a text-only post', async () => {
+      // Interactive cards (polls) are useless without their buttons — a silent
+      // text-only fallback would persist a "successful" card nobody can click.
+      const platformError: any = new Error('An API error occurred: invalid_blocks');
+      platformError.code = 'slack_webapi_platform_error';
+      platformError.data = { ok: false, error: 'invalid_blocks' };
+      mockApp.client.chat.postMessage.mockRejectedValueOnce(platformError);
+
+      await expect(
+        helper.postMessage('C123', 'fallback text', {
+          threadTs: '111.222',
+          blocks: [{ type: 'actions', elements: [] }],
+          strictBlocks: true,
+        }),
+      ).rejects.toThrow('invalid_blocks');
+      expect(mockApp.client.chat.postMessage).toHaveBeenCalledTimes(1);
+      expect(mockApp.client.chat.postMessage.mock.calls[0][0].strictBlocks).toBeUndefined();
+    });
+
     it('invalid_blocks with NO blocks in payload still throws (nothing to strip)', async () => {
       const platformError: any = new Error('An API error occurred: invalid_blocks');
       platformError.code = 'slack_webapi_platform_error';

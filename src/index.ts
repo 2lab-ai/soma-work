@@ -39,6 +39,7 @@ registerSkillStore({
 
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
+import { getActivePollService } from '@soma/slack/poll/poll-service';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
@@ -95,6 +96,7 @@ import {
 import { acquirePidLock, releasePidLock } from './pid-lock';
 import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
+import { PollScheduler } from './poll-scheduler';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
 import { GoalLoopController } from './slack/goal-loop-controller';
@@ -1050,6 +1052,18 @@ async function start() {
       logger.warn('Failed to start cron scheduler (non-critical)', error);
     }
 
+    // Native button polls: close due polls and retry pending result delivery
+    // (non-blocking, non-critical). The service itself is built by the action
+    // delegates (SlackHandler construction above) and read lazily per tick.
+    let pollScheduler: PollScheduler | null = null;
+    try {
+      pollScheduler = new PollScheduler({ getService: getActivePollService });
+      pollScheduler.start();
+      timing('Poll scheduler initialized');
+    } catch (error) {
+      logger.warn('Failed to start poll scheduler (non-critical)', error);
+    }
+
     // Goal auto-continuation loop — idle-settle driver.
     //
     // Spec (docs/goal-command/spec.md §Auto-Continuation Loop):
@@ -1249,6 +1263,11 @@ async function start() {
         // Stop cron scheduler
         if (cronScheduler) {
           cronScheduler.stop();
+        }
+
+        // Stop poll scheduler
+        if (pollScheduler) {
+          pollScheduler.stop();
         }
 
         // Stop CCT usage refresh scheduler before TM so no pump fires mid-teardown

@@ -6,6 +6,7 @@ import { ContextWindowManager, type SessionUsage } from './context-window-manage
 import type { FollowupQueueView } from './followup-queue-blocks';
 import type { RequestCoordinator } from './request-coordinator';
 import type { SlackApiHelper, ThreadPostEvent } from './slack-api-helper';
+import { definitiveRejectionCode } from './slack-rejection';
 import {
   type BeginPostOutcome,
   type DeliveryIntentRecord,
@@ -296,14 +297,7 @@ const FOLLOWUP_EMBED_PAGE_SIZE = 5;
  * queue before `execute()` runs (`slack-api-helper.ts:361-372`), so no HTTP
  * request was ever made.
  */
-const DEFINITIVE_POST_REJECTIONS: ReadonlySet<string> = new Set([
-  'channel_not_found',
-  'not_in_channel',
-  'invalid_auth',
-  'invalid_blocks',
-  'invalid_arguments',
-  'queue_overflow',
-]);
+// DEFINITIVE_POST_REJECTIONS lives in ./slack-rejection (single source; moved, not copied).
 
 /**
  * What the render path resolved about the follow-up queue. `view` absent +
@@ -1478,9 +1472,7 @@ export class ThreadSurface {
    * message — because only an explicit API code is evidence about Slack's side.
    */
   private static definitiveRejectionCode(error: unknown): string | undefined {
-    const code = (error as { data?: { error?: unknown } } | undefined)?.data?.error;
-    if (typeof code !== 'string') return undefined;
-    return DEFINITIVE_POST_REJECTIONS.has(code) ? code : undefined;
+    return definitiveRejectionCode(error);
   }
 
   /**

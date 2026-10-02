@@ -162,6 +162,8 @@ class ModelCommandMcpServer extends BaseMcpServer {
                 'RATE',
                 // Issue #1082 T2: model-initiated session goal (set-only).
                 'SET_GOAL',
+                // Native button poll card (host posts + persists).
+                'POLL_CREATE',
               ],
             },
             params: { type: 'object', description: 'Command params object' },

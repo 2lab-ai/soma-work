@@ -102,7 +102,8 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     commandId !== 'MEMORY' &&
     commandId !== 'MANAGE_SKILL' &&
     commandId !== 'RATE' &&
-    commandId !== 'SET_GOAL'
+    commandId !== 'SET_GOAL' &&
+    commandId !== 'POLL_CREATE'
   ) {
     return {
       ok: false,
@@ -353,6 +354,55 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
           content: typeof params.content === 'string' ? params.content : undefined,
         },
       },
+    };
+  }
+
+  // POLL_CREATE — validate-and-echo only; the host posts the card. Limits
+  // mirror the poll renderer (Slack button text ≤ 75 → option ≤ 60 chars).
+  if (commandId === 'POLL_CREATE') {
+    if (!isRecord(params)) {
+      return invalidArgsFor('POLL_CREATE', 'POLL_CREATE params must be an object with title, options and closesAt');
+    }
+    if (typeof params.title !== 'string' || params.title.trim().length === 0) {
+      return invalidArgsFor('POLL_CREATE', 'POLL_CREATE title must be a non-empty string');
+    }
+    const title = params.title.trim();
+    if (Array.from(title).length > 150) {
+      return invalidArgsFor('POLL_CREATE', 'POLL_CREATE title must be at most 150 characters');
+    }
+    if (!Array.isArray(params.options) || params.options.length === 0 || params.options.length > 20) {
+      return invalidArgsFor('POLL_CREATE', 'POLL_CREATE options must be an array of 1..20 strings');
+    }
+    const options: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of params.options) {
+      if (typeof raw !== 'string') {
+        return invalidArgsFor('POLL_CREATE', 'POLL_CREATE options must all be strings');
+      }
+      const option = raw.trim();
+      if (option.length === 0 || Array.from(option).length > 60 || /[\r\n]/.test(option)) {
+        return invalidArgsFor('POLL_CREATE', 'POLL_CREATE each option must be 1..60 characters on one line');
+      }
+      const key = option.toLowerCase();
+      if (seen.has(key)) {
+        return invalidArgsFor('POLL_CREATE', `POLL_CREATE options must be unique (duplicate: ${option})`);
+      }
+      seen.add(key);
+      options.push(option);
+    }
+    if (typeof params.closesAt !== 'string') {
+      return invalidArgsFor('POLL_CREATE', 'POLL_CREATE closesAt must be an ISO-8601 string with an offset');
+    }
+    const closesAt = params.closesAt.trim();
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(closesAt) || Number.isNaN(Date.parse(closesAt))) {
+      return invalidArgsFor(
+        'POLL_CREATE',
+        'POLL_CREATE closesAt must be ISO-8601 with an explicit offset, e.g. 2026-10-02T12:50:00+09:00',
+      );
+    }
+    return {
+      ok: true,
+      request: { commandId: 'POLL_CREATE', params: { title, options, closesAt } },
     };
   }
 

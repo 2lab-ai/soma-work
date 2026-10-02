@@ -86,6 +86,12 @@ export interface StreamContext {
    * user message. Absent on turns with no prompt text — SET_GOAL fails closed.
    */
   currentUserText?: string;
+  /**
+   * Slack user id of the person whose message started this turn (NOT the
+   * session owner). POLL_CREATE records it as the poll creator — the only user
+   * allowed to close early or cancel — and fails closed when it is absent.
+   */
+  currentUserId?: string;
   /** Allows long compact diagnostics to be withheld for terminal error formatting. */
   isCompactTurn?: boolean;
   /**

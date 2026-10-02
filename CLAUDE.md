@@ -127,7 +127,7 @@ asset을 하나씩 지워 실패하는지까지 확인한다. 소스에 파일�
 1. **Facade Pattern**: 복잡한 서브시스템을 단순한 인터페이스로 제공
 2. **Single Responsibility**: 각 모듈이 하나의 책임만 담당
 3. **Pipeline Architecture**: 입력 전처리 → 세션 초기화 → 스트림 실행
-4. **Append-Only Messages**: Slack 메시지 편집 대신 새 메시지 추가
+4. **Append-Only Messages**: Slack 메시지 편집 대신 새 메시지 추가. 예외: 네이티브 투표 카드(`packages/slack/src/poll/`)는 `chat.update`로 제자리 편집한다 — 클릭마다 카운트, 마감 시 명단으로 바뀌는 라이브 카드다. 결과는 스레드에 새 알림으로도 올린다. 이 예외를 다른 표면으로 넓히지 않는다.
 5. **Session-Based Context**: 대화별 세션 유지
 6. **Hierarchical CWD**: Thread > Channel > User 우선순위
 7. **Workflow Dispatch**: 입력 분류 → 전문 워크플로우 프롬프트 적용

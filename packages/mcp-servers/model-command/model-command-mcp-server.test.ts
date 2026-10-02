@@ -584,3 +584,29 @@ describe('SET_GOAL — MCP server wire-up (#1082)', () => {
     expect(help?.commandId).toBe('SET_GOAL');
   });
 });
+
+/**
+ * POLL_CREATE must be reachable through the MCP server process boundary:
+ * listed when a user context exists and runnable via the validator → catalog echo.
+ */
+describe('POLL_CREATE — MCP server wire-up', () => {
+  const baseSession = { issues: [], prs: [], docs: [], active: {}, sequence: 0 };
+
+  it('list exposes POLL_CREATE when user context exists', () => {
+    const withUser = buildModelCommandListResponse({ session: baseSession, user: 'U123' });
+    expect(withUser.commands.map((command) => command.id)).toContain('POLL_CREATE');
+  });
+
+  it('run validates and echoes POLL_CREATE params', () => {
+    const result = buildModelCommandRunResponse(
+      {
+        commandId: 'POLL_CREATE',
+        params: { title: '점심', options: ['a', 'b'], closesAt: '2026-10-02T12:50:00+09:00' },
+      },
+      { session: baseSession, user: 'U123', channel: 'C1', threadTs: '1.1' },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.commandId !== 'POLL_CREATE') return;
+    expect(result.payload).toMatchObject({ title: '점심', options: ['a', 'b'] });
+  });
+});
