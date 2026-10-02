@@ -46,8 +46,9 @@ export interface UsageSchedulerOpts {
  * Thin scheduler that pumps `TokenManager.fetchUsageForAllAttached` on a
  * fixed interval. Re-entrancy-safe: if a previous tick's async work has
  * not yet resolved when the next interval fires, the scheduler simply
- * kicks off another one — the TM already de-dupes per-keyId in-flight
- * fetches via `usageFetchInFlight`.
+ * kicks off another one — the TM already de-dupes in-flight fetches per
+ * keyId and attachment generation via `usageFetchInFlight`, so a re-attached
+ * slot gets its own fetch.
  */
 export class UsageRefreshScheduler {
   readonly #tm: TokenManager;

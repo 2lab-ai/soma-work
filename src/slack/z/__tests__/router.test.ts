@@ -118,6 +118,23 @@ describe('ZRouter.dispatch', () => {
     );
   });
 
+  it('carries a legacy crash and a parked permission out of routeToLegacy', async () => {
+    // A crashed legacy handler comes back `handled: true` + `error`, and a
+    // cross-user `$skill` parks with `awaitingPermission` — both must survive
+    // the rebuild, or the DM caller reports the message as fully answered.
+    const { legacyRouter, tombstoneStore } = makeDeps();
+    (legacyRouter.route as any).mockResolvedValueOnce({ handled: true, error: 'invalid_blocks' });
+    (legacyRouter.route as any).mockResolvedValueOnce({ handled: true, awaitingPermission: true });
+    const router = new ZRouter({ legacyRouter, tombstoneStore });
+
+    const crashed = await router.dispatch(
+      makeInv({ whitelistedNaked: true, remainder: 'session', rawText: 'session' }),
+    );
+    expect(crashed).toMatchObject({ handled: true, error: 'invalid_blocks' });
+    const parked = await router.dispatch(makeInv({ whitelistedNaked: true, remainder: 'session', rawText: 'session' }));
+    expect(parked).toMatchObject({ handled: true, awaitingPermission: true });
+  });
+
   it('legacy naked → shows tombstone and marks CAS', async () => {
     const markFn = vi.fn().mockResolvedValue(true);
     const { legacyRouter, tombstoneStore } = makeDeps({}, { markMigrationHintShown: markFn });

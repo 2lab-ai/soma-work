@@ -145,7 +145,7 @@ def ReasonOrderDependent (ev : Input → Result) : Prop :=
 
 /-- (d) The first guard that fires returns its whole result, and the PR-issue guard's result
 carries a `denyMessage` (54-57: "Only set for the PR-issue deny"), so a reordering can change the
-message as well as the reason. The current comment (tool-policy.ts:134-135): "reordering the
+message as well as the reason. The current comment (tool-policy.ts:188-189): "reordering the
 guards never changes the decision, but can change the reported reason and denyMessage". -/
 def DenyMessageOrderDependent (ev : Input → Result) : Prop :=
   ∃ (guards : List (Input → Option Result)) (i : Input),
@@ -253,3 +253,92 @@ def DecisionIgnoresCallArguments (ev : Input → Result) : Prop :=
     ev { i with command := command, filePath := filePath, pattern := pattern } = ev i
 
 end SomaVerify.ToolPolicy.Original
+
+/-!
+## The incident READ-ONLY tier
+
+Statements about an evaluation function `ev : Option IncidentReadOnly → Input → Result` of the
+current model, where `ev incident i` is the call with `ctx.incidentReadOnly = incident` (`none`:
+undefined). `ProofsIncident.lean` proves each one for `evaluateToolPolicy`. Unlike the statements
+above, a bare line number here refers to `src/agent-runtime/policy/tool-policy.ts` as it is now,
+the lines `Model.lean` cites.
+
+An incident session gets no admin privilege, so "no hard deny fired" is `¬IncidentDenyCond i`:
+the six deny conditions written from the comments above, for the same call made by a non-admin.
+-/
+
+namespace SomaVerify.ToolPolicy
+
+open SomaVerify.JsString
+
+/-- 101-102: "`isAdmin` is ignored (the deny tier checks every caller as a non-admin)"; 197: "an
+incident session gets no admin privilege". The deny conditions of an incident call are those of
+the same call made by a non-admin. -/
+def IncidentDenyCond (i : Input) : Prop :=
+  Original.DenyCond { i with isAdmin := false }
+
+/-- (a) 157-160: "Never returns `pass` or falls through: an unknown tool (a future native tool, a
+browser tool, a subagent) lands on the final deny, because `pass` would hand an unattended session
+back to the SDK's own permission logic." -/
+def IncidentNeverPass (ev : Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (inc : IncidentReadOnly) (i : Input), (ev (some inc) i).decision ≠ .pass
+
+/-- (a) The same, stronger: allow and deny are the only outcomes, so not `classify` either. -/
+def IncidentAllowOrDeny (ev : Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (inc : IncidentReadOnly) (i : Input),
+    (ev (some inc) i).decision = .allow ∨ (ev (some inc) i).decision = .deny
+
+/-- (b) 109-111: "a list of exact MCP tool names. Everything else — Bash, every native tool,
+subagents, unknown tools — is denied"; 124: "matching is exact, never by prefix, wildcard or
+name inference"; 167-168: "Exact match, `mcp__` tools only: a native tool name in the allowlist
+can never reach this branch"; 162-163: the tier "Runs *after* the hard-deny tier". -/
+def IncidentAllowIff (ev : Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (inc : IncidentReadOnly) (i : Input),
+    (ev (some inc) i).decision = .allow ↔
+      ¬IncidentDenyCond i ∧ jsStartsWith i.toolName "mcp__" = true ∧
+        i.toolName ∈ inc.allowedMcpTools
+
+/-- (b) 109-111 again, as deny-by-default: a call that is not an allow-listed `mcp__` tool is
+denied, under every mode and admin flag. -/
+def IncidentDeniesOffAllowList (ev : Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (inc : IncidentReadOnly) (i : Input),
+    ¬(jsStartsWith i.toolName "mcp__" = true ∧ i.toolName ∈ inc.allowedMcpTools) →
+      (ev (some inc) i).decision = .deny
+
+/-- (c) 101-103: "`isAdmin` is ignored ... so `mode` is never read either"; 238: "(hard, mode- and
+admin-independent)". Changing the mode and the admin flag together changes nothing in the result,
+reason included. -/
+def IncidentModeAdminIndependent (ev : Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (inc : IncidentReadOnly) (i : Input) (mode : Mode) (isAdmin : Bool),
+    ev (some inc) { i with mode := mode, isAdmin := isAdmin } = ev (some inc) i
+
+/-- (c) The admin flag alone: 101-102, "`isAdmin` is ignored". -/
+def IncidentAdminIndependent (ev : Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (inc : IncidentReadOnly) (i : Input) (isAdmin : Bool),
+    ev (some inc) { i with isAdmin := isAdmin } = ev (some inc) i
+
+/-- (c) The mode alone: 103, "`mode` is never read". -/
+def IncidentModeIndependent (ev : Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (inc : IncidentReadOnly) (i : Input) (mode : Mode),
+    ev (some inc) { i with mode := mode } = ev (some inc) i
+
+/-- (c) 102-103: "the incident tier alone decides what it lets through". When no hard deny fires,
+the result is the incident tier's, which takes only the tool name and the allowlist. -/
+def IncidentTierDecides (ev : Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (inc : IncidentReadOnly) (i : Input), ¬IncidentDenyCond i →
+    ev (some inc) i = evaluateIncidentReadOnly i.toolName inc
+
+/-- (d) 162-163: "Runs *after* the hard-deny tier, so a revoked MCP grant or an aborted session
+still wins over an allow-listed evidence tool". Under a met deny condition the result is that of
+the same call by a non-admin without an incident context: a denial, with the hard-deny guard's own
+reason. -/
+def IncidentHardDenyWins (ev : Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (inc : IncidentReadOnly) (i : Input), IncidentDenyCond i →
+    ev (some inc) i = ev none { i with isAdmin := false } ∧ (ev (some inc) i).decision = .deny
+
+/-- (e) 100: "**Absent (the default) → nothing changes.**" Without an incident context the result
+is `evaluate`'s, the function `Simplification.lean` carries every statement above over to. -/
+def IncidentAbsentUnchanged (ev : Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ i : Input, ev none i = evaluate i
+
+end SomaVerify.ToolPolicy
