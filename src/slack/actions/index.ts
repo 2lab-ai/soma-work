@@ -1,14 +1,11 @@
-import * as path from 'node:path';
 import { setActionHandlersProviders } from '@soma/slack/actions';
-import { getActivePollService, PollService, setActivePollService } from '@soma/slack/poll/poll-service';
-import { PollStore } from '@soma/slack/poll/poll-store';
+import { getActivePollService } from '@soma/slack/poll/poll-service';
 import { isAdminUser } from '../../admin-utils';
-import { DATA_DIR } from '../../env-paths';
 import { getTokenManager } from '../../token-manager';
 import { registerAuthActions } from '../auth/actions';
 import { registerCctActions } from '../cct/actions';
 import { defaultTabCache } from '../commands/usage-carousel-cache';
-import { createPollSlackApi } from '../poll-slack-adapter';
+import { ensurePollService } from '../poll-service-bootstrap';
 import { buildDefaultTopicRegistry } from '../z/topics';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
 import { AutoskillActionHandler } from './autoskill-action-handler';
@@ -39,23 +36,6 @@ import { UserSkillEditViewSubmissionHandler } from './user-skill-edit-view-submi
 import { UserSkillMenuActionHandler } from './user-skill-menu-action-handler';
 import { UserSkillRenameViewSubmissionHandler } from './user-skill-rename-view-submission-handler';
 import { ZSettingsActionHandler } from './z-settings-actions';
-
-/**
- * The poll service is a process-wide singleton: the store owns
- * `DATA_DIR/polls.json` and the scheduler + POLL_CREATE host-apply reach it via
- * `getActivePollService()`. Only the main bot's SlackHandler builds action
- * delegates today (secondary AgentInstances are not wired yet), so the first
- * slackApi wins.
- */
-function ensurePollService(slackApi: any): PollService {
-  const existing = getActivePollService();
-  if (existing) return existing;
-  const store = new PollStore(path.join(DATA_DIR, 'polls.json'));
-  store.load();
-  const service = new PollService({ store, slack: createPollSlackApi(slackApi) });
-  setActivePollService(service);
-  return service;
-}
 
 setActionHandlersProviders({
   isAdminUser,

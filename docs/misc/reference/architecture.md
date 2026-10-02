@@ -142,7 +142,8 @@ updates inside its terminal-cleanup boundary, including setup failures.
 - **생성**: 모델이 `POLL_CREATE`(somalib `model-commands`)를 부르면 `StreamExecutor.applyPollCreate`가 호스트에서 적용한다. 사용자 입력 턴 + `currentUserId`가 있을 때만 통과하고 creator는 말한 사용자로 고정된다(fail-closed). `PollService.createPoll`이 스레드 예약 → `strictBlocks` 게시 → 스레드 착지 확인(미확인·오착지는 best-effort 삭제 후 실패) → `polls.json` 1회 기록 순으로 처리한다.
 - **클릭**: `packages/slack/src/actions/index.ts`가 `poll_v1_vote_<n>` / `poll_v1_close` / `poll_v1_cancel`을 ack 후 `PollActionHandler`에 넘긴다. 검증은 스토어 기준(channel+messageTs, 선택지 범위, open, 마감 전)이고, 투표별 `PollLane`이 클릭을 직렬화하며 `action_ts` 숫자 순서로 늦게 도착한 옛 클릭을 버린다. 응답은 본인에게만 보이는 ephemeral.
 - **마감·전달**: `PollScheduler.tick` → `PollService.closeDue`. 카드 편집과 결과 알림(파트별 `ref <pollId> i/n` 마커)을 따로 추적하고, 결과를 알 수 없는 실패는 봇이 쓴 마커를 스레드에서 찾아 중복 게시를 막는다. 일시 오류는 1분→30분 백오프로 재시도하고 영구 오류(`packages/slack/src/slack-rejection.ts`)는 해당 대상을 멈춘다. 마감 후 24시간이 지나면 만료하고, 재시작 때 만료분을 다시 연다.
-- **조립**: `src/slack/actions/index.ts`의 `ensurePollService`가 `DATA_DIR/polls.json` 스토어와 Slack 어댑터(`src/slack/poll-slack-adapter.ts`)로 싱글턴을 만든다. 카드는 Append-Only 원칙의 문서화된 예외다(제자리 편집).
+- **조립**: action delegate 구성(`src/slack/actions/index.ts`)이 `ensurePollService`(`src/slack/poll-service-bootstrap.ts`)를 부르고, 이 함수가 `DATA_DIR/polls.json` 스토어와 Slack 어댑터(`src/slack/poll-slack-adapter.ts`)로 싱글턴을 만든다. 스토어를 읽을 수 없으면(live·`.bak` 모두 손상) 로그만 남기고 서비스 없이 기동한다 — 투표 진입점은 "사용할 수 없습니다"로 답하고 봇은 계속 뜬다. 카드는 Append-Only 원칙의 문서화된 예외다(제자리 편집).
+- **알림 write-ahead**: 결과 알림 파트를 게시하기 전에 `noticeUnknownPart`를 먼저 저장하고 성공 후 지운다. 게시 직후 프로세스가 죽어도 다음 시도는 마커를 먼저 찾는다. 재시작 시 `resumeExpiredDeliveries`는 만료 처리된 전달뿐 아니라 봇이 꺼져 있는 동안 재시도 기한이 지난 전달도 다시 연다(마감 후 7일 한도).
 
 ### Observability (`src/metrics/`, `src/conversation/`)
 - 이벤트 기반 텔레메트리(토큰·툴콜·레이턴시), 주기 리포트

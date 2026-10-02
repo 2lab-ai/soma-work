@@ -127,10 +127,10 @@ export class PollService {
     const options = input.options.map((o) => o.trim());
     if (
       title.length === 0 ||
-      title.length > MAX_TITLE_CHARS ||
+      codePoints(title) > MAX_TITLE_CHARS ||
       options.length === 0 ||
       options.length > MAX_OPTIONS ||
-      options.some((o) => o.length === 0 || o.length > MAX_OPTION_CHARS || /[\r\n]/.test(o)) ||
+      options.some((o) => o.length === 0 || codePoints(o) > MAX_OPTION_CHARS || /[\r\n]/.test(o)) ||
       !Number.isFinite(input.closesAt)
     ) {
       return Promise.resolve({ ok: false, reason: 'invalid_input' });
@@ -338,8 +338,12 @@ export class PollService {
   }
 
   /**
-   * Restart recovery: re-arm expired deliveries of polls closed within the last
-   * 7 days. Only the unfinished parts of the frozen result are resumed; the
+   * Restart recovery: re-arm unfinished deliveries of polls closed within the
+   * last 7 days — both those a running tick expired (`expiredAt` set) and those
+   * whose retry window lapsed while the bot was down (no tick ran `expire()`,
+   * so `expiredAt` is unset but `retryUntil` is past). Without the second case
+   * the first `closeDue()` after restart would expire them without a single
+   * attempt. Only the unfinished parts of the frozen result are resumed; the
    * poll is never reopened. Returns how many were re-armed.
    */
   resumeExpiredDeliveries(): number {
@@ -347,7 +351,9 @@ export class PollService {
     let count = 0;
     for (const poll of this.store.all()) {
       const d = poll.delivery;
-      if (!d || d.expiredAt === undefined || poll.closedAt === undefined) continue;
+      if (!d || poll.closedAt === undefined || !hasPendingDelivery(d)) continue;
+      const lapsed = d.expiredAt !== undefined || now > d.retryUntil;
+      if (!lapsed) continue;
       if (now - poll.closedAt > RESUME_HORIZON_MS) continue;
       this.store.update(poll.id, (p) => {
         if (!p.delivery) return;
@@ -456,13 +462,18 @@ export class PollService {
       }
     }
 
+    // Write-ahead intent: persist "part `index` may be in flight" BEFORE the
+    // post. If the process dies after Slack accepted the message but before the
+    // success is recorded (deploy restart, OOM, a failed store write), the next
+    // attempt sees the intent and scans for the marker instead of reposting.
+    // A write failure here throws before anything is sent.
+    if (poll.delivery?.noticeUnknownPart !== index) {
+      this.patchDelivery(poll.id, (d) => {
+        d.noticeUnknownPart = index;
+      });
+    }
     try {
       await this.slack.postMessage(poll.channel, text, { threadTs: poll.threadTs });
-      this.patchDelivery(poll.id, (d) => {
-        d.noticesDone = index + 1;
-        d.noticeUnknownPart = undefined;
-      });
-      return 'done';
     } catch (error) {
       const cls = classifySlackDeliveryError(error);
       if (cls.kind === 'permanent') {
@@ -472,13 +483,21 @@ export class PollService {
         });
         return 'stopped';
       }
-      if (cls.kind === 'unknown') {
+      if (cls.kind === 'transient') {
+        // Definitively not sent (queue_overflow / ratelimited): nothing to look up next time.
         this.patchDelivery(poll.id, (d) => {
-          d.noticeUnknownPart = index;
+          d.noticeUnknownPart = undefined;
         });
       }
-      return 'transient';
+      return 'transient'; // unknown keeps the intent → marker scan before any repost
     }
+    // Outside the try: a store failure after a successful post must not be
+    // classified as a Slack outcome. It propagates with the intent still on disk.
+    this.patchDelivery(poll.id, (d) => {
+      d.noticesDone = index + 1;
+      d.noticeUnknownPart = undefined;
+    });
+    return 'done';
   }
 
   /** Give up transient retries: persisted state + log + best-effort thread note. */
@@ -519,6 +538,11 @@ function freshDelivery(closedAt: number, canceled: boolean): PollDelivery {
     nextAttemptAt: 0,
     retryUntil: closedAt + RETRY_WINDOW_MS,
   };
+}
+
+/** Length in Unicode code points — the unit the somalib validator uses. */
+function codePoints(value: string): number {
+  return Array.from(value).length;
 }
 
 function hasPendingDelivery(d: PollDelivery): boolean {

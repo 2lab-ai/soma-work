@@ -94,6 +94,19 @@ describe('PollService', () => {
       expect(stored?.creatorId).toBe('UCREATOR');
     });
 
+    it('counts option and title length in code points, like the validator (emoji options are not refused)', async () => {
+      const emoji = '🍜'.repeat(60); // 60 code points, 120 UTF-16 units
+      const res = await service.createPoll({
+        channel: 'C1',
+        threadTs: '100.9',
+        creatorId: 'U1',
+        title: '🍚'.repeat(150),
+        options: [emoji, 'b'],
+        closesAt: CLOSES,
+      });
+      expect(res.ok).toBe(true);
+    });
+
     it('two overlapping creates in the same thread produce one poll (reservation held until write)', async () => {
       const a = service.createPoll({
         channel: 'C1',
@@ -497,6 +510,95 @@ describe('PollService', () => {
       await service.closeDue();
       expect(store.get(p.id)?.delivery?.cardDone).toBe(true);
       expect(store.get(p.id)?.delivery?.expiredAt).toBeUndefined();
+    });
+
+    it('persists the notice intent BEFORE posting, so a crash after Slack accepted the post is looked up, not reposted', async () => {
+      const p = await openPoll();
+      await vote(p.id, 'UA', 0, '1', p.messageTs);
+      now = CLOSES;
+      const file = path.join(dir, 'polls.json');
+      let midPost: string | undefined;
+      slack.postMessage.mockImplementationOnce(async () => {
+        midPost = fs.readFileSync(file, 'utf8'); // what a crash at this instant leaves on disk
+        return { ts: 'n1' };
+      });
+      await service.closeDue();
+      expect(midPost).toBeDefined();
+      const crashedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'poll-crash-'));
+      try {
+        const crashedFile = path.join(crashedDir, 'polls.json');
+        fs.writeFileSync(crashedFile, midPost as string);
+        const s = new PollStore(crashedFile);
+        s.load();
+        expect(s.get(p.id)?.delivery?.noticeUnknownPart).toBe(0);
+        const restarted = new PollService({
+          store: s,
+          slack: slack as unknown as PollSlackApi,
+          now: () => CLOSES + 60_000,
+          newId: () => 'unused',
+        });
+        slack.threadHasBotMessage.mockResolvedValueOnce(true);
+        const posts = slack.postMessage.mock.calls.length;
+        await restarted.closeDue();
+        expect(slack.threadHasBotMessage).toHaveBeenCalledWith('C1', '100.1', expect.any(String), `ref ${p.id} 1/1`);
+        expect(slack.postMessage.mock.calls.length).toBe(posts); // the landed notice is not posted again
+        expect(s.get(p.id)?.delivery?.noticeDone).toBe(true);
+      } finally {
+        fs.rmSync(crashedDir, { recursive: true, force: true });
+      }
+    });
+
+    it('a definitive "not sent" notice error clears the intent (no needless scan next time)', async () => {
+      const p = await openPoll();
+      now = CLOSES;
+      slack.postMessage.mockRejectedValueOnce(platformError('ratelimited'));
+      await service.closeDue();
+      expect(store.get(p.id)?.delivery?.noticeUnknownPart).toBeUndefined();
+      expect(store.get(p.id)?.delivery?.noticeDone).toBe(false);
+    });
+
+    it('restart after the retry window lapsed while the bot was down: pending delivery is re-armed, not silently expired', async () => {
+      const p = await openPoll();
+      now = CLOSES;
+      slack.updateMessage.mockRejectedValueOnce(transientError());
+      slack.postMessage.mockRejectedValueOnce(platformError('ratelimited'));
+      await service.closeDue();
+      expect(store.get(p.id)?.delivery?.cardDone).toBe(false);
+      // bot is down for 25h — no tick ever ran expire(), so expiredAt is unset
+      const s = new PollStore(path.join(dir, 'polls.json'));
+      s.load();
+      expect(s.get(p.id)?.delivery?.expiredAt).toBeUndefined();
+      const later = CLOSES + 25 * 3600_000;
+      const restarted = new PollService({
+        store: s,
+        slack: slack as unknown as PollSlackApi,
+        now: () => later,
+        newId: () => 'unused',
+      });
+      expect(restarted.resumeExpiredDeliveries()).toBe(1);
+      await restarted.closeDue();
+      const d = s.get(p.id)?.delivery;
+      expect(d?.cardDone).toBe(true);
+      expect(d?.noticeDone).toBe(true);
+      expect(d?.expiredAt).toBeUndefined();
+      expect(slack.postMessage.mock.calls.some((c) => String(c[1]).includes('전달을 완료하지 못했습니다'))).toBe(false);
+    });
+
+    it('does not re-arm a lapsed delivery beyond the 7-day resume horizon', async () => {
+      const p = await openPoll();
+      now = CLOSES;
+      slack.updateMessage.mockRejectedValueOnce(transientError());
+      await service.closeDue();
+      const s = new PollStore(path.join(dir, 'polls.json'));
+      s.load();
+      const restarted = new PollService({
+        store: s,
+        slack: slack as unknown as PollSlackApi,
+        now: () => CLOSES + 8 * 24 * 3600_000,
+        newId: () => 'unused',
+      });
+      expect(restarted.resumeExpiredDeliveries()).toBe(0);
+      expect(s.get(p.id)?.delivery?.cardDone).toBe(false);
     });
 
     it('survives a restart: a fresh service over the same store closes overdue polls', async () => {
