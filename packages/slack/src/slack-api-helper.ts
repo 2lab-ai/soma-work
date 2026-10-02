@@ -16,6 +16,12 @@ export interface MessageOptions {
   attachments?: any[];
   unfurlLinks?: boolean;
   unfurlMedia?: boolean;
+  /**
+   * Rethrow `invalid_blocks` instead of degrading to a text-only post. For
+   * interactive cards (e.g. polls) whose buttons ARE the message — a silent
+   * text fallback would return a ts for a card nobody can use.
+   */
+  strictBlocks?: boolean;
 }
 
 /**
@@ -822,7 +828,7 @@ export class SlackApiHelper {
       // for exactly this kind of degradation — so when the BLOCKS are the
       // problem, strip them and deliver the text instead of throwing.
       const platformErrorCode = (error as any)?.data?.error;
-      if (platformErrorCode === 'invalid_blocks' && payload.blocks) {
+      if (platformErrorCode === 'invalid_blocks' && payload.blocks && !options?.strictBlocks) {
         this.logger.warn('invalid_blocks — retrying with text-only fallback', { channel, error });
         const fallback = { ...payload };
         fallback.blocks = undefined;

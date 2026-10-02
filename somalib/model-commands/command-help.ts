@@ -272,6 +272,25 @@ const SET_GOAL_HELP: CommandHelp = {
   ],
 };
 
+const POLL_CREATE_HELP: CommandHelp = {
+  commandId: 'POLL_CREATE',
+  summary:
+    'Post a native button poll card in the current thread. title: 1..150 chars. options: 1..20 unique ' +
+    'strings, each 1..60 chars on one line, in display order. closesAt: ISO-8601 WITH an explicit offset ' +
+    '(Z or ±HH:MM), at least 60s and at most 7 days ahead. The host records the user of this turn as the ' +
+    'poll creator (only they can close early or cancel).',
+  examples: [
+    {
+      title: 'Lunch team poll closing today at 12:50 KST',
+      params: {
+        title: '점심 팀 편성',
+        options: ['김치찌개', '된장찌개', '제육볶음'],
+        closesAt: '2026-10-02T12:50:00+09:00',
+      },
+    },
+  ],
+};
+
 const COMMAND_HELP: Partial<Record<ModelCommandId, CommandHelp>> = {
   SAVE_MEMORY: SAVE_MEMORY_HELP,
   MEMORY: MEMORY_HELP,
@@ -281,6 +300,7 @@ const COMMAND_HELP: Partial<Record<ModelCommandId, CommandHelp>> = {
   SAVE_CONTEXT_RESULT: SAVE_CONTEXT_RESULT_HELP,
   ASK_USER_QUESTION: ASK_USER_QUESTION_HELP,
   SET_GOAL: SET_GOAL_HELP,
+  POLL_CREATE: POLL_CREATE_HELP,
   // GET_SESSION / GET_MEMORY / RATE take no params — nothing to guide.
 };
 

@@ -85,6 +85,10 @@ Connect any MCP-compatible server (stdio/SSE/HTTP) to extend Claude's capabiliti
 
 Slack-native button/form UX for permission approvals, option selection, and session management. Bypass mode available for trusted users.
 
+### 🗳️ Native Button Polls
+
+A skill or prompt can open a button poll in the current thread through the `POLL_CREATE` model command (title, ordered options, deadline with an explicit UTC offset). Anyone in the channel votes by clicking an option button — one vote per person, the last click wins. While open, the card shows per-option counts only; at the deadline (or when the creator clicks *Close now*) it is edited into the final roster — options in their original order with voters as mentions — and a result notice is posted in the thread. Only the creator can close or cancel. Polls live in `DATA_DIR/polls.json` and survive restarts; the 60s `PollScheduler` closes due polls and retries result delivery. The model can only create a poll on a user-input turn, owned by the speaking user. Example client: the `bab` lunch-team plugin.
+
 ### 📎 File Analysis
 
 Upload images (JPG/PNG/GIF/WebP), text, or code files directly in Slack. 50MB limit per file.
@@ -729,7 +733,7 @@ docs/                               # Architecture & feature specs
 2. **Single Responsibility** — One responsibility per module
 3. **Pipeline Architecture** — Input preprocessing → session init → stream execution
 4. **Workflow Dispatch** — Input classification → specialized workflow prompts
-5. **Append-Only Messages** — New Slack messages instead of edits (reliability)
+5. **Append-Only Messages** — New Slack messages instead of edits (reliability). Exception: a native poll card is edited in place — it is a live counter and the final roster, and its result is also posted as a new thread notice
 6. **Session-Based Context** — Per-thread session persistence with auto-resume
 7. **Error Isolation** — Sub-agent failures don't propagate to the main bot
 8. **Dependency Injection** — Testability through injected dependencies

@@ -1,5 +1,6 @@
 import type { App } from '@slack/bolt';
 import { Logger } from '@soma/common/logger';
+import { POLL_ACTION_CANCEL, POLL_ACTION_CLOSE, POLL_ACTION_VOTE_PATTERN } from '../poll/poll-blocks';
 import { TURN_DISMISS_ACTION_ID, TURN_FEEDBACK_ACTION_ID } from '../turn-feedback-block-builder';
 import { TurnFeedbackStore } from '../turn-feedback-store';
 import { type PendingChoiceFormData, PendingFormStore } from './pending-form-store';
@@ -146,6 +147,16 @@ export interface ActionHandlerDelegates {
   };
   feedbackHandler: { handleFeedback(body: any, respond: RespondFn): Promise<void> };
   dismissHandler: { handleDismiss(body: any, respond: RespondFn): Promise<void> };
+  /**
+   * Native button poll. Vote is open to ANY user; close/cancel are authorized
+   * against the stored creator inside the poll service. Optional so older
+   * delegate providers (tests) keep compiling.
+   */
+  pollHandler?: {
+    handleVote(body: any, respond: RespondFn): Promise<void>;
+    handleClose(body: any, respond: RespondFn): Promise<void>;
+    handleCancel(body: any, respond: RespondFn): Promise<void>;
+  };
   goalHandler: {
     handleDelete(body: any, respond: RespondFn): Promise<void>;
     handleUpdate(body: any, respond: RespondFn, client: any): Promise<void>;
@@ -488,6 +499,23 @@ export class ActionHandlers {
     app.action(TURN_DISMISS_ACTION_ID, async ({ ack, body, respond }) => {
       await ack();
       await this.delegates.dismissHandler.handleDismiss(body, respond as RespondFn);
+    });
+
+    // Native button poll — ACK first (3s budget). The handler joins the poll's
+    // serial lane synchronously, so clicks are processed in arrival order.
+    app.action(POLL_ACTION_VOTE_PATTERN, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.pollHandler?.handleVote(body, respond as RespondFn);
+    });
+
+    app.action(POLL_ACTION_CLOSE, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.pollHandler?.handleClose(body, respond as RespondFn);
+    });
+
+    app.action(POLL_ACTION_CANCEL, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.pollHandler?.handleCancel(body, respond as RespondFn);
     });
 
     app.view('custom_input_submit', async ({ ack, body, view }) => {

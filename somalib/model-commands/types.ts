@@ -20,7 +20,8 @@ export type ModelCommandId =
   | 'MEMORY'
   | 'MANAGE_SKILL'
   | 'RATE'
-  | 'SET_GOAL';
+  | 'SET_GOAL'
+  | 'POLL_CREATE';
 
 export interface ModelCommandContext {
   channel?: string;
@@ -163,6 +164,20 @@ export interface SetGoalParams {
   userRequestEvidence: string;
 }
 
+/**
+ * POLL_CREATE — post a native button poll card in the current thread.
+ *
+ * The MCP layer validates and echoes; the HOST (stream-executor) posts the
+ * card, records the turn's real speaker as the creator, and persists the poll.
+ * `closesAt` is ISO-8601 with an explicit offset (`Z` or `±HH:MM`) so the host
+ * never has to guess a timezone.
+ */
+export interface PollCreateParams {
+  title: string;
+  options: string[];
+  closesAt: string;
+}
+
 export interface ModelCommandParamsMap {
   GET_SESSION: undefined;
   UPDATE_SESSION: SessionResourceUpdateRequest;
@@ -175,6 +190,7 @@ export interface ModelCommandParamsMap {
   MANAGE_SKILL: ManageSkillParams;
   RATE: undefined;
   SET_GOAL: SetGoalParams;
+  POLL_CREATE: PollCreateParams;
 }
 
 export interface ModelCommandPayloadMap {
@@ -275,6 +291,8 @@ export interface ModelCommandPayloadMap {
     objective: string;
     userRequestEvidence: string;
   };
+  // Pure echo — the host posts the poll card and persists the poll.
+  POLL_CREATE: PollCreateParams;
 }
 
 export interface ModelCommandError {

@@ -1,9 +1,11 @@
 import { setActionHandlersProviders } from '@soma/slack/actions';
+import { getActivePollService } from '@soma/slack/poll/poll-service';
 import { isAdminUser } from '../../admin-utils';
 import { getTokenManager } from '../../token-manager';
 import { registerAuthActions } from '../auth/actions';
 import { registerCctActions } from '../cct/actions';
 import { defaultTabCache } from '../commands/usage-carousel-cache';
+import { ensurePollService } from '../poll-service-bootstrap';
 import { buildDefaultTopicRegistry } from '../z/topics';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
 import { AutoskillActionHandler } from './autoskill-action-handler';
@@ -21,6 +23,7 @@ import { JiraActionHandler } from './jira-action-handler';
 import { McpToolPermissionActionHandler } from './mcp-tool-permission-action-handler';
 import { PermissionActionHandler } from './permission-action-handler';
 import { PluginUpdateActionHandler } from './plugin-update-action-handler';
+import { PollActionHandler } from './poll-action-handler';
 import { PRActionHandler } from './pr-action-handler';
 import { SessionActionHandler } from './session-action-handler';
 import { SkillPermissionActionHandler } from './skill-permission-action-handler';
@@ -159,6 +162,10 @@ setActionHandlersProviders({
         slackApi: ctx.slackApi as any,
         store: stores.turnFeedbackStore,
       }),
+      pollHandler: (() => {
+        ensurePollService(ctx.slackApi);
+        return new PollActionHandler({ getService: getActivePollService });
+      })(),
       dismissHandler: new TurnDismissActionHandler({
         slackApi: ctx.slackApi as any,
         completionMessageTracker: ctx.completionMessageTracker,

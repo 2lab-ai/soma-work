@@ -457,6 +457,28 @@ const MANAGE_SKILL_SCHEMA = {
   required: ['action'],
 };
 
+// POLL_CREATE params schema (native button poll; host posts the card).
+const POLL_CREATE_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string', minLength: 1, maxLength: 150, description: 'Poll title shown on the card' },
+    options: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 20,
+      items: { type: 'string', minLength: 1, maxLength: 60 },
+      description: 'Options in display order (1..20, each 1..60 chars, unique, one line)',
+    },
+    closesAt: {
+      type: 'string',
+      description:
+        'Deadline as ISO-8601 WITH an explicit offset, e.g. 2026-10-02T12:50:00+09:00. ' +
+        'Must be at least 60s and at most 7 days ahead.',
+    },
+  },
+  required: ['title', 'options', 'closesAt'],
+};
+
 // Issue #1082 T2: SET_GOAL params schema (set-only model goal command).
 const SET_GOAL_SCHEMA = {
   type: 'object',
@@ -645,6 +667,17 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
           'auto-continuation loop; the model cannot mark the goal complete itself. The user keeps ' +
           'lifecycle control and can pause, clear or complete it with the `goal` command.',
         paramsSchema: SET_GOAL_SCHEMA,
+      },
+      {
+        id: 'POLL_CREATE',
+        description:
+          'Post a native button poll card in the CURRENT thread. Anyone can vote by clicking an option ' +
+          'button (one vote per person, the last click wins); while open the card shows only per-option ' +
+          'counts. At closesAt — or when the poll creator clicks "지금 마감" — the card turns into the ' +
+          'per-option member list (mentions, original option order) and a thread notice mentions every ' +
+          'voter. The creator (the user of this turn) can also cancel. Use only when the user asked to ' +
+          'start a poll in this message. One open poll per thread.',
+        paramsSchema: POLL_CREATE_SCHEMA,
       },
     );
   }
@@ -1270,6 +1303,24 @@ export function runModelCommand(
       payload: {
         objective: request.params.objective,
         userRequestEvidence: request.params.userRequestEvidence,
+      },
+    };
+  }
+
+  // POLL_CREATE — pure echo on the MCP side; the HOST posts the card, records
+  // the turn's real speaker as creator and persists the poll.
+  if (request.commandId === 'POLL_CREATE') {
+    if (!context.user || !context.channel || !context.threadTs) {
+      return toRunError('POLL_CREATE', { code: 'CONTEXT_ERROR', message: 'No user/channel/thread context available' });
+    }
+    return {
+      type: 'model_command_result',
+      commandId: 'POLL_CREATE',
+      ok: true,
+      payload: {
+        title: request.params.title,
+        options: request.params.options,
+        closesAt: request.params.closesAt,
       },
     };
   }
