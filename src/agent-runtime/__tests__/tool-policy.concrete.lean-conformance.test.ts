@@ -7,8 +7,9 @@
  * It lists the primitive calls the policy makes for it with the values the model was given; this
  * suite first checks those values against the real primitives, then requires the real
  * `evaluateToolPolicy` to return the model's result. The sensitive-path entry, arguments
- * included, is the model's own `sensitiveCall` for the case's input. The `constants` vector pins
- * the tool lists the model hardcodes.
+ * included, is the model's own `sensitiveCall` for the case's input. Cases whose `ctx` carries
+ * `incidentReadOnly` run in an incident session. The `constants` vector pins the tool lists and
+ * matchers the model hardcodes.
  *
  * `{{HOME}}` in a vector stands for `os.homedir()` and is substituted before anything runs, so
  * the committed file names no home directory. The mocked, exhaustive counterpart is
@@ -26,7 +27,13 @@ import { handlePrIssuePrecondition, type PrIssueGuardInput } from '../../hooks/p
 import { checkBashSensitivePaths, checkSensitiveGlob, checkSensitivePath } from '../../sensitive-path-filter';
 import type { HandoffContext } from '../../types';
 import type { PermissionMode } from '../policy/permission-mode';
-import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
+import {
+  evaluateToolPolicy,
+  INCIDENT_TOOL_POLICY_MATCHERS,
+  type IncidentReadOnlyContext,
+  TOOL_POLICY_MATCHERS,
+  type ToolPolicyContext,
+} from '../policy/tool-policy';
 
 const repoRoot = path.resolve(__dirname, '../../..');
 
@@ -55,6 +62,8 @@ interface ConcreteCase {
     handoffContext: HandoffContext | null;
     mcpDenied: string | null;
     disabledRules: string[];
+    /** Present only for an incident session. */
+    incidentReadOnly?: IncidentReadOnlyContext;
   };
   pre: PrimitiveCall[];
   expect: Record<string, unknown>;
@@ -64,6 +73,8 @@ interface ConstantsCase {
   kind: 'constants';
   nativeBypassTools: string[];
   toolPolicyMatchers: string[];
+  /** A matcher-less entry (`undefined`) is written `null`. */
+  incidentToolPolicyMatchers: Array<string | null>;
 }
 
 interface VectorFile {
@@ -122,6 +133,7 @@ function contextOf(c: ConcreteCase): ToolPolicyContext {
     isDangerousRuleDisabled: (id) => c.ctx.disabledRules.includes(id),
     handoffContext: c.ctx.handoffContext ?? undefined,
     checkMcpToolPermission: () => c.ctx.mcpDenied,
+    ...(c.ctx.incidentReadOnly ? { incidentReadOnly: c.ctx.incidentReadOnly } : {}),
   };
 }
 
@@ -134,6 +146,7 @@ describe('tool-policy Lean conformance vectors (real primitives)', () => {
   it('carry enough distinct concrete cases', () => {
     expect(vectors.module).toBe('tool-policy');
     expect(concrete.length).toBeGreaterThanOrEqual(12);
+    expect(concrete.filter((c) => c.ctx.incidentReadOnly !== undefined).length).toBeGreaterThanOrEqual(5);
     expect(new Set(concrete.map((c) => c.name)).size).toBe(concrete.length);
     // No home directory is committed: only the placeholder is, substituted above. (A home of
     // `/`, as in some containers, would match every path, so it is not checked.)
@@ -146,6 +159,9 @@ describe('tool-policy Lean conformance vectors (real primitives)', () => {
     expect(constants).toHaveLength(1);
     expect([...NATIVE_BYPASS_TOOLS]).toEqual(constants[0].nativeBypassTools);
     expect([...TOOL_POLICY_MATCHERS]).toEqual(constants[0].toolPolicyMatchers);
+    expect(INCIDENT_TOOL_POLICY_MATCHERS.map((matcher) => matcher ?? null)).toEqual(
+      constants[0].incidentToolPolicyMatchers,
+    );
   });
 
   it('assert primitive results the real primitives return', () => {

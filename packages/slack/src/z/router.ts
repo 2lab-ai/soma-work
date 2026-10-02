@@ -39,7 +39,9 @@ export interface CommandContext {
 }
 
 export interface LegacyCommandRouter {
-  route(ctx: CommandContext): Promise<{ handled: boolean; continueWithPrompt?: string; error?: string }>;
+  route(
+    ctx: CommandContext,
+  ): Promise<{ handled: boolean; continueWithPrompt?: string; error?: string; awaitingPermission?: boolean }>;
 }
 
 export interface TombstoneStore {
@@ -59,7 +61,14 @@ export interface ZDispatchResult {
   continueWithPrompt?: string;
   /** If true, the caller should treat the input as a no-op (tombstone shown etc.). */
   consumed?: boolean;
+  /**
+   * Set together with `handled: true` when the legacy handler CRASHED (the
+   * router already posted the failure notice) — the caller must not report the
+   * message as answered.
+   */
   error?: string;
+  /** The legacy command parked the message behind a user decision (cross-user `$skill` permission). */
+  awaitingPermission?: boolean;
 }
 
 export class ZRouter {
@@ -141,7 +150,12 @@ export class ZRouter {
 
     try {
       const result = await this.deps.legacyRouter.route(ctx);
-      return { handled: result.handled, continueWithPrompt: result.continueWithPrompt, error: result.error };
+      return {
+        handled: result.handled,
+        continueWithPrompt: result.continueWithPrompt,
+        error: result.error,
+        awaitingPermission: result.awaitingPermission,
+      };
     } catch (err) {
       logger.error('routeToLegacy failed', { err: (err as Error).message });
       return { handled: false, error: (err as Error).message };

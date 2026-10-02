@@ -16,6 +16,10 @@
  *   • ACP mode (P9, later): the ACP `requestPermission` handler calls the same
  *     function and maps the decision onto an ACP `PermissionOption`.
  *
+ * Tiers, in order: hard-deny → incident READ-ONLY (only when the session is an
+ * incident receiver; it decides every call and the tier below never runs) →
+ * allow/classify by permission mode.
+ *
  * Precedence (highest wins): **deny > classify/allow > pass**. `pass` means
  * "no policy opinion" — in SDK mode it maps to `{ continue: true }` (defer to
  * the SDK's own permission logic), NOT to an SDK `ask`; conflating the two
@@ -71,7 +75,7 @@ export interface ToolPolicyResult {
 export interface ToolPolicyContext {
   /** Slack user id of the session owner/initiator. */
   user: string;
-  /** `isAdminUser(user)` — admins bypass the ssh / sensitive / mcp guards. */
+  /** `isAdminUser(user)` — admins bypass the ssh / sensitive / mcp guards, except in an incident session. */
   isAdmin: boolean;
   /**
    * The session's permission mode (`mcpConfig.somaPermissionMode`). Governs the
@@ -92,6 +96,36 @@ export interface ToolPolicyContext {
   handoffContext?: HandoffContext;
   /** Returns a deny reason for a permission-gated MCP tool, else null. */
   checkMcpToolPermission: (toolName: string) => string | null;
+  /**
+   * Incident READ-ONLY mode. **Absent (the default) → nothing changes.**
+   * Present → the session is an incident receiver: `isAdmin` is ignored (the
+   * deny tier checks every caller as a non-admin) and the incident tier alone
+   * decides what it lets through, so `mode` is never read either.
+   */
+  incidentReadOnly?: IncidentReadOnlyContext;
+}
+
+/**
+ * The incident session's entire tool surface: a list of exact MCP tool names.
+ * Everything else — Bash, every native tool, subagents, unknown tools — is
+ * denied.
+ *
+ * There is deliberately no "evidence root" option for native Read/Glob/Grep.
+ * `evaluateToolPolicy` is pure, so it cannot `realpath()` a path; a lexical
+ * prefix check would miss a symlink inside the root, a symlinked ancestor, and
+ * anything planted between the decision and the read (TOCTOU). A caller-
+ * asserted "the root is symlink-free" flag would put that guarantee in a place
+ * this function cannot enforce, so evidence is read through the fixed read-only
+ * MCP server tool instead.
+ */
+export interface IncidentReadOnlyContext {
+  /**
+   * Exact tool names (`mcp__<server>__<tool>`) of read-only MCP tools the
+   * incident session may call. Built from the trusted server config by the
+   * caller — matching is exact, never by prefix, wildcard or name inference,
+   * so an `mcp__x__*` entry allows nothing.
+   */
+  allowedMcpTools: readonly string[];
 }
 
 function asStr(value: unknown): string {
@@ -119,6 +153,26 @@ function checkSensitiveForTool(toolName: string, input: Record<string, unknown>)
 }
 
 /**
+ * Incident READ-ONLY decision — allow the exactly-named read-only MCP tools,
+ * deny everything else. Never returns `pass` or falls through: an unknown tool
+ * (a future native tool, a browser tool, a subagent) lands on the final deny,
+ * because `pass` would hand an unattended session back to the SDK's own
+ * permission logic.
+ *
+ * Runs *after* the hard-deny tier, so a revoked MCP grant or an aborted session
+ * still wins over an allow-listed evidence tool, and *before* the bypass/auto
+ * tier, which it replaces entirely.
+ */
+function evaluateIncidentReadOnly(toolName: string, incident: IncidentReadOnlyContext): ToolPolicyResult {
+  // Exact match, `mcp__` tools only: a native tool name in the allowlist can
+  // never reach this branch, so a misconfigured list cannot grant Bash.
+  if (toolName.startsWith('mcp__') && incident.allowedMcpTools.includes(toolName)) {
+    return { decision: 'allow', reason: `incident-read-only: allow-listed evidence tool ${toolName}` };
+  }
+  return { decision: 'deny', reason: `incident-read-only: ${toolName} is not an allow-listed evidence tool` };
+}
+
+/**
  * Evaluate the policy for a single tool call. Pure — same inputs always yield
  * the same decision. Precedence: deny > classify/allow > pass.
  */
@@ -140,8 +194,8 @@ export function evaluateToolPolicy(
     return { decision: 'deny', reason: 'abort-guard: session aborted' };
   }
 
-  // 2-4. Admins bypass the ssh / sensitive / mcp guards.
-  if (!ctx.isAdmin) {
+  // 2-4. Admins bypass the ssh / sensitive / mcp guards; an incident session gets no admin privilege.
+  if (!ctx.isAdmin || ctx.incidentReadOnly) {
     // 2. SSH ban (Bash).
     if (toolName === 'Bash' && isSshCommand(command)) {
       return { decision: 'deny', reason: 'ssh-ban: ssh command for non-admin user' };
@@ -181,6 +235,12 @@ export function evaluateToolPolicy(
     }
   }
 
+  // ── INCIDENT READ-ONLY tier (hard, mode- and admin-independent) ──
+  // An incident receiver session ends here: the tier below can never widen it.
+  if (ctx.incidentReadOnly) {
+    return evaluateIncidentReadOnly(toolName, ctx.incidentReadOnly);
+  }
+
   // ── ALLOW / CLASSIFY tier (only reached when no deny fired) ──
   // Mode governs the outcome. Note `legacy` falls through to `pass` below so
   // the SDK runs its own per-tool permission prompt (the old accept/reject).
@@ -216,3 +276,20 @@ export function evaluateToolPolicy(
 
 /** Hook matchers covering every tool the policy decides on: Bash, the native tools, `mcp__` (deny tier only). */
 export const TOOL_POLICY_MATCHERS: readonly string[] = ['Bash', NATIVE_BYPASS_TOOLS.join('|'), 'mcp__'];
+
+/**
+ * Matchers for an incident READ-ONLY session — a single *catch-all* entry.
+ *
+ * `TOOL_POLICY_MATCHERS` deliberately enumerates the governed tools, so tools
+ * outside it (`Skill`, `EnterPlanMode`, a native tool a future SDK adds) never
+ * reach the hook. That is correct for a normal session and fatal for an
+ * incident one, whose whole contract is "deny everything not named". The SDK's
+ * `HookCallbackMatcher.matcher` is optional and an omitted matcher fires for
+ * every tool (`sdk.d.ts:666`; the repo already registers the compaction hooks
+ * this way), so the incident wiring registers one matcher-less entry.
+ *
+ * Kept separate rather than widening `TOOL_POLICY_MATCHERS`: a catch-all in a
+ * normal session would route previously-unhooked tools through the policy and
+ * change their SDK-side outcome.
+ */
+export const INCIDENT_TOOL_POLICY_MATCHERS: readonly (string | undefined)[] = [undefined];

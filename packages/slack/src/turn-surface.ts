@@ -89,6 +89,17 @@ export interface TurnContext {
    */
   readonly statusEpoch?: number;
   /**
+   * The turn publishes its own text and never writes to a B1 stream — an
+   * Eagle incident attempt, whose conclusion must reach the thread as a plain
+   * post rather than as a `markdown_text` chunk Slack interprets. `begin()`
+   * still registers the turn (supersede, native status, the completion card)
+   * but does not call `chat.startStream`: a stream nothing is appended to would
+   * be left behind as an empty message. With no `streamTs`, `appendText`
+   * returns `false` (callers post instead), `end()`/`fail()` stop nothing, and
+   * the completion card goes out as its own message.
+   */
+  readonly noStream?: boolean;
+  /**
    * P5 snapshot accessor for the B5 `WorkflowComplete` marker.
    *
    * Returns the **same Promise** on every invocation — a `snapshotPromise`
@@ -538,6 +549,13 @@ export class TurnSurface {
           error: (err as Error).message,
         });
       }
+    }
+
+    // The turn publishes its own text (see `TurnContext.noStream`): registered,
+    // but no stream message is ever opened for it.
+    if (ctx.noStream) {
+      this.logger.debug('B1 stream not opened — the turn publishes its own text', { turnId: ctx.turnId });
+      return;
     }
 
     try {
