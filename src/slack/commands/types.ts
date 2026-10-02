@@ -99,6 +99,12 @@ export interface CommandResult {
    * present, `continueWithPrompt` holds the RAW instruction text (no block).
    */
   deferredSkillFire?: DeferredSkillFire;
+  /**
+   * Set when the command consumed the message but parked it behind a user
+   * decision (cross-user `$skill` awaiting the owner's permission). The
+   * dispatch outcome is then `blocked` (item `uncertain`), not `safe`.
+   */
+  awaitingPermission?: boolean;
 }
 
 /**

@@ -320,7 +320,7 @@ export class SkillForceHandler implements CommandHandler {
     // whole turn (no partial execution) and asks each owner for permission.
     if (state.denied.length > 0) {
       await this.emitPermissionRequests(ctx, state.denied, text);
-      return { handled: true };
+      return { handled: true, awaitingPermission: true };
     }
 
     if (resolved.size === 0) {
