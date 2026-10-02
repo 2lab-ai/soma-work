@@ -1234,9 +1234,11 @@ export class SlackHandler {
         const routed = await this.routeDmViaZRouter(event);
         if (routed.terminal) {
           // Same contract as the consumed-command branch below: a handled `/z`
-          // card/command is a full answer (`safe`); a failed one is `error`.
-          // `blocked` would halt the DM lane for a message nobody can retry and
-          // hold the autogoal driver with it.
+          // card/command is a full answer (`safe`); a crashed one is `error`; a
+          // cross-user `$skill` parked on its owner's permission is `blocked`
+          // (not answered yet — the grant path re-dispatches the original
+          // text). Any other `blocked` would halt the DM lane for a message
+          // that was fully answered.
           if (routed.error) return { result: 'error', reason: routed.error };
           if (routed.awaitingPermission) return { result: 'blocked', reason: 'skill permission pending' };
           return { result: 'safe' };
