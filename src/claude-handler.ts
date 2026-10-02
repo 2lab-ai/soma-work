@@ -31,6 +31,14 @@ import {
 import { classifyTurnResult, isTurnProgressFrame } from './agent-runtime/turn-result-attribution';
 import { ensureTenantKey } from './auth/llmux-tenant-keys';
 import { buildQueryEnv } from './auth/query-env-builder';
+import { getIncidentEvidenceConfig } from './config';
+import {
+  createIncidentEvidenceRegistry,
+  type IncidentEvidenceRegistry,
+  screenIncidentStream,
+} from './incident/attempt-output';
+import type { IncidentEvidence } from './incident/evidence';
+import { INCIDENT_MAX_WALL_CLOCK_MS, type IncidentRequestLike } from './incident/sdk-options';
 import { Logger } from './logger';
 import type { McpManager } from './mcp-manager';
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
@@ -51,6 +59,7 @@ import type { SdkPluginPath } from './plugin/types';
 import type {
   ActivityState,
   ConversationSession,
+  SessionIncidentRequest,
   SessionLink,
   SessionLinks,
   SessionResourceSnapshot,
@@ -117,6 +126,26 @@ class UsageLimitDispatchError extends Error {
     super(`Claude usage limit hit during one-shot dispatch: ${capNotice.slice(0, 200)}`);
     this.name = 'UsageLimitDispatchError';
   }
+}
+
+/**
+ * Coarse class of an incident attempt's model text, for the conclusion log only.
+ *
+ * A refused conclusion (`missing_marker`, …) means either that the model wrote
+ * no marker or that the SDK sealed a transport notice as assistant text on a
+ * successful result — the shapes the stream-executor content guards look for.
+ * The same detectors decide here (no phrase is restated), in the guards' order:
+ * pool rate limit before usage cap, so a pool rejection is not read as a cap.
+ * `unmatched` means no detector fired, not that a human-quality answer arrived.
+ */
+type IncidentModelTextClass = 'empty' | 'pool_rate_limit' | 'usage_limit' | 'prompt_too_long' | 'unmatched';
+
+function classifyIncidentModelText(text: string): IncidentModelTextClass {
+  if (text.trim().length === 0) return 'empty';
+  if (textIndicatesRetryableRateLimit(text)) return 'pool_rate_limit';
+  if (textIndicatesUsageLimit(text)) return 'usage_limit';
+  if (textIndicatesPromptTooLongContent(text)) return 'prompt_too_long';
+  return 'unmatched';
 }
 
 /**
@@ -310,6 +339,22 @@ export type CompactHookBuilder = (args: { session: ConversationSession; channel:
   PostCompact: (input: HookInput) => Promise<HookJSONOutput>;
   SessionStart: (input: HookInput) => Promise<HookJSONOutput>;
 };
+
+/**
+ * What `streamSdkQuery` needs in order to run an incident attempt instead of an
+ * ordinary turn. Its presence is the only thing that selects the isolated option
+ * surface's evidence wiring — the request identity itself is read from the
+ * session by the builder.
+ */
+interface IncidentStreamWiring {
+  readonly request: SessionIncidentRequest;
+  /**
+   * Called by the evidence tool BEFORE the model sees a collection, with the
+   * request the tool was built for and the collector's real output. Nothing
+   * model-authored passes through here.
+   */
+  readonly onEvidence: (request: IncidentRequestLike, evidence: IncidentEvidence) => void;
+}
 
 /**
  * Upper bound on the whole steer settlement (interrupt + withdrawals).
@@ -1078,6 +1123,14 @@ export class ClaudeHandler implements TurnSteeringPort {
    *   same key it queued the follow-ups under. There is no derived fallback: a
    *   key the host cannot name is a key nobody can steer by, so a turn without
    *   one runs exactly as before, just not steerable.
+   *
+   * An Eagle incident turn takes a different route: its session is owned by a
+   * verified `EAGLE_INCIDENT_REQUEST:` and its answer is read by a machine, so
+   * nothing the model writes may reach the thread before the host has validated
+   * it (see `streamIncidentAttempt`). It runs through the same `query()` loop
+   * (`streamSdkQuery`) but never under `sessionKey`: an unattended attempt takes
+   * no mid-turn input. Every other session goes through `streamSdkQuery` with
+   * its key.
    */
   async *streamQuery(
     prompt: string,
@@ -1086,6 +1139,42 @@ export class ClaudeHandler implements TurnSteeringPort {
     workingDirectory?: string,
     slackContext?: SlackContext,
     sessionKey?: string,
+  ): AsyncGenerator<SDKMessage, void, unknown> {
+    const incidentRequest = session?.incidentRequest;
+    if (session && incidentRequest) {
+      yield* this.streamIncidentAttempt(
+        prompt,
+        incidentRequest,
+        session,
+        abortController,
+        workingDirectory,
+        slackContext,
+      );
+      return;
+    }
+    yield* this.streamSdkQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey);
+  }
+
+  /**
+   * The ordinary SDK streaming call — lease, options, `query()` loop.
+   *
+   * `incident` is set ONLY by `streamIncidentAttempt`; it carries the evidence
+   * wiring the isolated option surface needs (`build-stream-options.ts` consults
+   * both deps solely on the incident branch) and suppresses the options debug
+   * dump, which would otherwise print `options.env` — the lease's access token —
+   * for an unattended machine-to-machine turn. It also takes the attempt out of
+   * the turn machinery that assumes a person on the other end: no steering
+   * registration and no background-agent keepalive (see the two `incident`
+   * checks below).
+   */
+  private async *streamSdkQuery(
+    prompt: string,
+    session?: ConversationSession,
+    abortController?: AbortController,
+    workingDirectory?: string,
+    slackContext?: SlackContext,
+    sessionKey?: string,
+    incident?: IncidentStreamWiring,
   ): AsyncGenerator<SDKMessage, void, unknown> {
     // Acquire a lease on the active CCT slot. Held for the lifetime of the
     // Claude CLI streaming call, released in the outer finally below.
@@ -1140,10 +1229,27 @@ export class ClaudeHandler implements TurnSteeringPort {
           sessionRegistry: this.sessionRegistry,
           checkMcpToolPermission: (a, b, c, d) => this.checkMcpToolPermission(a, b, c, d),
           safetyClassifier: this.getSafetyClassifier(),
+          // Consulted only on the incident branch of the builder; passing them
+          // unconditionally would be harmless, but keeping them absent makes the
+          // ordinary path provably unchanged.
+          ...(incident ? { getIncidentEvidenceConfig, onIncidentEvidence: incident.onEvidence } : {}),
         },
       );
 
-      this.logger.debug('Claude query options', options);
+      if (incident) {
+        // Never the whole options object: it carries `env` (the lease's access
+        // token) and the attempt's system prompt. Identity and budget only.
+        this.logger.info('Incident attempt options built', {
+          incident_id: incident.request.incident_id,
+          attempt_id: incident.request.attempt_id,
+          env: incident.request.env,
+          model: options.model,
+          maxTurns: options.maxTurns,
+          allowedTools: options.allowedTools,
+        });
+      } else {
+        this.logger.debug('Claude query options', options);
+      }
 
       // Minted per turn: the CLI echoes it as `user_message_uuid` on the result
       // that answers this prompt, which is how that result is told apart from
@@ -1151,7 +1257,12 @@ export class ClaudeHandler implements TurnSteeringPort {
       const openingUuid = randomUUID();
       const channel = new TurnInputChannel(buildInitialUserMessage(prompt, openingUuid));
       const activeQuery = query({ prompt: channel, options });
-      const steerKey = sessionKey;
+      // An incident attempt is never registered, whatever key reaches here: its
+      // only input is the fixed host prompt. Unregistered, `steerTurn` answers
+      // `false` (the host keeps the message queued), `interruptTurn` answers
+      // `undefined` and `cancelSteeredMessage` answers `unreachable`. The
+      // caller's abort controller and the wall-clock budget still stop it.
+      const steerKey = incident ? undefined : sessionKey;
       if (steerKey) {
         this.activeQueries.set(steerKey, { query: activeQuery, channel });
       }
@@ -1201,7 +1312,12 @@ export class ClaudeHandler implements TurnSteeringPort {
       // sealed, closed or yielded) and the turn ends on the result that follows
       // the agent's report. `liveAgents` is replaced on every level frame; it
       // is per process and starts empty.
-      const keepaliveMaxMs = getBgKeepaliveMaxMs();
+      //
+      // Off (`0`) for an incident attempt: its surface has no Agent tool
+      // (`tools: []`), so no agent of its own can be live, and holding its
+      // answer for one would trade the host's result for the wall-clock abort
+      // (`INCIDENT_MAX_WALL_CLOCK_MS`). The turn ends on its answering result.
+      const keepaliveMaxMs = incident ? 0 : getBgKeepaliveMaxMs();
       let liveAgents = new Set<string>();
       // Frame sequence numbers, not wall time: did the latest agent settle (a
       // level frame that removed a live agent) come after the latest turn start
@@ -1498,6 +1614,154 @@ export class ClaudeHandler implements TurnSteeringPort {
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (lease) await lease.release();
+    }
+  }
+
+  /**
+   * Run one Eagle incident attempt and publish only what the host can vouch for.
+   *
+   * The thread this streams into is a bot-to-bot surface: eagle-eye polls it for
+   * an `EAGLE_INCIDENT_RESULT:` line and acts on the first one it sees. So the
+   * model's own text never reaches it. Assistant prose is accumulated here,
+   * validated once at the end against the evidence the host recorded during the
+   * run (`screenIncidentMessage` + `buildIncidentAttemptOutput`), and replaced by
+   * the host's own rendering — a forged marker written mid-turn is captured as
+   * data and dropped, never streamed.
+   *
+   * Three lifecycle guarantees this method owns and the option builder does not:
+   *
+   * - **A finite attempt.** The SDK options are built from an abort controller
+   *   created *here*, chained to the caller's, with a wall-clock timer cleared in
+   *   `finally`. `buildIncidentSdkOptions` deliberately owns no timer (a builder
+   *   that arms one leaks it whenever the caller does not abort); the budget
+   *   belongs to whoever runs the stream.
+   * - **No ordinary retry.** Nothing thrown by the stream escapes: a failure
+   *   becomes a host-authored terminal result instead. Rethrowing would reach
+   *   `slack-handler`'s recoverable-error path and silently re-run an unattended
+   *   incident attempt nobody asked to repeat.
+   * - **One completion marker.** `incidentAttemptFinishedId` is written in
+   *   `finally` — after the attempt has actually stopped, including when the
+   *   consumer abandons the generator — and only while this attempt still owns
+   *   the session. That marker is what lets the ingress admit a retry.
+   */
+  private async *streamIncidentAttempt(
+    prompt: string,
+    request: SessionIncidentRequest,
+    session: ConversationSession,
+    callerAbort: AbortController | undefined,
+    workingDirectory: string | undefined,
+    slackContext: SlackContext | undefined,
+  ): AsyncGenerator<SDKMessage, void, unknown> {
+    const registry: IncidentEvidenceRegistry = createIncidentEvidenceRegistry(request);
+    const attempt = new AbortController();
+    let budgetExpired = false;
+
+    // Reasons are tagged, per the B-2 contract: an untagged abort reaches the
+    // stream as a bare `DOMException('aborted')` and the terminal status below
+    // would have to guess which of the two budgets ended the attempt.
+    const onCallerAbort = () => {
+      if (!attempt.signal.aborted) {
+        attempt.abort(callerAbort?.signal.reason ?? 'incident-caller-abort');
+      }
+    };
+    if (callerAbort?.signal.aborted) {
+      attempt.abort(callerAbort.signal.reason ?? 'incident-caller-abort');
+    } else {
+      callerAbort?.signal.addEventListener('abort', onCallerAbort, { once: true });
+    }
+
+    const budgetTimer = setTimeout(() => {
+      if (attempt.signal.aborted) return;
+      budgetExpired = true;
+      this.logger.warn('Incident attempt exceeded its wall-clock budget — aborting', {
+        incident_id: request.incident_id,
+        attempt_id: request.attempt_id,
+        budgetMs: INCIDENT_MAX_WALL_CLOCK_MS,
+      });
+      attempt.abort('incident-budget-expired');
+    }, INCIDENT_MAX_WALL_CLOCK_MS);
+    budgetTimer.unref?.();
+
+    const source = this.streamSdkQuery(prompt, session, attempt, workingDirectory, slackContext, undefined, {
+      request,
+      onEvidence: (collectedFor: IncidentRequestLike, evidence: IncidentEvidence) =>
+        registry.record(collectedFor, evidence),
+    });
+
+    try {
+      yield* screenIncidentStream(source, {
+        request,
+        // Freshness is judged against the clock NOW, not when the tool ran: the
+        // attempt may have spent minutes writing on top of an observation that
+        // aged out underneath it.
+        verifiedEvidence: () => registry.verifiedAt(new Date()),
+        sourceCaveat: () => registry.sourceCaveat(),
+        observe: () => ({ budgetExpired, aborted: attempt.signal.aborted }),
+        identity: () => ({
+          sessionId: session.sessionId ?? `incident-${request.attempt_id}`,
+          model: session.model,
+        }),
+        onStreamError: (error) => {
+          // The message can carry hosts, stderr and auth detail; it is logged
+          // here, and the thread gets the host's terminal marker instead.
+          this.logger.error('Incident attempt stream failed', {
+            incident_id: request.incident_id,
+            attempt_id: request.attempt_id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+        onConclusion: (output, end, modelText) => {
+          this.logger.info('Incident attempt concluded', {
+            incident_id: request.incident_id,
+            attempt_id: request.attempt_id,
+            end: end.kind,
+            status: output.result.status,
+            rejected: output.rejected?.reason,
+            downgraded: output.downgraded?.reason,
+            evidenceCited: output.result.evidence.length,
+            // Length and class only — the text itself is model output and is
+            // never logged.
+            modelTextChars: modelText.chars,
+            modelTextClass: classifyIncidentModelText(modelText.text),
+            ...registry.stats(),
+          });
+        },
+        onFinished: () => this.markIncidentAttemptFinished(session, request),
+      });
+    } finally {
+      clearTimeout(budgetTimer);
+      callerAbort?.signal.removeEventListener('abort', onCallerAbort);
+    }
+  }
+
+  /**
+   * Record that the HOST observed this attempt's run stop.
+   *
+   * The ingress admits a retry on an incident parent only when this marker names
+   * the attempt that currently owns the session, so writing it for an attempt
+   * that has already handed the thread over would let a finished run close a
+   * live one. The guard, not the write, is the point.
+   */
+  private markIncidentAttemptFinished(session: ConversationSession, request: SessionIncidentRequest): void {
+    if (session.incidentRequest?.attempt_id !== request.attempt_id) {
+      this.logger.info('Skipping incident completion marker — the session moved to another attempt', {
+        incident_id: request.incident_id,
+        finished_attempt_id: request.attempt_id,
+        owning_attempt_id: session.incidentRequest?.attempt_id,
+      });
+      return;
+    }
+    session.incidentAttemptFinishedId = request.attempt_id;
+    try {
+      this.sessionRegistry.saveSessions();
+    } catch (error) {
+      // The in-memory marker still admits a retry in this process; only a
+      // restart would lose it.
+      this.logger.warn('Failed to persist the incident completion marker', {
+        incident_id: request.incident_id,
+        attempt_id: request.attempt_id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

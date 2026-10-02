@@ -16,7 +16,10 @@ import * as os from 'os';
 import * as path from 'path';
 import { normalizeTmpPath } from './path-utils';
 
-const HOME = os.homedir();
+// os.homedir() returns $HOME as it is set, so it is resolved to an absolute path, and written the
+// way normalizePath writes checked paths (/private/tmp as /tmp), or the tables below could never
+// match them.
+const HOME = normalizeTmpPath(path.resolve(os.homedir()));
 
 /** Directories where any path underneath is blocked. */
 const SENSITIVE_DIRECTORIES: ReadonlyArray<string> = [
@@ -44,18 +47,94 @@ const SENSITIVE_BASENAME_PATTERNS: ReadonlyArray<RegExp> = [
   /^secrets?\.(json|ya?ml|toml)$/,
 ];
 
-/** Service config files containing secrets. Only specific files are blocked, not the whole directory. */
+/**
+ * Service config files containing secrets. Only specific files are blocked, not the whole directory.
+ * Their `.env` files are not listed: SENSITIVE_BASENAME_PATTERNS, checked first, blocks every `.env`.
+ */
 const SENSITIVE_SERVICE_CONFIGS: ReadonlyArray<{ dir: string; files: ReadonlyArray<string> }> = [
-  { dir: '/opt/soma-work', files: ['.env', 'config.json'] },
-  { dir: '/opt/soma', files: ['.env', 'config.json'] },
+  { dir: '/opt/soma-work', files: ['config.json'] },
+  { dir: '/opt/soma', files: ['config.json'] },
 ];
 
+/** Shell spellings of the home directory; expandHome replaces each of them with HOME. */
+const HOME_ALIASES: ReadonlyArray<string> = ['~', '$HOME', `\${HOME}`];
+
+/**
+ * What fold writes for each code point other than A-Z that it rewrites. APFS, the macOS default,
+ * compares names with Unicode case folding, which folds these into ASCII letters: `.\u00DFh` opens
+ * `.ssh` and `.gitcon\uFB01g` opens `.gitconfig`.
+ */
+const FOLDED_LETTERS: Readonly<Record<string, string>> = {
+  '\u00DF': 'ss',
+  '\u017F': 's',
+  '\u1E9E': 'ss',
+  '\u212A': 'k',
+  '\uFB00': 'ff',
+  '\uFB01': 'fi',
+  '\uFB02': 'fl',
+  '\uFB03': 'ffi',
+  '\uFB04': 'ffl',
+  '\uFB05': 'st',
+  '\uFB06': 'st',
+};
+
+/** SENSITIVE_DIRECTORIES and SENSITIVE_EXACT_FILES as the rules compare them (foldKey). */
+const DIRECTORY_KEYS: ReadonlyArray<string> = SENSITIVE_DIRECTORIES.map(foldKey);
+const EXACT_FILE_KEYS: ReadonlySet<string> = new Set(Array.from(SENSITIVE_EXACT_FILES, foldKey));
+
 // Regexes for extracting file paths from bash commands — hoisted to avoid per-call recompilation.
+// A captured path may start with a HOME_ALIASES spelling, which expandHome replaces.
+// Known limits of this text-level check. Relative paths, and a Glob with a relative base, resolve
+// against a working directory this module never sees, so they are checked as written. `..` is
+// resolved lexically, while after a symbolic link the OS climbs from the link's target: the check
+// follows a walk into the sensitive directories, not through links outside them. `~user/...` is
+// not expanded. A glob's partial segment is not matched against names (`~/.ss*/id_rsa` checks
+// HOME). Names are compared case-folded, not Unicode-normalized (every sensitive name is ASCII).
+// In Bash, HOME is the only variable expanded, and quoting, `$'...'` and `$"..."` included, the
+// only other shell rule applied (extractPathsFromCommand). Quotes count as removed even where the
+// shell keeps them, so a quoted `~` or `$HOME` still counts as HOME (a `~` written as an escape in
+// `$'...'`, `\x7e`, does not). Other variables, command substitution (a `$'...'` inside
+// `"$(...)"` stays literal) and paths with white space or control characters are not understood,
+// and only the commands below are read. An OS-level read deny list would cover every spelling
+// (getSensitiveReadDenyPaths builds one; nothing applies it).
+// A read or copy command's arguments run to the next `|`, `;` or `&`; RE_PATH picks every path
+// among them. `\/+`: the shell reads `//` as `/`.
 const RE_READ_COMMANDS =
-  /\b(?:cat|head|tail|less|more|bat|xxd|hexdump|strings|base64|nano|vi|vim|code|open)\b[^|;&]*?((?:\/[\w.\-~]+)+(?:\/[\w.\-~*]+)?)/g;
-const RE_INPUT_REDIRECT = /<\s*((?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
-const RE_COPY_COMMANDS = /\b(?:cp|mv|rsync)\b[^|;&]*?\s+((?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)\s/g;
-const RE_SOURCE_CMD = /\b(?:source|\.)\s+((?:\/[\w.\-~]+)+(?:\/[\w.\-~]+)?)/g;
+  /\b(?:cat|head|tail|less|more|bat|xxd|hexdump|strings|base64|nano|vi|vim|code|open|cp|mv|rsync)\b([^|;&]*)/g;
+const RE_PATH = /(?:~|\$HOME|\$\{HOME\})?(?:\/+[\w.\-~]+)+(?:\/+[\w.\-~*]+)?/g;
+const RE_INPUT_REDIRECT = /<\s*((?:~|\$HOME|\$\{HOME\})?(?:\/+[\w.\-~]+)+(?:\/+[\w.\-~]+)?)/g;
+// `.` sources a file where a command starts: at the start, or after white space or a separator.
+const RE_SOURCE_CMD =
+  /(?:\bsource|(?<![^\w\s;&|(){}`])\.)\s+((?:~|\$HOME|\$\{HOME\})?(?:\/+[\w.\-~]+)+(?:\/+[\w.\-~]+)?)/g;
+// Changing into a directory is an access to it.
+const RE_CHANGE_DIR = /\b(?:cd|pushd)\b[^|;&]*?((?:~|\$HOME|\$\{HOME\})?(?:\/+[\w.\-~]+)+(?:\/+[\w.\-~]+)?)/g;
+/** The quote and backslash characters the shell removes from a word. */
+const QUOTING = /["'\\]/g;
+/** White space and the metacharacters `|&;()<>`: unquoted, each ends a word. */
+const WORD_END = /[\s|&;()<>]/;
+/** A character RE_PATH continues a path with. */
+const PATH_CHAR = /[\w.\-~/]/;
+/**
+ * The numeric escapes of `$'...'` after their backslash: \nnn, 1-3 octal digits, taken modulo 256
+ * (`\400` is a NUL); \xHH, 1-2 hex digits; \uHHHH, 1-4; \UHHHHHHHH, 1-8: at most 9 characters.
+ */
+const ANSI_C_NUMERIC = /^(?:[0-7]{1,3}|x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8})/;
+/** The one-letter escapes of `$'...'` and their values. */
+const ANSI_C_ESCAPES: ReadonlyMap<string, string> = new Map([
+  ['a', '\x07'],
+  ['b', '\b'],
+  ['e', '\x1b'],
+  ['E', '\x1b'],
+  ['f', '\f'],
+  ['n', '\n'],
+  ['r', '\r'],
+  ['t', '\t'],
+  ['v', '\v'],
+  ['\\', '\\'],
+  ["'", "'"],
+  ['"', '"'],
+  ['?', '?'],
+]);
 
 export interface SensitivePathResult {
   readonly isSensitive: boolean;
@@ -64,40 +143,38 @@ export interface SensitivePathResult {
 
 /** Check if an absolute path points to a sensitive location. */
 export function checkSensitivePath(filePath: string): SensitivePathResult {
-  if (!filePath) return { isSensitive: false };
-
   const normalized = normalizePath(filePath);
 
-  for (const dir of SENSITIVE_DIRECTORIES) {
-    if (normalized === dir || normalized.startsWith(dir + '/')) {
-      return { isSensitive: true, reason: `Access to ${dir}/ is restricted` };
+  // The path, then every directory its walk passes through: after a symbolic link, `..` climbs
+  // from the link's target (`.aws/link/../../credentials` can read `.aws/credentials`), so a walk
+  // that enters a sensitive directory may end anywhere inside it.
+  for (const point of [normalized, ...walkPoints(filePath)]) {
+    const key = foldKey(point);
+    const index = DIRECTORY_KEYS.findIndex((dir) => key === dir || key.startsWith(dir + '/'));
+    if (index >= 0) {
+      return { isSensitive: true, reason: `Access to ${SENSITIVE_DIRECTORIES[index]}/ is restricted` };
     }
   }
 
-  if (SENSITIVE_EXACT_FILES.has(normalized)) {
+  const key = foldKey(normalized);
+  if (EXACT_FILE_KEYS.has(key)) {
     return { isSensitive: true, reason: `Access to ${normalized} is restricted` };
   }
 
   const basename = path.basename(normalized);
   for (const pattern of SENSITIVE_BASENAME_PATTERNS) {
-    if (pattern.test(basename)) {
+    if (pattern.test(fold(basename))) {
       return { isSensitive: true, reason: `File ${basename} matches sensitive pattern` };
     }
   }
 
+  // A service config sits in its directory or one directory below it: /opt/soma-work/{,*/}{file}.
+  // The table is written folded.
   for (const { dir, files } of SENSITIVE_SERVICE_CONFIGS) {
-    for (const file of files) {
-      if (normalized === path.join(dir, file)) {
-        return { isSensitive: true, reason: `Service config ${normalized} is restricted` };
-      }
-      // Match subdirectories: /opt/soma-work/*/{file}
-      if (normalized.startsWith(dir + '/') && normalized.endsWith('/' + file)) {
-        const relative = normalized.slice(dir.length + 1);
-        const parts = relative.split('/');
-        if (parts.length === 2 && parts[1] === file) {
-          return { isSensitive: true, reason: `Service config ${normalized} is restricted` };
-        }
-      }
+    if (!key.startsWith(dir + '/')) continue;
+    const parts = key.slice(dir.length + 1).split('/');
+    if (parts.length <= 2 && files.includes(parts[parts.length - 1])) {
+      return { isSensitive: true, reason: `Service config ${normalized} is restricted` };
     }
   }
 
@@ -116,10 +193,21 @@ export function checkBashSensitivePaths(command: string): SensitivePathResult {
 
 /** Check if a glob pattern targets a sensitive directory. */
 export function checkSensitiveGlob(pattern: string, basePath?: string): SensitivePathResult {
-  const resolved = basePath ? path.resolve(basePath, pattern) : pattern;
-  // Split on first glob metacharacter to extract the concrete prefix
-  const baseDir = resolved.split(/[*?{}[\]]/)[0].replace(/\/+$/, '');
-  return checkSensitivePath(baseDir);
+  // path.resolve resolves `..` lexically; written after its base, the pattern keeps its walk
+  // through the base, where a symbolic link makes `..` climb from the link's target.
+  const spellings = basePath
+    ? [path.resolve(basePath, pattern), pattern.startsWith('/') ? pattern : `${basePath}/${pattern}`]
+    : [pattern];
+  for (const spelling of spellings) {
+    // The text before the first glob metacharacter, and the directory the glob lists: that text
+    // cut back to its last `/`, since a partial segment is a pattern (`.ssh/..*` lists .ssh).
+    const concrete = spelling.split(/[*?{}[\]]/)[0];
+    for (const dir of [concrete.replace(/\/+$/, ''), concrete.slice(0, concrete.lastIndexOf('/') + 1)]) {
+      const result = checkSensitivePath(dir);
+      if (result.isSensitive) return result;
+    }
+  }
+  return { isSensitive: false };
 }
 
 function collectMatches(pattern: RegExp, text: string): string[] {
@@ -127,23 +215,153 @@ function collectMatches(pattern: RegExp, text: string): string[] {
 }
 
 function extractPathsFromCommand(command: string): string[] {
+  // The command is read four ways and every path any reading shows is checked, so each reading
+  // only adds paths: as written, where a path stops at a quote or backslash; with every quote and
+  // backslash removed, as the shell removes them before it opens a file (`"$HOME/.env"`,
+  // `~/.s""sh`, `~/.s\sh`), even where it keeps them; and with `$'...'` decoded (decodeQuoting),
+  // once with a NUL ending the `$'...'`, as in bash, and once ending the word, as in zsh.
+  const readings = new Set([
+    command,
+    command.replace(QUOTING, ''),
+    decodeQuoting(command, false),
+    decodeQuoting(command, true),
+  ]);
   const paths: string[] = [];
-  paths.push(...collectMatches(RE_READ_COMMANDS, command));
-  paths.push(...collectMatches(RE_INPUT_REDIRECT, command));
-  paths.push(...collectMatches(RE_COPY_COMMANDS, command));
-  paths.push(...collectMatches(RE_SOURCE_CMD, command));
-  return paths.map(normalizePath);
+  for (const text of readings) {
+    for (const args of collectMatches(RE_READ_COMMANDS, text)) {
+      paths.push(...(args.match(RE_PATH) ?? []));
+    }
+    paths.push(...collectMatches(RE_INPUT_REDIRECT, text));
+    paths.push(...collectMatches(RE_SOURCE_CMD, text));
+    paths.push(...collectMatches(RE_CHANGE_DIR, text));
+  }
+  return paths;
+}
+
+/**
+ * The command with its quoting read as the shell reads it, quote and backslash characters then
+ * removed: each `$'...'` outside quotes becomes its value (decodeAnsiC) and `$"..."` is read as
+ * `"..."`. With nulEndsWord, a NUL in a `$'...'` drops the rest of its word, up to the next unquoted
+ * white space or metacharacter, as zsh does; otherwise it ends only the `$'...'`, as bash does. The
+ * shell never expands a quoted `~`, so a decoded `~` starting a path is written `/~`, a directory
+ * named `~`: `$'\x7e/.ssh/id_rsa'` is checked as `/~/.ssh/id_rsa`, not as a file in HOME.
+ */
+function decodeQuoting(command: string, nulEndsWord: boolean): string {
+  let text = '';
+  let quote = '';
+  let dropping = false;
+  const keep = (chars: string) => {
+    if (!dropping) text += chars.replace(QUOTING, '');
+  };
+  for (let i = 0; i < command.length; ) {
+    const c = command[i];
+    if (quote === "'") {
+      if (c === "'") quote = '';
+      keep(c);
+      i += 1;
+    } else if (c === '\\') {
+      keep(command.slice(i, i + 2));
+      i += 2;
+    } else if (quote === '"') {
+      if (c === '"') quote = '';
+      keep(c);
+      i += 1;
+    } else if (command.startsWith('$$', i)) {
+      // The shell's process ID: the `$` after it does not start a `$'` or `$"`.
+      keep('$$');
+      i += 2;
+    } else if (command.startsWith('$"', i)) {
+      quote = '"';
+      i += 2;
+    } else if (command.startsWith("$'", i)) {
+      let end = i + 2;
+      while (end < command.length && command[end] !== "'") end += command[end] === '\\' ? 2 : 1;
+      const { value, nul } = decodeAnsiC(command.slice(i + 2, end));
+      for (const ch of value) keep(ch === '~' && !PATH_CHAR.test(text.slice(-1)) ? '/~' : ch);
+      if (nul && nulEndsWord) dropping = true;
+      i = end + 1;
+    } else {
+      if (c === "'" || c === '"') quote = c;
+      else if (WORD_END.test(c)) dropping = false;
+      keep(c);
+      i += 1;
+    }
+  }
+  return text;
+}
+
+/**
+ * The value bash gives the body of a `$'...'`, up to the first NUL, and whether one cut it short.
+ * An escape bash does not know keeps its backslash (`\z` stays `\z`).
+ */
+function decodeAnsiC(body: string): { value: string; nul: boolean } {
+  let value = '';
+  for (let i = 0; i < body.length; ) {
+    let ch = body[i];
+    let next = i + 1;
+    if (ch === '\\' && i + 1 < body.length) {
+      const letter = body[i + 1];
+      const simple = ANSI_C_ESCAPES.get(letter);
+      const digits = ANSI_C_NUMERIC.exec(body.slice(i + 1, i + 10))?.[0];
+      next = i + 2;
+      if (simple !== undefined) {
+        ch = simple;
+      } else if (digits) {
+        const code = letter <= '7' ? parseInt(digits, 8) & 0xff : parseInt(digits.slice(1), 16);
+        ch = code <= 0x10ffff ? String.fromCodePoint(code) : body.slice(i, i + 1 + digits.length);
+        next = i + 1 + digits.length;
+      } else if (letter === 'c' && i + 2 < body.length) {
+        // \cX: the control character of X.
+        ch = String.fromCharCode(body[i + 2] === '?' ? 0x7f : body[i + 2].toUpperCase().charCodeAt(0) & 0x1f);
+        next = i + 3;
+      } else {
+        ch = body.slice(i, i + 2);
+      }
+    }
+    if (ch === '\0') return { value, nul: true };
+    value += ch;
+    i = next;
+  }
+  return { value, nul: false };
+}
+
+/** A path starting with a HOME_ALIASES spelling, alone or before `/`, with HOME in its place. */
+function expandHome(filePath: string): string {
+  for (const alias of HOME_ALIASES) {
+    if (filePath === alias || filePath.startsWith(alias + '/')) return HOME + filePath.slice(alias.length);
+  }
+  return filePath;
 }
 
 function normalizePath(filePath: string): string {
-  let normalized = filePath;
-  if (normalized.startsWith('~/')) {
-    normalized = path.join(HOME, normalized.slice(2));
-  } else if (normalized === '~') {
-    normalized = HOME;
-  }
-  normalized = normalizeTmpPath(normalized);
-  return normalized.replace(/\/+$/, '');
+  return resolvePath(expandHome(filePath));
+}
+
+function resolvePath(expanded: string): string {
+  // Resolve `.`, `..` and empty segments of an absolute path (`..` at the root stays there), so
+  // every spelling of a path is checked as that path. This runs before the /private/tmp mapping:
+  // resolving after it would let `//private/tmp/x` through as `/private/tmp/x`, unmapped.
+  const resolved = expanded.startsWith('/') ? path.posix.normalize(expanded) : expanded;
+  return normalizeTmpPath(resolved).replace(/\/+$/, '');
+}
+
+/** Where the walk of a path is after each of its segments, normalized. */
+function walkPoints(filePath: string): string[] {
+  const segments = expandHome(filePath).split('/');
+  return segments.map((_, i) => resolvePath(segments.slice(0, i + 1).join('/')));
+}
+
+/** A path with A-Z and the FOLDED_LETTERS code points written as the ASCII letters they fold to. */
+function fold(text: string): string {
+  return text.replace(/[A-Z\u00DF\u017F\u1E9E\u212A\uFB00-\uFB06]/g, (c) => FOLDED_LETTERS[c] ?? c.toLowerCase());
+}
+
+/**
+ * A normalized path as the rules compare it: folded, since APFS compares names without regard to
+ * case, and with /private/tmp written /tmp again, since folding can spell it (`/PRIVATE/tmp`).
+ */
+function foldKey(normalized: string): string {
+  return normalizeTmpPath(fold(normalized));
 }
 
 /**
