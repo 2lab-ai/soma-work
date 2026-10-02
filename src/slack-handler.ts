@@ -2262,6 +2262,11 @@ export class SlackHandler {
     }
 
     this.logger.debug('Goal turn settled — triggering goal driver', { sessionKey });
+    // Firing directly consumes any deferral left by an earlier boundary (e.g. a
+    // drained run that settled `error`): without this, the same turn's
+    // `drainFollowups` epilogue would find the stale entry and fire the driver
+    // a second time, racing the continuation this fire is about to inject.
+    this.followupDeferredGoalSessions?.delete(sessionKey);
     this.goalTurnSettledHandler?.(sessionKey);
   }
 
