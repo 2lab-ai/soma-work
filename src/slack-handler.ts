@@ -1237,7 +1237,9 @@ export class SlackHandler {
           // card/command is a full answer (`safe`); a failed one is `error`.
           // `blocked` would halt the DM lane for a message nobody can retry and
           // hold the autogoal driver with it.
-          return routed.error ? { result: 'error', reason: routed.error } : { result: 'safe' };
+          if (routed.error) return { result: 'error', reason: routed.error };
+          if (routed.awaitingPermission) return { result: 'blocked', reason: 'skill permission pending' };
+          return { result: 'safe' };
         }
         if (routed.continueWithPrompt !== undefined) {
           event.text = routed.continueWithPrompt;
@@ -4474,7 +4476,7 @@ export class SlackHandler {
    */
   private async routeDmViaZRouter(
     event: MessageEvent,
-  ): Promise<{ terminal: boolean; continueWithPrompt?: string; error?: string }> {
+  ): Promise<{ terminal: boolean; continueWithPrompt?: string; error?: string; awaitingPermission?: boolean }> {
     const zRouter = this.eventRouter.getZRouter();
     if (!zRouter) {
       this.logger.warn('routeDmViaZRouter: zRouter not initialized; falling through');
@@ -4513,8 +4515,12 @@ export class SlackHandler {
       }
 
       // Handled (card / tombstone / passthrough that finished itself) → terminal.
+      // Carry the qualifiers: a legacy handler that CRASHED comes back as
+      // `handled: true` + `error` (the router posted the notice), and a
+      // cross-user `$skill` parked on permission as `awaitingPermission` — the
+      // caller maps them to `error` / `blocked`, never to a full answer.
       if (result.handled) {
-        return { terminal: true };
+        return { terminal: true, error: result.error, awaitingPermission: result.awaitingPermission };
       }
 
       // Unhandled, no error, no continuation → fall through to legacy pipeline.
