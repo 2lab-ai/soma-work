@@ -582,6 +582,10 @@ describe('SlackHandler — follow-up queue host', () => {
     // halt with nothing queued is not outstanding work.
     handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['later turn']);
     expect(goalDriver).toHaveBeenCalledTimes(1);
+    // That direct fire consumed the earlier deferral: the same turn's drain
+    // epilogue must not fire the driver a second time.
+    handlerAny.releaseDeferredGoalDriver(SESSION_KEY, { canDrain: true });
+    expect(goalDriver).toHaveBeenCalledTimes(1);
   });
 
   /**
