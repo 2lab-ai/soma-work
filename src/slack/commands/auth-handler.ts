@@ -31,7 +31,7 @@ export interface AuthHandlerDeps {
  *     (`set auth llmux|cct` is an accepted alias.)
  *   - `auth switch <name>`       — llmux manual account switch (admin only).
  *   - `auth key` / bare `key`    — DM the caller their personal llmux client
- *                                  key + local Claude Code setup (any user:
+ *                                  key + local Claude Code / Codex setup (any user:
  *                                  it is THEIR key; llmux meters them by it).
  *
  * llmux settings (`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`) and account
@@ -87,7 +87,7 @@ export class AuthHandler implements CommandHandler {
 
   /**
    * `key` — issue-or-reuse the caller's llmux client key and DM it to them
-   * with local Claude Code / llmux CLI setup. `ensureTenantKey` guarantees the
+   * with local Claude Code / Codex / llmux CLI setup. `ensureTenantKey` guarantees the
    * SAME user always gets the SAME key (per daemon); a fresh issuance and a
    * repeat request are indistinguishable here on purpose.
    */
@@ -152,7 +152,7 @@ export class AuthHandler implements CommandHandler {
       // Invoked from a channel → confirm there WITHOUT the secret. Invoked
       // from the DM itself → the key message above IS the response.
       if (channel !== dmChannel) {
-        await say({ text: '🔑 llmux 키와 로컬 Claude Code 사용법을 DM으로 보냈습니다.', thread_ts: threadTs });
+        await say({ text: '🔑 llmux 키와 로컬 Claude Code / Codex 사용법을 DM으로 보냈습니다.', thread_ts: threadTs });
       }
     } catch {
       await say({
