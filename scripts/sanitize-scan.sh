@@ -92,10 +92,10 @@ count_once() { # count_once <file> [VAR=value]
 #      so this is the pass that folds non-ASCII letters in them.
 #   2. LC_ALL=C, input as it is: matches next to bytes that are not valid
 #      UTF-8, in all three inputs.
-#   3. Object content only: inherited locale, over a copy with NUL bytes
-#      removed and invalid UTF-8 dropped (see text_copy). Tree objects always
-#      hold NUL bytes, so pass 1 over content nearly always compares bytes; this
-#      is the pass that folds non-ASCII letters in object content.
+#   3. Object content only: inherited locale, over a text copy of it (see
+#      text_copy). Tree objects always hold NUL bytes, so pass 1 over content
+#      nearly always compares bytes; this is the pass that folds non-ASCII
+#      letters in object content.
 count_matches() { # count_matches <file> [<text copy of it>]
   local max n
   max=$(count_once "$1") || exit 2
@@ -108,17 +108,23 @@ count_matches() { # count_matches <file> [<text copy of it>]
   echo "$max"
 }
 
-# text_copy <file> <out>: <file> without NUL bytes or invalid UTF-8. tr runs
-# byte-wise because in a UTF-8 locale it stops at the first invalid byte. iconv
-# -c drops invalid sequences but fails on one still incomplete at end of input;
-# a sequence is at most six bytes, so the trailing newlines let every one end.
+# text_copy <file> <out>: <file> rewritten so that grep reads all of it as text
+# in a UTF-8 locale. Every NUL byte, and every byte that strict UTF-8 decoding
+# rejects — stray and truncated bytes, overlong forms, surrogates,
+# noncharacters, anything above U+10FFFF including five- and six-byte forms —
+# becomes a line break. The copy separates, never joins: deleting those bytes
+# instead would splice the text on either side into a match the content does
+# not hold, and a false hit in published history could not be cleared. -C0
+# keeps a PERL_UNICODE setting from re-encoding the streams; a failed write
+# fails the copy.
 text_copy() {
-  { LC_ALL=C tr -d '\000' <"$1" && printf '\n\n\n\n\n\n'; } >"$2.nul-free" || {
-    echo "sanitize-scan: tr failed; no scan result" >&2
-    exit 2
-  }
-  iconv -c -f UTF-8 -t UTF-8 "$2.nul-free" >"$2" || {
-    echo "sanitize-scan: iconv failed (exit $?); no scan result" >&2
+  LC_ALL=C perl -C0 -MEncode -ne '
+    my $text = Encode::decode("UTF-8", $_, sub { "\n" });
+    $text =~ tr/\0/\n/;
+    print Encode::encode("UTF-8", $text) or die "write failed: $!\n";
+    END { close STDOUT or die "close failed: $!\n" }
+  ' <"$1" >"$2" || {
+    echo "sanitize-scan: perl failed (exit $?); no scan result" >&2
     exit 2
   }
 }
