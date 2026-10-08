@@ -21,7 +21,8 @@
  *   byte that is not valid UTF-8, and content is matched exactly as stored, so
  *   no transform can splice fragments or move line boundaries into a match;
  * - a non-ASCII letter folds case in path and ref names but not in object
- *   content, where a pattern has to spell both cases as an alternation;
+ *   content, where a pattern has to spell both cases as an alternation; a
+ *   pattern with a non-ASCII byte inside a bracket expression is refused;
  * - a git command that fails is an error (exit 2), never a short input that
  *   counts as zero matches.
  *
@@ -255,6 +256,16 @@ function expectFound(result: ScanResult, counts: RegExp): void {
   expect(result.stdout).toMatch(counts);
   expect(result.stderr).toContain('sanitize-scan: FORBIDDEN PATTERN FOUND');
   expect(result.status).toBe(1);
+}
+
+/** What the scan prints, and all it prints, when it refuses a pattern; the pattern itself is never echoed. */
+const BRACKET_REFUSAL =
+  'sanitize-scan: a bracket expression holds a non-ASCII byte; write cased non-ASCII letters as an alternation such as (\u00e9|\u00c9)\n';
+
+function expectBracketRefused(result: ScanResult, pattern: string): void {
+  expect(result.stderr, pattern).toBe(BRACKET_REFUSAL);
+  expect(result.stdout, pattern).toBe('');
+  expect(result.status, pattern).toBe(2);
 }
 
 function expectRefused(result: ScanResult, subcommand: string): void {
@@ -547,6 +558,86 @@ describe('sanitize scan — path names and ref names keep their full-history che
   });
 });
 
+describe('sanitize scan — a non-ASCII byte inside a bracket expression is refused', () => {
+  // A bracket expression holding a cased non-ASCII letter cannot match object
+  // content in either count, so the scan refuses the pattern before reading any
+  // history instead of passing it silently. Bracket expressions are read the
+  // way POSIX extended expressions define them: `\[` outside one is a literal,
+  // a `]` right after `[` or `[^` is a member, `[:class:]`, `[=x=]` and
+  // `[.x.]` are sub-expressions, and a backslash inside one is a member.
+
+  it('(s) refuses a non-ASCII byte anywhere inside a bracket expression', () => {
+    const repo = seededRepo();
+    removeFixture(repo);
+    const refused = [
+      ['TESTLEAK', '[\u00e9\u00c9]x'].join('_'),
+      'a|[^\u00e9]',
+      '[[:alpha:]\u00e9]',
+      // The first ] is a member, so the bracket expression is still open.
+      '[]\u00e9]',
+      '[^]\u00e9]',
+      '[[=\u00e9=]]',
+      // An escaped [ opens nothing; the later one does.
+      'x\\[y|[\u00e9]',
+      // Not only letters: a range of Hangul syllables.
+      '[\uac00-\ud7a3]',
+    ];
+    for (const pattern of refused) {
+      // Debug output would show that set-building had started.
+      expectBracketRefused(repo.scan({ SANITIZE_PATTERNS: pattern, SANITIZE_DEBUG: '1' }), pattern);
+    }
+  });
+
+  it('(s2) accepts non-ASCII bytes outside bracket expressions', () => {
+    const repo = seededRepo();
+    removeFixture(repo);
+    const accepted = [
+      '(\u00e9|\u00c9)',
+      '\\[\u00e9\\]',
+      '[]a]\u00e9',
+      '[^]a]\u00e9',
+      '[[:alpha:]]\u00e9',
+      '[[.].]]\u00e9',
+      '[a\\]\u00e9',
+      // A backslash inside brackets is a member: the first ] closes, and the
+      // e-acute that follows is outside.
+      '[\\]\u00e9]',
+      '\uac00\ub098',
+    ];
+    for (const pattern of accepted) {
+      const result = repo.scan({ SANITIZE_PATTERNS: pattern });
+      expect(result.stderr, pattern).not.toContain('bracket expression');
+      expect(result.stdout, pattern).toContain('sanitize-scan: objects=');
+      expect([0, 1], pattern).toContain(result.status);
+    }
+  });
+
+  it('(s3) never refuses an all-ASCII pattern, however its brackets are written', () => {
+    const repo = seededRepo();
+    removeFixture(repo);
+    const ascii = [
+      '[]a]',
+      '[^]a]',
+      '[[:alpha:]]',
+      '[[:digit:][:space:]]x',
+      '[[.].]]',
+      '[[=a=]]',
+      '[\\]a]',
+      '[a\\]',
+      '[[]',
+      'a|[^]x]|b',
+      '\\[a\\]',
+      PATTERN,
+    ];
+    for (const pattern of ascii) {
+      const result = repo.scan({ SANITIZE_PATTERNS: pattern });
+      expect(result.stderr, pattern).not.toContain('bracket expression');
+      expect(result.stdout, pattern).toContain('sanitize-scan: objects=');
+      expect([0, 1], pattern).toContain(result.status);
+    }
+  });
+});
+
 describe('sanitize scan — refuses to run without its inputs', () => {
   it('(k) exits 2 when the pattern set is missing or empty', () => {
     const repo = seededRepo();
@@ -682,8 +773,9 @@ describe('sanitize scan — non-ASCII case folding', () => {
     const withLetter = (letter: string) => ['TESTLEAK', `${letter}[0-9a-f]{8}`].join('_');
     // The other case only: not folded.
     expectClean(repo.scan({ SANITIZE_PATTERNS: withLetter('\u00e9') }));
-    // A bracket expression: matches in neither count.
-    expectClean(repo.scan({ SANITIZE_PATTERNS: withLetter('[\u00e9\u00c9]') }));
+    // A bracket expression would match in neither count, so it is refused.
+    const bracketed = withLetter('[\u00e9\u00c9]');
+    expectBracketRefused(repo.scan({ SANITIZE_PATTERNS: bracketed }), bracketed);
     // An alternation: the byte-wise count matches it.
     expectFound(
       repo.scan({ SANITIZE_PATTERNS: withLetter('(\u00e9|\u00c9)') }),

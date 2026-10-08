@@ -39,6 +39,64 @@ set -euo pipefail
 P="${SANITIZE_PATTERNS:-}"
 if [ -z "$P" ]; then echo "SANITIZE_PATTERNS env var required" >&2; exit 2; fi
 
+# A bracket expression holding a non-ASCII byte cannot match object content in
+# either count (see count_matches), so such a pattern is refused before any
+# scanning instead of missing silently. Non-ASCII bytes outside brackets stay
+# allowed. The pattern is read byte by byte, the way POSIX extended expressions
+# define brackets: \[ outside one is a literal; a ] right after [ or [^ is a
+# member; [:class:], [=x=] and [.x.] are sub-expressions; a backslash inside
+# one is a member. It is never printed. Status 0 = found, 1 = none, 2 = the
+# bytes could not be read.
+nonascii_in_bracket() {
+  local codes i=0 n delim
+  local -a b
+  codes=$(printf '%s' "$P" | LC_ALL=C od -An -v -tu1) || return 2
+  read -r -d '' -a b <<<"$codes" || true
+  n=${#b[@]}
+  while [ "$i" -lt "$n" ]; do
+    if [ "${b[i]}" -eq 92 ]; then # \ escapes the next byte
+      i=$((i + 2))
+      continue
+    fi
+    i=$((i + 1))
+    [ "${b[i - 1]}" -eq 91 ] || continue # anything but [ outside brackets
+    if [ "$i" -lt "$n" ] && [ "${b[i]}" -eq 94 ]; then i=$((i + 1)); fi # [^
+    if [ "$i" -lt "$n" ] && [ "${b[i]}" -eq 93 ]; then i=$((i + 1)); fi # leading ]
+    while [ "$i" -lt "$n" ]; do
+      [ "${b[i]}" -lt 128 ] || return 0
+      if [ "${b[i]}" -eq 93 ]; then # ] closes the bracket expression
+        i=$((i + 1))
+        break
+      fi
+      if [ "${b[i]}" -eq 91 ] && [ $((i + 1)) -lt "$n" ] &&
+        { [ "${b[i + 1]}" -eq 58 ] || [ "${b[i + 1]}" -eq 61 ] || [ "${b[i + 1]}" -eq 46 ]; }; then
+        delim=${b[i + 1]} # [: [= [. run to the matching :] =] .]
+        i=$((i + 2))
+        while [ "$i" -lt "$n" ]; do
+          [ "${b[i]}" -lt 128 ] || return 0
+          if [ "${b[i]}" -eq "$delim" ] && [ $((i + 1)) -lt "$n" ] && [ "${b[i + 1]}" -eq 93 ]; then
+            i=$((i + 2))
+            break
+          fi
+          i=$((i + 1))
+        done
+        continue
+      fi
+      i=$((i + 1))
+    done
+  done
+  return 1
+}
+bracket_status=0
+nonascii_in_bracket || bracket_status=$?
+if [ "$bracket_status" -eq 0 ]; then
+  echo "sanitize-scan: a bracket expression holds a non-ASCII byte; write cased non-ASCII letters as an alternation such as (é|É)" >&2
+  exit 2
+elif [ "$bracket_status" -ne 1 ]; then
+  echo "sanitize-scan: the pattern could not be read; no scan result" >&2
+  exit 2
+fi
+
 # A full commit ID, never a ref name: a ref could be moved to accept anything.
 # The override exists for this script's own tests; the workflow does not set it.
 # The lookup's exit status counts, not only what it printed.
@@ -98,7 +156,8 @@ count_once() { # count_once <file> [VAR=value]
 # grep in a UTF-8 locale matches no non-ASCII pattern letter at all; only the
 # byte-wise pass does, byte for byte as written. A pattern with a cased
 # non-ASCII letter must spell both cases as an alternation, such as (é|É) — a
-# bracket expression such as [éÉ] matches object content in neither pass.
+# bracket expression such as [éÉ] matches object content in neither pass, and
+# a pattern holding one is refused up front (see nonascii_in_bracket).
 count_matches() { # count_matches <file>
   local here bytes
   here=$(count_once "$1") || exit 2
