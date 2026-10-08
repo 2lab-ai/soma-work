@@ -83,17 +83,44 @@ count_once() { # count_once <file> [VAR=value]
   echo "$n"
 }
 
-# Every file is counted twice and the larger count is the result. In a UTF-8
-# locale some greps (BSD grep among them) never match a line holding a byte that
-# is not valid UTF-8 unless a NUL byte appears early in the input, so a match
-# next to such a byte would count as zero; the byte-wise pass (LC_ALL=C) sees it.
-# The inherited locale is kept too: the patterns may be non-ASCII, and only a
-# locale-aware pass folds their case.
-count_matches() { # count_matches <file>
-  local here bytes
-  here=$(count_once "$1") || exit 2
-  bytes=$(count_once "$1" LC_ALL=C) || exit 2
-  echo $((here > bytes ? here : bytes))
+# Each count is the largest of several grep passes, because in a UTF-8 locale
+# BSD grep reads its input one of two ways. With no NUL byte in the first 32 KiB
+# it reads text: it folds the case of non-ASCII pattern letters, but never
+# matches a line holding a byte that is not valid UTF-8. With a NUL there it
+# compares bytes, and folds ASCII letters only.
+#   1. Inherited locale, input as it is. Path names and ref names hold no NUL,
+#      so this is the pass that folds non-ASCII letters in them.
+#   2. LC_ALL=C, input as it is: matches next to bytes that are not valid
+#      UTF-8, in all three inputs.
+#   3. Object content only: inherited locale, over a copy with NUL bytes
+#      removed and invalid UTF-8 dropped (see text_copy). Tree objects always
+#      hold NUL bytes, so pass 1 over content nearly always compares bytes; this
+#      is the pass that folds non-ASCII letters in object content.
+count_matches() { # count_matches <file> [<text copy of it>]
+  local max n
+  max=$(count_once "$1") || exit 2
+  n=$(count_once "$1" LC_ALL=C) || exit 2
+  [ "$n" -le "$max" ] || max=$n
+  if [ -n "${2:-}" ]; then
+    n=$(count_once "$2") || exit 2
+    [ "$n" -le "$max" ] || max=$n
+  fi
+  echo "$max"
+}
+
+# text_copy <file> <out>: <file> without NUL bytes or invalid UTF-8. tr runs
+# byte-wise because in a UTF-8 locale it stops at the first invalid byte. iconv
+# -c drops invalid sequences but fails on one still incomplete at end of input;
+# a sequence is at most six bytes, so the trailing newlines let every one end.
+text_copy() {
+  { LC_ALL=C tr -d '\000' <"$1" && printf '\n\n\n\n\n\n'; } >"$2.nul-free" || {
+    echo "sanitize-scan: tr failed; no scan result" >&2
+    exit 2
+  }
+  iconv -c -f UTF-8 -t UTF-8 "$2.nul-free" >"$2" || {
+    echo "sanitize-scan: iconv failed (exit $?); no scan result" >&2
+    exit 2
+  }
 }
 
 # Sets are files of object IDs, one per line, byte-sorted and de-duplicated.
@@ -130,7 +157,8 @@ fi
 run_git "$tmp/contents" cat-file --batch <"$tmp/scan"
 run_git "$tmp/paths" rev-list --all --objects
 run_git "$tmp/ref-names" for-each-ref --format='%(refname)'
-objects=$(count_matches "$tmp/contents") || exit 2
+text_copy "$tmp/contents" "$tmp/contents.text"
+objects=$(count_matches "$tmp/contents" "$tmp/contents.text") || exit 2
 paths=$(count_matches "$tmp/paths") || exit 2
 refs=$(count_matches "$tmp/ref-names") || exit 2
 echo "sanitize-scan: objects=$objects paths=$paths refs=$refs"

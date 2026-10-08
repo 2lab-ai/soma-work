@@ -74,25 +74,50 @@ function notUtf8(text: string): Buffer {
 }
 
 /**
+ * `head` + a fixed-width nonce + `tail`, with the nonce chosen so that the blob's
+ * object ID begins with `idPrefix`. Only the nonce varies, so `head` is hashed
+ * once.
+ */
+function blobWithIdPrefix(head: Buffer, tail: Buffer, idPrefix: string): Buffer {
+  const nonceLength = 'nonce 00000000\n'.length;
+  const hashed = crypto
+    .createHash('sha1')
+    .update(`blob ${head.length + nonceLength + tail.length}\0`)
+    .update(head);
+  for (let n = 0; n < 100_000_000; n++) {
+    const nonce = Buffer.from(`nonce ${String(n).padStart(8, '0')}\n`);
+    if (hashed.copy().update(nonce).update(tail).digest('hex').startsWith(idPrefix)) {
+      return Buffer.concat([head, nonce, tail]);
+    }
+  }
+  throw new Error(`no nonce gives an object ID starting ${idPrefix}`);
+}
+
+/**
  * A NUL-free blob longer than NO_NUL_SPAN whose object ID begins with four zero
  * hex digits, so that it sorts ahead of every other object in these small
- * repositories — the scan hands objects to grep in ID order. Only the
- * fixed-width nonce at the end varies, so everything before it is hashed once.
+ * repositories — the scan hands objects to grep in ID order.
  */
 function leadingBlob(): Buffer {
   const body = Buffer.from('filler line of plain ascii text\n'.repeat(NO_NUL_SPAN / 32 + 64));
-  const nonceLength = 'nonce 00000000\n'.length;
-  const prefix = crypto
-    .createHash('sha1')
-    .update(`blob ${body.length + nonceLength}\0`)
-    .update(body);
-  for (let n = 0; n < 100_000_000; n++) {
-    const nonce = Buffer.from(`nonce ${String(n).padStart(8, '0')}\n`);
-    if (prefix.copy().update(nonce).digest('hex').startsWith('0000')) {
-      return Buffer.concat([body, nonce]);
-    }
-  }
-  throw new Error('no nonce gives a leading object ID');
+  return blobWithIdPrefix(body, Buffer.alloc(0), '0000');
+}
+
+/**
+ * A blob ending in the lead byte of a six-byte sequence, whose object ID begins
+ * with four f hex digits so that it sorts after every other object: its last
+ * byte is followed only by the newline cat-file writes after each object.
+ */
+function trailingTruncatedBlob(): Buffer {
+  return blobWithIdPrefix(Buffer.from('tail '), Buffer.from([0xfc]), 'ffff');
+}
+
+/** Total content bytes of every object in the repository. */
+function objectBytes(repo: FixtureRepo): number {
+  return repo
+    .git('cat-file', '--batch-all-objects', '--batch-check=%(objectsize)')
+    .split('\n')
+    .reduce((sum, size) => sum + Number(size), 0);
 }
 
 let scratch: string;
@@ -246,33 +271,33 @@ function expectRefused(result: ScanResult, subcommand: string): void {
 }
 
 /**
- * A directory holding a stand-in `git` for the scan's PATH. It passes every
- * call through to the real git, except a call whose arguments match the glob in
- * FAIL_GIT_ARGS: that one writes the first line of the real output and then
- * exits 128, the way a git process dying mid-stream would.
+ * A directory holding a stand-in `tool` for the scan's PATH. It passes every
+ * call through to the real tool, except a call whose arguments match the glob in
+ * FAIL_ARGS: that one writes the first line of the real output and then exits
+ * 128, the way a process dying mid-stream would.
  */
-function failingGitDir(): string {
-  const which = spawnSync('sh', ['-c', 'command -v git'], { env: baseEnv(), encoding: 'utf8' });
-  const realGit = which.stdout.trim();
-  expect(path.isAbsolute(realGit), `git resolved to '${realGit}'`).toBe(true);
-  const dir = fs.mkdtempSync(path.join(scratch, 'git-shim-'));
+function failingToolDir(tool: string): string {
+  const which = spawnSync('sh', ['-c', `command -v ${tool}`], { env: baseEnv(), encoding: 'utf8' });
+  const real = which.stdout.trim();
+  expect(path.isAbsolute(real), `${tool} resolved to '${real}'`).toBe(true);
+  const dir = fs.mkdtempSync(path.join(scratch, `${tool}-shim-`));
   const shim = [
     '#!/bin/sh',
     'case "$*" in',
-    '  $FAIL_GIT_ARGS)',
-    `    '${realGit}' "$@" | head -n 1`,
+    '  $FAIL_ARGS)',
+    `    '${real}' "$@" | head -n 1`,
     '    exit 128 ;;',
     'esac',
-    `exec '${realGit}' "$@"`,
+    `exec '${real}' "$@"`,
     '',
   ].join('\n');
-  fs.writeFileSync(path.join(dir, 'git'), shim, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, tool), shim, { mode: 0o755 });
   return dir;
 }
 
-/** Scan overrides that make the git call matching `args` fail mid-stream. */
-function failing(args: string): Record<string, string> {
-  return { PATH: `${failingGitDir()}:${baseEnv().PATH}`, FAIL_GIT_ARGS: args };
+/** Scan overrides that make the `tool` call matching `args` fail mid-stream. */
+function failing(args: string, tool = 'git'): Record<string, string> {
+  return { PATH: `${failingToolDir(tool)}:${baseEnv().PATH}`, FAIL_ARGS: args };
 }
 
 describe('sanitize scan — baseline content that is only inherited is accepted', () => {
@@ -629,8 +654,7 @@ describe('sanitize scan — a non-ASCII pattern keeps its locale', () => {
   it('(p4) folds the case of a non-ASCII pattern the way the runner locale does', () => {
     // The byte-wise count cannot fold e-acute to E-acute; the count in the
     // inherited locale can, on text input. A ref name is text input that only
-    // the ref count sees. (Object content usually holds NUL bytes, and then BSD
-    // grep compares bytes in any locale.) Counting byte-wise only would lose it.
+    // the ref count sees. Counting byte-wise only would lose it.
     const repo = seededRepo();
     const head = removeFixture(repo);
     const name = ['TESTLEAK', '\u00c90badc0de'].join('_');
@@ -643,9 +667,41 @@ describe('sanitize scan — a non-ASCII pattern keeps its locale', () => {
     const pattern = ['TESTLEAK', '\u00e9[0-9a-f]{8}'].join('_');
     expectFound(repo.scan({ SANITIZE_PATTERNS: pattern }), /sanitize-scan: objects=0 paths=0 refs=1\n/);
   });
+
+  it('(p5) folds it in object content too, where a NUL early in the input makes grep compare bytes', () => {
+    // With a NUL in the first 32 KiB of its input, BSD grep compares bytes in any
+    // locale, so neither count over the content as it is folds e-acute. The
+    // content is counted once more with NUL bytes removed.
+    const repo = seededRepo();
+    removeFixture(repo);
+    repo.commit('add notes', {
+      'notes.txt': Buffer.concat([
+        Buffer.from([0, 0x0a]),
+        Buffer.from(`host = ${['TESTLEAK', '\u00c90badc0de'].join('_')}\n`),
+      ]),
+    });
+    // All of the scan input fits in the window, so that NUL is inside it.
+    expect(objectBytes(repo)).toBeLessThan(32 * 1024);
+
+    const pattern = ['TESTLEAK', '\u00e9[0-9a-f]{8}'].join('_');
+    expectFound(repo.scan({ SANITIZE_PATTERNS: pattern }), /sanitize-scan: objects=1 paths=0 refs=0\n/);
+  });
+
+  it('(p6) is not broken by content that ends in a truncated sequence', () => {
+    // iconv reports a sequence still incomplete at end of input as an error. The
+    // last object in the scan input ends in a six-byte lead with only cat-file's
+    // newline after it.
+    const repo = seededRepo();
+    removeFixture(repo);
+    repo.commit('add tail', { 'tail.bin': trailingTruncatedBlob() });
+    const ids = repo.git('cat-file', '--batch-all-objects', '--batch-check=%(objectname)').split('\n').sort();
+    expect(ids[ids.length - 1]).toBe(repo.git('rev-parse', 'HEAD:tail.bin'));
+
+    expectClean(repo.scan());
+  });
 });
 
-describe('sanitize scan — a git failure is never a clean result', () => {
+describe('sanitize scan — a failed command is never a clean result', () => {
   // Each state is caught by exactly one of the three counts. If the git command
   // feeding that count died after one line, grep would see a short input with
   // no match, and the other two counts are zero anyway: a green result for a
@@ -711,6 +767,27 @@ describe('sanitize scan — a git failure is never a clean result', () => {
     expect(result.stderr).toContain('sanitize-scan: HEAD');
     expect(result.stdout).toBe('');
     expect(result.status).toBe(2);
+  });
+
+  it('exits 2 when the text copy of object content cannot be made', () => {
+    // The third content count reads a copy made by tr and then iconv; a copy cut
+    // short would hide whatever followed. The content here is a match the other
+    // two counts miss, so a swallowed failure would read as clean.
+    const repo = seededRepo();
+    removeFixture(repo);
+    repo.commit('add notes', { 'notes.txt': `host = ${['TESTLEAK', '\u00c90badc0de'].join('_')}\n` });
+    const pattern = ['TESTLEAK', '\u00e9[0-9a-f]{8}'].join('_');
+    expect(repo.scan({ SANITIZE_PATTERNS: pattern }).status).toBe(1);
+
+    for (const [tool, args] of [
+      ['tr', '-d *'],
+      ['iconv', '-c *'],
+    ]) {
+      const result = repo.scan({ ...failing(args, tool), SANITIZE_PATTERNS: pattern });
+      expect(result.stderr, tool).toContain(`sanitize-scan: ${tool} failed`);
+      expect(result.stdout, tool).not.toContain('sanitize-scan: objects=');
+      expect(result.status, tool).toBe(2);
+    }
   });
 
   it('exits 2 when grep cannot evaluate the pattern', () => {
