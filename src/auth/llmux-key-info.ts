@@ -4,7 +4,7 @@ import * as os from 'node:os';
 /**
  * Rendering helpers for the personal llmux key DM (`key` / `auth key`).
  *
- * The DM tells a Slack user how to run a LOCAL Claude Code against the llmux
+ * The DM tells a Slack user how to run a LOCAL Claude Code or Codex against the llmux
  * daemon soma-work itself dispatches through, using the SAME per-user client
  * key `ensureTenantKey` issued for their Slack dispatches — so llmux meters
  * their bot usage and their local usage as one tenant.
@@ -178,13 +178,19 @@ function hostForRemoteConfig(baseUrl: string): string {
   }
 }
 
+/** POSIX shell literal: values from operator config must never become shell code. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
+}
+
 /**
- * The Slack-markdown DM body: key identity, the two-line local Claude Code
+ * The Slack-markdown DM body: key identity, local Claude Code / Codex
  * setup, the llmux CLI remote snippet, and handling guidance.
  */
 export function buildLlmuxKeyDmText(input: LlmuxKeyDmInput): string {
   const { secret, baseUrl } = input;
   const remoteHost = hostForRemoteConfig(baseUrl);
+  const codexBaseUrl = `${baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '')}/v1`;
   const identity: string[] = [];
   if (input.keyName) identity.push(`이름 \`${input.keyName}\``);
   if (input.keyId) identity.push(`id \`${input.keyId}\``);
@@ -208,6 +214,21 @@ export function buildLlmuxKeyDmText(input: LlmuxKeyDmInput): string {
     `export ANTHROPIC_API_KEY=${secret}`,
     'claude',
     '```',
+    '',
+    '*로컬에서 Codex 실행하기* — bash/zsh 터미널에 복사하세요:',
+    '```',
+    `export OPENAI_BASE_URL=${shellQuote(codexBaseUrl)}`,
+    `export OPENAI_API_KEY=${shellQuote(secret)}`,
+    'codex --model gpt-6.1-sol \\',
+    `  -c 'model_provider="llmux_env"' \\`,
+    `  -c 'model_providers.llmux_env.name="llmux"' \\`,
+    `  -c ${shellQuote(`model_providers.llmux_env.base_url=${JSON.stringify(codexBaseUrl)}`)} \\`,
+    `  -c 'model_providers.llmux_env.env_key="OPENAI_API_KEY"' \\`,
+    `  -c 'model_providers.llmux_env.wire_api="responses"' \\`,
+    `  -c 'model_providers.llmux_env.requires_openai_auth=false' \\`,
+    `  -c 'model_providers.llmux_env.supports_websockets=false'`,
+    '```',
+    '환경변수는 현재 터미널에 적용됩니다. 위 `-c` 옵션까지 함께 실행하면 기존 로그인 대신 이 키를 사용하며, Codex 설정 파일과 로그인 정보는 덮어쓰지 않습니다. llmux를 쓰는 동안에는 같은 명령으로 시작하세요.',
     '',
     '*llmux CLI를 원격으로 쓰려면* — 클라이언트 머신의 `llmux.json`:',
     '```',

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import type * as os from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { advertisedLlmuxBaseUrl, buildLlmuxKeyDmText, primaryLanIpv4 } from '../llmux-key-info';
@@ -140,6 +141,45 @@ describe('buildLlmuxKeyDmText', () => {
     expect(text).toContain('ANTHROPIC_API_KEY=lmk-secret-123');
     // the actual launch command
     expect(text).toMatch(/\bclaude\b/);
+  });
+
+  it('includes environment-based Codex setup with an explicit Responses provider', () => {
+    const text = buildLlmuxKeyDmText(input);
+    expect(text).toContain("export OPENAI_BASE_URL='http://192.168.77.10:3456/v1'");
+    expect(text).toContain("export OPENAI_API_KEY='lmk-secret-123'");
+    expect(text).toContain('codex --model gpt-6.1-sol');
+    expect(text).toContain('model_provider="llmux_env"');
+    expect(text).toContain('model_providers.llmux_env.env_key="OPENAI_API_KEY"');
+    expect(text).toContain('model_providers.llmux_env.wire_api="responses"');
+    expect(text).toContain('model_providers.llmux_env.requires_openai_auth=false');
+    expect(text).toContain('model_providers.llmux_env.base_url="http://192.168.77.10:3456/v1"');
+    expect(text).not.toMatch(/codex (?:login|logout)/);
+  });
+
+  it.each([
+    'http://h:3456/',
+    'http://h:3456/v1',
+    'http://h:3456/v1/',
+  ])('normalizes the Codex API suffix for %s', (baseUrl) => {
+    const text = buildLlmuxKeyDmText({ secret: 'lmk-x', baseUrl });
+    expect(text).toContain("export OPENAI_BASE_URL='http://h:3456/v1'");
+    expect(text).not.toContain('/v1/v1');
+  });
+
+  it('passes the rendered Codex environment and provider to the shell without evaluating values', () => {
+    const secret = "lmk-'$(printf injected)-fixture";
+    const baseUrl = 'http://gateway.example:3456/a"b\\c$(printf injected)';
+    const text = buildLlmuxKeyDmText({ secret, baseUrl });
+    const snippet = text.split('```')[3];
+    const probe = `codex() { node -e 'console.log(JSON.stringify({args:process.argv.slice(1), key:process.env.OPENAI_API_KEY, url:process.env.OPENAI_BASE_URL}))' -- "$@"; }`;
+    const result = spawnSync('/bin/bash', ['-c', `${probe}\n${snippet}`], { encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const captured = JSON.parse(result.stdout);
+    expect(captured.key).toBe(secret);
+    expect(captured.url).toBe(`${baseUrl}/v1`);
+    expect(captured.args).toContain(`model_providers.llmux_env.base_url=${JSON.stringify(`${baseUrl}/v1`)}`);
+    expect(captured.args).not.toContain(secret);
+    expect(captured.args).toContain('model_providers.llmux_env.requires_openai_auth=false');
   });
 
   it('includes the llmux.json remote snippet with host (no scheme) + api_key', () => {
