@@ -799,7 +799,13 @@ export class SlackHandler {
       refresh: (sessionKey, page) => this.refreshFollowupSurface(sessionKey, page),
       // The host owns the drain loop; the action module never re-enters the
       // dispatcher itself.
-      runDrain: (sessionKey) => this.runFollowupDrainLoop(sessionKey).then(() => undefined),
+      runDrain: (sessionKey) =>
+        this.runFollowupDrainLoop(sessionKey).then((last) => {
+          // A human-driven drain (Resume / Retry) is a boundary too: release
+          // the §3.6 deferral it may just have cleared instead of waiting for
+          // a turn end that a deferred loop would never produce.
+          if (last) this.releaseDeferredGoalDriver(sessionKey, last);
+        }),
       // The drain is gated on a safe outcome; the sweep is not. A `Send now`
       // whose turn ended aborted/blocked/parked left every row steered into
       // it with no settlement frame and no drain behind it to clear them.
@@ -1227,7 +1233,15 @@ export class SlackHandler {
       if (stripZPrefix(dmText) !== null) {
         const routed = await this.routeDmViaZRouter(event);
         if (routed.terminal) {
-          return { result: 'blocked', reason: 'consumed by /z router' };
+          // Same contract as the consumed-command branch below: a handled `/z`
+          // card/command is a full answer (`safe`); a crashed one is `error`; a
+          // cross-user `$skill` parked on its owner's permission is `blocked`
+          // (not answered yet — the grant path re-dispatches the original
+          // text). Any other `blocked` would halt the DM lane for a message
+          // that was fully answered.
+          if (routed.error) return { result: 'error', reason: routed.error };
+          if (routed.awaitingPermission) return { result: 'blocked', reason: 'skill permission pending' };
+          return { result: 'safe' };
         }
         if (routed.continueWithPrompt !== undefined) {
           event.text = routed.continueWithPrompt;
@@ -1386,8 +1400,15 @@ export class SlackHandler {
     const deferSkillFire = !event.synthetic && (!preRouteSession || preRouteSession.sessionId === undefined);
 
     // Step 2: Route commands
-    const { handled, continueWithPrompt, forceWorkflow, setGoalObjective, deferredSkillFire } =
-      await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
+    const {
+      handled,
+      continueWithPrompt,
+      forceWorkflow,
+      setGoalObjective,
+      deferredSkillFire,
+      error: commandError,
+      awaitingPermission,
+    } = await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
     if (handled && !continueWithPrompt) {
       // Issue #1082 T1 (spec-review P1): the no-session goal+skill split can
       // end here when the skill part errored out (`handled:true`, no prompt —
@@ -1405,7 +1426,34 @@ export class SlackHandler {
       // Command was handled - replace eyes with zap emoji
       await this.slackApi.removeReaction(channel, ts, 'eyes');
       await this.slackApi.addReaction(channel, ts, 'zap');
-      return { result: 'blocked', reason: 'command consumed the message' };
+      if (commandError) {
+        // The handler CRASHED while consuming the message (router-caught; the
+        // failure notice is already posted). `error`, not `safe`: a drained
+        // item must land `failed` with a Retry, never `resolved`.
+        return { result: 'error', reason: commandError };
+      }
+      if (awaitingPermission) {
+        // A cross-user `$skill` is parked until its owner answers the
+        // permission request: nothing ran and the message is not answered yet,
+        // so it is `blocked` (a drained item stays `uncertain`). The grant path
+        // re-dispatches the original text later.
+        return { result: 'blocked', reason: 'skill permission pending' };
+      }
+      // `safe`, not `blocked`: the command answered the message in full —
+      // nothing is running and nothing is outstanding, so the boundary is
+      // clear. This includes the dropped-goal case above: the drop is already
+      // announced, and a `blocked` here would only install a lane halt that no
+      // item exists to clear (an initial run has no Resume/Retry control).
+      // The dispatcher reads `blocked` as a turn torn down mid-flight: it marks
+      // the item `uncertain` and HALTS the drain lane until a human clicks
+      // Resume (`followup-dispatcher.ts` startRun). A `goal <objective>` queued
+      // behind the active goal lands here (control-with-dispatch that did not
+      // dispatch) — reported as `blocked`, it stranded every later follow-up
+      // AND the autogoal driver deferred under §3.6, so the goal loop that was
+      // supposed to finish the active goal never resumed (work-m64 dev,
+      // 2026-10-01 11:25Z).
+      this.logger.info('Command consumed the message — no turn to run', { channel, threadTs: originalThreadTs });
+      return { result: 'safe' };
     }
 
     // Gate B (Issue #553 backstop): non-admin DM input that survived Gate A
@@ -2218,6 +2266,11 @@ export class SlackHandler {
     }
 
     this.logger.debug('Goal turn settled — triggering goal driver', { sessionKey });
+    // Firing directly consumes any deferral left by an earlier boundary (e.g. a
+    // drained run that settled `error`): without this, the same turn's
+    // `drainFollowups` epilogue would find the stale entry and fire the driver
+    // a second time, racing the continuation this fire is about to inject.
+    this.followupDeferredGoalSessions?.delete(sessionKey);
     this.goalTurnSettledHandler?.(sessionKey);
   }
 
@@ -4111,14 +4164,19 @@ export class SlackHandler {
    * rows it parked (`FREEZE_PARKED_STATES`), and those are waiting for a user
    * decision that may never come — gating the driver on the freeze meant one
    * restored `paused` row stopped autogoal in that thread until somebody
-   * clicked Resume. What still defers is outstanding work: a halted drain, or an
-   * item that is queued/steered/reserved/claimed right now.
+   * clicked Resume. What still defers is outstanding work: an item that is
+   * queued/steered/reserved/claimed right now.
+   *
+   * A drain HALT is not a reason on its own either. A halt set by an INITIAL
+   * run (no item — an errored turn, an ASK pause, a parked command) has no
+   * Resume/Retry control that could ever clear it, so gating on it left the
+   * goal loop deferred for the rest of the session with no door out; with
+   * items still outstanding the halt is already covered by the item clause.
    */
   private shouldDeferGoalDriver(sessionKey: string): boolean {
     const queue = this.followupQueue;
     const dispatcher = this.followupDispatcher;
     if (!queue || !dispatcher) return false;
-    if (dispatcher.drainHalt(sessionKey)) return true;
     return queue.list(sessionKey).some(
       (item) =>
         // `steered` counts like `queued`: the message is outstanding user work
@@ -4418,7 +4476,9 @@ export class SlackHandler {
    *    handle the message (unknown `/z` remainder, or internal failure);
    *    caller should fall through to the legacy pipeline unchanged.
    */
-  private async routeDmViaZRouter(event: MessageEvent): Promise<{ terminal: boolean; continueWithPrompt?: string }> {
+  private async routeDmViaZRouter(
+    event: MessageEvent,
+  ): Promise<{ terminal: boolean; continueWithPrompt?: string; error?: string; awaitingPermission?: boolean }> {
     const zRouter = this.eventRouter.getZRouter();
     if (!zRouter) {
       this.logger.warn('routeDmViaZRouter: zRouter not initialized; falling through');
@@ -4448,7 +4508,7 @@ export class SlackHandler {
           channel: event.channel,
         });
         await respond.send({ text: `⚠️ 명령 실행 실패: ${result.error}` });
-        return { terminal: true };
+        return { terminal: true, error: result.error };
       }
 
       // Continuation path: caller must continue with the captured prompt.
@@ -4457,8 +4517,12 @@ export class SlackHandler {
       }
 
       // Handled (card / tombstone / passthrough that finished itself) → terminal.
+      // Carry the qualifiers: a legacy handler that CRASHED comes back as
+      // `handled: true` + `error` (the router posted the notice), and a
+      // cross-user `$skill` parked on permission as `awaitingPermission` — the
+      // caller maps them to `error` / `blocked`, never to a full answer.
       if (result.handled) {
-        return { terminal: true };
+        return { terminal: true, error: result.error, awaitingPermission: result.awaitingPermission };
       }
 
       // Unhandled, no error, no continuation → fall through to legacy pipeline.

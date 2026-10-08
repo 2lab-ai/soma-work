@@ -461,6 +461,169 @@ describe('SlackHandler — follow-up queue host', () => {
     expect(goalDriver).toHaveBeenCalledWith(SESSION_KEY);
   });
 
+  /**
+   * Incident 2026-10-01 (a goal session on work-m64 dev):
+   * `goal <objective>` typed while a goal turn runs is queued as
+   * `control-with-dispatch`. At the boundary it re-routes through
+   * `processMessage`, where `GoalHandler` queues it BEHIND the active goal and
+   * answers — no turn starts. That is a fully handled message, so the run must
+   * settle `safe`: the item resolves, the drain lane stays open, and the §3.6
+   * deferral releases the autogoal driver. Reporting it as `blocked` marked the
+   * item `uncertain`, halted the drain until a human clicked Resume, and left
+   * the goal loop deferred forever — the goal that was just queued could never
+   * start because nothing would ever finish the active one.
+   */
+  it('releases the autogoal driver after a drained follow-up is answered by a command without a turn', async () => {
+    const goalDriver = vi.fn();
+    handler.setGoalTurnSettledHandler(goalDriver);
+    registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+
+    const { settle } = await startBusyTurn();
+    await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+    expect(items()[0].state).toBe('queued');
+
+    // The drained `goal …` is routed to GoalHandler, which queues it behind the
+    // active goal and answers without a continuation prompt (goal-handler.ts).
+    routeCommand.mockResolvedValueOnce({ handled: true });
+
+    handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['turn text']);
+    expect(goalDriver).not.toHaveBeenCalled();
+
+    await settle();
+
+    expect(startWithContinuation).toHaveBeenCalledTimes(1); // the command started no turn
+    expect(items()[0].state).toBe('resolved');
+    expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toBeUndefined();
+    expect(goalDriver).toHaveBeenCalledTimes(1);
+    expect(goalDriver).toHaveBeenCalledWith(SESSION_KEY);
+  });
+
+  /**
+   * Same defect from the idle side: an idle `goal <objective>` is still a
+   * `control-with-dispatch`, so it runs through the dispatcher as the initial
+   * run. When the goal is merely queued behind the active one, a `blocked`
+   * outcome halted the lane — and `shouldDeferGoalDriver` holds the autogoal
+   * driver behind a halted drain, so the NEXT turn end could never re-enter the
+   * loop either.
+   */
+  it('keeps the drain lane open when an idle `goal …` is queued behind the active goal', async () => {
+    const goalDriver = vi.fn();
+    handler.setGoalTurnSettledHandler(goalDriver);
+    registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+    routeCommand.mockResolvedValueOnce({ handled: true });
+
+    await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+
+    expect(startWithContinuation).not.toHaveBeenCalled();
+    expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toBeUndefined();
+
+    handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['turn text']);
+    expect(goalDriver).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The dropped-goal case (#1082: no-session goal+skill split returns
+   * `handled:true` + the parsed objective, no prompt) is announced loudly and
+   * leaves nothing outstanding. It must ALSO settle `safe`: the only path into
+   * it is an initial run (no session ⇒ no turn ⇒ no drained item), so a
+   * `blocked` here would install a lane halt that no item could ever clear —
+   * and the goal the user is told to resend would then run into a deferred
+   * driver that never releases (verified by the trinity panel on a scratch
+   * copy before this assertion was flipped).
+   */
+  it('settles safe when the consumed command dropped a goal — announced, nothing outstanding', async () => {
+    const goalDriver = vi.fn();
+    handler.setGoalTurnSettledHandler(goalDriver);
+    routeCommand.mockResolvedValueOnce({ handled: true, setGoalObjective: '릴리즈까지' });
+
+    await handler.handleMessage(message({ ts: '333.444', text: 'goal 릴리즈까지 $bogus-skill' }), say());
+
+    expect(startWithContinuation).not.toHaveBeenCalled();
+    expect(postSystemMessage).toHaveBeenCalledWith(
+      CHANNEL,
+      expect.stringMatching(/Goal was NOT set/),
+      expect.anything(),
+    );
+    expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toBeUndefined();
+
+    // The resend the notice asks for: a goal turn runs and, at its end, the
+    // loop is driven — nothing stale is holding it.
+    registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈까지', epoch: 0 };
+    await handler.handleMessage(message({ ts: '444.555', text: 'goal 릴리즈까지' }), say());
+    expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['turn text']);
+    expect(goalDriver).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A handler that CRASHES while consuming a drained item is not a full
+   * answer: the item lands `failed` (Retry offered) and the lane halts, exactly
+   * like an errored turn. The autogoal driver waits for the next safe
+   * boundary — but a halt with nothing outstanding must not hold it beyond
+   * that (next test).
+   */
+  it('reports a command-handler crash on a drained item as error — item failed, never resolved', async () => {
+    const goalDriver = vi.fn();
+    handler.setGoalTurnSettledHandler(goalDriver);
+    registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+
+    const { settle } = await startBusyTurn();
+    await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+    routeCommand.mockResolvedValueOnce({ handled: true, error: 'invalid_blocks' });
+
+    handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['turn text']);
+    await settle();
+
+    expect(items()[0].state).toBe('failed');
+    expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({ reason: 'error' });
+    // Not released at THIS boundary (the last run was not safe)…
+    expect(goalDriver).not.toHaveBeenCalled();
+    // …but the next turn end drives the loop: a `failed` row is terminal and a
+    // halt with nothing queued is not outstanding work.
+    handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['later turn']);
+    expect(goalDriver).toHaveBeenCalledTimes(1);
+    // That direct fire consumed the earlier deferral: the same turn's drain
+    // epilogue must not fire the driver a second time.
+    handlerAny.releaseDeferredGoalDriver(SESSION_KEY, { canDrain: true });
+    expect(goalDriver).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A cross-user `$skill` parked behind its owner's permission is neither
+   * answered nor dropped — it stays `blocked` so a drained copy is `uncertain`
+   * (Retry re-sends it once the grant lands), never `resolved`.
+   */
+  it('keeps a permission-pending skill invocation blocked (uncertain), not resolved', async () => {
+    const { settle } = await startBusyTurn();
+    await handler.handleMessage(message({ ts: '333.444', text: '$other:deploy 지금' }), say());
+    expect(items()).toHaveLength(1);
+    routeCommand.mockResolvedValueOnce({ handled: true, awaitingPermission: true });
+
+    await settle();
+
+    expect(items()[0].state).toBe('uncertain');
+    expect(handlerAny.followupDispatcher.drainHalt(SESSION_KEY)).toMatchObject({ reason: 'blocked' });
+  });
+
+  /**
+   * A stale lane halt with nothing outstanding (an earlier errored or parked
+   * INITIAL run — no item, so no Resume/Retry control exists) must not hold
+   * the autogoal driver: that is the "no door out" variant of the incident.
+   */
+  it('does not hold the autogoal driver on a lane halt with nothing outstanding', () => {
+    const goalDriver = vi.fn();
+    handler.setGoalTurnSettledHandler(goalDriver);
+    registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
+    vi.spyOn(handlerAny.followupDispatcher, 'drainHalt').mockReturnValue({
+      reason: 'error',
+      detail: 'earlier turn failed',
+    });
+
+    handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['turn text']);
+
+    expect(goalDriver).toHaveBeenCalledTimes(1);
+  });
+
   it('runs an immediate control live while busy, but queues a command that would dispatch', async () => {
     const { settle } = await startBusyTurn();
 
