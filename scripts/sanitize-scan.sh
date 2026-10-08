@@ -41,12 +41,15 @@ if [ -z "$P" ]; then echo "SANITIZE_PATTERNS env var required" >&2; exit 2; fi
 
 # A full commit ID, never a ref name: a ref could be moved to accept anything.
 # The override exists for this script's own tests; the workflow does not set it.
+# The lookup's exit status counts, not only what it printed.
 BASELINE="${SANITIZE_BASELINE:-0477d8f12d8f643e7d5fe756d14d2e19e7321ccd}"
-if ! [[ "$BASELINE" =~ ^[0-9a-f]{40}$ ]] || [ "$(git cat-file -t "$BASELINE" 2>/dev/null)" != "commit" ]; then
+if ! [[ "$BASELINE" =~ ^[0-9a-f]{40}$ ]] ||
+  ! baseline_type=$(git cat-file -t "$BASELINE" 2>/dev/null) ||
+  [ "$baseline_type" != "commit" ]; then
   echo "sanitize-scan: baseline $BASELINE is not a full commit ID present in this clone (a full-history checkout is required)" >&2
   exit 2
 fi
-if ! HEAD_SHA=$(git rev-parse --verify --quiet 'HEAD^{commit}'); then
+if ! HEAD_SHA=$(git rev-parse --verify --quiet 'HEAD^{commit}') || ! [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "sanitize-scan: HEAD does not name a commit" >&2
   exit 2
 fi
@@ -70,15 +73,27 @@ run_git() { # run_git <output file> <git arguments...>
 # grep -c prints the count and exits 1 when it is zero; that is the only
 # non-zero exit a count may absorb. Anything else (a malformed pattern, say)
 # is an error, not a clean result.
-count_matches() { # count_matches <file> <grep options...>
-  local file=$1 n status=0
-  shift
-  n=$(grep "$@" -c -E "$P" "$file") || status=$?
-  if [ "$status" -gt 1 ]; then
+count_once() { # count_once <file> [VAR=value]
+  local n status=0
+  n=$(env ${2:+"$2"} grep -a -i -c -E "$P" "$1") || status=$?
+  if [ "$status" -gt 1 ] || ! [[ "$n" =~ ^[0-9]+$ ]]; then
     echo "sanitize-scan: grep failed (exit $status); no scan result" >&2
     exit 2
   fi
   echo "$n"
+}
+
+# Every file is counted twice and the larger count is the result. In a UTF-8
+# locale some greps (BSD grep among them) never match a line holding a byte that
+# is not valid UTF-8 unless a NUL byte appears early in the input, so a match
+# next to such a byte would count as zero; the byte-wise pass (LC_ALL=C) sees it.
+# The inherited locale is kept too: the patterns may be non-ASCII, and only a
+# locale-aware pass folds their case.
+count_matches() { # count_matches <file>
+  local here bytes
+  here=$(count_once "$1") || exit 2
+  bytes=$(count_once "$1" LC_ALL=C) || exit 2
+  echo $((here > bytes ? here : bytes))
 }
 
 # Sets are files of object IDs, one per line, byte-sorted and de-duplicated.
@@ -115,9 +130,9 @@ fi
 run_git "$tmp/contents" cat-file --batch <"$tmp/scan"
 run_git "$tmp/paths" rev-list --all --objects
 run_git "$tmp/ref-names" for-each-ref --format='%(refname)'
-objects=$(count_matches "$tmp/contents" -a -i) || exit 2
-paths=$(count_matches "$tmp/paths" -i) || exit 2
-refs=$(count_matches "$tmp/ref-names" -i) || exit 2
+objects=$(count_matches "$tmp/contents") || exit 2
+paths=$(count_matches "$tmp/paths") || exit 2
+refs=$(count_matches "$tmp/ref-names") || exit 2
 echo "sanitize-scan: objects=$objects paths=$paths refs=$refs"
 if [ "$objects" != "0" ] || [ "$paths" != "0" ] || [ "$refs" != "0" ]; then
   echo "sanitize-scan: FORBIDDEN PATTERN FOUND" >&2

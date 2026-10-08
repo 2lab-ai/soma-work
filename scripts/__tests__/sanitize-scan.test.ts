@@ -17,6 +17,8 @@
  *   commit removes it again;
  * - every object new since the baseline is scanned, on every ref;
  * - path names and ref names are still checked across the full history;
+ * - a match is counted in the runner's UTF-8 locale even when its line holds a
+ *   byte that is not valid UTF-8;
  * - a git command that fails is an error (exit 2), never a short input that
  *   counts as zero matches.
  *
@@ -27,6 +29,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -52,6 +55,45 @@ const RETIRED_BODY = `host = ${leak('00c0ffee')}\n`;
 
 /** Pinned so commit IDs do not depend on the wall clock. */
 const FIXED_DATE = '2001-02-03T04:05:06Z';
+
+/**
+ * The locale the self-hosted runner's environment sets for every job. Scans run
+ * in it, so locale-dependent matching is exercised the way CI exercises it.
+ */
+const RUNNER_LOCALE = 'C.UTF-8';
+
+/**
+ * Longer, with room to spare, than the stretch of input (32 KiB) that BSD grep
+ * inspects for a NUL byte before deciding to read the input as text.
+ */
+const NO_NUL_SPAN = 40 * 1024;
+
+/** `text` behind a byte that is not valid UTF-8 (a lone Latin-1 e-acute). */
+function notUtf8(text: string): Buffer {
+  return Buffer.concat([Buffer.from('caf'), Buffer.from([0xe9]), Buffer.from(text)]);
+}
+
+/**
+ * A NUL-free blob longer than NO_NUL_SPAN whose object ID begins with four zero
+ * hex digits, so that it sorts ahead of every other object in these small
+ * repositories — the scan hands objects to grep in ID order. Only the
+ * fixed-width nonce at the end varies, so everything before it is hashed once.
+ */
+function leadingBlob(): Buffer {
+  const body = Buffer.from('filler line of plain ascii text\n'.repeat(NO_NUL_SPAN / 32 + 64));
+  const nonceLength = 'nonce 00000000\n'.length;
+  const prefix = crypto
+    .createHash('sha1')
+    .update(`blob ${body.length + nonceLength}\0`)
+    .update(body);
+  for (let n = 0; n < 100_000_000; n++) {
+    const nonce = Buffer.from(`nonce ${String(n).padStart(8, '0')}\n`);
+    if (prefix.copy().update(nonce).digest('hex').startsWith('0000')) {
+      return Buffer.concat([body, nonce]);
+    }
+  }
+  throw new Error('no nonce gives a leading object ID');
+}
 
 let scratch: string;
 
@@ -97,15 +139,24 @@ class FixtureRepo {
   constructor(readonly dir: string) {}
 
   git(...args: string[]): string {
-    const result = spawnSync('git', args, { cwd: this.dir, env: baseEnv(), encoding: 'utf8' });
+    return this.run(args);
+  }
+
+  /** As `git`, with `input` on stdin. */
+  gitWithInput(input: string | Buffer, ...args: string[]): string {
+    return this.run(args, input);
+  }
+
+  private run(args: string[], input?: string | Buffer): string {
+    const result = spawnSync('git', args, { cwd: this.dir, env: baseEnv(), encoding: 'utf8', input });
     if (result.status !== 0) {
       throw new Error(`git ${args.join(' ')} exited ${result.status}: ${result.stderr}`);
     }
     return result.stdout.trim();
   }
 
-  /** Writes each path (string) or deletes it (null), stages everything, commits, and returns the commit ID. */
-  commit(message: string, changes: Record<string, string | null> = {}): string {
+  /** Writes each path (string or bytes) or deletes it (null), stages everything, commits, and returns the commit ID. */
+  commit(message: string, changes: Record<string, string | Buffer | null> = {}): string {
     for (const [file, content] of Object.entries(changes)) {
       const target = path.join(this.dir, file);
       if (content === null) {
@@ -124,6 +175,7 @@ class FixtureRepo {
   scan(overrides: Record<string, string | undefined> = {}): ScanResult {
     const env: Record<string, string> = {
       ...baseEnv(),
+      LANG: RUNNER_LOCALE,
       SANITIZE_PATTERNS: PATTERN,
       SANITIZE_BASELINE: this.baseline,
     };
@@ -382,6 +434,49 @@ describe('sanitize scan — HEAD and what its ancestry introduces are scanned', 
 
     expectFound(repo.scan(), /sanitize-scan: objects=1 paths=0 refs=0\n/);
   });
+
+  it('(n) fails when a clean file is rewritten to baseline content, even after a later deletion', () => {
+    const repo = seededRepo();
+    removeFixture(repo);
+    repo.commit('rewrite readme', { 'README.md': FIXTURE_BODY });
+    repo.commit('drop readme', { 'README.md': null });
+
+    expectFound(repo.scan(), /sanitize-scan: objects=1 paths=0 refs=0\n/);
+  });
+
+  it('(o) fails when a file becomes a symlink whose target is baseline content, even after a later deletion', () => {
+    // A symlink is a blob holding its target. Index only: no link is created on
+    // disk, and the baseline blob itself becomes the link.
+    const repo = seededRepo();
+    const fixtureBlob = repo.git('rev-parse', `${repo.baseline}:${FIXTURE}`);
+    removeFixture(repo);
+    repo.git('update-index', '--cacheinfo', `120000,${fixtureBlob},README.md`);
+    repo.git('commit', '-q', '-m', 'readme becomes a link');
+    expect(repo.git('diff-tree', '-r', '--no-commit-id', 'HEAD~1', 'HEAD')).toMatch(
+      /^:100644 120000 [0-9a-f]{40} [0-9a-f]{40} T\tREADME\.md$/,
+    );
+    repo.commit('drop readme', { 'README.md': null });
+
+    expectFound(repo.scan(), /sanitize-scan: objects=1 paths=0 refs=0\n/);
+  });
+
+  it('(o2) fails when a symlink becomes a file holding baseline content, even after a later deletion', () => {
+    const repo = seededRepo();
+    const fixtureBlob = repo.git('rev-parse', `${repo.baseline}:${FIXTURE}`);
+    removeFixture(repo);
+    const target = repo.gitWithInput('docs.txt', 'hash-object', '-w', '--stdin');
+    repo.git('update-index', '--add', '--cacheinfo', `120000,${target},link`);
+    repo.git('commit', '-q', '-m', 'add link');
+    repo.git('update-index', '--cacheinfo', `100644,${fixtureBlob},link`);
+    repo.git('commit', '-q', '-m', 'link becomes a file');
+    expect(repo.git('diff-tree', '-r', '--no-commit-id', 'HEAD~1', 'HEAD')).toMatch(
+      /^:120000 100644 [0-9a-f]{40} [0-9a-f]{40} T\tlink$/,
+    );
+    repo.git('rm', '-q', '--cached', 'link');
+    repo.git('commit', '-q', '-m', 'drop link');
+
+    expectFound(repo.scan(), /sanitize-scan: objects=1 paths=0 refs=0\n/);
+  });
 });
 
 describe('sanitize scan — new objects on every ref are scanned', () => {
@@ -475,6 +570,81 @@ describe('sanitize scan — refuses to run without its inputs', () => {
   });
 });
 
+describe('sanitize scan — a byte that is not UTF-8 does not hide a match', () => {
+  // Scans run in RUNNER_LOCALE. There, BSD grep reads its input as text unless a
+  // NUL byte turns up in the first 32 KiB, and read as text, a line holding a
+  // byte that is not valid UTF-8 never matches — with or without -a. Each case
+  // puts the only match on such a line, where exactly one count can see it.
+
+  it('(p) counts it in object content, with no NUL early in the scanned content', () => {
+    // Tree objects always contain NUL bytes, so a leading blob is what keeps
+    // them out of the window grep inspects.
+    const repo = seededRepo();
+    removeFixture(repo);
+    const leading = leadingBlob();
+    repo.commit('add docs', { 'filler.txt': leading, 'notes.txt': notUtf8(` host = ${leak('feedf00d')}\n`) });
+
+    // The leading blob is the first object grep sees, and it is NUL-free past the window.
+    const ids = repo.git('cat-file', '--batch-all-objects', '--batch-check=%(objectname)').split('\n').sort();
+    expect(ids[0]).toBe(repo.git('rev-parse', 'HEAD:filler.txt'));
+    expect(leading.length).toBeGreaterThan(NO_NUL_SPAN);
+    expect(leading.includes(0)).toBe(false);
+
+    expectFound(repo.scan(), /sanitize-scan: objects=1 paths=0 refs=0\n/);
+  });
+
+  it('(p2) counts it in a path name', () => {
+    // Index only: the path is never created on disk, where the filesystem could
+    // refuse the name. It exists only before the baseline, so only the path
+    // listing holds it.
+    const repo = emptyRepo();
+    const seed = repo.commit('seed', { 'README.md': 'seed\n' });
+    const blob = repo.gitWithInput('clean\n', 'hash-object', '-w', '--stdin');
+    const entry = Buffer.concat([Buffer.from(`100644 ${blob}\t`), notUtf8(`-${leak('cafebabe')}.txt\n`)]);
+    repo.gitWithInput(entry, 'update-index', '--add', '--index-info');
+    repo.git('commit', '-q', '-m', 'add file');
+    repo.git('read-tree', seed);
+    repo.git('commit', '-q', '-m', 'delete file');
+    repo.baseline = repo.git('rev-parse', 'HEAD');
+
+    expectFound(repo.scan(), /sanitize-scan: objects=0 paths=1 refs=0\n/);
+  });
+
+  it('(p3) counts it in a ref name', () => {
+    // packed-refs rather than a loose ref, so the name never becomes a file name.
+    const repo = seededRepo();
+    const head = removeFixture(repo);
+    const packed = Buffer.concat([
+      Buffer.from(`# pack-refs with: peeled fully-peeled sorted \n${head} refs/tags/`),
+      notUtf8(`-${leak('abcdef12')}\n`),
+    ]);
+    fs.writeFileSync(path.join(repo.dir, '.git', 'packed-refs'), packed);
+    expect(repo.git('for-each-ref', '--format=%(refname)')).toContain(leak('abcdef12'));
+
+    expectFound(repo.scan(), /sanitize-scan: objects=0 paths=0 refs=1\n/);
+  });
+});
+
+describe('sanitize scan — a non-ASCII pattern keeps its locale', () => {
+  it('(p4) folds the case of a non-ASCII pattern the way the runner locale does', () => {
+    // The byte-wise count cannot fold e-acute to E-acute; the count in the
+    // inherited locale can, on text input. A ref name is text input that only
+    // the ref count sees. (Object content usually holds NUL bytes, and then BSD
+    // grep compares bytes in any locale.) Counting byte-wise only would lose it.
+    const repo = seededRepo();
+    const head = removeFixture(repo);
+    const name = ['TESTLEAK', '\u00c90badc0de'].join('_');
+    fs.writeFileSync(
+      path.join(repo.dir, '.git', 'packed-refs'),
+      `# pack-refs with: peeled fully-peeled sorted \n${head} refs/tags/${name}\n`,
+    );
+    expect(repo.git('for-each-ref', '--format=%(refname)')).toContain(name);
+
+    const pattern = ['TESTLEAK', '\u00e9[0-9a-f]{8}'].join('_');
+    expectFound(repo.scan({ SANITIZE_PATTERNS: pattern }), /sanitize-scan: objects=0 paths=0 refs=1\n/);
+  });
+});
+
 describe('sanitize scan — a git failure is never a clean result', () => {
   // Each state is caught by exactly one of the three counts. If the git command
   // feeding that count died after one line, grep would see a short input with
@@ -524,6 +694,24 @@ describe('sanitize scan — a git failure is never a clean result', () => {
       expectRefused(repo.scan(failing(args)), subcommand);
     });
   }
+
+  it('exits 2 when the baseline lookup fails, even after printing the expected type', () => {
+    const repo = seededRepo();
+    removeFixture(repo);
+    const result = repo.scan(failing('cat-file -t *'));
+    expect(result.stderr).toContain('sanitize-scan: baseline');
+    expect(result.stdout).toBe('');
+    expect(result.status).toBe(2);
+  });
+
+  it('exits 2 when resolving HEAD fails, even after printing a commit ID', () => {
+    const repo = seededRepo();
+    removeFixture(repo);
+    const result = repo.scan(failing('rev-parse --verify *'));
+    expect(result.stderr).toContain('sanitize-scan: HEAD');
+    expect(result.stdout).toBe('');
+    expect(result.status).toBe(2);
+  });
 
   it('exits 2 when grep cannot evaluate the pattern', () => {
     // grep's exit 1 means "no match"; a malformed pattern is exit 2 and must not
