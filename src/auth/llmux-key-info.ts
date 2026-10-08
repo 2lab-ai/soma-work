@@ -4,7 +4,7 @@ import * as os from 'node:os';
 /**
  * Rendering helpers for the personal llmux key DM (`key` / `auth key`).
  *
- * The DM tells a Slack user how to run a LOCAL Claude Code against the llmux
+ * The DM tells a Slack user how to run a LOCAL Claude Code or Codex against the llmux
  * daemon soma-work itself dispatches through, using the SAME per-user client
  * key `ensureTenantKey` issued for their Slack dispatches — so llmux meters
  * their bot usage and their local usage as one tenant.
@@ -168,23 +168,79 @@ export interface LlmuxKeyDmInput {
   rotatedAtMs?: number;
 }
 
+/** A `scheme://` prefix. Without one, WHATWG reads `llmux-box:3456` as scheme `llmux-box:` with an empty host. */
+const SCHEME_PREFIX_RE = /^[a-z][a-z\d+.-]*:\/\//i;
+
+/**
+ * Parses an advertised llmux address; a scheme-less value (e.g. a
+ * `LLMUX_ADVERTISED_BASE_URL=llmux-box:3456` override) is read as `http://`.
+ * Throws when the input is not a URL even then.
+ */
+function parseAdvertisedUrl(baseUrl: string): URL {
+  return new URL(SCHEME_PREFIX_RE.test(baseUrl) ? baseUrl : `http://${baseUrl}`);
+}
+
 /** `host[:port]` form (no scheme) — what llmux.json `remote.host` expects. */
 function hostForRemoteConfig(baseUrl: string): string {
   try {
-    const url = new URL(baseUrl);
+    const url = parseAdvertisedUrl(baseUrl);
     return url.port ? `${url.hostname}:${url.port}` : url.hostname;
   } catch {
     return baseUrl;
   }
 }
 
+/** Trailing `/v1` API segments (any case, repeated) plus trailing slashes at the end of a path. */
+const TRAILING_API_PATH_RE = /(?:\/+v1)*\/*$/i;
+
 /**
- * The Slack-markdown DM body: key identity, the two-line local Claude Code
+ * The llmux server root (no trailing slash, no `/v1`) — Claude Code appends
+ * `/v1/messages` itself and the Codex URL is this root plus `/v1`, so an
+ * advertised `…/v1`, `…/V1/` or `…/v1/v1` must collapse to one root. Query and
+ * fragment are dropped: clients append API paths to a base URL, so neither can
+ * survive. WHATWG serialization also percent-encodes control/non-ASCII
+ * characters. Unparseable input gets the same query/fragment drop and `/v1`
+ * strip at string level.
+ */
+function llmuxRootUrl(baseUrl: string): string {
+  try {
+    const url = parseAdvertisedUrl(baseUrl);
+    url.search = '';
+    url.hash = '';
+    url.pathname = url.pathname.replace(TRAILING_API_PATH_RE, '');
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return baseUrl.split(/[?#]/, 1)[0].replace(TRAILING_API_PATH_RE, '');
+  }
+}
+
+/** A lone UTF-16 surrogate — with the `u` flag a valid pair is one code point and never matches. */
+const LONE_SURROGATE_RE = /[\uD800-\uDFFF]/gu;
+
+/**
+ * TOML basic string. JSON string syntax is TOML's except that JSON leaves
+ * U+007F raw and writes lone surrogates as `\uD8xx` escapes, both invalid
+ * TOML: DEL is escaped and a lone surrogate becomes U+FFFD (as URL
+ * serialization does). Only an unparseable address can carry either.
+ */
+function tomlBasicString(value: string): string {
+  return JSON.stringify(value.replace(LONE_SURROGATE_RE, '\uFFFD')).replace(/\u007f/g, '\\u007f');
+}
+
+/** POSIX shell literal: values from operator config must never become shell code. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
+}
+
+/**
+ * The Slack-markdown DM body: key identity, local Claude Code / Codex
  * setup, the llmux CLI remote snippet, and handling guidance.
  */
 export function buildLlmuxKeyDmText(input: LlmuxKeyDmInput): string {
   const { secret, baseUrl } = input;
   const remoteHost = hostForRemoteConfig(baseUrl);
+  const rootUrl = llmuxRootUrl(baseUrl);
+  const codexBaseUrl = `${rootUrl}/v1`;
   const identity: string[] = [];
   if (input.keyName) identity.push(`이름 \`${input.keyName}\``);
   if (input.keyId) identity.push(`id \`${input.keyId}\``);
@@ -200,18 +256,33 @@ export function buildLlmuxKeyDmText(input: LlmuxKeyDmInput): string {
     '이 키는 당신 전용입니다 — 봇에서의 사용량과 아래 로컬 사용량이 전부 이 키(테넌트)로 계측됩니다. 같은 유저는 항상 같은 키를 받습니다.',
     '',
     `• 키: \`${secret}\`${identity.length > 0 ? ` (${identity.join(', ')})` : ''}`,
-    `• 서버: \`${baseUrl}\``,
+    `• 서버: \`${rootUrl}\``,
     '',
     '*로컬에서 Claude Code 실행하기*',
     '```',
-    `export ANTHROPIC_BASE_URL=${baseUrl}`,
-    `export ANTHROPIC_API_KEY=${secret}`,
+    `export ANTHROPIC_BASE_URL=${shellQuote(rootUrl)}`,
+    `export ANTHROPIC_API_KEY=${shellQuote(secret)}`,
     'claude',
     '```',
     '',
+    '*로컬에서 Codex 실행하기* — bash/zsh 터미널에 복사하세요:',
+    '```',
+    `export OPENAI_BASE_URL=${shellQuote(codexBaseUrl)}`,
+    `export OPENAI_API_KEY=${shellQuote(secret)}`,
+    'codex --model gpt-6.1-sol \\',
+    `  -c 'model_provider="llmux_env"' \\`,
+    `  -c 'model_providers.llmux_env.name="llmux"' \\`,
+    `  -c ${shellQuote(`model_providers.llmux_env.base_url=${tomlBasicString(codexBaseUrl)}`)} \\`,
+    `  -c 'model_providers.llmux_env.env_key="OPENAI_API_KEY"' \\`,
+    `  -c 'model_providers.llmux_env.wire_api="responses"' \\`,
+    `  -c 'model_providers.llmux_env.requires_openai_auth=false' \\`,
+    `  -c 'model_providers.llmux_env.supports_websockets=false'`,
+    '```',
+    '환경변수는 현재 터미널에 적용됩니다. 위 `-c` 옵션까지 함께 실행하면 기존 로그인 대신 이 키를 사용하며, Codex 설정 파일과 로그인 정보는 덮어쓰지 않습니다. llmux를 쓰는 동안에는 같은 명령으로 시작하세요.',
+    '',
     '*llmux CLI를 원격으로 쓰려면* — 클라이언트 머신의 `llmux.json`:',
     '```',
-    `{ "remote": { "host": "${remoteHost}", "api_key": "${secret}" } }`,
+    `{ "remote": { "host": ${JSON.stringify(remoteHost)}, "api_key": ${JSON.stringify(secret)} } }`,
     '```',
     '',
     ':lock: 이 키는 비밀입니다. 채널·코드·커밋에 붙여넣지 마세요. 유출이 의심되면 관리자에게 로테이션(`llmux key rotate`)을 요청하세요 — 로테이션되면 이 DM의 키는 무효가 되고, `key`를 다시 호출하면 새 키를 받습니다.',
