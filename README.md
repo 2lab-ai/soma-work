@@ -208,7 +208,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z skill [list\|download]` | Skills directory |
 | `/z report [today\|daily\|weekly]` | Usage reports |
 
-### Auth capacity overview
+### llmux SDK authentication
 
 Soma-work uses the Claude Agent SDK's Messages transport with llmux, including
 Codex-backed models from its model catalog. Each SDK call carries its selected
@@ -217,6 +217,8 @@ the existing shared-key fallback (including helper calls without a tenant lease)
 Inherited OAuth/bearer credentials,
 alternative-provider selectors, and authentication custom headers cannot replace
 that choice; unrelated custom headers remain available. See the [SDK authentication contract](docs/current/spec/llmux-sdk-auth.md).
+
+### Auth capacity overview
 
 In llmux mode the `auth` card is first and foremost a **read-only capacity
 overview** of the llmux account pool (`GET /llmux/status`), rendered the same
