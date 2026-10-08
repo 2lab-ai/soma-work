@@ -207,6 +207,21 @@ describe('buildLlmuxKeyDmText', () => {
     expect(text).toContain('• 서버: `http://h:3456/llmux`\n');
   });
 
+  it.each([
+    'not a url/v1/v1',
+    'not a url/V1?x=1#frag',
+    'not a url//V1/#f',
+  ])('normalizes an unparseable %s at string level like a parsed URL', (baseUrl) => {
+    const text = buildLlmuxKeyDmText({ secret: 'lmk-x', baseUrl });
+    expect(text).toContain('• 서버: `not a url`\n');
+    expect(text).toContain("export ANTHROPIC_BASE_URL='not a url'\n");
+    const codex = fencedBlock(text, 'codex --model');
+    expect(codex).toContain("export OPENAI_BASE_URL='not a url/v1'\n");
+    expect(codex).toContain(`-c 'model_providers.llmux_env.base_url="not a url/v1"' \\\n`);
+    expect(codex).not.toContain('?x=1');
+    expect(codex).not.toContain('#');
+  });
+
   it('reads a scheme-less override (`host:port`) as http so host, port, and every line agree', async () => {
     const env = { LLMUX_ADVERTISED_BASE_URL: 'llmux-box:3456/' };
     const baseUrl = await advertisedLlmuxBaseUrl('http://localhost:3456', env, NO_ROUTE);

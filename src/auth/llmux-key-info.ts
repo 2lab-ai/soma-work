@@ -199,7 +199,8 @@ const TRAILING_API_PATH_RE = /(?:\/+v1)*\/*$/i;
  * advertised `…/v1`, `…/V1/` or `…/v1/v1` must collapse to one root. Query and
  * fragment are dropped: clients append API paths to a base URL, so neither can
  * survive. WHATWG serialization also percent-encodes control/non-ASCII
- * characters. Unparseable input keeps the plain string normalization.
+ * characters. Unparseable input gets the same query/fragment drop and `/v1`
+ * strip at string level.
  */
 function llmuxRootUrl(baseUrl: string): string {
   try {
@@ -209,7 +210,7 @@ function llmuxRootUrl(baseUrl: string): string {
     url.pathname = url.pathname.replace(TRAILING_API_PATH_RE, '');
     return url.toString().replace(/\/+$/, '');
   } catch {
-    return baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
+    return baseUrl.split(/[?#]/, 1)[0].replace(TRAILING_API_PATH_RE, '');
   }
 }
 
