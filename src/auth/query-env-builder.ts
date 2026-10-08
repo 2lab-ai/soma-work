@@ -104,7 +104,9 @@ const LLMUX_COMPETING_ENV_KEYS = [
   'CLAUDE_CODE_USE_VERTEX',
   'CLAUDE_CODE_USE_FOUNDRY',
   'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+  'CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD',
   'CLAUDE_CODE_USE_MANTLE',
+  'CLAUDE_CODE_USE_GATEWAY',
 ] as const;
 
 /** Custom headers are applied after SDK credentials, so strip identity overrides only. */
@@ -165,6 +167,9 @@ function isolateLlmuxAuth(env: Record<string, string>): void {
  *   - In ccp mode, `CLAUDE_CODE_OAUTH_TOKEN` is set to `lease.accessToken`.
  *     For both current lease kinds (`setup_token`, `oauth_credentials`) this
  *     is the value the Agent SDK hands to the Claude CLI over OAuth.
+ *   - In llmux mode, the `LLMUX_COMPETING_ENV_KEYS` credentials/provider
+ *     selectors are removed after both layers, and `authorization` /
+ *     `x-api-key` lines are filtered out of `ANTHROPIC_CUSTOM_HEADERS`.
  *   - All other `process.env` variables are copied through, then the
  *     operator-controlled additional env overlays them.
  *
