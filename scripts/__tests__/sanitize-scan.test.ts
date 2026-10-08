@@ -279,7 +279,8 @@ function expectRefused(result: ScanResult, subcommand: string): void {
  * A directory holding a stand-in `tool` for the scan's PATH. It passes every
  * call through to the real tool, except a call whose arguments match the glob in
  * FAIL_ARGS: that one writes the first line of the real output and then exits
- * 128, the way a process dying mid-stream would.
+ * 128, the way a process dying mid-stream would. When FAIL_MARK names a file,
+ * the arguments of each call that failed this way are appended to it.
  */
 function failingToolDir(tool: string): string {
   const which = spawnSync('sh', ['-c', `command -v ${tool}`], { env: baseEnv(), encoding: 'utf8' });
@@ -290,6 +291,7 @@ function failingToolDir(tool: string): string {
     '#!/bin/sh',
     'case "$*" in',
     '  $FAIL_ARGS)',
+    `    [ -z "\${FAIL_MARK:-}" ] || printf '%s\\n' "$*" >>"$FAIL_MARK"`,
     `    '${real}' "$@" | head -n 1`,
     '    exit 128 ;;',
     'esac',
@@ -902,6 +904,26 @@ describe('sanitize scan — a failed command is never a clean result', () => {
     removeFixture(repo);
     const result = repo.scan(failing('rev-parse --verify *'));
     expect(result.stderr).toContain('sanitize-scan: HEAD');
+    expect(result.stdout).toBe('');
+    expect(result.status).toBe(2);
+  });
+
+  it('exits 2 when the pattern cannot be read byte by byte', () => {
+    // The bracket check reads the pattern through od before anything else. If
+    // od dies after part of its output, the check has not seen every byte, so
+    // the scan must stop rather than go on as if the pattern were fine.
+    const repo = seededRepo();
+    removeFixture(repo);
+    expectClean(repo.scan());
+    // Longer than one od output line (16 bytes), so the stand-in's output is
+    // really cut short.
+    expect(Buffer.byteLength(PATTERN)).toBeGreaterThan(16);
+
+    const mark = path.join(fs.mkdtempSync(path.join(scratch, 'od-mark-')), 'calls');
+    const result = repo.scan({ ...failing('-An -v -tu1', 'od'), FAIL_MARK: mark, SANITIZE_DEBUG: '1' });
+    // The stand-in, not some other od, took the call, and exactly once.
+    expect(fs.readFileSync(mark, 'utf8')).toBe('-An -v -tu1\n');
+    expect(result.stderr).toBe('sanitize-scan: the pattern could not be read; no scan result\n');
     expect(result.stdout).toBe('');
     expect(result.status).toBe(2);
   });
