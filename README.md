@@ -208,6 +208,16 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z skill [list\|download]` | Skills directory |
 | `/z report [today\|daily\|weekly]` | Usage reports |
 
+### llmux SDK authentication
+
+Soma-work uses the Claude Agent SDK's Messages transport with llmux, including
+Codex-backed models from its model catalog. Each SDK call carries its selected
+llmux URL and key together: the personal tenant pair when available, otherwise
+the existing shared-key fallback (including helper calls without a tenant lease).
+Inherited OAuth/bearer credentials,
+alternative-provider selectors, and authentication custom headers cannot replace
+that choice; unrelated custom headers remain available. See the [SDK authentication contract](docs/current/spec/llmux-sdk-auth.md).
+
 ### Auth capacity overview
 
 In llmux mode the `auth` card is first and foremost a **read-only capacity
@@ -361,11 +371,13 @@ A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Sour
 | `sessions theme [<name>]` · `sessions theme=<name>` | Session-scoped theme |
 | `new [<prompt>]` · `renew [<prompt>]` | Reset / renew session, optional prompt carries over |
 | `auth` · `auth llmux\|cct` · `set auth <mode>` · `auth switch <name>` | Auth backend card / runtime mode switch (#1189; defaults to the read-only [capacity overview](#auth-capacity-overview) for everyone, mutations admin-only behind Admin mode) |
-| `key` · `auth key` | DM yourself your personal llmux client key + local Claude Code setup (`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`). Same user always gets the same key; llmux meters bot + local usage as one tenant. Works for every user (it is your own key) |
+| `key` · `auth key` | DM yourself your personal llmux client key + local Claude Code (`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`) and Codex (`OPENAI_BASE_URL`/`OPENAI_API_KEY`) setup. Same user always gets the same key; llmux meters bot + local usage as one tenant. Works for every user (it is your own key) |
 | `cct` · `cct set <n>` · `cct next` · `cct usage [<n>]` · `cct auto [dry]` | CCT token status / rotation; `auto` = admin-only manual auto-rotate (token mutation is card-only since #569) |
 | `cron` · `schedule` (also `크론` · `스케줄`) | Interactive cron card — per-job model/output-target dropdowns + delete button; routed as a command so autogoal can never swallow it; admins see all users' jobs with the owner shown |
 | `cron model <name> <default\|opus\|fable\|fast\|model>` · `cron target <name> <channel\|dm\|thread>` · `cron delete <name>` | Change a job's model (`default` = creator's current model at fire time; `opus`/`fable` = latest opus/fable resolved at fire time) / delivery target / delete; admins address another user's job by appending `<@owner>` |
 | `$` · `$model <v>` · `$verbosity <v>` · `$effort <v>` · `$thinking <v>` · `$thinking_summary <v>` | **Legacy** session prefix during deprecation grace period (emits one-line notice, use `%` going forward) |
+
+The Codex block in the key DM points `OPENAI_BASE_URL` at the advertised server's `/v1` endpoint and uses your same tenant key. Copy the complete `codex --model … -c …` invocation: its explicit Responses provider reads `OPENAI_API_KEY` even when you already use ChatGPT login or another provider. The exports apply to the current terminal; the invocation does not rewrite Codex config or login credentials. Use that invocation again for later llmux sessions. See [Codex gateway authentication](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway).
 
 Any free-form text not matching the whitelist is treated as a chat / workflow dispatch prompt.
 

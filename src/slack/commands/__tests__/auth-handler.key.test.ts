@@ -87,7 +87,11 @@ describe('AuthHandler — `key` (personal llmux key DM)', () => {
     const [dmChannel, dmText] = deps.slackApi.postMessage.mock.calls[0];
     expect(dmChannel).toBe('D555');
     expect(dmText).toContain('lmk-secret-1');
-    expect(dmText).toContain('ANTHROPIC_BASE_URL=');
+    expect(dmText).toContain("export ANTHROPIC_BASE_URL='");
+    expect(dmText).toContain("export ANTHROPIC_API_KEY='lmk-secret-1'");
+    expect(dmText).toContain("OPENAI_API_KEY='lmk-secret-1'");
+    expect(dmText).toContain('OPENAI_BASE_URL=');
+    expect(ctx.saidTexts.join('\n')).toContain('Claude Code / Codex');
     // channel-side reply exists but must not leak the secret
     expect(ctx.saidTexts.join('\n')).not.toContain('lmk-secret-1');
     expect(ctx.saidTexts.length).toBeGreaterThan(0);
