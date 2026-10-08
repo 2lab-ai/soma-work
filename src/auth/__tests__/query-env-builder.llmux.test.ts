@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SlotAuthLease } from '../../credentials-manager';
-import { buildQueryEnv } from '../query-env-builder';
+import { buildQueryEnv, setQueryEnvAdditional } from '../query-env-builder';
 
 // #llmux — exercise the `config.auth.mode === 'llmux'` branch of buildQueryEnv.
 // The default suite (query-env-builder.test.ts) runs against the real config
@@ -54,6 +54,8 @@ describe('buildQueryEnv — llmux mode (#llmux)', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
+    setQueryEnvAdditional({});
     if (originalOauth === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
     else process.env.CLAUDE_CODE_OAUTH_TOKEN = originalOauth;
     if (originalBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
@@ -69,6 +71,41 @@ describe('buildQueryEnv — llmux mode (#llmux)', () => {
   it('deletes CLAUDE_CODE_OAUTH_TOKEN so the proxy is not bypassed', () => {
     const { env } = buildQueryEnv(makeLease('llmux', 'llmux-local'));
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  it('removes competing provider selectors after both environment layers', () => {
+    const keys = [
+      'ANTHROPIC_AUTH_TOKEN',
+      'CLAUDE_CODE_USE_BEDROCK',
+      'CLAUDE_CODE_USE_VERTEX',
+      'CLAUDE_CODE_USE_FOUNDRY',
+      'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+      'CLAUDE_CODE_USE_MANTLE',
+    ];
+    for (const key of keys) vi.stubEnv(key, '1');
+    setQueryEnvAdditional(Object.fromEntries(keys.map((key) => [key, 'overlay'])));
+    const { env } = buildQueryEnv(makeLease('llmux', 'unused'));
+    for (const key of keys) {
+      expect(Object.keys(env).includes(key)).toBe(false);
+      expect(env[key]).toBeUndefined();
+      expect(process.env[key]).toBe('1');
+    }
+  });
+
+  it('filters only auth headers, case insensitively, preserving custom routing metadata', () => {
+    setQueryEnvAdditional({
+      ANTHROPIC_CUSTOM_HEADERS:
+        'Authorization: Bearer foreign\n X-API-Key : other-tenant\r\nX-Trace: retained\nx-llmux-claude-launch-model: sol',
+    });
+    const { env } = buildQueryEnv(makeLease('llmux', 'unused'));
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Trace: retained\nx-llmux-claude-launch-model: sol');
+  });
+
+  it('omits an authentication-only custom header map without mutating the parent', () => {
+    vi.stubEnv('ANTHROPIC_CUSTOM_HEADERS', 'Authorization: Bearer foreign\nX-Api-Key: other-tenant');
+    const { env } = buildQueryEnv(makeLease('llmux', 'unused'));
+    expect(Object.keys(env).includes('ANTHROPIC_CUSTOM_HEADERS')).toBe(false);
+    expect(process.env.ANTHROPIC_CUSTOM_HEADERS).toContain('foreign');
   });
 
   it('ignores the lease accessToken (proxy owns upstream auth)', () => {

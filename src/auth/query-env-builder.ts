@@ -96,6 +96,34 @@ export function getQueryEnvAdditional(): Record<string, string> {
   return { ..._additionalEnv };
 }
 
+/** Provider selectors recognized by the pinned SDK; llmux owns routing instead. */
+const LLMUX_COMPETING_ENV_KEYS = [
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+  'CLAUDE_CODE_USE_MANTLE',
+] as const;
+
+/** Custom headers are applied after SDK credentials, so strip identity overrides only. */
+function isolateLlmuxAuth(env: Record<string, string>): void {
+  // The pinned SDK copies options.env as the complete child environment.
+  // Remove competing values after both of our environment layers are applied.
+  for (const key of LLMUX_COMPETING_ENV_KEYS) delete env[key];
+  if (env.ANTHROPIC_CUSTOM_HEADERS === undefined) return;
+  const headers = env.ANTHROPIC_CUSTOM_HEADERS.split(/\r?\n/)
+    .filter((line) => {
+      const separator = line.indexOf(':');
+      const name = line.slice(0, separator).trim().toLowerCase();
+      return separator < 0 || (name !== 'authorization' && name !== 'x-api-key');
+    })
+    .join('\n');
+  if (headers.trim()) env.ANTHROPIC_CUSTOM_HEADERS = headers;
+  else delete env.ANTHROPIC_CUSTOM_HEADERS;
+}
+
 /**
  * Build a per-call env map that carries the lease's fresh access token to the
  * Claude Agent SDK via `options.env`.
@@ -118,10 +146,10 @@ export function getQueryEnvAdditional(): Record<string, string> {
  *          ALWAYS last — defense in depth even if the load-time denylist in
  *          `parseClaudeEnv` is bypassed, the lease's fresh token cannot be
  *          overridden by config.
- *        - `'llmux'`: set `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` and DELETE
- *          `CLAUDE_CODE_OAUTH_TOKEN` so the local llmux proxy owns upstream
- *          auth. The lease token is unused in this mode. When the dispatch has
- *          a user identity, BOTH values come from `opts.llmuxTenant` — the
+ *        - `'llmux'`: set `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` and remove
+ *          competing credentials/provider selectors so llmux owns upstream auth.
+ *          The lease token is unused in this mode. When the dispatch has a user
+ *          identity, BOTH values come from `opts.llmuxTenant` — the
  *          triggering user's own llmux client key and the daemon that issued
  *          it, taken as an atomic pair so a mid-dispatch daemon flip can never
  *          combine one daemon's key with another's URL (the flip applies from
@@ -134,7 +162,7 @@ export function getQueryEnvAdditional(): Record<string, string> {
  *   - NEVER mutates `process.env`.
  *   - Returns a new object each call; callers hold no aliases to a shared
  *     map, so parallel calls are trivially isolated.
- *   - `CLAUDE_CODE_OAUTH_TOKEN` is always set to `lease.accessToken`.
+ *   - In ccp mode, `CLAUDE_CODE_OAUTH_TOKEN` is set to `lease.accessToken`.
  *     For both current lease kinds (`setup_token`, `oauth_credentials`) this
  *     is the value the Agent SDK hands to the Claude CLI over OAuth.
  *   - All other `process.env` variables are copied through, then the
@@ -178,10 +206,8 @@ export function buildQueryEnv(lease: SlotAuthLease, opts?: QueryEnvOptions): Que
   if (getAuthMode() === 'llmux') {
     // llmux mode: the local proxy (https://github.com/2lab-ai/llmux) owns the
     // real upstream account pool. Point the SDK at it with the caller's llmux
-    // key and SUPPRESS the OAuth token — Claude Code prefers
-    // CLAUDE_CODE_OAUTH_TOKEN over ANTHROPIC_API_KEY when both are present, so
-    // an inherited token from process.env (or a future code path) would
-    // otherwise silently bypass the proxy. `lease.accessToken` is intentionally
+    // key and remove competing credentials/provider selectors from the child
+    // environment. `lease.accessToken` is intentionally
     // unused here; the synthetic llmux lease carries the placeholder key for
     // symmetry only.
     // Per-user tenant credential when the dispatch knows who triggered it (so
@@ -192,7 +218,7 @@ export function buildQueryEnv(lease: SlotAuthLease, opts?: QueryEnvOptions): Que
     const tenant = opts?.llmuxTenant;
     env.ANTHROPIC_BASE_URL = tenant ? tenant.baseUrl : llmux.baseUrl;
     env.ANTHROPIC_API_KEY = tenant ? tenant.secret : llmux.apiKey;
-    delete env.CLAUDE_CODE_OAUTH_TOKEN;
+    isolateLlmuxAuth(env);
     return { env };
   }
 
