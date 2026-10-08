@@ -9,6 +9,7 @@
 
 - [current/plans/](./current/plans/) — active feature specs, traces, plans
 - [current/spec/](./current/spec/) — evergreen product/system specs
+- [llmux SDK authentication](current/spec/llmux-sdk-auth.md) — per-call tenant identity and parent-environment isolation, verified through the actual SDK.
 - [`/z` command master spec](./current/spec/z-command-master-spec.md)
 - [goal-command/](./goal-command/) — goal command spec (top-level legacy location; new specs go under `current/`)
 
