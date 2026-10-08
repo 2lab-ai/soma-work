@@ -31,6 +31,28 @@ const TYPICAL = fakeInterfaces({
 /** Probe that forces the enumeration fallback (as if the route lookup failed). */
 const NO_ROUTE = { routeProbe: async () => null };
 
+/** The fenced (```) block whose body contains `marker` — selected by content, not position. */
+function fencedBlock(text: string, marker: string): string {
+  const blocks = text.split('```').filter((_, i) => i % 2 === 1);
+  const matches = blocks.filter((block) => block.includes(marker));
+  expect(matches).toHaveLength(1);
+  return matches[0];
+}
+
+/** Runs a DM shell block under bash with `fn` stubbed to print its argv + `envKeys` as one JSON line. */
+function runShellBlock(block: string, fn: string, envKeys: string[]) {
+  const env = envKeys.map((k) => `${k}:process.env.${k}`).join(',');
+  const probe = `${fn}() { node -e 'console.log(JSON.stringify({args:process.argv.slice(1),${env}}))' -- "$@"; }`;
+  const result = spawnSync('/bin/bash', ['-c', `${probe}\n${block}`], { encoding: 'utf8' });
+  expect(result.status).toBe(0);
+  // the probe's single JSON line is the ONLY output — nothing in the block was evaluated
+  expect(result.stdout.trim().split('\n')).toHaveLength(1);
+  return JSON.parse(result.stdout) as Record<string, unknown> & { args: string[] };
+}
+
+/** Hostile values: quotes, `$(...)`, backslash — a shell that evaluated them would print `injected`. */
+const HOSTILE_SECRET = "lmk-'$(printf injected)-fixture";
+
 describe('primaryLanIpv4', () => {
   it('picks the RFC1918 LAN address, skipping loopback/link-local/tailscale CGNAT', () => {
     expect(primaryLanIpv4(TYPICAL)).toBe('192.168.77.10');
@@ -137,8 +159,8 @@ describe('buildLlmuxKeyDmText', () => {
     const text = buildLlmuxKeyDmText(input);
     expect(text).toContain('lmk-secret-123');
     expect(text).toContain('http://192.168.77.10:3456');
-    expect(text).toContain('ANTHROPIC_BASE_URL=http://192.168.77.10:3456');
-    expect(text).toContain('ANTHROPIC_API_KEY=lmk-secret-123');
+    expect(text).toContain("export ANTHROPIC_BASE_URL='http://192.168.77.10:3456'");
+    expect(text).toContain("export ANTHROPIC_API_KEY='lmk-secret-123'");
     // the actual launch command
     expect(text).toMatch(/\bclaude\b/);
   });
@@ -160,26 +182,106 @@ describe('buildLlmuxKeyDmText', () => {
     'http://h:3456/',
     'http://h:3456/v1',
     'http://h:3456/v1/',
-  ])('normalizes the Codex API suffix for %s', (baseUrl) => {
+    'http://h:3456/V1',
+    'http://h:3456/v1/v1',
+    'http://h:3456/v1?x=1#frag',
+    'http://h:3456/?x=1',
+  ])('normalizes the Codex and Claude base URLs for %s (query/fragment dropped)', (baseUrl) => {
     const text = buildLlmuxKeyDmText({ secret: 'lmk-x', baseUrl });
-    expect(text).toContain("export OPENAI_BASE_URL='http://h:3456/v1'");
-    expect(text).not.toContain('/v1/v1');
+    const codex = fencedBlock(text, 'codex --model');
+    expect(codex).toContain("export OPENAI_BASE_URL='http://h:3456/v1'");
+    expect(codex).toContain('model_providers.llmux_env.base_url="http://h:3456/v1"');
+    expect(codex).not.toMatch(/\/v1\/v1/i);
+    expect(codex).not.toContain('?x=1');
+    expect(codex).not.toContain('#frag');
+    // Claude Code appends `/v1/messages` itself → the server root, never `.../v1`
+    expect(fencedBlock(text, 'ANTHROPIC_BASE_URL')).toContain("export ANTHROPIC_BASE_URL='http://h:3456'\n");
+    // the server line shows the same root the command blocks use
+    expect(text).toContain('• 서버: `http://h:3456`\n');
   });
 
-  it('passes the rendered Codex environment and provider to the shell without evaluating values', () => {
-    const secret = "lmk-'$(printf injected)-fixture";
-    const baseUrl = 'http://gateway.example:3456/a"b\\c$(printf injected)';
-    const text = buildLlmuxKeyDmText({ secret, baseUrl });
-    const snippet = text.split('```')[3];
-    const probe = `codex() { node -e 'console.log(JSON.stringify({args:process.argv.slice(1), key:process.env.OPENAI_API_KEY, url:process.env.OPENAI_BASE_URL}))' -- "$@"; }`;
-    const result = spawnSync('/bin/bash', ['-c', `${probe}\n${snippet}`], { encoding: 'utf8' });
-    expect(result.status).toBe(0);
-    const captured = JSON.parse(result.stdout);
-    expect(captured.key).toBe(secret);
-    expect(captured.url).toBe(`${baseUrl}/v1`);
-    expect(captured.args).toContain(`model_providers.llmux_env.base_url=${JSON.stringify(`${baseUrl}/v1`)}`);
-    expect(captured.args).not.toContain(secret);
+  it('keeps a non-API path prefix while stripping the trailing /v1', () => {
+    const text = buildLlmuxKeyDmText({ secret: 'lmk-x', baseUrl: 'http://h:3456/llmux/V1/' });
+    expect(text).toContain("export OPENAI_BASE_URL='http://h:3456/llmux/v1'");
+    expect(text).toContain("export ANTHROPIC_BASE_URL='http://h:3456/llmux'");
+    expect(text).toContain('• 서버: `http://h:3456/llmux`\n');
+  });
+
+  it('reads a scheme-less override (`host:port`) as http so host, port, and every line agree', async () => {
+    const env = { LLMUX_ADVERTISED_BASE_URL: 'llmux-box:3456/' };
+    const baseUrl = await advertisedLlmuxBaseUrl('http://localhost:3456', env, NO_ROUTE);
+    expect(baseUrl).toBe('llmux-box:3456');
+    const text = buildLlmuxKeyDmText({ secret: 'lmk-x', baseUrl: baseUrl as string });
+    expect(text).toContain('• 서버: `http://llmux-box:3456`\n');
+    expect(text).toContain("export ANTHROPIC_BASE_URL='http://llmux-box:3456'");
+    expect(text).toContain("export OPENAI_BASE_URL='http://llmux-box:3456/v1'");
+    expect(text).toContain('model_providers.llmux_env.base_url="http://llmux-box:3456/v1"');
+    expect(JSON.parse(fencedBlock(text, '"remote"')).remote.host).toBe('llmux-box:3456');
+  });
+
+  it.each([
+    ['http://h:3456', 'h:3456'],
+    ['llmux-box:3456', 'llmux-box:3456'],
+    ['llmux-box:3456/v1', 'llmux-box:3456'],
+    ['llmux-box', 'llmux-box'],
+    ['203.0.113.7:3456', '203.0.113.7:3456'],
+    ['[::1]:3456', '[::1]:3456'],
+    ['HTTPS://Gateway.Example/v1', 'gateway.example'],
+    ['not a url', 'not a url'],
+  ])('derives the llmux.json remote host from %s as %s', (baseUrl, host) => {
+    const text = buildLlmuxKeyDmText({ secret: 'lmk-x', baseUrl });
+    expect(JSON.parse(fencedBlock(text, '"remote"')).remote.host).toBe(host);
+  });
+
+  it('keeps the Codex TOML base_url valid for unparseable input carrying DEL and a lone surrogate', () => {
+    const text = buildLlmuxKeyDmText({ secret: 'lmk-x', baseUrl: 'not a url\u007f\ud800/v1' });
+    const tomlLine = fencedBlock(text, 'codex --model')
+      .split('\n')
+      .find((line) => line.includes('base_url='));
+    // DEL is escaped (TOML forbids it raw); the lone surrogate becomes U+FFFD, as URL serialization does
+    expect(tomlLine).toBe('  -c \'model_providers.llmux_env.base_url="not a url\\u007f\uFFFD/v1"\' \\');
+    expect(tomlLine).not.toMatch(/\\u[dD][89abAB]/);
+  });
+
+  it.each([
+    {
+      // parseable: WHATWG turns `\` into `/` and percent-encodes `"` and space; `$(` survives literally
+      baseUrl: 'http://gateway.example:3456/a"b\\c$(printf injected)',
+      root: 'http://gateway.example:3456/a%22b/c$(printf%20injected)',
+    },
+    {
+      // unparseable (reachable: unparseable config and the env override pass through) → string fallback
+      baseUrl: 'not a url "b\\c$(printf injected)/v1',
+      root: 'not a url "b\\c$(printf injected)',
+    },
+  ])('passes the Codex environment and provider to the shell without evaluating values ($baseUrl)', ({
+    baseUrl,
+    root,
+  }) => {
+    const text = buildLlmuxKeyDmText({ secret: HOSTILE_SECRET, baseUrl });
+    const captured = runShellBlock(fencedBlock(text, 'codex --model'), 'codex', ['OPENAI_API_KEY', 'OPENAI_BASE_URL']);
+    expect(captured.OPENAI_API_KEY).toBe(HOSTILE_SECRET);
+    expect(captured.OPENAI_BASE_URL).toBe(`${root}/v1`);
+    expect(captured.args).toContain(`model_providers.llmux_env.base_url=${JSON.stringify(`${root}/v1`)}`);
+    expect(captured.args).not.toContain(HOSTILE_SECRET);
     expect(captured.args).toContain('model_providers.llmux_env.requires_openai_auth=false');
+  });
+
+  it.each([
+    {
+      baseUrl: 'http://gateway.example:3456/a"b\\c$(printf injected)/v1',
+      root: 'http://gateway.example:3456/a%22b/c$(printf%20injected)',
+    },
+    { baseUrl: 'not a url "b\\c$(printf injected)', root: 'not a url "b\\c$(printf injected)' },
+  ])('passes the Claude Code environment to the shell without evaluating values ($baseUrl)', ({ baseUrl, root }) => {
+    const text = buildLlmuxKeyDmText({ secret: HOSTILE_SECRET, baseUrl });
+    const captured = runShellBlock(fencedBlock(text, 'ANTHROPIC_BASE_URL'), 'claude', [
+      'ANTHROPIC_API_KEY',
+      'ANTHROPIC_BASE_URL',
+    ]);
+    expect(captured.ANTHROPIC_API_KEY).toBe(HOSTILE_SECRET);
+    expect(captured.ANTHROPIC_BASE_URL).toBe(root);
+    expect(captured.args).toEqual([]);
   });
 
   it('includes the llmux.json remote snippet with host (no scheme) + api_key', () => {
@@ -187,6 +289,13 @@ describe('buildLlmuxKeyDmText', () => {
     expect(text).toContain('"remote"');
     expect(text).toContain('"host": "192.168.77.10:3456"');
     expect(text).toContain('"api_key": "lmk-secret-123"');
+  });
+
+  it('renders the llmux.json remote snippet as valid JSON for secrets with quotes and backslashes', () => {
+    const secret = 'lmk-"q\\b"-fixture';
+    const text = buildLlmuxKeyDmText({ secret, baseUrl: 'http://192.168.77.10:3456/v1' });
+    const parsed = JSON.parse(fencedBlock(text, '"remote"'));
+    expect(parsed).toEqual({ remote: { host: '192.168.77.10:3456', api_key: secret } });
   });
 
   it('shows key attribution metadata when present', () => {
