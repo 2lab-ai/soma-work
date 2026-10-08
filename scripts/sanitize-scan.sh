@@ -83,50 +83,27 @@ count_once() { # count_once <file> [VAR=value]
   echo "$n"
 }
 
-# Each count is the largest of several grep passes, because in a UTF-8 locale
-# BSD grep reads its input one of two ways. With no NUL byte in the first 32 KiB
-# it reads text: it folds the case of non-ASCII pattern letters, but never
-# matches a line holding a byte that is not valid UTF-8. With a NUL there it
-# compares bytes, and folds ASCII letters only.
-#   1. Inherited locale, input as it is. Path names and ref names hold no NUL,
-#      so this is the pass that folds non-ASCII letters in them.
-#   2. LC_ALL=C, input as it is: matches next to bytes that are not valid
-#      UTF-8, in all three inputs.
-#   3. Object content only: inherited locale, over a text copy of it (see
-#      text_copy). Tree objects always hold NUL bytes, so pass 1 over content
-#      nearly always compares bytes; this is the pass that folds non-ASCII
-#      letters in object content.
-count_matches() { # count_matches <file> [<text copy of it>]
-  local max n
-  max=$(count_once "$1") || exit 2
-  n=$(count_once "$1" LC_ALL=C) || exit 2
-  [ "$n" -le "$max" ] || max=$n
-  if [ -n "${2:-}" ]; then
-    n=$(count_once "$2") || exit 2
-    [ "$n" -le "$max" ] || max=$n
-  fi
-  echo "$max"
-}
-
-# text_copy <file> <out>: <file> rewritten so that grep reads all of it as text
-# in a UTF-8 locale. Every NUL byte, and every byte that strict UTF-8 decoding
-# rejects — stray and truncated bytes, overlong forms, surrogates,
-# noncharacters, anything above U+10FFFF including five- and six-byte forms —
-# becomes a line break. The copy separates, never joins: deleting those bytes
-# instead would splice the text on either side into a match the content does
-# not hold, and a false hit in published history could not be cleared. -C0
-# keeps a PERL_UNICODE setting from re-encoding the streams; a failed write
-# fails the copy.
-text_copy() {
-  LC_ALL=C perl -C0 -MEncode -ne '
-    my $text = Encode::decode("UTF-8", $_, sub { "\n" });
-    $text =~ tr/\0/\n/;
-    print Encode::encode("UTF-8", $text) or die "write failed: $!\n";
-    END { close STDOUT or die "close failed: $!\n" }
-  ' <"$1" >"$2" || {
-    echo "sanitize-scan: perl failed (exit $?); no scan result" >&2
-    exit 2
-  }
+# Every input is counted twice, both times exactly as git wrote it, and the
+# larger count is the result. Nothing is rewritten before matching, so no
+# transform can manufacture a match (or move an anchor or a word boundary)
+# that the bytes do not hold.
+#   - Inherited locale. In a UTF-8 locale BSD grep never matches a line holding
+#     a byte that is not valid UTF-8, unless a NUL byte appears in the first
+#     32 KiB of its input.
+#   - LC_ALL=C, byte-wise: sees matches next to such bytes.
+# Case-insensitive matching of non-ASCII letters therefore differs by input.
+# Path names and ref names hold no NUL and are matched as text in the inherited
+# locale, so their non-ASCII letters fold. Object content nearly always has a
+# NUL in its first 32 KiB, since tree objects hold NUL bytes, and from there BSD
+# grep in a UTF-8 locale matches no non-ASCII pattern letter at all; only the
+# byte-wise pass does, byte for byte as written. A pattern with a cased
+# non-ASCII letter must spell both cases as an alternation, such as (é|É) — a
+# bracket expression such as [éÉ] matches object content in neither pass.
+count_matches() { # count_matches <file>
+  local here bytes
+  here=$(count_once "$1") || exit 2
+  bytes=$(count_once "$1" LC_ALL=C) || exit 2
+  echo $((here > bytes ? here : bytes))
 }
 
 # Sets are files of object IDs, one per line, byte-sorted and de-duplicated.
@@ -163,8 +140,7 @@ fi
 run_git "$tmp/contents" cat-file --batch <"$tmp/scan"
 run_git "$tmp/paths" rev-list --all --objects
 run_git "$tmp/ref-names" for-each-ref --format='%(refname)'
-text_copy "$tmp/contents" "$tmp/contents.text"
-objects=$(count_matches "$tmp/contents" "$tmp/contents.text") || exit 2
+objects=$(count_matches "$tmp/contents") || exit 2
 paths=$(count_matches "$tmp/paths") || exit 2
 refs=$(count_matches "$tmp/ref-names") || exit 2
 echo "sanitize-scan: objects=$objects paths=$paths refs=$refs"

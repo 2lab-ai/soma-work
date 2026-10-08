@@ -18,9 +18,10 @@
  * - every object new since the baseline is scanned, on every ref;
  * - path names and ref names are still checked across the full history;
  * - a match is counted in the runner's UTF-8 locale even when its line holds a
- *   byte that is not valid UTF-8, and a non-ASCII pattern folds case in object
- *   content too — through a text copy that separates at NUL and malformed
- *   bytes, so it never joins fragments into a match the content does not hold;
+ *   byte that is not valid UTF-8, and content is matched exactly as stored, so
+ *   no transform can splice fragments or move line boundaries into a match;
+ * - a non-ASCII letter folds case in path and ref names but not in object
+ *   content, where a pattern has to spell both cases as an alternation;
  * - a git command that fails is an error (exit 2), never a short input that
  *   counts as zero matches.
  *
@@ -103,15 +104,6 @@ function blobWithIdPrefix(head: Buffer, tail: Buffer, idPrefix: string): Buffer 
 function leadingBlob(): Buffer {
   const body = Buffer.from('filler line of plain ascii text\n'.repeat(NO_NUL_SPAN / 32 + 64));
   return blobWithIdPrefix(body, Buffer.alloc(0), '0000');
-}
-
-/**
- * A blob ending in the lead byte of a six-byte sequence, whose object ID begins
- * with four f hex digits so that it sorts after every other object: its last
- * byte is followed only by the newline cat-file writes after each object.
- */
-function trailingTruncatedBlob(): Buffer {
-  return blobWithIdPrefix(Buffer.from('tail '), Buffer.from([0xfc]), 'ffff');
 }
 
 /** Total content bytes of every object in the repository. */
@@ -652,7 +644,7 @@ describe('sanitize scan — a byte that is not UTF-8 does not hide a match', () 
   });
 });
 
-describe('sanitize scan — a non-ASCII pattern keeps its locale', () => {
+describe('sanitize scan — non-ASCII case folding', () => {
   it('(p4) folds the case of a non-ASCII pattern the way the runner locale does', () => {
     // The byte-wise count cannot fold e-acute to E-acute; the count in the
     // inherited locale can, on text input. A ref name is text input that only
@@ -670,11 +662,12 @@ describe('sanitize scan — a non-ASCII pattern keeps its locale', () => {
     expectFound(repo.scan({ SANITIZE_PATTERNS: pattern }), /sanitize-scan: objects=0 paths=0 refs=1\n/);
   });
 
-  it('(p5) folds it in object content too, where a NUL early in the input makes grep compare bytes', () => {
-    // With a NUL in the first 32 KiB of its input, BSD grep compares bytes in any
-    // locale, so neither count over the content as it is folds e-acute. The
-    // content is counted once more, as text, with every NUL turned into a line
-    // break.
+  it('(r) does not fold one in object content, where both cases must be spelled as an alternation', () => {
+    // Object content nearly always has a NUL in the first 32 KiB grep inspects
+    // (tree objects hold NUL bytes). From there BSD grep in a UTF-8 locale
+    // matches no non-ASCII pattern letter, and the byte-wise count matches one
+    // only as written. This pins the limitation the script documents and the
+    // spelling it prescribes.
     const repo = seededRepo();
     removeFixture(repo);
     repo.commit('add notes', {
@@ -686,58 +679,25 @@ describe('sanitize scan — a non-ASCII pattern keeps its locale', () => {
     // All of the scan input fits in the window, so that NUL is inside it.
     expect(objectBytes(repo)).toBeLessThan(32 * 1024);
 
-    const pattern = ['TESTLEAK', '\u00e9[0-9a-f]{8}'].join('_');
-    expectFound(repo.scan({ SANITIZE_PATTERNS: pattern }), /sanitize-scan: objects=1 paths=0 refs=0\n/);
-  });
-
-  it('(p6) is not broken by content that ends in a truncated sequence', () => {
-    // The last object in the scan input ends in a six-byte lead with only
-    // cat-file's newline after it: the text copy must neither fail on it nor
-    // drop what precedes it.
-    const repo = seededRepo();
-    removeFixture(repo);
-    repo.commit('add tail', { 'tail.bin': trailingTruncatedBlob() });
-    const ids = repo.git('cat-file', '--batch-all-objects', '--batch-check=%(objectname)').split('\n').sort();
-    expect(ids[ids.length - 1]).toBe(repo.git('rev-parse', 'HEAD:tail.bin'));
-
-    expectClean(repo.scan());
-  });
-
-  it('(p7) folds it on a line holding a sequence that only strict UTF-8 decoding rejects', () => {
-    // A four-byte form above U+10FFFF and a five-byte form: a lenient decoder
-    // passes both through, and BSD grep reading text then never matches the
-    // line. The text copy breaks the line at each of them instead.
-    const repo = seededRepo();
-    removeFixture(repo);
-    const match = Buffer.from(` host = ${['TESTLEAK', '\u00c90badc0de'].join('_')}\n`);
-    repo.commit('add notes', {
-      'notes.bin': Buffer.concat([
-        Buffer.from([0, 0x0a]),
-        Buffer.from('x '),
-        Buffer.from([0xf4, 0x90, 0x80, 0x80]),
-        match,
-        Buffer.from('x '),
-        Buffer.from([0xf8, 0x88, 0x80, 0x80, 0x80]),
-        match,
-      ]),
-    });
-    expect(objectBytes(repo)).toBeLessThan(32 * 1024);
-
-    const pattern = ['TESTLEAK', '\u00e9[0-9a-f]{8}'].join('_');
-    expectFound(repo.scan({ SANITIZE_PATTERNS: pattern }), /sanitize-scan: objects=2 paths=0 refs=0\n/);
-    // A perl default from the environment must not re-encode the copy.
+    const withLetter = (letter: string) => ['TESTLEAK', `${letter}[0-9a-f]{8}`].join('_');
+    // The other case only: not folded.
+    expectClean(repo.scan({ SANITIZE_PATTERNS: withLetter('\u00e9') }));
+    // A bracket expression: matches in neither count.
+    expectClean(repo.scan({ SANITIZE_PATTERNS: withLetter('[\u00e9\u00c9]') }));
+    // An alternation: the byte-wise count matches it.
     expectFound(
-      repo.scan({ SANITIZE_PATTERNS: pattern, PERL_UNICODE: 'SDA' }),
-      /sanitize-scan: objects=2 paths=0 refs=0\n/,
+      repo.scan({ SANITIZE_PATTERNS: withLetter('(\u00e9|\u00c9)') }),
+      /sanitize-scan: objects=1 paths=0 refs=0\n/,
     );
   });
 });
 
-describe('sanitize scan — the text copy of object content separates, never joins', () => {
+describe('sanitize scan — content is matched as stored, never transformed', () => {
+  // Guards against rewriting content before matching. A false hit in published
+  // history could not be cleared without rewriting that history.
+
   it('(q) does not match fragments split by a NUL byte or by a byte that is not UTF-8', () => {
-    // Content that never held a match. Deleting the separating byte instead of
-    // breaking the line there would splice the fragments into one, and a false
-    // hit in published history could not be cleared without rewriting it.
+    // Deleting the separating byte would splice the fragments into one.
     const repo = seededRepo();
     removeFixture(repo);
     repo.commit('add fragments', {
@@ -755,7 +715,34 @@ describe('sanitize scan — the text copy of object content separates, never joi
     });
 
     expectClean(repo.scan());
-    expectClean(repo.scan({ PERL_UNICODE: 'SDA' }));
+  });
+
+  it('(q2) does not match an anchored pattern against a fragment between separating bytes', () => {
+    // Turning the separators into line breaks would make the fragment a line
+    // of its own, and ^...$ would match it.
+    const repo = seededRepo();
+    removeFixture(repo);
+    const fragment = Buffer.from(leak('deadbeef'));
+    repo.commit('add fragments', {
+      'fragments.bin': Buffer.concat([
+        Buffer.from('prefix'),
+        Buffer.from([0]),
+        fragment,
+        Buffer.from([0]),
+        Buffer.from('suffix\n'),
+        Buffer.from('prefix'),
+        Buffer.from([0xff]),
+        fragment,
+        Buffer.from([0xff]),
+        Buffer.from('suffix\n'),
+      ]),
+    });
+    const anchored = `^${PATTERN}$`;
+    expectClean(repo.scan({ SANITIZE_PATTERNS: anchored }));
+
+    // The anchored pattern does match the same text on a line of its own.
+    repo.commit('add line', { 'line.txt': `${leak('deadbeef')}\n` });
+    expectFound(repo.scan({ SANITIZE_PATTERNS: anchored }), /sanitize-scan: objects=1 paths=0 refs=0\n/);
   });
 });
 
@@ -824,22 +811,6 @@ describe('sanitize scan — a failed command is never a clean result', () => {
     const result = repo.scan(failing('rev-parse --verify *'));
     expect(result.stderr).toContain('sanitize-scan: HEAD');
     expect(result.stdout).toBe('');
-    expect(result.status).toBe(2);
-  });
-
-  it('exits 2 when the text copy of object content cannot be made', () => {
-    // The third content count reads a copy perl makes; a copy cut short would
-    // hide whatever followed. The content here is a match the other two counts
-    // miss, so a swallowed failure would read as clean.
-    const repo = seededRepo();
-    removeFixture(repo);
-    repo.commit('add notes', { 'notes.txt': `host = ${['TESTLEAK', '\u00c90badc0de'].join('_')}\n` });
-    const pattern = ['TESTLEAK', '\u00e9[0-9a-f]{8}'].join('_');
-    expect(repo.scan({ SANITIZE_PATTERNS: pattern }).status).toBe(1);
-
-    const result = repo.scan({ ...failing('-C0 *', 'perl'), SANITIZE_PATTERNS: pattern });
-    expect(result.stderr).toContain('sanitize-scan: perl failed');
-    expect(result.stdout).not.toContain('sanitize-scan: objects=');
     expect(result.status).toBe(2);
   });
 
