@@ -33,8 +33,10 @@ gh run list --branch <BRANCH> --repo <OWNER/REPO> --limit 1 --json status,conclu
 ## Step 2: Resolve All PR Review Comments
 
 1. `local:github-pr`로 리뷰 코멘트 가져오기.
-2. Unresolved 쓰레드마다: 코드 확인 → 수정 필요시 fix+commit+push+reply+resolve, 이미 해결됐으면 reply+resolve.
-3. 0 unresolved까지 루프.
+2. Unresolved 쓰레드마다 심각도로 나눈다:
+   - **P0/P1, 또는 심각도 태그 없음** → 코드 확인 → 수정 필요시 fix+commit+push+reply+resolve, 이미 해결됐으면 reply+resolve.
+   - **P2/P3 태그** (`[P2]`·`[P3]`, `P2 Badge` 등) → 이 PR에서 코드를 고치지 않는다. PR당 **후속 이슈 하나**에 쓰레드 링크를 모으고(이미 있으면 그 이슈에 추가), 쓰레드마다 그 이슈 링크로 reply+resolve.
+3. 0 unresolved까지 루프. P2/P3 이관은 코드 변경이 아니므로 Step 1 재시작을 일으키지 않는다.
 
 
 ## Step 3: 유저 설득 (`local:using-ssot` Hook 4)
