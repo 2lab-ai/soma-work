@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { atomicWriteJson, readJsonWithBackup } from '../atomic-json';
+import { atomicWriteJson, JsonStoreUnusableError, readJsonWithBackup } from '../atomic-json';
 
 /**
  * Contract tests for the shared atomic JSON store helper required by
@@ -162,7 +162,8 @@ describe('atomic-json', () => {
       expect(tmpLeftovers(dir)).toEqual([]);
     });
 
-    it('leaves the live file untouched when the filesystem write fails', () => {
+    // Permission bits do not bind root, so this injection cannot fail there.
+    it.skipIf(process.getuid?.() === 0)('leaves the live file untouched when the filesystem write fails', () => {
       atomicWriteJson(file, { items: ['v1'] });
       fs.chmodSync(dir, 0o500); // read-only directory: temp file cannot be created
 
@@ -268,6 +269,40 @@ describe('atomic-json', () => {
       const { warn } = collectWarnings();
 
       expect(() => readJsonWithBackup(file, validateQueue, { warn })).toThrow();
+    });
+
+    /** Run the loader and hand back what it threw (fails the test if it returns). */
+    function readError(): JsonStoreUnusableError {
+      const { warn } = collectWarnings();
+      try {
+        readJsonWithBackup(file, validateQueue, { warn });
+      } catch (error) {
+        expect(error).toBeInstanceOf(JsonStoreUnusableError);
+        return error as JsonStoreUnusableError;
+      }
+      throw new Error('expected readJsonWithBackup to throw');
+    }
+
+    it('classifies copies that were read but are invalid as ATOMIC_JSON_UNUSABLE', () => {
+      // The content deliberately contains the word the old message-sniffing
+      // callers looked for — the classification must come from what happened,
+      // never from what the file happens to say.
+      fs.writeFileSync(file, 'unreadable: x', 'utf-8'); // short, so the parser error quotes it whole
+      fs.writeFileSync(backup, JSON.stringify({ items: 'wrong shape' }), 'utf-8');
+
+      const error = readError();
+
+      expect(error.code).toBe('ATOMIC_JSON_UNUSABLE');
+      expect(error.message).toContain('unreadable:'); // the message still embeds it
+    });
+
+    it('classifies a copy that could not be read at all as ATOMIC_JSON_UNREADABLE', () => {
+      // A directory where the live file should be: readFileSync fails with
+      // EISDIR for every user, root included (permission bits would not).
+      fs.mkdirSync(file);
+      fs.writeFileSync(backup, 'garbage', 'utf-8');
+
+      expect(readError().code).toBe('ATOMIC_JSON_UNREADABLE');
     });
   });
 });

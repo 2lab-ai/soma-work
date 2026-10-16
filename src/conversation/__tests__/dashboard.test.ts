@@ -788,6 +788,50 @@ describe('Dashboard API', () => {
     expect(() => new Function(scriptContent)).not.toThrow();
   });
 
+  it('declares every top-level client function and variable exactly once (all classic scripts)', async () => {
+    // A second `function f` silently replaces the first in the browser (the
+    // later declaration wins), so the page would run code no test looked at.
+    // Classic scripts share one global scope, so a name declared in two
+    // blocks (e.g. the <script data-fouc> head block and the main one)
+    // collides the same way.
+    const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
+    expect(res.statusCode).toBe(200);
+    const html = res.body as string;
+    const blocks = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)].map((m, i) => ({
+      label: `#${i} <script${m[1]}>`,
+      attrs: m[1],
+      code: m[2],
+    }));
+    // Every opening tag was matched as a block (no script is skipped silently).
+    expect(blocks.length).toBe((html.match(/<script\b/gi) ?? []).length);
+    // Classic = inline and JavaScript (a module has its own scope, a data block is not code).
+    const isClassic = (attrs: string) => {
+      if (/\bsrc\s*=/i.test(attrs)) return false;
+      const type = /\btype\s*=\s*["']?([^"'\s>]+)/i.exec(attrs)?.[1]?.toLowerCase();
+      return !type || type === 'text/javascript' || type === 'application/javascript';
+    };
+    const classic = blocks.filter((b) => isClassic(b.attrs));
+    expect(classic.some((b) => /\bdata-fouc\b/.test(b.attrs))).toBe(true);
+    const ts = await import('typescript');
+    const where = new Map<string, string[]>(); // name → label of every block that declares it
+    for (const b of classic) {
+      expect(() => new Function(b.code), b.label).not.toThrow(); // each block parses on its own
+      const file = ts.createSourceFile('client.js', b.code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+      const add = (name: string) => where.set(name, [...(where.get(name) ?? []), b.label]);
+      for (const stmt of file.statements) {
+        if (ts.isFunctionDeclaration(stmt) && stmt.name) add(stmt.name.text);
+        if (ts.isVariableStatement(stmt)) {
+          for (const d of stmt.declarationList.declarations) if (ts.isIdentifier(d.name)) add(d.name.text);
+        }
+        if (ts.isClassDeclaration(stmt) && stmt.name) add(stmt.name.text);
+      }
+    }
+    expect(where.size).toBeGreaterThan(100); // the whole client script was parsed
+    expect(where.has('ensureCardIo')).toBe(true);
+    const duplicates = [...where].filter(([, at]) => at.length > 1).map(([name, at]) => `${name} in ${at.join(', ')}`);
+    expect(duplicates).toEqual([]);
+  });
+
   it('should render onclick handlers with properly escaped quotes', async () => {
     const res = await injectWebServer({
       method: 'GET',
@@ -929,7 +973,9 @@ describe('Dashboard API', () => {
     expect(correctOpenPanel).not.toBeNull();
 
     // There should be exactly 4 doAction calls (stop, close for idle/waiting, close for sleeping, trash for archived)
-    // and 2 openPanel calls (card click + multi-choice "답변하기" button)
+    // and 2 openPanel calls (open card's "작업 로그" button + multi-choice "답변하기" button).
+    // A card click no longer opens the panel — it expands the card in place
+    // through a delegated listener (.prd/10 §3.1-4), so it has no inline handler.
     expect(correctDoAction!.length).toBe(4);
     expect(correctOpenPanel!.length).toBe(2);
   });
@@ -950,9 +996,15 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 4 doAction calls × 1 sep + 1 resummarize + 4 answerChoice × 3 seps + 1 selectMc × 1 sep = 18 closing patterns
-    // (answerChoice appears at 4 sites: card-recommended, card-non-recommended, panel-recommended, panel-non-recommended)
-    expect(actionClosings!.length).toBe(18);
+    // 4 doAction calls × 1 sep + 1 resummarize = 5 closing patterns.
+    // The 4 answerChoice sites (card/panel × recommended/other) and the selectMc
+    // site no longer build inline JS strings: their model-written question /
+    // label / id travel in attribute-escaped data-choice-* attributes read by
+    // one delegated click handler, because escJs() inside a double-quoted
+    // onclick could not carry " or newlines safely (.prd/10 round-2 review).
+    expect(actionClosings!.length).toBe(5);
+    expect(script).not.toMatch(/answerChoice\(\\'/);
+    expect(script).not.toMatch(/selectMc\(\\'/);
   });
 
   // ── Guard: detect unescaped inline handlers if new ones are added ──
