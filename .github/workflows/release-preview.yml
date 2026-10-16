@@ -117,9 +117,11 @@ jobs:
 
       - name: Use Node.js 20
         uses: actions/setup-node@v4
+        # No `cache: 'npm'`: this runner is a persistent self-hosted Mac whose ~/.npm survives
+        # between runs; the cache restore downloaded a 2 GB archive at ~5 MB/s (7–9 min) and
+        # pushed quality-gates past its 15-minute timeout.
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
