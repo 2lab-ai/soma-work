@@ -18,7 +18,7 @@ import type { WorkLogInput } from '../work-log';
 const NARRATION = 'Let me read the config first.';
 const FINAL = 'The timeout is 30s; I raised it to 60s.';
 
-function* events(list: AgentStreamEvent[]): Generator<AgentStreamEvent> {
+async function* events(list: AgentStreamEvent[]): AsyncGenerator<AgentStreamEvent> {
   for (const event of list) yield event;
 }
 

@@ -768,7 +768,7 @@ describe('ToolEventProcessor', () => {
         // Poll until the flush is observed — independent of how many awaits
         // cleanup runs before it — then cleanup must still be pending on it.
         await vi.waitFor(() => expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts'), {
-          timeout: 5000,
+          timeout: 4000,
         });
         expect(cleanupSettled).toBe(false);
 
