@@ -1236,12 +1236,13 @@ async function cardIoOutage(browser: import('playwright').Browser) {
   await page.click(`[data-session-key="${key}"] .card-face`); // the opening fetch (fails)
   for (let i = 0; i < 50 && ioRequests.length < 1; i++) await page.waitForTimeout(10);
   const t1 = ioRequests[0];
-  // Board pushes with a new lastActivity every 150 ms while the endpoint is down.
+  // Board pushes with a new lastActivity every 100 ms while the endpoint is down
+  // (~500 ms of pushes leaves headroom before the 1 s deadline on a loaded host).
   for (let i = 1; i <= 5; i++) {
     const b = makeBoard() as Record<string, Array<Record<string, unknown>>>;
     b.waiting[0].lastActivity = new Date(NOW + i * 1000).toISOString();
     await page.evaluate((board) => (window as unknown as PageWindow).__wsSend({ type: 'session_update', board }), b);
-    await page.waitForTimeout(150);
+    await page.waitForTimeout(100);
   }
   const beforeDeadline = ioRequests.length;
   const elapsed = Date.now() - t1;

@@ -633,7 +633,8 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
   /** noSummary: the reply has no summary yet, so the raw-response fallback runs. */
   function harness(opts: { noSummary?: boolean } = {}) {
     let now = 1_000_000;
-    const timers: Array<{ at: number; fn: () => void }> = [];
+    const timers: Array<{ id: number; at: number; fn: () => void }> = [];
+    let timerSeq = 0;
     const refreshed: string[] = [];
     let mode: 'down' | 'up' = 'down';
     let rawMode: 'down' | 'up' = 'up';
@@ -669,13 +670,22 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
       isSiblingSession: () => false,
       refreshCard: (k: string) => refreshed.push(k),
       fetch: fetchStub,
-      setTimeout: (fn: () => void, ms: number) => timers.push({ at: now + ms, fn }),
+      setTimeout: (fn: () => void, ms: number) => {
+        timerSeq++;
+        timers.push({ id: timerSeq, at: now + ms, fn });
+        return timerSeq;
+      },
+      clearTimeout: (id: number) => {
+        const i = timers.findIndex((x) => x.id === id);
+        if (i >= 0) timers.splice(i, 1);
+      },
       Date: { now: () => now },
     };
     const io = load<{
       ensureCardIo(key: string, force?: boolean): void;
       invalidateCardIo(cid: string): void;
       ioNeedsFetch(c: unknown, stamp: string, force: boolean, now: number, fromTimer?: boolean): boolean;
+      releaseCardIoTimer(cid: string): void;
     }>(
       [
         'decodeSlackEntities',
@@ -683,6 +693,8 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
         'ioNeedsFetch',
         'ioHasBudget',
         'scheduleCardIoRetry',
+        'cancelCardIoRetry',
+        'releaseCardIoTimer',
         'fetchCardIo',
         'ensureCardIo',
         'retryCardIo',
@@ -699,7 +711,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
         lastActivity: '2026-10-16T01:00:00.000Z',
         activityState: 'waiting',
       };
-      env._cardEls[key] = {};
+      env._cardEls[key] = { _cid: cid };
       env._expanded.add(key);
     };
     // Fire only the timers that are due; later ones stay pending.
@@ -717,6 +729,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
       advance,
       fetchCalls,
       fetchTimes,
+      pendingTimers: () => timers.map((x) => x.at - now),
       rawCalls,
       refreshed,
       now: () => now,
@@ -901,6 +914,94 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     await h.advance(h.env._ioCache.c4.retryAt - h.now());
     expect(h.fetchCalls).toHaveLength(2);
     expect(h.env._ioCache.c4.state).toBe('ok');
+  });
+
+  /** Fail until the conversation's step reaches the 30 s cap with that timer pending. */
+  async function driveToLongBackoff(h: ReturnType<typeof harness>, key: string, cid: string) {
+    h.io.ensureCardIo(key, true); // fails at step 1 (1 s)
+    await flush();
+    while (h.env._ioCache[cid].retryAt - h.now() < 30_000) {
+      await h.advance(h.env._ioCache[cid].retryAt - h.now());
+    }
+  }
+
+  it('a successful reopen clears a pending long backoff; the next failure retries at the fresh 1 s deadline', async () => {
+    const h = harness();
+    h.addCard('kt', 'ct');
+    await driveToLongBackoff(h, 'kt', 'ct');
+    const stale30 = h.env._ioCache.ct.retryAt; // a 30 s timer is pending
+    expect(stale30 - h.now()).toBe(30_000);
+    expect(h.pendingTimers()).toEqual([30_000]);
+    const failedSoFar = h.fetchCalls.length;
+
+    h.setMode('up');
+    h.io.ensureCardIo('kt', true); // explicit reopen succeeds
+    await flush();
+    expect(h.env._ioCache.ct.state).toBe('ok');
+    expect(h.pendingTimers()).toEqual([]); // the stale 30 s timer is gone
+
+    h.setMode('down');
+    h.env._sessionCache.kt.lastActivity = '2026-10-16T05:00:00.000Z';
+    h.io.ensureCardIo('kt', false); // newer stamp → fetch → fails (step 1)
+    await flush();
+    expect(h.fetchCalls).toHaveLength(failedSoFar + 2);
+    expect(h.env._ioCache.ct.retryAt - h.now()).toBe(1000);
+
+    h.setMode('up');
+    await h.advance(1000); // the fresh deadline
+    expect(h.fetchCalls).toHaveLength(failedSoFar + 3);
+    expect(h.env._ioCache.ct.state).toBe('ok');
+    await h.advance(stale30 + 60_000 - h.now()); // well past the old 30 s deadline
+    expect(h.fetchCalls).toHaveLength(failedSoFar + 3);
+  });
+
+  it('an earlier deadline replaces a later pending timer (and the later one never fires)', async () => {
+    const h = harness();
+    h.addCard('ke', 'ce');
+    await driveToLongBackoff(h, 'ke', 'ce');
+    const later = h.env._ioCache.ce.retryAt;
+    const before = h.fetchCalls.length;
+    // A fresh failure cycle wants an earlier deadline (e.g. a newer stamp).
+    h.env._ioCache.ce.retryAt = h.now() + 1000;
+    h.io.ensureCardIo('ke', false); // render: arms the timer for the earlier deadline
+    // Re-arming with a deadline later than the pending one keeps the pending one.
+    // (scheduleCardIoRetry is reached through ensureCardIo; see pendingTimers.)
+    expect(h.pendingTimers()).toEqual([1000]);
+    await h.advance(1000);
+    expect(h.fetchCalls).toHaveLength(before + 1);
+    await h.advance(later + 1000 - h.now());
+    // Only the timers the new failure scheduled itself may remain; none of them fetched early.
+    expect(h.fetchCalls.length - before).toBeLessThanOrEqual(2);
+    expect(h.fetchTimes.filter((x) => x === later)).toEqual([]);
+  });
+
+  it('a pending deadline is kept when the new one is later', async () => {
+    const h = harness();
+    h.addCard('kk', 'ck');
+    h.io.ensureCardIo('kk', true); // fails → 1 s timer pending
+    await flush();
+    expect(h.pendingTimers()).toEqual([1000]);
+    h.env._ioCache.ck.retryAt = h.now() + 30_000;
+    h.io.ensureCardIo('kk', false); // a later deadline must not replace the earlier timer
+    expect(h.pendingTimers()).toEqual([1000]);
+  });
+
+  it('closing the last open card of a conversation (or it leaving the board) clears its timer', async () => {
+    const h = harness();
+    h.addCard('kx', 'cx');
+    h.addCard('ky', 'cx'); // a second open card on the same conversation
+    h.io.ensureCardIo('kx', true);
+    await flush();
+    expect(h.pendingTimers()).toEqual([1000]);
+    h.env._expanded.delete('kx');
+    h.io.releaseCardIoTimer('cx'); // ky still shows it → kept
+    expect(h.pendingTimers()).toEqual([1000]);
+    delete h.env._cardEls.ky; // ky left the board
+    h.io.releaseCardIoTimer('cx');
+    expect(h.pendingTimers()).toEqual([]);
+    const n = h.fetchCalls.length;
+    await h.advance(60_000);
+    expect(h.fetchCalls).toHaveLength(n);
   });
 
   it('board renders never send a request during an outage; the deadline and backoff survive stamp changes', async () => {
