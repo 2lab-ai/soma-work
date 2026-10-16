@@ -676,3 +676,47 @@ describe('leak handling at every ending', () => {
     });
   }
 });
+
+describe('guardText — what the executor content guards read', () => {
+  it('excludes suppressed segments: leak → real answer gives the answer alone', async () => {
+    const result = await run(harness(LOG_MINIMAL), [
+      { type: 'assistant_delta', text: 'Prompt is too long' },
+      { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} },
+      { type: 'assistant_delta', text: FINAL },
+      { type: 'result', stopReason: 'end_turn', finalText: FINAL },
+    ]);
+
+    expect(result.collectedText).toBe(`Prompt is too long\n${FINAL}`);
+    expect(result.guardText).toBe(FINAL);
+  });
+
+  it('is the leak itself when the turn ended on one', async () => {
+    const result = await run(harness(LOG_MINIMAL), toolTurn('Prompt is too long', ''));
+
+    expect(result.guardText).toBe('Prompt is too long');
+  });
+
+  it('equals collectedText for an ordinary turn', async () => {
+    const result = await run(harness(LOG_MINIMAL), toolTurn());
+
+    expect(result.guardText).toBe(result.collectedText);
+  });
+});
+
+describe('a finalText that differs from the streamed leak only by whitespace', () => {
+  it('is the same leak: logged once as error, nothing posted, returned as transportLeak', async () => {
+    const h = harness(LOG_MINIMAL);
+
+    const result = await run(h, [
+      { type: 'assistant_delta', text: NARRATION },
+      { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} },
+      { type: 'assistant_delta', text: 'Prompt is too long' },
+      { type: 'result', stopReason: 'end_turn', finalText: '  Prompt is too long\n' },
+    ]);
+
+    expect(h.appendText).not.toHaveBeenCalled();
+    expect(h.say).not.toHaveBeenCalled();
+    expect(h.log.filter((e) => e.kind === 'error')).toHaveLength(1);
+    expect(result.transportLeak).toBe('Prompt is too long');
+  });
+});

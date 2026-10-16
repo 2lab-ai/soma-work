@@ -130,10 +130,14 @@ Entry contract for the final answer (the log is append-only):
     (END has abandoned it and posts its own completion) replaces itself with the completion
     and starts no ticker.
   - Duplicate END signals (PostCompact hook + `compact_boundary`) deliver one completion: the
-    first claims the cycle synchronously, the others wait for it. If that delivery fails, the
-    claim is released and the next END delivers instead.
+    first claims the cycle synchronously. A duplicate never blocks its caller — the CLI awaits
+    the PostCompact hook, which is usually the duplicate — it does its bookkeeping and
+    returns; its retry, should the claimer's delivery fail, runs in the background. A failed
+    delivery releases the claim, so a waiting or later END delivers instead.
   - The turn-end close never touches a cycle whose END has sealed it or is still delivering —
-    END owns that message, so "ended" can never overwrite "completed".
+    END owns that message, so "ended" can never overwrite "completed". If that END then fails
+    for good (no other END left to retry), it replaces the message with the neutral "ended"
+    line itself.
 
 ## Transport-error leaks (all levels)
 
@@ -151,7 +155,10 @@ compact failure) — also when narration preceded the leak, which the joined `co
 used to hide. No withheld narration is posted as the answer of such a turn.
 
 A real answer after the leak — streamed, or a new `finalText` — means the turn did not end on
-it: there is no `transportLeak`, and the answer posts once.
+it: there is no `transportLeak`, the answer posts once, and no recovery fires. The executor's
+guards read `StreamResult.guardText` (the leak the turn ended on, else the turn text without
+suppressed segments), so the recovered leak cannot reach them through `collectedText`. A
+`finalText` that differs from a suppressed leak only by whitespace is the same leak.
 
 ## Migration and stored masks
 
