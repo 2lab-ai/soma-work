@@ -765,8 +765,9 @@ describe('ToolEventProcessor', () => {
         const cleanup = processor.cleanup('C123:thread_ts', 'C123:1:turn-A').then(() => {
           cleanupSettled = true;
         });
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts');
+        // Poll until the flush is observed — independent of how many awaits
+        // cleanup runs before it — then cleanup must still be pending on it.
+        await vi.waitFor(() => expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts'));
         expect(cleanupSettled).toBe(false);
 
         finishFlush();

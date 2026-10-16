@@ -275,15 +275,22 @@ const workLogLogger = new Logger('WorkLog');
  * (the dashboard store once src wires it). Used for conversation-level
  * events such as compaction notices (src/slack/hooks/compact-hooks.ts),
  * which belong to the conversation, not to a turn — no `turnId`. Stamps `ts`
- * when absent. A throwing provider is logged and ignored: the work log must
+ * when absent. A throwing provider is logged at warn (conversationId, kind,
+ * and the caller's sessionKey when it has one) and ignored: the work log must
  * never break what records into it.
  */
-export function recordConversationWorkLog(conversationId: string, entry: WorkLogInput): void {
+export function recordConversationWorkLog(
+  conversationId: string,
+  entry: WorkLogInput,
+  logContext: { sessionKey?: string } = {},
+): void {
   try {
     streamExecutorProviders.appendWorkLog(conversationId, { ts: Date.now(), ...entry });
   } catch (err) {
-    workLogLogger.debug('appendWorkLog provider threw — ignored', {
+    workLogLogger.warn('appendWorkLog provider threw — entry dropped', {
+      conversationId,
       kind: entry.kind,
+      ...(logContext.sessionKey ? { sessionKey: logContext.sessionKey } : {}),
       error: (err as Error)?.message ?? String(err),
     });
   }
@@ -1106,7 +1113,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const emitWorkLog = (entry: WorkLogInput): void => {
       const conversationId = session.conversationId;
       if (!conversationId) return;
-      recordConversationWorkLog(conversationId, { turnId, ts: Date.now(), ...entry });
+      recordConversationWorkLog(conversationId, { turnId, ts: Date.now(), ...entry }, { sessionKey });
     };
 
     // Per-request tool statistics

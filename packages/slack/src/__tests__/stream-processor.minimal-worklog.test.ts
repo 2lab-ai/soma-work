@@ -846,8 +846,8 @@ describe('bookkeeping frames do not settle the held answer as narration', () => 
 
 /**
  * Spec 10 §3.2-3: if the final answer or a question form reached Slack this
- * turn, the turn did not end on a leak. If nothing reached Slack, the leak
- * stays the terminal segment.
+ * turn, the turn did not end on a leak. If posting the answer throws, the
+ * turn fails on that error instead.
  */
 describe('what makes the accepted final the terminal segment', () => {
   const LEAK = 'Prompt is too long';
@@ -878,16 +878,15 @@ describe('what makes the accepted final the terminal segment', () => {
     expect(h.log.filter((e) => e.kind === 'error')).toEqual([expect.objectContaining({ text: LEAK })]);
   });
 
-  it('the promotion runs but posting the answer throws: nothing reached Slack, the leak stays terminal', async () => {
+  // What production observes: the post error escapes process() — no
+  // StreamResult, so the executor's catch runs handleError on that error and
+  // no leak recovery runs this turn.
+  it('the promotion runs but posting the answer throws: process() rejects with the post error', async () => {
     const h = harness(LOG_MINIMAL);
     h.appendText.mockRejectedValue(new Error('slack down'));
-    const processor = new AgentStreamProcessor();
 
     await expect(
-      processor.process(events(withheldThenLeak()), h.context, new AbortController().signal),
+      new AgentStreamProcessor().process(events(withheldThenLeak()), h.context, new AbortController().signal),
     ).rejects.toThrow('slack down');
-
-    const internals = processor as unknown as { transportLeakResult(): { transportLeak?: string } };
-    expect(internals.transportLeakResult()).toEqual({ transportLeak: LEAK });
   });
 });

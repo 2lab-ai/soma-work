@@ -1942,8 +1942,8 @@ export class AgentStreamProcessor {
           if (this.mayPromoteWithheld(known, context)) {
             // Spec 10 §3.2-3: kept off Slack as narration, but it IS the final
             // answer — post it once, without dispatching its directives again.
-            // A throw here leaves the terminal segment as it was: nothing
-            // reached Slack, so a leak before it still drives recovery.
+            // A throw here propagates out of process(); the turn fails on that
+            // error (handleError) and no leak recovery runs this turn.
             known.fate = 'settled';
             await this.postFinalAnswer(known.shown, context, usage, event.durationMs);
           }
