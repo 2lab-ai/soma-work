@@ -3,6 +3,7 @@
  * Extracted from claude-handler.ts (Phase 5.1)
  */
 
+import { upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
@@ -2151,7 +2152,9 @@ export class SessionRegistry {
           shutdownNotificationSent: serialized.shutdownNotificationSent,
           shutdownNotifiedAt: serialized.shutdownNotifiedAt,
           wasWorkingAtShutdown: serialized.wasWorkingAtShutdown,
-          logVerbosity: serialized.logVerbosity,
+          // A mask stored before the NARRATION flag maps to its current preset
+          // (spec 10 §3.2) — otherwise the thread silently loses narration.
+          logVerbosity: upgradeLegacyVerbosityMask(serialized.logVerbosity),
           // Backfill effort on legacy sessions so resume uses DEFAULT_EFFORT
           // rather than the SDK default.
           effort: serialized.effort ?? userSettingsStore.getUserDefaultEffort(resolvedOwnerId),

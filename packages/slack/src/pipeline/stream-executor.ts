@@ -1435,6 +1435,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         isUserInputTurn: params.isUserInput === true,
         incidentAttempt,
         ...(session.conversationId ? { workLog: emitWorkLog } : {}),
+        // The ASK_USER_QUESTION form is posted here, not by the processor
+        // (handleModelCommandToolResults); tell it so its no-final fallback
+        // does not post old narration under the form.
+        hostChoicePosted: () => toolChoicePending,
         get logVerbosity() {
           return session.logVerbosity ?? LOG_DETAIL;
         },
@@ -2641,12 +2645,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // `controller.abort()` yields a DOMException ("AbortError"); we only
       // trust it when it matches our known reason union.
       const abortReason = requestAborted ? coerceAbortReason(abortController.signal.reason) : undefined;
-      emitWorkLog({
-        kind: 'error',
-        text: requestAborted
-          ? `aborted${abortReason ? ` (${abortReason})` : ''}`
-          : this.sanitizeSdkDetails(String((error as Error)?.message ?? error)),
-      });
+      // Work log: an abort is a `notice`; an error is an `error` unless
+      // handleError schedules a retry (recoverable — `notice` with the delay).
+      // Written after handleError, in a finally, so a throw there still logs.
+      const turnErrorText = requestAborted
+        ? `aborted${abortReason ? ` (${abortReason})` : ''}`
+        : this.sanitizeSdkDetails(String((error as Error)?.message ?? error));
+      let scheduledRetryMs: number | undefined;
       // Issue #525 P1: close the B1 stream before handleError posts the
       // error block — otherwise the stream would linger until finally and
       // race with the error message rendering. PHASE=0 → no-op.
@@ -2686,20 +2691,35 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           error: (err as Error)?.message ?? String(err),
         });
       }
-      const retryAfterMs = await this.handleError(
-        error,
-        session,
-        sessionKey,
-        channel,
-        threadTs,
-        processedFiles,
-        say,
-        requestAborted,
-        activeSlotSnapshot,
-        abortReason,
-        turnEpochToken,
-        interruptFlushFailed,
-      );
+      let retryAfterMs: number | undefined;
+      try {
+        retryAfterMs = await this.handleError(
+          error,
+          session,
+          sessionKey,
+          channel,
+          threadTs,
+          processedFiles,
+          say,
+          requestAborted,
+          activeSlotSnapshot,
+          abortReason,
+          turnEpochToken,
+          interruptFlushFailed,
+        );
+        scheduledRetryMs = retryAfterMs;
+      } finally {
+        if (requestAborted) {
+          emitWorkLog({ kind: 'notice', text: turnErrorText });
+        } else if (scheduledRetryMs !== undefined) {
+          emitWorkLog({
+            kind: 'notice',
+            text: `retrying in ${Math.round(scheduledRetryMs / 1000)}s: ${turnErrorText}`,
+          });
+        } else {
+          emitWorkLog({ kind: 'error', text: turnErrorText });
+        }
+      }
       // `handleError()` ran to completion — it either dispatched a user-facing
       // Exception card (turnNotifier), reset status/reaction, or both.
       //

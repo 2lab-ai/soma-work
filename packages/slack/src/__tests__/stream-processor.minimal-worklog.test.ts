@@ -87,12 +87,13 @@ describe('minimal verbosity — narration goes to the work log, Slack gets the f
     // The recorder still gets the whole turn.
     expect(result.collectedText).toBe(`${NARRATION}\n${FINAL}`);
 
-    expect(h.log.map((e) => e.kind)).toEqual(['narration', 'tool', 'tool_result', 'narration', 'final']);
+    // The final answer is recorded once — as `final`, not also as narration.
+    expect(h.log.map((e) => e.kind)).toEqual(['narration', 'tool', 'tool_result', 'final']);
     expect(h.log[0]).toMatchObject({ kind: 'narration', text: NARRATION });
     expect(h.log[1]).toMatchObject({ kind: 'tool', tool: 'Read' });
     expect(h.log[1]?.text).toContain('/repo/config.ts');
     expect(h.log[2]).toMatchObject({ kind: 'tool_result', tool: 'Read', ok: true });
-    expect(h.log[4]).toMatchObject({ kind: 'final', text: FINAL });
+    expect(h.log[3]).toMatchObject({ kind: 'final', text: FINAL });
     for (const entry of h.log) {
       expect(entry.turnId).toBe('C1:T1:turn-1');
       expect(typeof entry.ts).toBe('number');
@@ -185,8 +186,66 @@ describe('minimal verbosity — narration goes to the work log, Slack gets the f
 
     expect(h.appendText).not.toHaveBeenCalled();
     expect(h.say).not.toHaveBeenCalled();
-    // Still in the work log — "before any suppression".
-    expect(h.log.map((e) => e.kind)).toEqual(['narration', 'final']);
+    // Still in the work log — "before any suppression" — once, as the final.
+    expect(h.log).toEqual([expect.objectContaining({ kind: 'final', text: 'Prompt is too long' })]);
+  });
+
+  it('a leaked transport error as the final never brings withheld narration onto Slack', async () => {
+    const h = harness(LOG_MINIMAL);
+
+    await run(h, [
+      { type: 'assistant_delta', text: NARRATION },
+      { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} },
+      { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'ok' }] },
+      { type: 'assistant_delta', text: 'Prompt is too long' },
+      { type: 'result', stopReason: 'end_turn', finalText: 'Prompt is too long' },
+    ]);
+
+    expect(h.appendText).not.toHaveBeenCalled();
+    expect(h.say).not.toHaveBeenCalled();
+  });
+
+  it('a directive-ONLY final segment: the withheld narration is posted instead of nothing', async () => {
+    const h = harness(LOG_MINIMAL);
+    const onChannelMessageDetected = vi.fn().mockResolvedValue(undefined);
+    const directiveOnly = '```json\n{"type":"channel_message","text":"Release notes"}\n```';
+
+    await run(h, toolTurn(directiveOnly, directiveOnly), { onChannelMessageDetected });
+
+    expect(onChannelMessageDetected).toHaveBeenCalledTimes(1);
+    expect(h.appendText).toHaveBeenCalledTimes(1);
+    expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', NARRATION);
+    expect(h.log.filter((e) => e.kind === 'final')).toEqual([expect.objectContaining({ text: NARRATION })]);
+  });
+
+  it('a whitespace-only final segment: the withheld narration is posted instead of nothing', async () => {
+    const h = harness(LOG_MINIMAL);
+
+    await run(h, toolTurn('   \n', '   \n'));
+
+    expect(h.appendText).toHaveBeenCalledTimes(1);
+    expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', NARRATION);
+  });
+
+  it('a choice form the HOST posted this turn suppresses the fallback (no narration under the form)', async () => {
+    const h = harness(LOG_MINIMAL);
+    h.context.hostChoicePosted = () => true;
+
+    await run(h, toolTurn(FINAL, ''));
+
+    expect(h.appendText).not.toHaveBeenCalled();
+    expect(h.say).not.toHaveBeenCalled();
+    expect(h.log.some((e) => e.kind === 'final')).toBe(false);
+  });
+
+  it('a host-posted choice does not hold back a real final answer', async () => {
+    const h = harness(LOG_MINIMAL);
+    h.context.hostChoicePosted = () => true;
+
+    await run(h, toolTurn());
+
+    expect(h.appendText).toHaveBeenCalledTimes(1);
+    expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', FINAL);
   });
 
   it('a result event with NO finalText property posts the last withheld segment, logged as one final', async () => {
@@ -197,6 +256,19 @@ describe('minimal verbosity — narration goes to the work log, Slack gets the f
     expect(result).not.toHaveProperty('finalText');
 
     await run(h, turn);
+
+    expect(h.appendText).toHaveBeenCalledTimes(1);
+    expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', FINAL);
+    expect(h.log.filter((e) => e.kind === 'final')).toEqual([expect.objectContaining({ text: FINAL })]);
+  });
+
+  it('a result event whose finalText is explicitly undefined posts the last withheld segment', async () => {
+    const h = harness(LOG_MINIMAL);
+    const turn = toolTurn(FINAL, NO_FINAL_TEXT);
+    const result = { ...turn[turn.length - 1], finalText: undefined } as AgentStreamEvent;
+    expect(result).toHaveProperty('finalText', undefined);
+
+    await run(h, [...turn.slice(0, -1), result]);
 
     expect(h.appendText).toHaveBeenCalledTimes(1);
     expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', FINAL);
@@ -361,7 +433,7 @@ describe('compact and above — narration still streams to Slack (unchanged)', (
       await run(h, toolTurn());
 
       expect(h.appendText.mock.calls.map((c) => c[1])).toEqual([NARRATION, FINAL]);
-      expect(h.log.map((e) => e.kind)).toEqual(['narration', 'tool', 'tool_result', 'narration', 'final']);
+      expect(h.log.map((e) => e.kind)).toEqual(['narration', 'tool', 'tool_result', 'final']);
     });
   }
 

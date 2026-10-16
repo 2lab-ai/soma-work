@@ -10,6 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getVerbosityFlags, LOG_MINIMAL } from '../../output-flags';
+import { AgentStreamProcessor, type StreamContext } from '../../stream-processor';
 import type { WorkLogInput } from '../../work-log';
 import { StreamExecutor, setStreamExecutorProviders } from '../stream-executor';
 
@@ -221,7 +222,7 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
     await settle();
 
     expect(result.success).toBe(true);
-    expect(loggedKinds()).toEqual(['instruction', 'narration', 'tool', 'tool_result', 'narration', 'final']);
+    expect(loggedKinds()).toEqual(['instruction', 'narration', 'tool', 'tool_result', 'final']);
     for (const [conversationId, entry] of appendWorkLog.mock.calls) {
       expect(conversationId).toBe('conv-1');
       expect(entry.turnId).toBe(appendWorkLog.mock.calls[0]?.[1].turnId);
@@ -241,7 +242,7 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
     await settle();
 
     expect(deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => call[1])).toEqual([NARRATION, FINAL]);
-    expect(loggedKinds()).toEqual(['instruction', 'narration', 'tool', 'tool_result', 'narration', 'final']);
+    expect(loggedKinds()).toEqual(['instruction', 'narration', 'tool', 'tool_result', 'final']);
   });
 
   it('a session without a conversation writes no work log', async () => {
@@ -312,7 +313,7 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
     );
   });
 
-  it('a thrown turn error is logged as an error entry before handleError runs', async () => {
+  it('a thrown turn error with no retry scheduled is logged as an error entry', async () => {
     const deps = createDeps(() =>
       (async function* () {
         yield { type: 'assistant_delta', text: NARRATION };
@@ -329,5 +330,69 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
     expect(appendWorkLog.mock.calls.map(([, entry]) => entry)).toContainEqual(
       expect.objectContaining({ kind: 'error', text: 'transport closed' }),
     );
+  });
+
+  it('a recoverable error (retry scheduled) is logged as a notice, not an error', async () => {
+    const deps = createDeps(() =>
+      (async function* () {
+        yield { type: 'assistant_delta', text: NARRATION };
+        throw new Error('rate limited');
+      })(),
+    );
+    const executor = new StreamExecutor(deps);
+    vi.spyOn(executor as any, 'handleError').mockResolvedValue(30_000);
+
+    await executor.execute(createParams(createSession(LOG_MINIMAL))).catch(() => undefined);
+    await settle();
+
+    const entries = appendWorkLog.mock.calls.map(([, entry]) => entry);
+    expect(entries.some((entry) => entry.kind === 'error')).toBe(false);
+    expect(entries).toContainEqual(expect.objectContaining({ kind: 'notice', text: 'retrying in 30s: rate limited' }));
+  });
+
+  it('a user stop is logged as a notice, not an error', async () => {
+    const controller = new AbortController();
+    const deps = createDeps(() =>
+      (async function* () {
+        yield { type: 'assistant_delta', text: NARRATION };
+        controller.abort('user-stop');
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        throw err;
+      })(),
+    );
+    const executor = new StreamExecutor(deps);
+    vi.spyOn(executor as any, 'handleError').mockResolvedValue(undefined);
+    const params = { ...createParams(createSession(LOG_MINIMAL)), abortController: controller };
+
+    await executor.execute(params).catch(() => undefined);
+    await settle();
+
+    const entries = appendWorkLog.mock.calls.map(([, entry]) => entry);
+    expect(entries.some((entry) => entry.kind === 'error')).toBe(false);
+  });
+
+  it('a choice form posted by the host (ASK_USER_QUESTION) is visible to the processor', async () => {
+    const deps = createDeps(toolTurn());
+    let seen: (() => boolean) | undefined;
+    const executor = new StreamExecutor(deps);
+    const realProcess = AgentStreamProcessor.prototype.process;
+    const spy = vi.spyOn(AgentStreamProcessor.prototype, 'process').mockImplementation(function (
+      this: AgentStreamProcessor,
+      stream,
+      context: StreamContext,
+      signal,
+    ) {
+      seen = context.hostChoicePosted;
+      return realProcess.call(this, stream, context, signal);
+    });
+    vi.spyOn(executor as any, 'handleModelCommandToolResults').mockResolvedValue({ hasPendingChoice: true });
+
+    await executor.execute(createParams(createSession(LOG_MINIMAL)));
+    await settle();
+    spy.mockRestore();
+
+    expect(seen).toBeTypeOf('function');
+    expect(seen?.()).toBe(true);
   });
 });
