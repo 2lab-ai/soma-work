@@ -85,10 +85,19 @@ Each flag is checked at the point of output using `shouldOutput(flag, verbosityM
 ## Work log (all levels)
 
 Verbosity decides what reaches the Slack thread, never what is recorded. Every turn's
-user instruction, narration segments, tool calls/results, final answer, compaction notices,
-retries and quiet aborts (`notice`) and errors (`error`) are emitted at every level through
-`StreamContext.workLog` → `streamExecutorProviders.appendWorkLog(conversationId, entry)`
-(types: `packages/slack/src/work-log.ts`), for the dashboard's per-session work log.
+user instruction, narration segments, tool calls/results, final answer, compaction notices
+(including the "next turn will auto /compact" announcement), turn errors and aborts are
+emitted at every level through `StreamContext.workLog` →
+`streamExecutorProviders.appendWorkLog(conversationId, entry)` (types:
+`packages/slack/src/work-log.ts`), for the dashboard's per-session work log.
+
+Errors and aborts follow the same split as the user-facing error card:
+
+- `error` — a turn error with no retry scheduled, and an abort that gets the 🔴 card
+  (stall-timeout, ghost-session, unknown reason).
+- `notice` — a quiet abort the user already knows about (supersede, user-stop, session-close,
+  shutdown, user-interrupted), and a recoverable error with a retry scheduled
+  (`retrying in Ns: …`).
 
 Entry contract for the final answer (the log is append-only):
 
@@ -106,13 +115,24 @@ Entry contract for the final answer (the log is append-only):
   its directives again.
 - A turn whose final answer shows nothing (no `finalText`, an empty one, a directive-only or
   blank segment, or no `result` at all) posts its last withheld narration instead — except
-  when the turn's last visible text was a transport-error leak the guards suppressed
-  (the executor recovers that turn), or when the host posted a question form this turn
-  (the form is what the user answers; nothing is posted under it).
-- Compaction start/complete notices are not posted (`src/slack/hooks/compact-hooks.ts`).
+  when the host posted a question form this turn (the form is what the user answers; nothing
+  is posted under it), or when the turn ended on a transport-error leak (below).
+- Compaction start/complete notices and the threshold checker's "next turn will auto
+  /compact" announcement are not posted (`src/slack/hooks/compact-hooks.ts`,
+  `src/session/compact-threshold-checker.ts`).
   A "starting" message that was already posted is always replaced — by the completion, or at
   turn end by a neutral "ended" line when no END signal arrived. END waits at most 10 s for
   an in-flight "starting" post; a later-landing one replaces itself.
+
+## Transport-error leaks (all levels)
+
+A transport error surfaced as assistant text (prompt-too-long, a failed compaction, the
+empty-text-block 400) is never posted. When the turn ENDS on such a segment, the processor
+returns it as `StreamResult.transportLeak`, and stream-executor runs its content guards on that
+text (falling back to the whole `collectedText`). The guards convert it into a thrown error so
+`handleError` takes the matching recovery (fallback `/compact`, transcript repair, terminal
+compact failure) — also when narration preceded the leak, which the joined `collectedText`
+used to hide. No withheld narration is posted as the answer of such a turn.
 
 ## Migration and stored masks
 

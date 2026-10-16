@@ -593,6 +593,15 @@ export interface StreamResult {
   aborted: boolean;
   /** All collected text from the response (for renew pattern detection) */
   collectedText?: string;
+  /**
+   * The transport-error leak the turn ENDED on (a segment the leak guards
+   * kept off Slack: prompt-too-long, compaction failure, empty-text-block
+   * 400) — its text alone. `collectedText` joins every segment, so after any
+   * narration the executor's content guards (short-text / starts-with) could
+   * no longer see the leak; they read this first. Absent when the turn went
+   * on to show other text after the leak.
+   */
+  transportLeak?: string;
   /** Usage data from the result message */
   usage?: UsageData;
   /** Whether the response ended with a user choice/form prompt */
@@ -1159,6 +1168,7 @@ export class AgentStreamProcessor {
         messageCount: currentMessages.length,
         aborted: false,
         collectedText: currentMessages.join('\n'),
+        ...this.transportLeakResult(),
         usage: lastUsage,
         hasUserChoice: this._hasUserChoice,
         endTurnInfo: this._endTurnInfo,
@@ -1942,6 +1952,12 @@ export class AgentStreamProcessor {
    */
   private mayPromoteWithheld(segment: SegmentFate, context: StreamContext): boolean {
     return segment.fate === 'withheld' && !context.hostChoicePosted?.();
+  }
+
+  /** `{ transportLeak }` when the turn's last visible segment was a suppressed leak. */
+  private transportLeakResult(): Pick<StreamResult, 'transportLeak'> {
+    const last = this.lastShownSegment;
+    return last?.fate === 'suppressed' ? { transportLeak: last.shown } : {};
   }
 
   /** Index one segment under one of its identities (raw or shown text). */

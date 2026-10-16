@@ -18,9 +18,11 @@ const appendWorkLog = vi.fn<(conversationId: string, entry: WorkLogInput) => voi
 const postCompactStartingIfNeeded = vi.fn().mockResolvedValue(undefined);
 const postCompactCompleteIfNeeded = vi.fn().mockResolvedValue(undefined);
 const closeCompactStartingAtTurnEnd = vi.fn().mockResolvedValue(undefined);
+const checkAndSchedulePendingCompact = vi.fn().mockResolvedValue(false);
 
 setStreamExecutorProviders({
   appendWorkLog,
+  checkAndSchedulePendingCompact,
   closeCompactStartingAtTurnEnd,
   postCompactStartingIfNeeded,
   postCompactCompleteIfNeeded,
@@ -473,5 +475,83 @@ describe('StreamExecutor — turn end closes an un-ended compaction "starting" m
     const result = await new StreamExecutor(deps).execute(createParams(createSession(LOG_MINIMAL)));
 
     expect(result.success).toBe(true);
+  });
+});
+
+describe('StreamExecutor — a leak after narration still reaches the recovery rail', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const LONG_NARRATION =
+    'I will start by reading the deployment configuration, then the three service manifests it references, and finally compare their timeout values against the load-balancer settings.';
+
+  for (const level of ['minimal', 'compact'] as const) {
+    it(`${level}: narration > 160 chars → tool → "Prompt is too long" ⇒ the prompt-too-long recovery fires`, async () => {
+      const deps = createDeps(() =>
+        (async function* () {
+          yield { type: 'assistant_delta', text: LONG_NARRATION };
+          yield { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} };
+          yield { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'ok' }] };
+          yield { type: 'assistant_delta', text: 'Prompt is too long' };
+          yield { type: 'result', stopReason: 'end_turn', finalText: 'Prompt is too long' };
+        })(),
+      );
+      const executor = new StreamExecutor(deps);
+      const handleError = spyOnHandleError(executor).mockResolvedValue(undefined);
+
+      await executor.execute(createParams(createSession(getVerbosityFlags(level)))).catch(() => undefined);
+      await settle();
+
+      expect(handleError).toHaveBeenCalledTimes(1);
+      expect(String((handleError.mock.calls[0]?.[0] as Error).message)).toBe(
+        'Prompt is too long (surfaced as turn content): Prompt is too long',
+      );
+      // The leak itself never reached the thread.
+      const appended = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => call[1]);
+      expect(appended).not.toContain('Prompt is too long');
+    });
+  }
+
+  it('an ordinary turn whose collectedText merely discusses the error is not recovered', async () => {
+    const deps = createDeps(() =>
+      (async function* () {
+        yield { type: 'assistant_delta', text: LONG_NARRATION };
+        yield { type: 'assistant_delta', text: 'When a prompt is too long the SDK says "Prompt is too long".' };
+        yield {
+          type: 'result',
+          stopReason: 'end_turn',
+          finalText: 'When a prompt is too long the SDK says "Prompt is too long".',
+        };
+      })(),
+    );
+    const executor = new StreamExecutor(deps);
+    const handleError = spyOnHandleError(executor).mockResolvedValue(undefined);
+
+    await executor.execute(createParams(createSession(LOG_MINIMAL)));
+    await settle();
+
+    expect(handleError).not.toHaveBeenCalled();
+  });
+});
+
+describe('StreamExecutor — the threshold checker gets the turn work-log sink', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('passes workLog bound to this conversation and turn', async () => {
+    const deps = createDeps(toolTurn());
+
+    await new StreamExecutor(deps).execute(createParams(createSession(LOG_MINIMAL)));
+    await settle();
+
+    expect(checkAndSchedulePendingCompact).toHaveBeenCalledTimes(1);
+    const args = checkAndSchedulePendingCompact.mock.calls[0]?.[0] as { workLog: (entry: WorkLogInput) => void };
+    args.workLog({ kind: 'notice', text: 'Context usage 160k tokens ≥ 160k' });
+    expect(appendWorkLog).toHaveBeenLastCalledWith(
+      'conv-1',
+      expect.objectContaining({ kind: 'notice', text: 'Context usage 160k tokens ≥ 160k' }),
+    );
   });
 });
