@@ -84,7 +84,7 @@ Only these fields exist per surface — anything else warns and is skipped.
 - `turnend`: `status`, `title`, `threadlink`, `errorbody`, `persona`, `model`, `effort`, `startedat`, `contextwindow`, `duration`, `fivehour`, `sevenday`, `toolstats`, `separator`
 - `dashboardheader`: `title`, `owner`, `workflow`, `model`, `links`, `mergestats`, `tokens`, `cost`, `contextwindow`, `tasks`, `status`, `separator`
 
-A field that does not appear in the resolved lines is hidden. On the dashboard card, the pending-question block and action buttons are always shown regardless of configuration.
+A field that does not appear in the resolved lines is hidden. The dashboard (Agent inbox) card is collapsed by default: its face shows the title, a one-line summary, the status and the `tasks` / `contextwindow` counts; the meta row (`owner`, `workflow`, `model`, `status`, links, tokens, cost, merge stats) and the task timeline move to the expanded card, under the same field gates. In the expanded card the pending-question block and the action buttons are always shown regardless of configuration.
 
 ## Slack constraints
 
