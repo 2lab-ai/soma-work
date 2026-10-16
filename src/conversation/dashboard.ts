@@ -4484,29 +4484,6 @@ function fetchCardIo(cid) {
     });
 }
 
-// force = the card was just (re)opened: a cached failure is retried at once.
-function ensureCardIo(key, force) {
-  var s = _sessionCache[key];
-  if (!s || !s.conversationId || isSiblingSession(s)) return;
-  var cid = s.conversationId;
-  var stamp = String(s.lastActivity || '');
-  var c = _ioCache[cid];
-  if (!ioNeedsFetch(c, stamp, force, Date.now())) return;
-  var prev = c ? c.data : null;
-  // The retry budget belongs to one content stamp: newer activity starts over.
-  var fails = c && c.state === 'error' && c.stamp === stamp ? (c.fails || 0) : 0;
-  _ioCache[cid] = { state: 'loading', stamp: stamp, data: prev, dirty: false, fails: fails };
-  function failed(data) {
-    var n = fails + 1;
-    var wait = ioBackoffMs(n);
-    settleCardIo(cid, { state: 'error', stamp: stamp, data: data, fails: n, retryAt: Date.now() + wait });
-    if (n <= IO_AUTO_RETRIES) setTimeout(function() { retryCardIo(cid); }, wait);
-  }
-  fetchCardIo(cid).then(function(result) {
-    if (result && result.partial) failed(result); // keep the instruction, retry the response
-    else settleCardIo(cid, { state: 'ok', stamp: stamp, data: result, fails: 0 });
-  }, function() { failed(prev); });
-}
 // Deadline timer fired: retry for the first card of that conversation still open.
 function retryCardIo(cid) {
   for (var k in _cardEls) {

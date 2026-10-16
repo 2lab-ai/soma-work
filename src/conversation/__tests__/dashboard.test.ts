@@ -788,6 +788,31 @@ describe('Dashboard API', () => {
     expect(() => new Function(scriptContent)).not.toThrow();
   });
 
+  it('declares every top-level client function and variable exactly once (the served script)', async () => {
+    // A second `function f` silently replaces the first in the browser (the
+    // later declaration wins), so the page would run code no test looked at.
+    const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
+    expect(res.statusCode).toBe(200);
+    const scriptMatch = (res.body as string).match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const script = scriptMatch?.[1] ?? '';
+    const ts = await import('typescript');
+    const file = ts.createSourceFile('dashboard-client.js', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const seen = new Map<string, number>();
+    const add = (name: string) => seen.set(name, (seen.get(name) ?? 0) + 1);
+    for (const stmt of file.statements) {
+      if (ts.isFunctionDeclaration(stmt) && stmt.name) add(stmt.name.text);
+      if (ts.isVariableStatement(stmt)) {
+        for (const d of stmt.declarationList.declarations) if (ts.isIdentifier(d.name)) add(d.name.text);
+      }
+      if (ts.isClassDeclaration(stmt) && stmt.name) add(stmt.name.text);
+    }
+    expect(seen.size).toBeGreaterThan(100); // the whole client script was parsed
+    expect(seen.has('ensureCardIo')).toBe(true);
+    const duplicates = [...seen].filter(([, n]) => n > 1).map(([name, n]) => `${name} ×${n}`);
+    expect(duplicates).toEqual([]);
+  });
+
   it('should render onclick handlers with properly escaped quotes', async () => {
     const res = await injectWebServer({
       method: 'GET',
