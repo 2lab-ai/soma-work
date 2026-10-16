@@ -3765,7 +3765,8 @@ function toNum(v) {
 }
 // Compact token count: 999 · 1.5K · 2.5M · 3.1B · 4.2T. The unit is chosen
 // after rounding (never "1000.0K"); a negative or non-number is 0, and anything
-// from 1000T up is capped so an absurd value cannot print an exponent.
+// that would round to 1000.0T or more (from 999.95T) is capped at 999.9T+ so an
+// absurd value cannot print an exponent.
 function formatTokens(n) {
   n = Math.max(0, toNum(n));
   if (n < 999.5) return String(Math.round(n));
