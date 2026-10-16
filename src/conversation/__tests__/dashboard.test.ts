@@ -952,9 +952,15 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 4 doAction calls × 1 sep + 1 resummarize + 4 answerChoice × 3 seps + 1 selectMc × 1 sep = 18 closing patterns
-    // (answerChoice appears at 4 sites: card-recommended, card-non-recommended, panel-recommended, panel-non-recommended)
-    expect(actionClosings!.length).toBe(18);
+    // 4 doAction calls × 1 sep + 1 resummarize = 5 closing patterns.
+    // The 4 answerChoice sites (card/panel × recommended/other) and the selectMc
+    // site no longer build inline JS strings: their model-written question /
+    // label / id travel in attribute-escaped data-choice-* attributes read by
+    // one delegated click handler, because escJs() inside a double-quoted
+    // onclick could not carry " or newlines safely (.prd/10 round-2 review).
+    expect(actionClosings!.length).toBe(5);
+    expect(script).not.toMatch(/answerChoice\(\\'/);
+    expect(script).not.toMatch(/selectMc\(\\'/);
   });
 
   // ── Guard: detect unescaped inline handlers if new ones are added ──
