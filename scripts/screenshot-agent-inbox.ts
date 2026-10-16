@@ -426,7 +426,11 @@ const PAGE_HELPERS = [
   'window.__wlSeqs = function () { return Array.prototype.map.call(document.querySelectorAll("#worklog-list .wl-entry"), function (e) { return Number(e.getAttribute("data-seq")); }); };',
 ].join('\n');
 
-async function installMocks(page: Page, board: unknown, opts: { holdLatestWorklog?: Promise<void> } = {}) {
+async function installMocks(
+  page: Page,
+  board: unknown,
+  opts: { holdLatestWorklog?: Promise<void>; holdDenied?: Promise<void> } = {},
+) {
   await page.addInitScript({ content: PAGE_HELPERS });
   await page.route('**/auth/me', (r) => r.fulfill({ json: { user: { name: 'Zhuge' }, csrfToken: 'x' } }));
   await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: [{ id: 'U001', name: 'Zhuge' }] } }));
@@ -454,7 +458,10 @@ async function installMocks(page: Page, board: unknown, opts: { holdLatestWorklo
     const conv = decodeURIComponent(url.pathname.split('/')[4] || '');
     const raw = url.searchParams.get('afterSeq');
     WORKLOG_CALLS.push({ conv, afterSeq: raw === null ? null : Number(raw) });
-    if (conv === 'conv-denied') return r.fulfill({ status: 403, json: { error: 'forbidden' } });
+    if (conv === 'conv-denied') {
+      if (opts.holdDenied) await opts.holdDenied;
+      return r.fulfill({ status: 403, json: { error: 'forbidden' } });
+    }
     if (conv === 'conv-flaky') {
       FLAKY_CALLS.n++;
       return FLAKY_CALLS.n === 1
@@ -1098,6 +1105,116 @@ async function reviewScenarios(browser: import('playwright').Browser) {
   await ctx.close();
 }
 
+/** Opus round-2 findings: hostile panel numbers, live entries then 403, long choice labels at 390. */
+async function addendumChecks(browser: import('playwright').Browser) {
+  const board = makeBoard() as Record<string, Array<Record<string, unknown>>>;
+  const LONG_URL = `https://example.com/${'very-long-path-segment-'.repeat(12)}end?query=${'x'.repeat(60)}`;
+  (board.waiting[0].pendingQuestion as { choices: Array<{ id: string; label: string }> }).choices.push({
+    id: '3',
+    label: LONG_URL,
+  });
+  board.idle[0].tokenUsage = {
+    totalInputTokens: '<img src=x onerror="window.__pwned=1">',
+    totalOutputTokens: '"><b>out</b>',
+    totalCostUsd: '<i>cost</i>',
+    contextUsagePercent: '<u>ctx</u>',
+  };
+  board.idle[0].mergeStats = { totalLinesAdded: '<img src=y onerror="window.__pwned=2">', totalLinesDeleted: '"x' };
+  board.working[1].conversationId = 'conv-denied'; // Release notes: someone else's log (403, held)
+  let releaseDenied: () => void = () => {};
+  const holdDenied = new Promise<void>((r) => {
+    releaseDenied = r;
+  });
+
+  const ctx = await browser.newContext({
+    viewport: { width: 390, height: 900 },
+    colorScheme: 'light',
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await ctx.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await installMocks(page, board, { holdDenied });
+  await openBoard(page);
+
+  // 4 — a long unbroken choice label wraps inside the open card at 390px.
+  await page.click(`[data-session-key="${K('100')}"] .card-face`);
+  await page.waitForTimeout(450);
+  const clip = await page.evaluate((key) => {
+    const card = document.querySelector(`[data-session-key="${key}"]`) as HTMLElement;
+    const cr = card.getBoundingClientRect();
+    const btns = Array.from(card.querySelectorAll('.btn-choice')) as HTMLElement[];
+    return {
+      buttons: btns.length,
+      clipped: btns.filter((b) => b.scrollWidth > b.clientWidth + 1).length,
+      // Either edge: the choices row is right-aligned, so a too-wide button
+      // spills out on the LEFT, where the open card clips it.
+      outside: btns.filter((b) => {
+        const r = b.getBoundingClientRect();
+        return r.left < cr.left - 0.5 || r.right > cr.right + 0.5;
+      }).length,
+      overflow: document.documentElement.scrollWidth - window.innerWidth,
+    };
+  }, K('100'));
+  check(
+    clip.buttons === 3 && clip.clipped === 0 && clip.outside === 0 && clip.overflow === 0,
+    `long URL choice wraps inside the card at 390 (${JSON.stringify(clip)})`,
+  );
+  await shoot(page, 'addendum-390-long-choice.png', true);
+
+  // 1 — hostile token / merge values: no injection, and the panel opens fully.
+  const openError = await page
+    .evaluate((key) => (window as unknown as PageWindow).openPanel(key, true), K('500'))
+    .then(
+      () => null,
+      (e: Error) => e.message.split('\n')[0],
+    );
+  await page.waitForTimeout(500);
+  const panel = await page.evaluate(() => ({
+    open: !!document.getElementById('slide-panel')?.classList.contains('open'),
+    injected: document.querySelectorAll('#panel-tokens img, #panel-tokens b, #panel-tokens i, #panel-tokens u').length,
+    pwned: (window as unknown as PageWindow).__pwned ?? null,
+    worklog: document.getElementById('worklog-list')?.textContent,
+    tokens: document.getElementById('panel-tokens')?.textContent,
+  }));
+  check(
+    openError === null &&
+      panel.open &&
+      panel.injected === 0 &&
+      panel.pwned === null &&
+      panel.worklog === '작업 로그 없음',
+    `hostile panel numbers: no injection, panel open, work log loaded (${JSON.stringify({ openError, ...panel })})`,
+  );
+  await page.evaluate(() => (window as unknown as PageWindow).closePanel());
+
+  // 2 — live entries painted before a 403 are replaced by the owner-only message.
+  await page.evaluate((key) => (window as unknown as PageWindow).openPanel(key, true), K('400'));
+  await page.waitForTimeout(200);
+  await page.evaluate(() => {
+    for (const seq of [1, 2, 3]) {
+      (window as unknown as PageWindow).__wsSend({
+        type: 'work_log',
+        conversationId: 'conv-denied',
+        entry: { seq, ts: Date.now(), kind: 'tool', tool: 'Bash', text: `live before the 403 (${seq})` },
+      });
+    }
+  });
+  const beforeDeny = await page.evaluate(() => document.querySelectorAll('#worklog-list .wl-entry').length);
+  releaseDenied();
+  await page.waitForTimeout(400);
+  const afterDeny = await page.evaluate(() => ({
+    entries: document.querySelectorAll('#worklog-list .wl-entry').length,
+    text: document.getElementById('worklog-list')?.textContent,
+  }));
+  check(
+    beforeDeny === 3 && afterDeny.entries === 0 && afterDeny.text === '작업 로그는 세션 소유자만 볼 수 있어요',
+    `live entries before a 403 give way to the owner-only message (${beforeDeny} → ${JSON.stringify(afterDeny)})`,
+  );
+  check(errors.length === 0, `addendum: no page errors (${errors.join(' | ')})`);
+  await ctx.close();
+}
+
 async function main() {
   const dashboard = await import('../src/conversation/dashboard');
   dashboard.setDashboardSessionAccessor(() => new Map());
@@ -1110,6 +1227,7 @@ async function main() {
     await motion(browser);
     await deepLinkAndWorkLog(browser);
     await reviewScenarios(browser);
+    await addendumChecks(browser);
   } finally {
     await browser.close();
     await ws.stopWebServer();
