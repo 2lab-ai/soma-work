@@ -4065,8 +4065,10 @@ function applyBoardPlan(cols, wanted) {
   }
   for (var gone in _cardEls) {
     if (wanted[gone]) continue;
+    var goneCid = _cardEls[gone]._cid;
     exitCard(_cardEls[gone], first ? first[gone] : null);
     delete _cardEls[gone];
+    releaseCardIoTimer(goneCid);
   }
   for (var key in _cardEls) {
     var card = _cardEls[key];
@@ -4200,7 +4202,7 @@ function applyExpanded(el, open) {
 // One card's rendered parts. The HTML strings depend only on the data (clocks
 // are filled by the 1 Hz tick), so equal data gives equal strings.
 function cardParts(s, col) {
-  return { col: col, state: cardState(s, col), face: renderCardFace(s, col), body: renderCardBody(s, col) };
+  return { col: col, state: cardState(s, col), face: renderCardFace(s, col), body: renderCardBody(s, col), cid: s.conversationId || null };
 }
 function cardPartsDiffer(el, p) {
   return el.getAttribute('data-col') !== p.col || el.getAttribute('data-state') !== p.state
@@ -4210,6 +4212,7 @@ function cardPartsDiffer(el, p) {
 // keep their nodes, an open card keeps its state, and a running transition is
 // never cut.
 function applyCardParts(el, p) {
+  el._cid = p.cid; // bookkeeping only (timer release), not a DOM write
   var changed = false;
   if (el.getAttribute('data-col') !== p.col) { el.setAttribute('data-col', p.col); changed = true; }
   if (el.getAttribute('data-state') !== p.state) { el.setAttribute('data-state', p.state); changed = true; }
@@ -4383,15 +4386,36 @@ function ioHasBudget(c, stamp) {
   return c.stamp !== stamp || (c.fails || 0) <= IO_AUTO_RETRIES;
 }
 
-// One pending retry timer per conversation, set for the conversation's deadline.
+// At most one pending retry timer per conversation: cid → { handle, at }.
+// The earliest deadline wins — a pending timer is kept only if it fires at or
+// before the new deadline, otherwise it is replaced. A success, or the last
+// open card of the conversation going away, clears it.
 var _ioTimers = Object.create(null);
 function scheduleCardIoRetry(cid, at) {
-  if (_ioTimers[cid]) return;
-  _ioTimers[cid] = true;
-  setTimeout(function() {
-    delete _ioTimers[cid];
+  var cur = _ioTimers[cid];
+  if (cur && cur.at <= at) return;
+  if (cur) clearTimeout(cur.handle);
+  var entry = { handle: null, at: at };
+  entry.handle = setTimeout(function() {
+    if (_ioTimers[cid] === entry) delete _ioTimers[cid];
     retryCardIo(cid);
   }, Math.max(0, at - Date.now()));
+  _ioTimers[cid] = entry;
+}
+function cancelCardIoRetry(cid) {
+  var cur = cid ? _ioTimers[cid] : null;
+  if (!cur) return;
+  clearTimeout(cur.handle);
+  delete _ioTimers[cid];
+}
+// A card closed or left the board: drop its conversation's timer unless
+// another open card still shows that conversation.
+function releaseCardIoTimer(cid) {
+  if (!cid) return;
+  for (var k in _cardEls) {
+    if (_cardEls[k]._cid === cid && _expanded.has(k)) return;
+  }
+  cancelCardIoRetry(cid);
 }
 
 // force = the card was just (re)opened (explicit user action).
@@ -4421,7 +4445,10 @@ function ensureCardIo(key, force, fromTimer) {
   }
   fetchCardIo(cid).then(function(result) {
     if (result && result.partial) failed(result); // keep the instruction, retry the response
-    else settleCardIo(cid, { state: 'ok', stamp: stamp, data: result, fails: 0, step: 0, retryAt: 0 });
+    else {
+      cancelCardIoRetry(cid); // a later backoff timer must not outlive the recovery
+      settleCardIo(cid, { state: 'ok', stamp: stamp, data: result, fails: 0, step: 0, retryAt: 0 });
+    }
   }, function() { failed(prev); });
 }
 function renderCardIo(s) {
@@ -4686,6 +4713,7 @@ function toggleCard(key, instant) {
   var open = !_expanded.has(key);
   if (open) _expanded.add(key);
   else _expanded.delete(key);
+  if (!open) releaseCardIoTimer(el._cid);
   if (instant) el.classList.add('no-motion');
   applyExpanded(el, open);
   if (instant) {
