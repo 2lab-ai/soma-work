@@ -381,6 +381,8 @@ describe('Abort handling', () => {
       },
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {},
       todoDisplayManager: {},
@@ -1332,6 +1334,8 @@ describe('model-command integration', () => {
       },
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {
         scheduleCleanup: vi.fn(),
@@ -2218,6 +2222,8 @@ describe('File access blocked error recovery', () => {
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
         cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: { scheduleCleanup: vi.fn() },
       todoDisplayManager: { cleanupSession: vi.fn(), cleanup: vi.fn() },
@@ -3022,7 +3028,7 @@ describe('Auto fallback compact — boundary restore (execute e2e)', () => {
     const session = {
       sessionId: 'sess_fb',
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'claude-opus-4-8[1m]',
@@ -3443,6 +3449,8 @@ describe('Email guard in execute()', () => {
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
         cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {
         scheduleCleanup: vi.fn(),
@@ -3477,7 +3485,7 @@ describe('Email guard in execute()', () => {
       session: {
         sessionId: 'sess_1',
         ownerId: 'U_TEST',
-        logVerbosity: 'detail',
+        logVerbosity: LOG_DETAIL,
         usage: {},
       },
       sessionKey: 'C123:thread123',
@@ -3894,6 +3902,8 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
         cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {
         scheduleCleanup: vi.fn(),
@@ -3954,7 +3964,7 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
       session: {
         sessionId: 'sess_tool_flow',
         ownerId: 'U_TEST',
-        logVerbosity: 'detail',
+        logVerbosity: LOG_DETAIL,
         usage: {},
         terminated: false,
       },
@@ -4613,6 +4623,8 @@ describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
       },
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {},
       todoDisplayManager: {},
@@ -5079,6 +5091,8 @@ describe('turn-end surface guarantee — P0 holes', () => {
       },
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {},
       todoDisplayManager: {},
@@ -6012,6 +6026,8 @@ describe('usage cap delivered as content triggers rotation (incident regression)
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
         cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {
         scheduleCleanup: vi.fn(),
@@ -6055,7 +6071,7 @@ describe('usage cap delivered as content triggers rotation (incident regression)
       session: {
         sessionId: 'sess_cap',
         ownerId: 'U_TEST',
-        logVerbosity: 'detail',
+        logVerbosity: LOG_DETAIL,
         usage: {},
         terminated: false,
       },
@@ -6188,7 +6204,7 @@ describe('prompt-too-long delivered as content triggers auto fallback compact (f
     const session = {
       sessionId: 'sess_ptl',
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'gpt-5.5',
@@ -6376,7 +6392,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     return {
       sessionId: SESSION_UUID,
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'claude-opus-4-8[1m]',
@@ -6636,7 +6652,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     const session = {
       sessionId: SESSION_UUID,
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'gpt-5.5',
@@ -6659,7 +6675,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     const session = {
       sessionId: SESSION_UUID,
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'gpt-5.5',
@@ -6682,7 +6698,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     const session = {
       sessionId: SESSION_UUID,
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'gpt-5.5',
@@ -6706,7 +6722,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     const session = {
       sessionId: SESSION_UUID,
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'claude-opus-4-8[1m]',
