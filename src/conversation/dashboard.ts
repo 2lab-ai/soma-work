@@ -1896,7 +1896,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 .app { display: flex; flex-direction: column; min-height: 100vh; }
 
-/* ── TOPBAR — strict horizontal grid ── */
+/* ── TOPBAR — strict horizontal grid ──
+   One row from 1024px; below that the nav (user select · Conversations · admin
+   toggle) takes its own row under brand · status · account (TOPBAR RESPONSIVE).
+   No control ever wraps or cuts its label: everything is nowrap and flex: none,
+   only the user's name inside the pill may end in an ellipsis. */
 .topbar {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -1904,7 +1908,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 48px;
+  min-height: 48px;
   min-width: 0;
 }
 .topbar h1 {
@@ -1913,9 +1917,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   letter-spacing: 0.08em;
   text-transform: uppercase;
   white-space: nowrap;
-  flex-shrink: 0;
+  flex: none;
 }
 .topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; min-width: 0; }
+.topbar .topbar-account { display: flex; gap: 6px; align-items: center; min-width: 0; }
 .topbar .nav a,
 .topbar .nav select {
   background: var(--surface-raised);
@@ -1929,8 +1934,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   cursor: pointer;
   transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease);
   min-height: 32px;
+  white-space: nowrap;
+  flex: none;
 }
-.topbar .nav select { min-width: 0; inline-size: clamp(72px, 24vw, 140px); }
+.topbar .nav a { display: inline-flex; align-items: center; gap: 4px; }
+/* Sized to the selected option, so "All Users" (or a name) is never cut. */
+.topbar .nav select { field-sizing: content; max-inline-size: 220px; }
 .topbar .nav a:hover,
 .topbar .nav select:hover { border-color: var(--accent); color: var(--text); }
 
@@ -1952,6 +1961,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   white-space: nowrap;
   max-width: 260px;
   min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1981,6 +1991,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   letter-spacing: 0.04em;
   cursor: pointer;
   min-height: 32px;
+  white-space: nowrap;
+  flex: none;
+  align-items: center;
   transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease), background var(--speed) var(--ease);
 }
 .topbar .admin-toggle:hover { border-color: var(--accent); color: var(--text); }
@@ -2000,6 +2013,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   cursor: pointer;
   min-height: 32px;
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: center;
   transition: border-color var(--speed) var(--ease), transform 0.2s var(--ease);
@@ -2016,6 +2030,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   text-transform: uppercase;
   background: var(--surface-raised);
   border: 1px solid var(--border);
+  white-space: nowrap;
+  flex: none;
 }
 
 /* ── MAIN — board-first column, capped at 1280px and centred (.prd/10 §5) ── */
@@ -3063,9 +3079,38 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     padding-bottom: 8px;
   }
   .kanban[data-view="board"] > .kanban-col { scroll-snap-align: start; }
+  /* Top bar: brand · status · account on the first row, the nav on its own row below, full labels. */
+  .topbar { flex-wrap: wrap; padding: 8px 20px; row-gap: 8px; }
+  /* Basis 0: the account group never pushes itself onto a row of its own — a
+     long name ends in an ellipsis inside the pill instead. */
+  .topbar .topbar-account { flex: 1 1 0; justify-content: flex-end; }
+  .topbar .nav { order: 1; flex: 1 0 100%; margin-left: 0; }
 }
 @media (max-width: 639px) {
   .main { padding: 14px 12px; }
+  /* Top bar: the status badge becomes a 10px dot (aria-label preserved for SR),
+     the "Logged in as" prefix goes, and the user select fills the nav row (which
+     wraps rather than overflow on very small screens). Labels stay whole. */
+  .topbar { padding: 6px 12px; gap: 6px 8px; }
+  .topbar h1 { font-size: 12px; }
+  .topbar .ws-badge {
+    display: inline-block;
+    inline-size: 10px;
+    block-size: 10px;
+    padding: 0;
+    border-radius: 50%;
+    text-indent: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    flex-shrink: 0;
+    min-width: 0;
+  }
+  .topbar .nav { flex-wrap: wrap; }
+  .topbar .nav select { flex: 1 1 auto; max-inline-size: 100%; }
+  .topbar .user-pill { padding: 4px 10px; }
+  .topbar .user-pill-prefix { display: none; }
+  .topbar .admin-toggle { padding: 4px 10px; }
+  #theme-toggle { inline-size: 32px; block-size: 32px; padding: 0; flex-shrink: 0; }
   .inbox-head { margin-bottom: 12px; }
   .crumbs { font-size: 15px; gap: 7px; }
   .kanban[data-view="board"] { grid-template-columns: repeat(3, minmax(min(300px, 84vw), 1fr)); }
@@ -3088,48 +3133,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .stat-card .label { font-size: 10px; }
   .chart-row { flex-direction: column; }
   .slide-panel { width: 100vw; right: -100vw; }
-  .topbar { padding: 0 10px; gap: 6px; }
-  .topbar h1 { font-size: 12px; }
-  .topbar .nav { gap: 4px; }
-  .topbar .nav a, .topbar .nav select { font-size: 11px; padding: 4px 8px; }
-  .topbar .nav .nav-text { display: none; }
-  .topbar .nav .nav-icon { display: inline !important; }
-  /* ws-badge → 10px round dot; aria-label preserved for SR */
-  .topbar .ws-badge {
-    display: inline-block;
-    inline-size: 10px;
-    block-size: 10px;
-    padding: 0;
-    border-radius: 50%;
-    text-indent: 100%;
-    white-space: nowrap;
-    overflow: hidden;
-    flex-shrink: 0;
-    min-width: 0;
-  }
-  .topbar .user-pill { max-width: 140px; padding: 4px 8px; }
-  .topbar .user-pill-prefix { display: none; }
-  .topbar .admin-toggle { padding: 4px 8px; font-size: 11px; }
-  #theme-toggle {
-    inline-size: 32px;
-    block-size: 32px;
-    padding: 0;
-    flex-shrink: 0;
-  }
-}
-@media (max-width: 480px) {
-  .topbar { padding: 0 8px; gap: 4px; }
-  .topbar h1 {
-    font-size: 11px;
-    flex-shrink: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .topbar .user-pill { max-width: 100px; }
-  .topbar .nav select { inline-size: clamp(60px, 22vw, 100px); }
-  .topbar .admin-mode-prefix { display: none; }
-  .topbar .admin-toggle { font-size: 10px; padding: 4px 6px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
@@ -3192,7 +3195,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
       <select id="user-select" onchange="selectUser(this.value)">
         <option value="">All Users</option>
       </select>
-      <a href="/conversations">&#x1F4DD; <span class="nav-text">Conversations</span><span class="nav-icon" style="display:none">Conv</span></a>
+      <a href="/conversations"><span aria-hidden="true">&#x1F4DD;</span>Conversations</a>
       <button
         id="admin-mode-toggle"
         type="button"
@@ -3202,6 +3205,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         title="Toggle admin write mode (#716)"
         onclick="toggleAdminMode()"
       ><span id="admin-mode-label"><span class="admin-mode-prefix">Admin: </span><span class="admin-mode-state">OFF</span></span></button>
+    </div>
+    <div class="topbar-account">
       <span
         class="user-pill"
         id="user-pill"
@@ -3659,10 +3664,10 @@ function _renderAdminModeButton() {
   if (!btn || !lbl) return;
   const on = _isAdminModeOn();
   btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  // Prefer split-span structure (prefix + state) so CSS can hide the
-  // "Admin: " prefix at narrow viewports without losing the ON/OFF state.
-  // Falls back to flat textContent if the spans haven't been rendered yet
-  // (e.g. legacy template / unit test setup).
+  // Prefer split-span structure (prefix + state): only the ON/OFF state is
+  // rewritten, the "Admin: " prefix stays as rendered. Falls back to flat
+  // textContent if the spans haven't been rendered yet (e.g. legacy
+  // template / unit test setup).
   const stateEl = lbl.querySelector('.admin-mode-state');
   if (stateEl) stateEl.textContent = on ? 'ON' : 'OFF';
   else lbl.textContent = on ? 'Admin: ON' : 'Admin: OFF';
@@ -5871,10 +5876,16 @@ function renderWorkLogEntry(e) {
   if (kind === 'tool' || kind === 'tool_result') {
     var fail = kind === 'tool_result' && e.ok === false;
     var mark = kind === 'tool' ? '&#x25B8;' : (fail ? '&#x2717;' : '&#x2713;');
+    // The emitter's text starts with the tool name ("Read {...}", "Glob ok");
+    // the name already has its own span, so the text shows only what follows.
+    var shown = text;
+    var tool = e.tool ? String(e.tool) : '';
+    if (tool && text === tool) shown = '';
+    else if (tool && text.indexOf(tool + ' ') === 0) shown = text.slice(tool.length + 1);
     return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + '"' + seqAttr + '>'
       + '<span class="wl-mark">' + mark + '</span>'
-      + (e.tool ? '<span class="wl-tool-name">' + esc(e.tool) + '</span>' : '')
-      + '<span class="wl-text" title="' + escAttr(text) + '">' + esc(text) + '</span>'
+      + (tool ? '<span class="wl-tool-name">' + esc(tool) + '</span>' : '')
+      + '<span class="wl-text" title="' + escAttr(text) + '">' + esc(shown) + '</span>'
       + timeHtml + '</div>';
   }
   if (kind === 'instruction') text = decodeSlackEntities(text);

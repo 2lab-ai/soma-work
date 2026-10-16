@@ -635,6 +635,61 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
   });
 });
 
+describe('work-log tool rows print the tool name once (shipped renderWorkLogEntry)', () => {
+  const { renderWorkLogEntry } = load<{ renderWorkLogEntry(e: unknown): string }>(
+    ['decodeSlackEntities', 'esc', 'escAttr', 'renderWorkLogEntry'],
+    ['WL_LABELS'],
+  );
+  /** The visible pieces of a tool row: the tool-name span, the text span and its title. */
+  function row(e: Record<string, unknown>) {
+    const html = renderWorkLogEntry({ seq: 1, ts: 0, ...e });
+    const name = /<span class="wl-tool-name">([^<]*)<\/span>/.exec(html)?.[1] ?? null;
+    const m = /<span class="wl-text" title="([^"]*)">([^<]*)<\/span>/.exec(html);
+    return { name, text: m?.[2] ?? null, title: m?.[1] ?? null };
+  }
+
+  // Stored entries carry the emitter's shape: `text` starts with the tool name
+  // (packages/slack/src/stream-processor.ts summarizeToolCall and the tool_result text).
+  it('a tool call shows its input after the name, not the name again', () => {
+    expect(row({ kind: 'tool', tool: 'Read', text: 'Read {"file_path":"/a.ts"}' })).toEqual({
+      name: 'Read',
+      text: '{&quot;file_path&quot;:&quot;/a.ts&quot;}',
+      title: 'Read {&quot;file_path&quot;:&quot;/a.ts&quot;}',
+    });
+  });
+
+  it('a tool result shows ok / error after the name', () => {
+    expect(row({ kind: 'tool_result', tool: 'Glob', ok: true, text: 'Glob ok' })).toEqual({
+      name: 'Glob',
+      text: 'ok',
+      title: 'Glob ok',
+    });
+    expect(row({ kind: 'tool_result', tool: 'Bash', ok: false, text: 'Bash error' })).toEqual({
+      name: 'Bash',
+      text: 'error',
+      title: 'Bash error',
+    });
+  });
+
+  it('a call without input (text is just the name) shows the name once', () => {
+    expect(row({ kind: 'tool', tool: 'TodoRead', text: 'TodoRead' })).toEqual({
+      name: 'TodoRead',
+      text: '',
+      title: 'TodoRead',
+    });
+  });
+
+  it('text that does not start with "<tool> " is shown whole', () => {
+    expect(row({ kind: 'tool', tool: 'Read', text: 'Readme.md opened' }).text).toBe('Readme.md opened');
+    expect(row({ kind: 'tool', tool: 'Bash', text: 'backfill step 3' }).text).toBe('backfill step 3');
+    expect(row({ kind: 'tool', text: 'Read {"a":1}' })).toEqual({
+      name: null,
+      text: 'Read {&quot;a&quot;:1}',
+      title: 'Read {&quot;a&quot;:1}',
+    });
+  });
+});
+
 describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => {
   /** noSummary: the reply has no summary yet, so the raw-response fallback runs. */
   function harness(opts: { noSummary?: boolean } = {}) {

@@ -1,20 +1,23 @@
 /**
- * Static structure tests for #800 — dashboard topbar mobile horizontal
- * overflow fix.
+ * Static structure tests for the dashboard top bar: #800 (no horizontal page
+ * overflow on phones) and the responsive top bar that replaced its crushed
+ * labels ("Conv", "OFF", "SOMA-W…", text wrapping inside buttons at 820px).
  *
- * These tests cannot prove zero scroll-overflow at runtime (that requires a
- * real browser; see scripts/screenshot-dashboard.ts for the live assertion).
+ * These tests cannot prove the layout at runtime (that requires a real
+ * browser; scripts/screenshot-agent-inbox.ts `topbarChecks` asserts no
+ * wrapping / clipping / overflow and ≥44px controls at 1280/1024/820/390, and
+ * scripts/screenshot-dashboard.ts the #800 overflow sweep at 360–680).
  * What they CAN do — and what guards against regression — is verify that
- * every structural piece the fix depends on is still in the rendered HTML
- * and CSS:
+ * every structural piece the layout depends on is still in the HTML and CSS:
  *
  *   - ws-badge has role="status" + aria-label so screen readers still hear
- *     state when the badge collapses to a 10px dot at ≤680px;
+ *     state when the badge collapses to a 10px dot below 640px;
  *   - user-pill prefix and admin-mode-label are wrapped in dedicated spans
- *     so CSS can hide the prefix without losing the dynamic state;
- *   - the @media (max-width: 480px) breakpoint exists with the expected
- *     rules, AND the @media (max-width: 680px) block carries the dot/pill
- *     reduction rules added by this fix.
+ *     so CSS can hide the "Logged in as" prefix without losing the name and
+ *     JS can rewrite ON/OFF without losing "Admin: ";
+ *   - every control keeps its label on one line (nowrap, flex: none) and the
+ *     user select sizes to its selected option;
+ *   - below 1024px the nav takes its own row; below 640px the select fills it.
  *
  * Anything in this list silently disappearing is a regression.
  */
@@ -40,6 +43,25 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
       expect(DASHBOARD_TS).toContain('<span class="user-pill-prefix">Logged in as </span>');
     });
 
+    it('Conversations is one full label (no short "Conv" variant)', () => {
+      expect(DASHBOARD_TS).toContain(
+        '<a href="/conversations"><span aria-hidden="true">&#x1F4DD;</span>Conversations</a>',
+      );
+      expect(DASHBOARD_TS).not.toContain('nav-icon');
+    });
+
+    it('user pill and theme toggle sit in their own account group after the nav', () => {
+      const bar = DASHBOARD_TS.match(/<div class="topbar">[\s\S]*?\n {2}<\/div>\n/)?.[0] ?? '';
+      const nav = bar.indexOf('<div class="nav">');
+      const account = bar.indexOf('<div class="topbar-account">');
+      expect(nav).toBeGreaterThan(0);
+      expect(account).toBeGreaterThan(nav);
+      expect(bar.indexOf('id="user-select"')).toBeGreaterThan(nav);
+      expect(bar.indexOf('id="admin-mode-toggle"')).toBeLessThan(account);
+      expect(bar.indexOf('id="user-pill"')).toBeGreaterThan(account);
+      expect(bar.indexOf('id="theme-toggle"')).toBeGreaterThan(account);
+    });
+
     it('admin-mode-label is split into prefix + state spans', () => {
       expect(DASHBOARD_TS).toContain(
         '<span id="admin-mode-label"><span class="admin-mode-prefix">Admin: </span><span class="admin-mode-state">OFF</span></span>',
@@ -60,8 +82,25 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
       expect(DASHBOARD_TS).toMatch(/\.topbar\s+\.nav\s*\{[^}]*min-width:\s*0/);
     });
 
-    it('.topbar .nav select has clamp() inline-size + min-width: 0', () => {
-      expect(DASHBOARD_TS).toContain('.topbar .nav select { min-width: 0; inline-size: clamp(72px, 24vw, 140px); }');
+    it('.topbar .nav select sizes to its selected option (never a fixed width that cuts "All Users")', () => {
+      expect(DASHBOARD_TS).toContain('.topbar .nav select { field-sizing: content; max-inline-size: 220px; }');
+      expect(DASHBOARD_TS).not.toMatch(/\.topbar\s+\.nav\s+select\s*\{[^}]*clamp\(/);
+    });
+
+    it('nav links, select, admin toggle and status badge never wrap or shrink their label', () => {
+      const navBlock = DASHBOARD_TS.match(/\.topbar \.nav a,\n\.topbar \.nav select \{[^}]*\}/)?.[0] ?? '';
+      const adminBlock = DASHBOARD_TS.match(/\.topbar \.admin-toggle \{[^}]*\}/)?.[0] ?? '';
+      const wsBlock = DASHBOARD_TS.match(/\n\.ws-badge \{[^}]*\}/)?.[0] ?? '';
+      for (const block of [navBlock, adminBlock, wsBlock]) {
+        expect(block).toContain('white-space: nowrap');
+        expect(block).toContain('flex: none');
+      }
+    });
+
+    it('the user pill is the only shrinkable control — its name ends in an ellipsis', () => {
+      const pill = DASHBOARD_TS.match(/\.topbar \.user-pill \{[^}]*\}/)?.[0] ?? '';
+      expect(pill).toContain('flex: 0 1 auto');
+      expect(pill).toContain('min-width: 0');
     });
 
     it('.topbar .user-pill b uses ellipsis + max-width: 100% so long names shrink', () => {
@@ -76,57 +115,68 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
     });
   });
 
-  describe('CSS — @media (max-width: 680px) extensions', () => {
-    // Capture just the 680px block so other media queries can't satisfy
-    // these by accident.
-    const block680 = DASHBOARD_TS.match(/@media \(max-width: 680px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  describe('CSS — @media (max-width: 1023px): the nav takes its own row', () => {
+    const block1023 = DASHBOARD_TS.match(/@media \(max-width: 1023px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
 
     it('block exists', () => {
-      expect(block680).not.toBe('');
+      expect(block1023).not.toBe('');
     });
 
-    it('ws-badge collapses to 10px round dot via text-indent trick', () => {
-      expect(block680).toContain('inline-size: 10px');
-      expect(block680).toContain('block-size: 10px');
-      expect(block680).toContain('border-radius: 50%');
-      expect(block680).toContain('text-indent: 100%');
+    it('the top bar wraps into rows instead of crushing its controls', () => {
+      expect(block1023).toMatch(/\.topbar\s*\{[^}]*flex-wrap:\s*wrap/);
     });
 
-    it('user-pill-prefix is hidden at ≤680px (icon-only pill)', () => {
-      expect(block680).toContain('.topbar .user-pill-prefix { display: none; }');
+    it('the nav is a full-width second row', () => {
+      expect(block1023).toContain('.topbar .nav { order: 1; flex: 1 0 100%; margin-left: 0; }');
     });
 
-    it('user-pill caps at 140px so it cannot push the row past the viewport', () => {
-      expect(block680).toMatch(/\.topbar\s+\.user-pill\s*\{\s*max-width:\s*140px/);
-    });
-
-    it('theme-toggle becomes a 32px square (no padding) at ≤680px', () => {
-      expect(block680).toMatch(/#theme-toggle\s*\{[^}]*inline-size:\s*32px[^}]*block-size:\s*32px/);
+    it('the account group has basis 0, so a long name never pushes it onto a row of its own', () => {
+      expect(block1023).toContain('.topbar .topbar-account { flex: 1 1 0; justify-content: flex-end; }');
     });
   });
 
-  describe('CSS — new @media (max-width: 480px) block', () => {
-    const block480 = DASHBOARD_TS.match(/@media \(max-width: 480px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  describe('CSS — @media (max-width: 639px): phone top bar', () => {
+    const block639 = DASHBOARD_TS.match(/@media \(max-width: 639px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
 
     it('block exists', () => {
-      expect(block480).not.toBe('');
+      expect(block639).not.toBe('');
     });
 
-    it('topbar h1 shrinks via flex-shrink: 1 + ellipsis', () => {
-      expect(block480).toContain('flex-shrink: 1');
-      expect(block480).toContain('text-overflow: ellipsis');
+    it('ws-badge collapses to 10px round dot via text-indent trick', () => {
+      expect(block639).toContain('inline-size: 10px');
+      expect(block639).toContain('block-size: 10px');
+      expect(block639).toContain('border-radius: 50%');
+      expect(block639).toContain('text-indent: 100%');
     });
 
-    it('user-pill caps at 100px at ≤480px', () => {
-      expect(block480).toMatch(/\.topbar\s+\.user-pill\s*\{\s*max-width:\s*100px/);
+    it('user-pill-prefix is hidden (the pill shows the name only)', () => {
+      expect(block639).toContain('.topbar .user-pill-prefix { display: none; }');
     });
 
-    it('admin-mode-prefix is hidden at ≤480px (state-only "ON" / "OFF")', () => {
-      expect(block480).toContain('.topbar .admin-mode-prefix { display: none; }');
+    it('the user select fills the nav row and the row wraps rather than overflow', () => {
+      expect(block639).toContain('.topbar .nav { flex-wrap: wrap; }');
+      expect(block639).toContain('.topbar .nav select { flex: 1 1 auto; max-inline-size: 100%; }');
     });
 
-    it('select drops to clamp(60px, 22vw, 100px)', () => {
-      expect(block480).toContain('inline-size: clamp(60px, 22vw, 100px)');
+    it('theme-toggle is a 32px square (no padding)', () => {
+      expect(block639).toMatch(/#theme-toggle\s*\{[^}]*inline-size:\s*32px[^}]*block-size:\s*32px/);
+    });
+  });
+
+  describe('CSS — labels are never cut down', () => {
+    it('no rule hides the "Admin: " prefix or swaps Conversations for a short label', () => {
+      expect(DASHBOARD_TS).not.toContain('.admin-mode-prefix { display: none; }');
+      expect(DASHBOARD_TS).not.toContain('.nav-text { display: none; }');
+    });
+
+    it('the brand never ends in an ellipsis', () => {
+      expect(DASHBOARD_TS).not.toMatch(/\.topbar\s+h1\s*\{[^}]*text-overflow/);
+    });
+
+    it('the old 680px / 480px top-bar overrides are gone (one set of breakpoints: 1023 / 639)', () => {
+      const block680 = DASHBOARD_TS.match(/@media \(max-width: 680px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+      expect(block680).not.toContain('.topbar');
+      expect(DASHBOARD_TS).not.toContain('@media (max-width: 480px) {');
     });
   });
 

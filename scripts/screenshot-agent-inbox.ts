@@ -16,6 +16,12 @@
  *   - work log: a live entry before the HTTP page keeps the older batch, entries
  *     stay in seq order, reconnect recovery pages forward (afterSeq=0 for an
  *     empty log), duplicates drop, a missing route reads "작업 로그 없음"
+ *   - work-log tool rows print the tool name once, with the emitter's stored
+ *     text shape ("Read {...}", "Glob ok")
+ *   - top bar at 1280 / 1024 / 820 / 390 (admin, named and 32-char Korean
+ *     users; "Live" and "Reconnecting..."): no control wraps or cuts its label,
+ *     none leaves the viewport, every control is ≥44px tall below 640px, and
+ *     the page never scrolls sideways (topbar-*.png)
  *
  * Run from the repo root (keeps state out of the checkout):
  *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst npx tsx scripts/screenshot-agent-inbox.ts [outDir]
@@ -283,17 +289,31 @@ const WORKLOG: Record<string, unknown[]> = {
       kind: 'narration',
       text: 'Reading the current schema and the migration history first.',
     },
-    { seq: 3, ts: NOW - 9 * M + 6000, kind: 'tool', tool: 'Read', text: 'db/schema.sql' },
-    { seq: 4, ts: NOW - 9 * M + 6500, kind: 'tool_result', tool: 'Read', ok: true, text: '412 lines' },
-    { seq: 5, ts: NOW - 8 * M, kind: 'tool', tool: 'Grep', text: 'users\\b in db/migrations (14 files)' },
-    { seq: 6, ts: NOW - 8 * M + 900, kind: 'tool_result', tool: 'Grep', ok: true, text: '37 matches' },
+    // Tool rows in the emitter's stored shape (packages/slack/src/stream-processor.ts):
+    // `text` starts with the tool name — the row must still print the name once.
+    { seq: 3, ts: NOW - 9 * M + 6000, kind: 'tool', tool: 'Read', text: 'Read {"file_path":"db/schema.sql"}' },
+    { seq: 4, ts: NOW - 9 * M + 6500, kind: 'tool_result', tool: 'Read', ok: true, text: 'Read ok' },
+    {
+      seq: 5,
+      ts: NOW - 8 * M,
+      kind: 'tool',
+      tool: 'Grep',
+      text: 'Grep {"pattern":"users\\\\b","path":"db/migrations"}',
+    },
+    { seq: 6, ts: NOW - 8 * M + 900, kind: 'tool_result', tool: 'Grep', ok: true, text: 'Grep ok' },
     {
       seq: 7,
       ts: NOW - 6 * M,
       kind: 'narration',
       text: 'Writing 0042_split_users: accounts keeps auth columns, profiles gets the rest.',
     },
-    { seq: 8, ts: NOW - 5 * M, kind: 'tool', tool: 'Bash', text: 'npm run db:migrate -- --env staging --dry-run' },
+    {
+      seq: 8,
+      ts: NOW - 5 * M,
+      kind: 'tool',
+      tool: 'Bash',
+      text: 'Bash {"command":"npm run db:migrate -- --env staging --dry-run"}',
+    },
     {
       seq: 9,
       ts: NOW - 4 * M,
@@ -424,6 +444,60 @@ const PAGE_HELPERS = [
   'window.__startLoadMore = function () { (window.__loads = window.__loads || []).push(window.loadMorePanelTurns()); return !!window._panelTurnsLoading; };',
   'window.__turnState = function () { return { turns: document.querySelectorAll("#panel-turns .turn").length, loading: !!window._panelTurnsLoading }; };',
   'window.__wlSeqs = function () { return Array.prototype.map.call(document.querySelectorAll("#worklog-list .wl-entry"), function (e) { return Number(e.getAttribute("data-seq")); }); };',
+  // Every visible top-bar control: the text it shows, how many lines that text
+  // takes, whether it is cut (own box, the pill name, or a select narrower than
+  // its selected option), its height and whether it sits inside the viewport.
+  'window.__topbarProbe = function () {',
+  '  var bar = document.querySelector(".topbar");',
+  '  var els = Array.prototype.slice.call(bar.querySelectorAll("h1, .ws-badge, select, a, button, .user-pill"));',
+  '  var range = document.createRange();',
+  '  var items = [];',
+  '  els.forEach(function (el) {',
+  '    var cs = getComputedStyle(el);',
+  '    var r = el.getBoundingClientRect();',
+  '    if (cs.display === "none" || cs.visibility === "hidden" || r.width === 0) return;',
+  '    var rects = [];',
+  '    var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);',
+  '    var n;',
+  '    while ((n = walker.nextNode())) {',
+  '      if (!n.textContent.trim()) continue;',
+  '      range.selectNodeContents(n);',
+  '      Array.prototype.forEach.call(range.getClientRects(), function (q) { if (q.width > 0 && q.height > 0) rects.push(q); });',
+  '    }',
+  '    rects.sort(function (a, b) { return a.top - b.top; });',
+  '    var lines = 0, bottom = -Infinity;',
+  '    rects.forEach(function (q) { if (q.top >= bottom - 1) { lines++; bottom = q.bottom; } else bottom = Math.max(bottom, q.bottom); });',
+  '    var clipped = el.scrollWidth > el.clientWidth + 1;',
+  '    var b = el.querySelector("b");',
+  '    if (b && b.scrollWidth > b.clientWidth + 1) clipped = true;',
+  '    var text = el.innerText.replace(/\\s+/g, " ").trim();',
+  '    if (el.tagName === "SELECT") {',
+  '      var opt = el.options[el.selectedIndex];',
+  '      text = opt ? opt.text : "";',
+  '      var probe = el.cloneNode(false);',
+  '      probe.removeAttribute("id"); probe.removeAttribute("onchange");',
+  '      var o = document.createElement("option"); o.textContent = text; probe.appendChild(o);',
+  '      probe.style.cssText = "position:absolute;visibility:hidden;inline-size:auto;min-inline-size:0;max-inline-size:none;flex:none";',
+  '      el.parentNode.appendChild(probe);',
+  '      var need = probe.getBoundingClientRect().width;',
+  '      probe.remove();',
+  '      clipped = r.width + 0.5 < need;',
+  '      lines = 1;',
+  '    }',
+  '    if (!text) clipped = false; // icon-only (theme toggle): ::before glyph, ::after hit slop wider than the box',
+  '    var dot = cs.textIndent !== "0px";',
+  '    if (dot) { clipped = false; lines = 0; text = ""; }',
+  '    items.push({',
+  '      el: el.id || el.className || el.tagName.toLowerCase(),',
+  '      text: text, label: el.getAttribute("aria-label") || el.getAttribute("title") || "",',
+  '      lines: lines, clipped: clipped, dot: dot,',
+  '      h: Math.round(r.height), outside: r.left < -0.5 || r.right > innerWidth + 0.5,',
+  '      interactive: /^(SELECT|A|BUTTON)$/.test(el.tagName) || el.getAttribute("data-clickable") === "true",',
+  '    });',
+  '  });',
+  '  var br = bar.getBoundingClientRect();',
+  '  return { items: items, bar: { h: Math.round(br.height), bottom: Math.ceil(br.bottom) }, overflow: document.documentElement.scrollWidth - innerWidth };',
+  '};',
 ].join('\n');
 
 async function installMocks(
@@ -571,6 +645,20 @@ async function viewportMatrix(browser: import('playwright').Browser) {
           timeout: 5000,
         });
         await page.waitForTimeout(400);
+        // A tool row prints the tool name once, even when the stored text starts with it.
+        const twice = await page.evaluate(() =>
+          Array.from(document.querySelectorAll('#worklog-list .wl-tool, #worklog-list .wl-tool_result'))
+            .map((row) => ({
+              name: row.querySelector('.wl-tool-name')?.textContent ?? '',
+              text: row.querySelector('.wl-text')?.textContent ?? '',
+            }))
+            .filter((r) => r.name && (r.text === r.name || r.text.startsWith(`${r.name} `)))
+            .map((r) => `${r.name} ${r.text}`),
+        );
+        check(
+          twice.length === 0,
+          `${theme} ${width}: work-log tool rows print the tool name once (${twice.join(' | ')})`,
+        );
         await shoot(page, `${theme}-${width}-panel-worklog.png`, false);
       }
       await ctx.close();
@@ -1215,6 +1303,130 @@ async function addendumChecks(browser: import('playwright').Browser) {
   await ctx.close();
 }
 
+type TopbarItem = {
+  el: string;
+  text: string;
+  label: string;
+  lines: number;
+  clipped: boolean;
+  dot: boolean;
+  h: number;
+  outside: boolean;
+  interactive: boolean;
+};
+type TopbarProbe = { items: TopbarItem[]; bar: { h: number; bottom: number }; overflow: number };
+
+/**
+ * Top bar at 1280 / 820 / 390 in the admin state the preview showed (bearer
+ * admin: "★ Admin" pill and the admin toggle; then an OAuth admin with a full
+ * name). Every control keeps its whole label on one line — or is icon-only with
+ * an accessible name — is ≥44px tall below 640px, and the page never scrolls
+ * sideways; also with the widest status text ("Reconnecting...").
+ */
+async function topbarChecks(browser: import('playwright').Browser) {
+  // The bearer admin opens /dashboard ("All Users" selected), the named one their own board.
+  // `long`: a 32-character Korean name in the pill and the user list — only the
+  // name inside the pill may end in an ellipsis.
+  const LONG = '가나다라마바사아자차카타파하가나다라마바사아자차카타파하가나다라';
+  const bearer = { me: { isAdmin: true }, pill: 'Admin', url: '/dashboard', select: 'All Users', long: false };
+  const named = {
+    me: { user: { name: 'Zhuge Hyuk' }, isAdmin: true },
+    pill: 'Zhuge Hyuk',
+    url: '/dashboard/U001',
+    select: 'Zhuge',
+    long: false,
+  };
+  const long = {
+    me: { user: { name: LONG }, isAdmin: true },
+    pill: '',
+    url: '/dashboard',
+    select: 'All Users',
+    long: true,
+  };
+  const cases = [
+    { width: 1280, touch: false, ...bearer },
+    { width: 1024, touch: false, ...long },
+    { width: 820, touch: false, ...bearer },
+    { width: 820, touch: true, ...bearer },
+    { width: 820, touch: false, ...named },
+    { width: 390, touch: true, ...bearer },
+    { width: 390, touch: true, ...named },
+    { width: 390, touch: true, ...long },
+  ];
+  /** The words each control must show in full (unless it is icon-only with a label). */
+  const full: Array<[RegExp, (c: (typeof cases)[number]) => string]> = [
+    [/^h1$/, () => 'SOMA-WORK'],
+    [/^user-select$/, (c) => c.select],
+    [/^a$/, () => 'Conversations'],
+    [/^admin-mode-toggle$/, () => 'Admin: OFF'],
+    [/^user-pill$/, (c) => c.pill],
+  ];
+  for (const c of cases) {
+    const name = `topbar-${c.width}${c.touch ? '-touch' : ''}${c.me === named.me ? '-named' : ''}${c.long ? '-long' : ''}`;
+    const ctx = await browser.newContext({
+      viewport: { width: c.width, height: 900 },
+      colorScheme: 'dark',
+      hasTouch: c.touch,
+      isMobile: c.touch,
+    });
+    const page = await ctx.newPage();
+    await installMocks(page, makeBoard());
+    // Registered after installMocks, so it answers /auth/me first.
+    await page.route('**/auth/me', (r) => r.fulfill({ json: { ...c.me, csrfToken: 'x' } }));
+    if (c.long) {
+      await page.route('**/api/dashboard/users', (r) =>
+        r.fulfill({
+          json: {
+            users: [
+              { id: 'U001', name: 'Zhuge' },
+              { id: 'U002', name: LONG },
+            ],
+          },
+        }),
+      );
+    }
+    await page.goto(`${BASE_URL}${c.url}`);
+    await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 5, null, { timeout: 10000 });
+    await page.waitForSelector('#admin-mode-toggle', { state: 'visible', timeout: 5000 });
+    for (const state of ['live', 'reconnecting'] as const) {
+      await page.evaluate((s) => {
+        const w = window as unknown as PageWindow;
+        if (s === 'live') w.__wsReopen();
+        else w.__ws.onclose();
+      }, state);
+      await page.waitForTimeout(150);
+      const p = (await page.evaluate(() => (window as unknown as PageWindow).__topbarProbe())) as TopbarProbe;
+      const tag = `${name} ${state}`;
+      check(p.overflow === 0, `${tag}: no page overflow (${p.overflow})`);
+      const wrapped = p.items.filter((i) => i.lines > 1).map((i) => `${i.el}="${i.text}"`);
+      check(wrapped.length === 0, `${tag}: no control wraps its text (${wrapped.join(', ')})`);
+      const cut = p.items
+        .filter((i) => i.outside || (i.clipped && !(c.long && i.el === 'user-pill')))
+        .map((i) => `${i.el}="${i.text}"`);
+      check(cut.length === 0, `${tag}: no control is clipped or off-screen (${cut.join(', ')})`);
+      const short = full.flatMap(([re, want]) =>
+        p.items
+          .filter((i) => re.test(i.el) && want(c))
+          .filter((i) => !(i.text.includes(want(c)) || (!/[A-Za-z]/.test(i.text) && i.label)))
+          .map((i) => `${i.el}="${i.text}" (want "${want(c)}")`),
+      );
+      check(short.length === 0, `${tag}: every label is shown in full (${short.join(', ')})`);
+      if (c.width < 640) {
+        const small = p.items.filter((i) => i.interactive && i.h < 44).map((i) => `${i.el} ${i.h}px`);
+        check(small.length === 0, `${tag}: every control is ≥44px tall (${small.join(', ')})`);
+      }
+      if (state === 'live') {
+        log(`      ${tag}: bar ${p.bar.h}px — ${p.items.map((i) => `${i.el}="${i.text}" ${i.h}px`).join(' | ')}`);
+        await page.screenshot({
+          path: path.join(OUT, `${name}.png`),
+          clip: { x: 0, y: 0, width: c.width, height: p.bar.bottom + 12 },
+        });
+      }
+    }
+    await ctx.close();
+  }
+}
+
 /** The served page with real timers: card 지시/응답 during an endpoint outage. */
 async function cardIoOutage(browser: import('playwright').Browser) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'light' });
@@ -1335,6 +1547,7 @@ async function main() {
     await deepLinkAndWorkLog(browser);
     await reviewScenarios(browser);
     await addendumChecks(browser);
+    await topbarChecks(browser);
     await cardIoOutage(browser);
     await titleSubPanelSwitch(browser);
   } finally {
