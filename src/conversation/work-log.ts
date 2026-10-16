@@ -108,6 +108,8 @@ export const WORK_LOG_MAX_LINE_BYTES = 1024 * 1024;
 export const WORK_LOG_SCAN_BUDGET_BYTES = 8 * 1024 * 1024;
 /** seqs reserved per sidecar write. */
 export const WORK_LOG_SEQ_RESERVE_BLOCK = 1000;
+/** The block every reservation path reads; always WORK_LOG_SEQ_RESERVE_BLOCK outside tests. */
+let reserveBlock = WORK_LOG_SEQ_RESERVE_BLOCK;
 /** Idle per-conversation writer states kept warm (each costs one tail read to rebuild). */
 export const WORK_LOG_MAX_CACHED_STATES = 256;
 /** Share of the budget an `afterSeq` read spends on the backward reconnect fast path. */
@@ -466,12 +468,12 @@ function readReservation(sidecarPath: string): Reservation | null {
  * A violating write is refused (error log + throw) before anything is written.
  */
 function assertReservationStep(sidecarPath: string, previous: number, next: number): void {
-  if (next >= previous && next - previous <= WORK_LOG_SEQ_RESERVE_BLOCK) return;
+  if (next >= previous && next - previous <= reserveBlock) return;
   logger.error('Work log reservation step refused: it would leave .bak more than one block behind', {
     sidecarPath,
     previous,
     next,
-    block: WORK_LOG_SEQ_RESERVE_BLOCK,
+    block: reserveBlock,
   });
   throw new Error(`Work log reservation step ${previous} -> ${next} breaks the one-block invariant`);
 }
@@ -484,6 +486,16 @@ async function writeReservation(sidecarPath: string, previous: number, reservedS
   atomicWriteJson(sidecarPath, { reservedSeq }, { warn: (message, detail) => logger.warn(message, detail) });
   noteDirChanged(path.dirname(sidecarPath));
   await syncDueDirs();
+}
+
+/**
+ * Test hook: shrink the reservation block so block-boundary scenarios need tens
+ * of fdatasyncs instead of thousands. Call with no argument to restore the
+ * production value.
+ */
+export function _setWorkLogReserveBlockForTests(block: number = WORK_LOG_SEQ_RESERVE_BLOCK): void {
+  if (!Number.isSafeInteger(block) || block < 1) throw new Error('reserve block must be a positive integer');
+  reserveBlock = block;
 }
 
 /** Test hook for the step invariant's refusal (no caller can reach it through the public API). */
@@ -607,10 +619,10 @@ async function readSeed(conversationId: string, logPath: string, sidecarPath: st
     return { lastSeq: live, reservedSeq: live, needsLeadingNewline: false, fileMayBeNew: true };
   }
 
-  if (reservation?.source === 'backup' && tailSeq !== null && tailSeq <= reservation.seq + WORK_LOG_SEQ_RESERVE_BLOCK) {
+  if (reservation?.source === 'backup' && tailSeq !== null && tailSeq <= reservation.seq + reserveBlock) {
     // The live copy is gone; `.bak` is the previous reservation, at most one block
     // behind it. Publish nothing until both copies durably hold a bound again.
-    const bound = reservation.seq + WORK_LOG_SEQ_RESERVE_BLOCK;
+    const bound = reservation.seq + reserveBlock;
     await rewriteBothReservations(sidecarPath, reservation.seq, bound);
     logger.warn('Work log reservation recovered from its backup; both copies rewritten', {
       conversationId,
@@ -806,7 +818,7 @@ async function writeEntry(
     // will hold (see assertReservationStep). With seqs burned only inside a
     // reservation this is a single step; the loop keeps any larger gap in steps.
     while (entry.seq > state.reservedSeq) {
-      const next = state.reservedSeq + WORK_LOG_SEQ_RESERVE_BLOCK;
+      const next = state.reservedSeq + reserveBlock;
       await writeReservation(files.sidecar, state.reservedSeq, next);
       state.reservedSeq = next;
     }
