@@ -91,6 +91,22 @@ describe('T1/T3 — logical holes removed across the z-family tree', () => {
     expect(read('zcheck')).not.toMatch(/bracnh/);
     expect(read('using-ssot')).not.toMatch(/psuedo/);
   });
+
+  it('P2/P3 review findings go to one follow-up issue and never hold the merge', () => {
+    // User decision 2026-10-16: required review passed + 0 P0/P1 → P2/P3 move to a
+    // follow-up issue and the PR merges (autoz looped ~12 commits on P2/P3 re-reviews).
+    const zcheck = read('zcheck');
+    expect(zcheck).toMatch(/P2\/P3/);
+    expect(zcheck).toMatch(/후속 이슈/);
+    expect(zcheck).toMatch(/코드를 고치지 않는다/);
+    expect(zcheck).toMatch(/후속 이슈 하나/);
+    expect(zcheck).toMatch(/Step 1 재시작을 일으키지 않는다/);
+    const autoz = read('autoz');
+    expect(autoz).toMatch(/P0\/P1[^\n]*blocking/i);
+    expect(autoz).not.toMatch(/\*\*Findings are blocking\.\*\*/);
+    expect(autoz).toMatch(/P2\/P3 are not, even when listed as MUST-FIX/);
+    expect(autoz).toMatch(/P0\/P1 \(or untagged\) MUST-FIX/);
+  });
 });
 
 describe('T5 — gpt-5.6-sol review findings folded in', () => {
