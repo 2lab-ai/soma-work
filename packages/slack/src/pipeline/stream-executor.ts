@@ -184,11 +184,6 @@ export interface StreamExecutorProviders {
   getAutoFallbackCompactModel?: () => string;
   postCompactCompleteIfNeeded?: (...args: any[]) => Promise<unknown>;
   postCompactStartingIfNeeded?: (...args: any[]) => Promise<unknown>;
-  /**
-   * Turn-end close for a compaction "starting" message that never got an END
-   * signal (src/slack/hooks/compact-hooks.ts). No-op by default.
-   */
-  closeCompactStartingAtTurnEnd?: (...args: any[]) => Promise<unknown>;
 }
 
 const FALLBACK_CONTEXT_WINDOW = 200_000;
@@ -242,7 +237,6 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   getAutoFallbackCompactModel: () => process.env.AUTO_FALLBACK_COMPACT_MODEL || 'opus[1m]',
   postCompactCompleteIfNeeded: async () => undefined,
   postCompactStartingIfNeeded: async () => undefined,
-  closeCompactStartingAtTurnEnd: async () => undefined,
 };
 
 export function setStreamExecutorProviders(providers: StreamExecutorProviders): void {
@@ -297,8 +291,6 @@ const coerceToAvailableModel = (model: string) => streamExecutorProviders.coerce
 const getAutoFallbackCompactModel = () => streamExecutorProviders.getAutoFallbackCompactModel();
 const postCompactCompleteIfNeeded = (...args: any[]) => streamExecutorProviders.postCompactCompleteIfNeeded(...args);
 const postCompactStartingIfNeeded = (...args: any[]) => streamExecutorProviders.postCompactStartingIfNeeded(...args);
-const closeCompactStartingAtTurnEnd = (...args: any[]) =>
-  streamExecutorProviders.closeCompactStartingAtTurnEnd(...args);
 
 /**
  * Work-log `notice` text for a sealed compaction: trigger and the token counts
@@ -2878,21 +2870,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // compact_boundary), `pendingUserText` was never promoted. Promote it
       // here so the intercepted message can neither strand forever nor be
       // overwritten by the next auto-compact interception.
-      // A compaction "starting" message whose cycle never got an END signal
-      // this turn (PostCompact + compact_boundary both dropped) would sit on
-      // the thread forever with its ticker running: close it now, at every
-      // verbosity. Skipped when a newer turn is already active — the open
-      // cycle may be that turn's (same guard as the re-dispatch below).
-      try {
-        if (!this.deps.requestCoordinator.isRequestActive(sessionKey)) {
-          await closeCompactStartingAtTurnEnd({ session, channel, threadTs, slackApi: this.deps.slackApi });
-        }
-      } catch (err) {
-        this.logger.warn('stream-executor: turn-end close of the compaction starting message failed', {
-          sessionKey,
-          error: (err as Error)?.message ?? String(err),
-        });
-      }
       const wasCompactTurn = session.compactTurnActive === true;
       session.compactTurnActive = false;
       // Issue #196 — release the post-compact occupancy shield. It is scoped to
