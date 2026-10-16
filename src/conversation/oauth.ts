@@ -465,13 +465,14 @@ const LOGIN_RETURN_MAX_AGE_SEC = 1800;
  */
 export function isSafeLoginReturnPath(value: string): boolean {
   if (typeof value !== 'string' || value.length === 0 || value.length > LOGIN_RETURN_MAX_LEN) return false;
-  if (!/^\/dashboard(?:[/?]|$)/.test(value)) return false;
+  if (!/^\/dashboard(?:[/?#]|$)/.test(value)) return false;
   if (value.includes('//') || value.includes('\\')) return false;
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
     if (code <= 0x20 || code >= 0x7f) return false;
   }
-  const pathPart = value.split('?', 1)[0];
+  // Dot segments are judged on the path alone: query and fragment end it.
+  const pathPart = value.split(/[?#]/, 1)[0];
   const segments = pathPart.replace(/%2e/gi, '.').split('/');
   if (segments.some((segment) => segment === '.' || segment === '..')) return false;
   return true;
