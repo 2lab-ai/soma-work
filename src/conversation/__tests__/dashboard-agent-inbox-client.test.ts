@@ -1283,6 +1283,67 @@ describe('numbers in panel / topbar markup (shipped toNum + formatTokens)', () =
   });
 });
 
+describe('top-bar user names keep their full text in title (shipped syncUserSelectLabel + _applyUserPill)', () => {
+  const LONG = '가나다라마바사아자차카타파하가나다라마바사아자차카타파하가나다라';
+  /** Just enough DOM for the two functions: a select with options, the label, the pill. */
+  function dom() {
+    const options = [
+      { value: '', textContent: 'All Users' },
+      { value: 'U002', textContent: LONG },
+    ];
+    const select = { options, selectedIndex: 0, title: 'All Users', value: '' };
+    const label = { textContent: 'All Users' };
+    const nameEl = { textContent: '…', title: '' };
+    const classes = new Set<string>();
+    const attrs: Record<string, string> = {};
+    const pill = {
+      style: { display: 'none' },
+      classList: { toggle: (c: string, on: boolean) => (on ? classes.add(c) : classes.delete(c)) },
+      setAttribute: (k: string, v: string) => {
+        attrs[k] = v;
+      },
+    };
+    const byId: Record<string, unknown> = {
+      'user-select': select,
+      'user-select-label': label,
+      'user-pill': pill,
+      'user-pill-name': nameEl,
+    };
+    const document = { getElementById: (id: string) => byId[id] ?? null };
+    return { document, select, label, nameEl };
+  }
+
+  it('the label over the select shows the selected option; the select title carries it in full', () => {
+    const d = dom();
+    const { syncUserSelectLabel } = load<{ syncUserSelectLabel(): void }>(['syncUserSelectLabel'], [], {
+      document: d.document,
+    });
+    d.select.selectedIndex = 1;
+    syncUserSelectLabel();
+    expect(d.label.textContent).toBe(LONG);
+    expect(d.select.title).toBe(LONG);
+    d.select.selectedIndex = 0;
+    syncUserSelectLabel();
+    expect(d.label.textContent).toBe('All Users');
+    expect(d.select.title).toBe('All Users');
+  });
+
+  it('selectUser and loadUsers keep the label in sync', () => {
+    expect(clientFn('selectUser')).toMatch(/^function selectUser\(userId\) \{\n {2}syncUserSelectLabel\(\);/);
+    expect(clientFn('loadUsers')).toMatch(/\n {2}syncUserSelectLabel\(\);\n\}$/);
+  });
+
+  it('the pill name carries the full name in title (it may end in an ellipsis)', () => {
+    const d = dom();
+    const { _applyUserPill } = load<{ _applyUserPill(data: unknown): void }>(['_applyUserPill'], [], {
+      document: d.document,
+    });
+    _applyUserPill({ user: { name: LONG } });
+    expect(d.nameEl.textContent).toBe(LONG);
+    expect(d.nameEl.title).toBe(LONG);
+  });
+});
+
 describe('panel subtitle generation is bound to its panel opening (shipped generateTitleSub)', () => {
   function harness() {
     const textEl = { textContent: '' };
