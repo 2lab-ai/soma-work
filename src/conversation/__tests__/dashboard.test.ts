@@ -929,7 +929,9 @@ describe('Dashboard API', () => {
     expect(correctOpenPanel).not.toBeNull();
 
     // There should be exactly 4 doAction calls (stop, close for idle/waiting, close for sleeping, trash for archived)
-    // and 2 openPanel calls (card click + multi-choice "답변하기" button)
+    // and 2 openPanel calls (open card's "작업 로그" button + multi-choice "답변하기" button).
+    // A card click no longer opens the panel — it expands the card in place
+    // through a delegated listener (.prd/10 §3.1-4), so it has no inline handler.
     expect(correctDoAction!.length).toBe(4);
     expect(correctOpenPanel!.length).toBe(2);
   });
