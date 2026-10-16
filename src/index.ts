@@ -77,6 +77,7 @@ import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLog
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
+import { migrateAllUsersMinimalOnce } from './deploy/migrate-all-users-minimal-once';
 import { migrateAllUsersOpusOnce } from './deploy/migrate-all-users-opus-once';
 import { migrateCronOpusOnce } from './deploy/migrate-cron-opus-once';
 import { initializeDispatchService } from './dispatch-service';
@@ -218,6 +219,36 @@ async function start() {
       }
     }
     timing('all-users opus migration evaluated');
+
+    // 2026-10-16 one-time ALL-USER Slack verbosity rewrite (spec 10 §3.2-1):
+    // every user default → `minimal` and every persisted session mask in
+    // sessions.json → LOG_MINIMAL. Same presence-only, marker-first contract
+    // as the opus rewrite above. Runs BEFORE `slackHandler.loadSavedSessions()`
+    // further down, so the restored sessions read the rewritten masks. No
+    // second writer can race it: the O_EXCL pid lock `acquirePidLock(DATA_DIR)`
+    // (src/pid-lock.ts) is held from the top of start() above. Own try/catch;
+    // never blocks boot, and the settings singleton is reloaded unless it was
+    // a clean skip (including after a throw).
+    let allUsersMinimalStatus: 'skipped' | 'applied' | 'failed' = 'failed';
+    try {
+      const allUsersMinimal = migrateAllUsersMinimalOnce({ dataDir: DATA_DIR });
+      allUsersMinimalStatus = allUsersMinimal.status;
+      logger.info(
+        `all-users log-minimal one-time migration: ${allUsersMinimal.status} (migrated users ${allUsersMinimal.users.migrated}/${allUsersMinimal.users.total}, sessions ${allUsersMinimal.sessions.migrated}/${allUsersMinimal.sessions.total}, marker=${allUsersMinimal.markerFile})`,
+      );
+    } catch (error) {
+      logger.error('all-users log-minimal one-time migration FAILED — check the marker before assuming a retry', error);
+    } finally {
+      if (allUsersMinimalStatus !== 'skipped') {
+        try {
+          userSettingsStore.reloadSettings();
+          logger.info(`reloaded user settings after all-users log-minimal migration (status=${allUsersMinimalStatus})`);
+        } catch (error) {
+          logger.error('reloadSettings after all-users log-minimal migration failed', error);
+        }
+      }
+    }
+    timing('all-users log-minimal migration evaluated');
 
     // 2026-09-28 one-time cron rewrite: every job's model → `{type:'opus'}`
     // (resolved to the latest opus at fire time). Same presence-only,
