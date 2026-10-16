@@ -7,8 +7,12 @@
  *   - no afterSeq: the latest `limit` entries; hasMore = older entries exist.
  *   - afterSeq=N (N ≥ 0): the first `limit` entries with seq > N, for forward
  *     paging after a reconnect; hasMore = more follow, ask again with the last seq.
- *     seqs can have gaps (an entry that landed on disk but whose append failed
- *     was never broadcast); a client backfills them with this call.
+ *     seqs can have two kinds of gaps in what a live client saw:
+ *       - landed but unpublished (the line reached disk, its append failed
+ *         afterwards, so no `work_log` event was sent): this call returns
+ *         those entries normally — backfill them here;
+ *       - holes (seqs skipped after a quarantine or a reservation-only
+ *         re-seed): no entry will ever carry them — do not wait for them.
  *   - limit: default 500, allowed 1..500.
  *   - Both params are decimal integers (`^\d+$`); anything else is
  *     400 { error: 'bad_request' } rather than a silent mode switch.

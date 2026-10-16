@@ -7,17 +7,31 @@
  * entry per line, written in `seq` order.
  *
  * Durability: an entry is published — `appendWorkLog` resolves and the
- * dashboard broadcast fires — only after its line is fdatasync'd (and the
- * directory fsync'd when the write created the file). Cost: one fdatasync per
- * entry. Entries are per tool event / narration segment, a low rate, and the
- * write is off the turn's path (the stream executor does not await it).
+ * dashboard broadcast fires — only after its line is fdatasync'd and every
+ * directory whose entries this module changed (mkdir, log create, sidecar
+ * rename, quarantine rename) has been fsync'd since. Those directory
+ * obligations live in module state until a sync succeeds, so a failed one is
+ * retried before the next publish instead of being forgotten. Cost: one
+ * fdatasync per entry, plus a directory fsync only after such a change. Entries
+ * are per tool event / narration segment, a low rate, and the write is off the
+ * turn's path (the stream executor does not await it).
  *
  * seq: monotonic per conversation and never reused once published. The first
  * append in a process reads the last seq back from the file's tail. The
  * sidecar `<id>.seq` reserves seqs in blocks, durably and before any seq in the
  * block is used, so every seq ever used is ≤ the reservation. When the tail
  * cannot be read within the scan budget, the log is quarantined to
- * `<id>.jsonl.corrupt-<ms>` and a fresh one continues above the reservation.
+ * `<id>.jsonl.corrupt-<ms>` and a fresh one continues above the reservation;
+ * the new floor is made durable before the old log is moved.
+ *
+ * Gaps — two kinds, different for a client:
+ *   - landed but unpublished: the line reached disk but its append failed
+ *     afterwards (e.g. fdatasync or the directory sync threw), so it was never
+ *     broadcast. It is a normal entry for readers — backfill it with
+ *     `readWorkLog({ afterSeq })`.
+ *   - holes: seqs skipped on purpose — after a quarantine, or after a re-seed
+ *     that could only trust the reservation. No entry will ever have those
+ *     seqs; a client must not wait for them.
  *
  * Reads: every scan has a byte budget (WORK_LOG_SCAN_BUDGET_BYTES). The latest
  * window and the seed scan back from the end; `afterSeq` pages first try a
@@ -105,7 +119,7 @@ interface ConversationLogState {
   reservedSeq: number;
   /** The file ends mid-line (torn write); the next line must start on a fresh one. */
   needsLeadingNewline: boolean;
-  /** The next write may create the file, so the directory must be fsync'd after it. */
+  /** The next write may create the file, which puts a sync obligation on its directory. */
   fileMayBeNew: boolean;
   /** Serialized write chain for this file — appends never interleave. */
   queue: Promise<void>;
@@ -120,6 +134,13 @@ type ScanEnd = 'done' | 'stopped' | 'budget';
 
 const states = new Map<string, ConversationLogState>();
 let dirReady: Promise<void> | null = null;
+/**
+ * Directories whose entries changed and have not been fsync'd since, each with
+ * the counter value of its latest change. A sync clears an obligation only if
+ * no newer change arrived while it ran.
+ */
+const dirSyncDue = new Map<string, number>();
+let dirChangeCounter = 0;
 let _onAppended: ((conversationId: string, entry: WorkLogEntry) => void) | null = null;
 
 class WorkLogScanError extends Error {}
@@ -149,12 +170,38 @@ async function syncDir(dir: string): Promise<void> {
   }
 }
 
+/** Record that an entry in `dir` was created or renamed; call after the change happened. */
+function noteDirChanged(dir: string): void {
+  dirChangeCounter += 1;
+  dirSyncDue.set(path.resolve(dir), dirChangeCounter);
+}
+
+/**
+ * fsync every directory with an outstanding obligation. Throws on the first
+ * failure and keeps that obligation (and any not yet reached) for the next call.
+ */
+async function syncDueDirs(): Promise<void> {
+  for (const [dir, mark] of Array.from(dirSyncDue)) {
+    await syncDir(dir);
+    if (dirSyncDue.get(dir) === mark) dirSyncDue.delete(dir);
+  }
+}
+
 function ensureDir(): Promise<void> {
   if (!dirReady) {
+    const dir = path.resolve(workLogDir());
     dirReady = fs.promises
-      .mkdir(workLogDir(), { recursive: true })
-      .then(async (created) => {
-        if (created) await syncDir(path.dirname(workLogDir()));
+      .mkdir(dir, { recursive: true })
+      .then((created) => {
+        if (!created) return;
+        // Every directory mkdir created is a new entry in its parent. The
+        // obligations outlive this promise, so a failed sync is retried even
+        // though the next mkdir finds everything in place.
+        const top = path.resolve(created);
+        for (let p = dir; ; p = path.dirname(p)) {
+          noteDirChanged(path.dirname(p));
+          if (p === top || p === path.dirname(p)) break;
+        }
       })
       .catch((err) => {
         dirReady = null; // retry on the next append
@@ -364,13 +411,15 @@ function readReservation(sidecarPath: string): number | null {
 async function writeReservation(sidecarPath: string, reservedSeq: number): Promise<void> {
   // Shared atomic writer (temp → fsync → rename); it leaves the directory
   // unsynced, and the rename must survive power loss for the reservation to
-  // bound every seq used after it.
+  // bound every seq used after it — so sync it now, not just before a publish.
   atomicWriteJson(sidecarPath, { reservedSeq }, { warn: (message, detail) => logger.warn(message, detail) });
-  await syncDir(path.dirname(sidecarPath));
+  noteDirChanged(path.dirname(sidecarPath));
+  await syncDueDirs();
 }
 
-async function appendDurably(filePath: string, line: string): Promise<void> {
+async function appendDurably(filePath: string, line: string, mayCreate: boolean): Promise<void> {
   const fh = await fs.promises.open(filePath, 'a');
+  if (mayCreate) noteDirChanged(path.dirname(filePath)); // the open may just have created it
   try {
     await fh.writeFile(line, 'utf-8');
     await fh.datasync();
@@ -431,17 +480,28 @@ async function readSeed(conversationId: string, logPath: string, sidecarPath: st
   // every seq it can hold: the reservation bounds every seq this module ever
   // used for it (one is written before the first append); a log without a
   // sidecar falls back to the most lines its size can hold.
+  //
+  // Plus one block: `reserved` may come from the sidecar's `.bak`, which holds
+  // the PREVIOUS reservation (atomicWriteJson promotes the old live content
+  // before writing). Consecutive reservations differ by exactly one block — each
+  // one is written at the first seq past the last — so one block covers a `.bak`
+  // that is one write behind. Holes are allowed; reuse is not.
+  const resume = (reserved ?? Math.ceil(size / MIN_ENTRY_BYTES)) + WORK_LOG_SEQ_RESERVE_BLOCK;
+  // Make the new floor durable BEFORE moving the evidence it replaces: if the
+  // process dies after the rename, the sidecar alone must still bound every seq.
+  // Written at exactly `resume`, so the next reservation is again one block on.
+  await writeReservation(sidecarPath, resume);
   const quarantined = `${logPath}.corrupt-${Date.now()}`;
   await fs.promises.rename(logPath, quarantined);
-  await syncDir(path.dirname(logPath));
-  const resume = reserved ?? Math.ceil(size / MIN_ENTRY_BYTES);
+  noteDirChanged(path.dirname(logPath));
+  await syncDueDirs();
   logger.warn('Work log tail unreadable within the scan budget; quarantined and continuing above it', {
     conversationId,
     quarantined,
     size,
     resumeAfterSeq: resume,
   });
-  return { lastSeq: resume, reservedSeq: floor, needsLeadingNewline: false, fileMayBeNew: true };
+  return { lastSeq: resume, reservedSeq: resume, needsLeadingNewline: false, fileMayBeNew: true };
 }
 
 function clampChars(text: string, max: number): string {
@@ -533,11 +593,12 @@ async function writeEntry(
       await writeReservation(files.sidecar, reservedSeq);
       state.reservedSeq = reservedSeq;
     }
-    await appendDurably(files.log, line);
-    if (state.fileMayBeNew) {
-      await syncDir(workLogDir());
-      state.fileMayBeNew = false;
-    }
+    await appendDurably(files.log, line, state.fileMayBeNew);
+    // A possible create is now an obligation in dirSyncDue, which outlives this state.
+    state.fileMayBeNew = false;
+    // Before publishing: every outstanding directory obligation, including any
+    // left by an earlier failed attempt of this or another conversation.
+    await syncDueDirs();
   } catch (error) {
     // The file may now hold nothing, part, or all of the line. Forget the seed
     // (the newline flag is left as it was) so the next append re-reads the tail

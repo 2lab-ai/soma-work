@@ -345,18 +345,18 @@ describe('work log store', () => {
           expect(counter.bytes).toBeLessThanOrEqual(wl.WORK_LOG_SCAN_BUDGET_BYTES);
         });
 
-        it('a seed stops at the budget, quarantines the log, and continues above the reservation', async () => {
+        it('a seed stops at the budget, quarantines the log, and continues a block above the reservation', async () => {
           // The reservation the module would have written for entries 1..1000.
           fs.writeFileSync(sidecarFile('conv-junk'), JSON.stringify({ reservedSeq: 1999 }));
           const next = await wl.appendWorkLog('conv-junk', { kind: 'notice', text: 'fresh' });
 
-          expect(next.seq).toBe(2000);
+          expect(next.seq).toBe(1999 + wl.WORK_LOG_SEQ_RESERVE_BLOCK + 1);
           expect(counter.bytes).toBeLessThanOrEqual(wl.WORK_LOG_SCAN_BUDGET_BYTES + 1);
           const dir = fs.readdirSync(path.dirname(logFile('conv-junk')));
           expect(dir.filter((f) => f.startsWith('conv-junk.jsonl.corrupt-'))).toHaveLength(1);
-          expect(seqs(await wl.readWorkLog('conv-junk'))).toEqual([2000]);
+          expect(seqs(await wl.readWorkLog('conv-junk'))).toEqual([next.seq]);
           expect(JSON.parse(fs.readFileSync(sidecarFile('conv-junk'), 'utf-8')).reservedSeq).toBeGreaterThanOrEqual(
-            2000,
+            next.seq,
           );
         });
       });
@@ -368,7 +368,7 @@ describe('work log store', () => {
       const size = fs.statSync(logFile('conv-legacy')).size;
 
       const next = await wl.appendWorkLog('conv-legacy', { kind: 'notice', text: 'fresh' });
-      expect(next.seq).toBe(Math.ceil(size / 32) + 1);
+      expect(next.seq).toBe(Math.ceil(size / 32) + wl.WORK_LOG_SEQ_RESERVE_BLOCK + 1);
       expect(next.seq).toBeGreaterThan(50);
     });
 
@@ -383,6 +383,120 @@ describe('work log store', () => {
       const later = await again.appendWorkLog('conv-q2', { kind: 'notice', text: 'later' });
       expect(later.seq).toBe(afterQuarantine.seq + 1);
       await again.flushWorkLog();
+    });
+
+    describe('recovery ordering (review round 4)', () => {
+      const realRename = fs.promises.rename.bind(fs.promises);
+
+      it('a quarantine interrupted right after the rename never reissues an old seq', async () => {
+        // No sidecar: before the fix, the rename removed the only seq evidence.
+        writeRaw('conv-qi', Array.from({ length: 50 }, (_, i) => line(i + 1)).join(''));
+        appendRaw('conv-qi', Buffer.alloc(JUNK_BYTES, 0x0a));
+        vi.spyOn(fs.promises, 'rename').mockImplementationOnce(async (from, to) => {
+          await realRename(from, to); // the rename lands, then the process "dies"
+          throw ioError('EIO');
+        });
+
+        await expect(wl.appendWorkLog('conv-qi', { kind: 'notice', text: 'lost' })).rejects.toThrow('EIO');
+        expect(fs.existsSync(logFile('conv-qi'))).toBe(false); // evidence moved away
+
+        const restarted = await loadFresh();
+        const next = await restarted.appendWorkLog('conv-qi', { kind: 'notice', text: 'after crash' });
+        expect(next.seq).toBeGreaterThan(50);
+        await restarted.flushWorkLog();
+      });
+
+      it('a quarantine whose rename itself fails keeps the log and still never reissues an old seq', async () => {
+        writeRaw('conv-qr', Array.from({ length: 50 }, (_, i) => line(i + 1)).join(''));
+        appendRaw('conv-qr', Buffer.alloc(JUNK_BYTES, 0x0a));
+        vi.spyOn(fs.promises, 'rename').mockRejectedValueOnce(ioError('EACCES'));
+
+        await expect(wl.appendWorkLog('conv-qr', { kind: 'notice', text: 'lost' })).rejects.toThrow('EACCES');
+        expect(fs.existsSync(logFile('conv-qr'))).toBe(true);
+        const next = await wl.appendWorkLog('conv-qr', { kind: 'notice', text: 'retry' });
+        expect(next.seq).toBeGreaterThan(50);
+      });
+
+      it('a stale .bak reservation (one write behind) still resumes above the live one', async () => {
+        // The live sidecar said 2000 and is now unreadable; .bak is the previous reservation.
+        writeRaw('conv-bak', Array.from({ length: 1000 }, (_, i) => line(i + 1)).join(''));
+        appendRaw('conv-bak', Buffer.alloc(JUNK_BYTES, 0x0a));
+        fs.writeFileSync(sidecarFile('conv-bak'), '{"reservedSeq": 20');
+        fs.writeFileSync(`${sidecarFile('conv-bak')}.bak`, JSON.stringify({ reservedSeq: 1000 }));
+
+        const next = await wl.appendWorkLog('conv-bak', { kind: 'notice', text: 'fresh' });
+        expect(next.seq).toBeGreaterThan(2000);
+      });
+    });
+  });
+
+  describe('directory durability obligations (review round 4)', () => {
+    const worklogsDir = () => path.join(paths.dataDir, 'worklogs');
+
+    /**
+     * Record log datasyncs, directory syncs and publishes; fail the first sync
+     * of `failDir` that happens after the trigger event (or right away).
+     */
+    function recordSyncs(failDir: () => string, after: 'log.datasync' | null) {
+      const events: string[] = [];
+      let triggered = after === null;
+      let failed = false;
+      spyOpen((fh, args) => {
+        const file = String(args[0]);
+        if (file.endsWith('.jsonl') && args[1] === 'a') {
+          const real = fh.datasync.bind(fh);
+          (fh as { datasync: unknown }).datasync = async () => {
+            await real();
+            events.push('log.datasync');
+            if (after === 'log.datasync') triggered = true;
+          };
+        } else if (args[1] === 'r' && (file === worklogsDir() || file === paths.dataDir)) {
+          const tag = file === worklogsDir() ? 'worklogs.sync' : 'parent.sync';
+          const real = fh.sync.bind(fh);
+          (fh as { sync: unknown }).sync = async () => {
+            if (file === failDir() && triggered && !failed) {
+              failed = true;
+              throw ioError('EIO');
+            }
+            await real();
+            events.push(tag);
+          };
+        }
+      });
+      wl.setOnWorkLogAppendedCallback(() => events.push('publish'));
+      return events;
+    }
+
+    it('a directory fsync that failed after the first append is redone before the next publish', async () => {
+      const events = recordSyncs(worklogsDir, 'log.datasync');
+
+      await expect(wl.appendWorkLog('conv-dir', { kind: 'narration', text: 'one' })).rejects.toThrow('EIO');
+      expect(events).not.toContain('publish');
+
+      events.length = 0;
+      const second = await wl.appendWorkLog('conv-dir', { kind: 'narration', text: 'two' });
+      events.push('resolved');
+      expect(second.seq).toBe(2); // seq 1 landed (fdatasync'd) and stays a normal entry
+      expect(events).toEqual(['log.datasync', 'worklogs.sync', 'publish', 'resolved']);
+      expect(seqs(await wl.readWorkLog('conv-dir'))).toEqual([1, 2]);
+
+      // Obligation cleared by that success: the third append syncs nothing extra.
+      events.length = 0;
+      await wl.appendWorkLog('conv-dir', { kind: 'narration', text: 'three' });
+      expect(events).toEqual(['log.datasync', 'publish']);
+    });
+
+    it('a failed parent fsync after mkdir is redone before the next publish (ensureDir retry)', async () => {
+      const events = recordSyncs(() => paths.dataDir, null);
+
+      await expect(wl.appendWorkLog('conv-mk', { kind: 'narration', text: 'one' })).rejects.toThrow('EIO');
+      expect(events).not.toContain('publish');
+
+      events.length = 0;
+      await wl.appendWorkLog('conv-mk', { kind: 'narration', text: 'two' });
+      const publishAt = events.indexOf('publish');
+      expect(publishAt).toBeGreaterThan(-1);
+      expect(events.slice(0, publishAt)).toContain('parent.sync');
     });
   });
 
