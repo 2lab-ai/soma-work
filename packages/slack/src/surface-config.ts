@@ -402,29 +402,40 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/**
+ * The registry field a config `field` name refers to, or undefined when the
+ * surface has no such field. Names match case-insensitively (camelCase ids
+ * like `dashboardLink` keep their registry spelling) and aliases apply
+ * (`name` → owner with format `name`). The one place that decides whether a
+ * config entry renders at all.
+ */
+export function resolveSurfaceField(
+  surface: SurfaceName,
+  name: string,
+): { field: string; format?: string } | undefined {
+  const lower = name.toLowerCase();
+  const alias = FIELD_ALIASES[lower];
+  const target = alias ? alias.field : lower;
+  const field = SURFACE_FIELD_REGISTRY[surface].find((known) => known.toLowerCase() === target);
+  if (!field) return undefined;
+  return alias?.format ? { field, format: alias.format } : { field };
+}
+
 function normalizeField(raw: unknown, surface: SurfaceName, warnings: string[]): SurfaceFieldConfig | undefined {
   if (!isPlainObject(raw) || typeof raw.field !== 'string') {
     warnings.push(`ui.${surface}: field entry is not an object with a "field" key — skipped`);
     return undefined;
   }
 
-  let fieldName = raw.field.toLowerCase();
-  let aliasFormat: string | undefined;
-  const alias = FIELD_ALIASES[fieldName];
-  if (alias) {
-    fieldName = alias.field;
-    aliasFormat = alias.format;
-  }
-  // Field names match case-insensitively; store the registry spelling
-  // (camelCase ids like `dashboardLink` must survive the lowercasing).
-  fieldName = SURFACE_FIELD_REGISTRY[surface].find((known) => known.toLowerCase() === fieldName) ?? fieldName;
-
-  if (!SURFACE_FIELD_REGISTRY[surface].includes(fieldName)) {
+  const resolved = resolveSurfaceField(surface, raw.field);
+  if (!resolved) {
     warnings.push(
       `ui.${surface}: unknown field "${raw.field}" — skipped (known: ${SURFACE_FIELD_REGISTRY[surface].join(', ')})`,
     );
     return undefined;
   }
+  const fieldName = resolved.field;
+  const aliasFormat = resolved.format;
 
   const out: SurfaceFieldConfig = { field: fieldName };
   out.show = raw.show !== false;

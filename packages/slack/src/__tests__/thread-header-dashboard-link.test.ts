@@ -171,6 +171,12 @@ describe('surface-config — no read-time rule', () => {
   // migration (src/deploy/migrate-threadheader-dashboard-link-once.ts).
   // Reading config never second-guesses the operator: a header without the
   // field renders exactly as configured.
+  //
+  // These cases document that contract; they are NOT the guard against a
+  // read-time seed rule coming back (the removed rule only fired on the exact
+  // pre-dashboardLink seed, which this inline header is not). The guard is the
+  // negative control in the migration test (a): it renders the literal
+  // e992de7c seed and requires no link before the migration runs.
   it('keeps an operator thread header without dashboardLink exactly as configured', () => {
     setThreadHeaderProviders({ getDashboardSessionUrl: () => DASHBOARD_URL });
     const { config } = setUiSurfacesConfig({

@@ -239,9 +239,12 @@ async function start() {
     // the 📋 작업 로그 field — seeded or edited copies alike, since a seeded
     // config.json never sees new built-in defaults. Runs BEFORE loadConfig below
     // so this boot already renders it; marker in DATA_DIR, so an operator who
-    // removes the link afterwards keeps it removed. Concurrent boots cannot race
-    // on config.json: the PID lock on DATA_DIR is held (acquirePidLock above).
-    // Non-fatal: a failure writes no marker and is retried next boot.
+    // removes the link afterwards keeps it removed. The DATA_DIR PID lock
+    // (acquirePidLock above) only excludes a second daemon boot; other
+    // config.json writers (CLI setup, plugin saves) take no lock, so the
+    // migration writes compare-and-swap and reports `contended` if they keep
+    // changing the file. Non-fatal: a failure or contention writes no marker and
+    // is retried next boot.
     try {
       const headerLink = migrateThreadHeaderDashboardLinkOnce({ configFile: CONFIG_FILE, dataDir: DATA_DIR });
       logger.info(
