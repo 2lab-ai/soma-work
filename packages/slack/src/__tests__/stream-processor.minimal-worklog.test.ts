@@ -709,10 +709,20 @@ describe('guardText — what the executor content guards read', () => {
     whole: [DIRECTIVE_ONLY],
     fragmented: ['```json\n{"type":"channel_message",', '"text":"Release notes"}\n```'],
   } as const;
-  for (const fragments of ['whole', 'fragmented'] as const) {
-    for (const shape of ['streamed', 'result-only'] as const) {
+  // Endings: a STREAMED directive-only segment (fragmentable like the leak),
+  // or a result whose finalText is one complete directive (a finalText is a
+  // single string — there is nothing to fragment).
+  const ENDINGS = [
+    ...(['whole', 'fragmented'] as const).map((directive) => ({
+      label: `streamed ${directive} directive-only segment`,
+      streamed: DIRECTIVE_PARTS[directive] as readonly string[],
+    })),
+    { label: 'result-only complete-directive finalText', streamed: [] as readonly string[] },
+  ];
+  for (const leak of ['whole', 'fragmented'] as const) {
+    for (const ending of ENDINGS) {
       for (const level of ['minimal', 'detail'] as const) {
-        it(`${level}: ${fragments} leak → ${shape} ${fragments} directive-only ending: guardText is the leak, directive dispatched once`, async () => {
+        it(`${level}: ${leak} leak → ${ending.label}: guardText is the leak, directive dispatched once`, async () => {
           const h = harness(getVerbosityFlags(level));
           const onChannelMessageDetected = vi.fn().mockResolvedValue(undefined);
           const delta = (text: string): AgentStreamEvent => ({ type: 'assistant_delta', text });
@@ -722,9 +732,9 @@ describe('guardText — what the executor content guards read', () => {
             [
               delta(NARRATION),
               { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} },
-              ...LEAK_PARTS[fragments].map(delta),
+              ...LEAK_PARTS[leak].map(delta),
               { type: 'tool_call', toolCallId: 'tu_2', name: 'Read', input: {} },
-              ...(shape === 'streamed' ? DIRECTIVE_PARTS[fragments].map(delta) : []),
+              ...ending.streamed.map(delta),
               { type: 'result', stopReason: 'end_turn', finalText: DIRECTIVE_ONLY },
             ],
             { onChannelMessageDetected },
@@ -831,5 +841,53 @@ describe('bookkeeping frames do not settle the held answer as narration', () => 
     await run(h, toolTurn());
 
     expect(h.log.map((e) => e.kind)).toEqual(['narration', 'tool', 'tool_result', 'final']);
+  });
+});
+
+/**
+ * Spec 10 §3.2-3: if the final answer or a question form reached Slack this
+ * turn, the turn did not end on a leak. If nothing reached Slack, the leak
+ * stays the terminal segment.
+ */
+describe('what makes the accepted final the terminal segment', () => {
+  const LEAK = 'Prompt is too long';
+  const withheldThenLeak = (): AgentStreamEvent[] => [
+    { type: 'assistant_delta', text: FINAL },
+    { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} },
+    { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'ok' }] },
+    { type: 'assistant_delta', text: LEAK },
+    { type: 'result', stopReason: 'end_turn', finalText: FINAL },
+  ];
+
+  it('a host question form reached Slack: A is not posted under it, and no recovery (no transportLeak)', async () => {
+    const h = harness(LOG_MINIMAL);
+    let asked = false;
+    h.context.hostChoicePosted = () => asked;
+
+    const result = await run(h, withheldThenLeak(), {
+      onToolResult: async () => {
+        asked = true;
+      },
+    });
+
+    expect(h.appendText).not.toHaveBeenCalled();
+    expect(h.say).not.toHaveBeenCalled();
+    expect(result.transportLeak).toBeUndefined();
+    expect(result.guardText).not.toContain(LEAK);
+    expect(h.log.filter((e) => e.kind === 'final')).toEqual([expect.objectContaining({ text: FINAL })]);
+    expect(h.log.filter((e) => e.kind === 'error')).toEqual([expect.objectContaining({ text: LEAK })]);
+  });
+
+  it('the promotion runs but posting the answer throws: nothing reached Slack, the leak stays terminal', async () => {
+    const h = harness(LOG_MINIMAL);
+    h.appendText.mockRejectedValue(new Error('slack down'));
+    const processor = new AgentStreamProcessor();
+
+    await expect(
+      processor.process(events(withheldThenLeak()), h.context, new AbortController().signal),
+    ).rejects.toThrow('slack down');
+
+    const internals = processor as unknown as { transportLeakResult(): { transportLeak?: string } };
+    expect(internals.transportLeakResult()).toEqual({ transportLeak: LEAK });
   });
 });

@@ -110,9 +110,12 @@ Entry contract for the final answer (the log is append-only):
   or result, thinking, or more text. Bookkeeping frames (`usage`, `status`,
   `compact_boundary`) do not move the turn on, so they can sit between the answer and `result`.
   If the turn's answer IS that segment, it is recorded only as `final`.
-- Compaction notices are recorded once per cycle — one start and one completion — whichever
+- Compaction notices belong to the conversation, not to a turn: `compact-hooks.ts` records
+  them against `session.conversationId` through `recordConversationWorkLog` (no `turnId`;
+  nothing without a conversation). Once per cycle — one start and one completion — whichever
   path signals it (the SDK PreCompact/PostCompact hooks or the stream's `compacting` status /
-  `compact_boundary`), at every level (`bindCompactWorkLog` in `compact-hooks.ts`).
+  `compact_boundary`), at every level, including a completion that arrives after the turn
+  that ran the compaction has ended.
 - When the fallback (below) posts a segment that was already recorded as `narration`, that
   text appears once as `narration` and once as `final` — never two of either.
 
@@ -152,11 +155,14 @@ back to the whole `collectedText`). The guards convert the leak into a thrown er
 compact failure) — also when narration preceded the leak, which the joined `collectedText`
 used to hide. No withheld narration is posted as the answer of such a turn.
 
-If a final answer reached Slack this turn, the turn did not end on a leak and no recovery
-runs. The answer becomes the turn's terminal segment whether it is a real answer after the leak
-(streamed, or a new `finalText`) or an earlier segment that `finalText` names (e.g. text A is
-withheld, a later leak L is suppressed, then `finalText` = A: A is posted once and L stays an
-`error` entry). Then there is no `transportLeak`, and the executor's guards read
+If the final answer or a question form reached Slack this turn, the turn did not end on a
+leak and no recovery runs. The answer becomes the turn's terminal segment whether it is a real
+answer after the leak (streamed, or a new `finalText`) or an earlier segment that `finalText`
+names (e.g. text A is withheld, a later leak L is suppressed, then `finalText` = A: A is posted
+once and L stays an `error` entry). When the host posted a question form this turn, A is not
+posted under it — the form is what the user answers — and the turn still does not recover
+(recovering would duplicate the form). If posting A fails, nothing reached Slack and L stays
+the terminal segment. Then there is no `transportLeak`, and the executor's guards read
 `StreamResult.guardText` — the leak the turn ended on, else the turn text without suppressed
 segments — so a recovered leak cannot reach them through `collectedText`. A `finalText` that
 differs from a suppressed leak only by whitespace is the same leak.

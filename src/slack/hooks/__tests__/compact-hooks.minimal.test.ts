@@ -16,14 +16,11 @@ vi.mock('../../../session/compaction-context-builder', () => ({
   snapshotFromSession: vi.fn().mockReturnValue({}),
 }));
 
+import { setStreamExecutorProviders } from '@soma/slack/pipeline/stream-executor';
+import type { WorkLogInput } from '@soma/slack/work-log';
 import type { ConversationSession } from '../../../types';
 import type { SlackApiHelper } from '../../slack-api-helper';
-import {
-  bindCompactWorkLog,
-  buildCompactHooks,
-  postCompactCompleteIfNeeded,
-  postCompactStartingIfNeeded,
-} from '../compact-hooks';
+import { buildCompactHooks, postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../compact-hooks';
 
 const COMPACT = getVerbosityFlags('compact');
 
@@ -182,57 +179,92 @@ describe('compaction notices at minimal (spec 10 §3.2-4)', () => {
 });
 
 /**
- * Spec 10 §3.3 — the work log gets exactly one start and one completion
- * `notice` per cycle, whichever path signals (SDK hooks, the stream's
- * status / compact_boundary fallbacks, or both), at every level. The sink is
- * the running turn's, bound by stream-executor (`bindCompactWorkLog`).
+ * Spec 10 §3.3 — compaction notices are conversation-level: compact-hooks
+ * records them against `session.conversationId` through the one global path
+ * (`recordConversationWorkLog` → `streamExecutorProviders.appendWorkLog`), with
+ * no turn involved. Exactly one start and one completion per cycle, whichever
+ * path signals, at every level; Slack posting is unchanged (gating above).
  */
 describe('compaction work-log notices: one start and one completion per cycle', () => {
-  function bound(mask: unknown) {
+  const recorded: Array<[string, WorkLogInput]> = [];
+  setStreamExecutorProviders({
+    appendWorkLog: (conversationId, entry) => {
+      recorded.push([conversationId, entry]);
+    },
+  });
+  afterEach(() => {
+    recorded.length = 0;
+  });
+
+  /** `conversationId: null` = a session with no conversation. */
+  function conversationSession(mask: unknown, conversationId: string | null = 'conv-1') {
     const session = track(makeSession(mask));
-    const slackApi = makeSlackApi();
-    const entries: Array<{ kind: string; text: string }> = [];
-    const unbind = bindCompactWorkLog(session, (entry) => {
-      entries.push(entry);
-    });
-    return { session, slackApi, entries, unbind };
+    if (conversationId) session.conversationId = conversationId;
+    return { session, slackApi: makeSlackApi() };
   }
+  const notices = () => recorded.map(([conversationId, entry]) => ({ conversationId, ...entry }));
 
   it.each([
     ['minimal', LOG_MINIMAL],
     ['compact', COMPACT],
-  ])('%s: PreCompact hook + compacting status, then compact_boundary + PostCompact hook', async (_label, mask) => {
-    const { session, slackApi, entries } = bound(mask);
+  ])('%s: hook-only cycle (PreCompact + PostCompact)', async (_label, mask) => {
+    const { session, slackApi } = conversationSession(mask);
+    const hooks = buildCompactHooks(deps(session, slackApi));
+
+    await hooks.PreCompact({ hook_event_name: 'PreCompact', trigger: 'auto' } as unknown as PreCompactHookInput);
+    session.compactPreTokens = 160_000;
+    session.compactPostTokens = 35_000;
+    await hooks.PostCompact({ hook_event_name: 'PostCompact', trigger: 'auto' } as unknown as PostCompactHookInput);
+
+    expect(notices()).toEqual([
+      { conversationId: 'conv-1', kind: 'notice', text: 'Compaction starting', ts: expect.any(Number) },
+      {
+        conversationId: 'conv-1',
+        kind: 'notice',
+        text: 'Compaction completed · trigger=auto · 160000 → 35000 tokens',
+        ts: expect.any(Number),
+      },
+    ]);
+    expect(recorded.every(([, entry]) => entry.turnId === undefined)).toBe(true);
+  });
+
+  it.each([
+    ['minimal', LOG_MINIMAL],
+    ['compact', COMPACT],
+  ])('%s: fallback-only cycle (compacting status twice + compact_boundary)', async (_label, mask) => {
+    const { session, slackApi } = conversationSession(mask);
+
+    await postCompactStartingIfNeeded(deps(session, slackApi), 'unknown (fallback)');
+    await postCompactStartingIfNeeded(deps(session, slackApi), 'unknown (fallback)');
+    session.compactTrigger = 'auto';
+    await postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+
+    expect(notices().map((n) => n.text)).toEqual(['Compaction starting', 'Compaction completed · trigger=auto']);
+  });
+
+  it.each([
+    ['minimal', LOG_MINIMAL],
+    ['compact', COMPACT],
+  ])('%s: both paths signal (hooks + fallbacks)', async (_label, mask) => {
+    const { session, slackApi } = conversationSession(mask);
     const hooks = buildCompactHooks(deps(session, slackApi));
 
     await hooks.PreCompact({ hook_event_name: 'PreCompact', trigger: 'auto' } as unknown as PreCompactHookInput);
     await postCompactStartingIfNeeded(deps(session, slackApi), 'unknown (fallback)');
-    await postCompactStartingIfNeeded(deps(session, slackApi), 'unknown (fallback)');
-    // The boundary callback writes the SDK metadata before signalling END.
     session.compactPreTokens = 160_000;
     session.compactPostTokens = 35_000;
     session.compactTrigger = 'auto';
     await postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
     await hooks.PostCompact({ hook_event_name: 'PostCompact', trigger: 'auto' } as unknown as PostCompactHookInput);
 
-    expect(entries).toEqual([
-      { kind: 'notice', text: 'Compaction starting' },
-      { kind: 'notice', text: 'Compaction completed · trigger=auto · 160000 → 35000 tokens' },
+    expect(notices().map((n) => n.text)).toEqual([
+      'Compaction starting',
+      'Compaction completed · trigger=auto · 160000 → 35000 tokens',
     ]);
   });
 
-  it('a completion that arrives ONLY through the PostCompact hook still records its notice', async () => {
-    const { session, slackApi, entries } = bound(LOG_MINIMAL);
-    session.compactPreTokens = 150_000;
-    const hooks = buildCompactHooks(deps(session, slackApi));
-
-    await hooks.PostCompact({ hook_event_name: 'PostCompact', trigger: 'manual' } as unknown as PostCompactHookInput);
-
-    expect(entries).toEqual([{ kind: 'notice', text: 'Compaction completed · trigger=manual' }]);
-  });
-
-  it('two racing ENDs record one completion notice', async () => {
-    const { session, slackApi, entries } = bound(COMPACT);
+  it('two racing ENDs record one completion', async () => {
+    const { session, slackApi } = conversationSession(COMPACT);
     await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
 
     await Promise.all([
@@ -240,38 +272,81 @@ describe('compaction work-log notices: one start and one completion per cycle', 
       postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' }),
     ]);
 
-    expect(entries.filter((e) => e.text.startsWith('Compaction completed'))).toHaveLength(1);
+    expect(notices().filter((n) => n.text.startsWith('Compaction completed'))).toHaveLength(1);
   });
 
-  it('a new cycle records its own pair; nothing is recorded once unbound', async () => {
-    const { session, slackApi, entries, unbind } = bound(LOG_MINIMAL);
+  it('a completion that arrives after the executing turn has ended is still recorded', async () => {
+    // No turn is involved at all: START during the turn, the turn ends, the
+    // PostCompact hook fires afterwards — the conversation still gets it.
+    const { session, slackApi } = conversationSession(LOG_MINIMAL);
     await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
-    await postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
-    await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
-    await postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
-    expect(entries.map((e) => e.text.split(' ·')[0])).toEqual([
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await buildCompactHooks(deps(session, slackApi)).PostCompact({
+      hook_event_name: 'PostCompact',
+      trigger: 'manual',
+    } as unknown as PostCompactHookInput);
+
+    expect(notices().map((n) => n.text)).toEqual(['Compaction starting', 'Compaction completed · trigger=manual']);
+  });
+
+  it('a new cycle records its own pair', async () => {
+    const { session, slackApi } = conversationSession(LOG_MINIMAL);
+    for (let cycle = 0; cycle < 2; cycle++) {
+      await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+      await postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    }
+
+    expect(notices().map((n) => n.text.split(' ·')[0])).toEqual([
       'Compaction starting',
       'Compaction completed',
       'Compaction starting',
       'Compaction completed',
     ]);
-
-    unbind();
-    await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
-    expect(entries).toHaveLength(4);
   });
 
-  it('a throwing sink never breaks the cycle', async () => {
-    const session = track(makeSession(LOG_MINIMAL));
-    const slackApi = makeSlackApi();
-    bindCompactWorkLog(session, () => {
-      throw new Error('disk full');
+  it('a throwing appendWorkLog provider is ignored — the cycle still seals', async () => {
+    setStreamExecutorProviders({
+      appendWorkLog: () => {
+        throw new Error('disk full');
+      },
     });
+    try {
+      const { session, slackApi } = conversationSession(LOG_MINIMAL);
+      await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+      await postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+      expectCycleSealed(session);
+    } finally {
+      setStreamExecutorProviders({
+        appendWorkLog: (conversationId, entry) => {
+          recorded.push([conversationId, entry]);
+        },
+      });
+    }
+  });
+
+  it('no conversationId: nothing is recorded', async () => {
+    const { session, slackApi } = conversationSession(LOG_MINIMAL, null);
+    expect(session.conversationId).toBeUndefined();
 
     await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
     await postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
 
+    expect(recorded).toEqual([]);
     expectCycleSealed(session);
+  });
+
+  it.each([
+    ['minimal', LOG_MINIMAL, 0],
+    ['compact', COMPACT, 1],
+  ])('%s: recording changes no Slack call', async (_label, mask, posts) => {
+    const { session, slackApi } = conversationSession(mask);
+
+    await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    await postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+
+    expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(posts);
+    expect(slackApi.updateMessage).toHaveBeenCalledTimes(posts);
   });
 });
 

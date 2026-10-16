@@ -751,9 +751,27 @@ describe('ToolEventProcessor', () => {
 
         mcpCallTracker.endCall.mockClear();
         mcpStatusDisplay.flushSession.mockClear();
+        // A flush that has not finished yet: cleanup must stay pending on it.
+        let finishFlush!: () => void;
+        mcpStatusDisplay.flushSession.mockImplementationOnce(
+          () =>
+            new Promise<void>((resolve) => {
+              finishFlush = resolve;
+            }),
+        );
 
         // Turn ends with the bg Task still alive — cleanup must drain it.
-        await processor.cleanup('C123:thread_ts', 'C123:1:turn-A');
+        let cleanupSettled = false;
+        const cleanup = processor.cleanup('C123:thread_ts', 'C123:1:turn-A').then(() => {
+          cleanupSettled = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts');
+        expect(cleanupSettled).toBe(false);
+
+        finishFlush();
+        await cleanup;
+        expect(cleanupSettled).toBe(true);
 
         expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_bg_task');
         expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts');
