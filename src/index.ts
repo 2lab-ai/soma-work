@@ -55,6 +55,7 @@ import {
   broadcastSessionUpdate,
   broadcastSummaryTitleChanged,
   broadcastTaskUpdate,
+  broadcastWorkLog,
   initRecorder,
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
@@ -72,6 +73,7 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
+import { appendWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
@@ -99,6 +101,7 @@ import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler } from './slack/goal-loop-resume';
+import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
@@ -801,6 +804,27 @@ async function start() {
 
     // Connect dashboard: real-time conversation turn updates
     setOnTurnRecordedCallback(broadcastConversationUpdate);
+
+    // Connect dashboard: work log (spec §3.3). The stream executor emits every
+    // instruction / narration / tool step through `appendWorkLog`; each entry is
+    // persisted and pushed to the owner's and admins' dashboards.
+    // setStreamExecutorProviders merges, so this adds one field on top of the
+    // set wired in src/slack/pipeline/stream-executor.ts. The intersection type
+    // keeps it compiling whether or not StreamExecutorProviders declares
+    // `appendWorkLog` yet (both declare the same WorkLogInput shape).
+    setOnWorkLogAppendedCallback(broadcastWorkLog);
+    const workLogProviders: StreamExecutorProviders & {
+      appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
+    } = {
+      appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
+        try {
+          appendWorkLog(conversationId, entry);
+        } catch (error) {
+          logger.warn('Work log append failed', { conversationId, error });
+        }
+      },
+    };
+    setStreamExecutorProviders(workLogProviders);
 
     // Dashboard v2.1 — wire session title bridge so the recorder can
     // regenerate session summaryTitle without importing session-registry
