@@ -25,10 +25,20 @@
  *      throws here, before anything is written, so the next boot retries;
  *   2. write the marker (counts computed from the pre-read);
  *   3. only then write the data.
- * A failure in step 3 means the one-shot is missed (the caller logs it loudly)
- * — non-destructive. The reverse order could let a later boot replay the
- * rewrite on top of choices users made in between, which is the one outcome
- * this module must never produce.
+ * A failure in step 3 means the one-shot is missed (the caller logs it at
+ * error level): users and threads stay on their previous levels. Those stored
+ * masks predate the NARRATION flag, so on their own they would now read as a
+ * `custom` level with narration hidden — `SessionRegistry.loadSessions()`
+ * maps them back to the current presets (`upgradeLegacyVerbosityMask`), which
+ * is what keeps a missed one-shot from degrading those threads. The reverse
+ * order could let a later boot replay the rewrite on top of choices users made
+ * in between, which is the one outcome this module must never produce.
+ *
+ * Concurrency: no other process can run this (or write either file) at the
+ * same time — the daemon calls it only while holding the exclusive pid lock,
+ * `acquirePidLock(DATA_DIR)` (O_CREAT|O_EXCL, src/pid-lock.ts), taken at the
+ * top of `start()` in src/index.ts before the migration and before
+ * `loadSavedSessions()`.
  */
 
 import fs from 'node:fs';

@@ -263,6 +263,7 @@ export {
   type OutputFlagValue,
   type RenderMode,
   shouldOutput,
+  upgradeLegacyVerbosityMask,
   VERBOSITY_NAMES,
   verboseTag,
 } from './output-flags';

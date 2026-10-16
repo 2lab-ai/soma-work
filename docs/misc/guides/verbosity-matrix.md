@@ -85,14 +85,21 @@ Each flag is checked at the point of output using `shouldOutput(flag, verbosityM
 ## Work log (all levels)
 
 Verbosity decides what reaches the Slack thread, never what is recorded. Every turn's
-user instruction, narration segments, tool calls/results, final answer, compaction notices
-and errors are emitted at every level through `StreamContext.workLog` →
-`streamExecutorProviders.appendWorkLog(conversationId, entry)` (types:
-`packages/slack/src/work-log.ts`), for the dashboard's per-session work log.
+user instruction, narration segments, tool calls/results, final answer (once, as `final`),
+compaction notices, retries/aborts (`notice`) and errors are emitted at every level through
+`StreamContext.workLog` → `streamExecutorProviders.appendWorkLog(conversationId, entry)`
+(types: `packages/slack/src/work-log.ts`), for the dashboard's per-session work log.
+
+At `minimal` the compaction start/complete notices are not posted either
+(`src/slack/hooks/compact-hooks.ts`); a "starting" message that was already posted is always
+replaced by the completion. A turn whose final answer shows nothing (no `finalText`, or a
+directive-only one) posts its last withheld narration instead, unless a choice form was posted.
 
 A one-time boot migration (`src/deploy/migrate-all-users-minimal-once.ts`, marker
 `.all-users-log-minimal-once-2026-10-16.json`) moved every user default and every persisted
-session mask to `minimal` on 2026-10-16; later choices are never overwritten.
+session mask to `minimal` on 2026-10-16; later choices are never overwritten. Session masks
+stored before `NARRATION` existed are mapped to the current presets on load
+(`upgradeLegacyVerbosityMask`).
 
 ## Render Modes
 
