@@ -125,14 +125,27 @@ function compactNoticesVisible(session: ConversationSession): boolean {
  * then lands — with a live ticker — after the cycle is closed, leaving a
  * "⏳ Compaction starting" message nothing will ever update.
  */
-/** Cycle markers whose END completion is already being posted (see postCompactCompleteIfNeeded). */
-const endClaimedMarkers = new WeakSet<object>();
+/**
+ * The END completion currently being delivered, per cycle marker. Resolves
+ * `true` once it is on the thread (or there was deliberately nothing to post),
+ * `false` if delivery failed — then the claim is released and the next END
+ * signal (a waiting duplicate, or a later one) delivers instead. Never
+ * rejects. Set synchronously, before any await, so duplicate END signals
+ * (PostCompact hook + compact_boundary) cannot both post.
+ */
+const endCompletionsInFlight = new WeakMap<object, Promise<boolean>>();
 
 interface StartingFlight {
   /** Settles when the post finished (it never rejects). */
   done: Promise<void>;
   /** The turn ended (closeCompactStartingAtTurnEnd) while this post was in flight. */
   closedAtTurnEnd: boolean;
+  /**
+   * END stopped waiting for this post (deadline) and delivers its own
+   * completion; the post, when it lands, must replace itself with the
+   * completion — nothing else will ever touch that message.
+   */
+  abandonedByEnd: boolean;
 }
 const startingPostsInFlight = new WeakMap<ConversationSession, StartingFlight>();
 
@@ -483,7 +496,7 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
     return;
   }
 
-  const flight: StartingFlight = { done: Promise.resolve(), closedAtTurnEnd: false };
+  const flight: StartingFlight = { done: Promise.resolve(), closedAtTurnEnd: false, abandonedByEnd: false };
   flight.done = postStartingMessage(deps, epoch, trigger, initialText, startedAtMs, flight);
   startingPostsInFlight.set(session, flight);
   try {
@@ -525,10 +538,10 @@ async function postStartingMessage(
   // cycle — or the turn ended — while this post was in Slack's queue. Nothing
   // else will ever touch this message: replace it now, start no ticker, and
   // leave the session's ts alone (it may already belong to a newer cycle).
-  const sealed = ensurePostedMap(session)[epoch]?.post === true;
-  if (sealed || flight.closedAtTurnEnd) {
+  const completed = ensurePostedMap(session)[epoch]?.post === true || flight.abandonedByEnd;
+  if (completed || flight.closedAtTurnEnd) {
     if (postResult.ts) {
-      const text = sealed ? buildCompactCompleteMessage(session) : COMPACT_ENDED_WITHOUT_SIGNAL_TEXT;
+      const text = completed ? buildCompactCompleteMessage(session) : COMPACT_ENDED_WITHOUT_SIGNAL_TEXT;
       await slackApi.updateMessage(channel, postResult.ts, text).catch((err) => {
         logger.warn('compact-starting: late starting message could not be closed', {
           error: (err as Error)?.message ?? String(err),
@@ -621,7 +634,7 @@ export async function postCompactCompleteIfNeeded(
   deps: CompactHookDeps,
   opts: PostCompactCompleteOpts = {},
 ): Promise<void> {
-  const { session, channel, threadTs, slackApi } = deps;
+  const { session } = deps;
   const epoch = getCurrentEpochForEnd(session);
   const marker = ensurePostedMap(session)[epoch];
   if (!marker) return;
@@ -647,94 +660,15 @@ export async function postCompactCompleteIfNeeded(
   // "completed" text back to "starting".
   stopStartingTicker(session);
 
-  // Claim the completion SYNCHRONOUSLY, before any await below: two END
-  // signals (PostCompact hook + compact_boundary) can both arrive while the
-  // first is still awaiting an in-flight START, and both would see
-  // `marker.post === false` and post. `marker.post` itself flips only once
-  // the completion is on the thread — a late START reads it as "sealed" and
-  // replaces itself, so it cannot be set this early.
-  const alreadyClaimed = marker.post === true || endClaimedMarkers.has(marker);
-  endClaimedMarkers.add(marker);
-  const postPromise = alreadyClaimed
-    ? Promise.resolve()
-    : (async () => {
-        // A "starting" post still in Slack's queue owns the message this
-        // completion must replace: wait for it — bounded, so a hung Slack
-        // call cannot hold the PostCompact hook — then stop the ticker it
-        // may have started. Past the deadline this completion is posted on
-        // its own, and the late post replaces itself when it lands.
-        await awaitStartingPost(session);
-        stopStartingTicker(session);
-        const text = buildCompactCompleteMessage(session);
-        const startingTs = session.compactStartingMessageTs;
-        // Track the ts of the message that actually carries the completion
-        // text — chat.update keeps the original ts; the postSystemMessage
-        // fallback creates a new one. We capture it for the deferred
-        // "now %" update path below.
-        let completionTs: string | null = null;
-        if (startingTs) {
-          // Replace the live "starting" message in-place. If the update
-          // fails (message deleted, edit window expired, etc.) fall back
-          // to posting a fresh system message so the user still sees the
-          // completion signal.
-          try {
-            await slackApi.updateMessage(channel, startingTs, text);
-            completionTs = startingTs;
-          } catch (err) {
-            logger.warn('compact complete: chat.update failed, falling back to new message', {
-              error: (err as Error)?.message ?? String(err),
-            });
-            const fallback = await slackApi.postSystemMessage(channel, text, { threadTs });
-            completionTs = fallback?.ts ?? null;
-          }
-        } else if (compactNoticesVisible(session)) {
-          // No starting ts (fallback-only path) → post a fresh message.
-          const fallback = await slackApi.postSystemMessage(channel, text, { threadTs });
-          completionTs = fallback?.ts ?? null;
-        }
-        // Else: below `compact` with no starting message on the thread —
-        // nothing to post (spec 10 §3.2-4); the bookkeeping below still runs.
-        marker.post = true;
-        // Clear runtime-only START tracking now that the cycle is sealed.
-        session.compactStartingMessageTs = null;
-        session.compactStartedAtMs = null;
-        // Deferred "now %" update path. The just-posted completion message
-        // shows `now ~?% ← was ~80%` whenever the SDK didn't supply
-        // `post_tokens` via onCompactBoundary (observed in production).
-        // The literal `?` is honest but useless to the user — they want a
-        // real number. Save the ts so the next turn-end usage sample (in
-        // `checkAndSchedulePendingCompact`) can chat.update this message
-        // in-place with `now ~25% ← was ~80%`. Skip the deferral when we
-        // already rendered real numbers (compactPostTokens populated).
-        if (completionTs && session.compactPostTokens === null) {
-          session.compactCompletionMessageTs = completionTs;
-        }
-        // One-shot threshold-check suppression. The very first post-compact
-        // turn's `session.usage` often still carries large cache_read tokens
-        // from the pre-compact prefix (the SDK doesn't reset usage atomically
-        // with the boundary), so `checkAndSchedulePendingCompact` would
-        // immediately re-trip the threshold and post `Context usage 83% ≥
-        // threshold 80%` right after we just announced "Compaction
-        // completed". User-reported as a confusing auto-compact loop.
-        // Skipping ONE check gives the next turn a chance to produce a
-        // fresh, post-compact `session.usage` sample before we decide.
-        //
-        // CRITICAL: must be inside the IIFE (not after it). A second END
-        // signal in the same cycle (PostCompact hook + onCompactBoundary
-        // race) re-enters this function with `marker.post === true`, taking
-        // the `Promise.resolve()` branch above. If suppression were set
-        // outside the IIFE it would re-arm AFTER the next-turn threshold
-        // check already consumed it, suppressing a legitimate later check.
-        session.skipThresholdCheckOnce = true;
-      })();
+  const postPromise = deliverCompletionOnce(marker, () => deliverCompletion(deps, marker));
 
   // Rehydration dedupe: whichever END signal fires first marks the epoch so
   // the SessionStart(source=compact) hook doesn't double-rebuild.
-  // Idempotent (set to the same value on re-entry), so safe outside the IIFE.
+  // Idempotent (set to the same value on re-entry), so it runs for every END.
   ensureRehydratedMap(session)[epoch] = true;
 
   // Clear the "pending" flag so InputProcessor stops intercepting.
-  // Idempotent (already false on re-entry), so safe outside the IIFE.
+  // Idempotent (already false on re-entry), so it runs for every END.
   session.autoCompactPending = false;
 
   // Consume pending atomically so a second END signal in the same cycle
@@ -760,6 +694,121 @@ export async function postCompactCompleteIfNeeded(
 }
 
 /**
+ * Run `deliver` for this cycle at most once at a time, and to success at most
+ * once. The claim is taken SYNCHRONOUSLY (no await between the check and the
+ * `set`), so duplicate END signals cannot both post. A duplicate awaits the
+ * claimer: if that delivery failed, the claim was released and the duplicate
+ * delivers instead. `marker.post` itself flips only once the completion is on
+ * the thread — a late START reads it as "completed" and replaces itself, so
+ * it cannot double as the claim. The claimer's own failure still rejects, as
+ * before (the hook / stream callback log it).
+ */
+async function deliverCompletionOnce(marker: { post: boolean }, deliver: () => Promise<void>): Promise<void> {
+  for (;;) {
+    if (marker.post === true) return;
+    const inFlight = endCompletionsInFlight.get(marker);
+    if (!inFlight) break;
+    if (await inFlight) return;
+  }
+  let settle!: (delivered: boolean) => void;
+  const outcome = new Promise<boolean>((resolve) => {
+    settle = resolve;
+  });
+  endCompletionsInFlight.set(marker, outcome);
+  try {
+    await deliver();
+    settle(true);
+  } catch (err) {
+    settle(false);
+    throw err;
+  } finally {
+    if (endCompletionsInFlight.get(marker) === outcome) endCompletionsInFlight.delete(marker);
+  }
+}
+
+/** Post (or replace in place) the completion message and seal the cycle. */
+async function deliverCompletion(deps: CompactHookDeps, marker: { pre: boolean; post: boolean }): Promise<void> {
+  const { session, channel, threadTs, slackApi } = deps;
+  // A "starting" post still in Slack's queue owns the message this
+  // completion must replace: wait for it — bounded, so a hung Slack
+  // call cannot hold the PostCompact hook — then stop the ticker it
+  // may have started. Past the deadline this completion is posted on
+  // its own, and the late post — marked abandoned — replaces itself
+  // with the completion when it lands.
+  const late = await awaitStartingPost(session);
+  if (late) late.abandonedByEnd = true;
+  stopStartingTicker(session);
+  const text = buildCompactCompleteMessage(session);
+  const startingTs = session.compactStartingMessageTs;
+  // Track the ts of the message that actually carries the completion
+  // text — chat.update keeps the original ts; the postSystemMessage
+  // fallback creates a new one. We capture it for the deferred
+  // "now %" update path below.
+  let completionTs: string | null = null;
+  if (startingTs) {
+    // Replace the live "starting" message in-place. If the update
+    // fails (message deleted, edit window expired, etc.) fall back
+    // to posting a fresh system message so the user still sees the
+    // completion signal.
+    try {
+      await slackApi.updateMessage(channel, startingTs, text);
+      completionTs = startingTs;
+    } catch (err) {
+      logger.warn('compact complete: chat.update failed, falling back to new message', {
+        error: (err as Error)?.message ?? String(err),
+      });
+      const fallback = await slackApi.postSystemMessage(channel, text, { threadTs });
+      completionTs = fallback?.ts ?? null;
+    }
+  } else if (compactNoticesVisible(session)) {
+    // No starting ts (fallback-only path) → post a fresh message.
+    const fallback = await slackApi.postSystemMessage(channel, text, { threadTs });
+    completionTs = fallback?.ts ?? null;
+  }
+  // Else: below `compact` with no starting message on the thread —
+  // nothing to post (spec 10 §3.2-4); the bookkeeping below still runs.
+  marker.post = true;
+  // Clear runtime-only START tracking now that the cycle is sealed.
+  session.compactStartingMessageTs = null;
+  session.compactStartedAtMs = null;
+  // Deferred "now %" update path. The just-posted completion message
+  // shows `now ~?% ← was ~80%` whenever the SDK didn't supply
+  // `post_tokens` via onCompactBoundary (observed in production).
+  // The literal `?` is honest but useless to the user — they want a
+  // real number. Save the ts so the next turn-end usage sample (in
+  // `checkAndSchedulePendingCompact`) can chat.update this message
+  // in-place with `now ~25% ← was ~80%`. Skip the deferral when we
+  // already rendered real numbers (compactPostTokens populated).
+  if (completionTs && session.compactPostTokens === null) {
+    session.compactCompletionMessageTs = completionTs;
+  }
+  // One-shot threshold-check suppression. The very first post-compact
+  // turn's `session.usage` often still carries large cache_read tokens
+  // from the pre-compact prefix (the SDK doesn't reset usage atomically
+  // with the boundary), so `checkAndSchedulePendingCompact` would
+  // immediately re-trip the threshold and post `Context usage 83% ≥
+  // threshold 80%` right after we just announced "Compaction
+  // completed". User-reported as a confusing auto-compact loop.
+  // Skipping ONE check gives the next turn a chance to produce a
+  // fresh, post-compact `session.usage` sample before we decide.
+  //
+  // CRITICAL: must stay in this once-per-cycle delivery (not in
+  // postCompactCompleteIfNeeded). A second END signal in the same cycle
+  // (PostCompact hook + onCompactBoundary race) re-enters that function
+  // after the cycle is sealed and returns from deliverCompletionOnce
+  // without running this. Set there, it would re-arm AFTER the next-turn
+  // threshold check already consumed it, suppressing a legitimate later
+  // check.
+  session.skipThresholdCheckOnce = true;
+}
+
+/** Whether the current cycle's END has sealed it or is delivering its completion. */
+function endOwnsCurrentCycle(session: ConversationSession): boolean {
+  const marker = ensurePostedMap(session)[session.compactEpoch ?? 0];
+  return marker !== undefined && (marker.post === true || endCompletionsInFlight.has(marker));
+}
+
+/**
  * Turn-end close for a "starting" message whose cycle never got an END signal
  * (the SDK dropped PostCompact and compact_boundary — e.g. the turn crashed or
  * was aborted mid-compaction). Called from stream-executor's turn `finally`,
@@ -771,7 +820,12 @@ export async function postCompactCompleteIfNeeded(
  */
 export async function closeCompactStartingAtTurnEnd(deps: CompactHookDeps): Promise<void> {
   const { session, channel, slackApi } = deps;
+  // END owns the message once it has claimed the cycle — sealed, or its
+  // completion still being delivered. Writing "ended" here would land after
+  // (and overwrite) the "completed" it is about to post.
+  if (endOwnsCurrentCycle(session)) return;
   const stillInFlight = await awaitStartingPost(session);
+  if (endOwnsCurrentCycle(session)) return;
   if (stillInFlight) stillInFlight.closedAtTurnEnd = true;
   stopStartingTicker(session);
   const ts = session.compactStartingMessageTs;

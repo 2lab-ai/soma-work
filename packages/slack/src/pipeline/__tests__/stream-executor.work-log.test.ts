@@ -513,16 +513,45 @@ describe('StreamExecutor — a leak after narration still reaches the recovery r
     });
   }
 
-  it('an ordinary turn whose collectedText merely discusses the error is not recovered', async () => {
+  for (const level of ['minimal', 'detail'] as const) {
+    it(`${level}: a leak that arrives only as finalText is not posted and still reaches recovery`, async () => {
+      const deps = createDeps(() =>
+        (async function* () {
+          yield { type: 'assistant_delta', text: LONG_NARRATION };
+          yield { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} };
+          yield { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'ok' }] };
+          yield { type: 'result', stopReason: 'end_turn', finalText: 'Prompt is too long' };
+        })(),
+      );
+      const executor = new StreamExecutor(deps);
+      const handleError = spyOnHandleError(executor).mockResolvedValue(undefined);
+
+      await executor.execute(createParams(createSession(getVerbosityFlags(level)))).catch(() => undefined);
+      await settle();
+
+      expect(handleError).toHaveBeenCalledTimes(1);
+      expect(String((handleError.mock.calls[0]?.[0] as Error).message)).toBe(
+        'Prompt is too long (surfaced as turn content): Prompt is too long',
+      );
+      const appended = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => call[1]);
+      expect(appended).not.toContain('Prompt is too long');
+    });
+  }
+
+  // The leak predicates are short-text heuristics (an error string, not prose:
+  // ≤160 chars for prompt-too-long). An answer that discusses the error runs
+  // longer and is neither suppressed nor recovered — on the streamed path and
+  // the finalText-only path alike.
+  it('an answer that merely discusses the error (prose, > 160 chars) is posted and not recovered', async () => {
+    const DISCUSSION =
+      'When a request exceeds the context window, the SDK reports "Prompt is too long" as plain text instead of throwing, so the harness checks short turn texts for that phrase and runs a fallback compaction.';
+    expect(DISCUSSION.length).toBeGreaterThan(160);
     const deps = createDeps(() =>
       (async function* () {
         yield { type: 'assistant_delta', text: LONG_NARRATION };
-        yield { type: 'assistant_delta', text: 'When a prompt is too long the SDK says "Prompt is too long".' };
-        yield {
-          type: 'result',
-          stopReason: 'end_turn',
-          finalText: 'When a prompt is too long the SDK says "Prompt is too long".',
-        };
+        yield { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} };
+        yield { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'ok' }] };
+        yield { type: 'result', stopReason: 'end_turn', finalText: DISCUSSION };
       })(),
     );
     const executor = new StreamExecutor(deps);
@@ -532,6 +561,7 @@ describe('StreamExecutor — a leak after narration still reaches the recovery r
     await settle();
 
     expect(handleError).not.toHaveBeenCalled();
+    expect(deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => call[1])).toEqual([DISCUSSION]);
   });
 });
 

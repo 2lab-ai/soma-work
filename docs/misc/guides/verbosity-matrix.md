@@ -102,6 +102,10 @@ Errors and aborts follow the same split as the user-facing error card:
 Entry contract for the final answer (the log is append-only):
 
 - The final answer is always recorded exactly once, as `final` (directive markup stripped).
+- A suppressed transport-error leak (below) is recorded once, as `error` — never as
+  `narration` or `final`, whatever the turn's ending (`finalText` = the leak, empty, absent,
+  or no `result`). When the executor then recovers the turn it adds its own `notice`
+  (retry scheduled) or `error` entry.
 - A narration segment is recorded as `narration` once the turn moves on past it (a tool,
   thinking, more text, a status frame). If the turn's answer IS that segment, it is recorded
   only as `final`.
@@ -121,18 +125,33 @@ Entry contract for the final answer (the log is append-only):
   /compact" announcement are not posted (`src/slack/hooks/compact-hooks.ts`,
   `src/session/compact-threshold-checker.ts`).
   A "starting" message that was already posted is always replaced — by the completion, or at
-  turn end by a neutral "ended" line when no END signal arrived. END waits at most 10 s for
-  an in-flight "starting" post; a later-landing one replaces itself.
+  turn end by a neutral "ended" line when no END signal arrived:
+  - END waits at most 10 s for an in-flight "starting" post. A post that lands after that
+    (END has abandoned it and posts its own completion) replaces itself with the completion
+    and starts no ticker.
+  - Duplicate END signals (PostCompact hook + `compact_boundary`) deliver one completion: the
+    first claims the cycle synchronously, the others wait for it. If that delivery fails, the
+    claim is released and the next END delivers instead.
+  - The turn-end close never touches a cycle whose END has sealed it or is still delivering —
+    END owns that message, so "ended" can never overwrite "completed".
 
 ## Transport-error leaks (all levels)
 
 A transport error surfaced as assistant text (prompt-too-long, a failed compaction, the
-empty-text-block 400) is never posted. When the turn ENDS on such a segment, the processor
-returns it as `StreamResult.transportLeak`, and stream-executor runs its content guards on that
-text (falling back to the whole `collectedText`). The guards convert it into a thrown error so
+empty-text-block 400) is never posted, at any level — whether it streamed as a segment or
+arrived only as the SDK `finalText`. The checks are short-text heuristics (an error string, not
+prose: prompt-too-long ≤ 160 chars), so an answer that discusses such an error at length is
+posted normally.
+
+When the turn ENDS on a leak, the processor returns the leak text as
+`StreamResult.transportLeak`, and stream-executor runs its content guards on that text (falling
+back to the whole `collectedText`). The guards convert the leak into a thrown error so
 `handleError` takes the matching recovery (fallback `/compact`, transcript repair, terminal
 compact failure) — also when narration preceded the leak, which the joined `collectedText`
 used to hide. No withheld narration is posted as the answer of such a turn.
+
+A real answer after the leak — streamed, or a new `finalText` — means the turn did not end on
+it: there is no `transportLeak`, and the answer posts once.
 
 ## Migration and stored masks
 

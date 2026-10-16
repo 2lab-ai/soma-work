@@ -1,5 +1,6 @@
 import { getVerbosityFlags, LOG_MINIMAL } from '@soma/slack/output-flags';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Logger } from '../../logger';
 import type { SlackApiHelper } from '../../slack/slack-api-helper';
 import type { ConversationSession, SessionUsage } from '../../types';
 import type { UserSettingsStore } from '../../user-settings-store';
@@ -161,9 +162,10 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
     expect(workLog).toHaveBeenCalledWith(expect.objectContaining({ kind: 'notice' }));
   });
 
-  it('a throwing work log never breaks the check', async () => {
+  it('a throwing work log never breaks the check, and is logged at warn', async () => {
     session.usage = makeUsage(160_000, 200_000);
     session.logVerbosity = LOG_MINIMAL;
+    const logger = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
 
     const result = await checkAndSchedulePendingCompact({
       session,
@@ -172,6 +174,7 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
       threadTs: 'T1',
       userSettings: userSettings as unknown as UserSettingsStore,
       slackApi: slackApi as unknown as SlackApiHelper,
+      logger: logger as unknown as Logger,
       workLog: () => {
         throw new Error('disk full');
       },
@@ -179,6 +182,11 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
 
     expect(result).toBe(true);
     expect(session.autoCompactPending).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('workLog sink threw'),
+      expect.objectContaining({ error: 'disk full' }),
+    );
+    expect(logger.debug).not.toHaveBeenCalled();
   });
 
   it('AC3: above threshold (95/80) → triggers with actual pct in message', async () => {
