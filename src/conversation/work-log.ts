@@ -214,8 +214,11 @@ async function scanBackward(
     const chunk = await readExactly(fh, pos, n);
     const buf = carry.length > 0 ? Buffer.concat([chunk, carry]) : chunk;
     let end = buf.length;
-    let idx: number;
-    while (end > 0 && (idx = buf.lastIndexOf(0x0a, end - 1)) !== -1) {
+    for (
+      let idx = end > 0 ? buf.lastIndexOf(0x0a, end - 1) : -1;
+      idx !== -1;
+      idx = end > 0 ? buf.lastIndexOf(0x0a, end - 1) : -1
+    ) {
       if (dropping) {
         dropping = false; // buf[idx+1, end) is the start of the dropped line
       } else {
@@ -254,8 +257,7 @@ async function scanForward(
     pos += n;
     const buf = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
     let start = 0;
-    let idx: number;
-    while ((idx = buf.indexOf(0x0a, start)) !== -1) {
+    for (let idx = buf.indexOf(0x0a, start); idx !== -1; idx = buf.indexOf(0x0a, start)) {
       if (dropping) {
         dropping = false; // buf[start, idx) is the end of the dropped line
       } else {
