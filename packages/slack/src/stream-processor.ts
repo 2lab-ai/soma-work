@@ -1939,16 +1939,19 @@ export class AgentStreamProcessor {
         // A suppressed leak is never the answer: it was recorded as `error`.
         if (known.fate !== 'suppressed' && known.shown.trim()) {
           this.emitFinal(context, known.shown, known);
-          // Spec 10 §3.2-3: the accepted final answer is the turn's terminal
-          // segment — a leak suppressed after it no longer counts as the
-          // ending, so no `transportLeak` and no recovery (guardText agrees).
+          if (this.mayPromoteWithheld(known, context)) {
+            // Spec 10 §3.2-3: kept off Slack as narration, but it IS the final
+            // answer — post it once, without dispatching its directives again.
+            // A throw here leaves the terminal segment as it was: nothing
+            // reached Slack, so a leak before it still drives recovery.
+            known.fate = 'settled';
+            await this.postFinalAnswer(known.shown, context, usage, event.durationMs);
+          }
+          // Spec 10 §3.2-3: the final answer — or the host's question form,
+          // which is why it was not promoted — reached Slack this turn, so the
+          // turn did not end on a leak: this segment is terminal, and there is
+          // no `transportLeak` and no recovery (guardText agrees).
           this.lastShownSegment = known;
-        }
-        if (this.mayPromoteWithheld(known, context)) {
-          // Spec 10 §3.2-3: kept off Slack as narration, but it IS the final
-          // answer — post it once, without dispatching its directives again.
-          known.fate = 'settled';
-          await this.postFinalAnswer(known.shown, context, usage, event.durationMs);
         }
       } else if (finalResult) {
         currentMessages.push(finalResult);

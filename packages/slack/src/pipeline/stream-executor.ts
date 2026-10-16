@@ -184,13 +184,6 @@ export interface StreamExecutorProviders {
   getAutoFallbackCompactModel?: () => string;
   postCompactCompleteIfNeeded?: (...args: any[]) => Promise<unknown>;
   postCompactStartingIfNeeded?: (...args: any[]) => Promise<unknown>;
-  /**
-   * Bind this turn's work-log sink for the session's compaction notices
-   * (src/slack/hooks/compact-hooks.ts records exactly one start and one
-   * completion `notice` per cycle, whichever path signals). Returns the
-   * unbind. No-op by default.
-   */
-  bindCompactWorkLog?: (session: ConversationSession, sink: (entry: WorkLogInput) => void) => () => void;
 }
 
 const FALLBACK_CONTEXT_WINDOW = 200_000;
@@ -244,7 +237,6 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   getAutoFallbackCompactModel: () => process.env.AUTO_FALLBACK_COMPACT_MODEL || 'opus[1m]',
   postCompactCompleteIfNeeded: async () => undefined,
   postCompactStartingIfNeeded: async () => undefined,
-  bindCompactWorkLog: () => () => {},
 };
 
 export function setStreamExecutorProviders(providers: StreamExecutorProviders): void {
@@ -275,8 +267,27 @@ const recordAssistantTurn = (conversationId: string, text: string) =>
   streamExecutorProviders.recordAssistantTurn(conversationId, text);
 const recordUserTurn = (conversationId: string, text: string, userName: string, user: string) =>
   streamExecutorProviders.recordUserTurn(conversationId, text, userName, user);
-const appendWorkLog = (conversationId: string, entry: WorkLogInput) =>
-  streamExecutorProviders.appendWorkLog(conversationId, entry);
+const workLogLogger = new Logger('WorkLog');
+
+/**
+ * Spec 10 §3.3 — record one work-log entry against a conversation, outside
+ * any turn: the one global path to `streamExecutorProviders.appendWorkLog`
+ * (the dashboard store once src wires it). Used for conversation-level
+ * events such as compaction notices (src/slack/hooks/compact-hooks.ts),
+ * which belong to the conversation, not to a turn — no `turnId`. Stamps `ts`
+ * when absent. A throwing provider is logged and ignored: the work log must
+ * never break what records into it.
+ */
+export function recordConversationWorkLog(conversationId: string, entry: WorkLogInput): void {
+  try {
+    streamExecutorProviders.appendWorkLog(conversationId, { ts: Date.now(), ...entry });
+  } catch (err) {
+    workLogLogger.debug('appendWorkLog provider threw — ignored', {
+      kind: entry.kind,
+      error: (err as Error)?.message ?? String(err),
+    });
+  }
+}
 const captureMemoryTurn = (userId: string, userText: string, assistantText: string) =>
   streamExecutorProviders.captureMemoryTurn(userId, userText, assistantText);
 const scheduleLinkDerivedTitleRefresh = (claudeHandler: any, channel: string, threadTs: string, reason: string) =>
@@ -1089,22 +1100,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     // Spec 10 §3.3 work log. `conversationId` is read at call time — it can be
     // auto-created below, after this binding. Stamped with this turn's id; a
-    // throwing provider must never break the turn. Compaction notices come
-    // from compact-hooks through the sink bound for this turn below.
+    // throwing provider must never break the turn. Compaction notices are
+    // conversation-level: compact-hooks records them itself through
+    // `recordConversationWorkLog`.
     const emitWorkLog = (entry: WorkLogInput): void => {
       const conversationId = session.conversationId;
       if (!conversationId) return;
-      try {
-        appendWorkLog(conversationId, { turnId, ts: Date.now(), ...entry });
-      } catch (err) {
-        this.logger.debug('appendWorkLog provider threw — ignored', {
-          sessionKey,
-          kind: entry.kind,
-          error: (err as Error)?.message ?? String(err),
-        });
-      }
+      recordConversationWorkLog(conversationId, { turnId, ts: Date.now(), ...entry });
     };
-    const unbindCompactWorkLog = streamExecutorProviders.bindCompactWorkLog(session, emitWorkLog);
 
     // Per-request tool statistics
     const toolStats: RequestToolStats = {};
@@ -2848,7 +2851,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // after `Send now` has already started a new turn — it carries the
       // captured token.
       await this.cleanup(session, sessionKey, abortController, turnId, turnEpochToken);
-      unbindCompactWorkLog();
       // Deferred post-compact re-dispatch (compact re-loop fix). When a
       // compact cycle sealed during THIS turn, `postCompactCompleteIfNeeded`
       // parked the intercepted user message on the session instead of

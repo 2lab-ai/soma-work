@@ -34,7 +34,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import { promotePendingToDispatchQueue } from '@soma/slack/compact-state';
 import { OutputFlag, resolveVerbosityMask, shouldOutput } from '@soma/slack/output-flags';
-import type { WorkLogInput } from '@soma/slack/work-log';
+import { recordConversationWorkLog } from '@soma/slack/pipeline/stream-executor';
 import { Logger } from '../../logger';
 import { resolveContextWindow } from '../../metrics/model-registry';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
@@ -106,8 +106,8 @@ export function getCurrentEpochForEnd(session: ConversationSession): number {
 /**
  * Spec 10 §3.2-4 — whether compaction notices may be POSTED to the thread.
  * Below `compact` (no `NARRATION` flag) they reach the dashboard work log only
- * (stream-executor emits a `notice` entry for each). Read at call time. A
- * missing or non-numeric mask reads as the default detail.
+ * (recorded here, see `recordCompactNotice`). Read at call time. A missing or
+ * non-numeric mask reads as the default detail.
  *
  * Gates new posts only: a "starting" message already on the thread is still
  * replaced in place by the completion, whatever the level is by then.
@@ -116,34 +116,21 @@ function compactNoticesVisible(session: ConversationSession): boolean {
   return shouldOutput(OutputFlag.NARRATION, resolveVerbosityMask(session.logVerbosity));
 }
 
-/**
- * Spec 10 §3.3 — the running turn's work-log sink, per session. Bound by
- * stream-executor for the turn (`bindCompactWorkLog`), read here so the work
- * log gets exactly one start and one completion `notice` per cycle whichever
- * path signals: the SDK hooks (built outside the executor) or the stream
- * fallbacks.
- */
-const compactWorkLogSinks = new WeakMap<ConversationSession, (entry: WorkLogInput) => void>();
-
 /** Cycle markers whose completion notice is already recorded (racing ENDs record one). */
 const completionNoticed = new WeakSet<object>();
 
-/** Bind `sink` as this session's compaction work-log sink; returns the unbind for this binding only. */
-export function bindCompactWorkLog(session: ConversationSession, sink: (entry: WorkLogInput) => void): () => void {
-  compactWorkLogSinks.set(session, sink);
-  return () => {
-    if (compactWorkLogSinks.get(session) === sink) compactWorkLogSinks.delete(session);
-  };
-}
-
+/**
+ * Spec 10 §3.3 — record a compaction `notice` in the conversation's work log.
+ * Compaction belongs to the conversation, not to a turn: no `turnId`, and it
+ * records whenever the signal arrives — including after the turn that ran the
+ * compaction has ended. One start and one completion per cycle, whichever path
+ * signals (SDK hooks or stream fallbacks), by the dedupe at the call sites.
+ * No conversation, nothing recorded. `recordConversationWorkLog` swallows a
+ * throwing store.
+ */
 function recordCompactNotice(session: ConversationSession, text: string): void {
-  const sink = compactWorkLogSinks.get(session);
-  if (!sink) return;
-  try {
-    sink({ kind: 'notice', text });
-  } catch (err) {
-    logger.warn('compact: work-log sink threw — ignored', { error: (err as Error)?.message ?? String(err) });
-  }
+  if (!session.conversationId) return;
+  recordConversationWorkLog(session.conversationId, { kind: 'notice', text });
 }
 
 /** Work-log text for a sealed cycle: trigger and SDK token counts, each omitted when unknown. */

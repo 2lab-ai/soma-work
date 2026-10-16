@@ -12,19 +12,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getVerbosityFlags, LOG_MINIMAL } from '../../output-flags';
 import { AgentStreamProcessor, type StreamContext } from '../../stream-processor';
 import type { WorkLogInput } from '../../work-log';
-import { StreamExecutor, setStreamExecutorProviders } from '../stream-executor';
+import { recordConversationWorkLog, StreamExecutor, setStreamExecutorProviders } from '../stream-executor';
 
 const appendWorkLog = vi.fn<(conversationId: string, entry: WorkLogInput) => void>();
 const postCompactStartingIfNeeded = vi.fn().mockResolvedValue(undefined);
 const postCompactCompleteIfNeeded = vi.fn().mockResolvedValue(undefined);
 const checkAndSchedulePendingCompact = vi.fn().mockResolvedValue(false);
-const unbindCompactWorkLog = vi.fn();
-const bindCompactWorkLog = vi.fn().mockReturnValue(unbindCompactWorkLog);
 
 setStreamExecutorProviders({
   appendWorkLog,
   checkAndSchedulePendingCompact,
-  bindCompactWorkLog,
   postCompactStartingIfNeeded,
   postCompactCompleteIfNeeded,
   userSettingsStore: {
@@ -297,15 +294,15 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
     expect(deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => call[1])).toEqual([FINAL]);
   });
 
-  // The notices themselves are recorded by compact-hooks (exactly one start
-  // and one completion per cycle, whichever path signals — covered in
-  // compact-hooks.minimal.test.ts). The executor binds this turn's sink for
-  // the session and unbinds it at turn end; the helpers still run.
+  // Compaction notices are conversation-level: compact-hooks records them
+  // itself through `recordConversationWorkLog` (covered in
+  // compact-hooks.minimal.test.ts). The executor records none — no duplicates —
+  // and the compaction helpers still run.
   it.each([
     'minimal',
     'compact',
     'detail',
-  ] as const)('%s: binds the turn sink for compaction notices; the compaction helpers still run', async (level) => {
+  ] as const)('%s: the executor records no compaction notice itself; the compaction helpers still run', async (level) => {
     const deps = createDeps(() =>
       (async function* () {
         yield { type: 'status', status: 'compacting' };
@@ -317,24 +314,11 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
         yield { type: 'result', stopReason: 'end_turn', finalText: FINAL };
       })(),
     );
-    const session = createSession(getVerbosityFlags(level));
 
-    await new StreamExecutor(deps).execute(createParams(session));
+    await new StreamExecutor(deps).execute(createParams(createSession(getVerbosityFlags(level))));
     await settle();
 
-    expect(bindCompactWorkLog).toHaveBeenCalledTimes(1);
-    expect(bindCompactWorkLog.mock.calls[0]?.[0]).toBe(session);
-    expect(unbindCompactWorkLog).toHaveBeenCalledTimes(1);
-    // The executor itself records no compaction notice (no duplicates).
     expect(appendWorkLog.mock.calls.filter(([, entry]) => entry.kind === 'notice')).toHaveLength(0);
-    // What compact-hooks writes through the bound sink lands in this turn's log.
-    const sink = bindCompactWorkLog.mock.calls[0]?.[1] as (entry: WorkLogInput) => void;
-    sink({ kind: 'notice', text: 'Compaction starting' });
-    const instruction = appendWorkLog.mock.calls.find(([, entry]) => entry.kind === 'instruction')?.[1];
-    expect(appendWorkLog).toHaveBeenLastCalledWith(
-      'conv-1',
-      expect.objectContaining({ kind: 'notice', text: 'Compaction starting', turnId: instruction?.turnId }),
-    );
     expect(postCompactStartingIfNeeded).toHaveBeenCalledTimes(1);
     expect(postCompactCompleteIfNeeded).toHaveBeenCalledTimes(1);
   });
@@ -695,5 +679,35 @@ describe('StreamExecutor — a final answer that reached Slack means no recovery
     expect(result.success).toBe(true);
     const appended = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => String(call[1]));
     expect(appended.filter((text) => text.startsWith(FINAL))).toHaveLength(1);
+  });
+});
+
+describe('recordConversationWorkLog — the conversation-level path', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('forwards to appendWorkLog with a timestamp and no turnId', () => {
+    recordConversationWorkLog('conv-9', { kind: 'notice', text: 'Compaction starting' });
+
+    expect(appendWorkLog).toHaveBeenCalledWith('conv-9', {
+      kind: 'notice',
+      text: 'Compaction starting',
+      ts: expect.any(Number),
+    });
+  });
+
+  it('keeps a caller-provided ts and turnId', () => {
+    recordConversationWorkLog('conv-9', { kind: 'final', text: FINAL, turnId: 't-1', ts: 42 });
+
+    expect(appendWorkLog).toHaveBeenCalledWith('conv-9', { kind: 'final', text: FINAL, turnId: 't-1', ts: 42 });
+  });
+
+  it('a throwing provider is ignored', () => {
+    appendWorkLog.mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
+
+    expect(() => recordConversationWorkLog('conv-9', { kind: 'notice', text: 'x' })).not.toThrow();
   });
 });
