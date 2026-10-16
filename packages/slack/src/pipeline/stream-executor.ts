@@ -2026,6 +2026,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // rotated a credential and re-ran an unattended attempt. One decision,
       // so none of the five applies to it.
       const textMayBeTransportError = !toolContinuation && !incidentAttempt;
+      // What the guards read: the leak the turn ended on when the processor
+      // suppressed one (`transportLeak`), else the whole turn text. After any
+      // narration `collectedText` is "narration\nleak", which the short-text
+      // and starts-with predicates below can no longer match — the turn then
+      // ended silent with no recovery, at every level.
+      const guardText = streamResult.transportLeak ?? streamResult.collectedText;
 
       // Compaction-failure-as-content guard (field incident 2026-07-07,
       // session ccee16e0). The SDK seals a FAILED `/compact` as a successful
@@ -2055,9 +2061,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (
         textMayBeTransportError &&
         (compactCommandTurn || session.fallbackCompactActive) &&
-        textIndicatesCompactionFailure(streamResult.collectedText)
+        textIndicatesCompactionFailure(guardText)
       ) {
-        const collected = String(streamResult.collectedText);
+        const collected = String(guardText);
         const emptyBlock400 = textIndicatesEmptyContentBlock400(collected);
         const repairRecentlyAttempted =
           typeof session.transcriptRepairAttemptedAtMs === 'number' &&
@@ -2100,15 +2106,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // delay so `handleError` schedules the timed retry. Checked BEFORE the
       // usage-limit guard so the retry-after hint is honored rather than
       // triggering a futile rotation.
-      if (textMayBeTransportError && textIndicatesRetryableRateLimit(streamResult.collectedText)) {
-        const delayMs = boundRateLimitDelayMs(parseRetryAfterMs(streamResult.collectedText));
+      if (textMayBeTransportError && textIndicatesRetryableRateLimit(guardText)) {
+        const delayMs = boundRateLimitDelayMs(parseRetryAfterMs(guardText));
         this.logger.warn('Pool rate-limit surfaced as turn content — converting to timed-retry path', {
           sessionKey,
           delayMs,
-          preview: String(streamResult.collectedText).slice(0, 120),
+          preview: String(guardText).slice(0, 120),
         });
         const rlError = new Error(
-          `Claude pool rate-limited (surfaced as turn content): ${String(streamResult.collectedText).slice(0, 200)}`,
+          `Claude pool rate-limited (surfaced as turn content): ${String(guardText).slice(0, 200)}`,
         );
         (rlError as { poolRateLimitRetryMs?: number }).poolRateLimitRetryMs = delayMs;
         throw rlError;
@@ -2130,13 +2136,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // (isRateLimitError → tryRotateToken) and schedule a retry
       // (isRecoverableClaudeSdkError), so the next attempt runs on a fresh
       // credential instead of replaying the cap notice to the user.
-      if (textMayBeTransportError && textIndicatesUsageLimit(streamResult.collectedText)) {
+      if (textMayBeTransportError && textIndicatesUsageLimit(guardText)) {
         this.logger.warn('Usage limit surfaced as turn content — converting to rotation path', {
           sessionKey,
-          preview: String(streamResult.collectedText).slice(0, 120),
+          preview: String(guardText).slice(0, 120),
         });
         const capError = new Error(
-          `Claude usage limit hit (surfaced as turn content): ${String(streamResult.collectedText).slice(0, 200)}`,
+          `Claude usage limit hit (surfaced as turn content): ${String(guardText).slice(0, 200)}`,
         );
         (capError as { usageLimitFromContent?: boolean }).usageLimitFromContent = true;
         throw capError;
@@ -2158,14 +2164,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // is recorded/posted. `isContextOverflowError` matches the message, so
       // handleError arms the fallback (stash model → switch to the 1M compact
       // model → `/compact` retry → restore at the boundary).
-      if (textMayBeTransportError && textIndicatesPromptTooLong(streamResult.collectedText)) {
+      if (textMayBeTransportError && textIndicatesPromptTooLong(guardText)) {
         this.logger.warn('Prompt-too-long surfaced as turn content — converting to fallback-compact path', {
           sessionKey,
-          preview: String(streamResult.collectedText).slice(0, 120),
+          preview: String(guardText).slice(0, 120),
         });
-        throw new Error(
-          `Prompt is too long (surfaced as turn content): ${String(streamResult.collectedText).slice(0, 200)}`,
-        );
+        throw new Error(`Prompt is too long (surfaced as turn content): ${String(guardText).slice(0, 200)}`);
       }
 
       // Empty-text-block 400 surfaced as content on a NORMAL turn (post-
@@ -2174,8 +2178,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // let the recoverable-error rail retry; if the repair already ran and
       // the 400 persists, fall through to the generic throw so
       // `shouldClearSessionOnError` policy decides.
-      if (textMayBeTransportError && textIndicatesEmptyContentBlock400(streamResult.collectedText)) {
-        const collected = String(streamResult.collectedText);
+      if (textMayBeTransportError && textIndicatesEmptyContentBlock400(guardText)) {
+        const collected = String(guardText);
         const repairRecentlyAttempted =
           typeof session.transcriptRepairAttemptedAtMs === 'number' &&
           Date.now() - session.transcriptRepairAttemptedAtMs < StreamExecutor.TRANSCRIPT_REPAIR_COOLDOWN_MS;
@@ -2833,6 +2837,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         userSettings: userSettingsStore,
         slackApi: this.deps.slackApi,
         logger: this.logger,
+        workLog: emitWorkLog,
       }).catch((err: unknown) => {
         this.logger.warn('stream-executor: compact threshold check failed', {
           turnId,

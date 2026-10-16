@@ -384,3 +384,46 @@ describe('END does not wait forever for an in-flight START', () => {
     expectCycleSealed(session);
   });
 });
+
+describe('two END signals while START is in flight', () => {
+  it('exactly one completion update — the second END claims nothing', async () => {
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    let releaseStart!: (value: { ts: string }) => void;
+    slackApi.postSystemMessage.mockImplementationOnce(
+      () =>
+        new Promise<{ ts: string }>((resolve) => {
+          releaseStart = resolve;
+        }),
+    );
+
+    const starting = postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    const boundary = postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    const hook = postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseStart({ ts: 'start_ts' });
+    await Promise.all([starting, boundary, hook]);
+
+    expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(1);
+    expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      'start_ts',
+      expect.stringContaining('Compaction completed'),
+    );
+    expectCycleSealed(session);
+  });
+
+  it('two ENDs with no START at all: one fresh completion post', async () => {
+    const session = track(makeSession(COMPACT, { compactEpoch: 0 }));
+    const slackApi = makeSlackApi();
+
+    await Promise.all([
+      postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' }),
+      postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' }),
+    ]);
+
+    expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(1);
+    expect(String(slackApi.postSystemMessage.mock.calls[0]?.[1])).toContain('Compaction completed');
+  });
+});

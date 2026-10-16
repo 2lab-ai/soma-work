@@ -533,3 +533,53 @@ describe('compact and above — narration still streams to Slack (unchanged)', (
     expect(h.appendText.mock.calls.map((c) => c[1])).toEqual([NARRATION, FINAL]);
   });
 });
+
+/**
+ * The executor's recovery for a transport error surfaced as content reads the
+ * turn's text. When narration preceded the leak, collectedText is
+ * "narration\nleak" and the executor's guards (≤160 chars / starts-with)
+ * missed it — the turn ended silent with no recovery. The processor now hands
+ * the leak itself back as `transportLeak`.
+ */
+describe('transportLeak — the suppressed segment the turn ended on', () => {
+  const LONG_NARRATION =
+    'I will start by reading the deployment configuration, then the three service manifests it references, and finally compare their timeout values against the load-balancer settings.';
+
+  for (const level of ['minimal', 'compact', 'detail'] as const) {
+    it(`${level}: narration > 160 chars → tool → leak → result(finalText = leak) returns the leak`, async () => {
+      const h = harness(getVerbosityFlags(level));
+      expect(LONG_NARRATION.length).toBeGreaterThan(160);
+
+      const result = await run(h, [
+        { type: 'assistant_delta', text: LONG_NARRATION },
+        { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} },
+        { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'ok' }] },
+        { type: 'assistant_delta', text: 'Prompt is too long' },
+        { type: 'result', stopReason: 'end_turn', finalText: 'Prompt is too long' },
+      ]);
+
+      expect(result.transportLeak).toBe('Prompt is too long');
+    });
+  }
+
+  it('no result after the leak: still returned', async () => {
+    const h = harness(LOG_MINIMAL);
+
+    const result = await run(h, toolTurn('Prompt is too long').slice(0, 4));
+
+    expect(result.transportLeak).toBe('Prompt is too long');
+  });
+
+  it('a turn that went on to real text after a leak, and an ordinary turn, return none', async () => {
+    const leakThenText = await run(harness(LOG_MINIMAL), [
+      { type: 'assistant_delta', text: 'Prompt is too long' },
+      { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} },
+      { type: 'assistant_delta', text: FINAL },
+      { type: 'result', stopReason: 'end_turn', finalText: FINAL },
+    ]);
+    expect(leakThenText.transportLeak).toBeUndefined();
+
+    const ordinary = await run(harness(LOG_MINIMAL), toolTurn());
+    expect(ordinary.transportLeak).toBeUndefined();
+  });
+});
