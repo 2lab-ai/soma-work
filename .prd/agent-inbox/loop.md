@@ -1,6 +1,6 @@
 # loop — Agent inbox 보드 + Slack 미니멀
 
-Status: in-progress · 스펙 = [`../10-agent-inbox-board-spec.md`](../10-agent-inbox-board-spec.md) · SSOT = [`ssot.md`](ssot.md)
+Status: done · 스펙 = [`../10-agent-inbox-board-spec.md`](../10-agent-inbox-board-spec.md) · SSOT = [`ssot.md`](ssot.md)
 
 ## 게이트 (build facts)
 - 워크트리마다: `npm run build --workspace @soma/slack` → `npx vitest run <touched test files>` → `npm run lint`(tsc --noEmit + biome).
@@ -22,17 +22,7 @@ Status: in-progress · 스펙 = [`../10-agent-inbox-board-spec.md`](../10-agent-
 | 헤더 필드 | `dashboardLink`, 라벨 `📋 작업 로그` |
 | 로그인 복귀 | 쿠키 `soma_next`(값은 `/dashboard`로 시작하는 같은 출처 경로만) |
 
-## 라운드 2 — 프리뷰 실측 결함 (2026-10-16)
-R1 리시트(`loop.done.md` R1)를 v0.2.1158 프리뷰에서 뜨다가 나온 결함 3건. 칸 행 G1·G4·G5는 이것이 닫힐 때 함께 닫는다.
-
-| WU | 브랜치 · 워크트리 | 결함 | 소유 파일 |
-|---|---|---|---|
-| WU-B 스킬 배너 | `fix/minimal-skill-banner` · `.worktrees/fix-minimal-skill-banner` | minimal 스레드에 `$skill`/자동 스킬 RPG 배너가 게시됨(배포 직후 활성 스레드 실측) — `SKILL_INVOCATION` 마스크를 안 봄 | `src/slack/commands/skill-force-handler.ts`, `src/slack-handler.ts`(배너 게이트만), `docs/misc/guides/verbosity-matrix.md` + 테스트 |
-| WU-T 상단 바·작업 로그 행 | `fix/dashboard-topbar-worklog` · `.worktrees/fix-dashboard-topbar-worklog` | 820px에서 상단 바 줄바꿈, 390px에서 라벨 잘림 · 작업 로그 도구 행에 도구명이 두 번(`▸ Read Read …`, `✓ Glob Glob ok`) | `src/conversation/dashboard.ts` 템플릿(`.topbar` CSS, `renderWorkLogEntry`) + 대시보드 테스트 |
-
-## 열린 gap
-| ID | 갭 | Status | R2 남은 일 |
-|---|---|---|---|
-| G1 | 보드 3칸·카드·펼침·List·반응형 (§3.1, §5) | 🟡 | 보드는 1280/820/390 실측 통과, 상단 바(WU-T) 재캡처 |
-| G4 | minimal 스레드 = 헤더·task·최종 답변만 (§3.2-2~5) | 🟡 | 서술·도구 메시지 없음은 실측 통과, 스킬 배너(WU-B) |
-| G5 | 작업 로그 저장·API·WS·패널 (§3.3, §3.1-7) | 🟡 | 딥링크 패널 64항목·실시간 증가 실측 통과, 도구 행 중복(WU-T) |
+## 다음 착수점 · 대기
+- 칸 행 G1–G6 전부 닫힘(`loop.done.md` R1·R2). 이 워크스트림의 다음 라운드는 새 결함·새 요구가 생길 때만 연다.
+- 대기(유저 게이트): 정식 배포(prod)는 유저가 정한다.
+- 대기(외부): t1 배포 — 러너가 오프라인이라 Deploy run 38912315787의 t1 작업이 큐에 남아 있다. 러너가 돌아오면 같은 실행이 처리한다.
