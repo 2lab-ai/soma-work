@@ -350,12 +350,19 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
     expect(entries).toContainEqual(expect.objectContaining({ kind: 'notice', text: 'retrying in 30s: rate limited' }));
   });
 
-  it('a user stop is logged as a notice, not an error', async () => {
+  // Same split as handleError's card decision: a quiet abort (the user already
+  // knows the turn ended) is a notice; a card-worthy one is an error.
+  it.each([
+    ['user-stop', 'notice'],
+    ['supersede', 'notice'],
+    ['stall-timeout', 'error'],
+    ['ghost-session', 'error'],
+  ] as const)('an abort for %s is logged as %s', async (reason, kind) => {
     const controller = new AbortController();
     const deps = createDeps(() =>
       (async function* () {
         yield { type: 'assistant_delta', text: NARRATION };
-        controller.abort('user-stop');
+        controller.abort(reason);
         const err = new Error('aborted');
         err.name = 'AbortError';
         throw err;
@@ -369,7 +376,8 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
     await settle();
 
     const entries = appendWorkLog.mock.calls.map(([, entry]) => entry);
-    expect(entries.some((entry) => entry.kind === 'error')).toBe(false);
+    expect(entries).toContainEqual(expect.objectContaining({ kind, text: `aborted (${reason})` }));
+    expect(entries.filter((entry) => entry.kind === 'error' || entry.kind === 'notice')).toHaveLength(1);
   });
 
   it('a choice form posted by the host (ASK_USER_QUESTION) is visible to the processor', async () => {

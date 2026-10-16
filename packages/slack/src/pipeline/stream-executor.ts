@@ -553,6 +553,20 @@ const UNKNOWN_ABORT_REASON = '__unknown' as const;
 /** Coerced reason type — either a known RequestAbortReason or the internal sentinel. */
 type CoercedAbortReason = RequestAbortReason | typeof UNKNOWN_ABORT_REASON;
 
+/**
+ * Abort reasons the user already knows about (they caused or chose the end of
+ * the turn), so no 🔴 card is posted — see `handleError`'s `knownSilentAbort`.
+ * Shared with the work log, which records these as `notice` and every other
+ * abort (stall-timeout, ghost-session, unknown) as `error`.
+ */
+const QUIET_ABORT_REASONS: ReadonlySet<CoercedAbortReason> = new Set<CoercedAbortReason>([
+  'supersede',
+  'user-stop',
+  'session-close',
+  'shutdown',
+  'user-interrupted',
+]);
+
 function coerceAbortReason(raw: unknown): CoercedAbortReason {
   if (typeof raw === 'string' && KNOWN_ABORT_REASONS.has(raw as RequestAbortReason)) {
     return raw as RequestAbortReason;
@@ -2645,7 +2659,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // `controller.abort()` yields a DOMException ("AbortError"); we only
       // trust it when it matches our known reason union.
       const abortReason = requestAborted ? coerceAbortReason(abortController.signal.reason) : undefined;
-      // Work log: an abort is a `notice`; an error is an `error` unless
+      // Work log: a quiet abort (QUIET_ABORT_REASONS) is a `notice`, a
+      // card-worthy one an `error`; any other error is an `error` unless
       // handleError schedules a retry (recoverable — `notice` with the delay).
       // Written after handleError, in a finally, so a throw there still logs.
       const turnErrorText = requestAborted
@@ -2709,9 +2724,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         );
         scheduledRetryMs = retryAfterMs;
       } finally {
-        if (requestAborted) {
+        if (requestAborted && abortReason !== undefined && QUIET_ABORT_REASONS.has(abortReason)) {
           emitWorkLog({ kind: 'notice', text: turnErrorText });
-        } else if (scheduledRetryMs !== undefined) {
+        } else if (!requestAborted && scheduledRetryMs !== undefined) {
           emitWorkLog({
             kind: 'notice',
             text: `retrying in ${Math.round(scheduledRetryMs / 1000)}s: ${turnErrorText}`,
@@ -3132,13 +3147,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const stallTimeoutAbort = isAbort && abortReason === 'stall-timeout';
     const ghostSessionAbort = isAbort && abortReason === 'ghost-session';
     const userInterruptedAbort = isAbort && abortReason === 'user-interrupted';
-    const knownSilentAbort =
-      isAbort &&
-      (abortReason === 'supersede' ||
-        abortReason === 'user-stop' ||
-        abortReason === 'session-close' ||
-        abortReason === 'shutdown' ||
-        userInterruptedAbort);
+    const knownSilentAbort = isAbort && abortReason !== undefined && QUIET_ABORT_REASONS.has(abortReason);
     const unknownAbort = isAbort && !stallTimeoutAbort && !ghostSessionAbort && !knownSilentAbort;
     const notifyWorthyAbort = stallTimeoutAbort || ghostSessionAbort || unknownAbort;
     const shouldNotifyException =
