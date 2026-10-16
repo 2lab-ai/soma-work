@@ -9,13 +9,15 @@
  *   GET  /api/dashboard/stats                → User statistics (JSON)
  *   GET  /api/dashboard/users                → User list (JSON)
  *   GET  /api/dashboard/session/:id          → Session detail turns (JSON)
+ *   GET  /api/dashboard/session/:id/worklog  → Work log entries (JSON, registered in work-log-routes.ts)
  *   POST /api/dashboard/session/:id/generate-title → Generate titleSub via codex model
  *   POST /api/dashboard/session/:key/stop    → Stop a working session
  *   POST /api/dashboard/session/:key/close   → Close/terminate a session
  *   POST /api/dashboard/session/:key/trash   → Trash (hide) a closed session
  *   POST /api/dashboard/session/:key/command → Send command to session
  *   POST /api/dashboard/session/:conversationId/resummarize/:turnId → Retry summary generation
- *   WS   /ws/dashboard                       → Real-time session state updates (WebSocket)
+ *   WS   /ws/dashboard                       → Real-time session state updates (WebSocket),
+ *                                              incl. `work_log` entries (owner/admin scoped)
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -33,6 +35,7 @@ import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggreg
 import { readAllInstances } from './instance-registry';
 import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
 import { generateTitle } from './title-generator';
+import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
 
@@ -945,48 +948,67 @@ export function broadcastTaskUpdate(
   }
 }
 
+/**
+ * Send a payload to the conversation's audience: the owning session's owner
+ * plus admin clients. Shared by `conversation_update` and `work_log` so both
+ * events have the same scope by construction.
+ */
+function sendToConversationAudience(conversationId: string, payload: string): void {
+  // Resolve session owner for scoping — iterate because sessions are keyed by
+  // sessionKey (channelId:threadTs), not conversationId (UUID)
+  let ownerId: string | undefined;
+  const sessions = _getSessionsFn?.();
+  if (sessions) {
+    for (const [, s] of sessions) {
+      if (s.conversationId === conversationId) {
+        ownerId = s.ownerId;
+        break;
+      }
+    }
+  }
+
+  if (!ownerId) {
+    // No active session — broadcast only to admin clients so archived session
+    // updates (e.g., resummarize) still reach the admin dashboard without
+    // leaking to non-owner clients.
+    logger.debug('No active session for broadcast, sending to admin clients only', { conversationId });
+  }
+
+  for (const client of wsClients) {
+    if (!ownerId) {
+      // When owner is unknown, only admin clients receive the update
+      if (!client.isAdmin) continue;
+    } else if (!client.isAdmin && client.userId && client.userId !== ownerId) {
+      continue;
+    }
+    try {
+      client.send(payload);
+    } catch {
+      wsClients.delete(client);
+    }
+  }
+}
+
 /** Broadcast conversation turn update — scoped to session owner's WS clients only */
 export function broadcastConversationUpdate(conversationId: string, turn: any): void {
   if (wsClients.size === 0) return;
   try {
-    // Resolve session owner for scoping — iterate because sessions are keyed by
-    // sessionKey (channelId:threadTs), not conversationId (UUID)
-    let ownerId: string | undefined;
-    const sessions = _getSessionsFn?.();
-    if (sessions) {
-      for (const [, s] of sessions) {
-        if (s.conversationId === conversationId) {
-          ownerId = s.ownerId;
-          break;
-        }
-      }
-    }
-
-    if (!ownerId) {
-      // No active session — broadcast only to admin clients so archived session
-      // updates (e.g., resummarize) still reach the admin dashboard without
-      // leaking to non-owner clients.
-      logger.debug('No active session for broadcast, sending to admin clients only', { conversationId });
-    }
-
     // Strip rawContent from assistant turns to reduce bandwidth
     const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent ? { ...turn, rawContent: undefined } : turn;
     const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
-    for (const client of wsClients) {
-      if (!ownerId) {
-        // When owner is unknown, only admin clients receive the update
-        if (!client.isAdmin) continue;
-      } else if (!client.isAdmin && client.userId && client.userId !== ownerId) {
-        continue;
-      }
-      try {
-        client.send(payload);
-      } catch {
-        wsClients.delete(client);
-      }
-    }
+    sendToConversationAudience(conversationId, payload);
   } catch (error) {
     logger.error('Failed to broadcast conversation update', error);
+  }
+}
+
+/** Broadcast a work-log entry (spec §3.3) — same owner/admin scope as `conversation_update`. */
+export function broadcastWorkLog(conversationId: string, entry: WorkLogEntry): void {
+  if (wsClients.size === 0) return;
+  try {
+    sendToConversationAudience(conversationId, JSON.stringify({ type: 'work_log', conversationId, entry }));
+  } catch (error) {
+    logger.error('Failed to broadcast work log entry', error);
   }
 }
 
@@ -1759,22 +1781,22 @@ function renderDashboardPage(userId?: string): string {
 /* ═══ BAUHAUS DESIGN SYSTEM v2 ═══ Geometric clarity. Structured planes. Disciplined typography. */
 *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  /* Surface hierarchy — 3 deliberate planes */
-  --bg: #0b0e14;
-  --surface: #12171f;
-  --surface-raised: #1a2130;
-  --border: #2a3548;
+  /* Surface hierarchy — 3 deliberate planes (neutral grays, Agent inbox .prd/10) */
+  --bg: #1c1c1f;
+  --surface: #232327;
+  --surface-raised: #2a2a2f;
+  --border: #34343a;
   --border-focus: #4d9de0;
   /* Typography */
-  --text: #e8edf5;
-  --text-secondary: #94a3b8;
-  --text-tertiary: #6b7d95;
+  --text: #ededf0;
+  --text-secondary: #a8a8b0;
+  --text-tertiary: #93939b;
   /* Functional color — Bauhaus primary triad + accents */
   --accent: #4d9de0;
   --accent-hover: #3b82c4;
   --green: #3ecf8e;
   --yellow: #f6c90e;
-  --red: #ef4444;
+  --red: #f26b6b;
   --purple: #a78bfa;
   --orange: #f97316;
   /* Geometry */
@@ -1782,31 +1804,74 @@ function renderDashboardPage(userId?: string): string {
   /* Motion */
   --ease: cubic-bezier(0.2,0.8,0.2,1);
   --speed: 140ms;
+  /* Motion contract (.prd/10 §4 — zworkflow motion-design standard, verbatim) */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --dur-press: 160ms;
+  --dur-expand: 240ms;
+  --dur-move: 320ms;
+  --dur-fade: 180ms;
+  /* Agent inbox board — neutral planes: column one step darker than the page.
+     Text tokens (--ib-muted, --ib-text-2, --text-tertiary) clear 4.5:1 on every
+     surface they sit on (page, column, card, dimmed card, segment track). */
+  --ib-col: #18181b;
+  --ib-card: #242428;
+  --ib-card-dim: #1f1f23;
+  --ib-card-border: #34343a;
+  --ib-pill: #2f2f35;
+  --ib-text: #f2f2f3;
+  --ib-text-2: #b4b4bb;
+  --ib-muted: #93939b;
+  --ib-seg: #161619;
+  --ib-seg-on: #2e2e33;
+  --ib-spark: #7b9cf0;
+  --ib-shadow: 0 1px 2px rgba(0,0,0,0.35);
+  --ib-shadow-raised: 0 14px 32px rgba(0,0,0,0.5), 0 3px 8px rgba(0,0,0,0.35);
+  --st-wait: #f5a524;
+  --st-run: #6b93f2;
+  --st-done: #3fb968;
+  --st-fail: #f26b6b;
 }
 
 /* ── LIGHT THEME — override surface & text planes ── */
 [data-theme="light"] {
-  --bg: #f8f9fb;
+  --bg: #f7f7f7;
   --surface: #ffffff;
-  --surface-raised: #f0f2f5;
-  --border: #e2e5ea;
+  --surface-raised: #f1f1f1;
+  --border: #e4e4e4;
   --border-focus: #4d9de0;
-  --text: #1a1d23;
-  --text-secondary: #5a6577;
-  --text-tertiary: #8b95a5;
-  --accent: #2b7fd4;
-  --accent-hover: #2468b0;
+  --text: #18181a;
+  --text-secondary: #57575d;
+  --text-tertiary: #68686f;
+  --accent: #1f6dc2;
+  --accent-hover: #1a5ca6;
   /* Functional colors — WCAG AA ≥4.5:1 on all light surfaces */
   --green: #14783b;
   --yellow: #a16207;
   --red: #b91c1c;
   --purple: #7c3aed;
   --orange: #c2410c;
+  /* Agent inbox board */
+  --ib-col: #efefef;
+  --ib-card: #ffffff;
+  --ib-card-dim: #f8f8f8;
+  --ib-card-border: #e3e3e3;
+  --ib-pill: #e2e2e2;
+  --ib-text: #161616;
+  --ib-text-2: #555558;
+  --ib-muted: #65656b;
+  --ib-seg: #ebebeb;
+  --ib-seg-on: #ffffff;
+  --ib-spark: #5b7fe0;
+  --ib-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  --ib-shadow-raised: 0 14px 30px rgba(0,0,0,0.14), 0 3px 8px rgba(0,0,0,0.08);
+  --st-wait: #c2780a;
+  --st-run: #2f63e0;
+  --st-done: #137a3e;
+  --st-fail: #d43a3a;
 }
 [data-theme="light"] ::selection { background: var(--accent); color: #fff; }
 [data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8cdd5; border-color: var(--bg); }
-[data-theme="light"] .card { box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-[data-theme="light"] .card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
 [data-theme="light"] .panel-overlay { background: rgba(0,0,0,0.25); }
 
 html,body {
@@ -1953,8 +2018,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   border: 1px solid var(--border);
 }
 
-/* ── MAIN ── */
-.main { flex: 1; padding: 20px; }
+/* ── MAIN — board-first column, capped at 1280px and centred (.prd/10 §5) ── */
+.main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
 /* ── PERIOD SELECTOR — segmented control ── */
 .period-bar { display: inline-flex; gap: 0; margin-bottom: 16px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
@@ -2008,175 +2073,159 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .stat-card .delta { font-size: 12px; color: var(--green); margin-top: 2px; font-weight: 600; }
 .stat-card .delta.negative { color: var(--red); }
 
-/* ── KANBAN — strict 4-column grid ── */
-.kanban {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-  align-items: start;
-}
-.kanban-col {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  min-height: 120px;
-  display: flex;
-  flex-direction: column;
-}
-.kanban-col-header {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
+/* ═══ AGENT INBOX BOARD (.prd/10 §3.1) ═══
+   NEEDS YOU (waiting) · RUNNING (working) · DONE (idle, then closed).
+   Card shells persist across renders (keyed reconciler in the client JS), so
+   every transition below animates a live node — nothing is rebuilt per poll. */
+.inbox { margin-bottom: 28px; }
+.inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 16px; min-width: 0; }
+.crumbs { display: flex; align-items: baseline; gap: 10px; font-size: 17px; line-height: 1.3; min-width: 0; white-space: nowrap; overflow: hidden; }
+.crumbs .crumb-root, .crumbs .crumb-sep { color: var(--ib-muted); }
+.crumbs .crumb-cur { color: var(--ib-text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.seg { display: inline-flex; padding: 3px; gap: 2px; background: var(--ib-seg); border-radius: 10px; flex-shrink: 0; }
+.seg-btn {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-}
-.kanban-col-header h3 {
-  font-size: 12px;
-  font-weight: 700;
-  flex: 1;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.kanban-col-header .count {
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
-  padding: 2px 8px;
-  border-radius: var(--radius);
-  font-size: 12px;
-  font-weight: 700;
-  min-width: 24px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-.kanban-col .cards {
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
   gap: 6px;
-  flex: 1;
-}
-
-/* ── STATUS INDICATORS — geometric square + text label ── */
-.working-dot,.waiting-dot,.idle-dot,.closed-dot {
-  width: 8px; height: 8px;
-  border-radius: 1px;
-  display: inline-block;
-  flex-shrink: 0;
-}
-.working-dot { background: var(--green); animation: pulse-dot 1.4s ease-in-out infinite; }
-.waiting-dot { background: var(--yellow); }
-.idle-dot { background: var(--text-tertiary); }
-.closed-dot { background: var(--red); opacity: 0.6; }
-
-@keyframes pulse-dot {
-  0%,100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-
-/* ── CARD — Bauhaus: flat, geometric, structured layout ── */
-.card {
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ib-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 8px;
   cursor: pointer;
-  position: relative;
-  transition: border-color var(--speed) var(--ease), box-shadow var(--speed) var(--ease);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  min-height: 32px;
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform var(--dur-press) var(--ease-out);
 }
-.card:hover { border-top-color: var(--accent); border-right-color: var(--accent); border-bottom-color: var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+.seg-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+.seg-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
 
-/* ── AURA SYSTEM — pure geometric: left-edge color band only ── */
-.aura-legendary { border-left: 4px solid var(--orange) !important; background: linear-gradient(90deg, rgba(249,115,22,0.06) 0%, transparent 40%); }
-.aura-epic { border-left: 4px solid var(--purple) !important; background: linear-gradient(90deg, rgba(167,139,250,0.05) 0%, transparent 40%); }
-.aura-blue { border-left: 4px solid var(--accent) !important; }
-.aura-green { border-left: 4px solid var(--green) !important; }
-.aura-white { border-left: 4px solid rgba(200,210,220,0.4) !important; }
+/* Board = 3 equal columns. No overflow clip on columns: a card flying between
+   columns must stay visible over its neighbours. */
+.kanban { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.kanban-col { position: relative; background: var(--ib-col); border-radius: 14px; padding: 2px 4px 4px; min-width: 0; display: flex; flex-direction: column; }
+.kanban-col-header { display: flex; align-items: center; gap: 8px; padding: 10px 8px 8px 10px; min-height: 40px; }
+.col-spark { color: var(--ib-spark); display: inline-flex; flex-shrink: 0; }
+.col-spark svg, .card-spark svg { width: 14px; height: 14px; }
+.kanban-col-header h3 { flex: 1; text-align: center; font-size: 12px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ib-muted); white-space: nowrap; }
+.kanban-col-header .count { background: var(--ib-pill); color: var(--ib-text-2); border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 500; min-width: 22px; text-align: center; font-variant-numeric: tabular-nums; }
+.kanban-col .cards { position: relative; display: flex; flex-direction: column; gap: 8px; }
+.col-empty { text-align: center; color: var(--ib-muted); font-size: 13px; padding: 14px 8px 18px; }
+.col-foot:empty { display: none; }
 
-/* ── CARD CONTENT — structured label:value grid ── */
-.card .card-title { font-weight: 700; font-size: 13.5px; margin-bottom: 5px; line-height: 1.3; display: flex; align-items: flex-start; gap: 6px; }
-.card .card-title-text { flex: 1; }
-.card .conv-link { color: var(--accent); text-decoration: none; font-size: 12px; flex-shrink: 0; opacity: 0.7; }
-.card .conv-link:hover { opacity: 1; }
+/* List = the same columns stacked as full-width sections (same DOM, §4-4). */
+.kanban[data-view="list"] { grid-template-columns: minmax(0, 1fr); }
+.kanban[data-view="list"] .kanban-col-header h3 { flex: 0 0 auto; text-align: left; }
+.kanban[data-view="list"] .card-summary { -webkit-line-clamp: 1; }
+.kanban[data-view="list"] .st-prefix { display: inline; }
+.kanban[data-view="list"] .col-empty { padding: 10px 8px 16px; }
+
+/* ── CARD — collapsed face + in-place expansion ── */
+.card {
+  position: relative;
+  background: var(--ib-card);
+  border: 1px solid var(--ib-card-border);
+  border-radius: 12px;
+  box-shadow: var(--ib-shadow);
+  color: var(--ib-text);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+  --st-color: var(--ib-muted);
+}
+.card[data-state="waiting"] { --st-color: var(--st-wait); }
+.card[data-state="working"] { --st-color: var(--st-run); }
+.card[data-state="idle"] { --st-color: var(--st-done); }
+/* Closed cards are dimmed with colour, not opacity — opacity would fight the
+   enter/exit fades and make each card its own stacking context. */
+.card[data-state="sleeping"], .card[data-state="archived"] { background: var(--ib-card-dim); box-shadow: none; }
+.card[data-state="sleeping"] .card-title-text, .card[data-state="archived"] .card-title-text { color: var(--ib-text-2); font-weight: 500; }
+.card[data-state="sleeping"] .card-summary, .card[data-state="archived"] .card-summary { color: var(--ib-muted); }
+.card.is-flying { z-index: 5; box-shadow: var(--ib-shadow-raised); }
+.card.is-exiting { position: absolute; z-index: 1; pointer-events: none; }
+.card-face { padding: 12px 14px; cursor: pointer; border-radius: 11px; }
+.card-face:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.card-spark { flex-shrink: 0; display: inline-flex; color: var(--st-color); }
+.card .card-title-text { font-size: 15px; font-weight: 600; line-height: 1.3; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-summary {
+  margin-top: 6px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--ib-text-2);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.card-foot { margin-top: 10px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ib-text-2); min-width: 0; }
+.card-status { display: inline-flex; align-items: center; gap: 7px; min-width: 0; flex: 1 1 auto; white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+.card-status .st-text { overflow: hidden; text-overflow: ellipsis; }
+.card-status .st-icon { flex-shrink: 0; display: inline-flex; align-items: center; color: var(--st-color); }
+.card-status .st-icon svg { width: 12px; height: 12px; }
+.st-prefix { display: none; }
+.st-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-color); display: inline-block; }
+.st-dot.is-hollow { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-color); }
+.spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ib-pill); border-top-color: var(--st-run); border-right-color: var(--st-run); display: inline-block; animation: spin 0.9s linear infinite; }
+.card-metrics { display: inline-flex; align-items: center; color: var(--ib-muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.card-metrics .metric { display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; }
+.card-metrics .metric + .metric { border-left: 1px solid var(--ib-card-border); }
+.card-metrics .metric:last-child { padding-right: 0; }
+.card-metrics svg { width: 13px; height: 13px; }
+
+/* Expansion — grid row 0fr → 1fr. min-height/overflow live on the grid item
+   so the row can collapse to zero; siblings below move with the animated row. */
+.card-expand { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
+.card.is-expanded .card-expand { grid-template-rows: 1fr; }
+.card-expand-inner { min-height: 0; overflow: hidden; opacity: 0; transition: opacity var(--dur-expand) var(--ease-out); }
+.card.is-expanded .card-expand-inner { opacity: 1; }
+.card.no-motion .card-expand, .card.no-motion .card-expand-inner { transition: none; }
+.card-body { margin: 0 14px; padding: 12px 0 14px; border-top: 1px solid var(--ib-card-border); font-size: 13px; color: var(--ib-text-2); }
+.cb-model { color: var(--ib-muted); font-size: 13px; }
+
+/* ── EXPANDED META — moved from the old card face, same dhShow() gates ── */
 .card .card-meta {
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--ib-muted);
   display: flex;
   gap: 6px;
-  margin-bottom: 4px;
-  font-weight: 600;
+  margin-top: 4px;
   flex-wrap: wrap;
   align-items: center;
 }
 .card .card-meta span { white-space: nowrap; }
-.card .card-meta span + span::before { content: "·"; color: var(--text-tertiary); opacity: 0.5; margin-right: 6px; }
-.card .card-meta .meta-owner { color: var(--purple); }
-.card .card-links { font-size: 12px; margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; }
-.card .card-links a { color: var(--accent); text-decoration: none; font-weight: 600; }
-.card .card-links a:hover { text-decoration: underline; }
-.card .card-merge { font-size: 12px; color: var(--green); margin-top: 2px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.card .card-tokens { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; font-variant-numeric: tabular-nums; }
-.card .card-tokens .cost { color: var(--green); font-weight: 700; }
+.card .card-meta span + span::before { content: "·"; color: var(--ib-muted); opacity: 0.6; margin-right: 6px; }
+.card .card-meta .meta-owner { color: var(--ib-text-2); }
+.card .card-subtitle { font-size: 12px; color: var(--ib-text-2); margin-top: 3px; overflow-wrap: anywhere; }
+.card .card-merge { color: var(--st-done); font-weight: 600; font-variant-numeric: tabular-nums; }
+.card .card-tokens .cost { color: var(--st-done); font-weight: 600; }
+.card .card-stats { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
+.card .card-stats > span { white-space: nowrap; }
 
-/* ── TIMER + COUNTER ROW — icon · value · separator ── */
-.card .card-timer-row {
-  display: flex;
-  gap: 10px;
-  align-items: baseline;
-  font-size: 11px;
-  color: var(--text-secondary);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  margin-bottom: 4px;
-  flex-wrap: wrap;
-}
+/* ── TIMER STATS — Σ thread total · compactions · sessions ── */
+.card .card-timer-row { display: inline-flex; gap: 10px; flex-wrap: wrap; }
 .card .card-timer-row > span { white-space: nowrap; }
-.card .card-timer-row .card-timer-total { color: var(--text-tertiary); }
-.card .card-timer-row .card-timer-compactions,
-.card .card-timer-row .card-timer-sessions { color: var(--text-tertiary); }
-
-/* ── HERO TIMER — big live timer above card title ── */
-.card .card-timer-hero {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-  line-height: 1.1;
-  margin-bottom: 6px;
-}
-.card .card-timer-hero .hero-icon { font-size: 18px; }
-.card .card-timer-hero .card-timer-live { color: var(--text); }
 
 /* ── SHORT REFS ROW — PROJ-123 · PR-123 ── */
 .card .card-refs {
   display: flex;
   gap: 6px;
   align-items: baseline;
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--ib-muted);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  margin-bottom: 4px;
+  margin-top: 6px;
   flex-wrap: wrap;
 }
 .card .card-refs a {
   color: var(--accent);
   text-decoration: none;
-  font-weight: 700;
+  font-weight: 600;
 }
-.card .card-refs a:hover { text-decoration: underline; }
-.card .card-refs .ref-sep { color: var(--text-tertiary); opacity: 0.6; }
-
-/* ── META EFFORT — power level token in meta row ── */
-.card .card-meta .meta-effort {
-  color: var(--accent);
-  font-weight: 700;
-  text-transform: lowercase;
-}
+.card .card-refs a:focus-visible { text-decoration: underline; }
+.card .card-refs .ref-sep { color: var(--ib-muted); opacity: 0.6; }
 
 /* ── ENV BADGE — multi-instance origin tag (#814) ── */
 .card .card-meta .env-badge {
@@ -2225,56 +2274,61 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 
 /* ── CONTEXT USAGE BAR ── */
-.card .context-bar { margin-top: 4px; margin-bottom: 2px; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; }
-.card .context-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s ease; background: var(--accent); }
-.card .context-bar-fill.ctx-warn { background: var(--yellow); }
-.card .context-bar-fill.ctx-danger { background: var(--red); }
+.card .context-bar { margin-top: 8px; height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
+.card .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform 0.3s var(--ease-out); background: var(--st-run); }
+.card .context-bar-fill.ctx-warn { background: var(--st-wait); }
+.card .context-bar-fill.ctx-danger { background: var(--st-fail); }
 
-/* ── WORKING PULSE INDICATOR ── */
-@keyframes working-pulse {
-  0%,100% { box-shadow: 0 0 0 0 rgba(249,115,22,0.3); }
-  50% { box-shadow: 0 0 0 3px rgba(249,115,22,0.08); }
-}
-.card.card-working { animation: working-pulse 2.5s ease-in-out infinite; }
-
-/* ── EMPTY COLUMN HINT ── */
-.kanban-col .empty-hint { text-align: center; padding: 24px 12px; font-size: 12px; color: var(--text-tertiary); opacity: 0.5; font-style: italic; }
-
-/* ── TASK LIST — compact rows ── */
-/* min-width: 0 on the flex row lets the content child shrink; otherwise the
-   content intrinsic width pushes the right-aligned duration out of view. */
-.card-tasks { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 4px; }
-.card-task { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; padding: 2px 0; line-height: 1.3; min-width: 0; }
-.card-task.completed { color: var(--text-tertiary); opacity: 0.55; }
-.card-task.in_progress { color: var(--text); font-weight: 600; }
-.card-task .task-icon { flex-shrink: 0; }
-.card-task .task-content { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ── TASK TIMELINE — dot + step + time; only the current step's dot is solid ── */
+.tl-wrap { margin-top: 10px; }
+.tl { list-style: none; margin: 0; padding: 0; }
+.tl-item { position: relative; display: flex; gap: 10px; padding: 0 0 8px 16px; line-height: 1.4; color: var(--ib-text-2); }
+.tl-item::before { content: ''; position: absolute; left: 2px; top: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--ib-muted); opacity: 0.55; }
+.tl-item::after { content: ''; position: absolute; left: 4.5px; top: 15px; bottom: 1px; width: 1px; background: var(--ib-card-border); }
+.tl-item:last-child { padding-bottom: 0; }
+.tl-item:last-child::after { display: none; }
+.tl-item.is-current { color: var(--ib-text); }
+.tl-item.is-current::before { background: var(--ib-text); opacity: 1; }
+.tl-item.is-pending { color: var(--ib-muted); }
+.tl-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.tl-time { flex-shrink: 0; color: var(--ib-muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.tl-more { font-size: 12px; color: var(--ib-muted); padding: 0 0 6px 16px; }
 .spin { display: inline-block; animation: spin 1.5s linear infinite; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-.tasks-more { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; font-weight: 600; }
 
-/* ── ACTION BUTTONS — geometric, adequate hit area ── */
-.card-actions { display: flex; gap: 4px; margin-top: 6px; justify-content: flex-end; }
+/* ── INSTRUCTION / RESPONSE — latest pair, lazy-loaded on expand ── */
+.card-io { margin-top: 12px; display: grid; gap: 6px; }
+.io-row { border-radius: 8px; padding: 8px 10px; background: var(--ib-col); min-width: 0; }
+.io-label { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: var(--ib-muted); margin-bottom: 3px; display: flex; gap: 6px; align-items: baseline; }
+.io-label .io-who { font-weight: 500; letter-spacing: 0; }
+.io-text { font-size: 13px; line-height: 1.45; color: var(--ib-text); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }
+.io-text .io-title { font-weight: 600; }
+.io-text.is-muted, .io-muted { color: var(--ib-muted); }
+
+/* ── ACTION BUTTONS — secondary outline + one solid primary (reference "Approve") ── */
+.card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; justify-content: flex-end; }
 .btn-action {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-  padding: 4px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ib-card);
+  border: 1px solid var(--ib-card-border);
+  border-radius: 8px;
+  color: var(--ib-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 5px 12px;
   cursor: pointer;
-  min-height: 26px;
-  transition: all var(--speed) var(--ease);
-  letter-spacing: 0.02em;
+  min-height: 32px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
 }
-.btn-action:hover { border-color: var(--accent); color: var(--text); background: rgba(96,165,250,0.08); }
-.btn-action.btn-stop { border-color: rgba(239,68,68,0.3); color: var(--text-secondary); }
-.btn-action.btn-stop:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,0.08); }
-.btn-action.btn-close { border-color: rgba(250,204,21,0.3); color: var(--text-secondary); }
-.btn-action.btn-close:hover { border-color: var(--yellow); color: var(--yellow); background: rgba(250,204,21,0.08); }
-.btn-action.btn-trash { border-color: rgba(239,68,68,0.2); color: var(--text-tertiary); }
-.btn-action.btn-trash:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,0.08); }
+.btn-action:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-action.btn-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); }
+.btn-action.btn-stop { color: var(--st-fail); }
+.btn-action.btn-trash { color: var(--ib-muted); }
 
 /* ── PENDING QUESTION (dashboard choice buttons) ── */
 .card-question {
@@ -2306,14 +2360,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   background: rgba(77,157,224,0.08);
   color: var(--accent);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
   font-family: inherit;
   line-height: 1.3;
-}
-.btn-choice:hover {
-  border-color: var(--accent);
-  background: rgba(77,157,224,0.18);
-  color: var(--text);
 }
 .btn-choice:disabled {
   opacity: 0.5;
@@ -2325,11 +2374,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   color: white;
   border: 2px solid #256f38;
   font-weight: 600;
-}
-.btn-choice-recommended:hover {
-  background: #256f38;
-  color: white;
-  border-color: #256f38;
 }
 .btn-choice-recommended::before { content: "\\2B50 "; }
 .choice-row-recommended .btn-choice-recommended {
@@ -2375,6 +2419,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   text-decoration: none;
 }
 .card-question-multi a:hover { text-decoration: underline; }
+/* Pending question inside an open card — the card's own button language
+   (reference "Reject | Approve"): outline choices, the recommended one solid
+   and last on the right. Markup and handlers are the shared ones above. */
+.card .card-question { margin-top: 12px; padding: 10px 12px; background: var(--ib-col); border: 0; border-radius: 8px; }
+.card .card-question-text { font-size: 13px; color: var(--ib-text); margin-bottom: 8px; }
+.card .card-question-multi { font-size: 12px; color: var(--ib-muted); }
+.card .card-question-choices { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.card .choice-divider { display: none; }
+.card .choice-row-recommended { order: 2; max-width: 100%; min-width: 0; }
+.card .btn-choice { font-size: 13px; padding: 5px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); text-align: left; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
+.card .btn-choice-recommended::before { content: none; }
+.card .choice-row-recommended .btn-choice-recommended,
+.card .btn-choice-recommended { display: inline-block; width: auto; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
 
 /* ── PANEL PENDING QUESTION ── */
 .panel-question {
@@ -2732,6 +2789,52 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   font-weight: 600;
 }
 .panel-tasks-toggle:hover { text-decoration: underline; }
+/* Panel work log (.prd/10 §3.1-7, §3.3) — what the agent did, in order. Own
+   scroll box so live appends tail-follow without moving the turn list. */
+.panel-worklog { padding: 8px 16px 10px; border-bottom: 1px solid var(--border); }
+.panel-worklog-header {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.panel-worklog-header .wl-count { font-weight: 600; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.worklog-list { max-height: min(48vh, 440px); overflow-y: auto; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; line-height: 1.45; }
+.wl-empty { color: var(--text-tertiary); font-size: 12px; padding: 6px 0; }
+.wl-entry { color: var(--text); min-width: 0; }
+.wl-head { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-tertiary); }
+.wl-label { font-weight: 700; letter-spacing: 0.04em; }
+.wl-head .wl-time { margin-left: auto; }
+.wl-time { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.wl-entry > .wl-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.wl-line { display: flex; align-items: baseline; gap: 8px; }
+.wl-line > .wl-text { flex: 1; min-width: 0; }
+.wl-narration > .wl-text { color: var(--text-secondary); }
+.wl-instruction { background: rgba(77,157,224,0.08); border-left: 2px solid var(--accent); border-radius: 4px; padding: 6px 8px; margin: 4px 0; }
+.wl-instruction .wl-label { color: var(--accent); }
+.wl-final { border-left: 2px solid var(--green); padding: 4px 8px; margin: 4px 0; }
+.wl-final .wl-label { color: var(--green); }
+.wl-notice > .wl-text { color: var(--text-tertiary); font-style: italic; }
+.wl-error { border-left: 2px solid var(--red); padding: 4px 8px; }
+.wl-error .wl-label, .wl-error > .wl-text { color: var(--red); }
+.wl-tool, .wl-tool_result {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+.wl-tool .wl-text, .wl-tool_result .wl-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-tool-name { color: var(--text); font-weight: 600; flex-shrink: 0; }
+.wl-mark { flex-shrink: 0; width: 1em; text-align: center; color: var(--text-tertiary); }
+.wl-tool_result .wl-mark { color: var(--green); }
+.wl-tool_result.is-fail .wl-mark, .wl-tool_result.is-fail .wl-tool-name { color: var(--red); }
 .slide-panel-overlay {
   position: fixed;
   top: 0; left: 0;
@@ -2861,15 +2964,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .card-links .pr-open { background: rgba(96,165,250,0.15); color: var(--accent); }
 .card .card-links .pr-merged { background: rgba(167,139,250,0.15); color: var(--purple); }
 
-/* ── DRAG & DROP ── */
-.card[draggable="true"] { cursor: grab; }
-.card[draggable="true"]:active { cursor: grabbing; }
-.card.dragging { opacity: 0.4; }
-.kanban-col.drag-over .cards { outline: 2px dashed var(--accent); outline-offset: -2px; border-radius: var(--radius); min-height: 60px; }
-.kanban-col#col-closed.drag-over .cards { outline-color: var(--yellow); }
-.kanban-col .drop-hint { display: none; text-align: center; padding: 8px; font-size: 12px; color: var(--text-tertiary); font-style: italic; }
-.kanban-col.drag-over .drop-hint { display: block; }
-
 /* ── COMMAND INPUT — flat ── */
 .panel-command {
   padding: 10px 16px;
@@ -2919,31 +3013,75 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .btn-send:hover { background: var(--accent-hover); }
 .btn-send:disabled { background: var(--surface-raised); color: var(--text-tertiary); cursor: default; }
 
-/* ── CLOSED COLUMN ── */
+/* ── CLOSED CARDS — 7-day "Show older" toggle at the foot of DONE ── */
 .show-older-btn {
-  background: var(--surface-raised);
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
-  color: var(--text-tertiary);
+  background: transparent;
+  border: 1px dashed var(--ib-card-border);
+  border-radius: 10px;
+  color: var(--ib-muted);
+  font: inherit;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   padding: 6px 12px;
   cursor: pointer;
-  margin: 4px 8px 8px;
-  width: calc(100% - 16px);
-  transition: all var(--speed) var(--ease);
+  margin: 8px 0 2px;
+  width: 100%;
+  transition: border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
   text-align: center;
-  min-height: 30px;
+  min-height: 32px;
 }
-.show-older-btn:hover { border-color: var(--accent); color: var(--text); }
+
+/* ── PRESS — buttons and segments give 0.97 feedback (§4-5), pointer presses only:
+   a keyboard-focused control matches :focus-visible, so Space/Enter never scale it (§4-9). ── */
+.btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+
+/* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
+@media (hover: hover) and (pointer: fine) {
+  .card:hover { border-color: var(--ib-muted); }
+  .card[data-state="sleeping"]:hover, .card[data-state="archived"]:hover { border-color: var(--ib-card-border); }
+  .seg-btn:hover { color: var(--ib-text); }
+  .btn-action:hover:not(:disabled) { border-color: var(--ib-muted); }
+  .btn-action.btn-primary:hover:not(:disabled) { opacity: 0.88; }
+  .btn-action.btn-stop:hover:not(:disabled) { border-color: var(--st-fail); }
+  .show-older-btn:hover { border-color: var(--ib-muted); color: var(--ib-text); }
+  .card .card-refs a:hover { text-decoration: underline; }
+  .btn-choice:hover:not(:disabled) { border-color: var(--accent); background: rgba(77,157,224,0.18); color: var(--text); }
+  .btn-choice-recommended:hover:not(:disabled) { background: #256f38; color: white; border-color: #256f38; }
+  .card .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--ib-card); color: var(--ib-text); }
+  .card .btn-choice-recommended:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
+}
+
+/* ── BOARD RESPONSIVE (.prd/10 §5) ──
+   ≥1024 three columns · 640–1023 the columns scroll sideways inside the board
+   (page itself never scrolls horizontally) · <640 List by default, 44px taps. */
+@media (max-width: 1023px) {
+  .kanban[data-view="board"] {
+    grid-template-columns: repeat(3, minmax(300px, 1fr));
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    overscroll-behavior-x: contain;
+    padding-bottom: 8px;
+  }
+  .kanban[data-view="board"] > .kanban-col { scroll-snap-align: start; }
+}
+@media (max-width: 639px) {
+  .main { padding: 14px 12px; }
+  .inbox-head { margin-bottom: 12px; }
+  .crumbs { font-size: 15px; gap: 7px; }
+  .kanban[data-view="board"] { grid-template-columns: repeat(3, minmax(min(300px, 84vw), 1fr)); }
+  /* Selectors carry an extra class so they beat the later @media (pointer: coarse) 40px rules. */
+  .seg .seg-btn { min-height: 44px; padding: 6px 14px; }
+  .card .btn-action, .col-foot .show-older-btn, .card .btn-choice { min-height: 44px; }
+  .card .btn-action { padding: 8px 14px; }
+  .card-face { padding: 14px; }
+  .card-metrics .metric { padding: 0 7px; }
+}
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
 @media (max-width: 1100px) {
-  .kanban { grid-template-columns: repeat(2, 1fr); }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 680px) {
-  .kanban { grid-template-columns: 1fr; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 6px; margin-bottom: 12px; }
   .stat-card { padding: 8px 12px; }
   .stat-card .value { font-size: 18px; }
@@ -2995,6 +3133,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  /* §4-8: no movement or scale — the expanded body only cross-fades. These
+     selectors are more specific than the * rule above, so they win. */
+  .card-expand { transition: none !important; }
+  .card-expand-inner { transition: opacity var(--dur-fade) linear !important; }
+  .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
+  /* Static working indicator: a full ring with a centre dot instead of a spin. */
+  .spinner, .spin { animation: none !important; }
+  .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
 }
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
@@ -3005,7 +3151,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .topbar .nav a, .topbar .nav select { min-height: 40px; padding: 8px 16px; }
   .period-btn { min-height: 40px; padding: 12px 20px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
-  .card { padding: 12px 16px; }
 }
 /* ── #800: TOUCH x NARROW — restore tight padding so the coarse-pointer
    tap-target (16px horizontal) does not push the topbar past mobile
@@ -3018,6 +3163,23 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 @media (max-width: 480px) and (pointer: coarse) {
   .topbar .nav a, .topbar .nav select { padding: 4px 6px; }
+}
+/* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens.
+   Heights only, so the #800 topbar width fit is untouched; the theme toggle keeps
+   its 32px square (pinned by #800) and gets a 44px-wide hit slop instead. ── */
+@media (max-width: 639px), (pointer: coarse) {
+  .topbar .nav a, .topbar .nav select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
+  #theme-toggle { min-block-size: 44px; position: relative; }
+  #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
+  .period-btn { min-height: 44px; }
+  .seg .seg-btn, .card .btn-action, .card .btn-choice, .col-foot .show-older-btn { min-height: 44px; }
+  .card .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
+  .panel-close { width: 44px; height: 44px; }
+  #panel-title-sub-regen { min-width: 44px; min-height: 44px; }
+  .panel-links a, .panel-tasks-toggle, .turn .btn-action { min-height: 44px; }
+  .turn-raw-details summary.turn-expand-btn { min-height: 44px; display: flex; align-items: center; }
+  .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn, .mc-btn-submit, .mc-btn-reset { min-height: 44px; }
+  .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command input { min-height: 44px; }
 }
 </style>
 </head>
@@ -3052,6 +3214,35 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   </div>
 
   <div class="main">
+    <!-- Agent inbox (.prd/10 §3.1) — the board leads; usage stats follow below it. -->
+    <section class="inbox" id="inbox" aria-label="Agent inbox">
+      <div class="inbox-head">
+        <nav class="crumbs" aria-label="Breadcrumb"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
+        <div class="seg" role="group" aria-label="Board layout">
+          <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="4.5" height="11" rx="1.2"/><rect x="9.5" y="2.5" width="4.5" height="7" rx="1.2"/></svg><span>Board</span></button>
+          <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span>List</span></button>
+        </div>
+      </div>
+      <div class="kanban" id="kanban" data-view="board">
+        <div class="kanban-col" id="col-waiting" data-col="waiting">
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>NEEDS YOU</h3><span class="count" id="count-waiting">0</span></div>
+          <div class="cards" id="cards-waiting"></div>
+          <div class="col-empty" id="empty-waiting">Nothing here</div>
+        </div>
+        <div class="kanban-col" id="col-working" data-col="working">
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>RUNNING</h3><span class="count" id="count-working">0</span></div>
+          <div class="cards" id="cards-working"></div>
+          <div class="col-empty" id="empty-working">Nothing here</div>
+        </div>
+        <div class="kanban-col" id="col-done" data-col="done">
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>DONE</h3><span class="count" id="count-done">0</span></div>
+          <div class="cards" id="cards-done"></div>
+          <div class="col-empty" id="empty-done">Nothing here</div>
+          <div class="col-foot" id="foot-done"></div>
+        </div>
+      </div>
+    </section>
+
     <div class="period-bar">
       <button class="period-btn active" data-period="day" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
       <button class="period-btn" data-period="week" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
@@ -3071,43 +3262,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     <div style="display:none" id="stat-commits-hidden"></div>
 
     <div class="chart-row" id="chart-row"></div>
-
-    <div style="border-top:1px solid var(--border);margin:16px 0 12px;opacity:0.5"></div>
-    <h2 style="font-size:0.95em;margin-bottom:12px;color:var(--text-secondary)">&#x1F4CB; &#xC138;&#xC158; &#xBCF4;&#xB4DC;</h2>
-    <div class="kanban" id="kanban">
-      <div class="kanban-col" id="col-working">
-        <div class="kanban-col-header">
-          <span class="working-dot"></span>
-          <h3>&#xC9C4;&#xD589;</h3>
-          <span class="count" id="count-working">0</span>
-        </div>
-        <div class="cards" id="cards-working"></div>
-      </div>
-      <div class="kanban-col" id="col-waiting">
-        <div class="kanban-col-header">
-          <span class="waiting-dot"></span>
-          <h3>&#xC720;&#xC800;&#xC785;&#xB825;</h3>
-          <span class="count" id="count-waiting">0</span>
-        </div>
-        <div class="cards" id="cards-waiting"></div>
-      </div>
-      <div class="kanban-col" id="col-idle">
-        <div class="kanban-col-header">
-          <span class="idle-dot"></span>
-          <h3>&#xB300;&#xAE30;</h3>
-          <span class="count" id="count-idle">0</span>
-        </div>
-        <div class="cards" id="cards-idle"></div>
-      </div>
-      <div class="kanban-col" id="col-closed">
-        <div class="kanban-col-header">
-          <span class="closed-dot"></span>
-          <h3>&#xB3D9;&#xBA74;</h3>
-          <span class="count" id="count-closed">0</span>
-        </div>
-        <div class="cards" id="cards-closed"></div>
-      </div>
-    </div>
   </div>
 
   <!-- Slide Panel for Session Detail -->
@@ -3127,10 +3281,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     <div class="panel-meta" id="panel-meta"></div>
     <div class="panel-links" id="panel-links"></div>
     <div class="panel-tokens" id="panel-tokens"></div>
-    <!-- Unified scroll area: question + tasks + turns scroll together as one. -->
+    <!-- Unified scroll area: question + tasks + work log + turns scroll together as one. -->
     <div class="panel-scroll" id="panel-scroll">
       <div class="panel-question" id="panel-question" style="display:none"></div>
       <div class="panel-tasks" id="panel-tasks" style="display:none"></div>
+      <div class="panel-worklog" id="panel-worklog" style="display:none">
+        <div class="panel-worklog-header"><span>작업 로그</span><span class="wl-count" id="worklog-count"></span></div>
+        <div class="worklog-list" id="worklog-list" role="log" aria-live="polite" aria-label="작업 로그"></div>
+      </div>
       <div class="panel-turns" id="panel-turns">
         <p style="color:var(--text-secondary);text-align:center;margin-top:40px">Click a session card to view details</p>
       </div>
@@ -3319,13 +3477,13 @@ function renderPanelQuestion(s) {
     if (pnlRecOpt) {
       var recLbl = stripRecommendedMarker(pnlRecOpt.label);
       pnlRecHtml = '<div class="choice-row-recommended">'
-        + '<button class="btn-choice btn-choice-recommended" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(pnlRecOpt.id) + '\\',\\'' + escJs(recLbl) + '\\',\\'' + escJs(q.question) + '\\',this)">' + esc(pnlRecOpt.id) + '. ' + esc(recLbl) + (pnlRecOpt.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(pnlRecOpt.description) + '</span>' : '') + '</button>'
+        + '<button class="btn-choice btn-choice-recommended"' + choiceDataAttrs(s.key, pnlRecOpt.id, recLbl, q.question) + '>' + esc(pnlRecOpt.id) + '. ' + esc(recLbl) + (pnlRecOpt.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(pnlRecOpt.description) + '</span>' : '') + '</button>'
         + '</div>'
         + (pnlOthers.length > 0 ? '<hr class="choice-divider">' : '');
     }
     var pnlOtherBtns = pnlOthers.map(function(c) {
       var lbl2 = stripRecommendedMarker(c.label);
-      return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(lbl2) + '\\',\\'' + escJs(q.question) + '\\',this)">' + esc(c.id) + '. ' + esc(lbl2) + (c.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(c.description) + '</span>' : '') + '</button>';
+      return '<button class="btn-choice"' + choiceDataAttrs(s.key, c.id, lbl2, q.question) + '>' + esc(c.id) + '. ' + esc(lbl2) + (c.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(c.description) + '</span>' : '') + '</button>';
     }).join('');
     container.innerHTML = '<div class="panel-question-text">&#x2753; ' + esc(q.question) + '</div>'
       + '<div class="panel-question-choices">' + pnlRecHtml + pnlOtherBtns + '</div>';
@@ -3558,13 +3716,33 @@ refreshCsrfToken();
 function decodeSlackEntities(s) {
   return (s || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
+// Pure (no DOM) so the escaping can be exercised outside a browser. Same &, <, >
+// output the textContent→innerHTML round-trip gave, plus " so a value can never
+// close the attribute it is placed in. ' stays literal: escJs() relies on that.
 function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s || '';
-  return d.innerHTML;
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 function escAttr(s) {
   return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+// Pending-question choice buttons carry their values as attribute-escaped data
+// attributes (read back through dataset by one delegated click handler), so a
+// model-written question or label with quotes, backslashes, < or newlines can
+// neither break nor extend the markup the way an inline JS string could.
+function choiceDataAttrs(key, id, label, question) {
+  return ' data-choice-key="' + escAttr(key) + '" data-choice-id="' + escAttr(id)
+    + '" data-choice-label="' + escAttr(label) + '" data-choice-question="' + escAttr(question) + '"';
+}
+document.addEventListener('click', function(e) {
+  var btn = e.target && e.target.closest ? e.target.closest('button[data-choice-id]') : null;
+  if (!btn || btn.disabled) return;
+  var d = btn.dataset;
+  if (d.mcIndex !== undefined) selectMc(d.choiceKey, Number(d.mcIndex), d.choiceId, d.choiceLabel);
+  else answerChoice(d.choiceKey, d.choiceId, d.choiceLabel, d.choiceQuestion, btn);
+});
+// Only http(s) URLs become links; anything else (javascript:, data:) is inert.
+function safeHref(u) {
+  return /^https?:\\/\\//i.test(String(u || '')) ? escAttr(u) : '#';
 }
 function escJs(s) {
   return esc(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
@@ -3602,10 +3780,24 @@ function timeAgo(iso) {
   if (ms < 86400000) return Math.floor(ms / 3600000) + 'h ago';
   return Math.floor(ms / 86400000) + 'd ago';
 }
+// A finite number or 0 — numeric fields pass through this before they reach markup.
+function toNum(v) {
+  var n = Number(v);
+  return isFinite(n) ? n : 0;
+}
+// Compact token count: 999 · 1.5K · 2.5M · 3.1B · 4.2T. The unit is chosen
+// after rounding (never "1000.0K"); a negative or non-number is 0, and anything
+// that would round to 1000.0T or more (from 999.95T) is capped at 999.9T+ so an
+// absurd value cannot print an exponent.
 function formatTokens(n) {
-  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-  return String(n);
+  n = Math.max(0, toNum(n));
+  if (n < 999.5) return String(Math.round(n));
+  var units = ['K', 'M', 'B', 'T'];
+  for (var i = 0; i < units.length; i++) {
+    n /= 1000;
+    if (n < 999.95) return n.toFixed(1) + units[i];
+  }
+  return '999.9T+';
 }
 // Dashboard v2.1 — \`Nm SSs\` for the 1s live tick. Mirrors src/format/duration.ts.
 function formatNmSSs(ms) {
@@ -3615,35 +3807,37 @@ function formatNmSSs(ms) {
   var s = totalSec % 60;
   return m + 'm ' + (s < 10 ? '0' + s : s) + 's';
 }
-// 1-Hz tick: update every .card-timer-live element from its data-* attrs.
+// 1-Hz tick: fill every time-dependent text from its data-* attrs.
 // Runs unconditionally of WS state — WS feeds new data-* values, tick reads them.
-// The producer of .card-timer-live is the heroTimerHtml builder in renderCard()
-// (server side). Keep the class name + data-leg-started / data-accumulated attr
-// contract in sync with that emitter.
-function updateTimers() {
+// Card HTML never embeds Date.now(): the reconciler compares rendered strings,
+// so a clock in the markup would make every poll look like a change.
+//   .card-timer-live  data-leg-started / data-accumulated (renderCardStatus)
+//   .rel-time         data-ts  → "6m ago"
+//   .task-elapsed     data-since → running task duration
+function updateTimersIn(root) {
   var now = Date.now();
-  var els = document.querySelectorAll('.card-timer-live');
+  var els = root.querySelectorAll('.card-timer-live');
   for (var i = 0; i < els.length; i++) {
     var el = els[i];
     var started = Number(el.dataset.legStarted) || 0;
     var accumulated = Number(el.dataset.accumulated) || 0;
     var elapsed = (started ? now - started : 0) + accumulated;
-    el.textContent = formatNmSSs(elapsed);
+    var t = formatNmSSs(elapsed);
+    if (el.textContent !== t) el.textContent = t;
+  }
+  var rel = root.querySelectorAll('.rel-time');
+  for (var j = 0; j < rel.length; j++) {
+    var r = timeAgo(Number(rel[j].dataset.ts) || 0);
+    if (rel[j].textContent !== r) rel[j].textContent = r;
+  }
+  var run = root.querySelectorAll('.task-elapsed');
+  for (var k = 0; k < run.length; k++) {
+    var d = formatDuration(now - (Number(run[k].dataset.since) || now)) || '0s';
+    if (run[k].textContent !== d) run[k].textContent = d;
   }
 }
-setInterval(updateTimers, 1000);
-
-// ── Card Aura ──
-function getAuraClass(isoStr) {
-  const ms = Date.now() - new Date(isoStr).getTime();
-  const min = ms / 60000;
-  if (min <= 10) return 'aura-legendary';
-  if (min <= 30) return 'aura-epic';
-  if (min <= 60) return 'aura-blue';
-  if (min <= 240) return 'aura-green';
-  if (min <= 480) return 'aura-white';
-  return '';
-}
+function updateTimers() { updateTimersIn(document); }
+var _timerTick = setInterval(updateTimers, 1000);
 
 // ── User list ──
 async function loadUsers() {
@@ -3678,7 +3872,8 @@ function setPeriod(period) {
 }
 
 // ── Session cache ──
-let _sessionCache = {};
+// Keyed by session key — prototype-free so any key string is just a key.
+let _sessionCache = Object.create(null);
 
 // ── Env badge helpers (#814) ──
 // 4-color palette — kept in CSS-friendly order so the contrast against
@@ -3702,7 +3897,7 @@ function _hashStr(s) {
 }
 
 function _buildEnvIndex() {
-  var envs = {};
+  var envs = Object.create(null);
   for (var k in _sessionCache) {
     var c = _sessionCache[k];
     if (c && c.environment && c.environment.instanceName) {
@@ -3710,7 +3905,7 @@ function _buildEnvIndex() {
     }
   }
   var sorted = Object.keys(envs).sort();
-  var assigned = {};
+  var assigned = Object.create(null);
   // First pass — try the hash bucket. If taken, mark conflict.
   var occupied = {};
   for (var i = 0; i < sorted.length; i++) {
@@ -3759,12 +3954,56 @@ function _envCount() {
   return Object.keys(_envIndex).length;
 }
 
-// ── Kanban rendering ──
+// ── Agent inbox board (.prd/10 §3.1, §4) ──
+// NEEDS YOU = waiting · RUNNING = working · DONE = idle, then closed (SLEEPING +
+// recent archives; older than 7 days stays behind "Show older"). The server
+// buckets (KanbanBoard) are unchanged — only the client folds idle + closed
+// into one column.
+var BOARD_COLS = ['waiting', 'working', 'done'];
+var SPARK_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg>';
+var WAIT_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.8 15 14H1z"/></svg>';
+var TASKS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.2l1.4 1.4 2.4-2.6M2.5 10.2l1.4 1.4 2.4-2.6M9 4.5h4.5M9 10.5h4.5"/></svg>';
+var CTX_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 8V2.4A5.6 5.6 0 0 1 13.6 8z" fill="currentColor" stroke="none"/></svg>';
+
+// Board state that survives re-renders — the DOM is reused, never rebuilt.
+// Every dictionary keyed by a session key or conversation id is prototype-free,
+// so a key such as "__proto__" or "constructor" is just a key.
+var _cardEls = Object.create(null);  // session key → persistent card shell
+var _expanded = new Set();           // keys whose card is open
+var _boardRenders = 0;
+var _ioCache = Object.create(null);  // conversationId → { state, stamp, data, dirty, fails, retryAt }
+
+// Motion tokens come from the CSS custom properties so CSS transitions and
+// WAAPI share one source of truth (§4 table).
+var MOTION = (function readMotionTokens() {
+  var cs = getComputedStyle(document.documentElement);
+  function ms(name, fallback) { var v = parseFloat(cs.getPropertyValue(name)); return isNaN(v) ? fallback : v; }
+  function str(name, fallback) { var v = cs.getPropertyValue(name).trim(); return v || fallback; }
+  return {
+    move: ms('--dur-move', 320),
+    fade: ms('--dur-fade', 180),
+    easeOut: str('--ease-out', 'cubic-bezier(0.23, 1, 0.32, 1)'),
+    easeInOut: str('--ease-in-out', 'cubic-bezier(0.77, 0, 0.175, 1)'),
+  };
+})();
+var _reducedMotionMq = window.matchMedia('(prefers-reduced-motion: reduce)');
+function reduceMotion() { return _reducedMotionMq.matches; }
+// The first paint and background tabs never animate.
+function canAnimate() {
+  return _boardRenders > 0 && !document.hidden && typeof Element.prototype.animate === 'function';
+}
+function setTextIfChanged(el, text) {
+  if (el && el.textContent !== text) el.textContent = text;
+}
+function isSiblingSession(s) {
+  return !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
+}
+
 function renderBoard(board) {
-  _sessionCache = {}; // Clear stale cache each render cycle
+  _sessionCache = Object.create(null); // Clear stale cache each render cycle
   // Populate cache from the entire board first so the env-palette pass
-  // (which reads every card's environment) and per-column renderCard
-  // calls share one walk over the data.
+  // (which reads every card's environment) and the per-card renders share
+  // one walk over the data.
   for (var col0 of ['working', 'waiting', 'idle', 'closed']) {
     var arr = board[col0] || [];
     for (var i0 = 0; i0 < arr.length; i0++) {
@@ -3772,53 +4011,574 @@ function renderBoard(board) {
     }
   }
   _envIndex = _buildEnvIndex();
-  var emptyHints = { working: 'No active sessions', waiting: 'No sessions awaiting input', idle: 'No idle sessions' };
-  for (const col of ['working', 'waiting', 'idle']) {
-    const container = document.getElementById('cards-' + col);
-    const countEl = document.getElementById('count-' + col);
-    const sessions = (board[col] || []);
-    countEl.textContent = sessions.length;
-    container.innerHTML = sessions.length > 0
-      ? sessions.map(function(s) { return renderCard(s, col); }).join('')
-      : '<div class="empty-hint">' + emptyHints[col] + '</div>';
-  }
-  // Closed column with 7-day filter
-  renderClosedColumn(board.closed || []);
+  var closed = board.closed || [];
+  var sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  var recent = closed.filter(function(s) { return new Date(s.lastActivity).getTime() >= sevenDaysAgo; });
+  var older = closed.filter(function(s) { return new Date(s.lastActivity).getTime() < sevenDaysAgo; });
+  function tag(col) { return function(s) { return { s: s, col: col }; }; }
+  var done = (board.idle || []).map(tag('idle')).concat(recent.map(tag('closed')));
+  if (showOlderClosed) done = done.concat(older.map(tag('closed')));
+  reconcileBoard({
+    waiting: (board.waiting || []).map(tag('waiting')),
+    working: (board.working || []).map(tag('working')),
+    done: done,
+  }, {
+    waiting: (board.waiting || []).length,
+    working: (board.working || []).length,
+    done: (board.idle || []).length + closed.length,
+  });
+  renderOlderToggle(older.length);
+  _boardRenders++;
+  openDeepLinkedSession();
 }
 
-function renderClosedColumn(sessions) {
-  const container = document.getElementById('cards-closed');
-  const countEl = document.getElementById('count-closed');
-  countEl.textContent = sessions.length;
-
-  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  const recent = sessions.filter(function(s) { return new Date(s.lastActivity).getTime() >= sevenDaysAgo; });
-  const older = sessions.filter(function(s) { return new Date(s.lastActivity).getTime() < sevenDaysAgo; });
-
-  let html = recent.map(function(s) { return renderCard(s, 'closed'); }).join('');
-  if (showOlderClosed) {
-    html += older.map(function(s) { return renderCard(s, 'closed'); }).join('');
+// Keyed reconciler (§3.1-6). Each card keeps its DOM node for its whole life:
+// it is moved between columns, only the parts whose HTML changed are
+// rewritten, and every card whose on-screen position moved is FLIPped from
+// where it was (§4-2).
+// Pass 1 plans against the stored HTML and node order without writing. If
+// nothing differs it stops there — a same-data render writes nothing and
+// leaves a running entrance or exit alone.
+function reconcileBoard(plan, counts) {
+  var wanted = Object.create(null);
+  var cols = [];
+  var changed = false;
+  for (var c = 0; c < BOARD_COLS.length; c++) {
+    var colId = BOARD_COLS[c];
+    var container = document.getElementById('cards-' + colId);
+    var rows = [];
+    var items = plan[colId] || [];
+    for (var i = 0; i < items.length; i++) {
+      var s = items[i].s;
+      if (wanted[s.key]) continue; // a key listed twice renders once
+      wanted[s.key] = true;
+      var parts = cardParts(s, items[i].col);
+      var el = _cardEls[s.key];
+      if (!el || container.children[rows.length] !== el || cardPartsDiffer(el, parts)) changed = true;
+      rows.push({ key: s.key, parts: parts });
+    }
+    if (container.children.length !== rows.length) changed = true;
+    cols.push({ colId: colId, container: container, rows: rows });
+    // Counts and empty hints are compared before they are written.
+    setTextIfChanged(document.getElementById('count-' + colId), String(counts[colId] || 0));
+    var empty = document.getElementById('empty-' + colId);
+    if (empty && empty.hidden !== rows.length > 0) empty.hidden = rows.length > 0;
   }
-  if (older.length > 0) {
-    const label = showOlderClosed
-      ? '&#x25B2; Hide older (' + older.length + ')'
-      : '&#x25BC; Show older (' + older.length + ')';
-    html += '<button class="show-older-btn" onclick="toggleOlderClosed()">' + label + '</button>';
+  for (var g in _cardEls) {
+    if (!wanted[g]) { changed = true; break; }
   }
-  container.innerHTML = html;
+  if (changed) applyBoardPlan(cols, wanted);
+  // Open cards keep their 지시/응답 current (no DOM write unless a fetch settles).
+  _expanded.forEach(function(key) { if (_cardEls[key]) ensureCardIo(key, false); });
 }
 
-function toggleOlderClosed() {
-  showOlderClosed = !showOlderClosed;
-  loadSessions();
+function applyBoardPlan(cols, wanted) {
+  var animate = canAnimate();
+  var first = animate ? measureCards() : null;
+  var firstCol = Object.create(null);
+  for (var k0 in _cardEls) firstCol[k0] = _cardEls[k0]._colId;
+  for (var c = 0; c < cols.length; c++) {
+    var col = cols[c];
+    for (var r = 0; r < col.rows.length; r++) {
+      var row = col.rows[r];
+      var el = _cardEls[row.key];
+      if (!el) {
+        el = createCardShell(row.key);
+        _cardEls[row.key] = el;
+        el._isNew = true;
+      }
+      applyCardParts(el, row.parts);
+      el._colId = col.colId;
+      applyExpanded(el, _expanded.has(row.key));
+      if (col.container.children[r] !== el) col.container.insertBefore(el, col.container.children[r] || null);
+    }
+  }
+  for (var gone in _cardEls) {
+    if (wanted[gone]) continue;
+    var goneCid = _cardEls[gone]._cid;
+    exitCard(_cardEls[gone], first ? first[gone] : null);
+    delete _cardEls[gone];
+    releaseCardIoTimer(goneCid);
+  }
+  for (var key in _cardEls) {
+    var card = _cardEls[key];
+    if (card._isNew) {
+      card._isNew = false;
+      if (animate) enterCard(card);
+      continue;
+    }
+    if (!animate || !first[key]) continue;
+    // Interrupted move: the first box was read mid-flight (translate included),
+    // so cancelling and re-FLIPping restarts from where the card is drawn.
+    var wasFlying = card.classList.contains('is-flying');
+    if (card._flip) { card._flip.cancel(); card._flip = null; }
+    if (wasFlying) card.classList.remove('is-flying');
+    var a = first[key];
+    var b = boxOf(card);
+    var dx = a.x - b.x;
+    var dy = a.y - b.y;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+    playFlip(card, dx, dy, wasFlying || firstCol[key] !== card._colId);
+  }
 }
 
-function renderCard(s, col) {
+// Top-left of the card's full-size box as drawn. Taken from the rect centre and
+// the untransformed size, so a card mid-entrance (scale 0.97) measures where its
+// box really is — no entrance has to be cut short to measure it — while a FLIP
+// translate in flight is included.
+function boxOf(el) {
+  var r = el.getBoundingClientRect();
+  return { x: r.left + r.width / 2 - el.offsetWidth / 2, y: r.top + r.height / 2 - el.offsetHeight / 2 };
+}
+function measureCards() {
+  var boxes = Object.create(null);
+  for (var k in _cardEls) boxes[k] = boxOf(_cardEls[k]);
+  return boxes;
+}
+
+// Move = translate only (widths snap; text never stretches). The card that
+// changes column flies raised above its neighbours (shadow + z-index). The
+// translate is added on top of whatever runs already, so a card still in its
+// entrance keeps scaling while it moves.
+function playFlip(el, dx, dy, raise) {
+  if (reduceMotion()) {
+    // §4-8: no travel — a card that changed column fades in where it landed.
+    if (raise) el._enter = el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
+    return;
+  }
+  if (raise) el.classList.add('is-flying');
+  var anim = el.animate(
+    [{ transform: 'translate(' + dx + 'px, ' + dy + 'px)' }, { transform: 'translate(0, 0)' }],
+    { duration: MOTION.move, easing: MOTION.easeInOut, composite: 'add' }
+  );
+  el._flip = anim;
+  anim.onfinish = function() {
+    if (el._flip !== anim) return;
+    el._flip = null;
+    el.classList.remove('is-flying');
+  };
+}
+
+// Enter: opacity 0 + scale(0.97) → 1 (never from scale(0)).
+function enterCard(el) {
+  var frames = reduceMotion()
+    ? [{ opacity: 0 }, { opacity: 1 }]
+    : [{ opacity: 0, transform: 'scale(0.97)' }, { opacity: 1, transform: 'scale(1)' }];
+  var anim = el.animate(frames, { duration: MOTION.fade, easing: MOTION.easeOut });
+  el._enter = anim;
+  anim.onfinish = function() { if (el._enter === anim) el._enter = null; };
+}
+
+// Exit: opacity only. The card leaves the column's card list (re-parented to
+// the column, absolutely placed where it was drawn) so the remaining cards
+// FLIP into the gap and later renders never see it; it removes itself when
+// its fade finishes.
+function exitCard(el, box) {
+  if (el._flip) { el._flip.cancel(); el._flip = null; }
+  var list = el.parentNode;
+  var host = list && list.parentNode;
+  if (!list) return;
+  if (!box || !host || !canAnimate()) { list.removeChild(el); return; }
+  var hr = host.getBoundingClientRect();
+  var width = el.offsetWidth;
+  el.removeAttribute('data-session-key');
+  el.setAttribute('aria-hidden', 'true');
+  el.setAttribute('inert', '');
+  el.classList.add('is-exiting');
+  el.style.left = (box.x - hr.left) + 'px';
+  el.style.top = (box.y - hr.top) + 'px';
+  el.style.width = width + 'px';
+  host.appendChild(el);
+  var anim = el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: MOTION.fade, easing: MOTION.easeOut, fill: 'forwards' });
+  el._exit = anim;
+  anim.onfinish = anim.oncancel = function() { if (el.parentNode) el.parentNode.removeChild(el); };
+}
+
+// Persistent shell: .card > .card-face (collapsed view, the toggle target)
+// + .card-expand (grid row 0fr↔1fr) > .card-expand-inner (expanded body).
+function createCardShell(key) {
+  var el = document.createElement('div');
+  el.className = 'card';
+  el.setAttribute('data-session-key', key);
+  var face = document.createElement('div');
+  face.className = 'card-face';
+  face.setAttribute('role', 'button');
+  face.setAttribute('tabindex', '0');
+  face.setAttribute('aria-expanded', 'false');
+  var expand = document.createElement('div');
+  expand.className = 'card-expand';
+  expand.setAttribute('inert', '');
+  var inner = document.createElement('div');
+  inner.className = 'card-expand-inner';
+  expand.appendChild(inner);
+  el.appendChild(face);
+  el.appendChild(expand);
+  el._faceEl = face;
+  el._expandEl = expand;
+  el._bodyEl = inner;
+  el._faceHtml = null;
+  el._bodyHtml = null;
+  return el;
+}
+
+function applyExpanded(el, open) {
+  if (el.classList.contains('is-expanded') === open) return;
+  el.classList.toggle('is-expanded', open);
+  el._faceEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) el._expandEl.removeAttribute('inert');
+  else el._expandEl.setAttribute('inert', '');
+}
+
+// One card's rendered parts. The HTML strings depend only on the data (clocks
+// are filled by the 1 Hz tick), so equal data gives equal strings.
+function cardParts(s, col) {
+  return { col: col, state: cardState(s, col), face: renderCardFace(s, col), body: renderCardBody(s, col), cid: s.conversationId || null };
+}
+function cardPartsDiffer(el, p) {
+  return el.getAttribute('data-col') !== p.col || el.getAttribute('data-state') !== p.state
+    || el._faceHtml !== p.face || el._bodyHtml !== p.body;
+}
+// Each part is replaced only when its HTML string changed, so untouched cards
+// keep their nodes, an open card keeps its state, and a running transition is
+// never cut.
+function applyCardParts(el, p) {
+  el._cid = p.cid; // bookkeeping only (timer release), not a DOM write
+  var changed = false;
+  if (el.getAttribute('data-col') !== p.col) { el.setAttribute('data-col', p.col); changed = true; }
+  if (el.getAttribute('data-state') !== p.state) { el.setAttribute('data-state', p.state); changed = true; }
+  if (el._faceHtml !== p.face) {
+    el._faceEl.innerHTML = p.face;
+    el._faceHtml = p.face;
+    updateTimersIn(el._faceEl);
+    changed = true;
+  }
+  if (el._bodyHtml !== p.body) {
+    el._bodyEl.innerHTML = p.body;
+    el._bodyHtml = p.body;
+    updateTimersIn(el._bodyEl);
+    changed = true;
+  }
+  return changed;
+}
+// Single-card path (sessionUpdated push, title patch, 지시/응답 arrival) —
+// the same compare-then-write as the reconciler.
+function patchCard(el, s, col) {
   _sessionCache[s.key] = s;
-  const aura = getAuraClass(s.lastActivity);
-  const workingCls = (col === 'working') ? ' card-working' : '';
-  const cls = 'card' + (aura ? ' ' + aura : '') + workingCls;
+  return applyCardParts(el, cardParts(s, col));
+}
+function refreshCard(key) {
+  var el = _cardEls[key];
+  var s = _sessionCache[key];
+  if (el && s) patchCard(el, s, el.getAttribute('data-col') || 'idle');
+}
 
+function cardState(s, col) {
+  if (col === 'closed') return s.terminated ? 'archived' : 'sleeping';
+  return col;
+}
+
+// Second line of the collapsed card (§3.1-3): what the session needs or is doing.
+function cardSummary(s, col, headline) {
+  var tasks = s.tasks || [];
+  var current = null;
+  var lastDone = null;
+  for (var i = 0; i < tasks.length; i++) {
+    if (!current && tasks[i].status === 'in_progress') current = tasks[i];
+    if (tasks[i].status === 'completed') lastDone = tasks[i];
+  }
+  var q = s.pendingQuestion;
+  if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
+  if (col === 'working' && current) return current.content;
+  if (s.summaryTitle && s.summaryTitle !== headline) return s.summaryTitle;
+  var lastTask = lastDone || (tasks.length ? tasks[tasks.length - 1] : null);
+  if (lastTask) return lastTask.content;
+  if (s.title && s.title !== headline) return s.title;
+  return '';
+}
+
+// Status at the foot of the card. Board shows the bare timer; List adds the
+// "Running · " / "Done in " prefix via CSS — same DOM in both views.
+function renderCardStatus(s, col) {
+  if (col === 'waiting') {
+    return '<span class="st-icon">' + WAIT_SVG + '</span><span class="st-text">Waiting for you</span>';
+  }
+  if (col === 'closed') {
+    return '<span class="st-icon"><span class="st-dot is-hollow"></span></span><span class="st-text">' + (s.terminated ? 'Archived' : 'Sleeping') + '</span>';
+  }
+  var acc = Number(s.activeAccumulatedMs) || 0;
+  var leg = col === 'working' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
+  var timer = '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '" title="Active time"></span>';
+  if (col === 'working') {
+    return '<span class="st-icon"><span class="spinner"></span></span><span class="st-text"><span class="st-prefix">Running &middot; </span>' + timer + '</span>';
+  }
+  if (!acc) return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text">Idle</span>';
+  return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text"><span class="st-prefix">Done in </span>' + timer + '</span>';
+}
+
+// Collapsed face (§2.1 reference anatomy): ✦ + headline / 2-line summary /
+// status · tasks done/total · context %.
+function renderCardFace(s, col) {
+  // Server-resolved headline (#762) — displayHeadline reflects the full
+  // priority chain (summaryTitle then issueTitle then prTitle then title then
+  // 'Untitled'). The local fallback covers the WS patch path where
+  // summaryTitleChanged / sessionUpdated may have rewritten only a subset.
+  var headline = s.displayHeadline || s.summaryTitle || s.title;
+  var titleTrunc = dhTruncate('title');
+  var titleHtml = dhShow('title')
+    ? '<span class="card-title-text">' + esc(titleTrunc ? String(headline || '').slice(0, titleTrunc) : headline) + '</span>'
+    : '';
+  var summary = cardSummary(s, col, headline);
+  var metrics = [];
+  if (dhShow('tasks') && s.tasks && s.tasks.length > 0) {
+    var doneCount = s.tasks.filter(function(t) { return t.status === 'completed'; }).length;
+    metrics.push('<span class="metric" title="Tasks done / total">' + TASKS_SVG + doneCount + '/' + s.tasks.length + '</span>');
+  }
+  var ctxPct = s.tokenUsage ? (s.tokenUsage.contextUsagePercent || 0) : 0;
+  if (dhShow('contextwindow') && ctxPct > 0) {
+    metrics.push('<span class="metric" title="Context window used">' + CTX_SVG + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '%</span>');
+  }
+  return '<div class="card-head"><span class="card-spark">' + SPARK_SVG + '</span>' + titleHtml + '</div>'
+    + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
+    + '<div class="card-foot"><span class="card-status">' + renderCardStatus(s, col) + '</span>'
+    + (metrics.length ? '<span class="card-metrics">' + metrics.join('') + '</span>' : '')
+    + '</div>';
+}
+
+// Task timeline (§3.1-4): list order, the in-progress step is the solid dot,
+// completed steps show how long they took. Over the dhMax('tasks') budget the
+// earliest completed steps fold into "+N completed" first.
+function renderTimeline(s) {
+  if (!dhShow('tasks') || !s.tasks || s.tasks.length === 0) return '';
+  var max = dhMax('tasks', 5);
+  var drop = Math.max(0, s.tasks.length - max);
+  var folded = 0;
+  var shown = [];
+  for (var i = 0; i < s.tasks.length; i++) {
+    if (drop > 0 && s.tasks[i].status === 'completed') { drop--; folded++; continue; }
+    shown.push(s.tasks[i]);
+  }
+  var tail = 0;
+  if (shown.length > max) { tail = shown.length - max; shown = shown.slice(0, max); }
+  var items = shown.map(function(t) {
+    var cls = t.status === 'in_progress' ? ' is-current' : (t.status === 'completed' ? ' is-done' : ' is-pending');
+    var time = '';
+    // Task timestamps come from model-written TodoWrite input: numbers only.
+    var started = Number(t.startedAt) || 0;
+    var completed = Number(t.completedAt) || 0;
+    if (t.status === 'completed' && started && completed) {
+      time = formatDuration(completed - started);
+    } else if (t.status === 'in_progress' && started) {
+      time = '<span class="task-elapsed" data-since="' + started + '"></span>';
+    }
+    return '<li class="tl-item' + cls + '"><span class="tl-text">' + esc(t.content) + '</span>'
+      + (time ? '<span class="tl-time">' + time + '</span>' : '') + '</li>';
+  }).join('');
+  return '<div class="tl-wrap">'
+    + (folded > 0 ? '<div class="tl-more">+' + folded + ' completed</div>' : '')
+    + '<ul class="tl">' + items + '</ul>'
+    + (tail > 0 ? '<div class="tl-more">+' + tail + ' more</div>' : '')
+    + '</div>';
+}
+
+// Latest user instruction + model response (§3.1-4), fetched lazily on
+// expand from GET /api/dashboard/session/:conversationId?limit=2 and cached
+// per conversation. Only a complete fetch for the session's current
+// lastActivity counts as fresh. A failure — or a partial result (the
+// instruction loaded, the raw response did not) — keeps what it has and is
+// retried on a backoff (1, 2, 4 … 30 s).
+// Two clocks, deliberately separate:
+//   - the retry DEADLINE and backoff STEP belong to the conversation: they keep
+//     growing through an outage no matter how often lastActivity changes;
+//   - the retry BUDGET (IO_AUTO_RETRIES automatic attempts) belongs to one
+//     lastActivity stamp: newer content earns a fresh budget, never an earlier
+//     deadline.
+// While in error, only the deadline timer (or an explicit reopen) sends a
+// request; board renders and landed turns can at most arm that timer.
+var IO_RETRY_MAX_MS = 30000;
+var IO_AUTO_RETRIES = 6;
+function ioBackoffMs(step) {
+  return Math.min(IO_RETRY_MAX_MS, 1000 * Math.pow(2, Math.max(0, step - 1)));
+}
+// Pure: may this call send a request now? fromTimer = the deadline timer fired.
+//   loading → no · ok → only for a newer stamp · error → reopen (force), or the
+//   deadline timer once the deadline passed and this stamp still has budget
+//   (a newer stamp always does).
+function ioNeedsFetch(c, stamp, force, now, fromTimer) {
+  if (!c) return true;
+  if (c.state === 'loading') return false;
+  if (c.state === 'ok') return c.stamp !== stamp;
+  if (force) return true;
+  if (!fromTimer || now < (c.retryAt || 0)) return false;
+  return ioHasBudget(c, stamp);
+}
+// Pure: an errored entry still wants an automatic retry for this stamp.
+function ioHasBudget(c, stamp) {
+  return c.stamp !== stamp || (c.fails || 0) <= IO_AUTO_RETRIES;
+}
+
+// At most one pending retry timer per conversation: cid → { handle, at }.
+// The earliest deadline wins — a pending timer is kept only if it fires at or
+// before the new deadline, otherwise it is replaced. A success, or the last
+// open card of the conversation going away, clears it.
+var _ioTimers = Object.create(null);
+function scheduleCardIoRetry(cid, at) {
+  var cur = _ioTimers[cid];
+  if (cur && cur.at <= at) return;
+  if (cur) clearTimeout(cur.handle);
+  var entry = { handle: null, at: at };
+  entry.handle = setTimeout(function() {
+    if (_ioTimers[cid] === entry) delete _ioTimers[cid];
+    retryCardIo(cid);
+  }, Math.max(0, at - Date.now()));
+  _ioTimers[cid] = entry;
+}
+function cancelCardIoRetry(cid) {
+  var cur = cid ? _ioTimers[cid] : null;
+  if (!cur) return;
+  clearTimeout(cur.handle);
+  delete _ioTimers[cid];
+}
+// The open card on the board that consumes this conversation's retry, or null.
+// A timer is armed only while one exists (retryCardIo fires into it).
+function cardIoConsumer(cid) {
+  for (var k in _cardEls) {
+    var s = _sessionCache[k];
+    if (s && s.conversationId === cid && _expanded.has(k)) return k;
+  }
+  return null;
+}
+// A card closed or left the board: drop its conversation's timer unless
+// another open card still shows that conversation.
+function releaseCardIoTimer(cid) {
+  if (!cid || cardIoConsumer(cid)) return;
+  cancelCardIoRetry(cid);
+}
+
+// force = the card was just (re)opened (explicit user action).
+// fromTimer = the conversation's retry deadline fired.
+function ensureCardIo(key, force, fromTimer) {
+  var s = _sessionCache[key];
+  if (!s || !s.conversationId || isSiblingSession(s)) return;
+  var cid = s.conversationId;
+  var stamp = String(s.lastActivity || '');
+  var c = _ioCache[cid];
+  if (!ioNeedsFetch(c, stamp, force, Date.now(), fromTimer)) {
+    // In error, a render or a landed turn only arms the deadline timer.
+    if (c && c.state === 'error' && ioHasBudget(c, stamp)) scheduleCardIoRetry(cid, c.retryAt || 0);
+    return;
+  }
+  var prev = c ? c.data : null;
+  // Budget per stamp; deadline and step per conversation (they survive stamps).
+  var fails = c && c.state === 'error' && c.stamp === stamp ? (c.fails || 0) : 0;
+  var step = c ? (c.step || 0) : 0;
+  _ioCache[cid] = { state: 'loading', stamp: stamp, data: prev, dirty: false, fails: fails, step: step, retryAt: c ? (c.retryAt || 0) : 0 };
+  function failed(data) {
+    var n = fails + 1;
+    var nextStep = step + 1;
+    var at = Date.now() + ioBackoffMs(nextStep);
+    settleCardIo(cid, { state: 'error', stamp: stamp, data: data, fails: n, step: nextStep, retryAt: at });
+    // The card may have closed or left the board while the request was in flight.
+    if (n <= IO_AUTO_RETRIES && cardIoConsumer(cid)) scheduleCardIoRetry(cid, at);
+  }
+  fetchCardIo(cid).then(function(result) {
+    if (result && result.partial) failed(result); // keep the instruction, retry the response
+    else {
+      cancelCardIoRetry(cid); // a later backoff timer must not outlive the recovery
+      settleCardIo(cid, { state: 'ok', stamp: stamp, data: result, fails: 0, step: 0, retryAt: 0 });
+    }
+  }, function() { failed(prev); });
+}
+function renderCardIo(s) {
+  if (!s.conversationId) return '';
+  var c = _ioCache[s.conversationId];
+  if (!c || !c.data) {
+    var note = c && c.state === 'error' ? '지시/응답을 불러오지 못했습니다' : '지시/응답 불러오는 중…';
+    return '<div class="card-io"><div class="io-row"><div class="io-text is-muted">' + note + '</div></div></div>';
+  }
+  var d = c.data;
+  var who = d.instruction && d.instruction.who ? '<span class="io-who">' + esc(d.instruction.who) + '</span>' : '';
+  var inHtml = d.instruction && d.instruction.text
+    ? '<div class="io-text">' + esc(d.instruction.text) + '</div>'
+    : '<div class="io-text is-muted">기록된 지시 없음</div>';
+  var outHtml;
+  if (d.response && (d.response.title || d.response.body)) {
+    outHtml = '<div class="io-text">'
+      + (d.response.title ? '<span class="io-title">' + esc(d.response.title) + '</span>' + (d.response.body ? '\\n' : '') : '')
+      + esc(d.response.body || '') + '</div>';
+  } else if (d.partial) {
+    outHtml = '<div class="io-text is-muted">응답을 불러오지 못했습니다</div>';
+  } else if (s.activityState === 'working') {
+    outHtml = '<div class="io-text is-muted">응답 작성 중…</div>';
+  } else {
+    outHtml = '<div class="io-text is-muted">응답 없음</div>';
+  }
+  return '<div class="card-io">'
+    + '<div class="io-row io-in"><div class="io-label">지시' + who + '</div>' + inHtml + '</div>'
+    + '<div class="io-row io-out"><div class="io-label">응답</div>' + outHtml + '</div>'
+    + '</div>';
+}
+
+// The latest instruction and the reply that answers it (only an assistant
+// turn AFTER the latest user turn counts). Rejects on any HTTP failure.
+function fetchCardIo(cid) {
+  return fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '?limit=2')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) {
+      var turns = (data && data.turns) || [];
+      var ui = -1;
+      for (var i = turns.length - 1; i >= 0; i--) { if (turns[i].role === 'user') { ui = i; break; } }
+      var reply = null;
+      for (var j = turns.length - 1; j > ui; j--) { if (turns[j].role === 'assistant') { reply = turns[j]; break; } }
+      var raw = ui >= 0 ? decodeSlackEntities(turns[ui].rawContent || '') : '';
+      var instruction = ui >= 0
+        ? { text: raw.slice(0, 500) + (raw.length > 500 ? '…' : ''), who: turns[ui].userName || '' }
+        : null;
+      if (reply && !reply.summaryTitle && !reply.summaryBody && reply.id) {
+        // Summary not generated yet — fall back to the head of the raw response.
+        // If that fails the result is partial: the instruction is kept, and the
+        // caller retries for the response.
+        return fetch('/api/conversations/' + encodeURIComponent(cid) + '/turns/' + encodeURIComponent(reply.id) + '/raw')
+          .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+          .then(function(rawData) {
+            var text = rawData && typeof rawData.raw === 'string' ? rawData.raw : '';
+            return { instruction: instruction, response: text ? { title: '', body: text.slice(0, 600) + (text.length > 600 ? '…' : '') } : null };
+          }, function() { return { instruction: instruction, response: null, partial: true }; });
+      }
+      return { instruction: instruction, response: reply ? { title: reply.summaryTitle || '', body: reply.summaryBody || '' } : null };
+    });
+}
+
+// Deadline timer fired: retry for the first card of that conversation still open.
+function retryCardIo(cid) {
+  var k = cardIoConsumer(cid);
+  if (k) ensureCardIo(k, false, true);
+}
+function settleCardIo(cid, entry) {
+  var wasDirty = !!(_ioCache[cid] && _ioCache[cid].dirty);
+  _ioCache[cid] = entry;
+  for (var k in _cardEls) {
+    var s = _sessionCache[k];
+    if (s && s.conversationId === cid) refreshCard(k);
+  }
+  if (wasDirty) invalidateCardIo(cid);
+}
+// A turn landed for this conversation — new content: refetch for any open card
+// (in error: a fresh budget, still paced by the conversation's deadline).
+function invalidateCardIo(cid) {
+  var c = cid && _ioCache[cid];
+  if (!c) return;
+  if (c.state === 'loading') { c.dirty = true; return; }
+  c.stamp = null;
+  for (var k in _cardEls) {
+    var s = _sessionCache[k];
+    if (s && s.conversationId === cid && _expanded.has(k)) ensureCardIo(k, false);
+  }
+}
+
+// Expanded body: model·effort → meta (env/workflow/owner/last activity) →
+// refs → task timeline → instruction/response → pending question → stats →
+// buttons. Every field the old card face showed is still gated by dhShow().
+function renderCardBody(s, col) {
   // Owner gating — server-side requireSessionOwner is the authoritative guard;
   // this is UX only. Fail closed: if ownerId is missing (legacy record) the
   // viewer is not treated as owner so the server-side reject is expected.
@@ -3828,65 +4588,76 @@ function renderCard(s, col) {
   // needs a descriptive tooltip (e.g. pending-question choices).
   const readOnlyAttrs = isOwner ? '' : ' disabled';
 
-  // Conversation link — gated by ui.dashboardheader field 'links'
-  const convLink = (dhShow('links') && s.conversationId)
-    ? ' <a class="conv-link" href="/conversations/' + esc(s.conversationId) + '" target="_blank" onclick="event.stopPropagation()" title="View conversation">&#x1F4DD;</a>'
-    : '';
+  // Model · effort — the first line of the open card (reference: "Opus 5.5").
+  const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
+  const modelParts = [];
+  if (dhShow('model') && modelShort) modelParts.push(modelShort);
+  if (s.effort) modelParts.push('<span class="meta-effort" title="Power level">' + esc(s.effort) + '</span>');
+  const modelHtml = modelParts.length ? '<div class="cb-model">' + modelParts.join(' &middot; ') + '</div>' : '';
 
-  // Slack thread link — gated by ui.dashboardheader field 'links'
-  const slackLink = (dhShow('links') && s.slackThreadUrl)
-    ? ' <a class="slack-link" href="' + esc(s.slackThreadUrl) + '" target="_blank" onclick="event.stopPropagation()" title="Open in Slack">&#x1F4AC;</a>'
-    : '';
-
-  // Merge stats — gated by ui.dashboardheader field 'mergestats'
-  const mergeHtml = (dhShow('mergestats') && s.mergeStats)
-    ? '<div class="card-merge">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</div>'
-    : '';
-
-  // Token info + context bar — 'tokens' / 'cost' / 'contextwindow' fields
-  // are gated independently (cost lives inside the tokens row, so the row
-  // is emitted when either flag is on).
-  let tokenHtml = '';
-  if (s.tokenUsage) {
-    const ctxPct = s.tokenUsage.contextUsagePercent || 0;
-    const ctxCls = ctxPct > 80 ? 'ctx-danger' : ctxPct > 60 ? 'ctx-warn' : '';
-    const tokParts = [];
-    if (dhShow('tokens')) tokParts.push(formatTokens(s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens) + ' tok');
-    if (dhShow('cost')) tokParts.push('<span class="cost">$' + s.tokenUsage.totalCostUsd.toFixed(2) + '</span>');
-    tokenHtml = (tokParts.length > 0 ? '<div class="card-tokens">' + tokParts.join(' &middot; ') + '</div>' : '')
-      + ((dhShow('contextwindow') && ctxPct > 0) ? '<div class="context-bar"><div class="context-bar-fill ' + ctxCls + '" style="width:' + Math.min(ctxPct, 100).toFixed(0) + '%"></div></div>' : '');
+  // #814 env badge — only shown when multiple distinct envs are present in
+  // the current cache. Single-env (sibling 0 + INSTANCE_NAME unset) suppresses
+  // the badge to keep the card chrome quiet for single-instance deploys.
+  var envHtml = '';
+  if (s.environment && s.environment.instanceName && _envCount() > 1) {
+    var instName = s.environment.instanceName;
+    var envColor = getEnvBadgeColor(instName);
+    var envHostPort = (s.environment.host || '') + ':' + (s.environment.port || '');
+    envHtml = '<span class="env-badge" style="background:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';
   }
+  // Meta row — every registered ui.dashboardheader field is gated via dhShow
+  // ("fields absent from config lines are hidden" contract): workflow /
+  // owner / status (= last-activity indicator, filled by the 1 Hz tick).
+  const metaWorkflowHtml = dhShow('workflow') ? '<span>' + esc(s.workflow) + '</span>' : '';
+  const metaOwnerHtml = dhShow('owner') ? '<span class="meta-owner">' + esc(s.ownerName) + '</span>' : '';
+  const metaStatusHtml = dhShow('status') ? '<span class="rel-time" data-ts="' + (new Date(s.lastActivity).getTime() || 0) + '"></span>' : '';
+  const metaInner = envHtml + metaWorkflowHtml + metaOwnerHtml + metaStatusHtml;
+  const metaHtml = metaInner ? '<div class="card-meta">' + metaInner + '</div>' : '';
 
-  // Tasks — sort in_progress → pending → completed; completed items sink below the max-item slice.
-  // Gated by ui.dashboardheader field 'tasks'; max entries from config (default 5).
-  let tasksHtml = '';
-  if (dhShow('tasks') && s.tasks && s.tasks.length > 0) {
-    function taskRank(status) {
-      if (status === 'in_progress') return 0;
-      if (status === 'completed') return 2;
-      return 1; // pending (and any unknown status)
-    }
-    const sortedTasks = s.tasks.slice().sort(function(a, b) {
-      return taskRank(a.status) - taskRank(b.status);
-    });
-    const shown = sortedTasks.slice(0, dhMax('tasks', 5));
-    const extra = sortedTasks.length - shown.length;
-    const taskItems = shown.map(function(t) {
-      let icon, cls2;
-      if (t.status === 'completed') { icon = '&#x2705;'; cls2 = 'completed'; }
-      else if (t.status === 'in_progress') { icon = '<span class="spin">&#x1F504;</span>'; cls2 = 'in_progress'; }
-      else { icon = '&#x25CB;'; cls2 = 'pending'; }
-      var durStr = '';
-      if (t.status === 'completed' && t.startedAt && t.completedAt) {
-        durStr = ' <span style="font-size:10px;color:var(--text-tertiary);margin-left:auto;flex-shrink:0">' + formatDuration(t.completedAt - t.startedAt) + '</span>';
-      } else if (t.status === 'in_progress' && t.startedAt) {
-        durStr = ' <span style="font-size:10px;color:var(--accent);margin-left:auto;flex-shrink:0">' + formatDuration(Date.now() - t.startedAt) + '...</span>';
-      }
-      return '<div class="card-task ' + cls2 + '"><span class="task-icon">' + icon + '</span><span class="task-content">' + esc(t.content.slice(0, 50)) + '</span>' + durStr + '</div>';
-    }).join('');
-    tasksHtml = '<div class="card-tasks">' + taskItems + (extra > 0 ? '<div class="tasks-more">+' + extra + ' more</div>' : '') + '</div>';
+  // Short refs (PROJ-123 · PR-123 · conversation). Gated by ui.dashboardheader 'links'.
+  const refParts = [];
+  if (dhShow('links') && s.issueShortRef && s.issueUrl) {
+    const issueTip = s.issueTitle || s.issueLabel || s.issueShortRef;
+    refParts.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener" title="' + escAttr(issueTip) + '">' + esc(s.issueShortRef) + '</a>');
   }
+  if (dhShow('links') && s.prShortRef && s.prUrl) {
+    const prTip = s.prTitle || s.prLabel || s.prShortRef;
+    refParts.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener" title="' + escAttr(prTip) + '">' + esc(s.prShortRef) + '</a>');
+  }
+  if (dhShow('links') && s.conversationId) {
+    refParts.push('<a href="/conversations/' + escAttr(s.conversationId) + '" target="_blank" rel="noopener" title="View conversation">&#x1F4DD; 대화 기록</a>');
+  }
+  const refsHtml = refParts.length
+    ? '<div class="card-refs">' + refParts.join('<span class="ref-sep">&middot;</span>') + '</div>'
+    : '';
+  const subtitlesHtml = (s.issueTitle ? '<div class="card-subtitle">' + esc(String(s.issueTitle).slice(0, 80)) + '</div>' : '')
+    + (s.prTitle ? '<div class="card-subtitle">' + esc(String(s.prTitle).slice(0, 80)) + '</div>' : '');
 
+  // Usage line — 'tokens' / 'cost' / 'mergestats' / 'contextwindow' gated
+  // independently; thread timers (Σ · compactions · sessions) always shown.
+  const statParts = [];
+  // Numbers are coerced before they reach markup (defence in depth — a
+  // non-number field must render as text, never as markup).
+  const num = toNum;
+  if (s.tokenUsage && dhShow('tokens')) statParts.push('<span class="card-tokens">' + formatTokens(num(s.tokenUsage.totalInputTokens) + num(s.tokenUsage.totalOutputTokens)) + ' tok</span>');
+  if (s.tokenUsage && dhShow('cost')) statParts.push('<span class="card-tokens"><span class="cost">$' + num(s.tokenUsage.totalCostUsd).toFixed(2) + '</span></span>');
+  if (dhShow('mergestats') && s.mergeStats) statParts.push('<span class="card-merge">+' + num(s.mergeStats.totalLinesAdded) + ' / -' + num(s.mergeStats.totalLinesDeleted) + '</span>');
+  statParts.push('<span class="card-timer-row">'
+    + '<span class="card-timer-total" title="Thread total active time">&Sigma; ' + formatNmSSs(num(s.threadTotalActiveMs)) + '</span>'
+    + '<span class="card-timer-compactions" title="Compactions">&#x1F5DC;&#xFE0F; ' + num(s.compactionCount) + '</span>'
+    + '<span class="card-timer-sessions" title="Thread session count"># ' + num(s.threadSessionCount) + '</span>'
+    + '</span>');
+  const ctxPct = s.tokenUsage ? num(s.tokenUsage.contextUsagePercent) : 0;
+  const ctxCls = ctxPct > 80 ? 'ctx-danger' : ctxPct > 60 ? 'ctx-warn' : '';
+  const ctxBar = (dhShow('contextwindow') && ctxPct > 0)
+    ? '<div class="context-bar" title="Context ' + Math.round(ctxPct) + '%"><div class="context-bar-fill ' + ctxCls + '" style="transform:scaleX(' + (Math.min(ctxPct, 100) / 100).toFixed(2) + ')"></div></div>'
+    : '';
+  const statsHtml = '<div class="card-stats">' + statParts.join('') + '</div>' + ctxBar;
+
+  const ioHtml = isSiblingSession(s) ? '' : renderCardIo(s);
+  // The collapsed face already shows the pending question as its summary; the
+  // open card then keeps only the choices, not the same sentence twice.
+  const faceSummary = cardSummary(s, col, s.displayHeadline || s.summaryTitle || s.title);
   // Pending question (choice buttons for waiting sessions)
   let questionHtml = '';
   if (s.pendingQuestion && col === 'waiting') {
@@ -3900,21 +4671,21 @@ function renderCard(s, col) {
         var recLabel = stripRecommendedMarker(recOpt.label);
         var recTitle = isOwner ? (recOpt.description || recLabel) : READ_ONLY_MSG;
         recHtml = '<div class="choice-row-recommended">'
-          + '<button class="btn-choice btn-choice-recommended"' + readOnlyAttrs + ' onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(recOpt.id) + '\\',\\'' + escJs(recLabel) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(recTitle) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
+          + '<button class="btn-choice btn-choice-recommended"' + readOnlyAttrs + choiceDataAttrs(s.key, recOpt.id, recLabel, pq.question) + ' title="' + escAttr(recTitle) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
           + '</div>'
           + (otherOpts.length > 0 ? '<hr class="choice-divider">' : '');
       }
       var otherBtns = otherOpts.map(function(c) {
         var lbl = stripRecommendedMarker(c.label);
         var btnTitle = isOwner ? (c.description || lbl) : READ_ONLY_MSG;
-        return '<button class="btn-choice"' + readOnlyAttrs + ' onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(lbl) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(btnTitle) + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
+        return '<button class="btn-choice"' + readOnlyAttrs + choiceDataAttrs(s.key, c.id, lbl, pq.question) + ' title="' + escAttr(btnTitle) + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
       }).join('');
       questionHtml = '<div class="card-question">'
-        + '<div class="card-question-text">&#x2753; ' + esc(pq.question).slice(0, 80) + '</div>'
+        + (pq.question === faceSummary ? '' : '<div class="card-question-text">&#x2753; ' + esc(String(pq.question || '').slice(0, 80)) + '</div>')
         + '<div class="card-question-choices">' + recHtml + otherBtns + '</div>'
         + '</div>';
     } else if (s.pendingQuestion.type === 'user_choices') {
-      questionHtml = renderMultiChoiceCard(s);
+      questionHtml = renderMultiChoiceCard(s, faceSummary);
     }
   }
 
@@ -3946,110 +4717,165 @@ function renderCard(s, col) {
       ? '<button class="btn-action btn-trash"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'trash\\')">Trash</button>'
       : '<button class="btn-action btn-close"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
   }
-  const actionsHtml = '<div class="card-actions">' + actionBtn + '</div>';
 
-  const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
-
-  const legStarted = s.activeLegStartedAtMs || 0;
-  const accumulated = s.activeAccumulatedMs || 0;
-  const compactions = s.compactionCount || 0;
-  const threadTotal = s.threadTotalActiveMs || 0;
-  const threadSessions = s.threadSessionCount || 0;
-
-  // data-leg-started / data-accumulated live on the .card-timer-live span itself
-  // — the 1-Hz updater at updateTimers() (see ~line 2880) reads them via
-  // querySelectorAll('.card-timer-live'). We always emit the live span, even in
-  // the zero state, so polling picks it up the instant the leg starts.
-  //
-  // The hero value is "current turn" = current leg elapsed (active accumulator
-  // plus any open-leg delta). Thread totals (Σ) live on the row below.
-  const heroTimerHtml =
-    '<div class="card-timer-hero" title="현재 턴 경과 시간 (Current turn)">'
-    + '<span class="hero-icon">&#x23F1;&#xFE0F;</span>'
-    + '<span class="card-timer-live" data-leg-started="' + legStarted + '" data-accumulated="' + accumulated + '" title="현재 턴 경과 시간 (Current turn)">' + formatNmSSs(accumulated + (legStarted ? Date.now() - legStarted : 0)) + '</span>'
-    + '</div>';
-
-  // Stats row: thread total (Σ) · compactions · session count. No live span here —
-  // the live leg moved to the hero above.
-  const timerRowHtml =
-    '<div class="card-timer-row">'
-    + '<span class="card-timer-total" title="Thread total active time">&Sigma; ' + formatNmSSs(threadTotal) + '</span>'
-    + '<span class="card-timer-compactions" title="Compactions">&#x1F5DC;&#xFE0F; ' + compactions + '</span>'
-    + '<span class="card-timer-sessions" title="Thread session count"># ' + threadSessions + '</span>'
-    + '</div>';
-
-  // Short refs (PROJ-123 · PR-123). escAttr for href/title because they're attribute values.
-  // Gated by ui.dashboardheader field 'links' like every other link rendering.
-  const refParts = [];
-  if (dhShow('links') && s.issueShortRef && s.issueUrl) {
-    const issueTip = s.issueTitle || s.issueLabel || s.issueShortRef;
-    refParts.push('<a href="' + escAttr(s.issueUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(issueTip) + '">' + esc(s.issueShortRef) + '</a>');
-  }
-  if (dhShow('links') && s.prShortRef && s.prUrl) {
-    const prTip = s.prTitle || s.prLabel || s.prShortRef;
-    refParts.push('<a href="' + escAttr(s.prUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(prTip) + '">' + esc(s.prShortRef) + '</a>');
-  }
-  const refsHtml = refParts.length
-    ? '<div class="card-refs">' + refParts.join('<span class="ref-sep">&middot;</span>') + '</div>'
+  // 작업 로그 opens the slide panel (details + message box) scrolled to the work
+  // log — for every card; without a conversation the log reads "작업 로그 없음".
+  const worklogBtn = '<button type="button" class="btn-action btn-primary" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',true)">작업 로그</button>';
+  const slackBtn = (dhShow('links') && s.slackThreadUrl)
+    ? '<a class="btn-action" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
     : '';
+  const actionsHtml = '<div class="card-actions">' + actionBtn + slackBtn + worklogBtn + '</div>';
 
-  const effortHtml = s.effort
-    ? '<span class="meta-effort" title="Power level">' + esc(s.effort) + '</span>'
-    : '';
-  // #814 env badge — only shown when multiple distinct envs are present in
-  // the current cache. Single-env (sibling 0 + INSTANCE_NAME unset) suppresses
-  // the badge to keep the card chrome quiet for single-instance deploys.
-  var envHtml = '';
-  if (s.environment && s.environment.instanceName && _envCount() > 1) {
-    var instName = s.environment.instanceName;
-    var envColor = getEnvBadgeColor(instName);
-    var envHostPort = (s.environment.host || '') + ':' + (s.environment.port || '');
-    envHtml = '<span class="env-badge" style="background:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';
-  }
-  // Meta row — every registered ui.dashboardheader field is gated via dhShow
-  // ("fields absent from config lines are hidden" contract): workflow /
-  // model / owner / status (= last-activity indicator). envHtml and
-  // effortHtml are not registry fields and always render.
-  const metaWorkflowHtml = dhShow('workflow') ? '<span>' + esc(s.workflow) + '</span>' : '';
-  const metaModelHtml = dhShow('model') ? '<span>' + modelShort + '</span>' : '';
-  const metaOwnerHtml = dhShow('owner') ? '<span class="meta-owner">' + esc(s.ownerName) + '</span>' : '';
-  const metaStatusHtml = dhShow('status') ? '<span>' + timeAgo(s.lastActivity) + '</span>' : '';
-  const metaInner = envHtml + metaWorkflowHtml + metaModelHtml + effortHtml + metaOwnerHtml + metaStatusHtml;
-  const metaHtml = metaInner ? '<div class="card-meta">' + metaInner + '</div>' : '';
-
-  // Server-resolved headline (#762) — displayHeadline reflects the full
-  // priority chain (summaryTitle then issueTitle then prTitle then title then
-  // 'Untitled'). The local fallback covers the WS patch path where
-  // summaryTitleChanged / sessionUpdated may have rewritten only a subset.
-  const displayHeadline = s.displayHeadline || s.summaryTitle || s.title;
-
-  // Title row — 'title' text and 'links' icons are gated independently; the
-  // row is dropped entirely only when nothing in it survives the config.
-  const titleTrunc = dhTruncate('title');
-  const titleTextHtml = dhShow('title')
-    ? '<span class="card-title-text">' + esc(titleTrunc ? String(displayHeadline || '').slice(0, titleTrunc) : displayHeadline) + '</span>'
-    : '';
-  const titleRowHtml = (titleTextHtml || slackLink || convLink)
-    ? '<div class="card-title">' + titleTextHtml + slackLink + convLink + '</div>'
-    : '';
-
-  // Card order: hero → stats → title → refs → meta → issue/pr subtitles → tokens → merge → question → tasks → actions.
-  // linksHtml removed (2026-04 #708): refs + issue/pr subtitles already surface
-  // the same hrefs; the iconized line was redundant and bloated the card.
-  return '<div class="' + cls + '" draggable="true" data-session-key="' + escJs(s.key) + '" data-source-col="' + col + '" onclick="openPanel(\\'' + escJs(s.key) + '\\')">'
-    + heroTimerHtml
-    + timerRowHtml
-    + titleRowHtml
-    + refsHtml
+  return '<div class="card-body">'
+    + modelHtml
     + metaHtml
-    + (s.issueTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:3px">' + esc(s.issueTitle).slice(0, 60) + '</div>' : '')
-    + (s.prTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:2px">' + esc(s.prTitle).slice(0, 60) + '</div>' : '')
-    + tokenHtml
-    + mergeHtml
+    + refsHtml
+    + subtitlesHtml
+    + renderTimeline(s)
+    + ioHtml
     + questionHtml
-    + tasksHtml
+    + statsHtml
     + actionsHtml
     + '</div>';
+}
+
+// Card click = expand / collapse in place (§3.1-4). Keyboard toggles skip the
+// transition (§4-9). Cards below ride the animated grid row, so they slide
+// with the expansion instead of needing a separate FLIP pass.
+function toggleCard(key, instant) {
+  var el = _cardEls[key];
+  if (!el) return;
+  var open = !_expanded.has(key);
+  if (open) _expanded.add(key);
+  else _expanded.delete(key);
+  if (!open) releaseCardIoTimer(el._cid);
+  if (instant) el.classList.add('no-motion');
+  applyExpanded(el, open);
+  if (instant) {
+    void el.offsetHeight;
+    el.classList.remove('no-motion');
+  }
+  if (open) ensureCardIo(key, true);
+}
+
+// Board ↔ List (§3.1-2, §4-4): CSS re-lays out the very same nodes and each
+// card / column header FLIPs from its old slot (translate only). The choice is
+// remembered only when the user makes it; keyboard activation does not animate.
+function setBoardView(view, ev) {
+  if (view !== 'board' && view !== 'list') return;
+  if (ev) {
+    try { localStorage.setItem('soma-board-view', view); } catch (_e) {}
+  }
+  var segs = document.querySelectorAll('.seg-btn');
+  for (var i = 0; i < segs.length; i++) {
+    var pressed = segs[i].getAttribute('data-view') === view ? 'true' : 'false';
+    if (segs[i].getAttribute('aria-pressed') !== pressed) segs[i].setAttribute('aria-pressed', pressed);
+  }
+  var kb = document.getElementById('kanban');
+  if (kb.getAttribute('data-view') === view) return;
+  var movers = (ev && ev.detail > 0 && canAnimate()) ? collectViewMovers() : null;
+  var before = movers ? movers.map(function(m) { return m.getBoundingClientRect(); }) : null;
+  kb.setAttribute('data-view', view);
+  if (!movers) return;
+  if (reduceMotion()) {
+    kb.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
+    return;
+  }
+  for (var j = 0; j < movers.length; j++) {
+    var el = movers[j];
+    if (el._flip) { el._flip.cancel(); el._flip = null; }
+    var b = el.getBoundingClientRect();
+    var dx = before[j].left - b.left;
+    var dy = before[j].top - b.top;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+    playFlip(el, dx, dy, false);
+  }
+}
+function collectViewMovers() {
+  var out = [];
+  var heads = document.querySelectorAll('#kanban .kanban-col-header');
+  for (var i = 0; i < heads.length; i++) out.push(heads[i]);
+  for (var k in _cardEls) out.push(_cardEls[k]);
+  return out;
+}
+
+function renderOlderToggle(olderCount) {
+  var foot = document.getElementById('foot-done');
+  if (!foot) return;
+  var html = olderCount > 0
+    ? '<button type="button" class="show-older-btn" onclick="toggleOlderClosed()">'
+      + (showOlderClosed ? '&#x25B2; Hide older (' : '&#x25BC; Show older (') + olderCount + ')</button>'
+    : '';
+  if ((foot._html || '') === html) return;
+  foot._html = html;
+  foot.innerHTML = html;
+}
+
+function toggleOlderClosed() {
+  showOlderClosed = !showOlderClosed;
+  loadSessions();
+}
+
+// Deep link (§3.1-8): /dashboard/<ownerId>?session=<sessionKey> opens that card
+// and the panel at its work log once the board has data. Slack links carry the
+// registry key WITHOUT the #814 instance prefix ("work:C123:1700000000.000100"),
+// while board cards are keyed "<instanceName>::work:C123:…" (composeSessionKey).
+// Until a card matches (board still loading, sibling instance), retry on each
+// board render for ~10 s, then give up silently.
+var DEEP_LINK_WINDOW_MS = 10000;
+var _deepLinkSession = (function() {
+  try { return new URLSearchParams(location.search).get('session'); } catch (_e) { return null; }
+})();
+var _deepLinkDeadline = Date.now() + DEEP_LINK_WINDOW_MS;
+// Pure: which board key does a ?session= value point at? Exact key first, then
+// this instance's prefixed key, then the one card whose key ends in "::<ref>".
+// Ambiguous suffix matches (same thread on two siblings) resolve to nothing.
+function resolveDeepLinkKey(ref, keys, selfInstance) {
+  if (!ref) return null;
+  if (keys.indexOf(ref) >= 0) return ref;
+  if (selfInstance && keys.indexOf(selfInstance + '::' + ref) >= 0) return selfInstance + '::' + ref;
+  var suffix = '::' + ref;
+  var hits = keys.filter(function(k) { return k.length > suffix.length && k.slice(-suffix.length) === suffix; });
+  return hits.length === 1 ? hits[0] : null;
+}
+function openDeepLinkedSession() {
+  if (!_deepLinkSession) return;
+  // The window bounds the whole attempt: a card that first shows up on a
+  // later poll (30 s) must not pop the panel open long after page load.
+  if (Date.now() > _deepLinkDeadline) { _deepLinkSession = null; return; }
+  var key = resolveDeepLinkKey(_deepLinkSession, Object.keys(_sessionCache), SELF_INSTANCE_NAME);
+  if (!key) return;
+  if (!_cardEls[key]) {
+    // Closed more than 7 days ago — reveal the older group and retry on that render.
+    if (!showOlderClosed) {
+      showOlderClosed = true;
+      loadSessions();
+    } else {
+      _deepLinkSession = null;
+    }
+    return;
+  }
+  _deepLinkSession = null;
+  if (!_expanded.has(key)) toggleCard(key, true);
+  _cardEls[key].scrollIntoView({ block: 'center' });
+  openPanel(key, true);
+}
+
+// The poll returns this instance's board merged with sibling instances' (#814);
+// a WS session_update carries only this instance's. Keep the last polled board
+// so a push re-attaches the sibling cards instead of animating them out.
+var _lastPolledBoard = null;
+function mergeSiblingCards(board) {
+  if (!_lastPolledBoard) return board;
+  var out = {};
+  ['working', 'waiting', 'idle', 'closed'].forEach(function(col) {
+    var mine = board[col] || [];
+    var have = new Set(mine.map(function(s) { return s.key; }));
+    var sibs = (_lastPolledBoard[col] || []).filter(function(s) { return isSiblingSession(s) && !have.has(s.key); });
+    // Same shape as the server merge: this instance's cards, then siblings'.
+    out[col] = mine.concat(sibs);
+  });
+  return out;
 }
 
 async function loadSessions() {
@@ -4057,6 +4883,7 @@ async function loadSessions() {
     const url = '/api/dashboard/sessions' + (currentUserId ? '?userId=' + currentUserId : '');
     const res = await fetch(url);
     const data = await res.json();
+    _lastPolledBoard = data.board;
     renderBoard(data.board);
   } catch (e) { console.error('Failed to load sessions', e); }
 }
@@ -4143,9 +4970,11 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
 }
 
 // ── Multi-choice form state ──
-var _mcState = {};
+var _mcState = Object.create(null);
 
-function renderMultiChoiceCard(s) {
+// faceSummary: the collapsed card's summary line — when it already reads the
+// form's title, the open card does not repeat it.
+function renderMultiChoiceCard(s, faceSummary) {
   var q = s.pendingQuestion;
   if (!q || !q.questions) {
     console.warn('renderMultiChoiceCard: missing questions data for session', s.key);
@@ -4159,7 +4988,7 @@ function renderMultiChoiceCard(s) {
   }
   var progressText = answered + '/' + total + ' \\uC644\\uB8CC';
   return '<div class="card-question">'
-    + '<div class="card-question-text">\\uD83D\\uDCCB ' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>'
+    + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">\\uD83D\\uDCCB ' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
     + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
     + '<div style="margin-top:6px"><button class="btn-choice" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
     + '</div>';
@@ -4270,7 +5099,7 @@ function renderMultiChoicePanel(s) {
         var chLbl = stripRecommendedMarker(ch.label);
         var desc = ch.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(ch.description) + '</span>' : '';
         var isRecBtn = mcRecId && ch.id === mcRecId;
-        html += '<button class="btn-choice' + (isRecBtn ? ' btn-choice-recommended' : '') + '" onclick="event.stopPropagation();selectMc(\\'' + escJs(key) + '\\',' + qi + ',\\'' + escJs(ch.id) + '\\',\\'' + escJs(chLbl) + '\\')">'
+        html += '<button class="btn-choice' + (isRecBtn ? ' btn-choice-recommended' : '') + '"' + choiceDataAttrs(key, ch.id, chLbl, '') + ' data-mc-index="' + qi + '">'
           + esc(ch.id) + '. ' + esc(chLbl) + desc + '</button>';
       }
       html += '</div>';
@@ -4580,6 +5409,9 @@ function connectWs() {
     statusEl.style.background = 'rgba(62,207,142,0.2)';
     statusEl.style.borderColor = 'var(--green)';
     statusEl.style.color = 'var(--green)';
+    // Reconnect: recover the work-log entries broadcast while we were offline
+    // (from the HTTP cursor; afterSeq=0 when the log was still empty).
+    if (panelOpen && _wl) recoverWorkLog();
   };
   ws.onclose = function() {
     statusEl.textContent = 'Reconnecting...';
@@ -4601,7 +5433,7 @@ function connectWs() {
           msg.board.idle = (msg.board.idle || []).filter(function(s) { return s.ownerId === currentUserId; });
           msg.board.closed = (msg.board.closed || []).filter(function(s) { return s.ownerId === currentUserId; });
         }
-        renderBoard(msg.board);
+        renderBoard(mergeSiblingCards(msg.board));
         // Refresh panel question if panel is open (session may have transitioned)
         if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
           var panelS = _sessionCache[panelSessionKey];
@@ -4622,6 +5454,8 @@ function connectWs() {
           renderPanelTasks(msg.tasks);
         }
       } else if (msg.type === 'conversation_update') {
+        // A turn landed — an open card's 지시/응답 pair may be stale now.
+        invalidateCardIo(msg.conversationId);
         // If panel is open for this conversation, append or update the turn
         if (panelOpen && panelConvId === msg.conversationId && msg.turn) {
           // Dedupe: skip user turns that match our optimistic send (content + within 10s)
@@ -4657,35 +5491,34 @@ function connectWs() {
           if (msg.displayHeadline) cached.displayHeadline = msg.displayHeadline;
         }
         var headline = msg.displayHeadline || msg.summaryTitle;
-        var cardTitleEls = document.querySelectorAll('[data-session-key="' + CSS.escape(msg.sessionKey) + '"] .card-title-text');
-        for (var i = 0; i < cardTitleEls.length; i++) {
-          cardTitleEls[i].textContent = headline;
-        }
+        // Re-render through the card patch path so the summary line (which
+        // avoids repeating the headline) stays consistent with the title.
+        refreshCard(msg.sessionKey);
         if (panelOpen && panelSessionKey === msg.sessionKey) {
           var pt = document.getElementById('panel-title');
           if (pt) pt.textContent = headline;
         }
       } else if (msg.type === 'sessionUpdated' && msg.session && msg.session.key) {
         // #762 — single-session card refresh from broadcastSingleSessionUpdate.
-        // Replace just this card's outerHTML so the link-derived title flow
-        // (which fires before the next full board push) lands immediately.
-        // Preserves the column the card already lives in by reading the
-        // existing element's data-source-col attribute.
+        // Patch just this card through the same keyed path as the board
+        // reconciler so the link-derived title flow (which fires before the
+        // next full board push) lands immediately without rebuilding the node
+        // (an open card stays open). The column comes from the card's data-col.
         var updatedKey = msg.session.key;
         _sessionCache[updatedKey] = msg.session;
-        var existingCard = document.querySelector('[data-session-key="' + CSS.escape(updatedKey) + '"]');
+        var existingCard = _cardEls[updatedKey];
         if (existingCard) {
-          var col = existingCard.getAttribute('data-source-col') || 'idle';
-          var newHtml = renderCard(msg.session, col);
-          var wrapper = document.createElement('div');
-          wrapper.innerHTML = newHtml;
-          var newCard = wrapper.firstElementChild;
-          if (newCard) existingCard.replaceWith(newCard);
+          patchCard(existingCard, msg.session, existingCard.getAttribute('data-col') || 'idle');
         }
         if (panelOpen && panelSessionKey === updatedKey) {
           var pt2 = document.getElementById('panel-title');
           if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || 'Untitled';
         }
+      } else if (msg.type === 'work_log' && msg.entry) {
+        // .prd/10 §3.3 — live work-log entry. Append when its conversation is
+        // open in the panel (seq-deduped against the initial fetch).
+        if (panelOpen) pushLiveWorkLog(msg.conversationId, msg.entry);
+        if (msg.entry.kind === 'instruction' || msg.entry.kind === 'final') invalidateCardIo(msg.conversationId);
       }
     } catch (e) { /* ignore */ }
   };
@@ -4698,19 +5531,19 @@ function updateTokenStats() {
   // Fallback bucket ('') is used for cards whose environment is missing
   // (legacy WS payloads, tests). When all cards share one env we suppress
   // the tooltip entirely — see _envCount() check below.
-  var byEnv = {};
+  var byEnv = Object.create(null);
   let totalTokens = 0, totalCost = 0;
   for (const key in _sessionCache) {
     const s = _sessionCache[key];
     if (currentUserId && s.ownerId !== currentUserId) continue;
     if (!s.tokenUsage) continue;
-    var t = s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens;
+    var t = toNum(s.tokenUsage.totalInputTokens) + toNum(s.tokenUsage.totalOutputTokens);
     totalTokens += t;
-    totalCost += s.tokenUsage.totalCostUsd;
+    totalCost += toNum(s.tokenUsage.totalCostUsd);
     var envName = (s.environment && s.environment.instanceName) || '';
     if (!byEnv[envName]) byEnv[envName] = { tokens: 0, cost: 0 };
     byEnv[envName].tokens += t;
-    byEnv[envName].cost += s.tokenUsage.totalCostUsd;
+    byEnv[envName].cost += toNum(s.tokenUsage.totalCostUsd);
   }
   document.getElementById('stat-tokens').textContent = formatTokens(totalTokens);
   document.getElementById('stat-cost').textContent = '$' + totalCost.toFixed(2);
@@ -4751,10 +5584,329 @@ function updateTokenStats() {
   }
 }
 
+// ── Panel work log (.prd/10 §3.1-7, §3.3) ──
+// GET /api/dashboard/session/:conversationId/worklog → { entries, hasMore }:
+// without afterSeq the LATEST page, with afterSeq=N (integer ≥ 0) the FIRST
+// page after N — so afterSeq=0 is the oldest page and the initial load must
+// omit it. Live entries arrive as WS { type: 'work_log', conversationId,
+// entry } once the line is on disk. 403 = not the session owner (no retry),
+// 404 = no log for this conversation.
+// Entries merge by seq identity into one seq-ordered list, so a live entry that
+// lands before the HTTP page never hides the older batch.
+// Seqs only increase, but they are NOT contiguous: the store reserves them in
+// blocks, so after a crash the next seq can jump (57 → 1001) and that hole is
+// permanent. The cursor is therefore server-confirmed, not "no holes": every
+// entry that exists up to the cursor is held. A page requested after seq c
+// returns every existing entry > c (first page), so it confirms up to its last
+// seq — and, when hasMore is false, up to every seq we held when the request
+// went out (a live entry is on disk before it is broadcast). Live entries that
+// directly follow the cursor advance it too. A live entry beyond cursor + 1 is
+// a gap → backfill from the cursor; once the backfill is done the gap is closed
+// even if nothing came back (the hole is permanent). A reconnect pages forward
+// the same way (afterSeq=0 when the log was empty) while hasMore === true.
+var WL_BACKFILL_MAX_PAGES = 20;
+var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
+var WL_EMPTY_MSG = '작업 로그 없음';
+var WL_FORBIDDEN_MSG = '작업 로그는 세션 소유자만 볼 수 있어요';
+var _wl = null;  // work-log state of the conversation open in the panel
+var _panelFocusWorkLog = false;
+
+// ── Pure core (no DOM): state, merge, paging ──
+function wlNewState(convId) {
+  return {
+    convId: convId, entries: [], seen: new Set(), cursor: 0, maxSeq: 0,
+    loaded: false, latestOk: false, denied: false, closed: false,
+    latest: null, recovering: null, againReconnect: false, againGap: false, painted: false,
+  };
+}
+// afterSeq: null/undefined = latest window (no parameter); otherwise always a
+// non-negative integer — the API answers 400 to anything else.
+function wlUrl(convId, afterSeq) {
+  var base = '/api/dashboard/session/' + encodeURIComponent(convId) + '/worklog';
+  if (afterSeq === null || afterSeq === undefined) return base;
+  var n = Math.max(0, Math.floor(Number(afterSeq) || 0));
+  return base + '?afterSeq=' + n;
+}
+function wlValidSeq(seq) {
+  return typeof seq === 'number' && Number.isSafeInteger(seq) && seq > 0;
+}
+// Adds entries not seen before (by seq) and keeps state.entries sorted by seq.
+// Returns the added entries in ascending seq order, each with its index in the
+// merged list — inserting them in that order at that index reproduces the list.
+function wlMerge(state, entries) {
+  var fresh = [];
+  var list = entries || [];
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (!e || !wlValidSeq(e.seq) || state.seen.has(e.seq)) continue;
+    state.seen.add(e.seq);
+    if (e.seq > state.maxSeq) state.maxSeq = e.seq;
+    fresh.push(e);
+  }
+  if (!fresh.length) return [];
+  fresh.sort(function(a, b) { return a.seq - b.seq; });
+  var old = state.entries;
+  var merged = [];
+  var added = [];
+  var oi = 0;
+  var fi = 0;
+  while (oi < old.length || fi < fresh.length) {
+    if (fi >= fresh.length || (oi < old.length && old[oi].seq < fresh[fi].seq)) {
+      merged.push(old[oi++]);
+    } else {
+      added.push({ entry: fresh[fi], index: merged.length });
+      merged.push(fresh[fi++]);
+    }
+  }
+  state.entries = merged;
+  return added;
+}
+function wlPageMaxSeq(entries) {
+  var top = 0;
+  var list = entries || [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && wlValidSeq(list[i].seq) && list[i].seq > top) top = list[i].seq;
+  }
+  return top;
+}
+// Advance the cursor over every directly-following seq we hold.
+function wlAdvance(state) {
+  while (state.seen.has(state.cursor + 1)) state.cursor++;
+}
+// The server answered: every entry that exists up to seq upTo is now held.
+function wlConfirm(state, upTo) {
+  if (upTo > state.cursor) state.cursor = upTo;
+  wlAdvance(state);
+}
+// 403 from any path (first load, latest retry, backfill page): stop for good
+// and tell the UI once through state.onDenied (set by the DOM side).
+function wlDeny(state) {
+  if (state.denied) return;
+  state.denied = true;
+  if (state.onDenied && !state.closed) state.onDenied(state);
+}
+// A held entry beyond the contiguous cursor means something in between is missing.
+function wlHasGap(state) {
+  return state.loaded && !state.denied && !state.closed && state.maxSeq > state.cursor;
+}
+function wlStatusOf(err) {
+  var status = err && err.status;
+  if (status === 403) return 'denied';
+  if (status === 404) return 'missing';
+  return 'error';
+}
+// Initial load: the latest page (no afterSeq). Resolves 'ok' | 'denied' |
+// 'missing' | 'error' | 'closed'. Early live entries beyond the page are a gap.
+function wlLoadLatest(state, fetchJson, onAdded) {
+  // The latest window holds the newest entries at request time — including
+  // any live entry we already held — so it confirms up to both.
+  var sentMax = state.maxSeq;
+  state.latest = fetchJson(wlUrl(state.convId, null)).then(function(data) {
+    if (state.closed) return 'closed';
+    var page = (data && data.entries) || [];
+    var added = wlMerge(state, page);
+    state.loaded = true;
+    state.latestOk = true;
+    wlConfirm(state, Math.max(wlPageMaxSeq(page), sentMax));
+    if (added.length) onAdded(state, added);
+    if (wlHasGap(state)) wlRecover(state, fetchJson, onAdded, 'gap');
+    return 'ok';
+  }, function(err) {
+    if (state.closed) return 'closed';
+    state.loaded = true;
+    var status = wlStatusOf(err);
+    if (status === 'denied') wlDeny(state);
+    return status;
+  });
+  return state.latest;
+}
+// A live entry: merge it; one that skips past the cursor triggers a backfill.
+function wlOnLive(state, entry, fetchJson, onAdded) {
+  if (state.closed || state.denied) return [];
+  var added = wlMerge(state, [entry]);
+  if (!added.length) return added;
+  if (state.loaded) wlAdvance(state);
+  onAdded(state, added);
+  if (wlHasGap(state)) wlRecover(state, fetchJson, onAdded, 'gap');
+  return added;
+}
+// Recovery (reconnect or gap): after the initial load settles, page forward
+// from the contiguous cursor while hasMore === true. Stops on a page that does
+// not advance the cursor, after WL_BACKFILL_MAX_PAGES pages, on 403, or when
+// the panel moved on. If the latest page itself never loaded, retry that instead.
+// reason: 'reconnect' (default — the socket was down, anything may be missing)
+// or 'gap' (a live entry skipped seqs). While a run is in flight, requests are
+// coalesced: a reconnect always re-runs afterwards; a gap re-runs only if the
+// in-flight run's confirmation did not already cover it.
+function wlRecover(state, fetchJson, onAdded, reason) {
+  if (state.closed || state.denied) return Promise.resolve(null);
+  if (state.recovering) {
+    if (reason === 'gap') state.againGap = true;
+    else state.againReconnect = true;
+    return state.recovering;
+  }
+  var pages = 0;
+  function step() {
+    if (state.closed || state.denied) return null;
+    if (state.loaded && !state.latestOk) return wlLoadLatest(state, fetchJson, onAdded);
+    var from = state.cursor;
+    var sentMax = state.maxSeq; // every seq we hold now is on disk now
+    pages++;
+    return fetchJson(wlUrl(state.convId, from)).then(function(data) {
+      if (state.closed) return null;
+      var page = (data && data.entries) || [];
+      var added = wlMerge(state, page);
+      var more = !!(data && data.hasMore === true);
+      // A full page confirms only up to its last seq; the last page confirms up
+      // to everything that existed when it was requested — so a permanent hole
+      // closes here instead of re-triggering a backfill on every live entry.
+      wlConfirm(state, more ? wlPageMaxSeq(page) : Math.max(wlPageMaxSeq(page), sentMax));
+      if (added.length) onAdded(state, added);
+      if (more && state.cursor > from && pages < WL_BACKFILL_MAX_PAGES) return step();
+      return null;
+    }, function(err) {
+      if (wlStatusOf(err) === 'denied') wlDeny(state);
+      return null;
+    });
+  }
+  var run = (state.latest || Promise.resolve()).then(step).then(null, function() { return null; }).then(function() {
+    state.recovering = null;
+    var reconnect = state.againReconnect;
+    var gap = state.againGap && wlHasGap(state);
+    state.againReconnect = false;
+    state.againGap = false;
+    if (state.closed) return null;
+    if (reconnect) return wlRecover(state, fetchJson, onAdded);
+    if (gap) return wlRecover(state, fetchJson, onAdded, 'gap');
+    return null;
+  });
+  state.recovering = run;
+  return run;
+}
+
+// ── DOM side ──
+function wlFetchJson(url) {
+  return fetch(url).then(function(r) {
+    if (!r.ok) {
+      var err = new Error('HTTP ' + r.status);
+      err.status = r.status;
+      throw err;
+    }
+    return r.json();
+  });
+}
+
+// visible: the panel is open (a session without a conversation still shows
+// the section, reading "작업 로그 없음").
+function resetWorkLog(convId, visible) {
+  if (_wl) _wl.closed = true; // late responses for the previous conversation are dropped
+  _wl = convId ? wlNewState(convId) : null;
+  if (_wl) _wl.onDenied = showWorkLogDenied;
+  var section = document.getElementById('panel-worklog');
+  var list = document.getElementById('worklog-list');
+  setTextIfChanged(document.getElementById('worklog-count'), '');
+  if (section) section.style.display = visible ? '' : 'none';
+  if (list) list.innerHTML = !visible ? '' : '<div class="wl-empty">' + (convId ? '불러오는 중…' : WL_EMPTY_MSG) + '</div>';
+}
+
+function loadWorkLog() {
+  var st = _wl;
+  if (!st) return;
+  wlLoadLatest(st, wlFetchJson, paintWorkLog).then(function(result) {
+    if (st.closed) return;
+    // 'denied' was already shown by showWorkLogDenied (state.onDenied).
+    if (result !== 'denied' && !st.entries.length) showWorkLogEmpty(WL_EMPTY_MSG);
+    if (_panelFocusWorkLog) scrollPanelToWorkLog();
+  });
+}
+function recoverWorkLog() {
+  if (_wl) wlRecover(_wl, wlFetchJson, paintWorkLog);
+}
+function pushLiveWorkLog(convId, entry) {
+  if (!_wl || _wl.convId !== convId) return;
+  wlOnLive(_wl, entry, wlFetchJson, paintWorkLog);
+}
+
+// Insert the merged entries at their seq position (the list mirrors state.entries).
+function paintWorkLog(state, added) {
+  if (state !== _wl || !added.length) return;
+  var list = document.getElementById('worklog-list');
+  if (!list) return;
+  var atBottom = list.scrollHeight - list.scrollTop <= list.clientHeight + 40;
+  var placeholder = list.querySelector('.wl-empty');
+  if (placeholder) placeholder.remove();
+  var tmp = document.createElement('div');
+  for (var i = 0; i < added.length; i++) {
+    tmp.innerHTML = renderWorkLogEntry(added[i].entry);
+    var node = tmp.firstElementChild;
+    if (node) list.insertBefore(node, list.children[added[i].index] || null);
+  }
+  setTextIfChanged(document.getElementById('worklog-count'), String(state.entries.length));
+  if (!state.painted || atBottom) list.scrollTop = list.scrollHeight;
+  state.painted = true;
+}
+
+// Owner-only log (403 on any path) — only for the conversation still open.
+function showWorkLogDenied(state) {
+  if (state !== _wl || state.closed) return;
+  // Live entries painted before the 403 go too: the log is owner-only.
+  state.entries = [];
+  var list = document.getElementById('worklog-list');
+  setTextIfChanged(document.getElementById('worklog-count'), '');
+  if (list) list.innerHTML = '<div class="wl-empty">' + esc(WL_FORBIDDEN_MSG) + '</div>';
+}
+function showWorkLogEmpty(message) {
+  var list = document.getElementById('worklog-list');
+  if (list && !list.querySelector('.wl-entry')) list.innerHTML = '<div class="wl-empty">' + esc(message || WL_EMPTY_MSG) + '</div>';
+}
+
+function renderWorkLogEntry(e) {
+  var kind = Object.prototype.hasOwnProperty.call(WL_LABELS, e.kind) ? e.kind : 'narration';
+  var time = typeof e.ts === 'number' && isFinite(e.ts)
+    ? new Date(e.ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    : '';
+  var timeHtml = time ? '<span class="wl-time">' + time + '</span>' : '';
+  var seqAttr = ' data-seq="' + (Number(e.seq) || 0) + '"';
+  var text = String(e.text || '');
+  if (kind === 'tool' || kind === 'tool_result') {
+    var fail = kind === 'tool_result' && e.ok === false;
+    var mark = kind === 'tool' ? '&#x25B8;' : (fail ? '&#x2717;' : '&#x2713;');
+    return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + '"' + seqAttr + '>'
+      + '<span class="wl-mark">' + mark + '</span>'
+      + (e.tool ? '<span class="wl-tool-name">' + esc(e.tool) + '</span>' : '')
+      + '<span class="wl-text" title="' + escAttr(text) + '">' + esc(text) + '</span>'
+      + timeHtml + '</div>';
+  }
+  if (kind === 'instruction') text = decodeSlackEntities(text);
+  var label = WL_LABELS[kind];
+  if (!label) {
+    // Narration: the text with its time on the right of the same line.
+    return '<div class="wl-entry wl-' + kind + ' wl-line"' + seqAttr + '><div class="wl-text">' + esc(text) + '</div>' + timeHtml + '</div>';
+  }
+  return '<div class="wl-entry wl-' + kind + '"' + seqAttr + '>'
+    + '<div class="wl-head"><span class="wl-label">' + label + '</span>' + timeHtml + '</div>'
+    + '<div class="wl-text">' + esc(text) + '</div>'
+    + '</div>';
+}
+
+// Bring the work-log section to the top of the panel's scroll area and show
+// its newest entries.
+function scrollPanelToWorkLog() {
+  var scrollEl = document.getElementById('panel-scroll');
+  var section = document.getElementById('panel-worklog');
+  var list = document.getElementById('worklog-list');
+  if (!scrollEl || !section || section.style.display === 'none') return;
+  var top = scrollEl.scrollTop + section.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
+  scrollEl.scrollTo({ top: top, behavior: 'instant' });
+  if (list) list.scrollTop = list.scrollHeight;
+}
+
 // ── Slide Panel ──
-function openPanel(sessionKey) {
+// focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link.
+function openPanel(sessionKey, focusWorkLog) {
   const s = _sessionCache[sessionKey];
   if (!s) return;
+  _panelFocusWorkLog = !!focusWorkLog;
 
   // Unconditional UI reset on card switch — an in-flight send from a previous
   // card must never leak "Sending..." / disabled state into this card. The
@@ -4766,13 +5918,17 @@ function openPanel(sessionKey) {
     if (cmdBtnEl) { cmdBtnEl.disabled = false; cmdBtnEl.textContent = 'Send'; }
   })();
 
-  // Reset pagination state before loading this session's turns.
+  // Reset pagination state before loading this session's turns. A new panel
+  // generation makes every request of the previous one stale — including a
+  // close + reopen of the same session, which session-key equality misses.
+  _panelGen++;
   _panelTurnsHasMore = false;
   _panelTurnsLoading = false;
   _panelTurnsOldestId = null;
 
   panelSessionKey = sessionKey;
   panelConvId = s.conversationId || null;
+  resetWorkLog(panelConvId, true);
 
   // #762 — single source of truth for headline. displayHeadline carries the
   // server-resolved priority chain; older WS messages without it still get a
@@ -4798,9 +5954,9 @@ function openPanel(sessionKey) {
   // Links
   const linksEl = document.getElementById('panel-links');
   const linkHtml = [];
-  if (s.issueUrl) linkHtml.push('<a href="' + esc(s.issueUrl) + '" target="_blank">&#x1F4CB; ' + esc(s.issueLabel || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(s.issueTitle).slice(0, 50) : '') + '</a>');
-  if (s.prUrl) linkHtml.push('<a href="' + esc(s.prUrl) + '" target="_blank">&#x1F500; ' + esc(s.prLabel || 'PR') + (s.prTitle ? ' &mdash; ' + esc(s.prTitle).slice(0, 50) : '') + '</a>');
-  if (s.slackThreadUrl) linkHtml.push('<a href="' + esc(s.slackThreadUrl) + '" target="_blank">&#x1F4AC; Slack Thread</a>');
+  if (s.issueUrl) linkHtml.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener">&#x1F4CB; ' + esc(s.issueLabel || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(String(s.issueTitle).slice(0, 50)) : '') + '</a>');
+  if (s.prUrl) linkHtml.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener">&#x1F500; ' + esc(s.prLabel || 'PR') + (s.prTitle ? ' &mdash; ' + esc(String(s.prTitle).slice(0, 50)) : '') + '</a>');
+  if (s.slackThreadUrl) linkHtml.push('<a href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">&#x1F4AC; Slack Thread</a>');
   if (s.conversationId) linkHtml.push('<a href="/conversations/' + esc(s.conversationId) + '" target="_blank">&#x1F4DD; Full Conversation</a>');
   linksEl.innerHTML = linkHtml.join('') || '<span style="font-size:0.78em;color:var(--text-secondary)">No links</span>';
 
@@ -4810,11 +5966,11 @@ function openPanel(sessionKey) {
     let tokHtml = [
       '<span class="token-badge"><span class="tok-label">Input:</span> <span class="tok-value">' + formatTokens(s.tokenUsage.totalInputTokens) + '</span></span>',
       '<span class="token-badge"><span class="tok-label">Output:</span> <span class="tok-value">' + formatTokens(s.tokenUsage.totalOutputTokens) + '</span></span>',
-      '<span class="token-badge"><span class="tok-label">Cost:</span> <span class="tok-cost">$' + s.tokenUsage.totalCostUsd.toFixed(3) + '</span></span>',
-      '<span class="token-badge"><span class="tok-label">Context:</span> <span class="tok-value">' + s.tokenUsage.contextUsagePercent.toFixed(1) + '%</span></span>',
+      '<span class="token-badge"><span class="tok-label">Cost:</span> <span class="tok-cost">$' + toNum(s.tokenUsage.totalCostUsd).toFixed(3) + '</span></span>',
+      '<span class="token-badge"><span class="tok-label">Context:</span> <span class="tok-value">' + toNum(s.tokenUsage.contextUsagePercent).toFixed(1) + '%</span></span>',
     ].join('');
     if (s.mergeStats) {
-      tokHtml += '<span class="token-badge" style="border-color:var(--green)"><span class="tok-label">Merge:</span> <span style="color:var(--green)">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</span></span>';
+      tokHtml += '<span class="token-badge" style="border-color:var(--green)"><span class="tok-label">Merge:</span> <span style="color:var(--green)">+' + toNum(s.mergeStats.totalLinesAdded) + ' / -' + toNum(s.mergeStats.totalLinesDeleted) + '</span></span>';
     }
     tokensEl.innerHTML = tokHtml;
   } else {
@@ -4834,12 +5990,12 @@ function openPanel(sessionKey) {
     turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Loading...</p>';
     _panelTurnsLoading = true;
     var loadingConvId = s.conversationId;
-    var loadingSessionKey = sessionKey;
+    var loadingGen = _panelGen;
     fetch('/api/dashboard/session/' + encodeURIComponent(loadingConvId) + '?limit=30')
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        // If the user switched cards while loading, discard this result.
-        if (panelSessionKey !== loadingSessionKey) return;
+        // If the panel was switched, closed or reopened while loading, discard this result.
+        if (loadingGen !== _panelGen) return;
 
         // Handle titleSub
         var tSubText = document.getElementById('panel-title-sub-text');
@@ -4861,13 +6017,17 @@ function openPanel(sessionKey) {
         _panelTurnsOldestId = data.turns[0] && data.turns[0].id;
         turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
         attachRawToggleHandlers();
-        // Jump to bottom on fresh load.
+        // Jump to bottom on fresh load — or to the work log when that is what
+        // the user asked for (작업 로그 button / ?session= deep link).
         var scrollEl = document.getElementById('panel-scroll');
-        if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+        // Instant: under scroll-behavior: smooth the glide down from 0 passed
+        // through scrollTop < 100 and set off the load-older-turns handler.
+        if (_panelFocusWorkLog) scrollPanelToWorkLog();
+        else if (scrollEl) scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
         _panelTurnsLoading = false;
       })
       .catch(function() {
-        if (panelSessionKey !== loadingSessionKey) return;
+        if (loadingGen !== _panelGen) return;
         turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Failed to load conversation</p>';
         _panelTurnsLoading = false;
       });
@@ -4904,12 +6064,25 @@ function openPanel(sessionKey) {
   document.getElementById('slide-panel').classList.add('open');
   document.getElementById('panel-overlay').classList.add('open');
   panelOpen = true;
+
+  if (panelConvId) loadWorkLog();
 }
 
 // ── Pagination state for panel chat (infinite scroll) ──
 var _panelTurnsHasMore = false;
 var _panelTurnsLoading = false;
 var _panelTurnsOldestId = null;
+var _panelGen = 0; // bumped by openPanel / closePanel — the identity of one panel opening
+
+function panelScrollAnchor(scrollEl) {
+  var viewTop = scrollEl.getBoundingClientRect().top;
+  var nodes = scrollEl.querySelectorAll('#panel-question, #panel-tasks, #panel-worklog, #panel-turns > .turn');
+  for (var i = 0; i < nodes.length; i++) {
+    var r = nodes[i].getBoundingClientRect();
+    if (r.height > 0 && r.bottom > viewTop) return { el: nodes[i], top: r.top };
+  }
+  return null;
+}
 
 async function loadMorePanelTurns() {
   if (_panelTurnsLoading || !_panelTurnsHasMore || !panelConvId || !_panelTurnsOldestId) return;
@@ -4919,12 +6092,8 @@ async function loadMorePanelTurns() {
 
   _panelTurnsLoading = true;
   var requestConvId = panelConvId;
-  var requestSessionKey = panelSessionKey;
+  var requestGen = _panelGen; // this panel opening; any switch/close/reopen makes it stale
   var requestOldestId = _panelTurnsOldestId;
-
-  // Preserve scroll position relative to the current oldest item.
-  var prevScrollHeight = scrollEl.scrollHeight;
-  var prevScrollTop = scrollEl.scrollTop;
 
   // Loading spinner at top of turns list.
   var spinner = document.createElement('div');
@@ -4938,14 +6107,18 @@ async function loadMorePanelTurns() {
     var r = await fetch(url);
     var data = await r.json();
 
-    // Discard stale response if card was switched mid-flight.
-    // panelSessionKey and panelConvId are always updated/cleared together (openPanel, closePanel),
-    // so sessionKey equality implies convId equality — single check is sufficient.
-    if (panelSessionKey !== requestSessionKey) {
+    // Discard a stale response: the panel was switched, closed or reopened
+    // (same session included) while this request was in flight.
+    if (requestGen !== _panelGen) {
       if (spinner.parentNode) spinner.remove();
       return;
     }
 
+    // Keep the reading position: capture the first element the reader can see
+    // (question / tasks / work log / a turn) NOW — after the response, so a
+    // scroll made while the request was pending is respected — and after the
+    // spinner goes and the older turns land, scroll by however far it moved.
+    var anchor = panelScrollAnchor(scrollEl);
     if (spinner.parentNode) spinner.remove();
 
     if (data.turns && data.turns.length > 0) {
@@ -4955,17 +6128,37 @@ async function loadMorePanelTurns() {
       var html = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
       turnsEl.insertAdjacentHTML('afterbegin', html);
       attachRawToggleHandlers();
-      // Restore scroll position so the user stays anchored on the turn they were reading.
-      var newScrollHeight = scrollEl.scrollHeight;
-      scrollEl.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+      // Restore scroll position so the user stays anchored on what they were reading.
+      // behavior 'instant': .panel-scroll is scroll-behavior: smooth, which would
+      // otherwise show the jump and then glide back.
+      if (anchor && anchor.el.isConnected) {
+        var drift = anchor.el.getBoundingClientRect().top - anchor.top;
+        if (drift) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift, behavior: 'instant' });
+      }
     } else {
       _panelTurnsHasMore = false;
+      if (anchor && anchor.el.isConnected) {
+        var drift0 = anchor.el.getBoundingClientRect().top - anchor.top;
+        if (drift0) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift0, behavior: 'instant' });
+      }
     }
   } catch (err) {
+    if (requestGen !== _panelGen) {
+      // A stale failure must not move the panel that replaced it.
+      if (spinner.parentNode) spinner.remove();
+      return;
+    }
+    var errAnchor = panelScrollAnchor(scrollEl);
     if (spinner.parentNode) spinner.remove();
+    if (errAnchor && errAnchor.el.isConnected) {
+      var drift1 = errAnchor.el.getBoundingClientRect().top - errAnchor.top;
+      if (drift1) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift1, behavior: 'instant' });
+    }
     console.error('loadMorePanelTurns failed', err);
   } finally {
-    _panelTurnsLoading = false;
+    // Only the current generation owns the in-flight flag; a stale request
+    // settling must not clear the flag of the load that replaced it.
+    if (requestGen === _panelGen) _panelTurnsLoading = false;
   }
 }
 
@@ -4986,7 +6179,7 @@ function renderTurn(t, _idx, _arr, convId) {
     if (t.summaryBody) {
       body = '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>';
     } else if (t.summarized) {
-      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">Summary failed <button class="btn-action" style="margin-left:8px;font-size:10px;padding:2px 8px" onclick="event.stopPropagation();resummarize(\\'' + esc(convId || panelConvId) + '\\',\\'' + esc(t.id) + '\\',this)">&#x1F504; Retry</button></div>';
+      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">Summary failed <button class="btn-action" style="margin-left:8px;font-size:10px;padding:2px 8px" onclick="event.stopPropagation();resummarize(\\'' + escJs(convId || panelConvId) + '\\',\\'' + escJs(t.id) + '\\',this)">&#x1F504; Retry</button></div>';
     } else {
       body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
     }
@@ -5031,7 +6224,7 @@ function updateTurnInPanel(existingEl, turn) {
   }
 }
 
-var _rawLoadedCache = {};
+var _rawLoadedCache = Object.create(null);
 function attachRawToggleHandlers() {
   document.querySelectorAll('.turn-raw-details').forEach(function(details) {
     if (details._rawBound) return;
@@ -5059,6 +6252,9 @@ function attachRawToggleHandlers() {
 }
 
 async function generateTitleSub(convId) {
+  // The panel opening this request belongs to: once another panel opens (or
+  // this one closes) the subtitle element shows someone else, so drop the result.
+  var gen = _panelGen;
   var textEl = document.getElementById('panel-title-sub-text');
   var btn = document.getElementById('panel-title-sub-regen');
   textEl.textContent = 'Generating title...';
@@ -5072,13 +6268,17 @@ async function generateTitleSub(convId) {
     const headers = {};
     if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
     var res = await fetch(url, { method: 'POST', headers });
+    if (gen !== _panelGen) return;
     if (res.status === 403) {
       await refreshCsrfToken();
+      if (gen !== _panelGen) return;
       const retryHeaders = {};
       if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
       res = await fetch(url, { method: 'POST', headers: retryHeaders });
+      if (gen !== _panelGen) return;
     }
     var data = await res.json();
+    if (gen !== _panelGen) return;
     if (data.titleSub) {
       textEl.textContent = data.titleSub;
       btn.style.display = 'inline-block';
@@ -5087,6 +6287,7 @@ async function generateTitleSub(convId) {
       btn.style.display = 'inline-block';
     }
   } catch(e) {
+    if (gen !== _panelGen) return;
     textEl.textContent = 'Error';
     btn.style.display = 'inline-block';
   }
@@ -5098,10 +6299,13 @@ function closePanel() {
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
-  _rawLoadedCache = {};
+  _rawLoadedCache = Object.create(null);
+  _panelGen++;
   _panelTurnsHasMore = false;
   _panelTurnsLoading = false;
   _panelTurnsOldestId = null;
+  resetWorkLog(null, false);
+  _panelFocusWorkLog = false;
 }
 
 document.addEventListener('keydown', function(e) {
@@ -5198,68 +6402,34 @@ function sendRetry(msg) {
   sendCommand();
 }
 
-// ── Drag & Drop (event delegation on kanban board) ──
-var dragState = { key: null, sourceCol: null, title: '' };
-
-document.addEventListener('dragstart', function(e) {
-  var card = e.target.closest('.card[draggable="true"]');
-  if (!card) return;
-  dragState.key = card.dataset.sessionKey;
-  dragState.sourceCol = card.dataset.sourceCol;
-  var s = _sessionCache[dragState.key];
-  dragState.title = s ? s.title : '';
-  card.classList.add('dragging');
-  e.dataTransfer.effectAllowed = 'move';
-  e.dataTransfer.setData('text/plain', dragState.key);
-});
-
-document.addEventListener('dragend', function(e) {
-  var card = e.target.closest('.card');
-  if (card) card.classList.remove('dragging');
-  document.querySelectorAll('.kanban-col').forEach(function(col) { col.classList.remove('drag-over'); });
-  dragState = { key: null, sourceCol: null, title: '' };
-});
-
-document.addEventListener('dragover', function(e) {
-  var col = e.target.closest('.kanban-col');
-  if (!col || !dragState.key) return;
-  e.preventDefault();
-  e.dataTransfer.dropEffect = 'move';
-  document.querySelectorAll('.kanban-col').forEach(function(c) { c.classList.remove('drag-over'); });
-  col.classList.add('drag-over');
-});
-
-document.addEventListener('dragleave', function(e) {
-  var col = e.target.closest('.kanban-col');
-  if (col && !col.contains(e.relatedTarget)) col.classList.remove('drag-over');
-});
-
-document.addEventListener('drop', function(e) {
-  e.preventDefault();
-  var col = e.target.closest('.kanban-col');
-  if (!col || !dragState.key) return;
-  document.querySelectorAll('.kanban-col').forEach(function(c) { c.classList.remove('drag-over'); });
-
-  var targetCol = col.id.replace('col-', '');
-  var sourceCol = dragState.sourceCol;
-  var key = dragState.key;
-  var title = dragState.title || key;
-
-  // T6: Drag to closed column = Close
-  if (targetCol === 'closed' && sourceCol !== 'closed') {
-    if (confirm('Close session "' + title + '"?')) {
-      doAction(key, 'close');
-    }
-  }
-  // T7: Drag working card out = Stop (interrupt)
-  else if (sourceCol === 'working' && targetCol !== 'working') {
-    if (confirm('Stop (interrupt) session "' + title + '"?')) {
-      doAction(key, 'stop');
-    }
-  }
-
-  dragState = { key: null, sourceCol: null, title: '' };
-});
+// ── Board interactions — card face click / Enter / Space expands in place.
+// Delegated from #kanban so the reconciler never re-binds per card. (Drag and
+// drop and its confirm dialogs were removed: .prd/10 §3.1-5 — the same Stop / Close / Trash
+// actions live on the open card.)
+(function initBoardInteractions() {
+  var kb = document.getElementById('kanban');
+  kb.addEventListener('click', function(e) {
+    var face = e.target.closest('.card-face');
+    if (!face || !kb.contains(face)) return;
+    var key = face.parentNode.getAttribute('data-session-key');
+    if (!key) return;
+    // Finishing a text selection inside the face is not a toggle.
+    if (window.getSelection && String(window.getSelection())) return;
+    toggleCard(key, e.detail === 0);
+  });
+  kb.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var face = e.target;
+    if (!face.classList || !face.classList.contains('card-face')) return;
+    e.preventDefault();
+    var key = face.parentNode.getAttribute('data-session-key');
+    if (key) toggleCard(key, true);
+  });
+  // View: the saved choice, else List on narrow screens (§3.1-2).
+  var saved = null;
+  try { saved = localStorage.getItem('soma-board-view'); } catch (_e) {}
+  setBoardView(saved === 'board' || saved === 'list' ? saved : (window.innerWidth < 640 ? 'list' : 'board'));
+})();
 
 // ── Init ──
 loadUsers();

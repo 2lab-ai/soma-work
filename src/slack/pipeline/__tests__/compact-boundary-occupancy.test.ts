@@ -22,6 +22,7 @@
  * ssot-task: T2.1, T2.2
  */
 
+import { LOG_DETAIL } from '@soma/slack/output-flags';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runAgentStreamFromSdk } from '../../../agent-runtime/claude-code/stream-runner';
 // Imported through the src wrapper (not `@soma/slack/...`): the wrapper is what
@@ -147,7 +148,7 @@ function makeSession() {
   return {
     sessionId: 'sess_compact',
     ownerId: 'U_TEST',
-    logVerbosity: 'detail',
+    logVerbosity: LOG_DETAIL,
     terminated: false,
     model: 'claude-fable-5[1m]',
     usage: {

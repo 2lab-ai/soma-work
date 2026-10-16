@@ -55,6 +55,24 @@ describe('parseTodos', () => {
     expect(result).toEqual([todoWithOptionals]);
   });
 
+  it('keeps only known fields and drops timestamps that are not finite numbers (model-controlled input)', () => {
+    const result = parseTodos([
+      {
+        ...validTodo,
+        startedAt: '1"><img src=x onerror=alert(1)>',
+        completedAt: Number.NaN,
+        dependencies: ['0', { evil: true }, 7],
+        activeForm: 42,
+        onclick: 'alert(1)',
+      },
+      { ...validTodo, id: '2', startedAt: '1700000000000', completedAt: 1700000060000 },
+    ]);
+    expect(result).toEqual([
+      { ...validTodo, dependencies: ['0'] },
+      { ...validTodo, id: '2', startedAt: 1700000000000, completedAt: 1700000060000 },
+    ]);
+  });
+
   it('auto-assigns id and priority when missing (TodoWrite compat)', () => {
     const todoWriteInput = [
       { content: 'Task A', status: 'pending', activeForm: 'Working on A' },

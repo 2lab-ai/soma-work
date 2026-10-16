@@ -19,7 +19,7 @@ import {
   buildInstructionConfirmFallbackText,
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
-import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flags';
+import { OutputFlag, resolveVerbosityMask, shouldOutput, verboseTag } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
 // Issue #1082 T2: shared goal-apply helpers (same pair T1's slack-handler
@@ -59,6 +59,7 @@ import {
 } from '../turn-notifier';
 import type { UserChoice, UserChoices } from '../user-choice-extractor';
 import { UserChoiceHandler } from '../user-choice-handler';
+import type { WorkLogInput } from '../work-log';
 import { decideBackgroundWaitContinuation, getBackgroundWaitCap } from './background-wait';
 import { isLocalSlashCommand } from './local-slash-command';
 import { cleanupWithTimeout, DEFAULT_CLEANUP_TIMEOUT_MS, runWithTimeout } from './stream-executor-cleanup-helpers';
@@ -145,6 +146,12 @@ export interface StreamExecutorProviders {
   recordAssistantTurn?: (conversationId: string, text: string) => void;
   recordUserTurn?: (conversationId: string, text: string, userName: string, user: string) => void;
   /**
+   * Spec 10 §3.3 — append one work-log entry to the conversation's log
+   * (instruction, narration, tool, tool_result, final, notice, error), at
+   * every verbosity. Fire-and-forget; a throw is swallowed. No-op by default.
+   */
+  appendWorkLog?: (conversationId: string, entry: WorkLogInput) => void;
+  /**
    * Append a per-turn episodic breadcrumb to the user's hierarchical memory.
    * Fire-and-forget; must never throw or block the reply. No-op by default.
    */
@@ -196,6 +203,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   createConversation: () => '',
   recordAssistantTurn: () => {},
   recordUserTurn: () => {},
+  appendWorkLog: () => {},
   captureMemoryTurn: () => {},
   scheduleLinkDerivedTitleRefresh: () => {},
   isMidThreadMention: () => false,
@@ -259,6 +267,117 @@ const recordAssistantTurn = (conversationId: string, text: string) =>
   streamExecutorProviders.recordAssistantTurn(conversationId, text);
 const recordUserTurn = (conversationId: string, text: string, userName: string, user: string) =>
   streamExecutorProviders.recordUserTurn(conversationId, text, userName, user);
+const workLogLogger = new Logger('WorkLog');
+
+/**
+ * Reporting interval for dropped work-log entries. While the store keeps
+ * throwing, the first drop warns at once and later drops are counted; at most
+ * one warning goes out per interval, a summary with the count and the latest
+ * drop. Process-wide: one outage warns once per interval, not once per
+ * conversation. Only reporting is throttled — every write is still attempted.
+ */
+export const WORK_LOG_DROP_WARN_INTERVAL_MS = 60_000;
+
+interface WorkLogDrop {
+  conversationId: string;
+  kind: WorkLogInput['kind'];
+  sessionKey?: string;
+  error: string;
+}
+
+const workLogDrops: {
+  lastWarnAt: number | undefined;
+  suppressed: number;
+  latest: WorkLogDrop | undefined;
+  flushTimer: ReturnType<typeof setTimeout> | undefined;
+} = { lastWarnAt: undefined, suppressed: 0, latest: undefined, flushTimer: undefined };
+
+function workLogDropFields(drop: WorkLogDrop): Record<string, unknown> {
+  return {
+    conversationId: drop.conversationId,
+    kind: drop.kind,
+    ...(drop.sessionKey ? { sessionKey: drop.sessionKey } : {}),
+    error: drop.error,
+  };
+}
+
+function flushWorkLogDrops(): void {
+  if (workLogDrops.flushTimer) clearTimeout(workLogDrops.flushTimer);
+  workLogDrops.flushTimer = undefined;
+  const { suppressed, latest } = workLogDrops;
+  if (suppressed === 0 || !latest) return;
+  workLogDrops.lastWarnAt = Date.now();
+  workLogDrops.suppressed = 0;
+  workLogDrops.latest = undefined;
+  workLogLogger.warn('appendWorkLog provider threw — more entries dropped (count; latest shown)', {
+    suppressed,
+    ...workLogDropFields(latest),
+  });
+}
+
+function reportWorkLogDrop(drop: WorkLogDrop): void {
+  const now = Date.now();
+  const { lastWarnAt } = workLogDrops;
+  if (lastWarnAt !== undefined && now - lastWarnAt < WORK_LOG_DROP_WARN_INTERVAL_MS) {
+    workLogDrops.suppressed += 1;
+    workLogDrops.latest = drop;
+    if (!workLogDrops.flushTimer) {
+      const timer = setTimeout(flushWorkLogDrops, lastWarnAt + WORK_LOG_DROP_WARN_INTERVAL_MS - now);
+      // Reporting must never keep the process alive; `unref` is missing on
+      // browser/jsdom timer stubs — optional-call.
+      (timer as { unref?: () => void } | undefined)?.unref?.();
+      workLogDrops.flushTimer = timer;
+    }
+    return;
+  }
+  if (workLogDrops.suppressed > 0) {
+    // The interval ended before its flush timer ran: this drop joins the summary.
+    workLogDrops.suppressed += 1;
+    workLogDrops.latest = drop;
+    flushWorkLogDrops();
+    return;
+  }
+  workLogDrops.lastWarnAt = now;
+  workLogLogger.warn('appendWorkLog provider threw — entry dropped', workLogDropFields(drop));
+}
+
+/** Test seam: forget throttle state and cancel a pending summary. */
+export function resetWorkLogDropWarningsForTests(): void {
+  if (workLogDrops.flushTimer) clearTimeout(workLogDrops.flushTimer);
+  workLogDrops.lastWarnAt = undefined;
+  workLogDrops.suppressed = 0;
+  workLogDrops.latest = undefined;
+  workLogDrops.flushTimer = undefined;
+}
+
+/**
+ * Spec 10 §3.3 — record one work-log entry: the one global path to
+ * `streamExecutorProviders.appendWorkLog` (the dashboard store once src wires
+ * it). Used for turn entries — through the executor's `emitWorkLog`, stamped
+ * with the turn's `turnId` — and for conversation-level entries such as the
+ * compaction notices (src/slack/hooks/compact-hooks.ts), which belong to the
+ * conversation, not to a turn: no `turnId`. Stamps `ts` when absent. A
+ * throwing provider is ignored — the work log must never break what records
+ * into it — and reported at warn (conversationId, kind, the caller's
+ * sessionKey when it has one, error), throttled process-wide to one warning
+ * per `WORK_LOG_DROP_WARN_INTERVAL_MS`.
+ */
+export function recordConversationWorkLog(
+  conversationId: string,
+  entry: WorkLogInput,
+  logContext: { sessionKey?: string } = {},
+): void {
+  try {
+    streamExecutorProviders.appendWorkLog(conversationId, { ts: Date.now(), ...entry });
+  } catch (err) {
+    reportWorkLogDrop({
+      conversationId,
+      kind: entry.kind,
+      ...(logContext.sessionKey ? { sessionKey: logContext.sessionKey } : {}),
+      error: (err as Error)?.message ?? String(err),
+    });
+  }
+}
 const captureMemoryTurn = (userId: string, userText: string, assistantText: string) =>
   streamExecutorProviders.captureMemoryTurn(userId, userText, assistantText);
 const scheduleLinkDerivedTitleRefresh = (claudeHandler: any, channel: string, threadTs: string, reason: string) =>
@@ -529,6 +648,20 @@ const UNKNOWN_ABORT_REASON = '__unknown' as const;
 
 /** Coerced reason type — either a known RequestAbortReason or the internal sentinel. */
 type CoercedAbortReason = RequestAbortReason | typeof UNKNOWN_ABORT_REASON;
+
+/**
+ * Abort reasons the user already knows about (they caused or chose the end of
+ * the turn), so no 🔴 card is posted — see `handleError`'s `knownSilentAbort`.
+ * Shared with the work log, which records these as `notice` and every other
+ * abort (stall-timeout, ghost-session, unknown) as `error`.
+ */
+const QUIET_ABORT_REASONS: ReadonlySet<CoercedAbortReason> = new Set<CoercedAbortReason>([
+  'supersede',
+  'user-stop',
+  'session-close',
+  'shutdown',
+  'user-interrupted',
+]);
 
 function coerceAbortReason(raw: unknown): CoercedAbortReason {
   if (typeof raw === 'string' && KNOWN_ABORT_REASONS.has(raw as RequestAbortReason)) {
@@ -1051,9 +1184,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const turnCollector = streamExecutorProviders.createTurnResultCollector();
 
     // Verbosity filtering — read from session dynamically so mid-stream $verbosity changes apply
-    const getVerbosity = () => session.logVerbosity ?? LOG_DETAIL;
+    const getVerbosity = () => resolveVerbosityMask(session.logVerbosity);
     const isOutputEnabled = (flag: number) => shouldOutput(flag, getVerbosity());
     const vtag = (flag: number) => verboseTag(flag, getVerbosity());
+
+    // Spec 10 §3.3 work log. `conversationId` is read at call time — it can be
+    // auto-created below, after this binding. Stamped with this turn's id; a
+    // throwing provider must never break the turn. Compaction notices are
+    // conversation-level: compact-hooks records them itself through
+    // `recordConversationWorkLog`.
+    const emitWorkLog = (entry: WorkLogInput): void => {
+      const conversationId = session.conversationId;
+      if (!conversationId) return;
+      recordConversationWorkLog(conversationId, { turnId, ts: Date.now(), ...entry }, { sessionKey });
+    };
 
     // Per-request tool statistics
     const toolStats: RequestToolStats = {};
@@ -1222,6 +1366,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
       if (session.conversationId && text) {
         recordUserTurn(session.conversationId, text, userName, user);
+        emitWorkLog({ kind: 'instruction', text });
       }
 
       // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)
@@ -1393,8 +1538,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         isCompactTurn: (isSlashCommand && trimmedText.startsWith('/compact')) || Boolean(session.fallbackCompactActive),
         isUserInputTurn: params.isUserInput === true,
         incidentAttempt,
+        ...(session.conversationId ? { workLog: emitWorkLog } : {}),
+        // The ASK_USER_QUESTION form is posted here, not by the processor
+        // (handleModelCommandToolResults); tell it so its no-final fallback
+        // does not post old narration under the form.
+        hostChoicePosted: () => toolChoicePending,
         get logVerbosity() {
-          return session.logVerbosity ?? LOG_DETAIL;
+          return resolveVerbosityMask(session.logVerbosity);
         },
         get showThinking() {
           return session.showThinking ?? userSettingsStore.getUserShowThinking(user);
@@ -1955,6 +2105,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // rotated a credential and re-ran an unattended attempt. One decision,
       // so none of the five applies to it.
       const textMayBeTransportError = !toolContinuation && !incidentAttempt;
+      // What the guards read (`StreamResult.guardText`): the leak the turn
+      // ended on, else the turn text WITHOUT suppressed leak segments. The
+      // whole `collectedText` broke both ways: after narration
+      // ("narration\nleak") the short-text and starts-with predicates missed a
+      // real leak, and after a recovered leak ("leak\nanswer") they fired on a
+      // turn that had answered. `collectedText` is the fallback for producers
+      // that do not set it.
+      const guardText = streamResult.guardText ?? streamResult.transportLeak ?? streamResult.collectedText;
 
       // Compaction-failure-as-content guard (field incident 2026-07-07,
       // session ccee16e0). The SDK seals a FAILED `/compact` as a successful
@@ -1984,9 +2142,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (
         textMayBeTransportError &&
         (compactCommandTurn || session.fallbackCompactActive) &&
-        textIndicatesCompactionFailure(streamResult.collectedText)
+        textIndicatesCompactionFailure(guardText)
       ) {
-        const collected = String(streamResult.collectedText);
+        const collected = String(guardText);
         const emptyBlock400 = textIndicatesEmptyContentBlock400(collected);
         const repairRecentlyAttempted =
           typeof session.transcriptRepairAttemptedAtMs === 'number' &&
@@ -2029,15 +2187,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // delay so `handleError` schedules the timed retry. Checked BEFORE the
       // usage-limit guard so the retry-after hint is honored rather than
       // triggering a futile rotation.
-      if (textMayBeTransportError && textIndicatesRetryableRateLimit(streamResult.collectedText)) {
-        const delayMs = boundRateLimitDelayMs(parseRetryAfterMs(streamResult.collectedText));
+      if (textMayBeTransportError && textIndicatesRetryableRateLimit(guardText)) {
+        const delayMs = boundRateLimitDelayMs(parseRetryAfterMs(guardText));
         this.logger.warn('Pool rate-limit surfaced as turn content — converting to timed-retry path', {
           sessionKey,
           delayMs,
-          preview: String(streamResult.collectedText).slice(0, 120),
+          preview: String(guardText).slice(0, 120),
         });
         const rlError = new Error(
-          `Claude pool rate-limited (surfaced as turn content): ${String(streamResult.collectedText).slice(0, 200)}`,
+          `Claude pool rate-limited (surfaced as turn content): ${String(guardText).slice(0, 200)}`,
         );
         (rlError as { poolRateLimitRetryMs?: number }).poolRateLimitRetryMs = delayMs;
         throw rlError;
@@ -2059,13 +2217,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // (isRateLimitError → tryRotateToken) and schedule a retry
       // (isRecoverableClaudeSdkError), so the next attempt runs on a fresh
       // credential instead of replaying the cap notice to the user.
-      if (textMayBeTransportError && textIndicatesUsageLimit(streamResult.collectedText)) {
+      if (textMayBeTransportError && textIndicatesUsageLimit(guardText)) {
         this.logger.warn('Usage limit surfaced as turn content — converting to rotation path', {
           sessionKey,
-          preview: String(streamResult.collectedText).slice(0, 120),
+          preview: String(guardText).slice(0, 120),
         });
         const capError = new Error(
-          `Claude usage limit hit (surfaced as turn content): ${String(streamResult.collectedText).slice(0, 200)}`,
+          `Claude usage limit hit (surfaced as turn content): ${String(guardText).slice(0, 200)}`,
         );
         (capError as { usageLimitFromContent?: boolean }).usageLimitFromContent = true;
         throw capError;
@@ -2087,14 +2245,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // is recorded/posted. `isContextOverflowError` matches the message, so
       // handleError arms the fallback (stash model → switch to the 1M compact
       // model → `/compact` retry → restore at the boundary).
-      if (textMayBeTransportError && textIndicatesPromptTooLong(streamResult.collectedText)) {
+      if (textMayBeTransportError && textIndicatesPromptTooLong(guardText)) {
         this.logger.warn('Prompt-too-long surfaced as turn content — converting to fallback-compact path', {
           sessionKey,
-          preview: String(streamResult.collectedText).slice(0, 120),
+          preview: String(guardText).slice(0, 120),
         });
-        throw new Error(
-          `Prompt is too long (surfaced as turn content): ${String(streamResult.collectedText).slice(0, 200)}`,
-        );
+        throw new Error(`Prompt is too long (surfaced as turn content): ${String(guardText).slice(0, 200)}`);
       }
 
       // Empty-text-block 400 surfaced as content on a NORMAL turn (post-
@@ -2103,8 +2259,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // let the recoverable-error rail retry; if the repair already ran and
       // the 400 persists, fall through to the generic throw so
       // `shouldClearSessionOnError` policy decides.
-      if (textMayBeTransportError && textIndicatesEmptyContentBlock400(streamResult.collectedText)) {
-        const collected = String(streamResult.collectedText);
+      if (textMayBeTransportError && textIndicatesEmptyContentBlock400(guardText)) {
+        const collected = String(guardText);
         const repairRecentlyAttempted =
           typeof session.transcriptRepairAttemptedAtMs === 'number' &&
           Date.now() - session.transcriptRepairAttemptedAtMs < StreamExecutor.TRANSCRIPT_REPAIR_COOLDOWN_MS;
@@ -2206,6 +2362,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         } else {
           errorLines.push(`> _No error details provided by SDK_`);
         }
+        emitWorkLog({ kind: 'error', text: [subtype, ...errors.slice(0, 5)].join(': ') });
         await say({ text: errorLines.join('\n'), thread_ts: threadTs });
       }
 
@@ -2595,6 +2752,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // `controller.abort()` yields a DOMException ("AbortError"); we only
       // trust it when it matches our known reason union.
       const abortReason = requestAborted ? coerceAbortReason(abortController.signal.reason) : undefined;
+      // Work log: a quiet abort (QUIET_ABORT_REASONS) is a `notice`, a
+      // card-worthy one an `error`; any other error is an `error` unless
+      // handleError schedules a retry (recoverable — `notice` with the delay).
+      // Written after handleError, in a finally, so a throw there still logs.
+      const turnErrorText = requestAborted
+        ? `aborted${abortReason ? ` (${abortReason})` : ''}`
+        : this.sanitizeSdkDetails(String((error as Error)?.message ?? error));
+      let scheduledRetryMs: number | undefined;
       // Issue #525 P1: close the B1 stream before handleError posts the
       // error block — otherwise the stream would linger until finally and
       // race with the error message rendering. PHASE=0 → no-op.
@@ -2634,20 +2799,35 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           error: (err as Error)?.message ?? String(err),
         });
       }
-      const retryAfterMs = await this.handleError(
-        error,
-        session,
-        sessionKey,
-        channel,
-        threadTs,
-        processedFiles,
-        say,
-        requestAborted,
-        activeSlotSnapshot,
-        abortReason,
-        turnEpochToken,
-        interruptFlushFailed,
-      );
+      let retryAfterMs: number | undefined;
+      try {
+        retryAfterMs = await this.handleError(
+          error,
+          session,
+          sessionKey,
+          channel,
+          threadTs,
+          processedFiles,
+          say,
+          requestAborted,
+          activeSlotSnapshot,
+          abortReason,
+          turnEpochToken,
+          interruptFlushFailed,
+        );
+        scheduledRetryMs = retryAfterMs;
+      } finally {
+        if (requestAborted && abortReason !== undefined && QUIET_ABORT_REASONS.has(abortReason)) {
+          emitWorkLog({ kind: 'notice', text: turnErrorText });
+        } else if (!requestAborted && scheduledRetryMs !== undefined) {
+          emitWorkLog({
+            kind: 'notice',
+            text: `retrying in ${Math.round(scheduledRetryMs / 1000)}s: ${turnErrorText}`,
+          });
+        } else {
+          emitWorkLog({ kind: 'error', text: turnErrorText });
+        }
+      }
       // `handleError()` ran to completion — it either dispatched a user-facing
       // Exception card (turnNotifier), reset status/reaction, or both.
       //
@@ -2738,6 +2918,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         userSettings: userSettingsStore,
         slackApi: this.deps.slackApi,
         logger: this.logger,
+        workLog: emitWorkLog,
       }).catch((err: unknown) => {
         this.logger.warn('stream-executor: compact threshold check failed', {
           turnId,
@@ -3060,13 +3241,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const stallTimeoutAbort = isAbort && abortReason === 'stall-timeout';
     const ghostSessionAbort = isAbort && abortReason === 'ghost-session';
     const userInterruptedAbort = isAbort && abortReason === 'user-interrupted';
-    const knownSilentAbort =
-      isAbort &&
-      (abortReason === 'supersede' ||
-        abortReason === 'user-stop' ||
-        abortReason === 'session-close' ||
-        abortReason === 'shutdown' ||
-        userInterruptedAbort);
+    const knownSilentAbort = isAbort && abortReason !== undefined && QUIET_ABORT_REASONS.has(abortReason);
     const unknownAbort = isAbort && !stallTimeoutAbort && !ghostSessionAbort && !knownSilentAbort;
     const notifyWorthyAbort = stallTimeoutAbort || ghostSessionAbort || unknownAbort;
     const shouldNotifyException =
