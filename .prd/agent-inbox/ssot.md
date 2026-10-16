@@ -1,6 +1,6 @@
 # SSOT — Agent inbox 작업 보드 + Slack 미니멀 출력
 
-Status: in-progress · 작성 2026-10-16 · 기준 커밋 main `e992de7c` (v0.2.1156 프리뷰)
+Status: shipped · 작성 2026-10-16 · 기준 커밋 main `e992de7c` (v0.2.1156 프리뷰)
 
 ## 유저 원문 (verbatim, 2026-10-16 /goal)
 
