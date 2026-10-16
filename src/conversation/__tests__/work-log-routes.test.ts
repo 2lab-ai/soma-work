@@ -102,9 +102,9 @@ describe('GET /api/dashboard/session/:conversationId/worklog', () => {
   });
 
   it('returns the stored entries in seq order', async () => {
-    workLog.appendWorkLog('conv-1', { kind: 'instruction', text: 'fix it' });
-    workLog.appendWorkLog('conv-1', { kind: 'tool', text: 'Bash: npm test', tool: 'Bash' });
-    workLog.appendWorkLog('conv-1', { kind: 'final', text: 'fixed' });
+    await workLog.appendWorkLog('conv-1', { kind: 'instruction', text: 'fix it' });
+    await workLog.appendWorkLog('conv-1', { kind: 'tool', text: 'Bash: npm test', tool: 'Bash' });
+    await workLog.appendWorkLog('conv-1', { kind: 'final', text: 'fixed' });
 
     const res = await web.injectWebServer({
       method: 'GET',
@@ -113,36 +113,44 @@ describe('GET /api/dashboard/session/:conversationId/worklog', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.entries.map((e: any) => [e.seq, e.kind])).toEqual([
+    expect(body.hasMore).toBe(false);
+    expect(body.entries.map((e: { seq: number; kind: string }) => [e.seq, e.kind])).toEqual([
       [1, 'instruction'],
       [2, 'tool'],
       [3, 'final'],
     ]);
   });
 
-  it('applies afterSeq and limit, clamping bad values', async () => {
-    for (let i = 1; i <= 6; i++) workLog.appendWorkLog('conv-1', { kind: 'narration', text: `n${i}` });
-    const get = async (qs: string) => {
+  it('pages: latest window without afterSeq, forward from afterSeq, hasMore on both, bad values clamped', async () => {
+    for (let i = 1; i <= 6; i++) await workLog.appendWorkLog('conv-1', { kind: 'narration', text: `n${i}` });
+    const get = async (qs: string): Promise<[number[], boolean]> => {
       const res = await web.injectWebServer({
         method: 'GET',
         url: `/api/dashboard/session/conv-1/worklog${qs}`,
         headers: AUTH_HEADER,
       });
       expect(res.statusCode).toBe(200);
-      return JSON.parse(res.body).entries.map((e: any) => e.seq);
+      const body = JSON.parse(res.body) as { entries: Array<{ seq: number }>; hasMore: boolean };
+      return [body.entries.map((e) => e.seq), body.hasMore];
     };
-    expect(await get('?afterSeq=4')).toEqual([5, 6]);
-    expect(await get('?limit=2')).toEqual([5, 6]);
-    expect(await get('?afterSeq=1&limit=2')).toEqual([5, 6]);
-    expect(await get('?limit=0')).toEqual([6]); // clamped to 1
-    expect(await get('?limit=abc&afterSeq=-3')).toEqual([1, 2, 3, 4, 5, 6]); // defaults
+    // Latest window; hasMore = older entries exist.
+    expect(await get('?limit=2')).toEqual([[5, 6], true]);
+    expect(await get('?limit=0')).toEqual([[6], true]); // clamped to 1
+    expect(await get('?limit=abc&afterSeq=-3')).toEqual([[1, 2, 3, 4, 5, 6], false]); // defaults
+    // Forward pages; hasMore = newer entries follow.
+    expect(await get('?afterSeq=1&limit=2')).toEqual([[2, 3], true]);
+    expect(await get('?afterSeq=3&limit=2')).toEqual([[4, 5], true]);
+    expect(await get('?afterSeq=5&limit=2')).toEqual([[6], false]);
+    expect(await get('?afterSeq=0&limit=2')).toEqual([[1, 2], true]);
+    expect(await get('?afterSeq=4')).toEqual([[5, 6], false]);
+    expect(await get('?afterSeq=6')).toEqual([[], false]);
   });
 
   // #716: dashboard reads are world-readable for any authenticated user. The
   // session-turns API does not restrict reads to the owner, so the work log
   // follows the same policy.
   it('lets the owner and a non-owner logged-in user read, like the session-turns API', async () => {
-    workLog.appendWorkLog('conv-1', { kind: 'narration', text: 'hello' });
+    await workLog.appendWorkLog('conv-1', { kind: 'narration', text: 'hello' });
     for (const sub of ['U_OWNER', 'U_OTHER']) {
       const res = await web.injectWebServer({
         method: 'GET',
@@ -246,7 +254,7 @@ describe('work_log WebSocket broadcast scoping', () => {
 
     // Wired the way src/index.ts wires it.
     workLog.setOnWorkLogAppendedCallback(dashboard.broadcastWorkLog);
-    const entry = workLog.appendWorkLog('conv-live', { kind: 'narration', text: 'reading the code' });
+    const entry = await workLog.appendWorkLog('conv-live', { kind: 'narration', text: 'reading the code' });
     await flushAll([owner, other, admin, bearer]);
 
     expect(workLogs(owner)).toEqual([{ type: 'work_log', conversationId: 'conv-live', entry }]);
