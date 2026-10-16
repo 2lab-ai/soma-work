@@ -1900,8 +1900,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    One row from 1024px; below that the nav (user select · Conversations · admin
    toggle) takes its own row under brand · status · account (BOARD RESPONSIVE).
    No control ever wraps or cuts its label: everything is nowrap and flex: none.
-   Only user names — the pill's name and the selected user — may shrink, and
-   only when they do not fit: they end in a visible ellipsis, full name in title. */
+   Only user names are ever shortened, always with a visible ellipsis and the
+   full name in title: the pill's name when its row is full, and the selected
+   user's name when it is wider than its cap — 180px on the one-row bar (≥1024,
+   even when the row has room), the whole nav row below 1024px. */
 .topbar {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -1957,10 +1959,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   flex: 0 1 auto;
   min-width: 0;
   max-inline-size: 180px;
+  /* WebKit counts the ellipsized label's full text in this box's scrollable
+     overflow and passes it up to the page (25px of sideways scroll at 320px
+     with a long name selected); nothing in here is meant to extend past it. */
+  overflow: hidden;
 }
-.topbar .user-select-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Decorations never take a tap: the chevron's transform makes it a stacking
+   context painted above the select, so without pointer-events: none a tap on
+   it would land on the wrapper and the picker would not open. */
+.topbar .user-select-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
 .topbar .user-select::after {
   content: '';
+  pointer-events: none;
   flex: none;
   inline-size: 6px;
   block-size: 6px;
@@ -1971,6 +1981,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .topbar .user-select select {
   position: absolute;
+  z-index: 1;
   inset: 0;
   inline-size: 100%;
   block-size: 100%;
