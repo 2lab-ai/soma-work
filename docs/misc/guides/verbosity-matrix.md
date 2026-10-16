@@ -85,21 +85,42 @@ Each flag is checked at the point of output using `shouldOutput(flag, verbosityM
 ## Work log (all levels)
 
 Verbosity decides what reaches the Slack thread, never what is recorded. Every turn's
-user instruction, narration segments, tool calls/results, final answer (once, as `final`),
-compaction notices, retries/aborts (`notice`) and errors are emitted at every level through
+user instruction, narration segments, tool calls/results, final answer, compaction notices,
+retries and quiet aborts (`notice`) and errors (`error`) are emitted at every level through
 `StreamContext.workLog` → `streamExecutorProviders.appendWorkLog(conversationId, entry)`
 (types: `packages/slack/src/work-log.ts`), for the dashboard's per-session work log.
 
-At `minimal` the compaction start/complete notices are not posted either
-(`src/slack/hooks/compact-hooks.ts`); a "starting" message that was already posted is always
-replaced by the completion. A turn whose final answer shows nothing (no `finalText`, or a
-directive-only one) posts its last withheld narration instead, unless a choice form was posted.
+Entry contract for the final answer (the log is append-only):
+
+- The final answer is always recorded exactly once, as `final` (directive markup stripped).
+- A narration segment is recorded as `narration` once the turn moves on past it (a tool,
+  thinking, more text, a status frame). If the turn's answer IS that segment, it is recorded
+  only as `final`.
+- When the fallback (below) posts a segment that was already recorded as `narration`, that
+  text appears once as `narration` and once as `final` — never two of either.
+
+## Final answer at `minimal`
+
+- Narration is withheld; the segment equal to the SDK `finalText` (by raw or
+  directive-stripped text) is posted once, through the final-answer path, without dispatching
+  its directives again.
+- A turn whose final answer shows nothing (no `finalText`, an empty one, a directive-only or
+  blank segment, or no `result` at all) posts its last withheld narration instead — except
+  when the turn's last visible text was a transport-error leak the guards suppressed
+  (the executor recovers that turn), or when the host posted a question form this turn
+  (the form is what the user answers; nothing is posted under it).
+- Compaction start/complete notices are not posted (`src/slack/hooks/compact-hooks.ts`).
+  A "starting" message that was already posted is always replaced — by the completion, or at
+  turn end by a neutral "ended" line when no END signal arrived. END waits at most 10 s for
+  an in-flight "starting" post; a later-landing one replaces itself.
+
+## Migration and stored masks
 
 A one-time boot migration (`src/deploy/migrate-all-users-minimal-once.ts`, marker
 `.all-users-log-minimal-once-2026-10-16.json`) moved every user default and every persisted
-session mask to `minimal` on 2026-10-16; later choices are never overwritten. Session masks
-stored before `NARRATION` existed are mapped to the current presets on load
-(`upgradeLegacyVerbosityMask`).
+session mask to `minimal` on 2026-10-16; later choices are never overwritten. Stored session
+masks carry `logVerbosityVersion` (`LOG_VERBOSITY_MASK_VERSION` = 2); a mask stored without it
+predates `NARRATION` and is mapped to the current preset on load (`upgradeLegacyVerbosityMask`).
 
 ## Render Modes
 

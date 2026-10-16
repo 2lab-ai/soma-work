@@ -258,6 +258,7 @@ export {
   getVerbosityName,
   LOG_DETAIL,
   LOG_MINIMAL,
+  LOG_VERBOSITY_MASK_VERSION,
   type LogVerbosity,
   OutputFlag,
   type OutputFlagValue,

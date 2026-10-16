@@ -10,6 +10,7 @@ import {
   getVerbosityFlags,
   getVerbosityName,
   LOG_MINIMAL,
+  LOG_VERBOSITY_MASK_VERSION,
   OutputFlag,
   shouldOutput,
   upgradeLegacyVerbosityMask,
@@ -83,5 +84,11 @@ describe('upgradeLegacyVerbosityMask', () => {
     }
     expect(upgradeLegacyVerbosityMask(0b1111)).toBe(0b1111);
     expect(upgradeLegacyVerbosityMask(undefined)).toBeUndefined();
+  });
+});
+
+describe('LOG_VERBOSITY_MASK_VERSION', () => {
+  it('is 2 — the masks that carry the NARRATION bit', () => {
+    expect(LOG_VERBOSITY_MASK_VERSION).toBe(2);
   });
 });

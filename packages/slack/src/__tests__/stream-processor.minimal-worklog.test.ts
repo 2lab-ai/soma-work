@@ -218,6 +218,41 @@ describe('minimal verbosity — narration goes to the work log, Slack gets the f
     expect(h.log.filter((e) => e.kind === 'final')).toEqual([expect.objectContaining({ text: NARRATION })]);
   });
 
+  // Work-log contract (spec 10 §3.3, docs/misc/guides/verbosity-matrix.md):
+  // the final answer is recorded once as `final`. A segment already recorded
+  // as `narration` because the turn moved on, then posted by the fallback,
+  // appears once as narration and once as final — never two of either.
+  it.each([
+    ['with a tool in between', true],
+    ['with no tool in between', false],
+  ])('narration → directive-only final %s: one narration + one final for the posted text', async (_label, withTool) => {
+    const h = harness(LOG_MINIMAL);
+    const directiveOnly = '```json\n{"type":"channel_message","text":"Release notes"}\n```';
+    const turn: AgentStreamEvent[] = withTool
+      ? toolTurn(directiveOnly, directiveOnly)
+      : [
+          { type: 'assistant_delta', text: NARRATION },
+          { type: 'usage', usage: { lastTurnInputTokens: 10 } },
+          { type: 'assistant_delta', text: directiveOnly },
+          { type: 'result', stopReason: 'end_turn', finalText: directiveOnly },
+        ];
+
+    await run(h, turn);
+
+    expect(h.appendText.mock.calls.map((c) => c[1])).toEqual([NARRATION]);
+    const forText = h.log.filter((e) => e.text === NARRATION).map((e) => e.kind);
+    expect(forText).toEqual(['narration', 'final']);
+    expect(h.log.filter((e) => e.kind === 'final')).toHaveLength(1);
+  });
+
+  it('the answer that IS the held segment is recorded once, as final only', async () => {
+    const h = harness(LOG_MINIMAL);
+
+    await run(h, toolTurn());
+
+    expect(h.log.filter((e) => e.text === FINAL).map((e) => e.kind)).toEqual(['final']);
+  });
+
   it('a whitespace-only final segment: the withheld narration is posted instead of nothing', async () => {
     const h = harness(LOG_MINIMAL);
 
@@ -238,15 +273,67 @@ describe('minimal verbosity — narration goes to the work log, Slack gets the f
     expect(h.log.some((e) => e.kind === 'final')).toBe(false);
   });
 
-  it('a host-posted choice does not hold back a real final answer', async () => {
+  // Question-form policy: once the HOST posted a question form this turn, no
+  // withheld narration is promoted onto Slack under it — whatever finalText is.
+  it.each([
+    ['a finalText equal to the withheld segment', FINAL],
+    ['an empty finalText', ''],
+    ['no finalText property', NO_FINAL_TEXT],
+  ] as const)('after a host question form, %s posts nothing', async (_label, finalText) => {
+    const h = harness(LOG_MINIMAL);
+    let asked = false;
+    h.context.hostChoicePosted = () => asked;
+    const turn = toolTurn(FINAL, finalText);
+
+    // The form is posted from the tool result (ASK_USER_QUESTION), before the
+    // final segment streams.
+    await run(h, turn, {
+      onToolResult: async () => {
+        asked = true;
+      },
+    });
+
+    expect(h.appendText).not.toHaveBeenCalled();
+    expect(h.say).not.toHaveBeenCalled();
+  });
+
+  it('a final text the stream never carried still posts after a host question (it is new text)', async () => {
     const h = harness(LOG_MINIMAL);
     h.context.hostChoicePosted = () => true;
 
-    await run(h, toolTurn());
+    await run(h, toolTurn('Draft wording.', FINAL));
 
-    expect(h.appendText).toHaveBeenCalledTimes(1);
-    expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', FINAL);
+    expect(h.appendText.mock.calls.map((c) => c[1])).toEqual([FINAL]);
   });
+
+  // Terminal suppression: a turn whose last text was a leak the guards kept
+  // off Slack ends on that error — no earlier narration is promoted.
+  for (const [leak, label] of [
+    ['Prompt is too long', 'prompt-too-long'],
+    ['Error: Error during compaction: boom', 'compaction failure'],
+    ['API Error: 400 messages: text content blocks must be non-empty', 'empty-text-block 400'],
+  ] as const) {
+    it.each([
+      ['an empty finalText', ''],
+      ['no finalText property', NO_FINAL_TEXT],
+    ] as const)(`withheld narration → ${label} leak → %s: nothing posted`, async (_l, finalText) => {
+      const h = harness(LOG_MINIMAL);
+
+      await run(h, toolTurn(leak, finalText));
+
+      expect(h.appendText).not.toHaveBeenCalled();
+      expect(h.say).not.toHaveBeenCalled();
+    });
+
+    it(`withheld narration → ${label} leak → no result at all: nothing posted`, async () => {
+      const h = harness(LOG_MINIMAL);
+
+      await run(h, toolTurn(leak).slice(0, 4));
+
+      expect(h.appendText).not.toHaveBeenCalled();
+      expect(h.say).not.toHaveBeenCalled();
+    });
+  }
 
   it('a result event with NO finalText property posts the last withheld segment, logged as one final', async () => {
     const h = harness(LOG_MINIMAL);

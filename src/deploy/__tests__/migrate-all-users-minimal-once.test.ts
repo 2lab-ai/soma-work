@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { getVerbosityFlags, LOG_MINIMAL } from '@soma/slack/output-flags';
+import { getVerbosityFlags, LOG_MINIMAL, LOG_VERBOSITY_MASK_VERSION } from '@soma/slack/output-flags';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { UserSettingsStore } from '../../user-settings-store';
 import {
@@ -87,7 +87,7 @@ describe('migrateAllUsersMinimalOnce', () => {
     }
   });
 
-  it('rewrites every session mask (missing ones included) to LOG_MINIMAL and keeps every other field', () => {
+  it('rewrites every session mask (missing ones included) to LOG_MINIMAL, stamps its version, keeps every other field', () => {
     const dataDir = makeDataDir();
     write(dataDir, 'sessions.json', SESSIONS);
 
@@ -98,7 +98,8 @@ describe('migrateAllUsersMinimalOnce', () => {
     expect(after).toHaveLength(SESSIONS.length);
     after.forEach((session, i) => {
       expect(session.logVerbosity).toBe(LOG_MINIMAL);
-      const { logVerbosity: _a, ...restAfter } = session;
+      expect(session.logVerbosityVersion).toBe(LOG_VERBOSITY_MASK_VERSION);
+      const { logVerbosity: _a, logVerbosityVersion: _v, ...restAfter } = session;
       const { logVerbosity: _b, ...restBefore } = SESSIONS[i] as Record<string, unknown>;
       expect(restAfter).toEqual(restBefore);
     });

@@ -17,9 +17,11 @@ import { StreamExecutor, setStreamExecutorProviders } from '../stream-executor';
 const appendWorkLog = vi.fn<(conversationId: string, entry: WorkLogInput) => void>();
 const postCompactStartingIfNeeded = vi.fn().mockResolvedValue(undefined);
 const postCompactCompleteIfNeeded = vi.fn().mockResolvedValue(undefined);
+const closeCompactStartingAtTurnEnd = vi.fn().mockResolvedValue(undefined);
 
 setStreamExecutorProviders({
   appendWorkLog,
+  closeCompactStartingAtTurnEnd,
   postCompactStartingIfNeeded,
   postCompactCompleteIfNeeded,
   userSettingsStore: {
@@ -128,6 +130,7 @@ function createDeps(stream: () => AsyncGenerator<unknown>): any {
     requestCoordinator: {
       removeController: vi.fn(),
       touchSession: vi.fn(),
+      isRequestActive: vi.fn().mockReturnValue(false),
     },
     slackApi: {
       getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
@@ -199,6 +202,20 @@ function createParams(session: any): any {
 /** Let the fire-and-forget writes settle. */
 async function settle(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** White-box access to the executor's private seams these tests stub. */
+interface ExecutorPrivates {
+  handleError: (...args: unknown[]) => Promise<number | undefined>;
+  handleModelCommandToolResults: (...args: unknown[]) => Promise<{ hasPendingChoice: boolean }>;
+}
+
+function privateOf(executor: StreamExecutor): ExecutorPrivates {
+  return executor as unknown as ExecutorPrivates;
+}
+
+function spyOnHandleError(executor: StreamExecutor) {
+  return vi.spyOn(privateOf(executor), 'handleError');
 }
 
 function loggedKinds(): string[] {
@@ -321,7 +338,7 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
       })(),
     );
     const executor = new StreamExecutor(deps);
-    const handleError = vi.spyOn(executor as any, 'handleError').mockResolvedValue(undefined);
+    const handleError = spyOnHandleError(executor).mockResolvedValue(undefined);
 
     await executor.execute(createParams(createSession(LOG_MINIMAL))).catch(() => undefined);
     await settle();
@@ -340,7 +357,7 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
       })(),
     );
     const executor = new StreamExecutor(deps);
-    vi.spyOn(executor as any, 'handleError').mockResolvedValue(30_000);
+    spyOnHandleError(executor).mockResolvedValue(30_000);
 
     await executor.execute(createParams(createSession(LOG_MINIMAL))).catch(() => undefined);
     await settle();
@@ -369,7 +386,7 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
       })(),
     );
     const executor = new StreamExecutor(deps);
-    vi.spyOn(executor as any, 'handleError').mockResolvedValue(undefined);
+    spyOnHandleError(executor).mockResolvedValue(undefined);
     const params = { ...createParams(createSession(LOG_MINIMAL)), abortController: controller };
 
     await executor.execute(params).catch(() => undefined);
@@ -394,7 +411,7 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
       seen = context.hostChoicePosted;
       return realProcess.call(this, stream, context, signal);
     });
-    vi.spyOn(executor as any, 'handleModelCommandToolResults').mockResolvedValue({ hasPendingChoice: true });
+    vi.spyOn(privateOf(executor), 'handleModelCommandToolResults').mockResolvedValue({ hasPendingChoice: true });
 
     await executor.execute(createParams(createSession(LOG_MINIMAL)));
     await settle();
@@ -402,5 +419,59 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
 
     expect(seen).toBeTypeOf('function');
     expect(seen?.()).toBe(true);
+  });
+});
+
+describe('StreamExecutor — turn end closes an un-ended compaction "starting" message', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('calls the closer once at turn end with the session and thread', async () => {
+    const deps = createDeps(toolTurn());
+    const session = createSession(LOG_MINIMAL);
+
+    await new StreamExecutor(deps).execute(createParams(session));
+    await settle();
+
+    expect(closeCompactStartingAtTurnEnd).toHaveBeenCalledTimes(1);
+    expect(closeCompactStartingAtTurnEnd).toHaveBeenCalledWith(
+      expect.objectContaining({ session, channel: CHANNEL, threadTs: THREAD, slackApi: deps.slackApi }),
+    );
+  });
+
+  it('runs on the error path too', async () => {
+    const deps = createDeps(() =>
+      (async function* () {
+        yield { type: 'status', status: 'compacting' };
+        throw new Error('transport closed');
+      })(),
+    );
+    const executor = new StreamExecutor(deps);
+    spyOnHandleError(executor).mockResolvedValue(undefined);
+
+    await executor.execute(createParams(createSession(getVerbosityFlags('compact')))).catch(() => undefined);
+    await settle();
+
+    expect(closeCompactStartingAtTurnEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('is skipped when a newer turn is already active (its cycle is not ours to close)', async () => {
+    const deps = createDeps(toolTurn());
+    deps.requestCoordinator.isRequestActive.mockReturnValue(true);
+
+    await new StreamExecutor(deps).execute(createParams(createSession(LOG_MINIMAL)));
+    await settle();
+
+    expect(closeCompactStartingAtTurnEnd).not.toHaveBeenCalled();
+  });
+
+  it('a throwing closer never breaks the turn', async () => {
+    closeCompactStartingAtTurnEnd.mockRejectedValueOnce(new Error('slack down'));
+    const deps = createDeps(toolTurn());
+
+    const result = await new StreamExecutor(deps).execute(createParams(createSession(LOG_MINIMAL)));
+
+    expect(result.success).toBe(true);
   });
 });
