@@ -512,10 +512,10 @@ const PAGE_HELPERS = [
   '    if (dot) { clipped = false; lines = 0; text = ""; }',
   // A tap near the left edge, at the centre and near the right edge must reach the control.
   '    var midY = r.top + r.height / 2;',
-  '    var hit = [r.left + 3, r.left + r.width / 2, r.right - 3].every(function (x) {',
-  '      var h = document.elementFromPoint(x, midY);',
-  '      return !!h && (h === target || target.contains(h));',
-  '    });',
+  '    var reaches = function (x) { var h = document.elementFromPoint(x, midY); return !!h && (h === target || target.contains(h)); };',
+  '    var hit = [r.left + 3, r.left + r.width / 2, r.right - 3].every(reaches);',
+  // The user select's chevron (its ::after, inside the right padding) must hand the tap to the select too.
+  '    if (wrap) hit = hit && reaches(r.right - parseFloat(cs.borderRightWidth) - parseFloat(cs.paddingRight) - 4);',
   '    items.push({',
   '      el: el.id || el.className.split(" ")[0] || el.tagName.toLowerCase(),',
   '      text: text, label: el.getAttribute("aria-label") || el.getAttribute("title") || "", role: el.getAttribute("role") || "",',
@@ -1367,7 +1367,7 @@ type NameRule = 'full' | 'ellipsis' | 'fit';
 
 /**
  * Top bar matrix, Chromium and WebKit: widths 1280 / 1100 / 1040 / 1024 / 820 /
- * 640 (mouse and touch) and 390 / 360 (touch) × status (Connecting... → Live →
+ * 640 (mouse and touch) and 390 / 360 / 320 (touch) × status (Connecting... → Live →
  * Reconnecting... → Live) × pill (bearer "★ Admin", "Zhuge Hyuk", a 32-character
  * Korean name) × selected user (All Users, Zhuge, Zhuge Hyuk, the Korean name).
  * Control labels never wrap or cut, no two controls overlap, none leaves the
@@ -1431,6 +1431,7 @@ async function topbarChecks(browser: import('playwright').Browser) {
     ]),
     { width: 390, touch: true },
     { width: 360, touch: true },
+    { width: 320, touch: true },
   ];
 
   // WebKit too: its native <select> hard-cuts text and ignores min-height.
@@ -1444,6 +1445,58 @@ async function topbarChecks(browser: import('playwright').Browser) {
     }
   } finally {
     await wk.close();
+  }
+
+  // Keyboard: Tab reaches the user select, the wrapper shows the focus ring, and a
+  // type-ahead key changes the selection; the label, title and accessible name follow.
+  for (const [engine, launch] of [
+    ['chromium', async () => browser],
+    ['webkit', () => webkit.launch({ headless: true })],
+  ] as const) {
+    const b = await launch();
+    const ctx = await b.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'dark' });
+    const page = await ctx.newPage();
+    await installMocks(page, makeBoard());
+    await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: USERS } }));
+    await page.goto(`${BASE_URL}/dashboard`);
+    await page.waitForFunction(() => (document.getElementById('user-select') as HTMLSelectElement).options.length > 1);
+    let tabs = 0;
+    while (tabs < 15 && (await page.evaluate(() => document.activeElement?.id)) !== 'user-select') {
+      await page.keyboard.press('Tab');
+      tabs++;
+    }
+    const ring = await page.evaluate(() => {
+      const w = document.querySelector('.topbar .user-select') as HTMLElement;
+      const cs = getComputedStyle(w);
+      return {
+        focused: document.activeElement?.id === 'user-select',
+        outline: `${cs.outlineStyle} ${cs.outlineWidth}`,
+      };
+    });
+    await page.keyboard.press('z'); // type-ahead: the first option starting with "Z" (Zhuge)
+    await page.waitForTimeout(200);
+    const after = await page.evaluate(() => {
+      const s = document.getElementById('user-select') as HTMLSelectElement;
+      return {
+        value: s.value,
+        title: s.title,
+        label: document.getElementById('user-select-label')?.textContent,
+        path: location.pathname,
+      };
+    });
+    const aria = await page.locator('#user-select').ariaSnapshot();
+    check(
+      ring.focused &&
+        ring.outline === 'solid 2px' &&
+        after.value === 'U001' &&
+        after.label === 'Zhuge' &&
+        after.title === 'Zhuge' &&
+        after.path === '/dashboard/U001' &&
+        aria.startsWith('- combobox "Zhuge"'),
+      `${engine} keyboard: Tab → user select with the wrapper focus ring, "z" selects Zhuge; label, title and accessible name follow (${JSON.stringify({ tabs, ...ring, ...after, aria })})`,
+    );
+    await ctx.close();
+    if (engine === 'webkit') await b.close();
   }
 
   // Initial load of a user's own board: loadUsers marks their option selected,
@@ -1486,8 +1539,8 @@ async function topbarChecks(browser: import('playwright').Browser) {
     await page.waitForSelector('#admin-mode-toggle', { state: 'visible', timeout: 5000 });
     await page.waitForFunction(() => (document.getElementById('user-select') as HTMLSelectElement).options.length > 1);
     const base = `topbar-${engine}${width}${touch ? '-touch' : ''}`;
-    const failed = new Set<string>();
     let probes = 0;
+    let failed = 0;
     for (const state of ['connecting', 'live', 'reconnecting', 'live'] as const) {
       if (state !== 'connecting') {
         await page.evaluate((s) => {
@@ -1516,7 +1569,7 @@ async function topbarChecks(browser: import('playwright').Browser) {
             if (i.lines > 1) bad.push(`${i.el} wraps "${i.text}"`);
             if (i.clipped) bad.push(`${i.el} hard-cut "${i.text}"`);
             if (i.outside) bad.push(`${i.el} off-screen`);
-            if (i.interactive && !i.hit) bad.push(`${i.el} not reachable across its box`);
+            if (i.interactive && !i.hit) bad.push(`${i.el} not reachable across its box (edges, centre, chevron)`);
             if (!i.covers) bad.push(`${i.el} select does not cover its box`);
             if (width < 640 && i.interactive && i.h < 44) bad.push(`${i.el} ${i.h}px tall`);
           }
@@ -1551,7 +1604,7 @@ async function topbarChecks(browser: import('playwright').Browser) {
           }
           const combo = `${state} pill=${pill.key} sel=${sel.key}`;
           if (bad.length) {
-            failed.add(combo);
+            failed++;
             log(`[FAIL] ${base} ${combo}: ${bad.join('; ')}`);
             failures.push(`${base} ${combo}`);
           }
@@ -1569,8 +1622,8 @@ async function topbarChecks(browser: import('playwright').Browser) {
       }
     }
     check(
-      failed.size === 0 && errors.length === 0,
-      `${base}: ${probes - failed.size}/${probes} status × pill × selected combinations clean${errors.length ? ` (page errors: ${errors.join(' | ')})` : ''}`,
+      failed === 0 && errors.length === 0,
+      `${base}: ${probes - failed}/${probes} status × pill × selected combinations clean${errors.length ? ` (page errors: ${errors.join(' | ')})` : ''}`,
     );
     await ctx.close();
   }

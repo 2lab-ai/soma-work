@@ -101,8 +101,10 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
       const wrap = DASHBOARD_TS.match(/\*\/\n\.topbar \.nav \.user-select \{[^}]*\}/)?.[0] ?? '';
       expect(wrap).toContain('max-inline-size: 180px');
       expect(wrap).toContain('min-width: 0');
+      // WebKit passes the ellipsized label's text up as page overflow unless the wrapper clips.
+      expect(wrap).toContain('overflow: hidden');
       expect(DASHBOARD_TS).toContain(
-        '.topbar .user-select-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }',
+        '.topbar .user-select-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }',
       );
       // No native-select sizing: WebKit hard-cuts a native select's text.
       expect(DASHBOARD_TS).not.toContain('field-sizing');
@@ -110,8 +112,19 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
 
     it('the native select is transparent and covers the whole visible box (every tap and key reaches it)', () => {
       const sel = DASHBOARD_TS.match(/\n\.topbar \.user-select select \{[^}]*\}/)?.[0] ?? '';
-      for (const decl of ['position: absolute', 'inset: 0', 'inline-size: 100%', 'block-size: 100%', 'opacity: 0'])
+      for (const decl of [
+        'position: absolute',
+        'z-index: 1',
+        'inset: 0',
+        'inline-size: 100%',
+        'block-size: 100%',
+        'opacity: 0',
+      ])
         expect(sel).toContain(decl);
+      // The chevron (a transformed ::after, so a stacking context above the select) must not take the tap.
+      const chevron = DASHBOARD_TS.match(/\n\.topbar \.user-select::after \{[^}]*\}/)?.[0] ?? '';
+      expect(chevron).toContain('transform: rotate(45deg)');
+      expect(chevron).toContain('pointer-events: none');
       expect(DASHBOARD_TS).toContain('.topbar .user-select:has(select:focus-visible) {');
     });
 
