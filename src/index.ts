@@ -55,6 +55,7 @@ import {
   broadcastSessionUpdate,
   broadcastSummaryTitleChanged,
   broadcastTaskUpdate,
+  broadcastWorkLog,
   initRecorder,
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
@@ -72,9 +73,11 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
+import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
+import { migrateAllUsersMinimalOnce } from './deploy/migrate-all-users-minimal-once';
 import { migrateAllUsersOpusOnce } from './deploy/migrate-all-users-opus-once';
 import { migrateCronOpusOnce } from './deploy/migrate-cron-opus-once';
 import { initializeDispatchService } from './dispatch-service';
@@ -99,6 +102,7 @@ import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler } from './slack/goal-loop-resume';
+import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
@@ -215,6 +219,36 @@ async function start() {
       }
     }
     timing('all-users opus migration evaluated');
+
+    // 2026-10-16 one-time ALL-USER Slack verbosity rewrite (spec 10 §3.2-1):
+    // every user default → `minimal` and every persisted session mask in
+    // sessions.json → LOG_MINIMAL. Same presence-only, marker-first contract
+    // as the opus rewrite above. Runs BEFORE `slackHandler.loadSavedSessions()`
+    // further down, so the restored sessions read the rewritten masks. No
+    // second writer can race it: the O_EXCL pid lock `acquirePidLock(DATA_DIR)`
+    // (src/pid-lock.ts) is held from the top of start() above. Own try/catch;
+    // never blocks boot, and the settings singleton is reloaded unless it was
+    // a clean skip (including after a throw).
+    let allUsersMinimalStatus: 'skipped' | 'applied' | 'failed' = 'failed';
+    try {
+      const allUsersMinimal = migrateAllUsersMinimalOnce({ dataDir: DATA_DIR });
+      allUsersMinimalStatus = allUsersMinimal.status;
+      logger.info(
+        `all-users log-minimal one-time migration: ${allUsersMinimal.status} (migrated users ${allUsersMinimal.users.migrated}/${allUsersMinimal.users.total}, sessions ${allUsersMinimal.sessions.migrated}/${allUsersMinimal.sessions.total}, marker=${allUsersMinimal.markerFile})`,
+      );
+    } catch (error) {
+      logger.error('all-users log-minimal one-time migration FAILED — check the marker before assuming a retry', error);
+    } finally {
+      if (allUsersMinimalStatus !== 'skipped') {
+        try {
+          userSettingsStore.reloadSettings();
+          logger.info(`reloaded user settings after all-users log-minimal migration (status=${allUsersMinimalStatus})`);
+        } catch (error) {
+          logger.error('reloadSettings after all-users log-minimal migration failed', error);
+        }
+      }
+    }
+    timing('all-users log-minimal migration evaluated');
 
     // 2026-09-28 one-time cron rewrite: every job's model → `{type:'opus'}`
     // (resolved to the latest opus at fire time). Same presence-only,
@@ -802,6 +836,25 @@ async function start() {
     // Connect dashboard: real-time conversation turn updates
     setOnTurnRecordedCallback(broadcastConversationUpdate);
 
+    // Connect dashboard: work log (spec §3.3). The stream executor emits every
+    // instruction / narration / tool step through `appendWorkLog`; each entry is
+    // persisted and pushed to the owner's and admins' dashboards.
+    // setStreamExecutorProviders merges, so this adds one field on top of the
+    // set wired in src/slack/pipeline/stream-executor.ts. The intersection type
+    // keeps it compiling whether or not StreamExecutorProviders declares
+    // `appendWorkLog` yet (both declare the same WorkLogInput shape).
+    // Fire-and-forget: the turn never waits on the disk; every failure is
+    // already logged inside work-log.ts.
+    setOnWorkLogAppendedCallback(broadcastWorkLog);
+    const workLogProviders: StreamExecutorProviders & {
+      appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
+    } = {
+      appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
+        appendWorkLog(conversationId, entry).catch(() => {});
+      },
+    };
+    setStreamExecutorProviders(workLogProviders);
+
     // Dashboard v2.1 — wire session title bridge so the recorder can
     // regenerate session summaryTitle without importing session-registry
     // (which would create a cycle with conversation/recorder).
@@ -1303,6 +1356,20 @@ async function start() {
         logger.info('Conversation viewer stopped');
       } catch (error) {
         logger.error('Error stopping conversation viewer:', error);
+      }
+
+      // Land queued work-log lines before exit; bounded so a stuck disk cannot
+      // hold the shutdown.
+      {
+        let flushTimer: NodeJS.Timeout | undefined;
+        const flushed = await Promise.race([
+          flushWorkLog().then(() => true),
+          new Promise<false>((resolve) => {
+            flushTimer = setTimeout(() => resolve(false), 2000);
+          }),
+        ]);
+        clearTimeout(flushTimer);
+        if (!flushed) logger.warn('Work log flush timed out during shutdown');
       }
 
       // SDK transport.close() escalates with timers, but timers cannot run after

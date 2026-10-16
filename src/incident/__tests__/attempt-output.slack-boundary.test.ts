@@ -237,6 +237,23 @@ describe('incident conclusion → real Slack stream processor', () => {
         });
       });
     }
+
+    // Spec 10 §3.2-3: `minimal` withholds mid-turn narration, but the incident
+    // conclusion is not narration — eagle-eye waits on that one line.
+    it(`[${mode}] publishes the conclusion once, verbatim, at every verbosity (minimal included)`, async () => {
+      const { output, messages } = terminalPairFor('projalpha-dev2-api is unreachable');
+
+      for (const verbosity of VERBOSITY_NAMES) {
+        const surface = await run(messages, {
+          phase1,
+          incidentAttempt: true,
+          logVerbosity: getVerbosityFlags(verbosity),
+        });
+
+        expect(surface.appends, verbosity).toEqual([]);
+        expect(surface.postTexts, verbosity).toEqual([output.text]);
+      }
+    });
   }
 
   function ordinaryReply(text: string): SDKMessage {

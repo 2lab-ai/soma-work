@@ -23,6 +23,7 @@
  * promotions below are therefore production code, not replicas.
  */
 
+import { LOG_DETAIL } from '@soma/slack/output-flags';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runAgentStreamFromSdk } from '../../../agent-runtime/claude-code/stream-runner';
 
@@ -213,7 +214,7 @@ function thresholdSession(overrides: Record<string, unknown> = {}) {
   return {
     sessionId: 'ac1f0d92-0000-4000-8000-00000000dead',
     ownerId: 'U_TEST',
-    logVerbosity: 'detail',
+    logVerbosity: LOG_DETAIL,
     usage: {},
     terminated: false,
     model: 'claude-opus-4-6',

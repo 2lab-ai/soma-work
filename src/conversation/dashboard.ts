@@ -9,13 +9,15 @@
  *   GET  /api/dashboard/stats                → User statistics (JSON)
  *   GET  /api/dashboard/users                → User list (JSON)
  *   GET  /api/dashboard/session/:id          → Session detail turns (JSON)
+ *   GET  /api/dashboard/session/:id/worklog  → Work log entries (JSON, registered in work-log-routes.ts)
  *   POST /api/dashboard/session/:id/generate-title → Generate titleSub via codex model
  *   POST /api/dashboard/session/:key/stop    → Stop a working session
  *   POST /api/dashboard/session/:key/close   → Close/terminate a session
  *   POST /api/dashboard/session/:key/trash   → Trash (hide) a closed session
  *   POST /api/dashboard/session/:key/command → Send command to session
  *   POST /api/dashboard/session/:conversationId/resummarize/:turnId → Retry summary generation
- *   WS   /ws/dashboard                       → Real-time session state updates (WebSocket)
+ *   WS   /ws/dashboard                       → Real-time session state updates (WebSocket),
+ *                                              incl. `work_log` entries (owner/admin scoped)
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -33,6 +35,7 @@ import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggreg
 import { readAllInstances } from './instance-registry';
 import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
 import { generateTitle } from './title-generator';
+import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
 
@@ -945,48 +948,67 @@ export function broadcastTaskUpdate(
   }
 }
 
+/**
+ * Send a payload to the conversation's audience: the owning session's owner
+ * plus admin clients. Shared by `conversation_update` and `work_log` so both
+ * events have the same scope by construction.
+ */
+function sendToConversationAudience(conversationId: string, payload: string): void {
+  // Resolve session owner for scoping — iterate because sessions are keyed by
+  // sessionKey (channelId:threadTs), not conversationId (UUID)
+  let ownerId: string | undefined;
+  const sessions = _getSessionsFn?.();
+  if (sessions) {
+    for (const [, s] of sessions) {
+      if (s.conversationId === conversationId) {
+        ownerId = s.ownerId;
+        break;
+      }
+    }
+  }
+
+  if (!ownerId) {
+    // No active session — broadcast only to admin clients so archived session
+    // updates (e.g., resummarize) still reach the admin dashboard without
+    // leaking to non-owner clients.
+    logger.debug('No active session for broadcast, sending to admin clients only', { conversationId });
+  }
+
+  for (const client of wsClients) {
+    if (!ownerId) {
+      // When owner is unknown, only admin clients receive the update
+      if (!client.isAdmin) continue;
+    } else if (!client.isAdmin && client.userId && client.userId !== ownerId) {
+      continue;
+    }
+    try {
+      client.send(payload);
+    } catch {
+      wsClients.delete(client);
+    }
+  }
+}
+
 /** Broadcast conversation turn update — scoped to session owner's WS clients only */
 export function broadcastConversationUpdate(conversationId: string, turn: any): void {
   if (wsClients.size === 0) return;
   try {
-    // Resolve session owner for scoping — iterate because sessions are keyed by
-    // sessionKey (channelId:threadTs), not conversationId (UUID)
-    let ownerId: string | undefined;
-    const sessions = _getSessionsFn?.();
-    if (sessions) {
-      for (const [, s] of sessions) {
-        if (s.conversationId === conversationId) {
-          ownerId = s.ownerId;
-          break;
-        }
-      }
-    }
-
-    if (!ownerId) {
-      // No active session — broadcast only to admin clients so archived session
-      // updates (e.g., resummarize) still reach the admin dashboard without
-      // leaking to non-owner clients.
-      logger.debug('No active session for broadcast, sending to admin clients only', { conversationId });
-    }
-
     // Strip rawContent from assistant turns to reduce bandwidth
     const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent ? { ...turn, rawContent: undefined } : turn;
     const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
-    for (const client of wsClients) {
-      if (!ownerId) {
-        // When owner is unknown, only admin clients receive the update
-        if (!client.isAdmin) continue;
-      } else if (!client.isAdmin && client.userId && client.userId !== ownerId) {
-        continue;
-      }
-      try {
-        client.send(payload);
-      } catch {
-        wsClients.delete(client);
-      }
-    }
+    sendToConversationAudience(conversationId, payload);
   } catch (error) {
     logger.error('Failed to broadcast conversation update', error);
+  }
+}
+
+/** Broadcast a work-log entry (spec §3.3) — same owner/admin scope as `conversation_update`. */
+export function broadcastWorkLog(conversationId: string, entry: WorkLogEntry): void {
+  if (wsClients.size === 0) return;
+  try {
+    sendToConversationAudience(conversationId, JSON.stringify({ type: 'work_log', conversationId, entry }));
+  } catch (error) {
+    logger.error('Failed to broadcast work log entry', error);
   }
 }
 
