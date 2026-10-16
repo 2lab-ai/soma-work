@@ -88,7 +88,7 @@ Only these fields exist per surface — anything else warns and is skipped.
 
 Field names match case-insensitively. `dashboardLink` renders `📋 작업 로그`, the deep link to the session's card on the owner's dashboard (`/dashboard/<ownerId>?session=<sessionKey>`). When the conversation viewer (the web server that serves the dashboard) is not listening there is no URL and the field renders nothing. A new session also posts the same link into a thread a user started; that post is skipped in the same case. To hide the header link, set `{ "field": "dashboardLink", "show": false }` or remove that entry from each theme's lines in `config.json` — this controls the header field only.
 
-A field that does not appear in the resolved lines is hidden. On the dashboard card, the pending-question block and action buttons are always shown regardless of configuration.
+A field that does not appear in the resolved lines is hidden. The dashboard (Agent inbox) card is collapsed by default: its face shows the title, a one-line summary, the status and the `tasks` / `contextwindow` counts; the meta row (`owner`, `workflow`, `model`, `status`, links, tokens, cost, merge stats) and the task timeline move to the expanded card, under the same field gates. In the expanded card the pending-question block and the action buttons are always shown regardless of configuration.
 
 ## Slack constraints
 
