@@ -1279,6 +1279,49 @@ async function cardIoOutage(browser: import('playwright').Browser) {
   await ctx.close();
 }
 
+// Panel A's generated subtitle lands after panel B opened: B keeps its own.
+async function titleSubPanelSwitch(browser: import('playwright').Browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'light' });
+  const page = await ctx.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await installMocks(page, makeBoard());
+  // The mocked session GET has no titleSub, so every panel opening asks for one.
+  let releaseA: () => void = () => {};
+  const aHeld = new Promise<void>((r) => {
+    releaseA = r;
+  });
+  const posts: string[] = [];
+  await page.route(/\/api\/dashboard\/session\/[^/?]+\/generate-title$/, async (r) => {
+    const conv = decodeURIComponent(new URL(r.request().url()).pathname.split('/')[4] || '');
+    posts.push(conv);
+    if (conv === 'conv-1') await aHeld;
+    return r.fulfill({ json: { titleSub: `subtitle of ${conv}` } });
+  });
+  await openBoard(page);
+  const sub = () => page.evaluate(() => document.getElementById('panel-title-sub-text')?.textContent ?? null);
+  const waitFor = async (pred: () => boolean) => {
+    for (let i = 0; i < 100 && !pred(); i++) await page.waitForTimeout(20);
+  };
+  await page.evaluate((k) => (window as unknown as PageWindow).openPanel(k), K('100')); // panel A
+  await waitFor(() => posts.includes('conv-1'));
+  const whileHeld = await sub();
+  await page.evaluate((k) => (window as unknown as PageWindow).openPanel(k), K('200')); // panel B
+  await waitFor(() => posts.includes('conv-2'));
+  await page.waitForTimeout(300);
+  const bBefore = await sub();
+  releaseA(); // A's response lands late
+  await page.waitForTimeout(400);
+  const bAfter = await sub();
+  log(`titleSub panel switch: ${JSON.stringify({ posts, whileHeld, bBefore, bAfter })}`);
+  check(
+    whileHeld === 'Generating title...' && bBefore === 'subtitle of conv-2' && bAfter === 'subtitle of conv-2',
+    `titleSub: A's late response does not overwrite panel B's subtitle (${JSON.stringify({ bBefore, bAfter })})`,
+  );
+  check(errors.length === 0, `titleSub: no page errors (${errors.join(' | ')})`);
+  await ctx.close();
+}
+
 async function main() {
   const dashboard = await import('../src/conversation/dashboard');
   dashboard.setDashboardSessionAccessor(() => new Map());
@@ -1293,6 +1336,7 @@ async function main() {
     await reviewScenarios(browser);
     await addendumChecks(browser);
     await cardIoOutage(browser);
+    await titleSubPanelSwitch(browser);
   } finally {
     await browser.close();
     await ws.stopWebServer();
