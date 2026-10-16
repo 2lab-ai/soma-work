@@ -6,9 +6,10 @@ import { isSafePathSegment } from '../../path-utils';
 import { createPermissionRequest } from '../../skill-permission-request-store';
 import { extractCopiedFrom } from '../../user-skill-frontmatter';
 import { consumeOneTimeGrant, hasOneTimeGrant, isSkillUseAllowed } from '../../user-skill-grants-store';
+import { announceForcedSkillFire } from '../skill-fire-banner';
 import { buildPermissionRequestMessage } from '../skill-permission-blocks';
 import { ToolFormatter } from '../tool-formatter';
-import type { CommandContext, CommandHandler, CommandResult } from './types';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 import { resolveUserIdentifier, type UserResolver } from './user-identity-resolver';
 
 /**
@@ -232,8 +233,14 @@ export class SkillForceHandler implements CommandHandler {
    * @param resolveUser maps a Slack identifier (uid / display name) to a uid
    *   for cross-user `$X:skill` invocation (S3/S6). Defaults to the offline
    *   `userSettingsStore`-backed resolver; injected as a stub in tests.
+   * @param deps `claudeHandler` finds the thread's session, whose verbosity
+   *   decides whether the RPG banner is posted. Without it (or without a
+   *   session) the mask reads as the default detail and the banner is posted.
    */
-  constructor(private resolveUser: UserResolver = resolveUserIdentifier) {}
+  constructor(
+    private resolveUser: UserResolver = resolveUserIdentifier,
+    private deps: Partial<Pick<CommandDependencies, 'claudeHandler'>> = {},
+  ) {}
 
   canHandle(text: string, userId?: string): boolean {
     const trimmed = text.trim();
@@ -377,11 +384,10 @@ export class SkillForceHandler implements CommandHandler {
       };
     }
 
-    await say({
-      text: '',
-      thread_ts: threadTs,
-      attachments: [{ color: rpg.color, text: rpg.text }],
-    });
+    // Posted at compact and above; recorded in the work log at every level.
+    await announceForcedSkillFire(this.deps.claudeHandler?.getSession(ctx.channel, threadTs), rpg, (attachment) =>
+      say({ text: '', thread_ts: threadTs, attachments: [attachment] }),
+    );
 
     return {
       handled: true,

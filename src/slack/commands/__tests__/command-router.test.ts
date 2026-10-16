@@ -1,5 +1,8 @@
 import * as fs from 'node:fs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { LOG_MINIMAL } from '@soma/slack/output-flags';
+import { setStreamExecutorProviders } from '@soma/slack/pipeline/stream-executor';
+import type { WorkLogInput } from '@soma/slack/work-log';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../user-settings-store', () => ({
   userSettingsStore: {
@@ -1356,5 +1359,56 @@ describe('CommandRouter — handler throw must not fall through to session init'
 
     expect(result.handled).toBe(true);
     expect(result.error).toBe('boom');
+  });
+});
+
+/**
+ * Wiring guard: the router hands SkillForceHandler its `claudeHandler`, so a
+ * non-deferred `$skill` banner reads the thread's session verbosity. Without
+ * that wiring the session is never found, the mask reads as detail and the
+ * banner reaches a `minimal` thread again.
+ */
+describe('CommandRouter — forced $skill banner reads the routed session verbosity', () => {
+  const recorded: Array<[string, WorkLogInput]> = [];
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    recorded.length = 0;
+    setStreamExecutorProviders({
+      appendWorkLog: (conversationId, entry) => {
+        recorded.push([conversationId, entry]);
+      },
+    });
+  });
+
+  afterEach(() => {
+    setStreamExecutorProviders({ appendWorkLog: () => {} });
+  });
+
+  it('minimal session: `$local:z` posts no banner, records one notice, still injects the skill', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const getSession = vi
+      .fn()
+      .mockReturnValue({ sessionId: 'sid', logVerbosity: LOG_MINIMAL, conversationId: 'conv-1' });
+    const say = vi.fn().mockResolvedValue(undefined);
+    const router = new CommandRouter(
+      buildDeps({
+        claudeHandler: {
+          getSession,
+          getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+          resetSessionContext: vi.fn().mockReturnValue(false),
+        },
+      }),
+    );
+
+    const result = await router.route({ text: '$local:z', user: 'U1', channel: 'C1', threadTs: 'T1', say } as any);
+
+    expect(getSession).toHaveBeenCalledWith('C1', 'T1');
+    expect(say.mock.calls.some((c: any[]) => Array.isArray(c[0]?.attachments))).toBe(false);
+    expect(recorded).toEqual([
+      ['conv-1', { kind: 'notice', text: expect.stringContaining('강제 발동'), ts: expect.any(Number) }],
+    ]);
+    expect(result.continueWithPrompt).toContain('<invoked_skills>');
+    expect(result.continueWithPrompt).toContain('<local:z>');
   });
 });
