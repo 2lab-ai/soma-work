@@ -16,6 +16,14 @@
  *   - work log: a live entry before the HTTP page keeps the older batch, entries
  *     stay in seq order, reconnect recovery pages forward (afterSeq=0 for an
  *     empty log), duplicates drop, a missing route reads "작업 로그 없음"
+ *   - work-log tool rows print the tool name once, with the emitter's stored
+ *     text shape ("Read {...}", "Glob ok")
+ *   - top bar, Chromium and WebKit, 360–1280px × status × pill name × selected
+ *     user (see topbarChecks): no control label wraps or is cut, no two
+ *     controls overlap, none leaves the viewport, each is reachable across its
+ *     box and ≥44px tall below 640px, only user names end in an ellipsis (full
+ *     name in title), the status badge keeps role="status" + a state
+ *     aria-label, and the page never scrolls sideways (topbar-*.png)
  *
  * Run from the repo root (keeps state out of the checkout):
  *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst npx tsx scripts/screenshot-agent-inbox.ts [outDir]
@@ -23,7 +31,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { chromium, type Page } from 'playwright';
+import { chromium, type Page, webkit } from 'playwright';
 
 const OUT = process.argv[2] || path.join(__dirname, '..', 'screenshots', 'agent-inbox');
 fs.mkdirSync(OUT, { recursive: true });
@@ -283,17 +291,31 @@ const WORKLOG: Record<string, unknown[]> = {
       kind: 'narration',
       text: 'Reading the current schema and the migration history first.',
     },
-    { seq: 3, ts: NOW - 9 * M + 6000, kind: 'tool', tool: 'Read', text: 'db/schema.sql' },
-    { seq: 4, ts: NOW - 9 * M + 6500, kind: 'tool_result', tool: 'Read', ok: true, text: '412 lines' },
-    { seq: 5, ts: NOW - 8 * M, kind: 'tool', tool: 'Grep', text: 'users\\b in db/migrations (14 files)' },
-    { seq: 6, ts: NOW - 8 * M + 900, kind: 'tool_result', tool: 'Grep', ok: true, text: '37 matches' },
+    // Tool rows in the emitter's stored shape (packages/slack/src/stream-processor.ts):
+    // `text` starts with the tool name — the row must still print the name once.
+    { seq: 3, ts: NOW - 9 * M + 6000, kind: 'tool', tool: 'Read', text: 'Read {"file_path":"db/schema.sql"}' },
+    { seq: 4, ts: NOW - 9 * M + 6500, kind: 'tool_result', tool: 'Read', ok: true, text: 'Read ok' },
+    {
+      seq: 5,
+      ts: NOW - 8 * M,
+      kind: 'tool',
+      tool: 'Grep',
+      text: 'Grep {"pattern":"users\\\\b","path":"db/migrations"}',
+    },
+    { seq: 6, ts: NOW - 8 * M + 900, kind: 'tool_result', tool: 'Grep', ok: true, text: 'Grep ok' },
     {
       seq: 7,
       ts: NOW - 6 * M,
       kind: 'narration',
       text: 'Writing 0042_split_users: accounts keeps auth columns, profiles gets the rest.',
     },
-    { seq: 8, ts: NOW - 5 * M, kind: 'tool', tool: 'Bash', text: 'npm run db:migrate -- --env staging --dry-run' },
+    {
+      seq: 8,
+      ts: NOW - 5 * M,
+      kind: 'tool',
+      tool: 'Bash',
+      text: 'Bash {"command":"npm run db:migrate -- --env staging --dry-run"}',
+    },
     {
       seq: 9,
       ts: NOW - 4 * M,
@@ -424,6 +446,91 @@ const PAGE_HELPERS = [
   'window.__startLoadMore = function () { (window.__loads = window.__loads || []).push(window.loadMorePanelTurns()); return !!window._panelTurnsLoading; };',
   'window.__turnState = function () { return { turns: document.querySelectorAll("#panel-turns .turn").length, loading: !!window._panelTurnsLoading }; };',
   'window.__wlSeqs = function () { return Array.prototype.map.call(document.querySelectorAll("#worklog-list .wl-entry"), function (e) { return Number(e.getAttribute("data-seq")); }); };',
+  // Every visible top-bar control: the text it shows, how many lines that text
+  // takes, whether it is hard-cut (its own box, or a native select narrower than
+  // its selected option), whether a user name in it (pill name, selected user)
+  // ends in an ellipsis and the title that carries the full name, its height,
+  // whether it sits inside the viewport, and whether a tap at its centre reaches it.
+  'window.__topbarProbe = function () {',
+  '  var bar = document.querySelector(".topbar");',
+  '  var els = Array.prototype.slice.call(bar.querySelectorAll("h1, .ws-badge, .user-select, select, a, button, .user-pill"))',
+  '    .filter(function (el) { return !(el.tagName === "SELECT" && el.parentNode.classList.contains("user-select")); });',
+  '  var range = document.createRange();',
+  '  var items = [];',
+  '  els.forEach(function (el) {',
+  '    var cs = getComputedStyle(el);',
+  '    var r = el.getBoundingClientRect();',
+  '    if (cs.display === "none" || cs.visibility === "hidden" || r.width === 0) return;',
+  '    var rects = [];',
+  '    var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);',
+  '    var n;',
+  '    while ((n = walker.nextNode())) {',
+  '      if (!n.textContent.trim() || (n.parentNode.closest && n.parentNode.closest("select"))) continue;',
+  '      range.selectNodeContents(n);',
+  '      Array.prototype.forEach.call(range.getClientRects(), function (q) { if (q.width > 0 && q.height > 0) rects.push(q); });',
+  '    }',
+  '    rects.sort(function (a, b) { return a.top - b.top; });',
+  '    var lines = 0, bottom = -Infinity;',
+  '    rects.forEach(function (q) { if (q.top >= bottom - 1) { lines++; bottom = q.bottom; } else bottom = Math.max(bottom, q.bottom); });',
+  '    var text = el.innerText.replace(/\\s+/g, " ").trim();',
+  '    var wrap = el.classList.contains("user-select");',
+  '    var nameEl = wrap ? el.querySelector(".user-select-label") : el.classList.contains("user-pill") ? el.querySelector("b") : null;',
+  // Name boxes are judged by their parts (a part pushed past the box is cut):
+  // WebKit counts a child's ellipsized text in the parent's scrollWidth.
+  '    var clipped = nameEl',
+  '      ? Array.prototype.some.call(el.children, function (k) { if (k.tagName === "SELECT") return false; var q = k.getBoundingClientRect(); return q.width > 0 && (q.left < r.left - 1 || q.right > r.right + 1); })',
+  '      : el.scrollWidth > el.clientWidth + 1;',
+  '    var name = null, nameTitle = "", ellipsized = false, target = el, covers = true;',
+  '    if (nameEl) {',
+  '      name = nameEl.textContent;',
+  '      if (nameEl.scrollWidth > nameEl.clientWidth + 1) {',
+  '        if (getComputedStyle(nameEl).textOverflow === "ellipsis") ellipsized = true; else clipped = true;',
+  '      }',
+  '      nameTitle = wrap ? el.querySelector("select").title : nameEl.getAttribute("title") || "";',
+  '      if (wrap) {',
+  '        target = el.querySelector("select"); text = name;',
+  '        var sr = target.getBoundingClientRect();', // the tap target is exactly the visible box
+  '        covers = Math.abs(sr.left - r.left) <= 1.5 && Math.abs(sr.right - r.right) <= 1.5 && Math.abs(sr.top - r.top) <= 1.5 && Math.abs(sr.bottom - r.bottom) <= 1.5;',
+  '      }',
+  '    }',
+  '    if (el.tagName === "SELECT") {',
+  '      var opt = el.options[el.selectedIndex];',
+  '      text = name = opt ? opt.text : "";',
+  '      nameTitle = el.title || "";',
+  '      var probe = el.cloneNode(false);',
+  '      probe.removeAttribute("id"); probe.removeAttribute("onchange");',
+  '      var o = document.createElement("option"); o.textContent = text; probe.appendChild(o);',
+  '      probe.style.cssText = "position:absolute;visibility:hidden;inline-size:auto;min-inline-size:0;max-inline-size:none;flex:none";',
+  '      el.parentNode.appendChild(probe);',
+  '      var need = probe.getBoundingClientRect().width;',
+  '      probe.remove();',
+  '      clipped = r.width + 0.5 < need; // a native select hard-cuts in WebKit',
+  '      lines = 1;',
+  '    }',
+  '    if (!text) clipped = false; // icon-only (theme toggle): ::before glyph, ::after hit slop wider than the box',
+  '    var dot = cs.textIndent !== "0px";',
+  '    if (dot) { clipped = false; lines = 0; text = ""; }',
+  // A tap near the left edge, at the centre and near the right edge must reach the control.
+  '    var midY = r.top + r.height / 2;',
+  '    var reaches = function (x) { var h = document.elementFromPoint(x, midY); return !!h && (h === target || target.contains(h)); };',
+  '    var hit = [r.left + 3, r.left + r.width / 2, r.right - 3].every(reaches);',
+  // The user select's chevron (its ::after, inside the right padding) must hand the tap to the select too.
+  '    if (wrap) hit = hit && reaches(r.right - parseFloat(cs.borderRightWidth) - parseFloat(cs.paddingRight) - 4);',
+  '    items.push({',
+  '      el: el.id || el.className.split(" ")[0] || el.tagName.toLowerCase(),',
+  '      text: text, label: el.getAttribute("aria-label") || el.getAttribute("title") || "", role: el.getAttribute("role") || "",',
+  '      lines: lines, clipped: clipped, ellipsized: ellipsized, name: name, nameTitle: nameTitle, dot: dot,',
+  '      h: Math.round(r.height), w: Math.round(r.width), outside: r.left < -0.5 || r.right > innerWidth + 0.5,',
+  '      interactive: /^(SELECT|A|BUTTON)$/.test(el.tagName) || wrap || el.getAttribute("data-clickable") === "true",',
+  '      hit: hit, covers: covers, box: { l: r.left, t: r.top, r: r.right, b: r.bottom },',
+  '    });',
+  '  });',
+  '  var br = bar.getBoundingClientRect();',
+  // overflow: sideways scroll of the page (0 = none). innerOverflow: against the
+  // window, which in WebKit includes a classic scrollbar (then -8, not overflow).
+  '  var de = document.documentElement;',
+  '  return { items: items, bar: { h: Math.round(br.height), bottom: Math.ceil(br.bottom) }, overflow: de.scrollWidth - de.clientWidth, innerOverflow: de.scrollWidth - innerWidth };',
+  '};',
 ].join('\n');
 
 async function installMocks(
@@ -571,6 +678,20 @@ async function viewportMatrix(browser: import('playwright').Browser) {
           timeout: 5000,
         });
         await page.waitForTimeout(400);
+        // A tool row prints the tool name once, even when the stored text starts with it.
+        const twice = await page.evaluate(() =>
+          Array.from(document.querySelectorAll('#worklog-list .wl-tool, #worklog-list .wl-tool_result'))
+            .map((row) => ({
+              name: row.querySelector('.wl-tool-name')?.textContent ?? '',
+              text: row.querySelector('.wl-text')?.textContent ?? '',
+            }))
+            .filter((r) => r.name && (r.text === r.name || r.text.startsWith(`${r.name} `)))
+            .map((r) => `${r.name} ${r.text}`),
+        );
+        check(
+          twice.length === 0,
+          `${theme} ${width}: work-log tool rows print the tool name once (${twice.join(' | ')})`,
+        );
         await shoot(page, `${theme}-${width}-panel-worklog.png`, false);
       }
       await ctx.close();
@@ -1215,6 +1336,299 @@ async function addendumChecks(browser: import('playwright').Browser) {
   await ctx.close();
 }
 
+type TopbarItem = {
+  el: string;
+  text: string;
+  label: string;
+  role: string;
+  lines: number;
+  clipped: boolean;
+  ellipsized: boolean;
+  name: string | null;
+  nameTitle: string;
+  dot: boolean;
+  h: number;
+  w: number;
+  outside: boolean;
+  interactive: boolean;
+  hit: boolean;
+  covers: boolean;
+  box: { l: number; t: number; r: number; b: number };
+};
+type TopbarProbe = {
+  items: TopbarItem[];
+  bar: { h: number; bottom: number };
+  overflow: number;
+  innerOverflow: number;
+};
+
+/** How a user name (pill or selected user) must render: whole, ellipsized, or whichever fits. */
+type NameRule = 'full' | 'ellipsis' | 'fit';
+
+/**
+ * Top bar matrix, Chromium and WebKit: widths 1280 / 1100 / 1040 / 1024 / 820 /
+ * 640 (mouse and touch) and 390 / 360 / 320 (touch) × status (Connecting... → Live →
+ * Reconnecting... → Live) × pill (bearer "★ Admin", "Zhuge Hyuk", a 32-character
+ * Korean name) × selected user (All Users, Zhuge, Zhuge Hyuk, the Korean name).
+ * Control labels never wrap or cut, no two controls overlap, none leaves the
+ * viewport, and a tap at the left edge, centre and right edge of each control
+ * reaches it; only user names may shrink — then with a visible ellipsis and the
+ * full name in title; every control is ≥44px tall below 640px; the status badge
+ * keeps role="status" and an aria-label that follows the socket (a 10px dot
+ * below 640px); the page never scrolls sideways.
+ */
+async function topbarChecks(browser: import('playwright').Browser) {
+  const LONG = '가나다라마바사아자차카타파하가나다라마바사아자차카타파하가나다라';
+  const REAL = 'Zhuge Hyuk';
+  const USERS = [
+    { id: 'U001', name: 'Zhuge' },
+    { id: 'U002', name: LONG },
+    { id: 'U003', name: REAL },
+  ];
+  const PILLS: Array<{ key: string; me: Record<string, unknown>; name: string }> = [
+    { key: 'admin', me: { isAdmin: true }, name: 'Admin' },
+    { key: 'named', me: { user: { name: REAL }, isAdmin: true }, name: REAL },
+    { key: 'long', me: { user: { name: LONG }, isAdmin: true }, name: LONG },
+  ];
+  const SELECTS: Array<{ key: string; value: string; name: string }> = [
+    { key: 'all', value: '', name: 'All Users' },
+    { key: 'zhuge', value: 'U001', name: 'Zhuge' },
+    { key: 'named', value: 'U003', name: REAL },
+    { key: 'long', value: 'U002', name: LONG },
+  ];
+  // The Korean name is wider than the select's cap on the one-row bar (≥1024)
+  // and than the 360px nav row, so it ends in an ellipsis there; on the 640–1023
+  // nav row it fits and must show whole. 1024 and 390 may be either: WebKit's
+  // classic scrollbar makes 1024 lay out as two rows, and at 390 the name is
+  // within 2px of the nav row's width.
+  const selRule = (name: string, w: number): NameRule =>
+    name !== LONG ? 'full' : w === 1024 || w === 390 ? 'fit' : w >= 1040 || w < 640 ? 'ellipsis' : 'full';
+  // A realistic pill name stays whole everywhere — also on the tightest one-row
+  // bar ("Reconnecting...", touch padding, the Korean name selected at 1024).
+  const pillRule = (name: string, _w: number): NameRule => (name === LONG ? 'ellipsis' : 'full');
+  const LABELS: Array<[string, string]> = [
+    ['h1', 'SOMA-WORK'],
+    ['a', 'Conversations'],
+    ['admin-mode-toggle', 'Admin: OFF'],
+  ];
+  const WS_LABEL = {
+    connecting: 'WebSocket: Connecting',
+    live: 'WebSocket: Live',
+    reconnecting: 'WebSocket: Reconnecting',
+  };
+  const SHOTS: Record<string, [string, string, string]> = {
+    '': ['admin', 'all', 'live'],
+    '-named': ['named', 'zhuge', 'live'],
+    '-selected-named': ['admin', 'named', 'live'],
+    '-selected-long': ['admin', 'long', 'live'],
+    '-long-longsel': ['long', 'long', 'live'],
+    '-reconn-long-longsel': ['long', 'long', 'reconnecting'],
+  };
+  const configs: Array<{ width: number; touch: boolean }> = [
+    ...[1280, 1100, 1040, 1024, 820, 640].flatMap((width) => [
+      { width, touch: false },
+      { width, touch: true },
+    ]),
+    { width: 390, touch: true },
+    { width: 360, touch: true },
+    { width: 320, touch: true },
+  ];
+
+  // WebKit too: its native <select> hard-cuts text and ignores min-height.
+  const wk = await webkit.launch({ headless: true });
+  try {
+    for (const [engine, b] of [
+      ['', browser],
+      ['webkit-', wk],
+    ] as const) {
+      for (const cfg of configs) await topbarPage(b, engine, cfg.width, cfg.touch);
+    }
+  } finally {
+    await wk.close();
+  }
+
+  // Keyboard: Tab reaches the user select, the wrapper shows the focus ring, and a
+  // type-ahead key changes the selection; the label, title and accessible name follow.
+  for (const [engine, launch] of [
+    ['chromium', async () => browser],
+    ['webkit', () => webkit.launch({ headless: true })],
+  ] as const) {
+    const b = await launch();
+    const ctx = await b.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'dark' });
+    const page = await ctx.newPage();
+    await installMocks(page, makeBoard());
+    await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: USERS } }));
+    await page.goto(`${BASE_URL}/dashboard`);
+    await page.waitForFunction(() => (document.getElementById('user-select') as HTMLSelectElement).options.length > 1);
+    let tabs = 0;
+    while (tabs < 15 && (await page.evaluate(() => document.activeElement?.id)) !== 'user-select') {
+      await page.keyboard.press('Tab');
+      tabs++;
+    }
+    const ring = await page.evaluate(() => {
+      const w = document.querySelector('.topbar .user-select') as HTMLElement;
+      const cs = getComputedStyle(w);
+      return {
+        focused: document.activeElement?.id === 'user-select',
+        outline: `${cs.outlineStyle} ${cs.outlineWidth}`,
+      };
+    });
+    await page.keyboard.press('z'); // type-ahead: the first option starting with "Z" (Zhuge)
+    await page.waitForTimeout(200);
+    const after = await page.evaluate(() => {
+      const s = document.getElementById('user-select') as HTMLSelectElement;
+      return {
+        value: s.value,
+        title: s.title,
+        label: document.getElementById('user-select-label')?.textContent,
+        path: location.pathname,
+      };
+    });
+    const aria = await page.locator('#user-select').ariaSnapshot();
+    check(
+      ring.focused &&
+        ring.outline === 'solid 2px' &&
+        after.value === 'U001' &&
+        after.label === 'Zhuge' &&
+        after.title === 'Zhuge' &&
+        after.path === '/dashboard/U001' &&
+        aria.startsWith('- combobox "Zhuge"'),
+      `${engine} keyboard: Tab → user select with the wrapper focus ring, "z" selects Zhuge; label, title and accessible name follow (${JSON.stringify({ tabs, ...ring, ...after, aria })})`,
+    );
+    await ctx.close();
+    if (engine === 'webkit') await b.close();
+  }
+
+  // Initial load of a user's own board: loadUsers marks their option selected,
+  // and the visible label and the select's title follow it.
+  {
+    const ctx = await browser.newContext({ viewport: { width: 820, height: 900 }, colorScheme: 'dark' });
+    const page = await ctx.newPage();
+    await installMocks(page, makeBoard());
+    await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: USERS } }));
+    await page.goto(`${BASE_URL}/dashboard/U003`);
+    await page.waitForFunction(() => (document.getElementById('user-select') as HTMLSelectElement).options.length > 1);
+    const sel = await page.evaluate(() => {
+      const s = document.getElementById('user-select') as HTMLSelectElement;
+      return { value: s.value, title: s.title, label: document.getElementById('user-select-label')?.textContent };
+    });
+    check(
+      sel.value === 'U003' && sel.label === REAL && sel.title === REAL,
+      `/dashboard/U003 opens with "${REAL}" in the select label and title (${JSON.stringify(sel)})`,
+    );
+    await ctx.close();
+  }
+
+  async function topbarPage(b: import('playwright').Browser, engine: string, width: number, touch: boolean) {
+    const ctx = await b.newContext({
+      viewport: { width, height: 900 },
+      colorScheme: 'dark',
+      hasTouch: touch,
+      // Playwright's isMobile is Chromium-only; hasTouch alone gives WebKit (pointer: coarse).
+      isMobile: touch && engine === '',
+    });
+    const page = await ctx.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await installMocks(page, makeBoard());
+    // Registered after installMocks, so these answer first.
+    await page.route('**/auth/me', (r) => r.fulfill({ json: { ...PILLS[0].me, csrfToken: 'x' } }));
+    await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: USERS } }));
+    await page.goto(`${BASE_URL}/dashboard`);
+    await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 5, null, { timeout: 10000 });
+    await page.waitForSelector('#admin-mode-toggle', { state: 'visible', timeout: 5000 });
+    await page.waitForFunction(() => (document.getElementById('user-select') as HTMLSelectElement).options.length > 1);
+    const base = `topbar-${engine}${width}${touch ? '-touch' : ''}`;
+    let probes = 0;
+    let failed = 0;
+    for (const state of ['connecting', 'live', 'reconnecting', 'live'] as const) {
+      if (state !== 'connecting') {
+        await page.evaluate((s) => {
+          const w = window as unknown as PageWindow;
+          if (s === 'live') w.__wsReopen();
+          else w.__ws.onclose();
+        }, state);
+      }
+      for (const sel of SELECTS) {
+        await page.selectOption('#user-select', sel.value);
+        await page.waitForTimeout(120);
+        for (const pill of PILLS) {
+          await page.evaluate((me) => (window as unknown as PageWindow)._applyUserPill(me), pill.me);
+          await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+          const p = (await page.evaluate(() => (window as unknown as PageWindow).__topbarProbe())) as TopbarProbe;
+          probes++;
+          const item = (el: string) => p.items.find((i) => i.el === el);
+          const bad: string[] = [];
+          const ws = item('ws-status');
+          if (!ws || ws.role !== 'status' || ws.label !== WS_LABEL[state] || (width < 640 && !(ws.dot && ws.h === 10)))
+            bad.push(
+              `status badge ${ws ? `role=${ws.role} label="${ws.label}" dot=${ws.dot} ${ws.w}x${ws.h}` : 'missing'}`,
+            );
+          if (p.overflow !== 0 || p.innerOverflow > 0) bad.push(`page overflow ${p.overflow}/${p.innerOverflow}`);
+          for (const i of p.items) {
+            if (i.lines > 1) bad.push(`${i.el} wraps "${i.text}"`);
+            if (i.clipped) bad.push(`${i.el} hard-cut "${i.text}"`);
+            if (i.outside) bad.push(`${i.el} off-screen`);
+            if (i.interactive && !i.hit) bad.push(`${i.el} not reachable across its box (edges, centre, chevron)`);
+            if (!i.covers) bad.push(`${i.el} select does not cover its box`);
+            if (width < 640 && i.interactive && i.h < 44) bad.push(`${i.el} ${i.h}px tall`);
+          }
+          for (let x = 0; x < p.items.length; x++) {
+            for (let y = x + 1; y < p.items.length; y++) {
+              const [a, c] = [p.items[x].box, p.items[y].box];
+              const ox = Math.min(a.r, c.r) - Math.max(a.l, c.l);
+              const oy = Math.min(a.b, c.b) - Math.max(a.t, c.t);
+              if (ox > 0.5 && oy > 0.5) bad.push(`${p.items[x].el} overlaps ${p.items[y].el} by ${ox.toFixed(1)}px`);
+            }
+          }
+          for (const [el, want] of LABELS) {
+            const i = item(el);
+            if (!i || i.ellipsized || !i.text.includes(want))
+              bad.push(`${el} label "${i?.text ?? ''}" (want "${want}")`);
+          }
+          for (const [el, want, rule] of [
+            ['user-pill', pill.name, pillRule(pill.name, width)],
+            ['user-select', sel.name, selRule(sel.name, width)],
+          ] as Array<[string, string, NameRule]>) {
+            const i = item(el);
+            const ok =
+              !!i &&
+              i.name === want &&
+              !(rule === 'full' && i.ellipsized) &&
+              !(rule === 'ellipsis' && !i.ellipsized) &&
+              (!i.ellipsized || i.nameTitle === want);
+            if (!ok)
+              bad.push(
+                `${el} want ${rule} "${want.slice(0, 12)}" got ${i ? `"${(i.name ?? '').slice(0, 12)}" ellipsized=${i.ellipsized} title=${i.nameTitle === want}` : 'missing'}`,
+              );
+          }
+          const combo = `${state} pill=${pill.key} sel=${sel.key}`;
+          if (bad.length) {
+            failed++;
+            log(`[FAIL] ${base} ${combo}: ${bad.join('; ')}`);
+            failures.push(`${base} ${combo}`);
+          }
+          for (const [suffix, [pk, sk, st]] of Object.entries(SHOTS)) {
+            const file = path.join(OUT, `${base}${suffix}.png`);
+            if (pk === pill.key && sk === sel.key && st === state && !fs.existsSync(file)) {
+              if (suffix === '' || suffix === '-selected-long')
+                log(
+                  `      ${base}${suffix}: bar ${p.bar.h}px — ${p.items.map((i) => `${i.el}="${i.text.slice(0, 16)}"${i.ellipsized ? '…' : ''} ${i.w}x${i.h}`).join(' | ')}`,
+                );
+              await page.screenshot({ path: file, clip: { x: 0, y: 0, width, height: p.bar.bottom + 12 } });
+            }
+          }
+        }
+      }
+    }
+    check(
+      failed === 0 && errors.length === 0,
+      `${base}: ${probes - failed}/${probes} status × pill × selected combinations clean${errors.length ? ` (page errors: ${errors.join(' | ')})` : ''}`,
+    );
+    await ctx.close();
+  }
+}
+
 /** The served page with real timers: card 지시/응답 during an endpoint outage. */
 async function cardIoOutage(browser: import('playwright').Browser) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'light' });
@@ -1335,6 +1749,7 @@ async function main() {
     await deepLinkAndWorkLog(browser);
     await reviewScenarios(browser);
     await addendumChecks(browser);
+    await topbarChecks(browser);
     await cardIoOutage(browser);
     await titleSubPanelSwitch(browser);
   } finally {
