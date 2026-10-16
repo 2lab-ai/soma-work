@@ -18,9 +18,16 @@
  *   - limit: default 500, allowed 1..500.
  *   - Both params are decimal integers (`^\d+$`); anything else is
  *     400 { error: 'bad_request' } rather than a silent mode switch.
- *   - hasMore is also true when the read stopped at its byte budget.
+ *   - hasMore without afterSeq: older entries exist, or the read stopped at its
+ *     byte budget (so there may be). With afterSeq: more than `limit` entries
+ *     follow, or the read stopped at its budget before it could prove the page
+ *     complete (the page may then be short or empty — ask again). It is false
+ *     when the page is provably every entry after N, even if the read hit its
+ *     budget on the way.
  *   - Quarantine trade-off: if nothing in the log's last 8 MB parses (external
- *     damage), the next append moves the whole log aside to
+ *     damage), the next seed — the first append after a server restart or
+ *     after the conversation's writer state was evicted, and only when the
+ *     reservation is read from its live copy — moves the whole log aside to
  *     `<id>.jsonl.corrupt-<ms>` and starts a fresh one; entries published
  *     before that are then no longer served here (they stay on disk for an
  *     operator).
