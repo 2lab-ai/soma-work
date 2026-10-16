@@ -33,6 +33,7 @@ import type {
   SessionStartHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { promotePendingToDispatchQueue } from '@soma/slack/compact-state';
+import { LOG_DETAIL, OutputFlag, shouldOutput } from '@soma/slack/output-flags';
 import { Logger } from '../../logger';
 import { resolveContextWindow } from '../../metrics/model-registry';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
@@ -100,6 +101,32 @@ export function getCurrentEpochForEnd(session: ConversationSession): number {
   }
   return epoch;
 }
+
+/**
+ * Spec 10 §3.2-4 — whether compaction notices may be POSTED to the thread.
+ * Below `compact` (no `NARRATION` flag) they reach the dashboard work log only
+ * (stream-executor emits a `notice` entry for each). Read at call time, so a
+ * level change mid-cycle applies to the next signal. Only a numeric mask is a
+ * mask: anything else (absent, or a non-number) reads as the default detail —
+ * an unreadable mask must not silently take notices away.
+ *
+ * Gates new posts only. A "starting" message that already reached the thread
+ * is always replaced by the completion, whatever the level is by then.
+ */
+function compactNoticesVisible(session: ConversationSession): boolean {
+  const mask = typeof session.logVerbosity === 'number' ? session.logVerbosity : LOG_DETAIL;
+  return shouldOutput(OutputFlag.NARRATION, mask);
+}
+
+/**
+ * In-flight "starting" posts, per session. The END signal waits for one before
+ * deciding between "update the starting message in place" and "post fresh":
+ * without the wait, a cycle that seals while the starting post is still in
+ * Slack's queue finds no ts, posts its own completion, and the starting post
+ * then lands — with a live ticker — after the cycle is closed, leaving a
+ * "⏳ Compaction starting" message nothing will ever update.
+ */
+const startingPostsInFlight = new WeakMap<ConversationSession, Promise<void>>();
 
 function ensurePostedMap(session: ConversationSession): Record<number, { pre: boolean; post: boolean }> {
   if (!session.compactPostedByEpoch) session.compactPostedByEpoch = {};
@@ -345,7 +372,7 @@ function stopStartingTicker(session: ConversationSession): void {
  * docs/misc/issues/current/compact-bugs-trace/trace.md Hypothesis 1).
  */
 export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger: string): Promise<void> {
-  const { session, channel, threadTs, slackApi } = deps;
+  const { session } = deps;
   const epoch = beginCompactionCycleIfNeeded(session);
 
   const marker = ensurePostedMap(session)[epoch];
@@ -398,6 +425,36 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
   const initialText = buildCompactStartingMessage({ trigger: resolvedTrigger });
   session.compactStartedAtMs = startedAtMs;
 
+  // Spec 10 §3.2-4: below `compact` nothing is posted — the cycle claim and
+  // the usage snapshot above are what the rest of the cycle needs. No message
+  // means no ticker, and the END path then has nothing to replace.
+  if (!compactNoticesVisible(session)) {
+    session.compactStartingMessageTs = null;
+    return;
+  }
+
+  const posting = postStartingMessage(deps, epoch, trigger, initialText, startedAtMs);
+  startingPostsInFlight.set(session, posting);
+  try {
+    await posting;
+  } finally {
+    if (startingPostsInFlight.get(session) === posting) startingPostsInFlight.delete(session);
+  }
+}
+
+/**
+ * Post the initial "starting" line, record its ts and start the live ticker.
+ * Never rejects (a failed post is logged and leaves no ts), so the END signal
+ * can await it unguarded.
+ */
+async function postStartingMessage(
+  deps: CompactHookDeps,
+  epoch: number,
+  trigger: string,
+  initialText: string,
+  startedAtMs: number,
+): Promise<void> {
+  const { session, channel, threadTs, slackApi } = deps;
   let postResult: { ts?: string; channel?: string };
   try {
     postResult = await slackApi.postSystemMessage(channel, initialText, { threadTs });
@@ -417,6 +474,19 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
   session.compactStartingMessageTs = postResult.ts ?? null;
 
   if (!postResult.ts) return; // Slack post returned no ts — nothing to tick against.
+
+  // Defense in depth: the END signal awaits this post before it reads the ts,
+  // so the cycle should still be open here. If it is not, nothing else will
+  // ever touch this message — close it out now instead of starting a ticker.
+  if (ensurePostedMap(session)[epoch]?.post === true) {
+    session.compactStartingMessageTs = null;
+    await slackApi.updateMessage(channel, postResult.ts, buildCompactCompleteMessage(session)).catch((err) => {
+      logger.warn('compact-starting: late starting message could not be closed', {
+        error: (err as Error)?.message ?? String(err),
+      });
+    });
+    return;
+  }
 
   // Start the ticker. Each tick re-resolves the trigger from the session —
   // covers the "fallback path posted first, then onCompactBoundary filled in
@@ -525,6 +595,14 @@ export async function postCompactCompleteIfNeeded(
     marker.post === true
       ? Promise.resolve()
       : (async () => {
+          // A "starting" post still in Slack's queue owns the message this
+          // completion must replace: wait for it (it never rejects), then stop
+          // the ticker it may just have started.
+          const inFlight = startingPostsInFlight.get(session);
+          if (inFlight) {
+            await inFlight;
+            stopStartingTicker(session);
+          }
           const text = buildCompactCompleteMessage(session);
           const startingTs = session.compactStartingMessageTs;
           // Track the ts of the message that actually carries the completion
@@ -547,11 +625,13 @@ export async function postCompactCompleteIfNeeded(
               const fallback = await slackApi.postSystemMessage(channel, text, { threadTs });
               completionTs = fallback?.ts ?? null;
             }
-          } else {
+          } else if (compactNoticesVisible(session)) {
             // No starting ts (fallback-only path) → post a fresh message.
             const fallback = await slackApi.postSystemMessage(channel, text, { threadTs });
             completionTs = fallback?.ts ?? null;
           }
+          // Else: below `compact` with no starting message on the thread —
+          // nothing to post (spec 10 §3.2-4); the bookkeeping below still runs.
           marker.post = true;
           // Clear runtime-only START tracking now that the cycle is sealed.
           session.compactStartingMessageTs = null;

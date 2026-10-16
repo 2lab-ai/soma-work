@@ -71,11 +71,19 @@ export interface MigrateAllUsersMinimalOnceResult {
   markerFile: string;
 }
 
+/**
+ * Marker payload — diagnostic only (the marker is presence-only, never parsed).
+ * Written BEFORE the data, so the counts are the rewrites this run was about to
+ * ATTEMPT, computed from the pre-read; they are not confirmed writes. A throw
+ * in the data step leaves this marker in place with these counts.
+ */
 interface AllUsersMinimalOnceMarker {
-  migratedAt: string;
+  markedAt: string;
   mask: number;
-  users: MigrationCount;
-  sessions: MigrationCount;
+  attemptedUsers: number;
+  totalUsers: number;
+  attemptedSessions: number;
+  totalSessions: number;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -153,10 +161,12 @@ export function migrateAllUsersMinimalOnce(params: MigrateAllUsersMinimalOncePar
   // 2. Marker FIRST — from here on this host never replays the rewrite.
   fs.mkdirSync(params.dataDir, { recursive: true });
   const marker: AllUsersMinimalOnceMarker = {
-    migratedAt: now().toISOString(),
+    markedAt: now().toISOString(),
     mask: LOG_MINIMAL,
-    users,
-    sessions: sessionCount,
+    attemptedUsers: users.migrated,
+    totalUsers: users.total,
+    attemptedSessions: sessionCount.migrated,
+    totalSessions: sessionCount.total,
   };
   atomicWriteJson(markerFile, marker);
 
