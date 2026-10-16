@@ -1,14 +1,17 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createRequire } from 'node:module';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Source-thread work-log link (spec 10-agent-inbox-board §3.4-2).
  *
  * A new session posts one link into the thread the user started. It used to be
  * `📝 대화 기록 보기` (conversation viewer); it is now `📋 작업 로그`, the
- * dashboard deep link for the same session, with the conversation link kept
- * only as the fallback when no dashboard URL is available. The post stays
- * init clutter: tracked in sourceThreadCleanupTs and deleted when the session
- * moves to a bot thread, where the header carries the link instead.
+ * dashboard deep link for the same session, resolved through the one injected
+ * provider (`setThreadHeaderProviders`, wired in src/index.ts). No URL means
+ * the viewer is not listening — the conversation viewer is the same server —
+ * so nothing is posted. The post stays init clutter: tracked in
+ * sourceThreadCleanupTs and deleted when the session moves to a bot thread,
+ * where the header carries the link instead.
  */
 
 vi.mock('../../../user-settings-store', () => ({
@@ -27,10 +30,6 @@ vi.mock('../../../admin-utils', () => ({
 vi.mock('../../../conversation', () => ({
   createConversation: vi.fn().mockReturnValue('conv-123'),
   getConversationUrl: vi.fn().mockReturnValue('http://localhost:3000/conversations/conv-123'),
-  getDashboardSessionUrl: vi.fn(
-    (ownerId: string, sessionKey: string) =>
-      `http://localhost:3000/dashboard/${encodeURIComponent(ownerId)}?session=${encodeURIComponent(sessionKey)}`,
-  ),
 }));
 
 vi.mock('../../../channel-registry', () => ({
@@ -48,15 +47,21 @@ vi.mock('../../../dispatch-service', () => ({
 }));
 
 import { getVerbosityFlags } from '@soma/slack/output-flags';
-import * as conversation from '../../../conversation';
 import { userSettingsStore } from '../../../user-settings-store';
 import { SessionInitializer } from '../session-initializer';
+
+// The dist session initializer loads ../thread-header-builder through Node's own
+// require: the single instance production uses, but not the one vitest inlines
+// for an `import` in this file. Configure the instance the code under test reads.
+const { setThreadHeaderProviders } = createRequire(__filename)(
+  '@soma/slack/thread-header-builder',
+) as typeof import('@soma/slack/thread-header-builder');
 
 const SOURCE_THREAD = '1711234567.000100';
 const SESSION_KEY = `work:C123:${SOURCE_THREAD}`;
 const DASHBOARD_URL = `http://localhost:3000/dashboard/U_EXISTING_USER?session=${encodeURIComponent(SESSION_KEY)}`;
 const DASHBOARD_LINK = `📋 <${DASHBOARD_URL}|작업 로그>`;
-const CONVERSATION_LINK = '📝 <http://localhost:3000/conversations/conv-123|대화 기록 보기>';
+const getDashboardSessionUrl = vi.fn<(ownerId: string, sessionKey: string) => string | undefined>();
 
 let sessionInitializer: SessionInitializer;
 let mockClaudeHandler: any;
@@ -79,8 +84,17 @@ function sourceThreadPosts(): string[] {
     .map((call: any[]) => call[1]);
 }
 
+afterEach(() => {
+  setThreadHeaderProviders({ getDashboardSessionUrl: () => undefined });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
+  getDashboardSessionUrl.mockImplementation(
+    (ownerId, sessionKey) =>
+      `http://localhost:3000/dashboard/${encodeURIComponent(ownerId)}?session=${encodeURIComponent(sessionKey)}`,
+  );
+  setThreadHeaderProviders({ getDashboardSessionUrl });
   vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({ userId: 'U_EXISTING_USER', accepted: true } as any);
 
   createdSession = {
@@ -162,7 +176,7 @@ describe('source-thread work-log link', () => {
   it('posts the 📋 작업 로그 dashboard deep link for the session owner and key', async () => {
     await sessionInitializer.initialize(mentionEvent() as any, '/test/dir');
 
-    expect(conversation.getDashboardSessionUrl).toHaveBeenCalledWith('U_EXISTING_USER', SESSION_KEY);
+    expect(getDashboardSessionUrl).toHaveBeenCalledWith('U_EXISTING_USER', SESSION_KEY);
     const posts = sourceThreadPosts();
     expect(posts).toContain(DASHBOARD_LINK);
     expect(posts.some((text) => text.includes('대화 기록 보기'))).toBe(false);
@@ -183,25 +197,24 @@ describe('source-thread work-log link', () => {
     expect(sourceThreadPosts()).toContain(DASHBOARD_LINK);
   });
 
-  it('falls back to the conversation link when no dashboard URL is available', async () => {
-    vi.mocked(conversation.getDashboardSessionUrl).mockReturnValueOnce(undefined);
+  it.each([
+    ['returns undefined', () => undefined],
+    [
+      'throws',
+      () => {
+        throw new Error('viewer down');
+      },
+    ],
+  ])('posts no link when the viewer is not listening (provider %s)', async (_label, impl) => {
+    getDashboardSessionUrl.mockImplementation(impl);
 
     await sessionInitializer.initialize(mentionEvent() as any, '/test/dir');
 
     const posts = sourceThreadPosts();
-    expect(posts).toContain(CONVERSATION_LINK);
     expect(posts.some((text) => text.includes('작업 로그'))).toBe(false);
-    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', 'conv-link-ts');
-  });
-
-  it('falls back to the conversation link when the dashboard provider throws', async () => {
-    vi.mocked(conversation.getDashboardSessionUrl).mockImplementationOnce(() => {
-      throw new Error('viewer not configured');
-    });
-
-    await sessionInitializer.initialize(mentionEvent() as any, '/test/dir');
-
-    expect(sourceThreadPosts()).toContain(CONVERSATION_LINK);
-    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', 'conv-link-ts');
+    // No dead conversation-viewer link either — it is served by the same server.
+    expect(posts.some((text) => text.includes('대화 기록 보기') || text.includes('/conversations/'))).toBe(false);
+    expect(mockSlackApi.deleteMessage).not.toHaveBeenCalledWith('C123', 'dash-link-ts');
+    expect(mockSlackApi.deleteMessage).not.toHaveBeenCalledWith('C123', 'conv-link-ts');
   });
 });

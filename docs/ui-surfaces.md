@@ -6,7 +6,7 @@ A bad `ui` value never breaks boot: structurally invalid input degrades to the b
 
 On first boot, if `config.json` has no `ui` key, the full default composition is seeded into the file automatically — edit the settings right there. An existing `ui` key (even an empty `{}`) is never overwritten, so your edits are safe across restarts. `config.default.json` in the repo root remains the pristine reference copy of the defaults.
 
-One exception: a surface that still equals the default as it was seeded before a field was added (unedited) counts as no override, so the newer built-in default applies. Today that covers `threadheader` seeded before `dashboardLink`. Any edit keeps your config exactly as written — add `{ "field": "dashboardLink" }` yourself to get the link in a customized header.
+Because the seed is a copy, a later change to the built-in defaults does not reach a `config.json` that already has `ui`. A field added to a default therefore ships with a one-time boot migration. The first one (2026-10-16) adds `dashboardLink` to the thread header: on the first boot after the upgrade, every `ui.threadheader` lines array (the base `lines` and each `themes.<name>.lines`) that does not mention `dashboardLink` at all gets `{ "field": "dashboardLink", "show": true }` — right before the first `links`/`linkhistory` field, or else as its own context line after the title line. An array that mentions it in any form (`"show": false` included) is left alone. Other keys, `${VAR}` placeholders included, keep their values; the file is rewritten with 2-space indentation. A marker `.threadheader-dashboard-link-once-2026-10-16.json` in the data directory makes this run once per data directory, so anything you change afterwards (removing the link included) stays. The boot log reports the outcome (`migrated`, `already-present`, `no-ui`, `marker-present`, or `failed`, which is retried next boot).
 
 ## Surfaces
 
@@ -86,7 +86,7 @@ Only these fields exist per surface — anything else warns and is skipped.
 - `turnend`: `status`, `title`, `threadlink`, `errorbody`, `persona`, `model`, `effort`, `startedat`, `contextwindow`, `duration`, `fivehour`, `sevenday`, `toolstats`, `separator`
 - `dashboardheader`: `title`, `owner`, `workflow`, `model`, `links`, `mergestats`, `tokens`, `cost`, `contextwindow`, `tasks`, `status`, `separator`
 
-Field names match case-insensitively. `dashboardLink` renders `📋 작업 로그`, the deep link to the session's card on the owner's dashboard (`/dashboard/<ownerId>?session=<sessionKey>`), and is omitted when no dashboard URL is available.
+Field names match case-insensitively. `dashboardLink` renders `📋 작업 로그`, the deep link to the session's card on the owner's dashboard (`/dashboard/<ownerId>?session=<sessionKey>`). When the conversation viewer (the web server that serves the dashboard) is not listening there is no URL and the field renders nothing. A new session also posts the same link into a thread a user started; that post is skipped in the same case. To hide the header link, set `{ "field": "dashboardLink", "show": false }` or remove that entry from each theme's lines in `config.json` — this controls the header field only.
 
 A field that does not appear in the resolved lines is hidden. On the dashboard card, the pending-question block and action buttons are always shown regardless of configuration.
 

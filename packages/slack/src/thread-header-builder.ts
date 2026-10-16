@@ -83,10 +83,12 @@ function getStatusEmoji(status: string | undefined, linkType?: string): string {
 
 /**
  * Host-injected URL sources. packages/slack cannot import the src web server,
- * so the host (src/index.ts) wires the dashboard deep-link builder here.
+ * so the host wires the dashboard deep-link builder here — once, in
+ * src/index.ts. The session initializer reads it through
+ * ThreadHeaderBuilder.resolveDashboardSessionUrl, so there is one injection path.
  */
 export interface ThreadHeaderProviders {
-  /** `/dashboard/<ownerId>?session=<sessionKey>` on the viewer, or undefined when unavailable. */
+  /** `/dashboard/<ownerId>?session=<sessionKey>` on the viewer, or undefined when the viewer is not listening. */
   getDashboardSessionUrl?: (ownerId: string, sessionKey: string) => string | undefined;
 }
 
@@ -271,7 +273,7 @@ export class ThreadHeaderBuilder {
         return [field.format === 'closed-text' ? '_종료됨_' : '🔴 _종료됨_'];
       }
       case 'dashboardLink': {
-        const url = ThreadHeaderBuilder.resolveDashboardUrl(data);
+        const url = ThreadHeaderBuilder.resolveDashboardSessionUrl(data.ownerId, data.sessionKey);
         return url ? [ThreadHeaderBuilder.formatDashboardLink(url)] : [];
       }
       default:
@@ -317,20 +319,6 @@ export class ThreadHeaderBuilder {
 
   private static resolveOwner(data: ThreadHeaderData): string | undefined {
     return data.ownerName || data.ownerId;
-  }
-
-  /**
-   * The session's dashboard deep link, or undefined when the owner/key is
-   * unknown (e.g. a bot-thread root posted before its thread ts exists) or the
-   * host has no URL. A provider failure drops the link, never the header.
-   */
-  private static resolveDashboardUrl(data: ThreadHeaderData): string | undefined {
-    if (!data.ownerId || !data.sessionKey) return undefined;
-    try {
-      return threadHeaderProviders.getDashboardSessionUrl(data.ownerId, data.sessionKey) || undefined;
-    } catch {
-      return undefined;
-    }
   }
 
   private static buildTextFallback(data: ThreadHeaderData): string {
@@ -448,6 +436,23 @@ export class ThreadHeaderBuilder {
    */
   static formatDashboardLink(url: string): string {
     return `📋 <${url}|작업 로그>`;
+  }
+
+  /**
+   * The session's dashboard deep link through the host provider — the one
+   * source for both the header `dashboardLink` field and the user-started
+   * thread link. Undefined means there is nothing to link to: the viewer is not
+   * listening, or the owner/key is unknown (a bot-thread root posted before its
+   * own thread ts exists). A provider failure counts as "not listening" — it
+   * drops the link, never the message carrying it.
+   */
+  static resolveDashboardSessionUrl(ownerId: string | undefined, sessionKey: string | undefined): string | undefined {
+    if (!ownerId || !sessionKey) return undefined;
+    try {
+      return threadHeaderProviders.getDashboardSessionUrl(ownerId, sessionKey) || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**

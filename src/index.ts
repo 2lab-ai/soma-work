@@ -78,6 +78,7 @@ import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
 import { migrateAllUsersOpusOnce } from './deploy/migrate-all-users-opus-once';
 import { migrateCronOpusOnce } from './deploy/migrate-cron-opus-once';
+import { migrateThreadHeaderDashboardLinkOnce } from './deploy/migrate-threadheader-dashboard-link-once';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
@@ -232,6 +233,26 @@ async function start() {
       logger.error('cron opus one-time migration FAILED — check the marker before assuming a retry', error);
     }
     timing('cron opus migration evaluated');
+
+    // 2026-10-16 one-time ADDITIVE config.json rewrite: every `ui.threadheader`
+    // lines array (base + each theme) that never mentions `dashboardLink` gets
+    // the 📋 작업 로그 field — seeded or edited copies alike, since a seeded
+    // config.json never sees new built-in defaults. Runs BEFORE loadConfig below
+    // so this boot already renders it; marker in DATA_DIR, so an operator who
+    // removes the link afterwards keeps it removed. Concurrent boots cannot race
+    // on config.json: the PID lock on DATA_DIR is held (acquirePidLock above).
+    // Non-fatal: a failure writes no marker and is retried next boot.
+    try {
+      const headerLink = migrateThreadHeaderDashboardLinkOnce({ configFile: CONFIG_FILE, dataDir: DATA_DIR });
+      logger.info(
+        `threadheader dashboardLink one-time migration: ${headerLink.outcome} (arrays changed ${headerLink.arraysChanged}, config=${CONFIG_FILE}, marker=${headerLink.markerFile})`,
+      );
+    } catch (error) {
+      logger.warn(
+        `threadheader dashboardLink one-time migration: failed (non-fatal, retried next boot): ${(error as Error).message}`,
+      );
+    }
+    timing('threadheader dashboardLink migration evaluated');
 
     // llmux-dependent boot steps (codex pin sync + model-catalog fetch) run
     // AFTER initAuthRuntimeDefault below — gating them on the static
@@ -432,7 +453,9 @@ async function start() {
     if (appConfig.ui) {
       timing(`UI surface config applied (${Object.keys(uiConfigResult.config).length} surfaces overridden)`);
     }
-    // Thread header `dashboardLink` (📋 작업 로그) resolves its deep link here.
+    // The one injection point for the dashboard deep link: the thread header
+    // `dashboardLink` field and the user-started thread link both resolve
+    // through it (undefined = viewer not listening = no link).
     setThreadHeaderProviders({ getDashboardSessionUrl });
 
     // Install operator-controlled additional env (config.json#claude.env)

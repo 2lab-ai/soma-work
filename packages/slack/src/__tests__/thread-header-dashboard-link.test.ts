@@ -9,12 +9,10 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  DEFAULT_UI_SURFACES,
   getSurfaceLines,
   normalizeUiSurfacesConfig,
   resetUiSurfacesConfig,
   SURFACE_FIELD_REGISTRY,
-  type SurfaceUiConfig,
   setUiSurfacesConfig,
 } from '../surface-config';
 import { setThreadHeaderProviders, ThreadHeaderBuilder, type ThreadHeaderData } from '../thread-header-builder';
@@ -73,7 +71,7 @@ describe('ThreadHeaderBuilder — dashboardLink field', () => {
     expect(texts).toContain(LINK_TEXT);
   });
 
-  it.each(THEMES)('omits the link in the %s theme when the provider has no URL', (theme) => {
+  it.each(THEMES)('omits the link in the %s theme when the viewer is not listening (no URL)', (theme) => {
     setThreadHeaderProviders({ getDashboardSessionUrl: () => undefined });
 
     const texts = allTexts(ThreadHeaderBuilder.build(makeData({ theme })).blocks || []);
@@ -101,7 +99,7 @@ describe('ThreadHeaderBuilder — dashboardLink field', () => {
     expect(provider).not.toHaveBeenCalled();
   });
 
-  it('omits the link when the provider throws instead of failing the header', () => {
+  it('treats a throwing provider as not listening: the link is dropped, the header is not', () => {
     setThreadHeaderProviders({
       getDashboardSessionUrl: () => {
         throw new Error('viewer not configured');
@@ -168,46 +166,39 @@ describe('surface-config — dashboardLink registration', () => {
   });
 });
 
-describe('surface-config — config.json seeded before dashboardLink existed', () => {
-  // config-loader seeds DEFAULT_UI_SURFACES into config.json when `ui` is
-  // absent, and an operator `ui.threadheader` overrides the built-in presets.
-  // A copy seeded before this field existed must not freeze it out.
-  function withoutDashboardLink(surface: SurfaceUiConfig): SurfaceUiConfig {
-    const strip = (lines: SurfaceUiConfig['lines']) =>
-      (lines ?? []).map((line) => ({ ...line, fields: line.fields.filter((f) => f.field !== 'dashboardLink') }));
-    return JSON.parse(
-      JSON.stringify({
-        lines: strip(surface.lines),
-        themes: Object.fromEntries(
-          Object.entries(surface.themes ?? {}).map(([name, theme]) => [name, { lines: strip(theme?.lines) }]),
-        ),
-      }),
-    );
-  }
+describe('surface-config — no read-time rule', () => {
+  // Getting the field into an existing config.json is a one-time boot
+  // migration (src/deploy/migrate-threadheader-dashboard-link-once.ts).
+  // Reading config never second-guesses the operator: a header without the
+  // field renders exactly as configured.
+  it('keeps an operator thread header without dashboardLink exactly as configured', () => {
+    setThreadHeaderProviders({ getDashboardSessionUrl: () => DASHBOARD_URL });
+    const { config } = setUiSurfacesConfig({
+      threadheader: {
+        lines: [
+          { block: 'header', fields: [{ field: 'title', show: true }] },
+          { block: 'context', fields: [{ field: 'linkhistory', show: true, max: 5 }] },
+        ],
+      },
+    });
 
-  it('treats an unedited pre-dashboardLink seed as no override, so the built-in preset applies', () => {
-    const seeded = JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES));
-    seeded.threadheader = withoutDashboardLink(DEFAULT_UI_SURFACES.threadheader!);
-
-    const { config } = setUiSurfacesConfig(seeded);
-
-    expect(config.threadheader).toBeUndefined();
-    expect(config.turnend).toBeDefined();
+    expect(config.threadheader).toBeDefined();
     for (const theme of THEMES) {
       const fields = getSurfaceLines('threadheader', theme).flatMap((line) => line.fields);
-      expect(fields.some((f) => f.field === 'dashboardLink')).toBe(true);
+      expect(fields.some((f) => f.field === 'dashboardLink')).toBe(false);
+      const texts = allTexts(ThreadHeaderBuilder.build(makeData({ theme })).blocks || []);
+      expect(texts.some((t) => t.includes('작업 로그'))).toBe(false);
     }
   });
 
-  it('keeps an operator-edited thread header exactly as configured', () => {
-    const edited = withoutDashboardLink(DEFAULT_UI_SURFACES.threadheader!);
-    edited.lines![0].fields[0].truncate = 80;
+  it('show:false turns the header link off', () => {
+    setThreadHeaderProviders({ getDashboardSessionUrl: () => DASHBOARD_URL });
+    setUiSurfacesConfig({
+      threadheader: {
+        lines: [{ block: 'context', fields: [{ field: 'title' }, { field: 'dashboardLink', show: false }] }],
+      },
+    });
 
-    const { config } = setUiSurfacesConfig({ threadheader: edited });
-
-    expect(config.threadheader).toBeDefined();
-    const fields = getSurfaceLines('threadheader', 'default').flatMap((line) => line.fields);
-    expect(fields.some((f) => f.field === 'dashboardLink')).toBe(false);
-    expect(fields[0].truncate).toBe(80);
+    expect(allTexts(ThreadHeaderBuilder.build(makeData()).blocks || [])).toEqual(['Fix login bug']);
   });
 });
