@@ -459,7 +459,9 @@ const LOGIN_RETURN_MAX_AGE_SEC = 1800;
 /**
  * True for a same-origin path under `/dashboard` that is safe to put in a
  * `Location` header: printable ASCII only (no CR/LF, spaces or raw non-ASCII),
- * no `//` or backslash (protocol-relative tricks), bounded length.
+ * no `//` or backslash (protocol-relative tricks), no `.`/`..` path segments
+ * in any spelling (browsers resolve `%2e%2e` like `..`, which would step out of
+ * /dashboard), bounded length.
  */
 export function isSafeLoginReturnPath(value: string): boolean {
   if (typeof value !== 'string' || value.length === 0 || value.length > LOGIN_RETURN_MAX_LEN) return false;
@@ -469,6 +471,9 @@ export function isSafeLoginReturnPath(value: string): boolean {
     const code = value.charCodeAt(i);
     if (code <= 0x20 || code >= 0x7f) return false;
   }
+  const pathPart = value.split('?', 1)[0];
+  const segments = pathPart.replace(/%2e/gi, '.').split('/');
+  if (segments.some((segment) => segment === '.' || segment === '..')) return false;
   return true;
 }
 

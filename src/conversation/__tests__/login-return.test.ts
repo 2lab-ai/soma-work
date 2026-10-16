@@ -1,3 +1,4 @@
+import * as net from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Spec §3.4-3: a browser bounced to /login keeps its /dashboard deep link in
@@ -29,6 +30,12 @@ vi.mock('../recorder', () => ({
 vi.mock('../viewer', () => ({
   renderConversationListPage: vi.fn().mockReturnValue('<html></html>'),
   renderConversationViewPage: vi.fn().mockReturnValue('<html></html>'),
+}));
+// A real listen() starts the #814 heartbeat; keep it off the shared instance registry.
+vi.mock('../instance-registry', () => ({
+  startHeartbeatLoop: vi.fn(() => setInterval(() => {}, 60_000)),
+  removeHeartbeat: vi.fn().mockResolvedValue(undefined),
+  readAllInstances: vi.fn().mockResolvedValue([]),
 }));
 
 const DEEP_LINK = '/dashboard/U_SSO?session=C1%3A1712345.678';
@@ -68,6 +75,8 @@ describe('login return (soma_next)', () => {
       '/dashboard/U1?session=C1%3A1712345.678',
       '/dashboard?user=U1',
       '/dashboard/',
+      '/dashboard/U1.v2?session=a..b',
+      '/dashboard/U1?next=../x',
     ])('accepts same-origin dashboard path %s', (value) => {
       expect(oauth.isSafeLoginReturnPath(value)).toBe(true);
     });
@@ -85,6 +94,16 @@ describe('login return (soma_next)', () => {
       '/dashboard/U1 x',
       '/dashboard/한글',
       '',
+      '/dashboard/../login',
+      '/dashboard/./U1',
+      '/dashboard/..',
+      '/dashboard/.',
+      '/dashboard/U1/..?session=x',
+      '/dashboard/%2e%2e/login',
+      '/dashboard/%2E%2E/login',
+      '/dashboard/.%2e/login',
+      '/dashboard/%2e/U1',
+      '/dashboard/U1/%2e%2E',
     ])('rejects %j', (value) => {
       expect(oauth.isSafeLoginReturnPath(value)).toBe(false);
     });
@@ -298,34 +317,78 @@ describe('login return (soma_next)', () => {
   });
 });
 
+async function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address() as net.AddressInfo;
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
 describe('getDashboardSessionUrl', () => {
-  beforeEach(() => {
+  let web: typeof import('../web-server');
+
+  beforeEach(async () => {
     vi.resetModules();
+    mockConfig.conversation.viewerHost = '127.0.0.1';
+    mockConfig.conversation.viewerPort = await freePort();
+    web = await import('../web-server');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await web.stopWebServer();
     mockConfig.conversation.viewerUrl = '';
+    mockConfig.conversation.viewerHost = '127.0.0.1';
+    mockConfig.conversation.viewerPort = 0;
   });
 
-  it('builds the deep link from the configured viewer URL, encoding owner and session key', async () => {
+  it('is undefined until the viewer is listening, then builds the encoded deep link', async () => {
     mockConfig.conversation.viewerUrl = 'https://soma.example.com/';
-    const { getDashboardSessionUrl } = await import('../web-server');
-    expect(getDashboardSessionUrl('U123', 'C1:1712345.678')).toBe(
+    expect(web.getDashboardSessionUrl('U123', 'C1:1712345.678')).toBeUndefined();
+    // The conversation link is not gated (unchanged behavior).
+    expect(web.getConversationUrl('c1')).toContain('/conversations/c1');
+
+    await web.startWebServer();
+    expect(web.getDashboardSessionUrl('U123', 'C1:1712345.678')).toBe(
       'https://soma.example.com/dashboard/U123?session=C1%3A1712345.678',
     );
-    expect(getDashboardSessionUrl('U 1/x', 'k')).toBe('https://soma.example.com/dashboard/U%201%2Fx?session=k');
+    expect(web.getDashboardSessionUrl('U 1/x', 'k')).toBe('https://soma.example.com/dashboard/U%201%2Fx?session=k');
+  });
+
+  it('is undefined again after the viewer stops', async () => {
+    await web.startWebServer();
+    expect(web.getDashboardSessionUrl('U1', 'C1:t1')).toBeDefined();
+    await web.stopWebServer();
+    expect(web.getDashboardSessionUrl('U1', 'C1:t1')).toBeUndefined();
+  });
+
+  it('is undefined for an in-process (listen:false) server', async () => {
+    mockConfig.conversation.viewerUrl = 'https://soma.example.com';
+    await web.startWebServer({ listen: false });
+    expect(web.getDashboardSessionUrl('U1', 'C1:t1')).toBeUndefined();
+  });
+
+  it('is undefined when the viewer failed to start', async () => {
+    mockConfig.conversation.viewerUrl = 'https://soma.example.com';
+    mockConfig.conversation.viewerHost = '192.0.2.1'; // TEST-NET-1: not on this host → EADDRNOTAVAIL
+    await expect(web.startWebServer()).rejects.toThrow();
+    expect(web.getDashboardSessionUrl('U1', 'C1:t1')).toBeUndefined();
   });
 
   it('falls back to the detected host when no viewer URL is configured', async () => {
     mockConfig.conversation.viewerUrl = '';
-    const { getDashboardSessionUrl, getViewerBaseUrl } = await import('../web-server');
-    expect(getDashboardSessionUrl('U1', 'C1:t1')).toBe(`${getViewerBaseUrl()}/dashboard/U1?session=C1%3At1`);
+    await web.startWebServer();
+    expect(web.getDashboardSessionUrl('U1', 'C1:t1')).toBe(`${web.getViewerBaseUrl()}/dashboard/U1?session=C1%3At1`);
+    expect(web.getViewerBaseUrl()).toContain(`:${mockConfig.conversation.viewerPort}`);
   });
 
   it('returns undefined when owner or session key is missing', async () => {
     mockConfig.conversation.viewerUrl = 'https://soma.example.com';
-    const { getDashboardSessionUrl } = await import('../web-server');
-    expect(getDashboardSessionUrl('', 'C1:t1')).toBeUndefined();
-    expect(getDashboardSessionUrl('U1', '')).toBeUndefined();
+    await web.startWebServer();
+    expect(web.getDashboardSessionUrl('', 'C1:t1')).toBeUndefined();
+    expect(web.getDashboardSessionUrl('U1', '')).toBeUndefined();
   });
 });

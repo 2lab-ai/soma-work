@@ -73,7 +73,7 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
-import { appendWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
+import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
@@ -812,16 +812,14 @@ async function start() {
     // set wired in src/slack/pipeline/stream-executor.ts. The intersection type
     // keeps it compiling whether or not StreamExecutorProviders declares
     // `appendWorkLog` yet (both declare the same WorkLogInput shape).
+    // Fire-and-forget: the turn never waits on the disk; every failure is
+    // already logged inside work-log.ts.
     setOnWorkLogAppendedCallback(broadcastWorkLog);
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
     } = {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
-        try {
-          appendWorkLog(conversationId, entry);
-        } catch (error) {
-          logger.warn('Work log append failed', { conversationId, error });
-        }
+        appendWorkLog(conversationId, entry).catch(() => {});
       },
     };
     setStreamExecutorProviders(workLogProviders);
@@ -1327,6 +1325,20 @@ async function start() {
         logger.info('Conversation viewer stopped');
       } catch (error) {
         logger.error('Error stopping conversation viewer:', error);
+      }
+
+      // Land queued work-log lines before exit; bounded so a stuck disk cannot
+      // hold the shutdown.
+      {
+        let flushTimer: NodeJS.Timeout | undefined;
+        const flushed = await Promise.race([
+          flushWorkLog().then(() => true),
+          new Promise<false>((resolve) => {
+            flushTimer = setTimeout(() => resolve(false), 2000);
+          }),
+        ]);
+        clearTimeout(flushTimer);
+        if (!flushed) logger.warn('Work log flush timed out during shutdown');
       }
 
       // SDK transport.close() escalates with timers, but timers cannot run after

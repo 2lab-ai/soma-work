@@ -1,7 +1,13 @@
 /**
  * Work log API (spec §3.3).
  *
- *   GET /api/dashboard/session/:conversationId/worklog?afterSeq=&limit=  → { entries: WorkLogEntry[] }
+ *   GET /api/dashboard/session/:conversationId/worklog?afterSeq=&limit=
+ *     → { entries: WorkLogEntry[], hasMore: boolean }
+ *
+ *   - no afterSeq: the latest `limit` entries; hasMore = older entries exist.
+ *   - afterSeq=N (N ≥ 0): the first `limit` entries with seq > N, for forward
+ *     paging after a reconnect; hasMore = more follow, ask again with the last seq.
+ *   - limit: default and maximum 500, minimum 1.
  *
  * Same auth and read scope as the session-turns API
  * (`GET /api/dashboard/session/:conversationId` in dashboard.ts): any
@@ -42,10 +48,11 @@ export async function registerWorkLogRoutes(
       const limit =
         limitRaw === undefined ? WORK_LOG_DEFAULT_LIMIT : Math.max(1, Math.min(WORK_LOG_DEFAULT_LIMIT, limitRaw));
       const afterSeqRaw = parseIntParam(request.query.afterSeq);
-      const afterSeq = afterSeqRaw !== undefined && afterSeqRaw > 0 ? afterSeqRaw : undefined;
+      // afterSeq=0 means "from the beginning"; a negative value is treated as absent.
+      const afterSeq = afterSeqRaw !== undefined && afterSeqRaw >= 0 ? afterSeqRaw : undefined;
 
-      const entries = await readWorkLog(conversationId, { afterSeq, limit });
-      reply.send({ entries });
+      const { entries, hasMore } = await readWorkLog(conversationId, { afterSeq, limit });
+      reply.send({ entries, hasMore });
     } catch (error) {
       logger.error('Error reading work log', error);
       reply.status(500).send({ error: 'Internal Server Error' });
