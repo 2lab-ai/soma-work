@@ -4408,13 +4408,19 @@ function cancelCardIoRetry(cid) {
   clearTimeout(cur.handle);
   delete _ioTimers[cid];
 }
+// The open card on the board that consumes this conversation's retry, or null.
+// A timer is armed only while one exists (retryCardIo fires into it).
+function cardIoConsumer(cid) {
+  for (var k in _cardEls) {
+    var s = _sessionCache[k];
+    if (s && s.conversationId === cid && _expanded.has(k)) return k;
+  }
+  return null;
+}
 // A card closed or left the board: drop its conversation's timer unless
 // another open card still shows that conversation.
 function releaseCardIoTimer(cid) {
-  if (!cid) return;
-  for (var k in _cardEls) {
-    if (_cardEls[k]._cid === cid && _expanded.has(k)) return;
-  }
+  if (!cid || cardIoConsumer(cid)) return;
   cancelCardIoRetry(cid);
 }
 
@@ -4441,7 +4447,8 @@ function ensureCardIo(key, force, fromTimer) {
     var nextStep = step + 1;
     var at = Date.now() + ioBackoffMs(nextStep);
     settleCardIo(cid, { state: 'error', stamp: stamp, data: data, fails: n, step: nextStep, retryAt: at });
-    if (n <= IO_AUTO_RETRIES) scheduleCardIoRetry(cid, at);
+    // The card may have closed or left the board while the request was in flight.
+    if (n <= IO_AUTO_RETRIES && cardIoConsumer(cid)) scheduleCardIoRetry(cid, at);
   }
   fetchCardIo(cid).then(function(result) {
     if (result && result.partial) failed(result); // keep the instruction, retry the response
@@ -4513,10 +4520,8 @@ function fetchCardIo(cid) {
 
 // Deadline timer fired: retry for the first card of that conversation still open.
 function retryCardIo(cid) {
-  for (var k in _cardEls) {
-    var s = _sessionCache[k];
-    if (s && s.conversationId === cid && _expanded.has(k)) { ensureCardIo(k, false, true); return; }
-  }
+  var k = cardIoConsumer(cid);
+  if (k) ensureCardIo(k, false, true);
 }
 function settleCardIo(cid, entry) {
   var wasDirty = !!(_ioCache[cid] && _ioCache[cid].dirty);

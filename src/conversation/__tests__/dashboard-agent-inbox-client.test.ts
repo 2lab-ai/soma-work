@@ -641,6 +641,9 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     const fetchCalls: string[] = [];
     const fetchTimes: number[] = [];
     const rawCalls: string[] = [];
+    // hold(): the next main fetch stays in flight until the test settles it.
+    let holdNext = false;
+    let held: { reject: (e: unknown) => void } | null = null;
     const fetchStub = async (url: string) => {
       if (url.endsWith('/raw')) {
         rawCalls.push(url);
@@ -649,6 +652,12 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
       }
       fetchCalls.push(url);
       fetchTimes.push(now);
+      if (holdNext) {
+        holdNext = false;
+        return new Promise((_resolve, reject) => {
+          held = { reject };
+        });
+      }
       if (mode === 'down') throw new Error('network down');
       return {
         ok: true,
@@ -694,6 +703,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
         'ioHasBudget',
         'scheduleCardIoRetry',
         'cancelCardIoRetry',
+        'cardIoConsumer',
         'releaseCardIoTimer',
         'fetchCardIo',
         'ensureCardIo',
@@ -730,6 +740,10 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
       fetchCalls,
       fetchTimes,
       pendingTimers: () => timers.map((x) => x.at - now),
+      hold: () => {
+        holdNext = true;
+        return { reject: () => held?.reject(new Error('network down')) };
+      },
       rawCalls,
       refreshed,
       now: () => now,
@@ -1002,6 +1016,42 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     const n = h.fetchCalls.length;
     await h.advance(60_000);
     expect(h.fetchCalls).toHaveLength(n);
+  });
+
+  it.each<[string, (h: ReturnType<typeof harness>) => void]>([
+    ['closed', (h) => h.env._expanded.delete('kd')],
+    ['removed from the board', (h) => delete h.env._cardEls.kd],
+  ])('a request that fails after its last card was %s arms no retry timer', async (_how, goAway) => {
+    const h = harness();
+    h.addCard('kd', 'cd');
+    const inFlight = h.hold();
+    h.io.ensureCardIo('kd', true); // the opening fetch is in flight
+    await flush();
+    goAway(h);
+    h.io.releaseCardIoTimer('cd'); // what toggleCard / applyBoardPlan do; nothing is pending yet
+    inFlight.reject();
+    await flush();
+    expect(h.env._ioCache.cd.state).toBe('error');
+    expect(h.pendingTimers()).toEqual([]);
+    const n = h.fetchCalls.length;
+    await h.advance(60_000);
+    expect(h.fetchCalls).toHaveLength(n);
+  });
+
+  it('a request that fails while another open card shows the conversation still arms the timer', async () => {
+    const h = harness();
+    h.addCard('kd', 'cd');
+    h.addCard('kd2', 'cd');
+    const inFlight = h.hold();
+    h.io.ensureCardIo('kd', true);
+    await flush();
+    h.env._expanded.delete('kd');
+    h.io.releaseCardIoTimer('cd');
+    inFlight.reject();
+    await flush();
+    expect(h.pendingTimers()).toEqual([1000]);
+    await h.advance(1000); // kd2 consumes the retry
+    expect(h.fetchCalls).toHaveLength(2);
   });
 
   it('board renders never send a request during an outage; the deadline and backoff survive stamp changes', async () => {
