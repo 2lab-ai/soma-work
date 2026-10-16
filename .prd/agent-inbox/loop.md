@@ -22,22 +22,17 @@ Status: in-progress · 스펙 = [`../10-agent-inbox-board-spec.md`](../10-agent-
 | 헤더 필드 | `dashboardLink`, 라벨 `📋 작업 로그` |
 | 로그인 복귀 | 쿠키 `soma_next`(값은 `/dashboard`로 시작하는 같은 출처 경로만) |
 
-## 라운드 1 — 계획 (2026-10-16)
-| WU | 브랜치 · 워크트리 | 스코프 | 소유 파일 |
-|---|---|---|---|
-| WU-S Slack 미니멀 | `feat/slack-minimal-worklog` · `.worktrees/feat-slack-minimal-worklog` | §3.2 전부 + §3.3 방출 훅 | `packages/slack/src/output-flags.ts`, `work-log.ts`(신규), `stream-processor.ts`, `pipeline/stream-executor.ts`, `tool-event-processor.ts`, `src/deploy/migrate-all-users-minimal-once.ts`(신규), `src/index.ts`(이관 배선만) + 테스트 |
-| WU-W 작업 로그 서버 | `feat/dashboard-worklog-api` · `.worktrees/feat-dashboard-worklog-api` | §3.3 저장·API·WS, §3.4-3 로그인 복귀 | `src/conversation/work-log.ts`(신규), `work-log-routes.ts`(신규), `web-server.ts`, `dashboard.ts`(서버 쪽 broadcast 함수만, 템플릿 금지), `oauth.ts`, `src/index.ts`(provider 배선만) + 테스트 |
-| WU-L 스레드 링크 | `feat/thread-dashboard-link` · `.worktrees/feat-thread-dashboard-link` | §3.4-1·2 | `packages/slack/src/thread-header-builder.ts`, `surface-config.ts`, `pipeline/session-initializer.ts`, `config.default.json`, `src/index.ts`(URL provider 배선만) + 테스트 |
-| WU-D 보드 UI | `feat/agent-inbox-dashboard` · `.worktrees/feat-agent-inbox-dashboard` | §3.1, §4, §5 | `src/conversation/dashboard.ts` 템플릿(CSS·HTML·클라이언트 JS) + 대시보드 테스트 |
+## 라운드 2 — 프리뷰 실측 결함 (2026-10-16)
+R1 리시트(`loop.done.md` R1)를 v0.2.1158 프리뷰에서 뜨다가 나온 결함 3건. 칸 행 G1·G4·G5는 이것이 닫힐 때 함께 닫는다.
 
-머지 순서: WU-S → WU-W → WU-D → WU-L (2026-10-16 변경 — WU-D가 `?session=` 소비자를 가지므로 링크를 내보내는 WU-L보다 먼저; WU-D는 작업 로그 API를 소비).
+| WU | 브랜치 · 워크트리 | 결함 | 소유 파일 |
+|---|---|---|---|
+| WU-B 스킬 배너 | `fix/minimal-skill-banner` · `.worktrees/fix-minimal-skill-banner` | minimal 스레드에 `$skill`/자동 스킬 RPG 배너가 게시됨(배포 직후 활성 스레드 실측) — `SKILL_INVOCATION` 마스크를 안 봄 | `src/slack/commands/skill-force-handler.ts`, `src/slack-handler.ts`(배너 게이트만), `docs/misc/guides/verbosity-matrix.md` + 테스트 |
+| WU-T 상단 바·작업 로그 행 | `fix/dashboard-topbar-worklog` · `.worktrees/fix-dashboard-topbar-worklog` | 820px에서 상단 바 줄바꿈, 390px에서 라벨 잘림 · 작업 로그 도구 행에 도구명이 두 번(`▸ Read Read …`, `✓ Glob Glob ok`) | `src/conversation/dashboard.ts` 템플릿(`.topbar` CSS, `renderWorkLogEntry`) + 대시보드 테스트 |
 
 ## 열린 gap
-| ID | 갭 | 상태 |
-|---|---|---|
-| G1 | 보드 3칸·카드·펼침·List·반응형 (§3.1, §5) | open |
-| G2 | 모션 계약 (§4) — FLIP 이동 프레임 시퀀스 리시트 | open |
-| G3 | 3a 이관 n/N·m/M 로그 (§3.2-1) | open |
-| G4 | minimal 스레드 = 헤더·task·최종 답변만 (§3.2-2~5) | open |
-| G5 | 작업 로그 저장·API·WS·패널 (§3.3, §3.1-7) | open |
-| G6 | 스레드 맨 위 링크 + 로그인 복귀 (§3.4) | open |
+| ID | 갭 | Status | R2 남은 일 |
+|---|---|---|---|
+| G1 | 보드 3칸·카드·펼침·List·반응형 (§3.1, §5) | 🟡 | 보드는 1280/820/390 실측 통과, 상단 바(WU-T) 재캡처 |
+| G4 | minimal 스레드 = 헤더·task·최종 답변만 (§3.2-2~5) | 🟡 | 서술·도구 메시지 없음은 실측 통과, 스킬 배너(WU-B) |
+| G5 | 작업 로그 저장·API·WS·패널 (§3.3, §3.1-7) | 🟡 | 딥링크 패널 64항목·실시간 증가 실측 통과, 도구 행 중복(WU-T) |
