@@ -14,10 +14,9 @@
  *     link-history line), keys as captured.
  */
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { getSurfaceLines, resetUiSurfacesConfig, setUiSurfacesConfig } from '@soma/slack/surface-config';
-import { setThreadHeaderProviders, ThreadHeaderBuilder } from '@soma/slack/thread-header-builder';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   migrateThreadHeaderDashboardLinkOnce,
@@ -36,6 +35,18 @@ vi.mock('@soma/common/atomic-write', async (importOriginal) => {
     },
   };
 });
+
+// Dist modules load their siblings through Node's own require: ThreadHeaderBuilder
+// reads `./surface-config` natively, a different instance from the one vitest
+// inlines for an `import` here (production has one). Configure and render through
+// the native instances, or the header silently falls back to the built-in default.
+const nativeRequire = createRequire(__filename);
+const { getSurfaceLines, resetUiSurfacesConfig, setUiSurfacesConfig } = nativeRequire(
+  '@soma/slack/surface-config',
+) as typeof import('@soma/slack/surface-config');
+const { setThreadHeaderProviders, ThreadHeaderBuilder } = nativeRequire(
+  '@soma/slack/thread-header-builder',
+) as typeof import('@soma/slack/thread-header-builder');
 
 afterEach(() => {
   fault.failConfigWrite = false;
@@ -81,6 +92,10 @@ function renderedTexts(ui: unknown, theme: 'default' | 'compact' | 'minimal'): s
 describe('migrateThreadHeaderDashboardLinkOnce', () => {
   it('(a) e992de7c seed: adds the link before linkhistory (base) and before links (compact, minimal)', () => {
     const host = makeHost({ mcpServers: {}, ui: SEED_E992DE7C.ui });
+    // Negative control: the seeded header renders no link before the migration.
+    for (const theme of ['default', 'compact', 'minimal'] as const) {
+      expect(renderedTexts(SEED_E992DE7C.ui, theme).some((t) => t.includes('작업 로그'))).toBe(false);
+    }
 
     const result = run(host);
 
@@ -117,6 +132,12 @@ describe('migrateThreadHeaderDashboardLinkOnce', () => {
 
   it('(b) fable dev edited header: base gets a link line right after the title, both themes before links', () => {
     const host = makeHost({ ui: { threadheader: FABLE_DEV_THREADHEADER } });
+    // Negative control: the live header renders no link before the migration.
+    for (const theme of ['default', 'compact', 'minimal'] as const) {
+      expect(renderedTexts({ threadheader: FABLE_DEV_THREADHEADER }, theme).some((t) => t.includes('작업 로그'))).toBe(
+        false,
+      );
+    }
 
     const result = run(host);
 
