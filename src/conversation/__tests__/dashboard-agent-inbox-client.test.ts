@@ -625,6 +625,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     let mode: 'down' | 'up' = 'down';
     let rawMode: 'down' | 'up' = 'up';
     const fetchCalls: string[] = [];
+    const fetchTimes: number[] = [];
     const rawCalls: string[] = [];
     const fetchStub = async (url: string) => {
       if (url.endsWith('/raw')) {
@@ -633,6 +634,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
         return { ok: true, json: async () => ({ raw: 'Dry run passed in 41s — raw text.' }) };
       }
       fetchCalls.push(url);
+      fetchTimes.push(now);
       if (mode === 'down') throw new Error('network down');
       return {
         ok: true,
@@ -660,19 +662,21 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     const io = load<{
       ensureCardIo(key: string, force?: boolean): void;
       invalidateCardIo(cid: string): void;
-      ioNeedsFetch(c: unknown, stamp: string, force: boolean, now: number): boolean;
+      ioNeedsFetch(c: unknown, stamp: string, force: boolean, now: number, fromTimer?: boolean): boolean;
     }>(
       [
         'decodeSlackEntities',
         'ioBackoffMs',
         'ioNeedsFetch',
+        'ioHasBudget',
+        'scheduleCardIoRetry',
         'fetchCardIo',
         'ensureCardIo',
         'retryCardIo',
         'settleCardIo',
         'invalidateCardIo',
       ],
-      ['IO_RETRY_MAX_MS', 'IO_AUTO_RETRIES'],
+      ['IO_RETRY_MAX_MS', 'IO_AUTO_RETRIES', '_ioTimers'],
       env,
     );
     const addCard = (key: string, cid: string) => {
@@ -685,9 +689,12 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
       env._cardEls[key] = {};
       env._expanded.add(key);
     };
+    // Fire only the timers that are due; later ones stay pending.
     const advance = async (ms: number) => {
       now += ms;
-      for (const t of timers.splice(0).filter((x) => x.at <= now)) t.fn();
+      const due = timers.filter((x) => x.at <= now);
+      for (const d of due) timers.splice(timers.indexOf(d), 1);
+      for (const d of due) d.fn();
       await flush();
     };
     return {
@@ -696,8 +703,10 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
       addCard,
       advance,
       fetchCalls,
+      fetchTimes,
       rawCalls,
       refreshed,
+      now: () => now,
       setMode: (m: 'down' | 'up') => {
         mode = m;
       },
@@ -756,8 +765,10 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     h.setMode('up');
     // A turn landed while the socket was down: only a board refresh shows it.
     h.env._sessionCache.ks.lastActivity = '2026-10-16T02:00:00.000Z';
-    h.io.ensureCardIo('ks', false);
+    h.io.ensureCardIo('ks', false); // the render itself sends nothing…
     await flush();
+    expect(h.fetchCalls).toHaveLength(1 + cap);
+    await h.advance(0); // …it arms one retry at the deadline (already past here)
     expect(h.fetchCalls).toHaveLength(2 + cap);
     expect(h.env._ioCache.cs.state).toBe('ok');
     h.io.ensureCardIo('ks', false); // same newer stamp: fresh, nothing more
@@ -775,10 +786,12 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
       h.io.ensureCardIo('kr', false);
       await flush();
     }
+    const stepBefore = h.env._ioCache.cr.step;
     h.env._sessionCache.kr.lastActivity = '2026-10-16T03:00:00.000Z';
     h.io.ensureCardIo('kr', false);
-    await flush();
-    expect(h.env._ioCache.cr.fails).toBe(1); // a fresh cycle, not 1 + cap + 1
+    await h.advance(0);
+    expect(h.env._ioCache.cr.fails).toBe(1); // a fresh budget for the new stamp…
+    expect(h.env._ioCache.cr.step).toBe(stepBefore + 1); // …but the backoff keeps growing
   });
 
   it('IO_AUTO_RETRIES caps automatic attempts — board re-renders cannot extend it; a reopen still retries', async () => {
@@ -863,7 +876,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     expect(gaps).toEqual([1000, 2000, 4000, 8000, 16000, 30000]);
   });
 
-  it('a landed turn refetches even while a failure is backing off', async () => {
+  it('a landed turn during an outage waits for the deadline, then refetches once', async () => {
     const h = harness();
     h.addCard('k4', 'c4');
     h.io.ensureCardIo('k4', true);
@@ -871,20 +884,65 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     h.setMode('up');
     h.io.invalidateCardIo('c4');
     await flush();
+    expect(h.fetchCalls).toHaveLength(1); // not before the deadline
+    await h.advance(h.env._ioCache.c4.retryAt - h.now());
+    expect(h.fetchCalls).toHaveLength(2);
     expect(h.env._ioCache.c4.state).toBe('ok');
   });
 
-  it('freshness rule: loading waits, ok is fresh only for its stamp, error only on force/backoff', () => {
+  it('board renders never send a request during an outage; the deadline and backoff survive stamp changes', async () => {
+    const h = harness();
+    h.addCard('ko', 'co');
+    let stampN = 0;
+    const newStampAndRender = async () => {
+      stampN++;
+      h.env._sessionCache.ko.lastActivity = new Date(Date.UTC(2026, 9, 16, 1, 0, stampN)).toISOString();
+      h.io.ensureCardIo('ko', false); // reconcileBoard on a board push
+      await flush();
+    };
+    h.io.ensureCardIo('ko', true); // opening fetch fails at t0
+    await flush();
+    const t0 = h.now();
+    expect(h.fetchCalls).toHaveLength(1);
+
+    for (const deadline of [1000, 2000, 4000]) {
+      const c = h.env._ioCache.co;
+      const at = c.retryAt;
+      expect(at - h.now()).toBe(deadline); // the step grows; a new stamp never resets it
+      const before = h.fetchCalls.length;
+      // Several new stamps + renders before the deadline: nothing goes out.
+      for (let i = 0; i < 4; i++) {
+        await h.advance(Math.floor(deadline / 5));
+        await newStampAndRender();
+        expect(h.fetchCalls).toHaveLength(before);
+      }
+      if (deadline === 4000) h.setMode('up'); // the endpoint recovers before the third deadline
+      await h.advance(at - h.now()); // the deadline: exactly one request
+      expect(h.fetchCalls).toHaveLength(before + 1);
+    }
+    expect(h.fetchTimes.map((x) => x - t0)).toEqual([0, 1000, 3000, 7000]);
+    expect(h.env._ioCache.co.state).toBe('ok');
+    expect(h.env._ioCache.co.step).toBe(0);
+  });
+
+  it('freshness rule: loading waits, ok is fresh only for its stamp, error only on reopen or the deadline timer', () => {
     const { ioNeedsFetch } = harness().io;
+    const err = { state: 'error', stamp: 's', retryAt: 100 };
     expect(ioNeedsFetch(undefined, 's', false, 0)).toBe(true);
     expect(ioNeedsFetch({ state: 'loading', stamp: 's' }, 's', true, 0)).toBe(false);
     expect(ioNeedsFetch({ state: 'ok', stamp: 's' }, 's', true, 0)).toBe(false);
     expect(ioNeedsFetch({ state: 'ok', stamp: 's' }, 't', false, 0)).toBe(true);
-    expect(ioNeedsFetch({ state: 'error', stamp: 's', retryAt: 100 }, 's', false, 50)).toBe(false);
-    expect(ioNeedsFetch({ state: 'error', stamp: 's', retryAt: 100 }, 's', false, 100)).toBe(true);
-    expect(ioNeedsFetch({ state: 'error', stamp: 's', retryAt: 100 }, 's', true, 0)).toBe(true);
-    expect(ioNeedsFetch({ state: 'error', stamp: 's', retryAt: 100, fails: 7 }, 's', false, 1e9)).toBe(false);
-    expect(ioNeedsFetch({ state: 'error', stamp: 's', retryAt: 100, fails: 7 }, 's', true, 0)).toBe(true);
+    // Renders (no timer) never send during an error — not even for a newer stamp.
+    expect(ioNeedsFetch(err, 's', false, 1e9)).toBe(false);
+    expect(ioNeedsFetch(err, 't', false, 1e9)).toBe(false);
+    // The deadline timer: only once the deadline passed.
+    expect(ioNeedsFetch(err, 't', false, 50, true)).toBe(false);
+    expect(ioNeedsFetch(err, 's', false, 100, true)).toBe(true);
+    // Budget per stamp: exhausted for 's', fresh for a newer stamp.
+    expect(ioNeedsFetch({ ...err, fails: 7 }, 's', false, 1e9, true)).toBe(false);
+    expect(ioNeedsFetch({ ...err, fails: 7 }, 't', false, 1e9, true)).toBe(true);
+    // Reopen always.
+    expect(ioNeedsFetch({ ...err, fails: 7 }, 's', true, 0)).toBe(true);
   });
 });
 
@@ -965,6 +1023,34 @@ describe('pending-question choices carry their values in data attributes (shippe
   it('no answerChoice / selectMc call is built as an inline JS string any more', () => {
     expect(TEMPLATE).not.toMatch(/answerChoice\(\\\\'/);
     expect(TEMPLATE).not.toMatch(/selectMc\(\\\\'/);
+  });
+});
+
+describe('numbers in panel / topbar markup (shipped toNum + formatTokens)', () => {
+  const { toNum, formatTokens } = load<{ toNum(v: unknown): number; formatTokens(v: unknown): string }>(
+    ['toNum', 'formatTokens'],
+    [],
+  );
+  it('a hostile string becomes a number before it reaches markup, and .toFixed never throws', () => {
+    for (const bad of ['<img src=x onerror=alert(1)>', '"x', 'NaN', {}, null, undefined, Number.POSITIVE_INFINITY]) {
+      expect(toNum(bad)).toBe(0);
+      expect(formatTokens(bad)).toBe('0');
+      expect(() => toNum(bad).toFixed(3)).not.toThrow();
+    }
+    expect(toNum('1500')).toBe(1500);
+    expect(formatTokens('1500')).toBe('1.5K');
+    expect(formatTokens(2_500_000)).toBe('2.5M');
+  });
+});
+
+describe('escaping order and inline-handler escaping in the template', () => {
+  it('text is sliced before it is escaped (an entity is never cut in half)', () => {
+    expect(TEMPLATE).not.toMatch(/esc\([^()]*\)\.slice\(/);
+  });
+  it('the resummarize handler escapes its single-quoted JS arguments with escJs', () => {
+    expect(TEMPLATE).toContain(
+      "resummarize(\\\\'' + escJs(convId || panelConvId) + '\\\\',\\\\'' + escJs(t.id) + '\\\\',this)",
+    );
   });
 });
 
