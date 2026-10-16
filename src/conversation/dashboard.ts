@@ -1898,9 +1898,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 /* ── TOPBAR — strict horizontal grid ──
    One row from 1024px; below that the nav (user select · Conversations · admin
-   toggle) takes its own row under brand · status · account (TOPBAR RESPONSIVE).
-   No control ever wraps or cuts its label: everything is nowrap and flex: none,
-   only the user's name inside the pill may end in an ellipsis. */
+   toggle) takes its own row under brand · status · account (BOARD RESPONSIVE).
+   No control ever wraps or cuts its label: everything is nowrap and flex: none.
+   Only user names — the pill's name and the selected user — may shrink, and
+   only when they do not fit: they end in a visible ellipsis, full name in title. */
 .topbar {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -1919,10 +1920,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   white-space: nowrap;
   flex: none;
 }
-.topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; min-width: 0; }
-.topbar .topbar-account { display: flex; gap: 6px; align-items: center; min-width: 0; }
+/* One row (≥1024): the nav never shrinks below its controls (so none of them
+   paints past it into the account group); the selected name is capped instead
+   (.user-select max-inline-size), and the account group is what gives way — the
+   pill's name ends in an ellipsis. The cap keeps "Logged in as <realistic name>"
+   whole at 1024px even with "Reconnecting..." and touch padding. */
+.topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; flex: none; }
+.topbar .topbar-account { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 0 1 auto; }
 .topbar .nav a,
-.topbar .nav select {
+.topbar .nav .user-select {
   background: var(--surface-raised);
   color: var(--text-secondary);
   border: 1px solid var(--border);
@@ -1938,10 +1944,45 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   flex: none;
 }
 .topbar .nav a { display: inline-flex; align-items: center; gap: 4px; }
-/* Sized to the selected option, so "All Users" (or a name) is never cut. */
-.topbar .nav select { field-sizing: content; max-inline-size: 220px; }
+/* User select: a visible label sized to the selected option, with the native
+   <select> laid transparently over it (it still takes every click, tap and key).
+   A native select cannot show an ellipsis in WebKit — it hard-cuts the text —
+   so the label carries the ellipsis and the select carries the full name in title. */
+.topbar .nav .user-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between; /* chevron at the right edge when the select fills the row */
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-inline-size: 180px;
+}
+.topbar .user-select-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.topbar .user-select::after {
+  content: '';
+  flex: none;
+  inline-size: 6px;
+  block-size: 6px;
+  margin: -3px 2px 0;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+.topbar .user-select select {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  opacity: 0;
+  cursor: pointer;
+  appearance: none;
+  border: 0;
+  font: inherit;
+}
+.topbar .user-select:has(select:focus-visible) { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .topbar .nav a:hover,
-.topbar .nav select:hover { border-color: var(--accent); color: var(--text); }
+.topbar .nav .user-select:hover { border-color: var(--accent); color: var(--text); }
 
 /* ── USER PILL — "Logged in as <name>" + logout, rendered from /auth/me ── */
 .topbar .user-pill {
@@ -3084,7 +3125,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   /* Basis 0: the account group never pushes itself onto a row of its own — a
      long name ends in an ellipsis inside the pill instead. */
   .topbar .topbar-account { flex: 1 1 0; justify-content: flex-end; }
-  .topbar .nav { order: 1; flex: 1 0 100%; margin-left: 0; }
+  .topbar .nav { order: 1; flex: 1 0 100%; margin-left: 0; flex-wrap: wrap; min-width: 0; }
+  /* The nav row is full width: a selected name can use all of it (the other
+     controls move to the next line first); only a name wider than the row ends
+     in an ellipsis. */
+  .topbar .nav .user-select { max-inline-size: 100%; }
 }
 @media (max-width: 639px) {
   .main { padding: 14px 12px; }
@@ -3105,8 +3150,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     flex-shrink: 0;
     min-width: 0;
   }
-  .topbar .nav { flex-wrap: wrap; }
-  .topbar .nav select { flex: 1 1 auto; max-inline-size: 100%; }
+  .topbar .nav .user-select { flex: 1 1 auto; }
   .topbar .user-pill { padding: 4px 10px; }
   .topbar .user-pill-prefix { display: none; }
   .topbar .admin-toggle { padding: 4px 10px; }
@@ -3151,7 +3195,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-send { min-height: 44px; padding: 12px 16px; }
   .panel-command input { min-height: 44px; padding: 12px 16px; }
   .panel-close { width: 40px; height: 40px; }
-  .topbar .nav a, .topbar .nav select { min-height: 40px; padding: 8px 16px; }
+  .topbar .nav a, .topbar .nav .user-select { min-height: 40px; padding: 8px 16px; }
   .period-btn { min-height: 40px; padding: 12px 20px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
@@ -3162,16 +3206,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    stay AFTER @media (pointer: coarse) in source order so the more
    specific (combined) query wins the cascade. ── */
 @media (max-width: 680px) and (pointer: coarse) {
-  .topbar .nav a, .topbar .nav select { padding: 4px 8px; }
+  .topbar .nav a, .topbar .nav .user-select { padding: 4px 8px; }
 }
 @media (max-width: 480px) and (pointer: coarse) {
-  .topbar .nav a, .topbar .nav select { padding: 4px 6px; }
+  .topbar .nav a, .topbar .nav .user-select { padding: 4px 6px; }
 }
 /* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens.
    Heights only, so the #800 topbar width fit is untouched; the theme toggle keeps
    its 32px square (pinned by #800) and gets a 44px-wide hit slop instead. ── */
 @media (max-width: 639px), (pointer: coarse) {
-  .topbar .nav a, .topbar .nav select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
+  .topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
   #theme-toggle { min-block-size: 44px; position: relative; }
   #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
   .period-btn { min-height: 44px; }
@@ -3192,9 +3236,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     <h1>&#x26A1; soma-work</h1>
     <span class="ws-badge" id="ws-status" role="status" aria-label="WebSocket: Connecting">Connecting...</span>
     <div class="nav">
-      <select id="user-select" onchange="selectUser(this.value)">
+      <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">All Users</span><select id="user-select" title="All Users" onchange="selectUser(this.value)">
         <option value="">All Users</option>
-      </select>
+      </select></span>
       <a href="/conversations"><span aria-hidden="true">&#x1F4DD;</span>Conversations</a>
       <button
         id="admin-mode-toggle"
@@ -3612,6 +3656,7 @@ function _applyUserPill(data) {
     return;
   }
   nameEl.textContent = label;
+  nameEl.title = label; // the name may end in an ellipsis
   pill.style.display = 'inline-flex';
   pill.classList.toggle('is-admin', isAdmin);
   pill.setAttribute('data-clickable', 'true');
@@ -3858,9 +3903,23 @@ async function loadUsers() {
       select.appendChild(opt);
     }
   } catch (e) { console.error('Failed to load users', e); }
+  syncUserSelectLabel();
+}
+
+// The visible label over the transparent user <select> shows the selected
+// option; the select's title keeps the full name when the label is ellipsized.
+function syncUserSelectLabel() {
+  const select = document.getElementById('user-select');
+  const label = document.getElementById('user-select-label');
+  if (!select || !label) return;
+  const opt = select.options[select.selectedIndex];
+  const text = opt ? opt.textContent : '';
+  if (label.textContent !== text) label.textContent = text;
+  select.title = text;
 }
 
 function selectUser(userId) {
+  syncUserSelectLabel();
   currentUserId = userId;
   history.replaceState(null, '', userId ? '/dashboard/' + userId : '/dashboard');
   loadSessions();

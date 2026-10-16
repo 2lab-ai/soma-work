@@ -4,8 +4,10 @@
  * labels ("Conv", "OFF", "SOMA-W…", text wrapping inside buttons at 820px).
  *
  * These tests cannot prove the layout at runtime (that requires a real
- * browser; scripts/screenshot-agent-inbox.ts `topbarChecks` asserts no
- * wrapping / clipping / overflow and ≥44px controls at 1280/1024/820/390, and
+ * browser; scripts/screenshot-agent-inbox.ts `topbarChecks` runs Chromium and
+ * WebKit from 360 to 1280px across status × pill name × selected user and
+ * asserts no wrapping, hard cuts, overlap or overflow, reachable ≥44px
+ * controls and ellipsized names with their full name in title, and
  * scripts/screenshot-dashboard.ts the #800 overflow sweep at 360–680).
  * What they CAN do — and what guards against regression — is verify that
  * every structural piece the layout depends on is still in the HTML and CSS:
@@ -15,8 +17,10 @@
  *   - user-pill prefix and admin-mode-label are wrapped in dedicated spans
  *     so CSS can hide the "Logged in as" prefix without losing the name and
  *     JS can rewrite ON/OFF without losing "Admin: ";
- *   - every control keeps its label on one line (nowrap, flex: none) and the
- *     user select sizes to its selected option;
+ *   - every control keeps its label on one line (nowrap, flex: none); the
+ *     one-row nav never shrinks (so nothing paints into the account group);
+ *   - the user select is a visible label (ellipsis) over a transparent native
+ *     select whose title carries the full name;
  *   - below 1024px the nav takes its own row; below 640px the select fills it.
  *
  * Anything in this list silently disappearing is a regression.
@@ -50,6 +54,12 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
       expect(DASHBOARD_TS).not.toContain('nav-icon');
     });
 
+    it('the user select is a visible label with the native select laid over it, full name in title', () => {
+      expect(DASHBOARD_TS).toContain(
+        '<span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">All Users</span><select id="user-select" title="All Users" onchange="selectUser(this.value)">',
+      );
+    });
+
     it('user pill and theme toggle sit in their own account group after the nav', () => {
       const bar = DASHBOARD_TS.match(/<div class="topbar">[\s\S]*?\n {2}<\/div>\n/)?.[0] ?? '';
       const nav = bar.indexOf('<div class="nav">');
@@ -78,17 +88,35 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
       expect(topbarBlock?.[0]).toContain('min-width: 0');
     });
 
-    it('.topbar .nav has min-width: 0', () => {
-      expect(DASHBOARD_TS).toMatch(/\.topbar\s+\.nav\s*\{[^}]*min-width:\s*0/);
+    it('the one-row nav never shrinks below its controls (they would paint over the account group)', () => {
+      const nav = DASHBOARD_TS.match(/\n\.topbar \.nav \{[^}]*\}/)?.[0] ?? '';
+      expect(nav).toContain('flex: none');
+      expect(nav).not.toContain('min-width: 0');
+      // The account group is what gives way on the one-row bar.
+      expect(DASHBOARD_TS).toMatch(/\n\.topbar \.topbar-account \{[^}]*min-width: 0;[^}]*flex: 0 1 auto/);
     });
 
-    it('.topbar .nav select sizes to its selected option (never a fixed width that cuts "All Users")', () => {
-      expect(DASHBOARD_TS).toContain('.topbar .nav select { field-sizing: content; max-inline-size: 220px; }');
-      expect(DASHBOARD_TS).not.toMatch(/\.topbar\s+\.nav\s+select\s*\{[^}]*clamp\(/);
+    it('the user select caps the selected name on the one-row bar; the label ends in an ellipsis', () => {
+      // The rule right after its comment (the shared `.topbar .nav a, .topbar .nav .user-select` block comes first).
+      const wrap = DASHBOARD_TS.match(/\*\/\n\.topbar \.nav \.user-select \{[^}]*\}/)?.[0] ?? '';
+      expect(wrap).toContain('max-inline-size: 180px');
+      expect(wrap).toContain('min-width: 0');
+      expect(DASHBOARD_TS).toContain(
+        '.topbar .user-select-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }',
+      );
+      // No native-select sizing: WebKit hard-cuts a native select's text.
+      expect(DASHBOARD_TS).not.toContain('field-sizing');
+    });
+
+    it('the native select is transparent and covers the whole visible box (every tap and key reaches it)', () => {
+      const sel = DASHBOARD_TS.match(/\n\.topbar \.user-select select \{[^}]*\}/)?.[0] ?? '';
+      for (const decl of ['position: absolute', 'inset: 0', 'inline-size: 100%', 'block-size: 100%', 'opacity: 0'])
+        expect(sel).toContain(decl);
+      expect(DASHBOARD_TS).toContain('.topbar .user-select:has(select:focus-visible) {');
     });
 
     it('nav links, select, admin toggle and status badge never wrap or shrink their label', () => {
-      const navBlock = DASHBOARD_TS.match(/\.topbar \.nav a,\n\.topbar \.nav select \{[^}]*\}/)?.[0] ?? '';
+      const navBlock = DASHBOARD_TS.match(/\.topbar \.nav a,\n\.topbar \.nav \.user-select \{[^}]*\}/)?.[0] ?? '';
       const adminBlock = DASHBOARD_TS.match(/\.topbar \.admin-toggle \{[^}]*\}/)?.[0] ?? '';
       const wsBlock = DASHBOARD_TS.match(/\n\.ws-badge \{[^}]*\}/)?.[0] ?? '';
       for (const block of [navBlock, adminBlock, wsBlock]) {
@@ -126,8 +154,14 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
       expect(block1023).toMatch(/\.topbar\s*\{[^}]*flex-wrap:\s*wrap/);
     });
 
-    it('the nav is a full-width second row', () => {
-      expect(block1023).toContain('.topbar .nav { order: 1; flex: 1 0 100%; margin-left: 0; }');
+    it('the nav is a full-width second row that wraps rather than overflow', () => {
+      expect(block1023).toContain(
+        '.topbar .nav { order: 1; flex: 1 0 100%; margin-left: 0; flex-wrap: wrap; min-width: 0; }',
+      );
+    });
+
+    it('a selected name can use the whole nav row', () => {
+      expect(block1023).toContain('.topbar .nav .user-select { max-inline-size: 100%; }');
     });
 
     it('the account group has basis 0, so a long name never pushes it onto a row of its own', () => {
@@ -153,9 +187,8 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
       expect(block639).toContain('.topbar .user-pill-prefix { display: none; }');
     });
 
-    it('the user select fills the nav row and the row wraps rather than overflow', () => {
-      expect(block639).toContain('.topbar .nav { flex-wrap: wrap; }');
-      expect(block639).toContain('.topbar .nav select { flex: 1 1 auto; max-inline-size: 100%; }');
+    it('the user select fills the nav row', () => {
+      expect(block639).toContain('.topbar .nav .user-select { flex: 1 1 auto; }');
     });
 
     it('theme-toggle is a 32px square (no padding)', () => {
@@ -220,7 +253,7 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
 
   describe('CSS — coarse-pointer × narrow combined media (#800 codex P2)', () => {
     // Touch devices match `@media (pointer: coarse)` which sets
-    // `padding: 8px 16px` on `.topbar .nav a, .topbar .nav select` —
+    // `padding: 8px 16px` on `.topbar .nav a, .topbar .nav .user-select` —
     // wide enough to push the topbar past 360-414px viewports.
     // Combined queries restore tight padding at narrow widths.
     // These rules MUST come AFTER `@media (pointer: coarse)` in source
@@ -229,13 +262,13 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
     it('@media (max-width: 680px) and (pointer: coarse) trims nav padding to 4px 8px', () => {
       const block = DASHBOARD_TS.match(/@media \(max-width: 680px\) and \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0];
       expect(block).toBeTruthy();
-      expect(block).toMatch(/\.topbar\s+\.nav\s+a,\s*\.topbar\s+\.nav\s+select\s*\{[^}]*padding:\s*4px\s+8px/);
+      expect(block).toMatch(/\.topbar\s+\.nav\s+a,\s*\.topbar\s+\.nav\s+\.user-select\s*\{[^}]*padding:\s*4px\s+8px/);
     });
 
     it('@media (max-width: 480px) and (pointer: coarse) trims nav padding to 4px 6px', () => {
       const block = DASHBOARD_TS.match(/@media \(max-width: 480px\) and \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0];
       expect(block).toBeTruthy();
-      expect(block).toMatch(/\.topbar\s+\.nav\s+a,\s*\.topbar\s+\.nav\s+select\s*\{[^}]*padding:\s*4px\s+6px/);
+      expect(block).toMatch(/\.topbar\s+\.nav\s+a,\s*\.topbar\s+\.nav\s+\.user-select\s*\{[^}]*padding:\s*4px\s+6px/);
     });
 
     it('combined coarse-narrow rules come AFTER @media (pointer: coarse) in source order', () => {
