@@ -9,14 +9,14 @@
 
 import type { PostCompactHookInput, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { getVerbosityFlags, LOG_MINIMAL } from '@soma/slack/output-flags';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../session/compaction-context-builder', () => ({
   buildCompactionContext: vi.fn().mockReturnValue('<compaction-context/>'),
   snapshotFromSession: vi.fn().mockReturnValue({}),
 }));
 
-import { setStreamExecutorProviders } from '@soma/slack/pipeline/stream-executor';
+import { resetWorkLogDropWarningsForTests, setStreamExecutorProviders } from '@soma/slack/pipeline/stream-executor';
 import type { WorkLogInput } from '@soma/slack/work-log';
 import type { ConversationSession } from '../../../types';
 import type { SlackApiHelper } from '../../slack-api-helper';
@@ -65,10 +65,17 @@ function track(session: ConversationSession): ConversationSession {
   return session;
 }
 
+// A throwing provider below leaves dropped-entry throttle state (and its
+// summary timer) behind; every test starts and ends without it.
+beforeEach(() => {
+  resetWorkLogDropWarningsForTests();
+});
+
 afterEach(() => {
   for (const session of sessions.splice(0)) {
     if (session.compactTickInterval) clearInterval(session.compactTickInterval);
   }
+  resetWorkLogDropWarningsForTests();
 });
 
 /** Every bookkeeping effect of one full START → END cycle. */

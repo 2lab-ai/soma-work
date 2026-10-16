@@ -586,7 +586,7 @@ describe('StreamExecutor — a leak followed by a real answer never triggers rec
 
         expect(handleError).not.toHaveBeenCalled();
         expect(result.success).toBe(true);
-        const appended = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => String(call[1]));
+        const appended: string[] = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => String(call[1]));
         expect(appended.filter((text) => text.startsWith(ANSWER))).toHaveLength(1);
         expect(appended.some((text) => text.includes(LEAK))).toBe(false);
       });
@@ -624,7 +624,7 @@ describe('StreamExecutor — a leak followed by a directive-only ending still re
           'Prompt is too long (surfaced as turn content): Prompt is too long',
         );
         expect(deps.slackApi.postMessage).toHaveBeenCalledTimes(1);
-        const appended = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => String(call[1]));
+        const appended: string[] = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => String(call[1]));
         expect(appended.some((text) => text.includes('Prompt is too long'))).toBe(false);
       });
     }
@@ -684,7 +684,7 @@ describe('StreamExecutor — a final answer that reached Slack means no recovery
 
     expect(handleError).not.toHaveBeenCalled();
     expect(result.success).toBe(true);
-    const appended = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => String(call[1]));
+    const appended: string[] = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => String(call[1]));
     expect(appended.filter((text) => text.startsWith(FINAL))).toHaveLength(1);
   });
 });
@@ -739,17 +739,22 @@ describe('recordConversationWorkLog — the conversation-level path', () => {
   });
 
   it('the turn path passes its sessionKey to that warning', async () => {
-    appendWorkLog.mockImplementation(() => {
-      throw new Error('disk full');
+    // Only the final entry is dropped, so its warning is the first and only
+    // one — independent of which entries the turn records before it.
+    appendWorkLog.mockImplementation((_conversationId, entry) => {
+      if (entry.kind === 'final') throw new Error('disk full');
     });
 
     await new StreamExecutor(createDeps(toolTurn())).execute(createParams(createSession(LOG_MINIMAL)));
     await settle();
 
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('appendWorkLog provider threw'),
-      expect.objectContaining({ conversationId: 'conv-1', kind: 'instruction', sessionKey: SESSION_KEY }),
-    );
+    const dropped = warn.mock.calls.filter(([message]) => String(message).includes('appendWorkLog provider threw'));
+    expect(dropped).toEqual([
+      [
+        expect.stringContaining('appendWorkLog provider threw'),
+        { conversationId: 'conv-1', kind: 'final', sessionKey: SESSION_KEY, error: 'disk full' },
+      ],
+    ]);
   });
 });
 
@@ -793,12 +798,14 @@ describe('recordConversationWorkLog — dropped-entry warnings are throttled pro
 
     expect(appendWorkLog).toHaveBeenCalledTimes(7);
     expect(drops()).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(1);
 
     vi.advanceTimersByTime(INTERVAL - 6_000 - 1);
     expect(drops()).toHaveLength(1);
 
     vi.advanceTimersByTime(1);
     expect(drops()).toHaveLength(2);
+    expect(vi.getTimerCount()).toBe(0);
     expect(drops()[1]).toEqual([
       expect.stringContaining('appendWorkLog provider threw'),
       { suppressed: 6, conversationId: 'conv-z', kind: 'final', sessionKey: 'C9:z', error: 'store down' },
@@ -831,11 +838,14 @@ describe('recordConversationWorkLog — dropped-entry warnings are throttled pro
     recordConversationWorkLog('conv-a', { kind: 'notice', text: 'x' });
     vi.advanceTimersByTime(1_000);
     recordConversationWorkLog('conv-b', { kind: 'tool', text: 'y' });
+    expect(vi.getTimerCount()).toBe(1);
     // The clock passes the interval without the pending timer firing.
     vi.setSystemTime(Date.now() + INTERVAL);
     recordConversationWorkLog('conv-c', { kind: 'final', text: FINAL }, { sessionKey: 'C3:c' });
 
     expect(drops()).toHaveLength(2);
+    // The synchronous flush cancelled the pending timer.
+    expect(vi.getTimerCount()).toBe(0);
     expect(drops()[1]).toEqual([
       expect.anything(),
       { suppressed: 2, conversationId: 'conv-c', kind: 'final', sessionKey: 'C3:c', error: 'store down' },
@@ -853,5 +863,34 @@ describe('recordConversationWorkLog — dropped-entry warnings are throttled pro
       [expect.anything(), { conversationId: 'conv-a', kind: 'notice', error: 'store down' }],
       [expect.anything(), { conversationId: 'conv-b', kind: 'error', sessionKey: 'C2:b', error: 'store down' }],
     ]);
+  });
+
+  it('the reset seam cancels a pending summary', () => {
+    recordConversationWorkLog('conv-a', { kind: 'notice', text: 'x' });
+    recordConversationWorkLog('conv-b', { kind: 'tool', text: 'y' });
+    expect(vi.getTimerCount()).toBe(1);
+
+    resetWorkLogDropWarningsForTests();
+
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(10 * INTERVAL);
+    expect(drops()).toHaveLength(1);
+  });
+
+  it('the summary timer is unref-ed (hasRef() === false): reporting never keeps the process alive', () => {
+    // A real Node timer, so `hasRef()` is the runtime's own answer.
+    vi.useRealTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      recordConversationWorkLog('conv-a', { kind: 'notice', text: 'x' });
+      recordConversationWorkLog('conv-b', { kind: 'tool', text: 'y' });
+
+      expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+      const timer = setTimeoutSpy.mock.results[0]?.value as NodeJS.Timeout;
+      expect(timer.hasRef()).toBe(false);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      resetWorkLogDropWarningsForTests();
+    }
   });
 });

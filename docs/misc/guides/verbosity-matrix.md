@@ -98,8 +98,8 @@ paths:
 
 A store that throws never breaks what records into it: the entry is dropped and reported at
 warn, throttled process-wide — the first drop at once, then at most one summary per
-`WORK_LOG_DROP_WARN_INTERVAL_MS` (60 s) with the count and the latest drop. Every write is
-still attempted.
+`WORK_LOG_DROP_WARN_INTERVAL_MS` with the count and the latest drop. Every write is still
+attempted.
 
 Errors and aborts follow the same split as the user-facing error card:
 
