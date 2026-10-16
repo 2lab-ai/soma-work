@@ -175,7 +175,7 @@ Four prefix families — each with a clear, non-overlapping purpose:
 |--------|-------|-------------|---------|
 | `/z <topic> …` | Primary command surface (Block Kit UI where it makes sense) | User-global | `/z persona set linus` |
 | `%<sub> …` | **Current session only** — override without saving | Ephemeral (reset on `new`/`renew`) | `%model opus` |
-| `$<skill>` / `$<plugin>:<skill>` | **Force skill invocation** (reads `SKILL.md`, emits RPG banner) | Per-message | `$z`, `$stv:new-task` |
+| `$<skill>` / `$<plugin>:<skill>` | **Force skill invocation** (reads `SKILL.md`, emits RPG banner at `compact` and above — at `minimal` it is not posted; recorded in the dashboard work log when the session has a conversation) | Per-message | `$z`, `$stv:new-task` |
 | naked text | Whitelisted bare forms (see below) or chat / workflow dispatch | n/a | `sessions`, `new`, `fix PR 123` |
 
 > **Split history (#508)**: `$` used to double as both "force skill" and "session setting". It was split — `%` took over session settings, `$` is now skill-only. Legacy `$model` / `$verbosity` / `$effort` / `$thinking` / `$thinking_summary` still work during the deprecation grace period but emit a one-line notice nudging users to `%`.
@@ -192,7 +192,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z bypass [set on\|off]` | Toggle permission bypass |
 | `/z persona [set <name>\|list]` | Switch persona |
 | `/z model [set <name>\|list]` | Switch model (sonnet, opus, haiku) |
-| `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list, questions/approvals, the final answer and errors; the model's running narration, tool calls and compaction notices go to the dashboard work log |
+| `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list, questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |
 | `/z session` · `sessions` | List active sessions (`sessions` naked form still accepted) |
 | `/z new` · `/z renew` | Reset / renew session (naked `new` / `renew` also accepted) |
 | `/z close` | Close current thread session |
@@ -345,7 +345,7 @@ Overrides that apply **only to the current session** and do not persist. Cleared
 
 ### `$` — forced skill invocation
 
-Forces the bot to read a skill's `SKILL.md` and follow it. Emits a red RPG banner ("⚡ skill 강제 발동") on resolution.
+Forces the bot to read a skill's `SKILL.md` and follow it. Emits a red RPG banner ("⚡ skill 강제 발동") on resolution at `compact` and above; at `minimal` the banner is not posted (the skill still runs). At every level the banner is recorded in the dashboard work log when the session has a conversation.
 
 | Syntax | Resolves to |
 |--------|-------------|

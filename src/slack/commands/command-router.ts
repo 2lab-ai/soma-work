@@ -49,7 +49,7 @@ import { WebhookHandler } from './webhook-handler';
 setCommandRouterProviders({
   createHandlers: (deps) => {
     const newHandler = new NewHandler(deps as any);
-    const skillForceHandler = new SkillForceHandler();
+    const skillForceHandler = new SkillForceHandler(undefined, deps as any);
     const goalHandler = new GoalHandler(deps as any);
 
     const claudeHandler = (deps as { claudeHandler: ClaudeHandler }).claudeHandler;
