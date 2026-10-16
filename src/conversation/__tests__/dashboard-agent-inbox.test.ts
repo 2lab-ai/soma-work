@@ -3,10 +3,11 @@
  * §3.1 board, §4 motion, §5 responsive).
  *
  * Like dashboard-topbar-mobile.test.ts these read the template source and
- * assert the pieces the contract depends on. Runtime behaviour (FLIP frames,
- * no-op reconcile, 390px overflow) needs a real browser and is captured by
- * the Playwright harness; what this file guards is that none of the
- * load-bearing pieces silently disappear.
+ * assert the pieces the contract depends on. Behaviour that can run without a
+ * browser (work-log merge/paging, card 지시/응답 retry, escaping, contrast) is
+ * executed from the shipped source in dashboard-agent-inbox-client.test.ts;
+ * DOM + WAAPI behaviour (FLIP frames, no-op renders during entry/exit, 390px
+ * overflow) runs in scripts/screenshot-agent-inbox.ts.
  */
 
 import { readFileSync } from 'node:fs';
@@ -90,10 +91,28 @@ describe('agent inbox board — keyed reconciler (§3.1-6)', () => {
   });
 
   it('the reconciler only replaces a card part when its HTML changed', () => {
-    const body = fnBody('patchCard');
+    const body = fnBody('applyCardParts');
     expect(body).not.toBe('');
     expect(body).toContain('_faceHtml !==');
     expect(body).toContain('_bodyHtml !==');
+    expect(fnBody('patchCard')).toContain('applyCardParts(');
+  });
+
+  it('a same-data render stops before touching the DOM or a running entrance/exit (§3.1-6)', () => {
+    const body = fnBody('reconcileBoard');
+    expect(body).toContain('if (changed) applyBoardPlan(');
+    // Nothing on the planning path finishes entrances or removes fading cards.
+    expect(TEMPLATE).not.toContain('clearExitingCards');
+    expect(fnBody('measureCards')).not.toContain('.finish(');
+    expect(fnBody('exitCard')).toContain('anim.onfinish = anim.oncancel');
+  });
+
+  it('dictionaries keyed by session keys / conversation ids are prototype-free', () => {
+    expect(TEMPLATE).toContain('var _cardEls = Object.create(null);');
+    expect(TEMPLATE).toContain('var _ioCache = Object.create(null);');
+    expect(TEMPLATE).toContain('let _sessionCache = Object.create(null);');
+    expect(fnBody('reconcileBoard')).toContain('var wanted = Object.create(null);');
+    expect(fnBody('renderBoard')).toContain('_sessionCache = Object.create(null);');
   });
 
   it('sessionUpdated goes through the same patch path', () => {
@@ -108,6 +127,34 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
   it('card click toggles expansion in place instead of opening the panel', () => {
     expect(TEMPLATE).toContain('function toggleCard(');
     expect(TEMPLATE).not.toContain('onclick="openPanel(');
+  });
+
+  it('does not repeat the pending question the face already shows', () => {
+    expect(fnBody('renderCardBody')).toContain('pq.question === faceSummary');
+    expect(fnBody('renderMultiChoiceCard')).toContain('=== faceSummary');
+  });
+
+  it('every card can open the panel; without a conversation the work log reads 작업 로그 없음', () => {
+    const body = fnBody('renderCardBody');
+    expect(body).toMatch(/const worklogBtn = '<button type="button" class="btn-action btn-primary"/);
+    expect(TEMPLATE).toContain("var WL_EMPTY_MSG = '작업 로그 없음';");
+    expect(fnBody('resetWorkLog')).toContain('WL_EMPTY_MSG');
+    expect(fnBody('openPanel')).toContain('resetWorkLog(panelConvId, true)');
+  });
+
+  it('a WS session_update re-attaches sibling-instance cards from the last poll', () => {
+    expect(fnBody('connectWs')).toContain('renderBoard(mergeSiblingCards(msg.board))');
+    expect(fnBody('loadSessions')).toContain('_lastPolledBoard = data.board;');
+  });
+
+  it('older panel turns keep the reading position (anchored on the first visible element)', () => {
+    const body = fnBody('loadMorePanelTurns');
+    expect(body).toContain('panelScrollAnchor(scrollEl)');
+    expect(body).toContain('anchor.el.getBoundingClientRect().top - anchor.top');
+  });
+
+  it('reopening a card retries a failed 지시/응답 fetch at once', () => {
+    expect(fnBody('toggleCard')).toContain('ensureCardIo(key, true)');
   });
 
   it('lazy-loads the latest instruction/response pair with limit=2', () => {
@@ -128,22 +175,19 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(TEMPLATE).toContain('작업 로그 없음');
   });
 
-  it('fetches the worklog route and resumes with afterSeq', () => {
+  it('loads on open and recovers on every reconnect while a conversation is open', () => {
     expect(TEMPLATE).toContain("'/worklog'");
-    expect(TEMPLATE).toContain('afterSeq=');
-    expect(fnBody('connectWs')).toContain('fetchWorkLog(_wlConvId, _wlLastSeq)');
+    expect(fnBody('openPanel')).toContain('loadWorkLog()');
+    expect(fnBody('connectWs')).toContain('if (panelOpen && _wl) recoverWorkLog();');
+    // Switching conversations closes the previous state so late responses drop.
+    expect(fnBody('resetWorkLog')).toContain('_wl.closed = true');
   });
 
-  it('backfill pages forward while hasMore === true (missing hasMore = done), with a progress guard', () => {
-    const body = fnBody('fetchWorkLog');
-    expect(body).toContain('data.hasMore === true');
-    expect(body).toContain('_wlLastSeq > before');
-    expect(body).toContain('fetchWorkLog(convId, _wlLastSeq, pageNo + 1)');
-    expect(body).toContain('WL_BACKFILL_MAX_PAGES');
-  });
-
-  it('live-appends work_log WS entries', () => {
+  it('live-appends work_log WS entries through the seq merge', () => {
     expect(fnBody('connectWs')).toContain("msg.type === 'work_log'");
+    expect(fnBody('connectWs')).toContain('pushLiveWorkLog(msg.conversationId, msg.entry)');
+    expect(fnBody('pushLiveWorkLog')).toContain('wlOnLive(');
+    expect(fnBody('wlOnLive')).toContain('wlMerge(');
   });
 });
 
@@ -226,8 +270,30 @@ describe('agent inbox board — motion contract (§4)', () => {
     expect(TEMPLATE).toContain("matchMedia('(prefers-reduced-motion: reduce)')");
   });
 
-  it('presses scale to 0.97', () => {
-    expect(TEMPLATE).toMatch(/:active[^{]*\{[^}]*transform: scale\(0\.97\)/);
+  it('presses scale to 0.97 — pointer presses only, never keyboard activation (§4-5, §4-9)', () => {
+    const rules = TEMPLATE.match(/^[^\n{]*:active[^\n{]*\{[^}]*transform: scale\(0\.97\)[^}]*\}/gm) ?? [];
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) {
+      const selectors = rule.slice(0, rule.indexOf('{')).split(',');
+      for (const sel of selectors) expect(sel, sel).toContain(':not(:focus-visible)');
+    }
+  });
+
+  it('reduced motion stops the spinner and shows a static working indicator (§4-8)', () => {
+    const reduced = TEMPLATE.match(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(reduced).toContain('.spinner, .spin { animation: none !important; }');
+    expect(reduced).toMatch(/\.spinner \{ border-color: var\(--st-run\); background: radial-gradient/);
+  });
+
+  it('the context fill animates transform scaleX, not width', () => {
+    expect(TEMPLATE).toMatch(
+      /\.card \.context-bar-fill \{[^}]*transform-origin: left center;[^}]*transition: transform/,
+    );
+    expect(fnBody('renderCardBody')).toContain('style="transform:scaleX(');
+  });
+
+  it('board cards drop the star on the recommended choice (the solid primary marks it)', () => {
+    expect(TEMPLATE).toContain('.card .btn-choice-recommended::before { content: none; }');
   });
 
   it('board hover effects live only inside (hover: hover) and (pointer: fine)', () => {
@@ -259,5 +325,20 @@ describe('agent inbox board — responsive (§5)', () => {
   it('<640px raises tap targets to 44px', () => {
     const block = TEMPLATE.match(/@media \(max-width: 639px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     expect(block).toContain('min-height: 44px');
+  });
+
+  it('every remaining control is 44px on narrow or touch screens (panel, topbar, period tabs)', () => {
+    const block = TEMPLATE.match(/@media \(max-width: 639px\), \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(block).toContain('.panel-close { width: 44px; height: 44px; }');
+    expect(block).toContain('.period-btn { min-height: 44px; }');
+    expect(block).toContain(
+      '.topbar .nav a, .topbar .nav select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }',
+    );
+    expect(block).toContain('#theme-toggle { min-block-size: 44px; position: relative; }');
+    expect(block).toContain('#panel-title-sub-regen { min-width: 44px; min-height: 44px; }');
+    // Must follow the #800 coarse blocks so it wins the cascade.
+    expect(TEMPLATE.indexOf('@media (max-width: 639px), (pointer: coarse)')).toBeGreaterThan(
+      TEMPLATE.indexOf('@media (max-width: 480px) and (pointer: coarse)'),
+    );
   });
 });
