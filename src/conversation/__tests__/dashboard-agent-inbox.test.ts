@@ -21,6 +21,9 @@ const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboa
 
 /** Body of a top-level client function: from its declaration to the first `\n}\n`. */
 function fnBody(name: string): string {
+  // The browser runs the LAST of several same-named declarations — refuse to pick one.
+  const decls = TEMPLATE.match(new RegExp(`^(?:async )?function ${name}\\(`, 'gm')) ?? [];
+  if (decls.length > 1) throw new Error(`client function ${name} is declared ${decls.length} times`);
   const start = TEMPLATE.indexOf(`function ${name}(`);
   if (start < 0) return '';
   const end = TEMPLATE.indexOf('\n}\n', start);
