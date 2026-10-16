@@ -8,7 +8,7 @@ import type { AgentStreamEventOf } from './agent-stream-types';
 import type { AssistantStatusManager } from './assistant-status-manager';
 import type { McpHealthMonitor } from './mcp-health-monitor';
 import type { McpStatusDisplay } from './mcp-status-tracker';
-import { getToolResultRenderMode, LOG_DETAIL, OutputFlag, shouldOutput } from './output-flags';
+import { getToolResultRenderMode, OutputFlag, resolveVerbosityMask, shouldOutput } from './output-flags';
 import { AgentTaskLifecycleTracker, parseBackgroundLaunchId } from './pipeline/background-task-tracker';
 import type { ReactionManager } from './reaction-manager';
 import { extractTaskIdFromResult } from './stream-processor';
@@ -398,7 +398,7 @@ export class ToolEventProcessor {
       paramsSummary: ToolFormatter.formatCompactParams(toolUse.input),
     };
 
-    if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
+    if (shouldOutput(OutputFlag.MCP_PROGRESS, resolveVerbosityMask(context.logVerbosity))) {
       this.mcpStatusDisplay.registerCall(context.sessionKey, callId, config, context.channel, context.threadTs);
     }
   }
@@ -451,7 +451,7 @@ export class ToolEventProcessor {
       paramsSummary: summary.promptPreview ? `(${ToolFormatter.truncateString(summary.promptPreview, 50)})` : '',
     };
 
-    if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
+    if (shouldOutput(OutputFlag.MCP_PROGRESS, resolveVerbosityMask(context.logVerbosity))) {
       this.mcpStatusDisplay.registerCall(context.sessionKey, callId, config, context.channel, context.threadTs);
     }
   }
@@ -490,7 +490,7 @@ export class ToolEventProcessor {
       paramsSummary: '',
     };
 
-    if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
+    if (shouldOutput(OutputFlag.MCP_PROGRESS, resolveVerbosityMask(context.logVerbosity))) {
       this.mcpStatusDisplay.registerCall(context.sessionKey, callId, config, context.channel, context.threadTs);
     }
   }
@@ -709,7 +709,7 @@ export class ToolEventProcessor {
     context: ToolEventContext,
   ): Promise<void> {
     // In compact mode, results are handled via in-place updates — skip separate messages
-    const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    const resultMode = getToolResultRenderMode(resolveVerbosityMask(context.logVerbosity));
     if (resultMode === 'compact' || resultMode === 'hidden') return;
 
     const result: ToolResult = {

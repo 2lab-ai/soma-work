@@ -192,7 +192,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z bypass [set on\|off]` | Toggle permission bypass |
 | `/z persona [set <name>\|list]` | Switch persona |
 | `/z model [set <name>\|list]` | Switch model (sonnet, opus, haiku) |
-| `/z verbosity [set <level>]` | Set output verbosity |
+| `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list, questions/approvals, the final answer and errors; the model's running narration, tool calls and compaction notices go to the dashboard work log |
 | `/z session` · `sessions` | List active sessions (`sessions` naked form still accepted) |
 | `/z new` · `/z renew` | Reset / renew session (naked `new` / `renew` also accepted) |
 | `/z close` | Close current thread session |
@@ -336,7 +336,7 @@ Overrides that apply **only to the current session** and do not persist. Cleared
 |---------|-------------|
 | `%` | Show session info (model, verbosity, effort, thinking flags) |
 | `%model [<name>]` | Get / set session model (e.g. `%model opus`) |
-| `%verbosity [<level>]` | Get / set session verbosity |
+| `%verbosity [<level>]` | Get / set session verbosity (same levels; default `minimal`, see `/z verbosity`) |
 | `%effort [<level>]` | Get / set session effort |
 | `%thinking [on\|off]` | Toggle extended thinking for this session |
 | `%thinking_summary [on\|off]` | Toggle thinking-output display |
