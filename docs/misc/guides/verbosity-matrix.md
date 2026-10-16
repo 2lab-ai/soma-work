@@ -1,14 +1,14 @@
 # Verbosity Matrix
 
-Complete mapping of 20 output flags across 4 verbosity levels.
+Complete mapping of the output flags in `packages/slack/src/output-flags.ts` across 4 verbosity levels.
 
 ## Verbosity Levels
 
 | Level | Description | Use Case |
 |-------|-------------|----------|
-| **minimal** | Final result + essential interactions only | Automated pipelines, quiet mode |
-| **compact** | Thinking + tool names + status/meta (no detail) | Daily use, reduced noise |
-| **detail** | Full output (default behaviour) | Standard development |
+| **minimal** | Task list + final answer + essential interactions only (default; narration and progress go to the dashboard work log) | Daily use, quiet threads |
+| **compact** | Narration + progress + thinking + tool names + status/meta (no detail) | Watching a turn live |
+| **detail** | Full output | Standard development |
 | **verbose** | Everything including raw data | Debugging, troubleshooting |
 
 ## Flag Matrix
@@ -20,7 +20,7 @@ Complete mapping of 20 output flags across 4 verbosity levels.
 | 2 | `TOOL_CALL` | `1<<2` | - | **on** | on | on | Tool call notification — name only (e.g. "Edit file.ts") |
 | 3 | `TOOL_DETAIL` | `1<<3` | - | - | **on** | on | Tool call detail — args, diff, command, MCP inputs |
 | 4 | `TOOL_RESULT` | `1<<4` | - | - | **on** | on | Tool execution result |
-| 5 | `MCP_PROGRESS` | `1<<5` | - | - | **on** | on | MCP / subagent progress status messages |
+| 5 | `MCP_PROGRESS` | `1<<5` | - | **on** | on | on | MCP / subagent / background-Bash progress status messages |
 | 6 | `STATUS_MESSAGE` | `1<<6` | - | **on** | on | on | Status text messages (Thinking / Working / Completed) |
 | 7 | `STATUS_REACTION` | `1<<7` | - | **on** | on | on | Emoji reactions (thinking_face, gear, check_mark) |
 | 8 | `STATUS_SPINNER` | `1<<8` | - | **on** | on | on | Native Slack assistant spinner |
@@ -30,11 +30,13 @@ Complete mapping of 20 output flags across 4 verbosity levels.
 | 12 | `THREAD_HEADER` | `1<<12` | - | **on** | on | on | Thread header (title, workflow badge, dispatch status) |
 | 13 | `SESSION_FOOTER` | `1<<13` | - | **on** | on | on | Session footer (timing, context, usage) |
 | 14 | `CONTEXT_EMOJI` | `1<<14` | - | **on** | on | on | Context window emoji (80p, 60p, ...) |
-| 15 | `TODO_UPDATE` | `1<<15` | - | - | **on** | on | Todo list create / update |
-| 16 | `TODO_REACTION` | `1<<16` | - | - | **on** | on | Todo progress reactions |
+| 15 | `TODO_UPDATE` | `1<<15` | **on** | on | on | on | Todo list create / update |
+| 16 | `TODO_REACTION` | `1<<16` | **on** | on | on | on | Todo progress reactions |
 | 17 | `ERROR` | `1<<17` | **on** | on | on | on | Error messages and error status (**ALWAYS** shown) |
 | 18 | `SYSTEM` | `1<<18` | - | - | **on** | on | System / command responses, onboarding, conversation URL |
 | 19 | `RAW_DATA` | `1<<19` | - | - | - | **on** | Raw model response data (debug) |
+| 20 | `SKILL_INVOCATION` | `1<<20` | - | **on** | on | on | Skill invocation announcement |
+| 21 | `NARRATION` | `1<<21` | - | **on** | on | on | Mid-turn model narration (assistant text while the turn runs) |
 
 **Bold "on"** = the level where the flag first appears.
 
@@ -58,6 +60,8 @@ Each flag is checked at the point of output using `shouldOutput(flag, verbosityM
 | Flag | Gated In | Notes |
 |------|----------|-------|
 | `FINAL_RESULT` | `stream-processor.ts` | Always shown at minimal+ |
+| `NARRATION` | `stream-processor.ts` | `handleTextMessage` + interrupt rescue; when off, the segment equal to the SDK `finalText` is posted once at the result event |
+| `SKILL_INVOCATION` | `stream-processor.ts` | RPG skill banner (PHASE=0) |
 | `THINKING` | `stream-processor.ts` | `getThinkingRenderMode()` |
 | `TOOL_CALL` | `stream-processor.ts` | `getToolCallRenderMode()` |
 | `TOOL_DETAIL` | `stream-processor.ts` | `getToolCallRenderMode()` |
@@ -77,6 +81,18 @@ Each flag is checked at the point of output using `shouldOutput(flag, verbosityM
 | `ERROR` | _(always on)_ | Never suppressed |
 | `SYSTEM` | `session-initializer.ts` | Conversation URL, migration notice |
 | `RAW_DATA` | `output-flags.ts` | `verboseTag()` prefix |
+
+## Work log (all levels)
+
+Verbosity decides what reaches the Slack thread, never what is recorded. Every turn's
+user instruction, narration segments, tool calls/results, final answer, compaction notices
+and errors are emitted at every level through `StreamContext.workLog` →
+`streamExecutorProviders.appendWorkLog(conversationId, entry)` (types:
+`packages/slack/src/work-log.ts`), for the dashboard's per-session work log.
+
+A one-time boot migration (`src/deploy/migrate-all-users-minimal-once.ts`, marker
+`.all-users-log-minimal-once-2026-10-16.json`) moved every user default and every persisted
+session mask to `minimal` on 2026-10-16; later choices are never overwritten.
 
 ## Render Modes
 

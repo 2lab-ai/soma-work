@@ -48,8 +48,14 @@ export const OutputFlag = {
   SYSTEM: 1 << 18,
   /** Raw model response data (debug) */
   RAW_DATA: 1 << 19,
-  /** Skill invocation announcement (shown even in minimal) */
+  /** Skill invocation announcement */
   SKILL_INVOCATION: 1 << 20,
+  /**
+   * Mid-turn model narration — assistant text segments streamed while the turn
+   * runs. Without it only the turn's final answer reaches Slack; the narration
+   * still goes to the dashboard work log (`StreamContext.workLog`).
+   */
+  NARRATION: 1 << 21,
 } as const;
 
 export type OutputFlagValue = (typeof OutputFlag)[keyof typeof OutputFlag];
@@ -61,18 +67,19 @@ export type LogVerbosity = 'minimal' | 'compact' | 'detail' | 'verbose';
 /** Flags that are ALWAYS active regardless of log level */
 const ALWAYS = OutputFlag.USER_CHOICE | OutputFlag.PERMISSION | OutputFlag.ERROR;
 
-/** MINIMAL — final result + essential interactions + long-running status + task progress + skill announcements */
-const LOG_MINIMAL =
-  ALWAYS |
-  OutputFlag.FINAL_RESULT |
-  OutputFlag.MCP_PROGRESS |
-  OutputFlag.TODO_UPDATE |
-  OutputFlag.TODO_REACTION |
-  OutputFlag.SKILL_INVOCATION;
+/**
+ * MINIMAL — task list + final answer + essential interactions, nothing else
+ * (spec 10 §3.2-2). Narration, MCP/subagent/background progress and skill
+ * banners go to the dashboard work log instead.
+ */
+export const LOG_MINIMAL = ALWAYS | OutputFlag.FINAL_RESULT | OutputFlag.TODO_UPDATE | OutputFlag.TODO_REACTION;
 
-/** COMPACT — thinking + tool names (no detail) + status/meta */
+/** COMPACT — narration + long-running status + thinking + tool names (no detail) + status/meta */
 const LOG_COMPACT =
   LOG_MINIMAL |
+  OutputFlag.NARRATION |
+  OutputFlag.MCP_PROGRESS |
+  OutputFlag.SKILL_INVOCATION |
   OutputFlag.THINKING |
   OutputFlag.TOOL_CALL |
   OutputFlag.STATUS_MESSAGE |

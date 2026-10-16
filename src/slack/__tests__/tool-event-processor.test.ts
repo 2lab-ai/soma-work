@@ -2,6 +2,7 @@
  * ToolEventProcessor tests
  */
 
+import { getVerbosityFlags } from '@soma/slack/output-flags';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { McpCallTracker } from '../../mcp-call-tracker';
 import { McpStatusDisplay } from '../mcp-status-tracker';
@@ -495,7 +496,11 @@ describe('ToolEventProcessor', () => {
   });
 
   /**
-   * Issue #794 — Subagent (Task) progress visibility in minimal mode.
+   * Issue #794 — Subagent (Task) progress tracking. #794 put this progress line
+   * in `minimal`; spec 10 §3.2-2 (2026-10-16) moves it to the dashboard work
+   * log, so `minimal` no longer renders it (first test below) while the
+   * tracking itself — registry, spawn-ack gate, turn-end drain — is unchanged
+   * at every level. The rest of this block runs at the default (detail) mask.
    *
    * Three independent surfaces drive these tests:
    *   1. `BackgroundTaskRegistry` — turn-scoped registry of live
@@ -509,7 +514,7 @@ describe('ToolEventProcessor', () => {
    *      drains bg Task entries, sweeps callIds for THIS turn only,
    *      then awaits `flushSession` for the final consolidated render.
    */
-  describe('Subagent progress in minimal mode (issue #794)', () => {
+  describe('Subagent progress tracking (issue #794)', () => {
     function makeBgTaskInput(prompt = 'do something long') {
       return {
         subagent_type: 'general-purpose',
@@ -523,6 +528,51 @@ describe('ToolEventProcessor', () => {
         prompt,
       };
     }
+
+    // Spec 10 §3.2-2 — reverses #794's minimal visibility: the progress line
+    // goes to the work log, the tracking stays.
+    it('minimal: a bg Task is tracked but renders NO progress line; compact still renders it', async () => {
+      const minimalCtx: ToolEventContext = {
+        ...mockContext,
+        turnId: 'C123:1:turn-A',
+        logVerbosity: getVerbosityFlags('minimal'),
+      };
+      await processor.handleToolUse([{ id: 'tu_bg_min', name: 'Task', input: makeBgTaskInput() }], minimalCtx);
+
+      expect(mcpCallTracker.startCall).toHaveBeenCalledWith('_subagent', expect.any(String));
+      expect(mcpStatusDisplay.registerCall).not.toHaveBeenCalled();
+      // The spawn-ack gate is installed regardless of verbosity.
+      mcpCallTracker.endCall.mockClear();
+      await processor.handleToolResult(
+        [{ toolUseId: 'tu_bg_min', toolName: 'Task', result: 'task_id: abc-123', isError: false }],
+        minimalCtx,
+      );
+      expect(mcpCallTracker.endCall).not.toHaveBeenCalled();
+
+      const compactCtx: ToolEventContext = { ...minimalCtx, logVerbosity: getVerbosityFlags('compact') };
+      await processor.handleToolUse([{ id: 'tu_bg_cmp', name: 'Task', input: makeBgTaskInput() }], compactCtx);
+      expect(mcpStatusDisplay.registerCall).toHaveBeenCalledWith(
+        'C123:thread_ts',
+        'call_123',
+        expect.objectContaining({ displayType: 'Subagent (bg)' }),
+        'C123',
+        'thread_ts',
+      );
+    });
+
+    it('minimal: an MCP call and a background Bash render no progress line either', async () => {
+      const minimalCtx: ToolEventContext = { ...mockContext, logVerbosity: getVerbosityFlags('minimal') };
+      await processor.handleToolUse(
+        [
+          { id: 'tu_mcp', name: 'mcp__jira__search', input: { jql: 'x' } },
+          { id: 'tu_bash_bg', name: 'Bash', input: { command: 'sleep 100', run_in_background: true } },
+        ],
+        minimalCtx,
+      );
+
+      expect(mcpCallTracker.startCall).toHaveBeenCalledTimes(2);
+      expect(mcpStatusDisplay.registerCall).not.toHaveBeenCalled();
+    });
 
     // S15b — bg Task: `Subagent (bg)` displayType + registry add.
     it('S15b: startSubagentTracking({run_in_background:true}) → displayType "Subagent (bg)"', async () => {
