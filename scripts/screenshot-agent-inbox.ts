@@ -323,6 +323,7 @@ const WORKLOG: Record<string, unknown[]> = {
 /** Mutable mock server state: the work log grows while the "socket" is down. */
 const WORKLOG_EXTRA: Record<string, number> = { 'conv-1': 0 };
 const WORKLOG_CALLS: Array<{ conv: string; afterSeq: number | null }> = [];
+const FLAKY_CALLS = { n: 0 };
 const PAGE = 5;
 
 function fullLog(conv: string): Array<Record<string, unknown>> {
@@ -390,6 +391,35 @@ const PAGE_HELPERS = [
   '  var at400 = target.getBoundingClientRect().top - before;',
   '  return { at0: Math.round(at0), at400: Math.round(at400), turnsBefore: turnsBefore, turnsAfter: document.querySelectorAll("#panel-turns .turn").length };',
   '};',
+  // Older-turns load that is still pending while the reader scrolls on.
+  'window.__beginPendingLoad = async function () {',
+  '  var settle = async function () { while (window._panelTurnsLoading) await new Promise(function (r) { setTimeout(r, 20); }); };',
+  '  await settle();',
+  '  var scroll = document.getElementById("panel-scroll");',
+  '  var t6 = document.querySelectorAll("#panel-turns .turn")[6];',
+  '  scroll.scrollTo({ top: scroll.scrollTop + t6.getBoundingClientRect().top - scroll.getBoundingClientRect().top, behavior: "instant" });',
+  '  await new Promise(function (r) { setTimeout(r, 50); });',
+  '  await settle();',
+  '  window.__pending = window.loadMorePanelTurns();',
+  '  return document.querySelectorAll("#panel-turns .turn").length;',
+  '};',
+  'window.__scrollWhilePending = function (dy) {',
+  '  var scroll = document.getElementById("panel-scroll");',
+  '  scroll.scrollTo({ top: scroll.scrollTop + dy, behavior: "instant" });',
+  '  var top = scroll.getBoundingClientRect().top;',
+  '  var turns = document.querySelectorAll("#panel-turns .turn");',
+  '  for (var i = 0; i < turns.length; i++) {',
+  '    var r = turns[i].getBoundingClientRect();',
+  '    if (r.bottom > top) { window.__readEl = turns[i]; window.__readTop = r.top; window.__userScrollTop = scroll.scrollTop; break; }',
+  '  }',
+  '  return !!window.__readEl;',
+  '};',
+  'window.__afterPending = async function () {',
+  '  await window.__pending;',
+  '  await new Promise(function (r) { setTimeout(r, 400); });',
+  '  var scroll = document.getElementById("panel-scroll");',
+  '  return { moved: Math.round(window.__readEl.getBoundingClientRect().top - window.__readTop), scrollTopKeptOrGrew: scroll.scrollTop >= window.__userScrollTop, turns: document.querySelectorAll("#panel-turns .turn").length };',
+  '};',
   'window.__wlSeqs = function () { return Array.prototype.map.call(document.querySelectorAll("#worklog-list .wl-entry"), function (e) { return Number(e.getAttribute("data-seq")); }); };',
 ].join('\n');
 
@@ -422,6 +452,12 @@ async function installMocks(page: Page, board: unknown, opts: { holdLatestWorklo
     const raw = url.searchParams.get('afterSeq');
     WORKLOG_CALLS.push({ conv, afterSeq: raw === null ? null : Number(raw) });
     if (conv === 'conv-denied') return r.fulfill({ status: 403, json: { error: 'forbidden' } });
+    if (conv === 'conv-flaky') {
+      FLAKY_CALLS.n++;
+      return FLAKY_CALLS.n === 1
+        ? r.fulfill({ status: 502, json: { error: 'bad gateway' } })
+        : r.fulfill({ status: 403, json: { error: 'forbidden' } });
+    }
     if (!(conv in WORKLOG)) return r.fulfill({ status: 404, json: { error: 'Not found' } });
     const log = fullLog(conv);
     if (raw === null) {
@@ -708,7 +744,7 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
   await shoot(page, 'deeplink-dark-1280-live-append.png', false);
 
   // Reconnect: the server log grew to 31; recovery pages forward from the
-  // contiguous cursor — 16, since live 14–16 directly followed the HTTP page.
+  // confirmed cursor — 16, since live 14–16 directly followed the HTTP page.
   WORKLOG_EXTRA['conv-1'] = 31 - 13;
   WORKLOG_CALLS.length = 0;
   await page.evaluate(() => (window as unknown as PageWindow).__wsReopen());
@@ -718,7 +754,7 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
   log(`reconnect recovery afterSeq calls ${JSON.stringify(after)} → ${seqs3.length} entries`);
   check(
     JSON.stringify(after) === JSON.stringify([16, 21, 26]) && seqs3.length === 31 && inOrder(seqs3),
-    'reconnect pages forward from the contiguous cursor while hasMore',
+    'reconnect pages forward from the confirmed cursor while hasMore',
   );
 
   // Gap: a live entry that skips seqs backfills the hole from the cursor (31).
@@ -738,6 +774,28 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
     JSON.stringify(gapCalls) === '[31,36]' && seqs4.length === 40 && inOrder(seqs4),
     `live seq 40 after 31 backfills 32–39 (afterSeq ${JSON.stringify(gapCalls)}, ${seqs4.length} entries)`,
   );
+
+  // Permanent hole: the store jumped to a new seq block (40 → 1001). One
+  // backfill confirms nothing exists in between; the next live entry is quiet.
+  WORKLOG_CALLS.length = 0;
+  for (const seq of [1001, 1002]) {
+    await page.evaluate(
+      (s) =>
+        (window as unknown as PageWindow).__wsSend({
+          type: 'work_log',
+          conversationId: 'conv-1',
+          entry: { seq: s, ts: Date.now(), kind: 'notice', text: `after the seq jump (${s})` },
+        }),
+      seq,
+    );
+    await page.waitForTimeout(300);
+  }
+  const holeCalls = WORKLOG_CALLS.map((c) => c.afterSeq);
+  const seqs5: number[] = await page.evaluate(() => (window as unknown as PageWindow).__wlSeqs());
+  check(
+    JSON.stringify(holeCalls) === '[40]' && seqs5.slice(-2).join() === '1001,1002' && inOrder(seqs5),
+    `permanent seq hole 40 → 1001: one backfill, then none (afterSeq ${JSON.stringify(holeCalls)})`,
+  );
   await ctx.close();
 
   // Empty log + reconnect → explicit afterSeq=0; missing route → "작업 로그 없음".
@@ -747,6 +805,7 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
   const emptyBoard = makeBoard() as Record<string, Array<Record<string, unknown>>>;
   emptyBoard.working[1].conversationId = 'empty'; // Release notes: a conversation with no log yet
   emptyBoard.closed[0].conversationId = 'conv-denied'; // Cron scheduler fix: someone else's session (403)
+  emptyBoard.closed[1].conversationId = 'conv-flaky'; // OAuth token refresh: 502, then 403
   await installMocks(page2, emptyBoard);
   await openBoard(page2);
   await page2.evaluate((key) => (window as unknown as PageWindow).openPanel(key, true), K('400'));
@@ -778,6 +837,20 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
     `work-log 403 reads "${denied}" and is not retried (${WORKLOG_CALLS.length} requests on reconnect)`,
   );
   await shoot(page2, 'worklog-403-light-1280.png', false);
+
+  // First load fails transiently (502), the reconnect's retry answers 403.
+  await page2.evaluate((key) => (window as unknown as PageWindow).openPanel(key, true), K('700'));
+  await page2.waitForTimeout(400);
+  const afterFirst = await page2.evaluate(() => document.getElementById('worklog-list')?.textContent);
+  await page2.evaluate(() => (window as unknown as PageWindow).__wsReopen());
+  await page2.waitForTimeout(400);
+  const afterRecovery = await page2.evaluate(() => document.getElementById('worklog-list')?.textContent);
+  check(
+    afterFirst === '작업 로그 없음' &&
+      afterRecovery === '작업 로그는 세션 소유자만 볼 수 있어요' &&
+      FLAKY_CALLS.n === 2,
+    `502 then 403 on recovery shows the owner-only message ("${afterFirst}" → "${afterRecovery}", ${FLAKY_CALLS.n} calls)`,
+  );
   await ctx2.close();
 }
 
@@ -878,6 +951,38 @@ async function reviewScenarios(browser: import('playwright').Browser) {
     logHold.turnsAfter > logHold.turnsBefore && Math.abs(logHold.at0) <= 1 && Math.abs(logHold.at400) <= 1,
     `older turns below the work log do not move it (${JSON.stringify(logHold)})`,
   );
+  await page.evaluate(() => (window as unknown as PageWindow).closePanel());
+
+  // The reader scrolls while the older-turns request is still pending: what
+  // they read after that scroll stays put, and their scroll is not undone.
+  let releaseTurns: () => void = () => {};
+  let turnsHeld = false;
+  await page.route(/\/api\/dashboard\/session\/conv-long\?.*before=/, async (r) => {
+    turnsHeld = true;
+    await new Promise<void>((res) => {
+      releaseTurns = res;
+    });
+    await r.fallback();
+  });
+  await page.evaluate((key) => (window as unknown as PageWindow).openPanel(key), K('500'));
+  await page.waitForFunction(() => document.querySelectorAll('#panel-turns .turn').length >= 30, null, {
+    timeout: 5000,
+  });
+  await page.waitForTimeout(400);
+  const turnsAtStart: number = await page.evaluate(() => (window as unknown as PageWindow).__beginPendingLoad());
+  for (let i = 0; i < 50 && !turnsHeld; i++) await page.waitForTimeout(20);
+  const found: boolean = await page.evaluate(() => (window as unknown as PageWindow).__scrollWhilePending(240));
+  releaseTurns();
+  const pendingHold = await page.evaluate(() => (window as unknown as PageWindow).__afterPending());
+  check(
+    turnsHeld &&
+      found &&
+      pendingHold.turns > turnsAtStart &&
+      Math.abs(pendingHold.moved) <= 1 &&
+      pendingHold.scrollTopKeptOrGrew,
+    `scrolling during a pending older-turns load is kept (${JSON.stringify(pendingHold)})`,
+  );
+  await page.unroute(/\/api\/dashboard\/session\/conv-long\?.*before=/);
   await page.evaluate(() => (window as unknown as PageWindow).closePanel());
 
   // F — a WS push (this instance only) keeps the sibling card's node and writes nothing.

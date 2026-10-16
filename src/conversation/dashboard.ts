@@ -4343,22 +4343,27 @@ function renderTimeline(s) {
 
 // Latest user instruction + model response (§3.1-4), fetched lazily on
 // expand from GET /api/dashboard/session/:conversationId?limit=2 and cached
-// per conversation. Only a successful fetch for the session's current
-// lastActivity counts as fresh: a failure is retried when the card is
-// reopened, and while it stays open on a capped backoff (1, 2, 4 … 30 s;
-// IO_AUTO_RETRIES tries), and a landed turn refetches at once.
+// per conversation. Only a complete fetch for the session's current
+// lastActivity counts as fresh. A failure — or a partial result (the
+// instruction loaded, the raw response did not) — keeps what it has and is
+// retried: automatically on a backoff (1, 2, 4 … 30 s) for at most
+// IO_AUTO_RETRIES attempts, which board re-renders cannot extend; every reopen
+// of the card retries once more; and a landed turn starts a fresh cycle.
 var IO_RETRY_MAX_MS = 30000;
 var IO_AUTO_RETRIES = 6;
 function ioBackoffMs(fails) {
   return Math.min(IO_RETRY_MAX_MS, 1000 * Math.pow(2, Math.max(0, fails - 1)));
 }
 // Pure freshness rule: loading → wait; ok → fresh only for the same stamp;
-// error → never fresh, refetch when forced (reopen) or once the backoff ran out.
+// error → never fresh: refetch when forced (reopen), else only while automatic
+// attempts remain and the backoff has run out.
 function ioNeedsFetch(c, stamp, force, now) {
   if (!c) return true;
   if (c.state === 'loading') return false;
   if (c.state === 'ok') return c.stamp !== stamp;
-  return !!force || now >= (c.retryAt || 0);
+  if (force) return true;
+  if ((c.fails || 0) > IO_AUTO_RETRIES) return false;
+  return now >= (c.retryAt || 0);
 }
 
 function renderCardIo(s) {
@@ -4378,6 +4383,8 @@ function renderCardIo(s) {
     outHtml = '<div class="io-text">'
       + (d.response.title ? '<span class="io-title">' + esc(d.response.title) + '</span>' + (d.response.body ? '\\n' : '') : '')
       + esc(d.response.body || '') + '</div>';
+  } else if (d.partial) {
+    outHtml = '<div class="io-text is-muted">응답을 불러오지 못했습니다</div>';
   } else if (s.activityState === 'working') {
     outHtml = '<div class="io-text is-muted">응답 작성 중…</div>';
   } else {
@@ -4406,12 +4413,14 @@ function fetchCardIo(cid) {
         : null;
       if (reply && !reply.summaryTitle && !reply.summaryBody && reply.id) {
         // Summary not generated yet — fall back to the head of the raw response.
+        // If that fails the result is partial: the instruction is kept, and the
+        // caller retries for the response.
         return fetch('/api/conversations/' + encodeURIComponent(cid) + '/turns/' + encodeURIComponent(reply.id) + '/raw')
-          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
           .then(function(rawData) {
             var text = rawData && typeof rawData.raw === 'string' ? rawData.raw : '';
             return { instruction: instruction, response: text ? { title: '', body: text.slice(0, 600) + (text.length > 600 ? '…' : '') } : null };
-          }, function() { return { instruction: instruction, response: null }; });
+          }, function() { return { instruction: instruction, response: null, partial: true }; });
       }
       return { instruction: instruction, response: reply ? { title: reply.summaryTitle || '', body: reply.summaryBody || '' } : null };
     });
@@ -4428,14 +4437,16 @@ function ensureCardIo(key, force) {
   var prev = c ? c.data : null;
   var fails = c && c.state === 'error' ? (c.fails || 0) : 0;
   _ioCache[cid] = { state: 'loading', stamp: stamp, data: prev, dirty: false, fails: fails };
-  fetchCardIo(cid).then(function(result) {
-    settleCardIo(cid, { state: 'ok', stamp: stamp, data: result, fails: 0 });
-  }, function() {
+  function failed(data) {
     var n = fails + 1;
     var wait = ioBackoffMs(n);
-    settleCardIo(cid, { state: 'error', stamp: stamp, data: prev, fails: n, retryAt: Date.now() + wait });
+    settleCardIo(cid, { state: 'error', stamp: stamp, data: data, fails: n, retryAt: Date.now() + wait });
     if (n <= IO_AUTO_RETRIES) setTimeout(function() { retryCardIo(cid); }, wait);
-  });
+  }
+  fetchCardIo(cid).then(function(result) {
+    if (result && result.partial) failed(result); // keep the instruction, retry the response
+    else settleCardIo(cid, { state: 'ok', stamp: stamp, data: result, fails: 0 });
+  }, function() { failed(prev); });
 }
 // Backoff timer fired: retry for the first card of that conversation still open.
 function retryCardIo(cid) {
@@ -4460,6 +4471,7 @@ function invalidateCardIo(cid) {
   if (c.state === 'loading') { c.dirty = true; return; }
   c.stamp = null;
   c.retryAt = 0;
+  c.fails = 0; // new content exists: a fresh retry cycle
   for (var k in _cardEls) {
     var s = _sessionCache[k];
     if (s && s.conversationId === cid && _expanded.has(k)) ensureCardIo(k, false);
@@ -5482,11 +5494,18 @@ function updateTokenStats() {
 // entry } once the line is on disk. 403 = not the session owner (no retry),
 // 404 = no log for this conversation.
 // Entries merge by seq identity into one seq-ordered list, so a live entry that
-// lands before the HTTP page never hides the older batch. The cursor is the
-// highest seq held CONTIGUOUSLY from the latest HTTP page: HTTP pages and live
-// entries that directly follow it advance it; a live entry beyond it is a gap,
-// and a gap or a reconnect pages forward from the cursor (afterSeq=0 when the
-// log was empty) while hasMore === true.
+// lands before the HTTP page never hides the older batch.
+// Seqs only increase, but they are NOT contiguous: the store reserves them in
+// blocks, so after a crash the next seq can jump (57 → 1001) and that hole is
+// permanent. The cursor is therefore server-confirmed, not "no holes": every
+// entry that exists up to the cursor is held. A page requested after seq c
+// returns every existing entry > c (first page), so it confirms up to its last
+// seq — and, when hasMore is false, up to every seq we held when the request
+// went out (a live entry is on disk before it is broadcast). Live entries that
+// directly follow the cursor advance it too. A live entry beyond cursor + 1 is
+// a gap → backfill from the cursor; once the backfill is done the gap is closed
+// even if nothing came back (the hole is permanent). A reconnect pages forward
+// the same way (afterSeq=0 when the log was empty) while hasMore === true.
 var WL_BACKFILL_MAX_PAGES = 20;
 var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
 var WL_EMPTY_MSG = '작업 로그 없음';
@@ -5552,9 +5571,21 @@ function wlPageMaxSeq(entries) {
   }
   return top;
 }
-// Advance the contiguous cursor over every directly-following seq we hold.
+// Advance the cursor over every directly-following seq we hold.
 function wlAdvance(state) {
   while (state.seen.has(state.cursor + 1)) state.cursor++;
+}
+// The server answered: every entry that exists up to seq upTo is now held.
+function wlConfirm(state, upTo) {
+  if (upTo > state.cursor) state.cursor = upTo;
+  wlAdvance(state);
+}
+// 403 from any path (first load, latest retry, backfill page): stop for good
+// and tell the UI once through state.onDenied (set by the DOM side).
+function wlDeny(state) {
+  if (state.denied) return;
+  state.denied = true;
+  if (state.onDenied && !state.closed) state.onDenied(state);
 }
 // A held entry beyond the contiguous cursor means something in between is missing.
 function wlHasGap(state) {
@@ -5569,14 +5600,16 @@ function wlStatusOf(err) {
 // Initial load: the latest page (no afterSeq). Resolves 'ok' | 'denied' |
 // 'missing' | 'error' | 'closed'. Early live entries beyond the page are a gap.
 function wlLoadLatest(state, fetchJson, onAdded) {
+  // The latest window holds the newest entries at request time — including
+  // any live entry we already held — so it confirms up to both.
+  var sentMax = state.maxSeq;
   state.latest = fetchJson(wlUrl(state.convId, null)).then(function(data) {
     if (state.closed) return 'closed';
     var page = (data && data.entries) || [];
     var added = wlMerge(state, page);
-    state.cursor = Math.max(state.cursor, wlPageMaxSeq(page));
     state.loaded = true;
     state.latestOk = true;
-    wlAdvance(state);
+    wlConfirm(state, Math.max(wlPageMaxSeq(page), sentMax));
     if (added.length) onAdded(state, added);
     if (wlHasGap(state)) wlRecover(state, fetchJson, onAdded);
     return 'ok';
@@ -5584,7 +5617,7 @@ function wlLoadLatest(state, fetchJson, onAdded) {
     if (state.closed) return 'closed';
     state.loaded = true;
     var status = wlStatusOf(err);
-    if (status === 'denied') state.denied = true;
+    if (status === 'denied') wlDeny(state);
     return status;
   });
   return state.latest;
@@ -5611,19 +5644,22 @@ function wlRecover(state, fetchJson, onAdded) {
     if (state.closed || state.denied) return null;
     if (state.loaded && !state.latestOk) return wlLoadLatest(state, fetchJson, onAdded);
     var from = state.cursor;
+    var sentMax = state.maxSeq; // every seq we hold now is on disk now
     pages++;
     return fetchJson(wlUrl(state.convId, from)).then(function(data) {
       if (state.closed) return null;
       var page = (data && data.entries) || [];
       var added = wlMerge(state, page);
-      var top = wlPageMaxSeq(page);
-      if (top > state.cursor) state.cursor = top;
-      wlAdvance(state);
+      var more = !!(data && data.hasMore === true);
+      // A full page confirms only up to its last seq; the last page confirms up
+      // to everything that existed when it was requested — so a permanent hole
+      // closes here instead of re-triggering a backfill on every live entry.
+      wlConfirm(state, more ? wlPageMaxSeq(page) : Math.max(wlPageMaxSeq(page), sentMax));
       if (added.length) onAdded(state, added);
-      if (data && data.hasMore === true && state.cursor > from && pages < WL_BACKFILL_MAX_PAGES) return step();
+      if (more && state.cursor > from && pages < WL_BACKFILL_MAX_PAGES) return step();
       return null;
     }, function(err) {
-      if (wlStatusOf(err) === 'denied') state.denied = true;
+      if (wlStatusOf(err) === 'denied') wlDeny(state);
       return null;
     });
   }
@@ -5656,6 +5692,7 @@ function wlFetchJson(url) {
 function resetWorkLog(convId, visible) {
   if (_wl) _wl.closed = true; // late responses for the previous conversation are dropped
   _wl = convId ? wlNewState(convId) : null;
+  if (_wl) _wl.onDenied = showWorkLogDenied;
   var section = document.getElementById('panel-worklog');
   var list = document.getElementById('worklog-list');
   setTextIfChanged(document.getElementById('worklog-count'), '');
@@ -5668,8 +5705,8 @@ function loadWorkLog() {
   if (!st) return;
   wlLoadLatest(st, wlFetchJson, paintWorkLog).then(function(result) {
     if (st.closed) return;
-    if (result === 'denied') showWorkLogEmpty(WL_FORBIDDEN_MSG);
-    else if (!st.entries.length) showWorkLogEmpty(WL_EMPTY_MSG);
+    // 'denied' was already shown by showWorkLogDenied (state.onDenied).
+    if (result !== 'denied' && !st.entries.length) showWorkLogEmpty(WL_EMPTY_MSG);
     if (_panelFocusWorkLog) scrollPanelToWorkLog();
   });
 }
@@ -5700,6 +5737,13 @@ function paintWorkLog(state, added) {
   state.painted = true;
 }
 
+// Owner-only log (403 on any path) — only for the conversation still open.
+function showWorkLogDenied(state) {
+  if (state !== _wl || state.closed) return;
+  var list = document.getElementById('worklog-list');
+  setTextIfChanged(document.getElementById('worklog-count'), '');
+  if (list) list.innerHTML = '<div class="wl-empty">' + esc(WL_FORBIDDEN_MSG) + '</div>';
+}
 function showWorkLogEmpty(message) {
   var list = document.getElementById('worklog-list');
   if (list && !list.querySelector('.wl-entry')) list.innerHTML = '<div class="wl-empty">' + esc(message || WL_EMPTY_MSG) + '</div>';
@@ -5936,12 +5980,6 @@ async function loadMorePanelTurns() {
   var requestSessionKey = panelSessionKey;
   var requestOldestId = _panelTurnsOldestId;
 
-  // Keep the reading position: remember the first element the reader can see
-  // (question / tasks / work log / a turn) and where it sits; after the older
-  // turns are inserted, scroll by however far that element moved. Reading the
-  // work log (above the turns) → it does not move → no scroll.
-  var anchor = panelScrollAnchor(scrollEl);
-
   // Loading spinner at top of turns list.
   var spinner = document.createElement('div');
   spinner.className = 'panel-turns-loading';
@@ -5962,6 +6000,11 @@ async function loadMorePanelTurns() {
       return;
     }
 
+    // Keep the reading position: capture the first element the reader can see
+    // (question / tasks / work log / a turn) NOW — after the response, so a
+    // scroll made while the request was pending is respected — and after the
+    // spinner goes and the older turns land, scroll by however far it moved.
+    var anchor = panelScrollAnchor(scrollEl);
     if (spinner.parentNode) spinner.remove();
 
     if (data.turns && data.turns.length > 0) {
@@ -5980,9 +6023,18 @@ async function loadMorePanelTurns() {
       }
     } else {
       _panelTurnsHasMore = false;
+      if (anchor && anchor.el.isConnected) {
+        var drift0 = anchor.el.getBoundingClientRect().top - anchor.top;
+        if (drift0) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift0, behavior: 'instant' });
+      }
     }
   } catch (err) {
+    var errAnchor = panelScrollAnchor(scrollEl);
     if (spinner.parentNode) spinner.remove();
+    if (errAnchor && errAnchor.el.isConnected) {
+      var drift1 = errAnchor.el.getBoundingClientRect().top - errAnchor.top;
+      if (drift1) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift1, behavior: 'instant' });
+    }
     console.error('loadMorePanelTurns failed', err);
   } finally {
     _panelTurnsLoading = false;
