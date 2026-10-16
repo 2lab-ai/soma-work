@@ -19,19 +19,23 @@
  * seq: monotonic per conversation and never reused once published. The first
  * append in a process reads the last seq back from the file's tail. The
  * sidecar `<id>.seq` reserves seqs in blocks, durably and before any seq in the
- * block is used, so every seq ever used is ≤ the reservation. When the tail
- * cannot be read within the scan budget, the log is quarantined to
- * `<id>.jsonl.corrupt-<ms>` and a fresh one continues above the reservation;
- * the new floor is made durable before the old log is moved.
+ * block is used, so every seq ever used is ≤ the live reservation. When the
+ * tail cannot be read within the scan budget, the log is quarantined to
+ * `<id>.jsonl.corrupt-<ms>` and a fresh one continues above the live
+ * reservation, which is durable before the old log is moved. If the live copy
+ * is lost, `.bak` (the previous reservation) is trusted only together with a
+ * readable tail, and both copies are rewritten before anything is published;
+ * with no readable entry and no live reservation there is no provable bound, so
+ * the conversation fails closed (appends rejected, one error log) — see readSeed.
  *
  * Gaps — two kinds, different for a client:
  *   - landed but unpublished: the line reached disk but its append failed
  *     afterwards (e.g. fdatasync or the directory sync threw), so it was never
  *     broadcast. It is a normal entry for readers — backfill it with
  *     `readWorkLog({ afterSeq })`.
- *   - holes: seqs skipped on purpose — after a quarantine, or after a re-seed
- *     that could only trust the reservation. No entry will ever have those
- *     seqs; a client must not wait for them.
+ *   - holes: seqs skipped on purpose — after a quarantine, a backup recovery,
+ *     or a re-seed that could only trust the reservation. No entry will ever
+ *     have those seqs; a client must not wait for them.
  *
  * Reads: every scan has a byte budget (WORK_LOG_SCAN_BUDGET_BYTES). The latest
  * window and the seed scan back from the end; `afterSeq` pages first try a
@@ -99,12 +103,6 @@ export const WORK_LOG_SCAN_BUDGET_BYTES = 8 * 1024 * 1024;
 export const WORK_LOG_SEQ_RESERVE_BLOCK = 1000;
 /** Idle per-conversation writer states kept warm (each costs one tail read to rebuild). */
 export const WORK_LOG_MAX_CACHED_STATES = 256;
-/**
- * Lower bound on the bytes per line this module writes (the smallest entry,
- * `{"seq":1,"ts":1,"kind":"tool","text":""}`, is 40), used to bound the seqs a
- * file without a sidecar can hold.
- */
-const MIN_ENTRY_BYTES = 32;
 /** Share of the budget an `afterSeq` read spends on the backward reconnect fast path. */
 const FAST_PATH_BUDGET_BYTES = WORK_LOG_SCAN_BUDGET_BYTES / 4;
 
@@ -121,6 +119,14 @@ interface ConversationLogState {
   needsLeadingNewline: boolean;
   /** The next write may create the file, which puts a sync obligation on its directory. */
   fileMayBeNew: boolean;
+  /** Highest seq this process seeded from or published: a re-seed never goes below it. */
+  highWater: number;
+  /**
+   * Set while the conversation has no provable seq upper bound: the file
+   * fingerprint at that verdict. Appends are refused without re-scanning until
+   * the files change.
+   */
+  unboundedAt: string | null;
   /** Serialized write chain for this file — appends never interleave. */
   queue: Promise<void>;
   /** Appends queued and not yet settled; a state is only evicted at 0. */
@@ -141,9 +147,24 @@ let dirReady: Promise<void> | null = null;
  */
 const dirSyncDue = new Map<string, number>();
 let dirChangeCounter = 0;
+/** Conversations whose fail-closed verdict was already logged at error level (once each). */
+const unboundedLogged = new Set<string>();
+const MAX_UNBOUNDED_LOGGED = 1024;
 let _onAppended: ((conversationId: string, entry: WorkLogEntry) => void) | null = null;
 
 class WorkLogScanError extends Error {}
+
+/**
+ * No seq upper bound can be proven for a conversation: its reservation is
+ * backup-only or absent and its log has no readable entry. Publishing any seq
+ * could reuse one a client already holds, so appends are refused (fail closed).
+ */
+export class WorkLogUnboundedError extends Error {
+  constructor(readonly detail: Record<string, unknown>) {
+    super('Work log has no provable seq upper bound; refusing to publish');
+    this.name = 'WorkLogUnboundedError';
+  }
+}
 
 function workLogDir(): string {
   return path.join(DATA_DIR, 'worklogs');
@@ -391,9 +412,25 @@ async function openForRead(filePath: string): Promise<{ fh: fs.promises.FileHand
 
 // ── Writer ──
 
-function readReservation(sidecarPath: string): number | null {
+/**
+ * Where a reservation came from. Only `live` is a proven upper bound: every
+ * live value is written durably before any seq it covers is used. `backup` is
+ * the PREVIOUS live value (atomicWriteJson promotes the old live copy before
+ * writing a new one), so it may be up to one block behind what was used.
+ */
+type ReservationSource = 'live' | 'backup';
+interface Reservation {
+  seq: number;
+  source: ReservationSource;
+}
+
+function readReservation(sidecarPath: string): Reservation | null {
   // Shared state-store loader (rules/config.md §4): `.bak` fallback with a WARN,
-  // and a throw — never a silent 0 — when both copies are unusable.
+  // and a throw — never a silent 0 — when both copies are unusable. It calls
+  // `warn` in exactly one place, when it serves the `.bak` instead of the live
+  // file (packages/common/src/atomic-json.ts, readJsonWithBackup), which is how
+  // the provenance is told apart without changing the shared loader.
+  let servedFromBackup = false;
   const value = readJsonWithBackup(
     sidecarPath,
     (raw) => {
@@ -403,9 +440,15 @@ function readReservation(sidecarPath: string): number | null {
       }
       return seq;
     },
-    { warn: (message, detail) => logger.warn(message, detail) },
+    {
+      warn: (message, detail) => {
+        servedFromBackup = true;
+        logger.warn(message, detail);
+      },
+    },
   );
-  return value ?? null;
+  if (value === undefined) return null;
+  return { seq: value, source: servedFromBackup ? 'backup' : 'live' };
 }
 
 async function writeReservation(sidecarPath: string, reservedSeq: number): Promise<void> {
@@ -413,6 +456,23 @@ async function writeReservation(sidecarPath: string, reservedSeq: number): Promi
   // unsynced, and the rename must survive power loss for the reservation to
   // bound every seq used after it — so sync it now, not just before a publish.
   atomicWriteJson(sidecarPath, { reservedSeq }, { warn: (message, detail) => logger.warn(message, detail) });
+  noteDirChanged(path.dirname(sidecarPath));
+  await syncDueDirs();
+}
+
+/**
+ * Make BOTH sidecar copies hold `floor` durably. Restores the invariant that
+ * `.bak` is at most one block behind the live reservation after the live copy
+ * was lost: atomicWriteJson only promotes a VALID live copy to `.bak`
+ * (promotePreviousToBackup), so with an invalid or missing live copy one write
+ * would leave the stale `.bak` in place under a new reservation. Writing twice
+ * — the first makes the live copy valid, the second promotes it — needs no
+ * change to packages/common.
+ */
+async function rewriteBothReservations(sidecarPath: string, floor: number): Promise<void> {
+  const warn = (message: string, detail?: unknown) => logger.warn(message, detail);
+  atomicWriteJson(sidecarPath, { reservedSeq: floor }, { warn });
+  atomicWriteJson(sidecarPath, { reservedSeq: floor }, { warn });
   noteDirChanged(path.dirname(sidecarPath));
   await syncDueDirs();
 }
@@ -438,70 +498,130 @@ interface Seed {
 }
 
 /**
- * Read the writer's starting point: the reservation and, from the file's tail,
- * the seq of the last parseable line and whether the file ends mid-line. Only
- * ENOENT means "no log yet"; any other failure throws so the caller never
- * guesses a seq. A tail with no parseable line within the budget quarantines
- * the file and continues above every seq it can have held.
+ * Read the writer's starting point and prove an upper bound on every seq ever
+ * used for the conversation. Only ENOENT means "no log yet"; any other failure
+ * throws so the caller never guesses a seq.
+ *
+ *   reservation  log tail                 next seq after
+ *   live R       entry T                  T  (T ≤ R)
+ *   live R       none (missing/empty/junk)  R
+ *   live R       unreadable within budget  R, after quarantining the log
+ *   backup B     entry T                  max(T, B + block), after rewriting both copies to it
+ *   none         entry T                  T  (no sidecar: the tail is the only evidence)
+ *   none         missing or empty         0  (a conversation that never wrote)
+ *   backup / none  anything else          refuse — WorkLogUnboundedError
+ *
+ * `backup B` alone is never trusted as a bound with no readable entry: the
+ * repeated-corruption case (live lost twice) can leave `.bak` further behind
+ * than one block. With a readable entry, B + block covers what the lost live
+ * copy can have reserved and T covers what is on disk.
  */
 async function readSeed(conversationId: string, logPath: string, sidecarPath: string): Promise<Seed> {
-  const reserved = readReservation(sidecarPath);
-  const floor = reserved ?? 0;
+  const reservation = readReservation(sidecarPath);
 
   const opened = await openForRead(logPath);
-  if (!opened) return { lastSeq: floor, reservedSeq: floor, needsLeadingNewline: false, fileMayBeNew: true };
-  const { fh, size } = opened;
-  const tail: { seq: number | null } = { seq: null };
+  let size = 0;
+  let tailSeq: number | null = null;
   let end: ScanEnd = 'done';
   let lastByteIsNewline = true;
-  try {
-    if (size > 0) {
-      lastByteIsNewline = (await readExactly(fh, size - 1, 1))[0] === 0x0a;
-      end = await scanBackward(fh, size, { left: WORK_LOG_SCAN_BUDGET_BYTES }, (line) => {
-        const entry = parseEntry(line);
-        if (!entry) return true; // torn/corrupt — keep looking further back
-        tail.seq = entry.seq;
-        return false;
-      });
+  if (opened) {
+    const { fh } = opened;
+    size = opened.size;
+    try {
+      if (size > 0) {
+        lastByteIsNewline = (await readExactly(fh, size - 1, 1))[0] === 0x0a;
+        const tail: { seq: number | null } = { seq: null };
+        end = await scanBackward(fh, size, { left: WORK_LOG_SCAN_BUDGET_BYTES }, (line) => {
+          const entry = parseEntry(line);
+          if (!entry) return true; // torn/corrupt — keep looking further back
+          tail.seq = entry.seq;
+          return false;
+        });
+        tailSeq = tail.seq;
+      }
+    } finally {
+      await fh.close().catch(() => {});
     }
-  } finally {
-    await fh.close().catch(() => {});
+  }
+  const needsLeadingNewline = !lastByteIsNewline;
+
+  if (reservation?.source === 'live') {
+    const live = reservation.seq;
+    if (tailSeq !== null) return { lastSeq: tailSeq, reservedSeq: live, needsLeadingNewline, fileMayBeNew: false };
+    if (end !== 'budget') return { lastSeq: live, reservedSeq: live, needsLeadingNewline, fileMayBeNew: !opened };
+
+    // The tail is unreadable within budget. The live reservation already bounds
+    // every seq used, durably, so the log can be set aside and the fresh one
+    // continue right above it. Rewriting the same floor first promotes it to
+    // `.bak` too, so both copies hold it before the old evidence moves.
+    await writeReservation(sidecarPath, live);
+    const quarantined = `${logPath}.corrupt-${Date.now()}`;
+    await fs.promises.rename(logPath, quarantined);
+    noteDirChanged(path.dirname(logPath));
+    await syncDueDirs();
+    logger.warn('Work log tail unreadable within the scan budget; quarantined and continuing above it', {
+      conversationId,
+      quarantined,
+      size,
+      resumeAfterSeq: live,
+    });
+    return { lastSeq: live, reservedSeq: live, needsLeadingNewline: false, fileMayBeNew: true };
   }
 
-  if (tail.seq !== null) {
-    return { lastSeq: tail.seq, reservedSeq: floor, needsLeadingNewline: !lastByteIsNewline, fileMayBeNew: false };
-  }
-  if (end !== 'budget') {
-    // Whole file read, no entry in it: nothing it holds was ever published.
-    return { lastSeq: floor, reservedSeq: floor, needsLeadingNewline: !lastByteIsNewline, fileMayBeNew: false };
+  if (reservation?.source === 'backup' && tailSeq !== null) {
+    // The live copy is gone; `.bak` is the previous reservation, at most one block
+    // behind it. Publish nothing until both copies durably hold a bound again.
+    const bound = Math.max(tailSeq, reservation.seq + WORK_LOG_SEQ_RESERVE_BLOCK);
+    await rewriteBothReservations(sidecarPath, bound);
+    logger.warn('Work log reservation recovered from its backup; both copies rewritten', {
+      conversationId,
+      tailSeq,
+      backupReservation: reservation.seq,
+      resumeAfterSeq: bound,
+    });
+    return { lastSeq: bound, reservedSeq: bound, needsLeadingNewline, fileMayBeNew: false };
   }
 
-  // The tail is unreadable within budget. Set the file aside and continue above
-  // every seq it can hold: the reservation bounds every seq this module ever
-  // used for it (one is written before the first append); a log without a
-  // sidecar falls back to the most lines its size can hold.
-  //
-  // Plus one block: `reserved` may come from the sidecar's `.bak`, which holds
-  // the PREVIOUS reservation (atomicWriteJson promotes the old live content
-  // before writing). Consecutive reservations differ by exactly one block — each
-  // one is written at the first seq past the last — so one block covers a `.bak`
-  // that is one write behind. Holes are allowed; reuse is not.
-  const resume = (reserved ?? Math.ceil(size / MIN_ENTRY_BYTES)) + WORK_LOG_SEQ_RESERVE_BLOCK;
-  // Make the new floor durable BEFORE moving the evidence it replaces: if the
-  // process dies after the rename, the sidecar alone must still bound every seq.
-  // Written at exactly `resume`, so the next reservation is again one block on.
-  await writeReservation(sidecarPath, resume);
-  const quarantined = `${logPath}.corrupt-${Date.now()}`;
-  await fs.promises.rename(logPath, quarantined);
-  noteDirChanged(path.dirname(logPath));
-  await syncDueDirs();
-  logger.warn('Work log tail unreadable within the scan budget; quarantined and continuing above it', {
-    conversationId,
-    quarantined,
-    size,
-    resumeAfterSeq: resume,
+  if (reservation === null) {
+    if (tailSeq !== null) return { lastSeq: tailSeq, reservedSeq: 0, needsLeadingNewline, fileMayBeNew: false };
+    if (size === 0) return { lastSeq: 0, reservedSeq: 0, needsLeadingNewline: false, fileMayBeNew: !opened };
+  }
+
+  throw new WorkLogUnboundedError({
+    logPath,
+    logSize: opened ? size : null,
+    log: !opened
+      ? 'missing'
+      : size === 0
+        ? 'empty'
+        : end === 'budget'
+          ? 'unreadable within the scan budget'
+          : 'no parseable entry',
+    sidecarPath,
+    reservationSource: reservation?.source ?? 'none',
+    backupReservation: reservation?.seq ?? null,
   });
-  return { lastSeq: resume, reservedSeq: resume, needsLeadingNewline: false, fileMayBeNew: true };
+}
+
+/** Sizes and mtimes of a conversation's files: unchanged = the fail-closed verdict still holds. */
+async function fileFingerprint(files: {
+  log: string;
+  sidecar: string;
+}): Promise<{ key: string; sizes: Record<string, number | null> }> {
+  const sizes: Record<string, number | null> = {};
+  const parts: string[] = [];
+  for (const file of [files.log, files.sidecar, `${files.sidecar}.bak`]) {
+    try {
+      const st = await fs.promises.stat(file);
+      sizes[path.basename(file)] = st.size;
+      parts.push(`${st.size}:${st.mtimeMs}`);
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
+      sizes[path.basename(file)] = null;
+      parts.push('-');
+    }
+  }
+  return { key: parts.join('|'), sizes };
 }
 
 function clampChars(text: string, max: number): string {
@@ -533,6 +653,8 @@ function touchState(conversationId: string): ConversationLogState {
       reservedSeq: 0,
       needsLeadingNewline: false,
       fileMayBeNew: true,
+      highWater: 0,
+      unboundedAt: null,
       queue: Promise.resolve(),
       pending: 0,
     };
@@ -564,15 +686,41 @@ async function writeEntry(
   fields: EntryFields,
 ): Promise<WorkLogEntry> {
   if (state.lastSeq === null) {
+    // Taken before the seed reads anything, so a change made during it is seen next time.
+    const fingerprint = await fileFingerprint(files);
+    if (state.unboundedAt !== null && state.unboundedAt === fingerprint.key) {
+      // Same files as at the fail-closed verdict: refuse without re-scanning.
+      throw new WorkLogUnboundedError({ conversationId, unchangedSinceVerdict: true });
+    }
     try {
       const seed = await readSeed(conversationId, files.log, files.sidecar);
-      state.lastSeq = seed.lastSeq;
+      // Never move the cursor backwards past what this process already used.
+      state.lastSeq = Math.max(seed.lastSeq, state.highWater);
       state.reservedSeq = seed.reservedSeq;
       state.needsLeadingNewline = seed.needsLeadingNewline;
       state.fileMayBeNew = seed.fileMayBeNew;
+      state.highWater = state.lastSeq;
+      state.unboundedAt = null;
+      unboundedLogged.delete(conversationId);
     } catch (error) {
       // State stays unseeded, so the next append reads the tail again.
-      logger.warn('Work log seed failed; entry dropped', { conversationId, error });
+      if (error instanceof WorkLogUnboundedError) {
+        state.unboundedAt = fingerprint.key;
+        if (!unboundedLogged.has(conversationId)) {
+          if (unboundedLogged.size >= MAX_UNBOUNDED_LOGGED) {
+            const oldest = unboundedLogged.values().next().value;
+            if (oldest !== undefined) unboundedLogged.delete(oldest);
+          }
+          unboundedLogged.add(conversationId);
+          logger.error('Work log refuses to publish: no provable seq upper bound for this conversation', {
+            conversationId,
+            ...error.detail,
+            fileSizes: fingerprint.sizes,
+          });
+        }
+      } else {
+        logger.warn('Work log seed failed; entry dropped', { conversationId, error });
+      }
       throw error;
     }
   }
@@ -609,6 +757,7 @@ async function writeEntry(
     throw error;
   }
   state.lastSeq = entry.seq;
+  state.highWater = Math.max(state.highWater, entry.seq);
   state.needsLeadingNewline = false;
 
   if (_onAppended) {
