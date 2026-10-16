@@ -788,28 +788,47 @@ describe('Dashboard API', () => {
     expect(() => new Function(scriptContent)).not.toThrow();
   });
 
-  it('declares every top-level client function and variable exactly once (the served script)', async () => {
+  it('declares every top-level client function and variable exactly once (all classic scripts)', async () => {
     // A second `function f` silently replaces the first in the browser (the
     // later declaration wins), so the page would run code no test looked at.
+    // Classic scripts share one global scope, so a name declared in two
+    // blocks (e.g. the <script data-fouc> head block and the main one)
+    // collides the same way.
     const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
     expect(res.statusCode).toBe(200);
-    const scriptMatch = (res.body as string).match(/<script>([\s\S]*?)<\/script>/);
-    expect(scriptMatch).not.toBeNull();
-    const script = scriptMatch?.[1] ?? '';
+    const html = res.body as string;
+    const blocks = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)].map((m, i) => ({
+      label: `#${i} <script${m[1]}>`,
+      attrs: m[1],
+      code: m[2],
+    }));
+    // Every opening tag was matched as a block (no script is skipped silently).
+    expect(blocks.length).toBe((html.match(/<script\b/gi) ?? []).length);
+    // Classic = inline and JavaScript (a module has its own scope, a data block is not code).
+    const isClassic = (attrs: string) => {
+      if (/\bsrc\s*=/i.test(attrs)) return false;
+      const type = /\btype\s*=\s*["']?([^"'\s>]+)/i.exec(attrs)?.[1]?.toLowerCase();
+      return !type || type === 'text/javascript' || type === 'application/javascript';
+    };
+    const classic = blocks.filter((b) => isClassic(b.attrs));
+    expect(classic.some((b) => /\bdata-fouc\b/.test(b.attrs))).toBe(true);
     const ts = await import('typescript');
-    const file = ts.createSourceFile('dashboard-client.js', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-    const seen = new Map<string, number>();
-    const add = (name: string) => seen.set(name, (seen.get(name) ?? 0) + 1);
-    for (const stmt of file.statements) {
-      if (ts.isFunctionDeclaration(stmt) && stmt.name) add(stmt.name.text);
-      if (ts.isVariableStatement(stmt)) {
-        for (const d of stmt.declarationList.declarations) if (ts.isIdentifier(d.name)) add(d.name.text);
+    const where = new Map<string, string[]>(); // name → label of every block that declares it
+    for (const b of classic) {
+      expect(() => new Function(b.code), b.label).not.toThrow(); // each block parses on its own
+      const file = ts.createSourceFile('client.js', b.code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+      const add = (name: string) => where.set(name, [...(where.get(name) ?? []), b.label]);
+      for (const stmt of file.statements) {
+        if (ts.isFunctionDeclaration(stmt) && stmt.name) add(stmt.name.text);
+        if (ts.isVariableStatement(stmt)) {
+          for (const d of stmt.declarationList.declarations) if (ts.isIdentifier(d.name)) add(d.name.text);
+        }
+        if (ts.isClassDeclaration(stmt) && stmt.name) add(stmt.name.text);
       }
-      if (ts.isClassDeclaration(stmt) && stmt.name) add(stmt.name.text);
     }
-    expect(seen.size).toBeGreaterThan(100); // the whole client script was parsed
-    expect(seen.has('ensureCardIo')).toBe(true);
-    const duplicates = [...seen].filter(([, n]) => n > 1).map(([name, n]) => `${name} ×${n}`);
+    expect(where.size).toBeGreaterThan(100); // the whole client script was parsed
+    expect(where.has('ensureCardIo')).toBe(true);
+    const duplicates = [...where].filter(([, at]) => at.length > 1).map(([name, at]) => `${name} in ${at.join(', ')}`);
     expect(duplicates).toEqual([]);
   });
 
