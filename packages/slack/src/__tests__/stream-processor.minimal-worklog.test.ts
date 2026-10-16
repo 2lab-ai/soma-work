@@ -186,8 +186,8 @@ describe('minimal verbosity — narration goes to the work log, Slack gets the f
 
     expect(h.appendText).not.toHaveBeenCalled();
     expect(h.say).not.toHaveBeenCalled();
-    // Still in the work log — "before any suppression" — once, as the final.
-    expect(h.log).toEqual([expect.objectContaining({ kind: 'final', text: 'Prompt is too long' })]);
+    // In the work log once — as an `error`, never as the answer.
+    expect(h.log).toEqual([expect.objectContaining({ kind: 'error', text: 'Prompt is too long' })]);
   });
 
   it('a leaked transport error as the final never brings withheld narration onto Slack', async () => {
@@ -582,4 +582,97 @@ describe('transportLeak — the suppressed segment the turn ended on', () => {
     const ordinary = await run(harness(LOG_MINIMAL), toolTurn());
     expect(ordinary.transportLeak).toBeUndefined();
   });
+});
+
+/**
+ * A transport-error leak is never posted and never recorded as the answer:
+ * whatever the turn's ending, the work log holds it once, as `error` (spec 10
+ * §3.3, docs/misc/guides/verbosity-matrix.md). Covers the three leak classes
+ * the processor suppresses.
+ */
+describe('leak handling at every ending', () => {
+  const SHORT_NARRATION = 'Let me check.';
+  const LEAKS = [
+    ['prompt-too-long', 'Prompt is too long', false],
+    [
+      'compaction failure (compact turn)',
+      'Error: Error during compaction: Error: Conversation too long. Press esc twice to go up a few messages and try again.',
+      true,
+    ],
+    [
+      'empty-text-block 400',
+      'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"messages.3.content.0: text content blocks must be non-empty"}}',
+      false,
+    ],
+  ] as const;
+  const TAILS = ['finalText = leak', 'finalText = ""', 'no finalText', 'no result'] as const;
+
+  function leakTurn(leak: string, tail: (typeof TAILS)[number]): AgentStreamEvent[] {
+    const base: AgentStreamEvent[] = [
+      { type: 'assistant_delta', text: SHORT_NARRATION },
+      { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} },
+      { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'ok' }] },
+      { type: 'assistant_delta', text: leak },
+    ];
+    if (tail === 'no result') return base;
+    if (tail === 'no finalText') return [...base, { type: 'result', stopReason: 'end_turn' }];
+    return [...base, { type: 'result', stopReason: 'end_turn', finalText: tail === 'finalText = leak' ? leak : '' }];
+  }
+
+  for (const [label, leak, isCompactTurn] of LEAKS) {
+    for (const tail of TAILS) {
+      it(`${label}, ${tail}: nothing posted, returned as transportLeak, logged once as error`, async () => {
+        const h = harness(LOG_MINIMAL);
+        h.context.isCompactTurn = isCompactTurn;
+
+        const result = await run(h, leakTurn(leak, tail));
+
+        expect(h.appendText).not.toHaveBeenCalled();
+        expect(h.say).not.toHaveBeenCalled();
+        expect(result.transportLeak).toBe(leak);
+        expect(h.log.filter((e) => e.text === leak)).toEqual([expect.objectContaining({ kind: 'error' })]);
+        expect(h.log.some((e) => e.kind === 'final')).toBe(false);
+      });
+    }
+  }
+
+  // A leak that arrives ONLY as finalText (never streamed) used to be posted
+  // through the final-answer path, at every level.
+  for (const level of ['minimal', 'compact', 'detail', 'verbose'] as const) {
+    it(`${level}: a leak that arrives only as finalText is never posted and is returned as transportLeak`, async () => {
+      const h = harness(getVerbosityFlags(level));
+
+      const result = await run(h, [
+        { type: 'assistant_delta', text: NARRATION },
+        { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} },
+        { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'ok' }] },
+        { type: 'result', stopReason: 'end_turn', finalText: 'Prompt is too long' },
+      ]);
+
+      const posted = [...h.appendText.mock.calls.map((c) => c[1]), ...h.say.mock.calls.map((c) => c[0]?.text)];
+      expect(posted).not.toContain('Prompt is too long');
+      expect(posted).toEqual(level === 'minimal' ? [] : [NARRATION]);
+      expect(result.transportLeak).toBe('Prompt is too long');
+      expect(h.log.filter((e) => e.text === 'Prompt is too long')).toEqual([
+        expect.objectContaining({ kind: 'error' }),
+      ]);
+    });
+  }
+
+  // A leak, then a result carrying a NEW real answer (never streamed): the
+  // turn recovered — the answer posts once and nothing is handed to recovery.
+  for (const level of ['minimal', 'compact'] as const) {
+    it(`${level}: leak → result with a new real finalText: answer posted once, no transportLeak`, async () => {
+      const h = harness(getVerbosityFlags(level));
+
+      const result = await run(h, [
+        { type: 'assistant_delta', text: 'Prompt is too long' },
+        { type: 'result', stopReason: 'end_turn', finalText: FINAL },
+      ]);
+
+      expect(h.appendText.mock.calls.map((c) => c[1])).toEqual([FINAL]);
+      expect(result.transportLeak).toBeUndefined();
+      expect(h.log.filter((e) => e.kind === 'final')).toEqual([expect.objectContaining({ text: FINAL })]);
+    });
+  }
 });

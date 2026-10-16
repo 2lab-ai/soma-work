@@ -427,3 +427,132 @@ describe('two END signals while START is in flight', () => {
     expect(String(slackApi.postSystemMessage.mock.calls[0]?.[1])).toContain('Compaction completed');
   });
 });
+
+/** First line of every chat.update, as `ts <- line`. */
+function updates(slackApi: ReturnType<typeof makeSlackApi>): string[] {
+  return slackApi.updateMessage.mock.calls.map((c) => `${c[1]} <- ${String(c[2]).split('\n')[0]}`);
+}
+
+describe('turn-end close never overwrites an END in progress (END owns the message)', () => {
+  it('END is awaiting its chat.update when the turn ends: the message ends as completed', async () => {
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    let releaseEndUpdate!: () => void;
+    slackApi.updateMessage.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          releaseEndUpdate = () => resolve(undefined);
+        }),
+    );
+
+    const end = postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const close = closeCompactStartingAtTurnEnd(deps(session, slackApi));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseEndUpdate();
+    await Promise.all([end, close]);
+
+    expect(updates(slackApi)).toEqual(['start_ts <- 🟢 🗜️ Compaction completed']);
+    expectCycleSealed(session);
+  });
+
+  it('START and END both in flight when the turn ends: one completion update, no ticker', async () => {
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    let releaseStart!: (value: { ts: string }) => void;
+    slackApi.postSystemMessage.mockImplementationOnce(
+      () =>
+        new Promise<{ ts: string }>((resolve) => {
+          releaseStart = resolve;
+        }),
+    );
+
+    const starting = postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    const end = postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const close = closeCompactStartingAtTurnEnd(deps(session, slackApi));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseStart({ ts: 'start_ts' });
+    await Promise.all([starting, end, close]);
+
+    expect(updates(slackApi)).toEqual(['start_ts <- 🟢 🗜️ Compaction completed']);
+    expect(session.compactTickInterval).toBeUndefined();
+  });
+});
+
+describe('a START abandoned by END (past the deadline) never becomes an orphan', () => {
+  it("lands while END's own completion post is pending: it replaces itself with the completion, starts no ticker", async () => {
+    vi.useFakeTimers();
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    let releaseStart!: (value: { ts: string }) => void;
+    let releaseEndPost!: (value: { ts: string }) => void;
+    slackApi.postSystemMessage
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ ts: string }>((resolve) => {
+            releaseStart = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ ts: string }>((resolve) => {
+            releaseEndPost = resolve;
+          }),
+      );
+
+    const starting = postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    const completing = postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    await vi.advanceTimersByTimeAsync(COMPACT_END_WAIT_FOR_START_MS);
+    // END is now inside its own fresh completion post.
+    releaseStart({ ts: 'late_ts' });
+    await starting;
+    releaseEndPost({ ts: 'end_ts' });
+    await completing;
+
+    expect(updates(slackApi)).toEqual(['late_ts <- 🟢 🗜️ Compaction completed']);
+    expect(session.compactTickInterval).toBeUndefined();
+    expect(session.compactStartingMessageTs).toBeNull();
+
+    await closeCompactStartingAtTurnEnd(deps(session, slackApi));
+    expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a failed completion releases its END claim', () => {
+  it('concurrent ENDs: the first delivery rejects, the waiting second END delivers — one completion message', async () => {
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    slackApi.postSystemMessage.mockRejectedValueOnce(new Error('rate_limited')).mockResolvedValueOnce({ ts: 'end_ts' });
+
+    const first = postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    const second = postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    const outcomes = await Promise.allSettled([first, second]);
+
+    expect(outcomes.map((o) => o.status)).toEqual(['rejected', 'fulfilled']);
+    expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(2);
+    expect(String(slackApi.postSystemMessage.mock.calls[1]?.[1])).toContain('Compaction completed');
+    expect(session.compactPostedByEpoch?.[1]?.post).toBe(true);
+
+    // A third END for the sealed cycle posts nothing more.
+    await postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('sequential: a later END retries after a failed one — the claim is not kept forever', async () => {
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    slackApi.postSystemMessage.mockRejectedValueOnce(new Error('rate_limited')).mockResolvedValueOnce({ ts: 'end_ts' });
+
+    await expect(
+      postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' }),
+    ).rejects.toThrow('rate_limited');
+    expect(session.compactPostedByEpoch?.[1]?.post).toBe(false);
+
+    await postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+
+    expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(2);
+    expect(session.compactPostedByEpoch?.[1]?.post).toBe(true);
+  });
+});

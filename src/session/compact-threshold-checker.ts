@@ -121,7 +121,7 @@ export async function checkAndSchedulePendingCompact(args: CheckAndSchedulePendi
   try {
     workLog?.({ kind: 'notice', text: announcement });
   } catch (err) {
-    logger?.debug('checkAndSchedulePendingCompact: workLog sink threw — ignored', {
+    logger?.warn('checkAndSchedulePendingCompact: workLog sink threw — ignored', {
       error: (err as Error)?.message ?? String(err),
     });
   }

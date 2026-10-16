@@ -1544,7 +1544,7 @@ export class AgentStreamProcessor {
     // turn. Do not stream that raw transport error to Slack; stream-executor
     // inspects collectedText after process() and routes it into fallback compact.
     if (textIndicatesPromptTooLong(textContent)) {
-      segment.fate = 'suppressed';
+      this.suppressLeak(context, segment);
       return;
     }
 
@@ -1553,7 +1553,7 @@ export class AgentStreamProcessor {
     // Slack — stream-executor routes collectedText into the transcript-repair
     // / terminal-failure rails, which surface one condensed notice instead.
     if (textIndicatesCompactionErrorLeak(textContent, context.isCompactTurn)) {
-      segment.fate = 'suppressed';
+      this.suppressLeak(context, segment);
       return;
     }
 
@@ -1920,7 +1920,8 @@ export class AgentStreamProcessor {
       const known = finalResult ? this.segments.get(finalResult) : undefined;
       if (known) {
         // The answer already streamed as a segment: its directives fired then.
-        if (known.shown.trim()) this.emitFinal(context, known.shown, known);
+        // A suppressed leak is never the answer: it was recorded as `error`.
+        if (known.fate !== 'suppressed' && known.shown.trim()) this.emitFinal(context, known.shown, known);
         if (this.mayPromoteWithheld(known, context)) {
           // Spec 10 §3.2-3: kept off Slack as narration, but it IS the final
           // answer — post it once, without dispatching its directives again.
@@ -1952,6 +1953,17 @@ export class AgentStreamProcessor {
    */
   private mayPromoteWithheld(segment: SegmentFate, context: StreamContext): boolean {
     return segment.fate === 'withheld' && !context.hostChoicePosted?.();
+  }
+
+  /**
+   * Mark a segment as a suppressed transport-error leak: never posted, and in
+   * the work log once as `error` — never as `narration` or `final`, whatever
+   * the turn's ending. A held narration entry for this segment is replaced.
+   */
+  private suppressLeak(context: StreamContext, segment: SegmentFate): void {
+    segment.fate = 'suppressed';
+    if (this.pendingNarration?.segment === segment) this.pendingNarration = undefined;
+    this.emitWorkLog(context, { kind: 'error', text: segment.shown });
   }
 
   /** `{ transportLeak }` when the turn's last visible segment was a suppressed leak. */
@@ -2080,6 +2092,25 @@ export class AgentStreamProcessor {
       return;
     }
 
+    // A final text the stream never carried is a segment shown this turn —
+    // tracked like a streamed one, so a leak before it no longer counts as
+    // the turn's ending (`transportLeak`).
+    const segment: SegmentFate = { shown: processedResult, fate: 'settled' };
+    this.recordSegment(result, segment);
+    this.recordSegment(processedResult, segment);
+    this.lastShownSegment = segment;
+
+    // Same leak guards as a streamed segment: a transport error that arrives
+    // only as `finalText` is never posted, at any level, and is handed to the
+    // executor's recovery as `transportLeak`.
+    if (
+      textIndicatesPromptTooLong(processedResult) ||
+      textIndicatesCompactionErrorLeak(processedResult, context.isCompactTurn)
+    ) {
+      this.suppressLeak(context, segment);
+      return;
+    }
+
     this.emitFinal(context, processedResult);
     await this.postFinalAnswer(processedResult, context, usage, durationMs);
   }
@@ -2185,11 +2216,12 @@ export class AgentStreamProcessor {
     }
     // The partial text never reaches handleTextMessage, so it joins the work
     // log here — before the suppressions below, like every other segment.
-    this.emitWorkLog(context, { kind: 'narration', text: pending });
     if (textIndicatesPromptTooLong(pending) || textIndicatesCompactionErrorLeak(pending)) {
+      this.emitWorkLog(context, { kind: 'error', text: pending });
       textBuf.length = 0;
       return { delivered: false };
     }
+    this.emitWorkLog(context, { kind: 'narration', text: pending });
     if (!this.shouldOutput(OutputFlag.NARRATION, context)) {
       // Spec 10 §3.2-3: an interrupted turn has no final answer, so what is
       // left is narration — kept in the work log, not on Slack, below
