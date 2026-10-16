@@ -24,8 +24,10 @@ instance writes its own heartbeat and discovers others independently.
 
 ## What you see in the UI
 
-- Each card gets a colored `env-badge` in the meta row identifying the
-  owning instance. Hovering shows `<instanceName> (<host>:<port>)`.
+- Each card gets a colored `env-badge` in the meta row of the expanded
+  card (click a card to open it) identifying the owning instance. Hovering
+  shows `<instanceName> (<host>:<port>)`. A sibling instance's card shows its
+  actions disabled there, labelled with the instance to act from.
 - The topbar **token usage** stat is the sum across instances. Hovering
   the value reveals an env-grouped breakdown:
   `oudwood-dev: 12K · mac-mini-dev: 8K · Total: 20K`. On touch

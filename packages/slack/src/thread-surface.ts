@@ -1532,7 +1532,7 @@ export class ThreadSurface {
     const blocks: any[] = [];
 
     // ── 1. Header section ──
-    blocks.push(...this.buildHeaderBlocks(session));
+    blocks.push(...this.buildHeaderBlocks(session, sessionKey));
 
     // ── 2. Status + fields section (from ActionPanelBuilder) ──
     const panelPayload = ActionPanelBuilder.build({
@@ -1607,9 +1607,9 @@ export class ThreadSurface {
   /**
    * Header blocks: title + context row.
    */
-  private buildHeaderBlocks(session: ConversationSession): any[] {
+  private buildHeaderBlocks(session: ConversationSession, sessionKey: string): any[] {
     const theme = threadSurfaceProviders.getSessionTheme(session.ownerId);
-    const payload = ThreadHeaderBuilder.fromSession(session, { theme });
+    const payload = ThreadHeaderBuilder.fromSession(session, { theme, sessionKey });
     return payload.blocks || [];
   }
 
@@ -1635,7 +1635,7 @@ export class ThreadSurface {
 
     // Header with closed flag
     const theme = threadSurfaceProviders.getSessionTheme(session.ownerId);
-    const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true, theme });
+    const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true, theme, sessionKey });
     blocks.push(...(headerPayload.blocks || []));
 
     // Closed panel

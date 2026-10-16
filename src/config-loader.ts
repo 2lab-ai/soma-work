@@ -109,7 +109,7 @@ class ReadOnlyConfigLoad extends Error {}
  * which would reorder an operator's `config.json` on every seed/strip/save and
  * break `saveConfig`'s documented "2-space indent, insertion order" contract.
  */
-function writeConfigFileAtomically(configFile: string, content: string): void {
+export function writeConfigFileAtomically(configFile: string, content: string): void {
   atomicWriteFile(configFile, content, {
     mode: CONFIG_FILE_MODE,
     dirMode: CONFIG_DIR_MODE,

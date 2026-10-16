@@ -1,0 +1,143 @@
+{
+ "lines": [
+  {
+   "block": "header",
+   "fields": [
+    {
+     "field": "title",
+     "show": true,
+     "truncate": 150
+    }
+   ]
+  },
+  {
+   "block": "context",
+   "fields": [
+    {
+     "field": "status",
+     "format": "closed-marker",
+     "show": true
+    },
+    {
+     "field": "owner",
+     "format": "mention",
+     "show": true
+    },
+    {
+     "field": "workflow",
+     "show": true,
+     "style": {
+      "code": true
+     }
+    },
+    {
+     "field": "model",
+     "show": true,
+     "style": {
+      "code": true
+     }
+    },
+    {
+     "bar": {
+      "emptyChar": "\u2591",
+      "filledChar": "\u2593",
+      "width": 5
+     },
+     "field": "contextwindow",
+     "show": true
+    }
+   ]
+  }
+ ],
+ "themes": {
+  "compact": {
+   "lines": [
+    {
+     "block": "section",
+     "fields": [
+      {
+       "field": "title",
+       "format": "headline",
+       "show": true
+      }
+     ]
+    },
+    {
+     "block": "context",
+     "fields": [
+      {
+       "field": "workflow",
+       "show": true,
+       "style": {
+        "code": true
+       }
+      },
+      {
+       "field": "model",
+       "show": true,
+       "style": {
+        "code": true
+       }
+      },
+      {
+       "bar": {
+        "emptyChar": "\u2591",
+        "filledChar": "\u2593",
+        "width": 5
+       },
+       "field": "contextwindow",
+       "show": true
+      },
+      {
+       "field": "links",
+       "show": true
+      },
+      {
+       "field": "status",
+       "format": "closed-text",
+       "show": true
+      }
+     ]
+    }
+   ]
+  },
+  "minimal": {
+   "lines": [
+    {
+     "block": "context",
+     "fields": [
+      {
+       "field": "title",
+       "show": true
+      },
+      {
+       "field": "model",
+       "show": true,
+       "style": {
+        "code": true
+       }
+      },
+      {
+       "bar": {
+        "emptyChar": "\u2591",
+        "filledChar": "\u2593",
+        "width": 5
+       },
+       "field": "contextwindow",
+       "show": true
+      },
+      {
+       "field": "links",
+       "show": true
+      },
+      {
+       "field": "status",
+       "format": "closed-text",
+       "show": true
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

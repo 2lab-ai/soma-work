@@ -1,4 +1,6 @@
+import { getVerbosityFlags, LOG_MINIMAL } from '@soma/slack/output-flags';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Logger } from '../../logger';
 import type { SlackApiHelper } from '../../slack/slack-api-helper';
 import type { ConversationSession, SessionUsage } from '../../types';
 import type { UserSettingsStore } from '../../user-settings-store';
@@ -112,6 +114,79 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
       { threadTs: 'T1' },
     );
     expect(session.lastKnownUsagePct).toBe(80);
+  });
+
+  // Spec 10 §3.2-4: the auto-compact announcement is a compaction notice —
+  // below `compact` it goes to the work log only; the flag is set regardless.
+  it('minimal: at threshold → flag set, NO Slack post, one work-log notice', async () => {
+    session.usage = makeUsage(160_000, 200_000);
+    session.logVerbosity = LOG_MINIMAL;
+    const workLog = vi.fn();
+
+    const result = await checkAndSchedulePendingCompact({
+      session,
+      userId: 'U1',
+      channel: 'C1',
+      threadTs: 'T1',
+      userSettings: userSettings as unknown as UserSettingsStore,
+      slackApi: slackApi as unknown as SlackApiHelper,
+      workLog,
+    });
+
+    expect(result).toBe(true);
+    expect(session.autoCompactPending).toBe(true);
+    expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
+    expect(workLog).toHaveBeenCalledTimes(1);
+    expect(workLog).toHaveBeenCalledWith({
+      kind: 'notice',
+      text: expect.stringMatching(/Context usage 160k tokens ≥ 160k .*next turn will auto \/compact/),
+    });
+  });
+
+  it('compact: at threshold → posts as before and records the same notice', async () => {
+    session.usage = makeUsage(160_000, 200_000);
+    session.logVerbosity = getVerbosityFlags('compact');
+    const workLog = vi.fn();
+
+    await checkAndSchedulePendingCompact({
+      session,
+      userId: 'U1',
+      channel: 'C1',
+      threadTs: 'T1',
+      userSettings: userSettings as unknown as UserSettingsStore,
+      slackApi: slackApi as unknown as SlackApiHelper,
+      workLog,
+    });
+
+    expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(1);
+    expect(workLog).toHaveBeenCalledWith(expect.objectContaining({ kind: 'notice' }));
+  });
+
+  it('a throwing work log never breaks the check, and is logged at warn', async () => {
+    session.usage = makeUsage(160_000, 200_000);
+    session.logVerbosity = LOG_MINIMAL;
+    const logger = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
+
+    const result = await checkAndSchedulePendingCompact({
+      session,
+      userId: 'U1',
+      channel: 'C1',
+      threadTs: 'T1',
+      userSettings: userSettings as unknown as UserSettingsStore,
+      slackApi: slackApi as unknown as SlackApiHelper,
+      logger: logger as unknown as Logger,
+      workLog: () => {
+        throw new Error('disk full');
+      },
+    });
+
+    expect(result).toBe(true);
+    expect(session.autoCompactPending).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('workLog sink threw'),
+      expect.objectContaining({ error: 'disk full' }),
+    );
+    expect(logger.debug).not.toHaveBeenCalled();
   });
 
   it('AC3: above threshold (95/80) → triggers with actual pct in message', async () => {

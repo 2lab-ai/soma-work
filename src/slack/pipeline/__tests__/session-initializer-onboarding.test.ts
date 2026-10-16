@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createRequire } from 'node:module';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mocks MUST be hoisted - define factories inline
 vi.mock('../../../user-settings-store', () => ({
@@ -73,6 +74,13 @@ vi.mock('../../../dispatch-service', () => ({
 import { userSettingsStore } from '../../../user-settings-store';
 // Import after mocks
 import { SessionInitializer } from '../session-initializer';
+
+// The dist session initializer loads ../thread-header-builder through Node's own
+// require: the single instance production uses, but not the one vitest inlines
+// for an `import` in this file. Configure the instance the code under test reads.
+const { setThreadHeaderProviders } = createRequire(__filename)(
+  '@soma/slack/thread-header-builder',
+) as typeof import('@soma/slack/thread-header-builder');
 
 describe('SessionInitializer - Onboarding Detection', () => {
   let sessionInitializer: SessionInitializer;
@@ -365,7 +373,16 @@ describe('SessionInitializer - Onboarding Detection', () => {
   });
 
   describe('bot thread header creation', () => {
+    afterEach(() => {
+      setThreadHeaderProviders({ getDashboardSessionUrl: () => undefined });
+    });
+
     it('creates a new bot thread header for non-routable initiate message', async () => {
+      // The source-thread 📋 작업 로그 link is the init clutter deleted on the move.
+      setThreadHeaderProviders({
+        getDashboardSessionUrl: (ownerId, sessionKey) =>
+          `http://localhost:3000/dashboard/${ownerId}?session=${sessionKey}`,
+      });
       vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
         userId: 'U_EXISTING_USER',
         accepted: true,
