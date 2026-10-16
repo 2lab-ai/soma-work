@@ -33,7 +33,8 @@ import type {
   SessionStartHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { promotePendingToDispatchQueue } from '@soma/slack/compact-state';
-import { LOG_DETAIL, OutputFlag, shouldOutput } from '@soma/slack/output-flags';
+import { OutputFlag, resolveVerbosityMask, shouldOutput } from '@soma/slack/output-flags';
+import type { WorkLogInput } from '@soma/slack/work-log';
 import { Logger } from '../../logger';
 import { resolveContextWindow } from '../../metrics/model-registry';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
@@ -112,8 +113,47 @@ export function getCurrentEpochForEnd(session: ConversationSession): number {
  * replaced in place by the completion, whatever the level is by then.
  */
 function compactNoticesVisible(session: ConversationSession): boolean {
-  const mask = typeof session.logVerbosity === 'number' ? session.logVerbosity : LOG_DETAIL;
-  return shouldOutput(OutputFlag.NARRATION, mask);
+  return shouldOutput(OutputFlag.NARRATION, resolveVerbosityMask(session.logVerbosity));
+}
+
+/**
+ * Spec 10 §3.3 — the running turn's work-log sink, per session. Bound by
+ * stream-executor for the turn (`bindCompactWorkLog`), read here so the work
+ * log gets exactly one start and one completion `notice` per cycle whichever
+ * path signals: the SDK hooks (built outside the executor) or the stream
+ * fallbacks.
+ */
+const compactWorkLogSinks = new WeakMap<ConversationSession, (entry: WorkLogInput) => void>();
+
+/** Cycle markers whose completion notice is already recorded (racing ENDs record one). */
+const completionNoticed = new WeakSet<object>();
+
+/** Bind `sink` as this session's compaction work-log sink; returns the unbind for this binding only. */
+export function bindCompactWorkLog(session: ConversationSession, sink: (entry: WorkLogInput) => void): () => void {
+  compactWorkLogSinks.set(session, sink);
+  return () => {
+    if (compactWorkLogSinks.get(session) === sink) compactWorkLogSinks.delete(session);
+  };
+}
+
+function recordCompactNotice(session: ConversationSession, text: string): void {
+  const sink = compactWorkLogSinks.get(session);
+  if (!sink) return;
+  try {
+    sink({ kind: 'notice', text });
+  } catch (err) {
+    logger.warn('compact: work-log sink threw — ignored', { error: (err as Error)?.message ?? String(err) });
+  }
+}
+
+/** Work-log text for a sealed cycle: trigger and SDK token counts, each omitted when unknown. */
+function describeCompactionComplete(session: ConversationSession): string {
+  const parts = ['Compaction completed'];
+  if (session.compactTrigger) parts.push(`trigger=${session.compactTrigger}`);
+  if (typeof session.compactPreTokens === 'number' && typeof session.compactPostTokens === 'number') {
+    parts.push(`${session.compactPreTokens} → ${session.compactPostTokens} tokens`);
+  }
+  return parts.join(' · ');
 }
 
 function ensurePostedMap(session: ConversationSession): Record<number, { pre: boolean; post: boolean }> {
@@ -370,6 +410,7 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
   // only correct position — setting it after the Slack round-trip leaves a
   // race window where a parallel caller passes the guard and double-posts.
   marker.pre = true;
+  recordCompactNotice(session, 'Compaction starting');
 
   // Snapshot usage% at pre-compact for the "was ~X%" end-of-cycle message,
   // then INVALIDATE the heuristic so we never present it as "now ~X%".
@@ -547,6 +588,12 @@ export async function postCompactCompleteIfNeeded(
     marker.post === true
       ? Promise.resolve()
       : (async () => {
+          // One completion notice per cycle, recorded before the first await
+          // so two racing ENDs cannot both record it.
+          if (!completionNoticed.has(marker)) {
+            completionNoticed.add(marker);
+            recordCompactNotice(session, describeCompactionComplete(session));
+          }
           const text = buildCompactCompleteMessage(session);
           const startingTs = session.compactStartingMessageTs;
           // Track the ts of the message that actually carries the completion

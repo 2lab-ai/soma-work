@@ -263,6 +263,7 @@ export {
   OutputFlag,
   type OutputFlagValue,
   type RenderMode,
+  resolveVerbosityMask,
   shouldOutput,
   upgradeLegacyVerbosityMask,
   VERBOSITY_NAMES,

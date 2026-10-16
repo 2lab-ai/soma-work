@@ -27,7 +27,7 @@ import { checkAndSchedulePendingCompact } from '../../session/compact-threshold-
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import { getTokenManager, parseCooldownTime } from '../../token-manager';
 import { coerceToAvailableModel, MODEL_ALIASES, userSettingsStore } from '../../user-settings-store';
-import { postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../hooks/compact-hooks';
+import { bindCompactWorkLog, postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../hooks/compact-hooks';
 
 setStreamExecutorProviders({
   parseModelCommandRunResponse,
@@ -67,6 +67,8 @@ setStreamExecutorProviders({
   },
   postCompactCompleteIfNeeded,
   postCompactStartingIfNeeded,
+  bindCompactWorkLog: (session, sink) =>
+    bindCompactWorkLog(session as unknown as Parameters<typeof bindCompactWorkLog>[0], sink),
 });
 
 export * from '@soma/slack/pipeline/stream-executor';

@@ -18,10 +18,13 @@ const appendWorkLog = vi.fn<(conversationId: string, entry: WorkLogInput) => voi
 const postCompactStartingIfNeeded = vi.fn().mockResolvedValue(undefined);
 const postCompactCompleteIfNeeded = vi.fn().mockResolvedValue(undefined);
 const checkAndSchedulePendingCompact = vi.fn().mockResolvedValue(false);
+const unbindCompactWorkLog = vi.fn();
+const bindCompactWorkLog = vi.fn().mockReturnValue(unbindCompactWorkLog);
 
 setStreamExecutorProviders({
   appendWorkLog,
   checkAndSchedulePendingCompact,
+  bindCompactWorkLog,
   postCompactStartingIfNeeded,
   postCompactCompleteIfNeeded,
   userSettingsStore: {
@@ -247,6 +250,15 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
     }
     expect(appendWorkLog.mock.calls[0]?.[1]).toMatchObject({ kind: 'instruction', text: INSTRUCTION });
     expect(String(appendWorkLog.mock.calls[0]?.[1].turnId)).toContain(SESSION_KEY);
+    // Payloads, not just kinds.
+    const turnId = appendWorkLog.mock.calls[0]?.[1].turnId;
+    expect(appendWorkLog.mock.calls.map(([, entry]) => entry)).toEqual([
+      { kind: 'instruction', text: INSTRUCTION, turnId, ts: expect.any(Number) },
+      { kind: 'narration', text: NARRATION, turnId, ts: expect.any(Number) },
+      { kind: 'tool', tool: 'Read', text: 'Read {"file_path":"/repo/config.ts"}', turnId, ts: expect.any(Number) },
+      { kind: 'tool_result', tool: 'Read', ok: true, text: 'Read ok', turnId, ts: expect.any(Number) },
+      { kind: 'final', text: FINAL, turnId, ts: expect.any(Number) },
+    ]);
 
     const appended = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => call[1]);
     expect(appended).toEqual([FINAL]);
@@ -285,11 +297,15 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
     expect(deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => call[1])).toEqual([FINAL]);
   });
 
+  // The notices themselves are recorded by compact-hooks (exactly one start
+  // and one completion per cycle, whichever path signals — covered in
+  // compact-hooks.minimal.test.ts). The executor binds this turn's sink for
+  // the session and unbinds it at turn end; the helpers still run.
   it.each([
     'minimal',
     'compact',
     'detail',
-  ] as const)('%s: compaction start/complete become work-log notices; the compaction helpers still run', async (level) => {
+  ] as const)('%s: binds the turn sink for compaction notices; the compaction helpers still run', async (level) => {
     const deps = createDeps(() =>
       (async function* () {
         yield { type: 'status', status: 'compacting' };
@@ -301,16 +317,24 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
         yield { type: 'result', stopReason: 'end_turn', finalText: FINAL };
       })(),
     );
+    const session = createSession(getVerbosityFlags(level));
 
-    await new StreamExecutor(deps).execute(createParams(createSession(getVerbosityFlags(level))));
+    await new StreamExecutor(deps).execute(createParams(session));
     await settle();
 
-    const notices = appendWorkLog.mock.calls.map(([, entry]) => entry).filter((entry) => entry.kind === 'notice');
-    expect(notices.map((entry) => entry.text)).toEqual([
-      'Compaction starting',
-      'Compaction completed · trigger=auto · 160000 → 35000 tokens',
-    ]);
-    // Epoch markers / pending re-dispatch live in these helpers: never skipped.
+    expect(bindCompactWorkLog).toHaveBeenCalledTimes(1);
+    expect(bindCompactWorkLog.mock.calls[0]?.[0]).toBe(session);
+    expect(unbindCompactWorkLog).toHaveBeenCalledTimes(1);
+    // The executor itself records no compaction notice (no duplicates).
+    expect(appendWorkLog.mock.calls.filter(([, entry]) => entry.kind === 'notice')).toHaveLength(0);
+    // What compact-hooks writes through the bound sink lands in this turn's log.
+    const sink = bindCompactWorkLog.mock.calls[0]?.[1] as (entry: WorkLogInput) => void;
+    sink({ kind: 'notice', text: 'Compaction starting' });
+    const instruction = appendWorkLog.mock.calls.find(([, entry]) => entry.kind === 'instruction')?.[1];
+    expect(appendWorkLog).toHaveBeenLastCalledWith(
+      'conv-1',
+      expect.objectContaining({ kind: 'notice', text: 'Compaction starting', turnId: instruction?.turnId }),
+    );
     expect(postCompactStartingIfNeeded).toHaveBeenCalledTimes(1);
     expect(postCompactCompleteIfNeeded).toHaveBeenCalledTimes(1);
   });
@@ -527,10 +551,14 @@ describe('StreamExecutor — the threshold checker gets the turn work-log sink',
     expect(checkAndSchedulePendingCompact).toHaveBeenCalledTimes(1);
     const args = checkAndSchedulePendingCompact.mock.calls[0]?.[0] as { workLog: (entry: WorkLogInput) => void };
     args.workLog({ kind: 'notice', text: 'Context usage 160k tokens ≥ 160k' });
-    expect(appendWorkLog).toHaveBeenLastCalledWith(
-      'conv-1',
-      expect.objectContaining({ kind: 'notice', text: 'Context usage 160k tokens ≥ 160k' }),
-    );
+    const instruction = appendWorkLog.mock.calls.find(([, entry]) => entry.kind === 'instruction')?.[1];
+    expect(instruction?.turnId).toBeTruthy();
+    expect(appendWorkLog).toHaveBeenLastCalledWith('conv-1', {
+      kind: 'notice',
+      text: 'Context usage 160k tokens ≥ 160k',
+      turnId: instruction?.turnId,
+      ts: expect.any(Number),
+    });
   });
 });
 
@@ -610,4 +638,62 @@ describe('StreamExecutor — a leak followed by a directive-only ending still re
       });
     }
   }
+});
+
+describe('StreamExecutor — a result-only answer logs exactly one final', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    'minimal',
+    'detail',
+  ] as const)('%s: narration → tool → result with a never-streamed answer', async (level) => {
+    const deps = createDeps(() =>
+      (async function* () {
+        yield { type: 'assistant_delta', text: NARRATION };
+        yield { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} };
+        yield { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'ok' }] };
+        yield { type: 'result', stopReason: 'end_turn', finalText: FINAL };
+      })(),
+    );
+
+    await new StreamExecutor(deps).execute(createParams(createSession(getVerbosityFlags(level))));
+    await settle();
+
+    const turnId = appendWorkLog.mock.calls.find(([, entry]) => entry.kind === 'instruction')?.[1].turnId;
+    const finals = appendWorkLog.mock.calls.map(([, entry]) => entry).filter((entry) => entry.kind === 'final');
+    expect(finals).toEqual([{ kind: 'final', text: FINAL, turnId, ts: expect.any(Number) }]);
+  });
+});
+
+describe('StreamExecutor — a final answer that reached Slack means no recovery (spec 10 §3.2-3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    'minimal',
+    'detail',
+  ] as const)('%s: A → tool → leak L → result(finalText = A): A posted once, no recovery', async (level) => {
+    const deps = createDeps(() =>
+      (async function* () {
+        yield { type: 'assistant_delta', text: FINAL };
+        yield { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} };
+        yield { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'ok' }] };
+        yield { type: 'assistant_delta', text: 'Prompt is too long' };
+        yield { type: 'result', stopReason: 'end_turn', finalText: FINAL };
+      })(),
+    );
+    const executor = new StreamExecutor(deps);
+    const handleError = spyOnHandleError(executor).mockResolvedValue(undefined);
+
+    const result = await executor.execute(createParams(createSession(getVerbosityFlags(level))));
+    await settle();
+
+    expect(handleError).not.toHaveBeenCalled();
+    expect(result.success).toBe(true);
+    const appended = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => String(call[1]));
+    expect(appended.filter((text) => text.startsWith(FINAL))).toHaveLength(1);
+  });
 });

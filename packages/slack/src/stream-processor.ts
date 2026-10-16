@@ -20,8 +20,8 @@ import {
   shouldOutput as checkOutputFlag,
   getThinkingRenderMode,
   getToolCallRenderMode,
-  LOG_DETAIL,
   OutputFlag,
+  resolveVerbosityMask,
   verboseTag,
 } from './output-flags';
 // Type-only: the interrupt-flush guard compares `AbortSignal.reason` against
@@ -807,12 +807,12 @@ export class AgentStreamProcessor {
 
   /** Check whether a given output flag is enabled for the stream's verbosity */
   private shouldOutput(flag: number, context: StreamContext): boolean {
-    return checkOutputFlag(flag, context.logVerbosity ?? LOG_DETAIL);
+    return checkOutputFlag(flag, resolveVerbosityMask(context.logVerbosity));
   }
 
   /** Returns verbose category tag prefix (empty string when not verbose) */
   private vtag(flag: number, context: StreamContext): string {
-    return verboseTag(flag, context.logVerbosity ?? LOG_DETAIL);
+    return verboseTag(flag, resolveVerbosityMask(context.logVerbosity));
   }
 
   /**
@@ -1045,9 +1045,10 @@ export class AgentStreamProcessor {
         // groups, then handles the terminal/usage/status event.
         switch (event.type) {
           // A held narration (see PendingNarration) is settled by every event
-          // that proves the turn went on past it — model output, a tool, a
-          // status/compaction frame — but not by `usage` (which arrives just
-          // before `result`) nor by side-band bookkeeping frames.
+          // that proves the turn went on past it — thinking, more text, a tool
+          // call or result — but not by bookkeeping frames (usage, status,
+          // compact_boundary, side-band lifecycle), which can arrive between
+          // the answer and `result`.
           case 'thought_delta':
             await flushText();
             await flushToolCalls();
@@ -1089,12 +1090,10 @@ export class AgentStreamProcessor {
             break;
           case 'status':
             await flushAll();
-            this.settleNarration(context);
             await this.handleStatusEvent(event.status, context);
             break;
           case 'compact_boundary':
             await flushAll();
-            this.settleNarration(context);
             // onCompactBoundary only — the mapper emits a separate
             // `status: 'compact_done'` event right after this, which carries the
             // status update (avoids a double onStatusUpdate('compact_done')).
@@ -1332,7 +1331,7 @@ export class AgentStreamProcessor {
     const inTurn = Boolean(context.turnId && context.threadPanel?.isTurnSurfaceActive());
     if (inTurn) return;
 
-    const thinkingMode = getThinkingRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    const thinkingMode = getThinkingRenderMode(resolveVerbosityMask(context.logVerbosity));
     if (thinkingMode === 'hidden') return;
 
     const thinkingParts = content
@@ -1421,7 +1420,7 @@ export class AgentStreamProcessor {
     });
 
     // Format and send tool use messages (render mode dispatch) — PHASE=0 only.
-    const toolCallMode = getToolCallRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    const toolCallMode = getToolCallRenderMode(resolveVerbosityMask(context.logVerbosity));
     if (!inTurn && toolCallMode !== 'hidden') {
       const toolContent = ToolFormatter.formatToolUse(enrichedContent, toolCallMode);
       if (toolContent) {
@@ -1938,7 +1937,13 @@ export class AgentStreamProcessor {
       if (known) {
         // The answer already streamed as a segment: its directives fired then.
         // A suppressed leak is never the answer: it was recorded as `error`.
-        if (known.fate !== 'suppressed' && known.shown.trim()) this.emitFinal(context, known.shown, known);
+        if (known.fate !== 'suppressed' && known.shown.trim()) {
+          this.emitFinal(context, known.shown, known);
+          // Spec 10 §3.2-3: the accepted final answer is the turn's terminal
+          // segment — a leak suppressed after it no longer counts as the
+          // ending, so no `transportLeak` and no recovery (guardText agrees).
+          this.lastShownSegment = known;
+        }
         if (this.mayPromoteWithheld(known, context)) {
           // Spec 10 §3.2-3: kept off Slack as narration, but it IS the final
           // answer — post it once, without dispatching its directives again.

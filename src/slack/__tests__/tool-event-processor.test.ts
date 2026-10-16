@@ -602,161 +602,169 @@ describe('ToolEventProcessor', () => {
       );
     });
 
-    // S13 — bg Task spawn-ack: keeps progress UI alive.
-    it('S13: bg Task spawn-ack tool_result → endMcpTracking SKIPPED', async () => {
-      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
-      await processor.handleToolUse([{ id: 'tu_bg_ack', name: 'Task', input: makeBgTaskInput() }], ctx);
+    // Spawn-ack gate, background completion and turn-end drain run the same
+    // at every level — minimal only drops the progress RENDER, never the
+    // tracking (spec 10 §3.2-2).
+    for (const [level, mask] of [
+      ['minimal', getVerbosityFlags('minimal')],
+      ['detail', getVerbosityFlags('detail')],
+    ] as const) {
+      // S13 — bg Task spawn-ack: keeps progress UI alive.
+      it(`[${level}] S13: bg Task spawn-ack tool_result → endMcpTracking SKIPPED`, async () => {
+        const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A', logVerbosity: mask };
+        await processor.handleToolUse([{ id: 'tu_bg_ack', name: 'Task', input: makeBgTaskInput() }], ctx);
 
-      // Reset the call mock so we can isolate the result-handling effect.
-      mcpCallTracker.endCall.mockClear();
-      mcpStatusDisplay.completeCall.mockClear();
+        // Reset the call mock so we can isolate the result-handling effect.
+        mcpCallTracker.endCall.mockClear();
+        mcpStatusDisplay.completeCall.mockClear();
 
-      const spawnAckText = 'Task started in background. output_file: /tmp/x.json task_id: abc-123-def';
-      await processor.handleToolResult(
-        [{ toolUseId: 'tu_bg_ack', toolName: 'Task', result: spawnAckText, isError: false }],
-        ctx,
-      );
+        const spawnAckText = 'Task started in background. output_file: /tmp/x.json task_id: abc-123-def';
+        await processor.handleToolResult(
+          [{ toolUseId: 'tu_bg_ack', toolName: 'Task', result: spawnAckText, isError: false }],
+          ctx,
+        );
 
-      // Progress UI must survive — no endMcpTracking.
-      expect(mcpCallTracker.endCall).not.toHaveBeenCalled();
-      expect(mcpStatusDisplay.completeCall).not.toHaveBeenCalled();
-    });
+        // Progress UI must survive — no endMcpTracking.
+        expect(mcpCallTracker.endCall).not.toHaveBeenCalled();
+        expect(mcpStatusDisplay.completeCall).not.toHaveBeenCalled();
+      });
 
-    // S13b — same spawn-ack semantics, but with the SDK's array
-    // tool_result shape ([{type:'text', text:'…task_id: …'}]). The
-    // Anthropic SDK returns this shape from real Task calls; a string-
-    // only test would let an extractTaskIdFromResult regression on the
-    // array branch slip past. (Issue #794.)
-    it('S13b: bg Task spawn-ack tool_result (array shape) → endMcpTracking SKIPPED', async () => {
-      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
-      await processor.handleToolUse([{ id: 'tu_bg_ack_arr', name: 'Task', input: makeBgTaskInput() }], ctx);
+      // S13b — same spawn-ack semantics, but with the SDK's array
+      // tool_result shape ([{type:'text', text:'…task_id: …'}]). The
+      // Anthropic SDK returns this shape from real Task calls; a string-
+      // only test would let an extractTaskIdFromResult regression on the
+      // array branch slip past. (Issue #794.)
+      it(`[${level}] S13b: bg Task spawn-ack tool_result (array shape) → endMcpTracking SKIPPED`, async () => {
+        const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A', logVerbosity: mask };
+        await processor.handleToolUse([{ id: 'tu_bg_ack_arr', name: 'Task', input: makeBgTaskInput() }], ctx);
 
-      mcpCallTracker.endCall.mockClear();
-      mcpStatusDisplay.completeCall.mockClear();
+        mcpCallTracker.endCall.mockClear();
+        mcpStatusDisplay.completeCall.mockClear();
 
-      await processor.handleToolResult(
-        [
-          {
-            toolUseId: 'tu_bg_ack_arr',
-            toolName: 'Task',
-            result: [{ type: 'text', text: 'Task started in background. task_id: abc-123' }],
-            isError: false,
-          },
-        ],
-        ctx,
-      );
+        await processor.handleToolResult(
+          [
+            {
+              toolUseId: 'tu_bg_ack_arr',
+              toolName: 'Task',
+              result: [{ type: 'text', text: 'Task started in background. task_id: abc-123' }],
+              isError: false,
+            },
+          ],
+          ctx,
+        );
 
-      expect(mcpCallTracker.endCall).not.toHaveBeenCalled();
-      expect(mcpStatusDisplay.completeCall).not.toHaveBeenCalled();
-    });
+        expect(mcpCallTracker.endCall).not.toHaveBeenCalled();
+        expect(mcpStatusDisplay.completeCall).not.toHaveBeenCalled();
+      });
 
-    // S14 — bg Task error result: normal close (no special-case).
-    it('S14: bg Task error tool_result → falls through to endMcpTracking + sendToolResult', async () => {
-      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
-      await processor.handleToolUse([{ id: 'tu_bg_err', name: 'Task', input: makeBgTaskInput() }], ctx);
+      // S14 — bg Task error result: normal close (no special-case).
+      it(`[${level}] S14: bg Task error tool_result → falls through to endMcpTracking + sendToolResult`, async () => {
+        const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A', logVerbosity: mask };
+        await processor.handleToolUse([{ id: 'tu_bg_err', name: 'Task', input: makeBgTaskInput() }], ctx);
 
-      mcpCallTracker.endCall.mockClear();
-      mcpStatusDisplay.completeCall.mockClear();
+        mcpCallTracker.endCall.mockClear();
+        mcpStatusDisplay.completeCall.mockClear();
 
-      // Even with `task_id` text, isError=true is a real failure: close normally.
-      await processor.handleToolResult(
-        [
-          {
-            toolUseId: 'tu_bg_err',
-            toolName: 'Task',
-            result: 'Failed to spawn: subagent panic. task_id: nope',
-            isError: true,
-          },
-        ],
-        ctx,
-      );
+        // Even with `task_id` text, isError=true is a real failure: close normally.
+        await processor.handleToolResult(
+          [
+            {
+              toolUseId: 'tu_bg_err',
+              toolName: 'Task',
+              result: 'Failed to spawn: subagent panic. task_id: nope',
+              isError: true,
+            },
+          ],
+          ctx,
+        );
 
-      expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_123');
-      // Issue #816 — error result: completeCall third arg flips to true.
-      expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_123', 1000, true);
-    });
+        expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_123');
+        // Issue #816 — error result: completeCall third arg flips to true.
+        expect(mcpStatusDisplay.completeCall).toHaveBeenCalledWith('call_123', 1000, true);
+      });
 
-    // S14c — bg Task non-empty result with NO task_id marker also emits a
-    // dev-warn surfacing the shape, so a silent SDK content-block schema
-    // drift (e.g. `{type:'output_text',…}`, structured task_id field)
-    // leaves an operator breadcrumb instead of silently regressing #794.
-    it('S14c: bg Task result missing task_id on non-empty payload → logger.warn shape-drift signal', async () => {
-      const warnSpy = vi.spyOn((processor as any).logger, 'warn');
-      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
-      await processor.handleToolUse([{ id: 'tu_bg_drift', name: 'Task', input: makeBgTaskInput() }], ctx);
-      warnSpy.mockClear();
+      // S14c — bg Task non-empty result with NO task_id marker also emits a
+      // dev-warn surfacing the shape, so a silent SDK content-block schema
+      // drift (e.g. `{type:'output_text',…}`, structured task_id field)
+      // leaves an operator breadcrumb instead of silently regressing #794.
+      it(`[${level}] S14c: bg Task result missing task_id on non-empty payload → logger.warn shape-drift signal`, async () => {
+        const warnSpy = vi.spyOn((processor as any).logger, 'warn');
+        const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A', logVerbosity: mask };
+        await processor.handleToolUse([{ id: 'tu_bg_drift', name: 'Task', input: makeBgTaskInput() }], ctx);
+        warnSpy.mockClear();
 
-      await processor.handleToolResult(
-        [{ toolUseId: 'tu_bg_drift', toolName: 'Task', result: 'unexpected shape, no marker', isError: false }],
-        ctx,
-      );
+        await processor.handleToolResult(
+          [{ toolUseId: 'tu_bg_drift', toolName: 'Task', result: 'unexpected shape, no marker', isError: false }],
+          ctx,
+        );
 
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('possible SDK content-block shape drift'),
-        expect.objectContaining({
-          toolUseId: 'tu_bg_drift',
-          resultType: 'string',
-          resultLength: 'unexpected shape, no marker'.length,
-        }),
-      );
-    });
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('possible SDK content-block shape drift'),
+          expect.objectContaining({
+            toolUseId: 'tu_bg_drift',
+            resultType: 'string',
+            resultLength: 'unexpected shape, no marker'.length,
+          }),
+        );
+      });
 
-    // S14d — empty/null result must NOT emit the shape-drift warn (benign
-    // path — pin so a future "always-warn" regression doesn't spam logs
-    // on every empty bg Task result).
-    it('S14d: bg Task empty/null result → no shape-drift warn', async () => {
-      const warnSpy = vi.spyOn((processor as any).logger, 'warn');
-      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
-      await processor.handleToolUse([{ id: 'tu_bg_empty', name: 'Task', input: makeBgTaskInput() }], ctx);
-      warnSpy.mockClear();
+      // S14d — empty/null result must NOT emit the shape-drift warn (benign
+      // path — pin so a future "always-warn" regression doesn't spam logs
+      // on every empty bg Task result).
+      it(`[${level}] S14d: bg Task empty/null result → no shape-drift warn`, async () => {
+        const warnSpy = vi.spyOn((processor as any).logger, 'warn');
+        const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A', logVerbosity: mask };
+        await processor.handleToolUse([{ id: 'tu_bg_empty', name: 'Task', input: makeBgTaskInput() }], ctx);
+        warnSpy.mockClear();
 
-      await processor.handleToolResult(
-        [{ toolUseId: 'tu_bg_empty', toolName: 'Task', result: '', isError: false }],
-        ctx,
-      );
+        await processor.handleToolResult(
+          [{ toolUseId: 'tu_bg_empty', toolName: 'Task', result: '', isError: false }],
+          ctx,
+        );
 
-      const driftWarns = warnSpy.mock.calls.filter(
-        (args) => typeof args[0] === 'string' && args[0].includes('shape drift'),
-      );
-      expect(driftWarns).toHaveLength(0);
-    });
+        const driftWarns = warnSpy.mock.calls.filter(
+          (args) => typeof args[0] === 'string' && args[0].includes('shape drift'),
+        );
+        expect(driftWarns).toHaveLength(0);
+      });
 
-    // S14b — bg Task non-ack result without `task_id`: normal close too.
-    it('S14b: bg Task result without task_id marker → endMcpTracking fires', async () => {
-      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
-      await processor.handleToolUse([{ id: 'tu_bg_no_id', name: 'Task', input: makeBgTaskInput() }], ctx);
+      // S14b — bg Task non-ack result without `task_id`: normal close too.
+      it(`[${level}] S14b: bg Task result without task_id marker → endMcpTracking fires`, async () => {
+        const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A', logVerbosity: mask };
+        await processor.handleToolUse([{ id: 'tu_bg_no_id', name: 'Task', input: makeBgTaskInput() }], ctx);
 
-      mcpCallTracker.endCall.mockClear();
+        mcpCallTracker.endCall.mockClear();
 
-      await processor.handleToolResult(
-        [{ toolUseId: 'tu_bg_no_id', toolName: 'Task', result: 'no marker here', isError: false }],
-        ctx,
-      );
+        await processor.handleToolResult(
+          [{ toolUseId: 'tu_bg_no_id', toolName: 'Task', result: 'no marker here', isError: false }],
+          ctx,
+        );
 
-      expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_123');
-    });
+        expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_123');
+      });
 
-    // S15 — async cleanup with bg Task: drain registry + flushSession.
-    it('S15: cleanup(sessionKey, turnId) drains bg Task → endMcpTracking + flushSession awaited', async () => {
-      const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A' };
-      mcpCallTracker.startCall.mockReturnValueOnce('call_bg_task');
-      await processor.handleToolUse([{ id: 'tu_bg_drain', name: 'Task', input: makeBgTaskInput() }], ctx);
+      // S15 — async cleanup with bg Task: drain registry + flushSession.
+      it(`[${level}] S15: cleanup(sessionKey, turnId) drains bg Task → endMcpTracking + flushSession awaited`, async () => {
+        const ctx: ToolEventContext = { ...mockContext, turnId: 'C123:1:turn-A', logVerbosity: mask };
+        mcpCallTracker.startCall.mockReturnValueOnce('call_bg_task');
+        await processor.handleToolUse([{ id: 'tu_bg_drain', name: 'Task', input: makeBgTaskInput() }], ctx);
 
-      mcpCallTracker.endCall.mockClear();
-      mcpStatusDisplay.flushSession.mockClear();
+        mcpCallTracker.endCall.mockClear();
+        mcpStatusDisplay.flushSession.mockClear();
 
-      // Turn ends with the bg Task still alive — cleanup must drain it.
-      await processor.cleanup('C123:thread_ts', 'C123:1:turn-A');
+        // Turn ends with the bg Task still alive — cleanup must drain it.
+        await processor.cleanup('C123:thread_ts', 'C123:1:turn-A');
 
-      expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_bg_task');
-      expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts');
-      // Ordering pin (issue #794) — flushSession MUST run AFTER endCall so
-      // the final render reflects the bg Task's `completed` flip. A drift
-      // here would re-introduce the "stuck running" symptom.
-      expect(mcpStatusDisplay.flushSession.mock.invocationCallOrder[0]).toBeGreaterThan(
-        mcpCallTracker.endCall.mock.invocationCallOrder[0],
-      );
-    });
+        expect(mcpCallTracker.endCall).toHaveBeenCalledWith('call_bg_task');
+        expect(mcpStatusDisplay.flushSession).toHaveBeenCalledWith('C123:thread_ts');
+        // Ordering pin (issue #794) — flushSession MUST run AFTER endCall so
+        // the final render reflects the bg Task's `completed` flip. A drift
+        // here would re-introduce the "stuck running" symptom.
+        expect(mcpStatusDisplay.flushSession.mock.invocationCallOrder[0]).toBeGreaterThan(
+          mcpCallTracker.endCall.mock.invocationCallOrder[0],
+        );
+      });
+    }
 
     // S15-bis — same-session, two turns: cleanup(turn1) leaves turn2 callIds alone.
     it('S15-bis: cleanup(turn1) does NOT complete callIds registered under turn2 (callIdsByTurn)', async () => {
