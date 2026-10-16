@@ -1215,6 +1215,69 @@ async function addendumChecks(browser: import('playwright').Browser) {
   await ctx.close();
 }
 
+/** The served page with real timers: card 지시/응답 during an endpoint outage. */
+async function cardIoOutage(browser: import('playwright').Browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'light' });
+  const page = await ctx.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await installMocks(page, makeBoard());
+  await page.addInitScript({ content: 'localStorage.setItem("soma-board-view", "board");' });
+  // Registered after installMocks, so it answers the card's ?limit=2 requests first.
+  let down = true;
+  const ioRequests: number[] = [];
+  await page.route(/\/api\/dashboard\/session\/conv-1\?limit=2$/, (r) => {
+    ioRequests.push(Date.now());
+    if (down) return r.fulfill({ status: 500, json: { error: 'boom' } });
+    return r.fallback();
+  });
+  await openBoard(page);
+  const key = K('100');
+  await page.click(`[data-session-key="${key}"] .card-face`); // the opening fetch (fails)
+  for (let i = 0; i < 50 && ioRequests.length < 1; i++) await page.waitForTimeout(10);
+  const t1 = ioRequests[0];
+  // Board pushes with a new lastActivity every 150 ms while the endpoint is down.
+  for (let i = 1; i <= 5; i++) {
+    const b = makeBoard() as Record<string, Array<Record<string, unknown>>>;
+    b.waiting[0].lastActivity = new Date(NOW + i * 1000).toISOString();
+    await page.evaluate((board) => (window as unknown as PageWindow).__wsSend({ type: 'session_update', board }), b);
+    await page.waitForTimeout(150);
+  }
+  const beforeDeadline = ioRequests.length;
+  const elapsed = Date.now() - t1;
+  down = false; // the endpoint recovers before the 1 s deadline
+  await page.waitForTimeout(1400);
+  const gaps = ioRequests.map((x) => x - t1);
+  const card = await page.evaluate(
+    (k) => ({
+      instruction: document.querySelector(`[data-session-key="${k}"] .io-in .io-text`)?.textContent ?? null,
+      response: document.querySelector(`[data-session-key="${k}"] .io-out .io-text`)?.textContent ?? null,
+    }),
+    key,
+  );
+  log(
+    `card I/O outage: requests at ${JSON.stringify(gaps)} ms (renders until ${elapsed} ms), card ${JSON.stringify(card)}`,
+  );
+  check(
+    beforeDeadline === 1 && elapsed < 1000,
+    `outage: 5 re-renders with new stamps send nothing before the deadline (${beforeDeadline} request(s) in ${elapsed} ms)`,
+  );
+  check(
+    ioRequests.length === 2 && gaps[1] >= 950 && gaps[1] <= 1600,
+    `outage: exactly one request at the 1 s deadline (${JSON.stringify(gaps)})`,
+  );
+  check(
+    !!card.instruction &&
+      card.instruction.includes('staging에서 dry run') &&
+      !!card.response &&
+      card.response.includes('Dry run on staging passed'),
+    'outage: after recovery the open card shows 지시/응답',
+  );
+  check(errors.length === 0, `outage: no page errors (${errors.join(' | ')})`);
+  await shoot(page, 'card-io-outage-recovered-1280.png', false);
+  await ctx.close();
+}
+
 async function main() {
   const dashboard = await import('../src/conversation/dashboard');
   dashboard.setDashboardSessionAccessor(() => new Map());
@@ -1228,6 +1291,7 @@ async function main() {
     await deepLinkAndWorkLog(browser);
     await reviewScenarios(browser);
     await addendumChecks(browser);
+    await cardIoOutage(browser);
   } finally {
     await browser.close();
     await ws.stopWebServer();

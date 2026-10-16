@@ -23,7 +23,19 @@ function cook(fragment: string): string {
   return new Function(`return \`${fragment}\`;`)() as string;
 }
 /** Source of a top-level client function, as served. */
+/** Every top-level declaration of NAME in the template (function / async function / var / let / const). */
+function declarationCount(name: string): number {
+  const re = new RegExp(`^(?:async function|function|var|let|const) ${name.replace(/[$]/g, '\\$')}\\b`, 'gm');
+  return (TEMPLATE.match(re) ?? []).length;
+}
+/** Refuse a name the page declares more than once: the browser runs the LAST one. */
+function assertUnique(name: string) {
+  const n = declarationCount(name);
+  if (n > 1)
+    throw new Error(`client ${name} is declared ${n} times — the page runs the last one; tests must not pick one`);
+}
 function clientFn(name: string): string {
+  assertUnique(name);
   const start = TEMPLATE.indexOf(`\nfunction ${name}(`);
   if (start < 0) throw new Error(`client function ${name} not found`);
   const end = TEMPLATE.indexOf('\n}\n', start);
@@ -31,6 +43,7 @@ function clientFn(name: string): string {
 }
 /** A single-line top-level `var NAME = …;` declaration, as served. */
 function clientVar(name: string): string {
+  assertUnique(name);
   const m = TEMPLATE.match(new RegExp(`^var ${name} = .*;$`, 'm'));
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[0]);
