@@ -110,6 +110,32 @@ describe('work log core (shipped wl* functions)', () => {
     return { calls, fetchJson };
   }
 
+  /** Like server(), but afterSeq requests answer only on drain(); the page is
+   *  the log as it was when the request arrived (the server's snapshot). */
+  function deferredServer(log: Entry[], pageSize: number) {
+    const calls: Array<number | null> = [];
+    const pending: Array<() => void> = [];
+    const fetchJson: FetchJson = async (url) => {
+      const q = new URL(url, 'http://h').searchParams.get('afterSeq');
+      calls.push(q === null ? null : Number(q));
+      const rest = q === null ? log.slice() : log.filter((e) => e.seq > Number(q));
+      const entries = q === null ? rest.slice(-pageSize) : rest.slice(0, pageSize);
+      const hasMore = rest.length > pageSize;
+      if (q !== null)
+        await new Promise<void>((r) => {
+          pending.push(r);
+        });
+      return { entries, hasMore };
+    };
+    const drain = async () => {
+      for (let i = 0; i < 30; i++) {
+        await flush();
+        for (const r of pending.splice(0)) r();
+      }
+    };
+    return { calls, fetchJson, drain };
+  }
+
   it('builds the latest-window URL without afterSeq, and integer-only afterSeq otherwise', () => {
     expect(wl.wlUrl('c/1', null)).toBe('/api/dashboard/session/c%2F1/worklog');
     expect(wl.wlUrl('c1', undefined as unknown as null)).toBe('/api/dashboard/session/c1/worklog');
@@ -195,6 +221,38 @@ describe('work log core (shipped wl* functions)', () => {
     expect(st.cursor).toBe(30);
   });
 
+  it('several live entries while the final backfill page is pending → exactly one backfill', async () => {
+    const log = range(1, 20);
+    const srv = deferredServer(log, 10);
+    const st = wl.wlNewState('c1');
+    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+    log.push(...range(21, 25));
+    wl.wlOnLive(st, { seq: 22 }, srv.fetchJson, () => {}); // 21 missing → backfill after 20 (pending)
+    await flush();
+    for (const seq of [23, 24, 25]) wl.wlOnLive(st, { seq }, srv.fetchJson, () => {});
+    await srv.drain(); // the page (21–25) already covers every one of them
+    await settled(st);
+    expect(srv.calls).toEqual([null, 20]);
+    expect(seqs(st)).toEqual(range(11, 25).map((e) => e.seq));
+    expect(st.cursor).toBe(25);
+  });
+
+  it('a reconnect during an in-flight backfill still re-fetches afterwards', async () => {
+    const log = range(1, 20);
+    const srv = deferredServer(log, 10);
+    const st = wl.wlNewState('c1');
+    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+    log.push(...range(21, 22));
+    wl.wlOnLive(st, { seq: 22 }, srv.fetchJson, () => {});
+    await flush();
+    wl.wlRecover(st, srv.fetchJson, () => {}); // socket dropped and came back meanwhile
+    log.push(...range(23, 24)); // missed while it was down
+    await srv.drain();
+    await settled(st);
+    expect(srv.calls).toEqual([null, 20, 22]);
+    expect(seqs(st).slice(-2)).toEqual([23, 24]);
+  });
+
   describe('seqs are increasing but not contiguous — a permanent hole (57 → 1001)', () => {
     const holeLog = () => range(1, 57);
 
@@ -243,8 +301,10 @@ describe('work log core (shipped wl* functions)', () => {
       expect(st.cursor).toBe(1002);
     });
 
-    it('a backfill that brings nothing new still closes the gap (no retry loop)', async () => {
-      const srv = server(holeLog(), 10); // 1001 is not readable over HTTP (yet)
+    it('defensive: a backfill that brings nothing new still closes the gap (no retry loop)', async () => {
+      // This fixture breaks durable-before-broadcast on purpose (1001 is
+      // broadcast but not readable): the client must still not loop.
+      const srv = server(holeLog(), 10);
       const st = wl.wlNewState('c1');
       await wl.wlLoadLatest(st, srv.fetchJson, () => {});
       wl.wlOnLive(st, { seq: 1001 }, srv.fetchJson, () => {});
@@ -255,6 +315,26 @@ describe('work log core (shipped wl* functions)', () => {
       wl.wlOnLive(st, { seq: 1003 }, srv.fetchJson, () => {});
       await settled(st);
       expect(srv.calls).toEqual([null, 57]);
+    });
+
+    it('an empty final page confirms only up to what was held when it was requested', async () => {
+      // Valid ordering: the snapshot (nothing after 57) predates 58–60, which
+      // are written while it is in flight; only 60's broadcast reaches us.
+      const log = holeLog();
+      const srv = deferredServer(log, 10);
+      const st = wl.wlNewState('c1');
+      await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+      const run = wl.wlRecover(st, srv.fetchJson, () => {}); // reconnect, snapshot = nothing after 57
+      await flush();
+      log.push(...range(58, 60));
+      wl.wlOnLive(st, { seq: 60 }, srv.fetchJson, () => {});
+      await srv.drain();
+      await run;
+      await settled(st);
+      // Confirming up to the response-time max (60) would have skipped 58–59.
+      expect(srv.calls).toEqual([null, 57, 57]);
+      expect(seqs(st).slice(-4)).toEqual([57, 58, 59, 60]);
+      expect(st.cursor).toBe(60);
     });
 
     it('a full page (hasMore) confirms only up to its last seq, then keeps paging', async () => {
@@ -659,6 +739,46 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     await flush();
     expect(h.env._ioCache.cq.state).toBe('ok');
     expect(h.env._ioCache.cq.data.response.body).toContain('raw text');
+  });
+
+  it('an exhausted error is fetched again once the board shows newer activity (no invalidation needed)', async () => {
+    const h = harness();
+    h.addCard('ks', 'cs');
+    h.io.ensureCardIo('ks', true);
+    await flush();
+    for (let i = 0; i < 12; i++) {
+      await h.advance(60_000);
+      h.io.ensureCardIo('ks', false);
+      await flush();
+    }
+    const cap = Number(clientVar('IO_AUTO_RETRIES').match(/\d+/)?.[0]);
+    expect(h.fetchCalls).toHaveLength(1 + cap); // exhausted for the old stamp
+    h.setMode('up');
+    // A turn landed while the socket was down: only a board refresh shows it.
+    h.env._sessionCache.ks.lastActivity = '2026-10-16T02:00:00.000Z';
+    h.io.ensureCardIo('ks', false);
+    await flush();
+    expect(h.fetchCalls).toHaveLength(2 + cap);
+    expect(h.env._ioCache.cs.state).toBe('ok');
+    h.io.ensureCardIo('ks', false); // same newer stamp: fresh, nothing more
+    await flush();
+    expect(h.fetchCalls).toHaveLength(2 + cap);
+  });
+
+  it('a newer stamp resets the retry budget while the endpoint stays down', async () => {
+    const h = harness();
+    h.addCard('kr', 'cr');
+    h.io.ensureCardIo('kr', true);
+    await flush();
+    for (let i = 0; i < 12; i++) {
+      await h.advance(60_000);
+      h.io.ensureCardIo('kr', false);
+      await flush();
+    }
+    h.env._sessionCache.kr.lastActivity = '2026-10-16T03:00:00.000Z';
+    h.io.ensureCardIo('kr', false);
+    await flush();
+    expect(h.env._ioCache.cr.fails).toBe(1); // a fresh cycle, not 1 + cap + 1
   });
 
   it('IO_AUTO_RETRIES caps automatic attempts — board re-renders cannot extend it; a reopen still retries', async () => {

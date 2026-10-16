@@ -4355,13 +4355,15 @@ function ioBackoffMs(fails) {
   return Math.min(IO_RETRY_MAX_MS, 1000 * Math.pow(2, Math.max(0, fails - 1)));
 }
 // Pure freshness rule: loading → wait; ok → fresh only for the same stamp;
-// error → never fresh: refetch when forced (reopen), else only while automatic
-// attempts remain and the backoff has run out.
+// error → never fresh: refetch when forced (reopen) or when the session's
+// lastActivity moved past the stamp the error was recorded for (newer content
+// → a fresh cycle); for the same stamp only while automatic attempts remain
+// and the backoff has run out.
 function ioNeedsFetch(c, stamp, force, now) {
   if (!c) return true;
   if (c.state === 'loading') return false;
   if (c.state === 'ok') return c.stamp !== stamp;
-  if (force) return true;
+  if (force || c.stamp !== stamp) return true;
   if ((c.fails || 0) > IO_AUTO_RETRIES) return false;
   return now >= (c.retryAt || 0);
 }
@@ -4435,7 +4437,8 @@ function ensureCardIo(key, force) {
   var c = _ioCache[cid];
   if (!ioNeedsFetch(c, stamp, force, Date.now())) return;
   var prev = c ? c.data : null;
-  var fails = c && c.state === 'error' ? (c.fails || 0) : 0;
+  // The retry budget belongs to one content stamp: newer activity starts over.
+  var fails = c && c.state === 'error' && c.stamp === stamp ? (c.fails || 0) : 0;
   _ioCache[cid] = { state: 'loading', stamp: stamp, data: prev, dirty: false, fails: fails };
   function failed(data) {
     var n = fails + 1;
@@ -5518,7 +5521,7 @@ function wlNewState(convId) {
   return {
     convId: convId, entries: [], seen: new Set(), cursor: 0, maxSeq: 0,
     loaded: false, latestOk: false, denied: false, closed: false,
-    latest: null, recovering: null, again: false, painted: false,
+    latest: null, recovering: null, againReconnect: false, againGap: false, painted: false,
   };
 }
 // afterSeq: null/undefined = latest window (no parameter); otherwise always a
@@ -5611,7 +5614,7 @@ function wlLoadLatest(state, fetchJson, onAdded) {
     state.latestOk = true;
     wlConfirm(state, Math.max(wlPageMaxSeq(page), sentMax));
     if (added.length) onAdded(state, added);
-    if (wlHasGap(state)) wlRecover(state, fetchJson, onAdded);
+    if (wlHasGap(state)) wlRecover(state, fetchJson, onAdded, 'gap');
     return 'ok';
   }, function(err) {
     if (state.closed) return 'closed';
@@ -5629,16 +5632,24 @@ function wlOnLive(state, entry, fetchJson, onAdded) {
   if (!added.length) return added;
   if (state.loaded) wlAdvance(state);
   onAdded(state, added);
-  if (wlHasGap(state)) wlRecover(state, fetchJson, onAdded);
+  if (wlHasGap(state)) wlRecover(state, fetchJson, onAdded, 'gap');
   return added;
 }
 // Recovery (reconnect or gap): after the initial load settles, page forward
 // from the contiguous cursor while hasMore === true. Stops on a page that does
 // not advance the cursor, after WL_BACKFILL_MAX_PAGES pages, on 403, or when
 // the panel moved on. If the latest page itself never loaded, retry that instead.
-function wlRecover(state, fetchJson, onAdded) {
+// reason: 'reconnect' (default — the socket was down, anything may be missing)
+// or 'gap' (a live entry skipped seqs). While a run is in flight, requests are
+// coalesced: a reconnect always re-runs afterwards; a gap re-runs only if the
+// in-flight run's confirmation did not already cover it.
+function wlRecover(state, fetchJson, onAdded, reason) {
   if (state.closed || state.denied) return Promise.resolve(null);
-  if (state.recovering) { state.again = true; return state.recovering; }
+  if (state.recovering) {
+    if (reason === 'gap') state.againGap = true;
+    else state.againReconnect = true;
+    return state.recovering;
+  }
   var pages = 0;
   function step() {
     if (state.closed || state.denied) return null;
@@ -5665,10 +5676,13 @@ function wlRecover(state, fetchJson, onAdded) {
   }
   var run = (state.latest || Promise.resolve()).then(step).then(null, function() { return null; }).then(function() {
     state.recovering = null;
-    if (state.again && !state.closed) {
-      state.again = false;
-      return wlRecover(state, fetchJson, onAdded);
-    }
+    var reconnect = state.againReconnect;
+    var gap = state.againGap && wlHasGap(state);
+    state.againReconnect = false;
+    state.againGap = false;
+    if (state.closed) return null;
+    if (reconnect) return wlRecover(state, fetchJson, onAdded);
+    if (gap) return wlRecover(state, fetchJson, onAdded, 'gap');
     return null;
   });
   state.recovering = run;
@@ -5807,7 +5821,10 @@ function openPanel(sessionKey, focusWorkLog) {
     if (cmdBtnEl) { cmdBtnEl.disabled = false; cmdBtnEl.textContent = 'Send'; }
   })();
 
-  // Reset pagination state before loading this session's turns.
+  // Reset pagination state before loading this session's turns. A new panel
+  // generation makes every request of the previous one stale — including a
+  // close + reopen of the same session, which session-key equality misses.
+  _panelGen++;
   _panelTurnsHasMore = false;
   _panelTurnsLoading = false;
   _panelTurnsOldestId = null;
@@ -5876,12 +5893,12 @@ function openPanel(sessionKey, focusWorkLog) {
     turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Loading...</p>';
     _panelTurnsLoading = true;
     var loadingConvId = s.conversationId;
-    var loadingSessionKey = sessionKey;
+    var loadingGen = _panelGen;
     fetch('/api/dashboard/session/' + encodeURIComponent(loadingConvId) + '?limit=30')
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        // If the user switched cards while loading, discard this result.
-        if (panelSessionKey !== loadingSessionKey) return;
+        // If the panel was switched, closed or reopened while loading, discard this result.
+        if (loadingGen !== _panelGen) return;
 
         // Handle titleSub
         var tSubText = document.getElementById('panel-title-sub-text');
@@ -5913,7 +5930,7 @@ function openPanel(sessionKey, focusWorkLog) {
         _panelTurnsLoading = false;
       })
       .catch(function() {
-        if (panelSessionKey !== loadingSessionKey) return;
+        if (loadingGen !== _panelGen) return;
         turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Failed to load conversation</p>';
         _panelTurnsLoading = false;
       });
@@ -5958,6 +5975,7 @@ function openPanel(sessionKey, focusWorkLog) {
 var _panelTurnsHasMore = false;
 var _panelTurnsLoading = false;
 var _panelTurnsOldestId = null;
+var _panelGen = 0; // bumped by openPanel / closePanel — the identity of one panel opening
 
 function panelScrollAnchor(scrollEl) {
   var viewTop = scrollEl.getBoundingClientRect().top;
@@ -5977,7 +5995,7 @@ async function loadMorePanelTurns() {
 
   _panelTurnsLoading = true;
   var requestConvId = panelConvId;
-  var requestSessionKey = panelSessionKey;
+  var requestGen = _panelGen; // this panel opening; any switch/close/reopen makes it stale
   var requestOldestId = _panelTurnsOldestId;
 
   // Loading spinner at top of turns list.
@@ -5992,10 +6010,9 @@ async function loadMorePanelTurns() {
     var r = await fetch(url);
     var data = await r.json();
 
-    // Discard stale response if card was switched mid-flight.
-    // panelSessionKey and panelConvId are always updated/cleared together (openPanel, closePanel),
-    // so sessionKey equality implies convId equality — single check is sufficient.
-    if (panelSessionKey !== requestSessionKey) {
+    // Discard a stale response: the panel was switched, closed or reopened
+    // (same session included) while this request was in flight.
+    if (requestGen !== _panelGen) {
       if (spinner.parentNode) spinner.remove();
       return;
     }
@@ -6029,6 +6046,11 @@ async function loadMorePanelTurns() {
       }
     }
   } catch (err) {
+    if (requestGen !== _panelGen) {
+      // A stale failure must not move the panel that replaced it.
+      if (spinner.parentNode) spinner.remove();
+      return;
+    }
     var errAnchor = panelScrollAnchor(scrollEl);
     if (spinner.parentNode) spinner.remove();
     if (errAnchor && errAnchor.el.isConnected) {
@@ -6037,7 +6059,9 @@ async function loadMorePanelTurns() {
     }
     console.error('loadMorePanelTurns failed', err);
   } finally {
-    _panelTurnsLoading = false;
+    // Only the current generation owns the in-flight flag; a stale request
+    // settling must not clear the flag of the load that replaced it.
+    if (requestGen === _panelGen) _panelTurnsLoading = false;
   }
 }
 
@@ -6171,6 +6195,7 @@ function closePanel() {
   panelSessionKey = null;
   panelConvId = null;
   _rawLoadedCache = Object.create(null);
+  _panelGen++;
   _panelTurnsHasMore = false;
   _panelTurnsLoading = false;
   _panelTurnsOldestId = null;

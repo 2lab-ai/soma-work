@@ -420,6 +420,9 @@ const PAGE_HELPERS = [
   '  var scroll = document.getElementById("panel-scroll");',
   '  return { moved: Math.round(window.__readEl.getBoundingClientRect().top - window.__readTop), scrollTopKeptOrGrew: scroll.scrollTop >= window.__userScrollTop, turns: document.querySelectorAll("#panel-turns .turn").length };',
   '};',
+  // Older-turns load bookkeeping for the stale-response checks.
+  'window.__startLoadMore = function () { (window.__loads = window.__loads || []).push(window.loadMorePanelTurns()); return !!window._panelTurnsLoading; };',
+  'window.__turnState = function () { return { turns: document.querySelectorAll("#panel-turns .turn").length, loading: !!window._panelTurnsLoading }; };',
   'window.__wlSeqs = function () { return Array.prototype.map.call(document.querySelectorAll("#worklog-list .wl-entry"), function (e) { return Number(e.getAttribute("data-seq")); }); };',
 ].join('\n');
 
@@ -870,6 +873,7 @@ async function reviewScenarios(browser: import('playwright').Browser) {
   };
   board.working[1].conversationId = undefined; // Release notes: no recorded conversation
   board.idle[0].conversationId = 'conv-long'; // Weekly digest: 100 turns
+  board.working[0].conversationId = 'conv-long2'; // Review PR: another 100 turns
   board.idle.push({
     ...board.idle[0],
     key: 'oud::work:C9:1700000000.000900',
@@ -887,6 +891,10 @@ async function reviewScenarios(browser: import('playwright').Browser) {
     summarized: true,
     summaryTitle: i % 2 ? `reply ${i + 1}` : undefined,
     summaryBody: i % 2 ? 'body' : undefined,
+  }));
+  TURNS['conv-long2'] = (TURNS['conv-long'] as Array<Record<string, unknown>>).map((x) => ({
+    ...x,
+    id: `M${String(x.id).slice(1)}`,
   }));
 
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'light' });
@@ -983,6 +991,82 @@ async function reviewScenarios(browser: import('playwright').Browser) {
     `scrolling during a pending older-turns load is kept (${JSON.stringify(pendingHold)})`,
   );
   await page.unroute(/\/api\/dashboard\/session\/conv-long\?.*before=/);
+  await page.evaluate(() => (window as unknown as PageWindow).closePanel());
+
+  // A stale older-turns response (panel switched, or the same session closed
+  // and reopened) must neither land in the new panel nor clear its in-flight flag.
+  const held: Array<{ conv: string; release: () => void }> = [];
+  const heldRe = /\/api\/dashboard\/session\/conv-long2?\?.*before=/;
+  await page.route(heldRe, async (r) => {
+    const conv = decodeURIComponent(new URL(r.request().url()).pathname.split('/').pop() || '');
+    await new Promise<void>((res) => {
+      held.push({ conv, release: res });
+    });
+    await r.fallback();
+  });
+  const pw = () =>
+    page.evaluate(() => (window as unknown as PageWindow).__turnState()) as Promise<{
+      turns: number;
+      loading: boolean;
+    }>;
+  const openAndWait = async (key: string) => {
+    await page.evaluate((k) => (window as unknown as PageWindow).openPanel(k), key);
+    await page.waitForFunction(() => document.querySelectorAll('#panel-turns .turn').length >= 30, null, {
+      timeout: 5000,
+    });
+    await page.waitForTimeout(200);
+  };
+  const waitHeld = async (n: number) => {
+    for (let i = 0; i < 100 && held.length < n; i++) await page.waitForTimeout(20);
+  };
+  const startLoad = () => page.evaluate(() => (window as unknown as PageWindow).__startLoadMore());
+
+  // Switch: A (conv-long) pending → open B (conv-long2) → B pending → A settles.
+  await openAndWait(K('500'));
+  await startLoad();
+  await waitHeld(1);
+  await openAndWait(K('300'));
+  await startLoad();
+  await waitHeld(2);
+  held[0].release(); // A's stale response
+  await page.waitForTimeout(400);
+  const afterStaleA = await pw();
+  const extra = await startLoad(); // must be refused: B is still loading
+  await page.waitForTimeout(150);
+  const requestsAfterRetry = held.length;
+  held[1].release();
+  await page.waitForTimeout(400);
+  const afterB = await pw();
+  check(
+    afterStaleA.turns === 30 &&
+      afterStaleA.loading &&
+      extra &&
+      requestsAfterRetry === 2 &&
+      afterB.turns === 60 &&
+      !afterB.loading,
+    `stale response after a panel switch is dropped and keeps B's in-flight flag (${JSON.stringify({ afterStaleA, requestsAfterRetry, afterB })})`,
+  );
+  await page.evaluate(() => (window as unknown as PageWindow).closePanel());
+
+  // Reopen: the same session closed and reopened while its older-turns load is pending.
+  await openAndWait(K('500'));
+  await startLoad();
+  await waitHeld(3);
+  await page.evaluate(() => (window as unknown as PageWindow).closePanel());
+  await openAndWait(K('500'));
+  await startLoad();
+  await waitHeld(4);
+  held[2].release(); // the first opening's stale response
+  await page.waitForTimeout(400);
+  const afterStaleReopen = await pw();
+  held[3].release();
+  await page.waitForTimeout(400);
+  const afterReopen = await pw();
+  check(
+    afterStaleReopen.turns === 30 && afterStaleReopen.loading && afterReopen.turns === 60 && !afterReopen.loading,
+    `stale response after close + reopen of the same session is dropped (${JSON.stringify({ afterStaleReopen, afterReopen })})`,
+  );
+  await page.unroute(heldRe);
   await page.evaluate(() => (window as unknown as PageWindow).closePanel());
 
   // F — a WS push (this instance only) keeps the sibling card's node and writes nothing.
