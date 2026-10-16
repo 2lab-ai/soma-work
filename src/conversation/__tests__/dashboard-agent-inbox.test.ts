@@ -131,6 +131,15 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
   it('fetches the worklog route and resumes with afterSeq', () => {
     expect(TEMPLATE).toContain("'/worklog'");
     expect(TEMPLATE).toContain('afterSeq=');
+    expect(fnBody('connectWs')).toContain('fetchWorkLog(_wlConvId, _wlLastSeq)');
+  });
+
+  it('backfill pages forward while hasMore === true (missing hasMore = done), with a progress guard', () => {
+    const body = fnBody('fetchWorkLog');
+    expect(body).toContain('data.hasMore === true');
+    expect(body).toContain('_wlLastSeq > before');
+    expect(body).toContain('fetchWorkLog(convId, _wlLastSeq, pageNo + 1)');
+    expect(body).toContain('WL_BACKFILL_MAX_PAGES');
   });
 
   it('live-appends work_log WS entries', () => {

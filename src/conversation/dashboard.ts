@@ -5356,21 +5356,32 @@ function resetWorkLog(convId) {
   if (list) list.innerHTML = convId ? '<div class="wl-empty">불러오는 중…</div>' : '';
 }
 
-function fetchWorkLog(convId, afterSeq) {
+// Response { entries, hasMore }. Without afterSeq: the LAST page (initial
+// load). With afterSeq: the FIRST page after that seq — a reconnect backfill
+// keeps paging forward while hasMore (missing hasMore = false), and stops if a
+// page brings nothing new so a misbehaving server cannot spin it.
+var WL_BACKFILL_MAX_PAGES = 20;
+function fetchWorkLog(convId, afterSeq, page) {
   var url = '/api/dashboard/session/' + encodeURIComponent(convId) + '/worklog'
     + (afterSeq ? '?afterSeq=' + encodeURIComponent(String(afterSeq)) : '');
+  var pageNo = page || 1;
   return fetch(url)
     .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(function(data) {
       if (_wlConvId !== convId) return;
+      var before = _wlLastSeq;
       appendWorkLogEntries((data && data.entries) || [], !afterSeq);
+      if (afterSeq && data && data.hasMore === true && _wlLastSeq > before && pageNo < WL_BACKFILL_MAX_PAGES) {
+        return fetchWorkLog(convId, _wlLastSeq, pageNo + 1);
+      }
     })
     .catch(function() {
       if (_wlConvId !== convId || afterSeq) return;
       showWorkLogEmpty();
     })
     .then(function() {
-      if (_wlConvId === convId && _panelFocusWorkLog) scrollPanelToWorkLog();
+      // Only the initial load positions the panel; a backfill must not move it.
+      if (!afterSeq && _wlConvId === convId && _panelFocusWorkLog) scrollPanelToWorkLog();
     });
 }
 
