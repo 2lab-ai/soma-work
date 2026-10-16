@@ -377,6 +377,16 @@ export function getConversationUrl(conversationId: string): string {
 }
 
 /**
+ * Deep link to one session's card on the owner's dashboard, or undefined without a viewer base URL.
+ * @public — consumed via injected providers (src/index.ts thread header, src/slack/pipeline/session-initializer.ts).
+ */
+export function getDashboardSessionUrl(ownerId: string, sessionKey: string): string | undefined {
+  const base = getViewerBaseUrl();
+  if (!base) return undefined;
+  return `${base}/dashboard/${encodeURIComponent(ownerId)}?session=${encodeURIComponent(sessionKey)}`;
+}
+
+/**
  * Start the conversation viewer web server
  */
 export async function startWebServer(options: StartWebServerOptions = {}): Promise<void> {

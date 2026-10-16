@@ -397,7 +397,7 @@ export class ActionPanelActionHandler {
     if (!session.actionPanel?.messageTs) return;
     try {
       const theme = userSettingsStore.getUserSessionTheme(session.ownerId);
-      const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true, theme });
+      const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true, theme, sessionKey });
       const panelPayload = ActionPanelBuilder.build({
         sessionKey,
         workflow: session.workflow,

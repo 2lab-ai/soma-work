@@ -21,6 +21,7 @@
  * the hard limits regardless of configuration.
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import { Logger } from '@soma/common/logger';
 
 const logger = new Logger('SurfaceConfig');
@@ -107,7 +108,18 @@ export interface NormalizeResult {
 // ---------------------------------------------------------------------------
 
 export const SURFACE_FIELD_REGISTRY: Record<SurfaceName, readonly string[]> = {
-  threadheader: ['title', 'owner', 'workflow', 'model', 'contextwindow', 'links', 'linkhistory', 'status', 'separator'],
+  threadheader: [
+    'title',
+    'owner',
+    'workflow',
+    'model',
+    'contextwindow',
+    'links',
+    'linkhistory',
+    'dashboardLink',
+    'status',
+    'separator',
+  ],
   turnend: [
     'status',
     'title',
@@ -192,7 +204,9 @@ function clampInt(value: number, min: number, max: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// Built-in defaults — exact mirror of the pre-config hardcoded rendering.
+// Built-in defaults — exact mirror of the pre-config hardcoded rendering,
+// plus fields added since (threadheader `dashboardLink`, which renders
+// nothing when the host has no dashboard URL).
 // config.default.json is generated from this constant (parity test-locked).
 // ---------------------------------------------------------------------------
 
@@ -209,7 +223,13 @@ export const DEFAULT_UI_SURFACES: UiSurfacesConfig = {
           { field: 'contextwindow', show: true, bar: { width: 5, filledChar: '▓', emptyChar: '░' } },
         ],
       },
-      { block: 'context', fields: [{ field: 'linkhistory', show: true, max: 5 }] },
+      {
+        block: 'context',
+        fields: [
+          { field: 'dashboardLink', show: true },
+          { field: 'linkhistory', show: true, max: 5 },
+        ],
+      },
       { block: 'context', fields: [{ field: 'status', show: true, format: 'closed-marker' }] },
     ],
     themes: {
@@ -222,6 +242,7 @@ export const DEFAULT_UI_SURFACES: UiSurfacesConfig = {
               { field: 'workflow', show: true, style: { code: true } },
               { field: 'model', show: true, style: { code: true } },
               { field: 'contextwindow', show: true, bar: { width: 5, filledChar: '▓', emptyChar: '░' } },
+              { field: 'dashboardLink', show: true },
               { field: 'links', show: true },
               { field: 'status', show: true, format: 'closed-text' },
             ],
@@ -236,6 +257,7 @@ export const DEFAULT_UI_SURFACES: UiSurfacesConfig = {
               { field: 'title', show: true },
               { field: 'model', show: true, style: { code: true } },
               { field: 'contextwindow', show: true, bar: { width: 5, filledChar: '▓', emptyChar: '░' } },
+              { field: 'dashboardLink', show: true },
               { field: 'links', show: true },
               { field: 'status', show: true, format: 'closed-text' },
             ],
@@ -389,6 +411,9 @@ function normalizeField(raw: unknown, surface: SurfaceName, warnings: string[]):
     fieldName = alias.field;
     aliasFormat = alias.format;
   }
+  // Field names match case-insensitively; store the registry spelling
+  // (camelCase ids like `dashboardLink` must survive the lowercasing).
+  fieldName = SURFACE_FIELD_REGISTRY[surface].find((known) => known.toLowerCase() === fieldName) ?? fieldName;
 
   if (!SURFACE_FIELD_REGISTRY[surface].includes(fieldName)) {
     warnings.push(
@@ -495,6 +520,39 @@ function normalizeSurface(raw: unknown, surface: SurfaceName, warnings: string[]
 }
 
 /**
+ * Fields added to a surface's built-in default AFTER config-loader began
+ * seeding DEFAULT_UI_SURFACES into config.json (once, when `ui` is absent).
+ * An operator `ui.<surface>` overrides the built-in presets, so without this
+ * a seeded copy would freeze these fields out of every existing deployment.
+ */
+const FIELDS_ADDED_AFTER_SEED: Partial<Record<SurfaceName, readonly string[]>> = {
+  threadheader: ['dashboardLink'],
+};
+
+/**
+ * True when `raw` is exactly the built-in default as seeded before the fields
+ * above existed — an operator never edited it — so it is treated as "no
+ * override" and the current built-in composition applies. Any edit keeps the
+ * operator config exactly as written.
+ */
+function isUneditedSupersededSeed(surface: SurfaceName, raw: unknown): boolean {
+  const added = FIELDS_ADDED_AFTER_SEED[surface];
+  const builtin = DEFAULT_UI_SURFACES[surface];
+  if (!added || !builtin) return false;
+  const strip = (lines: SurfaceLineConfig[] | undefined) =>
+    lines?.map((line) => ({ ...line, fields: line.fields.filter((f) => !added.includes(f.field)) }));
+  const seeded = {
+    lines: strip(builtin.lines),
+    themes: builtin.themes
+      ? Object.fromEntries(
+          Object.entries(builtin.themes).map(([name, theme]) => [name, { lines: strip(theme?.lines) }]),
+        )
+      : undefined,
+  };
+  return isDeepStrictEqual(raw, JSON.parse(JSON.stringify(seeded)));
+}
+
+/**
  * Validate + normalize a raw `ui` config value (from config.json).
  * Never throws — structurally broken input degrades to "no override" so a
  * bad config cannot take the surfaces (or the boot) down.
@@ -515,6 +573,7 @@ export function normalizeUiSurfacesConfig(raw: unknown): NormalizeResult {
       continue;
     }
     const surface = key as SurfaceName;
+    if (isUneditedSupersededSeed(surface, raw[key])) continue;
     const normalized = normalizeSurface(raw[key], surface, warnings);
     if (normalized) config[surface] = normalized;
   }

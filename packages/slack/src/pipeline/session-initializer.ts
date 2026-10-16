@@ -119,6 +119,8 @@ export interface SessionInitializerProviders {
   registerChannel?: (client: any, channel: string) => Promise<unknown>;
   createConversation?: (channel: string, threadTs: string, user: string, userName: string) => string;
   getConversationUrl?: (conversationId: string) => string;
+  /** Dashboard deep link `/dashboard/<ownerId>?session=<sessionKey>`, or undefined when unavailable. */
+  getDashboardSessionUrl?: (ownerId: string, sessionKey: string) => string | undefined;
   scheduleLinkDerivedTitleRefresh?: (claudeHandler: any, channel: string, threadTs: string, reason: string) => void;
   getDispatchService?: () => DispatchServiceLike;
   getUserSettings?: (userId: string) => any;
@@ -151,6 +153,7 @@ const providers: Required<SessionInitializerProviders> = {
   registerChannel: async () => undefined,
   createConversation: () => missingProvider('createConversation'),
   getConversationUrl: () => missingProvider('getConversationUrl'),
+  getDashboardSessionUrl: () => undefined,
   scheduleLinkDerivedTitleRefresh: () => undefined,
   getDispatchService: () => missingProvider('getDispatchService'),
   getUserSettings: () => undefined,
@@ -173,6 +176,7 @@ export function setSessionInitializerProviders(next: SessionInitializerProviders
   if (next.registerChannel) providers.registerChannel = next.registerChannel;
   if (next.createConversation) providers.createConversation = next.createConversation;
   if (next.getConversationUrl) providers.getConversationUrl = next.getConversationUrl;
+  if (next.getDashboardSessionUrl) providers.getDashboardSessionUrl = next.getDashboardSessionUrl;
   if (next.scheduleLinkDerivedTitleRefresh)
     providers.scheduleLinkDerivedTitleRefresh = next.scheduleLinkDerivedTitleRefresh;
   if (next.getDispatchService) providers.getDispatchService = next.getDispatchService;
@@ -407,15 +411,19 @@ export class SessionInitializer {
         const conversationId = providers.createConversation(channel, threadTs, user, userName);
         session.conversationId = conversationId;
 
-        // Always show conversation URL — it's essential for session review
-        const conversationUrl = providers.getConversationUrl(conversationId);
-        const convLinkResult = await this.deps.slackApi.postMessage(channel, `📝 <${conversationUrl}|대화 기록 보기>`, {
-          threadTs,
-        });
+        // Always show the session's work-log link — it's essential for session review.
+        // The dashboard deep link (📋 작업 로그) is preferred; the conversation viewer
+        // link is the fallback when the host has no dashboard URL.
+        const dashboardUrl = this.resolveDashboardSessionUrl(session.ownerId || user, sessionKey);
+        const linkUrl = dashboardUrl ?? providers.getConversationUrl(conversationId);
+        const linkText = dashboardUrl
+          ? ThreadHeaderBuilder.formatDashboardLink(dashboardUrl)
+          : `📝 <${linkUrl}|대화 기록 보기>`;
+        const convLinkResult = await this.deps.slackApi.postMessage(channel, linkText, { threadTs });
         if (convLinkResult?.ts) {
           (session.sourceThreadCleanupTs ??= []).push(convLinkResult.ts);
         }
-        this.logger.info('Conversation record created', { conversationId, url: conversationUrl });
+        this.logger.info('Conversation record created', { conversationId, url: linkUrl });
       } catch (error) {
         this.logger.error('Failed to create conversation record (non-critical)', error);
       }
@@ -1161,6 +1169,16 @@ export class SessionInitializer {
       // Clean up the in-flight tracking and resolve waiting promises
       dispatchInFlight.delete(sessionKey);
       resolveTracking!();
+    }
+  }
+
+  /** Dashboard deep link for a session; a provider failure means "unavailable", never a lost link post. */
+  private resolveDashboardSessionUrl(ownerId: string, sessionKey: string): string | undefined {
+    try {
+      return providers.getDashboardSessionUrl(ownerId, sessionKey) || undefined;
+    } catch (error) {
+      this.logger.debug('Dashboard session URL unavailable, using conversation link', { sessionKey, error });
+      return undefined;
     }
   }
 

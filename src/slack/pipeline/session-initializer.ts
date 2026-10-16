@@ -34,6 +34,7 @@ setSessionInitializerProviders({
   createConversation: (channel, threadTs, user, userName) =>
     (conversation as any).createConversation?.(channel, threadTs, user, userName) ?? '',
   getConversationUrl: (conversationId) => (conversation as any).getConversationUrl?.(conversationId) ?? '',
+  getDashboardSessionUrl: (ownerId, sessionKey) => (conversation as any).getDashboardSessionUrl?.(ownerId, sessionKey),
   scheduleLinkDerivedTitleRefresh,
   getDispatchService,
   getUserSettings: (userId) => userSettingsStore.getUserSettings(userId),
