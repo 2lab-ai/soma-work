@@ -190,7 +190,27 @@ function writeFileAtomic(target: string, contents: string): void {
   }
 }
 
-type Candidate<T> = { kind: 'ok'; value: T } | { kind: 'missing' } | { kind: 'invalid'; reason: string };
+type Candidate<T> =
+  | { kind: 'ok'; value: T }
+  | { kind: 'missing' }
+  | { kind: 'invalid'; reason: string; readFailed: boolean };
+
+/**
+ * Thrown by readJsonWithBackup when neither copy is usable. `code` tells a
+ * caller WHY without parsing the message (which can embed file content):
+ *   - `ATOMIC_JSON_UNREADABLE`: a copy could not be read at all (an I/O error
+ *     such as EACCES/EIO/EISDIR) — possibly transient, worth retrying;
+ *   - `ATOMIC_JSON_UNUSABLE`: every existing copy was read and found invalid
+ *     (not JSON, or rejected by `validate`) — it stays that way until repaired.
+ */
+export class JsonStoreUnusableError extends Error {
+  readonly code: 'ATOMIC_JSON_UNREADABLE' | 'ATOMIC_JSON_UNUSABLE';
+  constructor(message: string, readFailed: boolean) {
+    super(message);
+    this.name = 'JsonStoreUnusableError';
+    this.code = readFailed ? 'ATOMIC_JSON_UNREADABLE' : 'ATOMIC_JSON_UNUSABLE';
+  }
+}
 
 /**
  * Load JSON state, falling back to `<file>.bak` with a WARN.
@@ -228,9 +248,11 @@ export function readJsonWithBackup<T>(
 
   const liveReason = live.kind === 'missing' ? 'missing' : live.reason;
   const backupReason = backup.kind === 'missing' ? 'missing' : backup.reason;
-  throw new Error(
+  const readFailed = (live.kind === 'invalid' && live.readFailed) || (backup.kind === 'invalid' && backup.readFailed);
+  throw new JsonStoreUnusableError(
     `atomic-json: ${filePath} is unusable (${liveReason}) and backup ${bak} is unusable (${backupReason}) — ` +
       'refusing to report an empty store',
+    readFailed,
   );
 }
 
@@ -240,19 +262,19 @@ function loadCandidate<T>(filePath: string, validate: (raw: unknown) => T): Cand
     raw = fs.readFileSync(filePath, 'utf-8');
   } catch (error) {
     if (isMissing(error)) return { kind: 'missing' };
-    return { kind: 'invalid', reason: `unreadable: ${describeError(error)}` };
+    return { kind: 'invalid', reason: `unreadable: ${describeError(error)}`, readFailed: true };
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    return { kind: 'invalid', reason: `invalid JSON: ${describeError(error)}` };
+    return { kind: 'invalid', reason: `invalid JSON: ${describeError(error)}`, readFailed: false };
   }
 
   try {
     return { kind: 'ok', value: validate(parsed) };
   } catch (error) {
-    return { kind: 'invalid', reason: `failed validation: ${describeError(error)}` };
+    return { kind: 'invalid', reason: `failed validation: ${describeError(error)}`, readFailed: false };
   }
 }

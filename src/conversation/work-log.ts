@@ -27,17 +27,21 @@
  *   - within a process the cursor only moves forward: a failed append burns
  *     its seq, and only the trailing-newline state is re-read.
  * The tail is still read, for the trailing newline and to decide quarantine:
- * a tail unreadable within the scan budget is moved to
- * `<id>.jsonl.corrupt-<ms>` and a fresh log continues above the reservation.
+ * at a seed whose reservation comes from the live copy, a tail unreadable
+ * within the scan budget is moved to `<id>.jsonl.corrupt-<ms>` and a fresh log
+ * continues above the reservation.
  * Trade-off: quarantine moves the WHOLE old log, including entries published
  * before the damage, so the API no longer serves them (they stay on disk in
  * the `.corrupt-` file for an operator). It only happens when nothing in the
  * last 8 MB parses — i.e. after external damage — and in exchange every later
  * read and seed stays bounded instead of re-scanning the junk.
- * If the live copy is lost, `.bak` (the previous reservation) is trusted only
- * together with a readable entry, and both copies are rewritten before anything
- * is published. Anything else has no provable bound and fails closed (appends
- * rejected, one error log) — see readSeed.
+ * Every reservation write leaves `.bak` at most one block behind live; the
+ * first one of a conversation writes both copies, so even a young conversation
+ * whose live copy is damaged can recover. If the live copy is lost, `.bak` (the
+ * previous reservation) is trusted only together with a readable entry, and
+ * both copies are rewritten before anything is published. Anything else has no
+ * provable bound and fails closed (appends rejected, one error log) — see
+ * readSeed.
  *
  * Gaps — two kinds, different for a client:
  *   - landed but unpublished: the line reached disk but its append failed
@@ -52,12 +56,13 @@
  * Reads: every scan has a byte budget (WORK_LOG_SCAN_BUDGET_BYTES). The latest
  * window and the seed scan back from the end; `afterSeq` pages first try a
  * short backward scan (the reconnect case), else binary-search byte offsets
- * (lines are in seq order) and read forward. A read that runs out of budget
- * returns what it found with `hasMore: true` and logs a warning. When junk sits
- * between `afterSeq` and the tail, the entries the backward scan found are
- * returned as soon as the forward scan provably reaches them, so paging moves
- * past the junk. A junk region wider than the remaining budget between the two
- * keeps that page empty (`hasMore: true`) rather than risk skipping entries
+ * (lines are in seq order) and read forward. `hasMore` follows what the read
+ * could prove, not merely whether it hit the budget (see WorkLogPage.hasMore).
+ * When junk sits between `afterSeq` and the tail, the entries the backward scan
+ * found are returned as soon as they provably start the page — the oldest one
+ * is `afterSeq + 1`, or the forward scan reaches them — so paging moves past
+ * the junk. Otherwise a junk region wider than the remaining budget between the
+ * two keeps that page empty (`hasMore: true`) rather than risk skipping entries
  * inside it; the latest window (no `afterSeq`) still shows new entries.
  *
  * Line contract: a line longer than WORK_LOG_MAX_LINE_BYTES is never an entry —
@@ -97,9 +102,14 @@ export interface WorkLogEntry extends WorkLogInput {
 export interface WorkLogPage {
   entries: WorkLogEntry[];
   /**
-   * With `afterSeq`: newer entries exist past the returned page.
-   * Without: older entries exist before the returned (latest) window.
-   * Also true when the read stopped at its byte budget.
+   * Without `afterSeq`: older entries exist before the returned (latest)
+   * window — or the backward scan stopped at its byte budget, so there may be.
+   * With `afterSeq`: more entries than `limit` follow afterSeq — or the read
+   * stopped at its budget before it could prove the page complete, so there
+   * may be (the page can then be short or empty). It is false whenever the
+   * page is provably every entry after afterSeq, even if a scan hit its budget
+   * on the way (the backward scan reached afterSeq, the start of the file, or
+   * an entry with seq afterSeq + 1).
    */
   hasMore: boolean;
 }
@@ -494,14 +504,16 @@ function readReservation(sidecarPath: string): Reservation | null {
       },
     );
   } catch (error) {
-    // Both copies unusable. If that is their CONTENT (invalid JSON, wrong
-    // schema), no bound exists until an operator repairs them: the fail-closed
-    // verdict (one error log, cached by file fingerprint). A failed READ
-    // ("unreadable: …" in the loader's reason) may be transient, so it stays a
-    // plain seed error, retried on the next append.
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('unreadable:')) throw error;
-    throw new WorkLogUnboundedError({ sidecarPath, sidecar: message });
+    // Both copies unusable. Only when that is their CONTENT (every existing copy
+    // was read and is invalid JSON or the wrong schema: the loader's
+    // ATOMIC_JSON_UNUSABLE) does no bound exist until an operator repairs them:
+    // the fail-closed verdict (one error log, cached by file fingerprint).
+    // Anything else — a failed READ (ATOMIC_JSON_UNREADABLE), or an error the
+    // loader did not classify — may be transient, so it stays a plain seed
+    // error, retried on the next append. The code, not the message, decides:
+    // the message embeds parser output, which can quote file content.
+    if ((error as { code?: unknown } | null)?.code !== 'ATOMIC_JSON_UNUSABLE') throw error;
+    throw new WorkLogUnboundedError({ sidecarPath, sidecar: (error as Error).message });
   }
   if (value === undefined) return null;
   return { seq: value, source: servedFromBackup ? 'backup' : 'live' };
@@ -535,6 +547,10 @@ async function writeReservation(sidecarPath: string, previous: number, reservedS
   // backup") for an invalid one (promotePreviousToBackup). Either way the stale
   // `.bak` would survive under the new reservation, so write once more — the
   // second write promotes the first — as rewriteBothReservations does.
+  // "Valid" here means exactly `previous`, the value this writer last made
+  // durable: anything else in the live copy (a stale reservation, the wrong
+  // schema) was not written by this step's predecessor, and promoting it would
+  // put `.bak` an unknown distance behind live.
   let liveWasMissing = false;
   try {
     await fs.promises.stat(sidecarPath);
@@ -550,7 +566,14 @@ async function writeReservation(sidecarPath: string, previous: number, reservedS
   // Shared atomic writer (temp → fsync → rename); it leaves the directory
   // unsynced, and the rename must survive power loss for the reservation to
   // bound every seq used after it — so sync it now, not just before a publish.
-  atomicWriteJson(sidecarPath, { reservedSeq }, { warn });
+  atomicWriteJson(
+    sidecarPath,
+    { reservedSeq },
+    {
+      validatePrevious: (raw) => (raw as { reservedSeq?: unknown } | null)?.reservedSeq === previous,
+      warn,
+    },
+  );
   if (liveWasMissing || promotionSkipped) {
     atomicWriteJson(sidecarPath, { reservedSeq }, { warn: (message, detail) => logger.warn(message, detail) });
   }
@@ -984,9 +1007,10 @@ function warnBudget(conversationId: string, mode: string, found: number): void {
 /**
  * Without `afterSeq`: the latest `limit` entries (`hasMore` = older exist).
  * With `afterSeq`: the first `limit` entries with `seq > afterSeq`, for forward
- * paging (`hasMore` = newer exist past this page). A read that hits its byte
- * budget returns what it found with `hasMore: true`. Waits for this process's
- * pending writes to the same file first. Unknown or unsafe ids read as empty.
+ * paging (`hasMore` = newer exist past this page). `hasMore` is exactly
+ * WorkLogPage.hasMore: a budget stop only sets it when completeness is not
+ * proven. Waits for this process's pending writes to the same file first.
+ * Unknown or unsafe ids read as empty.
  */
 export async function readWorkLog(
   conversationId: string,
@@ -1042,6 +1066,14 @@ export async function readWorkLog(
     budget.left -= FAST_PATH_BUDGET_BYTES - fast.left;
     if (scan.reachedAfterSeq || fastEnd === 'done') {
       // Every entry after afterSeq was collected.
+      const all = newest.reverse();
+      return { entries: all.slice(0, limit), hasMore: all.length > limit };
+    }
+    if (newest.length > 0 && newest[newest.length - 1].seq === afterSeq + 1) {
+      // The oldest entry collected is afterSeq + 1. Lines are in strictly
+      // increasing seq order, so everything in front of it is ≤ afterSeq: the
+      // collection is the start of the page whatever lies unexamined beyond it
+      // (e.g. junk wider than the budget right after afterSeq).
       const all = newest.reverse();
       return { entries: all.slice(0, limit), hasMore: all.length > limit };
     }

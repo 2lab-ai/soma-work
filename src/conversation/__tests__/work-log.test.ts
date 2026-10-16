@@ -51,6 +51,9 @@ function line(seq: number, text = `n${seq}`): string {
 
 const seqs = (page: { entries: Array<{ seq: number }> }) => page.entries.map((e) => e.seq);
 
+/** Root ignores permission bits, so a chmod-based failure injection cannot fail there. */
+const AS_ROOT = process.getuid?.() === 0;
+
 function ioError(code: string): NodeJS.ErrnoException {
   return Object.assign(new Error(`${code}: simulated`), { code });
 }
@@ -596,7 +599,10 @@ describe('work log store', () => {
       fs.writeFileSync(sidecarFile(id), JSON.stringify({ reservedSeq: at }));
     }
 
-    /** Make the directory read-only, so the next reservation write fails before it lands. */
+    /**
+     * Make the directory read-only, so the next reservation write fails before it
+     * lands. Permission bits do not bind root, so the tests using it skip there.
+     */
     async function withReadOnlyDir<T>(fn: () => Promise<T>): Promise<T> {
       fs.chmodSync(dir(), 0o500);
       try {
@@ -635,86 +641,92 @@ describe('work log store', () => {
       }
     }
 
-    it('the full chain: a reservation failure, a block of publishes, live lost + last entry truncated → no reuse', async () => {
-      const id = 'conv-chain';
-      // 1. Live reservation and cursor both one block; 1..BLOCK were published by an earlier process.
-      restartAt(id, BLOCK);
-      const published = new Set<number>(Array.from({ length: BLOCK }, (_, i) => i + 1));
-      let proc = await freshWithSmallBlock();
-      wl = proc;
-      proc.setOnWorkLogAppendedCallback((_c, e) => published.add(e.seq));
+    it.skipIf(AS_ROOT)(
+      'the full chain: a reservation failure, a block of publishes, live lost + last entry truncated → no reuse',
+      async () => {
+        const id = 'conv-chain';
+        // 1. Live reservation and cursor both one block; 1..BLOCK were published by an earlier process.
+        restartAt(id, BLOCK);
+        const published = new Set<number>(Array.from({ length: BLOCK }, (_, i) => i + 1));
+        let proc = await freshWithSmallBlock();
+        wl = proc;
+        proc.setOnWorkLogAppendedCallback((_c, e) => published.add(e.seq));
 
-      // 2. Append BLOCK + 1 fails before its reservation write lands.
-      await withReadOnlyDir(() =>
-        expect(proc.appendWorkLog(id, { kind: 'narration', text: 'fails' })).rejects.toThrow(),
-      );
-      const afterFailure = { live: readSeqFile(sidecarFile(id)), bak: readSeqFile(`${sidecarFile(id)}.bak`) };
+        // 2. Append BLOCK + 1 fails before its reservation write lands.
+        await withReadOnlyDir(() =>
+          expect(proc.appendWorkLog(id, { kind: 'narration', text: 'fails' })).rejects.toThrow(),
+        );
+        const afterFailure = { live: readSeqFile(sidecarFile(id)), bak: readSeqFile(`${sidecarFile(id)}.bak`) };
 
-      // 3–4. The retry reserves the next block; publish up to the live reservation.
-      const retried = await proc.appendWorkLog(id, { kind: 'narration', text: 'retry' });
-      const step3 = { live: readSeqFile(sidecarFile(id)), bak: readSeqFile(`${sidecarFile(id)}.bak`) };
-      let last = retried.seq;
-      while (last < (step3.live ?? 0))
-        last = (await proc.appendWorkLog(id, { kind: 'narration', text: `p${last}` })).seq;
-      await proc.flushWorkLog();
+        // 3–4. The retry reserves the next block; publish up to the live reservation.
+        const retried = await proc.appendWorkLog(id, { kind: 'narration', text: 'retry' });
+        const step3 = { live: readSeqFile(sidecarFile(id)), bak: readSeqFile(`${sidecarFile(id)}.bak`) };
+        let last = retried.seq;
+        while (last < (step3.live ?? 0))
+          last = (await proc.appendWorkLog(id, { kind: 'narration', text: `p${last}` })).seq;
+        await proc.flushWorkLog();
 
-      // 5. The live sidecar is lost and the last entry is truncated away.
-      fs.rmSync(sidecarFile(id));
-      const raw = fs.readFileSync(logFile(id), 'utf-8');
-      fs.truncateSync(logFile(id), Buffer.byteLength(raw.slice(0, raw.lastIndexOf('\n', raw.length - 2) + 1)));
+        // 5. The live sidecar is lost and the last entry is truncated away.
+        fs.rmSync(sidecarFile(id));
+        const raw = fs.readFileSync(logFile(id), 'utf-8');
+        fs.truncateSync(logFile(id), Buffer.byteLength(raw.slice(0, raw.lastIndexOf('\n', raw.length - 2) + 1)));
 
-      // 6. Recovery from .bak + the tail must not republish anything.
-      const before = new Set(published);
-      proc = await freshWithSmallBlock();
-      wl = proc;
-      proc.setOnWorkLogAppendedCallback((_c, e) => published.add(e.seq));
-      const recovered = await proc.appendWorkLog(id, { kind: 'notice', text: 'after recovery' });
-      await proc.flushWorkLog();
-      expect(before.has(recovered.seq)).toBe(false);
-      expect(recovered.seq).toBeGreaterThan(Math.max(...before));
+        // 6. Recovery from .bak + the tail must not republish anything.
+        const before = new Set(published);
+        proc = await freshWithSmallBlock();
+        wl = proc;
+        proc.setOnWorkLogAppendedCallback((_c, e) => published.add(e.seq));
+        const recovered = await proc.appendWorkLog(id, { kind: 'notice', text: 'after recovery' });
+        await proc.flushWorkLog();
+        expect(before.has(recovered.seq)).toBe(false);
+        expect(recovered.seq).toBeGreaterThan(Math.max(...before));
 
-      // And the mechanism: the failed write landed nothing and burned nothing;
-      // the retry stepped exactly one block, keeping .bak one block behind.
-      expect(afterFailure).toEqual({ live: BLOCK, bak: null });
-      expect(retried.seq).toBe(BLOCK + 1);
-      expect(step3).toEqual({ live: 2 * BLOCK, bak: BLOCK });
-    });
+        // And the mechanism: the failed write landed nothing and burned nothing;
+        // the retry stepped exactly one block, keeping .bak one block behind.
+        expect(afterFailure).toEqual({ live: BLOCK, bak: null });
+        expect(retried.seq).toBe(BLOCK + 1);
+        expect(step3).toEqual({ live: 2 * BLOCK, bak: BLOCK });
+      },
+    );
 
-    it('a burst of burned seqs beyond a block, then reservation failures, then success: every live step ≤ one block', async () => {
-      const id = 'conv-burst';
-      restartAt(id, BLOCK);
-      wl = await freshWithSmallBlock();
-      // Phase 1: 2 blocks of appends whose reservation succeeds but whose line
-      // write fails — real burns, crossing two block boundaries.
-      let failWrites = true;
-      const seen = watchSidecar(id, (fh, args) => {
-        if (args[1] === 'a' && failWrites) {
-          (fh as { writeFile: unknown }).writeFile = async () => {
-            throw ioError('ENOSPC');
-          };
+    it.skipIf(AS_ROOT)(
+      'a burst of burned seqs beyond a block, then reservation failures, then success: every live step ≤ one block',
+      async () => {
+        const id = 'conv-burst';
+        restartAt(id, BLOCK);
+        wl = await freshWithSmallBlock();
+        // Phase 1: 2 blocks of appends whose reservation succeeds but whose line
+        // write fails — real burns, crossing two block boundaries.
+        let failWrites = true;
+        const seen = watchSidecar(id, (fh, args) => {
+          if (args[1] === 'a' && failWrites) {
+            (fh as { writeFile: unknown }).writeFile = async () => {
+              throw ioError('ENOSPC');
+            };
+          }
+        });
+        for (let i = 0; i < 2 * BLOCK; i++) {
+          await expect(wl.appendWorkLog(id, { kind: 'narration', text: `b${i}` })).rejects.toThrow('ENOSPC');
         }
-      });
-      for (let i = 0; i < 2 * BLOCK; i++) {
-        await expect(wl.appendWorkLog(id, { kind: 'narration', text: `b${i}` })).rejects.toThrow('ENOSPC');
-      }
-      failWrites = false;
+        failWrites = false;
 
-      // Phase 2: the next boundary's reservation write fails five times.
-      await withReadOnlyDir(async () => {
-        for (let i = 0; i < 5; i++) {
-          await expect(wl.appendWorkLog(id, { kind: 'narration', text: `r${i}` })).rejects.toThrow();
-        }
-      });
+        // Phase 2: the next boundary's reservation write fails five times.
+        await withReadOnlyDir(async () => {
+          for (let i = 0; i < 5; i++) {
+            await expect(wl.appendWorkLog(id, { kind: 'narration', text: `r${i}` })).rejects.toThrow();
+          }
+        });
 
-      // Then a successful append.
-      const ok = await wl.appendWorkLog(id, { kind: 'narration', text: 'ok' });
-      expect(ok.seq).toBe(3 * BLOCK + 1); // BLOCK+1..3·BLOCK burned; the failed reservations burned nothing
-      seen.push({ live: readSeqFile(sidecarFile(id)), bak: readSeqFile(`${sidecarFile(id)}.bak`) });
+        // Then a successful append.
+        const ok = await wl.appendWorkLog(id, { kind: 'narration', text: 'ok' });
+        expect(ok.seq).toBe(3 * BLOCK + 1); // BLOCK+1..3·BLOCK burned; the failed reservations burned nothing
+        seen.push({ live: readSeqFile(sidecarFile(id)), bak: readSeqFile(`${sidecarFile(id)}.bak`) });
 
-      expectOneBlockSteps(seen);
-      expect(seen.map((s) => s.live).filter((v, i, a) => v !== a[i - 1])).toEqual([2 * BLOCK, 3 * BLOCK, 4 * BLOCK]);
-      expect(seen[seen.length - 1]).toEqual({ live: 4 * BLOCK, bak: 3 * BLOCK });
-    });
+        expectOneBlockSteps(seen);
+        expect(seen.map((s) => s.live).filter((v, i, a) => v !== a[i - 1])).toEqual([2 * BLOCK, 3 * BLOCK, 4 * BLOCK]);
+        expect(seen[seen.length - 1]).toEqual({ live: 4 * BLOCK, bak: 3 * BLOCK });
+      },
+    );
 
     it('the production block is 1000, and resetting the test setter restores it', async () => {
       expect(wl.WORK_LOG_SEQ_RESERVE_BLOCK).toBe(1000);
@@ -763,10 +775,24 @@ describe('work log store', () => {
       return { error: vi.spyOn(Logger.prototype, 'error'), warn: vi.spyOn(Logger.prototype, 'warn') };
     }
 
+    const truncate = (file: string) => fs.writeFileSync(file, '{"reservedSeq": 9');
+    const remove = (file: string) => fs.rmSync(file);
+    const wrongSchema = (file: string) => fs.writeFileSync(file, JSON.stringify({ foo: 1 }));
     it.each([
-      ['corrupted', (file: string) => fs.writeFileSync(file, '{"reservedSeq": 9')],
-      ['deleted', (file: string) => fs.rmSync(file)],
-    ])('live sidecar %s in-process, a block crossed, the tail lost, live lost again → no seq reused', async (_how, damage) => {
+      ['corrupted', truncate, truncate],
+      ['deleted', remove, remove],
+      // Review round 10: a VALID but stale value (an older reservation put back
+      // over live 20) must not be promoted to `.bak` at the next crossing — that
+      // left `.bak` two blocks behind, and recovery reused 21.
+      [
+        'overwritten with an older reservation',
+        (file: string) => fs.writeFileSync(file, '{"reservedSeq":10}'),
+        truncate,
+      ],
+      // ...nor valid JSON of the wrong schema: promoting it left no usable copy
+      // after live was lost, so the conversation failed closed for good.
+      ['overwritten with the wrong schema', wrongSchema, wrongSchema],
+    ])('live sidecar %s in-process, a block crossed, the tail lost, live lost again → no seq reused', async (_how, damage, damageAgain) => {
       const BLOCK = 10;
       const id = 'conv-tf';
       const live = sidecarFile(id);
@@ -798,7 +824,7 @@ describe('work log store', () => {
         .split('\n')
         .filter((l) => l && JSON.parse(l).seq <= 2 * BLOCK);
       writeRaw(id, `${kept.join('\n')}\n`);
-      damage(live);
+      damageAgain(live);
 
       const before = new Set(published);
       proc = await fresh();
@@ -806,7 +832,8 @@ describe('work log store', () => {
       await proc.flushWorkLog();
       expect(before.has(next.seq)).toBe(false);
       expect(next.seq).toBeGreaterThan(Math.max(...before));
-      // The mechanism: the crossing promoted .bak even though live was unusable.
+      // The mechanism: the crossing promoted .bak to the new reservation even
+      // though live did not hold the writer's previous one.
       expect(bakAfterCrossing).toBe(3 * BLOCK);
     });
 
@@ -858,18 +885,49 @@ describe('work log store', () => {
     });
 
     it('an unreadable sidecar (I/O error) is not cached as a verdict: it is retried and recovers', async () => {
-      const id = 'conv-eacces';
+      const id = 'conv-eisdir';
       writeRaw(id, Array.from({ length: 5 }, (_, i) => line(i + 1)).join(''));
+      // A directory where the sidecar should be: reading it fails with EISDIR
+      // for every user, root included (a chmod 0o000 would not bind root).
+      fs.mkdirSync(sidecarFile(id));
+      const failure = await wl.appendWorkLog(id, { kind: 'notice', text: 'a' }).catch((e: unknown) => e);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(wl.WorkLogUnboundedError);
+
+      fs.rmdirSync(sidecarFile(id));
       fs.writeFileSync(sidecarFile(id), JSON.stringify({ reservedSeq: 1000 }));
-      fs.chmodSync(sidecarFile(id), 0o000);
-      try {
-        const failure = await wl.appendWorkLog(id, { kind: 'notice', text: 'a' }).catch((e: unknown) => e);
-        expect(failure).toBeInstanceOf(Error);
-        expect(failure).not.toBeInstanceOf(wl.WorkLogUnboundedError);
-      } finally {
-        fs.chmodSync(sidecarFile(id), 0o600);
-      }
       expect((await wl.appendWorkLog(id, { kind: 'notice', text: 'b' })).seq).toBe(1001);
+    });
+  });
+
+  describe('review round 10', () => {
+    it('afterSeq paging returns the entries after junk wider than the remaining budget when they start at afterSeq + 1', async () => {
+      const id = 'conv-gapjunk';
+      writeRaw(id, Array.from({ length: 50 }, (_, i) => line(i + 1)).join(''));
+      appendRaw(id, Buffer.from('x\n'.repeat(10 * 1024 * 1024))); // 20 MB, wider than the whole budget
+      appendRaw(id, Array.from({ length: 30 }, (_, i) => line(51 + i)).join(''));
+
+      const page = await wl.readWorkLog(id, { afterSeq: 50 });
+      expect(seqs(page)).toEqual(Array.from({ length: 30 }, (_, i) => 51 + i));
+      expect(page.hasMore).toBe(false);
+
+      // The backward scan collects at most limit + 1 entries, so the proof also
+      // holds when exactly one more than the page follows: hasMore from the extra.
+      const short = await wl.readWorkLog(id, { afterSeq: 50, limit: 29 });
+      expect(seqs(short)).toEqual(Array.from({ length: 29 }, (_, i) => 51 + i));
+      expect(short.hasMore).toBe(true);
+    });
+
+    it('a sidecar whose CONTENT mentions "unreadable:" is still classified by what happened (fails closed)', async () => {
+      const id = 'conv-sniff';
+      writeRaw(id, Array.from({ length: 5 }, (_, i) => line(i + 1)).join(''));
+      // Invalid JSON whose parser error quotes it — the old message sniffing
+      // read that as an I/O failure and retried forever instead of failing closed.
+      fs.writeFileSync(sidecarFile(id), 'unreadable: x');
+
+      await expect(wl.appendWorkLog(id, { kind: 'notice', text: 'a' })).rejects.toBeInstanceOf(
+        wl.WorkLogUnboundedError,
+      );
     });
   });
 
