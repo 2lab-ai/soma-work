@@ -2,30 +2,49 @@
  * Work log API (spec §3.3).
  *
  *   GET /api/dashboard/session/:conversationId/worklog?afterSeq=&limit=
- *     → { entries: WorkLogEntry[], hasMore: boolean }
+ *     → 200 { entries: WorkLogEntry[], hasMore: boolean }
  *
  *   - no afterSeq: the latest `limit` entries; hasMore = older entries exist.
  *   - afterSeq=N (N ≥ 0): the first `limit` entries with seq > N, for forward
  *     paging after a reconnect; hasMore = more follow, ask again with the last seq.
- *   - limit: default and maximum 500, minimum 1.
+ *     seqs can have gaps (an entry that landed on disk but whose append failed
+ *     was never broadcast); a client backfills them with this call.
+ *   - limit: default 500, allowed 1..500.
+ *   - Both params are decimal integers (`^\d+$`); anything else is
+ *     400 { error: 'bad_request' } rather than a silent mode switch.
+ *   - hasMore is also true when the read stopped at its byte budget.
  *
- * Same auth and read scope as the session-turns API
- * (`GET /api/dashboard/session/:conversationId` in dashboard.ts): any
- * authenticated user may read (#716), unknown conversations are 404. Live
- * entries arrive over `/ws/dashboard` as `work_log` events.
+ * Who may read: the conversation's owner and admins — the same audience as the
+ * `work_log` WS event. This is stricter than the turns APIs (world-readable per
+ * #716) because the work log carries raw instructions and tool inputs/results.
+ * Admin = `authContext.isAdmin` (viewer-token sessions, auth-disabled mode, and
+ * OAuth users listed in ADMIN_USERS). A conversation with no recorded owner is
+ * admin-only. Unknown conversation → 404, anyone else → 403 { error: 'forbidden' }.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { Logger } from '../logger';
+import type { AuthContext } from './oauth';
 import { getConversation } from './recorder';
 import { readWorkLog, WORK_LOG_DEFAULT_LIMIT } from './work-log';
 
 const logger = new Logger('WorkLogRoutes');
 
-function parseIntParam(raw: string | undefined): number | undefined {
-  if (raw === undefined || raw === '') return undefined;
-  const n = Number.parseInt(raw, 10);
-  return Number.isNaN(n) ? undefined : n;
+const DECIMAL = /^\d+$/;
+
+/** Absent → undefined; present must be a decimal safe integer within [min, max], else null. */
+function parseStrictInt(raw: unknown, min: number, max: number): number | undefined | null {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string' || !DECIMAL.test(raw)) return null; // also rejects repeated params (arrays)
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < min || n > max) return null;
+  return n;
+}
+
+function canReadWorkLog(auth: AuthContext | undefined, ownerId: string | undefined): boolean {
+  if (!auth) return false;
+  if (auth.isAdmin) return true;
+  return !!ownerId && auth.userId === ownerId;
 }
 
 export async function registerWorkLogRoutes(
@@ -37,21 +56,29 @@ export async function registerWorkLogRoutes(
     Querystring: { afterSeq?: string; limit?: string };
   }>('/api/dashboard/session/:conversationId/worklog', { preHandler: [authMiddleware] }, async (request, reply) => {
     try {
+      const limit = parseStrictInt(request.query.limit, 1, WORK_LOG_DEFAULT_LIMIT);
+      const afterSeq = parseStrictInt(request.query.afterSeq, 0, Number.MAX_SAFE_INTEGER);
+      if (limit === null || afterSeq === null) {
+        reply.status(400).send({ error: 'bad_request' });
+        return;
+      }
+
       const { conversationId } = request.params;
       const record = await getConversation(conversationId);
       if (!record) {
         reply.status(404).send({ error: 'Conversation not found' });
         return;
       }
+      const auth = (request as FastifyRequest & { authContext?: AuthContext }).authContext;
+      if (!canReadWorkLog(auth, record.ownerId || undefined)) {
+        reply.status(403).send({ error: 'forbidden' });
+        return;
+      }
 
-      const limitRaw = parseIntParam(request.query.limit);
-      const limit =
-        limitRaw === undefined ? WORK_LOG_DEFAULT_LIMIT : Math.max(1, Math.min(WORK_LOG_DEFAULT_LIMIT, limitRaw));
-      const afterSeqRaw = parseIntParam(request.query.afterSeq);
-      // afterSeq=0 means "from the beginning"; a negative value is treated as absent.
-      const afterSeq = afterSeqRaw !== undefined && afterSeqRaw >= 0 ? afterSeqRaw : undefined;
-
-      const { entries, hasMore } = await readWorkLog(conversationId, { afterSeq, limit });
+      const { entries, hasMore } = await readWorkLog(conversationId, {
+        afterSeq,
+        limit: limit ?? WORK_LOG_DEFAULT_LIMIT,
+      });
       reply.send({ entries, hasMore });
     } catch (error) {
       logger.error('Error reading work log', error);

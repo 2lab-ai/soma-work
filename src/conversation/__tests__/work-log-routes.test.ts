@@ -121,7 +121,7 @@ describe('GET /api/dashboard/session/:conversationId/worklog', () => {
     ]);
   });
 
-  it('pages: latest window without afterSeq, forward from afterSeq, hasMore on both, bad values clamped', async () => {
+  it('pages: latest window without afterSeq, forward from afterSeq, hasMore on both', async () => {
     for (let i = 1; i <= 6; i++) await workLog.appendWorkLog('conv-1', { kind: 'narration', text: `n${i}` });
     const get = async (qs: string): Promise<[number[], boolean]> => {
       const res = await web.injectWebServer({
@@ -134,9 +134,10 @@ describe('GET /api/dashboard/session/:conversationId/worklog', () => {
       return [body.entries.map((e) => e.seq), body.hasMore];
     };
     // Latest window; hasMore = older entries exist.
+    expect(await get('')).toEqual([[1, 2, 3, 4, 5, 6], false]);
     expect(await get('?limit=2')).toEqual([[5, 6], true]);
-    expect(await get('?limit=0')).toEqual([[6], true]); // clamped to 1
-    expect(await get('?limit=abc&afterSeq=-3')).toEqual([[1, 2, 3, 4, 5, 6], false]); // defaults
+    expect(await get('?limit=1')).toEqual([[6], true]);
+    expect(await get('?limit=500')).toEqual([[1, 2, 3, 4, 5, 6], false]);
     // Forward pages; hasMore = newer entries follow.
     expect(await get('?afterSeq=1&limit=2')).toEqual([[2, 3], true]);
     expect(await get('?afterSeq=3&limit=2')).toEqual([[4, 5], true]);
@@ -144,29 +145,127 @@ describe('GET /api/dashboard/session/:conversationId/worklog', () => {
     expect(await get('?afterSeq=0&limit=2')).toEqual([[1, 2], true]);
     expect(await get('?afterSeq=4')).toEqual([[5, 6], false]);
     expect(await get('?afterSeq=6')).toEqual([[], false]);
+    expect(await get('?afterSeq=9007199254740991')).toEqual([[], false]);
   });
 
-  // #716: dashboard reads are world-readable for any authenticated user. The
-  // session-turns API does not restrict reads to the owner, so the work log
-  // follows the same policy.
-  it('lets the owner and a non-owner logged-in user read, like the session-turns API', async () => {
-    await workLog.appendWorkLog('conv-1', { kind: 'narration', text: 'hello' });
-    for (const sub of ['U_OWNER', 'U_OTHER']) {
-      const res = await web.injectWebServer({
-        method: 'GET',
-        url: '/api/dashboard/session/conv-1/worklog',
-        headers: { cookie: userCookie(sub) },
-      });
+  it.each([
+    '?limit=0',
+    '?limit=501',
+    '?limit=-1',
+    '?limit=abc',
+    '?limit=10abc',
+    '?limit=1.5',
+    '?limit=',
+    '?limit=%2010',
+    '?limit=1&limit=2',
+    '?afterSeq=-1',
+    '?afterSeq=abc',
+    '?afterSeq=10abc',
+    '?afterSeq=1e3',
+    '?afterSeq=0x10',
+    '?afterSeq=',
+    '?afterSeq=99999999999999999999',
+  ])('rejects %s with 400 bad_request instead of switching modes', async (qs) => {
+    const res = await web.injectWebServer({
+      method: 'GET',
+      url: `/api/dashboard/session/conv-1/worklog${qs}`,
+      headers: AUTH_HEADER,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'bad_request' });
+  });
+
+  it('serves an entry that landed on disk but whose append was rejected (clients backfill the gap)', async () => {
+    await workLog.appendWorkLog('conv-1', { kind: 'narration', text: 'one' });
+    // seq 2 lands (as if its fdatasync failed after the write); a live client never saw it.
+    fs.appendFileSync(
+      path.join(paths.dataDir, 'worklogs', 'conv-1.jsonl'),
+      `${JSON.stringify({ seq: 2, ts: 2, kind: 'narration', text: 'landed' })}\n`,
+    );
+    const res = await web.injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-1/worklog?afterSeq=1',
+      headers: AUTH_HEADER,
+    });
+    expect(JSON.parse(res.body).entries.map((e: { text: string }) => e.text)).toEqual(['landed']);
+  });
+
+  describe('read authorization: owner and admins only', () => {
+    const read = (headers: Record<string, string>, id = 'conv-1') =>
+      web.injectWebServer({ method: 'GET', url: `/api/dashboard/session/${id}/worklog`, headers });
+
+    beforeEach(async () => {
+      await workLog.appendWorkLog('conv-1', { kind: 'instruction', text: 'raw instruction' });
+    });
+
+    it('owner: 200', async () => {
+      const res = await read({ cookie: userCookie('U_OWNER') });
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body).entries).toHaveLength(1);
+    });
+
+    it('another logged-in user: 403 forbidden (the turns API stays world-readable)', async () => {
+      const res = await read({ cookie: userCookie('U_OTHER') });
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'forbidden' });
 
       const turns = await web.injectWebServer({
         method: 'GET',
         url: '/api/dashboard/session/conv-1',
-        headers: { cookie: userCookie(sub) },
+        headers: { cookie: userCookie('U_OTHER') },
       });
       expect(turns.statusCode).toBe(200);
-    }
+    });
+
+    it('admin user (ADMIN_USERS): 200, no admin-mode header needed for reads', async () => {
+      expect((await read({ cookie: userCookie('U_ADMIN') })).statusCode).toBe(200);
+    });
+
+    it('viewer token (bearer header or bearer cookie): 200', async () => {
+      expect((await read(AUTH_HEADER)).statusCode).toBe(200);
+      expect(
+        (await read({ cookie: `soma_dash_token=${encodeURIComponent(`bearer:${VIEWER_TOKEN}`)}` })).statusCode,
+      ).toBe(200);
+    });
+
+    it('a conversation with no recorded owner is admin-only', async () => {
+      const { getConversation } = await import('../recorder');
+      (getConversation as any).mockImplementation(async (id: string) =>
+        id === 'conv-1' ? { ...CONVERSATION, ownerId: '' } : null,
+      );
+      expect((await read({ cookie: userCookie('U_OWNER') })).statusCode).toBe(403);
+      expect((await read({ cookie: userCookie('U_ADMIN') })).statusCode).toBe(200);
+    });
+
+    it('unknown conversation: 404 before any ownership check', async () => {
+      expect((await read({ cookie: userCookie('U_OTHER') }, 'conv-nope')).statusCode).toBe(404);
+    });
+  });
+});
+
+describe('work log read authorization with auth disabled', () => {
+  let web: typeof import('../web-server');
+
+  beforeEach(async () => {
+    vi.resetModules();
+    mockConfig.conversation.viewerToken = '';
+    paths.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-worklog-noauth-'));
+    web = await import('../web-server');
+    const { getConversation } = await import('../recorder');
+    (getConversation as any).mockImplementation(async (id: string) => (id === 'conv-1' ? CONVERSATION : null));
+    await web.startWebServer({ listen: false });
+  });
+
+  afterEach(async () => {
+    await web.stopWebServer();
+    mockConfig.conversation.viewerToken = VIEWER_TOKEN;
+    fs.rmSync(paths.dataDir, { recursive: true, force: true });
+  });
+
+  it('mode none (no viewer token, no OAuth) reads as admin, as today', async () => {
+    const res = await web.injectWebServer({ method: 'GET', url: '/api/dashboard/session/conv-1/worklog' });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ entries: [], hasMore: false });
   });
 });
 
