@@ -147,9 +147,9 @@ updates inside its terminal-cleanup boundary, including setup failures.
 ### Observability (`src/metrics/`, `src/conversation/`)
 - 이벤트 기반 텔레메트리(토큰·툴콜·레이턴시), 주기 리포트
 - 대화 레코더 + 웹 대시보드(`src/conversation/dashboard.ts`)
-- 작업 로그 방출 이음매: 턴 안의 항목(지시·서술·도구·최종 답변·오류)은 `StreamContext.workLog` →
-  `streamExecutorProviders.appendWorkLog(conversationId, entry)`로, 대화 단위인 압축 공지는 compact-hooks가
-  `recordConversationWorkLog`로 같은 provider에 넣는다. 출력 수준과 무관하게 항상 방출된다
+- 작업 로그 방출 이음매: 턴 안의 항목(지시·서술·도구·최종 답변·오류, 임계치 자동 압축 예고)은
+  `StreamContext.workLog` → `streamExecutorProviders.appendWorkLog(conversationId, entry)`로 턴의 `turnId`와 함께,
+  대화 단위인 압축 시작/완료 공지는 compact-hooks가 `recordConversationWorkLog`로 `turnId` 없이 같은 provider에 넣는다. 출력 수준과 무관하게 항상 방출된다
   (타입 `packages/slack/src/work-log.ts`).
 
 ## Data Stores (`$DATA_DIR`, JSON 파일 기반)

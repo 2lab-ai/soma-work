@@ -8,6 +8,7 @@
  * only. Harness shape copied from `stream-executor.incident-output.test.ts`.
  */
 
+import { Logger } from '@soma/common/logger';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getVerbosityFlags, LOG_MINIMAL } from '../../output-flags';
 import { AgentStreamProcessor, type StreamContext } from '../../stream-processor';
@@ -703,11 +704,41 @@ describe('recordConversationWorkLog — the conversation-level path', () => {
     expect(appendWorkLog).toHaveBeenCalledWith('conv-9', { kind: 'final', text: FINAL, turnId: 't-1', ts: 42 });
   });
 
-  it('a throwing provider is ignored', () => {
+  it('a throwing provider is ignored and logged at warn with conversationId, kind and sessionKey', () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn');
     appendWorkLog.mockImplementationOnce(() => {
       throw new Error('disk full');
     });
 
-    expect(() => recordConversationWorkLog('conv-9', { kind: 'notice', text: 'x' })).not.toThrow();
+    expect(() =>
+      recordConversationWorkLog('conv-9', { kind: 'notice', text: 'x' }, { sessionKey: SESSION_KEY }),
+    ).not.toThrow();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('appendWorkLog provider threw'), {
+      conversationId: 'conv-9',
+      kind: 'notice',
+      sessionKey: SESSION_KEY,
+      error: 'disk full',
+    });
+    warn.mockRestore();
+  });
+
+  it('the turn path passes its sessionKey to that warning', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    appendWorkLog.mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    try {
+      await new StreamExecutor(createDeps(toolTurn())).execute(createParams(createSession(LOG_MINIMAL)));
+      await settle();
+    } finally {
+      appendWorkLog.mockReset();
+    }
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('appendWorkLog provider threw'),
+      expect.objectContaining({ conversationId: 'conv-1', kind: 'instruction', sessionKey: SESSION_KEY }),
+    );
+    warn.mockRestore();
   });
 });

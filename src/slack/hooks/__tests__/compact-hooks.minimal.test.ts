@@ -275,9 +275,9 @@ describe('compaction work-log notices: one start and one completion per cycle', 
     expect(notices().filter((n) => n.text.startsWith('Compaction completed'))).toHaveLength(1);
   });
 
-  it('a completion that arrives after the executing turn has ended is still recorded', async () => {
-    // No turn is involved at all: START during the turn, the turn ends, the
-    // PostCompact hook fires afterwards — the conversation still gets it.
+  it('recording needs no bound executing turn: a later PostCompact completion is still recorded', async () => {
+    // No executing turn is bound anywhere — recording goes straight to the
+    // conversation, so a completion arriving after START still lands.
     const { session, slackApi } = conversationSession(LOG_MINIMAL);
     await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
     await new Promise((resolve) => setTimeout(resolve, 0));
