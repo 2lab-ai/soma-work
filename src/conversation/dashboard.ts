@@ -4609,11 +4609,11 @@ function resolveDeepLinkKey(ref, keys, selfInstance) {
 }
 function openDeepLinkedSession() {
   if (!_deepLinkSession) return;
+  // The window bounds the whole attempt: a card that first shows up on a
+  // later poll (30 s) must not pop the panel open long after page load.
+  if (Date.now() > _deepLinkDeadline) { _deepLinkSession = null; return; }
   var key = resolveDeepLinkKey(_deepLinkSession, Object.keys(_sessionCache), SELF_INSTANCE_NAME);
-  if (!key) {
-    if (Date.now() > _deepLinkDeadline) _deepLinkSession = null;
-    return;
-  }
+  if (!key) return;
   if (!_cardEls[key]) {
     // Closed more than 7 days ago — reveal the older group and retry on that render.
     if (!showOlderClosed) {

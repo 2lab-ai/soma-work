@@ -147,7 +147,12 @@ describe('agent inbox board — deep link (§3.1-8)', () => {
 
   it('retries on board renders for ~10s, then gives up silently', () => {
     expect(TEMPLATE).toContain('DEEP_LINK_WINDOW_MS = 10000');
-    expect(fnBody('openDeepLinkedSession')).toContain('_deepLinkDeadline');
+    const body = fnBody('openDeepLinkedSession');
+    // The deadline gates every attempt, not only misses — a card that first
+    // appears on the 30 s poll must not open the panel long after load.
+    const deadline = body.indexOf('Date.now() > _deepLinkDeadline');
+    expect(deadline).toBeGreaterThan(-1);
+    expect(deadline).toBeLessThan(body.indexOf('resolveDeepLinkKey('));
     expect(fnBody('renderBoard')).toContain('openDeepLinkedSession()');
   });
 
