@@ -221,9 +221,11 @@ async function start() {
     // every user default → `minimal` and every persisted session mask in
     // sessions.json → LOG_MINIMAL. Same presence-only, marker-first contract
     // as the opus rewrite above. Runs BEFORE `slackHandler.loadSavedSessions()`
-    // further down, so the restored sessions read the rewritten masks. Own try/catch; never
-    // blocks boot, and the settings singleton is reloaded unless it was a
-    // clean skip (including after a throw).
+    // further down, so the restored sessions read the rewritten masks. No
+    // second writer can race it: the O_EXCL pid lock `acquirePidLock(DATA_DIR)`
+    // (src/pid-lock.ts) is held from the top of start() above. Own try/catch;
+    // never blocks boot, and the settings singleton is reloaded unless it was
+    // a clean skip (including after a throw).
     let allUsersMinimalStatus: 'skipped' | 'applied' | 'failed' = 'failed';
     try {
       const allUsersMinimal = migrateAllUsersMinimalOnce({ dataDir: DATA_DIR });

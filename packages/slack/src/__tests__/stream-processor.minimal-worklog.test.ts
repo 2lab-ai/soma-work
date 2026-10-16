@@ -22,16 +22,24 @@ function* events(list: AgentStreamEvent[]): Generator<AgentStreamEvent> {
   for (const event of list) yield event;
 }
 
-/** narration → tool use → tool result → final text segment → result(finalText). */
-function toolTurn(finalSegment = FINAL, finalText: string | undefined = FINAL): AgentStreamEvent[] {
+const NO_FINAL_TEXT = Symbol('no finalText property');
+
+/**
+ * narration → tool use → tool result → final text segment → result(finalText).
+ * Pass {@link NO_FINAL_TEXT} for a result event with NO `finalText` property at
+ * all (a plain `undefined` argument would fall back to the default).
+ */
+function toolTurn(finalSegment = FINAL, finalText: string | typeof NO_FINAL_TEXT = FINAL): AgentStreamEvent[] {
   return [
     { type: 'assistant_delta', text: NARRATION },
     { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: { file_path: '/repo/config.ts' } },
     { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'export const timeout = 30;' }] },
     { type: 'assistant_delta', text: finalSegment },
-    { type: 'result', stopReason: 'end_turn', ...(finalText === undefined ? {} : { finalText }) },
+    { type: 'result', stopReason: 'end_turn', ...(finalText === NO_FINAL_TEXT ? {} : { finalText }) },
   ];
 }
+
+const DIRECTIVE_SEGMENT = 'Deployed.\n```json\n{"type":"channel_message","text":"Release notes"}\n```';
 
 interface Harness {
   context: StreamContext;
@@ -123,13 +131,24 @@ describe('minimal verbosity — narration goes to the work log, Slack gets the f
   it('a directive in the final segment is dispatched exactly once, and the cleaned text is posted', async () => {
     const h = harness(LOG_MINIMAL);
     const onChannelMessageDetected = vi.fn().mockResolvedValue(undefined);
-    const withDirective = `Deployed.\n\`\`\`json\n{"type":"channel_message","text":"Release notes"}\n\`\`\``;
 
-    await run(h, toolTurn(withDirective, withDirective), { onChannelMessageDetected });
+    await run(h, toolTurn(DIRECTIVE_SEGMENT, DIRECTIVE_SEGMENT), { onChannelMessageDetected });
 
     expect(onChannelMessageDetected).toHaveBeenCalledTimes(1);
     expect(h.appendText).toHaveBeenCalledTimes(1);
     expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', 'Deployed.');
+  });
+
+  it('a finalText equal to the CLEANED segment (directive stripped) is still posted once', async () => {
+    const h = harness(LOG_MINIMAL);
+    const onChannelMessageDetected = vi.fn().mockResolvedValue(undefined);
+
+    await run(h, toolTurn(DIRECTIVE_SEGMENT, 'Deployed.'), { onChannelMessageDetected });
+
+    expect(onChannelMessageDetected).toHaveBeenCalledTimes(1);
+    expect(h.appendText).toHaveBeenCalledTimes(1);
+    expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', 'Deployed.');
+    expect(h.log.filter((e) => e.kind === 'final')).toEqual([expect.objectContaining({ text: 'Deployed.' })]);
   });
 
   it('a choice prompt mid-turn still posts (text + choice), and is not reposted at the result', async () => {
@@ -170,22 +189,42 @@ describe('minimal verbosity — narration goes to the work log, Slack gets the f
     expect(h.log.map((e) => e.kind)).toEqual(['narration', 'final']);
   });
 
-  it('a result with no finalText posts the last withheld segment instead of nothing', async () => {
+  it('a result event with NO finalText property posts the last withheld segment, logged as one final', async () => {
     const h = harness(LOG_MINIMAL);
+    const turn = toolTurn(FINAL, NO_FINAL_TEXT);
+    const result = turn[turn.length - 1];
+    expect(result?.type).toBe('result');
+    expect(result).not.toHaveProperty('finalText');
 
-    await run(h, toolTurn(FINAL, undefined));
+    await run(h, turn);
 
     expect(h.appendText).toHaveBeenCalledTimes(1);
     expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', FINAL);
+    expect(h.log.filter((e) => e.kind === 'final')).toEqual([expect.objectContaining({ text: FINAL })]);
   });
 
-  it('a stream that ends without a result posts the last withheld segment', async () => {
+  it('a result event with an EMPTY finalText posts the last withheld segment, logged as one final', async () => {
     const h = harness(LOG_MINIMAL);
+    const turn = toolTurn(FINAL, '');
+    expect(turn[turn.length - 1]).toMatchObject({ type: 'result', finalText: '' });
 
-    await run(h, toolTurn().slice(0, 4));
+    await run(h, turn);
 
     expect(h.appendText).toHaveBeenCalledTimes(1);
     expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', FINAL);
+    expect(h.log.filter((e) => e.kind === 'final')).toEqual([expect.objectContaining({ text: FINAL })]);
+  });
+
+  it('a stream that ends without a result posts the last withheld segment, logged as one final', async () => {
+    const h = harness(LOG_MINIMAL);
+    const turn = toolTurn().slice(0, 4);
+    expect(turn.some((e) => e.type === 'result')).toBe(false);
+
+    await run(h, turn);
+
+    expect(h.appendText).toHaveBeenCalledTimes(1);
+    expect(h.appendText).toHaveBeenCalledWith('C1:T1:turn-1', FINAL);
+    expect(h.log.filter((e) => e.kind === 'final')).toEqual([expect.objectContaining({ text: FINAL })]);
   });
 
   it('a result error posts no withheld narration (the executor surfaces the error)', async () => {
@@ -251,6 +290,66 @@ describe('minimal verbosity — narration goes to the work log, Slack gets the f
     ]);
 
     expect(h.log.find((e) => e.kind === 'tool_result')).toMatchObject({ tool: 'Bash', ok: false });
+  });
+});
+
+describe('result-time dedup is against what was delivered, at every level', () => {
+  for (const level of ['minimal', 'compact', 'detail', 'verbose'] as const) {
+    it(`${level}: a directive segment whose raw text is the finalText dispatches once and posts once`, async () => {
+      const h = harness(getVerbosityFlags(level));
+      const onChannelMessageDetected = vi.fn().mockResolvedValue(undefined);
+
+      const result = await run(
+        h,
+        [
+          { type: 'assistant_delta', text: DIRECTIVE_SEGMENT },
+          { type: 'result', stopReason: 'end_turn', finalText: DIRECTIVE_SEGMENT },
+        ],
+        { onChannelMessageDetected },
+      );
+
+      expect(onChannelMessageDetected).toHaveBeenCalledTimes(1);
+      expect(h.appendText.mock.calls.map((c) => c[1])).toEqual(['Deployed.']);
+      expect(h.say).not.toHaveBeenCalled();
+      expect(result.collectedText).toBe('Deployed.');
+    });
+
+    it(`${level}: a directive-ONLY segment whose raw text is the finalText dispatches once and posts nothing`, async () => {
+      const h = harness(getVerbosityFlags(level));
+      const onChannelMessageDetected = vi.fn().mockResolvedValue(undefined);
+      const directiveOnly = '```json\n{"type":"channel_message","text":"Root post only"}\n```';
+
+      await run(
+        h,
+        [
+          { type: 'assistant_delta', text: directiveOnly },
+          { type: 'result', stopReason: 'end_turn', finalText: directiveOnly },
+        ],
+        { onChannelMessageDetected },
+      );
+
+      expect(onChannelMessageDetected).toHaveBeenCalledTimes(1);
+      expect(h.appendText).not.toHaveBeenCalled();
+      expect(h.say).not.toHaveBeenCalled();
+    });
+  }
+
+  it('detail (legacy say path): the directive segment posts once', async () => {
+    const h = harness(getVerbosityFlags('detail'), { stream: false });
+    const onChannelMessageDetected = vi.fn().mockResolvedValue(undefined);
+
+    await run(
+      h,
+      [
+        { type: 'assistant_delta', text: DIRECTIVE_SEGMENT },
+        { type: 'result', stopReason: 'end_turn', finalText: DIRECTIVE_SEGMENT },
+      ],
+      { onChannelMessageDetected },
+    );
+
+    expect(onChannelMessageDetected).toHaveBeenCalledTimes(1);
+    expect(h.say).toHaveBeenCalledTimes(1);
+    expect(h.say.mock.calls[0]?.[0]).toMatchObject({ text: 'Deployed.' });
   });
 });
 

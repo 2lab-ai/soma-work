@@ -231,6 +231,18 @@ function summarizeToolCall(name: string, input: unknown): string {
 }
 
 /**
+ * One assistant text segment's delivery state. `withheld` = narration kept off
+ * Slack by the verbosity, still owed if it turns out to be the final answer;
+ * `settled` = posted, or deliberately not shown (transport-error leak guard,
+ * directive-only text, incident publish) — never posted again.
+ */
+interface SegmentFate {
+  /** The text as the user reads it (directives stripped). */
+  shown: string;
+  fate: 'withheld' | 'settled';
+}
+
+/**
  * Handler for assistant text messages
  */
 export type AssistantTextHandler = (content: string, context: StreamContext) => Promise<void>;
@@ -717,20 +729,22 @@ export class AgentStreamProcessor {
   /** tool_use_id → tool name, so a `tool_result` work-log entry can name its tool. */
   private toolNamesById = new Map<string, string>();
   /**
-   * Spec 10 §3.2-3 — "posted to Slack" is tracked apart from `currentMessages`
-   * (the recorder's copy, which every segment still joins).
-   *
-   * `withheldByRaw`: raw segment text → its directive-stripped text, for every
-   * narration segment the verbosity kept off Slack. The result event posts the
-   * one equal to `finalText` (through the final-answer path, without a second
-   * directive dispatch). `cleanedByRaw` covers every segment so the `final`
-   * work-log entry carries the text the user reads. `slackTextPosted` is set by
-   * every assistant-text post (narration, final, choice, incident) and gates
-   * the "never end a turn silent" fallback in {@link postLastWithheldIfSilent}.
+   * What became of every assistant text segment this turn, keyed by BOTH its
+   * raw text (directives included — what the SDK `finalText` usually carries)
+   * and its shown text (directives stripped). The result event dedupes against
+   * this delivery record, never against `currentMessages` (the recorder's
+   * copy): a segment's directives were dispatched when it streamed, so a
+   * `finalText` naming a known segment is never dispatched again, and is
+   * posted only if that segment was withheld (spec 10 §3.2-3).
    */
-  private withheldByRaw = new Map<string, string>();
-  private cleanedByRaw = new Map<string, string>();
-  private lastWithheld: string | undefined;
+  private segments = new Map<string, SegmentFate>();
+  /** The latest withheld segment — the answer of a turn with no usable `finalText`. */
+  private lastWithheld: SegmentFate | undefined;
+  /**
+   * Set by every assistant-text post (narration, final, choice, incident);
+   * gates the "never end a turn silent" fallback in
+   * {@link postLastWithheldIfSilent}.
+   */
   private slackTextPosted = false;
   /**
    * Max ms between iterator `.next()` resolutions before
@@ -794,8 +808,7 @@ export class AgentStreamProcessor {
     let lastUsage: UsageData | undefined;
     let sawResult = false;
     this._hasUserChoice = false;
-    this.withheldByRaw.clear();
-    this.cleanedByRaw.clear();
+    this.segments.clear();
     this.lastWithheld = undefined;
     this.slackTextPosted = false;
     // Note: per-turn state fields (_lastAssistantTurnUsage, _lastToolName,
@@ -1405,22 +1418,26 @@ export class AgentStreamProcessor {
     if (context.incidentAttempt) {
       if (!textContent.trim()) return;
       currentMessages.push(textContent);
+      this.recordSegment(textContent, { shown: textContent, fate: 'settled' });
       this.emitWorkLog(context, { kind: 'narration', text: textContent });
       await this.publishIncidentText(textContent, context);
       return;
     }
 
-    // The SDK `finalText` carries the raw segment (directives included), so
-    // the withheld-final lookup at the result event is keyed by it.
     const rawSegment = textContent;
     textContent = await this.extractAndDispatchDirectives(textContent, context);
+    // Recorded as soon as its directives are dispatched — including a
+    // directive-only segment that shows nothing — so a `finalText` naming it
+    // is never dispatched a second time.
+    const segment: SegmentFate = { shown: textContent, fate: 'settled' };
+    this.recordSegment(rawSegment, segment);
 
     if (!textContent.trim()) {
       return;
     }
 
     currentMessages.push(textContent);
-    this.cleanedByRaw.set(rawSegment, textContent);
+    this.recordSegment(textContent, segment);
     // Work log first — before any of the suppressions below (spec 10 §3.3).
     this.emitWorkLog(context, { kind: 'narration', text: textContent });
 
@@ -1452,8 +1469,8 @@ export class AgentStreamProcessor {
       // Spec 10 §3.2-3: below `compact` the running narration stays off
       // Slack (it is in the work log). Held so the result event can post the
       // segment that turns out to be the final answer.
-      this.withheldByRaw.set(rawSegment, textContent);
-      this.lastWithheld = textContent;
+      segment.fate = 'withheld';
+      this.lastWithheld = segment;
     } else {
       // Regular message — convert to Block Kit
       await this.sayWithBlockKit(textContent, context);
@@ -1798,24 +1815,30 @@ export class AgentStreamProcessor {
       };
     } else {
       const finalResult = typeof event.finalText === 'string' ? event.finalText : '';
-      if (finalResult) {
-        this.emitWorkLog(context, { kind: 'final', text: this.cleanedByRaw.get(finalResult) ?? finalResult });
-      }
-      const withheldFinal = finalResult ? this.withheldByRaw.get(finalResult) : undefined;
-      if (withheldFinal !== undefined) {
-        // Spec 10 §3.2-3: the segment was kept off Slack as narration, but it
-        // IS the final answer — post it once. Its directives were already
-        // dispatched when the segment streamed; do not dispatch them again.
-        await this.postFinalAnswer(withheldFinal, context, usage, event.durationMs);
-      } else if (finalResult && !currentMessages.includes(finalResult)) {
+      const known = finalResult ? this.segments.get(finalResult) : undefined;
+      if (!finalResult) {
+        await this.postLastWithheldIfSilent(context, usage, event.durationMs);
+      } else if (known) {
+        // The answer already streamed as a segment: its directives fired then.
+        if (known.shown.trim()) this.emitWorkLog(context, { kind: 'final', text: known.shown });
+        if (known.fate === 'withheld') {
+          // Spec 10 §3.2-3: kept off Slack as narration, but it IS the final
+          // answer — post it once, without dispatching its directives again.
+          known.fate = 'settled';
+          await this.postFinalAnswer(known.shown, context, usage, event.durationMs);
+        }
+      } else {
         currentMessages.push(finalResult);
         await this.handleFinalResult(finalResult, context, usage, event.durationMs);
-      } else if (!finalResult) {
-        await this.postLastWithheldIfSilent(context, usage, event.durationMs);
       }
     }
 
     return usage;
+  }
+
+  /** Index one segment under one of its identities (raw or shown text). */
+  private recordSegment(identity: string, segment: SegmentFate): void {
+    if (identity.trim()) this.segments.set(identity, segment);
   }
 
   /**
@@ -1830,8 +1853,11 @@ export class AgentStreamProcessor {
     usage: UsageData | undefined,
     durationMs: number | undefined,
   ): Promise<void> {
-    if (this.slackTextPosted || this.lastWithheld === undefined) return;
-    await this.postFinalAnswer(this.lastWithheld, context, usage, durationMs);
+    const segment = this.lastWithheld;
+    if (this.slackTextPosted || !segment || segment.fate !== 'withheld') return;
+    segment.fate = 'settled';
+    this.emitWorkLog(context, { kind: 'final', text: segment.shown });
+    await this.postFinalAnswer(segment.shown, context, usage, durationMs);
   }
 
   /**
@@ -1910,7 +1936,10 @@ export class AgentStreamProcessor {
     // preceded it. Same rule as `handleTextMessage`: the host's bytes, nothing
     // read out of them and nothing (not even the footer) added after the marker.
     if (context.incidentAttempt) {
-      if (result.trim()) await this.publishIncidentText(result, context);
+      if (result.trim()) {
+        this.emitWorkLog(context, { kind: 'final', text: result });
+        await this.publishIncidentText(result, context);
+      }
       return;
     }
 
@@ -1921,6 +1950,7 @@ export class AgentStreamProcessor {
       return;
     }
 
+    this.emitWorkLog(context, { kind: 'final', text: processedResult });
     await this.postFinalAnswer(processedResult, context, usage, durationMs);
   }
 

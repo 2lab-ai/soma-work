@@ -115,7 +115,7 @@ describe('migrateAllUsersMinimalOnce', () => {
     expect(read(dataDir, ALL_USERS_LOG_MINIMAL_ONCE_SESSIONS_SNAPSHOT)).toEqual(SESSIONS);
   });
 
-  it('writes the marker with counts + timestamp', () => {
+  it('writes the marker with the ATTEMPTED counts (pre-data) + timestamp', () => {
     const dataDir = makeDataDir();
     write(dataDir, 'user-settings.json', USERS);
     write(dataDir, 'sessions.json', SESSIONS);
@@ -126,10 +126,12 @@ describe('migrateAllUsersMinimalOnce', () => {
     expect(result.markerFile).toBe(path.join(dataDir, ALL_USERS_LOG_MINIMAL_ONCE_MARKER));
     expect(ALL_USERS_LOG_MINIMAL_ONCE_MARKER).toBe('.all-users-log-minimal-once-2026-10-16.json');
     expect(read(dataDir, ALL_USERS_LOG_MINIMAL_ONCE_MARKER)).toEqual({
-      migratedAt: '2026-10-16T09:00:00.000Z',
+      markedAt: '2026-10-16T09:00:00.000Z',
       mask: LOG_MINIMAL,
-      users: { migrated: 4, total: 5 },
-      sessions: { migrated: 3, total: 4 },
+      attemptedUsers: 4,
+      totalUsers: 5,
+      attemptedSessions: 3,
+      totalSessions: 4,
     });
   });
 
@@ -240,8 +242,10 @@ describe('migrateAllUsersMinimalOnce', () => {
     expect(() => migrateAllUsersMinimalOnce({ dataDir })).toThrow('injected write failure');
     fault.failWriteOf = '';
 
-    // Marker landed first: a missed one-shot, never a replay.
-    expect(fs.existsSync(path.join(dataDir, ALL_USERS_LOG_MINIMAL_ONCE_MARKER))).toBe(true);
+    // Marker landed first: a missed one-shot, never a replay. Its counts say
+    // what was attempted, not what was written.
+    expect(read(dataDir, ALL_USERS_LOG_MINIMAL_ONCE_MARKER)).toMatchObject({ attemptedSessions: 3, totalSessions: 4 });
+    expect(read(dataDir, 'sessions.json')).toEqual(SESSIONS);
     new UserSettingsStore(dataDir).setUserDefaultLogVerbosity('U_COMPACT', 'compact');
     expect(migrateAllUsersMinimalOnce({ dataDir }).status).toBe('skipped');
     expect(new UserSettingsStore(dataDir).getUserDefaultLogVerbosity('U_COMPACT')).toBe('compact');
