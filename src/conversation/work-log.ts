@@ -458,13 +458,37 @@ function readReservation(sidecarPath: string): Reservation | null {
   return { seq: value, source: servedFromBackup ? 'backup' : 'live' };
 }
 
-async function writeReservation(sidecarPath: string, reservedSeq: number): Promise<void> {
+/**
+ * The step invariant every reservation write must keep: the new live value is
+ * never below the one it replaces and at most one block above it. Since `.bak`
+ * always holds the replaced live value, this is exactly what keeps `.bak` at
+ * most one block behind live — the premise of the backup recovery in readSeed.
+ * A violating write is refused (error log + throw) before anything is written.
+ */
+function assertReservationStep(sidecarPath: string, previous: number, next: number): void {
+  if (next >= previous && next - previous <= WORK_LOG_SEQ_RESERVE_BLOCK) return;
+  logger.error('Work log reservation step refused: it would leave .bak more than one block behind', {
+    sidecarPath,
+    previous,
+    next,
+    block: WORK_LOG_SEQ_RESERVE_BLOCK,
+  });
+  throw new Error(`Work log reservation step ${previous} -> ${next} breaks the one-block invariant`);
+}
+
+async function writeReservation(sidecarPath: string, previous: number, reservedSeq: number): Promise<void> {
+  assertReservationStep(sidecarPath, previous, reservedSeq);
   // Shared atomic writer (temp → fsync → rename); it leaves the directory
   // unsynced, and the rename must survive power loss for the reservation to
   // bound every seq used after it — so sync it now, not just before a publish.
   atomicWriteJson(sidecarPath, { reservedSeq }, { warn: (message, detail) => logger.warn(message, detail) });
   noteDirChanged(path.dirname(sidecarPath));
   await syncDueDirs();
+}
+
+/** Test hook for the step invariant's refusal (no caller can reach it through the public API). */
+export function _writeWorkLogReservationForTests(sidecarPath: string, previous: number, next: number): Promise<void> {
+  return writeReservation(sidecarPath, previous, next);
 }
 
 /**
@@ -474,9 +498,10 @@ async function writeReservation(sidecarPath: string, reservedSeq: number): Promi
  * (promotePreviousToBackup), so with an invalid or missing live copy one write
  * would leave the stale `.bak` in place under a new reservation. Writing twice
  * — the first makes the live copy valid, the second promotes it — needs no
- * change to packages/common.
+ * change to packages/common. `previous` is the `.bak` value being superseded.
  */
-async function rewriteBothReservations(sidecarPath: string, floor: number): Promise<void> {
+async function rewriteBothReservations(sidecarPath: string, previous: number, floor: number): Promise<void> {
+  assertReservationStep(sidecarPath, previous, floor);
   const warn = (message: string, detail?: unknown) => logger.warn(message, detail);
   atomicWriteJson(sidecarPath, { reservedSeq: floor }, { warn });
   atomicWriteJson(sidecarPath, { reservedSeq: floor }, { warn });
@@ -516,14 +541,16 @@ interface Seed {
  *   live R       anything readable, ≤ R      R  (a hole of up to one block per fresh seed)
  *   live R       unreadable within budget    R, after quarantining the log
  *   live R       an entry T > R              refuse — the reservation is contradicted
- *   backup B     entry T                     max(T, B + block), after rewriting both copies to it
+ *   backup B     entry T ≤ B + block         B + block, after rewriting both copies to it
+ *   backup B     entry T > B + block         refuse — no one-block step from B covers T
  *   none         missing or empty            0  (a conversation that never wrote)
  *   backup B     no readable entry           refuse — WorkLogUnboundedError
  *   none         non-empty                   refuse — a reservation always precedes the first
  *                                            append, so this only follows an operator deletion
  *
- * `backup B` is the previous reservation, at most one block behind the lost live
- * copy, so B + block covers what that copy can have reserved. It is not trusted
+ * `backup B` is the previous reservation. Every reservation write raises live by
+ * at most one block (assertReservationStep), so the lost live copy was at most
+ * B + block, which therefore covers everything it reserved. It is not trusted
  * alone with no readable entry: the repeated-corruption case (live lost twice)
  * can leave `.bak` further behind.
  */
@@ -566,7 +593,7 @@ async function readSeed(conversationId: string, logPath: string, sidecarPath: st
     // every seq used, durably, so the log can be set aside and the fresh one
     // continue right above it. Rewriting the same floor first promotes it to
     // `.bak` too, so both copies hold it before the old evidence moves.
-    await writeReservation(sidecarPath, live);
+    await writeReservation(sidecarPath, live, live);
     const quarantined = `${logPath}.corrupt-${Date.now()}`;
     await fs.promises.rename(logPath, quarantined);
     noteDirChanged(path.dirname(logPath));
@@ -580,11 +607,11 @@ async function readSeed(conversationId: string, logPath: string, sidecarPath: st
     return { lastSeq: live, reservedSeq: live, needsLeadingNewline: false, fileMayBeNew: true };
   }
 
-  if (reservation?.source === 'backup' && tailSeq !== null) {
+  if (reservation?.source === 'backup' && tailSeq !== null && tailSeq <= reservation.seq + WORK_LOG_SEQ_RESERVE_BLOCK) {
     // The live copy is gone; `.bak` is the previous reservation, at most one block
     // behind it. Publish nothing until both copies durably hold a bound again.
-    const bound = Math.max(tailSeq, reservation.seq + WORK_LOG_SEQ_RESERVE_BLOCK);
-    await rewriteBothReservations(sidecarPath, bound);
+    const bound = reservation.seq + WORK_LOG_SEQ_RESERVE_BLOCK;
+    await rewriteBothReservations(sidecarPath, reservation.seq, bound);
     logger.warn('Work log reservation recovered from its backup; both copies rewritten', {
       conversationId,
       tailSeq,
@@ -771,13 +798,19 @@ async function writeEntry(
     throw new Error('Work log entry exceeds the line size limit');
   }
   const line = `${state.needsLeadingNewline ? '\n' : ''}${json}\n`;
+  let reachedLog = false;
   try {
     await ensureDir();
-    if (entry.seq > state.reservedSeq) {
-      const reservedSeq = entry.seq + WORK_LOG_SEQ_RESERVE_BLOCK - 1;
-      await writeReservation(files.sidecar, reservedSeq);
-      state.reservedSeq = reservedSeq;
+    // Reserve in one-block steps from the previous live value, each durable
+    // before the next, so live never jumps more than a block past what `.bak`
+    // will hold (see assertReservationStep). With seqs burned only inside a
+    // reservation this is a single step; the loop keeps any larger gap in steps.
+    while (entry.seq > state.reservedSeq) {
+      const next = state.reservedSeq + WORK_LOG_SEQ_RESERVE_BLOCK;
+      await writeReservation(files.sidecar, state.reservedSeq, next);
+      state.reservedSeq = next;
     }
+    reachedLog = true;
     await appendDurably(files.log, line, state.fileMayBeNew);
     // A possible create is now an obligation in dirSyncDue, which outlives this state.
     state.fileMayBeNew = false;
@@ -785,12 +818,17 @@ async function writeEntry(
     // left by an earlier failed attempt of this or another conversation.
     await syncDueDirs();
   } catch (error) {
-    // The file may now hold nothing, part, or all of the line. Burn the seq — it
-    // may be on disk (readable, never broadcast), so it is never reissued — and
-    // re-read only whether the file ends mid-line before the next write. The
-    // reservation in memory is still durable, so nothing is re-derived from disk.
-    state.lastSeq = entry.seq;
-    state.tailUnknown = true;
+    if (reachedLog) {
+      // The file may now hold nothing, part, or all of the line. Burn the seq —
+      // it may be on disk (readable, never broadcast), so it is never reissued —
+      // and re-read only whether the file ends mid-line before the next write.
+      // It is inside the durable reservation, so nothing is re-derived from disk.
+      state.lastSeq = entry.seq;
+      state.tailUnknown = true;
+    }
+    // Otherwise the failure came before the log was touched (directory or
+    // reservation write): the seq was never used, and burning it would let the
+    // next reservation outrun the one-block step. The next append retries it.
     logger.error('Failed to persist work log entry', { conversationId, seq: entry.seq, error });
     throw error;
   }
