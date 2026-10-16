@@ -2405,11 +2405,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .card-question-multi { font-size: 12px; color: var(--ib-muted); }
 .card .card-question-choices { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .card .choice-divider { display: none; }
-.card .choice-row-recommended { order: 2; }
-.card .btn-choice { font-size: 13px; padding: 5px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); text-align: left; }
+.card .choice-row-recommended { order: 2; max-width: 100%; min-width: 0; }
+.card .btn-choice { font-size: 13px; padding: 5px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); text-align: left; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
 .card .btn-choice-recommended::before { content: none; }
 .card .choice-row-recommended .btn-choice-recommended,
-.card .btn-choice-recommended { display: inline-flex; align-items: center; width: auto; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
+.card .btn-choice-recommended { display: inline-block; width: auto; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
 
 /* ── PANEL PENDING QUESTION ── */
 .panel-question {
@@ -3758,7 +3758,13 @@ function timeAgo(iso) {
   if (ms < 86400000) return Math.floor(ms / 3600000) + 'h ago';
   return Math.floor(ms / 86400000) + 'd ago';
 }
+// A finite number or 0 — numeric fields pass through this before they reach markup.
+function toNum(v) {
+  var n = Number(v);
+  return isFinite(n) ? n : 0;
+}
 function formatTokens(n) {
+  n = toNum(n);
   if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
   if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
   return String(n);
@@ -4346,28 +4352,78 @@ function renderTimeline(s) {
 // per conversation. Only a complete fetch for the session's current
 // lastActivity counts as fresh. A failure — or a partial result (the
 // instruction loaded, the raw response did not) — keeps what it has and is
-// retried: automatically on a backoff (1, 2, 4 … 30 s) for at most
-// IO_AUTO_RETRIES attempts, which board re-renders cannot extend; every reopen
-// of the card retries once more; and a landed turn starts a fresh cycle.
+// retried on a backoff (1, 2, 4 … 30 s).
+// Two clocks, deliberately separate:
+//   - the retry DEADLINE and backoff STEP belong to the conversation: they keep
+//     growing through an outage no matter how often lastActivity changes;
+//   - the retry BUDGET (IO_AUTO_RETRIES automatic attempts) belongs to one
+//     lastActivity stamp: newer content earns a fresh budget, never an earlier
+//     deadline.
+// While in error, only the deadline timer (or an explicit reopen) sends a
+// request; board renders and landed turns can at most arm that timer.
 var IO_RETRY_MAX_MS = 30000;
 var IO_AUTO_RETRIES = 6;
-function ioBackoffMs(fails) {
-  return Math.min(IO_RETRY_MAX_MS, 1000 * Math.pow(2, Math.max(0, fails - 1)));
+function ioBackoffMs(step) {
+  return Math.min(IO_RETRY_MAX_MS, 1000 * Math.pow(2, Math.max(0, step - 1)));
 }
-// Pure freshness rule: loading → wait; ok → fresh only for the same stamp;
-// error → never fresh: refetch when forced (reopen) or when the session's
-// lastActivity moved past the stamp the error was recorded for (newer content
-// → a fresh cycle); for the same stamp only while automatic attempts remain
-// and the backoff has run out.
-function ioNeedsFetch(c, stamp, force, now) {
+// Pure: may this call send a request now? fromTimer = the deadline timer fired.
+//   loading → no · ok → only for a newer stamp · error → reopen (force), or the
+//   deadline timer once the deadline passed and this stamp still has budget
+//   (a newer stamp always does).
+function ioNeedsFetch(c, stamp, force, now, fromTimer) {
   if (!c) return true;
   if (c.state === 'loading') return false;
   if (c.state === 'ok') return c.stamp !== stamp;
-  if (force || c.stamp !== stamp) return true;
-  if ((c.fails || 0) > IO_AUTO_RETRIES) return false;
-  return now >= (c.retryAt || 0);
+  if (force) return true;
+  if (!fromTimer || now < (c.retryAt || 0)) return false;
+  return ioHasBudget(c, stamp);
+}
+// Pure: an errored entry still wants an automatic retry for this stamp.
+function ioHasBudget(c, stamp) {
+  return c.stamp !== stamp || (c.fails || 0) <= IO_AUTO_RETRIES;
 }
 
+// One pending retry timer per conversation, set for the conversation's deadline.
+var _ioTimers = Object.create(null);
+function scheduleCardIoRetry(cid, at) {
+  if (_ioTimers[cid]) return;
+  _ioTimers[cid] = true;
+  setTimeout(function() {
+    delete _ioTimers[cid];
+    retryCardIo(cid);
+  }, Math.max(0, at - Date.now()));
+}
+
+// force = the card was just (re)opened (explicit user action).
+// fromTimer = the conversation's retry deadline fired.
+function ensureCardIo(key, force, fromTimer) {
+  var s = _sessionCache[key];
+  if (!s || !s.conversationId || isSiblingSession(s)) return;
+  var cid = s.conversationId;
+  var stamp = String(s.lastActivity || '');
+  var c = _ioCache[cid];
+  if (!ioNeedsFetch(c, stamp, force, Date.now(), fromTimer)) {
+    // In error, a render or a landed turn only arms the deadline timer.
+    if (c && c.state === 'error' && ioHasBudget(c, stamp)) scheduleCardIoRetry(cid, c.retryAt || 0);
+    return;
+  }
+  var prev = c ? c.data : null;
+  // Budget per stamp; deadline and step per conversation (they survive stamps).
+  var fails = c && c.state === 'error' && c.stamp === stamp ? (c.fails || 0) : 0;
+  var step = c ? (c.step || 0) : 0;
+  _ioCache[cid] = { state: 'loading', stamp: stamp, data: prev, dirty: false, fails: fails, step: step, retryAt: c ? (c.retryAt || 0) : 0 };
+  function failed(data) {
+    var n = fails + 1;
+    var nextStep = step + 1;
+    var at = Date.now() + ioBackoffMs(nextStep);
+    settleCardIo(cid, { state: 'error', stamp: stamp, data: data, fails: n, step: nextStep, retryAt: at });
+    if (n <= IO_AUTO_RETRIES) scheduleCardIoRetry(cid, at);
+  }
+  fetchCardIo(cid).then(function(result) {
+    if (result && result.partial) failed(result); // keep the instruction, retry the response
+    else settleCardIo(cid, { state: 'ok', stamp: stamp, data: result, fails: 0, step: 0, retryAt: 0 });
+  }, function() { failed(prev); });
+}
 function renderCardIo(s) {
   if (!s.conversationId) return '';
   var c = _ioCache[s.conversationId];
@@ -4451,11 +4507,11 @@ function ensureCardIo(key, force) {
     else settleCardIo(cid, { state: 'ok', stamp: stamp, data: result, fails: 0 });
   }, function() { failed(prev); });
 }
-// Backoff timer fired: retry for the first card of that conversation still open.
+// Deadline timer fired: retry for the first card of that conversation still open.
 function retryCardIo(cid) {
   for (var k in _cardEls) {
     var s = _sessionCache[k];
-    if (s && s.conversationId === cid && _expanded.has(k)) { ensureCardIo(k, false); return; }
+    if (s && s.conversationId === cid && _expanded.has(k)) { ensureCardIo(k, false, true); return; }
   }
 }
 function settleCardIo(cid, entry) {
@@ -4467,14 +4523,13 @@ function settleCardIo(cid, entry) {
   }
   if (wasDirty) invalidateCardIo(cid);
 }
-// A turn landed for this conversation — refetch for any open card.
+// A turn landed for this conversation — new content: refetch for any open card
+// (in error: a fresh budget, still paced by the conversation's deadline).
 function invalidateCardIo(cid) {
   var c = cid && _ioCache[cid];
   if (!c) return;
   if (c.state === 'loading') { c.dirty = true; return; }
   c.stamp = null;
-  c.retryAt = 0;
-  c.fails = 0; // new content exists: a fresh retry cycle
   for (var k in _cardEls) {
     var s = _sessionCache[k];
     if (s && s.conversationId === cid && _expanded.has(k)) ensureCardIo(k, false);
@@ -4544,7 +4599,7 @@ function renderCardBody(s, col) {
   const statParts = [];
   // Numbers are coerced before they reach markup (defence in depth — a
   // non-number field must render as text, never as markup).
-  const num = function(v) { return Number(v) || 0; };
+  const num = toNum;
   if (s.tokenUsage && dhShow('tokens')) statParts.push('<span class="card-tokens">' + formatTokens(num(s.tokenUsage.totalInputTokens) + num(s.tokenUsage.totalOutputTokens)) + ' tok</span>');
   if (s.tokenUsage && dhShow('cost')) statParts.push('<span class="card-tokens"><span class="cost">$' + num(s.tokenUsage.totalCostUsd).toFixed(2) + '</span></span>');
   if (dhShow('mergestats') && s.mergeStats) statParts.push('<span class="card-merge">+' + num(s.mergeStats.totalLinesAdded) + ' / -' + num(s.mergeStats.totalLinesDeleted) + '</span>');
@@ -4587,7 +4642,7 @@ function renderCardBody(s, col) {
         return '<button class="btn-choice"' + readOnlyAttrs + choiceDataAttrs(s.key, c.id, lbl, pq.question) + ' title="' + escAttr(btnTitle) + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
       }).join('');
       questionHtml = '<div class="card-question">'
-        + (pq.question === faceSummary ? '' : '<div class="card-question-text">&#x2753; ' + esc(pq.question).slice(0, 80) + '</div>')
+        + (pq.question === faceSummary ? '' : '<div class="card-question-text">&#x2753; ' + esc(String(pq.question || '').slice(0, 80)) + '</div>')
         + '<div class="card-question-choices">' + recHtml + otherBtns + '</div>'
         + '</div>';
     } else if (s.pendingQuestion.type === 'user_choices') {
@@ -5442,13 +5497,13 @@ function updateTokenStats() {
     const s = _sessionCache[key];
     if (currentUserId && s.ownerId !== currentUserId) continue;
     if (!s.tokenUsage) continue;
-    var t = s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens;
+    var t = toNum(s.tokenUsage.totalInputTokens) + toNum(s.tokenUsage.totalOutputTokens);
     totalTokens += t;
-    totalCost += s.tokenUsage.totalCostUsd;
+    totalCost += toNum(s.tokenUsage.totalCostUsd);
     var envName = (s.environment && s.environment.instanceName) || '';
     if (!byEnv[envName]) byEnv[envName] = { tokens: 0, cost: 0 };
     byEnv[envName].tokens += t;
-    byEnv[envName].cost += s.tokenUsage.totalCostUsd;
+    byEnv[envName].cost += toNum(s.tokenUsage.totalCostUsd);
   }
   document.getElementById('stat-tokens').textContent = formatTokens(totalTokens);
   document.getElementById('stat-cost').textContent = '$' + totalCost.toFixed(2);
@@ -5754,6 +5809,8 @@ function paintWorkLog(state, added) {
 // Owner-only log (403 on any path) — only for the conversation still open.
 function showWorkLogDenied(state) {
   if (state !== _wl || state.closed) return;
+  // Live entries painted before the 403 go too: the log is owner-only.
+  state.entries = [];
   var list = document.getElementById('worklog-list');
   setTextIfChanged(document.getElementById('worklog-count'), '');
   if (list) list.innerHTML = '<div class="wl-empty">' + esc(WL_FORBIDDEN_MSG) + '</div>';
@@ -5857,8 +5914,8 @@ function openPanel(sessionKey, focusWorkLog) {
   // Links
   const linksEl = document.getElementById('panel-links');
   const linkHtml = [];
-  if (s.issueUrl) linkHtml.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener">&#x1F4CB; ' + esc(s.issueLabel || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(s.issueTitle).slice(0, 50) : '') + '</a>');
-  if (s.prUrl) linkHtml.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener">&#x1F500; ' + esc(s.prLabel || 'PR') + (s.prTitle ? ' &mdash; ' + esc(s.prTitle).slice(0, 50) : '') + '</a>');
+  if (s.issueUrl) linkHtml.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener">&#x1F4CB; ' + esc(s.issueLabel || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(String(s.issueTitle).slice(0, 50)) : '') + '</a>');
+  if (s.prUrl) linkHtml.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener">&#x1F500; ' + esc(s.prLabel || 'PR') + (s.prTitle ? ' &mdash; ' + esc(String(s.prTitle).slice(0, 50)) : '') + '</a>');
   if (s.slackThreadUrl) linkHtml.push('<a href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">&#x1F4AC; Slack Thread</a>');
   if (s.conversationId) linkHtml.push('<a href="/conversations/' + esc(s.conversationId) + '" target="_blank">&#x1F4DD; Full Conversation</a>');
   linksEl.innerHTML = linkHtml.join('') || '<span style="font-size:0.78em;color:var(--text-secondary)">No links</span>';
@@ -5869,11 +5926,11 @@ function openPanel(sessionKey, focusWorkLog) {
     let tokHtml = [
       '<span class="token-badge"><span class="tok-label">Input:</span> <span class="tok-value">' + formatTokens(s.tokenUsage.totalInputTokens) + '</span></span>',
       '<span class="token-badge"><span class="tok-label">Output:</span> <span class="tok-value">' + formatTokens(s.tokenUsage.totalOutputTokens) + '</span></span>',
-      '<span class="token-badge"><span class="tok-label">Cost:</span> <span class="tok-cost">$' + s.tokenUsage.totalCostUsd.toFixed(3) + '</span></span>',
-      '<span class="token-badge"><span class="tok-label">Context:</span> <span class="tok-value">' + s.tokenUsage.contextUsagePercent.toFixed(1) + '%</span></span>',
+      '<span class="token-badge"><span class="tok-label">Cost:</span> <span class="tok-cost">$' + toNum(s.tokenUsage.totalCostUsd).toFixed(3) + '</span></span>',
+      '<span class="token-badge"><span class="tok-label">Context:</span> <span class="tok-value">' + toNum(s.tokenUsage.contextUsagePercent).toFixed(1) + '%</span></span>',
     ].join('');
     if (s.mergeStats) {
-      tokHtml += '<span class="token-badge" style="border-color:var(--green)"><span class="tok-label">Merge:</span> <span style="color:var(--green)">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</span></span>';
+      tokHtml += '<span class="token-badge" style="border-color:var(--green)"><span class="tok-label">Merge:</span> <span style="color:var(--green)">+' + toNum(s.mergeStats.totalLinesAdded) + ' / -' + toNum(s.mergeStats.totalLinesDeleted) + '</span></span>';
     }
     tokensEl.innerHTML = tokHtml;
   } else {
@@ -6082,7 +6139,7 @@ function renderTurn(t, _idx, _arr, convId) {
     if (t.summaryBody) {
       body = '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>';
     } else if (t.summarized) {
-      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">Summary failed <button class="btn-action" style="margin-left:8px;font-size:10px;padding:2px 8px" onclick="event.stopPropagation();resummarize(\\'' + esc(convId || panelConvId) + '\\',\\'' + esc(t.id) + '\\',this)">&#x1F504; Retry</button></div>';
+      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">Summary failed <button class="btn-action" style="margin-left:8px;font-size:10px;padding:2px 8px" onclick="event.stopPropagation();resummarize(\\'' + escJs(convId || panelConvId) + '\\',\\'' + escJs(t.id) + '\\',this)">&#x1F504; Retry</button></div>';
     } else {
       body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
     }
