@@ -23,8 +23,8 @@ import {
   THREADHEADER_DASHBOARD_LINK_ONCE_MARKER,
 } from '../migrate-threadheader-dashboard-link-once';
 
-// Fault injection: make the config.json write throw on demand.
-const fault = vi.hoisted(() => ({ failConfigWrite: false }));
+// Fault injection: make the config.json write or the marker write throw on demand.
+const fault = vi.hoisted(() => ({ failConfigWrite: false, failMarkerWrite: false }));
 vi.mock('@soma/common/atomic-write', async (importOriginal) => {
   const orig = await importOriginal<typeof import('@soma/common/atomic-write')>();
   return {
@@ -33,8 +33,17 @@ vi.mock('@soma/common/atomic-write', async (importOriginal) => {
       if (fault.failConfigWrite && target.endsWith('config.json')) throw new Error('injected write failure');
       return orig.atomicWriteFile(target, data, opts);
     },
+    atomicWriteJson: (target: string, value: unknown, opts?: Parameters<typeof orig.atomicWriteJson>[2]) => {
+      if (fault.failMarkerWrite && target.endsWith(THREADHEADER_DASHBOARD_LINK_ONCE_MARKER_NAME)) {
+        throw new Error('injected marker failure');
+      }
+      return orig.atomicWriteJson(target, value, opts);
+    },
   };
 });
+// vi.mock is hoisted above the imports, so the factory cannot reference the
+// imported constant; the literal is asserted equal to it below.
+const THREADHEADER_DASHBOARD_LINK_ONCE_MARKER_NAME = '.threadheader-dashboard-link-once-2026-10-16.json';
 
 // Dist modules load their siblings through Node's own require: ThreadHeaderBuilder
 // reads `./surface-config` natively, a different instance from the one vitest
@@ -49,7 +58,9 @@ const { setThreadHeaderProviders, ThreadHeaderBuilder } = nativeRequire(
 ) as typeof import('@soma/slack/thread-header-builder');
 
 afterEach(() => {
+  vi.restoreAllMocks();
   fault.failConfigWrite = false;
+  fault.failMarkerWrite = false;
   resetUiSurfacesConfig();
   setThreadHeaderProviders({ getDashboardSessionUrl: () => undefined });
 });
@@ -318,5 +329,120 @@ describe('migrateThreadHeaderDashboardLinkOnce', () => {
     expect(JSON.stringify(SEED_E992DE7C)).not.toContain('dashboardLink');
     expect(Object.keys(SEED_E992DE7C.ui)).toEqual(['threadheader', 'turnend', 'dashboardheader']);
     expect(getSurfaceLines('threadheader', 'minimal').some((l) => fieldNames(l).includes('dashboardLink'))).toBe(true);
+  });
+
+  it('the marker literal used by the fault hook is the exported marker name', () => {
+    expect(THREADHEADER_DASHBOARD_LINK_ONCE_MARKER_NAME).toBe(THREADHEADER_DASHBOARD_LINK_ONCE_MARKER);
+  });
+
+  it('compare-and-swap: a writer landing between read and rename keeps its change, and the link is added', () => {
+    const host = makeHost({ mcpServers: {}, ui: SEED_E992DE7C.ui });
+    const realRead = fs.readFileSync;
+    let configReads = 0;
+    vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
+      const out = realRead(file, options as BufferEncoding);
+      if (file === host.configFile && ++configReads === 1) {
+        // Another writer (e.g. plugin-manager saveConfig) lands right after our read.
+        const other = JSON.parse(String(out));
+        other.mcpServers = { added: { command: 'other-writer' } };
+        fs.writeFileSync(host.configFile, `${JSON.stringify(other, null, 2)}\n`, 'utf8');
+      }
+      return out;
+    }) as typeof fs.readFileSync);
+
+    const result = run(host);
+    const readsDuringRun = configReads;
+    vi.restoreAllMocks();
+
+    expect(result).toMatchObject({ outcome: 'migrated', arraysChanged: 3 });
+    const after = readConfig(host.configFile);
+    expect(after.mcpServers).toEqual({ added: { command: 'other-writer' } });
+    expect(fieldNames(after.ui.threadheader.lines[2])).toEqual(['dashboardLink', 'linkhistory']);
+    expect(readsDuringRun).toBe(3); // read → CAS re-read mismatches → retry's CAS re-read matches
+  });
+
+  it('compare-and-swap: a file that keeps changing is left to the other writer — no write, no marker', () => {
+    const host = makeHost({ ui: SEED_E992DE7C.ui });
+    const realRead = fs.readFileSync;
+    let generation = 0;
+    vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
+      const out = realRead(file, options as BufferEncoding);
+      if (file === host.configFile) {
+        const other = JSON.parse(String(out));
+        other.generation = ++generation;
+        fs.writeFileSync(host.configFile, `${JSON.stringify(other, null, 2)}\n`, 'utf8');
+      }
+      return out;
+    }) as typeof fs.readFileSync);
+
+    const result = run(host);
+    vi.restoreAllMocks();
+
+    expect(result).toMatchObject({ outcome: 'contended', arraysChanged: 0 });
+    const after = readConfig(host.configFile);
+    expect(after.generation).toBe(generation);
+    expect(JSON.stringify(after.ui.threadheader)).not.toContain('dashboardLink');
+    expect(fs.existsSync(path.join(host.dataDir, THREADHEADER_DASHBOARD_LINK_ONCE_MARKER))).toBe(false);
+  });
+
+  it('config rewritten but marker write failed: the rerun changes no byte, adds no duplicate, writes the marker', () => {
+    const host = makeHost({ ui: SEED_E992DE7C.ui });
+    fault.failMarkerWrite = true;
+
+    expect(() => run(host)).toThrow('injected marker failure');
+    const migratedBytes = fs.readFileSync(host.configFile, 'utf8');
+    expect(fieldNames(readConfig(host.configFile).ui.threadheader.lines[2])).toEqual(['dashboardLink', 'linkhistory']);
+    expect(fs.existsSync(path.join(host.dataDir, THREADHEADER_DASHBOARD_LINK_ONCE_MARKER))).toBe(false);
+
+    fault.failMarkerWrite = false;
+    expect(run(host)).toMatchObject({ outcome: 'already-present', arraysChanged: 0 });
+
+    expect(fs.readFileSync(host.configFile, 'utf8')).toBe(migratedBytes);
+    expect(migratedBytes.match(/"dashboardLink"/g)).toHaveLength(3);
+    expect(fs.existsSync(path.join(host.dataDir, THREADHEADER_DASHBOARD_LINK_ONCE_MARKER))).toBe(true);
+  });
+
+  it('first boot already-present (marker written) → operator removes the link → next boot leaves it removed', () => {
+    const lines = [
+      { block: 'header', fields: [{ field: 'title', show: true }] },
+      {
+        block: 'context',
+        fields: [
+          { field: 'dashboardLink', show: true },
+          { field: 'links', show: true },
+        ],
+      },
+    ];
+    const host = makeHost({ ui: { threadheader: { lines } } });
+    expect(run(host).outcome).toBe('already-present');
+
+    const edited = readConfig(host.configFile);
+    edited.ui.threadheader.lines[1].fields.shift();
+    fs.writeFileSync(host.configFile, `${JSON.stringify(edited, null, 2)}\n`, 'utf8');
+    const before = fs.readFileSync(host.configFile, 'utf8');
+
+    expect(run(host).outcome).toBe('marker-present');
+    expect(fs.readFileSync(host.configFile, 'utf8')).toBe(before);
+    expect(before).not.toContain('dashboardLink');
+  });
+
+  it('skips a theme of only unknown/typo field names — it falls back to the base lines, not to a lone link', () => {
+    const typoTheme = [{ block: 'context', fields: [{ field: 'titel' }, { field: 'lnks', show: true }] }];
+    const base = [
+      { block: 'header', fields: [{ field: 'title', show: true }] },
+      { block: 'context', fields: [{ field: 'Name' }, { field: 'linkhistory', show: true }] },
+    ];
+    const host = makeHost({ ui: { threadheader: { lines: base, themes: { minimal: { lines: typoTheme } } } } });
+
+    expect(run(host)).toMatchObject({ outcome: 'migrated', arraysChanged: 1 });
+
+    const header = readConfig(host.configFile).ui.threadheader;
+    expect(header.themes.minimal.lines).toEqual(typoTheme);
+    // `Name` is the owner alias and counts as a known field; the link lands before linkhistory.
+    expect(fieldNames(header.lines[1])).toEqual(['Name', 'dashboardLink', 'linkhistory']);
+    // The typo theme still falls back to the base lines, which now carry the link.
+    expect(renderedTexts(readConfig(host.configFile).ui, 'minimal')).toContain(
+      '📋 <https://soma.example/dashboard/U1?session=k|작업 로그>',
+    );
   });
 });

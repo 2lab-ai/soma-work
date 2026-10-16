@@ -302,6 +302,8 @@ export { requireWriteAccess };
 
 let server: FastifyInstance | null = null;
 let activePort: number | null = null;
+/** True only between a successful listen() and stop/failure — links handed to Slack must resolve. */
+let listening = false;
 let heartbeatHandle: NodeJS.Timeout | null = null;
 let heartbeatPort: number | null = null;
 
@@ -377,11 +379,15 @@ export function getConversationUrl(conversationId: string): string {
 }
 
 /**
- * Deep link to one session's card on the owner's dashboard, or undefined without a viewer base URL.
- * @public — consumed via injected providers (src/index.ts thread header, src/slack/pipeline/session-initializer.ts).
+ * Deep link to one session's card on the owner's dashboard
+ * (`/dashboard/<ownerId>?session=<sessionKey>`). Undefined unless the viewer is
+ * actually listening — a Slack thread must not carry a dead link when the
+ * viewer failed to start or has stopped — or when there is no owner or key.
+ * @public — injected once in src/index.ts (`setThreadHeaderProviders`).
  */
 export function getDashboardSessionUrl(ownerId: string, sessionKey: string): string | undefined {
-  const base = getViewerBaseUrl();
+  if (!listening || !ownerId || !sessionKey) return undefined;
+  const base = getViewerBaseUrl().replace(/\/+$/, '');
   if (!base) return undefined;
   return `${base}/dashboard/${encodeURIComponent(ownerId)}?session=${encodeURIComponent(sessionKey)}`;
 }
@@ -597,6 +603,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     try {
       await server.listen({ port, host });
       activePort = port;
+      listening = true;
       logger.info(`Conversation viewer started on ${host}:${port}`);
       logger.info(`View at: ${getViewerBaseUrl()}/conversations`);
       if (config.conversation.viewerToken) {
@@ -634,6 +641,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
       return;
     } catch (error) {
+      listening = false;
       if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE' && attempt < MAX_PORT_RETRIES - 1) {
         logger.warn(`Port ${port} in use, trying ${port + 1}...`);
         continue;
@@ -648,6 +656,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
  * Stop the web server
  */
 export async function stopWebServer(): Promise<void> {
+  // Stop handing out dashboard links before the listener goes away.
+  listening = false;
   if (server) {
     // Flush hook state before closing
     try {

@@ -21,9 +21,10 @@
  *     right after the first `header`/`section` line, or first if there is none.
  *
  * Scope: `ui.threadheader.lines` and every `ui.threadheader.themes.<name>.lines`.
- * An empty or field-less array is skipped — it falls back to the built-in
- * default (which already has the link), and adding a lone line would replace
- * that whole default with just the link. No `ui` key: nothing to do, the loader
+ * An array with no field the thread header knows (empty, or only unknown /
+ * typo'd names) is skipped: surface-config drops it and falls back (theme →
+ * base lines → built-in default), and adding a lone line would replace that
+ * whole fallback with just the link. No `ui` key: nothing to do, the loader
  * seeds the current default.
  *
  * Runs once per DATA_DIR: the marker is written after a successful rewrite (or
@@ -36,6 +37,15 @@
  * placeholders survive verbatim (the hazard config-loader's ui seeding
  * describes); other keys keep their values and order, re-serialized by
  * config-loader's own writer (atomic tmp+rename, 2-space indent, 0600).
+ *
+ * Other config.json writers (CLI `somawork setup`, plugin-manager `saveConfig`)
+ * take no lock — there is none to share — and the DATA_DIR PID lock only
+ * excludes a second daemon boot. So the write is compare-and-swap: the bytes
+ * the rule was applied to are re-read right before the atomic write; if another
+ * writer changed the file in between, its bytes are re-parsed and the rule is
+ * re-applied (up to MAX_ATTEMPTS). Still contended after that: nothing is
+ * written, no marker, retried next boot. What remains is the window between
+ * that re-read and the rename itself.
  */
 
 import fs from 'node:fs';
@@ -43,11 +53,21 @@ import path from 'node:path';
 import { atomicWriteJson } from '@soma/common/atomic-write';
 
 import { writeConfigFileAtomically } from '../config-loader';
+import { resolveSurfaceField } from '../slack/surface-config';
 
 /** Presence of this file in DATA_DIR = migration done (never parsed). */
 export const THREADHEADER_DASHBOARD_LINK_ONCE_MARKER = '.threadheader-dashboard-link-once-2026-10-16.json';
 
-export type ThreadHeaderDashboardLinkOutcome = 'migrated' | 'already-present' | 'no-ui' | 'marker-present';
+/** Compare-and-swap rounds before giving up on a config.json another writer keeps changing. */
+const MAX_ATTEMPTS = 3;
+
+export type ThreadHeaderDashboardLinkOutcome =
+  | 'migrated'
+  | 'already-present'
+  | 'no-ui'
+  | 'marker-present'
+  /** Another writer changed config.json on every attempt; nothing written, retried next boot. */
+  | 'contended';
 
 export interface MigrateThreadHeaderDashboardLinkOnceParams {
   /** The live config.json (CONFIG_FILE). */
@@ -78,19 +98,21 @@ function fieldsOf(line: unknown): unknown[] | undefined {
   return undefined;
 }
 
-function fieldName(field: unknown): string | undefined {
-  return isPlainObject(field) && typeof field.field === 'string' ? field.field.toLowerCase() : undefined;
+/** The thread-header registry field an entry renders as, or undefined when surface-config would drop it. */
+function headerField(entry: unknown): string | undefined {
+  if (!isPlainObject(entry) || typeof entry.field !== 'string') return undefined;
+  return resolveSurfaceField('threadheader', entry.field)?.field;
 }
 
 /** Apply the additive rule to one lines array in place. Returns whether it changed. */
 function addDashboardLink(lines: unknown[]): boolean {
   const fieldLists = lines.map(fieldsOf);
-  if (!fieldLists.some((fields) => fields && fields.length > 0)) return false;
-  if (fieldLists.some((fields) => fields?.some((f) => fieldName(f) === FIELD.toLowerCase()))) return false;
+  const known = fieldLists.flatMap((fields) => (fields ?? []).map(headerField)).filter((f) => f !== undefined);
+  if (known.length === 0 || known.includes(FIELD)) return false;
 
   const entry = { field: FIELD, show: true };
   for (const fields of fieldLists) {
-    const at = fields?.findIndex((f) => fieldName(f) === 'links' || fieldName(f) === 'linkhistory') ?? -1;
+    const at = fields?.findIndex((f) => headerField(f) === 'links' || headerField(f) === 'linkhistory') ?? -1;
     if (fields && at >= 0) {
       fields.splice(at, 0, entry);
       return true;
@@ -103,23 +125,14 @@ function addDashboardLink(lines: unknown[]): boolean {
   return true;
 }
 
-export function migrateThreadHeaderDashboardLinkOnce(
-  params: MigrateThreadHeaderDashboardLinkOnceParams,
-): MigrateThreadHeaderDashboardLinkOnceResult {
-  const now = params.now ?? (() => new Date());
-  const markerFile = path.join(params.dataDir, THREADHEADER_DASHBOARD_LINK_ONCE_MARKER);
-
-  if (fs.existsSync(markerFile)) return { outcome: 'marker-present', arraysChanged: 0, markerFile };
-  // No config / no `ui`: no marker, so a config.json that turns up later
-  // (restored backup) is still checked; a fresh seed already has the field.
-  if (!params.configFile || !fs.existsSync(params.configFile)) {
-    return { outcome: 'no-ui', arraysChanged: 0, markerFile };
-  }
-
-  // Throws on unreadable / non-object JSON before anything is written.
-  const parsed: unknown = JSON.parse(fs.readFileSync(params.configFile, 'utf8'));
-  if (!isPlainObject(parsed)) throw new Error(`config.json root is not an object: ${params.configFile}`);
-  if (!isPlainObject(parsed.ui)) return { outcome: 'no-ui', arraysChanged: 0, markerFile };
+/** Parse config.json bytes and apply the rule. `null` = no usable `ui` key. Throws on non-object JSON. */
+function applyRule(
+  configFile: string,
+  bytes: string,
+): { parsed: Record<string, unknown>; arraysChanged: number } | null {
+  const parsed: unknown = JSON.parse(bytes);
+  if (!isPlainObject(parsed)) throw new Error(`config.json root is not an object: ${configFile}`);
+  if (!isPlainObject(parsed.ui)) return null;
 
   const header = parsed.ui.threadheader;
   const arrays: unknown[][] = [];
@@ -131,13 +144,45 @@ export function migrateThreadHeaderDashboardLinkOnce(
       }
     }
   }
-  const arraysChanged = arrays.filter((lines) => addDashboardLink(lines)).length;
+  return { parsed, arraysChanged: arrays.filter((lines) => addDashboardLink(lines)).length };
+}
 
-  if (arraysChanged > 0) {
-    writeConfigFileAtomically(params.configFile, `${JSON.stringify(parsed, null, 2)}\n`);
+export function migrateThreadHeaderDashboardLinkOnce(
+  params: MigrateThreadHeaderDashboardLinkOnceParams,
+): MigrateThreadHeaderDashboardLinkOnceResult {
+  const now = params.now ?? (() => new Date());
+  const markerFile = path.join(params.dataDir, THREADHEADER_DASHBOARD_LINK_ONCE_MARKER);
+  const writeMarker = (arraysChanged: number) => {
+    fs.mkdirSync(params.dataDir, { recursive: true });
+    atomicWriteJson(markerFile, { migratedAt: now().toISOString(), arraysChanged });
+  };
+
+  if (fs.existsSync(markerFile)) return { outcome: 'marker-present', arraysChanged: 0, markerFile };
+  // No config / no `ui`: no marker, so a config.json that turns up later
+  // (restored backup) is still checked; a fresh seed already has the field.
+  if (!params.configFile || !fs.existsSync(params.configFile)) {
+    return { outcome: 'no-ui', arraysChanged: 0, markerFile };
   }
-  fs.mkdirSync(params.dataDir, { recursive: true });
-  atomicWriteJson(markerFile, { migratedAt: now().toISOString(), arraysChanged });
 
-  return { outcome: arraysChanged > 0 ? 'migrated' : 'already-present', arraysChanged, markerFile };
+  // Throws on unreadable / non-object JSON before anything is written.
+  let bytes = fs.readFileSync(params.configFile, 'utf8');
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const applied = applyRule(params.configFile, bytes);
+    if (!applied) return { outcome: 'no-ui', arraysChanged: 0, markerFile };
+    if (applied.arraysChanged === 0) {
+      writeMarker(0);
+      return { outcome: 'already-present', arraysChanged: 0, markerFile };
+    }
+
+    // Compare-and-swap: only replace the exact bytes the rule was applied to.
+    const current = fs.readFileSync(params.configFile, 'utf8');
+    if (current !== bytes) {
+      bytes = current;
+      continue;
+    }
+    writeConfigFileAtomically(params.configFile, `${JSON.stringify(applied.parsed, null, 2)}\n`);
+    writeMarker(applied.arraysChanged);
+    return { outcome: 'migrated', arraysChanged: applied.arraysChanged, markerFile };
+  }
+  return { outcome: 'contended', arraysChanged: 0, markerFile };
 }
