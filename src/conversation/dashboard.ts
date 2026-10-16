@@ -1896,7 +1896,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 .app { display: flex; flex-direction: column; min-height: 100vh; }
 
-/* ── TOPBAR — strict horizontal grid ── */
+/* ── TOPBAR — strict horizontal grid ──
+   One row from 1024px; below that the nav (user select · Conversations · admin
+   toggle) takes its own row under brand · status · account (BOARD RESPONSIVE).
+   No control ever wraps or cuts its label: everything is nowrap and flex: none.
+   Only user names are ever shortened, always with a visible ellipsis and the
+   full name in title: the pill's name when its row is full, and the selected
+   user's name when it is wider than its cap — 180px on the one-row bar (≥1024,
+   even when the row has room), the whole nav row below 1024px. */
 .topbar {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -1904,7 +1911,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 48px;
+  min-height: 48px;
   min-width: 0;
 }
 .topbar h1 {
@@ -1913,11 +1920,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   letter-spacing: 0.08em;
   text-transform: uppercase;
   white-space: nowrap;
-  flex-shrink: 0;
+  flex: none;
 }
-.topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; min-width: 0; }
+/* One row (≥1024): the nav never shrinks below its controls (so none of them
+   paints past it into the account group); the selected name is capped instead
+   (.user-select max-inline-size), and the account group is what gives way — the
+   pill's name ends in an ellipsis. The cap keeps "Logged in as <realistic name>"
+   whole at 1024px even with "Reconnecting..." and touch padding. */
+.topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; flex: none; }
+.topbar .topbar-account { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 0 1 auto; }
 .topbar .nav a,
-.topbar .nav select {
+.topbar .nav .user-select {
   background: var(--surface-raised);
   color: var(--text-secondary);
   border: 1px solid var(--border);
@@ -1929,10 +1942,58 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   cursor: pointer;
   transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease);
   min-height: 32px;
+  white-space: nowrap;
+  flex: none;
 }
-.topbar .nav select { min-width: 0; inline-size: clamp(72px, 24vw, 140px); }
+.topbar .nav a { display: inline-flex; align-items: center; gap: 4px; }
+/* User select: a visible label sized to the selected option, with the native
+   <select> laid transparently over it (it still takes every click, tap and key).
+   A native select cannot show an ellipsis in WebKit — it hard-cuts the text —
+   so the label carries the ellipsis and the select carries the full name in title. */
+.topbar .nav .user-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between; /* chevron at the right edge when the select fills the row */
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-inline-size: 180px;
+  /* WebKit counts the ellipsized label's full text in this box's scrollable
+     overflow and passes it up to the page (25px of sideways scroll at 320px
+     with a long name selected); nothing in here is meant to extend past it. */
+  overflow: hidden;
+}
+/* Decorations never take a tap: the chevron's transform makes it a stacking
+   context painted above the select, so without pointer-events: none a tap on
+   it would land on the wrapper and the picker would not open. */
+.topbar .user-select-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.topbar .user-select::after {
+  content: '';
+  pointer-events: none;
+  flex: none;
+  inline-size: 6px;
+  block-size: 6px;
+  margin: -3px 2px 0;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+.topbar .user-select select {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  opacity: 0;
+  cursor: pointer;
+  appearance: none;
+  border: 0;
+  font: inherit;
+}
+.topbar .user-select:has(select:focus-visible) { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .topbar .nav a:hover,
-.topbar .nav select:hover { border-color: var(--accent); color: var(--text); }
+.topbar .nav .user-select:hover { border-color: var(--accent); color: var(--text); }
 
 /* ── USER PILL — "Logged in as <name>" + logout, rendered from /auth/me ── */
 .topbar .user-pill {
@@ -1952,6 +2013,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   white-space: nowrap;
   max-width: 260px;
   min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1981,6 +2043,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   letter-spacing: 0.04em;
   cursor: pointer;
   min-height: 32px;
+  white-space: nowrap;
+  flex: none;
+  align-items: center;
   transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease), background var(--speed) var(--ease);
 }
 .topbar .admin-toggle:hover { border-color: var(--accent); color: var(--text); }
@@ -2000,6 +2065,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   cursor: pointer;
   min-height: 32px;
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: center;
   transition: border-color var(--speed) var(--ease), transform 0.2s var(--ease);
@@ -2016,6 +2082,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   text-transform: uppercase;
   background: var(--surface-raised);
   border: 1px solid var(--border);
+  white-space: nowrap;
+  flex: none;
 }
 
 /* ── MAIN — board-first column, capped at 1280px and centred (.prd/10 §5) ── */
@@ -3063,9 +3131,41 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     padding-bottom: 8px;
   }
   .kanban[data-view="board"] > .kanban-col { scroll-snap-align: start; }
+  /* Top bar: brand · status · account on the first row, the nav on its own row below, full labels. */
+  .topbar { flex-wrap: wrap; padding: 8px 20px; row-gap: 8px; }
+  /* Basis 0: the account group never pushes itself onto a row of its own — a
+     long name ends in an ellipsis inside the pill instead. */
+  .topbar .topbar-account { flex: 1 1 0; justify-content: flex-end; }
+  .topbar .nav { order: 1; flex: 1 0 100%; margin-left: 0; flex-wrap: wrap; min-width: 0; }
+  /* The nav row is full width: a selected name can use all of it (the other
+     controls move to the next line first); only a name wider than the row ends
+     in an ellipsis. */
+  .topbar .nav .user-select { max-inline-size: 100%; }
 }
 @media (max-width: 639px) {
   .main { padding: 14px 12px; }
+  /* Top bar: the status badge becomes a 10px dot (aria-label preserved for SR),
+     the "Logged in as" prefix goes, and the user select fills the nav row (which
+     wraps rather than overflow on very small screens). Labels stay whole. */
+  .topbar { padding: 6px 12px; gap: 6px 8px; }
+  .topbar h1 { font-size: 12px; }
+  .topbar .ws-badge {
+    display: inline-block;
+    inline-size: 10px;
+    block-size: 10px;
+    padding: 0;
+    border-radius: 50%;
+    text-indent: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    flex-shrink: 0;
+    min-width: 0;
+  }
+  .topbar .nav .user-select { flex: 1 1 auto; }
+  .topbar .user-pill { padding: 4px 10px; }
+  .topbar .user-pill-prefix { display: none; }
+  .topbar .admin-toggle { padding: 4px 10px; }
+  #theme-toggle { inline-size: 32px; block-size: 32px; padding: 0; flex-shrink: 0; }
   .inbox-head { margin-bottom: 12px; }
   .crumbs { font-size: 15px; gap: 7px; }
   .kanban[data-view="board"] { grid-template-columns: repeat(3, minmax(min(300px, 84vw), 1fr)); }
@@ -3088,48 +3188,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .stat-card .label { font-size: 10px; }
   .chart-row { flex-direction: column; }
   .slide-panel { width: 100vw; right: -100vw; }
-  .topbar { padding: 0 10px; gap: 6px; }
-  .topbar h1 { font-size: 12px; }
-  .topbar .nav { gap: 4px; }
-  .topbar .nav a, .topbar .nav select { font-size: 11px; padding: 4px 8px; }
-  .topbar .nav .nav-text { display: none; }
-  .topbar .nav .nav-icon { display: inline !important; }
-  /* ws-badge → 10px round dot; aria-label preserved for SR */
-  .topbar .ws-badge {
-    display: inline-block;
-    inline-size: 10px;
-    block-size: 10px;
-    padding: 0;
-    border-radius: 50%;
-    text-indent: 100%;
-    white-space: nowrap;
-    overflow: hidden;
-    flex-shrink: 0;
-    min-width: 0;
-  }
-  .topbar .user-pill { max-width: 140px; padding: 4px 8px; }
-  .topbar .user-pill-prefix { display: none; }
-  .topbar .admin-toggle { padding: 4px 8px; font-size: 11px; }
-  #theme-toggle {
-    inline-size: 32px;
-    block-size: 32px;
-    padding: 0;
-    flex-shrink: 0;
-  }
-}
-@media (max-width: 480px) {
-  .topbar { padding: 0 8px; gap: 4px; }
-  .topbar h1 {
-    font-size: 11px;
-    flex-shrink: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .topbar .user-pill { max-width: 100px; }
-  .topbar .nav select { inline-size: clamp(60px, 22vw, 100px); }
-  .topbar .admin-mode-prefix { display: none; }
-  .topbar .admin-toggle { font-size: 10px; padding: 4px 6px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
@@ -3148,7 +3206,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-send { min-height: 44px; padding: 12px 16px; }
   .panel-command input { min-height: 44px; padding: 12px 16px; }
   .panel-close { width: 40px; height: 40px; }
-  .topbar .nav a, .topbar .nav select { min-height: 40px; padding: 8px 16px; }
+  .topbar .nav a, .topbar .nav .user-select { min-height: 40px; padding: 8px 16px; }
   .period-btn { min-height: 40px; padding: 12px 20px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
@@ -3159,16 +3217,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    stay AFTER @media (pointer: coarse) in source order so the more
    specific (combined) query wins the cascade. ── */
 @media (max-width: 680px) and (pointer: coarse) {
-  .topbar .nav a, .topbar .nav select { padding: 4px 8px; }
+  .topbar .nav a, .topbar .nav .user-select { padding: 4px 8px; }
 }
 @media (max-width: 480px) and (pointer: coarse) {
-  .topbar .nav a, .topbar .nav select { padding: 4px 6px; }
+  .topbar .nav a, .topbar .nav .user-select { padding: 4px 6px; }
 }
 /* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens.
    Heights only, so the #800 topbar width fit is untouched; the theme toggle keeps
    its 32px square (pinned by #800) and gets a 44px-wide hit slop instead. ── */
 @media (max-width: 639px), (pointer: coarse) {
-  .topbar .nav a, .topbar .nav select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
+  .topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
   #theme-toggle { min-block-size: 44px; position: relative; }
   #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
   .period-btn { min-height: 44px; }
@@ -3189,10 +3247,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     <h1>&#x26A1; soma-work</h1>
     <span class="ws-badge" id="ws-status" role="status" aria-label="WebSocket: Connecting">Connecting...</span>
     <div class="nav">
-      <select id="user-select" onchange="selectUser(this.value)">
+      <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">All Users</span><select id="user-select" title="All Users" onchange="selectUser(this.value)">
         <option value="">All Users</option>
-      </select>
-      <a href="/conversations">&#x1F4DD; <span class="nav-text">Conversations</span><span class="nav-icon" style="display:none">Conv</span></a>
+      </select></span>
+      <a href="/conversations"><span aria-hidden="true">&#x1F4DD;</span>Conversations</a>
       <button
         id="admin-mode-toggle"
         type="button"
@@ -3202,6 +3260,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         title="Toggle admin write mode (#716)"
         onclick="toggleAdminMode()"
       ><span id="admin-mode-label"><span class="admin-mode-prefix">Admin: </span><span class="admin-mode-state">OFF</span></span></button>
+    </div>
+    <div class="topbar-account">
       <span
         class="user-pill"
         id="user-pill"
@@ -3607,6 +3667,7 @@ function _applyUserPill(data) {
     return;
   }
   nameEl.textContent = label;
+  nameEl.title = label; // the name may end in an ellipsis
   pill.style.display = 'inline-flex';
   pill.classList.toggle('is-admin', isAdmin);
   pill.setAttribute('data-clickable', 'true');
@@ -3659,10 +3720,10 @@ function _renderAdminModeButton() {
   if (!btn || !lbl) return;
   const on = _isAdminModeOn();
   btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  // Prefer split-span structure (prefix + state) so CSS can hide the
-  // "Admin: " prefix at narrow viewports without losing the ON/OFF state.
-  // Falls back to flat textContent if the spans haven't been rendered yet
-  // (e.g. legacy template / unit test setup).
+  // Prefer split-span structure (prefix + state): only the ON/OFF state is
+  // rewritten, the "Admin: " prefix stays as rendered. Falls back to flat
+  // textContent if the spans haven't been rendered yet (e.g. legacy
+  // template / unit test setup).
   const stateEl = lbl.querySelector('.admin-mode-state');
   if (stateEl) stateEl.textContent = on ? 'ON' : 'OFF';
   else lbl.textContent = on ? 'Admin: ON' : 'Admin: OFF';
@@ -3853,9 +3914,23 @@ async function loadUsers() {
       select.appendChild(opt);
     }
   } catch (e) { console.error('Failed to load users', e); }
+  syncUserSelectLabel();
+}
+
+// The visible label over the transparent user <select> shows the selected
+// option; the select's title keeps the full name when the label is ellipsized.
+function syncUserSelectLabel() {
+  const select = document.getElementById('user-select');
+  const label = document.getElementById('user-select-label');
+  if (!select || !label) return;
+  const opt = select.options[select.selectedIndex];
+  const text = opt ? opt.textContent : '';
+  if (label.textContent !== text) label.textContent = text;
+  select.title = text;
 }
 
 function selectUser(userId) {
+  syncUserSelectLabel();
   currentUserId = userId;
   history.replaceState(null, '', userId ? '/dashboard/' + userId : '/dashboard');
   loadSessions();
@@ -5871,10 +5946,16 @@ function renderWorkLogEntry(e) {
   if (kind === 'tool' || kind === 'tool_result') {
     var fail = kind === 'tool_result' && e.ok === false;
     var mark = kind === 'tool' ? '&#x25B8;' : (fail ? '&#x2717;' : '&#x2713;');
+    // The emitter's text starts with the tool name ("Read {...}", "Glob ok");
+    // the name already has its own span, so the text shows only what follows.
+    var shown = text;
+    var tool = e.tool ? String(e.tool) : '';
+    if (tool && text === tool) shown = '';
+    else if (tool && text.indexOf(tool + ' ') === 0) shown = text.slice(tool.length + 1);
     return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + '"' + seqAttr + '>'
       + '<span class="wl-mark">' + mark + '</span>'
-      + (e.tool ? '<span class="wl-tool-name">' + esc(e.tool) + '</span>' : '')
-      + '<span class="wl-text" title="' + escAttr(text) + '">' + esc(text) + '</span>'
+      + (tool ? '<span class="wl-tool-name">' + esc(tool) + '</span>' : '')
+      + '<span class="wl-text" title="' + escAttr(text) + '">' + esc(shown) + '</span>'
       + timeHtml + '</div>';
   }
   if (kind === 'instruction') text = decodeSlackEntities(text);

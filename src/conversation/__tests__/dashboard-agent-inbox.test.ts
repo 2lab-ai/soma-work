@@ -335,7 +335,7 @@ describe('agent inbox board — responsive (§5)', () => {
     expect(block).toContain('.panel-close { width: 44px; height: 44px; }');
     expect(block).toContain('.period-btn { min-height: 44px; }');
     expect(block).toContain(
-      '.topbar .nav a, .topbar .nav select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }',
+      '.topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }',
     );
     expect(block).toContain('#theme-toggle { min-block-size: 44px; position: relative; }');
     expect(block).toContain('#panel-title-sub-regen { min-width: 44px; min-height: 44px; }');
