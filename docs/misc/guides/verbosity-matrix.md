@@ -35,7 +35,7 @@ Complete mapping of the output flags in `packages/slack/src/output-flags.ts` acr
 | 17 | `ERROR` | `1<<17` | **on** | on | on | on | Error messages and error status (**ALWAYS** shown) |
 | 18 | `SYSTEM` | `1<<18` | - | - | **on** | on | System / command responses, onboarding, conversation URL |
 | 19 | `RAW_DATA` | `1<<19` | - | - | - | **on** | Raw model response data (debug) |
-| 20 | `SKILL_INVOCATION` | `1<<20` | - | **on** | on | on | Skill invocation announcement |
+| 20 | `SKILL_INVOCATION` | `1<<20` | - | **on** | on | on | Skill invocation announcement — the model's Skill banner and the forced `$skill` / autoskill RPG banners (forced banners are always recorded as a work-log `notice`; posted only when on) |
 | 21 | `NARRATION` | `1<<21` | - | **on** | on | on | Mid-turn model narration (assistant text while the turn runs) |
 
 **Bold "on"** = the level where the flag first appears.
@@ -61,7 +61,7 @@ Each flag is checked at the point of output using `shouldOutput(flag, verbosityM
 |------|----------|-------|
 | `FINAL_RESULT` | `stream-processor.ts` | Always shown at minimal+ |
 | `NARRATION` | `stream-processor.ts` | `handleTextMessage` + interrupt rescue; when off, the segment equal to the SDK `finalText` is posted once at the result event |
-| `SKILL_INVOCATION` | `stream-processor.ts` | RPG skill banner (PHASE=0) |
+| `SKILL_INVOCATION` | `stream-processor.ts`, `src/slack/skill-fire-banner.ts` | Model Skill banner (PHASE=0); forced `$skill` / autoskill banners via `announceForcedSkillFire` (`skill-force-handler.ts`, `slack-handler.ts`) |
 | `THINKING` | `stream-processor.ts` | `getThinkingRenderMode()` |
 | `TOOL_CALL` | `stream-processor.ts` | `getToolCallRenderMode()` |
 | `TOOL_DETAIL` | `stream-processor.ts` | `getToolCallRenderMode()` |
@@ -94,7 +94,8 @@ paths:
   the threshold checker's "next turn will auto /compact" announcement (recorded at turn end
   through the same turn sink).
 - Conversation entries, with no `turnId`: the compaction start/complete notices, recorded by
-  `compact-hooks.ts` through `recordConversationWorkLog` (below).
+  `compact-hooks.ts` through `recordConversationWorkLog` (below), and the forced-skill banners
+  (below).
 
 A store that throws never breaks what records into it: the entry is dropped and reported at
 warn, throttled process-wide — the first drop at once, then at most one summary per
@@ -127,6 +128,11 @@ Entry contract for the final answer (the log is append-only):
   hooks or the stream's `compacting` status / `compact_boundary`), at every level, including a
   completion that arrives after the turn that ran the compaction has ended. The threshold
   announcement is a turn entry and carries the turn's `turnId`.
+- A forced-skill banner — a non-deferred `$skill` (`skill-force-handler.ts`), the autoskill fire
+  and the deferred first-instruction `$skill` on a fresh-context start (`slack-handler.ts`) — is
+  recorded once per fire as a `notice` carrying the banner text, against
+  `session.conversationId` through `recordConversationWorkLog` (no `turnId`; nothing without a
+  conversation), at every level, by `announceForcedSkillFire` (`src/slack/skill-fire-banner.ts`).
 - When the fallback (below) posts a segment that was already recorded as `narration`, that
   text appears once as `narration` and once as `final` — never two of either.
 
@@ -148,6 +154,12 @@ Entry contract for the final answer (the log is append-only):
   the thread (posted at `compact` or above) is still replaced in place by the completion (or,
   if that update fails, posted fresh — the existing fallback). At `compact` and above the
   compaction notices behave exactly as before this change.
+- Forced-skill RPG banners (`$skill`, autoskill) are not posted: they need `SKILL_INVOCATION`
+  (compact and above), the same flag as the model's own Skill banner, and are recorded as
+  work-log `notice` entries at every level (above). Only the banner is gated — the
+  `<invoked_skills>` block is appended to the prompt at every level, so the skill still runs.
+  The session's mask is read when the banner would be posted; with no session in scope it is
+  `detail`, as below.
 - Every consumer reads a stored mask through `resolveVerbosityMask`: a missing or non-numeric
   mask is `detail`.
 

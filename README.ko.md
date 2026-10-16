@@ -162,12 +162,12 @@ app-token 프롬프트는 금지된 자격증명 경로라 삭제됨), `scripts/
 |--------|------|--------|------|
 | `/z <topic> …` | 기본 명령어 surface (필요 시 Block Kit UI) | 유저 전역 | `/z persona set linus` |
 | `%<sub> …` | **현재 세션 전용** — 저장 없이 오버라이드 | 휘발성 (`new`/`renew` 시 초기화) | `%model opus` |
-| `$<skill>` / `$<plugin>:<skill>` | **강제 스킬 발동** (`SKILL.md` 로드, RPG 배너 출력) | 메시지 단위 | `$z`, `$stv:new-task` |
+| `$<skill>` / `$<plugin>:<skill>` | **강제 스킬 발동** (`SKILL.md` 로드, RPG 배너 출력 — `minimal`에서는 대시보드 작업 로그로) | 메시지 단위 | `$z`, `$stv:new-task` |
 | naked text | 화이트리스트 bare form 또는 채팅 / 워크플로우 디스패치 | n/a | `sessions`, `new`, `fix PR 123` |
 
 주요 `/z` 명령: `help` · `cwd` · `mcp` · `bypass` · `persona` · `model` · `verbosity` · `session` · `new`/`renew` · `close` · `restore` · `context`/`compact` · `link` · `onboarding` · `admin` · `cct` · `auth` · `marketplace` · `plugin` · `skill` · `report`
 
-- 출력 수준(`/z verbosity`, 세션 한정 `%verbosity`): `minimal` · `compact` · `detail` · `verbose`. 기본값은 `minimal`이다 — 스레드에는 task list, 질문/승인, 최종 답변, 오류만 남고, 모델의 실시간 작업 설명·도구 호출·압축 공지는 대시보드 작업 로그로 간다.
+- 출력 수준(`/z verbosity`, 세션 한정 `%verbosity`): `minimal` · `compact` · `detail` · `verbose`. 기본값은 `minimal`이다 — 스레드에는 task list, 질문/승인, 최종 답변, 오류만 남고, 모델의 실시간 작업 설명·도구 호출·압축 공지·스킬 발동 배너(`$skill`·autoskill 포함)는 대시보드 작업 로그로 간다.
 
 - Fable 5.1·Opus 5.5(`claude-opus-5-5`, Claude Code 2.1.280 이상 필요) 지원을 위해 SDK를 `0.3.284`(네이티브 Claude Code `2.1.284`)로 고정한다. 스트리밍 턴은 `CLAUDE_CODE_ENABLE_TASKS=false`와 `MCP_CONNECTION_NONBLOCKING=0`을 강제하여 기존 Slack TodoWrite 스냅샷 처리와 첫 턴 MCP 초기화를 유지한다. 이 호환성 설정은 stream-options builder가 관리하며 운영자 설정으로 덮어쓰지 않는다.
 - 모델 별칭 `fable`·`fable[1m]`·`fable-5-1`은 `claude-fable-5-1[1m]`을 선택한다. 1M 컨텍스트와 750k 자동 압축 기본값을 유지하며, 버전을 지정한 `fable-5`는 기존 `claude-fable-5[1m]`을 선택한다.

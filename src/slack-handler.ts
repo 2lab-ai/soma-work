@@ -90,6 +90,7 @@ import {
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
 import { advanceGoalQueue, enqueueOrActivateGoal, formatGoalObjectiveForSlack } from './slack/session-goal';
+import { announceForcedSkillFire } from './slack/skill-fire-banner';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
@@ -1752,10 +1753,14 @@ export class SlackHandler {
         try {
           const fire = buildAutoskillFire(event.user, `<@${event.user}>`);
           if (fire) {
-            await this.slackApi.postMessage(activeChannel, '', {
-              threadTs: activeThreadTs,
-              attachments: [{ color: fire.banner.color, text: fire.banner.text }],
-            });
+            // Posted at compact and above; recorded in the work log at every level.
+            await announceForcedSkillFire(
+              sessionResult.session as ConversationSession,
+              fire.banner,
+              (attachment) =>
+                this.slackApi.postMessage(activeChannel, '', { threadTs: activeThreadTs, attachments: [attachment] }),
+              { sessionKey: sessionResult.sessionKey },
+            );
             dispatchText = dispatchText ? `${dispatchText}\n\n${fire.invokedBlock}` : fire.invokedBlock;
             this.logger.info('Autoskills force-fired on session start', {
               user: event.user,
@@ -1777,10 +1782,14 @@ export class SlackHandler {
       // the autoskill block in the dispatch prompt. Always fired when present —
       // SkillForceHandler already resolved + deferred it, so it must not vanish.
       if (deferredSkillFire) {
-        await this.slackApi.postMessage(activeChannel, '', {
-          threadTs: activeThreadTs,
-          attachments: [{ color: deferredSkillFire.banner.color, text: deferredSkillFire.banner.text }],
-        });
+        // Like the autoskill banner: posted at compact and above, recorded at every level.
+        await announceForcedSkillFire(
+          sessionResult.session as ConversationSession,
+          deferredSkillFire.banner,
+          (attachment) =>
+            this.slackApi.postMessage(activeChannel, '', { threadTs: activeThreadTs, attachments: [attachment] }),
+          { sessionKey: sessionResult.sessionKey },
+        );
         dispatchText = dispatchText
           ? `${dispatchText}\n\n${deferredSkillFire.invokedBlock}`
           : deferredSkillFire.invokedBlock;
