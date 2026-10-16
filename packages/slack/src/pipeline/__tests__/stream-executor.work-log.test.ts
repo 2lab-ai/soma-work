@@ -9,7 +9,7 @@
  */
 
 import { Logger } from '@soma/common/logger';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import { getVerbosityFlags, LOG_MINIMAL } from '../../output-flags';
 import { AgentStreamProcessor, type StreamContext } from '../../stream-processor';
 import type { WorkLogInput } from '../../work-log';
@@ -690,7 +690,7 @@ describe('StreamExecutor — a final answer that reached Slack means no recovery
 });
 
 describe('recordConversationWorkLog — the conversation-level path', () => {
-  let warn: ReturnType<typeof vi.spyOn<Logger, 'warn'>>;
+  let warn: MockInstance<Logger['warn']>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -755,7 +755,7 @@ describe('recordConversationWorkLog — the conversation-level path', () => {
 
 describe('recordConversationWorkLog — dropped-entry warnings are throttled process-wide', () => {
   const INTERVAL = WORK_LOG_DROP_WARN_INTERVAL_MS;
-  let warn: ReturnType<typeof vi.spyOn<Logger, 'warn'>>;
+  let warn: MockInstance<Logger['warn']>;
   const drops = () => warn.mock.calls.filter(([message]) => String(message).includes('appendWorkLog provider threw'));
 
   beforeEach(() => {
