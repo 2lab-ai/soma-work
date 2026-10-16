@@ -17,13 +17,11 @@ import { StreamExecutor, setStreamExecutorProviders } from '../stream-executor';
 const appendWorkLog = vi.fn<(conversationId: string, entry: WorkLogInput) => void>();
 const postCompactStartingIfNeeded = vi.fn().mockResolvedValue(undefined);
 const postCompactCompleteIfNeeded = vi.fn().mockResolvedValue(undefined);
-const closeCompactStartingAtTurnEnd = vi.fn().mockResolvedValue(undefined);
 const checkAndSchedulePendingCompact = vi.fn().mockResolvedValue(false);
 
 setStreamExecutorProviders({
   appendWorkLog,
   checkAndSchedulePendingCompact,
-  closeCompactStartingAtTurnEnd,
   postCompactStartingIfNeeded,
   postCompactCompleteIfNeeded,
   userSettingsStore: {
@@ -287,7 +285,11 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
     expect(deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => call[1])).toEqual([FINAL]);
   });
 
-  it('compaction start/complete become work-log notices; the compaction helpers still run', async () => {
+  it.each([
+    'minimal',
+    'compact',
+    'detail',
+  ] as const)('%s: compaction start/complete become work-log notices; the compaction helpers still run', async (level) => {
     const deps = createDeps(() =>
       (async function* () {
         yield { type: 'status', status: 'compacting' };
@@ -300,7 +302,7 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
       })(),
     );
 
-    await new StreamExecutor(deps).execute(createParams(createSession(LOG_MINIMAL)));
+    await new StreamExecutor(deps).execute(createParams(createSession(getVerbosityFlags(level))));
     await settle();
 
     const notices = appendWorkLog.mock.calls.map(([, entry]) => entry).filter((entry) => entry.kind === 'notice');
@@ -421,60 +423,6 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
 
     expect(seen).toBeTypeOf('function');
     expect(seen?.()).toBe(true);
-  });
-});
-
-describe('StreamExecutor — turn end closes an un-ended compaction "starting" message', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('calls the closer once at turn end with the session and thread', async () => {
-    const deps = createDeps(toolTurn());
-    const session = createSession(LOG_MINIMAL);
-
-    await new StreamExecutor(deps).execute(createParams(session));
-    await settle();
-
-    expect(closeCompactStartingAtTurnEnd).toHaveBeenCalledTimes(1);
-    expect(closeCompactStartingAtTurnEnd).toHaveBeenCalledWith(
-      expect.objectContaining({ session, channel: CHANNEL, threadTs: THREAD, slackApi: deps.slackApi }),
-    );
-  });
-
-  it('runs on the error path too', async () => {
-    const deps = createDeps(() =>
-      (async function* () {
-        yield { type: 'status', status: 'compacting' };
-        throw new Error('transport closed');
-      })(),
-    );
-    const executor = new StreamExecutor(deps);
-    spyOnHandleError(executor).mockResolvedValue(undefined);
-
-    await executor.execute(createParams(createSession(getVerbosityFlags('compact')))).catch(() => undefined);
-    await settle();
-
-    expect(closeCompactStartingAtTurnEnd).toHaveBeenCalledTimes(1);
-  });
-
-  it('is skipped when a newer turn is already active (its cycle is not ours to close)', async () => {
-    const deps = createDeps(toolTurn());
-    deps.requestCoordinator.isRequestActive.mockReturnValue(true);
-
-    await new StreamExecutor(deps).execute(createParams(createSession(LOG_MINIMAL)));
-    await settle();
-
-    expect(closeCompactStartingAtTurnEnd).not.toHaveBeenCalled();
-  });
-
-  it('a throwing closer never breaks the turn', async () => {
-    closeCompactStartingAtTurnEnd.mockRejectedValueOnce(new Error('slack down'));
-    const deps = createDeps(toolTurn());
-
-    const result = await new StreamExecutor(deps).execute(createParams(createSession(LOG_MINIMAL)));
-
-    expect(result.success).toBe(true);
   });
 });
 
@@ -622,6 +570,43 @@ describe('StreamExecutor — a leak followed by a real answer never triggers rec
         const appended = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => String(call[1]));
         expect(appended.filter((text) => text.startsWith(ANSWER))).toHaveLength(1);
         expect(appended.some((text) => text.includes(LEAK))).toBe(false);
+      });
+    }
+  }
+});
+
+describe('StreamExecutor — a leak followed by a directive-only ending still recovers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const DIRECTIVE_ONLY = '```json\n{"type":"channel_message","text":"Release notes"}\n```';
+  for (const shape of ['streamed', 'result-only'] as const) {
+    for (const level of ['minimal', 'detail'] as const) {
+      it(`${level}, ${shape} directive-only ending: recovery fires, the directive posts once, the leak never does`, async () => {
+        const deps = createDeps(() =>
+          (async function* () {
+            yield { type: 'assistant_delta', text: NARRATION };
+            yield { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} };
+            yield { type: 'assistant_delta', text: 'Prompt is too long' };
+            yield { type: 'tool_call', toolCallId: 'tu_2', name: 'Read', input: {} };
+            if (shape === 'streamed') yield { type: 'assistant_delta', text: DIRECTIVE_ONLY };
+            yield { type: 'result', stopReason: 'end_turn', finalText: DIRECTIVE_ONLY };
+          })(),
+        );
+        const executor = new StreamExecutor(deps);
+        const handleError = spyOnHandleError(executor).mockResolvedValue(undefined);
+
+        await executor.execute(createParams(createSession(getVerbosityFlags(level)))).catch(() => undefined);
+        await settle();
+
+        expect(handleError).toHaveBeenCalledTimes(1);
+        expect(String((handleError.mock.calls[0]?.[0] as Error).message)).toBe(
+          'Prompt is too long (surfaced as turn content): Prompt is too long',
+        );
+        expect(deps.slackApi.postMessage).toHaveBeenCalledTimes(1);
+        const appended = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => String(call[1]));
+        expect(appended.some((text) => text.includes('Prompt is too long'))).toBe(false);
       });
     }
   }

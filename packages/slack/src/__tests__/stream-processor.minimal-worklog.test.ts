@@ -696,6 +696,38 @@ describe('guardText — what the executor content guards read', () => {
     expect(result.guardText).toBe('Prompt is too long');
   });
 
+  // A directive-only ending shows nothing, so the turn still ENDED on the
+  // leak: guardText (and transportLeak) is the leak, recovery must fire.
+  const DIRECTIVE_ONLY = '```json\n{"type":"channel_message","text":"Release notes"}\n```';
+  for (const shape of ['streamed', 'result-only'] as const) {
+    for (const level of ['minimal', 'detail'] as const) {
+      it(`${level}: leak → ${shape} directive-only ending: guardText is the leak, directive dispatched once`, async () => {
+        const h = harness(getVerbosityFlags(level));
+        const onChannelMessageDetected = vi.fn().mockResolvedValue(undefined);
+
+        const result = await run(
+          h,
+          [
+            { type: 'assistant_delta', text: NARRATION },
+            { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} },
+            { type: 'assistant_delta', text: 'Prompt is too long' },
+            { type: 'tool_call', toolCallId: 'tu_2', name: 'Read', input: {} },
+            ...(shape === 'streamed' ? [{ type: 'assistant_delta', text: DIRECTIVE_ONLY } as AgentStreamEvent] : []),
+            { type: 'result', stopReason: 'end_turn', finalText: DIRECTIVE_ONLY },
+          ],
+          { onChannelMessageDetected },
+        );
+
+        expect(result.guardText).toBe('Prompt is too long');
+        expect(result.transportLeak).toBe('Prompt is too long');
+        expect(onChannelMessageDetected).toHaveBeenCalledTimes(1);
+        const posted = [...h.appendText.mock.calls.map((c) => c[1]), ...h.say.mock.calls.map((c) => c[0]?.text)];
+        expect(posted).not.toContain('Prompt is too long');
+        expect(posted).toEqual(level === 'minimal' ? [] : [NARRATION]);
+      });
+    }
+  }
+
   it('equals collectedText for an ordinary turn', async () => {
     const result = await run(harness(LOG_MINIMAL), toolTurn());
 

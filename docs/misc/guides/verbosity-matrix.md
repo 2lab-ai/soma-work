@@ -123,21 +123,13 @@ Entry contract for the final answer (the log is append-only):
   is posted under it), or when the turn ended on a transport-error leak (below).
 - Compaction start/complete notices and the threshold checker's "next turn will auto
   /compact" announcement are not posted (`src/slack/hooks/compact-hooks.ts`,
-  `src/session/compact-threshold-checker.ts`).
-  A "starting" message that was already posted is always replaced — by the completion, or at
-  turn end by a neutral "ended" line when no END signal arrived:
-  - END waits at most 10 s for an in-flight "starting" post. A post that lands after that
-    (END has abandoned it and posts its own completion) replaces itself with the completion
-    and starts no ticker.
-  - Duplicate END signals (PostCompact hook + `compact_boundary`) deliver one completion: the
-    first claims the cycle synchronously. A duplicate never blocks its caller — the CLI awaits
-    the PostCompact hook, which is usually the duplicate — it does its bookkeeping and
-    returns; its retry, should the claimer's delivery fail, runs in the background. A failed
-    delivery releases the claim, so a waiting or later END delivers instead.
-  - The turn-end close never touches a cycle whose END has sealed it or is still delivering —
-    END owns that message, so "ended" can never overwrite "completed". If that END then fails
-    for good (no other END left to retry), it replaces the message with the neutral "ended"
-    line itself.
+  `src/session/compact-threshold-checker.ts`); they are recorded as work-log `notice` entries
+  at every level. The level is read when each notice would be posted, and only new posts are
+  gated: the cycle bookkeeping (epoch markers, usage snapshot, deferred re-dispatch of a
+  message typed during compaction) runs at every level, and a "starting" message already on
+  the thread (posted at `compact` or above) is still replaced in place by the completion. A
+  missing or non-numeric mask reads as `detail`. At `compact` and above the compaction
+  notices behave exactly as before this change.
 
 ## Transport-error leaks (all levels)
 
