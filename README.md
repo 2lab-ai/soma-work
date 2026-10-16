@@ -175,7 +175,7 @@ Four prefix families — each with a clear, non-overlapping purpose:
 |--------|-------|-------------|---------|
 | `/z <topic> …` | Primary command surface (Block Kit UI where it makes sense) | User-global | `/z persona set linus` |
 | `%<sub> …` | **Current session only** — override without saving | Ephemeral (reset on `new`/`renew`) | `%model opus` |
-| `$<skill>` / `$<plugin>:<skill>` | **Force skill invocation** (reads `SKILL.md`, emits RPG banner — at `minimal` it goes to the dashboard work log) | Per-message | `$z`, `$stv:new-task` |
+| `$<skill>` / `$<plugin>:<skill>` | **Force skill invocation** (reads `SKILL.md`, emits RPG banner at `compact` and above — at `minimal` it is not posted; recorded in the dashboard work log when the session has a conversation) | Per-message | `$z`, `$stv:new-task` |
 | naked text | Whitelisted bare forms (see below) or chat / workflow dispatch | n/a | `sessions`, `new`, `fix PR 123` |
 
 > **Split history (#508)**: `$` used to double as both "force skill" and "session setting". It was split — `%` took over session settings, `$` is now skill-only. Legacy `$model` / `$verbosity` / `$effort` / `$thinking` / `$thinking_summary` still work during the deprecation grace period but emit a one-line notice nudging users to `%`.
@@ -345,7 +345,7 @@ Overrides that apply **only to the current session** and do not persist. Cleared
 
 ### `$` — forced skill invocation
 
-Forces the bot to read a skill's `SKILL.md` and follow it. Emits a red RPG banner ("⚡ skill 강제 발동") on resolution at `compact` and above; at `minimal` the banner is not posted and is recorded in the dashboard work log instead (the skill still runs).
+Forces the bot to read a skill's `SKILL.md` and follow it. Emits a red RPG banner ("⚡ skill 강제 발동") on resolution at `compact` and above; at `minimal` the banner is not posted (the skill still runs). At every level the banner is recorded in the dashboard work log when the session has a conversation.
 
 | Syntax | Resolves to |
 |--------|-------------|

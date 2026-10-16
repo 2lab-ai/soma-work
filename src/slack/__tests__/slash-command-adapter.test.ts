@@ -1,5 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { SlashCommandAdapter } from '../slash-command-adapter';
+
+/**
+ * Loading `../commands/command-router` pulls in every command handler: 3–5 s
+ * cold, which alone used up the 5 s per-test default of whichever test
+ * imported it first. Load it once here, under the hook's own timeout, so the
+ * routing tests below time routing only.
+ */
+let CommandRouter: typeof import('../commands/command-router').CommandRouter;
+beforeAll(async () => {
+  ({ CommandRouter } = await import('../commands/command-router'));
+}, 30_000);
 
 /**
  * Contract Tests for Slash Command feature
@@ -102,8 +113,6 @@ describe('SlashCommandAdapter', () => {
 describe('/soma slash command — valid subcommand routing', () => {
   // Trace: S2, Section 3c — help subcommand routes through CommandRouter
   it('soma help: CommandRouter handles "help" text', async () => {
-    const { CommandRouter } = await import('../commands/command-router');
-
     const respond = vi.fn().mockResolvedValue(undefined);
     const command = {
       command: '/soma',
@@ -150,8 +159,6 @@ describe('/soma slash command — valid subcommand routing', () => {
 describe('/soma slash command — empty/unknown subcommand', () => {
   // Trace: S3, Section 3b, Case B — unknown subcommand detected by isPotentialCommand
   it('soma with unknown subcommand: CommandRouter responds with error', async () => {
-    const { CommandRouter } = await import('../commands/command-router');
-
     const respond = vi.fn().mockResolvedValue(undefined);
     const command = {
       command: '/soma',

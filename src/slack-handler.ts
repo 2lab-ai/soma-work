@@ -1787,12 +1787,14 @@ export class SlackHandler {
       }
 
       // Deferred forced `$skill` (the first-instruction `$skill`, e.g. `new
-      // $deploy` or a first message `$deploy`). Fired LAST so its banner shows
-      // after the autoskill banner and its `<invoked_skills>` block sits after
-      // the autoskill block in the dispatch prompt. Always fired when present —
+      // $deploy` or a first message `$deploy`). Fired LAST so its banner (when
+      // posted) follows the autoskill banner and its `<invoked_skills>` block
+      // sits after the autoskill block in the dispatch prompt. The fire — the
+      // block appended to the dispatch prompt — always happens when present:
       // SkillForceHandler already resolved + deferred it, so it must not vanish.
+      // Only the banner is gated: posted at compact and above, recorded in the
+      // work log at every level when the session has a conversation.
       if (deferredSkillFire) {
-        // Like the autoskill banner: posted at compact and above, recorded at every level.
         await announceSessionNotice(
           sessionResult.session as ConversationSession,
           OutputFlag.SKILL_INVOCATION,
