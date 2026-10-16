@@ -760,6 +760,12 @@ export class AgentStreamProcessor {
   private segments = new Map<string, SegmentFate>();
   /** The latest withheld segment — the answer of a turn with no usable `finalText`. */
   private lastWithheld: SegmentFate | undefined;
+  /**
+   * The latest segment that showed any text. When it is a suppressed
+   * transport-error leak, the turn ends on that error (the executor recovers
+   * it), and earlier withheld narration must not be posted as its answer.
+   */
+  private lastShownSegment: SegmentFate | undefined;
   private pendingNarration: PendingNarration | undefined;
   /**
    * Set by every assistant-text post (narration, final, choice, incident);
@@ -819,8 +825,11 @@ export class AgentStreamProcessor {
   }
 
   /**
-   * Record the turn's final answer. When it IS the held segment, the held
-   * entry is dropped — the answer is recorded once, as `final`.
+   * Record the turn's final answer — always exactly one `final` entry. When it
+   * IS the held segment, the held entry becomes that `final` (no narration).
+   * Work-log contract: a segment already recorded as `narration` (the turn
+   * moved on past it) that the fallback later posts as the answer appears
+   * once as `narration` and once as `final` — never two of either.
    */
   private emitFinal(context: StreamContext, text: string, segment?: SegmentFate): void {
     if (segment && this.pendingNarration?.segment === segment) {
@@ -868,6 +877,7 @@ export class AgentStreamProcessor {
     this._hasUserChoice = false;
     this.segments.clear();
     this.lastWithheld = undefined;
+    this.lastShownSegment = undefined;
     this.pendingNarration = undefined;
     this.slackTextPosted = false;
     // Note: per-turn state fields (_lastAssistantTurnUsage, _lastToolName,
@@ -1494,6 +1504,7 @@ export class AgentStreamProcessor {
       currentMessages.push(textContent);
       const incidentSegment: SegmentFate = { shown: textContent, fate: 'settled' };
       this.recordSegment(textContent, incidentSegment);
+      this.lastShownSegment = incidentSegment;
       this.holdNarration(context, incidentSegment, textContent);
       await this.publishIncidentText(textContent, context);
       return;
@@ -1513,6 +1524,7 @@ export class AgentStreamProcessor {
 
     currentMessages.push(textContent);
     this.recordSegment(textContent, segment);
+    this.lastShownSegment = segment;
     // Work log first — before any of the suppressions below (spec 10 §3.3).
     // Held: if this segment turns out to be the final answer it is recorded
     // once, as `final`.
@@ -1899,7 +1911,7 @@ export class AgentStreamProcessor {
       if (known) {
         // The answer already streamed as a segment: its directives fired then.
         if (known.shown.trim()) this.emitFinal(context, known.shown, known);
-        if (known.fate === 'withheld') {
+        if (this.mayPromoteWithheld(known, context)) {
           // Spec 10 §3.2-3: kept off Slack as narration, but it IS the final
           // answer — post it once, without dispatching its directives again.
           known.fate = 'settled';
@@ -1919,6 +1931,17 @@ export class AgentStreamProcessor {
     }
 
     return usage;
+  }
+
+  /**
+   * Whether a withheld segment may be promoted onto Slack as the answer.
+   * Question-form policy: once the HOST posted a question form this turn
+   * (`StreamContext.hostChoicePosted`), that form is what the user answers —
+   * no withheld narration is posted under it, whatever `finalText` says. A
+   * final text the stream never carried is new text and still posts.
+   */
+  private mayPromoteWithheld(segment: SegmentFate, context: StreamContext): boolean {
+    return segment.fate === 'withheld' && !context.hostChoicePosted?.();
   }
 
   /** Index one segment under one of its identities (raw or shown text). */
@@ -1942,10 +1965,10 @@ export class AgentStreamProcessor {
     durationMs: number | undefined,
   ): Promise<void> {
     const segment = this.lastWithheld;
-    if (this.slackTextPosted || !segment || segment.fate !== 'withheld') return;
-    // The turn ended on a choice form the host posted: that form is the
-    // answer; old narration must not land under it.
-    if (context.hostChoicePosted?.()) return;
+    if (this.slackTextPosted || !segment || !this.mayPromoteWithheld(segment, context)) return;
+    // The turn's last visible text was a transport-error leak: it ends on that
+    // error (the executor recovers it), not on the earlier narration.
+    if (this.lastShownSegment?.fate === 'suppressed') return;
     segment.fate = 'settled';
     this.emitFinal(context, segment.shown, segment);
     await this.postFinalAnswer(segment.shown, context, usage, durationMs);

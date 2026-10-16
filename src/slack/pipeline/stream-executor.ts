@@ -27,7 +27,11 @@ import { checkAndSchedulePendingCompact } from '../../session/compact-threshold-
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
 import { getTokenManager, parseCooldownTime } from '../../token-manager';
 import { coerceToAvailableModel, MODEL_ALIASES, userSettingsStore } from '../../user-settings-store';
-import { postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../hooks/compact-hooks';
+import {
+  closeCompactStartingAtTurnEnd,
+  postCompactCompleteIfNeeded,
+  postCompactStartingIfNeeded,
+} from '../hooks/compact-hooks';
 
 setStreamExecutorProviders({
   parseModelCommandRunResponse,
@@ -67,6 +71,7 @@ setStreamExecutorProviders({
   },
   postCompactCompleteIfNeeded,
   postCompactStartingIfNeeded,
+  closeCompactStartingAtTurnEnd,
 });
 
 export * from '@soma/slack/pipeline/stream-executor';

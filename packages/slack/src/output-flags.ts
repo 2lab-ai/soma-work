@@ -113,6 +113,15 @@ export function getVerbosityFlags(level: LogVerbosity): number {
 }
 
 /**
+ * Version of the mask encoding, persisted next to every stored mask
+ * (sessions.json `logVerbosityVersion`). 2 = masks that carry `NARRATION`.
+ * A stored mask WITHOUT it predates this release and is the only kind
+ * {@link upgradeLegacyVerbosityMask} may rewrite — a current custom mask that
+ * happens to equal an old preset number is left alone.
+ */
+export const LOG_VERBOSITY_MASK_VERSION = 2;
+
+/**
  * The preset masks as stored before `NARRATION` (bit 21) existed — the values
  * of `getVerbosityFlags()` at main e992de7c, pinned in
  * `__tests__/output-flags.minimal.test.ts`. Kept only to upgrade masks that
@@ -130,7 +139,8 @@ const LEGACY_PRESET_MASKS: ReadonlyMap<number, LogVerbosity> = new Map<number, L
  * preset of the same name; anything else (current presets, custom masks,
  * `undefined`) passes through. Without it a restored thread at an old
  * compact/detail/verbose mask would silently lose its narration and show a
- * `custom` chip.
+ * `custom` chip. Callers apply it only to masks stored without
+ * {@link LOG_VERBOSITY_MASK_VERSION}.
  */
 export function upgradeLegacyVerbosityMask(mask: number | undefined): number | undefined {
   if (mask === undefined) return undefined;

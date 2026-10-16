@@ -44,7 +44,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteJson } from '@soma/common/atomic-write';
-import { LOG_MINIMAL, type LogVerbosity } from '@soma/slack/output-flags';
+import { LOG_MINIMAL, LOG_VERBOSITY_MASK_VERSION, type LogVerbosity } from '@soma/slack/output-flags';
 
 /** Presence of this file (sibling of user-settings.json) = migration done. */
 export const ALL_USERS_LOG_MINIMAL_ONCE_MARKER = '.all-users-log-minimal-once-2026-10-16.json';
@@ -166,6 +166,8 @@ export function migrateAllUsersMinimalOnce(params: MigrateAllUsersMinimalOncePar
       session.logVerbosity = LOG_MINIMAL;
       sessionCount.migrated += 1;
     }
+    // Same marker `saveSessions` writes: this mask is current-encoding.
+    session.logVerbosityVersion = LOG_VERBOSITY_MASK_VERSION;
   }
 
   // 2. Marker FIRST — from here on this host never replays the rewrite.

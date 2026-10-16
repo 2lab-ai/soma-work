@@ -23,7 +23,14 @@ vi.mock('../../../session/compaction-context-builder', () => ({
 
 import type { ConversationSession } from '../../../types';
 import type { SlackApiHelper } from '../../slack-api-helper';
-import { buildCompactHooks, postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../compact-hooks';
+import {
+  buildCompactHooks,
+  COMPACT_END_WAIT_FOR_START_MS,
+  COMPACT_ENDED_WITHOUT_SIGNAL_TEXT,
+  closeCompactStartingAtTurnEnd,
+  postCompactCompleteIfNeeded,
+  postCompactStartingIfNeeded,
+} from '../compact-hooks';
 
 const COMPACT = getVerbosityFlags('compact');
 
@@ -230,6 +237,150 @@ describe('compaction notices at minimal (spec 10 §3.2-4)', () => {
 
     expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(2);
     expect(String(slackApi.postSystemMessage.mock.calls[1]?.[1])).toContain('Compaction completed');
+    expectCycleSealed(session);
+  });
+});
+
+describe('turn end closes a "starting" message that never got an END', () => {
+  it.each([
+    ['compact', COMPACT],
+    ['compact, then minimal before the turn ends', LOG_MINIMAL],
+  ])('%s: the message is updated once and the ticker cleared', async (_label, maskAtTurnEnd) => {
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    expect(session.compactTickInterval).toBeDefined();
+    session.logVerbosity = maskAtTurnEnd;
+
+    await closeCompactStartingAtTurnEnd(deps(session, slackApi));
+
+    expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
+    expect(slackApi.updateMessage).toHaveBeenCalledWith('C1', 'start_ts', COMPACT_ENDED_WITHOUT_SIGNAL_TEXT);
+    expect(session.compactTickInterval).toBeUndefined();
+    expect(session.compactStartingMessageTs).toBeNull();
+    // Bookkeeping is the END path's: the cycle is not sealed here.
+    expect(session.compactPostedByEpoch?.[1]).toEqual({ pre: true, post: false });
+
+    await closeCompactStartingAtTurnEnd(deps(session, slackApi));
+    expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('after a normal END there is nothing to close', async () => {
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    await postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    slackApi.updateMessage.mockClear();
+
+    await closeCompactStartingAtTurnEnd(deps(session, slackApi));
+
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
+  });
+
+  it('at minimal nothing was posted, so nothing is updated', async () => {
+    const session = track(makeSession(LOG_MINIMAL));
+    const slackApi = makeSlackApi();
+    await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+
+    await closeCompactStartingAtTurnEnd(deps(session, slackApi));
+
+    expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
+  });
+
+  it('a starting post still in flight at turn end is waited for, then closed — no ticker left', async () => {
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    let releaseStart!: (value: { ts: string }) => void;
+    slackApi.postSystemMessage.mockImplementationOnce(
+      () =>
+        new Promise<{ ts: string }>((resolve) => {
+          releaseStart = resolve;
+        }),
+    );
+
+    const starting = postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    const closing = closeCompactStartingAtTurnEnd(deps(session, slackApi));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseStart({ ts: 'late_start_ts' });
+    await Promise.all([starting, closing]);
+
+    expect(slackApi.updateMessage).toHaveBeenCalledWith('C1', 'late_start_ts', COMPACT_ENDED_WITHOUT_SIGNAL_TEXT);
+    expect(session.compactTickInterval).toBeUndefined();
+  });
+});
+
+describe('END does not wait forever for an in-flight START', () => {
+  it('waits at most the deadline: posts its own completion (compact), then replaces the late START when it lands', async () => {
+    vi.useFakeTimers();
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    let releaseStart!: (value: { ts: string }) => void;
+    slackApi.postSystemMessage
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ ts: string }>((resolve) => {
+            releaseStart = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({ ts: 'end_ts' });
+
+    const starting = postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    const completing = postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    await vi.advanceTimersByTimeAsync(COMPACT_END_WAIT_FOR_START_MS);
+    await completing;
+
+    // Deadline passed: END sealed the cycle and posted its own completion.
+    expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(2);
+    expect(String(slackApi.postSystemMessage.mock.calls[1]?.[1])).toContain('Compaction completed');
+    expectCycleSealed(session);
+
+    // The late START lands: it is replaced at once — no ticker on a closed cycle.
+    releaseStart({ ts: 'late_ts' });
+    await starting;
+    expect(slackApi.updateMessage).toHaveBeenCalledWith(
+      'C1',
+      'late_ts',
+      expect.stringContaining('Compaction completed'),
+    );
+    expect(session.compactTickInterval).toBeUndefined();
+  });
+
+  it('minimal: nothing is in flight, so END never waits and posts nothing', async () => {
+    const session = track(makeSession(LOG_MINIMAL));
+    const slackApi = makeSlackApi();
+
+    await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    await postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+
+    expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
+    expectCycleSealed(session);
+  });
+
+  it('a START that fails at the transport after the deadline changes nothing', async () => {
+    vi.useFakeTimers();
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    let failStart!: (err: Error) => void;
+    slackApi.postSystemMessage
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            failStart = reject;
+          }),
+      )
+      .mockResolvedValueOnce({ ts: 'end_ts' });
+
+    const starting = postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    const completing = postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    await vi.advanceTimersByTimeAsync(COMPACT_END_WAIT_FOR_START_MS);
+    await completing;
+    failStart(new Error('socket hang up'));
+    await starting;
+
+    expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(2);
+    expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    expect(session.compactTickInterval).toBeUndefined();
     expectCycleSealed(session);
   });
 });

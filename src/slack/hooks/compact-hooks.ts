@@ -106,16 +106,15 @@ export function getCurrentEpochForEnd(session: ConversationSession): number {
  * Spec 10 §3.2-4 — whether compaction notices may be POSTED to the thread.
  * Below `compact` (no `NARRATION` flag) they reach the dashboard work log only
  * (stream-executor emits a `notice` entry for each). Read at call time, so a
- * level change mid-cycle applies to the next signal. Only a numeric mask is a
- * mask: anything else (absent, or a non-number) reads as the default detail —
- * an unreadable mask must not silently take notices away.
+ * level change mid-cycle applies to the next signal. A missing mask reads as
+ * detail, like every other `logVerbosity` consumer.
  *
  * Gates new posts only. A "starting" message that already reached the thread
- * is always replaced by the completion, whatever the level is by then.
+ * is always replaced by the completion (or, at turn end, closed), whatever
+ * the level is by then.
  */
 function compactNoticesVisible(session: ConversationSession): boolean {
-  const mask = typeof session.logVerbosity === 'number' ? session.logVerbosity : LOG_DETAIL;
-  return shouldOutput(OutputFlag.NARRATION, mask);
+  return shouldOutput(OutputFlag.NARRATION, session.logVerbosity ?? LOG_DETAIL);
 }
 
 /**
@@ -126,7 +125,55 @@ function compactNoticesVisible(session: ConversationSession): boolean {
  * then lands — with a live ticker — after the cycle is closed, leaving a
  * "⏳ Compaction starting" message nothing will ever update.
  */
-const startingPostsInFlight = new WeakMap<ConversationSession, Promise<void>>();
+interface StartingFlight {
+  /** Settles when the post finished (it never rejects). */
+  done: Promise<void>;
+  /** The turn ended (closeCompactStartingAtTurnEnd) while this post was in flight. */
+  closedAtTurnEnd: boolean;
+}
+const startingPostsInFlight = new WeakMap<ConversationSession, StartingFlight>();
+
+/**
+ * How long the END signal (and the turn-end close) waits for an in-flight
+ * "starting" post before proceeding without it. Past this a Slack call that
+ * hangs must not hold the PostCompact hook — the CLI awaits it. If the late
+ * post lands afterwards it sees the sealed cycle and replaces itself.
+ */
+export const COMPACT_END_WAIT_FOR_START_MS = 10_000;
+
+/** Neutral text for a "starting" message whose cycle never got an END signal. */
+export const COMPACT_ENDED_WITHOUT_SIGNAL_TEXT = '⚪ 🗜️ Compaction ended (no completion signal)';
+
+/**
+ * Wait for this session's in-flight starting post, at most
+ * {@link COMPACT_END_WAIT_FOR_START_MS}. Returns the flight if it is STILL in
+ * flight after the wait, so the caller can mark it.
+ */
+async function awaitStartingPost(session: ConversationSession): Promise<StartingFlight | undefined> {
+  const flight = startingPostsInFlight.get(session);
+  if (!flight) return undefined;
+  let settled = false;
+  const inFlight = flight.done.then(() => {
+    settled = true;
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      logger.warn('compact: starting post still in flight past the deadline — proceeding without it', {
+        sessionId: session.sessionId,
+        waitedMs: COMPACT_END_WAIT_FOR_START_MS,
+      });
+      resolve();
+    }, COMPACT_END_WAIT_FOR_START_MS);
+    (timer as { unref?: () => void } | undefined)?.unref?.();
+  });
+  try {
+    await Promise.race([inFlight, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  return settled ? undefined : flight;
+}
 
 function ensurePostedMap(session: ConversationSession): Record<number, { pre: boolean; post: boolean }> {
   if (!session.compactPostedByEpoch) session.compactPostedByEpoch = {};
@@ -433,12 +480,13 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
     return;
   }
 
-  const posting = postStartingMessage(deps, epoch, trigger, initialText, startedAtMs);
-  startingPostsInFlight.set(session, posting);
+  const flight: StartingFlight = { done: Promise.resolve(), closedAtTurnEnd: false };
+  flight.done = postStartingMessage(deps, epoch, trigger, initialText, startedAtMs, flight);
+  startingPostsInFlight.set(session, flight);
   try {
-    await posting;
+    await flight.done;
   } finally {
-    if (startingPostsInFlight.get(session) === posting) startingPostsInFlight.delete(session);
+    if (startingPostsInFlight.get(session) === flight) startingPostsInFlight.delete(session);
   }
 }
 
@@ -453,6 +501,7 @@ async function postStartingMessage(
   trigger: string,
   initialText: string,
   startedAtMs: number,
+  flight: StartingFlight,
 ): Promise<void> {
   const { session, channel, threadTs, slackApi } = deps;
   let postResult: { ts?: string; channel?: string };
@@ -469,24 +518,28 @@ async function postStartingMessage(
     return;
   }
 
+  // Late post: the END signal stopped waiting (deadline) and sealed this
+  // cycle — or the turn ended — while this post was in Slack's queue. Nothing
+  // else will ever touch this message: replace it now, start no ticker, and
+  // leave the session's ts alone (it may already belong to a newer cycle).
+  const sealed = ensurePostedMap(session)[epoch]?.post === true;
+  if (sealed || flight.closedAtTurnEnd) {
+    if (postResult.ts) {
+      const text = sealed ? buildCompactCompleteMessage(session) : COMPACT_ENDED_WITHOUT_SIGNAL_TEXT;
+      await slackApi.updateMessage(channel, postResult.ts, text).catch((err) => {
+        logger.warn('compact-starting: late starting message could not be closed', {
+          error: (err as Error)?.message ?? String(err),
+        });
+      });
+    }
+    return;
+  }
+
   // Track the live-message ts so the completion handler can chat.update it
   // in-place rather than posting a second message.
   session.compactStartingMessageTs = postResult.ts ?? null;
 
   if (!postResult.ts) return; // Slack post returned no ts — nothing to tick against.
-
-  // Defense in depth: the END signal awaits this post before it reads the ts,
-  // so the cycle should still be open here. If it is not, nothing else will
-  // ever touch this message — close it out now instead of starting a ticker.
-  if (ensurePostedMap(session)[epoch]?.post === true) {
-    session.compactStartingMessageTs = null;
-    await slackApi.updateMessage(channel, postResult.ts, buildCompactCompleteMessage(session)).catch((err) => {
-      logger.warn('compact-starting: late starting message could not be closed', {
-        error: (err as Error)?.message ?? String(err),
-      });
-    });
-    return;
-  }
 
   // Start the ticker. Each tick re-resolves the trigger from the session —
   // covers the "fallback path posted first, then onCompactBoundary filled in
@@ -596,13 +649,12 @@ export async function postCompactCompleteIfNeeded(
       ? Promise.resolve()
       : (async () => {
           // A "starting" post still in Slack's queue owns the message this
-          // completion must replace: wait for it (it never rejects), then stop
-          // the ticker it may just have started.
-          const inFlight = startingPostsInFlight.get(session);
-          if (inFlight) {
-            await inFlight;
-            stopStartingTicker(session);
-          }
+          // completion must replace: wait for it — bounded, so a hung Slack
+          // call cannot hold the PostCompact hook — then stop the ticker it
+          // may have started. Past the deadline this completion is posted on
+          // its own, and the late post replaces itself when it lands.
+          await awaitStartingPost(session);
+          stopStartingTicker(session);
           const text = buildCompactCompleteMessage(session);
           const startingTs = session.compactStartingMessageTs;
           // Track the ts of the message that actually carries the completion
@@ -695,6 +747,34 @@ export async function postCompactCompleteIfNeeded(
   promotePendingToDispatchQueue(session);
 
   await postPromise;
+}
+
+/**
+ * Turn-end close for a "starting" message whose cycle never got an END signal
+ * (the SDK dropped PostCompact and compact_boundary — e.g. the turn crashed or
+ * was aborted mid-compaction). Called from stream-executor's turn `finally`,
+ * at every verbosity: a "starting" message that reached the thread is
+ * replaced once with {@link COMPACT_ENDED_WITHOUT_SIGNAL_TEXT} and its ticker
+ * is stopped. A post still in flight is waited for (bounded); if it lands
+ * after that, it replaces itself. Nothing else changes: the epoch stays open
+ * for the END path, which owns the bookkeeping.
+ */
+export async function closeCompactStartingAtTurnEnd(deps: CompactHookDeps): Promise<void> {
+  const { session, channel, slackApi } = deps;
+  const stillInFlight = await awaitStartingPost(session);
+  if (stillInFlight) stillInFlight.closedAtTurnEnd = true;
+  stopStartingTicker(session);
+  const ts = session.compactStartingMessageTs;
+  if (!ts) return;
+  session.compactStartingMessageTs = null;
+  session.compactStartedAtMs = null;
+  try {
+    await slackApi.updateMessage(channel, ts, COMPACT_ENDED_WITHOUT_SIGNAL_TEXT);
+  } catch (err) {
+    logger.warn('compact: turn-end close of the starting message failed', {
+      error: (err as Error)?.message ?? String(err),
+    });
+  }
 }
 
 /**
