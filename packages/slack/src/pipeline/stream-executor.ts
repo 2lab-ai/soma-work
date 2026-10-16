@@ -59,6 +59,7 @@ import {
 } from '../turn-notifier';
 import type { UserChoice, UserChoices } from '../user-choice-extractor';
 import { UserChoiceHandler } from '../user-choice-handler';
+import type { WorkLogInput } from '../work-log';
 import { decideBackgroundWaitContinuation, getBackgroundWaitCap } from './background-wait';
 import { isLocalSlashCommand } from './local-slash-command';
 import { cleanupWithTimeout, DEFAULT_CLEANUP_TIMEOUT_MS, runWithTimeout } from './stream-executor-cleanup-helpers';
@@ -145,6 +146,12 @@ export interface StreamExecutorProviders {
   recordAssistantTurn?: (conversationId: string, text: string) => void;
   recordUserTurn?: (conversationId: string, text: string, userName: string, user: string) => void;
   /**
+   * Spec 10 §3.3 — append one work-log entry to the conversation's log
+   * (instruction, narration, tool, tool_result, final, notice, error), at
+   * every verbosity. Fire-and-forget; a throw is swallowed. No-op by default.
+   */
+  appendWorkLog?: (conversationId: string, entry: WorkLogInput) => void;
+  /**
    * Append a per-turn episodic breadcrumb to the user's hierarchical memory.
    * Fire-and-forget; must never throw or block the reply. No-op by default.
    */
@@ -196,6 +203,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   createConversation: () => '',
   recordAssistantTurn: () => {},
   recordUserTurn: () => {},
+  appendWorkLog: () => {},
   captureMemoryTurn: () => {},
   scheduleLinkDerivedTitleRefresh: () => {},
   isMidThreadMention: () => false,
@@ -259,6 +267,8 @@ const recordAssistantTurn = (conversationId: string, text: string) =>
   streamExecutorProviders.recordAssistantTurn(conversationId, text);
 const recordUserTurn = (conversationId: string, text: string, userName: string, user: string) =>
   streamExecutorProviders.recordUserTurn(conversationId, text, userName, user);
+const appendWorkLog = (conversationId: string, entry: WorkLogInput) =>
+  streamExecutorProviders.appendWorkLog(conversationId, entry);
 const captureMemoryTurn = (userId: string, userText: string, assistantText: string) =>
   streamExecutorProviders.captureMemoryTurn(userId, userText, assistantText);
 const scheduleLinkDerivedTitleRefresh = (claudeHandler: any, channel: string, threadTs: string, reason: string) =>
@@ -281,6 +291,19 @@ const coerceToAvailableModel = (model: string) => streamExecutorProviders.coerce
 const getAutoFallbackCompactModel = () => streamExecutorProviders.getAutoFallbackCompactModel();
 const postCompactCompleteIfNeeded = (...args: any[]) => streamExecutorProviders.postCompactCompleteIfNeeded(...args);
 const postCompactStartingIfNeeded = (...args: any[]) => streamExecutorProviders.postCompactStartingIfNeeded(...args);
+
+/**
+ * Work-log `notice` text for a sealed compaction: trigger and the token counts
+ * `onCompactBoundary` just stored, each segment omitted when unknown.
+ */
+function describeCompactionComplete(session: ConversationSession): string {
+  const parts = ['Compaction completed'];
+  if (session.compactTrigger) parts.push(`trigger=${session.compactTrigger}`);
+  if (typeof session.compactPreTokens === 'number' && typeof session.compactPostTokens === 'number') {
+    parts.push(`${session.compactPreTokens} → ${session.compactPostTokens} tokens`);
+  }
+  return parts.join(' · ');
+}
 
 /**
  * Result of stream execution
@@ -1055,6 +1078,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const isOutputEnabled = (flag: number) => shouldOutput(flag, getVerbosity());
     const vtag = (flag: number) => verboseTag(flag, getVerbosity());
 
+    // Spec 10 §3.3 work log. `conversationId` is read at call time — it can be
+    // auto-created below, after this binding. Stamped with this turn's id; a
+    // throwing provider must never break the turn.
+    const emitWorkLog = (entry: WorkLogInput): void => {
+      const conversationId = session.conversationId;
+      if (!conversationId) return;
+      try {
+        appendWorkLog(conversationId, { turnId, ts: Date.now(), ...entry });
+      } catch (err) {
+        this.logger.debug('appendWorkLog provider threw — ignored', {
+          sessionKey,
+          kind: entry.kind,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+    };
+
     // Per-request tool statistics
     const toolStats: RequestToolStats = {};
     const toolStartTimes = new Map<string, number>();
@@ -1222,6 +1262,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
       if (session.conversationId && text) {
         recordUserTurn(session.conversationId, text, userName, user);
+        emitWorkLog({ kind: 'instruction', text });
       }
 
       // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)
@@ -1393,6 +1434,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         isCompactTurn: (isSlashCommand && trimmedText.startsWith('/compact')) || Boolean(session.fallbackCompactActive),
         isUserInputTurn: params.isUserInput === true,
         incidentAttempt,
+        ...(session.conversationId ? { workLog: emitWorkLog } : {}),
         get logVerbosity() {
           return session.logVerbosity ?? LOG_DETAIL;
         },
@@ -1816,6 +1858,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             }
           }
 
+          emitWorkLog({ kind: 'notice', text: describeCompactionComplete(session) });
+
           this.logger.info('Compaction flag set — context will be re-injected on next prompt', {
             sessionKey,
             preTokens: session.compactPreTokens ?? null,
@@ -1857,6 +1901,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         },
         onStatusUpdate: async (status: string) => {
           if (status === 'compacting') {
+            emitWorkLog({ kind: 'notice', text: 'Compaction starting' });
             // #617 AC4 fallback: if the SDK PreCompact hook never fires
             // (older SDK or edge case), the `compacting` status still
             // guarantees a thread-visible "starting" post. Epoch dedupe in
@@ -2206,6 +2251,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         } else {
           errorLines.push(`> _No error details provided by SDK_`);
         }
+        emitWorkLog({ kind: 'error', text: [subtype, ...errors.slice(0, 5)].join(': ') });
         await say({ text: errorLines.join('\n'), thread_ts: threadTs });
       }
 
@@ -2595,6 +2641,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // `controller.abort()` yields a DOMException ("AbortError"); we only
       // trust it when it matches our known reason union.
       const abortReason = requestAborted ? coerceAbortReason(abortController.signal.reason) : undefined;
+      emitWorkLog({
+        kind: 'error',
+        text: requestAborted
+          ? `aborted${abortReason ? ` (${abortReason})` : ''}`
+          : this.sanitizeSdkDetails(String((error as Error)?.message ?? error)),
+      });
       // Issue #525 P1: close the B1 stream before handleError posts the
       // error block — otherwise the stream would linger until finally and
       // race with the error message rendering. PHASE=0 → no-op.

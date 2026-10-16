@@ -257,6 +257,7 @@ export {
   getVerbosityFlags,
   getVerbosityName,
   LOG_DETAIL,
+  LOG_MINIMAL,
   type LogVerbosity,
   OutputFlag,
   type OutputFlagValue,
@@ -530,6 +531,7 @@ export {
   type UserSkillRoundtripProviders,
   uploadSkillFile,
 } from './user-skill-file-roundtrip';
+export type { WorkLogEntry, WorkLogInput, WorkLogKind } from './work-log';
 export { isSlashForbidden, SLASH_FORBIDDEN, SLASH_FORBIDDEN_MESSAGE } from './z/capability';
 export { type NormalizeInput, normalizeZInvocation, stripZPrefix } from './z/normalize';
 export {
