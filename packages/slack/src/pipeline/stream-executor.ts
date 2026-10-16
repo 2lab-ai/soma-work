@@ -2026,12 +2026,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // rotated a credential and re-ran an unattended attempt. One decision,
       // so none of the five applies to it.
       const textMayBeTransportError = !toolContinuation && !incidentAttempt;
-      // What the guards read: the leak the turn ended on when the processor
-      // suppressed one (`transportLeak`), else the whole turn text. After any
-      // narration `collectedText` is "narration\nleak", which the short-text
-      // and starts-with predicates below can no longer match — the turn then
-      // ended silent with no recovery, at every level.
-      const guardText = streamResult.transportLeak ?? streamResult.collectedText;
+      // What the guards read (`StreamResult.guardText`): the leak the turn
+      // ended on, else the turn text WITHOUT suppressed leak segments. The
+      // whole `collectedText` broke both ways: after narration
+      // ("narration\nleak") the short-text and starts-with predicates missed a
+      // real leak, and after a recovered leak ("leak\nanswer") they fired on a
+      // turn that had answered. `collectedText` is the fallback for producers
+      // that do not set it.
+      const guardText = streamResult.guardText ?? streamResult.transportLeak ?? streamResult.collectedText;
 
       // Compaction-failure-as-content guard (field incident 2026-07-07,
       // session ccee16e0). The SDK seals a FAILED `/compact` as a successful

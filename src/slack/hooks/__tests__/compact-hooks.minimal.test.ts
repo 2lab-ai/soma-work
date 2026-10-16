@@ -556,3 +556,145 @@ describe('a failed completion releases its END claim', () => {
     expect(session.compactPostedByEpoch?.[1]?.post).toBe(true);
   });
 });
+
+/**
+ * The CLI awaits the PostCompact hook. In the usual ordering the stream's
+ * fire-and-forget `compact_boundary` END claims the cycle first, so the hook
+ * arrives as the DUPLICATE — and must not sit through the claimer's Slack
+ * calls. It returns at once; its retry-on-failure runs in the background.
+ */
+describe('a duplicate END never blocks its caller (the CLI-awaited PostCompact hook)', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (err: Error) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  it("the claimer's chat.update hangs: the duplicate hook returns promptly", async () => {
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    slackApi.updateMessage.mockImplementationOnce(() => new Promise(() => {}));
+    session.compactPreTokens = 150_000;
+
+    void postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const hooks = buildCompactHooks(deps(session, slackApi));
+    const t0 = Date.now();
+    const outcome = await Promise.race([
+      hooks
+        .PostCompact({ hook_event_name: 'PostCompact', trigger: 'auto' } as unknown as PostCompactHookInput)
+        .then(() => 'returned'),
+      new Promise((resolve) => setTimeout(() => resolve('blocked'), 500)),
+    ]);
+
+    expect(outcome).toBe('returned');
+    expect(Date.now() - t0).toBeLessThan(50);
+    // Its synchronous bookkeeping still ran.
+    expect(session.autoCompactPending).toBe(false);
+    expect(session.pendingUserText).toBeNull();
+  });
+
+  it('the duplicate does not wait the 500 ms metadata window either when an END is already delivering', async () => {
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    slackApi.updateMessage.mockImplementationOnce(() => new Promise(() => {}));
+    // No boundary metadata: a hook that claimed would wait 500 ms for it.
+
+    void postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const t0 = Date.now();
+    await buildCompactHooks(deps(session, slackApi)).PostCompact({
+      hook_event_name: 'PostCompact',
+      trigger: 'auto',
+    } as unknown as PostCompactHookInput);
+
+    expect(Date.now() - t0).toBeLessThan(50);
+  });
+
+  it('the claimer then fails: the detached duplicate delivers the completion once', async () => {
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    const hangingUpdate = deferred<undefined>();
+    slackApi.updateMessage.mockImplementationOnce(() => hangingUpdate.promise);
+    slackApi.postSystemMessage.mockRejectedValueOnce(new Error('fallback post failed'));
+    session.compactPreTokens = 150_000;
+
+    const claimer = postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await buildCompactHooks(deps(session, slackApi)).PostCompact({
+      hook_event_name: 'PostCompact',
+      trigger: 'auto',
+    } as unknown as PostCompactHookInput);
+
+    hangingUpdate.reject(new Error('message_not_found'));
+    await expect(claimer).rejects.toThrow('fallback post failed');
+    await vi.waitFor(() => expect(session.compactPostedByEpoch?.[1]?.post).toBe(true));
+
+    // The failed claimer's update, then the detached retry's — both in place.
+    // (The retry's line also carries the hook's `trigger=auto`.)
+    const lines = updates(slackApi);
+    expect(lines).toHaveLength(2);
+    for (const line of lines) expect(line.startsWith('start_ts <- 🟢 🗜️ Compaction completed')).toBe(true);
+    // start + failed fallback: no further post — the retry updated in place.
+    expect(slackApi.postSystemMessage).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * The turn-end close skips a cycle whose END is still delivering (END owns
+ * the message). If that delivery then fails for good — no other END waiting
+ * to retry — the END path does the neutral close itself; otherwise the
+ * "starting" message would stay with its ticker stopped and nothing to end it.
+ */
+describe('an END that fails after the turn ended closes the starting message itself', () => {
+  it('update and fallback both reject after turn end deferred to END: the message ends neutral', async () => {
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    let rejectUpdate!: (err: Error) => void;
+    slackApi.updateMessage.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectUpdate = reject;
+        }),
+    );
+    slackApi.postSystemMessage.mockRejectedValueOnce(new Error('fallback post failed'));
+
+    const end = postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await closeCompactStartingAtTurnEnd(deps(session, slackApi));
+    rejectUpdate(new Error('message_not_found'));
+    await expect(end).rejects.toThrow('fallback post failed');
+
+    expect(updates(slackApi)).toEqual([
+      'start_ts <- 🟢 🗜️ Compaction completed',
+      `start_ts <- ${COMPACT_ENDED_WITHOUT_SIGNAL_TEXT}`,
+    ]);
+    expect(session.compactStartingMessageTs).toBeNull();
+    expect(session.compactTickInterval).toBeUndefined();
+  });
+
+  it('the same failure BEFORE the turn ends leaves the close to turn end (no early neutral line)', async () => {
+    const session = track(makeSession(COMPACT));
+    const slackApi = makeSlackApi();
+    await postCompactStartingIfNeeded(deps(session, slackApi), 'auto');
+    slackApi.updateMessage.mockRejectedValueOnce(new Error('message_not_found'));
+    slackApi.postSystemMessage.mockRejectedValueOnce(new Error('fallback post failed'));
+
+    await expect(
+      postCompactCompleteIfNeeded(deps(session, slackApi), { source: 'on-compact-boundary' }),
+    ).rejects.toThrow();
+    expect(slackApi.updateMessage).toHaveBeenCalledTimes(1);
+
+    await closeCompactStartingAtTurnEnd(deps(session, slackApi));
+    const lines = updates(slackApi);
+    expect(lines[lines.length - 1]).toBe(`start_ts <- ${COMPACT_ENDED_WITHOUT_SIGNAL_TEXT}`);
+  });
+});

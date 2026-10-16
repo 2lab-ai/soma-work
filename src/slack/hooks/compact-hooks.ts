@@ -135,6 +135,16 @@ function compactNoticesVisible(session: ConversationSession): boolean {
  */
 const endCompletionsInFlight = new WeakMap<object, Promise<boolean>>();
 
+/** END signals currently waiting on another END's delivery, per cycle marker. */
+const endWaiters = new WeakMap<object, number>();
+
+/**
+ * Cycles whose turn-end close was skipped because END owned the message. If
+ * that END then fails for good (no other END waiting to retry), nothing else
+ * will ever end the "starting" message — the END path closes it neutrally.
+ */
+const turnEndDeferredMarkers = new WeakSet<object>();
+
 interface StartingFlight {
   /** Settles when the post finished (it never rejects). */
   done: Promise<void>;
@@ -150,10 +160,17 @@ interface StartingFlight {
 const startingPostsInFlight = new WeakMap<ConversationSession, StartingFlight>();
 
 /**
- * How long the END signal (and the turn-end close) waits for an in-flight
- * "starting" post before proceeding without it. Past this a Slack call that
- * hangs must not hold the PostCompact hook — the CLI awaits it. If the late
- * post lands afterwards it sees the sealed cycle and replaces itself.
+ * How long the END signal that claims the cycle (and the turn-end close) waits
+ * for an in-flight "starting" post before proceeding without it — a starting
+ * post that hangs must not hold the PostCompact hook for long, because the CLI
+ * awaits that hook. A late post that lands afterwards was marked abandoned and
+ * replaces itself with the completion.
+ *
+ * What the hook may still wait on: as the claimer, this bounded wait plus its
+ * own completion chat.update / fallback post (as before this change). As a
+ * DUPLICATE (another END is already delivering — the usual ordering, since
+ * the stream's `compact_boundary` END claims first) it never waits: its
+ * bookkeeping runs synchronously and its retry-on-failure is detached.
  */
 export const COMPACT_END_WAIT_FOR_START_MS = 10_000;
 
@@ -646,7 +663,14 @@ export async function postCompactCompleteIfNeeded(
   // `~?% ← was ~?%`. Give onCompactBoundary a brief grace window to arrive
   // and fill in metadata; if it races in, it will seal the cycle via
   // `marker.post = true` and this invocation becomes a no-op.
-  if (opts.source === 'post-compact-hook' && !hasBoundaryMetadata(session) && !marker.post) {
+  // Skipped when an END is already delivering: there is nothing left to wait
+  // for, and the hook must not be held (see COMPACT_END_WAIT_FOR_START_MS).
+  if (
+    opts.source === 'post-compact-hook' &&
+    !hasBoundaryMetadata(session) &&
+    !marker.post &&
+    !endCompletionsInFlight.has(marker)
+  ) {
     await new Promise<void>((resolve) => setTimeout(resolve, COMPACT_METADATA_WAIT_MS));
     // Early exit if the boundary callback sealed the cycle during the wait.
     // Re-read through the map because TS would narrow marker.post to `false`
@@ -660,7 +684,20 @@ export async function postCompactCompleteIfNeeded(
   // "completed" text back to "starting".
   stopStartingTicker(session);
 
-  const postPromise = deliverCompletionOnce(marker, () => deliverCompletion(deps, marker));
+  // A DUPLICATE END (another one is already delivering) must not block its
+  // caller — the CLI awaits the PostCompact hook, and the usual ordering makes
+  // the hook the duplicate. Its retry-if-the-claimer-fails runs detached.
+  const duplicate = marker.post !== true && endCompletionsInFlight.has(marker);
+  const delivery = deliverCompletionOnce(deps, marker);
+  let postPromise: Promise<void> = delivery;
+  if (duplicate) {
+    postPromise = Promise.resolve();
+    void delivery.catch((err) => {
+      logger.warn('compact complete: detached retry after a failed END failed', {
+        error: (err as Error)?.message ?? String(err),
+      });
+    });
+  }
 
   // Rehydration dedupe: whichever END signal fires first marks the epoch so
   // the SessionStart(source=compact) hook doesn't double-rebuild.
@@ -703,12 +740,19 @@ export async function postCompactCompleteIfNeeded(
  * it cannot double as the claim. The claimer's own failure still rejects, as
  * before (the hook / stream callback log it).
  */
-async function deliverCompletionOnce(marker: { post: boolean }, deliver: () => Promise<void>): Promise<void> {
+async function deliverCompletionOnce(deps: CompactHookDeps, marker: { pre: boolean; post: boolean }): Promise<void> {
   for (;;) {
     if (marker.post === true) return;
     const inFlight = endCompletionsInFlight.get(marker);
     if (!inFlight) break;
-    if (await inFlight) return;
+    endWaiters.set(marker, (endWaiters.get(marker) ?? 0) + 1);
+    let delivered: boolean;
+    try {
+      delivered = await inFlight;
+    } finally {
+      endWaiters.set(marker, (endWaiters.get(marker) ?? 1) - 1);
+    }
+    if (delivered) return;
   }
   let settle!: (delivered: boolean) => void;
   const outcome = new Promise<boolean>((resolve) => {
@@ -716,10 +760,15 @@ async function deliverCompletionOnce(marker: { post: boolean }, deliver: () => P
   });
   endCompletionsInFlight.set(marker, outcome);
   try {
-    await deliver();
+    await deliverCompletion(deps, marker);
     settle(true);
   } catch (err) {
     settle(false);
+    // Final failure — no other END is waiting to retry — after the turn-end
+    // close already deferred to this END: nobody else will end the message.
+    if (turnEndDeferredMarkers.has(marker) && (endWaiters.get(marker) ?? 0) === 0) {
+      await closeStartingMessageNeutral(deps);
+    }
     throw err;
   } finally {
     if (endCompletionsInFlight.get(marker) === outcome) endCompletionsInFlight.delete(marker);
@@ -819,14 +868,29 @@ function endOwnsCurrentCycle(session: ConversationSession): boolean {
  * for the END path, which owns the bookkeeping.
  */
 export async function closeCompactStartingAtTurnEnd(deps: CompactHookDeps): Promise<void> {
-  const { session, channel, slackApi } = deps;
+  const { session } = deps;
   // END owns the message once it has claimed the cycle — sealed, or its
   // completion still being delivered. Writing "ended" here would land after
-  // (and overwrite) the "completed" it is about to post.
-  if (endOwnsCurrentCycle(session)) return;
+  // (and overwrite) the "completed" it is about to post. If that delivery
+  // later fails for good, the END path does this close itself.
+  if (deferToEndIfOwned(session)) return;
   const stillInFlight = await awaitStartingPost(session);
-  if (endOwnsCurrentCycle(session)) return;
+  if (deferToEndIfOwned(session)) return;
   if (stillInFlight) stillInFlight.closedAtTurnEnd = true;
+  await closeStartingMessageNeutral(deps);
+}
+
+/** True when END owns the current cycle; a cycle still being delivered is marked as deferred. */
+function deferToEndIfOwned(session: ConversationSession): boolean {
+  if (!endOwnsCurrentCycle(session)) return false;
+  const marker = ensurePostedMap(session)[session.compactEpoch ?? 0];
+  if (marker && marker.post !== true) turnEndDeferredMarkers.add(marker);
+  return true;
+}
+
+/** Replace a posted "starting" message with the neutral "ended" line and stop its ticker. */
+async function closeStartingMessageNeutral(deps: CompactHookDeps): Promise<void> {
+  const { session, channel, slackApi } = deps;
   stopStartingTicker(session);
   const ts = session.compactStartingMessageTs;
   if (!ts) return;
@@ -835,7 +899,7 @@ export async function closeCompactStartingAtTurnEnd(deps: CompactHookDeps): Prom
   try {
     await slackApi.updateMessage(channel, ts, COMPACT_ENDED_WITHOUT_SIGNAL_TEXT);
   } catch (err) {
-    logger.warn('compact: turn-end close of the starting message failed', {
+    logger.warn('compact: neutral close of the starting message failed', {
       error: (err as Error)?.message ?? String(err),
     });
   }

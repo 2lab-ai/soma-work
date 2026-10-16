@@ -602,6 +602,15 @@ export interface StreamResult {
    * on to show other text after the leak.
    */
   transportLeak?: string;
+  /**
+   * What the executor's content guards should read: `transportLeak` when the
+   * turn ended on a leak, else every NON-suppressed segment joined. A
+   * suppressed leak followed by a real answer must not reach the guards as
+   * "leak\nanswer" — short and containing the leak, it would fire recovery on
+   * a turn that recovered by itself. `collectedText` (the recorder's copy)
+   * keeps every segment.
+   */
+  guardText?: string;
   /** Usage data from the result message */
   usage?: UsageData;
   /** Whether the response ended with a user choice/form prompt */
@@ -767,6 +776,8 @@ export class AgentStreamProcessor {
    * posted only if that segment was withheld (spec 10 §3.2-3).
    */
   private segments = new Map<string, SegmentFate>();
+  /** Suppressed leak segments keyed by trimmed text (see the result-time lookup). */
+  private suppressedByTrimmed = new Map<string, SegmentFate>();
   /** The latest withheld segment — the answer of a turn with no usable `finalText`. */
   private lastWithheld: SegmentFate | undefined;
   /**
@@ -885,6 +896,7 @@ export class AgentStreamProcessor {
     let sawResult = false;
     this._hasUserChoice = false;
     this.segments.clear();
+    this.suppressedByTrimmed.clear();
     this.lastWithheld = undefined;
     this.lastShownSegment = undefined;
     this.pendingNarration = undefined;
@@ -1169,6 +1181,7 @@ export class AgentStreamProcessor {
         aborted: false,
         collectedText: currentMessages.join('\n'),
         ...this.transportLeakResult(),
+        guardText: this.guardTextFor(currentMessages),
         usage: lastUsage,
         hasUserChoice: this._hasUserChoice,
         endTurnInfo: this._endTurnInfo,
@@ -1917,7 +1930,11 @@ export class AgentStreamProcessor {
       };
     } else {
       const finalResult = typeof event.finalText === 'string' ? event.finalText : '';
-      const known = finalResult ? this.segments.get(finalResult) : undefined;
+      // A finalText that differs from a suppressed leak only by whitespace is
+      // that same leak — matched trimmed, so it is not logged a second time.
+      const known = finalResult
+        ? (this.segments.get(finalResult) ?? this.suppressedByTrimmed.get(finalResult.trim()))
+        : undefined;
       if (known) {
         // The answer already streamed as a segment: its directives fired then.
         // A suppressed leak is never the answer: it was recorded as `error`.
@@ -1962,8 +1979,16 @@ export class AgentStreamProcessor {
    */
   private suppressLeak(context: StreamContext, segment: SegmentFate): void {
     segment.fate = 'suppressed';
+    this.suppressedByTrimmed.set(segment.shown.trim(), segment);
     if (this.pendingNarration?.segment === segment) this.pendingNarration = undefined;
     this.emitWorkLog(context, { kind: 'error', text: segment.shown });
+  }
+
+  /** See {@link StreamResult.guardText}. */
+  private guardTextFor(currentMessages: string[]): string {
+    const last = this.lastShownSegment;
+    if (last?.fate === 'suppressed') return last.shown;
+    return currentMessages.filter((text) => this.segments.get(text)?.fate !== 'suppressed').join('\n');
   }
 
   /** `{ transportLeak }` when the turn's last visible segment was a suppressed leak. */

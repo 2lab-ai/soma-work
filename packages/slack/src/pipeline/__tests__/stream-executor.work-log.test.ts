@@ -585,3 +585,44 @@ describe('StreamExecutor — the threshold checker gets the turn work-log sink',
     );
   });
 });
+
+/**
+ * A short "leak, then a real answer" turn: the turn recovered, so recovery
+ * must not fire. `transportLeak` is clear, and the fallback guard text must
+ * not be "leak\nanswer" (≤160 chars, contains the leak) — the processor's
+ * `guardText` leaves suppressed segments out.
+ */
+describe('StreamExecutor — a leak followed by a real answer never triggers recovery', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const LEAK = 'Prompt is too long';
+  const ANSWER = 'Done: raised the timeout to 60s.';
+  for (const shape of ['streamed answer', 'result-only answer'] as const) {
+    for (const level of ['minimal', 'detail'] as const) {
+      it(`${level}, ${shape}: the answer is posted and no recovery fires`, async () => {
+        const deps = createDeps(() =>
+          (async function* () {
+            yield { type: 'assistant_delta', text: LEAK };
+            yield { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} };
+            yield { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'ok' }] };
+            if (shape === 'streamed answer') yield { type: 'assistant_delta', text: ANSWER };
+            yield { type: 'result', stopReason: 'end_turn', finalText: ANSWER };
+          })(),
+        );
+        const executor = new StreamExecutor(deps);
+        const handleError = spyOnHandleError(executor).mockResolvedValue(undefined);
+
+        const result = await executor.execute(createParams(createSession(getVerbosityFlags(level))));
+        await settle();
+
+        expect(handleError).not.toHaveBeenCalled();
+        expect(result.success).toBe(true);
+        const appended = deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => String(call[1]));
+        expect(appended.filter((text) => text.startsWith(ANSWER))).toHaveLength(1);
+        expect(appended.some((text) => text.includes(LEAK))).toBe(false);
+      });
+    }
+  }
+});
