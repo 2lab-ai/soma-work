@@ -306,9 +306,10 @@ describe('work log store', () => {
       }
     });
 
-    it('seeds the next seq from the tail without reading the whole file', async () => {
+    it('seeds from the reservation, reading only the tail (for the trailing newline and quarantine)', async () => {
+      fs.writeFileSync(sidecarFile('conv-big'), JSON.stringify({ reservedSeq: N + 999 }));
       const next = await wl.appendWorkLog('conv-big', { kind: 'notice', text: 'after restart' });
-      expect(next.seq).toBe(N + 1);
+      expect(next.seq).toBe(N + 1000);
       expect(counter.bytes).toBeLessThan(256 * 1024);
     });
   });
@@ -381,7 +382,7 @@ describe('work log store', () => {
 
       const again = await loadFresh();
       const later = await again.appendWorkLog('conv-q2', { kind: 'notice', text: 'later' });
-      expect(later.seq).toBe(afterQuarantine.seq + 1);
+      expect(later.seq).toBeGreaterThan(afterQuarantine.seq); // a restart resumes at the reservation
       await again.flushWorkLog();
     });
 
@@ -554,15 +555,84 @@ describe('work log store', () => {
       expect(next.seq).toBe(2001);
     });
 
-    it('a re-seed never moves the cursor below what this process already published', async () => {
+    it('a failed append burns its seq; the cursor is never re-derived from a damaged file', async () => {
       for (let i = 0; i < 3; i++) await wl.appendWorkLog('conv-hw', { kind: 'narration', text: `n${i}` });
       // The file loses its last two entries behind the writer's back.
       writeRaw('conv-hw', line(1));
-      failNextAppend('nothing-written'); // forces the next append to re-seed
+      failNextAppend('nothing-written');
       await expect(wl.appendWorkLog('conv-hw', { kind: 'narration', text: 'lost' })).rejects.toThrow('ENOSPC');
 
       const next = await wl.appendWorkLog('conv-hw', { kind: 'narration', text: 'kept' });
-      expect(next.seq).toBe(4); // not 2
+      expect(next.seq).toBe(5); // 4 burned by the failure; never 2
+    });
+  });
+
+  describe('the floor rests only on the reservation (review round 6)', () => {
+    async function publishThree(id: string): Promise<number> {
+      for (let i = 1; i <= 3; i++) await wl.appendWorkLog(id, { kind: 'narration', text: `entry ${i}` });
+      await wl.flushWorkLog();
+      return JSON.parse(fs.readFileSync(sidecarFile(id), 'utf-8')).reservedSeq as number;
+    }
+
+    it('a restart after the last published entry was corrupted resumes above the reservation', async () => {
+      const reserved = await publishThree('conv-c3');
+      // Damage entry 3 in place (same length, no longer JSON).
+      const raw = fs.readFileSync(logFile('conv-c3'), 'utf-8');
+      const lastStart = raw.lastIndexOf('\n', raw.length - 2) + 1;
+      writeRaw('conv-c3', `${raw.slice(0, lastStart)}${'x'.repeat(raw.length - lastStart - 1)}\n`);
+      expect(seqs(await wl.readWorkLog('conv-c3'))).toEqual([1, 2]);
+
+      const restarted = await loadFresh();
+      const next = await restarted.appendWorkLog('conv-c3', { kind: 'notice', text: 'after restart' });
+      expect(next.seq).toBeGreaterThan(reserved);
+      await restarted.flushWorkLog();
+    });
+
+    it('a restart after the last published entry was truncated away resumes above the reservation', async () => {
+      const reserved = await publishThree('conv-t3');
+      const raw = fs.readFileSync(logFile('conv-t3'), 'utf-8');
+      fs.truncateSync(logFile('conv-t3'), Buffer.byteLength(raw.slice(0, raw.lastIndexOf('\n', raw.length - 2) + 1)));
+      expect(seqs(await wl.readWorkLog('conv-t3'))).toEqual([1, 2]);
+
+      const restarted = await loadFresh();
+      const next = await restarted.appendWorkLog('conv-t3', { kind: 'notice', text: 'after restart' });
+      expect(next.seq).toBeGreaterThan(reserved);
+      await restarted.flushWorkLog();
+    });
+
+    it('no sidecar with a non-empty log refuses, even when the log reads cleanly', async () => {
+      writeRaw('conv-ns', `${line(1)}${line(2)}`);
+      await expect(wl.appendWorkLog('conv-ns', { kind: 'notice', text: 'x' })).rejects.toBeInstanceOf(
+        wl.WorkLogUnboundedError,
+      );
+    });
+
+    it('a readable entry above the live reservation contradicts it and refuses', async () => {
+      writeRaw('conv-gt', `${line(1)}${line(1500)}`);
+      fs.writeFileSync(sidecarFile('conv-gt'), JSON.stringify({ reservedSeq: 1000 }));
+      await expect(wl.appendWorkLog('conv-gt', { kind: 'notice', text: 'x' })).rejects.toBeInstanceOf(
+        wl.WorkLogUnboundedError,
+      );
+    });
+
+    it('the fail-closed verdict notices a same-size replacement whose mtime was preserved', async () => {
+      writeRaw('conv-fp', Array.from({ length: 10 }, (_, i) => line(i + 1)).join(''));
+      appendRaw('conv-fp', Buffer.alloc(9 * 1024 * 1024, 0x0a));
+      fs.writeFileSync(`${sidecarFile('conv-fp')}.bak`, JSON.stringify({ reservedSeq: 1000 }));
+      const live = sidecarFile('conv-fp');
+      fs.writeFileSync(live, '{"reservedSeq":2000'); // corrupt: 19 bytes
+      const pinned = new Date('2026-01-01T00:00:00Z');
+      fs.utimesSync(live, pinned, pinned);
+      await expect(wl.appendWorkLog('conv-fp', { kind: 'notice', text: 'a' })).rejects.toBeInstanceOf(
+        wl.WorkLogUnboundedError,
+      );
+
+      // Same path, same size, mtime put back: only ino/ctime can tell.
+      fs.writeFileSync(live, '{"reservedSeq":200}'); // valid: also 19 bytes
+      fs.utimesSync(live, pinned, pinned);
+      expect(fs.statSync(live).mtimeMs).toBe(pinned.getTime());
+      const next = await wl.appendWorkLog('conv-fp', { kind: 'notice', text: 'b' });
+      expect(next.seq).toBe(201);
     });
   });
 
@@ -802,7 +872,8 @@ describe('work log store', () => {
         }
         expect(forward).toEqual([1, 3, 4, 5]);
 
-        // Seed: continues after the last entry and repairs the missing newline.
+        // Seed: continues at the reservation and repairs the missing newline.
+        fs.writeFileSync(sidecarFile('conv-lines'), JSON.stringify({ reservedSeq: 5 }));
         const next = await wl.appendWorkLog('conv-lines', { kind: 'notice', text: 'next' });
         expect(next.seq).toBe(6);
         expect(seqs(await wl.readWorkLog('conv-lines', { afterSeq: 4 }))).toEqual([5, 6]);
@@ -836,8 +907,10 @@ describe('work log store', () => {
 
     it('skips an over-limit last line without a newline', async () => {
       writeRaw('conv-tail', `${line(1)}${over}`);
+      fs.writeFileSync(sidecarFile('conv-tail'), JSON.stringify({ reservedSeq: 2 }));
       expect(seqs(await wl.readWorkLog('conv-tail'))).toEqual([1]);
-      expect((await wl.appendWorkLog('conv-tail', { kind: 'notice', text: 'x' })).seq).toBe(2);
+      expect((await wl.appendWorkLog('conv-tail', { kind: 'notice', text: 'x' })).seq).toBe(3);
+      expect(seqs(await wl.readWorkLog('conv-tail'))).toEqual([1, 3]); // on its own line after the dropped one
     });
 
     it('caps tool and turnId like text, so the writer never produces an over-limit line', async () => {
@@ -892,32 +965,31 @@ describe('work log store', () => {
     ).resolves.toMatchObject({ seq: 1 });
   });
 
-  it('continues the seq from the existing file after a restart', async () => {
+  it('after a restart continues above the reservation (a hole of up to one block), never below', async () => {
     await wl.appendWorkLog('conv-r', { kind: 'instruction', text: 'first' });
     await wl.appendWorkLog('conv-r', { kind: 'narration', text: 'second' });
     await wl.appendWorkLog('conv-r', { kind: 'final', text: 'third' });
 
     const restarted = await loadFresh();
     const next = await restarted.appendWorkLog('conv-r', { kind: 'instruction', text: 'after restart' });
-    expect(next.seq).toBe(4);
-    expect(seqs(await restarted.readWorkLog('conv-r'))).toEqual([1, 2, 3, 4]);
+    expect(next.seq).toBe(wl.WORK_LOG_SEQ_RESERVE_BLOCK + 1);
+    expect(seqs(await restarted.readWorkLog('conv-r'))).toEqual([1, 2, 3, next.seq]);
   });
 
-  it('counts a complete last entry that lost its newline, and starts the next one on a fresh line', async () => {
+  it('a complete last entry that lost its newline is kept, and the next one starts on a fresh line', async () => {
     writeRaw('conv-nl', `${line(1)}${line(2).trimEnd()}`);
+    fs.writeFileSync(sidecarFile('conv-nl'), JSON.stringify({ reservedSeq: 2 }));
     const next = await wl.appendWorkLog('conv-nl', { kind: 'narration', text: 'three' });
     expect(next.seq).toBe(3);
     expect(seqs(await wl.readWorkLog('conv-nl'))).toEqual([1, 2, 3]);
   });
 
-  it('after a torn final line, the next entry reuses its seq on a fresh line', async () => {
+  it('after a torn final line, the next entry starts on a fresh line above the reservation', async () => {
     writeRaw('conv-t', `${line(1, 'ok')}{"seq":2,"ts":2,"ki`);
+    fs.writeFileSync(sidecarFile('conv-t'), JSON.stringify({ reservedSeq: 1000 }));
 
     const next = await wl.appendWorkLog('conv-t', { kind: 'narration', text: 'recovered' });
-    // Guarantee: an entry is published only after its whole line is fdatasync'd,
-    // so a line that is torn on disk was never published and its seq was never
-    // handed to a reader — reusing it cannot collide with what a client holds.
-    expect(next.seq).toBe(2);
+    expect(next.seq).toBe(1001);
     const page = await wl.readWorkLog('conv-t');
     expect(page.entries.map((e) => e.text)).toEqual(['ok', 'recovered']);
   });
@@ -925,6 +997,7 @@ describe('work log store', () => {
   describe('failure handling', () => {
     it('a non-ENOENT seed error drops the append, caches nothing, and the next append seeds correctly', async () => {
       writeRaw('conv-s', `${line(1)}${line(2)}${line(3)}`);
+      fs.writeFileSync(sidecarFile('conv-s'), JSON.stringify({ reservedSeq: 3 }));
       const seen: number[] = [];
       wl.setOnWorkLogAppendedCallback((_id, entry) => seen.push(entry.seq));
       vi.spyOn(fs.promises, 'open').mockRejectedValueOnce(ioError('EIO'));
@@ -941,6 +1014,7 @@ describe('work log store', () => {
 
     it('a failed write on a torn file keeps the newline repair for the next append', async () => {
       writeRaw('conv-w', `${line(1, 'ok')}{"seq":2,"ts":2,"ki`);
+      fs.writeFileSync(sidecarFile('conv-w'), JSON.stringify({ reservedSeq: 1000 }));
       failNextAppend('nothing-written');
 
       await expect(wl.appendWorkLog('conv-w', { kind: 'narration', text: 'lost' })).rejects.toThrow('ENOSPC');
@@ -958,7 +1032,7 @@ describe('work log store', () => {
 
       await expect(wl.appendWorkLog('conv-x', { kind: 'narration', text: 'torn' })).rejects.toThrow('EIO');
       const next = await wl.appendWorkLog('conv-x', { kind: 'narration', text: 'second' });
-      expect(next.seq).toBe(2);
+      expect(next.seq).toBe(3); // 2 burned (part of it is on disk)
       expect((await wl.readWorkLog('conv-x')).entries.map((e) => e.text)).toEqual(['first', 'second']);
     });
 
@@ -971,17 +1045,21 @@ describe('work log store', () => {
         wl.appendWorkLog('conv-q', { kind: 'narration', text: 'c' }),
       ]);
       expect(results.map((r) => r.status)).toEqual(['rejected', 'fulfilled', 'fulfilled']);
-      expect(seqs(await wl.readWorkLog('conv-q'))).toEqual([1, 2, 3]);
+      expect(seqs(await wl.readWorkLog('conv-q'))).toEqual([1, 3, 4]); // 2 burned
     });
 
-    it('a new log whose first write failed resumes above the reservation, never below it', async () => {
+    it('a new log whose first write failed burns seq 1 in-process, and a restart resumes above the reservation', async () => {
       failNextAppend('nothing-written');
       await expect(wl.appendWorkLog('conv-q0', { kind: 'narration', text: 'lost' })).rejects.toThrow('ENOSPC');
-      // Nothing parseable on disk, and the sidecar reserved 1..1000 before the
-      // write: without proof of which of those were used, continue above them.
       const next = await wl.appendWorkLog('conv-q0', { kind: 'narration', text: 'kept' });
-      expect(next.seq).toBe(wl.WORK_LOG_SEQ_RESERVE_BLOCK + 1);
-      expect(seqs(await wl.readWorkLog('conv-q0'))).toEqual([next.seq]);
+      expect(next.seq).toBe(2);
+      expect(seqs(await wl.readWorkLog('conv-q0'))).toEqual([2]);
+
+      // A fresh process has only the reservation (1..1000) as proof.
+      const restarted = await loadFresh();
+      const after = await restarted.appendWorkLog('conv-q0', { kind: 'narration', text: 'after restart' });
+      expect(after.seq).toBe(wl.WORK_LOG_SEQ_RESERVE_BLOCK + 1);
+      await restarted.flushWorkLog();
     });
   });
 
@@ -1025,8 +1103,10 @@ describe('work log store', () => {
       const opens = spyOpen(() => {});
       const tailReads = (id: string) =>
         opens.mock.calls.filter((c) => String(c[0]) === logFile(id) && c[1] === 'r').length;
-      // Evicted: appending reads its tail again and still continues at 2.
-      expect((await wl.appendWorkLog(oldest, { kind: 'narration', text: 'y' })).seq).toBe(2);
+      // Evicted: a fresh seed — reads the tail (newline/quarantine) and resumes at the reservation.
+      expect((await wl.appendWorkLog(oldest, { kind: 'narration', text: 'y' })).seq).toBe(
+        wl.WORK_LOG_SEQ_RESERVE_BLOCK + 1,
+      );
       expect(tailReads(oldest)).toBe(1);
       // Warm: no tail read.
       expect((await wl.appendWorkLog(newest, { kind: 'narration', text: 'y' })).seq).toBe(2);
