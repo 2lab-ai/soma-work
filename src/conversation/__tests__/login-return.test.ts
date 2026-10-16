@@ -77,6 +77,9 @@ describe('login return (soma_next)', () => {
       '/dashboard/',
       '/dashboard/U1.v2?session=a..b',
       '/dashboard/U1?next=../x',
+      '/dashboard/U1#card=..',
+      // The fragment never changes the path: this still resolves to /dashboard.
+      '/dashboard#/../login',
     ])('accepts same-origin dashboard path %s', (value) => {
       expect(oauth.isSafeLoginReturnPath(value)).toBe(true);
     });
@@ -104,6 +107,9 @@ describe('login return (soma_next)', () => {
       '/dashboard/.%2e/login',
       '/dashboard/%2e/U1',
       '/dashboard/U1/%2e%2E',
+      '/dashboard/..#x',
+      '/dashboard/%2e%2e#x',
+      '/dashboard/U1/.#frag',
     ])('rejects %j', (value) => {
       expect(oauth.isSafeLoginReturnPath(value)).toBe(false);
     });
@@ -172,7 +178,15 @@ describe('login return (soma_next)', () => {
 
     it('ignores a forged external soma_next and lands on the default dashboard', async () => {
       const token = oauth.issueSlackToken({ slackUserId: 'U_SSO', email: 'sso@x', name: 'SSO' });
-      for (const forged of ['https://evil.example.com/', '//evil.example.com', '/dashboard//evil.example.com']) {
+      for (const forged of [
+        'https://evil.example.com/',
+        '//evil.example.com',
+        '/dashboard//evil.example.com',
+        '/dashboard/../login',
+        '/dashboard/%2e%2e/login',
+        '/dashboard/..#x',
+        '/dashboard/%2e%2e#x',
+      ]) {
         const res = await web.injectWebServer({
           method: 'GET',
           url: `/auth/sso?token=${encodeURIComponent(oauth.issueSlackToken({ slackUserId: 'U_SSO', email: 'e', name: 'n' }))}`,
