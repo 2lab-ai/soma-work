@@ -67,8 +67,10 @@ describe('work log core (shipped wl* functions)', () => {
       'wlMerge',
       'wlPageMaxSeq',
       'wlAdvance',
+      'wlConfirm',
       'wlHasGap',
       'wlStatusOf',
+      'wlDeny',
       'wlLoadLatest',
       'wlOnLive',
       'wlRecover',
@@ -165,17 +167,109 @@ describe('work log core (shipped wl* functions)', () => {
     expect(st.cursor).toBe(30);
   });
 
-  it('a gap opened before the initial load answers is backfilled right after it', async () => {
-    const srv = server(range(1, 30), 10);
+  it('entries written while the initial load was in flight are backfilled right after it', async () => {
+    const log = range(1, 20);
+    const srv = server(log, 10);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const delayed: FetchJson = async (url) => {
+      const snapshot = url.includes('afterSeq') ? null : await srv.fetchJson(url); // answers for log 1–20
+      if (snapshot) {
+        await gate;
+        return snapshot;
+      }
+      return srv.fetchJson(url);
+    };
     const st = wl.wlNewState('c1');
-    // The latest window is 21–30 here; pretend the page came back older (11–20).
-    const older: FetchJson = async (url) =>
-      url.includes('afterSeq') ? srv.fetchJson(url) : { entries: range(11, 20), hasMore: true };
-    wl.wlOnLive(st, { seq: 27 }, older, () => {});
-    expect(await wl.wlLoadLatest(st, older, () => {})).toBe('ok');
+    const load = wl.wlLoadLatest(st, delayed, () => {});
+    await flush();
+    log.push(...range(21, 30)); // written after the request went out
+    wl.wlOnLive(st, { seq: 27 }, delayed, () => {}); // and broadcast before the answer
+    release();
+    expect(await load).toBe('ok');
     await settled(st);
-    expect(srv.calls).toEqual([20]);
+    expect(srv.calls).toEqual([null, 20]);
     expect(seqs(st)).toEqual(range(11, 30).map((e) => e.seq));
+    expect(st.cursor).toBe(30);
+  });
+
+  describe('seqs are increasing but not contiguous — a permanent hole (57 → 1001)', () => {
+    const holeLog = () => range(1, 57);
+
+    it('via a live entry: exactly one backfill, cursor 1001, then live 1002 fetches nothing', async () => {
+      const log = holeLog();
+      const srv = server(log, 10);
+      const st = wl.wlNewState('c1');
+      await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+      expect(st.cursor).toBe(57);
+      log.push({ seq: 1001 }); // the store restarted on a new seq block
+      wl.wlOnLive(st, { seq: 1001 }, srv.fetchJson, () => {});
+      await settled(st);
+      expect(srv.calls).toEqual([null, 57]);
+      expect(st.cursor).toBe(1001);
+      log.push({ seq: 1002 });
+      wl.wlOnLive(st, { seq: 1002 }, srv.fetchJson, () => {});
+      await settled(st);
+      expect(srv.calls).toEqual([null, 57]);
+      expect(st.cursor).toBe(1002);
+      expect(seqs(st)).toEqual([...range(48, 57).map((e) => e.seq), 1001, 1002]);
+    });
+
+    it('via a page: a recovery page that jumps the hole moves the cursor past it', async () => {
+      const log = holeLog();
+      const srv = server(log, 10);
+      const st = wl.wlNewState('c1');
+      await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+      log.push({ seq: 1001 });
+      await wl.wlRecover(st, srv.fetchJson, () => {}); // reconnect
+      expect(srv.calls).toEqual([null, 57]);
+      expect(st.cursor).toBe(1001);
+      log.push({ seq: 1002 });
+      wl.wlOnLive(st, { seq: 1002 }, srv.fetchJson, () => {});
+      await settled(st);
+      expect(srv.calls).toEqual([null, 57]);
+    });
+
+    it('via the latest window: a hole inside the first page needs no backfill at all', async () => {
+      const log = [...range(50, 57), { seq: 1001 }];
+      const srv = server(log, 10);
+      const st = wl.wlNewState('c1');
+      await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+      wl.wlOnLive(st, { seq: 1002 }, srv.fetchJson, () => {});
+      await settled(st);
+      expect(srv.calls).toEqual([null]);
+      expect(st.cursor).toBe(1002);
+    });
+
+    it('a backfill that brings nothing new still closes the gap (no retry loop)', async () => {
+      const srv = server(holeLog(), 10); // 1001 is not readable over HTTP (yet)
+      const st = wl.wlNewState('c1');
+      await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+      wl.wlOnLive(st, { seq: 1001 }, srv.fetchJson, () => {});
+      await settled(st);
+      expect(srv.calls).toEqual([null, 57]);
+      expect(st.cursor).toBe(1001);
+      wl.wlOnLive(st, { seq: 1002 }, srv.fetchJson, () => {});
+      wl.wlOnLive(st, { seq: 1003 }, srv.fetchJson, () => {});
+      await settled(st);
+      expect(srv.calls).toEqual([null, 57]);
+    });
+
+    it('a full page (hasMore) confirms only up to its last seq, then keeps paging', async () => {
+      const log = range(1, 31);
+      const srv = server(log, 5);
+      const st = wl.wlNewState('c1');
+      await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+      expect(st.cursor).toBe(31);
+      log.push(...range(32, 40));
+      wl.wlOnLive(st, { seq: 40 }, srv.fetchJson, () => {});
+      await settled(st);
+      expect(srv.calls).toEqual([null, 31, 36]);
+      expect(seqs(st)).toEqual(range(27, 40).map((e) => e.seq));
+      expect(st.cursor).toBe(40);
+    });
   });
 
   it('merges duplicate and out-of-order seqs into one ordered list; non-integer seqs are ignored', () => {
@@ -253,6 +347,60 @@ describe('work log core (shipped wl* functions)', () => {
     await settled(st);
     expect(srv.calls).toEqual([null]);
     expect(seqs(st)).toEqual(range(21, 30).map((e) => e.seq));
+  });
+
+  it('403 from any path is reported once through state.onDenied', async () => {
+    // First load fails transiently, the recovery's latest-window retry gets 403.
+    let first = true;
+    const flaky: FetchJson = async () => {
+      if (first) {
+        first = false;
+        throw httpError(502);
+      }
+      throw httpError(403);
+    };
+    const st = wl.wlNewState('c1') as WlState & { onDenied?: (s: unknown) => void };
+    const denied: unknown[] = [];
+    st.onDenied = (s) => denied.push(s);
+    expect(await wl.wlLoadLatest(st, flaky, () => {})).toBe('error');
+    expect(denied).toEqual([]);
+    await wl.wlRecover(st, flaky, () => {});
+    expect(denied).toEqual([st]);
+
+    // A backfill page that answers 403 (after a good first load).
+    let calls = 0;
+    const st2 = wl.wlNewState('c2') as WlState & { onDenied?: (s: unknown) => void };
+    const denied2: unknown[] = [];
+    st2.onDenied = (s) => denied2.push(s);
+    await wl.wlLoadLatest(
+      st2,
+      async () => ({ entries: range(1, 3) }),
+      () => {},
+    );
+    wl.wlOnLive(
+      st2,
+      { seq: 9 },
+      async () => {
+        calls++;
+        throw httpError(403);
+      },
+      () => {},
+    );
+    await settled(st2);
+    expect(denied2).toEqual([st2]);
+    expect(calls).toBe(1);
+    // Closed states (panel moved on) are not reported.
+    const st3 = wl.wlNewState('c3') as WlState & { onDenied?: (s: unknown) => void };
+    const denied3: unknown[] = [];
+    st3.onDenied = (s) => denied3.push(s);
+    const p = wl.wlLoadLatest(
+      st3,
+      async () => Promise.reject(httpError(403)),
+      () => {},
+    );
+    st3.closed = true;
+    await p;
+    expect(denied3).toEqual([]);
   });
 
   it('403 means owner-only: no entries, no recovery, live entries ignored', async () => {
@@ -389,13 +537,21 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
 });
 
 describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => {
-  function harness() {
+  /** noSummary: the reply has no summary yet, so the raw-response fallback runs. */
+  function harness(opts: { noSummary?: boolean } = {}) {
     let now = 1_000_000;
     const timers: Array<{ at: number; fn: () => void }> = [];
     const refreshed: string[] = [];
     let mode: 'down' | 'up' = 'down';
+    let rawMode: 'down' | 'up' = 'up';
     const fetchCalls: string[] = [];
+    const rawCalls: string[] = [];
     const fetchStub = async (url: string) => {
+      if (url.endsWith('/raw')) {
+        rawCalls.push(url);
+        if (rawMode === 'down') return { ok: false, status: 503, json: async () => ({}) };
+        return { ok: true, json: async () => ({ raw: 'Dry run passed in 41s — raw text.' }) };
+      }
       fetchCalls.push(url);
       if (mode === 'down') throw new Error('network down');
       return {
@@ -403,7 +559,9 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
         json: async () => ({
           turns: [
             { id: 'u1', role: 'user', userName: 'Zhuge', rawContent: 'staging에서 dry run 해줘' },
-            { id: 'a1', role: 'assistant', summaryTitle: 'Dry run passed', summaryBody: 'No errors.' },
+            opts.noSummary
+              ? { id: 'a1', role: 'assistant' }
+              : { id: 'a1', role: 'assistant', summaryTitle: 'Dry run passed', summaryBody: 'No errors.' },
           ],
         }),
       };
@@ -458,12 +616,74 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
       addCard,
       advance,
       fetchCalls,
+      rawCalls,
       refreshed,
       setMode: (m: 'down' | 'up') => {
         mode = m;
       },
+      setRaw: (m: 'down' | 'up') => {
+        rawMode = m;
+      },
     };
   }
+
+  it('a partial result (instruction ok, raw response failed) is kept and retried until the response loads', async () => {
+    const h = harness({ noSummary: true });
+    h.setMode('up');
+    h.setRaw('down');
+    h.addCard('kp', 'cp');
+    h.io.ensureCardIo('kp', true);
+    await flush();
+    const c = h.env._ioCache.cp;
+    expect(c.state).toBe('error'); // not "ok" — the response is still missing
+    expect(c.data.instruction.text).toBe('staging에서 dry run 해줘');
+    expect(c.data.response).toBeNull();
+    expect(c.data.partial).toBe(true);
+    // Same lastActivity; the response endpoint comes back; the backoff retries.
+    h.setRaw('up');
+    await h.advance(1000);
+    expect(h.env._ioCache.cp.state).toBe('ok');
+    expect(h.env._ioCache.cp.data.response.body).toBe('Dry run passed in 41s — raw text.');
+    expect(h.rawCalls).toHaveLength(2);
+  });
+
+  it('a partial result is also retried by reopening the card', async () => {
+    const h = harness({ noSummary: true });
+    h.setMode('up');
+    h.setRaw('down');
+    h.addCard('kq', 'cq');
+    h.io.ensureCardIo('kq', true);
+    await flush();
+    h.setRaw('up');
+    h.io.ensureCardIo('kq', true);
+    await flush();
+    expect(h.env._ioCache.cq.state).toBe('ok');
+    expect(h.env._ioCache.cq.data.response.body).toContain('raw text');
+  });
+
+  it('IO_AUTO_RETRIES caps automatic attempts — board re-renders cannot extend it; a reopen still retries', async () => {
+    const h = harness();
+    h.addCard('kc', 'cc');
+    h.io.ensureCardIo('kc', true); // the opening fetch
+    await flush();
+    // Let every backoff timer fire, interleaved with board re-renders.
+    for (let i = 0; i < 12; i++) {
+      await h.advance(60_000);
+      h.io.ensureCardIo('kc', false); // reconcileBoard on every push
+      await flush();
+    }
+    const cap = Number(clientVar('IO_AUTO_RETRIES').match(/\d+/)?.[0]);
+    expect(h.fetchCalls).toHaveLength(1 + cap);
+    // More renders much later: still capped.
+    await h.advance(10 * 60_000);
+    h.io.ensureCardIo('kc', false);
+    await flush();
+    expect(h.fetchCalls).toHaveLength(1 + cap);
+    // An explicit reopen retries once more.
+    h.io.ensureCardIo('kc', true);
+    await flush();
+    expect(h.fetchCalls).toHaveLength(2 + cap);
+  });
 
   it('a failed fetch is never fresh: it recovers on the backoff timer once the endpoint is back', async () => {
     const h = harness();
@@ -543,6 +763,8 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     expect(ioNeedsFetch({ state: 'error', stamp: 's', retryAt: 100 }, 's', false, 50)).toBe(false);
     expect(ioNeedsFetch({ state: 'error', stamp: 's', retryAt: 100 }, 's', false, 100)).toBe(true);
     expect(ioNeedsFetch({ state: 'error', stamp: 's', retryAt: 100 }, 's', true, 0)).toBe(true);
+    expect(ioNeedsFetch({ state: 'error', stamp: 's', retryAt: 100, fails: 7 }, 's', false, 1e9)).toBe(false);
+    expect(ioNeedsFetch({ state: 'error', stamp: 's', retryAt: 100, fails: 7 }, 's', true, 0)).toBe(true);
   });
 });
 
