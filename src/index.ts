@@ -55,6 +55,7 @@ import {
   broadcastSessionUpdate,
   broadcastSummaryTitleChanged,
   broadcastTaskUpdate,
+  getDashboardSessionUrl,
   initRecorder,
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
@@ -100,6 +101,7 @@ import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from 
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler } from './slack/goal-loop-resume';
 import { setUiSurfacesConfig } from './slack/surface-config';
+import { setThreadHeaderProviders } from './slack/thread-header-builder';
 import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
@@ -430,6 +432,8 @@ async function start() {
     if (appConfig.ui) {
       timing(`UI surface config applied (${Object.keys(uiConfigResult.config).length} surfaces overridden)`);
     }
+    // Thread header `dashboardLink` (📋 작업 로그) resolves its deep link here.
+    setThreadHeaderProviders({ getDashboardSessionUrl });
 
     // Install operator-controlled additional env (config.json#claude.env)
     // BEFORE any ClaudeHandler / SDK consumers are constructed, so every

@@ -81,6 +81,23 @@ function getStatusEmoji(status: string | undefined, linkType?: string): string {
   return STATUS_EMOJI[key] || STATUS_EMOJI[status.toLowerCase()] || '';
 }
 
+/**
+ * Host-injected URL sources. packages/slack cannot import the src web server,
+ * so the host (src/index.ts) wires the dashboard deep-link builder here.
+ */
+export interface ThreadHeaderProviders {
+  /** `/dashboard/<ownerId>?session=<sessionKey>` on the viewer, or undefined when unavailable. */
+  getDashboardSessionUrl?: (ownerId: string, sessionKey: string) => string | undefined;
+}
+
+const threadHeaderProviders: Required<ThreadHeaderProviders> = {
+  getDashboardSessionUrl: () => undefined,
+};
+
+export function setThreadHeaderProviders(next: ThreadHeaderProviders): void {
+  if (next.getDashboardSessionUrl) threadHeaderProviders.getDashboardSessionUrl = next.getDashboardSessionUrl;
+}
+
 /** Max links to display per type when the field config sets no `max` */
 const MAX_LINKS_PER_TYPE = 5;
 
@@ -104,6 +121,8 @@ export interface ThreadHeaderData {
   usage?: SessionUsage;
   /** UI display theme */
   theme?: SessionTheme;
+  /** Session registry key — with ownerId, addresses the session's dashboard card (`dashboardLink`). */
+  sessionKey?: string;
 }
 
 export interface ThreadHeaderPayload {
@@ -115,7 +134,7 @@ export interface ThreadHeaderPayload {
 export class ThreadHeaderBuilder {
   static fromSession(
     session: ConversationSession,
-    overrides?: { closed?: boolean; theme?: SessionTheme },
+    overrides?: { closed?: boolean; theme?: SessionTheme; sessionKey?: string },
   ): ThreadHeaderPayload {
     // Dashboard v2.1 — prefer LLM-generated summaryTitle when available,
     // then raw title. Undefined when neither is set so resolveTitle's
@@ -251,6 +270,10 @@ export class ThreadHeaderBuilder {
         if (!data.closed) return [];
         return [field.format === 'closed-text' ? '_종료됨_' : '🔴 _종료됨_'];
       }
+      case 'dashboardLink': {
+        const url = ThreadHeaderBuilder.resolveDashboardUrl(data);
+        return url ? [ThreadHeaderBuilder.formatDashboardLink(url)] : [];
+      }
       default:
         // Unknown fields were already warn-filtered by surface-config
         // normalization; built-ins never hit this. Stay silent on the hot path.
@@ -294,6 +317,20 @@ export class ThreadHeaderBuilder {
 
   private static resolveOwner(data: ThreadHeaderData): string | undefined {
     return data.ownerName || data.ownerId;
+  }
+
+  /**
+   * The session's dashboard deep link, or undefined when the owner/key is
+   * unknown (e.g. a bot-thread root posted before its thread ts exists) or the
+   * host has no URL. A provider failure drops the link, never the header.
+   */
+  private static resolveDashboardUrl(data: ThreadHeaderData): string | undefined {
+    if (!data.ownerId || !data.sessionKey) return undefined;
+    try {
+      return threadHeaderProviders.getDashboardSessionUrl(data.ownerId, data.sessionKey) || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private static buildTextFallback(data: ThreadHeaderData): string {
@@ -404,6 +441,14 @@ export class ThreadHeaderBuilder {
   // ---------------------------------------------------------------------------
   // Public static helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Slack mrkdwn for the session work-log link (`📋 작업 로그`). Shared by the
+   * header `dashboardLink` field and the link posted into a user-started thread.
+   */
+  static formatDashboardLink(url: string): string {
+    return `📋 <${url}|작업 로그>`;
+  }
 
   /**
    * Format model name for display.

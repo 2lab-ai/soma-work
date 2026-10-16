@@ -6,6 +6,8 @@ A bad `ui` value never breaks boot: structurally invalid input degrades to the b
 
 On first boot, if `config.json` has no `ui` key, the full default composition is seeded into the file automatically — edit the settings right there. An existing `ui` key (even an empty `{}`) is never overwritten, so your edits are safe across restarts. `config.default.json` in the repo root remains the pristine reference copy of the defaults.
 
+One exception: a surface that still equals the default as it was seeded before a field was added (unedited) counts as no override, so the newer built-in default applies. Today that covers `threadheader` seeded before `dashboardLink`. Any edit keeps your config exactly as written — add `{ "field": "dashboardLink" }` yourself to get the link in a customized header.
+
 ## Surfaces
 
 | Surface | Where it appears |
@@ -80,9 +82,11 @@ Themes: `default`, `compact`, `minimal`.
 
 Only these fields exist per surface — anything else warns and is skipped.
 
-- `threadheader`: `title`, `owner`, `workflow`, `model`, `contextwindow`, `links`, `linkhistory`, `status`, `separator`
+- `threadheader`: `title`, `owner`, `workflow`, `model`, `contextwindow`, `links`, `linkhistory`, `dashboardLink`, `status`, `separator`
 - `turnend`: `status`, `title`, `threadlink`, `errorbody`, `persona`, `model`, `effort`, `startedat`, `contextwindow`, `duration`, `fivehour`, `sevenday`, `toolstats`, `separator`
 - `dashboardheader`: `title`, `owner`, `workflow`, `model`, `links`, `mergestats`, `tokens`, `cost`, `contextwindow`, `tasks`, `status`, `separator`
+
+Field names match case-insensitively. `dashboardLink` renders `📋 작업 로그`, the deep link to the session's card on the owner's dashboard (`/dashboard/<ownerId>?session=<sessionKey>`), and is omitted when no dashboard URL is available.
 
 A field that does not appear in the resolved lines is hidden. On the dashboard card, the pending-question block and action buttons are always shown regardless of configuration.
 
