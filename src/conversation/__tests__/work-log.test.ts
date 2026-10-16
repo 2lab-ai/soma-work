@@ -568,9 +568,20 @@ describe('work log store', () => {
   });
 
   describe('one-block reservation steps (review round 7)', () => {
-    const SLOW = { timeout: 120_000 };
-    const BLOCK = 1000;
+    // A small block keeps the same shape (two boundary crossings, a full block of
+    // publishes) at tens of fdatasyncs instead of thousands. Every fresh module
+    // load starts at the production block, so it is set again after each one.
+    const BLOCK = 10;
     const dir = () => path.join(paths.dataDir, 'worklogs');
+    async function freshWithSmallBlock(): Promise<WorkLogModule> {
+      const mod = await loadFresh();
+      mod._setWorkLogReserveBlockForTests(BLOCK);
+      return mod;
+    }
+
+    afterEach(() => {
+      wl._setWorkLogReserveBlockForTests();
+    });
     const readSeqFile = (file: string): number | null =>
       fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf-8')).reservedSeq as number) : null;
 
@@ -619,92 +630,97 @@ describe('work log store', () => {
       }
     }
 
-    it(
-      'the full chain: a reservation failure, a block of publishes, live lost + last entry truncated → no reuse',
-      SLOW,
-      async () => {
-        const id = 'conv-chain';
-        // 1. Live reservation and cursor both 1000; 1..1000 were published by an earlier process.
-        restartAt(id, 1000);
-        const published = new Set<number>(Array.from({ length: 1000 }, (_, i) => i + 1));
-        let proc = await loadFresh();
-        proc.setOnWorkLogAppendedCallback((_c, e) => published.add(e.seq));
+    it('the full chain: a reservation failure, a block of publishes, live lost + last entry truncated → no reuse', async () => {
+      const id = 'conv-chain';
+      // 1. Live reservation and cursor both one block; 1..BLOCK were published by an earlier process.
+      restartAt(id, BLOCK);
+      const published = new Set<number>(Array.from({ length: BLOCK }, (_, i) => i + 1));
+      let proc = await freshWithSmallBlock();
+      wl = proc;
+      proc.setOnWorkLogAppendedCallback((_c, e) => published.add(e.seq));
 
-        // 2. Append 1001 fails before its reservation write lands.
-        await withReadOnlyDir(() =>
-          expect(proc.appendWorkLog(id, { kind: 'narration', text: 'fails' })).rejects.toThrow(),
-        );
-        const afterFailure = { live: readSeqFile(sidecarFile(id)), bak: readSeqFile(`${sidecarFile(id)}.bak`) };
+      // 2. Append BLOCK + 1 fails before its reservation write lands.
+      await withReadOnlyDir(() =>
+        expect(proc.appendWorkLog(id, { kind: 'narration', text: 'fails' })).rejects.toThrow(),
+      );
+      const afterFailure = { live: readSeqFile(sidecarFile(id)), bak: readSeqFile(`${sidecarFile(id)}.bak`) };
 
-        // 3–4. The retry reserves the next block; publish up to the live reservation.
-        const retried = await proc.appendWorkLog(id, { kind: 'narration', text: 'retry' });
-        const step3 = { live: readSeqFile(sidecarFile(id)), bak: readSeqFile(`${sidecarFile(id)}.bak`) };
-        let last = retried.seq;
-        while (last < (step3.live ?? 0))
-          last = (await proc.appendWorkLog(id, { kind: 'narration', text: `p${last}` })).seq;
-        await proc.flushWorkLog();
+      // 3–4. The retry reserves the next block; publish up to the live reservation.
+      const retried = await proc.appendWorkLog(id, { kind: 'narration', text: 'retry' });
+      const step3 = { live: readSeqFile(sidecarFile(id)), bak: readSeqFile(`${sidecarFile(id)}.bak`) };
+      let last = retried.seq;
+      while (last < (step3.live ?? 0))
+        last = (await proc.appendWorkLog(id, { kind: 'narration', text: `p${last}` })).seq;
+      await proc.flushWorkLog();
 
-        // 5. The live sidecar is lost and the last entry is truncated away.
-        fs.rmSync(sidecarFile(id));
-        const raw = fs.readFileSync(logFile(id), 'utf-8');
-        fs.truncateSync(logFile(id), Buffer.byteLength(raw.slice(0, raw.lastIndexOf('\n', raw.length - 2) + 1)));
+      // 5. The live sidecar is lost and the last entry is truncated away.
+      fs.rmSync(sidecarFile(id));
+      const raw = fs.readFileSync(logFile(id), 'utf-8');
+      fs.truncateSync(logFile(id), Buffer.byteLength(raw.slice(0, raw.lastIndexOf('\n', raw.length - 2) + 1)));
 
-        // 6. Recovery from .bak + the tail must not republish anything.
-        const before = new Set(published);
-        proc = await loadFresh();
-        proc.setOnWorkLogAppendedCallback((_c, e) => published.add(e.seq));
-        const recovered = await proc.appendWorkLog(id, { kind: 'notice', text: 'after recovery' });
-        await proc.flushWorkLog();
-        expect(before.has(recovered.seq)).toBe(false);
-        expect(recovered.seq).toBeGreaterThan(Math.max(...before));
+      // 6. Recovery from .bak + the tail must not republish anything.
+      const before = new Set(published);
+      proc = await freshWithSmallBlock();
+      wl = proc;
+      proc.setOnWorkLogAppendedCallback((_c, e) => published.add(e.seq));
+      const recovered = await proc.appendWorkLog(id, { kind: 'notice', text: 'after recovery' });
+      await proc.flushWorkLog();
+      expect(before.has(recovered.seq)).toBe(false);
+      expect(recovered.seq).toBeGreaterThan(Math.max(...before));
 
-        // And the mechanism: the failed write landed nothing and burned nothing;
-        // the retry stepped exactly one block, keeping .bak one block behind.
-        expect(afterFailure).toEqual({ live: 1000, bak: null });
-        expect(retried.seq).toBe(1001);
-        expect(step3).toEqual({ live: 2000, bak: 1000 });
-      },
-    );
+      // And the mechanism: the failed write landed nothing and burned nothing;
+      // the retry stepped exactly one block, keeping .bak one block behind.
+      expect(afterFailure).toEqual({ live: BLOCK, bak: null });
+      expect(retried.seq).toBe(BLOCK + 1);
+      expect(step3).toEqual({ live: 2 * BLOCK, bak: BLOCK });
+    });
 
-    it(
-      'a burst of burned seqs beyond a block, then reservation failures, then success: every live step ≤ one block',
-      SLOW,
-      async () => {
-        const id = 'conv-burst';
-        restartAt(id, 1000);
-        wl = await loadFresh();
-        // Phase 1: 2000 appends whose reservation succeeds but whose line write fails
-        // — real burns, crossing two block boundaries (seqs 1001..3000).
-        let failWrites = true;
-        const seen = watchSidecar(id, (fh, args) => {
-          if (args[1] === 'a' && failWrites) {
-            (fh as { writeFile: unknown }).writeFile = async () => {
-              throw ioError('ENOSPC');
-            };
-          }
-        });
-        for (let i = 0; i < 2 * BLOCK; i++) {
-          await expect(wl.appendWorkLog(id, { kind: 'narration', text: `b${i}` })).rejects.toThrow('ENOSPC');
+    it('a burst of burned seqs beyond a block, then reservation failures, then success: every live step ≤ one block', async () => {
+      const id = 'conv-burst';
+      restartAt(id, BLOCK);
+      wl = await freshWithSmallBlock();
+      // Phase 1: 2 blocks of appends whose reservation succeeds but whose line
+      // write fails — real burns, crossing two block boundaries.
+      let failWrites = true;
+      const seen = watchSidecar(id, (fh, args) => {
+        if (args[1] === 'a' && failWrites) {
+          (fh as { writeFile: unknown }).writeFile = async () => {
+            throw ioError('ENOSPC');
+          };
         }
-        failWrites = false;
+      });
+      for (let i = 0; i < 2 * BLOCK; i++) {
+        await expect(wl.appendWorkLog(id, { kind: 'narration', text: `b${i}` })).rejects.toThrow('ENOSPC');
+      }
+      failWrites = false;
 
-        // Phase 2: the next boundary's reservation write fails five times.
-        await withReadOnlyDir(async () => {
-          for (let i = 0; i < 5; i++) {
-            await expect(wl.appendWorkLog(id, { kind: 'narration', text: `r${i}` })).rejects.toThrow();
-          }
-        });
+      // Phase 2: the next boundary's reservation write fails five times.
+      await withReadOnlyDir(async () => {
+        for (let i = 0; i < 5; i++) {
+          await expect(wl.appendWorkLog(id, { kind: 'narration', text: `r${i}` })).rejects.toThrow();
+        }
+      });
 
-        // Then a successful append.
-        const ok = await wl.appendWorkLog(id, { kind: 'narration', text: 'ok' });
-        expect(ok.seq).toBe(3001); // 1001..3000 burned; the failed reservations burned nothing
-        seen.push({ live: readSeqFile(sidecarFile(id)), bak: readSeqFile(`${sidecarFile(id)}.bak`) });
+      // Then a successful append.
+      const ok = await wl.appendWorkLog(id, { kind: 'narration', text: 'ok' });
+      expect(ok.seq).toBe(3 * BLOCK + 1); // BLOCK+1..3·BLOCK burned; the failed reservations burned nothing
+      seen.push({ live: readSeqFile(sidecarFile(id)), bak: readSeqFile(`${sidecarFile(id)}.bak`) });
 
-        expectOneBlockSteps(seen);
-        expect(seen.map((s) => s.live).filter((v, i, a) => v !== a[i - 1])).toEqual([2000, 3000, 4000]);
-        expect(seen[seen.length - 1]).toEqual({ live: 4000, bak: 3000 });
-      },
-    );
+      expectOneBlockSteps(seen);
+      expect(seen.map((s) => s.live).filter((v, i, a) => v !== a[i - 1])).toEqual([2 * BLOCK, 3 * BLOCK, 4 * BLOCK]);
+      expect(seen[seen.length - 1]).toEqual({ live: 4 * BLOCK, bak: 3 * BLOCK });
+    });
+
+    it('the production block is 1000, and resetting the test setter restores it', async () => {
+      expect(wl.WORK_LOG_SEQ_RESERVE_BLOCK).toBe(1000);
+      expect(() => wl._setWorkLogReserveBlockForTests(0)).toThrow();
+      wl._setWorkLogReserveBlockForTests(BLOCK);
+      await wl.appendWorkLog('conv-small', { kind: 'narration', text: 'x' });
+      expect(readSeqFile(sidecarFile('conv-small'))).toBe(BLOCK);
+      wl._setWorkLogReserveBlockForTests();
+      await wl.appendWorkLog('conv-default', { kind: 'narration', text: 'x' });
+      expect(readSeqFile(sidecarFile('conv-default'))).toBe(1000);
+    });
 
     it('the step assertion refuses (error log, no write) a reservation that lowers live or jumps more than a block', async () => {
       const { Logger } = await import('../../logger');
