@@ -19,6 +19,7 @@ import {
 } from '@soma/slack/followup-queue';
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
+import { OutputFlag } from '@soma/slack/output-flags';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
@@ -90,7 +91,7 @@ import {
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
 import { advanceGoalQueue, enqueueOrActivateGoal, formatGoalObjectiveForSlack } from './slack/session-goal';
-import { announceForcedSkillFire } from './slack/skill-fire-banner';
+import { announceSessionNotice } from './slack/session-notice';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
@@ -1728,10 +1729,15 @@ export class SlackHandler {
           );
           this.claudeHandler.saveSessions();
           if (applied.activated) {
-            await this.slackApi.postSystemMessage(
-              activeChannel,
-              `🤖 Autogoal: 이 지시를 goal로 설정했습니다 — ${formatGoalObjectiveForSlack(effectiveText)}`,
-              { threadTs: activeThreadTs },
+            // A status notice (spec 10 §3.2-5): posted at compact and above,
+            // recorded in the work log at every level.
+            const autogoalNotice = `🤖 Autogoal: 이 지시를 goal로 설정했습니다 — ${formatGoalObjectiveForSlack(effectiveText)}`;
+            await announceSessionNotice(
+              fullSession,
+              OutputFlag.STATUS_MESSAGE,
+              autogoalNotice,
+              () => this.slackApi.postSystemMessage(activeChannel, autogoalNotice, { threadTs: activeThreadTs }),
+              { sessionKey: sessionResult.sessionKey },
             );
             dispatchText = buildGoalContinuationPrompt(applied.goal as SessionGoal);
           }
@@ -1754,11 +1760,15 @@ export class SlackHandler {
           const fire = buildAutoskillFire(event.user, `<@${event.user}>`);
           if (fire) {
             // Posted at compact and above; recorded in the work log at every level.
-            await announceForcedSkillFire(
+            await announceSessionNotice(
               sessionResult.session as ConversationSession,
-              fire.banner,
-              (attachment) =>
-                this.slackApi.postMessage(activeChannel, '', { threadTs: activeThreadTs, attachments: [attachment] }),
+              OutputFlag.SKILL_INVOCATION,
+              fire.banner.text,
+              () =>
+                this.slackApi.postMessage(activeChannel, '', {
+                  threadTs: activeThreadTs,
+                  attachments: [{ color: fire.banner.color, text: fire.banner.text }],
+                }),
               { sessionKey: sessionResult.sessionKey },
             );
             dispatchText = dispatchText ? `${dispatchText}\n\n${fire.invokedBlock}` : fire.invokedBlock;
@@ -1783,11 +1793,15 @@ export class SlackHandler {
       // SkillForceHandler already resolved + deferred it, so it must not vanish.
       if (deferredSkillFire) {
         // Like the autoskill banner: posted at compact and above, recorded at every level.
-        await announceForcedSkillFire(
+        await announceSessionNotice(
           sessionResult.session as ConversationSession,
-          deferredSkillFire.banner,
-          (attachment) =>
-            this.slackApi.postMessage(activeChannel, '', { threadTs: activeThreadTs, attachments: [attachment] }),
+          OutputFlag.SKILL_INVOCATION,
+          deferredSkillFire.banner.text,
+          () =>
+            this.slackApi.postMessage(activeChannel, '', {
+              threadTs: activeThreadTs,
+              attachments: [{ color: deferredSkillFire.banner.color, text: deferredSkillFire.banner.text }],
+            }),
           { sessionKey: sessionResult.sessionKey },
         );
         dispatchText = dispatchText
