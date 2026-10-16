@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import { LOG_MINIMAL } from '@soma/slack/output-flags';
+import { LOG_DETAIL, LOG_MINIMAL } from '@soma/slack/output-flags';
 import { setStreamExecutorProviders } from '@soma/slack/pipeline/stream-executor';
 import type { WorkLogInput } from '@soma/slack/work-log';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -112,6 +112,9 @@ function buildDeps(overrides: Record<string, any> = {}): any {
       getUserAutoGoalEnabled: vi.fn().mockReturnValue(false),
       setUserAutoGoalEnabled: vi.fn(),
       toggleUserAutoGoalEnabled: vi.fn().mockReturnValue(true),
+      // SkillForceHandler reads the requester's default verbosity when the
+      // thread has no session (decides whether the `$skill` banner posts).
+      getUserLogVerbosityFlags: vi.fn().mockReturnValue(LOG_DETAIL),
     },
     ...overrides,
   };

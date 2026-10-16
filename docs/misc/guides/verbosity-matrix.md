@@ -21,7 +21,7 @@ Complete mapping of the output flags in `packages/slack/src/output-flags.ts` acr
 | 3 | `TOOL_DETAIL` | `1<<3` | - | - | **on** | on | Tool call detail — args, diff, command, MCP inputs |
 | 4 | `TOOL_RESULT` | `1<<4` | - | - | **on** | on | Tool execution result |
 | 5 | `MCP_PROGRESS` | `1<<5` | - | **on** | on | on | MCP / subagent / background-Bash progress status messages |
-| 6 | `STATUS_MESSAGE` | `1<<6` | - | **on** | on | on | Status text messages (Thinking / Working / Completed) |
+| 6 | `STATUS_MESSAGE` | `1<<6` | - | **on** | on | on | Status text messages (Thinking / Working / Completed), goal-loop progress (🔄 not yet complete, ▶️ next queued goal) and the 🤖 Autogoal notice (the goal notices are always recorded as a work-log `notice`; posted only when on) |
 | 7 | `STATUS_REACTION` | `1<<7` | - | **on** | on | on | Emoji reactions (thinking_face, gear, check_mark) |
 | 8 | `STATUS_SPINNER` | `1<<8` | - | **on** | on | on | Native Slack assistant spinner |
 | 9 | `USER_CHOICE` | `1<<9` | **on** | on | on | on | User choice / form prompts (**ALWAYS** shown) |
@@ -61,13 +61,13 @@ Each flag is checked at the point of output using `shouldOutput(flag, verbosityM
 |------|----------|-------|
 | `FINAL_RESULT` | `stream-processor.ts` | Always shown at minimal+ |
 | `NARRATION` | `stream-processor.ts` | `handleTextMessage` + interrupt rescue; when off, the segment equal to the SDK `finalText` is posted once at the result event |
-| `SKILL_INVOCATION` | `stream-processor.ts`, `src/slack/skill-fire-banner.ts` | Model Skill banner (PHASE=0); forced `$skill` / autoskill banners via `announceForcedSkillFire` (`skill-force-handler.ts`, `slack-handler.ts`) |
+| `SKILL_INVOCATION` | `stream-processor.ts`, `src/slack/session-notice.ts` | Model Skill banner (PHASE=0); forced `$skill` / autoskill banners via `announceSessionNotice` (`skill-force-handler.ts`, `slack-handler.ts`) |
 | `THINKING` | `stream-processor.ts` | `getThinkingRenderMode()` |
 | `TOOL_CALL` | `stream-processor.ts` | `getToolCallRenderMode()` |
 | `TOOL_DETAIL` | `stream-processor.ts` | `getToolCallRenderMode()` |
 | `TOOL_RESULT` | `tool-event-processor.ts` | `getToolResultRenderMode()` |
 | `MCP_PROGRESS` | `tool-event-processor.ts` | Guards `mcpStatusDisplay.start*()` |
-| `STATUS_MESSAGE` | `stream-executor.ts` | Status create/update calls |
+| `STATUS_MESSAGE` | `stream-executor.ts`, `src/slack/session-notice.ts` | Status create/update calls; goal-loop progress (`goal-loop-controller.ts`) and the Autogoal notice (`slack-handler.ts`) via `announceSessionNotice` |
 | `STATUS_REACTION` | `stream-executor.ts` | Reaction add/update calls |
 | `STATUS_SPINNER` | `stream-executor.ts` | Native Slack spinner |
 | `USER_CHOICE` | _(always on)_ | Never suppressed |
@@ -94,8 +94,8 @@ paths:
   the threshold checker's "next turn will auto /compact" announcement (recorded at turn end
   through the same turn sink).
 - Conversation entries, with no `turnId`: the compaction start/complete notices, recorded by
-  `compact-hooks.ts` through `recordConversationWorkLog` (below), and the forced-skill banners
-  (below).
+  `compact-hooks.ts` through `recordConversationWorkLog` (below), and the session notices —
+  forced-skill banners and goal notices (below).
 
 A store that throws never breaks what records into it: the entry is dropped and reported at
 warn, throttled process-wide — the first drop at once, then at most one summary per
@@ -128,11 +128,15 @@ Entry contract for the final answer (the log is append-only):
   hooks or the stream's `compacting` status / `compact_boundary`), at every level, including a
   completion that arrives after the turn that ran the compaction has ended. The threshold
   announcement is a turn entry and carries the turn's `turnId`.
-- A forced-skill banner — a non-deferred `$skill` (`skill-force-handler.ts`), the autoskill fire
-  and the deferred first-instruction `$skill` on a fresh-context start (`slack-handler.ts`) — is
-  recorded once per fire as a `notice` carrying the banner text, against
+- Each session notice is recorded once, as a `notice` carrying its text, against
   `session.conversationId` through `recordConversationWorkLog` (no `turnId`; nothing without a
-  conversation), at every level, by `announceForcedSkillFire` (`src/slack/skill-fire-banner.ts`).
+  conversation), at every level, by `src/slack/session-notice.ts` (`announceSessionNotice`
+  records, then posts iff the flag is on; `recordSessionNotice` only records, for notices the
+  caller posts at every level). They are: the forced-skill banners —
+  a non-deferred `$skill` (`skill-force-handler.ts`), the autoskill fire and the deferred
+  first-instruction `$skill` on a fresh-context start (`slack-handler.ts`); the goal loop's
+  ✅ completed, ▶️ next queued goal, ⏸️ asked the owner via DM, ⏹️ paused and 🔄 not yet
+  complete (`goal-loop-controller.ts`); and the 🤖 Autogoal notice (`slack-handler.ts`).
 - When the fallback (below) posts a segment that was already recorded as `narration`, that
   text appears once as `narration` and once as `final` — never two of either.
 
@@ -158,8 +162,16 @@ Entry contract for the final answer (the log is append-only):
   (compact and above), the same flag as the model's own Skill banner, and are recorded as
   work-log `notice` entries at every level (above). Only the banner is gated — the
   `<invoked_skills>` block is appended to the prompt at every level, so the skill still runs.
-  The session's mask is read when the banner would be posted; with no session in scope it is
-  `detail`, as below.
+  The session's mask is read when the banner would be posted. For a non-deferred `$skill` with
+  no session registered for the thread, the requesting user's default verbosity is used (the
+  mask a new session would get); nothing is recorded then (no conversation).
+- Goal notices: 🔄 not yet complete, ▶️ starting the next queued goal, and the 🤖 Autogoal
+  notice are status messages — not posted below `compact` (`STATUS_MESSAGE`), recorded at every
+  level. ✅ goal completed (the result), ⏸️ asked the owner via DM and ⏹️ paused — send a
+  message to resume (the user has to act) are posted at every level and recorded too. Only the
+  posts change: the loop (counter, eval, continuation injection, queue advance, autogoal
+  activation) runs the same at every level. Goal eval errors (⚠️, ⏳ retrying) are error
+  notices and stay posted.
 - Every consumer reads a stored mask through `resolveVerbosityMask`: a missing or non-numeric
   mask is `detail`.
 

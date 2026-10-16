@@ -88,13 +88,56 @@ describe('SkillForceHandler — banner follows the session verbosity', () => {
     expect(result.continueWithPrompt).toContain('<invoked_skills>');
   });
 
-  it('no session in scope: banner posted (mask read as detail), nothing recorded', async () => {
+  it('no session and no settings store in scope: banner posted (mask read as detail), nothing recorded', async () => {
     const { handler } = handlerFor(undefined);
 
     await handler.execute(makeCtx('$local:z'));
 
     expect(bannerPosts()).toHaveLength(1);
     expect(recorded).toEqual([]);
+  });
+
+  describe('no session in scope: the requesting user default verbosity decides', () => {
+    function handlerWithUserDefault(mask: number) {
+      const getUserLogVerbosityFlags = vi.fn().mockReturnValue(mask);
+      const handler = new SkillForceHandler(undefined, {
+        claudeHandler: { getSession: vi.fn().mockReturnValue(undefined) } as any,
+        userSettingsStore: { getUserLogVerbosityFlags } as any,
+      });
+      return { handler, getUserLogVerbosityFlags };
+    }
+
+    it('user default minimal: no post, nothing recorded, the skill still executes', async () => {
+      const { handler, getUserLogVerbosityFlags } = handlerWithUserDefault(LOG_MINIMAL);
+
+      const result = await handler.execute(makeCtx('$local:z'));
+
+      expect(getUserLogVerbosityFlags).toHaveBeenCalledWith('U1');
+      expect(mockSay).not.toHaveBeenCalled();
+      expect(recorded).toEqual([]);
+      expect(result.continueWithPrompt).toContain('<invoked_skills>');
+    });
+
+    it('user default compact: banner posted', async () => {
+      const { handler } = handlerWithUserDefault(getVerbosityFlags('compact'));
+
+      await handler.execute(makeCtx('$local:z'));
+
+      expect(bannerPosts()).toHaveLength(1);
+    });
+
+    it('a found session wins over the user default', async () => {
+      const getUserLogVerbosityFlags = vi.fn().mockReturnValue(LOG_MINIMAL);
+      const handler = new SkillForceHandler(undefined, {
+        claudeHandler: { getSession: vi.fn().mockReturnValue({ logVerbosity: LOG_DETAIL }) } as any,
+        userSettingsStore: { getUserLogVerbosityFlags } as any,
+      });
+
+      await handler.execute(makeCtx('$local:z'));
+
+      expect(bannerPosts()).toHaveLength(1);
+      expect(getUserLogVerbosityFlags).not.toHaveBeenCalled();
+    });
   });
 
   it('minimal session without a conversation: no post, nothing recorded', async () => {

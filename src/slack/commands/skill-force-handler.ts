@@ -1,12 +1,14 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { OutputFlag } from '@soma/slack/output-flags';
 import { DATA_DIR, PLUGINS_DIR } from '../../env-paths';
 import { Logger } from '../../logger';
 import { isSafePathSegment } from '../../path-utils';
 import { createPermissionRequest } from '../../skill-permission-request-store';
+import type { ConversationSession } from '../../types';
 import { extractCopiedFrom } from '../../user-skill-frontmatter';
 import { consumeOneTimeGrant, hasOneTimeGrant, isSkillUseAllowed } from '../../user-skill-grants-store';
-import { announceForcedSkillFire } from '../skill-fire-banner';
+import { announceSessionNotice } from '../session-notice';
 import { buildPermissionRequestMessage } from '../skill-permission-blocks';
 import { ToolFormatter } from '../tool-formatter';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
@@ -234,12 +236,13 @@ export class SkillForceHandler implements CommandHandler {
    *   for cross-user `$X:skill` invocation (S3/S6). Defaults to the offline
    *   `userSettingsStore`-backed resolver; injected as a stub in tests.
    * @param deps `claudeHandler` finds the thread's session, whose verbosity
-   *   decides whether the RPG banner is posted. Without it (or without a
-   *   session) the mask reads as the default detail and the banner is posted.
+   *   decides whether the RPG banner is posted; `userSettingsStore` supplies
+   *   the requesting user's default when no session is registered for the
+   *   thread. With neither, the mask reads as the default detail.
    */
   constructor(
     private resolveUser: UserResolver = resolveUserIdentifier,
-    private deps: Partial<Pick<CommandDependencies, 'claudeHandler'>> = {},
+    private deps: Partial<Pick<CommandDependencies, 'claudeHandler' | 'userSettingsStore'>> = {},
   ) {}
 
   canHandle(text: string, userId?: string): boolean {
@@ -385,14 +388,34 @@ export class SkillForceHandler implements CommandHandler {
     }
 
     // Posted at compact and above; recorded in the work log at every level.
-    await announceForcedSkillFire(this.deps.claudeHandler?.getSession(ctx.channel, threadTs), rpg, (attachment) =>
-      say({ text: '', thread_ts: threadTs, attachments: [attachment] }),
+    await announceSessionNotice(
+      this.bannerSession(ctx.channel, threadTs, user),
+      OutputFlag.SKILL_INVOCATION,
+      rpg.text,
+      () => say({ text: '', thread_ts: threadTs, attachments: [{ color: rpg.color, text: rpg.text }] }),
     );
 
     return {
       handled: true,
       continueWithPrompt: finalPrompt,
     };
+  }
+
+  /**
+   * Whose verbosity decides the RPG banner: the thread's session, else the
+   * requesting user's default — the mask a session created for them now would
+   * carry (session-registry seeds `logVerbosity` from it). That stand-in has
+   * no conversation, so nothing is recorded for it.
+   */
+  private bannerSession(
+    channel: string,
+    threadTs: string,
+    user: string | undefined,
+  ): Pick<ConversationSession, 'logVerbosity' | 'conversationId'> | undefined {
+    const session = this.deps.claudeHandler?.getSession(channel, threadTs);
+    if (session) return session;
+    if (!user || !this.deps.userSettingsStore) return undefined;
+    return { logVerbosity: this.deps.userSettingsStore.getUserLogVerbosityFlags(user) };
   }
 
   /**
