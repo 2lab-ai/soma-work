@@ -1,5 +1,8 @@
+import type { IncomingHttpHeaders } from 'node:http';
 import * as os from 'node:os';
 import fastifyFormbody from '@fastify/formbody';
+// Type-only: the plugin itself is registered by dashboard.ts via dynamic import.
+import type { WebSocket } from '@fastify/websocket';
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -21,6 +24,7 @@ import {
   generateCsrfTokenForAdmin,
   getDashboardUser,
   getJwtSecret,
+  loginReturnCookieFor,
   registerOAuthRoutes,
   validateCsrfToken,
   verifyDashboardTokenRaw,
@@ -28,6 +32,7 @@ import {
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
 import type { ConversationTurn } from './types';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
+import { registerWorkLogRoutes } from './work-log-routes';
 
 const logger = new Logger('ConversationWebServer');
 
@@ -165,6 +170,9 @@ async function authMiddleware(request: FastifyRequest, reply: FastifyReply): Pro
         message: 'Valid Authorization header required',
       });
     } else {
+      // Remember a dashboard deep link so the next login lands on it (spec §3.4-3).
+      const nextCookie = request.method === 'GET' ? loginReturnCookieFor(request.url) : undefined;
+      if (nextCookie) reply.header('Set-Cookie', nextCookie);
       reply.redirect('/login');
     }
     return;
@@ -574,6 +582,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   // ---- Dashboard Routes ----
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
+  await registerWorkLogRoutes(server, authMiddleware);
 
   // Health check
   server.get('/health', async (_request, reply) => {
@@ -697,6 +706,27 @@ export async function injectWebServer(request: InjectRequest): Promise<InjectRes
   }
 
   return server.inject(request);
+}
+
+/**
+ * Open an in-process WebSocket (for tests) through `@fastify/websocket`'s
+ * `injectWS`, so upgrade requests run the same route + auth preHandler as a
+ * real browser. `onInit` sees the socket before it opens — attach `message`
+ * listeners there to catch the initial frames.
+ */
+export async function injectWebServerWS(
+  path: string,
+  upgradeContext: { headers?: IncomingHttpHeaders } = {},
+  onInit?: (ws: WebSocket) => void,
+): Promise<WebSocket> {
+  if (!server) {
+    throw new Error('Conversation web server is not running');
+  }
+  // Decorated only when dashboard.ts managed to register @fastify/websocket.
+  if (typeof server.injectWS !== 'function') {
+    throw new Error('WebSocket support is not registered');
+  }
+  return server.injectWS(path, upgradeContext, onInit ? { onInit } : {});
 }
 
 /**

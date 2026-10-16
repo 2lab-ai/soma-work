@@ -33,6 +33,8 @@ import type {
   SessionStartHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { promotePendingToDispatchQueue } from '@soma/slack/compact-state';
+import { OutputFlag, resolveVerbosityMask, shouldOutput } from '@soma/slack/output-flags';
+import { recordConversationWorkLog } from '@soma/slack/pipeline/stream-executor';
 import { Logger } from '../../logger';
 import { resolveContextWindow } from '../../metrics/model-registry';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
@@ -99,6 +101,46 @@ export function getCurrentEpochForEnd(session: ConversationSession): number {
     return nextEpoch;
   }
   return epoch;
+}
+
+/**
+ * Spec 10 §3.2-4 — whether compaction notices may be POSTED to the thread.
+ * Below `compact` (no `NARRATION` flag) they reach the dashboard work log only
+ * (recorded here, see `recordCompactNotice`). Read at call time. A missing or
+ * non-numeric mask reads as the default detail.
+ *
+ * Gates new posts only: a "starting" message already on the thread is still
+ * replaced in place by the completion, whatever the level is by then.
+ */
+function compactNoticesVisible(session: ConversationSession): boolean {
+  return shouldOutput(OutputFlag.NARRATION, resolveVerbosityMask(session.logVerbosity));
+}
+
+/** Cycle markers whose completion notice is already recorded (racing ENDs record one). */
+const completionNoticed = new WeakSet<object>();
+
+/**
+ * Spec 10 §3.3 — record a compaction `notice` in the conversation's work log.
+ * Compaction belongs to the conversation, not to a turn: no `turnId`, and it
+ * records whenever the signal arrives — including after the turn that ran the
+ * compaction has ended. One start and one completion per cycle, whichever path
+ * signals (SDK hooks or stream fallbacks), by the dedupe at the call sites.
+ * No conversation, nothing recorded. `recordConversationWorkLog` swallows a
+ * throwing store.
+ */
+function recordCompactNotice(session: ConversationSession, text: string): void {
+  if (!session.conversationId) return;
+  recordConversationWorkLog(session.conversationId, { kind: 'notice', text });
+}
+
+/** Work-log text for a sealed cycle: trigger and SDK token counts, each omitted when unknown. */
+function describeCompactionComplete(session: ConversationSession): string {
+  const parts = ['Compaction completed'];
+  if (session.compactTrigger) parts.push(`trigger=${session.compactTrigger}`);
+  if (typeof session.compactPreTokens === 'number' && typeof session.compactPostTokens === 'number') {
+    parts.push(`${session.compactPreTokens} → ${session.compactPostTokens} tokens`);
+  }
+  return parts.join(' · ');
 }
 
 function ensurePostedMap(session: ConversationSession): Record<number, { pre: boolean; post: boolean }> {
@@ -355,6 +397,7 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
   // only correct position — setting it after the Slack round-trip leaves a
   // race window where a parallel caller passes the guard and double-posts.
   marker.pre = true;
+  recordCompactNotice(session, 'Compaction starting');
 
   // Snapshot usage% at pre-compact for the "was ~X%" end-of-cycle message,
   // then INVALIDATE the heuristic so we never present it as "now ~X%".
@@ -397,6 +440,13 @@ export async function postCompactStartingIfNeeded(deps: CompactHookDeps, trigger
   const startedAtMs = Date.now();
   const initialText = buildCompactStartingMessage({ trigger: resolvedTrigger });
   session.compactStartedAtMs = startedAtMs;
+
+  // Spec 10 §3.2-4: below `compact` nothing is posted — the cycle claim and
+  // usage snapshot above are what the rest of the cycle needs.
+  if (!compactNoticesVisible(session)) {
+    session.compactStartingMessageTs = null;
+    return;
+  }
 
   let postResult: { ts?: string; channel?: string };
   try {
@@ -525,6 +575,12 @@ export async function postCompactCompleteIfNeeded(
     marker.post === true
       ? Promise.resolve()
       : (async () => {
+          // One completion notice per cycle, recorded before the first await
+          // so two racing ENDs cannot both record it.
+          if (!completionNoticed.has(marker)) {
+            completionNoticed.add(marker);
+            recordCompactNotice(session, describeCompactionComplete(session));
+          }
           const text = buildCompactCompleteMessage(session);
           const startingTs = session.compactStartingMessageTs;
           // Track the ts of the message that actually carries the completion
@@ -547,11 +603,13 @@ export async function postCompactCompleteIfNeeded(
               const fallback = await slackApi.postSystemMessage(channel, text, { threadTs });
               completionTs = fallback?.ts ?? null;
             }
-          } else {
+          } else if (compactNoticesVisible(session)) {
             // No starting ts (fallback-only path) → post a fresh message.
             const fallback = await slackApi.postSystemMessage(channel, text, { threadTs });
             completionTs = fallback?.ts ?? null;
           }
+          // Else: below `compact` with no starting message on the thread —
+          // nothing to post (spec 10 §3.2-4); the cycle seals below as usual.
           marker.post = true;
           // Clear runtime-only START tracking now that the cycle is sealed.
           session.compactStartingMessageTs = null;
