@@ -888,5 +888,8 @@ describe('what makes the accepted final the terminal segment', () => {
     await expect(
       new AgentStreamProcessor().process(events(withheldThenLeak()), h.context, new AbortController().signal),
     ).rejects.toThrow('slack down');
+    // The promotion branch ran: A was recorded as the answer before the post.
+    expect(h.appendText).toHaveBeenCalledTimes(1);
+    expect(h.log.filter((e) => e.kind === 'final')).toEqual([expect.objectContaining({ text: FINAL })]);
   });
 });

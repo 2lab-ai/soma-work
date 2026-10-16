@@ -96,6 +96,11 @@ paths:
 - Conversation entries, with no `turnId`: the compaction start/complete notices, recorded by
   `compact-hooks.ts` through `recordConversationWorkLog` (below).
 
+A store that throws never breaks what records into it: the entry is dropped and reported at
+warn, throttled process-wide — the first drop at once, then at most one summary per
+`WORK_LOG_DROP_WARN_INTERVAL_MS` (60 s) with the count and the latest drop. Every write is
+still attempted.
+
 Errors and aborts follow the same split as the user-facing error card:
 
 - `error` — a turn error with no retry scheduled, and an abort that gets the 🔴 card
@@ -117,11 +122,11 @@ Entry contract for the final answer (the log is append-only):
   If the turn's answer IS that segment, it is recorded only as `final`.
 - Compaction start/complete notices belong to the conversation, not to a turn:
   `compact-hooks.ts` records them against `session.conversationId` through
-  `recordConversationWorkLog` (no `turnId`; nothing without a conversation). The threshold
-  announcement is a turn entry and carries the turn's `turnId`. Once per cycle — one start and one completion — whichever
-  path signals it (the SDK PreCompact/PostCompact hooks or the stream's `compacting` status /
-  `compact_boundary`), at every level, including a completion that arrives after the turn
-  that ran the compaction has ended.
+  `recordConversationWorkLog` (no `turnId`; nothing without a conversation). Once per cycle —
+  one start and one completion — whichever path signals it (the SDK PreCompact/PostCompact
+  hooks or the stream's `compacting` status / `compact_boundary`), at every level, including a
+  completion that arrives after the turn that ran the compaction has ended. The threshold
+  announcement is a turn entry and carries the turn's `turnId`.
 - When the fallback (below) posts a segment that was already recorded as `narration`, that
   text appears once as `narration` and once as `final` — never two of either.
 
@@ -171,7 +176,9 @@ suppressed segments — so a recovered leak cannot reach them through `collected
 host posted a question form this turn, A is not posted under it — the form is what the user
 answers — and the turn still does not recover (recovering would duplicate the form). If
 posting A throws, the turn fails on that error (`handleError`); no leak recovery runs this
-turn. A `finalText` that differs from a suppressed leak only by whitespace is the same leak.
+turn. The work log then already holds A's `final` entry, followed by the executor's own entry
+for that error (`error`, or `notice` when a retry is scheduled — the split above). A
+`finalText` that differs from a suppressed leak only by whitespace is the same leak.
 
 ## Migration and stored masks
 
