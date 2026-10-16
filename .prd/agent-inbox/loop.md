@@ -13,11 +13,12 @@ Status: in-progress · 스펙 = [`../10-agent-inbox-board-spec.md`](../10-agent-
 | 작업 로그 타입 | `packages/slack/src/work-log.ts`: `WorkLogKind`, `WorkLogInput`, `WorkLogEntry` |
 | 방출 훅 | `StreamContext.workLog?: (entry: WorkLogInput) => void` |
 | executor provider | `streamExecutorProviders.appendWorkLog(conversationId, entry)` (기본 no-op) |
-| 저장 | `src/conversation/work-log.ts`: `appendWorkLog(conversationId, input) → WorkLogEntry`, `readWorkLog(conversationId, { afterSeq?, limit? })`, 파일 `${DATA_DIR}/worklogs/<conversationId>.jsonl` |
-| API | `GET /api/dashboard/session/:conversationId/worklog?afterSeq=&limit=` → `{ entries }` |
+| 저장 | `src/conversation/work-log.ts`: `appendWorkLog(conversationId, input) → Promise<WorkLogEntry>`(디스크 기록 후 resolve, WS 방송도 그 시점), `readWorkLog(conversationId, { afterSeq?, limit? }) → Promise<{ entries, hasMore }>`, 파일 `${DATA_DIR}/worklogs/<conversationId>.jsonl` |
+| API | `GET /api/dashboard/session/:conversationId/worklog?afterSeq=&limit=` → `{ entries, hasMore }` (afterSeq 있음 = 그 뒤 첫 limit개·hasMore=더 새 것 있음, `afterSeq=0` = 처음부터; 없음 = 마지막 limit개·hasMore=더 오래된 것 있음). 읽기 = 세션 소유자 + 관리자만(그 외 403, 소유자 없는 대화 = 관리자만), 형식이 틀린 파라미터 = 400 |
+| seq | 대화마다 엄격히 증가하되 영구히 건너뛸 수 있다(사이드카가 1000개 단위로 예약, 손상 파일 격리 후 다음 예약 블록부터). 클라이언트 커서는 서버가 확인한 값으로만 전진한다 |
 | WS | `{ type: 'work_log', conversationId, entry }` |
 | 딥링크 | `/dashboard/<ownerId>?session=<sessionKey>` |
-| URL provider | `getDashboardSessionUrl(ownerId, sessionKey): string \| undefined` (src: `src/conversation/web-server.ts`) |
+| URL provider | `getDashboardSessionUrl(ownerId, sessionKey): string \| undefined` (src: `src/conversation/web-server.ts`, 뷰어가 listen 중이 아니면 undefined) |
 | 헤더 필드 | `dashboardLink`, 라벨 `📋 작업 로그` |
 | 로그인 복귀 | 쿠키 `soma_next`(값은 `/dashboard`로 시작하는 같은 출처 경로만) |
 
@@ -29,7 +30,7 @@ Status: in-progress · 스펙 = [`../10-agent-inbox-board-spec.md`](../10-agent-
 | WU-L 스레드 링크 | `feat/thread-dashboard-link` · `.worktrees/feat-thread-dashboard-link` | §3.4-1·2 | `packages/slack/src/thread-header-builder.ts`, `surface-config.ts`, `pipeline/session-initializer.ts`, `config.default.json`, `src/index.ts`(URL provider 배선만) + 테스트 |
 | WU-D 보드 UI | `feat/agent-inbox-dashboard` · `.worktrees/feat-agent-inbox-dashboard` | §3.1, §4, §5 | `src/conversation/dashboard.ts` 템플릿(CSS·HTML·클라이언트 JS) + 대시보드 테스트 |
 
-머지 순서: WU-S → WU-W → WU-L → WU-D (WU-D가 작업 로그 API·딥링크를 소비).
+머지 순서: WU-S → WU-W → WU-D → WU-L (2026-10-16 변경 — WU-D가 `?session=` 소비자를 가지므로 링크를 내보내는 WU-L보다 먼저; WU-D는 작업 로그 API를 소비).
 
 ## 열린 gap
 | ID | 갭 | 상태 |
