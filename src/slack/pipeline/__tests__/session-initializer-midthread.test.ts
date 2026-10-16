@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mocks MUST be hoisted - define factories inline
@@ -72,6 +73,22 @@ vi.mock('../../../dispatch-service', () => ({
 import { userSettingsStore } from '../../../user-settings-store';
 import { SessionInitializer } from '../session-initializer';
 
+// The dist session initializer loads ../thread-header-builder through Node's own
+// require: the single instance production uses, but not the one vitest inlines
+// for an `import` in this file. Configure the instance the code under test reads.
+const { setThreadHeaderProviders } = createRequire(__filename)(
+  '@soma/slack/thread-header-builder',
+) as typeof import('@soma/slack/thread-header-builder');
+
+/**
+ * The retention card (removed) was `📋 … — 시작`. The `📋 <url|작업 로그>`
+ * work-log link is a different post — init clutter, tracked like the
+ * conversation link it replaced — and is not a retention card.
+ */
+function isRetentionCard(text: string): boolean {
+  return text.includes('— 시작') || (text.includes('📋') && !text.includes('|작업 로그>'));
+}
+
 let sessionInitializer: SessionInitializer;
 let mockClaudeHandler: any;
 let mockSlackApi: any;
@@ -83,6 +100,10 @@ let mockAssistantStatusManager: any;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The source-thread work-log link resolves through the one injected provider.
+  setThreadHeaderProviders({
+    getDashboardSessionUrl: (ownerId, sessionKey) => `http://localhost:3000/dashboard/${ownerId}?session=${sessionKey}`,
+  });
 
   mockClaudeHandler = {
     getSessionKey: vi.fn().mockReturnValue('C123:thread123'),
@@ -115,7 +136,7 @@ beforeEach(() => {
     // (which would have their own ts) must never be touched. See Issue #516.
     postMessage: vi.fn().mockImplementation(async (_channel: string, text: string) => {
       if (typeof text === 'string') {
-        if (text.includes('대화 기록 보기')) return { ts: 'conv-link-ts' };
+        if (text.includes('작업 로그')) return { ts: 'conv-link-ts' };
         if (text.includes('_Dispatching...')) return { ts: 'dispatch-ts' };
         if (text.includes('🧵')) return { ts: 'redirect-ts' };
       }
@@ -245,7 +266,7 @@ describe('Scenario 1: mid-thread mention — unified redirect UX', () => {
       (call: any[]) => typeof call[1] === 'string' && call[1].includes('🧵'),
     );
     const hasRetention = sourceThreadMessages.some(
-      (call: any[]) => typeof call[1] === 'string' && (call[1].includes('— 시작') || call[1].includes('📋')),
+      (call: any[]) => typeof call[1] === 'string' && isRetentionCard(call[1]),
     );
 
     expect(hasRedirect).toBe(true);
@@ -307,10 +328,7 @@ describe('Scenario 2: top-level mention — existing behavior preserved', () => 
     await sessionInitializer.initialize(event as any, '/test/dir');
 
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) =>
-        call[2]?.threadTs === 'thread123' &&
-        typeof call[1] === 'string' &&
-        (call[1].includes('— 시작') || call[1].includes('📋')),
+      (call: any[]) => call[2]?.threadTs === 'thread123' && typeof call[1] === 'string' && isRetentionCard(call[1]),
     );
 
     expect(retentionMessages).toHaveLength(0);
@@ -406,7 +424,7 @@ describe('Scenario 3 (v2): mid-thread delete-then-redirect ordering', () => {
           callOrder.push('redirect');
           return { ts: 'redirect-ts' };
         }
-        if (text.includes('대화 기록 보기')) return { ts: 'conv-link-ts' };
+        if (text.includes('작업 로그')) return { ts: 'conv-link-ts' };
         if (text.includes('_Dispatching...')) return { ts: 'dispatch-ts' };
       }
       return { ts: 'other-bot-ts' };
@@ -502,10 +520,7 @@ describe('Scenario 4 (v2): top-level delete + redirect preserved', () => {
     await sessionInitializer.initialize(event as any, '/test/dir');
 
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) =>
-        call[2]?.threadTs === 'thread123' &&
-        typeof call[1] === 'string' &&
-        (call[1].includes('— 시작') || call[1].includes('📋')),
+      (call: any[]) => call[2]?.threadTs === 'thread123' && typeof call[1] === 'string' && isRetentionCard(call[1]),
     );
     expect(retentionMessages).toHaveLength(0);
   });
@@ -603,9 +618,7 @@ describe('Scenario 5 (v2): mid-thread unified redirect', () => {
     // No retention 📋 messages in source thread
     const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
       (call: any[]) =>
-        call[2]?.threadTs === '1711234567.000100' &&
-        typeof call[1] === 'string' &&
-        (call[1].includes('— 시작') || call[1].includes('📋')),
+        call[2]?.threadTs === '1711234567.000100' && typeof call[1] === 'string' && isRetentionCard(call[1]),
     );
     expect(retentionMessages).toHaveLength(0);
 
