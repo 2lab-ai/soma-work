@@ -16,26 +16,33 @@
  * are per tool event / narration segment, a low rate, and the write is off the
  * turn's path (the stream executor does not await it).
  *
- * seq: monotonic per conversation and never reused once published. The first
- * append in a process reads the last seq back from the file's tail. The
- * sidecar `<id>.seq` reserves seqs in blocks, durably and before any seq in the
- * block is used, so every seq ever used is ≤ the live reservation. When the
- * tail cannot be read within the scan budget, the log is quarantined to
- * `<id>.jsonl.corrupt-<ms>` and a fresh one continues above the live
- * reservation, which is durable before the old log is moved. If the live copy
- * is lost, `.bak` (the previous reservation) is trusted only together with a
- * readable tail, and both copies are rewritten before anything is published;
- * with no readable entry and no live reservation there is no provable bound, so
- * the conversation fails closed (appends rejected, one error log) — see readSeed.
+ * seq: monotonic per conversation and never reused once published. The ONLY
+ * proof of an upper bound is the durable reservation: the sidecar `<id>.seq`
+ * reserves seqs in blocks and is written and synced before any seq in its
+ * block is used, so every seq ever used is ≤ the live reservation. The log's
+ * tail is never a bound — its bytes can be damaged or truncated after they
+ * were published — so a seed never derives the cursor from it:
+ *   - a fresh seed (first append in a process, or after eviction) resumes at
+ *     the live reservation, leaving a hole of up to one block;
+ *   - within a process the cursor only moves forward: a failed append burns
+ *     its seq, and only the trailing-newline state is re-read.
+ * The tail is still read, for the trailing newline and to decide quarantine:
+ * a tail unreadable within the scan budget is moved to
+ * `<id>.jsonl.corrupt-<ms>` and a fresh log continues above the reservation.
+ * If the live copy is lost, `.bak` (the previous reservation) is trusted only
+ * together with a readable entry, and both copies are rewritten before anything
+ * is published. Anything else has no provable bound and fails closed (appends
+ * rejected, one error log) — see readSeed.
  *
  * Gaps — two kinds, different for a client:
  *   - landed but unpublished: the line reached disk but its append failed
  *     afterwards (e.g. fdatasync or the directory sync threw), so it was never
  *     broadcast. It is a normal entry for readers — backfill it with
  *     `readWorkLog({ afterSeq })`.
- *   - holes: seqs skipped on purpose — after a quarantine, a backup recovery,
- *     or a re-seed that could only trust the reservation. No entry will ever
- *     have those seqs; a client must not wait for them.
+ *   - holes: seqs skipped on purpose — every fresh seed (resumes at the
+ *     reservation), a failed append that never landed, a quarantine, a backup
+ *     recovery. No entry will ever have those seqs; a client must not wait for
+ *     them.
  *
  * Reads: every scan has a byte budget (WORK_LOG_SCAN_BUDGET_BYTES). The latest
  * window and the seed scan back from the end; `afterSeq` pages first try a
@@ -111,16 +118,16 @@ const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const EMPTY = Buffer.alloc(0);
 
 interface ConversationLogState {
-  /** Last seq on disk; null = not read from the file yet (or unknown after a failed write). */
+  /** Last seq used (published or attempted); null = not seeded yet. Only ever moves forward. */
   lastSeq: number | null;
   /** Highest seq the durable sidecar allows without another reservation. */
   reservedSeq: number;
   /** The file ends mid-line (torn write); the next line must start on a fresh one. */
   needsLeadingNewline: boolean;
+  /** A write failed: whether the file now ends mid-line is unknown until re-read. */
+  tailUnknown: boolean;
   /** The next write may create the file, which puts a sync obligation on its directory. */
   fileMayBeNew: boolean;
-  /** Highest seq this process seeded from or published: a re-seed never goes below it. */
-  highWater: number;
   /**
    * Set while the conversation has no provable seq upper bound: the file
    * fingerprint at that verdict. Appends are refused without re-scanning until
@@ -502,19 +509,23 @@ interface Seed {
  * used for the conversation. Only ENOENT means "no log yet"; any other failure
  * throws so the caller never guesses a seq.
  *
- *   reservation  log tail                 next seq after
- *   live R       entry T                  T  (T ≤ R)
- *   live R       none (missing/empty/junk)  R
- *   live R       unreadable within budget  R, after quarantining the log
- *   backup B     entry T                  max(T, B + block), after rewriting both copies to it
- *   none         entry T                  T  (no sidecar: the tail is the only evidence)
- *   none         missing or empty         0  (a conversation that never wrote)
- *   backup / none  anything else          refuse — WorkLogUnboundedError
+ * The floor rests only on the reservation; the tail is read for the trailing
+ * newline and the quarantine decision, never for the floor.
  *
- * `backup B` alone is never trusted as a bound with no readable entry: the
- * repeated-corruption case (live lost twice) can leave `.bak` further behind
- * than one block. With a readable entry, B + block covers what the lost live
- * copy can have reserved and T covers what is on disk.
+ *   reservation  log                        next seq after
+ *   live R       anything readable, ≤ R      R  (a hole of up to one block per fresh seed)
+ *   live R       unreadable within budget    R, after quarantining the log
+ *   live R       an entry T > R              refuse — the reservation is contradicted
+ *   backup B     entry T                     max(T, B + block), after rewriting both copies to it
+ *   none         missing or empty            0  (a conversation that never wrote)
+ *   backup B     no readable entry           refuse — WorkLogUnboundedError
+ *   none         non-empty                   refuse — a reservation always precedes the first
+ *                                            append, so this only follows an operator deletion
+ *
+ * `backup B` is the previous reservation, at most one block behind the lost live
+ * copy, so B + block covers what that copy can have reserved. It is not trusted
+ * alone with no readable entry: the repeated-corruption case (live lost twice)
+ * can leave `.bak` further behind.
  */
 async function readSeed(conversationId: string, logPath: string, sidecarPath: string): Promise<Seed> {
   const reservation = readReservation(sidecarPath);
@@ -545,10 +556,11 @@ async function readSeed(conversationId: string, logPath: string, sidecarPath: st
   }
   const needsLeadingNewline = !lastByteIsNewline;
 
-  if (reservation?.source === 'live') {
+  if (reservation?.source === 'live' && !(tailSeq !== null && tailSeq > reservation.seq)) {
     const live = reservation.seq;
-    if (tailSeq !== null) return { lastSeq: tailSeq, reservedSeq: live, needsLeadingNewline, fileMayBeNew: false };
-    if (end !== 'budget') return { lastSeq: live, reservedSeq: live, needsLeadingNewline, fileMayBeNew: !opened };
+    if (tailSeq !== null || end !== 'budget') {
+      return { lastSeq: live, reservedSeq: live, needsLeadingNewline, fileMayBeNew: !opened };
+    }
 
     // The tail is unreadable within budget. The live reservation already bounds
     // every seq used, durably, so the log can be set aside and the fresh one
@@ -582,9 +594,8 @@ async function readSeed(conversationId: string, logPath: string, sidecarPath: st
     return { lastSeq: bound, reservedSeq: bound, needsLeadingNewline, fileMayBeNew: false };
   }
 
-  if (reservation === null) {
-    if (tailSeq !== null) return { lastSeq: tailSeq, reservedSeq: 0, needsLeadingNewline, fileMayBeNew: false };
-    if (size === 0) return { lastSeq: 0, reservedSeq: 0, needsLeadingNewline: false, fileMayBeNew: !opened };
+  if (reservation === null && size === 0) {
+    return { lastSeq: 0, reservedSeq: 0, needsLeadingNewline: false, fileMayBeNew: !opened };
   }
 
   throw new WorkLogUnboundedError({
@@ -594,16 +605,33 @@ async function readSeed(conversationId: string, logPath: string, sidecarPath: st
       ? 'missing'
       : size === 0
         ? 'empty'
-        : end === 'budget'
-          ? 'unreadable within the scan budget'
-          : 'no parseable entry',
+        : tailSeq !== null
+          ? `last readable entry ${tailSeq}`
+          : end === 'budget'
+            ? 'unreadable within the scan budget'
+            : 'no parseable entry',
     sidecarPath,
     reservationSource: reservation?.source ?? 'none',
-    backupReservation: reservation?.seq ?? null,
+    reservation: reservation?.seq ?? null,
   });
 }
 
-/** Sizes and mtimes of a conversation's files: unchanged = the fail-closed verdict still holds. */
+/** Read whether the log currently ends mid-line (after a failed write left it unknown). */
+async function endsMidLine(logPath: string): Promise<boolean> {
+  const opened = await openForRead(logPath);
+  if (!opened) return false;
+  try {
+    return opened.size > 0 && (await readExactly(opened.fh, opened.size - 1, 1))[0] !== 0x0a;
+  } finally {
+    await opened.fh.close().catch(() => {});
+  }
+}
+
+/**
+ * Identity + size + times of a conversation's files: unchanged = the fail-closed
+ * verdict still holds. ino and ctime catch a same-size replacement whose mtime
+ * was preserved (ctime cannot be set from user space).
+ */
 async function fileFingerprint(files: {
   log: string;
   sidecar: string;
@@ -614,7 +642,7 @@ async function fileFingerprint(files: {
     try {
       const st = await fs.promises.stat(file);
       sizes[path.basename(file)] = st.size;
-      parts.push(`${st.size}:${st.mtimeMs}`);
+      parts.push(`${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`);
     } catch (error) {
       if (!isEnoent(error)) throw error;
       sizes[path.basename(file)] = null;
@@ -652,8 +680,8 @@ function touchState(conversationId: string): ConversationLogState {
       lastSeq: null,
       reservedSeq: 0,
       needsLeadingNewline: false,
+      tailUnknown: false,
       fileMayBeNew: true,
-      highWater: 0,
       unboundedAt: null,
       queue: Promise.resolve(),
       pending: 0,
@@ -694,12 +722,10 @@ async function writeEntry(
     }
     try {
       const seed = await readSeed(conversationId, files.log, files.sidecar);
-      // Never move the cursor backwards past what this process already used.
-      state.lastSeq = Math.max(seed.lastSeq, state.highWater);
+      state.lastSeq = seed.lastSeq;
       state.reservedSeq = seed.reservedSeq;
       state.needsLeadingNewline = seed.needsLeadingNewline;
       state.fileMayBeNew = seed.fileMayBeNew;
-      state.highWater = state.lastSeq;
       state.unboundedAt = null;
       unboundedLogged.delete(conversationId);
     } catch (error) {
@@ -721,6 +747,17 @@ async function writeEntry(
       } else {
         logger.warn('Work log seed failed; entry dropped', { conversationId, error });
       }
+      throw error;
+    }
+  }
+
+  if (state.tailUnknown) {
+    // An earlier write failed and may have left part of its line behind.
+    try {
+      state.needsLeadingNewline = await endsMidLine(files.log);
+      state.tailUnknown = false;
+    } catch (error) {
+      logger.warn('Work log tail check failed; entry dropped', { conversationId, error });
       throw error;
     }
   }
@@ -748,16 +785,16 @@ async function writeEntry(
     // left by an earlier failed attempt of this or another conversation.
     await syncDueDirs();
   } catch (error) {
-    // The file may now hold nothing, part, or all of the line. Forget the seed
-    // (the newline flag is left as it was) so the next append re-reads the tail
-    // and the reservation instead of guessing — that gets seq and newline right
-    // in every case.
-    state.lastSeq = null;
+    // The file may now hold nothing, part, or all of the line. Burn the seq — it
+    // may be on disk (readable, never broadcast), so it is never reissued — and
+    // re-read only whether the file ends mid-line before the next write. The
+    // reservation in memory is still durable, so nothing is re-derived from disk.
+    state.lastSeq = entry.seq;
+    state.tailUnknown = true;
     logger.error('Failed to persist work log entry', { conversationId, seq: entry.seq, error });
     throw error;
   }
   state.lastSeq = entry.seq;
-  state.highWater = Math.max(state.highWater, entry.seq);
   state.needsLeadingNewline = false;
 
   if (_onAppended) {

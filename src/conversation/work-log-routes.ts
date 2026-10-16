@@ -11,8 +11,10 @@
  *       - landed but unpublished (the line reached disk, its append failed
  *         afterwards, so no `work_log` event was sent): this call returns
  *         those entries normally — backfill them here;
- *       - holes (seqs skipped after a quarantine, a backup recovery, or a reservation-only
- *         re-seed): no entry will ever carry them — do not wait for them.
+ *       - holes (seqs skipped on purpose: every server restart resumes at the
+ *         durable reservation, a failed append that never landed, a
+ *         quarantine, a backup recovery): no entry will ever carry them — do
+ *         not wait for them.
  *   - limit: default 500, allowed 1..500.
  *   - Both params are decimal integers (`^\d+$`); anything else is
  *     400 { error: 'bad_request' } rather than a silent mode switch.
