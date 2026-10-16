@@ -270,14 +270,97 @@ const recordUserTurn = (conversationId: string, text: string, userName: string, 
 const workLogLogger = new Logger('WorkLog');
 
 /**
- * Spec 10 §3.3 — record one work-log entry against a conversation, outside
- * any turn: the one global path to `streamExecutorProviders.appendWorkLog`
- * (the dashboard store once src wires it). Used for conversation-level
- * events such as compaction notices (src/slack/hooks/compact-hooks.ts),
- * which belong to the conversation, not to a turn — no `turnId`. Stamps `ts`
- * when absent. A throwing provider is logged at warn (conversationId, kind,
- * and the caller's sessionKey when it has one) and ignored: the work log must
- * never break what records into it.
+ * Reporting interval for dropped work-log entries. While the store keeps
+ * throwing, the first drop warns at once and later drops are counted; at most
+ * one warning goes out per interval, a summary with the count and the latest
+ * drop. Process-wide: one outage warns once per interval, not once per
+ * conversation. Only reporting is throttled — every write is still attempted.
+ */
+export const WORK_LOG_DROP_WARN_INTERVAL_MS = 60_000;
+
+interface WorkLogDrop {
+  conversationId: string;
+  kind: WorkLogInput['kind'];
+  sessionKey?: string;
+  error: string;
+}
+
+const workLogDrops: {
+  lastWarnAt: number | undefined;
+  suppressed: number;
+  latest: WorkLogDrop | undefined;
+  flushTimer: ReturnType<typeof setTimeout> | undefined;
+} = { lastWarnAt: undefined, suppressed: 0, latest: undefined, flushTimer: undefined };
+
+function workLogDropFields(drop: WorkLogDrop): Record<string, unknown> {
+  return {
+    conversationId: drop.conversationId,
+    kind: drop.kind,
+    ...(drop.sessionKey ? { sessionKey: drop.sessionKey } : {}),
+    error: drop.error,
+  };
+}
+
+function flushWorkLogDrops(): void {
+  if (workLogDrops.flushTimer) clearTimeout(workLogDrops.flushTimer);
+  workLogDrops.flushTimer = undefined;
+  const { suppressed, latest } = workLogDrops;
+  if (suppressed === 0 || !latest) return;
+  workLogDrops.lastWarnAt = Date.now();
+  workLogDrops.suppressed = 0;
+  workLogDrops.latest = undefined;
+  workLogLogger.warn('appendWorkLog provider threw — more entries dropped (count; latest shown)', {
+    suppressed,
+    ...workLogDropFields(latest),
+  });
+}
+
+function reportWorkLogDrop(drop: WorkLogDrop): void {
+  const now = Date.now();
+  const { lastWarnAt } = workLogDrops;
+  if (lastWarnAt !== undefined && now - lastWarnAt < WORK_LOG_DROP_WARN_INTERVAL_MS) {
+    workLogDrops.suppressed += 1;
+    workLogDrops.latest = drop;
+    if (!workLogDrops.flushTimer) {
+      const timer = setTimeout(flushWorkLogDrops, lastWarnAt + WORK_LOG_DROP_WARN_INTERVAL_MS - now);
+      // Reporting must never keep the process alive; `unref` is missing on
+      // browser/jsdom timer stubs — optional-call.
+      (timer as { unref?: () => void } | undefined)?.unref?.();
+      workLogDrops.flushTimer = timer;
+    }
+    return;
+  }
+  if (workLogDrops.suppressed > 0) {
+    // The interval ended before its flush timer ran: this drop joins the summary.
+    workLogDrops.suppressed += 1;
+    workLogDrops.latest = drop;
+    flushWorkLogDrops();
+    return;
+  }
+  workLogDrops.lastWarnAt = now;
+  workLogLogger.warn('appendWorkLog provider threw — entry dropped', workLogDropFields(drop));
+}
+
+/** Test seam: forget throttle state and cancel a pending summary. */
+export function resetWorkLogDropWarningsForTests(): void {
+  if (workLogDrops.flushTimer) clearTimeout(workLogDrops.flushTimer);
+  workLogDrops.lastWarnAt = undefined;
+  workLogDrops.suppressed = 0;
+  workLogDrops.latest = undefined;
+  workLogDrops.flushTimer = undefined;
+}
+
+/**
+ * Spec 10 §3.3 — record one work-log entry: the one global path to
+ * `streamExecutorProviders.appendWorkLog` (the dashboard store once src wires
+ * it). Used for turn entries — through the executor's `emitWorkLog`, stamped
+ * with the turn's `turnId` — and for conversation-level entries such as the
+ * compaction notices (src/slack/hooks/compact-hooks.ts), which belong to the
+ * conversation, not to a turn: no `turnId`. Stamps `ts` when absent. A
+ * throwing provider is ignored — the work log must never break what records
+ * into it — and reported at warn (conversationId, kind, the caller's
+ * sessionKey when it has one, error), throttled process-wide to one warning
+ * per `WORK_LOG_DROP_WARN_INTERVAL_MS`.
  */
 export function recordConversationWorkLog(
   conversationId: string,
@@ -287,7 +370,7 @@ export function recordConversationWorkLog(
   try {
     streamExecutorProviders.appendWorkLog(conversationId, { ts: Date.now(), ...entry });
   } catch (err) {
-    workLogLogger.warn('appendWorkLog provider threw — entry dropped', {
+    reportWorkLogDrop({
       conversationId,
       kind: entry.kind,
       ...(logContext.sessionKey ? { sessionKey: logContext.sessionKey } : {}),

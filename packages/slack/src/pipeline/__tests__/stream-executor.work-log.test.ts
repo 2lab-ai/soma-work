@@ -13,7 +13,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getVerbosityFlags, LOG_MINIMAL } from '../../output-flags';
 import { AgentStreamProcessor, type StreamContext } from '../../stream-processor';
 import type { WorkLogInput } from '../../work-log';
-import { recordConversationWorkLog, StreamExecutor, setStreamExecutorProviders } from '../stream-executor';
+import {
+  recordConversationWorkLog,
+  resetWorkLogDropWarningsForTests,
+  StreamExecutor,
+  setStreamExecutorProviders,
+  WORK_LOG_DROP_WARN_INTERVAL_MS,
+} from '../stream-executor';
 
 const appendWorkLog = vi.fn<(conversationId: string, entry: WorkLogInput) => void>();
 const postCompactStartingIfNeeded = vi.fn().mockResolvedValue(undefined);
@@ -684,8 +690,19 @@ describe('StreamExecutor — a final answer that reached Slack means no recovery
 });
 
 describe('recordConversationWorkLog — the conversation-level path', () => {
+  let warn: ReturnType<typeof vi.spyOn<Logger, 'warn'>>;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    resetWorkLogDropWarningsForTests();
+    warn = vi.spyOn(Logger.prototype, 'warn');
+  });
+
+  afterEach(() => {
+    warn?.mockRestore();
+    appendWorkLog.mockReset();
+    resetWorkLogDropWarningsForTests();
+    vi.useRealTimers();
   });
 
   it('forwards to appendWorkLog with a timestamp and no turnId', () => {
@@ -705,7 +722,6 @@ describe('recordConversationWorkLog — the conversation-level path', () => {
   });
 
   it('a throwing provider is ignored and logged at warn with conversationId, kind and sessionKey', () => {
-    const warn = vi.spyOn(Logger.prototype, 'warn');
     appendWorkLog.mockImplementationOnce(() => {
       throw new Error('disk full');
     });
@@ -720,25 +736,122 @@ describe('recordConversationWorkLog — the conversation-level path', () => {
       sessionKey: SESSION_KEY,
       error: 'disk full',
     });
-    warn.mockRestore();
   });
 
   it('the turn path passes its sessionKey to that warning', async () => {
-    const warn = vi.spyOn(Logger.prototype, 'warn');
     appendWorkLog.mockImplementation(() => {
       throw new Error('disk full');
     });
-    try {
-      await new StreamExecutor(createDeps(toolTurn())).execute(createParams(createSession(LOG_MINIMAL)));
-      await settle();
-    } finally {
-      appendWorkLog.mockReset();
-    }
+
+    await new StreamExecutor(createDeps(toolTurn())).execute(createParams(createSession(LOG_MINIMAL)));
+    await settle();
 
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('appendWorkLog provider threw'),
       expect.objectContaining({ conversationId: 'conv-1', kind: 'instruction', sessionKey: SESSION_KEY }),
     );
-    warn.mockRestore();
+  });
+});
+
+describe('recordConversationWorkLog — dropped-entry warnings are throttled process-wide', () => {
+  const INTERVAL = WORK_LOG_DROP_WARN_INTERVAL_MS;
+  let warn: ReturnType<typeof vi.spyOn<Logger, 'warn'>>;
+  const drops = () => warn.mock.calls.filter(([message]) => String(message).includes('appendWorkLog provider threw'));
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    resetWorkLogDropWarningsForTests();
+    warn = vi.spyOn(Logger.prototype, 'warn');
+    appendWorkLog.mockImplementation(() => {
+      throw new Error('store down');
+    });
+  });
+
+  afterEach(() => {
+    warn?.mockRestore();
+    appendWorkLog.mockReset();
+    resetWorkLogDropWarningsForTests();
+    vi.useRealTimers();
+  });
+
+  it('across conversations: one immediate warn, none within the interval, then one summary with the suppressed count — every write is still attempted', () => {
+    recordConversationWorkLog('conv-a', { kind: 'notice', text: 'first' }, { sessionKey: 'C1:a' });
+    expect(drops()).toEqual([
+      [
+        expect.stringContaining('appendWorkLog provider threw'),
+        { conversationId: 'conv-a', kind: 'notice', sessionKey: 'C1:a', error: 'store down' },
+      ],
+    ]);
+
+    for (let i = 0; i < 5; i++) {
+      vi.advanceTimersByTime(1_000);
+      recordConversationWorkLog(`conv-${i}`, { kind: 'tool', text: `t${i}` });
+    }
+    vi.advanceTimersByTime(1_000);
+    recordConversationWorkLog('conv-z', { kind: 'final', text: FINAL }, { sessionKey: 'C9:z' });
+
+    expect(appendWorkLog).toHaveBeenCalledTimes(7);
+    expect(drops()).toHaveLength(1);
+
+    vi.advanceTimersByTime(INTERVAL - 6_000 - 1);
+    expect(drops()).toHaveLength(1);
+
+    vi.advanceTimersByTime(1);
+    expect(drops()).toHaveLength(2);
+    expect(drops()[1]).toEqual([
+      expect.stringContaining('appendWorkLog provider threw'),
+      { suppressed: 6, conversationId: 'conv-z', kind: 'final', sessionKey: 'C9:z', error: 'store down' },
+    ]);
+
+    // Nothing more was dropped: no further summary.
+    vi.advanceTimersByTime(10 * INTERVAL);
+    expect(drops()).toHaveLength(2);
+  });
+
+  it('a sustained outage warns at most once per interval and every drop is counted', () => {
+    const seconds = 5 * 60;
+    for (let s = 0; s < seconds; s++) {
+      recordConversationWorkLog(`conv-${s % 7}`, { kind: 'narration', text: `n${s}` });
+      vi.advanceTimersByTime(1_000);
+    }
+    vi.advanceTimersByTime(INTERVAL);
+
+    expect(appendWorkLog).toHaveBeenCalledTimes(seconds);
+    const warned = drops();
+    // One immediate warn, then one summary per elapsed interval.
+    expect(warned).toHaveLength(Math.ceil((seconds * 1_000) / INTERVAL) + 1);
+    const summarized = warned
+      .slice(1)
+      .reduce((sum, [, fields]) => sum + (fields as { suppressed: number }).suppressed, 0);
+    expect(1 + summarized).toBe(seconds);
+  });
+
+  it('a drop after the interval whose summary timer has not run yet joins that summary, and no second one follows', () => {
+    recordConversationWorkLog('conv-a', { kind: 'notice', text: 'x' });
+    vi.advanceTimersByTime(1_000);
+    recordConversationWorkLog('conv-b', { kind: 'tool', text: 'y' });
+    // The clock passes the interval without the pending timer firing.
+    vi.setSystemTime(Date.now() + INTERVAL);
+    recordConversationWorkLog('conv-c', { kind: 'final', text: FINAL }, { sessionKey: 'C3:c' });
+
+    expect(drops()).toHaveLength(2);
+    expect(drops()[1]).toEqual([
+      expect.anything(),
+      { suppressed: 2, conversationId: 'conv-c', kind: 'final', sessionKey: 'C3:c', error: 'store down' },
+    ]);
+    vi.advanceTimersByTime(10 * INTERVAL);
+    expect(drops()).toHaveLength(2);
+  });
+
+  it('after a quiet interval the next failure warns immediately again', () => {
+    recordConversationWorkLog('conv-a', { kind: 'notice', text: 'x' });
+    vi.advanceTimersByTime(INTERVAL);
+    recordConversationWorkLog('conv-b', { kind: 'error', text: 'y' }, { sessionKey: 'C2:b' });
+
+    expect(drops()).toEqual([
+      [expect.anything(), { conversationId: 'conv-a', kind: 'notice', error: 'store down' }],
+      [expect.anything(), { conversationId: 'conv-b', kind: 'error', sessionKey: 'C2:b', error: 'store down' }],
+    ]);
   });
 });
