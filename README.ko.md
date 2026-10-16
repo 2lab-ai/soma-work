@@ -162,7 +162,7 @@ app-token 프롬프트는 금지된 자격증명 경로라 삭제됨), `scripts/
 |--------|------|--------|------|
 | `/z <topic> …` | 기본 명령어 surface (필요 시 Block Kit UI) | 유저 전역 | `/z persona set linus` |
 | `%<sub> …` | **현재 세션 전용** — 저장 없이 오버라이드 | 휘발성 (`new`/`renew` 시 초기화) | `%model opus` |
-| `$<skill>` / `$<plugin>:<skill>` | **강제 스킬 발동** (`SKILL.md` 로드, RPG 배너 출력 — `minimal`에서는 대시보드 작업 로그로) | 메시지 단위 | `$z`, `$stv:new-task` |
+| `$<skill>` / `$<plugin>:<skill>` | **강제 스킬 발동** (`SKILL.md` 로드, `compact` 이상에서 RPG 배너 출력 — `minimal`에서는 게시하지 않음; 세션에 대화가 있으면 대시보드 작업 로그에 기록) | 메시지 단위 | `$z`, `$stv:new-task` |
 | naked text | 화이트리스트 bare form 또는 채팅 / 워크플로우 디스패치 | n/a | `sessions`, `new`, `fix PR 123` |
 
 주요 `/z` 명령: `help` · `cwd` · `mcp` · `bypass` · `persona` · `model` · `verbosity` · `session` · `new`/`renew` · `close` · `restore` · `context`/`compact` · `link` · `onboarding` · `admin` · `cct` · `auth` · `marketplace` · `plugin` · `skill` · `report`

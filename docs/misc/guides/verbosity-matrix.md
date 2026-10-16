@@ -21,7 +21,7 @@ Complete mapping of the output flags in `packages/slack/src/output-flags.ts` acr
 | 3 | `TOOL_DETAIL` | `1<<3` | - | - | **on** | on | Tool call detail — args, diff, command, MCP inputs |
 | 4 | `TOOL_RESULT` | `1<<4` | - | - | **on** | on | Tool execution result |
 | 5 | `MCP_PROGRESS` | `1<<5` | - | **on** | on | on | MCP / subagent / background-Bash progress status messages |
-| 6 | `STATUS_MESSAGE` | `1<<6` | - | **on** | on | on | Status text messages (Thinking / Working / Completed), goal-loop progress (🔄 not yet complete, ▶️ next queued goal) and the 🤖 Autogoal notice (the goal notices are always recorded as a work-log `notice`; posted only when on) |
+| 6 | `STATUS_MESSAGE` | `1<<6` | - | **on** | on | on | Status text messages (Thinking / Working / Completed), goal-loop progress (🔄 not yet complete, ▶️ next queued goal) and the 🤖 Autogoal notice (the goal notices are posted only when on, and recorded in the work log when the session has a conversation) |
 | 7 | `STATUS_REACTION` | `1<<7` | - | **on** | on | on | Emoji reactions (thinking_face, gear, check_mark) |
 | 8 | `STATUS_SPINNER` | `1<<8` | - | **on** | on | on | Native Slack assistant spinner |
 | 9 | `USER_CHOICE` | `1<<9` | **on** | on | on | on | User choice / form prompts (**ALWAYS** shown) |
@@ -35,7 +35,7 @@ Complete mapping of the output flags in `packages/slack/src/output-flags.ts` acr
 | 17 | `ERROR` | `1<<17` | **on** | on | on | on | Error messages and error status (**ALWAYS** shown) |
 | 18 | `SYSTEM` | `1<<18` | - | - | **on** | on | System / command responses, onboarding, conversation URL |
 | 19 | `RAW_DATA` | `1<<19` | - | - | - | **on** | Raw model response data (debug) |
-| 20 | `SKILL_INVOCATION` | `1<<20` | - | **on** | on | on | Skill invocation announcement — the model's Skill banner and the forced `$skill` / autoskill RPG banners (forced banners are always recorded as a work-log `notice`; posted only when on) |
+| 20 | `SKILL_INVOCATION` | `1<<20` | - | **on** | on | on | Skill invocation announcement — the model's Skill banner and the forced `$skill` / autoskill RPG banners (forced banners are posted only when on, and recorded in the work log when the session has a conversation) |
 | 21 | `NARRATION` | `1<<21` | - | **on** | on | on | Mid-turn model narration (assistant text while the turn runs) |
 
 **Bold "on"** = the level where the flag first appears.
@@ -160,15 +160,16 @@ Entry contract for the final answer (the log is append-only):
   compaction notices behave exactly as before this change.
 - Forced-skill RPG banners (`$skill`, autoskill) are not posted: they need `SKILL_INVOCATION`
   (compact and above), the same flag as the model's own Skill banner, and are recorded as
-  work-log `notice` entries at every level (above). Only the banner is gated — the
+  work-log `notice` entries at every level when the session has a conversation (above). Only the banner is gated — the
   `<invoked_skills>` block is appended to the prompt at every level, so the skill still runs.
   The session's mask is read when the banner would be posted. For a non-deferred `$skill` with
   no session registered for the thread, the requesting user's default verbosity is used (the
   mask a new session would get); nothing is recorded then (no conversation).
 - Goal notices: 🔄 not yet complete, ▶️ starting the next queued goal, and the 🤖 Autogoal
   notice are status messages — not posted below `compact` (`STATUS_MESSAGE`), recorded at every
-  level. ✅ goal completed (the result), ⏸️ asked the owner via DM and ⏹️ paused — send a
-  message to resume (the user has to act) are posted at every level and recorded too. Only the
+  level when the session has a conversation. ✅ goal completed (the result), ⏸️ asked the owner
+  via DM and ⏹️ paused — send a message to resume (the user has to act) are posted at every
+  level and recorded the same way. Only the
   posts change: the loop (counter, eval, continuation injection, queue advance, autogoal
   activation) runs the same at every level. Goal eval errors (⚠️, ⏳ retrying) are error
   notices and stay posted.
