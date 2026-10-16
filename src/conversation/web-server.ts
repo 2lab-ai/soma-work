@@ -1,5 +1,8 @@
+import type { IncomingHttpHeaders } from 'node:http';
 import * as os from 'node:os';
 import fastifyFormbody from '@fastify/formbody';
+// Type-only: the plugin itself is registered by dashboard.ts via dynamic import.
+import type { WebSocket } from '@fastify/websocket';
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -21,6 +24,7 @@ import {
   generateCsrfTokenForAdmin,
   getDashboardUser,
   getJwtSecret,
+  loginReturnCookieFor,
   registerOAuthRoutes,
   validateCsrfToken,
   verifyDashboardTokenRaw,
@@ -28,6 +32,7 @@ import {
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
 import type { ConversationTurn } from './types';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
+import { registerWorkLogRoutes } from './work-log-routes';
 
 const logger = new Logger('ConversationWebServer');
 
@@ -165,6 +170,9 @@ async function authMiddleware(request: FastifyRequest, reply: FastifyReply): Pro
         message: 'Valid Authorization header required',
       });
     } else {
+      // Remember a dashboard deep link so the next login lands on it (spec §3.4-3).
+      const nextCookie = request.method === 'GET' ? loginReturnCookieFor(request.url) : undefined;
+      if (nextCookie) reply.header('Set-Cookie', nextCookie);
       reply.redirect('/login');
     }
     return;
@@ -302,6 +310,8 @@ export { requireWriteAccess };
 
 let server: FastifyInstance | null = null;
 let activePort: number | null = null;
+/** True only between a successful listen() and stop/failure — links handed to Slack must resolve. */
+let listening = false;
 let heartbeatHandle: NodeJS.Timeout | null = null;
 let heartbeatPort: number | null = null;
 
@@ -374,6 +384,19 @@ export function getViewerBaseUrl(): string {
  */
 export function getConversationUrl(conversationId: string): string {
   return `${getViewerBaseUrl()}/conversations/${conversationId}`;
+}
+
+/**
+ * Dashboard deep link for one session: opens the owner's board with that
+ * session's card and work log (spec §3.4-1). Undefined unless the viewer is
+ * actually listening (a thread header must not carry a dead link when the
+ * viewer failed to start), or when there is no owner or session key.
+ */
+export function getDashboardSessionUrl(ownerId: string, sessionKey: string): string | undefined {
+  if (!listening || !ownerId || !sessionKey) return undefined;
+  const base = getViewerBaseUrl().replace(/\/+$/, '');
+  if (!base) return undefined;
+  return `${base}/dashboard/${encodeURIComponent(ownerId)}?session=${encodeURIComponent(sessionKey)}`;
 }
 
 /**
@@ -558,6 +581,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   // ---- Dashboard Routes ----
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
+  await registerWorkLogRoutes(server, authMiddleware);
 
   // Health check
   server.get('/health', async (_request, reply) => {
@@ -587,6 +611,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     try {
       await server.listen({ port, host });
       activePort = port;
+      listening = true;
       logger.info(`Conversation viewer started on ${host}:${port}`);
       logger.info(`View at: ${getViewerBaseUrl()}/conversations`);
       if (config.conversation.viewerToken) {
@@ -624,6 +649,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
       return;
     } catch (error) {
+      listening = false;
       if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE' && attempt < MAX_PORT_RETRIES - 1) {
         logger.warn(`Port ${port} in use, trying ${port + 1}...`);
         continue;
@@ -638,6 +664,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
  * Stop the web server
  */
 export async function stopWebServer(): Promise<void> {
+  // Stop handing out dashboard links before the listener goes away.
+  listening = false;
   if (server) {
     // Flush hook state before closing
     try {
@@ -677,6 +705,27 @@ export async function injectWebServer(request: InjectRequest): Promise<InjectRes
   }
 
   return server.inject(request);
+}
+
+/**
+ * Open an in-process WebSocket (for tests) through `@fastify/websocket`'s
+ * `injectWS`, so upgrade requests run the same route + auth preHandler as a
+ * real browser. `onInit` sees the socket before it opens — attach `message`
+ * listeners there to catch the initial frames.
+ */
+export async function injectWebServerWS(
+  path: string,
+  upgradeContext: { headers?: IncomingHttpHeaders } = {},
+  onInit?: (ws: WebSocket) => void,
+): Promise<WebSocket> {
+  if (!server) {
+    throw new Error('Conversation web server is not running');
+  }
+  // Decorated only when dashboard.ts managed to register @fastify/websocket.
+  if (typeof server.injectWS !== 'function') {
+    throw new Error('WebSocket support is not registered');
+  }
+  return server.injectWS(path, upgradeContext, onInit ? { onInit } : {});
 }
 
 /**
