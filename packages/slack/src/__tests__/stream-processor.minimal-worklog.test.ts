@@ -699,32 +699,51 @@ describe('guardText — what the executor content guards read', () => {
   // A directive-only ending shows nothing, so the turn still ENDED on the
   // leak: guardText (and transportLeak) is the leak, recovery must fire.
   const DIRECTIVE_ONLY = '```json\n{"type":"channel_message","text":"Release notes"}\n```';
-  for (const shape of ['streamed', 'result-only'] as const) {
-    for (const level of ['minimal', 'detail'] as const) {
-      it(`${level}: leak → ${shape} directive-only ending: guardText is the leak, directive dispatched once`, async () => {
-        const h = harness(getVerbosityFlags(level));
-        const onChannelMessageDetected = vi.fn().mockResolvedValue(undefined);
+  // Adjacent deltas join into one segment, so a leak or a directive split
+  // across them must behave exactly like the whole-segment fixtures.
+  const LEAK_PARTS = {
+    whole: ['Prompt is too long'],
+    fragmented: ['Prompt is ', 'too long'],
+  } as const;
+  const DIRECTIVE_PARTS = {
+    whole: [DIRECTIVE_ONLY],
+    fragmented: ['```json\n{"type":"channel_message",', '"text":"Release notes"}\n```'],
+  } as const;
+  for (const fragments of ['whole', 'fragmented'] as const) {
+    for (const shape of ['streamed', 'result-only'] as const) {
+      for (const level of ['minimal', 'detail'] as const) {
+        it(`${level}: ${fragments} leak → ${shape} ${fragments} directive-only ending: guardText is the leak, directive dispatched once`, async () => {
+          const h = harness(getVerbosityFlags(level));
+          const onChannelMessageDetected = vi.fn().mockResolvedValue(undefined);
+          const delta = (text: string): AgentStreamEvent => ({ type: 'assistant_delta', text });
 
-        const result = await run(
-          h,
-          [
-            { type: 'assistant_delta', text: NARRATION },
-            { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} },
-            { type: 'assistant_delta', text: 'Prompt is too long' },
-            { type: 'tool_call', toolCallId: 'tu_2', name: 'Read', input: {} },
-            ...(shape === 'streamed' ? [{ type: 'assistant_delta', text: DIRECTIVE_ONLY } as AgentStreamEvent] : []),
-            { type: 'result', stopReason: 'end_turn', finalText: DIRECTIVE_ONLY },
-          ],
-          { onChannelMessageDetected },
-        );
+          const result = await run(
+            h,
+            [
+              delta(NARRATION),
+              { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} },
+              ...LEAK_PARTS[fragments].map(delta),
+              { type: 'tool_call', toolCallId: 'tu_2', name: 'Read', input: {} },
+              ...(shape === 'streamed' ? DIRECTIVE_PARTS[fragments].map(delta) : []),
+              { type: 'result', stopReason: 'end_turn', finalText: DIRECTIVE_ONLY },
+            ],
+            { onChannelMessageDetected },
+          );
 
-        expect(result.guardText).toBe('Prompt is too long');
-        expect(result.transportLeak).toBe('Prompt is too long');
-        expect(onChannelMessageDetected).toHaveBeenCalledTimes(1);
-        const posted = [...h.appendText.mock.calls.map((c) => c[1]), ...h.say.mock.calls.map((c) => c[0]?.text)];
-        expect(posted).not.toContain('Prompt is too long');
-        expect(posted).toEqual(level === 'minimal' ? [] : [NARRATION]);
-      });
+          expect(result.guardText).toBe('Prompt is too long');
+          expect(result.transportLeak).toBe('Prompt is too long');
+          expect(onChannelMessageDetected).toHaveBeenCalledTimes(1);
+          expect(onChannelMessageDetected).toHaveBeenCalledWith('Release notes', h.context);
+          const posted = [...h.appendText.mock.calls.map((c) => c[1]), ...h.say.mock.calls.map((c) => c[0]?.text)];
+          expect(posted).not.toContain('Prompt is too long');
+          expect(posted).toEqual(level === 'minimal' ? [] : [NARRATION]);
+          // Work log: the leak once as `error`, no `final` (nothing was the answer).
+          expect(h.log.filter((e) => e.kind === 'error')).toEqual([
+            expect.objectContaining({ text: 'Prompt is too long' }),
+          ]);
+          expect(h.log.some((e) => e.kind === 'final')).toBe(false);
+        });
+      }
     }
   }
 
@@ -750,5 +769,67 @@ describe('a finalText that differs from the streamed leak only by whitespace', (
     expect(h.say).not.toHaveBeenCalled();
     expect(h.log.filter((e) => e.kind === 'error')).toHaveLength(1);
     expect(result.transportLeak).toBe('Prompt is too long');
+  });
+});
+
+/**
+ * Spec 10 §3.2-3 (updated): if a final answer reached Slack this turn, the
+ * turn did not end on a leak and no recovery runs. A known (streamed,
+ * non-suppressed) segment accepted as the final becomes the terminal segment.
+ */
+describe('a known final answer after a suppressed leak is the terminal segment', () => {
+  for (const level of ['minimal', 'detail'] as const) {
+    it(`${level}: A withheld/streamed → leak L suppressed → result(finalText = A): A posted once, no recovery`, async () => {
+      const h = harness(getVerbosityFlags(level));
+      const LEAK = 'Prompt is too long';
+
+      const result = await run(h, [
+        { type: 'assistant_delta', text: FINAL },
+        { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: {} },
+        { type: 'tool_result', toolCallId: 'tu_1', content: [{ type: 'text', text: 'ok' }] },
+        { type: 'assistant_delta', text: LEAK },
+        { type: 'result', stopReason: 'end_turn', finalText: FINAL },
+      ]);
+
+      expect(h.appendText.mock.calls.map((c) => c[1])).toEqual([FINAL]);
+      expect(result.transportLeak).toBeUndefined();
+      expect(result.guardText).not.toBe(LEAK);
+      expect(result.guardText).not.toContain(LEAK);
+      expect(h.log.filter((e) => e.kind === 'error')).toEqual([expect.objectContaining({ text: LEAK })]);
+      expect(h.log.filter((e) => e.kind === 'final')).toEqual([expect.objectContaining({ text: FINAL })]);
+    });
+  }
+});
+
+/**
+ * "If the turn's answer IS that segment, it is recorded only as final":
+ * bookkeeping frames (status, compact_boundary, usage) between the answer and
+ * `result` do not move the turn on — only a tool, thinking or more text does.
+ */
+describe('bookkeeping frames do not settle the held answer as narration', () => {
+  for (const [label, frame] of [
+    ['a status frame', { type: 'status', status: 'working' }],
+    ['a compact_boundary frame', { type: 'compact_boundary', metadata: { trigger: 'auto' } }],
+  ] as const) {
+    it(`${label} between the answer and result: the answer is recorded once, as final`, async () => {
+      const h = harness(LOG_MINIMAL);
+
+      await run(h, [
+        { type: 'assistant_delta', text: FINAL },
+        frame as AgentStreamEvent,
+        { type: 'result', stopReason: 'end_turn', finalText: FINAL },
+      ]);
+
+      expect(h.log.filter((e) => e.text === FINAL).map((e) => e.kind)).toEqual(['final']);
+      expect(h.appendText.mock.calls.map((c) => c[1])).toEqual([FINAL]);
+    });
+  }
+
+  it('a tool call between narration and the answer still settles the narration', async () => {
+    const h = harness(LOG_MINIMAL);
+
+    await run(h, toolTurn());
+
+    expect(h.log.map((e) => e.kind)).toEqual(['narration', 'tool', 'tool_result', 'final']);
   });
 });

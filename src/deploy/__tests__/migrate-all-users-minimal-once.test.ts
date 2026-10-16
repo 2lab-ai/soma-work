@@ -252,6 +252,43 @@ describe('migrateAllUsersMinimalOnce', () => {
     expect(new UserSettingsStore(dataDir).getUserDefaultLogVerbosity('U_COMPACT')).toBe('compact');
   });
 
+  it('the MARKER write fails: rethrows, both data files untouched, the next boot retries', () => {
+    const dataDir = makeDataDir();
+    write(dataDir, 'user-settings.json', USERS);
+    write(dataDir, 'sessions.json', SESSIONS);
+    const settingsBefore = fs.readFileSync(path.join(dataDir, 'user-settings.json'), 'utf8');
+    const sessionsBefore = fs.readFileSync(path.join(dataDir, 'sessions.json'), 'utf8');
+
+    fault.failWriteOf = ALL_USERS_LOG_MINIMAL_ONCE_MARKER;
+    expect(() => migrateAllUsersMinimalOnce({ dataDir })).toThrow('injected write failure');
+    fault.failWriteOf = '';
+
+    expect(fs.existsSync(path.join(dataDir, ALL_USERS_LOG_MINIMAL_ONCE_MARKER))).toBe(false);
+    expect(fs.readFileSync(path.join(dataDir, 'user-settings.json'), 'utf8')).toBe(settingsBefore);
+    expect(fs.readFileSync(path.join(dataDir, 'sessions.json'), 'utf8')).toBe(sessionsBefore);
+    expect(migrateAllUsersMinimalOnce({ dataDir }).status).toBe('applied');
+  });
+
+  it('the FIRST data write (settings) fails after the marker: skipped for good, sessions untouched', () => {
+    const dataDir = makeDataDir();
+    write(dataDir, 'user-settings.json', USERS);
+    write(dataDir, 'sessions.json', SESSIONS);
+    const settingsBefore = fs.readFileSync(path.join(dataDir, 'user-settings.json'), 'utf8');
+    const sessionsBefore = fs.readFileSync(path.join(dataDir, 'sessions.json'), 'utf8');
+
+    fault.failWriteOf = 'user-settings.json';
+    expect(() => migrateAllUsersMinimalOnce({ dataDir })).toThrow('injected write failure');
+    fault.failWriteOf = '';
+
+    expect(fs.existsSync(path.join(dataDir, ALL_USERS_LOG_MINIMAL_ONCE_MARKER))).toBe(true);
+    expect(fs.readFileSync(path.join(dataDir, 'sessions.json'), 'utf8')).toBe(sessionsBefore);
+    for (let run = 0; run < 2; run++) {
+      expect(migrateAllUsersMinimalOnce({ dataDir }).status).toBe('skipped');
+    }
+    expect(fs.readFileSync(path.join(dataDir, 'user-settings.json'), 'utf8')).toBe(settingsBefore);
+    expect(fs.readFileSync(path.join(dataDir, 'sessions.json'), 'utf8')).toBe(sessionsBefore);
+  });
+
   it.each([
     ['user-settings.json', 'an array user record', '{"U1": ["x"]}'],
     ['user-settings.json', 'a null user record', '{"U1": null}'],

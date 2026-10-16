@@ -19,7 +19,7 @@ import {
   buildInstructionConfirmFallbackText,
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
-import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flags';
+import { OutputFlag, resolveVerbosityMask, shouldOutput, verboseTag } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
 // Issue #1082 T2: shared goal-apply helpers (same pair T1's slack-handler
@@ -184,6 +184,13 @@ export interface StreamExecutorProviders {
   getAutoFallbackCompactModel?: () => string;
   postCompactCompleteIfNeeded?: (...args: any[]) => Promise<unknown>;
   postCompactStartingIfNeeded?: (...args: any[]) => Promise<unknown>;
+  /**
+   * Bind this turn's work-log sink for the session's compaction notices
+   * (src/slack/hooks/compact-hooks.ts records exactly one start and one
+   * completion `notice` per cycle, whichever path signals). Returns the
+   * unbind. No-op by default.
+   */
+  bindCompactWorkLog?: (session: ConversationSession, sink: (entry: WorkLogInput) => void) => () => void;
 }
 
 const FALLBACK_CONTEXT_WINDOW = 200_000;
@@ -237,6 +244,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   getAutoFallbackCompactModel: () => process.env.AUTO_FALLBACK_COMPACT_MODEL || 'opus[1m]',
   postCompactCompleteIfNeeded: async () => undefined,
   postCompactStartingIfNeeded: async () => undefined,
+  bindCompactWorkLog: () => () => {},
 };
 
 export function setStreamExecutorProviders(providers: StreamExecutorProviders): void {
@@ -291,19 +299,6 @@ const coerceToAvailableModel = (model: string) => streamExecutorProviders.coerce
 const getAutoFallbackCompactModel = () => streamExecutorProviders.getAutoFallbackCompactModel();
 const postCompactCompleteIfNeeded = (...args: any[]) => streamExecutorProviders.postCompactCompleteIfNeeded(...args);
 const postCompactStartingIfNeeded = (...args: any[]) => streamExecutorProviders.postCompactStartingIfNeeded(...args);
-
-/**
- * Work-log `notice` text for a sealed compaction: trigger and the token counts
- * `onCompactBoundary` just stored, each segment omitted when unknown.
- */
-function describeCompactionComplete(session: ConversationSession): string {
-  const parts = ['Compaction completed'];
-  if (session.compactTrigger) parts.push(`trigger=${session.compactTrigger}`);
-  if (typeof session.compactPreTokens === 'number' && typeof session.compactPostTokens === 'number') {
-    parts.push(`${session.compactPreTokens} → ${session.compactPostTokens} tokens`);
-  }
-  return parts.join(' · ');
-}
 
 /**
  * Result of stream execution
@@ -1088,13 +1083,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const turnCollector = streamExecutorProviders.createTurnResultCollector();
 
     // Verbosity filtering — read from session dynamically so mid-stream $verbosity changes apply
-    const getVerbosity = () => session.logVerbosity ?? LOG_DETAIL;
+    const getVerbosity = () => resolveVerbosityMask(session.logVerbosity);
     const isOutputEnabled = (flag: number) => shouldOutput(flag, getVerbosity());
     const vtag = (flag: number) => verboseTag(flag, getVerbosity());
 
     // Spec 10 §3.3 work log. `conversationId` is read at call time — it can be
     // auto-created below, after this binding. Stamped with this turn's id; a
-    // throwing provider must never break the turn.
+    // throwing provider must never break the turn. Compaction notices come
+    // from compact-hooks through the sink bound for this turn below.
     const emitWorkLog = (entry: WorkLogInput): void => {
       const conversationId = session.conversationId;
       if (!conversationId) return;
@@ -1108,6 +1104,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         });
       }
     };
+    const unbindCompactWorkLog = streamExecutorProviders.bindCompactWorkLog(session, emitWorkLog);
 
     // Per-request tool statistics
     const toolStats: RequestToolStats = {};
@@ -1454,7 +1451,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // does not post old narration under the form.
         hostChoicePosted: () => toolChoicePending,
         get logVerbosity() {
-          return session.logVerbosity ?? LOG_DETAIL;
+          return resolveVerbosityMask(session.logVerbosity);
         },
         get showThinking() {
           return session.showThinking ?? userSettingsStore.getUserShowThinking(user);
@@ -1876,8 +1873,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             }
           }
 
-          emitWorkLog({ kind: 'notice', text: describeCompactionComplete(session) });
-
           this.logger.info('Compaction flag set — context will be re-injected on next prompt', {
             sessionKey,
             preTokens: session.compactPreTokens ?? null,
@@ -1919,7 +1914,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         },
         onStatusUpdate: async (status: string) => {
           if (status === 'compacting') {
-            emitWorkLog({ kind: 'notice', text: 'Compaction starting' });
             // #617 AC4 fallback: if the SDK PreCompact hook never fires
             // (older SDK or edge case), the `compacting` status still
             // guarantees a thread-visible "starting" post. Epoch dedupe in
@@ -2854,6 +2848,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // after `Send now` has already started a new turn — it carries the
       // captured token.
       await this.cleanup(session, sessionKey, abortController, turnId, turnEpochToken);
+      unbindCompactWorkLog();
       // Deferred post-compact re-dispatch (compact re-loop fix). When a
       // compact cycle sealed during THIS turn, `postCompactCompleteIfNeeded`
       // parked the intercepted user message on the session instead of

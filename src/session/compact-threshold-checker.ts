@@ -16,7 +16,7 @@
  * (continuation, `/compact` loop) don't double-post.
  */
 
-import { LOG_DETAIL, OutputFlag, shouldOutput } from '@soma/slack/output-flags';
+import { OutputFlag, resolveVerbosityMask, shouldOutput } from '@soma/slack/output-flags';
 import type { WorkLogInput } from '@soma/slack/work-log';
 import type { Logger } from '../logger';
 import { resolveContextWindow } from '../metrics/model-registry';
@@ -128,7 +128,7 @@ export async function checkAndSchedulePendingCompact(args: CheckAndSchedulePendi
 
   // Spec 10 §3.2-4: a compaction notice — below `compact` (no NARRATION) it
   // stays off the thread; the flag above is what schedules the compaction.
-  if (!shouldOutput(OutputFlag.NARRATION, session.logVerbosity ?? LOG_DETAIL)) return true;
+  if (!shouldOutput(OutputFlag.NARRATION, resolveVerbosityMask(session.logVerbosity))) return true;
 
   try {
     await slackApi.postSystemMessage(channel, announcement, { threadTs });

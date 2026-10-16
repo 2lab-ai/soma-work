@@ -9,9 +9,11 @@ import { describe, expect, it } from 'vitest';
 import {
   getVerbosityFlags,
   getVerbosityName,
+  LOG_DETAIL,
   LOG_MINIMAL,
   LOG_VERBOSITY_MASK_VERSION,
   OutputFlag,
+  resolveVerbosityMask,
   shouldOutput,
   upgradeLegacyVerbosityMask,
 } from '../output-flags';
@@ -90,5 +92,21 @@ describe('upgradeLegacyVerbosityMask', () => {
 describe('LOG_VERBOSITY_MASK_VERSION', () => {
   it('is 2 — the masks that carry the NARRATION bit', () => {
     expect(LOG_VERBOSITY_MASK_VERSION).toBe(2);
+  });
+});
+
+describe('resolveVerbosityMask — the one read rule for stored masks', () => {
+  it.each([
+    ['missing', undefined],
+    ['null', null],
+    ['a string', 'detail'],
+    ['NaN', Number.NaN],
+  ])('%s reads as detail', (_label, mask) => {
+    expect(resolveVerbosityMask(mask)).toBe(LOG_DETAIL);
+  });
+
+  it('a numeric mask is used as is (0 included)', () => {
+    expect(resolveVerbosityMask(LOG_MINIMAL)).toBe(LOG_MINIMAL);
+    expect(resolveVerbosityMask(0)).toBe(0);
   });
 });

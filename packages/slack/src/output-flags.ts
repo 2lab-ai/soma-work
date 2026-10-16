@@ -107,6 +107,15 @@ const VERBOSITY_MAP: Record<LogVerbosity, number> = {
 
 export const DEFAULT_LOG_VERBOSITY: LogVerbosity = 'minimal';
 
+/**
+ * A stored verbosity mask as every consumer reads it: a missing or
+ * non-numeric value (e.g. an unmigrated or hand-edited record) is the default
+ * `detail` — one rule, so no consumer reads it as "everything off".
+ */
+export function resolveVerbosityMask(mask: unknown): number {
+  return typeof mask === 'number' && Number.isFinite(mask) ? mask : LOG_DETAIL;
+}
+
 /** Resolve a verbosity name to its flag mask */
 export function getVerbosityFlags(level: LogVerbosity): number {
   return VERBOSITY_MAP[level];

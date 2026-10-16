@@ -106,9 +106,13 @@ Entry contract for the final answer (the log is append-only):
   `narration` or `final`, whatever the turn's ending (`finalText` = the leak, empty, absent,
   or no `result`). When the executor then recovers the turn it adds its own `notice`
   (retry scheduled) or `error` entry.
-- A narration segment is recorded as `narration` once the turn moves on past it (a tool,
-  thinking, more text, a status frame). If the turn's answer IS that segment, it is recorded
-  only as `final`.
+- A narration segment is recorded as `narration` once the turn moves on past it: a tool call
+  or result, thinking, or more text. Bookkeeping frames (`usage`, `status`,
+  `compact_boundary`) do not move the turn on, so they can sit between the answer and `result`.
+  If the turn's answer IS that segment, it is recorded only as `final`.
+- Compaction notices are recorded once per cycle — one start and one completion — whichever
+  path signals it (the SDK PreCompact/PostCompact hooks or the stream's `compacting` status /
+  `compact_boundary`), at every level (`bindCompactWorkLog` in `compact-hooks.ts`).
 - When the fallback (below) posts a segment that was already recorded as `narration`, that
   text appears once as `narration` and once as `final` — never two of either.
 
@@ -127,9 +131,11 @@ Entry contract for the final answer (the log is append-only):
   at every level. The level is read when each notice would be posted, and only new posts are
   gated: the cycle bookkeeping (epoch markers, usage snapshot, deferred re-dispatch of a
   message typed during compaction) runs at every level, and a "starting" message already on
-  the thread (posted at `compact` or above) is still replaced in place by the completion. A
-  missing or non-numeric mask reads as `detail`. At `compact` and above the compaction
-  notices behave exactly as before this change.
+  the thread (posted at `compact` or above) is still replaced in place by the completion (or,
+  if that update fails, posted fresh — the existing fallback). At `compact` and above the
+  compaction notices behave exactly as before this change.
+- Every consumer reads a stored mask through `resolveVerbosityMask`: a missing or non-numeric
+  mask is `detail`.
 
 ## Transport-error leaks (all levels)
 
@@ -146,11 +152,14 @@ back to the whole `collectedText`). The guards convert the leak into a thrown er
 compact failure) — also when narration preceded the leak, which the joined `collectedText`
 used to hide. No withheld narration is posted as the answer of such a turn.
 
-A real answer after the leak — streamed, or a new `finalText` — means the turn did not end on
-it: there is no `transportLeak`, the answer posts once, and no recovery fires. The executor's
-guards read `StreamResult.guardText` (the leak the turn ended on, else the turn text without
-suppressed segments), so the recovered leak cannot reach them through `collectedText`. A
-`finalText` that differs from a suppressed leak only by whitespace is the same leak.
+If a final answer reached Slack this turn, the turn did not end on a leak and no recovery
+runs. The answer becomes the turn's terminal segment whether it is a real answer after the leak
+(streamed, or a new `finalText`) or an earlier segment that `finalText` names (e.g. text A is
+withheld, a later leak L is suppressed, then `finalText` = A: A is posted once and L stays an
+`error` entry). Then there is no `transportLeak`, and the executor's guards read
+`StreamResult.guardText` — the leak the turn ended on, else the turn text without suppressed
+segments — so a recovered leak cannot reach them through `collectedText`. A `finalText` that
+differs from a suppressed leak only by whitespace is the same leak.
 
 ## Migration and stored masks
 
