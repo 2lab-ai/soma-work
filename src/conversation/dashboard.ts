@@ -1768,13 +1768,13 @@ function renderDashboardPage(userId?: string): string {
   /* Typography */
   --text: #ededf0;
   --text-secondary: #a8a8b0;
-  --text-tertiary: #7c7c85;
+  --text-tertiary: #93939b;
   /* Functional color — Bauhaus primary triad + accents */
   --accent: #4d9de0;
   --accent-hover: #3b82c4;
   --green: #3ecf8e;
   --yellow: #f6c90e;
-  --red: #ef4444;
+  --red: #f26b6b;
   --purple: #a78bfa;
   --orange: #f97316;
   /* Geometry */
@@ -1789,7 +1789,9 @@ function renderDashboardPage(userId?: string): string {
   --dur-expand: 240ms;
   --dur-move: 320ms;
   --dur-fade: 180ms;
-  /* Agent inbox board — neutral planes: column one step darker than the page */
+  /* Agent inbox board — neutral planes: column one step darker than the page.
+     Text tokens (--ib-muted, --ib-text-2, --text-tertiary) clear 4.5:1 on every
+     surface they sit on (page, column, card, dimmed card, segment track). */
   --ib-col: #18181b;
   --ib-card: #242428;
   --ib-card-dim: #1f1f23;
@@ -1797,7 +1799,7 @@ function renderDashboardPage(userId?: string): string {
   --ib-pill: #2f2f35;
   --ib-text: #f2f2f3;
   --ib-text-2: #b4b4bb;
-  --ib-muted: #87878f;
+  --ib-muted: #93939b;
   --ib-seg: #161619;
   --ib-seg-on: #2e2e33;
   --ib-spark: #7b9cf0;
@@ -1806,7 +1808,7 @@ function renderDashboardPage(userId?: string): string {
   --st-wait: #f5a524;
   --st-run: #6b93f2;
   --st-done: #3fb968;
-  --st-fail: #f05252;
+  --st-fail: #f26b6b;
 }
 
 /* ── LIGHT THEME — override surface & text planes ── */
@@ -1818,9 +1820,9 @@ function renderDashboardPage(userId?: string): string {
   --border-focus: #4d9de0;
   --text: #18181a;
   --text-secondary: #57575d;
-  --text-tertiary: #85858c;
-  --accent: #2b7fd4;
-  --accent-hover: #2468b0;
+  --text-tertiary: #68686f;
+  --accent: #1f6dc2;
+  --accent-hover: #1a5ca6;
   /* Functional colors — WCAG AA ≥4.5:1 on all light surfaces */
   --green: #14783b;
   --yellow: #a16207;
@@ -1835,7 +1837,7 @@ function renderDashboardPage(userId?: string): string {
   --ib-pill: #e2e2e2;
   --ib-text: #161616;
   --ib-text-2: #555558;
-  --ib-muted: #6f6f74;
+  --ib-muted: #65656b;
   --ib-seg: #ebebeb;
   --ib-seg-on: #ffffff;
   --ib-spark: #5b7fe0;
@@ -1843,7 +1845,7 @@ function renderDashboardPage(userId?: string): string {
   --ib-shadow-raised: 0 14px 30px rgba(0,0,0,0.14), 0 3px 8px rgba(0,0,0,0.08);
   --st-wait: #c2780a;
   --st-run: #2f63e0;
-  --st-done: #17914a;
+  --st-done: #137a3e;
   --st-fail: #d43a3a;
 }
 [data-theme="light"] ::selection { background: var(--accent); color: #fff; }
@@ -2081,7 +2083,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* Board = 3 equal columns. No overflow clip on columns: a card flying between
    columns must stay visible over its neighbours. */
 .kanban { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
-.kanban-col { background: var(--ib-col); border-radius: 14px; padding: 2px 4px 4px; min-width: 0; display: flex; flex-direction: column; }
+.kanban-col { position: relative; background: var(--ib-col); border-radius: 14px; padding: 2px 4px 4px; min-width: 0; display: flex; flex-direction: column; }
 .kanban-col-header { display: flex; align-items: center; gap: 8px; padding: 10px 8px 8px 10px; min-height: 40px; }
 .col-spark { color: var(--ib-spark); display: inline-flex; flex-shrink: 0; }
 .col-spark svg, .card-spark svg { width: 14px; height: 14px; }
@@ -2118,6 +2120,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card[data-state="sleeping"] .card-title-text, .card[data-state="archived"] .card-title-text { color: var(--ib-text-2); font-weight: 500; }
 .card[data-state="sleeping"] .card-summary, .card[data-state="archived"] .card-summary { color: var(--ib-muted); }
 .card.is-flying { z-index: 5; box-shadow: var(--ib-shadow-raised); }
+.card.is-exiting { position: absolute; z-index: 1; pointer-events: none; }
 .card-face { padding: 12px 14px; cursor: pointer; border-radius: 11px; }
 .card-face:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -2250,7 +2253,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 /* ── CONTEXT USAGE BAR ── */
 .card .context-bar { margin-top: 8px; height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
-.card .context-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s ease; background: var(--st-run); }
+.card .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform 0.3s var(--ease-out); background: var(--st-run); }
 .card .context-bar-fill.ctx-warn { background: var(--st-wait); }
 .card .context-bar-fill.ctx-danger { background: var(--st-fail); }
 
@@ -2404,6 +2407,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .choice-divider { display: none; }
 .card .choice-row-recommended { order: 2; }
 .card .btn-choice { font-size: 13px; padding: 5px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); text-align: left; }
+.card .btn-choice-recommended::before { content: none; }
 .card .choice-row-recommended .btn-choice-recommended,
 .card .btn-choice-recommended { display: inline-flex; align-items: center; width: auto; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
 
@@ -3005,8 +3009,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   min-height: 32px;
 }
 
-/* ── PRESS — buttons and segments give 0.97 feedback (§4-5) ── */
-.btn-action:active:not(:disabled), .seg-btn:active, .show-older-btn:active, .btn-choice:active:not(:disabled) { transform: scale(0.97); }
+/* ── PRESS — buttons and segments give 0.97 feedback (§4-5), pointer presses only:
+   a keyboard-focused control matches :focus-visible, so Space/Enter never scale it (§4-9). ── */
+.btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
@@ -3110,7 +3115,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
      selectors are more specific than the * rule above, so they win. */
   .card-expand { transition: none !important; }
   .card-expand-inner { transition: opacity var(--dur-fade) linear !important; }
-  .btn-action:active:not(:disabled), .seg-btn:active, .show-older-btn:active, .btn-choice:active:not(:disabled) { transform: none; }
+  .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
+  /* Static working indicator: a full ring with a centre dot instead of a spin. */
+  .spinner, .spin { animation: none !important; }
+  .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
 }
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
@@ -3133,6 +3141,23 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 @media (max-width: 480px) and (pointer: coarse) {
   .topbar .nav a, .topbar .nav select { padding: 4px 6px; }
+}
+/* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens.
+   Heights only, so the #800 topbar width fit is untouched; the theme toggle keeps
+   its 32px square (pinned by #800) and gets a 44px-wide hit slop instead. ── */
+@media (max-width: 639px), (pointer: coarse) {
+  .topbar .nav a, .topbar .nav select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
+  #theme-toggle { min-block-size: 44px; position: relative; }
+  #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
+  .period-btn { min-height: 44px; }
+  .seg .seg-btn, .card .btn-action, .card .btn-choice, .col-foot .show-older-btn { min-height: 44px; }
+  .card .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
+  .panel-close { width: 44px; height: 44px; }
+  #panel-title-sub-regen { min-width: 44px; min-height: 44px; }
+  .panel-links a, .panel-tasks-toggle, .turn .btn-action { min-height: 44px; }
+  .turn-raw-details summary.turn-expand-btn { min-height: 44px; display: flex; align-items: center; }
+  .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn, .mc-btn-submit, .mc-btn-reset { min-height: 44px; }
+  .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command input { min-height: 44px; }
 }
 </style>
 </head>
@@ -3430,13 +3455,13 @@ function renderPanelQuestion(s) {
     if (pnlRecOpt) {
       var recLbl = stripRecommendedMarker(pnlRecOpt.label);
       pnlRecHtml = '<div class="choice-row-recommended">'
-        + '<button class="btn-choice btn-choice-recommended" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(pnlRecOpt.id) + '\\',\\'' + escJs(recLbl) + '\\',\\'' + escJs(q.question) + '\\',this)">' + esc(pnlRecOpt.id) + '. ' + esc(recLbl) + (pnlRecOpt.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(pnlRecOpt.description) + '</span>' : '') + '</button>'
+        + '<button class="btn-choice btn-choice-recommended"' + choiceDataAttrs(s.key, pnlRecOpt.id, recLbl, q.question) + '>' + esc(pnlRecOpt.id) + '. ' + esc(recLbl) + (pnlRecOpt.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(pnlRecOpt.description) + '</span>' : '') + '</button>'
         + '</div>'
         + (pnlOthers.length > 0 ? '<hr class="choice-divider">' : '');
     }
     var pnlOtherBtns = pnlOthers.map(function(c) {
       var lbl2 = stripRecommendedMarker(c.label);
-      return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(lbl2) + '\\',\\'' + escJs(q.question) + '\\',this)">' + esc(c.id) + '. ' + esc(lbl2) + (c.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(c.description) + '</span>' : '') + '</button>';
+      return '<button class="btn-choice"' + choiceDataAttrs(s.key, c.id, lbl2, q.question) + '>' + esc(c.id) + '. ' + esc(lbl2) + (c.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(c.description) + '</span>' : '') + '</button>';
     }).join('');
     container.innerHTML = '<div class="panel-question-text">&#x2753; ' + esc(q.question) + '</div>'
       + '<div class="panel-question-choices">' + pnlRecHtml + pnlOtherBtns + '</div>';
@@ -3669,13 +3694,33 @@ refreshCsrfToken();
 function decodeSlackEntities(s) {
   return (s || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
+// Pure (no DOM) so the escaping can be exercised outside a browser. Same &, <, >
+// output the textContent→innerHTML round-trip gave, plus " so a value can never
+// close the attribute it is placed in. ' stays literal: escJs() relies on that.
 function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s || '';
-  return d.innerHTML;
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 function escAttr(s) {
   return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+// Pending-question choice buttons carry their values as attribute-escaped data
+// attributes (read back through dataset by one delegated click handler), so a
+// model-written question or label with quotes, backslashes, < or newlines can
+// neither break nor extend the markup the way an inline JS string could.
+function choiceDataAttrs(key, id, label, question) {
+  return ' data-choice-key="' + escAttr(key) + '" data-choice-id="' + escAttr(id)
+    + '" data-choice-label="' + escAttr(label) + '" data-choice-question="' + escAttr(question) + '"';
+}
+document.addEventListener('click', function(e) {
+  var btn = e.target && e.target.closest ? e.target.closest('button[data-choice-id]') : null;
+  if (!btn || btn.disabled) return;
+  var d = btn.dataset;
+  if (d.mcIndex !== undefined) selectMc(d.choiceKey, Number(d.mcIndex), d.choiceId, d.choiceLabel);
+  else answerChoice(d.choiceKey, d.choiceId, d.choiceLabel, d.choiceQuestion, btn);
+});
+// Only http(s) URLs become links; anything else (javascript:, data:) is inert.
+function safeHref(u) {
+  return /^https?:\\/\\//i.test(String(u || '')) ? escAttr(u) : '#';
 }
 function escJs(s) {
   return esc(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
@@ -3791,7 +3836,8 @@ function setPeriod(period) {
 }
 
 // ── Session cache ──
-let _sessionCache = {};
+// Keyed by session key — prototype-free so any key string is just a key.
+let _sessionCache = Object.create(null);
 
 // ── Env badge helpers (#814) ──
 // 4-color palette — kept in CSS-friendly order so the contrast against
@@ -3815,7 +3861,7 @@ function _hashStr(s) {
 }
 
 function _buildEnvIndex() {
-  var envs = {};
+  var envs = Object.create(null);
   for (var k in _sessionCache) {
     var c = _sessionCache[k];
     if (c && c.environment && c.environment.instanceName) {
@@ -3823,7 +3869,7 @@ function _buildEnvIndex() {
     }
   }
   var sorted = Object.keys(envs).sort();
-  var assigned = {};
+  var assigned = Object.create(null);
   // First pass — try the hash bucket. If taken, mark conflict.
   var occupied = {};
   for (var i = 0; i < sorted.length; i++) {
@@ -3884,11 +3930,12 @@ var TASKS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stro
 var CTX_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 8V2.4A5.6 5.6 0 0 1 13.6 8z" fill="currentColor" stroke="none"/></svg>';
 
 // Board state that survives re-renders — the DOM is reused, never rebuilt.
-var _cardEls = {};          // session key → persistent card shell
-var _expanded = new Set();  // keys whose card is open
+// Every dictionary keyed by a session key or conversation id is prototype-free,
+// so a key such as "__proto__" or "constructor" is just a key.
+var _cardEls = Object.create(null);  // session key → persistent card shell
+var _expanded = new Set();           // keys whose card is open
 var _boardRenders = 0;
-var _exiting = [];          // cards fading out after leaving the board
-var _ioCache = {};          // conversationId → { state, stamp, data, dirty }
+var _ioCache = Object.create(null);  // conversationId → { state, stamp, data, dirty, fails, retryAt }
 
 // Motion tokens come from the CSS custom properties so CSS transitions and
 // WAAPI share one source of truth (§4 table).
@@ -3917,7 +3964,7 @@ function isSiblingSession(s) {
 }
 
 function renderBoard(board) {
-  _sessionCache = {}; // Clear stale cache each render cycle
+  _sessionCache = Object.create(null); // Clear stale cache each render cycle
   // Populate cache from the entire board first so the env-palette pass
   // (which reads every card's environment) and the per-card renders share
   // one walk over the data.
@@ -3952,87 +3999,109 @@ function renderBoard(board) {
 // Keyed reconciler (§3.1-6). Each card keeps its DOM node for its whole life:
 // it is moved between columns, only the parts whose HTML changed are
 // rewritten, and every card whose on-screen position moved is FLIPped from
-// where it was (§4-2). A render with unchanged data writes nothing.
+// where it was (§4-2).
+// Pass 1 plans against the stored HTML and node order without writing. If
+// nothing differs it stops there — a same-data render writes nothing and
+// leaves a running entrance or exit alone.
 function reconcileBoard(plan, counts) {
-  var animate = canAnimate();
-  clearExitingCards();
-  var first = animate ? measureCards() : null;
-  var firstCol = {};
-  for (var k0 in _cardEls) firstCol[k0] = _cardEls[k0]._colId;
-  var wanted = {};
+  var wanted = Object.create(null);
+  var cols = [];
   var changed = false;
   for (var c = 0; c < BOARD_COLS.length; c++) {
     var colId = BOARD_COLS[c];
     var container = document.getElementById('cards-' + colId);
+    var rows = [];
     var items = plan[colId] || [];
-    var slot = 0;
     for (var i = 0; i < items.length; i++) {
       var s = items[i].s;
-      var key = s.key;
-      if (wanted[key]) continue; // a key listed twice renders once
-      wanted[key] = true;
-      var el = _cardEls[key];
-      if (!el) {
-        el = createCardShell(key);
-        _cardEls[key] = el;
-        el._isNew = true;
-        changed = true;
-      }
-      if (patchCard(el, s, items[i].col)) changed = true;
-      el._colId = colId;
-      applyExpanded(el, _expanded.has(key));
-      if (container.children[slot] !== el) {
-        container.insertBefore(el, container.children[slot] || null);
-        changed = true;
-      }
-      slot++;
-      if (_expanded.has(key)) ensureCardIo(key);
+      if (wanted[s.key]) continue; // a key listed twice renders once
+      wanted[s.key] = true;
+      var parts = cardParts(s, items[i].col);
+      var el = _cardEls[s.key];
+      if (!el || container.children[rows.length] !== el || cardPartsDiffer(el, parts)) changed = true;
+      rows.push({ key: s.key, parts: parts });
     }
+    if (container.children.length !== rows.length) changed = true;
+    cols.push({ colId: colId, container: container, rows: rows });
+    // Counts and empty hints are compared before they are written.
     setTextIfChanged(document.getElementById('count-' + colId), String(counts[colId] || 0));
     var empty = document.getElementById('empty-' + colId);
-    if (empty && empty.hidden !== slot > 0) empty.hidden = slot > 0;
+    if (empty && empty.hidden !== rows.length > 0) empty.hidden = rows.length > 0;
+  }
+  for (var g in _cardEls) {
+    if (!wanted[g]) { changed = true; break; }
+  }
+  if (changed) applyBoardPlan(cols, wanted);
+  // Open cards keep their 지시/응답 current (no DOM write unless a fetch settles).
+  _expanded.forEach(function(key) { if (_cardEls[key]) ensureCardIo(key, false); });
+}
+
+function applyBoardPlan(cols, wanted) {
+  var animate = canAnimate();
+  var first = animate ? measureCards() : null;
+  var firstCol = Object.create(null);
+  for (var k0 in _cardEls) firstCol[k0] = _cardEls[k0]._colId;
+  for (var c = 0; c < cols.length; c++) {
+    var col = cols[c];
+    for (var r = 0; r < col.rows.length; r++) {
+      var row = col.rows[r];
+      var el = _cardEls[row.key];
+      if (!el) {
+        el = createCardShell(row.key);
+        _cardEls[row.key] = el;
+        el._isNew = true;
+      }
+      applyCardParts(el, row.parts);
+      el._colId = col.colId;
+      applyExpanded(el, _expanded.has(row.key));
+      if (col.container.children[r] !== el) col.container.insertBefore(el, col.container.children[r] || null);
+    }
   }
   for (var gone in _cardEls) {
     if (wanted[gone]) continue;
     exitCard(_cardEls[gone], first ? first[gone] : null);
     delete _cardEls[gone];
-    changed = true;
   }
-  if (!changed) return;
-  for (var key2 in _cardEls) {
-    var card = _cardEls[key2];
+  for (var key in _cardEls) {
+    var card = _cardEls[key];
     if (card._isNew) {
       card._isNew = false;
       if (animate) enterCard(card);
       continue;
     }
-    if (!animate || !first[key2]) continue;
-    // Interrupted move: the first rect was read mid-flight (transform included), so
-    // cancelling and re-FLIPping restarts from the current on-screen spot.
+    if (!animate || !first[key]) continue;
+    // Interrupted move: the first box was read mid-flight (translate included),
+    // so cancelling and re-FLIPping restarts from where the card is drawn.
     var wasFlying = card.classList.contains('is-flying');
     if (card._flip) { card._flip.cancel(); card._flip = null; }
     if (wasFlying) card.classList.remove('is-flying');
-    var a = first[key2];
-    var b = card.getBoundingClientRect();
-    var dx = a.left - b.left;
-    var dy = a.top - b.top;
+    var a = first[key];
+    var b = boxOf(card);
+    var dx = a.x - b.x;
+    var dy = a.y - b.y;
     if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
-    playFlip(card, dx, dy, wasFlying || firstCol[key2] !== card._colId);
+    playFlip(card, dx, dy, wasFlying || firstCol[key] !== card._colId);
   }
 }
 
+// Top-left of the card's full-size box as drawn. Taken from the rect centre and
+// the untransformed size, so a card mid-entrance (scale 0.97) measures where its
+// box really is — no entrance has to be cut short to measure it — while a FLIP
+// translate in flight is included.
+function boxOf(el) {
+  var r = el.getBoundingClientRect();
+  return { x: r.left + r.width / 2 - el.offsetWidth / 2, y: r.top + r.height / 2 - el.offsetHeight / 2 };
+}
 function measureCards() {
-  var rects = {};
-  for (var k in _cardEls) {
-    var el = _cardEls[k];
-    if (el._enter) { el._enter.finish(); el._enter = null; }
-    rects[k] = el.getBoundingClientRect();
-  }
-  return rects;
+  var boxes = Object.create(null);
+  for (var k in _cardEls) boxes[k] = boxOf(_cardEls[k]);
+  return boxes;
 }
 
 // Move = translate only (widths snap; text never stretches). The card that
-// changes column flies raised above its neighbours (shadow + z-index).
+// changes column flies raised above its neighbours (shadow + z-index). The
+// translate is added on top of whatever runs already, so a card still in its
+// entrance keeps scaling while it moves.
 function playFlip(el, dx, dy, raise) {
   if (reduceMotion()) {
     // §4-8: no travel — a card that changed column fades in where it landed.
@@ -4042,7 +4111,7 @@ function playFlip(el, dx, dy, raise) {
   if (raise) el.classList.add('is-flying');
   var anim = el.animate(
     [{ transform: 'translate(' + dx + 'px, ' + dy + 'px)' }, { transform: 'translate(0, 0)' }],
-    { duration: MOTION.move, easing: MOTION.easeInOut }
+    { duration: MOTION.move, easing: MOTION.easeInOut, composite: 'add' }
   );
   el._flip = anim;
   anim.onfinish = function() {
@@ -4062,32 +4131,29 @@ function enterCard(el) {
   anim.onfinish = function() { if (el._enter === anim) el._enter = null; };
 }
 
-// Exit: opacity only. The card leaves the flow first (absolutely placed where
-// it was) so the remaining cards FLIP into the gap while it fades.
-function exitCard(el, rect) {
+// Exit: opacity only. The card leaves the column's card list (re-parented to
+// the column, absolutely placed where it was drawn) so the remaining cards
+// FLIP into the gap and later renders never see it; it removes itself when
+// its fade finishes.
+function exitCard(el, box) {
   if (el._flip) { el._flip.cancel(); el._flip = null; }
-  var parent = el.parentNode;
-  if (!parent) return;
-  if (!rect || !canAnimate()) { parent.removeChild(el); return; }
-  var pr = parent.getBoundingClientRect();
+  var list = el.parentNode;
+  var host = list && list.parentNode;
+  if (!list) return;
+  if (!box || !host || !canAnimate()) { list.removeChild(el); return; }
+  var hr = host.getBoundingClientRect();
+  var width = el.offsetWidth;
   el.removeAttribute('data-session-key');
   el.setAttribute('aria-hidden', 'true');
-  el.style.position = 'absolute';
-  el.style.left = (rect.left - pr.left) + 'px';
-  el.style.top = (rect.top - pr.top) + 'px';
-  el.style.width = rect.width + 'px';
-  el.style.pointerEvents = 'none';
-  _exiting.push(el);
+  el.setAttribute('inert', '');
+  el.classList.add('is-exiting');
+  el.style.left = (box.x - hr.left) + 'px';
+  el.style.top = (box.y - hr.top) + 'px';
+  el.style.width = width + 'px';
+  host.appendChild(el);
   var anim = el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: MOTION.fade, easing: MOTION.easeOut, fill: 'forwards' });
-  anim.onfinish = function() { clearExitingCards(el); };
-}
-function clearExitingCards(only) {
-  if (!_exiting.length) return;
-  _exiting = _exiting.filter(function(el) {
-    if (only && el !== only) return true;
-    if (el.parentNode) el.parentNode.removeChild(el);
-    return false;
-  });
+  el._exit = anim;
+  anim.onfinish = anim.oncancel = function() { if (el.parentNode) el.parentNode.removeChild(el); };
 }
 
 // Persistent shell: .card > .card-face (collapsed view, the toggle target)
@@ -4125,31 +4191,41 @@ function applyExpanded(el, open) {
   else el._expandEl.setAttribute('inert', '');
 }
 
-// Render one card into its shell. Each part is replaced only when its HTML
-// string changed, so untouched cards keep their nodes, an open card keeps its
-// state, and a running transition is never cut. Shared by the reconciler and
-// the single-card sessionUpdated push.
-function patchCard(el, s, col) {
-  _sessionCache[s.key] = s;
-  var face = renderCardFace(s, col);
-  var body = renderCardBody(s, col);
-  var state = cardState(s, col);
+// One card's rendered parts. The HTML strings depend only on the data (clocks
+// are filled by the 1 Hz tick), so equal data gives equal strings.
+function cardParts(s, col) {
+  return { col: col, state: cardState(s, col), face: renderCardFace(s, col), body: renderCardBody(s, col) };
+}
+function cardPartsDiffer(el, p) {
+  return el.getAttribute('data-col') !== p.col || el.getAttribute('data-state') !== p.state
+    || el._faceHtml !== p.face || el._bodyHtml !== p.body;
+}
+// Each part is replaced only when its HTML string changed, so untouched cards
+// keep their nodes, an open card keeps its state, and a running transition is
+// never cut.
+function applyCardParts(el, p) {
   var changed = false;
-  if (el.getAttribute('data-col') !== col) { el.setAttribute('data-col', col); changed = true; }
-  if (el.getAttribute('data-state') !== state) { el.setAttribute('data-state', state); changed = true; }
-  if (el._faceHtml !== face) {
-    el._faceEl.innerHTML = face;
-    el._faceHtml = face;
+  if (el.getAttribute('data-col') !== p.col) { el.setAttribute('data-col', p.col); changed = true; }
+  if (el.getAttribute('data-state') !== p.state) { el.setAttribute('data-state', p.state); changed = true; }
+  if (el._faceHtml !== p.face) {
+    el._faceEl.innerHTML = p.face;
+    el._faceHtml = p.face;
     updateTimersIn(el._faceEl);
     changed = true;
   }
-  if (el._bodyHtml !== body) {
-    el._bodyEl.innerHTML = body;
-    el._bodyHtml = body;
+  if (el._bodyHtml !== p.body) {
+    el._bodyEl.innerHTML = p.body;
+    el._bodyHtml = p.body;
     updateTimersIn(el._bodyEl);
     changed = true;
   }
   return changed;
+}
+// Single-card path (sessionUpdated push, title patch, 지시/응답 arrival) —
+// the same compare-then-write as the reconciler.
+function patchCard(el, s, col) {
+  _sessionCache[s.key] = s;
+  return applyCardParts(el, cardParts(s, col));
 }
 function refreshCard(key) {
   var el = _cardEls[key];
@@ -4190,8 +4266,8 @@ function renderCardStatus(s, col) {
   if (col === 'closed') {
     return '<span class="st-icon"><span class="st-dot is-hollow"></span></span><span class="st-text">' + (s.terminated ? 'Archived' : 'Sleeping') + '</span>';
   }
-  var acc = s.activeAccumulatedMs || 0;
-  var leg = col === 'working' ? (s.activeLegStartedAtMs || 0) : 0;
+  var acc = Number(s.activeAccumulatedMs) || 0;
+  var leg = col === 'working' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
   var timer = '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '" title="Active time"></span>';
   if (col === 'working') {
     return '<span class="st-icon"><span class="spinner"></span></span><span class="st-text"><span class="st-prefix">Running &middot; </span>' + timer + '</span>';
@@ -4220,7 +4296,7 @@ function renderCardFace(s, col) {
   }
   var ctxPct = s.tokenUsage ? (s.tokenUsage.contextUsagePercent || 0) : 0;
   if (dhShow('contextwindow') && ctxPct > 0) {
-    metrics.push('<span class="metric" title="Context window used">' + CTX_SVG + Math.round(Math.min(ctxPct, 100)) + '%</span>');
+    metrics.push('<span class="metric" title="Context window used">' + CTX_SVG + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '%</span>');
   }
   return '<div class="card-head"><span class="card-spark">' + SPARK_SVG + '</span>' + titleHtml + '</div>'
     + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
@@ -4247,10 +4323,13 @@ function renderTimeline(s) {
   var items = shown.map(function(t) {
     var cls = t.status === 'in_progress' ? ' is-current' : (t.status === 'completed' ? ' is-done' : ' is-pending');
     var time = '';
-    if (t.status === 'completed' && t.startedAt && t.completedAt) {
-      time = formatDuration(t.completedAt - t.startedAt);
-    } else if (t.status === 'in_progress' && t.startedAt) {
-      time = '<span class="task-elapsed" data-since="' + t.startedAt + '"></span>';
+    // Task timestamps come from model-written TodoWrite input: numbers only.
+    var started = Number(t.startedAt) || 0;
+    var completed = Number(t.completedAt) || 0;
+    if (t.status === 'completed' && started && completed) {
+      time = formatDuration(completed - started);
+    } else if (t.status === 'in_progress' && started) {
+      time = '<span class="task-elapsed" data-since="' + started + '"></span>';
     }
     return '<li class="tl-item' + cls + '"><span class="tl-text">' + esc(t.content) + '</span>'
       + (time ? '<span class="tl-time">' + time + '</span>' : '') + '</li>';
@@ -4264,7 +4343,24 @@ function renderTimeline(s) {
 
 // Latest user instruction + model response (§3.1-4), fetched lazily on
 // expand from GET /api/dashboard/session/:conversationId?limit=2 and cached
-// per conversation (re-fetched when lastActivity moves or a turn lands).
+// per conversation. Only a successful fetch for the session's current
+// lastActivity counts as fresh: a failure is retried when the card is
+// reopened, and while it stays open on a capped backoff (1, 2, 4 … 30 s;
+// IO_AUTO_RETRIES tries), and a landed turn refetches at once.
+var IO_RETRY_MAX_MS = 30000;
+var IO_AUTO_RETRIES = 6;
+function ioBackoffMs(fails) {
+  return Math.min(IO_RETRY_MAX_MS, 1000 * Math.pow(2, Math.max(0, fails - 1)));
+}
+// Pure freshness rule: loading → wait; ok → fresh only for the same stamp;
+// error → never fresh, refetch when forced (reopen) or once the backoff ran out.
+function ioNeedsFetch(c, stamp, force, now) {
+  if (!c) return true;
+  if (c.state === 'loading') return false;
+  if (c.state === 'ok') return c.stamp !== stamp;
+  return !!force || now >= (c.retryAt || 0);
+}
+
 function renderCardIo(s) {
   if (!s.conversationId) return '';
   var c = _ioCache[s.conversationId];
@@ -4293,22 +4389,15 @@ function renderCardIo(s) {
     + '</div>';
 }
 
-function ensureCardIo(key) {
-  var s = _sessionCache[key];
-  if (!s || !s.conversationId || isSiblingSession(s)) return;
-  var cid = s.conversationId;
-  var stamp = String(s.lastActivity || '');
-  var c = _ioCache[cid];
-  if (c && (c.state === 'loading' || c.stamp === stamp)) return;
-  var prev = c ? c.data : null;
-  _ioCache[cid] = { state: 'loading', stamp: stamp, data: prev, dirty: false };
-  fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '?limit=2')
+// The latest instruction and the reply that answers it (only an assistant
+// turn AFTER the latest user turn counts). Rejects on any HTTP failure.
+function fetchCardIo(cid) {
+  return fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '?limit=2')
     .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(function(data) {
       var turns = (data && data.turns) || [];
       var ui = -1;
       for (var i = turns.length - 1; i >= 0; i--) { if (turns[i].role === 'user') { ui = i; break; } }
-      // Only an assistant turn AFTER the latest instruction answers it.
       var reply = null;
       for (var j = turns.length - 1; j > ui; j--) { if (turns[j].role === 'assistant') { reply = turns[j]; break; } }
       var raw = ui >= 0 ? decodeSlackEntities(turns[ui].rawContent || '') : '';
@@ -4325,9 +4414,35 @@ function ensureCardIo(key) {
           }, function() { return { instruction: instruction, response: null }; });
       }
       return { instruction: instruction, response: reply ? { title: reply.summaryTitle || '', body: reply.summaryBody || '' } : null };
-    })
-    .then(function(result) { settleCardIo(cid, { state: 'ready', stamp: stamp, data: result }); })
-    .catch(function() { settleCardIo(cid, { state: 'error', stamp: stamp, data: prev }); });
+    });
+}
+
+// force = the card was just (re)opened: a cached failure is retried at once.
+function ensureCardIo(key, force) {
+  var s = _sessionCache[key];
+  if (!s || !s.conversationId || isSiblingSession(s)) return;
+  var cid = s.conversationId;
+  var stamp = String(s.lastActivity || '');
+  var c = _ioCache[cid];
+  if (!ioNeedsFetch(c, stamp, force, Date.now())) return;
+  var prev = c ? c.data : null;
+  var fails = c && c.state === 'error' ? (c.fails || 0) : 0;
+  _ioCache[cid] = { state: 'loading', stamp: stamp, data: prev, dirty: false, fails: fails };
+  fetchCardIo(cid).then(function(result) {
+    settleCardIo(cid, { state: 'ok', stamp: stamp, data: result, fails: 0 });
+  }, function() {
+    var n = fails + 1;
+    var wait = ioBackoffMs(n);
+    settleCardIo(cid, { state: 'error', stamp: stamp, data: prev, fails: n, retryAt: Date.now() + wait });
+    if (n <= IO_AUTO_RETRIES) setTimeout(function() { retryCardIo(cid); }, wait);
+  });
+}
+// Backoff timer fired: retry for the first card of that conversation still open.
+function retryCardIo(cid) {
+  for (var k in _cardEls) {
+    var s = _sessionCache[k];
+    if (s && s.conversationId === cid && _expanded.has(k)) { ensureCardIo(k, false); return; }
+  }
 }
 function settleCardIo(cid, entry) {
   var wasDirty = !!(_ioCache[cid] && _ioCache[cid].dirty);
@@ -4344,9 +4459,10 @@ function invalidateCardIo(cid) {
   if (!c) return;
   if (c.state === 'loading') { c.dirty = true; return; }
   c.stamp = null;
+  c.retryAt = 0;
   for (var k in _cardEls) {
     var s = _sessionCache[k];
-    if (s && s.conversationId === cid && _expanded.has(k)) ensureCardIo(k);
+    if (s && s.conversationId === cid && _expanded.has(k)) ensureCardIo(k, false);
   }
 }
 
@@ -4393,11 +4509,11 @@ function renderCardBody(s, col) {
   const refParts = [];
   if (dhShow('links') && s.issueShortRef && s.issueUrl) {
     const issueTip = s.issueTitle || s.issueLabel || s.issueShortRef;
-    refParts.push('<a href="' + escAttr(s.issueUrl) + '" target="_blank" rel="noopener" title="' + escAttr(issueTip) + '">' + esc(s.issueShortRef) + '</a>');
+    refParts.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener" title="' + escAttr(issueTip) + '">' + esc(s.issueShortRef) + '</a>');
   }
   if (dhShow('links') && s.prShortRef && s.prUrl) {
     const prTip = s.prTitle || s.prLabel || s.prShortRef;
-    refParts.push('<a href="' + escAttr(s.prUrl) + '" target="_blank" rel="noopener" title="' + escAttr(prTip) + '">' + esc(s.prShortRef) + '</a>');
+    refParts.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener" title="' + escAttr(prTip) + '">' + esc(s.prShortRef) + '</a>');
   }
   if (dhShow('links') && s.conversationId) {
     refParts.push('<a href="/conversations/' + escAttr(s.conversationId) + '" target="_blank" rel="noopener" title="View conversation">&#x1F4DD; 대화 기록</a>');
@@ -4411,22 +4527,28 @@ function renderCardBody(s, col) {
   // Usage line — 'tokens' / 'cost' / 'mergestats' / 'contextwindow' gated
   // independently; thread timers (Σ · compactions · sessions) always shown.
   const statParts = [];
-  if (s.tokenUsage && dhShow('tokens')) statParts.push('<span class="card-tokens">' + formatTokens(s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens) + ' tok</span>');
-  if (s.tokenUsage && dhShow('cost')) statParts.push('<span class="card-tokens"><span class="cost">$' + s.tokenUsage.totalCostUsd.toFixed(2) + '</span></span>');
-  if (dhShow('mergestats') && s.mergeStats) statParts.push('<span class="card-merge">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</span>');
+  // Numbers are coerced before they reach markup (defence in depth — a
+  // non-number field must render as text, never as markup).
+  const num = function(v) { return Number(v) || 0; };
+  if (s.tokenUsage && dhShow('tokens')) statParts.push('<span class="card-tokens">' + formatTokens(num(s.tokenUsage.totalInputTokens) + num(s.tokenUsage.totalOutputTokens)) + ' tok</span>');
+  if (s.tokenUsage && dhShow('cost')) statParts.push('<span class="card-tokens"><span class="cost">$' + num(s.tokenUsage.totalCostUsd).toFixed(2) + '</span></span>');
+  if (dhShow('mergestats') && s.mergeStats) statParts.push('<span class="card-merge">+' + num(s.mergeStats.totalLinesAdded) + ' / -' + num(s.mergeStats.totalLinesDeleted) + '</span>');
   statParts.push('<span class="card-timer-row">'
-    + '<span class="card-timer-total" title="Thread total active time">&Sigma; ' + formatNmSSs(s.threadTotalActiveMs || 0) + '</span>'
-    + '<span class="card-timer-compactions" title="Compactions">&#x1F5DC;&#xFE0F; ' + (s.compactionCount || 0) + '</span>'
-    + '<span class="card-timer-sessions" title="Thread session count"># ' + (s.threadSessionCount || 0) + '</span>'
+    + '<span class="card-timer-total" title="Thread total active time">&Sigma; ' + formatNmSSs(num(s.threadTotalActiveMs)) + '</span>'
+    + '<span class="card-timer-compactions" title="Compactions">&#x1F5DC;&#xFE0F; ' + num(s.compactionCount) + '</span>'
+    + '<span class="card-timer-sessions" title="Thread session count"># ' + num(s.threadSessionCount) + '</span>'
     + '</span>');
-  const ctxPct = s.tokenUsage ? (s.tokenUsage.contextUsagePercent || 0) : 0;
+  const ctxPct = s.tokenUsage ? num(s.tokenUsage.contextUsagePercent) : 0;
   const ctxCls = ctxPct > 80 ? 'ctx-danger' : ctxPct > 60 ? 'ctx-warn' : '';
   const ctxBar = (dhShow('contextwindow') && ctxPct > 0)
-    ? '<div class="context-bar" title="Context ' + Math.round(ctxPct) + '%"><div class="context-bar-fill ' + ctxCls + '" style="width:' + Math.min(ctxPct, 100).toFixed(0) + '%"></div></div>'
+    ? '<div class="context-bar" title="Context ' + Math.round(ctxPct) + '%"><div class="context-bar-fill ' + ctxCls + '" style="transform:scaleX(' + (Math.min(ctxPct, 100) / 100).toFixed(2) + ')"></div></div>'
     : '';
   const statsHtml = '<div class="card-stats">' + statParts.join('') + '</div>' + ctxBar;
 
   const ioHtml = isSiblingSession(s) ? '' : renderCardIo(s);
+  // The collapsed face already shows the pending question as its summary; the
+  // open card then keeps only the choices, not the same sentence twice.
+  const faceSummary = cardSummary(s, col, s.displayHeadline || s.summaryTitle || s.title);
   // Pending question (choice buttons for waiting sessions)
   let questionHtml = '';
   if (s.pendingQuestion && col === 'waiting') {
@@ -4440,21 +4562,21 @@ function renderCardBody(s, col) {
         var recLabel = stripRecommendedMarker(recOpt.label);
         var recTitle = isOwner ? (recOpt.description || recLabel) : READ_ONLY_MSG;
         recHtml = '<div class="choice-row-recommended">'
-          + '<button class="btn-choice btn-choice-recommended"' + readOnlyAttrs + ' onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(recOpt.id) + '\\',\\'' + escJs(recLabel) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(recTitle) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
+          + '<button class="btn-choice btn-choice-recommended"' + readOnlyAttrs + choiceDataAttrs(s.key, recOpt.id, recLabel, pq.question) + ' title="' + escAttr(recTitle) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
           + '</div>'
           + (otherOpts.length > 0 ? '<hr class="choice-divider">' : '');
       }
       var otherBtns = otherOpts.map(function(c) {
         var lbl = stripRecommendedMarker(c.label);
         var btnTitle = isOwner ? (c.description || lbl) : READ_ONLY_MSG;
-        return '<button class="btn-choice"' + readOnlyAttrs + ' onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(lbl) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(btnTitle) + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
+        return '<button class="btn-choice"' + readOnlyAttrs + choiceDataAttrs(s.key, c.id, lbl, pq.question) + ' title="' + escAttr(btnTitle) + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
       }).join('');
       questionHtml = '<div class="card-question">'
-        + '<div class="card-question-text">&#x2753; ' + esc(pq.question).slice(0, 80) + '</div>'
+        + (pq.question === faceSummary ? '' : '<div class="card-question-text">&#x2753; ' + esc(pq.question).slice(0, 80) + '</div>')
         + '<div class="card-question-choices">' + recHtml + otherBtns + '</div>'
         + '</div>';
     } else if (s.pendingQuestion.type === 'user_choices') {
-      questionHtml = renderMultiChoiceCard(s);
+      questionHtml = renderMultiChoiceCard(s, faceSummary);
     }
   }
 
@@ -4487,12 +4609,11 @@ function renderCardBody(s, col) {
       : '<button class="btn-action btn-close"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
   }
 
-  // 작업 로그 opens the slide panel scrolled to the work log; Slack jumps to the thread.
-  const worklogBtn = s.conversationId
-    ? '<button type="button" class="btn-action btn-primary" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',true)">작업 로그</button>'
-    : '';
+  // 작업 로그 opens the slide panel (details + message box) scrolled to the work
+  // log — for every card; without a conversation the log reads "작업 로그 없음".
+  const worklogBtn = '<button type="button" class="btn-action btn-primary" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',true)">작업 로그</button>';
   const slackBtn = (dhShow('links') && s.slackThreadUrl)
-    ? '<a class="btn-action" href="' + escAttr(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
+    ? '<a class="btn-action" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
     : '';
   const actionsHtml = '<div class="card-actions">' + actionBtn + slackBtn + worklogBtn + '</div>';
 
@@ -4524,7 +4645,7 @@ function toggleCard(key, instant) {
     void el.offsetHeight;
     el.classList.remove('no-motion');
   }
-  if (open) ensureCardIo(key);
+  if (open) ensureCardIo(key, true);
 }
 
 // Board ↔ List (§3.1-2, §4-4): CSS re-lays out the very same nodes and each
@@ -4630,11 +4751,29 @@ function openDeepLinkedSession() {
   openPanel(key, true);
 }
 
+// The poll returns this instance's board merged with sibling instances' (#814);
+// a WS session_update carries only this instance's. Keep the last polled board
+// so a push re-attaches the sibling cards instead of animating them out.
+var _lastPolledBoard = null;
+function mergeSiblingCards(board) {
+  if (!_lastPolledBoard) return board;
+  var out = {};
+  ['working', 'waiting', 'idle', 'closed'].forEach(function(col) {
+    var mine = board[col] || [];
+    var have = new Set(mine.map(function(s) { return s.key; }));
+    var sibs = (_lastPolledBoard[col] || []).filter(function(s) { return isSiblingSession(s) && !have.has(s.key); });
+    // Same shape as the server merge: this instance's cards, then siblings'.
+    out[col] = mine.concat(sibs);
+  });
+  return out;
+}
+
 async function loadSessions() {
   try {
     const url = '/api/dashboard/sessions' + (currentUserId ? '?userId=' + currentUserId : '');
     const res = await fetch(url);
     const data = await res.json();
+    _lastPolledBoard = data.board;
     renderBoard(data.board);
   } catch (e) { console.error('Failed to load sessions', e); }
 }
@@ -4721,9 +4860,11 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
 }
 
 // ── Multi-choice form state ──
-var _mcState = {};
+var _mcState = Object.create(null);
 
-function renderMultiChoiceCard(s) {
+// faceSummary: the collapsed card's summary line — when it already reads the
+// form's title, the open card does not repeat it.
+function renderMultiChoiceCard(s, faceSummary) {
   var q = s.pendingQuestion;
   if (!q || !q.questions) {
     console.warn('renderMultiChoiceCard: missing questions data for session', s.key);
@@ -4737,7 +4878,7 @@ function renderMultiChoiceCard(s) {
   }
   var progressText = answered + '/' + total + ' \\uC644\\uB8CC';
   return '<div class="card-question">'
-    + '<div class="card-question-text">\\uD83D\\uDCCB ' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>'
+    + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">\\uD83D\\uDCCB ' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
     + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
     + '<div style="margin-top:6px"><button class="btn-choice" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
     + '</div>';
@@ -4848,7 +4989,7 @@ function renderMultiChoicePanel(s) {
         var chLbl = stripRecommendedMarker(ch.label);
         var desc = ch.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(ch.description) + '</span>' : '';
         var isRecBtn = mcRecId && ch.id === mcRecId;
-        html += '<button class="btn-choice' + (isRecBtn ? ' btn-choice-recommended' : '') + '" onclick="event.stopPropagation();selectMc(\\'' + escJs(key) + '\\',' + qi + ',\\'' + escJs(ch.id) + '\\',\\'' + escJs(chLbl) + '\\')">'
+        html += '<button class="btn-choice' + (isRecBtn ? ' btn-choice-recommended' : '') + '"' + choiceDataAttrs(key, ch.id, chLbl, '') + ' data-mc-index="' + qi + '">'
           + esc(ch.id) + '. ' + esc(chLbl) + desc + '</button>';
       }
       html += '</div>';
@@ -5158,8 +5299,9 @@ function connectWs() {
     statusEl.style.background = 'rgba(62,207,142,0.2)';
     statusEl.style.borderColor = 'var(--green)';
     statusEl.style.color = 'var(--green)';
-    // Reconnect: pull the work-log entries broadcast while we were offline.
-    if (panelOpen && _wlConvId && _wlLastSeq > 0) fetchWorkLog(_wlConvId, _wlLastSeq);
+    // Reconnect: recover the work-log entries broadcast while we were offline
+    // (from the HTTP cursor; afterSeq=0 when the log was still empty).
+    if (panelOpen && _wl) recoverWorkLog();
   };
   ws.onclose = function() {
     statusEl.textContent = 'Reconnecting...';
@@ -5181,7 +5323,7 @@ function connectWs() {
           msg.board.idle = (msg.board.idle || []).filter(function(s) { return s.ownerId === currentUserId; });
           msg.board.closed = (msg.board.closed || []).filter(function(s) { return s.ownerId === currentUserId; });
         }
-        renderBoard(msg.board);
+        renderBoard(mergeSiblingCards(msg.board));
         // Refresh panel question if panel is open (session may have transitioned)
         if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
           var panelS = _sessionCache[panelSessionKey];
@@ -5265,9 +5407,7 @@ function connectWs() {
       } else if (msg.type === 'work_log' && msg.entry) {
         // .prd/10 §3.3 — live work-log entry. Append when its conversation is
         // open in the panel (seq-deduped against the initial fetch).
-        if (panelOpen && msg.conversationId && msg.conversationId === _wlConvId) {
-          appendWorkLogEntries([msg.entry], false);
-        }
+        if (panelOpen) pushLiveWorkLog(msg.conversationId, msg.entry);
         if (msg.entry.kind === 'instruction' || msg.entry.kind === 'final') invalidateCardIo(msg.conversationId);
       }
     } catch (e) { /* ignore */ }
@@ -5281,7 +5421,7 @@ function updateTokenStats() {
   // Fallback bucket ('') is used for cards whose environment is missing
   // (legacy WS payloads, tests). When all cards share one env we suppress
   // the tooltip entirely — see _envCount() check below.
-  var byEnv = {};
+  var byEnv = Object.create(null);
   let totalTokens = 0, totalCost = 0;
   for (const key in _sessionCache) {
     const s = _sessionCache[key];
@@ -5335,93 +5475,248 @@ function updateTokenStats() {
 }
 
 // ── Panel work log (.prd/10 §3.1-7, §3.3) ──
-// GET /api/dashboard/session/:conversationId/worklog?afterSeq=&limit= → { entries }
-// + WS { type: 'work_log', conversationId, entry }. Entries are seq-ordered per
-// conversation; _wlLastSeq dedupes the initial fetch against live pushes and is
-// the resume point after a reconnect. A missing route (404) reads as "no log".
-var _wlConvId = null;
-var _wlLastSeq = 0;
-var _wlCount = 0;
-var _panelFocusWorkLog = false;
+// GET /api/dashboard/session/:conversationId/worklog → { entries, hasMore }:
+// without afterSeq the LATEST page, with afterSeq=N (integer ≥ 0) the FIRST
+// page after N — so afterSeq=0 is the oldest page and the initial load must
+// omit it. Live entries arrive as WS { type: 'work_log', conversationId,
+// entry } once the line is on disk. 403 = not the session owner (no retry),
+// 404 = no log for this conversation.
+// Entries merge by seq identity into one seq-ordered list, so a live entry that
+// lands before the HTTP page never hides the older batch. The cursor is the
+// highest seq held CONTIGUOUSLY from the latest HTTP page: HTTP pages and live
+// entries that directly follow it advance it; a live entry beyond it is a gap,
+// and a gap or a reconnect pages forward from the cursor (afterSeq=0 when the
+// log was empty) while hasMore === true.
+var WL_BACKFILL_MAX_PAGES = 20;
 var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
+var WL_EMPTY_MSG = '작업 로그 없음';
+var WL_FORBIDDEN_MSG = '작업 로그는 세션 소유자만 볼 수 있어요';
+var _wl = null;  // work-log state of the conversation open in the panel
+var _panelFocusWorkLog = false;
 
-function resetWorkLog(convId) {
-  _wlConvId = convId;
-  _wlLastSeq = 0;
-  _wlCount = 0;
+// ── Pure core (no DOM): state, merge, paging ──
+function wlNewState(convId) {
+  return {
+    convId: convId, entries: [], seen: new Set(), cursor: 0, maxSeq: 0,
+    loaded: false, latestOk: false, denied: false, closed: false,
+    latest: null, recovering: null, again: false, painted: false,
+  };
+}
+// afterSeq: null/undefined = latest window (no parameter); otherwise always a
+// non-negative integer — the API answers 400 to anything else.
+function wlUrl(convId, afterSeq) {
+  var base = '/api/dashboard/session/' + encodeURIComponent(convId) + '/worklog';
+  if (afterSeq === null || afterSeq === undefined) return base;
+  var n = Math.max(0, Math.floor(Number(afterSeq) || 0));
+  return base + '?afterSeq=' + n;
+}
+function wlValidSeq(seq) {
+  return typeof seq === 'number' && Number.isSafeInteger(seq) && seq > 0;
+}
+// Adds entries not seen before (by seq) and keeps state.entries sorted by seq.
+// Returns the added entries in ascending seq order, each with its index in the
+// merged list — inserting them in that order at that index reproduces the list.
+function wlMerge(state, entries) {
+  var fresh = [];
+  var list = entries || [];
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (!e || !wlValidSeq(e.seq) || state.seen.has(e.seq)) continue;
+    state.seen.add(e.seq);
+    if (e.seq > state.maxSeq) state.maxSeq = e.seq;
+    fresh.push(e);
+  }
+  if (!fresh.length) return [];
+  fresh.sort(function(a, b) { return a.seq - b.seq; });
+  var old = state.entries;
+  var merged = [];
+  var added = [];
+  var oi = 0;
+  var fi = 0;
+  while (oi < old.length || fi < fresh.length) {
+    if (fi >= fresh.length || (oi < old.length && old[oi].seq < fresh[fi].seq)) {
+      merged.push(old[oi++]);
+    } else {
+      added.push({ entry: fresh[fi], index: merged.length });
+      merged.push(fresh[fi++]);
+    }
+  }
+  state.entries = merged;
+  return added;
+}
+function wlPageMaxSeq(entries) {
+  var top = 0;
+  var list = entries || [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && wlValidSeq(list[i].seq) && list[i].seq > top) top = list[i].seq;
+  }
+  return top;
+}
+// Advance the contiguous cursor over every directly-following seq we hold.
+function wlAdvance(state) {
+  while (state.seen.has(state.cursor + 1)) state.cursor++;
+}
+// A held entry beyond the contiguous cursor means something in between is missing.
+function wlHasGap(state) {
+  return state.loaded && !state.denied && !state.closed && state.maxSeq > state.cursor;
+}
+function wlStatusOf(err) {
+  var status = err && err.status;
+  if (status === 403) return 'denied';
+  if (status === 404) return 'missing';
+  return 'error';
+}
+// Initial load: the latest page (no afterSeq). Resolves 'ok' | 'denied' |
+// 'missing' | 'error' | 'closed'. Early live entries beyond the page are a gap.
+function wlLoadLatest(state, fetchJson, onAdded) {
+  state.latest = fetchJson(wlUrl(state.convId, null)).then(function(data) {
+    if (state.closed) return 'closed';
+    var page = (data && data.entries) || [];
+    var added = wlMerge(state, page);
+    state.cursor = Math.max(state.cursor, wlPageMaxSeq(page));
+    state.loaded = true;
+    state.latestOk = true;
+    wlAdvance(state);
+    if (added.length) onAdded(state, added);
+    if (wlHasGap(state)) wlRecover(state, fetchJson, onAdded);
+    return 'ok';
+  }, function(err) {
+    if (state.closed) return 'closed';
+    state.loaded = true;
+    var status = wlStatusOf(err);
+    if (status === 'denied') state.denied = true;
+    return status;
+  });
+  return state.latest;
+}
+// A live entry: merge it; one that skips past the cursor triggers a backfill.
+function wlOnLive(state, entry, fetchJson, onAdded) {
+  if (state.closed || state.denied) return [];
+  var added = wlMerge(state, [entry]);
+  if (!added.length) return added;
+  if (state.loaded) wlAdvance(state);
+  onAdded(state, added);
+  if (wlHasGap(state)) wlRecover(state, fetchJson, onAdded);
+  return added;
+}
+// Recovery (reconnect or gap): after the initial load settles, page forward
+// from the contiguous cursor while hasMore === true. Stops on a page that does
+// not advance the cursor, after WL_BACKFILL_MAX_PAGES pages, on 403, or when
+// the panel moved on. If the latest page itself never loaded, retry that instead.
+function wlRecover(state, fetchJson, onAdded) {
+  if (state.closed || state.denied) return Promise.resolve(null);
+  if (state.recovering) { state.again = true; return state.recovering; }
+  var pages = 0;
+  function step() {
+    if (state.closed || state.denied) return null;
+    if (state.loaded && !state.latestOk) return wlLoadLatest(state, fetchJson, onAdded);
+    var from = state.cursor;
+    pages++;
+    return fetchJson(wlUrl(state.convId, from)).then(function(data) {
+      if (state.closed) return null;
+      var page = (data && data.entries) || [];
+      var added = wlMerge(state, page);
+      var top = wlPageMaxSeq(page);
+      if (top > state.cursor) state.cursor = top;
+      wlAdvance(state);
+      if (added.length) onAdded(state, added);
+      if (data && data.hasMore === true && state.cursor > from && pages < WL_BACKFILL_MAX_PAGES) return step();
+      return null;
+    }, function(err) {
+      if (wlStatusOf(err) === 'denied') state.denied = true;
+      return null;
+    });
+  }
+  var run = (state.latest || Promise.resolve()).then(step).then(null, function() { return null; }).then(function() {
+    state.recovering = null;
+    if (state.again && !state.closed) {
+      state.again = false;
+      return wlRecover(state, fetchJson, onAdded);
+    }
+    return null;
+  });
+  state.recovering = run;
+  return run;
+}
+
+// ── DOM side ──
+function wlFetchJson(url) {
+  return fetch(url).then(function(r) {
+    if (!r.ok) {
+      var err = new Error('HTTP ' + r.status);
+      err.status = r.status;
+      throw err;
+    }
+    return r.json();
+  });
+}
+
+// visible: the panel is open (a session without a conversation still shows
+// the section, reading "작업 로그 없음").
+function resetWorkLog(convId, visible) {
+  if (_wl) _wl.closed = true; // late responses for the previous conversation are dropped
+  _wl = convId ? wlNewState(convId) : null;
   var section = document.getElementById('panel-worklog');
   var list = document.getElementById('worklog-list');
   setTextIfChanged(document.getElementById('worklog-count'), '');
-  if (section) section.style.display = convId ? '' : 'none';
-  if (list) list.innerHTML = convId ? '<div class="wl-empty">불러오는 중…</div>' : '';
+  if (section) section.style.display = visible ? '' : 'none';
+  if (list) list.innerHTML = !visible ? '' : '<div class="wl-empty">' + (convId ? '불러오는 중…' : WL_EMPTY_MSG) + '</div>';
 }
 
-// Response { entries, hasMore }. Without afterSeq: the LAST page (initial
-// load). With afterSeq: the FIRST page after that seq — a reconnect backfill
-// keeps paging forward while hasMore (missing hasMore = false), and stops if a
-// page brings nothing new so a misbehaving server cannot spin it.
-var WL_BACKFILL_MAX_PAGES = 20;
-function fetchWorkLog(convId, afterSeq, page) {
-  var url = '/api/dashboard/session/' + encodeURIComponent(convId) + '/worklog'
-    + (afterSeq ? '?afterSeq=' + encodeURIComponent(String(afterSeq)) : '');
-  var pageNo = page || 1;
-  return fetch(url)
-    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-    .then(function(data) {
-      if (_wlConvId !== convId) return;
-      var before = _wlLastSeq;
-      appendWorkLogEntries((data && data.entries) || [], !afterSeq);
-      if (afterSeq && data && data.hasMore === true && _wlLastSeq > before && pageNo < WL_BACKFILL_MAX_PAGES) {
-        return fetchWorkLog(convId, _wlLastSeq, pageNo + 1);
-      }
-    })
-    .catch(function() {
-      if (_wlConvId !== convId || afterSeq) return;
-      showWorkLogEmpty();
-    })
-    .then(function() {
-      // Only the initial load positions the panel; a backfill must not move it.
-      if (!afterSeq && _wlConvId === convId && _panelFocusWorkLog) scrollPanelToWorkLog();
-    });
+function loadWorkLog() {
+  var st = _wl;
+  if (!st) return;
+  wlLoadLatest(st, wlFetchJson, paintWorkLog).then(function(result) {
+    if (st.closed) return;
+    if (result === 'denied') showWorkLogEmpty(WL_FORBIDDEN_MSG);
+    else if (!st.entries.length) showWorkLogEmpty(WL_EMPTY_MSG);
+    if (_panelFocusWorkLog) scrollPanelToWorkLog();
+  });
+}
+function recoverWorkLog() {
+  if (_wl) wlRecover(_wl, wlFetchJson, paintWorkLog);
+}
+function pushLiveWorkLog(convId, entry) {
+  if (!_wl || _wl.convId !== convId) return;
+  wlOnLive(_wl, entry, wlFetchJson, paintWorkLog);
 }
 
-function showWorkLogEmpty() {
-  var list = document.getElementById('worklog-list');
-  if (list && !list.querySelector('.wl-entry')) list.innerHTML = '<div class="wl-empty">작업 로그 없음</div>';
-}
-
-function appendWorkLogEntries(entries, initial) {
+// Insert the merged entries at their seq position (the list mirrors state.entries).
+function paintWorkLog(state, added) {
+  if (state !== _wl || !added.length) return;
   var list = document.getElementById('worklog-list');
   if (!list) return;
   var atBottom = list.scrollHeight - list.scrollTop <= list.clientHeight + 40;
-  var html = '';
-  for (var i = 0; i < entries.length; i++) {
-    var e = entries[i];
-    if (!e || typeof e.seq !== 'number' || e.seq <= _wlLastSeq) continue;
-    html += renderWorkLogEntry(e);
-    _wlLastSeq = e.seq;
-    _wlCount++;
-  }
-  if (!html) {
-    if (initial) showWorkLogEmpty();
-    return;
-  }
   var placeholder = list.querySelector('.wl-empty');
   if (placeholder) placeholder.remove();
-  list.insertAdjacentHTML('beforeend', html);
-  setTextIfChanged(document.getElementById('worklog-count'), String(_wlCount));
-  if (initial || atBottom) list.scrollTop = list.scrollHeight;
+  var tmp = document.createElement('div');
+  for (var i = 0; i < added.length; i++) {
+    tmp.innerHTML = renderWorkLogEntry(added[i].entry);
+    var node = tmp.firstElementChild;
+    if (node) list.insertBefore(node, list.children[added[i].index] || null);
+  }
+  setTextIfChanged(document.getElementById('worklog-count'), String(state.entries.length));
+  if (!state.painted || atBottom) list.scrollTop = list.scrollHeight;
+  state.painted = true;
+}
+
+function showWorkLogEmpty(message) {
+  var list = document.getElementById('worklog-list');
+  if (list && !list.querySelector('.wl-entry')) list.innerHTML = '<div class="wl-empty">' + esc(message || WL_EMPTY_MSG) + '</div>';
 }
 
 function renderWorkLogEntry(e) {
   var kind = Object.prototype.hasOwnProperty.call(WL_LABELS, e.kind) ? e.kind : 'narration';
-  var time = e.ts ? new Date(e.ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '';
+  var time = typeof e.ts === 'number' && isFinite(e.ts)
+    ? new Date(e.ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    : '';
   var timeHtml = time ? '<span class="wl-time">' + time + '</span>' : '';
+  var seqAttr = ' data-seq="' + (Number(e.seq) || 0) + '"';
   var text = String(e.text || '');
   if (kind === 'tool' || kind === 'tool_result') {
     var fail = kind === 'tool_result' && e.ok === false;
     var mark = kind === 'tool' ? '&#x25B8;' : (fail ? '&#x2717;' : '&#x2713;');
-    return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + '">'
+    return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + '"' + seqAttr + '>'
       + '<span class="wl-mark">' + mark + '</span>'
       + (e.tool ? '<span class="wl-tool-name">' + esc(e.tool) + '</span>' : '')
       + '<span class="wl-text" title="' + escAttr(text) + '">' + esc(text) + '</span>'
@@ -5431,9 +5726,9 @@ function renderWorkLogEntry(e) {
   var label = WL_LABELS[kind];
   if (!label) {
     // Narration: the text with its time on the right of the same line.
-    return '<div class="wl-entry wl-' + kind + ' wl-line"><div class="wl-text">' + esc(text) + '</div>' + timeHtml + '</div>';
+    return '<div class="wl-entry wl-' + kind + ' wl-line"' + seqAttr + '><div class="wl-text">' + esc(text) + '</div>' + timeHtml + '</div>';
   }
-  return '<div class="wl-entry wl-' + kind + '">'
+  return '<div class="wl-entry wl-' + kind + '"' + seqAttr + '>'
     + '<div class="wl-head"><span class="wl-label">' + label + '</span>' + timeHtml + '</div>'
     + '<div class="wl-text">' + esc(text) + '</div>'
     + '</div>';
@@ -5446,7 +5741,8 @@ function scrollPanelToWorkLog() {
   var section = document.getElementById('panel-worklog');
   var list = document.getElementById('worklog-list');
   if (!scrollEl || !section || section.style.display === 'none') return;
-  scrollEl.scrollTop += section.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
+  var top = scrollEl.scrollTop + section.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
+  scrollEl.scrollTo({ top: top, behavior: 'instant' });
   if (list) list.scrollTop = list.scrollHeight;
 }
 
@@ -5474,7 +5770,7 @@ function openPanel(sessionKey, focusWorkLog) {
 
   panelSessionKey = sessionKey;
   panelConvId = s.conversationId || null;
-  resetWorkLog(panelConvId);
+  resetWorkLog(panelConvId, true);
 
   // #762 — single source of truth for headline. displayHeadline carries the
   // server-resolved priority chain; older WS messages without it still get a
@@ -5500,9 +5796,9 @@ function openPanel(sessionKey, focusWorkLog) {
   // Links
   const linksEl = document.getElementById('panel-links');
   const linkHtml = [];
-  if (s.issueUrl) linkHtml.push('<a href="' + esc(s.issueUrl) + '" target="_blank">&#x1F4CB; ' + esc(s.issueLabel || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(s.issueTitle).slice(0, 50) : '') + '</a>');
-  if (s.prUrl) linkHtml.push('<a href="' + esc(s.prUrl) + '" target="_blank">&#x1F500; ' + esc(s.prLabel || 'PR') + (s.prTitle ? ' &mdash; ' + esc(s.prTitle).slice(0, 50) : '') + '</a>');
-  if (s.slackThreadUrl) linkHtml.push('<a href="' + esc(s.slackThreadUrl) + '" target="_blank">&#x1F4AC; Slack Thread</a>');
+  if (s.issueUrl) linkHtml.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener">&#x1F4CB; ' + esc(s.issueLabel || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(s.issueTitle).slice(0, 50) : '') + '</a>');
+  if (s.prUrl) linkHtml.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener">&#x1F500; ' + esc(s.prLabel || 'PR') + (s.prTitle ? ' &mdash; ' + esc(s.prTitle).slice(0, 50) : '') + '</a>');
+  if (s.slackThreadUrl) linkHtml.push('<a href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">&#x1F4AC; Slack Thread</a>');
   if (s.conversationId) linkHtml.push('<a href="/conversations/' + esc(s.conversationId) + '" target="_blank">&#x1F4DD; Full Conversation</a>');
   linksEl.innerHTML = linkHtml.join('') || '<span style="font-size:0.78em;color:var(--text-secondary)">No links</span>';
 
@@ -5566,8 +5862,10 @@ function openPanel(sessionKey, focusWorkLog) {
         // Jump to bottom on fresh load — or to the work log when that is what
         // the user asked for (작업 로그 button / ?session= deep link).
         var scrollEl = document.getElementById('panel-scroll');
+        // Instant: under scroll-behavior: smooth the glide down from 0 passed
+        // through scrollTop < 100 and set off the load-older-turns handler.
         if (_panelFocusWorkLog) scrollPanelToWorkLog();
-        else if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+        else if (scrollEl) scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
         _panelTurnsLoading = false;
       })
       .catch(function() {
@@ -5609,13 +5907,23 @@ function openPanel(sessionKey, focusWorkLog) {
   document.getElementById('panel-overlay').classList.add('open');
   panelOpen = true;
 
-  if (panelConvId) fetchWorkLog(panelConvId, 0);
+  if (panelConvId) loadWorkLog();
 }
 
 // ── Pagination state for panel chat (infinite scroll) ──
 var _panelTurnsHasMore = false;
 var _panelTurnsLoading = false;
 var _panelTurnsOldestId = null;
+
+function panelScrollAnchor(scrollEl) {
+  var viewTop = scrollEl.getBoundingClientRect().top;
+  var nodes = scrollEl.querySelectorAll('#panel-question, #panel-tasks, #panel-worklog, #panel-turns > .turn');
+  for (var i = 0; i < nodes.length; i++) {
+    var r = nodes[i].getBoundingClientRect();
+    if (r.height > 0 && r.bottom > viewTop) return { el: nodes[i], top: r.top };
+  }
+  return null;
+}
 
 async function loadMorePanelTurns() {
   if (_panelTurnsLoading || !_panelTurnsHasMore || !panelConvId || !_panelTurnsOldestId) return;
@@ -5628,13 +5936,11 @@ async function loadMorePanelTurns() {
   var requestSessionKey = panelSessionKey;
   var requestOldestId = _panelTurnsOldestId;
 
-  // Preserve scroll position relative to the current oldest item.
-  var prevScrollHeight = scrollEl.scrollHeight;
-  var prevScrollTop = scrollEl.scrollTop;
-  // Only compensate when the insertion point sits above the viewport. When the
-  // user is reading the work log (above the turns) the older turns land below
-  // what they see, and shifting scrollTop would yank the work log away.
-  var insertAboveView = turnsEl.getBoundingClientRect().top < scrollEl.getBoundingClientRect().top;
+  // Keep the reading position: remember the first element the reader can see
+  // (question / tasks / work log / a turn) and where it sits; after the older
+  // turns are inserted, scroll by however far that element moved. Reading the
+  // work log (above the turns) → it does not move → no scroll.
+  var anchor = panelScrollAnchor(scrollEl);
 
   // Loading spinner at top of turns list.
   var spinner = document.createElement('div');
@@ -5665,10 +5971,12 @@ async function loadMorePanelTurns() {
       var html = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
       turnsEl.insertAdjacentHTML('afterbegin', html);
       attachRawToggleHandlers();
-      // Restore scroll position so the user stays anchored on the turn they were reading.
-      if (insertAboveView) {
-        var newScrollHeight = scrollEl.scrollHeight;
-        scrollEl.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+      // Restore scroll position so the user stays anchored on what they were reading.
+      // behavior 'instant': .panel-scroll is scroll-behavior: smooth, which would
+      // otherwise show the jump and then glide back.
+      if (anchor && anchor.el.isConnected) {
+        var drift = anchor.el.getBoundingClientRect().top - anchor.top;
+        if (drift) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift, behavior: 'instant' });
       }
     } else {
       _panelTurnsHasMore = false;
@@ -5743,7 +6051,7 @@ function updateTurnInPanel(existingEl, turn) {
   }
 }
 
-var _rawLoadedCache = {};
+var _rawLoadedCache = Object.create(null);
 function attachRawToggleHandlers() {
   document.querySelectorAll('.turn-raw-details').forEach(function(details) {
     if (details._rawBound) return;
@@ -5810,12 +6118,11 @@ function closePanel() {
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
-  _rawLoadedCache = {};
+  _rawLoadedCache = Object.create(null);
   _panelTurnsHasMore = false;
   _panelTurnsLoading = false;
   _panelTurnsOldestId = null;
-  _wlConvId = null;
-  _wlLastSeq = 0;
+  resetWorkLog(null, false);
   _panelFocusWorkLog = false;
 }
 
