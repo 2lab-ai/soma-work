@@ -3763,11 +3763,18 @@ function toNum(v) {
   var n = Number(v);
   return isFinite(n) ? n : 0;
 }
+// Compact token count: 999 · 1.5K · 2.5M · 3.1B · 4.2T. The unit is chosen
+// after rounding (never "1000.0K"); a negative or non-number is 0, and anything
+// from 1000T up is capped so an absurd value cannot print an exponent.
 function formatTokens(n) {
-  n = toNum(n);
-  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-  return String(n);
+  n = Math.max(0, toNum(n));
+  if (n < 999.5) return String(Math.round(n));
+  var units = ['K', 'M', 'B', 'T'];
+  for (var i = 0; i < units.length; i++) {
+    n /= 1000;
+    if (n < 999.95) return n.toFixed(1) + units[i];
+  }
+  return '999.9T+';
 }
 // Dashboard v2.1 — \`Nm SSs\` for the 1s live tick. Mirrors src/format/duration.ts.
 function formatNmSSs(ms) {
@@ -6222,6 +6229,9 @@ function attachRawToggleHandlers() {
 }
 
 async function generateTitleSub(convId) {
+  // The panel opening this request belongs to: once another panel opens (or
+  // this one closes) the subtitle element shows someone else, so drop the result.
+  var gen = _panelGen;
   var textEl = document.getElementById('panel-title-sub-text');
   var btn = document.getElementById('panel-title-sub-regen');
   textEl.textContent = 'Generating title...';
@@ -6235,13 +6245,17 @@ async function generateTitleSub(convId) {
     const headers = {};
     if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
     var res = await fetch(url, { method: 'POST', headers });
+    if (gen !== _panelGen) return;
     if (res.status === 403) {
       await refreshCsrfToken();
+      if (gen !== _panelGen) return;
       const retryHeaders = {};
       if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
       res = await fetch(url, { method: 'POST', headers: retryHeaders });
+      if (gen !== _panelGen) return;
     }
     var data = await res.json();
+    if (gen !== _panelGen) return;
     if (data.titleSub) {
       textEl.textContent = data.titleSub;
       btn.style.display = 'inline-block';
@@ -6250,6 +6264,7 @@ async function generateTitleSub(convId) {
       btn.style.display = 'inline-block';
     }
   } catch(e) {
+    if (gen !== _panelGen) return;
     textEl.textContent = 'Error';
     btn.style.display = 'inline-block';
   }

@@ -36,22 +36,28 @@ function assertUnique(name: string) {
 }
 function clientFn(name: string): string {
   assertUnique(name);
-  const start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  const plain = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  const start = plain >= 0 ? plain : TEMPLATE.indexOf(`\nasync function ${name}(`);
   if (start < 0) throw new Error(`client function ${name} not found`);
   const end = TEMPLATE.indexOf('\n}\n', start);
   return cook(TEMPLATE.slice(start + 1, end + 2));
 }
-/** A single-line top-level `var NAME = …;` declaration, as served. */
+/** A single-line top-level `var NAME = …;` declaration (a trailing // comment is dropped), as served. */
 function clientVar(name: string): string {
   assertUnique(name);
-  const m = TEMPLATE.match(new RegExp(`^var ${name} = .*;$`, 'm'));
+  const m = TEMPLATE.match(new RegExp(`^(var ${name} = .*?;)(?:\\s*//.*)?$`, 'm'));
   if (!m) throw new Error(`client var ${name} not found`);
-  return cook(m[0]);
+  return cook(m[1]);
 }
-/** Build a module from shipped functions; `inject` names become parameters. */
-function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+/**
+ * Build a module from shipped functions; `inject` names become parameters.
+ * `seams` are test-only functions compiled in the same scope (so they can
+ * reach shipped vars) and returned next to the shipped ones.
+ */
+function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, seams: string[] = []): T {
   const names = Object.keys(inject);
-  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
+  const seamNames = seams.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '');
+  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${seams.join('\n')}\nreturn { ${[...fns, ...seamNames].join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -1204,6 +1210,106 @@ describe('numbers in panel / topbar markup (shipped toNum + formatTokens)', () =
     expect(toNum('1500')).toBe(1500);
     expect(formatTokens('1500')).toBe('1.5K');
     expect(formatTokens(2_500_000)).toBe('2.5M');
+  });
+  it('absurd magnitudes stay compact: B and T units, a cap from 1000T, no exponent, no negative', () => {
+    expect(formatTokens(999)).toBe('999');
+    expect(formatTokens(999.6)).toBe('1.0K'); // rounds into the next unit, never "1000"
+    expect(formatTokens(999_950)).toBe('1.0M'); // never "1000.0K"
+    expect(formatTokens(3_100_000_000)).toBe('3.1B');
+    expect(formatTokens(4.2e12)).toBe('4.2T');
+    expect(formatTokens(999.9e12)).toBe('999.9T');
+    for (const huge of [1e15, 1e300, Number.MAX_VALUE]) expect(formatTokens(huge)).toBe('999.9T+');
+    for (const odd of [-5, -1e300, 1e-300]) expect(formatTokens(odd)).toBe('0');
+    for (const v of [1, 1e3, 1e6, 1e9, 1e12, 1e15, 1e100, 1e300]) {
+      const out = formatTokens(v);
+      expect(out).not.toMatch(/e[+-]?\d/);
+      expect(out.length).toBeLessThanOrEqual(7);
+    }
+  });
+});
+
+describe('panel subtitle generation is bound to its panel opening (shipped generateTitleSub)', () => {
+  function harness() {
+    const textEl = { textContent: '' };
+    const btn = { style: { display: 'none' } };
+    const held = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>();
+    const posts: string[] = [];
+    const answers: Record<string, () => unknown> = {};
+    const fetchStub = (url: string) => {
+      posts.push(url);
+      const conv = decodeURIComponent(url.split('/')[4] ?? '');
+      if (answers[conv]) return Promise.resolve(answers[conv]());
+      return new Promise((resolve, reject) => held.set(conv, { resolve, reject }));
+    };
+    let csrfRefreshes = 0;
+    const io = load<{
+      generateTitleSub(convId: string): Promise<void>;
+      switchPanel(): void;
+    }>(
+      ['generateTitleSub'],
+      ['_panelGen'],
+      {
+        document: { getElementById: (id: string) => (id === 'panel-title-sub-text' ? textEl : btn) },
+        fetch: fetchStub,
+        _csrfToken: 't',
+        refreshCsrfToken: async () => {
+          csrfRefreshes++;
+        },
+      },
+      // What openPanel / closePanel do to the panel identity (dashboard.ts: _panelGen++).
+      ['function switchPanel() { _panelGen++; }'],
+    );
+    const ok = (titleSub: string) => ({ status: 200, json: async () => ({ titleSub }) });
+    return { io, textEl, btn, held, posts, answers, ok, csrfRefreshes: () => csrfRefreshes };
+  }
+
+  it("A's late response does not overwrite B's subtitle", async () => {
+    const h = harness();
+    const a = h.io.generateTitleSub('conv-a'); // panel A: its title request is held
+    await flush();
+    expect(h.textEl.textContent).toBe('Generating title...');
+    h.io.switchPanel(); // open panel B
+    h.answers['conv-b'] = () => h.ok('B subtitle');
+    await h.io.generateTitleSub('conv-b');
+    expect(h.textEl.textContent).toBe('B subtitle');
+    expect(h.btn.style.display).toBe('inline-block');
+    h.btn.style.display = 'marker';
+    h.held.get('conv-a')?.resolve(h.ok('A subtitle')); // A lands late
+    await a;
+    expect(h.textEl.textContent).toBe('B subtitle');
+    expect(h.btn.style.display).toBe('marker');
+  });
+
+  it("A's late failure does not write 'Error' into B's subtitle", async () => {
+    const h = harness();
+    const a = h.io.generateTitleSub('conv-a');
+    await flush();
+    h.io.switchPanel();
+    h.answers['conv-b'] = () => h.ok('B subtitle');
+    await h.io.generateTitleSub('conv-b');
+    h.held.get('conv-a')?.reject(new Error('network down'));
+    await a;
+    expect(h.textEl.textContent).toBe('B subtitle');
+  });
+
+  it('a 403 for a panel that is gone is not retried', async () => {
+    const h = harness();
+    h.answers['conv-a'] = () => ({ status: 403, json: async () => ({}) });
+    const a = h.io.generateTitleSub('conv-a');
+    h.io.switchPanel(); // the panel changes before the 403 lands
+    await a;
+    expect(h.posts).toHaveLength(1);
+    expect(h.textEl.textContent).toBe('Generating title...');
+  });
+
+  it('the current panel still gets its subtitle (and its 403 retry)', async () => {
+    const h = harness();
+    let n = 0;
+    h.answers['conv-a'] = () => (++n === 1 ? { status: 403, json: async () => ({}) } : h.ok('A subtitle'));
+    await h.io.generateTitleSub('conv-a');
+    expect(h.posts).toHaveLength(2);
+    expect(h.csrfRefreshes()).toBe(1);
+    expect(h.textEl.textContent).toBe('A subtitle');
   });
 });
 
