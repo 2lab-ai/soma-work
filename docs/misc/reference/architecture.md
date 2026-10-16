@@ -153,7 +153,7 @@ updates inside its terminal-cleanup boundary, including setup failures.
 | `user-memory/{userId}.json` | 유저 메모리 |
 | `user-skills/{userId}/` | 유저 정의 스킬 |
 | `conversations/{id}.json` | 턴 단위 대화 기록 |
-| `worklogs/{conversationId}.jsonl` | 대화별 작업 로그 (append-only). `.seq`/`.seq.bak` = seq 예약 사이드카, `.jsonl.corrupt-<ms>` = 손상된 로그 격리본 |
+| `worklogs/{conversationId}.jsonl` | 대화별 작업 로그 (append-only). `worklogs/{conversationId}.seq`·`.seq.bak` = seq 예약 사이드카, `worklogs/{conversationId}.jsonl.corrupt-<ms>` = 손상된 로그 격리본 |
 | `cron-storage.json` | 예약 작업 |
 | `session-archive/` | 크래시/복구 세션 스냅샷 |
 
