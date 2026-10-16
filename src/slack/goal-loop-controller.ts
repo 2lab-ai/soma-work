@@ -37,6 +37,7 @@
 
 import { createHash } from 'node:crypto';
 import { boundRateLimitDelayMs, parseRetryAfterMs, textIndicatesRetryableRateLimit } from '@soma/common/rate-limit';
+import { OutputFlag } from '@soma/slack/output-flags';
 import type { SyntheticMessageEvent } from '../cron-scheduler';
 import { buildGoalContinuationPrompt } from '../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../types';
@@ -52,6 +53,7 @@ import {
 } from './goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX } from './goal-continuation';
 import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
+import { announceSessionNotice, recordSessionNotice } from './session-notice';
 
 /** Default ceiling for a single completion eval before it is aborted. */
 const DEFAULT_GOAL_EVAL_TIMEOUT_MS = 120_000;
@@ -389,18 +391,13 @@ export class GoalLoopController {
       const next = advanceGoalQueue(session);
       registry.saveSessions();
 
-      await this.deps.postNotice(
-        session.channelId,
-        session.threadTs,
+      await this.postResultNotice(
+        session,
         `✅ Goal completed (eval-model verdict).\n*Objective:* ${activeGoal.objective}\n*Eval reason:* ${verdict.reason}`,
       );
 
       if (next) {
-        await this.deps.postNotice(
-          session.channelId,
-          session.threadTs,
-          `▶️ Starting next queued goal:\n*Objective:* ${next.objective}`,
-        );
+        await this.postStatusNotice(session, `▶️ Starting next queued goal:\n*Objective:* ${next.objective}`);
         // Re-enter the ralph loop for the promoted goal — unless a real user
         // turn started during the eval, in which case defer (never supersede).
         if (requestCoordinator.isRequestActive(sessionKey)) {
@@ -463,9 +460,8 @@ export class GoalLoopController {
         if (dmSent) {
           activeGoal.capDmPendingAt = this.now();
           registry.saveSessions();
-          await this.deps.postNotice(
-            session.channelId,
-            session.threadTs,
+          await this.postResultNotice(
+            session,
             `⏸️ Goal auto-continuation reached its ${activeGoal.maxContinuations}-turn budget. Asked the owner via DM whether to keep going.`,
           );
           return;
@@ -473,17 +469,15 @@ export class GoalLoopController {
       }
       // Fallback (no DM transport, already asked, or DM send failed): keep the
       // original in-thread pause notice.
-      await this.deps.postNotice(
-        session.channelId,
-        session.threadTs,
+      await this.postResultNotice(
+        session,
         `⏹️ Goal auto-continuation paused after ${activeGoal.maxContinuations} turns.\n*Latest reason:* ${verdict.reason}\nSend a message in this thread to resume.`,
       );
       return;
     }
 
-    await this.deps.postNotice(
-      session.channelId,
-      session.threadTs,
+    await this.postStatusNotice(
+      session,
       `🔄 Goal not yet complete (eval-model verdict).\n*Reason:* ${verdict.reason}\n*Remaining:*\n${remaining}`,
     );
 
@@ -496,6 +490,28 @@ export class GoalLoopController {
     }
 
     this.injectContinuationTurn(sessionKey, session, activeGoal);
+  }
+
+  /**
+   * Loop progress (🔄 not yet complete, ▶️ next queued goal) is a status
+   * message: posted only at compact and above (spec 10 §3.2-5 — `minimal`
+   * keeps header, task list, final answer, choice/approval and errors).
+   * Recorded in the conversation work log at every level.
+   */
+  private postStatusNotice(session: ConversationSession, text: string): Promise<void> {
+    return announceSessionNotice(session, OutputFlag.STATUS_MESSAGE, text, () =>
+      this.deps.postNotice(session.channelId, session.threadTs, text),
+    );
+  }
+
+  /**
+   * A notice that carries the goal's result or asks the user to act (✅
+   * completed, ⏸️ asked via DM, ⏹️ paused): posted at every level, and
+   * recorded in the conversation work log.
+   */
+  private async postResultNotice(session: ConversationSession, text: string): Promise<void> {
+    recordSessionNotice(session, text);
+    await this.deps.postNotice(session.channelId, session.threadTs, text);
   }
 
   /** Stable hash of the work summary for the S9 unchanged-summary check. */

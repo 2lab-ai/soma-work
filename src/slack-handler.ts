@@ -19,6 +19,7 @@ import {
 } from '@soma/slack/followup-queue';
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
+import { OutputFlag } from '@soma/slack/output-flags';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
@@ -90,6 +91,7 @@ import {
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
 import { advanceGoalQueue, enqueueOrActivateGoal, formatGoalObjectiveForSlack } from './slack/session-goal';
+import { announceSessionNotice } from './slack/session-notice';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
@@ -1727,10 +1729,15 @@ export class SlackHandler {
           );
           this.claudeHandler.saveSessions();
           if (applied.activated) {
-            await this.slackApi.postSystemMessage(
-              activeChannel,
-              `🤖 Autogoal: 이 지시를 goal로 설정했습니다 — ${formatGoalObjectiveForSlack(effectiveText)}`,
-              { threadTs: activeThreadTs },
+            // A status notice (spec 10 §3.2-5): posted at compact and above,
+            // recorded in the work log at every level.
+            const autogoalNotice = `🤖 Autogoal: 이 지시를 goal로 설정했습니다 — ${formatGoalObjectiveForSlack(effectiveText)}`;
+            await announceSessionNotice(
+              fullSession,
+              OutputFlag.STATUS_MESSAGE,
+              autogoalNotice,
+              () => this.slackApi.postSystemMessage(activeChannel, autogoalNotice, { threadTs: activeThreadTs }),
+              { sessionKey: sessionResult.sessionKey },
             );
             dispatchText = buildGoalContinuationPrompt(applied.goal as SessionGoal);
           }
@@ -1752,10 +1759,18 @@ export class SlackHandler {
         try {
           const fire = buildAutoskillFire(event.user, `<@${event.user}>`);
           if (fire) {
-            await this.slackApi.postMessage(activeChannel, '', {
-              threadTs: activeThreadTs,
-              attachments: [{ color: fire.banner.color, text: fire.banner.text }],
-            });
+            // Posted at compact and above; recorded in the work log at every level.
+            await announceSessionNotice(
+              sessionResult.session as ConversationSession,
+              OutputFlag.SKILL_INVOCATION,
+              fire.banner.text,
+              () =>
+                this.slackApi.postMessage(activeChannel, '', {
+                  threadTs: activeThreadTs,
+                  attachments: [{ color: fire.banner.color, text: fire.banner.text }],
+                }),
+              { sessionKey: sessionResult.sessionKey },
+            );
             dispatchText = dispatchText ? `${dispatchText}\n\n${fire.invokedBlock}` : fire.invokedBlock;
             this.logger.info('Autoskills force-fired on session start', {
               user: event.user,
@@ -1772,15 +1787,25 @@ export class SlackHandler {
       }
 
       // Deferred forced `$skill` (the first-instruction `$skill`, e.g. `new
-      // $deploy` or a first message `$deploy`). Fired LAST so its banner shows
-      // after the autoskill banner and its `<invoked_skills>` block sits after
-      // the autoskill block in the dispatch prompt. Always fired when present —
+      // $deploy` or a first message `$deploy`). Fired LAST so its banner (when
+      // posted) follows the autoskill banner and its `<invoked_skills>` block
+      // sits after the autoskill block in the dispatch prompt. The fire — the
+      // block appended to the dispatch prompt — always happens when present:
       // SkillForceHandler already resolved + deferred it, so it must not vanish.
+      // Only the banner is gated: posted at compact and above, recorded in the
+      // work log at every level when the session has a conversation.
       if (deferredSkillFire) {
-        await this.slackApi.postMessage(activeChannel, '', {
-          threadTs: activeThreadTs,
-          attachments: [{ color: deferredSkillFire.banner.color, text: deferredSkillFire.banner.text }],
-        });
+        await announceSessionNotice(
+          sessionResult.session as ConversationSession,
+          OutputFlag.SKILL_INVOCATION,
+          deferredSkillFire.banner.text,
+          () =>
+            this.slackApi.postMessage(activeChannel, '', {
+              threadTs: activeThreadTs,
+              attachments: [{ color: deferredSkillFire.banner.color, text: deferredSkillFire.banner.text }],
+            }),
+          { sessionKey: sessionResult.sessionKey },
+        );
         dispatchText = dispatchText
           ? `${dispatchText}\n\n${deferredSkillFire.invokedBlock}`
           : deferredSkillFire.invokedBlock;

@@ -635,6 +635,61 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
   });
 });
 
+describe('work-log tool rows print the tool name once (shipped renderWorkLogEntry)', () => {
+  const { renderWorkLogEntry } = load<{ renderWorkLogEntry(e: unknown): string }>(
+    ['decodeSlackEntities', 'esc', 'escAttr', 'renderWorkLogEntry'],
+    ['WL_LABELS'],
+  );
+  /** The visible pieces of a tool row: the tool-name span, the text span and its title. */
+  function row(e: Record<string, unknown>) {
+    const html = renderWorkLogEntry({ seq: 1, ts: 0, ...e });
+    const name = /<span class="wl-tool-name">([^<]*)<\/span>/.exec(html)?.[1] ?? null;
+    const m = /<span class="wl-text" title="([^"]*)">([^<]*)<\/span>/.exec(html);
+    return { name, text: m?.[2] ?? null, title: m?.[1] ?? null };
+  }
+
+  // Stored entries carry the emitter's shape: `text` starts with the tool name
+  // (packages/slack/src/stream-processor.ts summarizeToolCall and the tool_result text).
+  it('a tool call shows its input after the name, not the name again', () => {
+    expect(row({ kind: 'tool', tool: 'Read', text: 'Read {"file_path":"/a.ts"}' })).toEqual({
+      name: 'Read',
+      text: '{&quot;file_path&quot;:&quot;/a.ts&quot;}',
+      title: 'Read {&quot;file_path&quot;:&quot;/a.ts&quot;}',
+    });
+  });
+
+  it('a tool result shows ok / error after the name', () => {
+    expect(row({ kind: 'tool_result', tool: 'Glob', ok: true, text: 'Glob ok' })).toEqual({
+      name: 'Glob',
+      text: 'ok',
+      title: 'Glob ok',
+    });
+    expect(row({ kind: 'tool_result', tool: 'Bash', ok: false, text: 'Bash error' })).toEqual({
+      name: 'Bash',
+      text: 'error',
+      title: 'Bash error',
+    });
+  });
+
+  it('a call without input (text is just the name) shows the name once', () => {
+    expect(row({ kind: 'tool', tool: 'TodoRead', text: 'TodoRead' })).toEqual({
+      name: 'TodoRead',
+      text: '',
+      title: 'TodoRead',
+    });
+  });
+
+  it('text that does not start with "<tool> " is shown whole', () => {
+    expect(row({ kind: 'tool', tool: 'Read', text: 'Readme.md opened' }).text).toBe('Readme.md opened');
+    expect(row({ kind: 'tool', tool: 'Bash', text: 'backfill step 3' }).text).toBe('backfill step 3');
+    expect(row({ kind: 'tool', text: 'Read {"a":1}' })).toEqual({
+      name: null,
+      text: 'Read {&quot;a&quot;:1}',
+      title: 'Read {&quot;a&quot;:1}',
+    });
+  });
+});
+
 describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => {
   /** noSummary: the reply has no summary yet, so the raw-response fallback runs. */
   function harness(opts: { noSummary?: boolean } = {}) {
@@ -1225,6 +1280,67 @@ describe('numbers in panel / topbar markup (shipped toNum + formatTokens)', () =
       expect(out).not.toMatch(/e[+-]?\d/);
       expect(out.length).toBeLessThanOrEqual(7);
     }
+  });
+});
+
+describe('top-bar user names keep their full text in title (shipped syncUserSelectLabel + _applyUserPill)', () => {
+  const LONG = '가나다라마바사아자차카타파하가나다라마바사아자차카타파하가나다라';
+  /** Just enough DOM for the two functions: a select with options, the label, the pill. */
+  function dom() {
+    const options = [
+      { value: '', textContent: 'All Users' },
+      { value: 'U002', textContent: LONG },
+    ];
+    const select = { options, selectedIndex: 0, title: 'All Users', value: '' };
+    const label = { textContent: 'All Users' };
+    const nameEl = { textContent: '…', title: '' };
+    const classes = new Set<string>();
+    const attrs: Record<string, string> = {};
+    const pill = {
+      style: { display: 'none' },
+      classList: { toggle: (c: string, on: boolean) => (on ? classes.add(c) : classes.delete(c)) },
+      setAttribute: (k: string, v: string) => {
+        attrs[k] = v;
+      },
+    };
+    const byId: Record<string, unknown> = {
+      'user-select': select,
+      'user-select-label': label,
+      'user-pill': pill,
+      'user-pill-name': nameEl,
+    };
+    const document = { getElementById: (id: string) => byId[id] ?? null };
+    return { document, select, label, nameEl };
+  }
+
+  it('the label over the select shows the selected option; the select title carries it in full', () => {
+    const d = dom();
+    const { syncUserSelectLabel } = load<{ syncUserSelectLabel(): void }>(['syncUserSelectLabel'], [], {
+      document: d.document,
+    });
+    d.select.selectedIndex = 1;
+    syncUserSelectLabel();
+    expect(d.label.textContent).toBe(LONG);
+    expect(d.select.title).toBe(LONG);
+    d.select.selectedIndex = 0;
+    syncUserSelectLabel();
+    expect(d.label.textContent).toBe('All Users');
+    expect(d.select.title).toBe('All Users');
+  });
+
+  it('selectUser and loadUsers keep the label in sync', () => {
+    expect(clientFn('selectUser')).toMatch(/^function selectUser\(userId\) \{\n {2}syncUserSelectLabel\(\);/);
+    expect(clientFn('loadUsers')).toMatch(/\n {2}syncUserSelectLabel\(\);\n\}$/);
+  });
+
+  it('the pill name carries the full name in title (it may end in an ellipsis)', () => {
+    const d = dom();
+    const { _applyUserPill } = load<{ _applyUserPill(data: unknown): void }>(['_applyUserPill'], [], {
+      document: d.document,
+    });
+    _applyUserPill({ user: { name: LONG } });
+    expect(d.nameEl.textContent).toBe(LONG);
+    expect(d.nameEl.title).toBe(LONG);
   });
 });
 
