@@ -107,7 +107,18 @@ export interface NormalizeResult {
 // ---------------------------------------------------------------------------
 
 export const SURFACE_FIELD_REGISTRY: Record<SurfaceName, readonly string[]> = {
-  threadheader: ['title', 'owner', 'workflow', 'model', 'contextwindow', 'links', 'linkhistory', 'status', 'separator'],
+  threadheader: [
+    'title',
+    'owner',
+    'workflow',
+    'model',
+    'contextwindow',
+    'links',
+    'linkhistory',
+    'dashboardLink',
+    'status',
+    'separator',
+  ],
   turnend: [
     'status',
     'title',
@@ -192,8 +203,15 @@ function clampInt(value: number, min: number, max: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// Built-in defaults — exact mirror of the pre-config hardcoded rendering.
+// Built-in defaults — exact mirror of the pre-config hardcoded rendering,
+// plus fields added since (threadheader `dashboardLink`, which renders
+// nothing when the viewer is not listening).
 // config.default.json is generated from this constant (parity test-locked).
+//
+// config-loader seeds this constant into an operator's config.json once, so a
+// change here does NOT reach hosts that already booted. A field added to a
+// default ships with a one-time additive config.json migration under its own
+// marker (precedent: src/deploy/migrate-threadheader-dashboard-link-once.ts).
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_UI_SURFACES: UiSurfacesConfig = {
@@ -209,7 +227,13 @@ export const DEFAULT_UI_SURFACES: UiSurfacesConfig = {
           { field: 'contextwindow', show: true, bar: { width: 5, filledChar: '▓', emptyChar: '░' } },
         ],
       },
-      { block: 'context', fields: [{ field: 'linkhistory', show: true, max: 5 }] },
+      {
+        block: 'context',
+        fields: [
+          { field: 'dashboardLink', show: true },
+          { field: 'linkhistory', show: true, max: 5 },
+        ],
+      },
       { block: 'context', fields: [{ field: 'status', show: true, format: 'closed-marker' }] },
     ],
     themes: {
@@ -222,6 +246,7 @@ export const DEFAULT_UI_SURFACES: UiSurfacesConfig = {
               { field: 'workflow', show: true, style: { code: true } },
               { field: 'model', show: true, style: { code: true } },
               { field: 'contextwindow', show: true, bar: { width: 5, filledChar: '▓', emptyChar: '░' } },
+              { field: 'dashboardLink', show: true },
               { field: 'links', show: true },
               { field: 'status', show: true, format: 'closed-text' },
             ],
@@ -236,6 +261,7 @@ export const DEFAULT_UI_SURFACES: UiSurfacesConfig = {
               { field: 'title', show: true },
               { field: 'model', show: true, style: { code: true } },
               { field: 'contextwindow', show: true, bar: { width: 5, filledChar: '▓', emptyChar: '░' } },
+              { field: 'dashboardLink', show: true },
               { field: 'links', show: true },
               { field: 'status', show: true, format: 'closed-text' },
             ],
@@ -376,26 +402,40 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/**
+ * The registry field a config `field` name refers to, or undefined when the
+ * surface has no such field. Names match case-insensitively (camelCase ids
+ * like `dashboardLink` keep their registry spelling) and aliases apply
+ * (`name` → owner with format `name`). The one place that decides whether a
+ * config entry renders at all.
+ */
+export function resolveSurfaceField(
+  surface: SurfaceName,
+  name: string,
+): { field: string; format?: string } | undefined {
+  const lower = name.toLowerCase();
+  const alias = FIELD_ALIASES[lower];
+  const target = alias ? alias.field : lower;
+  const field = SURFACE_FIELD_REGISTRY[surface].find((known) => known.toLowerCase() === target);
+  if (!field) return undefined;
+  return alias?.format ? { field, format: alias.format } : { field };
+}
+
 function normalizeField(raw: unknown, surface: SurfaceName, warnings: string[]): SurfaceFieldConfig | undefined {
   if (!isPlainObject(raw) || typeof raw.field !== 'string') {
     warnings.push(`ui.${surface}: field entry is not an object with a "field" key — skipped`);
     return undefined;
   }
 
-  let fieldName = raw.field.toLowerCase();
-  let aliasFormat: string | undefined;
-  const alias = FIELD_ALIASES[fieldName];
-  if (alias) {
-    fieldName = alias.field;
-    aliasFormat = alias.format;
-  }
-
-  if (!SURFACE_FIELD_REGISTRY[surface].includes(fieldName)) {
+  const resolved = resolveSurfaceField(surface, raw.field);
+  if (!resolved) {
     warnings.push(
       `ui.${surface}: unknown field "${raw.field}" — skipped (known: ${SURFACE_FIELD_REGISTRY[surface].join(', ')})`,
     );
     return undefined;
   }
+  const fieldName = resolved.field;
+  const aliasFormat = resolved.format;
 
   const out: SurfaceFieldConfig = { field: fieldName };
   out.show = raw.show !== false;

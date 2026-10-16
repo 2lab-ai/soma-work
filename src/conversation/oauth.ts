@@ -6,10 +6,11 @@
  *   2. Redirect to provider → user grants consent → redirect back to /auth/{provider}/callback
  *   3. Exchange code for access token → fetch user email
  *   4. Match email against UserSettingsStore (Slack profile emails)
- *   5. Issue JWT → set HttpOnly cookie → redirect to /dashboard
+ *   5. Issue JWT → set HttpOnly cookie → redirect to the `soma_next` deep link
+ *      when one was remembered, else /dashboard/<userId>
  *
  * Routes:
- *   GET /login                          → Login page (Google/Microsoft buttons)
+ *   GET /login                          → Login page (Google/Microsoft buttons + Slack `dashboard` hint)
  *   GET /auth/google                    → Redirect to Google OAuth
  *   GET /auth/google/callback           → Google OAuth callback
  *   GET /auth/microsoft                 → Redirect to Microsoft OAuth
@@ -443,6 +444,70 @@ function clearCookieAndRedirect(reply: FastifyReply, redirectTo: string): void {
   reply.redirect(redirectTo);
 }
 
+// ── Login return (`soma_next`, spec §3.4-3) ──
+//
+// A browser bounced to /login by authMiddleware keeps the dashboard deep link
+// it asked for; the next successful login (Slack SSO, Google, Microsoft, viewer
+// token) lands there instead of the generic dashboard. The value is
+// client-controlled, so it is validated both when written and when read.
+
+const LOGIN_RETURN_COOKIE = 'soma_next';
+const LOGIN_RETURN_MAX_LEN = 2048;
+/** Long enough to go to Slack, type `dashboard`, and click the link. */
+const LOGIN_RETURN_MAX_AGE_SEC = 1800;
+
+/**
+ * True for a same-origin path under `/dashboard` that is safe to put in a
+ * `Location` header: printable ASCII only (no CR/LF, spaces or raw non-ASCII),
+ * no `//` or backslash (protocol-relative tricks), no `.`/`..` path segments
+ * in any spelling (browsers resolve `%2e%2e` like `..`, which would step out of
+ * /dashboard), bounded length.
+ */
+export function isSafeLoginReturnPath(value: string): boolean {
+  if (typeof value !== 'string' || value.length === 0 || value.length > LOGIN_RETURN_MAX_LEN) return false;
+  if (!/^\/dashboard(?:[/?#]|$)/.test(value)) return false;
+  if (value.includes('//') || value.includes('\\')) return false;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x20 || code >= 0x7f) return false;
+  }
+  // Dot segments are judged on the path alone: query and fragment end it.
+  const pathPart = value.split(/[?#]/, 1)[0];
+  const segments = pathPart.replace(/%2e/gi, '.').split('/');
+  if (segments.some((segment) => segment === '.' || segment === '..')) return false;
+  return true;
+}
+
+/**
+ * Set-Cookie value remembering `url` (request path + query) for after login,
+ * or undefined when it is not worth remembering. The bare `/dashboard` is
+ * skipped: every login already lands on the user's own `/dashboard/<id>`,
+ * which is the better page for that request.
+ */
+export function loginReturnCookieFor(url: string): string | undefined {
+  if (!isSafeLoginReturnPath(url) || url === '/dashboard' || url === '/dashboard/') return undefined;
+  const secure = (config.conversation.viewerUrl || '').startsWith('https');
+  return `${LOGIN_RETURN_COOKIE}=${encodeURIComponent(url)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${LOGIN_RETURN_MAX_AGE_SEC}${secure ? '; Secure' : ''}`;
+}
+
+/**
+ * Consume `soma_next` on a successful login: returns the validated path (or
+ * undefined) and clears the cookie when the request carried one. Call only on
+ * success paths — failure paths emit no Set-Cookie (see `/auth/sso`).
+ */
+function takeLoginReturnPath(request: FastifyRequest, reply: FastifyReply): string | undefined {
+  const match = (request.headers.cookie || '').match(/(?:^|;\s*)soma_next=([^;]*)/);
+  if (!match) return undefined;
+  reply.header('Set-Cookie', `${LOGIN_RETURN_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+  let value: string;
+  try {
+    value = decodeURIComponent(match[1]);
+  } catch {
+    return undefined;
+  }
+  return isSafeLoginReturnPath(value) ? value : undefined;
+}
+
 // ── CSRF helpers ──
 
 export function generateCsrfToken(userId: string, exp: number): string {
@@ -576,7 +641,7 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
         };
         const token = issueToken(dashUser);
         logger.info('OAuth login success', { provider: 'google', email: userInfo.email, slackUserId: matched.userId });
-        setCookieAndRedirect(reply, token, `/dashboard/${matched.userId}`);
+        setCookieAndRedirect(reply, token, takeLoginReturnPath(request, reply) ?? `/dashboard/${matched.userId}`);
       },
     );
   }
@@ -637,7 +702,7 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
           email: userInfo.email,
           slackUserId: matched.userId,
         });
-        setCookieAndRedirect(reply, token, `/dashboard/${matched.userId}`);
+        setCookieAndRedirect(reply, token, takeLoginReturnPath(request, reply) ?? `/dashboard/${matched.userId}`);
       },
     );
   }
@@ -735,7 +800,7 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
       provider: 'slack',
     });
     logger.info('Slack SSO login success', { slackUserId: payload.sub });
-    setCookieAndRedirect(reply, sessionToken, `/dashboard/${payload.sub}`);
+    setCookieAndRedirect(reply, sessionToken, takeLoginReturnPath(request, reply) ?? `/dashboard/${payload.sub}`);
   });
 
   // Confirmation POST for session switching. This runs AFTER the user
@@ -791,7 +856,7 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
       'Set-Cookie',
       `${COOKIE_NAME}=${encodeURIComponent(sessionToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`,
     );
-    reply.redirect(`/dashboard/${payload.sub}`, 303);
+    reply.redirect(takeLoginReturnPath(request, reply) ?? `/dashboard/${payload.sub}`, 303);
   });
 
   // ── Token login (server-side) — replaces client-side cookie write ──
@@ -809,7 +874,7 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
       'Set-Cookie',
       `${COOKIE_NAME}=${encodeURIComponent('bearer:' + providedToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`,
     );
-    reply.send({ ok: true, redirect: '/dashboard' });
+    reply.send({ ok: true, redirect: takeLoginReturnPath(request, reply) ?? '/dashboard' });
   });
 
   // ── /auth/me — current user (JSON) + CSRF token ──
@@ -970,6 +1035,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .btn svg { width: 20px; height: 20px; }
 .error-msg { background: rgba(248,81,73,0.15); border: 1px solid var(--red); color: var(--red); padding: 10px; border-radius: 6px; margin-bottom: 16px; font-size: 0.85em; }
 .divider { color: var(--text-muted); font-size: 0.8em; margin: 16px 0; }
+.login-box .slack-hint { color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; line-height: 1.5; }
+.slack-hint code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); }
 .token-form { display: flex; gap: 8px; }
 .token-form input { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; color: var(--text); font-size: 0.85em; }
 .token-form button { background: var(--accent); color: #000; border: none; border-radius: 6px; padding: 8px 16px; font-size: 0.85em; cursor: pointer; font-weight: 600; }
@@ -979,6 +1046,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 <div class="login-box">
   <h1>⚡ soma-work</h1>
   <p>Sign in to access your personal dashboard</p>
+  <p class="slack-hint">Slack 스레드에서 <code>dashboard</code>를 입력하면 로그인 링크를 받습니다.</p>
 
   <div id="error"></div>
 

@@ -151,6 +151,7 @@ updates inside its terminal-cleanup boundary, including setup failures.
   `StreamContext.workLog` → `streamExecutorProviders.appendWorkLog(conversationId, entry)`로 턴의 `turnId`와 함께,
   대화 단위인 압축 시작/완료 공지는 compact-hooks가 `recordConversationWorkLog`로 `turnId` 없이 같은 provider에 넣는다. 출력 수준과 무관하게 항상 방출된다
   (타입 `packages/slack/src/work-log.ts`).
+- **작업 로그 (spec §3.3)**: 유저 지시·모델 내레이션·툴 호출 등 verbose 스트림은 Slack이 아니라 대시보드 작업 로그로 간다. 스토어 `src/conversation/work-log.ts` = 대화별 append-only JSONL + seq 예약 사이드카(seq는 엄격 증가, 구멍 허용, 발행된 seq는 재사용하지 않음). 조회 `GET /api/dashboard/session/:conversationId/worklog` (`work-log-routes.ts`, 대화 owner·admin만), 실시간 WS 이벤트 `work_log`. 발신 경로 = `src/index.ts`가 `setStreamExecutorProviders`로 `appendWorkLog`를 스트림 실행기에 주입(fire-and-forget). 로그인 후 원래 화면 복귀는 `soma_next` 쿠키(`src/conversation/oauth.ts`)
 
 ## Data Stores (`$DATA_DIR`, JSON 파일 기반)
 
@@ -162,6 +163,7 @@ updates inside its terminal-cleanup boundary, including setup failures.
 | `user-memory/{userId}.json` | 유저 메모리 |
 | `user-skills/{userId}/` | 유저 정의 스킬 |
 | `conversations/{id}.json` | 턴 단위 대화 기록 |
+| `worklogs/{conversationId}.jsonl` | 대화별 작업 로그 (append-only). `worklogs/{conversationId}.seq`·`.seq.bak` = seq 예약 사이드카, `worklogs/{conversationId}.jsonl.corrupt-<ms>` = 손상된 로그 격리본 |
 | `cron-storage.json` | 예약 작업 |
 | `session-archive/` | 크래시/복구 세션 스냅샷 |
 

@@ -49,6 +49,10 @@
           "block": "context",
           "fields": [
             {
+              "field": "dashboardLink",
+              "show": true
+            },
+            {
               "field": "linkhistory",
               "show": true,
               "max": 5
@@ -106,6 +110,10 @@
                   }
                 },
                 {
+                  "field": "dashboardLink",
+                  "show": true
+                },
+                {
                   "field": "links",
                   "show": true
                 },
@@ -142,6 +150,10 @@
                     "filledChar": "▓",
                     "emptyChar": "░"
                   }
+                },
+                {
+                  "field": "dashboardLink",
+                  "show": true
                 },
                 {
                   "field": "links",

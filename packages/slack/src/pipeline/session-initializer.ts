@@ -407,15 +407,22 @@ export class SessionInitializer {
         const conversationId = providers.createConversation(channel, threadTs, user, userName);
         session.conversationId = conversationId;
 
-        // Always show conversation URL — it's essential for session review
-        const conversationUrl = providers.getConversationUrl(conversationId);
-        const convLinkResult = await this.deps.slackApi.postMessage(channel, `📝 <${conversationUrl}|대화 기록 보기>`, {
-          threadTs,
-        });
-        if (convLinkResult?.ts) {
-          (session.sourceThreadCleanupTs ??= []).push(convLinkResult.ts);
+        // Link the session's work log (📋 작업 로그 → its dashboard card) from the
+        // thread the user started — essential for session review. Undefined means
+        // the viewer is not listening; the conversation viewer is served by the same
+        // web server, so there is no live link to post instead.
+        const dashboardUrl = ThreadHeaderBuilder.resolveDashboardSessionUrl(session.ownerId || user, sessionKey);
+        if (dashboardUrl) {
+          const linkResult = await this.deps.slackApi.postMessage(
+            channel,
+            ThreadHeaderBuilder.formatDashboardLink(dashboardUrl),
+            { threadTs },
+          );
+          if (linkResult?.ts) {
+            (session.sourceThreadCleanupTs ??= []).push(linkResult.ts);
+          }
         }
-        this.logger.info('Conversation record created', { conversationId, url: conversationUrl });
+        this.logger.info('Conversation record created', { conversationId, workLogUrl: dashboardUrl ?? null });
       } catch (error) {
         this.logger.error('Failed to create conversation record (non-critical)', error);
       }
