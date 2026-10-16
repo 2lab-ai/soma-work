@@ -19,13 +19,22 @@
  *   - Both params are decimal integers (`^\d+$`); anything else is
  *     400 { error: 'bad_request' } rather than a silent mode switch.
  *   - hasMore is also true when the read stopped at its byte budget.
+ *   - Quarantine trade-off: if nothing in the log's last 8 MB parses (external
+ *     damage), the next append moves the whole log aside to
+ *     `<id>.jsonl.corrupt-<ms>` and starts a fresh one; entries published
+ *     before that are then no longer served here (they stay on disk for an
+ *     operator).
  *
- * Who may read: the conversation's owner and admins — the same audience as the
- * `work_log` WS event. This is stricter than the turns APIs (world-readable per
- * #716) because the work log carries raw instructions and tool inputs/results.
- * Admin = `authContext.isAdmin` (viewer-token sessions, auth-disabled mode, and
- * OAuth users listed in ADMIN_USERS). A conversation with no recorded owner is
+ * Who may read: the conversation's owner (its recorded `ownerId`) and admins.
+ * This is stricter than the turns APIs (world-readable per #716) because the
+ * work log carries raw instructions and tool inputs/results. Admin =
+ * `authContext.isAdmin` (viewer-token sessions, auth-disabled mode, and OAuth
+ * users listed in ADMIN_USERS). A conversation with no recorded owner is
  * admin-only. Unknown conversation → 404, anyone else → 403 { error: 'forbidden' }.
+ *
+ * Not quite the `work_log` WS audience: the WS resolves the owner from the LIVE
+ * session for the conversation, so while no session is active its events go to
+ * admins only — whereas this route still admits the recorded owner then.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';

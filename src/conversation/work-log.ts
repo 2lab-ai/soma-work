@@ -29,6 +29,11 @@
  * The tail is still read, for the trailing newline and to decide quarantine:
  * a tail unreadable within the scan budget is moved to
  * `<id>.jsonl.corrupt-<ms>` and a fresh log continues above the reservation.
+ * Trade-off: quarantine moves the WHOLE old log, including entries published
+ * before the damage, so the API no longer serves them (they stay on disk in
+ * the `.corrupt-` file for an operator). It only happens when nothing in the
+ * last 8 MB parses — i.e. after external damage — and in exchange every later
+ * read and seed stays bounded instead of re-scanning the junk.
  * If the live copy is lost, `.bak` (the previous reservation) is trusted only
  * together with a readable entry, and both copies are rewritten before anything
  * is published. Anything else has no provable bound and fails closed (appends
@@ -48,7 +53,12 @@
  * window and the seed scan back from the end; `afterSeq` pages first try a
  * short backward scan (the reconnect case), else binary-search byte offsets
  * (lines are in seq order) and read forward. A read that runs out of budget
- * returns what it found with `hasMore: true` and logs a warning.
+ * returns what it found with `hasMore: true` and logs a warning. When junk sits
+ * between `afterSeq` and the tail, the entries the backward scan found are
+ * returned as soon as the forward scan provably reaches them, so paging moves
+ * past the junk. A junk region wider than the remaining budget between the two
+ * keeps that page empty (`hasMore: true`) rather than risk skipping entries
+ * inside it; the latest window (no `afterSeq`) still shows new entries.
  *
  * Line contract: a line longer than WORK_LOG_MAX_LINE_BYTES is never an entry —
  * readers skip it whatever its chunk alignment, and the writer refuses to
@@ -273,19 +283,27 @@ async function readExactly(fh: fs.promises.FileHandle, position: number, length:
  * still an entry). Lines over the size limit are skipped: the completed length
  * is checked before `onLine`, and a partial line that already exceeds the limit
  * is dropped instead of being buffered further.
+ *
+ * `cover.offset` is set to the lowest offset from which every line up to the
+ * end of the file has been examined (passed to `onLine`, or known to be an
+ * over-limit non-entry).
  */
 async function scanBackward(
   fh: fs.promises.FileHandle,
   size: number,
   budget: Budget,
   onLine: (line: Buffer) => boolean,
+  cover: { offset: number } = { offset: size },
 ): Promise<ScanEnd> {
   let pos = size;
   let carry: Buffer = EMPTY; // end part of a line that began before `pos`
   let dropping = false; // the line ending at the next newline found is over the limit
   while (pos > 0) {
     const n = Math.min(WORK_LOG_READ_CHUNK_BYTES, pos, budget.left);
-    if (n <= 0) return 'budget';
+    if (n <= 0) {
+      cover.offset = dropping ? pos : pos + carry.length;
+      return 'budget';
+    }
     budget.left -= n;
     pos -= n;
     const chunk = await readExactly(fh, pos, n);
@@ -300,7 +318,10 @@ async function scanBackward(
         dropping = false; // buf[idx+1, end) is the start of the dropped line
       } else {
         const len = end - idx - 1;
-        if (len > 0 && len <= WORK_LOG_MAX_LINE_BYTES && !onLine(buf.subarray(idx + 1, end))) return 'stopped';
+        if (len > 0 && len <= WORK_LOG_MAX_LINE_BYTES && !onLine(buf.subarray(idx + 1, end))) {
+          cover.offset = pos + idx + 1; // buf starts at file offset `pos`
+          return 'stopped';
+        }
       }
       end = idx;
     }
@@ -312,23 +333,32 @@ async function scanBackward(
     }
   }
   if (carry.length > 0) onLine(carry); // empty while dropping: the dropped line is never buffered
+  cover.offset = 0;
   return 'done';
 }
 
-/** Feed lines to `onLine` from byte offset `from` (a line start) forwards; same rules as scanBackward. */
+/**
+ * Feed lines to `onLine` from byte offset `from` (a line start) forwards; same
+ * rules as scanBackward. `cover.offset` is set to the highest offset up to which
+ * every line from `from` on has been examined.
+ */
 async function scanForward(
   fh: fs.promises.FileHandle,
   size: number,
   from: number,
   budget: Budget,
   onLine: (line: Buffer) => boolean,
+  cover: { offset: number } = { offset: from },
 ): Promise<ScanEnd> {
   let pos = from;
   let carry: Buffer = EMPTY; // start part of a line that continues past `pos`
   let dropping = false; // the bytes up to the next newline belong to an over-limit line
   while (pos < size) {
     const n = Math.min(WORK_LOG_READ_CHUNK_BYTES, size - pos, budget.left);
-    if (n <= 0) return 'budget';
+    if (n <= 0) {
+      cover.offset = dropping ? pos : pos - carry.length;
+      return 'budget';
+    }
     budget.left -= n;
     const chunk = await readExactly(fh, pos, n);
     pos += n;
@@ -339,7 +369,10 @@ async function scanForward(
         dropping = false; // buf[start, idx) is the end of the dropped line
       } else {
         const len = idx - start;
-        if (len > 0 && len <= WORK_LOG_MAX_LINE_BYTES && !onLine(buf.subarray(start, idx))) return 'stopped';
+        if (len > 0 && len <= WORK_LOG_MAX_LINE_BYTES && !onLine(buf.subarray(start, idx))) {
+          cover.offset = pos - buf.length + idx; // buf ends at file offset `pos`
+          return 'stopped';
+        }
       }
       start = idx + 1;
     }
@@ -351,6 +384,7 @@ async function scanForward(
     }
   }
   if (carry.length > 0) onLine(carry); // empty while dropping: the dropped line is never buffered
+  cover.offset = size;
   return 'done';
 }
 
@@ -424,8 +458,9 @@ async function openForRead(filePath: string): Promise<{ fh: fs.promises.FileHand
 /**
  * Where a reservation came from. Only `live` is a proven upper bound: every
  * live value is written durably before any seq it covers is used. `backup` is
- * the PREVIOUS live value (atomicWriteJson promotes the old live copy before
- * writing a new one), so it may be up to one block behind what was used.
+ * the PREVIOUS live value (atomicWriteJson promotes a valid live copy before
+ * writing a new one, and writeReservation re-writes when it could not), so it
+ * may be up to one block behind what was used.
  */
 type ReservationSource = 'live' | 'backup';
 interface Reservation {
@@ -440,32 +475,47 @@ function readReservation(sidecarPath: string): Reservation | null {
   // file (packages/common/src/atomic-json.ts, readJsonWithBackup), which is how
   // the provenance is told apart without changing the shared loader.
   let servedFromBackup = false;
-  const value = readJsonWithBackup(
-    sidecarPath,
-    (raw) => {
-      const seq = (raw as { reservedSeq?: unknown } | null)?.reservedSeq;
-      if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 0) {
-        throw new Error('reservedSeq must be a non-negative integer');
-      }
-      return seq;
-    },
-    {
-      warn: (message, detail) => {
-        servedFromBackup = true;
-        logger.warn(message, detail);
+  let value: number | undefined;
+  try {
+    value = readJsonWithBackup(
+      sidecarPath,
+      (raw) => {
+        const seq = (raw as { reservedSeq?: unknown } | null)?.reservedSeq;
+        if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 0) {
+          throw new Error('reservedSeq must be a non-negative integer');
+        }
+        return seq;
       },
-    },
-  );
+      {
+        warn: (message, detail) => {
+          servedFromBackup = true;
+          logger.warn(message, detail);
+        },
+      },
+    );
+  } catch (error) {
+    // Both copies unusable. If that is their CONTENT (invalid JSON, wrong
+    // schema), no bound exists until an operator repairs them: the fail-closed
+    // verdict (one error log, cached by file fingerprint). A failed READ
+    // ("unreadable: …" in the loader's reason) may be transient, so it stays a
+    // plain seed error, retried on the next append.
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('unreadable:')) throw error;
+    throw new WorkLogUnboundedError({ sidecarPath, sidecar: message });
+  }
   if (value === undefined) return null;
   return { seq: value, source: servedFromBackup ? 'backup' : 'live' };
 }
 
 /**
  * The step invariant every reservation write must keep: the new live value is
- * never below the one it replaces and at most one block above it. Since `.bak`
- * always holds the replaced live value, this is exactly what keeps `.bak` at
- * most one block behind live — the premise of the backup recovery in readSeed.
- * A violating write is refused (error log + throw) before anything is written.
+ * never below the one it replaces and at most one block above it. `.bak` holds
+ * the replaced live value when that copy was valid; atomicWriteJson keeps the
+ * OLD `.bak` when the live copy is missing or invalid at write time, and
+ * writeReservation then writes once more so `.bak` is promoted anyway. Together
+ * that keeps `.bak` at most one block behind live — the premise of the backup
+ * recovery in readSeed. A violating write is refused (error log + throw) before
+ * anything is written.
  */
 function assertReservationStep(sidecarPath: string, previous: number, next: number): void {
   if (next >= previous && next - previous <= reserveBlock) return;
@@ -480,10 +530,30 @@ function assertReservationStep(sidecarPath: string, previous: number, next: numb
 
 async function writeReservation(sidecarPath: string, previous: number, reservedSeq: number): Promise<void> {
   assertReservationStep(sidecarPath, previous, reservedSeq);
+  // atomicWriteJson promotes the old live copy to `.bak` only if it is valid:
+  // it returns silently for a missing live copy and warns ("keeping existing
+  // backup") for an invalid one (promotePreviousToBackup). Either way the stale
+  // `.bak` would survive under the new reservation, so write once more — the
+  // second write promotes the first — as rewriteBothReservations does.
+  let liveWasMissing = false;
+  try {
+    await fs.promises.stat(sidecarPath);
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+    liveWasMissing = true;
+  }
+  let promotionSkipped = false;
+  const warn = (message: string, detail?: unknown) => {
+    promotionSkipped = true;
+    logger.warn(message, detail);
+  };
   // Shared atomic writer (temp → fsync → rename); it leaves the directory
   // unsynced, and the rename must survive power loss for the reservation to
   // bound every seq used after it — so sync it now, not just before a publish.
-  atomicWriteJson(sidecarPath, { reservedSeq }, { warn: (message, detail) => logger.warn(message, detail) });
+  atomicWriteJson(sidecarPath, { reservedSeq }, { warn });
+  if (liveWasMissing || promotionSkipped) {
+    atomicWriteJson(sidecarPath, { reservedSeq }, { warn: (message, detail) => logger.warn(message, detail) });
+  }
   noteDirChanged(path.dirname(sidecarPath));
   await syncDueDirs();
 }
@@ -950,18 +1020,25 @@ export async function readWorkLog(
 
     // Reconnect fast path: a short backward scan usually reaches afterSeq.
     const fast: Budget = { left: FAST_PATH_BUDGET_BYTES };
+    const fastCover = { offset: size };
     const newest: WorkLogEntry[] = [];
     const scan = { reachedAfterSeq: false };
-    const fastEnd = await scanBackward(fh, size, fast, (line) => {
-      const entry = parseEntry(line);
-      if (!entry) return true;
-      if (entry.seq <= afterSeq) {
-        scan.reachedAfterSeq = true;
-        return false;
-      }
-      newest.push(entry);
-      return newest.length <= limit;
-    });
+    const fastEnd = await scanBackward(
+      fh,
+      size,
+      fast,
+      (line) => {
+        const entry = parseEntry(line);
+        if (!entry) return true;
+        if (entry.seq <= afterSeq) {
+          scan.reachedAfterSeq = true;
+          return false;
+        }
+        newest.push(entry);
+        return newest.length <= limit;
+      },
+      fastCover,
+    );
     budget.left -= FAST_PATH_BUDGET_BYTES - fast.left;
     if (scan.reachedAfterSeq || fastEnd === 'done') {
       // Every entry after afterSeq was collected.
@@ -973,12 +1050,32 @@ export async function readWorkLog(
     // forward from its position.
     const start = await findPageStart(fh, size, afterSeq, budget);
     const page: WorkLogEntry[] = [];
-    const end = await scanForward(fh, size, start, budget, (line) => {
-      const entry = parseEntry(line);
-      if (!entry || entry.seq <= afterSeq) return true;
-      page.push(entry);
-      return page.length <= limit;
-    });
+    const forwardCover = { offset: start };
+    const end = await scanForward(
+      fh,
+      size,
+      start,
+      budget,
+      (line) => {
+        const entry = parseEntry(line);
+        if (!entry || entry.seq <= afterSeq) return true;
+        page.push(entry);
+        return page.length <= limit;
+      },
+      forwardCover,
+    );
+    if (page.length === 0 && newest.length > 0 && forwardCover.offset >= fastCover.offset) {
+      // A junk region sits between afterSeq and the tail. The forward scan
+      // examined everything from the page start up to where the fast path's
+      // examined region begins and found no entry after afterSeq, so the fast
+      // path's collection is every such entry: return it instead of discarding
+      // it, so paging makes progress past the junk.
+      const all = newest.reverse();
+      return { entries: all.slice(0, limit), hasMore: all.length > limit };
+    }
+    // If the two scanned regions do not meet, an unexamined region (wider than
+    // the budget) lies between them; returning the fast path's entries could
+    // skip entries in it, so the page stays empty with hasMore (documented).
     if (end === 'budget') warnBudget(conversationId, 'afterSeq', page.length);
     return { entries: page.slice(0, limit), hasMore: page.length > limit || end === 'budget' };
   } finally {

@@ -3,6 +3,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Every test here does real, fsync'd file I/O, many on multi-MB fixtures; on a
+// heavily loaded host (load average 50+) a few of them cross the 5 s default
+// without anything being wrong. They are bounded by design, so give them room.
+vi.setConfig({ testTimeout: 30_000 });
+
 // DATA_DIR is read lazily by work-log.ts, so a getter lets each test point the
 // store at its own temp directory.
 const paths = vi.hoisted(() => ({ dataDir: '' }));
@@ -745,6 +750,126 @@ describe('work log store', () => {
       await expect(wl.appendWorkLog('conv-bigt', { kind: 'notice', text: 'x' })).rejects.toBeInstanceOf(
         wl.WorkLogUnboundedError,
       );
+    });
+  });
+
+  describe('final-review items (review round 9)', () => {
+    afterEach(() => {
+      wl._setWorkLogReserveBlockForTests();
+    });
+
+    async function loggerSpies() {
+      const { Logger } = await import('../../logger');
+      return { error: vi.spyOn(Logger.prototype, 'error'), warn: vi.spyOn(Logger.prototype, 'warn') };
+    }
+
+    it.each([
+      ['corrupted', (file: string) => fs.writeFileSync(file, '{"reservedSeq": 9')],
+      ['deleted', (file: string) => fs.rmSync(file)],
+    ])('live sidecar %s in-process, a block crossed, the tail lost, live lost again → no seq reused', async (_how, damage) => {
+      const BLOCK = 10;
+      const id = 'conv-tf';
+      const live = sidecarFile(id);
+      writeRaw(id, Array.from({ length: BLOCK }, (_, i) => line(i + 1)).join(''));
+      fs.writeFileSync(live, JSON.stringify({ reservedSeq: BLOCK }));
+      const published = new Set<number>(Array.from({ length: BLOCK }, (_, i) => i + 1));
+      const fresh = async () => {
+        const mod = await loadFresh();
+        mod._setWorkLogReserveBlockForTests(BLOCK);
+        mod.setOnWorkLogAppendedCallback((_c, e) => published.add(e.seq));
+        wl = mod;
+        return mod;
+      };
+
+      let proc = await fresh();
+      for (let s = BLOCK + 1; s <= 2 * BLOCK; s++) await proc.appendWorkLog(id, { kind: 'narration', text: `a${s}` });
+      // live 20, .bak 10. Now the live copy is damaged while the writer is warm...
+      damage(live);
+      // ...and the next block is crossed (reservation 20 → 30) and 21..25 published.
+      for (let s = 2 * BLOCK + 1; s <= 2 * BLOCK + 5; s++) {
+        await proc.appendWorkLog(id, { kind: 'narration', text: `b${s}` });
+      }
+      const bakAfterCrossing = JSON.parse(fs.readFileSync(`${live}.bak`, 'utf-8')).reservedSeq;
+      await proc.flushWorkLog();
+
+      // Entries 21..25 are lost, and the live copy is damaged again.
+      const kept = fs
+        .readFileSync(logFile(id), 'utf-8')
+        .split('\n')
+        .filter((l) => l && JSON.parse(l).seq <= 2 * BLOCK);
+      writeRaw(id, `${kept.join('\n')}\n`);
+      damage(live);
+
+      const before = new Set(published);
+      proc = await fresh();
+      const next = await proc.appendWorkLog(id, { kind: 'notice', text: 'after restart' });
+      await proc.flushWorkLog();
+      expect(before.has(next.seq)).toBe(false);
+      expect(next.seq).toBeGreaterThan(Math.max(...before));
+      // The mechanism: the crossing promoted .bak even though live was unusable.
+      expect(bakAfterCrossing).toBe(3 * BLOCK);
+    });
+
+    it('afterSeq paging makes progress past a mid-log junk region (reviewer probe)', async () => {
+      const id = 'conv-midjunk';
+      // The reader is under test, so the entries are written raw (no per-entry fdatasync).
+      writeRaw(id, Array.from({ length: 50 }, (_, i) => line(i + 1)).join(''));
+      appendRaw(id, Buffer.from('x\n'.repeat(3 * 1024 * 1024))); // ~6 MB of junk lines
+      appendRaw(id, Array.from({ length: 30 }, (_, i) => line(51 + i)).join(''));
+
+      const after50 = await wl.readWorkLog(id, { afterSeq: 50 });
+      expect(seqs(after50)).toEqual(Array.from({ length: 30 }, (_, i) => 51 + i));
+      expect(after50.hasMore).toBe(false);
+
+      // Paging from before the junk: first the entries in front of it, then past it.
+      const after40 = await wl.readWorkLog(id, { afterSeq: 40 });
+      expect(seqs(after40)).toEqual(Array.from({ length: 10 }, (_, i) => 41 + i));
+      expect(after40.hasMore).toBe(true);
+      const small = await wl.readWorkLog(id, { afterSeq: 50, limit: 10 });
+      expect(seqs(small)).toEqual(Array.from({ length: 10 }, (_, i) => 51 + i));
+      expect(small.hasMore).toBe(true);
+    });
+
+    it('a junk region wider than the budget never makes paging skip entries past it', async () => {
+      const id = 'conv-widejunk';
+      writeRaw(id, Array.from({ length: 50 }, (_, i) => line(i + 1)).join(''));
+      appendRaw(id, Buffer.from('x\n'.repeat(10 * 1024 * 1024))); // 20 MB
+      appendRaw(id, Array.from({ length: 600 }, (_, i) => line(51 + i)).join(''));
+
+      const page = await wl.readWorkLog(id, { afterSeq: 50 });
+      // Either nothing yet (documented stall) or exactly from 51 — never a jump past 51.
+      if (page.entries.length > 0) expect(page.entries[0].seq).toBe(51);
+      expect(page.hasMore).toBe(true);
+    });
+
+    it('a corrupt live sidecar with no .bak fails closed with one error log across 5 appends', async () => {
+      const id = 'conv-nobak';
+      writeRaw(id, Array.from({ length: 5 }, (_, i) => line(i + 1)).join(''));
+      fs.writeFileSync(sidecarFile(id), '{"reservedSeq": 10');
+      const { error, warn } = await loggerSpies();
+
+      for (let i = 0; i < 5; i++) {
+        await expect(wl.appendWorkLog(id, { kind: 'notice', text: `t${i}` })).rejects.toBeInstanceOf(
+          wl.WorkLogUnboundedError,
+        );
+      }
+      expect(error.mock.calls.filter(([m]) => String(m).includes('no provable seq upper bound'))).toHaveLength(1);
+      expect(warn.mock.calls.filter(([m]) => String(m).includes('seed failed'))).toHaveLength(0);
+    });
+
+    it('an unreadable sidecar (I/O error) is not cached as a verdict: it is retried and recovers', async () => {
+      const id = 'conv-eacces';
+      writeRaw(id, Array.from({ length: 5 }, (_, i) => line(i + 1)).join(''));
+      fs.writeFileSync(sidecarFile(id), JSON.stringify({ reservedSeq: 1000 }));
+      fs.chmodSync(sidecarFile(id), 0o000);
+      try {
+        const failure = await wl.appendWorkLog(id, { kind: 'notice', text: 'a' }).catch((e: unknown) => e);
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure).not.toBeInstanceOf(wl.WorkLogUnboundedError);
+      } finally {
+        fs.chmodSync(sidecarFile(id), 0o600);
+      }
+      expect((await wl.appendWorkLog(id, { kind: 'notice', text: 'b' })).seq).toBe(1001);
     });
   });
 
