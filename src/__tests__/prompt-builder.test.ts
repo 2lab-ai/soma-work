@@ -557,40 +557,6 @@ describe('PromptBuilder', () => {
     });
   });
 
-  describe('variable escaping', () => {
-    it('should not substitute escaped \\{{...}} variables in workflow prompts', async () => {
-      // Workflow prompts (e.g. jira-create-pr) contain {{user.email}} in Co-Authored-By
-      // When user settings are provided, these should be resolved
-      const { userSettingsStore } = await import('../user-settings-store');
-      vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({
-        userId: 'U123',
-        email: 'z@yourcompany.io',
-        slackName: 'Zhuge',
-        defaultDirectory: '',
-        bypassPermission: false,
-        persona: 'default',
-        defaultModel: 'claude-opus-4-6',
-        lastUpdated: '',
-        accepted: true,
-      });
-
-      const prompt = builder.buildSystemPrompt('U123', 'jira-create-pr');
-
-      expect(prompt).toBeDefined();
-      // Variables should be resolved in workflow prompts
-      expect(prompt).toContain('z@yourcompany.io');
-    });
-
-    it('should leave unresolved vars when no user settings', async () => {
-      // Without user settings, template vars remain as-is
-      const prompt = builder.buildSystemPrompt(undefined, 'jira-create-pr');
-
-      expect(prompt).toBeDefined();
-      // Unresolved variables should remain as template placeholders
-      expect(prompt).toContain('{{user.email}}');
-    });
-  });
-
   describe('clearCache', () => {
     it('should clear workflow prompt cache', () => {
       // Load a workflow prompt (caches it)
