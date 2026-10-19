@@ -74,6 +74,7 @@ describe('model-registry', () => {
     it('returns fallback for unknown model', () => {
       const spec = getModelSpec('gpt-99-turbo');
       expect(spec.pricing.inputPerMTok).toBe(3);
+      expect(spec.pricing.outputPerMTok).toBe(15);
       expect(spec.contextWindow).toBe(200_000);
     });
 
@@ -106,6 +107,15 @@ describe('model-registry', () => {
       const cost = calculateTokenCost('claude-sonnet-4-6-20250414', 1_000_000, 1_000_000, 0, 0);
       // 3 + 15 = 18
       expect(cost).toBeCloseTo(18, 2);
+    });
+
+    it('calculates Sonnet 4.6 cost with cache read and 5-min cache write tiers', () => {
+      const cost = calculateTokenCost('claude-sonnet-4-6-20250514', 1_000_000, 100_000, 500_000, 50_000);
+      // input: 1M/1M * 3 = 3
+      // output: 100k/1M * 15 = 1.5
+      // cacheRead: 500k/1M * 0.3 = 0.15
+      // cacheCreate: 50k/1M * 3.75 = 0.1875
+      expect(cost).toBeCloseTo(3 + 1.5 + 0.15 + 0.1875, 4);
     });
 
     it('uses fallback for unknown model', () => {

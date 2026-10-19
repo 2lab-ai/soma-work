@@ -28,8 +28,6 @@ covers. It is mandatory only when there would otherwise be a filename
 collision inside `__tests__/` (two sources producing the same target
 basename). Existing examples:
 
-- `src/metrics/__tests__/token-pricing.pricing.test.ts` +
-  `src/metrics/__tests__/token-pricing.test.ts`
 - `src/metrics/__tests__/report-aggregator.core.test.ts` +
   `src/metrics/__tests__/report-aggregator.test.ts`
 - `src/slack/commands/__tests__/usage-handler.routing.test.ts` +
