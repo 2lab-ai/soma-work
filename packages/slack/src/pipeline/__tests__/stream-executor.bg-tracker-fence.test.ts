@@ -262,4 +262,27 @@ describe('StreamExecutor — background tracker fence after session delete', () 
     expect(deps.toolEventProcessor.handleToolResult).not.toHaveBeenCalled();
     expect(abortController.signal.aborted).toBe(true);
   });
+
+  it('drops a tool use whose session was terminated during the status write', async () => {
+    const session = createSession();
+    const deps = createDeps(
+      stream(session, {
+        type: 'tool_call',
+        toolCallId: 'tu-1',
+        name: 'Bash',
+        input: { command: 'sleep 100', run_in_background: true },
+      }),
+    );
+    deps.threadPanel.setStatus.mockImplementation(async (_s: any, _k: string, patch: any) => {
+      if (patch?.agentPhase === '도구 실행 중') session.terminated = true;
+    });
+    const abortController = new AbortController();
+    const executor = new StreamExecutor(deps);
+
+    await executor.execute(createParams(session, abortController));
+    await settle();
+
+    expect(deps.toolEventProcessor.handleToolUse).not.toHaveBeenCalled();
+    expect(abortController.signal.aborted).toBe(true);
+  });
 });

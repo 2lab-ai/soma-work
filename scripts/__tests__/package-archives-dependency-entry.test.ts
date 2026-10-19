@@ -1,0 +1,76 @@
+/**
+ * `missingDependencyEntry` — the archive gate's per-dependency runtime check.
+ *
+ * A package.json is not a module: a dependency tree whose built files were
+ * pruned keeps its manifest. Each case is one way a manifest declares its entry,
+ * resolved in Node's order (exports → main → implicit index.js).
+ */
+
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
+
+const { missingDependencyEntry } = require('../smoke/package-archives.js') as {
+  missingDependencyEntry: (dir: string, rel: string) => string | null;
+};
+
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'dep-entry-'));
+afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
+
+let n = 0;
+function pkg(manifest: Record<string, unknown> | string, files: string[] = []): string {
+  const dir = path.join(scratch, `p${n++}`);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'package.json'), typeof manifest === 'string' ? manifest : JSON.stringify(manifest));
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), '');
+  }
+  return dir;
+}
+const check = (dir: string) => missingDependencyEntry(dir, 'node_modules/x');
+
+describe('missingDependencyEntry', () => {
+  it('main: resolves with Node suffixes, refuses when pruned', () => {
+    expect(check(pkg({ main: 'dist/index' }, ['dist/index.js']))).toBeNull();
+    expect(check(pkg({ main: 'lib' }, ['lib/index.js']))).toBeNull();
+    expect(check(pkg({ main: 'dist/index.js' }))).toBe('node_modules/x/dist/index.js');
+  });
+
+  it('exports-only: one concrete code target is enough, none is a refusal', () => {
+    const exportsMap = {
+      '.': { types: './dist/index.d.ts', import: './dist/esm/index.js', require: './dist/cjs/index.js' },
+      './client': { import: './dist/esm/client.js', require: './dist/cjs/client.js' },
+    };
+    // Root target missing, a subpath present — the @modelcontextprotocol/sdk shape.
+    expect(check(pkg({ exports: exportsMap }, ['dist/cjs/client.js']))).toBeNull();
+    expect(check(pkg({ exports: exportsMap }, ['dist/index.d.ts']))).toBe('node_modules/x/dist/esm/index.js');
+  });
+
+  it('a ./package.json export does not stand in for pruned code', () => {
+    const manifest = { exports: { '.': './dist/index.js', './package.json': './package.json' } };
+    expect(check(pkg(manifest))).toBe('node_modules/x/dist/index.js');
+  });
+
+  it('exports are consulted before main (a stale main does not refuse a working package)', () => {
+    expect(check(pkg({ main: 'gone.js', exports: './dist/index.js' }, ['dist/index.js']))).toBeNull();
+  });
+
+  it('no main, no exports: the implicit index.js must exist', () => {
+    expect(check(pkg({ name: 'x' }, ['index.js']))).toBeNull();
+    expect(check(pkg({ name: 'x' }))).toBe('node_modules/x/index.js');
+  });
+
+  it('types-only packages declare no runtime entry', () => {
+    expect(check(pkg({ name: '@types/x', types: 'index.d.ts' }, ['index.d.ts']))).toBeNull();
+  });
+
+  it('subpath-only exports with no code target declare no root requirement', () => {
+    expect(check(pkg({ exports: { './package.json': './package.json' } }))).toBeNull();
+  });
+
+  it('an unreadable manifest is a refusal, not a pass', () => {
+    expect(check(pkg('{ not json'))).toBe('node_modules/x/package.json (unreadable)');
+  });
+});
