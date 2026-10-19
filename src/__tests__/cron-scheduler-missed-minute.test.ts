@@ -38,6 +38,8 @@ function setup(jobs: Array<{ name: string; expression: string }>) {
 describe('CronScheduler — no lost minutes', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] });
+    // Jobs are created by setup() at this instant, before every scenario minute.
+    vi.setSystemTime(new Date('2026-10-19T00:00:00Z'));
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -151,6 +153,42 @@ describe('CronScheduler — no lost minutes', () => {
     await scheduler.tick();
 
     expect(fired()).toEqual(['recent']);
+  });
+
+  it('does not catch up an occurrence from before the job existed', async () => {
+    const { storage, deps, fired } = setup([]);
+    const scheduler = new CronScheduler(deps);
+
+    at('2026-10-19T12:00:10Z');
+    await scheduler.tick();
+    at('2026-10-19T12:09:00Z');
+    storage.addJob({ name: 'new', expression: '5 12 * * *', prompt: 'p', owner: 'U1', channel: 'C1', threadTs: null });
+    at('2026-10-19T12:10:10Z'); // window 12:01–12:10 includes 12:05, before creation
+    await scheduler.tick();
+
+    expect(fired()).toEqual([]);
+  });
+
+  it('does not re-fire a job that a run-now covered while an earlier job of the tick awaited', async () => {
+    const { deps, fired, injected } = setup([
+      { name: 'slow', expression: '0 12 * * *' },
+      { name: 'other', expression: '0 12 * * *' },
+    ]);
+    let release!: () => void;
+    deps.messageInjector = vi.fn(async (e: SyntheticMessageEvent) => {
+      injected.push(e);
+      if (e.text.startsWith('[cron:slow]')) await new Promise<void>((r) => (release = r));
+    });
+    const scheduler = new CronScheduler(deps);
+
+    at('2026-10-19T12:00:30Z');
+    const ticking = scheduler.tick(); // snapshot [slow, other]; blocks on slow
+    await vi.waitFor(() => expect(fired()).toEqual(['slow']));
+    await scheduler.runJobNow('U1', 'other'); // manual fire, same minute
+    release();
+    await ticking;
+
+    expect(fired()).toEqual(['slow', 'other']);
   });
 
   it('skips a minute already covered by a manual run-now', async () => {

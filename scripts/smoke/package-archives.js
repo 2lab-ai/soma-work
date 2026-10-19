@@ -900,18 +900,23 @@ function lockfileProductionInstalls(root) {
 
 /**
  * Whether an installed dependency still carries the runtime files its manifest
- * points at, in the order Node resolves `require('<name>')`:
+ * points at, resolved the way this CommonJS runtime loads it:
  *
- * 1. `exports` (Node prefers it over `main`): at least one concrete code
- *    target must exist. Published packages do ship root targets that do not
- *    exist (`@modelcontextprotocol/sdk` declares `./dist/esm/index.js` and is
- *    only imported by subpath), so requiring every target would refuse a
- *    correct archive, while a tree whose built files were pruned has none.
+ * 1. `exports` (Node prefers it over `main`): each subpath is resolved under
+ *    the `require` conditions (`require`, `node`, `default`, first match in
+ *    key order) — a surviving ESM build does not stand in for a pruned CJS
+ *    one. An ESM-only package (no require-resolvable target) is checked under
+ *    the `import` conditions instead. At least one resolved target must exist:
+ *    published packages do ship root targets that do not exist
+ *    (`@modelcontextprotocol/sdk` declares `./dist/cjs/index.js` and is only
+ *    imported by subpath), so requiring every target would refuse a correct
+ *    archive, while a tree whose built files were pruned has none.
  *    `./package.json`, declaration and source-map targets are not code and do
  *    not count. Targets must name the file exactly: Node applies no extension
- *    or `index.js` resolution to `exports`. An `exports` with no code target
+ *    or `index.js` lookup to `exports`. An `exports` with no code target
  *    falls through to `main`.
- * 2. `main` must resolve.
+ * 2. `main` must resolve (require suffixes), else Node's fallback to the
+ *    package root `index.js`.
  * 3. Neither: Node loads `index.js`, which must exist, unless the package is
  *    types-only (declares `types`/`typings` and ships no `index.js`).
  *
@@ -935,10 +940,13 @@ function missingDependencyEntry(dir, rel) {
     );
   const existsExactly = (target) => isFile(path.join(dir, target));
   const display = (target) => path.posix.join(rel, target.replace(/^\.\//, ''));
-  const codeTargets = exportTargets(manifest.exports).filter((target) => !NON_CODE_TARGET.test(target));
+
+  const requireTargets = exportEntryTargets(manifest.exports, REQUIRE_CONDITIONS);
+  const codeTargets =
+    requireTargets.length > 0 ? requireTargets : exportEntryTargets(manifest.exports, IMPORT_CONDITIONS);
   if (codeTargets.length > 0) return codeTargets.some(existsExactly) ? null : display(codeTargets[0]);
   if (typeof manifest.main === 'string' && manifest.main.length > 0) {
-    return resolves(manifest.main) ? null : display(manifest.main);
+    return resolves(manifest.main) || resolves('index') ? null : display(manifest.main);
   }
   if (manifest.exports !== undefined && manifest.exports !== null) return null;
   if (resolves('index')) return null;
@@ -947,20 +955,45 @@ function missingDependencyEntry(dir, rel) {
 }
 
 const NON_CODE_TARGET = /(?:^|\/)package\.json$|\.d\.[cm]?ts$|\.map$/;
+const REQUIRE_CONDITIONS = new Set(['require', 'node', 'default']);
+const IMPORT_CONDITIONS = new Set(['import', 'node', 'default']);
 
-/** Every concrete (non-wildcard), non-`types` file target of an `exports` field. */
-function exportTargets(exported) {
-  const targets = [];
-  const collect = (node) => {
-    if (typeof node === 'string') {
-      if (!node.includes('*')) targets.push(node);
-    } else if (Array.isArray(node)) node.forEach(collect);
-    else if (node !== null && typeof node === 'object') {
-      for (const [key, child] of Object.entries(node)) if (key !== 'types' && !key.includes('*')) collect(child);
+/**
+ * The file each concrete (non-wildcard) subpath of an `exports` field resolves
+ * to under `conditions` — Node's rule: in a condition object the first key
+ * (in key order) that is an active condition and resolves wins; arrays are
+ * fallbacks. Non-code targets are dropped.
+ */
+function exportEntryTargets(exported, conditions) {
+  if (exported === undefined || exported === null) return [];
+  const resolve = (node) => {
+    if (typeof node === 'string') return node;
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        const hit = resolve(item);
+        if (hit !== null) return hit;
+      }
+      return null;
     }
+    if (typeof node === 'object' && node !== null) {
+      for (const [key, child] of Object.entries(node)) {
+        if (!conditions.has(key)) continue;
+        const hit = resolve(child);
+        if (hit !== null) return hit;
+      }
+    }
+    return null;
   };
-  collect(exported);
-  return targets;
+  const isSubpathMap =
+    typeof exported === 'object' && !Array.isArray(exported) && Object.keys(exported).some((k) => k.startsWith('.'));
+  const entries = isSubpathMap
+    ? Object.entries(exported)
+        .filter(([key]) => !key.includes('*'))
+        .map(([, value]) => value)
+    : [exported];
+  return entries
+    .map(resolve)
+    .filter((target) => typeof target === 'string' && !target.includes('*') && !NON_CODE_TARGET.test(target));
 }
 
 /**

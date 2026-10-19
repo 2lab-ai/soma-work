@@ -200,6 +200,13 @@ export interface ToolEventContext {
    * format (`${sessionKey}:${ms}:${uuid}`).
    */
   turnId?: string;
+  /**
+   * True once the session this context belongs to was deleted. Deletion
+   * drains the background-task tracker; a spawn-ack processed afterwards (a
+   * later result of the same batch, after an await) must not re-add under a
+   * key a new session in the thread reuses. Absent = never terminated.
+   */
+  isSessionTerminated?: () => boolean;
 }
 
 /**
@@ -506,7 +513,7 @@ export class ToolEventProcessor {
         // adding it here too guarantees we never miss a launch even if a
         // `task_started` is ever dropped. Idempotent by task_id. Drained ONLY
         // by the authoritative `task_notification` (no consumer-tool polling).
-        if (context.sessionKey) {
+        if (context.sessionKey && !context.isSessionTerminated?.()) {
           const taskId = parseBackgroundLaunchId(toolResult.result);
           if (taskId) {
             this.backgroundTaskTracker.trackStart(context.sessionKey, taskId, {

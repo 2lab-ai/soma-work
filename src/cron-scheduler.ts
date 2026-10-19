@@ -214,8 +214,15 @@ export class CronScheduler {
         return;
       }
 
-      for (const job of jobs) {
+      for (const listed of jobs) {
+        let job = listed;
         try {
+          if (this.findDueMinute(job, firstMinute, nowMinute) === null) continue;
+          // Re-read before firing: an earlier job of this tick may have awaited
+          // a whole turn, long enough for a run-now, an edit or a delete to land.
+          const current = this.deps.storage.getAll().find((j) => j.id === listed.id);
+          if (!current) continue;
+          job = current;
           const dueMinute = this.findDueMinute(job, firstMinute, nowMinute);
           if (dueMinute === null) continue;
 
@@ -246,13 +253,16 @@ export class CronScheduler {
   }
 
   /**
-   * First minute in [fromMinute, toMinute] at which the job is due and has not
-   * already run (scheduled or run-now), or null.
+   * First minute in [fromMinute, toMinute] at which the job is due, existed,
+   * and has not already run (scheduled or run-now), or null.
    * Trace: S4, Section 3a — lastRunMinute dedup
    */
   private findDueMinute(job: CronJob, fromMinute: number, toMinute: number): number | null {
+    const createdMinute = typeof job.createdAt === 'string' ? job.createdAt.slice(0, 16) : '';
     for (let m = fromMinute; m <= toMinute; m++) {
-      if (job.lastRunMinute && job.lastRunMinute >= minuteKey(m)) continue;
+      const key = minuteKey(m);
+      if (key < createdMinute) continue; // catch-up never reaches before the job existed
+      if (job.lastRunMinute && job.lastRunMinute >= key) continue;
       if (matchesCronExpression(job.expression, new Date(m * MINUTE_MS))) return m;
     }
     return null;

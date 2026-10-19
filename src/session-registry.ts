@@ -1666,6 +1666,9 @@ export class SessionRegistry {
             });
             continue;
           }
+          // As in terminateSession: in-flight callbacks holding this object
+          // fence on the flag, and onExpiry below awaits before the delete.
+          session.terminated = true;
           if (this.expiryCallbacks) {
             try {
               await this.expiryCallbacks.onExpiry(session);
