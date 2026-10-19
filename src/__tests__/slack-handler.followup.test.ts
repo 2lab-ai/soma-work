@@ -6,8 +6,16 @@ vi.mock('../slack/autoskill-fire', () => ({
 }));
 
 import type { FollowupQueueSnapshot } from '@soma/slack/followup-queue';
-import { FOLLOWUP_CANCEL_ACTION_ID } from '@soma/slack/followup-queue-blocks';
+import {
+  buildFollowupQueueBlocks,
+  FOLLOWUP_CANCEL_ACTION_ID,
+  FOLLOWUP_SEND_NOW_ACTION_ID,
+  type FollowupQueueView,
+  parseFollowupItemActionValue,
+} from '@soma/slack/followup-queue-blocks';
 import { getMetricsEmitter } from '../metrics/event-emitter';
+import { QueueHandler } from '../slack/commands/queue-handler';
+import { ThreadSurface } from '../slack/thread-surface';
 import { SlackHandler } from '../slack-handler';
 import { userSettingsStore } from '../user-settings-store';
 
@@ -87,6 +95,8 @@ describe('SlackHandler — follow-up queue host', () => {
   let abortSession: ReturnType<typeof vi.fn>;
   let lastTurnSucceeded: boolean;
   let emitFollowupQueue: ReturnType<typeof vi.spyOn>;
+  /** The ThreadPanel the handler built itself — kept for its production follow-up wiring. */
+  let realThreadPanel: any;
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -128,6 +138,7 @@ describe('SlackHandler — follow-up queue host', () => {
     const app = { client: {}, assistant: vi.fn() } as any;
     handler = new SlackHandler(app, claudeHandler as any, {} as any, { followupQueueStore: store });
     handlerAny = handler as any;
+    realThreadPanel = handlerAny.threadPanel;
 
     addReaction = vi.fn().mockResolvedValue(undefined);
     removeReaction = vi.fn().mockResolvedValue(undefined);
@@ -694,6 +705,369 @@ describe('SlackHandler — follow-up queue host', () => {
     // still exists after the migration.
     expect(startWithContinuation).toHaveBeenCalledTimes(2);
     expect(handlerAny.getFollowupQueue().list(WORK_KEY)[0].state).toBe('resolved');
+  });
+
+  /**
+   * The turn generation of a migrated turn, as the thread surface sees it.
+   *
+   * The dispatch opens its generation under the SOURCE (slot) key
+   * (`runInitial` → `beginTurn(source)`), but every header write of the turn is
+   * addressed to the WORK key with that generation as `expectedTurnEpoch`, and
+   * the surface checks it against `getFollowupView(work).turnEpoch`. With
+   * nothing parked during the turn the work key had no queue session at all, so
+   * the surface read "unverifiable" and dropped the whole turn's header/task
+   * list (live 2026-10-19: 40 sessions, all `expected: 1`).
+   *
+   * One authoritative generation: while the pair is bound the work key READS
+   * the slot's live counter, and the release raises the work key's own counter
+   * to it — never a copy that could outlive a supersede of the slot.
+   */
+  describe('bot-thread migration — the work-thread key reads the live slot generation', () => {
+    const WORK_KEY = 'C123:999.000';
+    let workSession: any;
+
+    const migratedResult = () => ({
+      session: workSession,
+      sessionKey: WORK_KEY,
+      isNewSession: true,
+      userName: 'Owner',
+      workingDirectory: '/tmp/work',
+      abortController: new AbortController(),
+      halted: false,
+    });
+    const queue = () => handlerAny.getFollowupQueue();
+
+    beforeEach(() => {
+      claudeHandler.getSessionKey.mockImplementation(
+        (channel: string, threadTs?: string) => `${channel}:${threadTs ?? ''}`,
+      );
+      workSession = { ...registrySession, threadTs: '999.000', threadRootTs: '999.000' };
+      claudeHandler.getSessionByKey.mockImplementation((key: string) =>
+        key === WORK_KEY ? workSession : registrySession,
+      );
+      initialize.mockImplementation(async () => migratedResult());
+    });
+
+    /** The view the SURFACE is wired with — the exact closure the handler gave its own ThreadPanel. */
+    const surfaceView = (key: string): FollowupQueueView | undefined => realThreadPanel.deps.getFollowupView(key);
+
+    /**
+     * The view the CONTROL side is wired with: the command router's `queue`
+     * handler, the one production caller of the item/panel builders.
+     */
+    function controlView(key: string) {
+      const queueHandler = handlerAny.commandRouter.handlers.find((h: unknown) => h instanceof QueueHandler);
+      return queueHandler.deps.getFollowupView(key);
+    }
+
+    /**
+     * A REAL `ThreadSurface` reading the handler's queue view through the same
+     * two hooks the production panel is wired with — taken from the handler's
+     * own ThreadPanel. Acceptance is read off the session's `agentPhase`, which
+     * `setStatus` writes only after the epoch gate passed — independent of
+     * render debounce.
+     */
+    function workSurface() {
+      const surfaceSession: any = {
+        ...workSession,
+        actionPanel: { channelId: CHANNEL, messageTs: 'panel-ts', agentPhase: 'before' },
+      };
+      const surface = new ThreadSurface({
+        slackApi: {
+          getClient: vi.fn().mockReturnValue({}),
+          getPermalink: vi.fn().mockResolvedValue('https://slack.example/p'),
+          updateMessage: vi.fn().mockResolvedValue(undefined),
+          postMessage: vi.fn().mockResolvedValue({ ts: 'posted-ts' }),
+        },
+        claudeHandler: { getSessionByKey: vi.fn().mockReturnValue(surfaceSession) },
+        requestCoordinator: { isRequestActive: vi.fn().mockReturnValue(false) },
+        todoManager: { getTodos: vi.fn().mockReturnValue([]), getEffectiveStatus: vi.fn() },
+        getFollowupView: realThreadPanel.deps.getFollowupView,
+        getFollowupError: realThreadPanel.deps.getFollowupError,
+      } as any);
+      return { surface, surfaceSession };
+    }
+
+    /** One header write on the work key through a fresh real surface; `true` = the A28 gate let it land. */
+    async function lands(expectedTurnEpoch: number): Promise<boolean> {
+      const { surface, surfaceSession } = workSurface();
+      const phase = `write@${expectedTurnEpoch}`;
+      await surface.setStatus(surfaceSession, WORK_KEY, { agentPhase: phase }, { expectedTurnEpoch });
+      return surfaceSession.actionPanel.agentPhase === phase;
+    }
+
+    /** Start the migrating first mention and leave it running. */
+    async function startMigratedTurn() {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      // Ingress key = source thread `C123:111.222`; nothing is parked on the work key.
+      const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+      const turnEpoch = createAgentSession.mock.calls[0][2].turnEpoch as number;
+      return {
+        turnEpoch,
+        settle: async () => {
+          gate.resolve({ hasPendingChoice: false });
+          await first;
+        },
+      };
+    }
+
+    /** An ordinary dispatch on the WORK key — a reply in the work thread — left running. */
+    async function startWorkTurn(ts: string) {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const run = handler.handleMessage(message({ ts, thread_ts: '999.000', text: '다음 지시' }), say());
+      await tick();
+      const calls = createAgentSession.mock.calls;
+      return {
+        turnEpoch: calls[calls.length - 1][2].turnEpoch as number,
+        settle: async () => {
+          gate.resolve({ hasPendingChoice: false });
+          await run;
+        },
+      };
+    }
+
+    /** `!{prompt}` in the WORK thread: cuts the running turn through the slot key (`Send now`). */
+    function steerFromWorkThread() {
+      return handler.handleMessage(message({ ts: '333.444', thread_ts: '999.000', text: '!대신 이걸 해줘' }), say());
+    }
+
+    it('lets the migrated first turn write its own header on the work-thread key', async () => {
+      const turn = await startMigratedTurn();
+      try {
+        expect(turn.turnEpoch).toBe(1);
+        const { surface, surfaceSession } = workSurface();
+
+        await surface.setStatus(surfaceSession, WORK_KEY, { agentPhase: '작업 중' }, { expectedTurnEpoch: 1 });
+
+        expect(surfaceSession.actionPanel.agentPhase, 'the epoch-stamped write of turn 1 must land').toBe('작업 중');
+        expect(surfaceView(WORK_KEY)?.turnEpoch).toBe(1);
+      } finally {
+        await turn.settle();
+      }
+    });
+
+    it("overlays only the generation — the work thread shows its own parked items, never the slot's", async () => {
+      const turn = await startMigratedTurn();
+      try {
+        // One reply in each thread while the turn runs: the source-thread reply is
+        // parked under the slot key, the work-thread reply under the work key.
+        await handler.handleMessage(message({ ts: '333.444', text: '소스 스레드 후속' }), say());
+        await handler.handleMessage(message({ ts: '333.555', thread_ts: '999.000', text: '작업 스레드 후속' }), say());
+
+        const view = surfaceView(WORK_KEY);
+        expect(view?.turnEpoch).toBe(turn.turnEpoch);
+        expect(view?.items.map((item) => item.message.text)).toEqual(['작업 스레드 후속']);
+        // Read, not copied: the work key's own counter is untouched while bound.
+        expect(queue().getTurnEpoch(WORK_KEY)).toBe(0);
+      } finally {
+        await turn.settle();
+      }
+    });
+
+    it('fences turn 1 the moment Send now opens the next slot generation — before any rebind', async () => {
+      const gate1 = deferred<any>();
+      const gate2 = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate1.promise).mockImplementationOnce(() => gate2.promise);
+      const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+      expect(await lands(1)).toBe(true);
+
+      // The abort is delivered and `beginTurn(slot)` = 2 is committed; the
+      // dispatcher now waits for turn 1 to settle, so turn 2 has bound nothing.
+      const steering = steerFromWorkThread();
+      await tick();
+      expect(abortSession).toHaveBeenCalledWith(WORK_KEY, 'user-interrupted');
+      expect(queue().getTurnEpoch(SESSION_KEY)).toBe(2);
+      expect(createAgentSession).toHaveBeenCalledTimes(1);
+
+      expect(await lands(1), 'a superseded turn-1 write is fenced at once').toBe(false);
+      expect(await lands(2), 'the new generation is live on the work key before it rebinds').toBe(true);
+
+      gate1.resolve({ hasPendingChoice: false });
+      await first;
+      await vi.waitFor(() => expect(createAgentSession).toHaveBeenCalledTimes(2));
+      try {
+        expect(createAgentSession.mock.calls[1][2].turnEpoch).toBe(2);
+        expect(await lands(1)).toBe(false);
+        expect(await lands(2), 'turn 2 keeps writing once it has rebound').toBe(true);
+      } finally {
+        gate2.resolve({ hasPendingChoice: false });
+        await steering;
+      }
+    });
+
+    it('still fences a late turn-1 write once a later turn opens on the work-thread key', async () => {
+      const turn = await startMigratedTurn();
+      await turn.settle();
+
+      const next = await startWorkTurn('444.555');
+      try {
+        // A fresh generation — NOT a second "1" that a late turn-1 write would match.
+        expect(next.turnEpoch).toBe(turn.turnEpoch + 1);
+        expect(surfaceView(WORK_KEY)?.turnEpoch).toBe(turn.turnEpoch + 1);
+
+        expect(await lands(turn.turnEpoch), 'a superseded turn must not repaint the live turn').toBe(false);
+        // Positive control: the live turn's own generation still writes.
+        expect(await lands(next.turnEpoch)).toBe(true);
+      } finally {
+        await next.settle();
+      }
+    });
+
+    it('raises the work key past every slot generation on release, including one that never rebound', async () => {
+      // The `Send now` replacement dies before `initialize` returns, so it never
+      // rebinds: the slot reaches 2 while nothing ever stamped 2 on the work key.
+      initialize
+        .mockImplementationOnce(async () => migratedResult())
+        .mockImplementationOnce(async () => {
+          throw new Error('initialize failed');
+        });
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+      const steering = steerFromWorkThread();
+      await tick();
+      expect(queue().getTurnEpoch(SESSION_KEY)).toBe(2);
+
+      gate.resolve({ hasPendingChoice: false });
+      await first;
+      await steering;
+      expect(createAgentSession).toHaveBeenCalledTimes(1);
+
+      const next = await startWorkTurn('444.555');
+      try {
+        expect(next.turnEpoch, 'the next work-thread turn opens ABOVE every slot generation').toBe(3);
+        expect(await lands(1)).toBe(false);
+        expect(await lands(2), 'the never-rebound Send now generation is fenced too').toBe(false);
+        expect(await lands(3)).toBe(true);
+      } finally {
+        await next.settle();
+      }
+    });
+
+    it('rejects a stamped write while bound when the slot generation cannot be read', async () => {
+      const turn = await startMigratedTurn();
+      // A reply parked under the work key, so the work session itself exists and
+      // only the SLOT's counter is missing below.
+      await handler.handleMessage(message({ ts: '333.555', thread_ts: '999.000', text: '작업 스레드 후속' }), say());
+      const real = queue().snapshot.bind(queue());
+      const snapshot = vi.spyOn(queue(), 'snapshot');
+      try {
+        expect(await lands(1)).toBe(true);
+
+        snapshot.mockImplementation(() => {
+          const state = real();
+          state.sessions = state.sessions.filter((session: any) => session.sessionKey !== SESSION_KEY);
+          return state;
+        });
+        expect(surfaceView(WORK_KEY)?.turnEpoch).toBeUndefined();
+        expect(await lands(1), 'slot session missing = unverifiable, never "the work key\'s own 0"').toBe(false);
+
+        snapshot.mockImplementation(() => {
+          throw new Error('store unreadable');
+        });
+        expect(await lands(1), 'queue unreadable = unverifiable').toBe(false);
+      } finally {
+        snapshot.mockRestore();
+        await turn.settle();
+      }
+    });
+
+    /**
+     * The overlay is a SURFACE fact. A control payload is checked by the
+     * dispatcher against the queue's own counter for the key it is addressed
+     * to (`followup-dispatcher.ts` `staleTurn`, `FollowupQueue.reserve`), so it
+     * must be minted from that counter — on main the two were the same number.
+     */
+    it('gives control producers the counter the dispatcher checks (queue-panel deps + block encoder), not the overlaid surface epoch', async () => {
+      const turn = await startMigratedTurn();
+      try {
+        await handler.handleMessage(message({ ts: '333.555', thread_ts: '999.000', text: '작업 스레드 후속' }), say());
+        expect(surfaceView(WORK_KEY)?.turnEpoch, 'the surface fence reads the slot').toBe(turn.turnEpoch);
+
+        const { blocks } = buildFollowupQueueBlocks(controlView(WORK_KEY), { compact: false });
+        const button = (blocks as any[])
+          .map((block) => block?.accessory)
+          .find((accessory) => accessory?.action_id === FOLLOWUP_SEND_NOW_ACTION_ID);
+        const value = parseFollowupItemActionValue(button?.value);
+        if (!value || value.turnEpoch === undefined) throw new Error('no Send now button was minted');
+        expect(value.sessionKey).toBe(WORK_KEY);
+        expect(value.turnEpoch).toBe(queue().getTurnEpoch(WORK_KEY));
+
+        const result = await handlerAny
+          .getFollowupDispatcher()
+          .sendNow(value.sessionKey, value.itemId, value.epoch, 'U_OWNER', value.turnEpoch);
+        expect(result.status === 'rejected' ? result.reason : result.status).not.toBe('stale-turn-epoch');
+        if (result.status === 'dispatched') await result.run.settled;
+      } finally {
+        await turn.settle();
+      }
+    });
+
+    it('mints a reaction Send now from the same counter while bound', async () => {
+      const turn = await startMigratedTurn();
+      try {
+        await handler.handleMessage(message({ ts: '333.555', thread_ts: '999.000', text: '작업 스레드 후속' }), say());
+        const checked = queue().getTurnEpoch(WORK_KEY);
+        const sendNow = vi.spyOn(handlerAny.getFollowupDispatcher(), 'sendNow');
+
+        await handlerAny.handleFollowupReactionControl({
+          channel: CHANNEL,
+          ts: '333.555',
+          reaction: 'ui_send_now',
+          user: 'U_OWNER',
+        });
+
+        expect(sendNow).toHaveBeenCalledTimes(1);
+        expect(sendNow.mock.calls[0][0]).toBe(WORK_KEY);
+        expect(sendNow.mock.calls[0][4]).toBe(checked);
+        const result: any = await sendNow.mock.results[0].value;
+        expect(result.status === 'rejected' ? result.reason : result.status).not.toBe('stale-turn-epoch');
+        if (result.status === 'dispatched') await result.run.settled;
+      } finally {
+        await turn.settle();
+      }
+    });
+
+    it('stays fail-closed when the release floor cannot be persisted', async () => {
+      const logError = vi.spyOn(handlerAny.logger, 'error');
+      const turn = await startMigratedTurn();
+      // The store refuses the release-time floor write — the only save between
+      // here and the end of the release.
+      saveError = new Error('disk full');
+      try {
+        await turn.settle();
+      } finally {
+        saveError = undefined;
+      }
+      expect(logError.mock.calls.some((call: any[]) => String(call[0]).includes('floor'))).toBe(true);
+      expect(await lands(1)).toBe(false);
+
+      // The store recovers. The next work-thread turn opens at the work key's
+      // own 1 (the floor never landed), which is turn 1's generation too — so it
+      // is fenced as a whole rather than letting turn 1 repaint it.
+      const second = await startWorkTurn('444.555');
+      try {
+        expect(second.turnEpoch).toBe(turn.turnEpoch);
+        expect(await lands(turn.turnEpoch)).toBe(false);
+      } finally {
+        await second.settle();
+      }
+
+      // The turn after that is strictly above every slot generation: it writes again.
+      const third = await startWorkTurn('555.666');
+      try {
+        expect(third.turnEpoch).toBe(turn.turnEpoch + 1);
+        expect(await lands(third.turnEpoch)).toBe(true);
+        expect(await lands(turn.turnEpoch)).toBe(false);
+      } finally {
+        await third.settle();
+      }
+    });
   });
 
   /**
