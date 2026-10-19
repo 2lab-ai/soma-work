@@ -1348,7 +1348,10 @@ describe('archive gate internals', () => {
     // ships (how a gate requiring the pre-e9af688b nested copy stayed green).
     expect(gate.lockfileWorkspaceNestedInstalls(repoRoot)).toEqual([]);
     const lock = JSON.parse(read('package-lock.json')) as { packages: Record<string, { resolved?: string }> };
-    expect(lock.packages['node_modules/soma-lib']?.resolved).toBe(SOMA_LIB_TARBALL);
+    // Layout, not version: a soma-lib bump changes the URL but not the hoisting.
+    expect(lock.packages['node_modules/soma-lib']?.resolved).toMatch(
+      /^https:\/\/github\.com\/2lab-ai\/soma-lib\/releases\/download\/v\d+\.\d+\.\d+\/soma-lib-\d+\.\d+\.\d+\.tgz$/,
+    );
   });
 
   it('derives the required workspace-nested trees from the lockfile, skipping what --omit=dev omits', () => {
