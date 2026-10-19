@@ -66,7 +66,7 @@ getSessionKey(channelId, threadTs?) = `${channelId}-${threadTs || 'direct'}`
 
 근거:
 - 정의: [src/session-registry.ts:216](../../src/session-registry.ts).
-- userId 무시 (legacy 호환): [src/session-registry.ts:223](../../src/session-registry.ts) — `getSessionKeyWithUser`가 내부적으로 `getSessionKey`로 위임.
+- userId 무시: 키는 channel/thread만으로 만든다(`getSessionKey`). userId를 받던 legacy alias `getSessionKeyWithUser`는 2026-10에 삭제됐다.
 - `SessionRegistry`의 내부 맵 `sessions: Map<string, ConversationSession>` 키가 이 수식.
 
 **라이프사이클 연산:**
