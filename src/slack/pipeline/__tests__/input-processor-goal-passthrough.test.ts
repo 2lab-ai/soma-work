@@ -15,7 +15,7 @@ vi.mock('../../../user-settings-store', () => ({
 }));
 
 import { InputProcessor } from '../input-processor';
-import type { MessageEvent } from '../types';
+import type { MessageEvent } from '@soma/slack/pipeline/types';
 
 describe('InputProcessor — setGoalObjective passthrough (#1082)', () => {
   let commandRouterRoute: ReturnType<typeof vi.fn>;

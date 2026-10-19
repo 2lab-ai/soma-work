@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { LegacyCommandRouter } from '../router';
-import { parseTopic, translateToLegacy, ZRouter } from '../router';
+import type { LegacyCommandRouter } from '@soma/slack/z/router';
+import { parseTopic, translateToLegacy, ZRouter } from '@soma/slack/z/router';
 import type { ZInvocation, ZRespond } from '../types';
 
 function makeRespond(overrides: Partial<ZRespond> = {}): ZRespond {

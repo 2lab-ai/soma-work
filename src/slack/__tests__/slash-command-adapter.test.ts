@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { SlashCommandAdapter } from '../slash-command-adapter';
+import { SlashCommandAdapter } from '@soma/slack/slash-command-adapter';
 
 /**
  * Loading `../commands/command-router` pulls in every command handler: 3–5 s

@@ -16,7 +16,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { isLocalSlashCommand } from '../local-slash-command';
+import { isLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 
 describe('isLocalSlashCommand — SDK local command matcher', () => {
   describe('positive cases (must return true so bypass triggers)', () => {
