@@ -539,14 +539,12 @@ export {
   type LegacyCommandRouter,
   parseTopic,
   type SayFn as ZRouterSayFn,
-  type TombstoneStore,
   translateToLegacy,
   type ZDispatchResult,
   ZRouter,
   type ZRouterDeps,
 } from './z/router';
 export { stripZPrefix as stripZPrefixDirect } from './z/strip-z-prefix';
-export { detectLegacyNaked, isLegacyNaked, TOMBSTONE_HINTS, type TombstoneHint } from './z/tombstone';
 export {
   type BotMessageTs,
   markBotMessageTs,
@@ -559,7 +557,6 @@ export {
   buildConfirmationCard,
   buildHelpCard,
   buildSettingCard,
-  buildTombstoneCard,
   type ConfirmationCardOptions,
   DEFAULT_HELP_CATEGORIES,
   type HelpCardOptions,
@@ -567,7 +564,6 @@ export {
   type SettingCardExtraAction,
   type SettingCardOption,
   type SettingCardOptions,
-  type TombstoneCardOptions,
   zBlockId,
 } from './z/ui-builder';
-export { isDmAllowedForNonAdmin, isWhitelistedNaked } from './z/whitelist';
+export { isDmAllowedForNonAdmin } from './z/whitelist';

@@ -176,7 +176,7 @@ Four prefix families — each with a clear, non-overlapping purpose:
 | `/z <topic> …` | Primary command surface (Block Kit UI where it makes sense) | User-global | `/z persona set linus` |
 | `%<sub> …` | **Current session only** — override without saving | Ephemeral (reset on `new`/`renew`) | `%model opus` |
 | `$<skill>` / `$<plugin>:<skill>` | **Force skill invocation** (reads `SKILL.md`, emits RPG banner at `compact` and above — at `minimal` it is not posted; recorded in the dashboard work log when the session has a conversation) | Per-message | `$z`, `$stv:new-task` |
-| naked text | Whitelisted bare forms (see below) or chat / workflow dispatch | n/a | `sessions`, `new`, `fix PR 123` |
+| naked text | Bare command forms (see below) or chat / workflow dispatch | n/a | `sessions`, `new`, `fix PR 123` |
 
 > **Split history (#508)**: `$` used to double as both "force skill" and "session setting". It was split — `%` took over session settings, `$` is now skill-only. Legacy `$model` / `$verbosity` / `$effort` / `$thinking` / `$thinking_summary` still work during the deprecation grace period but emit a one-line notice nudging users to `%`.
 
@@ -360,7 +360,7 @@ Nested `$plugin:skill` references inside skill content are resolved recursively 
 
 ### naked — bare-text compatibility
 
-A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Source of truth is split across two layers: [`src/slack/z/whitelist.ts`](./src/slack/z/whitelist.ts) (z-topic forms) and the `CommandParser.is*Command` matchers routed by [`src/slack/commands/command-router.ts`](./src/slack/commands/command-router.ts) (operational cards such as `auth`, `cct`).
+Bare (no-prefix) `[cmd] [args]` forms run through the same command handlers as their `/z` counterparts. The source of truth is the handler chain of [`CommandRouter`](./packages/slack/src/commands/command-router.ts) and its `CommandParser.is*Command` matchers (including operational cards such as `auth`, `cct`). In a DM, a non-admin may send only the inputs [`isDmAllowedForNonAdmin`](./packages/slack/src/z/whitelist.ts) accepts. Common forms:
 
 | Form | Notes |
 |------|-------|
@@ -379,9 +379,9 @@ A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Sour
 
 The Codex block in the key DM points `OPENAI_BASE_URL` at the advertised server's `/v1` endpoint and uses your same tenant key. Copy the complete `codex --model … -c …` invocation: its explicit Responses provider reads `OPENAI_API_KEY` even when you already use ChatGPT login or another provider. The exports apply to the current terminal; the invocation does not rewrite Codex config or login credentials. Use that invocation again for later llmux sessions. See [Codex gateway authentication](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway).
 
-Any free-form text not matching the whitelist is treated as a chat / workflow dispatch prompt.
+Any free-form text that no command handler claims is treated as a chat / workflow dispatch prompt.
 
-**Migration (#506)**: Legacy naked command forms (`persona linus`, `model sonnet`, `show_prompt`, …) outside this whitelist are deprecated. First use per user shows a tombstone hint; subsequent uses are dropped. Set `SOMA_ENABLE_LEGACY_SLASH=true` to restore the pre-refactor behavior during rollback.
+**Bare commands (#531)**: Bare forms such as `persona linus` or `model sonnet` run directly through their handlers. The one-time tombstone hint that #506 Phase 1 showed for them was removed in #531. `SOMA_ENABLE_LEGACY_SLASH=true` only restores the legacy `/soma`, `/session` and `/new` slash commands.
 
 ---
 
@@ -689,7 +689,7 @@ src/                                # TypeScript source
 │   ├── pipeline/                   # Stream processing pipeline
 │   ├── directives/                 # Channel/session link directives
 │   ├── formatters/                 # Output formatters
-│   └── z/                          # /z command surface + naked whitelist
+│   └── z/                          # /z command surface + non-admin DM input gate
 ├── auth/                           # CCT lease + query env injection
 ├── conversation/                   # Conversation recording & replay
 ├── model-commands/                 # Model command catalog & validation

@@ -1,1 +1,1 @@
-export { isDmAllowedForNonAdmin, isWhitelistedNaked } from '@soma/slack/z/whitelist';
+export { isDmAllowedForNonAdmin } from '@soma/slack/z/whitelist';

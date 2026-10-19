@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { TombstoneHint } from '../tombstone';
 import {
   buildConfirmationCard,
   buildHelpCard,
   buildSettingCard,
-  buildTombstoneCard,
   DEFAULT_HELP_CATEGORIES,
   zBlockId,
 } from '../ui-builder';
@@ -88,46 +86,6 @@ describe('buildHelpCard', () => {
     expect(actions.length).toBe(2);
     expect((actions[0] as any).elements.length).toBe(5);
     expect((actions[1] as any).elements.length).toBe(2);
-  });
-});
-
-describe('buildTombstoneCard', () => {
-  const hint: TombstoneHint = {
-    match: /^persona$/i,
-    title: 'persona',
-    oldForm: 'persona set <n>',
-    newForm: '/z persona set <n>',
-  };
-
-  it('returns 3 blocks: header, actions, footer', () => {
-    const blocks = buildTombstoneCard({ hint, issuedAt: 1000 });
-    expect(blocks.length).toBe(3);
-    expect((blocks[0] as any).type).toBe('section');
-    expect((blocks[1] as any).type).toBe('actions');
-    expect((blocks[2] as any).type).toBe('context');
-  });
-
-  it('header shows oldForm and newForm', () => {
-    const blocks = buildTombstoneCard({ hint, issuedAt: 1000 });
-    const text = (blocks[0] as any).text.text as string;
-    expect(text).toContain(hint.oldForm);
-    expect(text).toContain(hint.newForm);
-  });
-
-  it('actions include copy + dismiss buttons with action_ids scoped by topic', () => {
-    const blocks = buildTombstoneCard({ hint, issuedAt: 1000 });
-    const elements = (blocks[1] as any).elements as any[];
-    expect(elements.length).toBe(2);
-    expect(elements[0].action_id).toBe('z_tombstone_copy_persona');
-    expect(elements[1].action_id).toBe('z_tombstone_dismiss_persona');
-    expect(elements[0].value).toBe(hint.newForm);
-  });
-
-  it('all block_ids follow z_<topic>_<issuedAt>_<index> pattern', () => {
-    const blocks = buildTombstoneCard({ hint, issuedAt: 777 });
-    expect((blocks[0] as any).block_id).toBe('z_persona_777_0');
-    expect((blocks[1] as any).block_id).toBe('z_persona_777_1');
-    expect((blocks[2] as any).block_id).toBe('z_persona_777_2');
   });
 });
 
