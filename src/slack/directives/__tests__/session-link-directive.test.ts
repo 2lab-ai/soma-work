@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { SessionLinkDirectiveHandler } from '@soma/slack/directives/session-link-directive';
+import { describe, expect, it } from 'vitest';
 
 describe('SessionLinkDirectiveHandler', () => {
   describe('extract', () => {
