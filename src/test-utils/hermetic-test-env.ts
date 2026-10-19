@@ -37,6 +37,9 @@ const KEEP_EXACT = new Set([
   'NODE_ENV',
   'NODE_OPTIONS',
   'TEST',
+  // Process-context flag, not deployment config: the real-SDK integration
+  // suite skips itself inside a Claude Code session (nested sessions crash).
+  'CLAUDECODE',
   // Windows process basics, harmless elsewhere.
   'SYSTEMROOT',
   'SystemRoot',
