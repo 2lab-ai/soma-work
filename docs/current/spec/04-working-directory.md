@@ -5,6 +5,12 @@
 - Source File: `src/working-directory-manager.ts`
 - Last Updated: 2025-12-13
 
+> **Status (2026-10): superseded.** Since `f6b15add` (2026-01) each user has one fixed working
+> directory (`{BASE_DIRECTORY}/{userId}/`). Channel/thread overrides and per-user defaults are gone;
+> the deprecated no-ops this document describes (`setWorkingDirectory`, `removeWorkingDirectory`,
+> `getChannelWorkingDirectory`, `formatChannelSetupMessage`, `get/setUserDefaultDirectory`) were
+> deleted in the 2026-10 dead-code audit. Kept as a historical design record.
+
 ## 1. Overview
 
 작업 디렉토리 관리자는 Claude가 작업할 파일 시스템 경로를 설정하고 해석합니다. 채널별 기본값, 스레드별 오버라이드, 사용자별 기본값을 지원합니다.
