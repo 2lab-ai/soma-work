@@ -44,7 +44,6 @@
     "./mrkdwn-escape": "./dist/mrkdwn-escape.js",
     "./output-flags": "./dist/output-flags.js",
     "./pipeline": "./dist/pipeline/index.js",
-    "./pipeline/effective-phase": "./dist/pipeline/effective-phase.js",
     "./pipeline/input-processor": "./dist/pipeline/input-processor.js",
     "./pipeline/session-initializer": "./dist/pipeline/session-initializer.js",
     "./pipeline/stream-executor": "./dist/pipeline/stream-executor.js",
@@ -206,9 +205,6 @@
       ],
       "pipeline": [
         "dist/pipeline/index.d.ts"
-      ],
-      "pipeline/effective-phase": [
-        "dist/pipeline/effective-phase.d.ts"
       ],
       "pipeline/input-processor": [
         "dist/pipeline/input-processor.d.ts"
