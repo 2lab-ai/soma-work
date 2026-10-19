@@ -185,5 +185,6 @@ export interface WorkLogEntry extends WorkLogInput { seq: number; ts: number }
 ## 7. 출고 기록 [LIVE]
 
 리시트 원장 = [`agent-inbox/loop.done.md`](agent-inbox/loop.done.md). 프리뷰 배포 대상 `t2`·`t3`(deploy.yml 잡 이름)에서 시나리오
-1·2·3·5와 6의 로그인 페이지·`soma_next` 쿠키를 실측했다(6의 SSO 착지는 유닛 테스트 `login-return.test.ts`). 대상 `t1`은 러너가
-오프라인이라 배포가 큐에 걸려 있고, 러너 복귀 시 같은 `deploy/dev` 실행으로 간다. prod(`deploy/prod`)는 유저 게이트다.
+1·2·3·5와 6의 로그인 페이지·`soma_next` 쿠키를 실측했다(6의 SSO 착지는 유닛 테스트 `login-return.test.ts`). 대상 `t1`은
+2026-10-19 유저 지시로 이 출고 범위에서 빠졌다([`agent-inbox/ssot.md`](agent-inbox/ssot.md) §스코프 변경) — 러너가 오프라인이라
+v0.2.1159는 t1에 배포되지 않았고, t1의 3a 1회 이관도 아직 돌지 않았다. prod(`deploy/prod`)는 유저 게이트다.
