@@ -46,13 +46,6 @@ describe('renderModelCard — catalog models', () => {
     expect(ids).toContain('z_setting_model_set_grok-4.5');
   });
 
-  it('appends catalog models (grok-4.5) after the static allow-list', async () => {
-    modelCatalog.__testSeed([GROK]);
-    const { blocks } = await renderModelCard({ userId: 'UCAT1', issuedAt: 1 });
-    const ids = collectButtons(blocks).map((b) => b.action_id);
-    expect(ids).toContain('z_setting_model_set_grok-4.5');
-  });
-
   it('dedupes catalog models already present in the static list', async () => {
     modelCatalog.__testSeed([
       GROK,

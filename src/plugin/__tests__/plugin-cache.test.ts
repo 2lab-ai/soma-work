@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { hasCachedPlugin, readCacheMeta, removeCachedPlugin, writeCacheMeta } from '../plugin-cache';
+import { hasCachedPlugin, readCacheMeta, writeCacheMeta } from '../plugin-cache';
 import type { CacheMeta } from '../types';
 
 describe('plugin-cache', () => {
@@ -72,21 +72,6 @@ describe('plugin-cache', () => {
       fs.mkdirSync(pluginDir, { recursive: true });
       fs.writeFileSync(path.join(pluginDir, 'file.txt'), 'content');
       expect(hasCachedPlugin(tmpDir, 'omc')).toBe(true);
-    });
-  });
-
-  describe('removeCachedPlugin', () => {
-    it('removes an existing plugin directory', () => {
-      const pluginDir = path.join(tmpDir, 'omc');
-      fs.mkdirSync(pluginDir, { recursive: true });
-      fs.writeFileSync(path.join(pluginDir, 'file.txt'), 'content');
-
-      removeCachedPlugin(tmpDir, 'omc');
-      expect(fs.existsSync(pluginDir)).toBe(false);
-    });
-
-    it('does not throw for nonexistent directory', () => {
-      expect(() => removeCachedPlugin(tmpDir, 'nodir')).not.toThrow();
     });
   });
 });

@@ -21,7 +21,7 @@ import type { AgentStreamEvent } from '../stream-types';
 import { type CalculateTokenCost, createSdkMessageMapper } from './sdk-message-to-event';
 
 export interface StreamRunnerDeps {
-  /** Mirrors `streamProcessorProviders.calculateTokenCost` (injected → pure). */
+  /** Cost function, injected so the mapper stays pure. */
   calculateTokenCost: CalculateTokenCost;
 }
 

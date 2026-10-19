@@ -362,6 +362,11 @@ drain.
 
 ## Scenario 7 — Response-header rate-limit detection
 
+> Status: not implemented. The stream executor has no access to the API
+> response headers (the SDK runs the Claude CLI as a subprocess), so only
+> error-string detection is live. The header parser this
+> scenario names was deleted in the 2026-10 dead-code audit.
+
 **Goal:** A successful response carrying
 `anthropic-ratelimit-unified-5h-remaining: 0` triggers rotation with
 `rateLimitSource = 'response_header'`.

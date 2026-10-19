@@ -223,38 +223,6 @@ export class TodoManager {
     return false;
   }
 
-  getStatusChange(oldTodos: Todo[], newTodos: Todo[]): string | null {
-    // Find status changes
-    const changes: string[] = [];
-
-    for (const newTodo of newTodos) {
-      const oldTodo = oldTodos.find((t) => t.id === newTodo.id);
-
-      if (!oldTodo) {
-        // New task added
-        changes.push(`➕ Added: ${newTodo.content}`);
-      } else if (oldTodo.status !== newTodo.status) {
-        // Status changed
-        const statusEmoji = {
-          pending: '⏳',
-          in_progress: '🔄',
-          completed: '✅',
-        };
-
-        changes.push(`${statusEmoji[newTodo.status]} ${newTodo.content}`);
-      }
-    }
-
-    // Check for removed tasks
-    for (const oldTodo of oldTodos) {
-      if (!newTodos.find((t) => t.id === oldTodo.id)) {
-        changes.push(`➖ Removed: ${oldTodo.content}`);
-      }
-    }
-
-    return changes.length > 0 ? changes.join('\n') : null;
-  }
-
   /**
    * Check if a task is blocked by incomplete dependencies.
    * A missing dependency (dangling ref) is treated as blocking (safe default).

@@ -2,9 +2,6 @@
  * StreamProcessor tests
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSdkMessageMapper } from '../../agent-runtime/claude-code/sdk-message-to-event';
-import { calculateTokenCost } from '../../metrics/model-registry';
 import {
   AgentStreamProcessor,
   extractTaskIdFromResult,
@@ -12,7 +9,10 @@ import {
   type SayFunction,
   type StreamCallbacks,
   type StreamContext,
-} from '../stream-processor';
+} from '@soma/slack/stream-processor';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createSdkMessageMapper } from '../../agent-runtime/claude-code/sdk-message-to-event';
+import { calculateTokenCost } from '../../metrics/model-registry';
 
 // epic #1023 P4: the processor now consumes the neutral AgentStreamEvent stream.
 // To keep these behavior tests' SDKMessage inputs AND callback assertions

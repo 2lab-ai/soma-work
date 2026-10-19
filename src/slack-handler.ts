@@ -43,7 +43,6 @@ import { buildGoalContinuationPrompt } from './prompt/session-goal-block';
 import {
   type ActionHandlerContext,
   ActionHandlers,
-  AgentStreamProcessor,
   AssistantStatusManager,
   type CommandDependencies,
   CommandRouter,

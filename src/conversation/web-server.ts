@@ -20,9 +20,6 @@ import { registerDashboardRoutes, setSelfInstanceEnv } from './dashboard';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
 import {
   type AuthContext,
-  generateCsrfToken,
-  generateCsrfTokenForAdmin,
-  getDashboardUser,
   getJwtSecret,
   loginReturnCookieFor,
   registerOAuthRoutes,

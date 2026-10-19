@@ -1296,8 +1296,8 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
   // The pre-fix `>= 1` check classified any non-zero usage (≥1%) as full,
   // so every healthy OAuth slot rendered as "7d Cooldown" in the CCT card
   // — see PR #684 screenshot (notify 19/63, info 2/94, ai 54/79 all
-  // wrongly badged as Cooldown). The fix applies the same `> 1.5`
-  // disambiguation used by `parsePercent` in `src/oauth/header-parser.ts`.
+  // wrongly badged as Cooldown). The fix applies a `> 1.5` percent-vs-fraction
+  // disambiguation (the one the since-deleted OAuth header parser used).
 
   it('#684: OAuth utilization=19 (percent form, 5h=19%) → Healthy, not Cooldown', () => {
     const slot = oauthAttachedSlot();

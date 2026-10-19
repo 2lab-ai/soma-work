@@ -83,7 +83,7 @@
 ### 2.2 session key / SessionKey
 
 - **정의:** `${channelId}-${threadTs || 'direct'}` — [src/session-registry.ts:216](../../src/session-registry.ts).
-- **주의:** userId는 키에 포함되지 않는다. `getSessionKeyWithUser`는 legacy alias — [src/session-registry.ts:223](../../src/session-registry.ts).
+- **주의:** userId는 키에 포함되지 않는다. (legacy alias `getSessionKeyWithUser`는 2026-10에 삭제됐다.)
 
 ### 2.3 `threadModel` enum
 

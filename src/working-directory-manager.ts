@@ -116,43 +116,6 @@ export class WorkingDirectoryManager {
   }
 
   /**
-   * @deprecated - Working directories are now fixed per user
-   * This method is kept for backward compatibility but does nothing
-   */
-  setWorkingDirectory(
-    _channelId: string,
-    _directory: string,
-    _threadTs?: string,
-    _userId?: string,
-  ): { success: boolean; resolvedPath?: string; error?: string } {
-    return {
-      success: false,
-      error: 'Working directory setting is disabled. Each user has a fixed directory.',
-    };
-  }
-
-  /**
-   * @deprecated - Working directories are now fixed per user
-   */
-  removeWorkingDirectory(_channelId: string, _threadTs?: string, _userId?: string): boolean {
-    return false;
-  }
-
-  /**
-   * @deprecated - No longer used with fixed directories
-   */
-  listConfigurations(): never[] {
-    return [];
-  }
-
-  /**
-   * @deprecated - Use getWorkingDirectory instead
-   */
-  getChannelWorkingDirectory(_channelId: string): string | undefined {
-    return undefined;
-  }
-
-  /**
    * @deprecated - No longer used with fixed directories
    */
   hasChannelWorkingDirectory(_channelId: string): boolean {

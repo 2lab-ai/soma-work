@@ -481,16 +481,6 @@ export class PromptBuilder {
     if (!instructionsBlock) return prompt;
     return prompt ? `${prompt}\n\n${instructionsBlock}` : instructionsBlock;
   }
-
-  /**
-   * Get the default system prompt without persona (includes .system.prompt if exists)
-   */
-  getDefaultPrompt(): string | undefined {
-    if (this.defaultSystemPrompt) {
-      return this.appendLocalSystemPrompt(this.defaultSystemPrompt);
-    }
-    return this.localSystemPrompt;
-  }
 }
 
 // Singleton instance for backward compatibility

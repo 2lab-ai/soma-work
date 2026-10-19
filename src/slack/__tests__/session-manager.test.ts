@@ -171,16 +171,16 @@ describe('SessionUiManager', () => {
       expect(actionsBlock).toBeDefined();
     });
 
-    it('should include model in meta context', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
+    it('should include model and time info in meta context', async () => {
+      const { cardBlocks } = await getCardBlocks(
+        createMockSession({ title: 'Test', lastActivity: new Date(Date.now() - 5 * 60_000) }),
+      );
       const metaCtx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('·'));
       expect(metaCtx).toBeDefined();
-    });
-
-    it('should include time info in meta context', async () => {
-      const { cardBlocks } = await getCardBlocks(createMockSession({ title: 'Test' }));
-      const metaCtx = cardBlocks.find((b: any) => b.type === 'context' && b.elements?.[0]?.text?.includes('·'));
-      expect(metaCtx).toBeDefined();
+      const metaText = metaCtx.elements[0].text;
+      // No session model → the card's default model label.
+      expect(metaText).toContain('`Sonnet 4`');
+      expect(metaText).toContain('5분 전');
     });
 
     it('should render issue link in linkHistory context when linkHistory has issues', async () => {

@@ -382,7 +382,7 @@ describe('validateCompactThreshold (#617 AC1)', () => {
   });
 });
 
-describe('UserSettingsStore.getUserCompactThreshold / setUserCompactThreshold (#617 AC1, AC2)', () => {
+describe('UserSettingsStore.getUserCompactThreshold / clearUserCompactThreshold (#617 AC2)', () => {
   it('AC2: returns DEFAULT_COMPACT_THRESHOLD=80 when user has no settings', () => {
     const store = makeStore();
     expect(DEFAULT_COMPACT_THRESHOLD).toBe(80);
@@ -396,39 +396,30 @@ describe('UserSettingsStore.getUserCompactThreshold / setUserCompactThreshold (#
     expect(store.getUserCompactThreshold('U1')).toBe(80);
   });
 
-  it('AC1: persists a valid threshold via setUserCompactThreshold', () => {
-    const store = makeStore();
-    store.setUserCompactThreshold('U1', 70);
-    expect(store.getUserCompactThreshold('U1')).toBe(70);
-  });
-
-  it('AC1: round-trips across store reloads', () => {
+  // The per-user percentage is no longer written (session-token thresholds replaced it in
+  // ebf1177a); a persisted legacy value is still read for conversion, then cleared.
+  function dirWithLegacyThresholds(thresholds: Record<string, number>): string {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-compact-'));
-    const s1 = new UserSettingsStore(dir);
-    s1.setUserCompactThreshold('U1', 65);
+    const users = Object.fromEntries(
+      Object.entries(thresholds).map(([userId, compactThreshold]) => [userId, { userId, compactThreshold }]),
+    );
+    fs.writeFileSync(path.join(dir, 'user-settings.json'), JSON.stringify(users), 'utf8');
+    return dir;
+  }
 
-    const s2 = new UserSettingsStore(dir);
-    expect(s2.getUserCompactThreshold('U1')).toBe(65);
-  });
-
-  it('AC1: setUserCompactThreshold throws on out-of-range (30) and does not persist', () => {
-    const store = makeStore();
-    expect(() => store.setUserCompactThreshold('U1', 30)).toThrow();
-    expect(store.getUserCompactThreshold('U1')).toBe(80); // default, not persisted
-  });
-
-  it('AC1: setUserCompactThreshold throws on 100 (above max) and does not persist', () => {
-    const store = makeStore();
-    expect(() => store.setUserCompactThreshold('U1', 100)).toThrow();
-    expect(store.getUserCompactThreshold('U1')).toBe(80);
-  });
-
-  it('AC1: threshold is per-user isolated', () => {
-    const store = makeStore();
-    store.setUserCompactThreshold('U1', 60);
-    store.setUserCompactThreshold('U2', 90);
+  it('reads a legacy persisted threshold per user', () => {
+    const store = new UserSettingsStore(dirWithLegacyThresholds({ U1: 60, U2: 90 }));
     expect(store.getUserCompactThreshold('U1')).toBe(60);
     expect(store.getUserCompactThreshold('U2')).toBe(90);
+  });
+
+  it('clearUserCompactThreshold drops the legacy value, persists, and leaves other users alone', () => {
+    const dir = dirWithLegacyThresholds({ U1: 65, U2: 70 });
+    const store = new UserSettingsStore(dir);
+    store.clearUserCompactThreshold('U1');
+    expect(store.getUserCompactThreshold('U1')).toBe(DEFAULT_COMPACT_THRESHOLD);
+    expect(store.getUserCompactThreshold('U2')).toBe(70);
+    expect(new UserSettingsStore(dir).getUserCompactThreshold('U1')).toBe(DEFAULT_COMPACT_THRESHOLD);
   });
 });
 
