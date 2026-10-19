@@ -1018,7 +1018,8 @@ function exportEntryTargets(exported, conditions) {
  * extensions and `index.js` exactly as the runtime will. Relative paths,
  * `node:` and builtin modules are not dependencies and are skipped; a
  * non-literal `require(expr)` cannot be read and is not seen. A package the
- * file's own workspace declares only in `devDependencies` is skipped too: the
+ * file's own workspace (never the archive root) declares only in
+ * `devDependencies` is skipped too: the
  * archive is installed with `--omit=dev` on purpose, and the staged
  * `packages/test-utils` mock factories require `vitest` that way. A
  * resolution that lands outside the archive root (an ancestor
@@ -1041,15 +1042,19 @@ function unresolvedFirstPartyRequires(root) {
     if (manifests.has(dir)) return manifests.get(dir);
     const own = readJson(path.join(dir, 'package.json'));
     const parent = path.dirname(dir);
-    const found = own !== null ? own : dir === root || parent === dir ? null : nearestManifest(parent);
+    const found =
+      own !== null ? { dir, manifest: own } : dir === root || parent === dir ? null : nearestManifest(parent);
     manifests.set(dir, found);
     return found;
   };
-  const devOnly = (manifest, name) =>
-    manifest !== null &&
-    Object.hasOwn(manifest.devDependencies || {}, name) &&
+  // Never the archive root's own manifest: the runtime's code (dist/) resolves
+  // to it, and a root devDependency required there is a runtime crash.
+  const devOnly = (found, name) =>
+    found !== null &&
+    found.dir !== root &&
+    Object.hasOwn(found.manifest.devDependencies || {}, name) &&
     !['dependencies', 'optionalDependencies', 'peerDependencies'].some((field) =>
-      Object.hasOwn(manifest[field] || {}, name),
+      Object.hasOwn(found.manifest[field] || {}, name),
     );
   for (const { rel, dirent } of walk(root)) {
     if (!dirent.isFile() || isDependencyPath(rel) || !/\.c?js$/.test(rel)) continue;

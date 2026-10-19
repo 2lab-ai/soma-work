@@ -4,7 +4,6 @@ import {
   DANGEROUS_RULES,
   isCrossUserAccess,
   isSshCommand,
-  matchRules,
   overridableMatchedRuleIds,
   overridableRulesByIds,
 } from '../dangerous-command-filter';
@@ -213,14 +212,14 @@ describe('lockdown isolation invariants', () => {
       expect(overridableRulesByIds([rule.id])).toEqual([]);
 
       // (b) matcher actually fires (sanity — synthetic command must hit the
-      // rule via the full-catalog matchRules path with proper ctx)
+      // rule's own matcher with proper ctx)
       const synthetic = syntheticCmdFor[rule.id];
       if (!synthetic) {
         throw new Error(
           `lockdown isolation invariants: missing synthetic command for new lockdown rule '${rule.id}'. Add an entry to syntheticCmdFor before merging.`,
         );
       }
-      expect(matchRules(synthetic.command, synthetic.ctx ?? {}).map((r) => r.id)).toContain(rule.id);
+      expect(rule.match(synthetic.command, synthetic.ctx ?? {})).toBe(true);
 
       // (c) overridable matcher (no ctx, ignores lockdown rules) does NOT
       // include this lockdown id, even though the command literally matches it
