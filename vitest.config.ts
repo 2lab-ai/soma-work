@@ -19,15 +19,9 @@ export default defineConfig({
       '**/node_modules/**',
       '**/.git/**',
       '**/dist/**',
-      // The model-commands tests below were quarantined in an earlier cleanup
-      // PR because they appeared to assert behavior the validator didn't
-      // implement (e.g. MANAGE_SKILL `rename`). The real root cause was stale
-      // compiled `*.js`/`*.d.ts` artifacts accidentally committed into
-      // `packages/process-shared/src/model-commands/`, which shadowed the
-      // up-to-date `*.ts` during module resolution. Those artifacts are now
-      // removed (and git-ignored), so these tests run against the real source.
-      'packages/mcp-servers/slack-mcp/slack-mcp-contract.test.ts',
-      'packages/mcp-servers/slack-mcp/slack-mcp-cross-thread.test.ts',
+      // Do not quarantine test files here: an excluded file silently drops out
+      // of CI (`test:release` uses this config). Fix a failing test, or delete
+      // it with evidence that it is a duplicate or tests dead code.
     ],
   },
 });
