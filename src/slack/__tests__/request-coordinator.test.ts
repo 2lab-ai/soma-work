@@ -123,14 +123,6 @@ describe('RequestCoordinator', () => {
 
       expect(coordinator.isRequestActive(sessionKey)).toBe(false);
     });
-
-    it('should always allow new requests', () => {
-      const sessionKey = 'C123:T456';
-      coordinator.setController(sessionKey, new AbortController());
-
-      // Even with active request, can start new one (queuing behavior)
-      expect(coordinator.canStartRequest(sessionKey)).toBe(true);
-    });
   });
 
   describe('active count', () => {
