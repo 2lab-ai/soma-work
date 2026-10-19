@@ -33,7 +33,6 @@
     "./dispatch-abort": "./dist/dispatch-abort.js",
     "./event-router": "./dist/event-router.js",
     "./formatters": "./dist/formatters/index.js",
-    "./formatters/directory-formatter": "./dist/formatters/directory-formatter.js",
     "./formatters/markdown-to-blocks": "./dist/formatters/markdown-to-blocks.js",
     "./incident-contract": "./dist/incident-contract.js",
     "./handoff-budget": "./dist/handoff-budget.js",
@@ -174,9 +173,6 @@
       ],
       "formatters": [
         "dist/formatters/index.d.ts"
-      ],
-      "formatters/directory-formatter": [
-        "dist/formatters/directory-formatter.d.ts"
       ],
       "formatters/markdown-to-blocks": [
         "dist/formatters/markdown-to-blocks.d.ts"
