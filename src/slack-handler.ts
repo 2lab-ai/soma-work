@@ -1575,9 +1575,10 @@ export class SlackHandler {
       // Bot-thread migration: the session this dispatch actually runs on is not
       // the one the slot was opened for. Bind the pair NOW — before the first
       // await that could let a work-thread reply in — so the fence sees the
-      // running turn from either thread.
+      // running turn from either thread, and before `createAgentSession` below
+      // hands this turn's generation to the writes addressed to the work key.
       if (options.slotKey && sessionResult.sessionKey && sessionResult.sessionKey !== options.slotKey) {
-        this.bindFollowupMigration(options.slotKey, sessionResult.sessionKey);
+        this.bindFollowupMigration(options.slotKey, sessionResult.sessionKey, options.turnEpoch);
       }
 
       // Channel routing check: if session was halted due to wrong channel, stop processing
@@ -2423,12 +2424,59 @@ export class SlackHandler {
    * Remember that the live slot `slotKey` is really running session
    * `canonicalKey` (bot-thread migration). Both directions are stored: the
    * fence looks up canonical → slot, the drain looks up slot → canonical.
+   *
+   * `turnEpoch` is the generation this dispatch owns (undefined = legacy caller,
+   * no fence to carry) — see {@link carryFollowupTurnEpoch}.
    */
-  private bindFollowupMigration(slotKey: string, canonicalKey: string): void {
+  private bindFollowupMigration(slotKey: string, canonicalKey: string, turnEpoch?: number): void {
     const maps = (this.followupMigration ??= { bySlot: new Map(), byCanonical: new Map() });
     maps.bySlot.set(slotKey, canonicalKey);
     maps.byCanonical.set(canonicalKey, slotKey);
     this.logger.info('Follow-up fence bound across bot-thread migration', { slotKey, canonicalKey });
+    if (turnEpoch !== undefined) this.carryFollowupTurnEpoch(slotKey, canonicalKey, turnEpoch);
+  }
+
+  /**
+   * Give the work-thread key the generation the migrating dispatch owns.
+   *
+   * The generation was opened under the SLOT key (`runInitial` → `beginTurn`),
+   * but every header write of the turn is addressed to the CANONICAL key with
+   * that generation stamped on it, and the surface verifies it against the
+   * canonical key's queue session (`thread-surface.ts` `isStaleWrite`). Without
+   * the carry a fresh work thread has no queue session, so the surface reads the
+   * generation as unverifiable and drops every write of the first turn — the
+   * header stays "요청 처리 중 · 실제 활동 기록 없음" and the task list never shows
+   * (live 2026-10-19). The copy is persisted, so the work key's next turn opens a
+   * NEW generation and a late write from this one stays fenced (A28).
+   *
+   * A refusal or a store failure leaves the work key exactly as it was: the
+   * writes of this turn stay fenced (fail-closed), the turn itself still runs,
+   * and the operator gets one line here instead of one per rejected write.
+   */
+  private carryFollowupTurnEpoch(slotKey: string, canonicalKey: string, turnEpoch: number): void {
+    const queue = this.followupQueue;
+    if (!queue) return;
+    let carried: number;
+    try {
+      carried = queue.carryTurnEpoch(slotKey, canonicalKey, turnEpoch);
+    } catch (error) {
+      this.logger.error('Turn generation NOT carried across bot-thread migration — this turn stays fenced', {
+        slotKey,
+        canonicalKey,
+        turnEpoch,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return;
+    }
+    if (carried !== turnEpoch) {
+      this.logger.warn('Turn generation NOT carried across bot-thread migration — this turn stays fenced', {
+        slotKey,
+        canonicalKey,
+        turnEpoch,
+        slotTurnEpoch: queue.getTurnEpoch(slotKey),
+        canonicalTurnEpoch: carried,
+      });
+    }
   }
 
   /**

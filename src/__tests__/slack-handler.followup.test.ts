@@ -8,6 +8,7 @@ vi.mock('../slack/autoskill-fire', () => ({
 import type { FollowupQueueSnapshot } from '@soma/slack/followup-queue';
 import { FOLLOWUP_CANCEL_ACTION_ID } from '@soma/slack/followup-queue-blocks';
 import { getMetricsEmitter } from '../metrics/event-emitter';
+import { ThreadSurface } from '../slack/thread-surface';
 import { SlackHandler } from '../slack-handler';
 import { userSettingsStore } from '../user-settings-store';
 
@@ -694,6 +695,172 @@ describe('SlackHandler — follow-up queue host', () => {
     // still exists after the migration.
     expect(startWithContinuation).toHaveBeenCalledTimes(2);
     expect(handlerAny.getFollowupQueue().list(WORK_KEY)[0].state).toBe('resolved');
+  });
+
+  /**
+   * The turn generation of a migrated FIRST turn, as the thread surface sees it.
+   *
+   * The dispatch opens its generation under the SOURCE key (`runInitial` →
+   * `beginTurn(source)`), but every header write of the turn is addressed to the
+   * WORK key with that generation as `expectedTurnEpoch`, and the surface checks
+   * it against `getFollowupView(work).turnEpoch`. With nothing parked during the
+   * turn the work key had no queue session at all, so the surface read
+   * "unverifiable" and dropped the whole turn's header/task list
+   * (live 2026-10-19: 40 sessions, all `expected: 1`).
+   */
+  describe('bot-thread migration — the work-thread key carries the turn generation', () => {
+    const WORK_KEY = 'C123:999.000';
+    let workSession: any;
+
+    beforeEach(() => {
+      claudeHandler.getSessionKey.mockImplementation(
+        (channel: string, threadTs?: string) => `${channel}:${threadTs ?? ''}`,
+      );
+      workSession = { ...registrySession, threadTs: '999.000', threadRootTs: '999.000' };
+      claudeHandler.getSessionByKey.mockImplementation((key: string) =>
+        key === WORK_KEY ? workSession : registrySession,
+      );
+      initialize.mockImplementation(async () => ({
+        session: workSession,
+        sessionKey: WORK_KEY,
+        isNewSession: true,
+        userName: 'Owner',
+        workingDirectory: '/tmp/work',
+        abortController: new AbortController(),
+        halted: false,
+      }));
+    });
+
+    /**
+     * A REAL `ThreadSurface` reading the handler's queue view through the same
+     * two hooks the production panel is wired with (`slack-handler.ts:428-431`).
+     * Acceptance is read off the session's `agentPhase`, which `setStatus`
+     * writes only after the epoch gate passed — independent of render debounce.
+     */
+    function workSurface() {
+      const surfaceSession: any = {
+        ...workSession,
+        actionPanel: { channelId: CHANNEL, messageTs: 'panel-ts', agentPhase: 'before' },
+      };
+      const surface = new ThreadSurface({
+        slackApi: {
+          getClient: vi.fn().mockReturnValue({}),
+          getPermalink: vi.fn().mockResolvedValue('https://slack.example/p'),
+          updateMessage: vi.fn().mockResolvedValue(undefined),
+          postMessage: vi.fn().mockResolvedValue({ ts: 'posted-ts' }),
+        },
+        claudeHandler: { getSessionByKey: vi.fn().mockReturnValue(surfaceSession) },
+        requestCoordinator: { isRequestActive: vi.fn().mockReturnValue(false) },
+        todoManager: { getTodos: vi.fn().mockReturnValue([]), getEffectiveStatus: vi.fn() },
+        getFollowupView: (key: string) => handler.getFollowupView(key),
+        getFollowupError: (key: string) => handler.getFollowupError(key),
+      } as any);
+      return { surface, surfaceSession };
+    }
+
+    /** Start the migrating first mention and leave it running. */
+    async function startMigratedTurn() {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      // Ingress key = source thread `C123:111.222`; nothing is parked on the work key.
+      const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+      const turnEpoch = createAgentSession.mock.calls[0][2].turnEpoch as number;
+      return {
+        turnEpoch,
+        settle: async () => {
+          gate.resolve({ hasPendingChoice: false });
+          await first;
+        },
+      };
+    }
+
+    it('lets the migrated first turn write its own header on the work-thread key', async () => {
+      const turn = await startMigratedTurn();
+      try {
+        expect(turn.turnEpoch).toBe(1);
+        const { surface, surfaceSession } = workSurface();
+
+        await surface.setStatus(surfaceSession, WORK_KEY, { agentPhase: '작업 중' }, { expectedTurnEpoch: 1 });
+
+        expect(surfaceSession.actionPanel.agentPhase, 'the epoch-stamped write of turn 1 must land').toBe('작업 중');
+        expect(handler.getFollowupView(WORK_KEY)?.turnEpoch).toBe(1);
+      } finally {
+        await turn.settle();
+      }
+    });
+
+    it('still fences a late turn-1 write once a later turn opens on the work-thread key', async () => {
+      const turn = await startMigratedTurn();
+      await turn.settle();
+
+      // The next reply in the work thread is an ordinary dispatch on the WORK key.
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const second = handler.handleMessage(message({ ts: '444.555', thread_ts: '999.000', text: '다음 지시' }), say());
+      await tick();
+      try {
+        // A fresh generation — NOT a second "1" that a late turn-1 write would match.
+        expect(createAgentSession.mock.calls[1][2].turnEpoch).toBe(turn.turnEpoch + 1);
+        expect(handler.getFollowupView(WORK_KEY)?.turnEpoch).toBe(turn.turnEpoch + 1);
+
+        const { surface, surfaceSession } = workSurface();
+        await surface.setStatus(
+          surfaceSession,
+          WORK_KEY,
+          { agentPhase: 'turn-1 late write' },
+          { expectedTurnEpoch: turn.turnEpoch },
+        );
+        expect(surfaceSession.actionPanel.agentPhase, 'a superseded turn must not repaint the live turn').toBe(
+          'before',
+        );
+
+        // Positive control: the live turn's own generation still writes.
+        await surface.setStatus(
+          surfaceSession,
+          WORK_KEY,
+          { agentPhase: 'turn-2 write' },
+          { expectedTurnEpoch: turn.turnEpoch + 1 },
+        );
+        expect(surfaceSession.actionPanel.agentPhase).toBe('turn-2 write');
+      } finally {
+        gate.resolve({ hasPendingChoice: false });
+        await second;
+      }
+    });
+
+    it('stays fail-closed when the generation cannot be persisted onto the work-thread key', async () => {
+      // The store refuses exactly the write that would carry the generation —
+      // the slot's own `beginTurn` already committed before `initialize` ran.
+      initialize.mockImplementation(async () => {
+        saveError = new Error('disk full');
+        return {
+          session: workSession,
+          sessionKey: WORK_KEY,
+          isNewSession: true,
+          userName: 'Owner',
+          workingDirectory: '/tmp/work',
+          abortController: new AbortController(),
+          halted: false,
+        };
+      });
+
+      const turn = await startMigratedTurn();
+      try {
+        // The turn still ran — a carry failure costs the header, never the turn.
+        expect(startWithContinuation).toHaveBeenCalledTimes(1);
+        expect(handler.getFollowupView(WORK_KEY)).toBeUndefined();
+
+        const { surface, surfaceSession } = workSurface();
+        await surface.setStatus(surfaceSession, WORK_KEY, { agentPhase: '작업 중' }, { expectedTurnEpoch: 1 });
+        expect(surfaceSession.actionPanel.agentPhase, 'an unverifiable generation is still rejected (A28)').toBe(
+          'before',
+        );
+      } finally {
+        saveError = undefined;
+        await turn.settle();
+      }
+    });
   });
 
   /**

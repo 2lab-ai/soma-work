@@ -97,8 +97,10 @@ export interface FollowupSessionSnapshot {
    * Turn-generation counter of the session (`ssot.md:116-120`). Advanced by
    * `beginTurn` at the start of EVERY dispatch — including a plain user message
    * that never touched the queue — and stamped into button payloads so a click
-   * from an older generation is rejected as stale. This is NOT `item.epoch`:
-   * see the two-token note on `FollowupItem.epoch`.
+   * from an older generation is rejected as stale. A bot-thread migration
+   * copies the running dispatch's generation onto the work-thread session
+   * (`carryTurnEpoch`); that copies an existing generation, it never opens one.
+   * This is NOT `item.epoch`: see the two-token note on `FollowupItem.epoch`.
    */
   turnEpoch: number;
   /** Present while the session is frozen (stop / session end / restart). Blocks drain. */
@@ -359,9 +361,10 @@ export class FollowupQueue {
    * The host calls this for EVERY dispatch — drained item, `Send now`
    * promotion, and an ordinary user message that never entered the queue —
    * because a turn generation is a property of the session, not of an item.
-   * Sole mutator of `turnEpoch`: no other method advances it, so a host that
-   * already called `beginTurn` can never be double-incremented by
-   * `markDispatched`.
+   * The only method that OPENS a generation: `markDispatched` never advances
+   * it, so a host that already called `beginTurn` can never be
+   * double-incremented. The one other writer, `carryTurnEpoch`, only copies a
+   * generation this method already opened onto a second key.
    */
   beginTurn(sessionKey: string): number {
     const next = cloneJson(this.state);
@@ -369,6 +372,37 @@ export class FollowupQueue {
     session.turnEpoch += 1;
     this.commit(next);
     return session.turnEpoch;
+  }
+
+  /**
+   * Bot-thread migration: the dispatch opened its generation under `fromKey`
+   * (the slot, i.e. the source thread), but the turn runs — and writes its
+   * surface with that generation as `expectedTurnEpoch` — under `toKey`, the
+   * work-thread session. Copy the generation across, durably, so the work key
+   * reads the turn that is actually running on it and its NEXT `beginTurn`
+   * opens a fresh one instead of a second "1" a late write could match.
+   *
+   * Two refusals keep the A28 fence (`ssot.md:116-120`), and both leave state
+   * untouched:
+   *   - `fromKey` no longer holds `expectedTurnEpoch` — the caller was
+   *     superseded on its own slot, so it is given no render authority anywhere.
+   *   - `toKey` is already at or past it — never lowered, because lowering would
+   *     re-open a generation that was already superseded there. Equal is the
+   *     idempotent re-bind (steer / `Send now` on a migrated turn).
+   * Items are not moved: parked rows already live under `toKey`.
+   *
+   * Returns `toKey`'s generation after the call. A value other than
+   * `expectedTurnEpoch` means this turn's stamped writes will stay fenced.
+   */
+  carryTurnEpoch(fromKey: string, toKey: string, expectedTurnEpoch: number): number {
+    const next = cloneJson(this.state);
+    const current = this.findSession(next, toKey)?.turnEpoch ?? 0;
+    if (this.findSession(next, fromKey)?.turnEpoch !== expectedTurnEpoch) return current;
+    if (current >= expectedTurnEpoch) return current;
+    const target = this.ensureSession(next, toKey);
+    target.turnEpoch = expectedTurnEpoch;
+    this.commit(next);
+    return target.turnEpoch;
   }
 
   /**
@@ -499,7 +533,7 @@ export class FollowupQueue {
    * `markInterrupted` it. Two live dispatches would also make a later stop
    * label both items `uncertain`, which would be a lie about the torn-down one.
    *
-   * Does not touch `turnEpoch` — `beginTurn` is its sole mutator.
+   * Does not touch `turnEpoch` — `beginTurn` is the only method that opens a generation.
    */
   markDispatched(sessionKey: string, itemId: string, expectedEpoch: number): FollowupOpResult {
     return this.mutate(sessionKey, itemId, expectedEpoch, (item, session) => {

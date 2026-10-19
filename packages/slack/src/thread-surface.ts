@@ -221,7 +221,10 @@ export interface ThreadSurfaceOutbox {
  * live turn's surface — the precise failure A28 exists to stop. In production
  * the two always travel together: the only producer of `expectedTurnEpoch` is a
  * dispatch whose `FollowupQueue.beginTurn` created the session snapshot the
- * epoch is read back from (`followup-dispatcher.ts` → `queue.beginTurn`), so an
+ * epoch is read back from (`followup-dispatcher.ts` → `queue.beginTurn`). When
+ * that dispatch migrated into a bot work thread, the host copies the same
+ * generation onto the work-thread key at bind time (`FollowupQueue.carryTurnEpoch`),
+ * because that is the key the turn's writes are addressed to. Either way an
  * unreadable epoch means the store is degraded, not that the host is young.
  */
 export interface ThreadSurfaceWriteOptions {
