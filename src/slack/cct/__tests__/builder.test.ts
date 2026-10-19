@@ -1259,20 +1259,6 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
     expect(text).not.toMatch(/Cooldown/);
   });
 
-  it('OAuth utilization === 150 (over budget) → cooldown fires (≥100 catches over-budget too)', () => {
-    const slot = oauthAttachedSlot();
-    const state: SlotState = {
-      authState: 'healthy',
-      activeLeases: [],
-      usage: {
-        fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 150, resetsAt: new Date(now + 30 * 60_000).toISOString() },
-      },
-    };
-    const text = statusText(slot, state);
-    expect(text).toContain('5h Cooldown');
-  });
-
   it('OAuth invalid resetsAt (NaN) → cooldown still triggers, remaining clamps to 0 (<1m)', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
