@@ -98,11 +98,6 @@ export function extractSentinelType(promptText: string): HandoffKind | null {
   return VALID_KINDS.has(captured as HandoffKind) ? (captured as HandoffKind) : null;
 }
 
-/** True iff the prompt carries a well-formed top-level handoff sentinel. */
-export function hasHandoffSentinel(promptText: string): boolean {
-  return extractSentinelType(promptText) !== null;
-}
-
 /**
  * Full parse of a `<z-handoff>` sentinel into a typed `HandoffContext`.
  *
