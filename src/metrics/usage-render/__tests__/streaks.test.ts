@@ -1,61 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { activeDays, currentStreak, longestStreak } from '../streaks';
+import { currentStreak, longestStreak } from '../streaks';
 
-// Trace: docs/current/plans/usage-card-dark/trace.md, Scenarios 4/5/6
-describe('activeDays', () => {
-  const windowStart = new Date('2026-04-01T00:00:00+09:00');
-  const windowEnd = new Date('2026-04-30T23:59:59+09:00');
-
-  it('empty events → 0', () => {
-    expect(activeDays([], windowStart, windowEnd)).toBe(0);
-  });
-
-  it('three events all on 2026-04-10 KST → 1', () => {
-    const events = [
-      { ts: new Date('2026-04-10T05:00:00+09:00') },
-      { ts: new Date('2026-04-10T12:00:00+09:00') },
-      { ts: new Date('2026-04-10T22:30:00+09:00') },
-    ];
-    expect(activeDays(events, windowStart, windowEnd)).toBe(1);
-  });
-
-  it('events on 2026-04-10 KST + one on 2026-04-11 KST → 2', () => {
-    const events = [
-      { ts: new Date('2026-04-10T05:00:00+09:00') },
-      { ts: new Date('2026-04-10T18:00:00+09:00') },
-      { ts: new Date('2026-04-11T09:00:00+09:00') },
-    ];
-    expect(activeDays(events, windowStart, windowEnd)).toBe(2);
-  });
-
-  it('timezone boundary — two UTC-adjacent events cross KST midnight → 2', () => {
-    // 14:30Z = 23:30 KST on 2026-04-09
-    // 15:30Z = 00:30 KST on 2026-04-10
-    const events = [{ ts: new Date('2026-04-09T14:30:00Z') }, { ts: new Date('2026-04-09T15:30:00Z') }];
-    expect(activeDays(events, windowStart, windowEnd)).toBe(2);
-  });
-
-  it('events outside window excluded', () => {
-    const narrowStart = new Date('2026-04-10T00:00:00+09:00');
-    const narrowEnd = new Date('2026-04-11T23:59:59+09:00');
-    const events = [
-      { ts: new Date('2026-04-09T12:00:00+09:00') }, // outside
-      { ts: new Date('2026-04-10T12:00:00+09:00') }, // in
-      { ts: new Date('2026-04-11T12:00:00+09:00') }, // in
-    ];
-    expect(activeDays(events, narrowStart, narrowEnd)).toBe(2);
-  });
-
-  it('ts as number (ms epoch) works same as Date', () => {
-    const events = [
-      { ts: new Date('2026-04-10T05:00:00+09:00').getTime() },
-      { ts: new Date('2026-04-10T22:30:00+09:00').getTime() },
-      { ts: new Date('2026-04-11T09:00:00+09:00').getTime() },
-    ];
-    expect(activeDays(events, windowStart, windowEnd)).toBe(2);
-  });
-});
-
+// Trace: docs/current/plans/usage-card-dark/trace.md, Scenarios 5/6
 describe('longestStreak', () => {
   it('empty set → 0', () => {
     expect(longestStreak(new Set())).toBe(0);
