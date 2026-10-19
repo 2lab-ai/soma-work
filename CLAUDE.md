@@ -149,6 +149,13 @@ asset을 하나씩 지워 실패하는지까지 확인한다. 소스에 파일�
 - 커밋 전 반드시: `npx tsc --noEmit && npx vitest run`
 - 새 기능/버그 수정 시 테스트가 먼저 존재해야 함
 
+### 테스트 환경 격리
+
+vitest `setupFiles`(`src/test-utils/vitest-setup.ts`)가 모든 테스트 파일 실행 전에 env를 허용 목록으로 줄이고
+`SOMA_CONFIG_DIR`/`DATA_DIR`를 파일별 scratch 디렉터리로 고정한다. 그래서 배포 노드나 봇이 띄운 에이전트 셸
+(`SOMA_CONFIG_DIR=/opt/soma-work/<env>`)에서 돌려도 그 배포의 `.env`·자격증명·data 디렉터리에 닿지 않는다.
+테스트가 env 변수가 필요하면 테스트 안에서 직접 설정한다 — 셸에서 물려받는 값에 기대지 않는다.
+
 ### Mock 전략
 
 - **Slack Mock**: `src/test-utils/mock-slack-api.ts` — SlackApiHelper mock factory
