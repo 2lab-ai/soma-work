@@ -1668,6 +1668,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             },
             turnEpochToken,
           );
+          // Re-check after the await: a delete during the status write has
+          // already drained this session's background tracking, and the
+          // spawn-ack below would re-add an entry nothing will ever settle.
+          if (session.terminated) {
+            abortController.abort('ghost-session' satisfies RequestAbortReason);
+            return;
+          }
           await this.deps.toolEventProcessor.handleToolResult(toolResults, {
             channel: ctx.channel,
             threadTs: ctx.threadTs,
@@ -1713,6 +1720,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           // notification). Feeds the session-scoped tracker that the turn-end
           // resume guard reads — replaces the old heuristic (spawn-ack text +
           // the model polling TaskOutput/BashOutput).
+          // A terminated session's tracking was drained on delete; a late frame
+          // must not re-add it under a key a new session in the thread reuses.
+          if (session.terminated) return;
           this.deps.toolEventProcessor.handleAgentTaskLifecycle(event, ctx.sessionKey);
         },
         onSteerLifecycle: async (event, ctx) => {
