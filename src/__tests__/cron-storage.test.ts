@@ -257,6 +257,15 @@ describe('CronStorage.updateJob', () => {
     expect(reloaded.modelConfig).toEqual({ type: 'custom', model: 'gpt-5.5' });
   });
 
+  it('stamps scheduleChangedAt only when the expression actually changes', () => {
+    seed();
+    expect(storage.updateJob('U_OWNER', 'job-a', { prompt: 'new' })!.scheduleChangedAt).toBeUndefined();
+    expect(storage.updateJob('U_OWNER', 'job-a', { expression: '0 9 * * *' })!.scheduleChangedAt).toBeUndefined();
+    const edited = storage.updateJob('U_OWNER', 'job-a', { expression: '30 9 * * *' })!;
+    expect(edited.scheduleChangedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+    expect(storage.getJobsByOwner('U_OWNER')[0].scheduleChangedAt).toBe(edited.scheduleChangedAt);
+  });
+
   it('clears modelConfig with null (default = creator current model)', () => {
     seed({ modelConfig: { type: 'fast' } });
     const updated = storage.updateJob('U_OWNER', 'job-a', { modelConfig: null });
