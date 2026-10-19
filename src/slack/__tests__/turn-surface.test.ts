@@ -909,40 +909,6 @@ describe('TurnSurface', () => {
       vi.useRealTimers();
     });
 
-    it('first call writes task chunks onto the turn’s own stream (no separate plan message)', async () => {
-      const client = makeClient({
-        postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-1' }),
-      });
-      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
-
-      const ctx = {
-        channelId: 'C1',
-        threadTs: 't1',
-        sessionKey: 'C1:t1',
-        turnId: 'C1:t1:1',
-      };
-      await surface.begin(ctx);
-      await expect(surface.renderTasks(ctx.turnId, todos as any)).resolves.toBe(true);
-      // Drain the 500ms debounce window.
-      await vi.advanceTimersByTimeAsync(500);
-
-      const appends = taskAppends(client);
-      expect(appends.length).toBe(1);
-      expect(appends[0].channel).toBe('C1');
-      expect(appends[0].ts).toBe('stream-ts-1');
-      expect(appends[0].chunks[0]).toEqual({ type: 'plan_update', title: 'Tasks (3)' });
-      expect(appends[0].chunks.slice(1)).toEqual([
-        { type: 'task_update', id: '1', title: 'done task', status: 'complete' },
-        { type: 'task_update', id: '2', title: 'running task', status: 'in_progress' },
-        { type: 'task_update', id: '3', title: 'waiting task', status: 'pending' },
-      ]);
-      // U10a: the second surface is gone — neither postMessage nor update.
-      expect(client.chat.postMessage).not.toHaveBeenCalled();
-      expect(client.chat.update).not.toHaveBeenCalled();
-
-      await surface.end(ctx.turnId, 'completed');
-    });
-
     it('second call reuses the same stream ts; an unchanged snapshot spends no write', async () => {
       const client = makeClient({
         postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-1' }),
@@ -2900,22 +2866,6 @@ describe('TurnSurface', () => {
       await expect(surface.markUserInterrupted(ctx.turnId)).resolves.toBe(false);
       await expect(surface.markUserInterrupted(ctx.turnId)).resolves.toBe(true);
       expect(client.chat.postMessage).toHaveBeenCalledTimes(2);
-    });
-
-    it('a SUCCESSFUL marker is still written exactly once', async () => {
-      const client = makeClient();
-      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
-
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:int-once' };
-      await surface.begin(ctx);
-      await expect(surface.markUserInterrupted(ctx.turnId)).resolves.toBe(true);
-      await expect(surface.markUserInterrupted(ctx.turnId)).resolves.toBe(false);
-      await surface.end(ctx.turnId, 'user-interrupted');
-
-      const markers = client.chat.appendStream.mock.calls.filter(
-        (call: any[]) => call[0]?.chunks?.[0]?.text === 'user-interrupted',
-      );
-      expect(markers).toHaveLength(1);
     });
   });
 

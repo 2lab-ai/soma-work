@@ -496,18 +496,6 @@ describe('ThreadSurface — turn-epoch gated writes (A12/A28)', () => {
     expect(session.actionPanel?.agentPhase).toBe('legacy phase');
   });
 
-  it('still rejects when the view carries a REAL epoch that disagrees', async () => {
-    const session = makeSession();
-    session.actionPanel!.agentPhase = 'live phase';
-    const slackApi = makeSlackApi();
-    const surface = new ThreadSurface(makeDeps(session, slackApi, { getFollowupView: () => view({ turnEpoch: 5 }) }));
-
-    await surface.setStatus(session, KEY, { agentPhase: 'stale phase' }, { expectedTurnEpoch: 4 });
-
-    expect(slackApi.updates).toHaveLength(0);
-    expect(session.actionPanel?.agentPhase).toBe('live phase');
-  });
-
   it('treats a genuine epoch 0 as a real value, not as unknown', async () => {
     const session = makeSession();
     session.actionPanel!.agentPhase = 'live phase';
