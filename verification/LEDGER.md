@@ -19,13 +19,13 @@ current file set on every run.
 | `packages/common/` | 13 | 0 | 13 |
 | `packages/process-shared/` | 21 | 0 | 21 |
 | `packages/slack/` | 95 | 2 | 93 |
-| `src/` | 394 | 5 | 389 |
+| `src/` | 393 | 5 | 388 |
 | `somalib/` | 17 | 0 | 17 |
 | `packages/test-utils/` | 4 | 0 | 4 |
 | `packages/mcp-servers/` | 11 | 0 | 11 |
 | `scripts/` | 7 | 0 | 7 |
 | other | 1 | 0 | 1 |
-| **total** | **563** | **7** | **556** |
+| **total** | **562** | **7** | **555** |
 
 ## Files
 
@@ -539,7 +539,6 @@ current file set on every run.
 | `src/slack/slack-api-helper.ts` | `src/` | T1 |
 | `src/slack/source-thread-summary.ts` | `src/` | T1 |
 | `src/slack/status-reporter.ts` | `src/` | T1 |
-| `src/slack/stream-processor.ts` | `src/` | T1 |
 | `src/slack/summary-service.ts` | `src/` | T1 |
 | `src/slack/summary-timer.ts` | `src/` | T1 |
 | `src/slack/surface-config.ts` | `src/` | T1 |
