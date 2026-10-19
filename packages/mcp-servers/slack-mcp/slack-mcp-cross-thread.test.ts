@@ -3,48 +3,13 @@ import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * RED Contract Tests for slack-mcp cross-thread access
+ * Source-contract checks for slack-mcp cross-thread access (originally the RED
+ * tests for the since-removed docs/slack-mcp-cross-thread/trace.md).
  *
- * These tests verify the contract defined in docs/slack-mcp-cross-thread/trace.md.
- * All tests should FAIL (RED) until implementation is complete.
+ * The SLACK_MCP_CONTEXT work/source thread wiring (former Scenario 1) is
+ * asserted behaviourally by src/__tests__/mcp-config-builder.test.ts and
+ * src/__tests__/mcp-config-builder-internal-servers.e2e.test.ts.
  */
-
-// ── Scenario 1: Context passes both threads ─────────────────
-
-describe('Scenario 1: Context passes both threads', () => {
-  // Trace: S1, Section 3a — mcp-config-builder passes both thread references
-  it('SLACK_MCP_CONTEXT includes work threadTs as primary (not sourceThreadTs)', async () => {
-    const configBuilder = await fs.readFile(
-      path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
-      'utf-8',
-    );
-    // After change: threadTs should be slackContext.threadTs (work thread),
-    // NOT sourceThreadTs || threadTs (which collapses to source)
-    // The buildSlackMcpServer should NOT collapse source into threadTs
-    expect(configBuilder).not.toMatch(
-      /const threadTs\s*=\s*slackContext\.sourceThreadTs\s*\|\|\s*slackContext\.threadTs/,
-    );
-  });
-
-  // Trace: S1, Section 3a — context includes sourceThreadTs field
-  it('SLACK_MCP_CONTEXT passes sourceThreadTs to MCP server', async () => {
-    const configBuilder = await fs.readFile(
-      path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
-      'utf-8',
-    );
-    // threadContext object must include sourceThreadTs
-    expect(configBuilder).toMatch(/sourceThreadTs.*slackContext\.sourceThreadTs/);
-  });
-
-  // Trace: S1, Section 3a — context includes sourceChannel field
-  it('SLACK_MCP_CONTEXT passes sourceChannel to MCP server', async () => {
-    const configBuilder = await fs.readFile(
-      path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
-      'utf-8',
-    );
-    expect(configBuilder).toMatch(/sourceChannel.*slackContext\.sourceChannel/);
-  });
-});
 
 // ── Scenario 2: Read source thread messages ─────────────────
 
