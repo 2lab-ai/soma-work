@@ -2,6 +2,7 @@ import { WebClient } from '@slack/web-api';
 import { parseBgKeepaliveMaxMs } from './agent-runtime/background-keepalive';
 import { resolveIncidentEvidenceOrigin } from './incident/evidence';
 import { Logger } from './logger';
+import { DEFAULT_OAUTH_REFRESH_INTERVAL_MS } from './oauth/oauth-refresh-scheduler';
 import { normalizeSigningSecret, SIGNING_SECRET_MIN_LENGTH } from './slack-signing-secret';
 
 // Logger for preflight checks and config validation
@@ -464,7 +465,7 @@ export const config = {
      * the scheduler churns refresh endpoints faster than the 8-hour token
      * TTL warrants, which burns Anthropic-side rate limit for no gain.
      */
-    intervalMs: parsePositiveIntEnv('OAUTH_REFRESH_INTERVAL_MS', 60 * 60_000, 5 * 60_000),
+    intervalMs: parsePositiveIntEnv('OAUTH_REFRESH_INTERVAL_MS', DEFAULT_OAUTH_REFRESH_INTERVAL_MS, 5 * 60_000),
     /**
      * ms deadline for each fan-out; default 30s. Per-slot HTTP call has
      * its own 10s timeout inside `refreshClaudeCredentials`, so 30s is
