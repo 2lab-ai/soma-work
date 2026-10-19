@@ -920,16 +920,6 @@ export class UserSettingsStore {
     return this.settings[userId]?.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD;
   }
 
-  /**
-   * Set user's compaction threshold (#617 AC1). Validates bounds + integer-ness
-   * before persisting. Throws on invalid input — caller surfaces the message.
-   */
-  setUserCompactThreshold(userId: string, value: number): void {
-    const validated = validateCompactThreshold(value);
-    this.patchUserSettings(userId, { compactThreshold: validated });
-    logger.info('Set user compact threshold', { userId, value: validated });
-  }
-
   /** Remove the deprecated persisted percentage after session-token conversion. */
   clearUserCompactThreshold(userId: string): void {
     const settings = this.settings[userId];

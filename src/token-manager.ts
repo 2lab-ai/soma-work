@@ -14,7 +14,7 @@
  *     with a background reaper sweeping expired leases.
  *   - Refresh OAuth credentials proactively (7 h before expiry) with
  *     in-process `Map<keyId, Promise<string>>` dedupe and cross-process
- *     serialisation via `store.withLock`.
+ *     serialisation via the store's CAS writes (`store.mutate`).
  *   - Fetch and persist usage snapshots with 429 backoff, 401-then-refresh
  *     retry, and 403 → authState=revoked transitions.
  *
@@ -28,8 +28,8 @@
  *     `kind === 'cct'` + `source === 'setup' | 'legacy-attachment'`.
  *
  * Lock ordering (STRICT):
- *   The ONLY cross-process lock is `cct-store.lock`, obtained via
- *   `CctStore.withLock(fn)` or `CctStore.save(...)`. Refresh-token and
+ *   The ONLY cross-process lock is `cct-store.lock`, obtained inside
+ *   `CctStore.save(...)` (and so `CctStore.mutate(...)`). Refresh-token and
  *   usage-cache serialisation is achieved by the combination of in-process
  *   dedupe maps (`Map<keyId, Promise>`) and the single store lock — we
  *   deliberately avoid a second lockfile to keep the lock ordering trivial:

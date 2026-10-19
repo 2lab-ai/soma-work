@@ -676,7 +676,7 @@ describe('SessionRegistry session-scoped dangerous-rule overrides', () => {
     const key = reg.getSessionKey('C1', '171.100');
 
     expect(reg.isDangerousRuleDisabled(key, 'kill')).toBe(false);
-    reg.disableDangerousRule(key, 'kill');
+    reg.disableDangerousRules(key, ['kill']);
     expect(reg.isDangerousRuleDisabled(key, 'kill')).toBe(true);
     expect(reg.isDangerousRuleDisabled(key, 'reboot')).toBe(false);
     expect(reg.listDisabledDangerousRules(key)).toEqual(['kill']);
@@ -699,8 +699,8 @@ describe('SessionRegistry session-scoped dangerous-rule overrides', () => {
     reg.createSession('U1', 'Tester', 'C3', '171.102');
     const key = reg.getSessionKey('C3', '171.102');
 
-    reg.disableDangerousRule(key, 'kill');
-    reg.disableDangerousRule(key, 'kill');
+    reg.disableDangerousRules(key, ['kill']);
+    reg.disableDangerousRules(key, ['kill']);
     expect(reg.listDisabledDangerousRules(key)).toEqual(['kill']);
   });
 
@@ -711,14 +711,14 @@ describe('SessionRegistry session-scoped dangerous-rule overrides', () => {
     const keyA = reg.getSessionKey('C4', '171.103');
     const keyB = reg.getSessionKey('C4', '171.104');
 
-    reg.disableDangerousRule(keyA, 'kill');
+    reg.disableDangerousRules(keyA, ['kill']);
     expect(reg.isDangerousRuleDisabled(keyA, 'kill')).toBe(true);
     expect(reg.isDangerousRuleDisabled(keyB, 'kill')).toBe(false);
   });
 
   it('no-op on unknown session key (safe side — still returns false)', () => {
     const reg = new SessionRegistry();
-    reg.disableDangerousRule('C-unknown-171.999', 'kill');
+    reg.disableDangerousRules('C-unknown-171.999', ['kill']);
     expect(reg.isDangerousRuleDisabled('C-unknown-171.999', 'kill')).toBe(false);
     expect(reg.listDisabledDangerousRules('C-unknown-171.999')).toEqual([]);
   });
@@ -730,8 +730,8 @@ describe('SessionRegistry session-scoped dangerous-rule overrides', () => {
     // persistence path actually runs (otherwise we'd be testing nothing).
     session.sessionId = 'session-rule-disable-roundtrip';
     const key = writer.getSessionKey('C5', '171.105');
-    writer.disableDangerousRule(key, 'kill');
-    writer.disableDangerousRule(key, 'reboot');
+    writer.disableDangerousRules(key, ['kill']);
+    writer.disableDangerousRules(key, ['reboot']);
 
     writer.saveSessions();
 
