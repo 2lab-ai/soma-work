@@ -4615,8 +4615,8 @@ export class SlackHandler {
    * a `DmZRespond` (chat.postMessage + chat.update).
    *
    * Return shape (codex P1 followup):
-   *  - `terminal: true` — the router fully consumed the invocation (tombstone
-   *    card, help card, forbidden notice, error ephemeral, or a command that
+   *  - `terminal: true` — the router fully consumed the invocation (help
+   *    card, forbidden notice, error ephemeral, or a command that
    *    returned `handled:true` with no continuation). Caller must return.
    *  - `terminal: false, continueWithPrompt: string` — the command captured
    *    a follow-up prompt (e.g. `/z new write a test`); caller should
@@ -4665,7 +4665,7 @@ export class SlackHandler {
         return { terminal: false, continueWithPrompt: result.continueWithPrompt };
       }
 
-      // Handled (card / tombstone / passthrough that finished itself) → terminal.
+      // Handled (card / passthrough that finished itself) → terminal.
       // Carry the qualifiers: a legacy handler that CRASHED comes back as
       // `handled: true` + `error` (the router posted the notice), and a
       // cross-user `$skill` parked on permission as `awaitingPermission` — the

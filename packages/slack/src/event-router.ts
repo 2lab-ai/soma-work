@@ -828,7 +828,7 @@ export class EventRouter {
    *
    * Return shape (codex P1 followup):
    *  - `terminal: true` — the router fully consumed the invocation (card,
-   *    tombstone, forbidden notice, error, or a command that finished itself).
+   *    forbidden notice, error, or a command that finished itself).
    *    Caller MUST NOT continue pipeline processing.
    *  - `terminal: false, continueWithPrompt: string` — the command produced
    *    a follow-up prompt (e.g. `@bot /z new do X` → `do X`); caller should
