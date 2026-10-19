@@ -1,6 +1,8 @@
 import * as child_process from 'child_process';
 import * as fs from 'fs';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as os from 'os';
+import * as path from 'path';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock child_process BEFORE importing the module under test
 vi.mock('child_process', async () => {
@@ -9,16 +11,6 @@ vi.mock('child_process', async () => {
     ...actual,
     execFileSync: vi.fn(),
     spawn: vi.fn(),
-  };
-});
-
-// Mock fs
-vi.mock('fs', async () => {
-  const actual = await vi.importActual<typeof import('fs')>('fs');
-  return {
-    ...actual,
-    statSync: vi.fn(),
-    readFileSync: vi.fn(),
   };
 });
 
@@ -69,12 +61,26 @@ import {
   validateTimestamp,
 } from './server-tools-mcp-server.js';
 
-// ── Helper: set up config mock ──────────────────────────────
+// ── Helper: real temp config file ───────────────────────────
+// ConfigCache comes from the compiled `@soma/process-shared` dist (CJS), whose
+// `require('fs')` a `vi.mock('fs')` here cannot reach, so the config is a real
+// file under a per-run temp dir rather than a mocked fs.
+
+const CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'server-tools-mcp-test-'));
+const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+
+afterAll(() => {
+  fs.rmSync(CONFIG_DIR, { recursive: true, force: true });
+});
+
+function writeConfig(data: Record<string, any>, mtimeMs: number) {
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(data));
+  fs.utimesSync(CONFIG_FILE, mtimeMs / 1000, mtimeMs / 1000);
+}
 
 function mockConfig(data: Record<string, any>, mtimeMs = Date.now()) {
-  process.env.SOMA_CONFIG_FILE = '/tmp/test-config.json';
-  vi.mocked(fs.statSync).mockReturnValue({ mtimeMs, size: 999 } as fs.Stats);
-  vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(data));
+  process.env.SOMA_CONFIG_FILE = CONFIG_FILE;
+  writeConfig(data, mtimeMs);
   resetConfigCache();
   loadConfig();
 }
@@ -590,9 +596,8 @@ describe('Config loading', () => {
   });
 
   it('returns empty config when server-tools section is missing', () => {
-    process.env.SOMA_CONFIG_FILE = '/tmp/test-config.json';
-    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 2000, size: 100 } as fs.Stats);
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ other: {} }));
+    process.env.SOMA_CONFIG_FILE = CONFIG_FILE;
+    writeConfig({ other: {} }, 2000);
     resetConfigCache();
 
     const config = loadConfig();
@@ -600,27 +605,21 @@ describe('Config loading', () => {
   });
 
   it('uses mtime cache and does not re-read unchanged file', () => {
-    process.env.SOMA_CONFIG_FILE = '/tmp/test-config.json';
-    vi.mocked(fs.statSync).mockClear();
-    vi.mocked(fs.readFileSync).mockClear();
+    process.env.SOMA_CONFIG_FILE = CONFIG_FILE;
+    // Same byte length for both hosts, so only the mtime differs between writes.
+    const withHost = (host: string) => ({ 'server-tools': { staging: { ssh: { host } } } });
 
-    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 3000, size: 200 } as fs.Stats);
-    vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify({ 'server-tools': { staging: { ssh: { host: 'staging.example.com' } } } }),
-    );
-
+    writeConfig(withHost('staging-a.example.com'), 3000);
     resetConfigCache();
-    loadConfig();
-    expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+    expect(loadConfig().staging.ssh.host).toBe('staging-a.example.com');
 
-    // Same mtime → cache hit
-    loadConfig();
-    expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+    // Same mtime + size → cache hit: the new contents are not read
+    writeConfig(withHost('staging-b.example.com'), 3000);
+    expect(loadConfig().staging.ssh.host).toBe('staging-a.example.com');
 
     // Changed mtime → re-read
-    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: 4000, size: 200 } as fs.Stats);
-    loadConfig();
-    expect(fs.readFileSync).toHaveBeenCalledTimes(2);
+    writeConfig(withHost('staging-b.example.com'), 4000);
+    expect(loadConfig().staging.ssh.host).toBe('staging-b.example.com');
   });
 });
 

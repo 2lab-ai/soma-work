@@ -26,7 +26,6 @@ export default defineConfig({
       // `packages/process-shared/src/model-commands/`, which shadowed the
       // up-to-date `*.ts` during module resolution. Those artifacts are now
       // removed (and git-ignored), so these tests run against the real source.
-      'packages/mcp-servers/server-tools/server-tools-mcp-server.test.ts',
       'packages/mcp-servers/slack-mcp/slack-mcp-contract.test.ts',
       'packages/mcp-servers/slack-mcp/slack-mcp-cross-thread.test.ts',
     ],
