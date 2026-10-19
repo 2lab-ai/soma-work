@@ -91,20 +91,6 @@ const RUNTIME_EXTRA_REQUIRED_FILES = [
   'services/a2t/requirements.txt',
 ];
 
-/**
- * Workspace packages whose *production* entry point must resolve inside a
- * runtime archive.
- *
- * Derived from the archive's own root manifest `workspaces` patterns and each
- * workspace manifest's declared `main`/`exports['.']`, so this list does not go
- * stale when a package is added. It is the closure `npm ci --omit=dev
- * --workspaces --include-workspace-root` is supposed to have produced — and the
- * thing that had no real-archive assertion at all: only root `node_modules`
- * existence was checked, so an install missing an unhoistable nested tree (the
- * bug this task actually hit with `somalib/node_modules/soma-lib`) shipped green.
- */
-const REQUIRED_NESTED_DEPENDENCIES = ['somalib/node_modules/soma-lib/dist/index.js'];
-
 /** Which package installs which profile. `null` is the profile-less controller. */
 const EXPECTED_PROFILE = {
   'somawork-cli': null,
@@ -349,10 +335,11 @@ function readJson(file) {
 /**
  * Is this path inside an installed dependency tree?
  *
- * Any `node_modules` segment, not just a leading one: `npm ci` cannot hoist a
- * workspace's unhoistable dependency, so a production install also writes
- * `somalib/node_modules/soma-lib/**`. Treating only the root tree as dependency
- * territory made a correct archive fail on a published package's own `.d.ts`.
+ * Any `node_modules` segment, not just a leading one: when a workspace pins a
+ * version the root cannot share, `npm ci` installs it under the workspace's own
+ * `node_modules` (`somalib/node_modules/soma-lib/**` until e9af688b aligned the
+ * pins). Treating only the root tree as dependency territory made a correct
+ * archive fail on a published package's own `.d.ts`.
  */
 function isDependencyPath(rel) {
   return rel === 'node_modules' || rel.split('/').includes('node_modules');
@@ -822,7 +809,8 @@ function checkRuntimeArchive(asset, root, manifest, members) {
  *
  * Three questions, in increasing strength:
  *
- * 1. the nested trees `npm ci` cannot hoist are present;
+ * 1. every production dependency tree the archive's own lockfile installs
+ *    (root and workspace-nested) is present;
  * 2. every workspace package the archive's OWN root manifest expands to has the
  *    entry point that package's manifest declares (derived, so a new workspace
  *    is covered without editing this file);
@@ -832,10 +820,16 @@ function checkRuntimeDependencies(asset, root, layout) {
   const modules = path.join(root, 'node_modules');
   if (!check(fs.existsSync(modules), `${asset}: carries its production dependencies`)) return;
 
-  for (const rel of REQUIRED_NESTED_DEPENDENCIES) {
+  const installs = lockfileProductionInstalls(root);
+  if (check(installs !== null, `${asset}: carries a package-lock.json with a packages map`)) {
+    const missingInstalls = installs.filter((rel) => !fs.existsSync(path.join(root, rel, 'package.json')));
     check(
-      fs.existsSync(path.join(root, rel)),
-      `${asset}: carries the unhoistable workspace dependency ${rel}`,
+      missingInstalls.length === 0,
+      `${asset}: carries every production dependency tree its lockfile installs (root and workspace-nested)`,
+      missingInstalls
+        .slice(0, 8)
+        .map((rel) => `${rel}/package.json`)
+        .join(', '),
     );
   }
 
@@ -862,6 +856,46 @@ function checkRuntimeDependencies(asset, root, layout) {
     `${asset}: the runtime's controller entry runs from the extraction`,
     `exit ${String(run.status)} ${String(run.stderr).slice(0, 160)}`,
   );
+}
+
+/**
+ * Every dependency tree the ARCHIVE's own `package-lock.json` installs for
+ * production — root (`node_modules/<name>`) and workspace-nested
+ * (`<workspace>/node_modules/<name>`) alike. Entries `npm ci --omit=dev` does
+ * not install (`dev`, `devOptional`) or may legitimately skip (`optional`), and
+ * workspace links (checked by entry point below), are excluded.
+ *
+ * Read from the lockfile, not hardcoded: a fixed path list
+ * (`somalib/node_modules/soma-lib/dist/index.js`) went stale when e9af688b
+ * aligned `somalib`'s soma-lib pin with the root's and the nested copy stopped
+ * existing — every real archive would have failed the gate, while a dropped
+ * root `node_modules/soma-lib` would not have been noticed at all.
+ *
+ * Returns lockfile keys (archive-relative package directories), sorted, or
+ * `null` when the archive has no readable lockfile `packages` map.
+ */
+function lockfileProductionInstalls(root) {
+  const lock = readJson(path.join(root, 'package-lock.json'));
+  const packages = lock === null ? null : lock.packages;
+  if (packages === null || typeof packages !== 'object' || Array.isArray(packages)) return null;
+  return Object.keys(packages)
+    .filter((key) => {
+      if (!key.split('/').includes('node_modules')) return false;
+      const meta = packages[key] || {};
+      return meta.dev !== true && meta.devOptional !== true && meta.optional !== true && meta.link !== true;
+    })
+    .sort();
+}
+
+/**
+ * The subset of {@link lockfileProductionInstalls} that lives inside a
+ * workspace rather than the root tree — the trees a packaging step that copies
+ * only the root `node_modules` silently drops. Empty today; re-arms by itself
+ * if a workspace pin diverges again.
+ */
+function lockfileWorkspaceNestedInstalls(root) {
+  const installs = lockfileProductionInstalls(root);
+  return installs === null ? null : installs.filter((key) => key.split('/')[0] !== 'node_modules');
 }
 
 /**
@@ -1064,8 +1098,9 @@ function main() {
 module.exports = {
   DEPENDENCY_TEXT_PATTERNS,
   RUNTIME_EXTRA_REQUIRED_FILES,
-  REQUIRED_NESTED_DEPENDENCIES,
   archiveWorkspaceEntries,
+  lockfileProductionInstalls,
+  lockfileWorkspaceNestedInstalls,
   isNativeExecutable,
   walk,
 };
