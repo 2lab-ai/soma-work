@@ -305,7 +305,13 @@ describe('fetchMessagesBefore — legacy mode', () => {
     const thread = makeThread(5);
     thread[0].files = [{ id: 'F1', name: 'header.png' }];
     const slack = createMockSlack(thread);
-    const { messages } = await fetchMessagesBefore(asSlack(slack), 'C123', '1700000000.000000', '1700000005.000000', 10);
+    const { messages } = await fetchMessagesBefore(
+      asSlack(slack),
+      'C123',
+      '1700000000.000000',
+      '1700000005.000000',
+      10,
+    );
     expect(messages.some((m: any) => m.ts === '1700000000.000000')).toBe(true);
     expect(messages.find((m: any) => m.ts === '1700000000.000000')?.files[0].name).toBe('header.png');
   });
@@ -313,14 +319,26 @@ describe('fetchMessagesBefore — legacy mode', () => {
   it('reports rootWasInjected when root is outside count window', async () => {
     const thread = makeThread(10);
     const slack = createMockSlack(thread);
-    const { rootWasInjected } = await fetchMessagesBefore(asSlack(slack), 'C123', '1700000000.000000', '1700000005.000000', 3);
+    const { rootWasInjected } = await fetchMessagesBefore(
+      asSlack(slack),
+      'C123',
+      '1700000000.000000',
+      '1700000005.000000',
+      3,
+    );
     expect(rootWasInjected).toBe(true);
   });
 
   it('rootWasInjected is false when root is within count window', async () => {
     const thread = makeThread(2);
     const slack = createMockSlack(thread);
-    const { rootWasInjected } = await fetchMessagesBefore(asSlack(slack), 'C123', '1700000000.000000', '1700000002.000000', 10);
+    const { rootWasInjected } = await fetchMessagesBefore(
+      asSlack(slack),
+      'C123',
+      '1700000000.000000',
+      '1700000002.000000',
+      10,
+    );
     expect(rootWasInjected).toBe(false);
   });
 
