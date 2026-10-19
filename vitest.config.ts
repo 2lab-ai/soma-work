@@ -4,6 +4,11 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // Strip deployment env (SOMA_CONFIG_DIR, DATA_DIR, AUTH_MODE, credentials)
+    // and pin config/data to a scratch dir, so a run on a host that also runs
+    // soma-work can neither read its .env nor write into its data dir.
+    globalSetup: ['./src/test-utils/vitest-global-setup.ts'],
+    setupFiles: ['./src/test-utils/vitest-setup.ts'],
     include: [
       'src/**/*.test.ts',
       'somalib/**/*.test.ts',
