@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isSlashForbidden, SLASH_FORBIDDEN, SLASH_FORBIDDEN_MESSAGE } from '../capability';
+import { isSlashForbidden, SLASH_FORBIDDEN, SLASH_FORBIDDEN_MESSAGE } from '@soma/slack/z/capability';
 
 describe('SLASH_FORBIDDEN set', () => {
   it('contains the expected forbidden keys', () => {

@@ -146,12 +146,8 @@ describe('packages-srp Phase 2 slack contract', () => {
       'cct/render-in-place',
       'cct/views',
       'context-window-manager',
-      'directives/channel-message-directive',
-      'directives/session-link-directive',
-      'directives/source-working-dir-directive',
       'dispatch-abort',
       'event-router',
-      'formatters/markdown-to-blocks',
       // 'formatters/directory-formatter', 'user-choice-extractor', 'z/strip-z-prefix':
       // legacy src shims deleted once all importers moved to @soma/slack directly.
       'handoff-budget',
@@ -165,14 +161,10 @@ describe('packages-srp Phase 2 slack contract', () => {
       'pipeline/input-processor',
       'pipeline/session-initializer',
       'pipeline/stream-executor',
-      'pipeline/stream-executor-cleanup-helpers',
-      'pipeline/local-slash-command',
-      'pipeline/types',
       'reaction-manager',
       'release-notifier',
       'request-coordinator',
       'session-manager',
-      'slash-command-adapter',
       'slack-api-helper',
       'source-thread-summary',
       'startup-notifier',
@@ -180,7 +172,6 @@ describe('packages-srp Phase 2 slack contract', () => {
       'stream-processor',
       'summary-service',
       'summary-timer',
-      'task-list-block-builder',
       'thread-panel',
       'thread-header-builder',
       'thread-surface',
@@ -189,17 +180,18 @@ describe('packages-srp Phase 2 slack contract', () => {
       'tool-formatter',
       'tool-tracker',
       'turn-notifier',
-      'turn-render-debouncer',
       'turn-surface',
       'user-choice-handler',
       'user-skill-file-roundtrip',
-      'z/capability',
       'z/normalize',
       'z/respond',
-      'z/router',
       'z/types',
       'z/ui-builder',
       'z/whitelist',
+      // directives/*, formatters/markdown-to-blocks, pipeline/{local-slash-command,
+      // stream-executor-cleanup-helpers,types}, slash-command-adapter, task-list-block-builder,
+      // turn-render-debouncer, z/{capability,router}: legacy src shims deleted once only tests
+      // imported them (tests now import @soma/slack directly).
     ];
     for (const moduleName of movedModules) {
       const packageSource = path.join(repoRoot, 'packages/slack/src', `${moduleName}.ts`);

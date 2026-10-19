@@ -32,7 +32,7 @@ const UI_TEST_RE = /^ui-test(?:\s+(stream|plan|task_card|work))?$/i;
  *  4. Unknown subcommands print usage.
  *
  * Slash `/z ui-test` is intentionally blocked by SLASH_FORBIDDEN in
- * `src/slack/z/capability.ts` — the slash path sets `threadTs = channel_id` as
+ * `packages/slack/src/z/capability.ts` — the slash path sets `threadTs = channel_id` as
  * a placeholder which is incompatible with `chat.startStream({ thread_ts })`.
  *
  * Stream mode invariant: once `appendStream` is called with `chunks:[{type,text}]`,

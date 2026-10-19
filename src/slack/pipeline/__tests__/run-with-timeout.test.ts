@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { runWithTimeout } from '../stream-executor-cleanup-helpers';
+import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 
 describe('runWithTimeout', () => {
   beforeEach(() => {

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { type Todo, TodoManager } from '../../todo-manager';
-import { TaskListBlockBuilder } from '../task-list-block-builder';
+import { TaskListBlockBuilder } from '@soma/slack/task-list-block-builder';
 
 // ═══════════════════════════════════════════════════════════
 // SHARED BEHAVIOR TESTS
