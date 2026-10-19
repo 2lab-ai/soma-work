@@ -808,7 +808,9 @@ export class SlackHandler {
       // The SAME interrupt policy the dispatcher uses for `Send now`
       // (owner / current initiator) — one policy, two call sites.
       canInterrupt: (sessionKey, clicker) => this.authorizeFollowupInterrupt(sessionKey, clicker).allowed,
-      refresh: (sessionKey, page) => this.refreshFollowupSurface(sessionKey, page),
+      // A pre-A39 panel's Prev/Next click: the panel no longer pages a queue,
+      // so the page is ignored and the surface just repaints.
+      refresh: (sessionKey) => this.refreshFollowupSurface(sessionKey),
       // The host owns the drain loop; the action module never re-enters the
       // dispatcher itself.
       runDrain: (sessionKey) =>
@@ -2387,10 +2389,10 @@ export class SlackHandler {
   }
 
   /** Refresh the Queue block for a live session key. */
-  private async refreshFollowupSurface(sessionKey: string, page?: number): Promise<void> {
+  private async refreshFollowupSurface(sessionKey: string): Promise<void> {
     const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
     if (!session) return;
-    await this.renderFollowupFor(session, sessionKey, page);
+    await this.renderFollowupFor(session, sessionKey);
   }
 
   /**
@@ -2399,13 +2401,13 @@ export class SlackHandler {
    * key lookup would silently find nothing and the user would never see the
    * cancellation.
    */
-  private async renderFollowupFor(session: ConversationSession, sessionKey: string, page?: number): Promise<void> {
+  private async renderFollowupFor(session: ConversationSession, sessionKey: string): Promise<void> {
     const panel = this.threadPanel as
-      | (ThreadPanel & { updateFollowup?: (s: ConversationSession, k: string, page?: number) => Promise<void> })
+      | (ThreadPanel & { updateFollowup?: (s: ConversationSession, k: string) => Promise<void> })
       | undefined;
     try {
       if (typeof panel?.updateFollowup === 'function') {
-        await panel.updateFollowup(session, sessionKey, page);
+        await panel.updateFollowup(session, sessionKey);
       } else {
         await panel?.updatePanel?.(session, sessionKey);
       }
