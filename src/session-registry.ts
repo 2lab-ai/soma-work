@@ -1696,6 +1696,11 @@ export class SessionRegistry {
         this.cleanupSourceWorkingDirs(session);
         slept++;
 
+        // Metrics: this sweep is the only live sleep path (fire-and-forget).
+        getMetricsEmitter()
+          .emitSessionSlept(session)
+          .catch((err) => this.logger.debug('metrics emit failed', err));
+
         if (this.expiryCallbacks) {
           try {
             // `warningMessageTs` is still set here on purpose. onSleep edits that
