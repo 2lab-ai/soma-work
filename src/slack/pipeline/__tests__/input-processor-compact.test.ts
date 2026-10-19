@@ -18,9 +18,9 @@ vi.mock('../../../user-settings-store', () => ({
   },
 }));
 
+import type { MessageEvent } from '@soma/slack/pipeline/types';
 import type { ConversationSession } from '../../../types';
 import { InputProcessor } from '../input-processor';
-import type { MessageEvent } from '@soma/slack/pipeline/types';
 
 function makeSession(overrides: Partial<ConversationSession> = {}): ConversationSession {
   return {

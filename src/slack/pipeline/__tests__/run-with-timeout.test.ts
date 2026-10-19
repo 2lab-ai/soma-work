@@ -6,9 +6,8 @@
  * Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §C-3/C-4/C-6.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 describe('runWithTimeout', () => {
   beforeEach(() => {

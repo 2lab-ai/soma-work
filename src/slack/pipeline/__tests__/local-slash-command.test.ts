@@ -15,8 +15,8 @@
  * regression fence around the matcher.
  */
 
-import { describe, expect, it } from 'vitest';
 import { isLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
+import { describe, expect, it } from 'vitest';
 
 describe('isLocalSlashCommand — SDK local command matcher', () => {
   describe('positive cases (must return true so bypass triggers)', () => {

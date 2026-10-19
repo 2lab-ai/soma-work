@@ -1,5 +1,10 @@
+import {
+  estimatePayloadSize,
+  markdownToBlocks,
+  sanitizeTable,
+  thinkingToQuoteBlock,
+} from '@soma/slack/formatters/markdown-to-blocks';
 import { describe, expect, it } from 'vitest';
-import { estimatePayloadSize, markdownToBlocks, sanitizeTable, thinkingToQuoteBlock } from '@soma/slack/formatters/markdown-to-blocks';
 
 describe('markdownToBlocks', () => {
   it('converts headers to header blocks', () => {
