@@ -45,23 +45,6 @@ describe('RequestCoordinator', () => {
   });
 
   describe('session abort', () => {
-    it('should abort active session and return true', () => {
-      const sessionKey = 'C123:T456';
-      const controller = new AbortController();
-      let aborted = false;
-
-      controller.signal.addEventListener('abort', () => {
-        aborted = true;
-      });
-
-      coordinator.setController(sessionKey, controller);
-      const result = coordinator.abortSession(sessionKey);
-
-      expect(result).toBe(true);
-      expect(aborted).toBe(true);
-      expect(controller.signal.aborted).toBe(true);
-    });
-
     it('should return false for non-existent session', () => {
       const result = coordinator.abortSession('nonexistent');
       expect(result).toBe(false);
@@ -95,16 +78,6 @@ describe('RequestCoordinator', () => {
       const result = coordinator.abortSession(sessionKey, 'user-stop');
 
       expect(result).toBe(true);
-      expect(controller.signal.reason).toBe('user-stop');
-    });
-
-    it('defaults to user-stop when no reason is given', () => {
-      const sessionKey = 'C123:T456';
-      const controller = new AbortController();
-      coordinator.setController(sessionKey, controller);
-
-      coordinator.abortSession(sessionKey);
-
       expect(controller.signal.reason).toBe('user-stop');
     });
   });

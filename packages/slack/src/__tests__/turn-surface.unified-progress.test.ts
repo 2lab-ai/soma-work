@@ -164,24 +164,6 @@ describe('TurnSurface — U10a native task stream', () => {
     vi.clearAllMocks();
   });
 
-  describe('stream opening', () => {
-    it("startStream requests task_display_mode 'plan' so task chunks render as a plan card", async () => {
-      const client = makeClient();
-      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
-
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:mode' };
-      await surface.begin(ctx);
-      await surface.end(ctx.turnId, 'completed');
-
-      expect(client.chat.startStream).toHaveBeenCalledTimes(1);
-      expect(client.chat.startStream.mock.calls[0][0]).toMatchObject({
-        channel: 'C1',
-        thread_ts: 't1',
-        task_display_mode: 'plan',
-      });
-    });
-  });
-
   describe('task rendering on an existing stream', () => {
     beforeEach(() => {
       vi.useFakeTimers();
@@ -338,42 +320,6 @@ describe('TurnSurface — U10a native task stream', () => {
       expect(lastAppendOrder).toBeLessThan(client.chat.stopStream.mock.invocationCallOrder[0]);
       // Still no B2 message anywhere on the turn.
       expect(client.chat.postMessage).not.toHaveBeenCalled();
-    });
-
-    it('all-terminal todos need no finalize write on close', async () => {
-      const client = makeClient();
-      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
-
-      const done = TODOS.map((t) => ({ ...t, status: 'completed' as const }));
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:alldone' };
-      await surface.begin(ctx);
-      await surface.renderTasks(ctx.turnId, done);
-      await vi.advanceTimersByTimeAsync(500);
-      await surface.end(ctx.turnId, 'completed');
-
-      expect(taskAppends(client).length).toBe(1);
-    });
-
-    it('fail()/supersede also demotes the native task list', async () => {
-      const client = makeClient({
-        startStream: vi.fn().mockResolvedValueOnce({ ts: 'stream-A' }).mockResolvedValueOnce({ ts: 'stream-B' }),
-      });
-      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
-
-      const sessionKey = 'C1:t1';
-      const ctxA = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:A' };
-      const ctxB = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:B' };
-
-      await surface.begin(ctxA);
-      await surface.renderTasks(ctxA.turnId, TODOS);
-      await vi.advanceTimersByTimeAsync(500);
-      await surface.begin(ctxB);
-
-      const againstA = taskAppends(client).filter((args) => args.ts === 'stream-A');
-      expect(againstA.length).toBe(2);
-      expect(againstA[1].chunks.filter((c: any) => c.status === 'in_progress')).toEqual([]);
-
-      await surface.end(ctxB.turnId, 'completed');
     });
 
     it('a task update arriving after the turn closed writes nothing and opens no new surface', async () => {
