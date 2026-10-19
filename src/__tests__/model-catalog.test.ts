@@ -202,6 +202,8 @@ describe('modelCatalog — refresh semantics', () => {
   });
 });
 
+// The clamp rule itself is soma-lib's (clampEffortToSupported, pinned by soma-lib's
+// model-effort.test.ts). These cases pin only the catalog lookup this wrapper adds.
 describe('clampEffortToModel', () => {
   beforeEach(() => {
     modelCatalog.__testSeed([GROK, SONNET5]);
@@ -209,19 +211,6 @@ describe('clampEffortToModel', () => {
 
   it('clamps xhigh → high for grok (highest included ≤ requested)', () => {
     expect(clampEffortToModel('grok-4.5', 'xhigh')).toBe('high');
-  });
-
-  it('clamps max → high for grok', () => {
-    expect(clampEffortToModel('grok-4.5', 'max')).toBe('high');
-  });
-
-  it('passes through an effort the model supports (low → low)', () => {
-    expect(clampEffortToModel('grok-4.5', 'low')).toBe('low');
-  });
-
-  it('returns the lowest included effort when nothing lower matches', () => {
-    modelCatalog.__testSeed([{ ...GROK, efforts: ['medium', 'high'] }]);
-    expect(clampEffortToModel('grok-4.5', 'low')).toBe('medium');
   });
 
   it('passes through unchanged for a model unknown to the catalog', () => {
