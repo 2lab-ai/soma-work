@@ -229,8 +229,8 @@ describe('packages-srp Phase 2 slack contract', () => {
       );
     }
 
-    // 'directives': legacy src barrel shim deleted once all importers moved off it.
-    const movedIndexModules = ['actions', 'formatters', 'pipeline'];
+    // 'directives', 'formatters': legacy src barrel shims deleted once all importers moved off them.
+    const movedIndexModules = ['actions', 'pipeline'];
     for (const moduleName of movedIndexModules) {
       const packageSource = path.join(repoRoot, 'packages/slack/src', moduleName, 'index.ts');
       const legacySource = path.join(repoRoot, 'src/slack', moduleName, 'index.ts');
