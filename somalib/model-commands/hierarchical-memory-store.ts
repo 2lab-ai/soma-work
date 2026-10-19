@@ -27,8 +27,8 @@ import {
   isSafeSegment,
   isSemanticPageType,
   type PageLocator,
-  type SemanticPageType,
   parsePageId,
+  type SemanticPageType,
 } from './memory-page-id';
 
 export const MEMORY_DIR = 'memory';
@@ -217,11 +217,13 @@ export class HierarchicalMemoryFileStore {
     const { relPath, id } = this.resolve(loc);
     this.ensureTaxonomy(user);
     const filePath = path.join(this.root(user), relPath);
-    const existing = fs.existsSync(filePath) ? parsePage(fs.readFileSync(filePath, 'utf-8'), id, loc.type, relPath) : null;
+    const existing = fs.existsSync(filePath)
+      ? parsePage(fs.readFileSync(filePath, 'utf-8'), id, loc.type, relPath)
+      : null;
 
     const title = (fields.title || existing?.title || defaultTitle(loc)).trim();
     const aliases = fields.aliases ?? existing?.aliases ?? [];
-    const current = fields.current !== undefined ? fields.current.trim() : existing?.current ?? '';
+    const current = fields.current !== undefined ? fields.current.trim() : (existing?.current ?? '');
     const history = existing ? [...existing.history] : [];
     if (fields.historyEntry && fields.historyEntry.trim()) {
       history.unshift(`${todayISO()}: ${fields.historyEntry.trim()}`);
@@ -332,7 +334,8 @@ export class HierarchicalMemoryFileStore {
         const projDir = path.join(projectsDir, project);
         if (!fs.statSync(projDir).isDirectory()) continue;
         const projMem = path.join(projDir, 'MEMORY.md');
-        if (fs.existsSync(projMem)) pushPage(path.join('projects', project, 'MEMORY.md'), 'project', `project/${project}`);
+        if (fs.existsSync(projMem))
+          pushPage(path.join('projects', project, 'MEMORY.md'), 'project', `project/${project}`);
         const issuesDir = path.join(projDir, 'issues');
         if (fs.existsSync(issuesDir)) {
           for (const f of fs.readdirSync(issuesDir)) {
@@ -410,11 +413,10 @@ function serializePage(page: SemanticPage, loc: PageLocator): string {
         ? `${loc.project}/${loc.issue}`
         : (loc.project ?? '')
       : loc.type === 'cron'
-        ? (loc.routine || loc.slug) ?? ''
+        ? ((loc.routine || loc.slug) ?? '')
         : (loc.slug ?? '');
   const aliasesYaml = `[${page.aliases.map((a) => a.replace(/[[\]]/g, '')).join(', ')}]`;
-  const historyBlock =
-    page.history.length > 0 ? page.history.map((h) => `- ${h}`).join('\n') : '- (no history yet)';
+  const historyBlock = page.history.length > 0 ? page.history.map((h) => `- ${h}`).join('\n') : '- (no history yet)';
   return [
     '---',
     `title: ${page.title}`,

@@ -6,7 +6,15 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["src/**/*.ts", "scripts/**/*.ts", "packages/**/*.ts", "!packages/**/dist/**", "!packages/**/node_modules/**"]
+    "includes": [
+      "src/**/*.ts",
+      "scripts/**/*.ts",
+      "packages/**/*.ts",
+      "somalib/**/*.ts",
+      "!packages/**/dist/**",
+      "!packages/**/node_modules/**",
+      "!somalib/**/*.d.ts"
+    ]
   },
   "formatter": {
     "enabled": true,
