@@ -1,5 +1,17 @@
+import Fastify, { type FastifyInstance, type LightMyRequestResponse } from 'fastify';
 import * as jwt from 'jsonwebtoken';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { logWarn } = vi.hoisted(() => ({ logWarn: vi.fn() }));
+
+vi.mock('../../logger', () => ({
+  Logger: class {
+    info = vi.fn();
+    warn = logWarn;
+    debug = vi.fn();
+    error = vi.fn();
+  },
+}));
 
 const mockConfig = {
   conversation: {
@@ -113,8 +125,8 @@ describe('OAuth module', () => {
       // This tests the lookup registration — actual matching is done in index.ts
       // Just verify the function can be called without error
       setOAuthUserLookup((email: string) => {
-        if (email === 'alice@test.com') return { userId: 'U123', name: 'Alice' };
-        return null;
+        if (email === 'alice@test.com') return { kind: 'match', userId: 'U123', name: 'Alice' };
+        return { kind: 'none' };
       });
       // No assertion needed — just verifying no throw
     });
@@ -176,6 +188,167 @@ describe('OAuth module', () => {
       const token = oauth.issueSlackToken({ slackUserId: 'U1', email: 'e@x', name: 'N' });
       expect(verifyDashboardToken(token)).toBeNull();
       expect(oauth.verifyDashboardTokenRaw(token)).toBeNull();
+    });
+  });
+
+  // A Google or Microsoft login is only issued for an email that is verified
+  // by Google and registered by exactly one Slack user (`/z email`).
+  describe('OAuth callback email match', () => {
+    let server: FastifyInstance | undefined;
+
+    async function startServer(provider: 'google' | 'microsoft'): Promise<typeof import('../oauth')> {
+      mockConfig.oauth[provider] = { clientId: 'cid', clientSecret: 'csecret' };
+      const oauth = await import('../oauth');
+      server = Fastify({ logger: false });
+      await oauth.registerOAuthRoutes(server);
+      return oauth;
+    }
+
+    function stubProviderFetch(userinfo: Record<string, unknown>): void {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) => ({
+          json: async () => (String(url).includes('token') ? { access_token: 'at' } : userinfo),
+        })),
+      );
+    }
+
+    function app(): FastifyInstance {
+      if (!server) throw new Error('startServer() first');
+      return server;
+    }
+
+    function callback(provider: 'google' | 'microsoft'): Promise<LightMyRequestResponse> {
+      const state = `abc:${provider}`;
+      return app().inject({
+        method: 'GET',
+        url: `/auth/${provider}/callback?code=c&state=${encodeURIComponent(state)}`,
+        headers: { cookie: `soma_oauth_state_${provider}=${encodeURIComponent(state)}` },
+      });
+    }
+
+    function issuedSession(res: LightMyRequestResponse): boolean {
+      const raw = res.headers['set-cookie'];
+      const cookies = raw === undefined ? [] : Array.isArray(raw) ? raw.map(String) : [String(raw)];
+      return cookies.some((c) => c.startsWith('soma_dash_token=') && !c.startsWith('soma_dash_token=;'));
+    }
+
+    beforeEach(() => {
+      logWarn.mockClear();
+    });
+
+    afterEach(async () => {
+      vi.unstubAllGlobals();
+      await server?.close();
+      server = undefined;
+      mockConfig.oauth.google = { clientId: '', clientSecret: '' };
+      mockConfig.oauth.microsoft = { clientId: '', clientSecret: '' };
+    });
+
+    it('Google: a verified email registered by one Slack user logs in', async () => {
+      const oauth = await startServer('google');
+      oauth.setOAuthUserLookup((email) =>
+        email === 'alice@x.com' ? { kind: 'match', userId: 'U_A', name: 'Alice' } : { kind: 'none' },
+      );
+      stubProviderFetch({ email: 'Alice@x.com', name: 'Alice', verified_email: true });
+
+      const res = await callback('google');
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe('/dashboard/U_A');
+      expect(issuedSession(res)).toBe(true);
+    });
+
+    it.each([
+      ['false', { verified_email: false }],
+      ['missing', {}],
+      ['the string "true"', { verified_email: 'true' }],
+    ])('Google: verified_email %s → google_unverified, no session', async (_label, verified) => {
+      const oauth = await startServer('google');
+      oauth.setOAuthUserLookup(() => ({ kind: 'match', userId: 'U_A', name: 'Alice' }));
+      stubProviderFetch({ email: 'alice@x.com', name: 'Alice', ...verified });
+
+      const res = await callback('google');
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe('/login?error=google_unverified');
+      expect(issuedSession(res)).toBe(false);
+      expect(logWarn).toHaveBeenCalledWith(expect.any(String), { email: 'alice@x.com' });
+    });
+
+    it('Google: an email registered by several Slack users → ambiguous_email, no session', async () => {
+      const oauth = await startServer('google');
+      oauth.setOAuthUserLookup((email) =>
+        email === 'shared@x.com' ? { kind: 'ambiguous', count: 2 } : { kind: 'none' },
+      );
+      stubProviderFetch({ email: 'shared@x.com', name: 'S', verified_email: true });
+
+      const res = await callback('google');
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe('/login?error=ambiguous_email');
+      expect(issuedSession(res)).toBe(false);
+      expect(logWarn).toHaveBeenCalledWith(expect.any(String), { email: 'shared@x.com', count: 2 });
+    });
+
+    it('Microsoft: an email registered by several Slack users → ambiguous_email, no session', async () => {
+      const oauth = await startServer('microsoft');
+      oauth.setOAuthUserLookup((email) =>
+        email === 'shared@x.com' ? { kind: 'ambiguous', count: 3 } : { kind: 'none' },
+      );
+      stubProviderFetch({ mail: 'shared@x.com', displayName: 'S' });
+
+      const res = await callback('microsoft');
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe('/login?error=ambiguous_email');
+      expect(issuedSession(res)).toBe(false);
+      expect(logWarn).toHaveBeenCalledWith(expect.any(String), { email: 'shared@x.com', count: 3 });
+    });
+
+    it('Google: a verified email no Slack user registered still → no_match with the email', async () => {
+      const oauth = await startServer('google');
+      oauth.setOAuthUserLookup(() => ({ kind: 'none' }));
+      stubProviderFetch({ email: 'nobody@x.com', name: 'N', verified_email: true });
+
+      const res = await callback('google');
+      expect(res.headers.location).toBe('/login?error=no_match&email=nobody%40x.com');
+      expect(issuedSession(res)).toBe(false);
+    });
+
+    it('login page explains google_unverified and ambiguous_email', async () => {
+      await startServer('google');
+      const res = await app().inject({ method: 'GET', url: '/login' });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toMatch(/'google_unverified': '[^']*not verified[^']*'/);
+      expect(res.body).toMatch(/'ambiguous_email': '[^']*Several Slack users[^']*\/z email[^']*'/);
+    });
+  });
+
+  // The production lookup (src/index.ts) feeds every Slack user's `/z email`
+  // into this matcher; it must count matches instead of taking the first one.
+  describe('matchSlackUsersByEmail', () => {
+    it('reports a single case-insensitive match', async () => {
+      const { matchSlackUsersByEmail } = await import('../oauth');
+      const users = [
+        { userId: 'U_A', email: 'Alice@X.com', slackName: 'Alice' },
+        { userId: 'U_B', email: 'bob@x.com' },
+      ];
+      expect(matchSlackUsersByEmail(users, 'alice@x.com')).toEqual({ kind: 'match', userId: 'U_A', name: 'Alice' });
+      expect(matchSlackUsersByEmail(users, 'bob@x.com')).toEqual({ kind: 'match', userId: 'U_B', name: 'U_B' });
+    });
+
+    it('reports ambiguity with the count when several Slack users registered the email', async () => {
+      const { matchSlackUsersByEmail } = await import('../oauth');
+      const users = [
+        { userId: 'U_A', email: 'shared@x.com' },
+        { userId: 'U_B', email: 'SHARED@x.com' },
+        { userId: 'U_C', email: 'other@x.com' },
+      ];
+      expect(matchSlackUsersByEmail(users, 'shared@x.com')).toEqual({ kind: 'ambiguous', count: 2 });
+    });
+
+    it('reports none when no Slack user registered the email (cleared emails never match)', async () => {
+      const { matchSlackUsersByEmail } = await import('../oauth');
+      const users = [{ userId: 'U_A', email: '' }, { userId: 'U_B' }];
+      expect(matchSlackUsersByEmail(users, 'alice@x.com')).toEqual({ kind: 'none' });
+      expect(matchSlackUsersByEmail(users, '')).toEqual({ kind: 'none' });
     });
   });
 });
