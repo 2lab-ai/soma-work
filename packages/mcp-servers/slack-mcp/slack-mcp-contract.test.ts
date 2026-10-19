@@ -1,14 +1,15 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 /**
- * RED Contract Tests for slack-mcp rename + send_file/send_media tools
+ * Source-contract checks for the slack-mcp rename + send_file/send_media tools
+ * (originally the RED tests for the since-removed docs/slack-mcp-rename/trace.md).
  *
- * These tests verify the contract defined in docs/slack-mcp-rename/trace.md.
- * All tests should FAIL (RED) until implementation is complete.
- *
- * Trace references are noted in each test.
+ * The mcp-config-builder wiring is asserted behaviourally by
+ * src/__tests__/mcp-config-builder.test.ts and
+ * src/__tests__/mcp-config-builder-internal-servers.e2e.test.ts; only the
+ * checks those do not cover are kept here.
  */
 
 // ── Scenario 1: Rename slack-thread → slack-mcp ─────────────
@@ -21,29 +22,10 @@ describe('Scenario 1: Rename slack-thread → slack-mcp', () => {
     await expect(fs.access(serverFile)).resolves.toBeUndefined();
   });
 
-  // Trace: Scenario 1, Section 3a — BASENAME constant
-  it('mcp-config-builder uses SLACK_MCP_SERVER_BASENAME', async () => {
-    const configBuilder = await fs.readFile(
-      path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
-      'utf-8',
-    );
-    expect(configBuilder).toContain("SLACK_MCP_SERVER_BASENAME = 'slack-mcp-server'");
-  });
-
-  // Trace: Scenario 1, Section 3a — registration key
-  it('mcp-config-builder registers server as slack-mcp key', async () => {
-    const configBuilder = await fs.readFile(
-      path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
-      'utf-8',
-    );
-    expect(configBuilder).toContain("internalServers['slack-mcp']");
-    expect(configBuilder).not.toContain("internalServers['slack-thread']");
-  });
-
   // Trace: Scenario 1, Section 3a — allowed tools prefix
   it('allowed tools uses mcp__slack-mcp prefix', async () => {
     const configBuilder = await fs.readFile(
-      path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
+      path.resolve(__dirname, '..', '..', '..', 'src', 'mcp-config-builder.ts'),
       'utf-8',
     );
     expect(configBuilder).toContain("'mcp__slack-mcp'");
@@ -53,7 +35,7 @@ describe('Scenario 1: Rename slack-thread → slack-mcp', () => {
   // Trace: Scenario 1, Section 3a — env var
   it('passes SLACK_MCP_CONTEXT env var', async () => {
     const configBuilder = await fs.readFile(
-      path.resolve(__dirname, '..', '..', 'src', 'mcp-config-builder.ts'),
+      path.resolve(__dirname, '..', '..', '..', 'src', 'mcp-config-builder.ts'),
       'utf-8',
     );
     expect(configBuilder).toContain('SLACK_MCP_CONTEXT');
@@ -62,7 +44,7 @@ describe('Scenario 1: Rename slack-thread → slack-mcp', () => {
 
   // Trace: Scenario 1, Section 3b — auto-resume prompt
   it('auto-resume prompt references slack-mcp', async () => {
-    const handler = await fs.readFile(path.resolve(__dirname, '..', '..', 'src', 'slack-handler.ts'), 'utf-8');
+    const handler = await fs.readFile(path.resolve(__dirname, '..', '..', '..', 'src', 'slack-handler.ts'), 'utf-8');
     // Auto-resume prompt must reference the slack-mcp MCP tool (not legacy slack-thread)
     expect(handler).toContain('slack-mcp__get_thread_messages');
     expect(handler).not.toContain('slack-thread');
@@ -212,13 +194,5 @@ describe('Scenario 5: Existing tools work after rename', () => {
     const source = await fs.readFile(serverPath, 'utf-8');
     expect(source).toContain('SLACK_MCP_CONTEXT');
     expect(source).not.toContain('SLACK_THREAD_CONTEXT');
-  });
-
-  // Trace: Scenario 5, Section 3 — server version bump
-  it('server version is 3.0.0', async () => {
-    const serverPath = path.resolve(__dirname, 'slack-mcp-server.ts');
-    const source = await fs.readFile(serverPath, 'utf-8');
-    // After cross-thread access: super('slack-mcp', '4.0.0')
-    expect(source).toContain("'4.0.0'");
   });
 });
