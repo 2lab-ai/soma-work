@@ -14,43 +14,26 @@ import { ClaudeHandler } from '../claude-handler';
 import { McpManager } from '../mcp-manager';
 import type { ConversationSession } from '../types';
 
-// Skip if running inside Claude Code session (nested sessions crash)
-// Run from a regular terminal: npx vitest run src/claude-handler.integration.test.ts
-const isNestedSession = !!process.env.CLAUDECODE;
-// CI runners (hosted or self-hosted) must not consume real Claude credentials:
-// on a self-hosted runner the runner user's ~/.claude exists, which used to
-// make this suite run and fail on CCT lease acquisition.
+// Real-SDK suite: consumes real Claude credentials, so it is explicit opt-in.
+// Run from a regular terminal:
+//   SOMA_TEST_REAL_SDK=1 npx vitest run src/__tests__/claude-handler.integration.test.ts
+// Only with that flag does the test-env isolation (src/test-utils/hermetic-test-env.ts)
+// pass AUTH_MODE / ANTHROPIC_* / CLAUDE_CODE_OAUTH_TOKEN through. It used to
+// auto-enable whenever ~/.claude existed, which ran it (and failed it) on any
+// host with Claude installed, including self-hosted CI runners.
+const isNestedSession = !!process.env.CLAUDECODE; // nested sessions crash
 const isCI = !!process.env.CI;
-const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
+const optedIn = process.env.SOMA_TEST_REAL_SDK === '1';
 
-const canRun =
-  !isNestedSession &&
-  !isCI &&
-  (hasApiKey ||
-    (() => {
-      try {
-        const fs = require('fs');
-        const os = require('os');
-        const path = require('path');
-        // Claude subscription auth
-        const authDir = path.join(os.homedir(), '.claude');
-        return fs.existsSync(authDir);
-      } catch {
-        return false;
-      }
-    })());
+const canRun = optedIn && !isNestedSession && !isCI;
 
 const describeWithCredentials = canRun ? describe : describe.skip;
 
-if (isNestedSession) {
+if (optedIn && isNestedSession) {
   console.warn('⚠️  Skipped: running inside Claude Code session (nested sessions not allowed)');
-  console.warn('   Run from terminal: npx vitest run src/claude-handler.integration.test.ts');
 }
-if (isCI) {
+if (optedIn && isCI) {
   console.warn('⚠️  Skipped: CI environment (no real Claude credentials in CI)');
-}
-if (!canRun && !isNestedSession && !isCI) {
-  console.warn('⚠️  Skipped: no Claude credentials found');
 }
 
 function createMockSession(overrides: Partial<ConversationSession> = {}): ConversationSession {

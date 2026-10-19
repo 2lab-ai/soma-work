@@ -42,6 +42,8 @@ function deploymentShellEnv(): NodeJS.ProcessEnv {
     VITEST: 'true',
     VITEST_POOL_ID: '1',
     npm_lifecycle_event: 'test:release',
+    // npm config can carry arbitrary values (e.g. from an operator .npmrc).
+    npm_config_soma_data_dir: '/opt/soma-work/dev/data',
     // Deployment state a bot-spawned shell carries.
     SOMA_CONFIG_DIR: '/opt/soma-work/dev',
     DATA_DIR: '/opt/soma-work/dev/data',
@@ -120,6 +122,40 @@ describe('isolateTestEnv', () => {
       VITEST_POOL_ID: '1',
       npm_lifecycle_event: 'test:release',
     });
+  });
+});
+
+describe('isolateTestEnv — npm config and the real-SDK opt-in', () => {
+  it('drops npm_config_* (only npm lifecycle/package metadata is kept)', () => {
+    const env = deploymentShellEnv();
+    isolateTestEnv(env, makeScratch());
+    expect(env).not.toHaveProperty('npm_config_soma_data_dir');
+    expect(env.npm_lifecycle_event).toBe('test:release');
+  });
+
+  it('strips auth/credential variables unless SOMA_TEST_REAL_SDK=1', () => {
+    const env = deploymentShellEnv();
+    isolateTestEnv(env, makeScratch());
+    expect(env).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(env).not.toHaveProperty('AUTH_MODE');
+  });
+
+  it('with SOMA_TEST_REAL_SDK=1 keeps auth variables but still pins config/data and drops the rest', () => {
+    const scratch = makeScratch();
+    const env = { ...deploymentShellEnv(), SOMA_TEST_REAL_SDK: '1' };
+    isolateTestEnv(env, scratch);
+    expect(env).toMatchObject({
+      SOMA_TEST_REAL_SDK: '1',
+      AUTH_MODE: 'llmux',
+      ANTHROPIC_BASE_URL: 'http://localhost:3456',
+      ANTHROPIC_API_KEY: 'sk-live',
+      CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-live',
+      SOMA_CONFIG_DIR: scratch,
+      DATA_DIR: path.join(scratch, 'data'),
+    });
+    expect(env).not.toHaveProperty('SOMA_DATA_DIR');
+    expect(env).not.toHaveProperty('SLACK_BOT_TOKEN');
+    expect(env).not.toHaveProperty('GITHUB_PRIVATE_KEY');
   });
 });
 
