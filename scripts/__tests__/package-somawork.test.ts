@@ -1415,6 +1415,23 @@ describe('archive gate internals', () => {
     expect(derived.entries).toContain('packages/common/dist/index.js');
     expect(derived.entries.some((entry) => entry.startsWith('somalib/'))).toBe(false);
   });
+
+  it('requires every concrete subpath target of a package with no root entry point', () => {
+    // `@soma/slack` exports subpaths only. Without this, dropping its root
+    // entry would also drop the only requirement that its dist is staged.
+    const root = makeStagedRuntime(path.join(scratch, 'workspace-subpaths'));
+    const manifest = {
+      name: '@soma/slack',
+      exports: { './a': './dist/a.js', './b/c': './dist/b/c.js', './*': './dist/*.js' },
+    };
+    fs.mkdirSync(path.join(root, 'packages/slack'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'packages/slack/package.json'), `${JSON.stringify(manifest)}\n`);
+
+    const derived = gate.archiveWorkspaceEntries(root);
+    expect(derived.entries).toContain('packages/slack/dist/a.js');
+    expect(derived.entries).toContain('packages/slack/dist/b/c.js');
+    expect(derived.entries.some((entry) => entry.includes('*'))).toBe(false);
+  });
 });
 
 describe('release identity is supplied, not invented', () => {

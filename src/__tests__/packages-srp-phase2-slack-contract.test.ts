@@ -42,7 +42,6 @@ describe('packages-srp Phase 2 slack contract', () => {
     expect(manifest.name).toBe('@soma/slack');
     expect(manifest.files).toEqual(expect.arrayContaining(['dist']));
     expect(manifest.exports).toMatchObject({
-      '.': './dist/index.js',
       './action-panel-builder': './dist/action-panel-builder.js',
       './actions': './dist/actions/index.js',
       './actions/click-classifier': './dist/actions/click-classifier.js',
