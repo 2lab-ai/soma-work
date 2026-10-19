@@ -1,6 +1,6 @@
 # Verification ledger
 
-Snapshot of 2026-10-01. Every production TypeScript file (the set the ImportGraph extractor reads
+Snapshot of 2026-10-19. Every production TypeScript file (the set the ImportGraph extractor reads
 from `git ls-files`: `*.ts`, `*.tsx`, `*.mts`, `*.cts`, minus declaration files, tests, specs
 and fixtures), and how far `verification/` covers it. Written by
 `node scripts/verification/ledger.cjs`. Nothing checks this file against the tree; the live
@@ -17,15 +17,15 @@ current file set on every run.
 | Group | Files | T2 | T1 |
 |---|---:|---:|---:|
 | `packages/common/` | 13 | 0 | 13 |
-| `packages/process-shared/` | 26 | 0 | 26 |
-| `packages/slack/` | 97 | 2 | 95 |
-| `src/` | 406 | 5 | 401 |
+| `packages/process-shared/` | 21 | 0 | 21 |
+| `packages/slack/` | 98 | 2 | 96 |
+| `src/` | 411 | 5 | 406 |
 | `somalib/` | 17 | 0 | 17 |
 | `packages/test-utils/` | 4 | 0 | 4 |
 | `packages/mcp-servers/` | 11 | 0 | 11 |
-| `scripts/` | 6 | 0 | 6 |
+| `scripts/` | 7 | 0 | 7 |
 | other | 1 | 0 | 1 |
-| **total** | **581** | **7** | **574** |
+| **total** | **583** | **7** | **576** |
 
 ## Files
 
@@ -64,17 +64,12 @@ current file set on every run.
 | `packages/process-shared/src/mcp-tool-permission-config.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/mcp/base-mcp-server.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/mcp/config-cache.ts` | `packages/process-shared/` | T1 |
-| `packages/process-shared/src/mcp/mcp-client.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/mcp/types.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/catalog.ts` | `packages/process-shared/` | T1 |
-| `packages/process-shared/src/model-commands/command-help.ts` | `packages/process-shared/` | T1 |
-| `packages/process-shared/src/model-commands/handoff-parser.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/hierarchical-memory-store.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/memory-file-store.ts` | `packages/process-shared/` | T1 |
-| `packages/process-shared/src/model-commands/result-parser.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/session-types.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/skill-file-store.ts` | `packages/process-shared/` | T1 |
-| `packages/process-shared/src/model-commands/skill-share-errors.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/types.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/validator.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/permission/dangerous-rules.ts` | `packages/process-shared/` | T1 |
@@ -169,6 +164,7 @@ current file set on every run.
 | `packages/slack/src/user-choice-extractor.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/user-choice-handler.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/user-skill-file-roundtrip.ts` | `packages/slack/` | T1 |
+| `packages/slack/src/work-log.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/z/capability.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/z/normalize.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/z/respond.ts` | `packages/slack/` | T1 |
@@ -185,6 +181,7 @@ current file set on every run.
 | `scripts/gen-usage-card-fixture.ts` | `scripts/` | T1 |
 | `scripts/provision-agent.ts` | `scripts/` | T1 |
 | `scripts/release/render-manifest.ts` | `scripts/` | T1 |
+| `scripts/screenshot-agent-inbox.ts` | `scripts/` | T1 |
 | `scripts/screenshot-dashboard.ts` | `scripts/` | T1 |
 | `scripts/soma-cli.ts` | `scripts/` | T1 |
 | `scripts/update-slack-jira-mapping.ts` | `scripts/` | T1 |
@@ -289,6 +286,8 @@ current file set on every run.
 | `src/conversation/types.ts` | `src/` | T1 |
 | `src/conversation/viewer.ts` | `src/` | T1 |
 | `src/conversation/web-server.ts` | `src/` | T1 |
+| `src/conversation/work-log-routes.ts` | `src/` | T1 |
+| `src/conversation/work-log.ts` | `src/` | T1 |
 | `src/credential-alert.ts` | `src/` | T1 |
 | `src/credentials-manager.ts` | `src/` | T1 |
 | `src/cron-run-request-store.ts` | `src/` | T1 |
@@ -297,8 +296,10 @@ current file set on every run.
 | `src/deploy/force-migrate-opus-1m.ts` | `src/` | T1 |
 | `src/deploy/llmux-codex-model-sync.ts` | `src/` | T1 |
 | `src/deploy/main-env-bootstrap.ts` | `src/` | T1 |
+| `src/deploy/migrate-all-users-minimal-once.ts` | `src/` | T1 |
 | `src/deploy/migrate-all-users-opus-once.ts` | `src/` | T1 |
 | `src/deploy/migrate-cron-opus-once.ts` | `src/` | T1 |
+| `src/deploy/migrate-threadheader-dashboard-link-once.ts` | `src/` | T1 |
 | `src/dispatch-recovery.ts` | `src/` | T1 |
 | `src/dispatch-service.ts` | `src/` | T1 |
 | `src/env-paths.ts` | `src/` | T1 |
@@ -547,6 +548,7 @@ current file set on every run.
 | `src/slack/session-goal-lifecycle.ts` | `src/` | T1 |
 | `src/slack/session-goal.ts` | `src/` | T1 |
 | `src/slack/session-manager.ts` | `src/` | T1 |
+| `src/slack/session-notice.ts` | `src/` | T1 |
 | `src/slack/skill-permission-blocks.ts` | `src/` | T1 |
 | `src/slack/slack-api-helper.ts` | `src/` | T1 |
 | `src/slack/slash-command-adapter.ts` | `src/` | T1 |

@@ -12,8 +12,8 @@ import {
   HierarchicalMemoryFileStore,
   l1FilePath,
   legacyL1FilePath,
-  migrateLegacyL1,
   memoryRoot,
+  migrateLegacyL1,
 } from './hierarchical-memory-store';
 
 describe('HierarchicalMemoryFileStore', () => {
@@ -31,12 +31,16 @@ describe('HierarchicalMemoryFileStore', () => {
   });
 
   it('creates and reads an agent page with frontmatter + Current + History', () => {
-    const res = store.upsertPage(user, { type: 'agent', slug: 'build-system' }, {
-      title: 'Build system',
-      aliases: ['build', 'bun'],
-      current: 'Repo builds with bun.',
-      historyEntry: 'Confirmed bun build.',
-    });
+    const res = store.upsertPage(
+      user,
+      { type: 'agent', slug: 'build-system' },
+      {
+        title: 'Build system',
+        aliases: ['build', 'bun'],
+        current: 'Repo builds with bun.',
+        historyEntry: 'Confirmed bun build.',
+      },
+    );
     expect(res.ok).toBe(true);
     expect(res.id).toBe('agent/build-system');
 
@@ -67,7 +71,9 @@ describe('HierarchicalMemoryFileStore', () => {
     store.upsertPage(user, { type: 'project', project: 'soma-work', issue: '1234' }, { current: 'Issue spec' });
 
     expect(fs.existsSync(path.join(memoryRoot(dataDir, user), 'projects', 'soma-work', 'MEMORY.md'))).toBe(true);
-    expect(fs.existsSync(path.join(memoryRoot(dataDir, user), 'projects', 'soma-work', 'issues', '1234.md'))).toBe(true);
+    expect(fs.existsSync(path.join(memoryRoot(dataDir, user), 'projects', 'soma-work', 'issues', '1234.md'))).toBe(
+      true,
+    );
 
     expect(store.getPage(user, { type: 'project', project: 'soma-work' })?.current).toBe('Project notes');
     expect(store.getPage(user, { type: 'project', project: 'soma-work', issue: '1234' })?.current).toBe('Issue spec');

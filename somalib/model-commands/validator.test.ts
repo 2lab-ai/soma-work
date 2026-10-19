@@ -339,9 +339,9 @@ describe('Rule 4 — forbidden meta labels', () => {
       ],
     });
     const w = warnings(q);
-    expect(
-      w.some((s) => s.includes("option [1] label 'approve (Recommended · 1/2)' is a meta/approval verb")),
-    ).toBe(true);
+    expect(w.some((s) => s.includes("option [1] label 'approve (Recommended · 1/2)' is a meta/approval verb"))).toBe(
+      true,
+    );
   });
 });
 
