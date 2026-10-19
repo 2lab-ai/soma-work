@@ -2123,11 +2123,3 @@ export function getTokenManager(): TokenManager {
   }
   return singleton;
 }
-
-/**
- * Reset the singleton (test-only).
- */
-function __resetTokenManagerSingleton(): void {
-  if (singleton) singleton.stop();
-  singleton = null;
-}

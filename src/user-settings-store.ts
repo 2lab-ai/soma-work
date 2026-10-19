@@ -2,12 +2,7 @@ import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_
 import fs from 'fs';
 import path from 'path';
 import { SDK_EFFORT_LEVELS as EFFORT_LEVELS, type SdkEffortLevel as EffortLevel } from 'soma-lib';
-import {
-  DEFAULT_PERMISSION_MODE,
-  isPermissionMode,
-  type PermissionMode,
-  resolvePermissionMode,
-} from './agent-runtime/policy/permission-mode';
+import { isPermissionMode, type PermissionMode, resolvePermissionMode } from './agent-runtime/policy/permission-mode';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
 import { Logger } from './logger.js';
 import { isRejectedModelInput, resolveModelInputCompatibility } from './metrics/model-registry';

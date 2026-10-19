@@ -107,11 +107,6 @@ export function currentDaemonInstance(): DaemonInstance {
   return cachedInstance;
 }
 
-/** Test-only: forget the cached identity so a case can simulate a fresh process. */
-export function resetDaemonInstanceForTests(): void {
-  cachedInstance = null;
-}
-
 /**
  * Does an externally observed process start match a recorded one?
  *
@@ -122,10 +117,6 @@ export function resetDaemonInstanceForTests(): void {
 export function matchesProcessStart(recordedMs: number, observedMs: number | null): boolean {
   if (observedMs === null) return true;
   return Math.abs(observedMs - recordedMs) <= START_IDENTITY_TOLERANCE_MS;
-}
-
-export function pidLockPath(dataDir: string): string {
-  return path.join(dataDir, PID_LOCK_FILENAME);
 }
 
 export function readyMarkerPath(dataDir: string): string {

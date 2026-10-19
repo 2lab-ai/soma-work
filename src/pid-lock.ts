@@ -12,7 +12,7 @@
  * @see https://github.com/2lab-ai/soma-work/issues/152
  */
 
-import { closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { closeSync, constants, mkdirSync, openSync, readFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { Logger } from './logger';
 import {

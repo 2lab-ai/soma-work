@@ -150,13 +150,6 @@ export function isNativeOneMModel(model: string): boolean {
   return NATIVE_ONE_M_RE.test(model);
 }
 
-/**
- * `CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE` value injected for native-1M models.
- * Kept as a named alias of {@link ONE_M_SDK_BLOCKING_LIMIT} because the pinned
- * SDK resolves native-1M ids to 200k; remove it together with that workaround.
- */
-export const NATIVE_ONE_M_SDK_BLOCKING_LIMIT = ONE_M_SDK_BLOCKING_LIMIT;
-
 /* ------------------------------------------------------------------ *
  * gpt-5.5 / gpt-5.6 (llmux codex backend)
  * ------------------------------------------------------------------ */
