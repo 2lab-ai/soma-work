@@ -390,20 +390,18 @@ try {
 
 ### 10.2 Dispatch Pipeline
 
-`src/slack/z/` 모듈:
+`packages/slack/src/z/` 모듈 (`src/slack/z/`는 re-export shim):
 
-1. **normalize** (`normalize.ts`) — entry text → `ZInvocation` + 플래그 (`isLegacyNaked`, `whitelistedNaked`).
-2. **tombstone** (`tombstone.ts`) — legacy naked 감지. 매칭되면 `migrationHintShown` CAS로 한 번만 힌트 카드 표시.
-3. **whitelist** (`whitelist.ts`) — `session`, `sessions public`, `new`, `renew`, `theme`, `$*` — 네이키드 허용.
-4. **capability** (`capability.ts`) — slash 엔트리에서 스레드 컨텍스트가 필요한 명령 (`new`, `close`, `renew`, `context`, `restore`, `link`, `compact`, `session:set:*`) 차단.
-5. **router** (`router.ts`) — `translateToLegacy()`로 `/z <topic> <verb> …` → 기존 legacy 문법으로 브리지한 뒤 `CommandRouter`에 dispatch. Phase 2에서 handler 가 직접 `/z` 문법을 수용하도록 이관 예정.
-6. **ui-builder** (`ui-builder.ts`) — `buildHelpCard`, `buildTombstoneCard` (결정적 `block_id = z_<topic>_<issuedAt>_<idx>`), `buildSettingCard` (Phase 2 #507 stub).
+1. **normalize** (`normalize.ts`) — `/z` 엔트리 text → `ZInvocation` (`/z` prefix 제거한 `remainder`).
+2. **whitelist** (`whitelist.ts`) — `isDmAllowedForNonAdmin`: 비-admin DM에서 받는 입력(안전한 `/z` topic, `help`/`sessions`/`theme`/`key`, `%…`/`$…`).
+3. **capability** (`capability.ts`) — slash 엔트리에서 스레드 컨텍스트가 필요한 명령 (`new`, `close`, `renew`, `context`, `restore`, `link`, `compact`, `session:set:*`) 차단.
+4. **router** (`router.ts`) — `translateToLegacy()`로 `/z <topic> <verb> …` → 기존 legacy 문법으로 브리지한 뒤 `CommandRouter`에 dispatch. Phase 2에서 handler 가 직접 `/z` 문법을 수용하도록 이관 예정.
+5. **ui-builder** (`ui-builder.ts`) — `buildHelpCard` (결정적 `block_id = z_<topic>_<issuedAt>_<idx>`), `buildSettingCard`, `buildConfirmationCard`.
 
-### 10.3 Legacy Naked Handling
+### 10.3 Bare (naked) 명령
 
-- 멀티 워드 legacy 명령 (`persona set linus`, `show prompt`, `mcp list` 등) — 실행되지 않고 **사용자당 한 번** 마이그레이션 힌트만 표시 (`user-settings-store.markMigrationHintShown`, CAS).
-- 화이트리스트 네이키드는 기존대로 동작.
-- 정체 불명 입력은 통과 → Claude 대화로 전달.
+- `/z` 없이 쓴 `[cmd] [args]` (`persona set linus`, `model sonnet`, `show prompt`, `mcp list` 등)는 ZRouter를 거치지 않고 `CommandRouter` 핸들러가 그대로 실행한다 (#531). #506 Phase 1의 사용자당 1회 tombstone 힌트는 #531에서 제거됐다.
+- 어느 핸들러도 잡지 않은 입력은 통과 → Claude 대화로 전달.
 
 ### 10.4 Slash 금지 Capability
 
@@ -417,7 +415,7 @@ DM / 채널-멘션에서는 문제 없이 동작.
 
 세 단계 (빠른 → 느린):
 
-1. `SOMA_ENABLE_LEGACY_SLASH=true` 환경 변수 — tombstone 비활성, legacy 네이키드 그대로 dispatch.
+1. `SOMA_ENABLE_LEGACY_SLASH=true` 환경 변수 — legacy 슬래시 커맨드 `/soma` · `/session` · `/new`를 `/z` 안내 대신 원래 핸들러로 되살린다 (bare 명령은 플래그와 무관하게 항상 실행된다).
 2. `git revert` + 재배포.
 3. `docs/archive/manifests/slack-app-manifest.prev.json` + `scripts/slack-manifest-rollback.sh` — Slack 앱 설정 UI에서 `/z` 슬래시 커맨드 제거.
 

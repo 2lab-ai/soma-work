@@ -260,7 +260,7 @@ getSessionKey(channelId, threadTs?) = `${channelId}-${threadTs || 'direct'}`
 ### 7.2 비-admin DM whitelist
 
 - `SAFE_Z_TOPICS` regex — [src/slack/z/whitelist.ts:93](../../src/slack/z/whitelist.ts). help/sessions/theme/`%.../$...` 허용.
-- `isWhitelistedNaked(text)` — [src/slack/z/whitelist.ts:30](../../src/slack/z/whitelist.ts).
+- 체크 함수: `isDmAllowedForNonAdmin(text)` — [packages/slack/src/z/whitelist.ts](../../../../packages/slack/src/z/whitelist.ts). (구 `isWhitelistedNaked`는 #531 이후 호출 경로가 없어 삭제됐다.)
 
 ### 7.3 slack-mcp 등록
 

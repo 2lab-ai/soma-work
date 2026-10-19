@@ -84,7 +84,6 @@
     "./z/respond": "./dist/z/respond.js",
     "./z/router": "./dist/z/router.js",
     "./z/strip-z-prefix": "./dist/z/strip-z-prefix.js",
-    "./z/tombstone": "./dist/z/tombstone.js",
     "./z/types": "./dist/z/types.js",
     "./z/ui-builder": "./dist/z/ui-builder.js",
     "./z/whitelist": "./dist/z/whitelist.js",
@@ -316,9 +315,6 @@
       ],
       "z/strip-z-prefix": [
         "dist/z/strip-z-prefix.d.ts"
-      ],
-      "z/tombstone": [
-        "dist/z/tombstone.d.ts"
       ],
       "z/types": [
         "dist/z/types.d.ts"

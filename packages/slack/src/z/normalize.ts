@@ -10,22 +10,16 @@
  *    stripped by the caller before this function is invoked.
  *  - `source: 'dm'` — DM `message` event. `rawText` is the full DM body.
  *
- * Classification:
- *  - `remainder.startsWith('/z')` → strip `/z` + optional leading space →
- *    `isLegacyNaked=false`, `whitelistedNaked=false`.
- *  - empty remainder → treated as `/z help` request.
- *  - Whitelisted naked (session/new/renew/$…) → `whitelistedNaked=true`,
- *    `isLegacyNaked=false`, remainder is the full text.
- *  - Anything else multi-word-ish that matches a known legacy command →
- *    `isLegacyNaked=true`.
- *  - Everything else → `isLegacyNaked=false`, `whitelistedNaked=false`
- *    (unrelated prose; caller decides).
+ * Remainder:
+ *  - `slash` → the text as given (Slack already removed `/z`).
+ *  - text starting with `/z` → `/z` + optional leading space stripped.
+ *  - anything else → the full text (callers only route `/z`-prefixed DM and
+ *    app-mention text here; bare commands go to CommandRouter, #531).
+ *  - empty remainder → treated as `/z help` request by the router.
  */
 
 import { stripZPrefix } from './strip-z-prefix';
-import { isLegacyNaked } from './tombstone';
 import type { ZInvocation, ZRespond, ZSource } from './types';
-import { isWhitelistedNaked } from './whitelist';
 
 // BC re-export — `slack-handler.ts`, `event-router.ts`, `command-router.ts`,
 // and `__tests__/normalize.test.ts` still import `stripZPrefix` from here.
@@ -50,42 +44,16 @@ export interface NormalizeInput {
 export function normalizeZInvocation(input: NormalizeInput): ZInvocation {
   const raw = (input.text ?? '').trim();
 
-  if (input.source === 'slash') {
-    // `/z` slash — text is already post-`/z`. Always treated as a `/z` invocation.
-    return makeZInvocation(input, raw, raw, { isLegacyNaked: false, whitelistedNaked: false });
-  }
-
-  // DM / channel_mention paths: detect prefix.
-  const stripped = stripZPrefix(raw);
-  if (stripped !== null) {
-    return makeZInvocation(input, stripped, raw, { isLegacyNaked: false, whitelistedNaked: false });
-  }
-
-  // Not a `/z` invocation — classify naked.
-  if (isWhitelistedNaked(raw)) {
-    return makeZInvocation(input, raw, raw, { isLegacyNaked: false, whitelistedNaked: true });
-  }
-
-  if (isLegacyNaked(raw)) {
-    return makeZInvocation(input, raw, raw, { isLegacyNaked: true, whitelistedNaked: false });
-  }
-
-  // Unrecognized naked input — let the caller decide (likely pass-through to Claude).
-  return makeZInvocation(input, raw, raw, { isLegacyNaked: false, whitelistedNaked: false });
+  // `/z` slash — text is already post-`/z`. DM / channel_mention: strip the prefix.
+  const stripped = input.source === 'slash' ? raw : stripZPrefix(raw);
+  return makeZInvocation(input, stripped ?? raw, raw);
 }
 
-function makeZInvocation(
-  input: NormalizeInput,
-  remainder: string,
-  rawText: string,
-  flags: { isLegacyNaked: boolean; whitelistedNaked: boolean },
-): ZInvocation {
+function makeZInvocation(input: NormalizeInput, remainder: string, rawText: string): ZInvocation {
   return {
     source: input.source,
     remainder,
     rawText,
-    isLegacyNaked: flags.isLegacyNaked,
-    whitelistedNaked: flags.whitelistedNaked,
     userId: input.userId,
     channelId: input.channelId,
     threadTs: input.threadTs,
