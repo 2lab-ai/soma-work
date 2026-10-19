@@ -545,16 +545,6 @@ export class SlackApiHelper {
   }
 
   /**
-   * 큐 상태 조회
-   */
-  getQueueStatus(): { queueLength: number; tokens: number } {
-    return {
-      queueLength: this.queue.length,
-      tokens: this.tokens,
-    };
-  }
-
-  /**
    * 사용자 ID로 사용자 이름 조회
    */
   async getUserName(userId: string): Promise<string> {

@@ -485,16 +485,6 @@ export class ToolFormatter {
     }
   }
 
-  /** Format a completed tool line with status icon and optional duration */
-  static formatOneLineToolComplete(toolName: string, input: any, isError: boolean, duration?: number | null): string {
-    const icon = isError ? '🔴' : '🟢';
-    const line = ToolFormatter.formatOneLineToolUse(toolName, input);
-    if (duration !== null && duration !== undefined) {
-      return `${icon} ${line} — ${formatDuration(duration)}`;
-    }
-    return `${icon} ${line}`;
-  }
-
   private static getToolEmoji(toolName: string): string {
     if (toolName === 'Edit' || toolName === 'MultiEdit') return '📝';
     if (toolName === 'Write') return '📄';

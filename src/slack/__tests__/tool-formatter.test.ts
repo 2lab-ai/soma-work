@@ -575,32 +575,6 @@ describe('ToolFormatter', () => {
     });
   });
 
-  describe('formatOneLineToolComplete', () => {
-    it('should show 🟢 for success without duration', () => {
-      const result = ToolFormatter.formatOneLineToolComplete('Read', { file_path: '/test.ts' }, false);
-      expect(result).toContain('🟢');
-      expect(result).toContain('Read');
-      expect(result).not.toContain('—');
-    });
-
-    it('should show 🔴 for error', () => {
-      const result = ToolFormatter.formatOneLineToolComplete('Bash', { command: 'exit 1' }, true);
-      expect(result).toContain('🔴');
-    });
-
-    it('should include duration when provided', () => {
-      const result = ToolFormatter.formatOneLineToolComplete('mcp__agent__chat', { model: 'opus' }, false, 5000);
-      expect(result).toContain('🟢');
-      expect(result).toContain('MCP: agent → chat');
-      expect(result).toContain('— 5.0s');
-    });
-
-    it('should skip duration when null', () => {
-      const result = ToolFormatter.formatOneLineToolComplete('Read', { file_path: '/test.ts' }, false, null);
-      expect(result).not.toContain('—');
-    });
-  });
-
   /**
    * Issue #688 — background Bash labels across detail/compact/verbose
    * render paths. Foreground Bash output MUST remain unchanged so the

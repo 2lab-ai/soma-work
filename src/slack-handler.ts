@@ -995,9 +995,9 @@ export class SlackHandler {
    * the SYNCHRONOUS busy fence and the untouched capture of the raw message.
    *
    * Everything here down to `runInitial` runs with no `await` in between —
-   * that is the whole point. `RequestCoordinator.canStartRequest`
-   * (`request-coordinator.ts:173-174`) only says "may start", and the executor
-   * releases its slot at the TOP of a cleanup that still has awaits ahead of it
+   * that is the whole point. `RequestCoordinator` has no "may start" policy at
+   * all, and the executor releases its slot at the TOP of a cleanup that still
+   * has awaits ahead of it
    * (`stream-executor.ts:3702` vs `:3726`), so neither can answer "is this
    * session busy?". The dispatcher's slot can, and it is taken before the first
    * await — two messages arriving in the same tick cannot both dispatch.

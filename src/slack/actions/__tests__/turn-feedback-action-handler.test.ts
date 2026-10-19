@@ -68,14 +68,14 @@ describe('TurnFeedbackActionHandler', () => {
   it('is idempotent on double-click (one record, sentiment stable)', async () => {
     await handler().handleFeedback(makeBody(), vi.fn());
     await handler().handleFeedback(makeBody(), vi.fn());
-    expect(store.listForTurn('C1-1.2:1700:abc')).toHaveLength(1);
+    expect(store.list()).toHaveLength(1);
   });
 
   it('records a sentiment flip in place', async () => {
     await handler().handleFeedback(makeBody({ value: encodeFeedbackValue('positive', 'C1-1.2:1700:abc') }), vi.fn());
     await handler().handleFeedback(makeBody({ value: encodeFeedbackValue('negative', 'C1-1.2:1700:abc') }), vi.fn());
     expect(store.get('C1-1.2:1700:abc', 'U1')?.sentiment).toBe('negative');
-    expect(store.listForTurn('C1-1.2:1700:abc')).toHaveLength(1);
+    expect(store.list()).toHaveLength(1);
   });
 
   it('ignores an unparseable value (no persist, no update)', async () => {

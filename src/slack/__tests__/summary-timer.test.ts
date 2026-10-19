@@ -10,7 +10,7 @@ describe('SummaryTimer', () => {
   });
 
   afterEach(() => {
-    timer.cancelAll();
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
@@ -52,37 +52,6 @@ describe('SummaryTimer', () => {
       vi.advanceTimersByTime(SummaryTimer.DELAY_MS - 100_000);
       expect(callback1).not.toHaveBeenCalled();
       expect(callback2).toHaveBeenCalledOnce();
-    });
-  });
-
-  describe('cancelAll()', () => {
-    it('cancels all active timers across sessions', () => {
-      const cb1 = vi.fn();
-      const cb2 = vi.fn();
-      const cb3 = vi.fn();
-
-      timer.start('session-a', cb1);
-      timer.start('session-b', cb2);
-      timer.start('session-c', cb3);
-
-      expect(timer.has('session-a')).toBe(true);
-      expect(timer.has('session-b')).toBe(true);
-      expect(timer.has('session-c')).toBe(true);
-
-      timer.cancelAll();
-
-      expect(timer.has('session-a')).toBe(false);
-      expect(timer.has('session-b')).toBe(false);
-      expect(timer.has('session-c')).toBe(false);
-
-      vi.advanceTimersByTime(SummaryTimer.DELAY_MS + 1000);
-      expect(cb1).not.toHaveBeenCalled();
-      expect(cb2).not.toHaveBeenCalled();
-      expect(cb3).not.toHaveBeenCalled();
-    });
-
-    it('cancelAll() is safe when no timers exist', () => {
-      expect(() => timer.cancelAll()).not.toThrow();
     });
   });
 
