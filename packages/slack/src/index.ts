@@ -352,7 +352,7 @@ export {
   notifyStartup,
   type StartupNotificationOptions,
 } from './startup-notifier';
-export { type StatusMessage, StatusReporter, type StatusType } from './status-reporter';
+export { StatusReporter, type StatusType } from './status-reporter';
 export {
   AgentStreamProcessor,
   type AssistantTextHandler,
