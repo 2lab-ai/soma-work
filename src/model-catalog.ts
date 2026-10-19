@@ -42,13 +42,6 @@ const logger = new Logger('ModelCatalog');
 // snapshot written by one is loadable by the other. Store policy stays here.
 export type { CatalogModel } from 'soma-lib';
 
-/**
- * Canonical effort ordering used by {@link clampEffortToModel}: soma-lib's
- * `EFFORT_LEVELS`. Superset of the store's EFFORT_LEVELS (`ultra` exists
- * upstream on some codex tiers).
- */
-export { EFFORT_LEVELS as CANONICAL_EFFORT_ORDER } from 'soma-lib';
-
 const SNAPSHOT_FILE_NAME = 'model-catalog.json';
 /** Min gap between two llmux fetch attempts (success or failure). */
 const REFRESH_COOLDOWN_MS = 60_000;
@@ -318,7 +311,8 @@ modelCatalog.loadSnapshotSync();
  * - Model unknown to the catalog, or catalog efforts empty → `effort` as-is.
  * - `effort` included in the model's menu → unchanged.
  * - Otherwise → the highest supported effort that is ≤ the requested one on
- *   {@link CANONICAL_EFFORT_ORDER}; if nothing lower exists, the lowest
+ *   soma-lib's `EFFORT_LEVELS` order (a superset of the store's levels —
+ *   `ultra` exists upstream on some codex tiers); if nothing lower exists, the lowest
  *   supported effort. (grok: xhigh→high, max→high, low→low.)
  *
  * Pure read over catalog state — never mutates session/user settings.
