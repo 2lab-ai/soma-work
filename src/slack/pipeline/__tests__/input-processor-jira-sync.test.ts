@@ -13,10 +13,10 @@
  * `user-settings-store`, so it fails if the wiring is bypassed.
  */
 
+import type { MessageEvent } from '@soma/slack/pipeline/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { userSettingsStore } from '../../../user-settings-store';
 import { InputProcessor } from '../index';
-import type { MessageEvent } from '@soma/slack/pipeline/types';
 
 describe('InputProcessor via production barrel — Jira sync wiring', () => {
   afterEach(() => {
