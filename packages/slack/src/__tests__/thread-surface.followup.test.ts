@@ -8,7 +8,6 @@ import {
   FOLLOWUP_QUEUE_TITLE,
   FOLLOWUP_SEND_NOW_ACTION_ID,
   FOLLOWUP_SEND_NOW_LABEL,
-  FOLLOWUP_STEERED_COUNT_LABEL,
   type FollowupItemMenuValue,
   type FollowupQueueView,
   parseFollowupMenuValue,
@@ -293,7 +292,7 @@ describe('ThreadSurface — the combined panel no longer renders the Queue (A39)
     expect(text).not.toContain(FOLLOWUP_QUEUE_TITLE);
     expect(text).not.toContain('2 item(s)');
     expect(text).not.toContain('queued 1');
-    expect(text).not.toContain(FOLLOWUP_STEERED_COUNT_LABEL);
+    expect(text).not.toContain('전달'); // the old counts-line word for `steered`
     expect(text).not.toContain('stopped by');
   });
 
