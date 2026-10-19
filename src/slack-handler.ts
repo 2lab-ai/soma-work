@@ -339,6 +339,12 @@ export class SlackHandler {
    */
   private followupMigration?: { bySlot: Map<string, string>; byCanonical: Map<string, string> };
   /**
+   * Work-thread keys whose release-time floor raise the store refused, with the
+   * floor that did not land ({@link raiseFollowupFloorOnRelease}). Every
+   * generation of that key at or below it reads as unverifiable.
+   */
+  private followupUnraisedFloors?: Map<string, number>;
+  /**
    * Last COMMITTED item states, per session — the baseline the observability
    * delta is taken against. Written only from the save sink, i.e. only after
    * the store accepted the snapshot, so an observation can never describe a
@@ -440,6 +446,9 @@ export class SlackHandler {
       assistantStatusManager: this.assistantStatusManager,
       slackBlockKitChannel,
       ...followupSurfaceDeps,
+      // The panel is the one reader of the SURFACE view: its epoch is the write
+      // fence's, not a control token (`getFollowupSurfaceView`).
+      getFollowupView: (sessionKey: string) => this.getFollowupSurfaceView(sessionKey),
     });
 
     // Command routing
@@ -454,8 +463,9 @@ export class SlackHandler {
       contextWindowManager: this.contextWindowManager,
       // #617: /compact-threshold handler reads/writes compactThreshold.
       userSettingsStore,
-      // `queue`/`큐` (A40) reads the SAME live view the surface renders. Spread
-      // like the panel's wiring above — the deps interface is
+      // `queue`/`큐` (A40) reads the same live queue the surface renders, through
+      // the CONTROL view: the rows it builds mint their turn generation from it.
+      // Spread like the panel's wiring above — the deps interface is
       // `[key: string]: any`, and the handler declares the subset it reads.
       //
       // `rememberFollowupItemMessage` is deliberately NOT wired since 09: the
@@ -1575,7 +1585,9 @@ export class SlackHandler {
       // Bot-thread migration: the session this dispatch actually runs on is not
       // the one the slot was opened for. Bind the pair NOW — before the first
       // await that could let a work-thread reply in — so the fence sees the
-      // running turn from either thread.
+      // running turn from either thread, and before `createAgentSession` below
+      // starts the writes this turn addresses to the work key: from here on the
+      // surface verifies them against the slot's generation (`getFollowupView`).
       if (options.slotKey && sessionResult.sessionKey && sessionResult.sessionKey !== options.slotKey) {
         this.bindFollowupMigration(options.slotKey, sessionResult.sessionKey);
       }
@@ -2314,14 +2326,59 @@ export class SlackHandler {
   }
 
   /**
-   * What the surface renders. The queue's own snapshot IS the view
+   * The queue as the CONTROL side sees it. The queue's own snapshot IS the view
    * (`followup-queue-blocks.ts:86-101` accepts a session snapshot structurally),
    * so nothing is re-derived here — a second derivation is a second truth.
+   *
+   * Its `turnEpoch` is the counter every control minted from it is checked
+   * against: `Send now` on this key goes through `FollowupDispatcher.staleTurn`
+   * and `FollowupQueue.reserve`, both reading this key's own session. Anything
+   * that stamps a control payload reads THIS view, never
+   * {@link getFollowupSurfaceView}.
    */
   getFollowupView(sessionKey: string): FollowupQueueView | undefined {
     const queue = this.followupQueue;
     if (!queue) return undefined;
     return queue.snapshot().sessions.find((session) => session.sessionKey === sessionKey);
+  }
+
+  /**
+   * The queue as the thread SURFACE sees it — the view its write fence checks
+   * (`thread-surface.ts` `isStaleWrite`). Identical to {@link getFollowupView}
+   * except for `turnEpoch` in two cases, which is why the two never share a
+   * caller: a control minted from this epoch would be checked against the other.
+   *
+   * While a bot-thread migration is bound, `turnEpoch` of the WORK key is read
+   * live from the SLOT key's session. The running turn opened its generation
+   * there (`runInitial` → `beginTurn(slot)`) but stamps it on every write it
+   * addresses to the work key. Reading — never copying — keeps a single
+   * authoritative counter: a `Send now` that advances the slot fences the old
+   * turn's work-key writes at once. Items and freeze stay the work key's own
+   * (parked replies live there); the slot's items are never shown in the work
+   * thread. A slot session that is missing leaves the epoch absent, i.e.
+   * unverifiable — fail-closed, like any degraded read. The release then raises
+   * the work key's own counter ({@link releaseFollowupMigration}).
+   *
+   * MUST stay side-effect free: the surface calls it on every render.
+   */
+  getFollowupSurfaceView(sessionKey: string): FollowupQueueView | undefined {
+    const queue = this.followupQueue;
+    if (!queue) return undefined;
+    const sessions = queue.snapshot().sessions;
+    const own = sessions.find((session) => session.sessionKey === sessionKey);
+
+    const slotKey = this.boundFollowupSlot(sessionKey);
+    if (slotKey !== undefined) {
+      const slotEpoch = sessions.find((session) => session.sessionKey === slotKey)?.turnEpoch;
+      return { ...(own ?? { sessionKey, items: [] }), turnEpoch: slotEpoch };
+    }
+
+    // A release whose floor never landed: generations at or below it may repeat
+    // one the slot already handed out, so they cannot be told apart from a late
+    // write of the migrated run.
+    const unraised = this.followupUnraisedFloors?.get(sessionKey);
+    if (own && unraised !== undefined && own.turnEpoch <= unraised) return { ...own, turnEpoch: undefined };
+    return own;
   }
 
   /** Why the queue view is untrustworthy right now (DEGRADED), else `undefined`. */
@@ -2432,6 +2489,21 @@ export class SlackHandler {
   }
 
   /**
+   * The slot behind a LIVE binding of `canonicalKey`, else `undefined`.
+   *
+   * Both directions must agree. A slot that was rebound to another work thread
+   * leaves its old `byCanonical` entry behind, and reading the slot's live
+   * generation through that stale entry would fence every later turn of the
+   * old work thread against a counter that is no longer running there.
+   */
+  private boundFollowupSlot(canonicalKey: string): string | undefined {
+    const maps = this.followupMigration;
+    const slotKey = maps?.byCanonical.get(canonicalKey);
+    if (slotKey === undefined || maps?.bySlot.get(slotKey) !== canonicalKey) return undefined;
+    return slotKey;
+  }
+
+  /**
    * The key of the session that is really running behind a dispatch slot.
    * Identity for every ordinary turn; the work-thread key while a bot-thread
    * migration is bound. Everything that addresses the SESSION (registry lookup,
@@ -2442,12 +2514,55 @@ export class SlackHandler {
     return this.followupMigration?.bySlot.get(slotKey) ?? slotKey;
   }
 
-  /** Drop the mapping once the migrating run is over — later turns key on the work thread directly. */
+  /**
+   * Drop the mapping once the migrating run is over — later turns key on the
+   * work thread directly.
+   *
+   * While bound, the work key's generation IS the slot's (`getFollowupView`).
+   * The moment the mapping goes, the work key's own counter takes over, so it is
+   * raised to the slot's FIRST, durably — otherwise the work key's next
+   * `beginTurn` would hand out a number the slot already used, and a late write
+   * from the migrated run would pass against that new turn (A28).
+   */
   private releaseFollowupMigration(slotKey: string): void {
     const canonical = this.followupMigration?.bySlot.get(slotKey);
     if (canonical === undefined) return;
+    this.raiseFollowupFloorOnRelease(slotKey, canonical);
     this.followupMigration?.bySlot.delete(slotKey);
     this.followupMigration?.byCanonical.delete(canonical);
+  }
+
+  /**
+   * The release-time floor raise, and what happens when the store refuses it.
+   *
+   * A refused raise must not leave the work key OPEN: its own counter is still
+   * below the slot's, so its next `beginTurn` could return a generation the slot
+   * already used. The floor is then remembered in memory instead, and
+   * `getFollowupView` reports every work-key generation at or below it as
+   * unverifiable (fail-closed). That costs the header of any work-key turn whose
+   * number collides with the slot's — never the turn — and it heals by itself
+   * once the work key's counter passes the floor. In-memory is enough: a late
+   * write needs the process that started the turn, so after a restart there is
+   * nothing left for the floor to fence.
+   */
+  private raiseFollowupFloorOnRelease(slotKey: string, canonicalKey: string): void {
+    const queue = this.followupQueue;
+    if (!queue) return;
+    // An in-memory read — it cannot fail; only the durable write below can.
+    const floor = queue.getTurnEpoch(slotKey);
+    try {
+      queue.raiseTurnEpochFloor(canonicalKey, floor);
+    } catch (error) {
+      const floors = this.followupUnraisedFloors ?? new Map<string, number>();
+      this.followupUnraisedFloors = floors;
+      floors.set(canonicalKey, Math.max(floors.get(canonicalKey) ?? 0, floor));
+      this.logger.error('Turn generation floor NOT raised on bot-thread release — work-thread writes stay fenced', {
+        slotKey,
+        canonicalKey,
+        floor,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
   }
 
   /**

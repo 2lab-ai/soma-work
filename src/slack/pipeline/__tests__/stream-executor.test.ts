@@ -109,7 +109,7 @@ vi.mock('../../../token-manager', () => ({
   parseCooldownTime: vi.fn().mockReturnValue(null),
 }));
 
-import { LOG_DETAIL } from '@soma/slack/output-flags';
+import { getVerbosityFlags, LOG_DETAIL, LOG_MINIMAL, OutputFlag } from '@soma/slack/output-flags';
 import type { Continuation } from '../../../types';
 import { userSettingsStore } from '../../../user-settings-store';
 import { type ExecuteResult, StreamExecutor } from '../stream-executor';
@@ -2193,6 +2193,263 @@ describe('model-command integration', () => {
       expect(say).toHaveBeenCalled();
       const text = say.mock.calls[0]?.[0]?.text ?? '';
       expect(text).toMatch(/❌|⚠️/);
+    });
+  });
+
+  /**
+   * Spec 10 §3.2 — where each host-side model-command outcome goes. Every
+   * outcome writes exactly one work-log entry, at every verbosity; compact and
+   * up post every outcome to Slack. At `minimal`:
+   *   - posted (user-facing): an ASK_USER_QUESTION failure; a parse/connection
+   *     failure (command unknown — the #816 shape, MCP gone while the model was
+   *     asking); a host-side failure the model never sees because its tool
+   *     result said ok (UPDATE_SESSION host apply, SET_GOAL refusal);
+   *   - work log only: a failure the model receives in its own tool result
+   *     (argument error, wire-level isError on an ok body), and the 🎯/📋 goal
+   *     status notices (`STATUS_MESSAGE`, like goal-loop status notices).
+   */
+  describe('model-command outcomes by verbosity (spec 10 §3.2)', () => {
+    type PrivateExecutor = { handleModelCommandToolResults: (...args: unknown[]) => Promise<unknown> };
+
+    type MatrixSession = {
+      logVerbosity: number;
+      goal?: { objective?: string; status?: string };
+      goalQueue?: unknown[];
+      [key: string]: unknown;
+    };
+
+    interface Outcome {
+      name: string;
+      toolResult: unknown;
+      kind: 'error' | 'notice';
+      /** The exact text, in the work-log entry and (when posted) in Slack. */
+      text: string;
+      /** Compact and up post every outcome; this is the minimal cell. */
+      postedAtMinimal: boolean;
+      context?: Record<string, unknown>;
+      session?: () => Record<string, unknown>;
+      hostRejectsUpdate?: boolean;
+      /** The outcome's effect on the session, unchanged by verbosity. */
+      verify?: (session: MatrixSession) => void;
+    }
+
+    const OBJECTIVE = 'ship the goal feature';
+    const EVIDENCE = 'goal로 잡아줘: ship the goal feature';
+    const USER_TURN = { currentUserText: `이번 릴리즈 ${EVIDENCE}`, isUserInputTurn: true };
+
+    function run(commandId: string, body: Record<string, unknown>, toolUseId: string, isError = false) {
+      return {
+        toolUseId,
+        toolName: 'mcp__model-command__run',
+        result: JSON.stringify({ type: 'model_command_result', commandId, ...body }),
+        isError,
+      };
+    }
+
+    function failedRun(commandId: string, message: string) {
+      return run(commandId, { ok: false, error: { code: 'INVALID_ARGS', message } }, `tool_${commandId}_fail`);
+    }
+
+    const setGoal = run(
+      'SET_GOAL',
+      { ok: true, payload: { objective: OBJECTIVE, userRequestEvidence: EVIDENCE } },
+      'tool_goal',
+    );
+
+    const ARGUMENT_ERROR: Outcome = {
+      name: 'argument error',
+      toolResult: failedRun('UPDATE_SESSION', 'UPDATE_SESSION requires operations or title'),
+      kind: 'error',
+      text: '❌ MCP UPDATE_SESSION 실패: INVALID_ARGS — UPDATE_SESSION requires operations or title',
+      postedAtMinimal: false,
+    };
+
+    const OUTCOMES: Outcome[] = [
+      ARGUMENT_ERROR,
+      {
+        name: 'wire-level isError on an ok body',
+        toolResult: run('GET_MEMORY', { ok: true, payload: { memory: '', userMemory: '' } }, 'tool_outer_fail', true),
+        kind: 'error',
+        text: '❌ MCP GET_MEMORY 호출 실패 (wire-level isError=true). MCP 연결 상태를 확인해주세요.',
+        postedAtMinimal: false,
+      },
+      {
+        name: 'ASK_USER_QUESTION failure',
+        toolResult: failedRun('ASK_USER_QUESTION', 'question payload missing'),
+        kind: 'error',
+        text:
+          '❌ MCP ASK_USER_QUESTION 실패: INVALID_ARGS — question payload missing\n' +
+          '❌ 사용자 선택 UI를 띄우지 못했습니다. 같은 질문을 다시 호출하시거나 MCP 연결 상태를 확인하세요.',
+        postedAtMinimal: true,
+      },
+      {
+        name: 'parse failure',
+        toolResult: {
+          toolUseId: 'tool_parse_fail',
+          toolName: 'mcp__model-command__run',
+          result: 'Not connected',
+          isError: true,
+        },
+        kind: 'error',
+        text: '❌ MCP 응답 파싱 실패 (toolUseId: tool_parse_fail). raw: Not connected',
+        postedAtMinimal: true,
+      },
+      {
+        name: 'host-apply failure',
+        toolResult: run(
+          'UPDATE_SESSION',
+          {
+            ok: true,
+            payload: {
+              session: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 0 },
+              appliedOperations: 1,
+              request: { operations: [{ action: 'set_active', resourceType: 'issue' }] },
+            },
+          },
+          'tool_update_host_fail',
+        ),
+        hostRejectsUpdate: true,
+        kind: 'error',
+        text: '⚠️ Session update could not be applied on host (INVALID_OPERATION).',
+        postedAtMinimal: true,
+      },
+      {
+        name: 'SET_GOAL refusal',
+        toolResult: setGoal,
+        context: { currentUserText: EVIDENCE, isUserInputTurn: false },
+        kind: 'notice',
+        text:
+          '⚠️ SET_GOAL refused: not a direct user-input turn (synthetic/continuation turns cannot set goals). ' +
+          'A goal can only be set when the user explicitly asks for it in their current message.',
+        postedAtMinimal: true,
+        verify: (session) => expect(session.goal).toBeUndefined(),
+      },
+      {
+        name: 'goal started',
+        toolResult: setGoal,
+        context: USER_TURN,
+        kind: 'notice',
+        text: `🎯 Goal set by model (user-requested): \`${OBJECTIVE}\`\n> "${EVIDENCE}"`,
+        postedAtMinimal: false,
+        verify: (session) => expect(session.goal).toMatchObject({ objective: OBJECTIVE, status: 'active' }),
+      },
+      {
+        name: 'goal queued',
+        toolResult: setGoal,
+        context: USER_TURN,
+        session: () => ({
+          goal: {
+            goalId: 'goal-old',
+            objective: 'old objective',
+            status: 'active',
+            createdAt: 1,
+            updatedAt: 1,
+            createdBy: 'U1',
+            continuationCount: 0,
+            maxContinuations: 10,
+            epoch: 1,
+          },
+        }),
+        kind: 'notice',
+        text: `📋 Goal queued by model at position 1: \`${OBJECTIVE}\`\n> "${EVIDENCE}"`,
+        postedAtMinimal: false,
+        verify: (session) => {
+          expect(session.goal?.objective).toBe('old objective');
+          expect(session.goalQueue).toHaveLength(1);
+        },
+      },
+    ];
+
+    const LEVELS = ['minimal', 'compact', 'detail', 'verbose'] as const;
+    const MATRIX = OUTCOMES.flatMap((spec) =>
+      LEVELS.map((level) => ({ outcome: spec.name, level, posted: level !== 'minimal' || spec.postedAtMinimal, spec })),
+    );
+
+    function executorFor(spec: Outcome): PrivateExecutor {
+      const deps = createExecutorDeps();
+      deps.claudeHandler.saveSessions = vi.fn();
+      if (spec.hostRejectsUpdate) {
+        deps.claudeHandler.updateSessionResources = vi.fn().mockReturnValue({
+          ok: false,
+          reason: 'INVALID_OPERATION',
+          error: 'invalid request',
+          snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 0 },
+        });
+      }
+      return new StreamExecutor(deps) as unknown as PrivateExecutor;
+    }
+
+    function sessionAt(logVerbosity: number, spec: Outcome): MatrixSession {
+      return { ...createSession(), ...spec.session?.(), logVerbosity };
+    }
+
+    async function deliver(
+      executor: PrivateExecutor,
+      spec: Outcome,
+      session: unknown,
+      say: ReturnType<typeof vi.fn>,
+      workLog: ReturnType<typeof vi.fn>,
+    ) {
+      await executor.handleModelCommandToolResults([spec.toolResult], session, {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        workLog,
+        ...spec.context,
+      });
+    }
+
+    it.each(MATRIX)('$outcome at $level → posted: $posted', async ({ level, posted, spec }) => {
+      const session = sessionAt(getVerbosityFlags(level), spec);
+      const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+      const workLog = vi.fn();
+
+      await deliver(executorFor(spec), spec, session, say, workLog);
+
+      expect(workLog.mock.calls).toEqual([[{ kind: spec.kind, text: spec.text }]]);
+      expect(say.mock.calls).toEqual(posted ? [[{ text: spec.text, thread_ts: '171.100' }]] : []);
+      spec.verify?.(session);
+    });
+
+    it('a live verbosity change on the same session applies to the next outcome', async () => {
+      const executor = executorFor(ARGUMENT_ERROR);
+      const session = sessionAt(LOG_MINIMAL, ARGUMENT_ERROR);
+      const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+      const workLog = vi.fn();
+      const entry = { kind: 'error', text: ARGUMENT_ERROR.text };
+
+      await deliver(executor, ARGUMENT_ERROR, session, say, workLog);
+      expect(say).toHaveBeenCalledTimes(0);
+      expect(workLog.mock.calls).toEqual([[entry]]);
+
+      session.logVerbosity = getVerbosityFlags('compact');
+      await deliver(executor, ARGUMENT_ERROR, session, say, workLog);
+      expect(say.mock.calls).toEqual([[{ text: ARGUMENT_ERROR.text, thread_ts: '171.100' }]]);
+      expect(workLog.mock.calls).toEqual([[entry], [entry]]);
+
+      session.logVerbosity = LOG_MINIMAL;
+      await deliver(executor, ARGUMENT_ERROR, session, say, workLog);
+      expect(say).toHaveBeenCalledTimes(1);
+      expect(workLog.mock.calls).toEqual([[entry], [entry], [entry]]);
+    });
+
+    it('a throwing work-log sink never stops the Slack notice', async () => {
+      const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+      const workLog = vi.fn(() => {
+        throw new Error('sink down');
+      });
+
+      await deliver(
+        executorFor(ARGUMENT_ERROR),
+        ARGUMENT_ERROR,
+        sessionAt(getVerbosityFlags('compact'), ARGUMENT_ERROR),
+        say,
+        workLog,
+      );
+
+      expect(workLog).toHaveBeenCalledTimes(1);
+      expect(say).toHaveBeenCalledWith({ text: ARGUMENT_ERROR.text, thread_ts: '171.100' });
     });
   });
 });
@@ -5591,9 +5848,11 @@ describe('turn-end surface guarantee — P0 holes', () => {
  *   - refuse when `userRequestEvidence` is not a verbatim substring of the
  *     current user message (`currentUserText`),
  *   - on success: apply an active goal to the session (epoch-fresh, cached
- *     system prompt invalidated), persist, and post a user-visible 🎯 notice
- *     that quotes the evidence.
- * Refusals are user-visible (⚠️ via context.say) and never mutate the session.
+ *     system prompt invalidated), persist, and post a 🎯 notice that quotes
+ *     the evidence.
+ * Refusals (⚠️) never mutate the session. Both notices reach Slack by
+ * verbosity — see `notices by verbosity` below; these cases run at the
+ * default `detail` (no `logVerbosity` on the session).
  */
 describe('SET_GOAL host-apply (#1082)', () => {
   function createExecutorDeps() {
@@ -5866,6 +6125,50 @@ describe('SET_GOAL host-apply (#1082)', () => {
     }
     expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
     expect(session.systemPrompt).toBe('cached prompt');
+  });
+
+  /**
+   * Spec 10 §3.2 — the preset cells (posted? work-log kind? session effect?)
+   * are in `model-command outcomes by verbosity` under `model-command
+   * integration`. These pin which flag decides, which no preset tells apart:
+   * a refusal follows none (host-side, the MCP echo told the model ok), the
+   * 🎯/📋 notice follows `STATUS_MESSAGE` like goal-loop-controller's
+   * `postStatusNotice`.
+   */
+  describe('notices by verbosity (spec 10 §3.2)', () => {
+    async function handleGoal(logVerbosity: number, contextOverrides: Record<string, unknown>) {
+      const executor = new StreamExecutor(createExecutorDeps()) as unknown as {
+        handleModelCommandToolResults: (...args: unknown[]) => Promise<unknown>;
+      };
+      const session = { ...createSession(), logVerbosity };
+      const workLog = vi.fn();
+      const context = makeContext({ workLog, ...contextOverrides });
+      await executor.handleModelCommandToolResults(
+        [makeSetGoalToolResult('ship the goal feature', 'goal로 잡아줘: ship the goal feature')],
+        session,
+        context,
+      );
+      return { session, say: context.say as ReturnType<typeof vi.fn>, workLog };
+    }
+
+    const USER_TURN = { currentUserText: '이번 릴리즈 goal로 잡아줘: ship the goal feature', isUserInputTurn: true };
+    const SYNTHETIC_TURN = { currentUserText: 'goal로 잡아줘: ship the goal feature', isUserInputTurn: false };
+
+    it('a refusal follows no flag: posted even when the mask is 0', async () => {
+      const { say, workLog } = await handleGoal(0, SYNTHETIC_TURN);
+
+      expect(say).toHaveBeenCalledTimes(1);
+      expect(say.mock.calls[0]?.[0]?.text ?? '').toContain('⚠️ SET_GOAL refused');
+      expect(workLog).toHaveBeenCalledTimes(1);
+    });
+
+    it('the goal notice follows STATUS_MESSAGE, like goal-loop status notices', async () => {
+      const onlyStatus = await handleGoal(LOG_MINIMAL | OutputFlag.STATUS_MESSAGE, USER_TURN);
+      const onlyToolCall = await handleGoal(LOG_MINIMAL | OutputFlag.TOOL_CALL, USER_TURN);
+
+      expect(onlyStatus.say).toHaveBeenCalledTimes(1);
+      expect(onlyToolCall.say).not.toHaveBeenCalled();
+    });
   });
 });
 

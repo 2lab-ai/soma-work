@@ -4948,6 +4948,38 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
   }
 
+  /**
+   * Spec 10 §3.2 — report one host-side outcome of a model-command call (a
+   * failure, a refusal, a goal notice). It always goes to this turn's work
+   * log as `entry.kind`, and to Slack only when the session's mask carries
+   * `flag` — by default `TOOL_CALL` (compact and up): model-command
+   * bookkeeping is not part of the minimal thread. Verbosity is read from the
+   * session at call time so a mid-stream change applies. `alwaysPost` is for
+   * the user-facing ones: an ASK_USER_QUESTION failure and a parse/connection
+   * failure (the user would wait for a question form that never appears), and
+   * a host-side failure the model never sees — its tool result said ok, so
+   * without the post nobody learns of it.
+   */
+  private async reportModelCommandOutcome(
+    entry: { kind: 'error' | 'notice'; text: string },
+    session: ConversationSession,
+    context: StreamContext,
+    { flag = OutputFlag.TOOL_CALL, alwaysPost = false }: { flag?: number; alwaysPost?: boolean } = {},
+  ): Promise<void> {
+    try {
+      context.workLog?.(entry);
+    } catch (err) {
+      // The work log is a side record — it must never block the notice.
+      this.logger.debug('workLog sink threw — ignored', {
+        sessionKey: context.sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+    if (alwaysPost || shouldOutput(flag, resolveVerbosityMask(session.logVerbosity))) {
+      await context.say({ text: entry.text, thread_ts: context.threadTs });
+    }
+  }
+
   private async handleModelCommandToolResults(
     toolResults: Array<{ toolUseId: string; toolName?: string; result: any; isError?: boolean }>,
     session: ConversationSession,
@@ -4975,14 +5007,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           sessionKey: context.sessionKey,
           toolUseId: toolResult.toolUseId,
         });
-        // Issue #816 — surface to Slack so a parse failure isn't a
-        // silent drop. Match the bare-await convention used by the
-        // UPDATE_SESSION warning branch below.
+        // Issue #816 — never a silent drop, at any verbosity. The command is
+        // unknown, and this is the disconnected-MCP shape (the model may have
+        // been asking the user a question), so it is user-facing.
         const rawPreview = stringifyAndTruncate(toolResult.result, 200);
-        await context.say({
-          text: `❌ MCP 응답 파싱 실패 (toolUseId: ${toolResult.toolUseId}). raw: ${rawPreview}`,
-          thread_ts: context.threadTs,
-        });
+        await this.reportModelCommandOutcome(
+          {
+            kind: 'error',
+            text: `❌ MCP 응답 파싱 실패 (toolUseId: ${toolResult.toolUseId}). raw: ${rawPreview}`,
+          },
+          session,
+          context,
+          { alwaysPost: true },
+        );
         continue;
       }
 
@@ -4996,28 +5033,36 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         modelCommandResults.push({ commandId: parsed.commandId, ok: false, error: parsed.error });
         // Issue #816 — ASK_USER_QUESTION's failure is the loudest split-
         // brain symptom (agent thinks it asked, user sees nothing), so
-        // it gets an explicit hint; other commands get the bare error.
+        // it gets an explicit hint and reaches Slack at every verbosity;
+        // other commands get the bare error.
         const errMessage = parsed.error?.message ?? 'unknown error';
         const errCode = parsed.error?.code ?? 'UNKNOWN';
+        const isAskUserQuestion = parsed.commandId === 'ASK_USER_QUESTION';
         let text = `❌ MCP ${parsed.commandId} 실패: ${errCode} — ${errMessage}`;
-        if (parsed.commandId === 'ASK_USER_QUESTION') {
+        if (isAskUserQuestion) {
           text += `\n❌ 사용자 선택 UI를 띄우지 못했습니다. 같은 질문을 다시 호출하시거나 MCP 연결 상태를 확인하세요.`;
         }
-        await context.say({ text, thread_ts: context.threadTs });
+        await this.reportModelCommandOutcome({ kind: 'error', text }, session, context, {
+          alwaysPost: isAskUserQuestion,
+        });
         continue;
       }
 
       // Issue #816 — split-brain guard: the wire-level call was flagged
       // isError=true but the parsed body still looked successful (e.g. a
       // transport hiccup that returned a JSON candidate anyway). Without
-      // this branch the user would see no failure at all. Continue
+      // this branch the failure would leave no trace at all. Continue
       // processing afterwards — the body is parseable so downstream
       // branches (e.g. SAVE_CONTEXT_RESULT) may still need the payload.
       if (toolResult.isError === true) {
-        await context.say({
-          text: `❌ MCP ${parsed.commandId} 호출 실패 (wire-level isError=true). MCP 연결 상태를 확인해주세요.`,
-          thread_ts: context.threadTs,
-        });
+        await this.reportModelCommandOutcome(
+          {
+            kind: 'error',
+            text: `❌ MCP ${parsed.commandId} 호출 실패 (wire-level isError=true). MCP 연결 상태를 확인해주세요.`,
+          },
+          session,
+          context,
+        );
       }
 
       // Issue #42 S3: 성공 결과 수집
@@ -5119,9 +5164,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // and echoed the params; the HOST is the enforcement point. A goal may
       // be installed ONLY when (a) this turn originates from a real user
       // message and (b) the model's `userRequestEvidence` is a verbatim
-      // substring of that ACTUAL message. Anything else is refused loudly
-      // (⚠️ via context.say, mirroring the UPDATE_SESSION host-failure
-      // pattern) with zero session mutation.
+      // substring of that ACTUAL message. Anything else is refused with zero
+      // session mutation and a ⚠️ notice posted at every verbosity, like the
+      // UPDATE_SESSION host failure: the MCP echo told the model ok, so the
+      // model never sees the refusal (spec 10 §3.2).
       if (parsed.commandId === 'SET_GOAL') {
         const payload = parsed.payload as { objective?: string; userRequestEvidence?: string };
         const objective = typeof payload?.objective === 'string' ? payload.objective.trim() : '';
@@ -5150,12 +5196,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             isUserInputTurn: context.isUserInputTurn === true,
             hasCurrentUserText: typeof userText === 'string',
           });
-          await context.say({
-            text:
-              `⚠️ SET_GOAL refused: ${refusalReason}. ` +
-              'A goal can only be set when the user explicitly asks for it in their current message.',
-            thread_ts: context.threadTs,
-          });
+          // A refusal is the gate working, not a malfunction: `notice`.
+          // Posted at every verbosity — host-side, invisible to the model.
+          await this.reportModelCommandOutcome(
+            {
+              kind: 'notice',
+              text:
+                `⚠️ SET_GOAL refused: ${refusalReason}. ` +
+                'A goal can only be set when the user explicitly asks for it in their current message.',
+            },
+            session,
+            context,
+            { alwaysPost: true },
+          );
           continue;
         }
 
@@ -5187,12 +5240,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           activated: applied.activated,
           objectivePreview: objective.slice(0, 120),
         });
-        await context.say({
-          text: applied.activated
-            ? `🎯 Goal set by model (user-requested): ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`
-            : `📋 Goal queued by model at position ${applied.position}: ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`,
-          thread_ts: context.threadTs,
-        });
+        // Goal started/queued is a status notice: gated on STATUS_MESSAGE like
+        // goal-loop-controller's `postStatusNotice` (compact and up).
+        await this.reportModelCommandOutcome(
+          {
+            kind: 'notice',
+            text: applied.activated
+              ? `🎯 Goal set by model (user-requested): ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`
+              : `📋 Goal queued by model at position ${applied.position}: ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`,
+          },
+          session,
+          context,
+          { flag: OutputFlag.STATUS_MESSAGE },
+        );
         continue;
       }
 
@@ -5227,10 +5287,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               error: updateResult.error,
               mismatch: updateResult.sequenceMismatch,
             });
-            await context.say({
-              text: `⚠️ Session update could not be applied on host (${updateResult.reason || 'UNKNOWN'}).`,
-              thread_ts: context.threadTs,
-            });
+            // The MCP side applied its own preview and answered ok: true, so
+            // the model never sees this failure — posted at every verbosity.
+            await this.reportModelCommandOutcome(
+              {
+                kind: 'error',
+                text: `⚠️ Session update could not be applied on host (${updateResult.reason || 'UNKNOWN'}).`,
+              },
+              session,
+              context,
+              { alwaysPost: true },
+            );
           } else {
             this.logger.info('Applied UPDATE_SESSION resource ops on host', {
               sessionKey: context.sessionKey,
