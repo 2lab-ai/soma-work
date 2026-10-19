@@ -1066,8 +1066,6 @@ button, .btn-cancel { flex: 1; padding: 10px; border-radius: 8px; font-size: 0.9
 // ── Login page HTML ──
 
 function renderLoginPage(googleEnabled: boolean, microsoftEnabled: boolean): string {
-  const params = new URLSearchParams(typeof globalThis !== 'undefined' ? '' : '');
-
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>

@@ -460,24 +460,10 @@ export class SessionRegistry {
   }
 
   /**
-   * Legacy method for backward compatibility - ignores userId
-   */
-  getSessionKeyWithUser(userId: string, channelId: string, threadTs?: string): string {
-    return this.getSessionKey(channelId, threadTs);
-  }
-
-  /**
    * Get a session by channel and thread
    */
   getSession(channelId: string, threadTs?: string): ConversationSession | undefined {
     return this.sessions.get(this.getSessionKey(channelId, threadTs));
-  }
-
-  /**
-   * Legacy method for backward compatibility
-   */
-  getSessionWithUser(userId: string, channelId: string, threadTs?: string): ConversationSession | undefined {
-    return this.getSession(channelId, threadTs);
   }
 
   /**
@@ -684,22 +670,6 @@ export class SessionRegistry {
   }
 
   /**
-   * Get session state
-   */
-  getSessionState(channelId: string, threadTs?: string): SessionState | undefined {
-    const session = this.getSession(channelId, threadTs);
-    return session?.state;
-  }
-
-  /**
-   * Get session workflow
-   */
-  getSessionWorkflow(channelId: string, threadTs?: string): WorkflowType | undefined {
-    const session = this.getSession(channelId, threadTs);
-    return session?.workflow;
-  }
-
-  /**
    * Check if session needs dispatch (is in INITIALIZING state)
    */
   needsDispatch(channelId: string, threadTs?: string): boolean {
@@ -713,36 +683,6 @@ export class SessionRegistry {
   isSleeping(channelId: string, threadTs?: string): boolean {
     const session = this.getSession(channelId, threadTs);
     return session?.state === 'SLEEPING';
-  }
-
-  /**
-   * Transition session to SLEEPING state
-   * Called when session has been inactive for 24 hours
-   */
-  transitionToSleep(channelId: string, threadTs?: string): boolean {
-    const session = this.getSession(channelId, threadTs);
-    if (!session || session.state === 'SLEEPING') return false;
-
-    session.state = 'SLEEPING';
-    session.sleepStartedAt = new Date();
-    // Clear warning state
-    session.warningMessageTs = undefined;
-    session.lastWarningSentAt = undefined;
-
-    this.logger.info('Session transitioned to SLEEPING', {
-      channelId,
-      threadTs,
-      sessionId: session.sessionId,
-      owner: session.ownerName,
-    });
-    this.saveSessions();
-
-    // Metrics: emit session_slept event (fire-and-forget)
-    getMetricsEmitter()
-      .emitSessionSlept(session)
-      .catch((err) => this.logger.debug('metrics emit failed', err));
-
-    return true;
   }
 
   /**
@@ -851,14 +791,6 @@ export class SessionRegistry {
     } catch (error: any) {
       this.logger.warn('onIdleAfterDrainHook failed', { sessionKey, error: error?.message });
     }
-  }
-
-  /**
-   * Get activity state for a session
-   */
-  getActivityState(channelId: string, threadTs?: string): ActivityState | undefined {
-    const session = this.getSession(channelId, threadTs);
-    return session?.activityState;
   }
 
   /**
@@ -1013,14 +945,6 @@ export class SessionRegistry {
   }
 
   /**
-   * Refresh session activity timestamp and clear warning state.
-   * Used when user clicks "Keep" on idle check prompt.
-   */
-  refreshSessionActivity(channelId: string, threadTs: string | undefined): boolean {
-    return this.refreshSessionActivityByKey(this.getSessionKey(channelId, threadTs));
-  }
-
-  /**
    * Refresh session activity by session key.
    */
   refreshSessionActivityByKey(sessionKey: string): boolean {
@@ -1031,17 +955,6 @@ export class SessionRegistry {
     session.warningMessageTs = undefined;
     this.saveSessions();
     return true;
-  }
-
-  /**
-   * Get session links
-   */
-  getSessionLinks(channelId: string, threadTs?: string): SessionLinks | undefined {
-    const session = this.getSession(channelId, threadTs);
-    if (session) {
-      this.ensureSessionLinkState(session);
-    }
-    return session?.links;
   }
 
   /**
@@ -1346,31 +1259,11 @@ export class SessionRegistry {
   // ---------------------------------------------------------------------------
 
   /**
-   * Mark a dangerous rule as disabled for the given session key.
-   * Creates the backing Set on first use. No-op if the session is unknown —
-   * the caller is expected to have already checked; we log at debug instead
-   * of throwing because racing with session cleanup is expected.
-   */
-  disableDangerousRule(sessionKey: string, ruleId: string): void {
-    const session = this.sessions.get(normalizeSessionKey(sessionKey));
-    if (!session) {
-      this.logger.debug('disableDangerousRule: session not found', { sessionKey, ruleId });
-      return;
-    }
-    if (!session.disabledDangerousRules) {
-      session.disabledDangerousRules = new Set<string>();
-    }
-    session.disabledDangerousRules.add(ruleId);
-    this.logger.info('Dangerous rule disabled for session', {
-      sessionKey,
-      ruleId,
-      activeDisabled: Array.from(session.disabledDangerousRules),
-    });
-  }
-
-  /**
-   * Batch variant — disable multiple rule ids atomically with a single session
-   * lookup and a single summary log line.
+   * Mark dangerous rules as disabled for the given session key, atomically
+   * with a single session lookup and a single summary log line. Creates the
+   * backing Set on first use. No-op if the session is unknown — the caller is
+   * expected to have already checked; we log at debug instead of throwing
+   * because racing with session cleanup is expected.
    */
   disableDangerousRules(sessionKey: string, ruleIds: ReadonlyArray<string>): void {
     if (ruleIds.length === 0) return;
@@ -1409,16 +1302,6 @@ export class SessionRegistry {
   listDisabledDangerousRules(sessionKey: string): string[] {
     const session = this.sessions.get(normalizeSessionKey(sessionKey));
     return session?.disabledDangerousRules ? Array.from(session.disabledDangerousRules) : [];
-  }
-
-  /**
-   * Update session with session ID from Claude SDK
-   */
-  updateSessionId(channelId: string, threadTs: string | undefined, sessionId: string): void {
-    const session = this.getSession(channelId, threadTs);
-    if (session) {
-      session.sessionId = sessionId;
-    }
   }
 
   /**

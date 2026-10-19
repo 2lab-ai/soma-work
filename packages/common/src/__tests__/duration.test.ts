@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatNmSSs } from '../duration';
+import { formatNmSSs } from '../format/duration';
 
 describe('formatNmSSs — Dashboard v2.1 chunk A-2', () => {
   it('formats 0ms as 0m 00s', () => {

@@ -33,27 +33,6 @@ import { ToolFormatter } from './tool-formatter';
 import { UserChoiceHandler } from './user-choice-handler';
 import type { WorkLogInput } from './work-log';
 
-export interface StreamProcessorProviders {
-  calculateTokenCost?: (
-    model: string | undefined,
-    inputTokens: number,
-    outputTokens: number,
-    cacheReadInputTokens: number,
-    cacheCreationInputTokens: number,
-  ) => number;
-}
-
-let streamProcessorProviders: Required<StreamProcessorProviders> = {
-  calculateTokenCost: () => 0,
-};
-
-export function setStreamProcessorProviders(providers: StreamProcessorProviders): void {
-  streamProcessorProviders = {
-    ...streamProcessorProviders,
-    ...providers,
-  };
-}
-
 /**
  * Context for stream processing
  */

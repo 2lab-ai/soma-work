@@ -206,11 +206,11 @@ if (isDm && !isCleanup) {
 
 - `src/slack/z/normalize.ts` — `normalizeZInvocation()`
 - `src/slack/z/respond.ts` — `ZRespond` 3 구현체
-- `src/slack/z/router.ts` — `ZRouter`
-- `src/slack/z/capability.ts` — `SLASH_FORBIDDEN` 판정
+- `packages/slack/src/z/router.ts` — `ZRouter`
+- `packages/slack/src/z/capability.ts` — `SLASH_FORBIDDEN` 판정
 - `src/slack/z/whitelist.ts` — 비-admin DM 입력 게이트 `isDmAllowedForNonAdmin` (#553)
 - `src/slack/z/ui-builder.ts` — `buildSettingCard`, `buildHelpCard`, `buildConfirmationCard`
-- (구현은 `packages/slack/src/z/`로 이동, `src/slack/z/`는 re-export shim. `tombstone.ts`는 #531 이후 삭제)
+- (구현은 `packages/slack/src/z/`에 있고, `src/slack/z/`에 남은 파일은 re-export shim. `tombstone.ts`는 #531 이후 도달 불가로 삭제)
 - `src/slack/actions/z-settings-actions.ts` — 액션 핸들러
 
 ### 8-2. `buildSettingCard` 인터페이스

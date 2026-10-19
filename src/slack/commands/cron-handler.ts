@@ -596,24 +596,6 @@ export class CronCommandHandler implements CommandHandler {
 
 // --- helpers ---
 
-function describeOwner(job: CronJob): string {
-  return `owner:<@${job.owner}>`;
-}
-
-function describeModel(job: CronJob): string {
-  const c = job.modelConfig;
-  if (!c || c.type === 'default') return 'default(만든 사람의 현재 모델)';
-  if (c.type === 'opus') return 'opus(최신)';
-  if (c.type === 'fable') return 'fable(최신)';
-  if (c.type === 'fast') return 'fast';
-  return `custom(${c.model ?? '?'})`;
-}
-
-function describeTarget(job: CronJob): string {
-  const target = job.target ?? 'channel';
-  return job.threadTs ? `${target}(ts:${job.threadTs})` : target;
-}
-
 function ownerSuffix(ctx: CommandContext, owner: string): string {
   return owner !== ctx.user ? ` (owner: <@${owner}>)` : '';
 }

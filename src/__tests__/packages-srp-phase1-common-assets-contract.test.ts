@@ -82,7 +82,6 @@ describe('packages-srp Phase 1 common/assets contract', () => {
       ['path-utils.ts', 'path-utils'],
       ['env-paths.ts', 'env-paths'],
       ['format/display-title.ts', 'format/display-title'],
-      ['format/duration.ts', 'format/duration'],
       ['util/format-rate-limited-at.ts', 'util/format-rate-limited-at'],
       ['utils/dir-size.ts', 'utils/dir-size'],
     ];

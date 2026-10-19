@@ -5748,7 +5748,7 @@ describe('turn-end surface guarantee — P0 holes', () => {
   // 3s race; assert it resolves even when the inner promise never settles.
 
   it('C-5: cleanupTempFiles is wrapped with a finite timeout', async () => {
-    const wrapper = (await import('../stream-executor-cleanup-helpers')).cleanupWithTimeout as
+    const wrapper = (await import('@soma/slack/pipeline/stream-executor-cleanup-helpers')).cleanupWithTimeout as
       | ((cleanup: () => Promise<void>, timeoutMs: number) => Promise<void>)
       | undefined;
     // RED gate: helper file/export does not exist yet.

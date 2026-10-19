@@ -22,9 +22,9 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { INCIDENT_RESULT_MARKER } from '@soma/slack/incident-result';
 import { getVerbosityFlags, VERBOSITY_NAMES } from '@soma/slack/output-flags';
+import { AgentStreamProcessor, type StreamContext } from '@soma/slack/stream-processor';
 import { describe, expect, it } from 'vitest';
 import { createSdkMessageMapper } from '../../agent-runtime/claude-code/sdk-message-to-event';
-import { AgentStreamProcessor, type StreamContext } from '../../slack/stream-processor';
 import {
   buildIncidentAttemptOutput,
   buildIncidentTerminalMessages,
