@@ -378,6 +378,75 @@ export function getViewerBaseUrl(): string {
   return `http://${_resolveViewerHost()}:${port}`;
 }
 
+const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1']);
+
+interface HostPort {
+  hostname: string;
+  port: string;
+}
+
+/**
+ * Split a Host value (`name`, `name:port`, `[v6]`, `[v6]:port`) into a
+ * lowercased hostname and port. A bare IPv6 literal (`::1`) has no port.
+ */
+function splitHost(value: string): HostPort {
+  const host = value.trim().toLowerCase();
+  if (host.startsWith('[')) {
+    const end = host.indexOf(']');
+    if (end === -1) return { hostname: host, port: '' };
+    const rest = host.slice(end + 1);
+    return { hostname: host.slice(1, end), port: rest.startsWith(':') ? rest.slice(1) : '' };
+  }
+  const colon = host.indexOf(':');
+  if (colon === -1 || colon !== host.lastIndexOf(':')) return { hostname: host, port: '' };
+  return { hostname: host.slice(0, colon), port: host.slice(colon + 1) };
+}
+
+/**
+ * Redirect browsers that reach the viewer on a non-canonical origin to the
+ * https `viewerUrl`.
+ *
+ * Once `viewerUrl` is https every auth cookie carries `Secure` (oauth.ts), and
+ * a browser on plain `http://<host>:<port>` — the shape of links minted before
+ * `viewerUrl` was set — never stores it, so login from an old Slack link fails
+ * silently. Only GET/HEAD are redirected; loopback Hosts (health checks,
+ * in-process callers), `/health` and WebSocket upgrades are left alone, and
+ * nothing is installed unless `viewerUrl` is a valid https URL.
+ */
+function registerCanonicalOriginRedirect(instance: FastifyInstance): void {
+  let canonical: URL;
+  try {
+    canonical = new URL(config.conversation.viewerUrl || '');
+  } catch {
+    return;
+  }
+  if (canonical.protocol !== 'https:') return;
+
+  const origin = canonical.origin;
+  // URL.host omits the default port, and so do browsers in the Host header.
+  const target = splitHost(canonical.host);
+  const targetPort = target.port || '443';
+
+  instance.addHook('onRequest', async (request, reply) => {
+    if (request.method !== 'GET' && request.method !== 'HEAD') return;
+    // Origin-form only; anything else is not a path we can append to origin.
+    if (!request.url.startsWith('/')) return;
+    if (request.url.split('?')[0] === '/health') return;
+    const upgrade = request.headers.upgrade;
+    if (typeof upgrade === 'string' && upgrade.toLowerCase().includes('websocket')) return;
+    const hostHeader = request.headers.host;
+    if (!hostHeader) return;
+
+    const { hostname, port } = splitHost(hostHeader);
+    if (LOOPBACK_HOSTNAMES.has(hostname)) return;
+    if (hostname === target.hostname && (port || '443') === targetPort) return;
+
+    // 302, not 301: viewerUrl is ops config that may be rolled back, and browsers cache a 301 past that.
+    return reply.redirect(`${origin}${request.url}`, 302);
+  });
+  logger.info(`Canonical-origin redirect enabled: ${origin}`);
+}
+
 /**
  * Get the full URL for a specific conversation
  * @public — consumed dynamically via `import * as conversation` + `(conversation as any).getConversationUrl` in src/slack/session-manager.ts; knip cannot see that.
@@ -410,6 +479,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   }
 
   server = Fastify({ logger: false });
+
+  // Old `http://<host>:<port>` links → https viewerUrl, before any route runs.
+  registerCanonicalOriginRedirect(server);
 
   // Required for HTML form POSTs (e.g. the SSO session-switch interstitial
   // at `POST /auth/sso/confirm`, #704). Fastify does not parse

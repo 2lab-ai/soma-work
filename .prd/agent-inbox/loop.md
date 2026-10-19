@@ -1,6 +1,6 @@
 # loop — Agent inbox 보드 + Slack 미니멀
 
-Status: in-progress · 스펙 = [`../10-agent-inbox-board-spec.md`](../10-agent-inbox-board-spec.md) · SSOT = [`ssot.md`](ssot.md)
+Status: done · 스펙 = [`../10-agent-inbox-board-spec.md`](../10-agent-inbox-board-spec.md) · SSOT = [`ssot.md`](ssot.md)
 
 ## 게이트 (build facts)
 - 워크트리마다: `npm run build --workspace @soma/slack` → `npx vitest run <touched test files>` → `npm run lint`(tsc --noEmit + biome).
@@ -22,22 +22,9 @@ Status: in-progress · 스펙 = [`../10-agent-inbox-board-spec.md`](../10-agent-
 | 헤더 필드 | `dashboardLink`, 라벨 `📋 작업 로그` |
 | 로그인 복귀 | 쿠키 `soma_next`(값은 `/dashboard`로 시작하는 같은 출처 경로만) |
 
-## 라운드 1 — 계획 (2026-10-16)
-| WU | 브랜치 · 워크트리 | 스코프 | 소유 파일 |
-|---|---|---|---|
-| WU-S Slack 미니멀 | `feat/slack-minimal-worklog` · `.worktrees/feat-slack-minimal-worklog` | §3.2 전부 + §3.3 방출 훅 | `packages/slack/src/output-flags.ts`, `work-log.ts`(신규), `stream-processor.ts`, `pipeline/stream-executor.ts`, `tool-event-processor.ts`, `src/deploy/migrate-all-users-minimal-once.ts`(신규), `src/index.ts`(이관 배선만) + 테스트 |
-| WU-W 작업 로그 서버 | `feat/dashboard-worklog-api` · `.worktrees/feat-dashboard-worklog-api` | §3.3 저장·API·WS, §3.4-3 로그인 복귀 | `src/conversation/work-log.ts`(신규), `work-log-routes.ts`(신규), `web-server.ts`, `dashboard.ts`(서버 쪽 broadcast 함수만, 템플릿 금지), `oauth.ts`, `src/index.ts`(provider 배선만) + 테스트 |
-| WU-L 스레드 링크 | `feat/thread-dashboard-link` · `.worktrees/feat-thread-dashboard-link` | §3.4-1·2 | `packages/slack/src/thread-header-builder.ts`, `surface-config.ts`, `pipeline/session-initializer.ts`, `config.default.json`, `src/index.ts`(URL provider 배선만) + 테스트 |
-| WU-D 보드 UI | `feat/agent-inbox-dashboard` · `.worktrees/feat-agent-inbox-dashboard` | §3.1, §4, §5 | `src/conversation/dashboard.ts` 템플릿(CSS·HTML·클라이언트 JS) + 대시보드 테스트 |
-
-머지 순서: WU-S → WU-W → WU-D → WU-L (2026-10-16 변경 — WU-D가 `?session=` 소비자를 가지므로 링크를 내보내는 WU-L보다 먼저; WU-D는 작업 로그 API를 소비).
-
-## 열린 gap
-| ID | 갭 | 상태 |
-|---|---|---|
-| G1 | 보드 3칸·카드·펼침·List·반응형 (§3.1, §5) | open |
-| G2 | 모션 계약 (§4) — FLIP 이동 프레임 시퀀스 리시트 | open |
-| G3 | 3a 이관 n/N·m/M 로그 (§3.2-1) | open |
-| G4 | minimal 스레드 = 헤더·task·최종 답변만 (§3.2-2~5) | open |
-| G5 | 작업 로그 저장·API·WS·패널 (§3.3, §3.1-7) | open |
-| G6 | 스레드 맨 위 링크 + 로그인 복귀 (§3.4) | open |
+## 다음 착수점 · 대기
+- 칸 행 G1–G6 전부 닫힘(`loop.done.md` R1·R2). 이 워크스트림의 다음 라운드는 새 결함·새 요구가 생길 때만 연다.
+- 대기(유저 게이트): 정식 배포(prod)는 유저가 정한다.
+- 범위 밖(2026-10-19 유저 지시, `ssot.md` §스코프 변경): t1 배포. Deploy run 38912315787의 t1 작업은 2026-10-17 14:02Z에 취소돼
+  다시 돌지 않는다. 러너가 돌아온 뒤 t1을 대상에 포함한 `deploy/dev` 배포(push 시 대상 지정 없음 = 설정된 전 대상)가 성공하면 t1은
+  새 빌드를 받고, 그 기동에서 마커가 없으면 3a 1회 이관이 돈다(2026-10-17 t1 실측: 마커 없음, v0.2.1156). 이관 결과는 그 기동 뒤 확인한다.

@@ -5,7 +5,9 @@
  *   1. User clicks "Sign in with Google/Microsoft" on /login
  *   2. Redirect to provider → user grants consent → redirect back to /auth/{provider}/callback
  *   3. Exchange code for access token → fetch user email
- *   4. Match email against UserSettingsStore (Slack profile emails)
+ *   4. Match email against UserSettingsStore (Slack profile emails) — Google
+ *      emails must be verified, and the email must belong to exactly one
+ *      Slack user
  *   5. Issue JWT → set HttpOnly cookie → redirect to the `soma_next` deep link
  *      when one was remembered, else /dashboard/<userId>
  *
@@ -193,7 +195,17 @@ function _getCurrentSession(request: FastifyRequest): { kind: 'jwt'; user: Dashb
 
 // ── User lookup ──
 
-type UserLookupFn = (email: string) => { userId: string; name: string } | null;
+/**
+ * Result of matching an OAuth email against the Slack users' `/z email`
+ * addresses. Each Slack user sets that address themselves, so two users can
+ * hold the same one: `ambiguous` means no login may be issued for it.
+ */
+export type OAuthUserLookupResult =
+  | { kind: 'match'; userId: string; name: string }
+  | { kind: 'none' }
+  | { kind: 'ambiguous'; count: number };
+
+type UserLookupFn = (email: string) => OAuthUserLookupResult;
 let _lookupByEmail: UserLookupFn | null = null;
 
 /** Register the email→user lookup (called once at startup). */
@@ -201,9 +213,44 @@ export function setOAuthUserLookup(fn: UserLookupFn): void {
   _lookupByEmail = fn;
 }
 
-function lookupUser(email: string): { userId: string; name: string } | null {
-  if (!_lookupByEmail) return null;
+function lookupUser(email: string): OAuthUserLookupResult {
+  if (!_lookupByEmail) return { kind: 'none' };
   return _lookupByEmail(email.toLowerCase());
+}
+
+/**
+ * Match `email` case-insensitively against every Slack user's registered
+ * email. Counts all matches instead of taking the first, so an address
+ * registered by several Slack users comes back `ambiguous`.
+ */
+export function matchSlackUsersByEmail(
+  users: ReadonlyArray<{ userId: string; email?: string; slackName?: string }>,
+  email: string,
+): OAuthUserLookupResult {
+  const emailLower = email.toLowerCase();
+  if (!emailLower) return { kind: 'none' };
+  const matches = users.filter((u) => u.email && u.email.toLowerCase() === emailLower);
+  if (matches.length === 0) return { kind: 'none' };
+  if (matches.length > 1) return { kind: 'ambiguous', count: matches.length };
+  return { kind: 'match', userId: matches[0].userId, name: matches[0].slackName || matches[0].userId };
+}
+
+/**
+ * Shared by the Google and Microsoft callbacks: returns the single Slack user
+ * registered under `email`, or redirects to /login with the reason and
+ * returns null. The ambiguity warning carries the count, never the user ids.
+ */
+function matchedSlackUserOrRedirect(reply: FastifyReply, email: string): { userId: string; name: string } | null {
+  const result = lookupUser(email);
+  if (result.kind === 'match') return result;
+  if (result.kind === 'ambiguous') {
+    logger.warn('OAuth login: email registered by several Slack users', { email, count: result.count });
+    reply.redirect('/login?error=ambiguous_email');
+    return null;
+  }
+  logger.warn('OAuth login: no Slack user matched for email', { email });
+  reply.redirect(`/login?error=no_match&email=${encodeURIComponent(email)}`);
+  return null;
 }
 
 // ── JWT helpers ──
@@ -353,7 +400,14 @@ function isOAuthConfigured(provider: 'google' | 'microsoft'): boolean {
   return !!(cfg.clientId && cfg.clientSecret);
 }
 
-async function exchangeGoogleCode(code: string): Promise<{ email: string; name: string } | null> {
+/**
+ * Returns null when the exchange fails, `unverified` when Google has not
+ * verified the account's email (an unverified address proves nothing about
+ * who owns it, so it must not be matched against Slack users).
+ */
+async function exchangeGoogleCode(
+  code: string,
+): Promise<{ kind: 'ok'; email: string; name: string } | { kind: 'unverified'; email: string } | null> {
   try {
     // Exchange code for tokens
     const tokenRes = await fetch(GOOGLE_TOKEN_URL, {
@@ -382,8 +436,12 @@ async function exchangeGoogleCode(code: string): Promise<{ email: string; name: 
       logger.error('Google userinfo missing email', userInfo);
       return null;
     }
+    // v2 userinfo field; anything but literal `true` (false, missing, "true") is unverified.
+    if (userInfo.verified_email !== true) {
+      return { kind: 'unverified', email: userInfo.email };
+    }
 
-    return { email: userInfo.email, name: userInfo.name || userInfo.email };
+    return { kind: 'ok', email: userInfo.email, name: userInfo.name || userInfo.email };
   } catch (error) {
     logger.error('Google OAuth exchange error', error);
     return null;
@@ -625,13 +683,14 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
           reply.redirect('/login?error=google_failed');
           return;
         }
-
-        const matched = lookupUser(userInfo.email);
-        if (!matched) {
-          logger.warn('OAuth login: no Slack user matched for email', { email: userInfo.email });
-          reply.redirect('/login?error=no_match&email=' + encodeURIComponent(userInfo.email));
+        if (userInfo.kind === 'unverified') {
+          logger.warn('OAuth login: Google email is not verified', { email: userInfo.email });
+          reply.redirect('/login?error=google_unverified');
           return;
         }
+
+        const matched = matchedSlackUserOrRedirect(reply, userInfo.email);
+        if (!matched) return;
 
         const dashUser: DashboardUser = {
           slackUserId: matched.userId,
@@ -683,12 +742,8 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
           return;
         }
 
-        const matched = lookupUser(userInfo.email);
-        if (!matched) {
-          logger.warn('OAuth login: no Slack user matched for email', { email: userInfo.email });
-          reply.redirect('/login?error=no_match&email=' + encodeURIComponent(userInfo.email));
-          return;
-        }
+        const matched = matchedSlackUserOrRedirect(reply, userInfo.email);
+        if (!matched) return;
 
         const dashUser: DashboardUser = {
           slackUserId: matched.userId,
@@ -1105,11 +1160,13 @@ if (err) {
   const msgs = {
     'google_denied': 'Google sign-in was cancelled.',
     'google_failed': 'Google sign-in failed. Please try again.',
+    'google_unverified': 'Your Google email address is not verified. Verify it in your Google account, or sign in with the Slack dashboard link.',
     'microsoft_denied': 'Microsoft sign-in was cancelled.',
     'microsoft_failed': 'Microsoft sign-in failed. Please try again.',
     // emailParam is inserted as text only via _showError — do NOT switch
     // this branch back to innerHTML.
     'no_match': 'No matching Slack account found for ' + emailParam + '. Contact your admin.',
+    'ambiguous_email': 'Several Slack users registered this email via /z email, so the dashboard cannot pick one account. Keep it on one Slack user, or sign in with the Slack dashboard link.',
     'state_mismatch': 'Authentication state mismatch. Please try again.',
     'sso_missing': 'Slack SSO link is missing a token. Request a new dashboard link in Slack.',
     'sso_invalid': 'Slack SSO link expired or is invalid. Request a new dashboard link in Slack.',

@@ -97,8 +97,10 @@ export interface FollowupSessionSnapshot {
    * Turn-generation counter of the session (`ssot.md:116-120`). Advanced by
    * `beginTurn` at the start of EVERY dispatch — including a plain user message
    * that never touched the queue — and stamped into button payloads so a click
-   * from an older generation is rejected as stale. This is NOT `item.epoch`:
-   * see the two-token note on `FollowupItem.epoch`.
+   * from an older generation is rejected as stale. When a bot-thread migration
+   * ends, `raiseTurnEpochFloor` lifts the work-thread session to the slot's
+   * counter so its next generation opens above every one the slot ever opened.
+   * This is NOT `item.epoch`: see the two-token note on `FollowupItem.epoch`.
    */
   turnEpoch: number;
   /** Present while the session is frozen (stop / session end / restart). Blocks drain. */
@@ -359,14 +361,47 @@ export class FollowupQueue {
    * The host calls this for EVERY dispatch — drained item, `Send now`
    * promotion, and an ordinary user message that never entered the queue —
    * because a turn generation is a property of the session, not of an item.
-   * Sole mutator of `turnEpoch`: no other method advances it, so a host that
-   * already called `beginTurn` can never be double-incremented by
-   * `markDispatched`.
+   * The only method that OPENS a generation: `markDispatched` never advances
+   * it, so a host that already called `beginTurn` can never be
+   * double-incremented. The one other writer, `raiseTurnEpochFloor`, opens
+   * nothing — it only moves the counter up to a generation already opened
+   * elsewhere, so the NEXT `beginTurn` lands above it.
    */
   beginTurn(sessionKey: string): number {
     const next = cloneJson(this.state);
     const session = this.ensureSession(next, sessionKey);
     session.turnEpoch += 1;
+    this.commit(next);
+    return session.turnEpoch;
+  }
+
+  /**
+   * Lift the session's turn generation to at least `floor`, durably; never
+   * lower it.
+   *
+   * Exists for the end of a bot-thread migration. While the pair is bound the
+   * work-thread session has no generation of its own that matters — the host
+   * reads the SLOT's counter for it — so once the binding goes, the work key's
+   * own counter must already stand where the slot's does. Otherwise its next
+   * `beginTurn` would hand out a number the slot already used, and a late write
+   * stamped with that number would pass against the new turn (A28,
+   * `ssot.md:116-120`).
+   *
+   * Lowering is refused for the same reason in the other direction: it would
+   * re-open generations the session has already superseded. At or above `floor`
+   * is a no-write no-op. Durable first like every transition here: a save that
+   * throws leaves committed memory exactly as it was. Returns the session's
+   * generation after the call.
+   */
+  raiseTurnEpochFloor(sessionKey: string, floor: number): number {
+    if (!Number.isSafeInteger(floor) || floor < 0) {
+      throw new Error(`FollowupQueue: turn epoch floor must be a non-negative integer, got ${String(floor)}`);
+    }
+    const current = this.findSession(this.state, sessionKey)?.turnEpoch ?? 0;
+    if (current >= floor) return current;
+    const next = cloneJson(this.state);
+    const session = this.ensureSession(next, sessionKey);
+    session.turnEpoch = floor;
     this.commit(next);
     return session.turnEpoch;
   }
@@ -499,7 +534,7 @@ export class FollowupQueue {
    * `markInterrupted` it. Two live dispatches would also make a later stop
    * label both items `uncertain`, which would be a lie about the torn-down one.
    *
-   * Does not touch `turnEpoch` — `beginTurn` is its sole mutator.
+   * Does not touch `turnEpoch` — `beginTurn` is the only method that opens a generation.
    */
   markDispatched(sessionKey: string, itemId: string, expectedEpoch: number): FollowupOpResult {
     return this.mutate(sessionKey, itemId, expectedEpoch, (item, session) => {
