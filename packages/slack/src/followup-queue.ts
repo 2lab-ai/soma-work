@@ -97,9 +97,9 @@ export interface FollowupSessionSnapshot {
    * Turn-generation counter of the session (`ssot.md:116-120`). Advanced by
    * `beginTurn` at the start of EVERY dispatch — including a plain user message
    * that never touched the queue — and stamped into button payloads so a click
-   * from an older generation is rejected as stale. A bot-thread migration
-   * copies the running dispatch's generation onto the work-thread session
-   * (`carryTurnEpoch`); that copies an existing generation, it never opens one.
+   * from an older generation is rejected as stale. When a bot-thread migration
+   * ends, `raiseTurnEpochFloor` lifts the work-thread session to the slot's
+   * counter so its next generation opens above every one the slot ever opened.
    * This is NOT `item.epoch`: see the two-token note on `FollowupItem.epoch`.
    */
   turnEpoch: number;
@@ -363,8 +363,9 @@ export class FollowupQueue {
    * because a turn generation is a property of the session, not of an item.
    * The only method that OPENS a generation: `markDispatched` never advances
    * it, so a host that already called `beginTurn` can never be
-   * double-incremented. The one other writer, `carryTurnEpoch`, only copies a
-   * generation this method already opened onto a second key.
+   * double-incremented. The one other writer, `raiseTurnEpochFloor`, opens
+   * nothing — it only moves the counter up to a generation already opened
+   * elsewhere, so the NEXT `beginTurn` lands above it.
    */
   beginTurn(sessionKey: string): number {
     const next = cloneJson(this.state);
@@ -375,34 +376,34 @@ export class FollowupQueue {
   }
 
   /**
-   * Bot-thread migration: the dispatch opened its generation under `fromKey`
-   * (the slot, i.e. the source thread), but the turn runs — and writes its
-   * surface with that generation as `expectedTurnEpoch` — under `toKey`, the
-   * work-thread session. Copy the generation across, durably, so the work key
-   * reads the turn that is actually running on it and its NEXT `beginTurn`
-   * opens a fresh one instead of a second "1" a late write could match.
+   * Lift the session's turn generation to at least `floor`, durably; never
+   * lower it.
    *
-   * Two refusals keep the A28 fence (`ssot.md:116-120`), and both leave state
-   * untouched:
-   *   - `fromKey` no longer holds `expectedTurnEpoch` — the caller was
-   *     superseded on its own slot, so it is given no render authority anywhere.
-   *   - `toKey` is already at or past it — never lowered, because lowering would
-   *     re-open a generation that was already superseded there. Equal is the
-   *     idempotent re-bind (steer / `Send now` on a migrated turn).
-   * Items are not moved: parked rows already live under `toKey`.
+   * Exists for the end of a bot-thread migration. While the pair is bound the
+   * work-thread session has no generation of its own that matters — the host
+   * reads the SLOT's counter for it — so once the binding goes, the work key's
+   * own counter must already stand where the slot's does. Otherwise its next
+   * `beginTurn` would hand out a number the slot already used, and a late write
+   * stamped with that number would pass against the new turn (A28,
+   * `ssot.md:116-120`).
    *
-   * Returns `toKey`'s generation after the call. A value other than
-   * `expectedTurnEpoch` means this turn's stamped writes will stay fenced.
+   * Lowering is refused for the same reason in the other direction: it would
+   * re-open generations the session has already superseded. At or above `floor`
+   * is a no-write no-op. Durable first like every transition here: a save that
+   * throws leaves committed memory exactly as it was. Returns the session's
+   * generation after the call.
    */
-  carryTurnEpoch(fromKey: string, toKey: string, expectedTurnEpoch: number): number {
+  raiseTurnEpochFloor(sessionKey: string, floor: number): number {
+    if (!Number.isSafeInteger(floor) || floor < 0) {
+      throw new Error(`FollowupQueue: turn epoch floor must be a non-negative integer, got ${String(floor)}`);
+    }
+    const current = this.findSession(this.state, sessionKey)?.turnEpoch ?? 0;
+    if (current >= floor) return current;
     const next = cloneJson(this.state);
-    const current = this.findSession(next, toKey)?.turnEpoch ?? 0;
-    if (this.findSession(next, fromKey)?.turnEpoch !== expectedTurnEpoch) return current;
-    if (current >= expectedTurnEpoch) return current;
-    const target = this.ensureSession(next, toKey);
-    target.turnEpoch = expectedTurnEpoch;
+    const session = this.ensureSession(next, sessionKey);
+    session.turnEpoch = floor;
     this.commit(next);
-    return target.turnEpoch;
+    return session.turnEpoch;
   }
 
   /**
