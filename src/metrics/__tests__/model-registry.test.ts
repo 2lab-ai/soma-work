@@ -3,7 +3,6 @@ import {
   calculateTokenCost,
   classifyOneMUnavailable,
   FALLBACK_CONTEXT_WINDOW,
-  getMaxOutput,
   getModelPricing,
   getModelSpec,
   hasOneMSuffix,
@@ -81,12 +80,6 @@ describe('model-registry', () => {
     it('returns fallback for undefined', () => {
       const spec = getModelSpec(undefined);
       expect(spec.pricing.inputPerMTok).toBe(3);
-    });
-  });
-
-  describe('getMaxOutput', () => {
-    it('returns 128k for opus-4-6', () => {
-      expect(getMaxOutput('claude-opus-4-6-20250414')).toBe(128_000);
     });
   });
 

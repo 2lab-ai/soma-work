@@ -479,13 +479,6 @@ export function resolveContextWindow(modelName?: string): number {
 }
 
 /**
- * Get max output token count for a model.
- */
-export function getMaxOutput(modelName?: string): number {
-  return getModelSpec(modelName).maxOutput;
-}
-
-/**
  * Calculate cost from token counts and model name.
  * Uses cache5minWritePerMTok for cacheCreateTokens (default behavior).
  * Returns cost in USD.
