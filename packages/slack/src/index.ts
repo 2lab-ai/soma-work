@@ -236,9 +236,6 @@ export {
 } from './mcp-status-tracker';
 export { MessageFormatter } from './message-formatter';
 export {
-  type InterruptCheckResult,
-  type InterruptSession,
-  type InterruptSessionReader,
   MessageValidator,
   setMessageValidatorBaseDirectoryProvider,
   type ValidationResult,

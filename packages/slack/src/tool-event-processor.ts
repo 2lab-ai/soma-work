@@ -95,12 +95,6 @@ class BackgroundBashRegistry {
     this.map.delete(sessionKey);
     return entries;
   }
-
-  /** Non-destructive count of live entries for a session (still running at
-   *  turn end, before `drain()`). Used by the background-work resume guard. */
-  countFor(sessionKey: string): number {
-    return this.map.get(sessionKey)?.size ?? 0;
-  }
 }
 
 /**
@@ -155,14 +149,6 @@ class BackgroundTaskRegistry {
     const entries = Array.from(bucket.values());
     this.map.delete(turnId);
     return entries;
-  }
-
-  /** Non-destructive subagent labels of live entries for a turn (still running
-   *  at turn end, before `drain()`). Used by the background-work resume guard. */
-  labelsFor(turnId: string): string[] {
-    const bucket = this.map.get(turnId);
-    if (!bucket) return [];
-    return Array.from(bucket.values()).map((e) => e.subagentLabel);
   }
 
   /**
@@ -814,7 +800,8 @@ export class ToolEventProcessor {
   }
 
   /**
-   * Drop all background-task tracking for a session. SESSION TEARDOWN ONLY.
+   * Drop all background-task tracking for a session. SESSION TEARDOWN ONLY —
+   * the host calls it from the session registry's before-delete seam.
    * NOTE: this is no longer called on resume-cap exhaustion — the cap is now a
    * NON-destructive suppression in StreamExecutor (it must not falsify the
    * authoritative live state). Draining authoritative state on cap would lie

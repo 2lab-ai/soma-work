@@ -3616,6 +3616,38 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
+     * B3 — the background-task lifecycle tracker lives on the process-wide
+     * ToolEventProcessor and is documented as drained on session teardown.
+     * Nothing drained it since 59e5b457, so a deleted session left its live
+     * tasks and settled tombstones behind for the whole process lifetime, and a
+     * reused key inherited them (a tombstone silently refuses a fresh start).
+     */
+    it('drops the deleted session background-task tracking, live tasks and tombstones', async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const { spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
+      const tracker = spawnedAny.toolEventProcessor;
+      const lifecycle = (phase: 'started' | 'settled', taskId: string) =>
+        tracker.handleAgentTaskLifecycle({ type: 'agent_task_lifecycle', phase, taskId }, SESSION_KEY);
+      lifecycle('started', 'bg-live');
+      lifecycle('started', 'bg-done');
+      lifecycle('settled', 'bg-done');
+      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count).toBe(1);
+
+      expect(beforeDelete, 'the registry seam was wired').toBeDefined();
+      beforeDelete?.(SESSION_KEY, registrySession, 'expired');
+
+      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count, 'live tasks of a deleted session').toBe(0);
+      // Same key, next session: a task id the old session settled is a new task now.
+      lifecycle('started', 'bg-done');
+      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count, 'a stale tombstone refused the start').toBe(1);
+    });
+
+    /**
      * MF1 — a stop parks every pending row. `paused` and `queued` share a
      * surface (§2.1: `Send now` is the parked row's Resume), so what this pins
      * is that the stop does not strip the message of its controls.

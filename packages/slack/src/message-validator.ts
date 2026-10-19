@@ -1,29 +1,12 @@
-import { Logger } from '@soma/common/logger';
-
 export interface ValidationResult {
   valid: boolean;
   workingDirectory?: string;
   errorMessage?: string;
 }
 
-export interface InterruptCheckResult {
-  canInterrupt: boolean;
-  reason?: string;
-}
-
 export interface WorkingDirectoryReader {
   getWorkingDirectory(channelId: string, threadTs: string | undefined, userId: string): string | undefined;
   hasChannelWorkingDirectory(channelId: string): boolean;
-}
-
-export interface InterruptSession {
-  ownerName?: string;
-  currentInitiatorName?: string;
-}
-
-export interface InterruptSessionReader {
-  canInterrupt(channelId: string, threadTs: string, userId: string): boolean;
-  getSession(channelId: string, threadTs: string): InterruptSession | undefined;
 }
 
 let getBaseDirectory: () => string | undefined = () => process.env.SOMA_BASE_DIRECTORY || process.env.BASE_DIRECTORY;
@@ -33,12 +16,7 @@ export function setMessageValidatorBaseDirectoryProvider(provider: () => string 
 }
 
 export class MessageValidator {
-  private logger = new Logger('MessageValidator');
-
-  constructor(
-    private workingDirManager: WorkingDirectoryReader,
-    private claudeHandler: InterruptSessionReader,
-  ) {}
+  constructor(private workingDirManager: WorkingDirectoryReader) {}
 
   /**
    * Validate that a working directory is set for the given context.
@@ -83,27 +61,6 @@ export class MessageValidator {
     }
 
     return errorMessage;
-  }
-
-  /**
-   * Check if a user can interrupt the current session.
-   */
-  checkInterruptPermission(userId: string, channelId: string, threadTs: string): InterruptCheckResult {
-    const canInterrupt = this.claudeHandler.canInterrupt(channelId, threadTs, userId);
-
-    if (canInterrupt) {
-      return { canInterrupt: true };
-    }
-
-    const session = this.claudeHandler.getSession(channelId, threadTs);
-    if (!session) {
-      return { canInterrupt: true };
-    }
-
-    return {
-      canInterrupt: false,
-      reason: `Session owned by ${session.ownerName}, current initiator: ${session.currentInitiatorName}`,
-    };
   }
 
   /**

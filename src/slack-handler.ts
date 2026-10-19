@@ -477,7 +477,7 @@ export class SlackHandler {
     this.commandRouter = new CommandRouter(commandDeps);
 
     // Message validation, status reporting, and todo display
-    this.messageValidator = new MessageValidator(this.workingDirManager, this.claudeHandler);
+    this.messageValidator = new MessageValidator(this.workingDirManager);
     this.statusReporter = new StatusReporter();
     this.todoDisplayManager = new TodoDisplayManager(this.slackApi, this.todoManager, this.reactionManager);
     // Wire todo updates to trigger thread header re-render + plan block render.
@@ -856,6 +856,9 @@ export class SlackHandler {
    * The re-render is detached and uses the session object handed to the
    * callback: by the time it runs, the registry has removed the session and a
    * lookup by key would find nothing.
+   *
+   * The same seam also drops the session's background-task tracking
+   * (`ToolEventProcessor.clearBackgroundResume`), which nothing else drains.
    */
   private registerFollowupSessionDeletion(): void {
     const registry = (this.claudeHandler as { getSessionRegistry?: () => unknown })?.getSessionRegistry?.() as
@@ -867,6 +870,10 @@ export class SlackHandler {
     }
 
     registry.setBeforeSessionDelete((sessionKey, session, reason) => {
+      // The background-task lifecycle tracker is process-wide and keyed by
+      // session; this seam is the one teardown point both deletion paths share,
+      // so it is where the session's live tasks and settled tombstones go.
+      this.toolEventProcessor?.clearBackgroundResume(sessionKey);
       const queue = this.followupQueue;
       if (!queue) return;
       const pending = queue

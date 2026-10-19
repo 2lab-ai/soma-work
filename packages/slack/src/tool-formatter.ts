@@ -658,12 +658,6 @@ export class ToolFormatter {
     };
   }
 
-  /** Format a compact completion line for in-place tool message update */
-  static formatCompactToolDone(toolName: string, input: any, isError: boolean): string {
-    const icon = isError ? '🔴' : '🟢';
-    return `${icon} ${ToolFormatter.formatOneLineToolUse(toolName, input)}`;
-  }
-
   /**
    * Extract tool results from user message content
    */
