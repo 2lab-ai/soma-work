@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  expectedHandoffKind,
-  extractSentinelType,
-  HandoffAbortError,
-  parseHandoff,
-} from './handoff-parser';
+import { expectedHandoffKind, extractSentinelType, HandoffAbortError, parseHandoff } from './handoff-parser';
 
 // -------------------------------------------------------------------
 // Fixture helpers — mirror SKILL.md §Session Handoff Protocol payloads.
@@ -233,12 +228,7 @@ describe('parseHandoff — malformed inputs', () => {
   });
 
   it('reports unknown-type for an unrecognized type attribute', () => {
-    const text = [
-      '<z-handoff type="foo-bar">',
-      '## Issue',
-      'https://example.com/1',
-      '</z-handoff>',
-    ].join('\n');
+    const text = ['<z-handoff type="foo-bar">', '## Issue', 'https://example.com/1', '</z-handoff>'].join('\n');
     const result = parseHandoff(text);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable');

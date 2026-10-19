@@ -43,7 +43,10 @@ export class MemoryFileStore implements MemoryStore {
       if (!fs.existsSync(fp)) return [];
       const raw = fs.readFileSync(fp, 'utf-8');
       if (!raw.trim()) return [];
-      return raw.split(ENTRY_DELIMITER).map((e) => e.trim()).filter((e) => e.length > 0);
+      return raw
+        .split(ENTRY_DELIMITER)
+        .map((e) => e.trim())
+        .filter((e) => e.length > 0);
     } catch {
       return [];
     }
@@ -66,7 +69,10 @@ export class MemoryFileStore implements MemoryStore {
     const next = [...entries, trimmed];
     const limit = this.charLimit(target);
     if (charCount(next) > limit) {
-      return { ok: false, message: `Would exceed char limit (${charCount(entries)}/${limit} used). Remove old entries first.` };
+      return {
+        ok: false,
+        message: `Would exceed char limit (${charCount(entries)}/${limit} used). Remove old entries first.`,
+      };
     }
 
     this.writeEntries(user, target, next);
@@ -111,10 +117,18 @@ export class MemoryFileStore implements MemoryStore {
     return { ok: true, message: 'Entry removed' };
   }
 
-  loadMemory(user: string, target: string): { entries: string[]; charLimit: number; totalChars: number; percentUsed: number } {
+  loadMemory(
+    user: string,
+    target: string,
+  ): { entries: string[]; charLimit: number; totalChars: number; percentUsed: number } {
     const entries = this.readEntries(user, target);
     const limit = this.charLimit(target);
     const total = charCount(entries);
-    return { entries, charLimit: limit, totalChars: total, percentUsed: limit > 0 ? Math.round((total / limit) * 100) : 0 };
+    return {
+      entries,
+      charLimit: limit,
+      totalChars: total,
+      percentUsed: limit > 0 ? Math.round((total / limit) * 100) : 0,
+    };
   }
 }

@@ -16,8 +16,8 @@
  */
 export type { DangerousRule, DangerousRuleContext, RuleSet } from 'soma-lib';
 export {
-  DANGEROUS_RULES,
   createRuleSet,
+  DANGEROUS_RULES,
   isCrossUserAccess,
   isSshCommand,
   matchRules,

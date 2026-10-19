@@ -161,10 +161,10 @@ import {
 import type {
   ContinueSessionParams,
   ManageSkillParams,
+  MemoryParams,
   ModelCommandContext,
   ModelCommandDescriptor,
   ModelCommandError,
-  MemoryParams,
   ModelCommandRunRequest,
   ModelCommandRunResponse,
   SaveMemoryParams,
@@ -1022,7 +1022,11 @@ export function runModelCommand(
         const loc = buildLocator();
         if ('error' in loc) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: loc.error });
         const res = store.removePage(user, loc);
-        return ok({ ok: res.ok, message: res.message, ...(res.ok ? { mutated: { kind: 'memory' as const, user } } : {}) });
+        return ok({
+          ok: res.ok,
+          message: res.message,
+          ...(res.ok ? { mutated: { kind: 'memory' as const, user } } : {}),
+        });
       }
       if (params.op === 'episodic_append') {
         if (!params.content) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: 'content is required' });
