@@ -23,13 +23,7 @@ import type {
   ZHandoffWorkflow,
 } from './session-types';
 
-const VALID_TIERS: ReadonlySet<HandoffTier> = new Set([
-  'tiny',
-  'small',
-  'medium',
-  'large',
-  'xlarge',
-]);
+const VALID_TIERS: ReadonlySet<HandoffTier> = new Set(['tiny', 'small', 'medium', 'large', 'xlarge']);
 
 const VALID_KINDS: ReadonlySet<HandoffKind> = new Set(['plan-to-work', 'work-complete']);
 
@@ -189,11 +183,7 @@ export class HandoffAbortError extends Error {
   readonly detail: string;
   readonly forceWorkflow: ZHandoffWorkflow;
 
-  constructor(
-    reason: HandoffParseFailure | 'host-policy',
-    detail: string,
-    forceWorkflow: ZHandoffWorkflow,
-  ) {
+  constructor(reason: HandoffParseFailure | 'host-policy', detail: string, forceWorkflow: ZHandoffWorkflow) {
     super(`HandoffAbort(${forceWorkflow}): ${reason} — ${detail}`);
     this.name = 'HandoffAbortError';
     this.reason = reason;
@@ -263,10 +253,7 @@ function parseBool(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
-function deriveContext(
-  kind: HandoffKind,
-  fields: Record<string, string>,
-): HandoffContext {
+function deriveContext(kind: HandoffKind, fields: Record<string, string>): HandoffContext {
   // Kind-specific source URL resolution.
   let sourceIssueUrl: string | null;
   let parentEpicUrl: string | null;
@@ -281,9 +268,7 @@ function deriveContext(
   // Typed metadata (producer-authoritative, optional with conservative defaults).
   const tierRaw = fields['Tier']?.trim();
   const tier: HandoffTier | null =
-    tierRaw !== undefined && VALID_TIERS.has(tierRaw as HandoffTier)
-      ? (tierRaw as HandoffTier)
-      : null;
+    tierRaw !== undefined && VALID_TIERS.has(tierRaw as HandoffTier) ? (tierRaw as HandoffTier) : null;
 
   const escapeEligibleParsed = parseBool(fields['Escape Eligible']);
   const escapeEligible = escapeEligibleParsed === true;
