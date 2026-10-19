@@ -354,80 +354,64 @@ describe('FollowupQueue turn epoch (session turn generation, ssot.md:116-120)', 
 });
 
 /**
- * Bot-thread migration: the dispatch opened its generation under the SLOT key,
- * but the turn runs — and writes its surface — under the work-thread key. The
- * carry copies that one generation across; it never opens one of its own.
+ * End of a bot-thread migration: while bound, the host reads the SLOT's counter
+ * for the work-thread key; on release the work key's own counter is raised to
+ * it so its next generation opens above every one the slot handed out.
  */
-describe('FollowupQueue turn epoch carried across a bot-thread migration', () => {
-  const SLOT = SESSION;
+describe('FollowupQueue turn epoch floor (bot-thread migration release)', () => {
   const WORK = OTHER_SESSION;
 
-  it('gives the work-thread key the generation the slot dispatch owns, durably', () => {
+  it('raises the session to the floor durably, and the next turn opens above it', () => {
     const saved: FollowupQueueSnapshot[] = [];
     const queue = new FollowupQueue({ save: (snapshot) => saved.push(snapshot) });
-    const owned = queue.beginTurn(SLOT);
 
-    expect(queue.carryTurnEpoch(SLOT, WORK, owned)).toBe(owned);
+    expect(queue.raiseTurnEpochFloor(WORK, 2)).toBe(2);
 
-    expect(queue.getTurnEpoch(WORK)).toBe(owned);
+    expect(queue.getTurnEpoch(WORK)).toBe(2);
     const persisted = saved[saved.length - 1].sessions.find((session) => session.sessionKey === WORK);
-    expect(persisted).toMatchObject({ turnEpoch: owned, items: [] });
-    // Restart: the carried generation is part of the snapshot, like any beginTurn.
-    expect(new FollowupQueue({ snapshot: saved[saved.length - 1] }).getTurnEpoch(WORK)).toBe(owned);
+    expect(persisted).toMatchObject({ turnEpoch: 2, items: [] });
+    // Restart: the floor is part of the snapshot, like any beginTurn.
+    const restored = new FollowupQueue({ snapshot: saved[saved.length - 1] });
+    expect(restored.beginTurn(WORK)).toBe(3);
   });
 
-  it('makes the next turn on the work-thread key a NEW generation, not a second copy of the first', () => {
+  it('raises a session that already holds parked items, leaving the items alone', () => {
     const queue = new FollowupQueue();
-    const first = queue.beginTurn(SLOT);
-    queue.carryTurnEpoch(SLOT, WORK, first);
-
-    expect(queue.beginTurn(WORK)).toBe(first + 1);
-  });
-
-  it('raises a work-thread session that already holds parked items, leaving the items alone', () => {
-    const queue = new FollowupQueue();
-    const owned = queue.beginTurn(SLOT);
     const parked = queue.enqueue(WORK, event({ ts: '1.1' })); // a reply parked under the work key at turnEpoch 0
     if (parked.status !== 'queued') throw new Error('setup failed');
 
-    expect(queue.carryTurnEpoch(SLOT, WORK, owned)).toBe(owned);
+    expect(queue.raiseTurnEpochFloor(WORK, 1)).toBe(1);
     expect(queue.list(WORK)).toEqual([parked.item]);
-    expect(queue.list(SLOT)).toEqual([]);
   });
 
-  it('refuses when the slot has already moved past the caller generation — a superseded turn gains nothing', () => {
+  it('never lowers the generation, and writes nothing at or above the floor', () => {
     const saved: FollowupQueueSnapshot[] = [];
     const queue = new FollowupQueue({ save: (snapshot) => saved.push(snapshot) });
-    const superseded = queue.beginTurn(SLOT);
-    queue.beginTurn(SLOT); // `Send now` opened the next generation meanwhile
-    const writes = saved.length;
-
-    expect(queue.carryTurnEpoch(SLOT, WORK, superseded)).toBe(0);
-    expect(queue.getTurnEpoch(WORK)).toBe(0);
-    expect(saved).toHaveLength(writes);
-    expect(queue.snapshot().sessions.some((session) => session.sessionKey === WORK)).toBe(false);
-  });
-
-  it('never lowers the work-thread generation', () => {
-    const queue = new FollowupQueue();
     queue.beginTurn(WORK);
     queue.beginTurn(WORK);
     queue.beginTurn(WORK); // WORK at 3
-    const owned = queue.beginTurn(SLOT); // SLOT at 1
-
-    expect(queue.carryTurnEpoch(SLOT, WORK, owned)).toBe(3);
-    expect(queue.getTurnEpoch(WORK)).toBe(3);
-  });
-
-  it('is a no-write no-op when the work-thread key already carries that generation (re-bind)', () => {
-    const saved: FollowupQueueSnapshot[] = [];
-    const queue = new FollowupQueue({ save: (snapshot) => saved.push(snapshot) });
-    const owned = queue.beginTurn(SLOT);
-    queue.carryTurnEpoch(SLOT, WORK, owned);
     const writes = saved.length;
 
-    expect(queue.carryTurnEpoch(SLOT, WORK, owned)).toBe(owned);
+    expect(queue.raiseTurnEpochFloor(WORK, 1)).toBe(3);
+    expect(queue.raiseTurnEpochFloor(WORK, 3)).toBe(3);
+    expect(queue.getTurnEpoch(WORK)).toBe(3);
     expect(saved).toHaveLength(writes);
+  });
+
+  it('creates no session for a floor of 0', () => {
+    const queue = new FollowupQueue();
+
+    expect(queue.raiseTurnEpochFloor(WORK, 0)).toBe(0);
+    expect(queue.snapshot().sessions).toEqual([]);
+  });
+
+  it('refuses a floor that is not a non-negative integer instead of persisting it', () => {
+    const queue = new FollowupQueue();
+
+    expect(() => queue.raiseTurnEpochFloor(WORK, -1)).toThrow(/floor/);
+    expect(() => queue.raiseTurnEpochFloor(WORK, 1.5)).toThrow(/floor/);
+    expect(() => queue.raiseTurnEpochFloor(WORK, Number.NaN)).toThrow(/floor/);
+    expect(queue.snapshot().sessions).toEqual([]);
   });
 
   it('leaves committed memory untouched when persistence throws', () => {
@@ -437,12 +421,11 @@ describe('FollowupQueue turn epoch carried across a bot-thread migration', () =>
         if (failing) throw new Error('disk full');
       },
     });
-    const owned = queue.beginTurn(SLOT);
+    queue.beginTurn(WORK); // WORK at 1
     failing = true;
 
-    expect(() => queue.carryTurnEpoch(SLOT, WORK, owned)).toThrow('disk full');
-    expect(queue.getTurnEpoch(WORK)).toBe(0);
-    expect(queue.snapshot().sessions.some((session) => session.sessionKey === WORK)).toBe(false);
+    expect(() => queue.raiseTurnEpochFloor(WORK, 2)).toThrow('disk full');
+    expect(queue.getTurnEpoch(WORK)).toBe(1);
   });
 });
 
