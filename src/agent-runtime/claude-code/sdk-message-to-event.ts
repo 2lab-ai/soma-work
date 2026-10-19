@@ -39,9 +39,9 @@ import { readUuidList, STEER_SETTLEMENT_SUBTYPE } from '../steer-settlement';
 import type { AgentContent, AgentStopReason, AgentStreamEvent, AgentUsage } from '../stream-types';
 
 /**
- * Cost calculator dependency — mirrors
- * `streamProcessorProviders.calculateTokenCost`. Injected so the mapper is a
- * pure, deterministically-testable function with no cost-provider coupling.
+ * Cost calculator dependency (`calculateTokenCost`, injected by claude-handler)
+ * so the mapper is a pure, deterministically-testable function with no
+ * cost-provider coupling.
  */
 export type CalculateTokenCost = (
   model: string | undefined,
