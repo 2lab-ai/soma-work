@@ -58,6 +58,7 @@ import {
   broadcastWorkLog,
   getDashboardSessionUrl,
   initRecorder,
+  matchSlackUsersByEmail,
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
@@ -979,16 +980,7 @@ async function start() {
     // Connect OAuth: email → Slack user lookup for dashboard login
     {
       const { userSettingsStore } = await import('./user-settings-store');
-      setOAuthUserLookup((email: string) => {
-        const allUsers = userSettingsStore.getAllUsers();
-        const emailLower = email.toLowerCase();
-        for (const u of allUsers) {
-          if (u.email && u.email.toLowerCase() === emailLower) {
-            return { userId: u.userId, name: u.slackName || u.userId };
-          }
-        }
-        return null;
-      });
+      setOAuthUserLookup((email: string) => matchSlackUsersByEmail(userSettingsStore.getAllUsers(), email));
     }
 
     // Start conversation viewer web server (includes dashboard)

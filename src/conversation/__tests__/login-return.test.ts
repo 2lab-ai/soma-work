@@ -241,7 +241,7 @@ describe('login return (soma_next)', () => {
   });
 
   describe('OAuth and token logins land on soma_next', () => {
-    function stubOAuthFetch(userinfo: Record<string, string>): void {
+    function stubOAuthFetch(userinfo: Record<string, unknown>): void {
       vi.stubGlobal(
         'fetch',
         vi.fn(async (url: string) => ({
@@ -253,8 +253,10 @@ describe('login return (soma_next)', () => {
     it('Google callback redirects to the deep link', async () => {
       mockConfig.oauth.google = { clientId: 'gid', clientSecret: 'gsecret' };
       await web.startWebServer({ listen: false });
-      oauth.setOAuthUserLookup((email) => (email === 'g@x.com' ? { userId: 'U_G', name: 'G' } : null));
-      stubOAuthFetch({ email: 'g@x.com', name: 'G' });
+      oauth.setOAuthUserLookup((email) =>
+        email === 'g@x.com' ? { kind: 'match', userId: 'U_G', name: 'G' } : { kind: 'none' },
+      );
+      stubOAuthFetch({ email: 'g@x.com', name: 'G', verified_email: true });
 
       const state = 'abc:google';
       const res = await web.injectWebServer({
@@ -270,7 +272,9 @@ describe('login return (soma_next)', () => {
     it('Microsoft callback redirects to the deep link', async () => {
       mockConfig.oauth.microsoft = { clientId: 'mid', clientSecret: 'msecret' };
       await web.startWebServer({ listen: false });
-      oauth.setOAuthUserLookup((email) => (email === 'm@x.com' ? { userId: 'U_M', name: 'M' } : null));
+      oauth.setOAuthUserLookup((email) =>
+        email === 'm@x.com' ? { kind: 'match', userId: 'U_M', name: 'M' } : { kind: 'none' },
+      );
       stubOAuthFetch({ mail: 'm@x.com', displayName: 'M' });
 
       const state = 'abc:microsoft';
@@ -286,8 +290,8 @@ describe('login return (soma_next)', () => {
     it('Google callback without soma_next keeps the per-user landing', async () => {
       mockConfig.oauth.google = { clientId: 'gid', clientSecret: 'gsecret' };
       await web.startWebServer({ listen: false });
-      oauth.setOAuthUserLookup(() => ({ userId: 'U_G', name: 'G' }));
-      stubOAuthFetch({ email: 'g@x.com', name: 'G' });
+      oauth.setOAuthUserLookup(() => ({ kind: 'match', userId: 'U_G', name: 'G' }));
+      stubOAuthFetch({ email: 'g@x.com', name: 'G', verified_email: true });
 
       const state = 'abc:google';
       const res = await web.injectWebServer({
