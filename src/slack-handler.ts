@@ -63,9 +63,6 @@ import {
   ToolEventProcessor,
   ToolTracker,
 } from './slack';
-// Side effect only: this shim wires the `calculateTokenCost` provider into
-// @soma/slack/stream-processor. Without it the package default (cost 0) applies.
-import './slack/stream-processor';
 import {
   type CancelSteeredOutcome,
   CANCEL_STEERED_DELIVERED_TEXT as FOLLOWUP_CANCEL_ALREADY_DELIVERED_TEXT,

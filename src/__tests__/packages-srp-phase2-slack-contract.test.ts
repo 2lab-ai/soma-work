@@ -169,7 +169,6 @@ describe('packages-srp Phase 2 slack contract', () => {
       'source-thread-summary',
       'startup-notifier',
       'status-reporter',
-      'stream-processor',
       'summary-service',
       'summary-timer',
       'thread-panel',

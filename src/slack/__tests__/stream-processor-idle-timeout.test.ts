@@ -16,9 +16,13 @@
  * `aborted: true` — even if the underlying SDK never honors the abort.
  */
 
+import {
+  AgentStreamProcessor,
+  readIdleTimeoutMs,
+  type StreamCallbacks,
+  type StreamContext,
+} from '@soma/slack/stream-processor';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import { AgentStreamProcessor, readIdleTimeoutMs, type StreamCallbacks, type StreamContext } from '../stream-processor';
 
 const baseContext = (): StreamContext => ({
   channel: 'C1',
