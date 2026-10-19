@@ -3648,6 +3648,35 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
+     * The drain must come LAST in the seam: if cancelling the session's
+     * follow-ups throws (e.g. the queue store cannot save), the registry refuses
+     * the deletion and keeps the session alive — so its live background tasks
+     * must still be tracked.
+     */
+    it('keeps background-task tracking when the follow-up cancel refuses the deletion', async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const { spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
+      const tracker = spawnedAny.toolEventProcessor;
+      tracker.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'bg-live' },
+        SESSION_KEY,
+      );
+      const queue = spawnedAny.getFollowupQueue();
+      vi.spyOn(queue, 'list').mockReturnValue([{ state: 'queued' }]);
+      vi.spyOn(queue, 'cancelSession').mockImplementation(() => {
+        throw new Error('disk full');
+      });
+
+      expect(() => beforeDelete?.(SESSION_KEY, registrySession, 'expired')).toThrow('disk full');
+      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count, 'live tasks of a session that was NOT deleted').toBe(1);
+    });
+
+    /**
      * MF1 — a stop parks every pending row. `paused` and `queued` share a
      * surface (§2.1: `Send now` is the parked row's Resume), so what this pins
      * is that the stop does not strip the message of its controls.
