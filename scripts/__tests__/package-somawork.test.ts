@@ -204,7 +204,7 @@ function writeInstalledPackage(dir: string, name: string, version: string): void
  */
 function makeDependencyOverlay(
   root: string,
-  options: { nestedSomaLib?: boolean; omitRootSomaLib?: boolean } = {},
+  options: { nestedSomaLib?: boolean; omitRootSomaLib?: boolean; pruneRootSomaLibBuild?: boolean } = {},
 ): string {
   const modules = path.join(root, 'node_modules');
   fs.mkdirSync(path.join(modules, 'left-pad'), { recursive: true });
@@ -213,6 +213,8 @@ function makeDependencyOverlay(
   fs.mkdirSync(path.join(modules, '@soma'), { recursive: true });
   fs.symlinkSync('../../packages/common', path.join(modules, '@soma', 'common'));
   if (!options.omitRootSomaLib) writeInstalledPackage(path.join(modules, 'soma-lib'), 'soma-lib', '0.7.0');
+  // The manifest survives, the module does not (a prune that drops `dist/`).
+  if (options.pruneRootSomaLibBuild) fs.unlinkSync(path.join(modules, 'soma-lib', 'dist', 'index.js'));
 
   if (options.nestedSomaLib) {
     writeInstalledPackage(path.join(root, 'somalib', 'node_modules', 'soma-lib'), 'soma-lib', '0.5.0');
@@ -849,6 +851,26 @@ describe('root dependency trees the lockfile installs', () => {
       expect(run.status, output).not.toBe(0);
       expect(output).toMatch(
         /carries every production dependency tree its lockfile installs.*node_modules\/soma-lib\/package\.json/,
+      );
+    },
+    PACKAGING_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses an archive whose production package kept its package.json but lost its runtime entry',
+    () => {
+      const staged = makeStagedRuntime(path.join(scratch, 'staged-root-pruned'));
+      const run = runPackaging({
+        outDir: path.join(scratch, 'out-root-pruned'),
+        stagedRuntime: staged,
+        dependencyOverlay: makeDependencyOverlay(path.join(scratch, 'modules-root-pruned'), {
+          pruneRootSomaLibBuild: true,
+        }),
+      });
+      const output = `${run.stdout}${run.stderr}`;
+      expect(run.status, output).not.toBe(0);
+      expect(output).toMatch(
+        /FAIL .*every production dependency's declared runtime entry is present.*node_modules\/soma-lib\/dist\/index\.js/,
       );
     },
     PACKAGING_TIMEOUT_MS,
