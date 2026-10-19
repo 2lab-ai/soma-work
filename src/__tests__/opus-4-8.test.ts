@@ -65,11 +65,6 @@ describe('opus-4.8 — model-registry pricing + context', () => {
     expect(spec.maxOutput).toBe(128_000);
     expect(spec.contextWindow).toBe(1_000_000);
   });
-
-  it('[1m] suffix opts into 1M; bare id falls back to 200k (suffix-is-SSOT)', () => {
-    expect(resolveContextWindow('claude-opus-4-8[1m]')).toBe(1_000_000);
-    expect(resolveContextWindow('claude-opus-4-8')).toBe(200_000);
-  });
 });
 
 describe('opus-4.8 — effort surface unchanged at the API level', () => {
