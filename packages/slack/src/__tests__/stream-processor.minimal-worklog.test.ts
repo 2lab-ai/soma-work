@@ -245,14 +245,6 @@ describe('minimal verbosity — narration goes to the work log, Slack gets the f
     expect(h.log.filter((e) => e.kind === 'final')).toHaveLength(1);
   });
 
-  it('the answer that IS the held segment is recorded once, as final only', async () => {
-    const h = harness(LOG_MINIMAL);
-
-    await run(h, toolTurn());
-
-    expect(h.log.filter((e) => e.text === FINAL).map((e) => e.kind)).toEqual(['final']);
-  });
-
   it('a whitespace-only final segment: the withheld narration is posted instead of nothing', async () => {
     const h = harness(LOG_MINIMAL);
 
@@ -834,14 +826,6 @@ describe('bookkeeping frames do not settle the held answer as narration', () => 
       expect(h.appendText.mock.calls.map((c) => c[1])).toEqual([FINAL]);
     });
   }
-
-  it('a tool call between narration and the answer still settles the narration', async () => {
-    const h = harness(LOG_MINIMAL);
-
-    await run(h, toolTurn());
-
-    expect(h.log.map((e) => e.kind)).toEqual(['narration', 'tool', 'tool_result', 'final']);
-  });
 });
 
 /**

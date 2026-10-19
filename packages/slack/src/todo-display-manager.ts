@@ -212,10 +212,6 @@ export class TodoDisplayManager {
     }
   }
 
-  getTodoMessageTs(sessionKey: string): string | undefined {
-    return this.todoMessages.get(sessionKey);
-  }
-
   cleanup(sessionKey: string): void {
     this.todoMessages.delete(sessionKey);
     this.logger.debug('Cleaned up todo message tracking', { sessionKey });

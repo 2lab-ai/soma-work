@@ -39,7 +39,7 @@ describe('TurnFeedbackStore', () => {
     store.record({ ...base, sentiment: 'positive' });
     store.record({ ...base, sentiment: 'positive' });
 
-    expect(store.listForTurn(base.turnId)).toHaveLength(1);
+    expect(store.list()).toHaveLength(1);
   });
 
   it('upserts in place on a sentiment flip and bumps updatedAt', () => {
@@ -47,7 +47,7 @@ describe('TurnFeedbackStore', () => {
     const first = store.record({ ...base, sentiment: 'positive' });
     const flipped = store.record({ ...base, sentiment: 'negative' });
 
-    expect(store.listForTurn(base.turnId)).toHaveLength(1);
+    expect(store.list()).toHaveLength(1);
     expect(flipped.sentiment).toBe('negative');
     expect(flipped.createdAt).toBe(first.createdAt); // preserved
     expect(flipped.updatedAt).toBeGreaterThanOrEqual(first.updatedAt);
@@ -58,7 +58,7 @@ describe('TurnFeedbackStore', () => {
     store.record({ ...base, userId: 'U1', sentiment: 'positive' });
     store.record({ ...base, userId: 'U2', sentiment: 'negative' });
 
-    expect(store.listForTurn(base.turnId)).toHaveLength(2);
+    expect(store.list()).toHaveLength(2);
     expect(store.get(base.turnId, 'U1')?.sentiment).toBe('positive');
     expect(store.get(base.turnId, 'U2')?.sentiment).toBe('negative');
   });

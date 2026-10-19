@@ -45,10 +45,6 @@ export interface ZInvocation {
   remainder: string;
   /** Original text (DM body, app_mention text post bot-mention strip, or `/z` command.text). */
   rawText: string;
-  /** True if the message is a cut-off legacy naked command that should show tombstone. */
-  isLegacyNaked: boolean;
-  /** True if message is an allowed naked command (session/new/renew/$*). */
-  whitelistedNaked: boolean;
   userId: string;
   channelId: string;
   threadTs?: string;

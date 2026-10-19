@@ -114,11 +114,6 @@ export class TurnFeedbackStore {
     return this.byKey.get(compositeKey(turnId, userId));
   }
 
-  /** All feedback recorded for a turn (across users). */
-  listForTurn(turnId: string): TurnFeedbackRecord[] {
-    return Array.from(this.byKey.values()).filter((r) => r.turnId === turnId);
-  }
-
   /** Shallow snapshot for tests/diagnostics. */
   list(): TurnFeedbackRecord[] {
     return Array.from(this.byKey.values());

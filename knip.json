@@ -36,6 +36,14 @@
         "**/*.ts"
       ]
     },
+    "packages/slack": {
+      "entry": [
+        "src/**/*.ts"
+      ],
+      "project": [
+        "**/*.ts"
+      ]
+    },
     "packages/mcp-servers/*": {
       "entry": [
         "*.ts",

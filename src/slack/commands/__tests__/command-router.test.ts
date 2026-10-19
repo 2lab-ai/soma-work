@@ -5,9 +5,7 @@ import type { WorkLogInput } from '@soma/slack/work-log';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../user-settings-store', () => ({
-  userSettingsStore: {
-    markMigrationHintShown: vi.fn().mockResolvedValue(false),
-  },
+  userSettingsStore: {},
 }));
 
 vi.mock('../../../metrics', () => ({
@@ -52,7 +50,6 @@ vi.mock('../../../path-utils', async (importOriginal) => {
   };
 });
 
-import { userSettingsStore } from '../../../user-settings-store';
 import { BypassHandler } from '../bypass-handler';
 import { CommandRouter } from '../command-router';
 import { EffortHandler } from '../effort-handler';
@@ -441,12 +438,11 @@ describe('CommandRouter — effort/rate regression guard (already canonical)', (
 /**
  * Issue #530: retired / non-canonical bare forms must fall through as
  * `handled: false` — NO tombstone hint ("더 이상 사용되지 않습니다") is ever
- * emitted from the router, and `markMigrationHintShown` is not called.
+ * emitted from the router.
  */
 describe('CommandRouter — non-canonical bare input falls through (no tombstone #530)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(userSettingsStore.markMigrationHintShown).mockClear();
   });
 
   async function assertFallsThrough(text: string): Promise<void> {
@@ -465,9 +461,7 @@ describe('CommandRouter — non-canonical bare input falls through (no tombstone
 
     // 1. Handled must be false (no tombstone short-circuit).
     expect(result.handled).toBe(false);
-    // 2. markMigrationHintShown must NOT be called — the gate was removed.
-    expect(userSettingsStore.markMigrationHintShown).not.toHaveBeenCalled();
-    // 3. `say` must NOT emit the tombstone hint text.
+    // 2. `say` must NOT emit the tombstone hint text.
     for (const call of say.mock.calls) {
       const payload = call[0] as { text?: string };
       expect(payload?.text ?? '').not.toContain('더 이상 사용되지 않습니다');
@@ -552,7 +546,6 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
 
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(userSettingsStore.markMigrationHintShown).mockClear();
   });
 
   it('1. `new $z foo` → NewHandler runs AND SkillForce DEFERS <invoked_skills>', async () => {
@@ -1319,7 +1312,6 @@ describe('CommandRouter — `new <command>` remainder re-route (recursive)', () 
 describe('CommandRouter — handler throw must not fall through to session init', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(userSettingsStore.markMigrationHintShown).mockClear();
   });
 
   it('`goal` + GoalHandler.execute throws → handled:true + error notice posted', async () => {

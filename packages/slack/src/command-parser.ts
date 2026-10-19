@@ -606,7 +606,7 @@ export class CommandParser {
    *
    * `/z` refactor (#506): legacy `credentials` / `credentials status` aliases
    * are removed — only `restore` / `restore status` / `restore restore` forms
-   * are accepted (tombstone redirects legacy callers).
+   * are accepted; a removed alias falls through as an unhandled command.
    */
   static isRestoreCommand(text: string): boolean {
     return /^\/?restore(?:\s+(?:restore|status))?$/i.test(text.trim());
@@ -636,7 +636,7 @@ export class CommandParser {
    * Check if text is a help command.
    *
    * `/z` refactor (#506): legacy `commands` / `command` / `?` suffix aliases
-   * are removed — only `help` is accepted (tombstone redirects `commands`).
+   * are removed — only `help` is accepted.
    */
   static isHelpCommand(text: string): boolean {
     return /^\/?help$/i.test(text.trim());
@@ -1074,8 +1074,7 @@ export class CommandParser {
    * Check if text is a plugins command.
    *
    * `/z` refactor (#506): Korean alias `플러그인 업데이트` is removed — only
-   * the English `plugins <verb>` / `plugin <verb>` forms are accepted (the
-   * tombstone hint redirects `플러그인` callers to `/z plugin update`).
+   * the English `plugins <verb>` / `plugin <verb>` forms are accepted.
    */
   static isPluginsCommand(text: string): boolean {
     return /^\/?plugins?(?:\s+(?:add|remove|rollback|backups)\s+\S+|\s+update)?$/i.test(text.trim());
@@ -1241,7 +1240,7 @@ export class CommandParser {
   /**
    * Known command keywords (for `isPotentialCommand` hint detection).
    *
-   * `/z` refactor (#506) — removed aliases (all now tombstone-redirected):
+   * `/z` refactor (#506) — removed aliases (they fall through unhandled, #530):
    *  - `set_cct`, `nextcct` — underscore form
    *  - `servers` — use `mcp [list|reload]`
    *  - `credentials` — use `restore`
