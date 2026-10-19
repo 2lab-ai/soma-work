@@ -870,43 +870,49 @@ export class SlackHandler {
     }
 
     registry.setBeforeSessionDelete((sessionKey, session, reason) => {
+      // May throw (the queue store cannot save) — the registry then refuses
+      // the deletion and keeps the session.
+      this.cancelFollowupsOfDeletedSession(sessionKey, session, reason);
       // The background-task lifecycle tracker is process-wide and keyed by
       // session; this seam is the one teardown point both deletion paths share,
       // so it is where the session's live tasks and settled tombstones go.
+      // Drained LAST: a refused deletion leaves a live session, whose tasks must
+      // stay tracked.
       this.toolEventProcessor?.clearBackgroundResume(sessionKey);
-      const queue = this.followupQueue;
-      if (!queue) return;
-      const pending = queue
-        .list(sessionKey)
-        .filter((item) => !['resolved', 'failed', 'cancelled'].includes(item.state));
-      if (pending.length === 0) {
-        // Nothing to repaint, but the session is still gone — its `failed` rows
-        // (the ones the cancel never touches) would otherwise keep index
-        // entries for a session nothing can read any more. Detached: the
-        // registry callback is synchronous and the removals queue behind
-        // whatever paint holds each message.
-        void this.forgetFollowupReactionsForSession(sessionKey);
-        return;
-      }
-      queue.cancelSession(sessionKey, `세션이 종료되었습니다 (${reason})`);
-      // Captured BEFORE the cancel, because afterwards every row in the session
-      // reads `cancelled` and nothing says which ones this act moved. Without it
-      // the thread keeps a `ui_send_now` on every parked message, pointing at a
-      // session that no longer exists.
-      //
-      // A `failed` row is deliberately NOT in that list: the cancel does not
-      // move it either (`followup-queue.ts:826` skips the terminal states), so
-      // repainting it would say something the queue did not do.
-      //
-      // The index is dropped AFTER those repaints, never before: each paint
-      // needs its entry to know which reactions to take down, and dropping the
-      // session's entries first would leave every control standing.
-      void this.syncFollowupReactionsFor(pending).then(() => this.forgetFollowupReactionsForSession(sessionKey));
-      void this.renderFollowupFor(session, sessionKey).catch((error) => {
-        this.logger.warn('Follow-up cancellation render failed', {
-          sessionKey,
-          error: (error as Error)?.message ?? String(error),
-        });
+    });
+  }
+
+  private cancelFollowupsOfDeletedSession(sessionKey: string, session: ConversationSession, reason: string): void {
+    const queue = this.followupQueue;
+    if (!queue) return;
+    const pending = queue.list(sessionKey).filter((item) => !['resolved', 'failed', 'cancelled'].includes(item.state));
+    if (pending.length === 0) {
+      // Nothing to repaint, but the session is still gone — its `failed` rows
+      // (the ones the cancel never touches) would otherwise keep index
+      // entries for a session nothing can read any more. Detached: the
+      // registry callback is synchronous and the removals queue behind
+      // whatever paint holds each message.
+      void this.forgetFollowupReactionsForSession(sessionKey);
+      return;
+    }
+    queue.cancelSession(sessionKey, `세션이 종료되었습니다 (${reason})`);
+    // Captured BEFORE the cancel, because afterwards every row in the session
+    // reads `cancelled` and nothing says which ones this act moved. Without it
+    // the thread keeps a `ui_send_now` on every parked message, pointing at a
+    // session that no longer exists.
+    //
+    // A `failed` row is deliberately NOT in that list: the cancel does not
+    // move it either (`followup-queue.ts:826` skips the terminal states), so
+    // repainting it would say something the queue did not do.
+    //
+    // The index is dropped AFTER those repaints, never before: each paint
+    // needs its entry to know which reactions to take down, and dropping the
+    // session's entries first would leave every control standing.
+    void this.syncFollowupReactionsFor(pending).then(() => this.forgetFollowupReactionsForSession(sessionKey));
+    void this.renderFollowupFor(session, sessionKey).catch((error) => {
+      this.logger.warn('Follow-up cancellation render failed', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
       });
     });
   }
