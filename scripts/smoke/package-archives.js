@@ -831,7 +831,33 @@ function checkRuntimeDependencies(asset, root, layout) {
         .map((rel) => `${rel}/package.json`)
         .join(', '),
     );
+    // A manifest is not a module: a tree whose built files were pruned still
+    // has its package.json. Resolve the entry each manifest declares.
+    const brokenEntries = installs
+      .filter((rel) => fs.existsSync(path.join(root, rel, 'package.json')))
+      .map((rel) => missingDependencyEntry(path.join(root, rel), rel))
+      .filter((missing) => missing !== null);
+    check(
+      brokenEntries.length === 0,
+      `${asset}: every production dependency's declared runtime entry is present`,
+      brokenEntries.slice(0, 8).join(', '),
+    );
   }
+
+  // The entry check above cannot say which subpath the runtime loads (one
+  // surviving subpath satisfies it). Resolve what the shipped code actually
+  // requires, with Node's own resolver.
+  let unresolved;
+  try {
+    unresolved = unresolvedFirstPartyRequires(root);
+  } catch (error) {
+    unresolved = [`<scan failed: ${error && error.message ? error.message : String(error)}>`];
+  }
+  check(
+    unresolved.length === 0,
+    `${asset}: every dependency the shipped code requires resolves inside the archive`,
+    unresolved.slice(0, 8).join(', '),
+  );
 
   const workspaces = archiveWorkspaceEntries(root);
   check(workspaces.unsupported.length === 0, `${asset}: every workspace pattern is one this gate can expand`, workspaces.unsupported.join(', '));
@@ -886,6 +912,174 @@ function lockfileProductionInstalls(root) {
     })
     .sort();
 }
+
+/**
+ * Whether an installed dependency still carries the runtime files its manifest
+ * points at, resolved the way this CommonJS runtime loads it:
+ *
+ * 1. `exports` (Node prefers it over `main`): each subpath is resolved under
+ *    the `require` conditions (`require`, `node`, `default`, first match in
+ *    key order) — a surviving ESM build does not stand in for a pruned CJS
+ *    one. An ESM-only package (no require-resolvable target) is checked under
+ *    the `import` conditions instead. At least one resolved target must exist:
+ *    published packages do ship root targets that do not exist
+ *    (`@modelcontextprotocol/sdk` declares `./dist/cjs/index.js` and is only
+ *    imported by subpath), so requiring every target would refuse a correct
+ *    archive, while a tree whose built files were pruned has none.
+ *    `./package.json`, declaration and source-map targets are not code and do
+ *    not count. Targets must name the file exactly: Node applies no extension
+ *    or `index.js` lookup to `exports`. An `exports` with no code target
+ *    falls through to `main`.
+ * 2. `main` must resolve (require suffixes), else Node's fallback to the
+ *    package root `index.js`.
+ * 3. Neither: Node loads `index.js`, which must exist, unless the package is
+ *    types-only (declares `types`/`typings` and ships no `index.js`).
+ *
+ * Returns an archive-relative path that is missing (or an unreadable
+ * manifest), or null.
+ */
+function missingDependencyEntry(dir, rel) {
+  const manifest = readJson(path.join(dir, 'package.json'));
+  if (manifest === null) return `${rel}/package.json (unreadable)`;
+  const isFile = (file) => {
+    try {
+      return fs.statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  };
+  // `require` semantics for `main` and the implicit entry.
+  const resolves = (target) =>
+    ['', '.js', '.json', '.node', '/index.js', '/index.json', '/index.node'].some((suffix) =>
+      isFile(path.join(dir, target) + suffix),
+    );
+  const existsExactly = (target) => isFile(path.join(dir, target));
+  const display = (target) => path.posix.join(rel, target.replace(/^\.\//, ''));
+
+  const requireTargets = exportEntryTargets(manifest.exports, REQUIRE_CONDITIONS);
+  const codeTargets =
+    requireTargets.length > 0 ? requireTargets : exportEntryTargets(manifest.exports, IMPORT_CONDITIONS);
+  if (codeTargets.length > 0) return codeTargets.some(existsExactly) ? null : display(codeTargets[0]);
+  if (typeof manifest.main === 'string' && manifest.main.length > 0) {
+    return resolves(manifest.main) || resolves('index') ? null : display(manifest.main);
+  }
+  if (manifest.exports !== undefined && manifest.exports !== null) return null;
+  if (resolves('index')) return null;
+  const typesOnly = typeof manifest.types === 'string' || typeof manifest.typings === 'string';
+  return typesOnly ? null : display('index.js');
+}
+
+const NON_CODE_TARGET = /(?:^|\/)package\.json$|\.d\.[cm]?ts$|\.map$/;
+const REQUIRE_CONDITIONS = new Set(['require', 'node', 'default']);
+const IMPORT_CONDITIONS = new Set(['import', 'node', 'default']);
+
+/**
+ * The file each concrete (non-wildcard) subpath of an `exports` field resolves
+ * to under `conditions` — Node's rule: in a condition object the first key
+ * (in key order) that is an active condition and resolves wins; arrays are
+ * fallbacks. Non-code targets are dropped.
+ */
+function exportEntryTargets(exported, conditions) {
+  if (exported === undefined || exported === null) return [];
+  const resolve = (node) => {
+    if (typeof node === 'string') return node;
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        const hit = resolve(item);
+        if (hit !== null) return hit;
+      }
+      return null;
+    }
+    if (typeof node === 'object' && node !== null) {
+      for (const [key, child] of Object.entries(node)) {
+        if (!conditions.has(key)) continue;
+        const hit = resolve(child);
+        if (hit !== null) return hit;
+      }
+    }
+    return null;
+  };
+  const isSubpathMap =
+    typeof exported === 'object' && !Array.isArray(exported) && Object.keys(exported).some((k) => k.startsWith('.'));
+  const entries = isSubpathMap
+    ? Object.entries(exported)
+        .filter(([key]) => !key.includes('*'))
+        .map(([, value]) => value)
+    : [exported];
+  return entries
+    .map(resolve)
+    .filter((target) => typeof target === 'string' && !target.includes('*') && !NON_CODE_TARGET.test(target));
+}
+
+/**
+ * Every bare `require('<specifier>')` in the archive's first-party JavaScript
+ * (everything outside dependency trees), resolved from the requiring file's
+ * directory with Node's own resolver — `exports` conditions, `main`,
+ * extensions and `index.js` exactly as the runtime will. Relative paths,
+ * `node:` and builtin modules are not dependencies and are skipped; a
+ * non-literal `require(expr)` cannot be read and is not seen. A package the
+ * file's own workspace declares only in `devDependencies` is skipped too: the
+ * archive is installed with `--omit=dev` on purpose, and the staged
+ * `packages/test-utils` mock factories require `vitest` that way. A
+ * resolution that lands outside the archive root (an ancestor
+ * `node_modules`, a global folder) does not count as resolved.
+ *
+ * This is the check that knows which subpath the runtime loads: the
+ * per-package entry check passes `@modelcontextprotocol/sdk` while any one of
+ * its subpaths survives; this one fails when the subpath the code requires is
+ * gone.
+ *
+ * Returns `<file>: <specifier>` for every specifier that does not resolve.
+ */
+function unresolvedFirstPartyRequires(root) {
+  const missing = [];
+  const resolved = new Map();
+  const realRoot = fs.realpathSync(root);
+  const manifests = new Map();
+  // The nearest package.json at or above `dir`, inside the archive.
+  const nearestManifest = (dir) => {
+    if (manifests.has(dir)) return manifests.get(dir);
+    const own = readJson(path.join(dir, 'package.json'));
+    const parent = path.dirname(dir);
+    const found = own !== null ? own : dir === root || parent === dir ? null : nearestManifest(parent);
+    manifests.set(dir, found);
+    return found;
+  };
+  const devOnly = (manifest, name) =>
+    manifest !== null &&
+    Object.hasOwn(manifest.devDependencies || {}, name) &&
+    !['dependencies', 'optionalDependencies', 'peerDependencies'].some((field) =>
+      Object.hasOwn(manifest[field] || {}, name),
+    );
+  for (const { rel, dirent } of walk(root)) {
+    if (!dirent.isFile() || isDependencyPath(rel) || !/\.c?js$/.test(rel)) continue;
+    const source = fs.readFileSync(path.join(root, rel), 'utf8');
+    const fromDir = path.join(root, path.dirname(rel));
+    for (const match of source.matchAll(REQUIRE_CALL_RE)) {
+      const specifier = match[2];
+      if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:')) continue;
+      if (BUILTIN_MODULES.has(specifier)) continue;
+      const name = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0];
+      if (devOnly(nearestManifest(fromDir), name)) continue;
+      const key = `${fromDir}\0${specifier}`;
+      if (!resolved.has(key)) {
+        let ok = true;
+        try {
+          const target = fs.realpathSync(require.resolve(specifier, { paths: [fromDir] }));
+          ok = target === realRoot || target.startsWith(realRoot + path.sep);
+        } catch {
+          ok = false;
+        }
+        resolved.set(key, ok);
+      }
+      if (!resolved.get(key)) missing.push(`${rel}: ${specifier}`);
+    }
+  }
+  return missing;
+}
+
+const REQUIRE_CALL_RE = /\brequire\(\s*(['"])([^'"\n]+)\1\s*\)/g;
+const BUILTIN_MODULES = new Set(require('node:module').builtinModules);
 
 /**
  * The subset of {@link lockfileProductionInstalls} that lives inside a
@@ -1117,6 +1311,8 @@ module.exports = {
   archiveWorkspaceEntries,
   lockfileProductionInstalls,
   lockfileWorkspaceNestedInstalls,
+  missingDependencyEntry,
+  unresolvedFirstPartyRequires,
   isNativeExecutable,
   walk,
 };

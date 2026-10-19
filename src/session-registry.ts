@@ -1666,6 +1666,9 @@ export class SessionRegistry {
             });
             continue;
           }
+          // As in terminateSession: in-flight callbacks holding this object
+          // fence on the flag, and onExpiry below awaits before the delete.
+          session.terminated = true;
           if (this.expiryCallbacks) {
             try {
               await this.expiryCallbacks.onExpiry(session);
@@ -1695,6 +1698,11 @@ export class SessionRegistry {
         session.sleepStartedAt = new Date();
         this.cleanupSourceWorkingDirs(session);
         slept++;
+
+        // Metrics: this sweep is the only live sleep path (fire-and-forget).
+        getMetricsEmitter()
+          .emitSessionSlept(session)
+          .catch((err) => this.logger.debug('metrics emit failed', err));
 
         if (this.expiryCallbacks) {
           try {

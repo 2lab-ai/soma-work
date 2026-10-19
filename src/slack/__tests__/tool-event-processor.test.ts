@@ -112,6 +112,21 @@ describe('ToolEventProcessor', () => {
       expect(processor.getLiveBackgroundWork('C123:thread_ts').count).toBe(0);
     });
 
+    // Session delete drains this tracker; a spawn-ack processed afterwards (a
+    // later result of the same batch, after an await) must not re-add under a
+    // key a new session in the thread reuses. The fence sits at the mutation.
+    it('does not add a spawn-ack for a session that was terminated mid-batch', async () => {
+      let terminated = false;
+      const ctx: ToolEventContext = { ...mockContext, turnId: 'turn-1', isSessionTerminated: () => terminated };
+      await processor.handleToolUse(
+        [{ id: 'bg', name: 'Bash', input: { command: 'sleep 999', run_in_background: true } }],
+        ctx,
+      );
+      terminated = true; // deleted while an earlier result of the batch awaited
+      await processor.handleToolResult([{ toolUseId: 'bg', toolName: 'Bash', result: ackResult('bg-shell-9') }], ctx);
+      expect(processor.getLiveBackgroundWork('C123:thread_ts').count).toBe(0);
+    });
+
     it('returns an empty snapshot for an unknown session', () => {
       expect(processor.getLiveBackgroundWork('nope')).toEqual({ count: 0, labels: [], signature: '' });
       expect(processor.getLiveBackgroundWork()).toEqual({ count: 0, labels: [], signature: '' });
