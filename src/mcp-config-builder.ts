@@ -25,7 +25,6 @@ import type { McpManager } from './mcp-manager';
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
 import {
   getPermissionGatedServers,
-  getRequiredLevel,
   levelSatisfies,
   loadMcpToolPermissions,
   type McpToolPermissionConfig,
@@ -33,19 +32,6 @@ import {
 } from './mcp-tool-permission-config';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import { userSettingsStore } from './user-settings-store';
-
-const PERMISSION_SERVER_BASENAME = 'permission-mcp-server';
-const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
-const SLACK_MCP_SERVER_BASENAME = 'slack-mcp-server';
-const SERVER_TOOLS_BASENAME = 'server-tools-mcp-server';
-const CRON_SERVER_BASENAME = 'cron-mcp-server';
-const MCP_TOOL_PERMISSION_SERVER_BASENAME = 'mcp-tool-permission-mcp-server';
-const AGENT_SERVER_BASENAME = 'agent-mcp-server';
-
-/** Root of the project (one level up from src/) */
-const PROJECT_ROOT = path.resolve(__dirname, '..');
-/** Directory containing extracted MCP servers */
-const MCP_SERVERS_DIR = path.join(PROJECT_ROOT, 'packages', 'mcp-servers');
 
 /** Native SDK tools that require terminal interaction — disallowed in Slack context */
 const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
@@ -55,51 +41,6 @@ const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
  * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 1
  */
 const NATIVE_CRON_TOOLS = ['CronCreate', 'CronDelete', 'CronList'];
-
-export interface PermissionServerPathResult {
-  resolvedPath: string | null;
-  fallbackUsed: boolean;
-  triedPaths: string[];
-}
-
-export function resolveInternalMcpServer(
-  baseDir: string,
-  basename: string,
-  runtimeExt: '.ts' | '.js',
-  existsSync: (path: string) => boolean = fs.existsSync,
-): PermissionServerPathResult {
-  const basePath = path.join(baseDir, basename);
-  const preferredPath = `${basePath}${runtimeExt}`;
-  const fallbackExt = runtimeExt === '.ts' ? '.js' : '.ts';
-  const fallbackPath = `${basePath}${fallbackExt}`;
-  const triedPaths = [preferredPath, fallbackPath];
-
-  if (existsSync(preferredPath)) {
-    return { resolvedPath: preferredPath, fallbackUsed: false, triedPaths };
-  }
-
-  if (existsSync(fallbackPath)) {
-    return { resolvedPath: fallbackPath, fallbackUsed: true, triedPaths };
-  }
-
-  return { resolvedPath: null, fallbackUsed: false, triedPaths };
-}
-
-export function resolvePermissionServerPath(
-  baseDir: string,
-  runtimeExt: '.ts' | '.js',
-  existsSync: (path: string) => boolean = fs.existsSync,
-): PermissionServerPathResult {
-  return resolveInternalMcpServer(baseDir, PERMISSION_SERVER_BASENAME, runtimeExt, existsSync);
-}
-
-export function resolveModelCommandServerPath(
-  baseDir: string,
-  runtimeExt: '.ts' | '.js',
-  existsSync: (path: string) => boolean = fs.existsSync,
-): PermissionServerPathResult {
-  return resolveInternalMcpServer(baseDir, MODEL_COMMAND_SERVER_BASENAME, runtimeExt, existsSync);
-}
 
 /** True when the bot was mentioned inside an existing thread (not at the root). */
 export function isMidThreadMention(ctx?: { mentionTs?: string; threadTs?: string } | null): boolean {
@@ -416,87 +357,6 @@ export class McpConfigBuilder {
   }
 
   /**
-   * Resolve and cache an internal MCP server path with logging.
-   * Deduplicates the resolve/log/throw pattern used by all internal servers.
-   */
-  private resolveServerPath(
-    label: string,
-    basename: string,
-    serverDir: string,
-    cache: { path: string | null; checked: boolean; triedPaths: string[] },
-  ): string {
-    if (!cache.checked) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      const result = resolveInternalMcpServer(serverDir, basename, runtimeExt);
-      cache.checked = true;
-      cache.path = result.resolvedPath;
-      cache.triedPaths = result.triedPaths;
-
-      if (!result.resolvedPath) {
-        this.logger.error(`${label} MCP server file not found`, {
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      } else if (result.fallbackUsed) {
-        this.logger.warn(`${label} MCP server path fallback used`, {
-          resolvedPath: result.resolvedPath,
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      }
-    }
-
-    if (!cache.path) {
-      throw new Error(`${label} MCP server file not found. Tried: ${cache.triedPaths.join(', ')}`);
-    }
-
-    return cache.path;
-  }
-
-  /** Registry of server path caches — replaces 5 individual cache fields */
-  private serverPathRegistry = new Map<string, { path: string | null; checked: boolean; triedPaths: string[] }>();
-
-  /**
-   * Resolve an internal MCP server path with caching.
-   * Single entry point for all server path lookups.
-   */
-  private getServerPath(label: string, basename: string, subdir: string): string {
-    if (!this.serverPathRegistry.has(basename)) {
-      this.serverPathRegistry.set(basename, {
-        path: null,
-        checked: false,
-        triedPaths: [],
-      });
-    }
-    return this.resolveServerPath(
-      label,
-      basename,
-      path.join(MCP_SERVERS_DIR, subdir),
-      this.serverPathRegistry.get(basename)!,
-    );
-  }
-
-  private getPermissionServerPath(): string {
-    return this.getServerPath('Permission', PERMISSION_SERVER_BASENAME, 'permission');
-  }
-
-  private getModelCommandServerPath(): string {
-    return this.getServerPath('Model-command', MODEL_COMMAND_SERVER_BASENAME, 'model-command');
-  }
-
-  private getSlackMcpServerPath(): string {
-    return this.getServerPath('Slack-mcp', SLACK_MCP_SERVER_BASENAME, 'slack-mcp');
-  }
-
-  private getServerToolsServerPath(): string {
-    return this.getServerPath('Server-tools', SERVER_TOOLS_BASENAME, 'server-tools');
-  }
-
-  private getCronServerPath(): string {
-    return this.getServerPath('Cron', CRON_SERVER_BASENAME, 'cron');
-  }
-
-  /**
    * Build slack-mcp server configuration (thread context + file upload)
    */
   private buildSlackMcpServer(slackContext: SlackContext): Record<string, any> {
@@ -556,10 +416,6 @@ export class McpConfigBuilder {
         SOMA_AGENT_CONFIGS: JSON.stringify(safeConfigs),
       },
     };
-  }
-
-  private getAgentServerPath(): string {
-    return this.getServerPath('Agent', AGENT_SERVER_BASENAME, 'agent');
   }
 
   /**
@@ -773,10 +629,6 @@ export class McpConfigBuilder {
         SOMA_CONFIG_FILE: CONFIG_FILE,
       },
     };
-  }
-
-  private getMcpToolPermissionServerPath(): string {
-    return this.getServerPath('Mcp-tool-permission', MCP_TOOL_PERMISSION_SERVER_BASENAME, 'mcp-tool-permission');
   }
 
   /**
