@@ -2,8 +2,6 @@ import { getVerbosityFlags, getVerbosityName, LOG_DETAIL, VERBOSITY_NAMES } from
 import { resolveContextWindow } from '../../metrics/model-registry';
 import {
   DEFAULT_EFFORT,
-  DEFAULT_SHOW_THINKING,
-  DEFAULT_THINKING_ENABLED,
   EFFORT_LEVELS,
   MODEL_ALIASES,
   type ModelId,
@@ -35,7 +33,7 @@ export class SessionCommandHandler implements CommandHandler {
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const { user, channel, threadTs, say } = ctx;
+    const { channel, threadTs, say } = ctx;
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
 
     // Emit deprecation notice if the user still uses the legacy `$` prefix.

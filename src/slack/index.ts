@@ -23,7 +23,6 @@ export { SessionUiManager } from './session-manager';
 export { SlackApiHelper } from './slack-api-helper';
 export { StatusReporter } from './status-reporter';
 // Phase 4: Stream and tool processing
-export { AgentStreamProcessor } from './stream-processor';
 export { ThreadPanel } from './thread-panel';
 export { TodoDisplayManager } from './todo-display-manager';
 export { ToolEventProcessor } from './tool-event-processor';
