@@ -102,7 +102,7 @@ addition (replacement next to redundant watchdog).
 - `packages/slack/src/pipeline/index.ts`: drop the
   `{ DEFAULT_STALL_TIMEOUT_MS, readStallTimeoutMs, STALL_TIMEOUT_ENV_VAR,
   StreamStallWatchdog }` re-export.
-- `packages/slack/src/index.ts`: drop the same re-export.
+- ~~`packages/slack/src/index.ts`: drop the same re-export.~~ (the barrel was deleted — nothing imported it)
 - `packages/slack/package.json`: drop `./pipeline/stream-stall-watchdog`
   from `exports` and from `typesVersions[*]`.
 - `src/__tests__/packages-srp-phase2-slack-contract.test.ts`: drop

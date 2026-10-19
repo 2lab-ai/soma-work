@@ -2,10 +2,7 @@
   "name": "@soma/slack",
   "version": "1.0.0",
   "private": true,
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js",
     "./action-panel-builder": "./dist/action-panel-builder.js",
     "./actions": "./dist/actions/index.js",
     "./actions/click-classifier": "./dist/actions/click-classifier.js",

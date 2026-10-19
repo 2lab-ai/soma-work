@@ -670,6 +670,23 @@ function expectedWorkspaceManifests() {
 // ---------------------------------------------------------------------------
 
 /**
+ * The entry points a workspace manifest declares: `main`, else `exports['.']`,
+ * else — for a subpath-only package such as `@soma/slack`, which has no root
+ * entry — every concrete (non-wildcard) `exports` target. `somalib` declares
+ * none of these and contributes nothing.
+ */
+function declaredEntryPoints(manifest) {
+  if (typeof manifest.main === 'string') return [manifest.main];
+  const exported = manifest.exports;
+  if (typeof exported === 'string') return [exported];
+  if (exported === null || typeof exported !== 'object') return [];
+  if (typeof exported['.'] === 'string') return [exported['.']];
+  return Object.entries(exported)
+    .filter(([key, target]) => !key.includes('*') && typeof target === 'string')
+    .map(([, target]) => target);
+}
+
+/**
  * Everything that can be decided by looking at the staged tree.
  *
  * Returns the list of problems rather than reporting them, so a mutation
@@ -786,24 +803,23 @@ function inventoryProblems(root) {
       problems.push(`missing staged workspace manifest: ${rel}`);
       continue;
     }
-    // Require the entry point the manifest itself declares, rather than "a
-    // non-empty dist". `somalib` is compiled in place and declares no `main`,
-    // so a blanket dist rule would fail a correct bundle; a package that DOES
-    // declare an entry must have that exact file staged, which is stricter
-    // than a directory being non-empty.
-    let entry = null;
+    // Require the entry points the manifest itself declares, rather than "a
+    // non-empty dist". `somalib` is compiled in place and declares none, so a
+    // blanket dist rule would fail a correct bundle; a package that DOES
+    // declare one must have that exact file staged, which is stricter than a
+    // directory being non-empty.
+    let entries;
     try {
-      const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-      const exported = manifest.exports && manifest.exports['.'];
-      entry = typeof manifest.main === 'string' ? manifest.main : typeof exported === 'string' ? exported : null;
+      entries = declaredEntryPoints(JSON.parse(fs.readFileSync(manifestFile, 'utf8')));
     } catch {
       problems.push(`staged workspace manifest is not valid JSON: ${rel}`);
       continue;
     }
-    if (entry === null) continue;
-    const entryStat = lstatOrNull(path.join(root, path.dirname(rel), entry));
-    if (entryStat === null || !entryStat.isFile()) {
-      problems.push(`staged workspace package is missing its declared entry point: ${path.dirname(rel)}/${entry.replace(/^\.\//, '')}`);
+    for (const entry of entries) {
+      const entryStat = lstatOrNull(path.join(root, path.dirname(rel), entry));
+      if (entryStat === null || !entryStat.isFile()) {
+        problems.push(`staged workspace package is missing its declared entry point: ${path.dirname(rel)}/${entry.replace(/^\.\//, '')}`);
+      }
     }
   }
 
