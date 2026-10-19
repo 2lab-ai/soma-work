@@ -31,10 +31,6 @@ export interface CronModelConfig {
   type: 'default' | 'opus' | 'fable' | 'fast' | 'custom';
   /** Model identifier for custom type (e.g. "claude-sonnet-4-20250514") */
   model?: string;
-  /** Reasoning effort for custom type */
-  reasoningEffort?: 'low' | 'medium' | 'high';
-  /** Fast mode for custom type */
-  fastMode?: boolean;
 }
 
 export interface CronJob {

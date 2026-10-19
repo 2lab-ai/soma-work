@@ -1811,7 +1811,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onUsageUpdate: async (usage: UsageData) => {
-          this.updateSessionUsage(session, usage, turnId);
+          this.updateSessionUsage(session, sessionKey, usage, turnId);
 
           // Update context window emoji
           if (session.usage && isOutputEnabled(OutputFlag.CONTEXT_EMOJI)) {
@@ -4766,7 +4766,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     return session.usage;
   }
 
-  private updateSessionUsage(session: ConversationSession, usage: UsageData, turnId?: string): void {
+  private updateSessionUsage(
+    session: ConversationSession,
+    sessionKey: string,
+    usage: UsageData,
+    turnId?: string,
+  ): void {
     this.ensureSessionUsage(session);
 
     // Update model name on session (useful for display)
@@ -4905,17 +4910,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
 
     // Emit token_usage event for persistent tracking (fire-and-forget)
-    this.emitTokenUsageEvent(session, usage);
+    this.emitTokenUsageEvent(session, sessionKey, usage);
   }
 
   /**
    * Emit token_usage metrics event for persistent JSONL tracking.
    * Fire-and-forget — errors are logged but never block the caller.
+   *
+   * `sessionKey` is the session-registry key from `execute()` params — the
+   * same key every other metrics event carries. (This package cannot import
+   * the app's `buildWorkSessionKey`, so the key is threaded in, not rebuilt.)
    */
-  private emitTokenUsageEvent(session: ConversationSession, usage: UsageData): void {
+  private emitTokenUsageEvent(session: ConversationSession, sessionKey: string, usage: UsageData): void {
     try {
       const emitter = getMetricsEmitter();
-      const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
       // Must come from StreamProcessor where the cost was actually determined.
       // Re-deriving from `usage.totalCostUsd > 0` flips the label for any
       // calculated non-zero cost (which the SDK did not actually report).

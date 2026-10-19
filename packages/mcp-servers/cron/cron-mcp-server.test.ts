@@ -16,10 +16,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Mock the MCP SDK so importing the module under test does not pull in real
 // stdio plumbing. The `if (require.main === module)` guard already prevents
 // auto-start, but the imports themselves still need to resolve.
+const mcpHandlers = vi.hoisted(() => new Map<string, (request?: any) => Promise<any>>());
+
 vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
   Server: class MockServer {
     constructor(_info: any, _opts?: any) {}
-    setRequestHandler(_schema: any, _handler: any) {}
+    setRequestHandler(schema: any, handler: any) {
+      mcpHandlers.set(schema, handler);
+    }
     connect() {}
   },
 }));
@@ -43,7 +47,7 @@ vi.mock('@soma/process-shared/stderr-logger.js', () => ({
 }));
 
 import { CronStorage } from '@soma/process-shared/cron/cron-storage';
-import { handleCreate } from './cron-mcp-server';
+import { getCronServer, handleCreate } from './cron-mcp-server';
 
 const baseContext = { user: 'U_TEST', channel: 'C_DEFAULT' };
 
@@ -311,6 +315,28 @@ describe('handleCreate', () => {
         channel: 'C100',
         model_type: 'custom',
         model_name: 'claude-sonnet-4-20250514',
+      },
+      baseContext,
+      storage,
+    );
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(' | model: custom(claude-sonnet-4-20250514)');
+    const job = storage.getAll().find((j) => j.name === 'custom-model');
+    expect(job?.modelConfig).toEqual({ type: 'custom', model: 'claude-sonnet-4-20250514' });
+  });
+
+  it('stores no reasoning_effort / fast_mode even when a caller still sends them', () => {
+    // Nothing on the fire path reads them (resolveModelOverride returns a
+    // model id only), so persisting them would record a setting that never
+    // takes effect.
+    const r = handleCreate(
+      {
+        name: 'custom-legacy-args',
+        expression: '* * * * *',
+        prompt: 'hi',
+        channel: 'C100',
+        model_type: 'custom',
+        model_name: 'claude-sonnet-4-20250514',
         reasoning_effort: 'high',
         fast_mode: true,
       },
@@ -318,7 +344,8 @@ describe('handleCreate', () => {
       storage,
     );
     expect(r.isError).toBe(false);
-    expect(r.text).toContain(' | model: custom(claude-sonnet-4-20250514)');
+    const job = storage.getAll().find((j) => j.name === 'custom-legacy-args');
+    expect(job?.modelConfig).toEqual({ type: 'custom', model: 'claude-sonnet-4-20250514' });
   });
 
   it('creates job with model_type=default (no modelStr)', () => {
@@ -669,5 +696,28 @@ describe('handleDelete admin scoping', () => {
     expect(r.text).toContain('ambiguous');
     expect(storage.getJobsByOwner('U_OWNER')).toHaveLength(1);
     expect(storage.getJobsByOwner('U_ADMIN')).toHaveLength(1);
+  });
+});
+
+describe('advertised tool schema', () => {
+  // The schema is what the model reads to decide which arguments exist. It
+  // must not offer a setting the scheduler never applies: cron dispatch has a
+  // per-event model override (`SyntheticMessageEvent.modelOverride`) but no
+  // effort or fast-mode channel, so `reasoning_effort` / `fast_mode` were
+  // accepted, stored, and silently ignored.
+  async function toolSchemas(): Promise<Map<string, Record<string, unknown>>> {
+    getCronServer();
+    const list = mcpHandlers.get('ListToolsRequestSchema');
+    if (!list) throw new Error('ListTools handler was not registered');
+    const { tools } = await list();
+    return new Map(tools.map((t: any) => [t.name, t.inputSchema.properties]));
+  }
+
+  it.each(['cron_create', 'cron_update'])('%s offers no reasoning_effort / fast_mode', async (tool) => {
+    const props = (await toolSchemas()).get(tool);
+    expect(props).toBeDefined();
+    expect(Object.keys(props!)).toEqual(expect.arrayContaining(['model_type', 'model_name']));
+    expect(props).not.toHaveProperty('reasoning_effort');
+    expect(props).not.toHaveProperty('fast_mode');
   });
 });
