@@ -409,7 +409,6 @@ export {
   type BuildPlanTasksOptions,
   type SessionTheme as TaskListSessionTheme,
   TaskListBlockBuilder,
-  type TaskListBuildOptions,
   type Todo,
   type TodoStatusReader,
 } from './task-list-block-builder';
