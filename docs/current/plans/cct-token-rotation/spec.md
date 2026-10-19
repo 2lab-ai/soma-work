@@ -190,9 +190,10 @@ post-image.
 
 ### Locking
 
-`cct-store.lock` is the **only** cross-process lock. `CctStore.withLock(fn)`
-is a bounded spin on `O_EXCL` with a hand-off file. The TokenManager
-uses it for every mutation. Refresh and usage-fetch dedupe use
+`cct-store.lock` is the **only** cross-process lock. `CctStore.save()` takes
+it (`proper-lockfile`) around each revision-CAS write, and the TokenManager
+makes every mutation through `CctStore.mutate()`, which retries on CAS
+conflict. Refresh and usage-fetch dedupe use
 **in-process** `Map<keyId, Promise<…>>` only; HTTP calls happen outside
 the store lock so we never hold the lock across the network. Lock
 ordering is strict: caller → store lock → done.

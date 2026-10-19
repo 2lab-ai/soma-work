@@ -83,18 +83,6 @@ export interface ArchivedSession {
 }
 
 /**
- * Filter options for listing archived sessions.
- */
-export interface ArchiveFilter {
-  ownerId?: string;
-  model?: string;
-  after?: number; // Unix ms — archivedAt >= after
-  before?: number; // Unix ms — archivedAt <= before
-  workflow?: string;
-  limit?: number;
-}
-
-/**
  * Sanitize a session key for use as a filename.
  * Replaces characters unsafe for filenames with hyphens.
  */
@@ -233,22 +221,6 @@ export class SessionArchiveStore {
   }
 
   /**
-   * Load a single archived session by session key.
-   * Returns null if not found or corrupt.
-   */
-  load(sessionKey: string): ArchivedSession | null {
-    try {
-      const filePath = this.findLatestArchive(sessionKey);
-      if (!filePath) return null;
-      const data = fs.readFileSync(filePath, 'utf-8');
-      return JSON.parse(data) as ArchivedSession;
-    } catch (err) {
-      logger.error(`Failed to load archive for ${sessionKey}`, err);
-      return null;
-    }
-  }
-
-  /**
    * List archived sessions within a recent time window.
    * Optimized: uses file mtime for pre-filtering to avoid parsing old files.
    *
@@ -257,31 +229,6 @@ export class SessionArchiveStore {
   listRecent(maxAgeMs: number): ArchivedSession[] {
     const cutoff = Date.now() - maxAgeMs;
     return this.listWithFilter((archived) => archived.archivedAt >= cutoff, cutoff);
-  }
-
-  /**
-   * List all archived sessions with optional filter.
-   * Used by CLI (Scenario 4).
-   */
-  list(filter?: ArchiveFilter): ArchivedSession[] {
-    const mtimeCutoff = filter?.after ? filter.after : undefined;
-    const results = this.listWithFilter((archived) => {
-      if (filter?.ownerId && archived.ownerId !== filter.ownerId) return false;
-      if (filter?.model && archived.model !== filter.model) return false;
-      if (filter?.after && archived.archivedAt < filter.after) return false;
-      if (filter?.before && archived.archivedAt > filter.before) return false;
-      if (filter?.workflow && archived.workflow !== filter.workflow) return false;
-      return true;
-    }, mtimeCutoff);
-
-    // Sort by archivedAt desc (newest first)
-    results.sort((a, b) => b.archivedAt - a.archivedAt);
-
-    // Apply limit
-    if (filter?.limit && results.length > filter.limit) {
-      return results.slice(0, filter.limit);
-    }
-    return results;
   }
 
   /**
