@@ -7,7 +7,7 @@ import { UserChoiceHandler } from '../user-choice-handler';
 import type { ChoiceActionHandler } from './choice-action-handler';
 import { classifyClick, markClickAsStale } from './click-classifier';
 import type { PendingFormStore } from './pending-form-store';
-import { type MessageHandler, PendingChoiceFormData, type SayFn } from './types';
+import type { MessageHandler, SayFn } from './types';
 
 interface FormActionContext {
   slackApi: SlackApiHelper;
