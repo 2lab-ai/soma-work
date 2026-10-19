@@ -441,6 +441,79 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
   });
 });
 
+// Spec 10 §3.2 — a failed model-command call is an internal tool error the
+// model retries: at `minimal` it is this turn's work-log `error`, never a
+// Slack post. Unit cases per branch live in src/slack/pipeline/__tests__/
+// stream-executor.test.ts; this pins the binding end to end.
+describe('StreamExecutor — a failed model-command call at minimal (spec 10 §3.2)', () => {
+  const COMMAND_ERROR = 'UPDATE_SESSION requires operations or title';
+  const ERROR_TEXT = `❌ MCP UPDATE_SESSION 실패: INVALID_ARGS — ${COMMAND_ERROR}`;
+
+  function failedCommandTurn(): () => AsyncGenerator<unknown> {
+    const body = {
+      type: 'model_command_result',
+      commandId: 'UPDATE_SESSION',
+      ok: false,
+      error: { code: 'INVALID_ARGS', message: COMMAND_ERROR },
+    };
+    return () =>
+      (async function* () {
+        yield {
+          type: 'tool_call',
+          toolCallId: 'tu_cmd',
+          name: 'mcp__model-command__run',
+          input: { commandId: 'UPDATE_SESSION', params: {} },
+        };
+        yield { type: 'tool_result', toolCallId: 'tu_cmd', content: [{ type: 'text', text: JSON.stringify(body) }] };
+        yield { type: 'assistant_delta', text: FINAL };
+        yield { type: 'result', stopReason: 'end_turn', finalText: FINAL };
+      })();
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // The harness default parser returns null; read the body the tool returned.
+    setStreamExecutorProviders({
+      parseModelCommandRunResponse: (raw: unknown) => {
+        const text = Array.isArray(raw) ? (raw[0] as { text?: unknown } | undefined)?.text : undefined;
+        return typeof text === 'string' ? JSON.parse(text) : null;
+      },
+    });
+  });
+
+  afterEach(() => {
+    // `setStreamExecutorProviders` merges: put the harness default back explicitly.
+    setStreamExecutorProviders({ parseModelCommandRunResponse: () => null });
+    vi.restoreAllMocks();
+  });
+
+  it('minimal: the error is this turn’s work-log entry; the thread gets no MCP notice', async () => {
+    const deps = createDeps(failedCommandTurn());
+    // Production names the tool inside handleToolResult (tool-event-processor).
+    deps.toolEventProcessor.handleToolResult.mockImplementation(async (results: Array<{ toolName?: string }>) => {
+      for (const result of results) result.toolName = 'mcp__model-command__run';
+    });
+    const params = createParams(createSession(LOG_MINIMAL));
+
+    const result = await new StreamExecutor(deps).execute(params);
+    await settle();
+
+    expect(result.success).toBe(true);
+    const posted = params.say.mock.calls.map((call: Array<{ text?: string }>) => call[0]?.text ?? '');
+    expect(posted.filter((text: string) => text.includes('MCP'))).toEqual([]);
+    expect(deps.threadPanel.appendText.mock.calls.map((call: unknown[]) => call[1])).toEqual([FINAL]);
+
+    const turnId = appendWorkLog.mock.calls[0]?.[1].turnId;
+    expect(loggedKinds()).toEqual(['instruction', 'tool', 'tool_result', 'error', 'final']);
+    expect(appendWorkLog).toHaveBeenCalledWith('conv-1', {
+      kind: 'error',
+      text: ERROR_TEXT,
+      turnId,
+      ts: expect.any(Number),
+    });
+  });
+});
+
 describe('StreamExecutor — a leak after narration still reaches the recovery rail', () => {
   beforeEach(() => {
     vi.clearAllMocks();
