@@ -3860,7 +3860,7 @@ function formatTokens(n) {
   }
   return '999.9T+';
 }
-// Dashboard v2.1 — \`Nm SSs\` for the 1s live tick. Mirrors src/format/duration.ts.
+// Dashboard v2.1 — \`Nm SSs\` for the 1s live tick. Mirrors packages/common/src/format/duration.ts.
 function formatNmSSs(ms) {
   if (!ms || ms < 0 || isNaN(ms)) return '0m 00s';
   var totalSec = Math.floor(ms / 1000);
