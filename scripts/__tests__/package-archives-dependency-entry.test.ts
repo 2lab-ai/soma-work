@@ -147,3 +147,32 @@ describe('unresolvedFirstPartyRequires', () => {
     expect(unresolvedFirstPartyRequires(root)).toEqual([]);
   });
 });
+
+describe('unresolvedFirstPartyRequires — what the archive deliberately omits', () => {
+  it('skips a require of a package the workspace itself declares as a devDependency', () => {
+    // packages/test-utils is staged (its dist is a declared entry) but its mock
+    // factories `require("vitest")`, which `npm ci --omit=dev` never installs.
+    const root = path.join(scratch, `dev${n++}`);
+    fs.mkdirSync(path.join(root, 'packages/tu/dist'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'packages/tu/package.json'),
+      JSON.stringify({ name: '@x/tu', devDependencies: { vitest: '^4' } }),
+    );
+    fs.writeFileSync(path.join(root, 'packages/tu/dist/mock.js'), "const { vi } = require('vitest');");
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'root' }));
+    fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'dist/app.js'), "require('vitest');");
+    // the workspace's dev-only import is skipped; the root, which does not declare it, is not
+    expect(unresolvedFirstPartyRequires(root)).toEqual(['dist/app.js: vitest']);
+  });
+
+  it('does not count a resolution that escapes the archive root', () => {
+    const outer = path.join(scratch, `outer${n++}`);
+    const root = path.join(outer, 'root');
+    fs.mkdirSync(path.join(outer, 'node_modules/escapee'), { recursive: true });
+    fs.writeFileSync(path.join(outer, 'node_modules/escapee/index.js'), '');
+    fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'dist/app.js'), "require('escapee');");
+    expect(unresolvedFirstPartyRequires(root)).toEqual(['dist/app.js: escapee']);
+  });
+});

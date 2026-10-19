@@ -1017,7 +1017,12 @@ function exportEntryTargets(exported, conditions) {
  * directory with Node's own resolver — `exports` conditions, `main`,
  * extensions and `index.js` exactly as the runtime will. Relative paths,
  * `node:` and builtin modules are not dependencies and are skipped; a
- * non-literal `require(expr)` cannot be read and is not seen.
+ * non-literal `require(expr)` cannot be read and is not seen. A package the
+ * file's own workspace declares only in `devDependencies` is skipped too: the
+ * archive is installed with `--omit=dev` on purpose, and the staged
+ * `packages/test-utils` mock factories require `vitest` that way. A
+ * resolution that lands outside the archive root (an ancestor
+ * `node_modules`, a global folder) does not count as resolved.
  *
  * This is the check that knows which subpath the runtime loads: the
  * per-package entry check passes `@modelcontextprotocol/sdk` while any one of
@@ -1029,6 +1034,23 @@ function exportEntryTargets(exported, conditions) {
 function unresolvedFirstPartyRequires(root) {
   const missing = [];
   const resolved = new Map();
+  const realRoot = fs.realpathSync(root);
+  const manifests = new Map();
+  // The nearest package.json at or above `dir`, inside the archive.
+  const nearestManifest = (dir) => {
+    if (manifests.has(dir)) return manifests.get(dir);
+    const own = readJson(path.join(dir, 'package.json'));
+    const parent = path.dirname(dir);
+    const found = own !== null ? own : dir === root || parent === dir ? null : nearestManifest(parent);
+    manifests.set(dir, found);
+    return found;
+  };
+  const devOnly = (manifest, name) =>
+    manifest !== null &&
+    Object.hasOwn(manifest.devDependencies || {}, name) &&
+    !['dependencies', 'optionalDependencies', 'peerDependencies'].some((field) =>
+      Object.hasOwn(manifest[field] || {}, name),
+    );
   for (const { rel, dirent } of walk(root)) {
     if (!dirent.isFile() || isDependencyPath(rel) || !/\.c?js$/.test(rel)) continue;
     const source = fs.readFileSync(path.join(root, rel), 'utf8');
@@ -1037,11 +1059,14 @@ function unresolvedFirstPartyRequires(root) {
       const specifier = match[2];
       if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:')) continue;
       if (BUILTIN_MODULES.has(specifier)) continue;
+      const name = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0];
+      if (devOnly(nearestManifest(fromDir), name)) continue;
       const key = `${fromDir}\0${specifier}`;
       if (!resolved.has(key)) {
         let ok = true;
         try {
-          require.resolve(specifier, { paths: [fromDir] });
+          const target = fs.realpathSync(require.resolve(specifier, { paths: [fromDir] }));
+          ok = target === realRoot || target.startsWith(realRoot + path.sep);
         } catch {
           ok = false;
         }
