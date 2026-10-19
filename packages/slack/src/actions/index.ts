@@ -212,10 +212,6 @@ export class ActionHandlers {
     return this.delegates.zTopicRegistry;
   }
 
-  getPendingInstructionConfirmStore(): PendingInstructionConfirmStore {
-    return this.pendingInstructionConfirmStore;
-  }
-
   registerHandlers(app: App): void {
     app.action('approve_tool', async ({ ack, body, respond }) => {
       await ack();

@@ -903,7 +903,7 @@ function lockfileWorkspaceNestedInstalls(root) {
  *
  * Only the bounded `<dir>/*` form the root manifest actually uses is supported;
  * anything else is reported rather than silently ignored. A package that
- * declares no `main`/`exports['.']` (`somalib` compiles in place) contributes no
+ * declares no entry point (`somalib` compiles in place) contributes no
  * requirement instead of a false one.
  */
 function archiveWorkspaceEntries(root) {
@@ -940,12 +940,28 @@ function archiveWorkspaceEntries(root) {
   for (const dir of dirs.sort()) {
     const manifest = readJson(path.join(root, dir, 'package.json'));
     if (manifest === null) continue;
-    const exported = manifest.exports === undefined || manifest.exports === null ? undefined : manifest.exports['.'];
-    const entry = typeof manifest.main === 'string' ? manifest.main : typeof exported === 'string' ? exported : null;
-    if (entry === null) continue;
-    entries.push(path.posix.join(dir, entry.replace(/^\.\//, '')));
+    for (const entry of declaredEntryPoints(manifest)) {
+      entries.push(path.posix.join(dir, entry.replace(/^\.\//, '')));
+    }
   }
   return { entries, unsupported };
+}
+
+/**
+ * The entry points a workspace manifest declares: `main`, else `exports['.']`,
+ * else — for a subpath-only package such as `@soma/slack`, which has no root
+ * entry — every concrete (non-wildcard) `exports` target. `somalib` declares
+ * none of these and contributes nothing.
+ */
+function declaredEntryPoints(manifest) {
+  if (typeof manifest.main === 'string') return [manifest.main];
+  const exported = manifest.exports;
+  if (typeof exported === 'string') return [exported];
+  if (exported === null || typeof exported !== 'object') return [];
+  if (typeof exported['.'] === 'string') return [exported['.']];
+  return Object.entries(exported)
+    .filter(([key, target]) => !key.includes('*') && typeof target === 'string')
+    .map(([, target]) => target);
 }
 
 /**

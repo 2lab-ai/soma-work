@@ -228,15 +228,6 @@ export class RequestCoordinator {
   }
 
   /**
-   * Check if a new request can start for a session.
-   * Currently always returns true (requests queue naturally).
-   * This method exists for future expansion of concurrency policies.
-   */
-  canStartRequest(_sessionKey: string): boolean {
-    return true;
-  }
-
-  /**
    * Get the count of active requests
    */
   getActiveCount(): number {

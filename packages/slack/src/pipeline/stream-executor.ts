@@ -1696,13 +1696,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           if (commandResult.continuation) {
             toolContinuation = commandResult.continuation;
           }
-          // Issue #42 S3: observer — 도구 종료 + model-command 결과 수집
-          // duration은 위 루프(367-377)에서 이미 계산·삭제되었으므로 toolStats에서 역산
+          // Issue #42 S3: observer — 도구 종료 + model-command 결과 수집.
+          // duration은 collector가 자체 startTime으로 계산한다.
           for (const tr of toolResults) {
-            const name = tr.toolName || 'unknown';
-            const _stats = toolStats[name];
-            // 직전 루프에서 계산된 duration을 collector의 자체 startTime fallback으로 위임
-            turnCollector.onToolEnd(name, tr.toolUseId);
+            turnCollector.onToolEnd(tr.toolName || 'unknown', tr.toolUseId);
           }
           turnCollector.onPhaseChange('결과 반영 중');
           if (commandResult.modelCommandResults) {
@@ -4214,7 +4211,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         this.deps.todoDisplayManager.cleanup(sessionKey);
         this.deps.reactionManager.cleanup(sessionKey);
         this.deps.contextWindowManager.cleanup(sessionKey);
-        this.deps.statusReporter.cleanup(sessionKey);
       });
     }
   }
@@ -5869,7 +5865,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return undefined;
     }
 
-    const { id, files, path, dir, summary } = saveResult;
+    const { id, files, path, dir } = saveResult;
 
     // Try to get save content from files array or fallback to reading from path
     let saveContent: string;

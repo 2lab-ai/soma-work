@@ -477,8 +477,8 @@ export class SlackHandler {
     this.commandRouter = new CommandRouter(commandDeps);
 
     // Message validation, status reporting, and todo display
-    this.messageValidator = new MessageValidator(this.workingDirManager, this.claudeHandler);
-    this.statusReporter = new StatusReporter(this.slackApi);
+    this.messageValidator = new MessageValidator(this.workingDirManager);
+    this.statusReporter = new StatusReporter();
     this.todoDisplayManager = new TodoDisplayManager(this.slackApi, this.todoManager, this.reactionManager);
     // Wire todo updates to trigger thread header re-render + plan block render.
     this.todoDisplayManager.setRenderRequestCallback(async (session, sessionKey) => {
@@ -808,7 +808,9 @@ export class SlackHandler {
       // The SAME interrupt policy the dispatcher uses for `Send now`
       // (owner / current initiator) — one policy, two call sites.
       canInterrupt: (sessionKey, clicker) => this.authorizeFollowupInterrupt(sessionKey, clicker).allowed,
-      refresh: (sessionKey, page) => this.refreshFollowupSurface(sessionKey, page),
+      // A pre-A39 panel's Prev/Next click: the panel no longer pages a queue,
+      // so the page is ignored and the surface just repaints.
+      refresh: (sessionKey) => this.refreshFollowupSurface(sessionKey),
       // The host owns the drain loop; the action module never re-enters the
       // dispatcher itself.
       runDrain: (sessionKey) =>
@@ -854,6 +856,9 @@ export class SlackHandler {
    * The re-render is detached and uses the session object handed to the
    * callback: by the time it runs, the registry has removed the session and a
    * lookup by key would find nothing.
+   *
+   * The same seam also drops the session's background-task tracking
+   * (`ToolEventProcessor.clearBackgroundResume`), which nothing else drains.
    */
   private registerFollowupSessionDeletion(): void {
     const registry = (this.claudeHandler as { getSessionRegistry?: () => unknown })?.getSessionRegistry?.() as
@@ -865,39 +870,49 @@ export class SlackHandler {
     }
 
     registry.setBeforeSessionDelete((sessionKey, session, reason) => {
-      const queue = this.followupQueue;
-      if (!queue) return;
-      const pending = queue
-        .list(sessionKey)
-        .filter((item) => !['resolved', 'failed', 'cancelled'].includes(item.state));
-      if (pending.length === 0) {
-        // Nothing to repaint, but the session is still gone — its `failed` rows
-        // (the ones the cancel never touches) would otherwise keep index
-        // entries for a session nothing can read any more. Detached: the
-        // registry callback is synchronous and the removals queue behind
-        // whatever paint holds each message.
-        void this.forgetFollowupReactionsForSession(sessionKey);
-        return;
-      }
-      queue.cancelSession(sessionKey, `세션이 종료되었습니다 (${reason})`);
-      // Captured BEFORE the cancel, because afterwards every row in the session
-      // reads `cancelled` and nothing says which ones this act moved. Without it
-      // the thread keeps a `ui_send_now` on every parked message, pointing at a
-      // session that no longer exists.
-      //
-      // A `failed` row is deliberately NOT in that list: the cancel does not
-      // move it either (`followup-queue.ts:826` skips the terminal states), so
-      // repainting it would say something the queue did not do.
-      //
-      // The index is dropped AFTER those repaints, never before: each paint
-      // needs its entry to know which reactions to take down, and dropping the
-      // session's entries first would leave every control standing.
-      void this.syncFollowupReactionsFor(pending).then(() => this.forgetFollowupReactionsForSession(sessionKey));
-      void this.renderFollowupFor(session, sessionKey).catch((error) => {
-        this.logger.warn('Follow-up cancellation render failed', {
-          sessionKey,
-          error: (error as Error)?.message ?? String(error),
-        });
+      // May throw (the queue store cannot save) — the registry then refuses
+      // the deletion and keeps the session.
+      this.cancelFollowupsOfDeletedSession(sessionKey, session, reason);
+      // The background-task lifecycle tracker is process-wide and keyed by
+      // session; this seam is the one teardown point both deletion paths share,
+      // so it is where the session's live tasks and settled tombstones go.
+      // Drained LAST: a refused deletion leaves a live session, whose tasks must
+      // stay tracked.
+      this.toolEventProcessor?.clearBackgroundResume(sessionKey);
+    });
+  }
+
+  private cancelFollowupsOfDeletedSession(sessionKey: string, session: ConversationSession, reason: string): void {
+    const queue = this.followupQueue;
+    if (!queue) return;
+    const pending = queue.list(sessionKey).filter((item) => !['resolved', 'failed', 'cancelled'].includes(item.state));
+    if (pending.length === 0) {
+      // Nothing to repaint, but the session is still gone — its `failed` rows
+      // (the ones the cancel never touches) would otherwise keep index
+      // entries for a session nothing can read any more. Detached: the
+      // registry callback is synchronous and the removals queue behind
+      // whatever paint holds each message.
+      void this.forgetFollowupReactionsForSession(sessionKey);
+      return;
+    }
+    queue.cancelSession(sessionKey, `세션이 종료되었습니다 (${reason})`);
+    // Captured BEFORE the cancel, because afterwards every row in the session
+    // reads `cancelled` and nothing says which ones this act moved. Without it
+    // the thread keeps a `ui_send_now` on every parked message, pointing at a
+    // session that no longer exists.
+    //
+    // A `failed` row is deliberately NOT in that list: the cancel does not
+    // move it either (`followup-queue.ts:826` skips the terminal states), so
+    // repainting it would say something the queue did not do.
+    //
+    // The index is dropped AFTER those repaints, never before: each paint
+    // needs its entry to know which reactions to take down, and dropping the
+    // session's entries first would leave every control standing.
+    void this.syncFollowupReactionsFor(pending).then(() => this.forgetFollowupReactionsForSession(sessionKey));
+    void this.renderFollowupFor(session, sessionKey).catch((error) => {
+      this.logger.warn('Follow-up cancellation render failed', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
       });
     });
   }
@@ -986,9 +1001,9 @@ export class SlackHandler {
    * the SYNCHRONOUS busy fence and the untouched capture of the raw message.
    *
    * Everything here down to `runInitial` runs with no `await` in between —
-   * that is the whole point. `RequestCoordinator.canStartRequest`
-   * (`request-coordinator.ts:173-174`) only says "may start", and the executor
-   * releases its slot at the TOP of a cleanup that still has awaits ahead of it
+   * that is the whole point. `RequestCoordinator` has no "may start" policy at
+   * all, and the executor releases its slot at the TOP of a cleanup that still
+   * has awaits ahead of it
    * (`stream-executor.ts:3702` vs `:3726`), so neither can answer "is this
    * session busy?". The dispatcher's slot can, and it is taken before the first
    * await — two messages arriving in the same tick cannot both dispatch.
@@ -2387,10 +2402,10 @@ export class SlackHandler {
   }
 
   /** Refresh the Queue block for a live session key. */
-  private async refreshFollowupSurface(sessionKey: string, page?: number): Promise<void> {
+  private async refreshFollowupSurface(sessionKey: string): Promise<void> {
     const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
     if (!session) return;
-    await this.renderFollowupFor(session, sessionKey, page);
+    await this.renderFollowupFor(session, sessionKey);
   }
 
   /**
@@ -2399,13 +2414,13 @@ export class SlackHandler {
    * key lookup would silently find nothing and the user would never see the
    * cancellation.
    */
-  private async renderFollowupFor(session: ConversationSession, sessionKey: string, page?: number): Promise<void> {
+  private async renderFollowupFor(session: ConversationSession, sessionKey: string): Promise<void> {
     const panel = this.threadPanel as
-      | (ThreadPanel & { updateFollowup?: (s: ConversationSession, k: string, page?: number) => Promise<void> })
+      | (ThreadPanel & { updateFollowup?: (s: ConversationSession, k: string) => Promise<void> })
       | undefined;
     try {
       if (typeof panel?.updateFollowup === 'function') {
-        await panel.updateFollowup(session, sessionKey, page);
+        await panel.updateFollowup(session, sessionKey);
       } else {
         await panel?.updatePanel?.(session, sessionKey);
       }
@@ -4606,8 +4621,8 @@ export class SlackHandler {
    * a `DmZRespond` (chat.postMessage + chat.update).
    *
    * Return shape (codex P1 followup):
-   *  - `terminal: true` — the router fully consumed the invocation (tombstone
-   *    card, help card, forbidden notice, error ephemeral, or a command that
+   *  - `terminal: true` — the router fully consumed the invocation (help
+   *    card, forbidden notice, error ephemeral, or a command that
    *    returned `handled:true` with no continuation). Caller must return.
    *  - `terminal: false, continueWithPrompt: string` — the command captured
    *    a follow-up prompt (e.g. `/z new write a test`); caller should
@@ -4656,7 +4671,7 @@ export class SlackHandler {
         return { terminal: false, continueWithPrompt: result.continueWithPrompt };
       }
 
-      // Handled (card / tombstone / passthrough that finished itself) → terminal.
+      // Handled (card / passthrough that finished itself) → terminal.
       // Carry the qualifiers: a legacy handler that CRASHED comes back as
       // `handled: true` + `error` (the router posted the notice), and a
       // cross-user `$skill` parked on permission as `awaitingPermission` — the

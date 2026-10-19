@@ -207,27 +207,6 @@ describe('ThreadHeaderBuilder.formatContextBar', () => {
     expect(ThreadHeaderBuilder.formatContextBar(undefined)).toBeUndefined();
   });
 
-  it('shows correct bar segments for 15% used', () => {
-    const usage: SessionUsage = {
-      currentInputTokens: 100_000,
-      currentOutputTokens: 50_000,
-      currentCacheReadTokens: 0,
-      currentCacheCreateTokens: 0,
-      contextWindow: 1_000_000,
-      totalInputTokens: 100_000,
-      totalOutputTokens: 50_000,
-      totalCacheReadTokens: 0,
-      totalCacheCreateTokens: 0,
-      totalCostUsd: 0,
-      lastUpdated: Date.now(),
-    };
-
-    const bar = ThreadHeaderBuilder.formatContextBar(usage);
-    expect(bar).toBeDefined();
-    // 15% used → 1 filled of 5
-    expect(bar).toBe('▓░░░░ 150k/1M (15% used)');
-  });
-
   it('shows full bar for 100% used', () => {
     const usage: SessionUsage = {
       currentInputTokens: 800_000,

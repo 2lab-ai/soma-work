@@ -314,7 +314,7 @@ legacy 텍스트 출력은 fallback `text`로만 유지되고, 주 UX는 버튼 
 
 | 모듈 | 역할 |
 |------|------|
-| `src/slack/z/ui-builder.ts` | `buildSettingCard`, `buildHelpCard`, `buildConfirmationCard`, `buildTombstoneCard` |
+| `src/slack/z/ui-builder.ts` | `buildSettingCard`, `buildHelpCard`, `buildConfirmationCard` |
 | `src/slack/z/topics/*-topic.ts` | 토픽별 `renderCard` / `apply` / `openModal` / `submitModal` (11개) |
 | `src/slack/z/topics/index.ts` | `buildDefaultTopicRegistry()` — 11 토픽을 한 번에 등록 |
 | `src/slack/actions/z-settings-actions.ts` | regex action/view 핸들러 (`ZSettingsActionHandler`) |
