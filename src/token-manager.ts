@@ -888,17 +888,6 @@ export class TokenManager {
     await this.refreshCache();
   }
 
-  async clearRateLimitFlag(keyId: string): Promise<void> {
-    await this.store.mutate((snap) => {
-      const state = snap.state[keyId];
-      if (!state) return;
-      delete state.rateLimitedAt;
-      delete state.rateLimitSource;
-      delete state.cooldownUntil;
-    });
-    await this.refreshCache();
-  }
-
   // ── Leases ────────────────────────────────────────────────
 
   async acquireLease(ownerTag: string, ttlMs: number = DEFAULT_LEASE_TTL_MS): Promise<Lease> {

@@ -302,11 +302,6 @@ export class V1QueryAdapter implements IAgentSession {
     return (await gate(result)) === true;
   }
 
-  /** 내부 baseParams 업데이트 (session refresh 등) */
-  updateBaseParams(patch: Record<string, any>): void {
-    Object.assign(this.baseParams, patch);
-  }
-
   private async executeTurn(text: string, options: { isFirstDispatchTurn: boolean }): Promise<AgentTurnResult> {
     const startTime = Date.now();
     const turnId = `turn-${this.turnCount}-${Date.now()}`;

@@ -61,7 +61,6 @@ import type {
   SessionIncidentRequest,
   SessionLink,
   SessionLinks,
-  SessionResourceSnapshot,
   SessionResourceUpdateRequest,
   SessionResourceUpdateResult,
   WorkflowType,
@@ -579,16 +578,8 @@ export class ClaudeHandler implements TurnSteeringPort {
     return this.sessionRegistry.getSessionKey(channelId, threadTs);
   }
 
-  getSessionKeyWithUser(userId: string, channelId: string, threadTs?: string): string {
-    return this.sessionRegistry.getSessionKeyWithUser(userId, channelId, threadTs);
-  }
-
   getSession(channelId: string, threadTs?: string): ConversationSession | undefined {
     return this.sessionRegistry.getSession(channelId, threadTs);
-  }
-
-  getSessionWithUser(userId: string, channelId: string, threadTs?: string): ConversationSession | undefined {
-    return this.sessionRegistry.getSessionWithUser(userId, channelId, threadTs);
   }
 
   getSessionByKey(sessionKey: string): ConversationSession | undefined {
@@ -675,16 +666,8 @@ export class ClaudeHandler implements TurnSteeringPort {
     this.sessionRegistry.setSessionLinks(channelId, threadTs, links);
   }
 
-  getSessionLinks(channelId: string, threadTs?: string): SessionLinks | undefined {
-    return this.sessionRegistry.getSessionLinks(channelId, threadTs);
-  }
-
   addSourceWorkingDir(channelId: string, threadTs: string | undefined, dirPath: string): boolean {
     return this.sessionRegistry.addSourceWorkingDir(channelId, threadTs, dirPath);
-  }
-
-  getSessionResourceSnapshot(channelId: string, threadTs?: string): SessionResourceSnapshot {
-    return this.sessionRegistry.getSessionResourceSnapshot(channelId, threadTs);
   }
 
   updateSessionResources(
@@ -724,24 +707,12 @@ export class ClaudeHandler implements TurnSteeringPort {
     return this.sessionRegistry.wakeFromSleep(channelId, threadTs);
   }
 
-  transitionToSleep(channelId: string, threadTs?: string): boolean {
-    return this.sessionRegistry.transitionToSleep(channelId, threadTs);
-  }
-
-  getSessionWorkflow(channelId: string, threadTs?: string): WorkflowType | undefined {
-    return this.sessionRegistry.getSessionWorkflow(channelId, threadTs);
-  }
-
   setActivityState(channelId: string, threadTs: string | undefined, state: ActivityState): void {
     this.sessionRegistry.setActivityState(channelId, threadTs, state);
   }
 
   setActivityStateByKey(sessionKey: string, state: ActivityState): void {
     this.sessionRegistry.setActivityStateByKey(sessionKey, state);
-  }
-
-  getActivityState(channelId: string, threadTs?: string): ActivityState | undefined {
-    return this.sessionRegistry.getActivityState(channelId, threadTs);
   }
 
   async cleanupInactiveSessions(maxAge?: number): Promise<void> {
