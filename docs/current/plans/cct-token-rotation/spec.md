@@ -38,8 +38,8 @@ Code entry points:
 - `src/credentials-manager.ts` — lease contract (`SlotAuthLease`) and
   the `ensureActiveSlotAuth` wrapper used by every dispatcher.
 - `src/auth/query-env-builder.ts` — per-lease env-object builder.
-- `src/oauth/refresher.ts` / `usage.ts` / `scope-check.ts` /
-  `header-parser.ts` — HTTP-layer helpers. HTTP contract documented in
+- `src/oauth/refresher.ts` / `usage.ts` / `scope-check.ts` — HTTP-layer
+  helpers. HTTP contract documented in
   `docs/current/plans/cct-token-rotation/extraction/agent-island-oauth-extraction.md`.
 - `src/slack/cct/builder.ts`, `views.ts`, `actions.ts` — Block Kit card
   & modal surface.
@@ -367,13 +367,16 @@ backoff and advances to the next step (capping at 15 min).
 
 ## Rate-limit detection
 
-### Primary: response headers
+### Primary: response headers (not wired)
 
-`src/oauth/header-parser.ts::parseRateLimitHeaders` inspects
-`anthropic-ratelimit-unified-5h-remaining`,
-`anthropic-ratelimit-unified-7d-remaining`, and the matching `reset`
-headers. When `remaining === 0`, the stream executor calls
-`TokenManager.rotateOnRateLimit(reason, { source: 'response_header', … })`.
+The plan was to inspect `anthropic-ratelimit-unified-5h-remaining`,
+`anthropic-ratelimit-unified-7d-remaining` and the matching `reset`
+headers, and rotate with `source: 'response_header'` when
+`remaining === 0`. This never shipped: the SDK runs the Claude CLI as a
+subprocess and does not expose the API response headers to the stream
+executor. The header parser (`src/oauth/header-parser.ts`) never had a
+production caller and was deleted in the 2026-10 dead-code audit. The
+error-string path below is the only live detection.
 
 ### Fallback: error string match
 
