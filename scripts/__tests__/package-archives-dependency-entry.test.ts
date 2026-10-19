@@ -166,6 +166,14 @@ describe('unresolvedFirstPartyRequires — what the archive deliberately omits',
     expect(unresolvedFirstPartyRequires(root)).toEqual(['dist/app.js: vitest']);
   });
 
+  it("does not skip the archive root's devDependencies: the runtime's own code requiring one would crash", () => {
+    const root = path.join(scratch, `rootdev${n++}`);
+    fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'root', devDependencies: { tsx: '*' } }));
+    fs.writeFileSync(path.join(root, 'dist/app.js'), "require('tsx');");
+    expect(unresolvedFirstPartyRequires(root)).toEqual(['dist/app.js: tsx']);
+  });
+
   it('does not count a resolution that escapes the archive root', () => {
     const outer = path.join(scratch, `outer${n++}`);
     const root = path.join(outer, 'root');

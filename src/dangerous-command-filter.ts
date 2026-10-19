@@ -2,8 +2,8 @@
  * Dangerous Command Filter — parent-process surface.
  *
  * The full rule catalog (`DANGEROUS_RULES`) and the matcher helpers
- * (`matchRules`, `overridableMatchedRuleIds`,
- * `overridableRulesByIds`, `isCrossUserAccess`, `isSshCommand`) live in
+ * (`overridableMatchedRuleIds`, `overridableRulesByIds`,
+ * `isCrossUserAccess`, `isSshCommand`) live in
  * `somalib/permission/dangerous-rules.ts` so the permission MCP child can
  * import them without duplicating the catalog. This file re-exports them; its
  * production importer is `src/agent-runtime/policy/tool-policy.ts`.
@@ -25,7 +25,6 @@ export {
   DANGEROUS_RULES,
   isCrossUserAccess,
   isSshCommand,
-  matchRules,
   overridableMatchedRuleIds,
   overridableRulesByIds,
 } from 'somalib/permission/dangerous-rules';

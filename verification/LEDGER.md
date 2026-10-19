@@ -1,6 +1,6 @@
 # Verification ledger
 
-Snapshot of 2026-10-19. Every production TypeScript file (the set the ImportGraph extractor reads
+Snapshot of 2026-10-20. Every production TypeScript file (the set the ImportGraph extractor reads
 from `git ls-files`: `*.ts`, `*.tsx`, `*.mts`, `*.cts`, minus declaration files, tests, specs
 and fixtures), and how far `verification/` covers it. Written by
 `node scripts/verification/ledger.cjs`. Nothing checks this file against the tree; the live
