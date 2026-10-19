@@ -158,9 +158,9 @@ vitest `setupFiles`(`src/test-utils/vitest-setup.ts`)가 모든 테스트 파일
 
 ### Mock 전략
 
-- **Slack Mock**: `src/test-utils/mock-slack-api.ts` — SlackApiHelper mock factory
-- **Model Mock**: `src/test-utils/mock-claude-handler.ts` — ClaudeHandler mock factory
-- **Session Mock**: `src/test-utils/mock-session.ts` — Session mock factory
+- **Slack Mock**: `@soma/test-utils` (`packages/test-utils/src/mock-slack-api.ts`) — SlackApiHelper mock factory
+- **Model Mock**: `@soma/test-utils` (`packages/test-utils/src/mock-claude-handler.ts`) — ClaudeHandler mock factory
+- **Session Mock**: `@soma/test-utils` (`packages/test-utils/src/mock-session.ts`) — Session mock factory
 - 모든 기능은 Mock 기반 e2e 테스트 커버리지 확보 목표
 
 ## Deployment
