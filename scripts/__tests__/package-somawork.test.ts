@@ -202,14 +202,17 @@ function writeInstalledPackage(dir: string, name: string, version: string): void
  * e9af688b). The nested-layout tests use it to exercise the rule that
  * dependency territory is any `node_modules` segment, not just a leading one.
  */
-function makeDependencyOverlay(root: string, options: { nestedSomaLib?: boolean } = {}): string {
+function makeDependencyOverlay(
+  root: string,
+  options: { nestedSomaLib?: boolean; omitRootSomaLib?: boolean } = {},
+): string {
   const modules = path.join(root, 'node_modules');
   fs.mkdirSync(path.join(modules, 'left-pad'), { recursive: true });
   fs.writeFileSync(path.join(modules, 'left-pad', 'index.js'), 'module.exports = () => {};\n');
   fs.writeFileSync(path.join(modules, 'left-pad', 'package.json'), '{"name":"left-pad","version":"1.0.0"}\n');
   fs.mkdirSync(path.join(modules, '@soma'), { recursive: true });
   fs.symlinkSync('../../packages/common', path.join(modules, '@soma', 'common'));
-  writeInstalledPackage(path.join(modules, 'soma-lib'), 'soma-lib', '0.7.0');
+  if (!options.omitRootSomaLib) writeInstalledPackage(path.join(modules, 'soma-lib'), 'soma-lib', '0.7.0');
 
   if (options.nestedSomaLib) {
     writeInstalledPackage(path.join(root, 'somalib', 'node_modules', 'soma-lib'), 'soma-lib', '0.5.0');
@@ -740,7 +743,7 @@ describe('packaged release assets', () => {
       // …and both runtime archives were still opened and checked.
       for (const asset of [PRODUCTION_ASSET, PREVIEW_ASSET]) {
         expect(output, asset).toContain(
-          `${asset}: carries every workspace-nested dependency tree its lockfile installs`,
+          `${asset}: carries every production dependency tree its lockfile installs (root and workspace-nested)`,
         );
         expect(output, asset).toContain(`${asset}: the runtime's controller entry runs from the extraction`);
       }
@@ -822,11 +825,31 @@ describe('workspace-nested dependency trees, when the lockfile has them', () => 
       for (const asset of [PRODUCTION_ASSET, PREVIEW_ASSET]) {
         expect(output, asset).toMatch(
           new RegExp(
-            `FAIL ${asset.replace(/\./g, '\\.')}: carries every workspace-nested dependency tree its lockfile installs.*somalib/node_modules/soma-lib/package\\.json`,
+            `FAIL ${asset.replace(/\./g, '\\.')}: carries every production dependency tree its lockfile installs.*somalib/node_modules/soma-lib/package\\.json`,
           ),
         );
       }
       expect(output).not.toContain('dev-only-tool');
+    },
+    PACKAGING_TIMEOUT_MS,
+  );
+});
+
+describe('root dependency trees the lockfile installs', () => {
+  it(
+    'refuses an archive whose root node_modules lost a production package (hoisted soma-lib)',
+    () => {
+      const staged = makeStagedRuntime(path.join(scratch, 'staged-root-missing'));
+      const run = runPackaging({
+        outDir: path.join(scratch, 'out-root-missing'),
+        stagedRuntime: staged,
+        dependencyOverlay: makeDependencyOverlay(path.join(scratch, 'modules-root-missing'), { omitRootSomaLib: true }),
+      });
+      const output = `${run.stdout}${run.stderr}`;
+      expect(run.status, output).not.toBe(0);
+      expect(output).toMatch(
+        /carries every production dependency tree its lockfile installs.*node_modules\/soma-lib\/package\.json/,
+      );
     },
     PACKAGING_TIMEOUT_MS,
   );
