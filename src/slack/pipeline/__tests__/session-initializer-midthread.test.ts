@@ -15,8 +15,6 @@ vi.mock('../../../user-settings-store', () => ({
       defaultModel: 'claude-sonnet-4-5-20250929',
       lastUpdated: new Date().toISOString(),
     }),
-    getUserDefaultDirectory: vi.fn().mockReturnValue(''),
-    setUserDefaultDirectory: vi.fn(),
     getUserBypassPermission: vi.fn().mockReturnValue(false),
     setUserBypassPermission: vi.fn(),
     getUserPersona: vi.fn().mockReturnValue('default'),

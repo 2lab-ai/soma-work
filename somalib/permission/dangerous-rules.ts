@@ -20,8 +20,6 @@ export {
   DANGEROUS_RULES,
   isCrossUserAccess,
   isSshCommand,
-  matchRules,
   overridableMatchedRuleIds,
   overridableRulesByIds,
-  rulesByIds,
 } from 'soma-lib';
