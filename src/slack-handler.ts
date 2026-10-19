@@ -478,7 +478,7 @@ export class SlackHandler {
 
     // Message validation, status reporting, and todo display
     this.messageValidator = new MessageValidator(this.workingDirManager, this.claudeHandler);
-    this.statusReporter = new StatusReporter(this.slackApi);
+    this.statusReporter = new StatusReporter();
     this.todoDisplayManager = new TodoDisplayManager(this.slackApi, this.todoManager, this.reactionManager);
     // Wire todo updates to trigger thread header re-render + plan block render.
     this.todoDisplayManager.setRenderRequestCallback(async (session, sessionKey) => {
