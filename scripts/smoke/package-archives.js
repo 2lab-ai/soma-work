@@ -831,6 +831,17 @@ function checkRuntimeDependencies(asset, root, layout) {
         .map((rel) => `${rel}/package.json`)
         .join(', '),
     );
+    // A manifest is not a module: a tree whose built files were pruned still
+    // has its package.json. Resolve the entry each manifest declares.
+    const brokenEntries = installs
+      .filter((rel) => fs.existsSync(path.join(root, rel, 'package.json')))
+      .map((rel) => missingDependencyEntry(path.join(root, rel), rel))
+      .filter((missing) => missing !== null);
+    check(
+      brokenEntries.length === 0,
+      `${asset}: every production dependency's declared runtime entry is present`,
+      brokenEntries.slice(0, 8).join(', '),
+    );
   }
 
   const workspaces = archiveWorkspaceEntries(root);
@@ -885,6 +896,55 @@ function lockfileProductionInstalls(root) {
       return meta.dev !== true && meta.devOptional !== true && meta.optional !== true && meta.link !== true;
     })
     .sort();
+}
+
+/**
+ * Whether an installed dependency still carries the runtime files its manifest
+ * points at. `main` must resolve the way Node resolves `require('<name>')`.
+ * With `exports` instead, at least one concrete non-`types` target must exist:
+ * published packages do ship root targets that do not exist
+ * (`@modelcontextprotocol/sdk` declares `./dist/esm/index.js` and is only ever
+ * imported by subpath), so requiring every target would refuse a correct
+ * archive, while a tree whose built files were pruned has none of them. A
+ * package that declares neither contributes no requirement.
+ *
+ * Returns an archive-relative path that is missing, or null.
+ */
+function missingDependencyEntry(dir, rel) {
+  const manifest = readJson(path.join(dir, 'package.json'));
+  if (manifest === null) return null;
+  const resolves = (target) => {
+    const base = path.join(dir, target);
+    return ['', '.js', '.json', '.node', '/index.js', '/index.json', '/index.node'].some((suffix) => {
+      try {
+        return fs.statSync(base + suffix).isFile();
+      } catch {
+        return false;
+      }
+    });
+  };
+  const display = (target) => path.posix.join(rel, target.replace(/^\.\//, ''));
+  if (typeof manifest.main === 'string' && manifest.main.length > 0) {
+    return resolves(manifest.main) ? null : display(manifest.main);
+  }
+  const targets = exportTargets(manifest.exports);
+  if (targets.length === 0) return null;
+  return targets.some(resolves) ? null : display(targets[0]);
+}
+
+/** Every concrete, non-`types` file target of an `exports` field. */
+function exportTargets(exported) {
+  const targets = [];
+  const collect = (node) => {
+    if (typeof node === 'string') {
+      if (!node.includes('*')) targets.push(node);
+    } else if (Array.isArray(node)) node.forEach(collect);
+    else if (node !== null && typeof node === 'object') {
+      for (const [key, child] of Object.entries(node)) if (key !== 'types' && !key.includes('*')) collect(child);
+    }
+  };
+  collect(exported);
+  return targets;
 }
 
 /**
@@ -1117,6 +1177,7 @@ module.exports = {
   archiveWorkspaceEntries,
   lockfileProductionInstalls,
   lockfileWorkspaceNestedInstalls,
+  missingDependencyEntry,
   isNativeExecutable,
   walk,
 };
