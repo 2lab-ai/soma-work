@@ -4,7 +4,6 @@ import * as path from 'node:path';
 import { config } from './config';
 import { Logger } from './logger';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
-import { DirectoryFormatter } from './slack/formatters';
 
 /**
  * WorkingDirectoryManager - Simplified version with fixed user directories
@@ -158,10 +157,6 @@ export class WorkingDirectoryManager {
    */
   hasChannelWorkingDirectory(_channelId: string): boolean {
     return false;
-  }
-
-  formatChannelSetupMessage(_channelId: string, _channelName: string): string {
-    return DirectoryFormatter.formatChannelSetupMessage(_channelId, _channelName);
   }
 
   /**

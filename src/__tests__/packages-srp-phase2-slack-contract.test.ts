@@ -70,7 +70,6 @@ describe('packages-srp Phase 2 slack contract', () => {
       './event-router': './dist/event-router.js',
       './formatters': './dist/formatters/index.js',
       './formatters/markdown-to-blocks': './dist/formatters/markdown-to-blocks.js',
-      './formatters/directory-formatter': './dist/formatters/directory-formatter.js',
       './handoff-budget': './dist/handoff-budget.js',
       './instruction-confirm-blocks': './dist/instruction-confirm-blocks.js',
       './message-formatter': './dist/message-formatter.js',

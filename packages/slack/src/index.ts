@@ -194,10 +194,6 @@ export {
   setEventRouterProviders,
 } from './event-router';
 export {
-  DirectoryFormatter,
-  setDirectoryFormatterBaseDirectoryProvider,
-} from './formatters/directory-formatter';
-export {
   type ConvertResult,
   estimatePayloadSize,
   markdownToBlocks,
