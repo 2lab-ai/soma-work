@@ -142,18 +142,4 @@ export class AgentInstance {
       this.logger.info(`Agent '${this.name}' stopped`);
     }
   }
-
-  /**
-   * Get the agent's PromptBuilder (for agent_chat MCP).
-   */
-  getPromptBuilder(): PromptBuilder {
-    return this.promptBuilder;
-  }
-
-  /**
-   * Get the agent's config.
-   */
-  getConfig(): AgentConfig {
-    return { ...this.config };
-  }
 }

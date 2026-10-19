@@ -57,26 +57,10 @@ class GitHubAppAuth {
   }
 
   /**
-   * Get JWT for GitHub App authentication
-   */
-  async getAppJWT(): Promise<string> {
-    return this.apiClient.getAppJWT();
-  }
-
-  /**
    * List all installations for the GitHub App
    */
   async listInstallations(): Promise<Installation[]> {
     return this.apiClient.listInstallations();
-  }
-
-  /**
-   * Invalidate token cache
-   */
-  invalidateTokenCache(): void {
-    if (this.tokenScheduler) {
-      this.tokenScheduler.invalidateCache();
-    }
   }
 
   /**

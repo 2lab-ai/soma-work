@@ -770,25 +770,6 @@ export class UserSettingsStore {
   }
 
   /**
-   * @deprecated Working directories are now fixed per user ({BASE_DIRECTORY}/{userId}/).
-   * This method is kept for backward compatibility but the value is no longer used.
-   */
-  getUserDefaultDirectory(userId: string): string | undefined {
-    logger.debug('getUserDefaultDirectory called (deprecated)', { userId });
-    // Return undefined to indicate no custom directory - fixed directories are now used
-    return undefined;
-  }
-
-  /**
-   * @deprecated Working directories are now fixed per user ({BASE_DIRECTORY}/{userId}/).
-   * This method is kept for backward compatibility but does nothing.
-   */
-  setUserDefaultDirectory(userId: string, _directory: string): void {
-    logger.debug('setUserDefaultDirectory called (deprecated, no-op)', { userId });
-    // No-op: Working directories are now fixed per user
-  }
-
-  /**
    * Patch one or more fields on a user's settings record.
    * Creates a new record with defaults if the user does not yet exist.
    * Saves to disk after applying the patch.
@@ -820,14 +801,6 @@ export class UserSettingsStore {
    */
   getUserBypassPermission(userId: string): boolean {
     return this.settings[userId]?.bypassPermission ?? false;
-  }
-
-  /**
-   * Set user's bypass permission setting
-   */
-  setUserBypassPermission(userId: string, bypass: boolean): void {
-    this.patchUserSettings(userId, { bypassPermission: bypass });
-    logger.info('Set user bypass permission', { userId, bypass });
   }
 
   /**
@@ -1093,26 +1066,10 @@ export class UserSettingsStore {
   }
 
   /**
-   * Set user's thinking enabled setting
-   */
-  setUserThinkingEnabled(userId: string, enabled: boolean): void {
-    this.patchUserSettings(userId, { thinkingEnabled: enabled });
-    logger.info('Set user thinking enabled', { userId, enabled });
-  }
-
-  /**
    * Get user's show thinking setting (display thinking in Slack)
    */
   getUserShowThinking(userId: string): boolean {
     return this.settings[userId]?.showThinking ?? DEFAULT_SHOW_THINKING;
-  }
-
-  /**
-   * Set user's show thinking setting
-   */
-  setUserShowThinking(userId: string, show: boolean): void {
-    this.patchUserSettings(userId, { showThinking: show });
-    logger.info('Set user show thinking', { userId, show });
   }
 
   /**
@@ -1123,13 +1080,6 @@ export class UserSettingsStore {
     const stored = this.settings[userId]?.sessionTheme;
     if (!stored) return DEFAULT_THEME;
     return migrateLegacyTheme(stored);
-  }
-
-  /**
-   * Get user's raw theme setting. undefined means "use default".
-   */
-  getUserRawSessionTheme(userId: string): SessionTheme | undefined {
-    return this.settings[userId]?.sessionTheme;
   }
 
   /**
@@ -1479,17 +1429,6 @@ export class UserSettingsStore {
    */
   listUsers(): string[] {
     return Object.keys(this.settings);
-  }
-
-  /**
-   * Get statistics
-   */
-  getStats(): { userCount: number; directories: string[] } {
-    const directories = [...new Set(Object.values(this.settings).map((s) => s.defaultDirectory))];
-    return {
-      userCount: Object.keys(this.settings).length,
-      directories,
-    };
   }
 }
 

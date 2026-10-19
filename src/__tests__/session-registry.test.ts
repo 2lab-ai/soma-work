@@ -972,7 +972,7 @@ describe('setOnIdleAfterDrainHook — goal ralph-loop entry point', () => {
       registry.setActivityState('C-G', 't-G', 'working');
       registry.setActivityState('C-G', 't-G', 'idle');
     }).not.toThrow();
-    expect(registry.getActivityState('C-G', 't-G')).toBe('idle');
+    expect(registry.getSession('C-G', 't-G')?.activityState).toBe('idle');
   });
 
   it('uninstalling the hook (undefined) stops further fires', () => {
