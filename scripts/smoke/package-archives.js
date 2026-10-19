@@ -809,8 +809,8 @@ function checkRuntimeArchive(asset, root, manifest, members) {
  *
  * Three questions, in increasing strength:
  *
- * 1. the nested trees `npm ci` cannot hoist (read from the archive's own
- *    lockfile) are present;
+ * 1. every production dependency tree the archive's own lockfile installs
+ *    (root and workspace-nested) is present;
  * 2. every workspace package the archive's OWN root manifest expands to has the
  *    entry point that package's manifest declares (derived, so a new workspace
  *    is covered without editing this file);
@@ -820,13 +820,13 @@ function checkRuntimeDependencies(asset, root, layout) {
   const modules = path.join(root, 'node_modules');
   if (!check(fs.existsSync(modules), `${asset}: carries its production dependencies`)) return;
 
-  const nested = lockfileWorkspaceNestedInstalls(root);
-  if (check(nested !== null, `${asset}: carries a package-lock.json with a packages map`)) {
-    const missingNested = nested.filter((rel) => !fs.existsSync(path.join(root, rel, 'package.json')));
+  const installs = lockfileProductionInstalls(root);
+  if (check(installs !== null, `${asset}: carries a package-lock.json with a packages map`)) {
+    const missingInstalls = installs.filter((rel) => !fs.existsSync(path.join(root, rel, 'package.json')));
     check(
-      missingNested.length === 0,
-      `${asset}: carries every workspace-nested dependency tree its lockfile installs`,
-      missingNested
+      missingInstalls.length === 0,
+      `${asset}: carries every production dependency tree its lockfile installs (root and workspace-nested)`,
+      missingInstalls
         .slice(0, 8)
         .map((rel) => `${rel}/package.json`)
         .join(', '),
@@ -859,32 +859,43 @@ function checkRuntimeDependencies(asset, root, layout) {
 }
 
 /**
- * Dependency trees the ARCHIVE's own `package-lock.json` installs inside a
- * workspace (`<workspace>/node_modules/<name>`, at any depth) rather than in
- * the root tree — the ones a packaging step that copies only the root
- * `node_modules` silently drops. Entries `npm ci --omit=dev` does not install
- * (`dev`, `devOptional`) or may legitimately skip (`optional`) are excluded.
+ * Every dependency tree the ARCHIVE's own `package-lock.json` installs for
+ * production — root (`node_modules/<name>`) and workspace-nested
+ * (`<workspace>/node_modules/<name>`) alike. Entries `npm ci --omit=dev` does
+ * not install (`dev`, `devOptional`) or may legitimately skip (`optional`), and
+ * workspace links (checked by entry point below), are excluded.
  *
- * Read from the lockfile, not hardcoded: a fixed path list went stale when
- * e9af688b aligned `somalib`'s soma-lib pin with the root's and the nested copy
- * stopped existing, so every real archive would have failed the gate. Today the
- * list is empty; it re-arms by itself if a workspace pin diverges again.
+ * Read from the lockfile, not hardcoded: a fixed path list
+ * (`somalib/node_modules/soma-lib/dist/index.js`) went stale when e9af688b
+ * aligned `somalib`'s soma-lib pin with the root's and the nested copy stopped
+ * existing — every real archive would have failed the gate, while a dropped
+ * root `node_modules/soma-lib` would not have been noticed at all.
  *
  * Returns lockfile keys (archive-relative package directories), sorted, or
  * `null` when the archive has no readable lockfile `packages` map.
  */
-function lockfileWorkspaceNestedInstalls(root) {
+function lockfileProductionInstalls(root) {
   const lock = readJson(path.join(root, 'package-lock.json'));
   const packages = lock === null ? null : lock.packages;
   if (packages === null || typeof packages !== 'object' || Array.isArray(packages)) return null;
   return Object.keys(packages)
     .filter((key) => {
-      const segments = key.split('/');
-      if (segments[0] === 'node_modules' || !segments.includes('node_modules')) return false;
+      if (!key.split('/').includes('node_modules')) return false;
       const meta = packages[key] || {};
-      return meta.dev !== true && meta.devOptional !== true && meta.optional !== true;
+      return meta.dev !== true && meta.devOptional !== true && meta.optional !== true && meta.link !== true;
     })
     .sort();
+}
+
+/**
+ * The subset of {@link lockfileProductionInstalls} that lives inside a
+ * workspace rather than the root tree — the trees a packaging step that copies
+ * only the root `node_modules` silently drops. Empty today; re-arms by itself
+ * if a workspace pin diverges again.
+ */
+function lockfileWorkspaceNestedInstalls(root) {
+  const installs = lockfileProductionInstalls(root);
+  return installs === null ? null : installs.filter((key) => key.split('/')[0] !== 'node_modules');
 }
 
 /**
@@ -1088,6 +1099,7 @@ module.exports = {
   DEPENDENCY_TEXT_PATTERNS,
   RUNTIME_EXTRA_REQUIRED_FILES,
   archiveWorkspaceEntries,
+  lockfileProductionInstalls,
   lockfileWorkspaceNestedInstalls,
   isNativeExecutable,
   walk,
