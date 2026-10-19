@@ -1619,6 +1619,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             },
             turnEpochToken,
           );
+          // Re-check after the awaits: a delete during them has already
+          // drained this session's tracking, and handleToolUse would register
+          // background-bash state under a key a new session may reuse.
+          if (session.terminated) {
+            abortController.abort('ghost-session' satisfies RequestAbortReason);
+            return;
+          }
           // Track tool start times for per-request stats
           for (const tu of toolUses) {
             toolStartTimes.set(tu.id, Date.now());

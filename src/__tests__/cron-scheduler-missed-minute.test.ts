@@ -32,7 +32,7 @@ function setup(jobs: Array<{ name: string; expression: string }>) {
     threadCreator: vi.fn(async () => 'thread-ts'),
   };
   const fired = () => injected.map((e) => /^\[cron:([^\]]+)\]/.exec(e.text)?.[1]);
-  return { storage, deps, fired };
+  return { storage, deps, fired, injected };
 }
 
 describe('CronScheduler — no lost minutes', () => {
@@ -44,15 +44,13 @@ describe('CronScheduler — no lost minutes', () => {
   });
 
   it('fires a job whose minute passed while the previous tick was still running', async () => {
-    const { deps, fired } = setup([
+    const { deps, fired, injected } = setup([
       { name: 'slow', expression: '0 12 * * *' },
       { name: 'next-minute', expression: '1 12 * * *' },
     ]);
     let release!: () => void;
-    const inject = deps.messageInjector as ReturnType<typeof vi.fn>;
-    const base = inject.getMockImplementation()!;
-    inject.mockImplementation(async (e: SyntheticMessageEvent) => {
-      await base(e);
+    deps.messageInjector = vi.fn(async (e: SyntheticMessageEvent) => {
+      injected.push(e);
       if (e.text.startsWith('[cron:slow]')) await new Promise<void>((r) => (release = r));
     });
     const scheduler = new CronScheduler(deps);
@@ -111,6 +109,8 @@ describe('CronScheduler — no lost minutes', () => {
     expect(fired()).toEqual(['every-minute', 'every-minute']);
   });
 
+  // Guard for the catch-up design (not a RED case): a failed fire must not be
+  // retried by every later tick inside the catch-up window.
   it('does not retry a failed fire on every later tick', async () => {
     const { deps } = setup([{ name: 'job', expression: '1 12 * * *' }]);
     deps.threadCreator = vi.fn(async () => undefined); // Slack returned no ts

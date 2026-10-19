@@ -5405,8 +5405,9 @@ describe('turn-end surface guarantee — P0 holes', () => {
     );
 
     const matches = Array.from(src.matchAll(/abortController\.abort\('ghost-session'/g));
-    // Two sites: onToolUse self-abort + onToolResult self-abort.
-    expect(matches.length).toBe(2);
+    // Four sites: onToolUse and onToolResult each check before and again after
+    // their status-write awaits (a delete can land during the await).
+    expect(matches.length).toBe(4);
   });
 
   // -------------------------------------------------------------------------

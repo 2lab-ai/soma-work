@@ -900,19 +900,25 @@ function lockfileProductionInstalls(root) {
 
 /**
  * Whether an installed dependency still carries the runtime files its manifest
- * points at. `main` must resolve the way Node resolves `require('<name>')`.
- * With `exports` instead, at least one concrete non-`types` target must exist:
- * published packages do ship root targets that do not exist
- * (`@modelcontextprotocol/sdk` declares `./dist/esm/index.js` and is only ever
- * imported by subpath), so requiring every target would refuse a correct
- * archive, while a tree whose built files were pruned has none of them. A
- * package that declares neither contributes no requirement.
+ * points at, in the order Node resolves `require('<name>')`:
  *
- * Returns an archive-relative path that is missing, or null.
+ * 1. `exports` (Node prefers it over `main`): at least one concrete code
+ *    target must exist. Published packages do ship root targets that do not
+ *    exist (`@modelcontextprotocol/sdk` declares `./dist/esm/index.js` and is
+ *    only imported by subpath), so requiring every target would refuse a
+ *    correct archive, while a tree whose built files were pruned has none.
+ *    `./package.json`, declaration and source-map targets are not code and do
+ *    not count. An `exports` with no code target falls through to `main`.
+ * 2. `main` must resolve.
+ * 3. Neither: Node loads `index.js`, which must exist, unless the package is
+ *    types-only (declares `types`/`typings` and ships no `index.js`).
+ *
+ * Returns an archive-relative path that is missing (or an unreadable
+ * manifest), or null.
  */
 function missingDependencyEntry(dir, rel) {
   const manifest = readJson(path.join(dir, 'package.json'));
-  if (manifest === null) return null;
+  if (manifest === null) return `${rel}/package.json (unreadable)`;
   const resolves = (target) => {
     const base = path.join(dir, target);
     return ['', '.js', '.json', '.node', '/index.js', '/index.json', '/index.node'].some((suffix) => {
@@ -924,15 +930,20 @@ function missingDependencyEntry(dir, rel) {
     });
   };
   const display = (target) => path.posix.join(rel, target.replace(/^\.\//, ''));
+  const codeTargets = exportTargets(manifest.exports).filter((target) => !NON_CODE_TARGET.test(target));
+  if (codeTargets.length > 0) return codeTargets.some(resolves) ? null : display(codeTargets[0]);
   if (typeof manifest.main === 'string' && manifest.main.length > 0) {
     return resolves(manifest.main) ? null : display(manifest.main);
   }
-  const targets = exportTargets(manifest.exports);
-  if (targets.length === 0) return null;
-  return targets.some(resolves) ? null : display(targets[0]);
+  if (manifest.exports !== undefined && manifest.exports !== null) return null;
+  if (resolves('index')) return null;
+  const typesOnly = typeof manifest.types === 'string' || typeof manifest.typings === 'string';
+  return typesOnly ? null : display('index.js');
 }
 
-/** Every concrete, non-`types` file target of an `exports` field. */
+const NON_CODE_TARGET = /(?:^|\/)package\.json$|\.d\.[cm]?ts$|\.map$/;
+
+/** Every concrete (non-wildcard), non-`types` file target of an `exports` field. */
 function exportTargets(exported) {
   const targets = [];
   const collect = (node) => {
