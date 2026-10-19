@@ -258,10 +258,14 @@ export class CronScheduler {
    * Trace: S4, Section 3a — lastRunMinute dedup
    */
   private findDueMinute(job: CronJob, fromMinute: number, toMinute: number): number | null {
-    const createdMinute = typeof job.createdAt === 'string' ? job.createdAt.slice(0, 16) : '';
+    // Catch-up never reaches before the job, or its current schedule, existed.
+    const createdMinute = [job.createdAt, job.scheduleChangedAt]
+      .filter((t): t is string => typeof t === 'string')
+      .map((t) => t.slice(0, 16))
+      .reduce((a, b) => (b > a ? b : a), '');
     for (let m = fromMinute; m <= toMinute; m++) {
       const key = minuteKey(m);
-      if (key < createdMinute) continue; // catch-up never reaches before the job existed
+      if (key < createdMinute) continue;
       if (job.lastRunMinute && job.lastRunMinute >= key) continue;
       if (matchesCronExpression(job.expression, new Date(m * MINUTE_MS))) return m;
     }
