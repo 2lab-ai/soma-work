@@ -169,6 +169,34 @@ describe('CronScheduler — no lost minutes', () => {
     expect(fired()).toEqual([]);
   });
 
+  it('does not catch up an occurrence from before the schedule was edited', async () => {
+    const { storage, deps, fired } = setup([{ name: 'edited', expression: '0 0 * * *' }]);
+    const scheduler = new CronScheduler(deps);
+
+    at('2026-10-19T12:00:10Z');
+    await scheduler.tick();
+    at('2026-10-19T12:09:00Z');
+    storage.updateJob('U1', 'edited', { expression: '5 12 * * *' });
+    at('2026-10-19T12:10:10Z'); // window 12:01–12:10 includes 12:05, before the edit
+    await scheduler.tick();
+
+    expect(fired()).toEqual([]);
+  });
+
+  it('a non-schedule edit does not move the catch-up bound', async () => {
+    const { storage, deps, fired } = setup([{ name: 'renamed-prompt', expression: '5 12 * * *' }]);
+    const scheduler = new CronScheduler(deps);
+
+    at('2026-10-19T12:00:10Z');
+    await scheduler.tick();
+    at('2026-10-19T12:09:00Z');
+    storage.updateJob('U1', 'renamed-prompt', { prompt: 'new prompt' });
+    at('2026-10-19T12:10:10Z');
+    await scheduler.tick();
+
+    expect(fired()).toEqual(['renamed-prompt']);
+  });
+
   it('does not re-fire a job that a run-now covered while an earlier job of the tick awaited', async () => {
     const { deps, fired, injected } = setup([
       { name: 'slow', expression: '0 12 * * *' },
