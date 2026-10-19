@@ -45,7 +45,19 @@ describe('missingDependencyEntry', () => {
     };
     // Root target missing, a subpath present — the @modelcontextprotocol/sdk shape.
     expect(check(pkg({ exports: exportsMap }, ['dist/cjs/client.js']))).toBeNull();
-    expect(check(pkg({ exports: exportsMap }, ['dist/index.d.ts']))).toBe('node_modules/x/dist/esm/index.js');
+    expect(check(pkg({ exports: exportsMap }, ['dist/index.d.ts']))).toBe('node_modules/x/dist/cjs/index.js');
+  });
+
+  it('the require condition decides: a surviving ESM build does not hide a pruned CJS build', () => {
+    const exportsMap = { '.': { import: './dist/esm/index.js', require: './dist/cjs/index.js' } };
+    expect(check(pkg({ exports: exportsMap }, ['dist/esm/index.js']))).toBe('node_modules/x/dist/cjs/index.js');
+    expect(check(pkg({ exports: exportsMap }, ['dist/cjs/index.js']))).toBeNull();
+  });
+
+  it('an ESM-only package is checked on its import condition', () => {
+    const manifest = { exports: { '.': { import: './index.mjs' } } };
+    expect(check(pkg(manifest, ['index.mjs']))).toBeNull();
+    expect(check(pkg(manifest))).toBe('node_modules/x/index.mjs');
   });
 
   it('exports targets must name the file exactly (Node does no index/extension lookup there)', () => {
@@ -60,6 +72,11 @@ describe('missingDependencyEntry', () => {
 
   it('exports are consulted before main (a stale main does not refuse a working package)', () => {
     expect(check(pkg({ main: 'gone.js', exports: './dist/index.js' }, ['dist/index.js']))).toBeNull();
+  });
+
+  it('a stale main falls back to the root index.js, as Node does', () => {
+    expect(check(pkg({ main: 'gone.js' }, ['index.js']))).toBeNull();
+    expect(check(pkg({ main: 'gone.js' }))).toBe('node_modules/x/gone.js');
   });
 
   it('no main, no exports: the implicit index.js must exist', () => {

@@ -1688,6 +1688,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             sessionKey: ctx.sessionKey,
             say: ctx.say,
             logVerbosity: getVerbosity(),
+            // Checked at the tracker mutation itself: a delete can land while an
+            // earlier result of this batch awaits, after the guard above.
+            isSessionTerminated: () => session.terminated === true,
             // #664 P2 absorb: same turnId as the matching tool_use event,
             // so sink-side lookups stay on one B1 stream handle.
             turnId,

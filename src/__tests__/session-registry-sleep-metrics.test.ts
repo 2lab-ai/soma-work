@@ -58,6 +58,30 @@ describe('SessionRegistry — session_slept metric', () => {
     expect(emitter.emitSessionSlept).not.toHaveBeenCalled();
   });
 
+  // Both deletion paths must mark the session object terminated: in-flight
+  // stream callbacks hold the object and fence on that flag (ghost-session),
+  // and the sleep-expiry path awaits onExpiry between drain and delete.
+  it('sleep-expiry deletion marks the session terminated before notifying', async () => {
+    const reg = new SessionRegistry();
+    const session = reg.createSession('U1', 'User', 'C1', '500.004');
+    session.state = 'SLEEPING';
+    session.sleepStartedAt = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    let terminatedDuringExpiry: boolean | undefined;
+    reg.setExpiryCallbacks({
+      onWarning: async () => undefined,
+      onSleep: async () => undefined,
+      onExpiry: async (s) => {
+        terminatedDuringExpiry = s.terminated;
+      },
+    });
+
+    await reg.cleanupInactiveSessions(0);
+
+    expect(reg.getSession('C1', '500.004')).toBeUndefined();
+    expect(terminatedDuringExpiry).toBe(true);
+    expect(session.terminated).toBe(true);
+  });
+
   it('a failing metrics store does not break the sleep transition', async () => {
     emitter.emitSessionSlept.mockRejectedValueOnce(new Error('store down'));
     const reg = new SessionRegistry();
