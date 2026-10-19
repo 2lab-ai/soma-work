@@ -48,6 +48,11 @@ describe('missingDependencyEntry', () => {
     expect(check(pkg({ exports: exportsMap }, ['dist/index.d.ts']))).toBe('node_modules/x/dist/esm/index.js');
   });
 
+  it('exports targets must name the file exactly (Node does no index/extension lookup there)', () => {
+    expect(check(pkg({ exports: { '.': './dist' } }, ['dist/index.js']))).toBe('node_modules/x/dist');
+    expect(check(pkg({ exports: { '.': './dist/index.js' } }, ['dist/index.js']))).toBeNull();
+  });
+
   it('a ./package.json export does not stand in for pruned code', () => {
     const manifest = { exports: { '.': './dist/index.js', './package.json': './package.json' } };
     expect(check(pkg(manifest))).toBe('node_modules/x/dist/index.js');

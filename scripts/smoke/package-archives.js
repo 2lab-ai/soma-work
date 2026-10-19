@@ -908,7 +908,9 @@ function lockfileProductionInstalls(root) {
  *    only imported by subpath), so requiring every target would refuse a
  *    correct archive, while a tree whose built files were pruned has none.
  *    `./package.json`, declaration and source-map targets are not code and do
- *    not count. An `exports` with no code target falls through to `main`.
+ *    not count. Targets must name the file exactly: Node applies no extension
+ *    or `index.js` resolution to `exports`. An `exports` with no code target
+ *    falls through to `main`.
  * 2. `main` must resolve.
  * 3. Neither: Node loads `index.js`, which must exist, unless the package is
  *    types-only (declares `types`/`typings` and ships no `index.js`).
@@ -919,19 +921,22 @@ function lockfileProductionInstalls(root) {
 function missingDependencyEntry(dir, rel) {
   const manifest = readJson(path.join(dir, 'package.json'));
   if (manifest === null) return `${rel}/package.json (unreadable)`;
-  const resolves = (target) => {
-    const base = path.join(dir, target);
-    return ['', '.js', '.json', '.node', '/index.js', '/index.json', '/index.node'].some((suffix) => {
-      try {
-        return fs.statSync(base + suffix).isFile();
-      } catch {
-        return false;
-      }
-    });
+  const isFile = (file) => {
+    try {
+      return fs.statSync(file).isFile();
+    } catch {
+      return false;
+    }
   };
+  // `require` semantics for `main` and the implicit entry.
+  const resolves = (target) =>
+    ['', '.js', '.json', '.node', '/index.js', '/index.json', '/index.node'].some((suffix) =>
+      isFile(path.join(dir, target) + suffix),
+    );
+  const existsExactly = (target) => isFile(path.join(dir, target));
   const display = (target) => path.posix.join(rel, target.replace(/^\.\//, ''));
   const codeTargets = exportTargets(manifest.exports).filter((target) => !NON_CODE_TARGET.test(target));
-  if (codeTargets.length > 0) return codeTargets.some(resolves) ? null : display(codeTargets[0]);
+  if (codeTargets.length > 0) return codeTargets.some(existsExactly) ? null : display(codeTargets[0]);
   if (typeof manifest.main === 'string' && manifest.main.length > 0) {
     return resolves(manifest.main) ? null : display(manifest.main);
   }
