@@ -106,11 +106,17 @@ task list와 유저가 꼭 알아야 할 것만 남고, 모델의 실시간 작�
 3. minimal에서 모델 서술(턴 중간 텍스트)은 Slack에 가지 않는다. 턴의 최종 답변(SDK `finalText`)만 간다. "Slack에 보냈는가"는
    `currentMessages`(기록용)와 따로 추적한다 — 서술을 보류했으면 `finalText`가 같은 문자열이어도 한 번 보낸다.
    선택 질문 JSON·인시던트 결론(`context.incidentAttempt`)·오류는 간다.
+   여기서 오류 = 유저나 턴에 영향을 주는 오류다. 모델 커맨드 결과 중 유저 대면 오류는 모든 수준에서 Slack에 가고 작업 로그에도 남는다:
+   ASK_USER_QUESTION 실패·응답 파싱·연결 실패(커맨드를 알 수 없고 MCP가 끊긴 채 질문하던 #816 모양 — 안 가면 유저는 뜨지 않을 선택 폼을
+   기다린다) = `error`, 모델이 볼 수 없는 호스트 측 실패(도구 결과는 ok였다 — UPDATE_SESSION 호스트 적용 실패 = `error`, SET_GOAL 거절 =
+   `notice`). 모델이 자기 도구 결과로 받는 실패(인자 오류, 본문 ok의 wire-level `isError`)만 minimal에서 작업 로그 `error`로만 가고,
+   Slack에는 `TOOL_CALL` 수준(compact 이상)에서 간다. SET_GOAL 목표 시작·대기 공지(🎯/📋)는 상태 공지라 goal 루프 진행 공지와 같이
+   `STATUS_MESSAGE`(compact 이상)에서만 가고 작업 로그 `notice`로 남는다.
    빈 턴 금지: 최종 답변이 아무것도 보여주지 않으면(`finalText` 없음·빈 문자열·지시문뿐·공백뿐, `result` 없음) 마지막으로 보류한
    서술을 최종 답변으로 한 번 보낸다. 예외 = 호스트가 이 턴에 선택 질문 폼을 올렸을 때, 턴이 전송 오류 누출로 끝났을 때(executor가
    복구). 최종 답변을 Slack에 보냈으면 그 턴은 누출로 끝난 턴이 아니다.
 4. minimal에서 압축 시작/완료 공지는 Slack에 가지 않는다(작업 로그 `notice`).
-5. 남는 Slack 표면(minimal): 스레드 헤더(대시보드 링크 포함) · task list · 최종 답변(+완료 카드) · 선택 질문/승인 · 오류.
+5. 남는 Slack 표면(minimal): 스레드 헤더(대시보드 링크 포함) · task list · 최종 답변(+완료 카드) · 선택 질문/승인 · 오류(유저·턴에 영향을 주는 것, 3항).
 
 ### 3.3 작업 로그 계약
 ```ts
