@@ -7,7 +7,7 @@ vi.mock('../slack/autoskill-fire', () => ({
 
 import type { FollowupQueueSnapshot } from '@soma/slack/followup-queue';
 import {
-  buildFollowupQueueBlocks,
+  buildFollowupItemMessage,
   FOLLOWUP_CANCEL_ACTION_ID,
   FOLLOWUP_SEND_NOW_ACTION_ID,
   type FollowupQueueView,
@@ -753,7 +753,7 @@ describe('SlackHandler — follow-up queue host', () => {
 
     /**
      * The view the CONTROL side is wired with: the command router's `queue`
-     * handler, the one production caller of the item/panel builders.
+     * handler, the one production caller of the item-message builder.
      */
     function controlView(key: string) {
       const queueHandler = handlerAny.commandRouter.handlers.find((h: unknown) => h instanceof QueueHandler);
@@ -983,16 +983,17 @@ describe('SlackHandler — follow-up queue host', () => {
      * to (`followup-dispatcher.ts` `staleTurn`, `FollowupQueue.reserve`), so it
      * must be minted from that counter — on main the two were the same number.
      */
-    it('gives control producers the counter the dispatcher checks (queue-panel deps + block encoder), not the overlaid surface epoch', async () => {
+    it('gives control producers the counter the dispatcher checks (queue-command deps + item-message encoder), not the overlaid surface epoch', async () => {
       const turn = await startMigratedTurn();
       try {
         await handler.handleMessage(message({ ts: '333.555', thread_ts: '999.000', text: '작업 스레드 후속' }), say());
         expect(surfaceView(WORK_KEY)?.turnEpoch, 'the surface fence reads the slot').toBe(turn.turnEpoch);
 
-        const { blocks } = buildFollowupQueueBlocks(controlView(WORK_KEY), { compact: false });
-        const button = (blocks as any[])
-          .map((block) => block?.accessory)
-          .find((accessory) => accessory?.action_id === FOLLOWUP_SEND_NOW_ACTION_ID);
+        const view = controlView(WORK_KEY);
+        const button = (view?.items ?? [])
+          .flatMap((entry: any) => buildFollowupItemMessage(entry, view?.turnEpoch ?? 0).blocks as any[])
+          .flatMap((block: any) => (block?.type === 'actions' ? block.elements : []))
+          .find((element: any) => element?.action_id === FOLLOWUP_SEND_NOW_ACTION_ID);
         const value = parseFollowupItemActionValue(button?.value);
         if (!value || value.turnEpoch === undefined) throw new Error('no Send now button was minted');
         expect(value.sessionKey).toBe(WORK_KEY);
