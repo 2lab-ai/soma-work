@@ -11,8 +11,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
-const { missingDependencyEntry } = require('../smoke/package-archives.js') as {
+const { missingDependencyEntry, unresolvedFirstPartyRequires } = require('../smoke/package-archives.js') as {
   missingDependencyEntry: (dir: string, rel: string) => string | null;
+  unresolvedFirstPartyRequires: (root: string) => string[];
 };
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'dep-entry-'));
@@ -94,5 +95,55 @@ describe('missingDependencyEntry', () => {
 
   it('an unreadable manifest is a refusal, not a pass', () => {
     expect(check(pkg('{ not json'))).toBe('node_modules/x/package.json (unreadable)');
+  });
+});
+
+/**
+ * `unresolvedFirstPartyRequires` — what the shipped code actually loads.
+ *
+ * The per-package entry check passes a package while any one subpath survives
+ * (it must: `@modelcontextprotocol/sdk` ships a root target that does not
+ * exist). Only the requiring code knows which subpath the runtime needs.
+ */
+describe('unresolvedFirstPartyRequires', () => {
+  function archive(sdkFiles: string[]): string {
+    const root = path.join(scratch, `a${n++}`);
+    const write = (rel: string, body = '') => {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), body);
+    };
+    write(
+      'dist/app.js',
+      [
+        "const server = require('sdk/server');",
+        'const client = require("sdk/client");',
+        "const fs = require('fs'); const p = require('node:path'); const local = require('./local');",
+      ].join('\n'),
+    );
+    write('dist/local.js');
+    write(
+      'node_modules/sdk/package.json',
+      JSON.stringify({
+        exports: {
+          '.': { require: './dist/cjs/index.js' },
+          './server': { import: './dist/esm/server.js', require: './dist/cjs/server.js' },
+          './client': { import: './dist/esm/client.js', require: './dist/cjs/client.js' },
+        },
+      }),
+    );
+    for (const file of sdkFiles) write(`node_modules/sdk/${file}`);
+    // dependency code is not first-party: its own unresolved requires are not ours to judge
+    write('node_modules/sdk/dist/cjs/optional.js', "try { require('not-installed') } catch {}");
+    return root;
+  }
+
+  it('reports a required subpath whose CJS build was pruned while a sibling subpath survives', () => {
+    const root = archive(['dist/cjs/client.js', 'dist/esm/server.js']);
+    expect(unresolvedFirstPartyRequires(root)).toEqual(['dist/app.js: sdk/server']);
+  });
+
+  it('passes when every required subpath resolves, even if the unused root target is missing', () => {
+    const root = archive(['dist/cjs/client.js', 'dist/cjs/server.js']);
+    expect(unresolvedFirstPartyRequires(root)).toEqual([]);
   });
 });

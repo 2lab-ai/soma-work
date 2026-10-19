@@ -844,6 +844,21 @@ function checkRuntimeDependencies(asset, root, layout) {
     );
   }
 
+  // The entry check above cannot say which subpath the runtime loads (one
+  // surviving subpath satisfies it). Resolve what the shipped code actually
+  // requires, with Node's own resolver.
+  let unresolved;
+  try {
+    unresolved = unresolvedFirstPartyRequires(root);
+  } catch (error) {
+    unresolved = [`<scan failed: ${error && error.message ? error.message : String(error)}>`];
+  }
+  check(
+    unresolved.length === 0,
+    `${asset}: every dependency the shipped code requires resolves inside the archive`,
+    unresolved.slice(0, 8).join(', '),
+  );
+
   const workspaces = archiveWorkspaceEntries(root);
   check(workspaces.unsupported.length === 0, `${asset}: every workspace pattern is one this gate can expand`, workspaces.unsupported.join(', '));
   check(workspaces.entries.length > 0, `${asset}: the archive manifest expands to at least one workspace package`);
@@ -995,6 +1010,51 @@ function exportEntryTargets(exported, conditions) {
     .map(resolve)
     .filter((target) => typeof target === 'string' && !target.includes('*') && !NON_CODE_TARGET.test(target));
 }
+
+/**
+ * Every bare `require('<specifier>')` in the archive's first-party JavaScript
+ * (everything outside dependency trees), resolved from the requiring file's
+ * directory with Node's own resolver — `exports` conditions, `main`,
+ * extensions and `index.js` exactly as the runtime will. Relative paths,
+ * `node:` and builtin modules are not dependencies and are skipped; a
+ * non-literal `require(expr)` cannot be read and is not seen.
+ *
+ * This is the check that knows which subpath the runtime loads: the
+ * per-package entry check passes `@modelcontextprotocol/sdk` while any one of
+ * its subpaths survives; this one fails when the subpath the code requires is
+ * gone.
+ *
+ * Returns `<file>: <specifier>` for every specifier that does not resolve.
+ */
+function unresolvedFirstPartyRequires(root) {
+  const missing = [];
+  const resolved = new Map();
+  for (const { rel, dirent } of walk(root)) {
+    if (!dirent.isFile() || isDependencyPath(rel) || !/\.c?js$/.test(rel)) continue;
+    const source = fs.readFileSync(path.join(root, rel), 'utf8');
+    const fromDir = path.join(root, path.dirname(rel));
+    for (const match of source.matchAll(REQUIRE_CALL_RE)) {
+      const specifier = match[2];
+      if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:')) continue;
+      if (BUILTIN_MODULES.has(specifier)) continue;
+      const key = `${fromDir}\0${specifier}`;
+      if (!resolved.has(key)) {
+        let ok = true;
+        try {
+          require.resolve(specifier, { paths: [fromDir] });
+        } catch {
+          ok = false;
+        }
+        resolved.set(key, ok);
+      }
+      if (!resolved.get(key)) missing.push(`${rel}: ${specifier}`);
+    }
+  }
+  return missing;
+}
+
+const REQUIRE_CALL_RE = /\brequire\(\s*(['"])([^'"\n]+)\1\s*\)/g;
+const BUILTIN_MODULES = new Set(require('node:module').builtinModules);
 
 /**
  * The subset of {@link lockfileProductionInstalls} that lives inside a
@@ -1227,6 +1287,7 @@ module.exports = {
   lockfileProductionInstalls,
   lockfileWorkspaceNestedInstalls,
   missingDependencyEntry,
+  unresolvedFirstPartyRequires,
   isNativeExecutable,
   walk,
 };
