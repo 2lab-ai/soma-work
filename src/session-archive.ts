@@ -347,11 +347,3 @@ export function getArchiveStore(): SessionArchiveStore {
   }
   return _instance;
 }
-
-/**
- * Initialize with custom base directory (for testing).
- */
-function initArchiveStore(baseDir?: string): SessionArchiveStore {
-  _instance = new SessionArchiveStore(baseDir);
-  return _instance;
-}

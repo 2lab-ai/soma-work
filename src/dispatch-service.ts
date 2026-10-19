@@ -8,7 +8,7 @@ import * as path from 'path';
 import type { ClaudeHandler } from './claude-handler';
 import { type ComplexityResult, scoreComplexity } from './complexity-scorer';
 import { Logger } from './logger';
-import { SessionLink, type SessionLinks, type WorkflowType } from './types';
+import type { SessionLinks, WorkflowType } from './types';
 
 /**
  * Decode Slack HTML entities in text.

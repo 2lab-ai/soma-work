@@ -13,7 +13,6 @@ import {
   type SDKMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import * as fs from 'fs';
-import * as path from 'path';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { liveAgentIds } from './agent-runtime/background-keepalive';
 import { buildStreamOptions } from './agent-runtime/claude-code/build-stream-options';
