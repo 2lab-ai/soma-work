@@ -2507,11 +2507,11 @@ describe('SlackHandler — #1082 goal-prefixed first message', () => {
       expect.anything(),
     );
 
-    // 4. Model-turn text is the goal continuation prompt, not the raw text.
+    // 4. D1: the model turn is the raw objective — no continuation wrapper.
+    // Goal rules reach the model through the rebuilt <session-goal> block.
     expect(execute).toHaveBeenCalledTimes(1);
     const dispatched = execute.mock.calls[0][0].text as string;
-    expect(dispatched).toContain('Continue working toward the active session goal');
-    expect(dispatched).toContain('ship the feature');
+    expect(dispatched).toBe('ship the feature');
   });
 
   it('continueWithPrompt (goal+skill split) wins as dispatch text while the goal is still applied', async () => {

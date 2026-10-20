@@ -97,7 +97,8 @@ describe('SlackHandler — autogoal notice follows the session verbosity', () =>
     expect(recorded[0][1].text).toContain('ship the dashboard');
     expect(registrySession.goal?.status).toBe('active');
     expect(registrySession.goal?.objective).toBe('ship the dashboard');
-    expect(dispatched).not.toBe('ship the dashboard');
+    // D1: autogoal dispatches the user's instruction verbatim.
+    expect(dispatched).toBe('ship the dashboard');
   });
 
   it.each([

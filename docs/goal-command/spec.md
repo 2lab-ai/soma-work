@@ -30,7 +30,7 @@ Source handles used for this spec:
 Add a Slack command family for the current thread/session:
 
 - `goal` or `/goal`: show the current session goal.
-- `goal <objective>` or `goal set <objective>`: set or replace the active goal and continue the model with goal-steering context.
+- `goal <objective>` or `goal set <objective>`: set or replace the active goal and continue the model with the objective itself as the opening turn (steering rules come from the `<session-goal>` system block).
 - `goal status`: alias for showing the current goal.
 - `goal pause`: keep the objective but stop injecting it into future prompts.
 - `goal resume`: reactivate a paused goal.
@@ -81,12 +81,13 @@ Legacy goals serialized before this followup (lacking the ralph-loop fields) are
 
 Only active goals are injected into the system prompt. Paused and complete goals remain visible through `goal status` but do not steer the model.
 
-The injected block must:
+The `<session-goal>` block is the **single** place the objective and the steering rules reach the model. It must:
 
-- XML-escape objective delimiters (`&`, `<`, `>`) before prompt insertion.
-- State that the objective is user-provided task data, not higher-priority instruction.
-- Preserve Codex's completion-audit rule: completion must be proven against the current workspace or external state before the assistant says the goal is complete.
+- Escape the tag delimiters `<` and `>` so the objective cannot open or close a tag. `&` is deliberately left alone: Slack already delivers `<`/`>`/`&` as `&lt;`/`&gt;`/`&amp;`, and re-escaping `&` turned every `&gt;` into `&amp;gt;`.
+- Carry exactly four rules: the goal persists across turns and a host evaluator (not the model) decides completion; do not shrink the objective; end each turn with a short summary of actions and evidence (the evaluator's input); say the goal is done only when every requirement has concrete evidence.
 - Avoid claiming a local `update_goal` tool exists. Completion is adjudicated by the host eval model, which forks a clean eval turn after every turn end; the work model never flips the status itself.
+
+**Opening turn.** Every surface that starts a goal — autogoal promotion, `goal <objective>` / `new goal <objective>`, a goal-prefixed first message, and `goal done` advancing to the next queued goal — dispatches the user's raw text (or the promoted objective) as the turn's message. The turn is never rewritten into a continuation prompt: that duplicated the objective and ~4 KB of rules into the user message, the conversation record, and the work log, and made episodic memory skip the real first instruction as a "system re-injection".
 
 Changing goal state (set/pause/resume/complete/clear, plus every ralph-loop continuation and every eval verdict) must clear `session.systemPrompt` so the next model turn rebuilds against the current goal. This applies because `applySessionGoal` only injects when `goal.status === 'active'`, and the cached prompt would otherwise embed a stale steering block.
 
@@ -129,13 +130,11 @@ On a valid (in-epoch) verdict it stamps `pendingEval`, clears `systemPrompt`, ru
 
 **User-message reset:** A real user message zeroes `continuationCount` and bumps the intent `epoch`. It does **not** clear `pendingEval` — an in-flight eval triggered by a previous turn must still resolve — but the epoch bump makes `GoalLoopController` discard that eval's (now stale) verdict when it returns (M1).
 
-**Continuation prompt body** is the codex `continuation.md` template ported into `buildGoalContinuationPrompt`, with three Slack-environment adaptations:
+**Continuation prompt body** (`buildGoalContinuationPrompt`) is one line: `Continue working toward the active session goal (objective in <session-goal>). Auto-continuation N/cap.` The objective and rules are not repeated — they already sit in the `<session-goal>` system block. The first sentence is also the episodic-memory filter marker (`memory-auto-capture.ts`), so it must stay verbatim. There is **no** `<goal-complete-request>` sentinel (N10); the host runs an eval after every active-goal turn regardless.
 
-- The token-budget block is replaced by `Continuation turns used / cap / remaining`, which is the real governor in this environment.
-- The `update_goal` tool reference is replaced by a plain-language completion self-assessment (N10 — there is **no** `<goal-complete-request>` sentinel; the host never parsed one). The model is told it cannot mark the goal complete itself and to state a completion belief with evidence in its closing summary; that text is one input to the eval's work-summary evidence. It is **not** a loop trigger — the host runs an eval after every active-goal turn regardless.
-- When `session.goal.lastEvalReason` is set, the prompt appends a `### Previous evaluation gap` section reproducing the verdict verbatim so the next turn closes that specific gap.
+When `session.goal.lastEvalReason` is set, the prompt appends a `Previous evaluation gap` line and the verdict inside `<previous-eval-reason>` (tag delimiters escaped) so the next turn closes that specific gap.
 
-The Fidelity and Completion-audit sections are carried verbatim from codex. The codex Blocked-audit is dropped (N11 — the `blocked` status is not implemented); the prompt instead carries a lightweight "impasse" note that tells the model not to give up early and to keep going rather than self-declare a stop.
+The codex `continuation.md` Fidelity, Completion-audit, and Impasse sections are intentionally **not** carried: the host evaluator re-audits completion every turn, "do not shrink the objective" covers Fidelity, and the loop itself re-injects turns, so an Impasse rule only added ~3 KB per turn and contradicted user instructions to stop for confirmation.
 
 ## Completion via Host-Side Eval Model
 

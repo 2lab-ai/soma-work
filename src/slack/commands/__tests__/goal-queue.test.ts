@@ -217,7 +217,7 @@ describe('GoalHandler — queue behavior (T2)', () => {
     const result = await handler.execute(makeCtx({ text: 'goal ship it' }));
 
     expect(session.goal?.objective).toBe('ship it');
-    expect(result.continueWithPrompt).toBeTruthy();
+    expect(result.continueWithPrompt).toBe('ship it');
   });
 
   it('`goal done` advances to the next queued goal and continues it', async () => {
@@ -232,8 +232,9 @@ describe('GoalHandler — queue behavior (T2)', () => {
     expect(session.goal?.status).toBe('active');
     expect(session.goalHistory?.[0].objective).toBe('first goal');
     expect(session.goalHistory?.[0].completedVia).toBe('user');
-    // advancing to a queued goal re-enters the loop
-    expect(result.continueWithPrompt).toBeTruthy();
+    // advancing to a queued goal re-enters the loop with that goal's own
+    // words (D1) — the rules ride in the rebuilt <session-goal> block.
+    expect(result.continueWithPrompt).toBe('second goal');
   });
 });
 
