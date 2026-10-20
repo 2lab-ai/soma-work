@@ -2578,6 +2578,34 @@ describe('SlackHandler — #1082 goal-prefixed first message', () => {
     expect(execute.mock.calls[0][0].literalPrompt).toBe(true);
   });
 
+  // Round-3 review (astra): a goal command already ran when the turn reaches
+  // session init. If init stashes the turn for a post-compact replay, the
+  // stash must replay the objective verbatim — so the event handed to
+  // `initialize` carries the marker the stash copies onto its context.
+  it('hands session init a verbatim-marked event after a goal command ran', async () => {
+    const { handler, handlerAny } = buildGoalHarness({
+      handled: true,
+      continueWithPrompt: 'new dashboard 구현',
+      verbatimPrompt: true,
+    });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: 'goal new dashboard 구현' } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    const [initEvent, , initText] = handlerAny.sessionInitializer.initialize.mock.calls[0];
+    expect(initText).toBe('new dashboard 구현');
+    expect(initEvent.routeContext?.verbatimPrompt).toBe(true);
+  });
+
+  it('does not mark an ordinary message for verbatim replay', async () => {
+    const { handler, handlerAny } = buildGoalHarness({ handled: false });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: 'new dashboard 구현' } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    expect(handlerAny.sessionInitializer.initialize.mock.calls[0][0].routeContext?.verbatimPrompt).toBeUndefined();
+  });
+
   it('a verbatim `/z goal` objective is a literal turn too', async () => {
     const { handler, execute } = buildGoalHarness({ handled: false });
     await handler.handleMessage(
