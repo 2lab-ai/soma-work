@@ -216,6 +216,55 @@ function summarizeToolCall(name: string, input: unknown): string {
   return text.length <= WORK_LOG_TOOL_TEXT_MAX ? text : ToolFormatter.truncateString(text, WORK_LOG_TOOL_TEXT_MAX - 3);
 }
 
+/** `String(value)`, or undefined when even that throws (e.g. a null-prototype object). */
+function safeString(value: unknown): string | undefined {
+  try {
+    return String(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Work-log `raw` for a tool call: its whole input, pretty-printed. None without input. */
+function toolInputRaw(input: unknown): string | undefined {
+  if (input === undefined || input === null) return undefined;
+  try {
+    return JSON.stringify(input, null, 2) ?? safeString(input);
+  } catch {
+    return safeString(input); // circular, BigInt, a throwing toJSON
+  }
+}
+
+/**
+ * Work-log `raw` for a tool result: the content as the SDK delivered it. A
+ * string as-is; a block array as its text blocks' text, `[image]` per image and
+ * other blocks as JSON, one per line; any other value as pretty JSON. None
+ * without content.
+ */
+function toolResultRaw(result: unknown): string | undefined {
+  if (result === undefined || result === null) return undefined;
+  if (typeof result === 'string') return result;
+  if (Array.isArray(result)) {
+    return result
+      .map((block) => {
+        const typed = block as { type?: unknown; text?: unknown } | null;
+        if (typed?.type === 'text' && typeof typed.text === 'string') return typed.text;
+        if (typed?.type === 'image') return '[image]';
+        try {
+          return JSON.stringify(block) ?? safeString(block) ?? '';
+        } catch {
+          return safeString(block) ?? '';
+        }
+      })
+      .join('\n');
+  }
+  try {
+    return JSON.stringify(result, null, 2) ?? safeString(result);
+  } catch {
+    return safeString(result);
+  }
+}
+
 /**
  * One assistant text segment's delivery state. `withheld` = narration kept off
  * Slack by the verbosity, still owed if it turns out to be the final answer;
@@ -1419,10 +1468,12 @@ export class AgentStreamProcessor {
         ToolFormatter.buildToolUseLogSummary(toolUse.id, toolUse.name, toolUse.input),
       );
       this.toolNamesById.set(toolUse.id, toolUse.name);
+      const raw = toolInputRaw(toolUse.input);
       this.emitWorkLog(context, {
         kind: 'tool',
         tool: toolUse.name,
         text: summarizeToolCall(toolUse.name, toolUse.input),
+        ...(raw !== undefined ? { raw } : {}),
       });
     }
 
@@ -1824,7 +1875,14 @@ export class AgentStreamProcessor {
       const tool = toolResult.toolName ?? this.toolNamesById.get(toolResult.toolUseId) ?? 'unknown';
       this.toolNamesById.delete(toolResult.toolUseId);
       const ok = toolResult.isError !== true;
-      this.emitWorkLog(context, { kind: 'tool_result', tool, ok, text: `${tool} ${ok ? 'ok' : 'error'}` });
+      const raw = toolResultRaw(toolResult.result);
+      this.emitWorkLog(context, {
+        kind: 'tool_result',
+        tool,
+        ok,
+        text: `${tool} ${ok ? 'ok' : 'error'}`,
+        ...(raw !== undefined ? { raw } : {}),
+      });
     }
 
     if (toolResults.length > 0 && this.callbacks.onToolResult) {
