@@ -6038,6 +6038,7 @@ var WL_EMPTY_MSG = '작업 로그 없음';
 var WL_FORBIDDEN_MSG = '작업 로그는 세션 소유자만 볼 수 있어요';
 var WL_RAW_MISSING_MSG = '원본 출력이 저장되어 있지 않습니다';
 var WL_RAW_ERROR_MSG = '원본 출력을 불러오지 못했어요';
+var WL_RAW_DAMAGED_MSG = '로그가 손상되어 원본을 읽을 수 없습니다';
 var _wl = null;  // work-log state of the conversation open in the panel
 var _panelFocusWorkLog = false;
 
@@ -6217,8 +6218,10 @@ function wlRecover(state, fetchJson, onAdded, reason) {
 // Raw output of one entry (§3.1-6). An entry with rawBytes has its full output
 // stored: GET …/worklog/:seq/raw → { seq, raw, rawBytes, rawTruncated }, asked
 // once per (panel state, seq) — the promise is kept on the state, and a new
-// state (resetWorkLog) starts without it. 404 / 403 settle for good; 503 and
-// network failures are not kept, so 다시 시도 asks again.
+// state (resetWorkLog) starts without it. 404 (not stored), 403 (owner only)
+// and 503 (the log is damaged; the answer stays the same until it is repaired)
+// settle for good. A network failure is not kept and offers 다시 시도; any
+// other HTTP error is not kept either (reopening asks again) but offers no retry.
 function wlRawUrl(convId, seq) {
   return wlUrl(convId, null) + '/' + Math.max(0, Math.floor(Number(seq) || 0)) + '/raw';
 }
@@ -6236,8 +6239,9 @@ function wlRawLoad(state, seq, fetchJson) {
     var status = err && err.status;
     if (status === 404) return { status: 'missing' };
     if (status === 403) return { status: 'denied' };
+    if (status === 503) return { status: 'damaged' };
     if (cache[seq] === p) delete cache[seq];
-    return { status: 'error' };
+    return { status: typeof status === 'number' ? 'failed' : 'error' };
   });
   cache[seq] = p;
   return p;
@@ -6251,11 +6255,13 @@ function formatBytes(n) {
 }
 // The detail block under an open entry: the full output in a <pre> (with a
 // copy button), or the line for a load in flight / not stored / owner-only /
-// a failure that can be retried.
+// a damaged log / an HTTP failure / a network failure (the only one with 다시 시도).
 function renderWorkLogDetail(r) {
   if (r.status === 'loading') return '<div class="wl-detail-msg is-loading">원본 출력 불러오는 중…</div>';
   if (r.status === 'missing') return '<div class="wl-detail-msg">' + esc(WL_RAW_MISSING_MSG) + '</div>';
   if (r.status === 'denied') return '<div class="wl-detail-msg">' + esc(WL_FORBIDDEN_MSG) + '</div>';
+  if (r.status === 'damaged') return '<div class="wl-detail-msg">' + esc(WL_RAW_DAMAGED_MSG) + '</div>';
+  if (r.status === 'failed') return '<div class="wl-detail-msg">' + esc(WL_RAW_ERROR_MSG) + '</div>';
   if (r.status === 'error') {
     return '<div class="wl-detail-msg">' + esc(WL_RAW_ERROR_MSG)
       + '<button type="button" class="wl-detail-btn" data-wl-act="retry">다시 시도</button></div>';
@@ -6432,6 +6438,7 @@ function paintWorkLog(state, added) {
     if (node) list.insertBefore(node, list.children[added[i].index] || null);
   }
   setTextIfChanged(document.getElementById('worklog-count'), String(state.entries.length));
+  wlEnsureTabStop(list);
   // Tail-follow, unless the reader has an entry's detail open.
   if (!state.painted || (atBottom && !wlDetailOpen(state))) list.scrollTop = list.scrollHeight;
   state.painted = true;
@@ -6459,11 +6466,14 @@ function renderWorkLogEntry(e) {
   var timeHtml = time ? '<span class="wl-time">' + time + '</span>' : '';
   var seq = Math.floor(Number(e.seq) || 0);
   var seqAttr = ' data-seq="' + seq + '"';
-  // One root per entry: the row (role=button) and its detail block (§3.1-6).
+  // One root per entry: the row (role=button, out of the tab order — the list
+  // keeps one roving stop) and its detail block (§3.1-6).
   function rowOpen(extra) {
-    return '<div class="wl-row' + (extra || '') + '" role="button" tabindex="0" aria-expanded="false" aria-controls="wl-detail-' + seq + '">';
+    return '<div class="wl-row' + (extra || '') + '" role="button" tabindex="-1" aria-expanded="false" aria-controls="wl-detail-' + seq + '">';
   }
-  var detailHtml = '<div class="wl-detail" id="wl-detail-' + seq + '" hidden></div>';
+  // aria-live="off": the list is role=log (polite), and an opened raw output
+  // of up to 256 KiB must not be read out in full.
+  var detailHtml = '<div class="wl-detail" id="wl-detail-' + seq + '" aria-live="off" hidden></div>';
   var text = String(e.text || '');
   if (kind === 'tool' || kind === 'tool_result') {
     var fail = kind === 'tool_result' && e.ok === false;
@@ -6492,6 +6502,28 @@ function renderWorkLogEntry(e) {
     + '</div>' + detailHtml + '</div>';
 }
 
+// Roving tabindex (§3.1-6): the list is one tab stop. The first paint puts it
+// on the newest row (where the tail-followed list is looking); focusing a row
+// (click, arrows) moves it there. ArrowUp / ArrowDown step, Home / End jump.
+function wlRovingIndex(key, i, n) {
+  if (n <= 0) return -1;
+  if (key === 'ArrowDown') return Math.min(n - 1, i + 1);
+  if (key === 'ArrowUp') return Math.max(0, i - 1);
+  if (key === 'Home') return 0;
+  if (key === 'End') return n - 1;
+  return -1;
+}
+function wlEnsureTabStop(list) {
+  if (!list || !list.querySelector || list.querySelector('.wl-row[tabindex="0"]')) return;
+  var rows = list.querySelectorAll('.wl-row');
+  if (rows.length) rows[rows.length - 1].setAttribute('tabindex', '0');
+}
+function wlSetTabStop(list, row) {
+  var old = list.querySelectorAll('.wl-row[tabindex="0"]');
+  for (var i = 0; i < old.length; i++) if (old[i] !== row) old[i].setAttribute('tabindex', '-1');
+  if (row.getAttribute('tabindex') !== '0') row.setAttribute('tabindex', '0');
+}
+
 // Rows open / close their detail on click, Enter or Space; clicks inside an
 // open detail (the <pre>, 복사, 다시 시도) never toggle it.
 (function initWorkLogInteractions() {
@@ -6517,11 +6549,22 @@ function renderWorkLogEntry(e) {
     toggleWorkLogEntry(seqOf(row));
   });
   list.addEventListener('keydown', function(e) {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
     var row = e.target;
     if (!row.classList || !row.classList.contains('wl-row')) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      toggleWorkLogEntry(seqOf(row));
+      return;
+    }
+    var rows = Array.prototype.slice.call(list.querySelectorAll('.wl-row'));
+    var j = wlRovingIndex(e.key, rows.indexOf(row), rows.length);
+    if (j < 0) return;
     e.preventDefault();
-    toggleWorkLogEntry(seqOf(row));
+    rows[j].focus(); // focusin moves the tab stop
+  });
+  list.addEventListener('focusin', function(e) {
+    var row = e.target;
+    if (row && row.classList && row.classList.contains('wl-row')) wlSetTabStop(list, row);
   });
 })();
 
@@ -6985,8 +7028,13 @@ function panelOlderStep(armed, inZone, canLoad) {
   var scrollEl = document.getElementById('panel-scroll');
   var turnsEl = document.getElementById('panel-turns');
   if (!scrollEl || !turnsEl) return;
+  var lastTop = 0;
   scrollEl.addEventListener('scroll', function() {
-    if (scrollEl.scrollHeight - scrollEl.clientHeight - scrollEl.scrollTop > 4) _panelStickBottom = false;
+    // Only the reader moving up ends the stick; the area shrinking under a
+    // resting scrollTop (a late subtitle) does not.
+    var top = scrollEl.scrollTop;
+    if (top < lastTop && scrollEl.scrollHeight - scrollEl.clientHeight - top > 4) _panelStickBottom = false;
+    lastTop = top;
     var first = turnsEl.querySelector('.turn');
     if (!first) return;
     var inZone = olderTurnsZone(first.getBoundingClientRect().top, scrollEl.getBoundingClientRect().top);
@@ -6995,10 +7043,14 @@ function panelOlderStep(armed, inZone, canLoad) {
     _panelOlderArmed = step.armed;
     if (step.load) loadMorePanelTurns();
   }, { passive: true });
+  // The area shrinking (a subtitle arriving) or the turns growing after the
+  // landing (late fonts, images) both leave the default landing short of the end.
   if (typeof ResizeObserver === 'function') {
-    new ResizeObserver(function() {
+    var stick = new ResizeObserver(function() {
       if (_panelStickBottom) scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
-    }).observe(scrollEl);
+    });
+    stick.observe(scrollEl);
+    stick.observe(turnsEl);
   }
 })();
 

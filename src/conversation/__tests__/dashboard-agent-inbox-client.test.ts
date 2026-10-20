@@ -600,7 +600,9 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
   );
   /** Every " left after removing the attributes we emit would be an attribute break-out. */
   const strayQuotes = (html: string) =>
-    html.replace(/\s(class|title|data-seq|role|tabindex|aria-expanded|aria-controls|id)="[^"]*"/g, '').includes('"');
+    html
+      .replace(/\s(class|title|data-seq|role|tabindex|aria-expanded|aria-controls|aria-live|id)="[^"]*"/g, '')
+      .includes('"');
   const tags = (html: string) =>
     (html.match(/<\/?([a-z0-9]+)/gi) ?? []).map((t) => t.replace(/[</]/g, '').toLowerCase());
 
@@ -645,9 +647,14 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
       expect(html.startsWith(`<div class="wl-entry wl-${e.kind}`), html).toBe(true);
       expect(html).toContain(` data-seq="${e.seq}">`);
       expect(html).toContain(
-        `<div class="wl-row${e.kind === 'narration' ? ' wl-line' : ''}" role="button" tabindex="0" aria-expanded="false" aria-controls="wl-detail-${e.seq}">`,
+        // Roving tabindex: rows render out of the tab order; the list keeps one stop (wlEnsureTabStop).
+        `<div class="wl-row${e.kind === 'narration' ? ' wl-line' : ''}" role="button" tabindex="-1" aria-expanded="false" aria-controls="wl-detail-${e.seq}">`,
       );
-      expect(html.endsWith(`<div class="wl-detail" id="wl-detail-${e.seq}" hidden></div></div>`), html).toBe(true);
+      // aria-live="off": an opened raw output (up to 256 KiB) is not read out by the role=log list.
+      expect(
+        html.endsWith(`<div class="wl-detail" id="wl-detail-${e.seq}" aria-live="off" hidden></div></div>`),
+        html,
+      ).toBe(true);
     }
     // A hostile seq cannot reach the id / aria-controls values.
     expect(renderWorkLogEntry({ seq: '5" onmouseover="x', kind: 'tool', text: 'x' })).toContain(
@@ -1552,12 +1559,13 @@ describe('work-log raw output: fetched once per entry, failures retryable (shipp
     expect(calls.length).toBe(2);
   });
 
-  it('404 / 403 settle for good; 503 and network errors are not cached, so 다시 시도 refetches', async () => {
+  it('404 / 403 / 503 (damaged log) settle for good; network failures and other errors are not kept', async () => {
     const answer = new Map<number, unknown>([
       [4, httpErr(404)],
       [5, httpErr(403)],
-      [6, httpErr(503)],
-      [7, new TypeError('Failed to fetch')],
+      [6, new TypeError('Failed to fetch')],
+      [7, httpErr(503)],
+      [8, httpErr(500)],
     ]);
     const calls: number[] = [];
     const fetchJson = async (url: string) => {
@@ -1570,18 +1578,21 @@ describe('work-log raw output: fetched once per entry, failures retryable (shipp
     const st: RawState = { convId: 'c1', closed: false };
     expect((await core.wlRawLoad(st, 4, fetchJson)).status).toBe('missing');
     expect((await core.wlRawLoad(st, 5, fetchJson)).status).toBe('denied');
-    expect((await core.wlRawLoad(st, 6, fetchJson)).status).toBe('error');
-    expect((await core.wlRawLoad(st, 7, fetchJson)).status).toBe('error');
+    expect((await core.wlRawLoad(st, 6, fetchJson)).status).toBe('error'); // network: 다시 시도
+    expect((await core.wlRawLoad(st, 7, fetchJson)).status).toBe('damaged'); // same answer until repaired
+    expect((await core.wlRawLoad(st, 8, fetchJson)).status).toBe('failed');
     await core.wlRawLoad(st, 4, fetchJson);
     await core.wlRawLoad(st, 5, fetchJson);
-    answer.delete(6); // the service is back
+    await core.wlRawLoad(st, 7, fetchJson);
+    answer.delete(6); // the network is back
     expect(await core.wlRawLoad(st, 6, fetchJson)).toEqual({
       status: 'ok',
       raw: 'recovered',
       bytes: 9,
       truncated: false,
     });
-    expect(calls).toEqual([4, 5, 6, 7, 6]);
+    await core.wlRawLoad(st, 8, fetchJson); // reopening asks again
+    expect(calls).toEqual([4, 5, 6, 7, 8, 6, 8]);
   });
 });
 
@@ -1591,7 +1602,7 @@ describe('work-log raw detail markup (shipped renderWorkLogDetail + formatBytes)
     formatBytes(n: unknown): string;
   }>(
     ['esc', 'toNum', 'formatBytes', 'renderWorkLogDetail'],
-    ['WL_FORBIDDEN_MSG', 'WL_RAW_MISSING_MSG', 'WL_RAW_ERROR_MSG'],
+    ['WL_FORBIDDEN_MSG', 'WL_RAW_MISSING_MSG', 'WL_RAW_ERROR_MSG', 'WL_RAW_DAMAGED_MSG'],
   );
 
   it('formats byte counts in B / KiB / MiB / GiB', () => {
@@ -1628,6 +1639,13 @@ describe('work-log raw detail markup (shipped renderWorkLogDetail + formatBytes)
     expect(err).toContain('원본 출력을 불러오지 못했어요');
     expect(err).toContain('<button type="button" class="wl-detail-btn" data-wl-act="retry">다시 시도</button>');
     expect(err).not.toContain('<pre');
+    // 503: the log is damaged and the answer stays the same until repair — no retry.
+    expect(renderWorkLogDetail({ status: 'damaged' })).toBe(
+      '<div class="wl-detail-msg">로그가 손상되어 원본을 읽을 수 없습니다</div>',
+    );
+    expect(renderWorkLogDetail({ status: 'failed' })).toBe(
+      '<div class="wl-detail-msg">원본 출력을 불러오지 못했어요</div>',
+    );
   });
 });
 
@@ -1646,6 +1664,7 @@ type FakeEl = {
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
   querySelector(sel: string): FakeEl | null;
+  querySelectorAll(sel: string): FakeEl[];
   insertBefore(node: unknown, ref: unknown): void;
 };
 function fakeEl(over: Partial<FakeEl> = {}): FakeEl {
@@ -1666,6 +1685,7 @@ function fakeEl(over: Partial<FakeEl> = {}): FakeEl {
       return k in this.attrs ? this.attrs[k] : null;
     },
     querySelector: () => null,
+    querySelectorAll: () => [],
     insertBefore(node) {
       this.children.push(node);
     },
@@ -1718,7 +1738,7 @@ describe('work-log entries open their raw output in place (shipped toggleWorkLog
         'toggleWorkLogEntry',
         'retryWorkLogDetail',
       ],
-      ['WL_FORBIDDEN_MSG', 'WL_RAW_MISSING_MSG', 'WL_RAW_ERROR_MSG'],
+      ['WL_FORBIDDEN_MSG', 'WL_RAW_MISSING_MSG', 'WL_RAW_ERROR_MSG', 'WL_RAW_DAMAGED_MSG'],
       { document, wlFetchJson, _wl: st },
       ['function setWl(s) { _wl = s; }'],
     );
@@ -1776,11 +1796,21 @@ describe('work-log entries open their raw output in place (shipped toggleWorkLog
     expect(q.rows[3].detail.innerHTML).not.toContain('<pre');
   });
 
-  it('503 shows 다시 시도; the retry refetches and paints the raw', async () => {
+  it('503 says the log is damaged, with no 다시 시도', async () => {
+    const p = page([{ seq: 12, kind: 'tool_result', text: 'exit 0', rawBytes: 40 }], async () => {
+      throw httpErr(503);
+    });
+    p.m.toggleWorkLogEntry(12);
+    await flush();
+    expect(p.rows[12].detail.innerHTML).toContain('로그가 손상되어 원본을 읽을 수 없습니다');
+    expect(p.rows[12].detail.innerHTML).not.toContain('data-wl-act="retry"');
+  });
+
+  it('a network failure shows 다시 시도; the retry refetches and paints the raw', async () => {
     let n = 0;
     const p = page([{ seq: 12, kind: 'tool_result', text: 'exit 0', rawBytes: 40 }], async () => {
       n++;
-      if (n === 1) throw httpErr(503);
+      if (n === 1) throw new TypeError('Failed to fetch');
       return { seq: 12, raw: 'exit 0 (41s)', rawBytes: 12 };
     });
     p.m.toggleWorkLogEntry(12);
@@ -1791,6 +1821,22 @@ describe('work-log entries open their raw output in place (shipped toggleWorkLog
     await flush();
     expect(p.rows[12].detail.innerHTML).toContain('<pre class="wl-raw">exit 0 (41s)</pre>');
     expect(p.calls.length).toBe(2);
+  });
+});
+
+describe('work-log rows: one tab stop, arrows move it (shipped wlRovingIndex)', () => {
+  const { wlRovingIndex } = load<{ wlRovingIndex(key: string, i: number, n: number): number }>(['wlRovingIndex'], []);
+
+  it('ArrowDown / ArrowUp step and stop at the ends; Home / End jump; other keys do nothing', () => {
+    expect(wlRovingIndex('ArrowDown', 0, 5)).toBe(1);
+    expect(wlRovingIndex('ArrowDown', 4, 5)).toBe(4);
+    expect(wlRovingIndex('ArrowUp', 3, 5)).toBe(2);
+    expect(wlRovingIndex('ArrowUp', 0, 5)).toBe(0);
+    expect(wlRovingIndex('Home', 3, 5)).toBe(0);
+    expect(wlRovingIndex('End', 1, 5)).toBe(4);
+    expect(wlRovingIndex('Tab', 1, 5)).toBe(-1);
+    expect(wlRovingIndex('a', 1, 5)).toBe(-1);
+    expect(wlRovingIndex('ArrowDown', 0, 0)).toBe(-1);
   });
 });
 
@@ -1820,6 +1866,7 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         'setTextIfChanged',
         'renderWorkLogEntry',
         'wlDetailOpen',
+        'wlEnsureTabStop',
         'setWorkLogOpen',
         'paintWorkLog',
       ],
