@@ -67,19 +67,22 @@
  *
  * Line contract: a line longer than WORK_LOG_MAX_LINE_BYTES is never an entry —
  * readers skip it whatever its chunk alignment, and the writer refuses to
- * produce one (`text` ≤ 4000 chars, `tool`/`turnId` ≤ 200 chars, `raw` cut to
- * fit — see below).
+ * produce one (`text` ≤ 4000 chars, `tool`/`turnId` ≤ 200 chars).
  *
- * Raw: an entry may carry `raw`, the full content behind its one-line `text`
+ * Raw: an entry may have a raw — the full content behind its one-line `text`
  * (a tool call's whole input, a tool result's output, or the uncut text when
- * `text` was over its cap). It is stored in the same line, cut to
- * WORK_LOG_RAW_MAX_BYTES UTF-8 bytes and then further until the line fits the
- * line limit, so raw can never cost an entry. `rawBytes` is the byte length of
- * the ORIGINAL; `rawTruncated: true` marks a cut. `raw` itself is served only by
- * readWorkLogRaw — list pages, the appended callback (the dashboard broadcast)
- * and appendWorkLog's result carry `rawBytes`/`rawTruncated` instead. Lines
- * with a large raw are longer than a read chunk, so a list read fits fewer of
- * them into its byte budget.
+ * `text` was over its cap). Raws live in a second append-only file,
+ * `<id>.raw.jsonl`, one record `{"seq":N,"raw":"…"}` per line, cut to
+ * WORK_LOG_RAW_MAX_BYTES UTF-8 bytes; entry lines stay small, so a list read
+ * still fits its full window in the scan budget. The entry line carries
+ * `rawBytes` (the ORIGINAL's UTF-8 size), `rawTruncated: true` when cut, and
+ * the record's byte position `rawOffset`/`rawLen`. The record is fdatasync'd
+ * (and a new raw file's directory synced) before the entry line that points at
+ * it is written. A failed raw write never costs the entry: it is published
+ * without raw, like an entry that never had one. List pages, the appended
+ * callback and appendWorkLog's result carry `rawBytes`/`rawTruncated` only;
+ * readWorkLogRaw serves the record, checked against the entry's seq. A
+ * quarantine moves only the entry log; the raw file stays and keeps growing.
  *
  * Contract: .prd/10-agent-inbox-board-spec.md §3.3.
  */
@@ -105,20 +108,22 @@ export interface WorkLogInput {
   ok?: boolean;
   turnId?: string;
   ts?: number;
-  /** Full content behind `text` (tool input / result); stored, served only by readWorkLogRaw. */
+  /** Full content behind `text` (tool input / result); stored apart, served only by readWorkLogRaw. */
   raw?: string;
+  /** UTF-8 size of the original when the emitter already cut `raw`; ignored unless larger than `raw`. */
+  rawBytes?: number;
 }
-/** An entry as pages and the broadcast carry it: `raw` is replaced by its size. */
-export interface WorkLogEntry extends Omit<WorkLogInput, 'raw'> {
+/** An entry as pages and the broadcast carry it: its raw is described, never included. */
+export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
   seq: number;
   ts: number;
-  /** UTF-8 byte length of the original raw; present iff the entry has one. */
+  /** UTF-8 byte length of the original raw; present iff the entry has a stored raw. */
   rawBytes?: number;
   /** The stored raw is cut short of the original. */
   rawTruncated?: true;
 }
-/** An entry as stored on disk. */
-type StoredWorkLogEntry = WorkLogEntry & { raw?: string };
+/** An entry line as stored: plus where its raw record sits in `<id>.raw.jsonl`. */
+type StoredWorkLogEntry = WorkLogEntry & { rawOffset?: number; rawLen?: number };
 
 /** readWorkLogRaw's answer. */
 export interface WorkLogRaw {
@@ -147,16 +152,16 @@ export interface WorkLogPage {
 export const WORK_LOG_TEXT_MAX = 4000;
 /** Max characters kept for `tool` and `turnId`. */
 export const WORK_LOG_FIELD_MAX = 200;
-/** Max UTF-8 bytes kept per entry `raw` (before the line-fit cut). */
+/** Max UTF-8 bytes kept per raw. */
 export const WORK_LOG_RAW_MAX_BYTES = 256 * 1024;
+/** Largest raw record a reader accepts: a cap-size raw where every byte JSON-escapes to 6, plus its seq. */
+const RAW_RECORD_MAX_BYTES = 6 * WORK_LOG_RAW_MAX_BYTES + 64;
 /** Default (and API maximum) number of entries returned by a read. */
 export const WORK_LOG_DEFAULT_LIMIT = 500;
 /** Read granularity. */
 export const WORK_LOG_READ_CHUNK_BYTES = 64 * 1024;
 /** A line longer than this (excluding its `\n`) is never an entry. */
 export const WORK_LOG_MAX_LINE_BYTES = 1024 * 1024;
-/** An entry carrying raw is cut to this many JSON bytes before `seq` is added (room for it and a newline). */
-const RAW_LINE_FIT_BYTES = WORK_LOG_MAX_LINE_BYTES - 4096;
 /** Most bytes any single read or seed scan may read. */
 export const WORK_LOG_SCAN_BUDGET_BYTES = 8 * 1024 * 1024;
 /** seqs reserved per sidecar write. */
@@ -183,6 +188,13 @@ interface ConversationLogState {
   tailUnknown: boolean;
   /** The next write may create the file, which puts a sync obligation on its directory. */
   fileMayBeNew: boolean;
+  /**
+   * Size of the raw file right after this process's last successful record
+   * (it then ends with a newline); null = unknown (none yet, or the last raw
+   * write failed). A different size at the next write means the file must be
+   * checked for a torn last record.
+   */
+  rawSize: number | null;
   /**
    * Set while the conversation has no provable seq upper bound: the file
    * fingerprint at that verdict. Appends are refused without re-scanning until
@@ -232,10 +244,17 @@ function workLogDir(): string {
   return path.join(DATA_DIR, 'worklogs');
 }
 
-function workLogPaths(conversationId: string): { log: string; sidecar: string } | null {
+interface WorkLogFiles {
+  log: string;
+  sidecar: string;
+  /** Raw records; SAFE_ID has no `.`, so no conversation's log can collide with it. */
+  raw: string;
+}
+
+function workLogPaths(conversationId: string): WorkLogFiles | null {
   if (typeof conversationId !== 'string' || !SAFE_ID.test(conversationId)) return null;
   const base = path.join(workLogDir(), conversationId);
-  return { log: `${base}.jsonl`, sidecar: `${base}.seq` };
+  return { log: `${base}.jsonl`, sidecar: `${base}.seq`, raw: `${base}.raw.jsonl` };
 }
 
 function isEnoent(err: unknown): boolean {
@@ -309,10 +328,10 @@ function parseEntry(line: Buffer): StoredWorkLogEntry | null {
   }
 }
 
-/** The entry as pages and the broadcast carry it: without `raw` (its size stays). */
+/** The entry as pages and the broadcast carry it: without the raw record's position. */
 function publicEntry(entry: StoredWorkLogEntry): WorkLogEntry {
-  if (!('raw' in entry)) return entry;
-  const { raw: _raw, ...rest } = entry;
+  if (!('rawOffset' in entry) && !('rawLen' in entry) && !('raw' in entry)) return entry;
+  const { rawOffset: _offset, rawLen: _len, raw: _raw, ...rest } = entry as StoredWorkLogEntry & { raw?: unknown };
   return rest;
 }
 
@@ -438,29 +457,7 @@ async function scanForward(
   return 'done';
 }
 
-/** Enough bytes to hold `{"seq":<16 digits>,` — the start of every line the writer produces. */
-const SEQ_PREFIX_BYTES = 32;
-const SEQ_PREFIX = /^\{"seq":(\d{1,16}),/;
-
-/** The seq a line's first bytes name, when they have the writer's `{"seq":N,` shape. */
-function seqFromPrefix(head: Buffer): number | null {
-  const match = SEQ_PREFIX.exec(head.subarray(0, SEQ_PREFIX_BYTES).toString('latin1'));
-  if (!match) return null;
-  const seq = Number(match[1]);
-  return Number.isSafeInteger(seq) ? seq : null;
-}
-
-/**
- * The first entry that starts after byte `at`, with its seq. One chunk is read
- * and its complete lines parsed. Entries carrying a large `raw` are longer than
- * a chunk, so: when `at` falls in such a line the read goes on to its end (at
- * most the line limit; past that the line is not an entry and the probe
- * misses), and a line that runs past what was read is placed by its first
- * bytes — the writer always starts a line with `{"seq":N,` — instead of being
- * read whole. That is positional evidence only: lines are in seq order
- * whatever their state (whole, torn, over the limit), and the reader parses
- * every line it returns.
- */
+/** First parseable entry that starts after byte `at`, read from one chunk. */
 async function probeAfter(
   fh: fs.promises.FileHandle,
   size: number,
@@ -468,63 +465,28 @@ async function probeAfter(
   budget: Budget,
 ): Promise<{ start: number; seq: number } | null | 'budget'> {
   if (at >= size) return null;
-  if (budget.left <= 0) return 'budget';
-  let pos = at; // next byte to read
-  const read = async (max: number): Promise<Buffer | null> => {
-    const n = Math.min(max, size - pos, budget.left);
-    if (n <= 0) return null;
-    budget.left -= n;
-    const chunk = await readExactly(fh, pos, n);
-    pos += n;
-    return chunk;
-  };
-
-  // Skip the rest of the line `at` falls in.
-  let rest: Buffer | null = null; // what was read after that line's newline
-  while (rest === null) {
-    if (pos - at > WORK_LOG_MAX_LINE_BYTES) return null;
-    const chunk = await read(WORK_LOG_READ_CHUNK_BYTES);
-    if (!chunk) return null; // end of file (no line starts after `at`) or out of budget
-    const nl = chunk.indexOf(0x0a);
-    if (nl !== -1) rest = chunk.subarray(nl + 1);
+  const n = Math.min(WORK_LOG_READ_CHUNK_BYTES, size - at, budget.left);
+  if (n <= 0) return 'budget';
+  budget.left -= n;
+  const buf = await readExactly(fh, at, n);
+  let start = buf.indexOf(0x0a);
+  while (start !== -1) {
+    const next = buf.indexOf(0x0a, start + 1);
+    const lineEnd = next !== -1 ? next : at + n >= size ? buf.length : -1;
+    if (lineEnd === -1) return null; // line runs past this chunk
+    const entry = lineEnd - start - 1 > 0 ? parseEntry(buf.subarray(start + 1, lineEnd)) : null;
+    if (entry) return { start: at + start + 1, seq: entry.seq };
+    start = next;
   }
-  const restStart = pos - rest.length;
-
-  let from = 0;
-  for (let nl = rest.indexOf(0x0a); nl !== -1; nl = rest.indexOf(0x0a, from)) {
-    const entry = nl > from ? parseEntry(rest.subarray(from, nl)) : null;
-    if (entry) return { start: restStart + from, seq: entry.seq };
-    from = nl + 1;
-  }
-
-  // The line at `from` runs past what was read (or is the file's last line).
-  let tail = rest.subarray(from);
-  if (pos < size && tail.length < SEQ_PREFIX_BYTES) {
-    const more = await read(SEQ_PREFIX_BYTES - tail.length);
-    if (more) tail = Buffer.concat([tail, more]);
-  }
-  const nl = tail.indexOf(0x0a);
-  if (nl !== -1 || pos >= size) {
-    // It ended after all: a whole line.
-    const whole = nl !== -1 ? tail.subarray(0, nl) : tail;
-    const entry = whole.length > 0 ? parseEntry(whole) : null;
-    return entry ? { start: restStart + from, seq: entry.seq } : null;
-  }
-  const seq = seqFromPrefix(tail);
-  return seq === null ? null : { start: restStart + from, seq };
+  return null;
 }
 
 /**
  * Byte offset of a line start such that every line before it has
  * `seq <= afterSeq`. Lines are in seq order, so this is a binary search on byte
- * offsets. Only `lo` moves on evidence (a line ≤ afterSeq: parsed, or placed by
- * its `{"seq":N,` prefix — see probeAfter); a missed or unparseable probe only
- * lowers `hi`, which costs scanning, never correctness. Out of budget, the
- * current `lo` is still a valid (if early) start.
- *
- * The search spends at most half of `budget`: probes read through long lines,
- * and the forward read from `lo` must keep room for the lines between it and
- * the page (two at the line limit, in the worst case).
+ * offsets. Only `lo` moves on evidence (a parsed line ≤ afterSeq); a missed or
+ * unparseable probe only lowers `hi`, which costs scanning, never correctness.
+ * Out of budget, the current `lo` is still a valid (if early) start.
  */
 async function findPageStart(
   fh: fs.promises.FileHandle,
@@ -532,18 +494,15 @@ async function findPageStart(
   afterSeq: number,
   budget: Budget,
 ): Promise<number> {
-  const search: Budget = { left: Math.floor(budget.left / 2) };
-  const granted = search.left;
   let lo = 0;
   let hi = size;
   while (hi - lo > WORK_LOG_READ_CHUNK_BYTES) {
     const mid = lo + Math.floor((hi - lo) / 2);
-    const probe = await probeAfter(fh, size, mid, search);
+    const probe = await probeAfter(fh, size, mid, budget);
     if (probe === 'budget') break;
     if (probe && probe.seq <= afterSeq) lo = probe.start;
     else hi = mid;
   }
-  budget.left -= granted - search.left;
   return lo;
 }
 
@@ -893,74 +852,90 @@ function clampChars(text: string, max: number): string {
 }
 
 /**
- * Longest prefix of `text` that is at most `maxBytes` in UTF-8 and at most
- * `maxJsonBytes` once JSON.stringify escapes it (quotes excluded), never ending
- * inside a surrogate pair. UTF-8 sizes match Buffer.byteLength (a lone surrogate
- * encodes as the 3-byte U+FFFD); JSON sizes match JSON.stringify (`"` `\` and
- * \b \f \n \r \t take 2 bytes, other control characters and lone surrogates 6).
+ * Length (in UTF-16 units) of the longest prefix of `text` whose UTF-8 encoding
+ * is at most `maxBytes`, never ending inside a surrogate pair. Sizes match
+ * Buffer.byteLength (a lone surrogate encodes as the 3-byte U+FFFD).
  */
-function rawPrefix(text: string, maxBytes: number, maxJsonBytes: number): string {
+function utf8PrefixLength(text: string, maxBytes: number): number {
   let bytes = 0;
-  let jsonBytes = 0;
   let i = 0;
   while (i < text.length) {
     const c = text.charCodeAt(i);
-    let size: number;
-    let json: number;
+    let size = 3;
     let units = 1;
-    if (c < 0x20) {
-      size = 1;
-      json = c === 0x08 || c === 0x09 || c === 0x0a || c === 0x0c || c === 0x0d ? 2 : 6;
-    } else if (c < 0x80) {
-      size = 1;
-      json = c === 0x22 || c === 0x5c ? 2 : 1;
-    } else if (c < 0x800) {
-      size = 2;
-      json = 2;
-    } else if (c < 0xd800 || c > 0xdfff) {
-      size = 3;
-      json = 3;
-    } else if (c <= 0xdbff && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+    if (c < 0x80) size = 1;
+    else if (c < 0x800) size = 2;
+    else if (c >= 0xd800 && c <= 0xdbff && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
       size = 4;
-      json = 4;
       units = 2;
-    } else {
-      size = 3; // lone surrogate
-      json = 6;
     }
-    if (bytes + size > maxBytes || jsonBytes + json > maxJsonBytes) break;
+    if (bytes + size > maxBytes) break;
     bytes += size;
-    jsonBytes += json;
     i += units;
   }
-  return i === text.length ? text : text.slice(0, i);
+  return i;
+}
+
+/** A raw waiting in the write queue: its stored bytes are a copy, so the caller's string is not kept alive. */
+interface PendingRaw {
+  /** UTF-8 of the stored raw (≤ WORK_LOG_RAW_MAX_BYTES). */
+  bytes: Buffer;
+  /** UTF-8 size of the original. */
+  rawBytes: number;
 }
 
 /**
- * Add `raw` to an entry's fields, cut to WORK_LOG_RAW_MAX_BYTES and — JSON
- * escaping can grow a string up to 6× (control characters) — to what still
- * fits the line in RAW_LINE_FIT_BYTES, so raw never drops an entry. The cut is
- * computed exactly from the other fields' size; the loop only guards it.
+ * Cut a raw to WORK_LOG_RAW_MAX_BYTES and copy it out. `upstreamBytes` is the
+ * original's size when the emitter already cut it (used only if larger).
  */
-function withRaw(fields: EntryFields, raw: string): EntryFields {
-  const rawBytes = Buffer.byteLength(raw, 'utf-8');
-  // raw last, so the start of a stored line stays readable.
-  const build = (kept: string): EntryFields => ({
-    ...fields,
-    rawBytes,
-    ...(kept.length < raw.length ? { rawTruncated: true as const } : {}),
-    raw: kept,
-  });
-  const room = RAW_LINE_FIT_BYTES - Buffer.byteLength(JSON.stringify(build('')), 'utf-8');
-  let kept = rawPrefix(raw, WORK_LOG_RAW_MAX_BYTES, Math.max(0, room));
-  for (;;) {
-    const out = build(kept);
-    const over = Buffer.byteLength(JSON.stringify(out), 'utf-8') - RAW_LINE_FIT_BYTES;
-    if (over <= 0 || kept.length === 0) return out;
-    // Every character takes at least as many JSON bytes as UTF-8 bytes, so
-    // this cut always fits.
-    kept = rawPrefix(kept, Math.max(0, Buffer.byteLength(kept, 'utf-8') - over), Number.POSITIVE_INFINITY);
+function pendingRaw(raw: string, upstreamBytes: unknown): PendingRaw {
+  const own = Buffer.byteLength(raw, 'utf-8');
+  const rawBytes =
+    typeof upstreamBytes === 'number' && Number.isSafeInteger(upstreamBytes) && upstreamBytes > own
+      ? upstreamBytes
+      : own;
+  const bytes =
+    own <= WORK_LOG_RAW_MAX_BYTES
+      ? Buffer.from(raw, 'utf-8')
+      : Buffer.from(raw.slice(0, utf8PrefixLength(raw, WORK_LOG_RAW_MAX_BYTES)), 'utf-8');
+  return { bytes, rawBytes };
+}
+
+/**
+ * Append one raw record to `<id>.raw.jsonl` durably and return where it sits.
+ * The file's size is read on every write (fstat on the open handle); the last
+ * byte is read only when that size is not the one this process left behind,
+ * and a record after a torn one starts on a fresh line. A new file is a
+ * directory obligation, synced here — before the entry line that points at
+ * the record exists.
+ */
+async function appendRawRecord(
+  file: string,
+  state: ConversationLogState,
+  seq: number,
+  raw: PendingRaw,
+): Promise<{ rawOffset: number; rawLen: number }> {
+  const record = JSON.stringify({ seq, raw: raw.bytes.toString('utf-8') });
+  const rawLen = Buffer.byteLength(record, 'utf-8');
+  const known = state.rawSize;
+  state.rawSize = null; // unknown until this write is durable
+  const fh = await fs.promises.open(file, 'a+');
+  let size: number;
+  try {
+    size = (await fh.stat()).size;
+    if (size === 0) noteDirChanged(path.dirname(file)); // the open may just have created it
+    const lead = size > 0 && size !== known && (await readExactly(fh, size - 1, 1))[0] !== 0x0a ? '\n' : '';
+    await fh.writeFile(`${lead}${record}\n`, 'utf-8');
+    await fh.datasync();
+    size += lead.length;
+  } catch (error) {
+    await fh.close().catch(() => {});
+    throw error;
   }
+  await fh.close();
+  await syncDueDirs();
+  state.rawSize = size + rawLen + 1;
+  return { rawOffset: size, rawLen };
 }
 
 /** Evict idle states, oldest first, until the cache fits (never `keep`). */
@@ -985,6 +960,7 @@ function touchState(conversationId: string): ConversationLogState {
       needsLeadingNewline: false,
       tailUnknown: false,
       fileMayBeNew: true,
+      rawSize: null,
       unboundedAt: null,
       queue: Promise.resolve(),
       pending: 0,
@@ -1008,13 +984,14 @@ export function setOnWorkLogAppendedCallback(fn: ((conversationId: string, entry
   _onAppended = fn;
 }
 
-type EntryFields = Omit<StoredWorkLogEntry, 'seq'>;
+type EntryFields = Omit<WorkLogEntry, 'seq'>;
 
 async function writeEntry(
   conversationId: string,
-  files: { log: string; sidecar: string },
+  files: WorkLogFiles,
   state: ConversationLogState,
   fields: EntryFields,
+  raw: PendingRaw | undefined,
 ): Promise<WorkLogEntry> {
   if (state.lastSeq === null) {
     // Taken before the seed reads anything, so a change made during it is seen next time.
@@ -1065,16 +1042,7 @@ async function writeEntry(
     }
   }
 
-  const entry: StoredWorkLogEntry = { seq: state.lastSeq + 1, ...fields };
-  const json = JSON.stringify(entry);
-  // Unreachable through the field caps and the raw line fit (withRaw leaves
-  // 4 KiB for `seq`); a backstop so the writer can never produce a line every
-  // reader would skip.
-  if (Buffer.byteLength(json, 'utf-8') > WORK_LOG_MAX_LINE_BYTES) {
-    logger.warn('Work log entry dropped: over the line size limit', { conversationId, seq: entry.seq });
-    throw new Error('Work log entry exceeds the line size limit');
-  }
-  const line = `${state.needsLeadingNewline ? '\n' : ''}${json}\n`;
+  let entry: WorkLogEntry = { seq: state.lastSeq + 1, ...fields };
   let reachedLog = false;
   try {
     await ensureDir();
@@ -1087,6 +1055,35 @@ async function writeEntry(
       await writeReservation(files.sidecar, state.reservedSeq, next);
       state.reservedSeq = next;
     }
+    // The raw record first, durable, so the entry line never points at one
+    // that is not. A failure here costs only the raw: the entry goes on
+    // without it (a partial record is skipped by position, never read).
+    let stored: StoredWorkLogEntry = entry;
+    if (raw) {
+      try {
+        const at = await appendRawRecord(files.raw, state, entry.seq, raw);
+        entry = {
+          ...entry,
+          rawBytes: raw.rawBytes,
+          ...(raw.bytes.length < raw.rawBytes ? { rawTruncated: true as const } : {}),
+        };
+        stored = { ...entry, ...at };
+      } catch (error) {
+        logger.warn('Work log raw not stored; publishing the entry without it', {
+          conversationId,
+          seq: entry.seq,
+          error,
+        });
+      }
+    }
+    const json = JSON.stringify(stored);
+    // Unreachable through the field caps above (raw is not in the line); a
+    // backstop so the writer can never produce a line every reader would skip.
+    if (Buffer.byteLength(json, 'utf-8') > WORK_LOG_MAX_LINE_BYTES) {
+      logger.warn('Work log entry dropped: over the line size limit', { conversationId, seq: entry.seq });
+      throw new Error('Work log entry exceeds the line size limit');
+    }
+    const line = `${state.needsLeadingNewline ? '\n' : ''}${json}\n`;
     reachedLog = true;
     await appendDurably(files.log, line, state.fileMayBeNew);
     // A possible create is now an obligation in dirSyncDue, which outlives this state.
@@ -1112,25 +1109,24 @@ async function writeEntry(
   state.lastSeq = entry.seq;
   state.needsLeadingNewline = false;
 
-  const published = publicEntry(entry);
   if (_onAppended) {
     try {
-      _onAppended(conversationId, published);
+      _onAppended(conversationId, entry);
     } catch (error) {
       logger.warn('Work log listener failed', { conversationId, error });
     }
   }
-  return published;
+  return entry;
 }
 
 /**
  * Append one entry. `ts` defaults to the call time; `seq` is assigned when the
  * entry reaches the front of this conversation's write queue. Resolves with the
- * stored entry — as pages carry it, `raw` replaced by `rawBytes` — once it is
- * durable (the listener has fired by then); rejects — already logged — when
- * the id is unsafe, the seed read fails, the entry is over the line limit, or
- * the write fails. A `text` over WORK_LOG_TEXT_MAX with no `raw` keeps its
- * full form as `raw`.
+ * stored entry — as pages carry it: its raw described by `rawBytes`, never
+ * included — once it is durable (the listener has fired by then); rejects —
+ * already logged — when the id is unsafe, the seed read fails, the entry is
+ * over the line limit, or the write fails. A `text` over WORK_LOG_TEXT_MAX with
+ * no `raw` keeps its full form as the raw.
  */
 export function appendWorkLog(conversationId: string, input: WorkLogInput): Promise<WorkLogEntry> {
   const files = workLogPaths(conversationId);
@@ -1140,7 +1136,7 @@ export function appendWorkLog(conversationId: string, input: WorkLogInput): Prom
   }
 
   const text = String(input.text ?? '');
-  let fields: EntryFields = {
+  const fields: EntryFields = {
     ts: typeof input.ts === 'number' && Number.isFinite(input.ts) ? input.ts : Date.now(),
     kind: input.kind,
     text: clampChars(text, WORK_LOG_TEXT_MAX),
@@ -1148,13 +1144,17 @@ export function appendWorkLog(conversationId: string, input: WorkLogInput): Prom
   if (input.tool !== undefined) fields.tool = clampChars(String(input.tool), WORK_LOG_FIELD_MAX);
   if (input.ok !== undefined) fields.ok = input.ok;
   if (input.turnId !== undefined) fields.turnId = clampChars(String(input.turnId), WORK_LOG_FIELD_MAX);
-  const raw = input.raw != null ? String(input.raw) : text.length > WORK_LOG_TEXT_MAX ? text : undefined;
-  if (raw !== undefined) fields = withRaw(fields, raw);
+  const raw =
+    input.raw != null
+      ? pendingRaw(String(input.raw), input.rawBytes)
+      : text.length > WORK_LOG_TEXT_MAX
+        ? pendingRaw(text, undefined)
+        : undefined;
 
   const state = touchState(conversationId);
   state.pending += 1;
   const result = state.queue
-    .then(() => writeEntry(conversationId, files, state, fields))
+    .then(() => writeEntry(conversationId, files, state, fields, raw))
     .finally(() => {
       state.pending -= 1;
       trimStates(); // a burst of distinct conversations may have left the cache over its cap
@@ -1296,41 +1296,95 @@ export async function readWorkLog(
 /**
  * The stored entry with exactly this seq, within one scan budget: a short
  * backward scan first (the entry clicked is usually recent), else a binary
- * search for its position and a forward read. Lines are in seq order, so either
- * scan stops as soon as it passes the seq. Null when the entry is absent or
- * the budget ran out before it was found.
+ * search for its position and a forward read. Lines are in seq order, so
+ * either scan stops as soon as it passes the seq. Null = provably absent;
+ * 'budget' = the budget ran out before the entry was found or ruled out.
  */
-async function findEntry(fh: fs.promises.FileHandle, size: number, seq: number): Promise<StoredWorkLogEntry | null> {
+async function findEntry(
+  fh: fs.promises.FileHandle,
+  size: number,
+  seq: number,
+): Promise<StoredWorkLogEntry | null | 'budget'> {
   const budget: Budget = { left: WORK_LOG_SCAN_BUDGET_BYTES };
   const fast: Budget = { left: FAST_PATH_BUDGET_BYTES };
-  const found: { entry: StoredWorkLogEntry | null; passed: boolean } = { entry: null, passed: false };
+  const found: { entry: StoredWorkLogEntry | null } = { entry: null };
   const fastEnd = await scanBackward(fh, size, fast, (line) => {
     const entry = parseEntry(line);
     if (!entry || entry.seq > seq) return true;
     if (entry.seq === seq) found.entry = entry;
-    else found.passed = true;
-    return false;
+    return false; // found, or passed it
   });
   budget.left -= FAST_PATH_BUDGET_BYTES - fast.left;
-  if (found.entry || found.passed || fastEnd === 'done') return found.entry;
+  if (fastEnd !== 'budget') return found.entry;
 
   const start = await findPageStart(fh, size, seq - 1, budget);
-  await scanForward(fh, size, start, budget, (line) => {
+  const end = await scanForward(fh, size, start, budget, (line) => {
     const entry = parseEntry(line);
     if (!entry || entry.seq < seq) return true;
     if (entry.seq === seq) found.entry = entry;
-    return false;
+    return false; // found, or passed it
   });
-  return found.entry;
+  return end === 'budget' ? 'budget' : found.entry;
+}
+
+/** The raw record an entry points at, checked against the entry's seq; null (one warn) when unusable. */
+async function readRawRecord(conversationId: string, file: string, entry: StoredWorkLogEntry): Promise<string | null> {
+  const { seq, rawOffset, rawLen } = entry;
+  const warn = (reason: string) =>
+    logger.warn('Work log raw record unusable; serving the entry as having no raw', {
+      conversationId,
+      seq,
+      reason,
+    });
+  if (
+    typeof rawOffset !== 'number' ||
+    typeof rawLen !== 'number' ||
+    !Number.isSafeInteger(rawOffset) ||
+    !Number.isSafeInteger(rawLen) ||
+    rawOffset < 0 ||
+    rawLen < 1 ||
+    rawLen > RAW_RECORD_MAX_BYTES
+  ) {
+    warn('bad position');
+    return null;
+  }
+  const opened = await openForRead(file);
+  if (!opened) {
+    warn('raw file missing');
+    return null;
+  }
+  try {
+    if (rawOffset + rawLen > opened.size) {
+      warn('short read');
+      return null;
+    }
+    const bytes = await readExactly(opened.fh, rawOffset, rawLen);
+    let record: { seq?: unknown; raw?: unknown } | null;
+    try {
+      record = JSON.parse(bytes.toString('utf-8')) as typeof record;
+    } catch {
+      warn('record does not parse');
+      return null;
+    }
+    if (!record || record.seq !== seq || typeof record.raw !== 'string') {
+      warn('record belongs to another entry');
+      return null;
+    }
+    return record.raw;
+  } finally {
+    await opened.fh.close().catch(() => {});
+  }
 }
 
 /**
- * The raw content of one entry, for the dashboard's on-demand view. Null when
- * the entry is absent, carries no raw (every entry written before raw
- * existed), or the id/seq is unusable. Waits for this process's pending writes
- * to the same file first, like readWorkLog.
+ * The raw of one entry, for the dashboard's on-demand view. Null when the entry
+ * is absent, has no raw (every entry written before raw existed, or one whose
+ * raw write failed), its record is unusable (missing, short, unparseable, or
+ * another seq's — logged once at warn), or the id/seq is unusable. 'budget'
+ * when the scan could not reach the entry within its budget — retry, it is not
+ * an answer. Waits for this process's pending writes to the same log first.
  */
-export async function readWorkLogRaw(conversationId: string, seq: number): Promise<WorkLogRaw | null> {
+export async function readWorkLogRaw(conversationId: string, seq: number): Promise<WorkLogRaw | null | 'budget'> {
   const files = workLogPaths(conversationId);
   if (!files || !Number.isSafeInteger(seq) || seq < 1) return null;
 
@@ -1338,17 +1392,18 @@ export async function readWorkLogRaw(conversationId: string, seq: number): Promi
 
   const opened = await openForRead(files.log);
   if (!opened) return null;
-  const { fh, size } = opened;
+  let entry: StoredWorkLogEntry | null | 'budget';
   try {
-    const entry = await findEntry(fh, size, seq);
-    if (!entry || typeof entry.raw !== 'string') return null;
-    return {
-      seq,
-      raw: entry.raw,
-      rawBytes: typeof entry.rawBytes === 'number' ? entry.rawBytes : Buffer.byteLength(entry.raw, 'utf-8'),
-      rawTruncated: entry.rawTruncated === true,
-    };
+    entry = await findEntry(opened.fh, opened.size, seq);
   } finally {
-    await fh.close().catch(() => {});
+    await opened.fh.close().catch(() => {});
   }
+  if (entry === 'budget') {
+    warnBudget(conversationId, 'raw', 0);
+    return 'budget';
+  }
+  if (!entry || typeof entry.rawBytes !== 'number') return null;
+  const raw = await readRawRecord(conversationId, files.raw, entry);
+  if (raw === null) return null;
+  return { seq, raw, rawBytes: entry.rawBytes, rawTruncated: entry.rawTruncated === true };
 }

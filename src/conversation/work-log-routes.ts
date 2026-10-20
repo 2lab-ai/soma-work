@@ -7,12 +7,14 @@
  *     → 200 { seq, raw, rawBytes, rawTruncated } (Cache-Control: no-store)
  *
  * Raw: an entry with `rawBytes` has a stored raw — the full tool input/result
- * (or the uncut text) behind its one-line `text`. List entries never carry
- * `raw` itself; the second route serves it for one entry. `rawBytes` is the
- * original's UTF-8 size; `rawTruncated: true` when the stored copy was cut
- * (256 KiB, less when JSON escaping would overflow the line). `:seq` is a
- * decimal integer ≥ 1 (else 400 bad_request); 404 when the entry or its raw is
- * missing. Same authentication and read authorization as the list.
+ * (or the uncut text) behind its one-line `text`, kept in `<id>.raw.jsonl`.
+ * List entries never carry `raw` itself; the second route serves it for one
+ * entry. `rawBytes` is the original's UTF-8 size; `rawTruncated: true` when the
+ * stored copy was cut (256 KiB). `:seq` is a decimal integer ≥ 1 (else 400
+ * bad_request); 404 when the entry or its raw is missing or unusable; 503
+ * { error: 'unavailable' } when the read ran out of its scan budget before it
+ * found the entry (retry). Same authentication and read authorization as the
+ * list. Every status, 401 and redirects included, carries no-store.
  *
  *   - no afterSeq: the latest `limit` entries; hasMore = older entries exist.
  *   - afterSeq=N (N ≥ 0): the first `limit` entries with seq > N, for forward
@@ -122,10 +124,17 @@ export async function registerWorkLogRoutes(
     Params: { conversationId: string; seq: string };
   }>(
     '/api/dashboard/session/:conversationId/worklog/:seq/raw',
-    { preHandler: [authMiddleware] },
+    {
+      // Every answer of this route is no-store: raw is tool input/output. onSend,
+      // not onRequest: it also runs for replies sent before this route's own
+      // hooks — the global canonical-origin redirect, the auth 401.
+      onSend: async (_request, reply, payload) => {
+        reply.header('Cache-Control', 'no-store');
+        return payload;
+      },
+      preHandler: [authMiddleware],
+    },
     async (request, reply) => {
-      // Every answer of this route, errors included: raw is tool input/output.
-      reply.header('Cache-Control', 'no-store');
       try {
         const seq = parseStrictInt(request.params.seq, 1, Number.MAX_SAFE_INTEGER);
         if (seq === null || seq === undefined) {
@@ -146,6 +155,11 @@ export async function registerWorkLogRoutes(
         }
 
         const raw = await readWorkLogRaw(conversationId, seq);
+        if (raw === 'budget') {
+          // The read could not reach the entry within its budget: not an answer.
+          reply.status(503).send({ error: 'unavailable' });
+          return;
+        }
         if (!raw) {
           reply.status(404).send({ error: 'not_found' });
           return;

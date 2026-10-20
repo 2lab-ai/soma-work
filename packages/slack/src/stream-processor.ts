@@ -236,32 +236,57 @@ function toolInputRaw(input: unknown): string | undefined {
 }
 
 /**
- * Work-log `raw` for a tool result: the content as the SDK delivered it. A
- * string as-is; a block array as its text blocks' text, `[image]` per image and
- * other blocks as JSON, one per line; any other value as pretty JSON. None
- * without content.
+ * The store keeps at most this many UTF-8 bytes of a raw
+ * (WORK_LOG_RAW_MAX_BYTES in src/conversation/work-log.ts); a block array is
+ * not joined much past it.
  */
-function toolResultRaw(result: unknown): string | undefined {
+const WORK_LOG_RAW_MAX_BYTES = 256 * 1024;
+
+/** One tool-result block as raw text: a text block's text, `[image]`, anything else as JSON. */
+function resultBlockText(block: unknown): string {
+  const typed = block as { type?: unknown; text?: unknown } | null;
+  if (typed?.type === 'text' && typeof typed.text === 'string') return typed.text;
+  if (typed?.type === 'image') return '[image]';
+  try {
+    return JSON.stringify(block) ?? safeString(block) ?? '';
+  } catch {
+    return safeString(block) ?? '';
+  }
+}
+
+/**
+ * Work-log `raw` for a tool result: the content as the SDK delivered it. A
+ * string as-is; a block array as its blocks' raw text ({@link resultBlockText})
+ * one per line; any other value as pretty JSON. None without content. A block
+ * array stops accumulating once the join passes WORK_LOG_RAW_MAX_BYTES (the
+ * store cuts the rest anyway), and then `rawBytes` reports the whole output's
+ * size — the later blocks are measured, not joined.
+ */
+function toolResultRaw(result: unknown): { raw: string; rawBytes?: number } | undefined {
   if (result === undefined || result === null) return undefined;
-  if (typeof result === 'string') return result;
+  if (typeof result === 'string') return { raw: result };
   if (Array.isArray(result)) {
-    return result
-      .map((block) => {
-        const typed = block as { type?: unknown; text?: unknown } | null;
-        if (typed?.type === 'text' && typeof typed.text === 'string') return typed.text;
-        if (typed?.type === 'image') return '[image]';
-        try {
-          return JSON.stringify(block) ?? safeString(block) ?? '';
-        } catch {
-          return safeString(block) ?? '';
-        }
-      })
-      .join('\n');
+    const kept: string[] = [];
+    let keptBytes = 0;
+    let totalBytes = 0;
+    result.forEach((block, i) => {
+      const text = resultBlockText(block);
+      const bytes = Buffer.byteLength(text, 'utf-8') + (i > 0 ? 1 : 0); // the joining newline
+      totalBytes += bytes;
+      if (keptBytes <= WORK_LOG_RAW_MAX_BYTES) {
+        kept.push(text);
+        keptBytes += bytes;
+      }
+    });
+    const raw = kept.join('\n');
+    return totalBytes > keptBytes ? { raw, rawBytes: totalBytes } : { raw };
   }
   try {
-    return JSON.stringify(result, null, 2) ?? safeString(result);
+    const raw = JSON.stringify(result, null, 2) ?? safeString(result);
+    return raw === undefined ? undefined : { raw };
   } catch {
-    return safeString(result);
+    const raw = safeString(result);
+    return raw === undefined ? undefined : { raw };
   }
 }
 
@@ -1875,13 +1900,12 @@ export class AgentStreamProcessor {
       const tool = toolResult.toolName ?? this.toolNamesById.get(toolResult.toolUseId) ?? 'unknown';
       this.toolNamesById.delete(toolResult.toolUseId);
       const ok = toolResult.isError !== true;
-      const raw = toolResultRaw(toolResult.result);
       this.emitWorkLog(context, {
         kind: 'tool_result',
         tool,
         ok,
         text: `${tool} ${ok ? 'ok' : 'error'}`,
-        ...(raw !== undefined ? { raw } : {}),
+        ...toolResultRaw(toolResult.result),
       });
     }
 

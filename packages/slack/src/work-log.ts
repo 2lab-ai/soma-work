@@ -20,14 +20,17 @@ export interface WorkLogInput {
   ts?: number;
   /**
    * The full content behind the one-line `text`: a tool call's whole input, a
-   * tool result's output. The store keeps it (size-capped) and serves it on
-   * demand only; pages and the live broadcast carry `rawBytes` instead.
+   * tool result's output. The store keeps it (size-capped, in a file of its
+   * own) and serves it on demand only; pages and the live broadcast carry
+   * `rawBytes` instead.
    */
   raw?: string;
+  /** UTF-8 size of the original when `raw` was already cut here (the store then reports it as truncated). */
+  rawBytes?: number;
 }
 
-/** An entry as pages and the live broadcast carry it: `raw` is replaced by its size. */
-export interface WorkLogEntry extends Omit<WorkLogInput, 'raw'> {
+/** An entry as pages and the live broadcast carry it: its raw is described, never included. */
+export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
   seq: number;
   ts: number;
   /** UTF-8 byte length of the original raw; present iff the entry has one. */

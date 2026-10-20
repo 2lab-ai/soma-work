@@ -292,6 +292,31 @@ describe('GET /api/dashboard/session/:conversationId/worklog', () => {
       }
     });
 
+    it('404 when the raw record at the recorded position is another seq or cut short', async () => {
+      const rawFile = path.join(paths.dataDir, 'worklogs', 'conv-1.raw.jsonl');
+      const original = fs.readFileSync(rawFile, 'utf-8');
+      fs.writeFileSync(rawFile, original.replace('{"seq":1,', '{"seq":9,'));
+      expect((await getRaw(1)).statusCode).toBe(404);
+      fs.writeFileSync(rawFile, original.slice(0, 12));
+      const res = await getRaw(1);
+      expect(res.statusCode).toBe(404);
+      expect(JSON.parse(res.body)).toEqual({ error: 'not_found' });
+    });
+
+    it('503 unavailable (not 404) when the read runs out of its scan budget before reaching the entry', async () => {
+      const line = (seq: number) => `${JSON.stringify({ seq, ts: seq, kind: 'narration', text: `n${seq}` })}\n`;
+      const logFile = path.join(paths.dataDir, 'worklogs', 'conv-1.jsonl');
+      fs.writeFileSync(logFile, Array.from({ length: 50 }, (_, i) => line(i + 1)).join(''));
+      fs.appendFileSync(logFile, Buffer.from('x\n'.repeat(4.5 * 1024 * 1024))); // 9 MB of junk
+      fs.appendFileSync(logFile, Array.from({ length: 10 }, (_, i) => line(51 + i)).join(''));
+      fs.appendFileSync(logFile, Buffer.from('x\n'.repeat(1.5 * 1024 * 1024))); // wider than the fast path
+
+      const res = await getRaw(55);
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body)).toEqual({ error: 'unavailable' });
+      expect(res.headers['cache-control']).toBe('no-store');
+    });
+
     it.each([
       '0',
       '-1',
@@ -309,10 +334,17 @@ describe('GET /api/dashboard/session/:conversationId/worklog', () => {
     });
 
     describe('authorization: exactly the list route rules', () => {
-      it('401 without credentials', async () => {
+      it('401 without credentials, still no-store', async () => {
         const res = await getRaw(1, {});
         expect(res.statusCode).toBe(401);
         expect(JSON.parse(res.body).error).toBe('Unauthorized');
+        expect(res.headers['cache-control']).toBe('no-store');
+      });
+
+      it('403 carries no-store too', async () => {
+        const res = await getRaw(1, { cookie: userCookie('U_OTHER') });
+        expect(res.statusCode).toBe(403);
+        expect(res.headers['cache-control']).toBe('no-store');
       });
 
       it('owner, admin user, viewer token (header or cookie): 200', async () => {
@@ -345,6 +377,35 @@ describe('GET /api/dashboard/session/:conversationId/worklog', () => {
         expect((await getRaw(1, { cookie: userCookie('U_OTHER') }, 'conv-nope')).statusCode).toBe(404);
       });
     });
+  });
+});
+
+describe('work log raw route behind the canonical-origin redirect', () => {
+  let web: typeof import('../web-server');
+
+  beforeEach(async () => {
+    vi.resetModules();
+    mockConfig.conversation.viewerUrl = 'https://dash.example.test';
+    paths.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-worklog-redirect-'));
+    web = await import('../web-server');
+    await web.startWebServer({ listen: false });
+  });
+
+  afterEach(async () => {
+    await web.stopWebServer();
+    mockConfig.conversation.viewerUrl = '';
+    fs.rmSync(paths.dataDir, { recursive: true, force: true });
+  });
+
+  it('the redirect a global hook sends for this route still carries no-store', async () => {
+    const res = await web.injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-1/worklog/1/raw',
+      headers: { host: 'old-host:33000', ...AUTH_HEADER },
+    });
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe('https://dash.example.test/api/dashboard/session/conv-1/worklog/1/raw');
+    expect(res.headers['cache-control']).toBe('no-store');
   });
 });
 
