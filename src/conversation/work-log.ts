@@ -90,6 +90,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
+import { WORK_LOG_RAW_MAX_BYTES } from '@soma/slack/work-log';
 import { DATA_DIR } from '../env-paths';
 import { Logger } from '../logger';
 
@@ -152,8 +153,9 @@ export interface WorkLogPage {
 export const WORK_LOG_TEXT_MAX = 4000;
 /** Max characters kept for `tool` and `turnId`. */
 export const WORK_LOG_FIELD_MAX = 200;
-/** Max UTF-8 bytes kept per raw. */
-export const WORK_LOG_RAW_MAX_BYTES = 256 * 1024;
+/** Max UTF-8 bytes kept per raw — defined once, next to the emitter's types. */
+export { WORK_LOG_RAW_MAX_BYTES };
+
 /** Largest raw record a reader accepts: a cap-size raw where every byte JSON-escapes to 6, plus its seq. */
 const RAW_RECORD_MAX_BYTES = 6 * WORK_LOG_RAW_MAX_BYTES + 64;
 /** Default (and API maximum) number of entries returned by a read. */
@@ -1381,8 +1383,12 @@ async function readRawRecord(conversationId: string, file: string, entry: Stored
  * is absent, has no raw (every entry written before raw existed, or one whose
  * raw write failed), its record is unusable (missing, short, unparseable, or
  * another seq's — logged once at warn), or the id/seq is unusable. 'budget'
- * when the scan could not reach the entry within its budget — retry, it is not
- * an answer. Waits for this process's pending writes to the same log first.
+ * when the scan could not reach the entry within its budget: the log is
+ * damaged in a way the budget cannot pass (entry lines are small, so an intact
+ * log never gets here). The log only grows at its tail, so the answer stays
+ * the same until the log is repaired — not a transient failure, not worth an
+ * automatic retry. Waits for this process's pending writes to the same log
+ * first.
  */
 export async function readWorkLogRaw(conversationId: string, seq: number): Promise<WorkLogRaw | null | 'budget'> {
   const files = workLogPaths(conversationId);
@@ -1399,7 +1405,11 @@ export async function readWorkLogRaw(conversationId: string, seq: number): Promi
     await opened.fh.close().catch(() => {});
   }
   if (entry === 'budget') {
-    warnBudget(conversationId, 'raw', 0);
+    logger.warn('Work log raw lookup stopped at its byte budget before reaching the entry; the log is damaged', {
+      conversationId,
+      seq,
+      budgetBytes: WORK_LOG_SCAN_BUDGET_BYTES,
+    });
     return 'budget';
   }
   if (!entry || typeof entry.rawBytes !== 'number') return null;

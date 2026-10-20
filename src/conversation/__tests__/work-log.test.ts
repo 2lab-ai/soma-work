@@ -1713,7 +1713,15 @@ describe('work log store', () => {
       appendRaw(id, Buffer.from('x\n'.repeat(4.5 * 1024 * 1024))); // 9 MB
       appendRaw(id, Array.from({ length: 10 }, (_, i) => line(51 + i)).join(''));
       appendRaw(id, Buffer.from('x\n'.repeat(1.5 * 1024 * 1024))); // 3 MB: wider than the backward fast path
+      const warn = await loggerWarn();
 
+      expect(await wl.readWorkLogRaw(id, 55)).toBe('budget');
+      // One warn that names the raw lookup and the damage — not the list's "partial page".
+      const messages = warn.mock.calls.map(([m]) => String(m));
+      expect(messages).toEqual([expect.stringContaining('raw lookup')]);
+      expect(messages[0]).toContain('damaged');
+      expect(messages[0]).not.toContain('partial page');
+      // Every retry gets the same answer: the junk stays and the log only grows at its tail.
       expect(await wl.readWorkLogRaw(id, 55)).toBe('budget');
       // An entry the scan does reach is answered (it has no raw).
       expect(await wl.readWorkLogRaw(id, 10)).toBeNull();
