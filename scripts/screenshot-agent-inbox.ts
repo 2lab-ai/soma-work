@@ -18,6 +18,11 @@
  *     empty log), duplicates drop, a missing route reads "작업 로그 없음"
  *   - work-log tool rows print the tool name once, with the emitter's stored
  *     text shape ("Read {...}", "Glob ok")
+ *   - stats strip (1280 / 820 / 390 × light / dark): above the board, collapsed
+ *     to period · 세션 · 토큰 · 비용 · 자세히 — one row from 640px, two below with
+ *     44px targets; 자세히 opens the other cards and the charts between the strip
+ *     and the board, survives a reload, and never scrolls the page sideways
+ *     (stats-strip-*.png)
  *   - stats: 오늘 → 지난 7일 changes 세션 / 토큰 / 비용 to the week's totals
  *     (stats + usage requests carry the period; All Users sends no userId), and
  *     a late answer for a period no longer selected does not repaint them
@@ -454,6 +459,24 @@ const PAGE_HELPERS = [
   // its selected option), whether a user name in it (pill name, selected user)
   // ends in an ellipsis and the title that carries the full name, its height,
   // whether it sits inside the viewport, and whether a tap at its centre reaches it.
+  // The stats strip (.prd/10 §3.1-2): its box and the board's, how many rows its
+  // three parts (period · numbers · 자세히) take, its smallest button, and the 자세히 state.
+  'window.__stripProbe = function () {',
+  '  var box = function (el) { var q = el.getBoundingClientRect(); return { t: Math.round(q.top), b: Math.round(q.bottom), l: q.left, r: q.right }; };',
+  '  var strip = document.querySelector(".stats-strip");',
+  '  var more = document.getElementById("stats-more");',
+  '  var parts = [strip.querySelector(".period-bar"), strip.querySelector(".strip-nums"), more].map(box);',
+  '  var rows = [];',
+  '  parts.forEach(function (p) { var mid = (p.t + p.b) / 2; if (!rows.some(function (m) { return Math.abs(m - mid) < 6; })) rows.push(mid); });',
+  '  var heights = Array.prototype.map.call(strip.querySelectorAll("button"), function (b) { return Math.round(b.getBoundingClientRect().height); });',
+  '  var detail = document.getElementById("stats-detail");',
+  '  return {',
+  '    stats: box(document.getElementById("stats")), board: box(document.getElementById("inbox")), rows: rows.length,',
+  '    minTarget: Math.min.apply(null, heights), outside: parts.some(function (p) { return p.l < -0.5 || p.r > innerWidth + 0.5; }),',
+  '    expanded: more.getAttribute("aria-expanded"), detailHidden: detail.hidden, detailH: Math.round(detail.getBoundingClientRect().height),',
+  '    nums: Array.prototype.map.call(strip.querySelectorAll(".strip-num"), function (n) { return n.textContent; }),',
+  '  };',
+  '};',
   'window.__topbarProbe = function () {',
   '  var bar = document.querySelector(".topbar");',
   '  var els = Array.prototype.slice.call(bar.querySelectorAll("h1, .ws-badge, .user-select, select, a, button, .user-pill"))',
@@ -735,6 +758,24 @@ async function viewportMatrix(browser: import('playwright').Browser) {
       check(width < 640 ? view0 === 'list' : view0 === 'board', `${theme} ${width}: default view ${view0}`);
       check((await overflow(page)) === 0, `${theme} ${width} ${view0}: no page overflow`);
       await shoot(page, `${theme}-${width}-${view0}.png`);
+      // §3.1-2: the stats strip leads, collapsed; the board follows it.
+      await page.waitForFunction(() => document.getElementById('stat-cost')?.textContent !== '-', null, {
+        timeout: 5000,
+      });
+      const sp = (await page.evaluate(() => (window as unknown as PageWindow).__stripProbe())) as StripProbe;
+      check(
+        sp.stats.b <= sp.board.t,
+        `${theme} ${width}: the stats strip sits above the board (strip ${sp.stats.t}–${sp.stats.b}px, board from ${sp.board.t}px)`,
+      );
+      check(
+        sp.expanded === 'false' && sp.detailHidden && sp.detailH === 0 && sp.nums.length === 3,
+        `${theme} ${width}: stats strip collapsed by default — ${sp.nums.join(' · ')} + 자세히`,
+      );
+      check(
+        sp.rows === (width < 640 ? 2 : 1) && !sp.outside && (width >= 640 || sp.minTarget >= 44),
+        `${theme} ${width}: stats strip in ${width < 640 ? 'two rows, 44px targets' : 'one row'}, inside the viewport (rows ${sp.rows}, smallest button ${sp.minTarget}px)`,
+      );
+      if (width === 1280 || width === 390) await shoot(page, `stats-strip-${theme}-${width}.png`, false);
       await page.click(`[data-session-key="${K('100')}"] .card-face`);
       await page.waitForSelector(`[data-session-key="${K('100')}"] .io-in`, { timeout: 5000 });
       await page.waitForTimeout(450);
@@ -1415,6 +1456,18 @@ async function addendumChecks(browser: import('playwright').Browser) {
   await ctx.close();
 }
 
+type StripProbe = {
+  stats: { t: number; b: number };
+  board: { t: number; b: number };
+  rows: number;
+  minTarget: number;
+  outside: boolean;
+  expanded: string | null;
+  detailHidden: boolean;
+  detailH: number;
+  nums: string[];
+};
+
 type TopbarItem = {
   el: string;
   text: string;
@@ -1815,6 +1868,83 @@ async function titleSubPanelSwitch(browser: import('playwright').Browser) {
   await ctx.close();
 }
 
+/**
+ * 자세히 (dark, 1280 / 820 / 390): opens the five other cards and the charts
+ * between the strip and the board without sideways scroll; the choice survives
+ * a reload, and closing it does too.
+ */
+async function statsStripDetail(browser: import('playwright').Browser) {
+  const state = (page: Page) =>
+    page.evaluate(() => {
+      const detail = document.getElementById('stats-detail') as HTMLElement;
+      return {
+        expanded: document.getElementById('stats-more')?.getAttribute('aria-expanded') ?? null,
+        hidden: detail.hidden,
+        cards: Array.from(document.querySelectorAll('#stats-grid .stat-card')).filter(
+          (c) => c.getBoundingClientRect().height > 0,
+        ).length,
+        charts: document.querySelectorAll('#chart-row .chart-container').length,
+        detailBottom: Math.round(detail.getBoundingClientRect().bottom),
+        boardTop: Math.round((document.getElementById('inbox') as HTMLElement).getBoundingClientRect().top),
+        saved: localStorage.getItem('soma-stats-detail'),
+      };
+    });
+  for (const width of [1280, 820, 390]) {
+    const ctx = await browser.newContext({
+      viewport: { width, height: 900 },
+      colorScheme: 'dark',
+      hasTouch: width < 640,
+      isMobile: width < 640,
+    });
+    const page = await ctx.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await installMocks(page, makeBoard());
+    await openBoard(page);
+    await page.click('.period-btn[data-period="week"]'); // seven bars per chart
+    await page.click('#stats-more');
+    await page.waitForFunction(() => document.querySelectorAll('#chart-row .bar').length >= 14, null, {
+      timeout: 5000,
+    });
+    await page.waitForTimeout(300);
+    const open = await state(page);
+    check(
+      open.expanded === 'true' &&
+        !open.hidden &&
+        open.cards === 5 &&
+        open.charts === 2 &&
+        open.detailBottom <= open.boardTop &&
+        open.saved === 'open',
+      `dark ${width}: 자세히 opens the 5 other cards and the charts between the strip and the board (${JSON.stringify(open)})`,
+    );
+    check((await overflow(page)) === 0, `dark ${width}: stats detail open — no page overflow`);
+    if (width === 1280) {
+      await shoot(page, 'stats-strip-expanded-dark-1280.png', false);
+      await page.reload();
+      await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 5, null, {
+        timeout: 10000,
+      });
+      const reopened = await state(page);
+      await page.click('#stats-more');
+      await page.reload();
+      await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 5, null, {
+        timeout: 10000,
+      });
+      const closed = await state(page);
+      check(
+        reopened.expanded === 'true' &&
+          !reopened.hidden &&
+          closed.expanded === 'false' &&
+          closed.hidden &&
+          closed.saved === 'closed',
+        `자세히 open / closed survives a reload (${JSON.stringify({ reopened: reopened.expanded, closed: closed.expanded, saved: closed.saved })})`,
+      );
+    }
+    check(errors.length === 0, `dark ${width}: stats detail — no page errors (${errors.join(' | ')})`);
+    await ctx.close();
+  }
+}
+
 /** Expected strip text for a period: U001's own numbers or All Users'. */
 function stripWant(scope: 'user' | 'all', period: Period) {
   const t = PERIOD_TOTALS[period];
@@ -1950,6 +2080,7 @@ async function main() {
     await cardIoOutage(browser);
     await titleSubPanelSwitch(browser);
     await statsChecks(browser);
+    await statsStripDetail(browser);
   } finally {
     await browser.close();
     await ws.stopWebServer();

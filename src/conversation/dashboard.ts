@@ -2086,11 +2086,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   flex: none;
 }
 
-/* ── MAIN — board-first column, capped at 1280px and centred (.prd/10 §5) ── */
+/* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
 .main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
 /* ── PERIOD SELECTOR — segmented control ── */
-.period-bar { display: inline-flex; gap: 0; margin-bottom: 16px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.period-bar { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .period-btn {
   background: var(--surface);
   color: var(--text-secondary);
@@ -2100,6 +2100,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
   transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
   min-height: 32px;
 }
@@ -2107,10 +2108,51 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .period-btn:hover { background: var(--surface-raised); color: var(--text); }
 .period-btn.active { background: var(--accent); color: var(--bg); font-weight: 700; }
 
-/* ── STATS GRID — 4-column, monospace numbers ── */
+/* ── STATS STRIP — leads the page, above the board (.prd/10 §3.1-2) ──
+   One row from 640px: period · 세션 · 토큰 · 비용 · 자세히. Below 640px the
+   period control and 자세히 share the first row and the numbers take the
+   second. 자세히 opens the other cards and the charts under the strip. */
+.stats { margin-bottom: 18px; }
+.stats-strip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "period nums more";
+  align-items: center;
+  gap: 10px 16px;
+}
+.stats-strip .period-bar { grid-area: period; }
+.strip-nums { grid-area: nums; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; min-width: 0; }
+.strip-num { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.strip-num .label { font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
+.strip-num .value { font-size: 15px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.strip-num .no-data { color: var(--text-tertiary); }
+.stats-more {
+  grid-area: more;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  min-height: 32px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
+}
+.stats-more svg { width: 12px; height: 12px; flex-shrink: 0; transition: transform var(--dur-expand) var(--ease-out); }
+.stats-more[aria-expanded="true"] { color: var(--text); }
+.stats-more[aria-expanded="true"] svg { transform: rotate(180deg); }
+.stats-detail { margin-top: 12px; }
+
+/* ── STATS GRID — the cards behind 자세히: 5 columns, 2 below 1100px ── */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 16px;
 }
@@ -3112,6 +3154,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-action.btn-primary:hover:not(:disabled) { opacity: 0.88; }
   .btn-action.btn-stop:hover:not(:disabled) { border-color: var(--st-fail); }
   .show-older-btn:hover { border-color: var(--ib-muted); color: var(--ib-text); }
+  .stats-more:hover { background: var(--surface-raised); color: var(--text); }
   .card .card-refs a:hover { text-decoration: underline; }
   .btn-choice:hover:not(:disabled) { border-color: var(--accent); background: rgba(77,157,224,0.18); color: var(--text); }
   .btn-choice-recommended:hover:not(:disabled) { background: #256f38; color: white; border-color: #256f38; }
@@ -3144,6 +3187,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 @media (max-width: 639px) {
   .main { padding: 14px 12px; }
+  /* Stats strip: period control + 자세히 on the first row, the numbers on the
+     second. The period tabs share the row's width and keep 44px height with
+     narrower sides, so the row fits 320px with the coarse-pointer padding. */
+  .stats-strip { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "period more" "nums nums"; gap: 8px 12px; }
+  .stats-strip .period-btn { flex: 1 1 auto; padding-left: 12px; padding-right: 12px; }
   /* Top bar: the status badge becomes a 10px dot (aria-label preserved for SR),
      the "Logged in as" prefix goes, and the user select fills the nav row (which
      wraps rather than overflow on very small screens). Labels stay whole. */
@@ -3179,10 +3227,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
 @media (max-width: 1100px) {
-  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* Workflows — the widest value — takes the last row on its own. */
+  .stats-grid .stat-card:last-child { grid-column: 1 / -1; }
 }
 @media (max-width: 680px) {
-  .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 6px; margin-bottom: 12px; }
+  .stats-grid { gap: 6px; margin-bottom: 12px; }
   .stat-card { padding: 8px 12px; }
   .stat-card .value { font-size: 18px; }
   .stat-card .label { font-size: 10px; }
@@ -3230,6 +3280,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   #theme-toggle { min-block-size: 44px; position: relative; }
   #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
   .period-btn { min-height: 44px; }
+  .stats-more { min-height: 44px; }
   .seg .seg-btn, .card .btn-action, .card .btn-choice, .col-foot .show-older-btn { min-height: 44px; }
   .card .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .panel-close { width: 44px; height: 44px; }
@@ -3274,7 +3325,37 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   </div>
 
   <div class="main">
-    <!-- Agent inbox (.prd/10 §3.1) — the board leads; usage stats follow below it. -->
+    <!-- Stats strip (.prd/10 §3.1-2) leads; the agent inbox board follows it.
+         Collapsed by default: period · 세션 · 토큰 · 비용 + 자세히, which opens the
+         other cards and the charts below the strip (kept in localStorage). -->
+    <section class="stats" id="stats" aria-label="Usage stats">
+      <div class="stats-strip">
+        <div class="period-bar" role="group" aria-label="&#xAE30;&#xAC04;">
+          <button type="button" class="period-btn active" data-period="day" aria-pressed="true" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
+          <button type="button" class="period-btn" data-period="week" aria-pressed="false" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
+          <button type="button" class="period-btn" data-period="month" aria-pressed="false" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
+        </div>
+        <div class="strip-nums">
+          <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value" id="stat-sessions">-</span></div>
+          <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><span id="stat-tokens">-</span><span id="stat-tokens-tooltip" role="tooltip"></span></span></div>
+          <div class="strip-num"><span class="label">&#xBE44;&#xC6A9;</span><span class="value" id="stat-cost">-</span></div>
+        </div>
+        <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+      </div>
+      <div class="stats-detail" id="stats-detail" hidden>
+        <div class="stats-grid" id="stats-grid">
+          <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-turns">-</div></div>
+          <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value" id="stat-prs">-</div></div>
+          <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value" id="stat-merged">-</div></div>
+          <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC;</div><div class="value" id="stat-merge-lines">-</div></div>
+          <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value" id="stat-workflows" style="font-size:0.85em">-</div></div>
+        </div>
+        <div style="display:none" id="stat-commits-hidden"></div>
+        <div class="chart-row" id="chart-row"></div>
+      </div>
+    </section>
+
+    <!-- Agent inbox (.prd/10 §3.1) — the board, right under the stats strip. -->
     <section class="inbox" id="inbox" aria-label="Agent inbox">
       <div class="inbox-head">
         <nav class="crumbs" aria-label="Breadcrumb"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
@@ -3302,26 +3383,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         </div>
       </div>
     </section>
-
-    <div class="period-bar">
-      <button class="period-btn active" data-period="day" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
-      <button class="period-btn" data-period="week" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
-      <button class="period-btn" data-period="month" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
-    </div>
-
-    <div class="stats-grid" id="stats-grid">
-      <div class="stat-card"><div class="label">&#xC138;&#xC158;</div><div class="value" id="stat-sessions">-</div></div>
-      <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-turns">-</div></div>
-      <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value" id="stat-prs">-</div></div>
-      <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value" id="stat-merged">-</div></div>
-      <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC;</div><div class="value" id="stat-merge-lines">-</div></div>
-      <div class="stat-card"><div class="label">&#xD1A0;&#xD070; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-tokens-wrap"><span id="stat-tokens">-</span><span id="stat-tokens-tooltip" role="tooltip"></span></div></div>
-      <div class="stat-card"><div class="label">&#xBE44;&#xC6A9; (USD)</div><div class="value" id="stat-cost">-</div></div>
-      <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value" id="stat-workflows" style="font-size:0.85em">-</div></div>
-    </div>
-    <div style="display:none" id="stat-commits-hidden"></div>
-
-    <div class="chart-row" id="chart-row"></div>
   </div>
 
   <!-- Slide Panel for Session Detail -->
@@ -3941,10 +4002,33 @@ function selectUser(userId) {
 function setPeriod(period) {
   currentPeriod = period;
   document.querySelectorAll('.period-btn').forEach(function(b) {
-    b.classList.toggle('active', b.dataset.period === period);
+    var on = b.dataset.period === period;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
   loadStats();
 }
+
+// ── Stats strip 자세히 (.prd/10 §3.1-2) — the other cards + charts, collapsed
+// unless the user opened them (localStorage['soma-stats-detail'] = 'open'). ──
+var STATS_DETAIL_KEY = 'soma-stats-detail';
+function setStatsDetail(open) {
+  var btn = document.getElementById('stats-more');
+  var detail = document.getElementById('stats-detail');
+  if (!btn || !detail) return;
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  detail.hidden = !open;
+}
+function toggleStatsDetail() {
+  var open = document.getElementById('stats-more').getAttribute('aria-expanded') !== 'true';
+  setStatsDetail(open);
+  try { localStorage.setItem(STATS_DETAIL_KEY, open ? 'open' : 'closed'); } catch (_e) {}
+}
+(function initStatsDetail() {
+  var saved = null;
+  try { saved = localStorage.getItem(STATS_DETAIL_KEY); } catch (_e) {}
+  setStatsDetail(saved === 'open');
+})();
 
 // ── Session cache ──
 // Keyed by session key — prototype-free so any key string is just a key.

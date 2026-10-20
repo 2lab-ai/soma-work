@@ -25,6 +25,7 @@ task list와 유저가 꼭 알아야 할 것만 남고, 모델의 실시간 작�
   기본 30개). 드래그로 close/stop(`confirm()` 경유, `:5204-5262`). 반응형은 ≤1100px 2칸, ≤680px 1칸(`:2941-2981`).
 - 모션: 상태 점 pulse·working 카드 그림자 pulse·스피너·패널 `right` 전환뿐. 칸 이동·FLIP 없음.
 - AS-IS 캡처(2026-10-16, fable dev v0.2.1156): 통계 8칸 + 세션 보드 4칸, 390px에서 상단 바 글자가 잘림.
+  (그때 통계는 8칸을 다 펼친 채 보드 위에 있었다. 지금의 통계 배치는 §3.1-2 — 접힌 통계 줄이 앞에, 보드가 뒤에.)
 
 ### 1.2 Slack 출력
 - 수준 4개 `minimal|compact|detail|verbose`, 기본 `minimal`(`packages/slack/src/output-flags.ts:59,101`).
@@ -78,8 +79,16 @@ task list와 유저가 꼭 알아야 할 것만 남고, 모델의 실시간 작�
 ### 3.1 보드 (`src/conversation/dashboard.ts` 템플릿)
 1. 칸 3개: `NEEDS YOU` = `waiting` · `RUNNING` = `working` · `DONE` = `idle` 다음에 `closed`(동면·아카이브). closed 카드는 흐리게,
    상태 `Sleeping`/`Archived`, 7일 지난 것은 `Show older` 뒤에 숨는다. 서버 버킷(`KanbanBoard`)은 그대로다. 빈 칸 = `Nothing here`.
-2. 상단: breadcrumb `soma-work / Agent inbox` + `Board | List` 세그먼트. 선택은 `localStorage['soma-board-view']`, 없으면 폭 < 640px = List.
-   기존 통계(기간 선택·8칸·차트)와 상단 바(유저 선택·Conversations·admin·테마)는 유지된다. 상단 바 = ≥1024px 한 줄, 그 아래는 nav가
+2. 상단: 상단 바 바로 아래에 **통계 줄**이 먼저 오고 보드가 그 뒤에 온다. 통계 줄 = 기간 선택(`오늘`·`지난 7일`·`지난 30일`)
+   + `세션`·`토큰`·`비용` 세 숫자 + `자세히` 버튼(`aria-expanded`). 기본은 접힘이고, `자세히`는 나머지 다섯 칸(턴 사용·PR 생성·
+   PR 머지·머지 코드·워크플로우)과 차트를 통계 줄과 보드 사이에 펼친다. 선택은 `localStorage['soma-stats-detail']`(`open`/`closed`,
+   없으면 접힘). 통계 줄은 ≥640px 한 줄, <640px은 두 줄(기간 선택 + `자세히` / 세 숫자)이고 터치 대상 ≥ 44px다.
+   모든 숫자는 선택한 기간을 따른다: 세션·턴·PR·머지 코드·워크플로우·차트 = `GET /api/dashboard/stats?period=&userId=`,
+   토큰(입력 + 출력)·비용 = `GET /api/dashboard/usage?period=&userId=`의 `totals`. `userId`가 없으면(All Users) 모든 유저다.
+   기간이나 유저를 바꾸면 둘 다 다시 묻고, 그 사이 늦게 도착한 이전 선택의 응답은 버린다. 토큰 툴팁(#814)의 인스턴스별 분해는
+   보드에 있는 세션 기준이고 툴팁에 `보드 세션 기준`이라고 적힌다.
+   보드 머리: breadcrumb `soma-work / Agent inbox` + `Board | List` 세그먼트. 선택은 `localStorage['soma-board-view']`, 없으면 폭 < 640px = List.
+   상단 바(유저 선택·Conversations·admin·테마)는 유지된다. 상단 바 = ≥1024px 한 줄, 그 아래는 nav가
    자기 줄로 내려가고, <640px은 상태 배지가 점(`role="status"` + 상태별 aria-label)이 되며 터치 대상 ≥ 44px. 컨트롤 라벨은 줄바꿈·잘림이
    없고 서로 겹치지 않는다(320–1280px, Chromium·WebKit). 줄어드는 것은 유저 이름뿐 — pill 이름은 줄이 찰 때, 선택된 유저 이름은 한 줄 바(≥1024px)
    에서 180px 상한·그 아래는 nav 줄 전체를 넘을 때 — 언제나 보이는 말줄임표로 줄고 전체 이름은 `title`에 있다. 유저 선택은 보이는 라벨 위에

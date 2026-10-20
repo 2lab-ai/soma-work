@@ -70,6 +70,42 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(TEMPLATE).toContain('Show older');
     expect(TEMPLATE).toContain('function toggleOlderClosed()');
   });
+
+  it('the stats strip leads the page and the board follows it (§3.1-2)', () => {
+    const main = TEMPLATE.slice(TEMPLATE.indexOf('<div class="main">'));
+    const strip = main.indexOf('<section class="stats" id="stats"');
+    const detailAt = main.indexOf('<div class="stats-detail" id="stats-detail" hidden>');
+    const board = main.indexOf('<section class="inbox" id="inbox"');
+    expect(strip).toBeGreaterThan(0);
+    expect(detailAt).toBeGreaterThan(strip);
+    expect(board).toBeGreaterThan(detailAt);
+    // Collapsed: the period control, 세션 · 토큰 · 비용 and the 자세히 toggle.
+    const row = main.slice(strip, detailAt);
+    expect(row).toContain('class="period-bar"');
+    for (const id of ['stat-sessions', 'stat-tokens-wrap', 'stat-tokens', 'stat-tokens-tooltip', 'stat-cost']) {
+      expect(row, id).toContain(`id="${id}"`);
+    }
+    expect(row).toContain('id="stats-more" aria-expanded="false" aria-controls="stats-detail"');
+    // Behind 자세히: the remaining cards and the charts, same ids as before.
+    const detail = main.slice(detailAt, board);
+    for (const id of [
+      'stats-grid',
+      'stat-turns',
+      'stat-prs',
+      'stat-merged',
+      'stat-merge-lines',
+      'stat-workflows',
+      'chart-row',
+    ]) {
+      expect(detail, id).toContain(`id="${id}"`);
+    }
+  });
+
+  it('the 자세히 choice persists in localStorage and starts collapsed (§3.1-2)', () => {
+    expect(TEMPLATE).toContain("var STATS_DETAIL_KEY = 'soma-stats-detail';");
+    expect(fnBody('toggleStatsDetail')).toContain('localStorage.setItem(STATS_DETAIL_KEY');
+    expect(TEMPLATE).toContain("setStatsDetail(saved === 'open');");
+  });
 });
 
 describe('agent inbox board — drag and drop removed (§3.1-5)', () => {
@@ -334,6 +370,7 @@ describe('agent inbox board — responsive (§5)', () => {
     const block = TEMPLATE.match(/@media \(max-width: 639px\), \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     expect(block).toContain('.panel-close { width: 44px; height: 44px; }');
     expect(block).toContain('.period-btn { min-height: 44px; }');
+    expect(block).toContain('.stats-more { min-height: 44px; }');
     expect(block).toContain(
       '.topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }',
     );
