@@ -1439,6 +1439,353 @@ describe('work log store', () => {
     expect((await wl.readWorkLog('conv-l')).entries).toHaveLength(1);
   });
 
+  describe('raw output (the full content behind a one-line entry, in <id>.raw.jsonl)', () => {
+    const RAW_MAX = 256 * 1024;
+    const SLOW = { timeout: 120_000 };
+
+    function rawFile(id: string): string {
+      return path.join(paths.dataDir, 'worklogs', `${id}.raw.jsonl`);
+    }
+
+    function storedLines(id: string): Array<Record<string, unknown>> {
+      return fs
+        .readFileSync(logFile(id), 'utf-8')
+        .trimEnd()
+        .split('\n')
+        .map((l) => JSON.parse(l));
+    }
+
+    /** The raw-file record an entry's stored line points at. */
+    function recordAt(id: string, stored: Record<string, unknown>): unknown {
+      const bytes = fs.readFileSync(rawFile(id));
+      const offset = stored.rawOffset as number;
+      return JSON.parse(bytes.subarray(offset, offset + (stored.rawLen as number)).toString('utf-8'));
+    }
+
+    async function loggerWarn() {
+      const { Logger } = await import('../../logger');
+      return vi.spyOn(Logger.prototype, 'warn');
+    }
+
+    /** Fail the next write to `file` after it landed `keep` bytes. */
+    function failNextWriteTo(file: string, keep: number): void {
+      let armed = true;
+      spyOpen((fh, args) => {
+        if (!armed || String(args[0]) !== file) return;
+        armed = false;
+        const realWrite = fh.writeFile.bind(fh);
+        (fh as { writeFile: unknown }).writeFile = async (data: string) => {
+          await realWrite(String(data).slice(0, keep), 'utf-8');
+          throw ioError('EIO');
+        };
+      });
+    }
+
+    it('exports the raw cap it enforces', () => {
+      expect(wl.WORK_LOG_RAW_MAX_BYTES).toBe(RAW_MAX);
+    });
+
+    it('stores raw as a record in the raw file; the entry line points at it and stays small', async () => {
+      const first = '{\n  "command": "ls -la"\n}\n한글 ✓ 😀\u0001';
+      const second = 'total 0\n'.repeat(500);
+      const a = await wl.appendWorkLog('conv-raw', { kind: 'tool', text: 'Bash ls', tool: 'Bash', raw: first });
+      await wl.appendWorkLog('conv-raw', { kind: 'narration', text: 'no raw here' });
+      const c = await wl.appendWorkLog('conv-raw', { kind: 'tool_result', text: 'Bash ok', tool: 'Bash', raw: second });
+
+      const [la, lb, lc] = storedLines('conv-raw');
+      expect(la).toMatchObject({ seq: 1, rawBytes: Buffer.byteLength(first), rawOffset: 0 });
+      expect(la).not.toHaveProperty('raw');
+      expect(lb).not.toHaveProperty('rawOffset');
+      expect(lc.rawOffset).toBe((la.rawOffset as number) + (la.rawLen as number) + 1);
+      expect(recordAt('conv-raw', la)).toEqual({ seq: 1, raw: first });
+      expect(recordAt('conv-raw', lc)).toEqual({ seq: 3, raw: second });
+      expect(fs.statSync(logFile('conv-raw')).size).toBeLessThan(1024);
+
+      expect(await wl.readWorkLogRaw('conv-raw', a.seq)).toEqual({
+        seq: 1,
+        raw: first,
+        rawBytes: Buffer.byteLength(first),
+        rawTruncated: false,
+      });
+      expect(await wl.readWorkLogRaw('conv-raw', c.seq)).toMatchObject({ seq: 3, raw: second });
+    });
+
+    it('list pages, the appended callback and the resolved entry carry rawBytes, never raw or its position', async () => {
+      const seen: unknown[] = [];
+      wl.setOnWorkLogAppendedCallback((_id, e) => seen.push(e));
+      const raw = 'total 0\n한글';
+      const resolved = await wl.appendWorkLog('conv-pub', {
+        kind: 'tool_result',
+        text: 'Bash ok',
+        tool: 'Bash',
+        ok: true,
+        raw,
+      });
+      await wl.appendWorkLog('conv-pub', { kind: 'narration', text: 'no raw here' });
+      await wl.appendWorkLog('conv-pub', { kind: 'final', text: 'done' });
+
+      expect(resolved).toEqual({
+        seq: 1,
+        ts: resolved.ts,
+        kind: 'tool_result',
+        text: 'Bash ok',
+        tool: 'Bash',
+        ok: true,
+        rawBytes: Buffer.byteLength(raw),
+      });
+      expect(seen).toHaveLength(3);
+      expect(seen[0]).toEqual(resolved);
+      expect(seen[1]).not.toHaveProperty('rawBytes');
+
+      // Every page path: latest window, the afterSeq fast path, and the binary
+      // search + forward scan (limit 1 with more entries than the page).
+      const latest = await wl.readWorkLog('conv-pub');
+      const fast = await wl.readWorkLog('conv-pub', { afterSeq: 0 });
+      const forward = await wl.readWorkLog('conv-pub', { afterSeq: 0, limit: 1 });
+      expect(latest.entries[0]).toEqual(resolved);
+      expect(fast.entries[0]).toEqual(resolved);
+      expect(forward.entries).toEqual([resolved]);
+      expect(latest.entries[1]).not.toHaveProperty('rawBytes');
+      for (const e of [...seen, ...latest.entries, ...fast.entries, ...forward.entries]) {
+        for (const key of ['raw', 'rawOffset', 'rawLen']) expect(e).not.toHaveProperty(key);
+      }
+    });
+
+    it(
+      'a heavy session (600 entries with 200 KiB raw each) still shows the full 500-entry latest window',
+      SLOW,
+      async () => {
+        const raw = `${'r'.repeat(200 * 1024 - 1)}\n`;
+        for (let i = 1; i <= 600; i++) {
+          await wl.appendWorkLog('conv-heavy', { kind: 'tool_result', text: `Read ok #${i}`, tool: 'Read', raw });
+        }
+
+        const page = await wl.readWorkLog('conv-heavy');
+        expect(page.entries).toHaveLength(500);
+        expect(page.entries[0].seq).toBe(101);
+        expect(page.entries[499]).toMatchObject({ seq: 600, rawBytes: 200 * 1024 });
+        expect(page.hasMore).toBe(true);
+        expect(await wl.readWorkLogRaw('conv-heavy', 1)).toMatchObject({ seq: 1, raw });
+        expect(await wl.readWorkLogRaw('conv-heavy', 600)).toMatchObject({ seq: 600, raw });
+      },
+    );
+
+    it('a 2 MB raw with control and multibyte characters is cut at the byte cap, on a character boundary', async () => {
+      // 11 UTF-8 bytes per unit.
+      const unit = 'a\u0001한😀\n"';
+      const raw = unit.repeat(Math.ceil((2 * 1024 * 1024) / 11));
+      const entry = await wl.appendWorkLog('conv-2mb', { kind: 'tool_result', text: 'Bash ok', tool: 'Bash', raw });
+
+      expect(entry).toMatchObject({ seq: 1, rawBytes: Buffer.byteLength(raw), rawTruncated: true });
+      expect(fs.statSync(logFile('conv-2mb')).size).toBeLessThan(1024);
+      const got = await wl.readWorkLogRaw('conv-2mb', 1);
+      expect(got).toMatchObject({ seq: 1, rawBytes: Buffer.byteLength(raw), rawTruncated: true });
+      const kept = got && got !== 'budget' ? got.raw : '';
+      expect(raw.startsWith(kept)).toBe(true);
+      expect(Buffer.byteLength(kept)).toBeLessThanOrEqual(RAW_MAX);
+      expect(Buffer.byteLength(kept)).toBeGreaterThan(RAW_MAX - 4);
+      const last = kept.charCodeAt(kept.length - 1);
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+    });
+
+    it('cuts exactly at the byte cap, never inside a surrogate pair', async () => {
+      const exact = 'a'.repeat(RAW_MAX);
+      const pair = `${'a'.repeat(RAW_MAX - 2)}😀tail`; // the emoji's 4 bytes would end 2 past the cap
+      const a = await wl.appendWorkLog('conv-cut', { kind: 'tool_result', text: 'ok', raw: exact });
+      const b = await wl.appendWorkLog('conv-cut', { kind: 'tool_result', text: 'ok', raw: `${exact}b` });
+      const c = await wl.appendWorkLog('conv-cut', { kind: 'tool_result', text: 'ok', raw: pair });
+
+      expect(a).not.toHaveProperty('rawTruncated');
+      expect(await wl.readWorkLogRaw('conv-cut', a.seq)).toEqual({
+        seq: a.seq,
+        raw: exact,
+        rawBytes: RAW_MAX,
+        rawTruncated: false,
+      });
+      expect(await wl.readWorkLogRaw('conv-cut', b.seq)).toEqual({
+        seq: b.seq,
+        raw: exact,
+        rawBytes: RAW_MAX + 1,
+        rawTruncated: true,
+      });
+      expect(await wl.readWorkLogRaw('conv-cut', c.seq)).toMatchObject({ raw: 'a'.repeat(RAW_MAX - 2) });
+    });
+
+    it('an emitter-supplied rawBytes (raw already cut upstream) is the reported original size', async () => {
+      const cut = await wl.appendWorkLog('conv-up', { kind: 'tool_result', text: 'ok', raw: 'abc', rawBytes: 5000 });
+      expect(cut).toMatchObject({ rawBytes: 5000, rawTruncated: true });
+      expect(await wl.readWorkLogRaw('conv-up', cut.seq)).toEqual({
+        seq: cut.seq,
+        raw: 'abc',
+        rawBytes: 5000,
+        rawTruncated: true,
+      });
+      // Smaller than what arrived, or not a byte count: ignored, the store measures.
+      for (const rawBytes of [1, -1, 1.5, Number.NaN]) {
+        const e = await wl.appendWorkLog('conv-up', { kind: 'tool_result', text: 'ok', raw: 'abc', rawBytes });
+        expect(e.rawBytes).toBe(3);
+        expect(e).not.toHaveProperty('rawTruncated');
+      }
+    });
+
+    it('a text over 4000 characters with no raw keeps the full text as raw', async () => {
+      const text = `${'n'.repeat(5000)} 끝`;
+      const entry = await wl.appendWorkLog('conv-long', { kind: 'narration', text });
+      expect(entry.text.length).toBe(wl.WORK_LOG_TEXT_MAX);
+      expect(entry).toMatchObject({ rawBytes: Buffer.byteLength(text) });
+      expect(entry).not.toHaveProperty('rawTruncated');
+      expect(await wl.readWorkLogRaw('conv-long', entry.seq)).toEqual({
+        seq: entry.seq,
+        raw: text,
+        rawBytes: Buffer.byteLength(text),
+        rawTruncated: false,
+      });
+
+      // An explicit raw wins over the long text.
+      const explicit = await wl.appendWorkLog('conv-long', { kind: 'tool', text: 'x'.repeat(5000), raw: 'input' });
+      expect(await wl.readWorkLogRaw('conv-long', explicit.seq)).toMatchObject({ raw: 'input' });
+      // A text within the cap has no raw.
+      const short = await wl.appendWorkLog('conv-long', { kind: 'final', text: 'f'.repeat(4000) });
+      expect(short).not.toHaveProperty('rawBytes');
+      expect(await wl.readWorkLogRaw('conv-long', short.seq)).toBeNull();
+    });
+
+    it('readWorkLogRaw is null for an entry without raw (every pre-existing entry), an unknown seq or log, an unsafe id', async () => {
+      writeRaw('conv-old', `${line(1)}${line(2)}`);
+      expect(await wl.readWorkLogRaw('conv-old', 1)).toBeNull();
+      expect(await wl.readWorkLogRaw('conv-old', 3)).toBeNull();
+      expect(await wl.readWorkLogRaw('conv-old', 0)).toBeNull();
+      expect(await wl.readWorkLogRaw('conv-old', 1.5)).toBeNull();
+      expect(await wl.readWorkLogRaw('conv-none', 1)).toBeNull();
+      expect(await wl.readWorkLogRaw('../escape', 1)).toBeNull();
+    });
+
+    it("waits for this process's pending write to the same log", async () => {
+      const pending = wl.appendWorkLog('conv-wait', { kind: 'tool_result', text: 'ok', raw: 'just written' });
+      expect(await wl.readWorkLogRaw('conv-wait', 1)).toMatchObject({ raw: 'just written' });
+      await pending;
+    });
+
+    it('a failed raw write still publishes the entry, without raw; the next record starts on a fresh line', async () => {
+      const seen: unknown[] = [];
+      wl.setOnWorkLogAppendedCallback((_id, e) => seen.push(e));
+      await wl.appendWorkLog('conv-rawfail', { kind: 'tool', text: 'first', raw: 'one' });
+      const warn = await loggerWarn();
+      failNextWriteTo(rawFile('conv-rawfail'), 9); // lands `{"seq":2,` then fails
+
+      const lost = await wl.appendWorkLog('conv-rawfail', { kind: 'tool_result', text: 'Bash ok', raw: 'two' });
+      expect(lost).toEqual({ seq: 2, ts: lost.ts, kind: 'tool_result', text: 'Bash ok' });
+      expect(seen[1]).toEqual(lost);
+      expect(storedLines('conv-rawfail')[1]).toEqual({ seq: 2, ts: lost.ts, kind: 'tool_result', text: 'Bash ok' });
+      expect(await wl.readWorkLogRaw('conv-rawfail', 2)).toBeNull();
+      expect(warn.mock.calls.filter(([m]) => String(m).includes('raw'))).toHaveLength(1);
+
+      vi.restoreAllMocks();
+      const next = await wl.appendWorkLog('conv-rawfail', { kind: 'tool_result', text: 'Bash ok', raw: 'three' });
+      expect(await wl.readWorkLogRaw('conv-rawfail', next.seq)).toMatchObject({ raw: 'three' });
+      expect(await wl.readWorkLogRaw('conv-rawfail', 1)).toMatchObject({ raw: 'one' });
+      expect(fs.readFileSync(rawFile('conv-rawfail'), 'utf-8')).toContain('{"seq":2,\n{"seq":3,');
+    });
+
+    it.each([
+      [
+        'a record with another seq',
+        (file: string) => {
+          const text = fs.readFileSync(file, 'utf-8');
+          fs.writeFileSync(file, text.replace('{"seq":1,', '{"seq":7,'));
+        },
+      ],
+      ['a truncated raw file (short read)', (file: string) => fs.truncateSync(file, 10)],
+      ['bytes that do not parse', (file: string) => fs.writeFileSync(file, 'x'.repeat(fs.statSync(file).size))],
+      ['a missing raw file', (file: string) => fs.rmSync(file)],
+    ])('%s at the recorded position reads as no raw, with one warn', async (_what, damage) => {
+      await wl.appendWorkLog('conv-dmg', { kind: 'tool', text: 'Bash ls', raw: 'the input' });
+      damage(rawFile('conv-dmg'));
+      const warn = await loggerWarn();
+
+      expect(await wl.readWorkLogRaw('conv-dmg', 1)).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it("'budget' when the scan cannot reach the entry within its budget, not null", async () => {
+      const id = 'conv-budget';
+      writeRaw(id, Array.from({ length: 50 }, (_, i) => line(i + 1)).join(''));
+      appendRaw(id, Buffer.from('x\n'.repeat(4.5 * 1024 * 1024))); // 9 MB
+      appendRaw(id, Array.from({ length: 10 }, (_, i) => line(51 + i)).join(''));
+      appendRaw(id, Buffer.from('x\n'.repeat(1.5 * 1024 * 1024))); // 3 MB: wider than the backward fast path
+      const warn = await loggerWarn();
+
+      expect(await wl.readWorkLogRaw(id, 55)).toBe('budget');
+      // One warn that names the raw lookup and the damage — not the list's "partial page".
+      const messages = warn.mock.calls.map(([m]) => String(m));
+      expect(messages).toEqual([expect.stringContaining('raw lookup')]);
+      expect(messages[0]).toContain('damaged');
+      expect(messages[0]).not.toContain('partial page');
+      // Every retry gets the same answer: the junk stays and the log only grows at its tail.
+      expect(await wl.readWorkLogRaw(id, 55)).toBe('budget');
+      // An entry the scan does reach is answered (it has no raw).
+      expect(await wl.readWorkLogRaw(id, 10)).toBeNull();
+    });
+
+    it('finds old, middle and recent entries in a log longer than the backward fast path', async () => {
+      const id = 'conv-deep';
+      const N = 12_000; // ~3.5 MB of entry lines
+      const records: string[] = [];
+      const lines: string[] = [];
+      let offset = 0;
+      for (let seq = 1; seq <= N; seq++) {
+        const raw = `raw #${seq}`;
+        const record = JSON.stringify({ seq, raw });
+        const rawLen = Buffer.byteLength(record);
+        lines.push(
+          JSON.stringify({
+            seq,
+            ts: seq,
+            kind: 'tool',
+            text: `${'t'.repeat(200)} ${seq}`,
+            rawBytes: raw.length,
+            rawOffset: offset,
+            rawLen,
+          }),
+        );
+        records.push(record);
+        offset += rawLen + 1;
+      }
+      writeRaw(id, `${lines.join('\n')}\n`);
+      fs.writeFileSync(rawFile(id), `${records.join('\n')}\n`);
+      expect(fs.statSync(logFile(id)).size).toBeGreaterThan(3 * 1024 * 1024);
+
+      const counter = countReads();
+      for (const seq of [1, 2, 5_000, N - 1, N]) {
+        counter.bytes = 0;
+        expect(await wl.readWorkLogRaw(id, seq)).toEqual({
+          seq,
+          raw: `raw #${seq}`,
+          rawBytes: `raw #${seq}`.length,
+          rawTruncated: false,
+        });
+        expect(counter.bytes).toBeLessThanOrEqual(wl.WORK_LOG_SCAN_BUDGET_BYTES);
+      }
+      expect(await wl.readWorkLogRaw(id, N + 1)).toBeNull();
+    });
+
+    it('a quarantine of the log leaves the raw file in place; new records append after the old ones', async () => {
+      const id = 'conv-qraw';
+      await wl.appendWorkLog(id, { kind: 'tool', text: 'before', raw: 'old record' });
+      await wl.flushWorkLog();
+      const before = fs.readFileSync(rawFile(id));
+      appendRaw(id, Buffer.from('x\n'.repeat(4.5 * 1024 * 1024))); // 9 MB of junk: the next seed quarantines
+
+      wl = await loadFresh();
+      const next = await wl.appendWorkLog(id, { kind: 'tool', text: 'after', raw: 'new record' });
+      const dir = fs.readdirSync(path.dirname(logFile(id)));
+      expect(dir.filter((f) => f.startsWith(`${id}.jsonl.corrupt-`))).toHaveLength(1);
+      const after = fs.readFileSync(rawFile(id));
+      expect(after.subarray(0, before.length).equals(before)).toBe(true);
+      expect(await wl.readWorkLogRaw(id, next.seq)).toMatchObject({ seq: next.seq, raw: 'new record' });
+    });
+  });
+
   describe('writer-state cache', () => {
     const CAP = 256;
     // Each new conversation pays its real fsyncs (sidecar, directory, line), so a

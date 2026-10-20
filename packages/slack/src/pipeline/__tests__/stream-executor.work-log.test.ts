@@ -257,8 +257,23 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
     expect(appendWorkLog.mock.calls.map(([, entry]) => entry)).toEqual([
       { kind: 'instruction', text: INSTRUCTION, turnId, ts: expect.any(Number) },
       { kind: 'narration', text: NARRATION, turnId, ts: expect.any(Number) },
-      { kind: 'tool', tool: 'Read', text: 'Read {"file_path":"/repo/config.ts"}', turnId, ts: expect.any(Number) },
-      { kind: 'tool_result', tool: 'Read', ok: true, text: 'Read ok', turnId, ts: expect.any(Number) },
+      {
+        kind: 'tool',
+        tool: 'Read',
+        text: 'Read {"file_path":"/repo/config.ts"}',
+        raw: JSON.stringify({ file_path: '/repo/config.ts' }, null, 2),
+        turnId,
+        ts: expect.any(Number),
+      },
+      {
+        kind: 'tool_result',
+        tool: 'Read',
+        ok: true,
+        text: 'Read ok',
+        raw: 'timeout = 30',
+        turnId,
+        ts: expect.any(Number),
+      },
       { kind: 'final', text: FINAL, turnId, ts: expect.any(Number) },
     ]);
 
