@@ -1931,6 +1931,112 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
   });
 });
 
+describe('stats: only the latest period / user selection paints (shipped loadStats + statsJson, _statsGen)', () => {
+  type Pending = { url: string; settle(body: unknown, ok?: boolean): void };
+  function page() {
+    const pending: Pending[] = [];
+    const fetch = (url: string) =>
+      new Promise((res, rej) => {
+        pending.push({
+          url,
+          settle: (body, ok = true) =>
+            body instanceof Error ? rej(body) : res({ ok, status: ok ? 200 : 500, json: async () => body }),
+        });
+      });
+    const painted: string[] = [];
+    const m = load<{ loadStats(): Promise<void>; select(p: string, u: string): void }>(
+      ['statsJson', 'loadStats'],
+      ['_statsGen'],
+      {
+        fetch,
+        currentPeriod: 'day',
+        currentUserId: '',
+        paintStats: (d: { tag?: string } | null) => painted.push(`stats:${d ? d.tag : 'dash'}`),
+        paintUsage: (r: { tag?: string } | null) => painted.push(`usage:${r ? r.tag : 'dash'}`),
+        updateTokenBreakdown: () => {},
+        console: { error: () => {} },
+      },
+      ['function select(p, u) { currentPeriod = p; currentUserId = u; }'],
+    );
+    const answer = (url: string, body: unknown, ok?: boolean) => {
+      const hit = pending.find((x) => x.url === url);
+      if (!hit) throw new Error(`no request ${url} (have ${pending.map((x) => x.url).join(', ')})`);
+      hit.settle(body, ok);
+    };
+    return { m, pending, painted, answer };
+  }
+
+  it('asks /stats and /usage for the period, with userId only when a user is selected', () => {
+    const p = page();
+    p.m.loadStats();
+    p.m.select('week', 'U07KQ2M4XR1');
+    p.m.loadStats();
+    expect(p.pending.map((x) => x.url)).toEqual([
+      '/api/dashboard/stats?period=day',
+      '/api/dashboard/usage?period=day',
+      '/api/dashboard/stats?period=week&userId=U07KQ2M4XR1',
+      '/api/dashboard/usage?period=week&userId=U07KQ2M4XR1',
+    ]);
+  });
+
+  it('period switch: answers for the replaced period landing last are dropped', async () => {
+    const p = page();
+    const day = p.m.loadStats();
+    p.m.select('week', '');
+    const week = p.m.loadStats();
+    p.answer('/api/dashboard/stats?period=week', { tag: 'week' });
+    p.answer('/api/dashboard/usage?period=week', { tag: 'week' });
+    await week;
+    p.answer('/api/dashboard/stats?period=day', { tag: 'day' });
+    p.answer('/api/dashboard/usage?period=day', { tag: 'day' });
+    await day;
+    expect(p.painted).toEqual(['stats:week', 'usage:week']);
+  });
+
+  it('day → week → day: the middle selection never paints, also when it answers last', async () => {
+    const p = page();
+    const a = p.m.loadStats();
+    p.m.select('week', '');
+    const b = p.m.loadStats();
+    p.m.select('day', '');
+    const c = p.m.loadStats();
+    // Requests 0/1 (first day) and 4/5 (last day) ask the same URLs; answer in order.
+    p.pending[4].settle({ tag: 'day-2' });
+    p.pending[5].settle({ tag: 'day-2' });
+    await c;
+    p.pending[0].settle({ tag: 'day-1' });
+    p.pending[1].settle({ tag: 'day-1' });
+    p.answer('/api/dashboard/stats?period=week', { tag: 'week' });
+    p.answer('/api/dashboard/usage?period=week', { tag: 'week' });
+    await Promise.all([a, b]);
+    expect(p.painted).toEqual(['stats:day-2', 'usage:day-2']);
+  });
+
+  it('user switch: the previous user’s late answers and late failures paint nothing', async () => {
+    const p = page();
+    p.m.select('day', 'U07KQ2M4XR1');
+    const alice = p.m.loadStats();
+    p.m.select('day', 'U03BN8TZP6E');
+    const bob = p.m.loadStats();
+    p.answer('/api/dashboard/stats?period=day&userId=U03BN8TZP6E', { tag: 'bob' });
+    p.answer('/api/dashboard/usage?period=day&userId=U03BN8TZP6E', { tag: 'bob' });
+    await bob;
+    p.answer('/api/dashboard/stats?period=day&userId=U07KQ2M4XR1', {}, false); // HTTP 500
+    p.answer('/api/dashboard/usage?period=day&userId=U07KQ2M4XR1', new TypeError('Failed to fetch'));
+    await alice;
+    expect(p.painted).toEqual(['stats:bob', 'usage:bob']);
+  });
+
+  it('a failure for the current selection paints dashes, not the previous numbers', async () => {
+    const p = page();
+    const a = p.m.loadStats();
+    p.answer('/api/dashboard/stats?period=day', {}, false);
+    p.answer('/api/dashboard/usage?period=day', new TypeError('Failed to fetch'));
+    await a;
+    expect(p.painted.sort()).toEqual(['stats:dash', 'usage:dash']);
+  });
+});
+
 describe('panel landing and older-turn loading (shipped workLogLandingTop + olderTurnsZone + panelOlderStep)', () => {
   const m = load<{
     workLogLandingTop(sectionTop: number, headerHeight: number, viewHeight: number): number;
