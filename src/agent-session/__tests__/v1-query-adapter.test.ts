@@ -242,6 +242,22 @@ describe('V1QueryAdapter', () => {
   // Bug fix: first dispatch turn must carry the caller's `isUserInput`
   // through to StreamExecutor; continuation turns must force `false`.
   // Full forensics in v1-query-adapter.ts above the `isUserInput:` line.
+  describe('literalPrompt propagation (goal objective opening turn)', () => {
+    it('carries literalPrompt on the first dispatch turn only', async () => {
+      const adapter = new V1QueryAdapter({
+        streamExecutor: mockExecutor as any,
+        executeParams: { ...createMockExecuteParams(), isUserInput: true, literalPrompt: true },
+      });
+
+      await adapter.start('/compact 명령의 버그를 고쳐라');
+      await adapter.continue('/compact');
+      // The objective is never a slash command; a later host continuation
+      // (for example an emergency `/compact`) must still be one.
+      expect(mockExecutor.execute).toHaveBeenNthCalledWith(1, expect.objectContaining({ literalPrompt: true }));
+      expect(mockExecutor.execute.mock.calls[1][0].literalPrompt).toBeFalsy();
+    });
+  });
+
   describe('isUserInput propagation (SET_GOAL / SSOT gate)', () => {
     it('start() preserves baseParams.isUserInput=true on the first dispatch turn', async () => {
       const adapter = new V1QueryAdapter({

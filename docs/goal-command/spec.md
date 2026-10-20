@@ -91,6 +91,8 @@ The `<session-goal>` block is the **single** place the objective and the steerin
 
 **Verbatim re-entry.** `GoalHandler` marks its `continueWithPrompt` with `verbatimPrompt: true` (set and queue-advance paths). The two `/z` consumers that feed a command's prompt back into the full message pipeline — the admin DM branch and `@bot /z …` app_mention — copy that marker onto `routeContext.verbatimPrompt`. A verbatim event skips the `!` abort check, inline `%` directives, command routing, and steer parsing, and always counts as a real turn for the follow-up queue (the stored message keeps the marker). Without it, an objective such as `new dashboard`, `!urgent …`, or `%nogoal …` was executed as that command right after the goal was set.
 
+**Literal opening turn.** The opening turn of an explicitly set goal (a goal command's prompt, a verbatim `/z goal` event, or a goal-prefixed first message) is dispatched with `literalPrompt`. The executor then never forwards it raw as an SDK local slash command (`shouldForwardAsLocalSlashCommand`), so `goal /compact 명령의 버그를 고쳐라` reaches the model as a task. The adapter carries the flag on the first dispatch turn only — a host `/compact` continuation and a typed `/compact` stay commands. Autogoal never promotes a typed SDK slash command (`/compact focus on X`) to a goal.
+
 Changing goal state (set/pause/resume/complete/clear, plus every ralph-loop continuation and every eval verdict) must clear `session.systemPrompt` so the next model turn rebuilds against the current goal. This applies because `applySessionGoal` only injects when `goal.status === 'active'`, and the cached prompt would otherwise embed a stale steering block.
 
 ## Auto-Continuation Loop (Ralph Loop)

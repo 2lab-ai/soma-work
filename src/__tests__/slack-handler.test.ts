@@ -2554,6 +2554,54 @@ describe('SlackHandler — #1082 goal-prefixed first message', () => {
     expect(execute.mock.calls[0][0].text).toBe(objective);
   });
 
+  // Review P1 (PR #305, round 2): the opening turn of a goal is the objective
+  // itself. An objective starting with an SDK slash command must reach the
+  // model as text, so the executor gets `literalPrompt` on that turn.
+  it.each([
+    [
+      'goal command (channel)',
+      { handled: true, continueWithPrompt: '/compact 명령의 버그를 고쳐라', verbatimPrompt: true },
+      'goal /compact 명령의 버그를 고쳐라',
+    ],
+    [
+      'goal-prefixed first message',
+      { handled: false, setGoalObjective: '/clear 명령을 문서화해' },
+      'goal /clear 명령을 문서화해',
+    ],
+  ])('marks the opening turn literal: %s', async (_label, routeResult, text) => {
+    const { handler, execute } = buildGoalHarness(routeResult);
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0][0].literalPrompt).toBe(true);
+  });
+
+  it('a verbatim `/z goal` objective is a literal turn too', async () => {
+    const { handler, execute } = buildGoalHarness({ handled: false });
+    await handler.handleMessage(
+      {
+        user: 'U123',
+        channel: 'C123',
+        ts: '111.222',
+        text: '/compact 명령의 버그를 고쳐라',
+        routeContext: { verbatimPrompt: true },
+      } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    expect(execute.mock.calls[0][0].literalPrompt).toBe(true);
+  });
+
+  it('a plain message is not literal — a typed `/compact` stays an SDK command', async () => {
+    const { handler, execute } = buildGoalHarness({ handled: false });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: '/compact' } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    expect(execute.mock.calls[0][0].literalPrompt).toBeFalsy();
+  });
+
   it('continueWithPrompt (goal+skill split) wins as dispatch text while the goal is still applied', async () => {
     const { handler, handlerAny, fullSession, execute, dispatchSnapshots } = buildGoalHarness({
       handled: true,

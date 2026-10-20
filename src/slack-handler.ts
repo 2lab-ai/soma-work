@@ -20,6 +20,7 @@ import {
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { OutputFlag } from '@soma/slack/output-flags';
+import { isLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
@@ -1452,11 +1453,17 @@ export class SlackHandler {
       deferredSkillFire,
       error: commandError,
       awaitingPermission,
+      verbatimPrompt: routedObjective,
     } = verbatimPrompt
       ? // Already routed by the `/z` command that produced it — the same result
         // the channel path gets straight from `GoalHandler`.
-        { handled: true, continueWithPrompt: event.text ?? '' }
+        { handled: true, continueWithPrompt: event.text ?? '', verbatimPrompt: true }
       : await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
+    // The opening turn of an explicitly set goal is the OBJECTIVE: a goal
+    // command's prompt (`goal …`, `/z goal …`, queue advance) or the objective
+    // of a goal-prefixed first message. The executor must never forward it as
+    // an SDK slash command, whatever it starts with (`goal /compact …`).
+    const literalPrompt = routedObjective === true || (setGoalObjective !== undefined && !continueWithPrompt);
     if (handled && !continueWithPrompt) {
       // Issue #1082 T1 (spec-review P1): the no-session goal+skill split can
       // end here when the skill part errored out (`handled:true`, no prompt —
@@ -1763,6 +1770,9 @@ export class SlackHandler {
         // promoting it would keep the restricted session running on its own.
         !incidentTurn &&
         effectiveText.trim() !== '' &&
+        // A typed SDK slash command (`/compact focus on X`) is a request to the
+        // CLI, not an instruction — promoting it would name a goal after it.
+        !isLocalSlashCommand(effectiveText.trim()) &&
         userSettingsStore.getUserAutoGoalEnabled(event.user)
       ) {
         const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
@@ -1901,6 +1911,7 @@ export class SlackHandler {
         sourceThreadTs,
         sourceChannel,
         synthetic: event.synthetic,
+        literalPrompt,
       });
 
       const continuationHandler: ContinuationHandler = {
@@ -2192,6 +2203,8 @@ export class SlackHandler {
       sourceThreadTs?: string;
       sourceChannel?: string;
       synthetic?: boolean;
+      /** The first turn's text is a goal objective — never an SDK slash command. */
+      literalPrompt?: boolean;
       /**
        * Turn generation this dispatch owns (`ssot.md:116-120`, A28). Captured
        * from the dispatch request and passed down verbatim — the surface
@@ -2244,6 +2257,7 @@ export class SlackHandler {
       sourceThreadTs: context.sourceThreadTs,
       sourceChannel: context.sourceChannel,
       isUserInput: !context.synthetic,
+      literalPrompt: context.literalPrompt === true,
       // Same captured token, for the executor's own late-write fence.
       followupTurnEpoch: expectedTurnEpoch,
     };
