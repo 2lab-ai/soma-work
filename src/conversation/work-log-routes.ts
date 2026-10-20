@@ -3,6 +3,16 @@
  *
  *   GET /api/dashboard/session/:conversationId/worklog?afterSeq=&limit=
  *     → 200 { entries: WorkLogEntry[], hasMore: boolean }
+ *   GET /api/dashboard/session/:conversationId/worklog/:seq/raw
+ *     → 200 { seq, raw, rawBytes, rawTruncated } (Cache-Control: no-store)
+ *
+ * Raw: an entry with `rawBytes` has a stored raw — the full tool input/result
+ * (or the uncut text) behind its one-line `text`. List entries never carry
+ * `raw` itself; the second route serves it for one entry. `rawBytes` is the
+ * original's UTF-8 size; `rawTruncated: true` when the stored copy was cut
+ * (256 KiB, less when JSON escaping would overflow the line). `:seq` is a
+ * decimal integer ≥ 1 (else 400 bad_request); 404 when the entry or its raw is
+ * missing. Same authentication and read authorization as the list.
  *
  *   - no afterSeq: the latest `limit` entries; hasMore = older entries exist.
  *   - afterSeq=N (N ≥ 0): the first `limit` entries with seq > N, for forward
@@ -48,7 +58,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { Logger } from '../logger';
 import type { AuthContext } from './oauth';
 import { getConversation } from './recorder';
-import { readWorkLog, WORK_LOG_DEFAULT_LIMIT } from './work-log';
+import { readWorkLog, readWorkLogRaw, WORK_LOG_DEFAULT_LIMIT } from './work-log';
 
 const logger = new Logger('WorkLogRoutes');
 
@@ -107,4 +117,44 @@ export async function registerWorkLogRoutes(
       reply.status(500).send({ error: 'Internal Server Error' });
     }
   });
+
+  server.get<{
+    Params: { conversationId: string; seq: string };
+  }>(
+    '/api/dashboard/session/:conversationId/worklog/:seq/raw',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      // Every answer of this route, errors included: raw is tool input/output.
+      reply.header('Cache-Control', 'no-store');
+      try {
+        const seq = parseStrictInt(request.params.seq, 1, Number.MAX_SAFE_INTEGER);
+        if (seq === null || seq === undefined) {
+          reply.status(400).send({ error: 'bad_request' });
+          return;
+        }
+
+        const { conversationId } = request.params;
+        const record = await getConversation(conversationId);
+        if (!record) {
+          reply.status(404).send({ error: 'Conversation not found' });
+          return;
+        }
+        const auth = (request as FastifyRequest & { authContext?: AuthContext }).authContext;
+        if (!canReadWorkLog(auth, record.ownerId || undefined)) {
+          reply.status(403).send({ error: 'forbidden' });
+          return;
+        }
+
+        const raw = await readWorkLogRaw(conversationId, seq);
+        if (!raw) {
+          reply.status(404).send({ error: 'not_found' });
+          return;
+        }
+        reply.send({ seq: raw.seq, raw: raw.raw, rawBytes: raw.rawBytes, rawTruncated: raw.rawTruncated });
+      } catch (error) {
+        logger.error('Error reading work log raw', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
 }

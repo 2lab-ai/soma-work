@@ -1439,6 +1439,241 @@ describe('work log store', () => {
     expect((await wl.readWorkLog('conv-l')).entries).toHaveLength(1);
   });
 
+  describe('raw output (the full content behind a one-line entry)', () => {
+    const LINE_LIMIT = 1024 * 1024;
+    const RAW_MAX = 256 * 1024;
+
+    function storedLines(id: string): Array<Record<string, unknown>> {
+      return fs
+        .readFileSync(logFile(id), 'utf-8')
+        .trimEnd()
+        .split('\n')
+        .map((l) => JSON.parse(l));
+    }
+
+    function longestLine(id: string): number {
+      const bytes = fs.readFileSync(logFile(id));
+      let longest = 0;
+      for (let start = 0; start < bytes.length; ) {
+        const nl = bytes.indexOf(0x0a, start);
+        const end = nl === -1 ? bytes.length : nl;
+        longest = Math.max(longest, end - start);
+        start = end + 1;
+      }
+      return longest;
+    }
+
+    it('exports the raw cap it enforces', () => {
+      expect(wl.WORK_LOG_RAW_MAX_BYTES).toBe(RAW_MAX);
+    });
+
+    it('round-trips through readWorkLogRaw, and the stored line keeps it', async () => {
+      const raw = '{\n  "command": "ls -la"\n}\n한글 ✓ 😀\u0001';
+      const entry = await wl.appendWorkLog('conv-raw', {
+        kind: 'tool',
+        text: 'Bash {"command":"ls -la"}',
+        tool: 'Bash',
+        raw,
+      });
+
+      expect(await wl.readWorkLogRaw('conv-raw', entry.seq)).toEqual({
+        seq: entry.seq,
+        raw,
+        rawBytes: Buffer.byteLength(raw),
+        rawTruncated: false,
+      });
+      const [stored] = storedLines('conv-raw');
+      expect(stored).toMatchObject({ seq: 1, raw, rawBytes: Buffer.byteLength(raw) });
+      expect(stored).not.toHaveProperty('rawTruncated');
+    });
+
+    it('list pages, the appended callback and the resolved entry carry rawBytes but never raw', async () => {
+      const seen: unknown[] = [];
+      wl.setOnWorkLogAppendedCallback((_id, e) => seen.push(e));
+      const raw = 'total 0\n한글';
+      const resolved = await wl.appendWorkLog('conv-pub', {
+        kind: 'tool_result',
+        text: 'Bash ok',
+        tool: 'Bash',
+        ok: true,
+        raw,
+      });
+      await wl.appendWorkLog('conv-pub', { kind: 'narration', text: 'no raw here' });
+      await wl.appendWorkLog('conv-pub', { kind: 'final', text: 'done' });
+
+      expect(resolved).toEqual({
+        seq: 1,
+        ts: resolved.ts,
+        kind: 'tool_result',
+        text: 'Bash ok',
+        tool: 'Bash',
+        ok: true,
+        rawBytes: Buffer.byteLength(raw),
+      });
+      expect(seen).toHaveLength(3);
+      expect(seen[0]).toEqual(resolved);
+      expect(seen[1]).not.toHaveProperty('rawBytes');
+
+      // Every page path: latest window, the afterSeq fast path, and the binary
+      // search + forward scan (limit 1 with more entries than the page).
+      const latest = await wl.readWorkLog('conv-pub');
+      const fast = await wl.readWorkLog('conv-pub', { afterSeq: 0 });
+      const forward = await wl.readWorkLog('conv-pub', { afterSeq: 0, limit: 1 });
+      expect(latest.entries[0]).toEqual(resolved);
+      expect(fast.entries[0]).toEqual(resolved);
+      expect(forward.entries).toEqual([resolved]);
+      expect(latest.entries[1]).not.toHaveProperty('rawBytes');
+      for (const e of [...seen, ...latest.entries, ...fast.entries, ...forward.entries]) {
+        expect(e).not.toHaveProperty('raw');
+      }
+    });
+
+    it('a 2 MB raw with control and multibyte characters is cut to fit; the entry is still stored', async () => {
+      // 11 UTF-8 bytes, 18 once JSON-escaped.
+      const unit = 'a\u0001한😀\n"';
+      const raw = unit.repeat(Math.ceil((2 * 1024 * 1024) / 11));
+      const entry = await wl.appendWorkLog('conv-2mb', { kind: 'tool_result', text: 'Bash ok', tool: 'Bash', raw });
+
+      expect(entry).toMatchObject({ seq: 1, rawBytes: Buffer.byteLength(raw), rawTruncated: true });
+      expect(longestLine('conv-2mb')).toBeLessThan(LINE_LIMIT);
+      const got = await wl.readWorkLogRaw('conv-2mb', 1);
+      expect(got).toMatchObject({ seq: 1, rawBytes: Buffer.byteLength(raw), rawTruncated: true });
+      const kept = got?.raw ?? '';
+      expect(raw.startsWith(kept)).toBe(true);
+      expect(Buffer.byteLength(kept)).toBeLessThanOrEqual(RAW_MAX);
+      expect(Buffer.byteLength(kept)).toBeGreaterThan(RAW_MAX - 4); // cut at a character boundary
+      const last = kept.charCodeAt(kept.length - 1);
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+    });
+
+    it('a raw under the byte cap that JSON-escapes past the line limit is shrunk until the line fits', async () => {
+      // 200 000 bytes, but 1.2 MB once every \u0001 escapes to 6 bytes.
+      const raw = '\u0001'.repeat(200_000);
+      const entry = await wl.appendWorkLog('conv-esc', { kind: 'tool_result', text: 'Bash ok', raw });
+      await wl.appendWorkLog('conv-esc', { kind: 'final', text: 'after' });
+
+      expect(entry).toMatchObject({ seq: 1, rawBytes: 200_000, rawTruncated: true });
+      // The line keeps its 4 KiB headroom (for `seq`) apart from the few bytes `seq` took.
+      expect(longestLine('conv-esc')).toBeLessThan(LINE_LIMIT - 4000);
+      const kept = (await wl.readWorkLogRaw('conv-esc', 1))?.raw ?? '';
+      expect(kept).toBe('\u0001'.repeat(kept.length));
+      expect(kept.length).toBeGreaterThan(150_000);
+      expect(seqs(await wl.readWorkLog('conv-esc'))).toEqual([1, 2]);
+    });
+
+    it('cuts exactly at the byte cap, never inside a surrogate pair', async () => {
+      const exact = 'a'.repeat(RAW_MAX);
+      const pair = `${'a'.repeat(RAW_MAX - 2)}😀tail`; // the emoji's 4 bytes would end 2 past the cap
+      const a = await wl.appendWorkLog('conv-cut', { kind: 'tool_result', text: 'ok', raw: exact });
+      const b = await wl.appendWorkLog('conv-cut', { kind: 'tool_result', text: 'ok', raw: `${exact}b` });
+      const c = await wl.appendWorkLog('conv-cut', { kind: 'tool_result', text: 'ok', raw: pair });
+
+      expect(a).not.toHaveProperty('rawTruncated');
+      expect(await wl.readWorkLogRaw('conv-cut', a.seq)).toEqual({
+        seq: a.seq,
+        raw: exact,
+        rawBytes: RAW_MAX,
+        rawTruncated: false,
+      });
+      expect(await wl.readWorkLogRaw('conv-cut', b.seq)).toEqual({
+        seq: b.seq,
+        raw: exact,
+        rawBytes: RAW_MAX + 1,
+        rawTruncated: true,
+      });
+      expect((await wl.readWorkLogRaw('conv-cut', c.seq))?.raw).toBe('a'.repeat(RAW_MAX - 2));
+    });
+
+    it('a text over 4000 characters with no raw keeps the full text as raw', async () => {
+      const text = `${'n'.repeat(5000)} 끝`;
+      const entry = await wl.appendWorkLog('conv-long', { kind: 'narration', text });
+      expect(entry.text.length).toBe(wl.WORK_LOG_TEXT_MAX);
+      expect(entry).toMatchObject({ rawBytes: Buffer.byteLength(text) });
+      expect(entry).not.toHaveProperty('rawTruncated');
+      expect(await wl.readWorkLogRaw('conv-long', entry.seq)).toEqual({
+        seq: entry.seq,
+        raw: text,
+        rawBytes: Buffer.byteLength(text),
+        rawTruncated: false,
+      });
+
+      // An explicit raw wins over the long text.
+      const explicit = await wl.appendWorkLog('conv-long', { kind: 'tool', text: 'x'.repeat(5000), raw: 'input' });
+      expect((await wl.readWorkLogRaw('conv-long', explicit.seq))?.raw).toBe('input');
+      // A text within the cap has no raw.
+      const short = await wl.appendWorkLog('conv-long', { kind: 'final', text: 'f'.repeat(4000) });
+      expect(short).not.toHaveProperty('rawBytes');
+      expect(await wl.readWorkLogRaw('conv-long', short.seq)).toBeNull();
+    });
+
+    it('readWorkLogRaw is null for an entry without raw (every pre-existing entry), an unknown seq or log, an unsafe id', async () => {
+      writeRaw('conv-old', `${line(1)}${line(2)}`);
+      expect(await wl.readWorkLogRaw('conv-old', 1)).toBeNull();
+      expect(await wl.readWorkLogRaw('conv-old', 3)).toBeNull();
+      expect(await wl.readWorkLogRaw('conv-old', 0)).toBeNull();
+      expect(await wl.readWorkLogRaw('conv-old', 1.5)).toBeNull();
+      expect(await wl.readWorkLogRaw('conv-none', 1)).toBeNull();
+      expect(await wl.readWorkLogRaw('../escape', 1)).toBeNull();
+    });
+
+    it("waits for this process's pending write to the same log", async () => {
+      const pending = wl.appendWorkLog('conv-wait', { kind: 'tool_result', text: 'ok', raw: 'just written' });
+      expect((await wl.readWorkLogRaw('conv-wait', 1))?.raw).toBe('just written');
+      await pending;
+    });
+
+    describe('a long log of large entries', () => {
+      // 40 tool / tool_result pairs, every line longer than one 64 KiB read
+      // chunk: ~11 MB, more than the 8 MB scan budget.
+      const PAIRS = 40;
+      const ID = 'conv-large';
+      const inputOf = (seq: number) => JSON.stringify({ seq, content: 'i'.repeat(70 * 1024) }, null, 2);
+      const outputOf = (seq: number) => `#${seq}\n${'o'.repeat(200 * 1024)}`;
+      let counter: { bytes: number };
+
+      beforeEach(() => {
+        const lines: string[] = [];
+        for (let i = 0; i < PAIRS; i++) {
+          for (const [seq, kind, raw] of [
+            [2 * i + 1, 'tool', inputOf(2 * i + 1)],
+            [2 * i + 2, 'tool_result', outputOf(2 * i + 2)],
+          ] as const) {
+            lines.push(
+              JSON.stringify({ seq, ts: seq, kind, text: 'Read', tool: 'Read', rawBytes: Buffer.byteLength(raw), raw }),
+            );
+          }
+        }
+        writeRaw(ID, `${lines.join('\n')}\n`);
+        expect(fs.statSync(logFile(ID)).size).toBeGreaterThan(wl.WORK_LOG_SCAN_BUDGET_BYTES);
+        counter = countReads();
+      });
+
+      it('readWorkLogRaw finds old, middle and recent entries within the scan budget', async () => {
+        for (const seq of [1, 2, 3, 41, 42, 2 * PAIRS - 1, 2 * PAIRS]) {
+          counter.bytes = 0;
+          const got = await wl.readWorkLogRaw(ID, seq);
+          expect(got?.raw).toBe(seq % 2 === 1 ? inputOf(seq) : outputOf(seq));
+          expect(counter.bytes).toBeLessThanOrEqual(wl.WORK_LOG_SCAN_BUDGET_BYTES);
+        }
+        expect(await wl.readWorkLogRaw(ID, 2 * PAIRS + 1)).toBeNull();
+      });
+
+      it('afterSeq paging still lands on the right entries deep in the log', async () => {
+        for (const afterSeq of [1, 20, 41, 60]) {
+          counter.bytes = 0;
+          const page = await wl.readWorkLog(ID, { afterSeq, limit: 3 });
+          expect(seqs(page)).toEqual([afterSeq + 1, afterSeq + 2, afterSeq + 3]);
+          expect(page.hasMore).toBe(true);
+          expect(counter.bytes).toBeLessThanOrEqual(wl.WORK_LOG_SCAN_BUDGET_BYTES);
+          for (const e of page.entries) {
+            expect(e).not.toHaveProperty('raw');
+            expect(e.rawBytes).toBeGreaterThan(0);
+          }
+        }
+      });
+    });
+  });
+
   describe('writer-state cache', () => {
     const CAP = 256;
     // Each new conversation pays its real fsyncs (sidecar, directory, line), so a
