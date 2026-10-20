@@ -1234,7 +1234,12 @@ export class SlackHandler {
     }
 
     if (channel.startsWith('D')) {
-      const handledCleanupRequest = await this.handleDmCleanupRequest(event, say);
+      // A replayed goal objective (`routeContext.verbatimPrompt`) was routed
+      // already: it is the user's words, never a cleanup link or a `/z`
+      // command (`/z new …` would reset the session). The admin gate below
+      // still applies to it.
+      const verbatimDm = isVerbatimPrompt(event);
+      const handledCleanupRequest = !verbatimDm && (await this.handleDmCleanupRequest(event, say));
       if (handledCleanupRequest) {
         return { result: 'blocked', reason: 'dm cleanup request handled' };
       }
@@ -1266,7 +1271,7 @@ export class SlackHandler {
       // like `/z new write a test` continue into the session pipeline with
       // the captured prompt rather than becoming a silent no-op.
       const dmText = (event.text ?? '').trim();
-      if (stripZPrefix(dmText) !== null) {
+      if (!verbatimDm && stripZPrefix(dmText) !== null) {
         const routed = await this.routeDmViaZRouter(event);
         if (routed.terminal) {
           // Same contract as the consumed-command branch below: a handled `/z`
