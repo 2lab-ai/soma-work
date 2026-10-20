@@ -23,6 +23,7 @@ Slack Handler는 모든 Slack 이벤트를 수신하고 처리하는 핵심 컴�
 | `im:read` | DM 정보 조회 |
 | `im:write` | DM 메시지 전송 |
 | `users:read` | 사용자 정보 조회 |
+| `users:read.email` | 사용자 Slack 계정 이메일 조회 — 프로필 이메일 자동 수집(`users.info`)과 대시보드 Google 로그인 fallback(`users.lookupByEmail`, `/z email`이 일치하지 않을 때) |
 | `reactions:read` | 리액션 조회 |
 | `reactions:write` | 리액션 추가/제거 |
 | `files:read` | 파일 정보 읽기 (implicit) |

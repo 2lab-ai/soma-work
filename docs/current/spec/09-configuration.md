@@ -235,6 +235,7 @@ Slack 앱 설정 템플릿:
         "im:read",
         "im:write",
         "users:read",
+        "users:read.email",
         "reactions:read",
         "reactions:write"
       ]
@@ -255,6 +256,8 @@ Slack 앱 설정 템플릿:
   }
 }
 ```
+
+`users:read.email`은 사용자의 Slack 계정 이메일을 읽는 scope다: 프로필 이메일 자동 수집(`users.info`)과, `/z email`이 일치하지 않을 때의 대시보드 Google 로그인 fallback(`users.lookupByEmail`)이 쓴다.
 
 ## 5. Data Files
 
