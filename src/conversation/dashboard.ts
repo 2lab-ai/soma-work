@@ -6240,7 +6240,8 @@ function loadWorkLog() {
     if (st.closed) return;
     // 'denied' was already shown by showWorkLogDenied (state.onDenied).
     if (result !== 'denied' && !st.entries.length) showWorkLogEmpty(WL_EMPTY_MSG);
-    if (_panelFocusWorkLog) scrollPanelToWorkLog();
+    // No re-landing here: the log is collapsed, so its arrival moves nothing,
+    // and a reader who already scrolled is left where they are.
   });
 }
 function recoverWorkLog() {
@@ -6252,8 +6253,8 @@ function pushLiveWorkLog(convId, entry) {
 }
 
 // Work-log section open / closed (§3.1-6). Every panel opening starts closed
-// unless it came from 작업 로그 or a ?session= link (openPanel). Opening only
-// shows what loadWorkLog already fetched — it never asks again.
+// (openPanel); 작업 로그 and ?session= only change where the panel lands.
+// Opening only shows what loadWorkLog already fetched — it never asks again.
 function setWorkLogOpen(open) {
   var toggle = document.getElementById('worklog-toggle');
   var list = document.getElementById('worklog-list');
@@ -6464,20 +6465,27 @@ function renderWorkLogEntry(e) {
   });
 })();
 
-// Bring the work-log section to the top of the panel's scroll area and show
-// its newest entries.
+// Where an opening from 작업 로그 / ?session= lands (§3.1-6): the top of the
+// scroll area when the collapsed work-log header fits there (a short pending
+// question above it stays in view), else the header itself.
+function workLogLandingTop(sectionTop, headerHeight, viewHeight) {
+  return sectionTop + headerHeight <= viewHeight ? 0 : sectionTop;
+}
+// Bring the collapsed work-log header into view, one click from its entries.
 function scrollPanelToWorkLog() {
   var scrollEl = document.getElementById('panel-scroll');
   var section = document.getElementById('panel-worklog');
-  var list = document.getElementById('worklog-list');
+  var toggle = document.getElementById('worklog-toggle');
   if (!scrollEl || !section || section.style.display === 'none') return;
-  var top = scrollEl.scrollTop + section.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
-  scrollEl.scrollTo({ top: top, behavior: 'instant' });
-  if (list) list.scrollTop = list.scrollHeight;
+  var sectionTop = scrollEl.scrollTop + section.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
+  var headerHeight = toggle ? toggle.getBoundingClientRect().height : 0;
+  scrollEl.scrollTo({ top: workLogLandingTop(sectionTop, headerHeight, scrollEl.clientHeight), behavior: 'instant' });
 }
 
 // ── Slide Panel ──
-// focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link.
+// focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link:
+// the work log stays collapsed like every opening, but the panel lands with its
+// header in view instead of on the newest turns.
 function openPanel(sessionKey, focusWorkLog) {
   const s = _sessionCache[sessionKey];
   if (!s) return;
@@ -6504,7 +6512,9 @@ function openPanel(sessionKey, focusWorkLog) {
   panelSessionKey = sessionKey;
   panelConvId = s.conversationId || null;
   resetWorkLog(panelConvId, true);
-  setWorkLogOpen(_panelFocusWorkLog);
+  setWorkLogOpen(false); // every opening starts collapsed (§3.1-6)
+  _panelOlderArmed = false; // a landing never loads older turns by itself
+  _panelStickBottom = false;
 
   // #762 — single source of truth for headline. displayHeadline carries the
   // server-resolved priority chain; older WS messages without it still get a
@@ -6593,13 +6603,18 @@ function openPanel(sessionKey, focusWorkLog) {
         _panelTurnsOldestId = data.turns[0] && data.turns[0].id;
         turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
         attachRawToggleHandlers();
-        // Jump to bottom on fresh load — or to the work log when that is what
-        // the user asked for (작업 로그 button / ?session= deep link).
+        // Jump to bottom on fresh load — or to the collapsed work-log header when
+        // that is what the user asked for (작업 로그 button / ?session= deep link).
         var scrollEl = document.getElementById('panel-scroll');
         // Instant: under scroll-behavior: smooth the glide down from 0 passed
         // through scrollTop < 100 and set off the load-older-turns handler.
         if (_panelFocusWorkLog) scrollPanelToWorkLog();
-        else if (scrollEl) scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
+        else if (scrollEl) {
+          scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
+          // Stay on the newest turns while the panel settles (the subtitle
+          // arriving later makes the scroll area shorter) until the reader scrolls.
+          _panelStickBottom = true;
+        }
         _panelTurnsLoading = false;
       })
       .catch(function() {
@@ -6882,6 +6897,7 @@ function closePanel() {
   _panelTurnsOldestId = null;
   resetWorkLog(null, false);
   _panelFocusWorkLog = false;
+  _panelStickBottom = false;
 }
 
 document.addEventListener('keydown', function(e) {
@@ -6889,14 +6905,41 @@ document.addEventListener('keydown', function(e) {
 });
 
 // Scroll-up-to-load-more handler (bound once on panel-scroll).
+// Older turns load when the first turn comes within 100px of the top of the
+// scroll area (or sits below it, under the question / work log). One load per
+// approach: entering the zone loads once and disarms; leaving it re-arms. An
+// opening starts disarmed, so landing at the top (작업 로그 / ?session=) loads
+// nothing by itself, and an insert that keeps the reader in place (the new
+// first turn still in the zone) cannot cascade into the next page.
+var _panelOlderArmed = false;
+var _panelStickBottom = false; // a default landing keeps the newest turns in view until the reader scrolls
+function olderTurnsZone(firstTurnTop, areaTop) {
+  return firstTurnTop >= areaTop - 100;
+}
+function panelOlderStep(armed, inZone, canLoad) {
+  if (!inZone) return { load: false, armed: true };
+  if (armed && canLoad) return { load: true, armed: false };
+  return { load: false, armed: armed };
+}
 (function initPanelScrollHandler() {
   var scrollEl = document.getElementById('panel-scroll');
-  if (!scrollEl) return;
+  var turnsEl = document.getElementById('panel-turns');
+  if (!scrollEl || !turnsEl) return;
   scrollEl.addEventListener('scroll', function() {
-    if (scrollEl.scrollTop < 100 && _panelTurnsHasMore && !_panelTurnsLoading && panelConvId && _panelTurnsOldestId) {
-      loadMorePanelTurns();
-    }
+    if (scrollEl.scrollHeight - scrollEl.clientHeight - scrollEl.scrollTop > 4) _panelStickBottom = false;
+    var first = turnsEl.querySelector('.turn');
+    if (!first) return;
+    var inZone = olderTurnsZone(first.getBoundingClientRect().top, scrollEl.getBoundingClientRect().top);
+    var canLoad = _panelTurnsHasMore && !_panelTurnsLoading && !!panelConvId && !!_panelTurnsOldestId;
+    var step = panelOlderStep(_panelOlderArmed, inZone, canLoad);
+    _panelOlderArmed = step.armed;
+    if (step.load) loadMorePanelTurns();
   }, { passive: true });
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(function() {
+      if (_panelStickBottom) scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
+    }).observe(scrollEl);
+  }
 })();
 
 // ── Send command (optimistic UI) ──
