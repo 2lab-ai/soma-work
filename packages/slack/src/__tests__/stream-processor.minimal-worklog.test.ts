@@ -444,6 +444,136 @@ describe('minimal verbosity — narration goes to the work log, Slack gets the f
   });
 });
 
+describe('work-log raw — the full tool input and result behind each one-line entry', () => {
+  const resultOf = (h: Harness) => h.log.find((e) => e.kind === 'tool_result');
+
+  /** One Bash call whose result arrives as SDK content `rawOutput`. */
+  async function runResult(rawOutput: unknown): Promise<Harness> {
+    const h = harness(LOG_MINIMAL);
+    await run(h, [
+      { type: 'tool_call', toolCallId: 'tu_1', name: 'Bash', input: { command: 'ls' } },
+      { type: 'tool_result', toolCallId: 'tu_1', content: [], rawOutput },
+    ]);
+    return h;
+  }
+
+  it('a tool entry carries its whole input as pretty JSON; the one-line text is unchanged', async () => {
+    const h = harness(LOG_MINIMAL);
+    const input = { command: 'x'.repeat(5000), description: 'long one', _internal: 'kept' };
+
+    await run(h, [{ type: 'tool_call', toolCallId: 'tu_1', name: 'Bash', input }]);
+
+    const tool = h.log.find((e) => e.kind === 'tool');
+    expect(tool?.raw).toBe(JSON.stringify(input, null, 2));
+    expect(tool?.text.length).toBeLessThanOrEqual(200);
+    expect(tool?.text.startsWith('Bash {"command":"xxx')).toBe(true);
+  });
+
+  it('the default tool turn: tool raw is the input JSON, tool_result raw is the result text', async () => {
+    const h = harness(LOG_MINIMAL);
+
+    await run(h, toolTurn());
+
+    expect(h.log[1]).toMatchObject({
+      kind: 'tool',
+      raw: JSON.stringify({ file_path: '/repo/config.ts' }, null, 2),
+    });
+    expect(h.log[2]).toMatchObject({ kind: 'tool_result', text: 'Read ok', raw: 'export const timeout = 30;' });
+    // Narration and final carry no raw: their text is the content.
+    expect(h.log[0]).not.toHaveProperty('raw');
+    expect(h.log[3]).not.toHaveProperty('raw');
+  });
+
+  it('an input JSON cannot encode falls back to String(input)', async () => {
+    const h = harness(LOG_MINIMAL);
+    const input: Record<string, unknown> = { a: 1 };
+    input.self = input;
+
+    await run(h, [{ type: 'tool_call', toolCallId: 'tu_1', name: 'Bash', input }]);
+
+    expect(h.log.find((e) => e.kind === 'tool')?.raw).toBe('[object Object]');
+  });
+
+  it('a tool call without input carries no raw', async () => {
+    const h = harness(LOG_MINIMAL);
+
+    await run(h, [{ type: 'tool_call', toolCallId: 'tu_1', name: 'Bash', input: undefined }]);
+
+    expect(h.log.find((e) => e.kind === 'tool')).not.toHaveProperty('raw');
+  });
+
+  it('string result content is the raw as-is', async () => {
+    const h = await runResult('line 1\n\tline 2\u0001');
+    expect(resultOf(h)).toMatchObject({ kind: 'tool_result', text: 'Bash ok', raw: 'line 1\n\tline 2\u0001' });
+  });
+
+  it('block-array content: text blocks joined by newlines, images as [image], other blocks as JSON', async () => {
+    const other = { type: 'document', source: { kind: 'file', id: 'f1' } };
+    const h = await runResult([
+      { type: 'text', text: 'first' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } },
+      other,
+      { type: 'text', text: 'last' },
+    ]);
+    expect(resultOf(h)?.raw).toBe(`first\n[image]\n${JSON.stringify(other)}\nlast`);
+    // Within the cap the store measures the size itself.
+    expect(resultOf(h)).not.toHaveProperty('rawBytes');
+  });
+
+  it('a block array past the 256 KiB cap stops accumulating; rawBytes reports the whole output', async () => {
+    const KIB = 1024;
+    const a = 'a'.repeat(200 * KIB);
+    const b = '한'.repeat(30 * KIB); // 90 KiB in UTF-8: the join passes the cap here
+    const c = 'c'.repeat(50 * KIB);
+    const other = { type: 'document', n: 1 };
+    const h = await runResult([
+      { type: 'text', text: a },
+      { type: 'text', text: b },
+      { type: 'text', text: c },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } },
+      other,
+    ]);
+
+    const result = resultOf(h);
+    expect(result?.raw).toBe(`${a}\n${b}`);
+    const whole = `${a}\n${b}\n${c}\n[image]\n${JSON.stringify(other)}`;
+    expect(result?.rawBytes).toBe(Buffer.byteLength(whole));
+  });
+
+  it('an object result is pretty JSON', async () => {
+    const h = await runResult({ stdout: 'ok', code: 0 });
+    expect(resultOf(h)?.raw).toBe(JSON.stringify({ stdout: 'ok', code: 0 }, null, 2));
+  });
+
+  it('a result with no content (undefined / null) carries no raw', async () => {
+    for (const rawOutput of [undefined, null]) {
+      const h = harness(LOG_MINIMAL);
+      await run(h, [
+        { type: 'tool_call', toolCallId: 'tu_1', name: 'Bash', input: { command: 'true' } },
+        { type: 'tool_result', toolCallId: 'tu_1', content: undefined as never, rawOutput },
+      ]);
+      expect(resultOf(h)).toMatchObject({ kind: 'tool_result', ok: true });
+      expect(resultOf(h)).not.toHaveProperty('raw');
+    }
+  });
+
+  it('without rawOutput the neutral content blocks are the result (text joined, json blocks as JSON)', async () => {
+    const h = harness(LOG_MINIMAL);
+    await run(h, [
+      { type: 'tool_call', toolCallId: 'tu_1', name: 'Bash', input: { command: 'ls' } },
+      {
+        type: 'tool_result',
+        toolCallId: 'tu_1',
+        content: [
+          { type: 'text', text: 'a.ts' },
+          { type: 'json', value: { n: 1 } },
+        ],
+      },
+    ]);
+    expect(resultOf(h)?.raw).toBe(`a.ts\n${JSON.stringify({ type: 'json', value: { n: 1 } })}`);
+  });
+});
+
 describe('result-time dedup is against what was delivered, at every level', () => {
   for (const level of ['minimal', 'compact', 'detail', 'verbose'] as const) {
     it(`${level}: a directive segment whose raw text is the finalText dispatches once and posts once`, async () => {
