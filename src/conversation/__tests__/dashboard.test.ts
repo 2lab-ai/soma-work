@@ -35,6 +35,18 @@ vi.mock('../../session-archive', () => ({
   getArchiveStore: () => ({ listRecent: mockListRecent }),
 }));
 
+// Metrics events the stats/usage routes read (the real store, minus the disk).
+const mockReadRange = vi.fn().mockResolvedValue([]);
+vi.mock('../../metrics/event-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../metrics/event-store')>();
+  class TestMetricsEventStore extends actual.MetricsEventStore {
+    override readRange(startDate: string, endDate: string) {
+      return mockReadRange(startDate, endDate);
+    }
+  }
+  return { ...actual, MetricsEventStore: TestMetricsEventStore };
+});
+
 const AUTH_HEADER = { Authorization: 'Bearer test-token' };
 
 describe('Dashboard API', () => {
@@ -435,14 +447,97 @@ describe('Dashboard API', () => {
 
   // ── Stats API ──
 
-  it('should require userId for stats', async () => {
-    const res = await injectWebServer({
-      method: 'GET',
-      url: '/api/dashboard/stats',
-      headers: AUTH_HEADER,
+  describe('GET /api/dashboard/stats', () => {
+    const now = Date.now();
+    const ev = (id: string, userId: string, eventType: string, metadata?: Record<string, unknown>) => ({
+      id,
+      timestamp: now,
+      eventType,
+      userId,
+      userName: userId,
+      metadata,
+    });
+    const EVENTS = [
+      ev('e1', 'U1', 'session_created', { workflow: 'zwork' }),
+      ev('e2', 'U1', 'turn_used'),
+      ev('e3', 'U2', 'session_created'),
+      ev('e4', 'U2', 'session_created', { workflow: 'zwork' }),
+      ev('e5', 'U2', 'pr_merged'),
+      ev('e6', 'U2', 'merge_lines_added', { linesAdded: 40, linesDeleted: 7 }),
+    ];
+
+    afterEach(() => {
+      mockReadRange.mockReset();
+      mockReadRange.mockResolvedValue([]);
     });
 
-    expect(res.statusCode).toBe(400);
+    it('without userId aggregates every user for the period', async () => {
+      mockReadRange.mockResolvedValue(EVENTS);
+      const res = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/stats?period=week',
+        headers: AUTH_HEADER,
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.userId).toBeNull();
+      expect(body.period).toBe('week');
+      expect(body.totals).toMatchObject({
+        sessionsCreated: 3,
+        turnsUsed: 1,
+        prsMerged: 1,
+        mergeLinesAdded: 40,
+        mergeLinesDeleted: 7,
+        workflowCounts: { zwork: 2, default: 1 },
+      });
+      // The period picks the date range that is read: 7 days, today included.
+      const [start, end] = mockReadRange.mock.calls[0];
+      expect(Date.parse(end) - Date.parse(start)).toBe(6 * 24 * 60 * 60 * 1000);
+    });
+
+    it('with userId still counts only that user', async () => {
+      mockReadRange.mockResolvedValue(EVENTS);
+      const res = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/stats?userId=U1&period=day',
+        headers: AUTH_HEADER,
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.userId).toBe('U1');
+      expect(body.totals).toMatchObject({ sessionsCreated: 1, turnsUsed: 1, prsMerged: 0, mergeLinesAdded: 0 });
+      const [start, end] = mockReadRange.mock.calls[0];
+      expect(start).toBe(end);
+    });
+
+    // The stats strip takes its tokens and cost from /usage for the same period.
+    it('/usage totals follow the period and the optional user', async () => {
+      const usage = (id: string, userId: string, inputTokens: number, outputTokens: number, costUsd: number) =>
+        ev(id, userId, 'token_usage', { inputTokens, outputTokens, costUsd, model: 'claude-opus-4-6' });
+      mockReadRange.mockResolvedValue([usage('t1', 'U1', 1000, 200, 0.5), usage('t2', 'U2', 3000, 400, 1.25)]);
+      const all = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/usage?period=month',
+        headers: AUTH_HEADER,
+      });
+      expect(all.statusCode).toBe(200);
+      expect(JSON.parse(all.body).totals).toMatchObject({
+        totalInputTokens: 4000,
+        totalOutputTokens: 600,
+        totalCostUsd: 1.75,
+      });
+      const [start, end] = mockReadRange.mock.calls[0];
+      expect(Date.parse(end) - Date.parse(start)).toBe(29 * 24 * 60 * 60 * 1000);
+
+      const one = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/usage?period=month&userId=U2',
+        headers: AUTH_HEADER,
+      });
+      expect(JSON.parse(one.body).totals).toMatchObject({ totalInputTokens: 3000, totalOutputTokens: 400 });
+    });
   });
 
   // ── Dashboard HTML ──
