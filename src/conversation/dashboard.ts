@@ -5172,7 +5172,7 @@ function renderArchivesToggle(archivedCount, hiddenCount) {
 }
 
 // Deep link (§3.1-8): /dashboard/<ownerId>?session=<sessionKey> opens that card
-// and the panel at its work log once the board has data. Slack links carry the
+// and its panel (default state) once the board has data. Slack links carry the
 // registry key WITHOUT the #814 instance prefix ("work:C123:1700000000.000100"),
 // while board cards are keyed "<instanceName>::work:C123:…" (composeSessionKey).
 // Until a card matches (board still loading, sibling instance), retry on each
@@ -5221,7 +5221,9 @@ function openDeepLinkedSession() {
   _deepLinkSession = null;
   if (!_expanded.has(key)) toggleCard(key, true);
   _cardEls[key].scrollIntoView({ block: 'center' });
-  openPanel(key, true);
+  // A default opening (§3.1-7): work log collapsed, the panel on the newest
+  // turns. Only the card's 작업 로그 button asks for the work log by name.
+  openPanel(key, false);
 }
 
 // The poll returns this instance's board merged with sibling instances' (#814);
@@ -6252,7 +6254,7 @@ function pushLiveWorkLog(convId, entry) {
 }
 
 // Work-log section open / closed (§3.1-6). Every panel opening starts closed
-// unless it came from 작업 로그 or a ?session= link (openPanel). Opening only
+// unless it came from the card's 작업 로그 button (openPanel). Opening only
 // shows what loadWorkLog already fetched — it never asks again.
 function setWorkLogOpen(open) {
   var toggle = document.getElementById('worklog-toggle');
@@ -6477,7 +6479,8 @@ function scrollPanelToWorkLog() {
 }
 
 // ── Slide Panel ──
-// focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link.
+// focusWorkLog = opened from a card's 작업 로그 button (the ?session= deep link
+// is a default opening).
 function openPanel(sessionKey, focusWorkLog) {
   const s = _sessionCache[sessionKey];
   if (!s) return;
@@ -6594,7 +6597,7 @@ function openPanel(sessionKey, focusWorkLog) {
         turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
         attachRawToggleHandlers();
         // Jump to bottom on fresh load — or to the work log when that is what
-        // the user asked for (작업 로그 button / ?session= deep link).
+        // the user asked for (the card's 작업 로그 button).
         var scrollEl = document.getElementById('panel-scroll');
         // Instant: under scroll-behavior: smooth the glide down from 0 passed
         // through scrollTop < 100 and set off the load-older-turns handler.

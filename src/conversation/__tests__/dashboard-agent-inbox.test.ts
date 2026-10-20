@@ -279,7 +279,7 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(TEMPLATE).toContain('.worklog-list[hidden] { display: none; }');
   });
 
-  it('every opening starts collapsed unless it came from 작업 로그 / ?session= (§3.1-6, §3.1-7)', () => {
+  it('every opening starts collapsed unless it came from the card’s 작업 로그 button (§3.1-6)', () => {
     const body = fnBody('openPanel');
     const reset = body.indexOf('resetWorkLog(panelConvId, true);');
     expect(reset).toBeGreaterThan(-1);
@@ -307,10 +307,14 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
 });
 
 describe('agent inbox board — deep link (§3.1-8)', () => {
-  it('reads ?session= and opens the card + panel at the work log', () => {
+  it('reads ?session=, opens the card and a default panel (work log collapsed, newest turns) (§3.1-7)', () => {
     expect(TEMPLATE).toContain('URLSearchParams(location.search)');
     expect(TEMPLATE).toContain(".get('session')");
-    expect(fnBody('openDeepLinkedSession')).toContain('openPanel(key, true)');
+    const body = fnBody('openDeepLinkedSession');
+    expect(body).toContain('toggleCard(key, true)');
+    expect(body).toContain("scrollIntoView({ block: 'center' })");
+    expect(body).toContain('openPanel(key, false)');
+    expect(body).not.toContain('openPanel(key, true)');
   });
 
   it('retries on board renders for ~10s, then gives up silently', () => {
