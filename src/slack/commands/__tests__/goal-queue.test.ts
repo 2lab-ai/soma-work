@@ -235,6 +235,7 @@ describe('GoalHandler — queue behavior (T2)', () => {
     // advancing to a queued goal re-enters the loop with that goal's own
     // words (D1) — the rules ride in the rebuilt <session-goal> block.
     expect(result.continueWithPrompt).toBe('second goal');
+    expect(result.verbatimPrompt).toBe(true);
   });
 });
 

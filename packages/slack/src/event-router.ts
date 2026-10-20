@@ -732,6 +732,11 @@ export class EventRouter {
         // ZRouter captured a follow-up prompt; continue legacy pipeline with it.
         nextText = routedViaZ.continueWithPrompt;
       }
+      // `/z goal <objective>`: the objective is the user's words — mark it so
+      // the pipeline never parses it as a command again.
+      const routeContext = routedViaZ.verbatimPrompt
+        ? { ...(event as MessageEvent).routeContext, verbatimPrompt: true }
+        : (event as MessageEvent).routeContext;
 
       // Source thread re-mention: if mentioned in a thread that has a linked bot session,
       // respond with that session's status instead of creating a new session.
@@ -751,6 +756,7 @@ export class EventRouter {
         {
           ...event,
           text: nextText,
+          ...(routeContext ? { routeContext } : {}),
         } as MessageEvent,
         say,
       );
@@ -845,7 +851,7 @@ export class EventRouter {
   private async maybeRouteAppMentionViaZRouter(args: {
     event: any;
     strippedText: string;
-  }): Promise<{ terminal: boolean; continueWithPrompt?: string }> {
+  }): Promise<{ terminal: boolean; continueWithPrompt?: string; verbatimPrompt?: boolean }> {
     const { event, strippedText } = args;
     if (!this.zRouter) return { terminal: false };
     const text = strippedText.trim();
@@ -886,7 +892,11 @@ export class EventRouter {
       }
 
       if (result.continueWithPrompt !== undefined) {
-        return { terminal: false, continueWithPrompt: result.continueWithPrompt };
+        return {
+          terminal: false,
+          continueWithPrompt: result.continueWithPrompt,
+          verbatimPrompt: result.verbatimPrompt,
+        };
       }
 
       if (result.handled) {

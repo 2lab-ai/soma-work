@@ -197,7 +197,7 @@ export class GoalHandler implements CommandHandler {
 
     // The opening turn is the user's own words; the goal rules reach the
     // model through the rebuilt `<session-goal>` system block.
-    return { handled: true, continueWithPrompt: objective };
+    return { handled: true, continueWithPrompt: objective, verbatimPrompt: true };
   }
 
   private async pauseGoal(channel: string, threadTs: string, session: ConversationSession): Promise<void> {
@@ -278,7 +278,7 @@ export class GoalHandler implements CommandHandler {
         { threadTs },
       );
       // Re-enter the loop for the promoted goal, same as a fresh `goal set`.
-      return { handled: true, continueWithPrompt: next.objective };
+      return { handled: true, continueWithPrompt: next.objective, verbatimPrompt: true };
     }
 
     await this.deps.slackApi.postSystemMessage(channel, '✅ Goal marked complete.', { threadTs });

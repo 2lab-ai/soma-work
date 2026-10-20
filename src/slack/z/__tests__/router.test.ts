@@ -126,6 +126,21 @@ describe('ZRouter.dispatch', () => {
     expect(parked).toMatchObject({ handled: true, awaitingPermission: true });
   });
 
+  it('carries verbatimPrompt out of routeToLegacy so `/z goal` objectives are never re-parsed', async () => {
+    const { legacyRouter } = makeDeps();
+    (legacyRouter.route as any).mockResolvedValueOnce({
+      handled: true,
+      continueWithPrompt: 'new dashboard',
+      verbatimPrompt: true,
+    });
+    const router = new ZRouter({ legacyRouter });
+
+    const result = await router.dispatch(
+      makeInv({ source: 'dm', remainder: 'goal new dashboard', rawText: '/z goal new dashboard' }),
+    );
+    expect(result).toMatchObject({ handled: true, continueWithPrompt: 'new dashboard', verbatimPrompt: true });
+  });
+
   it('empty remainder → shows help card', async () => {
     const { legacyRouter } = makeDeps();
     const router = new ZRouter({ legacyRouter });
