@@ -6219,9 +6219,10 @@ function wlRecover(state, fetchJson, onAdded, reason) {
 // stored: GET …/worklog/:seq/raw → { seq, raw, rawBytes, rawTruncated }, asked
 // once per (panel state, seq) — the promise is kept on the state, and a new
 // state (resetWorkLog) starts without it. 404 (not stored), 403 (owner only)
-// and 503 (the log is damaged; the answer stays the same until it is repaired)
-// settle for good. A network failure is not kept and offers 다시 시도; any
-// other HTTP error is not kept either (reopening asks again) but offers no retry.
+// and the server's 503 { error: 'unavailable' } (the log is damaged; the answer
+// stays the same until it is repaired) settle for good. Everything else — a
+// network failure, a 500 / 502, a 503 without that code (a proxy during a
+// restart) — is not kept and offers 다시 시도.
 function wlRawUrl(convId, seq) {
   return wlUrl(convId, null) + '/' + Math.max(0, Math.floor(Number(seq) || 0)) + '/raw';
 }
@@ -6239,9 +6240,9 @@ function wlRawLoad(state, seq, fetchJson) {
     var status = err && err.status;
     if (status === 404) return { status: 'missing' };
     if (status === 403) return { status: 'denied' };
-    if (status === 503) return { status: 'damaged' };
+    if (status === 503 && err.code === 'unavailable') return { status: 'damaged' };
     if (cache[seq] === p) delete cache[seq];
-    return { status: typeof status === 'number' ? 'failed' : 'error' };
+    return { status: 'error' };
   });
   cache[seq] = p;
   return p;
@@ -6255,13 +6256,12 @@ function formatBytes(n) {
 }
 // The detail block under an open entry: the full output in a <pre> (with a
 // copy button), or the line for a load in flight / not stored / owner-only /
-// a damaged log / an HTTP failure / a network failure (the only one with 다시 시도).
+// a damaged log / any other failure (the only one with 다시 시도).
 function renderWorkLogDetail(r) {
   if (r.status === 'loading') return '<div class="wl-detail-msg is-loading">원본 출력 불러오는 중…</div>';
   if (r.status === 'missing') return '<div class="wl-detail-msg">' + esc(WL_RAW_MISSING_MSG) + '</div>';
   if (r.status === 'denied') return '<div class="wl-detail-msg">' + esc(WL_FORBIDDEN_MSG) + '</div>';
   if (r.status === 'damaged') return '<div class="wl-detail-msg">' + esc(WL_RAW_DAMAGED_MSG) + '</div>';
-  if (r.status === 'failed') return '<div class="wl-detail-msg">' + esc(WL_RAW_ERROR_MSG) + '</div>';
   if (r.status === 'error') {
     return '<div class="wl-detail-msg">' + esc(WL_RAW_ERROR_MSG)
       + '<button type="button" class="wl-detail-btn" data-wl-act="retry">다시 시도</button></div>';
@@ -6275,14 +6275,20 @@ function renderWorkLogDetail(r) {
 }
 
 // ── DOM side ──
+// A failed answer rejects with err.status and err.code — the error string of a
+// JSON error body ({ error: 'unavailable' }), or null for anything else (an
+// HTML page from a proxy, no body).
 function wlFetchJson(url) {
   return fetch(url).then(function(r) {
-    if (!r.ok) {
+    if (r.ok) return r.json();
+    return Promise.resolve().then(function() { return r.json(); }).then(function(b) {
+      return b && typeof b.error === 'string' ? b.error : null;
+    }, function() { return null; }).then(function(code) {
       var err = new Error('HTTP ' + r.status);
       err.status = r.status;
+      err.code = code;
       throw err;
-    }
-    return r.json();
+    });
   });
 }
 
@@ -7015,7 +7021,7 @@ document.addEventListener('keydown', function(e) {
 // nothing by itself, and an insert that keeps the reader in place (the new
 // first turn still in the zone) cannot cascade into the next page.
 var _panelOlderArmed = false;
-var _panelStickBottom = false; // a default landing keeps the newest turns in view until the reader scrolls
+var _panelStickBottom = false; // a default landing keeps the newest turns in view until the reader acts
 function olderTurnsZone(firstTurnTop, areaTop) {
   return firstTurnTop >= areaTop - 100;
 }
@@ -7043,6 +7049,14 @@ function panelOlderStep(armed, inZone, canLoad) {
     _panelOlderArmed = step.armed;
     if (step.load) loadMorePanelTurns();
   }, { passive: true });
+  // Any input inside the panel (expanding the work log, reading, typing) means
+  // the reader took over: stop holding the newest turns.
+  var panel = document.getElementById('slide-panel');
+  if (panel) {
+    ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(function(type) {
+      panel.addEventListener(type, function() { _panelStickBottom = false; }, { passive: true, capture: true });
+    });
+  }
   // The area shrinking (a subtitle arriving) or the turns growing after the
   // landing (late fonts, images) both leave the default landing short of the end.
   if (typeof ResizeObserver === 'function') {

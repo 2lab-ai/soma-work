@@ -298,6 +298,13 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(fnBody('toggleWorkLogSection')).not.toContain('fetch');
   });
 
+  it('a default landing stays on the newest turns only until the reader touches the panel (§3.1-6)', () => {
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelScrollHandler() {'));
+    expect(init).toContain("['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(");
+    expect(init).toContain("document.getElementById('slide-panel')");
+    expect(init).toContain('_panelStickBottom = false;');
+  });
+
   it('older turns load from a user scroll near the first turn, armed once per approach (§3.1-6)', () => {
     const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelScrollHandler() {'));
     expect(init).toContain('panelOlderStep(_panelOlderArmed, inZone, canLoad)');

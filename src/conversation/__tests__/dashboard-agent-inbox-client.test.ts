@@ -1530,7 +1530,8 @@ type DonePlan = {
 
 type RawResult = { status: string; raw?: string; bytes?: number; truncated?: boolean };
 type RawState = { convId: string; closed: boolean; raw?: Record<number, Promise<RawResult>> };
-const httpErr = (status: number) => Object.assign(new Error(`HTTP ${status}`), { status });
+const httpErr = (status: number, code: string | null = null) =>
+  Object.assign(new Error(`HTTP ${status}`), { status, code });
 
 describe('work-log raw output: fetched once per entry, failures retryable (shipped wlRawUrl + wlRawLoad)', () => {
   const core = load<{
@@ -1559,13 +1560,15 @@ describe('work-log raw output: fetched once per entry, failures retryable (shipp
     expect(calls.length).toBe(2);
   });
 
-  it('404 / 403 / 503 (damaged log) settle for good; network failures and other errors are not kept', async () => {
+  it('404 / 403 / the server’s 503 {error:"unavailable"} settle for good; every other failure is retried', async () => {
     const answer = new Map<number, unknown>([
-      [4, httpErr(404)],
-      [5, httpErr(403)],
+      [4, httpErr(404, 'not_found')],
+      [5, httpErr(403, 'forbidden')],
       [6, new TypeError('Failed to fetch')],
-      [7, httpErr(503)],
+      [7, httpErr(503, 'unavailable')], // the damaged-log answer
       [8, httpErr(500)],
+      [9, httpErr(503)], // a proxy during a restart: no server code
+      [10, httpErr(502, 'bad gateway')],
     ]);
     const calls: number[] = [];
     const fetchJson = async (url: string) => {
@@ -1580,19 +1583,22 @@ describe('work-log raw output: fetched once per entry, failures retryable (shipp
     expect((await core.wlRawLoad(st, 5, fetchJson)).status).toBe('denied');
     expect((await core.wlRawLoad(st, 6, fetchJson)).status).toBe('error'); // network: 다시 시도
     expect((await core.wlRawLoad(st, 7, fetchJson)).status).toBe('damaged'); // same answer until repaired
-    expect((await core.wlRawLoad(st, 8, fetchJson)).status).toBe('failed');
+    expect((await core.wlRawLoad(st, 8, fetchJson)).status).toBe('error');
+    expect((await core.wlRawLoad(st, 9, fetchJson)).status).toBe('error');
+    expect((await core.wlRawLoad(st, 10, fetchJson)).status).toBe('error');
     await core.wlRawLoad(st, 4, fetchJson);
     await core.wlRawLoad(st, 5, fetchJson);
     await core.wlRawLoad(st, 7, fetchJson);
-    answer.delete(6); // the network is back
-    expect(await core.wlRawLoad(st, 6, fetchJson)).toEqual({
-      status: 'ok',
-      raw: 'recovered',
-      bytes: 9,
-      truncated: false,
-    });
-    await core.wlRawLoad(st, 8, fetchJson); // reopening asks again
-    expect(calls).toEqual([4, 5, 6, 7, 8, 6, 8]);
+    for (const n of [6, 8, 9, 10]) answer.delete(n); // back up
+    for (const n of [6, 8, 9, 10]) {
+      expect(await core.wlRawLoad(st, n, fetchJson)).toEqual({
+        status: 'ok',
+        raw: 'recovered',
+        bytes: 9,
+        truncated: false,
+      });
+    }
+    expect(calls).toEqual([4, 5, 6, 7, 8, 9, 10, 6, 8, 9, 10]);
   });
 });
 
@@ -1643,9 +1649,39 @@ describe('work-log raw detail markup (shipped renderWorkLogDetail + formatBytes)
     expect(renderWorkLogDetail({ status: 'damaged' })).toBe(
       '<div class="wl-detail-msg">로그가 손상되어 원본을 읽을 수 없습니다</div>',
     );
-    expect(renderWorkLogDetail({ status: 'failed' })).toBe(
-      '<div class="wl-detail-msg">원본 출력을 불러오지 못했어요</div>',
+  });
+});
+
+describe('work-log fetch errors carry the server code (shipped wlFetchJson)', () => {
+  const run = async (res: { ok: boolean; status: number; json(): Promise<unknown> }) => {
+    const { wlFetchJson } = load<{ wlFetchJson(url: string): Promise<unknown> }>(['wlFetchJson'], [], {
+      fetch: async () => res,
+    });
+    return wlFetchJson('/x').then(
+      (v) => ({ ok: v }),
+      (e: { status?: number; code?: unknown }) => ({ status: e.status, code: e.code }),
     );
+  };
+
+  it('a JSON error body puts its error string on the error; anything else leaves the code null', async () => {
+    expect(await run({ ok: false, status: 503, json: async () => ({ error: 'unavailable' }) })).toEqual({
+      status: 503,
+      code: 'unavailable',
+    });
+    expect(
+      await run({
+        ok: false,
+        status: 503,
+        json: async () => {
+          throw new SyntaxError('Unexpected token <'); // an HTML page from a proxy
+        },
+      }),
+    ).toEqual({ status: 503, code: null });
+    expect(await run({ ok: false, status: 500, json: async () => ({ error: 42 }) })).toEqual({
+      status: 500,
+      code: null,
+    });
+    expect(await run({ ok: true, status: 200, json: async () => ({ entries: [] }) })).toEqual({ ok: { entries: [] } });
   });
 });
 
@@ -1796,14 +1832,26 @@ describe('work-log entries open their raw output in place (shipped toggleWorkLog
     expect(q.rows[3].detail.innerHTML).not.toContain('<pre');
   });
 
-  it('503 says the log is damaged, with no 다시 시도', async () => {
+  it('the server’s 503 {error:"unavailable"} says the log is damaged, with no 다시 시도', async () => {
     const p = page([{ seq: 12, kind: 'tool_result', text: 'exit 0', rawBytes: 40 }], async () => {
-      throw httpErr(503);
+      throw httpErr(503, 'unavailable');
     });
     p.m.toggleWorkLogEntry(12);
     await flush();
     expect(p.rows[12].detail.innerHTML).toContain('로그가 손상되어 원본을 읽을 수 없습니다');
     expect(p.rows[12].detail.innerHTML).not.toContain('data-wl-act="retry"');
+  });
+
+  it('a 503 without that code (a proxy) and a 500 are generic failures with 다시 시도', async () => {
+    for (const err of [httpErr(503), httpErr(500)]) {
+      const p = page([{ seq: 12, kind: 'tool_result', text: 'exit 0', rawBytes: 40 }], async () => {
+        throw err;
+      });
+      p.m.toggleWorkLogEntry(12);
+      await flush();
+      expect(p.rows[12].detail.innerHTML).toContain('원본 출력을 불러오지 못했어요');
+      expect(p.rows[12].detail.innerHTML).toContain('data-wl-act="retry"');
+    }
   });
 
   it('a network failure shows 다시 시도; the retry refetches and paints the raw', async () => {
