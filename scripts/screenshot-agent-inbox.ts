@@ -38,7 +38,8 @@
  *     opens its full raw output (fetched once, cached), the truncated note, the
  *     404 / 503 + 다시 시도 lines, the entry text when no raw is stored, copy,
  *     keyboard, a late answer for a closed row dropped, no tail-follow yank
- *     (panel-*.png)
+ *     (panel-*.png); a default opening (답변하기) holds the newest turns only
+ *     until the reader acts, so a later resize never pulls them off the work log
  *   - stats: 오늘 → 지난 7일 changes 세션 / 토큰 / 비용 to the week's totals
  *     (stats + usage requests carry the period; All Users sends no userId), and
  *     a late answer for a period no longer selected does not repaint them
@@ -412,8 +413,9 @@ const WORKLOG_EXTRA: Record<string, number> = { 'conv-1': 0 };
  * Stored raw output (GET …/worklog/:seq/raw) for the panel scenario's
  * conversation. Its list entries carry rawBytes for 3, 4, 6, 9, 11 and 12: 3
  * and 4 answer 200 (multi-line), 9 answers 200 truncated, 6 has no stored raw
- * (404), 11 fails at the network once, then answers 200, and 12 answers 503
- * (the log is damaged — the same answer every time).
+ * (404), 11 fails at the network once, then answers 200, 12 answers the
+ * server's 503 { error: 'unavailable' } (the log is damaged — the same answer
+ * every time), and 13 answers a proxy's 503 (an HTML page) once, then 200.
  */
 const RAW_STORE: Record<string, Record<number, { raw: string; rawBytes: number; rawTruncated?: boolean }>> = {
   'conv-panel': {
@@ -445,11 +447,15 @@ const RAW_STORE: Record<string, Record<number, { raw: string; rawBytes: number; 
       raw: '> db:migrate --env staging --dry-run --reset\nreset 3 tables\nmigrated 0042_split_users\ndone in 41s',
       rawBytes: 98,
     },
+    13: {
+      raw: 'Dry run on staging passed in 41s with no errors.\nApprove to run 0042_split_users on production.',
+      rawBytes: 92,
+    },
   },
 };
 /** The entries the panel scenario lists: conv-1's log, with rawBytes where raw output was stored. */
 function panelLog() {
-  const bytes: Record<number, number> = { 3: 64, 4: 196, 6: 120, 9: 1_048_576, 11: 98, 12: 40 };
+  const bytes: Record<number, number> = { 3: 64, 4: 196, 6: 120, 9: 1_048_576, 11: 98, 12: 40, 13: 92 };
   return (WORKLOG['conv-1'] as Array<Record<string, unknown>>).map((e) => {
     const n = bytes[e.seq as number];
     return n ? { ...e, rawBytes: n, ...(e.seq === 9 ? { rawTruncated: true } : {}) } : { ...e };
@@ -791,9 +797,11 @@ async function installMocks(
     return r.fulfill({ json: { entries: rest.slice(0, PAGE), hasMore: rest.length > PAGE } });
   });
   // Raw output of one entry. Registered after the list route, which also
-  // matches this URL, so this one answers. 12 is a damaged log (503 every
-  // time); 11 fails at the network once per page, then answers.
+  // matches this URL, so this one answers. 12 is a damaged log (the server's
+  // 503 every time); 11 fails at the network once per page, 13 meets a proxy's
+  // 503 once per page, then both answer.
   const failedOnce = new Set<string>();
+  const proxiedOnce = new Set<string>();
   await page.route(/\/api\/dashboard\/session\/[^/?]+\/worklog\/\d+\/raw/, (r) => {
     const parts = new URL(r.request().url()).pathname.split('/');
     const conv = decodeURIComponent(parts[4] || '');
@@ -803,6 +811,14 @@ async function installMocks(
     if (seq === 11 && !failedOnce.has(conv)) {
       failedOnce.add(conv);
       return r.abort('failed');
+    }
+    if (seq === 13 && !proxiedOnce.has(conv)) {
+      proxiedOnce.add(conv);
+      return r.fulfill({
+        status: 503,
+        contentType: 'text/html',
+        body: '<html><body>Service Unavailable</body></html>',
+      });
     }
     const hit = RAW_STORE[conv]?.[seq];
     if (!hit) return r.fulfill({ status: 404, json: { error: 'not_found' } });
@@ -2646,6 +2662,18 @@ async function panelChecks(browser: import('playwright').Browser) {
       );
       await page.click(row(12));
 
+      // A proxy's 503 (no server code) is a generic failure: 다시 시도 → the raw.
+      await page.click(row(13));
+      await shown(page, 13, 'msg');
+      const p13 = await readDetail(page, 13);
+      await page.click(`#worklog-list .wl-entry[data-seq="13"] [data-wl-act="retry"]`);
+      const after13 = await shown(page, 13, 'pre');
+      check(
+        (p13.msg || '').startsWith('원본 출력을 불러오지 못했어요') && p13.retry && after13 && rawCalls(13) === 2,
+        `${tag}: a proxy's 503 (no {error:"unavailable"}) is a generic failure; 다시 시도 refetches (${rawCalls(13)} requests)`,
+      );
+      await page.click(row(13));
+
       // A network failure → 다시 시도 → the raw.
       await page.click(row(11));
       await shown(page, 11, 'msg');
@@ -2783,7 +2811,7 @@ async function panelChecks(browser: import('playwright').Browser) {
         await page.unroute(/\/worklog\/4\/raw/);
       }
 
-      // A session with no tasks: the pinned block says so. A 작업 로그 opening is expanded.
+      // A session with no tasks: the pinned block says so (a default opening: log collapsed).
       await page.evaluate((k) => (window as unknown as PageWindow).openPanel(k), K('600'));
       await page.waitForTimeout(400);
       const e0 = await readPanel(page);
@@ -2895,6 +2923,111 @@ async function panelChecks(browser: import('playwright').Browser) {
     `작업 로그 landing at the top loads nothing by itself; one scroll up loads one older page, small moves near the top no more (turns ${landed.turns} → ${once.turns} → ${settled.turns})`,
   );
   await ctx.close();
+}
+
+/**
+ * A default opening (답변하기) holds the newest turns only until the reader acts:
+ * after expanding the work log, a resize (Tasks growing on task_update, a late
+ * subtitle) must not pull them to the bottom.
+ */
+async function stickChecks(browser: import('playwright').Browser) {
+  for (const width of [1280, 390]) {
+    const ctx = await browser.newContext({
+      viewport: { width, height: 900 },
+      colorScheme: 'light',
+      hasTouch: width < 640,
+      isMobile: width < 640,
+    });
+    const page = await ctx.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    // A short conversation (two turns) and conv-1's work log: the landing on the
+    // newest turns still shows the collapsed header, so opening it needs no scroll.
+    WORKLOG['conv-stick'] = panelLog();
+    TURNS['conv-stick'] = Array.from({ length: 2 }, (_, i) => ({
+      id: `S${i + 1}`,
+      role: i % 2 ? 'assistant' : 'user',
+      userName: 'Zhuge',
+      timestamp: NOW - (2 - i) * M,
+      rawContent: i % 2 ? undefined : `merge step ${i / 2 + 1}`,
+      summarized: true,
+      summaryTitle: i % 2 ? `merge step ${(i + 1) / 2} done` : undefined,
+      summaryBody: i % 2 ? 'Merged a batch of duplicates.' : undefined,
+    }));
+    const board = makeBoard() as Record<string, Array<Record<string, unknown>>>;
+    const crm = board.waiting[1]; // Clean up CRM contacts: a multi-question form
+    crm.conversationId = 'conv-stick';
+    crm.pendingQuestion = {
+      type: 'user_choices',
+      title: 'Merge plan',
+      questions: [
+        {
+          id: 'q1',
+          question: 'Merge the 1,312 likely duplicates now?',
+          choices: [
+            { id: '1', label: 'Merge now' },
+            { id: '2', label: 'Wait for the rate limit to reset' },
+          ],
+        },
+      ],
+    };
+    await installMocks(page, board);
+    await openBoard(page);
+    const sel = `[data-session-key="${K('200')}"]`;
+    await page.click(`${sel} .card-face`);
+    await page.waitForTimeout(400);
+    await page.click(`${sel} .card-question .btn-choice`); // 답변하기
+    await page.waitForFunction(() => document.querySelectorAll('#panel-turns .turn').length >= 2, null, {
+      timeout: 5000,
+    });
+    await page.waitForTimeout(500);
+    const pos = () =>
+      page.evaluate(() => {
+        const sc = document.getElementById('panel-scroll') as HTMLElement;
+        const head = (document.getElementById('worklog-toggle') as HTMLElement).getBoundingClientRect();
+        return {
+          top: Math.round(sc.scrollTop),
+          fromEnd: Math.round(sc.scrollHeight - sc.clientHeight - sc.scrollTop),
+          headTop: Math.round(head.top),
+          expanded: document.getElementById('worklog-toggle')?.getAttribute('aria-expanded'),
+        };
+      });
+    const landed = await pos();
+    // The reader opens the work log and reads it (no scroll gesture).
+    await page.click('#worklog-toggle');
+    await page.waitForTimeout(300);
+    const reading = await pos();
+    // Resizes while they read: Tasks grow on a task_update, then the turns grow.
+    const tasks = Array.from({ length: 6 }, (_, i) => ({
+      content: `Merge batch ${i + 1} of 6`,
+      status: i < 2 ? 'completed' : i === 2 ? 'in_progress' : 'pending',
+      startedAt: NOW - (6 - i) * M,
+      completedAt: i < 2 ? NOW - (5 - i) * M : undefined,
+    }));
+    await page.evaluate(
+      ([k, t]) => (window as unknown as PageWindow).__wsSend({ type: 'task_update', sessionKey: k, tasks: t }),
+      [K('200'), tasks] as const,
+    );
+    await page.waitForTimeout(400);
+    await page.evaluate(() => {
+      const extra = document.createElement('div');
+      extra.style.height = '120px';
+      document.getElementById('panel-turns')?.appendChild(extra);
+    });
+    await page.waitForTimeout(400);
+    const after = await pos();
+    log(`stick ${width}: ${JSON.stringify({ landed, reading, after })}`);
+    check(
+      landed.fromEnd <= 2 &&
+        reading.expanded === 'true' &&
+        reading.top === landed.top && // opening the log scrolled nothing: the stick would still hold
+        Math.abs(after.top - reading.top) <= 1 &&
+        after.fromEnd > 50,
+      `${width}: after 답변하기 and opening the work log, resizes leave the reader where they were (scrollTop ${reading.top} → ${after.top}, ${after.fromEnd}px from the end)`,
+    );
+    check(errors.length === 0, `${width}: stick — no page errors (${errors.join(' | ')})`);
+    await ctx.close();
+  }
 }
 
 /** Expected strip text for a period: U001's own numbers or All Users'. */
@@ -3036,6 +3169,7 @@ async function main() {
     await archivesChecks(browser);
     await ownerBadgeChecks(browser);
     await panelChecks(browser);
+    await stickChecks(browser);
   } finally {
     await browser.close();
     await ws.stopWebServer();
