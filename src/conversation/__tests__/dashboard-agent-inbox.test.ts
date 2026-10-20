@@ -309,8 +309,12 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
   it('entry rows toggle on click, Enter and Space; detail buttons do not toggle (§3.1-6)', () => {
     const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initWorkLogInteractions() {'));
     expect(init).toContain("e.target.closest('.wl-detail')");
-    expect(init).toContain("e.key !== 'Enter' && e.key !== ' '");
+    expect(init).toContain("e.key === 'Enter' || e.key === ' '");
     expect(init).toContain('toggleWorkLogEntry(');
+    // Roving tabindex: one stop in the list; the arrows, Home and End move it.
+    expect(init).toContain('wlRovingIndex(e.key, rows.indexOf(row), rows.length)');
+    expect(init).toContain("addEventListener('focusin'");
+    expect(fnBody('paintWorkLog')).toContain('wlEnsureTabStop(list)');
     expect(TEMPLATE).toContain("act === 'retry'");
     expect(TEMPLATE).toContain("act === 'copy'");
   });

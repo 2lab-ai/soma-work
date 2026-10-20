@@ -410,9 +410,10 @@ const WORKLOG_EXTRA: Record<string, number> = { 'conv-1': 0 };
 
 /**
  * Stored raw output (GET …/worklog/:seq/raw) for the panel scenario's
- * conversation. Its list entries carry rawBytes for 3, 4, 6, 9 and 12: 3 and 4
- * answer 200 (multi-line), 9 answers 200 truncated, 6 has no stored raw (404),
- * and 12 answers 503 once, then 200.
+ * conversation. Its list entries carry rawBytes for 3, 4, 6, 9, 11 and 12: 3
+ * and 4 answer 200 (multi-line), 9 answers 200 truncated, 6 has no stored raw
+ * (404), 11 fails at the network once, then answers 200, and 12 answers 503
+ * (the log is damaged — the same answer every time).
  */
 const RAW_STORE: Record<string, Record<number, { raw: string; rawBytes: number; rawTruncated?: boolean }>> = {
   'conv-panel': {
@@ -440,7 +441,7 @@ const RAW_STORE: Record<string, Record<number, { raw: string; rawBytes: number; 
       rawBytes: 1_048_576,
       rawTruncated: true,
     },
-    12: {
+    11: {
       raw: '> db:migrate --env staging --dry-run --reset\nreset 3 tables\nmigrated 0042_split_users\ndone in 41s',
       rawBytes: 98,
     },
@@ -448,7 +449,7 @@ const RAW_STORE: Record<string, Record<number, { raw: string; rawBytes: number; 
 };
 /** The entries the panel scenario lists: conv-1's log, with rawBytes where raw output was stored. */
 function panelLog() {
-  const bytes: Record<number, number> = { 3: 64, 4: 196, 6: 120, 9: 1_048_576, 12: 98 };
+  const bytes: Record<number, number> = { 3: 64, 4: 196, 6: 120, 9: 1_048_576, 11: 98, 12: 40 };
   return (WORKLOG['conv-1'] as Array<Record<string, unknown>>).map((e) => {
     const n = bytes[e.seq as number];
     return n ? { ...e, rawBytes: n, ...(e.seq === 9 ? { rawTruncated: true } : {}) } : { ...e };
@@ -790,16 +791,18 @@ async function installMocks(
     return r.fulfill({ json: { entries: rest.slice(0, PAGE), hasMore: rest.length > PAGE } });
   });
   // Raw output of one entry. Registered after the list route, which also
-  // matches this URL, so this one answers. 12 fails once per page (503).
+  // matches this URL, so this one answers. 12 is a damaged log (503 every
+  // time); 11 fails at the network once per page, then answers.
   const failedOnce = new Set<string>();
   await page.route(/\/api\/dashboard\/session\/[^/?]+\/worklog\/\d+\/raw/, (r) => {
     const parts = new URL(r.request().url()).pathname.split('/');
     const conv = decodeURIComponent(parts[4] || '');
     const seq = Number(parts[6]);
     RAW_CALLS.push({ conv, seq });
-    if (seq === 12 && !failedOnce.has(conv)) {
+    if (seq === 12) return r.fulfill({ status: 503, json: { error: 'unavailable' } });
+    if (seq === 11 && !failedOnce.has(conv)) {
       failedOnce.add(conv);
-      return r.fulfill({ status: 503, json: { error: 'unavailable' } });
+      return r.abort('failed');
     }
     const hit = RAW_STORE[conv]?.[seq];
     if (!hit) return r.fulfill({ status: 404, json: { error: 'not_found' } });
@@ -2562,6 +2565,14 @@ async function panelChecks(browser: import('playwright').Browser) {
       await page.click(row(3));
       const okPre = await shown(page, 3, 'pre');
       const raw3 = await readDetail(page, 3);
+      const live = await page.evaluate(() => ({
+        list: document.getElementById('worklog-list')?.getAttribute('aria-live'),
+        detail: document.querySelector('#worklog-list .wl-entry[data-seq="3"] .wl-detail')?.getAttribute('aria-live'),
+      }));
+      check(
+        live.list === 'polite' && live.detail === 'off',
+        `${tag}: an opened raw output stays out of the polite log region (${JSON.stringify(live)})`,
+      );
       await page.click(row(3));
       const closed3 = await readDetail(page, 3);
       await page.click(row(3));
@@ -2620,26 +2631,41 @@ async function panelChecks(browser: import('playwright').Browser) {
       check(m6.msg === '원본 출력이 저장되어 있지 않습니다' && !m6.retry, `${tag}: 404 reads "${m6.msg}"`);
       await page.click(row(6));
 
-      // 503 → 다시 시도 → the raw.
+      // 503: the log is damaged — its own line, no 다시 시도, asked once.
       await page.click(row(12));
       await shown(page, 12, 'msg');
-      const e12 = await readDetail(page, 12);
+      const d12 = await readDetail(page, 12);
       await intoView(page, 12);
+      await shoot(page, `panel-raw-damaged-${theme}-${width}.png`, false);
+      await page.click(row(12));
+      await page.click(row(12));
+      await shown(page, 12, 'msg');
+      check(
+        d12.msg === '로그가 손상되어 원본을 읽을 수 없습니다' && !d12.retry && rawCalls(12) === 1,
+        `${tag}: 503 reads "${d12.msg}" with no 다시 시도; reopening does not ask again (${rawCalls(12)} request)`,
+      );
+      await page.click(row(12));
+
+      // A network failure → 다시 시도 → the raw.
+      await page.click(row(11));
+      await shown(page, 11, 'msg');
+      const e11 = await readDetail(page, 11);
+      await intoView(page, 11);
       await shoot(page, `panel-raw-error-${theme}-${width}.png`, false);
       if (width < 640) {
         const small = (await readPanel(page)).small;
         check(small.length === 0, `${tag}: rows, 다시 시도 and the header are ≥44px (${small.join(' | ')})`);
       }
-      await page.click(`#worklog-list .wl-entry[data-seq="12"] [data-wl-act="retry"]`);
-      const retried = await shown(page, 12, 'pre');
-      const r12 = await readDetail(page, 12);
+      await page.click(`#worklog-list .wl-entry[data-seq="11"] [data-wl-act="retry"]`);
+      const retried = await shown(page, 11, 'pre');
+      const r11 = await readDetail(page, 11);
       check(
-        (e12.msg || '').startsWith('원본 출력을 불러오지 못했어요') &&
-          e12.retry &&
+        (e11.msg || '').startsWith('원본 출력을 불러오지 못했어요') &&
+          e11.retry &&
           retried &&
-          r12.pre === RAW_STORE['conv-panel'][12].raw &&
-          rawCalls(12) === 2,
-        `${tag}: 503 offers 다시 시도, which refetches and shows the raw (${rawCalls(12)} requests)`,
+          r11.pre === RAW_STORE['conv-panel'][11].raw &&
+          rawCalls(11) === 2,
+        `${tag}: a network failure offers 다시 시도, which refetches and shows the raw (${rawCalls(11)} requests)`,
       );
 
       // Tail-follow does not yank the list while a detail is open.
@@ -2663,16 +2689,63 @@ async function panelChecks(browser: import('playwright').Browser) {
         after === before,
         `${tag}: a live entry does not move the list while a detail is open (${before} → ${after})`,
       );
-      await page.click(row(12));
       check((await overflow(page)) === 0, `${tag}: raw output open — no page overflow`);
+      await page.click(row(11));
 
       if (extra) {
-        // Keyboard: Enter opens, Space closes.
-        await page.focus(row(5));
+        // Keyboard: the list is one tab stop (the newest row); arrows, Home and End
+        // move it; Enter opens an entry's raw output, Space closes it; Tab leaves.
+        const roving = () =>
+          page.evaluate(() => {
+            const stops = Array.from(document.querySelectorAll('#worklog-list .wl-row[tabindex="0"]'));
+            const a = document.activeElement as HTMLElement | null;
+            return {
+              stops: stops.length,
+              stopSeq: stops[0]?.parentElement?.getAttribute('data-seq') ?? null,
+              focusSeq: a?.classList.contains('wl-row') ? a.parentElement?.getAttribute('data-seq') : null,
+              rows: document.querySelectorAll('#worklog-list .wl-row').length,
+            };
+          });
+        await page.click('#worklog-toggle');
+        await page.click('#worklog-toggle'); // focus on the header, list open
+        const r0 = await roving();
+        await page.keyboard.press('Tab');
+        const r1 = await roving();
+        await page.keyboard.press('ArrowUp');
+        const r2 = await roving();
+        await page.keyboard.press('Home');
+        const r3 = await roving();
+        await page.keyboard.press('ArrowDown');
+        await page.keyboard.press('ArrowDown');
+        await page.keyboard.press('ArrowDown');
+        await page.keyboard.press('ArrowDown');
+        const r4 = await roving();
         await page.keyboard.press('Enter');
         const k1 = await readDetail(page, 5);
         await page.keyboard.press(' ');
         const k2 = await readDetail(page, 5);
+        await page.keyboard.press('End');
+        const r5 = await roving();
+        await page.keyboard.press('Tab');
+        const r6 = await roving();
+        log(`roving: ${JSON.stringify({ r0, r1, r2, r3, r4, r5, r6 })}`);
+        // The stop is the row focused last (the clicks above), else the newest row.
+        const stop = Number(r0.stopSeq);
+        const last = String(r0.rows); // seqs 1..n, one row each
+        check(
+          r0.stops === 1 &&
+            r1.focusSeq === r0.stopSeq &&
+            r2.focusSeq === String(stop - 1) &&
+            r2.stops === 1 &&
+            r2.stopSeq === r2.focusSeq &&
+            r3.focusSeq === '1' &&
+            r4.focusSeq === '5' &&
+            r5.focusSeq === last &&
+            r6.focusSeq === null &&
+            r6.stops === 1 &&
+            r6.stopSeq === last,
+          `keyboard: one tab stop in the list (${r0.rows} rows, on seq ${r0.stopSeq}); Tab enters there, ↑ / Home / ↓ / End move it, Tab leaves`,
+        );
         check(
           k1.expanded === 'true' && !!k1.pre && k2.expanded === 'false' && k2.hidden === true,
           `keyboard: Enter opens an entry's raw output, Space closes it`,
