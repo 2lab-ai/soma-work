@@ -61,7 +61,7 @@ import type { UserChoice, UserChoices } from '../user-choice-extractor';
 import { UserChoiceHandler } from '../user-choice-handler';
 import type { WorkLogInput } from '../work-log';
 import { decideBackgroundWaitContinuation, getBackgroundWaitCap } from './background-wait';
-import { isLocalSlashCommand } from './local-slash-command';
+import { shouldForwardAsLocalSlashCommand } from './local-slash-command';
 import { cleanupWithTimeout, DEFAULT_CLEANUP_TIMEOUT_MS, runWithTimeout } from './stream-executor-cleanup-helpers';
 import { sanitizeTranscriptEmptyTextBlocks } from './transcript-sanitizer';
 import type { ConversationSession, ProcessedFile, SayFn } from './types';
@@ -512,6 +512,13 @@ interface StreamExecuteParams {
   sourceChannel?: string;
   /** True when the prompt originates from a real user message (not auto-resume, continuation, /renew load, etc.) */
   isUserInput?: boolean;
+  /**
+   * The text is a goal objective dispatched as the goal's opening turn: never
+   * forward it to the SDK as a local slash command, whatever it starts with.
+   * Set by slack-handler; the adapter carries it on the first dispatch turn
+   * only, so a later host `/compact` continuation is still a command.
+   */
+  literalPrompt?: boolean;
   /**
    * A28 — the session's follow-up turn generation at the moment the host
    * dispatched THIS run. Captured once at `execute()` entry and carried
@@ -1267,7 +1274,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // so without this bypass the threshold-triggered compaction would also
       // be silently no-op'd.
       const trimmedText = (text ?? '').trim();
-      const isSlashCommand = isLocalSlashCommand(trimmedText);
+      // A literal turn (a goal objective) is the user's words even when it
+      // starts with `/compact` or `/clear` — wrap it like any prompt.
+      const isSlashCommand = shouldForwardAsLocalSlashCommand(trimmedText, params.literalPrompt);
 
       let finalPrompt: string;
       if (isSlashCommand) {

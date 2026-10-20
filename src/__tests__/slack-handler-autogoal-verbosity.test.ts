@@ -33,7 +33,7 @@ describe('SlackHandler — autogoal notice follows the session verbosity', () =>
     vi.restoreAllMocks();
   });
 
-  async function run(logVerbosity: number | undefined) {
+  async function run(logVerbosity: number | undefined, text = 'ship the dashboard') {
     const registrySession: any = {
       ownerId: 'U123',
       channelId: 'C123',
@@ -77,10 +77,7 @@ describe('SlackHandler — autogoal notice follows the session verbosity', () =>
     handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
 
     const say = vi.fn().mockResolvedValue({ ts: 'msg' });
-    await handler.handleMessage(
-      { user: 'U123', channel: 'C123', ts: '111.222', text: 'ship the dashboard' } as any,
-      say,
-    );
+    await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text } as any, say);
 
     expect(execute).toHaveBeenCalledTimes(1);
     const autogoalPosts = postSystemMessage.mock.calls.filter((c: any[]) => String(c[1]).includes('Autogoal'));
@@ -111,5 +108,17 @@ describe('SlackHandler — autogoal notice follows the session verbosity', () =>
     expect(autogoalPosts[0][0]).toBe('C123');
     expect(autogoalPosts[0][2]).toEqual({ threadTs: '111.222' });
     expect(recorded).toEqual([['conv-1', { kind: 'notice', text: autogoalPosts[0][1], ts: expect.any(Number) }]]);
+  });
+
+  // PR #305 round-2 review: a typed SDK slash command (`/compact focus on X`)
+  // is a request to the CLI, not an instruction. Promoting it would set a goal
+  // named "/compact …" and, since the opening turn is now the raw text, run
+  // the compaction under that goal.
+  it('does not promote an SDK slash command to a goal', async () => {
+    const { registrySession, autogoalPosts, dispatched } = await run(undefined, '/compact focus on the parser');
+
+    expect(registrySession.goal).toBeUndefined();
+    expect(autogoalPosts).toHaveLength(0);
+    expect(dispatched).toBe('/compact focus on the parser');
   });
 });

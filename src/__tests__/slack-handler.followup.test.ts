@@ -1200,7 +1200,8 @@ describe('SlackHandler — follow-up queue host', () => {
       await tick();
       // Drained as an ordinary turn with its text intact; still no abort.
       expect(abortSession).not.toHaveBeenCalled();
-      expect(processFiles.mock.calls.at(-1)?.[0].text).toBe('!important: ship it');
+      const lastCall = processFiles.mock.calls[processFiles.mock.calls.length - 1];
+      expect(lastCall?.[0].text).toBe('!important: ship it');
     });
 
     it('keeps an already-queued peer in FIFO and runs it after the steer', async () => {

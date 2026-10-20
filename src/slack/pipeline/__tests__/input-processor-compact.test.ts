@@ -121,6 +121,19 @@ describe('InputProcessor auto-compact interception (#617 AC3)', () => {
     expect(session.pendingUserText).toBeNull();
   });
 
+  it('forwards verbatimPrompt from the command result (goal objective, PR #305)', async () => {
+    session.autoCompactPending = false;
+    commandRouterRoute.mockResolvedValueOnce({
+      handled: true,
+      continueWithPrompt: '/compact 버그',
+      verbatimPrompt: true,
+    });
+
+    const result = await processor.routeCommand(makeEvent('goal /compact 버그'), vi.fn() as any);
+
+    expect(result).toMatchObject({ handled: true, continueWithPrompt: '/compact 버그', verbatimPrompt: true });
+  });
+
   it('AC3: uses thread_ts||ts as threadTs (top-level message in thread-less DM)', async () => {
     session.autoCompactPending = true;
     const event = {

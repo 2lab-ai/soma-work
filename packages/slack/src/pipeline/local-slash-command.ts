@@ -41,3 +41,15 @@ const LOCAL_SLASH_COMMAND_RE = new RegExp(`^/(${SDK_LOCAL_SLASH_COMMANDS.join('|
 export function isLocalSlashCommand(trimmedText: string): boolean {
   return LOCAL_SLASH_COMMAND_RE.test(trimmedText);
 }
+
+/**
+ * Should the executor forward this prompt raw to the SDK as a local slash
+ * command? `literalPrompt` marks a turn whose text is the user's own words
+ * standing for something else — the opening turn of a goal is the OBJECTIVE,
+ * so `goal /compact 명령의 버그를 고쳐라` is a task about /compact, never a
+ * request to compact. Host-injected `/compact` and a typed `/compact` are not
+ * literal and keep the bypass.
+ */
+export function shouldForwardAsLocalSlashCommand(trimmedText: string, literalPrompt?: boolean): boolean {
+  return !literalPrompt && isLocalSlashCommand(trimmedText);
+}
