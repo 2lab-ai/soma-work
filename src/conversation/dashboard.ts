@@ -3480,7 +3480,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
       <div class="inbox-head">
         <nav class="crumbs" aria-label="Breadcrumb"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
         <div class="inbox-tools">
-          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">Show archives</span></button>
+          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">Archives</span></button>
           <div class="seg" role="group" aria-label="Board layout">
             <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="4.5" height="11" rx="1.2"/><rect x="9.5" y="2.5" width="4.5" height="7" rx="1.2"/></svg><span>Board</span></button>
             <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span>List</span></button>
@@ -4289,23 +4289,23 @@ function isSiblingSession(s) {
 // last 7 days, then — when "Show older" is open — the older ones. An archived
 // (terminated) closed card is left out unless archives are shown; the one key
 // a deep link revealed (revealKey) is always in, whatever its age. olderCount =
-// what "Show older" would add; hiddenArchives = archives not drawn now.
+// what "Show older" would add; archivedCount = archives in the board data.
 function planDoneColumn(idle, closed, o) {
   var cutoff = o.now - 7 * 24 * 60 * 60 * 1000;
-  var recent = [], older = [], archivedCount = 0, hiddenArchives = 0;
+  var recent = [], older = [], archivedCount = 0;
   for (var i = 0; i < closed.length; i++) {
     var s = closed[i];
     var archived = s.terminated === true;
     var revealed = !!o.revealKey && s.key === o.revealKey;
     if (archived) archivedCount++;
-    if (archived && !o.showArchives && !revealed) { hiddenArchives++; continue; }
+    if (archived && !o.showArchives && !revealed) continue;
     if (!revealed && new Date(s.lastActivity).getTime() < cutoff) older.push(s);
     else recent.push(s);
   }
   var done = idle.map(function(s) { return { s: s, col: 'idle' }; })
     .concat(recent.map(function(s) { return { s: s, col: 'closed' }; }));
   if (o.showOlder) done = done.concat(older.map(function(s) { return { s: s, col: 'closed' }; }));
-  return { done: done, olderCount: older.length, archivedCount: archivedCount, hiddenArchives: hiddenArchives };
+  return { done: done, olderCount: older.length, archivedCount: archivedCount };
 }
 
 function renderBoard(board) {
@@ -4320,6 +4320,11 @@ function renderBoard(board) {
     }
   }
   _envIndex = _buildEnvIndex();
+  // Owner hues for every card in the board data (hidden archives too, so the
+  // Show archives toggle never recolours anyone).
+  var owners = [];
+  for (var ok in _sessionCache) owners.push(_sessionCache[ok].ownerId || _sessionCache[ok].ownerName || '');
+  _ownerIndex = assignOwnerHues(owners);
   function tag(col) { return function(s) { return { s: s, col: col }; }; }
   var plan = planDoneColumn(board.idle || [], board.closed || [], {
     now: Date.now(),
@@ -4339,7 +4344,9 @@ function renderBoard(board) {
     done: plan.done.length,
   });
   renderOlderToggle(plan.olderCount);
-  renderArchivesToggle(plan.archivedCount, plan.hiddenArchives);
+  renderArchivesToggle(plan.archivedCount);
+  // The #814 tokens tooltip describes this board (user switch, WS push).
+  updateTokenBreakdown();
   _boardRenders++;
   openDeepLinkedSession();
 }
@@ -4628,11 +4635,45 @@ function renderCardStatus(s, col) {
 }
 
 // Owner badge (§3.1-3): in the All Users view every card head names its owner,
-// right-aligned. The colour slot is a pure function of ownerId (djb2 into the 8
-// hues of --ob-N-*), so one person keeps one colour on every card and reload.
+// right-aligned, in one of the 8 hues of --ob-N-*. Like the env badges
+// (_buildEnvIndex), the owners on the board are assigned together: in sorted
+// order each takes its hash slot (djb2 % 8) when free, the rest probe forward to
+// the next free slot. Up to 8 owners never share a colour, and the result
+// depends only on the set of owners — one person keeps one colour on every card
+// and render while that set stands. An owner not on the board yet gets its
+// hash slot.
 var OWNER_BADGE_HUES = 8;
+var _ownerIndex = null; // ownerId → hue slot for the board on screen (renderBoard)
+function assignOwnerHues(ids) {
+  var seen = Object.create(null);
+  var sorted = [];
+  for (var i = 0; i < ids.length; i++) {
+    var id = String(ids[i] || '');
+    if (id && !seen[id]) { seen[id] = true; sorted.push(id); }
+  }
+  sorted.sort();
+  var out = Object.create(null);
+  var taken = [];
+  var pending = [];
+  for (var j = 0; j < sorted.length; j++) {
+    var slot = _hashStr(sorted[j]) % OWNER_BADGE_HUES;
+    if (!taken[slot]) { taken[slot] = true; out[sorted[j]] = slot; }
+    else pending.push(sorted[j]);
+  }
+  for (var k = 0; k < pending.length; k++) {
+    var start = _hashStr(pending[k]) % OWNER_BADGE_HUES;
+    out[pending[k]] = start; // more owners than hues: share the hash slot
+    for (var step = 1; step < OWNER_BADGE_HUES; step++) {
+      var probe = (start + step) % OWNER_BADGE_HUES;
+      if (!taken[probe]) { taken[probe] = true; out[pending[k]] = probe; break; }
+    }
+  }
+  return out;
+}
 function ownerBadgeHue(ownerId) {
-  return _hashStr(String(ownerId || '')) % OWNER_BADGE_HUES;
+  var id = String(ownerId || '');
+  var slot = _ownerIndex ? _ownerIndex[id] : undefined;
+  return typeof slot === 'number' ? slot : _hashStr(id) % OWNER_BADGE_HUES;
 }
 function renderOwnerBadge(s) {
   if (currentUserId) return '';
@@ -5160,7 +5201,9 @@ function toggleArchives() {
   try { localStorage.setItem(SHOW_ARCHIVES_KEY, showArchives ? 'on' : 'off'); } catch (_e) {}
   loadSessions();
 }
-function renderArchivesToggle(archivedCount, hiddenCount) {
+// A toggle button: the label stays "Archives (N)" (N = archives on the board)
+// and aria-pressed carries on / off — pressed it wears the selected-segment look.
+function renderArchivesToggle(archivedCount) {
   var btn = document.getElementById('archives-toggle');
   var label = document.getElementById('archives-label');
   if (!btn || !label) return;
@@ -5168,7 +5211,7 @@ function renderArchivesToggle(archivedCount, hiddenCount) {
   if (btn.hidden !== hide) btn.hidden = hide;
   var pressed = showArchives ? 'true' : 'false';
   if (btn.getAttribute('aria-pressed') !== pressed) btn.setAttribute('aria-pressed', pressed);
-  setTextIfChanged(label, showArchives ? 'Hide archives' : 'Show archives (' + hiddenCount + ')');
+  setTextIfChanged(label, 'Archives (' + archivedCount + ')');
 }
 
 // Deep link (§3.1-8): /dashboard/<ownerId>?session=<sessionKey> opens that card
@@ -5191,7 +5234,21 @@ function resolveDeepLinkKey(ref, keys, selfInstance) {
   if (selfInstance && keys.indexOf(selfInstance + '::' + ref) >= 0) return selfInstance + '::' + ref;
   var suffix = '::' + ref;
   var hits = keys.filter(function(k) { return k.length > suffix.length && k.slice(-suffix.length) === suffix; });
-  return hits.length === 1 ? hits[0] : null;
+  if (hits.length) return hits.length === 1 ? hits[0] : null;
+  // No live card: the thread's latest archive. archivedToKanban keys it
+  // "[<instance>::]archived_<registry key>_<archivedAt ms>".
+  var mark = 'archived_' + ref + '_';
+  var best = null;
+  var bestAt = -1;
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var at = k.indexOf(mark);
+    if (at < 0 || (at > 0 && k.slice(at - 2, at) !== '::')) continue;
+    var tail = k.slice(at + mark.length);
+    if (!/^[0-9]+$/.test(tail)) continue;
+    if (Number(tail) > bestAt) { bestAt = Number(tail); best = k; }
+  }
+  return best;
 }
 function openDeepLinkedSession() {
   if (!_deepLinkSession) return;
@@ -5919,14 +5976,16 @@ function updateTokenBreakdown() {
   // Tooltip: only show when there's actually a breakdown (≥2 envs in
   // the cache). For the single-instance / empty-env case we leave the
   // tooltip dark so the topbar stays the same shape it was before #814.
+  // Runs on every board render (renderBoard) and stats load — it writes only
+  // what changed.
   var tip = document.getElementById('stat-tokens-tooltip');
   var wrap = document.getElementById('stat-tokens-wrap');
   if (!tip || !wrap) return;
   var envNames = Object.keys(byEnv).filter(function(n) { return n.length > 0; });
   if (envNames.length < 2) {
-    tip.textContent = '';
-    wrap.classList.remove('tooltip-open');
-    wrap.removeAttribute('data-has-breakdown');
+    if (tip._html !== '') { tip.textContent = ''; tip._html = ''; }
+    if (wrap.classList.contains('tooltip-open')) wrap.classList.remove('tooltip-open');
+    if (wrap.hasAttribute('data-has-breakdown')) wrap.removeAttribute('data-has-breakdown');
     return;
   }
   // Stable order: sort so the same env always renders in the same position.
@@ -5937,8 +5996,9 @@ function updateTokenBreakdown() {
     parts.push(esc(n) + ': ' + formatTokens(byEnv[n].tokens));
   }
   parts.push('Total: ' + formatTokens(totalTokens));
-  tip.innerHTML = '보드 세션 기준 &middot; ' + parts.join(' &middot; ');
-  wrap.setAttribute('data-has-breakdown', 'true');
+  var html = '보드 세션 기준 &middot; ' + parts.join(' &middot; ');
+  if (tip._html !== html) { tip.innerHTML = html; tip._html = html; }
+  if (!wrap.hasAttribute('data-has-breakdown')) wrap.setAttribute('data-has-breakdown', 'true');
   // Mobile (no-hover) tap-toggle wiring — attach once.
   if (!wrap.hasAttribute('data-tap-bound')) {
     wrap.setAttribute('data-tap-bound', 'true');

@@ -24,7 +24,7 @@
  *     and the board, survives a reload, and never scrolls the page sideways
  *     (stats-strip-*.png)
  *   - archives (light / dark × 1280 / 390): archived cards are hidden by default,
- *     Show archives (N) shows them and survives a reload, the DONE count is what
+ *     Archives (N) — a toggle button, aria-pressed — shows them and survives a reload, the DONE count is what
  *     DONE shows, Show older counts only what it would add, and a deep link to
  *     a hidden archive (recent or 9 days old) still opens it without changing
  *     the stored choice (archives-*.png)
@@ -71,6 +71,12 @@ const NOW = Date.now();
 const M = 60_000;
 const iso = (agoMs: number) => new Date(NOW - agoMs).toISOString();
 const K = (n: string) => `mock-inst::work:C123:1700000000.000${n}`;
+/** archivedToKanban's key for an archived session: "<inst>::archived_<registry key>_<archivedAt>". */
+const ARCHIVED_AT: Record<string, number> = {
+  '700': NOW - 2 * 24 * 60 * M + 5 * M,
+  '800': NOW - 9 * 24 * 60 * M + 5 * M,
+};
+const KA = (n: string) => `mock-inst::archived_work:C123:1700000000.000${n}_${ARCHIVED_AT[n]}`;
 
 function base(o: Record<string, unknown>) {
   return {
@@ -238,7 +244,7 @@ function makeBoard() {
         activeAccumulatedMs: 12 * M,
       }),
       base({
-        key: K('700'),
+        key: KA('700'),
         title: 'OAuth token refresh',
         displayHeadline: 'OAuth token refresh',
         summaryTitle: 'Refresh now retries once on 401 before logging the user out.',
@@ -249,7 +255,7 @@ function makeBoard() {
         lastActivity: iso(2 * 24 * 60 * M),
       }),
       base({
-        key: K('800'),
+        key: KA('800'),
         title: 'Old spike: vector search',
         displayHeadline: 'Old spike: vector search',
         activityState: 'idle',
@@ -263,25 +269,28 @@ function makeBoard() {
 }
 
 /** The owners of the team board (All Users view): one name long enough to ellipsize. */
+// Slack-style member ids. A bare hash % 8 puts Zhuge and Alice on one hue and
+// Carol and Dana on another; the board assigns them distinct ones.
 const TEAM = [
-  { id: 'U001', name: 'Zhuge' },
-  { id: 'U002', name: 'Alice' },
-  { id: 'U003', name: 'Bob' },
-  { id: 'U004', name: 'Carol' },
-  { id: 'U005', name: 'Dana Alexandria Montgomery-Wellington' },
+  { id: 'U01ZHG7K2QD', name: 'Zhuge' },
+  { id: 'U07KQ2M4XR1', name: 'Alice' },
+  { id: 'U03BN8TZP6E', name: 'Bob' },
+  { id: 'U05HJ1WQ9DA', name: 'Carol' },
+  { id: 'U06TF4YQ8BN', name: 'Dana Alexandria Montgomery-Wellington' },
 ];
+const [ZHUGE, ALICE, BOB, CAROL, DANA] = TEAM.map((t) => t.id);
 /** makeBoard() with the cards spread over five owners (Alice twice). */
 function makeTeamBoard() {
   const b = makeBoard() as Record<string, Array<Record<string, unknown>>>;
   const owner: Record<string, string> = {
-    [K('100')]: 'U002',
-    [K('200')]: 'U003',
-    [K('300')]: 'U004',
-    [K('400')]: 'U002',
-    [K('500')]: 'U005',
-    [K('600')]: 'U001',
-    [K('700')]: 'U003',
-    [K('800')]: 'U004',
+    [K('100')]: ALICE,
+    [K('200')]: BOB,
+    [K('300')]: CAROL,
+    [K('400')]: ALICE,
+    [K('500')]: DANA,
+    [K('600')]: ZHUGE,
+    [KA('700')]: BOB,
+    [KA('800')]: CAROL,
   };
   for (const col of Object.values(b)) {
     for (const card of col) {
@@ -1208,7 +1217,7 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
   await shoot(page2, 'worklog-403-light-1280.png', false);
 
   // First load fails transiently (502), the reconnect's retry answers 403.
-  await page2.evaluate((key) => (window as unknown as PageWindow).openPanel(key, true), K('700'));
+  await page2.evaluate((key) => (window as unknown as PageWindow).openPanel(key, true), KA('700'));
   await page2.waitForTimeout(400);
   const afterFirst = await page2.evaluate(() => document.getElementById('worklog-list')?.textContent);
   await page2.evaluate(() => (window as unknown as PageWindow).__wsReopen());
@@ -2130,7 +2139,7 @@ async function archivesChecks(browser: import('playwright').Browser) {
           off.foot === '' &&
           !off.btnHidden &&
           off.pressed === 'false' &&
-          off.label === 'Show archives (2)' &&
+          off.label === 'Archives (2)' &&
           (width >= 640 || off.btnH >= 44),
         `${tag}: archives hidden by default — DONE shows ${off.count}, "${off.label}", no Show older for archives (${JSON.stringify(off)})`,
       );
@@ -2140,13 +2149,13 @@ async function archivesChecks(browser: import('playwright').Browser) {
       const on = await settle(page, (d) => d.archived === 1);
       check(
         on.archived === 1 &&
-          on.keys.includes(K('700')) &&
+          on.keys.includes(KA('700')) &&
           on.count === '3' &&
           on.foot === '▼ Show older (1)' &&
           on.pressed === 'true' &&
-          on.label === 'Hide archives' &&
+          on.label === 'Archives (2)' &&
           on.saved === 'on',
-        `${tag}: Show archives shows the recent archive, DONE ${on.count}, the 9-day one behind "${on.foot}" (${JSON.stringify(on)})`,
+        `${tag}: Archives (pressed) shows the recent archive, DONE ${on.count}, the 9-day one behind "${on.foot}" (${JSON.stringify(on)})`,
       );
       check((await overflow(page)) === 0, `${tag}: archives shown — no page overflow`);
       await shoot(page, `archives-shown-${theme}-${width}.png`);
@@ -2197,17 +2206,17 @@ async function archivesChecks(browser: import('playwright').Browser) {
     const d = await readDone(page);
     const expanded = await page.evaluate(
       (key) => !!document.querySelector(`[data-session-key="${key}"]`)?.classList.contains('is-expanded'),
-      K(n),
+      KA(n),
     );
     check(
       opened &&
         expanded &&
-        d.keys.includes(K(n)) &&
+        d.keys.includes(KA(n)) &&
         d.archived === 1 &&
         d.pressed === 'false' &&
         d.saved === null &&
-        d.label === 'Show archives (1)',
-      `deep link to a hidden ${age} archive opens it alone; the stored choice stays unset (${JSON.stringify({ opened, expanded, ...d })})`,
+        d.label === 'Archives (2)',
+      `deep link (Slack key) to a hidden ${age} archive (${KA(n).slice(11, 60)}…) opens it alone; the stored choice stays unset (${JSON.stringify({ opened, expanded, ...d })})`,
     );
     if (n === '800') await shoot(page, 'archives-deeplink-dark-1280.png', false);
     await ctx.close();
@@ -2281,7 +2290,7 @@ async function ownerBadgeChecks(browser: import('playwright').Browser) {
       if (!b.inside) bad.push(`${b.text} badge leaves its head`);
       if (!b.clear) bad.push(`${b.text} badge covers the title`);
       if (contrast(b.fg, b.bg) < 4.5) bad.push(`${b.text} contrast ${contrast(b.fg, b.bg).toFixed(2)}`);
-      if (b.owner === 'U005' && !b.cut) bad.push('the long name is not ellipsized');
+      if (b.owner === DANA && !b.cut) bad.push('the long name is not ellipsized');
       if (!colour.has(b.owner)) colour.set(b.owner, new Set());
       colour.get(b.owner)?.add(b.bg);
     }
@@ -2326,7 +2335,7 @@ async function ownerBadgeChecks(browser: import('playwright').Browser) {
         j2.bad.length === 0 && (await overflow(page)) === 0,
         `${tag} ${other}: owner badges hold in the other view ${j2.bad.join('; ')}`,
       );
-      await page.selectOption('#user-select', 'U002');
+      await page.selectOption('#user-select', ALICE);
       await page
         .waitForFunction(() => document.querySelectorAll('#kanban .owner-badge').length === 0, null, {
           timeout: 5000,

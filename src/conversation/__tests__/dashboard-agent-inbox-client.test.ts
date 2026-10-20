@@ -1519,7 +1519,6 @@ type DonePlan = {
   done: Array<{ s: DoneCard; col: string }>;
   olderCount: number;
   archivedCount: number;
-  hiddenArchives: number;
 };
 
 type RawResult = { status: string; raw?: string; bytes?: number; truncated?: boolean };
@@ -1979,14 +1978,14 @@ describe('DONE column: archived cards hide behind Show archives (shipped planDon
     const p = plan();
     expect(keys(p)).toEqual(['idle-1', 'sleeping-recent']);
     expect(p.done.map((d) => d.col)).toEqual(['idle', 'closed']);
-    expect(p).toMatchObject({ olderCount: 1, archivedCount: 2, hiddenArchives: 2 });
+    expect(p).toMatchObject({ olderCount: 1, archivedCount: 2 });
   });
 
   it('Show older counts only cards that would appear: older non-archived unless archives are shown', () => {
     expect(keys(plan({ showOlder: true }))).toEqual(['idle-1', 'sleeping-recent', 'sleeping-old']);
     const shown = plan({ showArchives: true });
     expect(keys(shown)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent']);
-    expect(shown).toMatchObject({ olderCount: 2, archivedCount: 2, hiddenArchives: 0 });
+    expect(shown).toMatchObject({ olderCount: 2, archivedCount: 2 });
     expect(keys(plan({ showArchives: true, showOlder: true }))).toEqual([
       'idle-1',
       'sleeping-recent',
@@ -1999,10 +1998,10 @@ describe('DONE column: archived cards hide behind Show archives (shipped planDon
   it('a revealed (deep-linked) archive shows on its own, also when older than 7 days', () => {
     const recent = plan({ revealKey: 'archived-recent' });
     expect(keys(recent)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent']);
-    expect(recent).toMatchObject({ olderCount: 1, hiddenArchives: 1 });
+    expect(recent).toMatchObject({ olderCount: 1, archivedCount: 2 });
     const old = plan({ revealKey: 'archived-old' });
     expect(keys(old)).toEqual(['idle-1', 'sleeping-recent', 'archived-old']);
-    expect(old).toMatchObject({ olderCount: 1, hiddenArchives: 1 });
+    expect(old).toMatchObject({ olderCount: 1, archivedCount: 2 });
   });
 });
 
@@ -2108,7 +2107,8 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
     };
     return { m, calls, render };
   }
-  const KEY = 'inst::work:C1:1700000000.000700';
+  // The board key of an archived session (archivedToKanban): "<inst>::archived_<registry key>_<archivedAt>".
+  const KEY = 'inst::archived_work:C1:1700000000.000700_1792000000000';
 
   it('reveals just that archive for this page load, then expands it and opens the panel', () => {
     const p = page({ key: KEY, terminated: true });
@@ -2137,36 +2137,63 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
   });
 });
 
-describe('All Users: owner badge on every card (shipped ownerBadgeHue + renderOwnerBadge)', () => {
-  type Badge = { ownerBadgeHue(id: string): number; renderOwnerBadge(s: Record<string, unknown>): string };
-  const badge = (currentUserId: string) =>
-    load<Badge>(['esc', 'escAttr', '_hashStr', 'ownerBadgeHue', 'renderOwnerBadge'], ['OWNER_BADGE_HUES'], {
-      currentUserId,
-    });
-  const all = badge('');
+describe('All Users: owner badge on every card (shipped assignOwnerHues + ownerBadgeHue + renderOwnerBadge)', () => {
+  type Badge = {
+    assignOwnerHues(ids: string[]): Record<string, number>;
+    ownerBadgeHue(id: string): number;
+    renderOwnerBadge(s: Record<string, unknown>): string;
+  };
+  const badge = (currentUserId: string, owners: string[] = []) => {
+    const m = load<Badge>(
+      ['esc', 'escAttr', '_hashStr', 'assignOwnerHues', 'ownerBadgeHue', 'renderOwnerBadge'],
+      ['OWNER_BADGE_HUES'],
+      { currentUserId, _ownerIndex: null },
+      ['function setIndex(i) { _ownerIndex = i; }'],
+    ) as Badge & { setIndex(i: unknown): void };
+    m.setIndex(m.assignOwnerHues(owners));
+    return m;
+  };
+  // Slack-style member ids. Under a bare hash % 8 the first two pairs collide
+  // (U01ZHG7K2QD / U07KQ2M4XR1 on 3, U05HJ1WQ9DA / U06TF4YQ8BN on 0).
+  const TEAM = ['U01ZHG7K2QD', 'U07KQ2M4XR1', 'U03BN8TZP6E', 'U05HJ1WQ9DA', 'U06TF4YQ8BN'];
+  const all = badge('', TEAM);
 
   it('shows the owner name in All Users mode only, full name in title', () => {
-    const html = all.renderOwnerBadge({ ownerId: 'U002', ownerName: 'Alice' });
-    expect(html).toBe(`<span class="owner-badge" data-hue="${all.ownerBadgeHue('U002')}" title="Alice">Alice</span>`);
-    expect(badge('U002').renderOwnerBadge({ ownerId: 'U002', ownerName: 'Alice' })).toBe('');
+    const html = all.renderOwnerBadge({ ownerId: TEAM[1], ownerName: 'Alice' });
+    expect(html).toBe(`<span class="owner-badge" data-hue="${all.ownerBadgeHue(TEAM[1])}" title="Alice">Alice</span>`);
+    expect(badge(TEAM[1], TEAM).renderOwnerBadge({ ownerId: TEAM[1], ownerName: 'Alice' })).toBe('');
     expect(all.renderOwnerBadge({})).toBe('');
   });
 
   it('escapes the name in text and title', () => {
-    const html = all.renderOwnerBadge({ ownerId: 'U9', ownerName: '<img src=x onerror=alert(1)> "q" \'s' });
+    const html = all.renderOwnerBadge({ ownerId: 'U0BADNAME01', ownerName: '<img src=x onerror=alert(1)> "q" \'s' });
     expect(html).not.toContain('<img');
     expect(html).toContain('title="&lt;img src=x onerror=alert(1)&gt; &quot;q&quot; &#39;s"');
   });
 
-  it('the colour is a function of ownerId: same id same hue, the fixture owners all differ', () => {
-    expect(all.ownerBadgeHue('U002')).toBe(all.ownerBadgeHue('U002'));
-    const a = all.renderOwnerBadge({ ownerId: 'U003', ownerName: 'Bob' });
-    const b = all.renderOwnerBadge({ ownerId: 'U003', ownerName: 'Bob (renamed)' });
-    expect(a.match(/data-hue="(\d)"/)?.[1]).toBe(b.match(/data-hue="(\d)"/)?.[1]);
-    // The owners in scripts/screenshot-agent-inbox.ts (Zhuge, Alice, Bob, Carol, Dana).
-    const hues = ['U001', 'U002', 'U003', 'U004', 'U005'].map((id) => all.ownerBadgeHue(id));
-    expect(new Set(hues).size).toBe(hues.length);
-    for (const h of hues) expect(h >= 0 && h < 8).toBe(true);
+  it('owners on the board never share a colour while there are ≤ 8 of them; hash slot first, then probing', () => {
+    const hues = all.assignOwnerHues(TEAM);
+    expect(new Set(TEAM.map((id) => hues[id])).size).toBe(TEAM.length);
+    // The first owner in sorted order always keeps its hash slot.
+    expect(hues.U01ZHG7K2QD).toBe(3);
+    const eight = [...TEAM, 'U02MXR7LC3K', 'U04PLW3N6VS', 'U08CRX5J1MT'];
+    const h8 = all.assignOwnerHues(eight);
+    expect(new Set(eight.map((id) => h8[id])).size).toBe(8);
+    // More owners than hues: every one still gets a valid slot.
+    const ten = [...eight, 'U09DKS2V7QE', 'U0A1B2C3D4E'];
+    const h10 = all.assignOwnerHues(ten);
+    for (const id of ten) expect(h10[id] >= 0 && h10[id] < 8).toBe(true);
+  });
+
+  it('stable for a given owner set: order and repeats do not matter; one person keeps one colour', () => {
+    const a = all.assignOwnerHues(TEAM);
+    const b = all.assignOwnerHues([...TEAM].reverse().concat(TEAM[0], TEAM[2], ''));
+    expect(b).toEqual(a);
+    const x = all.renderOwnerBadge({ ownerId: TEAM[2], ownerName: 'Bob' });
+    const y = all.renderOwnerBadge({ ownerId: TEAM[2], ownerName: 'Bob (renamed)' });
+    expect(x.match(/data-hue="(\d)"/)?.[1]).toBe(y.match(/data-hue="(\d)"/)?.[1]);
+    // An owner not on the board (yet) falls back to the hash slot.
+    expect(all.ownerBadgeHue('U0NOTONBRD1')).toBe(all.assignOwnerHues(['U0NOTONBRD1']).U0NOTONBRD1);
   });
 });
 

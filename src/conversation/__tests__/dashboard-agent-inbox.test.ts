@@ -117,9 +117,12 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(TEMPLATE).toContain("var SHOW_ARCHIVES_KEY = 'soma-show-archives';");
     expect(TEMPLATE).toContain('var showArchives = readShowArchives();');
     const toggle = fnBody('renderArchivesToggle');
-    expect(toggle).toContain("'Show archives (' + hiddenCount + ')'");
-    expect(toggle).toContain("'Hide archives'");
+    // A toggle button: the label stays "Archives (N)", aria-pressed carries the state.
+    expect(toggle).toContain("'Archives (' + archivedCount + ')'");
+    expect(toggle).not.toContain('Show archives');
+    expect(toggle).not.toContain('Hide archives');
     expect(toggle).toContain('archivedCount === 0');
+    expect(toggle).toContain("btn.setAttribute('aria-pressed', pressed)");
   });
 
   it('the DONE count is the cards it shows; Show older counts what expanding would add (§3.1-1)', () => {
@@ -127,7 +130,9 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(body).toContain('planDoneColumn(board.idle || [], board.closed || [], {');
     expect(body).toContain('done: plan.done.length');
     expect(body).toContain('renderOlderToggle(plan.olderCount)');
-    expect(body).toContain('renderArchivesToggle(plan.archivedCount, plan.hiddenArchives)');
+    expect(body).toContain('renderArchivesToggle(plan.archivedCount)');
+    // The #814 tokens tooltip follows the board it describes.
+    expect(body).toContain('updateTokenBreakdown();');
   });
 
   it('every card head carries the owner badge (All Users only — the renderer decides) (§3.1-3)', () => {
@@ -367,6 +372,25 @@ describe('agent inbox board — deep link (§3.1-8)', () => {
     const keys = ['oud::work:C1:1700000000.000100', 'mac-mini::work:C1:1700000000.000100'];
     expect(resolve('work:C1:1700000000.000100', keys, 'mac-mini')).toBe('mac-mini::work:C1:1700000000.000100');
     expect(resolve('work:C1:1700000000.000100', keys, 'other')).toBeNull();
+  });
+
+  it('with no live card, maps the Slack key to its latest archive ("…archived_<ref>_<archivedAt>")', () => {
+    const ref = 'work:C1:1700000000.000100';
+    const keys = [
+      'mac-mini::work:C2:1700000000.000200',
+      `mac-mini::archived_${ref}_1790000000000`,
+      `mac-mini::archived_${ref}_1792000000000`,
+      `oud::archived_${ref}_1791000000000`,
+      `mac-mini::archived_${ref}_17920x`, // not an archivedAt
+      `mac-mini::archived_${ref}.5_1799000000000`, // another thread whose key extends this one
+    ];
+    expect(resolve(ref, keys, 'mac-mini')).toBe(`mac-mini::archived_${ref}_1792000000000`);
+    // Single-instance board: archive keys carry no instance prefix.
+    expect(resolve(ref, [`archived_${ref}_1790000000000`], null)).toBe(`archived_${ref}_1790000000000`);
+    // A live card of the thread wins over any archive.
+    expect(resolve(ref, [...keys, `mac-mini::${ref}`], 'mac-mini')).toBe(`mac-mini::${ref}`);
+    // Two live cards on two siblings are still refused, archives or not.
+    expect(resolve(ref, [...keys, `oud::${ref}`, `mac-mini::${ref}`], 'other')).toBeNull();
   });
 
   it('returns null when nothing matches yet (caller retries on the next render)', () => {
