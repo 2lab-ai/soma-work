@@ -253,6 +253,51 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(fnBody('resetWorkLog')).toContain('_wl.closed = true');
   });
 
+  it('Tasks sit in a pinned block above the scroll area, after the token badges (§3.1-6)', () => {
+    const panel = TEMPLATE.slice(TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel">'));
+    const tokens = panel.indexOf('id="panel-tokens"');
+    const tasks = panel.indexOf('<div class="panel-tasks" id="panel-tasks"></div>');
+    const scroll = panel.indexOf('<div class="panel-scroll" id="panel-scroll">');
+    const command = panel.indexOf('<div class="panel-command" id="panel-command">');
+    expect(tokens).toBeGreaterThan(0);
+    expect(tasks).toBeGreaterThan(tokens);
+    expect(scroll).toBeGreaterThan(tasks);
+    expect(panel.slice(scroll, command)).not.toContain('panel-tasks');
+    expect(TEMPLATE).toMatch(
+      /\n\.panel-tasks \{[^}]*flex: none;[^}]*max-height: min\(30vh, 240px\);[^}]*overflow-y: auto;/,
+    );
+    expect(fnBody('panelScrollAnchor')).not.toContain('#panel-tasks');
+  });
+
+  it('the work log header is a disclosure button; the list starts hidden (§3.1-6)', () => {
+    expect(TEMPLATE).toContain(
+      '<button type="button" class="panel-worklog-header" id="worklog-toggle" aria-expanded="false" aria-controls="worklog-list" onclick="toggleWorkLogSection()">',
+    );
+    expect(TEMPLATE).toContain(
+      '<div class="worklog-list" id="worklog-list" role="log" aria-live="polite" aria-label="작업 로그" hidden></div>',
+    );
+    expect(TEMPLATE).toContain('.worklog-list[hidden] { display: none; }');
+  });
+
+  it('every opening starts collapsed unless it came from 작업 로그 / ?session= (§3.1-6, §3.1-7)', () => {
+    const body = fnBody('openPanel');
+    const reset = body.indexOf('resetWorkLog(panelConvId, true);');
+    expect(reset).toBeGreaterThan(-1);
+    expect(body.indexOf('setWorkLogOpen(_panelFocusWorkLog);')).toBeGreaterThan(reset);
+    // Expanding only shows what was already fetched on open.
+    expect(fnBody('toggleWorkLogSection')).not.toContain('loadWorkLog');
+    expect(fnBody('toggleWorkLogSection')).not.toContain('fetch');
+  });
+
+  it('entry rows toggle on click, Enter and Space; detail buttons do not toggle (§3.1-6)', () => {
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initWorkLogInteractions() {'));
+    expect(init).toContain("e.target.closest('.wl-detail')");
+    expect(init).toContain("e.key !== 'Enter' && e.key !== ' '");
+    expect(init).toContain('toggleWorkLogEntry(');
+    expect(TEMPLATE).toContain("act === 'retry'");
+    expect(TEMPLATE).toContain("act === 'copy'");
+  });
+
   it('live-appends work_log WS entries through the seq merge', () => {
     expect(fnBody('connectWs')).toContain("msg.type === 'work_log'");
     expect(fnBody('connectWs')).toContain('pushLiveWorkLog(msg.conversationId, msg.entry)');

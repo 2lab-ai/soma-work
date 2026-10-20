@@ -32,6 +32,13 @@
  *     per owner, text ≥4.5:1 on its fill, never over the title, long names
  *     ellipsized with the full name in title; gone once a user is selected
  *     (owner-badges-*.png)
+ *   - side panel (light / dark × 1280 / 390): Tasks pinned above the scroll area
+ *     (also with no tasks), the work log collapsed unless opened from 작업 로그,
+ *     its count live while collapsed, expanding without a refetch; every entry
+ *     opens its full raw output (fetched once, cached), the truncated note, the
+ *     404 / 503 + 다시 시도 lines, the entry text when no raw is stored, copy,
+ *     keyboard, a late answer for a closed row dropped, no tail-follow yank
+ *     (panel-*.png)
  *   - stats: 오늘 → 지난 7일 changes 세션 / 토큰 / 비용 to the week's totals
  *     (stats + usage requests carry the period; All Users sends no userId), and
  *     a late answer for a period no longer selected does not repaint them
@@ -391,6 +398,54 @@ const WORKLOG: Record<string, unknown[]> = {
 
 /** Mutable mock server state: the work log grows while the "socket" is down. */
 const WORKLOG_EXTRA: Record<string, number> = { 'conv-1': 0 };
+
+/**
+ * Stored raw output (GET …/worklog/:seq/raw) for the panel scenario's
+ * conversation. Its list entries carry rawBytes for 3, 4, 6, 9 and 12: 3 and 4
+ * answer 200 (multi-line), 9 answers 200 truncated, 6 has no stored raw (404),
+ * and 12 answers 503 once, then 200.
+ */
+const RAW_STORE: Record<string, Record<number, { raw: string; rawBytes: number; rawTruncated?: boolean }>> = {
+  'conv-panel': {
+    3: {
+      raw: JSON.stringify({ file_path: 'db/schema.sql', offset: 0, limit: 400 }, null, 2),
+      rawBytes: 64,
+    },
+    4: {
+      raw: [
+        'CREATE TABLE users (',
+        '  id          bigint PRIMARY KEY,',
+        '  email       text NOT NULL UNIQUE,',
+        '  password    text NOT NULL,',
+        '  display     text,',
+        '  created_at  timestamptz NOT NULL DEFAULT now()',
+        ');',
+      ].join('\n'),
+      rawBytes: 196,
+    },
+    9: {
+      raw: Array.from(
+        { length: 60 },
+        (_, i) => `[${String(i).padStart(2, '0')}] migrate 0042_split_users: relation "profiles" already exists`,
+      ).join('\n'),
+      rawBytes: 1_048_576,
+      rawTruncated: true,
+    },
+    12: {
+      raw: '> db:migrate --env staging --dry-run --reset\nreset 3 tables\nmigrated 0042_split_users\ndone in 41s',
+      rawBytes: 98,
+    },
+  },
+};
+/** The entries the panel scenario lists: conv-1's log, with rawBytes where raw output was stored. */
+function panelLog() {
+  const bytes: Record<number, number> = { 3: 64, 4: 196, 6: 120, 9: 1_048_576, 12: 98 };
+  return (WORKLOG['conv-1'] as Array<Record<string, unknown>>).map((e) => {
+    const n = bytes[e.seq as number];
+    return n ? { ...e, rawBytes: n, ...(e.seq === 9 ? { rawTruncated: true } : {}) } : { ...e };
+  });
+}
+const RAW_CALLS: Array<{ conv: string; seq: number }> = [];
 const WORKLOG_CALLS: Array<{ conv: string; afterSeq: number | null }> = [];
 const FLAKY_CALLS = { n: 0 };
 const PAGE = 5;
@@ -724,6 +779,25 @@ async function installMocks(
     }
     const rest = log.filter((e) => (e.seq as number) > Number(raw));
     return r.fulfill({ json: { entries: rest.slice(0, PAGE), hasMore: rest.length > PAGE } });
+  });
+  // Raw output of one entry. Registered after the list route, which also
+  // matches this URL, so this one answers. 12 fails once per page (503).
+  const failedOnce = new Set<string>();
+  await page.route(/\/api\/dashboard\/session\/[^/?]+\/worklog\/\d+\/raw/, (r) => {
+    const parts = new URL(r.request().url()).pathname.split('/');
+    const conv = decodeURIComponent(parts[4] || '');
+    const seq = Number(parts[6]);
+    RAW_CALLS.push({ conv, seq });
+    if (seq === 12 && !failedOnce.has(conv)) {
+      failedOnce.add(conv);
+      return r.fulfill({ status: 503, json: { error: 'unavailable' } });
+    }
+    const hit = RAW_STORE[conv]?.[seq];
+    if (!hit) return r.fulfill({ status: 404, json: { error: 'not_found' } });
+    return r.fulfill({
+      json: { seq, raw: hit.raw, rawBytes: hit.rawBytes, rawTruncated: hit.rawTruncated === true },
+      headers: { 'Cache-Control': 'no-store' },
+    });
   });
   await page.route(/\/api\/dashboard\/session\/[^/?]+(\?.*)?$/, (r) => {
     if (r.request().method() !== 'GET') return r.fulfill({ json: { ok: true } });
@@ -2261,6 +2335,381 @@ async function ownerBadgeChecks(browser: import('playwright').Browser) {
   }
 }
 
+/** The side panel's pinned Tasks, the collapsible work log and the raw output of its entries. */
+type PanelRead = {
+  tasksOutside: boolean;
+  tasksHeader: string;
+  tasksItems: number;
+  tasksEmpty: string | null;
+  expanded: string | null;
+  listHidden: boolean;
+  count: string;
+  entries: number;
+  tasks: { t: number; b: number; h: number };
+  scroll: { t: number; b: number; h: number; top: number; scrollable: boolean };
+  small: string[];
+};
+async function readPanel(page: Page): Promise<PanelRead> {
+  return page.evaluate(() => {
+    const tasks = document.getElementById('panel-tasks') as HTMLElement;
+    const scroll = document.getElementById('panel-scroll') as HTMLElement;
+    const list = document.getElementById('worklog-list') as HTMLElement;
+    // No named functions in here: tsx would wrap them in a __name() the page lacks.
+    const [tb, sb] = [tasks, scroll].map((el) => {
+      const q = el.getBoundingClientRect();
+      return { t: Math.round(q.top), b: Math.round(q.bottom), h: Math.round(q.height) };
+    });
+    const panel = document.getElementById('slide-panel') as HTMLElement;
+    const small = Array.from(panel.querySelectorAll('button, a, input, [role="button"]'))
+      .filter((el) => {
+        const q = el.getBoundingClientRect();
+        return q.width > 0 && q.height > 0 && q.bottom > 0 && q.top < innerHeight;
+      })
+      .filter((el) => el.getBoundingClientRect().height < 43.5)
+      .map(
+        (el) =>
+          `${el.id || (el as HTMLElement).className || el.tagName}:${Math.round(el.getBoundingClientRect().height)}`,
+      );
+    return {
+      tasksOutside: !scroll.contains(tasks),
+      tasksHeader: tasks.querySelector('.panel-tasks-header')?.textContent ?? '',
+      tasksItems: tasks.querySelectorAll('.panel-task-item').length,
+      tasksEmpty: tasks.querySelector('.panel-tasks-empty')?.textContent ?? null,
+      expanded: document.getElementById('worklog-toggle')?.getAttribute('aria-expanded') ?? null,
+      listHidden: list.hidden,
+      count: document.getElementById('worklog-count')?.textContent ?? '',
+      entries: list.querySelectorAll('.wl-entry').length,
+      tasks: tb,
+      scroll: {
+        ...sb,
+        top: Math.round(scroll.scrollTop),
+        scrollable: scroll.scrollHeight > scroll.clientHeight + 1,
+      },
+      small,
+    };
+  });
+}
+async function readDetail(page: Page, seq: number) {
+  return page.evaluate((n) => {
+    const el = document.querySelector(`#worklog-list .wl-entry[data-seq="${n}"]`) as HTMLElement | null;
+    const detail = el?.querySelector('.wl-detail') as HTMLElement | null;
+    return {
+      expanded: el?.querySelector('.wl-row')?.getAttribute('aria-expanded') ?? null,
+      hidden: detail?.hidden ?? null,
+      html: detail?.innerHTML ?? '',
+      pre: (detail?.querySelector('.wl-raw') as HTMLElement | null)?.textContent ?? null,
+      note: detail?.querySelector('.wl-detail-note')?.textContent ?? null,
+      msg: detail?.querySelector('.wl-detail-msg')?.textContent ?? null,
+      retry: !!detail?.querySelector('[data-wl-act="retry"]'),
+    };
+  }, seq);
+}
+
+async function panelChecks(browser: import('playwright').Browser) {
+  // Conversation for this scenario: conv-1's work log (with rawBytes) and six turns.
+  WORKLOG['conv-panel'] = panelLog();
+  TURNS['conv-panel'] = Array.from({ length: 6 }, (_, i) => ({
+    id: `P${i + 1}`,
+    role: i % 2 ? 'assistant' : 'user',
+    userName: 'Zhuge',
+    timestamp: NOW - (6 - i) * M,
+    rawContent: i % 2 ? undefined : `step ${i / 2 + 1}: check the migration on staging`,
+    summarized: true,
+    summaryTitle: i % 2 ? `step ${(i + 1) / 2} done` : undefined,
+    summaryBody: i % 2 ? 'Ran it on staging; no errors.' : undefined,
+  }));
+  const row = (seq: number) => `#worklog-list .wl-entry[data-seq="${seq}"] > .wl-row`;
+  const shown = (page: Page, seq: number, what: 'pre' | 'msg') =>
+    page
+      .waitForFunction(
+        ([n, w]) =>
+          !!document.querySelector(
+            `#worklog-list .wl-entry[data-seq="${n}"] .wl-detail ${w === 'pre' ? '.wl-raw' : '.wl-detail-msg:not(.is-loading)'}`,
+          ),
+        [seq, what] as const,
+        { timeout: 5000 },
+      )
+      .then(
+        () => true,
+        () => false,
+      );
+  const intoView = (page: Page, seq: number) =>
+    page.evaluate((n) => {
+      const el = document.querySelector(`#worklog-list .wl-entry[data-seq="${n}"]`) as HTMLElement | null;
+      el?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    }, seq);
+  const rawCalls = (seq: number) => RAW_CALLS.filter((c) => c.conv === 'conv-panel' && c.seq === seq).length;
+
+  for (const theme of ['light', 'dark'] as const) {
+    for (const width of [1280, 390]) {
+      const tag = `${theme} ${width}`;
+      const extra = theme === 'dark' && width === 1280;
+      const ctx = await browser.newContext({
+        viewport: { width, height: 900 },
+        colorScheme: theme,
+        hasTouch: width < 640,
+        isMobile: width < 640,
+        ...(extra ? { permissions: ['clipboard-read', 'clipboard-write'] } : {}),
+      });
+      const page = await ctx.newPage();
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      const board = makeBoard() as Record<string, Array<Record<string, unknown>>>;
+      board.waiting[0].conversationId = 'conv-panel'; // Migrate users table: 4 tasks
+      await installMocks(page, board);
+      await openBoard(page);
+      RAW_CALLS.length = 0;
+      WORKLOG_CALLS.length = 0;
+
+      // Default opening: Tasks pinned, work log collapsed (but loaded: the count).
+      await page.evaluate((k) => (window as unknown as PageWindow).openPanel(k), K('100'));
+      await page
+        .waitForFunction(() => document.getElementById('worklog-count')?.textContent === '13', null, { timeout: 5000 })
+        .catch(() => {});
+      await page.waitForTimeout(450);
+      const d0 = await readPanel(page);
+      check(
+        d0.tasksOutside &&
+          d0.tasksHeader.startsWith('Tasks') &&
+          d0.tasksItems === 4 &&
+          d0.expanded === 'false' &&
+          d0.listHidden &&
+          d0.count === '13' &&
+          d0.tasks.b <= d0.scroll.t,
+        `${tag}: panel opens with Tasks pinned above the scroll area and the work log collapsed (13) (${JSON.stringify({ ...d0, small: undefined })})`,
+      );
+      check((await overflow(page)) === 0, `${tag}: panel default — no page overflow`);
+      if (width < 640) check(d0.small.length === 0, `${tag}: panel controls ≥44px (${d0.small.join(' | ')})`);
+      // The opening lands on the newest turns; the shot shows the top, where the collapsed header is.
+      await page.evaluate(() =>
+        (document.getElementById('panel-scroll') as HTMLElement).scrollTo({ top: 0, behavior: 'instant' }),
+      );
+      await page.waitForTimeout(150);
+      await shoot(page, `panel-default-${theme}-${width}.png`, false);
+
+      // A live entry while collapsed moves the count; expanding does not refetch.
+      await page.evaluate(() =>
+        (window as unknown as PageWindow).__wsSend({
+          type: 'work_log',
+          conversationId: 'conv-panel',
+          entry: { seq: 14, ts: Date.now(), kind: 'notice', text: 'live while collapsed' },
+        }),
+      );
+      const d1 = await readPanel(page);
+      const listCalls = WORKLOG_CALLS.length;
+      await page.click('#worklog-toggle');
+      await page.waitForTimeout(300);
+      const d2 = await readPanel(page);
+      check(
+        d1.count === '14' &&
+          d1.listHidden &&
+          d2.expanded === 'true' &&
+          !d2.listHidden &&
+          d2.entries === 14 &&
+          WORKLOG_CALLS.length === listCalls,
+        `${tag}: count follows live entries while collapsed (${d1.count}); expanding shows them without a refetch (${WORKLOG_CALLS.length - listCalls} requests)`,
+      );
+
+      // Tasks stay put while the scroll area scrolls.
+      await page.evaluate(() => {
+        const sc = document.getElementById('panel-scroll') as HTMLElement;
+        sc.scrollTo({ top: sc.scrollHeight, behavior: 'instant' });
+      });
+      await page.waitForTimeout(150);
+      const atEnd = await readPanel(page);
+      await page.evaluate(() =>
+        (document.getElementById('panel-scroll') as HTMLElement).scrollTo({ top: 0, behavior: 'instant' }),
+      );
+      await page.waitForTimeout(150);
+      const atTop = await readPanel(page);
+      log(
+        `${tag}: tasks ${JSON.stringify(atTop.tasks)} / ${JSON.stringify(atEnd.tasks)} · scroll ${JSON.stringify(atTop.scroll)} / ${JSON.stringify(atEnd.scroll)}`,
+      );
+      check(
+        atEnd.scroll.scrollable &&
+          atEnd.scroll.top > 50 &&
+          atTop.scroll.top === 0 &&
+          atTop.tasks.t === atEnd.tasks.t &&
+          atTop.tasks.b === atEnd.tasks.b &&
+          atEnd.tasks.b <= atEnd.scroll.t,
+        `${tag}: Tasks top stays at ${atTop.tasks.t}px while the scroll area moves ${atEnd.scroll.top}px`,
+      );
+      await shoot(page, `panel-worklog-expanded-${theme}-${width}.png`, false);
+
+      // A tool entry with stored raw: fetched once, kept when closed and reopened.
+      await page.click(row(3));
+      const okPre = await shown(page, 3, 'pre');
+      const raw3 = await readDetail(page, 3);
+      await page.click(row(3));
+      const closed3 = await readDetail(page, 3);
+      await page.click(row(3));
+      await shown(page, 3, 'pre');
+      check(
+        okPre &&
+          raw3.expanded === 'true' &&
+          raw3.pre === RAW_STORE['conv-panel'][3].raw &&
+          closed3.hidden === true &&
+          closed3.expanded === 'false' &&
+          rawCalls(3) === 1,
+        `${tag}: a tool entry opens its full raw output; close + reopen asks once (${rawCalls(3)} request)`,
+      );
+      await intoView(page, 3);
+      await shoot(page, `panel-raw-${theme}-${width}.png`, false);
+      if (extra) {
+        await page.click(`#worklog-list .wl-entry[data-seq="3"] [data-wl-act="copy"]`);
+        await page.waitForTimeout(200);
+        const clip = await page.evaluate(() => navigator.clipboard.readText().catch(() => null));
+        const label = await page.evaluate(
+          () => document.querySelector('#worklog-list .wl-entry[data-seq="3"] [data-wl-act="copy"]')?.textContent,
+        );
+        check(
+          clip === RAW_STORE['conv-panel'][3].raw && label === '복사됨',
+          `copy puts the shown raw output on the clipboard ("${label}")`,
+        );
+      }
+      await page.click(row(3));
+
+      // Narration (no stored raw): its own full text, no request.
+      await page.click(row(2));
+      await shown(page, 2, 'pre');
+      const n2 = await readDetail(page, 2);
+      check(
+        n2.pre === 'Reading the current schema and the migration history first.' && rawCalls(2) === 0,
+        `${tag}: an entry without stored raw shows its full text, no request (${rawCalls(2)})`,
+      );
+      await page.click(row(2));
+
+      // Truncated raw.
+      await page.click(row(9));
+      await shown(page, 9, 'pre');
+      const t9 = await readDetail(page, 9);
+      check(
+        t9.note === '저장된 앞 256 KiB만 표시 — 원본 1.0 MiB' && (t9.pre || '').split('\n').length === 60,
+        `${tag}: a truncated raw output says so ("${t9.note}")`,
+      );
+      await intoView(page, 9);
+      await shoot(page, `panel-raw-truncated-${theme}-${width}.png`, false);
+      await page.click(row(9));
+
+      // 404: nothing stored.
+      await page.click(row(6));
+      await shown(page, 6, 'msg');
+      const m6 = await readDetail(page, 6);
+      check(m6.msg === '원본 출력이 저장되어 있지 않습니다' && !m6.retry, `${tag}: 404 reads "${m6.msg}"`);
+      await page.click(row(6));
+
+      // 503 → 다시 시도 → the raw.
+      await page.click(row(12));
+      await shown(page, 12, 'msg');
+      const e12 = await readDetail(page, 12);
+      await intoView(page, 12);
+      await shoot(page, `panel-raw-error-${theme}-${width}.png`, false);
+      if (width < 640) {
+        const small = (await readPanel(page)).small;
+        check(small.length === 0, `${tag}: rows, 다시 시도 and the header are ≥44px (${small.join(' | ')})`);
+      }
+      await page.click(`#worklog-list .wl-entry[data-seq="12"] [data-wl-act="retry"]`);
+      const retried = await shown(page, 12, 'pre');
+      const r12 = await readDetail(page, 12);
+      check(
+        (e12.msg || '').startsWith('원본 출력을 불러오지 못했어요') &&
+          e12.retry &&
+          retried &&
+          r12.pre === RAW_STORE['conv-panel'][12].raw &&
+          rawCalls(12) === 2,
+        `${tag}: 503 offers 다시 시도, which refetches and shows the raw (${rawCalls(12)} requests)`,
+      );
+
+      // Tail-follow does not yank the list while a detail is open.
+      const before = await page.evaluate(() => {
+        const l = document.getElementById('worklog-list') as HTMLElement;
+        l.scrollTop = l.scrollHeight;
+        return Math.round(l.scrollTop);
+      });
+      await page.evaluate(() =>
+        (window as unknown as PageWindow).__wsSend({
+          type: 'work_log',
+          conversationId: 'conv-panel',
+          entry: { seq: 15, ts: Date.now(), kind: 'tool', tool: 'Bash', text: 'Bash {"command":"npm test"}' },
+        }),
+      );
+      await page.waitForTimeout(100);
+      const after = await page.evaluate(() =>
+        Math.round((document.getElementById('worklog-list') as HTMLElement).scrollTop),
+      );
+      check(
+        after === before,
+        `${tag}: a live entry does not move the list while a detail is open (${before} → ${after})`,
+      );
+      await page.click(row(12));
+      check((await overflow(page)) === 0, `${tag}: raw output open — no page overflow`);
+
+      if (extra) {
+        // Keyboard: Enter opens, Space closes.
+        await page.focus(row(5));
+        await page.keyboard.press('Enter');
+        const k1 = await readDetail(page, 5);
+        await page.keyboard.press(' ');
+        const k2 = await readDetail(page, 5);
+        check(
+          k1.expanded === 'true' && !!k1.pre && k2.expanded === 'false' && k2.hidden === true,
+          `keyboard: Enter opens an entry's raw output, Space closes it`,
+        );
+      }
+      if (theme === 'light' && width === 1280) {
+        // A late answer for a row closed in the meantime is dropped; reopening uses it.
+        let release: () => void = () => {};
+        const gate = new Promise<void>((r) => {
+          release = r;
+        });
+        let asked = false;
+        await page.route(/\/worklog\/4\/raw/, async (r) => {
+          asked = true;
+          await gate;
+          await r.fallback();
+        });
+        await page.click(row(4));
+        for (let i = 0; i < 50 && !asked; i++) await page.waitForTimeout(20);
+        await page.click(row(4));
+        release();
+        await page.waitForTimeout(300);
+        const late = await readDetail(page, 4);
+        await page.click(row(4));
+        await shown(page, 4, 'pre');
+        const reopened = await readDetail(page, 4);
+        check(
+          asked &&
+            late.hidden === true &&
+            late.html === '' &&
+            reopened.pre === RAW_STORE['conv-panel'][4].raw &&
+            rawCalls(4) === 1,
+          `a late raw answer for a closed row is dropped; reopening shows it without asking again (${rawCalls(4)} request)`,
+        );
+        await page.unroute(/\/worklog\/4\/raw/);
+      }
+
+      // A session with no tasks: the pinned block says so. A 작업 로그 opening is expanded.
+      await page.evaluate((k) => (window as unknown as PageWindow).openPanel(k), K('600'));
+      await page.waitForTimeout(400);
+      const e0 = await readPanel(page);
+      check(
+        e0.tasksOutside &&
+          e0.tasksHeader === 'Tasks' &&
+          e0.tasksEmpty === '아직 작업 목록이 없습니다' &&
+          e0.expanded === 'false',
+        `${tag}: no tasks yet — the pinned block reads "${e0.tasksEmpty}"`,
+      );
+      await shoot(page, `panel-empty-tasks-${theme}-${width}.png`, false);
+      await page.evaluate((k) => (window as unknown as PageWindow).openPanel(k, true), K('100'));
+      await page.waitForTimeout(400);
+      const f0 = await readPanel(page);
+      check(f0.expanded === 'true' && !f0.listHidden, `${tag}: opened from 작업 로그 the work log is expanded`);
+      check(errors.length === 0, `${tag}: panel — no page errors (${errors.join(' | ')})`);
+      await ctx.close();
+    }
+  }
+}
+
 /** Expected strip text for a period: U001's own numbers or All Users'. */
 function stripWant(scope: 'user' | 'all', period: Period) {
   const t = PERIOD_TOTALS[period];
@@ -2399,6 +2848,7 @@ async function main() {
     await statsStripDetail(browser);
     await archivesChecks(browser);
     await ownerBadgeChecks(browser);
+    await panelChecks(browser);
   } finally {
     await browser.close();
     await ws.stopWebServer();
