@@ -6,7 +6,8 @@
  *   GET  /dashboard                          → Dashboard HTML (all users overview)
  *   GET  /dashboard/:userId                  → Dashboard HTML (specific user)
  *   GET  /api/dashboard/sessions             → All active sessions as Kanban data (JSON)
- *   GET  /api/dashboard/stats                → User statistics (JSON)
+ *   GET  /api/dashboard/stats                → Period statistics, one user or all users (JSON)
+ *   GET  /api/dashboard/usage                → Period token usage + cost, one user or all users (JSON)
  *   GET  /api/dashboard/users                → User list (JSON)
  *   GET  /api/dashboard/session/:id          → Session detail turns (JSON)
  *   GET  /api/dashboard/session/:id/worklog  → Work log entries (JSON, registered in work-log-routes.ts)
@@ -171,7 +172,8 @@ export interface UserDayStats {
 }
 
 export interface UserStats {
-  userId: string;
+  /** null = every user (no userId asked). */
+  userId: string | null;
   period: 'day' | 'week' | 'month';
   days: UserDayStats[];
   totals: {
@@ -799,11 +801,12 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
 
 // ── Stats aggregation ──────────────────────────────────────────────
 
-function aggregateUserStats(events: MetricsEvent[], userId: string): Map<string, UserDayStats> {
+/** Per-day stats for one user, or for every user when `userId` is absent. */
+function aggregateUserStats(events: MetricsEvent[], userId?: string): Map<string, UserDayStats> {
   const dayMap = new Map<string, UserDayStats>();
 
   for (const ev of events) {
-    if (ev.userId !== userId) continue;
+    if (userId && ev.userId !== userId) continue;
 
     const dateStr = new Date(ev.timestamp).toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
     if (!dayMap.has(dateStr)) {
@@ -1179,16 +1182,13 @@ export async function registerDashboardRoutes(
     },
   );
 
-  // User stats
-  server.get<{ Querystring: { userId: string; period?: string } }>(
+  // Stats for one user, or for every user when userId is absent (the All Users view).
+  server.get<{ Querystring: { userId?: string; period?: string } }>(
     '/api/dashboard/stats',
     { preHandler: [authMiddleware] },
     async (request, reply) => {
-      const { userId, period: rawPeriod } = request.query;
-      if (!userId) {
-        reply.status(400).send({ error: 'userId is required' });
-        return;
-      }
+      const { period: rawPeriod } = request.query;
+      const userId = request.query.userId || undefined;
       // #716: stats are world-readable for any authenticated user. The
       // session/conversation contents are also world-readable; write
       // operations (close/command/resummarize) remain gated by
@@ -1237,7 +1237,7 @@ export async function registerDashboardRoutes(
           },
         );
 
-        reply.send({ userId, period, days, totals } satisfies UserStats);
+        reply.send({ userId: userId ?? null, period, days, totals } satisfies UserStats);
       } catch (error) {
         logger.error('Error computing dashboard stats', error);
         reply.status(500).send({ error: 'Internal Server Error' });
@@ -2336,7 +2336,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (hover: none) {
   /* On touch devices :hover is sticky after a tap and never closes —
      gate visibility entirely on the explicit tooltip-open class
-     toggled by the tap handler in updateTokenStats(). */
+     toggled by the tap handler in updateTokenBreakdown(). */
   #stat-tokens-wrap:hover #stat-tokens-tooltip { display: none; }
   #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip { display: block; }
 }
@@ -5395,58 +5395,65 @@ async function submitAllRecommended(key) {
 }
 
 // ── Stats ──
+// Every number follows the selected period, for the selected user or — with
+// no user (All Users) — for everyone: /api/dashboard/stats gives sessions,
+// turns, PRs, merge lines, workflows and the charts; /api/dashboard/usage gives
+// tokens (input + output) and cost. Each load takes a generation and paints
+// only while it is still the latest, so an answer for a period or user that
+// was since replaced is dropped (fast clicks end on the last selection).
+var _statsGen = 0;
 async function loadStats() {
-  if (!currentUserId) {
-    // Show aggregate stats from session cache when no specific user is selected
-    document.getElementById('stats-grid').style.display = '';
-    document.getElementById('chart-row').innerHTML = '';
-    updateTokenStats();
-    var sessCount = Object.keys(_sessionCache).length;
-    var totalMergeAdd = 0, totalMergeDel = 0, prCount = 0, mergedCount = 0;
-    var wfMap = {};
-    for (var k in _sessionCache) {
-      var cs = _sessionCache[k];
-      if (cs.mergeStats) { totalMergeAdd += cs.mergeStats.totalLinesAdded || 0; totalMergeDel += cs.mergeStats.totalLinesDeleted || 0; }
-      if (cs.prUrl) { prCount++; if (cs.prStatus === 'merged') mergedCount++; }
-      if (cs.workflow) { wfMap[cs.workflow] = (wfMap[cs.workflow] || 0) + 1; }
-    }
-    var sessEl = document.getElementById('stat-sessions');
-    sessEl.textContent = sessCount || '0'; sessEl.className = 'value';
-    var turnsEl = document.getElementById('stat-turns');
-    turnsEl.textContent = '\u2014'; turnsEl.className = 'value no-data';
-    document.getElementById('stat-prs').textContent = prCount;
-    document.getElementById('stat-prs').classList.remove('no-data');
-    document.getElementById('stat-merged').textContent = mergedCount;
-    document.getElementById('stat-merged').classList.remove('no-data');
-    var commitsEl = document.getElementById('stat-commits') || document.getElementById('stat-commits-hidden');
-    if (commitsEl) { commitsEl.textContent = '\u2014'; commitsEl.classList.add('no-data'); }
-    document.getElementById('stat-merge-lines').textContent = '+' + totalMergeAdd + ' / -' + totalMergeDel;
-    var wfEntries = Object.entries(wfMap).sort(function(a, b) { return b[1] - a[1]; });
-    document.getElementById('stat-workflows').innerHTML = wfEntries.length
-      ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + e[1] + '</b></span>'; }).join('')
-      : '-';
-    return;
-  }
-  document.getElementById('stats-grid').style.display = '';
-  try {
-    const res = await fetch('/api/dashboard/stats?userId=' + currentUserId + '&period=' + currentPeriod);
-    const data = await res.json();
-    document.getElementById('stat-sessions').textContent = data.totals.sessionsCreated;
-    document.getElementById('stat-turns').textContent = data.totals.turnsUsed;
-    document.getElementById('stat-prs').textContent = data.totals.prsCreated;
-    document.getElementById('stat-merged').textContent = data.totals.prsMerged;
-    var commitsEl2 = document.getElementById('stat-commits') || document.getElementById('stat-commits-hidden');
-    if (commitsEl2) commitsEl2.textContent = data.totals.commitsCreated;
-    document.getElementById('stat-merge-lines').textContent = '+' + data.totals.mergeLinesAdded + ' / -' + data.totals.mergeLinesDeleted;
-    // Workflow counts
-    const wfCounts = data.totals.workflowCounts || {};
-    const wfEntries = Object.entries(wfCounts).sort(function(a, b) { return b[1] - a[1]; });
-    document.getElementById('stat-workflows').innerHTML = wfEntries.length
-      ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + e[1] + '</b></span>'; }).join('')
-      : '<span style="color:var(--text-secondary)">-</span>';
-    updateTokenStats();
-    renderCharts(data.days);
-  } catch (e) { console.error('Failed to load stats', e); }
+  var gen = ++_statsGen;
+  var q = 'period=' + encodeURIComponent(currentPeriod) + (currentUserId ? '&userId=' + encodeURIComponent(currentUserId) : '');
+  updateTokenBreakdown();
+  await Promise.all([
+    statsJson('/api/dashboard/stats?' + q).then(
+      function(data) { if (gen === _statsGen) paintStats(data); },
+      function(e) { if (gen === _statsGen) { console.error('Failed to load stats', e); paintStats(null); } }
+    ),
+    statsJson('/api/dashboard/usage?' + q).then(
+      function(report) { if (gen === _statsGen) paintUsage(report); },
+      function(e) { if (gen === _statsGen) { console.error('Failed to load usage', e); paintUsage(null); } }
+    ),
+  ]);
+}
+
+function statsJson(url) {
+  return fetch(url).then(function(res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  });
+}
+
+// A failed load shows a dash rather than the previous period's number.
+function setStat(id, text) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('no-data', text === '\\u2014');
+}
+
+function paintStats(data) {
+  var t = data && data.totals;
+  var dash = '\\u2014';
+  setStat('stat-sessions', t ? String(toNum(t.sessionsCreated)) : dash);
+  setStat('stat-turns', t ? String(toNum(t.turnsUsed)) : dash);
+  setStat('stat-prs', t ? String(toNum(t.prsCreated)) : dash);
+  setStat('stat-merged', t ? String(toNum(t.prsMerged)) : dash);
+  setStat('stat-commits-hidden', t ? String(toNum(t.commitsCreated)) : dash);
+  setStat('stat-merge-lines', t ? '+' + toNum(t.mergeLinesAdded) + ' / -' + toNum(t.mergeLinesDeleted) : dash);
+  var wfEntries = Object.entries((t && t.workflowCounts) || {}).sort(function(a, b) { return toNum(b[1]) - toNum(a[1]); });
+  document.getElementById('stat-workflows').innerHTML = wfEntries.length
+    ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join('')
+    : '<span style="color:var(--text-secondary)">-</span>';
+  if (data) renderCharts(Array.isArray(data.days) ? data.days : []);
+  else document.getElementById('chart-row').innerHTML = '';
+}
+
+function paintUsage(report) {
+  var t = report && report.totals;
+  setStat('stat-tokens', t ? formatTokens(toNum(t.totalInputTokens) + toNum(t.totalOutputTokens)) : '\\u2014');
+  setStat('stat-cost', t ? '$' + toNum(t.totalCostUsd).toFixed(2) : '\\u2014');
 }
 
 function renderCharts(days) {
@@ -5599,29 +5606,27 @@ function connectWs() {
   };
 }
 
-// ── Token stats from session cache ──
-function updateTokenStats() {
-  // #814 — group token usage by environment.instanceName so the topbar
-  // tooltip can break down "instance-a: 12K | instance-b: 8K | Total: 20K".
+// ── Token breakdown by instance, from the session cache (#814) ──
+function updateTokenBreakdown() {
+  // #814 — group the board's session token usage by environment.instanceName
+  // so the tokens tooltip can break down "instance-a: 12K | instance-b: 8K |
+  // Total: 20K". The number itself is the period total from /api/dashboard/usage
+  // (loadStats); this breakdown covers the sessions on the board, and says so.
   // Fallback bucket ('') is used for cards whose environment is missing
   // (legacy WS payloads, tests). When all cards share one env we suppress
   // the tooltip entirely — see _envCount() check below.
   var byEnv = Object.create(null);
-  let totalTokens = 0, totalCost = 0;
+  let totalTokens = 0;
   for (const key in _sessionCache) {
     const s = _sessionCache[key];
     if (currentUserId && s.ownerId !== currentUserId) continue;
     if (!s.tokenUsage) continue;
     var t = toNum(s.tokenUsage.totalInputTokens) + toNum(s.tokenUsage.totalOutputTokens);
     totalTokens += t;
-    totalCost += toNum(s.tokenUsage.totalCostUsd);
     var envName = (s.environment && s.environment.instanceName) || '';
-    if (!byEnv[envName]) byEnv[envName] = { tokens: 0, cost: 0 };
+    if (!byEnv[envName]) byEnv[envName] = { tokens: 0 };
     byEnv[envName].tokens += t;
-    byEnv[envName].cost += toNum(s.tokenUsage.totalCostUsd);
   }
-  document.getElementById('stat-tokens').textContent = formatTokens(totalTokens);
-  document.getElementById('stat-cost').textContent = '$' + totalCost.toFixed(2);
 
   // Tooltip: only show when there's actually a breakdown (≥2 envs in
   // the cache). For the single-instance / empty-env case we leave the
@@ -5644,7 +5649,7 @@ function updateTokenStats() {
     parts.push(esc(n) + ': ' + formatTokens(byEnv[n].tokens));
   }
   parts.push('Total: ' + formatTokens(totalTokens));
-  tip.innerHTML = parts.join(' &middot; ');
+  tip.innerHTML = '보드 세션 기준 &middot; ' + parts.join(' &middot; ');
   wrap.setAttribute('data-has-breakdown', 'true');
   // Mobile (no-hover) tap-toggle wiring — attach once.
   if (!wrap.hasAttribute('data-tap-bound')) {
