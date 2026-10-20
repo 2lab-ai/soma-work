@@ -39,7 +39,6 @@ import { SlackBlockKitChannel } from './notification-channels/slack-block-kit-ch
 import { SlackDmChannel } from './notification-channels/slack-dm-channel';
 import { TelegramChannel } from './notification-channels/telegram-channel';
 import { WebhookChannel } from './notification-channels/webhook-channel';
-import { buildGoalContinuationPrompt } from './prompt/session-goal-block';
 import {
   type ActionHandlerContext,
   ActionHandlers,
@@ -98,7 +97,7 @@ import { DmZRespond } from './slack/z/respond';
 import { isDmAllowedForNonAdmin } from './slack/z/whitelist';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
-import type { ConversationSession, SessionGoal, SessionIncidentRequest } from './types';
+import type { ConversationSession, SessionIncidentRequest } from './types';
 import { userSettingsStore } from './user-settings-store';
 import { WorkingDirectoryManager } from './working-directory-manager';
 
@@ -1669,11 +1668,12 @@ export class SlackHandler {
       // goal-prefixed message that arrived with NO session. Apply it to the
       // freshly created registry session BEFORE dispatch so turn 1 already
       // runs with the goal block (cached system prompt invalidated by the
-      // helper), then dispatch the goal continuation prompt — unless the
-      // goal+skill split already produced a `continueWithPrompt`, which wins
-      // as dispatch text. Note: the user-message goal reset above ran on a
-      // goal-less session (this IS the message creating the goal), so the two
-      // blocks never act on the same turn.
+      // helper). The turn itself dispatches `effectiveText` unchanged — the
+      // raw objective, or the goal+skill split's `continueWithPrompt` — and
+      // the goal rules reach the model only through `<session-goal>`. Note:
+      // the user-message goal reset above ran on a goal-less session (this IS
+      // the message creating the goal), so the two blocks never act on the
+      // same turn.
       let dispatchText = effectiveText;
 
       // Fresh-context start = a brand-new session OR a `new`-reset (which keeps
@@ -1702,9 +1702,6 @@ export class SlackHandler {
               `🎯 Goal set: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_Continuing with goal context._`,
               { threadTs: activeThreadTs },
             );
-            if (!continueWithPrompt) {
-              dispatchText = buildGoalContinuationPrompt(applied.goal as SessionGoal);
-            }
           } else {
             await this.slackApi.postSystemMessage(
               activeChannel,
@@ -1725,8 +1722,10 @@ export class SlackHandler {
       // S2 — Autogoal mode: when the user has autogoal ON and this session has
       // NO goal in flight (no active/paused goal, no queue), the first real
       // instruction is promoted to the session goal automatically and then
-      // dispatched as the goal's opening turn. Skips synthetic continuation
-      // turns and the goal-prefixed path (already handled via setGoalObjective).
+      // dispatched verbatim as the goal's opening turn (the goal rules ride in
+      // the rebuilt `<session-goal>` system block). Skips synthetic
+      // continuation turns and the goal-prefixed path (already handled via
+      // setGoalObjective).
       //
       // A deferred `$skill` (fresh-context start) still runs autogoal: its
       // `continueWithPrompt` is the RAW instruction text (no <invoked_skills>
@@ -1765,7 +1764,6 @@ export class SlackHandler {
               () => this.slackApi.postSystemMessage(activeChannel, autogoalNotice, { threadTs: activeThreadTs }),
               { sessionKey: sessionResult.sessionKey },
             );
-            dispatchText = buildGoalContinuationPrompt(applied.goal as SessionGoal);
           }
         }
       }
