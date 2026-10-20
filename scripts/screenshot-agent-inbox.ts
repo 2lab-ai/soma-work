@@ -18,6 +18,31 @@
  *     empty log), duplicates drop, a missing route reads "작업 로그 없음"
  *   - work-log tool rows print the tool name once, with the emitter's stored
  *     text shape ("Read {...}", "Glob ok")
+ *   - stats strip (1280 / 820 / 390 × light / dark): above the board, collapsed
+ *     to period · 세션 · 토큰 · 비용 · 자세히 — one row from 640px, two below with
+ *     44px targets; 자세히 opens the other cards and the charts between the strip
+ *     and the board, survives a reload, and never scrolls the page sideways
+ *     (stats-strip-*.png)
+ *   - archives (light / dark × 1280 / 390): archived cards are hidden by default,
+ *     Archives (N) — a toggle button, aria-pressed — shows them and survives a reload, the DONE count is what
+ *     DONE shows, Show older counts only what it would add, and a deep link to
+ *     a hidden archive (recent or 9 days old) still opens it without changing
+ *     the stored choice (archives-*.png)
+ *   - All Users: every card names its owner in a right-aligned badge, one colour
+ *     per owner, text ≥4.5:1 on its fill, never over the title, long names
+ *     ellipsized with the full name in title; gone once a user is selected
+ *     (owner-badges-*.png)
+ *   - side panel (light / dark × 1280 / 390): Tasks pinned above the scroll area
+ *     (also with no tasks), the work log collapsed unless opened from 작업 로그,
+ *     its count live while collapsed, expanding without a refetch; every entry
+ *     opens its full raw output (fetched once, cached), the truncated note, the
+ *     404 / 503 + 다시 시도 lines, the entry text when no raw is stored, copy,
+ *     keyboard, a late answer for a closed row dropped, no tail-follow yank
+ *     (panel-*.png); a default opening (답변하기) holds the newest turns only
+ *     until the reader acts, so a later resize never pulls them off the work log
+ *   - stats: 오늘 → 지난 7일 changes 세션 / 토큰 / 비용 to the week's totals
+ *     (stats + usage requests carry the period; All Users sends no userId), and
+ *     a late answer for a period no longer selected does not repaint them
  *   - top bar, Chromium and WebKit, 360–1280px × status × pill name × selected
  *     user (see topbarChecks): no control label wraps or is cut, no two
  *     controls overlap, none leaves the viewport, each is reachable across its
@@ -47,6 +72,12 @@ const NOW = Date.now();
 const M = 60_000;
 const iso = (agoMs: number) => new Date(NOW - agoMs).toISOString();
 const K = (n: string) => `mock-inst::work:C123:1700000000.000${n}`;
+/** archivedToKanban's key for an archived session: "<inst>::archived_<registry key>_<archivedAt>". */
+const ARCHIVED_AT: Record<string, number> = {
+  '700': NOW - 2 * 24 * 60 * M + 5 * M,
+  '800': NOW - 9 * 24 * 60 * M + 5 * M,
+};
+const KA = (n: string) => `mock-inst::archived_work:C123:1700000000.000${n}_${ARCHIVED_AT[n]}`;
 
 function base(o: Record<string, unknown>) {
   return {
@@ -214,7 +245,7 @@ function makeBoard() {
         activeAccumulatedMs: 12 * M,
       }),
       base({
-        key: K('700'),
+        key: KA('700'),
         title: 'OAuth token refresh',
         displayHeadline: 'OAuth token refresh',
         summaryTitle: 'Refresh now retries once on 401 before logging the user out.',
@@ -225,7 +256,7 @@ function makeBoard() {
         lastActivity: iso(2 * 24 * 60 * M),
       }),
       base({
-        key: K('800'),
+        key: KA('800'),
         title: 'Old spike: vector search',
         displayHeadline: 'Old spike: vector search',
         activityState: 'idle',
@@ -236,6 +267,39 @@ function makeBoard() {
       }),
     ],
   };
+}
+
+/** The owners of the team board (All Users view): one name long enough to ellipsize. */
+// Slack-style member ids. A bare hash % 8 puts Zhuge and Alice on one hue and
+// Carol and Dana on another; the board assigns them distinct ones.
+const TEAM = [
+  { id: 'U01ZHG7K2QD', name: 'Zhuge' },
+  { id: 'U07KQ2M4XR1', name: 'Alice' },
+  { id: 'U03BN8TZP6E', name: 'Bob' },
+  { id: 'U05HJ1WQ9DA', name: 'Carol' },
+  { id: 'U06TF4YQ8BN', name: 'Dana Alexandria Montgomery-Wellington' },
+];
+const [ZHUGE, ALICE, BOB, CAROL, DANA] = TEAM.map((t) => t.id);
+/** makeBoard() with the cards spread over five owners (Alice twice). */
+function makeTeamBoard() {
+  const b = makeBoard() as Record<string, Array<Record<string, unknown>>>;
+  const owner: Record<string, string> = {
+    [K('100')]: ALICE,
+    [K('200')]: BOB,
+    [K('300')]: CAROL,
+    [K('400')]: ALICE,
+    [K('500')]: DANA,
+    [K('600')]: ZHUGE,
+    [KA('700')]: BOB,
+    [KA('800')]: CAROL,
+  };
+  for (const col of Object.values(b)) {
+    for (const card of col) {
+      const t = TEAM.find((u) => u.id === owner[card.key as string]);
+      if (t) Object.assign(card, { ownerId: t.id, ownerName: t.name });
+    }
+  }
+  return b;
 }
 
 const TURNS: Record<string, unknown[]> = {
@@ -344,6 +408,60 @@ const WORKLOG: Record<string, unknown[]> = {
 
 /** Mutable mock server state: the work log grows while the "socket" is down. */
 const WORKLOG_EXTRA: Record<string, number> = { 'conv-1': 0 };
+
+/**
+ * Stored raw output (GET …/worklog/:seq/raw) for the panel scenario's
+ * conversation. Its list entries carry rawBytes for 3, 4, 6, 9, 11 and 12: 3
+ * and 4 answer 200 (multi-line), 9 answers 200 truncated, 6 has no stored raw
+ * (404), 11 fails at the network once, then answers 200, 12 answers the
+ * server's 503 { error: 'unavailable' } (the log is damaged — the same answer
+ * every time), and 13 answers a proxy's 503 (an HTML page) once, then 200.
+ */
+const RAW_STORE: Record<string, Record<number, { raw: string; rawBytes: number; rawTruncated?: boolean }>> = {
+  'conv-panel': {
+    3: {
+      raw: JSON.stringify({ file_path: 'db/schema.sql', offset: 0, limit: 400 }, null, 2),
+      rawBytes: 64,
+    },
+    4: {
+      raw: [
+        'CREATE TABLE users (',
+        '  id          bigint PRIMARY KEY,',
+        '  email       text NOT NULL UNIQUE,',
+        '  password    text NOT NULL,',
+        '  display     text,',
+        '  created_at  timestamptz NOT NULL DEFAULT now()',
+        ');',
+      ].join('\n'),
+      rawBytes: 196,
+    },
+    9: {
+      raw: Array.from(
+        { length: 60 },
+        (_, i) => `[${String(i).padStart(2, '0')}] migrate 0042_split_users: relation "profiles" already exists`,
+      ).join('\n'),
+      rawBytes: 1_048_576,
+      rawTruncated: true,
+    },
+    11: {
+      raw: '> db:migrate --env staging --dry-run --reset\nreset 3 tables\nmigrated 0042_split_users\ndone in 41s',
+      rawBytes: 98,
+    },
+    13: {
+      raw: 'Dry run on staging passed in 41s with no errors.\nApprove to run 0042_split_users on production.',
+      rawBytes: 92,
+    },
+  },
+};
+/** The entries the panel scenario lists: conv-1's log, with rawBytes where raw output was stored. */
+function panelLog() {
+  const bytes: Record<number, number> = { 3: 64, 4: 196, 6: 120, 9: 1_048_576, 11: 98, 12: 40, 13: 92 };
+  return (WORKLOG['conv-1'] as Array<Record<string, unknown>>).map((e) => {
+    const n = bytes[e.seq as number];
+    return n ? { ...e, rawBytes: n, ...(e.seq === 9 ? { rawTruncated: true } : {}) } : { ...e };
+  });
+}
+const RAW_CALLS: Array<{ conv: string; seq: number }> = [];
 const WORKLOG_CALLS: Array<{ conv: string; afterSeq: number | null }> = [];
 const FLAKY_CALLS = { n: 0 };
 const PAGE = 5;
@@ -451,6 +569,24 @@ const PAGE_HELPERS = [
   // its selected option), whether a user name in it (pill name, selected user)
   // ends in an ellipsis and the title that carries the full name, its height,
   // whether it sits inside the viewport, and whether a tap at its centre reaches it.
+  // The stats strip (.prd/10 §3.1-2): its box and the board's, how many rows its
+  // three parts (period · numbers · 자세히) take, its smallest button, and the 자세히 state.
+  'window.__stripProbe = function () {',
+  '  var box = function (el) { var q = el.getBoundingClientRect(); return { t: Math.round(q.top), b: Math.round(q.bottom), l: q.left, r: q.right }; };',
+  '  var strip = document.querySelector(".stats-strip");',
+  '  var more = document.getElementById("stats-more");',
+  '  var parts = [strip.querySelector(".period-bar"), strip.querySelector(".strip-nums"), more].map(box);',
+  '  var rows = [];',
+  '  parts.forEach(function (p) { var mid = (p.t + p.b) / 2; if (!rows.some(function (m) { return Math.abs(m - mid) < 6; })) rows.push(mid); });',
+  '  var heights = Array.prototype.map.call(strip.querySelectorAll("button"), function (b) { return Math.round(b.getBoundingClientRect().height); });',
+  '  var detail = document.getElementById("stats-detail");',
+  '  return {',
+  '    stats: box(document.getElementById("stats")), board: box(document.getElementById("inbox")), rows: rows.length,',
+  '    minTarget: Math.min.apply(null, heights), outside: parts.some(function (p) { return p.l < -0.5 || p.r > innerWidth + 0.5; }),',
+  '    expanded: more.getAttribute("aria-expanded"), detailHidden: detail.hidden, detailH: Math.round(detail.getBoundingClientRect().height),',
+  '    nums: Array.prototype.map.call(strip.querySelectorAll(".strip-num"), function (n) { return n.textContent; }),',
+  '  };',
+  '};',
   'window.__topbarProbe = function () {',
   '  var bar = document.querySelector(".topbar");',
   '  var els = Array.prototype.slice.call(bar.querySelectorAll("h1, .ws-badge, .user-select, select, a, button, .user-pill"))',
@@ -533,6 +669,89 @@ const PAGE_HELPERS = [
   '};',
 ].join('\n');
 
+/**
+ * What the stats / usage mocks answer per period: U001's own numbers, and the
+ * All Users numbers (no userId) — sessions differ, tokens and cost are doubled.
+ * None of them equals what the board's own cards add up to (8 cards, 1.7M
+ * tokens, $11.63), so a strip still reading the session cache cannot pass.
+ */
+type Period = 'day' | 'week' | 'month';
+const PERIOD_TOTALS: Record<Period, { sessions: number; all: number; input: number; output: number; cost: number }> = {
+  day: { sessions: 6, all: 14, input: 1_000_000, output: 200_000, cost: 12.47 },
+  week: { sessions: 37, all: 61, input: 9_000_000, output: 1_500_000, cost: 84.2 },
+  month: { sessions: 112, all: 203, input: 30_000_000, output: 4_000_000, cost: 301.5 },
+};
+const PERIOD_DAYS: Record<Period, number> = { day: 1, week: 7, month: 30 };
+/** The query string of every stats / usage request the mocks answered, in answer order. */
+const STATS_CALLS: URLSearchParams[] = [];
+const USAGE_CALLS: URLSearchParams[] = [];
+
+function periodOf(q: URLSearchParams): Period {
+  const p = q.get('period');
+  return p === 'week' || p === 'month' ? p : 'day';
+}
+
+function statsBody(q: URLSearchParams) {
+  const period = periodOf(q);
+  const t = PERIOD_TOTALS[period];
+  const sessions = q.get('userId') ? t.sessions : t.all;
+  const n = PERIOD_DAYS[period];
+  const days = Array.from({ length: n }, (_, i) => ({
+    date: new Date(NOW - (n - 1 - i) * 24 * 60 * M).toISOString().slice(0, 10),
+    sessionsCreated: Math.round(sessions / n) + (i % 3),
+    turnsUsed: 0,
+    prsCreated: 0,
+    prsMerged: 0,
+    commitsCreated: 0,
+    linesAdded: 0,
+    linesDeleted: 0,
+    mergeLinesAdded: 40 + ((i * 37) % 90),
+    mergeLinesDeleted: 5 + ((i * 11) % 20),
+    workflowCounts: {},
+  }));
+  return {
+    userId: q.get('userId') || null,
+    period,
+    totals: {
+      sessionsCreated: sessions,
+      turnsUsed: 41,
+      prsCreated: 2,
+      prsMerged: 1,
+      commitsCreated: 9,
+      linesAdded: 0,
+      linesDeleted: 0,
+      mergeLinesAdded: 254,
+      mergeLinesDeleted: 33,
+      workflowCounts: { zwork: 5, default: 3 },
+    },
+    days,
+  };
+}
+
+function usageBody(q: URLSearchParams) {
+  const period = periodOf(q);
+  const t = PERIOD_TOTALS[period];
+  const k = q.get('userId') ? 1 : 2;
+  return {
+    period,
+    startDate: '2026-01-01',
+    endDate: '2026-01-01',
+    totals: {
+      totalInputTokens: t.input * k,
+      totalOutputTokens: t.output * k,
+      totalCacheReadTokens: 5_000_000, // not part of the strip's token count
+      totalCacheCreateTokens: 700_000,
+      totalCostUsd: t.cost * k,
+      byModel: {},
+    },
+    byUser: {},
+    byDay: [],
+    tokenRankings: [],
+    costRankings: [],
+    hasLegacyData: false,
+  };
+}
+
 async function installMocks(
   page: Page,
   board: unknown,
@@ -541,23 +760,16 @@ async function installMocks(
   await page.addInitScript({ content: PAGE_HELPERS });
   await page.route('**/auth/me', (r) => r.fulfill({ json: { user: { name: 'Zhuge' }, csrfToken: 'x' } }));
   await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: [{ id: 'U001', name: 'Zhuge' }] } }));
-  await page.route('**/api/dashboard/stats**', (r) =>
-    r.fulfill({
-      json: {
-        totals: {
-          sessionsCreated: 8,
-          turnsUsed: 41,
-          prsCreated: 2,
-          prsMerged: 1,
-          commitsCreated: 9,
-          mergeLinesAdded: 254,
-          mergeLinesDeleted: 33,
-          workflowCounts: { zwork: 5, default: 3 },
-        },
-        days: [],
-      },
-    }),
-  );
+  await page.route('**/api/dashboard/stats**', (r) => {
+    const q = new URL(r.request().url()).searchParams;
+    STATS_CALLS.push(q);
+    return r.fulfill({ json: statsBody(q) });
+  });
+  await page.route('**/api/dashboard/usage**', (r) => {
+    const q = new URL(r.request().url()).searchParams;
+    USAGE_CALLS.push(q);
+    return r.fulfill({ json: usageBody(q) });
+  });
   await page.route('**/api/dashboard/sessions**', (r) => r.fulfill({ json: { board } }));
   // Work log seam: no afterSeq = latest PAGE window; afterSeq=N = first PAGE after N.
   await page.route(/\/api\/dashboard\/session\/[^/?]+\/worklog/, async (r) => {
@@ -583,6 +795,37 @@ async function installMocks(
     }
     const rest = log.filter((e) => (e.seq as number) > Number(raw));
     return r.fulfill({ json: { entries: rest.slice(0, PAGE), hasMore: rest.length > PAGE } });
+  });
+  // Raw output of one entry. Registered after the list route, which also
+  // matches this URL, so this one answers. 12 is a damaged log (the server's
+  // 503 every time); 11 fails at the network once per page, 13 meets a proxy's
+  // 503 once per page, then both answer.
+  const failedOnce = new Set<string>();
+  const proxiedOnce = new Set<string>();
+  await page.route(/\/api\/dashboard\/session\/[^/?]+\/worklog\/\d+\/raw/, (r) => {
+    const parts = new URL(r.request().url()).pathname.split('/');
+    const conv = decodeURIComponent(parts[4] || '');
+    const seq = Number(parts[6]);
+    RAW_CALLS.push({ conv, seq });
+    if (seq === 12) return r.fulfill({ status: 503, json: { error: 'unavailable' } });
+    if (seq === 11 && !failedOnce.has(conv)) {
+      failedOnce.add(conv);
+      return r.abort('failed');
+    }
+    if (seq === 13 && !proxiedOnce.has(conv)) {
+      proxiedOnce.add(conv);
+      return r.fulfill({
+        status: 503,
+        contentType: 'text/html',
+        body: '<html><body>Service Unavailable</body></html>',
+      });
+    }
+    const hit = RAW_STORE[conv]?.[seq];
+    if (!hit) return r.fulfill({ status: 404, json: { error: 'not_found' } });
+    return r.fulfill({
+      json: { seq, raw: hit.raw, rawBytes: hit.rawBytes, rawTruncated: hit.rawTruncated === true },
+      headers: { 'Cache-Control': 'no-store' },
+    });
   });
   await page.route(/\/api\/dashboard\/session\/[^/?]+(\?.*)?$/, (r) => {
     if (r.request().method() !== 'GET') return r.fulfill({ json: { ok: true } });
@@ -656,6 +899,24 @@ async function viewportMatrix(browser: import('playwright').Browser) {
       check(width < 640 ? view0 === 'list' : view0 === 'board', `${theme} ${width}: default view ${view0}`);
       check((await overflow(page)) === 0, `${theme} ${width} ${view0}: no page overflow`);
       await shoot(page, `${theme}-${width}-${view0}.png`);
+      // §3.1-2: the stats strip leads, collapsed; the board follows it.
+      await page.waitForFunction(() => document.getElementById('stat-cost')?.textContent !== '-', null, {
+        timeout: 5000,
+      });
+      const sp = (await page.evaluate(() => (window as unknown as PageWindow).__stripProbe())) as StripProbe;
+      check(
+        sp.stats.b <= sp.board.t,
+        `${theme} ${width}: the stats strip sits above the board (strip ${sp.stats.t}–${sp.stats.b}px, board from ${sp.board.t}px)`,
+      );
+      check(
+        sp.expanded === 'false' && sp.detailHidden && sp.detailH === 0 && sp.nums.length === 3,
+        `${theme} ${width}: stats strip collapsed by default — ${sp.nums.join(' · ')} + 자세히`,
+      );
+      check(
+        sp.rows === (width < 640 ? 2 : 1) && !sp.outside && (width >= 640 || sp.minTarget >= 44),
+        `${theme} ${width}: stats strip in ${width < 640 ? 'two rows, 44px targets' : 'one row'}, inside the viewport (rows ${sp.rows}, smallest button ${sp.minTarget}px)`,
+      );
+      if (width === 1280 || width === 390) await shoot(page, `stats-strip-${theme}-${width}.png`, false);
       await page.click(`[data-session-key="${K('100')}"] .card-face`);
       await page.waitForSelector(`[data-session-key="${K('100')}"] .io-in`, { timeout: 5000 });
       await page.waitForTimeout(450);
@@ -692,6 +953,8 @@ async function viewportMatrix(browser: import('playwright').Browser) {
           twice.length === 0,
           `${theme} ${width}: work-log tool rows print the tool name once (${twice.join(' | ')})`,
         );
+        await page.click('#worklog-toggle'); // every opening starts collapsed; the shot is of the log
+        await page.waitForTimeout(300);
         await shoot(page, `${theme}-${width}-panel-worklog.png`, false);
       }
       await ctx.close();
@@ -833,12 +1096,13 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
   await page.waitForTimeout(400);
   const state = await page.evaluate((key) => {
     const card = document.querySelector(`[data-session-key="${key}"]`);
-    const scroll = document.getElementById('panel-scroll') as HTMLElement;
-    const wl = document.getElementById('panel-worklog') as HTMLElement;
+    const scroll = (document.getElementById('panel-scroll') as HTMLElement).getBoundingClientRect();
+    const head = (document.getElementById('worklog-toggle') as HTMLElement).getBoundingClientRect();
     return {
       expanded: !!card?.classList.contains('is-expanded'),
       panelOpen: !!document.getElementById('slide-panel')?.classList.contains('open'),
-      worklogTop: Math.round(wl.getBoundingClientRect().top - scroll.getBoundingClientRect().top),
+      worklog: document.getElementById('worklog-toggle')?.getAttribute('aria-expanded') ?? null,
+      headerInView: head.top >= scroll.top - 0.5 && head.bottom <= scroll.bottom + 0.5,
       seqs: (window as unknown as PageWindow).__wlSeqs(),
     };
   }, K('100'));
@@ -846,8 +1110,8 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
     `deep link → ${JSON.stringify({ ...state, seqs: `${state.seqs[0]}..${state.seqs[state.seqs.length - 1]} (${state.seqs.length})` })}`,
   );
   check(
-    state.expanded && state.panelOpen && state.worklogTop === 0,
-    'deep link (Slack key without instance prefix) opens the card and the panel at the work log',
+    state.expanded && state.panelOpen && state.worklog === 'false' && state.headerInView,
+    'deep link (Slack key without instance prefix) opens the card and the panel with the collapsed work-log header in view',
   );
   const inOrder = (s: number[]) => s.every((v, i) => i === 0 || v > s[i - 1]);
   check(
@@ -855,6 +1119,8 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
     'a live entry that beat the HTTP page keeps the older batch, in seq order',
   );
   await shoot(page, 'deeplink-dark-1280.png', false);
+  await page.click('#worklog-toggle'); // the reader opens the log for the live-append checks below
+  await page.waitForTimeout(300);
 
   // Live duplicate + out-of-order entries.
   const seqs2: number[] = await page.evaluate(() => {
@@ -970,7 +1236,7 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
   await shoot(page2, 'worklog-403-light-1280.png', false);
 
   // First load fails transiently (502), the reconnect's retry answers 403.
-  await page2.evaluate((key) => (window as unknown as PageWindow).openPanel(key, true), K('700'));
+  await page2.evaluate((key) => (window as unknown as PageWindow).openPanel(key, true), KA('700'));
   await page2.waitForTimeout(400);
   const afterFirst = await page2.evaluate(() => document.getElementById('worklog-list')?.textContent);
   await page2.evaluate(() => (window as unknown as PageWindow).__wsReopen());
@@ -1335,6 +1601,18 @@ async function addendumChecks(browser: import('playwright').Browser) {
   check(errors.length === 0, `addendum: no page errors (${errors.join(' | ')})`);
   await ctx.close();
 }
+
+type StripProbe = {
+  stats: { t: number; b: number };
+  board: { t: number; b: number };
+  rows: number;
+  minTarget: number;
+  outside: boolean;
+  expanded: string | null;
+  detailHidden: boolean;
+  detailH: number;
+  nums: string[];
+};
 
 type TopbarItem = {
   el: string;
@@ -1736,6 +2014,1140 @@ async function titleSubPanelSwitch(browser: import('playwright').Browser) {
   await ctx.close();
 }
 
+/**
+ * 자세히 (dark, 1280 / 820 / 390): opens the five other cards and the charts
+ * between the strip and the board without sideways scroll; the choice survives
+ * a reload, and closing it does too.
+ */
+async function statsStripDetail(browser: import('playwright').Browser) {
+  const state = (page: Page) =>
+    page.evaluate(() => {
+      const detail = document.getElementById('stats-detail') as HTMLElement;
+      return {
+        expanded: document.getElementById('stats-more')?.getAttribute('aria-expanded') ?? null,
+        hidden: detail.hidden,
+        cards: Array.from(document.querySelectorAll('#stats-grid .stat-card')).filter(
+          (c) => c.getBoundingClientRect().height > 0,
+        ).length,
+        charts: document.querySelectorAll('#chart-row .chart-container').length,
+        detailBottom: Math.round(detail.getBoundingClientRect().bottom),
+        boardTop: Math.round((document.getElementById('inbox') as HTMLElement).getBoundingClientRect().top),
+        saved: localStorage.getItem('soma-stats-detail'),
+      };
+    });
+  for (const width of [1280, 820, 390]) {
+    const ctx = await browser.newContext({
+      viewport: { width, height: 900 },
+      colorScheme: 'dark',
+      hasTouch: width < 640,
+      isMobile: width < 640,
+    });
+    const page = await ctx.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await installMocks(page, makeBoard());
+    await openBoard(page);
+    await page.click('.period-btn[data-period="week"]'); // seven bars per chart
+    await page.click('#stats-more');
+    await page.waitForFunction(() => document.querySelectorAll('#chart-row .bar').length >= 14, null, {
+      timeout: 5000,
+    });
+    await page.waitForTimeout(300);
+    const open = await state(page);
+    check(
+      open.expanded === 'true' &&
+        !open.hidden &&
+        open.cards === 5 &&
+        open.charts === 2 &&
+        open.detailBottom <= open.boardTop &&
+        open.saved === 'open',
+      `dark ${width}: 자세히 opens the 5 other cards and the charts between the strip and the board (${JSON.stringify(open)})`,
+    );
+    check((await overflow(page)) === 0, `dark ${width}: stats detail open — no page overflow`);
+    if (width === 1280) {
+      await shoot(page, 'stats-strip-expanded-dark-1280.png', false);
+      await page.reload();
+      await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 5, null, {
+        timeout: 10000,
+      });
+      const reopened = await state(page);
+      await page.click('#stats-more');
+      await page.reload();
+      await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 5, null, {
+        timeout: 10000,
+      });
+      const closed = await state(page);
+      check(
+        reopened.expanded === 'true' &&
+          !reopened.hidden &&
+          closed.expanded === 'false' &&
+          closed.hidden &&
+          closed.saved === 'closed',
+        `자세히 open / closed survives a reload (${JSON.stringify({ reopened: reopened.expanded, closed: closed.expanded, saved: closed.saved })})`,
+      );
+    }
+    check(errors.length === 0, `dark ${width}: stats detail — no page errors (${errors.join(' | ')})`);
+    await ctx.close();
+  }
+}
+
+/** DONE column state: visible cards by state, the header count, the archives button and the older toggle. */
+type DoneRead = {
+  keys: string[];
+  archived: number;
+  count: string;
+  btnHidden: boolean;
+  pressed: string | null;
+  label: string;
+  btnH: number;
+  foot: string;
+  saved: string | null;
+};
+async function readDone(page: Page): Promise<DoneRead> {
+  return page.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll('#cards-done > .card:not(.is-exiting)')) as HTMLElement[];
+    const btn = document.getElementById('archives-toggle') as HTMLElement;
+    return {
+      keys: cards.map((c) => c.getAttribute('data-session-key') || ''),
+      archived: cards.filter((c) => c.getAttribute('data-state') === 'archived').length,
+      count: document.getElementById('count-done')?.textContent ?? '',
+      btnHidden: btn.hidden,
+      pressed: btn.getAttribute('aria-pressed'),
+      label: document.getElementById('archives-label')?.textContent ?? '',
+      btnH: Math.round(btn.getBoundingClientRect().height),
+      foot: document.getElementById('foot-done')?.textContent ?? '',
+      saved: localStorage.getItem('soma-show-archives'),
+    };
+  });
+}
+
+/**
+ * Archived (terminated) cards: hidden by default, Show archives shows them and
+ * is remembered, counts follow what is drawn, and a deep link to a hidden
+ * archive still opens it.
+ */
+async function archivesChecks(browser: import('playwright').Browser) {
+  const settle = (page: Page, want: (d: DoneRead) => boolean) =>
+    (async () => {
+      for (let i = 0; i < 100; i++) {
+        const d = await readDone(page);
+        if (want(d)) return d;
+        await page.waitForTimeout(30);
+      }
+      return readDone(page);
+    })();
+  for (const theme of ['light', 'dark'] as const) {
+    for (const width of [1280, 390]) {
+      const ctx = await browser.newContext({
+        viewport: { width, height: 900 },
+        colorScheme: theme,
+        hasTouch: width < 640,
+        isMobile: width < 640,
+      });
+      const page = await ctx.newPage();
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      await installMocks(page, makeBoard());
+      await openBoard(page);
+      const tag = `${theme} ${width}`;
+      const off = await readDone(page);
+      check(
+        off.archived === 0 &&
+          off.keys.length === 2 &&
+          off.count === '2' &&
+          off.foot === '' &&
+          !off.btnHidden &&
+          off.pressed === 'false' &&
+          off.label === 'Archives (2)' &&
+          (width >= 640 || off.btnH >= 44),
+        `${tag}: archives hidden by default — DONE shows ${off.count}, "${off.label}", no Show older for archives (${JSON.stringify(off)})`,
+      );
+      check((await overflow(page)) === 0, `${tag}: board header with Show archives — no page overflow`);
+      await shoot(page, `archives-hidden-${theme}-${width}.png`);
+      await page.click('#archives-toggle');
+      const on = await settle(page, (d) => d.archived === 1);
+      check(
+        on.archived === 1 &&
+          on.keys.includes(KA('700')) &&
+          on.count === '3' &&
+          on.foot === '▼ Show older (1)' &&
+          on.pressed === 'true' &&
+          on.label === 'Archives (2)' &&
+          on.saved === 'on',
+        `${tag}: Archives (pressed) shows the recent archive, DONE ${on.count}, the 9-day one behind "${on.foot}" (${JSON.stringify(on)})`,
+      );
+      check((await overflow(page)) === 0, `${tag}: archives shown — no page overflow`);
+      await shoot(page, `archives-shown-${theme}-${width}.png`);
+      if (theme === 'dark' && width === 1280) {
+        await page.click('#foot-done .show-older-btn');
+        const older = await settle(page, (d) => d.archived === 2);
+        await page.reload();
+        await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 5, null, {
+          timeout: 10000,
+        });
+        const kept = await settle(page, (d) => d.archived === 1);
+        await page.click('#archives-toggle');
+        const hidden = await settle(page, (d) => d.archived === 0);
+        check(
+          older.count === '4' &&
+            older.foot === '▲ Hide older (1)' &&
+            kept.pressed === 'true' &&
+            kept.archived === 1 &&
+            hidden.pressed === 'false' &&
+            hidden.archived === 0 &&
+            hidden.saved === 'off',
+          `Show archives survives a reload and turns off again (older ${older.count}, reload ${kept.pressed}, off → ${hidden.saved})`,
+        );
+      }
+      check(errors.length === 0, `${tag}: archives — no page errors (${errors.join(' | ')})`);
+      await ctx.close();
+    }
+  }
+
+  // Deep links to hidden archives: 2 days old and 9 days old (behind Show older too).
+  for (const [n, age] of [
+    ['700', 'recent'],
+    ['800', '9-day'],
+  ] as const) {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'dark' });
+    const page = await ctx.newPage();
+    await installMocks(page, makeBoard());
+    await page.goto(`${BASE_URL}/dashboard/U001?session=${encodeURIComponent(`work:C123:1700000000.000${n}`)}`);
+    const opened = await page
+      .waitForFunction(() => document.getElementById('slide-panel')?.classList.contains('open'), null, {
+        timeout: 8000,
+      })
+      .then(
+        () => true,
+        () => false,
+      );
+    await page.waitForTimeout(400);
+    const d = await readDone(page);
+    const expanded = await page.evaluate(
+      (key) => !!document.querySelector(`[data-session-key="${key}"]`)?.classList.contains('is-expanded'),
+      KA(n),
+    );
+    check(
+      opened &&
+        expanded &&
+        d.keys.includes(KA(n)) &&
+        d.archived === 1 &&
+        d.pressed === 'false' &&
+        d.saved === null &&
+        d.label === 'Archives (2)',
+      `deep link (Slack key) to a hidden ${age} archive (${KA(n).slice(11, 60)}…) opens it alone; the stored choice stays unset (${JSON.stringify({ opened, expanded, ...d })})`,
+    );
+    if (n === '800') await shoot(page, 'archives-deeplink-dark-1280.png', false);
+    await ctx.close();
+  }
+}
+
+/** All Users: owner badges on every card head, one colour per owner. */
+async function ownerBadgeChecks(browser: import('playwright').Browser) {
+  type BadgeRead = {
+    cards: number;
+    badges: Array<{
+      owner: string;
+      text: string;
+      title: string;
+      bg: string;
+      fg: string;
+      inside: boolean;
+      clear: boolean;
+      cut: boolean;
+    }>;
+  };
+  // The owner each card was given in makeTeamBoard(), by session key.
+  const OWNER_OF = Object.fromEntries(
+    Object.values(makeTeamBoard()).flatMap((col) => col.map((c) => [c.key as string, c.ownerId as string])),
+  );
+  const probe = (page: Page) =>
+    page.evaluate((ownerOf) => {
+      const cards = Array.from(document.querySelectorAll('#kanban .card:not(.is-exiting)')) as HTMLElement[];
+      const badges = cards.flatMap((card) => {
+        const b = card.querySelector('.card-head .owner-badge') as HTMLElement | null;
+        if (!b) return [];
+        const head = (card.querySelector('.card-head') as HTMLElement).getBoundingClientRect();
+        const title = card.querySelector('.card-title-text') as HTMLElement | null;
+        const br = b.getBoundingClientRect();
+        const tr = title?.getBoundingClientRect();
+        const cs = getComputedStyle(b);
+        const key = card.getAttribute('data-session-key') || '';
+        return [
+          {
+            owner: ownerOf[key] ?? '',
+            text: b.textContent || '',
+            title: b.getAttribute('title') || '',
+            bg: cs.backgroundColor,
+            fg: cs.color,
+            inside: br.left >= head.left - 0.5 && br.right <= head.right + 0.5 && br.width > 0,
+            clear: !tr || tr.right <= br.left + 0.5,
+            cut: b.scrollWidth > b.clientWidth + 1,
+          },
+        ];
+      });
+      return { cards: cards.length, badges };
+    }, OWNER_OF) as Promise<BadgeRead>;
+  const lum = (rgb: string) => {
+    const [r, g, b] = (rgb.match(/\d+(\.\d+)?/g) || []).slice(0, 3).map((v) => {
+      const c = Number(v) / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a: string, b: string) => {
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const judge = (p: BadgeRead) => {
+    const bad: string[] = [];
+    if (p.badges.length !== p.cards) bad.push(`${p.badges.length} badges on ${p.cards} cards`);
+    const colour = new Map<string, Set<string>>();
+    for (const b of p.badges) {
+      const want = TEAM.find((t) => t.id === b.owner)?.name;
+      if (b.text !== want || b.title !== want) bad.push(`badge "${b.text}" for ${b.owner}`);
+      if (!b.inside) bad.push(`${b.text} badge leaves its head`);
+      if (!b.clear) bad.push(`${b.text} badge covers the title`);
+      if (contrast(b.fg, b.bg) < 4.5) bad.push(`${b.text} contrast ${contrast(b.fg, b.bg).toFixed(2)}`);
+      if (b.owner === DANA && !b.cut) bad.push('the long name is not ellipsized');
+      if (!colour.has(b.owner)) colour.set(b.owner, new Set());
+      colour.get(b.owner)?.add(b.bg);
+    }
+    for (const [o, set] of colour) if (set.size !== 1) bad.push(`${o} has ${set.size} colours`);
+    const all = [...colour.values()].map((set) => [...set][0]);
+    if (new Set(all).size !== all.length) bad.push(`owners share a colour (${all.join(' ')})`);
+    return { bad, owners: colour.size };
+  };
+  for (const theme of ['light', 'dark'] as const) {
+    for (const width of [1280, 390]) {
+      const ctx = await browser.newContext({
+        viewport: { width, height: 900 },
+        colorScheme: theme,
+        hasTouch: width < 640,
+        isMobile: width < 640,
+      });
+      const page = await ctx.newPage();
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      await installMocks(page, makeTeamBoard());
+      await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: TEAM } }));
+      await page.goto(`${BASE_URL}/dashboard`);
+      await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 5, null, {
+        timeout: 10000,
+      });
+      await page.waitForTimeout(350);
+      const tag = `${theme} ${width}`;
+      const view = await page.evaluate(() => document.getElementById('kanban')?.getAttribute('data-view'));
+      const first = await probe(page);
+      const j1 = judge(first);
+      check(
+        j1.bad.length === 0 && j1.owners >= 4 && (await overflow(page)) === 0,
+        `${tag} ${view}: All Users — every card names its owner (${first.badges.length}/${first.cards} cards, ${j1.owners} owners, one colour each) ${j1.bad.join('; ')}`,
+      );
+      await shoot(page, `owner-badges-${theme}-${width}.png`, false);
+      const other = view === 'board' ? 'list' : 'board';
+      await page.click(`.seg-btn[data-view="${other}"]`);
+      await page.waitForTimeout(450);
+      const second = await probe(page);
+      const j2 = judge(second);
+      check(
+        j2.bad.length === 0 && (await overflow(page)) === 0,
+        `${tag} ${other}: owner badges hold in the other view ${j2.bad.join('; ')}`,
+      );
+      await page.selectOption('#user-select', ALICE);
+      await page
+        .waitForFunction(() => document.querySelectorAll('#kanban .owner-badge').length === 0, null, {
+          timeout: 5000,
+        })
+        .catch(() => {});
+      const mine = await probe(page);
+      check(mine.badges.length === 0, `${tag}: a selected user shows no owner badges (${mine.badges.length})`);
+      check(errors.length === 0, `${tag}: owner badges — no page errors (${errors.join(' | ')})`);
+      await ctx.close();
+    }
+  }
+}
+
+/** The side panel's pinned Tasks, the collapsible work log and the raw output of its entries. */
+type PanelRead = {
+  tasksOutside: boolean;
+  tasksHeader: string;
+  tasksItems: number;
+  tasksEmpty: string | null;
+  expanded: string | null;
+  listHidden: boolean;
+  count: string;
+  entries: number;
+  tasks: { t: number; b: number; h: number };
+  scroll: { t: number; b: number; h: number; top: number; scrollable: boolean; fromEnd: number };
+  header: { t: number; b: number };
+  turns: number;
+  small: string[];
+};
+async function readPanel(page: Page): Promise<PanelRead> {
+  return page.evaluate(() => {
+    const tasks = document.getElementById('panel-tasks') as HTMLElement;
+    const scroll = document.getElementById('panel-scroll') as HTMLElement;
+    const list = document.getElementById('worklog-list') as HTMLElement;
+    // No named functions in here: tsx would wrap them in a __name() the page lacks.
+    const [tb, sb] = [tasks, scroll].map((el) => {
+      const q = el.getBoundingClientRect();
+      return { t: Math.round(q.top), b: Math.round(q.bottom), h: Math.round(q.height) };
+    });
+    const panel = document.getElementById('slide-panel') as HTMLElement;
+    const small = Array.from(panel.querySelectorAll('button, a, input, [role="button"]'))
+      .filter((el) => {
+        const q = el.getBoundingClientRect();
+        return q.width > 0 && q.height > 0 && q.bottom > 0 && q.top < innerHeight;
+      })
+      .filter((el) => el.getBoundingClientRect().height < 43.5)
+      .map(
+        (el) =>
+          `${el.id || (el as HTMLElement).className || el.tagName}:${Math.round(el.getBoundingClientRect().height)}`,
+      );
+    return {
+      tasksOutside: !scroll.contains(tasks),
+      tasksHeader: tasks.querySelector('.panel-tasks-header')?.textContent ?? '',
+      tasksItems: tasks.querySelectorAll('.panel-task-item').length,
+      tasksEmpty: tasks.querySelector('.panel-tasks-empty')?.textContent ?? null,
+      expanded: document.getElementById('worklog-toggle')?.getAttribute('aria-expanded') ?? null,
+      listHidden: list.hidden,
+      count: document.getElementById('worklog-count')?.textContent ?? '',
+      entries: list.querySelectorAll('.wl-entry').length,
+      tasks: tb,
+      scroll: {
+        ...sb,
+        top: Math.round(scroll.scrollTop),
+        scrollable: scroll.scrollHeight > scroll.clientHeight + 1,
+        fromEnd: Math.round(scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop),
+      },
+      header: {
+        t: Math.round((document.getElementById('worklog-toggle') as HTMLElement).getBoundingClientRect().top),
+        b: Math.round((document.getElementById('worklog-toggle') as HTMLElement).getBoundingClientRect().bottom),
+      },
+      turns: document.querySelectorAll('#panel-turns .turn').length,
+      small,
+    };
+  });
+}
+async function readDetail(page: Page, seq: number) {
+  return page.evaluate((n) => {
+    const el = document.querySelector(`#worklog-list .wl-entry[data-seq="${n}"]`) as HTMLElement | null;
+    const detail = el?.querySelector('.wl-detail') as HTMLElement | null;
+    return {
+      expanded: el?.querySelector('.wl-row')?.getAttribute('aria-expanded') ?? null,
+      hidden: detail?.hidden ?? null,
+      html: detail?.innerHTML ?? '',
+      pre: (detail?.querySelector('.wl-raw') as HTMLElement | null)?.textContent ?? null,
+      note: detail?.querySelector('.wl-detail-note')?.textContent ?? null,
+      msg: detail?.querySelector('.wl-detail-msg')?.textContent ?? null,
+      retry: !!detail?.querySelector('[data-wl-act="retry"]'),
+    };
+  }, seq);
+}
+
+async function panelChecks(browser: import('playwright').Browser) {
+  // Conversation for this scenario: conv-1's work log (with rawBytes) and six turns.
+  WORKLOG['conv-panel'] = panelLog();
+  TURNS['conv-panel'] = Array.from({ length: 6 }, (_, i) => ({
+    id: `P${i + 1}`,
+    role: i % 2 ? 'assistant' : 'user',
+    userName: 'Zhuge',
+    timestamp: NOW - (6 - i) * M,
+    rawContent: i % 2 ? undefined : `step ${i / 2 + 1}: check the migration on staging`,
+    summarized: true,
+    summaryTitle: i % 2 ? `step ${(i + 1) / 2} done` : undefined,
+    summaryBody: i % 2 ? 'Ran it on staging; no errors.' : undefined,
+  }));
+  const row = (seq: number) => `#worklog-list .wl-entry[data-seq="${seq}"] > .wl-row`;
+  const shown = (page: Page, seq: number, what: 'pre' | 'msg') =>
+    page
+      .waitForFunction(
+        ([n, w]) =>
+          !!document.querySelector(
+            `#worklog-list .wl-entry[data-seq="${n}"] .wl-detail ${w === 'pre' ? '.wl-raw' : '.wl-detail-msg:not(.is-loading)'}`,
+          ),
+        [seq, what] as const,
+        { timeout: 5000 },
+      )
+      .then(
+        () => true,
+        () => false,
+      );
+  const intoView = (page: Page, seq: number) =>
+    page.evaluate((n) => {
+      const el = document.querySelector(`#worklog-list .wl-entry[data-seq="${n}"]`) as HTMLElement | null;
+      el?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    }, seq);
+  const rawCalls = (seq: number) => RAW_CALLS.filter((c) => c.conv === 'conv-panel' && c.seq === seq).length;
+
+  for (const theme of ['light', 'dark'] as const) {
+    for (const width of [1280, 390]) {
+      const tag = `${theme} ${width}`;
+      const extra = theme === 'dark' && width === 1280;
+      const ctx = await browser.newContext({
+        viewport: { width, height: 900 },
+        colorScheme: theme,
+        hasTouch: width < 640,
+        isMobile: width < 640,
+        ...(extra ? { permissions: ['clipboard-read', 'clipboard-write'] } : {}),
+      });
+      const page = await ctx.newPage();
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      const board = makeBoard() as Record<string, Array<Record<string, unknown>>>;
+      board.waiting[0].conversationId = 'conv-panel'; // Migrate users table: 4 tasks
+      await installMocks(page, board);
+      await openBoard(page);
+      RAW_CALLS.length = 0;
+      WORKLOG_CALLS.length = 0;
+
+      // The user's path: open the card, press its 작업 로그 button. Tasks pinned, the
+      // work log collapsed (but loaded: the count) with its header in view.
+      await page.click(`[data-session-key="${K('100')}"] .card-face`);
+      await page.waitForTimeout(350);
+      await page.click(`[data-session-key="${K('100')}"] .btn-primary`);
+      await page
+        .waitForFunction(() => document.getElementById('worklog-count')?.textContent === '13', null, { timeout: 5000 })
+        .catch(() => {});
+      await page.waitForTimeout(450);
+      const d0 = await readPanel(page);
+      check(
+        d0.tasksOutside &&
+          d0.tasksHeader.startsWith('Tasks') &&
+          d0.tasksItems === 4 &&
+          d0.expanded === 'false' &&
+          d0.listHidden &&
+          d0.count === '13' &&
+          d0.tasks.b <= d0.scroll.t &&
+          d0.header.t >= d0.scroll.t &&
+          d0.header.b <= d0.scroll.b,
+        `${tag}: the 작업 로그 button opens the panel with Tasks pinned and the work log collapsed (13), its header in view (${JSON.stringify({ ...d0, small: undefined })})`,
+      );
+      check((await overflow(page)) === 0, `${tag}: panel from 작업 로그 — no page overflow`);
+      if (width < 640) check(d0.small.length === 0, `${tag}: panel controls ≥44px (${d0.small.join(' | ')})`);
+      await shoot(page, `panel-open-button-${theme}-${width}.png`, false);
+
+      // A live entry while collapsed moves the count; expanding does not refetch.
+      await page.evaluate(() =>
+        (window as unknown as PageWindow).__wsSend({
+          type: 'work_log',
+          conversationId: 'conv-panel',
+          entry: { seq: 14, ts: Date.now(), kind: 'notice', text: 'live while collapsed' },
+        }),
+      );
+      const d1 = await readPanel(page);
+      const listCalls = WORKLOG_CALLS.length;
+      await page.click('#worklog-toggle');
+      await page.waitForTimeout(300);
+      const d2 = await readPanel(page);
+      check(
+        d1.count === '14' &&
+          d1.listHidden &&
+          d2.expanded === 'true' &&
+          !d2.listHidden &&
+          d2.entries === 14 &&
+          WORKLOG_CALLS.length === listCalls,
+        `${tag}: count follows live entries while collapsed (${d1.count}); expanding shows them without a refetch (${WORKLOG_CALLS.length - listCalls} requests)`,
+      );
+
+      // Tasks stay put while the scroll area scrolls.
+      await page.evaluate(() => {
+        const sc = document.getElementById('panel-scroll') as HTMLElement;
+        sc.scrollTo({ top: sc.scrollHeight, behavior: 'instant' });
+      });
+      await page.waitForTimeout(150);
+      const atEnd = await readPanel(page);
+      await page.evaluate(() =>
+        (document.getElementById('panel-scroll') as HTMLElement).scrollTo({ top: 0, behavior: 'instant' }),
+      );
+      await page.waitForTimeout(150);
+      const atTop = await readPanel(page);
+      log(
+        `${tag}: tasks ${JSON.stringify(atTop.tasks)} / ${JSON.stringify(atEnd.tasks)} · scroll ${JSON.stringify(atTop.scroll)} / ${JSON.stringify(atEnd.scroll)}`,
+      );
+      check(
+        atEnd.scroll.scrollable &&
+          atEnd.scroll.top > 50 &&
+          atTop.scroll.top === 0 &&
+          atTop.tasks.t === atEnd.tasks.t &&
+          atTop.tasks.b === atEnd.tasks.b &&
+          atEnd.tasks.b <= atEnd.scroll.t,
+        `${tag}: Tasks top stays at ${atTop.tasks.t}px while the scroll area moves ${atEnd.scroll.top}px`,
+      );
+      await shoot(page, `panel-worklog-expanded-${theme}-${width}.png`, false);
+
+      // A tool entry with stored raw: fetched once, kept when closed and reopened.
+      await page.click(row(3));
+      const okPre = await shown(page, 3, 'pre');
+      const raw3 = await readDetail(page, 3);
+      const live = await page.evaluate(() => ({
+        list: document.getElementById('worklog-list')?.getAttribute('aria-live'),
+        detail: document.querySelector('#worklog-list .wl-entry[data-seq="3"] .wl-detail')?.getAttribute('aria-live'),
+      }));
+      check(
+        live.list === 'polite' && live.detail === 'off',
+        `${tag}: an opened raw output stays out of the polite log region (${JSON.stringify(live)})`,
+      );
+      await page.click(row(3));
+      const closed3 = await readDetail(page, 3);
+      await page.click(row(3));
+      await shown(page, 3, 'pre');
+      check(
+        okPre &&
+          raw3.expanded === 'true' &&
+          raw3.pre === RAW_STORE['conv-panel'][3].raw &&
+          closed3.hidden === true &&
+          closed3.expanded === 'false' &&
+          rawCalls(3) === 1,
+        `${tag}: a tool entry opens its full raw output; close + reopen asks once (${rawCalls(3)} request)`,
+      );
+      await intoView(page, 3);
+      await shoot(page, `panel-raw-${theme}-${width}.png`, false);
+      if (extra) {
+        await page.click(`#worklog-list .wl-entry[data-seq="3"] [data-wl-act="copy"]`);
+        await page.waitForTimeout(200);
+        const clip = await page.evaluate(() => navigator.clipboard.readText().catch(() => null));
+        const label = await page.evaluate(
+          () => document.querySelector('#worklog-list .wl-entry[data-seq="3"] [data-wl-act="copy"]')?.textContent,
+        );
+        check(
+          clip === RAW_STORE['conv-panel'][3].raw && label === '복사됨',
+          `copy puts the shown raw output on the clipboard ("${label}")`,
+        );
+      }
+      await page.click(row(3));
+
+      // Narration (no stored raw): its own full text, no request.
+      await page.click(row(2));
+      await shown(page, 2, 'pre');
+      const n2 = await readDetail(page, 2);
+      check(
+        n2.pre === 'Reading the current schema and the migration history first.' && rawCalls(2) === 0,
+        `${tag}: an entry without stored raw shows its full text, no request (${rawCalls(2)})`,
+      );
+      await page.click(row(2));
+
+      // Truncated raw.
+      await page.click(row(9));
+      await shown(page, 9, 'pre');
+      const t9 = await readDetail(page, 9);
+      check(
+        t9.note === '저장된 앞 256 KiB만 표시 — 원본 1.0 MiB' && (t9.pre || '').split('\n').length === 60,
+        `${tag}: a truncated raw output says so ("${t9.note}")`,
+      );
+      await intoView(page, 9);
+      await shoot(page, `panel-raw-truncated-${theme}-${width}.png`, false);
+      await page.click(row(9));
+
+      // 404: nothing stored.
+      await page.click(row(6));
+      await shown(page, 6, 'msg');
+      const m6 = await readDetail(page, 6);
+      check(m6.msg === '원본 출력이 저장되어 있지 않습니다' && !m6.retry, `${tag}: 404 reads "${m6.msg}"`);
+      await page.click(row(6));
+
+      // 503: the log is damaged — its own line, no 다시 시도, asked once.
+      await page.click(row(12));
+      await shown(page, 12, 'msg');
+      const d12 = await readDetail(page, 12);
+      await intoView(page, 12);
+      await shoot(page, `panel-raw-damaged-${theme}-${width}.png`, false);
+      await page.click(row(12));
+      await page.click(row(12));
+      await shown(page, 12, 'msg');
+      check(
+        d12.msg === '로그가 손상되어 원본을 읽을 수 없습니다' && !d12.retry && rawCalls(12) === 1,
+        `${tag}: 503 reads "${d12.msg}" with no 다시 시도; reopening does not ask again (${rawCalls(12)} request)`,
+      );
+      await page.click(row(12));
+
+      // A proxy's 503 (no server code) is a generic failure: 다시 시도 → the raw.
+      await page.click(row(13));
+      await shown(page, 13, 'msg');
+      const p13 = await readDetail(page, 13);
+      await page.click(`#worklog-list .wl-entry[data-seq="13"] [data-wl-act="retry"]`);
+      const after13 = await shown(page, 13, 'pre');
+      check(
+        (p13.msg || '').startsWith('원본 출력을 불러오지 못했어요') && p13.retry && after13 && rawCalls(13) === 2,
+        `${tag}: a proxy's 503 (no {error:"unavailable"}) is a generic failure; 다시 시도 refetches (${rawCalls(13)} requests)`,
+      );
+      await page.click(row(13));
+
+      // A network failure → 다시 시도 → the raw.
+      await page.click(row(11));
+      await shown(page, 11, 'msg');
+      const e11 = await readDetail(page, 11);
+      await intoView(page, 11);
+      await shoot(page, `panel-raw-error-${theme}-${width}.png`, false);
+      if (width < 640) {
+        const small = (await readPanel(page)).small;
+        check(small.length === 0, `${tag}: rows, 다시 시도 and the header are ≥44px (${small.join(' | ')})`);
+      }
+      await page.click(`#worklog-list .wl-entry[data-seq="11"] [data-wl-act="retry"]`);
+      const retried = await shown(page, 11, 'pre');
+      const r11 = await readDetail(page, 11);
+      check(
+        (e11.msg || '').startsWith('원본 출력을 불러오지 못했어요') &&
+          e11.retry &&
+          retried &&
+          r11.pre === RAW_STORE['conv-panel'][11].raw &&
+          rawCalls(11) === 2,
+        `${tag}: a network failure offers 다시 시도, which refetches and shows the raw (${rawCalls(11)} requests)`,
+      );
+
+      // Tail-follow does not yank the list while a detail is open.
+      const before = await page.evaluate(() => {
+        const l = document.getElementById('worklog-list') as HTMLElement;
+        l.scrollTop = l.scrollHeight;
+        return Math.round(l.scrollTop);
+      });
+      await page.evaluate(() =>
+        (window as unknown as PageWindow).__wsSend({
+          type: 'work_log',
+          conversationId: 'conv-panel',
+          entry: { seq: 15, ts: Date.now(), kind: 'tool', tool: 'Bash', text: 'Bash {"command":"npm test"}' },
+        }),
+      );
+      await page.waitForTimeout(100);
+      const after = await page.evaluate(() =>
+        Math.round((document.getElementById('worklog-list') as HTMLElement).scrollTop),
+      );
+      check(
+        after === before,
+        `${tag}: a live entry does not move the list while a detail is open (${before} → ${after})`,
+      );
+      check((await overflow(page)) === 0, `${tag}: raw output open — no page overflow`);
+      await page.click(row(11));
+
+      if (extra) {
+        // Keyboard: the list is one tab stop (the newest row); arrows, Home and End
+        // move it; Enter opens an entry's raw output, Space closes it; Tab leaves.
+        const roving = () =>
+          page.evaluate(() => {
+            const stops = Array.from(document.querySelectorAll('#worklog-list .wl-row[tabindex="0"]'));
+            const a = document.activeElement as HTMLElement | null;
+            return {
+              stops: stops.length,
+              stopSeq: stops[0]?.parentElement?.getAttribute('data-seq') ?? null,
+              focusSeq: a?.classList.contains('wl-row') ? a.parentElement?.getAttribute('data-seq') : null,
+              rows: document.querySelectorAll('#worklog-list .wl-row').length,
+            };
+          });
+        await page.click('#worklog-toggle');
+        await page.click('#worklog-toggle'); // focus on the header, list open
+        const r0 = await roving();
+        await page.keyboard.press('Tab');
+        const r1 = await roving();
+        await page.keyboard.press('ArrowUp');
+        const r2 = await roving();
+        await page.keyboard.press('Home');
+        const r3 = await roving();
+        await page.keyboard.press('ArrowDown');
+        await page.keyboard.press('ArrowDown');
+        await page.keyboard.press('ArrowDown');
+        await page.keyboard.press('ArrowDown');
+        const r4 = await roving();
+        await page.keyboard.press('Enter');
+        const k1 = await readDetail(page, 5);
+        await page.keyboard.press(' ');
+        const k2 = await readDetail(page, 5);
+        await page.keyboard.press('End');
+        const r5 = await roving();
+        await page.keyboard.press('Tab');
+        const r6 = await roving();
+        log(`roving: ${JSON.stringify({ r0, r1, r2, r3, r4, r5, r6 })}`);
+        // The stop is the row focused last (the clicks above), else the newest row.
+        const stop = Number(r0.stopSeq);
+        const last = String(r0.rows); // seqs 1..n, one row each
+        check(
+          r0.stops === 1 &&
+            r1.focusSeq === r0.stopSeq &&
+            r2.focusSeq === String(stop - 1) &&
+            r2.stops === 1 &&
+            r2.stopSeq === r2.focusSeq &&
+            r3.focusSeq === '1' &&
+            r4.focusSeq === '5' &&
+            r5.focusSeq === last &&
+            r6.focusSeq === null &&
+            r6.stops === 1 &&
+            r6.stopSeq === last,
+          `keyboard: one tab stop in the list (${r0.rows} rows, on seq ${r0.stopSeq}); Tab enters there, ↑ / Home / ↓ / End move it, Tab leaves`,
+        );
+        check(
+          k1.expanded === 'true' && !!k1.pre && k2.expanded === 'false' && k2.hidden === true,
+          `keyboard: Enter opens an entry's raw output, Space closes it`,
+        );
+      }
+      if (theme === 'light' && width === 1280) {
+        // A late answer for a row closed in the meantime is dropped; reopening uses it.
+        let release: () => void = () => {};
+        const gate = new Promise<void>((r) => {
+          release = r;
+        });
+        let asked = false;
+        await page.route(/\/worklog\/4\/raw/, async (r) => {
+          asked = true;
+          await gate;
+          await r.fallback();
+        });
+        await page.click(row(4));
+        for (let i = 0; i < 50 && !asked; i++) await page.waitForTimeout(20);
+        await page.click(row(4));
+        release();
+        await page.waitForTimeout(300);
+        const late = await readDetail(page, 4);
+        await page.click(row(4));
+        await shown(page, 4, 'pre');
+        const reopened = await readDetail(page, 4);
+        check(
+          asked &&
+            late.hidden === true &&
+            late.html === '' &&
+            reopened.pre === RAW_STORE['conv-panel'][4].raw &&
+            rawCalls(4) === 1,
+          `a late raw answer for a closed row is dropped; reopening shows it without asking again (${rawCalls(4)} request)`,
+        );
+        await page.unroute(/\/worklog\/4\/raw/);
+      }
+
+      // A session with no tasks: the pinned block says so (a default opening: log collapsed).
+      await page.evaluate((k) => (window as unknown as PageWindow).openPanel(k), K('600'));
+      await page.waitForTimeout(400);
+      const e0 = await readPanel(page);
+      check(
+        e0.tasksOutside &&
+          e0.tasksHeader === 'Tasks' &&
+          e0.tasksEmpty === '아직 작업 목록이 없습니다' &&
+          e0.expanded === 'false',
+        `${tag}: no tasks yet — the pinned block reads "${e0.tasksEmpty}"`,
+      );
+      await shoot(page, `panel-empty-tasks-${theme}-${width}.png`, false);
+      // Any other opening (답변하기, …) lands on the newest turns, the log collapsed too.
+      await page.evaluate((k) => (window as unknown as PageWindow).openPanel(k), K('100'));
+      await page.waitForTimeout(500);
+      const f0 = await readPanel(page);
+      check(
+        f0.expanded === 'false' && f0.listHidden && f0.scroll.fromEnd <= 2,
+        `${tag}: another opening lands on the newest turns with the log collapsed (${f0.scroll.fromEnd}px from the end)`,
+      );
+      check(errors.length === 0, `${tag}: panel — no page errors (${errors.join(' | ')})`);
+      await ctx.close();
+
+      // The Slack 작업 로그 link: a real ?session= navigation.
+      const ctx2 = await browser.newContext({
+        viewport: { width, height: 900 },
+        colorScheme: theme,
+        hasTouch: width < 640,
+        isMobile: width < 640,
+      });
+      const page2 = await ctx2.newPage();
+      await installMocks(page2, board);
+      await page2.goto(`${BASE_URL}/dashboard/U001?session=${encodeURIComponent('work:C123:1700000000.000100')}`);
+      await page2
+        .waitForFunction(() => document.getElementById('worklog-count')?.textContent === '13', null, { timeout: 8000 })
+        .catch(() => {});
+      await page2.waitForTimeout(500);
+      const g0 = await readPanel(page2);
+      const cardOpen = await page2.evaluate(
+        (k) => !!document.querySelector(`[data-session-key="${k}"]`)?.classList.contains('is-expanded'),
+        K('100'),
+      );
+      check(
+        cardOpen &&
+          g0.tasksOutside &&
+          g0.expanded === 'false' &&
+          g0.listHidden &&
+          g0.count === '13' &&
+          g0.header.t >= g0.scroll.t &&
+          g0.header.b <= g0.scroll.b,
+        `${tag}: the ?session= link opens the card and the panel with the work log collapsed, its header in view (${JSON.stringify({ header: g0.header, scroll: g0.scroll })})`,
+      );
+      check((await overflow(page2)) === 0, `${tag}: panel from ?session= — no page overflow`);
+      if (width < 640)
+        check(g0.small.length === 0, `${tag}: deep-linked panel controls ≥44px (${g0.small.join(' | ')})`);
+      await shoot(page2, `panel-open-deeplink-${theme}-${width}.png`, false);
+      await ctx2.close();
+    }
+  }
+
+  // Landing at the top (작업 로그) loads no older turns by itself; one scroll gesture
+  // up into the first turns loads exactly one older page — no cascade.
+  TURNS['conv-cascade'] = Array.from({ length: 100 }, (_, i) => ({
+    id: `C${i + 1}`,
+    role: i % 2 ? 'assistant' : 'user',
+    userName: 'Zhuge',
+    timestamp: NOW - (100 - i) * M,
+    rawContent: i % 2 ? undefined : `instruction ${i + 1}`,
+    summarized: true,
+    summaryTitle: i % 2 ? `reply ${i + 1}` : undefined,
+    summaryBody: i % 2 ? 'body' : undefined,
+  }));
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'light' });
+  const page = await ctx.newPage();
+  const board = makeBoard() as Record<string, Array<Record<string, unknown>>>;
+  board.working[0].conversationId = 'conv-cascade'; // Review PR #482: 100 turns
+  await installMocks(page, board);
+  await openBoard(page);
+  await page.click(`[data-session-key="${K('300')}"] .card-face`);
+  await page.waitForTimeout(350);
+  await page.click(`[data-session-key="${K('300')}"] .btn-primary`);
+  await page.waitForFunction(() => document.querySelectorAll('#panel-turns .turn').length >= 30, null, {
+    timeout: 5000,
+  });
+  await page.waitForTimeout(900);
+  const landed = await readPanel(page);
+  const box = await page.evaluate(() => {
+    const q = (document.getElementById('panel-scroll') as HTMLElement).getBoundingClientRect();
+    return { x: q.left + q.width / 2, y: q.top + q.height / 2 };
+  });
+  await page.mouse.move(box.x, box.y);
+  await page.mouse.wheel(0, 600);
+  await page.waitForTimeout(500);
+  await page.mouse.wheel(0, -1200);
+  await page.waitForTimeout(1200);
+  const once = await readPanel(page);
+  // Small moves that stay near the first turns (the reader adjusting) load nothing more.
+  for (const dy of [40, -40, 30, -30]) {
+    await page.mouse.wheel(0, dy);
+    await page.waitForTimeout(350);
+  }
+  await page.waitForTimeout(900);
+  const settled = await readPanel(page);
+  check(
+    landed.turns === 30 &&
+      landed.scroll.top === 0 &&
+      once.turns === 60 &&
+      settled.turns === 60 &&
+      settled.header.t >= settled.scroll.t,
+    `작업 로그 landing at the top loads nothing by itself; one scroll up loads one older page, small moves near the top no more (turns ${landed.turns} → ${once.turns} → ${settled.turns})`,
+  );
+  await ctx.close();
+}
+
+/**
+ * A default opening (답변하기) holds the newest turns only until the reader acts:
+ * after expanding the work log, a resize (Tasks growing on task_update, a late
+ * subtitle) must not pull them to the bottom.
+ */
+async function stickChecks(browser: import('playwright').Browser) {
+  for (const width of [1280, 390]) {
+    const ctx = await browser.newContext({
+      viewport: { width, height: 900 },
+      colorScheme: 'light',
+      hasTouch: width < 640,
+      isMobile: width < 640,
+    });
+    const page = await ctx.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    // A short conversation (two turns) and conv-1's work log: the landing on the
+    // newest turns still shows the collapsed header, so opening it needs no scroll.
+    WORKLOG['conv-stick'] = panelLog();
+    TURNS['conv-stick'] = Array.from({ length: 2 }, (_, i) => ({
+      id: `S${i + 1}`,
+      role: i % 2 ? 'assistant' : 'user',
+      userName: 'Zhuge',
+      timestamp: NOW - (2 - i) * M,
+      rawContent: i % 2 ? undefined : `merge step ${i / 2 + 1}`,
+      summarized: true,
+      summaryTitle: i % 2 ? `merge step ${(i + 1) / 2} done` : undefined,
+      summaryBody: i % 2 ? 'Merged a batch of duplicates.' : undefined,
+    }));
+    const board = makeBoard() as Record<string, Array<Record<string, unknown>>>;
+    const crm = board.waiting[1]; // Clean up CRM contacts: a multi-question form
+    crm.conversationId = 'conv-stick';
+    crm.pendingQuestion = {
+      type: 'user_choices',
+      title: 'Merge plan',
+      questions: [
+        {
+          id: 'q1',
+          question: 'Merge the 1,312 likely duplicates now?',
+          choices: [
+            { id: '1', label: 'Merge now' },
+            { id: '2', label: 'Wait for the rate limit to reset' },
+          ],
+        },
+      ],
+    };
+    await installMocks(page, board);
+    await openBoard(page);
+    const sel = `[data-session-key="${K('200')}"]`;
+    await page.click(`${sel} .card-face`);
+    await page.waitForTimeout(400);
+    await page.click(`${sel} .card-question .btn-choice`); // 답변하기
+    await page.waitForFunction(() => document.querySelectorAll('#panel-turns .turn').length >= 2, null, {
+      timeout: 5000,
+    });
+    await page.waitForTimeout(500);
+    const pos = () =>
+      page.evaluate(() => {
+        const sc = document.getElementById('panel-scroll') as HTMLElement;
+        const head = (document.getElementById('worklog-toggle') as HTMLElement).getBoundingClientRect();
+        return {
+          top: Math.round(sc.scrollTop),
+          fromEnd: Math.round(sc.scrollHeight - sc.clientHeight - sc.scrollTop),
+          headTop: Math.round(head.top),
+          expanded: document.getElementById('worklog-toggle')?.getAttribute('aria-expanded'),
+        };
+      });
+    const landed = await pos();
+    // The reader opens the work log and reads it (no scroll gesture).
+    await page.click('#worklog-toggle');
+    await page.waitForTimeout(300);
+    const reading = await pos();
+    // Resizes while they read: Tasks grow on a task_update, then the turns grow.
+    const tasks = Array.from({ length: 6 }, (_, i) => ({
+      content: `Merge batch ${i + 1} of 6`,
+      status: i < 2 ? 'completed' : i === 2 ? 'in_progress' : 'pending',
+      startedAt: NOW - (6 - i) * M,
+      completedAt: i < 2 ? NOW - (5 - i) * M : undefined,
+    }));
+    await page.evaluate(
+      ([k, t]) => (window as unknown as PageWindow).__wsSend({ type: 'task_update', sessionKey: k, tasks: t }),
+      [K('200'), tasks] as const,
+    );
+    await page.waitForTimeout(400);
+    await page.evaluate(() => {
+      const extra = document.createElement('div');
+      extra.style.height = '120px';
+      document.getElementById('panel-turns')?.appendChild(extra);
+    });
+    await page.waitForTimeout(400);
+    const after = await pos();
+    log(`stick ${width}: ${JSON.stringify({ landed, reading, after })}`);
+    check(
+      landed.fromEnd <= 2 &&
+        reading.expanded === 'true' &&
+        reading.top === landed.top && // opening the log scrolled nothing: the stick would still hold
+        Math.abs(after.top - reading.top) <= 1 &&
+        after.fromEnd > 50,
+      `${width}: after 답변하기 and opening the work log, resizes leave the reader where they were (scrollTop ${reading.top} → ${after.top}, ${after.fromEnd}px from the end)`,
+    );
+    check(errors.length === 0, `${width}: stick — no page errors (${errors.join(' | ')})`);
+    await ctx.close();
+  }
+}
+
+/** Expected strip text for a period: U001's own numbers or All Users'. */
+function stripWant(scope: 'user' | 'all', period: Period) {
+  const t = PERIOD_TOTALS[period];
+  const k = scope === 'user' ? 1 : 2;
+  const tokens = ((t.input + t.output) * k) / 1_000_000;
+  return {
+    sessions: String(scope === 'user' ? t.sessions : t.all),
+    tokens: `${tokens.toFixed(1)}M`,
+    cost: `$${(t.cost * k).toFixed(2)}`,
+  };
+}
+type StripRead = { sessions: string; tokens: string; cost: string; active: string };
+
+/**
+ * Every stat follows the selected period (오늘 / 지난 7일 / 지난 30일): sessions
+ * from /api/dashboard/stats, tokens (input + output) and cost from
+ * /api/dashboard/usage — for one user and for All Users (no userId) — and a
+ * late response for a period no longer selected is dropped.
+ */
+async function statsChecks(browser: import('playwright').Browser) {
+  const read = (page: Page) =>
+    page.evaluate(() => ({
+      sessions: document.getElementById('stat-sessions')?.textContent ?? '',
+      tokens: document.getElementById('stat-tokens')?.textContent ?? '',
+      cost: document.getElementById('stat-cost')?.textContent ?? '',
+      active: (document.querySelector('.period-btn.active') as HTMLElement | null)?.dataset.period ?? '',
+    })) as Promise<StripRead>;
+  const shows = (page: Page, want: Omit<StripRead, 'active'>) =>
+    page
+      .waitForFunction(
+        (w) =>
+          document.getElementById('stat-sessions')?.textContent === w.sessions &&
+          document.getElementById('stat-tokens')?.textContent === w.tokens &&
+          document.getElementById('stat-cost')?.textContent === w.cost,
+        want,
+        { timeout: 5000 },
+      )
+      .then(
+        () => true,
+        () => false,
+      );
+  const callsFor = (calls: URLSearchParams[], period: Period) => calls.filter((q) => periodOf(q) === period);
+
+  for (const scope of ['user', 'all'] as const) {
+    const label = scope === 'user' ? 'stats U001' : 'stats All Users';
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'dark' });
+    const page = await ctx.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await installMocks(page, makeBoard());
+    STATS_CALLS.length = 0;
+    USAGE_CALLS.length = 0;
+    if (scope === 'user') await openBoard(page);
+    else {
+      await page.goto(`${BASE_URL}/dashboard`);
+      await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 5, null, {
+        timeout: 10000,
+      });
+    }
+    const dayOk = await shows(page, stripWant(scope, 'day'));
+    check(dayOk, `${label}: 오늘 shows the day's sessions, tokens and cost (${JSON.stringify(await read(page))})`);
+    await page.click('.period-btn[data-period="week"]');
+    const weekOk = await shows(page, stripWant(scope, 'week'));
+    check(
+      weekOk,
+      `${label}: 지난 7일 changes sessions, tokens and cost to the week totals (want ${JSON.stringify(stripWant(scope, 'week'))}, got ${JSON.stringify(await read(page))})`,
+    );
+    const asked = [...callsFor(STATS_CALLS, 'week'), ...callsFor(USAGE_CALLS, 'week')];
+    const userIds = [...STATS_CALLS, ...USAGE_CALLS].map((q) => q.get('userId'));
+    check(
+      callsFor(STATS_CALLS, 'week').length === 1 &&
+        callsFor(USAGE_CALLS, 'week').length === 1 &&
+        userIds.every((u) => (scope === 'user' ? u === 'U001' : u === null)),
+      `${label}: one stats + one usage request per period, userId ${scope === 'user' ? '=U001' : 'absent'} (${asked.length} week requests, userIds ${JSON.stringify(userIds)})`,
+    );
+    check(errors.length === 0, `${label}: no page errors (${errors.join(' | ')})`);
+    await ctx.close();
+  }
+
+  // Fast clicks: 오늘 → 지난 7일 (both responses held) → 오늘; the late week
+  // responses land last and must not repaint the strip.
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'dark' });
+  const page = await ctx.newPage();
+  await installMocks(page, makeBoard());
+  const held: Array<() => void> = [];
+  await page.route(/\/api\/dashboard\/(stats|usage)\?.*period=week/, async (r) => {
+    await new Promise<void>((res) => {
+      held.push(res);
+    });
+    await r.fallback();
+  });
+  await page.goto(`${BASE_URL}/dashboard`);
+  await shows(page, stripWant('all', 'day'));
+  STATS_CALLS.length = 0;
+  USAGE_CALLS.length = 0;
+  await page.click('.period-btn[data-period="week"]');
+  for (let i = 0; i < 100 && held.length < 2; i++) await page.waitForTimeout(20);
+  await page.click('.period-btn[data-period="day"]');
+  for (let i = 0; i < 100 && (STATS_CALLS.length < 1 || USAGE_CALLS.length < 1); i++) await page.waitForTimeout(20);
+  await page.waitForTimeout(200);
+  for (const release of held) release();
+  for (let i = 0; i < 100 && (STATS_CALLS.length < 2 || USAGE_CALLS.length < 2); i++) await page.waitForTimeout(20);
+  await page.waitForTimeout(400);
+  const end = await read(page);
+  const order = STATS_CALLS.map(periodOf).join('>');
+  const want = stripWant('all', 'day');
+  check(
+    held.length === 2 &&
+      order === 'day>week' &&
+      end.active === 'day' &&
+      end.sessions === want.sessions &&
+      end.tokens === want.tokens &&
+      end.cost === want.cost,
+    `stats: 오늘 → 지난 7일 → 오늘 with the week answers landing last ends on today's numbers (answers ${order}, ${JSON.stringify(end)})`,
+  );
+  await ctx.close();
+}
+
 async function main() {
   const dashboard = await import('../src/conversation/dashboard');
   dashboard.setDashboardSessionAccessor(() => new Map());
@@ -1752,6 +3164,12 @@ async function main() {
     await topbarChecks(browser);
     await cardIoOutage(browser);
     await titleSubPanelSwitch(browser);
+    await statsChecks(browser);
+    await statsStripDetail(browser);
+    await archivesChecks(browser);
+    await ownerBadgeChecks(browser);
+    await panelChecks(browser);
+    await stickChecks(browser);
   } finally {
     await browser.close();
     await ws.stopWebServer();

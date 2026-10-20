@@ -46,7 +46,8 @@ describe('Dashboard multi-instance frontend (#814)', () => {
     expect(DASHBOARD_TS).toContain("matchMedia('(hover: none)')");
   });
 
-  it('updateTokenStats suppresses the tooltip when fewer than 2 envs are present', () => {
+  it('updateTokenBreakdown suppresses the tooltip when fewer than 2 envs are present', () => {
+    expect(DASHBOARD_TS).toContain('function updateTokenBreakdown()');
     expect(DASHBOARD_TS).toContain('envNames.length < 2');
   });
 

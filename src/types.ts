@@ -718,7 +718,13 @@ export interface ConversationSession {
   // after the fallback `/compact` finishes, mirroring the normal auto-compact
   // pending-user path.
   fallbackCompactPendingUserText?: string | null;
-  fallbackCompactPendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
+  fallbackCompactPendingEventContext?: {
+    channel: string;
+    threadTs: string;
+    user: string;
+    ts: string;
+    verbatimPrompt?: boolean;
+  } | null;
   // Wall-clock ms of the last transcript empty-text-block repair attempt
   // (proactive at fallback-compact arming, or reactive on a content-shaped
   // `400 text content blocks must be non-empty`). Bounds the repair→retry
@@ -743,7 +749,7 @@ export interface ConversationSession {
   // control abort the still-running /compact process and lose the compaction
   // entirely (observed as `now ~85% ← was ~85%` immediate re-compact loops).
   compactPendingDispatches?: Array<{
-    ctx: { channel: string; threadTs: string; user: string; ts: string };
+    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean };
     text: string;
   }> | null;
   // Runtime-only exact-once guard while the queue is handed back to EventRouter.

@@ -6,7 +6,8 @@
  *   GET  /dashboard                          → Dashboard HTML (all users overview)
  *   GET  /dashboard/:userId                  → Dashboard HTML (specific user)
  *   GET  /api/dashboard/sessions             → All active sessions as Kanban data (JSON)
- *   GET  /api/dashboard/stats                → User statistics (JSON)
+ *   GET  /api/dashboard/stats                → Period statistics, one user or all users (JSON)
+ *   GET  /api/dashboard/usage                → Period token usage + cost, one user or all users (JSON)
  *   GET  /api/dashboard/users                → User list (JSON)
  *   GET  /api/dashboard/session/:id          → Session detail turns (JSON)
  *   GET  /api/dashboard/session/:id/worklog  → Work log entries (JSON, registered in work-log-routes.ts)
@@ -171,7 +172,8 @@ export interface UserDayStats {
 }
 
 export interface UserStats {
-  userId: string;
+  /** null = every user (no userId asked). */
+  userId: string | null;
   period: 'day' | 'week' | 'month';
   days: UserDayStats[];
   totals: {
@@ -799,11 +801,12 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
 
 // ── Stats aggregation ──────────────────────────────────────────────
 
-function aggregateUserStats(events: MetricsEvent[], userId: string): Map<string, UserDayStats> {
+/** Per-day stats for one user, or for every user when `userId` is absent. */
+function aggregateUserStats(events: MetricsEvent[], userId?: string): Map<string, UserDayStats> {
   const dayMap = new Map<string, UserDayStats>();
 
   for (const ev of events) {
-    if (ev.userId !== userId) continue;
+    if (userId && ev.userId !== userId) continue;
 
     const dateStr = new Date(ev.timestamp).toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
     if (!dayMap.has(dateStr)) {
@@ -1179,16 +1182,13 @@ export async function registerDashboardRoutes(
     },
   );
 
-  // User stats
-  server.get<{ Querystring: { userId: string; period?: string } }>(
+  // Stats for one user, or for every user when userId is absent (the All Users view).
+  server.get<{ Querystring: { userId?: string; period?: string } }>(
     '/api/dashboard/stats',
     { preHandler: [authMiddleware] },
     async (request, reply) => {
-      const { userId, period: rawPeriod } = request.query;
-      if (!userId) {
-        reply.status(400).send({ error: 'userId is required' });
-        return;
-      }
+      const { period: rawPeriod } = request.query;
+      const userId = request.query.userId || undefined;
       // #716: stats are world-readable for any authenticated user. The
       // session/conversation contents are also world-readable; write
       // operations (close/command/resummarize) remain gated by
@@ -1237,7 +1237,7 @@ export async function registerDashboardRoutes(
           },
         );
 
-        reply.send({ userId, period, days, totals } satisfies UserStats);
+        reply.send({ userId: userId ?? null, period, days, totals } satisfies UserStats);
       } catch (error) {
         logger.error('Error computing dashboard stats', error);
         reply.status(500).send({ error: 'Internal Server Error' });
@@ -1831,6 +1831,17 @@ function renderDashboardPage(userId?: string): string {
   --st-run: #6b93f2;
   --st-done: #3fb968;
   --st-fail: #f26b6b;
+  /* Owner badges (All Users, .prd/10 §3.1-3) — 8 hues, ordered so neighbouring
+     slots are far apart: blue · amber · green · rose · teal · orange · violet · olive.
+     Each text colour clears 4.5:1 on its own fill. */
+  --ob-0-bg: #233b57; --ob-0-fg: #aacef8;
+  --ob-1-bg: #574723; --ob-1-fg: #f8e1aa;
+  --ob-2-bg: #235735; --ob-2-fg: #aaf8c4;
+  --ob-3-bg: #572330; --ob-3-fg: #f8aabe;
+  --ob-4-bg: #235755; --ob-4-fg: #aaf8f6;
+  --ob-5-bg: #573323; --ob-5-fg: #f8c1aa;
+  --ob-6-bg: #3b2357; --ob-6-fg: #ceaaf8;
+  --ob-7-bg: #475723; --ob-7-fg: #e1f8aa;
 }
 
 /* ── LIGHT THEME — override surface & text planes ── */
@@ -1869,6 +1880,14 @@ function renderDashboardPage(userId?: string): string {
   --st-run: #2f63e0;
   --st-done: #137a3e;
   --st-fail: #d43a3a;
+  --ob-0-bg: #d9e9fc; --ob-0-fg: #0e3562;
+  --ob-1-bg: #fcf2d9; --ob-1-fg: #62490e;
+  --ob-2-bg: #d9fce5; --ob-2-fg: #0e622a;
+  --ob-3-bg: #fcd9e2; --ob-3-fg: #620e23;
+  --ob-4-bg: #d9fcfb; --ob-4-fg: #0e625f;
+  --ob-5-bg: #fce4d9; --ob-5-fg: #62270e;
+  --ob-6-bg: #e9d9fc; --ob-6-fg: #350e62;
+  --ob-7-bg: #f2fcd9; --ob-7-fg: #49620e;
 }
 [data-theme="light"] ::selection { background: var(--accent); color: #fff; }
 [data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8cdd5; border-color: var(--bg); }
@@ -2086,11 +2105,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   flex: none;
 }
 
-/* ── MAIN — board-first column, capped at 1280px and centred (.prd/10 §5) ── */
+/* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
 .main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
 /* ── PERIOD SELECTOR — segmented control ── */
-.period-bar { display: inline-flex; gap: 0; margin-bottom: 16px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.period-bar { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .period-btn {
   background: var(--surface);
   color: var(--text-secondary);
@@ -2100,6 +2119,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
   transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
   min-height: 32px;
 }
@@ -2107,10 +2127,51 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .period-btn:hover { background: var(--surface-raised); color: var(--text); }
 .period-btn.active { background: var(--accent); color: var(--bg); font-weight: 700; }
 
-/* ── STATS GRID — 4-column, monospace numbers ── */
+/* ── STATS STRIP — leads the page, above the board (.prd/10 §3.1-2) ──
+   One row from 640px: period · 세션 · 토큰 · 비용 · 자세히. Below 640px the
+   period control and 자세히 share the first row and the numbers take the
+   second. 자세히 opens the other cards and the charts under the strip. */
+.stats { margin-bottom: 18px; }
+.stats-strip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "period nums more";
+  align-items: center;
+  gap: 10px 16px;
+}
+.stats-strip .period-bar { grid-area: period; }
+.strip-nums { grid-area: nums; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; min-width: 0; }
+.strip-num { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.strip-num .label { font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
+.strip-num .value { font-size: 15px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.strip-num .no-data { color: var(--text-tertiary); }
+.stats-more {
+  grid-area: more;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  min-height: 32px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
+}
+.stats-more svg { width: 12px; height: 12px; flex-shrink: 0; transition: transform var(--dur-expand) var(--ease-out); }
+.stats-more[aria-expanded="true"] { color: var(--text); }
+.stats-more[aria-expanded="true"] svg { transform: rotate(180deg); }
+.stats-detail { margin-top: 12px; }
+
+/* ── STATS GRID — the cards behind 자세히: 5 columns, 2 below 1100px ── */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 16px;
 }
@@ -2169,6 +2230,30 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .seg-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 .seg-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
+/* Board header tools: Show archives, then Board | List. Below 640px the tools
+   take their own row under the breadcrumb. */
+.inbox-tools { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
+.archives-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: var(--ib-seg);
+  color: var(--ib-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 10px;
+  min-height: 38px;
+  white-space: nowrap;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform var(--dur-press) var(--ease-out);
+}
+.archives-btn[hidden] { display: none; }
+.archives-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+.archives-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
 
 /* Board = 3 equal columns. No overflow clip on columns: a card flying between
    columns must stay visible over its neighbours. */
@@ -2215,7 +2300,33 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card-face:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .card-spark { flex-shrink: 0; display: inline-flex; color: var(--st-color); }
-.card .card-title-text { font-size: 15px; font-weight: 600; line-height: 1.3; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .card-title-text { flex: 1 1 auto; font-size: 15px; font-weight: 600; line-height: 1.3; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Owner badge (All Users, §3.1-3): right end of the head. It keeps its width up
+   to its cap, so the title truncates first; a longer name ends in an ellipsis
+   (full name in title). The colour slot comes from ownerBadgeHue(ownerId). */
+.owner-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+  max-inline-size: min(45%, 168px);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--ob-bg);
+  color: var(--ob-fg);
+}
+.owner-badge[data-hue="0"] { --ob-bg: var(--ob-0-bg); --ob-fg: var(--ob-0-fg); }
+.owner-badge[data-hue="1"] { --ob-bg: var(--ob-1-bg); --ob-fg: var(--ob-1-fg); }
+.owner-badge[data-hue="2"] { --ob-bg: var(--ob-2-bg); --ob-fg: var(--ob-2-fg); }
+.owner-badge[data-hue="3"] { --ob-bg: var(--ob-3-bg); --ob-fg: var(--ob-3-fg); }
+.owner-badge[data-hue="4"] { --ob-bg: var(--ob-4-bg); --ob-fg: var(--ob-4-fg); }
+.owner-badge[data-hue="5"] { --ob-bg: var(--ob-5-bg); --ob-fg: var(--ob-5-fg); }
+.owner-badge[data-hue="6"] { --ob-bg: var(--ob-6-bg); --ob-fg: var(--ob-6-fg); }
+.owner-badge[data-hue="7"] { --ob-bg: var(--ob-7-bg); --ob-fg: var(--ob-7-fg); }
 .card-summary {
   margin-top: 6px;
   font-size: 13.5px;
@@ -2336,7 +2447,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (hover: none) {
   /* On touch devices :hover is sticky after a tap and never closes —
      gate visibility entirely on the explicit tooltip-open class
-     toggled by the tap handler in updateTokenStats(). */
+     toggled by the tap handler in updateTokenBreakdown(). */
   #stat-tokens-wrap:hover #stat-tokens-tooltip { display: none; }
   #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip { display: block; }
 }
@@ -2800,13 +2911,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   background: var(--accent);
   opacity: 0.4;
 }
-/* Panel tasks section */
+/* Panel tasks (.prd/10 §3.1-6) — pinned between the token badges and the
+   scroll area: always shown (an empty line when there are none yet), with its
+   own scroll so a long list never pushes the work log and turns away. */
 .panel-tasks {
+  flex: none;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
-  max-height: 260px;
+  max-height: min(30vh, 240px);
   overflow-y: auto;
 }
+.panel-tasks-empty { font-size: 12px; color: var(--text-tertiary); padding: 2px 0 4px; }
 .panel-tasks-header {
   font-size: 12px;
   font-weight: 700;
@@ -2857,47 +2972,82 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   font-weight: 600;
 }
 .panel-tasks-toggle:hover { text-decoration: underline; }
-/* Panel work log (.prd/10 §3.1-7, §3.3) — what the agent did, in order. Own
-   scroll box so live appends tail-follow without moving the turn list. */
-.panel-worklog { padding: 8px 16px 10px; border-bottom: 1px solid var(--border); }
+/* Panel work log (.prd/10 §3.1-6, §3.3) — what the agent did, in order. The
+   header is a disclosure button (collapsed unless the panel was opened from
+   작업 로그); the count keeps counting while it is closed. Own scroll box so
+   live appends tail-follow without moving the turn list. */
+.panel-worklog { padding: 4px 16px 6px; border-bottom: 1px solid var(--border); }
 .panel-worklog-header {
+  font: inherit;
   font-size: 12px;
   font-weight: 700;
   color: var(--text-secondary);
   letter-spacing: 0.04em;
-  margin-bottom: 6px;
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 0;
+  background: none;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
 }
 .panel-worklog-header .wl-count { font-weight: 600; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
-.worklog-list { max-height: min(48vh, 440px); overflow-y: auto; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; line-height: 1.45; }
+.panel-worklog-header .wl-chevron { width: 12px; height: 12px; margin-left: auto; flex-shrink: 0; transition: transform var(--dur-expand) var(--ease-out); }
+.panel-worklog-header[aria-expanded="true"] .wl-chevron { transform: rotate(180deg); }
+.worklog-list { max-height: min(48vh, 440px); overflow-y: auto; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; line-height: 1.45; margin: 2px 0 4px; }
+.worklog-list[hidden] { display: none; }
 .wl-empty { color: var(--text-tertiary); font-size: 12px; padding: 6px 0; }
 .wl-entry { color: var(--text); min-width: 0; }
 .wl-head { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-tertiary); }
 .wl-label { font-weight: 700; letter-spacing: 0.04em; }
 .wl-head .wl-time { margin-left: auto; }
 .wl-time { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.wl-entry > .wl-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Each entry = a row (role=button: click, Enter or Space opens its raw output
+   below it) + its detail block. */
+.wl-row { border-radius: 4px; cursor: pointer; min-width: 0; }
+.wl-row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.wl-row[aria-expanded="true"] { background: var(--surface-raised); }
+.wl-row > .wl-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .wl-line { display: flex; align-items: baseline; gap: 8px; }
 .wl-line > .wl-text { flex: 1; min-width: 0; }
-.wl-narration > .wl-text { color: var(--text-secondary); }
+.wl-narration .wl-text { color: var(--text-secondary); }
+.wl-detail { margin: 4px 0 6px; min-width: 0; font-family: Inter,ui-sans-serif,system-ui,sans-serif; }
+.wl-detail-bar { display: flex; justify-content: flex-end; gap: 6px; margin-bottom: 4px; }
+.wl-detail-btn { font: inherit; font-size: 11px; font-weight: 600; color: var(--text-secondary); background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; min-height: 26px; cursor: pointer; }
+.wl-detail-msg { font-size: 12px; color: var(--text-tertiary); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wl-detail-note { font-size: 11px; color: var(--yellow); margin-bottom: 4px; }
+.wl-raw {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: min(36vh, 320px);
+  overflow: auto;
+}
 .wl-instruction { background: rgba(77,157,224,0.08); border-left: 2px solid var(--accent); border-radius: 4px; padding: 6px 8px; margin: 4px 0; }
 .wl-instruction .wl-label { color: var(--accent); }
 .wl-final { border-left: 2px solid var(--green); padding: 4px 8px; margin: 4px 0; }
 .wl-final .wl-label { color: var(--green); }
-.wl-notice > .wl-text { color: var(--text-tertiary); font-style: italic; }
+.wl-notice .wl-row > .wl-text { color: var(--text-tertiary); font-style: italic; }
 .wl-error { border-left: 2px solid var(--red); padding: 4px 8px; }
-.wl-error .wl-label, .wl-error > .wl-text { color: var(--red); }
+.wl-error .wl-label, .wl-error .wl-row > .wl-text { color: var(--red); }
 .wl-tool, .wl-tool_result {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
   font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
   font-size: 11.5px;
   color: var(--text-secondary);
   min-width: 0;
 }
+.wl-tool > .wl-row, .wl-tool_result > .wl-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .wl-tool .wl-text, .wl-tool_result .wl-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wl-tool-name { color: var(--text); font-weight: 600; flex-shrink: 0; }
 .wl-mark { flex-shrink: 0; width: 1em; text-align: center; color: var(--text-tertiary); }
@@ -2996,9 +3146,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .token-badge .tok-label { color: var(--text-tertiary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 .token-badge .tok-value { color: var(--accent); font-variant-numeric: tabular-nums; }
 .token-badge .tok-cost { color: var(--green); }
-/* Unified scroll container: wraps panel-question + panel-tasks + panel-turns
-   so large UIAskQ choices or long task lists naturally scroll together with the
-   chat content. .panel-command stays pinned below as a non-scrolling sibling. */
+/* Scroll container: wraps panel-question + panel-worklog + panel-turns so
+   large UIAskQ choices scroll together with the chat content. Tasks sit pinned
+   above it and .panel-command stays pinned below, both non-scrolling siblings. */
 .panel-scroll { flex: 1; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
 .panel-turns { padding: 10px 16px; }
 .panel-turns-loading { text-align: center; font-size: 11px; color: var(--text-tertiary); padding: 8px 0; font-style: italic; }
@@ -3101,17 +3251,22 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 /* ── PRESS — buttons and segments give 0.97 feedback (§4-5), pointer presses only:
    a keyboard-focused control matches :focus-visible, so Space/Enter never scale it (§4-9). ── */
-.btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+.btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
   .card:hover { border-color: var(--ib-muted); }
   .card[data-state="sleeping"]:hover, .card[data-state="archived"]:hover { border-color: var(--ib-card-border); }
   .seg-btn:hover { color: var(--ib-text); }
+  .archives-btn:hover { color: var(--ib-text); }
+  .wl-row:hover { background: var(--surface-raised); }
+  .wl-detail-btn:hover { color: var(--text); border-color: var(--text-tertiary); }
+  .panel-worklog-header:hover { color: var(--text); }
   .btn-action:hover:not(:disabled) { border-color: var(--ib-muted); }
   .btn-action.btn-primary:hover:not(:disabled) { opacity: 0.88; }
   .btn-action.btn-stop:hover:not(:disabled) { border-color: var(--st-fail); }
   .show-older-btn:hover { border-color: var(--ib-muted); color: var(--ib-text); }
+  .stats-more:hover { background: var(--surface-raised); color: var(--text); }
   .card .card-refs a:hover { text-decoration: underline; }
   .btn-choice:hover:not(:disabled) { border-color: var(--accent); background: rgba(77,157,224,0.18); color: var(--text); }
   .btn-choice-recommended:hover:not(:disabled) { background: #256f38; color: white; border-color: #256f38; }
@@ -3144,6 +3299,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 @media (max-width: 639px) {
   .main { padding: 14px 12px; }
+  .panel-tasks { max-height: min(22vh, 160px); }
+  /* Stats strip: period control + 자세히 on the first row, the numbers on the
+     second. The period tabs share the row's width and keep 44px height with
+     narrower sides, so the row fits 320px with the coarse-pointer padding. */
+  .stats-strip { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "period more" "nums nums"; gap: 8px 12px; }
+  .stats-strip .period-btn { flex: 1 1 auto; padding-left: 12px; padding-right: 12px; }
   /* Top bar: the status badge becomes a 10px dot (aria-label preserved for SR),
      the "Logged in as" prefix goes, and the user select fills the nav row (which
      wraps rather than overflow on very small screens). Labels stay whole. */
@@ -3166,7 +3327,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .topbar .user-pill-prefix { display: none; }
   .topbar .admin-toggle { padding: 4px 10px; }
   #theme-toggle { inline-size: 32px; block-size: 32px; padding: 0; flex-shrink: 0; }
-  .inbox-head { margin-bottom: 12px; }
+  .inbox-head { margin-bottom: 12px; flex-wrap: wrap; row-gap: 8px; }
+  /* The tools take the row under the breadcrumb; on the narrowest screens
+     (320px) Show archives sits above Board | List instead of overflowing. */
+  .inbox-tools { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
   .crumbs { font-size: 15px; gap: 7px; }
   .kanban[data-view="board"] { grid-template-columns: repeat(3, minmax(min(300px, 84vw), 1fr)); }
   /* Selectors carry an extra class so they beat the later @media (pointer: coarse) 40px rules. */
@@ -3179,10 +3343,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
 @media (max-width: 1100px) {
-  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* Workflows — the widest value — takes the last row on its own. */
+  .stats-grid .stat-card:last-child { grid-column: 1 / -1; }
 }
 @media (max-width: 680px) {
-  .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 6px; margin-bottom: 12px; }
+  .stats-grid { gap: 6px; margin-bottom: 12px; }
   .stat-card { padding: 8px 12px; }
   .stat-card .value { font-size: 18px; }
   .stat-card .label { font-size: 10px; }
@@ -3195,7 +3361,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
      selectors are more specific than the * rule above, so they win. */
   .card-expand { transition: none !important; }
   .card-expand-inner { transition: opacity var(--dur-fade) linear !important; }
-  .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
+  .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
@@ -3230,11 +3396,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   #theme-toggle { min-block-size: 44px; position: relative; }
   #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
   .period-btn { min-height: 44px; }
+  .stats-more { min-height: 44px; }
   .seg .seg-btn, .card .btn-action, .card .btn-choice, .col-foot .show-older-btn { min-height: 44px; }
+  .inbox-head .archives-btn { min-height: 44px; }
   .card .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .panel-close { width: 44px; height: 44px; }
   #panel-title-sub-regen { min-width: 44px; min-height: 44px; }
   .panel-links a, .panel-tasks-toggle, .turn .btn-action { min-height: 44px; }
+  .panel-worklog-header, .wl-detail-btn { min-height: 44px; }
+  .worklog-list .wl-row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
+  .wl-tool > .wl-row, .wl-tool_result > .wl-row, .worklog-list .wl-row.wl-line { flex-direction: row; align-items: center; }
   .turn-raw-details summary.turn-expand-btn { min-height: 44px; display: flex; align-items: center; }
   .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn, .mc-btn-submit, .mc-btn-reset { min-height: 44px; }
   .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command input { min-height: 44px; }
@@ -3274,13 +3445,46 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   </div>
 
   <div class="main">
-    <!-- Agent inbox (.prd/10 §3.1) — the board leads; usage stats follow below it. -->
+    <!-- Stats strip (.prd/10 §3.1-2) leads; the agent inbox board follows it.
+         Collapsed by default: period · 세션 · 토큰 · 비용 + 자세히, which opens the
+         other cards and the charts below the strip (kept in localStorage). -->
+    <section class="stats" id="stats" aria-label="Usage stats">
+      <div class="stats-strip">
+        <div class="period-bar" role="group" aria-label="&#xAE30;&#xAC04;">
+          <button type="button" class="period-btn active" data-period="day" aria-pressed="true" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
+          <button type="button" class="period-btn" data-period="week" aria-pressed="false" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
+          <button type="button" class="period-btn" data-period="month" aria-pressed="false" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
+        </div>
+        <div class="strip-nums">
+          <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value" id="stat-sessions">-</span></div>
+          <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><span id="stat-tokens">-</span><span id="stat-tokens-tooltip" role="tooltip"></span></span></div>
+          <div class="strip-num"><span class="label">&#xBE44;&#xC6A9;</span><span class="value" id="stat-cost">-</span></div>
+        </div>
+        <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+      </div>
+      <div class="stats-detail" id="stats-detail" hidden>
+        <div class="stats-grid" id="stats-grid">
+          <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-turns">-</div></div>
+          <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value" id="stat-prs">-</div></div>
+          <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value" id="stat-merged">-</div></div>
+          <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC;</div><div class="value" id="stat-merge-lines">-</div></div>
+          <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value" id="stat-workflows" style="font-size:0.85em">-</div></div>
+        </div>
+        <div style="display:none" id="stat-commits-hidden"></div>
+        <div class="chart-row" id="chart-row"></div>
+      </div>
+    </section>
+
+    <!-- Agent inbox (.prd/10 §3.1) — the board, right under the stats strip. -->
     <section class="inbox" id="inbox" aria-label="Agent inbox">
       <div class="inbox-head">
         <nav class="crumbs" aria-label="Breadcrumb"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
-        <div class="seg" role="group" aria-label="Board layout">
-          <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="4.5" height="11" rx="1.2"/><rect x="9.5" y="2.5" width="4.5" height="7" rx="1.2"/></svg><span>Board</span></button>
-          <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span>List</span></button>
+        <div class="inbox-tools">
+          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">Archives</span></button>
+          <div class="seg" role="group" aria-label="Board layout">
+            <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="4.5" height="11" rx="1.2"/><rect x="9.5" y="2.5" width="4.5" height="7" rx="1.2"/></svg><span>Board</span></button>
+            <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span>List</span></button>
+          </div>
         </div>
       </div>
       <div class="kanban" id="kanban" data-view="board">
@@ -3302,26 +3506,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         </div>
       </div>
     </section>
-
-    <div class="period-bar">
-      <button class="period-btn active" data-period="day" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
-      <button class="period-btn" data-period="week" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
-      <button class="period-btn" data-period="month" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
-    </div>
-
-    <div class="stats-grid" id="stats-grid">
-      <div class="stat-card"><div class="label">&#xC138;&#xC158;</div><div class="value" id="stat-sessions">-</div></div>
-      <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-turns">-</div></div>
-      <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value" id="stat-prs">-</div></div>
-      <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value" id="stat-merged">-</div></div>
-      <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC;</div><div class="value" id="stat-merge-lines">-</div></div>
-      <div class="stat-card"><div class="label">&#xD1A0;&#xD070; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-tokens-wrap"><span id="stat-tokens">-</span><span id="stat-tokens-tooltip" role="tooltip"></span></div></div>
-      <div class="stat-card"><div class="label">&#xBE44;&#xC6A9; (USD)</div><div class="value" id="stat-cost">-</div></div>
-      <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value" id="stat-workflows" style="font-size:0.85em">-</div></div>
-    </div>
-    <div style="display:none" id="stat-commits-hidden"></div>
-
-    <div class="chart-row" id="chart-row"></div>
   </div>
 
   <!-- Slide Panel for Session Detail -->
@@ -3341,13 +3525,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     <div class="panel-meta" id="panel-meta"></div>
     <div class="panel-links" id="panel-links"></div>
     <div class="panel-tokens" id="panel-tokens"></div>
-    <!-- Unified scroll area: question + tasks + work log + turns scroll together as one. -->
+    <!-- Tasks are pinned (.prd/10 §3.1-6): always shown, never scrolled away. -->
+    <div class="panel-tasks" id="panel-tasks"></div>
+    <!-- Scroll area: question + work log (collapsed unless opened from 작업 로그) + turns. -->
     <div class="panel-scroll" id="panel-scroll">
       <div class="panel-question" id="panel-question" style="display:none"></div>
-      <div class="panel-tasks" id="panel-tasks" style="display:none"></div>
       <div class="panel-worklog" id="panel-worklog" style="display:none">
-        <div class="panel-worklog-header"><span>작업 로그</span><span class="wl-count" id="worklog-count"></span></div>
-        <div class="worklog-list" id="worklog-list" role="log" aria-live="polite" aria-label="작업 로그"></div>
+        <button type="button" class="panel-worklog-header" id="worklog-toggle" aria-expanded="false" aria-controls="worklog-list" onclick="toggleWorkLogSection()"><span>작업 로그</span><span class="wl-count" id="worklog-count"></span><svg class="wl-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+        <div class="worklog-list" id="worklog-list" role="log" aria-live="polite" aria-label="작업 로그" hidden></div>
       </div>
       <div class="panel-turns" id="panel-turns">
         <p style="color:var(--text-secondary);text-align:center;margin-top:40px">Click a session card to view details</p>
@@ -3555,13 +3740,16 @@ function renderPanelQuestion(s) {
   }
 }
 
+// Pinned Tasks block (.prd/10 §3.1-6): always rendered — with no tasks yet it
+// says so instead of disappearing.
 function renderPanelTasks(tasks) {
   var container = document.getElementById('panel-tasks');
+  if (!container) return;
+  container.style.display = '';
   if (!tasks || tasks.length === 0) {
-    container.style.display = 'none';
+    container.innerHTML = '<div class="panel-tasks-header"><span>Tasks</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>';
     return;
   }
-  container.style.display = '';
 
   // Sort: in_progress → pending → completed
   var inProgress = tasks.filter(function(t) { return t.status === 'in_progress'; });
@@ -3941,10 +4129,33 @@ function selectUser(userId) {
 function setPeriod(period) {
   currentPeriod = period;
   document.querySelectorAll('.period-btn').forEach(function(b) {
-    b.classList.toggle('active', b.dataset.period === period);
+    var on = b.dataset.period === period;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
   loadStats();
 }
+
+// ── Stats strip 자세히 (.prd/10 §3.1-2) — the other cards + charts, collapsed
+// unless the user opened them (localStorage['soma-stats-detail'] = 'open'). ──
+var STATS_DETAIL_KEY = 'soma-stats-detail';
+function setStatsDetail(open) {
+  var btn = document.getElementById('stats-more');
+  var detail = document.getElementById('stats-detail');
+  if (!btn || !detail) return;
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  detail.hidden = !open;
+}
+function toggleStatsDetail() {
+  var open = document.getElementById('stats-more').getAttribute('aria-expanded') !== 'true';
+  setStatsDetail(open);
+  try { localStorage.setItem(STATS_DETAIL_KEY, open ? 'open' : 'closed'); } catch (_e) {}
+}
+(function initStatsDetail() {
+  var saved = null;
+  try { saved = localStorage.getItem(STATS_DETAIL_KEY); } catch (_e) {}
+  setStatsDetail(saved === 'open');
+})();
 
 // ── Session cache ──
 // Keyed by session key — prototype-free so any key string is just a key.
@@ -4031,9 +4242,9 @@ function _envCount() {
 
 // ── Agent inbox board (.prd/10 §3.1, §4) ──
 // NEEDS YOU = waiting · RUNNING = working · DONE = idle, then closed (SLEEPING +
-// recent archives; older than 7 days stays behind "Show older"). The server
-// buckets (KanbanBoard) are unchanged — only the client folds idle + closed
-// into one column.
+// archives; older than 7 days stays behind "Show older", archives behind "Show
+// archives"). The server buckets (KanbanBoard) are unchanged — only the client
+// folds idle + closed into one column.
 var BOARD_COLS = ['waiting', 'working', 'done'];
 var SPARK_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg>';
 var WAIT_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.8 15 14H1z"/></svg>';
@@ -4074,6 +4285,29 @@ function isSiblingSession(s) {
   return !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
 }
 
+// Pure: the DONE column for this render. idle cards, then closed cards from the
+// last 7 days, then — when "Show older" is open — the older ones. An archived
+// (terminated) closed card is left out unless archives are shown; the one key
+// a deep link revealed (revealKey) is always in, whatever its age. olderCount =
+// what "Show older" would add; archivedCount = archives in the board data.
+function planDoneColumn(idle, closed, o) {
+  var cutoff = o.now - 7 * 24 * 60 * 60 * 1000;
+  var recent = [], older = [], archivedCount = 0;
+  for (var i = 0; i < closed.length; i++) {
+    var s = closed[i];
+    var archived = s.terminated === true;
+    var revealed = !!o.revealKey && s.key === o.revealKey;
+    if (archived) archivedCount++;
+    if (archived && !o.showArchives && !revealed) continue;
+    if (!revealed && new Date(s.lastActivity).getTime() < cutoff) older.push(s);
+    else recent.push(s);
+  }
+  var done = idle.map(function(s) { return { s: s, col: 'idle' }; })
+    .concat(recent.map(function(s) { return { s: s, col: 'closed' }; }));
+  if (o.showOlder) done = done.concat(older.map(function(s) { return { s: s, col: 'closed' }; }));
+  return { done: done, olderCount: older.length, archivedCount: archivedCount };
+}
+
 function renderBoard(board) {
   _sessionCache = Object.create(null); // Clear stale cache each render cycle
   // Populate cache from the entire board first so the env-palette pass
@@ -4086,23 +4320,33 @@ function renderBoard(board) {
     }
   }
   _envIndex = _buildEnvIndex();
-  var closed = board.closed || [];
-  var sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  var recent = closed.filter(function(s) { return new Date(s.lastActivity).getTime() >= sevenDaysAgo; });
-  var older = closed.filter(function(s) { return new Date(s.lastActivity).getTime() < sevenDaysAgo; });
+  // Owner hues for every card in the board data (hidden archives too, so the
+  // Show archives toggle never recolours anyone).
+  var owners = [];
+  for (var ok in _sessionCache) owners.push(_sessionCache[ok].ownerId || _sessionCache[ok].ownerName || '');
+  _ownerIndex = assignOwnerHues(owners);
   function tag(col) { return function(s) { return { s: s, col: col }; }; }
-  var done = (board.idle || []).map(tag('idle')).concat(recent.map(tag('closed')));
-  if (showOlderClosed) done = done.concat(older.map(tag('closed')));
+  var plan = planDoneColumn(board.idle || [], board.closed || [], {
+    now: Date.now(),
+    showOlder: showOlderClosed,
+    showArchives: showArchives,
+    revealKey: _revealedKey,
+  });
   reconcileBoard({
     waiting: (board.waiting || []).map(tag('waiting')),
     working: (board.working || []).map(tag('working')),
-    done: done,
+    done: plan.done,
   }, {
     waiting: (board.waiting || []).length,
     working: (board.working || []).length,
-    done: (board.idle || []).length + closed.length,
+    // The DONE badge counts the cards DONE shows (hidden archives and the
+    // collapsed older group are not in it).
+    done: plan.done.length,
   });
-  renderOlderToggle(older.length);
+  renderOlderToggle(plan.olderCount);
+  renderArchivesToggle(plan.archivedCount);
+  // The #814 tokens tooltip describes this board (user switch, WS push).
+  updateTokenBreakdown();
   _boardRenders++;
   openDeepLinkedSession();
 }
@@ -4390,8 +4634,56 @@ function renderCardStatus(s, col) {
   return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text"><span class="st-prefix">Done in </span>' + timer + '</span>';
 }
 
-// Collapsed face (§2.1 reference anatomy): ✦ + headline / 2-line summary /
-// status · tasks done/total · context %.
+// Owner badge (§3.1-3): in the All Users view every card head names its owner,
+// right-aligned, in one of the 8 hues of --ob-N-*. Like the env badges
+// (_buildEnvIndex), the owners on the board are assigned together: in sorted
+// order each takes its hash slot (djb2 % 8) when free, the rest probe forward to
+// the next free slot. Up to 8 owners never share a colour, and the result
+// depends only on the set of owners — one person keeps one colour on every card
+// and render while that set stands. An owner not on the board yet gets its
+// hash slot.
+var OWNER_BADGE_HUES = 8;
+var _ownerIndex = null; // ownerId → hue slot for the board on screen (renderBoard)
+function assignOwnerHues(ids) {
+  var seen = Object.create(null);
+  var sorted = [];
+  for (var i = 0; i < ids.length; i++) {
+    var id = String(ids[i] || '');
+    if (id && !seen[id]) { seen[id] = true; sorted.push(id); }
+  }
+  sorted.sort();
+  var out = Object.create(null);
+  var taken = [];
+  var pending = [];
+  for (var j = 0; j < sorted.length; j++) {
+    var slot = _hashStr(sorted[j]) % OWNER_BADGE_HUES;
+    if (!taken[slot]) { taken[slot] = true; out[sorted[j]] = slot; }
+    else pending.push(sorted[j]);
+  }
+  for (var k = 0; k < pending.length; k++) {
+    var start = _hashStr(pending[k]) % OWNER_BADGE_HUES;
+    out[pending[k]] = start; // more owners than hues: share the hash slot
+    for (var step = 1; step < OWNER_BADGE_HUES; step++) {
+      var probe = (start + step) % OWNER_BADGE_HUES;
+      if (!taken[probe]) { taken[probe] = true; out[pending[k]] = probe; break; }
+    }
+  }
+  return out;
+}
+function ownerBadgeHue(ownerId) {
+  var id = String(ownerId || '');
+  var slot = _ownerIndex ? _ownerIndex[id] : undefined;
+  return typeof slot === 'number' ? slot : _hashStr(id) % OWNER_BADGE_HUES;
+}
+function renderOwnerBadge(s) {
+  if (currentUserId) return '';
+  var name = s.ownerName || s.ownerId;
+  if (!name) return '';
+  return '<span class="owner-badge" data-hue="' + ownerBadgeHue(s.ownerId || name) + '" title="' + escAttr(name) + '">' + esc(name) + '</span>';
+}
+
+// Collapsed face (§2.1 reference anatomy): ✦ + headline [+ owner badge] /
+// 2-line summary / status · tasks done/total · context %.
 function renderCardFace(s, col) {
   // Server-resolved headline (#762) — displayHeadline reflects the full
   // priority chain (summaryTitle then issueTitle then prTitle then title then
@@ -4412,7 +4704,7 @@ function renderCardFace(s, col) {
   if (dhShow('contextwindow') && ctxPct > 0) {
     metrics.push('<span class="metric" title="Context window used">' + CTX_SVG + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '%</span>');
   }
-  return '<div class="card-head"><span class="card-spark">' + SPARK_SVG + '</span>' + titleHtml + '</div>'
+  return '<div class="card-head"><span class="card-spark">' + SPARK_SVG + '</span>' + titleHtml + renderOwnerBadge(s) + '</div>'
     + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
     + '<div class="card-foot"><span class="card-status">' + renderCardStatus(s, col) + '</span>'
     + (metrics.length ? '<span class="card-metrics">' + metrics.join('') + '</span>' : '')
@@ -4891,6 +5183,37 @@ function toggleOlderClosed() {
   loadSessions();
 }
 
+// ── Show archives (.prd/10 §3.1-1) — archived (terminated) cards are hidden
+// unless the user turned them on (localStorage['soma-show-archives'] = 'on').
+// The button sits in the board header and only appears while the board holds
+// at least one archive. ──
+var SHOW_ARCHIVES_KEY = 'soma-show-archives';
+function readShowArchives() {
+  try { return localStorage.getItem(SHOW_ARCHIVES_KEY) === 'on'; } catch (_e) { return false; }
+}
+var showArchives = readShowArchives();
+// A deep link to a hidden archive shows that one card for this page load
+// without touching the stored choice; the user's own toggle ends it.
+var _revealedKey = null;
+function toggleArchives() {
+  showArchives = !showArchives;
+  _revealedKey = null;
+  try { localStorage.setItem(SHOW_ARCHIVES_KEY, showArchives ? 'on' : 'off'); } catch (_e) {}
+  loadSessions();
+}
+// A toggle button: the label stays "Archives (N)" (N = archives on the board)
+// and aria-pressed carries on / off — pressed it wears the selected-segment look.
+function renderArchivesToggle(archivedCount) {
+  var btn = document.getElementById('archives-toggle');
+  var label = document.getElementById('archives-label');
+  if (!btn || !label) return;
+  var hide = archivedCount === 0;
+  if (btn.hidden !== hide) btn.hidden = hide;
+  var pressed = showArchives ? 'true' : 'false';
+  if (btn.getAttribute('aria-pressed') !== pressed) btn.setAttribute('aria-pressed', pressed);
+  setTextIfChanged(label, 'Archives (' + archivedCount + ')');
+}
+
 // Deep link (§3.1-8): /dashboard/<ownerId>?session=<sessionKey> opens that card
 // and the panel at its work log once the board has data. Slack links carry the
 // registry key WITHOUT the #814 instance prefix ("work:C123:1700000000.000100"),
@@ -4911,7 +5234,21 @@ function resolveDeepLinkKey(ref, keys, selfInstance) {
   if (selfInstance && keys.indexOf(selfInstance + '::' + ref) >= 0) return selfInstance + '::' + ref;
   var suffix = '::' + ref;
   var hits = keys.filter(function(k) { return k.length > suffix.length && k.slice(-suffix.length) === suffix; });
-  return hits.length === 1 ? hits[0] : null;
+  if (hits.length) return hits.length === 1 ? hits[0] : null;
+  // No live card: the thread's latest archive. archivedToKanban keys it
+  // "[<instance>::]archived_<registry key>_<archivedAt ms>".
+  var mark = 'archived_' + ref + '_';
+  var best = null;
+  var bestAt = -1;
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var at = k.indexOf(mark);
+    if (at < 0 || (at > 0 && k.slice(at - 2, at) !== '::')) continue;
+    var tail = k.slice(at + mark.length);
+    if (!/^[0-9]+$/.test(tail)) continue;
+    if (Number(tail) > bestAt) { bestAt = Number(tail); best = k; }
+  }
+  return best;
 }
 function openDeepLinkedSession() {
   if (!_deepLinkSession) return;
@@ -4921,6 +5258,14 @@ function openDeepLinkedSession() {
   var key = resolveDeepLinkKey(_deepLinkSession, Object.keys(_sessionCache), SELF_INSTANCE_NAME);
   if (!key) return;
   if (!_cardEls[key]) {
+    // A hidden archive (any age): show just this card for this page load — the
+    // stored Show archives choice stays as it is — and retry on that render.
+    var linked = _sessionCache[key];
+    if (linked && linked.terminated === true && !showArchives && _revealedKey !== key) {
+      _revealedKey = key;
+      loadSessions();
+      return;
+    }
     // Closed more than 7 days ago — reveal the older group and retry on that render.
     if (!showOlderClosed) {
       showOlderClosed = true;
@@ -5395,58 +5740,65 @@ async function submitAllRecommended(key) {
 }
 
 // ── Stats ──
+// Every number follows the selected period, for the selected user or — with
+// no user (All Users) — for everyone: /api/dashboard/stats gives sessions,
+// turns, PRs, merge lines, workflows and the charts; /api/dashboard/usage gives
+// tokens (input + output) and cost. Each load takes a generation and paints
+// only while it is still the latest, so an answer for a period or user that
+// was since replaced is dropped (fast clicks end on the last selection).
+var _statsGen = 0;
 async function loadStats() {
-  if (!currentUserId) {
-    // Show aggregate stats from session cache when no specific user is selected
-    document.getElementById('stats-grid').style.display = '';
-    document.getElementById('chart-row').innerHTML = '';
-    updateTokenStats();
-    var sessCount = Object.keys(_sessionCache).length;
-    var totalMergeAdd = 0, totalMergeDel = 0, prCount = 0, mergedCount = 0;
-    var wfMap = {};
-    for (var k in _sessionCache) {
-      var cs = _sessionCache[k];
-      if (cs.mergeStats) { totalMergeAdd += cs.mergeStats.totalLinesAdded || 0; totalMergeDel += cs.mergeStats.totalLinesDeleted || 0; }
-      if (cs.prUrl) { prCount++; if (cs.prStatus === 'merged') mergedCount++; }
-      if (cs.workflow) { wfMap[cs.workflow] = (wfMap[cs.workflow] || 0) + 1; }
-    }
-    var sessEl = document.getElementById('stat-sessions');
-    sessEl.textContent = sessCount || '0'; sessEl.className = 'value';
-    var turnsEl = document.getElementById('stat-turns');
-    turnsEl.textContent = '\u2014'; turnsEl.className = 'value no-data';
-    document.getElementById('stat-prs').textContent = prCount;
-    document.getElementById('stat-prs').classList.remove('no-data');
-    document.getElementById('stat-merged').textContent = mergedCount;
-    document.getElementById('stat-merged').classList.remove('no-data');
-    var commitsEl = document.getElementById('stat-commits') || document.getElementById('stat-commits-hidden');
-    if (commitsEl) { commitsEl.textContent = '\u2014'; commitsEl.classList.add('no-data'); }
-    document.getElementById('stat-merge-lines').textContent = '+' + totalMergeAdd + ' / -' + totalMergeDel;
-    var wfEntries = Object.entries(wfMap).sort(function(a, b) { return b[1] - a[1]; });
-    document.getElementById('stat-workflows').innerHTML = wfEntries.length
-      ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + e[1] + '</b></span>'; }).join('')
-      : '-';
-    return;
-  }
-  document.getElementById('stats-grid').style.display = '';
-  try {
-    const res = await fetch('/api/dashboard/stats?userId=' + currentUserId + '&period=' + currentPeriod);
-    const data = await res.json();
-    document.getElementById('stat-sessions').textContent = data.totals.sessionsCreated;
-    document.getElementById('stat-turns').textContent = data.totals.turnsUsed;
-    document.getElementById('stat-prs').textContent = data.totals.prsCreated;
-    document.getElementById('stat-merged').textContent = data.totals.prsMerged;
-    var commitsEl2 = document.getElementById('stat-commits') || document.getElementById('stat-commits-hidden');
-    if (commitsEl2) commitsEl2.textContent = data.totals.commitsCreated;
-    document.getElementById('stat-merge-lines').textContent = '+' + data.totals.mergeLinesAdded + ' / -' + data.totals.mergeLinesDeleted;
-    // Workflow counts
-    const wfCounts = data.totals.workflowCounts || {};
-    const wfEntries = Object.entries(wfCounts).sort(function(a, b) { return b[1] - a[1]; });
-    document.getElementById('stat-workflows').innerHTML = wfEntries.length
-      ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + e[1] + '</b></span>'; }).join('')
-      : '<span style="color:var(--text-secondary)">-</span>';
-    updateTokenStats();
-    renderCharts(data.days);
-  } catch (e) { console.error('Failed to load stats', e); }
+  var gen = ++_statsGen;
+  var q = 'period=' + encodeURIComponent(currentPeriod) + (currentUserId ? '&userId=' + encodeURIComponent(currentUserId) : '');
+  updateTokenBreakdown();
+  await Promise.all([
+    statsJson('/api/dashboard/stats?' + q).then(
+      function(data) { if (gen === _statsGen) paintStats(data); },
+      function(e) { if (gen === _statsGen) { console.error('Failed to load stats', e); paintStats(null); } }
+    ),
+    statsJson('/api/dashboard/usage?' + q).then(
+      function(report) { if (gen === _statsGen) paintUsage(report); },
+      function(e) { if (gen === _statsGen) { console.error('Failed to load usage', e); paintUsage(null); } }
+    ),
+  ]);
+}
+
+function statsJson(url) {
+  return fetch(url).then(function(res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  });
+}
+
+// A failed load shows a dash rather than the previous period's number.
+function setStat(id, text) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('no-data', text === '\\u2014');
+}
+
+function paintStats(data) {
+  var t = data && data.totals;
+  var dash = '\\u2014';
+  setStat('stat-sessions', t ? String(toNum(t.sessionsCreated)) : dash);
+  setStat('stat-turns', t ? String(toNum(t.turnsUsed)) : dash);
+  setStat('stat-prs', t ? String(toNum(t.prsCreated)) : dash);
+  setStat('stat-merged', t ? String(toNum(t.prsMerged)) : dash);
+  setStat('stat-commits-hidden', t ? String(toNum(t.commitsCreated)) : dash);
+  setStat('stat-merge-lines', t ? '+' + toNum(t.mergeLinesAdded) + ' / -' + toNum(t.mergeLinesDeleted) : dash);
+  var wfEntries = Object.entries((t && t.workflowCounts) || {}).sort(function(a, b) { return toNum(b[1]) - toNum(a[1]); });
+  document.getElementById('stat-workflows').innerHTML = wfEntries.length
+    ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join('')
+    : '<span style="color:var(--text-secondary)">-</span>';
+  if (data) renderCharts(Array.isArray(data.days) ? data.days : []);
+  else document.getElementById('chart-row').innerHTML = '';
+}
+
+function paintUsage(report) {
+  var t = report && report.totals;
+  setStat('stat-tokens', t ? formatTokens(toNum(t.totalInputTokens) + toNum(t.totalOutputTokens)) : '\\u2014');
+  setStat('stat-cost', t ? '$' + toNum(t.totalCostUsd).toFixed(2) : '\\u2014');
 }
 
 function renderCharts(days) {
@@ -5599,41 +5951,41 @@ function connectWs() {
   };
 }
 
-// ── Token stats from session cache ──
-function updateTokenStats() {
-  // #814 — group token usage by environment.instanceName so the topbar
-  // tooltip can break down "instance-a: 12K | instance-b: 8K | Total: 20K".
+// ── Token breakdown by instance, from the session cache (#814) ──
+function updateTokenBreakdown() {
+  // #814 — group the board's session token usage by environment.instanceName
+  // so the tokens tooltip can break down "instance-a: 12K | instance-b: 8K |
+  // Total: 20K". The number itself is the period total from /api/dashboard/usage
+  // (loadStats); this breakdown covers the sessions on the board, and says so.
   // Fallback bucket ('') is used for cards whose environment is missing
   // (legacy WS payloads, tests). When all cards share one env we suppress
   // the tooltip entirely — see _envCount() check below.
   var byEnv = Object.create(null);
-  let totalTokens = 0, totalCost = 0;
+  let totalTokens = 0;
   for (const key in _sessionCache) {
     const s = _sessionCache[key];
     if (currentUserId && s.ownerId !== currentUserId) continue;
     if (!s.tokenUsage) continue;
     var t = toNum(s.tokenUsage.totalInputTokens) + toNum(s.tokenUsage.totalOutputTokens);
     totalTokens += t;
-    totalCost += toNum(s.tokenUsage.totalCostUsd);
     var envName = (s.environment && s.environment.instanceName) || '';
-    if (!byEnv[envName]) byEnv[envName] = { tokens: 0, cost: 0 };
+    if (!byEnv[envName]) byEnv[envName] = { tokens: 0 };
     byEnv[envName].tokens += t;
-    byEnv[envName].cost += toNum(s.tokenUsage.totalCostUsd);
   }
-  document.getElementById('stat-tokens').textContent = formatTokens(totalTokens);
-  document.getElementById('stat-cost').textContent = '$' + totalCost.toFixed(2);
 
   // Tooltip: only show when there's actually a breakdown (≥2 envs in
   // the cache). For the single-instance / empty-env case we leave the
   // tooltip dark so the topbar stays the same shape it was before #814.
+  // Runs on every board render (renderBoard) and stats load — it writes only
+  // what changed.
   var tip = document.getElementById('stat-tokens-tooltip');
   var wrap = document.getElementById('stat-tokens-wrap');
   if (!tip || !wrap) return;
   var envNames = Object.keys(byEnv).filter(function(n) { return n.length > 0; });
   if (envNames.length < 2) {
-    tip.textContent = '';
-    wrap.classList.remove('tooltip-open');
-    wrap.removeAttribute('data-has-breakdown');
+    if (tip._html !== '') { tip.textContent = ''; tip._html = ''; }
+    if (wrap.classList.contains('tooltip-open')) wrap.classList.remove('tooltip-open');
+    if (wrap.hasAttribute('data-has-breakdown')) wrap.removeAttribute('data-has-breakdown');
     return;
   }
   // Stable order: sort so the same env always renders in the same position.
@@ -5644,8 +5996,9 @@ function updateTokenStats() {
     parts.push(esc(n) + ': ' + formatTokens(byEnv[n].tokens));
   }
   parts.push('Total: ' + formatTokens(totalTokens));
-  tip.innerHTML = parts.join(' &middot; ');
-  wrap.setAttribute('data-has-breakdown', 'true');
+  var html = '보드 세션 기준 &middot; ' + parts.join(' &middot; ');
+  if (tip._html !== html) { tip.innerHTML = html; tip._html = html; }
+  if (!wrap.hasAttribute('data-has-breakdown')) wrap.setAttribute('data-has-breakdown', 'true');
   // Mobile (no-hover) tap-toggle wiring — attach once.
   if (!wrap.hasAttribute('data-tap-bound')) {
     wrap.setAttribute('data-tap-bound', 'true');
@@ -5683,6 +6036,9 @@ var WL_BACKFILL_MAX_PAGES = 20;
 var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
 var WL_EMPTY_MSG = '작업 로그 없음';
 var WL_FORBIDDEN_MSG = '작업 로그는 세션 소유자만 볼 수 있어요';
+var WL_RAW_MISSING_MSG = '원본 출력이 저장되어 있지 않습니다';
+var WL_RAW_ERROR_MSG = '원본 출력을 불러오지 못했어요';
+var WL_RAW_DAMAGED_MSG = '로그가 손상되어 원본을 읽을 수 없습니다';
 var _wl = null;  // work-log state of the conversation open in the panel
 var _panelFocusWorkLog = false;
 
@@ -5859,15 +6215,80 @@ function wlRecover(state, fetchJson, onAdded, reason) {
   return run;
 }
 
+// Raw output of one entry (§3.1-6). An entry with rawBytes has its full output
+// stored: GET …/worklog/:seq/raw → { seq, raw, rawBytes, rawTruncated }, asked
+// once per (panel state, seq) — the promise is kept on the state, and a new
+// state (resetWorkLog) starts without it. 404 (not stored), 403 (owner only)
+// and the server's 503 { error: 'unavailable' } (the log is damaged; the answer
+// stays the same until it is repaired) settle for good. Everything else — a
+// network failure, a 500 / 502, a 503 without that code (a proxy during a
+// restart) — is not kept and offers 다시 시도.
+function wlRawUrl(convId, seq) {
+  return wlUrl(convId, null) + '/' + Math.max(0, Math.floor(Number(seq) || 0)) + '/raw';
+}
+function wlRawLoad(state, seq, fetchJson) {
+  var cache = state.raw || (state.raw = Object.create(null));
+  if (cache[seq]) return cache[seq];
+  var p = fetchJson(wlRawUrl(state.convId, seq)).then(function(d) {
+    return {
+      status: 'ok',
+      raw: d && typeof d.raw === 'string' ? d.raw : '',
+      bytes: toNum(d && d.rawBytes),
+      truncated: !!(d && d.rawTruncated === true),
+    };
+  }, function(err) {
+    var status = err && err.status;
+    if (status === 404) return { status: 'missing' };
+    if (status === 403) return { status: 'denied' };
+    if (status === 503 && err.code === 'unavailable') return { status: 'damaged' };
+    if (cache[seq] === p) delete cache[seq];
+    return { status: 'error' };
+  });
+  cache[seq] = p;
+  return p;
+}
+function formatBytes(n) {
+  n = Math.max(0, toNum(n));
+  if (n < 1024) return Math.round(n) + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KiB';
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MiB';
+  return (n / 1073741824).toFixed(1) + ' GiB';
+}
+// The detail block under an open entry: the full output in a <pre> (with a
+// copy button), or the line for a load in flight / not stored / owner-only /
+// a damaged log / any other failure (the only one with 다시 시도).
+function renderWorkLogDetail(r) {
+  if (r.status === 'loading') return '<div class="wl-detail-msg is-loading">원본 출력 불러오는 중…</div>';
+  if (r.status === 'missing') return '<div class="wl-detail-msg">' + esc(WL_RAW_MISSING_MSG) + '</div>';
+  if (r.status === 'denied') return '<div class="wl-detail-msg">' + esc(WL_FORBIDDEN_MSG) + '</div>';
+  if (r.status === 'damaged') return '<div class="wl-detail-msg">' + esc(WL_RAW_DAMAGED_MSG) + '</div>';
+  if (r.status === 'error') {
+    return '<div class="wl-detail-msg">' + esc(WL_RAW_ERROR_MSG)
+      + '<button type="button" class="wl-detail-btn" data-wl-act="retry">다시 시도</button></div>';
+  }
+  var note = r.truncated
+    ? '<div class="wl-detail-note">저장된 앞 256 KiB만 표시 — 원본 ' + formatBytes(r.bytes) + '</div>'
+    : '';
+  return note
+    + '<div class="wl-detail-bar"><button type="button" class="wl-detail-btn" data-wl-act="copy">복사</button></div>'
+    + '<pre class="wl-raw">' + esc(r.raw) + '</pre>';
+}
+
 // ── DOM side ──
+// A failed answer rejects with err.status and err.code — the error string of a
+// JSON error body ({ error: 'unavailable' }), or null for anything else (an
+// HTML page from a proxy, no body).
 function wlFetchJson(url) {
   return fetch(url).then(function(r) {
-    if (!r.ok) {
+    if (r.ok) return r.json();
+    return Promise.resolve().then(function() { return r.json(); }).then(function(b) {
+      return b && typeof b.error === 'string' ? b.error : null;
+    }, function() { return null; }).then(function(code) {
       var err = new Error('HTTP ' + r.status);
       err.status = r.status;
+      err.code = code;
       throw err;
-    }
-    return r.json();
+    });
   });
 }
 
@@ -5891,7 +6312,8 @@ function loadWorkLog() {
     if (st.closed) return;
     // 'denied' was already shown by showWorkLogDenied (state.onDenied).
     if (result !== 'denied' && !st.entries.length) showWorkLogEmpty(WL_EMPTY_MSG);
-    if (_panelFocusWorkLog) scrollPanelToWorkLog();
+    // No re-landing here: the log is collapsed, so its arrival moves nothing,
+    // and a reader who already scrolled is left where they are.
   });
 }
 function recoverWorkLog() {
@@ -5900,6 +6322,111 @@ function recoverWorkLog() {
 function pushLiveWorkLog(convId, entry) {
   if (!_wl || _wl.convId !== convId) return;
   wlOnLive(_wl, entry, wlFetchJson, paintWorkLog);
+}
+
+// Work-log section open / closed (§3.1-6). Every panel opening starts closed
+// (openPanel); 작업 로그 and ?session= only change where the panel lands.
+// Opening only shows what loadWorkLog already fetched — it never asks again.
+function setWorkLogOpen(open) {
+  var toggle = document.getElementById('worklog-toggle');
+  var list = document.getElementById('worklog-list');
+  if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (!list) return;
+  list.hidden = !open;
+  if (open) list.scrollTop = list.scrollHeight;
+}
+function toggleWorkLogSection() {
+  var toggle = document.getElementById('worklog-toggle');
+  setWorkLogOpen(!(toggle && toggle.getAttribute('aria-expanded') === 'true'));
+}
+
+// One entry's detail (§3.1-6): a click on its row opens the full output under
+// it, a second click closes it. state.open = the seqs open now.
+function wlDetailOpen(state) {
+  return !!(state && state.open && state.open.size);
+}
+function wlEntryEl(seq) {
+  var list = document.getElementById('worklog-list');
+  return list ? list.querySelector('.wl-entry[data-seq="' + Math.floor(Number(seq) || 0) + '"]') : null;
+}
+function wlEntryBySeq(state, seq) {
+  var list = (state && state.entries) || [];
+  for (var i = 0; i < list.length; i++) if (list[i].seq === seq) return list[i];
+  return null;
+}
+// What the row stands for, in full — for an entry without stored raw output.
+function wlFullText(e) {
+  var text = String(e.text || '');
+  return e.kind === 'instruction' ? decodeSlackEntities(text) : text;
+}
+// Paints only while that entry is still open in the conversation still shown —
+// a late answer for a closed row or a previous conversation is dropped.
+function paintWorkLogDetail(state, seq, result) {
+  if (state !== _wl || state.closed || !state.open || !state.open.has(seq)) return;
+  var el = wlEntryEl(seq);
+  var detail = el && el.querySelector('.wl-detail');
+  if (detail) detail.innerHTML = renderWorkLogDetail(result);
+}
+function loadWorkLogDetail(state, seq) {
+  var entry = wlEntryBySeq(state, seq);
+  if (!entry) return;
+  if (!(toNum(entry.rawBytes) > 0)) {
+    paintWorkLogDetail(state, seq, { status: 'ok', raw: wlFullText(entry), bytes: 0, truncated: false });
+    return;
+  }
+  paintWorkLogDetail(state, seq, { status: 'loading' });
+  wlRawLoad(state, seq, wlFetchJson).then(function(result) {
+    paintWorkLogDetail(state, seq, result);
+  });
+}
+function toggleWorkLogEntry(seq) {
+  var st = _wl;
+  if (!st || st.closed) return;
+  var el = wlEntryEl(seq);
+  var row = el && el.querySelector('.wl-row');
+  var detail = el && el.querySelector('.wl-detail');
+  if (!row || !detail) return;
+  var open = st.open || (st.open = new Set());
+  if (open.has(seq)) {
+    open.delete(seq);
+    row.setAttribute('aria-expanded', 'false');
+    detail.hidden = true;
+    detail.innerHTML = '';
+    return;
+  }
+  open.add(seq);
+  row.setAttribute('aria-expanded', 'true');
+  detail.hidden = false;
+  loadWorkLogDetail(st, seq);
+}
+function retryWorkLogDetail(seq) {
+  if (_wl && _wl.open && _wl.open.has(seq)) loadWorkLogDetail(_wl, seq);
+}
+// Copies the text the <pre> shows. Without clipboard access (plain http, a
+// denied permission) the text is selected instead, so the user can copy it.
+function copyWorkLogDetail(seq, btn) {
+  var el = wlEntryEl(seq);
+  var pre = el && el.querySelector('.wl-raw');
+  if (!pre) return;
+  function say(label) {
+    if (!btn) return;
+    btn.textContent = label;
+    setTimeout(function() { btn.textContent = '복사'; }, 1500);
+  }
+  function selectIt() {
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(pre);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (_e) {}
+    say('선택됨');
+  }
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { selectIt(); return; }
+    navigator.clipboard.writeText(pre.textContent || '').then(function() { say('복사됨'); }, selectIt);
+  } catch (_e) { selectIt(); }
 }
 
 // Insert the merged entries at their seq position (the list mirrors state.entries).
@@ -5917,7 +6444,9 @@ function paintWorkLog(state, added) {
     if (node) list.insertBefore(node, list.children[added[i].index] || null);
   }
   setTextIfChanged(document.getElementById('worklog-count'), String(state.entries.length));
-  if (!state.painted || atBottom) list.scrollTop = list.scrollHeight;
+  wlEnsureTabStop(list);
+  // Tail-follow, unless the reader has an entry's detail open.
+  if (!state.painted || (atBottom && !wlDetailOpen(state))) list.scrollTop = list.scrollHeight;
   state.painted = true;
 }
 
@@ -5941,7 +6470,16 @@ function renderWorkLogEntry(e) {
     ? new Date(e.ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
     : '';
   var timeHtml = time ? '<span class="wl-time">' + time + '</span>' : '';
-  var seqAttr = ' data-seq="' + (Number(e.seq) || 0) + '"';
+  var seq = Math.floor(Number(e.seq) || 0);
+  var seqAttr = ' data-seq="' + seq + '"';
+  // One root per entry: the row (role=button, out of the tab order — the list
+  // keeps one roving stop) and its detail block (§3.1-6).
+  function rowOpen(extra) {
+    return '<div class="wl-row' + (extra || '') + '" role="button" tabindex="-1" aria-expanded="false" aria-controls="wl-detail-' + seq + '">';
+  }
+  // aria-live="off": the list is role=log (polite), and an opened raw output
+  // of up to 256 KiB must not be read out in full.
+  var detailHtml = '<div class="wl-detail" id="wl-detail-' + seq + '" aria-live="off" hidden></div>';
   var text = String(e.text || '');
   if (kind === 'tool' || kind === 'tool_result') {
     var fail = kind === 'tool_result' && e.ok === false;
@@ -5952,38 +6490,111 @@ function renderWorkLogEntry(e) {
     var tool = e.tool ? String(e.tool) : '';
     if (tool && text === tool) shown = '';
     else if (tool && text.indexOf(tool + ' ') === 0) shown = text.slice(tool.length + 1);
-    return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + '"' + seqAttr + '>'
+    return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + '"' + seqAttr + '>' + rowOpen()
       + '<span class="wl-mark">' + mark + '</span>'
       + (tool ? '<span class="wl-tool-name">' + esc(tool) + '</span>' : '')
       + '<span class="wl-text" title="' + escAttr(text) + '">' + esc(shown) + '</span>'
-      + timeHtml + '</div>';
+      + timeHtml + '</div>' + detailHtml + '</div>';
   }
   if (kind === 'instruction') text = decodeSlackEntities(text);
   var label = WL_LABELS[kind];
   if (!label) {
     // Narration: the text with its time on the right of the same line.
-    return '<div class="wl-entry wl-' + kind + ' wl-line"' + seqAttr + '><div class="wl-text">' + esc(text) + '</div>' + timeHtml + '</div>';
+    return '<div class="wl-entry wl-' + kind + '"' + seqAttr + '>' + rowOpen(' wl-line') + '<div class="wl-text">' + esc(text) + '</div>' + timeHtml + '</div>' + detailHtml + '</div>';
   }
-  return '<div class="wl-entry wl-' + kind + '"' + seqAttr + '>'
+  return '<div class="wl-entry wl-' + kind + '"' + seqAttr + '>' + rowOpen()
     + '<div class="wl-head"><span class="wl-label">' + label + '</span>' + timeHtml + '</div>'
     + '<div class="wl-text">' + esc(text) + '</div>'
-    + '</div>';
+    + '</div>' + detailHtml + '</div>';
 }
 
-// Bring the work-log section to the top of the panel's scroll area and show
-// its newest entries.
+// Roving tabindex (§3.1-6): the list is one tab stop. The first paint puts it
+// on the newest row (where the tail-followed list is looking); focusing a row
+// (click, arrows) moves it there. ArrowUp / ArrowDown step, Home / End jump.
+function wlRovingIndex(key, i, n) {
+  if (n <= 0) return -1;
+  if (key === 'ArrowDown') return Math.min(n - 1, i + 1);
+  if (key === 'ArrowUp') return Math.max(0, i - 1);
+  if (key === 'Home') return 0;
+  if (key === 'End') return n - 1;
+  return -1;
+}
+function wlEnsureTabStop(list) {
+  if (!list || !list.querySelector || list.querySelector('.wl-row[tabindex="0"]')) return;
+  var rows = list.querySelectorAll('.wl-row');
+  if (rows.length) rows[rows.length - 1].setAttribute('tabindex', '0');
+}
+function wlSetTabStop(list, row) {
+  var old = list.querySelectorAll('.wl-row[tabindex="0"]');
+  for (var i = 0; i < old.length; i++) if (old[i] !== row) old[i].setAttribute('tabindex', '-1');
+  if (row.getAttribute('tabindex') !== '0') row.setAttribute('tabindex', '0');
+}
+
+// Rows open / close their detail on click, Enter or Space; clicks inside an
+// open detail (the <pre>, 복사, 다시 시도) never toggle it.
+(function initWorkLogInteractions() {
+  var list = document.getElementById('worklog-list');
+  if (!list) return;
+  function seqOf(node) {
+    var entry = node && node.closest('.wl-entry');
+    return entry ? Math.floor(Number(entry.getAttribute('data-seq')) || 0) : 0;
+  }
+  list.addEventListener('click', function(e) {
+    var btn = e.target.closest('.wl-detail-btn');
+    if (btn && list.contains(btn)) {
+      var act = btn.getAttribute('data-wl-act');
+      if (act === 'retry') retryWorkLogDetail(seqOf(btn));
+      else if (act === 'copy') copyWorkLogDetail(seqOf(btn), btn);
+      return;
+    }
+    if (e.target.closest('.wl-detail')) return;
+    var row = e.target.closest('.wl-row');
+    if (!row || !list.contains(row)) return;
+    // Finishing a text selection inside the row is not a toggle.
+    if (window.getSelection && String(window.getSelection())) return;
+    toggleWorkLogEntry(seqOf(row));
+  });
+  list.addEventListener('keydown', function(e) {
+    var row = e.target;
+    if (!row.classList || !row.classList.contains('wl-row')) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      toggleWorkLogEntry(seqOf(row));
+      return;
+    }
+    var rows = Array.prototype.slice.call(list.querySelectorAll('.wl-row'));
+    var j = wlRovingIndex(e.key, rows.indexOf(row), rows.length);
+    if (j < 0) return;
+    e.preventDefault();
+    rows[j].focus(); // focusin moves the tab stop
+  });
+  list.addEventListener('focusin', function(e) {
+    var row = e.target;
+    if (row && row.classList && row.classList.contains('wl-row')) wlSetTabStop(list, row);
+  });
+})();
+
+// Where an opening from 작업 로그 / ?session= lands (§3.1-6): the top of the
+// scroll area when the collapsed work-log header fits there (a short pending
+// question above it stays in view), else the header itself.
+function workLogLandingTop(sectionTop, headerHeight, viewHeight) {
+  return sectionTop + headerHeight <= viewHeight ? 0 : sectionTop;
+}
+// Bring the collapsed work-log header into view, one click from its entries.
 function scrollPanelToWorkLog() {
   var scrollEl = document.getElementById('panel-scroll');
   var section = document.getElementById('panel-worklog');
-  var list = document.getElementById('worklog-list');
+  var toggle = document.getElementById('worklog-toggle');
   if (!scrollEl || !section || section.style.display === 'none') return;
-  var top = scrollEl.scrollTop + section.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
-  scrollEl.scrollTo({ top: top, behavior: 'instant' });
-  if (list) list.scrollTop = list.scrollHeight;
+  var sectionTop = scrollEl.scrollTop + section.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
+  var headerHeight = toggle ? toggle.getBoundingClientRect().height : 0;
+  scrollEl.scrollTo({ top: workLogLandingTop(sectionTop, headerHeight, scrollEl.clientHeight), behavior: 'instant' });
 }
 
 // ── Slide Panel ──
-// focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link.
+// focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link:
+// the work log stays collapsed like every opening, but the panel lands with its
+// header in view instead of on the newest turns.
 function openPanel(sessionKey, focusWorkLog) {
   const s = _sessionCache[sessionKey];
   if (!s) return;
@@ -6010,6 +6621,9 @@ function openPanel(sessionKey, focusWorkLog) {
   panelSessionKey = sessionKey;
   panelConvId = s.conversationId || null;
   resetWorkLog(panelConvId, true);
+  setWorkLogOpen(false); // every opening starts collapsed (§3.1-6)
+  _panelOlderArmed = false; // a landing never loads older turns by itself
+  _panelStickBottom = false;
 
   // #762 — single source of truth for headline. displayHeadline carries the
   // server-resolved priority chain; older WS messages without it still get a
@@ -6098,13 +6712,18 @@ function openPanel(sessionKey, focusWorkLog) {
         _panelTurnsOldestId = data.turns[0] && data.turns[0].id;
         turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
         attachRawToggleHandlers();
-        // Jump to bottom on fresh load — or to the work log when that is what
-        // the user asked for (작업 로그 button / ?session= deep link).
+        // Jump to bottom on fresh load — or to the collapsed work-log header when
+        // that is what the user asked for (작업 로그 button / ?session= deep link).
         var scrollEl = document.getElementById('panel-scroll');
         // Instant: under scroll-behavior: smooth the glide down from 0 passed
         // through scrollTop < 100 and set off the load-older-turns handler.
         if (_panelFocusWorkLog) scrollPanelToWorkLog();
-        else if (scrollEl) scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
+        else if (scrollEl) {
+          scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
+          // Stay on the newest turns while the panel settles (the subtitle
+          // arriving later makes the scroll area shorter) until the reader scrolls.
+          _panelStickBottom = true;
+        }
         _panelTurnsLoading = false;
       })
       .catch(function() {
@@ -6157,7 +6776,7 @@ var _panelGen = 0; // bumped by openPanel / closePanel — the identity of one p
 
 function panelScrollAnchor(scrollEl) {
   var viewTop = scrollEl.getBoundingClientRect().top;
-  var nodes = scrollEl.querySelectorAll('#panel-question, #panel-tasks, #panel-worklog, #panel-turns > .turn');
+  var nodes = scrollEl.querySelectorAll('#panel-question, #panel-worklog, #panel-turns > .turn');
   for (var i = 0; i < nodes.length; i++) {
     var r = nodes[i].getBoundingClientRect();
     if (r.height > 0 && r.bottom > viewTop) return { el: nodes[i], top: r.top };
@@ -6387,6 +7006,7 @@ function closePanel() {
   _panelTurnsOldestId = null;
   resetWorkLog(null, false);
   _panelFocusWorkLog = false;
+  _panelStickBottom = false;
 }
 
 document.addEventListener('keydown', function(e) {
@@ -6394,14 +7014,58 @@ document.addEventListener('keydown', function(e) {
 });
 
 // Scroll-up-to-load-more handler (bound once on panel-scroll).
+// Older turns load when the first turn comes within 100px of the top of the
+// scroll area (or sits below it, under the question / work log). One load per
+// approach: entering the zone loads once and disarms; leaving it re-arms. An
+// opening starts disarmed, so landing at the top (작업 로그 / ?session=) loads
+// nothing by itself, and an insert that keeps the reader in place (the new
+// first turn still in the zone) cannot cascade into the next page.
+var _panelOlderArmed = false;
+var _panelStickBottom = false; // a default landing keeps the newest turns in view until the reader acts
+function olderTurnsZone(firstTurnTop, areaTop) {
+  return firstTurnTop >= areaTop - 100;
+}
+function panelOlderStep(armed, inZone, canLoad) {
+  if (!inZone) return { load: false, armed: true };
+  if (armed && canLoad) return { load: true, armed: false };
+  return { load: false, armed: armed };
+}
 (function initPanelScrollHandler() {
   var scrollEl = document.getElementById('panel-scroll');
-  if (!scrollEl) return;
+  var turnsEl = document.getElementById('panel-turns');
+  if (!scrollEl || !turnsEl) return;
+  var lastTop = 0;
   scrollEl.addEventListener('scroll', function() {
-    if (scrollEl.scrollTop < 100 && _panelTurnsHasMore && !_panelTurnsLoading && panelConvId && _panelTurnsOldestId) {
-      loadMorePanelTurns();
-    }
+    // Only the reader moving up ends the stick; the area shrinking under a
+    // resting scrollTop (a late subtitle) does not.
+    var top = scrollEl.scrollTop;
+    if (top < lastTop && scrollEl.scrollHeight - scrollEl.clientHeight - top > 4) _panelStickBottom = false;
+    lastTop = top;
+    var first = turnsEl.querySelector('.turn');
+    if (!first) return;
+    var inZone = olderTurnsZone(first.getBoundingClientRect().top, scrollEl.getBoundingClientRect().top);
+    var canLoad = _panelTurnsHasMore && !_panelTurnsLoading && !!panelConvId && !!_panelTurnsOldestId;
+    var step = panelOlderStep(_panelOlderArmed, inZone, canLoad);
+    _panelOlderArmed = step.armed;
+    if (step.load) loadMorePanelTurns();
   }, { passive: true });
+  // Any input inside the panel (expanding the work log, reading, typing) means
+  // the reader took over: stop holding the newest turns.
+  var panel = document.getElementById('slide-panel');
+  if (panel) {
+    ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(function(type) {
+      panel.addEventListener(type, function() { _panelStickBottom = false; }, { passive: true, capture: true });
+    });
+  }
+  // The area shrinking (a subtitle arriving) or the turns growing after the
+  // landing (late fonts, images) both leave the default landing short of the end.
+  if (typeof ResizeObserver === 'function') {
+    var stick = new ResizeObserver(function() {
+      if (_panelStickBottom) scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
+    });
+    stick.observe(scrollEl);
+    stick.observe(turnsEl);
+  }
 })();
 
 // ── Send command (optimistic UI) ──

@@ -30,6 +30,8 @@ export interface CommandRouteResult {
   error?: string;
   /** A cross-user `$skill` parked until its owner answers the permission request. */
   awaitingPermission?: boolean;
+  /** `continueWithPrompt` is a goal objective (user text) — see `CommandResult.verbatimPrompt`. */
+  verbatimPrompt?: boolean;
 }
 
 export interface CommandRouterReader {
@@ -135,6 +137,7 @@ export class InputProcessor {
     deferredSkillFire?: DeferredSkillFireResult;
     error?: string;
     awaitingPermission?: boolean;
+    verbatimPrompt?: boolean;
   }> {
     const { user, channel, thread_ts, ts, text } = event;
 
@@ -224,6 +227,9 @@ export class InputProcessor {
       // permission to `blocked`; everything else consumed is `safe`.
       error: commandResult.error,
       awaitingPermission: commandResult.awaitingPermission,
+      // `continueWithPrompt` is a goal objective (user text): slack-handler
+      // dispatches it as a literal turn, never as an SDK slash command.
+      verbatimPrompt: commandResult.verbatimPrompt,
     };
   }
 }

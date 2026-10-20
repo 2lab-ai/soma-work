@@ -873,7 +873,7 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
     // Goal is set with the full literal objective.
     expect(session.goal?.objective).toBe('buy 5 items for $20');
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt).toContain('Continue working toward the active session goal');
+    expect(result.continueWithPrompt).toBe('buy 5 items for $20');
   });
 
   it('6. `goal set ship X $unknown_skill_name proceed` → no resolvable skill, falls through', async () => {
@@ -1222,10 +1222,10 @@ describe('CommandRouter — `new <command>` remainder re-route (recursive)', () 
     expect(session.goal.objective).toBe('ship X');
     expect(session.goal.status).toBe('active');
 
-    // The turn continues with the goal continuation prompt — exactly what a
+    // The turn continues with the raw objective — exactly what a
     // directly-typed `goal ship X` produces.
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt).toContain('Continue working toward the active session goal');
+    expect(result.continueWithPrompt).toBe('ship X');
   });
 
   it('2. `new goal ship X $z proceed` → reset + CLEAN goal objective + DEFERRED <invoked_skills> (triple composition)', async () => {

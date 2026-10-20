@@ -70,6 +70,78 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(TEMPLATE).toContain('Show older');
     expect(TEMPLATE).toContain('function toggleOlderClosed()');
   });
+
+  it('the stats strip leads the page and the board follows it (§3.1-2)', () => {
+    const main = TEMPLATE.slice(TEMPLATE.indexOf('<div class="main">'));
+    const strip = main.indexOf('<section class="stats" id="stats"');
+    const detailAt = main.indexOf('<div class="stats-detail" id="stats-detail" hidden>');
+    const board = main.indexOf('<section class="inbox" id="inbox"');
+    expect(strip).toBeGreaterThan(0);
+    expect(detailAt).toBeGreaterThan(strip);
+    expect(board).toBeGreaterThan(detailAt);
+    // Collapsed: the period control, 세션 · 토큰 · 비용 and the 자세히 toggle.
+    const row = main.slice(strip, detailAt);
+    expect(row).toContain('class="period-bar"');
+    for (const id of ['stat-sessions', 'stat-tokens-wrap', 'stat-tokens', 'stat-tokens-tooltip', 'stat-cost']) {
+      expect(row, id).toContain(`id="${id}"`);
+    }
+    expect(row).toContain('id="stats-more" aria-expanded="false" aria-controls="stats-detail"');
+    // Behind 자세히: the remaining cards and the charts, same ids as before.
+    const detail = main.slice(detailAt, board);
+    for (const id of [
+      'stats-grid',
+      'stat-turns',
+      'stat-prs',
+      'stat-merged',
+      'stat-merge-lines',
+      'stat-workflows',
+      'chart-row',
+    ]) {
+      expect(detail, id).toContain(`id="${id}"`);
+    }
+  });
+
+  it('the 자세히 choice persists in localStorage and starts collapsed (§3.1-2)', () => {
+    expect(TEMPLATE).toContain("var STATS_DETAIL_KEY = 'soma-stats-detail';");
+    expect(fnBody('toggleStatsDetail')).toContain('localStorage.setItem(STATS_DETAIL_KEY');
+    expect(TEMPLATE).toContain("setStatsDetail(saved === 'open');");
+  });
+
+  it('Show archives sits in the board header next to Board | List, hidden until there are archives (§3.1-1)', () => {
+    const head = TEMPLATE.slice(TEMPLATE.indexOf('<div class="inbox-head">'), TEMPLATE.indexOf('<div class="kanban"'));
+    const btn = head.indexOf(
+      '<button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()">',
+    );
+    expect(btn).toBeGreaterThan(0);
+    expect(head.indexOf('class="seg" role="group" aria-label="Board layout"')).toBeGreaterThan(btn);
+    expect(TEMPLATE).toContain("var SHOW_ARCHIVES_KEY = 'soma-show-archives';");
+    expect(TEMPLATE).toContain('var showArchives = readShowArchives();');
+    const toggle = fnBody('renderArchivesToggle');
+    // A toggle button: the label stays "Archives (N)", aria-pressed carries the state.
+    expect(toggle).toContain("'Archives (' + archivedCount + ')'");
+    expect(toggle).not.toContain('Show archives');
+    expect(toggle).not.toContain('Hide archives');
+    expect(toggle).toContain('archivedCount === 0');
+    expect(toggle).toContain("btn.setAttribute('aria-pressed', pressed)");
+  });
+
+  it('the DONE count is the cards it shows; Show older counts what expanding would add (§3.1-1)', () => {
+    const body = fnBody('renderBoard');
+    expect(body).toContain('planDoneColumn(board.idle || [], board.closed || [], {');
+    expect(body).toContain('done: plan.done.length');
+    expect(body).toContain('renderOlderToggle(plan.olderCount)');
+    expect(body).toContain('renderArchivesToggle(plan.archivedCount)');
+    // The #814 tokens tooltip follows the board it describes.
+    expect(body).toContain('updateTokenBreakdown();');
+  });
+
+  it('every card head carries the owner badge (All Users only — the renderer decides) (§3.1-3)', () => {
+    expect(fnBody('renderCardFace')).toContain("titleHtml + renderOwnerBadge(s) + '</div>'");
+    expect(fnBody('renderOwnerBadge')).toContain('if (currentUserId) return');
+    // The title truncates first; the badge keeps its size up to its cap.
+    expect(TEMPLATE).toMatch(/\.card \.card-title-text \{[^}]*flex: 1 1 auto;/);
+    expect(TEMPLATE).toMatch(/\.owner-badge \{[^}]*flex: 0 0 auto;[^}]*text-overflow: ellipsis;/);
+  });
 });
 
 describe('agent inbox board — drag and drop removed (§3.1-5)', () => {
@@ -186,6 +258,74 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(fnBody('resetWorkLog')).toContain('_wl.closed = true');
   });
 
+  it('Tasks sit in a pinned block above the scroll area, after the token badges (§3.1-6)', () => {
+    const panel = TEMPLATE.slice(TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel">'));
+    const tokens = panel.indexOf('id="panel-tokens"');
+    const tasks = panel.indexOf('<div class="panel-tasks" id="panel-tasks"></div>');
+    const scroll = panel.indexOf('<div class="panel-scroll" id="panel-scroll">');
+    const command = panel.indexOf('<div class="panel-command" id="panel-command">');
+    expect(tokens).toBeGreaterThan(0);
+    expect(tasks).toBeGreaterThan(tokens);
+    expect(scroll).toBeGreaterThan(tasks);
+    expect(panel.slice(scroll, command)).not.toContain('panel-tasks');
+    expect(TEMPLATE).toMatch(
+      /\n\.panel-tasks \{[^}]*flex: none;[^}]*max-height: min\(30vh, 240px\);[^}]*overflow-y: auto;/,
+    );
+    expect(fnBody('panelScrollAnchor')).not.toContain('#panel-tasks');
+  });
+
+  it('the work log header is a disclosure button; the list starts hidden (§3.1-6)', () => {
+    expect(TEMPLATE).toContain(
+      '<button type="button" class="panel-worklog-header" id="worklog-toggle" aria-expanded="false" aria-controls="worklog-list" onclick="toggleWorkLogSection()">',
+    );
+    expect(TEMPLATE).toContain(
+      '<div class="worklog-list" id="worklog-list" role="log" aria-live="polite" aria-label="작업 로그" hidden></div>',
+    );
+    expect(TEMPLATE).toContain('.worklog-list[hidden] { display: none; }');
+  });
+
+  it('every opening starts with the work log collapsed, no exceptions (§3.1-6, §3.1-7)', () => {
+    const body = fnBody('openPanel');
+    const reset = body.indexOf('resetWorkLog(panelConvId, true);');
+    expect(reset).toBeGreaterThan(-1);
+    expect(body.indexOf('setWorkLogOpen(false);')).toBeGreaterThan(reset);
+    expect(body).not.toContain('setWorkLogOpen(_panelFocusWorkLog)');
+    // 작업 로그 / ?session= land with the collapsed header in view, not inside the log.
+    expect(fnBody('scrollPanelToWorkLog')).toContain('workLogLandingTop(');
+    expect(fnBody('scrollPanelToWorkLog')).not.toContain('list.scrollTop');
+    // Expanding only shows what was already fetched on open.
+    expect(fnBody('toggleWorkLogSection')).not.toContain('loadWorkLog');
+    expect(fnBody('toggleWorkLogSection')).not.toContain('fetch');
+  });
+
+  it('a default landing stays on the newest turns only until the reader touches the panel (§3.1-6)', () => {
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelScrollHandler() {'));
+    expect(init).toContain("['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(");
+    expect(init).toContain("document.getElementById('slide-panel')");
+    expect(init).toContain('_panelStickBottom = false;');
+  });
+
+  it('older turns load from a user scroll near the first turn, armed once per approach (§3.1-6)', () => {
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelScrollHandler() {'));
+    expect(init).toContain('panelOlderStep(_panelOlderArmed, inZone, canLoad)');
+    expect(init).toContain("turnsEl.querySelector('.turn')");
+    expect(init).not.toContain('scrollEl.scrollTop < 100');
+    expect(fnBody('openPanel')).toContain('_panelOlderArmed = false;');
+  });
+
+  it('entry rows toggle on click, Enter and Space; detail buttons do not toggle (§3.1-6)', () => {
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initWorkLogInteractions() {'));
+    expect(init).toContain("e.target.closest('.wl-detail')");
+    expect(init).toContain("e.key === 'Enter' || e.key === ' '");
+    expect(init).toContain('toggleWorkLogEntry(');
+    // Roving tabindex: one stop in the list; the arrows, Home and End move it.
+    expect(init).toContain('wlRovingIndex(e.key, rows.indexOf(row), rows.length)');
+    expect(init).toContain("addEventListener('focusin'");
+    expect(fnBody('paintWorkLog')).toContain('wlEnsureTabStop(list)');
+    expect(TEMPLATE).toContain("act === 'retry'");
+    expect(TEMPLATE).toContain("act === 'copy'");
+  });
+
   it('live-appends work_log WS entries through the seq merge', () => {
     expect(fnBody('connectWs')).toContain("msg.type === 'work_log'");
     expect(fnBody('connectWs')).toContain('pushLiveWorkLog(msg.conversationId, msg.entry)');
@@ -243,6 +383,25 @@ describe('agent inbox board — deep link (§3.1-8)', () => {
     const keys = ['oud::work:C1:1700000000.000100', 'mac-mini::work:C1:1700000000.000100'];
     expect(resolve('work:C1:1700000000.000100', keys, 'mac-mini')).toBe('mac-mini::work:C1:1700000000.000100');
     expect(resolve('work:C1:1700000000.000100', keys, 'other')).toBeNull();
+  });
+
+  it('with no live card, maps the Slack key to its latest archive ("…archived_<ref>_<archivedAt>")', () => {
+    const ref = 'work:C1:1700000000.000100';
+    const keys = [
+      'mac-mini::work:C2:1700000000.000200',
+      `mac-mini::archived_${ref}_1790000000000`,
+      `mac-mini::archived_${ref}_1792000000000`,
+      `oud::archived_${ref}_1791000000000`,
+      `mac-mini::archived_${ref}_17920x`, // not an archivedAt
+      `mac-mini::archived_${ref}.5_1799000000000`, // another thread whose key extends this one
+    ];
+    expect(resolve(ref, keys, 'mac-mini')).toBe(`mac-mini::archived_${ref}_1792000000000`);
+    // Single-instance board: archive keys carry no instance prefix.
+    expect(resolve(ref, [`archived_${ref}_1790000000000`], null)).toBe(`archived_${ref}_1790000000000`);
+    // A live card of the thread wins over any archive.
+    expect(resolve(ref, [...keys, `mac-mini::${ref}`], 'mac-mini')).toBe(`mac-mini::${ref}`);
+    // Two live cards on two siblings are still refused, archives or not.
+    expect(resolve(ref, [...keys, `oud::${ref}`, `mac-mini::${ref}`], 'other')).toBeNull();
   });
 
   it('returns null when nothing matches yet (caller retries on the next render)', () => {
@@ -334,6 +493,7 @@ describe('agent inbox board — responsive (§5)', () => {
     const block = TEMPLATE.match(/@media \(max-width: 639px\), \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     expect(block).toContain('.panel-close { width: 44px; height: 44px; }');
     expect(block).toContain('.period-btn { min-height: 44px; }');
+    expect(block).toContain('.stats-more { min-height: 44px; }');
     expect(block).toContain(
       '.topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }',
     );

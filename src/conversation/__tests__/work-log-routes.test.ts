@@ -241,6 +241,172 @@ describe('GET /api/dashboard/session/:conversationId/worklog', () => {
       expect((await read({ cookie: userCookie('U_OTHER') }, 'conv-nope')).statusCode).toBe(404);
     });
   });
+
+  describe('GET …/worklog/:seq/raw', () => {
+    const RAW = '{\n  "command": "ls -la",\n  "note": "한글 😀"\n}';
+    const rawUrl = (seq: string | number, id = 'conv-1') => `/api/dashboard/session/${id}/worklog/${seq}/raw`;
+    const getRaw = (seq: string | number, headers: Record<string, string> = AUTH_HEADER, id = 'conv-1') =>
+      web.injectWebServer({ method: 'GET', url: rawUrl(seq, id), headers });
+
+    beforeEach(async () => {
+      await workLog.appendWorkLog('conv-1', {
+        kind: 'tool',
+        text: 'Bash {"command":"ls -la"}',
+        tool: 'Bash',
+        raw: RAW,
+      });
+      await workLog.appendWorkLog('conv-1', { kind: 'narration', text: 'no raw' });
+    });
+
+    it('200 { seq, raw, rawBytes, rawTruncated } with Cache-Control: no-store', async () => {
+      const res = await getRaw(1);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(JSON.parse(res.body)).toEqual({ seq: 1, raw: RAW, rawBytes: Buffer.byteLength(RAW), rawTruncated: false });
+    });
+
+    it('the list carries rawBytes and never raw', async () => {
+      const res = await web.injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/session/conv-1/worklog',
+        headers: AUTH_HEADER,
+      });
+      const { entries } = JSON.parse(res.body) as { entries: Array<Record<string, unknown>> };
+      expect(entries[0]).toMatchObject({ seq: 1, rawBytes: Buffer.byteLength(RAW) });
+      expect(entries[0]).not.toHaveProperty('raw');
+      expect(entries[1]).not.toHaveProperty('rawBytes');
+    });
+
+    it('a truncated raw reports rawTruncated and the original size', async () => {
+      const big = 'x'.repeat(workLog.WORK_LOG_RAW_MAX_BYTES + 10);
+      const entry = await workLog.appendWorkLog('conv-1', { kind: 'tool_result', text: 'Bash ok', raw: big });
+      const body = JSON.parse((await getRaw(entry.seq)).body);
+      expect(body).toMatchObject({ seq: entry.seq, rawBytes: big.length, rawTruncated: true });
+      expect(body.raw).toBe(big.slice(0, workLog.WORK_LOG_RAW_MAX_BYTES));
+    });
+
+    it('404 for an entry without raw, an unknown seq, and an unknown conversation', async () => {
+      for (const res of [await getRaw(2), await getRaw(99), await getRaw(1, AUTH_HEADER, 'conv-nope')]) {
+        expect(res.statusCode).toBe(404);
+        expect(res.headers['cache-control']).toBe('no-store');
+      }
+    });
+
+    it('404 when the raw record at the recorded position is another seq or cut short', async () => {
+      const rawFile = path.join(paths.dataDir, 'worklogs', 'conv-1.raw.jsonl');
+      const original = fs.readFileSync(rawFile, 'utf-8');
+      fs.writeFileSync(rawFile, original.replace('{"seq":1,', '{"seq":9,'));
+      expect((await getRaw(1)).statusCode).toBe(404);
+      fs.writeFileSync(rawFile, original.slice(0, 12));
+      const res = await getRaw(1);
+      expect(res.statusCode).toBe(404);
+      expect(JSON.parse(res.body)).toEqual({ error: 'not_found' });
+    });
+
+    it('503 unavailable (not 404) when the read runs out of its scan budget before reaching the entry', async () => {
+      const line = (seq: number) => `${JSON.stringify({ seq, ts: seq, kind: 'narration', text: `n${seq}` })}\n`;
+      const logFile = path.join(paths.dataDir, 'worklogs', 'conv-1.jsonl');
+      fs.writeFileSync(logFile, Array.from({ length: 50 }, (_, i) => line(i + 1)).join(''));
+      fs.appendFileSync(logFile, Buffer.from('x\n'.repeat(4.5 * 1024 * 1024))); // 9 MB of junk
+      fs.appendFileSync(logFile, Array.from({ length: 10 }, (_, i) => line(51 + i)).join(''));
+      fs.appendFileSync(logFile, Buffer.from('x\n'.repeat(1.5 * 1024 * 1024))); // wider than the fast path
+
+      const res = await getRaw(55);
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body)).toEqual({ error: 'unavailable' });
+      expect(res.headers['cache-control']).toBe('no-store');
+    });
+
+    it.each([
+      '0',
+      '-1',
+      'abc',
+      '1abc',
+      '1.5',
+      '1e3',
+      '0x10',
+      '%201',
+      '99999999999999999999',
+    ])('rejects seq %s with 400 bad_request', async (seq) => {
+      const res = await getRaw(seq);
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: 'bad_request' });
+    });
+
+    describe('authorization: exactly the list route rules', () => {
+      it('401 without credentials, still no-store', async () => {
+        const res = await getRaw(1, {});
+        expect(res.statusCode).toBe(401);
+        expect(JSON.parse(res.body).error).toBe('Unauthorized');
+        expect(res.headers['cache-control']).toBe('no-store');
+      });
+
+      it('403 carries no-store too', async () => {
+        const res = await getRaw(1, { cookie: userCookie('U_OTHER') });
+        expect(res.statusCode).toBe(403);
+        expect(res.headers['cache-control']).toBe('no-store');
+      });
+
+      it('owner, admin user, viewer token (header or cookie): 200', async () => {
+        for (const headers of [
+          { cookie: userCookie('U_OWNER') },
+          { cookie: userCookie('U_ADMIN') },
+          AUTH_HEADER,
+          { cookie: `soma_dash_token=${encodeURIComponent(`bearer:${VIEWER_TOKEN}`)}` },
+        ]) {
+          expect((await getRaw(1, headers)).statusCode).toBe(200);
+        }
+      });
+
+      it('another logged-in user: 403 forbidden, and no raw in the body', async () => {
+        const res = await getRaw(1, { cookie: userCookie('U_OTHER') });
+        expect(res.statusCode).toBe(403);
+        expect(JSON.parse(res.body)).toEqual({ error: 'forbidden' });
+      });
+
+      it('a conversation with no recorded owner is admin-only', async () => {
+        const { getConversation } = await import('../recorder');
+        vi.mocked(getConversation).mockImplementation(async (id: string) =>
+          id === 'conv-1' ? ({ ...CONVERSATION, ownerId: '' } as never) : null,
+        );
+        expect((await getRaw(1, { cookie: userCookie('U_OWNER') })).statusCode).toBe(403);
+        expect((await getRaw(1, { cookie: userCookie('U_ADMIN') })).statusCode).toBe(200);
+      });
+
+      it('unknown conversation: 404 before any ownership check', async () => {
+        expect((await getRaw(1, { cookie: userCookie('U_OTHER') }, 'conv-nope')).statusCode).toBe(404);
+      });
+    });
+  });
+});
+
+describe('work log raw route behind the canonical-origin redirect', () => {
+  let web: typeof import('../web-server');
+
+  beforeEach(async () => {
+    vi.resetModules();
+    mockConfig.conversation.viewerUrl = 'https://dash.example.test';
+    paths.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-worklog-redirect-'));
+    web = await import('../web-server');
+    await web.startWebServer({ listen: false });
+  });
+
+  afterEach(async () => {
+    await web.stopWebServer();
+    mockConfig.conversation.viewerUrl = '';
+    fs.rmSync(paths.dataDir, { recursive: true, force: true });
+  });
+
+  it('the redirect a global hook sends for this route still carries no-store', async () => {
+    const res = await web.injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-1/worklog/1/raw',
+      headers: { host: 'old-host:33000', ...AUTH_HEADER },
+    });
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe('https://dash.example.test/api/dashboard/session/conv-1/worklog/1/raw');
+    expect(res.headers['cache-control']).toBe('no-store');
+  });
 });
 
 describe('work log read authorization with auth disabled', () => {
@@ -266,6 +432,12 @@ describe('work log read authorization with auth disabled', () => {
     const res = await web.injectWebServer({ method: 'GET', url: '/api/dashboard/session/conv-1/worklog' });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ entries: [], hasMore: false });
+  });
+
+  it('mode none: the raw route reads as admin too (404 = no such entry, not 401/403)', async () => {
+    const res = await web.injectWebServer({ method: 'GET', url: '/api/dashboard/session/conv-1/worklog/1/raw' });
+    expect(res.statusCode).toBe(404);
+    expect(res.headers['cache-control']).toBe('no-store');
   });
 });
 

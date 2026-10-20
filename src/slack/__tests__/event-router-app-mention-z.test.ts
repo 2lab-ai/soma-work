@@ -357,6 +357,28 @@ describe('EventRouter.app_mention — /z routing (FIX #1)', () => {
     // Pipeline was entered with the substituted text.
     expect(mockMessageHandler).toHaveBeenCalledTimes(1);
     expect(mockMessageHandler.mock.calls[0][0].text).toBe('write a failing test');
+    // `/z new` keeps the re-route (a deferred `$skill` remainder relies on it).
+    expect(mockMessageHandler.mock.calls[0][0].routeContext?.verbatimPrompt).toBeUndefined();
+  });
+
+  it('`@bot /z goal <objective>` marks the returned objective verbatim (review P1, PR #305)', async () => {
+    const dispatch = vi.fn().mockResolvedValue({
+      handled: true,
+      continueWithPrompt: 'new dashboard',
+      verbatimPrompt: true,
+    });
+    eventRouter.zRouter = { dispatch };
+
+    const handler = eventHandlers['app_mention'];
+    await handler({
+      event: { user: 'U_X', channel: 'C_X', ts: '1.2', text: '<@B_BOT> /z goal new dashboard', team: 'T_X' },
+      say: vi.fn(),
+    });
+
+    expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+    const forwarded = mockMessageHandler.mock.calls[0][0];
+    expect(forwarded.text).toBe('new dashboard');
+    expect(forwarded.routeContext?.verbatimPrompt).toBe(true);
   });
 
   it('`@bot /z persona` in a source thread with a linked session bypasses linked-status guard (codex P1 followup)', async () => {

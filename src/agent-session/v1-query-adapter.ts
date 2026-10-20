@@ -329,6 +329,9 @@ export class V1QueryAdapter implements IAgentSession {
         // `undefined` and `false` mean different things downstream
         // (SSOT tracking checks `!== false`, SET_GOAL checks `=== true`).
         isUserInput: options.isFirstDispatchTurn ? (this.baseParams as any).isUserInput : false,
+        // A goal objective is literal only on the turn that carries it; a
+        // host continuation (e.g. an emergency `/compact`) must stay a command.
+        literalPrompt: options.isFirstDispatchTurn ? (this.baseParams as any).literalPrompt : undefined,
       };
 
       const executeResult = await this.executor.execute(params);
