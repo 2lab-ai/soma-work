@@ -122,34 +122,42 @@ task list와 유저가 꼭 알아야 할 것만 남고, 모델의 실시간 작�
 ```ts
 // packages/slack/src/work-log.ts — 타입
 export type WorkLogKind = 'instruction' | 'narration' | 'tool' | 'tool_result' | 'final' | 'notice' | 'error';
-export interface WorkLogInput { kind: WorkLogKind; text: string; tool?: string; ok?: boolean; turnId?: string; ts?: number; raw?: string }
+export interface WorkLogInput { kind: WorkLogKind; text: string; tool?: string; ok?: boolean; turnId?: string; ts?: number; raw?: string; rawBytes?: number }
 // 목록·WS·appendWorkLog 결과의 모양 — raw 대신 그 크기만 싣는다
-export interface WorkLogEntry extends Omit<WorkLogInput, 'raw'> { seq: number; ts: number; rawBytes?: number; rawTruncated?: true }
+export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> { seq: number; ts: number; rawBytes?: number; rawTruncated?: true }
 ```
 - 방출(packages/slack): `StreamContext.workLog?: (entry: WorkLogInput) => void`. stream-executor가 `session.conversationId`가 있을 때
   `streamExecutorProviders.appendWorkLog(conversationId, entry)`로 묶는다(기본 no-op). 수준과 무관하게 항상 방출:
   `instruction` · `narration`(지시문 제거 후) · `tool`(도구명 + 입력 요약 ≤200자) · `tool_result`(도구명 + `ok`) · `final` · `notice` · `error`.
   `raw` = 한 줄 `text` 뒤의 원문 전체: `tool`은 입력 전체 `JSON.stringify(input, null, 2)`(실패 시 `String(input)`), `tool_result`는
   결과 content — 문자열은 그대로, 블록 배열은 text 블록의 text · 이미지 `[image]` · 그 밖의 블록 JSON을 `\n`으로 이음, 그 밖의 객체는
-  pretty JSON, undefined/null이면 raw 없음.
+  pretty JSON, undefined/null이면 raw 없음. 블록 배열은 이은 크기가 256 KiB를 넘으면 더 잇지 않고, 그때 입력 `rawBytes`에
+  전체 결과의 UTF-8 크기를 싣는다(나머지 블록은 크기만 잰다).
 - 저장(`src/conversation/work-log.ts`): `${DATA_DIR}/worklogs/<conversationId>.jsonl` 추가 전용, 항목 text ≤ 4000자(`WORK_LOG_TEXT_MAX`).
   `seq`는 대화마다 엄격히 증가하되 건너뛸 수 있다(사이드카가 `WORK_LOG_SEQ_RESERVE_BLOCK` = 1000개 단위로 예약, 재기동은 예약 지점에서 재개).
   `appendWorkLog(conversationId, input) → Promise<WorkLogEntry>`는 디스크 기록 후 resolve하고 그때 WS로 방송한다.
   `readWorkLog(conversationId, { afterSeq?, limit = 500 }) → { entries, hasMore }`.
-- raw 저장: 같은 줄에 `raw`(문자열) · `rawBytes`(잘리기 전 원문의 UTF-8 바이트 수) · `rawTruncated: true`(잘렸을 때만)로 저장한다.
-  raw는 `WORK_LOG_RAW_MAX_BYTES` = 256 KiB(UTF-8, 서로게이트 쌍을 가르지 않음)로 자르고, JSON 이스케이프 후 줄 전체가
-  `WORK_LOG_MAX_LINE_BYTES`(1 MiB) − 4 KiB를 넘으면 맞을 때까지 더 자른다 — raw 때문에 항목이 버려지는 일은 없다.
-  raw 없이 4000자를 넘는 `text`가 오면 자르기 전 전문을 raw로 보관한다. `rawBytes`가 없는 항목 = raw 없음(raw 도입 전 항목 전부).
-  `readWorkLogRaw(conversationId, seq) → { seq, raw, rawBytes, rawTruncated: boolean } | null`.
+- raw 저장: 항목 줄과 별도인 `${DATA_DIR}/worklogs/<conversationId>.raw.jsonl`(추가 전용, 다시 쓰지 않음)에 한 줄 한 레코드
+  `{"seq":N,"raw":"…"}`로 둔다. raw는 `WORK_LOG_RAW_MAX_BYTES` = 256 KiB(UTF-8, 서로게이트 쌍을 가르지 않음)로 자른다.
+  항목 줄에는 `rawBytes`(잘리기 전 원문의 UTF-8 바이트 수, 입력 `rawBytes`가 더 크면 그 값) · `rawTruncated: true`(잘렸을 때만) ·
+  `rawOffset`/`rawLen`(raw 파일 안 레코드의 바이트 위치·길이)만 싣는다 — 항목 줄은 작게(text ≤ 4000자) 남아 목록 창(최대 500개)이
+  스캔 예산 안에 다 들어온다. 레코드를 fdatasync(새 raw 파일이면 디렉터리도 sync)한 뒤에 그것을 가리키는 항목 줄을 쓴다.
+  raw 쓰기가 실패해도 항목은 raw 없이(`rawBytes` 없이) 발행된다. raw 없이 4000자를 넘는 `text`가 오면 자르기 전 전문을 raw로
+  보관한다. `rawBytes`가 없는 항목 = raw 없음(raw 도입 전 항목 전부). 로그 격리(`.corrupt-`)는 항목 로그만 옮기고 raw 파일은 둔다.
+  `readWorkLogRaw(conversationId, seq) → { seq, raw, rawBytes, rawTruncated: boolean } | null | 'budget'`: `rawOffset`에서 정확히
+  `rawLen` 바이트를 읽어 레코드의 seq가 항목과 같아야 쓴다. 파일 없음·짧은 읽기·파싱 실패·seq 불일치 = raw 없음(warn 1회).
+  스캔 예산 안에 항목을 찾지도 배제하지도 못하면 `'budget'`.
 - API(`src/conversation/work-log-routes.ts`): `GET /api/dashboard/session/:conversationId/worklog?afterSeq=&limit=` → `{ entries, hasMore }`.
   afterSeq 없음 = 마지막 limit개(hasMore = 더 오래된 것 있음), afterSeq=N = N 뒤 첫 limit개(hasMore = 더 있음). limit 1..500.
   형식이 틀린 파라미터 = 400, 모르는 대화 = 404, 소유자·관리자 외 = 403(소유자 없는 대화 = 관리자만).
-  목록 항목에는 `raw`가 절대 실리지 않는다(`rawBytes`·`rawTruncated`만).
+  목록 항목에는 `raw`도 그 위치(`rawOffset`/`rawLen`)도 실리지 않는다(`rawBytes`·`rawTruncated`만).
 - raw API: `GET /api/dashboard/session/:conversationId/worklog/:seq/raw` → 200 `{ seq, raw, rawBytes, rawTruncated }`.
   인증·대화 확인은 목록 API와 같다(미인증 401, 모르는 대화 404, 소유자·관리자 외 403). `:seq`는 1 이상 10진 정수, 아니면
-  400 `{ error: 'bad_request' }`. 항목이 없거나 raw가 없으면 404. 모든 응답(오류 포함)에 `Cache-Control: no-store`.
+  400 `{ error: 'bad_request' }`. 항목이 없거나 raw가 없거나 레코드를 쓸 수 없으면 404 `{ error: 'not_found' }`(영구).
+  스캔 예산이 모자라 판정하지 못하면 503 `{ error: 'unavailable' }`(일시 — 다시 요청). 모든 응답(401, 리다이렉트 포함)에
+  `Cache-Control: no-store`.
 - WS: `{ type: 'work_log', conversationId, entry }`, `conversation_update`와 같은 소유자/관리자 범위로 방송. `entry`는 목록 항목과
-  같은 모양 — `rawBytes`·`rawTruncated`만 싣고 `raw`는 절대 싣지 않는다.
+  같은 모양 — `rawBytes`·`rawTruncated`만 싣고 `raw`와 그 위치는 싣지 않는다.
 
 ### 3.4 스레드 맨 위 링크
 1. 헤더 필드 `dashboardLink`(라벨 `📋 작업 로그`, `packages/slack/src/surface-config.ts`) — URL = 주입 provider
