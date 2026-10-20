@@ -154,8 +154,9 @@ export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> { s
 - raw API: `GET /api/dashboard/session/:conversationId/worklog/:seq/raw` → 200 `{ seq, raw, rawBytes, rawTruncated }`.
   인증·대화 확인은 목록 API와 같다(미인증 401, 모르는 대화 404, 소유자·관리자 외 403). `:seq`는 1 이상 10진 정수, 아니면
   400 `{ error: 'bad_request' }`. 항목이 없거나 raw가 없거나 레코드를 쓸 수 없으면 404 `{ error: 'not_found' }`(영구).
-  스캔 예산이 모자라 판정하지 못하면 503 `{ error: 'unavailable' }`(일시 — 다시 요청). 모든 응답(401, 리다이렉트 포함)에
-  `Cache-Control: no-store`.
+  로그가 스캔 예산으로 지나갈 수 없게 손상돼 항목을 찾지도 배제하지도 못하면 503 `{ error: 'unavailable' }` — 로그는 끝에만
+  자라므로 복구 전까지 같은 답이다. 클라이언트는 "unavailable"을 보여주고 자동 재시도하지 않는다. 모든 응답(401, 리다이렉트
+  포함)에 `Cache-Control: no-store`.
 - WS: `{ type: 'work_log', conversationId, entry }`, `conversation_update`와 같은 소유자/관리자 범위로 방송. `entry`는 목록 항목과
   같은 모양 — `rawBytes`·`rawTruncated`만 싣고 `raw`와 그 위치는 싣지 않는다.
 

@@ -12,9 +12,11 @@
  * entry. `rawBytes` is the original's UTF-8 size; `rawTruncated: true` when the
  * stored copy was cut (256 KiB). `:seq` is a decimal integer ≥ 1 (else 400
  * bad_request); 404 when the entry or its raw is missing or unusable; 503
- * { error: 'unavailable' } when the read ran out of its scan budget before it
- * found the entry (retry). Same authentication and read authorization as the
- * list. Every status, 401 and redirects included, carries no-store.
+ * { error: 'unavailable' } when the log is damaged in a way the read's scan
+ * budget cannot pass, so it can neither find nor rule out the entry. That
+ * answer stays the same until the log is repaired: clients show "unavailable"
+ * and do not retry automatically. Same authentication and read authorization
+ * as the list. Every status, 401 and redirects included, carries no-store.
  *
  *   - no afterSeq: the latest `limit` entries; hasMore = older entries exist.
  *   - afterSeq=N (N ≥ 0): the first `limit` entries with seq > N, for forward
@@ -156,7 +158,7 @@ export async function registerWorkLogRoutes(
 
         const raw = await readWorkLogRaw(conversationId, seq);
         if (raw === 'budget') {
-          // The read could not reach the entry within its budget: not an answer.
+          // A damaged log the scan budget cannot pass: neither found nor ruled out.
           reply.status(503).send({ error: 'unavailable' });
           return;
         }

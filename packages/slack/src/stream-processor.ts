@@ -31,7 +31,7 @@ import type { SessionLinks } from './thread-header-builder';
 import type { EndTurnInfo } from './thread-surface';
 import { ToolFormatter } from './tool-formatter';
 import { UserChoiceHandler } from './user-choice-handler';
-import type { WorkLogInput } from './work-log';
+import { WORK_LOG_RAW_MAX_BYTES, type WorkLogInput } from './work-log';
 
 /**
  * Context for stream processing
@@ -235,18 +235,19 @@ function toolInputRaw(input: unknown): string | undefined {
   }
 }
 
-/**
- * The store keeps at most this many UTF-8 bytes of a raw
- * (WORK_LOG_RAW_MAX_BYTES in src/conversation/work-log.ts); a block array is
- * not joined much past it.
- */
-const WORK_LOG_RAW_MAX_BYTES = 256 * 1024;
+const IMAGE_BLOCK_TEXT = '[image]';
+
+/** A text block's own text, when the block is one. */
+function textOfBlock(block: unknown): string | undefined {
+  const typed = block as { type?: unknown; text?: unknown } | null;
+  return typed?.type === 'text' && typeof typed.text === 'string' ? typed.text : undefined;
+}
 
 /** One tool-result block as raw text: a text block's text, `[image]`, anything else as JSON. */
 function resultBlockText(block: unknown): string {
-  const typed = block as { type?: unknown; text?: unknown } | null;
-  if (typed?.type === 'text' && typeof typed.text === 'string') return typed.text;
-  if (typed?.type === 'image') return '[image]';
+  const text = textOfBlock(block);
+  if (text !== undefined) return text;
+  if ((block as { type?: unknown } | null)?.type === 'image') return IMAGE_BLOCK_TEXT;
   try {
     return JSON.stringify(block) ?? safeString(block) ?? '';
   } catch {
@@ -255,12 +256,24 @@ function resultBlockText(block: unknown): string {
 }
 
 /**
+ * UTF-8 size of {@link resultBlockText}(block). A text block is measured in
+ * place and an image is a constant, so neither builds a string; other blocks
+ * have no size without their JSON.
+ */
+function resultBlockBytes(block: unknown): number {
+  const text = textOfBlock(block);
+  if (text !== undefined) return Buffer.byteLength(text, 'utf-8');
+  if ((block as { type?: unknown } | null)?.type === 'image') return IMAGE_BLOCK_TEXT.length;
+  return Buffer.byteLength(resultBlockText(block), 'utf-8');
+}
+
+/**
  * Work-log `raw` for a tool result: the content as the SDK delivered it. A
  * string as-is; a block array as its blocks' raw text ({@link resultBlockText})
  * one per line; any other value as pretty JSON. None without content. A block
  * array stops accumulating once the join passes WORK_LOG_RAW_MAX_BYTES (the
  * store cuts the rest anyway), and then `rawBytes` reports the whole output's
- * size — the later blocks are measured, not joined.
+ * size — the later blocks are measured ({@link resultBlockBytes}), not joined.
  */
 function toolResultRaw(result: unknown): { raw: string; rawBytes?: number } | undefined {
   if (result === undefined || result === null) return undefined;
@@ -270,12 +283,15 @@ function toolResultRaw(result: unknown): { raw: string; rawBytes?: number } | un
     let keptBytes = 0;
     let totalBytes = 0;
     result.forEach((block, i) => {
-      const text = resultBlockText(block);
-      const bytes = Buffer.byteLength(text, 'utf-8') + (i > 0 ? 1 : 0); // the joining newline
-      totalBytes += bytes;
+      const newline = i > 0 ? 1 : 0; // the joining newline
       if (keptBytes <= WORK_LOG_RAW_MAX_BYTES) {
+        const text = resultBlockText(block);
+        const bytes = Buffer.byteLength(text, 'utf-8') + newline;
         kept.push(text);
         keptBytes += bytes;
+        totalBytes += bytes;
+      } else {
+        totalBytes += resultBlockBytes(block) + newline;
       }
     });
     const raw = kept.join('\n');
