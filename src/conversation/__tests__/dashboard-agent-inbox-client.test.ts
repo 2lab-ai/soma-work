@@ -1493,6 +1493,230 @@ describe('WS session_update keeps sibling-instance cards (shipped mergeSiblingCa
   });
 });
 
+type DoneCard = { key: string; lastActivity: string; terminated?: boolean };
+type DonePlan = {
+  done: Array<{ s: DoneCard; col: string }>;
+  olderCount: number;
+  archivedCount: number;
+  hiddenArchives: number;
+};
+
+describe('DONE column: archived cards hide behind Show archives (shipped planDoneColumn)', () => {
+  const { planDoneColumn } = load<{
+    planDoneColumn(
+      idle: DoneCard[],
+      closed: DoneCard[],
+      o: { now: number; showOlder: boolean; showArchives: boolean; revealKey: string | null },
+    ): DonePlan;
+  }>(['planDoneColumn'], []);
+  const NOW = Date.parse('2026-03-20T12:00:00Z');
+  const ago = (days: number) => new Date(NOW - days * 24 * 60 * 60 * 1000).toISOString();
+  const IDLE = [{ key: 'idle-1', lastActivity: ago(0) }];
+  const CLOSED: DoneCard[] = [
+    { key: 'sleeping-recent', lastActivity: ago(1) },
+    { key: 'archived-recent', lastActivity: ago(2), terminated: true },
+    { key: 'sleeping-old', lastActivity: ago(8) },
+    { key: 'archived-old', lastActivity: ago(9), terminated: true },
+  ];
+  const plan = (o: Partial<{ showOlder: boolean; showArchives: boolean; revealKey: string | null }> = {}) =>
+    planDoneColumn(IDLE, CLOSED, { now: NOW, showOlder: false, showArchives: false, revealKey: null, ...o });
+  const keys = (p: DonePlan) => p.done.map((d) => d.s.key);
+
+  it('hides archived cards by default; sleeping ones stay', () => {
+    const p = plan();
+    expect(keys(p)).toEqual(['idle-1', 'sleeping-recent']);
+    expect(p.done.map((d) => d.col)).toEqual(['idle', 'closed']);
+    expect(p).toMatchObject({ olderCount: 1, archivedCount: 2, hiddenArchives: 2 });
+  });
+
+  it('Show older counts only cards that would appear: older non-archived unless archives are shown', () => {
+    expect(keys(plan({ showOlder: true }))).toEqual(['idle-1', 'sleeping-recent', 'sleeping-old']);
+    const shown = plan({ showArchives: true });
+    expect(keys(shown)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent']);
+    expect(shown).toMatchObject({ olderCount: 2, archivedCount: 2, hiddenArchives: 0 });
+    expect(keys(plan({ showArchives: true, showOlder: true }))).toEqual([
+      'idle-1',
+      'sleeping-recent',
+      'archived-recent',
+      'sleeping-old',
+      'archived-old',
+    ]);
+  });
+
+  it('a revealed (deep-linked) archive shows on its own, also when older than 7 days', () => {
+    const recent = plan({ revealKey: 'archived-recent' });
+    expect(keys(recent)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent']);
+    expect(recent).toMatchObject({ olderCount: 1, hiddenArchives: 1 });
+    const old = plan({ revealKey: 'archived-old' });
+    expect(keys(old)).toEqual(['idle-1', 'sleeping-recent', 'archived-old']);
+    expect(old).toMatchObject({ olderCount: 1, hiddenArchives: 1 });
+  });
+});
+
+describe('Show archives choice persists (shipped readShowArchives + toggleArchives)', () => {
+  function page(stored: Record<string, string>, opts: { throws?: boolean } = {}) {
+    const store = new Map(Object.entries(stored));
+    const localStorage = {
+      getItem: (k: string) => {
+        if (opts.throws) throw new Error('SecurityError');
+        return store.get(k) ?? null;
+      },
+      setItem: (k: string, v: string) => {
+        if (opts.throws) throw new Error('SecurityError');
+        store.set(k, v);
+      },
+    };
+    let loads = 0;
+    const m = load<{
+      readShowArchives(): boolean;
+      toggleArchives(): void;
+      state(): { show: boolean; revealed: string | null };
+    }>(
+      ['readShowArchives', 'toggleArchives'],
+      ['SHOW_ARCHIVES_KEY'],
+      {
+        localStorage,
+        showArchives: false,
+        _revealedKey: 'deep-linked',
+        loadSessions: () => {
+          loads++;
+        },
+      },
+      ['function state() { return { show: showArchives, revealed: _revealedKey }; }'],
+    );
+    return { m, store, loads: () => loads };
+  }
+
+  it('reads hidden unless "on" was stored; a throwing storage reads hidden', () => {
+    expect(page({}).m.readShowArchives()).toBe(false);
+    expect(page({ 'soma-show-archives': 'off' }).m.readShowArchives()).toBe(false);
+    expect(page({ 'soma-show-archives': 'on' }).m.readShowArchives()).toBe(true);
+    expect(page({}, { throws: true }).m.readShowArchives()).toBe(false);
+  });
+
+  it('the toggle flips, stores on / off, re-renders, and ends a deep-link reveal', () => {
+    const p = page({});
+    p.m.toggleArchives();
+    expect(p.m.state()).toEqual({ show: true, revealed: null });
+    expect(p.store.get('soma-show-archives')).toBe('on');
+    p.m.toggleArchives();
+    expect(p.m.state().show).toBe(false);
+    expect(p.store.get('soma-show-archives')).toBe('off');
+    expect(p.loads()).toBe(2);
+    // Storage that throws still toggles for this page.
+    const q = page({}, { throws: true });
+    q.m.toggleArchives();
+    expect(q.m.state().show).toBe(true);
+  });
+});
+
+describe('deep link to a hidden archived card still opens it (shipped openDeepLinkedSession)', () => {
+  type Card = { key: string; terminated?: boolean; lastActivity?: string };
+  function page(card: Card, opts: { showArchives?: boolean } = {}) {
+    const calls = { loads: 0, toggled: [] as string[], panel: [] as unknown[][], scrolled: 0, stored: 0 };
+    const cardEls: Record<string, { scrollIntoView(): void }> = Object.create(null);
+    const m = load<{
+      openDeepLinkedSession(): void;
+      state(): { revealed: string | null; showOlder: boolean; link: string | null; showArchives: boolean };
+    }>(
+      ['resolveDeepLinkKey', 'openDeepLinkedSession'],
+      [],
+      {
+        _deepLinkSession: 'work:C1:1700000000.000700',
+        _deepLinkDeadline: Date.now() + 10_000,
+        _sessionCache: { [card.key]: card },
+        SELF_INSTANCE_NAME: 'inst',
+        _cardEls: cardEls,
+        _expanded: new Set<string>(),
+        showArchives: !!opts.showArchives,
+        showOlderClosed: false,
+        _revealedKey: null,
+        localStorage: {
+          setItem: () => {
+            calls.stored++;
+          },
+        },
+        loadSessions: () => {
+          calls.loads++;
+        },
+        toggleCard: (k: string) => calls.toggled.push(k),
+        openPanel: (...a: unknown[]) => calls.panel.push(a),
+      },
+      [
+        'function state() { return { revealed: _revealedKey, showOlder: showOlderClosed, link: _deepLinkSession, showArchives: showArchives }; }',
+      ],
+    );
+    const render = () => {
+      cardEls[card.key] = {
+        scrollIntoView: () => {
+          calls.scrolled++;
+        },
+      };
+    };
+    return { m, calls, render };
+  }
+  const KEY = 'inst::work:C1:1700000000.000700';
+
+  it('reveals just that archive for this page load, then expands it and opens the panel', () => {
+    const p = page({ key: KEY, terminated: true });
+    p.m.openDeepLinkedSession(); // the card is hidden: reveal + re-render
+    expect(p.m.state()).toEqual({
+      revealed: KEY,
+      showOlder: false,
+      link: 'work:C1:1700000000.000700',
+      showArchives: false,
+    });
+    expect(p.calls.loads).toBe(1);
+    p.render(); // the re-render drew it (planDoneColumn keeps a revealed key, any age)
+    p.m.openDeepLinkedSession();
+    expect(p.calls.toggled).toEqual([KEY]);
+    expect(p.calls.scrolled).toBe(1);
+    expect(p.calls.panel).toEqual([[KEY, true]]);
+    expect(p.m.state().link).toBeNull();
+    expect(p.calls.stored).toBe(0); // the stored Show archives choice is untouched
+  });
+
+  it('an older sleeping card still opens the older group, as before', () => {
+    const p = page({ key: KEY });
+    p.m.openDeepLinkedSession();
+    expect(p.m.state()).toMatchObject({ revealed: null, showOlder: true });
+    expect(p.calls.loads).toBe(1);
+  });
+});
+
+describe('All Users: owner badge on every card (shipped ownerBadgeHue + renderOwnerBadge)', () => {
+  type Badge = { ownerBadgeHue(id: string): number; renderOwnerBadge(s: Record<string, unknown>): string };
+  const badge = (currentUserId: string) =>
+    load<Badge>(['esc', 'escAttr', '_hashStr', 'ownerBadgeHue', 'renderOwnerBadge'], ['OWNER_BADGE_HUES'], {
+      currentUserId,
+    });
+  const all = badge('');
+
+  it('shows the owner name in All Users mode only, full name in title', () => {
+    const html = all.renderOwnerBadge({ ownerId: 'U002', ownerName: 'Alice' });
+    expect(html).toBe(`<span class="owner-badge" data-hue="${all.ownerBadgeHue('U002')}" title="Alice">Alice</span>`);
+    expect(badge('U002').renderOwnerBadge({ ownerId: 'U002', ownerName: 'Alice' })).toBe('');
+    expect(all.renderOwnerBadge({})).toBe('');
+  });
+
+  it('escapes the name in text and title', () => {
+    const html = all.renderOwnerBadge({ ownerId: 'U9', ownerName: '<img src=x onerror=alert(1)> "q" \'s' });
+    expect(html).not.toContain('<img');
+    expect(html).toContain('title="&lt;img src=x onerror=alert(1)&gt; &quot;q&quot; &#39;s"');
+  });
+
+  it('the colour is a function of ownerId: same id same hue, the fixture owners all differ', () => {
+    expect(all.ownerBadgeHue('U002')).toBe(all.ownerBadgeHue('U002'));
+    const a = all.renderOwnerBadge({ ownerId: 'U003', ownerName: 'Bob' });
+    const b = all.renderOwnerBadge({ ownerId: 'U003', ownerName: 'Bob (renamed)' });
+    expect(a.match(/data-hue="(\d)"/)?.[1]).toBe(b.match(/data-hue="(\d)"/)?.[1]);
+    // The owners in scripts/screenshot-agent-inbox.ts (Zhuge, Alice, Bob, Carol, Dana).
+    const hues = ['U001', 'U002', 'U003', 'U004', 'U005'].map((id) => all.ownerBadgeHue(id));
+    expect(new Set(hues).size).toBe(hues.length);
+    for (const h of hues) expect(h >= 0 && h < 8).toBe(true);
+  });
+});
+
 describe('muted text contrast ≥ 4.5:1 on every surface it sits on (CSS tokens)', () => {
   function tokens(selector: RegExp): Record<string, string> {
     const block = TEMPLATE.match(selector)?.[1] ?? '';
@@ -1537,5 +1761,13 @@ describe('muted text contrast ≥ 4.5:1 on every surface it sits on (CSS tokens)
         });
       }
     }
+    // Owner badges (All Users): each of the 8 hues, its text on its own fill.
+    it(`${theme}: owner badge text on its fill, all 8 hues`, () => {
+      for (let i = 0; i < 8; i++) {
+        expect(t[`ob-${i}-fg`], `--ob-${i}-fg`).toMatch(/^#/);
+        expect(t[`ob-${i}-bg`], `--ob-${i}-bg`).toMatch(/^#/);
+        expect(ratio(t[`ob-${i}-fg`], t[`ob-${i}-bg`]), `hue ${i}`).toBeGreaterThanOrEqual(4.5);
+      }
+    });
   }
 });

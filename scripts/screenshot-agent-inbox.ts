@@ -23,6 +23,15 @@
  *     44px targets; 자세히 opens the other cards and the charts between the strip
  *     and the board, survives a reload, and never scrolls the page sideways
  *     (stats-strip-*.png)
+ *   - archives (light / dark × 1280 / 390): archived cards are hidden by default,
+ *     Show archives (N) shows them and survives a reload, the DONE count is what
+ *     DONE shows, Show older counts only what it would add, and a deep link to
+ *     a hidden archive (recent or 9 days old) still opens it without changing
+ *     the stored choice (archives-*.png)
+ *   - All Users: every card names its owner in a right-aligned badge, one colour
+ *     per owner, text ≥4.5:1 on its fill, never over the title, long names
+ *     ellipsized with the full name in title; gone once a user is selected
+ *     (owner-badges-*.png)
  *   - stats: 오늘 → 지난 7일 changes 세션 / 토큰 / 비용 to the week's totals
  *     (stats + usage requests carry the period; All Users sends no userId), and
  *     a late answer for a period no longer selected does not repaint them
@@ -244,6 +253,36 @@ function makeBoard() {
       }),
     ],
   };
+}
+
+/** The owners of the team board (All Users view): one name long enough to ellipsize. */
+const TEAM = [
+  { id: 'U001', name: 'Zhuge' },
+  { id: 'U002', name: 'Alice' },
+  { id: 'U003', name: 'Bob' },
+  { id: 'U004', name: 'Carol' },
+  { id: 'U005', name: 'Dana Alexandria Montgomery-Wellington' },
+];
+/** makeBoard() with the cards spread over five owners (Alice twice). */
+function makeTeamBoard() {
+  const b = makeBoard() as Record<string, Array<Record<string, unknown>>>;
+  const owner: Record<string, string> = {
+    [K('100')]: 'U002',
+    [K('200')]: 'U003',
+    [K('300')]: 'U004',
+    [K('400')]: 'U002',
+    [K('500')]: 'U005',
+    [K('600')]: 'U001',
+    [K('700')]: 'U003',
+    [K('800')]: 'U004',
+  };
+  for (const col of Object.values(b)) {
+    for (const card of col) {
+      const t = TEAM.find((u) => u.id === owner[card.key as string]);
+      if (t) Object.assign(card, { ownerId: t.id, ownerName: t.name });
+    }
+  }
+  return b;
 }
 
 const TURNS: Record<string, unknown[]> = {
@@ -1945,6 +1984,283 @@ async function statsStripDetail(browser: import('playwright').Browser) {
   }
 }
 
+/** DONE column state: visible cards by state, the header count, the archives button and the older toggle. */
+type DoneRead = {
+  keys: string[];
+  archived: number;
+  count: string;
+  btnHidden: boolean;
+  pressed: string | null;
+  label: string;
+  btnH: number;
+  foot: string;
+  saved: string | null;
+};
+async function readDone(page: Page): Promise<DoneRead> {
+  return page.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll('#cards-done > .card:not(.is-exiting)')) as HTMLElement[];
+    const btn = document.getElementById('archives-toggle') as HTMLElement;
+    return {
+      keys: cards.map((c) => c.getAttribute('data-session-key') || ''),
+      archived: cards.filter((c) => c.getAttribute('data-state') === 'archived').length,
+      count: document.getElementById('count-done')?.textContent ?? '',
+      btnHidden: btn.hidden,
+      pressed: btn.getAttribute('aria-pressed'),
+      label: document.getElementById('archives-label')?.textContent ?? '',
+      btnH: Math.round(btn.getBoundingClientRect().height),
+      foot: document.getElementById('foot-done')?.textContent ?? '',
+      saved: localStorage.getItem('soma-show-archives'),
+    };
+  });
+}
+
+/**
+ * Archived (terminated) cards: hidden by default, Show archives shows them and
+ * is remembered, counts follow what is drawn, and a deep link to a hidden
+ * archive still opens it.
+ */
+async function archivesChecks(browser: import('playwright').Browser) {
+  const settle = (page: Page, want: (d: DoneRead) => boolean) =>
+    (async () => {
+      for (let i = 0; i < 100; i++) {
+        const d = await readDone(page);
+        if (want(d)) return d;
+        await page.waitForTimeout(30);
+      }
+      return readDone(page);
+    })();
+  for (const theme of ['light', 'dark'] as const) {
+    for (const width of [1280, 390]) {
+      const ctx = await browser.newContext({
+        viewport: { width, height: 900 },
+        colorScheme: theme,
+        hasTouch: width < 640,
+        isMobile: width < 640,
+      });
+      const page = await ctx.newPage();
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      await installMocks(page, makeBoard());
+      await openBoard(page);
+      const tag = `${theme} ${width}`;
+      const off = await readDone(page);
+      check(
+        off.archived === 0 &&
+          off.keys.length === 2 &&
+          off.count === '2' &&
+          off.foot === '' &&
+          !off.btnHidden &&
+          off.pressed === 'false' &&
+          off.label === 'Show archives (2)' &&
+          (width >= 640 || off.btnH >= 44),
+        `${tag}: archives hidden by default — DONE shows ${off.count}, "${off.label}", no Show older for archives (${JSON.stringify(off)})`,
+      );
+      check((await overflow(page)) === 0, `${tag}: board header with Show archives — no page overflow`);
+      await shoot(page, `archives-hidden-${theme}-${width}.png`);
+      await page.click('#archives-toggle');
+      const on = await settle(page, (d) => d.archived === 1);
+      check(
+        on.archived === 1 &&
+          on.keys.includes(K('700')) &&
+          on.count === '3' &&
+          on.foot === '▼ Show older (1)' &&
+          on.pressed === 'true' &&
+          on.label === 'Hide archives' &&
+          on.saved === 'on',
+        `${tag}: Show archives shows the recent archive, DONE ${on.count}, the 9-day one behind "${on.foot}" (${JSON.stringify(on)})`,
+      );
+      check((await overflow(page)) === 0, `${tag}: archives shown — no page overflow`);
+      await shoot(page, `archives-shown-${theme}-${width}.png`);
+      if (theme === 'dark' && width === 1280) {
+        await page.click('#foot-done .show-older-btn');
+        const older = await settle(page, (d) => d.archived === 2);
+        await page.reload();
+        await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 5, null, {
+          timeout: 10000,
+        });
+        const kept = await settle(page, (d) => d.archived === 1);
+        await page.click('#archives-toggle');
+        const hidden = await settle(page, (d) => d.archived === 0);
+        check(
+          older.count === '4' &&
+            older.foot === '▲ Hide older (1)' &&
+            kept.pressed === 'true' &&
+            kept.archived === 1 &&
+            hidden.pressed === 'false' &&
+            hidden.archived === 0 &&
+            hidden.saved === 'off',
+          `Show archives survives a reload and turns off again (older ${older.count}, reload ${kept.pressed}, off → ${hidden.saved})`,
+        );
+      }
+      check(errors.length === 0, `${tag}: archives — no page errors (${errors.join(' | ')})`);
+      await ctx.close();
+    }
+  }
+
+  // Deep links to hidden archives: 2 days old and 9 days old (behind Show older too).
+  for (const [n, age] of [
+    ['700', 'recent'],
+    ['800', '9-day'],
+  ] as const) {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'dark' });
+    const page = await ctx.newPage();
+    await installMocks(page, makeBoard());
+    await page.goto(`${BASE_URL}/dashboard/U001?session=${encodeURIComponent(`work:C123:1700000000.000${n}`)}`);
+    const opened = await page
+      .waitForFunction(() => document.getElementById('slide-panel')?.classList.contains('open'), null, {
+        timeout: 8000,
+      })
+      .then(
+        () => true,
+        () => false,
+      );
+    await page.waitForTimeout(400);
+    const d = await readDone(page);
+    const expanded = await page.evaluate(
+      (key) => !!document.querySelector(`[data-session-key="${key}"]`)?.classList.contains('is-expanded'),
+      K(n),
+    );
+    check(
+      opened &&
+        expanded &&
+        d.keys.includes(K(n)) &&
+        d.archived === 1 &&
+        d.pressed === 'false' &&
+        d.saved === null &&
+        d.label === 'Show archives (1)',
+      `deep link to a hidden ${age} archive opens it alone; the stored choice stays unset (${JSON.stringify({ opened, expanded, ...d })})`,
+    );
+    if (n === '800') await shoot(page, 'archives-deeplink-dark-1280.png', false);
+    await ctx.close();
+  }
+}
+
+/** All Users: owner badges on every card head, one colour per owner. */
+async function ownerBadgeChecks(browser: import('playwright').Browser) {
+  type BadgeRead = {
+    cards: number;
+    badges: Array<{
+      owner: string;
+      text: string;
+      title: string;
+      bg: string;
+      fg: string;
+      inside: boolean;
+      clear: boolean;
+      cut: boolean;
+    }>;
+  };
+  // The owner each card was given in makeTeamBoard(), by session key.
+  const OWNER_OF = Object.fromEntries(
+    Object.values(makeTeamBoard()).flatMap((col) => col.map((c) => [c.key as string, c.ownerId as string])),
+  );
+  const probe = (page: Page) =>
+    page.evaluate((ownerOf) => {
+      const cards = Array.from(document.querySelectorAll('#kanban .card:not(.is-exiting)')) as HTMLElement[];
+      const badges = cards.flatMap((card) => {
+        const b = card.querySelector('.card-head .owner-badge') as HTMLElement | null;
+        if (!b) return [];
+        const head = (card.querySelector('.card-head') as HTMLElement).getBoundingClientRect();
+        const title = card.querySelector('.card-title-text') as HTMLElement | null;
+        const br = b.getBoundingClientRect();
+        const tr = title?.getBoundingClientRect();
+        const cs = getComputedStyle(b);
+        const key = card.getAttribute('data-session-key') || '';
+        return [
+          {
+            owner: ownerOf[key] ?? '',
+            text: b.textContent || '',
+            title: b.getAttribute('title') || '',
+            bg: cs.backgroundColor,
+            fg: cs.color,
+            inside: br.left >= head.left - 0.5 && br.right <= head.right + 0.5 && br.width > 0,
+            clear: !tr || tr.right <= br.left + 0.5,
+            cut: b.scrollWidth > b.clientWidth + 1,
+          },
+        ];
+      });
+      return { cards: cards.length, badges };
+    }, OWNER_OF) as Promise<BadgeRead>;
+  const lum = (rgb: string) => {
+    const [r, g, b] = (rgb.match(/\d+(\.\d+)?/g) || []).slice(0, 3).map((v) => {
+      const c = Number(v) / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a: string, b: string) => {
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const judge = (p: BadgeRead) => {
+    const bad: string[] = [];
+    if (p.badges.length !== p.cards) bad.push(`${p.badges.length} badges on ${p.cards} cards`);
+    const colour = new Map<string, Set<string>>();
+    for (const b of p.badges) {
+      const want = TEAM.find((t) => t.id === b.owner)?.name;
+      if (b.text !== want || b.title !== want) bad.push(`badge "${b.text}" for ${b.owner}`);
+      if (!b.inside) bad.push(`${b.text} badge leaves its head`);
+      if (!b.clear) bad.push(`${b.text} badge covers the title`);
+      if (contrast(b.fg, b.bg) < 4.5) bad.push(`${b.text} contrast ${contrast(b.fg, b.bg).toFixed(2)}`);
+      if (b.owner === 'U005' && !b.cut) bad.push('the long name is not ellipsized');
+      if (!colour.has(b.owner)) colour.set(b.owner, new Set());
+      colour.get(b.owner)?.add(b.bg);
+    }
+    for (const [o, set] of colour) if (set.size !== 1) bad.push(`${o} has ${set.size} colours`);
+    const all = [...colour.values()].map((set) => [...set][0]);
+    if (new Set(all).size !== all.length) bad.push(`owners share a colour (${all.join(' ')})`);
+    return { bad, owners: colour.size };
+  };
+  for (const theme of ['light', 'dark'] as const) {
+    for (const width of [1280, 390]) {
+      const ctx = await browser.newContext({
+        viewport: { width, height: 900 },
+        colorScheme: theme,
+        hasTouch: width < 640,
+        isMobile: width < 640,
+      });
+      const page = await ctx.newPage();
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      await installMocks(page, makeTeamBoard());
+      await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: TEAM } }));
+      await page.goto(`${BASE_URL}/dashboard`);
+      await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 5, null, {
+        timeout: 10000,
+      });
+      await page.waitForTimeout(350);
+      const tag = `${theme} ${width}`;
+      const view = await page.evaluate(() => document.getElementById('kanban')?.getAttribute('data-view'));
+      const first = await probe(page);
+      const j1 = judge(first);
+      check(
+        j1.bad.length === 0 && j1.owners >= 4 && (await overflow(page)) === 0,
+        `${tag} ${view}: All Users — every card names its owner (${first.badges.length}/${first.cards} cards, ${j1.owners} owners, one colour each) ${j1.bad.join('; ')}`,
+      );
+      await shoot(page, `owner-badges-${theme}-${width}.png`, false);
+      const other = view === 'board' ? 'list' : 'board';
+      await page.click(`.seg-btn[data-view="${other}"]`);
+      await page.waitForTimeout(450);
+      const second = await probe(page);
+      const j2 = judge(second);
+      check(
+        j2.bad.length === 0 && (await overflow(page)) === 0,
+        `${tag} ${other}: owner badges hold in the other view ${j2.bad.join('; ')}`,
+      );
+      await page.selectOption('#user-select', 'U002');
+      await page
+        .waitForFunction(() => document.querySelectorAll('#kanban .owner-badge').length === 0, null, {
+          timeout: 5000,
+        })
+        .catch(() => {});
+      const mine = await probe(page);
+      check(mine.badges.length === 0, `${tag}: a selected user shows no owner badges (${mine.badges.length})`);
+      check(errors.length === 0, `${tag}: owner badges — no page errors (${errors.join(' | ')})`);
+      await ctx.close();
+    }
+  }
+}
+
 /** Expected strip text for a period: U001's own numbers or All Users'. */
 function stripWant(scope: 'user' | 'all', period: Period) {
   const t = PERIOD_TOTALS[period];
@@ -2081,6 +2397,8 @@ async function main() {
     await titleSubPanelSwitch(browser);
     await statsChecks(browser);
     await statsStripDetail(browser);
+    await archivesChecks(browser);
+    await ownerBadgeChecks(browser);
   } finally {
     await browser.close();
     await ws.stopWebServer();

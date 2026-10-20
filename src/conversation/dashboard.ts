@@ -1831,6 +1831,17 @@ function renderDashboardPage(userId?: string): string {
   --st-run: #6b93f2;
   --st-done: #3fb968;
   --st-fail: #f26b6b;
+  /* Owner badges (All Users, .prd/10 §3.1-3) — 8 hues, ordered so neighbouring
+     slots are far apart: blue · amber · green · rose · teal · orange · violet · olive.
+     Each text colour clears 4.5:1 on its own fill. */
+  --ob-0-bg: #233b57; --ob-0-fg: #aacef8;
+  --ob-1-bg: #574723; --ob-1-fg: #f8e1aa;
+  --ob-2-bg: #235735; --ob-2-fg: #aaf8c4;
+  --ob-3-bg: #572330; --ob-3-fg: #f8aabe;
+  --ob-4-bg: #235755; --ob-4-fg: #aaf8f6;
+  --ob-5-bg: #573323; --ob-5-fg: #f8c1aa;
+  --ob-6-bg: #3b2357; --ob-6-fg: #ceaaf8;
+  --ob-7-bg: #475723; --ob-7-fg: #e1f8aa;
 }
 
 /* ── LIGHT THEME — override surface & text planes ── */
@@ -1869,6 +1880,14 @@ function renderDashboardPage(userId?: string): string {
   --st-run: #2f63e0;
   --st-done: #137a3e;
   --st-fail: #d43a3a;
+  --ob-0-bg: #d9e9fc; --ob-0-fg: #0e3562;
+  --ob-1-bg: #fcf2d9; --ob-1-fg: #62490e;
+  --ob-2-bg: #d9fce5; --ob-2-fg: #0e622a;
+  --ob-3-bg: #fcd9e2; --ob-3-fg: #620e23;
+  --ob-4-bg: #d9fcfb; --ob-4-fg: #0e625f;
+  --ob-5-bg: #fce4d9; --ob-5-fg: #62270e;
+  --ob-6-bg: #e9d9fc; --ob-6-fg: #350e62;
+  --ob-7-bg: #f2fcd9; --ob-7-fg: #49620e;
 }
 [data-theme="light"] ::selection { background: var(--accent); color: #fff; }
 [data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8cdd5; border-color: var(--bg); }
@@ -2211,6 +2230,30 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .seg-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 .seg-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
+/* Board header tools: Show archives, then Board | List. Below 640px the tools
+   take their own row under the breadcrumb. */
+.inbox-tools { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
+.archives-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: var(--ib-seg);
+  color: var(--ib-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 10px;
+  min-height: 38px;
+  white-space: nowrap;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform var(--dur-press) var(--ease-out);
+}
+.archives-btn[hidden] { display: none; }
+.archives-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+.archives-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
 
 /* Board = 3 equal columns. No overflow clip on columns: a card flying between
    columns must stay visible over its neighbours. */
@@ -2257,7 +2300,33 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card-face:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .card-spark { flex-shrink: 0; display: inline-flex; color: var(--st-color); }
-.card .card-title-text { font-size: 15px; font-weight: 600; line-height: 1.3; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .card-title-text { flex: 1 1 auto; font-size: 15px; font-weight: 600; line-height: 1.3; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Owner badge (All Users, §3.1-3): right end of the head. It keeps its width up
+   to its cap, so the title truncates first; a longer name ends in an ellipsis
+   (full name in title). The colour slot comes from ownerBadgeHue(ownerId). */
+.owner-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+  max-inline-size: min(45%, 168px);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--ob-bg);
+  color: var(--ob-fg);
+}
+.owner-badge[data-hue="0"] { --ob-bg: var(--ob-0-bg); --ob-fg: var(--ob-0-fg); }
+.owner-badge[data-hue="1"] { --ob-bg: var(--ob-1-bg); --ob-fg: var(--ob-1-fg); }
+.owner-badge[data-hue="2"] { --ob-bg: var(--ob-2-bg); --ob-fg: var(--ob-2-fg); }
+.owner-badge[data-hue="3"] { --ob-bg: var(--ob-3-bg); --ob-fg: var(--ob-3-fg); }
+.owner-badge[data-hue="4"] { --ob-bg: var(--ob-4-bg); --ob-fg: var(--ob-4-fg); }
+.owner-badge[data-hue="5"] { --ob-bg: var(--ob-5-bg); --ob-fg: var(--ob-5-fg); }
+.owner-badge[data-hue="6"] { --ob-bg: var(--ob-6-bg); --ob-fg: var(--ob-6-fg); }
+.owner-badge[data-hue="7"] { --ob-bg: var(--ob-7-bg); --ob-fg: var(--ob-7-fg); }
 .card-summary {
   margin-top: 6px;
   font-size: 13.5px;
@@ -3143,13 +3212,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 /* ── PRESS — buttons and segments give 0.97 feedback (§4-5), pointer presses only:
    a keyboard-focused control matches :focus-visible, so Space/Enter never scale it (§4-9). ── */
-.btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+.btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
   .card:hover { border-color: var(--ib-muted); }
   .card[data-state="sleeping"]:hover, .card[data-state="archived"]:hover { border-color: var(--ib-card-border); }
   .seg-btn:hover { color: var(--ib-text); }
+  .archives-btn:hover { color: var(--ib-text); }
   .btn-action:hover:not(:disabled) { border-color: var(--ib-muted); }
   .btn-action.btn-primary:hover:not(:disabled) { opacity: 0.88; }
   .btn-action.btn-stop:hover:not(:disabled) { border-color: var(--st-fail); }
@@ -3214,7 +3284,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .topbar .user-pill-prefix { display: none; }
   .topbar .admin-toggle { padding: 4px 10px; }
   #theme-toggle { inline-size: 32px; block-size: 32px; padding: 0; flex-shrink: 0; }
-  .inbox-head { margin-bottom: 12px; }
+  .inbox-head { margin-bottom: 12px; flex-wrap: wrap; row-gap: 8px; }
+  /* The tools take the row under the breadcrumb; on the narrowest screens
+     (320px) Show archives sits above Board | List instead of overflowing. */
+  .inbox-tools { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
   .crumbs { font-size: 15px; gap: 7px; }
   .kanban[data-view="board"] { grid-template-columns: repeat(3, minmax(min(300px, 84vw), 1fr)); }
   /* Selectors carry an extra class so they beat the later @media (pointer: coarse) 40px rules. */
@@ -3245,7 +3318,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
      selectors are more specific than the * rule above, so they win. */
   .card-expand { transition: none !important; }
   .card-expand-inner { transition: opacity var(--dur-fade) linear !important; }
-  .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
+  .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
@@ -3282,6 +3355,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .period-btn { min-height: 44px; }
   .stats-more { min-height: 44px; }
   .seg .seg-btn, .card .btn-action, .card .btn-choice, .col-foot .show-older-btn { min-height: 44px; }
+  .inbox-head .archives-btn { min-height: 44px; }
   .card .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .panel-close { width: 44px; height: 44px; }
   #panel-title-sub-regen { min-width: 44px; min-height: 44px; }
@@ -3359,9 +3433,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     <section class="inbox" id="inbox" aria-label="Agent inbox">
       <div class="inbox-head">
         <nav class="crumbs" aria-label="Breadcrumb"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
-        <div class="seg" role="group" aria-label="Board layout">
-          <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="4.5" height="11" rx="1.2"/><rect x="9.5" y="2.5" width="4.5" height="7" rx="1.2"/></svg><span>Board</span></button>
-          <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span>List</span></button>
+        <div class="inbox-tools">
+          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">Show archives</span></button>
+          <div class="seg" role="group" aria-label="Board layout">
+            <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="4.5" height="11" rx="1.2"/><rect x="9.5" y="2.5" width="4.5" height="7" rx="1.2"/></svg><span>Board</span></button>
+            <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span>List</span></button>
+          </div>
         </div>
       </div>
       <div class="kanban" id="kanban" data-view="board">
@@ -4115,9 +4192,9 @@ function _envCount() {
 
 // ── Agent inbox board (.prd/10 §3.1, §4) ──
 // NEEDS YOU = waiting · RUNNING = working · DONE = idle, then closed (SLEEPING +
-// recent archives; older than 7 days stays behind "Show older"). The server
-// buckets (KanbanBoard) are unchanged — only the client folds idle + closed
-// into one column.
+// archives; older than 7 days stays behind "Show older", archives behind "Show
+// archives"). The server buckets (KanbanBoard) are unchanged — only the client
+// folds idle + closed into one column.
 var BOARD_COLS = ['waiting', 'working', 'done'];
 var SPARK_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg>';
 var WAIT_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.8 15 14H1z"/></svg>';
@@ -4158,6 +4235,29 @@ function isSiblingSession(s) {
   return !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
 }
 
+// Pure: the DONE column for this render. idle cards, then closed cards from the
+// last 7 days, then — when "Show older" is open — the older ones. An archived
+// (terminated) closed card is left out unless archives are shown; the one key
+// a deep link revealed (revealKey) is always in, whatever its age. olderCount =
+// what "Show older" would add; hiddenArchives = archives not drawn now.
+function planDoneColumn(idle, closed, o) {
+  var cutoff = o.now - 7 * 24 * 60 * 60 * 1000;
+  var recent = [], older = [], archivedCount = 0, hiddenArchives = 0;
+  for (var i = 0; i < closed.length; i++) {
+    var s = closed[i];
+    var archived = s.terminated === true;
+    var revealed = !!o.revealKey && s.key === o.revealKey;
+    if (archived) archivedCount++;
+    if (archived && !o.showArchives && !revealed) { hiddenArchives++; continue; }
+    if (!revealed && new Date(s.lastActivity).getTime() < cutoff) older.push(s);
+    else recent.push(s);
+  }
+  var done = idle.map(function(s) { return { s: s, col: 'idle' }; })
+    .concat(recent.map(function(s) { return { s: s, col: 'closed' }; }));
+  if (o.showOlder) done = done.concat(older.map(function(s) { return { s: s, col: 'closed' }; }));
+  return { done: done, olderCount: older.length, archivedCount: archivedCount, hiddenArchives: hiddenArchives };
+}
+
 function renderBoard(board) {
   _sessionCache = Object.create(null); // Clear stale cache each render cycle
   // Populate cache from the entire board first so the env-palette pass
@@ -4170,23 +4270,26 @@ function renderBoard(board) {
     }
   }
   _envIndex = _buildEnvIndex();
-  var closed = board.closed || [];
-  var sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  var recent = closed.filter(function(s) { return new Date(s.lastActivity).getTime() >= sevenDaysAgo; });
-  var older = closed.filter(function(s) { return new Date(s.lastActivity).getTime() < sevenDaysAgo; });
   function tag(col) { return function(s) { return { s: s, col: col }; }; }
-  var done = (board.idle || []).map(tag('idle')).concat(recent.map(tag('closed')));
-  if (showOlderClosed) done = done.concat(older.map(tag('closed')));
+  var plan = planDoneColumn(board.idle || [], board.closed || [], {
+    now: Date.now(),
+    showOlder: showOlderClosed,
+    showArchives: showArchives,
+    revealKey: _revealedKey,
+  });
   reconcileBoard({
     waiting: (board.waiting || []).map(tag('waiting')),
     working: (board.working || []).map(tag('working')),
-    done: done,
+    done: plan.done,
   }, {
     waiting: (board.waiting || []).length,
     working: (board.working || []).length,
-    done: (board.idle || []).length + closed.length,
+    // The DONE badge counts the cards DONE shows (hidden archives and the
+    // collapsed older group are not in it).
+    done: plan.done.length,
   });
-  renderOlderToggle(older.length);
+  renderOlderToggle(plan.olderCount);
+  renderArchivesToggle(plan.archivedCount, plan.hiddenArchives);
   _boardRenders++;
   openDeepLinkedSession();
 }
@@ -4474,8 +4577,22 @@ function renderCardStatus(s, col) {
   return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text"><span class="st-prefix">Done in </span>' + timer + '</span>';
 }
 
-// Collapsed face (§2.1 reference anatomy): ✦ + headline / 2-line summary /
-// status · tasks done/total · context %.
+// Owner badge (§3.1-3): in the All Users view every card head names its owner,
+// right-aligned. The colour slot is a pure function of ownerId (djb2 into the 8
+// hues of --ob-N-*), so one person keeps one colour on every card and reload.
+var OWNER_BADGE_HUES = 8;
+function ownerBadgeHue(ownerId) {
+  return _hashStr(String(ownerId || '')) % OWNER_BADGE_HUES;
+}
+function renderOwnerBadge(s) {
+  if (currentUserId) return '';
+  var name = s.ownerName || s.ownerId;
+  if (!name) return '';
+  return '<span class="owner-badge" data-hue="' + ownerBadgeHue(s.ownerId || name) + '" title="' + escAttr(name) + '">' + esc(name) + '</span>';
+}
+
+// Collapsed face (§2.1 reference anatomy): ✦ + headline [+ owner badge] /
+// 2-line summary / status · tasks done/total · context %.
 function renderCardFace(s, col) {
   // Server-resolved headline (#762) — displayHeadline reflects the full
   // priority chain (summaryTitle then issueTitle then prTitle then title then
@@ -4496,7 +4613,7 @@ function renderCardFace(s, col) {
   if (dhShow('contextwindow') && ctxPct > 0) {
     metrics.push('<span class="metric" title="Context window used">' + CTX_SVG + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '%</span>');
   }
-  return '<div class="card-head"><span class="card-spark">' + SPARK_SVG + '</span>' + titleHtml + '</div>'
+  return '<div class="card-head"><span class="card-spark">' + SPARK_SVG + '</span>' + titleHtml + renderOwnerBadge(s) + '</div>'
     + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
     + '<div class="card-foot"><span class="card-status">' + renderCardStatus(s, col) + '</span>'
     + (metrics.length ? '<span class="card-metrics">' + metrics.join('') + '</span>' : '')
@@ -4975,6 +5092,35 @@ function toggleOlderClosed() {
   loadSessions();
 }
 
+// ── Show archives (.prd/10 §3.1-1) — archived (terminated) cards are hidden
+// unless the user turned them on (localStorage['soma-show-archives'] = 'on').
+// The button sits in the board header and only appears while the board holds
+// at least one archive. ──
+var SHOW_ARCHIVES_KEY = 'soma-show-archives';
+function readShowArchives() {
+  try { return localStorage.getItem(SHOW_ARCHIVES_KEY) === 'on'; } catch (_e) { return false; }
+}
+var showArchives = readShowArchives();
+// A deep link to a hidden archive shows that one card for this page load
+// without touching the stored choice; the user's own toggle ends it.
+var _revealedKey = null;
+function toggleArchives() {
+  showArchives = !showArchives;
+  _revealedKey = null;
+  try { localStorage.setItem(SHOW_ARCHIVES_KEY, showArchives ? 'on' : 'off'); } catch (_e) {}
+  loadSessions();
+}
+function renderArchivesToggle(archivedCount, hiddenCount) {
+  var btn = document.getElementById('archives-toggle');
+  var label = document.getElementById('archives-label');
+  if (!btn || !label) return;
+  var hide = archivedCount === 0;
+  if (btn.hidden !== hide) btn.hidden = hide;
+  var pressed = showArchives ? 'true' : 'false';
+  if (btn.getAttribute('aria-pressed') !== pressed) btn.setAttribute('aria-pressed', pressed);
+  setTextIfChanged(label, showArchives ? 'Hide archives' : 'Show archives (' + hiddenCount + ')');
+}
+
 // Deep link (§3.1-8): /dashboard/<ownerId>?session=<sessionKey> opens that card
 // and the panel at its work log once the board has data. Slack links carry the
 // registry key WITHOUT the #814 instance prefix ("work:C123:1700000000.000100"),
@@ -5005,6 +5151,14 @@ function openDeepLinkedSession() {
   var key = resolveDeepLinkKey(_deepLinkSession, Object.keys(_sessionCache), SELF_INSTANCE_NAME);
   if (!key) return;
   if (!_cardEls[key]) {
+    // A hidden archive (any age): show just this card for this page load — the
+    // stored Show archives choice stays as it is — and retry on that render.
+    var linked = _sessionCache[key];
+    if (linked && linked.terminated === true && !showArchives && _revealedKey !== key) {
+      _revealedKey = key;
+      loadSessions();
+      return;
+    }
     // Closed more than 7 days ago — reveal the older group and retry on that render.
     if (!showOlderClosed) {
       showOlderClosed = true;

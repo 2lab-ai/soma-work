@@ -79,6 +79,11 @@ task list와 유저가 꼭 알아야 할 것만 남고, 모델의 실시간 작�
 ### 3.1 보드 (`src/conversation/dashboard.ts` 템플릿)
 1. 칸 3개: `NEEDS YOU` = `waiting` · `RUNNING` = `working` · `DONE` = `idle` 다음에 `closed`(동면·아카이브). closed 카드는 흐리게,
    상태 `Sleeping`/`Archived`, 7일 지난 것은 `Show older` 뒤에 숨는다. 서버 버킷(`KanbanBoard`)은 그대로다. 빈 칸 = `Nothing here`.
+   **아카이브**(closed 칸의 `terminated` 카드, 상태 `Archived`)는 기본으로 그리지 않는다 — `Sleeping` 카드는 그대로 보인다. 보드 머리의
+   `Board | List` 왼쪽에 `Show archives (N)` 버튼(`aria-pressed`, N = 지금 숨은 아카이브 수)이 있고, 누르면 아카이브가 보이며 라벨이
+   `Hide archives`가 된다. 선택은 `localStorage['soma-show-archives']`(`on`/`off`, 없으면 숨김). 보드에 아카이브가 하나도 없으면 버튼은
+   숨는다. `DONE` 개수 배지 = `DONE`에 지금 그려진 카드 수(숨은 아카이브·접힌 7일 전 묶음은 빠진다), `Show older (N)` = 펼치면 더해질
+   카드 수(아카이브는 보일 때만 센다).
 2. 상단: 상단 바 바로 아래에 **통계 줄**이 먼저 오고 보드가 그 뒤에 온다. 통계 줄 = 기간 선택(`오늘`·`지난 7일`·`지난 30일`)
    + `세션`·`토큰`·`비용` 세 숫자 + `자세히` 버튼(`aria-expanded`). 기본은 접힘이고, `자세히`는 나머지 다섯 칸(턴 사용·PR 생성·
    PR 머지·머지 코드·워크플로우)과 차트를 통계 줄과 보드 사이에 펼친다. 선택은 `localStorage['soma-stats-detail']`(`open`/`closed`,
@@ -96,6 +101,10 @@ task list와 유저가 꼭 알아야 할 것만 남고, 모델의 실시간 작�
 3. 접힌 카드: 상태색 ✦ + `displayHeadline` / 요약 2줄(waiting = 대기 질문, working = 진행 중 task, 그 외 = `summaryTitle` 또는 마지막 task)
    / 바닥 줄 = 상태 + 지표(task `완료/전체`, 컨텍스트 %). 나머지 메타(env 배지·refs·워크플로·모델·effort·owner·토큰·컨텍스트 바·merge)는
    펼친 영역에 있고 `dhShow()` 게이트를 따른다.
+   **All Users**(유저를 고르지 않은 보기)에서는 모든 카드 머리 오른쪽 끝에 소유자 이름 배지(`ownerName`, 둥근 pill)가 붙는다. 색은
+   `ownerId`의 해시(djb2)로 고른 8색 중 하나라 같은 사람은 어느 카드·새로고침에서도 같은 색이고, 각 색의 글자는 라이트·다크 모두 배지
+   바탕에 4.5:1 이상이다. 제목이 먼저 줄고(말줄임표), 배지는 상한(카드 폭 45%·168px)을 넘는 이름만 말줄임표로 줄며 전체 이름은 `title`에
+   있다. 유저를 고르면 배지는 없다. Board·List 모두 같고 390px에서도 제목을 덮지 않는다.
 4. 카드 클릭 = 제자리 펼침/접힘. 펼친 영역: 모델·effort → task 타임라인(현재 task만 진한 점, 완료 task는 소요시간) → **지시 / 응답**
    (최근 1쌍, 펼칠 때 `GET /api/dashboard/session/:conversationId?limit=2`로 지연 로드) → 대기 질문 선택지 → 버튼: 상태별 Stop / Close /
    Trash + `작업 로그`(패널 열기) + `Slack`(스레드 링크). 드래그 앤 드롭과 `confirm()`은 없다.
@@ -103,6 +112,8 @@ task list와 유저가 꼭 알아야 할 것만 남고, 모델의 실시간 작�
 6. 슬라이드 패널의 **작업 로그** 섹션: §3.3 항목을 시간순으로, 새 항목은 WS로 아래에 붙는다. 도구 행은 `▸ <도구> <입력 요약>` /
    `✓ <도구> ok` — 도구명은 한 번만 보인다(방출 텍스트가 도구명으로 시작하면 클라이언트가 그 접두를 뗀다).
 7. 딥링크: `/dashboard/<ownerId>?session=<sessionKey>` → 첫 렌더 후 그 카드를 펼치고 패널을 작업 로그 위치로 연다.
+   숨은 아카이브(나이 무관)를 가리키면 그 카드 하나만 이 페이지 로드 동안 보이게 하고(저장된 `Show archives` 선택은 바꾸지 않는다) 같은
+   순서로 연다. 유저가 `Show archives`를 누르면 그 예외는 끝난다. 7일 지난 `Sleeping` 카드는 전처럼 `Show older` 묶음을 펼친다.
 
 ### 3.2 Slack (minimal)
 1. **3a 1회 이관** (`src/deploy/migrate-all-users-minimal-once.ts`): 부팅 시 1회(마커 `.all-users-log-minimal-once-2026-10-16.json`,
