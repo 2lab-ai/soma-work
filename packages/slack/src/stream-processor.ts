@@ -33,27 +33,6 @@ import { ToolFormatter } from './tool-formatter';
 import { UserChoiceHandler } from './user-choice-handler';
 import type { WorkLogInput } from './work-log';
 
-export interface StreamProcessorProviders {
-  calculateTokenCost?: (
-    model: string | undefined,
-    inputTokens: number,
-    outputTokens: number,
-    cacheReadInputTokens: number,
-    cacheCreationInputTokens: number,
-  ) => number;
-}
-
-let streamProcessorProviders: Required<StreamProcessorProviders> = {
-  calculateTokenCost: () => 0,
-};
-
-export function setStreamProcessorProviders(providers: StreamProcessorProviders): void {
-  streamProcessorProviders = {
-    ...streamProcessorProviders,
-    ...providers,
-  };
-}
-
 /**
  * Context for stream processing
  */
@@ -751,13 +730,6 @@ export class AgentStreamProcessor {
     cacheReadTokens: number;
     cacheCreateTokens: number;
   } | null = null;
-  /**
-   * Model name captured from the most recent SDKAssistantMessage
-   * (BetaMessage.model). Used by extractUsageData's direct-usage fallback
-   * so calculateTokenCost prices the correct tier when the result message
-   * itself does not carry `model`.
-   */
-  private _lastAssistantModelName: string | undefined;
   /** EndTurn info from the result message stop_reason (Issue #42 S3) */
   private _endTurnInfo: EndTurnInfo | undefined;
   /** Last tool name seen in assistant messages (for endTurnInfo.lastToolUse) */
@@ -902,7 +874,7 @@ export class AgentStreamProcessor {
     this.pendingNarration = undefined;
     this.slackTextPosted = false;
     // Note: per-turn state fields (_lastAssistantTurnUsage, _lastToolName,
-    // _endTurnInfo, _sdkResultError, _lastAssistantModelName) are NOT reset
+    // _endTurnInfo, _sdkResultError) are NOT reset
     // here — stream-executor constructs a fresh AgentStreamProcessor per turn,
     // so they start at their declared initializers (matches the old class).
 

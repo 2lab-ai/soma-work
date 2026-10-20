@@ -10,8 +10,6 @@ import './user-skill-file-roundtrip';
 
 setEventRouterProviders({
   createLegacyCommandRouter: (deps) => new CommandRouter(deps as any),
-  markMigrationHintShown: (userId) => userSettingsStore.markMigrationHintShown(userId),
-  hasMigrationHintShown: (userId) => userSettingsStore.hasMigrationHintShown(userId),
   registerChannel: async (client, channel) => {
     const register = (channelRegistry as any).registerChannel;
     if (typeof register === 'function') {

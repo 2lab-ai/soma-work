@@ -1,5 +1,4 @@
 import { Logger } from '../../logger';
-import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
 import { applyTheme, renderThemeCard } from '../z/topics/theme-topic';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';

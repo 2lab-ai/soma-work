@@ -339,7 +339,7 @@ function readAsset(asset: PackagedAsset | undefined, label: string): string {
  * | `ANTHROPIC_BASE_URL`  | `src/config.ts` `config.auth.llmux.baseUrl`                 |
  * | `ANTHROPIC_API_KEY`   | `src/config.ts` `config.auth.llmux.apiKey`                  |
  * | `BASE_DIRECTORY`      | `src/config.ts`, `src/mcp/server-factory.ts`               |
- * | `SOMA_BASE_DIRECTORY` | `packages/slack` message-validator / directory-formatter   |
+ * | `SOMA_BASE_DIRECTORY` | `packages/slack` message-validator                         |
  *
  * The first three are legacy non-`SOMA_` names and are migration debt: they are
  * what the shipped runtime reads today, so setup must emit them.

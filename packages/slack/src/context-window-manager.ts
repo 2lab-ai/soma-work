@@ -73,13 +73,6 @@ export class ContextWindowManager {
   }
 
   /**
-   * Get current emoji for a session
-   */
-  getCurrentEmoji(sessionKey: string): string | null {
-    return this.contextState.get(sessionKey)?.currentEmoji ?? null;
-  }
-
-  /**
    * Calculate remaining context window percentage.
    * Instance method for backward compatibility.
    */

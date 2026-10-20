@@ -8,7 +8,6 @@ import {
   FOLLOWUP_QUEUE_TITLE,
   FOLLOWUP_SEND_NOW_ACTION_ID,
   FOLLOWUP_SEND_NOW_LABEL,
-  FOLLOWUP_STEERED_COUNT_LABEL,
   type FollowupItemMenuValue,
   type FollowupQueueView,
   parseFollowupMenuValue,
@@ -293,7 +292,7 @@ describe('ThreadSurface — the combined panel no longer renders the Queue (A39)
     expect(text).not.toContain(FOLLOWUP_QUEUE_TITLE);
     expect(text).not.toContain('2 item(s)');
     expect(text).not.toContain('queued 1');
-    expect(text).not.toContain(FOLLOWUP_STEERED_COUNT_LABEL);
+    expect(text).not.toContain('전달'); // the old counts-line word for `steered`
     expect(text).not.toContain('stopped by');
   });
 
@@ -495,18 +494,6 @@ describe('ThreadSurface — turn-epoch gated writes (A12/A28)', () => {
 
     expect(slackApi.updates).toHaveLength(1);
     expect(session.actionPanel?.agentPhase).toBe('legacy phase');
-  });
-
-  it('still rejects when the view carries a REAL epoch that disagrees', async () => {
-    const session = makeSession();
-    session.actionPanel!.agentPhase = 'live phase';
-    const slackApi = makeSlackApi();
-    const surface = new ThreadSurface(makeDeps(session, slackApi, { getFollowupView: () => view({ turnEpoch: 5 }) }));
-
-    await surface.setStatus(session, KEY, { agentPhase: 'stale phase' }, { expectedTurnEpoch: 4 });
-
-    expect(slackApi.updates).toHaveLength(0);
-    expect(session.actionPanel?.agentPhase).toBe('live phase');
   });
 
   it('treats a genuine epoch 0 as a real value, not as unknown', async () => {

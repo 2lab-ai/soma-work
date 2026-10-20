@@ -8,7 +8,6 @@ import {
 import { type FollowupItem, FollowupQueue } from '@soma/slack/followup-queue';
 import {
   encodeFollowupItemActionValue,
-  encodeFollowupPageActionValue,
   FOLLOWUP_CANCEL_ACTION_ID,
   FOLLOWUP_PAGE_NEXT_ACTION_ID,
   FOLLOWUP_RESUME_ACTION_ID,
@@ -628,10 +627,7 @@ describe('retry', () => {
 describe('pagination', () => {
   it('is read-only: refreshes the requested page and mutates nothing', async () => {
     const h = harness();
-    await h.click(
-      FOLLOWUP_PAGE_NEXT_ACTION_ID,
-      clickBody(encodeFollowupPageActionValue({ sessionKey: SESSION_KEY, page: 3 })),
-    );
+    await h.click(FOLLOWUP_PAGE_NEXT_ACTION_ID, clickBody(JSON.stringify({ sessionKey: SESSION_KEY, page: 3 })));
     await tick();
     expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY, 3);
     expect(h.queue.resume).not.toHaveBeenCalled();
@@ -645,7 +641,7 @@ describe('pagination', () => {
     const h = harness();
     await h.click(
       FOLLOWUP_PAGE_NEXT_ACTION_ID,
-      clickBody(encodeFollowupPageActionValue({ sessionKey: SESSION_KEY, page: 2 }), {
+      clickBody(JSON.stringify({ sessionKey: SESSION_KEY, page: 2 }), {
         channel: { id: 'C-ATTACKER' },
         container: { channel_id: 'C-ATTACKER', message_ts: SURFACE_TS, thread_ts: THREAD },
       }),

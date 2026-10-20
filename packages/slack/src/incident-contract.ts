@@ -62,24 +62,6 @@ export type IncidentRejectReason =
   | 'envelope_channel_mismatch'
   | 'envelope_parent_mismatch';
 
-/**
- * Rejections caused by *who sent it* rather than *what it said*. The policy
- * layer uses this to stay quiet about strangers while alerting on a trusted bot
- * that emits garbage.
- */
-const UNTRUSTED_SENDER_REASONS: ReadonlySet<IncidentRejectReason> = new Set<IncidentRejectReason>([
-  'missing_sender_identity',
-  'untrusted_team',
-  'untrusted_app',
-  'untrusted_bot',
-  'untrusted_user',
-  'untrusted_channel',
-]);
-
-export function isUntrustedSenderRejection(reason: IncidentRejectReason): boolean {
-  return UNTRUSTED_SENDER_REASONS.has(reason);
-}
-
 const STRING_FIELDS = [
   'incident_id',
   'lifecycle_id',

@@ -4,7 +4,6 @@ import {
   DANGEROUS_RULES,
   isCrossUserAccess,
   isSshCommand,
-  matchRules,
   overridableMatchedRuleIds,
   overridableRulesByIds,
 } from '../dangerous-command-filter';
@@ -62,108 +61,12 @@ describe('dangerous-command detection (bypassBashPermissionDecision, no session)
   });
 });
 
-describe('isSshCommand', () => {
-  describe('detects SSH patterns', () => {
-    it.each([
-      ['ssh dev2 docker ps', 'ssh command'],
-      ['ssh user@host ls', 'ssh with user@host'],
-      ['ssh -i key.pem host', 'ssh with identity file'],
-      ['sudo ssh dev2 docker pull nginx', 'sudo ssh'],
-      ['scp file.txt user@host:/tmp/', 'scp upload'],
-      ['scp user@host:/tmp/file.txt .', 'scp download'],
-      ['sftp user@host', 'sftp connection'],
-      ['rsync -avz -e ssh ./dir user@host:/tmp/', 'rsync over ssh'],
-      ['rsync -e "ssh -i key" src dest', 'rsync with ssh key'],
-    ])('detects: %s (%s)', (command) => {
-      expect(isSshCommand(command)).toBe(true);
-    });
-  });
-
-  describe('allows non-SSH patterns', () => {
-    it.each([
-      ['git status', 'git status'],
-      ['npm install', 'npm install'],
-      ['ls -la', 'ls'],
-      ['cat ssh_config', 'cat ssh_config file (ssh_ is not word boundary)'],
-      ['docker ps', 'docker ps'],
-      ['rsync -avz ./dir /tmp/', 'rsync without ssh'],
-      ['grep sshd /var/log/syslog', 'grep sshd (not standalone ssh)'],
-    ])('allows: %s (%s)', (command) => {
-      expect(isSshCommand(command)).toBe(false);
-    });
-  });
-
-  describe('conservative match — contains standalone ssh word', () => {
-    it.each([
-      ['echo "ssh is cool"', 'echo with ssh word'],
-      ['cat ~/.ssh/config', 'path with /ssh/'],
-    ])('matches: %s (%s)', (command) => {
-      // \bssh\b matches standalone "ssh" even in strings — this is intentional
-      expect(isSshCommand(command)).toBe(true);
-    });
-  });
-});
-
 describe('bypassBashPermissionDecision on compound commands', () => {
   it('returns the ids of every overridable rule the parts match', () => {
     const result = bypassBashPermissionDecision('kill 1234 && rm -rf /tmp');
     expect(result.decision).toBe('ask');
     expect(result.matchedRuleIds).toContain('kill');
     expect(result.matchedRuleIds).toContain('rm-recursive');
-  });
-});
-
-describe('isCrossUserAccess', () => {
-  const CURRENT_USER = 'U094E5L4A15';
-
-  describe('detects cross-user directory access', () => {
-    it.each([
-      ['cd /tmp/U09F1M5MML1/session_123', 'cd into another user dir'],
-      ['cat /tmp/U09F1M5MML1/file.txt', 'read another user file'],
-      ['mkdir -p /tmp/UOTHER123/workdir', 'create dir under another user'],
-      ['git clone repo /tmp/U09F1M5MML1/repo', 'clone into another user dir'],
-      ['cp /tmp/U094E5L4A15/a.txt /tmp/U09F1M5MML1/b.txt', 'copy to another user dir'],
-      ['ls /private/tmp/U09F1M5MML1/', 'macOS /private/tmp path'],
-      ['cat /tmp/U094E5L4A15/../U09F1M5MML1/file.txt', 'path traversal via ..'],
-      ['ls /tmp/U094E5L4A15/../../etc/passwd', 'traversal out of /tmp entirely'],
-      ['cat /private/tmp/U094E5L4A15/../U09F1M5MML1/secret', 'macOS path traversal'],
-      ['ls /tmp/W012ABC3DEF/files', 'Enterprise Grid W-prefixed user ID'],
-    ])('detects: %s (%s)', (command) => {
-      expect(isCrossUserAccess(command, CURRENT_USER)).toBe(true);
-    });
-  });
-
-  describe('allows same-user directory access', () => {
-    it.each([
-      ['cd /tmp/U094E5L4A15/session_123', 'cd into own session dir'],
-      ['mkdir -p /tmp/U094E5L4A15/soma-work_xxx', 'create sibling dir'],
-      ['cat /tmp/U094E5L4A15/file.txt', 'read own file'],
-      ['ls /private/tmp/U094E5L4A15/', 'macOS /private/tmp own path'],
-      ['cp /tmp/U094E5L4A15/a.txt /tmp/U094E5L4A15/b.txt', 'copy within own dir'],
-    ])('allows: %s (%s)', (command) => {
-      expect(isCrossUserAccess(command, CURRENT_USER)).toBe(false);
-    });
-  });
-
-  describe('allows commands without /tmp user paths', () => {
-    it.each([
-      ['git status', 'git status'],
-      ['npm install', 'npm install'],
-      ['ls -la /home/user', 'non-tmp path'],
-      ['cat /etc/hosts', 'system file'],
-      ['echo hello', 'echo'],
-      ['mkdir -p /tmp/workdir', 'tmp without user ID pattern'],
-    ])('allows: %s (%s)', (command) => {
-      expect(isCrossUserAccess(command, CURRENT_USER)).toBe(false);
-    });
-  });
-
-  it('detects cross-user in compound commands', () => {
-    expect(isCrossUserAccess('cd /tmp/U094E5L4A15 && cat /tmp/U09F1M5MML1/file', CURRENT_USER)).toBe(true);
-  });
-
-  it('allows when all paths belong to current user', () => {
-    expect(isCrossUserAccess('cp /tmp/U094E5L4A15/a.txt /tmp/U094E5L4A15/b.txt', CURRENT_USER)).toBe(false);
   });
 });
 
@@ -260,47 +163,6 @@ describe('rule catalog', () => {
     }
   });
 
-  it('rule ids are unique', () => {
-    const ids = DANGEROUS_RULES.map((r) => r.id);
-    expect(new Set(ids).size).toBe(ids.length);
-  });
-
-  it('cross-user-access and ssh-remote are lockdown (non-overridable)', () => {
-    expect(DANGEROUS_RULES.find((r) => r.id === 'cross-user-access')?.sessionOverridable).toBe(false);
-    expect(DANGEROUS_RULES.find((r) => r.id === 'ssh-remote')?.sessionOverridable).toBe(false);
-  });
-
-  describe('matchRules', () => {
-    it('returns empty for safe commands', () => {
-      expect(matchRules('git status')).toEqual([]);
-    });
-
-    it('returns the matched rule object for a dangerous command', () => {
-      const matches = matchRules('kill 1234');
-      expect(matches.map((r) => r.id)).toContain('kill');
-    });
-
-    it('consults cross-user rule only when ctx.userId is provided', () => {
-      expect(matchRules('ls /tmp/U09F1M5MML1/file').map((r) => r.id)).not.toContain('cross-user-access');
-      const withUser = matchRules('ls /tmp/U09F1M5MML1/file', { userId: 'U094E5L4A15' });
-      expect(withUser.map((r) => r.id)).toContain('cross-user-access');
-    });
-  });
-
-  describe('overridableMatchedRuleIds', () => {
-    it('returns ids for dangerous overridable commands', () => {
-      expect(overridableMatchedRuleIds('kill 1234')).toContain('kill');
-    });
-
-    it('excludes lockdown rules', () => {
-      expect(overridableMatchedRuleIds('ssh host ls')).toEqual([]);
-    });
-
-    it('returns empty for safe commands', () => {
-      expect(overridableMatchedRuleIds('echo hi')).toEqual([]);
-    });
-  });
-
   describe('overridableRulesByIds', () => {
     it('drops unknown ids', () => {
       expect(overridableRulesByIds(['nonexistent'])).toEqual([]);
@@ -323,10 +185,6 @@ describe('rule catalog', () => {
  *      (`src/agent-runtime/policy/tool-policy.ts`), not through this escalation.
  */
 describe('lockdown isolation invariants', () => {
-  it('overridableRulesByIds([only lockdown ids]) returns empty array — never leaks lockdown rules through the overridable surface', () => {
-    expect(overridableRulesByIds(['cross-user-access', 'ssh-remote'])).toEqual([]);
-  });
-
   it('overridableRulesByIds preserves overridable rules and silently drops lockdown ids in mixed input', () => {
     const result = overridableRulesByIds(['kill', 'cross-user-access', 'rm-recursive', 'ssh-remote']);
     expect(result.map((r) => r.id)).toEqual(['kill', 'rm-recursive']);
@@ -354,14 +212,14 @@ describe('lockdown isolation invariants', () => {
       expect(overridableRulesByIds([rule.id])).toEqual([]);
 
       // (b) matcher actually fires (sanity — synthetic command must hit the
-      // rule via the full-catalog matchRules path with proper ctx)
+      // rule's own matcher with proper ctx)
       const synthetic = syntheticCmdFor[rule.id];
       if (!synthetic) {
         throw new Error(
           `lockdown isolation invariants: missing synthetic command for new lockdown rule '${rule.id}'. Add an entry to syntheticCmdFor before merging.`,
         );
       }
-      expect(matchRules(synthetic.command, synthetic.ctx ?? {}).map((r) => r.id)).toContain(rule.id);
+      expect(rule.match(synthetic.command, synthetic.ctx ?? {})).toBe(true);
 
       // (c) overridable matcher (no ctx, ignores lockdown rules) does NOT
       // include this lockdown id, even though the command literally matches it

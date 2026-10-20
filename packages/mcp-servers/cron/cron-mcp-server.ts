@@ -125,7 +125,7 @@ function validateCreateInput(args: Record<string, any>, context: CronContext): V
 }
 
 function buildModelConfig(args: Record<string, any>): ModelConfigResult {
-  const { model_type, model_name, reasoning_effort, fast_mode } = args;
+  const { model_type, model_name } = args;
   const effectiveModelType = model_type || 'default';
 
   if (effectiveModelType === 'default') {
@@ -142,15 +142,7 @@ function buildModelConfig(args: Record<string, any>): ModelConfigResult {
     if (!model_name) {
       return { ok: false, errorText: 'Error: model_name is required when model_type is "custom"' };
     }
-    return {
-      ok: true,
-      modelConfig: {
-        type: 'custom',
-        model: model_name,
-        reasoningEffort: reasoning_effort || undefined,
-        fastMode: fast_mode ?? undefined,
-      },
-    };
+    return { ok: true, modelConfig: { type: 'custom', model: model_name } };
   }
   return {
     ok: false,
@@ -538,12 +530,6 @@ class CronMcpServer {
                 type: 'string',
                 description: 'Model identifier when model_type=custom (e.g. "claude-sonnet-4-20250514")',
               },
-              reasoning_effort: {
-                type: 'string',
-                enum: ['low', 'medium', 'high'],
-                description: 'Reasoning effort for custom model',
-              },
-              fast_mode: { type: 'boolean', description: 'Enable fast mode for custom model' },
             },
             required: ['name', 'expression', 'prompt'],
           },
@@ -589,12 +575,6 @@ class CronMcpServer {
                 type: 'string',
                 description: 'Model identifier when model_type=custom (e.g. "claude-sonnet-4-20250514")',
               },
-              reasoning_effort: {
-                type: 'string',
-                enum: ['low', 'medium', 'high'],
-                description: 'Reasoning effort for custom model',
-              },
-              fast_mode: { type: 'boolean', description: 'Enable fast mode for custom model' },
             },
             required: ['name'],
           },

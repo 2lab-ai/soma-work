@@ -1,5 +1,5 @@
+import { ChannelMessageDirectiveHandler } from '@soma/slack/directives/channel-message-directive';
 import { describe, expect, it } from 'vitest';
-import { ChannelMessageDirectiveHandler } from '../channel-message-directive';
 
 describe('ChannelMessageDirectiveHandler', () => {
   describe('extract', () => {

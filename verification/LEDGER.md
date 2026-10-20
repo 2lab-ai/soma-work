@@ -1,6 +1,6 @@
 # Verification ledger
 
-Snapshot of 2026-10-01. Every production TypeScript file (the set the ImportGraph extractor reads
+Snapshot of 2026-10-20. Every production TypeScript file (the set the ImportGraph extractor reads
 from `git ls-files`: `*.ts`, `*.tsx`, `*.mts`, `*.cts`, minus declaration files, tests, specs
 and fixtures), and how far `verification/` covers it. Written by
 `node scripts/verification/ledger.cjs`. Nothing checks this file against the tree; the live
@@ -17,15 +17,15 @@ current file set on every run.
 | Group | Files | T2 | T1 |
 |---|---:|---:|---:|
 | `packages/common/` | 13 | 0 | 13 |
-| `packages/process-shared/` | 26 | 0 | 26 |
-| `packages/slack/` | 97 | 2 | 95 |
-| `src/` | 406 | 5 | 401 |
+| `packages/process-shared/` | 21 | 0 | 21 |
+| `packages/slack/` | 95 | 2 | 93 |
+| `src/` | 393 | 5 | 388 |
 | `somalib/` | 17 | 0 | 17 |
 | `packages/test-utils/` | 4 | 0 | 4 |
 | `packages/mcp-servers/` | 11 | 0 | 11 |
-| `scripts/` | 6 | 0 | 6 |
+| `scripts/` | 7 | 0 | 7 |
 | other | 1 | 0 | 1 |
-| **total** | **581** | **7** | **574** |
+| **total** | **562** | **7** | **555** |
 
 ## Files
 
@@ -64,17 +64,12 @@ current file set on every run.
 | `packages/process-shared/src/mcp-tool-permission-config.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/mcp/base-mcp-server.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/mcp/config-cache.ts` | `packages/process-shared/` | T1 |
-| `packages/process-shared/src/mcp/mcp-client.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/mcp/types.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/catalog.ts` | `packages/process-shared/` | T1 |
-| `packages/process-shared/src/model-commands/command-help.ts` | `packages/process-shared/` | T1 |
-| `packages/process-shared/src/model-commands/handoff-parser.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/hierarchical-memory-store.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/memory-file-store.ts` | `packages/process-shared/` | T1 |
-| `packages/process-shared/src/model-commands/result-parser.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/session-types.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/skill-file-store.ts` | `packages/process-shared/` | T1 |
-| `packages/process-shared/src/model-commands/skill-share-errors.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/types.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/model-commands/validator.ts` | `packages/process-shared/` | T1 |
 | `packages/process-shared/src/permission/dangerous-rules.ts` | `packages/process-shared/` | T1 |
@@ -113,13 +108,11 @@ current file set on every run.
 | `packages/slack/src/followup-queue-blocks.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/followup-queue-store.ts` | `packages/slack/` | T2:FollowupSnapshot |
 | `packages/slack/src/followup-queue.ts` | `packages/slack/` | T1 |
-| `packages/slack/src/formatters/directory-formatter.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/formatters/index.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/formatters/markdown-to-blocks.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/handoff-budget.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/incident-contract.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/incident-result.ts` | `packages/slack/` | T1 |
-| `packages/slack/src/index.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/instruction-confirm-blocks.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/mcp-health-monitor.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/mcp-status-tracker.ts` | `packages/slack/` | T1 |
@@ -169,12 +162,12 @@ current file set on every run.
 | `packages/slack/src/user-choice-extractor.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/user-choice-handler.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/user-skill-file-roundtrip.ts` | `packages/slack/` | T1 |
+| `packages/slack/src/work-log.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/z/capability.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/z/normalize.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/z/respond.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/z/router.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/z/strip-z-prefix.ts` | `packages/slack/` | T1 |
-| `packages/slack/src/z/tombstone.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/z/types.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/z/ui-builder.ts` | `packages/slack/` | T1 |
 | `packages/slack/src/z/whitelist.ts` | `packages/slack/` | T1 |
@@ -185,6 +178,7 @@ current file set on every run.
 | `scripts/gen-usage-card-fixture.ts` | `scripts/` | T1 |
 | `scripts/provision-agent.ts` | `scripts/` | T1 |
 | `scripts/release/render-manifest.ts` | `scripts/` | T1 |
+| `scripts/screenshot-agent-inbox.ts` | `scripts/` | T1 |
 | `scripts/screenshot-dashboard.ts` | `scripts/` | T1 |
 | `scripts/soma-cli.ts` | `scripts/` | T1 |
 | `scripts/update-slack-jira-mapping.ts` | `scripts/` | T1 |
@@ -289,6 +283,8 @@ current file set on every run.
 | `src/conversation/types.ts` | `src/` | T1 |
 | `src/conversation/viewer.ts` | `src/` | T1 |
 | `src/conversation/web-server.ts` | `src/` | T1 |
+| `src/conversation/work-log-routes.ts` | `src/` | T1 |
+| `src/conversation/work-log.ts` | `src/` | T1 |
 | `src/credential-alert.ts` | `src/` | T1 |
 | `src/credentials-manager.ts` | `src/` | T1 |
 | `src/cron-run-request-store.ts` | `src/` | T1 |
@@ -297,14 +293,15 @@ current file set on every run.
 | `src/deploy/force-migrate-opus-1m.ts` | `src/` | T1 |
 | `src/deploy/llmux-codex-model-sync.ts` | `src/` | T1 |
 | `src/deploy/main-env-bootstrap.ts` | `src/` | T1 |
+| `src/deploy/migrate-all-users-minimal-once.ts` | `src/` | T1 |
 | `src/deploy/migrate-all-users-opus-once.ts` | `src/` | T1 |
 | `src/deploy/migrate-cron-opus-once.ts` | `src/` | T1 |
+| `src/deploy/migrate-threadheader-dashboard-link-once.ts` | `src/` | T1 |
 | `src/dispatch-recovery.ts` | `src/` | T1 |
 | `src/dispatch-service.ts` | `src/` | T1 |
 | `src/env-paths.ts` | `src/` | T1 |
 | `src/file-handler.ts` | `src/` | T1 |
 | `src/format/display-title.ts` | `src/` | T1 |
-| `src/format/duration.ts` | `src/` | T1 |
 | `src/github-auth.ts` | `src/` | T1 |
 | `src/github/api-client.ts` | `src/` | T1 |
 | `src/github/git-credentials-manager.ts` | `src/` | T1 |
@@ -344,7 +341,6 @@ current file set on every run.
 | `src/metrics/report-formatter.ts` | `src/` | T1 |
 | `src/metrics/report-publisher.ts` | `src/` | T1 |
 | `src/metrics/report-scheduler.ts` | `src/` | T1 |
-| `src/metrics/token-pricing.ts` | `src/` | T1 |
 | `src/metrics/tool-result-interceptor.ts` | `src/` | T1 |
 | `src/metrics/types.ts` | `src/` | T1 |
 | `src/metrics/usage-render/buildCarouselOption.ts` | `src/` | T1 |
@@ -363,7 +359,6 @@ current file set on every run.
 | `src/notification-channels/webhook-channel.ts` | `src/` | T1 |
 | `src/oauth/auto-rotate-notifier.ts` | `src/` | T1 |
 | `src/oauth/auto-rotate.ts` | `src/` | T1 |
-| `src/oauth/header-parser.ts` | `src/` | T1 |
 | `src/oauth/index.ts` | `src/` | T1 |
 | `src/oauth/oauth-refresh-scheduler.ts` | `src/` | T1 |
 | `src/oauth/profile.ts` | `src/` | T1 |
@@ -513,14 +508,9 @@ current file set on every run.
 | `src/slack/cron-blocks.ts` | `src/` | T1 |
 | `src/slack/cron-run-permission-blocks.ts` | `src/` | T1 |
 | `src/slack/cron-run-permission-request.ts` | `src/` | T1 |
-| `src/slack/directives/channel-message-directive.ts` | `src/` | T1 |
-| `src/slack/directives/session-link-directive.ts` | `src/` | T1 |
-| `src/slack/directives/source-working-dir-directive.ts` | `src/` | T1 |
 | `src/slack/dispatch-abort.ts` | `src/` | T1 |
 | `src/slack/event-router.ts` | `src/` | T1 |
 | `src/slack/followup-reactions.ts` | `src/` | T1 |
-| `src/slack/formatters/index.ts` | `src/` | T1 |
-| `src/slack/formatters/markdown-to-blocks.ts` | `src/` | T1 |
 | `src/slack/goal-blocks.ts` | `src/` | T1 |
 | `src/slack/goal-completion-evaluator.ts` | `src/` | T1 |
 | `src/slack/goal-continuation.ts` | `src/` | T1 |
@@ -537,26 +527,21 @@ current file set on every run.
 | `src/slack/mrkdwn-escape.ts` | `src/` | T1 |
 | `src/slack/pipeline/index.ts` | `src/` | T1 |
 | `src/slack/pipeline/input-processor.ts` | `src/` | T1 |
-| `src/slack/pipeline/local-slash-command.ts` | `src/` | T1 |
 | `src/slack/pipeline/session-initializer.ts` | `src/` | T1 |
-| `src/slack/pipeline/stream-executor-cleanup-helpers.ts` | `src/` | T1 |
 | `src/slack/pipeline/stream-executor.ts` | `src/` | T1 |
-| `src/slack/pipeline/types.ts` | `src/` | T1 |
 | `src/slack/reaction-manager.ts` | `src/` | T1 |
 | `src/slack/request-coordinator.ts` | `src/` | T1 |
 | `src/slack/session-goal-lifecycle.ts` | `src/` | T1 |
 | `src/slack/session-goal.ts` | `src/` | T1 |
 | `src/slack/session-manager.ts` | `src/` | T1 |
+| `src/slack/session-notice.ts` | `src/` | T1 |
 | `src/slack/skill-permission-blocks.ts` | `src/` | T1 |
 | `src/slack/slack-api-helper.ts` | `src/` | T1 |
-| `src/slack/slash-command-adapter.ts` | `src/` | T1 |
 | `src/slack/source-thread-summary.ts` | `src/` | T1 |
 | `src/slack/status-reporter.ts` | `src/` | T1 |
-| `src/slack/stream-processor.ts` | `src/` | T1 |
 | `src/slack/summary-service.ts` | `src/` | T1 |
 | `src/slack/summary-timer.ts` | `src/` | T1 |
 | `src/slack/surface-config.ts` | `src/` | T1 |
-| `src/slack/task-list-block-builder.ts` | `src/` | T1 |
 | `src/slack/thread-header-builder.ts` | `src/` | T1 |
 | `src/slack/thread-panel.ts` | `src/` | T1 |
 | `src/slack/thread-surface.ts` | `src/` | T1 |
@@ -564,15 +549,11 @@ current file set on every run.
 | `src/slack/tool-event-processor.ts` | `src/` | T1 |
 | `src/slack/tool-formatter.ts` | `src/` | T1 |
 | `src/slack/tool-tracker.ts` | `src/` | T1 |
-| `src/slack/turn-render-debouncer.ts` | `src/` | T1 |
 | `src/slack/turn-surface.ts` | `src/` | T1 |
 | `src/slack/user-choice-handler.ts` | `src/` | T1 |
 | `src/slack/user-skill-file-roundtrip.ts` | `src/` | T1 |
-| `src/slack/z/capability.ts` | `src/` | T1 |
 | `src/slack/z/normalize.ts` | `src/` | T1 |
 | `src/slack/z/respond.ts` | `src/` | T1 |
-| `src/slack/z/router.ts` | `src/` | T1 |
-| `src/slack/z/tombstone.ts` | `src/` | T1 |
 | `src/slack/z/topics/auth-topic.ts` | `src/` | T1 |
 | `src/slack/z/topics/bypass-topic.ts` | `src/` | T1 |
 | `src/slack/z/topics/cct-topic.ts` | `src/` | T1 |
@@ -593,10 +574,10 @@ current file set on every run.
 | `src/slack/z/ui-builder.ts` | `src/` | T1 |
 | `src/slack/z/whitelist.ts` | `src/` | T1 |
 | `src/startup-notifier.ts` | `src/` | T1 |
-| `src/test-utils/mock-claude-handler.ts` | `src/` | T1 |
-| `src/test-utils/mock-session.ts` | `src/` | T1 |
-| `src/test-utils/mock-slack-api.ts` | `src/` | T1 |
+| `src/test-utils/hermetic-test-env.ts` | `src/` | T1 |
 | `src/test-utils/slack-token-fixtures.ts` | `src/` | T1 |
+| `src/test-utils/vitest-global-setup.ts` | `src/` | T1 |
+| `src/test-utils/vitest-setup.ts` | `src/` | T1 |
 | `src/todo-manager.ts` | `src/` | T1 |
 | `src/token-manager.ts` | `src/` | T1 |
 | `src/turn-notifier.ts` | `src/` | T1 |

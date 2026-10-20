@@ -88,33 +88,10 @@ interface SlackJiraMapping {
 
 ## 4. Settings Operations
 
-### 4.1 Get User Default Directory
+### 4.1 / 4.2 Default Directory (removed)
 
-```typescript
-getUserDefaultDirectory(userId: string): string | undefined {
-  const userSettings = this.settings[userId];
-  if (userSettings?.defaultDirectory) {
-    return userSettings.defaultDirectory;
-  }
-  return undefined;
-}
-```
-
-### 4.2 Set User Default Directory
-
-```typescript
-setUserDefaultDirectory(userId: string, directory: string): void {
-  const existing = this.settings[userId];
-  this.settings[userId] = {
-    userId,
-    defaultDirectory: directory,
-    bypassPermission: existing?.bypassPermission ?? false,
-    persona: existing?.persona ?? 'default',
-    lastUpdated: new Date().toISOString(),
-  };
-  this.saveSettings();
-}
-```
+Working directories are fixed per user (`{BASE_DIRECTORY}/{userId}/`). The deprecated
+`getUserDefaultDirectory` / `setUserDefaultDirectory` no-ops were deleted in 2026-10.
 
 ### 4.3 Get Bypass Permission
 
@@ -125,25 +102,10 @@ getUserBypassPermission(userId: string): boolean {
 }
 ```
 
-### 4.4 Set Bypass Permission
+### 4.4 Set Bypass Permission (removed)
 
-```typescript
-setUserBypassPermission(userId: string, bypass: boolean): void {
-  if (this.settings[userId]) {
-    this.settings[userId].bypassPermission = bypass;
-    this.settings[userId].lastUpdated = new Date().toISOString();
-  } else {
-    this.settings[userId] = {
-      userId,
-      defaultDirectory: '',
-      bypassPermission: bypass,
-      persona: 'default',
-      lastUpdated: new Date().toISOString(),
-    };
-  }
-  this.saveSettings();
-}
-```
+There is no direct setter any more. `setUserPermissionMode(userId, mode)` writes the mode and keeps
+the legacy `bypassPermission` boolean in sync (`mode === 'bypass'`).
 
 ### 4.5 Get User Persona
 
@@ -265,19 +227,9 @@ listUsers(): string[] {
 }
 ```
 
-### 6.4 Get Statistics
+### 6.4 Get Statistics (removed)
 
-```typescript
-getStats(): { userCount: number; directories: string[] } {
-  const directories = [...new Set(
-    Object.values(this.settings).map(s => s.defaultDirectory)
-  )];
-  return {
-    userCount: Object.keys(this.settings).length,
-    directories,
-  };
-}
-```
+`getStats()` had no caller and was deleted in 2026-10.
 
 ## 7. Persistence
 

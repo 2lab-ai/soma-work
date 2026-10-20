@@ -2,12 +2,7 @@ import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_
 import fs from 'fs';
 import path from 'path';
 import { SDK_EFFORT_LEVELS as EFFORT_LEVELS, type SdkEffortLevel as EffortLevel } from 'soma-lib';
-import {
-  DEFAULT_PERMISSION_MODE,
-  isPermissionMode,
-  type PermissionMode,
-  resolvePermissionMode,
-} from './agent-runtime/policy/permission-mode';
+import { isPermissionMode, type PermissionMode, resolvePermissionMode } from './agent-runtime/policy/permission-mode';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
 import { Logger } from './logger.js';
 import { isRejectedModelInput, resolveModelInputCompatibility } from './metrics/model-registry';
@@ -411,12 +406,6 @@ export interface UserSettings {
   // Notification preferences
   notification?: NotificationSettings;
   /**
-   * Whether the one-time `/z` migration tombstone hint has been shown to
-   * this user. Set via CAS (see `markMigrationHintShown`).
-   * Phase 1 of /z refactor (#506).
-   */
-  migrationHintShown?: boolean;
-  /**
    * Compaction threshold (percent). Integer 50–95. When the current turn's
    * context-usage% reaches this value, the next user turn is auto-compacted.
    * Undefined = use `DEFAULT_COMPACT_THRESHOLD` (no migration needed).
@@ -781,25 +770,6 @@ export class UserSettingsStore {
   }
 
   /**
-   * @deprecated Working directories are now fixed per user ({BASE_DIRECTORY}/{userId}/).
-   * This method is kept for backward compatibility but the value is no longer used.
-   */
-  getUserDefaultDirectory(userId: string): string | undefined {
-    logger.debug('getUserDefaultDirectory called (deprecated)', { userId });
-    // Return undefined to indicate no custom directory - fixed directories are now used
-    return undefined;
-  }
-
-  /**
-   * @deprecated Working directories are now fixed per user ({BASE_DIRECTORY}/{userId}/).
-   * This method is kept for backward compatibility but does nothing.
-   */
-  setUserDefaultDirectory(userId: string, _directory: string): void {
-    logger.debug('setUserDefaultDirectory called (deprecated, no-op)', { userId });
-    // No-op: Working directories are now fixed per user
-  }
-
-  /**
    * Patch one or more fields on a user's settings record.
    * Creates a new record with defaults if the user does not yet exist.
    * Saves to disk after applying the patch.
@@ -831,14 +801,6 @@ export class UserSettingsStore {
    */
   getUserBypassPermission(userId: string): boolean {
     return this.settings[userId]?.bypassPermission ?? false;
-  }
-
-  /**
-   * Set user's bypass permission setting
-   */
-  setUserBypassPermission(userId: string, bypass: boolean): void {
-    this.patchUserSettings(userId, { bypassPermission: bypass });
-    logger.info('Set user bypass permission', { userId, bypass });
   }
 
   /**
@@ -956,16 +918,6 @@ export class UserSettingsStore {
    */
   getUserCompactThreshold(userId: string): number {
     return this.settings[userId]?.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD;
-  }
-
-  /**
-   * Set user's compaction threshold (#617 AC1). Validates bounds + integer-ness
-   * before persisting. Throws on invalid input — caller surfaces the message.
-   */
-  setUserCompactThreshold(userId: string, value: number): void {
-    const validated = validateCompactThreshold(value);
-    this.patchUserSettings(userId, { compactThreshold: validated });
-    logger.info('Set user compact threshold', { userId, value: validated });
   }
 
   /** Remove the deprecated persisted percentage after session-token conversion. */
@@ -1104,26 +1056,10 @@ export class UserSettingsStore {
   }
 
   /**
-   * Set user's thinking enabled setting
-   */
-  setUserThinkingEnabled(userId: string, enabled: boolean): void {
-    this.patchUserSettings(userId, { thinkingEnabled: enabled });
-    logger.info('Set user thinking enabled', { userId, enabled });
-  }
-
-  /**
    * Get user's show thinking setting (display thinking in Slack)
    */
   getUserShowThinking(userId: string): boolean {
     return this.settings[userId]?.showThinking ?? DEFAULT_SHOW_THINKING;
-  }
-
-  /**
-   * Set user's show thinking setting
-   */
-  setUserShowThinking(userId: string, show: boolean): void {
-    this.patchUserSettings(userId, { showThinking: show });
-    logger.info('Set user show thinking', { userId, show });
   }
 
   /**
@@ -1134,13 +1070,6 @@ export class UserSettingsStore {
     const stored = this.settings[userId]?.sessionTheme;
     if (!stored) return DEFAULT_THEME;
     return migrateLegacyTheme(stored);
-  }
-
-  /**
-   * Get user's raw theme setting. undefined means "use default".
-   */
-  getUserRawSessionTheme(userId: string): SessionTheme | undefined {
-    return this.settings[userId]?.sessionTheme;
   }
 
   /**
@@ -1374,68 +1303,6 @@ export class UserSettingsStore {
   }
 
   /**
-   * Has the `/z` migration tombstone hint been shown to this user?
-   * Phase 1 of /z refactor (#506).
-   */
-  hasMigrationHintShown(userId: string): boolean {
-    return this.settings[userId]?.migrationHintShown === true;
-  }
-
-  /**
-   * Atomically set the `migrationHintShown` flag (compare-and-set).
-   *
-   * Returns `true` if the flag was freshly set (caller should show the
-   * tombstone), or `false` if another call already set it for this user
-   * (caller must suppress duplicate hints).
-   *
-   * Concurrency: Node.js is single-threaded, so "compare-and-set" here
-   * is an atomic check-then-write on the in-memory record plus an async
-   * `writeFileSync`. For safety against the (rare) interleaving where
-   * two async tombstone paths race, the first caller to observe
-   * `migrationHintShown !== true` wins and writes the flag + persists to
-   * disk before yielding to the event loop.
-   */
-  async markMigrationHintShown(userId: string): Promise<boolean> {
-    // Synchronous CAS — no awaits between read and write.
-    const existing = this.settings[userId];
-    if (existing?.migrationHintShown === true) {
-      return false;
-    }
-    if (existing) {
-      existing.migrationHintShown = true;
-      existing.lastUpdated = new Date().toISOString();
-    } else {
-      this.settings[userId] = {
-        userId,
-        defaultDirectory: '',
-        bypassPermission: false,
-        persona: 'default',
-        defaultModel: DEFAULT_MODEL,
-        accepted: true,
-        migrationHintShown: true,
-        lastUpdated: new Date().toISOString(),
-      };
-    }
-    // Persist asynchronously — the in-memory CAS is already committed.
-    this.saveSettings();
-    logger.info('Marked /z migrationHintShown for user', { userId });
-    return true;
-  }
-
-  /**
-   * Test-only: reset the `migrationHintShown` flag for a user.
-   * Used by the tombstone table-driven test.
-   */
-  resetMigrationHintShown(userId: string): void {
-    const existing = this.settings[userId];
-    if (existing) {
-      existing.migrationHintShown = false;
-      existing.lastUpdated = new Date().toISOString();
-      this.saveSettings();
-    }
-  }
-
-  /**
    * Get all settings for a user
    */
   getUserSettings(userId: string): UserSettings | undefined {
@@ -1552,17 +1419,6 @@ export class UserSettingsStore {
    */
   listUsers(): string[] {
     return Object.keys(this.settings);
-  }
-
-  /**
-   * Get statistics
-   */
-  getStats(): { userCount: number; directories: string[] } {
-    const directories = [...new Set(Object.values(this.settings).map((s) => s.defaultDirectory))];
-    return {
-      userCount: Object.keys(this.settings).length,
-      directories,
-    };
   }
 }
 

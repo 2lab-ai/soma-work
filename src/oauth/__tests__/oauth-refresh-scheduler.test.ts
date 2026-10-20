@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // RED tests for the hourly OAuth token refresh scheduler (#653 M2).
 // Module lives at src/oauth/oauth-refresh-scheduler.ts. Mirrors the
@@ -52,11 +52,37 @@ function makeTm(overrides: Partial<Record<string, any>> = {}) {
 }
 
 describe('OAuthRefreshScheduler (#653 M2)', () => {
-  it('DEFAULT_OAUTH_REFRESH_INTERVAL_MS is exactly 1 hour (user spec)', () => {
-    // User explicitly called for "1 hour" cadence — lock the constant so
-    // a future "I made it faster" commit can't silently drop to 5min
-    // without a PR discussion.
-    expect(DEFAULT_OAUTH_REFRESH_INTERVAL_MS).toBe(60 * 60 * 1_000);
+  describe('production default cadence', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      vi.doUnmock('../oauth-refresh-scheduler');
+      vi.resetModules();
+    });
+
+    it('DEFAULT_OAUTH_REFRESH_INTERVAL_MS is exactly 1 hour and is what config ships (user spec)', async () => {
+      // User explicitly called for "1 hour" cadence — lock the value production
+      // actually uses (config.oauthRefresh.intervalMs → index.ts →
+      // startOAuthRefreshScheduler) so a future "I made it faster" commit
+      // can't silently drop to 5min without a PR discussion.
+      expect(DEFAULT_OAUTH_REFRESH_INTERVAL_MS).toBe(60 * 60 * 1_000);
+      vi.stubEnv('OAUTH_REFRESH_INTERVAL_MS', '');
+      vi.resetModules();
+      const { config } = await import('../../config');
+      expect(config.oauthRefresh.intervalMs).toBe(60 * 60 * 1_000);
+    });
+
+    it('config.oauthRefresh.intervalMs default is sourced from DEFAULT_OAUTH_REFRESH_INTERVAL_MS', async () => {
+      // Without this, config could carry its own literal and the pin above
+      // would guard a constant production never reads.
+      vi.stubEnv('OAUTH_REFRESH_INTERVAL_MS', '');
+      vi.resetModules();
+      vi.doMock('../oauth-refresh-scheduler', async (importOriginal) => ({
+        ...(await importOriginal<typeof import('../oauth-refresh-scheduler')>()),
+        DEFAULT_OAUTH_REFRESH_INTERVAL_MS: 7 * 60_000,
+      }));
+      const { config } = await import('../../config');
+      expect(config.oauthRefresh.intervalMs).toBe(7 * 60_000);
+    });
   });
 
   it('first tick calls tm.refreshAllAttachedOAuthTokens once with the configured timeoutMs', async () => {

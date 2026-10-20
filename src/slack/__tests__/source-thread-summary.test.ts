@@ -183,44 +183,6 @@ describe('Scenario 5: session close posts summary to source thread', () => {
   });
 });
 
-describe('buildRequestStartBlocks', () => {
-  it('returns header and section with fields', async () => {
-    const { buildRequestStartBlocks } = await import('../source-thread-summary');
-    const session = { title: 'Test Task', workflow: 'default', ownerId: 'U123' } as any;
-    const result = buildRequestStartBlocks(session);
-    expect(result.text).toBe('Test Task — 시작');
-    expect(result.blocks).toHaveLength(2);
-    expect(result.blocks[0].type).toBe('header');
-    expect(result.blocks[1].type).toBe('section');
-    expect((result.blocks[1] as any).fields!.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('adds accessory button when permalink provided', async () => {
-    const { buildRequestStartBlocks } = await import('../source-thread-summary');
-    const session = { title: 'Task', workflow: 'default' } as any;
-    const result = buildRequestStartBlocks(session, 'https://slack.com/archives/C1/p1');
-    const section = result.blocks[1] as any;
-    expect(section.accessory).toBeDefined();
-    expect(section.accessory.action_id).toBe('source_open_thread');
-    expect(section.accessory.url).toBe('https://slack.com/archives/C1/p1');
-  });
-
-  it('omits accessory button when no permalink', async () => {
-    const { buildRequestStartBlocks } = await import('../source-thread-summary');
-    const session = { title: 'Task', workflow: 'default' } as any;
-    const result = buildRequestStartBlocks(session, null);
-    expect((result.blocks[1] as any).accessory).toBeUndefined();
-  });
-
-  it('truncates long titles in header block', async () => {
-    const { buildRequestStartBlocks } = await import('../source-thread-summary');
-    const longTitle = 'A'.repeat(200);
-    const session = { title: longTitle, workflow: 'default' } as any;
-    const result = buildRequestStartBlocks(session);
-    expect((result.blocks[0] as any).text.text.length).toBeLessThanOrEqual(150);
-  });
-});
-
 describe('buildRequestCompleteBlocks', () => {
   it('returns merged status for merged trigger', async () => {
     const { buildRequestCompleteBlocks } = await import('../source-thread-summary');
@@ -397,16 +359,6 @@ describe('postSourceThreadSummary edge cases', () => {
   });
 });
 
-describe('buildRequestStartBlocks edge cases', () => {
-  it('uses Session as default title when title is empty', async () => {
-    const { buildRequestStartBlocks } = await import('../source-thread-summary');
-    const session = { workflow: 'default' } as any;
-    const result = buildRequestStartBlocks(session);
-    expect((result.blocks[0] as any).text.text).toBe('Session');
-    expect(result.text).toContain('Session');
-  });
-});
-
 describe('postSourceThreadSummary success path', () => {
   it('passes Block Kit blocks to postMessage on success', async () => {
     const mockSlackApi = {
@@ -484,15 +436,6 @@ describe('buildRequestCompleteBlocks edge cases', () => {
     const result = buildRequestCompleteBlocks(session, 'closed');
     expect((result.blocks[0] as any).text.text).toBe('Session');
     expect(result.text).toContain('Session');
-  });
-
-  it('handles whitespace-only title', async () => {
-    const { buildRequestStartBlocks } = await import('../source-thread-summary');
-    const session = { title: '   ', workflow: 'default' } as any;
-    const result = buildRequestStartBlocks(session);
-    // Whitespace title passes through (not empty string), this is acceptable
-    expect((result.blocks[0] as any).text.text).toBeDefined();
-    expect(result.text).toBeDefined();
   });
 });
 
@@ -577,21 +520,21 @@ describe('postSourceThreadSummary fallback paths', () => {
   });
 });
 
-describe('buildRequestStartBlocks truncation boundary', () => {
+describe('header title truncation boundary', () => {
   it('does not truncate title at exactly 150 chars', async () => {
-    const { buildRequestStartBlocks } = await import('../source-thread-summary');
+    const { buildRequestCompleteBlocks } = await import('../source-thread-summary');
     const exactTitle = 'X'.repeat(150);
-    const session = { title: exactTitle, workflow: 'default' } as any;
-    const result = buildRequestStartBlocks(session);
+    const session = { title: exactTitle, workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'closed');
     expect((result.blocks[0] as any).text.text).toBe(exactTitle);
     expect((result.blocks[0] as any).text.text.length).toBe(150);
   });
 
   it('truncates title at 151 chars', async () => {
-    const { buildRequestStartBlocks } = await import('../source-thread-summary');
+    const { buildRequestCompleteBlocks } = await import('../source-thread-summary');
     const overTitle = 'Y'.repeat(151);
-    const session = { title: overTitle, workflow: 'default' } as any;
-    const result = buildRequestStartBlocks(session);
+    const session = { title: overTitle, workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'closed');
     expect((result.blocks[0] as any).text.text.length).toBe(150);
     expect((result.blocks[0] as any).text.text.endsWith('...')).toBe(true);
   });
@@ -643,15 +586,6 @@ describe('Block Kit truncation and escaping', () => {
     expect(result.text).toContain('머지 완료');
   });
 
-  it('handles whitespace-only title', async () => {
-    const { buildRequestStartBlocks } = await import('../source-thread-summary');
-    const session = { title: '   ', workflow: 'default' } as any;
-    const result = buildRequestStartBlocks(session);
-    // Whitespace title passes through (not empty string), this is acceptable
-    expect((result.blocks[0] as any).text.text).toBeDefined();
-    expect(result.text).toBeDefined();
-  });
-
   it('truncates button text to 75 chars', async () => {
     const { buildRequestCompleteBlocks } = await import('../source-thread-summary');
     const longPrLabel = 'P'.repeat(100);
@@ -686,9 +620,9 @@ describe('safeText', () => {
 
 describe('text fallback sanitization', () => {
   it('text fallback strips Slack tokens like <@U123>', async () => {
-    const { buildRequestStartBlocks } = await import('../source-thread-summary');
-    const session = { title: 'Fix for <@U123> issue', workflow: 'default' } as any;
-    const result = buildRequestStartBlocks(session);
+    const { buildRequestCompleteBlocks } = await import('../source-thread-summary');
+    const session = { title: 'Fix for <@U123> issue', workflow: 'default', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'closed');
     expect(result.text).not.toContain('<@U123>');
     expect(result.text).toContain('Fix for');
   });
@@ -703,15 +637,6 @@ describe('text fallback sanitization', () => {
 });
 
 describe('payload contract', () => {
-  it('start blocks have exactly 2 blocks (header+section)', async () => {
-    const { buildRequestStartBlocks } = await import('../source-thread-summary');
-    const session = { title: 'Test', workflow: 'default' } as any;
-    const result = buildRequestStartBlocks(session);
-    expect(result.blocks.length).toBe(2);
-    expect(result.blocks[0].type).toBe('header');
-    expect(result.blocks[1].type).toBe('section');
-  });
-
   it('complete blocks with issue+PR have divider and actions', async () => {
     const { buildRequestCompleteBlocks } = await import('../source-thread-summary');
     const session = {
@@ -830,9 +755,9 @@ describe('buildLinkSection', () => {
 
 describe('backtick escape in meta fields', () => {
   it('workflow with backticks is escaped in meta fields', async () => {
-    const { buildRequestStartBlocks } = await import('../source-thread-summary');
-    const session = { title: 'Task', workflow: 'my`workflow`name' } as any;
-    const result = buildRequestStartBlocks(session);
+    const { buildRequestCompleteBlocks } = await import('../source-thread-summary');
+    const session = { title: 'Task', workflow: 'my`workflow`name', links: {} } as any;
+    const result = buildRequestCompleteBlocks(session, 'closed');
     const blocksJson = JSON.stringify(result.blocks);
     // Backticks should be replaced with single quotes
     expect(blocksJson).not.toContain('my`workflow`name');

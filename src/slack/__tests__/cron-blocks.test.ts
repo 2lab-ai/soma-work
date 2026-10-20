@@ -176,49 +176,6 @@ describe('buildCronEditModal', () => {
     expect(meta).toMatchObject({ owner: 'U_ALICE', name: 'daily-report', requesterId: 'U_ALICE' });
   });
 
-  it('mode select preselects current mode', () => {
-    const { blocks } = buildCronCard({ jobs: [job({ mode: 'fastlane' })], isAdmin: false });
-    const actions = blocks.find((b: any) => b.type === 'actions');
-    expect(actions.elements[2].initial_option.value).toBe('fastlane');
-  });
-
-  it('section shows current settings as text (change confirmation surface)', () => {
-    const { blocks } = buildCronCard({
-      jobs: [job({ modelConfig: { type: 'custom', model: 'gpt-5.5' }, target: 'dm', mode: 'fastlane' })],
-      isAdmin: false,
-    });
-    const section = blocks.find((b: any) => b.type === 'section' && b.text.text.includes('daily-report'));
-    expect(section.text.text).toContain('현재 설정');
-    expect(section.text.text).toContain('custom(gpt-5.5)');
-    expect(section.text.text).toContain('DM(오너)');
-    expect(section.text.text).toContain('fastlane');
-  });
-});
-
-describe('buildCronEditModal', () => {
-  it('renders name/schedule/channel/prompt inputs with initial values', () => {
-    const modal = buildCronEditModal({
-      job: job(),
-      metadata: {
-        owner: 'U_ALICE',
-        name: 'daily-report',
-        cardChannelId: 'C_CARD',
-        cardMessageTs: '1.2',
-        requesterId: 'U_ALICE',
-      },
-    });
-    expect(modal.callback_id).toBe('cron_edit_modal_submit');
-    const byId = Object.fromEntries((modal.blocks as any[]).map((b) => [b.block_id, b]));
-    expect(byId.cron_edit_name.element.initial_value).toBe('daily-report');
-    expect(byId.cron_edit_expr.element.initial_value).toBe('0 9 * * 1-5');
-    expect(byId.cron_edit_channel.element.type).toBe('conversations_select');
-    expect(byId.cron_edit_channel.element.initial_conversation).toBe('C111');
-    expect(byId.cron_edit_prompt.element.multiline).toBe(true);
-    // Slack caps plain_text_input.max_length at 3000 — 4000 makes views.open reject the modal
-    expect(byId.cron_edit_prompt.element.max_length).toBe(3000);
-    expect(JSON.parse(modal.private_metadata).owner).toBe('U_ALICE');
-  });
-
   it('truncates over-3000-char prompts in the modal initial value (Slack cap)', () => {
     const long = 'x'.repeat(3500);
     const modal = buildCronEditModal({

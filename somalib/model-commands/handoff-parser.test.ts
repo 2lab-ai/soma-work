@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  expectedHandoffKind,
-  extractSentinelType,
-  HandoffAbortError,
-  hasHandoffSentinel,
-  parseHandoff,
-} from './handoff-parser';
+import { expectedHandoffKind, extractSentinelType, HandoffAbortError, parseHandoff } from './handoff-parser';
 
 // -------------------------------------------------------------------
 // Fixture helpers — mirror SKILL.md §Session Handoff Protocol payloads.
@@ -234,12 +228,7 @@ describe('parseHandoff — malformed inputs', () => {
   });
 
   it('reports unknown-type for an unrecognized type attribute', () => {
-    const text = [
-      '<z-handoff type="foo-bar">',
-      '## Issue',
-      'https://example.com/1',
-      '</z-handoff>',
-    ].join('\n');
+    const text = ['<z-handoff type="foo-bar">', '## Issue', 'https://example.com/1', '</z-handoff>'].join('\n');
     const result = parseHandoff(text);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable');
@@ -360,24 +349,8 @@ describe('parseHandoff — edge cases', () => {
 });
 
 // -------------------------------------------------------------------
-// hasHandoffSentinel / extractSentinelType
+// extractSentinelType
 // -------------------------------------------------------------------
-
-describe('hasHandoffSentinel', () => {
-  it('returns true for a well-formed top-level sentinel', () => {
-    expect(hasHandoffSentinel(planToWorkMinimal())).toBe(true);
-    expect(hasHandoffSentinel(workCompleteMinimal())).toBe(true);
-  });
-
-  it('returns false for a prompt with no sentinel', () => {
-    expect(hasHandoffSentinel('hey there')).toBe(false);
-  });
-
-  it('returns false for a sentinel that is not top-level', () => {
-    const text = `some preamble\n\n${planToWorkMinimal()}`;
-    expect(hasHandoffSentinel(text)).toBe(false);
-  });
-});
 
 describe('extractSentinelType', () => {
   it('extracts plan-to-work from a valid top-level sentinel', () => {
@@ -395,6 +368,11 @@ describe('extractSentinelType', () => {
 
   it('returns null for no sentinel', () => {
     expect(extractSentinelType('plain text')).toBeNull();
+  });
+
+  it('returns null for a sentinel that is not top-level', () => {
+    const text = `some preamble\n\n${planToWorkMinimal()}`;
+    expect(extractSentinelType(text)).toBeNull();
   });
 });
 

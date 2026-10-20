@@ -1,31 +1,13 @@
 /**
  * KST (Korea Standard Time) streak utilities.
  *
- * Trace: docs/current/plans/usage-card-dark/trace.md — Scenarios 4, 5, 6.
+ * Trace: docs/current/plans/usage-card-dark/trace.md — Scenarios 5, 6.
  *
  * All day keys are 'YYYY-MM-DD' strings computed in KST (UTC+9).
  * Pure functions — no clock, no I/O.
  */
 
-/** KST offset from UTC in minutes. */
-const KST_OFFSET_MINUTES = 9 * 60;
-
-const MS_PER_MINUTE = 60 * 1000;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-/**
- * Convert a Date | number timestamp into its KST 'YYYY-MM-DD' day key.
- * Strategy: shift the epoch by +9h and then read UTC calendar components —
- * this avoids JS locale/timezone ambiguity.
- */
-function toKstDayKey(ts: Date | number): string {
-  const ms = typeof ts === 'number' ? ts : ts.getTime();
-  const shifted = new Date(ms + KST_OFFSET_MINUTES * MS_PER_MINUTE);
-  const y = shifted.getUTCFullYear();
-  const m = shifted.getUTCMonth() + 1;
-  const d = shifted.getUTCDate();
-  return `${y.toString().padStart(4, '0')}-${m.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
-}
 
 /**
  * Parse a 'YYYY-MM-DD' key into a UTC-midnight Date (arithmetic anchor).
@@ -42,27 +24,6 @@ function formatUtcDate(date: Date): string {
   const m = date.getUTCMonth() + 1;
   const d = date.getUTCDate();
   return `${y.toString().padStart(4, '0')}-${m.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
-}
-
-/**
- * Distinct KST 'YYYY-MM-DD' days among events whose timestamp is
- * within the inclusive window `[windowStart, windowEnd]`.
- */
-function activeDayKeys(events: Array<{ ts: Date | number }>, windowStart: Date, windowEnd: Date): Set<string> {
-  const startMs = windowStart.getTime();
-  const endMs = windowEnd.getTime();
-  const out = new Set<string>();
-  for (const evt of events) {
-    const ms = typeof evt.ts === 'number' ? evt.ts : evt.ts.getTime();
-    if (ms < startMs || ms > endMs) continue;
-    out.add(toKstDayKey(ms));
-  }
-  return out;
-}
-
-/** Count of distinct KST days in window — sugar for `activeDayKeys(...).size`. */
-export function activeDays(events: Array<{ ts: Date | number }>, windowStart: Date, windowEnd: Date): number {
-  return activeDayKeys(events, windowStart, windowEnd).size;
 }
 
 /**

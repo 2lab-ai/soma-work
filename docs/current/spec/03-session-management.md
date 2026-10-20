@@ -58,14 +58,8 @@ getSessionKey(channelId: string, threadTs?: string): string {
 
 ### 3.3 Legacy Support
 
-이전 버전과의 호환성을 위한 레거시 메서드:
-
-```typescript
-// userId 무시 (공유 세션)
-getSessionKeyWithUser(userId: string, channelId: string, threadTs?: string): string {
-  return this.getSessionKey(channelId, threadTs);
-}
-```
+userId를 받던 레거시 메서드(`getSessionKeyWithUser`, `getSessionWithUser`)는 호출처가 없어
+2026-10에 삭제됐다. 세션 키는 userId를 포함하지 않는다(공유 세션) — `getSessionKey(channelId, threadTs)`를 쓴다.
 
 ## 4. Session Lifecycle
 

@@ -119,15 +119,6 @@ export async function fetchLinkMetadata(link: SessionLink): Promise<{ title?: st
 }
 
 /**
- * Convenience wrapper - fetch title only (backward compatible)
- */
-async function fetchLinkTitle(link: SessionLink): Promise<string | undefined> {
-  if (link.title) return link.title;
-  const metadata = await fetchLinkMetadata(link);
-  return metadata.title;
-}
-
-/**
  * Batch fetch metadata for multiple links in parallel.
  * Returns enriched copies of the links with title/status filled in.
  * Graceful: individual failures don't block others.

@@ -1,6 +1,6 @@
+import type { LegacyCommandRouter } from '@soma/slack/z/router';
+import { parseTopic, translateToLegacy, ZRouter } from '@soma/slack/z/router';
 import { describe, expect, it, vi } from 'vitest';
-import type { LegacyCommandRouter, TombstoneStore } from '../router';
-import { parseTopic, translateToLegacy, ZRouter } from '../router';
 import type { ZInvocation, ZRespond } from '../types';
 
 function makeRespond(overrides: Partial<ZRespond> = {}): ZRespond {
@@ -18,8 +18,6 @@ function makeInv(overrides: Partial<ZInvocation> = {}): ZInvocation {
     source: 'slash',
     remainder: '',
     rawText: '',
-    isLegacyNaked: false,
-    whitelistedNaked: false,
     userId: 'U1',
     channelId: 'C1',
     teamId: 'T1',
@@ -28,17 +26,12 @@ function makeInv(overrides: Partial<ZInvocation> = {}): ZInvocation {
   } as ZInvocation;
 }
 
-function makeDeps(legacyOverride: Partial<LegacyCommandRouter> = {}, storeOverride: Partial<TombstoneStore> = {}) {
+function makeDeps(legacyOverride: Partial<LegacyCommandRouter> = {}) {
   const legacyRouter: LegacyCommandRouter = {
     route: vi.fn().mockResolvedValue({ handled: true }),
     ...legacyOverride,
   };
-  const tombstoneStore: TombstoneStore = {
-    markMigrationHintShown: vi.fn().mockResolvedValue(true),
-    hasMigrationHintShown: vi.fn().mockReturnValue(false),
-    ...storeOverride,
-  };
-  return { legacyRouter, tombstoneStore };
+  return { legacyRouter };
 }
 
 describe('parseTopic', () => {
@@ -106,10 +99,10 @@ describe('translateToLegacy', () => {
 });
 
 describe('ZRouter.dispatch', () => {
-  it('whitelisted naked → routes to legacy', async () => {
-    const { legacyRouter, tombstoneStore } = makeDeps();
-    const router = new ZRouter({ legacyRouter, tombstoneStore });
-    const inv = makeInv({ whitelistedNaked: true, remainder: 'session', rawText: 'session' });
+  it('/z topic → routes the translated text to legacy with the caller identity', async () => {
+    const { legacyRouter } = makeDeps();
+    const router = new ZRouter({ legacyRouter });
+    const inv = makeInv({ source: 'dm', remainder: 'session', rawText: '/z session' });
 
     const r = await router.dispatch(inv);
     expect(r.handled).toBe(true);
@@ -122,60 +115,20 @@ describe('ZRouter.dispatch', () => {
     // A crashed legacy handler comes back `handled: true` + `error`, and a
     // cross-user `$skill` parks with `awaitingPermission` — both must survive
     // the rebuild, or the DM caller reports the message as fully answered.
-    const { legacyRouter, tombstoneStore } = makeDeps();
+    const { legacyRouter } = makeDeps();
     (legacyRouter.route as any).mockResolvedValueOnce({ handled: true, error: 'invalid_blocks' });
     (legacyRouter.route as any).mockResolvedValueOnce({ handled: true, awaitingPermission: true });
-    const router = new ZRouter({ legacyRouter, tombstoneStore });
+    const router = new ZRouter({ legacyRouter });
 
-    const crashed = await router.dispatch(
-      makeInv({ whitelistedNaked: true, remainder: 'session', rawText: 'session' }),
-    );
+    const crashed = await router.dispatch(makeInv({ source: 'dm', remainder: 'session', rawText: '/z session' }));
     expect(crashed).toMatchObject({ handled: true, error: 'invalid_blocks' });
-    const parked = await router.dispatch(makeInv({ whitelistedNaked: true, remainder: 'session', rawText: 'session' }));
+    const parked = await router.dispatch(makeInv({ source: 'dm', remainder: 'session', rawText: '/z session' }));
     expect(parked).toMatchObject({ handled: true, awaitingPermission: true });
   });
 
-  it('legacy naked → shows tombstone and marks CAS', async () => {
-    const markFn = vi.fn().mockResolvedValue(true);
-    const { legacyRouter, tombstoneStore } = makeDeps({}, { markMigrationHintShown: markFn });
-    const router = new ZRouter({ legacyRouter, tombstoneStore });
-    const send = vi.fn().mockResolvedValue({});
-    const inv = makeInv({
-      isLegacyNaked: true,
-      remainder: 'persona set linus',
-      rawText: 'persona set linus',
-      respond: makeRespond({ send }),
-    });
-
-    const r = await router.dispatch(inv);
-    expect(r.handled).toBe(true);
-    expect(r.consumed).toBe(true);
-    expect(markFn).toHaveBeenCalledWith('U1');
-    expect(send).toHaveBeenCalled();
-    expect(legacyRouter.route).not.toHaveBeenCalled();
-  });
-
-  it('legacy naked + already-shown → silent (no tombstone)', async () => {
-    const markFn = vi.fn().mockResolvedValue(false); // already shown
-    const { legacyRouter, tombstoneStore } = makeDeps({}, { markMigrationHintShown: markFn });
-    const router = new ZRouter({ legacyRouter, tombstoneStore });
-    const send = vi.fn().mockResolvedValue({});
-    const inv = makeInv({
-      isLegacyNaked: true,
-      remainder: 'model sonnet',
-      rawText: 'model sonnet',
-      respond: makeRespond({ send }),
-    });
-
-    const r = await router.dispatch(inv);
-    expect(r.handled).toBe(true);
-    expect(send).not.toHaveBeenCalled();
-    expect(legacyRouter.route).not.toHaveBeenCalled();
-  });
-
   it('empty remainder → shows help card', async () => {
-    const { legacyRouter, tombstoneStore } = makeDeps();
-    const router = new ZRouter({ legacyRouter, tombstoneStore });
+    const { legacyRouter } = makeDeps();
+    const router = new ZRouter({ legacyRouter });
     const send = vi.fn().mockResolvedValue({});
     const inv = makeInv({ remainder: '', respond: makeRespond({ send }) });
 
@@ -191,8 +144,8 @@ describe('ZRouter.dispatch', () => {
   });
 
   it('slash + forbidden topic → rejects with SLASH_FORBIDDEN_MESSAGE', async () => {
-    const { legacyRouter, tombstoneStore } = makeDeps();
-    const router = new ZRouter({ legacyRouter, tombstoneStore });
+    const { legacyRouter } = makeDeps();
+    const router = new ZRouter({ legacyRouter });
     const send = vi.fn().mockResolvedValue({});
     const inv = makeInv({ source: 'slash', remainder: 'new hello', respond: makeRespond({ send }) });
 
@@ -202,8 +155,8 @@ describe('ZRouter.dispatch', () => {
   });
 
   it('slash + goal topic → rejects because goal needs thread context', async () => {
-    const { legacyRouter, tombstoneStore } = makeDeps();
-    const router = new ZRouter({ legacyRouter, tombstoneStore });
+    const { legacyRouter } = makeDeps();
+    const router = new ZRouter({ legacyRouter });
     const send = vi.fn().mockResolvedValue({});
     const inv = makeInv({ source: 'slash', remainder: 'goal set ship it', respond: makeRespond({ send }) });
 
@@ -213,8 +166,8 @@ describe('ZRouter.dispatch', () => {
   });
 
   it('dm + forbidden topic → allowed (not slash)', async () => {
-    const { legacyRouter, tombstoneStore } = makeDeps();
-    const router = new ZRouter({ legacyRouter, tombstoneStore });
+    const { legacyRouter } = makeDeps();
+    const router = new ZRouter({ legacyRouter });
     const inv = makeInv({ source: 'dm', remainder: 'new hello', rawText: '/z new hello' });
 
     await router.dispatch(inv);
@@ -222,8 +175,8 @@ describe('ZRouter.dispatch', () => {
   });
 
   it('session set model → translates to $model', async () => {
-    const { legacyRouter, tombstoneStore } = makeDeps();
-    const router = new ZRouter({ legacyRouter, tombstoneStore });
+    const { legacyRouter } = makeDeps();
+    const router = new ZRouter({ legacyRouter });
     const inv = makeInv({ source: 'dm', remainder: 'session set persona linus' });
 
     await router.dispatch(inv);
@@ -231,8 +184,8 @@ describe('ZRouter.dispatch', () => {
   });
 
   it('admin accept <@U> → translates to accept', async () => {
-    const { legacyRouter, tombstoneStore } = makeDeps();
-    const router = new ZRouter({ legacyRouter, tombstoneStore });
+    const { legacyRouter } = makeDeps();
+    const router = new ZRouter({ legacyRouter });
     const inv = makeInv({ source: 'slash', remainder: 'admin accept <@U999>' });
 
     await router.dispatch(inv);
@@ -241,8 +194,8 @@ describe('ZRouter.dispatch', () => {
 
   it('legacy router error → dispatch returns error', async () => {
     const routeFn = vi.fn().mockRejectedValue(new Error('boom'));
-    const { legacyRouter, tombstoneStore } = makeDeps({ route: routeFn });
-    const router = new ZRouter({ legacyRouter, tombstoneStore });
+    const { legacyRouter } = makeDeps({ route: routeFn });
+    const router = new ZRouter({ legacyRouter });
     const inv = makeInv({ source: 'dm', remainder: 'persona set linus' });
 
     const r = await router.dispatch(inv);

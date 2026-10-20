@@ -283,14 +283,6 @@ const REANCHOR_MIN_INTERVAL_MS = Number(process.env.SLACK_PANEL_REANCHOR_MIN_INT
 const MAX_MESSAGE_BLOCKS = 50;
 
 /**
- * Queue page size INSIDE the combined message. The standalone queue surface
- * defaults to 10 (`followup-queue-blocks.ts:73`); here the header, the status
- * panel and the action rows share the same 50-block budget, so the embed is
- * capped tighter. Pagination keeps every backlog item reachable.
- */
-const FOLLOWUP_EMBED_PAGE_SIZE = 5;
-
-/**
  * A24b — Slack `data.error` codes that PROVE no message was created, and are
  * therefore the only ones allowed to release a delivery intent for a retry.
  *
@@ -338,13 +330,6 @@ interface SessionRenderState {
   prCache: PRCacheEntry | null;
   // Dashboard v2.1 chunk I — leading+trailing debounce bookkeeping.
   lastEditMs: number;
-  /**
-   * U3/U9 — the ONLY queue-derived state the surface owns: which page of the
-   * follow-up queue this session is currently looking at (1-based). Items,
-   * states, freeze and epoch are never copied here; they are read from the
-   * injected queue view on every render.
-   */
-  followupPage: number;
   /**
    * A24b — whether the "delivery held, not retrying" warning reaction has
    * already been placed for this session. The condition is sticky by nature
@@ -427,7 +412,6 @@ export class ThreadSurface {
         pendingOverrides: null,
         prCache: null,
         lastEditMs: 0,
-        followupPage: 1,
         outboxWarned: false,
         epochUnverifiableWarned: false,
         address: null,
@@ -715,42 +699,13 @@ export class ThreadSurface {
    * U3/U9 — re-render because the follow-up queue changed (enqueue, state
    * transition, freeze, drain). Forced: a queue change must always land, even
    * when the rest of the surface is byte-identical.
-   *
-   * `page` is optional; when given it becomes the session's current page
-   * (validated + clamped like {@link setFollowupPage}).
    */
-  async updateFollowup(session: ConversationSession, sessionKey: string, page?: number): Promise<void> {
-    if (page !== undefined) {
-      this.getState(sessionKey).followupPage = this.clampFollowupPage(sessionKey, page);
-    }
+  async updateFollowup(session: ConversationSession, sessionKey: string): Promise<void> {
     if (!session.actionPanel) {
       await this.initialize(session, sessionKey);
       return;
     }
     await this.renderViaFlush(session, sessionKey, true);
-  }
-
-  /**
-   * U3/U9 — move the embedded queue to `page` (1-based) and re-render.
-   *
-   * Input is validated and clamped, never trusted: a non-integer, a 0/negative
-   * page or a page past the end collapses to the nearest real page rather than
-   * rendering an empty queue. Returns the page actually applied.
-   *
-   * The session is looked up through the injected claude handler, so a Slack
-   * pagination click (which carries only `sessionKey` + `page`) renders the
-   * LATEST known session rather than a snapshot captured at button-mint time.
-   * No session known → the page is still recorded for the next render.
-   */
-  async setFollowupPage(sessionKey: string, page: number): Promise<number> {
-    const applied = this.clampFollowupPage(sessionKey, page);
-    this.getState(sessionKey).followupPage = applied;
-
-    const session = this.getLiveSession(sessionKey);
-    if (session?.actionPanel) {
-      await this.renderViaFlush(session, sessionKey, true);
-    }
-    return applied;
   }
 
   /**
@@ -1717,21 +1672,6 @@ export class ThreadSurface {
 
     if (!view && !error) return null;
     return { view, error };
-  }
-
-  /**
-   * Clamp a requested page into `[1, pageCount]` using the queue's own item
-   * count. Non-integers and non-finite input collapse to page 1. The renderer
-   * clamps again against the budget-derived page size, so this never renders
-   * an empty page even if the two disagree.
-   */
-  private clampFollowupPage(sessionKey: string, requested: number): number {
-    if (!Number.isFinite(requested)) return 1;
-    const page = Math.max(1, Math.floor(requested));
-    const view = this.readFollowup(sessionKey)?.view;
-    if (!view) return page;
-    const pageCount = Math.max(1, Math.ceil(view.items.length / FOLLOWUP_EMBED_PAGE_SIZE));
-    return Math.min(page, pageCount);
   }
 
   /**

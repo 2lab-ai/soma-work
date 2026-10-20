@@ -463,17 +463,6 @@ export class ActionPanelBuilder {
     return name === 'custom' ? `🔧 custom` : LABELS[name];
   }
 
-  private static contextChip(contextRemainingPercent?: number): string {
-    if (typeof contextRemainingPercent === 'number' && Number.isFinite(contextRemainingPercent)) {
-      return `${ActionPanelBuilder.formatPercent(contextRemainingPercent)}%`;
-    }
-    return '--%';
-  }
-
-  private static formatPercent(value: number): string {
-    return Number.isInteger(value) ? String(value) : value.toFixed(1);
-  }
-
   private static statusBadge(status: string): string {
     switch (status) {
       case '사용 가능':
@@ -560,22 +549,6 @@ export class ActionPanelBuilder {
       type: 'section',
       text: { type: 'mrkdwn', text },
     };
-  }
-
-  /**
-   * @deprecated No longer used for embedding in the header panel.
-   * Kept as a helper for potential future use.
-   */
-  private static buildChoiceSlotBlocks(choiceBlocks?: any[]): any[] {
-    if (!Array.isArray(choiceBlocks) || choiceBlocks.length === 0) {
-      return [
-        {
-          type: 'section',
-          text: { type: 'mrkdwn', text: '❓ *응답이 필요한 질문이 있습니다.*' },
-        },
-      ];
-    }
-    return choiceBlocks.map((block) => JSON.parse(JSON.stringify(block)));
   }
 
   private static buildCloseButton(sessionKey: string): any {

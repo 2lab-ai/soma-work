@@ -37,7 +37,7 @@ soma-work/
 
 1. **분기 사본 우선** — `process-shared/env-paths.ts`를 `@soma/common/env-paths` 재export로(로직 차이 = 활성 버그).
 2. **store 삼중복** — `memory-file-store`·`skill-file-store`·`shared-store`·`pending-*-store`·`mcp-tool-grant-store`를 정본 패키지로 모으고 나머지는 재export. (이때 `config.md`의 `atomicWriteJson`도 함께 적용.)
-3. **test-utils 삼중복** — `src/test-utils/*`를 `@soma/test-utils` 재export로(이미 `2abefe5a`가 양쪽을 손봐야 했던 증거). CLAUDE.md의 mock 경로도 갱신.
+3. **test-utils 삼중복** — 완료(2026-10-19): importer가 없던 `src/test-utils/mock-*` 사본을 삭제하고 `@soma/test-utils`만 남김. CLAUDE.md의 mock 경로도 갱신.
 4. **click-classifier 등 잔여 src↔slack 중복** → @soma/slack로.
 5. **somalib 흡수** (위 권고 확정 후).
 6. **extensions 디렉터리 제거.**
@@ -45,7 +45,6 @@ soma-work/
 ## 현재 위반 (실측 2026-06-27)
 
 - **내용 100% 동일한 src↔packages 사본**(재export로 교체 대상):
-  `src/test-utils/mock-{slack-api,session,claude-handler}.ts` ≈ `@soma/test-utils`,
   `src/{mcp-tool-permission-config,mcp-tool-grant-store,admin-utils}.ts` ≈ `@soma/process-shared`.
 - **분기된 사본**(더 위험 — 로직이 달라 활성 버그): `@soma/process-shared/src/env-paths.ts` vs `@soma/common/src/env-paths.ts`.
 - **somalib↔process-shared 삼중복**: `memory-file-store`·`skill-file-store`·`shared-store`(src 기준 스캔엔 안 잡히는 별도 축).

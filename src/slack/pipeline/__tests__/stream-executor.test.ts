@@ -373,7 +373,6 @@ describe('Abort handling', () => {
       },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: {
@@ -1326,7 +1325,6 @@ describe('model-command integration', () => {
       },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: {
@@ -2468,9 +2466,7 @@ describe('File access blocked error recovery', () => {
       },
       toolEventProcessor: { cleanup: vi.fn() },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('x'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -3086,9 +3082,7 @@ describe('Auto fallback compact — handleError arming', () => {
       fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
       toolEventProcessor: { cleanup: vi.fn() },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('x'),
-        cleanup: vi.fn(),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
       contextWindowManager: { handlePromptTooLong: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
@@ -3234,9 +3228,7 @@ describe('Auto fallback compact — boundary restore (execute e2e)', () => {
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
       contextWindowManager: {
@@ -3695,9 +3687,7 @@ describe('Email guard in execute()', () => {
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -3853,7 +3843,6 @@ describe('W3-B rate-limit rotation wiring', () => {
       fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
@@ -4148,9 +4137,7 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -4342,7 +4329,6 @@ describe('stream-executor — B3 choice wiring', () => {
         fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
         toolEventProcessor: {},
         statusReporter: {
-          updateStatusDirect: vi.fn().mockResolvedValue(undefined),
           getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
         },
         reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
@@ -4679,9 +4665,7 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -4872,7 +4856,6 @@ describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
       },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('warning'),
       },
       reactionManager: {
@@ -5340,7 +5323,6 @@ describe('turn-end surface guarantee — P0 holes', () => {
       },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: {
@@ -5423,8 +5405,9 @@ describe('turn-end surface guarantee — P0 holes', () => {
     );
 
     const matches = Array.from(src.matchAll(/abortController\.abort\('ghost-session'/g));
-    // Two sites: onToolUse self-abort + onToolResult self-abort.
-    expect(matches.length).toBe(2);
+    // Four sites: onToolUse and onToolResult each check before and again after
+    // their status-write awaits (a delete can land during the await).
+    expect(matches.length).toBe(4);
   });
 
   // -------------------------------------------------------------------------
@@ -5766,7 +5749,7 @@ describe('turn-end surface guarantee — P0 holes', () => {
   // 3s race; assert it resolves even when the inner promise never settles.
 
   it('C-5: cleanupTempFiles is wrapped with a finite timeout', async () => {
-    const wrapper = (await import('../stream-executor-cleanup-helpers')).cleanupWithTimeout as
+    const wrapper = (await import('@soma/slack/pipeline/stream-executor-cleanup-helpers')).cleanupWithTimeout as
       | ((cleanup: () => Promise<void>, timeoutMs: number) => Promise<void>)
       | undefined;
     // RED gate: helper file/export does not exist yet.
@@ -5866,7 +5849,6 @@ describe('SET_GOAL host-apply (#1082)', () => {
       fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
@@ -6318,9 +6300,7 @@ describe('usage cap delivered as content triggers rotation (incident regression)
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -6457,9 +6437,7 @@ describe('prompt-too-long delivered as content triggers auto fallback compact (f
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
       contextWindowManager: {
@@ -6652,9 +6630,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
       contextWindowManager: {

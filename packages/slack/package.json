@@ -2,10 +2,7 @@
   "name": "@soma/slack",
   "version": "1.0.0",
   "private": true,
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js",
     "./action-panel-builder": "./dist/action-panel-builder.js",
     "./actions": "./dist/actions/index.js",
     "./actions/click-classifier": "./dist/actions/click-classifier.js",
@@ -33,7 +30,6 @@
     "./dispatch-abort": "./dist/dispatch-abort.js",
     "./event-router": "./dist/event-router.js",
     "./formatters": "./dist/formatters/index.js",
-    "./formatters/directory-formatter": "./dist/formatters/directory-formatter.js",
     "./formatters/markdown-to-blocks": "./dist/formatters/markdown-to-blocks.js",
     "./incident-contract": "./dist/incident-contract.js",
     "./handoff-budget": "./dist/handoff-budget.js",
@@ -45,7 +41,6 @@
     "./mrkdwn-escape": "./dist/mrkdwn-escape.js",
     "./output-flags": "./dist/output-flags.js",
     "./pipeline": "./dist/pipeline/index.js",
-    "./pipeline/effective-phase": "./dist/pipeline/effective-phase.js",
     "./pipeline/input-processor": "./dist/pipeline/input-processor.js",
     "./pipeline/session-initializer": "./dist/pipeline/session-initializer.js",
     "./pipeline/stream-executor": "./dist/pipeline/stream-executor.js",
@@ -86,7 +81,6 @@
     "./z/respond": "./dist/z/respond.js",
     "./z/router": "./dist/z/router.js",
     "./z/strip-z-prefix": "./dist/z/strip-z-prefix.js",
-    "./z/tombstone": "./dist/z/tombstone.js",
     "./z/types": "./dist/z/types.js",
     "./z/ui-builder": "./dist/z/ui-builder.js",
     "./z/whitelist": "./dist/z/whitelist.js",
@@ -175,9 +169,6 @@
       "formatters": [
         "dist/formatters/index.d.ts"
       ],
-      "formatters/directory-formatter": [
-        "dist/formatters/directory-formatter.d.ts"
-      ],
       "formatters/markdown-to-blocks": [
         "dist/formatters/markdown-to-blocks.d.ts"
       ],
@@ -210,9 +201,6 @@
       ],
       "pipeline": [
         "dist/pipeline/index.d.ts"
-      ],
-      "pipeline/effective-phase": [
-        "dist/pipeline/effective-phase.d.ts"
       ],
       "pipeline/input-processor": [
         "dist/pipeline/input-processor.d.ts"
@@ -324,9 +312,6 @@
       ],
       "z/strip-z-prefix": [
         "dist/z/strip-z-prefix.d.ts"
-      ],
-      "z/tombstone": [
-        "dist/z/tombstone.d.ts"
       ],
       "z/types": [
         "dist/z/types.d.ts"

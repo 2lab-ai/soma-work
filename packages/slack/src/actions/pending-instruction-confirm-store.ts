@@ -78,18 +78,6 @@ export class PendingInstructionConfirmStore {
     return entry;
   }
 
-  getBySession(sessionKey: string): PendingInstructionConfirm | undefined {
-    const id = this.bySession.get(sessionKey);
-    if (!id) return undefined;
-    const entry = this.byRequest.get(id);
-    if (!entry) return undefined;
-    if (this.isExpired(entry)) {
-      this.deleteExpired(entry);
-      return undefined;
-    }
-    return entry;
-  }
-
   private isExpired(entry: PendingInstructionConfirm): boolean {
     return Date.now() - (entry.createdAt || 0) > CONFIRM_TTL_MS;
   }

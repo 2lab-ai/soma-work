@@ -195,8 +195,6 @@ export interface SessionUiEventManager {
 
 export interface EventRouterProviders {
   createLegacyCommandRouter?: (deps: unknown) => LegacyCommandRouter;
-  markMigrationHintShown?: (userId: string) => Promise<boolean>;
-  hasMigrationHintShown?: (userId: string) => boolean;
   registerChannel?: (client: any, channel: string) => Promise<unknown>;
   unregisterChannel?: (channel: string) => void;
   getBaseDirectory?: () => string | undefined;
@@ -223,8 +221,6 @@ let eventRouterProviders: Required<EventRouterProviders> = {
   createLegacyCommandRouter: () => {
     throw new Error('EventRouter legacy command router provider is not configured.');
   },
-  markMigrationHintShown: async () => false,
-  hasMigrationHintShown: () => false,
   registerChannel: async () => {},
   unregisterChannel: () => {},
   getBaseDirectory: () => undefined,
@@ -317,13 +313,7 @@ export class EventRouter {
   ) {
     if (deps.commandDeps) {
       this.commandRouter = eventRouterProviders.createLegacyCommandRouter(deps.commandDeps);
-      this.zRouter = new ZRouter({
-        legacyRouter: this.commandRouter,
-        tombstoneStore: {
-          markMigrationHintShown: (uid) => eventRouterProviders.markMigrationHintShown(uid),
-          hasMigrationHintShown: (uid) => eventRouterProviders.hasMigrationHintShown(uid),
-        },
-      });
+      this.zRouter = new ZRouter({ legacyRouter: this.commandRouter });
     }
   }
 
@@ -838,7 +828,7 @@ export class EventRouter {
    *
    * Return shape (codex P1 followup):
    *  - `terminal: true` — the router fully consumed the invocation (card,
-   *    tombstone, forbidden notice, error, or a command that finished itself).
+   *    forbidden notice, error, or a command that finished itself).
    *    Caller MUST NOT continue pipeline processing.
    *  - `terminal: false, continueWithPrompt: string` — the command produced
    *    a follow-up prompt (e.g. `@bot /z new do X` → `do X`); caller should

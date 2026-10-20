@@ -545,16 +545,6 @@ export class SlackApiHelper {
   }
 
   /**
-   * 큐 상태 조회
-   */
-  getQueueStatus(): { queueLength: number; tokens: number } {
-    return {
-      queueLength: this.queue.length,
-      tokens: this.tokens,
-    };
-  }
-
-  /**
    * 사용자 ID로 사용자 이름 조회
    */
   async getUserName(userId: string): Promise<string> {
@@ -1174,46 +1164,6 @@ export class SlackApiHelper {
       );
     } catch (error) {
       this.logger.error('Failed to open modal', { triggerId, error });
-      throw error;
-    }
-  }
-
-  /**
-   * Update an already-open modal.
-   *
-   * Pass `hash` (taken from the inbound view payload) to guard against
-   * stale-write races — Slack rejects the update when the stored hash has
-   * moved on. See https://api.slack.com/methods/views.update.
-   */
-  async updateModal(viewId: string, view: any, hash?: string): Promise<void> {
-    try {
-      await this.enqueue(() =>
-        this.app.client.views.update({
-          view_id: viewId,
-          hash,
-          view,
-        }),
-      );
-    } catch (error) {
-      this.logger.error('Failed to update modal', { viewId, error });
-      throw error;
-    }
-  }
-
-  /**
-   * Push a new modal onto the modal stack. Requires a fresh `trigger_id`
-   * sourced from the originating interaction.
-   */
-  async pushModal(triggerId: string, view: any): Promise<void> {
-    try {
-      await this.enqueue(() =>
-        this.app.client.views.push({
-          trigger_id: triggerId,
-          view,
-        }),
-      );
-    } catch (error) {
-      this.logger.error('Failed to push modal', { triggerId, error });
       throw error;
     }
   }

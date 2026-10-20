@@ -123,12 +123,10 @@ class PermissionMCPServer extends BaseMcpServer {
     let permissionMessage: { ts?: string; channel?: string } | undefined;
 
     try {
-      permissionMessage = await this.messenger.sendPermissionRequest(
-        { channel, threadTs: thread_ts, user },
-        blocks,
-        tool_name,
-      );
-
+      // Persist BEFORE posting: the action handler stores a click only when
+      // this record exists and the clicker is its requester, so a prompt that
+      // is visible before the record is written would reject a fast click
+      // (and the request would then time out to deny).
       const pendingApproval: PendingApproval = {
         tool_name,
         input,
@@ -141,6 +139,12 @@ class PermissionMCPServer extends BaseMcpServer {
       };
 
       await sharedStore.storePendingApproval(approvalId, pendingApproval);
+
+      permissionMessage = await this.messenger.sendPermissionRequest(
+        { channel, threadTs: thread_ts, user },
+        blocks,
+        tool_name,
+      );
 
       const response = await this.waitForApproval(approvalId, context.signal);
 

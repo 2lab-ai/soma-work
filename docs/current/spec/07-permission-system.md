@@ -361,6 +361,10 @@ async waitForPermissionResponse(
 
 ## 6. Button Action Handlers
 
+Current implementation: `src/slack/actions/permission-action-handler.ts` (registered in `packages/slack/src/actions/index.ts`). The snippets below show the response each button stores.
+
+**Requester-only.** The prompt is an ordinary thread message, so every channel member can click it. Before storing anything, each handler (`approve_tool`, `deny_tool`, `explain_tool`, `approve_disable_rule_session`) loads the `PendingApproval` and proceeds only when `body.user.id === PendingApproval.user` (the user the request was raised for). Any other clicker gets an ephemeral notice and no response is stored. A missing click user, a request with no recorded user, or a missing/expired record also stores nothing (fail-closed): the MCP server keeps waiting and times out to deny.
+
 ### 6.1 Approve Handler
 
 ```typescript

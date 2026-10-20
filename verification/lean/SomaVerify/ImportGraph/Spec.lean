@@ -96,10 +96,9 @@ def NeverLoads (g : Graph) (r : Nat) (targets : List Nat) : Prop :=
 
 /-- packages/process-shared/src/mcp/base-mcp-server.ts:72: `const transport = new
 StdioServerTransport();` (packages/mcp-servers/cron/cron-mcp-server.ts:675 constructs one
-directly): an MCP server speaks JSON-RPC on its own stdout, which is how this repository's client
-reads a server too (packages/process-shared/src/mcp/mcp-client.ts:114: "Handle stdout - JSON-RPC
-messages"). packages/common/src/env-paths.ts:94 writes its banner with `console.log`, to stdout,
-when the module loads.
+directly): an MCP server speaks JSON-RPC on its own stdout, which is where a stdio MCP client
+reads the server's messages. packages/common/src/env-paths.ts:94 writes its banner with
+`console.log`, to stdout, when the module loads.
 
 `NoEntryLoads g entries targets`: no entry loads a target, directly or through any chain of
 loads, so no target's load-time output is written by an entry's process. -/

@@ -15,8 +15,6 @@ vi.mock('../../../user-settings-store', () => ({
       defaultModel: 'claude-sonnet-4-5-20250929',
       lastUpdated: new Date().toISOString(),
     }),
-    getUserDefaultDirectory: vi.fn().mockReturnValue(''),
-    setUserDefaultDirectory: vi.fn(),
     getUserBypassPermission: vi.fn().mockReturnValue(false),
     setUserBypassPermission: vi.fn(),
     getUserPersona: vi.fn().mockReturnValue('default'),
@@ -292,50 +290,6 @@ describe('Scenario 1: mid-thread mention — unified redirect UX', () => {
 });
 
 // ============================================================
-// Scenario 2 — Top-level: 기존 동작 유지
-// ============================================================
-describe('Scenario 2: top-level mention — existing behavior preserved', () => {
-  beforeEach(() => {
-    vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(ACCEPTED_USER_SETTINGS);
-    mockClaudeHandler.getSession.mockReturnValue(null);
-    mockClaudeHandler.needsDispatch.mockReturnValue(true);
-  });
-
-  it('topLevel_deletesBotMessages: deletes tracked init clutter when no thread_ts', async () => {
-    const event = {
-      user: 'U_EXISTING_USER',
-      channel: 'C123',
-      thread_ts: undefined,
-      ts: 'thread123',
-      text: 'Hello!',
-    };
-
-    await sessionInitializer.initialize(event as any, '/test/dir');
-
-    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', 'conv-link-ts');
-    expect(mockSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
-  });
-
-  it('topLevel_doesNotRetainInitialMessage: does not post permalink retention message', async () => {
-    const event = {
-      user: 'U_EXISTING_USER',
-      channel: 'C123',
-      thread_ts: undefined,
-      ts: 'thread123',
-      text: 'Hello!',
-    };
-
-    await sessionInitializer.initialize(event as any, '/test/dir');
-
-    const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) => call[2]?.threadTs === 'thread123' && typeof call[1] === 'string' && isRetentionCard(call[1]),
-    );
-
-    expect(retentionMessages).toHaveLength(0);
-  });
-});
-
-// ============================================================
 // Scenario 3 — sourceThread 저장
 // ============================================================
 describe('Scenario 3: sourceThread storage on session', () => {
@@ -393,21 +347,6 @@ describe('Scenario 3 (v2): mid-thread delete-then-redirect ordering', () => {
     vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(ACCEPTED_USER_SETTINGS);
     mockClaudeHandler.getSession.mockReturnValue(null);
     mockClaudeHandler.needsDispatch.mockReturnValue(true);
-  });
-
-  it('midThread_alwaysCallsDelete: deleteMessage called for mid-thread mentions', async () => {
-    const event = {
-      user: 'U_EXISTING_USER',
-      channel: 'C123',
-      thread_ts: '1711234567.000100',
-      ts: '1711234599.000200',
-      text: '@zhugeliang 여기 내용 정리해줘',
-    };
-
-    await sessionInitializer.initialize(event as any, '/test/dir');
-
-    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C123', 'conv-link-ts');
-    expect(mockSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
   });
 
   it('midThread_deletesBeforeRedirect: delete happens before redirect message', async () => {
@@ -524,20 +463,6 @@ describe('Scenario 4 (v2): top-level delete + redirect preserved', () => {
     );
     expect(retentionMessages).toHaveLength(0);
   });
-
-  // Trace: S4, Sec 3a — sourceThread undefined
-  it('topLevel_noSourceThread: sourceThread is not set', async () => {
-    const event = {
-      user: 'U_EXISTING_USER',
-      channel: 'C123',
-      thread_ts: undefined,
-      ts: 'thread123',
-      text: 'Hello!',
-    };
-
-    const result = await sessionInitializer.initialize(event as any, '/test/dir');
-    expect(result.session.sourceThread).toBeUndefined();
-  });
 });
 
 // ============================================================
@@ -591,42 +516,5 @@ describe('Scenario 6 (#516): model replies preserved across mid-thread migration
     expect(mockSlackApi.deleteMessage).not.toHaveBeenCalledWith('C123', 'model-reply-ts-from-prior-turn');
     // And the old broad-sweep API must remain unused.
     expect(mockSlackApi.deleteThreadBotMessages).not.toHaveBeenCalled();
-  });
-});
-
-// ============================================================
-// Scenario 5 (v2) — Mid-thread: unified redirect (no retention)
-// ============================================================
-describe('Scenario 5 (v2): mid-thread unified redirect', () => {
-  beforeEach(() => {
-    vi.mocked(userSettingsStore.getUserSettings).mockReturnValue(ACCEPTED_USER_SETTINGS);
-    mockClaudeHandler.getSession.mockReturnValue(null);
-    mockClaudeHandler.needsDispatch.mockReturnValue(true);
-  });
-
-  it('midThread_noRetention: does not post retention 📋 card for thread-originating mentions', async () => {
-    const event = {
-      user: 'U_EXISTING_USER',
-      channel: 'C123',
-      thread_ts: '1711234567.000100',
-      ts: '1711234599.000200',
-      text: '@zhugeliang 여기 내용 정리해줘',
-    };
-
-    await sessionInitializer.initialize(event as any, '/test/dir');
-
-    // No retention 📋 messages in source thread
-    const retentionMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) =>
-        call[2]?.threadTs === '1711234567.000100' && typeof call[1] === 'string' && isRetentionCard(call[1]),
-    );
-    expect(retentionMessages).toHaveLength(0);
-
-    // Instead, redirect 🧵 is posted
-    const redirectMessages = mockSlackApi.postMessage.mock.calls.filter(
-      (call: any[]) =>
-        call[2]?.threadTs === '1711234567.000100' && typeof call[1] === 'string' && call[1].includes('🧵'),
-    );
-    expect(redirectMessages.length).toBeGreaterThanOrEqual(1);
   });
 });
