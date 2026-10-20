@@ -94,6 +94,15 @@ export interface MessageEvent {
      */
     goalContinuation?: boolean;
     /**
+     * True when `text` is a `/z` command's verbatim `continueWithPrompt` (a
+     * goal objective) that already went through command routing. The message
+     * path dispatches it as the user's words: no second command routing, no
+     * inline `%` directives, no `!` abort/steer, always a real turn. Set only
+     * by the `/z` consumers (DM branch, app_mention); survives the follow-up
+     * queue because stored messages are never rebuilt.
+     */
+    verbatimPrompt?: boolean;
+    /**
      * Present ONLY on a turn the incident ingress itself built after the
      * contract accepted it (`event-router.ts` → `evaluateIncidentIngress`).
      * Internal: it never survives a round-trip through Slack, so a message

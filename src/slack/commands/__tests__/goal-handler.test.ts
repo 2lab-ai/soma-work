@@ -163,6 +163,8 @@ describe('GoalHandler', () => {
     // D1: the opening turn sends the user's own words. Goal rules ride in
     // the rebuilt system prompt (<session-goal>), never in the user message.
     expect(result.continueWithPrompt).toBe('implement the Slack goal command');
+    // The objective is user text, already past routing — never re-parse it.
+    expect(result.verbatimPrompt).toBe(true);
     expect(session.goal).toMatchObject({
       objective: 'implement the Slack goal command',
       status: 'active',

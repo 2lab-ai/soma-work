@@ -186,6 +186,16 @@ export interface SlackHandlerOptions {
   followupQueueStore?: FollowupQueueStorePort;
 }
 
+/**
+ * Is this event a `/z goal` objective re-entering the pipeline
+ * (`routeContext.verbatimPrompt`)? Such text is the user's words and has
+ * already been through command routing: it must never be parsed as a command,
+ * an inline `%` directive, or the `!` abort/steer marker again.
+ */
+function isVerbatimPrompt(event: MessageEvent): boolean {
+  return event.routeContext?.verbatimPrompt === true;
+}
+
 export class SlackHandler {
   private app: App;
   private claudeHandler: ClaudeHandler;
@@ -1270,6 +1280,11 @@ export class SlackHandler {
         }
         if (routed.continueWithPrompt !== undefined) {
           event.text = routed.continueWithPrompt;
+          // `/z goal <objective>`: the objective is the user's words — mark it
+          // so the steps below never parse it as a command again.
+          if (routed.verbatimPrompt) {
+            event.routeContext = { ...event.routeContext, verbatimPrompt: true };
+          }
         }
         // else: not terminal and no continuation — fall through with original text.
       }
@@ -1278,9 +1293,13 @@ export class SlackHandler {
     // Immediately acknowledge the message with eyes emoji
     await this.slackApi.addReaction(channel, ts, 'eyes');
 
+    // A `/z goal` objective re-entering the pipeline: dispatch the user's
+    // words as-is — no abort marker, no inline directives, no command routing.
+    const verbatimPrompt = isVerbatimPrompt(event);
+
     // Check for abort command: "!" or "!{prompt}"
     const trimmedText = (event.text || '').trim();
-    if (trimmedText.startsWith('!')) {
+    if (!verbatimPrompt && trimmedText.startsWith('!')) {
       const sessionKey = this.claudeHandler.getSessionKey(channel, originalThreadTs);
       let aborted: boolean;
       try {
@@ -1343,7 +1362,7 @@ export class SlackHandler {
     // An incident turn's text is host-built; the only payload-derived part is
     // quoted summary data. Parsing directives out of it would hand the alert
     // producer a model/permission knob, so the parser never runs on it.
-    if (!event.synthetic && !incidentTurn) {
+    if (!event.synthetic && !incidentTurn && !verbatimPrompt) {
       const directives = CommandParser.parseInlineSessionDirectives(event.text || '');
       if (directives) {
         if (directives.remainder === '') {
@@ -1433,7 +1452,11 @@ export class SlackHandler {
       deferredSkillFire,
       error: commandError,
       awaitingPermission,
-    } = await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
+    } = verbatimPrompt
+      ? // Already routed by the `/z` command that produced it — the same result
+        // the channel path gets straight from `GoalHandler`.
+        { handled: true, continueWithPrompt: event.text ?? '' }
+      : await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
     if (handled && !continueWithPrompt) {
       // Issue #1082 T1 (spec-review P1): the no-session goal+skill split can
       // end here when the skill part errored out (`handled:true`, no prompt —
@@ -2465,6 +2488,11 @@ export class SlackHandler {
     const text = (event.text ?? '').trim();
     if (!text && !event.files?.length) return false;
 
+    // A `/z goal` objective is the user's turn whatever it looks like — never an
+    // immediate control. DM non-admins never reach here with one (`goal` is
+    // not a safe `/z` topic, Gate A rejects it).
+    if (isVerbatimPrompt(event)) return true;
+
     // Bare `!` is an immediate stop: it answers, aborts and consumes, so it
     // runs live. `!{prompt}` is NOT immediate — it starts a turn, so it needs
     // the slot like any other instruction (while busy it takes the steer path).
@@ -2583,7 +2611,7 @@ export class SlackHandler {
    * `undefined` for anything that is not a steer, including a bare `!`.
    */
   private parseSteerPrompt(event: MessageEvent): string | undefined {
-    if (event.synthetic) return undefined;
+    if (event.synthetic || isVerbatimPrompt(event)) return undefined;
     const text = (event.text ?? '').trim();
     if (!text.startsWith('!')) return undefined;
     const prompt = text.slice(1).trim();
@@ -4628,9 +4656,13 @@ export class SlackHandler {
    *    handle the message (unknown `/z` remainder, or internal failure);
    *    caller should fall through to the legacy pipeline unchanged.
    */
-  private async routeDmViaZRouter(
-    event: MessageEvent,
-  ): Promise<{ terminal: boolean; continueWithPrompt?: string; error?: string; awaitingPermission?: boolean }> {
+  private async routeDmViaZRouter(event: MessageEvent): Promise<{
+    terminal: boolean;
+    continueWithPrompt?: string;
+    verbatimPrompt?: boolean;
+    error?: string;
+    awaitingPermission?: boolean;
+  }> {
     const zRouter = this.eventRouter.getZRouter();
     if (!zRouter) {
       this.logger.warn('routeDmViaZRouter: zRouter not initialized; falling through');
@@ -4665,7 +4697,11 @@ export class SlackHandler {
 
       // Continuation path: caller must continue with the captured prompt.
       if (result.continueWithPrompt !== undefined) {
-        return { terminal: false, continueWithPrompt: result.continueWithPrompt };
+        return {
+          terminal: false,
+          continueWithPrompt: result.continueWithPrompt,
+          verbatimPrompt: result.verbatimPrompt,
+        };
       }
 
       // Handled (card / passthrough that finished itself) → terminal.

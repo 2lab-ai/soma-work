@@ -89,6 +89,8 @@ The `<session-goal>` block is the **single** place the objective and the steerin
 
 **Opening turn.** Every surface that starts a goal — autogoal promotion, `goal <objective>` / `new goal <objective>`, a goal-prefixed first message, and `goal done` advancing to the next queued goal — dispatches the user's raw text (or the promoted objective) as the turn's message. The turn is never rewritten into a continuation prompt: that duplicated the objective and ~4 KB of rules into the user message, the conversation record, and the work log, and made episodic memory skip the real first instruction as a "system re-injection".
 
+**Verbatim re-entry.** `GoalHandler` marks its `continueWithPrompt` with `verbatimPrompt: true` (set and queue-advance paths). The two `/z` consumers that feed a command's prompt back into the full message pipeline — the admin DM branch and `@bot /z …` app_mention — copy that marker onto `routeContext.verbatimPrompt`. A verbatim event skips the `!` abort check, inline `%` directives, command routing, and steer parsing, and always counts as a real turn for the follow-up queue (the stored message keeps the marker). Without it, an objective such as `new dashboard`, `!urgent …`, or `%nogoal …` was executed as that command right after the goal was set.
+
 Changing goal state (set/pause/resume/complete/clear, plus every ralph-loop continuation and every eval verdict) must clear `session.systemPrompt` so the next model turn rebuilds against the current goal. This applies because `applySessionGoal` only injects when `goal.status === 'active'`, and the cached prompt would otherwise embed a stale steering block.
 
 ## Auto-Continuation Loop (Ralph Loop)

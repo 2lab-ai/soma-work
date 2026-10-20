@@ -57,6 +57,14 @@ export interface CommandResult {
    * instruction text (no `<invoked_skills>` block).
    */
   deferredSkillFire?: DeferredSkillFire;
+  /**
+   * `continueWithPrompt` is the user's own free text (a goal objective), not
+   * a host-built prompt. It has already been through command routing, so the
+   * `/z` callers (DM branch, app_mention) must mark the re-entered event
+   * `routeContext.verbatimPrompt` instead of letting the pipeline parse it as
+   * a command, an inline directive, or the `!` abort marker again.
+   */
+  verbatimPrompt?: boolean;
 }
 
 export type SayFn = (message: {

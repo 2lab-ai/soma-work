@@ -1343,6 +1343,16 @@ describe('SlackHandler', () => {
       expect(handlerAny.inputProcessor.processFiles).toHaveBeenCalledTimes(1);
       const forwardedEvent = handlerAny.inputProcessor.processFiles.mock.calls[0][0];
       expect(forwardedEvent.text).toBe('write a failing test');
+      // `/z new` keeps the re-route (a deferred `$skill` remainder relies on it).
+      expect(forwardedEvent.routeContext?.verbatimPrompt).toBeUndefined();
+
+      // `/z goal <objective>`: the objective is marked verbatim so the
+      // pipeline never parses it as a command.
+      dispatch.mockResolvedValueOnce({ handled: true, continueWithPrompt: 'new dashboard', verbatimPrompt: true });
+      await handler.handleMessage({ ...event, ts: '555.667', text: '/z goal new dashboard' } as any, say);
+      const goalEvent = handlerAny.inputProcessor.processFiles.mock.calls[1][0];
+      expect(goalEvent.text).toBe('new dashboard');
+      expect(goalEvent.routeContext?.verbatimPrompt).toBe(true);
     } finally {
       if (prevAdmins === undefined) {
         delete process.env.ADMIN_USERS;
@@ -2457,7 +2467,7 @@ describe('SlackHandler — #1082 goal-prefixed first message', () => {
     return { handler, handlerAny, claudeHandler, fullSession, execute, dispatchSnapshots };
   }
 
-  it('applies the goal to the new session and dispatches the continuation prompt', async () => {
+  it('applies the goal to the new session and dispatches the raw objective', async () => {
     const { handler, handlerAny, claudeHandler, fullSession, execute, dispatchSnapshots } = buildGoalHarness({
       handled: false,
       setGoalObjective: 'ship the feature',
@@ -2512,6 +2522,36 @@ describe('SlackHandler — #1082 goal-prefixed first message', () => {
     expect(execute).toHaveBeenCalledTimes(1);
     const dispatched = execute.mock.calls[0][0].text as string;
     expect(dispatched).toBe('ship the feature');
+  });
+
+  // Review P1 (PR #305): `/z goal <objective>` hands the RAW objective back as
+  // `continueWithPrompt`, and both `/z` consumers (DM branch, app_mention)
+  // feed it into the full pipeline again. It must dispatch verbatim — never
+  // parsed as a command, an inline directive, or the `!` abort marker.
+  it.each([
+    ['a command form', 'new dashboard 구현'],
+    ['the abort marker', '!stop the flaky test'],
+    ['an inline directive', '%nogoal ship it'],
+  ])('a verbatim prompt that looks like %s is dispatched as-is, never re-routed', async (_label, objective) => {
+    const { handler, handlerAny, execute } = buildGoalHarness({ handled: false });
+    const abortSpy = vi.spyOn(handlerAny.requestCoordinator, 'abortSession');
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    await handler.handleMessage(
+      {
+        user: 'U123',
+        channel: 'C123',
+        ts: '111.222',
+        text: objective,
+        routeContext: { verbatimPrompt: true },
+      } as any,
+      say,
+    );
+
+    expect(handlerAny.inputProcessor.routeCommand).not.toHaveBeenCalled();
+    expect(abortSpy).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0][0].text).toBe(objective);
   });
 
   it('continueWithPrompt (goal+skill split) wins as dispatch text while the goal is still applied', async () => {
