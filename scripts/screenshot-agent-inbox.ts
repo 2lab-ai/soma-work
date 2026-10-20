@@ -18,6 +18,9 @@
  *     empty log), duplicates drop, a missing route reads "작업 로그 없음"
  *   - work-log tool rows print the tool name once, with the emitter's stored
  *     text shape ("Read {...}", "Glob ok")
+ *   - stats: 오늘 → 지난 7일 changes 세션 / 토큰 / 비용 to the week's totals
+ *     (stats + usage requests carry the period; All Users sends no userId), and
+ *     a late answer for a period no longer selected does not repaint them
  *   - top bar, Chromium and WebKit, 360–1280px × status × pill name × selected
  *     user (see topbarChecks): no control label wraps or is cut, no two
  *     controls overlap, none leaves the viewport, each is reachable across its
@@ -533,6 +536,89 @@ const PAGE_HELPERS = [
   '};',
 ].join('\n');
 
+/**
+ * What the stats / usage mocks answer per period: U001's own numbers, and the
+ * All Users numbers (no userId) — sessions differ, tokens and cost are doubled.
+ * None of them equals what the board's own cards add up to (8 cards, 1.7M
+ * tokens, $11.63), so a strip still reading the session cache cannot pass.
+ */
+type Period = 'day' | 'week' | 'month';
+const PERIOD_TOTALS: Record<Period, { sessions: number; all: number; input: number; output: number; cost: number }> = {
+  day: { sessions: 6, all: 14, input: 1_000_000, output: 200_000, cost: 12.47 },
+  week: { sessions: 37, all: 61, input: 9_000_000, output: 1_500_000, cost: 84.2 },
+  month: { sessions: 112, all: 203, input: 30_000_000, output: 4_000_000, cost: 301.5 },
+};
+const PERIOD_DAYS: Record<Period, number> = { day: 1, week: 7, month: 30 };
+/** The query string of every stats / usage request the mocks answered, in answer order. */
+const STATS_CALLS: URLSearchParams[] = [];
+const USAGE_CALLS: URLSearchParams[] = [];
+
+function periodOf(q: URLSearchParams): Period {
+  const p = q.get('period');
+  return p === 'week' || p === 'month' ? p : 'day';
+}
+
+function statsBody(q: URLSearchParams) {
+  const period = periodOf(q);
+  const t = PERIOD_TOTALS[period];
+  const sessions = q.get('userId') ? t.sessions : t.all;
+  const n = PERIOD_DAYS[period];
+  const days = Array.from({ length: n }, (_, i) => ({
+    date: new Date(NOW - (n - 1 - i) * 24 * 60 * M).toISOString().slice(0, 10),
+    sessionsCreated: Math.round(sessions / n) + (i % 3),
+    turnsUsed: 0,
+    prsCreated: 0,
+    prsMerged: 0,
+    commitsCreated: 0,
+    linesAdded: 0,
+    linesDeleted: 0,
+    mergeLinesAdded: 40 + ((i * 37) % 90),
+    mergeLinesDeleted: 5 + ((i * 11) % 20),
+    workflowCounts: {},
+  }));
+  return {
+    userId: q.get('userId') || null,
+    period,
+    totals: {
+      sessionsCreated: sessions,
+      turnsUsed: 41,
+      prsCreated: 2,
+      prsMerged: 1,
+      commitsCreated: 9,
+      linesAdded: 0,
+      linesDeleted: 0,
+      mergeLinesAdded: 254,
+      mergeLinesDeleted: 33,
+      workflowCounts: { zwork: 5, default: 3 },
+    },
+    days,
+  };
+}
+
+function usageBody(q: URLSearchParams) {
+  const period = periodOf(q);
+  const t = PERIOD_TOTALS[period];
+  const k = q.get('userId') ? 1 : 2;
+  return {
+    period,
+    startDate: '2026-01-01',
+    endDate: '2026-01-01',
+    totals: {
+      totalInputTokens: t.input * k,
+      totalOutputTokens: t.output * k,
+      totalCacheReadTokens: 5_000_000, // not part of the strip's token count
+      totalCacheCreateTokens: 700_000,
+      totalCostUsd: t.cost * k,
+      byModel: {},
+    },
+    byUser: {},
+    byDay: [],
+    tokenRankings: [],
+    costRankings: [],
+    hasLegacyData: false,
+  };
+}
+
 async function installMocks(
   page: Page,
   board: unknown,
@@ -541,23 +627,16 @@ async function installMocks(
   await page.addInitScript({ content: PAGE_HELPERS });
   await page.route('**/auth/me', (r) => r.fulfill({ json: { user: { name: 'Zhuge' }, csrfToken: 'x' } }));
   await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: [{ id: 'U001', name: 'Zhuge' }] } }));
-  await page.route('**/api/dashboard/stats**', (r) =>
-    r.fulfill({
-      json: {
-        totals: {
-          sessionsCreated: 8,
-          turnsUsed: 41,
-          prsCreated: 2,
-          prsMerged: 1,
-          commitsCreated: 9,
-          mergeLinesAdded: 254,
-          mergeLinesDeleted: 33,
-          workflowCounts: { zwork: 5, default: 3 },
-        },
-        days: [],
-      },
-    }),
-  );
+  await page.route('**/api/dashboard/stats**', (r) => {
+    const q = new URL(r.request().url()).searchParams;
+    STATS_CALLS.push(q);
+    return r.fulfill({ json: statsBody(q) });
+  });
+  await page.route('**/api/dashboard/usage**', (r) => {
+    const q = new URL(r.request().url()).searchParams;
+    USAGE_CALLS.push(q);
+    return r.fulfill({ json: usageBody(q) });
+  });
   await page.route('**/api/dashboard/sessions**', (r) => r.fulfill({ json: { board } }));
   // Work log seam: no afterSeq = latest PAGE window; afterSeq=N = first PAGE after N.
   await page.route(/\/api\/dashboard\/session\/[^/?]+\/worklog/, async (r) => {
@@ -1736,6 +1815,124 @@ async function titleSubPanelSwitch(browser: import('playwright').Browser) {
   await ctx.close();
 }
 
+/** Expected strip text for a period: U001's own numbers or All Users'. */
+function stripWant(scope: 'user' | 'all', period: Period) {
+  const t = PERIOD_TOTALS[period];
+  const k = scope === 'user' ? 1 : 2;
+  const tokens = ((t.input + t.output) * k) / 1_000_000;
+  return {
+    sessions: String(scope === 'user' ? t.sessions : t.all),
+    tokens: `${tokens.toFixed(1)}M`,
+    cost: `$${(t.cost * k).toFixed(2)}`,
+  };
+}
+type StripRead = { sessions: string; tokens: string; cost: string; active: string };
+
+/**
+ * Every stat follows the selected period (오늘 / 지난 7일 / 지난 30일): sessions
+ * from /api/dashboard/stats, tokens (input + output) and cost from
+ * /api/dashboard/usage — for one user and for All Users (no userId) — and a
+ * late response for a period no longer selected is dropped.
+ */
+async function statsChecks(browser: import('playwright').Browser) {
+  const read = (page: Page) =>
+    page.evaluate(() => ({
+      sessions: document.getElementById('stat-sessions')?.textContent ?? '',
+      tokens: document.getElementById('stat-tokens')?.textContent ?? '',
+      cost: document.getElementById('stat-cost')?.textContent ?? '',
+      active: (document.querySelector('.period-btn.active') as HTMLElement | null)?.dataset.period ?? '',
+    })) as Promise<StripRead>;
+  const shows = (page: Page, want: Omit<StripRead, 'active'>) =>
+    page
+      .waitForFunction(
+        (w) =>
+          document.getElementById('stat-sessions')?.textContent === w.sessions &&
+          document.getElementById('stat-tokens')?.textContent === w.tokens &&
+          document.getElementById('stat-cost')?.textContent === w.cost,
+        want,
+        { timeout: 5000 },
+      )
+      .then(
+        () => true,
+        () => false,
+      );
+  const callsFor = (calls: URLSearchParams[], period: Period) => calls.filter((q) => periodOf(q) === period);
+
+  for (const scope of ['user', 'all'] as const) {
+    const label = scope === 'user' ? 'stats U001' : 'stats All Users';
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'dark' });
+    const page = await ctx.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await installMocks(page, makeBoard());
+    STATS_CALLS.length = 0;
+    USAGE_CALLS.length = 0;
+    if (scope === 'user') await openBoard(page);
+    else {
+      await page.goto(`${BASE_URL}/dashboard`);
+      await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 5, null, {
+        timeout: 10000,
+      });
+    }
+    const dayOk = await shows(page, stripWant(scope, 'day'));
+    check(dayOk, `${label}: 오늘 shows the day's sessions, tokens and cost (${JSON.stringify(await read(page))})`);
+    await page.click('.period-btn[data-period="week"]');
+    const weekOk = await shows(page, stripWant(scope, 'week'));
+    check(
+      weekOk,
+      `${label}: 지난 7일 changes sessions, tokens and cost to the week totals (want ${JSON.stringify(stripWant(scope, 'week'))}, got ${JSON.stringify(await read(page))})`,
+    );
+    const asked = [...callsFor(STATS_CALLS, 'week'), ...callsFor(USAGE_CALLS, 'week')];
+    const userIds = [...STATS_CALLS, ...USAGE_CALLS].map((q) => q.get('userId'));
+    check(
+      callsFor(STATS_CALLS, 'week').length === 1 &&
+        callsFor(USAGE_CALLS, 'week').length === 1 &&
+        userIds.every((u) => (scope === 'user' ? u === 'U001' : u === null)),
+      `${label}: one stats + one usage request per period, userId ${scope === 'user' ? '=U001' : 'absent'} (${asked.length} week requests, userIds ${JSON.stringify(userIds)})`,
+    );
+    check(errors.length === 0, `${label}: no page errors (${errors.join(' | ')})`);
+    await ctx.close();
+  }
+
+  // Fast clicks: 오늘 → 지난 7일 (both responses held) → 오늘; the late week
+  // responses land last and must not repaint the strip.
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'dark' });
+  const page = await ctx.newPage();
+  await installMocks(page, makeBoard());
+  const held: Array<() => void> = [];
+  await page.route(/\/api\/dashboard\/(stats|usage)\?.*period=week/, async (r) => {
+    await new Promise<void>((res) => {
+      held.push(res);
+    });
+    await r.fallback();
+  });
+  await page.goto(`${BASE_URL}/dashboard`);
+  await shows(page, stripWant('all', 'day'));
+  STATS_CALLS.length = 0;
+  USAGE_CALLS.length = 0;
+  await page.click('.period-btn[data-period="week"]');
+  for (let i = 0; i < 100 && held.length < 2; i++) await page.waitForTimeout(20);
+  await page.click('.period-btn[data-period="day"]');
+  for (let i = 0; i < 100 && (STATS_CALLS.length < 1 || USAGE_CALLS.length < 1); i++) await page.waitForTimeout(20);
+  await page.waitForTimeout(200);
+  for (const release of held) release();
+  for (let i = 0; i < 100 && (STATS_CALLS.length < 2 || USAGE_CALLS.length < 2); i++) await page.waitForTimeout(20);
+  await page.waitForTimeout(400);
+  const end = await read(page);
+  const order = STATS_CALLS.map(periodOf).join('>');
+  const want = stripWant('all', 'day');
+  check(
+    held.length === 2 &&
+      order === 'day>week' &&
+      end.active === 'day' &&
+      end.sessions === want.sessions &&
+      end.tokens === want.tokens &&
+      end.cost === want.cost,
+    `stats: 오늘 → 지난 7일 → 오늘 with the week answers landing last ends on today's numbers (answers ${order}, ${JSON.stringify(end)})`,
+  );
+  await ctx.close();
+}
+
 async function main() {
   const dashboard = await import('../src/conversation/dashboard');
   dashboard.setDashboardSessionAccessor(() => new Map());
@@ -1752,6 +1949,7 @@ async function main() {
     await topbarChecks(browser);
     await cardIoOutage(browser);
     await titleSubPanelSwitch(browser);
+    await statsChecks(browser);
   } finally {
     await browser.close();
     await ws.stopWebServer();
