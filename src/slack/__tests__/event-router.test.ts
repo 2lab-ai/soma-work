@@ -89,6 +89,21 @@ describe('EventRouter', () => {
   });
 
   describe('dispatchPendingUserMessage', () => {
+    it('replays a stashed goal objective with routeContext.verbatimPrompt (PR #305)', async () => {
+      await router.dispatchPendingUserMessage(
+        { channel: 'C123', threadTs: '111.222', user: 'U123', ts: '111.333', verbatimPrompt: true },
+        'new dashboard 구현',
+        { compactRedispatch: true },
+      );
+      expect(mockMessageHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'new dashboard 구현',
+          routeContext: { compactRedispatch: true, verbatimPrompt: true },
+        }),
+        expect.any(Function),
+      );
+    });
+
     it('treats pipeline invocation as the handoff boundary and does not reject after downstream acceptance', async () => {
       mockMessageHandler = vi.fn(async () => {
         throw new Error('downstream turn failed after acceptance');

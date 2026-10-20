@@ -455,7 +455,7 @@ interface StreamExecutorDeps {
    * by the auto-compact interception path (AC3 end-to-end).
    */
   dispatchPendingUserMessage?: (
-    ctx: { channel: string; threadTs: string; user: string; ts: string },
+    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
     text: string,
     opts?: { compactRedispatch?: boolean },
   ) => Promise<void>;
@@ -2767,6 +2767,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         text.trim()
       ) {
         (error as any).failedTurnText = text;
+        // A goal objective must replay as the user's words — never re-parsed
+        // as a command (`new …`) or an SDK slash command (`/clear …`).
+        if (params.literalPrompt === true) (error as any).failedTurnLiteral = true;
       }
       // The reason was set by `RequestCoordinator.abortSession(reason)` —
       // `controller.abort(reason)` surfaces it on `signal.reason`. Used by
@@ -3778,6 +3781,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // The user text whose turn overflowed — attached by execute()'s catch so
     // the boundary handler can re-dispatch it after compaction completes.
     const failedTurnText = typeof (error as any)?.failedTurnText === 'string' ? (error as any).failedTurnText : null;
+    const failedTurnLiteral = (error as any)?.failedTurnLiteral === true;
 
     // Proactive transcript repair (field incident 2026-07-07, ccee16e0): the
     // `/compact` we are about to run replays the FULL transcript through the
@@ -3810,7 +3814,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session.fallbackCompactActive = true;
     session.fallbackCompactPendingUserText = failedTurnText;
     session.fallbackCompactPendingEventContext = failedTurnText
-      ? { channel, threadTs, user: session.ownerId || '', ts: `${Date.now() / 1000}` }
+      ? {
+          channel,
+          threadTs,
+          user: session.ownerId || '',
+          ts: `${Date.now() / 1000}`,
+          ...(failedTurnLiteral ? { verbatimPrompt: true } : {}),
+        }
       : null;
     session.model = fallbackModel;
     session.lastErrorContext = undefined;

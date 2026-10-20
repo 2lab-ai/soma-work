@@ -353,10 +353,16 @@ export class EventRouter {
    * `messageHandler` runs) still propagates normally.
    */
   public async dispatchPendingUserMessage(
-    ctx: { channel: string; threadTs: string; user: string; ts: string },
+    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
     text: string,
     opts?: { compactRedispatch?: boolean },
   ): Promise<void> {
+    // `ctx.verbatimPrompt`: the stashed text is a goal objective — replay it as
+    // the user's words, never as a command (see `routeContext.verbatimPrompt`).
+    const routeContext = {
+      ...(opts?.compactRedispatch ? { compactRedispatch: true } : {}),
+      ...(ctx.verbatimPrompt ? { verbatimPrompt: true } : {}),
+    };
     const syntheticEvent = {
       type: 'message',
       channel: ctx.channel,
@@ -364,7 +370,7 @@ export class EventRouter {
       user: ctx.user,
       ts: ctx.ts,
       text,
-      ...(opts?.compactRedispatch ? { routeContext: { compactRedispatch: true } } : {}),
+      ...(Object.keys(routeContext).length > 0 ? { routeContext } : {}),
     } as unknown as MessageEvent;
 
     const say: SayFn = async (arg) => {

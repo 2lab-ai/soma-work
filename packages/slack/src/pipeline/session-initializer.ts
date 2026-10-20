@@ -301,7 +301,12 @@ export class SessionInitializer {
     // Replay stashes must preserve leading inline session directives
     // (`%model <v>` / `%nogoal`) that the message handler already stripped
     // off `event.text` — a replayed message re-parses them on re-entry.
-    const replayText = event.inlineDirectiveRawText || dispatchText;
+    // A goal objective (`routeContext.verbatimPrompt`) is the opposite: it
+    // replays exactly as dispatched and is never re-parsed, so the stash keeps
+    // the dispatch text and carries the marker on its context.
+    const verbatimReplay = event.routeContext?.verbatimPrompt === true;
+    const replayText = (verbatimReplay ? undefined : event.inlineDirectiveRawText) || dispatchText;
+    const replayCtx = { channel, threadTs, user, ts, ...(verbatimReplay ? { verbatimPrompt: true } : {}) };
     const skipAutoBotThread = event.routeContext?.skipAutoBotThread === true;
     // Whether the mention originated from inside an existing thread (thread_ts exists).
     // Used for sourceThread data linking — NOT for UX decisions.
@@ -789,7 +794,7 @@ export class SessionInitializer {
     if (event.routeContext?.compactRedispatch === true && this.deps.requestCoordinator.isRequestActive(sessionKey)) {
       this.logger.info('Post-compact replay lost the slot race — re-parking for the active turn', { sessionKey });
       if (dispatchText) {
-        stashUserMessageDuringCompaction(session, { channel, threadTs, user, ts }, replayText ?? dispatchText);
+        stashUserMessageDuringCompaction(session, replayCtx, replayText ?? dispatchText);
       }
       return {
         session,
@@ -816,6 +821,9 @@ export class SessionInitializer {
     // is already refused by CompactHandler while busy), the stream-executor
     // backstop claims the flag at query start.
     if (
+      // A goal objective that merely starts with `/compact` is a task, not a
+      // compaction turn (the executor wraps it — `literalPrompt`).
+      !verbatimReplay &&
       (dispatchText ?? '').trim().split(/\s/)[0] === '/compact' &&
       !this.deps.requestCoordinator.isRequestActive(sessionKey)
     ) {
@@ -831,7 +839,7 @@ export class SessionInitializer {
         user: userName,
       });
       if (dispatchText) {
-        stashUserMessageDuringCompaction(session, { channel, threadTs, user, ts }, replayText ?? dispatchText);
+        stashUserMessageDuringCompaction(session, replayCtx, replayText ?? dispatchText);
       }
       void this.deps.slackApi
         .postSystemMessage(channel, '🗜️ Compaction 진행 중 — 메시지는 완료 후 처리됩니다', { threadTs })

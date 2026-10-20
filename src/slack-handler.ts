@@ -635,7 +635,7 @@ export class SlackHandler {
     // 1. StreamExecutor → EventRouter.dispatchPendingUserMessage
     //    Set on an already-constructed instance via a runtime field.
     (this.streamExecutor as any).deps.dispatchPendingUserMessage = (
-      ctx: { channel: string; threadTs: string; user: string; ts: string },
+      ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
       text: string,
       opts?: { compactRedispatch?: boolean },
     ) => this.eventRouter.dispatchPendingUserMessage(ctx, text, opts);
@@ -1464,6 +1464,12 @@ export class SlackHandler {
     // of a goal-prefixed first message. The executor must never forward it as
     // an SDK slash command, whatever it starts with (`goal /compact …`).
     const literalPrompt = routedObjective === true || (setGoalObjective !== undefined && !continueWithPrompt);
+    // A goal command already ran (the goal is set): if this turn is stashed for
+    // a post-compact replay, the replay must dispatch the objective as-is —
+    // re-parsing it would run `new …` as a reset or set the goal twice.
+    if (routedObjective === true && !verbatimPrompt) {
+      event.routeContext = { ...event.routeContext, verbatimPrompt: true };
+    }
     if (handled && !continueWithPrompt) {
       // Issue #1082 T1 (spec-review P1): the no-session goal+skill split can
       // end here when the skill part errored out (`handled:true`, no prompt —
