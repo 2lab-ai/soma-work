@@ -1179,6 +1179,31 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(processFiles.mock.calls[1][0].text).toBe('대신 이걸 해줘');
     });
 
+    it('never steers or aborts with a `/z goal` objective that starts with `!` — it queues as a turn (review P1, PR #305)', async () => {
+      const { settle } = await startBusyTurn();
+
+      // The `/z` consumer marks a goal objective verbatim; its leading `!` is
+      // the user's words, not the steer marker.
+      await handler.handleMessage(
+        message({ ts: '333.555', text: '!important: ship it', routeContext: { verbatimPrompt: true } } as any),
+        say(),
+      );
+      await tick();
+
+      expect(abortSession).not.toHaveBeenCalled();
+      const queued = items().find((item: any) => item.message.text === '!important: ship it');
+      expect(queued, 'stored verbatim, `!` included').toBeDefined();
+      expect(queued.state).toBe('queued');
+      expect(queued.message.routeContext?.verbatimPrompt).toBe(true);
+
+      await settle();
+      await tick();
+      // Drained as an ordinary turn with its text intact; still no abort.
+      expect(abortSession).not.toHaveBeenCalled();
+      const lastCall = processFiles.mock.calls[processFiles.mock.calls.length - 1];
+      expect(lastCall?.[0].text).toBe('!important: ship it');
+    });
+
     it('keeps an already-queued peer in FIFO and runs it after the steer', async () => {
       const { settle } = await startBusyTurn();
       await handler.handleMessage(message({ ts: '333.111', text: '먼저 들어온 지시' }), say());
