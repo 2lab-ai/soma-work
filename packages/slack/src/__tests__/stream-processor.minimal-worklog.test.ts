@@ -516,6 +516,28 @@ describe('work-log raw — the full tool input and result behind each one-line e
       { type: 'text', text: 'last' },
     ]);
     expect(resultOf(h)?.raw).toBe(`first\n[image]\n${JSON.stringify(other)}\nlast`);
+    // Within the cap the store measures the size itself.
+    expect(resultOf(h)).not.toHaveProperty('rawBytes');
+  });
+
+  it('a block array past the 256 KiB cap stops accumulating; rawBytes reports the whole output', async () => {
+    const KIB = 1024;
+    const a = 'a'.repeat(200 * KIB);
+    const b = '한'.repeat(30 * KIB); // 90 KiB in UTF-8: the join passes the cap here
+    const c = 'c'.repeat(50 * KIB);
+    const other = { type: 'document', n: 1 };
+    const h = await runResult([
+      { type: 'text', text: a },
+      { type: 'text', text: b },
+      { type: 'text', text: c },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } },
+      other,
+    ]);
+
+    const result = resultOf(h);
+    expect(result?.raw).toBe(`${a}\n${b}`);
+    const whole = `${a}\n${b}\n${c}\n[image]\n${JSON.stringify(other)}`;
+    expect(result?.rawBytes).toBe(Buffer.byteLength(whole));
   });
 
   it('an object result is pretty JSON', async () => {
