@@ -2055,7 +2055,7 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
     p.m.openDeepLinkedSession();
     expect(p.calls.toggled).toEqual([KEY]);
     expect(p.calls.scrolled).toBe(1);
-    expect(p.calls.panel).toEqual([[KEY, false]]); // a default opening: work log collapsed
+    expect(p.calls.panel).toEqual([[KEY, true]]);
     expect(p.m.state().link).toBeNull();
     expect(p.calls.stored).toBe(0); // the stored Show archives choice is untouched
   });

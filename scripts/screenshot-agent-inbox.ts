@@ -12,8 +12,7 @@
  *   - reduced motion: the card never travels, it only fades
  *   - identical renders write nothing — also while a card is entering and while
  *     one is fading out (no entrance finished early, no exiting card removed early)
- *   - ?session=<Slack registry key> opens the card and a default panel: work
- *     log collapsed (still loaded), the scroll area on the newest turns
+ *   - ?session=<Slack registry key> opens the card and the panel at the work log
  *   - work log: a live entry before the HTTP page keeps the older batch, entries
  *     stay in seq order, reconnect recovery pages forward (afterSeq=0 for an
  *     empty log), duplicates drop, a missing route reads "작업 로그 없음"
@@ -1068,14 +1067,11 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
   const state = await page.evaluate((key) => {
     const card = document.querySelector(`[data-session-key="${key}"]`);
     const scroll = document.getElementById('panel-scroll') as HTMLElement;
+    const wl = document.getElementById('panel-worklog') as HTMLElement;
     return {
       expanded: !!card?.classList.contains('is-expanded'),
       panelOpen: !!document.getElementById('slide-panel')?.classList.contains('open'),
-      worklog: document.getElementById('worklog-toggle')?.getAttribute('aria-expanded') ?? null,
-      listHidden: (document.getElementById('worklog-list') as HTMLElement).hidden,
-      count: document.getElementById('worklog-count')?.textContent ?? '',
-      // The scroll area rests on the newest turns (its end), not on the work log.
-      fromEnd: Math.round(scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop),
+      worklogTop: Math.round(wl.getBoundingClientRect().top - scroll.getBoundingClientRect().top),
       seqs: (window as unknown as PageWindow).__wlSeqs(),
     };
   }, K('100'));
@@ -1083,13 +1079,8 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
     `deep link → ${JSON.stringify({ ...state, seqs: `${state.seqs[0]}..${state.seqs[state.seqs.length - 1]} (${state.seqs.length})` })}`,
   );
   check(
-    state.expanded &&
-      state.panelOpen &&
-      state.worklog === 'false' &&
-      state.listHidden &&
-      state.count === '14' &&
-      state.fromEnd <= 2,
-    `deep link (Slack key without instance prefix) opens the card and a default panel: work log collapsed (${state.count}), newest turns in view (${state.fromEnd}px from the end)`,
+    state.expanded && state.panelOpen && state.worklogTop === 0,
+    'deep link (Slack key without instance prefix) opens the card and the panel at the work log',
   );
   const inOrder = (s: number[]) => s.every((v, i) => i === 0 || v > s[i - 1]);
   check(
@@ -1097,9 +1088,6 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
     'a live entry that beat the HTTP page keeps the older batch, in seq order',
   );
   await shoot(page, 'deeplink-dark-1280.png', false);
-  // The reader opens the work log for the live-append checks below.
-  await page.click('#worklog-toggle');
-  await page.waitForTimeout(300);
 
   // Live duplicate + out-of-order entries.
   const seqs2: number[] = await page.evaluate(() => {
