@@ -353,10 +353,16 @@ export class EventRouter {
    * `messageHandler` runs) still propagates normally.
    */
   public async dispatchPendingUserMessage(
-    ctx: { channel: string; threadTs: string; user: string; ts: string },
+    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
     text: string,
     opts?: { compactRedispatch?: boolean },
   ): Promise<void> {
+    // `ctx.verbatimPrompt`: the stashed text is a goal objective — replay it as
+    // the user's words, never as a command (see `routeContext.verbatimPrompt`).
+    const routeContext = {
+      ...(opts?.compactRedispatch ? { compactRedispatch: true } : {}),
+      ...(ctx.verbatimPrompt ? { verbatimPrompt: true } : {}),
+    };
     const syntheticEvent = {
       type: 'message',
       channel: ctx.channel,
@@ -364,7 +370,7 @@ export class EventRouter {
       user: ctx.user,
       ts: ctx.ts,
       text,
-      ...(opts?.compactRedispatch ? { routeContext: { compactRedispatch: true } } : {}),
+      ...(Object.keys(routeContext).length > 0 ? { routeContext } : {}),
     } as unknown as MessageEvent;
 
     const say: SayFn = async (arg) => {
@@ -732,6 +738,11 @@ export class EventRouter {
         // ZRouter captured a follow-up prompt; continue legacy pipeline with it.
         nextText = routedViaZ.continueWithPrompt;
       }
+      // `/z goal <objective>`: the objective is the user's words — mark it so
+      // the pipeline never parses it as a command again.
+      const routeContext = routedViaZ.verbatimPrompt
+        ? { ...(event as MessageEvent).routeContext, verbatimPrompt: true }
+        : (event as MessageEvent).routeContext;
 
       // Source thread re-mention: if mentioned in a thread that has a linked bot session,
       // respond with that session's status instead of creating a new session.
@@ -751,6 +762,7 @@ export class EventRouter {
         {
           ...event,
           text: nextText,
+          ...(routeContext ? { routeContext } : {}),
         } as MessageEvent,
         say,
       );
@@ -845,7 +857,7 @@ export class EventRouter {
   private async maybeRouteAppMentionViaZRouter(args: {
     event: any;
     strippedText: string;
-  }): Promise<{ terminal: boolean; continueWithPrompt?: string }> {
+  }): Promise<{ terminal: boolean; continueWithPrompt?: string; verbatimPrompt?: boolean }> {
     const { event, strippedText } = args;
     if (!this.zRouter) return { terminal: false };
     const text = strippedText.trim();
@@ -886,7 +898,11 @@ export class EventRouter {
       }
 
       if (result.continueWithPrompt !== undefined) {
-        return { terminal: false, continueWithPrompt: result.continueWithPrompt };
+        return {
+          terminal: false,
+          continueWithPrompt: result.continueWithPrompt,
+          verbatimPrompt: result.verbatimPrompt,
+        };
       }
 
       if (result.handled) {

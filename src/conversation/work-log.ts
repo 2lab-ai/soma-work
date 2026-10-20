@@ -69,12 +69,28 @@
  * readers skip it whatever its chunk alignment, and the writer refuses to
  * produce one (`text` ≤ 4000 chars, `tool`/`turnId` ≤ 200 chars).
  *
+ * Raw: an entry may have a raw — the full content behind its one-line `text`
+ * (a tool call's whole input, a tool result's output, or the uncut text when
+ * `text` was over its cap). Raws live in a second append-only file,
+ * `<id>.raw.jsonl`, one record `{"seq":N,"raw":"…"}` per line, cut to
+ * WORK_LOG_RAW_MAX_BYTES UTF-8 bytes; entry lines stay small, so a list read
+ * still fits its full window in the scan budget. The entry line carries
+ * `rawBytes` (the ORIGINAL's UTF-8 size), `rawTruncated: true` when cut, and
+ * the record's byte position `rawOffset`/`rawLen`. The record is fdatasync'd
+ * (and a new raw file's directory synced) before the entry line that points at
+ * it is written. A failed raw write never costs the entry: it is published
+ * without raw, like an entry that never had one. List pages, the appended
+ * callback and appendWorkLog's result carry `rawBytes`/`rawTruncated` only;
+ * readWorkLogRaw serves the record, checked against the entry's seq. A
+ * quarantine moves only the entry log; the raw file stays and keeps growing.
+ *
  * Contract: .prd/10-agent-inbox-board-spec.md §3.3.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
+import { WORK_LOG_RAW_MAX_BYTES } from '@soma/slack/work-log';
 import { DATA_DIR } from '../env-paths';
 import { Logger } from '../logger';
 
@@ -93,10 +109,29 @@ export interface WorkLogInput {
   ok?: boolean;
   turnId?: string;
   ts?: number;
+  /** Full content behind `text` (tool input / result); stored apart, served only by readWorkLogRaw. */
+  raw?: string;
+  /** UTF-8 size of the original when the emitter already cut `raw`; ignored unless larger than `raw`. */
+  rawBytes?: number;
 }
-export interface WorkLogEntry extends WorkLogInput {
+/** An entry as pages and the broadcast carry it: its raw is described, never included. */
+export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
   seq: number;
   ts: number;
+  /** UTF-8 byte length of the original raw; present iff the entry has a stored raw. */
+  rawBytes?: number;
+  /** The stored raw is cut short of the original. */
+  rawTruncated?: true;
+}
+/** An entry line as stored: plus where its raw record sits in `<id>.raw.jsonl`. */
+type StoredWorkLogEntry = WorkLogEntry & { rawOffset?: number; rawLen?: number };
+
+/** readWorkLogRaw's answer. */
+export interface WorkLogRaw {
+  seq: number;
+  raw: string;
+  rawBytes: number;
+  rawTruncated: boolean;
 }
 
 export interface WorkLogPage {
@@ -118,6 +153,11 @@ export interface WorkLogPage {
 export const WORK_LOG_TEXT_MAX = 4000;
 /** Max characters kept for `tool` and `turnId`. */
 export const WORK_LOG_FIELD_MAX = 200;
+/** Max UTF-8 bytes kept per raw — defined once, next to the emitter's types. */
+export { WORK_LOG_RAW_MAX_BYTES };
+
+/** Largest raw record a reader accepts: a cap-size raw where every byte JSON-escapes to 6, plus its seq. */
+const RAW_RECORD_MAX_BYTES = 6 * WORK_LOG_RAW_MAX_BYTES + 64;
 /** Default (and API maximum) number of entries returned by a read. */
 export const WORK_LOG_DEFAULT_LIMIT = 500;
 /** Read granularity. */
@@ -150,6 +190,13 @@ interface ConversationLogState {
   tailUnknown: boolean;
   /** The next write may create the file, which puts a sync obligation on its directory. */
   fileMayBeNew: boolean;
+  /**
+   * Size of the raw file right after this process's last successful record
+   * (it then ends with a newline); null = unknown (none yet, or the last raw
+   * write failed). A different size at the next write means the file must be
+   * checked for a torn last record.
+   */
+  rawSize: number | null;
   /**
    * Set while the conversation has no provable seq upper bound: the file
    * fingerprint at that verdict. Appends are refused without re-scanning until
@@ -199,10 +246,17 @@ function workLogDir(): string {
   return path.join(DATA_DIR, 'worklogs');
 }
 
-function workLogPaths(conversationId: string): { log: string; sidecar: string } | null {
+interface WorkLogFiles {
+  log: string;
+  sidecar: string;
+  /** Raw records; SAFE_ID has no `.`, so no conversation's log can collide with it. */
+  raw: string;
+}
+
+function workLogPaths(conversationId: string): WorkLogFiles | null {
   if (typeof conversationId !== 'string' || !SAFE_ID.test(conversationId)) return null;
   const base = path.join(workLogDir(), conversationId);
-  return { log: `${base}.jsonl`, sidecar: `${base}.seq` };
+  return { log: `${base}.jsonl`, sidecar: `${base}.seq`, raw: `${base}.raw.jsonl` };
 }
 
 function isEnoent(err: unknown): boolean {
@@ -261,19 +315,26 @@ function ensureDir(): Promise<void> {
   return dirReady;
 }
 
-function parseEntry(line: Buffer): WorkLogEntry | null {
+function parseEntry(line: Buffer): StoredWorkLogEntry | null {
   // Shape check first, so a long run of junk lines costs no JSON.parse throws.
   if (line[0] !== 0x7b) return null; // '{'
   let last = line.length - 1;
   while (last > 0 && (line[last] === 0x0d || line[last] === 0x20 || line[last] === 0x09)) last--; // CRLF / padding
   if (line[last] !== 0x7d) return null; // '}'
   try {
-    const value = JSON.parse(line.toString('utf-8')) as Partial<WorkLogEntry> | null;
+    const value = JSON.parse(line.toString('utf-8')) as Partial<StoredWorkLogEntry> | null;
     if (!value || typeof value.seq !== 'number' || !Number.isFinite(value.seq)) return null;
-    return value as WorkLogEntry;
+    return value as StoredWorkLogEntry;
   } catch {
     return null; // torn or corrupt line
   }
+}
+
+/** The entry as pages and the broadcast carry it: without the raw record's position. */
+function publicEntry(entry: StoredWorkLogEntry): WorkLogEntry {
+  if (!('rawOffset' in entry) && !('rawLen' in entry) && !('raw' in entry)) return entry;
+  const { rawOffset: _offset, rawLen: _len, raw: _raw, ...rest } = entry as StoredWorkLogEntry & { raw?: unknown };
+  return rest;
 }
 
 // ── Chunked, budgeted line scanning ──
@@ -792,6 +853,93 @@ function clampChars(text: string, max: number): string {
   return `${text.slice(0, end)}…`;
 }
 
+/**
+ * Length (in UTF-16 units) of the longest prefix of `text` whose UTF-8 encoding
+ * is at most `maxBytes`, never ending inside a surrogate pair. Sizes match
+ * Buffer.byteLength (a lone surrogate encodes as the 3-byte U+FFFD).
+ */
+function utf8PrefixLength(text: string, maxBytes: number): number {
+  let bytes = 0;
+  let i = 0;
+  while (i < text.length) {
+    const c = text.charCodeAt(i);
+    let size = 3;
+    let units = 1;
+    if (c < 0x80) size = 1;
+    else if (c < 0x800) size = 2;
+    else if (c >= 0xd800 && c <= 0xdbff && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      size = 4;
+      units = 2;
+    }
+    if (bytes + size > maxBytes) break;
+    bytes += size;
+    i += units;
+  }
+  return i;
+}
+
+/** A raw waiting in the write queue: its stored bytes are a copy, so the caller's string is not kept alive. */
+interface PendingRaw {
+  /** UTF-8 of the stored raw (≤ WORK_LOG_RAW_MAX_BYTES). */
+  bytes: Buffer;
+  /** UTF-8 size of the original. */
+  rawBytes: number;
+}
+
+/**
+ * Cut a raw to WORK_LOG_RAW_MAX_BYTES and copy it out. `upstreamBytes` is the
+ * original's size when the emitter already cut it (used only if larger).
+ */
+function pendingRaw(raw: string, upstreamBytes: unknown): PendingRaw {
+  const own = Buffer.byteLength(raw, 'utf-8');
+  const rawBytes =
+    typeof upstreamBytes === 'number' && Number.isSafeInteger(upstreamBytes) && upstreamBytes > own
+      ? upstreamBytes
+      : own;
+  const bytes =
+    own <= WORK_LOG_RAW_MAX_BYTES
+      ? Buffer.from(raw, 'utf-8')
+      : Buffer.from(raw.slice(0, utf8PrefixLength(raw, WORK_LOG_RAW_MAX_BYTES)), 'utf-8');
+  return { bytes, rawBytes };
+}
+
+/**
+ * Append one raw record to `<id>.raw.jsonl` durably and return where it sits.
+ * The file's size is read on every write (fstat on the open handle); the last
+ * byte is read only when that size is not the one this process left behind,
+ * and a record after a torn one starts on a fresh line. A new file is a
+ * directory obligation, synced here — before the entry line that points at
+ * the record exists.
+ */
+async function appendRawRecord(
+  file: string,
+  state: ConversationLogState,
+  seq: number,
+  raw: PendingRaw,
+): Promise<{ rawOffset: number; rawLen: number }> {
+  const record = JSON.stringify({ seq, raw: raw.bytes.toString('utf-8') });
+  const rawLen = Buffer.byteLength(record, 'utf-8');
+  const known = state.rawSize;
+  state.rawSize = null; // unknown until this write is durable
+  const fh = await fs.promises.open(file, 'a+');
+  let size: number;
+  try {
+    size = (await fh.stat()).size;
+    if (size === 0) noteDirChanged(path.dirname(file)); // the open may just have created it
+    const lead = size > 0 && size !== known && (await readExactly(fh, size - 1, 1))[0] !== 0x0a ? '\n' : '';
+    await fh.writeFile(`${lead}${record}\n`, 'utf-8');
+    await fh.datasync();
+    size += lead.length;
+  } catch (error) {
+    await fh.close().catch(() => {});
+    throw error;
+  }
+  await fh.close();
+  await syncDueDirs();
+  state.rawSize = size + rawLen + 1;
+  return { rawOffset: size, rawLen };
+}
+
 /** Evict idle states, oldest first, until the cache fits (never `keep`). */
 function trimStates(keep?: string): void {
   if (states.size <= WORK_LOG_MAX_CACHED_STATES) return;
@@ -814,6 +962,7 @@ function touchState(conversationId: string): ConversationLogState {
       needsLeadingNewline: false,
       tailUnknown: false,
       fileMayBeNew: true,
+      rawSize: null,
       unboundedAt: null,
       queue: Promise.resolve(),
       pending: 0,
@@ -841,9 +990,10 @@ type EntryFields = Omit<WorkLogEntry, 'seq'>;
 
 async function writeEntry(
   conversationId: string,
-  files: { log: string; sidecar: string },
+  files: WorkLogFiles,
   state: ConversationLogState,
   fields: EntryFields,
+  raw: PendingRaw | undefined,
 ): Promise<WorkLogEntry> {
   if (state.lastSeq === null) {
     // Taken before the seed reads anything, so a change made during it is seen next time.
@@ -894,15 +1044,7 @@ async function writeEntry(
     }
   }
 
-  const entry: WorkLogEntry = { seq: state.lastSeq + 1, ...fields };
-  const json = JSON.stringify(entry);
-  // Unreachable through the field caps above; a backstop so the writer can
-  // never produce a line every reader would skip.
-  if (Buffer.byteLength(json, 'utf-8') > WORK_LOG_MAX_LINE_BYTES) {
-    logger.warn('Work log entry dropped: over the line size limit', { conversationId, seq: entry.seq });
-    throw new Error('Work log entry exceeds the line size limit');
-  }
-  const line = `${state.needsLeadingNewline ? '\n' : ''}${json}\n`;
+  let entry: WorkLogEntry = { seq: state.lastSeq + 1, ...fields };
   let reachedLog = false;
   try {
     await ensureDir();
@@ -915,6 +1057,35 @@ async function writeEntry(
       await writeReservation(files.sidecar, state.reservedSeq, next);
       state.reservedSeq = next;
     }
+    // The raw record first, durable, so the entry line never points at one
+    // that is not. A failure here costs only the raw: the entry goes on
+    // without it (a partial record is skipped by position, never read).
+    let stored: StoredWorkLogEntry = entry;
+    if (raw) {
+      try {
+        const at = await appendRawRecord(files.raw, state, entry.seq, raw);
+        entry = {
+          ...entry,
+          rawBytes: raw.rawBytes,
+          ...(raw.bytes.length < raw.rawBytes ? { rawTruncated: true as const } : {}),
+        };
+        stored = { ...entry, ...at };
+      } catch (error) {
+        logger.warn('Work log raw not stored; publishing the entry without it', {
+          conversationId,
+          seq: entry.seq,
+          error,
+        });
+      }
+    }
+    const json = JSON.stringify(stored);
+    // Unreachable through the field caps above (raw is not in the line); a
+    // backstop so the writer can never produce a line every reader would skip.
+    if (Buffer.byteLength(json, 'utf-8') > WORK_LOG_MAX_LINE_BYTES) {
+      logger.warn('Work log entry dropped: over the line size limit', { conversationId, seq: entry.seq });
+      throw new Error('Work log entry exceeds the line size limit');
+    }
+    const line = `${state.needsLeadingNewline ? '\n' : ''}${json}\n`;
     reachedLog = true;
     await appendDurably(files.log, line, state.fileMayBeNew);
     // A possible create is now an obligation in dirSyncDue, which outlives this state.
@@ -953,9 +1124,11 @@ async function writeEntry(
 /**
  * Append one entry. `ts` defaults to the call time; `seq` is assigned when the
  * entry reaches the front of this conversation's write queue. Resolves with the
- * stored entry once it is durable (the listener has fired by then); rejects —
+ * stored entry — as pages carry it: its raw described by `rawBytes`, never
+ * included — once it is durable (the listener has fired by then); rejects —
  * already logged — when the id is unsafe, the seed read fails, the entry is
- * over the line limit, or the write fails.
+ * over the line limit, or the write fails. A `text` over WORK_LOG_TEXT_MAX with
+ * no `raw` keeps its full form as the raw.
  */
 export function appendWorkLog(conversationId: string, input: WorkLogInput): Promise<WorkLogEntry> {
   const files = workLogPaths(conversationId);
@@ -964,19 +1137,26 @@ export function appendWorkLog(conversationId: string, input: WorkLogInput): Prom
     return Promise.reject(new Error('Invalid work log conversationId'));
   }
 
+  const text = String(input.text ?? '');
   const fields: EntryFields = {
     ts: typeof input.ts === 'number' && Number.isFinite(input.ts) ? input.ts : Date.now(),
     kind: input.kind,
-    text: clampChars(String(input.text ?? ''), WORK_LOG_TEXT_MAX),
+    text: clampChars(text, WORK_LOG_TEXT_MAX),
   };
   if (input.tool !== undefined) fields.tool = clampChars(String(input.tool), WORK_LOG_FIELD_MAX);
   if (input.ok !== undefined) fields.ok = input.ok;
   if (input.turnId !== undefined) fields.turnId = clampChars(String(input.turnId), WORK_LOG_FIELD_MAX);
+  const raw =
+    input.raw != null
+      ? pendingRaw(String(input.raw), input.rawBytes)
+      : text.length > WORK_LOG_TEXT_MAX
+        ? pendingRaw(text, undefined)
+        : undefined;
 
   const state = touchState(conversationId);
   state.pending += 1;
   const result = state.queue
-    .then(() => writeEntry(conversationId, files, state, fields))
+    .then(() => writeEntry(conversationId, files, state, fields, raw))
     .finally(() => {
       state.pending -= 1;
       trimStates(); // a burst of distinct conversations may have left the cache over its cap
@@ -1035,7 +1215,7 @@ export async function readWorkLog(
       const newest: WorkLogEntry[] = [];
       const end = await scanBackward(fh, size, budget, (line) => {
         const entry = parseEntry(line);
-        if (entry) newest.push(entry);
+        if (entry) newest.push(publicEntry(entry));
         return newest.length <= limit; // one extra tells us whether more exist
       });
       if (end === 'budget') warnBudget(conversationId, 'latest', newest.length);
@@ -1058,7 +1238,7 @@ export async function readWorkLog(
           scan.reachedAfterSeq = true;
           return false;
         }
-        newest.push(entry);
+        newest.push(publicEntry(entry));
         return newest.length <= limit;
       },
       fastCover,
@@ -1091,7 +1271,7 @@ export async function readWorkLog(
       (line) => {
         const entry = parseEntry(line);
         if (!entry || entry.seq <= afterSeq) return true;
-        page.push(entry);
+        page.push(publicEntry(entry));
         return page.length <= limit;
       },
       forwardCover,
@@ -1113,4 +1293,127 @@ export async function readWorkLog(
   } finally {
     await fh.close().catch(() => {});
   }
+}
+
+/**
+ * The stored entry with exactly this seq, within one scan budget: a short
+ * backward scan first (the entry clicked is usually recent), else a binary
+ * search for its position and a forward read. Lines are in seq order, so
+ * either scan stops as soon as it passes the seq. Null = provably absent;
+ * 'budget' = the budget ran out before the entry was found or ruled out.
+ */
+async function findEntry(
+  fh: fs.promises.FileHandle,
+  size: number,
+  seq: number,
+): Promise<StoredWorkLogEntry | null | 'budget'> {
+  const budget: Budget = { left: WORK_LOG_SCAN_BUDGET_BYTES };
+  const fast: Budget = { left: FAST_PATH_BUDGET_BYTES };
+  const found: { entry: StoredWorkLogEntry | null } = { entry: null };
+  const fastEnd = await scanBackward(fh, size, fast, (line) => {
+    const entry = parseEntry(line);
+    if (!entry || entry.seq > seq) return true;
+    if (entry.seq === seq) found.entry = entry;
+    return false; // found, or passed it
+  });
+  budget.left -= FAST_PATH_BUDGET_BYTES - fast.left;
+  if (fastEnd !== 'budget') return found.entry;
+
+  const start = await findPageStart(fh, size, seq - 1, budget);
+  const end = await scanForward(fh, size, start, budget, (line) => {
+    const entry = parseEntry(line);
+    if (!entry || entry.seq < seq) return true;
+    if (entry.seq === seq) found.entry = entry;
+    return false; // found, or passed it
+  });
+  return end === 'budget' ? 'budget' : found.entry;
+}
+
+/** The raw record an entry points at, checked against the entry's seq; null (one warn) when unusable. */
+async function readRawRecord(conversationId: string, file: string, entry: StoredWorkLogEntry): Promise<string | null> {
+  const { seq, rawOffset, rawLen } = entry;
+  const warn = (reason: string) =>
+    logger.warn('Work log raw record unusable; serving the entry as having no raw', {
+      conversationId,
+      seq,
+      reason,
+    });
+  if (
+    typeof rawOffset !== 'number' ||
+    typeof rawLen !== 'number' ||
+    !Number.isSafeInteger(rawOffset) ||
+    !Number.isSafeInteger(rawLen) ||
+    rawOffset < 0 ||
+    rawLen < 1 ||
+    rawLen > RAW_RECORD_MAX_BYTES
+  ) {
+    warn('bad position');
+    return null;
+  }
+  const opened = await openForRead(file);
+  if (!opened) {
+    warn('raw file missing');
+    return null;
+  }
+  try {
+    if (rawOffset + rawLen > opened.size) {
+      warn('short read');
+      return null;
+    }
+    const bytes = await readExactly(opened.fh, rawOffset, rawLen);
+    let record: { seq?: unknown; raw?: unknown } | null;
+    try {
+      record = JSON.parse(bytes.toString('utf-8')) as typeof record;
+    } catch {
+      warn('record does not parse');
+      return null;
+    }
+    if (!record || record.seq !== seq || typeof record.raw !== 'string') {
+      warn('record belongs to another entry');
+      return null;
+    }
+    return record.raw;
+  } finally {
+    await opened.fh.close().catch(() => {});
+  }
+}
+
+/**
+ * The raw of one entry, for the dashboard's on-demand view. Null when the entry
+ * is absent, has no raw (every entry written before raw existed, or one whose
+ * raw write failed), its record is unusable (missing, short, unparseable, or
+ * another seq's — logged once at warn), or the id/seq is unusable. 'budget'
+ * when the scan could not reach the entry within its budget: the log is
+ * damaged in a way the budget cannot pass (entry lines are small, so an intact
+ * log never gets here). The log only grows at its tail, so the answer stays
+ * the same until the log is repaired — not a transient failure, not worth an
+ * automatic retry. Waits for this process's pending writes to the same log
+ * first.
+ */
+export async function readWorkLogRaw(conversationId: string, seq: number): Promise<WorkLogRaw | null | 'budget'> {
+  const files = workLogPaths(conversationId);
+  if (!files || !Number.isSafeInteger(seq) || seq < 1) return null;
+
+  await states.get(conversationId)?.queue;
+
+  const opened = await openForRead(files.log);
+  if (!opened) return null;
+  let entry: StoredWorkLogEntry | null | 'budget';
+  try {
+    entry = await findEntry(opened.fh, opened.size, seq);
+  } finally {
+    await opened.fh.close().catch(() => {});
+  }
+  if (entry === 'budget') {
+    logger.warn('Work log raw lookup stopped at its byte budget before reaching the entry; the log is damaged', {
+      conversationId,
+      seq,
+      budgetBytes: WORK_LOG_SCAN_BUDGET_BYTES,
+    });
+    return 'budget';
+  }
+  if (!entry || typeof entry.rawBytes !== 'number') return null;
+  const raw = await readRawRecord(conversationId, files.raw, entry);
+  if (raw === null) return null;
+  return { seq, raw, rawBytes: entry.rawBytes, rawTruncated: entry.rawTruncated === true };
 }

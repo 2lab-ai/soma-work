@@ -1,4 +1,4 @@
-import { buildGoalContinuationPrompt, validateSessionGoalObjective } from '../../prompt/session-goal-block';
+import { validateSessionGoalObjective } from '../../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../../types';
 import { DEFAULT_GOAL_MAX_CONTINUATIONS } from '../../types';
 import { validateGoalMaxContinuations } from '../../user-settings-store';
@@ -195,7 +195,9 @@ export class GoalHandler implements CommandHandler {
       { threadTs: ctx.threadTs },
     );
 
-    return { handled: true, continueWithPrompt: buildGoalContinuationPrompt(result.goal as SessionGoal) };
+    // The opening turn is the user's own words; the goal rules reach the
+    // model through the rebuilt `<session-goal>` system block.
+    return { handled: true, continueWithPrompt: objective, verbatimPrompt: true };
   }
 
   private async pauseGoal(channel: string, threadTs: string, session: ConversationSession): Promise<void> {
@@ -276,7 +278,7 @@ export class GoalHandler implements CommandHandler {
         { threadTs },
       );
       // Re-enter the loop for the promoted goal, same as a fresh `goal set`.
-      return { handled: true, continueWithPrompt: buildGoalContinuationPrompt(next as SessionGoal) };
+      return { handled: true, continueWithPrompt: next.objective, verbatimPrompt: true };
     }
 
     await this.deps.slackApi.postSystemMessage(channel, '✅ Goal marked complete.', { threadTs });

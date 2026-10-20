@@ -39,9 +39,13 @@ export interface CommandContext {
 }
 
 export interface LegacyCommandRouter {
-  route(
-    ctx: CommandContext,
-  ): Promise<{ handled: boolean; continueWithPrompt?: string; error?: string; awaitingPermission?: boolean }>;
+  route(ctx: CommandContext): Promise<{
+    handled: boolean;
+    continueWithPrompt?: string;
+    error?: string;
+    awaitingPermission?: boolean;
+    verbatimPrompt?: boolean;
+  }>;
 }
 
 export interface ZRouterDeps {
@@ -52,6 +56,11 @@ export interface ZDispatchResult {
   handled: boolean;
   /** Prompt to continue the pipeline with (e.g. `/z new <prompt>`). */
   continueWithPrompt?: string;
+  /**
+   * `continueWithPrompt` is user text that must not be parsed as a command
+   * again (`/z goal <objective>`). Carried from the legacy result.
+   */
+  verbatimPrompt?: boolean;
   /** If true, the caller should treat the input as a no-op (help card / slash refusal shown). */
   consumed?: boolean;
   /**
@@ -116,6 +125,7 @@ export class ZRouter {
         continueWithPrompt: result.continueWithPrompt,
         error: result.error,
         awaitingPermission: result.awaitingPermission,
+        verbatimPrompt: result.verbatimPrompt,
       };
     } catch (err) {
       logger.error('routeToLegacy failed', { err: (err as Error).message });

@@ -31,7 +31,7 @@ import type { SessionLinks } from './thread-header-builder';
 import type { EndTurnInfo } from './thread-surface';
 import { ToolFormatter } from './tool-formatter';
 import { UserChoiceHandler } from './user-choice-handler';
-import type { WorkLogInput } from './work-log';
+import { WORK_LOG_RAW_MAX_BYTES, type WorkLogInput } from './work-log';
 
 /**
  * Context for stream processing
@@ -214,6 +214,96 @@ function summarizeToolCall(name: string, input: unknown): string {
   if (args === '{}') args = '';
   const text = args ? `${name} ${args}` : name;
   return text.length <= WORK_LOG_TOOL_TEXT_MAX ? text : ToolFormatter.truncateString(text, WORK_LOG_TOOL_TEXT_MAX - 3);
+}
+
+/** `String(value)`, or undefined when even that throws (e.g. a null-prototype object). */
+function safeString(value: unknown): string | undefined {
+  try {
+    return String(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Work-log `raw` for a tool call: its whole input, pretty-printed. None without input. */
+function toolInputRaw(input: unknown): string | undefined {
+  if (input === undefined || input === null) return undefined;
+  try {
+    return JSON.stringify(input, null, 2) ?? safeString(input);
+  } catch {
+    return safeString(input); // circular, BigInt, a throwing toJSON
+  }
+}
+
+const IMAGE_BLOCK_TEXT = '[image]';
+
+/** A text block's own text, when the block is one. */
+function textOfBlock(block: unknown): string | undefined {
+  const typed = block as { type?: unknown; text?: unknown } | null;
+  return typed?.type === 'text' && typeof typed.text === 'string' ? typed.text : undefined;
+}
+
+/** One tool-result block as raw text: a text block's text, `[image]`, anything else as JSON. */
+function resultBlockText(block: unknown): string {
+  const text = textOfBlock(block);
+  if (text !== undefined) return text;
+  if ((block as { type?: unknown } | null)?.type === 'image') return IMAGE_BLOCK_TEXT;
+  try {
+    return JSON.stringify(block) ?? safeString(block) ?? '';
+  } catch {
+    return safeString(block) ?? '';
+  }
+}
+
+/**
+ * UTF-8 size of {@link resultBlockText}(block). A text block is measured in
+ * place and an image is a constant, so neither builds a string; other blocks
+ * have no size without their JSON.
+ */
+function resultBlockBytes(block: unknown): number {
+  const text = textOfBlock(block);
+  if (text !== undefined) return Buffer.byteLength(text, 'utf-8');
+  if ((block as { type?: unknown } | null)?.type === 'image') return IMAGE_BLOCK_TEXT.length;
+  return Buffer.byteLength(resultBlockText(block), 'utf-8');
+}
+
+/**
+ * Work-log `raw` for a tool result: the content as the SDK delivered it. A
+ * string as-is; a block array as its blocks' raw text ({@link resultBlockText})
+ * one per line; any other value as pretty JSON. None without content. A block
+ * array stops accumulating once the join passes WORK_LOG_RAW_MAX_BYTES (the
+ * store cuts the rest anyway), and then `rawBytes` reports the whole output's
+ * size — the later blocks are measured ({@link resultBlockBytes}), not joined.
+ */
+function toolResultRaw(result: unknown): { raw: string; rawBytes?: number } | undefined {
+  if (result === undefined || result === null) return undefined;
+  if (typeof result === 'string') return { raw: result };
+  if (Array.isArray(result)) {
+    const kept: string[] = [];
+    let keptBytes = 0;
+    let totalBytes = 0;
+    result.forEach((block, i) => {
+      const newline = i > 0 ? 1 : 0; // the joining newline
+      if (keptBytes <= WORK_LOG_RAW_MAX_BYTES) {
+        const text = resultBlockText(block);
+        const bytes = Buffer.byteLength(text, 'utf-8') + newline;
+        kept.push(text);
+        keptBytes += bytes;
+        totalBytes += bytes;
+      } else {
+        totalBytes += resultBlockBytes(block) + newline;
+      }
+    });
+    const raw = kept.join('\n');
+    return totalBytes > keptBytes ? { raw, rawBytes: totalBytes } : { raw };
+  }
+  try {
+    const raw = JSON.stringify(result, null, 2) ?? safeString(result);
+    return raw === undefined ? undefined : { raw };
+  } catch {
+    const raw = safeString(result);
+    return raw === undefined ? undefined : { raw };
+  }
 }
 
 /**
@@ -1419,10 +1509,12 @@ export class AgentStreamProcessor {
         ToolFormatter.buildToolUseLogSummary(toolUse.id, toolUse.name, toolUse.input),
       );
       this.toolNamesById.set(toolUse.id, toolUse.name);
+      const raw = toolInputRaw(toolUse.input);
       this.emitWorkLog(context, {
         kind: 'tool',
         tool: toolUse.name,
         text: summarizeToolCall(toolUse.name, toolUse.input),
+        ...(raw !== undefined ? { raw } : {}),
       });
     }
 
@@ -1824,7 +1916,13 @@ export class AgentStreamProcessor {
       const tool = toolResult.toolName ?? this.toolNamesById.get(toolResult.toolUseId) ?? 'unknown';
       this.toolNamesById.delete(toolResult.toolUseId);
       const ok = toolResult.isError !== true;
-      this.emitWorkLog(context, { kind: 'tool_result', tool, ok, text: `${tool} ${ok ? 'ok' : 'error'}` });
+      this.emitWorkLog(context, {
+        kind: 'tool_result',
+        tool,
+        ok,
+        text: `${tool} ${ok ? 'ok' : 'error'}`,
+        ...toolResultRaw(toolResult.result),
+      });
     }
 
     if (toolResults.length > 0 && this.callbacks.onToolResult) {

@@ -25,7 +25,8 @@
  */
 
 export interface CompactDispatchPayload {
-  ctx: { channel: string; threadTs: string; user: string; ts: string };
+  /** `verbatimPrompt`: the text is a goal objective — replayed as the user's words. */
+  ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean };
   text: string;
 }
 
@@ -101,13 +102,19 @@ export function isCompactionInProgress(session: CompactStateSession, nowMs: numb
  */
 export function stashUserMessageDuringCompaction(
   session: CompactStateSession,
-  ctx: { channel: string; threadTs: string; user: string; ts: string },
+  ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
   text: string,
 ): void {
   if (!text) return;
   const queue = (session.compactPendingDispatches ??= []);
+  // A goal objective (`verbatimPrompt`) always gets its own entry: merged with
+  // ordinary text, one of the two would be replayed under the wrong rules.
+  if (ctx.verbatimPrompt) {
+    queue.push({ ctx, text });
+    return;
+  }
   const last = queue[queue.length - 1];
-  if (last && last.ctx.user === ctx.user) {
+  if (last && last.ctx.user === ctx.user && !last.ctx.verbatimPrompt) {
     last.text += `\n${text}`;
     return;
   }

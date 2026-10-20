@@ -3136,6 +3136,22 @@ describe('Auto fallback compact — handleError arming', () => {
       threadTs: 't1',
       user: 'U1',
     });
+    expect(session.fallbackCompactPendingEventContext.verbatimPrompt).toBeUndefined();
+  });
+
+  it('keeps the goal-objective marker on the stash so the replay is not re-parsed (PR #305)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { model: 'gpt-5.5', ownerId: 'U1' } as any;
+    const error = overflowError();
+    (error as any).failedTurnText = 'new dashboard 구현';
+    (error as any).failedTurnLiteral = true;
+
+    await (executor as any).handleError(error, session, 'C1:t1', 'C1', 't1', [], say);
+
+    expect(session.fallbackCompactPendingUserText).toBe('new dashboard 구현');
+    expect(session.fallbackCompactPendingEventContext).toMatchObject({ user: 'U1', verbatimPrompt: true });
   });
 
   it('does NOT arm for native-1M models (fable-5) — genuine 1M overflow clears session', async () => {
@@ -6526,6 +6542,41 @@ describe('prompt-too-long delivered as content triggers auto fallback compact (f
     // The error text must NOT be persisted as the assistant's answer.
     const { recordAssistantTurn } = await import('../../../conversation');
     expect(vi.mocked(recordAssistantTurn)).not.toHaveBeenCalledWith(expect.anything(), 'Prompt is too long');
+  });
+
+  it('marks the stash as a goal objective when the failed turn was literal (PR #305)', async () => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+    const deps = createPtlDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = {
+      sessionId: 'sess_ptl_literal',
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'gpt-5.5',
+    } as any;
+
+    await executor.execute({
+      session,
+      sessionKey: 'C555:t555',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: 'new dashboard 구현',
+      channel: 'C555',
+      threadTs: 't555',
+      user: 'U_TEST',
+      say,
+      isUserInput: true,
+      literalPrompt: true,
+    } as any);
+
+    expect(session.fallbackCompactPendingUserText).toBe('new dashboard 구현');
+    // Replayed after the emergency /compact as the user's words, not as `new`.
+    expect(session.fallbackCompactPendingEventContext).toMatchObject({ user: 'U_TEST', verbatimPrompt: true });
   });
 
   it('does NOT misfire on long prose that merely mentions the phrase', () => {
