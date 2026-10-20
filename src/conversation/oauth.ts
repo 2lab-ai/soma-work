@@ -7,7 +7,8 @@
  *   3. Exchange code for access token → fetch user email
  *   4. Match email against UserSettingsStore (Slack profile emails) — Google
  *      emails must be verified, and the email must belong to exactly one
- *      Slack user
+ *      Slack user; a Google email no Slack user registered falls back to the
+ *      Slack account whose workspace email it is
  *   5. Issue JWT → set HttpOnly cookie → redirect to the `soma_next` deep link
  *      when one was remembered, else /dashboard/<userId>
  *
@@ -236,17 +237,82 @@ export function matchSlackUsersByEmail(
 }
 
 /**
+ * Finds the Slack user whose workspace account email is `email` (the Slack
+ * directory, as opposed to the self-set `/z email`). Resolves null when no
+ * single active human account holds it.
+ */
+export type OAuthDirectoryLookupFn = (email: string) => Promise<{ userId: string; name: string } | null>;
+let _directoryLookup: OAuthDirectoryLookupFn | null = null;
+
+/** Register the Slack directory lookup (called once at startup; null clears it). */
+export function setOAuthDirectoryLookup(fn: OAuthDirectoryLookupFn | null): void {
+  _directoryLookup = fn;
+}
+
+/**
+ * Upper bound on the directory call. The Slack client retries on its own, so
+ * an unreachable Slack would otherwise hold the login callback open.
+ */
+export const OAUTH_DIRECTORY_LOOKUP_TIMEOUT_MS = 5000;
+
+const DIRECTORY_TIMEOUT = Symbol('directory-timeout');
+
+/**
+ * A failing or slow directory is a miss, never a 500 or a hung login; the
+ * warning carries the message (or 'timeout') only.
+ */
+async function lookupInDirectory(
+  directory: OAuthDirectoryLookupFn,
+  email: string,
+): Promise<{ userId: string; name: string } | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof DIRECTORY_TIMEOUT>((resolve) => {
+    timer = setTimeout(() => resolve(DIRECTORY_TIMEOUT), OAUTH_DIRECTORY_LOOKUP_TIMEOUT_MS);
+  });
+  try {
+    const result = await Promise.race([directory(email.toLowerCase()), timeout]);
+    if (result === DIRECTORY_TIMEOUT) {
+      logger.warn('OAuth login: Slack workspace email lookup failed', { email, error: 'timeout' });
+      return null;
+    }
+    return result;
+  } catch (error) {
+    logger.warn('OAuth login: Slack workspace email lookup failed', {
+      email,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Shared by the Google and Microsoft callbacks: returns the single Slack user
  * registered under `email`, or redirects to /login with the reason and
  * returns null. The ambiguity warning carries the count, never the user ids.
+ *
+ * `directory` is consulted only when no `/z email` matches at all (an
+ * ambiguous one still refuses). Only the Google callback passes it: Google
+ * has verified that the user owns the address, Microsoft's `mail` /
+ * `userPrincipalName` claim proves no such thing.
  */
-function matchedSlackUserOrRedirect(reply: FastifyReply, email: string): { userId: string; name: string } | null {
+async function matchedSlackUserOrRedirect(
+  reply: FastifyReply,
+  email: string,
+  directory?: OAuthDirectoryLookupFn | null,
+): Promise<{ userId: string; name: string } | null> {
   const result = lookupUser(email);
   if (result.kind === 'match') return result;
   if (result.kind === 'ambiguous') {
     logger.warn('OAuth login: email registered by several Slack users', { email, count: result.count });
     reply.redirect('/login?error=ambiguous_email');
     return null;
+  }
+  const listed = directory ? await lookupInDirectory(directory, email) : null;
+  if (listed) {
+    logger.info('OAuth login: matched by Slack workspace email', { email, slackUserId: listed.userId });
+    return listed;
   }
   logger.warn('OAuth login: no Slack user matched for email', { email });
   reply.redirect(`/login?error=no_match&email=${encodeURIComponent(email)}`);
@@ -689,7 +755,7 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
           return;
         }
 
-        const matched = matchedSlackUserOrRedirect(reply, userInfo.email);
+        const matched = await matchedSlackUserOrRedirect(reply, userInfo.email, _directoryLookup);
         if (!matched) return;
 
         const dashUser: DashboardUser = {
@@ -742,7 +808,7 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
           return;
         }
 
-        const matched = matchedSlackUserOrRedirect(reply, userInfo.email);
+        const matched = await matchedSlackUserOrRedirect(reply, userInfo.email);
         if (!matched) return;
 
         const dashUser: DashboardUser = {
