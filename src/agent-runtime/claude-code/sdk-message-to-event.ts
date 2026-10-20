@@ -39,9 +39,9 @@ import { readUuidList, STEER_SETTLEMENT_SUBTYPE } from '../steer-settlement';
 import type { AgentContent, AgentStopReason, AgentStreamEvent, AgentUsage } from '../stream-types';
 
 /**
- * Cost calculator dependency — mirrors
- * `streamProcessorProviders.calculateTokenCost`. Injected so the mapper is a
- * pure, deterministically-testable function with no cost-provider coupling.
+ * Cost calculator dependency (`calculateTokenCost`, injected by claude-handler)
+ * so the mapper is a pure, deterministically-testable function with no
+ * cost-provider coupling.
  */
 export type CalculateTokenCost = (
   model: string | undefined,
@@ -155,7 +155,7 @@ function mapCommandLifecycle(m: Record<string, unknown>): AgentStreamEvent[] {
 
 export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMapper {
   // Carried across messages so the direct-usage fallback prices the correct
-  // model tier (mirrors `_lastAssistantModelName`, stream-processor.ts:765/1389).
+  // model tier when the result message itself does not carry `model`.
   let lastAssistantModelName: string | undefined;
 
   function mapAssistant(message: Extract<SDKMessage, { type: 'assistant' }>): AgentStreamEvent[] {

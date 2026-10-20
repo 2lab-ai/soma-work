@@ -109,14 +109,6 @@ function cacheRecord(id: string, record: ConversationRecord): void {
 }
 
 /**
- * Remove a conversation from the in-memory cache (e.g., on session end).
- */
-function removeFromCache(id: string): void {
-  activeConversations.delete(id);
-  writeLocks.delete(id);
-}
-
-/**
  * Initialize the recorder with optional base directory
  */
 export function initRecorder(baseDir?: string): void {
@@ -460,21 +452,4 @@ export async function updateConversationTitleSub(conversationId: string, titleSu
   record.updatedAt = Date.now();
   await serializedSave(conversationId, record);
   return true;
-}
-
-/**
- * Update conversation metadata (title, workflow)
- */
-async function updateConversationMeta(
-  conversationId: string,
-  updates: { title?: string; workflow?: string },
-): Promise<void> {
-  const record = await getOrLoadConversation(conversationId);
-  if (!record) return;
-
-  if (updates.title !== undefined) record.title = updates.title;
-  if (updates.workflow !== undefined) record.workflow = updates.workflow;
-  record.updatedAt = Date.now();
-
-  await serializedSave(conversationId, record);
 }

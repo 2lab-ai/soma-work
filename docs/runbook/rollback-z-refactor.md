@@ -12,7 +12,7 @@
 
 ## Tier 1 — 환경 변수 플래그 (즉시, 무중단)
 
-**언제**: `/z` 경로에서 예기치 않은 동작이 보이지만 legacy naked 명령 (`persona`, `model`, `mcp` 등)은 정상 동작해야 하는 경우.
+**언제**: legacy 슬래시 커맨드 `/soma` · `/session` · `/new`를 `/z` 안내 대신 원래 동작으로 되살려야 하는 경우. (bare 명령 `persona`, `model`, `mcp` 등은 #531 이후 플래그와 무관하게 항상 바로 실행된다.)
 
 **방법**: 모든 봇 인스턴스에 `SOMA_ENABLE_LEGACY_SLASH=true` 환경 변수 설정 후 재시작.
 
@@ -31,9 +31,9 @@ SOMA_ENABLE_LEGACY_SLASH=true docker-compose up -d
 ```
 
 **효과**
-- `CommandRouter`가 legacy naked 명령 탐지 시 tombstone 힌트를 건너뛰고 legacy 핸들러로 바로 dispatch.
-- `/z` prefix는 **여전히 동작**한다 (플래그는 tombstone만 비활성화).
-- 사용자가 기존 `persona linus`, `model sonnet` 등을 사용해도 마이그레이션 안내 없이 바로 실행.
+- `/soma` · `/session` · `/new` 슬래시 커맨드가 `/z` 통합 안내 대신 원래 핸들러로 처리된다.
+- `/z` prefix는 **여전히 동작**한다.
+- bare 명령(`persona linus`, `model sonnet` 등)에는 영향이 없다 — 이미 마이그레이션 안내 없이 바로 실행된다 (#531).
 
 **해제**: `launchctl unsetenv SOMA_ENABLE_LEGACY_SLASH`, 재시작.
 
@@ -58,7 +58,7 @@ git push origin main:deploy/prod
 ```
 
 **효과**
-- `src/slack/z/` 모듈, `/z` 슬래시 커맨드 등록, tombstone 모두 제거.
+- `src/slack/z/` 모듈과 `/z` 슬래시 커맨드 등록 제거.
 - Legacy naked 명령은 refactor 이전 상태로 복귀.
 - Slack 앱 manifest의 `/z` 슬래시 커맨드는 **Tier 3을 수행하기 전까지 존재만 하고 무시**된다 (봇이 이벤트를 ignore). 무해하지만 사용자 혼란을 막기 위해 Tier 3 병행 권장.
 
@@ -109,7 +109,7 @@ git push
 
 ## 확인 체크리스트 (롤백 후)
 
-- [ ] `persona linus`, `model sonnet` 등 legacy naked 명령이 tombstone 없이 바로 실행되는가
+- [ ] `persona linus`, `model sonnet` 등 bare 명령이 바로 실행되는가
 - [ ] `/z help`가 404/에러 없이 응답하는가 (Tier 3 미수행 시: 봇이 무시만 하고 Slack UI에는 명령이 남아있을 수 있음 — 정상)
 - [ ] `/soma help`, `/session`, `/new`가 동작하는가
 - [ ] 운영 로그에 `CommandRouter` 에러가 없는가

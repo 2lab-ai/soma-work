@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 /**
  * RED tests for Issue #112: Array-style pagination (offset/limit) for get_thread_messages
@@ -144,93 +144,5 @@ describe('S6: total_count retrieval', () => {
     const source = readSourceToolSchema();
     // Should use reply_count from conversations.replies response
     expect(source).toMatch(/reply_count|total_count|totalCount/);
-  });
-});
-
-// ── Behavioral contract tests (mock-based) ──────────────────────
-
-describe('S7: Behavioral contracts for array mode', () => {
-  // These test the expected response format, not the actual server
-  // (server can't be imported without starting)
-
-  interface ArrayModeResult {
-    thread_ts: string;
-    channel: string;
-    total_count: number;
-    offset: number;
-    returned: number;
-    messages: any[];
-    has_more: boolean;
-  }
-
-  it('offset=0, limit=1 returns only root message', () => {
-    const result: ArrayModeResult = {
-      thread_ts: '1700000000.000000',
-      channel: 'C123',
-      total_count: 50,
-      offset: 0,
-      returned: 1,
-      messages: [{ ts: '1700000000.000000', user: 'U1', text: 'Root message' }],
-      has_more: true,
-    };
-
-    expect(result.returned).toBe(1);
-    expect(result.offset).toBe(0);
-    expect(result.messages[0].ts).toBe(result.thread_ts); // First msg IS the root
-    expect(result.has_more).toBe(true); // 49 more messages
-  });
-
-  it('offset=1, limit=10 returns first 10 replies (no root)', () => {
-    const messages = Array.from({ length: 10 }, (_, i) => ({
-      ts: `${1700000001 + i}.000000`,
-      user: `U${i}`,
-      text: `Reply ${i + 1}`,
-    }));
-
-    const result: ArrayModeResult = {
-      thread_ts: '1700000000.000000',
-      channel: 'C123',
-      total_count: 50,
-      offset: 1,
-      returned: 10,
-      messages,
-      has_more: true,
-    };
-
-    expect(result.returned).toBe(10);
-    expect(result.offset).toBe(1);
-    // No root message in the results
-    expect(result.messages.every((m) => m.ts !== result.thread_ts)).toBe(true);
-    // has_more: offset(1) + returned(10) = 11 < total_count(50)
-    expect(result.offset + result.returned < result.total_count).toBe(true);
-    expect(result.has_more).toBe(true);
-  });
-
-  it('last page returns has_more=false', () => {
-    const result: ArrayModeResult = {
-      thread_ts: '1700000000.000000',
-      channel: 'C123',
-      total_count: 5,
-      offset: 3,
-      returned: 2,
-      messages: [
-        { ts: '1700000004.000000', user: 'U1', text: 'Msg 4' },
-        { ts: '1700000005.000000', user: 'U2', text: 'Msg 5' },
-      ],
-      has_more: false,
-    };
-
-    // offset(3) + returned(2) = 5 === total_count(5)
-    expect(result.offset + result.returned).toBe(result.total_count);
-    expect(result.has_more).toBe(false);
-  });
-
-  it('model can compute "last 5 messages" using total_count', () => {
-    const total_count = 42;
-    const wantLast = 5;
-    const computedOffset = total_count - wantLast; // 37
-
-    expect(computedOffset).toBe(37);
-    expect(computedOffset).toBeGreaterThanOrEqual(0);
   });
 });

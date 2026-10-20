@@ -103,9 +103,7 @@ function createDeps(stream: () => AsyncGenerator<unknown>): any {
       cleanup: vi.fn(),
     },
     statusReporter: {
-      updateStatusDirect: vi.fn().mockResolvedValue(undefined),
       getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-      cleanup: vi.fn(),
     },
     reactionManager: {
       updateReaction: vi.fn().mockResolvedValue(undefined),

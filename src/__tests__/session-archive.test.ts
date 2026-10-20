@@ -20,6 +20,19 @@ const TEST_ARCHIVES_DIR = path.join(TEST_DATA_DIR, 'archives');
 
 // ── Test Helpers ────────────────────────────────────────────────────
 
+/** Newest archive written for `sessionKey` (append-only `{key}_{timestamp}.json`), or null. */
+function loadLatestArchive(sessionKey: string): ArchivedSession | null {
+  if (!fs.existsSync(TEST_ARCHIVES_DIR)) return null;
+  const files = fs
+    .readdirSync(TEST_ARCHIVES_DIR)
+    .filter((f) => f.startsWith(`${sessionKey}_`) && f.endsWith('.json'))
+    .sort();
+  const latest = files[files.length - 1];
+  return latest
+    ? (JSON.parse(fs.readFileSync(path.join(TEST_ARCHIVES_DIR, latest), 'utf-8')) as ArchivedSession)
+    : null;
+}
+
 function makeTestSession(overrides: Partial<ConversationSession> = {}): ConversationSession {
   return {
     ownerId: 'U000',
@@ -53,7 +66,7 @@ describe('SessionArchiveStore', () => {
     const session = makeTestSession({ ownerId: 'U001', model: 'claude-opus-4-6' });
     store.archive(session, 'C123-456.789', 'terminated');
 
-    const archived = store.load('C123-456.789');
+    const archived = loadLatestArchive('C123-456.789');
     expect(archived).not.toBeNull();
     expect(archived?.sessionKey).toBe('C123-456.789');
     expect(archived?.archiveReason).toBe('terminated');
@@ -78,7 +91,7 @@ describe('SessionArchiveStore', () => {
     });
 
     store.archive(session, 'C0AK-123.456', 'terminated');
-    const archived = store.load('C0AK-123.456');
+    const archived = loadLatestArchive('C0AK-123.456');
 
     expect(archived?.ownerId).toBe('U001');
     expect(archived?.ownerName).toBe('Zhuge');
@@ -137,8 +150,8 @@ describe('SessionArchiveStore', () => {
     // Should have 2 archive files (or 1 if same ms — still valid, just overwritten)
     expect(files2.length).toBeGreaterThanOrEqual(1);
 
-    // load() returns the most recent
-    const latest = store.load('C123-456.789');
+    // the newest archive is still readable
+    const latest = loadLatestArchive('C123-456.789');
     expect(latest).not.toBeNull();
   });
 
@@ -150,7 +163,7 @@ describe('SessionArchiveStore', () => {
     const session = makeTestSession({ ownerId: 'U001', state: 'SLEEPING' });
     store.archive(session, 'C123-456.789', 'sleep_expired');
 
-    const archived = store.load('C123-456.789');
+    const archived = loadLatestArchive('C123-456.789');
     expect(archived).not.toBeNull();
     expect(archived?.archiveReason).toBe('sleep_expired');
   });
@@ -161,7 +174,7 @@ describe('SessionArchiveStore', () => {
     const session = makeTestSession({ state: 'SLEEPING' });
     store.archive(session, 'C123-456.789', 'sleep_expired');
 
-    const archived = store.load('C123-456.789');
+    const archived = loadLatestArchive('C123-456.789');
     expect(archived?.archiveReason).toBe('sleep_expired');
     expect(archived?.finalState).toBe('SLEEPING');
   });
@@ -205,17 +218,6 @@ describe('SessionArchiveStore', () => {
     expect(recent).toHaveLength(0);
   });
 
-  // Trace: Scenario 3, Section 3a — user filter on archives
-  it('dashboard_closedColumn_filtersArchivesByUser', () => {
-    const store = new SessionArchiveStore(TEST_ARCHIVES_DIR);
-    store.archive(makeTestSession({ ownerId: 'U001' }), 'C123-u1.789', 'terminated');
-    store.archive(makeTestSession({ ownerId: 'U002' }), 'C123-u2.789', 'terminated');
-
-    const filtered = store.list({ ownerId: 'U001' });
-    expect(filtered).toHaveLength(1);
-    expect(filtered[0].ownerId).toBe('U001');
-  });
-
   // Trace: Scenario 3, Section 3a transformation — ArchivedSession fields
   it('dashboard_closedColumn_archivedToKanban_transformation', () => {
     const store = new SessionArchiveStore(TEST_ARCHIVES_DIR);
@@ -229,7 +231,7 @@ describe('SessionArchiveStore', () => {
     });
     store.archive(session, 'C0AK-123.456', 'terminated');
 
-    const archived = store.load('C0AK-123.456');
+    const archived = loadLatestArchive('C0AK-123.456');
     expect(archived).not.toBeNull();
     expect(archived?.sessionKey).toBe('C0AK-123.456');
     expect(archived?.title).toBe('Test');

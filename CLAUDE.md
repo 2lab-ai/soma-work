@@ -54,7 +54,7 @@ src/
 │   ├── commands/    # 명령어 핸들러
 │   ├── directives/  # 채널/세션 링크 디렉티브
 │   ├── formatters/  # 출력 포맷터
-│   └── z/           # /z 명령어 surface + naked whitelist
+│   └── z/           # /z 명령어 surface + 비-admin DM 입력 게이트
 ├── agent-runtime/   # Claude Agent SDK 실행 런타임
 ├── auth/            # CCT lease + query env 주입
 ├── conversation/    # 대화 기록 및 리플레이
@@ -149,11 +149,18 @@ asset을 하나씩 지워 실패하는지까지 확인한다. 소스에 파일�
 - 커밋 전 반드시: `npx tsc --noEmit && npx vitest run`
 - 새 기능/버그 수정 시 테스트가 먼저 존재해야 함
 
+### 테스트 환경 격리
+
+vitest `setupFiles`(`src/test-utils/vitest-setup.ts`)가 모든 테스트 파일 실행 전에 env를 허용 목록으로 줄이고
+`SOMA_CONFIG_DIR`/`DATA_DIR`를 파일별 scratch 디렉터리로 고정한다. 그래서 배포 노드나 봇이 띄운 에이전트 셸
+(`SOMA_CONFIG_DIR=/opt/soma-work/<env>`)에서 돌려도 그 배포의 `.env`·자격증명·data 디렉터리에 닿지 않는다.
+테스트가 env 변수가 필요하면 테스트 안에서 직접 설정한다 — 셸에서 물려받는 값에 기대지 않는다.
+
 ### Mock 전략
 
-- **Slack Mock**: `src/test-utils/mock-slack-api.ts` — SlackApiHelper mock factory
-- **Model Mock**: `src/test-utils/mock-claude-handler.ts` — ClaudeHandler mock factory
-- **Session Mock**: `src/test-utils/mock-session.ts` — Session mock factory
+- **Slack Mock**: `@soma/test-utils` (`packages/test-utils/src/mock-slack-api.ts`) — SlackApiHelper mock factory
+- **Model Mock**: `@soma/test-utils` (`packages/test-utils/src/mock-claude-handler.ts`) — ClaudeHandler mock factory
+- **Session Mock**: `@soma/test-utils` (`packages/test-utils/src/mock-session.ts`) — Session mock factory
 - 모든 기능은 Mock 기반 e2e 테스트 커버리지 확보 목표
 
 ## Deployment
@@ -191,10 +198,10 @@ gh workflow run deploy --ref main -f confirm=deploy
 
 ## Command Surface
 
-- 명령어 체계는 4개 prefix family: `/z <topic>` (영속) · `%<sub>` (세션 전용) · `$<skill>` (강제 스킬 발동) · naked whitelist. 상세는 `README.md`의 Commands 섹션. naked form의 source of truth는 두 층: `src/slack/z/whitelist.ts` + `CommandRouter`의 `CommandParser.is*Command` 매처(`auth`, `cct` 등 운영 카드).
-- whitelist 외 네이키드 텍스트는 채팅 / 워크플로우 디스패치로 처리.
+- 명령어 체계는 4개 prefix family: `/z <topic>` (영속) · `%<sub>` (세션 전용) · `$<skill>` (강제 스킬 발동) · naked(bare `[cmd] [args]`). 상세는 `README.md`의 Commands 섹션. naked form의 source of truth는 `CommandRouter` 핸들러 체인(`CommandParser.is*Command` 매처 포함 — `auth`, `cct` 등 운영 카드). 비-admin DM에서 받는 입력은 `isDmAllowedForNonAdmin`(`packages/slack/src/z/whitelist.ts`)이 정한다.
+- 어느 핸들러도 잡지 않은 네이키드 텍스트는 채팅 / 워크플로우 디스패치로 처리.
 - **터미널 `somawork` 컨트롤러는 별개 surface다** (`setup` · `doctor` · `status` · `service` · `profile` · `sessions` · `help` · `version`). Slack prefix family와 아무 관계 없고, 문법의 SSOT는 `src/cli/args.ts`의 `COMMAND_GRAMMAR` + `publicCommandSummaries()` — help 텍스트가 그 테이블에서 생성되므로 drift할 수 없고, 비공개 훅 라우트는 절대 나타나지 않는다.
-- **Migration (#506)**: whitelist 외의 legacy 네이키드 형태(`persona linus`, `model sonnet`, `show_prompt` 등)는 deprecated. 첫 사용 시 tombstone hint, 이후 drop. `SOMA_ENABLE_LEGACY_SLASH=true` 환경변수로 rollback 가능.
+- **Bare 명령 (#531)**: `persona linus`, `model sonnet` 같은 bare `[cmd] [args]` 형태는 `CommandRouter` 핸들러가 그대로 실행한다 (#506 Phase 1의 tombstone 힌트는 #531에서 제거됐다). `SOMA_ENABLE_LEGACY_SLASH=true`는 legacy 슬래시 커맨드 `/soma` · `/session` · `/new`만 되살린다.
 
 ## Documentation Sync (Required)
 

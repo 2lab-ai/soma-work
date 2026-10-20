@@ -95,12 +95,6 @@ class BackgroundBashRegistry {
     this.map.delete(sessionKey);
     return entries;
   }
-
-  /** Non-destructive count of live entries for a session (still running at
-   *  turn end, before `drain()`). Used by the background-work resume guard. */
-  countFor(sessionKey: string): number {
-    return this.map.get(sessionKey)?.size ?? 0;
-  }
 }
 
 /**
@@ -157,14 +151,6 @@ class BackgroundTaskRegistry {
     return entries;
   }
 
-  /** Non-destructive subagent labels of live entries for a turn (still running
-   *  at turn end, before `drain()`). Used by the background-work resume guard. */
-  labelsFor(turnId: string): string[] {
-    const bucket = this.map.get(turnId);
-    if (!bucket) return [];
-    return Array.from(bucket.values()).map((e) => e.subagentLabel);
-  }
-
   /**
    * Spawn-ack detection runs before `context.turnId` is guaranteed; scan
    * every turn bucket for `toolUseId`. `toolUseId` is unique per stream
@@ -214,6 +200,13 @@ export interface ToolEventContext {
    * format (`${sessionKey}:${ms}:${uuid}`).
    */
   turnId?: string;
+  /**
+   * True once the session this context belongs to was deleted. Deletion
+   * drains the background-task tracker; a spawn-ack processed afterwards (a
+   * later result of the same batch, after an await) must not re-add under a
+   * key a new session in the thread reuses. Absent = never terminated.
+   */
+  isSessionTerminated?: () => boolean;
 }
 
 /**
@@ -520,7 +513,7 @@ export class ToolEventProcessor {
         // adding it here too guarantees we never miss a launch even if a
         // `task_started` is ever dropped. Idempotent by task_id. Drained ONLY
         // by the authoritative `task_notification` (no consumer-tool polling).
-        if (context.sessionKey) {
+        if (context.sessionKey && !context.isSessionTerminated?.()) {
           const taskId = parseBackgroundLaunchId(toolResult.result);
           if (taskId) {
             this.backgroundTaskTracker.trackStart(context.sessionKey, taskId, {
@@ -814,7 +807,8 @@ export class ToolEventProcessor {
   }
 
   /**
-   * Drop all background-task tracking for a session. SESSION TEARDOWN ONLY.
+   * Drop all background-task tracking for a session. SESSION TEARDOWN ONLY —
+   * the host calls it from the session registry's before-delete seam.
    * NOTE: this is no longer called on resume-cap exhaustion — the cap is now a
    * NON-destructive suppression in StreamExecutor (it must not falsify the
    * authoritative live state). Draining authoritative state on cap would lie

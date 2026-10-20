@@ -7,7 +7,7 @@ vi.mock('../slack/autoskill-fire', () => ({
 
 import type { FollowupQueueSnapshot } from '@soma/slack/followup-queue';
 import {
-  buildFollowupQueueBlocks,
+  buildFollowupItemMessage,
   FOLLOWUP_CANCEL_ACTION_ID,
   FOLLOWUP_SEND_NOW_ACTION_ID,
   type FollowupQueueView,
@@ -753,7 +753,7 @@ describe('SlackHandler — follow-up queue host', () => {
 
     /**
      * The view the CONTROL side is wired with: the command router's `queue`
-     * handler, the one production caller of the item/panel builders.
+     * handler, the one production caller of the item-message builder.
      */
     function controlView(key: string) {
       const queueHandler = handlerAny.commandRouter.handlers.find((h: unknown) => h instanceof QueueHandler);
@@ -983,16 +983,17 @@ describe('SlackHandler — follow-up queue host', () => {
      * to (`followup-dispatcher.ts` `staleTurn`, `FollowupQueue.reserve`), so it
      * must be minted from that counter — on main the two were the same number.
      */
-    it('gives control producers the counter the dispatcher checks (queue-panel deps + block encoder), not the overlaid surface epoch', async () => {
+    it('gives control producers the counter the dispatcher checks (queue-command deps + item-message encoder), not the overlaid surface epoch', async () => {
       const turn = await startMigratedTurn();
       try {
         await handler.handleMessage(message({ ts: '333.555', thread_ts: '999.000', text: '작업 스레드 후속' }), say());
         expect(surfaceView(WORK_KEY)?.turnEpoch, 'the surface fence reads the slot').toBe(turn.turnEpoch);
 
-        const { blocks } = buildFollowupQueueBlocks(controlView(WORK_KEY), { compact: false });
-        const button = (blocks as any[])
-          .map((block) => block?.accessory)
-          .find((accessory) => accessory?.action_id === FOLLOWUP_SEND_NOW_ACTION_ID);
+        const view = controlView(WORK_KEY);
+        const button = (view?.items ?? [])
+          .flatMap((entry: any) => buildFollowupItemMessage(entry, view?.turnEpoch ?? 0).blocks as any[])
+          .flatMap((block: any) => (block?.type === 'actions' ? block.elements : []))
+          .find((element: any) => element?.action_id === FOLLOWUP_SEND_NOW_ACTION_ID);
         const value = parseFollowupItemActionValue(button?.value);
         if (!value || value.turnEpoch === undefined) throw new Error('no Send now button was minted');
         expect(value.sessionKey).toBe(WORK_KEY);
@@ -3612,6 +3613,67 @@ describe('SlackHandler — follow-up queue host', () => {
 
       gate.resolve({ hasPendingChoice: false });
       await first;
+    });
+
+    /**
+     * B3 — the background-task lifecycle tracker lives on the process-wide
+     * ToolEventProcessor and is documented as drained on session teardown.
+     * Nothing drained it since 59e5b457, so a deleted session left its live
+     * tasks and settled tombstones behind for the whole process lifetime, and a
+     * reused key inherited them (a tombstone silently refuses a fresh start).
+     */
+    it('drops the deleted session background-task tracking, live tasks and tombstones', async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const { spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
+      const tracker = spawnedAny.toolEventProcessor;
+      const lifecycle = (phase: 'started' | 'settled', taskId: string) =>
+        tracker.handleAgentTaskLifecycle({ type: 'agent_task_lifecycle', phase, taskId }, SESSION_KEY);
+      lifecycle('started', 'bg-live');
+      lifecycle('started', 'bg-done');
+      lifecycle('settled', 'bg-done');
+      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count).toBe(1);
+
+      expect(beforeDelete, 'the registry seam was wired').toBeDefined();
+      beforeDelete?.(SESSION_KEY, registrySession, 'expired');
+
+      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count, 'live tasks of a deleted session').toBe(0);
+      // Same key, next session: a task id the old session settled is a new task now.
+      lifecycle('started', 'bg-done');
+      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count, 'a stale tombstone refused the start').toBe(1);
+    });
+
+    /**
+     * The drain must come LAST in the seam: if cancelling the session's
+     * follow-ups throws (e.g. the queue store cannot save), the registry refuses
+     * the deletion and keeps the session alive — so its live background tasks
+     * must still be tracked.
+     */
+    it('keeps background-task tracking when the follow-up cancel refuses the deletion', async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const { spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
+      const tracker = spawnedAny.toolEventProcessor;
+      tracker.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'bg-live' },
+        SESSION_KEY,
+      );
+      const queue = spawnedAny.getFollowupQueue();
+      vi.spyOn(queue, 'list').mockReturnValue([{ state: 'queued' }]);
+      vi.spyOn(queue, 'cancelSession').mockImplementation(() => {
+        throw new Error('disk full');
+      });
+
+      expect(() => beforeDelete?.(SESSION_KEY, registrySession, 'expired')).toThrow('disk full');
+      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count, 'live tasks of a session that was NOT deleted').toBe(1);
     });
 
     /**

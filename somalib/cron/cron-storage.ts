@@ -31,10 +31,6 @@ export interface CronModelConfig {
   type: 'default' | 'opus' | 'fable' | 'fast' | 'custom';
   /** Model identifier for custom type (e.g. "claude-sonnet-4-20250514") */
   model?: string;
-  /** Reasoning effort for custom type */
-  reasoningEffort?: 'low' | 'medium' | 'high';
-  /** Fast mode for custom type */
-  fastMode?: boolean;
 }
 
 export interface CronJob {
@@ -46,6 +42,12 @@ export interface CronJob {
   channel: string;
   threadTs: string | null;
   createdAt: string;
+  /**
+   * When `expression` last changed (ISO). The scheduler's catch-up never reaches
+   * a minute before it, as it never reaches one before `createdAt`. Absent until
+   * the first schedule edit.
+   */
+  scheduleChangedAt?: string;
   lastRunAt: string | null;
   /** Dedup key: YYYY-MM-DDTHH:mm — prevents re-fire within the same minute */
   lastRunMinute: string | null;
@@ -235,7 +237,10 @@ export class CronStorage {
       }
       job.name = patch.name;
     }
-    if (patch.expression !== undefined) job.expression = patch.expression;
+    if (patch.expression !== undefined && patch.expression !== job.expression) {
+      job.expression = patch.expression;
+      job.scheduleChangedAt = new Date().toISOString();
+    }
     if (patch.prompt !== undefined) job.prompt = patch.prompt;
     if (patch.channel !== undefined) job.channel = patch.channel;
     if (patch.threadTs !== undefined) job.threadTs = patch.threadTs;

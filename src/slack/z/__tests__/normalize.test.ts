@@ -47,8 +47,6 @@ describe('normalizeZInvocation', () => {
   it('slash source: treats text as post-/z remainder', () => {
     const inv = normalizeZInvocation(makeInput({ source: 'slash', text: 'persona set linus' }));
     expect(inv.remainder).toBe('persona set linus');
-    expect(inv.isLegacyNaked).toBe(false);
-    expect(inv.whitelistedNaked).toBe(false);
     expect(inv.source).toBe('slash');
   });
 
@@ -61,8 +59,6 @@ describe('normalizeZInvocation', () => {
     const inv = normalizeZInvocation(makeInput({ source: 'dm', text: '/z persona set linus' }));
     expect(inv.remainder).toBe('persona set linus');
     expect(inv.rawText).toBe('/z persona set linus');
-    expect(inv.isLegacyNaked).toBe(false);
-    expect(inv.whitelistedNaked).toBe(false);
   });
 
   it('channel_mention source: /z prefix recognized', () => {
@@ -70,33 +66,10 @@ describe('normalizeZInvocation', () => {
     expect(inv.remainder).toBe('help');
   });
 
-  it('dm source: whitelisted naked (session) → whitelistedNaked=true', () => {
-    const inv = normalizeZInvocation(makeInput({ source: 'dm', text: 'session' }));
-    expect(inv.whitelistedNaked).toBe(true);
-    expect(inv.isLegacyNaked).toBe(false);
-    expect(inv.remainder).toBe('session');
-  });
-
-  it('dm source: whitelisted naked (new <prompt>) → whitelistedNaked=true', () => {
-    const inv = normalizeZInvocation(makeInput({ source: 'dm', text: 'new hello world' }));
-    expect(inv.whitelistedNaked).toBe(true);
-  });
-
-  it('dm source: legacy naked (persona) → isLegacyNaked=true', () => {
-    const inv = normalizeZInvocation(makeInput({ source: 'dm', text: 'persona set linus' }));
-    expect(inv.isLegacyNaked).toBe(true);
-    expect(inv.whitelistedNaked).toBe(false);
-  });
-
-  it('channel_mention source: legacy naked (model) → isLegacyNaked=true', () => {
-    const inv = normalizeZInvocation(makeInput({ source: 'channel_mention', text: 'model sonnet' }));
-    expect(inv.isLegacyNaked).toBe(true);
-  });
-
-  it('unknown prose: both flags false', () => {
+  it('dm source without a /z prefix: remainder is the full text', () => {
     const inv = normalizeZInvocation(makeInput({ source: 'dm', text: 'hello claude how are you' }));
-    expect(inv.isLegacyNaked).toBe(false);
-    expect(inv.whitelistedNaked).toBe(false);
+    expect(inv.remainder).toBe('hello claude how are you');
+    expect(inv.rawText).toBe('hello claude how are you');
   });
 
   it('preserves user/channel/team/threadTs fields', () => {

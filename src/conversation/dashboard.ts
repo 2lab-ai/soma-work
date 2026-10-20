@@ -26,7 +26,7 @@ import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
 import { ReportAggregator } from '../metrics/report-aggregator';
-import { AggregatedMetrics, type MetricsEvent } from '../metrics/types';
+import type { MetricsEvent } from '../metrics/types';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
 import { getSurfaceLines } from '../slack/surface-config';
 import { buildThreadPermalink } from '../turn-notifier';
@@ -1609,7 +1609,7 @@ export async function registerDashboardRoutes(
         return;
       }
       // Validate each selection entry
-      for (const [qId, sel] of Object.entries(selections)) {
+      for (const sel of Object.values(selections)) {
         if (
           !sel ||
           typeof sel !== 'object' ||
@@ -1665,7 +1665,7 @@ export async function registerDashboardRoutes(
     async (request, reply) => {
       const resolved = resolveSelfActionKeyAndOwner(request, reply);
       if (!resolved) return;
-      const { wireKey: key, originalKey } = resolved;
+      const { originalKey } = resolved;
       try {
         if (!_submitRecommendedHandlerFn) {
           reply.status(501).send({ error: 'Submit-recommended handler not configured' });
@@ -3860,7 +3860,7 @@ function formatTokens(n) {
   }
   return '999.9T+';
 }
-// Dashboard v2.1 — \`Nm SSs\` for the 1s live tick. Mirrors src/format/duration.ts.
+// Dashboard v2.1 — \`Nm SSs\` for the 1s live tick. Mirrors packages/common/src/format/duration.ts.
 function formatNmSSs(ms) {
   if (!ms || ms < 0 || isNaN(ms)) return '0m 00s';
   var totalSec = Math.floor(ms / 1000);

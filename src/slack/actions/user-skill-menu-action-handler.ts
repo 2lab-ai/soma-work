@@ -24,8 +24,6 @@ import type { MessageHandler, RespondFn, SayFn } from './types';
 // forming the cycle list-handler → menu-action-handler → view-submission-shared
 // → list-handler (#745).
 import {
-  LEGACY_INVOKE_ACTION_ID_PREFIX,
-  MENU_ACTION_ID_PREFIX,
   VALUE_KIND_COPY,
   VALUE_KIND_DELETE,
   VALUE_KIND_EDIT,

@@ -138,7 +138,12 @@ def realCommands : List (String × List String) :=
   [("", []),
     ("ls", []),
     ("rm /tmp/x", []),
-    ("KILL 1", []),
+    -- Case-insensitive since soma-lib 0.8.0: the hosts run on case-insensitive APFS, where
+    -- `KILL`, `RM` and `SSH` are the real binaries.
+    ("KILL 1", ["kill"]),
+    ("RM -rf /tmp/x", ["rm-recursive", "rm-force"]),
+    ("rm -R /tmp/x", ["rm-recursive"]),
+    ("SSH user@host ls", ["ssh-remote"]),
     ("cat /tmp/UOTHERUSER1/file.txt", []),
     ("kill -9 1", ["kill"]),
     ("pkill node", ["pkill"]),

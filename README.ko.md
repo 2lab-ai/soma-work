@@ -163,7 +163,7 @@ app-token 프롬프트는 금지된 자격증명 경로라 삭제됨), `scripts/
 | `/z <topic> …` | 기본 명령어 surface (필요 시 Block Kit UI) | 유저 전역 | `/z persona set linus` |
 | `%<sub> …` | **현재 세션 전용** — 저장 없이 오버라이드 | 휘발성 (`new`/`renew` 시 초기화) | `%model opus` |
 | `$<skill>` / `$<plugin>:<skill>` | **강제 스킬 발동** (`SKILL.md` 로드, `compact` 이상에서 RPG 배너 출력 — `minimal`에서는 게시하지 않음; 세션에 대화가 있으면 대시보드 작업 로그에 기록) | 메시지 단위 | `$z`, `$stv:new-task` |
-| naked text | 화이트리스트 bare form 또는 채팅 / 워크플로우 디스패치 | n/a | `sessions`, `new`, `fix PR 123` |
+| naked text | bare 명령 또는 채팅 / 워크플로우 디스패치 | n/a | `sessions`, `new`, `fix PR 123` |
 
 주요 `/z` 명령: `help` · `cwd` · `mcp` · `bypass` · `persona` · `model` · `verbosity` · `session` · `new`/`renew` · `close` · `restore` · `context`/`compact` · `link` · `onboarding` · `admin` · `cct` · `auth` · `marketplace` · `plugin` · `skill` · `report`
 
@@ -181,7 +181,7 @@ app-token 프롬프트는 금지된 자격증명 경로라 삭제됨), `scripts/
 - 모든 `gpt-…[1m]` 프로파일은 앞으로 추가되는 지원 모델까지 Sol과 같은 1M 윈도우, SDK 차단선 977k, 자동 압축 600k를 적용한다. 모델별 임계값을 따로 등록할 필요가 없다. 지원하지 않는 모델 변형을 생성하거나 명시적으로 선택한 bare 모델 ID를 바꾸지는 않으며, 세션 오버라이드는 계속 우선한다.
 - 제공자가 compact 요청을 거절하면 실패 안내에 인증정보를 가린 오류 상세를 표시한다. Slack 표시 길이를 넘으면 생략 사실을 알리며, 서버 로그에는 가림 처리한 전체 원인을 남긴다. 실패 안내는 압축 성공을 뜻하지 않는다.
 - 전체 명령어 표와 마이그레이션 히스토리(#506, #508)는 [README.md의 Commands 섹션](./README.md#commands)을 참고하세요.
-- naked 화이트리스트의 source of truth: [`src/slack/z/whitelist.ts`](./src/slack/z/whitelist.ts)
+- naked(bare `[cmd] [args]`) 명령의 source of truth: [`CommandRouter`](./packages/slack/src/commands/command-router.ts) 핸들러 체인. 비-admin DM에서 받는 입력은 [`isDmAllowedForNonAdmin`](./packages/slack/src/z/whitelist.ts)이 정한다. `persona linus` 같은 bare 형태는 그대로 실행된다 — #506 Phase 1의 tombstone 힌트는 #531에서 제거됐다.
 - `$model` 등 legacy `$` 세션 설정은 deprecation grace period 동안만 허용 (경고 후 `%` 사용 안내)
 
 ---
@@ -434,7 +434,7 @@ src/                                # TypeScript 소스
 │   ├── pipeline/                   # 스트림 처리 파이프라인
 │   ├── directives/                 # 채널/세션 링크 디렉티브
 │   ├── formatters/                 # 출력 포맷터
-│   └── z/                          # /z 명령어 surface + naked 화이트리스트
+│   └── z/                          # /z 명령어 surface + 비-admin DM 입력 게이트
 ├── auth/                           # CCT lease + query env 주입
 ├── conversation/                   # 대화 기록 & 리플레이
 ├── model-commands/                 # 모델 커맨드 카탈로그 & 검증

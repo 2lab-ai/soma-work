@@ -1,5 +1,5 @@
 {
-  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "$schema": "https://unpkg.com/knip@6/schema.json",
   "workspaces": {
     ".": {
       "entry": [
@@ -31,6 +31,14 @@
       "entry": [
         "src/index.ts",
         "*.ts"
+      ],
+      "project": [
+        "**/*.ts"
+      ]
+    },
+    "packages/slack": {
+      "entry": [
+        "src/**/*.ts"
       ],
       "project": [
         "**/*.ts"

@@ -2128,6 +2128,7 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
   // ── M1-S4: fetchAndStoreUsage { force } + fetchUsageForAllAttached { force } ──
 
   describe('fetchAndStoreUsage { force } + fetchUsageForAllAttached { force } (M1-S4)', () => {
+    // The no-opts default keeps the gate: see `honours nextUsageFetchAllowedAt` under fetchAndStoreUsage.
     it('force:true bypasses nextUsageFetchAllowedAt gate (local throttle only)', async () => {
       const { mod, storeMod } = await importSut();
       const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
@@ -2155,26 +2156,6 @@ describe('TokenManager (AuthKey v2, keyId-keyed)', () => {
       expect(fetchUsageMock).toHaveBeenCalledTimes(1);
       // #701 — percent-form stored verbatim.
       expect(result?.fiveHour?.utilization).toBe(90);
-    });
-
-    it('force:false (default) still respects nextUsageFetchAllowedAt gate — regression guard', async () => {
-      const { mod, storeMod } = await importSut();
-      const store = new storeMod.CctStore(path.join(tmp, 'cct-store.json'));
-      const tm = new mod.TokenManager(store);
-      await tm.init();
-      const s = await tm.addSlot({
-        name: 'oauth',
-        kind: 'oauth_credentials',
-        credentials: makeOAuthCreds(),
-        acknowledgedConsumerTosRisk: true,
-      });
-      await store.mutate((snap) => {
-        snap.state[s.keyId].nextUsageFetchAllowedAt = new Date(Date.now() + 60_000).toISOString();
-      });
-      // No-opts overload — existing callers MUST keep the gate.
-      const result = await tm.fetchAndStoreUsage(s.keyId);
-      expect(result).toBeNull();
-      expect(fetchUsageMock).not.toHaveBeenCalled();
     });
 
     it('fetchUsageForAllAttached does NOT accept or forward force to per-slot calls (dedupe-over-force)', async () => {

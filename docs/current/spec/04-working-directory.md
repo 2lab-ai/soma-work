@@ -5,6 +5,12 @@
 - Source File: `src/working-directory-manager.ts`
 - Last Updated: 2025-12-13
 
+> **Status (2026-10): superseded.** Since `f6b15add` (2026-01) each user has one fixed working
+> directory (`{BASE_DIRECTORY}/{userId}/`). Channel/thread overrides and per-user defaults are gone;
+> the deprecated no-ops this document describes (`setWorkingDirectory`, `removeWorkingDirectory`,
+> `getChannelWorkingDirectory`, `formatChannelSetupMessage`, `get/setUserDefaultDirectory`) were
+> deleted in the 2026-10 dead-code audit. Kept as a historical design record.
+
 ## 1. Overview
 
 작업 디렉토리 관리자는 Claude가 작업할 파일 시스템 경로를 설정하고 해석합니다. 채널별 기본값, 스레드별 오버라이드, 사용자별 기본값을 지원합니다.
@@ -301,55 +307,29 @@ Base directory: `/Users/dev/Code`
 Base directory: `/Users/dev/Code`
 ```
 
-## 9. Channel Setup Flow
+## 9. Base Directory
 
-### 9.1 Welcome Message Format
-
-```typescript
-formatChannelSetupMessage(channelId: string, channelName: string): string {
-  let message = `🏠 **Channel Working Directory Setup**\n\n`;
-  message += `Please set the default working directory for #${channelName}:\n\n`;
-
-  if (hasBaseDir) {
-    message += `**Options:**\n`;
-    message += `• \`cwd project-name\` (relative to: \`${config.baseDirectory}\`)\n`;
-    message += `• \`cwd /absolute/path/to/project\` (absolute path)\n\n`;
-  } else {
-    message += `**Usage:**\n`;
-    message += `• \`cwd /path/to/project\`\n`;
-    message += `• \`set directory /path/to/project\`\n\n`;
-  }
-
-  message += `This becomes the default for all conversations in this channel.\n`;
-  message += `Individual threads can override this by mentioning me with a different \`cwd\` command.`;
-
-  return message;
-}
-```
-
-## 10. Base Directory
-
-### 10.1 Configuration
+### 9.1 Configuration
 
 ```env
 BASE_DIRECTORY=/Users/username/Code/
 ```
 
-### 10.2 Usage Benefits
+### 9.2 Usage Benefits
 
 - 짧은 프로젝트 이름으로 경로 지정 가능
 - 일관된 프로젝트 구조 유지
 - 오타 방지 및 편의성 향상
 
-### 10.3 Without Base Directory
+### 9.3 Without Base Directory
 
 Base Directory가 설정되지 않은 경우:
 - 절대 경로만 사용 가능
 - 상대 경로는 프로세스 CWD 기준으로 해석
 
-## 11. User Default Persistence
+## 10. User Default Persistence
 
-### 11.1 Save Default
+### 10.1 Save Default
 
 ```typescript
 // setWorkingDirectory 내부에서 호출
@@ -358,7 +338,7 @@ if (userId) {
 }
 ```
 
-### 11.2 Auto-Apply
+### 10.2 Auto-Apply
 
 사용자가 새 대화를 시작할 때:
 
@@ -371,7 +351,7 @@ if (userDefault) {
 }
 ```
 
-## 12. Flow Diagram
+## 11. Flow Diagram
 
 ```
 ┌──────────────────────────────────────────────────────────┐

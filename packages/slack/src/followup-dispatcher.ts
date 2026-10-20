@@ -13,9 +13,8 @@ import type { MessageEvent } from './pipeline/types';
  * running something?" (U4b/U6 of `.prd/slack-agent-ui`).
  *
  * Why this exists as its own service: nothing else in the process can answer
- * that question truthfully. `RequestCoordinator.canStartRequest`
- * (`request-coordinator.ts:173-174`) always returns true, and the controller
- * slot is removed at the TOP of `StreamExecutor.cleanup`
+ * that question truthfully. `RequestCoordinator` has no start policy, and the
+ * controller slot is removed at the TOP of `StreamExecutor.cleanup`
  * (`pipeline/stream-executor.ts:3702`) while the cleanup still has awaits
  * ahead of it (`:3726`) — so "no slot" does NOT mean "torn down". A drain or a
  * `Send now` that trusted the slot would start a fresh dispatch into a session
@@ -34,8 +33,7 @@ import type { MessageEvent } from './pipeline/types';
  *     Guards item transitions.
  *   - **turn epoch** — the per-session turn generation, owned by the queue
  *     (`beginTurn`/`getTurnEpoch`). Fences late surface writes from a turn that
- *     has been superseded (A28). A rendered `Send now` control must carry BOTH
- *     (`controlPayload`).
+ *     has been superseded (A28). A rendered `Send now` control must carry BOTH.
  */
 
 export type DispatchKind = 'initial' | 'drain' | 'send-now';
@@ -142,14 +140,6 @@ export interface DispatcherSnapshot {
   halt?: DrainHalt;
   frozenReason?: string;
   queued: number;
-}
-
-/** Everything a rendered `Send now` button must carry back (both epochs). */
-export interface SendNowControlPayload {
-  sessionKey: string;
-  itemId: string;
-  itemEpoch: number;
-  turnEpoch: number;
 }
 
 export type DispatcherNotice =
@@ -354,13 +344,6 @@ export class FollowupDispatcher {
       frozenReason: this.deps.queue.freezeReason(sessionKey),
       queued: this.deps.queue.list(sessionKey).filter((item) => item.state === 'queued').length,
     };
-  }
-
-  /** Both epochs a `Send now` control must round-trip. `undefined` = nothing to render. */
-  controlPayload(sessionKey: string, itemId: string): SendNowControlPayload | undefined {
-    const item = this.deps.queue.get(sessionKey, itemId);
-    if (!item) return undefined;
-    return { sessionKey, itemId, itemEpoch: item.epoch, turnEpoch: this.currentTurnEpoch(sessionKey) };
   }
 
   drainHalt(sessionKey: string): DrainHalt | undefined {

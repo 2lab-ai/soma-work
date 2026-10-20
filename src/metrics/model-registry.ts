@@ -32,7 +32,6 @@ export {
   type ModelInputCompatibility,
   type ModelInputRejected,
   type ModelProfile,
-  NATIVE_ONE_M_SDK_BLOCKING_LIMIT,
   ONE_M_SUFFIX_RE,
   resolveModelInputCompatibility,
   resolveModelProfile,
@@ -477,13 +476,6 @@ export function classifyOneMUnavailable(text: string): OneMUnavailableKind {
  */
 export function resolveContextWindow(modelName?: string): number {
   return resolveModelProfile(modelName).contextWindow;
-}
-
-/**
- * Get max output token count for a model.
- */
-export function getMaxOutput(modelName?: string): number {
-  return getModelSpec(modelName).maxOutput;
 }
 
 /**

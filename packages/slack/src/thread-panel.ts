@@ -179,22 +179,11 @@ export class ThreadPanel {
 
   /**
    * U3/U9 — the host calls this whenever the follow-up queue changed (enqueue,
-   * state transition, freeze/resume, drain) to repaint the `Queue` section of
-   * the combined message. Forced, so a queue-only change always lands.
-   *
-   * `page` is optional; when given it also moves the view to that page.
+   * state transition, freeze/resume, drain) to repaint the combined message.
+   * Forced, so a queue-only change always lands.
    */
-  async updateFollowup(session: ConversationSession, sessionKey: string, page?: number): Promise<void> {
-    await this.surface.updateFollowup(session, sessionKey, page);
-  }
-
-  /**
-   * U3/U9 — Prev/Next click entry point. Validates and clamps `page`, then
-   * re-renders using the latest known session for `sessionKey`. Returns the
-   * page actually applied.
-   */
-  async setFollowupPage(sessionKey: string, page: number): Promise<number> {
-    return this.surface.setFollowupPage(sessionKey, page);
+  async updateFollowup(session: ConversationSession, sessionKey: string): Promise<void> {
+    await this.surface.updateFollowup(session, sessionKey);
   }
 
   async close(session: ConversationSession, sessionKey: string): Promise<void> {

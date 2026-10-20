@@ -127,16 +127,6 @@ describe('AssistantStatusManager', () => {
       expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C123', '123.456', '');
     });
 
-    it('should reroute empty-string StatusDescriptor to clearStatus', async () => {
-      const clearSpy = vi.spyOn(manager, 'clearStatus');
-
-      await manager.setStatus('C123', '123.456', '');
-
-      expect(clearSpy).toHaveBeenCalledWith('C123', '123.456');
-      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledTimes(1);
-      expect(mockSlackApi.setAssistantStatus).toHaveBeenCalledWith('C123', '123.456', '');
-    });
-
     it('should evaluate resolver on initial call', async () => {
       const resolver = vi.fn(() => 'resolved-text-1');
 

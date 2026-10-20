@@ -42,7 +42,6 @@ describe('packages-srp Phase 2 slack contract', () => {
     expect(manifest.name).toBe('@soma/slack');
     expect(manifest.files).toEqual(expect.arrayContaining(['dist']));
     expect(manifest.exports).toMatchObject({
-      '.': './dist/index.js',
       './action-panel-builder': './dist/action-panel-builder.js',
       './actions': './dist/actions/index.js',
       './actions/click-classifier': './dist/actions/click-classifier.js',
@@ -70,7 +69,6 @@ describe('packages-srp Phase 2 slack contract', () => {
       './event-router': './dist/event-router.js',
       './formatters': './dist/formatters/index.js',
       './formatters/markdown-to-blocks': './dist/formatters/markdown-to-blocks.js',
-      './formatters/directory-formatter': './dist/formatters/directory-formatter.js',
       './handoff-budget': './dist/handoff-budget.js',
       './instruction-confirm-blocks': './dist/instruction-confirm-blocks.js',
       './message-formatter': './dist/message-formatter.js',
@@ -117,7 +115,6 @@ describe('packages-srp Phase 2 slack contract', () => {
       './z/respond': './dist/z/respond.js',
       './z/router': './dist/z/router.js',
       './z/strip-z-prefix': './dist/z/strip-z-prefix.js',
-      './z/tombstone': './dist/z/tombstone.js',
       './z/types': './dist/z/types.js',
       './z/ui-builder': './dist/z/ui-builder.js',
       './z/whitelist': './dist/z/whitelist.js',
@@ -149,12 +146,8 @@ describe('packages-srp Phase 2 slack contract', () => {
       'cct/render-in-place',
       'cct/views',
       'context-window-manager',
-      'directives/channel-message-directive',
-      'directives/session-link-directive',
-      'directives/source-working-dir-directive',
       'dispatch-abort',
       'event-router',
-      'formatters/markdown-to-blocks',
       // 'formatters/directory-formatter', 'user-choice-extractor', 'z/strip-z-prefix':
       // legacy src shims deleted once all importers moved to @soma/slack directly.
       'handoff-budget',
@@ -168,22 +161,16 @@ describe('packages-srp Phase 2 slack contract', () => {
       'pipeline/input-processor',
       'pipeline/session-initializer',
       'pipeline/stream-executor',
-      'pipeline/stream-executor-cleanup-helpers',
-      'pipeline/local-slash-command',
-      'pipeline/types',
       'reaction-manager',
       'release-notifier',
       'request-coordinator',
       'session-manager',
-      'slash-command-adapter',
       'slack-api-helper',
       'source-thread-summary',
       'startup-notifier',
       'status-reporter',
-      'stream-processor',
       'summary-service',
       'summary-timer',
-      'task-list-block-builder',
       'thread-panel',
       'thread-header-builder',
       'thread-surface',
@@ -192,18 +179,18 @@ describe('packages-srp Phase 2 slack contract', () => {
       'tool-formatter',
       'tool-tracker',
       'turn-notifier',
-      'turn-render-debouncer',
       'turn-surface',
       'user-choice-handler',
       'user-skill-file-roundtrip',
-      'z/capability',
       'z/normalize',
       'z/respond',
-      'z/router',
-      'z/tombstone',
       'z/types',
       'z/ui-builder',
       'z/whitelist',
+      // directives/*, formatters/markdown-to-blocks, pipeline/{local-slash-command,
+      // stream-executor-cleanup-helpers,types}, slash-command-adapter, task-list-block-builder,
+      // turn-render-debouncer, z/{capability,router}: legacy src shims deleted once only tests
+      // imported them (tests now import @soma/slack directly).
     ];
     for (const moduleName of movedModules) {
       const packageSource = path.join(repoRoot, 'packages/slack/src', `${moduleName}.ts`);
@@ -232,8 +219,8 @@ describe('packages-srp Phase 2 slack contract', () => {
       );
     }
 
-    // 'directives': legacy src barrel shim deleted once all importers moved off it.
-    const movedIndexModules = ['actions', 'formatters', 'pipeline'];
+    // 'directives', 'formatters': legacy src barrel shims deleted once all importers moved off them.
+    const movedIndexModules = ['actions', 'pipeline'];
     for (const moduleName of movedIndexModules) {
       const packageSource = path.join(repoRoot, 'packages/slack/src', moduleName, 'index.ts');
       const legacySource = path.join(repoRoot, 'src/slack', moduleName, 'index.ts');
