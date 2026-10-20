@@ -1363,6 +1363,61 @@ describe('SlackHandler', () => {
     }
   });
 
+  // PR #305 round-4 review (astra): a goal objective replayed into an admin DM
+  // (`routeContext.verbatimPrompt`) is the user's words. If it starts with
+  // `/z` or carries a Slack permalink, the DM branch must not run it as a
+  // `/z` command (`/z new …` would reset the session) or as a cleanup link.
+  it('DM: a verbatim objective is not re-run as `/z` or as a cleanup link (admin)', async () => {
+    const { resetAdminUsersCache } = await import('../admin-utils');
+    const prevAdmins = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
+
+    try {
+      const handler = new SlackHandler({ client: {}, assistant: vi.fn() } as any, {} as any, {} as any);
+      const handlerAny = handler as any;
+      const dispatch = vi.fn().mockResolvedValue({ handled: true, continueWithPrompt: 'x' });
+      handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
+      handlerAny.slackApi = {
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+      };
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: false }),
+        routeCommand: vi.fn(),
+      };
+      const cleanup = vi.spyOn(handlerAny, 'handleDmCleanupRequest');
+
+      for (const text of [
+        '/z new dashboard 구현',
+        '이 메시지 https://example.slack.com/archives/C0123ABCD/p1700000000123456 분석해줘',
+      ]) {
+        await handler.handleMessage(
+          {
+            user: 'U_ADMIN',
+            channel: 'D123',
+            ts: `9.${text.length}`,
+            text,
+            routeContext: { verbatimPrompt: true },
+          } as any,
+          vi.fn(),
+        );
+        const calls = handlerAny.inputProcessor.processFiles.mock.calls;
+        const forwarded = calls[calls.length - 1][0];
+        expect(forwarded.text).toBe(text);
+      }
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(cleanup).not.toHaveBeenCalled();
+    } finally {
+      if (prevAdmins === undefined) {
+        delete process.env.ADMIN_USERS;
+      } else {
+        process.env.ADMIN_USERS = prevAdmins;
+      }
+      resetAdminUsersCache();
+    }
+  });
+
   /* ============================================================
    * Issue #553 — DM always responds (admin/non-admin matrix)
    * ============================================================ */
