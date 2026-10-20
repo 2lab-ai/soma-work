@@ -106,6 +106,37 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(fnBody('toggleStatsDetail')).toContain('localStorage.setItem(STATS_DETAIL_KEY');
     expect(TEMPLATE).toContain("setStatsDetail(saved === 'open');");
   });
+
+  it('Show archives sits in the board header next to Board | List, hidden until there are archives (§3.1-1)', () => {
+    const head = TEMPLATE.slice(TEMPLATE.indexOf('<div class="inbox-head">'), TEMPLATE.indexOf('<div class="kanban"'));
+    const btn = head.indexOf(
+      '<button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()">',
+    );
+    expect(btn).toBeGreaterThan(0);
+    expect(head.indexOf('class="seg" role="group" aria-label="Board layout"')).toBeGreaterThan(btn);
+    expect(TEMPLATE).toContain("var SHOW_ARCHIVES_KEY = 'soma-show-archives';");
+    expect(TEMPLATE).toContain('var showArchives = readShowArchives();');
+    const toggle = fnBody('renderArchivesToggle');
+    expect(toggle).toContain("'Show archives (' + hiddenCount + ')'");
+    expect(toggle).toContain("'Hide archives'");
+    expect(toggle).toContain('archivedCount === 0');
+  });
+
+  it('the DONE count is the cards it shows; Show older counts what expanding would add (§3.1-1)', () => {
+    const body = fnBody('renderBoard');
+    expect(body).toContain('planDoneColumn(board.idle || [], board.closed || [], {');
+    expect(body).toContain('done: plan.done.length');
+    expect(body).toContain('renderOlderToggle(plan.olderCount)');
+    expect(body).toContain('renderArchivesToggle(plan.archivedCount, plan.hiddenArchives)');
+  });
+
+  it('every card head carries the owner badge (All Users only — the renderer decides) (§3.1-3)', () => {
+    expect(fnBody('renderCardFace')).toContain("titleHtml + renderOwnerBadge(s) + '</div>'");
+    expect(fnBody('renderOwnerBadge')).toContain('if (currentUserId) return');
+    // The title truncates first; the badge keeps its size up to its cap.
+    expect(TEMPLATE).toMatch(/\.card \.card-title-text \{[^}]*flex: 1 1 auto;/);
+    expect(TEMPLATE).toMatch(/\.owner-badge \{[^}]*flex: 0 0 auto;[^}]*text-overflow: ellipsis;/);
+  });
 });
 
 describe('agent inbox board — drag and drop removed (§3.1-5)', () => {
