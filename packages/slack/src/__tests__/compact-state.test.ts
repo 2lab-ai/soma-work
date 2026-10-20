@@ -86,6 +86,21 @@ describe('stashUserMessageDuringCompaction', () => {
     ]);
   });
 
+  // PR #305: a goal objective (`verbatimPrompt`) replays as the user's words,
+  // never as a command. Merging it with ordinary text would change the
+  // meaning of one or the other, so it always gets its own entry.
+  it('never merges a verbatim goal objective with ordinary same-user text', () => {
+    const v1 = { ...u1, verbatimPrompt: true };
+    const s: CompactStateSession = { pendingUserText: 'first', pendingEventContext: u1 };
+    stashUserMessageDuringCompaction(s, v1, 'new dashboard 구현');
+    stashUserMessageDuringCompaction(s, u1, 'and then this');
+    expect(s.pendingUserText).toBe('first');
+    expect(s.compactPendingDispatches).toEqual([
+      { ctx: v1, text: 'new dashboard 구현' },
+      { ctx: u1, text: 'and then this' },
+    ]);
+  });
+
   it('ignores empty text', () => {
     const s: CompactStateSession = {};
     stashUserMessageDuringCompaction(s, u1, '');

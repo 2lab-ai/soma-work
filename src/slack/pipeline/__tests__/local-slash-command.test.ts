@@ -15,7 +15,7 @@
  * regression fence around the matcher.
  */
 
-import { isLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
+import { isLocalSlashCommand, shouldForwardAsLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { describe, expect, it } from 'vitest';
 
 describe('isLocalSlashCommand — SDK local command matcher', () => {
@@ -81,5 +81,23 @@ describe('isLocalSlashCommand — SDK local command matcher', () => {
     // accidentally matched it, we'd never actually wrap real messages.
     const wrapped = '<speaker>Zhuge</speaker>\n/compact\n\n<context>...</context>';
     expect(isLocalSlashCommand(wrapped)).toBe(false);
+  });
+});
+
+// Review P1 on PR #305: a goal's opening turn now dispatches the objective
+// itself. `goal /compact 명령의 버그를 고쳐라` is a task about /compact, not a
+// request to compact — the executor must wrap it like any prompt.
+describe('shouldForwardAsLocalSlashCommand — literal goal objectives', () => {
+  it('forwards a real slash command when the prompt is not literal', () => {
+    expect(shouldForwardAsLocalSlashCommand('/compact')).toBe(true);
+    expect(shouldForwardAsLocalSlashCommand('/clear all', false)).toBe(true);
+  });
+
+  it.each([
+    ['/compact 명령의 버그를 고쳐라'],
+    ['/clear 명령을 문서화해'],
+    ['/compact'],
+  ])('never forwards a literal prompt: %s', (text) => {
+    expect(shouldForwardAsLocalSlashCommand(text, true)).toBe(false);
   });
 });

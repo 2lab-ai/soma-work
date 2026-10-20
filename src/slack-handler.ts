@@ -20,6 +20,7 @@ import {
 import { FOLLOWUP_RESTART_FREEZE_REASON, type FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { OutputFlag } from '@soma/slack/output-flags';
+import { isLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
@@ -39,7 +40,6 @@ import { SlackBlockKitChannel } from './notification-channels/slack-block-kit-ch
 import { SlackDmChannel } from './notification-channels/slack-dm-channel';
 import { TelegramChannel } from './notification-channels/telegram-channel';
 import { WebhookChannel } from './notification-channels/webhook-channel';
-import { buildGoalContinuationPrompt } from './prompt/session-goal-block';
 import {
   type ActionHandlerContext,
   ActionHandlers,
@@ -98,7 +98,7 @@ import { DmZRespond } from './slack/z/respond';
 import { isDmAllowedForNonAdmin } from './slack/z/whitelist';
 import { TodoManager } from './todo-manager';
 import { TurnNotifier } from './turn-notifier';
-import type { ConversationSession, SessionGoal, SessionIncidentRequest } from './types';
+import type { ConversationSession, SessionIncidentRequest } from './types';
 import { userSettingsStore } from './user-settings-store';
 import { WorkingDirectoryManager } from './working-directory-manager';
 
@@ -185,6 +185,16 @@ export interface SlackHandlerOptions {
    * here, so `rules/config.md` §절대규칙 2 keeps a single path owner.
    */
   followupQueueStore?: FollowupQueueStorePort;
+}
+
+/**
+ * Is this event a `/z goal` objective re-entering the pipeline
+ * (`routeContext.verbatimPrompt`)? Such text is the user's words and has
+ * already been through command routing: it must never be parsed as a command,
+ * an inline `%` directive, or the `!` abort/steer marker again.
+ */
+function isVerbatimPrompt(event: MessageEvent): boolean {
+  return event.routeContext?.verbatimPrompt === true;
 }
 
 export class SlackHandler {
@@ -625,7 +635,7 @@ export class SlackHandler {
     // 1. StreamExecutor → EventRouter.dispatchPendingUserMessage
     //    Set on an already-constructed instance via a runtime field.
     (this.streamExecutor as any).deps.dispatchPendingUserMessage = (
-      ctx: { channel: string; threadTs: string; user: string; ts: string },
+      ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
       text: string,
       opts?: { compactRedispatch?: boolean },
     ) => this.eventRouter.dispatchPendingUserMessage(ctx, text, opts);
@@ -1224,7 +1234,12 @@ export class SlackHandler {
     }
 
     if (channel.startsWith('D')) {
-      const handledCleanupRequest = await this.handleDmCleanupRequest(event, say);
+      // A replayed goal objective (`routeContext.verbatimPrompt`) was routed
+      // already: it is the user's words, never a cleanup link or a `/z`
+      // command (`/z new …` would reset the session). The admin gate below
+      // still applies to it.
+      const verbatimDm = isVerbatimPrompt(event);
+      const handledCleanupRequest = !verbatimDm && (await this.handleDmCleanupRequest(event, say));
       if (handledCleanupRequest) {
         return { result: 'blocked', reason: 'dm cleanup request handled' };
       }
@@ -1256,7 +1271,7 @@ export class SlackHandler {
       // like `/z new write a test` continue into the session pipeline with
       // the captured prompt rather than becoming a silent no-op.
       const dmText = (event.text ?? '').trim();
-      if (stripZPrefix(dmText) !== null) {
+      if (!verbatimDm && stripZPrefix(dmText) !== null) {
         const routed = await this.routeDmViaZRouter(event);
         if (routed.terminal) {
           // Same contract as the consumed-command branch below: a handled `/z`
@@ -1271,6 +1286,11 @@ export class SlackHandler {
         }
         if (routed.continueWithPrompt !== undefined) {
           event.text = routed.continueWithPrompt;
+          // `/z goal <objective>`: the objective is the user's words — mark it
+          // so the steps below never parse it as a command again.
+          if (routed.verbatimPrompt) {
+            event.routeContext = { ...event.routeContext, verbatimPrompt: true };
+          }
         }
         // else: not terminal and no continuation — fall through with original text.
       }
@@ -1279,9 +1299,13 @@ export class SlackHandler {
     // Immediately acknowledge the message with eyes emoji
     await this.slackApi.addReaction(channel, ts, 'eyes');
 
+    // A `/z goal` objective re-entering the pipeline: dispatch the user's
+    // words as-is — no abort marker, no inline directives, no command routing.
+    const verbatimPrompt = isVerbatimPrompt(event);
+
     // Check for abort command: "!" or "!{prompt}"
     const trimmedText = (event.text || '').trim();
-    if (trimmedText.startsWith('!')) {
+    if (!verbatimPrompt && trimmedText.startsWith('!')) {
       const sessionKey = this.claudeHandler.getSessionKey(channel, originalThreadTs);
       let aborted: boolean;
       try {
@@ -1344,7 +1368,7 @@ export class SlackHandler {
     // An incident turn's text is host-built; the only payload-derived part is
     // quoted summary data. Parsing directives out of it would hand the alert
     // producer a model/permission knob, so the parser never runs on it.
-    if (!event.synthetic && !incidentTurn) {
+    if (!event.synthetic && !incidentTurn && !verbatimPrompt) {
       const directives = CommandParser.parseInlineSessionDirectives(event.text || '');
       if (directives) {
         if (directives.remainder === '') {
@@ -1434,7 +1458,23 @@ export class SlackHandler {
       deferredSkillFire,
       error: commandError,
       awaitingPermission,
-    } = await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
+      verbatimPrompt: routedObjective,
+    } = verbatimPrompt
+      ? // Already routed by the `/z` command that produced it — the same result
+        // the channel path gets straight from `GoalHandler`.
+        { handled: true, continueWithPrompt: event.text ?? '', verbatimPrompt: true }
+      : await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
+    // The opening turn of an explicitly set goal is the OBJECTIVE: a goal
+    // command's prompt (`goal …`, `/z goal …`, queue advance) or the objective
+    // of a goal-prefixed first message. The executor must never forward it as
+    // an SDK slash command, whatever it starts with (`goal /compact …`).
+    const literalPrompt = routedObjective === true || (setGoalObjective !== undefined && !continueWithPrompt);
+    // A goal command already ran (the goal is set): if this turn is stashed for
+    // a post-compact replay, the replay must dispatch the objective as-is —
+    // re-parsing it would run `new …` as a reset or set the goal twice.
+    if (routedObjective === true && !verbatimPrompt) {
+      event.routeContext = { ...event.routeContext, verbatimPrompt: true };
+    }
     if (handled && !continueWithPrompt) {
       // Issue #1082 T1 (spec-review P1): the no-session goal+skill split can
       // end here when the skill part errored out (`handled:true`, no prompt —
@@ -1669,11 +1709,12 @@ export class SlackHandler {
       // goal-prefixed message that arrived with NO session. Apply it to the
       // freshly created registry session BEFORE dispatch so turn 1 already
       // runs with the goal block (cached system prompt invalidated by the
-      // helper), then dispatch the goal continuation prompt — unless the
-      // goal+skill split already produced a `continueWithPrompt`, which wins
-      // as dispatch text. Note: the user-message goal reset above ran on a
-      // goal-less session (this IS the message creating the goal), so the two
-      // blocks never act on the same turn.
+      // helper). The turn itself dispatches `effectiveText` unchanged — the
+      // raw objective, or the goal+skill split's `continueWithPrompt` — and
+      // the goal rules reach the model only through `<session-goal>`. Note:
+      // the user-message goal reset above ran on a goal-less session (this IS
+      // the message creating the goal), so the two blocks never act on the
+      // same turn.
       let dispatchText = effectiveText;
 
       // Fresh-context start = a brand-new session OR a `new`-reset (which keeps
@@ -1702,9 +1743,6 @@ export class SlackHandler {
               `🎯 Goal set: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_Continuing with goal context._`,
               { threadTs: activeThreadTs },
             );
-            if (!continueWithPrompt) {
-              dispatchText = buildGoalContinuationPrompt(applied.goal as SessionGoal);
-            }
           } else {
             await this.slackApi.postSystemMessage(
               activeChannel,
@@ -1725,8 +1763,10 @@ export class SlackHandler {
       // S2 — Autogoal mode: when the user has autogoal ON and this session has
       // NO goal in flight (no active/paused goal, no queue), the first real
       // instruction is promoted to the session goal automatically and then
-      // dispatched as the goal's opening turn. Skips synthetic continuation
-      // turns and the goal-prefixed path (already handled via setGoalObjective).
+      // dispatched verbatim as the goal's opening turn (the goal rules ride in
+      // the rebuilt `<session-goal>` system block). Skips synthetic
+      // continuation turns and the goal-prefixed path (already handled via
+      // setGoalObjective).
       //
       // A deferred `$skill` (fresh-context start) still runs autogoal: its
       // `continueWithPrompt` is the RAW instruction text (no <invoked_skills>
@@ -1741,6 +1781,9 @@ export class SlackHandler {
         // promoting it would keep the restricted session running on its own.
         !incidentTurn &&
         effectiveText.trim() !== '' &&
+        // A typed SDK slash command (`/compact focus on X`) is a request to the
+        // CLI, not an instruction — promoting it would name a goal after it.
+        !isLocalSlashCommand(effectiveText.trim()) &&
         userSettingsStore.getUserAutoGoalEnabled(event.user)
       ) {
         const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
@@ -1765,7 +1808,6 @@ export class SlackHandler {
               () => this.slackApi.postSystemMessage(activeChannel, autogoalNotice, { threadTs: activeThreadTs }),
               { sessionKey: sessionResult.sessionKey },
             );
-            dispatchText = buildGoalContinuationPrompt(applied.goal as SessionGoal);
           }
         }
       }
@@ -1880,6 +1922,7 @@ export class SlackHandler {
         sourceThreadTs,
         sourceChannel,
         synthetic: event.synthetic,
+        literalPrompt,
       });
 
       const continuationHandler: ContinuationHandler = {
@@ -2171,6 +2214,8 @@ export class SlackHandler {
       sourceThreadTs?: string;
       sourceChannel?: string;
       synthetic?: boolean;
+      /** The first turn's text is a goal objective — never an SDK slash command. */
+      literalPrompt?: boolean;
       /**
        * Turn generation this dispatch owns (`ssot.md:116-120`, A28). Captured
        * from the dispatch request and passed down verbatim — the surface
@@ -2223,6 +2268,7 @@ export class SlackHandler {
       sourceThreadTs: context.sourceThreadTs,
       sourceChannel: context.sourceChannel,
       isUserInput: !context.synthetic,
+      literalPrompt: context.literalPrompt === true,
       // Same captured token, for the executor's own late-write fence.
       followupTurnEpoch: expectedTurnEpoch,
     };
@@ -2467,6 +2513,11 @@ export class SlackHandler {
     const text = (event.text ?? '').trim();
     if (!text && !event.files?.length) return false;
 
+    // A `/z goal` objective is the user's turn whatever it looks like — never an
+    // immediate control. DM non-admins never reach here with one (`goal` is
+    // not a safe `/z` topic, Gate A rejects it).
+    if (isVerbatimPrompt(event)) return true;
+
     // Bare `!` is an immediate stop: it answers, aborts and consumes, so it
     // runs live. `!{prompt}` is NOT immediate — it starts a turn, so it needs
     // the slot like any other instruction (while busy it takes the steer path).
@@ -2585,7 +2636,7 @@ export class SlackHandler {
    * `undefined` for anything that is not a steer, including a bare `!`.
    */
   private parseSteerPrompt(event: MessageEvent): string | undefined {
-    if (event.synthetic) return undefined;
+    if (event.synthetic || isVerbatimPrompt(event)) return undefined;
     const text = (event.text ?? '').trim();
     if (!text.startsWith('!')) return undefined;
     const prompt = text.slice(1).trim();
@@ -4630,9 +4681,13 @@ export class SlackHandler {
    *    handle the message (unknown `/z` remainder, or internal failure);
    *    caller should fall through to the legacy pipeline unchanged.
    */
-  private async routeDmViaZRouter(
-    event: MessageEvent,
-  ): Promise<{ terminal: boolean; continueWithPrompt?: string; error?: string; awaitingPermission?: boolean }> {
+  private async routeDmViaZRouter(event: MessageEvent): Promise<{
+    terminal: boolean;
+    continueWithPrompt?: string;
+    verbatimPrompt?: boolean;
+    error?: string;
+    awaitingPermission?: boolean;
+  }> {
     const zRouter = this.eventRouter.getZRouter();
     if (!zRouter) {
       this.logger.warn('routeDmViaZRouter: zRouter not initialized; falling through');
@@ -4667,7 +4722,11 @@ export class SlackHandler {
 
       // Continuation path: caller must continue with the captured prompt.
       if (result.continueWithPrompt !== undefined) {
-        return { terminal: false, continueWithPrompt: result.continueWithPrompt };
+        return {
+          terminal: false,
+          continueWithPrompt: result.continueWithPrompt,
+          verbatimPrompt: result.verbatimPrompt,
+        };
       }
 
       // Handled (card / passthrough that finished itself) → terminal.
