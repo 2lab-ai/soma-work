@@ -599,7 +599,8 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
     ['WL_LABELS'],
   );
   /** Every " left after removing the attributes we emit would be an attribute break-out. */
-  const strayQuotes = (html: string) => html.replace(/\s(class|title|data-seq)="[^"]*"/g, '').includes('"');
+  const strayQuotes = (html: string) =>
+    html.replace(/\s(class|title|data-seq|role|tabindex|aria-expanded|aria-controls|id)="[^"]*"/g, '').includes('"');
   const tags = (html: string) =>
     (html.match(/<\/?([a-z0-9]+)/gi) ?? []).map((t) => t.replace(/[</]/g, '').toLowerCase());
 
@@ -632,6 +633,26 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
       ).toBe(true);
       expect(strayQuotes(html), html).toBe(false);
     }
+  });
+
+  it('every entry is one root: a keyboard-reachable row that controls its (empty, hidden) detail block', () => {
+    for (const e of [
+      { seq: 7, kind: 'tool', tool: 'Bash', text: 'Bash {"command":"ls"}' },
+      { seq: 8, kind: 'narration', text: 'Reading the schema.' },
+      { seq: 9, kind: 'final', text: 'Done.' },
+    ]) {
+      const html = renderWorkLogEntry(e);
+      expect(html.startsWith(`<div class="wl-entry wl-${e.kind}`), html).toBe(true);
+      expect(html).toContain(` data-seq="${e.seq}">`);
+      expect(html).toContain(
+        `<div class="wl-row${e.kind === 'narration' ? ' wl-line' : ''}" role="button" tabindex="0" aria-expanded="false" aria-controls="wl-detail-${e.seq}">`,
+      );
+      expect(html.endsWith(`<div class="wl-detail" id="wl-detail-${e.seq}" hidden></div></div>`), html).toBe(true);
+    }
+    // A hostile seq cannot reach the id / aria-controls values.
+    expect(renderWorkLogEntry({ seq: '5" onmouseover="x', kind: 'tool', text: 'x' })).toContain(
+      'aria-controls="wl-detail-0"',
+    );
   });
 });
 
@@ -1500,6 +1521,369 @@ type DonePlan = {
   archivedCount: number;
   hiddenArchives: number;
 };
+
+type RawResult = { status: string; raw?: string; bytes?: number; truncated?: boolean };
+type RawState = { convId: string; closed: boolean; raw?: Record<number, Promise<RawResult>> };
+const httpErr = (status: number) => Object.assign(new Error(`HTTP ${status}`), { status });
+
+describe('work-log raw output: fetched once per entry, failures retryable (shipped wlRawUrl + wlRawLoad)', () => {
+  const core = load<{
+    wlRawUrl(convId: string, seq: number): string;
+    wlRawLoad(state: RawState, seq: number, fetchJson: (url: string) => Promise<unknown>): Promise<RawResult>;
+  }>(['wlUrl', 'toNum', 'wlRawUrl', 'wlRawLoad'], []);
+
+  it('asks /worklog/:seq/raw of the conversation', () => {
+    expect(core.wlRawUrl('conv a/b', 12)).toBe('/api/dashboard/session/conv%20a%2Fb/worklog/12/raw');
+  });
+
+  it('caches a 200 per (state, seq): a second open does not fetch', async () => {
+    const calls: string[] = [];
+    const fetchJson = async (url: string) => {
+      calls.push(url);
+      return { seq: 3, raw: 'line 1\nline 2', rawBytes: 13, rawTruncated: false };
+    };
+    const st: RawState = { convId: 'c1', closed: false };
+    const a = await core.wlRawLoad(st, 3, fetchJson);
+    const b = await core.wlRawLoad(st, 3, fetchJson);
+    expect(a).toEqual({ status: 'ok', raw: 'line 1\nline 2', bytes: 13, truncated: false });
+    expect(b).toEqual(a);
+    expect(calls).toEqual(['/api/dashboard/session/c1/worklog/3/raw']);
+    // A new panel state (resetWorkLog) has no cache: the next conversation fetches its own.
+    await core.wlRawLoad({ convId: 'c1', closed: false }, 3, fetchJson);
+    expect(calls.length).toBe(2);
+  });
+
+  it('404 / 403 settle for good; 503 and network errors are not cached, so 다시 시도 refetches', async () => {
+    const answer = new Map<number, unknown>([
+      [4, httpErr(404)],
+      [5, httpErr(403)],
+      [6, httpErr(503)],
+      [7, new TypeError('Failed to fetch')],
+    ]);
+    const calls: number[] = [];
+    const fetchJson = async (url: string) => {
+      const seq = Number(url.split('/').slice(-2)[0]);
+      calls.push(seq);
+      const a = answer.get(seq);
+      if (a instanceof Error) throw a;
+      return { seq, raw: 'recovered', rawBytes: 9 };
+    };
+    const st: RawState = { convId: 'c1', closed: false };
+    expect((await core.wlRawLoad(st, 4, fetchJson)).status).toBe('missing');
+    expect((await core.wlRawLoad(st, 5, fetchJson)).status).toBe('denied');
+    expect((await core.wlRawLoad(st, 6, fetchJson)).status).toBe('error');
+    expect((await core.wlRawLoad(st, 7, fetchJson)).status).toBe('error');
+    await core.wlRawLoad(st, 4, fetchJson);
+    await core.wlRawLoad(st, 5, fetchJson);
+    answer.delete(6); // the service is back
+    expect(await core.wlRawLoad(st, 6, fetchJson)).toEqual({
+      status: 'ok',
+      raw: 'recovered',
+      bytes: 9,
+      truncated: false,
+    });
+    expect(calls).toEqual([4, 5, 6, 7, 6]);
+  });
+});
+
+describe('work-log raw detail markup (shipped renderWorkLogDetail + formatBytes)', () => {
+  const { renderWorkLogDetail, formatBytes } = load<{
+    renderWorkLogDetail(r: RawResult): string;
+    formatBytes(n: unknown): string;
+  }>(
+    ['esc', 'toNum', 'formatBytes', 'renderWorkLogDetail'],
+    ['WL_FORBIDDEN_MSG', 'WL_RAW_MISSING_MSG', 'WL_RAW_ERROR_MSG'],
+  );
+
+  it('formats byte counts in B / KiB / MiB / GiB', () => {
+    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(1023)).toBe('1023 B');
+    expect(formatBytes(1536)).toBe('1.5 KiB');
+    expect(formatBytes(1048576)).toBe('1.0 MiB');
+    expect(formatBytes(3 * 1024 ** 3)).toBe('3.0 GiB');
+    expect(formatBytes('<b>')).toBe('0 B');
+  });
+
+  it('the full output in an escaped <pre>, with a copy button', () => {
+    const html = renderWorkLogDetail({ status: 'ok', raw: '{\n  "a": "<script>"\n}', bytes: 22, truncated: false });
+    expect(html).toBe(
+      '<div class="wl-detail-bar"><button type="button" class="wl-detail-btn" data-wl-act="copy">복사</button></div>' +
+        '<pre class="wl-raw">{\n  &quot;a&quot;: &quot;&lt;script&gt;&quot;\n}</pre>',
+    );
+  });
+
+  it('a truncated output says how much is shown and the original size', () => {
+    const html = renderWorkLogDetail({ status: 'ok', raw: 'x', bytes: 3 * 1048576, truncated: true });
+    expect(html.startsWith('<div class="wl-detail-note">저장된 앞 256 KiB만 표시 — 원본 3.0 MiB</div>')).toBe(true);
+  });
+
+  it('loading, 404, 403 and retryable failures each have their line', () => {
+    expect(renderWorkLogDetail({ status: 'loading' })).toContain('불러오는 중');
+    expect(renderWorkLogDetail({ status: 'missing' })).toBe(
+      '<div class="wl-detail-msg">원본 출력이 저장되어 있지 않습니다</div>',
+    );
+    expect(renderWorkLogDetail({ status: 'denied' })).toBe(
+      '<div class="wl-detail-msg">작업 로그는 세션 소유자만 볼 수 있어요</div>',
+    );
+    const err = renderWorkLogDetail({ status: 'error' });
+    expect(err).toContain('원본 출력을 불러오지 못했어요');
+    expect(err).toContain('<button type="button" class="wl-detail-btn" data-wl-act="retry">다시 시도</button>');
+    expect(err).not.toContain('<pre');
+  });
+});
+
+/** Minimal DOM fakes for the panel work-log functions (no DOM library in this repo's tests). */
+type FakeEl = {
+  id?: string;
+  hidden: boolean;
+  innerHTML: string;
+  textContent: string;
+  attrs: Record<string, string>;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  style: Record<string, string>;
+  children: unknown[];
+  setAttribute(k: string, v: string): void;
+  getAttribute(k: string): string | null;
+  querySelector(sel: string): FakeEl | null;
+  insertBefore(node: unknown, ref: unknown): void;
+};
+function fakeEl(over: Partial<FakeEl> = {}): FakeEl {
+  const el: FakeEl = {
+    hidden: false,
+    innerHTML: '',
+    textContent: '',
+    attrs: {},
+    scrollTop: 0,
+    scrollHeight: 0,
+    clientHeight: 0,
+    style: {},
+    children: [],
+    setAttribute(k, v) {
+      this.attrs[k] = String(v);
+    },
+    getAttribute(k) {
+      return k in this.attrs ? this.attrs[k] : null;
+    },
+    querySelector: () => null,
+    insertBefore(node) {
+      this.children.push(node);
+    },
+    ...over,
+  };
+  return el;
+}
+
+describe('work-log entries open their raw output in place (shipped toggleWorkLogEntry and friends)', () => {
+  type Entry = { seq: number; kind: string; text: string; rawBytes?: number; tool?: string };
+  function page(entries: Entry[], fetchImpl: (url: string) => Promise<unknown>) {
+    const rows: Record<number, { row: FakeEl; detail: FakeEl }> = {};
+    for (const e of entries) rows[e.seq] = { row: fakeEl(), detail: fakeEl({ hidden: true }) };
+    const list = fakeEl({
+      querySelector: (sel: string) => {
+        const seq = Number(/data-seq="(\d+)"/.exec(sel)?.[1]);
+        const r = rows[seq];
+        if (!r) return null;
+        return fakeEl({
+          querySelector: (inner: string) => (inner === '.wl-row' ? r.row : inner === '.wl-detail' ? r.detail : null),
+        });
+      },
+    });
+    const document = { getElementById: (id: string) => (id === 'worklog-list' ? list : null) };
+    const calls: string[] = [];
+    const wlFetchJson = (url: string) => {
+      calls.push(url);
+      return fetchImpl(url);
+    };
+    const st = { convId: 'c1', closed: false, entries, seen: new Set(entries.map((e) => e.seq)) };
+    const m = load<{
+      toggleWorkLogEntry(seq: number): void;
+      retryWorkLogDetail(seq: number): void;
+      setWl(s: unknown): void;
+    }>(
+      [
+        'esc',
+        'toNum',
+        'decodeSlackEntities',
+        'wlUrl',
+        'wlRawUrl',
+        'wlRawLoad',
+        'formatBytes',
+        'renderWorkLogDetail',
+        'wlEntryEl',
+        'wlEntryBySeq',
+        'wlFullText',
+        'paintWorkLogDetail',
+        'loadWorkLogDetail',
+        'toggleWorkLogEntry',
+        'retryWorkLogDetail',
+      ],
+      ['WL_FORBIDDEN_MSG', 'WL_RAW_MISSING_MSG', 'WL_RAW_ERROR_MSG'],
+      { document, wlFetchJson, _wl: st },
+      ['function setWl(s) { _wl = s; }'],
+    );
+    return { m, rows, calls, st };
+  }
+  const RAW = { seq: 3, raw: '{\n  "file_path": "db/schema.sql"\n}', rawBytes: 34, rawTruncated: false };
+
+  it('with rawBytes: loading, then the fetched raw; collapse and reopen without a second fetch', async () => {
+    const p = page([{ seq: 3, kind: 'tool', tool: 'Read', text: 'Read {...}', rawBytes: 34 }], async () => RAW);
+    p.m.toggleWorkLogEntry(3);
+    expect(p.rows[3].row.attrs['aria-expanded']).toBe('true');
+    expect(p.rows[3].detail.hidden).toBe(false);
+    expect(p.rows[3].detail.innerHTML).toContain('불러오는 중');
+    await flush();
+    expect(p.rows[3].detail.innerHTML).toContain(
+      '<pre class="wl-raw">{\n  &quot;file_path&quot;: &quot;db/schema.sql&quot;\n}</pre>',
+    );
+    p.m.toggleWorkLogEntry(3);
+    expect(p.rows[3].row.attrs['aria-expanded']).toBe('false');
+    expect(p.rows[3].detail).toMatchObject({ hidden: true, innerHTML: '' });
+    p.m.toggleWorkLogEntry(3);
+    await flush();
+    expect(p.rows[3].detail.innerHTML).toContain('<pre class="wl-raw">');
+    expect(p.calls).toEqual(['/api/dashboard/session/c1/worklog/3/raw']);
+  });
+
+  it('without rawBytes: the entry’s own full text, no fetch (narration, older entries)', () => {
+    const long = `Reading the current schema ${'and the migration history '.repeat(20)}first.`;
+    const p = page([{ seq: 2, kind: 'narration', text: long }], async () => RAW);
+    p.m.toggleWorkLogEntry(2);
+    expect(p.rows[2].detail.innerHTML).toContain(`<pre class="wl-raw">${long}</pre>`);
+    expect(p.calls).toEqual([]);
+  });
+
+  it('a late answer for a collapsed row, or for another conversation, is dropped', async () => {
+    let release: (v: unknown) => void = () => {};
+    const held = () =>
+      new Promise((r) => {
+        release = r;
+      });
+    const p = page([{ seq: 3, kind: 'tool', text: 'x', rawBytes: 34 }], held);
+    p.m.toggleWorkLogEntry(3); // open, request in flight
+    p.m.toggleWorkLogEntry(3); // collapsed again
+    release(RAW);
+    await flush();
+    expect(p.rows[3].detail).toMatchObject({ hidden: true, innerHTML: '' });
+
+    const q = page([{ seq: 3, kind: 'tool', text: 'x', rawBytes: 34 }], held);
+    q.m.toggleWorkLogEntry(3);
+    q.st.closed = true; // the panel moved to another conversation (resetWorkLog)
+    q.m.setWl({ convId: 'c2', closed: false, entries: [], open: new Set([3]) });
+    release(RAW);
+    await flush();
+    expect(q.rows[3].detail.innerHTML).toContain('불러오는 중');
+    expect(q.rows[3].detail.innerHTML).not.toContain('<pre');
+  });
+
+  it('503 shows 다시 시도; the retry refetches and paints the raw', async () => {
+    let n = 0;
+    const p = page([{ seq: 12, kind: 'tool_result', text: 'exit 0', rawBytes: 40 }], async () => {
+      n++;
+      if (n === 1) throw httpErr(503);
+      return { seq: 12, raw: 'exit 0 (41s)', rawBytes: 12 };
+    });
+    p.m.toggleWorkLogEntry(12);
+    await flush();
+    expect(p.rows[12].detail.innerHTML).toContain('data-wl-act="retry"');
+    p.m.retryWorkLogDetail(12);
+    expect(p.rows[12].detail.innerHTML).toContain('불러오는 중');
+    await flush();
+    expect(p.rows[12].detail.innerHTML).toContain('<pre class="wl-raw">exit 0 (41s)</pre>');
+    expect(p.calls.length).toBe(2);
+  });
+});
+
+describe('work-log section collapses; the count and tail-follow keep working (shipped setWorkLogOpen + paintWorkLog)', () => {
+  function page(state: Record<string, unknown>) {
+    const toggle = fakeEl();
+    const count = fakeEl();
+    const list = fakeEl({ hidden: true, scrollHeight: 900, clientHeight: 300, scrollTop: 600 });
+    const document = {
+      getElementById: (id: string) =>
+        ({ 'worklog-toggle': toggle, 'worklog-count': count, 'worklog-list': list })[id] ?? null,
+      createElement: () => {
+        const tmp: Record<string, unknown> = {};
+        Object.defineProperty(tmp, 'innerHTML', {
+          set(v: string) {
+            tmp.firstElementChild = { html: v };
+          },
+        });
+        return tmp;
+      },
+    };
+    const m = load<{ setWorkLogOpen(open: boolean): void; paintWorkLog(s: unknown, added: unknown[]): void }>(
+      [
+        'esc',
+        'escAttr',
+        'decodeSlackEntities',
+        'setTextIfChanged',
+        'renderWorkLogEntry',
+        'wlDetailOpen',
+        'setWorkLogOpen',
+        'paintWorkLog',
+      ],
+      ['WL_LABELS'],
+      { document, _wl: state },
+    );
+    return { m, toggle, count, list };
+  }
+
+  it('collapsed / expanded follows aria-expanded; expanding shows the newest entries', () => {
+    const p = page({});
+    p.m.setWorkLogOpen(false);
+    expect(p.toggle.attrs['aria-expanded']).toBe('false');
+    expect(p.list.hidden).toBe(true);
+    p.m.setWorkLogOpen(true);
+    expect(p.toggle.attrs['aria-expanded']).toBe('true');
+    expect(p.list.hidden).toBe(false);
+    expect(p.list.scrollTop).toBe(900);
+  });
+
+  it('entries painted while collapsed still update the count', () => {
+    const st = { entries: [{ seq: 1 }, { seq: 2 }], painted: true };
+    const p = page(st);
+    p.m.paintWorkLog(st, [{ entry: { seq: 2, kind: 'notice', text: 'live' }, index: 1 }]);
+    expect(p.count.textContent).toBe('2');
+    expect(p.list.hidden).toBe(true);
+  });
+
+  it('tail-follow stops while an entry’s detail is open', () => {
+    const st = { entries: [{ seq: 1 }], painted: true, open: new Set([1]) };
+    const p = page(st);
+    p.list.hidden = false;
+    p.list.scrollTop = 600; // at the bottom (900 - 600 <= 300 + 40)
+    p.m.paintWorkLog(st, [{ entry: { seq: 2, kind: 'tool', text: 'x' }, index: 1 }]);
+    expect(p.list.scrollTop).toBe(600);
+    st.open.clear();
+    p.m.paintWorkLog(st, [{ entry: { seq: 3, kind: 'tool', text: 'y' }, index: 2 }]);
+    expect(p.list.scrollTop).toBe(900);
+  });
+});
+
+describe('panel Tasks always render, also with no tasks (shipped renderPanelTasks)', () => {
+  const container = fakeEl({ style: { display: 'none' } });
+  const { renderPanelTasks } = load<{ renderPanelTasks(t: unknown): void }>(
+    ['esc', 'renderPanelTaskItem', 'renderPanelTasks'],
+    [],
+    {
+      document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
+      _panelTasksExpanded: false,
+    },
+  );
+
+  it('zero or missing tasks show the header and an empty line', () => {
+    for (const t of [[], undefined, null]) {
+      container.innerHTML = '';
+      renderPanelTasks(t);
+      expect(container.style.display).toBe('');
+      expect(container.innerHTML).toBe(
+        '<div class="panel-tasks-header"><span>Tasks</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>',
+      );
+    }
+  });
+});
 
 describe('DONE column: archived cards hide behind Show archives (shipped planDoneColumn)', () => {
   const { planDoneColumn } = load<{
