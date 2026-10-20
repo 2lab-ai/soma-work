@@ -228,7 +228,9 @@ export const GPT_5_6_SDK_BLOCKING_LIMIT = sdkBlockingLimitFor(GPT_5_6_CONTEXT_WI
  * gpt-6 — OpenAI's 2026-09-03 release, served through llmux's codex backend
  * group like the gpt-5.x ids: llmux forwards `gpt-6-astra` verbatim and
  * resolves the `astra` / `gpt-6` aliases to it (backend probe 2026-09-07).
- * `gpt-6-astra` is the only shipped tier — there is no gpt-6-sol/terra/luna.
+ * Upstream, generation 6 also grew sol and luna tiers (llmux catalog,
+ * 2026-09-22). soma-work declares only `gpt-6-astra` statically; the other
+ * gen-6 tiers reach users through the llmux catalog overlay.
  *
  * The lookahead pins the pattern to the generation boundary: it matches
  * `gpt-6`, `gpt-6-astra` and `gpt-6-astra[1m]`, but NOT `gpt-60` or
@@ -244,8 +246,9 @@ export function isGpt6Model(model: string): boolean {
 
 /**
  * gpt-6 context window: 272k — the openai/codex model catalog value
- * (context_window 272000), the same class as gpt-5.5's 272k input cap and
- * NOT gpt-5.6's 372k. Do NOT raise this without re-checking the catalog.
+ * (context_window 272000 for both gpt-6-astra and gpt-6.1-sol), the same class
+ * as gpt-5.5's 272k input cap and NOT gpt-5.6's 372k. Do NOT raise this
+ * without re-checking the catalog.
  */
 export const GPT_6_CONTEXT_WINDOW = 272_000;
 
@@ -355,6 +358,17 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     // Bare Astra keeps its 272k window and 240k auto-compact trigger.
     // The `[1m]` variant uses the shared GPT 1M policy in the suffix branch.
     modelId: 'gpt-6-astra',
+    contextWindow: GPT_6_CONTEXT_WINDOW,
+    sdkBlockingLimit: GPT_6_SDK_BLOCKING_LIMIT,
+    autoCompactTokens: GPT_6_AUTO_COMPACT_TOKENS,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
+    // Bare gpt-6.1-sol: same 272k catalog window as Astra, same numbers.
+    // This row is what sizes it — GPT_6_RE does not match `gpt-6.1-*`. The
+    // `[1m]` variant (the `sol` shorthand target) uses the shared GPT 1M
+    // policy in the suffix branch.
+    modelId: 'gpt-6.1-sol',
     contextWindow: GPT_6_CONTEXT_WINDOW,
     sdkBlockingLimit: GPT_6_SDK_BLOCKING_LIMIT,
     autoCompactTokens: GPT_6_AUTO_COMPACT_TOKENS,

@@ -20,7 +20,7 @@ const invalidator = createPromptInvalidator(logger, 'Settings');
 export const setSettingsPromptInvalidationHook = invalidator.setHook;
 const fireSettingsInvalidate = invalidator.fire;
 
-// Available models — the 22-entry user-facing allow-list.
+// Available models — the user-facing allow-list.
 //
 // Contract:
 //   - The 9 bare claude entries are the historical lineup and MUST NOT be
@@ -52,7 +52,9 @@ const fireSettingsInvalidate = invalidator.fire;
 //     2026-09-07 probe). 272k context window (openai/codex catalog value —
 //     the same class as gpt-5.5's 272k input cap, NOT gpt-5.6's 372k);
 //     efforts low/medium/high/xhigh/max/ultra, catalog default effort low.
-//     It is the only shipped gpt-6 tier (no sol/terra/luna) and is a
+//     It is the only gpt-6 tier declared statically here — upstream,
+//     generation 6 also grew sol and luna tiers (llmux catalog, 2026-09-22),
+//     which reach users through the llmux catalog overlay. It is a
 //     declared row in metrics/model-profile.ts: 249k blocking limit, 240k
 //     auto-compact (= limit − DEFAULT_COMPACT_HEADROOM). The `[1m]` opt-in
 //     variant ships alongside the bare id (same wire contract as
@@ -66,6 +68,16 @@ const fireSettingsInvalidate = invalidator.fire;
 //     is intentionally NOT bumped), and the `astra`/`gpt-6`/`gpt6`
 //     shorthand aliases point at the `[1m]` variant so a user typing the
 //     shorthand does not silently get a fifth of the window they meant.
+//   - `gpt-6.1-sol` (added 2026-10-14) is the newest sol generation and rides
+//     the same llmux codex passthrough (llmux forwards the slug verbatim and
+//     moved its own `sol` alias to it on 2026-10-06). 272k context window
+//     (openai/codex catalog value — same class as gpt-6-astra); it is a
+//     declared row in metrics/model-profile.ts with the gen-6 numbers (249k
+//     blocking limit, 240k auto-compact). The `[1m]` opt-in variant ships
+//     alongside it under the shared GPT `[1m]` policy (1M window, 977k
+//     blocking limit, 600k auto-compact). The `sol` / `sol[1m]` / `gpt-6.1`
+//     shorthands point at the `[1m]` variant; the default stays
+//     `gpt-5.6-sol`, whose literal ids remain selectable.
 //   - `grok-4.6` (added 2026-08-26) is DECLARED here rather than left to the
 //     llmux catalog overlay: a cold start with no catalog snapshot must still
 //     be able to select the model whose 450k auto-compact default is declared
@@ -120,6 +132,8 @@ export const AVAILABLE_MODELS = [
   'gpt-5.6-luna',
   'gpt-6-astra',
   'gpt-6-astra[1m]',
+  'gpt-6.1-sol',
+  'gpt-6.1-sol[1m]',
   'grok-4.6',
 ] as const;
 
@@ -186,11 +200,17 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   // keep resolving (llmux also maps the bare id to sol on the wire).
   'gpt-5.6': 'gpt-5.6-sol',
   'gpt5.6': 'gpt-5.6-sol',
-  // Tier shorthands. `sol[1m]` is the 1M opt-in of the flagship — a different
-  // profile (1M window / 977k blocking limit / 600k trigger), not a decoration
-  // on the bare 372k one.
-  sol: 'gpt-5.6-sol',
-  'sol[1m]': 'gpt-5.6-sol[1m]',
+  // Tier shorthands. `sol` / `sol[1m]` follow the NEWEST sol generation
+  // (gpt-6.1-sol since 2026-10-14, matching llmux's own `sol` alias) and land
+  // on its `[1m]` row — same rule as `astra` / `fable` / `opus`: a family
+  // shorthand selects the spelling whose SDK-side window is actually 1M
+  // (1M window / 977k blocking limit / 600k trigger). `gpt-6.1` is the bare
+  // generation spelling. gpt-5.6-sol stays reachable by its literal ids and
+  // the pinned `gpt-5.6` / `gpt5.6` aliases above; bump these rows (plus
+  // AVAILABLE_MODELS) when a newer sol generation lands.
+  sol: 'gpt-6.1-sol[1m]',
+  'sol[1m]': 'gpt-6.1-sol[1m]',
+  'gpt-6.1': 'gpt-6.1-sol[1m]',
   terra: 'gpt-5.6-terra',
   luna: 'gpt-5.6-luna',
   // gpt-6 (2026-09-03 release, wired 2026-09-07). Selectable, NOT the
@@ -1294,6 +1314,13 @@ export class UserSettingsStore {
       case 'gpt-6-astra[1m]':
         // Shared GPT [1m] policy: 1M window, 977k SDK block, 600k auto-compact.
         return 'GPT-6 Astra (1M)';
+      case 'gpt-6.1-sol':
+        // Newest sol generation (llmux codex backend); 272k catalog window,
+        // 240k auto-compact (model-profile.ts).
+        return 'GPT-6.1 Sol (272k)';
+      case 'gpt-6.1-sol[1m]':
+        // Shared GPT [1m] policy: 1M window, 977k SDK block, 600k auto-compact.
+        return 'GPT-6.1 Sol (1M)';
       default:
         // llmux model-catalog overlay — catalog models carry their llmux
         // display name (e.g. `grok-4.5` → "Grok 4.5"); anything else echoes
