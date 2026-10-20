@@ -925,6 +925,8 @@ async function viewportMatrix(browser: import('playwright').Browser) {
           twice.length === 0,
           `${theme} ${width}: work-log tool rows print the tool name once (${twice.join(' | ')})`,
         );
+        await page.click('#worklog-toggle'); // every opening starts collapsed; the shot is of the log
+        await page.waitForTimeout(300);
         await shoot(page, `${theme}-${width}-panel-worklog.png`, false);
       }
       await ctx.close();
@@ -1066,12 +1068,13 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
   await page.waitForTimeout(400);
   const state = await page.evaluate((key) => {
     const card = document.querySelector(`[data-session-key="${key}"]`);
-    const scroll = document.getElementById('panel-scroll') as HTMLElement;
-    const wl = document.getElementById('panel-worklog') as HTMLElement;
+    const scroll = (document.getElementById('panel-scroll') as HTMLElement).getBoundingClientRect();
+    const head = (document.getElementById('worklog-toggle') as HTMLElement).getBoundingClientRect();
     return {
       expanded: !!card?.classList.contains('is-expanded'),
       panelOpen: !!document.getElementById('slide-panel')?.classList.contains('open'),
-      worklogTop: Math.round(wl.getBoundingClientRect().top - scroll.getBoundingClientRect().top),
+      worklog: document.getElementById('worklog-toggle')?.getAttribute('aria-expanded') ?? null,
+      headerInView: head.top >= scroll.top - 0.5 && head.bottom <= scroll.bottom + 0.5,
       seqs: (window as unknown as PageWindow).__wlSeqs(),
     };
   }, K('100'));
@@ -1079,8 +1082,8 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
     `deep link → ${JSON.stringify({ ...state, seqs: `${state.seqs[0]}..${state.seqs[state.seqs.length - 1]} (${state.seqs.length})` })}`,
   );
   check(
-    state.expanded && state.panelOpen && state.worklogTop === 0,
-    'deep link (Slack key without instance prefix) opens the card and the panel at the work log',
+    state.expanded && state.panelOpen && state.worklog === 'false' && state.headerInView,
+    'deep link (Slack key without instance prefix) opens the card and the panel with the collapsed work-log header in view',
   );
   const inOrder = (s: number[]) => s.every((v, i) => i === 0 || v > s[i - 1]);
   check(
@@ -1088,6 +1091,8 @@ async function deepLinkAndWorkLog(browser: import('playwright').Browser) {
     'a live entry that beat the HTTP page keeps the older batch, in seq order',
   );
   await shoot(page, 'deeplink-dark-1280.png', false);
+  await page.click('#worklog-toggle'); // the reader opens the log for the live-append checks below
+  await page.waitForTimeout(300);
 
   // Live duplicate + out-of-order entries.
   const seqs2: number[] = await page.evaluate(() => {
@@ -2346,7 +2351,9 @@ type PanelRead = {
   count: string;
   entries: number;
   tasks: { t: number; b: number; h: number };
-  scroll: { t: number; b: number; h: number; top: number; scrollable: boolean };
+  scroll: { t: number; b: number; h: number; top: number; scrollable: boolean; fromEnd: number };
+  header: { t: number; b: number };
+  turns: number;
   small: string[];
 };
 async function readPanel(page: Page): Promise<PanelRead> {
@@ -2384,7 +2391,13 @@ async function readPanel(page: Page): Promise<PanelRead> {
         ...sb,
         top: Math.round(scroll.scrollTop),
         scrollable: scroll.scrollHeight > scroll.clientHeight + 1,
+        fromEnd: Math.round(scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop),
       },
+      header: {
+        t: Math.round((document.getElementById('worklog-toggle') as HTMLElement).getBoundingClientRect().top),
+        b: Math.round((document.getElementById('worklog-toggle') as HTMLElement).getBoundingClientRect().bottom),
+      },
+      turns: document.querySelectorAll('#panel-turns .turn').length,
       small,
     };
   });
@@ -2461,8 +2474,11 @@ async function panelChecks(browser: import('playwright').Browser) {
       RAW_CALLS.length = 0;
       WORKLOG_CALLS.length = 0;
 
-      // Default opening: Tasks pinned, work log collapsed (but loaded: the count).
-      await page.evaluate((k) => (window as unknown as PageWindow).openPanel(k), K('100'));
+      // The user's path: open the card, press its 작업 로그 button. Tasks pinned, the
+      // work log collapsed (but loaded: the count) with its header in view.
+      await page.click(`[data-session-key="${K('100')}"] .card-face`);
+      await page.waitForTimeout(350);
+      await page.click(`[data-session-key="${K('100')}"] .btn-primary`);
       await page
         .waitForFunction(() => document.getElementById('worklog-count')?.textContent === '13', null, { timeout: 5000 })
         .catch(() => {});
@@ -2475,17 +2491,14 @@ async function panelChecks(browser: import('playwright').Browser) {
           d0.expanded === 'false' &&
           d0.listHidden &&
           d0.count === '13' &&
-          d0.tasks.b <= d0.scroll.t,
-        `${tag}: panel opens with Tasks pinned above the scroll area and the work log collapsed (13) (${JSON.stringify({ ...d0, small: undefined })})`,
+          d0.tasks.b <= d0.scroll.t &&
+          d0.header.t >= d0.scroll.t &&
+          d0.header.b <= d0.scroll.b,
+        `${tag}: the 작업 로그 button opens the panel with Tasks pinned and the work log collapsed (13), its header in view (${JSON.stringify({ ...d0, small: undefined })})`,
       );
-      check((await overflow(page)) === 0, `${tag}: panel default — no page overflow`);
+      check((await overflow(page)) === 0, `${tag}: panel from 작업 로그 — no page overflow`);
       if (width < 640) check(d0.small.length === 0, `${tag}: panel controls ≥44px (${d0.small.join(' | ')})`);
-      // The opening lands on the newest turns; the shot shows the top, where the collapsed header is.
-      await page.evaluate(() =>
-        (document.getElementById('panel-scroll') as HTMLElement).scrollTo({ top: 0, behavior: 'instant' }),
-      );
-      await page.waitForTimeout(150);
-      await shoot(page, `panel-default-${theme}-${width}.png`, false);
+      await shoot(page, `panel-open-button-${theme}-${width}.png`, false);
 
       // A live entry while collapsed moves the count; expanding does not refetch.
       await page.evaluate(() =>
@@ -2700,14 +2713,106 @@ async function panelChecks(browser: import('playwright').Browser) {
         `${tag}: no tasks yet — the pinned block reads "${e0.tasksEmpty}"`,
       );
       await shoot(page, `panel-empty-tasks-${theme}-${width}.png`, false);
-      await page.evaluate((k) => (window as unknown as PageWindow).openPanel(k, true), K('100'));
-      await page.waitForTimeout(400);
+      // Any other opening (답변하기, …) lands on the newest turns, the log collapsed too.
+      await page.evaluate((k) => (window as unknown as PageWindow).openPanel(k), K('100'));
+      await page.waitForTimeout(500);
       const f0 = await readPanel(page);
-      check(f0.expanded === 'true' && !f0.listHidden, `${tag}: opened from 작업 로그 the work log is expanded`);
+      check(
+        f0.expanded === 'false' && f0.listHidden && f0.scroll.fromEnd <= 2,
+        `${tag}: another opening lands on the newest turns with the log collapsed (${f0.scroll.fromEnd}px from the end)`,
+      );
       check(errors.length === 0, `${tag}: panel — no page errors (${errors.join(' | ')})`);
       await ctx.close();
+
+      // The Slack 작업 로그 link: a real ?session= navigation.
+      const ctx2 = await browser.newContext({
+        viewport: { width, height: 900 },
+        colorScheme: theme,
+        hasTouch: width < 640,
+        isMobile: width < 640,
+      });
+      const page2 = await ctx2.newPage();
+      await installMocks(page2, board);
+      await page2.goto(`${BASE_URL}/dashboard/U001?session=${encodeURIComponent('work:C123:1700000000.000100')}`);
+      await page2
+        .waitForFunction(() => document.getElementById('worklog-count')?.textContent === '13', null, { timeout: 8000 })
+        .catch(() => {});
+      await page2.waitForTimeout(500);
+      const g0 = await readPanel(page2);
+      const cardOpen = await page2.evaluate(
+        (k) => !!document.querySelector(`[data-session-key="${k}"]`)?.classList.contains('is-expanded'),
+        K('100'),
+      );
+      check(
+        cardOpen &&
+          g0.tasksOutside &&
+          g0.expanded === 'false' &&
+          g0.listHidden &&
+          g0.count === '13' &&
+          g0.header.t >= g0.scroll.t &&
+          g0.header.b <= g0.scroll.b,
+        `${tag}: the ?session= link opens the card and the panel with the work log collapsed, its header in view (${JSON.stringify({ header: g0.header, scroll: g0.scroll })})`,
+      );
+      check((await overflow(page2)) === 0, `${tag}: panel from ?session= — no page overflow`);
+      if (width < 640)
+        check(g0.small.length === 0, `${tag}: deep-linked panel controls ≥44px (${g0.small.join(' | ')})`);
+      await shoot(page2, `panel-open-deeplink-${theme}-${width}.png`, false);
+      await ctx2.close();
     }
   }
+
+  // Landing at the top (작업 로그) loads no older turns by itself; one scroll gesture
+  // up into the first turns loads exactly one older page — no cascade.
+  TURNS['conv-cascade'] = Array.from({ length: 100 }, (_, i) => ({
+    id: `C${i + 1}`,
+    role: i % 2 ? 'assistant' : 'user',
+    userName: 'Zhuge',
+    timestamp: NOW - (100 - i) * M,
+    rawContent: i % 2 ? undefined : `instruction ${i + 1}`,
+    summarized: true,
+    summaryTitle: i % 2 ? `reply ${i + 1}` : undefined,
+    summaryBody: i % 2 ? 'body' : undefined,
+  }));
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'light' });
+  const page = await ctx.newPage();
+  const board = makeBoard() as Record<string, Array<Record<string, unknown>>>;
+  board.working[0].conversationId = 'conv-cascade'; // Review PR #482: 100 turns
+  await installMocks(page, board);
+  await openBoard(page);
+  await page.click(`[data-session-key="${K('300')}"] .card-face`);
+  await page.waitForTimeout(350);
+  await page.click(`[data-session-key="${K('300')}"] .btn-primary`);
+  await page.waitForFunction(() => document.querySelectorAll('#panel-turns .turn').length >= 30, null, {
+    timeout: 5000,
+  });
+  await page.waitForTimeout(900);
+  const landed = await readPanel(page);
+  const box = await page.evaluate(() => {
+    const q = (document.getElementById('panel-scroll') as HTMLElement).getBoundingClientRect();
+    return { x: q.left + q.width / 2, y: q.top + q.height / 2 };
+  });
+  await page.mouse.move(box.x, box.y);
+  await page.mouse.wheel(0, 600);
+  await page.waitForTimeout(500);
+  await page.mouse.wheel(0, -1200);
+  await page.waitForTimeout(1200);
+  const once = await readPanel(page);
+  // Small moves that stay near the first turns (the reader adjusting) load nothing more.
+  for (const dy of [40, -40, 30, -30]) {
+    await page.mouse.wheel(0, dy);
+    await page.waitForTimeout(350);
+  }
+  await page.waitForTimeout(900);
+  const settled = await readPanel(page);
+  check(
+    landed.turns === 30 &&
+      landed.scroll.top === 0 &&
+      once.turns === 60 &&
+      settled.turns === 60 &&
+      settled.header.t >= settled.scroll.t,
+    `작업 로그 landing at the top loads nothing by itself; one scroll up loads one older page, small moves near the top no more (turns ${landed.turns} → ${once.turns} → ${settled.turns})`,
+  );
+  await ctx.close();
 }
 
 /** Expected strip text for a period: U001's own numbers or All Users'. */

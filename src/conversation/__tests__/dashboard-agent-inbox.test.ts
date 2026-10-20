@@ -279,14 +279,26 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(TEMPLATE).toContain('.worklog-list[hidden] { display: none; }');
   });
 
-  it('every opening starts collapsed unless it came from 작업 로그 / ?session= (§3.1-6, §3.1-7)', () => {
+  it('every opening starts with the work log collapsed, no exceptions (§3.1-6, §3.1-7)', () => {
     const body = fnBody('openPanel');
     const reset = body.indexOf('resetWorkLog(panelConvId, true);');
     expect(reset).toBeGreaterThan(-1);
-    expect(body.indexOf('setWorkLogOpen(_panelFocusWorkLog);')).toBeGreaterThan(reset);
+    expect(body.indexOf('setWorkLogOpen(false);')).toBeGreaterThan(reset);
+    expect(body).not.toContain('setWorkLogOpen(_panelFocusWorkLog)');
+    // 작업 로그 / ?session= land with the collapsed header in view, not inside the log.
+    expect(fnBody('scrollPanelToWorkLog')).toContain('workLogLandingTop(');
+    expect(fnBody('scrollPanelToWorkLog')).not.toContain('list.scrollTop');
     // Expanding only shows what was already fetched on open.
     expect(fnBody('toggleWorkLogSection')).not.toContain('loadWorkLog');
     expect(fnBody('toggleWorkLogSection')).not.toContain('fetch');
+  });
+
+  it('older turns load from a user scroll near the first turn, armed once per approach (§3.1-6)', () => {
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelScrollHandler() {'));
+    expect(init).toContain('panelOlderStep(_panelOlderArmed, inZone, canLoad)');
+    expect(init).toContain("turnsEl.querySelector('.turn')");
+    expect(init).not.toContain('scrollEl.scrollTop < 100');
+    expect(fnBody('openPanel')).toContain('_panelOlderArmed = false;');
   });
 
   it('entry rows toggle on click, Enter and Space; detail buttons do not toggle (§3.1-6)', () => {

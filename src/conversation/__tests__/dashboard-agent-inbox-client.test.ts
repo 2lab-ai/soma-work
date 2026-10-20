@@ -1885,6 +1885,75 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
   });
 });
 
+describe('panel landing and older-turn loading (shipped workLogLandingTop + olderTurnsZone + panelOlderStep)', () => {
+  const m = load<{
+    workLogLandingTop(sectionTop: number, headerHeight: number, viewHeight: number): number;
+    olderTurnsZone(firstTurnTop: number, areaTop: number): boolean;
+    panelOlderStep(armed: boolean, inZone: boolean, canLoad: boolean): { load: boolean; armed: boolean };
+  }>(['workLogLandingTop', 'olderTurnsZone', 'panelOlderStep'], []);
+
+  it('작업 로그 / ?session= land at the top when the collapsed header fits there, else on the header', () => {
+    expect(m.workLogLandingTop(0, 40, 400)).toBe(0); // no question: the log heads the scroll area
+    expect(m.workLogLandingTop(180, 40, 400)).toBe(0); // a short question above it: both in view
+    expect(m.workLogLandingTop(520, 40, 400)).toBe(520); // a tall question: bring the header up
+  });
+
+  it('the first turn within 100px of the area top (or below it) is the load-older zone', () => {
+    expect(m.olderTurnsZone(300, 300)).toBe(true);
+    expect(m.olderTurnsZone(350, 300)).toBe(true); // header above it, turn in view
+    expect(m.olderTurnsZone(201, 300)).toBe(true);
+    expect(m.olderTurnsZone(199, 300)).toBe(false);
+    expect(m.olderTurnsZone(-4000, 300)).toBe(false); // far above: reading newer turns
+  });
+
+  it('one load per approach: entering the zone loads once, leaving it re-arms; a landing never loads', () => {
+    const run = (events: Array<[boolean, boolean]>) => {
+      let armed = false; // openPanel starts disarmed
+      const loads: number[] = [];
+      events.forEach(([inZone, canLoad], i) => {
+        const step = m.panelOlderStep(armed, inZone, canLoad);
+        armed = step.armed;
+        if (step.load) loads.push(i);
+      });
+      return loads;
+    };
+    // Landing at the top (작업 로그): in the zone from the start → nothing loads.
+    expect(
+      run([
+        [true, true],
+        [true, true],
+        [true, true],
+      ]),
+    ).toEqual([]);
+    // Landing at the bottom, scrolling up into the zone, staying there (anchored insert) → one load.
+    expect(
+      run([
+        [false, true],
+        [true, true],
+        [true, true],
+        [true, true],
+      ]),
+    ).toEqual([1]);
+    // Out and back in → the next page.
+    expect(
+      run([
+        [false, true],
+        [true, true],
+        [false, true],
+        [true, true],
+      ]),
+    ).toEqual([1, 3]);
+    // In the zone while a load is in flight: the arm is kept for when it can load.
+    expect(
+      run([
+        [false, true],
+        [true, false],
+        [true, true],
+      ]),
+    ).toEqual([2]);
+  });
+});
+
 describe('DONE column: archived cards hide behind Show archives (shipped planDoneColumn)', () => {
   const { planDoneColumn } = load<{
     planDoneColumn(
