@@ -413,6 +413,14 @@ export const config = {
       clientSecret: process.env.MICROSOFT_CLIENT_SECRET || '',
     },
     jwtSecret: process.env.DASHBOARD_JWT_SECRET || '',
+    /**
+     * Origin the OAuth provider redirects back to (`<base>/auth/<provider>/callback`).
+     * Empty = the public viewer URL. Set it to the previous public origin while the
+     * provider console still lists only that callback: the provider returns there,
+     * the canonical-origin redirect forwards the callback to the public URL, and
+     * the code exchange repeats this same redirect_uri.
+     */
+    callbackBaseUrl: process.env.SOMA_OAUTH_CALLBACK_BASE_URL || '',
     /** Seconds until dashboard JWT expires (default: 7 days) */
     jwtExpiresIn: parseInt(process.env.DASHBOARD_JWT_EXPIRES_IN || '604800', 10),
   },
