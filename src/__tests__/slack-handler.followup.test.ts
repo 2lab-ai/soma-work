@@ -4910,6 +4910,39 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(startWithContinuation, 'the first turn ran once').toHaveBeenCalledTimes(2);
     });
 
+    it("`goal resume` while a paused goal's opening is being skipped admits a fresh first turn — it never reuses the skipping one", async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await handler.handleMessage(message({ ts: '333.555', text: 'goal pause' }), say());
+      // Hold the skip at its notice: the opening is dispatched and committed to skipping.
+      const skipNotice = deferred<any>();
+      postSystemMessage.mockImplementation((_c: string, text: string) =>
+        String(text).includes('시작 전에') ? skipNotice.promise : Promise.resolve({ ts: 'm' }),
+      );
+      const settled = settle();
+      await vi.waitFor(() =>
+        expect(postSystemMessage).toHaveBeenCalledWith(
+          CHANNEL,
+          expect.stringContaining('시작 전에'),
+          expect.anything(),
+        ),
+      );
+
+      await handler.handleMessage(message({ ts: '333.666', text: 'goal resume' }), say());
+
+      const goalId = registrySession.goal.goalId;
+      const fresh = items().find(
+        (item: any) => item.message.ts === '333.666' && item.message.routeContext?.goalOpeningId === goalId,
+      );
+      expect(fresh?.state, 'a fresh opening waits behind the skipping one').toBe('queued');
+
+      skipNotice.resolve({ ts: 'm' });
+      await settled;
+      await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalledTimes(2));
+      expect(registrySession.goal).toMatchObject({ status: 'active' });
+      expect(registrySession.goal.openingPending).toBeUndefined();
+    });
+
     it('an opening `$skill` that no handler claims any more still runs the objective (handled:false)', async () => {
       const { settle } = await startBusyTurn();
       await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표 $local:z' }), say());
