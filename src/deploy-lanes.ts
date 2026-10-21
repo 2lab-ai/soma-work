@@ -80,11 +80,14 @@ export class DeployLaneTrigger {
 
     let jobs: CronJob[];
     try {
-      jobs = this.storage().getAllStrict();
+      jobs = this.readJobs();
     } catch (error) {
-      const message = (error as Error).message;
-      logger.error('deploy_completed: cron jobs unreadable — no lane can be matched', { deploy, error: message });
-      await ctx.reply(`⚠️ 배포 레인 확인 불가 — ${deploy}: cron jobs file unreadable (${message}) ${recovery([])}`);
+      // The detail (it names the server's file path) goes to the log only.
+      logger.error('deploy_completed: cron jobs unreadable — no lane can be matched', {
+        deploy,
+        error: (error as Error).message,
+      });
+      await ctx.reply(`⚠️ 배포 레인 확인 불가 — ${deploy}: cron 설정 파일을 읽지 못함 ${recovery([])}`);
       return;
     }
 
@@ -218,19 +221,32 @@ export class DeployLaneTrigger {
     let lanes: CronJob[] = [];
     try {
       const repos = new Set(rejections.map((r) => r.repo?.trim().toLowerCase()).filter(Boolean));
-      lanes = this.storage()
-        .getAllStrict()
-        .filter((job) => Array.isArray(job.onDeploy) && job.onDeploy.some((t) => repos.has(t?.repo?.toLowerCase())));
-    } catch {
+      lanes = this.readJobs().filter(
+        (job) => Array.isArray(job.onDeploy) && job.onDeploy.some((t) => repos.has(t?.repo?.toLowerCase())),
+      );
+    } catch (error) {
       // The line still goes out, with the generic recovery hint.
+      logger.warn('deploy_completed rejected: cron jobs unreadable — lanes not named', {
+        error: (error as Error).message,
+      });
     }
     const problems = rejections.map((r) => (r.repo ? `${r.repo}: ${r.problem}` : r.problem)).join('; ');
     logger.warn('deploy_completed rejected — no lane fired', { rejections, lanes: names(lanes) });
     await ctx.reply(`⚠️ deploy_completed 무시됨 — ${problems}; 레인 미발동 ${recovery(lanes)}`);
   }
 
-  private storage(): CronStorage {
-    return new CronStorage(this.opts.storagePath ?? path.join(DATA_DIR, 'cron-jobs.json'));
+  /**
+   * The scheduler's jobs, read strictly (an unreadable file throws). Entries
+   * that are not objects — a hand edit — are skipped with a warning rather than
+   * left to throw inside matching.
+   */
+  private readJobs(): CronJob[] {
+    const jobs = new CronStorage(this.opts.storagePath ?? path.join(DATA_DIR, 'cron-jobs.json')).getAllStrict();
+    const valid = jobs.filter((job): job is CronJob => !!job && typeof job === 'object' && !Array.isArray(job));
+    if (valid.length !== jobs.length) {
+      logger.warn('cron jobs file holds entries that are not jobs — skipped', { skipped: jobs.length - valid.length });
+    }
+    return valid;
   }
 }
 
@@ -246,10 +262,15 @@ function bold(jobs: CronJob[]): string {
   return jobs.map((job) => `*${job.name}*`).join(', ');
 }
 
-/** What the owner can do: run the lane by hand. Ends every ⚠️ line. */
+/**
+ * What the owner can do: run the lane by hand. Ends every ⚠️ line, and
+ * mentions each lane's owner so they are notified, not just named. Without a
+ * known lane it is the generic hint.
+ */
 function recovery(jobs: CronJob[]): string {
-  const lanes = jobs.length > 0 ? [...new Set(names(jobs))] : [UNKNOWN_LANE];
-  return `(owner: ${lanes.map((name) => `cron run ${name}`).join(' · ')})`;
+  if (jobs.length === 0) return `(owner: cron run ${UNKNOWN_LANE})`;
+  const hints = [...new Set(jobs.map((job) => `<@${job.owner}> cron run ${job.name}`))];
+  return `(${hints.join(' · ')})`;
 }
 
 /** Distinct targets registered for `repo` across all jobs, for the near-miss reply. */

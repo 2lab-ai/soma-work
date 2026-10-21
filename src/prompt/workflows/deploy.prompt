@@ -229,7 +229,7 @@ Other work (for example a QA pass over the deployed PRs) can be registered to st
 - **Confirmed**: emit it as shown below (no `confirmed` field). Confirmed means one of:
   - If CD runs for the target branch, the run for the merge commit concluded `success`. Wait for it **in-turn**, the same way you wait for CI (e.g. `timeout 1200 gh run watch <run-id> --exit-status`, finding the run with `gh run list --commit <after_sha>`).
   - If there is no CD signal, step 5's healthcheck passed.
-- **Merged but not confirmed**: there is neither a CD run nor a healthcheck to confirm it. Emit the directive with `"confirmed": false`. The harness then starts nothing and tells the lane owners that the deploy is unconfirmed.
+- **Merged but not confirmed**: there is neither a CD run nor a healthcheck to confirm it. A CD run that is still in progress when the wait ends (the bounded watch timed out and you are not waiting longer) also counts as unconfirmed, not as success. Emit the directive with `"confirmed": false`. The harness then starts nothing and tells the lane owners that the deploy is unconfirmed.
 
 Fields:
 

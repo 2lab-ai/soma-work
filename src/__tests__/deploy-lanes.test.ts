@@ -15,8 +15,9 @@ import { DEPLOY_LANE_DEDUPE_MS, DeployLaneTrigger } from '../deploy-lanes';
 
 const AFTER = '0123456789abcdef0123456789abcdef01234567';
 const BEFORE = 'fedcba9876543210fedcba9876543210fedcba98';
-/** Every ⚠️ line ends with what the owner can do about it. */
-const RECOVERY = /\(owner: cron run [^)]+\)$/;
+/** Every ⚠️ line ends with what the owner can do about it — and pings the owner when the lane is known. */
+const RECOVERY = /\(<@U_OWNER> cron run qa-lane\)$/;
+const GENERIC_RECOVERY = /\(owner: cron run 레인 이름\)$/;
 
 describe('DeployLaneTrigger', () => {
   let file: string;
@@ -184,7 +185,9 @@ describe('DeployLaneTrigger', () => {
     addLane();
     await trigger({ scheduler: null }).handle(deploy(), ctx);
     expect(runJobNow).not.toHaveBeenCalled();
-    expect(replies).toEqual(['⚠️ 배포 레인 미발동 — cron scheduler not running: *qa-lane* (owner: cron run qa-lane)']);
+    expect(replies).toEqual([
+      '⚠️ 배포 레인 미발동 — cron scheduler not running: *qa-lane* (<@U_OWNER> cron run qa-lane)',
+    ]);
   });
 
   it('stays quiet without a scheduler when no lane matches', async () => {
@@ -210,7 +213,7 @@ describe('DeployLaneTrigger', () => {
     await t.handle(deploy(), ctx);
 
     expect(replies[0]).toBe(
-      `⚠️ 배포 레인 미발동 — acme/app → deploy/dev2 (${AFTER.slice(0, 7)}): *qa-lane* (delivery failed (new_thread)) (owner: cron run qa-lane)`,
+      `⚠️ 배포 레인 미발동 — acme/app → deploy/dev2 (${AFTER.slice(0, 7)}): *qa-lane* (delivery failed (new_thread)) (<@U_OWNER> cron run qa-lane)`,
     );
     expect(replies[0]).toMatch(RECOVERY);
 
@@ -253,7 +256,7 @@ describe('DeployLaneTrigger', () => {
 
     expect(replies).toHaveLength(2);
     expect(replies[1]).toBe(
-      `⚠️ 배포 레인 실패 — acme/app → deploy/dev2 (${AFTER.slice(0, 7)}): *qa-lane* (delivery failed (new_thread)) (owner: cron run qa-lane)`,
+      `⚠️ 배포 레인 실패 — acme/app → deploy/dev2 (${AFTER.slice(0, 7)}): *qa-lane* (delivery failed (new_thread)) (<@U_OWNER> cron run qa-lane)`,
     );
 
     await t.handle(deploy(), ctx);
@@ -273,10 +276,40 @@ describe('DeployLaneTrigger', () => {
     await trigger().handle(deploy(), ctx);
     expect(runJobNow).not.toHaveBeenCalled();
     expect(replies).toHaveLength(1);
-    expect(replies[0]).toMatch(
-      /^⚠️ 배포 레인 확인 불가 — acme\/app → deploy\/dev2 \(0123456\): cron jobs file unreadable/,
+    // Generic text only: the parse error carries the server's absolute path.
+    expect(replies[0]).toBe(
+      `⚠️ 배포 레인 확인 불가 — acme/app → deploy/dev2 (${AFTER.slice(0, 7)}): cron 설정 파일을 읽지 못함 (owner: cron run 레인 이름)`,
     );
-    expect(replies[0]).toMatch(RECOVERY);
+    expect(replies[0]).not.toContain(file);
+    expect(replies[0]).toMatch(GENERIC_RECOVERY);
+  });
+
+  it('skips hand-edited entries that are not jobs instead of throwing', async () => {
+    const lane = addLane();
+    const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    raw.jobs = [null, 'junk', 7, raw.jobs[0]];
+    fs.writeFileSync(file, JSON.stringify(raw));
+
+    await trigger().handle(deploy(), ctx);
+
+    expect(runJobNow).toHaveBeenCalledTimes(1);
+    expect(runJobNow).toHaveBeenCalledWith(lane.owner, lane.name, expect.objectContaining({ forceNewThread: true }));
+    expect(replies[0]).toContain('배포 레인 시작');
+
+    await trigger().handle(
+      { kind: 'rejected', rejections: [{ problem: 'after must be a 7-40 char hex sha', repo: 'acme/app' }] },
+      ctx,
+    );
+    expect(replies[1]).toMatch(RECOVERY);
+  });
+
+  it('pings each owner of the lanes that did not start', async () => {
+    addLane();
+    addLane({ name: 'smoke-lane', owner: 'U_OTHER', channel: 'C_SMOKE' });
+    await trigger({ scheduler: null }).handle(deploy(), ctx);
+    expect(replies).toEqual([
+      '⚠️ 배포 레인 미발동 — cron scheduler not running: *qa-lane*, *smoke-lane* (<@U_OWNER> cron run qa-lane · <@U_OTHER> cron run smoke-lane)',
+    ]);
   });
 
   it('does not fire on an unconfirmed deploy and says which lanes did not start', async () => {
@@ -284,7 +317,7 @@ describe('DeployLaneTrigger', () => {
     await trigger().handle(deploy({ confirmed: false }), ctx);
     expect(runJobNow).not.toHaveBeenCalled();
     expect(replies).toEqual([
-      '⚠️ acme/app → deploy/dev2 머지됨, 배포 미확인 — 레인 미발동: *qa-lane* (owner: cron run qa-lane)',
+      '⚠️ acme/app → deploy/dev2 머지됨, 배포 미확인 — 레인 미발동: *qa-lane* (<@U_OWNER> cron run qa-lane)',
     ]);
   });
 
@@ -310,7 +343,7 @@ describe('DeployLaneTrigger', () => {
 
     expect(runJobNow).not.toHaveBeenCalled();
     expect(replies).toEqual([
-      '⚠️ deploy_completed 무시됨 — Acme/App: after must be a 7-40 char hex sha; 레인 미발동 (owner: cron run qa-lane)',
+      '⚠️ deploy_completed 무시됨 — Acme/App: after must be a 7-40 char hex sha; 레인 미발동 (<@U_OWNER> cron run qa-lane)',
       '⚠️ deploy_completed 무시됨 — unparseable JSON, or "type" is not the first key; 레인 미발동 (owner: cron run 레인 이름)',
     ]);
   });

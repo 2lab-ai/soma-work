@@ -153,6 +153,8 @@ describe('PromptBuilder', () => {
       expect(section).toContain('baseRefName');
       // A merged-but-unconfirmed deploy is said explicitly, not left silent.
       expect(section).toContain('"confirmed": false');
+      // A CD run still going when the in-turn wait ends is not a confirmation.
+      expect(section).toMatch(/still in progress when the wait ends[^.]*unconfirmed/);
       expect(section).toMatch(/"type"`? is the first key/);
     });
 
