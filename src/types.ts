@@ -251,6 +251,15 @@ export interface SessionGoal {
    */
   capDmPendingAt?: number;
 
+  /**
+   * The goal's opening turn was admitted but has not reached the model yet
+   * (set by the host when it admits the opening, cleared right before the
+   * opening's model call). While set, cancelling the opening cancels the
+   * goal, and `goal resume` re-admits the opening instead of resuming a goal
+   * that never had its first turn.
+   */
+  openingPending?: boolean;
+
   // ── Host-side completion evaluation ────────────────────────────────────
   /**
    * Set when the work model emits `<goal-complete-request reason="..."/>`
