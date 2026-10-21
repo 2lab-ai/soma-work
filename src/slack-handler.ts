@@ -1341,7 +1341,7 @@ export class SlackHandler {
         });
         await this.slackApi.postSystemMessage(
           channel,
-          '⏭️ 이 goal은 시작 전에 삭제되었거나 바뀌어서 첫 턴을 실행하지 않았습니다.',
+          '⏭️ 이 goal은 시작 전에 삭제·일시정지되었거나 다른 goal로 바뀌어서 첫 턴을 실행하지 않았습니다.',
           { threadTs: originalThreadTs },
         );
         // `safe`: the message is fully answered — nothing ran, nothing is owed.
@@ -5812,6 +5812,10 @@ export class SlackHandler {
       const invalid = validateSessionGoalObjective(objective);
       if (invalid) throw new HostGoalActionError(400, invalid);
       const inFlight = session.goal?.status === 'active' || session.goal?.status === 'paused';
+      // A goal that may START here gets an opening turn the drain would run as
+      // `actor` — refuse now what the drain would refuse later, or the opening
+      // would sit in the queue for good while the goal looks started.
+      if (!inFlight) this.assertGoalOpeningAuthor(sessionKey, actor, channel, threadTs);
       const anchorTs = await this.postGoalAnchor(
         channel,
         threadTs,
@@ -5821,7 +5825,17 @@ export class SlackHandler {
       );
 
       // ── synchronous from here: re-check → mutate → persist → admit ──
-      const live = this.liveGoalSession(sessionKey);
+      let live: ConversationSession;
+      try {
+        live = this.liveGoalSession(sessionKey);
+      } catch (error) {
+        await this.postGoalNoticeBestEffort(
+          channel,
+          threadTs,
+          '⚠️ 위 goal은 설정되지 않았습니다 — 세션이 바뀌었습니다.',
+        );
+        throw error;
+      }
       const snapshot = snapshotGoalState(live);
       const result = enqueueOrActivateGoal(
         live,
@@ -5876,6 +5890,7 @@ export class SlackHandler {
 
     const current = session.goal as NonNullable<ConversationSession['goal']>;
     const next = session.goalQueue?.[0];
+    if (next) this.assertGoalOpeningAuthor(sessionKey, next.createdBy || actor, channel, threadTs);
     const anchorTs = await this.postGoalAnchor(
       channel,
       threadTs,
@@ -5886,8 +5901,9 @@ export class SlackHandler {
     );
 
     // ── synchronous from here ──
-    const live = this.liveGoalSession(sessionKey);
+    let live: ConversationSession;
     try {
+      live = this.liveGoalSession(sessionKey);
       this.assertGoalWhereExpected(live, goalId, 'current');
     } catch (error) {
       await this.postGoalNoticeBestEffort(
@@ -5932,6 +5948,19 @@ export class SlackHandler {
     if (!session) throw new HostGoalActionError(404, 'Session not found');
     if (session.terminated) throw new HostGoalActionError(409, 'Session is closed');
     return session;
+  }
+
+  /**
+   * The opening turn of a goal this action may start runs as `author` through
+   * the follow-up drain, which re-checks the author (§3.4). Same check, up
+   * front: a refusal there would leave the opening parked for good.
+   */
+  private assertGoalOpeningAuthor(sessionKey: string, author: string, channel: string, threadTs: string): void {
+    const probe = { type: 'message', channel, thread_ts: threadTs, ts: threadTs, user: author } as MessageEvent;
+    const decision = this.authorizeFollowupDispatch(sessionKey, probe, this.captureFollowupContext(probe));
+    if (!decision.allowed) {
+      throw new HostGoalActionError(403, `The goal could not be started for <@${author}> — ${decision.reason}`);
+    }
   }
 
   /** Refuse a delete whose goal is not where the caller saw it (stale view). */
