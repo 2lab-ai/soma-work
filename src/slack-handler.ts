@@ -2823,6 +2823,20 @@ export class SlackHandler {
     }
     if (this.followupShutdownPreparing) return { failed: 'server is shutting down' };
 
+    // One opening per goal: `goal pause` + `goal resume` while the first
+    // opening still waits (or is being dispatched) must not admit a second —
+    // the waiting one runs once the goal is active again.
+    const existing = queue
+      .list(sessionKey)
+      .find(
+        (item) =>
+          item.message?.routeContext?.goalOpeningId === opening.goalId &&
+          (SlackHandler.OUTSTANDING_FOLLOWUP_STATES.has(item.state) ||
+            item.state === 'paused' ||
+            item.state === 'dispatched'),
+      );
+    if (existing) return existing.state === 'dispatched' ? 'started' : 'queued';
+
     const slotKey = this.followupMigration?.byCanonical.get(sessionKey);
     const busy = () => dispatcher.isBusy(sessionKey) || (slotKey !== undefined && dispatcher.isBusy(slotKey));
     const wasBusy = busy();
@@ -3003,6 +3017,9 @@ export class SlackHandler {
     if (opening && sessionKey && queue) {
       const attached = queue.attachFilesQueued(sessionKey, opening.id, opening.epoch, files);
       if (attached.ok) {
+        // The edit bumped the item's epoch: repaint its controls so the next
+        // Cancel / Send now click is not refused as stale.
+        void this.syncFollowupReactions(sessionKey, opening.id);
         this.logger.info('Late goal-command attachments added to its queued opening turn', {
           sessionKey,
           itemId: opening.id,
