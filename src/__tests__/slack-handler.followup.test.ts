@@ -4571,6 +4571,32 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    it('ignores a redelivery of a goal event after the turn ended (busy first, idle second)', async () => {
+      registrySession.goal = activeGoal();
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+      await settle();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+
+      expect(registrySession.goalQueue).toHaveLength(1);
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores a redelivery of an idle goal event while its opening turn runs (idle first, busy second)', async () => {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await tick();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+
+      expect(items(), 'the redelivery is not parked either').toHaveLength(0);
+      gate.resolve({ hasPendingChoice: false });
+      await first;
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    });
+
     it('keeps the queue path for a goal+skill split (it also starts a forced-skill turn)', async () => {
       registrySession.goal = activeGoal();
       const { settle } = await startBusyTurn();
@@ -4826,6 +4852,28 @@ describe('SlackHandler — follow-up queue host', () => {
 
       expect(result).toEqual({ outcome: 'deleted', goalId: 'g1' });
       expect(registrySession.goal).toBeUndefined();
+    });
+
+    it('re-checks the author of the goal that is ACTUALLY promoted after the anchor await', async () => {
+      vi.spyOn(userSettingsStore, 'isUserAccepted').mockImplementation((user: string) => user !== 'U_PENDING');
+      registrySession.goal = goalOf();
+      registrySession.goalQueue = [
+        goalOf({ goalId: 'g2', objective: '둘', status: 'queued', createdBy: 'U_OWNER' }),
+        goalOf({ goalId: 'g3', objective: '셋', status: 'queued', createdBy: 'U_PENDING' }),
+      ];
+      // While the anchor is being posted, g2 is removed from the queue.
+      postSystemMessage.mockImplementationOnce(async () => {
+        registrySession.goalQueue = registrySession.goalQueue.filter((g: any) => g.goalId !== 'g2');
+        return { ts: 'anchor' };
+      });
+
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'delete', goalId: 'g1', expect: 'current' }),
+      ).rejects.toMatchObject({ statusCode: 403 });
+
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active' });
+      expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g3']);
+      expect(items()).toHaveLength(0);
     });
 
     it('delete queued removes only that goal', async () => {
