@@ -689,7 +689,7 @@ src/                                # TypeScript source
 │   ├── actions/                    # Interactive action handlers
 │   ├── commands/                   # Command handlers
 │   ├── pipeline/                   # Stream processing pipeline
-│   ├── directives/                 # Channel/session link directives
+│   ├── directives/                 # Channel/session link + deploy-completed directives
 │   ├── formatters/                 # Output formatters
 │   └── z/                          # /z command surface + non-admin DM input gate
 ├── auth/                           # CCT lease + query env injection
