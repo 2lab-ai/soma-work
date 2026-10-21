@@ -2008,6 +2008,7 @@ export class SessionRegistry {
       const { sleepAfterMs: maxAge, archiveAfterMs } = getSessionLifecyclePolicy();
       // Unreadable saved policy: load every session as it was (see cleanupInactiveSessions).
       const applyLifecycle = !isSessionLifecyclePolicyDegraded();
+      let sleptOnLoadCount = 0;
       this._crashRecoveredSessions = [];
 
       for (const serialized of sessionsArray) {
@@ -2034,6 +2035,7 @@ export class SessionRegistry {
           const sessionAge = now - lastActivity.getTime();
           if (sessionAge >= maxAge) {
             sleptOnLoad = true;
+            sleptOnLoadCount++;
             sleepStartedAt = new Date(now);
           }
         }
@@ -2285,6 +2287,12 @@ export class SessionRegistry {
       }
 
       this.logger.info(`Loaded ${loaded} sessions from file (${sessionsArray.length - loaded} expired)`);
+      // Persist sessions put to sleep on load now, as the sweep does: otherwise a
+      // crash before the next save reloads them awake and restarts their clock.
+      if (sleptOnLoadCount > 0) {
+        this.logger.info(`Put ${sleptOnLoadCount} stale session(s) to sleep on load`);
+        this.saveSessions();
+      }
 
       return loaded;
     } catch (error) {

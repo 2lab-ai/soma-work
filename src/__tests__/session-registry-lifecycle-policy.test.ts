@@ -153,6 +153,16 @@ describe('SessionRegistry — lifecycle policy', () => {
       expect(s?.sleepStartedAt?.getTime()).toBeGreaterThanOrEqual(now);
     }
     expect(reg.getCrashRecoveredSessions().map((c) => c.threadTs)).toEqual([]);
+
+    // Persisted at once: a crash before the next save must not reload them awake.
+    const onDisk = JSON.parse(fs.readFileSync(path.join(TEST_DATA_DIR, 'sessions.json'), 'utf-8')) as Array<{
+      threadTs: string;
+      state: string;
+    }>;
+    const stateOf = (ts: string) => onDisk.find((r) => r.threadTs === ts)?.state;
+    expect(stateOf('700.001')).toBe('SLEEPING');
+    expect(stateOf('700.002')).toBe('SLEEPING');
+    expect(stateOf('700.003')).toBeUndefined();
   });
 
   it('an unreadable saved policy pauses the sweep and the loader instead of falling back to shorter defaults', async () => {

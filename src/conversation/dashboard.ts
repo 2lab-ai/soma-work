@@ -2321,7 +2321,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .archives-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 .archives-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
 /* Session lifecycle dialog (admin) */
-.lifecycle-dialog { border: 1px solid var(--border, rgba(127,127,127,0.3)); border-radius: 14px; padding: 18px 20px; background: var(--bg-card, var(--ib-col)); color: var(--ib-text); max-width: 420px; width: calc(100% - 32px); }
+.lifecycle-dialog { margin: auto; border: 1px solid var(--border, rgba(127,127,127,0.3)); border-radius: 14px; padding: 18px 20px; background: var(--bg-card, var(--ib-col)); color: var(--ib-text); max-width: 420px; width: calc(100% - 32px); }
 .lifecycle-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
 .lifecycle-dialog h3 { margin: 0 0 4px; font-size: 15px; }
 .lifecycle-dialog .lc-note { margin: 0 0 12px; font-size: 12px; color: var(--ib-muted); }
@@ -3570,7 +3570,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
       <dialog id="lifecycle-dialog" class="lifecycle-dialog" aria-labelledby="lifecycle-title">
         <form method="dialog" onsubmit="saveLifecycle(event)" oninput="armLifecycleSave(null)">
           <h3 id="lifecycle-title">Session lifecycle</h3>
-          <p class="lc-note">이 인스턴스에만 적용되고, 다음 정리 주기(최대 5분)부터 반영됩니다. 값을 줄이면 그 기준을 넘긴 세션이 바로 Sleeping이 되거나 종료됩니다 — 저장 전에 몇 개인지 알려 줍니다. Sleeping 전환이 12시간 이하이면 12시간 전 확인 알림은 보내지 않습니다.</p>
+          <p class="lc-note"><span id="lifecycle-scope">이 인스턴스</span>에만 적용되고, 다음 정리 주기(최대 5분)부터 반영됩니다. 값을 줄이면 그 기준을 넘긴 세션이 바로 Sleeping이 되거나 종료됩니다 — 저장 전에 몇 개인지 알려 줍니다. Sleeping 전환이 12시간 이하이면 12시간 전 확인 알림은 보내지 않습니다.</p>
           <label>마지막 활동 후 Sleeping 전환 <span class="lc-unit">시간</span><input id="lc-sleepAfterHours" type="number" min="1" max="720" step="any" required></label>
           <label>Sleeping 후 Archive(종료) 전환 <span class="lc-unit">일</span><input id="lc-archiveAfterDays" type="number" min="0.05" max="365" step="any" required></label>
           <label>보드에 Archive 표시 기간 <span class="lc-unit">시간</span><input id="lc-boardArchiveWindowHours" type="number" min="0" max="8760" step="any" required></label>
@@ -5388,6 +5388,7 @@ function openLifecycleDialog() {
     if (input) input.value = String(form[k]);
   }
   armLifecycleSave(null);
+  setTextIfChanged(document.getElementById('lifecycle-scope'), SELF_INSTANCE_NAME ? '이 인스턴스(' + SELF_INSTANCE_NAME + ')' : '이 인스턴스');
   setLifecycleStatus(_lifecycle.degraded ? '저장된 정책 파일을 읽을 수 없어 Sleeping/종료 전환을 멈춘 상태입니다. 저장하면 다시 시작합니다.' : '', !!_lifecycle.degraded);
   if (typeof dlg.showModal === 'function') dlg.showModal();
   else dlg.setAttribute('open', '');
