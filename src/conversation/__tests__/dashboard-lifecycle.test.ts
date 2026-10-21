@@ -175,11 +175,22 @@ describe('Dashboard lifecycle policy API', () => {
       lastActivity: new Date(Date.now() - 4 * DAY),
       sleepStartedAt: new Date(Date.now() - 3 * DAY),
     });
+    // INITIALIZING is swept like MAIN (anything not SLEEPING goes through the idle check), so it counts too.
+    sessions.set('C1:t3', {
+      sessionId: 's3',
+      ownerId: 'U1',
+      channelId: 'C1',
+      threadTs: 't3',
+      state: 'INITIALIZING',
+      activityState: 'idle',
+      lastActivity: new Date(Date.now() - 30 * HOUR),
+    });
     const body = { sleepAfterMs: 2 * HOUR, archiveAfterMs: 2 * DAY };
     const headers = { ...AUTH_HEADER, 'content-type': 'application/json' };
 
     const first = await injectWebServer({ method: 'PUT', url: '/api/dashboard/lifecycle', headers, payload: body });
     expect(first.statusCode).toBe(409);
+    // t1 (idle 5h) newly past 2h; t3 (idle 30h) was already past 24h and moves on the next sweep anyway.
     expect(JSON.parse(first.body)).toEqual({ needsConfirm: true, willSleep: 1, willArchive: 1 });
     const unchanged = await injectWebServer({ method: 'GET', url: '/api/dashboard/lifecycle', headers: AUTH_HEADER });
     expect(JSON.parse(unchanged.body).lifecycle).toEqual(DEFAULTS);
