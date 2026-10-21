@@ -2014,9 +2014,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .topbar .nav a:hover,
 .topbar .nav .user-select:hover { border-color: var(--accent); color: var(--text); }
 
-/* ── USER PILL — "Logged in as <name>" + logout, rendered from /auth/me ── */
+/* ── USER PILL — "Logged in as <name>", links to the /login account page, rendered from /auth/me ── */
 .topbar .user-pill {
   display: none; /* toggled by JS once /auth/me resolves */
+  text-decoration: none;
   align-items: center;
   gap: 6px;
   background: var(--surface-raised);
@@ -2049,6 +2050,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .topbar .user-pill.is-admin b::before { content: '★ '; color: var(--accent); }
 .topbar .user-pill[data-clickable="true"] { cursor: pointer; transition: border-color var(--speed) var(--ease); }
 .topbar .user-pill[data-clickable="true"]:hover { border-color: var(--accent); color: var(--text); }
+.topbar .user-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 
 /* ── ADMIN MODE TOGGLE — visible only for ADMIN_USERS (#716) ── */
 .topbar .admin-toggle {
@@ -3433,13 +3435,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
       ><span id="admin-mode-label"><span class="admin-mode-prefix">Admin: </span><span class="admin-mode-state">OFF</span></span></button>
     </div>
     <div class="topbar-account">
-      <span
+      <a
         class="user-pill"
         id="user-pill"
-        title="Click to logout"
+        href="/login"
+        title="Account — switch account or sign out"
         data-clickable="false"
-        onclick="handleUserPillClick()"
-      ><span class="user-pill-prefix">Logged in as </span><b id="user-pill-name">…</b></span>
+      ><span class="user-pill-prefix">Logged in as </span><b id="user-pill-name">…</b></a>
       <button id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
     </div>
   </div>
@@ -3826,16 +3828,14 @@ let _csrfToken = '';
  * Populate the "Logged in as <name>" pill in the topbar.
  *
  * Rendered from /auth/me for three session types:
- *   - OAuth JWT (Google/Microsoft/Slack SSO) — shows user.name, pill is
- *     clickable and logs out on click.
- *   - bearer_cookie (admin viewer token) — shows "Admin" with a star marker,
- *     still clickable (logout clears the cookie).
+ *   - OAuth JWT (Google/Microsoft/Slack SSO) — shows user.name.
+ *   - bearer_cookie (admin viewer token) — shows "Admin" with a star marker.
  *   - unauthenticated (/auth/me → 401) — pill stays hidden; auth middleware
  *     is about to redirect us to /login anyway.
  *
- * Kept in sync with server-side setCookieAndRedirect / clearCookieAndRedirect —
- * the click handler calls GET /auth/logout (not a form POST) because the
- * logout endpoint is intentionally CSRF-free; it only clears the cookie.
+ * The pill is a link to /login, which for a signed-in browser is the account
+ * page: who you are signed in as, continue, use a different account, or sign
+ * out (GET /auth/logout).
  */
 function _applyUserPill(data) {
   const pill = document.getElementById('user-pill');
@@ -3877,11 +3877,6 @@ function _applyUserPill(data) {
       try { localStorage.removeItem('soma_admin_mode'); } catch(_e) {}
     }
   }
-}
-function handleUserPillClick() {
-  const pill = document.getElementById('user-pill');
-  if (!pill || pill.getAttribute('data-clickable') !== 'true') return;
-  location.href = '/auth/logout';
 }
 
 // Admin mode (#716)
