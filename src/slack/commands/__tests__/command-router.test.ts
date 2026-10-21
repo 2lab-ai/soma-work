@@ -1454,3 +1454,104 @@ describe('CommandRouter.isGoalCommandText — pure goal commands only', () => {
     }
   });
 });
+
+/**
+ * SSOT 2026-10-21 T1 (round 2) — the `goal … $skill` split typed while a turn
+ * runs is run at once too: the goal is set now and the `$skill` part becomes
+ * the new goal's opening turn, admitted with the goal change.
+ */
+describe('CommandRouter — goal + `$skill` split at the host intake', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('isGoalSkillSplitText recognizes the split in every spelling, and nothing else', () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const router = new CommandRouter(buildDeps());
+    for (const text of ['goal ship it $z proceed', 'goal set ship it $z', '/z goal ship it $z go']) {
+      expect(router.isGoalSkillSplitText(text, 'U1'), text).toBe(true);
+    }
+    for (const text of [
+      '',
+      'goal ship it',
+      'goal costs $20',
+      '$z proceed',
+      'new goal ship it $z',
+      '%nogoal goal ship it $z',
+      '/z goal',
+    ]) {
+      expect(router.isGoalSkillSplitText(text, 'U1'), text).toBe(false);
+    }
+  });
+
+  it('hands the skill part to admitOpening as the opening prompt — the skill is not fired during routing', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+    const session: any = { systemPrompt: 'cached' };
+    const deps = buildDeps({
+      claudeHandler: {
+        getSession: vi.fn().mockReturnValue(session),
+        getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+        resetSessionContext: vi.fn().mockReturnValue(false),
+        saveSessions: vi.fn(),
+      },
+    });
+    const router = new CommandRouter(deps);
+    const admitOpening = vi.fn().mockReturnValue('queued');
+
+    const result = await router.route({
+      text: 'goal ship the feature $z proceed',
+      user: 'U1',
+      channel: 'C1',
+      threadTs: 'T1',
+      say: vi.fn().mockResolvedValue(undefined),
+      admitOpening,
+    } as any);
+
+    expect(session.goal).toMatchObject({ objective: 'ship the feature', status: 'active' });
+    expect(admitOpening).toHaveBeenCalledWith({
+      goalId: session.goal.goalId,
+      objective: 'ship the feature',
+      cause: 'set',
+      prompt: '$z proceed',
+    });
+    expect(skillExec, 'the skill fires when its opening turn runs').not.toHaveBeenCalled();
+    expect(result).toMatchObject({ handled: true });
+    expect(result.continueWithPrompt).toBeUndefined();
+  });
+
+  it('tells admitOpening which goal it opens: the one the command set, or the one `goal done` promoted', async () => {
+    stubSkillFs({ localSkills: [] });
+    const session: any = { systemPrompt: 'cached' };
+    const deps = buildDeps({
+      claudeHandler: {
+        getSession: vi.fn().mockReturnValue(session),
+        getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+        resetSessionContext: vi.fn().mockReturnValue(false),
+        saveSessions: vi.fn(),
+      },
+    });
+    const router = new CommandRouter(deps);
+    const admitOpening = vi.fn().mockReturnValue('queued');
+    const ctx = (text: string) =>
+      ({
+        text,
+        user: 'U1',
+        channel: 'C1',
+        threadTs: 'T1',
+        say: vi.fn().mockResolvedValue(undefined),
+        admitOpening,
+      }) as any;
+
+    await router.route(ctx('goal first'));
+    await router.route(ctx('goal second'));
+    await router.route(ctx('goal done'));
+
+    expect(admitOpening).toHaveBeenNthCalledWith(1, expect.objectContaining({ objective: 'first', cause: 'set' }));
+    expect(admitOpening).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ objective: 'second', cause: 'promoted' }),
+    );
+    expect(admitOpening.mock.calls[0][0].prompt).toBeUndefined();
+  });
+});

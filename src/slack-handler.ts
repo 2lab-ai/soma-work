@@ -856,6 +856,11 @@ export class SlackHandler {
       onItemProcessed: (sessionKey, itemId) => {
         void this.syncFollowupReactions(sessionKey, itemId);
       },
+      // A goal's queued opening turn IS that goal's start: cancelling it means
+      // cancelling the goal (see `onGoalOpeningCancelled`).
+      vetoCancel: (sessionKey, item, clicker) => this.vetoGoalOpeningCancel(sessionKey, item, clicker),
+      onItemCancelled: (sessionKey, item, clicker, previousState) =>
+        this.onGoalOpeningCancelled(sessionKey, item, clicker, previousState),
       refreshItemMessage: (sessionKey, itemId) => this.syncFollowupReactions(sessionKey, itemId),
       reportError: (label, error) => {
         this.logger.error('Follow-up action failed', { label, error: (error as Error)?.message ?? String(error) });
@@ -1504,6 +1509,12 @@ export class SlackHandler {
     const deferSkillFire = !event.synthetic && (!preRouteSession || preRouteSession.sessionId === undefined);
 
     // Step 2: Route commands
+    let routed: Awaited<ReturnType<InputProcessor['routeCommand']>> = verbatimPrompt
+      ? // Already routed by the `/z` command that produced it — the same result
+        // the channel path gets straight from `GoalHandler`.
+        { handled: true, continueWithPrompt: event.text ?? '', verbatimPrompt: true }
+      : await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
+    routed = await this.ensureGoalOpeningPrompt(event, routed, channel, originalThreadTs);
     const {
       handled,
       continueWithPrompt,
@@ -1513,11 +1524,7 @@ export class SlackHandler {
       error: commandError,
       awaitingPermission,
       verbatimPrompt: routedObjective,
-    } = verbatimPrompt
-      ? // Already routed by the `/z` command that produced it — the same result
-        // the channel path gets straight from `GoalHandler`.
-        { handled: true, continueWithPrompt: event.text ?? '', verbatimPrompt: true }
-      : await this.inputProcessor.routeCommand(event, wrappedSay, { deferSkillFire });
+    } = routed;
     // The opening turn of an explicitly set goal is the OBJECTIVE: a goal
     // command's prompt (`goal …`, `/z goal …`, queue advance) or the objective
     // of a goal-prefixed first message. The executor must never forward it as
@@ -2616,19 +2623,20 @@ export class SlackHandler {
    * (SSOT 2026-10-21 T1). Pure: it only asks the router's predicate and the
    * registry. Everything that would make the command mean something else, or
    * skip a gate the queue path applies, keeps the queue path:
-   *  - a synthetic turn or a verbatim objective (already routed — the opening
-   *    turn of a goal is never a goal command),
-   *  - attachments (the queue path keeps them for the turn that reads them),
+   *  - a synthetic turn, a verbatim objective or any goal's opening turn
+   *    (already routed — an opening is never a goal command),
    *  - non-admin DM input (Gate A lives in `processMessage`),
    *  - no session yet (`goal <objective>` then starts a conversation, #1068),
-   *  - the `goal … $skill` split and anything another handler claims first.
+   *  - anything another handler claims first.
+   * The `goal … $skill` split counts (its `$skill` part becomes the opening
+   * turn), and so does a message with attachments (they ride on the opening
+   * turn of the goal it sets).
    */
   private isGoalCommandIntake(event: MessageEvent): boolean {
-    if (event.synthetic || isVerbatimPrompt(event)) return false;
-    if (event.files?.length) return false;
+    if (event.synthetic || isVerbatimPrompt(event) || event.routeContext?.goalOpeningId !== undefined) return false;
     if (event.channel.startsWith('D') && !isAdminUser(event.user)) return false;
     const text = (event.text ?? '').trim();
-    if (!text || this.commandRouter?.isGoalCommandText?.(text, event.user) !== true) return false;
+    if (!text || this.commandRouter?.isGoalIntakeText?.(text, event.user) !== true) return false;
     return Boolean(this.claudeHandler?.getSession?.(event.channel, event.thread_ts || event.ts));
   }
 
@@ -2674,19 +2682,44 @@ export class SlackHandler {
       });
       return { ts: result?.ts };
     };
-    const result = await this.commandRouter.route({
-      user: event.user,
-      channel,
-      threadTs,
-      text: (event.text ?? '').trim(),
-      say: wrappedSay,
-      admitOpening: (opening) =>
-        this.admitGoalOpeningTurn(
-          sessionKey,
-          { channel, threadTs, ts: event.ts, user: event.user, team: (event as { team?: string }).team, say },
-          opening,
-        ),
-    });
+    const files = event.files?.length ? event.files : undefined;
+    let filesCarried = false;
+    let result: Awaited<ReturnType<CommandRouter['route']>>;
+    try {
+      result = await this.commandRouter.route({
+        user: event.user,
+        channel,
+        threadTs,
+        text: (event.text ?? '').trim(),
+        say: wrappedSay,
+        admitOpening: (opening) => {
+          // Attachments belong to the goal THIS message set — never to a goal
+          // `goal done` promoted.
+          const carry = opening.cause === 'set' ? files : undefined;
+          const admission = this.admitGoalOpeningTurn(
+            sessionKey,
+            {
+              channel,
+              threadTs,
+              ts: event.ts,
+              user: event.user,
+              team: (event as { team?: string }).team,
+              say,
+              files: carry,
+            },
+            opening,
+          );
+          if (carry && typeof admission !== 'object') filesCarried = true;
+          return admission;
+        },
+      });
+    } catch (error) {
+      // Goal handlers never throw past the router (a crash is consumed with a
+      // visible notice), so this is a failure before any goal state changed:
+      // a Slack retry of the same event must be allowed to run it.
+      this.releaseGoalIntake(event);
+      throw error;
+    }
     if (!result.handled) {
       // The session went away between the predicate and the handler: the
       // command means "start a conversation" again — take the ordinary path.
@@ -2699,7 +2732,21 @@ export class SlackHandler {
       // run on top of the turn the intake exists to protect.
       this.logger.error('Goal command returned a prompt despite admitOpening — dropped', { sessionKey });
     }
-    await this.slackApi.addReaction(channel, event.ts, result.error ? 'warning' : 'zap');
+    // From here the goal change is done: Slack writes are best effort.
+    if (files && !filesCarried && !result.error) {
+      await this.postGoalNoticeBestEffort(
+        channel,
+        threadTs,
+        result.goalQueued
+          ? '📎 첨부 파일은 전달되지 않았습니다 — goal이 대기열에 들어가 지금 시작하는 턴이 없습니다. goal이 시작되면 다시 첨부해 주세요.'
+          : '📎 첨부 파일은 전달되지 않았습니다 — 이 goal 명령으로 시작한 턴이 없습니다. 필요하면 다시 보내 주세요.',
+      );
+    }
+    try {
+      await this.slackApi.addReaction(channel, event.ts, result.error ? 'warning' : 'zap');
+    } catch (error) {
+      this.logger.debug('Goal command reaction failed', { error: (error as Error)?.message ?? String(error) });
+    }
   }
 
   /**
@@ -2718,8 +2765,16 @@ export class SlackHandler {
    */
   private admitGoalOpeningTurn(
     sessionKey: string,
-    anchor: { channel: string; threadTs: string; ts: string; user: string; team?: string; say: any },
-    opening: { goalId: string; objective: string },
+    anchor: {
+      channel: string;
+      threadTs: string;
+      ts: string;
+      user: string;
+      team?: string;
+      say: any;
+      files?: MessageEvent['files'];
+    },
+    opening: { goalId: string; objective: string; prompt?: string },
   ): GoalOpeningAdmission {
     const dispatcher = this.followupDispatcher;
     const queue = this.followupQueue;
@@ -2737,9 +2792,15 @@ export class SlackHandler {
       thread_ts: anchor.threadTs,
       ts: anchor.ts,
       user: anchor.user,
-      text: opening.objective,
+      // The objective verbatim — or, for a `goal … $skill` split, the `$skill`
+      // part, routed as a command when it runs so the skill is resolved then.
+      text: opening.prompt ?? opening.objective,
       ...(anchor.team ? { team: anchor.team } : {}),
-      routeContext: { verbatimPrompt: true, goalOpeningId: opening.goalId },
+      ...(anchor.files?.length ? { files: anchor.files } : {}),
+      routeContext:
+        opening.prompt === undefined
+          ? { verbatimPrompt: true, goalOpeningId: opening.goalId }
+          : { goalOpeningId: opening.goalId },
     } as MessageEvent;
 
     void this.handleMessage(openingEvent, anchor.say).catch((error) => {
@@ -2786,10 +2847,43 @@ export class SlackHandler {
     return stale;
   }
 
+  /**
+   * A goal's opening turn must START the goal. The `$skill` opening of a
+   * `goal … $skill` split is routed as a command when it runs; if the skill
+   * no longer resolves (or answers without a prompt), the goal would sit
+   * active with no first turn — so the turn runs the live goal's objective
+   * instead (verbatim, as a plain goal's opening would). A skill parked on a
+   * cross-user permission keeps its own contract (`awaitingPermission`).
+   */
+  private async ensureGoalOpeningPrompt(
+    event: MessageEvent,
+    routed: Awaited<ReturnType<InputProcessor['routeCommand']>>,
+    channel: string,
+    threadTs: string,
+  ): Promise<Awaited<ReturnType<InputProcessor['routeCommand']>>> {
+    const goalId = event.routeContext?.goalOpeningId;
+    if (goalId === undefined || isVerbatimPrompt(event)) return routed;
+    if (!routed.handled || routed.continueWithPrompt || routed.awaitingPermission) return routed;
+    const goal = this.claudeHandler.getSession?.(channel, threadTs)?.goal;
+    if (!goal || goal.goalId !== goalId || goal.status !== 'active') return routed;
+    this.logger.info('Goal opening skill produced no turn — running the objective instead', {
+      channel,
+      threadTs,
+      goalId,
+    });
+    await this.postGoalNoticeBestEffort(
+      channel,
+      threadTs,
+      `ℹ️ 스킬 없이 goal의 첫 턴을 시작합니다: ${formatGoalObjectiveForSlack(goal.objective)}`,
+    );
+    event.routeContext = { ...event.routeContext, verbatimPrompt: true };
+    return { handled: true, continueWithPrompt: goal.objective, verbatimPrompt: true };
+  }
+
   private async postStaleGoalOpeningNotice(channel: string, threadTs: string): Promise<void> {
     await this.slackApi.postSystemMessage(
       channel,
-      '⏭️ 이 goal은 시작 전에 삭제·일시정지되었거나 다른 goal로 바뀌어서 첫 턴을 실행하지 않았습니다.',
+      '⏭️ 이 goal은 시작 전에 삭제·일시정지되었거나 다른 goal로 바뀌어서 첫 턴을 실행하지 않았습니다. `goal resume`은 첫 턴을 다시 실행하지 않습니다 — 필요하면 목표를 다시 보내 주세요.',
       { threadTs },
     );
   }
@@ -2821,6 +2915,11 @@ export class SlackHandler {
     if (this.goalIntakeSeen.has(key)) return false;
     this.goalIntakeSeen.set(key, now);
     return true;
+  }
+
+  /** Forget a claim whose command failed before it changed anything (see `runGoalCommandNow`). */
+  private releaseGoalIntake(event: MessageEvent): void {
+    this.goalIntakeSeen.delete(`${event.channel}:${event.ts}`);
   }
 
   /** Follow-up states that are still user work waiting to run (`shouldDeferGoalDriver`). */
@@ -3791,10 +3890,11 @@ export class SlackHandler {
    * without a command router keeps its pre-steering behavior.
    */
   private isSteerableText(event: MessageEvent): boolean {
-    // A goal's opening turn (always verbatim) is its own turn: pushed into the
-    // running turn, the new goal's first instruction would be answered as part
-    // of whatever that turn was doing.
-    if (isVerbatimPrompt(event)) return false;
+    // A goal's opening turn is its own turn: pushed into the running turn, the
+    // new goal's first instruction would be answered as part of whatever that
+    // turn was doing. Verbatim objectives AND the non-verbatim `$skill` opening
+    // of a `goal … $skill` split.
+    if (isVerbatimPrompt(event) || event.routeContext?.goalOpeningId !== undefined) return false;
     const text = (event.text ?? '').trim();
     if (!text) return true;
     if (text.startsWith('!')) return false;
@@ -4029,6 +4129,23 @@ export class SlackHandler {
     const eventKey = `${edit.channel}:${edit.ts}`;
     const item = queue.list(sessionKey).find((candidate) => candidate.eventKey === eventKey);
     if (!item) return;
+
+    // The message is a goal command that already ran: the queued item is that
+    // goal's opening turn (its objective, or its `$skill` part), not the text
+    // the user is editing. Rewriting it would run `goal Y` as a literal prompt
+    // while the goal stays X.
+    if (item.message?.routeContext?.goalOpeningId !== undefined) {
+      if (['resolved', 'failed', 'cancelled'].includes(item.state)) return;
+      const noticed = (this.followupEditNoticed ??= new Set());
+      if (noticed.has(item.id)) return;
+      noticed.add(item.id);
+      await this.slackApi.postSystemMessage(
+        edit.channel,
+        '✏️ 이 goal 명령은 이미 실행되어 수정 내용은 반영되지 않았습니다. goal을 바꾸려면 `goal`로 목록을 열어 삭제하고 새로 추가해 주세요.',
+        { threadTs: edit.threadTs },
+      );
+      return;
+    }
 
     if (item.state === 'queued') {
       const result = queue.editQueued(sessionKey, item.id, item.epoch, edit.text);
@@ -5883,23 +6000,26 @@ export class SlackHandler {
       const objective = request.objective.trim();
       const invalid = validateSessionGoalObjective(objective);
       if (invalid) throw new HostGoalActionError(400, invalid);
-      const inFlight = session.goal?.status === 'active' || session.goal?.status === 'paused';
-      // A goal that may START here gets an opening turn the drain would run as
-      // `actor` — refuse now what the drain would refuse later, or the opening
-      // would sit in the queue for good while the goal looks started.
-      if (!inFlight) this.assertGoalOpeningAuthor(sessionKey, actor, channel, threadTs);
+      // Whether the goal will START or QUEUE is only known after the anchor
+      // await (the goal in flight may finish, or one may start, meanwhile).
+      // So nothing before the await depends on it: the author is checked
+      // unconditionally (the drain would refuse a queued goal's opening later
+      // anyway) and the anchor text promises neither outcome.
+      this.assertGoalOpeningAuthor(sessionKey, actor, channel, threadTs);
       const anchorTs = await this.postGoalAnchor(
         channel,
         threadTs,
-        inFlight
-          ? `📋 Goal queued via dashboard: ${formatGoalObjectiveForSlack(objective)}\n_It will start automatically when the current goal completes._`
-          : `🎯 Goal set via dashboard: ${formatGoalObjectiveForSlack(objective)}\n_Its first turn starts now, or right after the current turn._`,
+        `🎯 Goal added via dashboard: ${formatGoalObjectiveForSlack(objective)}`,
       );
 
       // ── synchronous from here: re-check → mutate → persist → admit ──
       let live: ConversationSession;
       try {
         live = this.liveGoalSession(sessionKey);
+        // The same session object — not a new session that took the key while
+        // the anchor was posted (its author rules may differ).
+        if (live !== session) throw new HostGoalActionError(409, 'The session was replaced — refresh and try again');
+        this.assertGoalOpeningAuthor(sessionKey, actor, channel, threadTs);
       } catch (error) {
         await this.postGoalNoticeBestEffort(
           channel,
@@ -5919,11 +6039,13 @@ export class SlackHandler {
         // Behind the goal in flight: no opening turn, no epoch bump (the
         // running goal's in-flight eval stays valid, M1).
         this.claudeHandler.saveSessions();
-        return {
-          outcome: 'queued',
-          goalId: result.goal.goalId,
-          position: result.position ?? live.goalQueue?.length ?? 1,
-        };
+        const position = result.position ?? live.goalQueue?.length ?? 1;
+        await this.postGoalNoticeBestEffort(
+          channel,
+          threadTs,
+          `📋 Queued at position ${position} — it starts automatically when the current goal completes.`,
+        );
+        return { outcome: 'queued', goalId: result.goal.goalId, position };
       }
       this.persistHostGoalMutation(live);
       const admission = this.admitGoalOpeningTurn(
@@ -6027,6 +6149,100 @@ export class SlackHandler {
       );
     }
     return { outcome: 'deleted', goalId, promoted: { goalId: promoted.goalId, objective: promoted.objective } };
+  }
+
+  /**
+   * The live ACTIVE goal whose opening turn `item` is, while that opening has
+   * never run — or `undefined` (an ordinary item, a stale opening, an opening
+   * that already ran or failed mid-flight).
+   */
+  private goalOfUnstartedOpening(
+    sessionKey: string,
+    item: { id: string; message?: MessageEvent },
+    previousState: string,
+  ): { session: ConversationSession; goal: NonNullable<ConversationSession['goal']> } | undefined {
+    const goalId = item.message?.routeContext?.goalOpeningId;
+    if (goalId === undefined) return undefined;
+    if (previousState !== 'queued' && previousState !== 'paused') return undefined;
+    const session = this.claudeHandler.getSessionByKey?.(sessionKey);
+    const goal = session?.goal;
+    if (!session || !goal || goal.goalId !== goalId || goal.status !== 'active') return undefined;
+    const ranBefore = this.followupQueue
+      ?.list(sessionKey)
+      .some(
+        (other) =>
+          other.id !== item.id &&
+          other.message?.routeContext?.goalOpeningId === goalId &&
+          !['queued', 'paused', 'cancelled'].includes(other.state),
+      );
+    return ranBefore ? undefined : { session, goal };
+  }
+
+  /**
+   * Cancelling a goal's unstarted opening turn deletes the goal, so it takes
+   * what deleting a goal takes: the session owner or the goal's author — not
+   * merely someone allowed to interrupt the session.
+   */
+  private vetoGoalOpeningCancel(
+    sessionKey: string,
+    item: { id: string; state: string; message?: MessageEvent },
+    clicker: string,
+  ): string | undefined {
+    const found = this.goalOfUnstartedOpening(sessionKey, item, item.state);
+    if (!found) return undefined;
+    if (clicker === found.session.ownerId || clicker === found.goal.createdBy) return undefined;
+    return '이 메시지는 goal의 첫 턴입니다 — 취소하면 goal이 삭제되므로 세션 소유자나 goal을 만든 사람만 취소할 수 있습니다.';
+  }
+
+  /**
+   * The user cancelled a goal's opening turn before it ran: the goal is
+   * cancelled with it (the opening is the user's own `goal …` message, or the
+   * notice that started the goal). Keeping it would leave an ACTIVE goal with
+   * no first turn, evaluated on whatever unrelated turn ends next.
+   *
+   * Fenced in the same synchronous step as the queue write: the goal is paused
+   * and its epoch bumped right here, so neither the driver nor an in-flight
+   * eval can act on it while the delete below awaits its Slack anchor — and a
+   * crash in between leaves a paused goal, never an active one without an
+   * opening. The delete then promotes the next queued goal with its own
+   * opening; if it cannot, the goal simply stays paused and the thread is told.
+   */
+  private onGoalOpeningCancelled(
+    sessionKey: string,
+    item: { id: string; message?: MessageEvent },
+    clicker: string,
+    previousState: string,
+  ): void {
+    const found = this.goalOfUnstartedOpening(sessionKey, item, previousState);
+    if (!found) return;
+    const { session, goal } = found;
+    goal.status = 'paused';
+    goal.capDmPendingAt = undefined;
+    goal.updatedAt = Date.now();
+    this.persistHostGoalMutation(session);
+    void this.deleteGoalOfCancelledOpening(sessionKey, goal.goalId, clicker, session);
+  }
+
+  private async deleteGoalOfCancelledOpening(
+    sessionKey: string,
+    goalId: string,
+    clicker: string,
+    session: ConversationSession,
+  ): Promise<void> {
+    try {
+      await this.handleHostGoalAction(sessionKey, { action: 'delete', goalId, expect: 'current' }, clicker);
+    } catch (error) {
+      if (error instanceof HostGoalActionError && error.statusCode === 409) return; // the goal already moved on
+      const reason = (error as Error)?.message ?? String(error);
+      this.logger.warn('Cancelled goal opening — goal left paused', { sessionKey, goalId, reason });
+      if (session.channelId && session.threadTs) {
+        await this.postGoalNoticeBestEffort(
+          session.channelId,
+          session.threadTs,
+          `⏸️ 첫 턴이 취소되어 goal을 일시정지했습니다 — 삭제하지 못했습니다 (${reason}). \`goal resume\`은 첫 턴을 다시 실행하지 않습니다. 대시보드나 \`goal\` 목록에서 삭제해 주세요.`,
+        );
+      }
+    }
   }
 
   /** The session a host goal action may touch, or the refusal. */
