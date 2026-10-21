@@ -2,6 +2,7 @@ import { setSessionUiManagerProviders } from '@soma/slack/session-manager';
 
 import * as conversation from '../conversation';
 import * as linkMetadataFetcher from '../link-metadata-fetcher';
+import { getSessionLifecyclePolicy } from '../session-lifecycle-policy';
 import { userSettingsStore } from '../user-settings-store';
 
 setSessionUiManagerProviders({
@@ -39,6 +40,10 @@ setSessionUiManagerProviders({
   },
   getUserSessionTheme: (userId) => userSettingsStore.getUserSessionTheme(userId),
   getModelDisplayName: (model) => userSettingsStore.getModelDisplayName(model as any),
+  getSessionLifecycle: () => {
+    const { sleepAfterMs, archiveAfterMs } = getSessionLifecyclePolicy();
+    return { sleepAfterMs, archiveAfterMs };
+  },
 });
 
 export * from '@soma/slack/session-manager';

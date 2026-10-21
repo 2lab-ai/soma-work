@@ -9,6 +9,9 @@
  *   GET  /api/dashboard/stats                → Period statistics, one user or all users (JSON)
  *   GET  /api/dashboard/usage                → Period token usage + cost, one user or all users (JSON)
  *   GET  /api/dashboard/users                → User list (JSON)
+ *   GET  /api/dashboard/lifecycle            → Session lifecycle policy (JSON; also in the sessions response)
+ *   PUT  /api/dashboard/lifecycle            → Update it (admin: viewer token, or ADMIN_USERS + X-Admin-Mode: on);
+ *                                              409 + counts when it would sleep/end sessions, unless ?confirm=1
  *   GET  /api/dashboard/session/:id          → Session detail turns (JSON)
  *   GET  /api/dashboard/session/:id/worklog  → Work log entries (JSON, registered in work-log-routes.ts)
  *   POST /api/dashboard/session/:id/generate-title → Generate titleSub via codex model
@@ -16,6 +19,7 @@
  *   POST /api/dashboard/session/:key/close   → Close/terminate a session
  *   POST /api/dashboard/session/:key/trash   → Trash (hide) a closed session
  *   POST /api/dashboard/session/:key/command → Send command to session
+ *   POST /api/dashboard/session/:key/goal    → Add a goal / delete the current or a queued goal
  *   POST /api/dashboard/session/:conversationId/resummarize/:turnId → Retry summary generation
  *   WS   /ws/dashboard                       → Real-time session state updates (WebSocket),
  *                                              incl. `work_log` entries (owner/admin scoped)
@@ -29,6 +33,15 @@ import { MetricsEventStore } from '../metrics/event-store';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
+import {
+  countLifecycleTransitions,
+  getSessionLifecyclePolicy,
+  isSessionLifecyclePolicyDegraded,
+  previewSessionLifecyclePolicy,
+  SessionLifecyclePolicyError,
+  updateSessionLifecyclePolicy,
+} from '../session-lifecycle-policy';
+import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from '../slack/goal-host-actions';
 import { getSurfaceLines } from '../slack/surface-config';
 import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, type EffortLevel, userSettingsStore } from '../user-settings-store';
@@ -129,6 +142,12 @@ export interface KanbanSession {
     port: number;
     host: string;
   };
+  /**
+   * The session's goal list (SSOT 2026-10-21 T2): the current goal with its
+   * state, and the goals queued behind it in start order. Absent when the
+   * session has never had a goal.
+   */
+  goal?: KanbanGoal;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -148,6 +167,22 @@ export interface KanbanSession {
     title?: string;
     description?: string;
   };
+}
+
+export interface KanbanGoal {
+  current?: {
+    goalId: string;
+    objective: string;
+    /** `active` drives the loop; `paused` keeps the objective but stops injecting it; `complete` is the last finished goal. */
+    status: 'active' | 'paused' | 'complete';
+    /** Auto-continuation turns since the last real user message, and the cap. */
+    continuationCount: number;
+    maxContinuations: number;
+    /** The last completion-eval verdict that said "not yet" — what is still missing. */
+    lastEvalReason?: string;
+  };
+  queue: Array<{ goalId: string; objective: string }>;
+  completedCount: number;
 }
 
 export interface KanbanBoard {
@@ -331,6 +366,12 @@ function getAllSessions(): Map<string, any> {
   return _getSessionsFn();
 }
 
+/** The lifecycle policy as the page sees it; `degraded` only when the saved policy is unreadable. */
+function lifecycleView(): ReturnType<typeof getSessionLifecyclePolicy> & { degraded?: true } {
+  const policy = getSessionLifecyclePolicy();
+  return isSessionLifecyclePolicyDegraded() ? { ...policy, degraded: true } : policy;
+}
+
 /**
  * #716 write-access predicate. Returns true when the authenticated
  * caller may mutate a resource owned by `ownerId`:
@@ -421,6 +462,22 @@ export function setDashboardTrashHandler(fn: TrashHandler): void {
 }
 export function setDashboardCommandHandler(fn: CommandHandler): void {
   _commandHandlerFn = fn;
+}
+
+/**
+ * Goal list actions from the work item (SSOT 2026-10-21 T3). The handler is
+ * `SlackHandler.handleHostGoalAction`; it throws `HostGoalActionError` for
+ * every refusal, whose `statusCode` the route answers with.
+ */
+type GoalActionHandler = (
+  sessionKey: string,
+  action: HostGoalAction,
+  actorUserId?: string,
+) => Promise<HostGoalActionResult>;
+let _goalActionHandlerFn: GoalActionHandler | null = null;
+
+export function setDashboardGoalHandler(fn: GoalActionHandler): void {
+  _goalActionHandlerFn = fn;
 }
 
 type ChoiceAnswerHandler = (sessionKey: string, choiceId: string, label: string, question: string) => Promise<void>;
@@ -528,6 +585,35 @@ function cardDerivedFields(src: {
   };
 }
 
+const KANBAN_GOAL_STATUSES = new Set(['active', 'paused', 'complete']);
+
+/** The goal list of a live session, shaped for the card (`KanbanSession.goal`). */
+function goalToKanban(s: any): KanbanGoal | undefined {
+  const goal = s.goal;
+  const queue: any[] = Array.isArray(s.goalQueue) ? s.goalQueue : [];
+  const history: any[] = Array.isArray(s.goalHistory) ? s.goalHistory : [];
+  if (!goal && queue.length === 0 && history.length === 0) return undefined;
+  return {
+    current:
+      goal && typeof goal.goalId === 'string' && KANBAN_GOAL_STATUSES.has(goal.status)
+        ? {
+            goalId: goal.goalId,
+            objective: String(goal.objective ?? ''),
+            status: goal.status,
+            continuationCount: Number(goal.continuationCount) || 0,
+            maxContinuations: Number(goal.maxContinuations) || 0,
+            ...(typeof goal.lastEvalReason === 'string' && goal.lastEvalReason
+              ? { lastEvalReason: goal.lastEvalReason }
+              : {}),
+          }
+        : undefined,
+    queue: queue
+      .filter((g) => g && typeof g.goalId === 'string')
+      .map((g) => ({ goalId: g.goalId, objective: String(g.objective ?? '') })),
+    completedCount: history.length,
+  };
+}
+
 function sessionToKanban(key: string, s: any): KanbanSession {
   const tasks = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
@@ -597,6 +683,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     // badge for self cards too — siblings get their env from the
     // aggregator's mergeBoards stamp.
     environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
+    goal: goalToKanban(s),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -634,9 +721,6 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       : undefined,
   };
 }
-
-// Dashboard archive display window: 48 hours
-const DASHBOARD_ARCHIVE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
 /**
  * Convert an ArchivedSession to KanbanSession for the closed column.
@@ -745,7 +829,8 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
       if (s.conversationId) liveConversationIds.add(s.conversationId);
     }
 
-    const archives = getArchiveStore().listRecent(DASHBOARD_ARCHIVE_MAX_AGE_MS);
+    // How long archives stay listed is the admin-set lifecycle policy (48h default).
+    const archives = getArchiveStore().listRecent(getSessionLifecyclePolicy().boardArchiveWindowMs);
     // Fix #438: Sort archives newest-first so the most recent interaction in a
     // thread/conversation wins during dedup (older terminated duplicates are dropped)
     const sortedArchives = [...archives].sort((a, b) => b.archivedAt - a.archivedAt);
@@ -1118,16 +1203,18 @@ export async function registerDashboardRoutes(
       const userId = request.query.userId || undefined;
       const selfOnly = request.query.selfOnly === 'true';
       const board = buildKanbanBoard(userId);
+      // The admin Lifecycle dialog reads the policy from the board poll.
+      const lifecycle = lifecycleView();
 
       // #814 — when not the recursion-guarded selfOnly path, ask the
       // aggregator to fan out to sibling instances on the same host.
       // Skip pre-listen / single-instance.
       if (!_selfInstanceEnv) {
-        reply.send({ board });
+        reply.send({ board, lifecycle });
         return;
       }
       if (selfOnly) {
-        reply.send({ board });
+        reply.send({ board, lifecycle });
         return;
       }
 
@@ -1145,7 +1232,7 @@ export async function registerDashboardRoutes(
             siblingCount,
           })
         ) {
-          reply.send({ board });
+          reply.send({ board, lifecycle });
           return;
         }
         // Per-poll TTL cache — multiple browser tabs polling /sessions
@@ -1170,14 +1257,68 @@ export async function registerDashboardRoutes(
           selfEnv: _selfInstanceEnv,
           siblings,
         });
-        reply.send({ board: merged });
+        reply.send({ board: merged, lifecycle });
       } catch (err) {
         // Hard failure of the aggregator must never surface a 500 —
         // fall back to self-only. Log at error (with stack) so a
         // genuine bug in mergeBoards / fetch wiring is visible, not
         // confused with the warn-throttled per-sibling failures.
         logger.error('Aggregator failed; serving self-only board', err);
-        reply.send({ board });
+        reply.send({ board, lifecycle });
+      }
+    },
+  );
+
+  // Session lifecycle policy (sleep / archive / board windows). Readable by any
+  // signed-in user; only an admin may change it — the viewer-token bearer, or an
+  // ADMIN_USERS member with X-Admin-Mode: on (same gate as cross-owner writes, #716).
+  server.get('/api/dashboard/lifecycle', { preHandler: [authMiddleware] }, async (_request, reply) => {
+    reply.send({ lifecycle: lifecycleView() });
+  });
+
+  // Shortening a duration sleeps or ends sessions on the next sweep, and ending
+  // removes their work dirs — so a change that would move any live session is
+  // answered 409 with the counts until the caller repeats it with ?confirm=1.
+  server.put<{ Body: unknown; Querystring: { confirm?: string } }>(
+    '/api/dashboard/lifecycle',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      if (!_hasWriteAccess(request, undefined)) {
+        reply
+          .status(403)
+          .send({ error: 'Forbidden — changing the lifecycle policy requires an admin with Admin mode on' });
+        return;
+      }
+      try {
+        const before = getSessionLifecyclePolicy();
+        const next = previewSessionLifecyclePolicy(request.body);
+        // While degraded the sweep has been paused, so nothing has moved under
+        // `before`: count every session the resumed sweep would move.
+        const from = isSessionLifecyclePolicyDegraded()
+          ? { ...before, sleepAfterMs: Number.POSITIVE_INFINITY, archiveAfterMs: Number.POSITIVE_INFINITY }
+          : before;
+        const impact = countLifecycleTransitions(getAllSessions().values(), from, next, Date.now());
+        if ((impact.willSleep > 0 || impact.willArchive > 0) && request.query.confirm !== '1') {
+          reply.status(409).send({ needsConfirm: true, ...impact });
+          return;
+        }
+        const lifecycle = updateSessionLifecyclePolicy(request.body);
+        const auth = (request as any).authContext;
+        logger.warn('Session lifecycle policy changed', {
+          actor: auth?.userId || auth?.mode || 'unknown',
+          before,
+          after: lifecycle,
+          ...impact,
+        });
+        broadcastSessionUpdate();
+        reply.send({ lifecycle: lifecycleView() });
+      } catch (error) {
+        if (error instanceof SessionLifecyclePolicyError) {
+          reply.status(400).send({ error: error.message, field: error.field });
+          return;
+        }
+        logger.error('Failed to save the session lifecycle policy', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
       }
     },
   );
@@ -1529,6 +1670,66 @@ export async function registerDashboardRoutes(
         reply.send({ ok: true });
       } catch (error) {
         logger.error('Error sending command to session', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // ── Goal list (work item) ──
+
+  server.post<{
+    Params: { key: string };
+    Body: { action?: unknown; objective?: unknown; goalId?: unknown; expect?: unknown };
+  }>(
+    '/api/dashboard/session/:key/goal',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const body = request.body || {};
+      let action: HostGoalAction;
+      if (body.action === 'add') {
+        if (typeof body.objective !== 'string' || !body.objective.trim()) {
+          reply.status(400).send({ error: 'objective is required and must be a non-empty string' });
+          return;
+        }
+        if (body.objective.length > 4000) {
+          reply.status(400).send({ error: 'objective exceeds max length (4000 chars)' });
+          return;
+        }
+        action = { action: 'add', objective: body.objective };
+      } else if (body.action === 'delete') {
+        if (typeof body.goalId !== 'string' || !body.goalId || body.goalId.length > 200) {
+          reply.status(400).send({ error: 'goalId is required and must be a string' });
+          return;
+        }
+        if (body.expect !== 'current' && body.expect !== 'queued') {
+          reply.status(400).send({ error: "expect must be 'current' or 'queued'" });
+          return;
+        }
+        action = { action: 'delete', goalId: body.goalId, expect: body.expect };
+      } else {
+        reply.status(400).send({ error: "action must be 'add' or 'delete'" });
+        return;
+      }
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { originalKey } = resolved;
+      if (!_goalActionHandlerFn) {
+        reply.status(501).send({ error: 'Goal action handler not configured' });
+        return;
+      }
+      try {
+        // The acting dashboard user (owner, or an admin in admin mode); a bearer
+        // client has none and the handler falls back to the session owner.
+        const actorUserId = (request as { authContext?: { userId?: string } }).authContext?.userId;
+        const result = await _goalActionHandlerFn(originalKey, action, actorUserId);
+        broadcastSessionUpdate();
+        reply.send({ ok: true, result });
+      } catch (error) {
+        if (error instanceof HostGoalActionError) {
+          reply.status(error.statusCode).send({ error: error.message });
+          return;
+        }
+        logger.error('Error applying goal action from dashboard', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
     },
@@ -2254,6 +2455,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .archives-btn[hidden] { display: none; }
 .archives-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 .archives-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
+/* Session lifecycle dialog (admin) */
+.lifecycle-dialog { margin: auto; border: 1px solid var(--border, rgba(127,127,127,0.3)); border-radius: 14px; padding: 18px 20px; background: var(--bg-card, var(--ib-col)); color: var(--ib-text); max-width: 420px; width: calc(100% - 32px); }
+.lifecycle-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+.lifecycle-dialog h3 { margin: 0 0 4px; font-size: 15px; }
+.lifecycle-dialog .lc-note { margin: 0 0 12px; font-size: 12px; color: var(--ib-muted); }
+.lifecycle-dialog label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; font-size: 13px; margin-bottom: 10px; }
+.lifecycle-dialog label input { grid-column: 1 / -1; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border, rgba(127,127,127,0.35)); background: var(--ib-seg); color: var(--ib-text); }
+.lifecycle-dialog .lc-unit { color: var(--ib-muted); font-size: 12px; }
+.lifecycle-dialog .lc-status { min-height: 1.2em; margin: 4px 0 8px; font-size: 12px; color: var(--ib-muted); }
+.lifecycle-dialog .lc-status.is-error { color: #f85149; }
+.lifecycle-dialog .lc-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.lifecycle-dialog .lc-save { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
 
 /* Board = 3 equal columns. No overflow clip on columns: a card flying between
    columns must stay visible over its neighbours. */
@@ -2508,6 +2721,74 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .btn-action.btn-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); }
 .btn-action.btn-stop { color: var(--st-fail); }
 .btn-action.btn-trash { color: var(--ib-muted); }
+
+/* ── GOAL LIST (work item, SSOT 2026-10-21 T2/T3) ── */
+.card-goal {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--ib-card-border);
+  border-radius: 8px;
+  background: var(--ib-card-dim);
+  font-size: 12.5px;
+}
+.card-goal .cg-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.card-goal .cg-label { font-weight: 600; color: var(--ib-text); }
+.card-goal .cg-status {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  line-height: 1.5;
+}
+.card-goal .cg-status.cg-active { color: var(--st-run); }
+.card-goal .cg-status.cg-paused { color: var(--st-wait); }
+.card-goal .cg-status.cg-complete { color: var(--st-done); }
+.card-goal .cg-progress { margin-left: auto; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
+.card-goal .cg-objective {
+  color: var(--ib-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.card-goal .cg-gap { margin-top: 3px; color: var(--ib-muted); overflow-wrap: anywhere; }
+.card-goal .cg-empty { color: var(--ib-muted); }
+.card-goal .cg-row { display: flex; align-items: flex-start; gap: 6px; }
+.card-goal .cg-row > :first-child { flex: 1; min-width: 0; }
+.card-goal .cg-queue-title { margin-top: 8px; color: var(--ib-muted); font-size: 11.5px; }
+.card-goal .cg-queue { list-style: decimal; margin: 2px 0 0 18px; }
+.card-goal .cg-queue li { padding: 2px 0; }
+.card-goal .cg-q-text { overflow-wrap: anywhere; color: var(--ib-text); }
+.card-goal .cg-done { margin-top: 6px; color: var(--ib-muted); font-size: 11.5px; }
+.card-goal .cg-btn {
+  flex: none;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border: 1px solid var(--ib-card-border);
+  border-radius: 6px;
+  background: var(--ib-card);
+  color: var(--ib-text);
+  cursor: pointer;
+}
+.card-goal .cg-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.card-goal .cg-btn.cg-danger { color: var(--st-fail); }
+.card-goal .cg-add { display: flex; gap: 6px; margin-top: 8px; }
+.card-goal .cg-add-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 8px;
+  border: 1px solid var(--ib-card-border);
+  border-radius: 6px;
+  background: var(--ib-card);
+  color: var(--ib-text);
+}
+.card-goal .cg-add-input:focus { outline: none; border-color: var(--border-focus); }
+.card-goal .cg-error { margin-top: 6px; color: var(--st-fail); overflow-wrap: anywhere; }
 
 /* ── PENDING QUESTION (dashboard choice buttons) ── */
 .card-question {
@@ -3481,12 +3762,28 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         <nav class="crumbs" aria-label="Breadcrumb"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
         <div class="inbox-tools">
           <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">Archives</span></button>
+          <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z"/></svg><span id="sleeping-label">Sleeping</span></button>
+          <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="Session lifecycle (admin)" onclick="openLifecycleDialog()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/></svg><span>Lifecycle</span></button>
           <div class="seg" role="group" aria-label="Board layout">
             <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="4.5" height="11" rx="1.2"/><rect x="9.5" y="2.5" width="4.5" height="7" rx="1.2"/></svg><span>Board</span></button>
             <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span>List</span></button>
           </div>
         </div>
       </div>
+      <dialog id="lifecycle-dialog" class="lifecycle-dialog" aria-labelledby="lifecycle-title">
+        <form method="dialog" onsubmit="saveLifecycle(event)" oninput="armLifecycleSave(null)">
+          <h3 id="lifecycle-title">Session lifecycle</h3>
+          <p class="lc-note"><span id="lifecycle-scope">이 인스턴스</span>에만 적용되고, 다음 정리 주기(최대 5분)부터 반영됩니다. 값을 줄이면 그 기준을 넘긴 세션이 바로 Sleeping이 되거나 종료됩니다 — 저장 전에 몇 개인지 알려 줍니다. Sleeping 전환이 12시간 이하이면 12시간 전 확인 알림은 보내지 않습니다.</p>
+          <label>마지막 활동 후 Sleeping 전환 <span class="lc-unit">시간</span><input id="lc-sleepAfterHours" type="number" min="1" max="720" step="any" required></label>
+          <label>Sleeping 후 Archive(종료) 전환 <span class="lc-unit">일</span><input id="lc-archiveAfterDays" type="number" min="0.05" max="365" step="any" required></label>
+          <label>보드에 Archive 표시 기간 <span class="lc-unit">시간</span><input id="lc-boardArchiveWindowHours" type="number" min="0" max="8760" step="any" required></label>
+          <p class="lc-status" id="lifecycle-status" role="status" aria-live="polite"></p>
+          <div class="lc-actions">
+            <button type="button" class="archives-btn" onclick="closeLifecycleDialog()">취소</button>
+            <button type="submit" class="archives-btn lc-save" id="lifecycle-save">저장</button>
+          </div>
+        </form>
+      </dialog>
       <div class="kanban" id="kanban" data-view="board">
         <div class="kanban-col" id="col-waiting" data-col="waiting">
           <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>NEEDS YOU</h3><span class="count" id="count-waiting">0</span></div>
@@ -3866,6 +4163,8 @@ function _applyUserPill(data) {
   // Bearer-cookie admin (viewer token) is treated as always-admin and
   // also gets the toggle.
   const isAdminCapable = !!(data && (data.isAdmin || (data.user && data.user.name && data.isAdmin)));
+  const lifecycleBtn = document.getElementById('lifecycle-btn');
+  if (lifecycleBtn) lifecycleBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
   const toggle = document.getElementById('admin-mode-toggle');
   if (toggle) {
     if (isAdminCapable) {
@@ -4286,26 +4585,30 @@ function isSiblingSession(s) {
 }
 
 // Pure: the DONE column for this render. idle cards, then closed cards from the
-// last 7 days, then — when "Show older" is open — the older ones. An archived
-// (terminated) closed card is left out unless archives are shown; the one key
-// a deep link revealed (revealKey) is always in, whatever its age. olderCount =
-// what "Show older" would add; archivedCount = archives in the board data.
+// last 7 days, then — when "Show older" is open — the older ones.
+// An archived (terminated) closed card is left out unless archives are shown;
+// a sleeping one (closed, not terminated) unless sleeping cards are shown
+// (showSleeping, on unless false). The one key a deep link revealed (revealKey)
+// is always in, whatever its age. olderCount = what "Show older" would add;
+// archivedCount / sleepingCount = those cards in the board data.
 function planDoneColumn(idle, closed, o) {
   var cutoff = o.now - 7 * 24 * 60 * 60 * 1000;
-  var recent = [], older = [], archivedCount = 0;
+  var recent = [], older = [], archivedCount = 0, sleepingCount = 0;
   for (var i = 0; i < closed.length; i++) {
     var s = closed[i];
     var archived = s.terminated === true;
     var revealed = !!o.revealKey && s.key === o.revealKey;
     if (archived) archivedCount++;
+    else sleepingCount++;
     if (archived && !o.showArchives && !revealed) continue;
+    if (!archived && o.showSleeping === false && !revealed) continue;
     if (!revealed && new Date(s.lastActivity).getTime() < cutoff) older.push(s);
     else recent.push(s);
   }
   var done = idle.map(function(s) { return { s: s, col: 'idle' }; })
     .concat(recent.map(function(s) { return { s: s, col: 'closed' }; }));
   if (o.showOlder) done = done.concat(older.map(function(s) { return { s: s, col: 'closed' }; }));
-  return { done: done, olderCount: older.length, archivedCount: archivedCount };
+  return { done: done, olderCount: older.length, archivedCount: archivedCount, sleepingCount: sleepingCount };
 }
 
 function renderBoard(board) {
@@ -4330,6 +4633,7 @@ function renderBoard(board) {
     now: Date.now(),
     showOlder: showOlderClosed,
     showArchives: showArchives,
+    showSleeping: showSleeping,
     revealKey: _revealedKey,
   });
   reconcileBoard({
@@ -4345,6 +4649,7 @@ function renderBoard(board) {
   });
   renderOlderToggle(plan.olderCount);
   renderArchivesToggle(plan.archivedCount);
+  renderSleepingToggle(plan.sleepingCount);
   // The #814 tokens tooltip describes this board (user switch, WS push).
   updateTokenBreakdown();
   _boardRenders++;
@@ -4571,9 +4876,11 @@ function applyCardParts(el, p) {
     updateTimersIn(el._faceEl);
     changed = true;
   }
-  if (el._bodyHtml !== p.body) {
+  if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl)) {
+    var goalDraft = captureGoalDraft(el._bodyEl);
     el._bodyEl.innerHTML = p.body;
     el._bodyHtml = p.body;
+    restoreGoalDraft(el._bodyEl, goalDraft);
     updateTimersIn(el._bodyEl);
     changed = true;
   }
@@ -5098,12 +5405,157 @@ function renderCardBody(s, col) {
     + metaHtml
     + refsHtml
     + subtitlesHtml
+    + renderCardGoal(s, col, isOwner && !isSibling)
     + renderTimeline(s)
     + ioHtml
     + questionHtml
     + statsHtml
     + actionsHtml
     + '</div>';
+}
+
+// ── Goal list on the work item (SSOT 2026-10-21 T2/T3) ──
+// The card shows the current goal, its state and the goals queued behind it,
+// and lets the owner add a goal, delete the current goal (the next queued one
+// starts — never \`goal clear\`, which also drops the queue) or delete a queued
+// goal. Every write names WHERE the goal was seen (current / queued), so a goal
+// that moved in the meantime is refused (409) instead of deleting the wrong one.
+var GOAL_STATUS_LABELS = { active: '진행 중', paused: '일시정지', complete: '완료' };
+var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
+
+function renderCardGoal(s, col, canEdit) {
+  var g = s.goal || null;
+  var live = col !== 'closed' && !s.terminated;
+  // Read-only viewers and closed sessions only see a goal list that exists.
+  if (!g && !(canEdit && live)) return '';
+  var editable = canEdit && live;
+  var dis = editable ? '' : ' disabled';
+  var key = escJs(s.key);
+  var queue = (g && g.queue) || [];
+  var cur = g && g.current;
+  var html = '<div class="card-goal">';
+  html += '<div class="cg-head"><span class="cg-label">&#x1F3AF; Goal</span>';
+  if (cur) {
+    html += '<span class="cg-status cg-' + escAttr(cur.status) + '">' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
+    if (cur.status === 'active' && toNum(cur.maxContinuations) > 0) {
+      html += '<span class="cg-progress" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
+    }
+  }
+  html += '</div>';
+  if (cur) {
+    var dropLabel = queue.length ? '현재 goal 삭제 · 다음 시작' : '현재 goal 삭제';
+    html += '<div class="cg-row"><div class="cg-objective" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
+      + '<button type="button" class="cg-btn cg-danger"' + dis
+      + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(cur.goalId) + '\\',expect:\\'current\\'},this)">'
+      + dropLabel + '</button></div>';
+    if (cur.status === 'active' && cur.lastEvalReason) {
+      html += '<div class="cg-gap">남은 것: ' + esc(String(cur.lastEvalReason).slice(0, 300)) + '</div>';
+    }
+  } else {
+    html += '<div class="cg-empty">현재 goal 없음</div>';
+  }
+  if (queue.length) {
+    html += '<div class="cg-queue-title">대기 중인 goal ' + queue.length + '개</div><ol class="cg-queue">';
+    for (var i = 0; i < queue.length; i++) {
+      var q = queue[i];
+      html += '<li><div class="cg-row"><span class="cg-q-text">' + esc(q.objective) + '</span>'
+        + '<button type="button" class="cg-btn cg-danger" title="대기 goal 삭제" aria-label="대기 goal 삭제"' + dis
+        + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(q.goalId) + '\\',expect:\\'queued\\'},this)">삭제</button></div></li>';
+    }
+    html += '</ol>';
+  }
+  if (g && toNum(g.completedCount) > 0) html += '<div class="cg-done">완료된 goal ' + toNum(g.completedCount) + '개</div>';
+  if (editable) {
+    html += '<form class="cg-add" onsubmit="event.preventDefault();event.stopPropagation();addGoalFromCard(\\'' + key + '\\',this)">'
+      + '<input class="cg-add-input" name="objective" maxlength="4000" autocomplete="off" aria-label="goal 추가"'
+      + ' placeholder="' + (cur && cur.status !== 'complete' ? 'goal 추가 (현재 goal 다음에 시작)' : 'goal 추가 (바로 시작)') + '"'
+      + ' onblur="goalInputBlur(\\'' + key + '\\')">'
+      + '<button type="submit" class="cg-btn">추가</button></form>';
+  }
+  if (_goalErrors[s.key]) html += '<div class="cg-error" role="alert">' + esc(_goalErrors[s.key]) + '</div>';
+  return html + '</div>';
+}
+
+// The goal input survives the card's live re-render: while it has focus the
+// body is not replaced at all (typing and IME composition stay intact), and an
+// unfocused draft is carried into the new body.
+function isEditingGoal(root) {
+  var a = document.activeElement;
+  return !!(a && a.classList && a.classList.contains('cg-add-input') && root.contains(a));
+}
+function captureGoalDraft(root) {
+  var input = root.querySelector('.cg-add-input');
+  return input && input.value ? input.value : '';
+}
+function restoreGoalDraft(root, value) {
+  if (!value) return;
+  var input = root.querySelector('.cg-add-input');
+  if (input && !input.value) input.value = value;
+}
+function goalInputBlur(key) {
+  // Let a click on 추가 land before the deferred re-render replaces the form.
+  setTimeout(function() {
+    var el = _cardEls[key];
+    if (el && !isEditingGoal(el._bodyEl)) refreshCard(key);
+  }, 200);
+}
+
+async function postGoalAction(key, payload) {
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/goal';
+  var body = JSON.stringify(payload);
+  var headers = { 'Content-Type': 'application/json' };
+  if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+  var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+  if (res.status === 403) {
+    await refreshCsrfToken();
+    var retryHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+    res = await fetch(url, { method: 'POST', headers: retryHeaders, body: body });
+  }
+  var data = null;
+  try { data = await res.json(); } catch (_e) {}
+  return { ok: res.ok, error: (data && data.error) || ('HTTP ' + res.status) };
+}
+function setGoalError(key, message) {
+  if (message) _goalErrors[key] = message;
+  else delete _goalErrors[key];
+  refreshCard(key);
+}
+async function goalAction(key, payload, btn) {
+  if (btn) btn.disabled = true;
+  var r;
+  try { r = await postGoalAction(key, payload); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+  setGoalError(key, r.ok ? '' : r.error);
+  if (!r.ok && btn) btn.disabled = false;
+  loadSessions();
+}
+// One add in flight per card. The input is NOT disabled while it is sent:
+// keeping its focus is what keeps a live re-render from replacing the form
+// (and resurrecting the sent text as a fresh, submittable draft).
+var _goalAdding = Object.create(null);
+async function addGoalFromCard(key, form) {
+  if (_goalAdding[key]) return;
+  var input = form.querySelector('.cg-add-input');
+  var objective = input ? input.value.trim() : '';
+  if (!objective) return;
+  _goalAdding[key] = true;
+  var btn = form.querySelector('button');
+  if (btn) btn.disabled = true;
+  var r;
+  try { r = await postGoalAction(key, { action: 'add', objective: objective }); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+  delete _goalAdding[key];
+  // The form on screen may have been re-rendered meanwhile — act on the live one.
+  var el = _cardEls[key];
+  var live = (el && el._bodyEl.querySelector('.cg-add-input')) || input;
+  var liveBtn = live.form ? live.form.querySelector('button') : btn;
+  if (liveBtn) liveBtn.disabled = false;
+  if (btn && btn !== liveBtn) btn.disabled = false;
+  if (r.ok) {
+    if (live.value.trim() === objective) live.value = '';
+    live.blur();
+  }
+  setGoalError(key, r.ok ? '' : r.error);
+  loadSessions();
 }
 
 // Card click = expand / collapse in place (§3.1-4). Keyboard toggles skip the
@@ -5214,6 +5666,155 @@ function renderArchivesToggle(archivedCount) {
   setTextIfChanged(label, 'Archives (' + archivedCount + ')');
 }
 
+// ── Sleeping — the same on / off toggle for sleeping (closed, not archived)
+// cards. Shown by default, as before this toggle existed; the choice persists
+// in localStorage['soma-show-sleeping'] ('on' / 'off'). ──
+var SHOW_SLEEPING_KEY = 'soma-show-sleeping';
+function readShowSleeping() {
+  try { return localStorage.getItem(SHOW_SLEEPING_KEY) !== 'off'; } catch (_e) { return true; }
+}
+var showSleeping = readShowSleeping();
+function toggleSleeping() {
+  showSleeping = !showSleeping;
+  _revealedKey = null;
+  try { localStorage.setItem(SHOW_SLEEPING_KEY, showSleeping ? 'on' : 'off'); } catch (_e) {}
+  loadSessions();
+}
+function renderSleepingToggle(sleepingCount) {
+  var btn = document.getElementById('sleeping-toggle');
+  var label = document.getElementById('sleeping-label');
+  if (!btn || !label) return;
+  var hide = sleepingCount === 0;
+  if (btn.hidden !== hide) btn.hidden = hide;
+  var pressed = showSleeping ? 'true' : 'false';
+  if (btn.getAttribute('aria-pressed') !== pressed) btn.setAttribute('aria-pressed', pressed);
+  setTextIfChanged(label, 'Sleeping (' + sleepingCount + ')');
+}
+
+// ── Session lifecycle policy (sleep / archive / board windows). The board
+// response carries it; admins edit it in the Lifecycle dialog (PUT
+// /api/dashboard/lifecycle, which the server only accepts from an admin with
+// Admin mode on). Sleep and the board archive window are edited in hours, the
+// archive time in days. ──
+var _lifecycle = null;
+// The request body the Save button is armed to force (?confirm=1), or null.
+var _lifecycleArmed = null;
+function armLifecycleSave(body) {
+  _lifecycleArmed = body;
+  var btn = document.getElementById('lifecycle-save');
+  if (btn) btn.textContent = body ? '그래도 저장' : '저장';
+}
+// [form field, policy field, ms per form unit]
+var LIFECYCLE_FIELDS = [['sleepAfterHours', 'sleepAfterMs', 3600000], ['archiveAfterDays', 'archiveAfterMs', 86400000], ['boardArchiveWindowHours', 'boardArchiveWindowMs', 3600000]];
+// Pure: policy (ms) → form values.
+function lifecycleToForm(p) {
+  var out = {};
+  for (var i = 0; i < LIFECYCLE_FIELDS.length; i++) {
+    var f = LIFECYCLE_FIELDS[i];
+    out[f[0]] = Math.round((p[f[1]] / f[2]) * 100) / 100;
+  }
+  return out;
+}
+// Pure: form values → { ok, patch } in ms (whole minutes), or { ok: false, field }
+// naming the first field that is not a non-negative number. Bounds are the
+// server's job; it answers 400 with the field.
+function lifecycleFromForm(form) {
+  var patch = {};
+  for (var i = 0; i < LIFECYCLE_FIELDS.length; i++) {
+    var f = LIFECYCLE_FIELDS[i];
+    var raw = form[f[0]];
+    var n = typeof raw === 'number' ? raw : (String(raw == null ? '' : raw).trim() === '' ? NaN : Number(raw));
+    if (!isFinite(n) || n < 0) return { ok: false, field: f[0] };
+    patch[f[1]] = Math.round((n * f[2]) / 60000) * 60000;
+  }
+  return { ok: true, patch: patch };
+}
+function openLifecycleDialog() {
+  var dlg = document.getElementById('lifecycle-dialog');
+  if (!dlg || !_lifecycle) return;
+  var form = lifecycleToForm(_lifecycle);
+  for (var k in form) {
+    var input = document.getElementById('lc-' + k);
+    if (input) input.value = String(form[k]);
+  }
+  armLifecycleSave(null);
+  setTextIfChanged(document.getElementById('lifecycle-scope'), SELF_INSTANCE_NAME ? '이 인스턴스(' + SELF_INSTANCE_NAME + ')' : '이 인스턴스');
+  setLifecycleStatus(_lifecycle.degraded ? '저장된 정책 파일을 읽을 수 없어 Sleeping/종료 전환을 멈춘 상태입니다. 저장하면 다시 시작합니다.' : '', !!_lifecycle.degraded);
+  if (typeof dlg.showModal === 'function') dlg.showModal();
+  else dlg.setAttribute('open', '');
+}
+function closeLifecycleDialog() {
+  var dlg = document.getElementById('lifecycle-dialog');
+  if (!dlg) return;
+  if (typeof dlg.close === 'function') dlg.close();
+  else dlg.removeAttribute('open');
+}
+function setLifecycleStatus(text, isError) {
+  var el = document.getElementById('lifecycle-status');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('is-error', !!isError);
+}
+var LIFECYCLE_LABELS = {
+  sleepAfterHours: 'Sleeping 전환', archiveAfterDays: 'Archive 전환', boardArchiveWindowHours: 'Archive 표시 기간',
+  sleepAfterMs: 'Sleeping 전환', archiveAfterMs: 'Archive 전환', boardArchiveWindowMs: 'Archive 표시 기간',
+};
+async function saveLifecycle(ev) {
+  if (ev) ev.preventDefault();
+  var form = {};
+  for (var i = 0; i < LIFECYCLE_FIELDS.length; i++) {
+    var input = document.getElementById('lc-' + LIFECYCLE_FIELDS[i][0]);
+    form[LIFECYCLE_FIELDS[i][0]] = input ? input.value : '';
+  }
+  var parsed = lifecycleFromForm(form);
+  if (!parsed.ok) { setLifecycleStatus(LIFECYCLE_LABELS[parsed.field] + ': 0 이상의 숫자를 입력하세요.', true); return; }
+  // Send only what the admin changed: the dialog shows rounded values, and
+  // re-saving an untouched field must not rewrite it.
+  var shown = lifecycleToForm(_lifecycle || {});
+  for (var j = 0; j < LIFECYCLE_FIELDS.length; j++) {
+    if (Number(form[LIFECYCLE_FIELDS[j][0]]) === shown[LIFECYCLE_FIELDS[j][0]]) delete parsed.patch[LIFECYCLE_FIELDS[j][1]];
+  }
+  if (Object.keys(parsed.patch).length === 0) { closeLifecycleDialog(); return; }
+  // The server answers 409 with counts when the change would sleep or end live
+  // sessions. The dialog shows them and arms the Save button; saving the same
+  // values again sends ?confirm=1. Any edit disarms it.
+  var body = JSON.stringify(parsed.patch);
+  var force = _lifecycleArmed === body;
+  setLifecycleStatus('저장 중…', false);
+  try {
+    var send = function() {
+      var headers = { 'Content-Type': 'application/json' };
+      if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+      var url = '/api/dashboard/lifecycle' + (force ? '?confirm=1' : '');
+      return fetch(url, { method: 'PUT', headers: headers, body: body });
+    };
+    var res = await send();
+    if (res.status === 403 && !_isAdminModeOn()) {
+      setLifecycleStatus('Admin 모드를 ON으로 바꾼 뒤 저장하세요.', true);
+      return;
+    }
+    if (res.status === 403) { await refreshCsrfToken(); res = await send(); }
+    var data = await res.json().catch(function() { return {}; });
+    if (res.status === 409 && data && data.needsConfirm) {
+      armLifecycleSave(body);
+      setLifecycleStatus('이 값으로 저장하면 다음 정리 주기에 ' + (data.willSleep || 0) + '개 세션이 Sleeping으로, '
+        + (data.willArchive || 0) + '개 세션이 종료(Archive)됩니다. 종료는 되돌릴 수 없습니다. 그래도 저장하려면 한 번 더 누르세요.', true);
+      return;
+    }
+    armLifecycleSave(null);
+    if (!res.ok) {
+      var why = data && data.field ? LIFECYCLE_LABELS[data.field] + ' 값이 허용 범위를 벗어났습니다.' : (data && data.error) || ('저장 실패 (' + res.status + ')');
+      setLifecycleStatus(why, true);
+      return;
+    }
+    _lifecycle = data.lifecycle;
+    closeLifecycleDialog();
+    loadSessions();
+  } catch (e) {
+    setLifecycleStatus('저장 실패: 네트워크 오류', true);
+  }
+}
+
 // Deep link (§3.1-8): /dashboard/<ownerId>?session=<sessionKey> opens that card
 // and the panel at its work log once the board has data. Slack links carry the
 // registry key WITHOUT the #814 instance prefix ("work:C123:1700000000.000100"),
@@ -5258,10 +5859,12 @@ function openDeepLinkedSession() {
   var key = resolveDeepLinkKey(_deepLinkSession, Object.keys(_sessionCache), SELF_INSTANCE_NAME);
   if (!key) return;
   if (!_cardEls[key]) {
-    // A hidden archive (any age): show just this card for this page load — the
-    // stored Show archives choice stays as it is — and retry on that render.
+    // A card hidden by the Archives / Sleeping toggle (any age): show just this
+    // card for this page load — the stored choice stays as it is — and retry on
+    // that render.
     var linked = _sessionCache[key];
-    if (linked && linked.terminated === true && !showArchives && _revealedKey !== key) {
+    var hiddenByToggle = linked && (linked.terminated === true ? !showArchives : !showSleeping);
+    if (hiddenByToggle && _revealedKey !== key) {
       _revealedKey = key;
       loadSessions();
       return;
@@ -5304,6 +5907,7 @@ async function loadSessions() {
     const res = await fetch(url);
     const data = await res.json();
     _lastPolledBoard = data.board;
+    if (data.lifecycle) _lifecycle = data.lifecycle;
     renderBoard(data.board);
   } catch (e) { console.error('Failed to load sessions', e); }
 }

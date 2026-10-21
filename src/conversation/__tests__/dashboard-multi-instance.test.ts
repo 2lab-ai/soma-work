@@ -341,12 +341,12 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
   // self-instance prefix AND reject foreign prefixes with 409. Missing the
   // strip on any one endpoint silently degraded a sibling-routed action;
   // missing the foreign-prefix reject silently 4xxed (or worse, 200/no-op).
-  describe('action endpoint prefix handling — all 7 endpoints', () => {
+  describe('action endpoint prefix handling — all 8 endpoints', () => {
     type EndpointSpec = {
       verb: string;
       path: string;
       bodyForOk?: any;
-      handler: 'stop' | 'close' | 'trash' | 'command' | 'choice' | 'multi' | 'submit';
+      handler: 'stop' | 'close' | 'trash' | 'command' | 'choice' | 'multi' | 'submit' | 'goal';
     };
     const endpoints: EndpointSpec[] = [
       { verb: 'POST', path: 'stop', handler: 'stop' },
@@ -366,6 +366,7 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
         handler: 'multi',
       },
       { verb: 'POST', path: 'submit-recommended', handler: 'submit' },
+      { verb: 'POST', path: 'goal', bodyForOk: { action: 'add', objective: 'ship it' }, handler: 'goal' },
     ];
 
     for (const ep of endpoints) {
@@ -406,6 +407,9 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
             break;
           case 'submit':
             dashboard.setDashboardSubmitRecommendedHandler(handler);
+            break;
+          case 'goal':
+            dashboard.setDashboardGoalHandler(handler);
             break;
         }
 
@@ -459,6 +463,9 @@ describe('Dashboard multi-instance aggregation (#814)', () => {
             break;
           case 'submit':
             dashboard.setDashboardSubmitRecommendedHandler(handler);
+            break;
+          case 'goal':
+            dashboard.setDashboardGoalHandler(handler);
             break;
         }
 

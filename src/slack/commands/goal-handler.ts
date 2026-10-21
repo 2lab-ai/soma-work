@@ -1,3 +1,4 @@
+import { Logger } from '../../logger';
 import { validateSessionGoalObjective } from '../../prompt/session-goal-block';
 import type { ConversationSession, SessionGoal } from '../../types';
 import { DEFAULT_GOAL_MAX_CONTINUATIONS } from '../../types';
@@ -5,12 +6,19 @@ import { validateGoalMaxContinuations } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
 import { buildGoalStatusBlocks } from '../goal-blocks';
 import { bumpGoalEpoch } from '../goal-continuation';
-import { advanceGoalQueue, enqueueOrActivateGoal, formatGoalObjectiveForSlack } from '../session-goal';
-import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
+import {
+  advanceGoalQueue,
+  enqueueOrActivateGoal,
+  formatGoalObjectiveForSlack,
+  restoreGoalState,
+  snapshotGoalState,
+} from '../session-goal';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult, GoalOpeningAdmission } from './types';
 
 export class GoalHandler implements CommandHandler {
   /** Max queue/history rows rendered by `goal` status before truncating. */
   private static readonly STATUS_LIST_LIMIT = 10;
+  private logger = new Logger('GoalHandler');
 
   constructor(private deps: CommandDependencies) {}
 
@@ -77,7 +85,7 @@ export class GoalHandler implements CommandHandler {
         await this.resumeGoal(channel, threadTs, session);
         return { handled: true };
       case 'complete':
-        return this.completeGoal(channel, threadTs, session, user);
+        return this.completeGoal(channel, threadTs, session, user, ctx.admitOpening);
       case 'clear':
         await this.clearGoal(channel, threadTs, session);
         return { handled: true };
@@ -163,6 +171,10 @@ export class GoalHandler implements CommandHandler {
       return { handled: true };
     }
 
+    // Taken BEFORE the mutation: if the caller cannot admit the opening turn,
+    // the goal must not stay behind as an active goal nothing will start.
+    const snapshot = ctx.admitOpening ? snapshotGoalState(session) : undefined;
+
     // Multi-goal (T2): a second `goal <text>` while one is already in flight
     // APPENDS to the queue instead of replacing the running goal. The single
     // chokepoint (`enqueueOrActivateGoal`) decides activate-vs-queue so the
@@ -189,6 +201,30 @@ export class GoalHandler implements CommandHandler {
     }
 
     this.persistGoalChange(session);
+
+    if (ctx.admitOpening && snapshot) {
+      // Outside a dispatch slot (a turn is running): the opening turn is
+      // admitted HERE, in the same synchronous step as the mutation, never
+      // handed back after the notice below (see `CommandContext.admitOpening`).
+      const admission = ctx.admitOpening({ goalId: result.goal.goalId, objective });
+      if (typeof admission === 'object') {
+        restoreGoalState(session, snapshot);
+        this.deps.claudeHandler.saveSessions();
+        await this.notifyBestEffort(
+          ctx.channel,
+          ctx.threadTs,
+          `⚠️ Goal was NOT set — its first turn could not be scheduled (${admission.failed}). Send \`goal <objective>\` again.`,
+        );
+        return { handled: true };
+      }
+      await this.notifyBestEffort(
+        ctx.channel,
+        ctx.threadTs,
+        `🎯 Goal set: ${this.formatObjectiveForSlack(objective)}\n_${GoalHandler.openingHint(admission)}_`,
+      );
+      return { handled: true };
+    }
+
     await this.deps.slackApi.postSystemMessage(
       ctx.channel,
       `🎯 Goal set: ${this.formatObjectiveForSlack(objective)}\n_Continuing with goal context._`,
@@ -243,11 +279,13 @@ export class GoalHandler implements CommandHandler {
     threadTs: string,
     session: ConversationSession,
     user: string,
+    admitOpening?: CommandContext['admitOpening'],
   ): Promise<CommandResult> {
     if (!session.goal) {
       await this.postNoGoal(channel, threadTs);
       return { handled: true };
     }
+    const snapshot = admitOpening ? snapshotGoalState(session) : undefined;
     // User-driven completion bypasses the host-side eval model — see
     // docs/goal-command/spec.md §Completion via Host-Side Eval Model
     // ("user trust") and SSOT requirement H.4. Always reset pendingEval
@@ -270,6 +308,28 @@ export class GoalHandler implements CommandHandler {
     // eval-`complete` advance semantics identical.
     const next = advanceGoalQueue(session);
     this.persistGoalChange(session);
+
+    if (next && admitOpening && snapshot) {
+      // Same contract as `setGoal`: the promoted goal's opening turn is
+      // admitted with the mutation, or the completion is undone.
+      const admission = admitOpening({ goalId: next.goalId, objective: next.objective });
+      if (typeof admission === 'object') {
+        restoreGoalState(session, snapshot);
+        this.deps.claudeHandler.saveSessions();
+        await this.notifyBestEffort(
+          channel,
+          threadTs,
+          `⚠️ Goal was NOT marked complete — the next goal's first turn could not be scheduled (${admission.failed}). Try \`goal done\` again.`,
+        );
+        return { handled: true };
+      }
+      await this.notifyBestEffort(
+        channel,
+        threadTs,
+        `✅ Goal marked complete.\n▶️ Starting next queued goal: ${this.formatObjectiveForSlack(next.objective)}\n_${GoalHandler.openingHint(admission)}_`,
+      );
+      return { handled: true };
+    }
 
     if (next) {
       await this.deps.slackApi.postSystemMessage(
@@ -383,6 +443,27 @@ export class GoalHandler implements CommandHandler {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
     if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
     return `${n}`;
+  }
+
+  /** Where an admitted opening turn stands, for the notice. */
+  private static openingHint(admission: Exclude<GoalOpeningAdmission, { failed: string }>): string {
+    return admission === 'queued' ? 'It starts as soon as the current turn ends.' : 'Continuing with goal context.';
+  }
+
+  /**
+   * A notice AFTER the goal state and its opening turn are already settled:
+   * a Slack failure here must not undo or fail anything that already happened.
+   */
+  private async notifyBestEffort(channel: string, threadTs: string, text: string): Promise<void> {
+    try {
+      await this.deps.slackApi.postSystemMessage(channel, text, { threadTs });
+    } catch (error) {
+      this.logger.warn('Goal notice failed — the goal change itself stands', {
+        channel,
+        threadTs,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
   }
 
   private persistGoalChange(session: ConversationSession): void {
