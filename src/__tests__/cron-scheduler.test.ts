@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { type CronJob, CronStorage } from 'somalib/cron/cron-storage';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CronScheduler,
   type CronSchedulerDeps,
@@ -1251,10 +1251,16 @@ describe('CronScheduler.runJobNow', () => {
 // session it would be reported as started and may never run. The note tells the
 // lane which deploy fired it.
 describe('CronScheduler.runJobNow — forceNewThread + note', () => {
+  let tmpDir: string;
   let tmpFile: string;
 
   beforeEach(() => {
-    tmpFile = path.join(os.tmpdir(), `cron-force-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cron-force-'));
+    tmpFile = path.join(tmpDir, 'cron-jobs.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   const NOTE = '\n\n[deploy_completed repo=acme/app target=deploy/dev2 before=- after=abc1234 by=U_DEPLOYER]';
