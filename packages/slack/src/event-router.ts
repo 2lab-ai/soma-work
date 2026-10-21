@@ -716,6 +716,20 @@ export class EventRouter {
       }
       const text = botId ? event.text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim() : event.text.trim(); // fallback: preserve all mentions if botId unavailable
 
+      // `@bot /z goal …` in a thread that already has a session is the same
+      // instruction as typing `/z goal …` there (SSOT 2026-10-21: an added goal
+      // must become a goal at once, never a steering-queue item). Hand it to the
+      // host pipeline as typed: its follow-up fence runs the goal command now
+      // and admits the new goal's opening turn in the same step as the goal
+      // change. Through ZRouter, GoalHandler would run AHEAD of the fence and
+      // the opening would only be handed over after its Slack notice — the
+      // running turn could end in between and drive the goal loop on unrelated
+      // evidence. No session in the thread → nothing can be running: ZRouter.
+      if (this.isThreadGoalCommand(event, text)) {
+        await this.messageHandler({ ...event, text } as MessageEvent, say);
+        return;
+      }
+
       // FIX #1 (PR #509, revised by #530): route `@bot /z …` through ZRouter
       // so slash + DM + app_mention share one normalization pipeline for the
       // `/z` surface. Bare `[cmd] [args]` falls through to the normal
@@ -832,6 +846,13 @@ export class EventRouter {
         await this.handleThreadMessage(messageEvent, say);
       }
     });
+  }
+
+  /** A `/z` goal command (see `CommandRouter.isGoalIntakeText`) in a thread that has a session. */
+  private isThreadGoalCommand(event: { channel: string; thread_ts?: string; user?: string }, text: string): boolean {
+    if (!event.thread_ts || stripZPrefix(text) === null) return false;
+    if (this.commandRouter?.isGoalIntakeText?.(text, event.user) !== true) return false;
+    return Boolean(this.deps.claudeHandler.getSession(event.channel, event.thread_ts));
   }
 
   /**
@@ -1230,7 +1251,23 @@ export class EventRouter {
         threadTs,
         sessionId: session.sessionId || '(pending)',
       });
-      await this.messageHandler(messageEvent as MessageEvent, say);
+      // Strip the BOT mention, as the app_mention path does (Issue #141), so
+      // `@bot goal …` + file is the same command as a typed `goal …` + file.
+      // Cloned: the Slack event object is not ours to mutate.
+      const uploadText: string = messageEvent.text || '';
+      let botId: string | undefined;
+      if (uploadText.includes('<@')) {
+        try {
+          botId = await this.deps.slackApi.getBotUserId();
+        } catch (err) {
+          this.logger.warn('Failed to get bot user ID for mention stripping', { error: (err as Error).message });
+        }
+      }
+      const forwarded =
+        botId && uploadText.includes(`<@${botId}>`)
+          ? { ...messageEvent, text: uploadText.replace(new RegExp(`<@${botId}>`, 'g'), '').trim() }
+          : messageEvent;
+      await this.messageHandler(forwarded as MessageEvent, say);
       return;
     }
 

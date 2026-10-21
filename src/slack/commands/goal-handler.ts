@@ -192,12 +192,15 @@ export class GoalHandler implements CommandHandler {
       // eval). The running goal owns the loop untouched until it completes and
       // advances the queue. Just persist the appended queue entry.
       this.deps.claudeHandler.saveSessions();
-      await this.deps.slackApi.postSystemMessage(
-        ctx.channel,
-        `📋 Goal queued at position ${result.position}: ${this.formatObjectiveForSlack(objective)}\n_It will start automatically when the current goal completes._`,
-        { threadTs: ctx.threadTs },
-      );
-      return { handled: true };
+      const queuedNotice = `📋 Goal queued at position ${result.position}: ${this.formatObjectiveForSlack(objective)}\n_It will start automatically when the current goal completes._`;
+      if (ctx.admitOpening) {
+        // The queue entry is already saved: a Slack failure must not turn a
+        // done change into a crash (the host keeps the redelivery claim).
+        await this.notifyBestEffort(ctx.channel, ctx.threadTs, queuedNotice);
+      } else {
+        await this.deps.slackApi.postSystemMessage(ctx.channel, queuedNotice, { threadTs: ctx.threadTs });
+      }
+      return { handled: true, goalQueued: true };
     }
 
     this.persistGoalChange(session);
@@ -206,7 +209,7 @@ export class GoalHandler implements CommandHandler {
       // Outside a dispatch slot (a turn is running): the opening turn is
       // admitted HERE, in the same synchronous step as the mutation, never
       // handed back after the notice below (see `CommandContext.admitOpening`).
-      const admission = ctx.admitOpening({ goalId: result.goal.goalId, objective });
+      const admission = ctx.admitOpening({ goalId: result.goal.goalId, objective, cause: 'set' });
       if (typeof admission === 'object') {
         restoreGoalState(session, snapshot);
         this.deps.claudeHandler.saveSessions();
@@ -312,7 +315,7 @@ export class GoalHandler implements CommandHandler {
     if (next && admitOpening && snapshot) {
       // Same contract as `setGoal`: the promoted goal's opening turn is
       // admitted with the mutation, or the completion is undone.
-      const admission = admitOpening({ goalId: next.goalId, objective: next.objective });
+      const admission = admitOpening({ goalId: next.goalId, objective: next.objective, cause: 'promoted' });
       if (typeof admission === 'object') {
         restoreGoalState(session, snapshot);
         this.deps.claudeHandler.saveSessions();
