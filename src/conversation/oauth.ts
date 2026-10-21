@@ -13,7 +13,9 @@
  *      when one was remembered, else /dashboard/<userId>
  *
  * Routes:
- *   GET /login                          → Login page (Google/Microsoft buttons + Slack `dashboard` hint)
+ *   GET /login                          → Login page (Google/Microsoft buttons + Slack `dashboard` hint);
+ *                                         a signed-in browser also sees its account with
+ *                                         continue / use a different account / sign out
  *   GET /auth/google                    → Redirect to Google OAuth
  *   GET /auth/google/callback           → Google OAuth callback
  *   GET /auth/microsoft                 → Redirect to Microsoft OAuth
@@ -172,17 +174,27 @@ function _isSameOriginRequest(request: FastifyRequest): boolean {
  *   - Admin bearer cookies (`soma_dash_token=bearer:<viewerToken>`)
  *
  * Returns `{ kind: 'jwt', user }` for JWT sessions, `{ kind: 'bearer' }`
- * for admin, or `null` when the cookie is missing / garbage. The
- * session-fixation guard needs the bearer branch because
- * `getDashboardUser` alone would miss it — an admin who's already signed
- * in via `/auth/token` must NOT be silently downgraded to a Slack
- * identity by clicking a Slack `dashboard` link (Oracle re-review P1).
+ * for admin, or `null` when the cookie is missing / garbage / past its
+ * absolute lifetime. The session-fixation guard needs the bearer branch
+ * because `getDashboardUser` alone would miss it — an admin browser still
+ * holding a viewer-token cookie (issued by the since-removed token login)
+ * must NOT be silently downgraded to a Slack identity by clicking a Slack
+ * `dashboard` link (Oracle re-review P1). The login page uses the same
+ * answer to show who the browser is signed in as.
  */
-function _getCurrentSession(request: FastifyRequest): { kind: 'jwt'; user: DashboardUser } | { kind: 'bearer' } | null {
+type CurrentSession = { kind: 'jwt'; user: DashboardUser } | { kind: 'bearer' };
+
+function _getCurrentSession(request: FastifyRequest): CurrentSession | null {
   const cookieHeader = request.headers.cookie || '';
   const match = cookieHeader.match(new RegExp(`${COOKIE_NAME}=([^;]+)`));
   if (!match) return null;
-  const cookieVal = decodeURIComponent(match[1]);
+  // A malformed cookie is no session — /login must still render for it.
+  let cookieVal: string;
+  try {
+    cookieVal = decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
   if (
     cookieVal.startsWith('bearer:') &&
     config.conversation.viewerToken &&
@@ -190,8 +202,19 @@ function _getCurrentSession(request: FastifyRequest): { kind: 'jwt'; user: Dashb
   ) {
     return { kind: 'bearer' };
   }
-  const user = verifyDashboardToken(cookieVal);
-  return user ? { kind: 'jwt', user } : null;
+  // A JWT past its absolute lifetime is no session: `buildAuthContext`
+  // refuses it, so it must not be reported as one either.
+  const payload = verifyDashboardTokenRaw(cookieVal);
+  if (!payload || exceedsAbsoluteSessionLifetime(payload)) return null;
+  return {
+    kind: 'jwt',
+    user: {
+      slackUserId: payload.sub,
+      email: payload.email,
+      name: payload.name,
+      provider: payload.provider as DashboardProvider,
+    },
+  };
 }
 
 // ── User lookup ──
@@ -430,6 +453,17 @@ export function verifySsoExchangeToken(token: string): (JwtPayload & { jti: stri
   }
 }
 
+/**
+ * True when a session JWT was first issued longer ago than the absolute
+ * lifetime: 4× the configured expiry, at least 30 days. Rotation keeps
+ * `originalIat`, so a rotated session still ends here and must sign in again.
+ */
+export function exceedsAbsoluteSessionLifetime(payload: { iat?: number; originalIat?: number }): boolean {
+  const originalIat = payload.originalIat || payload.iat || 0;
+  const absoluteMax = Math.max(config.oauth.jwtExpiresIn * 4, 30 * 86400);
+  return Math.floor(Date.now() / 1000) - originalIat > absoluteMax;
+}
+
 /** Verify JWT and return raw payload (for JWT rotation logic). */
 export function verifyDashboardTokenRaw(token: string): (JwtPayload & { iat: number; exp: number }) | null {
   try {
@@ -571,8 +605,8 @@ function clearCookieAndRedirect(reply: FastifyReply, redirectTo: string): void {
 // ── Login return (`soma_next`, spec §3.4-3) ──
 //
 // A browser bounced to /login by authMiddleware keeps the dashboard deep link
-// it asked for; the next successful login (Slack SSO, Google, Microsoft, viewer
-// token) lands there instead of the generic dashboard. The value is
+// it asked for; the next successful login (Slack SSO, Google, Microsoft) lands
+// there instead of the generic dashboard. The value is
 // client-controlled, so it is validated both when written and when read.
 
 const LOGIN_RETURN_COOKIE = 'soma_next';
@@ -708,9 +742,14 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
   const microsoftEnabled = isOAuthConfigured('microsoft');
   const anyEnabled = googleEnabled || microsoftEnabled;
 
-  // ── Login page ──
-  server.get('/login', async (_request, reply) => {
-    reply.type('text/html; charset=utf-8').send(renderLoginPage(googleEnabled, microsoftEnabled));
+  // ── Login page — also the account page of a signed-in browser ──
+  // `no-store`: the page names the signed-in account, so neither a shared
+  // cache nor the back button may show it after sign-out.
+  server.get('/login', async (request, reply) => {
+    reply
+      .type('text/html; charset=utf-8')
+      .header('Cache-Control', 'no-store')
+      .send(renderLoginPage({ googleEnabled, microsoftEnabled, session: _getCurrentSession(request) }));
   });
 
   // ── Google OAuth ──
@@ -829,7 +868,12 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
   }
 
   // ── Logout ──
+  // A plain GET, deliberately CSRF-free: it only clears cookies, so a forged
+  // request can sign a browser out but never into anything. It also forgets
+  // `soma_next`, so the next account signed in here does not land on the
+  // previous account's deep link.
   server.get('/auth/logout', async (_request, reply) => {
+    reply.header('Set-Cookie', `${LOGIN_RETURN_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
     clearCookieAndRedirect(reply, '/login');
   });
 
@@ -980,24 +1024,6 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
     reply.redirect(takeLoginReturnPath(request, reply) ?? `/dashboard/${payload.sub}`, 303);
   });
 
-  // ── Token login (server-side) — replaces client-side cookie write ──
-  server.post<{ Body: { token: string } }>('/auth/token', async (request, reply) => {
-    const { token: providedToken } = request.body || {};
-    const viewerToken = config.conversation.viewerToken;
-    if (!providedToken || !viewerToken || providedToken !== viewerToken) {
-      reply.status(401).send({ error: 'Invalid token' });
-      return;
-    }
-    logger.info('Token login success');
-    const maxAge = config.oauth.jwtExpiresIn;
-    const secure = (config.conversation.viewerUrl || '').startsWith('https');
-    reply.header(
-      'Set-Cookie',
-      `${COOKIE_NAME}=${encodeURIComponent('bearer:' + providedToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`,
-    );
-    reply.send({ ok: true, redirect: takeLoginReturnPath(request, reply) ?? '/dashboard' });
-  });
-
   // ── /auth/me — current user (JSON) + CSRF token ──
   server.get('/auth/me', async (request, reply) => {
     const user = getDashboardUser(request);
@@ -1131,77 +1157,169 @@ button, .btn-cancel { flex: 1; padding: 10px; border-radius: 8px; font-size: 0.9
 
 // ── Login page HTML ──
 
-function renderLoginPage(googleEnabled: boolean, microsoftEnabled: boolean): string {
+const GOOGLE_ICON =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>';
+const MICROSOFT_ICON =
+  '<svg viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>';
+
+// A Map, not an object: the claim is a string, and an object lookup would also
+// answer for inherited keys such as `constructor`.
+const PROVIDER_LABELS = new Map<string, string>([
+  ['google', 'Google'],
+  ['microsoft', 'Microsoft'],
+  ['slack', 'Slack'],
+]);
+
+/**
+ * The signed-in account block: who the browser is signed in as, where the
+ * dashboard is, and an explicit sign-out. Every value is HTML-escaped — the
+ * name and email come from the provider or from Slack.
+ */
+function renderAccountBlock(session: CurrentSession): string {
+  const user = session.kind === 'jwt' ? session.user : null;
+  const name = user ? user.name || user.email || user.slackUserId : 'Admin';
+  const provider = user ? PROVIDER_LABELS.get(user.provider) : undefined;
+  const meta = user
+    ? [user.email, provider ? `via ${provider}` : ''].filter(Boolean).join(' · ')
+    : 'Viewer token session';
+  const initial = Array.from(name)[0]?.toUpperCase() ?? '?';
+  const dashboardHref = user ? `/dashboard/${encodeURIComponent(user.slackUserId)}` : '/dashboard';
+  return `
+    <section class="account" aria-label="Current account">
+      <p class="account-label">Signed in as</p>
+      <div class="account-row">
+        <span class="avatar" aria-hidden="true">${_htmlEscape(initial)}</span>
+        <div class="account-text">
+          <p class="account-name">${_htmlEscape(name)}</p>
+          <p class="account-meta">${_htmlEscape(meta)}</p>
+        </div>
+      </div>
+      <a class="btn btn-primary" href="${_htmlEscape(dashboardHref)}">Continue to dashboard</a>
+      <a class="btn btn-quiet" href="/auth/logout">Sign out</a>
+    </section>`;
+}
+
+/**
+ * `/login`. Signed out: the provider buttons and the Slack `dashboard` hint.
+ * Signed in: the account block first, then the same sign-in options under
+ * "Use a different account" — Google opens its account chooser
+ * (`prompt=select_account`), and a cancelled or failed switch keeps the
+ * current session.
+ */
+function renderLoginPage(opts: {
+  googleEnabled: boolean;
+  microsoftEnabled: boolean;
+  session: CurrentSession | null;
+}): string {
+  const { googleEnabled, microsoftEnabled, session } = opts;
+  const providerButtons = [
+    googleEnabled
+      ? `<a href="/auth/google" class="btn btn-google">${GOOGLE_ICON}<span>Sign in with Google</span></a>`
+      : '',
+    microsoftEnabled
+      ? `<a href="/auth/microsoft" class="btn btn-microsoft">${MICROSOFT_ICON}<span>Sign in with Microsoft</span></a>`
+      : '',
+  ].join('');
+  const slackHint =
+    '<p class="slack-hint">Slack 스레드에서 <code>dashboard</code>를 입력하면 로그인 링크를 받습니다.</p>';
+  const signIn = providerButtons
+    ? `${providerButtons}<div class="divider"><span>or</span></div>${slackHint}`
+    : slackHint;
+  const body = session
+    ? `${renderAccountBlock(session)}
+    <div class="divider"><span>Use a different account</span></div>
+    ${signIn}`
+    : signIn;
+
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>soma-work — Sign In</title>
+<title>soma-work — Sign in</title>
+<script>
+// Same theme choice as the dashboard (soma-theme, else the OS preference).
+(function () {
+  var t = null;
+  try { t = localStorage.getItem('soma-theme'); } catch (_e) {}
+  if (t !== 'light' && t !== 'dark') {
+    t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  document.documentElement.setAttribute('data-theme', t);
+})();
+</script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-:root { --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #e6edf3; --text-muted: #8b949e; --accent: #58a6ff; --red: #f85149; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-.login-box { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 40px; width: 380px; text-align: center; }
-.login-box h1 { font-size: 1.4em; margin-bottom: 8px; }
-.login-box p { color: var(--text-muted); font-size: 0.85em; margin-bottom: 24px; }
-.btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.95em; cursor: pointer; text-decoration: none; margin-bottom: 12px; transition: all 0.2s; }
-.btn:hover { border-color: var(--accent); background: rgba(88,166,255,0.1); }
-.btn-google { background: #fff; color: #333; }
-.btn-google:hover { background: #f5f5f5; }
-.btn-microsoft { background: #2b2b2b; color: #fff; }
-.btn-microsoft:hover { background: #3b3b3b; }
-.btn svg { width: 20px; height: 20px; }
-.error-msg { background: rgba(248,81,73,0.15); border: 1px solid var(--red); color: var(--red); padding: 10px; border-radius: 6px; margin-bottom: 16px; font-size: 0.85em; }
-.divider { color: var(--text-muted); font-size: 0.8em; margin: 16px 0; }
-.login-box .slack-hint { color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; line-height: 1.5; }
-.slack-hint code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); }
-.token-form { display: flex; gap: 8px; }
-.token-form input { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; color: var(--text); font-size: 0.85em; }
-.token-form button { background: var(--accent); color: #000; border: none; border-radius: 6px; padding: 8px 16px; font-size: 0.85em; cursor: pointer; font-weight: 600; }
+/* Dashboard surface tokens (dashboard.ts :root / [data-theme="light"]). */
+:root {
+  --bg: #1c1c1f; --surface: #232327; --surface-raised: #2a2a2f; --border: #34343a; --border-focus: #4d9de0;
+  --text: #ededf0; --text-secondary: #a8a8b0; --text-tertiary: #93939b;
+  --accent: #4d9de0; --accent-hover: #3b82c4; --on-accent: #0b1220; --red: #f26b6b;
+  --google-bg: #131314; --google-border: #8e918f; --google-text: #e3e3e3;
+  --ms-bg: #2f2f2f; --ms-border: #2f2f2f; --ms-text: #ffffff;
+}
+[data-theme="light"] {
+  --bg: #f7f7f7; --surface: #ffffff; --surface-raised: #f1f1f1; --border: #e4e4e4; --border-focus: #1f6dc2;
+  --text: #18181a; --text-secondary: #57575d; --text-tertiary: #68686f;
+  --accent: #1f6dc2; --accent-hover: #1a5ca6; --on-accent: #ffffff; --red: #c43c3c;
+  --google-bg: #ffffff; --google-border: #747775; --google-text: #1f1f1f;
+  --ms-bg: #ffffff; --ms-border: #8c8c8c; --ms-text: #5e5e5e;
+}
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg); color: var(--text);
+  min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
+  -webkit-font-smoothing: antialiased;
+}
+.login { width: 100%; max-width: 360px; }
+.brand { text-align: center; margin-bottom: 20px; }
+.brand h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+.brand p { color: var(--text-secondary); font-size: 13px; margin-top: 4px; }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 24px; }
+.btn {
+  display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 44px;
+  padding: 0 16px; border-radius: 8px; border: 1px solid var(--border); font: inherit; font-size: 14px; font-weight: 600;
+  text-decoration: none; color: var(--text); background: var(--surface-raised); cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.btn + .btn { margin-top: 10px; }
+.btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.btn svg { width: 18px; height: 18px; flex: none; }
+.btn-google { background: var(--google-bg); border-color: var(--google-border); color: var(--google-text); }
+.btn-microsoft { background: var(--ms-bg); border-color: var(--ms-border); color: var(--ms-text); }
+.btn-google:hover, .btn-microsoft:hover { border-color: var(--accent); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn-quiet { background: transparent; color: var(--text-secondary); }
+.btn-quiet:hover { color: var(--red); border-color: var(--red); }
+.account-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); margin-bottom: 10px; }
+.account-row { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; min-width: 0; }
+.avatar {
+  flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--surface-raised); border: 1px solid var(--border); font-weight: 700; color: var(--accent);
+}
+.account-text { min-width: 0; }
+.account-name { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-meta { color: var(--text-secondary); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; color: var(--text-tertiary); font-size: 12px; }
+.divider::before, .divider::after { content: ''; flex: 1; border-top: 1px solid var(--border); }
+.slack-hint { color: var(--text-secondary); font-size: 13px; line-height: 1.6; text-align: center; }
+.slack-hint code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--accent); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+.error-msg { border: 1px solid var(--red); color: var(--red); padding: 10px 12px; border-radius: 8px; margin-bottom: 18px; font-size: 13px; line-height: 1.5; }
+@media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
 </style>
 </head>
 <body>
-<div class="login-box">
-  <h1>⚡ soma-work</h1>
-  <p>Sign in to access your personal dashboard</p>
-  <p class="slack-hint">Slack 스레드에서 <code>dashboard</code>를 입력하면 로그인 링크를 받습니다.</p>
-
-  <div id="error"></div>
-
-  ${
-    googleEnabled
-      ? `
-  <a href="/auth/google" class="btn btn-google">
-    <svg viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
-    Sign in with Google
-  </a>`
-      : ''
-  }
-
-  ${
-    microsoftEnabled
-      ? `
-  <a href="/auth/microsoft" class="btn btn-microsoft">
-    <svg viewBox="0 0 21 21"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
-    Sign in with Microsoft
-  </a>`
-      : ''
-  }
-
-  ${
-    !googleEnabled && !microsoftEnabled
-      ? `
-  <p style="color:var(--text-muted);margin-bottom:16px">OAuth not configured. Use API token below.</p>
-  `
-      : `<div class="divider">or use API token</div>`
-  }
-
-  <div class="token-form">
-    <input type="password" id="token-input" placeholder="Viewer token..." />
-    <button onclick="loginWithToken()">Go</button>
+<main class="login">
+  <header class="brand">
+    <h1>⚡ soma-work</h1>
+    ${session ? '' : '<p>Sign in to your dashboard</p>'}
+  </header>
+  <div class="panel">
+    <div id="error" role="alert"></div>
+    ${body}
   </div>
-</div>
+</main>
 
 <script>
 // Show error from query params
@@ -1237,21 +1355,6 @@ if (err) {
     'sso_consumed': 'Slack SSO link was already used. Request a new dashboard link in Slack.',
   };
   _showError(msgs[err] || 'Authentication error.');
-}
-
-function loginWithToken() {
-  const token = document.getElementById('token-input').value.trim();
-  if (!token) return;
-  fetch('/auth/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token }),
-  }).then(r => r.json()).then(data => {
-    if (data.ok) location.href = data.redirect || '/dashboard';
-    else _showError('Invalid token.');
-  }).catch(() => {
-    _showError('Login failed.');
-  });
 }
 </script>
 </body>
