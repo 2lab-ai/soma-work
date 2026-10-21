@@ -29,12 +29,30 @@ async function* events(list: AgentStreamEvent[]): AsyncGenerator<AgentStreamEven
   for (const event of list) yield event;
 }
 
-/** Yield, run `after`, then park: the abort race (not exhaustion) ends the run. */
-async function* eventsThen(list: AgentStreamEvent[], after?: () => void): AsyncGenerator<AgentStreamEvent> {
+/**
+ * Yield, run `after`, then park until `signal` aborts: the abort race (not
+ * exhaustion) ends the run, and the parked generator then finishes at once, so
+ * the processor's `iterator.return()` does not wait out its bound. Without a
+ * signal it parks for good (the idle-timeout case).
+ */
+async function* eventsThen(
+  list: AgentStreamEvent[],
+  after?: () => void,
+  signal?: AbortSignal,
+): AsyncGenerator<AgentStreamEvent> {
   for (const event of list) yield event;
   after?.();
-  await new Promise<never>(() => {});
-  throw new Error('unreachable');
+  await new Promise<void>((resolve) => {
+    if (!signal) return;
+    if (signal.aborted) resolve();
+    else signal.addEventListener('abort', () => resolve(), { once: true });
+  });
+}
+
+/** Yield, then fail the way a broken transport does. */
+async function* eventsThenThrow(list: AgentStreamEvent[], error: Error): AsyncGenerator<AgentStreamEvent> {
+  for (const event of list) yield event;
+  throw error;
 }
 
 describe('AgentStreamProcessor — deploy_completed rejections', () => {
@@ -83,7 +101,11 @@ describe('AgentStreamProcessor — deploy_completed still buffered when the turn
     const ctx = context();
 
     const result = await processor.process(
-      eventsThen([{ type: 'assistant_delta', text: `Deployed.\n${DIRECTIVE}` }], () => abort.abort(reason)),
+      eventsThen(
+        [{ type: 'assistant_delta', text: `Deployed.\n${DIRECTIVE}` }],
+        () => abort.abort(reason),
+        abort.signal,
+      ),
       ctx,
       abort.signal,
     );
@@ -104,7 +126,11 @@ describe('AgentStreamProcessor — deploy_completed still buffered when the turn
     const abort = new AbortController();
 
     await processor.process(
-      eventsThen([{ type: 'assistant_delta', text: `Deployed.\n${DIRECTIVE}` }], () => abort.abort('user-interrupted')),
+      eventsThen(
+        [{ type: 'assistant_delta', text: `Deployed.\n${DIRECTIVE}` }],
+        () => abort.abort('user-interrupted'),
+        abort.signal,
+      ),
       ctx,
       abort.signal,
     );
@@ -136,12 +162,29 @@ describe('AgentStreamProcessor — deploy_completed still buffered when the turn
     const abort = new AbortController();
 
     await processor.process(
-      eventsThen([{ type: 'assistant_delta', text: 'half an answer' }], () => abort.abort('user-stop')),
+      eventsThen([{ type: 'assistant_delta', text: 'half an answer' }], () => abort.abort('user-stop'), abort.signal),
       context(),
       abort.signal,
     );
 
     expect(onDeployCompletedDetected).not.toHaveBeenCalled();
     expect(onDeployCompletedRejected).not.toHaveBeenCalled();
+  });
+
+  it('dispatches it when the stream fails with a transport error, then rethrows', async () => {
+    const onDeployCompletedDetected = vi.fn().mockResolvedValue(undefined);
+    const processor = new AgentStreamProcessor({ onDeployCompletedDetected });
+    const ctx = context();
+
+    await expect(
+      processor.process(
+        eventsThenThrow([{ type: 'assistant_delta', text: `Deployed.\n${DIRECTIVE}` }], new Error('socket hang up')),
+        ctx,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow('socket hang up');
+
+    expect(onDeployCompletedDetected).toHaveBeenCalledTimes(1);
+    expect(onDeployCompletedDetected).toHaveBeenCalledWith(PAYLOAD, ctx);
   });
 });

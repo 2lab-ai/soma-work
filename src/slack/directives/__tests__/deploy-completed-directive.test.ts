@@ -106,6 +106,47 @@ Next?`;
       expect(result.rejections[0]).toMatchObject({ problem: 'after must be a 7-40 char hex sha', after: 'zz' });
     });
 
+    it('fires every directive of one json fence that holds several on separate lines', () => {
+      const text = [
+        'Both repos deployed.',
+        '```json',
+        '{"type":"deploy_completed","repo":"acme/app","target":"deploy/dev2","after":"aaaaaaa"}',
+        '{"type":"deploy_completed","repo":"acme/api","target":"deploy/dev2","after":"bbbbbbb"}',
+        '```',
+        'Done.',
+      ].join('\n');
+      const result = DeployCompletedDirectiveHandler.extract(text);
+      expect(result.payloads.map((p) => p.repo)).toEqual(['acme/app', 'acme/api']);
+      expect(result.rejections).toEqual([]);
+      expect(result.cleanedText).not.toContain('deploy_completed');
+      expect(result.cleanedText).toContain('Both repos deployed.');
+      expect(result.cleanedText).toContain('Done.');
+    });
+
+    it('fires every directive of one json fence that holds an array, leaving no empty fence behind', () => {
+      const text = [
+        'Both repos deployed.',
+        '```json',
+        '[',
+        '  {"type":"deploy_completed","repo":"acme/app","target":"deploy/dev2","after":"aaaaaaa"},',
+        '  {"type":"deploy_completed","repo":"acme/api","target":"deploy/dev2","after":"bbbbbbb"}',
+        ']',
+        '```',
+        'Done.',
+      ].join('\n');
+      const result = DeployCompletedDirectiveHandler.extract(text);
+      expect(result.payloads.map((p) => p.repo)).toEqual(['acme/app', 'acme/api']);
+      expect(result.rejections).toEqual([]);
+      expect(result.cleanedText).toBe('Both repos deployed.\n\nDone.');
+    });
+
+    it('still reports a fence of broken JSON once', () => {
+      const text = '```json\n{"type":"deploy_completed","repo":"acme/app", oops\n```';
+      const result = DeployCompletedDirectiveHandler.extract(text);
+      expect(result.payloads).toEqual([]);
+      expect(result.rejections).toEqual([{ problem: 'unparseable JSON, or "type" is not the first key' }]);
+    });
+
     it('does not treat prose that names the directive without quotes as an attempt', () => {
       const result = DeployCompletedDirectiveHandler.extract(
         'No `deploy_completed` signal was sent: the deploy failed.',
