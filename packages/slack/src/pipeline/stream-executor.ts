@@ -14,6 +14,7 @@ import type { AssistantStatusManager } from '../assistant-status-manager';
 import { type CompactStateSession, promotePendingToDispatchQueue } from '../compact-state';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
 import type { ContextWindowManager } from '../context-window-manager';
+import type { DeployCompletedPayload } from '../directives/deploy-completed-directive';
 import {
   buildInstructionConfirmBlocks,
   buildInstructionConfirmFallbackText,
@@ -483,6 +484,17 @@ interface StreamExecutorDeps {
     uuid: string;
     phase: AgentStreamEventOf<'steer_lifecycle'>['phase'];
   }) => void | Promise<void>;
+  /**
+   * Host sink for a `deploy_completed` directive: fires the cron lanes
+   * registered for that repo + target (src/deploy-lanes.ts). Resolves to the
+   * one line to post in the deploy thread, or nothing. Called without being
+   * awaited by the turn; a rejection is logged, never surfaced. Optional —
+   * without it the directive is still stripped from the visible text.
+   */
+  onDeployCompleted?: (
+    payload: DeployCompletedPayload,
+    ctx: { channel: string; threadTs: string; user: string },
+  ) => Promise<string | void>;
 }
 
 interface StreamExecuteParams {
@@ -1813,6 +1825,30 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               error: (error as Error).message,
             });
           }
+        },
+        onDeployCompletedDetected: async (payload) => {
+          const onDeployCompleted = this.deps.onDeployCompleted;
+          if (!onDeployCompleted) return;
+          this.logger.info('deploy_completed directive detected', {
+            sessionKey,
+            repo: payload.repo,
+            target: payload.target,
+            after: payload.after,
+          });
+          // Not awaited: the lanes are other sessions' work and the deploy turn
+          // must not wait on them. The host's one-line answer lands in this thread.
+          void Promise.resolve()
+            .then(() => onDeployCompleted(payload, { channel, threadTs, user }))
+            .then(async (line) => {
+              if (line) await this.deps.slackApi.postMessage(channel, line, { threadTs });
+            })
+            .catch((error) => {
+              this.logger.error('Failed to handle deploy_completed directive', {
+                sessionKey,
+                repo: payload.repo,
+                error: (error as Error)?.message,
+              });
+            });
         },
         onSourceWorkingDirDetected: async (dirPath) => {
           try {

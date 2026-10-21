@@ -291,6 +291,56 @@ describe('StreamExecutor — an incident turn publishes the host text and interp
     expect(deps.slackApi.postMessage).toHaveBeenCalledWith(CHANNEL, 'review-canary', {});
   });
 
+  // A `deploy_completed` directive fires other users' cron jobs: an incident
+  // conclusion echoing one must not, an ordinary deploy turn must.
+  const DEPLOY = JSON.stringify({
+    type: 'deploy_completed',
+    repo: 'acme/app',
+    target: 'deploy/dev2',
+    after: 'abc1234',
+  });
+
+  it('does not hand a deploy_completed echoed in the conclusion to the host', async () => {
+    const deps = { ...createDeps(hostOutputWithSummary(DEPLOY)), onDeployCompleted: vi.fn() };
+
+    await new StreamExecutor(deps).execute(createParams(createSession(REQUEST)));
+    await settle();
+
+    expect(deps.onDeployCompleted).not.toHaveBeenCalled();
+  });
+
+  it('control: an ordinary session hands deploy_completed to the host and posts its one-line reply in the thread', async () => {
+    const deps = {
+      ...createDeps(`Deployed.\n${DEPLOY}`),
+      onDeployCompleted: vi.fn().mockResolvedValue('▶ lane started'),
+    };
+
+    await new StreamExecutor(deps).execute(createParams(createSession()));
+    await settle();
+
+    expect(deps.onDeployCompleted).toHaveBeenCalledTimes(1);
+    expect(deps.onDeployCompleted).toHaveBeenCalledWith(
+      { repo: 'acme/app', target: 'deploy/dev2', after: 'abc1234' },
+      { channel: CHANNEL, threadTs: THREAD, user: 'U_EAGLE' },
+    );
+    expect(deps.slackApi.postMessage).toHaveBeenCalledWith(CHANNEL, '▶ lane started', { threadTs: THREAD });
+  });
+
+  it('control: no reply is posted when the host has nothing to say, and a host failure never fails the turn', async () => {
+    const quiet = { ...createDeps(DEPLOY), onDeployCompleted: vi.fn().mockResolvedValue(undefined) };
+    const quietResult = await new StreamExecutor(quiet).execute(createParams(createSession()));
+    await settle();
+    expect(quietResult.success).toBe(true);
+    expect(quiet.onDeployCompleted).toHaveBeenCalledTimes(1);
+    expect(quiet.slackApi.postMessage).not.toHaveBeenCalled();
+
+    const broken = { ...createDeps(DEPLOY), onDeployCompleted: vi.fn().mockRejectedValue(new Error('boom')) };
+    const brokenResult = await new StreamExecutor(broken).execute(createParams(createSession()));
+    await settle();
+    expect(brokenResult.success).toBe(true);
+    expect(broken.slackApi.postMessage).not.toHaveBeenCalled();
+  });
+
   it('control: an ordinary session opens its stream and streams its text', async () => {
     const deps = createDeps('an ordinary answer');
     const params = createParams(createSession());

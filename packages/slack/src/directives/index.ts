@@ -3,6 +3,11 @@ export {
   type ChannelMessageExtractResult,
 } from './channel-message-directive';
 export {
+  DeployCompletedDirectiveHandler,
+  type DeployCompletedExtractResult,
+  type DeployCompletedPayload,
+} from './deploy-completed-directive';
+export {
   type SessionLink,
   SessionLinkDirectiveHandler,
   type SessionLinkExtractResult,
