@@ -4895,6 +4895,21 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.goal.openingPending).toBeUndefined();
     });
 
+    it('`goal pause` + `goal resume` while the first turn still waits never admits a second first turn', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await handler.handleMessage(message({ ts: '333.555', text: 'goal pause' }), say());
+      await handler.handleMessage(message({ ts: '333.666', text: 'goal resume' }), say());
+
+      const goalId = registrySession.goal.goalId;
+      const openings = items().filter((item: any) => item.message.routeContext?.goalOpeningId === goalId);
+      expect(openings, 'the waiting opening is reused').toHaveLength(1);
+      expect(registrySession.goal.status).toBe('active');
+
+      await settle();
+      expect(startWithContinuation, 'the first turn ran once').toHaveBeenCalledTimes(2);
+    });
+
     it('an opening `$skill` that no handler claims any more still runs the objective (handled:false)', async () => {
       const { settle } = await startBusyTurn();
       await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표 $local:z' }), say());
