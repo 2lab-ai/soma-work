@@ -20,6 +20,7 @@ import { registerDashboardRoutes, setSelfInstanceEnv } from './dashboard';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
 import {
   type AuthContext,
+  exceedsAbsoluteSessionLifetime,
   getJwtSecret,
   loginReturnCookieFor,
   registerOAuthRoutes,
@@ -71,11 +72,7 @@ function buildAuthContext(request: FastifyRequest): AuthContext | null {
     const payload = verifyDashboardTokenRaw(cookieVal);
     if (payload) {
       // Enforce absolute max lifetime — reject sessions that exceeded 4x expiry (min 30 days)
-      const originalIat = (payload as any).originalIat || payload.iat;
-      const expiresIn = config.oauth.jwtExpiresIn;
-      const absoluteMax = Math.max(expiresIn * 4, 30 * 86400);
-      const now = Math.floor(Date.now() / 1000);
-      if (now - originalIat > absoluteMax) {
+      if (exceedsAbsoluteSessionLifetime(payload)) {
         // Session exceeded absolute max — force re-login
         return null;
       }
@@ -124,11 +121,10 @@ function maybeRotateJwt(request: FastifyRequest, reply: FastifyReply): void {
   const now = Math.floor(Date.now() / 1000);
   const expiresIn = config.oauth.jwtExpiresIn;
   const refreshWindow = Math.min(Math.floor(expiresIn * 0.15), 86400); // 15% of expiry, max 24h
-  const absoluteMax = Math.max(expiresIn * 4, 30 * 86400); // 4x expiry, min 30 days
-  const originalIat = (payload as any).originalIat || payload.iat;
+  const originalIat = payload.originalIat || payload.iat;
 
   // Force re-login if absolute max exceeded
-  if (now - originalIat > absoluteMax) return;
+  if (exceedsAbsoluteSessionLifetime(payload)) return;
 
   // Rotate if within refresh window
   const timeUntilExpiry = payload.exp - now;

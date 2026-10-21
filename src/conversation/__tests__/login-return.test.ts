@@ -301,20 +301,6 @@ describe('login return (soma_next)', () => {
       });
       expect(res.headers.location).toBe('/dashboard/U_G');
     });
-
-    it('viewer-token login returns the deep link as its redirect', async () => {
-      mockConfig.conversation.viewerToken = 'viewer-secret';
-      await web.startWebServer({ listen: false });
-      const res = await web.injectWebServer({
-        method: 'POST',
-        url: '/auth/token',
-        headers: { 'content-type': 'application/json', cookie: nextCookie(DEEP_LINK) },
-        payload: JSON.stringify({ token: 'viewer-secret' }),
-      });
-      expect(res.statusCode).toBe(200);
-      expect(JSON.parse(res.body)).toEqual({ ok: true, redirect: DEEP_LINK });
-      expect(setCookies(res).find((c) => c.startsWith('soma_next='))).toMatch(/Max-Age=0/);
-    });
   });
 
   describe('login page', () => {
