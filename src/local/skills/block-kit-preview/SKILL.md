@@ -1,4 +1,5 @@
 ---
+name: block-kit-preview
 description: Render Slack Block Kit JSON to PNG screenshot using Playwright. Use when you need to visually preview Block Kit layouts, compare design variants, or validate UI before deploying. Triggers on "block kit preview", "render block kit", "slack preview", "block kit screenshot", "block kit to png", "visualize blocks".
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent
 ---

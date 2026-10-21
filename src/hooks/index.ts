@@ -7,7 +7,6 @@ import type { FastifyInstance } from 'fastify';
 import { Logger } from '../logger';
 import { trackPostCall, trackPreCall } from './call-tracker';
 import { hookState } from './hook-state';
-import { handlePreToolUse } from './todo-guard';
 
 const logger = new Logger('HookRoutes');
 
@@ -27,24 +26,9 @@ export async function registerHookRoutes(server: FastifyInstance): Promise<void>
     try {
       const body = request.body || {};
 
-      // Guard check FIRST — don't track calls that will be blocked
-      const result = handlePreToolUse(body);
-      if (result.blocked) {
-        logger.info('Tool call blocked by TodoGuard', {
-          sessionId: body.session_id,
-          toolName: body.tool_name,
-        });
-        return reply.status(403).send({ message: result.message });
-      }
-
-      // Track the call only after guard passes (avoids ghost entries)
+      // Observation only — this route never blocks a tool call. It records the
+      // start of Task / MCP calls so the call log can time them.
       trackPreCall(body);
-
-      // Non-blocking warning: tool call proceeds, but the proxy surfaces this
-      // to the model via PreToolUse `additionalContext` so it registers a task.
-      if (result.warning) {
-        return reply.send({ action: 'warn', message: result.warning });
-      }
 
       reply.send({ action: 'pass' });
     } catch (error) {

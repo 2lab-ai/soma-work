@@ -36,15 +36,35 @@ export function parseTodos(raw: unknown): Todo[] | null {
       if (item == null || typeof item !== 'object') return null;
       const src = item as Record<string, unknown>;
       if (typeof src.content !== 'string' || !VALID_STATUSES.has(src.status as string)) return null;
-      // Clone to avoid mutating the caller's input
-      const t = { ...src };
-      // Stable content-based id when missing (TodoWrite omits it)
-      if (typeof t.id !== 'string') t.id = `todo-${simpleHash(src.content as string)}`;
-      // Default priority when missing or invalid (TodoWrite omits it)
-      if (!VALID_PRIORITIES.has(t.priority as string)) t.priority = 'medium';
-      return t as unknown as Todo;
+      // Build a fresh object from the known fields only (never mutates the
+      // caller's input). This is model-written TodoWrite input that ends up in
+      // the dashboard's markup, so nothing unknown passes through and the
+      // timestamps are finite numbers or absent.
+      const t: Todo = {
+        // Stable content-based id when missing (TodoWrite omits it)
+        id: typeof src.id === 'string' ? src.id : `todo-${simpleHash(src.content)}`,
+        content: src.content,
+        status: src.status as Todo['status'],
+        // Default priority when missing or invalid (TodoWrite omits it)
+        priority: VALID_PRIORITIES.has(src.priority as string) ? (src.priority as Todo['priority']) : 'medium',
+      };
+      if (Array.isArray(src.dependencies)) {
+        t.dependencies = src.dependencies.filter((d): d is string => typeof d === 'string');
+      }
+      if (typeof src.activeForm === 'string') t.activeForm = src.activeForm;
+      const startedAt = toEpochMs(src.startedAt);
+      if (startedAt !== undefined) t.startedAt = startedAt;
+      const completedAt = toEpochMs(src.completedAt);
+      if (completedAt !== undefined) t.completedAt = completedAt;
+      return t;
     })
     .filter((item): item is Todo => item !== null);
+}
+
+/** A positive finite epoch-ms number (numeric strings accepted), else undefined. */
+function toEpochMs(v: unknown): number | undefined {
+  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 /** Simple string hash for generating stable, deterministic todo IDs from content. */
@@ -201,38 +221,6 @@ export class TodoManager {
     }
 
     return false;
-  }
-
-  getStatusChange(oldTodos: Todo[], newTodos: Todo[]): string | null {
-    // Find status changes
-    const changes: string[] = [];
-
-    for (const newTodo of newTodos) {
-      const oldTodo = oldTodos.find((t) => t.id === newTodo.id);
-
-      if (!oldTodo) {
-        // New task added
-        changes.push(`➕ Added: ${newTodo.content}`);
-      } else if (oldTodo.status !== newTodo.status) {
-        // Status changed
-        const statusEmoji = {
-          pending: '⏳',
-          in_progress: '🔄',
-          completed: '✅',
-        };
-
-        changes.push(`${statusEmoji[newTodo.status]} ${newTodo.content}`);
-      }
-    }
-
-    // Check for removed tasks
-    for (const oldTodo of oldTodos) {
-      if (!newTodos.find((t) => t.id === oldTodo.id)) {
-        changes.push(`➖ Removed: ${oldTodo.content}`);
-      }
-    }
-
-    return changes.length > 0 ? changes.join('\n') : null;
   }
 
   /**

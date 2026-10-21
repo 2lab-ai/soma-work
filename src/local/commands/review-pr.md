@@ -1,7 +1,7 @@
 ---
 description: "Comprehensive PR review using specialized agents"
 argument-hint: "[review-aspects]"
-allowed-tools: ["Bash", "Glob", "Grep", "Read", "Task", "TaskOutput", "Skill"]
+allowed-tools: ["Bash", "Glob", "Grep", "Read", "Agent", "Task", "TaskOutput", "Skill"]
 ---
 
 # Comprehensive PR Review
@@ -35,15 +35,15 @@ Run a comprehensive pull request review using multiple specialized agents, each 
 4. **Determine Applicable Reviews**
 
    Based on changes:
-   - **Always applicable**: code-reviewer (general quality), `oracle-reviewer` Skill, `oracle-gemini-reviewer` Skill
+   - **Always applicable**: code-reviewer (general quality), `oracle-reviewer` Skill (trinity chain: astra-zhuge / grok-elon / fable-zhuge), `subagent (opus)` reviewer
    - **If test files changed**: pr-test-analyzer
    - **If comments/docs added**: comment-analyzer
    - **If error handling changed**: silent-failure-hunter
    - **If types added/modified**: type-design-analyzer
-   - **After passing review**: code-simplifier (polish and refine)
+   - **After passing review**: `local:simplify` (fix mode — cut over-engineering, polish)
 
    **IMPORTANT — Oracle reviewers**:
-   Use `oracle-reviewer` and `oracle-gemini-reviewer` Skill, not subagents
+   Use `oracle-reviewer` Skill (trinity chain) plus a `subagent (opus)` reviewer as the second/tiebreaker reviewer
 
 5. **Launch Review Agents**
 
@@ -118,10 +118,10 @@ Run a comprehensive pull request review using multiple specialized agents, each 
 ## Agent Descriptions:
 
 **oracle-reviewer** SKILL(not subagent):
-- Reviews general code quality with high intelligent
+- Reviews general code quality with the trinity chain (astra-zhuge / grok-elon / fable-zhuge)
 
-**oracle-gemini-reviewer** SKILL(not subagent):
-- Reviews general code quality with high intelligent
+**subagent (opus)** reviewer:
+- Independent Opus-subagent review — second opinion / tiebreaker (replaces the former gemini reviewer)
 
 **comment-analyzer**:
 - Verifies comment accuracy vs code
@@ -148,11 +148,10 @@ Run a comprehensive pull request review using multiple specialized agents, each 
 - Detects bugs and issues
 - Reviews general code quality
 
-**code-simplifier**:
-- Simplifies complex code
-- Improves clarity and readability
-- Applies project standards
-- Preserves functionality
+**local:simplify**:
+- Reviews the diff for over-engineering (delete / stdlib / native / yagni / shrink)
+- Applies safe, behavior-preserving cuts in fix mode
+- Preserves functionality; correctness/security routed to normal review
 
 ## Tips:
 

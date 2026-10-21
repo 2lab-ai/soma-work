@@ -12,7 +12,7 @@
 
 ## Tier 1 — 환경 변수 플래그 (즉시, 무중단)
 
-**언제**: `/z` 경로에서 예기치 않은 동작이 보이지만 legacy naked 명령 (`persona`, `model`, `mcp` 등)은 정상 동작해야 하는 경우.
+**언제**: legacy 슬래시 커맨드 `/soma` · `/session` · `/new`를 `/z` 안내 대신 원래 동작으로 되살려야 하는 경우. (bare 명령 `persona`, `model`, `mcp` 등은 #531 이후 플래그와 무관하게 항상 바로 실행된다.)
 
 **방법**: 모든 봇 인스턴스에 `SOMA_ENABLE_LEGACY_SLASH=true` 환경 변수 설정 후 재시작.
 
@@ -31,9 +31,9 @@ SOMA_ENABLE_LEGACY_SLASH=true docker-compose up -d
 ```
 
 **효과**
-- `CommandRouter`가 legacy naked 명령 탐지 시 tombstone 힌트를 건너뛰고 legacy 핸들러로 바로 dispatch.
-- `/z` prefix는 **여전히 동작**한다 (플래그는 tombstone만 비활성화).
-- 사용자가 기존 `persona linus`, `model sonnet` 등을 사용해도 마이그레이션 안내 없이 바로 실행.
+- `/soma` · `/session` · `/new` 슬래시 커맨드가 `/z` 통합 안내 대신 원래 핸들러로 처리된다.
+- `/z` prefix는 **여전히 동작**한다.
+- bare 명령(`persona linus`, `model sonnet` 등)에는 영향이 없다 — 이미 마이그레이션 안내 없이 바로 실행된다 (#531).
 
 **해제**: `launchctl unsetenv SOMA_ENABLE_LEGACY_SLASH`, 재시작.
 
@@ -58,7 +58,7 @@ git push origin main:deploy/prod
 ```
 
 **효과**
-- `src/slack/z/` 모듈, `/z` 슬래시 커맨드 등록, tombstone 모두 제거.
+- `src/slack/z/` 모듈과 `/z` 슬래시 커맨드 등록 제거.
 - Legacy naked 명령은 refactor 이전 상태로 복귀.
 - Slack 앱 manifest의 `/z` 슬래시 커맨드는 **Tier 3을 수행하기 전까지 존재만 하고 무시**된다 (봇이 이벤트를 ignore). 무해하지만 사용자 혼란을 막기 위해 Tier 3 병행 권장.
 
@@ -89,6 +89,15 @@ git push
 
 **효과**
 - `infra/slack/slack-app-manifest.json`이 `docs/archive/manifests/slack-app-manifest.prev.json`로 복원 (→ `/soma`, `/session`, `/new`만 존재).
+- ⚠️ **이름도 함께 되돌아간다.** 스냅샷은 `[DEV] Claude Code Bot` / `DEV Claude Code` 시절 것이라,
+  복원본을 업로드하면 앱·봇 이름이 그 이름으로 되돌아간다. 이 롤백은 슬래시 커맨드 되돌리기가
+  목적이므로, 이름은 유지하고 싶다면 3단계 업로드 전에 `display_information.name` 과
+  `features.bot_user.display_name` 을 `Somawork` 로 되돌려 놓아라. (스냅샷 파일 자체는 그 시점의
+  기록이므로 수정하지 않는다.)
+- ⚠️ **롤백 직후 테스트가 빨개지는 것은 의도된 동작이다.** `src/cli/setup/__tests__/slack-manifest.test.ts`
+  가 canonical 매니페스트의 이름을 `Somawork` 로 핀하고 있어서, 스냅샷을 덮어쓴 상태로는 그 케이스가
+  실패한다. 이름 핀은 "조용한 rename 금지" 장치이므로 롤백을 시끄럽게 만드는 것이 목적이다. 위 단계대로
+  이름 두 필드를 `Somawork` 로 되돌리면 초록으로 돌아온다.
 - Slack 앱 설정 UI에서 `/z` 슬래시 커맨드 사라짐.
 - `*.rollback-backup-YYYYMMDD-HHMMSS` 파일에 이전 상태 보존.
 
@@ -100,7 +109,7 @@ git push
 
 ## 확인 체크리스트 (롤백 후)
 
-- [ ] `persona linus`, `model sonnet` 등 legacy naked 명령이 tombstone 없이 바로 실행되는가
+- [ ] `persona linus`, `model sonnet` 등 bare 명령이 바로 실행되는가
 - [ ] `/z help`가 404/에러 없이 응답하는가 (Tier 3 미수행 시: 봇이 무시만 하고 Slack UI에는 명령이 남아있을 수 있음 — 정상)
 - [ ] `/soma help`, `/session`, `/new`가 동작하는가
 - [ ] 운영 로그에 `CommandRouter` 에러가 없는가

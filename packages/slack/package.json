@@ -2,10 +2,7 @@
   "name": "@soma/slack",
   "version": "1.0.0",
   "private": true,
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js",
     "./action-panel-builder": "./dist/action-panel-builder.js",
     "./actions": "./dist/actions/index.js",
     "./actions/click-classifier": "./dist/actions/click-classifier.js",
@@ -28,12 +25,13 @@
     "./directives/channel-message-directive": "./dist/directives/channel-message-directive.js",
     "./directives/session-link-directive": "./dist/directives/session-link-directive.js",
     "./context-window-manager": "./dist/context-window-manager.js",
+    "./session-usage-math": "./dist/session-usage-math.js",
     "./directives/source-working-dir-directive": "./dist/directives/source-working-dir-directive.js",
     "./dispatch-abort": "./dist/dispatch-abort.js",
     "./event-router": "./dist/event-router.js",
     "./formatters": "./dist/formatters/index.js",
-    "./formatters/directory-formatter": "./dist/formatters/directory-formatter.js",
     "./formatters/markdown-to-blocks": "./dist/formatters/markdown-to-blocks.js",
+    "./incident-contract": "./dist/incident-contract.js",
     "./handoff-budget": "./dist/handoff-budget.js",
     "./instruction-confirm-blocks": "./dist/instruction-confirm-blocks.js",
     "./message-formatter": "./dist/message-formatter.js",
@@ -43,12 +41,12 @@
     "./mrkdwn-escape": "./dist/mrkdwn-escape.js",
     "./output-flags": "./dist/output-flags.js",
     "./pipeline": "./dist/pipeline/index.js",
-    "./pipeline/effective-phase": "./dist/pipeline/effective-phase.js",
     "./pipeline/input-processor": "./dist/pipeline/input-processor.js",
     "./pipeline/session-initializer": "./dist/pipeline/session-initializer.js",
     "./pipeline/stream-executor": "./dist/pipeline/stream-executor.js",
     "./pipeline/stream-executor-cleanup-helpers": "./dist/pipeline/stream-executor-cleanup-helpers.js",
     "./pipeline/local-slash-command": "./dist/pipeline/local-slash-command.js",
+    "./pipeline/transcript-sanitizer": "./dist/pipeline/transcript-sanitizer.js",
     "./pipeline/types": "./dist/pipeline/types.js",
     "./reaction-manager": "./dist/reaction-manager.js",
     "./release-notifier": "./dist/release-notifier.js",
@@ -64,6 +62,7 @@
     "./summary-timer": "./dist/summary-timer.js",
     "./task-list-block-builder": "./dist/task-list-block-builder.js",
     "./thread-panel": "./dist/thread-panel.js",
+    "./surface-config": "./dist/surface-config.js",
     "./thread-header-builder": "./dist/thread-header-builder.js",
     "./thread-surface": "./dist/thread-surface.js",
     "./todo-display-manager": "./dist/todo-display-manager.js",
@@ -76,12 +75,12 @@
     "./user-choice-handler": "./dist/user-choice-handler.js",
     "./user-choice-extractor": "./dist/user-choice-extractor.js",
     "./user-skill-file-roundtrip": "./dist/user-skill-file-roundtrip.js",
+    "./work-log": "./dist/work-log.js",
     "./z/capability": "./dist/z/capability.js",
     "./z/normalize": "./dist/z/normalize.js",
     "./z/respond": "./dist/z/respond.js",
     "./z/router": "./dist/z/router.js",
     "./z/strip-z-prefix": "./dist/z/strip-z-prefix.js",
-    "./z/tombstone": "./dist/z/tombstone.js",
     "./z/types": "./dist/z/types.js",
     "./z/ui-builder": "./dist/z/ui-builder.js",
     "./z/whitelist": "./dist/z/whitelist.js",
@@ -146,6 +145,9 @@
       "context-window-manager": [
         "dist/context-window-manager.d.ts"
       ],
+      "session-usage-math": [
+        "dist/session-usage-math.d.ts"
+      ],
       "directives": [
         "dist/directives/index.d.ts"
       ],
@@ -167,11 +169,11 @@
       "formatters": [
         "dist/formatters/index.d.ts"
       ],
-      "formatters/directory-formatter": [
-        "dist/formatters/directory-formatter.d.ts"
-      ],
       "formatters/markdown-to-blocks": [
         "dist/formatters/markdown-to-blocks.d.ts"
+      ],
+      "incident-contract": [
+        "dist/incident-contract.d.ts"
       ],
       "handoff-budget": [
         "dist/handoff-budget.d.ts"
@@ -199,9 +201,6 @@
       ],
       "pipeline": [
         "dist/pipeline/index.d.ts"
-      ],
-      "pipeline/effective-phase": [
-        "dist/pipeline/effective-phase.d.ts"
       ],
       "pipeline/input-processor": [
         "dist/pipeline/input-processor.d.ts"
@@ -313,9 +312,6 @@
       ],
       "z/strip-z-prefix": [
         "dist/z/strip-z-prefix.d.ts"
-      ],
-      "z/tombstone": [
-        "dist/z/tombstone.d.ts"
       ],
       "z/types": [
         "dist/z/types.d.ts"

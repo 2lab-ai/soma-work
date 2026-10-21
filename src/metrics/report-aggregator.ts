@@ -3,28 +3,27 @@
  * Trace: docs/archive/features/daily-weekly-report/trace.md, Scenario 4
  */
 
-import { Logger } from '../logger';
+import { normalizeSessionKey } from '../session-identity';
 import type { MetricsEventStore } from './event-store';
-import {
-  type Achievement,
-  type AggregatedMetrics,
-  type DailyBreakdown,
-  type DailyReport,
-  type DerivedMetrics,
-  type EnrichedDailyReport,
-  type EnrichedWeeklyReport,
-  type FunFact,
-  type HourlyDistribution,
-  type MetricsEvent,
-  MetricsEventType,
-  type ModelTokenUsage,
-  type TokenUsageAggregation,
-  type TokenUsageMetadata,
-  type TokenUsageRanking,
-  type TrendComparison,
-  type UsageReport,
-  type UserRanking,
-  type WeeklyReport,
+import type {
+  Achievement,
+  AggregatedMetrics,
+  DailyBreakdown,
+  DailyReport,
+  DerivedMetrics,
+  EnrichedDailyReport,
+  EnrichedWeeklyReport,
+  FunFact,
+  HourlyDistribution,
+  MetricsEvent,
+  ModelTokenUsage,
+  TokenUsageAggregation,
+  TokenUsageMetadata,
+  TokenUsageRanking,
+  TrendComparison,
+  UsageReport,
+  UserRanking,
+  WeeklyReport,
 } from './types';
 import { currentStreak, longestStreak } from './usage-render/streaks';
 import {
@@ -37,8 +36,6 @@ import {
   OTHER_MODEL_ID,
   type PeriodTabId,
 } from './usage-render/types';
-
-const logger = new Logger('ReportAggregator');
 
 /**
  * Add N days to a YYYY-MM-DD string and return YYYY-MM-DD.
@@ -470,7 +467,11 @@ export class ReportAggregator {
 
       const hour = getHourInTz(e.timestamp);
       const dayKey = timestampToDateInTz(e.timestamp);
-      const sessionKey = m.sessionKey || e.sessionKey;
+      // Normalize on read: events written before the Step 4d key format
+      // switch carry legacy `channel-thread` keys — without this, one
+      // session spanning the deploy splits into two per-session rows.
+      const rawSessionKey = m.sessionKey || e.sessionKey;
+      const sessionKey = rawSessionKey ? normalizeSessionKey(rawSessionKey) : rawSessionKey;
 
       // Each of 4 windows: if event in range, accumulate.
       const winRanges: Array<[PeriodTabId, number, number]> = [

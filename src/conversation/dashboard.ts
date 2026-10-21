@@ -6,16 +6,23 @@
  *   GET  /dashboard                          → Dashboard HTML (all users overview)
  *   GET  /dashboard/:userId                  → Dashboard HTML (specific user)
  *   GET  /api/dashboard/sessions             → All active sessions as Kanban data (JSON)
- *   GET  /api/dashboard/stats                → User statistics (JSON)
+ *   GET  /api/dashboard/stats                → Period statistics, one user or all users (JSON)
+ *   GET  /api/dashboard/usage                → Period token usage + cost, one user or all users (JSON)
  *   GET  /api/dashboard/users                → User list (JSON)
+ *   GET  /api/dashboard/lifecycle            → Session lifecycle policy (JSON; also in the sessions response)
+ *   PUT  /api/dashboard/lifecycle            → Update it (admin: viewer token, or ADMIN_USERS + X-Admin-Mode: on);
+ *                                              409 + counts when it would sleep/end sessions, unless ?confirm=1
  *   GET  /api/dashboard/session/:id          → Session detail turns (JSON)
+ *   GET  /api/dashboard/session/:id/worklog  → Work log entries (JSON, registered in work-log-routes.ts)
  *   POST /api/dashboard/session/:id/generate-title → Generate titleSub via codex model
  *   POST /api/dashboard/session/:key/stop    → Stop a working session
  *   POST /api/dashboard/session/:key/close   → Close/terminate a session
  *   POST /api/dashboard/session/:key/trash   → Trash (hide) a closed session
  *   POST /api/dashboard/session/:key/command → Send command to session
+ *   POST /api/dashboard/session/:key/goal    → Add a goal / delete the current or a queued goal
  *   POST /api/dashboard/session/:conversationId/resummarize/:turnId → Retry summary generation
- *   WS   /ws/dashboard                       → Real-time session state updates (WebSocket)
+ *   WS   /ws/dashboard                       → Real-time session state updates (WebSocket),
+ *                                              incl. `work_log` entries (owner/admin scoped)
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -24,14 +31,25 @@ import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
 import { ReportAggregator } from '../metrics/report-aggregator';
-import { AggregatedMetrics, type MetricsEvent } from '../metrics/types';
+import type { MetricsEvent } from '../metrics/types';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
+import {
+  countLifecycleTransitions,
+  getSessionLifecyclePolicy,
+  isSessionLifecyclePolicyDegraded,
+  previewSessionLifecyclePolicy,
+  SessionLifecyclePolicyError,
+  updateSessionLifecyclePolicy,
+} from '../session-lifecycle-policy';
+import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from '../slack/goal-host-actions';
+import { getSurfaceLines } from '../slack/surface-config';
 import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
 import { readAllInstances } from './instance-registry';
 import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
 import { generateTitle } from './title-generator';
+import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
 
@@ -124,6 +142,12 @@ export interface KanbanSession {
     port: number;
     host: string;
   };
+  /**
+   * The session's goal list (SSOT 2026-10-21 T2): the current goal with its
+   * state, and the goals queued behind it in start order. Absent when the
+   * session has never had a goal.
+   */
+  goal?: KanbanGoal;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -143,6 +167,22 @@ export interface KanbanSession {
     title?: string;
     description?: string;
   };
+}
+
+export interface KanbanGoal {
+  current?: {
+    goalId: string;
+    objective: string;
+    /** `active` drives the loop; `paused` keeps the objective but stops injecting it; `complete` is the last finished goal. */
+    status: 'active' | 'paused' | 'complete';
+    /** Auto-continuation turns since the last real user message, and the cap. */
+    continuationCount: number;
+    maxContinuations: number;
+    /** The last completion-eval verdict that said "not yet" — what is still missing. */
+    lastEvalReason?: string;
+  };
+  queue: Array<{ goalId: string; objective: string }>;
+  completedCount: number;
 }
 
 export interface KanbanBoard {
@@ -167,7 +207,8 @@ export interface UserDayStats {
 }
 
 export interface UserStats {
-  userId: string;
+  /** null = every user (no userId asked). */
+  userId: string | null;
   period: 'day' | 'week' | 'month';
   days: UserDayStats[];
   totals: {
@@ -325,6 +366,12 @@ function getAllSessions(): Map<string, any> {
   return _getSessionsFn();
 }
 
+/** The lifecycle policy as the page sees it; `degraded` only when the saved policy is unreadable. */
+function lifecycleView(): ReturnType<typeof getSessionLifecyclePolicy> & { degraded?: true } {
+  const policy = getSessionLifecyclePolicy();
+  return isSessionLifecyclePolicyDegraded() ? { ...policy, degraded: true } : policy;
+}
+
 /**
  * #716 write-access predicate. Returns true when the authenticated
  * caller may mutate a resource owned by `ownerId`:
@@ -417,6 +464,22 @@ export function setDashboardCommandHandler(fn: CommandHandler): void {
   _commandHandlerFn = fn;
 }
 
+/**
+ * Goal list actions from the work item (SSOT 2026-10-21 T3). The handler is
+ * `SlackHandler.handleHostGoalAction`; it throws `HostGoalActionError` for
+ * every refusal, whose `statusCode` the route answers with.
+ */
+type GoalActionHandler = (
+  sessionKey: string,
+  action: HostGoalAction,
+  actorUserId?: string,
+) => Promise<HostGoalActionResult>;
+let _goalActionHandlerFn: GoalActionHandler | null = null;
+
+export function setDashboardGoalHandler(fn: GoalActionHandler): void {
+  _goalActionHandlerFn = fn;
+}
+
 type ChoiceAnswerHandler = (sessionKey: string, choiceId: string, label: string, question: string) => Promise<void>;
 let _choiceAnswerHandlerFn: ChoiceAnswerHandler | null = null;
 
@@ -458,12 +521,15 @@ function computeThreadAggregate(
   allSessions: Map<string, any>,
   now: number,
 ): { totalActiveMs: number; sessionCount: number; compactionCount: number } {
-  const threadKey = `${channelId}-${threadTs || 'direct'}`;
+  // Match on session FIELDS, not a constructed key: aggregation must never
+  // throw on hostile/corrupt in-memory data (the shared identity builder
+  // rejects separator characters), and the fields are the ground truth the
+  // map key is derived from anyway.
   let totalActiveMs = 0;
   let sessionCount = 0;
   let compactionCount = 0;
-  for (const [k, s] of allSessions.entries()) {
-    if (k !== threadKey) continue;
+  for (const s of allSessions.values()) {
+    if (s.channelId !== channelId || (s.threadTs || undefined) !== (threadTs || undefined)) continue;
     sessionCount += 1;
     compactionCount += s.compactionCount || 0;
     let acc = s.activeAccumulatedMs || 0;
@@ -516,6 +582,35 @@ function cardDerivedFields(src: {
     effort,
     issueShortRef: extractIssueShortRef(src.links?.issue?.url),
     prShortRef: extractPrShortRef(src.links?.pr?.url),
+  };
+}
+
+const KANBAN_GOAL_STATUSES = new Set(['active', 'paused', 'complete']);
+
+/** The goal list of a live session, shaped for the card (`KanbanSession.goal`). */
+function goalToKanban(s: any): KanbanGoal | undefined {
+  const goal = s.goal;
+  const queue: any[] = Array.isArray(s.goalQueue) ? s.goalQueue : [];
+  const history: any[] = Array.isArray(s.goalHistory) ? s.goalHistory : [];
+  if (!goal && queue.length === 0 && history.length === 0) return undefined;
+  return {
+    current:
+      goal && typeof goal.goalId === 'string' && KANBAN_GOAL_STATUSES.has(goal.status)
+        ? {
+            goalId: goal.goalId,
+            objective: String(goal.objective ?? ''),
+            status: goal.status,
+            continuationCount: Number(goal.continuationCount) || 0,
+            maxContinuations: Number(goal.maxContinuations) || 0,
+            ...(typeof goal.lastEvalReason === 'string' && goal.lastEvalReason
+              ? { lastEvalReason: goal.lastEvalReason }
+              : {}),
+          }
+        : undefined,
+    queue: queue
+      .filter((g) => g && typeof g.goalId === 'string')
+      .map((g) => ({ goalId: g.goalId, objective: String(g.objective ?? '') })),
+    completedCount: history.length,
   };
 }
 
@@ -588,6 +683,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     // badge for self cards too — siblings get their env from the
     // aggregator's mergeBoards stamp.
     environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
+    goal: goalToKanban(s),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -625,9 +721,6 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       : undefined,
   };
 }
-
-// Dashboard archive display window: 48 hours
-const DASHBOARD_ARCHIVE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
 /**
  * Convert an ArchivedSession to KanbanSession for the closed column.
@@ -736,7 +829,8 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
       if (s.conversationId) liveConversationIds.add(s.conversationId);
     }
 
-    const archives = getArchiveStore().listRecent(DASHBOARD_ARCHIVE_MAX_AGE_MS);
+    // How long archives stay listed is the admin-set lifecycle policy (48h default).
+    const archives = getArchiveStore().listRecent(getSessionLifecyclePolicy().boardArchiveWindowMs);
     // Fix #438: Sort archives newest-first so the most recent interaction in a
     // thread/conversation wins during dedup (older terminated duplicates are dropped)
     const sortedArchives = [...archives].sort((a, b) => b.archivedAt - a.archivedAt);
@@ -792,11 +886,12 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
 
 // ── Stats aggregation ──────────────────────────────────────────────
 
-function aggregateUserStats(events: MetricsEvent[], userId: string): Map<string, UserDayStats> {
+/** Per-day stats for one user, or for every user when `userId` is absent. */
+function aggregateUserStats(events: MetricsEvent[], userId?: string): Map<string, UserDayStats> {
   const dayMap = new Map<string, UserDayStats>();
 
   for (const ev of events) {
-    if (ev.userId !== userId) continue;
+    if (userId && ev.userId !== userId) continue;
 
     const dateStr = new Date(ev.timestamp).toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
     if (!dayMap.has(dateStr)) {
@@ -941,48 +1036,67 @@ export function broadcastTaskUpdate(
   }
 }
 
+/**
+ * Send a payload to the conversation's audience: the owning session's owner
+ * plus admin clients. Shared by `conversation_update` and `work_log` so both
+ * events have the same scope by construction.
+ */
+function sendToConversationAudience(conversationId: string, payload: string): void {
+  // Resolve session owner for scoping — iterate because sessions are keyed by
+  // sessionKey (channelId:threadTs), not conversationId (UUID)
+  let ownerId: string | undefined;
+  const sessions = _getSessionsFn?.();
+  if (sessions) {
+    for (const [, s] of sessions) {
+      if (s.conversationId === conversationId) {
+        ownerId = s.ownerId;
+        break;
+      }
+    }
+  }
+
+  if (!ownerId) {
+    // No active session — broadcast only to admin clients so archived session
+    // updates (e.g., resummarize) still reach the admin dashboard without
+    // leaking to non-owner clients.
+    logger.debug('No active session for broadcast, sending to admin clients only', { conversationId });
+  }
+
+  for (const client of wsClients) {
+    if (!ownerId) {
+      // When owner is unknown, only admin clients receive the update
+      if (!client.isAdmin) continue;
+    } else if (!client.isAdmin && client.userId && client.userId !== ownerId) {
+      continue;
+    }
+    try {
+      client.send(payload);
+    } catch {
+      wsClients.delete(client);
+    }
+  }
+}
+
 /** Broadcast conversation turn update — scoped to session owner's WS clients only */
 export function broadcastConversationUpdate(conversationId: string, turn: any): void {
   if (wsClients.size === 0) return;
   try {
-    // Resolve session owner for scoping — iterate because sessions are keyed by
-    // sessionKey (channelId:threadTs), not conversationId (UUID)
-    let ownerId: string | undefined;
-    const sessions = _getSessionsFn?.();
-    if (sessions) {
-      for (const [, s] of sessions) {
-        if (s.conversationId === conversationId) {
-          ownerId = s.ownerId;
-          break;
-        }
-      }
-    }
-
-    if (!ownerId) {
-      // No active session — broadcast only to admin clients so archived session
-      // updates (e.g., resummarize) still reach the admin dashboard without
-      // leaking to non-owner clients.
-      logger.debug('No active session for broadcast, sending to admin clients only', { conversationId });
-    }
-
     // Strip rawContent from assistant turns to reduce bandwidth
     const sanitizedTurn = turn?.role === 'assistant' && turn?.rawContent ? { ...turn, rawContent: undefined } : turn;
     const payload = JSON.stringify({ type: 'conversation_update', conversationId, turn: sanitizedTurn });
-    for (const client of wsClients) {
-      if (!ownerId) {
-        // When owner is unknown, only admin clients receive the update
-        if (!client.isAdmin) continue;
-      } else if (!client.isAdmin && client.userId && client.userId !== ownerId) {
-        continue;
-      }
-      try {
-        client.send(payload);
-      } catch {
-        wsClients.delete(client);
-      }
-    }
+    sendToConversationAudience(conversationId, payload);
   } catch (error) {
     logger.error('Failed to broadcast conversation update', error);
+  }
+}
+
+/** Broadcast a work-log entry (spec §3.3) — same owner/admin scope as `conversation_update`. */
+export function broadcastWorkLog(conversationId: string, entry: WorkLogEntry): void {
+  if (wsClients.size === 0) return;
+  try {
+    sendToConversationAudience(conversationId, JSON.stringify({ type: 'work_log', conversationId, entry }));
+  } catch (error) {
+    logger.error('Failed to broadcast work log entry', error);
   }
 }
 
@@ -1089,16 +1203,18 @@ export async function registerDashboardRoutes(
       const userId = request.query.userId || undefined;
       const selfOnly = request.query.selfOnly === 'true';
       const board = buildKanbanBoard(userId);
+      // The admin Lifecycle dialog reads the policy from the board poll.
+      const lifecycle = lifecycleView();
 
       // #814 — when not the recursion-guarded selfOnly path, ask the
       // aggregator to fan out to sibling instances on the same host.
       // Skip pre-listen / single-instance.
       if (!_selfInstanceEnv) {
-        reply.send({ board });
+        reply.send({ board, lifecycle });
         return;
       }
       if (selfOnly) {
-        reply.send({ board });
+        reply.send({ board, lifecycle });
         return;
       }
 
@@ -1116,7 +1232,7 @@ export async function registerDashboardRoutes(
             siblingCount,
           })
         ) {
-          reply.send({ board });
+          reply.send({ board, lifecycle });
           return;
         }
         // Per-poll TTL cache — multiple browser tabs polling /sessions
@@ -1141,28 +1257,79 @@ export async function registerDashboardRoutes(
           selfEnv: _selfInstanceEnv,
           siblings,
         });
-        reply.send({ board: merged });
+        reply.send({ board: merged, lifecycle });
       } catch (err) {
         // Hard failure of the aggregator must never surface a 500 —
         // fall back to self-only. Log at error (with stack) so a
         // genuine bug in mergeBoards / fetch wiring is visible, not
         // confused with the warn-throttled per-sibling failures.
         logger.error('Aggregator failed; serving self-only board', err);
-        reply.send({ board });
+        reply.send({ board, lifecycle });
       }
     },
   );
 
-  // User stats
-  server.get<{ Querystring: { userId: string; period?: string } }>(
+  // Session lifecycle policy (sleep / archive / board windows). Readable by any
+  // signed-in user; only an admin may change it — the viewer-token bearer, or an
+  // ADMIN_USERS member with X-Admin-Mode: on (same gate as cross-owner writes, #716).
+  server.get('/api/dashboard/lifecycle', { preHandler: [authMiddleware] }, async (_request, reply) => {
+    reply.send({ lifecycle: lifecycleView() });
+  });
+
+  // Shortening a duration sleeps or ends sessions on the next sweep, and ending
+  // removes their work dirs — so a change that would move any live session is
+  // answered 409 with the counts until the caller repeats it with ?confirm=1.
+  server.put<{ Body: unknown; Querystring: { confirm?: string } }>(
+    '/api/dashboard/lifecycle',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      if (!_hasWriteAccess(request, undefined)) {
+        reply
+          .status(403)
+          .send({ error: 'Forbidden — changing the lifecycle policy requires an admin with Admin mode on' });
+        return;
+      }
+      try {
+        const before = getSessionLifecyclePolicy();
+        const next = previewSessionLifecyclePolicy(request.body);
+        // While degraded the sweep has been paused, so nothing has moved under
+        // `before`: count every session the resumed sweep would move.
+        const from = isSessionLifecyclePolicyDegraded()
+          ? { ...before, sleepAfterMs: Number.POSITIVE_INFINITY, archiveAfterMs: Number.POSITIVE_INFINITY }
+          : before;
+        const impact = countLifecycleTransitions(getAllSessions().values(), from, next, Date.now());
+        if ((impact.willSleep > 0 || impact.willArchive > 0) && request.query.confirm !== '1') {
+          reply.status(409).send({ needsConfirm: true, ...impact });
+          return;
+        }
+        const lifecycle = updateSessionLifecyclePolicy(request.body);
+        const auth = (request as any).authContext;
+        logger.warn('Session lifecycle policy changed', {
+          actor: auth?.userId || auth?.mode || 'unknown',
+          before,
+          after: lifecycle,
+          ...impact,
+        });
+        broadcastSessionUpdate();
+        reply.send({ lifecycle: lifecycleView() });
+      } catch (error) {
+        if (error instanceof SessionLifecyclePolicyError) {
+          reply.status(400).send({ error: error.message, field: error.field });
+          return;
+        }
+        logger.error('Failed to save the session lifecycle policy', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // Stats for one user, or for every user when userId is absent (the All Users view).
+  server.get<{ Querystring: { userId?: string; period?: string } }>(
     '/api/dashboard/stats',
     { preHandler: [authMiddleware] },
     async (request, reply) => {
-      const { userId, period: rawPeriod } = request.query;
-      if (!userId) {
-        reply.status(400).send({ error: 'userId is required' });
-        return;
-      }
+      const { period: rawPeriod } = request.query;
+      const userId = request.query.userId || undefined;
       // #716: stats are world-readable for any authenticated user. The
       // session/conversation contents are also world-readable; write
       // operations (close/command/resummarize) remain gated by
@@ -1211,7 +1378,7 @@ export async function registerDashboardRoutes(
           },
         );
 
-        reply.send({ userId, period, days, totals } satisfies UserStats);
+        reply.send({ userId: userId ?? null, period, days, totals } satisfies UserStats);
       } catch (error) {
         logger.error('Error computing dashboard stats', error);
         reply.status(500).send({ error: 'Internal Server Error' });
@@ -1508,6 +1675,66 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Goal list (work item) ──
+
+  server.post<{
+    Params: { key: string };
+    Body: { action?: unknown; objective?: unknown; goalId?: unknown; expect?: unknown };
+  }>(
+    '/api/dashboard/session/:key/goal',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const body = request.body || {};
+      let action: HostGoalAction;
+      if (body.action === 'add') {
+        if (typeof body.objective !== 'string' || !body.objective.trim()) {
+          reply.status(400).send({ error: 'objective is required and must be a non-empty string' });
+          return;
+        }
+        if (body.objective.length > 4000) {
+          reply.status(400).send({ error: 'objective exceeds max length (4000 chars)' });
+          return;
+        }
+        action = { action: 'add', objective: body.objective };
+      } else if (body.action === 'delete') {
+        if (typeof body.goalId !== 'string' || !body.goalId || body.goalId.length > 200) {
+          reply.status(400).send({ error: 'goalId is required and must be a string' });
+          return;
+        }
+        if (body.expect !== 'current' && body.expect !== 'queued') {
+          reply.status(400).send({ error: "expect must be 'current' or 'queued'" });
+          return;
+        }
+        action = { action: 'delete', goalId: body.goalId, expect: body.expect };
+      } else {
+        reply.status(400).send({ error: "action must be 'add' or 'delete'" });
+        return;
+      }
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { originalKey } = resolved;
+      if (!_goalActionHandlerFn) {
+        reply.status(501).send({ error: 'Goal action handler not configured' });
+        return;
+      }
+      try {
+        // The acting dashboard user (owner, or an admin in admin mode); a bearer
+        // client has none and the handler falls back to the session owner.
+        const actorUserId = (request as { authContext?: { userId?: string } }).authContext?.userId;
+        const result = await _goalActionHandlerFn(originalKey, action, actorUserId);
+        broadcastSessionUpdate();
+        reply.send({ ok: true, result });
+      } catch (error) {
+        if (error instanceof HostGoalActionError) {
+          reply.status(error.statusCode).send({ error: error.message });
+          return;
+        }
+        logger.error('Error applying goal action from dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── Answer choice from dashboard ──
 
   server.post<{ Params: { key: string }; Body: { choiceId: string; label: string; question: string } }>(
@@ -1583,7 +1810,7 @@ export async function registerDashboardRoutes(
         return;
       }
       // Validate each selection entry
-      for (const [qId, sel] of Object.entries(selections)) {
+      for (const sel of Object.values(selections)) {
         if (
           !sel ||
           typeof sel !== 'object' ||
@@ -1639,7 +1866,7 @@ export async function registerDashboardRoutes(
     async (request, reply) => {
       const resolved = resolveSelfActionKeyAndOwner(request, reply);
       if (!resolved) return;
-      const { wireKey: key, originalKey } = resolved;
+      const { originalKey } = resolved;
       try {
         if (!_submitRecommendedHandlerFn) {
           reply.status(501).send({ error: 'Submit-recommended handler not configured' });
@@ -1734,6 +1961,13 @@ function renderDashboardPage(userId?: string): string {
   // sibling cards (`environment.instanceName !== SELF_INSTANCE_NAME`) and
   // hide actions that would silently 4xx if dispatched to the wrong port.
   const initSelfInstance = _selfInstanceEnv ? JSON.stringify(_selfInstanceEnv.instanceName) : 'null';
+  // ui.dashboardheader — normalized card-header composition (config.json#ui
+  // via @soma/slack/surface-config; docs/ui-surfaces.md). `<` is escaped so
+  // an operator-supplied label cannot break out of the <script> block.
+  const initDashboardHeaderConfig = JSON.stringify(getSurfaceLines('dashboardheader', 'default')).replace(
+    /</g,
+    '\\u003c',
+  );
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -1748,22 +1982,22 @@ function renderDashboardPage(userId?: string): string {
 /* ═══ BAUHAUS DESIGN SYSTEM v2 ═══ Geometric clarity. Structured planes. Disciplined typography. */
 *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  /* Surface hierarchy — 3 deliberate planes */
-  --bg: #0b0e14;
-  --surface: #12171f;
-  --surface-raised: #1a2130;
-  --border: #2a3548;
+  /* Surface hierarchy — 3 deliberate planes (neutral grays, Agent inbox .prd/10) */
+  --bg: #1c1c1f;
+  --surface: #232327;
+  --surface-raised: #2a2a2f;
+  --border: #34343a;
   --border-focus: #4d9de0;
   /* Typography */
-  --text: #e8edf5;
-  --text-secondary: #94a3b8;
-  --text-tertiary: #6b7d95;
+  --text: #ededf0;
+  --text-secondary: #a8a8b0;
+  --text-tertiary: #93939b;
   /* Functional color — Bauhaus primary triad + accents */
   --accent: #4d9de0;
   --accent-hover: #3b82c4;
   --green: #3ecf8e;
   --yellow: #f6c90e;
-  --red: #ef4444;
+  --red: #f26b6b;
   --purple: #a78bfa;
   --orange: #f97316;
   /* Geometry */
@@ -1771,31 +2005,93 @@ function renderDashboardPage(userId?: string): string {
   /* Motion */
   --ease: cubic-bezier(0.2,0.8,0.2,1);
   --speed: 140ms;
+  /* Motion contract (.prd/10 §4 — zworkflow motion-design standard, verbatim) */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --dur-press: 160ms;
+  --dur-expand: 240ms;
+  --dur-move: 320ms;
+  --dur-fade: 180ms;
+  /* Agent inbox board — neutral planes: column one step darker than the page.
+     Text tokens (--ib-muted, --ib-text-2, --text-tertiary) clear 4.5:1 on every
+     surface they sit on (page, column, card, dimmed card, segment track). */
+  --ib-col: #18181b;
+  --ib-card: #242428;
+  --ib-card-dim: #1f1f23;
+  --ib-card-border: #34343a;
+  --ib-pill: #2f2f35;
+  --ib-text: #f2f2f3;
+  --ib-text-2: #b4b4bb;
+  --ib-muted: #93939b;
+  --ib-seg: #161619;
+  --ib-seg-on: #2e2e33;
+  --ib-spark: #7b9cf0;
+  --ib-shadow: 0 1px 2px rgba(0,0,0,0.35);
+  --ib-shadow-raised: 0 14px 32px rgba(0,0,0,0.5), 0 3px 8px rgba(0,0,0,0.35);
+  --st-wait: #f5a524;
+  --st-run: #6b93f2;
+  --st-done: #3fb968;
+  --st-fail: #f26b6b;
+  /* Owner badges (All Users, .prd/10 §3.1-3) — 8 hues, ordered so neighbouring
+     slots are far apart: blue · amber · green · rose · teal · orange · violet · olive.
+     Each text colour clears 4.5:1 on its own fill. */
+  --ob-0-bg: #233b57; --ob-0-fg: #aacef8;
+  --ob-1-bg: #574723; --ob-1-fg: #f8e1aa;
+  --ob-2-bg: #235735; --ob-2-fg: #aaf8c4;
+  --ob-3-bg: #572330; --ob-3-fg: #f8aabe;
+  --ob-4-bg: #235755; --ob-4-fg: #aaf8f6;
+  --ob-5-bg: #573323; --ob-5-fg: #f8c1aa;
+  --ob-6-bg: #3b2357; --ob-6-fg: #ceaaf8;
+  --ob-7-bg: #475723; --ob-7-fg: #e1f8aa;
 }
 
 /* ── LIGHT THEME — override surface & text planes ── */
 [data-theme="light"] {
-  --bg: #f8f9fb;
+  --bg: #f7f7f7;
   --surface: #ffffff;
-  --surface-raised: #f0f2f5;
-  --border: #e2e5ea;
+  --surface-raised: #f1f1f1;
+  --border: #e4e4e4;
   --border-focus: #4d9de0;
-  --text: #1a1d23;
-  --text-secondary: #5a6577;
-  --text-tertiary: #8b95a5;
-  --accent: #2b7fd4;
-  --accent-hover: #2468b0;
+  --text: #18181a;
+  --text-secondary: #57575d;
+  --text-tertiary: #68686f;
+  --accent: #1f6dc2;
+  --accent-hover: #1a5ca6;
   /* Functional colors — WCAG AA ≥4.5:1 on all light surfaces */
   --green: #14783b;
   --yellow: #a16207;
   --red: #b91c1c;
   --purple: #7c3aed;
   --orange: #c2410c;
+  /* Agent inbox board */
+  --ib-col: #efefef;
+  --ib-card: #ffffff;
+  --ib-card-dim: #f8f8f8;
+  --ib-card-border: #e3e3e3;
+  --ib-pill: #e2e2e2;
+  --ib-text: #161616;
+  --ib-text-2: #555558;
+  --ib-muted: #65656b;
+  --ib-seg: #ebebeb;
+  --ib-seg-on: #ffffff;
+  --ib-spark: #5b7fe0;
+  --ib-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  --ib-shadow-raised: 0 14px 30px rgba(0,0,0,0.14), 0 3px 8px rgba(0,0,0,0.08);
+  --st-wait: #c2780a;
+  --st-run: #2f63e0;
+  --st-done: #137a3e;
+  --st-fail: #d43a3a;
+  --ob-0-bg: #d9e9fc; --ob-0-fg: #0e3562;
+  --ob-1-bg: #fcf2d9; --ob-1-fg: #62490e;
+  --ob-2-bg: #d9fce5; --ob-2-fg: #0e622a;
+  --ob-3-bg: #fcd9e2; --ob-3-fg: #620e23;
+  --ob-4-bg: #d9fcfb; --ob-4-fg: #0e625f;
+  --ob-5-bg: #fce4d9; --ob-5-fg: #62270e;
+  --ob-6-bg: #e9d9fc; --ob-6-fg: #350e62;
+  --ob-7-bg: #f2fcd9; --ob-7-fg: #49620e;
 }
 [data-theme="light"] ::selection { background: var(--accent); color: #fff; }
 [data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8cdd5; border-color: var(--bg); }
-[data-theme="light"] .card { box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-[data-theme="light"] .card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
 [data-theme="light"] .panel-overlay { background: rgba(0,0,0,0.25); }
 
 html,body {
@@ -1820,7 +2116,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 .app { display: flex; flex-direction: column; min-height: 100vh; }
 
-/* ── TOPBAR — strict horizontal grid ── */
+/* ── TOPBAR — strict horizontal grid ──
+   One row from 1024px; below that the nav (user select · Conversations · admin
+   toggle) takes its own row under brand · status · account (BOARD RESPONSIVE).
+   No control ever wraps or cuts its label: everything is nowrap and flex: none.
+   Only user names are ever shortened, always with a visible ellipsis and the
+   full name in title: the pill's name when its row is full, and the selected
+   user's name when it is wider than its cap — 180px on the one-row bar (≥1024,
+   even when the row has room), the whole nav row below 1024px. */
 .topbar {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -1828,7 +2131,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 48px;
+  min-height: 48px;
   min-width: 0;
 }
 .topbar h1 {
@@ -1837,11 +2140,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   letter-spacing: 0.08em;
   text-transform: uppercase;
   white-space: nowrap;
-  flex-shrink: 0;
+  flex: none;
 }
-.topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; min-width: 0; }
+/* One row (≥1024): the nav never shrinks below its controls (so none of them
+   paints past it into the account group); the selected name is capped instead
+   (.user-select max-inline-size), and the account group is what gives way — the
+   pill's name ends in an ellipsis. The cap keeps "Logged in as <realistic name>"
+   whole at 1024px even with "Reconnecting..." and touch padding. */
+.topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; flex: none; }
+.topbar .topbar-account { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 0 1 auto; }
 .topbar .nav a,
-.topbar .nav select {
+.topbar .nav .user-select {
   background: var(--surface-raised);
   color: var(--text-secondary);
   border: 1px solid var(--border);
@@ -1853,14 +2162,63 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   cursor: pointer;
   transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease);
   min-height: 32px;
+  white-space: nowrap;
+  flex: none;
 }
-.topbar .nav select { min-width: 0; inline-size: clamp(72px, 24vw, 140px); }
+.topbar .nav a { display: inline-flex; align-items: center; gap: 4px; }
+/* User select: a visible label sized to the selected option, with the native
+   <select> laid transparently over it (it still takes every click, tap and key).
+   A native select cannot show an ellipsis in WebKit — it hard-cuts the text —
+   so the label carries the ellipsis and the select carries the full name in title. */
+.topbar .nav .user-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between; /* chevron at the right edge when the select fills the row */
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-inline-size: 180px;
+  /* WebKit counts the ellipsized label's full text in this box's scrollable
+     overflow and passes it up to the page (25px of sideways scroll at 320px
+     with a long name selected); nothing in here is meant to extend past it. */
+  overflow: hidden;
+}
+/* Decorations never take a tap: the chevron's transform makes it a stacking
+   context painted above the select, so without pointer-events: none a tap on
+   it would land on the wrapper and the picker would not open. */
+.topbar .user-select-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.topbar .user-select::after {
+  content: '';
+  pointer-events: none;
+  flex: none;
+  inline-size: 6px;
+  block-size: 6px;
+  margin: -3px 2px 0;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+.topbar .user-select select {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  opacity: 0;
+  cursor: pointer;
+  appearance: none;
+  border: 0;
+  font: inherit;
+}
+.topbar .user-select:has(select:focus-visible) { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .topbar .nav a:hover,
-.topbar .nav select:hover { border-color: var(--accent); color: var(--text); }
+.topbar .nav .user-select:hover { border-color: var(--accent); color: var(--text); }
 
-/* ── USER PILL — "Logged in as <name>" + logout, rendered from /auth/me ── */
+/* ── USER PILL — "Logged in as <name>", links to the /login account page, rendered from /auth/me ── */
 .topbar .user-pill {
   display: none; /* toggled by JS once /auth/me resolves */
+  text-decoration: none;
   align-items: center;
   gap: 6px;
   background: var(--surface-raised);
@@ -1872,10 +2230,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   font-weight: 600;
   line-height: 1;
   min-height: 32px;
-  cursor: default;
+  cursor: pointer;
+  transition: border-color var(--speed) var(--ease);
   white-space: nowrap;
   max-width: 260px;
   min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1890,8 +2250,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   display: inline-block;
 }
 .topbar .user-pill.is-admin b::before { content: '★ '; color: var(--accent); }
-.topbar .user-pill[data-clickable="true"] { cursor: pointer; transition: border-color var(--speed) var(--ease); }
-.topbar .user-pill[data-clickable="true"]:hover { border-color: var(--accent); color: var(--text); }
+.topbar .user-pill:hover { border-color: var(--accent); color: var(--text); }
+.topbar .user-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 
 /* ── ADMIN MODE TOGGLE — visible only for ADMIN_USERS (#716) ── */
 .topbar .admin-toggle {
@@ -1905,6 +2265,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   letter-spacing: 0.04em;
   cursor: pointer;
   min-height: 32px;
+  white-space: nowrap;
+  flex: none;
+  align-items: center;
   transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease), background var(--speed) var(--ease);
 }
 .topbar .admin-toggle:hover { border-color: var(--accent); color: var(--text); }
@@ -1924,6 +2287,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   cursor: pointer;
   min-height: 32px;
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: center;
   transition: border-color var(--speed) var(--ease), transform 0.2s var(--ease);
@@ -1940,13 +2304,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   text-transform: uppercase;
   background: var(--surface-raised);
   border: 1px solid var(--border);
+  white-space: nowrap;
+  flex: none;
 }
 
-/* ── MAIN ── */
-.main { flex: 1; padding: 20px; }
+/* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
+.main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
 /* ── PERIOD SELECTOR — segmented control ── */
-.period-bar { display: inline-flex; gap: 0; margin-bottom: 16px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.period-bar { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .period-btn {
   background: var(--surface);
   color: var(--text-secondary);
@@ -1956,6 +2322,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
   transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
   min-height: 32px;
 }
@@ -1963,10 +2330,51 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .period-btn:hover { background: var(--surface-raised); color: var(--text); }
 .period-btn.active { background: var(--accent); color: var(--bg); font-weight: 700; }
 
-/* ── STATS GRID — 4-column, monospace numbers ── */
+/* ── STATS STRIP — leads the page, above the board (.prd/10 §3.1-2) ──
+   One row from 640px: period · 세션 · 토큰 · 비용 · 자세히. Below 640px the
+   period control and 자세히 share the first row and the numbers take the
+   second. 자세히 opens the other cards and the charts under the strip. */
+.stats { margin-bottom: 18px; }
+.stats-strip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "period nums more";
+  align-items: center;
+  gap: 10px 16px;
+}
+.stats-strip .period-bar { grid-area: period; }
+.strip-nums { grid-area: nums; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; min-width: 0; }
+.strip-num { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.strip-num .label { font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
+.strip-num .value { font-size: 15px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.strip-num .no-data { color: var(--text-tertiary); }
+.stats-more {
+  grid-area: more;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  min-height: 32px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
+}
+.stats-more svg { width: 12px; height: 12px; flex-shrink: 0; transition: transform var(--dur-expand) var(--ease-out); }
+.stats-more[aria-expanded="true"] { color: var(--text); }
+.stats-more[aria-expanded="true"] svg { transform: rotate(180deg); }
+.stats-detail { margin-top: 12px; }
+
+/* ── STATS GRID — the cards behind 자세히: 5 columns, 2 below 1100px ── */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 16px;
 }
@@ -1997,175 +2405,221 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .stat-card .delta { font-size: 12px; color: var(--green); margin-top: 2px; font-weight: 600; }
 .stat-card .delta.negative { color: var(--red); }
 
-/* ── KANBAN — strict 4-column grid ── */
-.kanban {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-  align-items: start;
-}
-.kanban-col {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  min-height: 120px;
-  display: flex;
-  flex-direction: column;
-}
-.kanban-col-header {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
+/* ═══ AGENT INBOX BOARD (.prd/10 §3.1) ═══
+   NEEDS YOU (waiting) · RUNNING (working) · DONE (idle, then closed).
+   Card shells persist across renders (keyed reconciler in the client JS), so
+   every transition below animates a live node — nothing is rebuilt per poll. */
+.inbox { margin-bottom: 28px; }
+.inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 16px; min-width: 0; }
+.crumbs { display: flex; align-items: baseline; gap: 10px; font-size: 17px; line-height: 1.3; min-width: 0; white-space: nowrap; overflow: hidden; }
+.crumbs .crumb-root, .crumbs .crumb-sep { color: var(--ib-muted); }
+.crumbs .crumb-cur { color: var(--ib-text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.seg { display: inline-flex; padding: 3px; gap: 2px; background: var(--ib-seg); border-radius: 10px; flex-shrink: 0; }
+.seg-btn {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-}
-.kanban-col-header h3 {
-  font-size: 12px;
-  font-weight: 700;
-  flex: 1;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.kanban-col-header .count {
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
-  padding: 2px 8px;
-  border-radius: var(--radius);
-  font-size: 12px;
-  font-weight: 700;
-  min-width: 24px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-.kanban-col .cards {
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
   gap: 6px;
-  flex: 1;
-}
-
-/* ── STATUS INDICATORS — geometric square + text label ── */
-.working-dot,.waiting-dot,.idle-dot,.closed-dot {
-  width: 8px; height: 8px;
-  border-radius: 1px;
-  display: inline-block;
-  flex-shrink: 0;
-}
-.working-dot { background: var(--green); animation: pulse-dot 1.4s ease-in-out infinite; }
-.waiting-dot { background: var(--yellow); }
-.idle-dot { background: var(--text-tertiary); }
-.closed-dot { background: var(--red); opacity: 0.6; }
-
-@keyframes pulse-dot {
-  0%,100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-
-/* ── CARD — Bauhaus: flat, geometric, structured layout ── */
-.card {
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ib-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 8px;
   cursor: pointer;
-  position: relative;
-  transition: border-color var(--speed) var(--ease), box-shadow var(--speed) var(--ease);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  min-height: 32px;
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform var(--dur-press) var(--ease-out);
 }
-.card:hover { border-top-color: var(--accent); border-right-color: var(--accent); border-bottom-color: var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+.seg-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+.seg-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
+/* Board header tools: Show archives, then Board | List. Below 640px the tools
+   take their own row under the breadcrumb. */
+.inbox-tools { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
+.archives-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: var(--ib-seg);
+  color: var(--ib-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 10px;
+  min-height: 38px;
+  white-space: nowrap;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform var(--dur-press) var(--ease-out);
+}
+.archives-btn[hidden] { display: none; }
+.archives-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+.archives-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
+/* Session lifecycle dialog (admin) */
+.lifecycle-dialog { margin: auto; border: 1px solid var(--border, rgba(127,127,127,0.3)); border-radius: 14px; padding: 18px 20px; background: var(--bg-card, var(--ib-col)); color: var(--ib-text); max-width: 420px; width: calc(100% - 32px); }
+.lifecycle-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+.lifecycle-dialog h3 { margin: 0 0 4px; font-size: 15px; }
+.lifecycle-dialog .lc-note { margin: 0 0 12px; font-size: 12px; color: var(--ib-muted); }
+.lifecycle-dialog label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; font-size: 13px; margin-bottom: 10px; }
+.lifecycle-dialog label input { grid-column: 1 / -1; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border, rgba(127,127,127,0.35)); background: var(--ib-seg); color: var(--ib-text); }
+.lifecycle-dialog .lc-unit { color: var(--ib-muted); font-size: 12px; }
+.lifecycle-dialog .lc-status { min-height: 1.2em; margin: 4px 0 8px; font-size: 12px; color: var(--ib-muted); }
+.lifecycle-dialog .lc-status.is-error { color: #f85149; }
+.lifecycle-dialog .lc-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.lifecycle-dialog .lc-save { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
 
-/* ── AURA SYSTEM — pure geometric: left-edge color band only ── */
-.aura-legendary { border-left: 4px solid var(--orange) !important; background: linear-gradient(90deg, rgba(249,115,22,0.06) 0%, transparent 40%); }
-.aura-epic { border-left: 4px solid var(--purple) !important; background: linear-gradient(90deg, rgba(167,139,250,0.05) 0%, transparent 40%); }
-.aura-blue { border-left: 4px solid var(--accent) !important; }
-.aura-green { border-left: 4px solid var(--green) !important; }
-.aura-white { border-left: 4px solid rgba(200,210,220,0.4) !important; }
+/* Board = 3 equal columns. No overflow clip on columns: a card flying between
+   columns must stay visible over its neighbours. */
+.kanban { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.kanban-col { position: relative; background: var(--ib-col); border-radius: 14px; padding: 2px 4px 4px; min-width: 0; display: flex; flex-direction: column; }
+.kanban-col-header { display: flex; align-items: center; gap: 8px; padding: 10px 8px 8px 10px; min-height: 40px; }
+.col-spark { color: var(--ib-spark); display: inline-flex; flex-shrink: 0; }
+.col-spark svg, .card-spark svg { width: 14px; height: 14px; }
+.kanban-col-header h3 { flex: 1; text-align: center; font-size: 12px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ib-muted); white-space: nowrap; }
+.kanban-col-header .count { background: var(--ib-pill); color: var(--ib-text-2); border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 500; min-width: 22px; text-align: center; font-variant-numeric: tabular-nums; }
+.kanban-col .cards { position: relative; display: flex; flex-direction: column; gap: 8px; }
+.col-empty { text-align: center; color: var(--ib-muted); font-size: 13px; padding: 14px 8px 18px; }
+.col-foot:empty { display: none; }
 
-/* ── CARD CONTENT — structured label:value grid ── */
-.card .card-title { font-weight: 700; font-size: 13.5px; margin-bottom: 5px; line-height: 1.3; display: flex; align-items: flex-start; gap: 6px; }
-.card .card-title-text { flex: 1; }
-.card .conv-link { color: var(--accent); text-decoration: none; font-size: 12px; flex-shrink: 0; opacity: 0.7; }
-.card .conv-link:hover { opacity: 1; }
+/* List = the same columns stacked as full-width sections (same DOM, §4-4). */
+.kanban[data-view="list"] { grid-template-columns: minmax(0, 1fr); }
+.kanban[data-view="list"] .kanban-col-header h3 { flex: 0 0 auto; text-align: left; }
+.kanban[data-view="list"] .card-summary { -webkit-line-clamp: 1; }
+.kanban[data-view="list"] .st-prefix { display: inline; }
+.kanban[data-view="list"] .col-empty { padding: 10px 8px 16px; }
+
+/* ── CARD — collapsed face + in-place expansion ── */
+.card {
+  position: relative;
+  background: var(--ib-card);
+  border: 1px solid var(--ib-card-border);
+  border-radius: 12px;
+  box-shadow: var(--ib-shadow);
+  color: var(--ib-text);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+  --st-color: var(--ib-muted);
+}
+.card[data-state="waiting"] { --st-color: var(--st-wait); }
+.card[data-state="working"] { --st-color: var(--st-run); }
+.card[data-state="idle"] { --st-color: var(--st-done); }
+/* Closed cards are dimmed with colour, not opacity — opacity would fight the
+   enter/exit fades and make each card its own stacking context. */
+.card[data-state="sleeping"], .card[data-state="archived"] { background: var(--ib-card-dim); box-shadow: none; }
+.card[data-state="sleeping"] .card-title-text, .card[data-state="archived"] .card-title-text { color: var(--ib-text-2); font-weight: 500; }
+.card[data-state="sleeping"] .card-summary, .card[data-state="archived"] .card-summary { color: var(--ib-muted); }
+.card.is-flying { z-index: 5; box-shadow: var(--ib-shadow-raised); }
+.card.is-exiting { position: absolute; z-index: 1; pointer-events: none; }
+.card-face { padding: 12px 14px; cursor: pointer; border-radius: 11px; }
+.card-face:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.card-spark { flex-shrink: 0; display: inline-flex; color: var(--st-color); }
+.card .card-title-text { flex: 1 1 auto; font-size: 15px; font-weight: 600; line-height: 1.3; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Owner badge (All Users, §3.1-3): right end of the head. It keeps its width up
+   to its cap, so the title truncates first; a longer name ends in an ellipsis
+   (full name in title). The colour slot comes from ownerBadgeHue(ownerId). */
+.owner-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+  max-inline-size: min(45%, 168px);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--ob-bg);
+  color: var(--ob-fg);
+}
+.owner-badge[data-hue="0"] { --ob-bg: var(--ob-0-bg); --ob-fg: var(--ob-0-fg); }
+.owner-badge[data-hue="1"] { --ob-bg: var(--ob-1-bg); --ob-fg: var(--ob-1-fg); }
+.owner-badge[data-hue="2"] { --ob-bg: var(--ob-2-bg); --ob-fg: var(--ob-2-fg); }
+.owner-badge[data-hue="3"] { --ob-bg: var(--ob-3-bg); --ob-fg: var(--ob-3-fg); }
+.owner-badge[data-hue="4"] { --ob-bg: var(--ob-4-bg); --ob-fg: var(--ob-4-fg); }
+.owner-badge[data-hue="5"] { --ob-bg: var(--ob-5-bg); --ob-fg: var(--ob-5-fg); }
+.owner-badge[data-hue="6"] { --ob-bg: var(--ob-6-bg); --ob-fg: var(--ob-6-fg); }
+.owner-badge[data-hue="7"] { --ob-bg: var(--ob-7-bg); --ob-fg: var(--ob-7-fg); }
+.card-summary {
+  margin-top: 6px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--ib-text-2);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.card-foot { margin-top: 10px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ib-text-2); min-width: 0; }
+.card-status { display: inline-flex; align-items: center; gap: 7px; min-width: 0; flex: 1 1 auto; white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+.card-status .st-text { overflow: hidden; text-overflow: ellipsis; }
+.card-status .st-icon { flex-shrink: 0; display: inline-flex; align-items: center; color: var(--st-color); }
+.card-status .st-icon svg { width: 12px; height: 12px; }
+.st-prefix { display: none; }
+.st-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-color); display: inline-block; }
+.st-dot.is-hollow { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-color); }
+.spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ib-pill); border-top-color: var(--st-run); border-right-color: var(--st-run); display: inline-block; animation: spin 0.9s linear infinite; }
+.card-metrics { display: inline-flex; align-items: center; color: var(--ib-muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.card-metrics .metric { display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; }
+.card-metrics .metric + .metric { border-left: 1px solid var(--ib-card-border); }
+.card-metrics .metric:last-child { padding-right: 0; }
+.card-metrics svg { width: 13px; height: 13px; }
+
+/* Expansion — grid row 0fr → 1fr. min-height/overflow live on the grid item
+   so the row can collapse to zero; siblings below move with the animated row. */
+.card-expand { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
+.card.is-expanded .card-expand { grid-template-rows: 1fr; }
+.card-expand-inner { min-height: 0; overflow: hidden; opacity: 0; transition: opacity var(--dur-expand) var(--ease-out); }
+.card.is-expanded .card-expand-inner { opacity: 1; }
+.card.no-motion .card-expand, .card.no-motion .card-expand-inner { transition: none; }
+.card-body { margin: 0 14px; padding: 12px 0 14px; border-top: 1px solid var(--ib-card-border); font-size: 13px; color: var(--ib-text-2); }
+.cb-model { color: var(--ib-muted); font-size: 13px; }
+
+/* ── EXPANDED META — moved from the old card face, same dhShow() gates ── */
 .card .card-meta {
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--ib-muted);
   display: flex;
   gap: 6px;
-  margin-bottom: 4px;
-  font-weight: 600;
+  margin-top: 4px;
   flex-wrap: wrap;
   align-items: center;
 }
 .card .card-meta span { white-space: nowrap; }
-.card .card-meta span + span::before { content: "·"; color: var(--text-tertiary); opacity: 0.5; margin-right: 6px; }
-.card .card-meta .meta-owner { color: var(--purple); }
-.card .card-links { font-size: 12px; margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; }
-.card .card-links a { color: var(--accent); text-decoration: none; font-weight: 600; }
-.card .card-links a:hover { text-decoration: underline; }
-.card .card-merge { font-size: 12px; color: var(--green); margin-top: 2px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.card .card-tokens { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; font-variant-numeric: tabular-nums; }
-.card .card-tokens .cost { color: var(--green); font-weight: 700; }
+.card .card-meta span + span::before { content: "·"; color: var(--ib-muted); opacity: 0.6; margin-right: 6px; }
+.card .card-meta .meta-owner { color: var(--ib-text-2); }
+.card .card-subtitle { font-size: 12px; color: var(--ib-text-2); margin-top: 3px; overflow-wrap: anywhere; }
+.card .card-merge { color: var(--st-done); font-weight: 600; font-variant-numeric: tabular-nums; }
+.card .card-tokens .cost { color: var(--st-done); font-weight: 600; }
+.card .card-stats { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
+.card .card-stats > span { white-space: nowrap; }
 
-/* ── TIMER + COUNTER ROW — icon · value · separator ── */
-.card .card-timer-row {
-  display: flex;
-  gap: 10px;
-  align-items: baseline;
-  font-size: 11px;
-  color: var(--text-secondary);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  margin-bottom: 4px;
-  flex-wrap: wrap;
-}
+/* ── TIMER STATS — Σ thread total · compactions · sessions ── */
+.card .card-timer-row { display: inline-flex; gap: 10px; flex-wrap: wrap; }
 .card .card-timer-row > span { white-space: nowrap; }
-.card .card-timer-row .card-timer-total { color: var(--text-tertiary); }
-.card .card-timer-row .card-timer-compactions,
-.card .card-timer-row .card-timer-sessions { color: var(--text-tertiary); }
-
-/* ── HERO TIMER — big live timer above card title ── */
-.card .card-timer-hero {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-  line-height: 1.1;
-  margin-bottom: 6px;
-}
-.card .card-timer-hero .hero-icon { font-size: 18px; }
-.card .card-timer-hero .card-timer-live { color: var(--text); }
 
 /* ── SHORT REFS ROW — PROJ-123 · PR-123 ── */
 .card .card-refs {
   display: flex;
   gap: 6px;
   align-items: baseline;
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--ib-muted);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  margin-bottom: 4px;
+  margin-top: 6px;
   flex-wrap: wrap;
 }
 .card .card-refs a {
   color: var(--accent);
   text-decoration: none;
-  font-weight: 700;
+  font-weight: 600;
 }
-.card .card-refs a:hover { text-decoration: underline; }
-.card .card-refs .ref-sep { color: var(--text-tertiary); opacity: 0.6; }
-
-/* ── META EFFORT — power level token in meta row ── */
-.card .card-meta .meta-effort {
-  color: var(--accent);
-  font-weight: 700;
-  text-transform: lowercase;
-}
+.card .card-refs a:focus-visible { text-decoration: underline; }
+.card .card-refs .ref-sep { color: var(--ib-muted); opacity: 0.6; }
 
 /* ── ENV BADGE — multi-instance origin tag (#814) ── */
 .card .card-meta .env-badge {
@@ -2208,62 +2662,135 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (hover: none) {
   /* On touch devices :hover is sticky after a tap and never closes —
      gate visibility entirely on the explicit tooltip-open class
-     toggled by the tap handler in updateTokenStats(). */
+     toggled by the tap handler in updateTokenBreakdown(). */
   #stat-tokens-wrap:hover #stat-tokens-tooltip { display: none; }
   #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip { display: block; }
 }
 
 /* ── CONTEXT USAGE BAR ── */
-.card .context-bar { margin-top: 4px; margin-bottom: 2px; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; }
-.card .context-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s ease; background: var(--accent); }
-.card .context-bar-fill.ctx-warn { background: var(--yellow); }
-.card .context-bar-fill.ctx-danger { background: var(--red); }
+.card .context-bar { margin-top: 8px; height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
+.card .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform 0.3s var(--ease-out); background: var(--st-run); }
+.card .context-bar-fill.ctx-warn { background: var(--st-wait); }
+.card .context-bar-fill.ctx-danger { background: var(--st-fail); }
 
-/* ── WORKING PULSE INDICATOR ── */
-@keyframes working-pulse {
-  0%,100% { box-shadow: 0 0 0 0 rgba(249,115,22,0.3); }
-  50% { box-shadow: 0 0 0 3px rgba(249,115,22,0.08); }
-}
-.card.card-working { animation: working-pulse 2.5s ease-in-out infinite; }
-
-/* ── EMPTY COLUMN HINT ── */
-.kanban-col .empty-hint { text-align: center; padding: 24px 12px; font-size: 12px; color: var(--text-tertiary); opacity: 0.5; font-style: italic; }
-
-/* ── TASK LIST — compact rows ── */
-/* min-width: 0 on the flex row lets the content child shrink; otherwise the
-   content intrinsic width pushes the right-aligned duration out of view. */
-.card-tasks { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 4px; }
-.card-task { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; padding: 2px 0; line-height: 1.3; min-width: 0; }
-.card-task.completed { color: var(--text-tertiary); opacity: 0.55; }
-.card-task.in_progress { color: var(--text); font-weight: 600; }
-.card-task .task-icon { flex-shrink: 0; }
-.card-task .task-content { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ── TASK TIMELINE — dot + step + time; only the current step's dot is solid ── */
+.tl-wrap { margin-top: 10px; }
+.tl { list-style: none; margin: 0; padding: 0; }
+.tl-item { position: relative; display: flex; gap: 10px; padding: 0 0 8px 16px; line-height: 1.4; color: var(--ib-text-2); }
+.tl-item::before { content: ''; position: absolute; left: 2px; top: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--ib-muted); opacity: 0.55; }
+.tl-item::after { content: ''; position: absolute; left: 4.5px; top: 15px; bottom: 1px; width: 1px; background: var(--ib-card-border); }
+.tl-item:last-child { padding-bottom: 0; }
+.tl-item:last-child::after { display: none; }
+.tl-item.is-current { color: var(--ib-text); }
+.tl-item.is-current::before { background: var(--ib-text); opacity: 1; }
+.tl-item.is-pending { color: var(--ib-muted); }
+.tl-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.tl-time { flex-shrink: 0; color: var(--ib-muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.tl-more { font-size: 12px; color: var(--ib-muted); padding: 0 0 6px 16px; }
 .spin { display: inline-block; animation: spin 1.5s linear infinite; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-.tasks-more { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; font-weight: 600; }
 
-/* ── ACTION BUTTONS — geometric, adequate hit area ── */
-.card-actions { display: flex; gap: 4px; margin-top: 6px; justify-content: flex-end; }
+/* ── INSTRUCTION / RESPONSE — latest pair, lazy-loaded on expand ── */
+.card-io { margin-top: 12px; display: grid; gap: 6px; }
+.io-row { border-radius: 8px; padding: 8px 10px; background: var(--ib-col); min-width: 0; }
+.io-label { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: var(--ib-muted); margin-bottom: 3px; display: flex; gap: 6px; align-items: baseline; }
+.io-label .io-who { font-weight: 500; letter-spacing: 0; }
+.io-text { font-size: 13px; line-height: 1.45; color: var(--ib-text); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }
+.io-text .io-title { font-weight: 600; }
+.io-text.is-muted, .io-muted { color: var(--ib-muted); }
+
+/* ── ACTION BUTTONS — secondary outline + one solid primary (reference "Approve") ── */
+.card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; justify-content: flex-end; }
 .btn-action {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-  padding: 4px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ib-card);
+  border: 1px solid var(--ib-card-border);
+  border-radius: 8px;
+  color: var(--ib-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 5px 12px;
   cursor: pointer;
-  min-height: 26px;
-  transition: all var(--speed) var(--ease);
-  letter-spacing: 0.02em;
+  min-height: 32px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
 }
-.btn-action:hover { border-color: var(--accent); color: var(--text); background: rgba(96,165,250,0.08); }
-.btn-action.btn-stop { border-color: rgba(239,68,68,0.3); color: var(--text-secondary); }
-.btn-action.btn-stop:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,0.08); }
-.btn-action.btn-close { border-color: rgba(250,204,21,0.3); color: var(--text-secondary); }
-.btn-action.btn-close:hover { border-color: var(--yellow); color: var(--yellow); background: rgba(250,204,21,0.08); }
-.btn-action.btn-trash { border-color: rgba(239,68,68,0.2); color: var(--text-tertiary); }
-.btn-action.btn-trash:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,0.08); }
+.btn-action:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-action.btn-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); }
+.btn-action.btn-stop { color: var(--st-fail); }
+.btn-action.btn-trash { color: var(--ib-muted); }
+
+/* ── GOAL LIST (work item, SSOT 2026-10-21 T2/T3) ── */
+.card-goal {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--ib-card-border);
+  border-radius: 8px;
+  background: var(--ib-card-dim);
+  font-size: 12.5px;
+}
+.card-goal .cg-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.card-goal .cg-label { font-weight: 600; color: var(--ib-text); }
+.card-goal .cg-status {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  line-height: 1.5;
+}
+.card-goal .cg-status.cg-active { color: var(--st-run); }
+.card-goal .cg-status.cg-paused { color: var(--st-wait); }
+.card-goal .cg-status.cg-complete { color: var(--st-done); }
+.card-goal .cg-progress { margin-left: auto; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
+.card-goal .cg-objective {
+  color: var(--ib-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.card-goal .cg-gap { margin-top: 3px; color: var(--ib-muted); overflow-wrap: anywhere; }
+.card-goal .cg-empty { color: var(--ib-muted); }
+.card-goal .cg-row { display: flex; align-items: flex-start; gap: 6px; }
+.card-goal .cg-row > :first-child { flex: 1; min-width: 0; }
+.card-goal .cg-queue-title { margin-top: 8px; color: var(--ib-muted); font-size: 11.5px; }
+.card-goal .cg-queue { list-style: decimal; margin: 2px 0 0 18px; }
+.card-goal .cg-queue li { padding: 2px 0; }
+.card-goal .cg-q-text { overflow-wrap: anywhere; color: var(--ib-text); }
+.card-goal .cg-done { margin-top: 6px; color: var(--ib-muted); font-size: 11.5px; }
+.card-goal .cg-btn {
+  flex: none;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border: 1px solid var(--ib-card-border);
+  border-radius: 6px;
+  background: var(--ib-card);
+  color: var(--ib-text);
+  cursor: pointer;
+}
+.card-goal .cg-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.card-goal .cg-btn.cg-danger { color: var(--st-fail); }
+.card-goal .cg-add { display: flex; gap: 6px; margin-top: 8px; }
+.card-goal .cg-add-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 8px;
+  border: 1px solid var(--ib-card-border);
+  border-radius: 6px;
+  background: var(--ib-card);
+  color: var(--ib-text);
+}
+.card-goal .cg-add-input:focus { outline: none; border-color: var(--border-focus); }
+.card-goal .cg-error { margin-top: 6px; color: var(--st-fail); overflow-wrap: anywhere; }
 
 /* ── PENDING QUESTION (dashboard choice buttons) ── */
 .card-question {
@@ -2295,14 +2822,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   background: rgba(77,157,224,0.08);
   color: var(--accent);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
   font-family: inherit;
   line-height: 1.3;
-}
-.btn-choice:hover {
-  border-color: var(--accent);
-  background: rgba(77,157,224,0.18);
-  color: var(--text);
 }
 .btn-choice:disabled {
   opacity: 0.5;
@@ -2314,11 +2836,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   color: white;
   border: 2px solid #256f38;
   font-weight: 600;
-}
-.btn-choice-recommended:hover {
-  background: #256f38;
-  color: white;
-  border-color: #256f38;
 }
 .btn-choice-recommended::before { content: "\\2B50 "; }
 .choice-row-recommended .btn-choice-recommended {
@@ -2364,6 +2881,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   text-decoration: none;
 }
 .card-question-multi a:hover { text-decoration: underline; }
+/* Pending question inside an open card — the card's own button language
+   (reference "Reject | Approve"): outline choices, the recommended one solid
+   and last on the right. Markup and handlers are the shared ones above. */
+.card .card-question { margin-top: 12px; padding: 10px 12px; background: var(--ib-col); border: 0; border-radius: 8px; }
+.card .card-question-text { font-size: 13px; color: var(--ib-text); margin-bottom: 8px; }
+.card .card-question-multi { font-size: 12px; color: var(--ib-muted); }
+.card .card-question-choices { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.card .choice-divider { display: none; }
+.card .choice-row-recommended { order: 2; max-width: 100%; min-width: 0; }
+.card .btn-choice { font-size: 13px; padding: 5px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); text-align: left; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
+.card .btn-choice-recommended::before { content: none; }
+.card .choice-row-recommended .btn-choice-recommended,
+.card .btn-choice-recommended { display: inline-block; width: auto; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
 
 /* ── PANEL PENDING QUESTION ── */
 .panel-question {
@@ -2664,13 +3194,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   background: var(--accent);
   opacity: 0.4;
 }
-/* Panel tasks section */
+/* Panel tasks (.prd/10 §3.1-6) — pinned between the token badges and the
+   scroll area: always shown (an empty line when there are none yet), with its
+   own scroll so a long list never pushes the work log and turns away. */
 .panel-tasks {
+  flex: none;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
-  max-height: 260px;
+  max-height: min(30vh, 240px);
   overflow-y: auto;
 }
+.panel-tasks-empty { font-size: 12px; color: var(--text-tertiary); padding: 2px 0 4px; }
 .panel-tasks-header {
   font-size: 12px;
   font-weight: 700;
@@ -2721,6 +3255,87 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   font-weight: 600;
 }
 .panel-tasks-toggle:hover { text-decoration: underline; }
+/* Panel work log (.prd/10 §3.1-6, §3.3) — what the agent did, in order. The
+   header is a disclosure button (collapsed unless the panel was opened from
+   작업 로그); the count keeps counting while it is closed. Own scroll box so
+   live appends tail-follow without moving the turn list. */
+.panel-worklog { padding: 4px 16px 6px; border-bottom: 1px solid var(--border); }
+.panel-worklog-header {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 0;
+  background: none;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.panel-worklog-header .wl-count { font-weight: 600; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.panel-worklog-header .wl-chevron { width: 12px; height: 12px; margin-left: auto; flex-shrink: 0; transition: transform var(--dur-expand) var(--ease-out); }
+.panel-worklog-header[aria-expanded="true"] .wl-chevron { transform: rotate(180deg); }
+.worklog-list { max-height: min(48vh, 440px); overflow-y: auto; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; line-height: 1.45; margin: 2px 0 4px; }
+.worklog-list[hidden] { display: none; }
+.wl-empty { color: var(--text-tertiary); font-size: 12px; padding: 6px 0; }
+.wl-entry { color: var(--text); min-width: 0; }
+.wl-head { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-tertiary); }
+.wl-label { font-weight: 700; letter-spacing: 0.04em; }
+.wl-head .wl-time { margin-left: auto; }
+.wl-time { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+/* Each entry = a row (role=button: click, Enter or Space opens its raw output
+   below it) + its detail block. */
+.wl-row { border-radius: 4px; cursor: pointer; min-width: 0; }
+.wl-row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.wl-row[aria-expanded="true"] { background: var(--surface-raised); }
+.wl-row > .wl-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.wl-line { display: flex; align-items: baseline; gap: 8px; }
+.wl-line > .wl-text { flex: 1; min-width: 0; }
+.wl-narration .wl-text { color: var(--text-secondary); }
+.wl-detail { margin: 4px 0 6px; min-width: 0; font-family: Inter,ui-sans-serif,system-ui,sans-serif; }
+.wl-detail-bar { display: flex; justify-content: flex-end; gap: 6px; margin-bottom: 4px; }
+.wl-detail-btn { font: inherit; font-size: 11px; font-weight: 600; color: var(--text-secondary); background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; min-height: 26px; cursor: pointer; }
+.wl-detail-msg { font-size: 12px; color: var(--text-tertiary); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wl-detail-note { font-size: 11px; color: var(--yellow); margin-bottom: 4px; }
+.wl-raw {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: min(36vh, 320px);
+  overflow: auto;
+}
+.wl-instruction { background: rgba(77,157,224,0.08); border-left: 2px solid var(--accent); border-radius: 4px; padding: 6px 8px; margin: 4px 0; }
+.wl-instruction .wl-label { color: var(--accent); }
+.wl-final { border-left: 2px solid var(--green); padding: 4px 8px; margin: 4px 0; }
+.wl-final .wl-label { color: var(--green); }
+.wl-notice .wl-row > .wl-text { color: var(--text-tertiary); font-style: italic; }
+.wl-error { border-left: 2px solid var(--red); padding: 4px 8px; }
+.wl-error .wl-label, .wl-error .wl-row > .wl-text { color: var(--red); }
+.wl-tool, .wl-tool_result {
+  font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+.wl-tool > .wl-row, .wl-tool_result > .wl-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.wl-tool .wl-text, .wl-tool_result .wl-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-tool-name { color: var(--text); font-weight: 600; flex-shrink: 0; }
+.wl-mark { flex-shrink: 0; width: 1em; text-align: center; color: var(--text-tertiary); }
+.wl-tool_result .wl-mark { color: var(--green); }
+.wl-tool_result.is-fail .wl-mark, .wl-tool_result.is-fail .wl-tool-name { color: var(--red); }
 .slide-panel-overlay {
   position: fixed;
   top: 0; left: 0;
@@ -2814,9 +3429,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .token-badge .tok-label { color: var(--text-tertiary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 .token-badge .tok-value { color: var(--accent); font-variant-numeric: tabular-nums; }
 .token-badge .tok-cost { color: var(--green); }
-/* Unified scroll container: wraps panel-question + panel-tasks + panel-turns
-   so large UIAskQ choices or long task lists naturally scroll together with the
-   chat content. .panel-command stays pinned below as a non-scrolling sibling. */
+/* Scroll container: wraps panel-question + panel-worklog + panel-turns so
+   large UIAskQ choices scroll together with the chat content. Tasks sit pinned
+   above it and .panel-command stays pinned below, both non-scrolling siblings. */
 .panel-scroll { flex: 1; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
 .panel-turns { padding: 10px 16px; }
 .panel-turns-loading { text-align: center; font-size: 11px; color: var(--text-tertiary); padding: 8px 0; font-style: italic; }
@@ -2849,15 +3464,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .card-links .pr-badge { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 700; margin-left: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
 .card .card-links .pr-open { background: rgba(96,165,250,0.15); color: var(--accent); }
 .card .card-links .pr-merged { background: rgba(167,139,250,0.15); color: var(--purple); }
-
-/* ── DRAG & DROP ── */
-.card[draggable="true"] { cursor: grab; }
-.card[draggable="true"]:active { cursor: grabbing; }
-.card.dragging { opacity: 0.4; }
-.kanban-col.drag-over .cards { outline: 2px dashed var(--accent); outline-offset: -2px; border-radius: var(--radius); min-height: 60px; }
-.kanban-col#col-closed.drag-over .cards { outline-color: var(--yellow); }
-.kanban-col .drop-hint { display: none; text-align: center; padding: 8px; font-size: 12px; color: var(--text-tertiary); font-style: italic; }
-.kanban-col.drag-over .drop-hint { display: block; }
 
 /* ── COMMAND INPUT — flat ── */
 .panel-command {
@@ -2908,44 +3514,85 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .btn-send:hover { background: var(--accent-hover); }
 .btn-send:disabled { background: var(--surface-raised); color: var(--text-tertiary); cursor: default; }
 
-/* ── CLOSED COLUMN ── */
+/* ── CLOSED CARDS — 7-day "Show older" toggle at the foot of DONE ── */
 .show-older-btn {
-  background: var(--surface-raised);
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
-  color: var(--text-tertiary);
+  background: transparent;
+  border: 1px dashed var(--ib-card-border);
+  border-radius: 10px;
+  color: var(--ib-muted);
+  font: inherit;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   padding: 6px 12px;
   cursor: pointer;
-  margin: 4px 8px 8px;
-  width: calc(100% - 16px);
-  transition: all var(--speed) var(--ease);
+  margin: 8px 0 2px;
+  width: 100%;
+  transition: border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
   text-align: center;
-  min-height: 30px;
+  min-height: 32px;
 }
-.show-older-btn:hover { border-color: var(--accent); color: var(--text); }
 
-/* ── RESPONSIVE — Bauhaus grid adapts ── */
-@media (max-width: 1100px) {
-  .kanban { grid-template-columns: repeat(2, 1fr); }
-  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+/* ── PRESS — buttons and segments give 0.97 feedback (§4-5), pointer presses only:
+   a keyboard-focused control matches :focus-visible, so Space/Enter never scale it (§4-9). ── */
+.btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+
+/* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
+@media (hover: hover) and (pointer: fine) {
+  .card:hover { border-color: var(--ib-muted); }
+  .card[data-state="sleeping"]:hover, .card[data-state="archived"]:hover { border-color: var(--ib-card-border); }
+  .seg-btn:hover { color: var(--ib-text); }
+  .archives-btn:hover { color: var(--ib-text); }
+  .wl-row:hover { background: var(--surface-raised); }
+  .wl-detail-btn:hover { color: var(--text); border-color: var(--text-tertiary); }
+  .panel-worklog-header:hover { color: var(--text); }
+  .btn-action:hover:not(:disabled) { border-color: var(--ib-muted); }
+  .btn-action.btn-primary:hover:not(:disabled) { opacity: 0.88; }
+  .btn-action.btn-stop:hover:not(:disabled) { border-color: var(--st-fail); }
+  .show-older-btn:hover { border-color: var(--ib-muted); color: var(--ib-text); }
+  .stats-more:hover { background: var(--surface-raised); color: var(--text); }
+  .card .card-refs a:hover { text-decoration: underline; }
+  .btn-choice:hover:not(:disabled) { border-color: var(--accent); background: rgba(77,157,224,0.18); color: var(--text); }
+  .btn-choice-recommended:hover:not(:disabled) { background: #256f38; color: white; border-color: #256f38; }
+  .card .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--ib-card); color: var(--ib-text); }
+  .card .btn-choice-recommended:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
 }
-@media (max-width: 680px) {
-  .kanban { grid-template-columns: 1fr; }
-  .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 6px; margin-bottom: 12px; }
-  .stat-card { padding: 8px 12px; }
-  .stat-card .value { font-size: 18px; }
-  .stat-card .label { font-size: 10px; }
-  .chart-row { flex-direction: column; }
-  .slide-panel { width: 100vw; right: -100vw; }
-  .topbar { padding: 0 10px; gap: 6px; }
+
+/* ── BOARD RESPONSIVE (.prd/10 §5) ──
+   ≥1024 three columns · 640–1023 the columns scroll sideways inside the board
+   (page itself never scrolls horizontally) · <640 List by default, 44px taps. */
+@media (max-width: 1023px) {
+  .kanban[data-view="board"] {
+    grid-template-columns: repeat(3, minmax(300px, 1fr));
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    overscroll-behavior-x: contain;
+    padding-bottom: 8px;
+  }
+  .kanban[data-view="board"] > .kanban-col { scroll-snap-align: start; }
+  /* Top bar: brand · status · account on the first row, the nav on its own row below, full labels. */
+  .topbar { flex-wrap: wrap; padding: 8px 20px; row-gap: 8px; }
+  /* Basis 0: the account group never pushes itself onto a row of its own — a
+     long name ends in an ellipsis inside the pill instead. */
+  .topbar .topbar-account { flex: 1 1 0; justify-content: flex-end; }
+  .topbar .nav { order: 1; flex: 1 0 100%; margin-left: 0; flex-wrap: wrap; min-width: 0; }
+  /* The nav row is full width: a selected name can use all of it (the other
+     controls move to the next line first); only a name wider than the row ends
+     in an ellipsis. */
+  .topbar .nav .user-select { max-inline-size: 100%; }
+}
+@media (max-width: 639px) {
+  .main { padding: 14px 12px; }
+  .panel-tasks { max-height: min(22vh, 160px); }
+  /* Stats strip: period control + 자세히 on the first row, the numbers on the
+     second. The period tabs share the row's width and keep 44px height with
+     narrower sides, so the row fits 320px with the coarse-pointer padding. */
+  .stats-strip { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "period more" "nums nums"; gap: 8px 12px; }
+  .stats-strip .period-btn { flex: 1 1 auto; padding-left: 12px; padding-right: 12px; }
+  /* Top bar: the status badge becomes a 10px dot (aria-label preserved for SR),
+     the "Logged in as" prefix goes, and the user select fills the nav row (which
+     wraps rather than overflow on very small screens). Labels stay whole. */
+  .topbar { padding: 6px 12px; gap: 6px 8px; }
   .topbar h1 { font-size: 12px; }
-  .topbar .nav { gap: 4px; }
-  .topbar .nav a, .topbar .nav select { font-size: 11px; padding: 4px 8px; }
-  .topbar .nav .nav-text { display: none; }
-  .topbar .nav .nav-icon { display: inline !important; }
-  /* ws-badge → 10px round dot; aria-label preserved for SR */
   .topbar .ws-badge {
     display: inline-block;
     inline-size: 10px;
@@ -2958,32 +3605,49 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     flex-shrink: 0;
     min-width: 0;
   }
-  .topbar .user-pill { max-width: 140px; padding: 4px 8px; }
+  .topbar .nav .user-select { flex: 1 1 auto; }
+  .topbar .user-pill { padding: 4px 10px; }
   .topbar .user-pill-prefix { display: none; }
-  .topbar .admin-toggle { padding: 4px 8px; font-size: 11px; }
-  #theme-toggle {
-    inline-size: 32px;
-    block-size: 32px;
-    padding: 0;
-    flex-shrink: 0;
-  }
+  .topbar .admin-toggle { padding: 4px 10px; }
+  #theme-toggle { inline-size: 32px; block-size: 32px; padding: 0; flex-shrink: 0; }
+  .inbox-head { margin-bottom: 12px; flex-wrap: wrap; row-gap: 8px; }
+  /* The tools take the row under the breadcrumb; on the narrowest screens
+     (320px) Show archives sits above Board | List instead of overflowing. */
+  .inbox-tools { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
+  .crumbs { font-size: 15px; gap: 7px; }
+  .kanban[data-view="board"] { grid-template-columns: repeat(3, minmax(min(300px, 84vw), 1fr)); }
+  /* Selectors carry an extra class so they beat the later @media (pointer: coarse) 40px rules. */
+  .seg .seg-btn { min-height: 44px; padding: 6px 14px; }
+  .card .btn-action, .col-foot .show-older-btn, .card .btn-choice { min-height: 44px; }
+  .card .btn-action { padding: 8px 14px; }
+  .card-face { padding: 14px; }
+  .card-metrics .metric { padding: 0 7px; }
 }
-@media (max-width: 480px) {
-  .topbar { padding: 0 8px; gap: 4px; }
-  .topbar h1 {
-    font-size: 11px;
-    flex-shrink: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .topbar .user-pill { max-width: 100px; }
-  .topbar .nav select { inline-size: clamp(60px, 22vw, 100px); }
-  .topbar .admin-mode-prefix { display: none; }
-  .topbar .admin-toggle { font-size: 10px; padding: 4px 6px; }
+
+/* ── RESPONSIVE — Bauhaus grid adapts ── */
+@media (max-width: 1100px) {
+  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* Workflows — the widest value — takes the last row on its own. */
+  .stats-grid .stat-card:last-child { grid-column: 1 / -1; }
+}
+@media (max-width: 680px) {
+  .stats-grid { gap: 6px; margin-bottom: 12px; }
+  .stat-card { padding: 8px 12px; }
+  .stat-card .value { font-size: 18px; }
+  .stat-card .label { font-size: 10px; }
+  .chart-row { flex-direction: column; }
+  .slide-panel { width: 100vw; right: -100vw; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  /* §4-8: no movement or scale — the expanded body only cross-fades. These
+     selectors are more specific than the * rule above, so they win. */
+  .card-expand { transition: none !important; }
+  .card-expand-inner { transition: opacity var(--dur-fade) linear !important; }
+  .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
+  /* Static working indicator: a full ring with a centre dot instead of a spin. */
+  .spinner, .spin { animation: none !important; }
+  .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
 }
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
@@ -2991,10 +3655,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-send { min-height: 44px; padding: 12px 16px; }
   .panel-command input { min-height: 44px; padding: 12px 16px; }
   .panel-close { width: 40px; height: 40px; }
-  .topbar .nav a, .topbar .nav select { min-height: 40px; padding: 8px 16px; }
+  .topbar .nav a, .topbar .nav .user-select { min-height: 40px; padding: 8px 16px; }
   .period-btn { min-height: 40px; padding: 12px 20px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
-  .card { padding: 12px 16px; }
 }
 /* ── #800: TOUCH x NARROW — restore tight padding so the coarse-pointer
    tap-target (16px horizontal) does not push the topbar past mobile
@@ -3003,10 +3666,32 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    stay AFTER @media (pointer: coarse) in source order so the more
    specific (combined) query wins the cascade. ── */
 @media (max-width: 680px) and (pointer: coarse) {
-  .topbar .nav a, .topbar .nav select { padding: 4px 8px; }
+  .topbar .nav a, .topbar .nav .user-select { padding: 4px 8px; }
 }
 @media (max-width: 480px) and (pointer: coarse) {
-  .topbar .nav a, .topbar .nav select { padding: 4px 6px; }
+  .topbar .nav a, .topbar .nav .user-select { padding: 4px 6px; }
+}
+/* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens.
+   Heights only, so the #800 topbar width fit is untouched; the theme toggle keeps
+   its 32px square (pinned by #800) and gets a 44px-wide hit slop instead. ── */
+@media (max-width: 639px), (pointer: coarse) {
+  .topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
+  #theme-toggle { min-block-size: 44px; position: relative; }
+  #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
+  .period-btn { min-height: 44px; }
+  .stats-more { min-height: 44px; }
+  .seg .seg-btn, .card .btn-action, .card .btn-choice, .col-foot .show-older-btn { min-height: 44px; }
+  .inbox-head .archives-btn { min-height: 44px; }
+  .card .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
+  .panel-close { width: 44px; height: 44px; }
+  #panel-title-sub-regen { min-width: 44px; min-height: 44px; }
+  .panel-links a, .panel-tasks-toggle, .turn .btn-action { min-height: 44px; }
+  .panel-worklog-header, .wl-detail-btn { min-height: 44px; }
+  .worklog-list .wl-row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
+  .wl-tool > .wl-row, .wl-tool_result > .wl-row, .worklog-list .wl-row.wl-line { flex-direction: row; align-items: center; }
+  .turn-raw-details summary.turn-expand-btn { min-height: 44px; display: flex; align-items: center; }
+  .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn, .mc-btn-submit, .mc-btn-reset { min-height: 44px; }
+  .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command input { min-height: 44px; }
 }
 </style>
 </head>
@@ -3016,10 +3701,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     <h1>&#x26A1; soma-work</h1>
     <span class="ws-badge" id="ws-status" role="status" aria-label="WebSocket: Connecting">Connecting...</span>
     <div class="nav">
-      <select id="user-select" onchange="selectUser(this.value)">
+      <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">All Users</span><select id="user-select" title="All Users" onchange="selectUser(this.value)">
         <option value="">All Users</option>
-      </select>
-      <a href="/conversations">&#x1F4DD; <span class="nav-text">Conversations</span><span class="nav-icon" style="display:none">Conv</span></a>
+      </select></span>
+      <a href="/conversations"><span aria-hidden="true">&#x1F4DD;</span>Conversations</a>
       <button
         id="admin-mode-toggle"
         type="button"
@@ -3029,74 +3714,96 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         title="Toggle admin write mode (#716)"
         onclick="toggleAdminMode()"
       ><span id="admin-mode-label"><span class="admin-mode-prefix">Admin: </span><span class="admin-mode-state">OFF</span></span></button>
-      <span
+    </div>
+    <div class="topbar-account">
+      <a
         class="user-pill"
         id="user-pill"
-        title="Click to logout"
-        data-clickable="false"
-        onclick="handleUserPillClick()"
-      ><span class="user-pill-prefix">Logged in as </span><b id="user-pill-name">…</b></span>
+        href="/login"
+        title="Account — switch account or sign out"
+      ><span class="user-pill-prefix">Logged in as </span><b id="user-pill-name">…</b></a>
       <button id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
     </div>
   </div>
 
   <div class="main">
-    <div class="period-bar">
-      <button class="period-btn active" data-period="day" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
-      <button class="period-btn" data-period="week" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
-      <button class="period-btn" data-period="month" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
-    </div>
+    <!-- Stats strip (.prd/10 §3.1-2) leads; the agent inbox board follows it.
+         Collapsed by default: period · 세션 · 토큰 · 비용 + 자세히, which opens the
+         other cards and the charts below the strip (kept in localStorage). -->
+    <section class="stats" id="stats" aria-label="Usage stats">
+      <div class="stats-strip">
+        <div class="period-bar" role="group" aria-label="&#xAE30;&#xAC04;">
+          <button type="button" class="period-btn active" data-period="day" aria-pressed="true" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
+          <button type="button" class="period-btn" data-period="week" aria-pressed="false" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
+          <button type="button" class="period-btn" data-period="month" aria-pressed="false" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
+        </div>
+        <div class="strip-nums">
+          <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value" id="stat-sessions">-</span></div>
+          <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><span id="stat-tokens">-</span><span id="stat-tokens-tooltip" role="tooltip"></span></span></div>
+          <div class="strip-num"><span class="label">&#xBE44;&#xC6A9;</span><span class="value" id="stat-cost">-</span></div>
+        </div>
+        <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+      </div>
+      <div class="stats-detail" id="stats-detail" hidden>
+        <div class="stats-grid" id="stats-grid">
+          <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-turns">-</div></div>
+          <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value" id="stat-prs">-</div></div>
+          <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value" id="stat-merged">-</div></div>
+          <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC;</div><div class="value" id="stat-merge-lines">-</div></div>
+          <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value" id="stat-workflows" style="font-size:0.85em">-</div></div>
+        </div>
+        <div style="display:none" id="stat-commits-hidden"></div>
+        <div class="chart-row" id="chart-row"></div>
+      </div>
+    </section>
 
-    <div class="stats-grid" id="stats-grid">
-      <div class="stat-card"><div class="label">&#xC138;&#xC158;</div><div class="value" id="stat-sessions">-</div></div>
-      <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-turns">-</div></div>
-      <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value" id="stat-prs">-</div></div>
-      <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value" id="stat-merged">-</div></div>
-      <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC;</div><div class="value" id="stat-merge-lines">-</div></div>
-      <div class="stat-card"><div class="label">&#xD1A0;&#xD070; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-tokens-wrap"><span id="stat-tokens">-</span><span id="stat-tokens-tooltip" role="tooltip"></span></div></div>
-      <div class="stat-card"><div class="label">&#xBE44;&#xC6A9; (USD)</div><div class="value" id="stat-cost">-</div></div>
-      <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value" id="stat-workflows" style="font-size:0.85em">-</div></div>
-    </div>
-    <div style="display:none" id="stat-commits-hidden"></div>
-
-    <div class="chart-row" id="chart-row"></div>
-
-    <div style="border-top:1px solid var(--border);margin:16px 0 12px;opacity:0.5"></div>
-    <h2 style="font-size:0.95em;margin-bottom:12px;color:var(--text-secondary)">&#x1F4CB; &#xC138;&#xC158; &#xBCF4;&#xB4DC;</h2>
-    <div class="kanban" id="kanban">
-      <div class="kanban-col" id="col-working">
-        <div class="kanban-col-header">
-          <span class="working-dot"></span>
-          <h3>&#xC9C4;&#xD589;</h3>
-          <span class="count" id="count-working">0</span>
+    <!-- Agent inbox (.prd/10 §3.1) — the board, right under the stats strip. -->
+    <section class="inbox" id="inbox" aria-label="Agent inbox">
+      <div class="inbox-head">
+        <nav class="crumbs" aria-label="Breadcrumb"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
+        <div class="inbox-tools">
+          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">Archives</span></button>
+          <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z"/></svg><span id="sleeping-label">Sleeping</span></button>
+          <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="Session lifecycle (admin)" onclick="openLifecycleDialog()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/></svg><span>Lifecycle</span></button>
+          <div class="seg" role="group" aria-label="Board layout">
+            <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="4.5" height="11" rx="1.2"/><rect x="9.5" y="2.5" width="4.5" height="7" rx="1.2"/></svg><span>Board</span></button>
+            <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span>List</span></button>
+          </div>
         </div>
-        <div class="cards" id="cards-working"></div>
       </div>
-      <div class="kanban-col" id="col-waiting">
-        <div class="kanban-col-header">
-          <span class="waiting-dot"></span>
-          <h3>&#xC720;&#xC800;&#xC785;&#xB825;</h3>
-          <span class="count" id="count-waiting">0</span>
+      <dialog id="lifecycle-dialog" class="lifecycle-dialog" aria-labelledby="lifecycle-title">
+        <form method="dialog" onsubmit="saveLifecycle(event)" oninput="armLifecycleSave(null)">
+          <h3 id="lifecycle-title">Session lifecycle</h3>
+          <p class="lc-note"><span id="lifecycle-scope">이 인스턴스</span>에만 적용되고, 다음 정리 주기(최대 5분)부터 반영됩니다. 값을 줄이면 그 기준을 넘긴 세션이 바로 Sleeping이 되거나 종료됩니다 — 저장 전에 몇 개인지 알려 줍니다. Sleeping 전환이 12시간 이하이면 12시간 전 확인 알림은 보내지 않습니다.</p>
+          <label>마지막 활동 후 Sleeping 전환 <span class="lc-unit">시간</span><input id="lc-sleepAfterHours" type="number" min="1" max="720" step="any" required></label>
+          <label>Sleeping 후 Archive(종료) 전환 <span class="lc-unit">일</span><input id="lc-archiveAfterDays" type="number" min="0.05" max="365" step="any" required></label>
+          <label>보드에 Archive 표시 기간 <span class="lc-unit">시간</span><input id="lc-boardArchiveWindowHours" type="number" min="0" max="8760" step="any" required></label>
+          <p class="lc-status" id="lifecycle-status" role="status" aria-live="polite"></p>
+          <div class="lc-actions">
+            <button type="button" class="archives-btn" onclick="closeLifecycleDialog()">취소</button>
+            <button type="submit" class="archives-btn lc-save" id="lifecycle-save">저장</button>
+          </div>
+        </form>
+      </dialog>
+      <div class="kanban" id="kanban" data-view="board">
+        <div class="kanban-col" id="col-waiting" data-col="waiting">
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>NEEDS YOU</h3><span class="count" id="count-waiting">0</span></div>
+          <div class="cards" id="cards-waiting"></div>
+          <div class="col-empty" id="empty-waiting">Nothing here</div>
         </div>
-        <div class="cards" id="cards-waiting"></div>
-      </div>
-      <div class="kanban-col" id="col-idle">
-        <div class="kanban-col-header">
-          <span class="idle-dot"></span>
-          <h3>&#xB300;&#xAE30;</h3>
-          <span class="count" id="count-idle">0</span>
+        <div class="kanban-col" id="col-working" data-col="working">
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>RUNNING</h3><span class="count" id="count-working">0</span></div>
+          <div class="cards" id="cards-working"></div>
+          <div class="col-empty" id="empty-working">Nothing here</div>
         </div>
-        <div class="cards" id="cards-idle"></div>
-      </div>
-      <div class="kanban-col" id="col-closed">
-        <div class="kanban-col-header">
-          <span class="closed-dot"></span>
-          <h3>&#xB3D9;&#xBA74;</h3>
-          <span class="count" id="count-closed">0</span>
+        <div class="kanban-col" id="col-done" data-col="done">
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>DONE</h3><span class="count" id="count-done">0</span></div>
+          <div class="cards" id="cards-done"></div>
+          <div class="col-empty" id="empty-done">Nothing here</div>
+          <div class="col-foot" id="foot-done"></div>
         </div>
-        <div class="cards" id="cards-closed"></div>
       </div>
-    </div>
+    </section>
   </div>
 
   <!-- Slide Panel for Session Detail -->
@@ -3116,10 +3823,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     <div class="panel-meta" id="panel-meta"></div>
     <div class="panel-links" id="panel-links"></div>
     <div class="panel-tokens" id="panel-tokens"></div>
-    <!-- Unified scroll area: question + tasks + turns scroll together as one. -->
+    <!-- Tasks are pinned (.prd/10 §3.1-6): always shown, never scrolled away. -->
+    <div class="panel-tasks" id="panel-tasks"></div>
+    <!-- Scroll area: question + work log (collapsed unless opened from 작업 로그) + turns. -->
     <div class="panel-scroll" id="panel-scroll">
       <div class="panel-question" id="panel-question" style="display:none"></div>
-      <div class="panel-tasks" id="panel-tasks" style="display:none"></div>
+      <div class="panel-worklog" id="panel-worklog" style="display:none">
+        <button type="button" class="panel-worklog-header" id="worklog-toggle" aria-expanded="false" aria-controls="worklog-list" onclick="toggleWorkLogSection()"><span>작업 로그</span><span class="wl-count" id="worklog-count"></span><svg class="wl-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+        <div class="worklog-list" id="worklog-list" role="log" aria-live="polite" aria-label="작업 로그" hidden></div>
+      </div>
       <div class="panel-turns" id="panel-turns">
         <p style="color:var(--text-secondary);text-align:center;margin-top:40px">Click a session card to view details</p>
       </div>
@@ -3142,6 +3854,30 @@ const INIT_USER = ${initUser};
 // buttons that would post to the wrong instance. null when single-instance
 // (no env wired) or pre-listen tests; the suppression check tolerates null.
 const SELF_INSTANCE_NAME = ${initSelfInstance};
+// ui.dashboardheader (config.json#ui) — resolved card-header line composition.
+// renderCard() consults this to decide which sub-blocks to emit and with
+// what limits. Fields absent from the lines are hidden (isFieldVisible
+// semantics on the server side).
+const DASHBOARD_HEADER_CONFIG = ${initDashboardHeaderConfig};
+// field → first config entry map (show/max/truncate lookups in renderCard).
+const _dhFieldMap = {};
+for (const _dhLine of DASHBOARD_HEADER_CONFIG) {
+  for (const _dhField of (_dhLine.fields || [])) {
+    if (!(_dhField.field in _dhFieldMap)) _dhFieldMap[_dhField.field] = _dhField;
+  }
+}
+function dhShow(field) {
+  const f = _dhFieldMap[field];
+  return !!f && f.show !== false;
+}
+function dhMax(field, fallback) {
+  const f = _dhFieldMap[field];
+  return (f && typeof f.max === 'number') ? f.max : fallback;
+}
+function dhTruncate(field) {
+  const f = _dhFieldMap[field];
+  return (f && typeof f.truncate === 'number') ? f.truncate : null;
+}
 let currentUserId = INIT_USER || '';
 // Displayed + placeholder copy when a non-owner views a session. Kept here so
 // wording edits only touch one place instead of four button sites + panel.
@@ -3284,13 +4020,13 @@ function renderPanelQuestion(s) {
     if (pnlRecOpt) {
       var recLbl = stripRecommendedMarker(pnlRecOpt.label);
       pnlRecHtml = '<div class="choice-row-recommended">'
-        + '<button class="btn-choice btn-choice-recommended" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(pnlRecOpt.id) + '\\',\\'' + escJs(recLbl) + '\\',\\'' + escJs(q.question) + '\\',this)">' + esc(pnlRecOpt.id) + '. ' + esc(recLbl) + (pnlRecOpt.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(pnlRecOpt.description) + '</span>' : '') + '</button>'
+        + '<button class="btn-choice btn-choice-recommended"' + choiceDataAttrs(s.key, pnlRecOpt.id, recLbl, q.question) + '>' + esc(pnlRecOpt.id) + '. ' + esc(recLbl) + (pnlRecOpt.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(pnlRecOpt.description) + '</span>' : '') + '</button>'
         + '</div>'
         + (pnlOthers.length > 0 ? '<hr class="choice-divider">' : '');
     }
     var pnlOtherBtns = pnlOthers.map(function(c) {
       var lbl2 = stripRecommendedMarker(c.label);
-      return '<button class="btn-choice" onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(lbl2) + '\\',\\'' + escJs(q.question) + '\\',this)">' + esc(c.id) + '. ' + esc(lbl2) + (c.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(c.description) + '</span>' : '') + '</button>';
+      return '<button class="btn-choice"' + choiceDataAttrs(s.key, c.id, lbl2, q.question) + '>' + esc(c.id) + '. ' + esc(lbl2) + (c.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(c.description) + '</span>' : '') + '</button>';
     }).join('');
     container.innerHTML = '<div class="panel-question-text">&#x2753; ' + esc(q.question) + '</div>'
       + '<div class="panel-question-choices">' + pnlRecHtml + pnlOtherBtns + '</div>';
@@ -3302,13 +4038,16 @@ function renderPanelQuestion(s) {
   }
 }
 
+// Pinned Tasks block (.prd/10 §3.1-6): always rendered — with no tasks yet it
+// says so instead of disappearing.
 function renderPanelTasks(tasks) {
   var container = document.getElementById('panel-tasks');
+  if (!container) return;
+  container.style.display = '';
   if (!tasks || tasks.length === 0) {
-    container.style.display = 'none';
+    container.innerHTML = '<div class="panel-tasks-header"><span>Tasks</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>';
     return;
   }
-  container.style.display = '';
 
   // Sort: in_progress → pending → completed
   var inProgress = tasks.filter(function(t) { return t.status === 'in_progress'; });
@@ -3385,16 +4124,14 @@ let _csrfToken = '';
  * Populate the "Logged in as <name>" pill in the topbar.
  *
  * Rendered from /auth/me for three session types:
- *   - OAuth JWT (Google/Microsoft/Slack SSO) — shows user.name, pill is
- *     clickable and logs out on click.
- *   - bearer_cookie (admin viewer token) — shows "Admin" with a star marker,
- *     still clickable (logout clears the cookie).
+ *   - OAuth JWT (Google/Microsoft/Slack SSO) — shows user.name.
+ *   - bearer_cookie (admin viewer token) — shows "Admin" with a star marker.
  *   - unauthenticated (/auth/me → 401) — pill stays hidden; auth middleware
  *     is about to redirect us to /login anyway.
  *
- * Kept in sync with server-side setCookieAndRedirect / clearCookieAndRedirect —
- * the click handler calls GET /auth/logout (not a form POST) because the
- * logout endpoint is intentionally CSRF-free; it only clears the cookie.
+ * The pill is a link to /login, which for a signed-in browser is the account
+ * page: who you are signed in as, continue, use a different account, or sign
+ * out (GET /auth/logout).
  */
 function _applyUserPill(data) {
   const pill = document.getElementById('user-pill');
@@ -3410,13 +4147,12 @@ function _applyUserPill(data) {
   }
   if (!label) {
     pill.style.display = 'none';
-    pill.setAttribute('data-clickable', 'false');
     return;
   }
   nameEl.textContent = label;
+  nameEl.title = label; // the name may end in an ellipsis
   pill.style.display = 'inline-flex';
   pill.classList.toggle('is-admin', isAdmin);
-  pill.setAttribute('data-clickable', 'true');
 
   // #716: admin-mode toggle visibility. Only ADMIN_USERS members see
   // the button; clicking it stores soma_admin_mode in localStorage and
@@ -3424,6 +4160,8 @@ function _applyUserPill(data) {
   // Bearer-cookie admin (viewer token) is treated as always-admin and
   // also gets the toggle.
   const isAdminCapable = !!(data && (data.isAdmin || (data.user && data.user.name && data.isAdmin)));
+  const lifecycleBtn = document.getElementById('lifecycle-btn');
+  if (lifecycleBtn) lifecycleBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
   const toggle = document.getElementById('admin-mode-toggle');
   if (toggle) {
     if (isAdminCapable) {
@@ -3435,11 +4173,6 @@ function _applyUserPill(data) {
       try { localStorage.removeItem('soma_admin_mode'); } catch(_e) {}
     }
   }
-}
-function handleUserPillClick() {
-  const pill = document.getElementById('user-pill');
-  if (!pill || pill.getAttribute('data-clickable') !== 'true') return;
-  location.href = '/auth/logout';
 }
 
 // Admin mode (#716)
@@ -3466,10 +4199,10 @@ function _renderAdminModeButton() {
   if (!btn || !lbl) return;
   const on = _isAdminModeOn();
   btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  // Prefer split-span structure (prefix + state) so CSS can hide the
-  // "Admin: " prefix at narrow viewports without losing the ON/OFF state.
-  // Falls back to flat textContent if the spans haven't been rendered yet
-  // (e.g. legacy template / unit test setup).
+  // Prefer split-span structure (prefix + state): only the ON/OFF state is
+  // rewritten, the "Admin: " prefix stays as rendered. Falls back to flat
+  // textContent if the spans haven't been rendered yet (e.g. legacy
+  // template / unit test setup).
   const stateEl = lbl.querySelector('.admin-mode-state');
   if (stateEl) stateEl.textContent = on ? 'ON' : 'OFF';
   else lbl.textContent = on ? 'Admin: ON' : 'Admin: OFF';
@@ -3523,13 +4256,33 @@ refreshCsrfToken();
 function decodeSlackEntities(s) {
   return (s || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
+// Pure (no DOM) so the escaping can be exercised outside a browser. Same &, <, >
+// output the textContent→innerHTML round-trip gave, plus " so a value can never
+// close the attribute it is placed in. ' stays literal: escJs() relies on that.
 function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s || '';
-  return d.innerHTML;
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 function escAttr(s) {
   return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+// Pending-question choice buttons carry their values as attribute-escaped data
+// attributes (read back through dataset by one delegated click handler), so a
+// model-written question or label with quotes, backslashes, < or newlines can
+// neither break nor extend the markup the way an inline JS string could.
+function choiceDataAttrs(key, id, label, question) {
+  return ' data-choice-key="' + escAttr(key) + '" data-choice-id="' + escAttr(id)
+    + '" data-choice-label="' + escAttr(label) + '" data-choice-question="' + escAttr(question) + '"';
+}
+document.addEventListener('click', function(e) {
+  var btn = e.target && e.target.closest ? e.target.closest('button[data-choice-id]') : null;
+  if (!btn || btn.disabled) return;
+  var d = btn.dataset;
+  if (d.mcIndex !== undefined) selectMc(d.choiceKey, Number(d.mcIndex), d.choiceId, d.choiceLabel);
+  else answerChoice(d.choiceKey, d.choiceId, d.choiceLabel, d.choiceQuestion, btn);
+});
+// Only http(s) URLs become links; anything else (javascript:, data:) is inert.
+function safeHref(u) {
+  return /^https?:\\/\\//i.test(String(u || '')) ? escAttr(u) : '#';
 }
 function escJs(s) {
   return esc(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
@@ -3567,12 +4320,26 @@ function timeAgo(iso) {
   if (ms < 86400000) return Math.floor(ms / 3600000) + 'h ago';
   return Math.floor(ms / 86400000) + 'd ago';
 }
-function formatTokens(n) {
-  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-  return String(n);
+// A finite number or 0 — numeric fields pass through this before they reach markup.
+function toNum(v) {
+  var n = Number(v);
+  return isFinite(n) ? n : 0;
 }
-// Dashboard v2.1 — \`Nm SSs\` for the 1s live tick. Mirrors src/format/duration.ts.
+// Compact token count: 999 · 1.5K · 2.5M · 3.1B · 4.2T. The unit is chosen
+// after rounding (never "1000.0K"); a negative or non-number is 0, and anything
+// that would round to 1000.0T or more (from 999.95T) is capped at 999.9T+ so an
+// absurd value cannot print an exponent.
+function formatTokens(n) {
+  n = Math.max(0, toNum(n));
+  if (n < 999.5) return String(Math.round(n));
+  var units = ['K', 'M', 'B', 'T'];
+  for (var i = 0; i < units.length; i++) {
+    n /= 1000;
+    if (n < 999.95) return n.toFixed(1) + units[i];
+  }
+  return '999.9T+';
+}
+// Dashboard v2.1 — \`Nm SSs\` for the 1s live tick. Mirrors packages/common/src/format/duration.ts.
 function formatNmSSs(ms) {
   if (!ms || ms < 0 || isNaN(ms)) return '0m 00s';
   var totalSec = Math.floor(ms / 1000);
@@ -3580,35 +4347,37 @@ function formatNmSSs(ms) {
   var s = totalSec % 60;
   return m + 'm ' + (s < 10 ? '0' + s : s) + 's';
 }
-// 1-Hz tick: update every .card-timer-live element from its data-* attrs.
+// 1-Hz tick: fill every time-dependent text from its data-* attrs.
 // Runs unconditionally of WS state — WS feeds new data-* values, tick reads them.
-// The producer of .card-timer-live is the heroTimerHtml builder in renderCard()
-// (server side). Keep the class name + data-leg-started / data-accumulated attr
-// contract in sync with that emitter.
-function updateTimers() {
+// Card HTML never embeds Date.now(): the reconciler compares rendered strings,
+// so a clock in the markup would make every poll look like a change.
+//   .card-timer-live  data-leg-started / data-accumulated (renderCardStatus)
+//   .rel-time         data-ts  → "6m ago"
+//   .task-elapsed     data-since → running task duration
+function updateTimersIn(root) {
   var now = Date.now();
-  var els = document.querySelectorAll('.card-timer-live');
+  var els = root.querySelectorAll('.card-timer-live');
   for (var i = 0; i < els.length; i++) {
     var el = els[i];
     var started = Number(el.dataset.legStarted) || 0;
     var accumulated = Number(el.dataset.accumulated) || 0;
     var elapsed = (started ? now - started : 0) + accumulated;
-    el.textContent = formatNmSSs(elapsed);
+    var t = formatNmSSs(elapsed);
+    if (el.textContent !== t) el.textContent = t;
+  }
+  var rel = root.querySelectorAll('.rel-time');
+  for (var j = 0; j < rel.length; j++) {
+    var r = timeAgo(Number(rel[j].dataset.ts) || 0);
+    if (rel[j].textContent !== r) rel[j].textContent = r;
+  }
+  var run = root.querySelectorAll('.task-elapsed');
+  for (var k = 0; k < run.length; k++) {
+    var d = formatDuration(now - (Number(run[k].dataset.since) || now)) || '0s';
+    if (run[k].textContent !== d) run[k].textContent = d;
   }
 }
-setInterval(updateTimers, 1000);
-
-// ── Card Aura ──
-function getAuraClass(isoStr) {
-  const ms = Date.now() - new Date(isoStr).getTime();
-  const min = ms / 60000;
-  if (min <= 10) return 'aura-legendary';
-  if (min <= 30) return 'aura-epic';
-  if (min <= 60) return 'aura-blue';
-  if (min <= 240) return 'aura-green';
-  if (min <= 480) return 'aura-white';
-  return '';
-}
+function updateTimers() { updateTimersIn(document); }
+var _timerTick = setInterval(updateTimers, 1000);
 
 // ── User list ──
 async function loadUsers() {
@@ -3624,9 +4393,23 @@ async function loadUsers() {
       select.appendChild(opt);
     }
   } catch (e) { console.error('Failed to load users', e); }
+  syncUserSelectLabel();
+}
+
+// The visible label over the transparent user <select> shows the selected
+// option; the select's title keeps the full name when the label is ellipsized.
+function syncUserSelectLabel() {
+  const select = document.getElementById('user-select');
+  const label = document.getElementById('user-select-label');
+  if (!select || !label) return;
+  const opt = select.options[select.selectedIndex];
+  const text = opt ? opt.textContent : '';
+  if (label.textContent !== text) label.textContent = text;
+  select.title = text;
 }
 
 function selectUser(userId) {
+  syncUserSelectLabel();
   currentUserId = userId;
   history.replaceState(null, '', userId ? '/dashboard/' + userId : '/dashboard');
   loadSessions();
@@ -3637,13 +4420,37 @@ function selectUser(userId) {
 function setPeriod(period) {
   currentPeriod = period;
   document.querySelectorAll('.period-btn').forEach(function(b) {
-    b.classList.toggle('active', b.dataset.period === period);
+    var on = b.dataset.period === period;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
   loadStats();
 }
 
+// ── Stats strip 자세히 (.prd/10 §3.1-2) — the other cards + charts, collapsed
+// unless the user opened them (localStorage['soma-stats-detail'] = 'open'). ──
+var STATS_DETAIL_KEY = 'soma-stats-detail';
+function setStatsDetail(open) {
+  var btn = document.getElementById('stats-more');
+  var detail = document.getElementById('stats-detail');
+  if (!btn || !detail) return;
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  detail.hidden = !open;
+}
+function toggleStatsDetail() {
+  var open = document.getElementById('stats-more').getAttribute('aria-expanded') !== 'true';
+  setStatsDetail(open);
+  try { localStorage.setItem(STATS_DETAIL_KEY, open ? 'open' : 'closed'); } catch (_e) {}
+}
+(function initStatsDetail() {
+  var saved = null;
+  try { saved = localStorage.getItem(STATS_DETAIL_KEY); } catch (_e) {}
+  setStatsDetail(saved === 'open');
+})();
+
 // ── Session cache ──
-let _sessionCache = {};
+// Keyed by session key — prototype-free so any key string is just a key.
+let _sessionCache = Object.create(null);
 
 // ── Env badge helpers (#814) ──
 // 4-color palette — kept in CSS-friendly order so the contrast against
@@ -3667,7 +4474,7 @@ function _hashStr(s) {
 }
 
 function _buildEnvIndex() {
-  var envs = {};
+  var envs = Object.create(null);
   for (var k in _sessionCache) {
     var c = _sessionCache[k];
     if (c && c.environment && c.environment.instanceName) {
@@ -3675,7 +4482,7 @@ function _buildEnvIndex() {
     }
   }
   var sorted = Object.keys(envs).sort();
-  var assigned = {};
+  var assigned = Object.create(null);
   // First pass — try the hash bucket. If taken, mark conflict.
   var occupied = {};
   for (var i = 0; i < sorted.length; i++) {
@@ -3724,12 +4531,83 @@ function _envCount() {
   return Object.keys(_envIndex).length;
 }
 
-// ── Kanban rendering ──
+// ── Agent inbox board (.prd/10 §3.1, §4) ──
+// NEEDS YOU = waiting · RUNNING = working · DONE = idle, then closed (SLEEPING +
+// archives; older than 7 days stays behind "Show older", archives behind "Show
+// archives"). The server buckets (KanbanBoard) are unchanged — only the client
+// folds idle + closed into one column.
+var BOARD_COLS = ['waiting', 'working', 'done'];
+var SPARK_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg>';
+var WAIT_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.8 15 14H1z"/></svg>';
+var TASKS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.2l1.4 1.4 2.4-2.6M2.5 10.2l1.4 1.4 2.4-2.6M9 4.5h4.5M9 10.5h4.5"/></svg>';
+var CTX_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 8V2.4A5.6 5.6 0 0 1 13.6 8z" fill="currentColor" stroke="none"/></svg>';
+
+// Board state that survives re-renders — the DOM is reused, never rebuilt.
+// Every dictionary keyed by a session key or conversation id is prototype-free,
+// so a key such as "__proto__" or "constructor" is just a key.
+var _cardEls = Object.create(null);  // session key → persistent card shell
+var _expanded = new Set();           // keys whose card is open
+var _boardRenders = 0;
+var _ioCache = Object.create(null);  // conversationId → { state, stamp, data, dirty, fails, retryAt }
+
+// Motion tokens come from the CSS custom properties so CSS transitions and
+// WAAPI share one source of truth (§4 table).
+var MOTION = (function readMotionTokens() {
+  var cs = getComputedStyle(document.documentElement);
+  function ms(name, fallback) { var v = parseFloat(cs.getPropertyValue(name)); return isNaN(v) ? fallback : v; }
+  function str(name, fallback) { var v = cs.getPropertyValue(name).trim(); return v || fallback; }
+  return {
+    move: ms('--dur-move', 320),
+    fade: ms('--dur-fade', 180),
+    easeOut: str('--ease-out', 'cubic-bezier(0.23, 1, 0.32, 1)'),
+    easeInOut: str('--ease-in-out', 'cubic-bezier(0.77, 0, 0.175, 1)'),
+  };
+})();
+var _reducedMotionMq = window.matchMedia('(prefers-reduced-motion: reduce)');
+function reduceMotion() { return _reducedMotionMq.matches; }
+// The first paint and background tabs never animate.
+function canAnimate() {
+  return _boardRenders > 0 && !document.hidden && typeof Element.prototype.animate === 'function';
+}
+function setTextIfChanged(el, text) {
+  if (el && el.textContent !== text) el.textContent = text;
+}
+function isSiblingSession(s) {
+  return !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
+}
+
+// Pure: the DONE column for this render. idle cards, then closed cards from the
+// last 7 days, then — when "Show older" is open — the older ones.
+// An archived (terminated) closed card is left out unless archives are shown;
+// a sleeping one (closed, not terminated) unless sleeping cards are shown
+// (showSleeping, on unless false). The one key a deep link revealed (revealKey)
+// is always in, whatever its age. olderCount = what "Show older" would add;
+// archivedCount / sleepingCount = those cards in the board data.
+function planDoneColumn(idle, closed, o) {
+  var cutoff = o.now - 7 * 24 * 60 * 60 * 1000;
+  var recent = [], older = [], archivedCount = 0, sleepingCount = 0;
+  for (var i = 0; i < closed.length; i++) {
+    var s = closed[i];
+    var archived = s.terminated === true;
+    var revealed = !!o.revealKey && s.key === o.revealKey;
+    if (archived) archivedCount++;
+    else sleepingCount++;
+    if (archived && !o.showArchives && !revealed) continue;
+    if (!archived && o.showSleeping === false && !revealed) continue;
+    if (!revealed && new Date(s.lastActivity).getTime() < cutoff) older.push(s);
+    else recent.push(s);
+  }
+  var done = idle.map(function(s) { return { s: s, col: 'idle' }; })
+    .concat(recent.map(function(s) { return { s: s, col: 'closed' }; }));
+  if (o.showOlder) done = done.concat(older.map(function(s) { return { s: s, col: 'closed' }; }));
+  return { done: done, olderCount: older.length, archivedCount: archivedCount, sleepingCount: sleepingCount };
+}
+
 function renderBoard(board) {
-  _sessionCache = {}; // Clear stale cache each render cycle
+  _sessionCache = Object.create(null); // Clear stale cache each render cycle
   // Populate cache from the entire board first so the env-palette pass
-  // (which reads every card's environment) and per-column renderCard
-  // calls share one walk over the data.
+  // (which reads every card's environment) and the per-card renders share
+  // one walk over the data.
   for (var col0 of ['working', 'waiting', 'idle', 'closed']) {
     var arr = board[col0] || [];
     for (var i0 = 0; i0 < arr.length; i0++) {
@@ -3737,53 +4615,636 @@ function renderBoard(board) {
     }
   }
   _envIndex = _buildEnvIndex();
-  var emptyHints = { working: 'No active sessions', waiting: 'No sessions awaiting input', idle: 'No idle sessions' };
-  for (const col of ['working', 'waiting', 'idle']) {
-    const container = document.getElementById('cards-' + col);
-    const countEl = document.getElementById('count-' + col);
-    const sessions = (board[col] || []);
-    countEl.textContent = sessions.length;
-    container.innerHTML = sessions.length > 0
-      ? sessions.map(function(s) { return renderCard(s, col); }).join('')
-      : '<div class="empty-hint">' + emptyHints[col] + '</div>';
-  }
-  // Closed column with 7-day filter
-  renderClosedColumn(board.closed || []);
+  // Owner hues for every card in the board data (hidden archives too, so the
+  // Show archives toggle never recolours anyone).
+  var owners = [];
+  for (var ok in _sessionCache) owners.push(_sessionCache[ok].ownerId || _sessionCache[ok].ownerName || '');
+  _ownerIndex = assignOwnerHues(owners);
+  function tag(col) { return function(s) { return { s: s, col: col }; }; }
+  var plan = planDoneColumn(board.idle || [], board.closed || [], {
+    now: Date.now(),
+    showOlder: showOlderClosed,
+    showArchives: showArchives,
+    showSleeping: showSleeping,
+    revealKey: _revealedKey,
+  });
+  reconcileBoard({
+    waiting: (board.waiting || []).map(tag('waiting')),
+    working: (board.working || []).map(tag('working')),
+    done: plan.done,
+  }, {
+    waiting: (board.waiting || []).length,
+    working: (board.working || []).length,
+    // The DONE badge counts the cards DONE shows (hidden archives and the
+    // collapsed older group are not in it).
+    done: plan.done.length,
+  });
+  renderOlderToggle(plan.olderCount);
+  renderArchivesToggle(plan.archivedCount);
+  renderSleepingToggle(plan.sleepingCount);
+  // The #814 tokens tooltip describes this board (user switch, WS push).
+  updateTokenBreakdown();
+  _boardRenders++;
+  openDeepLinkedSession();
 }
 
-function renderClosedColumn(sessions) {
-  const container = document.getElementById('cards-closed');
-  const countEl = document.getElementById('count-closed');
-  countEl.textContent = sessions.length;
-
-  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  const recent = sessions.filter(function(s) { return new Date(s.lastActivity).getTime() >= sevenDaysAgo; });
-  const older = sessions.filter(function(s) { return new Date(s.lastActivity).getTime() < sevenDaysAgo; });
-
-  let html = recent.map(function(s) { return renderCard(s, 'closed'); }).join('');
-  if (showOlderClosed) {
-    html += older.map(function(s) { return renderCard(s, 'closed'); }).join('');
+// Keyed reconciler (§3.1-6). Each card keeps its DOM node for its whole life:
+// it is moved between columns, only the parts whose HTML changed are
+// rewritten, and every card whose on-screen position moved is FLIPped from
+// where it was (§4-2).
+// Pass 1 plans against the stored HTML and node order without writing. If
+// nothing differs it stops there — a same-data render writes nothing and
+// leaves a running entrance or exit alone.
+function reconcileBoard(plan, counts) {
+  var wanted = Object.create(null);
+  var cols = [];
+  var changed = false;
+  for (var c = 0; c < BOARD_COLS.length; c++) {
+    var colId = BOARD_COLS[c];
+    var container = document.getElementById('cards-' + colId);
+    var rows = [];
+    var items = plan[colId] || [];
+    for (var i = 0; i < items.length; i++) {
+      var s = items[i].s;
+      if (wanted[s.key]) continue; // a key listed twice renders once
+      wanted[s.key] = true;
+      var parts = cardParts(s, items[i].col);
+      var el = _cardEls[s.key];
+      if (!el || container.children[rows.length] !== el || cardPartsDiffer(el, parts)) changed = true;
+      rows.push({ key: s.key, parts: parts });
+    }
+    if (container.children.length !== rows.length) changed = true;
+    cols.push({ colId: colId, container: container, rows: rows });
+    // Counts and empty hints are compared before they are written.
+    setTextIfChanged(document.getElementById('count-' + colId), String(counts[colId] || 0));
+    var empty = document.getElementById('empty-' + colId);
+    if (empty && empty.hidden !== rows.length > 0) empty.hidden = rows.length > 0;
   }
-  if (older.length > 0) {
-    const label = showOlderClosed
-      ? '&#x25B2; Hide older (' + older.length + ')'
-      : '&#x25BC; Show older (' + older.length + ')';
-    html += '<button class="show-older-btn" onclick="toggleOlderClosed()">' + label + '</button>';
+  for (var g in _cardEls) {
+    if (!wanted[g]) { changed = true; break; }
   }
-  container.innerHTML = html;
+  if (changed) applyBoardPlan(cols, wanted);
+  // Open cards keep their 지시/응답 current (no DOM write unless a fetch settles).
+  _expanded.forEach(function(key) { if (_cardEls[key]) ensureCardIo(key, false); });
 }
 
-function toggleOlderClosed() {
-  showOlderClosed = !showOlderClosed;
-  loadSessions();
+function applyBoardPlan(cols, wanted) {
+  var animate = canAnimate();
+  var first = animate ? measureCards() : null;
+  var firstCol = Object.create(null);
+  for (var k0 in _cardEls) firstCol[k0] = _cardEls[k0]._colId;
+  for (var c = 0; c < cols.length; c++) {
+    var col = cols[c];
+    for (var r = 0; r < col.rows.length; r++) {
+      var row = col.rows[r];
+      var el = _cardEls[row.key];
+      if (!el) {
+        el = createCardShell(row.key);
+        _cardEls[row.key] = el;
+        el._isNew = true;
+      }
+      applyCardParts(el, row.parts);
+      el._colId = col.colId;
+      applyExpanded(el, _expanded.has(row.key));
+      if (col.container.children[r] !== el) col.container.insertBefore(el, col.container.children[r] || null);
+    }
+  }
+  for (var gone in _cardEls) {
+    if (wanted[gone]) continue;
+    var goneCid = _cardEls[gone]._cid;
+    exitCard(_cardEls[gone], first ? first[gone] : null);
+    delete _cardEls[gone];
+    releaseCardIoTimer(goneCid);
+  }
+  for (var key in _cardEls) {
+    var card = _cardEls[key];
+    if (card._isNew) {
+      card._isNew = false;
+      if (animate) enterCard(card);
+      continue;
+    }
+    if (!animate || !first[key]) continue;
+    // Interrupted move: the first box was read mid-flight (translate included),
+    // so cancelling and re-FLIPping restarts from where the card is drawn.
+    var wasFlying = card.classList.contains('is-flying');
+    if (card._flip) { card._flip.cancel(); card._flip = null; }
+    if (wasFlying) card.classList.remove('is-flying');
+    var a = first[key];
+    var b = boxOf(card);
+    var dx = a.x - b.x;
+    var dy = a.y - b.y;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+    playFlip(card, dx, dy, wasFlying || firstCol[key] !== card._colId);
+  }
 }
 
-function renderCard(s, col) {
+// Top-left of the card's full-size box as drawn. Taken from the rect centre and
+// the untransformed size, so a card mid-entrance (scale 0.97) measures where its
+// box really is — no entrance has to be cut short to measure it — while a FLIP
+// translate in flight is included.
+function boxOf(el) {
+  var r = el.getBoundingClientRect();
+  return { x: r.left + r.width / 2 - el.offsetWidth / 2, y: r.top + r.height / 2 - el.offsetHeight / 2 };
+}
+function measureCards() {
+  var boxes = Object.create(null);
+  for (var k in _cardEls) boxes[k] = boxOf(_cardEls[k]);
+  return boxes;
+}
+
+// Move = translate only (widths snap; text never stretches). The card that
+// changes column flies raised above its neighbours (shadow + z-index). The
+// translate is added on top of whatever runs already, so a card still in its
+// entrance keeps scaling while it moves.
+function playFlip(el, dx, dy, raise) {
+  if (reduceMotion()) {
+    // §4-8: no travel — a card that changed column fades in where it landed.
+    if (raise) el._enter = el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
+    return;
+  }
+  if (raise) el.classList.add('is-flying');
+  var anim = el.animate(
+    [{ transform: 'translate(' + dx + 'px, ' + dy + 'px)' }, { transform: 'translate(0, 0)' }],
+    { duration: MOTION.move, easing: MOTION.easeInOut, composite: 'add' }
+  );
+  el._flip = anim;
+  anim.onfinish = function() {
+    if (el._flip !== anim) return;
+    el._flip = null;
+    el.classList.remove('is-flying');
+  };
+}
+
+// Enter: opacity 0 + scale(0.97) → 1 (never from scale(0)).
+function enterCard(el) {
+  var frames = reduceMotion()
+    ? [{ opacity: 0 }, { opacity: 1 }]
+    : [{ opacity: 0, transform: 'scale(0.97)' }, { opacity: 1, transform: 'scale(1)' }];
+  var anim = el.animate(frames, { duration: MOTION.fade, easing: MOTION.easeOut });
+  el._enter = anim;
+  anim.onfinish = function() { if (el._enter === anim) el._enter = null; };
+}
+
+// Exit: opacity only. The card leaves the column's card list (re-parented to
+// the column, absolutely placed where it was drawn) so the remaining cards
+// FLIP into the gap and later renders never see it; it removes itself when
+// its fade finishes.
+function exitCard(el, box) {
+  if (el._flip) { el._flip.cancel(); el._flip = null; }
+  var list = el.parentNode;
+  var host = list && list.parentNode;
+  if (!list) return;
+  if (!box || !host || !canAnimate()) { list.removeChild(el); return; }
+  var hr = host.getBoundingClientRect();
+  var width = el.offsetWidth;
+  el.removeAttribute('data-session-key');
+  el.setAttribute('aria-hidden', 'true');
+  el.setAttribute('inert', '');
+  el.classList.add('is-exiting');
+  el.style.left = (box.x - hr.left) + 'px';
+  el.style.top = (box.y - hr.top) + 'px';
+  el.style.width = width + 'px';
+  host.appendChild(el);
+  var anim = el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: MOTION.fade, easing: MOTION.easeOut, fill: 'forwards' });
+  el._exit = anim;
+  anim.onfinish = anim.oncancel = function() { if (el.parentNode) el.parentNode.removeChild(el); };
+}
+
+// Persistent shell: .card > .card-face (collapsed view, the toggle target)
+// + .card-expand (grid row 0fr↔1fr) > .card-expand-inner (expanded body).
+function createCardShell(key) {
+  var el = document.createElement('div');
+  el.className = 'card';
+  el.setAttribute('data-session-key', key);
+  var face = document.createElement('div');
+  face.className = 'card-face';
+  face.setAttribute('role', 'button');
+  face.setAttribute('tabindex', '0');
+  face.setAttribute('aria-expanded', 'false');
+  var expand = document.createElement('div');
+  expand.className = 'card-expand';
+  expand.setAttribute('inert', '');
+  var inner = document.createElement('div');
+  inner.className = 'card-expand-inner';
+  expand.appendChild(inner);
+  el.appendChild(face);
+  el.appendChild(expand);
+  el._faceEl = face;
+  el._expandEl = expand;
+  el._bodyEl = inner;
+  el._faceHtml = null;
+  el._bodyHtml = null;
+  return el;
+}
+
+function applyExpanded(el, open) {
+  if (el.classList.contains('is-expanded') === open) return;
+  el.classList.toggle('is-expanded', open);
+  el._faceEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) el._expandEl.removeAttribute('inert');
+  else el._expandEl.setAttribute('inert', '');
+}
+
+// One card's rendered parts. The HTML strings depend only on the data (clocks
+// are filled by the 1 Hz tick), so equal data gives equal strings.
+function cardParts(s, col) {
+  return { col: col, state: cardState(s, col), face: renderCardFace(s, col), body: renderCardBody(s, col), cid: s.conversationId || null };
+}
+function cardPartsDiffer(el, p) {
+  return el.getAttribute('data-col') !== p.col || el.getAttribute('data-state') !== p.state
+    || el._faceHtml !== p.face || el._bodyHtml !== p.body;
+}
+// Each part is replaced only when its HTML string changed, so untouched cards
+// keep their nodes, an open card keeps its state, and a running transition is
+// never cut.
+function applyCardParts(el, p) {
+  el._cid = p.cid; // bookkeeping only (timer release), not a DOM write
+  var changed = false;
+  if (el.getAttribute('data-col') !== p.col) { el.setAttribute('data-col', p.col); changed = true; }
+  if (el.getAttribute('data-state') !== p.state) { el.setAttribute('data-state', p.state); changed = true; }
+  if (el._faceHtml !== p.face) {
+    el._faceEl.innerHTML = p.face;
+    el._faceHtml = p.face;
+    updateTimersIn(el._faceEl);
+    changed = true;
+  }
+  if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl)) {
+    var goalDraft = captureGoalDraft(el._bodyEl);
+    el._bodyEl.innerHTML = p.body;
+    el._bodyHtml = p.body;
+    restoreGoalDraft(el._bodyEl, goalDraft);
+    updateTimersIn(el._bodyEl);
+    changed = true;
+  }
+  return changed;
+}
+// Single-card path (sessionUpdated push, title patch, 지시/응답 arrival) —
+// the same compare-then-write as the reconciler.
+function patchCard(el, s, col) {
   _sessionCache[s.key] = s;
-  const aura = getAuraClass(s.lastActivity);
-  const workingCls = (col === 'working') ? ' card-working' : '';
-  const cls = 'card' + (aura ? ' ' + aura : '') + workingCls;
+  return applyCardParts(el, cardParts(s, col));
+}
+function refreshCard(key) {
+  var el = _cardEls[key];
+  var s = _sessionCache[key];
+  if (el && s) patchCard(el, s, el.getAttribute('data-col') || 'idle');
+}
 
+function cardState(s, col) {
+  if (col === 'closed') return s.terminated ? 'archived' : 'sleeping';
+  return col;
+}
+
+// Second line of the collapsed card (§3.1-3): what the session needs or is doing.
+function cardSummary(s, col, headline) {
+  var tasks = s.tasks || [];
+  var current = null;
+  var lastDone = null;
+  for (var i = 0; i < tasks.length; i++) {
+    if (!current && tasks[i].status === 'in_progress') current = tasks[i];
+    if (tasks[i].status === 'completed') lastDone = tasks[i];
+  }
+  var q = s.pendingQuestion;
+  if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
+  if (col === 'working' && current) return current.content;
+  if (s.summaryTitle && s.summaryTitle !== headline) return s.summaryTitle;
+  var lastTask = lastDone || (tasks.length ? tasks[tasks.length - 1] : null);
+  if (lastTask) return lastTask.content;
+  if (s.title && s.title !== headline) return s.title;
+  return '';
+}
+
+// Status at the foot of the card. Board shows the bare timer; List adds the
+// "Running · " / "Done in " prefix via CSS — same DOM in both views.
+function renderCardStatus(s, col) {
+  if (col === 'waiting') {
+    return '<span class="st-icon">' + WAIT_SVG + '</span><span class="st-text">Waiting for you</span>';
+  }
+  if (col === 'closed') {
+    return '<span class="st-icon"><span class="st-dot is-hollow"></span></span><span class="st-text">' + (s.terminated ? 'Archived' : 'Sleeping') + '</span>';
+  }
+  var acc = Number(s.activeAccumulatedMs) || 0;
+  var leg = col === 'working' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
+  var timer = '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '" title="Active time"></span>';
+  if (col === 'working') {
+    return '<span class="st-icon"><span class="spinner"></span></span><span class="st-text"><span class="st-prefix">Running &middot; </span>' + timer + '</span>';
+  }
+  if (!acc) return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text">Idle</span>';
+  return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text"><span class="st-prefix">Done in </span>' + timer + '</span>';
+}
+
+// Owner badge (§3.1-3): in the All Users view every card head names its owner,
+// right-aligned, in one of the 8 hues of --ob-N-*. Like the env badges
+// (_buildEnvIndex), the owners on the board are assigned together: in sorted
+// order each takes its hash slot (djb2 % 8) when free, the rest probe forward to
+// the next free slot. Up to 8 owners never share a colour, and the result
+// depends only on the set of owners — one person keeps one colour on every card
+// and render while that set stands. An owner not on the board yet gets its
+// hash slot.
+var OWNER_BADGE_HUES = 8;
+var _ownerIndex = null; // ownerId → hue slot for the board on screen (renderBoard)
+function assignOwnerHues(ids) {
+  var seen = Object.create(null);
+  var sorted = [];
+  for (var i = 0; i < ids.length; i++) {
+    var id = String(ids[i] || '');
+    if (id && !seen[id]) { seen[id] = true; sorted.push(id); }
+  }
+  sorted.sort();
+  var out = Object.create(null);
+  var taken = [];
+  var pending = [];
+  for (var j = 0; j < sorted.length; j++) {
+    var slot = _hashStr(sorted[j]) % OWNER_BADGE_HUES;
+    if (!taken[slot]) { taken[slot] = true; out[sorted[j]] = slot; }
+    else pending.push(sorted[j]);
+  }
+  for (var k = 0; k < pending.length; k++) {
+    var start = _hashStr(pending[k]) % OWNER_BADGE_HUES;
+    out[pending[k]] = start; // more owners than hues: share the hash slot
+    for (var step = 1; step < OWNER_BADGE_HUES; step++) {
+      var probe = (start + step) % OWNER_BADGE_HUES;
+      if (!taken[probe]) { taken[probe] = true; out[pending[k]] = probe; break; }
+    }
+  }
+  return out;
+}
+function ownerBadgeHue(ownerId) {
+  var id = String(ownerId || '');
+  var slot = _ownerIndex ? _ownerIndex[id] : undefined;
+  return typeof slot === 'number' ? slot : _hashStr(id) % OWNER_BADGE_HUES;
+}
+function renderOwnerBadge(s) {
+  if (currentUserId) return '';
+  var name = s.ownerName || s.ownerId;
+  if (!name) return '';
+  return '<span class="owner-badge" data-hue="' + ownerBadgeHue(s.ownerId || name) + '" title="' + escAttr(name) + '">' + esc(name) + '</span>';
+}
+
+// Collapsed face (§2.1 reference anatomy): ✦ + headline [+ owner badge] /
+// 2-line summary / status · tasks done/total · context %.
+function renderCardFace(s, col) {
+  // Server-resolved headline (#762) — displayHeadline reflects the full
+  // priority chain (summaryTitle then issueTitle then prTitle then title then
+  // 'Untitled'). The local fallback covers the WS patch path where
+  // summaryTitleChanged / sessionUpdated may have rewritten only a subset.
+  var headline = s.displayHeadline || s.summaryTitle || s.title;
+  var titleTrunc = dhTruncate('title');
+  var titleHtml = dhShow('title')
+    ? '<span class="card-title-text">' + esc(titleTrunc ? String(headline || '').slice(0, titleTrunc) : headline) + '</span>'
+    : '';
+  var summary = cardSummary(s, col, headline);
+  var metrics = [];
+  if (dhShow('tasks') && s.tasks && s.tasks.length > 0) {
+    var doneCount = s.tasks.filter(function(t) { return t.status === 'completed'; }).length;
+    metrics.push('<span class="metric" title="Tasks done / total">' + TASKS_SVG + doneCount + '/' + s.tasks.length + '</span>');
+  }
+  var ctxPct = s.tokenUsage ? (s.tokenUsage.contextUsagePercent || 0) : 0;
+  if (dhShow('contextwindow') && ctxPct > 0) {
+    metrics.push('<span class="metric" title="Context window used">' + CTX_SVG + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '%</span>');
+  }
+  return '<div class="card-head"><span class="card-spark">' + SPARK_SVG + '</span>' + titleHtml + renderOwnerBadge(s) + '</div>'
+    + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
+    + '<div class="card-foot"><span class="card-status">' + renderCardStatus(s, col) + '</span>'
+    + (metrics.length ? '<span class="card-metrics">' + metrics.join('') + '</span>' : '')
+    + '</div>';
+}
+
+// Task timeline (§3.1-4): list order, the in-progress step is the solid dot,
+// completed steps show how long they took. Over the dhMax('tasks') budget the
+// earliest completed steps fold into "+N completed" first.
+function renderTimeline(s) {
+  if (!dhShow('tasks') || !s.tasks || s.tasks.length === 0) return '';
+  var max = dhMax('tasks', 5);
+  var drop = Math.max(0, s.tasks.length - max);
+  var folded = 0;
+  var shown = [];
+  for (var i = 0; i < s.tasks.length; i++) {
+    if (drop > 0 && s.tasks[i].status === 'completed') { drop--; folded++; continue; }
+    shown.push(s.tasks[i]);
+  }
+  var tail = 0;
+  if (shown.length > max) { tail = shown.length - max; shown = shown.slice(0, max); }
+  var items = shown.map(function(t) {
+    var cls = t.status === 'in_progress' ? ' is-current' : (t.status === 'completed' ? ' is-done' : ' is-pending');
+    var time = '';
+    // Task timestamps come from model-written TodoWrite input: numbers only.
+    var started = Number(t.startedAt) || 0;
+    var completed = Number(t.completedAt) || 0;
+    if (t.status === 'completed' && started && completed) {
+      time = formatDuration(completed - started);
+    } else if (t.status === 'in_progress' && started) {
+      time = '<span class="task-elapsed" data-since="' + started + '"></span>';
+    }
+    return '<li class="tl-item' + cls + '"><span class="tl-text">' + esc(t.content) + '</span>'
+      + (time ? '<span class="tl-time">' + time + '</span>' : '') + '</li>';
+  }).join('');
+  return '<div class="tl-wrap">'
+    + (folded > 0 ? '<div class="tl-more">+' + folded + ' completed</div>' : '')
+    + '<ul class="tl">' + items + '</ul>'
+    + (tail > 0 ? '<div class="tl-more">+' + tail + ' more</div>' : '')
+    + '</div>';
+}
+
+// Latest user instruction + model response (§3.1-4), fetched lazily on
+// expand from GET /api/dashboard/session/:conversationId?limit=2 and cached
+// per conversation. Only a complete fetch for the session's current
+// lastActivity counts as fresh. A failure — or a partial result (the
+// instruction loaded, the raw response did not) — keeps what it has and is
+// retried on a backoff (1, 2, 4 … 30 s).
+// Two clocks, deliberately separate:
+//   - the retry DEADLINE and backoff STEP belong to the conversation: they keep
+//     growing through an outage no matter how often lastActivity changes;
+//   - the retry BUDGET (IO_AUTO_RETRIES automatic attempts) belongs to one
+//     lastActivity stamp: newer content earns a fresh budget, never an earlier
+//     deadline.
+// While in error, only the deadline timer (or an explicit reopen) sends a
+// request; board renders and landed turns can at most arm that timer.
+var IO_RETRY_MAX_MS = 30000;
+var IO_AUTO_RETRIES = 6;
+function ioBackoffMs(step) {
+  return Math.min(IO_RETRY_MAX_MS, 1000 * Math.pow(2, Math.max(0, step - 1)));
+}
+// Pure: may this call send a request now? fromTimer = the deadline timer fired.
+//   loading → no · ok → only for a newer stamp · error → reopen (force), or the
+//   deadline timer once the deadline passed and this stamp still has budget
+//   (a newer stamp always does).
+function ioNeedsFetch(c, stamp, force, now, fromTimer) {
+  if (!c) return true;
+  if (c.state === 'loading') return false;
+  if (c.state === 'ok') return c.stamp !== stamp;
+  if (force) return true;
+  if (!fromTimer || now < (c.retryAt || 0)) return false;
+  return ioHasBudget(c, stamp);
+}
+// Pure: an errored entry still wants an automatic retry for this stamp.
+function ioHasBudget(c, stamp) {
+  return c.stamp !== stamp || (c.fails || 0) <= IO_AUTO_RETRIES;
+}
+
+// At most one pending retry timer per conversation: cid → { handle, at }.
+// The earliest deadline wins — a pending timer is kept only if it fires at or
+// before the new deadline, otherwise it is replaced. A success, or the last
+// open card of the conversation going away, clears it.
+var _ioTimers = Object.create(null);
+function scheduleCardIoRetry(cid, at) {
+  var cur = _ioTimers[cid];
+  if (cur && cur.at <= at) return;
+  if (cur) clearTimeout(cur.handle);
+  var entry = { handle: null, at: at };
+  entry.handle = setTimeout(function() {
+    if (_ioTimers[cid] === entry) delete _ioTimers[cid];
+    retryCardIo(cid);
+  }, Math.max(0, at - Date.now()));
+  _ioTimers[cid] = entry;
+}
+function cancelCardIoRetry(cid) {
+  var cur = cid ? _ioTimers[cid] : null;
+  if (!cur) return;
+  clearTimeout(cur.handle);
+  delete _ioTimers[cid];
+}
+// The open card on the board that consumes this conversation's retry, or null.
+// A timer is armed only while one exists (retryCardIo fires into it).
+function cardIoConsumer(cid) {
+  for (var k in _cardEls) {
+    var s = _sessionCache[k];
+    if (s && s.conversationId === cid && _expanded.has(k)) return k;
+  }
+  return null;
+}
+// A card closed or left the board: drop its conversation's timer unless
+// another open card still shows that conversation.
+function releaseCardIoTimer(cid) {
+  if (!cid || cardIoConsumer(cid)) return;
+  cancelCardIoRetry(cid);
+}
+
+// force = the card was just (re)opened (explicit user action).
+// fromTimer = the conversation's retry deadline fired.
+function ensureCardIo(key, force, fromTimer) {
+  var s = _sessionCache[key];
+  if (!s || !s.conversationId || isSiblingSession(s)) return;
+  var cid = s.conversationId;
+  var stamp = String(s.lastActivity || '');
+  var c = _ioCache[cid];
+  if (!ioNeedsFetch(c, stamp, force, Date.now(), fromTimer)) {
+    // In error, a render or a landed turn only arms the deadline timer.
+    if (c && c.state === 'error' && ioHasBudget(c, stamp)) scheduleCardIoRetry(cid, c.retryAt || 0);
+    return;
+  }
+  var prev = c ? c.data : null;
+  // Budget per stamp; deadline and step per conversation (they survive stamps).
+  var fails = c && c.state === 'error' && c.stamp === stamp ? (c.fails || 0) : 0;
+  var step = c ? (c.step || 0) : 0;
+  _ioCache[cid] = { state: 'loading', stamp: stamp, data: prev, dirty: false, fails: fails, step: step, retryAt: c ? (c.retryAt || 0) : 0 };
+  function failed(data) {
+    var n = fails + 1;
+    var nextStep = step + 1;
+    var at = Date.now() + ioBackoffMs(nextStep);
+    settleCardIo(cid, { state: 'error', stamp: stamp, data: data, fails: n, step: nextStep, retryAt: at });
+    // The card may have closed or left the board while the request was in flight.
+    if (n <= IO_AUTO_RETRIES && cardIoConsumer(cid)) scheduleCardIoRetry(cid, at);
+  }
+  fetchCardIo(cid).then(function(result) {
+    if (result && result.partial) failed(result); // keep the instruction, retry the response
+    else {
+      cancelCardIoRetry(cid); // a later backoff timer must not outlive the recovery
+      settleCardIo(cid, { state: 'ok', stamp: stamp, data: result, fails: 0, step: 0, retryAt: 0 });
+    }
+  }, function() { failed(prev); });
+}
+function renderCardIo(s) {
+  if (!s.conversationId) return '';
+  var c = _ioCache[s.conversationId];
+  if (!c || !c.data) {
+    var note = c && c.state === 'error' ? '지시/응답을 불러오지 못했습니다' : '지시/응답 불러오는 중…';
+    return '<div class="card-io"><div class="io-row"><div class="io-text is-muted">' + note + '</div></div></div>';
+  }
+  var d = c.data;
+  var who = d.instruction && d.instruction.who ? '<span class="io-who">' + esc(d.instruction.who) + '</span>' : '';
+  var inHtml = d.instruction && d.instruction.text
+    ? '<div class="io-text">' + esc(d.instruction.text) + '</div>'
+    : '<div class="io-text is-muted">기록된 지시 없음</div>';
+  var outHtml;
+  if (d.response && (d.response.title || d.response.body)) {
+    outHtml = '<div class="io-text">'
+      + (d.response.title ? '<span class="io-title">' + esc(d.response.title) + '</span>' + (d.response.body ? '\\n' : '') : '')
+      + esc(d.response.body || '') + '</div>';
+  } else if (d.partial) {
+    outHtml = '<div class="io-text is-muted">응답을 불러오지 못했습니다</div>';
+  } else if (s.activityState === 'working') {
+    outHtml = '<div class="io-text is-muted">응답 작성 중…</div>';
+  } else {
+    outHtml = '<div class="io-text is-muted">응답 없음</div>';
+  }
+  return '<div class="card-io">'
+    + '<div class="io-row io-in"><div class="io-label">지시' + who + '</div>' + inHtml + '</div>'
+    + '<div class="io-row io-out"><div class="io-label">응답</div>' + outHtml + '</div>'
+    + '</div>';
+}
+
+// The latest instruction and the reply that answers it (only an assistant
+// turn AFTER the latest user turn counts). Rejects on any HTTP failure.
+function fetchCardIo(cid) {
+  return fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '?limit=2')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) {
+      var turns = (data && data.turns) || [];
+      var ui = -1;
+      for (var i = turns.length - 1; i >= 0; i--) { if (turns[i].role === 'user') { ui = i; break; } }
+      var reply = null;
+      for (var j = turns.length - 1; j > ui; j--) { if (turns[j].role === 'assistant') { reply = turns[j]; break; } }
+      var raw = ui >= 0 ? decodeSlackEntities(turns[ui].rawContent || '') : '';
+      var instruction = ui >= 0
+        ? { text: raw.slice(0, 500) + (raw.length > 500 ? '…' : ''), who: turns[ui].userName || '' }
+        : null;
+      if (reply && !reply.summaryTitle && !reply.summaryBody && reply.id) {
+        // Summary not generated yet — fall back to the head of the raw response.
+        // If that fails the result is partial: the instruction is kept, and the
+        // caller retries for the response.
+        return fetch('/api/conversations/' + encodeURIComponent(cid) + '/turns/' + encodeURIComponent(reply.id) + '/raw')
+          .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+          .then(function(rawData) {
+            var text = rawData && typeof rawData.raw === 'string' ? rawData.raw : '';
+            return { instruction: instruction, response: text ? { title: '', body: text.slice(0, 600) + (text.length > 600 ? '…' : '') } : null };
+          }, function() { return { instruction: instruction, response: null, partial: true }; });
+      }
+      return { instruction: instruction, response: reply ? { title: reply.summaryTitle || '', body: reply.summaryBody || '' } : null };
+    });
+}
+
+// Deadline timer fired: retry for the first card of that conversation still open.
+function retryCardIo(cid) {
+  var k = cardIoConsumer(cid);
+  if (k) ensureCardIo(k, false, true);
+}
+function settleCardIo(cid, entry) {
+  var wasDirty = !!(_ioCache[cid] && _ioCache[cid].dirty);
+  _ioCache[cid] = entry;
+  for (var k in _cardEls) {
+    var s = _sessionCache[k];
+    if (s && s.conversationId === cid) refreshCard(k);
+  }
+  if (wasDirty) invalidateCardIo(cid);
+}
+// A turn landed for this conversation — new content: refetch for any open card
+// (in error: a fresh budget, still paced by the conversation's deadline).
+function invalidateCardIo(cid) {
+  var c = cid && _ioCache[cid];
+  if (!c) return;
+  if (c.state === 'loading') { c.dirty = true; return; }
+  c.stamp = null;
+  for (var k in _cardEls) {
+    var s = _sessionCache[k];
+    if (s && s.conversationId === cid && _expanded.has(k)) ensureCardIo(k, false);
+  }
+}
+
+// Expanded body: model·effort → meta (env/workflow/owner/last activity) →
+// refs → task timeline → instruction/response → pending question → stats →
+// buttons. Every field the old card face showed is still gated by dhShow().
+function renderCardBody(s, col) {
   // Owner gating — server-side requireSessionOwner is the authoritative guard;
   // this is UX only. Fail closed: if ownerId is missing (legacy record) the
   // viewer is not treated as owner so the server-side reject is expected.
@@ -3793,59 +5254,76 @@ function renderCard(s, col) {
   // needs a descriptive tooltip (e.g. pending-question choices).
   const readOnlyAttrs = isOwner ? '' : ' disabled';
 
-  // Conversation link
-  const convLink = s.conversationId
-    ? ' <a class="conv-link" href="/conversations/' + esc(s.conversationId) + '" target="_blank" onclick="event.stopPropagation()" title="View conversation">&#x1F4DD;</a>'
-    : '';
+  // Model · effort — the first line of the open card (reference: "Opus 5.5").
+  const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
+  const modelParts = [];
+  if (dhShow('model') && modelShort) modelParts.push(modelShort);
+  if (s.effort) modelParts.push('<span class="meta-effort" title="Power level">' + esc(s.effort) + '</span>');
+  const modelHtml = modelParts.length ? '<div class="cb-model">' + modelParts.join(' &middot; ') + '</div>' : '';
 
-  // Slack thread link
-  const slackLink = s.slackThreadUrl
-    ? ' <a class="slack-link" href="' + esc(s.slackThreadUrl) + '" target="_blank" onclick="event.stopPropagation()" title="Open in Slack">&#x1F4AC;</a>'
-    : '';
-
-  // Merge stats
-  const mergeHtml = s.mergeStats
-    ? '<div class="card-merge">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</div>'
-    : '';
-
-  // Token info + context bar
-  let tokenHtml = '';
-  if (s.tokenUsage) {
-    const ctxPct = s.tokenUsage.contextUsagePercent || 0;
-    const ctxCls = ctxPct > 80 ? 'ctx-danger' : ctxPct > 60 ? 'ctx-warn' : '';
-    tokenHtml = '<div class="card-tokens">' + formatTokens(s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens) + ' tok &middot; <span class="cost">$' + s.tokenUsage.totalCostUsd.toFixed(2) + '</span></div>'
-      + (ctxPct > 0 ? '<div class="context-bar"><div class="context-bar-fill ' + ctxCls + '" style="width:' + Math.min(ctxPct, 100).toFixed(0) + '%"></div></div>' : '');
+  // #814 env badge — only shown when multiple distinct envs are present in
+  // the current cache. Single-env (sibling 0 + INSTANCE_NAME unset) suppresses
+  // the badge to keep the card chrome quiet for single-instance deploys.
+  var envHtml = '';
+  if (s.environment && s.environment.instanceName && _envCount() > 1) {
+    var instName = s.environment.instanceName;
+    var envColor = getEnvBadgeColor(instName);
+    var envHostPort = (s.environment.host || '') + ':' + (s.environment.port || '');
+    envHtml = '<span class="env-badge" style="background:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';
   }
+  // Meta row — every registered ui.dashboardheader field is gated via dhShow
+  // ("fields absent from config lines are hidden" contract): workflow /
+  // owner / status (= last-activity indicator, filled by the 1 Hz tick).
+  const metaWorkflowHtml = dhShow('workflow') ? '<span>' + esc(s.workflow) + '</span>' : '';
+  const metaOwnerHtml = dhShow('owner') ? '<span class="meta-owner">' + esc(s.ownerName) + '</span>' : '';
+  const metaStatusHtml = dhShow('status') ? '<span class="rel-time" data-ts="' + (new Date(s.lastActivity).getTime() || 0) + '"></span>' : '';
+  const metaInner = envHtml + metaWorkflowHtml + metaOwnerHtml + metaStatusHtml;
+  const metaHtml = metaInner ? '<div class="card-meta">' + metaInner + '</div>' : '';
 
-  // Tasks — sort in_progress → pending → completed; completed items sink below the 5-item slice.
-  let tasksHtml = '';
-  if (s.tasks && s.tasks.length > 0) {
-    function taskRank(status) {
-      if (status === 'in_progress') return 0;
-      if (status === 'completed') return 2;
-      return 1; // pending (and any unknown status)
-    }
-    const sortedTasks = s.tasks.slice().sort(function(a, b) {
-      return taskRank(a.status) - taskRank(b.status);
-    });
-    const shown = sortedTasks.slice(0, 5);
-    const extra = sortedTasks.length - shown.length;
-    const taskItems = shown.map(function(t) {
-      let icon, cls2;
-      if (t.status === 'completed') { icon = '&#x2705;'; cls2 = 'completed'; }
-      else if (t.status === 'in_progress') { icon = '<span class="spin">&#x1F504;</span>'; cls2 = 'in_progress'; }
-      else { icon = '&#x25CB;'; cls2 = 'pending'; }
-      var durStr = '';
-      if (t.status === 'completed' && t.startedAt && t.completedAt) {
-        durStr = ' <span style="font-size:10px;color:var(--text-tertiary);margin-left:auto;flex-shrink:0">' + formatDuration(t.completedAt - t.startedAt) + '</span>';
-      } else if (t.status === 'in_progress' && t.startedAt) {
-        durStr = ' <span style="font-size:10px;color:var(--accent);margin-left:auto;flex-shrink:0">' + formatDuration(Date.now() - t.startedAt) + '...</span>';
-      }
-      return '<div class="card-task ' + cls2 + '"><span class="task-icon">' + icon + '</span><span class="task-content">' + esc(t.content.slice(0, 50)) + '</span>' + durStr + '</div>';
-    }).join('');
-    tasksHtml = '<div class="card-tasks">' + taskItems + (extra > 0 ? '<div class="tasks-more">+' + extra + ' more</div>' : '') + '</div>';
+  // Short refs (PROJ-123 · PR-123 · conversation). Gated by ui.dashboardheader 'links'.
+  const refParts = [];
+  if (dhShow('links') && s.issueShortRef && s.issueUrl) {
+    const issueTip = s.issueTitle || s.issueLabel || s.issueShortRef;
+    refParts.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener" title="' + escAttr(issueTip) + '">' + esc(s.issueShortRef) + '</a>');
   }
+  if (dhShow('links') && s.prShortRef && s.prUrl) {
+    const prTip = s.prTitle || s.prLabel || s.prShortRef;
+    refParts.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener" title="' + escAttr(prTip) + '">' + esc(s.prShortRef) + '</a>');
+  }
+  if (dhShow('links') && s.conversationId) {
+    refParts.push('<a href="/conversations/' + escAttr(s.conversationId) + '" target="_blank" rel="noopener" title="View conversation">&#x1F4DD; 대화 기록</a>');
+  }
+  const refsHtml = refParts.length
+    ? '<div class="card-refs">' + refParts.join('<span class="ref-sep">&middot;</span>') + '</div>'
+    : '';
+  const subtitlesHtml = (s.issueTitle ? '<div class="card-subtitle">' + esc(String(s.issueTitle).slice(0, 80)) + '</div>' : '')
+    + (s.prTitle ? '<div class="card-subtitle">' + esc(String(s.prTitle).slice(0, 80)) + '</div>' : '');
 
+  // Usage line — 'tokens' / 'cost' / 'mergestats' / 'contextwindow' gated
+  // independently; thread timers (Σ · compactions · sessions) always shown.
+  const statParts = [];
+  // Numbers are coerced before they reach markup (defence in depth — a
+  // non-number field must render as text, never as markup).
+  const num = toNum;
+  if (s.tokenUsage && dhShow('tokens')) statParts.push('<span class="card-tokens">' + formatTokens(num(s.tokenUsage.totalInputTokens) + num(s.tokenUsage.totalOutputTokens)) + ' tok</span>');
+  if (s.tokenUsage && dhShow('cost')) statParts.push('<span class="card-tokens"><span class="cost">$' + num(s.tokenUsage.totalCostUsd).toFixed(2) + '</span></span>');
+  if (dhShow('mergestats') && s.mergeStats) statParts.push('<span class="card-merge">+' + num(s.mergeStats.totalLinesAdded) + ' / -' + num(s.mergeStats.totalLinesDeleted) + '</span>');
+  statParts.push('<span class="card-timer-row">'
+    + '<span class="card-timer-total" title="Thread total active time">&Sigma; ' + formatNmSSs(num(s.threadTotalActiveMs)) + '</span>'
+    + '<span class="card-timer-compactions" title="Compactions">&#x1F5DC;&#xFE0F; ' + num(s.compactionCount) + '</span>'
+    + '<span class="card-timer-sessions" title="Thread session count"># ' + num(s.threadSessionCount) + '</span>'
+    + '</span>');
+  const ctxPct = s.tokenUsage ? num(s.tokenUsage.contextUsagePercent) : 0;
+  const ctxCls = ctxPct > 80 ? 'ctx-danger' : ctxPct > 60 ? 'ctx-warn' : '';
+  const ctxBar = (dhShow('contextwindow') && ctxPct > 0)
+    ? '<div class="context-bar" title="Context ' + Math.round(ctxPct) + '%"><div class="context-bar-fill ' + ctxCls + '" style="transform:scaleX(' + (Math.min(ctxPct, 100) / 100).toFixed(2) + ')"></div></div>'
+    : '';
+  const statsHtml = '<div class="card-stats">' + statParts.join('') + '</div>' + ctxBar;
+
+  const ioHtml = isSiblingSession(s) ? '' : renderCardIo(s);
+  // The collapsed face already shows the pending question as its summary; the
+  // open card then keeps only the choices, not the same sentence twice.
+  const faceSummary = cardSummary(s, col, s.displayHeadline || s.summaryTitle || s.title);
   // Pending question (choice buttons for waiting sessions)
   let questionHtml = '';
   if (s.pendingQuestion && col === 'waiting') {
@@ -3859,21 +5337,21 @@ function renderCard(s, col) {
         var recLabel = stripRecommendedMarker(recOpt.label);
         var recTitle = isOwner ? (recOpt.description || recLabel) : READ_ONLY_MSG;
         recHtml = '<div class="choice-row-recommended">'
-          + '<button class="btn-choice btn-choice-recommended"' + readOnlyAttrs + ' onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(recOpt.id) + '\\',\\'' + escJs(recLabel) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(recTitle) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
+          + '<button class="btn-choice btn-choice-recommended"' + readOnlyAttrs + choiceDataAttrs(s.key, recOpt.id, recLabel, pq.question) + ' title="' + escAttr(recTitle) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
           + '</div>'
           + (otherOpts.length > 0 ? '<hr class="choice-divider">' : '');
       }
       var otherBtns = otherOpts.map(function(c) {
         var lbl = stripRecommendedMarker(c.label);
         var btnTitle = isOwner ? (c.description || lbl) : READ_ONLY_MSG;
-        return '<button class="btn-choice"' + readOnlyAttrs + ' onclick="event.stopPropagation();answerChoice(\\'' + escJs(s.key) + '\\',\\'' + escJs(c.id) + '\\',\\'' + escJs(lbl) + '\\',\\'' + escJs(pq.question) + '\\',this)" title="' + escAttr(btnTitle) + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
+        return '<button class="btn-choice"' + readOnlyAttrs + choiceDataAttrs(s.key, c.id, lbl, pq.question) + ' title="' + escAttr(btnTitle) + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
       }).join('');
       questionHtml = '<div class="card-question">'
-        + '<div class="card-question-text">&#x2753; ' + esc(pq.question).slice(0, 80) + '</div>'
+        + (pq.question === faceSummary ? '' : '<div class="card-question-text">&#x2753; ' + esc(String(pq.question || '').slice(0, 80)) + '</div>')
         + '<div class="card-question-choices">' + recHtml + otherBtns + '</div>'
         + '</div>';
     } else if (s.pendingQuestion.type === 'user_choices') {
-      questionHtml = renderMultiChoiceCard(s);
+      questionHtml = renderMultiChoiceCard(s, faceSummary);
     }
   }
 
@@ -3905,97 +5383,514 @@ function renderCard(s, col) {
       ? '<button class="btn-action btn-trash"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'trash\\')">Trash</button>'
       : '<button class="btn-action btn-close"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
   }
-  const actionsHtml = '<div class="card-actions">' + actionBtn + '</div>';
 
-  const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
-
-  const legStarted = s.activeLegStartedAtMs || 0;
-  const accumulated = s.activeAccumulatedMs || 0;
-  const compactions = s.compactionCount || 0;
-  const threadTotal = s.threadTotalActiveMs || 0;
-  const threadSessions = s.threadSessionCount || 0;
-
-  // data-leg-started / data-accumulated live on the .card-timer-live span itself
-  // — the 1-Hz updater at updateTimers() (see ~line 2880) reads them via
-  // querySelectorAll('.card-timer-live'). We always emit the live span, even in
-  // the zero state, so polling picks it up the instant the leg starts.
-  //
-  // The hero value is "current turn" = current leg elapsed (active accumulator
-  // plus any open-leg delta). Thread totals (Σ) live on the row below.
-  const heroTimerHtml =
-    '<div class="card-timer-hero" title="현재 턴 경과 시간 (Current turn)">'
-    + '<span class="hero-icon">&#x23F1;&#xFE0F;</span>'
-    + '<span class="card-timer-live" data-leg-started="' + legStarted + '" data-accumulated="' + accumulated + '" title="현재 턴 경과 시간 (Current turn)">' + formatNmSSs(accumulated + (legStarted ? Date.now() - legStarted : 0)) + '</span>'
-    + '</div>';
-
-  // Stats row: thread total (Σ) · compactions · session count. No live span here —
-  // the live leg moved to the hero above.
-  const timerRowHtml =
-    '<div class="card-timer-row">'
-    + '<span class="card-timer-total" title="Thread total active time">&Sigma; ' + formatNmSSs(threadTotal) + '</span>'
-    + '<span class="card-timer-compactions" title="Compactions">&#x1F5DC;&#xFE0F; ' + compactions + '</span>'
-    + '<span class="card-timer-sessions" title="Thread session count"># ' + threadSessions + '</span>'
-    + '</div>';
-
-  // Short refs (PROJ-123 · PR-123). escAttr for href/title because they're attribute values.
-  const refParts = [];
-  if (s.issueShortRef && s.issueUrl) {
-    const issueTip = s.issueTitle || s.issueLabel || s.issueShortRef;
-    refParts.push('<a href="' + escAttr(s.issueUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(issueTip) + '">' + esc(s.issueShortRef) + '</a>');
-  }
-  if (s.prShortRef && s.prUrl) {
-    const prTip = s.prTitle || s.prLabel || s.prShortRef;
-    refParts.push('<a href="' + escAttr(s.prUrl) + '" target="_blank" onclick="event.stopPropagation()" title="' + escAttr(prTip) + '">' + esc(s.prShortRef) + '</a>');
-  }
-  const refsHtml = refParts.length
-    ? '<div class="card-refs">' + refParts.join('<span class="ref-sep">&middot;</span>') + '</div>'
+  // 작업 로그 opens the slide panel (details + message box) scrolled to the work
+  // log — for every card; without a conversation the log reads "작업 로그 없음".
+  const worklogBtn = '<button type="button" class="btn-action btn-primary" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',true)">작업 로그</button>';
+  const slackBtn = (dhShow('links') && s.slackThreadUrl)
+    ? '<a class="btn-action" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
     : '';
+  const actionsHtml = '<div class="card-actions">' + actionBtn + slackBtn + worklogBtn + '</div>';
 
-  const effortHtml = s.effort
-    ? '<span class="meta-effort" title="Power level">' + esc(s.effort) + '</span>'
-    : '';
-  // #814 env badge — only shown when multiple distinct envs are present in
-  // the current cache. Single-env (sibling 0 + INSTANCE_NAME unset) suppresses
-  // the badge to keep the card chrome quiet for single-instance deploys.
-  var envHtml = '';
-  if (s.environment && s.environment.instanceName && _envCount() > 1) {
-    var instName = s.environment.instanceName;
-    var envColor = getEnvBadgeColor(instName);
-    var envHostPort = (s.environment.host || '') + ':' + (s.environment.port || '');
-    envHtml = '<span class="env-badge" style="background:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';
-  }
-  const metaHtml = '<div class="card-meta">'
-    + envHtml
-    + '<span>' + esc(s.workflow) + '</span>'
-    + '<span>' + modelShort + '</span>'
-    + effortHtml
-    + '<span class="meta-owner">' + esc(s.ownerName) + '</span>'
-    + '<span>' + timeAgo(s.lastActivity) + '</span>'
-    + '</div>';
-
-  // Server-resolved headline (#762) — displayHeadline reflects the full
-  // priority chain (summaryTitle then issueTitle then prTitle then title then
-  // 'Untitled'). The local fallback covers the WS patch path where
-  // summaryTitleChanged / sessionUpdated may have rewritten only a subset.
-  const displayHeadline = s.displayHeadline || s.summaryTitle || s.title;
-
-  // Card order: hero → stats → title → refs → meta → issue/pr subtitles → tokens → merge → question → tasks → actions.
-  // linksHtml removed (2026-04 #708): refs + issue/pr subtitles already surface
-  // the same hrefs; the iconized line was redundant and bloated the card.
-  return '<div class="' + cls + '" draggable="true" data-session-key="' + escJs(s.key) + '" data-source-col="' + col + '" onclick="openPanel(\\'' + escJs(s.key) + '\\')">'
-    + heroTimerHtml
-    + timerRowHtml
-    + '<div class="card-title"><span class="card-title-text">' + esc(displayHeadline) + '</span>' + slackLink + convLink + '</div>'
-    + refsHtml
+  return '<div class="card-body">'
+    + modelHtml
     + metaHtml
-    + (s.issueTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:3px">' + esc(s.issueTitle).slice(0, 60) + '</div>' : '')
-    + (s.prTitle ? '<div style="font-size:0.7em;color:var(--text-secondary);margin-top:2px">' + esc(s.prTitle).slice(0, 60) + '</div>' : '')
-    + tokenHtml
-    + mergeHtml
+    + refsHtml
+    + subtitlesHtml
+    + renderCardGoal(s, col, isOwner && !isSibling)
+    + renderTimeline(s)
+    + ioHtml
     + questionHtml
-    + tasksHtml
+    + statsHtml
     + actionsHtml
     + '</div>';
+}
+
+// ── Goal list on the work item (SSOT 2026-10-21 T2/T3) ──
+// The card shows the current goal, its state and the goals queued behind it,
+// and lets the owner add a goal, delete the current goal (the next queued one
+// starts — never \`goal clear\`, which also drops the queue) or delete a queued
+// goal. Every write names WHERE the goal was seen (current / queued), so a goal
+// that moved in the meantime is refused (409) instead of deleting the wrong one.
+var GOAL_STATUS_LABELS = { active: '진행 중', paused: '일시정지', complete: '완료' };
+var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
+
+function renderCardGoal(s, col, canEdit) {
+  var g = s.goal || null;
+  var live = col !== 'closed' && !s.terminated;
+  // Read-only viewers and closed sessions only see a goal list that exists.
+  if (!g && !(canEdit && live)) return '';
+  var editable = canEdit && live;
+  var dis = editable ? '' : ' disabled';
+  var key = escJs(s.key);
+  var queue = (g && g.queue) || [];
+  var cur = g && g.current;
+  var html = '<div class="card-goal">';
+  html += '<div class="cg-head"><span class="cg-label">&#x1F3AF; Goal</span>';
+  if (cur) {
+    html += '<span class="cg-status cg-' + escAttr(cur.status) + '">' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
+    if (cur.status === 'active' && toNum(cur.maxContinuations) > 0) {
+      html += '<span class="cg-progress" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
+    }
+  }
+  html += '</div>';
+  if (cur) {
+    var dropLabel = queue.length ? '현재 goal 삭제 · 다음 시작' : '현재 goal 삭제';
+    html += '<div class="cg-row"><div class="cg-objective" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
+      + '<button type="button" class="cg-btn cg-danger"' + dis
+      + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(cur.goalId) + '\\',expect:\\'current\\'},this)">'
+      + dropLabel + '</button></div>';
+    if (cur.status === 'active' && cur.lastEvalReason) {
+      html += '<div class="cg-gap">남은 것: ' + esc(String(cur.lastEvalReason).slice(0, 300)) + '</div>';
+    }
+  } else {
+    html += '<div class="cg-empty">현재 goal 없음</div>';
+  }
+  if (queue.length) {
+    html += '<div class="cg-queue-title">대기 중인 goal ' + queue.length + '개</div><ol class="cg-queue">';
+    for (var i = 0; i < queue.length; i++) {
+      var q = queue[i];
+      html += '<li><div class="cg-row"><span class="cg-q-text">' + esc(q.objective) + '</span>'
+        + '<button type="button" class="cg-btn cg-danger" title="대기 goal 삭제" aria-label="대기 goal 삭제"' + dis
+        + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(q.goalId) + '\\',expect:\\'queued\\'},this)">삭제</button></div></li>';
+    }
+    html += '</ol>';
+  }
+  if (g && toNum(g.completedCount) > 0) html += '<div class="cg-done">완료된 goal ' + toNum(g.completedCount) + '개</div>';
+  if (editable) {
+    html += '<form class="cg-add" onsubmit="event.preventDefault();event.stopPropagation();addGoalFromCard(\\'' + key + '\\',this)">'
+      + '<input class="cg-add-input" name="objective" maxlength="4000" autocomplete="off" aria-label="goal 추가"'
+      + ' placeholder="' + (cur && cur.status !== 'complete' ? 'goal 추가 (현재 goal 다음에 시작)' : 'goal 추가 (바로 시작)') + '"'
+      + ' onblur="goalInputBlur(\\'' + key + '\\')">'
+      + '<button type="submit" class="cg-btn">추가</button></form>';
+  }
+  if (_goalErrors[s.key]) html += '<div class="cg-error" role="alert">' + esc(_goalErrors[s.key]) + '</div>';
+  return html + '</div>';
+}
+
+// The goal input survives the card's live re-render: while it has focus the
+// body is not replaced at all (typing and IME composition stay intact), and an
+// unfocused draft is carried into the new body.
+function isEditingGoal(root) {
+  var a = document.activeElement;
+  return !!(a && a.classList && a.classList.contains('cg-add-input') && root.contains(a));
+}
+function captureGoalDraft(root) {
+  var input = root.querySelector('.cg-add-input');
+  return input && input.value ? input.value : '';
+}
+function restoreGoalDraft(root, value) {
+  if (!value) return;
+  var input = root.querySelector('.cg-add-input');
+  if (input && !input.value) input.value = value;
+}
+function goalInputBlur(key) {
+  // Let a click on 추가 land before the deferred re-render replaces the form.
+  setTimeout(function() {
+    var el = _cardEls[key];
+    if (el && !isEditingGoal(el._bodyEl)) refreshCard(key);
+  }, 200);
+}
+
+async function postGoalAction(key, payload) {
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/goal';
+  var body = JSON.stringify(payload);
+  var headers = { 'Content-Type': 'application/json' };
+  if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+  var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+  if (res.status === 403) {
+    await refreshCsrfToken();
+    var retryHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+    res = await fetch(url, { method: 'POST', headers: retryHeaders, body: body });
+  }
+  var data = null;
+  try { data = await res.json(); } catch (_e) {}
+  return { ok: res.ok, error: (data && data.error) || ('HTTP ' + res.status) };
+}
+function setGoalError(key, message) {
+  if (message) _goalErrors[key] = message;
+  else delete _goalErrors[key];
+  refreshCard(key);
+}
+async function goalAction(key, payload, btn) {
+  if (btn) btn.disabled = true;
+  var r;
+  try { r = await postGoalAction(key, payload); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+  setGoalError(key, r.ok ? '' : r.error);
+  if (!r.ok && btn) btn.disabled = false;
+  loadSessions();
+}
+// One add in flight per card. The input is NOT disabled while it is sent:
+// keeping its focus is what keeps a live re-render from replacing the form
+// (and resurrecting the sent text as a fresh, submittable draft).
+var _goalAdding = Object.create(null);
+async function addGoalFromCard(key, form) {
+  if (_goalAdding[key]) return;
+  var input = form.querySelector('.cg-add-input');
+  var objective = input ? input.value.trim() : '';
+  if (!objective) return;
+  _goalAdding[key] = true;
+  var btn = form.querySelector('button');
+  if (btn) btn.disabled = true;
+  var r;
+  try { r = await postGoalAction(key, { action: 'add', objective: objective }); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+  delete _goalAdding[key];
+  // The form on screen may have been re-rendered meanwhile — act on the live one.
+  var el = _cardEls[key];
+  var live = (el && el._bodyEl.querySelector('.cg-add-input')) || input;
+  var liveBtn = live.form ? live.form.querySelector('button') : btn;
+  if (liveBtn) liveBtn.disabled = false;
+  if (btn && btn !== liveBtn) btn.disabled = false;
+  if (r.ok) {
+    if (live.value.trim() === objective) live.value = '';
+    live.blur();
+  }
+  setGoalError(key, r.ok ? '' : r.error);
+  loadSessions();
+}
+
+// Card click = expand / collapse in place (§3.1-4). Keyboard toggles skip the
+// transition (§4-9). Cards below ride the animated grid row, so they slide
+// with the expansion instead of needing a separate FLIP pass.
+function toggleCard(key, instant) {
+  var el = _cardEls[key];
+  if (!el) return;
+  var open = !_expanded.has(key);
+  if (open) _expanded.add(key);
+  else _expanded.delete(key);
+  if (!open) releaseCardIoTimer(el._cid);
+  if (instant) el.classList.add('no-motion');
+  applyExpanded(el, open);
+  if (instant) {
+    void el.offsetHeight;
+    el.classList.remove('no-motion');
+  }
+  if (open) ensureCardIo(key, true);
+}
+
+// Board ↔ List (§3.1-2, §4-4): CSS re-lays out the very same nodes and each
+// card / column header FLIPs from its old slot (translate only). The choice is
+// remembered only when the user makes it; keyboard activation does not animate.
+function setBoardView(view, ev) {
+  if (view !== 'board' && view !== 'list') return;
+  if (ev) {
+    try { localStorage.setItem('soma-board-view', view); } catch (_e) {}
+  }
+  var segs = document.querySelectorAll('.seg-btn');
+  for (var i = 0; i < segs.length; i++) {
+    var pressed = segs[i].getAttribute('data-view') === view ? 'true' : 'false';
+    if (segs[i].getAttribute('aria-pressed') !== pressed) segs[i].setAttribute('aria-pressed', pressed);
+  }
+  var kb = document.getElementById('kanban');
+  if (kb.getAttribute('data-view') === view) return;
+  var movers = (ev && ev.detail > 0 && canAnimate()) ? collectViewMovers() : null;
+  var before = movers ? movers.map(function(m) { return m.getBoundingClientRect(); }) : null;
+  kb.setAttribute('data-view', view);
+  if (!movers) return;
+  if (reduceMotion()) {
+    kb.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
+    return;
+  }
+  for (var j = 0; j < movers.length; j++) {
+    var el = movers[j];
+    if (el._flip) { el._flip.cancel(); el._flip = null; }
+    var b = el.getBoundingClientRect();
+    var dx = before[j].left - b.left;
+    var dy = before[j].top - b.top;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+    playFlip(el, dx, dy, false);
+  }
+}
+function collectViewMovers() {
+  var out = [];
+  var heads = document.querySelectorAll('#kanban .kanban-col-header');
+  for (var i = 0; i < heads.length; i++) out.push(heads[i]);
+  for (var k in _cardEls) out.push(_cardEls[k]);
+  return out;
+}
+
+function renderOlderToggle(olderCount) {
+  var foot = document.getElementById('foot-done');
+  if (!foot) return;
+  var html = olderCount > 0
+    ? '<button type="button" class="show-older-btn" onclick="toggleOlderClosed()">'
+      + (showOlderClosed ? '&#x25B2; Hide older (' : '&#x25BC; Show older (') + olderCount + ')</button>'
+    : '';
+  if ((foot._html || '') === html) return;
+  foot._html = html;
+  foot.innerHTML = html;
+}
+
+function toggleOlderClosed() {
+  showOlderClosed = !showOlderClosed;
+  loadSessions();
+}
+
+// ── Show archives (.prd/10 §3.1-1) — archived (terminated) cards are hidden
+// unless the user turned them on (localStorage['soma-show-archives'] = 'on').
+// The button sits in the board header and only appears while the board holds
+// at least one archive. ──
+var SHOW_ARCHIVES_KEY = 'soma-show-archives';
+function readShowArchives() {
+  try { return localStorage.getItem(SHOW_ARCHIVES_KEY) === 'on'; } catch (_e) { return false; }
+}
+var showArchives = readShowArchives();
+// A deep link to a hidden archive shows that one card for this page load
+// without touching the stored choice; the user's own toggle ends it.
+var _revealedKey = null;
+function toggleArchives() {
+  showArchives = !showArchives;
+  _revealedKey = null;
+  try { localStorage.setItem(SHOW_ARCHIVES_KEY, showArchives ? 'on' : 'off'); } catch (_e) {}
+  loadSessions();
+}
+// A toggle button: the label stays "Archives (N)" (N = archives on the board)
+// and aria-pressed carries on / off — pressed it wears the selected-segment look.
+function renderArchivesToggle(archivedCount) {
+  var btn = document.getElementById('archives-toggle');
+  var label = document.getElementById('archives-label');
+  if (!btn || !label) return;
+  var hide = archivedCount === 0;
+  if (btn.hidden !== hide) btn.hidden = hide;
+  var pressed = showArchives ? 'true' : 'false';
+  if (btn.getAttribute('aria-pressed') !== pressed) btn.setAttribute('aria-pressed', pressed);
+  setTextIfChanged(label, 'Archives (' + archivedCount + ')');
+}
+
+// ── Sleeping — the same on / off toggle for sleeping (closed, not archived)
+// cards. Shown by default, as before this toggle existed; the choice persists
+// in localStorage['soma-show-sleeping'] ('on' / 'off'). ──
+var SHOW_SLEEPING_KEY = 'soma-show-sleeping';
+function readShowSleeping() {
+  try { return localStorage.getItem(SHOW_SLEEPING_KEY) !== 'off'; } catch (_e) { return true; }
+}
+var showSleeping = readShowSleeping();
+function toggleSleeping() {
+  showSleeping = !showSleeping;
+  _revealedKey = null;
+  try { localStorage.setItem(SHOW_SLEEPING_KEY, showSleeping ? 'on' : 'off'); } catch (_e) {}
+  loadSessions();
+}
+function renderSleepingToggle(sleepingCount) {
+  var btn = document.getElementById('sleeping-toggle');
+  var label = document.getElementById('sleeping-label');
+  if (!btn || !label) return;
+  var hide = sleepingCount === 0;
+  if (btn.hidden !== hide) btn.hidden = hide;
+  var pressed = showSleeping ? 'true' : 'false';
+  if (btn.getAttribute('aria-pressed') !== pressed) btn.setAttribute('aria-pressed', pressed);
+  setTextIfChanged(label, 'Sleeping (' + sleepingCount + ')');
+}
+
+// ── Session lifecycle policy (sleep / archive / board windows). The board
+// response carries it; admins edit it in the Lifecycle dialog (PUT
+// /api/dashboard/lifecycle, which the server only accepts from an admin with
+// Admin mode on). Sleep and the board archive window are edited in hours, the
+// archive time in days. ──
+var _lifecycle = null;
+// The request body the Save button is armed to force (?confirm=1), or null.
+var _lifecycleArmed = null;
+function armLifecycleSave(body) {
+  _lifecycleArmed = body;
+  var btn = document.getElementById('lifecycle-save');
+  if (btn) btn.textContent = body ? '그래도 저장' : '저장';
+}
+// [form field, policy field, ms per form unit]
+var LIFECYCLE_FIELDS = [['sleepAfterHours', 'sleepAfterMs', 3600000], ['archiveAfterDays', 'archiveAfterMs', 86400000], ['boardArchiveWindowHours', 'boardArchiveWindowMs', 3600000]];
+// Pure: policy (ms) → form values.
+function lifecycleToForm(p) {
+  var out = {};
+  for (var i = 0; i < LIFECYCLE_FIELDS.length; i++) {
+    var f = LIFECYCLE_FIELDS[i];
+    out[f[0]] = Math.round((p[f[1]] / f[2]) * 100) / 100;
+  }
+  return out;
+}
+// Pure: form values → { ok, patch } in ms (whole minutes), or { ok: false, field }
+// naming the first field that is not a non-negative number. Bounds are the
+// server's job; it answers 400 with the field.
+function lifecycleFromForm(form) {
+  var patch = {};
+  for (var i = 0; i < LIFECYCLE_FIELDS.length; i++) {
+    var f = LIFECYCLE_FIELDS[i];
+    var raw = form[f[0]];
+    var n = typeof raw === 'number' ? raw : (String(raw == null ? '' : raw).trim() === '' ? NaN : Number(raw));
+    if (!isFinite(n) || n < 0) return { ok: false, field: f[0] };
+    patch[f[1]] = Math.round((n * f[2]) / 60000) * 60000;
+  }
+  return { ok: true, patch: patch };
+}
+function openLifecycleDialog() {
+  var dlg = document.getElementById('lifecycle-dialog');
+  if (!dlg || !_lifecycle) return;
+  var form = lifecycleToForm(_lifecycle);
+  for (var k in form) {
+    var input = document.getElementById('lc-' + k);
+    if (input) input.value = String(form[k]);
+  }
+  armLifecycleSave(null);
+  setTextIfChanged(document.getElementById('lifecycle-scope'), SELF_INSTANCE_NAME ? '이 인스턴스(' + SELF_INSTANCE_NAME + ')' : '이 인스턴스');
+  setLifecycleStatus(_lifecycle.degraded ? '저장된 정책 파일을 읽을 수 없어 Sleeping/종료 전환을 멈춘 상태입니다. 저장하면 다시 시작합니다.' : '', !!_lifecycle.degraded);
+  if (typeof dlg.showModal === 'function') dlg.showModal();
+  else dlg.setAttribute('open', '');
+}
+function closeLifecycleDialog() {
+  var dlg = document.getElementById('lifecycle-dialog');
+  if (!dlg) return;
+  if (typeof dlg.close === 'function') dlg.close();
+  else dlg.removeAttribute('open');
+}
+function setLifecycleStatus(text, isError) {
+  var el = document.getElementById('lifecycle-status');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('is-error', !!isError);
+}
+var LIFECYCLE_LABELS = {
+  sleepAfterHours: 'Sleeping 전환', archiveAfterDays: 'Archive 전환', boardArchiveWindowHours: 'Archive 표시 기간',
+  sleepAfterMs: 'Sleeping 전환', archiveAfterMs: 'Archive 전환', boardArchiveWindowMs: 'Archive 표시 기간',
+};
+async function saveLifecycle(ev) {
+  if (ev) ev.preventDefault();
+  var form = {};
+  for (var i = 0; i < LIFECYCLE_FIELDS.length; i++) {
+    var input = document.getElementById('lc-' + LIFECYCLE_FIELDS[i][0]);
+    form[LIFECYCLE_FIELDS[i][0]] = input ? input.value : '';
+  }
+  var parsed = lifecycleFromForm(form);
+  if (!parsed.ok) { setLifecycleStatus(LIFECYCLE_LABELS[parsed.field] + ': 0 이상의 숫자를 입력하세요.', true); return; }
+  // Send only what the admin changed: the dialog shows rounded values, and
+  // re-saving an untouched field must not rewrite it.
+  var shown = lifecycleToForm(_lifecycle || {});
+  for (var j = 0; j < LIFECYCLE_FIELDS.length; j++) {
+    if (Number(form[LIFECYCLE_FIELDS[j][0]]) === shown[LIFECYCLE_FIELDS[j][0]]) delete parsed.patch[LIFECYCLE_FIELDS[j][1]];
+  }
+  if (Object.keys(parsed.patch).length === 0) { closeLifecycleDialog(); return; }
+  // The server answers 409 with counts when the change would sleep or end live
+  // sessions. The dialog shows them and arms the Save button; saving the same
+  // values again sends ?confirm=1. Any edit disarms it.
+  var body = JSON.stringify(parsed.patch);
+  var force = _lifecycleArmed === body;
+  setLifecycleStatus('저장 중…', false);
+  try {
+    var send = function() {
+      var headers = { 'Content-Type': 'application/json' };
+      if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+      var url = '/api/dashboard/lifecycle' + (force ? '?confirm=1' : '');
+      return fetch(url, { method: 'PUT', headers: headers, body: body });
+    };
+    var res = await send();
+    if (res.status === 403 && !_isAdminModeOn()) {
+      setLifecycleStatus('Admin 모드를 ON으로 바꾼 뒤 저장하세요.', true);
+      return;
+    }
+    if (res.status === 403) { await refreshCsrfToken(); res = await send(); }
+    var data = await res.json().catch(function() { return {}; });
+    if (res.status === 409 && data && data.needsConfirm) {
+      armLifecycleSave(body);
+      setLifecycleStatus('이 값으로 저장하면 다음 정리 주기에 ' + (data.willSleep || 0) + '개 세션이 Sleeping으로, '
+        + (data.willArchive || 0) + '개 세션이 종료(Archive)됩니다. 종료는 되돌릴 수 없습니다. 그래도 저장하려면 한 번 더 누르세요.', true);
+      return;
+    }
+    armLifecycleSave(null);
+    if (!res.ok) {
+      var why = data && data.field ? LIFECYCLE_LABELS[data.field] + ' 값이 허용 범위를 벗어났습니다.' : (data && data.error) || ('저장 실패 (' + res.status + ')');
+      setLifecycleStatus(why, true);
+      return;
+    }
+    _lifecycle = data.lifecycle;
+    closeLifecycleDialog();
+    loadSessions();
+  } catch (e) {
+    setLifecycleStatus('저장 실패: 네트워크 오류', true);
+  }
+}
+
+// Deep link (§3.1-8): /dashboard/<ownerId>?session=<sessionKey> opens that card
+// and the panel at its work log once the board has data. Slack links carry the
+// registry key WITHOUT the #814 instance prefix ("work:C123:1700000000.000100"),
+// while board cards are keyed "<instanceName>::work:C123:…" (composeSessionKey).
+// Until a card matches (board still loading, sibling instance), retry on each
+// board render for ~10 s, then give up silently.
+var DEEP_LINK_WINDOW_MS = 10000;
+var _deepLinkSession = (function() {
+  try { return new URLSearchParams(location.search).get('session'); } catch (_e) { return null; }
+})();
+var _deepLinkDeadline = Date.now() + DEEP_LINK_WINDOW_MS;
+// Pure: which board key does a ?session= value point at? Exact key first, then
+// this instance's prefixed key, then the one card whose key ends in "::<ref>".
+// Ambiguous suffix matches (same thread on two siblings) resolve to nothing.
+function resolveDeepLinkKey(ref, keys, selfInstance) {
+  if (!ref) return null;
+  if (keys.indexOf(ref) >= 0) return ref;
+  if (selfInstance && keys.indexOf(selfInstance + '::' + ref) >= 0) return selfInstance + '::' + ref;
+  var suffix = '::' + ref;
+  var hits = keys.filter(function(k) { return k.length > suffix.length && k.slice(-suffix.length) === suffix; });
+  if (hits.length) return hits.length === 1 ? hits[0] : null;
+  // No live card: the thread's latest archive. archivedToKanban keys it
+  // "[<instance>::]archived_<registry key>_<archivedAt ms>".
+  var mark = 'archived_' + ref + '_';
+  var best = null;
+  var bestAt = -1;
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var at = k.indexOf(mark);
+    if (at < 0 || (at > 0 && k.slice(at - 2, at) !== '::')) continue;
+    var tail = k.slice(at + mark.length);
+    if (!/^[0-9]+$/.test(tail)) continue;
+    if (Number(tail) > bestAt) { bestAt = Number(tail); best = k; }
+  }
+  return best;
+}
+function openDeepLinkedSession() {
+  if (!_deepLinkSession) return;
+  // The window bounds the whole attempt: a card that first shows up on a
+  // later poll (30 s) must not pop the panel open long after page load.
+  if (Date.now() > _deepLinkDeadline) { _deepLinkSession = null; return; }
+  var key = resolveDeepLinkKey(_deepLinkSession, Object.keys(_sessionCache), SELF_INSTANCE_NAME);
+  if (!key) return;
+  if (!_cardEls[key]) {
+    // A card hidden by the Archives / Sleeping toggle (any age): show just this
+    // card for this page load — the stored choice stays as it is — and retry on
+    // that render.
+    var linked = _sessionCache[key];
+    var hiddenByToggle = linked && (linked.terminated === true ? !showArchives : !showSleeping);
+    if (hiddenByToggle && _revealedKey !== key) {
+      _revealedKey = key;
+      loadSessions();
+      return;
+    }
+    // Closed more than 7 days ago — reveal the older group and retry on that render.
+    if (!showOlderClosed) {
+      showOlderClosed = true;
+      loadSessions();
+    } else {
+      _deepLinkSession = null;
+    }
+    return;
+  }
+  _deepLinkSession = null;
+  if (!_expanded.has(key)) toggleCard(key, true);
+  _cardEls[key].scrollIntoView({ block: 'center' });
+  openPanel(key, true);
+}
+
+// The poll returns this instance's board merged with sibling instances' (#814);
+// a WS session_update carries only this instance's. Keep the last polled board
+// so a push re-attaches the sibling cards instead of animating them out.
+var _lastPolledBoard = null;
+function mergeSiblingCards(board) {
+  if (!_lastPolledBoard) return board;
+  var out = {};
+  ['working', 'waiting', 'idle', 'closed'].forEach(function(col) {
+    var mine = board[col] || [];
+    var have = new Set(mine.map(function(s) { return s.key; }));
+    var sibs = (_lastPolledBoard[col] || []).filter(function(s) { return isSiblingSession(s) && !have.has(s.key); });
+    // Same shape as the server merge: this instance's cards, then siblings'.
+    out[col] = mine.concat(sibs);
+  });
+  return out;
 }
 
 async function loadSessions() {
@@ -4003,6 +5898,8 @@ async function loadSessions() {
     const url = '/api/dashboard/sessions' + (currentUserId ? '?userId=' + currentUserId : '');
     const res = await fetch(url);
     const data = await res.json();
+    _lastPolledBoard = data.board;
+    if (data.lifecycle) _lifecycle = data.lifecycle;
     renderBoard(data.board);
   } catch (e) { console.error('Failed to load sessions', e); }
 }
@@ -4089,9 +5986,11 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
 }
 
 // ── Multi-choice form state ──
-var _mcState = {};
+var _mcState = Object.create(null);
 
-function renderMultiChoiceCard(s) {
+// faceSummary: the collapsed card's summary line — when it already reads the
+// form's title, the open card does not repeat it.
+function renderMultiChoiceCard(s, faceSummary) {
   var q = s.pendingQuestion;
   if (!q || !q.questions) {
     console.warn('renderMultiChoiceCard: missing questions data for session', s.key);
@@ -4105,7 +6004,7 @@ function renderMultiChoiceCard(s) {
   }
   var progressText = answered + '/' + total + ' \\uC644\\uB8CC';
   return '<div class="card-question">'
-    + '<div class="card-question-text">\\uD83D\\uDCCB ' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>'
+    + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">\\uD83D\\uDCCB ' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
     + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
     + '<div style="margin-top:6px"><button class="btn-choice" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
     + '</div>';
@@ -4216,7 +6115,7 @@ function renderMultiChoicePanel(s) {
         var chLbl = stripRecommendedMarker(ch.label);
         var desc = ch.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(ch.description) + '</span>' : '';
         var isRecBtn = mcRecId && ch.id === mcRecId;
-        html += '<button class="btn-choice' + (isRecBtn ? ' btn-choice-recommended' : '') + '" onclick="event.stopPropagation();selectMc(\\'' + escJs(key) + '\\',' + qi + ',\\'' + escJs(ch.id) + '\\',\\'' + escJs(chLbl) + '\\')">'
+        html += '<button class="btn-choice' + (isRecBtn ? ' btn-choice-recommended' : '') + '"' + choiceDataAttrs(key, ch.id, chLbl, '') + ' data-mc-index="' + qi + '">'
           + esc(ch.id) + '. ' + esc(chLbl) + desc + '</button>';
       }
       html += '</div>';
@@ -4437,58 +6336,65 @@ async function submitAllRecommended(key) {
 }
 
 // ── Stats ──
+// Every number follows the selected period, for the selected user or — with
+// no user (All Users) — for everyone: /api/dashboard/stats gives sessions,
+// turns, PRs, merge lines, workflows and the charts; /api/dashboard/usage gives
+// tokens (input + output) and cost. Each load takes a generation and paints
+// only while it is still the latest, so an answer for a period or user that
+// was since replaced is dropped (fast clicks end on the last selection).
+var _statsGen = 0;
 async function loadStats() {
-  if (!currentUserId) {
-    // Show aggregate stats from session cache when no specific user is selected
-    document.getElementById('stats-grid').style.display = '';
-    document.getElementById('chart-row').innerHTML = '';
-    updateTokenStats();
-    var sessCount = Object.keys(_sessionCache).length;
-    var totalMergeAdd = 0, totalMergeDel = 0, prCount = 0, mergedCount = 0;
-    var wfMap = {};
-    for (var k in _sessionCache) {
-      var cs = _sessionCache[k];
-      if (cs.mergeStats) { totalMergeAdd += cs.mergeStats.totalLinesAdded || 0; totalMergeDel += cs.mergeStats.totalLinesDeleted || 0; }
-      if (cs.prUrl) { prCount++; if (cs.prStatus === 'merged') mergedCount++; }
-      if (cs.workflow) { wfMap[cs.workflow] = (wfMap[cs.workflow] || 0) + 1; }
-    }
-    var sessEl = document.getElementById('stat-sessions');
-    sessEl.textContent = sessCount || '0'; sessEl.className = 'value';
-    var turnsEl = document.getElementById('stat-turns');
-    turnsEl.textContent = '\u2014'; turnsEl.className = 'value no-data';
-    document.getElementById('stat-prs').textContent = prCount;
-    document.getElementById('stat-prs').classList.remove('no-data');
-    document.getElementById('stat-merged').textContent = mergedCount;
-    document.getElementById('stat-merged').classList.remove('no-data');
-    var commitsEl = document.getElementById('stat-commits') || document.getElementById('stat-commits-hidden');
-    if (commitsEl) { commitsEl.textContent = '\u2014'; commitsEl.classList.add('no-data'); }
-    document.getElementById('stat-merge-lines').textContent = '+' + totalMergeAdd + ' / -' + totalMergeDel;
-    var wfEntries = Object.entries(wfMap).sort(function(a, b) { return b[1] - a[1]; });
-    document.getElementById('stat-workflows').innerHTML = wfEntries.length
-      ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + e[1] + '</b></span>'; }).join('')
-      : '-';
-    return;
-  }
-  document.getElementById('stats-grid').style.display = '';
-  try {
-    const res = await fetch('/api/dashboard/stats?userId=' + currentUserId + '&period=' + currentPeriod);
-    const data = await res.json();
-    document.getElementById('stat-sessions').textContent = data.totals.sessionsCreated;
-    document.getElementById('stat-turns').textContent = data.totals.turnsUsed;
-    document.getElementById('stat-prs').textContent = data.totals.prsCreated;
-    document.getElementById('stat-merged').textContent = data.totals.prsMerged;
-    var commitsEl2 = document.getElementById('stat-commits') || document.getElementById('stat-commits-hidden');
-    if (commitsEl2) commitsEl2.textContent = data.totals.commitsCreated;
-    document.getElementById('stat-merge-lines').textContent = '+' + data.totals.mergeLinesAdded + ' / -' + data.totals.mergeLinesDeleted;
-    // Workflow counts
-    const wfCounts = data.totals.workflowCounts || {};
-    const wfEntries = Object.entries(wfCounts).sort(function(a, b) { return b[1] - a[1]; });
-    document.getElementById('stat-workflows').innerHTML = wfEntries.length
-      ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + e[1] + '</b></span>'; }).join('')
-      : '<span style="color:var(--text-secondary)">-</span>';
-    updateTokenStats();
-    renderCharts(data.days);
-  } catch (e) { console.error('Failed to load stats', e); }
+  var gen = ++_statsGen;
+  var q = 'period=' + encodeURIComponent(currentPeriod) + (currentUserId ? '&userId=' + encodeURIComponent(currentUserId) : '');
+  updateTokenBreakdown();
+  await Promise.all([
+    statsJson('/api/dashboard/stats?' + q).then(
+      function(data) { if (gen === _statsGen) paintStats(data); },
+      function(e) { if (gen === _statsGen) { console.error('Failed to load stats', e); paintStats(null); } }
+    ),
+    statsJson('/api/dashboard/usage?' + q).then(
+      function(report) { if (gen === _statsGen) paintUsage(report); },
+      function(e) { if (gen === _statsGen) { console.error('Failed to load usage', e); paintUsage(null); } }
+    ),
+  ]);
+}
+
+function statsJson(url) {
+  return fetch(url).then(function(res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  });
+}
+
+// A failed load shows a dash rather than the previous period's number.
+function setStat(id, text) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('no-data', text === '\\u2014');
+}
+
+function paintStats(data) {
+  var t = data && data.totals;
+  var dash = '\\u2014';
+  setStat('stat-sessions', t ? String(toNum(t.sessionsCreated)) : dash);
+  setStat('stat-turns', t ? String(toNum(t.turnsUsed)) : dash);
+  setStat('stat-prs', t ? String(toNum(t.prsCreated)) : dash);
+  setStat('stat-merged', t ? String(toNum(t.prsMerged)) : dash);
+  setStat('stat-commits-hidden', t ? String(toNum(t.commitsCreated)) : dash);
+  setStat('stat-merge-lines', t ? '+' + toNum(t.mergeLinesAdded) + ' / -' + toNum(t.mergeLinesDeleted) : dash);
+  var wfEntries = Object.entries((t && t.workflowCounts) || {}).sort(function(a, b) { return toNum(b[1]) - toNum(a[1]); });
+  document.getElementById('stat-workflows').innerHTML = wfEntries.length
+    ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join('')
+    : '<span style="color:var(--text-secondary)">-</span>';
+  if (data) renderCharts(Array.isArray(data.days) ? data.days : []);
+  else document.getElementById('chart-row').innerHTML = '';
+}
+
+function paintUsage(report) {
+  var t = report && report.totals;
+  setStat('stat-tokens', t ? formatTokens(toNum(t.totalInputTokens) + toNum(t.totalOutputTokens)) : '\\u2014');
+  setStat('stat-cost', t ? '$' + toNum(t.totalCostUsd).toFixed(2) : '\\u2014');
 }
 
 function renderCharts(days) {
@@ -4526,6 +6432,9 @@ function connectWs() {
     statusEl.style.background = 'rgba(62,207,142,0.2)';
     statusEl.style.borderColor = 'var(--green)';
     statusEl.style.color = 'var(--green)';
+    // Reconnect: recover the work-log entries broadcast while we were offline
+    // (from the HTTP cursor; afterSeq=0 when the log was still empty).
+    if (panelOpen && _wl) recoverWorkLog();
   };
   ws.onclose = function() {
     statusEl.textContent = 'Reconnecting...';
@@ -4547,7 +6456,7 @@ function connectWs() {
           msg.board.idle = (msg.board.idle || []).filter(function(s) { return s.ownerId === currentUserId; });
           msg.board.closed = (msg.board.closed || []).filter(function(s) { return s.ownerId === currentUserId; });
         }
-        renderBoard(msg.board);
+        renderBoard(mergeSiblingCards(msg.board));
         // Refresh panel question if panel is open (session may have transitioned)
         if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
           var panelS = _sessionCache[panelSessionKey];
@@ -4568,6 +6477,8 @@ function connectWs() {
           renderPanelTasks(msg.tasks);
         }
       } else if (msg.type === 'conversation_update') {
+        // A turn landed — an open card's 지시/응답 pair may be stale now.
+        invalidateCardIo(msg.conversationId);
         // If panel is open for this conversation, append or update the turn
         if (panelOpen && panelConvId === msg.conversationId && msg.turn) {
           // Dedupe: skip user turns that match our optimistic send (content + within 10s)
@@ -4603,75 +6514,74 @@ function connectWs() {
           if (msg.displayHeadline) cached.displayHeadline = msg.displayHeadline;
         }
         var headline = msg.displayHeadline || msg.summaryTitle;
-        var cardTitleEls = document.querySelectorAll('[data-session-key="' + CSS.escape(msg.sessionKey) + '"] .card-title-text');
-        for (var i = 0; i < cardTitleEls.length; i++) {
-          cardTitleEls[i].textContent = headline;
-        }
+        // Re-render through the card patch path so the summary line (which
+        // avoids repeating the headline) stays consistent with the title.
+        refreshCard(msg.sessionKey);
         if (panelOpen && panelSessionKey === msg.sessionKey) {
           var pt = document.getElementById('panel-title');
           if (pt) pt.textContent = headline;
         }
       } else if (msg.type === 'sessionUpdated' && msg.session && msg.session.key) {
         // #762 — single-session card refresh from broadcastSingleSessionUpdate.
-        // Replace just this card's outerHTML so the link-derived title flow
-        // (which fires before the next full board push) lands immediately.
-        // Preserves the column the card already lives in by reading the
-        // existing element's data-source-col attribute.
+        // Patch just this card through the same keyed path as the board
+        // reconciler so the link-derived title flow (which fires before the
+        // next full board push) lands immediately without rebuilding the node
+        // (an open card stays open). The column comes from the card's data-col.
         var updatedKey = msg.session.key;
         _sessionCache[updatedKey] = msg.session;
-        var existingCard = document.querySelector('[data-session-key="' + CSS.escape(updatedKey) + '"]');
+        var existingCard = _cardEls[updatedKey];
         if (existingCard) {
-          var col = existingCard.getAttribute('data-source-col') || 'idle';
-          var newHtml = renderCard(msg.session, col);
-          var wrapper = document.createElement('div');
-          wrapper.innerHTML = newHtml;
-          var newCard = wrapper.firstElementChild;
-          if (newCard) existingCard.replaceWith(newCard);
+          patchCard(existingCard, msg.session, existingCard.getAttribute('data-col') || 'idle');
         }
         if (panelOpen && panelSessionKey === updatedKey) {
           var pt2 = document.getElementById('panel-title');
           if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || 'Untitled';
         }
+      } else if (msg.type === 'work_log' && msg.entry) {
+        // .prd/10 §3.3 — live work-log entry. Append when its conversation is
+        // open in the panel (seq-deduped against the initial fetch).
+        if (panelOpen) pushLiveWorkLog(msg.conversationId, msg.entry);
+        if (msg.entry.kind === 'instruction' || msg.entry.kind === 'final') invalidateCardIo(msg.conversationId);
       }
     } catch (e) { /* ignore */ }
   };
 }
 
-// ── Token stats from session cache ──
-function updateTokenStats() {
-  // #814 — group token usage by environment.instanceName so the topbar
-  // tooltip can break down "oudwood-dev: 12K | mac-mini-dev: 8K | Total: 20K".
+// ── Token breakdown by instance, from the session cache (#814) ──
+function updateTokenBreakdown() {
+  // #814 — group the board's session token usage by environment.instanceName
+  // so the tokens tooltip can break down "instance-a: 12K | instance-b: 8K |
+  // Total: 20K". The number itself is the period total from /api/dashboard/usage
+  // (loadStats); this breakdown covers the sessions on the board, and says so.
   // Fallback bucket ('') is used for cards whose environment is missing
   // (legacy WS payloads, tests). When all cards share one env we suppress
   // the tooltip entirely — see _envCount() check below.
-  var byEnv = {};
-  let totalTokens = 0, totalCost = 0;
+  var byEnv = Object.create(null);
+  let totalTokens = 0;
   for (const key in _sessionCache) {
     const s = _sessionCache[key];
     if (currentUserId && s.ownerId !== currentUserId) continue;
     if (!s.tokenUsage) continue;
-    var t = s.tokenUsage.totalInputTokens + s.tokenUsage.totalOutputTokens;
+    var t = toNum(s.tokenUsage.totalInputTokens) + toNum(s.tokenUsage.totalOutputTokens);
     totalTokens += t;
-    totalCost += s.tokenUsage.totalCostUsd;
     var envName = (s.environment && s.environment.instanceName) || '';
-    if (!byEnv[envName]) byEnv[envName] = { tokens: 0, cost: 0 };
+    if (!byEnv[envName]) byEnv[envName] = { tokens: 0 };
     byEnv[envName].tokens += t;
-    byEnv[envName].cost += s.tokenUsage.totalCostUsd;
   }
-  document.getElementById('stat-tokens').textContent = formatTokens(totalTokens);
-  document.getElementById('stat-cost').textContent = '$' + totalCost.toFixed(2);
 
   // Tooltip: only show when there's actually a breakdown (≥2 envs in
   // the cache). For the single-instance / empty-env case we leave the
   // tooltip dark so the topbar stays the same shape it was before #814.
+  // Runs on every board render (renderBoard) and stats load — it writes only
+  // what changed.
   var tip = document.getElementById('stat-tokens-tooltip');
   var wrap = document.getElementById('stat-tokens-wrap');
   if (!tip || !wrap) return;
   var envNames = Object.keys(byEnv).filter(function(n) { return n.length > 0; });
   if (envNames.length < 2) {
-    tip.textContent = '';
-    wrap.classList.remove('tooltip-open');
-    wrap.removeAttribute('data-has-breakdown');
+    if (tip._html !== '') { tip.textContent = ''; tip._html = ''; }
+    if (wrap.classList.contains('tooltip-open')) wrap.classList.remove('tooltip-open');
+    if (wrap.hasAttribute('data-has-breakdown')) wrap.removeAttribute('data-has-breakdown');
     return;
   }
   // Stable order: sort so the same env always renders in the same position.
@@ -4682,8 +6592,9 @@ function updateTokenStats() {
     parts.push(esc(n) + ': ' + formatTokens(byEnv[n].tokens));
   }
   parts.push('Total: ' + formatTokens(totalTokens));
-  tip.innerHTML = parts.join(' &middot; ');
-  wrap.setAttribute('data-has-breakdown', 'true');
+  var html = '보드 세션 기준 &middot; ' + parts.join(' &middot; ');
+  if (tip._html !== html) { tip.innerHTML = html; tip._html = html; }
+  if (!wrap.hasAttribute('data-has-breakdown')) wrap.setAttribute('data-has-breakdown', 'true');
   // Mobile (no-hover) tap-toggle wiring — attach once.
   if (!wrap.hasAttribute('data-tap-bound')) {
     wrap.setAttribute('data-tap-bound', 'true');
@@ -4697,10 +6608,593 @@ function updateTokenStats() {
   }
 }
 
+// ── Panel work log (.prd/10 §3.1-7, §3.3) ──
+// GET /api/dashboard/session/:conversationId/worklog → { entries, hasMore }:
+// without afterSeq the LATEST page, with afterSeq=N (integer ≥ 0) the FIRST
+// page after N — so afterSeq=0 is the oldest page and the initial load must
+// omit it. Live entries arrive as WS { type: 'work_log', conversationId,
+// entry } once the line is on disk. 403 = not the session owner (no retry),
+// 404 = no log for this conversation.
+// Entries merge by seq identity into one seq-ordered list, so a live entry that
+// lands before the HTTP page never hides the older batch.
+// Seqs only increase, but they are NOT contiguous: the store reserves them in
+// blocks, so after a crash the next seq can jump (57 → 1001) and that hole is
+// permanent. The cursor is therefore server-confirmed, not "no holes": every
+// entry that exists up to the cursor is held. A page requested after seq c
+// returns every existing entry > c (first page), so it confirms up to its last
+// seq — and, when hasMore is false, up to every seq we held when the request
+// went out (a live entry is on disk before it is broadcast). Live entries that
+// directly follow the cursor advance it too. A live entry beyond cursor + 1 is
+// a gap → backfill from the cursor; once the backfill is done the gap is closed
+// even if nothing came back (the hole is permanent). A reconnect pages forward
+// the same way (afterSeq=0 when the log was empty) while hasMore === true.
+var WL_BACKFILL_MAX_PAGES = 20;
+var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
+var WL_EMPTY_MSG = '작업 로그 없음';
+var WL_FORBIDDEN_MSG = '작업 로그는 세션 소유자만 볼 수 있어요';
+var WL_RAW_MISSING_MSG = '원본 출력이 저장되어 있지 않습니다';
+var WL_RAW_ERROR_MSG = '원본 출력을 불러오지 못했어요';
+var WL_RAW_DAMAGED_MSG = '로그가 손상되어 원본을 읽을 수 없습니다';
+var _wl = null;  // work-log state of the conversation open in the panel
+var _panelFocusWorkLog = false;
+
+// ── Pure core (no DOM): state, merge, paging ──
+function wlNewState(convId) {
+  return {
+    convId: convId, entries: [], seen: new Set(), cursor: 0, maxSeq: 0,
+    loaded: false, latestOk: false, denied: false, closed: false,
+    latest: null, recovering: null, againReconnect: false, againGap: false, painted: false,
+  };
+}
+// afterSeq: null/undefined = latest window (no parameter); otherwise always a
+// non-negative integer — the API answers 400 to anything else.
+function wlUrl(convId, afterSeq) {
+  var base = '/api/dashboard/session/' + encodeURIComponent(convId) + '/worklog';
+  if (afterSeq === null || afterSeq === undefined) return base;
+  var n = Math.max(0, Math.floor(Number(afterSeq) || 0));
+  return base + '?afterSeq=' + n;
+}
+function wlValidSeq(seq) {
+  return typeof seq === 'number' && Number.isSafeInteger(seq) && seq > 0;
+}
+// Adds entries not seen before (by seq) and keeps state.entries sorted by seq.
+// Returns the added entries in ascending seq order, each with its index in the
+// merged list — inserting them in that order at that index reproduces the list.
+function wlMerge(state, entries) {
+  var fresh = [];
+  var list = entries || [];
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (!e || !wlValidSeq(e.seq) || state.seen.has(e.seq)) continue;
+    state.seen.add(e.seq);
+    if (e.seq > state.maxSeq) state.maxSeq = e.seq;
+    fresh.push(e);
+  }
+  if (!fresh.length) return [];
+  fresh.sort(function(a, b) { return a.seq - b.seq; });
+  var old = state.entries;
+  var merged = [];
+  var added = [];
+  var oi = 0;
+  var fi = 0;
+  while (oi < old.length || fi < fresh.length) {
+    if (fi >= fresh.length || (oi < old.length && old[oi].seq < fresh[fi].seq)) {
+      merged.push(old[oi++]);
+    } else {
+      added.push({ entry: fresh[fi], index: merged.length });
+      merged.push(fresh[fi++]);
+    }
+  }
+  state.entries = merged;
+  return added;
+}
+function wlPageMaxSeq(entries) {
+  var top = 0;
+  var list = entries || [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && wlValidSeq(list[i].seq) && list[i].seq > top) top = list[i].seq;
+  }
+  return top;
+}
+// Advance the cursor over every directly-following seq we hold.
+function wlAdvance(state) {
+  while (state.seen.has(state.cursor + 1)) state.cursor++;
+}
+// The server answered: every entry that exists up to seq upTo is now held.
+function wlConfirm(state, upTo) {
+  if (upTo > state.cursor) state.cursor = upTo;
+  wlAdvance(state);
+}
+// 403 from any path (first load, latest retry, backfill page): stop for good
+// and tell the UI once through state.onDenied (set by the DOM side).
+function wlDeny(state) {
+  if (state.denied) return;
+  state.denied = true;
+  if (state.onDenied && !state.closed) state.onDenied(state);
+}
+// A held entry beyond the contiguous cursor means something in between is missing.
+function wlHasGap(state) {
+  return state.loaded && !state.denied && !state.closed && state.maxSeq > state.cursor;
+}
+function wlStatusOf(err) {
+  var status = err && err.status;
+  if (status === 403) return 'denied';
+  if (status === 404) return 'missing';
+  return 'error';
+}
+// Initial load: the latest page (no afterSeq). Resolves 'ok' | 'denied' |
+// 'missing' | 'error' | 'closed'. Early live entries beyond the page are a gap.
+function wlLoadLatest(state, fetchJson, onAdded) {
+  // The latest window holds the newest entries at request time — including
+  // any live entry we already held — so it confirms up to both.
+  var sentMax = state.maxSeq;
+  state.latest = fetchJson(wlUrl(state.convId, null)).then(function(data) {
+    if (state.closed) return 'closed';
+    var page = (data && data.entries) || [];
+    var added = wlMerge(state, page);
+    state.loaded = true;
+    state.latestOk = true;
+    wlConfirm(state, Math.max(wlPageMaxSeq(page), sentMax));
+    if (added.length) onAdded(state, added);
+    if (wlHasGap(state)) wlRecover(state, fetchJson, onAdded, 'gap');
+    return 'ok';
+  }, function(err) {
+    if (state.closed) return 'closed';
+    state.loaded = true;
+    var status = wlStatusOf(err);
+    if (status === 'denied') wlDeny(state);
+    return status;
+  });
+  return state.latest;
+}
+// A live entry: merge it; one that skips past the cursor triggers a backfill.
+function wlOnLive(state, entry, fetchJson, onAdded) {
+  if (state.closed || state.denied) return [];
+  var added = wlMerge(state, [entry]);
+  if (!added.length) return added;
+  if (state.loaded) wlAdvance(state);
+  onAdded(state, added);
+  if (wlHasGap(state)) wlRecover(state, fetchJson, onAdded, 'gap');
+  return added;
+}
+// Recovery (reconnect or gap): after the initial load settles, page forward
+// from the contiguous cursor while hasMore === true. Stops on a page that does
+// not advance the cursor, after WL_BACKFILL_MAX_PAGES pages, on 403, or when
+// the panel moved on. If the latest page itself never loaded, retry that instead.
+// reason: 'reconnect' (default — the socket was down, anything may be missing)
+// or 'gap' (a live entry skipped seqs). While a run is in flight, requests are
+// coalesced: a reconnect always re-runs afterwards; a gap re-runs only if the
+// in-flight run's confirmation did not already cover it.
+function wlRecover(state, fetchJson, onAdded, reason) {
+  if (state.closed || state.denied) return Promise.resolve(null);
+  if (state.recovering) {
+    if (reason === 'gap') state.againGap = true;
+    else state.againReconnect = true;
+    return state.recovering;
+  }
+  var pages = 0;
+  function step() {
+    if (state.closed || state.denied) return null;
+    if (state.loaded && !state.latestOk) return wlLoadLatest(state, fetchJson, onAdded);
+    var from = state.cursor;
+    var sentMax = state.maxSeq; // every seq we hold now is on disk now
+    pages++;
+    return fetchJson(wlUrl(state.convId, from)).then(function(data) {
+      if (state.closed) return null;
+      var page = (data && data.entries) || [];
+      var added = wlMerge(state, page);
+      var more = !!(data && data.hasMore === true);
+      // A full page confirms only up to its last seq; the last page confirms up
+      // to everything that existed when it was requested — so a permanent hole
+      // closes here instead of re-triggering a backfill on every live entry.
+      wlConfirm(state, more ? wlPageMaxSeq(page) : Math.max(wlPageMaxSeq(page), sentMax));
+      if (added.length) onAdded(state, added);
+      if (more && state.cursor > from && pages < WL_BACKFILL_MAX_PAGES) return step();
+      return null;
+    }, function(err) {
+      if (wlStatusOf(err) === 'denied') wlDeny(state);
+      return null;
+    });
+  }
+  var run = (state.latest || Promise.resolve()).then(step).then(null, function() { return null; }).then(function() {
+    state.recovering = null;
+    var reconnect = state.againReconnect;
+    var gap = state.againGap && wlHasGap(state);
+    state.againReconnect = false;
+    state.againGap = false;
+    if (state.closed) return null;
+    if (reconnect) return wlRecover(state, fetchJson, onAdded);
+    if (gap) return wlRecover(state, fetchJson, onAdded, 'gap');
+    return null;
+  });
+  state.recovering = run;
+  return run;
+}
+
+// Raw output of one entry (§3.1-6). An entry with rawBytes has its full output
+// stored: GET …/worklog/:seq/raw → { seq, raw, rawBytes, rawTruncated }, asked
+// once per (panel state, seq) — the promise is kept on the state, and a new
+// state (resetWorkLog) starts without it. 404 (not stored), 403 (owner only)
+// and the server's 503 { error: 'unavailable' } (the log is damaged; the answer
+// stays the same until it is repaired) settle for good. Everything else — a
+// network failure, a 500 / 502, a 503 without that code (a proxy during a
+// restart) — is not kept and offers 다시 시도.
+function wlRawUrl(convId, seq) {
+  return wlUrl(convId, null) + '/' + Math.max(0, Math.floor(Number(seq) || 0)) + '/raw';
+}
+function wlRawLoad(state, seq, fetchJson) {
+  var cache = state.raw || (state.raw = Object.create(null));
+  if (cache[seq]) return cache[seq];
+  var p = fetchJson(wlRawUrl(state.convId, seq)).then(function(d) {
+    return {
+      status: 'ok',
+      raw: d && typeof d.raw === 'string' ? d.raw : '',
+      bytes: toNum(d && d.rawBytes),
+      truncated: !!(d && d.rawTruncated === true),
+    };
+  }, function(err) {
+    var status = err && err.status;
+    if (status === 404) return { status: 'missing' };
+    if (status === 403) return { status: 'denied' };
+    if (status === 503 && err.code === 'unavailable') return { status: 'damaged' };
+    if (cache[seq] === p) delete cache[seq];
+    return { status: 'error' };
+  });
+  cache[seq] = p;
+  return p;
+}
+function formatBytes(n) {
+  n = Math.max(0, toNum(n));
+  if (n < 1024) return Math.round(n) + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KiB';
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MiB';
+  return (n / 1073741824).toFixed(1) + ' GiB';
+}
+// The detail block under an open entry: the full output in a <pre> (with a
+// copy button), or the line for a load in flight / not stored / owner-only /
+// a damaged log / any other failure (the only one with 다시 시도).
+function renderWorkLogDetail(r) {
+  if (r.status === 'loading') return '<div class="wl-detail-msg is-loading">원본 출력 불러오는 중…</div>';
+  if (r.status === 'missing') return '<div class="wl-detail-msg">' + esc(WL_RAW_MISSING_MSG) + '</div>';
+  if (r.status === 'denied') return '<div class="wl-detail-msg">' + esc(WL_FORBIDDEN_MSG) + '</div>';
+  if (r.status === 'damaged') return '<div class="wl-detail-msg">' + esc(WL_RAW_DAMAGED_MSG) + '</div>';
+  if (r.status === 'error') {
+    return '<div class="wl-detail-msg">' + esc(WL_RAW_ERROR_MSG)
+      + '<button type="button" class="wl-detail-btn" data-wl-act="retry">다시 시도</button></div>';
+  }
+  var note = r.truncated
+    ? '<div class="wl-detail-note">저장된 앞 256 KiB만 표시 — 원본 ' + formatBytes(r.bytes) + '</div>'
+    : '';
+  return note
+    + '<div class="wl-detail-bar"><button type="button" class="wl-detail-btn" data-wl-act="copy">복사</button></div>'
+    + '<pre class="wl-raw">' + esc(r.raw) + '</pre>';
+}
+
+// ── DOM side ──
+// A failed answer rejects with err.status and err.code — the error string of a
+// JSON error body ({ error: 'unavailable' }), or null for anything else (an
+// HTML page from a proxy, no body).
+function wlFetchJson(url) {
+  return fetch(url).then(function(r) {
+    if (r.ok) return r.json();
+    return Promise.resolve().then(function() { return r.json(); }).then(function(b) {
+      return b && typeof b.error === 'string' ? b.error : null;
+    }, function() { return null; }).then(function(code) {
+      var err = new Error('HTTP ' + r.status);
+      err.status = r.status;
+      err.code = code;
+      throw err;
+    });
+  });
+}
+
+// visible: the panel is open (a session without a conversation still shows
+// the section, reading "작업 로그 없음").
+function resetWorkLog(convId, visible) {
+  if (_wl) _wl.closed = true; // late responses for the previous conversation are dropped
+  _wl = convId ? wlNewState(convId) : null;
+  if (_wl) _wl.onDenied = showWorkLogDenied;
+  var section = document.getElementById('panel-worklog');
+  var list = document.getElementById('worklog-list');
+  setTextIfChanged(document.getElementById('worklog-count'), '');
+  if (section) section.style.display = visible ? '' : 'none';
+  if (list) list.innerHTML = !visible ? '' : '<div class="wl-empty">' + (convId ? '불러오는 중…' : WL_EMPTY_MSG) + '</div>';
+}
+
+function loadWorkLog() {
+  var st = _wl;
+  if (!st) return;
+  wlLoadLatest(st, wlFetchJson, paintWorkLog).then(function(result) {
+    if (st.closed) return;
+    // 'denied' was already shown by showWorkLogDenied (state.onDenied).
+    if (result !== 'denied' && !st.entries.length) showWorkLogEmpty(WL_EMPTY_MSG);
+    // No re-landing here: the log is collapsed, so its arrival moves nothing,
+    // and a reader who already scrolled is left where they are.
+  });
+}
+function recoverWorkLog() {
+  if (_wl) wlRecover(_wl, wlFetchJson, paintWorkLog);
+}
+function pushLiveWorkLog(convId, entry) {
+  if (!_wl || _wl.convId !== convId) return;
+  wlOnLive(_wl, entry, wlFetchJson, paintWorkLog);
+}
+
+// Work-log section open / closed (§3.1-6). Every panel opening starts closed
+// (openPanel); 작업 로그 and ?session= only change where the panel lands.
+// Opening only shows what loadWorkLog already fetched — it never asks again.
+function setWorkLogOpen(open) {
+  var toggle = document.getElementById('worklog-toggle');
+  var list = document.getElementById('worklog-list');
+  if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (!list) return;
+  list.hidden = !open;
+  if (open) list.scrollTop = list.scrollHeight;
+}
+function toggleWorkLogSection() {
+  var toggle = document.getElementById('worklog-toggle');
+  setWorkLogOpen(!(toggle && toggle.getAttribute('aria-expanded') === 'true'));
+}
+
+// One entry's detail (§3.1-6): a click on its row opens the full output under
+// it, a second click closes it. state.open = the seqs open now.
+function wlDetailOpen(state) {
+  return !!(state && state.open && state.open.size);
+}
+function wlEntryEl(seq) {
+  var list = document.getElementById('worklog-list');
+  return list ? list.querySelector('.wl-entry[data-seq="' + Math.floor(Number(seq) || 0) + '"]') : null;
+}
+function wlEntryBySeq(state, seq) {
+  var list = (state && state.entries) || [];
+  for (var i = 0; i < list.length; i++) if (list[i].seq === seq) return list[i];
+  return null;
+}
+// What the row stands for, in full — for an entry without stored raw output.
+function wlFullText(e) {
+  var text = String(e.text || '');
+  return e.kind === 'instruction' ? decodeSlackEntities(text) : text;
+}
+// Paints only while that entry is still open in the conversation still shown —
+// a late answer for a closed row or a previous conversation is dropped.
+function paintWorkLogDetail(state, seq, result) {
+  if (state !== _wl || state.closed || !state.open || !state.open.has(seq)) return;
+  var el = wlEntryEl(seq);
+  var detail = el && el.querySelector('.wl-detail');
+  if (detail) detail.innerHTML = renderWorkLogDetail(result);
+}
+function loadWorkLogDetail(state, seq) {
+  var entry = wlEntryBySeq(state, seq);
+  if (!entry) return;
+  if (!(toNum(entry.rawBytes) > 0)) {
+    paintWorkLogDetail(state, seq, { status: 'ok', raw: wlFullText(entry), bytes: 0, truncated: false });
+    return;
+  }
+  paintWorkLogDetail(state, seq, { status: 'loading' });
+  wlRawLoad(state, seq, wlFetchJson).then(function(result) {
+    paintWorkLogDetail(state, seq, result);
+  });
+}
+function toggleWorkLogEntry(seq) {
+  var st = _wl;
+  if (!st || st.closed) return;
+  var el = wlEntryEl(seq);
+  var row = el && el.querySelector('.wl-row');
+  var detail = el && el.querySelector('.wl-detail');
+  if (!row || !detail) return;
+  var open = st.open || (st.open = new Set());
+  if (open.has(seq)) {
+    open.delete(seq);
+    row.setAttribute('aria-expanded', 'false');
+    detail.hidden = true;
+    detail.innerHTML = '';
+    return;
+  }
+  open.add(seq);
+  row.setAttribute('aria-expanded', 'true');
+  detail.hidden = false;
+  loadWorkLogDetail(st, seq);
+}
+function retryWorkLogDetail(seq) {
+  if (_wl && _wl.open && _wl.open.has(seq)) loadWorkLogDetail(_wl, seq);
+}
+// Copies the text the <pre> shows. Without clipboard access (plain http, a
+// denied permission) the text is selected instead, so the user can copy it.
+function copyWorkLogDetail(seq, btn) {
+  var el = wlEntryEl(seq);
+  var pre = el && el.querySelector('.wl-raw');
+  if (!pre) return;
+  function say(label) {
+    if (!btn) return;
+    btn.textContent = label;
+    setTimeout(function() { btn.textContent = '복사'; }, 1500);
+  }
+  function selectIt() {
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(pre);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (_e) {}
+    say('선택됨');
+  }
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { selectIt(); return; }
+    navigator.clipboard.writeText(pre.textContent || '').then(function() { say('복사됨'); }, selectIt);
+  } catch (_e) { selectIt(); }
+}
+
+// Insert the merged entries at their seq position (the list mirrors state.entries).
+function paintWorkLog(state, added) {
+  if (state !== _wl || !added.length) return;
+  var list = document.getElementById('worklog-list');
+  if (!list) return;
+  var atBottom = list.scrollHeight - list.scrollTop <= list.clientHeight + 40;
+  var placeholder = list.querySelector('.wl-empty');
+  if (placeholder) placeholder.remove();
+  var tmp = document.createElement('div');
+  for (var i = 0; i < added.length; i++) {
+    tmp.innerHTML = renderWorkLogEntry(added[i].entry);
+    var node = tmp.firstElementChild;
+    if (node) list.insertBefore(node, list.children[added[i].index] || null);
+  }
+  setTextIfChanged(document.getElementById('worklog-count'), String(state.entries.length));
+  wlEnsureTabStop(list);
+  // Tail-follow, unless the reader has an entry's detail open.
+  if (!state.painted || (atBottom && !wlDetailOpen(state))) list.scrollTop = list.scrollHeight;
+  state.painted = true;
+}
+
+// Owner-only log (403 on any path) — only for the conversation still open.
+function showWorkLogDenied(state) {
+  if (state !== _wl || state.closed) return;
+  // Live entries painted before the 403 go too: the log is owner-only.
+  state.entries = [];
+  var list = document.getElementById('worklog-list');
+  setTextIfChanged(document.getElementById('worklog-count'), '');
+  if (list) list.innerHTML = '<div class="wl-empty">' + esc(WL_FORBIDDEN_MSG) + '</div>';
+}
+function showWorkLogEmpty(message) {
+  var list = document.getElementById('worklog-list');
+  if (list && !list.querySelector('.wl-entry')) list.innerHTML = '<div class="wl-empty">' + esc(message || WL_EMPTY_MSG) + '</div>';
+}
+
+function renderWorkLogEntry(e) {
+  var kind = Object.prototype.hasOwnProperty.call(WL_LABELS, e.kind) ? e.kind : 'narration';
+  var time = typeof e.ts === 'number' && isFinite(e.ts)
+    ? new Date(e.ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    : '';
+  var timeHtml = time ? '<span class="wl-time">' + time + '</span>' : '';
+  var seq = Math.floor(Number(e.seq) || 0);
+  var seqAttr = ' data-seq="' + seq + '"';
+  // One root per entry: the row (role=button, out of the tab order — the list
+  // keeps one roving stop) and its detail block (§3.1-6).
+  function rowOpen(extra) {
+    return '<div class="wl-row' + (extra || '') + '" role="button" tabindex="-1" aria-expanded="false" aria-controls="wl-detail-' + seq + '">';
+  }
+  // aria-live="off": the list is role=log (polite), and an opened raw output
+  // of up to 256 KiB must not be read out in full.
+  var detailHtml = '<div class="wl-detail" id="wl-detail-' + seq + '" aria-live="off" hidden></div>';
+  var text = String(e.text || '');
+  if (kind === 'tool' || kind === 'tool_result') {
+    var fail = kind === 'tool_result' && e.ok === false;
+    var mark = kind === 'tool' ? '&#x25B8;' : (fail ? '&#x2717;' : '&#x2713;');
+    // The emitter's text starts with the tool name ("Read {...}", "Glob ok");
+    // the name already has its own span, so the text shows only what follows.
+    var shown = text;
+    var tool = e.tool ? String(e.tool) : '';
+    if (tool && text === tool) shown = '';
+    else if (tool && text.indexOf(tool + ' ') === 0) shown = text.slice(tool.length + 1);
+    return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + '"' + seqAttr + '>' + rowOpen()
+      + '<span class="wl-mark">' + mark + '</span>'
+      + (tool ? '<span class="wl-tool-name">' + esc(tool) + '</span>' : '')
+      + '<span class="wl-text" title="' + escAttr(text) + '">' + esc(shown) + '</span>'
+      + timeHtml + '</div>' + detailHtml + '</div>';
+  }
+  if (kind === 'instruction') text = decodeSlackEntities(text);
+  var label = WL_LABELS[kind];
+  if (!label) {
+    // Narration: the text with its time on the right of the same line.
+    return '<div class="wl-entry wl-' + kind + '"' + seqAttr + '>' + rowOpen(' wl-line') + '<div class="wl-text">' + esc(text) + '</div>' + timeHtml + '</div>' + detailHtml + '</div>';
+  }
+  return '<div class="wl-entry wl-' + kind + '"' + seqAttr + '>' + rowOpen()
+    + '<div class="wl-head"><span class="wl-label">' + label + '</span>' + timeHtml + '</div>'
+    + '<div class="wl-text">' + esc(text) + '</div>'
+    + '</div>' + detailHtml + '</div>';
+}
+
+// Roving tabindex (§3.1-6): the list is one tab stop. The first paint puts it
+// on the newest row (where the tail-followed list is looking); focusing a row
+// (click, arrows) moves it there. ArrowUp / ArrowDown step, Home / End jump.
+function wlRovingIndex(key, i, n) {
+  if (n <= 0) return -1;
+  if (key === 'ArrowDown') return Math.min(n - 1, i + 1);
+  if (key === 'ArrowUp') return Math.max(0, i - 1);
+  if (key === 'Home') return 0;
+  if (key === 'End') return n - 1;
+  return -1;
+}
+function wlEnsureTabStop(list) {
+  if (!list || !list.querySelector || list.querySelector('.wl-row[tabindex="0"]')) return;
+  var rows = list.querySelectorAll('.wl-row');
+  if (rows.length) rows[rows.length - 1].setAttribute('tabindex', '0');
+}
+function wlSetTabStop(list, row) {
+  var old = list.querySelectorAll('.wl-row[tabindex="0"]');
+  for (var i = 0; i < old.length; i++) if (old[i] !== row) old[i].setAttribute('tabindex', '-1');
+  if (row.getAttribute('tabindex') !== '0') row.setAttribute('tabindex', '0');
+}
+
+// Rows open / close their detail on click, Enter or Space; clicks inside an
+// open detail (the <pre>, 복사, 다시 시도) never toggle it.
+(function initWorkLogInteractions() {
+  var list = document.getElementById('worklog-list');
+  if (!list) return;
+  function seqOf(node) {
+    var entry = node && node.closest('.wl-entry');
+    return entry ? Math.floor(Number(entry.getAttribute('data-seq')) || 0) : 0;
+  }
+  list.addEventListener('click', function(e) {
+    var btn = e.target.closest('.wl-detail-btn');
+    if (btn && list.contains(btn)) {
+      var act = btn.getAttribute('data-wl-act');
+      if (act === 'retry') retryWorkLogDetail(seqOf(btn));
+      else if (act === 'copy') copyWorkLogDetail(seqOf(btn), btn);
+      return;
+    }
+    if (e.target.closest('.wl-detail')) return;
+    var row = e.target.closest('.wl-row');
+    if (!row || !list.contains(row)) return;
+    // Finishing a text selection inside the row is not a toggle.
+    if (window.getSelection && String(window.getSelection())) return;
+    toggleWorkLogEntry(seqOf(row));
+  });
+  list.addEventListener('keydown', function(e) {
+    var row = e.target;
+    if (!row.classList || !row.classList.contains('wl-row')) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      toggleWorkLogEntry(seqOf(row));
+      return;
+    }
+    var rows = Array.prototype.slice.call(list.querySelectorAll('.wl-row'));
+    var j = wlRovingIndex(e.key, rows.indexOf(row), rows.length);
+    if (j < 0) return;
+    e.preventDefault();
+    rows[j].focus(); // focusin moves the tab stop
+  });
+  list.addEventListener('focusin', function(e) {
+    var row = e.target;
+    if (row && row.classList && row.classList.contains('wl-row')) wlSetTabStop(list, row);
+  });
+})();
+
+// Where an opening from 작업 로그 / ?session= lands (§3.1-6): the top of the
+// scroll area when the collapsed work-log header fits there (a short pending
+// question above it stays in view), else the header itself.
+function workLogLandingTop(sectionTop, headerHeight, viewHeight) {
+  return sectionTop + headerHeight <= viewHeight ? 0 : sectionTop;
+}
+// Bring the collapsed work-log header into view, one click from its entries.
+function scrollPanelToWorkLog() {
+  var scrollEl = document.getElementById('panel-scroll');
+  var section = document.getElementById('panel-worklog');
+  var toggle = document.getElementById('worklog-toggle');
+  if (!scrollEl || !section || section.style.display === 'none') return;
+  var sectionTop = scrollEl.scrollTop + section.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
+  var headerHeight = toggle ? toggle.getBoundingClientRect().height : 0;
+  scrollEl.scrollTo({ top: workLogLandingTop(sectionTop, headerHeight, scrollEl.clientHeight), behavior: 'instant' });
+}
+
 // ── Slide Panel ──
-function openPanel(sessionKey) {
+// focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link:
+// the work log stays collapsed like every opening, but the panel lands with its
+// header in view instead of on the newest turns.
+function openPanel(sessionKey, focusWorkLog) {
   const s = _sessionCache[sessionKey];
   if (!s) return;
+  _panelFocusWorkLog = !!focusWorkLog;
 
   // Unconditional UI reset on card switch — an in-flight send from a previous
   // card must never leak "Sending..." / disabled state into this card. The
@@ -4712,13 +7206,20 @@ function openPanel(sessionKey) {
     if (cmdBtnEl) { cmdBtnEl.disabled = false; cmdBtnEl.textContent = 'Send'; }
   })();
 
-  // Reset pagination state before loading this session's turns.
+  // Reset pagination state before loading this session's turns. A new panel
+  // generation makes every request of the previous one stale — including a
+  // close + reopen of the same session, which session-key equality misses.
+  _panelGen++;
   _panelTurnsHasMore = false;
   _panelTurnsLoading = false;
   _panelTurnsOldestId = null;
 
   panelSessionKey = sessionKey;
   panelConvId = s.conversationId || null;
+  resetWorkLog(panelConvId, true);
+  setWorkLogOpen(false); // every opening starts collapsed (§3.1-6)
+  _panelOlderArmed = false; // a landing never loads older turns by itself
+  _panelStickBottom = false;
 
   // #762 — single source of truth for headline. displayHeadline carries the
   // server-resolved priority chain; older WS messages without it still get a
@@ -4744,9 +7245,9 @@ function openPanel(sessionKey) {
   // Links
   const linksEl = document.getElementById('panel-links');
   const linkHtml = [];
-  if (s.issueUrl) linkHtml.push('<a href="' + esc(s.issueUrl) + '" target="_blank">&#x1F4CB; ' + esc(s.issueLabel || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(s.issueTitle).slice(0, 50) : '') + '</a>');
-  if (s.prUrl) linkHtml.push('<a href="' + esc(s.prUrl) + '" target="_blank">&#x1F500; ' + esc(s.prLabel || 'PR') + (s.prTitle ? ' &mdash; ' + esc(s.prTitle).slice(0, 50) : '') + '</a>');
-  if (s.slackThreadUrl) linkHtml.push('<a href="' + esc(s.slackThreadUrl) + '" target="_blank">&#x1F4AC; Slack Thread</a>');
+  if (s.issueUrl) linkHtml.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener">&#x1F4CB; ' + esc(s.issueLabel || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(String(s.issueTitle).slice(0, 50)) : '') + '</a>');
+  if (s.prUrl) linkHtml.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener">&#x1F500; ' + esc(s.prLabel || 'PR') + (s.prTitle ? ' &mdash; ' + esc(String(s.prTitle).slice(0, 50)) : '') + '</a>');
+  if (s.slackThreadUrl) linkHtml.push('<a href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">&#x1F4AC; Slack Thread</a>');
   if (s.conversationId) linkHtml.push('<a href="/conversations/' + esc(s.conversationId) + '" target="_blank">&#x1F4DD; Full Conversation</a>');
   linksEl.innerHTML = linkHtml.join('') || '<span style="font-size:0.78em;color:var(--text-secondary)">No links</span>';
 
@@ -4756,11 +7257,11 @@ function openPanel(sessionKey) {
     let tokHtml = [
       '<span class="token-badge"><span class="tok-label">Input:</span> <span class="tok-value">' + formatTokens(s.tokenUsage.totalInputTokens) + '</span></span>',
       '<span class="token-badge"><span class="tok-label">Output:</span> <span class="tok-value">' + formatTokens(s.tokenUsage.totalOutputTokens) + '</span></span>',
-      '<span class="token-badge"><span class="tok-label">Cost:</span> <span class="tok-cost">$' + s.tokenUsage.totalCostUsd.toFixed(3) + '</span></span>',
-      '<span class="token-badge"><span class="tok-label">Context:</span> <span class="tok-value">' + s.tokenUsage.contextUsagePercent.toFixed(1) + '%</span></span>',
+      '<span class="token-badge"><span class="tok-label">Cost:</span> <span class="tok-cost">$' + toNum(s.tokenUsage.totalCostUsd).toFixed(3) + '</span></span>',
+      '<span class="token-badge"><span class="tok-label">Context:</span> <span class="tok-value">' + toNum(s.tokenUsage.contextUsagePercent).toFixed(1) + '%</span></span>',
     ].join('');
     if (s.mergeStats) {
-      tokHtml += '<span class="token-badge" style="border-color:var(--green)"><span class="tok-label">Merge:</span> <span style="color:var(--green)">+' + s.mergeStats.totalLinesAdded + ' / -' + s.mergeStats.totalLinesDeleted + '</span></span>';
+      tokHtml += '<span class="token-badge" style="border-color:var(--green)"><span class="tok-label">Merge:</span> <span style="color:var(--green)">+' + toNum(s.mergeStats.totalLinesAdded) + ' / -' + toNum(s.mergeStats.totalLinesDeleted) + '</span></span>';
     }
     tokensEl.innerHTML = tokHtml;
   } else {
@@ -4780,12 +7281,12 @@ function openPanel(sessionKey) {
     turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Loading...</p>';
     _panelTurnsLoading = true;
     var loadingConvId = s.conversationId;
-    var loadingSessionKey = sessionKey;
+    var loadingGen = _panelGen;
     fetch('/api/dashboard/session/' + encodeURIComponent(loadingConvId) + '?limit=30')
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        // If the user switched cards while loading, discard this result.
-        if (panelSessionKey !== loadingSessionKey) return;
+        // If the panel was switched, closed or reopened while loading, discard this result.
+        if (loadingGen !== _panelGen) return;
 
         // Handle titleSub
         var tSubText = document.getElementById('panel-title-sub-text');
@@ -4807,13 +7308,22 @@ function openPanel(sessionKey) {
         _panelTurnsOldestId = data.turns[0] && data.turns[0].id;
         turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
         attachRawToggleHandlers();
-        // Jump to bottom on fresh load.
+        // Jump to bottom on fresh load — or to the collapsed work-log header when
+        // that is what the user asked for (작업 로그 button / ?session= deep link).
         var scrollEl = document.getElementById('panel-scroll');
-        if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+        // Instant: under scroll-behavior: smooth the glide down from 0 passed
+        // through scrollTop < 100 and set off the load-older-turns handler.
+        if (_panelFocusWorkLog) scrollPanelToWorkLog();
+        else if (scrollEl) {
+          scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
+          // Stay on the newest turns while the panel settles (the subtitle
+          // arriving later makes the scroll area shorter) until the reader scrolls.
+          _panelStickBottom = true;
+        }
         _panelTurnsLoading = false;
       })
       .catch(function() {
-        if (panelSessionKey !== loadingSessionKey) return;
+        if (loadingGen !== _panelGen) return;
         turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Failed to load conversation</p>';
         _panelTurnsLoading = false;
       });
@@ -4850,12 +7360,25 @@ function openPanel(sessionKey) {
   document.getElementById('slide-panel').classList.add('open');
   document.getElementById('panel-overlay').classList.add('open');
   panelOpen = true;
+
+  if (panelConvId) loadWorkLog();
 }
 
 // ── Pagination state for panel chat (infinite scroll) ──
 var _panelTurnsHasMore = false;
 var _panelTurnsLoading = false;
 var _panelTurnsOldestId = null;
+var _panelGen = 0; // bumped by openPanel / closePanel — the identity of one panel opening
+
+function panelScrollAnchor(scrollEl) {
+  var viewTop = scrollEl.getBoundingClientRect().top;
+  var nodes = scrollEl.querySelectorAll('#panel-question, #panel-worklog, #panel-turns > .turn');
+  for (var i = 0; i < nodes.length; i++) {
+    var r = nodes[i].getBoundingClientRect();
+    if (r.height > 0 && r.bottom > viewTop) return { el: nodes[i], top: r.top };
+  }
+  return null;
+}
 
 async function loadMorePanelTurns() {
   if (_panelTurnsLoading || !_panelTurnsHasMore || !panelConvId || !_panelTurnsOldestId) return;
@@ -4865,12 +7388,8 @@ async function loadMorePanelTurns() {
 
   _panelTurnsLoading = true;
   var requestConvId = panelConvId;
-  var requestSessionKey = panelSessionKey;
+  var requestGen = _panelGen; // this panel opening; any switch/close/reopen makes it stale
   var requestOldestId = _panelTurnsOldestId;
-
-  // Preserve scroll position relative to the current oldest item.
-  var prevScrollHeight = scrollEl.scrollHeight;
-  var prevScrollTop = scrollEl.scrollTop;
 
   // Loading spinner at top of turns list.
   var spinner = document.createElement('div');
@@ -4884,14 +7403,18 @@ async function loadMorePanelTurns() {
     var r = await fetch(url);
     var data = await r.json();
 
-    // Discard stale response if card was switched mid-flight.
-    // panelSessionKey and panelConvId are always updated/cleared together (openPanel, closePanel),
-    // so sessionKey equality implies convId equality — single check is sufficient.
-    if (panelSessionKey !== requestSessionKey) {
+    // Discard a stale response: the panel was switched, closed or reopened
+    // (same session included) while this request was in flight.
+    if (requestGen !== _panelGen) {
       if (spinner.parentNode) spinner.remove();
       return;
     }
 
+    // Keep the reading position: capture the first element the reader can see
+    // (question / tasks / work log / a turn) NOW — after the response, so a
+    // scroll made while the request was pending is respected — and after the
+    // spinner goes and the older turns land, scroll by however far it moved.
+    var anchor = panelScrollAnchor(scrollEl);
     if (spinner.parentNode) spinner.remove();
 
     if (data.turns && data.turns.length > 0) {
@@ -4901,17 +7424,37 @@ async function loadMorePanelTurns() {
       var html = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
       turnsEl.insertAdjacentHTML('afterbegin', html);
       attachRawToggleHandlers();
-      // Restore scroll position so the user stays anchored on the turn they were reading.
-      var newScrollHeight = scrollEl.scrollHeight;
-      scrollEl.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+      // Restore scroll position so the user stays anchored on what they were reading.
+      // behavior 'instant': .panel-scroll is scroll-behavior: smooth, which would
+      // otherwise show the jump and then glide back.
+      if (anchor && anchor.el.isConnected) {
+        var drift = anchor.el.getBoundingClientRect().top - anchor.top;
+        if (drift) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift, behavior: 'instant' });
+      }
     } else {
       _panelTurnsHasMore = false;
+      if (anchor && anchor.el.isConnected) {
+        var drift0 = anchor.el.getBoundingClientRect().top - anchor.top;
+        if (drift0) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift0, behavior: 'instant' });
+      }
     }
   } catch (err) {
+    if (requestGen !== _panelGen) {
+      // A stale failure must not move the panel that replaced it.
+      if (spinner.parentNode) spinner.remove();
+      return;
+    }
+    var errAnchor = panelScrollAnchor(scrollEl);
     if (spinner.parentNode) spinner.remove();
+    if (errAnchor && errAnchor.el.isConnected) {
+      var drift1 = errAnchor.el.getBoundingClientRect().top - errAnchor.top;
+      if (drift1) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift1, behavior: 'instant' });
+    }
     console.error('loadMorePanelTurns failed', err);
   } finally {
-    _panelTurnsLoading = false;
+    // Only the current generation owns the in-flight flag; a stale request
+    // settling must not clear the flag of the load that replaced it.
+    if (requestGen === _panelGen) _panelTurnsLoading = false;
   }
 }
 
@@ -4932,7 +7475,7 @@ function renderTurn(t, _idx, _arr, convId) {
     if (t.summaryBody) {
       body = '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>';
     } else if (t.summarized) {
-      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">Summary failed <button class="btn-action" style="margin-left:8px;font-size:10px;padding:2px 8px" onclick="event.stopPropagation();resummarize(\\'' + esc(convId || panelConvId) + '\\',\\'' + esc(t.id) + '\\',this)">&#x1F504; Retry</button></div>';
+      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">Summary failed <button class="btn-action" style="margin-left:8px;font-size:10px;padding:2px 8px" onclick="event.stopPropagation();resummarize(\\'' + escJs(convId || panelConvId) + '\\',\\'' + escJs(t.id) + '\\',this)">&#x1F504; Retry</button></div>';
     } else {
       body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
     }
@@ -4977,7 +7520,7 @@ function updateTurnInPanel(existingEl, turn) {
   }
 }
 
-var _rawLoadedCache = {};
+var _rawLoadedCache = Object.create(null);
 function attachRawToggleHandlers() {
   document.querySelectorAll('.turn-raw-details').forEach(function(details) {
     if (details._rawBound) return;
@@ -5005,6 +7548,9 @@ function attachRawToggleHandlers() {
 }
 
 async function generateTitleSub(convId) {
+  // The panel opening this request belongs to: once another panel opens (or
+  // this one closes) the subtitle element shows someone else, so drop the result.
+  var gen = _panelGen;
   var textEl = document.getElementById('panel-title-sub-text');
   var btn = document.getElementById('panel-title-sub-regen');
   textEl.textContent = 'Generating title...';
@@ -5018,13 +7564,17 @@ async function generateTitleSub(convId) {
     const headers = {};
     if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
     var res = await fetch(url, { method: 'POST', headers });
+    if (gen !== _panelGen) return;
     if (res.status === 403) {
       await refreshCsrfToken();
+      if (gen !== _panelGen) return;
       const retryHeaders = {};
       if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
       res = await fetch(url, { method: 'POST', headers: retryHeaders });
+      if (gen !== _panelGen) return;
     }
     var data = await res.json();
+    if (gen !== _panelGen) return;
     if (data.titleSub) {
       textEl.textContent = data.titleSub;
       btn.style.display = 'inline-block';
@@ -5033,6 +7583,7 @@ async function generateTitleSub(convId) {
       btn.style.display = 'inline-block';
     }
   } catch(e) {
+    if (gen !== _panelGen) return;
     textEl.textContent = 'Error';
     btn.style.display = 'inline-block';
   }
@@ -5044,10 +7595,14 @@ function closePanel() {
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
-  _rawLoadedCache = {};
+  _rawLoadedCache = Object.create(null);
+  _panelGen++;
   _panelTurnsHasMore = false;
   _panelTurnsLoading = false;
   _panelTurnsOldestId = null;
+  resetWorkLog(null, false);
+  _panelFocusWorkLog = false;
+  _panelStickBottom = false;
 }
 
 document.addEventListener('keydown', function(e) {
@@ -5055,14 +7610,58 @@ document.addEventListener('keydown', function(e) {
 });
 
 // Scroll-up-to-load-more handler (bound once on panel-scroll).
+// Older turns load when the first turn comes within 100px of the top of the
+// scroll area (or sits below it, under the question / work log). One load per
+// approach: entering the zone loads once and disarms; leaving it re-arms. An
+// opening starts disarmed, so landing at the top (작업 로그 / ?session=) loads
+// nothing by itself, and an insert that keeps the reader in place (the new
+// first turn still in the zone) cannot cascade into the next page.
+var _panelOlderArmed = false;
+var _panelStickBottom = false; // a default landing keeps the newest turns in view until the reader acts
+function olderTurnsZone(firstTurnTop, areaTop) {
+  return firstTurnTop >= areaTop - 100;
+}
+function panelOlderStep(armed, inZone, canLoad) {
+  if (!inZone) return { load: false, armed: true };
+  if (armed && canLoad) return { load: true, armed: false };
+  return { load: false, armed: armed };
+}
 (function initPanelScrollHandler() {
   var scrollEl = document.getElementById('panel-scroll');
-  if (!scrollEl) return;
+  var turnsEl = document.getElementById('panel-turns');
+  if (!scrollEl || !turnsEl) return;
+  var lastTop = 0;
   scrollEl.addEventListener('scroll', function() {
-    if (scrollEl.scrollTop < 100 && _panelTurnsHasMore && !_panelTurnsLoading && panelConvId && _panelTurnsOldestId) {
-      loadMorePanelTurns();
-    }
+    // Only the reader moving up ends the stick; the area shrinking under a
+    // resting scrollTop (a late subtitle) does not.
+    var top = scrollEl.scrollTop;
+    if (top < lastTop && scrollEl.scrollHeight - scrollEl.clientHeight - top > 4) _panelStickBottom = false;
+    lastTop = top;
+    var first = turnsEl.querySelector('.turn');
+    if (!first) return;
+    var inZone = olderTurnsZone(first.getBoundingClientRect().top, scrollEl.getBoundingClientRect().top);
+    var canLoad = _panelTurnsHasMore && !_panelTurnsLoading && !!panelConvId && !!_panelTurnsOldestId;
+    var step = panelOlderStep(_panelOlderArmed, inZone, canLoad);
+    _panelOlderArmed = step.armed;
+    if (step.load) loadMorePanelTurns();
   }, { passive: true });
+  // Any input inside the panel (expanding the work log, reading, typing) means
+  // the reader took over: stop holding the newest turns.
+  var panel = document.getElementById('slide-panel');
+  if (panel) {
+    ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(function(type) {
+      panel.addEventListener(type, function() { _panelStickBottom = false; }, { passive: true, capture: true });
+    });
+  }
+  // The area shrinking (a subtitle arriving) or the turns growing after the
+  // landing (late fonts, images) both leave the default landing short of the end.
+  if (typeof ResizeObserver === 'function') {
+    var stick = new ResizeObserver(function() {
+      if (_panelStickBottom) scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
+    });
+    stick.observe(scrollEl);
+    stick.observe(turnsEl);
+  }
 })();
 
 // ── Send command (optimistic UI) ──
@@ -5144,68 +7743,34 @@ function sendRetry(msg) {
   sendCommand();
 }
 
-// ── Drag & Drop (event delegation on kanban board) ──
-var dragState = { key: null, sourceCol: null, title: '' };
-
-document.addEventListener('dragstart', function(e) {
-  var card = e.target.closest('.card[draggable="true"]');
-  if (!card) return;
-  dragState.key = card.dataset.sessionKey;
-  dragState.sourceCol = card.dataset.sourceCol;
-  var s = _sessionCache[dragState.key];
-  dragState.title = s ? s.title : '';
-  card.classList.add('dragging');
-  e.dataTransfer.effectAllowed = 'move';
-  e.dataTransfer.setData('text/plain', dragState.key);
-});
-
-document.addEventListener('dragend', function(e) {
-  var card = e.target.closest('.card');
-  if (card) card.classList.remove('dragging');
-  document.querySelectorAll('.kanban-col').forEach(function(col) { col.classList.remove('drag-over'); });
-  dragState = { key: null, sourceCol: null, title: '' };
-});
-
-document.addEventListener('dragover', function(e) {
-  var col = e.target.closest('.kanban-col');
-  if (!col || !dragState.key) return;
-  e.preventDefault();
-  e.dataTransfer.dropEffect = 'move';
-  document.querySelectorAll('.kanban-col').forEach(function(c) { c.classList.remove('drag-over'); });
-  col.classList.add('drag-over');
-});
-
-document.addEventListener('dragleave', function(e) {
-  var col = e.target.closest('.kanban-col');
-  if (col && !col.contains(e.relatedTarget)) col.classList.remove('drag-over');
-});
-
-document.addEventListener('drop', function(e) {
-  e.preventDefault();
-  var col = e.target.closest('.kanban-col');
-  if (!col || !dragState.key) return;
-  document.querySelectorAll('.kanban-col').forEach(function(c) { c.classList.remove('drag-over'); });
-
-  var targetCol = col.id.replace('col-', '');
-  var sourceCol = dragState.sourceCol;
-  var key = dragState.key;
-  var title = dragState.title || key;
-
-  // T6: Drag to closed column = Close
-  if (targetCol === 'closed' && sourceCol !== 'closed') {
-    if (confirm('Close session "' + title + '"?')) {
-      doAction(key, 'close');
-    }
-  }
-  // T7: Drag working card out = Stop (interrupt)
-  else if (sourceCol === 'working' && targetCol !== 'working') {
-    if (confirm('Stop (interrupt) session "' + title + '"?')) {
-      doAction(key, 'stop');
-    }
-  }
-
-  dragState = { key: null, sourceCol: null, title: '' };
-});
+// ── Board interactions — card face click / Enter / Space expands in place.
+// Delegated from #kanban so the reconciler never re-binds per card. (Drag and
+// drop and its confirm dialogs were removed: .prd/10 §3.1-5 — the same Stop / Close / Trash
+// actions live on the open card.)
+(function initBoardInteractions() {
+  var kb = document.getElementById('kanban');
+  kb.addEventListener('click', function(e) {
+    var face = e.target.closest('.card-face');
+    if (!face || !kb.contains(face)) return;
+    var key = face.parentNode.getAttribute('data-session-key');
+    if (!key) return;
+    // Finishing a text selection inside the face is not a toggle.
+    if (window.getSelection && String(window.getSelection())) return;
+    toggleCard(key, e.detail === 0);
+  });
+  kb.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var face = e.target;
+    if (!face.classList || !face.classList.contains('card-face')) return;
+    e.preventDefault();
+    var key = face.parentNode.getAttribute('data-session-key');
+    if (key) toggleCard(key, true);
+  });
+  // View: the saved choice, else List on narrow screens (§3.1-2).
+  var saved = null;
+  try { saved = localStorage.getItem('soma-board-view'); } catch (_e) {}
+  setBoardView(saved === 'board' || saved === 'list' ? saved : (window.innerWidth < 640 ? 'list' : 'board'));
+})();
 
 // ── Init ──
 loadUsers();

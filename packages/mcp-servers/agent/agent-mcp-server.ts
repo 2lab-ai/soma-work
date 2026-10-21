@@ -3,7 +3,7 @@
 /**
  * Agent MCP Server — agent_chat / agent_reply tools.
  *
- * Mirrors the llm-mcp-server pattern:
+ * Mirrors the shared internal MCP server pattern:
  *  - chat: Start a new conversation with a named sub-agent
  *  - chat-reply: Continue an existing agent conversation
  *

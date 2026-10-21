@@ -1,4 +1,5 @@
 ---
+name: example
 description: Example skill for testing
 allowed-tools: Read, Grep, Glob
 ---

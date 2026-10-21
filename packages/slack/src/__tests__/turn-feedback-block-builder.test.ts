@@ -4,11 +4,13 @@ import {
   buildFeedbackContextActions,
   encodeDismissValue,
   encodeFeedbackValue,
+  isStreamHostedFeedbackBlockId,
   keepIconButtonsOnly,
   parseDismissValue,
   parseFeedbackValue,
   TURN_DISMISS_ACTION_ID,
   TURN_FEEDBACK_ACTION_ID,
+  TURN_FEEDBACK_BLOCK_ID_PREFIX,
 } from '../turn-feedback-block-builder';
 
 describe('turn-feedback-block-builder', () => {
@@ -100,6 +102,45 @@ describe('turn-feedback-block-builder', () => {
       }
       expect(parseFeedbackValue(fb.positive_button.value)?.sentiment).toBe('positive');
       expect(parseFeedbackValue(fb.negative_button.value)?.sentiment).toBe('negative');
+    });
+  });
+
+  // A32 — the consolidated turn surface hosts the feedback row on the STREAMED
+  // answer message itself. That message must never be deleted or overwritten,
+  // so the dismiss affordance is dropped and the row carries a marker block_id
+  // the click handler uses to pick the respond()-only ack path.
+  describe('buildFeedbackContextActions — stream-hosted row (A32)', () => {
+    it('includeDismiss:false drops the dismiss icon_button', () => {
+      const block = buildFeedbackContextActions('t1', 'Uowner', { includeDismiss: false }) as any;
+      expect(block.type).toBe('context_actions');
+      expect(block.elements).toHaveLength(1);
+      expect(block.elements[0].type).toBe('feedback_buttons');
+      expect(JSON.stringify(block)).not.toContain('icon_button');
+    });
+
+    it('streamHosted:true stamps the marker block_id keyed on the turnId', () => {
+      const block = buildFeedbackContextActions('C1:1.2:uuid', 'Uowner', {
+        includeDismiss: false,
+        streamHosted: true,
+      }) as any;
+      expect(block.block_id).toBe(`${TURN_FEEDBACK_BLOCK_ID_PREFIX}C1:1.2:uuid`);
+      expect(isStreamHostedFeedbackBlockId(block.block_id)).toBe(true);
+    });
+
+    it('default options are unchanged: dismiss present, no marker block_id (legacy card)', () => {
+      const block = buildFeedbackContextActions('t1', 'Uowner') as any;
+      expect(block.elements).toHaveLength(2);
+      expect(block.block_id).toBeUndefined();
+      expect(isStreamHostedFeedbackBlockId(block.block_id)).toBe(false);
+    });
+
+    it('clamps the marker block_id to Slack’s 255-char limit', () => {
+      const block = buildFeedbackContextActions('x'.repeat(400), 'U1', {
+        includeDismiss: false,
+        streamHosted: true,
+      }) as any;
+      expect(block.block_id.length).toBeLessThanOrEqual(255);
+      expect(isStreamHostedFeedbackBlockId(block.block_id)).toBe(true);
     });
   });
 

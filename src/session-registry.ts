@@ -3,6 +3,7 @@
  * Extracted from claude-handler.ts (Phase 5.1)
  */
 
+import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
@@ -12,12 +13,22 @@ import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { normalizeTmpPath } from './path-utils';
 import { getArchiveStore } from './session-archive';
+import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from './session-identity';
+import { getSessionLifecyclePolicy, isSessionLifecyclePolicyDegraded } from './session-lifecycle-policy';
 import { DEFAULT_AUTO_HANDOFF_BUDGET } from './slack/handoff-budget';
+import {
+  creditActiveGoalMs,
+  migrateLegacyGoal,
+  migrateLegacyGoalArray,
+  stampActiveLegGoalOwner,
+} from './slack/session-goal-lifecycle';
 import type {
   ActionPanelState,
   ActivityState,
   ConversationSession,
   HandoffContext,
+  SessionGoal,
+  SessionIncidentRequest,
   SessionInstruction,
   SessionLink,
   SessionLinkHistory,
@@ -30,72 +41,18 @@ import type {
   SessionState,
   WorkflowType,
 } from './types';
-import { DEFAULT_GOAL_MAX_CONTINUATIONS, type SessionGoal } from './types';
-
-/**
- * Backfill ralph-loop fields onto a legacy `SessionGoal` loaded from
- * disk. Pre-#959-followup goals lack `continuationCount` /
- * `maxContinuations`, and the loop guards would treat `undefined < N`
- * as `false`, silently disabling continuation. We default to a
- * not-yet-fired loop with the standard cap.
- *
- * The dead `'blocked'` status arm was removed (N11) — it was never
- * assigned in production, but a defensively-persisted `'blocked'` is
- * coerced to `'paused'` on load so a legacy record can't carry an
- * out-of-union status.
- *
- * Also clears `pendingEval` unconditionally on load: it is a
- * process-local lease on an in-flight completion eval (fire-and-forget,
- * in-memory only). No eval can survive a process restart, so a
- * persisted `pendingEval` would permanently suppress the turn-end loop
- * (every turn end short-circuits on `if (goal.pendingEval) return`).
- * Dropping it on load lets the loop resume on the next turn.
- */
-function migrateLegacyGoal(goal: SessionGoal | undefined): SessionGoal | undefined {
-  if (!goal) return goal;
-  // Stale lease cleanup — see doc comment. Rebind so both the fast path
-  // and the backfill path below return a goal without `pendingEval`.
-  if (goal.pendingEval !== undefined) {
-    goal = { ...goal, pendingEval: undefined };
-  }
-  // Coerce the retired `'blocked'` status arm (N11) to `'paused'`.
-  if ((goal.status as string) === 'blocked') {
-    goal = { ...goal, status: 'paused' };
-  }
-  // Fast path — goal already has all post-followup fields.
-  if (
-    typeof goal.continuationCount === 'number' &&
-    typeof goal.maxContinuations === 'number' &&
-    goal.maxContinuations > 0 &&
-    typeof goal.evalAttemptCount === 'number'
-  ) {
-    return goal;
-  }
-  return {
-    ...goal,
-    continuationCount: typeof goal.continuationCount === 'number' ? goal.continuationCount : 0,
-    maxContinuations:
-      typeof goal.maxContinuations === 'number' && goal.maxContinuations > 0
-        ? goal.maxContinuations
-        : DEFAULT_GOAL_MAX_CONTINUATIONS,
-    evalAttemptCount: typeof goal.evalAttemptCount === 'number' ? goal.evalAttemptCount : 0,
-  };
-}
-
 import { coerceToAvailableModel, type EffortLevel, userSettingsStore } from './user-settings-store';
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
-
-// Default session timeout: 24 hours (Active → Sleep)
-const DEFAULT_SESSION_TIMEOUT = 24 * 60 * 60 * 1000;
 
 // Dashboard improvements (v2.1): max duration of a single active-leg before we
 // assume the process missed an endTurn (crash / OS sleep) and cap the accumulator.
 // 30min default. idle은 대부분 이내 재개, OS sleep/crash는 이보다 길다고 가정.
 export const MAX_LEG_MS = Number(process.env.MAX_LEG_MS) || 30 * 60 * 1000;
 
-// Maximum sleep duration: 7 days (Sleep → Delete)
-const MAX_SLEEP_DURATION = 7 * 24 * 60 * 60 * 1000;
+// Active → Sleep (idle) and Sleep → archive durations come from the admin-set
+// lifecycle policy (session-lifecycle-policy.ts; defaults 24h / 7d), read at use
+// time so a dashboard change applies on the next sweep.
 
 // Session expiry warning intervals in milliseconds (from session expiry time)
 // Sorted descending: most urgent first
@@ -120,6 +77,16 @@ const ACTIVE_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinks> = 
  * Serialized session for file persistence
  */
 interface SerializedSession {
+  /**
+   * Incident ownership survives restarts: dropping it would silently promote a
+   * restricted session back to an ordinary one.
+   */
+  incidentRequest?: SessionIncidentRequest;
+  /**
+   * Host-written completion marker for the owning attempt — the only evidence
+   * that admits a retry, so it must survive a restart with the request.
+   */
+  incidentAttemptFinishedId?: string;
   key: string;
   ownerId: string;
   ownerName?: string;
@@ -132,6 +99,12 @@ interface SerializedSession {
   workingDirectory?: string;
   title?: string;
   model?: string;
+  // Auto fallback compact (prompt-too-long emergency recovery): persisted so a
+  // restart that lands between "switched to the 1M compact model" and "compact
+  // boundary restored the original model" can restore the original model on
+  // load instead of stranding the session on the 1M compact model.
+  fallbackCompactActive?: boolean;
+  fallbackCompactOriginalModel?: string | null;
   // Session state machine fields
   state?: SessionState;
   workflow?: WorkflowType;
@@ -151,6 +124,12 @@ interface SerializedSession {
   wasWorkingAtShutdown?: boolean;
   // Log verbosity bitmask
   logVerbosity?: number;
+  /**
+   * Encoding version of `logVerbosity` (LOG_VERBOSITY_MASK_VERSION), written
+   * with every stored mask. Absent = saved before the NARRATION flag, the
+   * only case loadSessions upgrades.
+   */
+  logVerbosityVersion?: number;
   // Effort level for Claude thinking
   effort?: EffortLevel;
   // Extended thinking (adaptive reasoning) toggle
@@ -187,6 +166,9 @@ interface SerializedSession {
   instructions?: SessionInstruction[];
   // Host-managed session goal (persisted)
   goal?: SessionGoal;
+  // Multi-goal queue + completed history (persisted — T1/T2).
+  goalQueue?: SessionGoal[];
+  goalHistory?: SessionGoal[];
   /**
    * Cached summary of completed instructions. Persisted so that
    * restart after a long session doesn't force a fresh summary re-build
@@ -197,6 +179,7 @@ interface SerializedSession {
   // Dashboard v2.1 — thread-aggregate snapshot fields (live aggregate derived from memory).
   compactionCount?: number;
   activeLegStartedAtMs?: number;
+  activeLegGoalId?: string;
   activeAccumulatedMs?: number;
   summaryTitle?: string;
   summaryTitleTurnId?: string;
@@ -213,6 +196,13 @@ interface SerializedSession {
    * from pre-#697 disk state is handled defensively by `checkAndConsumeBudget`.
    */
   autoHandoffBudget?: number;
+  /**
+   * Session-scoped `/autocompact` token override. Persisted VERBATIM: the
+   * safe-max clamp is a read-time decision of `resolveEffectiveAutoCompact`,
+   * so a threshold that is temporarily too large for the current model still
+   * round-trips unchanged.
+   */
+  autoCompactTokens?: number | null;
 }
 
 /**
@@ -226,6 +216,55 @@ export interface SessionExpiryCallbacks {
   ) => Promise<string | undefined>;
   onSleep: (session: ConversationSession) => Promise<void>;
   onExpiry: (session: ConversationSession) => Promise<void>;
+}
+
+/**
+ * Why a session is about to be deleted from the registry.
+ * `terminated` = explicit `terminateSession()`; `sleep-expired` = the sleeping
+ * session outlived the policy archiveAfterMs during `cleanupInactiveSessions()`.
+ */
+export type SessionDeletionReason = 'terminated' | 'sleep-expired';
+
+/**
+ * Observer invoked immediately BEFORE a session is destroyed (archive +
+ * source-dir cleanup + Map delete), while the session object is still
+ * reachable and still registered.
+ *
+ * Contract:
+ * - Synchronous. The host does its durable work here (e.g. persisting the
+ *   cancellation of that session's queued follow-ups); anything it wants to
+ *   render afterwards it must detach itself.
+ * - Throwing is fail-closed: the registry keeps the session instead of
+ *   deleting it, so host state keyed by this session is never orphaned.
+ */
+export type BeforeSessionDeleteCallback = (
+  sessionKey: string,
+  session: ConversationSession,
+  reason: SessionDeletionReason,
+) => void;
+
+/**
+ * Thrown by `terminateSession` when the deletion observer refused (threw): the
+ * session is still live and registered.
+ *
+ * Refusal is a throw rather than a `false` return because callers routinely
+ * ignore the boolean (e.g. `slack/actions/channel-route-action-handler.ts`
+ * terminates and then routes on regardless), which would leave a live session
+ * behind a UI that claims it was closed. `false` keeps its one existing
+ * meaning: no session by that key.
+ */
+export class SessionDeleteRefusedError extends Error {
+  public readonly sessionKey: string;
+  public readonly reason: SessionDeletionReason;
+  public readonly cause: unknown;
+
+  constructor(sessionKey: string, reason: SessionDeletionReason, cause: unknown) {
+    super(`Session deletion refused by beforeSessionDelete observer (${reason}): ${sessionKey}`);
+    this.name = 'SessionDeleteRefusedError';
+    this.sessionKey = sessionKey;
+    this.reason = reason;
+    this.cause = cause;
+  }
 }
 
 /**
@@ -261,6 +300,7 @@ export class SessionRegistry {
   private sessions: Map<string, ConversationSession> = new Map();
   private logger = new Logger('SessionRegistry');
   private expiryCallbacks?: SessionExpiryCallbacks;
+  private beforeSessionDelete?: BeforeSessionDeleteCallback;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
 
   /**
@@ -290,6 +330,30 @@ export class SessionRegistry {
   }
 
   /**
+   * Fire-and-forget hook invoked when a session goes to sleep or expires, used
+   * to consolidate that owner's hierarchical memory ("dreaming"). Keyed by
+   * ownerId so a per-user LLM pass runs at most at the 24h sleep cadence, not
+   * per turn. Must never throw.
+   */
+  private onSessionConsolidateHook?: (ownerId: string) => void;
+
+  setOnSessionConsolidateHook(hook: ((ownerId: string) => void) | undefined): void {
+    this.onSessionConsolidateHook = hook;
+  }
+
+  private fireSessionConsolidate(ownerId: string | undefined): void {
+    if (!ownerId || !this.onSessionConsolidateHook) return;
+    try {
+      this.onSessionConsolidateHook(ownerId);
+    } catch (error) {
+      this.logger.warn('onSessionConsolidateHook failed', {
+        ownerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
    * Callback fired whenever any session's activity state changes.
    * Used by the dashboard WebSocket to push real-time updates.
    */
@@ -300,6 +364,41 @@ export class SessionRegistry {
    */
   setExpiryCallbacks(callbacks: SessionExpiryCallbacks): void {
     this.expiryCallbacks = callbacks;
+  }
+
+  /**
+   * Register the deletion-lifecycle observer. Deliberately a slot of its own:
+   * `setExpiryCallbacks` is a single slot already owned by the EventRouter, and
+   * this seam fires on the `terminateSession` path too, which has no expiry
+   * callback at all.
+   */
+  setBeforeSessionDelete(callback: BeforeSessionDeleteCallback): void {
+    this.beforeSessionDelete = callback;
+  }
+
+  /**
+   * Run the deletion observer. Throws `SessionDeleteRefusedError` when the
+   * observer refused (threw), in which case the caller MUST leave the session
+   * untouched — the host's durable state for this session could not be settled,
+   * and deleting anyway would orphan it. The session stays deletable by the
+   * next attempt/sweep.
+   */
+  private fireBeforeSessionDelete(
+    sessionKey: string,
+    session: ConversationSession,
+    reason: SessionDeletionReason,
+  ): void {
+    if (!this.beforeSessionDelete) return;
+    try {
+      this.beforeSessionDelete(sessionKey, session, reason);
+    } catch (error) {
+      this.logger.error('beforeSessionDelete hook refused deletion — session retained (fail-closed)', {
+        sessionKey,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new SessionDeleteRefusedError(sessionKey, reason, error);
+    }
   }
 
   /**
@@ -350,17 +449,12 @@ export class SessionRegistry {
   }
 
   /**
-   * Get session key - based on channel and thread only (shared session)
+   * Get session key - based on channel and thread only (shared session).
+   * Canonical format is the shared soma-lib identity model
+   * (`work:<channel>:<thread>`) — see src/session-identity.ts.
    */
   getSessionKey(channelId: string, threadTs?: string): string {
-    return `${channelId}-${threadTs || 'direct'}`;
-  }
-
-  /**
-   * Legacy method for backward compatibility - ignores userId
-   */
-  getSessionKeyWithUser(userId: string, channelId: string, threadTs?: string): string {
-    return this.getSessionKey(channelId, threadTs);
+    return buildWorkSessionKey(channelId, threadTs);
   }
 
   /**
@@ -371,17 +465,12 @@ export class SessionRegistry {
   }
 
   /**
-   * Legacy method for backward compatibility
-   */
-  getSessionWithUser(userId: string, channelId: string, threadTs?: string): ConversationSession | undefined {
-    return this.getSession(channelId, threadTs);
-  }
-
-  /**
-   * Get a session by its key directly
+   * Get a session by its key directly. Accepts legacy `<channel>-<thread>`
+   * keys (e.g. from Slack action payloads posted before the Step 4d key
+   * format switch) via normalization.
    */
   getSessionByKey(sessionKey: string): ConversationSession | undefined {
-    return this.sessions.get(sessionKey);
+    return this.sessions.get(normalizeSessionKey(sessionKey));
   }
 
   /**
@@ -432,17 +521,24 @@ export class SessionRegistry {
    */
   beginTurn(session: ConversationSession, now: number = Date.now()): void {
     // Fold any stale leg first (MAX_LEG_MS cap covers crash / missed endTurn).
+    // Credit the PREVIOUS leg to its recorded owner (`activeLegGoalId` still
+    // holds the prior leg's owner here) BEFORE re-stamping the owner below.
     if (session.activeLegStartedAtMs) {
       const elapsed = Math.min(now - session.activeLegStartedAtMs, MAX_LEG_MS);
       session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
+      creditActiveGoalMs(session, Math.max(0, elapsed));
     }
     session.activeLegStartedAtMs = now;
+    // Capture the goal (id + intent epoch) that owns THIS leg — see
+    // `stampActiveLegGoalOwner` for why the owner is pinned per leg.
+    stampActiveLegGoalOwner(session);
   }
 
   endTurn(session: ConversationSession, now: number = Date.now()): void {
     if (session.activeLegStartedAtMs) {
       const elapsed = Math.min(now - session.activeLegStartedAtMs, MAX_LEG_MS);
       session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
+      creditActiveGoalMs(session, Math.max(0, elapsed));
     }
     session.activeLegStartedAtMs = undefined;
   }
@@ -456,12 +552,14 @@ export class SessionRegistry {
     threadTs: string | undefined,
     now: number = Date.now(),
   ): { totalActiveMs: number; sessionCount: number; compactionCount: number } {
-    const threadKey = `${channelId}-${threadTs || 'direct'}`;
+    // Match on session FIELDS, not a constructed key — the shared identity
+    // builder throws on separator characters, and aggregation must stay
+    // total even over hostile/corrupt in-memory data.
     let totalActiveMs = 0;
     let sessionCount = 0;
     let compactionCount = 0;
-    for (const [key, s] of this.sessions.entries()) {
-      if (key !== threadKey) continue;
+    for (const s of this.sessions.values()) {
+      if (s.channelId !== channelId || (s.threadTs || undefined) !== (threadTs || undefined)) continue;
       sessionCount += 1;
       compactionCount += s.compactionCount || 0;
       let acc = s.activeAccumulatedMs || 0;
@@ -570,22 +668,6 @@ export class SessionRegistry {
   }
 
   /**
-   * Get session state
-   */
-  getSessionState(channelId: string, threadTs?: string): SessionState | undefined {
-    const session = this.getSession(channelId, threadTs);
-    return session?.state;
-  }
-
-  /**
-   * Get session workflow
-   */
-  getSessionWorkflow(channelId: string, threadTs?: string): WorkflowType | undefined {
-    const session = this.getSession(channelId, threadTs);
-    return session?.workflow;
-  }
-
-  /**
    * Check if session needs dispatch (is in INITIALIZING state)
    */
   needsDispatch(channelId: string, threadTs?: string): boolean {
@@ -599,36 +681,6 @@ export class SessionRegistry {
   isSleeping(channelId: string, threadTs?: string): boolean {
     const session = this.getSession(channelId, threadTs);
     return session?.state === 'SLEEPING';
-  }
-
-  /**
-   * Transition session to SLEEPING state
-   * Called when session has been inactive for 24 hours
-   */
-  transitionToSleep(channelId: string, threadTs?: string): boolean {
-    const session = this.getSession(channelId, threadTs);
-    if (!session || session.state === 'SLEEPING') return false;
-
-    session.state = 'SLEEPING';
-    session.sleepStartedAt = new Date();
-    // Clear warning state
-    session.warningMessageTs = undefined;
-    session.lastWarningSentAt = undefined;
-
-    this.logger.info('Session transitioned to SLEEPING', {
-      channelId,
-      threadTs,
-      sessionId: session.sessionId,
-      owner: session.ownerName,
-    });
-    this.saveSessions();
-
-    // Metrics: emit session_slept event (fire-and-forget)
-    getMetricsEmitter()
-      .emitSessionSlept(session)
-      .catch((err) => this.logger.debug('metrics emit failed', err));
-
-    return true;
   }
 
   /**
@@ -699,6 +751,7 @@ export class SessionRegistry {
    * Set activity state by session key
    */
   setActivityStateByKey(sessionKey: string, state: ActivityState): void {
+    sessionKey = normalizeSessionKey(sessionKey);
     const session = this.getSessionByKey(sessionKey);
     if (!session) return;
     if (session.activityState === state) return;
@@ -739,14 +792,6 @@ export class SessionRegistry {
   }
 
   /**
-   * Get activity state for a session
-   */
-  getActivityState(channelId: string, threadTs?: string): ActivityState | undefined {
-    const session = this.getSession(channelId, threadTs);
-    return session?.activityState;
-  }
-
-  /**
    * Get activity state by session key
    */
   getActivityStateByKey(sessionKey: string): ActivityState | undefined {
@@ -759,6 +804,7 @@ export class SessionRegistry {
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3c
    */
   registerOnIdle(sessionKey: string, callback: () => void): void {
+    sessionKey = normalizeSessionKey(sessionKey);
     const existing = this.onIdleCallbacks.get(sessionKey) || [];
     existing.push(callback);
     this.onIdleCallbacks.set(sessionKey, existing);
@@ -791,7 +837,7 @@ export class SessionRegistry {
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 5
    */
   clearOnIdleCallbacks(sessionKey: string): void {
-    this.onIdleCallbacks.delete(sessionKey);
+    this.onIdleCallbacks.delete(normalizeSessionKey(sessionKey));
   }
 
   /**
@@ -897,14 +943,6 @@ export class SessionRegistry {
   }
 
   /**
-   * Refresh session activity timestamp and clear warning state.
-   * Used when user clicks "Keep" on idle check prompt.
-   */
-  refreshSessionActivity(channelId: string, threadTs: string | undefined): boolean {
-    return this.refreshSessionActivityByKey(this.getSessionKey(channelId, threadTs));
-  }
-
-  /**
    * Refresh session activity by session key.
    */
   refreshSessionActivityByKey(sessionKey: string): boolean {
@@ -915,17 +953,6 @@ export class SessionRegistry {
     session.warningMessageTs = undefined;
     this.saveSessions();
     return true;
-  }
-
-  /**
-   * Get session links
-   */
-  getSessionLinks(channelId: string, threadTs?: string): SessionLinks | undefined {
-    const session = this.getSession(channelId, threadTs);
-    if (session) {
-      this.ensureSessionLinkState(session);
-    }
-    return session?.links;
   }
 
   /**
@@ -1137,7 +1164,7 @@ export class SessionRegistry {
         //       (single source of truth via stdout parsing). Only issue_created is emitted here.
         if (existingIndex < 0 && operation.resourceType === 'issue') {
           const emitter = getMetricsEmitter();
-          const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
+          const sessionKey = this.getSessionKey(session.channelId, session.threadTs);
           emitter
             .emitGitHubEvent('issue_created', session.ownerId, session.ownerName || 'unknown', sessionKey, {
               url: normalized.url,
@@ -1223,41 +1250,22 @@ export class SessionRegistry {
   //
   // When a user clicks "Approve & disable rule for this session" in the Slack
   // permission prompt, the rule id(s) are added to `session.disabledDangerousRules`
-  // so subsequent bypass-mode bash commands matching only those rules no longer
+  // so subsequent auto-mode Bash commands matching only those rules no longer
   // escalate. In-memory only — a process restart clears the set intentionally.
-  // See `src/dangerous-command-filter.ts` for the rule catalog.
+  // The rule catalog is soma-lib's `DANGEROUS_RULES`, re-exported by
+  // `somalib/permission/dangerous-rules.ts`.
   // ---------------------------------------------------------------------------
 
   /**
-   * Mark a dangerous rule as disabled for the given session key.
-   * Creates the backing Set on first use. No-op if the session is unknown —
-   * the caller is expected to have already checked; we log at debug instead
-   * of throwing because racing with session cleanup is expected.
-   */
-  disableDangerousRule(sessionKey: string, ruleId: string): void {
-    const session = this.sessions.get(sessionKey);
-    if (!session) {
-      this.logger.debug('disableDangerousRule: session not found', { sessionKey, ruleId });
-      return;
-    }
-    if (!session.disabledDangerousRules) {
-      session.disabledDangerousRules = new Set<string>();
-    }
-    session.disabledDangerousRules.add(ruleId);
-    this.logger.info('Dangerous rule disabled for session', {
-      sessionKey,
-      ruleId,
-      activeDisabled: Array.from(session.disabledDangerousRules),
-    });
-  }
-
-  /**
-   * Batch variant — disable multiple rule ids atomically with a single session
-   * lookup and a single summary log line.
+   * Mark dangerous rules as disabled for the given session key, atomically
+   * with a single session lookup and a single summary log line. Creates the
+   * backing Set on first use. No-op if the session is unknown — the caller is
+   * expected to have already checked; we log at debug instead of throwing
+   * because racing with session cleanup is expected.
    */
   disableDangerousRules(sessionKey: string, ruleIds: ReadonlyArray<string>): void {
     if (ruleIds.length === 0) return;
-    const session = this.sessions.get(sessionKey);
+    const session = this.sessions.get(normalizeSessionKey(sessionKey));
     if (!session) {
       this.logger.debug('disableDangerousRules: session not found', { sessionKey, ruleIds });
       return;
@@ -1281,7 +1289,7 @@ export class SessionRegistry {
    * (still escalates).
    */
   isDangerousRuleDisabled(sessionKey: string, ruleId: string): boolean {
-    const session = this.sessions.get(sessionKey);
+    const session = this.sessions.get(normalizeSessionKey(sessionKey));
     return session?.disabledDangerousRules?.has(ruleId) ?? false;
   }
 
@@ -1290,18 +1298,8 @@ export class SessionRegistry {
    * array if the session is unknown or no rules have been disabled.
    */
   listDisabledDangerousRules(sessionKey: string): string[] {
-    const session = this.sessions.get(sessionKey);
+    const session = this.sessions.get(normalizeSessionKey(sessionKey));
     return session?.disabledDangerousRules ? Array.from(session.disabledDangerousRules) : [];
-  }
-
-  /**
-   * Update session with session ID from Claude SDK
-   */
-  updateSessionId(channelId: string, threadTs: string | undefined, sessionId: string): void {
-    const session = this.getSession(channelId, threadTs);
-    if (session) {
-      session.sessionId = sessionId;
-    }
   }
 
   /**
@@ -1379,6 +1377,11 @@ export class SessionRegistry {
     // Reset state to INITIALIZING to trigger re-dispatch on next message
     session.state = 'INITIALIZING';
     session.workflow = undefined;
+
+    // NOTE: `session.incidentRequest` is deliberately NOT cleared here. A
+    // reset makes a fresh logical conversation, not a fresh privilege level —
+    // if `/new` dropped the marker, the cheapest way to turn a restricted
+    // incident session into an unrestricted coding session would be to reset it.
 
     // Clear stale handoff metadata. The AD-12 filter (#695) persists sessions
     // that still have handoffContext; leaving it here after a reset would keep
@@ -1588,10 +1591,18 @@ export class SessionRegistry {
    * Terminate a session by its key
    */
   terminateSession(sessionKey: string): boolean {
+    sessionKey = normalizeSessionKey(sessionKey);
     const session = this.sessions.get(sessionKey);
     if (!session) {
       return false;
     }
+
+    // Deletion-lifecycle seam: the host settles its per-session durable state
+    // before ANY destructive step (incl. the terminated flag). Fail-closed — a
+    // refusal throws `SessionDeleteRefusedError` and leaves the session exactly
+    // as it was. It is NOT reported as `false`: callers treat false as "already
+    // gone" and route on, which would strand a still-live session.
+    this.fireBeforeSessionDelete(sessionKey, session, 'terminated');
 
     // Ghost Session Fix #99: set terminated flag BEFORE deleting from Map.
     // In-flight code holding a reference to this session object will see the flag
@@ -1617,6 +1628,7 @@ export class SessionRegistry {
 
   /** Mark a session as trashed (hidden from dashboard but kept in conversation list) */
   trashSession(sessionKey: string): boolean {
+    sessionKey = normalizeSessionKey(sessionKey);
     const session = this.sessions.get(sessionKey);
     if (!session) return false;
     session.trashed = true;
@@ -1627,19 +1639,45 @@ export class SessionRegistry {
 
   /**
    * Clean up inactive sessions based on max age
-   * 3-stage lifecycle: Active → Sleep (24h) → Delete (7d sleep)
+   * 3-stage lifecycle: Active → Sleep (policy sleepAfterMs, 24h default) →
+   * Delete (policy archiveAfterMs asleep, 7d default). `maxAge` overrides the
+   * idle limit (tests, explicit callers).
    */
-  async cleanupInactiveSessions(maxAge: number = DEFAULT_SESSION_TIMEOUT): Promise<void> {
+  async cleanupInactiveSessions(maxAge?: number): Promise<void> {
+    if (isSessionLifecyclePolicyDegraded()) {
+      // The saved policy is unreadable; its defaults may be far shorter than what
+      // an admin chose. Sleeping or ending sessions on them could not be undone.
+      this.logger.warn('Session lifecycle policy unreadable — sleep/archive sweep skipped until an admin saves one');
+      return;
+    }
     const now = Date.now();
+    const policy = getSessionLifecyclePolicy();
+    const sleepAfterMs = maxAge ?? policy.sleepAfterMs;
+    const archiveAfterMs = policy.archiveAfterMs;
     let cleaned = 0;
     let slept = 0;
 
     for (const [key, session] of this.sessions.entries()) {
-      // Stage 1: SLEEPING sessions - check if sleep duration exceeded (7 days)
+      // Stage 1: SLEEPING sessions - check if sleep duration exceeded (policy archiveAfterMs)
       if (session.state === 'SLEEPING') {
-        const sleepAge = session.sleepStartedAt ? now - session.sleepStartedAt.getTime() : MAX_SLEEP_DURATION + 1; // Force expire if no sleepStartedAt
+        const sleepAge = session.sleepStartedAt ? now - session.sleepStartedAt.getTime() : archiveAfterMs + 1; // Force expire if no sleepStartedAt
 
-        if (sleepAge >= MAX_SLEEP_DURATION) {
+        if (sleepAge >= archiveAfterMs) {
+          // Same seam as terminateSession, before notification and deletion.
+          // A refusal is per-session here: the sweep keeps that session and
+          // moves on, so one host failure cannot stall everyone else's expiry.
+          try {
+            this.fireBeforeSessionDelete(key, session, 'sleep-expired');
+          } catch (error) {
+            this.logger.warn('Sleep-expiry deletion refused — session kept for the next sweep', {
+              sessionKey: key,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            continue;
+          }
+          // As in terminateSession: in-flight callbacks holding this object
+          // fence on the flag, and onExpiry below awaits before the delete.
+          session.terminated = true;
           if (this.expiryCallbacks) {
             try {
               await this.expiryCallbacks.onExpiry(session);
@@ -1659,32 +1697,51 @@ export class SessionRegistry {
         continue;
       }
 
-      // Stage 2: Active sessions - check if inactive for 24h → transition to Sleep
+      // A turn in progress is not idle: lastActivity only moves on user input, so
+      // a long autonomous turn would otherwise be put to sleep (and its work dirs
+      // removed) mid-run once a short policy is set.
+      if (session.activityState === 'working') continue;
+
+      // Stage 2: Active sessions - check if idle past the policy limit → transition to Sleep
       const sessionAge = now - session.lastActivity.getTime();
-      const timeUntilExpiry = maxAge - sessionAge;
+      const timeUntilExpiry = sleepAfterMs - sessionAge;
 
       if (timeUntilExpiry <= 0) {
         // Transition to sleep instead of deleting
         session.state = 'SLEEPING';
         session.sleepStartedAt = new Date();
-        session.warningMessageTs = undefined;
-        session.lastWarningSentAt = undefined;
         this.cleanupSourceWorkingDirs(session);
         slept++;
 
+        // Metrics: this sweep is the only live sleep path (fire-and-forget).
+        getMetricsEmitter()
+          .emitSessionSlept(session)
+          .catch((err) => this.logger.debug('metrics emit failed', err));
+
         if (this.expiryCallbacks) {
           try {
+            // `warningMessageTs` is still set here on purpose. onSleep edits that
+            // existing "만료 예정" warning into the sleep notice instead of posting
+            // a second message; clearing the field first made that branch
+            // unreachable and left the stale warning sitting above the new one.
             await this.expiryCallbacks.onSleep(session);
           } catch (error) {
             this.logger.error('Failed to send session sleep message', error);
           }
         }
+        // Cleared only after onSleep has had its chance to use it — a ts from this
+        // cycle must not be carried into the next warning cycle.
+        session.warningMessageTs = undefined;
+        session.lastWarningSentAt = undefined;
+        // Auto-update memory on session end: consolidate this owner's episodic
+        // observations into durable L1 memory ("dreaming"). Fire-and-forget.
+        this.fireSessionConsolidate(session.ownerId);
         continue;
       }
 
       // Stage 3: Active sessions with time remaining - check for warnings
       if (this.expiryCallbacks) {
-        await this.checkAndSendWarning(key, session, timeUntilExpiry);
+        await this.checkAndSendWarning(key, session, timeUntilExpiry, sleepAfterMs);
       }
     }
 
@@ -1704,8 +1761,12 @@ export class SessionRegistry {
     sessionKey: string,
     session: ConversationSession,
     timeUntilExpiry: number,
+    sleepAfterMs: number,
   ): Promise<void> {
     for (const warningInterval of WARNING_INTERVALS) {
+      // A warning not shorter than the idle limit itself would fire on the first
+      // sweep after any activity (e.g. the 12h check under a 2h policy) — skip it.
+      if (warningInterval >= sleepAfterMs) continue;
       if (timeUntilExpiry <= warningInterval) {
         const lastWarningSent = session.lastWarningSentAt || Infinity;
 
@@ -1762,17 +1823,38 @@ export class SessionRegistry {
       }
 
       const sessionsArray: SerializedSession[] = [];
-      for (const [key, session] of this.sessions.entries()) {
+      for (const session of this.sessions.values()) {
         // Save sessions that have conversation history (sessionId) OR a pending
         // handoff context (AD-12, issue #695). The handoffContext branch covers
         // the narrow window between `resetSessionContext()` (which clears
         // sessionId) and the first model turn after a forced handoff entrypoint,
         // where the typed metadata must survive a crash/restart so downstream
         // guards (#696/#697/#698) can consume it.
-        if (session.sessionId || session.handoffContext || session.goal) {
+        // The `autoCompactTokens` branch is the same shape of exception as
+        // `goal`: the user set it EXPLICITLY, possibly before the first SDK
+        // turn produced a sessionId, so dropping it here would silently
+        // discard a direct instruction.
+        if (
+          session.sessionId ||
+          session.handoffContext ||
+          session.goal ||
+          session.goalQueue?.length ||
+          session.goalHistory?.length ||
+          // An incident session is persisted from the moment it is marked,
+          // even before the SDK assigns a sessionId — otherwise a crash in
+          // that window would bring the thread back unrestricted.
+          session.incidentRequest ||
+          session.autoCompactTokens != null
+        ) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
-            key,
+            // Rollback compatibility: persist the LEGACY key form. The
+            // running (post-4d) loader ignores this field and re-derives the
+            // canonical key from channelId/threadTs; a pre-4d binary loads it
+            // verbatim and derives legacy keys for lookup — so this exact
+            // form is what keeps sessions.json loadable after an emergency
+            // rollback. See buildLegacySessionKey.
+            key: buildLegacySessionKey(session.channelId, session.threadTs),
             ownerId: session.ownerId,
             ownerName: session.ownerName,
             userId: session.userId, // Legacy field
@@ -1784,6 +1866,10 @@ export class SessionRegistry {
             workingDirectory: session.workingDirectory,
             title: session.title,
             model: session.model,
+            // Auto fallback compact: persist the in-flight fallback marker so
+            // loadSessions can restore the original model after a restart.
+            fallbackCompactActive: session.fallbackCompactActive,
+            fallbackCompactOriginalModel: session.fallbackCompactOriginalModel,
             state: session.state,
             workflow: session.workflow,
             links: session.links,
@@ -1803,6 +1889,7 @@ export class SessionRegistry {
             shutdownNotifiedAt: session.shutdownNotifiedAt,
             wasWorkingAtShutdown: session.wasWorkingAtShutdown,
             logVerbosity: session.logVerbosity,
+            logVerbosityVersion: session.logVerbosity === undefined ? undefined : LOG_VERBOSITY_MASK_VERSION,
             effort: session.effort,
             thinkingEnabled: session.thinkingEnabled,
             showThinking: session.showThinking,
@@ -1823,6 +1910,10 @@ export class SessionRegistry {
             instructions: session.instructions,
             // Host-managed session goal (persisted)
             goal: session.goal,
+            // Multi-goal queue + completed history (persisted so the queue
+            // survives a restart — T1/T2).
+            goalQueue: session.goalQueue,
+            goalHistory: session.goalHistory,
             // Cached completed-summary (persisted so the next turn after restart
             // doesn't pay a cold summary rebuild). Safe to omit — the block
             // builder falls back to a placeholder and the async regen kicks in.
@@ -1830,6 +1921,7 @@ export class SessionRegistry {
             // Dashboard v2.1 — derive-first aggregate snapshot (persisted per session)
             compactionCount: session.compactionCount,
             activeLegStartedAtMs: session.activeLegStartedAtMs,
+            activeLegGoalId: session.activeLegGoalId,
             activeAccumulatedMs: session.activeAccumulatedMs,
             summaryTitle: session.summaryTitle,
             summaryTitleTurnId: session.summaryTitleTurnId,
@@ -1838,6 +1930,12 @@ export class SessionRegistry {
             handoffContext: session.handoffContext,
             // Host-enforced auto-handoff budget (issue #697)
             autoHandoffBudget: session.autoHandoffBudget,
+            // Verified Eagle incident request that owns this session, plus the
+            // host completion marker that decides whether a retry is admissible
+            incidentRequest: session.incidentRequest,
+            incidentAttemptFinishedId: session.incidentAttemptFinishedId,
+            // Session-scoped `/autocompact` token override (persisted verbatim).
+            autoCompactTokens: session.autoCompactTokens,
           });
         }
       }
@@ -1885,6 +1983,8 @@ export class SessionRegistry {
         mergeStats: serialized.mergeStats,
         instructions: serialized.instructions,
         goal: migrateLegacyGoal(serialized.goal),
+        goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
+        goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
         activityState: serialized.activityState || 'idle',
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
@@ -1910,30 +2010,41 @@ export class SessionRegistry {
 
       let loaded = 0;
       const now = Date.now();
-      const maxAge = DEFAULT_SESSION_TIMEOUT;
+      const { sleepAfterMs: maxAge, archiveAfterMs } = getSessionLifecyclePolicy();
+      // Unreadable saved policy: load every session as it was (see cleanupInactiveSessions).
+      const applyLifecycle = !isSessionLifecyclePolicyDegraded();
+      let sleptOnLoadCount = 0;
       this._crashRecoveredSessions = [];
 
       for (const serialized of sessionsArray) {
         const lastActivity = new Date(serialized.lastActivity);
-        const sleepStartedAt = serialized.sleepStartedAt ? new Date(serialized.sleepStartedAt) : undefined;
+        let sleepStartedAt = serialized.sleepStartedAt ? new Date(serialized.sleepStartedAt) : undefined;
+        // Set when an active session went idle past the policy limit while the
+        // process was down: it loads asleep, as the sweep would leave it.
+        let sleptOnLoad = false;
 
-        // For SLEEPING sessions: check against MAX_SLEEP_DURATION
-        if (serialized.state === 'SLEEPING') {
-          const sleepAge = sleepStartedAt ? now - sleepStartedAt.getTime() : MAX_SLEEP_DURATION + 1;
-          if (sleepAge >= MAX_SLEEP_DURATION) {
+        // For SLEEPING sessions: check against the policy sleep time
+        if (applyLifecycle && serialized.state === 'SLEEPING') {
+          const sleepAge = sleepStartedAt ? now - sleepStartedAt.getTime() : archiveAfterMs + 1;
+          if (sleepAge >= archiveAfterMs) {
             // Archive expired session before discarding (#401)
             this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
             serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
             continue;
           }
-        } else {
-          // For active sessions: check against 24h timeout
+        } else if (applyLifecycle) {
+          // Active session idle past the policy limit while the process was down:
+          // the same step the sweep takes when it notices — asleep from now, ended
+          // only after archiveAfter more. Never ended outright on load, so a
+          // restart cannot shorten the sleep a running process would have given.
           const sessionAge = now - lastActivity.getTime();
-          if (sessionAge >= maxAge) {
-            // Archive expired session before discarding (#401)
-            this.archiveSerializedOnLoad(serialized, lastActivity, 'terminated');
-            serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
-            continue;
+          // A session with an active goal is resumed after restart (resumeActiveGoals),
+          // which runs turns without waking a sleeper — leave it awake for that.
+          const hasActiveGoal = serialized.goal?.status === 'active';
+          if (sessionAge >= maxAge && !hasActiveGoal) {
+            sleptOnLoad = true;
+            sleptOnLoadCount++;
+            sleepStartedAt = new Date(now);
           }
         }
 
@@ -1954,21 +2065,29 @@ export class SessionRegistry {
           // to DEFAULT_MODEL. Preserves undefined when the session was saved
           // without a model (unchanged behavior from verbatim passthrough).
           model: serialized.model === undefined ? undefined : coerceToAvailableModel(serialized.model),
-          state: serialized.state || 'MAIN', // Default to MAIN for legacy sessions
+          state: sleptOnLoad ? 'SLEEPING' : serialized.state || 'MAIN', // Default to MAIN for legacy sessions
           workflow: serialized.workflow || 'default', // Default to 'default' for legacy sessions
           links: serialized.links,
           linkHistory: serialized.linkHistory,
           linkSequence: serialized.linkSequence,
           linkRefreshGeneration: serialized.linkRefreshGeneration,
           sleepStartedAt,
-          activityState: serialized.activityState || 'idle', // Preserve saved state for correct dashboard display; crash recovery handles auto-resume
+          // Preserve saved state for correct dashboard display; crash recovery handles auto-resume.
+          // A session put to sleep on load is idle by definition.
+          activityState: sleptOnLoad ? 'idle' : serialized.activityState || 'idle',
           // Restore restart-notification markers so we can still drive the
           // symmetric restart message (and the correct auto-resume decision)
           // even if a save happened after notifyShutdown but before exit.
           shutdownNotificationSent: serialized.shutdownNotificationSent,
           shutdownNotifiedAt: serialized.shutdownNotifiedAt,
           wasWorkingAtShutdown: serialized.wasWorkingAtShutdown,
-          logVerbosity: serialized.logVerbosity,
+          // A mask stored before the NARRATION flag (no version marker) maps
+          // to its current preset (spec 10 §3.2) — otherwise the thread
+          // silently loses narration. A versioned mask is used as stored.
+          logVerbosity:
+            serialized.logVerbosityVersion === undefined
+              ? upgradeLegacyVerbosityMask(serialized.logVerbosity)
+              : serialized.logVerbosity,
           // Backfill effort on legacy sessions so resume uses DEFAULT_EFFORT
           // rather than the SDK default.
           effort: serialized.effort ?? userSettingsStore.getUserDefaultEffort(resolvedOwnerId),
@@ -2013,6 +2132,16 @@ export class SessionRegistry {
               : undefined,
           // Conversation record ID
           conversationId: serialized.conversationId,
+          // Incident ownership is restored verbatim and never repaired: any
+          // present value keeps the session restricted (fail closed).
+          incidentRequest:
+            typeof serialized.incidentRequest === 'object' && serialized.incidentRequest !== null
+              ? serialized.incidentRequest
+              : undefined,
+          // Restored only as a string; anything else reads as "not finished",
+          // which denies the retry rather than admitting one on bad state.
+          incidentAttemptFinishedId:
+            typeof serialized.incidentAttemptFinishedId === 'string' ? serialized.incidentAttemptFinishedId : undefined,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
           // User SSOT instructions (restored from disk).
@@ -2028,11 +2157,15 @@ export class SessionRegistry {
           // Host-managed session goal (restored from disk).
           // Migrate legacy goals so ralph-loop guards see the new fields.
           goal: migrateLegacyGoal(serialized.goal),
+          // Multi-goal queue + completed history (restored — T1/T2).
+          goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
+          goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
           // Dashboard v2.1 — restore aggregate snapshot
           compactionCount: typeof serialized.compactionCount === 'number' ? serialized.compactionCount : 0,
           activeLegStartedAtMs: serialized.activeLegStartedAtMs,
+          activeLegGoalId: serialized.activeLegGoalId,
           activeAccumulatedMs: typeof serialized.activeAccumulatedMs === 'number' ? serialized.activeAccumulatedMs : 0,
           summaryTitle: serialized.summaryTitle,
           summaryTitleTurnId: serialized.summaryTitleTurnId,
@@ -2044,6 +2177,10 @@ export class SessionRegistry {
           // backfill is deferred to `checkAndConsumeBudget` so pre-#697 disk
           // state loads as `undefined` and is handled by the guard.
           autoHandoffBudget: serialized.autoHandoffBudget,
+          // Session-scoped `/autocompact` override — restored verbatim. Unlike
+          // the pending/compaction state below this is USER intent, not
+          // in-flight machinery, so it survives the restart.
+          autoCompactTokens: serialized.autoCompactTokens ?? null,
           // Compaction Tracking (#617): runtime-only dedupe state — always reset on reload.
           // Pending state (autoCompactPending / pendingUserText / pendingEventContext) is
           // intentionally NOT rehydrated because the original event context cannot be
@@ -2061,17 +2198,56 @@ export class SessionRegistry {
           autoCompactPending: false,
           pendingUserText: null,
           pendingEventContext: null,
+          // Deferred post-compact dispatch queue + /compact-turn marker are
+          // runtime-only (same rationale as pendingUserText above).
+          compactPendingDispatches: null,
+          compactTurnActive: false,
         };
+        // Auto fallback compact: a restart that lands mid-fallback (model
+        // switched to the 1M compact model, boundary restore not yet fired)
+        // aborts the emergency compact. Restore the original model so the
+        // session does not silently stay on the 1M compact model; the stashed
+        // pending text is dropped (same convention as pendingUserText above —
+        // the user can simply retype).
+        if (serialized.fallbackCompactActive && serialized.fallbackCompactOriginalModel) {
+          session.model = coerceToAvailableModel(serialized.fallbackCompactOriginalModel);
+          this.logger.info('Auto fallback compact: restored original model on session reload', {
+            key: serialized.key,
+            restoredModel: session.model,
+          });
+        }
         // Orphan sweep: if process crashed while a turn was active, fold the elapsed
         // leg (capped by MAX_LEG_MS) into the accumulator and clear the marker so
         // the next beginTurn starts a fresh leg.
         if (session.activeLegStartedAtMs) {
           const elapsed = Math.min(Date.now() - session.activeLegStartedAtMs, MAX_LEG_MS);
           session.activeAccumulatedMs = (session.activeAccumulatedMs || 0) + Math.max(0, elapsed);
+          creditActiveGoalMs(session, Math.max(0, elapsed));
           session.activeLegStartedAtMs = undefined;
         }
         this.ensureSessionLinkState(session);
-        this.sessions.set(serialized.key, session);
+        // Step 4d key migration: the map key is DERIVED from the persisted
+        // channel/thread fields, never trusted from `serialized.key` — a
+        // sessions.json written before the shared-identity format switch
+        // migrates automatically (and idempotently) on this load.
+        //
+        // Per-record containment: the shared identity builder throws on
+        // empty/separator-bearing segments, so one corrupt record must
+        // quarantine itself instead of aborting every record after it
+        // (the enclosing catch spans the whole loop).
+        let derivedKey: string;
+        try {
+          derivedKey = this.getSessionKey(serialized.channelId, serialized.threadTs);
+        } catch (keyError) {
+          this.logger.warn('Skipped session with underivable key on load', {
+            key: serialized.key,
+            channelId: serialized.channelId,
+            threadTs: serialized.threadTs,
+            error: (keyError as Error)?.message,
+          });
+          continue;
+        }
+        this.sessions.set(derivedKey, session);
         loaded++;
 
         // Decide whether to enqueue this session for restart/crash recovery.
@@ -2089,6 +2265,8 @@ export class SessionRegistry {
         //   (uncaughtException path saves but doesn't notify). Fall back to
         //   the persisted `activityState`: if non-idle, the session was
         //   actively processing and the user is still waiting for output.
+        // A session that went to sleep while the process was down is not resumed:
+        // it still gets the restart notice it was promised (symmetry), never an auto-resume.
         if (serialized.shutdownNotificationSent) {
           this._crashRecoveredSessions.push({
             channelId: serialized.channelId,
@@ -2096,19 +2274,19 @@ export class SessionRegistry {
             ownerId: serialized.ownerId || serialized.userId,
             ownerName: serialized.ownerName,
             activityState: serialized.activityState || 'idle',
-            sessionKey: serialized.key,
+            sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
-            shouldAutoResume: serialized.wasWorkingAtShutdown === true,
+            shouldAutoResume: !sleptOnLoad && serialized.wasWorkingAtShutdown === true,
           });
-        } else if (serialized.activityState && serialized.activityState !== 'idle') {
+        } else if (!sleptOnLoad && serialized.activityState && serialized.activityState !== 'idle') {
           this._crashRecoveredSessions.push({
             channelId: serialized.channelId,
             threadTs: serialized.threadTs,
             ownerId: serialized.ownerId || serialized.userId,
             ownerName: serialized.ownerName,
             activityState: serialized.activityState,
-            sessionKey: serialized.key,
+            sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
             shouldAutoResume: serialized.activityState === 'working',
@@ -2117,6 +2295,12 @@ export class SessionRegistry {
       }
 
       this.logger.info(`Loaded ${loaded} sessions from file (${sessionsArray.length - loaded} expired)`);
+      // Persist sessions put to sleep on load now, as the sweep does: otherwise a
+      // crash before the next save reloads them awake and restarts their clock.
+      if (sleptOnLoadCount > 0) {
+        this.logger.info(`Put ${sleptOnLoadCount} stale session(s) to sleep on load`);
+        this.saveSessions();
+      }
 
       return loaded;
     } catch (error) {

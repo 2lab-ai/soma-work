@@ -38,7 +38,7 @@ If any field is missing/unknown, say so explicitly instead of guessing.
 ### 2. Jira Account Connection
 Check `<context>` for `jira-name`:
 - If present: Skip this step (user already mapped)
-- If absent: Ask for their Jira display name using **UIAskUserQuestion** to update the mapping
+- If absent: Ask for their Jira display name using **local:UIAskUserQuestion** to update the mapping
 
 ### 3. Settings Confirmation
 Explain current settings from `<context>` first, then explain defaults:
@@ -46,7 +46,7 @@ Explain current settings from `<context>` first, then explain defaults:
 - Persona default: `default`
 - Permission bypass default: off
 
-Use **UIAskUserQuestion** to offer changes:
+Use **local:UIAskUserQuestion** to offer changes:
 - "Would you like to customize settings now?"
 - Options: "Use defaults", "Change model", "Change persona", "Skip setup"
 
@@ -99,7 +99,7 @@ Also explain context indicators:
 - `context` command shows detailed token/cost info
 
 ### 6. Practice (renew encouraged)
-Use **UIAskUserQuestion**:
+Use **local:UIAskUserQuestion**:
 - Ask if user wants hands-on practice now
 - Options: "Try renew now", "Try new now", "Skip practice"
 
@@ -118,7 +118,7 @@ If user picks **Try new now**:
 
 2. **Language Detection**: Detect language from user's first message. If Korean, respond in Korean. If English, respond in English. If ambiguous command-like input (e.g., `/onboarding`), infer from surrounding user phrasing when available; otherwise default to English.
 
-3. **UIAskUserQuestion**: ALWAYS use `UIAskUserQuestion` skill for any questions requiring user choice. Never ask questions in plain text when options are available.
+3. **UIAskUserQuestion**: ALWAYS use `local:UIAskUserQuestion` skill for any questions requiring user choice. Never ask questions in plain text when options are available.
 
 4. **Concrete Guidance**: Always include runnable example messages/commands, not abstract descriptions.
 

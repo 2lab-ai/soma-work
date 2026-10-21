@@ -72,7 +72,7 @@ const DEFAULT_TIMEOUT_MS = 20_000;
  * pinned by tests. The model is told the operation runs inside an OS sandbox
  * scoped to the user's /tmp directory, and is asked for strict JSON.
  */
-export function buildSafetyPrompt(req: SafetyClassifyRequest): string {
+function buildSafetyPrompt(req: SafetyClassifyRequest): string {
   return [
     'You are a SAFETY REVIEWER (guardian) for an autonomous coding agent.',
     'The agent runs inside an OS sandbox; filesystem writes are restricted to',

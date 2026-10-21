@@ -334,6 +334,8 @@ CLI로 아카이브된 세션 목록을 필터링/조회.
 
 #### 3a. CLI Entry → SessionArchiveStore.list()
 
+> 2026-10: superseded. `src/cli/sessions.ts` owns the archive filters; `SessionArchiveStore.list()` was deleted.
+
 ```
 parseArgs(process.argv)
   → ArchiveFilter { ownerId, model, after, before, limit }

@@ -25,29 +25,11 @@ ssot-task ID는 산출물 안에서 carry — 서브이슈 본문 첫 줄 `<!-- 
 
 ## Core
 
-유저 요청 → `decision-gate` 호출 → 반환된 tier로 케이스 결정.
-
-| tier | 케이스 | 산출물 |
-|---|---|---|
-| ≤ large (≤~100 lines) | **Case A** | 이슈 1 + PR 1 |
-| xlarge (~500 lines) | **Case B** | 에픽 1 + 서브이슈 N + PR N |
-| ≥ xxlarge (≥~1000 lines) | **Case C** | 없음 — 유저에게 쪼개기 요청 후 중지 |
-
-**작업 시작 전 반드시 케이스 판정.** 판정 없이 에픽·이슈 생성 금지.
+유저 요청 → tier(= `z` phase0의 `decision-gate` 판정 결과) → 위 매핑 표로 케이스 결정. **작업 시작 전 반드시 케이스 판정.** 판정 없이 에픽·이슈 생성 금지.
 
 ### Tier 판정 휴리스틱 (line 수 예측이 어려울 때)
 
-유저 요청 단계에서 실제 diff 라인 수를 알기 어렵다. 아래 대체 신호를 사용.
-
-| 신호 | xxlarge 가중치 |
-|---|---|
-| 수정 대상 모듈 ≥ 5 | +1 |
-| 의존 층 ≥ 3 (DB · API · UI · auth · billing 등) | +1 |
-| 외부 API 계약 또는 DB 스키마 변경 | +1 |
-| 배포 유닛 ≥ 2 (서비스·워커·CI) | +1 |
-| 신규 제품 표면 (새 인증 스택, 새 빌링 시스템 등) | +1 |
-
-**≥ 2개 충족** 시 xxlarge 판정, Case C. 1개면 xlarge 후보로 Case B + `decision-gate` 재검토.
+line 수 예측이 어려운 상황의 대체 신호는 `local:decision-gate` §"SSOT-TASK-TREE shape as a tier signal"를 단일 진실원으로 따른다 — 여기서 재정의하지 않는다.
 
 ## Case A — 단일 이슈
 
@@ -99,7 +81,7 @@ tier가 `tiny (~5 lines)` 또는 `small (~20 lines)`이면 **이슈 생성 생�
 
 **Flow**:
 1. **작업 시작 금지.** 에픽·이슈 하나도 만들지 않음.
-2. 3명 리뷰(self + `oracle-reviewer` + `oracle-gemini-reviewer`)로 가능한 분해 구조 초안. **SSOT-TASK-TREE를 분해 제안의 출발점으로 사용** — root 아래 `ssot-task` 그룹화가 곧 에픽 후보. 새로 분해를 발명하지 말고 트리 모양을 우선.
+2. 3명 리뷰(self + `oracle-reviewer` + `subagent (opus)`)로 가능한 분해 구조 초안. **SSOT-TASK-TREE를 분해 제안의 출발점으로 사용** — root 아래 `ssot-task` 그룹화가 곧 에픽 후보. 새로 분해를 발명하지 말고 트리 모양을 우선.
 3. 유저에게 보고 — "이 요청은 에픽 N개 분량입니다. SSOT-TASK-TREE를 이렇게 쪼개는 것을 제안합니다: [에픽 목록 + 각 에픽이 커버할 ssot-task ID 집합]. 승인하시겠습니까?"
 4. 유저 승인 후 — 각 에픽을 독립 세션에서 Case B로 처리. 각 에픽 세션은 자기 `ssot-task` 부분집합만 SSOT-TASK-TREE의 view로 받는다.
 

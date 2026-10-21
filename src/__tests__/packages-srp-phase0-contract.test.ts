@@ -20,7 +20,6 @@ const repoRoot = path.resolve(__dirname, '..', '..');
 const internalServers = [
   { id: 'agent', dir: 'agent', basename: 'agent-mcp-server' },
   { id: 'cron', dir: 'cron', basename: 'cron-mcp-server' },
-  { id: 'llm', dir: 'llm', basename: 'llm-mcp-server' },
   { id: 'mcp-tool-permission', dir: 'mcp-tool-permission', basename: 'mcp-tool-permission-mcp-server' },
   { id: 'model-command', dir: 'model-command', basename: 'model-command-mcp-server' },
   { id: 'permission', dir: 'permission', basename: 'permission-mcp-server' },
@@ -136,6 +135,10 @@ describe('packages SRP Phase 0 package contract', () => {
 
     for (const [name, server] of Object.entries(config.mcpServers ?? {})) {
       if (name === 'filesystem') continue;
+      if (name === 'permission-prompt') {
+        expect(server).toMatchObject({ type: 'sdk', name: 'permission-prompt', instance: expect.any(Object) });
+        continue;
+      }
       const serverPath = executablePath(server);
       expect(serverPath).toContain(`${path.sep}packages${path.sep}mcp-servers${path.sep}`);
       expect(serverPath).not.toContain(`${repoRoot}${path.sep}mcp-servers${path.sep}`);

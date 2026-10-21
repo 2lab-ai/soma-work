@@ -1230,7 +1230,7 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
     expect(text).not.toContain('OAuth refreshes in');
   });
 
-  it('OAuth utilization === 1.0 exactly → cooldown fires (≥1)', () => {
+  it('OAuth utilization === 100 exactly → cooldown fires (≥100)', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
@@ -1244,7 +1244,7 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
     expect(text).toContain('5h Cooldown');
   });
 
-  it('OAuth utilization === 0.999 → still Healthy (cooldown not triggered)', () => {
+  it('OAuth utilization === 99.9 → still Healthy (cooldown not triggered)', () => {
     const slot = oauthAttachedSlot();
     const state: SlotState = {
       authState: 'healthy',
@@ -1257,20 +1257,6 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
     const text = statusText(slot, state);
     expect(text).toContain(':large_green_circle: Healthy');
     expect(text).not.toMatch(/Cooldown/);
-  });
-
-  it('OAuth utilization === 1.5 → cooldown fires (≥1 catches over-budget too)', () => {
-    const slot = oauthAttachedSlot();
-    const state: SlotState = {
-      authState: 'healthy',
-      activeLeases: [],
-      usage: {
-        fetchedAt: new Date(now).toISOString(),
-        fiveHour: { utilization: 100, resetsAt: new Date(now + 30 * 60_000).toISOString() },
-      },
-    };
-    const text = statusText(slot, state);
-    expect(text).toContain('5h Cooldown');
   });
 
   it('OAuth invalid resetsAt (NaN) → cooldown still triggers, remaining clamps to 0 (<1m)', () => {
@@ -1310,8 +1296,8 @@ describe('authStateBadge + buildSlotStatusLine — option A (PR #672 follow-up)'
   // The pre-fix `>= 1` check classified any non-zero usage (≥1%) as full,
   // so every healthy OAuth slot rendered as "7d Cooldown" in the CCT card
   // — see PR #684 screenshot (notify 19/63, info 2/94, ai 54/79 all
-  // wrongly badged as Cooldown). The fix applies the same `> 1.5`
-  // disambiguation used by `parsePercent` in `src/oauth/header-parser.ts`.
+  // wrongly badged as Cooldown). The fix applies a `> 1.5` percent-vs-fraction
+  // disambiguation (the one the since-deleted OAuth header parser used).
 
   it('#684: OAuth utilization=19 (percent form, 5h=19%) → Healthy, not Cooldown', () => {
     const slot = oauthAttachedSlot();

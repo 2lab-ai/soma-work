@@ -34,13 +34,13 @@ const logger = new Logger('InstanceRegistry');
 export const STALE_THRESHOLD_MS = 30_000;
 
 /** Default refresh cadence for {@link startHeartbeatLoop}. */
-export const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
 
 export interface HeartbeatPayload {
   /** Listening port — also the filename stem (`<port>.json`). */
   port: number;
   /**
-   * Operator-supplied instance label (e.g. `oudwood-dev`). When empty the
+   * Operator-supplied instance label (e.g. `instance-a`). When empty the
    * caller is expected to fall back to `${hostname}:${port}` upstream.
    */
   instanceName: string;

@@ -47,6 +47,22 @@ export interface AgentUsage {
   lastTurnOutputTokens?: number;
   lastTurnCacheReadTokens?: number;
   lastTurnCacheCreateTokens?: number;
+  /**
+   * Per-model billing breakdown for the turn, preserved from the SDK's
+   * `modelUsage` map before aggregation. `costUsd` is the SDK-reported
+   * cost when available, otherwise calculated at that model's rates.
+   * Keyed by the model id the SDK reported (e.g. `gpt-5.6-sol`).
+   */
+  modelBreakdown?: Record<
+    string,
+    {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadInputTokens: number;
+      cacheCreationInputTokens: number;
+      costUsd: number;
+    }
+  >;
 }
 
 export type AgentStreamEvent =
@@ -118,6 +134,16 @@ export type AgentStreamEvent =
       status?: 'completed' | 'failed' | 'stopped';
       outputFile?: string;
       summary?: string;
+    }
+  // Lifecycle of a user message injected into a RUNNING turn (user steering).
+  // `uuid` is the host-minted send id the backend stamps back on the turn's
+  // first reply frame and on the turn result — the join key binding a queued
+  // Slack message to the turn that consumed it. `observed` carries the uuid
+  // without claiming a transition (a backend phase this seam does not model).
+  | {
+      type: 'steer_lifecycle';
+      uuid: string;
+      phase: 'started' | 'completed' | 'cancelled' | 'discarded' | 'observed';
     };
 
 export type AgentStreamEventOf<T extends AgentStreamEvent['type']> = Extract<AgentStreamEvent, { type: T }>;
@@ -134,4 +160,9 @@ export type AgentStreamRunnerLike = (
   abortController?: AbortController,
   workingDirectory?: string,
   slackContext?: unknown,
+  // The steering registry key. Must be the SAME key the host queued the
+  // follow-ups under — the handler registers the running turn under it and
+  // stamps the `steer_lifecycle` events it emits with it, so a different
+  // format here silently makes every turn unsteerable.
+  sessionKey?: string,
 ) => AsyncIterable<AgentStreamEvent>;

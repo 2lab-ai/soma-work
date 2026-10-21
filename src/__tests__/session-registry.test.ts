@@ -77,6 +77,7 @@ describe('SessionRegistry persistence', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C_GOAL', '171.G1');
     session.goal = {
+      goalId: 'goal-test',
       objective: 'ship the goal command',
       status: 'active',
       createdAt: Date.now(),
@@ -107,6 +108,7 @@ describe('SessionRegistry persistence', () => {
     const writer = new SessionRegistry();
     const session = writer.createSession('U123', 'Tester', 'C_GOAL_PE', '171.G2');
     session.goal = {
+      goalId: 'goal-test',
       objective: 'finish the migration',
       status: 'active',
       createdAt: Date.now(),
@@ -478,6 +480,7 @@ describe('SessionRegistry persistence', () => {
     const session = registry.createSession('U123', 'Tester', 'C_GOAL_RESET', '171.GR1');
     session.sessionId = 'session-goal-reset';
     session.goal = {
+      goalId: 'goal-test',
       objective: 'old objective',
       status: 'active',
       createdAt: 1,
@@ -501,6 +504,7 @@ describe('SessionRegistry persistence', () => {
     const registry = new SessionRegistry();
     const session = registry.createSession('U123', 'Tester', 'C_GOAL_ONLY', '171.GO1');
     session.goal = {
+      goalId: 'goal-test',
       objective: 'pre-first-turn objective',
       status: 'active',
       createdAt: 1,
@@ -648,7 +652,7 @@ describe('SessionRegistry persistence', () => {
     const recovered = reader.getCrashRecoveredSessions();
     expect(recovered.length).toBe(1);
     expect(recovered[0].activityState).toBe('working');
-    expect(recovered[0].sessionKey).toBe('C391-171.391d');
+    expect(recovered[0].sessionKey).toBe('work:C391:171.391d');
   });
 });
 
@@ -672,7 +676,7 @@ describe('SessionRegistry session-scoped dangerous-rule overrides', () => {
     const key = reg.getSessionKey('C1', '171.100');
 
     expect(reg.isDangerousRuleDisabled(key, 'kill')).toBe(false);
-    reg.disableDangerousRule(key, 'kill');
+    reg.disableDangerousRules(key, ['kill']);
     expect(reg.isDangerousRuleDisabled(key, 'kill')).toBe(true);
     expect(reg.isDangerousRuleDisabled(key, 'reboot')).toBe(false);
     expect(reg.listDisabledDangerousRules(key)).toEqual(['kill']);
@@ -695,8 +699,8 @@ describe('SessionRegistry session-scoped dangerous-rule overrides', () => {
     reg.createSession('U1', 'Tester', 'C3', '171.102');
     const key = reg.getSessionKey('C3', '171.102');
 
-    reg.disableDangerousRule(key, 'kill');
-    reg.disableDangerousRule(key, 'kill');
+    reg.disableDangerousRules(key, ['kill']);
+    reg.disableDangerousRules(key, ['kill']);
     expect(reg.listDisabledDangerousRules(key)).toEqual(['kill']);
   });
 
@@ -707,14 +711,14 @@ describe('SessionRegistry session-scoped dangerous-rule overrides', () => {
     const keyA = reg.getSessionKey('C4', '171.103');
     const keyB = reg.getSessionKey('C4', '171.104');
 
-    reg.disableDangerousRule(keyA, 'kill');
+    reg.disableDangerousRules(keyA, ['kill']);
     expect(reg.isDangerousRuleDisabled(keyA, 'kill')).toBe(true);
     expect(reg.isDangerousRuleDisabled(keyB, 'kill')).toBe(false);
   });
 
   it('no-op on unknown session key (safe side — still returns false)', () => {
     const reg = new SessionRegistry();
-    reg.disableDangerousRule('C-unknown-171.999', 'kill');
+    reg.disableDangerousRules('C-unknown-171.999', ['kill']);
     expect(reg.isDangerousRuleDisabled('C-unknown-171.999', 'kill')).toBe(false);
     expect(reg.listDisabledDangerousRules('C-unknown-171.999')).toEqual([]);
   });
@@ -726,8 +730,8 @@ describe('SessionRegistry session-scoped dangerous-rule overrides', () => {
     // persistence path actually runs (otherwise we'd be testing nothing).
     session.sessionId = 'session-rule-disable-roundtrip';
     const key = writer.getSessionKey('C5', '171.105');
-    writer.disableDangerousRule(key, 'kill');
-    writer.disableDangerousRule(key, 'reboot');
+    writer.disableDangerousRules(key, ['kill']);
+    writer.disableDangerousRules(key, ['reboot']);
 
     writer.saveSessions();
 
@@ -855,7 +859,7 @@ describe('SessionRegistry deserialize — model coerce', () => {
     const reader = new SessionRegistry();
     reader.loadSessions();
     const restored = reader.getSession('C1', 't4');
-    expect(restored?.model).toBe('claude-opus-4-8[1m]'); // DEFAULT_MODEL
+    expect(restored?.model).toBe('gpt-5.6-sol'); // DEFAULT_MODEL
   });
 
   it('preserves undefined when session was saved without a model', () => {
@@ -968,7 +972,7 @@ describe('setOnIdleAfterDrainHook — goal ralph-loop entry point', () => {
       registry.setActivityState('C-G', 't-G', 'working');
       registry.setActivityState('C-G', 't-G', 'idle');
     }).not.toThrow();
-    expect(registry.getActivityState('C-G', 't-G')).toBe('idle');
+    expect(registry.getSession('C-G', 't-G')?.activityState).toBe('idle');
   });
 
   it('uninstalling the hook (undefined) stops further fires', () => {
@@ -1062,5 +1066,112 @@ describe('invalidateSystemPromptForUser', () => {
     expect(registry.invalidateSystemPromptForUser('U-ghost')).toBe(0);
     expect(registry.invalidateSystemPromptForUser('')).toBe(0);
     expect(s.systemPrompt).toBe('cached');
+  });
+});
+
+describe('SessionRegistry per-goal time attribution (T3)', () => {
+  it('credits the leg-owner goal, not a goal promoted mid-turn (codex blocking #2)', () => {
+    const registry = new SessionRegistry();
+    const session = registry.createSession('U1', 'Tester', 'C_LEG', 't1');
+    session.goal = {
+      goalId: 'g1',
+      objective: 'first',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U1',
+      continuationCount: 0,
+      maxContinuations: 10,
+    } as never;
+
+    // Leg starts while g1 is active → owner captured.
+    registry.beginTurn(session, 1000);
+    expect(session.activeLegGoalId).toBe('g1');
+
+    // Mid-turn the goal completes and the next queued goal is promoted.
+    (session.goal as { status: string }).status = 'complete';
+    session.goalHistory = [session.goal as never];
+    session.goal = {
+      goalId: 'g2',
+      objective: 'second',
+      status: 'active',
+      createdAt: 2,
+      updatedAt: 2,
+      createdBy: 'U1',
+      continuationCount: 0,
+      maxContinuations: 10,
+    } as never;
+
+    // Leg closes — the 5s must credit g1 (the owner), NOT the promoted g2.
+    registry.endTurn(session, 6000);
+
+    const g1 = session.goalHistory.find((g) => g.goalId === 'g1') as { activeMsUsed?: number };
+    expect(g1.activeMsUsed).toBe(5000);
+    expect((session.goal as { activeMsUsed?: number }).activeMsUsed ?? 0).toBe(0);
+  });
+
+  it('persists an autoCompactTokens override across a restart', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C_AC', '171.AC1');
+    session.sessionId = 'session-ac-1';
+    session.model = 'claude-opus-5[1m]';
+    session.autoCompactTokens = 400_000;
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C_AC', '171.AC1');
+
+    expect(restored?.autoCompactTokens).toBe(400_000);
+  });
+
+  it('persists an override set BEFORE the first SDK sessionId exists', () => {
+    // Save eligibility must not drop a pre-first-turn override — the user set
+    // it, so it has to survive a crash the same way `goal` does.
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C_AC', '171.AC2');
+    expect(session.sessionId).toBeUndefined();
+    session.autoCompactTokens = 250_000;
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C_AC', '171.AC2');
+
+    expect(restored?.autoCompactTokens).toBe(250_000);
+  });
+
+  it('restores a cleared override as absent, not as a stale number', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C_AC', '171.AC3');
+    session.sessionId = 'session-ac-3';
+    session.autoCompactTokens = null;
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C_AC', '171.AC3');
+
+    expect(restored?.autoCompactTokens ?? null).toBeNull();
+  });
+
+  it('loads an active session model verbatim — the user-default Opus migration does not touch it', () => {
+    // `migrateOpusDefaultModel` rewrites USER DEFAULTS only. An active session
+    // pinned to an older Opus must resume on exactly that model.
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C_AC', '171.AC4');
+    session.sessionId = 'session-ac-4';
+    session.model = 'claude-opus-4-6';
+
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const restored = reader.getSession('C_AC', '171.AC4');
+
+    expect(restored?.model).toBe('claude-opus-4-6');
   });
 });

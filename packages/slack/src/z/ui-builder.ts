@@ -16,7 +16,6 @@
  * See: docs/current/spec/z-command-master-spec.md §8 / §15.
  */
 
-import type { TombstoneHint } from './tombstone';
 import type { ZBlock } from './types';
 
 /** Deterministic block_id generator.
@@ -74,6 +73,7 @@ export const DEFAULT_HELP_CATEGORIES: HelpCategory[] = [
       { id: 'link', label: 'link' },
       { id: 'compact', label: 'compact' },
       { id: 'goal', label: 'goal' },
+      { id: 'queue', label: 'queue' },
       { id: 'session', label: 'session' },
       { id: 'theme', label: 'theme' },
     ],
@@ -101,6 +101,7 @@ export const DEFAULT_HELP_CATEGORIES: HelpCategory[] = [
     topics: [
       { id: 'memory', label: 'memory' },
       { id: 'cct', label: 'cct' },
+      { id: 'auth', label: 'auth' },
       { id: 'mcp', label: 'mcp' },
       { id: 'skill', label: 'skill' },
       { id: 'plugin', label: 'plugin' },
@@ -211,71 +212,6 @@ export function buildHelpCard(opts: HelpCardOptions): ZBlock[] {
   });
 
   return blocks;
-}
-
-/* ------------------------------------------------------------------ *
- * buildTombstoneCard
- * ------------------------------------------------------------------ */
-
-export interface TombstoneCardOptions {
-  hint: TombstoneHint;
-  issuedAt: number;
-}
-
-/**
- * The one-time migration tombstone — shown on first legacy naked attempt per
- * user.
- */
-export function buildTombstoneCard(opts: TombstoneCardOptions): ZBlock[] {
-  const { hint, issuedAt } = opts;
-  const topic = hint.title || 'z';
-
-  const header: ZBlock = {
-    type: 'section',
-    block_id: zBlockId(topic, issuedAt, 0),
-    text: {
-      type: 'mrkdwn',
-      text: [
-        `ℹ️ *이 명령은 더 이상 사용되지 않습니다*`,
-        ``,
-        `이전: \`${hint.oldForm}\``,
-        `신규: \`${hint.newForm}\``,
-      ].join('\n'),
-    },
-  };
-
-  const actions: ZBlock = {
-    type: 'actions',
-    block_id: zBlockId(topic, issuedAt, 1),
-    elements: [
-      {
-        type: 'button',
-        action_id: `z_tombstone_copy_${topic}`,
-        text: { type: 'plain_text', text: '📋 복사' },
-        value: hint.newForm,
-      },
-      {
-        type: 'button',
-        action_id: `z_tombstone_dismiss_${topic}`,
-        text: { type: 'plain_text', text: '❌ 무시' },
-        value: hint.title,
-        style: 'danger',
-      },
-    ],
-  };
-
-  const footer: ZBlock = {
-    type: 'context',
-    block_id: zBlockId(topic, issuedAt, 2),
-    elements: [
-      {
-        type: 'mrkdwn',
-        text: '💡 `/z` 또는 `/z help`로 전체 명령을 확인할 수 있어요.',
-      },
-    ],
-  };
-
-  return [header, actions, footer];
 }
 
 /* ------------------------------------------------------------------ *

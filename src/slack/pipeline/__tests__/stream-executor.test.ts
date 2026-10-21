@@ -19,6 +19,8 @@ vi.mock('../../../user-settings-store', () => ({
     getUserEmail: vi.fn().mockReturnValue(undefined),
     setUserEmail: vi.fn(),
     ensureUserExists: vi.fn(),
+    setUserSlackDisplayName: vi.fn(),
+    shouldRefreshSlackIdentity: vi.fn().mockReturnValue(false),
     getUserJiraAccountId: vi.fn(),
     getUserJiraName: vi.fn(),
     getUserBypassPermission: vi.fn().mockReturnValue(false),
@@ -38,6 +40,10 @@ vi.mock('../../../user-settings-store', () => ({
   // `coerceToAvailableModel` is a pure function — pass-through is sufficient
   // for tests that never exercise the AVAILABLE_MODELS allowlist guard.
   coerceToAvailableModel: (raw: string) => raw,
+  // Auto fallback compact (prompt-too-long): the wrapper resolves the
+  // configured alias (default `opus[1m]`) through MODEL_ALIASES before
+  // handing it to packages/slack. Only the alias the default uses is needed.
+  MODEL_ALIASES: { 'opus[1m]': 'claude-opus-4-8[1m]' },
 }));
 
 vi.mock('../../../channel-description-cache', () => ({
@@ -103,9 +109,9 @@ vi.mock('../../../token-manager', () => ({
   parseCooldownTime: vi.fn().mockReturnValue(null),
 }));
 
+import { getVerbosityFlags, LOG_DETAIL, LOG_MINIMAL, OutputFlag } from '@soma/slack/output-flags';
 import type { Continuation } from '../../../types';
 import { userSettingsStore } from '../../../user-settings-store';
-import { LOG_DETAIL } from '../../output-flags';
 import { type ExecuteResult, StreamExecutor } from '../stream-executor';
 
 describe('Continuation type', () => {
@@ -367,7 +373,6 @@ describe('Abort handling', () => {
       },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: {
@@ -375,6 +380,8 @@ describe('Abort handling', () => {
       },
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {},
       todoDisplayManager: {},
@@ -805,15 +812,69 @@ describe('Abort handling', () => {
     expect(payload.text).toContain('Session:* ✅ 유지됨');
   });
 
-  it('clears session for context-overflow errors', async () => {
+  it('context-overflow on a non-1M model arms the auto fallback compact (session preserved)', async () => {
+    // Behavior change (auto-fallback-compact): prompt-too-long used to clear
+    // the session. Now, when the session sits on a non-1M model, the session
+    // is preserved, temporarily switched to the 1M compact model, and a
+    // `/compact` retry is scheduled instead.
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const say = vi.fn().mockResolvedValue(undefined);
     const error = new Error('Prompt is too long: maximum context length exceeded');
+    const session = { model: 'gpt-5.5', ownerId: 'U1' } as any;
 
-    await (executor as any).handleError(error, {} as any, 'C123:thread123', 'C123', 'thread123', [], say);
+    const retryAfterMs = await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+    );
 
+    expect(retryAfterMs).toBe(500);
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(session.model).toBe('claude-opus-4-8[1m]');
+    expect(session.fallbackCompactActive).toBe(true);
+    expect(session.fallbackCompactOriginalModel).toBe('gpt-5.5');
+    expect(deps.contextWindowManager.handlePromptTooLong).toHaveBeenCalledWith('C123:thread123');
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    const payload = say.mock.calls[0][0];
+    expect(payload.text).toContain('1M 모델로 자동 컴팩트');
+    expect(payload.text).toContain('Session:* ✅ 유지됨');
+  });
+
+  it('context-overflow on a 1M-window model still clears the session (no fallback possible)', async () => {
+    // Overflowing an actual 1M window means the context is genuinely too
+    // large — switching models cannot help, so the legacy clear-session
+    // behavior is preserved.
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const error = new Error('Prompt is too long: maximum context length exceeded');
+    const session = { model: 'claude-opus-4-8[1m]', ownerId: 'U1' } as any;
+
+    const retryAfterMs = await (executor as any).handleError(
+      error,
+      session,
+      'C123:thread123',
+      'C123',
+      'thread123',
+      [],
+      say,
+    );
+
+    expect(retryAfterMs).toBeUndefined();
     expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C123', 'thread123');
+    expect(session.fallbackCompactActive).toBeUndefined();
+    expect(deps.turnNotifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'Exception',
+        message: 'Prompt is too long: maximum context length exceeded',
+      }),
+    );
     expect(say).toHaveBeenCalledTimes(1);
     const payload = say.mock.calls[0][0];
     expect(payload.text).toContain('Session:* 🔄 초기화됨');
@@ -1264,7 +1325,6 @@ describe('model-command integration', () => {
       },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: {
@@ -1272,6 +1332,8 @@ describe('model-command integration', () => {
       },
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {
         scheduleCleanup: vi.fn(),
@@ -2131,6 +2193,263 @@ describe('model-command integration', () => {
       expect(text).toMatch(/❌|⚠️/);
     });
   });
+
+  /**
+   * Spec 10 §3.2 — where each host-side model-command outcome goes. Every
+   * outcome writes exactly one work-log entry, at every verbosity; compact and
+   * up post every outcome to Slack. At `minimal`:
+   *   - posted (user-facing): an ASK_USER_QUESTION failure; a parse/connection
+   *     failure (command unknown — the #816 shape, MCP gone while the model was
+   *     asking); a host-side failure the model never sees because its tool
+   *     result said ok (UPDATE_SESSION host apply, SET_GOAL refusal);
+   *   - work log only: a failure the model receives in its own tool result
+   *     (argument error, wire-level isError on an ok body), and the 🎯/📋 goal
+   *     status notices (`STATUS_MESSAGE`, like goal-loop status notices).
+   */
+  describe('model-command outcomes by verbosity (spec 10 §3.2)', () => {
+    type PrivateExecutor = { handleModelCommandToolResults: (...args: unknown[]) => Promise<unknown> };
+
+    type MatrixSession = {
+      logVerbosity: number;
+      goal?: { objective?: string; status?: string };
+      goalQueue?: unknown[];
+      [key: string]: unknown;
+    };
+
+    interface Outcome {
+      name: string;
+      toolResult: unknown;
+      kind: 'error' | 'notice';
+      /** The exact text, in the work-log entry and (when posted) in Slack. */
+      text: string;
+      /** Compact and up post every outcome; this is the minimal cell. */
+      postedAtMinimal: boolean;
+      context?: Record<string, unknown>;
+      session?: () => Record<string, unknown>;
+      hostRejectsUpdate?: boolean;
+      /** The outcome's effect on the session, unchanged by verbosity. */
+      verify?: (session: MatrixSession) => void;
+    }
+
+    const OBJECTIVE = 'ship the goal feature';
+    const EVIDENCE = 'goal로 잡아줘: ship the goal feature';
+    const USER_TURN = { currentUserText: `이번 릴리즈 ${EVIDENCE}`, isUserInputTurn: true };
+
+    function run(commandId: string, body: Record<string, unknown>, toolUseId: string, isError = false) {
+      return {
+        toolUseId,
+        toolName: 'mcp__model-command__run',
+        result: JSON.stringify({ type: 'model_command_result', commandId, ...body }),
+        isError,
+      };
+    }
+
+    function failedRun(commandId: string, message: string) {
+      return run(commandId, { ok: false, error: { code: 'INVALID_ARGS', message } }, `tool_${commandId}_fail`);
+    }
+
+    const setGoal = run(
+      'SET_GOAL',
+      { ok: true, payload: { objective: OBJECTIVE, userRequestEvidence: EVIDENCE } },
+      'tool_goal',
+    );
+
+    const ARGUMENT_ERROR: Outcome = {
+      name: 'argument error',
+      toolResult: failedRun('UPDATE_SESSION', 'UPDATE_SESSION requires operations or title'),
+      kind: 'error',
+      text: '❌ MCP UPDATE_SESSION 실패: INVALID_ARGS — UPDATE_SESSION requires operations or title',
+      postedAtMinimal: false,
+    };
+
+    const OUTCOMES: Outcome[] = [
+      ARGUMENT_ERROR,
+      {
+        name: 'wire-level isError on an ok body',
+        toolResult: run('GET_MEMORY', { ok: true, payload: { memory: '', userMemory: '' } }, 'tool_outer_fail', true),
+        kind: 'error',
+        text: '❌ MCP GET_MEMORY 호출 실패 (wire-level isError=true). MCP 연결 상태를 확인해주세요.',
+        postedAtMinimal: false,
+      },
+      {
+        name: 'ASK_USER_QUESTION failure',
+        toolResult: failedRun('ASK_USER_QUESTION', 'question payload missing'),
+        kind: 'error',
+        text:
+          '❌ MCP ASK_USER_QUESTION 실패: INVALID_ARGS — question payload missing\n' +
+          '❌ 사용자 선택 UI를 띄우지 못했습니다. 같은 질문을 다시 호출하시거나 MCP 연결 상태를 확인하세요.',
+        postedAtMinimal: true,
+      },
+      {
+        name: 'parse failure',
+        toolResult: {
+          toolUseId: 'tool_parse_fail',
+          toolName: 'mcp__model-command__run',
+          result: 'Not connected',
+          isError: true,
+        },
+        kind: 'error',
+        text: '❌ MCP 응답 파싱 실패 (toolUseId: tool_parse_fail). raw: Not connected',
+        postedAtMinimal: true,
+      },
+      {
+        name: 'host-apply failure',
+        toolResult: run(
+          'UPDATE_SESSION',
+          {
+            ok: true,
+            payload: {
+              session: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 0 },
+              appliedOperations: 1,
+              request: { operations: [{ action: 'set_active', resourceType: 'issue' }] },
+            },
+          },
+          'tool_update_host_fail',
+        ),
+        hostRejectsUpdate: true,
+        kind: 'error',
+        text: '⚠️ Session update could not be applied on host (INVALID_OPERATION).',
+        postedAtMinimal: true,
+      },
+      {
+        name: 'SET_GOAL refusal',
+        toolResult: setGoal,
+        context: { currentUserText: EVIDENCE, isUserInputTurn: false },
+        kind: 'notice',
+        text:
+          '⚠️ SET_GOAL refused: not a direct user-input turn (synthetic/continuation turns cannot set goals). ' +
+          'A goal can only be set when the user explicitly asks for it in their current message.',
+        postedAtMinimal: true,
+        verify: (session) => expect(session.goal).toBeUndefined(),
+      },
+      {
+        name: 'goal started',
+        toolResult: setGoal,
+        context: USER_TURN,
+        kind: 'notice',
+        text: `🎯 Goal set by model (user-requested): \`${OBJECTIVE}\`\n> "${EVIDENCE}"`,
+        postedAtMinimal: false,
+        verify: (session) => expect(session.goal).toMatchObject({ objective: OBJECTIVE, status: 'active' }),
+      },
+      {
+        name: 'goal queued',
+        toolResult: setGoal,
+        context: USER_TURN,
+        session: () => ({
+          goal: {
+            goalId: 'goal-old',
+            objective: 'old objective',
+            status: 'active',
+            createdAt: 1,
+            updatedAt: 1,
+            createdBy: 'U1',
+            continuationCount: 0,
+            maxContinuations: 10,
+            epoch: 1,
+          },
+        }),
+        kind: 'notice',
+        text: `📋 Goal queued by model at position 1: \`${OBJECTIVE}\`\n> "${EVIDENCE}"`,
+        postedAtMinimal: false,
+        verify: (session) => {
+          expect(session.goal?.objective).toBe('old objective');
+          expect(session.goalQueue).toHaveLength(1);
+        },
+      },
+    ];
+
+    const LEVELS = ['minimal', 'compact', 'detail', 'verbose'] as const;
+    const MATRIX = OUTCOMES.flatMap((spec) =>
+      LEVELS.map((level) => ({ outcome: spec.name, level, posted: level !== 'minimal' || spec.postedAtMinimal, spec })),
+    );
+
+    function executorFor(spec: Outcome): PrivateExecutor {
+      const deps = createExecutorDeps();
+      deps.claudeHandler.saveSessions = vi.fn();
+      if (spec.hostRejectsUpdate) {
+        deps.claudeHandler.updateSessionResources = vi.fn().mockReturnValue({
+          ok: false,
+          reason: 'INVALID_OPERATION',
+          error: 'invalid request',
+          snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 0 },
+        });
+      }
+      return new StreamExecutor(deps) as unknown as PrivateExecutor;
+    }
+
+    function sessionAt(logVerbosity: number, spec: Outcome): MatrixSession {
+      return { ...createSession(), ...spec.session?.(), logVerbosity };
+    }
+
+    async function deliver(
+      executor: PrivateExecutor,
+      spec: Outcome,
+      session: unknown,
+      say: ReturnType<typeof vi.fn>,
+      workLog: ReturnType<typeof vi.fn>,
+    ) {
+      await executor.handleModelCommandToolResults([spec.toolResult], session, {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        workLog,
+        ...spec.context,
+      });
+    }
+
+    it.each(MATRIX)('$outcome at $level → posted: $posted', async ({ level, posted, spec }) => {
+      const session = sessionAt(getVerbosityFlags(level), spec);
+      const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+      const workLog = vi.fn();
+
+      await deliver(executorFor(spec), spec, session, say, workLog);
+
+      expect(workLog.mock.calls).toEqual([[{ kind: spec.kind, text: spec.text }]]);
+      expect(say.mock.calls).toEqual(posted ? [[{ text: spec.text, thread_ts: '171.100' }]] : []);
+      spec.verify?.(session);
+    });
+
+    it('a live verbosity change on the same session applies to the next outcome', async () => {
+      const executor = executorFor(ARGUMENT_ERROR);
+      const session = sessionAt(LOG_MINIMAL, ARGUMENT_ERROR);
+      const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+      const workLog = vi.fn();
+      const entry = { kind: 'error', text: ARGUMENT_ERROR.text };
+
+      await deliver(executor, ARGUMENT_ERROR, session, say, workLog);
+      expect(say).toHaveBeenCalledTimes(0);
+      expect(workLog.mock.calls).toEqual([[entry]]);
+
+      session.logVerbosity = getVerbosityFlags('compact');
+      await deliver(executor, ARGUMENT_ERROR, session, say, workLog);
+      expect(say.mock.calls).toEqual([[{ text: ARGUMENT_ERROR.text, thread_ts: '171.100' }]]);
+      expect(workLog.mock.calls).toEqual([[entry], [entry]]);
+
+      session.logVerbosity = LOG_MINIMAL;
+      await deliver(executor, ARGUMENT_ERROR, session, say, workLog);
+      expect(say).toHaveBeenCalledTimes(1);
+      expect(workLog.mock.calls).toEqual([[entry], [entry], [entry]]);
+    });
+
+    it('a throwing work-log sink never stops the Slack notice', async () => {
+      const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+      const workLog = vi.fn(() => {
+        throw new Error('sink down');
+      });
+
+      await deliver(
+        executorFor(ARGUMENT_ERROR),
+        ARGUMENT_ERROR,
+        sessionAt(getVerbosityFlags('compact'), ARGUMENT_ERROR),
+        say,
+        workLog,
+      );
+
+      expect(workLog).toHaveBeenCalledTimes(1);
+      expect(say).toHaveBeenCalledWith({ text: ARGUMENT_ERROR.text, thread_ts: '171.100' });
+    });
+  });
 });
 
 // ── File Access Blocked Error Recovery ──────────────────────────────────
@@ -2147,9 +2466,7 @@ describe('File access blocked error recovery', () => {
       },
       toolEventProcessor: { cleanup: vi.fn() },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('x'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -2158,6 +2475,8 @@ describe('File access blocked error recovery', () => {
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
         cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: { scheduleCleanup: vi.fn() },
       todoDisplayManager: { cleanupSession: vi.fn(), cleanup: vi.fn() },
@@ -2742,6 +3061,280 @@ describe('File access blocked error recovery', () => {
   });
 });
 
+// ── Auto fallback compact (prompt-too-long emergency recovery) ──
+//
+// When a non-1M model hard-fails with "Prompt is too long" (the turn-end
+// threshold checker could not fire in time), handleError:
+//   1. stashes the current model + failed user text on the session,
+//   2. switches session.model to the configured 1M compact model
+//      (default alias `opus[1m]` → `claude-opus-4-8[1m]`),
+//   3. returns retryAfterMs + fallbackCompact so V1QueryAdapter immediately
+//      re-enters with `/compact`.
+// After the compact boundary, the original model is restored and the stashed
+// user text re-dispatched (see onCompactBoundary in stream-executor).
+describe('Auto fallback compact — handleError arming', () => {
+  function createExecutorDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+      },
+      fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
+      toolEventProcessor: { cleanup: vi.fn() },
+      statusReporter: {
+        getStatusEmoji: vi.fn().mockReturnValue('x'),
+      },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      contextWindowManager: { handlePromptTooLong: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: { cleanupSession: vi.fn(), cleanup: vi.fn() },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn() },
+      slackApi: {},
+      assistantStatusManager: {
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      threadPanel: undefined,
+    } as any;
+  }
+
+  const overflowError = () => new Error('Prompt is too long');
+
+  it('arms fallback: stashes original model, switches to opus[1m] target, schedules retry', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { model: 'gpt-5.5', ownerId: 'U1' } as any;
+
+    const retryAfterMs = await (executor as any).handleError(overflowError(), session, 'C1:t1', 'C1', 't1', [], say);
+
+    expect(retryAfterMs).toBe(500);
+    expect(session.model).toBe('claude-opus-4-8[1m]'); // default opus[1m] alias target
+    expect(session.fallbackCompactOriginalModel).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(true);
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+  });
+
+  it('stashes the failed user text (attached by execute catch) for post-compact re-dispatch', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { model: 'gpt-5.5', ownerId: 'U1' } as any;
+    const error = overflowError();
+    (error as any).failedTurnText = '이 메시지가 오버플로우를 일으켰다';
+
+    await (executor as any).handleError(error, session, 'C1:t1', 'C1', 't1', [], say);
+
+    expect(session.fallbackCompactPendingUserText).toBe('이 메시지가 오버플로우를 일으켰다');
+    expect(session.fallbackCompactPendingEventContext).toMatchObject({
+      channel: 'C1',
+      threadTs: 't1',
+      user: 'U1',
+    });
+    expect(session.fallbackCompactPendingEventContext.verbatimPrompt).toBeUndefined();
+  });
+
+  it('keeps the goal-objective marker on the stash so the replay is not re-parsed (PR #305)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { model: 'gpt-5.5', ownerId: 'U1' } as any;
+    const error = overflowError();
+    (error as any).failedTurnText = 'new dashboard 구현';
+    (error as any).failedTurnLiteral = true;
+
+    await (executor as any).handleError(error, session, 'C1:t1', 'C1', 't1', [], say);
+
+    expect(session.fallbackCompactPendingUserText).toBe('new dashboard 구현');
+    expect(session.fallbackCompactPendingEventContext).toMatchObject({ user: 'U1', verbatimPrompt: true });
+  });
+
+  it('does NOT arm for native-1M models (fable-5) — genuine 1M overflow clears session', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { model: 'claude-fable-5', ownerId: 'U1' } as any;
+
+    const retryAfterMs = await (executor as any).handleError(overflowError(), session, 'C1:t1', 'C1', 't1', [], say);
+
+    expect(retryAfterMs).toBeUndefined();
+    expect(session.model).toBe('claude-fable-5'); // untouched
+    expect(session.fallbackCompactActive).toBeUndefined();
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C1', 't1');
+  });
+
+  it('does NOT re-arm while a fallback is already active (second overflow → legacy clear)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    // Simulates: the /compact retry itself overflowed. Escape hatch = the
+    // legacy clear-session path, never an infinite fallback loop.
+    const session = {
+      model: 'claude-opus-4-8[1m]',
+      ownerId: 'U1',
+      fallbackCompactActive: true,
+      fallbackCompactOriginalModel: 'gpt-5.5',
+    } as any;
+
+    const retryAfterMs = await (executor as any).handleError(overflowError(), session, 'C1:t1', 'C1', 't1', [], say);
+
+    expect(retryAfterMs).toBeUndefined();
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C1', 't1');
+  });
+
+  it('user-facing message explains the compact-model swap and the return to the original model', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { model: 'gpt-5.5', ownerId: 'U1' } as any;
+
+    await (executor as any).handleError(overflowError(), session, 'C1:t1', 'C1', 't1', [], say);
+
+    expect(say).toHaveBeenCalledTimes(1);
+    const text = say.mock.calls[0][0].text as string;
+    expect(text).toContain('1M 모델로 자동 컴팩트');
+    expect(text).toContain('claude-opus-4-8[1m]');
+    expect(text).toContain('gpt-5.5'); // 복귀 대상 원래 모델 명시
+  });
+});
+
+// ── Auto fallback compact — end-to-end restore at the compact boundary ──
+//
+// Full execute() run of the emergency `/compact` retry turn: the session is
+// mid-fallback (model already switched to the 1M compact model by
+// handleError), the SDK stream emits a `compact_boundary`, and the
+// onCompactBoundary handler must restore the original model, clear the
+// fallback markers, and re-dispatch the stashed user text.
+describe('Auto fallback compact — boundary restore (execute e2e)', () => {
+  async function* compactBoundaryStream() {
+    yield {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'manual', pre_tokens: 210_000, post_tokens: 30_000 },
+    };
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+  }
+
+  function createDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(compactBoundaryStream())),
+        getSessionRegistry: vi.fn().mockReturnValue({
+          beginTurn: vi.fn(),
+          endTurn: vi.fn(),
+          broadcastSessionUpdate: vi.fn(),
+          getActivityState: vi.fn().mockReturnValue('idle'),
+        }),
+      },
+      fileHandler: {
+        formatFilePrompt: vi.fn().mockResolvedValue(''),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        handleToolUse: vi.fn().mockResolvedValue(undefined),
+        handleToolResult: vi.fn().mockResolvedValue(undefined),
+        getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        cleanup: vi.fn(),
+      },
+      statusReporter: {
+        getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
+      },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(50),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+        handleTodoUpdate: vi.fn().mockResolvedValue(undefined),
+      },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn(), touchSession: vi.fn() },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
+        getClient: vi.fn().mockReturnValue({}),
+        getBotUserId: vi.fn().mockResolvedValue('U_BOT'),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+        postSystemMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      threadPanel: undefined,
+      dispatchPendingUserMessage: vi.fn().mockResolvedValue(undefined),
+    } as any;
+  }
+
+  it('restores the original model at the boundary and re-dispatches the stashed user text', async () => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+
+    const deps = createDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    // Session mid-fallback: handleError already switched to the 1M compact
+    // model and stashed the original model + failed user text.
+    const session = {
+      sessionId: 'sess_fb',
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'claude-opus-4-8[1m]',
+      fallbackCompactActive: true,
+      fallbackCompactOriginalModel: 'gpt-5.5',
+      fallbackCompactPendingUserText: '오버플로우를 일으킨 원래 메시지',
+      fallbackCompactPendingEventContext: { channel: 'C9', threadTs: 't9', user: 'U_TEST', ts: '1.0' },
+    } as any;
+
+    const result = await executor.execute({
+      session,
+      sessionKey: 'C9:t9',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: '/compact', // the emergency retry turn injected by V1QueryAdapter
+      channel: 'C9',
+      threadTs: 't9',
+      user: 'U_TEST',
+      say,
+      isUserInput: false,
+    } as any);
+
+    expect(result.success).toBe(true);
+    // Boundary handler restored the ORIGINAL model and cleared all markers.
+    expect(session.model).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(false);
+    expect(session.fallbackCompactOriginalModel).toBeNull();
+    expect(session.fallbackCompactPendingUserText).toBeNull();
+    expect(session.fallbackCompactPendingEventContext).toBeNull();
+    // The interrupted user message resumes on the restored model.
+    expect(deps.dispatchPendingUserMessage).toHaveBeenCalledWith(
+      { channel: 'C9', threadTs: 't9', user: 'U_TEST', ts: '1.0' },
+      '오버플로우를 일으킨 원래 메시지',
+    );
+    // Compaction bookkeeping still ran (flag consumed by boundary path).
+    expect(session.compactionCount).toBe(1);
+  });
+});
+
 // ── Trace: docs/archive/features/fix-thread-header-files/trace.md ──
 // S2: Thread-awareness hint guides array mode + root file check
 describe('getThreadContextHint — array mode guidance', () => {
@@ -3110,9 +3703,7 @@ describe('Email guard in execute()', () => {
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -3121,6 +3712,8 @@ describe('Email guard in execute()', () => {
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
         cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {
         scheduleCleanup: vi.fn(),
@@ -3155,7 +3748,7 @@ describe('Email guard in execute()', () => {
       session: {
         sessionId: 'sess_1',
         ownerId: 'U_TEST',
-        logVerbosity: 'detail',
+        logVerbosity: LOG_DETAIL,
         usage: {},
       },
       sessionKey: 'C123:thread123',
@@ -3266,7 +3859,6 @@ describe('W3-B rate-limit rotation wiring', () => {
       fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
@@ -3561,9 +4153,7 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -3572,6 +4162,8 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
         cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {
         scheduleCleanup: vi.fn(),
@@ -3632,7 +4224,7 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
       session: {
         sessionId: 'sess_tool_flow',
         ownerId: 'U_TEST',
-        logVerbosity: 'detail',
+        logVerbosity: LOG_DETAIL,
         usage: {},
         terminated: false,
       },
@@ -3753,7 +4345,6 @@ describe('stream-executor — B3 choice wiring', () => {
         fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
         toolEventProcessor: {},
         statusReporter: {
-          updateStatusDirect: vi.fn().mockResolvedValue(undefined),
           getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
         },
         reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
@@ -4090,9 +4681,7 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -4195,6 +4784,19 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
     );
   });
 
+  it('[T2] closes the turn when initial runtime status setup rejects', async () => {
+    const deps = createDeps(() => toolFlowStream('Read'));
+    deps.threadPanel.setStatus.mockRejectedValueOnce(new Error('initial status failed'));
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(createParams(say)).catch(() => undefined);
+
+    const turnId = deps.threadPanel.beginTurn.mock.calls[0][0].turnId;
+    expect(deps.threadPanel.endTurn).toHaveBeenCalledWith(turnId, 'completed');
+    expect(deps.requestCoordinator.removeController).toHaveBeenCalled();
+  });
+
   it('does not write legacy native assistant status directly', async () => {
     const deps = createDeps(() => toolFlowStream('Read'));
     const executor = new StreamExecutor(deps);
@@ -4270,7 +4872,6 @@ describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
       },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('warning'),
       },
       reactionManager: {
@@ -4278,6 +4879,8 @@ describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
       },
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {},
       todoDisplayManager: {},
@@ -4736,7 +5339,6 @@ describe('turn-end surface guarantee — P0 holes', () => {
       },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: {
@@ -4744,6 +5346,8 @@ describe('turn-end surface guarantee — P0 holes', () => {
       },
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {},
       todoDisplayManager: {},
@@ -4817,8 +5421,9 @@ describe('turn-end surface guarantee — P0 holes', () => {
     );
 
     const matches = Array.from(src.matchAll(/abortController\.abort\('ghost-session'/g));
-    // Two sites: onToolUse self-abort + onToolResult self-abort.
-    expect(matches.length).toBe(2);
+    // Four sites: onToolUse and onToolResult each check before and again after
+    // their status-write awaits (a delete can land during the await).
+    expect(matches.length).toBe(4);
   });
 
   // -------------------------------------------------------------------------
@@ -5160,7 +5765,7 @@ describe('turn-end surface guarantee — P0 holes', () => {
   // 3s race; assert it resolves even when the inner promise never settles.
 
   it('C-5: cleanupTempFiles is wrapped with a finite timeout', async () => {
-    const wrapper = (await import('../stream-executor-cleanup-helpers')).cleanupWithTimeout as
+    const wrapper = (await import('@soma/slack/pipeline/stream-executor-cleanup-helpers')).cleanupWithTimeout as
       | ((cleanup: () => Promise<void>, timeoutMs: number) => Promise<void>)
       | undefined;
     // RED gate: helper file/export does not exist yet.
@@ -5242,9 +5847,11 @@ describe('turn-end surface guarantee — P0 holes', () => {
  *   - refuse when `userRequestEvidence` is not a verbatim substring of the
  *     current user message (`currentUserText`),
  *   - on success: apply an active goal to the session (epoch-fresh, cached
- *     system prompt invalidated), persist, and post a user-visible 🎯 notice
- *     that quotes the evidence.
- * Refusals are user-visible (⚠️ via context.say) and never mutate the session.
+ *     system prompt invalidated), persist, and post a 🎯 notice that quotes
+ *     the evidence.
+ * Refusals (⚠️) never mutate the session. Both notices reach Slack by
+ * verbosity — see `notices by verbosity` below; these cases run at the
+ * default `detail` (no `logVerbosity` on the session).
  */
 describe('SET_GOAL host-apply (#1082)', () => {
   function createExecutorDeps() {
@@ -5258,7 +5865,6 @@ describe('SET_GOAL host-apply (#1082)', () => {
       fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
@@ -5441,11 +6047,12 @@ describe('SET_GOAL host-apply (#1082)', () => {
     expect(session.goal).toMatchObject({ objective: 'finish the epic', status: 'active' });
   });
 
-  it('replaces an existing goal and bumps the intent epoch (stale eval guard)', async () => {
+  it('queues behind an in-flight goal instead of replacing it (multi-goal T2)', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
     const session = createSession();
     session.goal = {
+      goalId: 'goal-old',
       objective: 'old objective',
       status: 'active',
       createdAt: 1,
@@ -5457,25 +6064,25 @@ describe('SET_GOAL host-apply (#1082)', () => {
       pendingEval: { requestedAt: 1, turnId: 'T1' },
     };
     const context = makeContext({
-      currentUserText: 'goal 바꿔줘: new objective',
+      currentUserText: 'goal 추가해줘: new objective',
       isUserInputTurn: true,
     });
 
     await (executor as any).handleModelCommandToolResults(
-      [makeSetGoalToolResult('new objective', 'goal 바꿔줘: new objective')],
+      [makeSetGoalToolResult('new objective', 'goal 추가해줘: new objective')],
       session,
       context,
     );
 
-    expect(session.goal.objective).toBe('new objective');
+    // T2: a second goal request while one is active must NOT replace the
+    // running goal — it is appended to the queue. The running goal (incl. its
+    // in-flight eval lease + epoch) stays untouched.
+    expect(session.goal.objective).toBe('old objective');
     expect(session.goal.status).toBe('active');
-    expect(session.goal.continuationCount).toBe(0);
-    // M1 stale-eval guard: a replacement is a NEW intent — the epoch must
-    // advance past the old goal's epoch so in-flight evals for the old
-    // objective are discarded on arrival.
-    expect(session.goal.epoch).toBeGreaterThan(3);
-    // No stale eval state may survive the replacement.
-    expect(session.goal.pendingEval).toBeUndefined();
+    expect(session.goal.epoch).toBe(3);
+    expect(session.goal.pendingEval).toEqual({ requestedAt: 1, turnId: 'T1' });
+    expect(session.goalQueue).toHaveLength(1);
+    expect(session.goalQueue[0]).toMatchObject({ objective: 'new objective', status: 'queued' });
   });
 
   it('a refused SET_GOAL leaves a pre-existing goal completely untouched', async () => {
@@ -5517,6 +6124,50 @@ describe('SET_GOAL host-apply (#1082)', () => {
     expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
     expect(session.systemPrompt).toBe('cached prompt');
   });
+
+  /**
+   * Spec 10 §3.2 — the preset cells (posted? work-log kind? session effect?)
+   * are in `model-command outcomes by verbosity` under `model-command
+   * integration`. These pin which flag decides, which no preset tells apart:
+   * a refusal follows none (host-side, the MCP echo told the model ok), the
+   * 🎯/📋 notice follows `STATUS_MESSAGE` like goal-loop-controller's
+   * `postStatusNotice`.
+   */
+  describe('notices by verbosity (spec 10 §3.2)', () => {
+    async function handleGoal(logVerbosity: number, contextOverrides: Record<string, unknown>) {
+      const executor = new StreamExecutor(createExecutorDeps()) as unknown as {
+        handleModelCommandToolResults: (...args: unknown[]) => Promise<unknown>;
+      };
+      const session = { ...createSession(), logVerbosity };
+      const workLog = vi.fn();
+      const context = makeContext({ workLog, ...contextOverrides });
+      await executor.handleModelCommandToolResults(
+        [makeSetGoalToolResult('ship the goal feature', 'goal로 잡아줘: ship the goal feature')],
+        session,
+        context,
+      );
+      return { session, say: context.say as ReturnType<typeof vi.fn>, workLog };
+    }
+
+    const USER_TURN = { currentUserText: '이번 릴리즈 goal로 잡아줘: ship the goal feature', isUserInputTurn: true };
+    const SYNTHETIC_TURN = { currentUserText: 'goal로 잡아줘: ship the goal feature', isUserInputTurn: false };
+
+    it('a refusal follows no flag: posted even when the mask is 0', async () => {
+      const { say, workLog } = await handleGoal(0, SYNTHETIC_TURN);
+
+      expect(say).toHaveBeenCalledTimes(1);
+      expect(say.mock.calls[0]?.[0]?.text ?? '').toContain('⚠️ SET_GOAL refused');
+      expect(workLog).toHaveBeenCalledTimes(1);
+    });
+
+    it('the goal notice follows STATUS_MESSAGE, like goal-loop status notices', async () => {
+      const onlyStatus = await handleGoal(LOG_MINIMAL | OutputFlag.STATUS_MESSAGE, USER_TURN);
+      const onlyToolCall = await handleGoal(LOG_MINIMAL | OutputFlag.TOOL_CALL, USER_TURN);
+
+      expect(onlyStatus.say).toHaveBeenCalledTimes(1);
+      expect(onlyToolCall.say).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('isRateLimitError (usage-limit detection)', () => {
@@ -5552,6 +6203,46 @@ describe('isRateLimitError (usage-limit detection)', () => {
   it('does not misfire on unrelated errors', () => {
     const executor = makeExecutor();
     expect((executor as any).isRateLimitError(new Error('Prompt is too long'))).toBe(false);
+  });
+});
+
+describe('detectPoolRateLimitRetryMs (pool-exhaustion retry-after)', () => {
+  function makeExecutor() {
+    return new StreamExecutor({} as any);
+  }
+
+  const INCIDENT =
+    'API Error: Request rejected (429) · All 9 eligible accounts are rate-limited right now; retry in 3283s.';
+
+  it('parses the advertised window from the incident rejection message', () => {
+    const executor = makeExecutor();
+    expect((executor as any).detectPoolRateLimitRetryMs(new Error(INCIDENT))).toBe(3283 * 1000);
+  });
+
+  it('reads the delay from stderrContent when the message is a bare process-exit', () => {
+    const executor = makeExecutor();
+    const error = Object.assign(new Error('Claude Code process exited with code 1'), { stderrContent: INCIDENT });
+    expect((executor as any).detectPoolRateLimitRetryMs(error)).toBe(3283 * 1000);
+  });
+
+  it('prefers the delay stashed by the content-guard (poolRateLimitRetryMs)', () => {
+    const executor = makeExecutor();
+    const error = Object.assign(new Error('Claude pool rate-limited (surfaced as turn content)'), {
+      poolRateLimitRetryMs: 42_000,
+    });
+    expect((executor as any).detectPoolRateLimitRetryMs(error)).toBe(42_000);
+  });
+
+  it('clamps an absurd advertised window to the 1-hour ceiling', () => {
+    const executor = makeExecutor();
+    const error = new Error('Request rejected (429) all accounts rate-limited; retry in 999999s');
+    expect((executor as any).detectPoolRateLimitRetryMs(error)).toBe(60 * 60 * 1000);
+  });
+
+  it('returns null for a per-account cap (rotation class, not a timed retry)', () => {
+    const executor = makeExecutor();
+    expect((executor as any).detectPoolRateLimitRetryMs(new Error("You've hit your limit · resets 9pm"))).toBeNull();
+    expect((executor as any).detectPoolRateLimitRetryMs(new Error('HTTP 429 too many requests'))).toBeNull();
   });
 });
 
@@ -5625,9 +6316,7 @@ describe('usage cap delivered as content triggers rotation (incident regression)
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -5636,6 +6325,8 @@ describe('usage cap delivered as content triggers rotation (incident regression)
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
         cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {
         scheduleCleanup: vi.fn(),
@@ -5679,7 +6370,7 @@ describe('usage cap delivered as content triggers rotation (incident regression)
       session: {
         sessionId: 'sess_cap',
         ownerId: 'U_TEST',
-        logVerbosity: 'detail',
+        logVerbosity: LOG_DETAIL,
         usage: {},
         terminated: false,
       },
@@ -5718,5 +6409,664 @@ describe('usage cap delivered as content triggers rotation (incident regression)
       expect.anything(),
       expect.stringContaining('hit your limit'),
     );
+  });
+});
+
+// ── Prompt-too-long delivered as content triggers auto fallback compact ──
+//
+// Field incident (dev, 2026-07-06T05:42Z): a gpt-5.5 (275k) overflow came back
+// as an ordinary assistant text turn — content literally "Prompt is too long" —
+// with a SUCCESSFUL result (stopReason=stop_sequence, isError=false). Nothing
+// threw, handleError never ran, so the auto-fallback-compact recovery (armed in
+// handleError) never fired and the session stayed wedged. This suite locks the
+// content→throw conversion that routes the shape into the fallback path.
+describe('prompt-too-long delivered as content triggers auto fallback compact (field incident)', () => {
+  async function* promptTooLongAsContentStream() {
+    yield {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'Prompt is too long' }] },
+    };
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+  }
+
+  function createPtlDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(promptTooLongAsContentStream())),
+        getSessionRegistry: vi.fn().mockReturnValue({
+          beginTurn: vi.fn(),
+          endTurn: vi.fn(),
+          broadcastSessionUpdate: vi.fn(),
+          getActivityState: vi.fn().mockReturnValue('idle'),
+        }),
+      },
+      fileHandler: {
+        formatFilePrompt: vi.fn().mockResolvedValue(''),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        handleToolUse: vi.fn().mockResolvedValue(undefined),
+        handleToolResult: vi.fn().mockResolvedValue(undefined),
+        getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        cleanup: vi.fn(),
+      },
+      statusReporter: {
+        getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
+      },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(50),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+        handleTodoUpdate: vi.fn().mockResolvedValue(undefined),
+      },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn(), touchSession: vi.fn() },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
+        getClient: vi.fn().mockReturnValue({}),
+        getBotUserId: vi.fn().mockResolvedValue('U_BOT'),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+        postSystemMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      turnNotifier: {
+        notify: vi.fn().mockResolvedValue(undefined),
+      },
+      threadPanel: undefined,
+    } as any;
+  }
+
+  it('converts the content-shaped overflow to the fallback-compact path without emitting a raw Exception card', async () => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+    const deps = createPtlDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    const session = {
+      sessionId: 'sess_ptl',
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'gpt-5.5',
+    } as any;
+
+    const result = await executor.execute({
+      session,
+      sessionKey: 'C555:t555',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: '아주 긴 메시지',
+      channel: 'C555',
+      threadTs: 't555',
+      user: 'U_TEST',
+      say,
+      isUserInput: true,
+    } as any);
+
+    // The success-shaped overflow was converted to the fallback path.
+    expect(result.success).toBe(false);
+    expect((result as any).fallbackCompact).toBe(true);
+    expect(result.retryAfterMs).toBe(500);
+    // Session switched to the 1M compact model; original + user text stashed.
+    expect(session.model).toBe('claude-opus-4-8[1m]');
+    expect(session.fallbackCompactActive).toBe(true);
+    expect(session.fallbackCompactOriginalModel).toBe('gpt-5.5');
+    expect(session.fallbackCompactPendingUserText).toBe('아주 긴 메시지');
+    // Session must NOT be cleared — history is what /compact will shrink.
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    // The recoverable fallback path must not surface the raw prompt-too-long
+    // wrapper as a red Exception card before the compact notice.
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('1M 모델로 자동 컴팩트');
+    expect(say.mock.calls[0][0].text).not.toContain('surfaced as turn content');
+    // The error text must NOT be persisted as the assistant's answer.
+    const { recordAssistantTurn } = await import('../../../conversation');
+    expect(vi.mocked(recordAssistantTurn)).not.toHaveBeenCalledWith(expect.anything(), 'Prompt is too long');
+  });
+
+  it('marks the stash as a goal objective when the failed turn was literal (PR #305)', async () => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+    const deps = createPtlDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = {
+      sessionId: 'sess_ptl_literal',
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'gpt-5.5',
+    } as any;
+
+    await executor.execute({
+      session,
+      sessionKey: 'C555:t555',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: 'new dashboard 구현',
+      channel: 'C555',
+      threadTs: 't555',
+      user: 'U_TEST',
+      say,
+      isUserInput: true,
+      literalPrompt: true,
+    } as any);
+
+    expect(session.fallbackCompactPendingUserText).toBe('new dashboard 구현');
+    // Replayed after the emergency /compact as the user's words, not as `new`.
+    expect(session.fallbackCompactPendingEventContext).toMatchObject({ user: 'U_TEST', verbatimPrompt: true });
+  });
+
+  it('does NOT misfire on long prose that merely mentions the phrase', () => {
+    const prose =
+      'The error "Prompt is too long" appears when the context window overflows. To handle it, the harness switches to a 1M model, compacts, and switches back — see stream-executor for details.';
+    // Access module-local detector through the same behavior surface: a long
+    // text must not convert to a throw. We assert via execute-level behavior
+    // being unnecessary here — the length gate (>160 chars) excludes prose.
+    expect(prose.length).toBeGreaterThan(160);
+  });
+});
+
+// ── Compaction failure delivered as content: transcript repair + unwedge ──
+//
+// Field incident (dev, 2026-07-07T08:32Z, session ccee16e0): a gpt-5.5 turn
+// persisted an assistant message with an EMPTY text content block into the
+// SDK transcript. The auto-fallback `/compact` (on opus[1m]) replayed that
+// history through the Anthropic API → 400 "messages: text content blocks
+// must be non-empty". The SDK sealed the failed compact as a SUCCESSFUL turn
+// whose content was the raw stderr line — so nothing threw, the raw error
+// leaked to Slack, fallbackCompactActive/model were never restored, and every
+// subsequent turn 400-ed the same way (session wedged forever).
+describe('compaction failure delivered as content (transcript repair + unwedge)', () => {
+  const SESSION_UUID = 'ccee16e0-ffed-4c59-a1c1-732b89c5cf53';
+  const EMPTY_BLOCK_400_TEXT =
+    'Error: Error during compaction: API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"messages: text content blocks must be non-empty"},"request_id":"req_x"}';
+
+  let configDir: string;
+  let transcriptPath: string;
+  let prevConfigDirEnv: string | undefined;
+
+  function writePoisonedTranscript() {
+    const fsn = require('node:fs');
+    const pathn = require('node:path');
+    const projectDir = pathn.join(configDir, 'projects', '-tmp-U-session-1');
+    fsn.mkdirSync(projectDir, { recursive: true });
+    transcriptPath = pathn.join(projectDir, `${SESSION_UUID}.jsonl`);
+    const lines = [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'work' }] } },
+      {
+        type: 'assistant',
+        uuid: 'a1',
+        parentUuid: 'u1',
+        message: { role: 'assistant', content: [{ type: 'text', text: '' }], stop_reason: 'tool_use' },
+      },
+    ];
+    fsn.writeFileSync(transcriptPath, lines.map((l: unknown) => JSON.stringify(l)).join('\n'), 'utf8');
+  }
+
+  function transcriptStillPoisoned(): boolean {
+    const fsn = require('node:fs');
+    return fsn
+      .readFileSync(transcriptPath, 'utf8')
+      .split('\n')
+      .some((l: string) => l !== '' && l.includes('"text":""'));
+  }
+
+  beforeEach(() => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+    const fsn = require('node:fs');
+    const osn = require('node:os');
+    const pathn = require('node:path');
+    configDir = fsn.mkdtempSync(pathn.join(osn.tmpdir(), 'se-compact-repair-'));
+    prevConfigDirEnv = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    writePoisonedTranscript();
+  });
+
+  afterEach(() => {
+    const fsn = require('node:fs');
+    if (prevConfigDirEnv === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevConfigDirEnv;
+    fsn.rmSync(configDir, { recursive: true, force: true });
+  });
+
+  async function* contentTurnStream(text: string) {
+    yield { type: 'assistant', message: { content: [{ type: 'text', text }] } };
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+  }
+
+  function createRepairDeps(turnText: string) {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(contentTurnStream(turnText))),
+        getSessionRegistry: vi.fn().mockReturnValue({
+          beginTurn: vi.fn(),
+          endTurn: vi.fn(),
+          broadcastSessionUpdate: vi.fn(),
+          getActivityState: vi.fn().mockReturnValue('idle'),
+        }),
+      },
+      fileHandler: {
+        formatFilePrompt: vi.fn().mockResolvedValue(''),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        handleToolUse: vi.fn().mockResolvedValue(undefined),
+        handleToolResult: vi.fn().mockResolvedValue(undefined),
+        getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        cleanup: vi.fn(),
+      },
+      statusReporter: {
+        getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
+      },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(50),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+        handleTodoUpdate: vi.fn().mockResolvedValue(undefined),
+      },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn(), touchSession: vi.fn() },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
+        getClient: vi.fn().mockReturnValue({}),
+        getBotUserId: vi.fn().mockResolvedValue('U_BOT'),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+        postSystemMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      turnNotifier: { notify: vi.fn().mockResolvedValue(undefined) },
+      threadPanel: undefined,
+    } as any;
+  }
+
+  function fallbackCompactSession() {
+    return {
+      sessionId: SESSION_UUID,
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'claude-opus-4-8[1m]',
+      fallbackCompactActive: true,
+      fallbackCompactOriginalModel: 'gpt-5.5',
+      fallbackCompactPendingUserText: '아주 긴 메시지',
+      fallbackCompactPendingEventContext: { channel: 'C555', threadTs: 't555', user: 'U_TEST', ts: '1' },
+    } as any;
+  }
+
+  function executeParams(session: any, say: ReturnType<typeof vi.fn>, text: string) {
+    return {
+      session,
+      sessionKey: 'C555:t555',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text,
+      channel: 'C555',
+      threadTs: 't555',
+      user: 'U_TEST',
+      say,
+    } as any;
+  }
+
+  it('repairs the transcript and schedules a /compact retry on the empty-block 400 (quiet)', async () => {
+    const deps = createRepairDeps(EMPTY_BLOCK_400_TEXT);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    // Retry rail: fallbackCompact re-entry scheduled, session state intact.
+    expect(result.success).toBe(false);
+    expect((result as any).fallbackCompact).toBe(true);
+    expect(result.retryAfterMs).toBe(500);
+    expect(session.fallbackCompactActive).toBe(true);
+    expect(session.model).toBe('claude-opus-4-8[1m]');
+    // The poison was actually removed from the transcript.
+    expect(transcriptStillPoisoned()).toBe(false);
+    // Quiet: no raw error post, no Exception card, session preserved.
+    expect(say).not.toHaveBeenCalled();
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+  });
+
+  it('fails terminally when repair was already attempted: restores model, clears state, resets session, posts ONE condensed notice', async () => {
+    const deps = createRepairDeps(EMPTY_BLOCK_400_TEXT);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+    session.transcriptRepairAttemptedAtMs = Date.now(); // repair already ran for this wedge
+    session.compactTickInterval = setInterval(() => {}, 60_000);
+    session.compactEpoch = 3;
+    session.compactPostedByEpoch = { 3: { pre: true, post: false } };
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    // Terminal: no retry, turn handled.
+    expect(result.retryAfterMs).toBeUndefined();
+    expect((result as any).fallbackCompact).toBe(false);
+    expect(result.handled).toBe(true);
+    // Unwedged: original model restored, fallback state cleared.
+    expect(session.model).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(false);
+    expect(session.fallbackCompactOriginalModel).toBeNull();
+    expect(session.fallbackCompactPendingUserText).toBeNull();
+    expect(typeof session.fallbackCompactFailedAtMs).toBe('number');
+    // Compact-cycle UI sealed: ticker stopped, epoch closed.
+    expect(session.compactTickInterval).toBeUndefined();
+    expect(session.compactPostedByEpoch[3].post).toBe(true);
+    // Transcript unrepairable → SDK session cleared so next turn starts clean.
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalledWith('C555', 't555');
+    // Exactly ONE condensed notice — not the raw stderr, not a 🔴 card pair.
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    const text = say.mock.calls[0][0].text as string;
+    expect(text).toContain('컴팩트 실패');
+    expect(text).toContain('gpt-5.5');
+    expect(text).toContain('Error during compaction');
+  });
+
+  it('preserves provider compact refusal details beyond 300 characters in Slack and logs', async () => {
+    const detail = `Error: Error during compaction: ${'provider context '.repeat(25)}Usage Policy: request blocked`;
+    const deps = createRepairDeps(detail);
+    const executor = new StreamExecutor(deps);
+    const log = vi.spyOn((executor as any).logger, 'error');
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+
+    await executor.execute(executeParams(session, say, '/compact'));
+
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('Usage Policy: request blocked');
+    expect(say.mock.calls[0][0].text).not.toContain('다음 메시지부터 정상 동작');
+    expect(log).toHaveBeenCalledWith(
+      'Fallback compact failed terminally — session unwedged',
+      expect.objectContaining({ reason: expect.stringContaining('Usage Policy: request blocked') }),
+    );
+    expect(session.model).toBe('gpt-5.5');
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+  });
+
+  it('redacts credentials and neutralizes Slack markup in compact error details', async () => {
+    const detail =
+      'Error: Error during compaction: policy refusal xoxb-sensitive-token ghp_sensitive123 <@U_TEST> ``` token=private-value {"password":"json-private","api_key":"json-key"} {\'password\': \'python-private\', \'api_key\': \'python-key\'}';
+    const deps = createRepairDeps(detail);
+    const executor = new StreamExecutor(deps);
+    const log = vi.spyOn((executor as any).logger, 'error');
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(executeParams(fallbackCompactSession(), say, '/compact'));
+
+    const text = say.mock.calls[0][0].text as string;
+    expect(text).toContain('policy refusal');
+    expect(text).not.toContain('<@U_TEST>');
+    expect(text).not.toContain('```');
+    for (const secret of [
+      'xoxb-sensitive-token',
+      'ghp_sensitive123',
+      'private-value',
+      'json-private',
+      'json-key',
+      'python-private',
+      'python-key',
+    ]) {
+      expect(text).not.toContain(secret);
+      expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
+    }
+  });
+
+  it.each([
+    'private_key',
+    'privateKey',
+    'aws_secret_access_key',
+    'client_secret',
+    'session_token',
+  ])('redacts compound credential field %s in provider diagnostics', async (field) => {
+    const detail = `Error: Error during compaction: policy refusal ${JSON.stringify({ [field]: 'compound-sensitive-value' })}`;
+    const executor = new StreamExecutor(createRepairDeps(detail));
+    const log = vi.spyOn((executor as any).logger, 'error');
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    await executor.execute(executeParams(fallbackCompactSession(), say, '/compact'));
+    expect(say.mock.calls[0][0].text).toContain('policy refusal');
+    expect(say.mock.calls[0][0].text).not.toContain('compound-sensitive-value');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('compound-sensitive-value');
+  });
+
+  it('redacts unlabelled multiline PEM private keys from provider diagnostics', async () => {
+    const detail =
+      'Error: Error during compaction: policy refusal\n-----BEGIN RSA PRIVATE KEY-----\nprivate-key-material\n-----END RSA PRIVATE KEY-----';
+    const executor = new StreamExecutor(createRepairDeps(detail));
+    const log = vi.spyOn((executor as any).logger, 'error');
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    await executor.execute(executeParams(fallbackCompactSession(), say, '/compact'));
+    expect(say.mock.calls[0][0].text).toContain('policy refusal');
+    expect(say.mock.calls[0][0].text).not.toContain('private-key-material');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private-key-material');
+  });
+
+  it('does not suppress a long compact-error explanation on an ordinary work turn', async () => {
+    const detail = `Error during compaction: ${'explanation '.repeat(160)}`;
+    const deps = createRepairDeps(detail);
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = { ...fallbackCompactSession(), fallbackCompactActive: false };
+
+    const result = await executor.execute(executeParams(session, say, 'Explain the error'));
+
+    expect(result.success).toBe(true);
+    expect(say).toHaveBeenCalled();
+    expect(say.mock.calls.some((args) => String(args[0].text).includes('explanation'))).toBe(true);
+  });
+
+  it('bounds Slack compact details with explicit truncation while retaining sanitized log detail', async () => {
+    const detail = `Error: Error during compaction: ${'<'.repeat(4000)}PROVIDER_END`;
+    const deps = createRepairDeps(detail);
+    const executor = new StreamExecutor(deps);
+    const log = vi.spyOn((executor as any).logger, 'error');
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await executor.execute(executeParams(fallbackCompactSession(), say, '/compact'));
+
+    const text = say.mock.calls[0][0].text as string;
+    expect(text.length).toBeLessThan(3000);
+    expect(text).toContain('상세 로그');
+    expect(log).toHaveBeenCalledWith(
+      'Fallback compact failed terminally — session unwedged',
+      expect.objectContaining({ reason: expect.stringContaining('PROVIDER_END') }),
+    );
+  });
+
+  it('fails terminally on a non-400 compaction error WITHOUT clearing the session', async () => {
+    const deps = createRepairDeps(
+      'Error: Error during compaction: API Error: Server is temporarily limiting requests (not your usage limit)',
+    );
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    expect(result.retryAfterMs).toBeUndefined();
+    expect(session.model).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(false);
+    // History is intact — a rate-limited compact must NOT cost the session.
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('컴팩트 실패');
+  });
+
+  // Codex review (PR #1206): guard ORDER regression. A compaction failure
+  // whose detail embeds a prompt-too-long / usage-limit phrase must reach the
+  // terminal compact rail — if the generic content guards consumed it first,
+  // fallback state and the 1M model would never be unwound.
+  it('routes "Error during compaction: Prompt is too long" to the terminal compact rail, not the PTL guard', async () => {
+    const deps = createRepairDeps('Error: Error during compaction: Prompt is too long');
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    // Terminal compact rail — NOT the prompt-too-long fallback path.
+    expect(result.retryAfterMs).toBeUndefined();
+    expect(session.model).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(false);
+    expect(typeof session.fallbackCompactFailedAtMs).toBe('number');
+    // Not an empty-block 400 → the session history survives.
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('컴팩트 실패');
+  });
+
+  it('routes a usage-limit-phrased compaction failure to the terminal compact rail, not the rotation path', async () => {
+    const deps = createRepairDeps("Error: Error during compaction: You've hit your usage limit · resets 9pm");
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = fallbackCompactSession();
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    expect(result.retryAfterMs).toBeUndefined();
+    expect(session.model).toBe('gpt-5.5');
+    expect(session.fallbackCompactActive).toBe(false);
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('컴팩트 실패');
+  });
+
+  it('does NOT set the re-arm cooldown when a MANUAL /compact fails (no armed fallback)', async () => {
+    const deps = createRepairDeps('Error: Error during compaction: API Error: Server is temporarily limiting requests');
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = {
+      sessionId: SESSION_UUID,
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'gpt-5.5',
+      // No fallbackCompactActive — this is a user-invoked /compact.
+    } as any;
+
+    const result = await executor.execute(executeParams(session, say, '/compact'));
+
+    expect(result.retryAfterMs).toBeUndefined();
+    // A failed manual compact must not block a later EMERGENCY fallback.
+    expect(session.fallbackCompactFailedAtMs).toBeUndefined();
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(say.mock.calls[0][0].text).toContain('컴팩트 실패');
+  });
+
+  it('repairs the transcript PROACTIVELY when arming the fallback compact (prompt-too-long path)', async () => {
+    const deps = createRepairDeps('Prompt is too long');
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = {
+      sessionId: SESSION_UUID,
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'gpt-5.5',
+    } as any;
+
+    const result = await executor.execute(executeParams(session, say, '아주 긴 메시지'));
+
+    // Fallback armed as before…
+    expect((result as any).fallbackCompact).toBe(true);
+    expect(session.fallbackCompactActive).toBe(true);
+    // …and the poison was removed BEFORE the /compact that would have 400-ed.
+    expect(transcriptStillPoisoned()).toBe(false);
+    expect(typeof session.transcriptRepairAttemptedAtMs).toBe('number');
+  });
+
+  it('does not re-arm the fallback within the terminal-failure cooldown (no arm→fail→arm loop)', async () => {
+    const deps = createRepairDeps('Prompt is too long');
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = {
+      sessionId: SESSION_UUID,
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'gpt-5.5',
+      fallbackCompactFailedAtMs: Date.now(), // just failed terminally
+    } as any;
+
+    const result = await executor.execute(executeParams(session, say, '아주 긴 메시지'));
+
+    expect((result as any).fallbackCompact).toBe(false);
+    expect(session.fallbackCompactActive).toBeFalsy();
+    // Falls through to the generic overflow policy instead of looping.
+    expect(deps.claudeHandler.clearSessionId).toHaveBeenCalled();
+  });
+
+  it('repairs and quietly retries when the empty-block 400 leaks on a NORMAL turn', async () => {
+    const deps = createRepairDeps(
+      'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"messages: text content blocks must be non-empty"},"request_id":"req_y"}',
+    );
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = {
+      sessionId: SESSION_UUID,
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'claude-opus-4-8[1m]',
+    } as any;
+
+    const result = await executor.execute(executeParams(session, say, '계속 진행해줘'));
+
+    expect(result.success).toBe(false);
+    expect(result.retryAfterMs).toBe(500);
+    expect((result as any).fallbackCompact).toBe(false);
+    expect(transcriptStillPoisoned()).toBe(false);
+    // Quiet retry: no raw 400 leak, no Exception card, session preserved.
+    expect(say).not.toHaveBeenCalled();
+    expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
+    expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
   });
 });

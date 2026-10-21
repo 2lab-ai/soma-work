@@ -3,7 +3,15 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RESERVED_LEASE_KEYS } from '../auth/query-env-builder';
-import { type Config, loadConfig, parseAgentsConfig, parseClaudeEnv, saveConfig } from '../config-loader';
+import { __resetForTests } from '../config-env-substitution';
+import {
+  type Config,
+  inspectConfig,
+  loadConfig,
+  parseAgentsConfig,
+  parseClaudeEnv,
+  saveConfig,
+} from '../config-loader';
 
 describe('saveConfig', () => {
   let tmpDir: string;
@@ -410,6 +418,20 @@ describe('loadConfig — env-var substitution', () => {
  *      valid ones still load.
  *   6. The summary `logger.info` fires only when ≥ 1 agent loaded.
  */
+/**
+ * Own-property probe: is the key actually present, or merely `undefined`?
+ *
+ * Bolt itself does NOT distinguish the two — `App.js` destructures its options
+ * as `{ signingSecret = undefined, … }`, and a destructuring default fires on
+ * the value whether or not the key exists. The contract these tests pin is the
+ * canonical SHAPE of the object we hand over: an options/config object must
+ * never carry a declared-but-empty secret, so that serialization, diffing, and
+ * any future receiver or config consumer read it unambiguously. `toEqual` and
+ * `in` both blur exactly that distinction, so the assertions go through here.
+ */
+// biome-ignore lint/suspicious/noPrototypeBuiltins: Object.hasOwn needs lib ES2022; tsconfig targets ES2020
+const hasOwnProp = (target: object, key: string): boolean => Object.prototype.hasOwnProperty.call(target, key);
+
 describe('parseAgentsConfig — characterization (issue #793 PR1)', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
   let infoSpy: ReturnType<typeof vi.spyOn>;
@@ -515,12 +537,41 @@ describe('parseAgentsConfig — characterization (issue #793 PR1)', () => {
     });
   });
 
+  /**
+   * Task 7 — `signingSecret` is OPTIONAL. It verifies the `X-Slack-Signature`
+   * header on HTTP delivery; each agent runs Socket Mode (outbound wss keyed
+   * by `xapp-…`), so an agent without one is valid and must still load. A
+   * secret that IS declared has to look real, so present-but-invalid values
+   * (wrong type, blank, short) still skip the agent.
+   */
   describe('signingSecret validation', () => {
-    it('skips when signingSecret is missing', () => {
+    it('accepts an agent that declares no signingSecret at all', () => {
       const agent = makeValidAgent({ signingSecret: undefined });
       const result = parseAgentsConfig({ agents: { a: agent } });
-      expect(result).toEqual({});
-      expect(lastWarn()).toContain('missing or invalid signingSecret');
+      expect(result.a).toBeDefined();
+      expect(hasOwnProp(result.a, 'signingSecret')).toBe(false);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('accepts an agent whose entry omits the signingSecret key entirely', () => {
+      const { signingSecret: _omitted, ...agent } = makeValidAgent();
+      const result = parseAgentsConfig({ agents: { a: agent } });
+      expect(result.a).toBeDefined();
+      expect(hasOwnProp(result.a, 'signingSecret')).toBe(false);
+    });
+
+    it('skips when a declared signingSecret is blank or whitespace-only', () => {
+      for (const blank of ['', '   ']) {
+        warnSpy.mockClear();
+        const result = parseAgentsConfig({ agents: { a: makeValidAgent({ signingSecret: blank }) } });
+        expect(result).toEqual({});
+        expect(lastWarn()).toContain('min 20 chars');
+      }
+    });
+
+    it('never puts the declared secret value in the warning', () => {
+      parseAgentsConfig({ agents: { a: makeValidAgent({ signingSecret: 'c'.repeat(19) }) } });
+      expect(lastWarn()).not.toContain('c'.repeat(19));
     });
 
     it('skips when signingSecret is not a string', () => {
@@ -870,5 +921,482 @@ describe('loadConfig (claude.env round-trip)', () => {
 
     const reloaded = loadConfig(configFile);
     expect(reloaded['claude.env']).toEqual({ FOO: 'bar' });
+  });
+});
+
+describe('loadConfig — ui surfaces passthrough', () => {
+  let tmpDir: string;
+  let configFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-config-ui-'));
+    configFile = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const UI_SECTION = {
+    threadheader: {
+      lines: [{ block: 'header', fields: [{ field: 'title', truncate: 80 }] }],
+    },
+  };
+
+  it('loads a ui object into result.ui verbatim (opaque passthrough)', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: UI_SECTION }));
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toEqual(UI_SECTION);
+  });
+
+  it('round-trips ui through loadConfig → saveConfig (plugin-manager data-loss guard)', () => {
+    // plugin-manager.ts saveConfig path: loadConfig → {...full, plugin} →
+    // saveConfig. Without passthrough a plugin save would DELETE the
+    // operator's ui config.
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        ui: UI_SECTION,
+        plugin: { marketplace: [], plugins: [], localOverrides: [] },
+      }),
+    );
+    const loaded = loadConfig(configFile);
+    const updated = { ...loaded, plugin: { ...loaded.plugin, plugins: ['some@plugin'] } };
+    saveConfig(configFile, updated);
+
+    const onDisk = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    expect(onDisk.ui).toEqual(UI_SECTION);
+    const reloaded = loadConfig(configFile);
+    expect(reloaded.ui).toEqual(UI_SECTION);
+  });
+
+  it('SECURITY: ui keeps ${VAR} placeholders literal — never substituted, never persisted resolved', () => {
+    // ui is display-only config: env substitution must NOT apply to it.
+    // Regression guard for the round-trip leak: loadConfig used to surface
+    // the POST-substituteEnvVars ui object, so plugin-manager's
+    // loadConfig → saveConfig cycle would persist the RESOLVED env value
+    // to disk (secret disclosure + breaks env-driven rotation).
+    process.env.LEAK_TEST_VAR = 'resolved-secret-value-must-stay-in-env';
+    try {
+      fs.writeFileSync(
+        configFile,
+        JSON.stringify({
+          ui: {
+            threadheader: {
+              lines: [{ block: 'header', fields: [{ field: 'title', label: '${LEAK_TEST_VAR}' }] }],
+            },
+          },
+          plugin: { marketplace: [], plugins: [], localOverrides: [] },
+        }),
+      );
+
+      const loaded = loadConfig(configFile);
+      // In-memory Config.ui still carries the literal placeholder.
+      expect(JSON.stringify(loaded.ui)).toContain('${LEAK_TEST_VAR}');
+      expect(JSON.stringify(loaded.ui)).not.toContain('resolved-secret-value-must-stay-in-env');
+
+      // plugin-manager saveConfig path: loadConfig → spread → saveConfig.
+      saveConfig(configFile, { ...loaded, plugin: { ...loaded.plugin, plugins: ['some@plugin'] } });
+
+      const onDiskRaw = fs.readFileSync(configFile, 'utf-8');
+      expect(onDiskRaw).toContain('${LEAK_TEST_VAR}');
+      expect(onDiskRaw).not.toContain('resolved-secret-value-must-stay-in-env');
+    } finally {
+      delete process.env.LEAK_TEST_VAR;
+    }
+  });
+
+  it('drops a malformed ui (array) without throwing', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: [1, 2, 3] }));
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toBeUndefined();
+  });
+
+  it('drops a malformed ui (string) without throwing', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: 'compact' }));
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toBeUndefined();
+  });
+});
+
+describe('config.json ui defaults seeding (디폴트 설정을 config.json에)', () => {
+  // User requirement SSOT_1: defaults must land IN config.json itself so the
+  // operator sees and edits them there. Seed happens once, only when the
+  // `ui` key is absent; existing/emptied `ui` is never overwritten.
+  let tmpDir: string;
+  let configFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-seed-test-'));
+    configFile = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('seeds DEFAULT_UI_SURFACES into config.json when ui key is absent', async () => {
+    fs.writeFileSync(configFile, JSON.stringify({ mcpServers: {} }, null, 2));
+    const { loadConfig } = await import('../config-loader');
+    const { DEFAULT_UI_SURFACES } = await import('../slack/surface-config');
+
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toEqual(JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)));
+
+    const onDisk = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    expect(onDisk.ui).toEqual(JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)));
+    expect(onDisk.ui.threadheader.lines[0].fields[0].field).toBe('title');
+    expect(onDisk.mcpServers).toEqual({});
+    // No tmp leftover from the atomic write
+    expect(fs.readdirSync(tmpDir).filter((f) => f.includes('.tmp'))).toEqual([]);
+  });
+
+  it('does NOT overwrite an operator-customized ui key (file byte-content untouched)', async () => {
+    const custom = { ui: { threadheader: { lines: [{ fields: [{ field: 'title' }] }] } } };
+    // Deliberately non-pretty JSON: a rewrite would reformat, so byte
+    // equality proves the loader never touched the file at all.
+    const originalBytes = JSON.stringify(custom);
+    fs.writeFileSync(configFile, originalBytes);
+    const { loadConfig } = await import('../config-loader');
+
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toEqual(custom.ui);
+    expect(fs.readFileSync(configFile, 'utf-8')).toBe(originalBytes);
+  });
+
+  it('preserves ${VAR} placeholders elsewhere in the file when seeding', async () => {
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({ mcpServers: { j: { type: 'sse', url: '${SEED_TEST_URL}' } } }, null, 2),
+    );
+    process.env.SEED_TEST_URL = 'https://resolved.example';
+    try {
+      const { loadConfig } = await import('../config-loader');
+      loadConfig(configFile);
+      const onDisk = fs.readFileSync(configFile, 'utf-8');
+      expect(onDisk).toContain('${SEED_TEST_URL}');
+      expect(onDisk).not.toContain('https://resolved.example');
+    } finally {
+      delete process.env.SEED_TEST_URL;
+    }
+  });
+
+  it('second load is a no-op (seed is idempotent)', async () => {
+    fs.writeFileSync(configFile, JSON.stringify({}, null, 2));
+    const { loadConfig } = await import('../config-loader');
+    loadConfig(configFile);
+    const first = fs.readFileSync(configFile, 'utf-8');
+    loadConfig(configFile);
+    expect(fs.readFileSync(configFile, 'utf-8')).toBe(first);
+  });
+
+  it('missing config.json → returns {} and does NOT create the file', async () => {
+    // Seeding must never manufacture a config.json out of thin air — the
+    // loader's missing-file contract (warn + empty Config) stays intact.
+    const { loadConfig } = await import('../config-loader');
+    const cfg = loadConfig(configFile);
+    expect(cfg).toEqual({});
+    expect(fs.existsSync(configFile)).toBe(false);
+    expect(fs.readdirSync(tmpDir)).toEqual([]);
+  });
+
+  it('round-trip: seeded file → loadConfig → saveConfig keeps ui present', async () => {
+    // plugin-manager path: loadConfig → spread → saveConfig. The seeded
+    // defaults must survive that cycle like any operator-authored ui.
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({ plugin: { marketplace: [], plugins: [], localOverrides: [] } }, null, 2),
+    );
+    const { loadConfig, saveConfig: save } = await import('../config-loader');
+    const { DEFAULT_UI_SURFACES } = await import('../slack/surface-config');
+
+    const loaded = loadConfig(configFile); // triggers seed
+    save(configFile, { ...loaded, plugin: { ...loaded.plugin, plugins: ['some@plugin'] } as Config['plugin'] });
+
+    const onDisk = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    expect(onDisk.ui).toEqual(JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)));
+    const reloaded = loadConfig(configFile);
+    expect(reloaded.ui).toEqual(JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)));
+  });
+
+  it('logs the seed info at most once per process (module-scoped flag)', async () => {
+    // `loadConfig` runs at boot AND on every plugin-manager save; without
+    // the flag, seeding two different config files (multi-agent setups)
+    // would double-log. vi.resetModules gives this test a fresh flag.
+    vi.resetModules();
+    const infoSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const { loadConfig } = await import('../config-loader');
+      const otherFile = path.join(tmpDir, 'config-b.json');
+      fs.writeFileSync(configFile, JSON.stringify({}, null, 2));
+      fs.writeFileSync(otherFile, JSON.stringify({}, null, 2));
+
+      loadConfig(configFile);
+      loadConfig(otherFile);
+
+      const seedLogs = infoSpy.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('Seeded default `ui`'),
+      );
+      expect(seedLogs.length).toBe(1);
+      // Both files are still seeded — only the LOG is deduped.
+      expect(JSON.parse(fs.readFileSync(configFile, 'utf-8')).ui).toBeDefined();
+      expect(JSON.parse(fs.readFileSync(otherFile, 'utf-8')).ui).toBeDefined();
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+});
+
+describe('ui seeding + legacy llmChat strip interplay (PR #1270 codex finding)', () => {
+  let tmpDir: string;
+  let configFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-seed-llmchat-'));
+    configFile = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('keeps the seeded ui when the llmChat strip rewrites the file in the same load', async () => {
+    // Both migrations fire in one loadConfig: (1) seed ui, (2) strip llmChat.
+    // The strip rewrites from rawParsed — it must include the seeded ui,
+    // otherwise the second rename drops it (BLOCKING finding, PR #1270).
+    vi.resetModules();
+    fs.writeFileSync(configFile, JSON.stringify({ llmChat: { legacy: true }, mcpServers: {} }, null, 2));
+    const { loadConfig } = await import('../config-loader');
+    const { DEFAULT_UI_SURFACES } = await import('../slack/surface-config');
+
+    const cfg = loadConfig(configFile);
+    expect(cfg.ui).toEqual(JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)));
+
+    const onDisk = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    expect(onDisk.llmChat).toBeUndefined();
+    expect(onDisk.ui).toEqual(JSON.parse(JSON.stringify(DEFAULT_UI_SURFACES)));
+  });
+});
+
+/**
+ * The read-only inspection path.
+ *
+ * `loadConfig` is built for the runtime: it seeds `ui`, strips legacy keys, and
+ * degrades a failed load to `{}` so the process boots. Every one of those is
+ * wrong for a checker, which must not touch the profile it is diagnosing and
+ * must be able to tell "empty config" from "config threw". These tests pin
+ * both halves of that split.
+ */
+describe('inspectConfig / loadConfig read-only options', () => {
+  let tmpDir: string;
+  let configFile: string;
+
+  function write(body: string): void {
+    fs.writeFileSync(configFile, body, { mode: 0o600 });
+    fs.chmodSync(configFile, 0o600);
+  }
+
+  function snapshot(): { text: string; mode: number; mtimeMs: number } {
+    const stat = fs.statSync(configFile);
+    return { text: fs.readFileSync(configFile, 'utf-8'), mode: stat.mode & 0o7777, mtimeMs: stat.mtimeMs };
+  }
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'inspect-config-test-'));
+    configFile = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reports loaded:false for a required ${VAR:?} placeholder, whose throw precedes the missing list', () => {
+    write(JSON.stringify({ ui: {}, probe: '${SOMA_REQUIRED:?set me}' }));
+    const result = inspectConfig(configFile, { env: {} });
+    expect(result).toEqual({ loaded: false, missing: [], config: null });
+  });
+
+  it('reports loaded:false for malformed JSON and for an absent file', () => {
+    write('{ not json');
+    expect(inspectConfig(configFile, { env: {} }).loaded).toBe(false);
+    expect(inspectConfig(path.join(tmpDir, 'absent.json'), { env: {} }).loaded).toBe(false);
+  });
+
+  it('reports bare unresolved placeholders with loaded:true', () => {
+    write(JSON.stringify({ ui: {}, probe: '${SOMA_ABSENT}' }));
+    expect(inspectConfig(configFile, { env: {} })).toMatchObject({ loaded: true, missing: ['SOMA_ABSENT'] });
+  });
+
+  it('resolves from the supplied env map without touching process.env', () => {
+    write(JSON.stringify({ ui: {}, probe: '${SOMA_SUPPLIED}' }));
+    const before = { ...process.env };
+    const result = inspectConfig(configFile, { env: { SOMA_SUPPLIED: 'value' } });
+    expect(result.missing).toEqual([]);
+    expect(process.env).toEqual(before);
+  });
+
+  it('does not run dotenv discovery, so a sibling .env never enters process.env', () => {
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'SOMA_SIBLING_ENV_PROBE=leaked\n');
+    write(JSON.stringify({ ui: {} }));
+    inspectConfig(configFile, { env: {} });
+    expect(process.env.SOMA_SIBLING_ENV_PROBE).toBeUndefined();
+  });
+
+  it('does not seed ui into a config that lacks it', () => {
+    write(JSON.stringify({ mcpServers: {} }));
+    const before = snapshot();
+    // The in-memory view still reports what the runtime would use...
+    expect(inspectConfig(configFile, { env: {} }).config?.ui).toBeDefined();
+    // ...while the file on disk is byte-, mode- and mtime-identical.
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('does not strip a legacy llmChat key', () => {
+    write(JSON.stringify({ ui: {}, llmChat: { model: 'legacy' } }));
+    const before = snapshot();
+    inspectConfig(configFile, { env: {} });
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('leaves no temp file behind', () => {
+    write(JSON.stringify({ mcpServers: {} }));
+    inspectConfig(configFile, { env: {} });
+    expect(fs.readdirSync(tmpDir)).toEqual(['config.json']);
+  });
+
+  it('honours an explicit readOnly:true even when no env map is supplied', () => {
+    write(JSON.stringify({ mcpServers: {} }));
+    const before = snapshot();
+    loadConfig(configFile, { readOnly: true });
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('suppresses dotenv discovery under readOnly even with no env map', () => {
+    // The contract is "no ambient process.env mutation", full stop. Keying the
+    // skip on `env` alone left both no-env-map entrypoints writing the
+    // discovered file's variables into the controller's environment.
+    __resetForTests();
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'SOMA_READONLY_DISCOVERY_PROBE=leaked\n');
+    write(JSON.stringify({ ui: {} }));
+    const before = { ...process.env };
+
+    inspectConfig(configFile);
+    expect(process.env.SOMA_READONLY_DISCOVERY_PROBE).toBeUndefined();
+    expect(process.env).toEqual(before);
+
+    loadConfig(configFile, { readOnly: true });
+    expect(process.env.SOMA_READONLY_DISCOVERY_PROBE).toBeUndefined();
+    expect(process.env).toEqual(before);
+  });
+
+  it('still runs dotenv discovery on the default runtime path, proving readOnly is what suppresses it', () => {
+    __resetForTests();
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'SOMA_RUNTIME_DISCOVERY_PROBE=loaded\n');
+    write(JSON.stringify({ ui: {} }));
+    try {
+      loadConfig(configFile);
+      expect(process.env.SOMA_RUNTIME_DISCOVERY_PROBE).toBe('loaded');
+    } finally {
+      delete process.env.SOMA_RUNTIME_DISCOVERY_PROBE;
+      __resetForTests();
+    }
+  });
+
+  it('still seeds ui on the default runtime path, proving read-only is what suppresses it', () => {
+    write(JSON.stringify({ mcpServers: {} }));
+    loadConfig(configFile);
+    expect(JSON.parse(fs.readFileSync(configFile, 'utf-8')).ui).toBeDefined();
+  });
+
+  it('writes a seeded config owner-only so a later permission check cannot fail on it', () => {
+    write(JSON.stringify({ mcpServers: {} }));
+    fs.chmodSync(configFile, 0o644);
+    loadConfig(configFile);
+    expect(fs.statSync(configFile).mode & 0o777).toBe(0o600);
+  });
+
+  it('saveConfig also writes owner-only, so every writer of config.json agrees', () => {
+    saveConfig(configFile, { mcpServers: {} });
+    expect(fs.statSync(configFile).mode & 0o777).toBe(0o600);
+  });
+
+  it('writes 0600 under a permissive umask, which the mode argument alone does not guarantee', () => {
+    const saved = process.umask(0o000);
+    try {
+      saveConfig(configFile, { mcpServers: {} });
+      expect(fs.statSync(configFile).mode & 0o777).toBe(0o600);
+      write(JSON.stringify({ mcpServers: {} }));
+      fs.chmodSync(configFile, 0o644);
+      loadConfig(configFile);
+      expect(fs.statSync(configFile).mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(saved);
+    }
+  });
+
+  it('never reuses a stale temp file left by a crashed save', () => {
+    // The old fixed `config.json.tmp` name meant a 0644 leftover was reused and
+    // renamed over the live file, re-creating the mode failure this hardening
+    // exists to remove.
+    const stale = `${configFile}.tmp`;
+    fs.writeFileSync(stale, '{"stale":true}\n', { mode: 0o644 });
+    fs.chmodSync(stale, 0o644);
+    saveConfig(configFile, { mcpServers: {} });
+    expect(JSON.parse(fs.readFileSync(configFile, 'utf-8'))).toEqual({ mcpServers: {} });
+    expect(fs.statSync(configFile).mode & 0o777).toBe(0o600);
+  });
+
+  it('leaves no temp file behind after a seed, a strip, or a save', () => {
+    write(JSON.stringify({ mcpServers: {} }));
+    loadConfig(configFile);
+    expect(fs.readdirSync(tmpDir)).toEqual(['config.json']);
+
+    write(JSON.stringify({ ui: {}, llmChat: { model: 'legacy' } }));
+    loadConfig(configFile);
+    expect(fs.readdirSync(tmpDir)).toEqual(['config.json']);
+
+    saveConfig(configFile, { mcpServers: {} });
+    expect(fs.readdirSync(tmpDir)).toEqual(['config.json']);
+  });
+
+  it('creates a missing config parent at 0700, never world-writable', () => {
+    // NN-1: the tightening opt-out used to be spelled `dirMode: 0o7777`, which
+    // is also the mode every CREATED component got — reachable from
+    // PluginManager.saveConfig on a config path whose directory does not exist,
+    // and worse than the 0644 file mode the hardening was written to prevent
+    // (config.json's mcpServers entries are command lines the runtime runs).
+    const nested = path.join(tmpDir, 'made', 'somawork');
+    const nestedConfig = path.join(nested, 'config.json');
+    saveConfig(nestedConfig, { mcpServers: {} });
+    expect(fs.statSync(nested).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(path.join(tmpDir, 'made')).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(nestedConfig).mode & 0o777).toBe(0o600);
+  });
+
+  it('creates a missing config parent at 0700 even under a permissive umask', () => {
+    const saved = process.umask(0o000);
+    try {
+      const nested = path.join(tmpDir, 'umask-made');
+      saveConfig(path.join(nested, 'config.json'), { mcpServers: {} });
+      expect(fs.statSync(nested).mode & 0o777).toBe(0o700);
+    } finally {
+      process.umask(saved);
+    }
+  });
+
+  it('leaves an existing 0755 checkout directory alone when saving config into it', () => {
+    // The other half of the same intent: a repository checkout holding
+    // config.json must not be chmod'd to 0700 by a plugin save.
+    fs.chmodSync(tmpDir, 0o755);
+    saveConfig(configFile, { mcpServers: {} });
+    expect(fs.statSync(tmpDir).mode & 0o777).toBe(0o755);
+    expect(fs.statSync(configFile).mode & 0o777).toBe(0o600);
+  });
+
+  it('preserves saveConfig key insertion order rather than sorting it', () => {
+    // `atomicWriteJson` would sort deeply; an operator's config.json must not
+    // be reordered by a plugin save.
+    saveConfig(configFile, { plugin: { enabled: true }, mcpServers: {} } as unknown as Config);
+    expect(Object.keys(JSON.parse(fs.readFileSync(configFile, 'utf-8')))).toEqual(['plugin', 'mcpServers']);
   });
 });

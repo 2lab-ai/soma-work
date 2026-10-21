@@ -27,7 +27,7 @@ describe('SummaryTimer — countdown tick callback', () => {
   });
 
   afterEach(() => {
-    timer.cancelAll();
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
@@ -104,22 +104,6 @@ describe('SummaryTimer — countdown tick callback', () => {
     expect(tick).toHaveBeenCalledTimes(1);
     expect(cb).not.toHaveBeenCalled();
     expect(timer.has('s')).toBe(false);
-  });
-
-  it('cancelAll() clears intervals across multiple sessions', () => {
-    const t1 = vi.fn();
-    const t2 = vi.fn();
-    timer.start('a', vi.fn(), t1);
-    timer.start('b', vi.fn(), t2);
-
-    expect(t1).toHaveBeenCalledTimes(1);
-    expect(t2).toHaveBeenCalledTimes(1);
-
-    timer.cancelAll();
-
-    vi.advanceTimersByTime(SummaryTimer.DELAY_MS * 2);
-    expect(t1).toHaveBeenCalledTimes(1);
-    expect(t2).toHaveBeenCalledTimes(1);
   });
 
   it('a thrown tick callback does not kill the interval (still fires later ticks)', () => {

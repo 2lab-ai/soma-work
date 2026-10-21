@@ -101,10 +101,3 @@ function sanitize(text: string): string {
 export function invalidateChannelCache(channelId: string): void {
   cache.delete(channelId);
 }
-
-/**
- * Clear all cached descriptions.
- */
-function clearChannelCache(): void {
-  cache.clear();
-}

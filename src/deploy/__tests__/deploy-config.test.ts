@@ -13,14 +13,15 @@ describe('deploy config expectations', () => {
     const workflow = read('.github/workflows/deploy.yml');
 
     expect(workflow).toContain('branches: [deploy/dev, deploy/prod]');
-    expect(workflow).toContain('deploy/prod)');
-    expect(workflow).toContain('"name":"work-m16-dev"');
-    expect(workflow).toContain('"name":"oudwood-dev"');
-    expect(workflow).toContain('"name":"work-m64-dev"');
-    expect(workflow).toContain('"name":"work-m16-main"');
-    expect(workflow).toContain('"deploy_env":"dev"');
-    expect(workflow).toContain('"target_dir":"/opt/soma-work/dev"');
-    expect(workflow).toContain('"target_dir":"/opt/soma-work/main"');
+    // Topology moved out of the repo into Actions variables ({runner}:{target-dir}
+    // line lists) — the workflow must route deploy/prod to the production list and
+    // everything else to the preview list, and build the matrix from the lines.
+    expect(workflow).toContain(
+      "RAW: ${{ github.ref_name == 'deploy/prod' && vars.PRODUCTION_DEPLOY_TARGETS || vars.PREVIEW_DEPLOY_TARGETS }}",
+    );
+    expect(workflow).toContain("DEPLOY_ENV_NAME: ${{ github.ref_name == 'deploy/prod' && 'main' || 'dev' }}");
+    expect(workflow).toContain('runner_label: $p[0]');
+    expect(workflow).toContain('target_dir: ($p[1:] | join(":"))');
     expect(workflow).toContain('node dist/deploy/main-env-bootstrap.js');
     expect(workflow).toContain('/Users/dd/app.claude-code-slack-bot');
   });
@@ -29,7 +30,6 @@ describe('deploy config expectations', () => {
     const promptSetup = read('scripts/setup/05-system-prompt.sh');
     const deployDirs = read('scripts/setup/07-deploy-dirs.sh');
     const environments = read('scripts/setup/09-github-environments.sh');
-    const newDeploySetup = read('scripts/new-deploy-setup.sh');
     const deployDoc = read('docs/runbook/add-new-deploy.md');
     const prFixWorkflow = read('src/prompt/workflows/pr-fix-and-update.prompt');
     const versionBump = read('scripts/version-bump.sh');
@@ -39,7 +39,9 @@ describe('deploy config expectations', () => {
     expect(deployDirs).toContain('(branch: main)');
     expect(environments).toContain('--field name="deploy/prod"');
     expect(environments).toContain('--field name="main"');
-    expect(newDeploySetup).toContain('PR target: main');
+    // `scripts/new-deploy-setup.sh` no longer carries deploy topology: it is a
+    // deprecation shim into `somawork setup`, whose contract lives in
+    // `scripts/__tests__/legacy-setup-shims.test.ts`.
     expect(deployDoc).toContain('main 브랜치가 macmini와 oudwood-512의 `/opt/soma-work/dev`로 배포');
     expect(deployDoc).toContain('deploy/prod 브랜치는 macmini의 `/opt/soma-work/main`으로 배포');
     expect(prFixWorkflow).toContain('git rebase origin/main');

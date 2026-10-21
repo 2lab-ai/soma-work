@@ -1,3 +1,6 @@
+import type { IncidentRequest } from '../incident-contract';
+import type { SayPostSwitches } from '../stream-processor';
+
 export interface ProcessedFile {
   path: string;
   name: string;
@@ -14,6 +17,22 @@ export interface ConversationSession {
   channelId: string;
   threadTs?: string;
   threadRootTs?: string;
+  /**
+   * Set once, at session init, from `routeContext.incidentRequest` of a
+   * verified Eagle incident request (see `incident-contract.ts`). Its presence
+   * makes the session incident-owned: the ingress refuses ordinary traffic in
+   * that thread and the runtime restricts the turn. Never set from message
+   * text, and deliberately NOT cleared by a session reset — a reset must not
+   * become the way to turn a restricted session into an unrestricted one.
+   */
+  incidentRequest?: IncidentRequest;
+  /**
+   * `attempt_id` of the incident attempt the HOST observed finish. Written only
+   * by the completion path — never by the model, message text, or a command —
+   * and cleared when the ingress hands the session to the next attempt. Without
+   * it, a retry on the same incident parent is denied.
+   */
+  incidentAttemptFinishedId?: string;
   actionPanel?: {
     waitingForChoice?: boolean;
     [key: string]: any;
@@ -42,6 +61,15 @@ export interface MessageEvent {
   text?: string;
   /** True for auto-resume, auto-retry, and other system-generated messages (not real user input) */
   synthetic?: boolean;
+  /**
+   * Original message text BEFORE leading inline session directives
+   * (`%model <v>` / `%nogoal`) were stripped by the message handler.
+   * Replay stashes (channel-route halt advisory `userMessage`, auto-compact
+   * `pendingUserText`) must store THIS text so a replayed message re-parses
+   * the directives instead of silently losing them. Never used as dispatch
+   * text for the current turn.
+   */
+  inlineDirectiveRawText?: string;
   /** Skip dispatch (workflow classification) entirely — transition straight to default workflow */
   skipDispatch?: boolean;
   /** Model override for cron jobs (e.g. "claude-sonnet-4-20250514"). Applied at session creation. */
@@ -51,12 +79,45 @@ export interface MessageEvent {
     sourceChannel?: string;
     sourceThreadTs?: string;
     /**
+     * True only for post-compact deferred replays (codex F2). Such a turn
+     * must NEVER supersede a live request: if a real turn grabbed the slot
+     * between the finally's isRequestActive check and this event reaching
+     * concurrency control, the replay is RE-PARKED on the session queue
+     * (the active turn's own finally replays it later), never aborted into.
+     */
+    compactRedispatch?: boolean;
+    /**
      * True only for goal auto-continuation injections. Such a turn must
      * NEVER supersede a live request: if the slot is busy when this event
      * reaches concurrency control, the continuation is dropped (the active
      * turn wins), not aborted. See `GoalLoopController` (M2).
      */
     goalContinuation?: boolean;
+    /**
+     * True when `text` is a `/z` command's verbatim `continueWithPrompt` (a
+     * goal objective) that already went through command routing. The message
+     * path dispatches it as the user's words: no second command routing, no
+     * inline `%` directives, no `!` abort/steer, always a real turn. Set only
+     * by the `/z` consumers (DM branch, app_mention); survives the follow-up
+     * queue because stored messages are never rebuilt.
+     */
+    verbatimPrompt?: boolean;
+    /**
+     * The opening turn of the goal with this id (always together with
+     * `verbatimPrompt`). Set by the host when a goal command or a dashboard
+     * goal action starts a goal while it cannot dispatch directly; the message
+     * path runs it only while that goal is still the ACTIVE goal — a goal
+     * deleted or replaced while its opening turn waited in the follow-up queue
+     * never runs. Survives the queue for the same reason as `verbatimPrompt`.
+     */
+    goalOpeningId?: string;
+    /**
+     * Present ONLY on a turn the incident ingress itself built after the
+     * contract accepted it (`event-router.ts` → `evaluateIncidentIngress`).
+     * Internal: it never survives a round-trip through Slack, so a message
+     * body cannot forge it. `SessionInitializer` copies it onto the session.
+     */
+    incidentRequest?: IncidentRequest;
   };
   files?: Array<{
     id: string;
@@ -69,12 +130,15 @@ export interface MessageEvent {
   }>;
 }
 
-export type SayFn = (args: {
-  text: string;
-  thread_ts?: string;
-  blocks?: any[];
-  attachments?: any[];
-}) => Promise<{ ts?: string }>;
+/** `SayPostSwitches` are set only by the incident conclusion post (see stream-processor.ts). */
+export type SayFn = (
+  args: {
+    text: string;
+    thread_ts?: string;
+    blocks?: any[];
+    attachments?: any[];
+  } & SayPostSwitches,
+) => Promise<{ ts?: string }>;
 
 export interface InputProcessResult {
   processedFiles: ProcessedFile[];

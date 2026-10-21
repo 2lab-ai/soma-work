@@ -36,6 +36,7 @@ import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { isSafePathSegment } from './path-utils';
 import { createPromptInvalidator } from './prompt-cache-invalidation';
+import { extractCopiedFrom, withCopiedFrom } from './user-skill-frontmatter';
 
 const logger = new Logger('UserSkillStore');
 
@@ -177,6 +178,30 @@ export function computeContentHash(content: string): string {
 }
 
 // --- Public API ---
+
+/**
+ * List a user's skill NAMES only — without reading any SKILL.md content.
+ *
+ * Used to render ANOTHER user's `$user:{owner}` list: skill names (directory
+ * names) are the minimal metadata needed to request access, whereas the
+ * descriptions inside SKILL.md are gated content. Reading descriptions for a
+ * cross-user list would leak the owner's skill bodies before any permission
+ * grant (codex review). Only a directory walk + a `SKILL.md` existence check —
+ * no `readFileSync`.
+ */
+export function listUserSkillNames(userId: string): string[] {
+  const skillsDir = getUserSkillsDir(userId);
+  if (!fs.existsSync(skillsDir)) return [];
+  try {
+    return fs
+      .readdirSync(skillsDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && fs.existsSync(path.join(skillsDir, e.name, 'SKILL.md')))
+      .map((e) => e.name)
+      .sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
 
 export function listUserSkills(userId: string): UserSkillMeta[] {
   const skillsDir = getUserSkillsDir(userId);
@@ -508,4 +533,50 @@ export function shareUserSkill(userId: string, skillName: string): SkillShareRes
 
   logger.info('User skill shared', { userId, skillName, length: detail.content.length });
   return { ok: true, message: `Skill "${skillName}" read for share.`, content: detail.content };
+}
+
+/**
+ * Copy another user's skill into `targetUserId`'s own skill set (S1, S8).
+ *
+ * The copy embeds the ORIGINAL owner's uid via a `copied_from` frontmatter
+ * field so that owner-relative refs inside the body (`$user:dev`, bare `$dev`)
+ * keep resolving to the origin owner for the new owner who installed the copy —
+ * see `slack/commands/skill-force-handler.ts` owner-context derivation. The
+ * authored body is preserved verbatim; only the frontmatter gains the field.
+ *
+ * Origin preservation: copying an already-copied skill keeps the TRUE origin
+ * (the existing `copied_from`) rather than re-attributing to the intermediate
+ * copier — otherwise the chained copy's owner-relative refs would break.
+ *
+ * Validation / caps are delegated to `createUserSkill` on the target (name
+ * validity, size, per-user count). The source read goes through the public
+ * `getUserSkill` so an invalid source name / missing skill fails cleanly.
+ */
+export function copyUserSkill(
+  sourceUserId: string,
+  skillName: string,
+  targetUserId: string,
+  targetName?: string,
+): SkillOperationResult {
+  if (!isValidSkillName(skillName)) {
+    return { ok: false, message: `Invalid source skill name "${skillName}". Use kebab-case.` };
+  }
+
+  const source = getUserSkill(sourceUserId, skillName);
+  if (!source) {
+    return { ok: false, message: `Source skill "${skillName}" not found.` };
+  }
+
+  // Preserve the true origin owner across chained copies.
+  const existing = extractCopiedFrom(source.content);
+  const originOwner = existing?.ownerUserId ?? sourceUserId;
+  const originSkill = existing?.skillName ?? skillName;
+  const content = withCopiedFrom(source.content, originOwner, originSkill);
+
+  const finalName = targetName ?? skillName;
+  const result = createUserSkill(targetUserId, finalName, content);
+  if (result.ok) {
+    logger.info('User skill copied', { sourceUserId, skillName, targetUserId, finalName, originOwner });
+  }
+  return result;
 }

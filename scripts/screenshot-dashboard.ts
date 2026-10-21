@@ -199,20 +199,17 @@ async function setupMockSessions() {
  * unused by production code and intentionally omitted.
  */
 async function installWsStub(page: Page) {
-  await page.addInitScript(() => {
-    class StubWebSocket {
-      onopen: ((ev: unknown) => void) | null = null;
-      onclose: ((ev: unknown) => void) | null = null;
-      onerror: ((ev: unknown) => void) | null = null;
-      onmessage: ((ev: unknown) => void) | null = null;
-      url: string;
-      constructor(url: string) {
-        this.url = url;
-      }
-      close() {}
-    }
-    // Override before the dashboard inline script runs.
-    (window as unknown as { WebSocket: typeof StubWebSocket }).WebSocket = StubWebSocket;
+  // Plain-JS source, not a TS function: tsx (esbuild keepNames) would wrap a
+  // class or named function in a __name() helper that does not exist in the
+  // page, and in WebKit that throw also cancels the init scripts after it.
+  await page.addInitScript({
+    content: [
+      // Override before the dashboard inline script runs.
+      'window.WebSocket = function StubWebSocket(url) {',
+      '  this.url = url; this.onopen = null; this.onclose = null; this.onerror = null; this.onmessage = null;',
+      '};',
+      'window.WebSocket.prototype.close = function () {};',
+    ].join('\n'),
   });
 }
 
@@ -275,24 +272,21 @@ async function applyState(page: Page, state: WsState, longName: string) {
  * of a copy-paste of the 6-property "set ws-status to Live" mutation.
  */
 async function installApplyStateHelpers(page: Page) {
-  await page.addInitScript(() => {
-    type DashboardWindow = Window & {
-      _applyUserPill?: (data: unknown) => void;
-      _renderAdminModeButton?: () => void;
-    };
-    (window as unknown as { __getDashWindow: () => DashboardWindow }).__getDashWindow = () =>
-      window as unknown as DashboardWindow;
-
-    (window as unknown as { __setLive: () => void }).__setLive = () => {
-      const el = document.getElementById('ws-status');
-      if (!el) return;
-      el.textContent = 'Live';
-      el.title = 'WebSocket: Live';
-      el.setAttribute('aria-label', 'WebSocket: Live');
-      el.style.background = 'rgba(62,207,142,0.2)';
-      el.style.borderColor = 'var(--green)';
-      el.style.color = 'var(--green)';
-    };
+  // Plain-JS source for the same __name() reason as installWsStub.
+  await page.addInitScript({
+    content: [
+      'window.__getDashWindow = function () { return window; };',
+      'window.__setLive = function () {',
+      "  var el = document.getElementById('ws-status');",
+      '  if (!el) return;',
+      "  el.textContent = 'Live';",
+      "  el.title = 'WebSocket: Live';",
+      "  el.setAttribute('aria-label', 'WebSocket: Live');",
+      "  el.style.background = 'rgba(62,207,142,0.2)';",
+      "  el.style.borderColor = 'var(--green)';",
+      "  el.style.color = 'var(--green)';",
+      '};',
+    ].join('\n'),
   });
 }
 

@@ -97,6 +97,28 @@ describe('local:html skill — RED contract', () => {
     expect(designIdx).toBeLessThan(generateIdx);
   });
 
+  it('wires the motion-design standards + apple-design typography before generating HTML (Step 3.6)', () => {
+    const md = readFileSync(SKILL_MD, 'utf8');
+    // All authored CSS motion is governed by the shared motion standards —
+    // if this wiring disappears, entrances/hovers fall back to weak built-in
+    // easing and untracked durations (motion slop).
+    expect(md).toMatch(/motion-design\/references\/motion-standards\.md/);
+    expect(md).toMatch(/@starting-style/);
+    expect(md).toMatch(/hover:\s*hover/);
+    // Display typography is size-specific (apple-design §15).
+    expect(md).toMatch(/apple-design/);
+    expect(md).toMatch(/letter-spacing|tracking/i);
+    // The motion/typography layer must sit before the HTML is generated.
+    const motionIdx = md.search(/motion-design\/references\/motion-standards\.md/);
+    const generateIdx = md.search(/###\s*4\.\s*Generate HTML/);
+    expect(motionIdx).toBeGreaterThan(-1);
+    expect(generateIdx).toBeGreaterThan(-1);
+    expect(motionIdx).toBeLessThan(generateIdx);
+    // And the skills it points at must actually exist.
+    expect(existsSync(resolve(SKILL_ROOT, '..', 'motion-design', 'references', 'motion-standards.md'))).toBe(true);
+    expect(existsSync(resolve(SKILL_ROOT, '..', 'apple-design', 'SKILL.md'))).toBe(true);
+  });
+
   it('renderer/render.mjs exists and uses Playwright Chromium', () => {
     expect(existsSync(RENDERER)).toBe(true);
     const src = readFileSync(RENDERER, 'utf8');

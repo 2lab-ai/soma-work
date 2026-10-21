@@ -1,4 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ModelInputResolution } from '../../../user-settings-store';
+
+/**
+ * Static stand-in for `resolveModelInputDetailed`. `opus` resolves; the fake
+ * `grok-4.6[1m]` id takes the REJECTED branch (with the suggestion the real
+ * resolver produces); anything else is an unknown typo.
+ */
+function resolveDetailedStub(raw: string): ModelInputResolution {
+  const v = raw.toLowerCase().trim();
+  if (v === 'opus') return { status: 'accepted', modelId: 'claude-opus-4-1-20250805' };
+  if (/^grok-.*\[1m\]$/.test(v)) {
+    return {
+      status: 'rejected',
+      rejectedReason: `\`${raw}\` is not a real model id — grok has no 1M variant. Use \`grok-4.6\`.`,
+      suggestedModel: 'grok-4.6',
+    };
+  }
+  return { status: 'unknown' };
+}
 
 // Stub user-settings-store so SessionCommandHandler's imports don't trigger real file I/O.
 vi.mock('../../../user-settings-store', () => ({
@@ -13,6 +32,9 @@ vi.mock('../../../user-settings-store', () => ({
     getUserThinkingEnabled: vi.fn().mockReturnValue(false),
     getUserShowThinking: vi.fn().mockReturnValue(false),
     resolveModelInput: vi.fn((v: string) => (v === 'opus' ? 'claude-opus-4-1-20250805' : null)),
+    resolveModelInputWithRefresh: vi.fn(async (v: string) => (v === 'opus' ? 'claude-opus-4-1-20250805' : null)),
+    resolveModelInputDetailed: vi.fn((v: string) => resolveDetailedStub(v)),
+    resolveModelInputDetailedWithRefresh: vi.fn(async (v: string) => resolveDetailedStub(v)),
     resolveVerbosityInput: vi.fn((v: string) => (['minimal', 'compact', 'detail', 'verbose'].includes(v) ? v : null)),
   },
 }));
@@ -119,6 +141,32 @@ describe('SessionCommandHandler', () => {
       expect(texts.some((t: string) => t.includes('Session Model Changed'))).toBe(true);
     });
 
+    it('`%model <value>` immediately updates session.usage.contextWindow to the new model window', async () => {
+      // Regression: after `%model sol` the session kept the OLD model's
+      // contextWindow until the next turn's usage event, so `/context`
+      // reported remaining space against the wrong denominator.
+      session.usage = {
+        currentInputTokens: 100,
+        currentOutputTokens: 10,
+        currentCacheReadTokens: 0,
+        currentCacheCreateTokens: 0,
+        contextWindow: 1_000_000, // stale window from previous [1m] model
+        totalInputTokens: 100,
+        totalOutputTokens: 10,
+        totalCacheReadTokens: 0,
+        totalCacheCreateTokens: 0,
+        totalCostUsd: 0.01,
+        lastUpdated: Date.now(),
+      };
+
+      const ctx = makeCtx('%model opus');
+      await handler.execute(ctx);
+
+      // Mocked resolveModelInput('opus') → 'claude-opus-4-1-20250805' (bare id,
+      // no [1m] suffix) → resolveContextWindow = 200k fallback, not 1M.
+      expect((session.usage as { contextWindow: number }).contextWindow).toBe(200_000);
+    });
+
     it('emits deprecation notice for bare `$` → info', async () => {
       const ctx = makeCtx('$');
       await handler.execute(ctx);
@@ -126,6 +174,34 @@ describe('SessionCommandHandler', () => {
       const firstCall = (ctx.say as any).mock.calls[0][0];
       expect(firstCall.text).toContain('더 이상 사용되지 않습니다');
       expect(firstCall.text).toContain('`%`');
+    });
+  });
+
+  describe('session-only model set — fake grok [1m] rejection', () => {
+    it('rejects `%model grok-4.6[1m]` visibly and suggests bare grok-4.6', async () => {
+      const ctx = makeCtx('%model grok-4.6[1m]');
+      await handler.execute(ctx);
+
+      const texts = (ctx.say as any).mock.calls.map((c: any[]) => c[0].text as string);
+      const joined = texts.join('\n');
+      expect(joined).toContain('grok-4.6[1m]');
+      expect(joined).toMatch(/use `grok-4\.6`/i);
+      // Not the generic typo path — that dump reads as "you misspelled it".
+      expect(joined).not.toContain('Unknown model');
+      expect(joined).not.toContain('Session Model Changed');
+    });
+
+    it('does not mutate session.model on a rejected id', async () => {
+      const ctx = makeCtx('%model grok-4.6[1m]');
+      await handler.execute(ctx);
+      expect(session.model).toBe('claude-sonnet-4-20250514');
+    });
+
+    it('still reports an ordinary typo as an unknown model', async () => {
+      const ctx = makeCtx('%model opuss');
+      await handler.execute(ctx);
+      const joined = (ctx.say as any).mock.calls.map((c: any[]) => c[0].text as string).join('\n');
+      expect(joined).toContain('Unknown model');
     });
   });
 

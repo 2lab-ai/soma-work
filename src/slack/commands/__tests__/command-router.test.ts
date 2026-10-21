@@ -1,10 +1,11 @@
 import * as fs from 'node:fs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { LOG_DETAIL, LOG_MINIMAL } from '@soma/slack/output-flags';
+import { setStreamExecutorProviders } from '@soma/slack/pipeline/stream-executor';
+import type { WorkLogInput } from '@soma/slack/work-log';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../user-settings-store', () => ({
-  userSettingsStore: {
-    markMigrationHintShown: vi.fn().mockResolvedValue(false),
-  },
+  userSettingsStore: {},
 }));
 
 vi.mock('../../../metrics', () => ({
@@ -49,7 +50,6 @@ vi.mock('../../../path-utils', async (importOriginal) => {
   };
 });
 
-import { userSettingsStore } from '../../../user-settings-store';
 import { BypassHandler } from '../bypass-handler';
 import { CommandRouter } from '../command-router';
 import { EffortHandler } from '../effort-handler';
@@ -101,6 +101,17 @@ function buildDeps(overrides: Record<string, any> = {}): any {
     },
     contextWindowManager: {
       cleanupWithReaction: vi.fn().mockResolvedValue(undefined),
+    },
+    userSettingsStore: {
+      // GoalHandler.setGoal resolves the per-user max-continuation default (S4).
+      getUserGoalMaxContinuations: vi.fn().mockReturnValue(undefined),
+      setUserGoalMaxContinuations: vi.fn(),
+      getUserAutoGoalEnabled: vi.fn().mockReturnValue(false),
+      setUserAutoGoalEnabled: vi.fn(),
+      toggleUserAutoGoalEnabled: vi.fn().mockReturnValue(true),
+      // SkillForceHandler reads the requester's default verbosity when the
+      // thread has no session (decides whether the `$skill` banner posts).
+      getUserLogVerbosityFlags: vi.fn().mockReturnValue(LOG_DETAIL),
     },
     ...overrides,
   };
@@ -427,12 +438,11 @@ describe('CommandRouter — effort/rate regression guard (already canonical)', (
 /**
  * Issue #530: retired / non-canonical bare forms must fall through as
  * `handled: false` — NO tombstone hint ("더 이상 사용되지 않습니다") is ever
- * emitted from the router, and `markMigrationHintShown` is not called.
+ * emitted from the router.
  */
 describe('CommandRouter — non-canonical bare input falls through (no tombstone #530)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(userSettingsStore.markMigrationHintShown).mockClear();
   });
 
   async function assertFallsThrough(text: string): Promise<void> {
@@ -451,9 +461,7 @@ describe('CommandRouter — non-canonical bare input falls through (no tombstone
 
     // 1. Handled must be false (no tombstone short-circuit).
     expect(result.handled).toBe(false);
-    // 2. markMigrationHintShown must NOT be called — the gate was removed.
-    expect(userSettingsStore.markMigrationHintShown).not.toHaveBeenCalled();
-    // 3. `say` must NOT emit the tombstone hint text.
+    // 2. `say` must NOT emit the tombstone hint text.
     for (const call of say.mock.calls) {
       const payload = call[0] as { text?: string };
       expect(payload?.text ?? '').not.toContain('더 이상 사용되지 않습니다');
@@ -538,10 +546,9 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
 
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.mocked(userSettingsStore.markMigrationHintShown).mockClear();
   });
 
-  it('1. `new $z foo` → NewHandler runs AND SkillForce injects <invoked_skills>', async () => {
+  it('1. `new $z foo` → NewHandler runs AND SkillForce DEFERS <invoked_skills>', async () => {
     stubSkillFs({ localSkills: ['z'] });
     const newExec = vi.spyOn(NewHandler.prototype, 'execute');
     const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
@@ -551,16 +558,19 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
 
     expect(newExec).toHaveBeenCalledTimes(1);
     expect(skillExec).toHaveBeenCalledTimes(1);
+    // `new` reset forces deferSkillFire so the block rides on `deferredSkillFire`
+    // (fired after session init / autogoal / autoskill), NOT in continueWithPrompt.
+    expect(skillExec.mock.calls[0][0].deferSkillFire).toBe(true);
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt).toBeDefined();
-    // Remainder after `new` is "$z foo" — that's what SkillForce sees.
-    expect(result.continueWithPrompt?.startsWith('$z foo')).toBe(true);
-    expect(result.continueWithPrompt).toContain('<invoked_skills>');
-    expect(result.continueWithPrompt).toContain('<local:z>');
-    expect(result.continueWithPrompt).toContain('</local:z>');
+    expect(result.continueWithPrompt).toBe('$z foo'); // raw remainder, no block
+    expect(result.continueWithPrompt).not.toContain('<invoked_skills>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<invoked_skills>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<local:z>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('</local:z>');
+    expect(result.deferredSkillFire?.keys).toContain('local:z');
   });
 
-  it('2. `/new $z foo` (slash variant) → same composition', async () => {
+  it('2. `/new $z foo` (slash variant) → same deferred composition', async () => {
     stubSkillFs({ localSkills: ['z'] });
     const newExec = vi.spyOn(NewHandler.prototype, 'execute');
     const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
@@ -571,8 +581,8 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
     expect(newExec).toHaveBeenCalledTimes(1);
     expect(skillExec).toHaveBeenCalledTimes(1);
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt?.startsWith('$z foo')).toBe(true);
-    expect(result.continueWithPrompt).toContain('<local:z>');
+    expect(result.continueWithPrompt).toBe('$z foo');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<local:z>');
   });
 
   it('3. `/z new $z foo` via full route() (stripZPrefix + translateToLegacy path)', async () => {
@@ -584,15 +594,15 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
     const result = await router.route(makeCtx('/z new $z foo', say));
 
     // /z is stripped to "new $z foo", translateToLegacy passes through unchanged
-    // for `new …`, preprocessor then fires for the translated form.
+    // for `new …`, preprocessor then fires (deferred) for the translated form.
     expect(newExec).toHaveBeenCalledTimes(1);
     expect(skillExec).toHaveBeenCalledTimes(1);
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt?.startsWith('$z foo')).toBe(true);
-    expect(result.continueWithPrompt).toContain('<local:z>');
+    expect(result.continueWithPrompt).toBe('$z foo');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<local:z>');
   });
 
-  it('4. `new $stv:new-task implement X` → plugin skill is injected', async () => {
+  it('4. `new $stv:new-task implement X` → plugin skill is deferred', async () => {
     stubSkillFs({ localSkills: [], pluginSkills: { stv: ['new-task'] } });
     const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
 
@@ -601,9 +611,9 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
 
     expect(skillExec).toHaveBeenCalledTimes(1);
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt?.startsWith('$stv:new-task implement X')).toBe(true);
-    expect(result.continueWithPrompt).toContain('<stv:new-task>');
-    expect(result.continueWithPrompt).toContain('</stv:new-task>');
+    expect(result.continueWithPrompt).toBe('$stv:new-task implement X');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<stv:new-task>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('</stv:new-task>');
   });
 
   it('5. `new write a function` (no $skill) → plain remainder prompt, no SkillForce run', async () => {
@@ -689,7 +699,7 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
     expect(result.continueWithPrompt).toBeUndefined();
   });
 
-  it('10. multi-line `new <URL>\\n$z proceed` → session reset + <invoked_skills> AND URL preserved in remainder', async () => {
+  it('10. multi-line `new <URL>\\n$z proceed` → session reset + DEFERRED <invoked_skills> AND URL preserved in remainder', async () => {
     stubSkillFs({ localSkills: ['z'] });
     const newExec = vi.spyOn(NewHandler.prototype, 'execute');
     const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
@@ -701,10 +711,13 @@ describe('CommandRouter — `new` + `$skill` composition (preprocessor)', () => 
     expect(newExec).toHaveBeenCalledTimes(1);
     expect(skillExec).toHaveBeenCalledTimes(1);
     expect(result.handled).toBe(true);
+    // Raw remainder (URL + skill ref) stays in continueWithPrompt; the resolved
+    // block is deferred onto deferredSkillFire.
     expect(result.continueWithPrompt).toContain('https://github.com/foo/bar');
     expect(result.continueWithPrompt).toContain('$z proceed');
-    expect(result.continueWithPrompt).toContain('<invoked_skills>');
-    expect(result.continueWithPrompt).toContain('<local:z>');
+    expect(result.continueWithPrompt).not.toContain('<invoked_skills>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<invoked_skills>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<local:z>');
   });
 });
 
@@ -860,7 +873,7 @@ describe('CommandRouter — `goal` + `$skill` composition (preprocessor)', () =>
     // Goal is set with the full literal objective.
     expect(session.goal?.objective).toBe('buy 5 items for $20');
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt).toContain('Continue working toward the active session goal');
+    expect(result.continueWithPrompt).toBe('buy 5 items for $20');
   });
 
   it('6. `goal set ship X $unknown_skill_name proceed` → no resolvable skill, falls through', async () => {
@@ -1209,13 +1222,13 @@ describe('CommandRouter — `new <command>` remainder re-route (recursive)', () 
     expect(session.goal.objective).toBe('ship X');
     expect(session.goal.status).toBe('active');
 
-    // The turn continues with the goal continuation prompt — exactly what a
+    // The turn continues with the raw objective — exactly what a
     // directly-typed `goal ship X` produces.
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt).toContain('Continue working toward the active session goal');
+    expect(result.continueWithPrompt).toBe('ship X');
   });
 
-  it('2. `new goal ship X $z proceed` → reset + CLEAN goal objective + <invoked_skills> (triple composition)', async () => {
+  it('2. `new goal ship X $z proceed` → reset + CLEAN goal objective + DEFERRED <invoked_skills> (triple composition)', async () => {
     stubSkillFs({ localSkills: ['z'] });
     const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
 
@@ -1225,9 +1238,13 @@ describe('CommandRouter — `new <command>` remainder re-route (recursive)', () 
     expect(session.goal?.objective).toBe('ship X');
     expect(skillExec).toHaveBeenCalledTimes(1);
     expect(skillExec.mock.calls[0][0].text).toBe('$z proceed');
+    // `new` forces deferral: raw remainder in continueWithPrompt, block deferred.
+    expect(skillExec.mock.calls[0][0].deferSkillFire).toBe(true);
     expect(result.handled).toBe(true);
-    expect(result.continueWithPrompt).toContain('<invoked_skills>');
-    expect(result.continueWithPrompt).toContain('<local:z>');
+    expect(result.continueWithPrompt).toBe('$z proceed');
+    expect(result.continueWithPrompt).not.toContain('<invoked_skills>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<invoked_skills>');
+    expect(result.deferredSkillFire?.invokedBlock).toContain('<local:z>');
     // Durable goal objective must not leak the skill suffix.
     expect(session.goal?.objective).not.toContain('$z');
   });
@@ -1279,5 +1296,262 @@ describe('CommandRouter — `new <command>` remainder re-route (recursive)', () 
 
     expect(renewExec).toHaveBeenCalledTimes(1);
     expect(result.handled).toBe(true);
+  });
+});
+
+/**
+ * Regression guard (2026-07-09 work-m64 incident): a handler that CLAIMED the
+ * text (canHandle → true) but THREW during execute must consume the message.
+ *
+ * Old behavior returned `{ handled: false, error }`, which let the raw
+ * command text fall through into session init — where autogoal promoted the
+ * literal string `goal` into a session goal after GoalHandler crashed on a
+ * Slack `invalid_blocks` error. A crashed command must never turn into a
+ * model prompt or a goal objective.
+ */
+describe('CommandRouter — handler throw must not fall through to session init', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('`goal` + GoalHandler.execute throws → handled:true + error notice posted', async () => {
+    vi.spyOn(GoalHandler.prototype, 'execute').mockRejectedValue(new Error('invalid_blocks'));
+
+    const say = vi.fn().mockResolvedValue(undefined);
+    const deps = buildDeps({
+      claudeHandler: {
+        getSession: vi.fn().mockReturnValue({ systemPrompt: 'cached' }),
+        getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+        resetSessionContext: vi.fn().mockReturnValue(false),
+      },
+    });
+    const router = new CommandRouter(deps);
+
+    const result = await router.route({ text: 'goal', user: 'U1', channel: 'C1', threadTs: 'T1', say } as any);
+
+    // The message is CONSUMED — never falls through to session init/autogoal.
+    expect(result.handled).toBe(true);
+    expect(result.error).toBe('invalid_blocks');
+    // The user sees a visible failure instead of a silent hijack.
+    const notices = say.mock.calls.map((c: any[]) => c[0]?.text ?? '');
+    expect(notices.some((t: string) => t.includes('⚠️') && t.includes('GoalHandler'))).toBe(true);
+  });
+
+  it('error notice failure is swallowed — result still handled:true', async () => {
+    vi.spyOn(GoalHandler.prototype, 'execute').mockRejectedValue(new Error('boom'));
+
+    const say = vi.fn().mockRejectedValue(new Error('slack down'));
+    const deps = buildDeps({
+      claudeHandler: {
+        getSession: vi.fn().mockReturnValue({ systemPrompt: 'cached' }),
+        getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+        resetSessionContext: vi.fn().mockReturnValue(false),
+      },
+    });
+    const router = new CommandRouter(deps);
+
+    const result = await router.route({ text: 'goal', user: 'U1', channel: 'C1', threadTs: 'T1', say } as any);
+
+    expect(result.handled).toBe(true);
+    expect(result.error).toBe('boom');
+  });
+});
+
+/**
+ * Wiring guard: the router hands SkillForceHandler its `claudeHandler`, so a
+ * non-deferred `$skill` banner reads the thread's session verbosity. Without
+ * that wiring the session is never found, the mask reads as detail and the
+ * banner reaches a `minimal` thread again.
+ */
+describe('CommandRouter — forced $skill banner reads the routed session verbosity', () => {
+  const recorded: Array<[string, WorkLogInput]> = [];
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    recorded.length = 0;
+    setStreamExecutorProviders({
+      appendWorkLog: (conversationId, entry) => {
+        recorded.push([conversationId, entry]);
+      },
+    });
+  });
+
+  afterEach(() => {
+    setStreamExecutorProviders({ appendWorkLog: () => {} });
+  });
+
+  it('minimal session: `$local:z` posts no banner, records one notice, still injects the skill', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const getSession = vi
+      .fn()
+      .mockReturnValue({ sessionId: 'sid', logVerbosity: LOG_MINIMAL, conversationId: 'conv-1' });
+    const say = vi.fn().mockResolvedValue(undefined);
+    const router = new CommandRouter(
+      buildDeps({
+        claudeHandler: {
+          getSession,
+          getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+          resetSessionContext: vi.fn().mockReturnValue(false),
+        },
+      }),
+    );
+
+    const result = await router.route({ text: '$local:z', user: 'U1', channel: 'C1', threadTs: 'T1', say } as any);
+
+    expect(getSession).toHaveBeenCalledWith('C1', 'T1');
+    expect(say.mock.calls.some((c: any[]) => Array.isArray(c[0]?.attachments))).toBe(false);
+    expect(recorded).toEqual([
+      ['conv-1', { kind: 'notice', text: expect.stringContaining('강제 발동'), ts: expect.any(Number) }],
+    ]);
+    expect(result.continueWithPrompt).toContain('<invoked_skills>');
+    expect(result.continueWithPrompt).toContain('<local:z>');
+  });
+});
+
+/**
+ * SSOT 2026-10-21 T1 — a goal command typed while a turn runs is run NOW by
+ * the host (it must never be parked in the follow-up/steering queue). The
+ * host asks this pure predicate which texts `route` would hand to
+ * `GoalHandler` alone; a `goal … $skill` split also starts a forced-skill
+ * turn, so it keeps the queue path.
+ */
+describe('CommandRouter.isGoalCommandText — pure goal commands only', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('claims every goal form, including the `/z goal` spelling', () => {
+    stubSkillFs({ localSkills: [] });
+    const router = new CommandRouter(buildDeps());
+    for (const text of [
+      'goal 두번째 목표',
+      'goal set ship it',
+      'goal',
+      'goal status',
+      'goal done',
+      'goal pause',
+      'goal resume',
+      'goal clear',
+      '/z goal 다음 목표',
+      'set goal auto',
+    ]) {
+      expect(router.isGoalCommandText(text, 'U1'), text).toBe(true);
+    }
+  });
+
+  it('rejects instructions, other commands and the goal+skill split', () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const router = new CommandRouter(buildDeps());
+    for (const text of [
+      '',
+      '진행중인거 알려줘?',
+      'goals are fun',
+      'new goal ship it',
+      '%nogoal goal 무시',
+      'goal ship the feature $z proceed',
+    ]) {
+      expect(router.isGoalCommandText(text, 'U1'), text).toBe(false);
+    }
+  });
+});
+
+/**
+ * SSOT 2026-10-21 T1 (round 2) — the `goal … $skill` split typed while a turn
+ * runs is run at once too: the goal is set now and the `$skill` part becomes
+ * the new goal's opening turn, admitted with the goal change.
+ */
+describe('CommandRouter — goal + `$skill` split at the host intake', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('isGoalSkillSplitText recognizes the split in every spelling, and nothing else', () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const router = new CommandRouter(buildDeps());
+    for (const text of ['goal ship it $z proceed', 'goal set ship it $z', '/z goal ship it $z go']) {
+      expect(router.isGoalSkillSplitText(text, 'U1'), text).toBe(true);
+    }
+    for (const text of [
+      '',
+      'goal ship it',
+      'goal costs $20',
+      '$z proceed',
+      'new goal ship it $z',
+      '%nogoal goal ship it $z',
+      '/z goal',
+    ]) {
+      expect(router.isGoalSkillSplitText(text, 'U1'), text).toBe(false);
+    }
+  });
+
+  it('hands the skill part to admitOpening as the opening prompt — the skill is not fired during routing', async () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const skillExec = vi.spyOn(SkillForceHandler.prototype, 'execute');
+    const session: any = { systemPrompt: 'cached' };
+    const deps = buildDeps({
+      claudeHandler: {
+        getSession: vi.fn().mockReturnValue(session),
+        getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+        resetSessionContext: vi.fn().mockReturnValue(false),
+        saveSessions: vi.fn(),
+      },
+    });
+    const router = new CommandRouter(deps);
+    const admitOpening = vi.fn().mockReturnValue('queued');
+
+    const result = await router.route({
+      text: 'goal ship the feature $z proceed',
+      user: 'U1',
+      channel: 'C1',
+      threadTs: 'T1',
+      say: vi.fn().mockResolvedValue(undefined),
+      admitOpening,
+    } as any);
+
+    expect(session.goal).toMatchObject({ objective: 'ship the feature', status: 'active' });
+    expect(admitOpening).toHaveBeenCalledWith({
+      goalId: session.goal.goalId,
+      objective: 'ship the feature',
+      cause: 'set',
+      prompt: '$z proceed',
+    });
+    expect(skillExec, 'the skill fires when its opening turn runs').not.toHaveBeenCalled();
+    expect(result).toMatchObject({ handled: true });
+    expect(result.continueWithPrompt).toBeUndefined();
+  });
+
+  it('tells admitOpening which goal it opens: the one the command set, or the one `goal done` promoted', async () => {
+    stubSkillFs({ localSkills: [] });
+    const session: any = { systemPrompt: 'cached' };
+    const deps = buildDeps({
+      claudeHandler: {
+        getSession: vi.fn().mockReturnValue(session),
+        getSessionKey: vi.fn().mockImplementation((c: string, t: string) => `${c}:${t}`),
+        resetSessionContext: vi.fn().mockReturnValue(false),
+        saveSessions: vi.fn(),
+      },
+    });
+    const router = new CommandRouter(deps);
+    const admitOpening = vi.fn().mockReturnValue('queued');
+    const ctx = (text: string) =>
+      ({
+        text,
+        user: 'U1',
+        channel: 'C1',
+        threadTs: 'T1',
+        say: vi.fn().mockResolvedValue(undefined),
+        admitOpening,
+      }) as any;
+
+    await router.route(ctx('goal first'));
+    await router.route(ctx('goal second'));
+    await router.route(ctx('goal done'));
+
+    expect(admitOpening).toHaveBeenNthCalledWith(1, expect.objectContaining({ objective: 'first', cause: 'set' }));
+    expect(admitOpening).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ objective: 'second', cause: 'promoted' }),
+    );
+    expect(admitOpening.mock.calls[0][0].prompt).toBeUndefined();
   });
 });

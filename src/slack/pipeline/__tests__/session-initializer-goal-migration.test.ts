@@ -179,6 +179,61 @@ describe('SessionInitializer — bot-thread migration copies goal (#1082)', () =
     );
   }
 
+  // PR #305 round-3 review: a goal objective replayed after compaction must
+  // keep its verbatim marker when it is re-parked, or the next replay parses
+  // `new dashboard 구현` as the `new` command and erases the goal.
+  it('re-parks a verbatim goal objective with its marker when the replay loses the slot race', async () => {
+    const live = makeOriginalSession({
+      threadTs: '111.222',
+      sessionId: 'sess-1',
+      activityState: 'working',
+      goal: makeGoal({ objective: 'new dashboard 구현' }),
+    });
+    mockClaudeHandler.getSession.mockReturnValue(live);
+    (sessionInitializer as any).deps.requestCoordinator.isRequestActive.mockReturnValue(true);
+
+    const result = await sessionInitializer.initialize(
+      {
+        user: 'U123',
+        channel: 'C123',
+        thread_ts: '111.222',
+        ts: '111.333',
+        text: 'new dashboard 구현',
+        inlineDirectiveRawText: '%model opus goal new dashboard 구현',
+        routeContext: { compactRedispatch: true, verbatimPrompt: true },
+      } as any,
+      '/test/dir',
+    );
+
+    expect(result.halted).toBe(true);
+    // The objective itself (not the directive-bearing raw text) and the marker.
+    expect(live.compactPendingDispatches).toEqual([
+      {
+        ctx: { channel: 'C123', threadTs: '111.222', user: 'U123', ts: '111.333', verbatimPrompt: true },
+        text: 'new dashboard 구현',
+      },
+    ]);
+  });
+
+  it('does not claim the /compact turn marker for a verbatim objective that starts with /compact', async () => {
+    const live = makeOriginalSession({ threadTs: '111.222', sessionId: 'sess-2' });
+    mockClaudeHandler.getSession.mockReturnValue(live);
+
+    await sessionInitializer.initialize(
+      {
+        user: 'U123',
+        channel: 'C123',
+        thread_ts: '111.222',
+        ts: '111.444',
+        text: '/compact 명령의 버그를 고쳐라',
+        routeContext: { verbatimPrompt: true },
+      } as any,
+      '/test/dir',
+    );
+
+    expect(live.compactTurnActive).toBeUndefined();
+  });
+
   it('clones the goal onto the bot session (deep copy, not a shared reference)', async () => {
     const goal = makeGoal();
     const original = makeOriginalSession({ goal });

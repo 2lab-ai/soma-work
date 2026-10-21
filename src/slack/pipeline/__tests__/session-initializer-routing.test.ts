@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../user-settings-store', () => ({
@@ -60,6 +61,13 @@ vi.mock('../../../dispatch-service', () => ({
 
 import * as channelRegistry from '../../../channel-registry';
 import { SessionInitializer } from '../session-initializer';
+
+// The dist session initializer loads ../thread-header-builder through Node's own
+// require: the single instance production uses, but not the one vitest inlines
+// for an `import` in this file. Configure the instance the code under test reads.
+const { setThreadHeaderProviders } = createRequire(__filename)(
+  '@soma/slack/thread-header-builder',
+) as typeof import('@soma/slack/thread-header-builder');
 
 describe('SessionInitializer - channel routing advisory', () => {
   let sessionInitializer: SessionInitializer;
@@ -203,6 +211,29 @@ describe('SessionInitializer - channel routing advisory', () => {
     expect(mockSlackApi.postEphemeral).not.toHaveBeenCalled();
   });
 
+  it('advisory userMessage preserves inline-directive raw text (codex review of #1268)', async () => {
+    // The message handler stripped `%model fable %nogoal ` off event.text
+    // before initialize. The Move/Stay replay re-enters the handler with
+    // `userMessage`, so it must carry the ORIGINAL directive-bearing text —
+    // otherwise the model change and the autogoal suppression are lost.
+    const event = {
+      user: 'U123',
+      channel: 'C123',
+      thread_ts: undefined,
+      ts: 'thread123',
+      text: 'Review PR https://github.com/acme/repo/pull/1',
+      inlineDirectiveRawText: '%model fable %nogoal Review PR https://github.com/acme/repo/pull/1',
+    };
+
+    await sessionInitializer.initialize(event as any, '/test/dir');
+
+    const callWithBlocks = mockSlackApi.postMessage.mock.calls.find((call: any[]) => Array.isArray(call[2]?.blocks));
+    expect(callWithBlocks).toBeDefined();
+    const actionsBlock = callWithBlocks[2].blocks.find((block: any) => block.type === 'actions');
+    const value = JSON.parse(actionsBlock.elements[0].value);
+    expect(value.userMessage).toBe('%model fable %nogoal Review PR https://github.com/acme/repo/pull/1');
+  });
+
   it('shows fallback advisory when repo channel mapping is missing', async () => {
     mockCheckRepoChannelMatch.mockReturnValue({
       correct: false,
@@ -341,10 +372,15 @@ describe('SessionInitializer - channel routing advisory', () => {
   });
 
   it('threads sourceThreadCleanupTs into channel-route button value (Issue #516)', async () => {
-    // Distinct ts per postMessage so we can identify the conversation-link ts.
+    // The source-thread work-log link resolves through the one injected provider.
+    setThreadHeaderProviders({
+      getDashboardSessionUrl: (ownerId, sessionKey) =>
+        `http://localhost:3000/dashboard/${ownerId}?session=${sessionKey}`,
+    });
+    // Distinct ts per postMessage so we can identify the work-log-link ts.
     mockSlackApi.postMessage = vi.fn().mockImplementation(async (_c: string, text: string) => {
       if (typeof text === 'string') {
-        if (text.includes('대화 기록 보기')) return { ts: 'conv-link-ts' };
+        if (text.includes('작업 로그')) return { ts: 'conv-link-ts' };
         if (text.includes('_Dispatching...')) return { ts: 'dispatch-ts' };
       }
       return { ts: 'other-bot-ts' };
@@ -421,6 +457,7 @@ describe('SessionInitializer - channel routing advisory', () => {
   });
 
   afterEach(() => {
+    setThreadHeaderProviders({ getDashboardSessionUrl: () => undefined });
     if (originalDefaultUpdateChannel === undefined) {
       delete process.env.DEFAULT_UPDATE_CHANNEL;
       return;

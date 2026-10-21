@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import { Logger } from '@soma/common/logger';
 import type { AssistantStatusManager } from '../assistant-status-manager';
+import { type CompactStateSession, isCompactionInProgress, stashUserMessageDuringCompaction } from '../compact-state';
 import type { ContextWindowManager } from '../context-window-manager';
 import {
   DispatchAbortError,
@@ -32,6 +33,30 @@ export function shouldDropGoalContinuation(
   isRequestActive: boolean,
 ): boolean {
   return event.routeContext?.goalContinuation === true && isRequestActive;
+}
+
+/**
+ * Compact re-loop fix — a message must NEVER abort an in-flight compaction.
+ * The SDK's /compact turn is silent for 2–3 minutes (no stream events while
+ * the summarization request runs), so `handleConcurrency` would classify it
+ * as stalled and displace it. Killing the CLI in that window loses the
+ * compaction: the compacted transcript (summary + `compact_boundary`) is only
+ * flushed a few seconds after the PostCompact hook fires, and an aborted
+ * process never writes it. The session then resumes UNCOMPACTED, the
+ * threshold re-trips, and the thread loops compact→abort→compact (observed
+ * on work-m64 dev, session f4ee1a3f, 2026-07-08: three consecutive /compact
+ * runs each aborted by the immediately re-dispatched pending message, context
+ * pinned at 82–93% of a 1M window). Pure predicate, M2-style, so the rule is
+ * unit-testable without the full initializer.
+ */
+export function shouldStashForCompaction(session: CompactStateSession, isRequestActive: boolean): boolean {
+  // `compactTurnActive` (set for the whole dedicated /compact turn) covers
+  // the two windows the epoch marker misses (codex review F1): query init
+  // before the PreCompact hook claims the cycle, and the post-PostCompact /
+  // pre-`result` stretch where the cycle is already sealed but the CLI has
+  // not yet flushed the compacted transcript. The epoch marker still covers
+  // SDK-internal auto-compaction that happens mid-way through a NORMAL turn.
+  return isRequestActive && (isCompactionInProgress(session) || session.compactTurnActive === true);
 }
 
 type ZHandoffWorkflow = 'z-plan-to-work' | 'z-epic-update';
@@ -273,6 +298,15 @@ export class SessionInitializer {
     const threadTs = thread_ts || ts;
     // Use effectiveText for dispatch if provided (e.g., after command parsing)
     const dispatchText = effectiveText ?? text;
+    // Replay stashes must preserve leading inline session directives
+    // (`%model <v>` / `%nogoal`) that the message handler already stripped
+    // off `event.text` — a replayed message re-parses them on re-entry.
+    // A goal objective (`routeContext.verbatimPrompt`) is the opposite: it
+    // replays exactly as dispatched and is never re-parsed, so the stash keeps
+    // the dispatch text and carries the marker on its context.
+    const verbatimReplay = event.routeContext?.verbatimPrompt === true;
+    const replayText = (verbatimReplay ? undefined : event.inlineDirectiveRawText) || dispatchText;
+    const replayCtx = { channel, threadTs, user, ts, ...(verbatimReplay ? { verbatimPrompt: true } : {}) };
     const skipAutoBotThread = event.routeContext?.skipAutoBotThread === true;
     // Whether the mention originated from inside an existing thread (thread_ts exists).
     // Used for sourceThread data linking — NOT for UX decisions.
@@ -318,6 +352,26 @@ export class SessionInitializer {
       ? this.deps.claudeHandler.createSession(user, userName, channel, threadTs, event.modelOverride)
       : existingSession;
 
+    // Incident ownership is stamped BEFORE anything can query the model, so
+    // the restriction is in place for the session's very first turn. Only the
+    // ingress can supply `routeContext.incidentRequest` (it is internal and
+    // never round-trips through Slack), and it is never unset here: a session
+    // that started restricted stays restricted.
+    // A retry admitted by the ingress arrives with a NEWER attempt for the same
+    // incident, so the stamp replaces rather than skips — and drops the host
+    // completion marker that belonged to the finished attempt. Replacement is
+    // always incident→incident: the restriction is never lifted here.
+    const incidentRequest = event.routeContext?.incidentRequest;
+    if (incidentRequest && session.incidentRequest?.attempt_id !== incidentRequest.attempt_id) {
+      session.incidentRequest = incidentRequest;
+      session.incidentAttemptFinishedId = undefined;
+      this.logger.info('Session marked incident-owned', {
+        sessionKey,
+        incidentId: incidentRequest.incident_id,
+        attemptId: incidentRequest.attempt_id,
+      });
+    }
+
     // Apply model override to existing sessions too (cron may inject into idle session)
     if (!isNewSession && event.modelOverride && session.model !== event.modelOverride) {
       session.model = event.modelOverride;
@@ -358,15 +412,22 @@ export class SessionInitializer {
         const conversationId = providers.createConversation(channel, threadTs, user, userName);
         session.conversationId = conversationId;
 
-        // Always show conversation URL — it's essential for session review
-        const conversationUrl = providers.getConversationUrl(conversationId);
-        const convLinkResult = await this.deps.slackApi.postMessage(channel, `📝 <${conversationUrl}|대화 기록 보기>`, {
-          threadTs,
-        });
-        if (convLinkResult?.ts) {
-          (session.sourceThreadCleanupTs ??= []).push(convLinkResult.ts);
+        // Link the session's work log (📋 작업 로그 → its dashboard card) from the
+        // thread the user started — essential for session review. Undefined means
+        // the viewer is not listening; the conversation viewer is served by the same
+        // web server, so there is no live link to post instead.
+        const dashboardUrl = ThreadHeaderBuilder.resolveDashboardSessionUrl(session.ownerId || user, sessionKey);
+        if (dashboardUrl) {
+          const linkResult = await this.deps.slackApi.postMessage(
+            channel,
+            ThreadHeaderBuilder.formatDashboardLink(dashboardUrl),
+            { threadTs },
+          );
+          if (linkResult?.ts) {
+            (session.sourceThreadCleanupTs ??= []).push(linkResult.ts);
+          }
         }
-        this.logger.info('Conversation record created', { conversationId, url: conversationUrl });
+        this.logger.info('Conversation record created', { conversationId, workLogUrl: dashboardUrl ?? null });
       } catch (error) {
         this.logger.error('Failed to create conversation record (non-critical)', error);
       }
@@ -580,7 +641,7 @@ export class SessionInitializer {
           originalChannel: channel,
           originalTs: threadTs,
           originalThreadTs: threadTs,
-          userMessage: dispatchText || text || '',
+          userMessage: replayText || text || '',
           userId: user,
           advisoryEphemeral: false,
           allowStay: true,
@@ -629,7 +690,7 @@ export class SessionInitializer {
           originalChannel: channel,
           originalTs: threadTs,
           originalThreadTs: threadTs,
-          userMessage: dispatchText || text || '',
+          userMessage: replayText || text || '',
           userId: user,
           advisoryEphemeral: false,
           allowStay: true,
@@ -715,6 +776,76 @@ export class SessionInitializer {
     // recheck wins: drop the continuation instead of aborting the user's turn.
     if (shouldDropGoalContinuation(event, this.deps.requestCoordinator.isRequestActive(sessionKey))) {
       this.logger.info('Goal continuation dropped — session busy (never supersede)', { sessionKey });
+      return {
+        session,
+        sessionKey,
+        isNewSession,
+        userName,
+        workingDirectory: effectiveWorkingDir,
+        abortController: new AbortController(),
+        halted: true,
+      };
+    }
+
+    // Codex F2 (replay-vs-user race): a post-compact deferred replay must
+    // never supersede a real turn that grabbed the slot between the
+    // finally's isRequestActive check and this point. Re-park it — the
+    // active turn's own finally replays the queue at its stream end.
+    if (event.routeContext?.compactRedispatch === true && this.deps.requestCoordinator.isRequestActive(sessionKey)) {
+      this.logger.info('Post-compact replay lost the slot race — re-parking for the active turn', { sessionKey });
+      if (dispatchText) {
+        stashUserMessageDuringCompaction(session, replayCtx, replayText ?? dispatchText);
+      }
+      return {
+        session,
+        sessionKey,
+        isNewSession,
+        userName,
+        workingDirectory: effectiveWorkingDir,
+        abortController: new AbortController(),
+        halted: true,
+      };
+    }
+
+    // Codex F1 (early shield): claim the /compact turn marker BEFORE
+    // concurrency control registers this turn's controller, so there is no
+    // window where the /compact turn is active-but-unshielded. The
+    // stream-executor sets it again at the local-slash-command bypass
+    // (idempotent) and clears it in the turn's `finally`.
+    //
+    // Claim ONLY when the slot is idle: if another request is active this
+    // /compact will be halted/stashed below and never reach execute(), so an
+    // early claim would leak the flag and wrongly compaction-shield the
+    // unrelated active turn until its own finally clears it (codex
+    // re-review). When /compact instead supersedes a live turn (manual path
+    // is already refused by CompactHandler while busy), the stream-executor
+    // backstop claims the flag at query start.
+    if (
+      // A goal objective that merely starts with `/compact` is a task, not a
+      // compaction turn (the executor wraps it — `literalPrompt`).
+      !verbatimReplay &&
+      (dispatchText ?? '').trim().split(/\s/)[0] === '/compact' &&
+      !this.deps.requestCoordinator.isRequestActive(sessionKey)
+    ) {
+      session.compactTurnActive = true;
+    }
+
+    // Compact re-loop fix — NEVER abort an in-flight compaction (see
+    // `shouldStashForCompaction`). Instead: stash the message for
+    // post-compact re-dispatch (arrival order preserved) and halt this turn.
+    if (shouldStashForCompaction(session, this.deps.requestCoordinator.isRequestActive(sessionKey))) {
+      this.logger.info('Compaction in progress — stashing message instead of aborting the /compact turn', {
+        sessionKey,
+        user: userName,
+      });
+      if (dispatchText) {
+        stashUserMessageDuringCompaction(session, replayCtx, replayText ?? dispatchText);
+      }
+      void this.deps.slackApi
+        .postSystemMessage(channel, '🗜️ Compaction 진행 중 — 메시지는 완료 후 처리됩니다', { threadTs })
+        .catch(() => {
+          /* decorative notice — never block on Slack */
+        });
       return {
         session,
         sessionKey,

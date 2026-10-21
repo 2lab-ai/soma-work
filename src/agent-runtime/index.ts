@@ -18,3 +18,13 @@ export type {
   AgentToolStatus,
   AgentUsage,
 } from './stream-types';
+export {
+  buildInitialUserMessage,
+  buildSteerUserMessage,
+  type SteerImage,
+  type SteerInput,
+  type SteerInterruptReceipt,
+  type SteerUserMessage,
+  TurnInputChannel,
+  type TurnSteeringPort,
+} from './turn-input-channel';

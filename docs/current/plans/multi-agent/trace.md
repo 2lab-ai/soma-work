@@ -31,7 +31,6 @@
       "{agentName}": {
         "slackBotToken": "xoxb-...",
         "slackAppToken": "xapp-...",
-        "signingSecret": "...",
         "promptDir": "src/prompt/{agentName}",
         "persona": "default",
         "description": "...",
@@ -43,7 +42,8 @@
 - Validation rules:
   - `slackBotToken`: required, must start with `xoxb-`
   - `slackAppToken`: required, must start with `xapp-`
-  - `signingSecret`: required, string, length >= 20
+  - `signingSecret`: **optional** — HTTP 리시버의 서명 검증 전용이고 에이전트는 Socket Mode다.
+    미선언이면 그대로 통과. 선언했다면 string이고 length >= 20이어야 하며, 아니면 에이전트 skip
   - `promptDir`: optional, defaults to `src/prompt/{agentName}`
   - `persona`: optional, defaults to `"default"`
   - `description`: optional
@@ -57,7 +57,7 @@
 - Transformation:
   - `raw.agents.{name}.slackBotToken` → `AgentConfig.slackBotToken`
   - `raw.agents.{name}.slackAppToken` → `AgentConfig.slackAppToken`
-  - `raw.agents.{name}.signingSecret` → `AgentConfig.signingSecret`
+  - `raw.agents.{name}.signingSecret` → `AgentConfig.signingSecret` (optional; 미선언이면 양쪽 모두 키 없음)
   - `raw.agents.{name}.promptDir` → `AgentConfig.promptDir` (default: `src/prompt/{name}`)
   - `raw.agents.{name}.persona` → `AgentConfig.persona` (default: `"default"`)
   - `raw.agents.{name}.model` → `AgentConfig.model` (default: `undefined` → inherit)
@@ -117,7 +117,8 @@
 - Transformation:
   - `AgentConfig.slackBotToken` → `new App({ token: ... })`
   - `AgentConfig.slackAppToken` → `App({ appToken: ... })`
-  - `AgentConfig.signingSecret` → `App({ signingSecret: ... })`
+  - `AgentConfig.signingSecret` → 선언된 경우에만 `App({ signingSecret: ... })`로 전달;
+    미선언이면 옵션 객체에 키를 넣지 않는다 (Socket Mode는 서명 검증을 하지 않는다)
   - `AgentConfig.promptDir` → `PromptBuilder(agentPromptDir)`
   - `AgentConfig` → `AgentInstance` stored in `Map<string, AgentInstance>`
 

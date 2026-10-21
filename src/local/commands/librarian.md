@@ -2,7 +2,9 @@
 description: "Search external docs, best practices, library APIs using Librarian agent (Opus 4.5)"
 argument-hint: "QUESTION"
 allowed-tools:
+  - Agent
   - Task
+  - Skill
   - TaskOutput
   - Read
   - Grep

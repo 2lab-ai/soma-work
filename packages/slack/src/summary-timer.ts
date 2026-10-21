@@ -146,13 +146,4 @@ export class SummaryTimer {
   has(sessionKey: string): boolean {
     return this.timers.has(sessionKey);
   }
-
-  /** Cancel all active timers (cleanup on shutdown). */
-  cancelAll(): void {
-    for (const entry of this.timers.values()) {
-      clearTimeout(entry.timerId);
-      if (entry.intervalId) clearInterval(entry.intervalId);
-    }
-    this.timers.clear();
-  }
 }

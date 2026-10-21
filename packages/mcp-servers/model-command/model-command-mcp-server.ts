@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import fs from 'node:fs';
+import path from 'node:path';
 import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import type { WorkflowType } from '@soma/process-shared/mcp/types.js';
@@ -7,11 +9,13 @@ import {
   getDefaultSessionSnapshot,
   listModelCommands,
   normalizeSessionSnapshot,
+  registerHierarchicalMemoryStore,
   registerMemoryStore,
   registerRatingStore,
   registerSkillStore,
   runModelCommand,
 } from '@soma/process-shared/model-commands/catalog.js';
+import { HierarchicalMemoryFileStore } from '@soma/process-shared/model-commands/hierarchical-memory-store.js';
 import { MemoryFileStore } from '@soma/process-shared/model-commands/memory-file-store.js';
 import { SkillFileStore } from '@soma/process-shared/model-commands/skill-file-store.js';
 import type {
@@ -21,8 +25,6 @@ import type {
 } from '@soma/process-shared/model-commands/types.js';
 import { validateModelCommandRunArgs } from '@soma/process-shared/model-commands/validator.js';
 import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
-import fs from 'fs';
-import path from 'path';
 
 const logger = new StderrLogger('ModelCommandMCP');
 
@@ -112,6 +114,7 @@ class ModelCommandMcpServer extends BaseMcpServer {
     // Register memory + skill stores so commands work in this process
     if (process.env.SOMA_DATA_DIR) {
       registerMemoryStore(new MemoryFileStore(process.env.SOMA_DATA_DIR));
+      registerHierarchicalMemoryStore(new HierarchicalMemoryFileStore(process.env.SOMA_DATA_DIR));
       registerSkillStore(new SkillFileStore(process.env.SOMA_DATA_DIR));
 
       // Register rating store so RATE command works in this process
@@ -154,6 +157,7 @@ class ModelCommandMcpServer extends BaseMcpServer {
                 'SAVE_CONTEXT_RESULT',
                 'SAVE_MEMORY',
                 'GET_MEMORY',
+                'MEMORY',
                 'MANAGE_SKILL',
                 'RATE',
                 // Issue #1082 T2: model-initiated session goal (set-only).
@@ -195,13 +199,19 @@ function getModelCommandServer(): ModelCommandMcpServer {
   return serverInstance;
 }
 
-if (require.main === module) {
-  getModelCommandServer()
-    .run()
-    .catch((error) => {
-      logger.error('Model-command MCP server error', error);
-      process.exit(1);
-    });
+const invokedDirectly =
+  require.main === module ||
+  ['model-command-mcp-server.ts', 'model-command-mcp-server.js'].includes(path.basename(process.argv[1] ?? ''));
+
+async function main(): Promise<void> {
+  await getModelCommandServer().run();
+}
+
+if (invokedDirectly) {
+  main().catch((error) => {
+    logger.error('Model-command MCP server error', error);
+    process.stderr.write('', () => process.exit(1));
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

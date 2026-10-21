@@ -3,7 +3,8 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { modelCatalog } from '../model-catalog';
 import {
   AVAILABLE_MODELS,
   COMPACT_THRESHOLD_MAX,
@@ -11,16 +12,42 @@ import {
   coerceToAvailableModel,
   DEFAULT_COMPACT_THRESHOLD,
   DEFAULT_MODEL,
+  GOAL_MAX_CONTINUATIONS_MAX,
+  GOAL_MAX_CONTINUATIONS_MIN,
   MODEL_ALIASES,
   migrateLegacyTheme,
   UserSettingsStore,
   validateCompactThreshold,
+  validateGoalMaxContinuations,
 } from '../user-settings-store';
 
 function makeStore(): UserSettingsStore {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-test-'));
   return new UserSettingsStore(dir);
 }
+
+describe('Slack display-name identity (cross-user skill resolution)', () => {
+  it('stores slackDisplayName + exposes it via getAllUsers', () => {
+    const s = makeStore();
+    s.setUserSlackDisplayName('U094E5L4A15', 'Z');
+    const rec = s.getAllUsers().find((u) => u.userId === 'U094E5L4A15');
+    expect(rec?.slackDisplayName).toBe('Z');
+    expect(typeof rec?.slackIdentitySyncedAt).toBe('number');
+  });
+
+  it('shouldRefreshSlackIdentity: true when never synced, false right after a sync', () => {
+    const s = makeStore();
+    expect(s.shouldRefreshSlackIdentity('U1', 1000)).toBe(true); // never synced
+    s.setUserSlackDisplayName('U1', 'Z');
+    expect(s.shouldRefreshSlackIdentity('U1', 60_000)).toBe(false); // just synced
+  });
+
+  it('shouldRefreshSlackIdentity: true once the TTL has elapsed', () => {
+    const s = makeStore();
+    s.setUserSlackDisplayName('U1', 'Z');
+    expect(s.shouldRefreshSlackIdentity('U1', -1)).toBe(true); // negative ttl ⇒ always stale
+  });
+});
 
 // Issue #656 — 1M context variants + allow-list regression guards.
 //
@@ -30,13 +57,21 @@ function makeStore(): UserSettingsStore {
 // tests assert the **exact** expected arrays/records, not just the length,
 // so any future silent removal is caught immediately.
 describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', () => {
-  it('AVAILABLE_MODELS is exactly 11 entries in the expected order', () => {
-    // Fable 5 (2026-06-09) leads as the flagship; it is native-1M on the bare
-    // id and has NO `[1m]` variant. 4.8 prepended at the top of the opus tier so
-    // substring matchers see it before 4.7. Historical entries MUST survive
-    // every bump.
+  it('AVAILABLE_MODELS preserves every historical entry in the expected order', () => {
+    // Fable 5 (2026-06-09) leads as the flagship; Opus 5 (2026-08-26) heads the
+    // opus tier so substring matchers see it before 4.8/4.7. The `[1m]` block
+    // now carries the literal `claude-fable-5[1m]` and `gpt-5.6-sol[1m]` — the
+    // suffix is what makes Claude Code's own accounting use a 1M denominator,
+    // which the 750k/600k auto-compact defaults depend on. `grok-4.6` is
+    // declared statically so a cold start with no llmux catalog snapshot can
+    // still select it. `gpt-6-astra` and its `[1m]` opt-in variant (2026-09-07)
+    // are appended after the gpt-5.6 tiers — selectable, but NOT the default.
+    // Historical entries MUST survive every bump.
     expect([...AVAILABLE_MODELS]).toEqual([
+      'claude-fable-5-1',
       'claude-fable-5',
+      'claude-opus-5-5',
+      'claude-opus-5',
       'claude-opus-4-8',
       'claude-opus-4-7',
       'claude-opus-4-6',
@@ -44,36 +79,82 @@ describe('Issue #656 — AVAILABLE_MODELS + MODEL_ALIASES (exact-set guards)', (
       'claude-sonnet-4-5-20250929',
       'claude-opus-4-5-20251101',
       'claude-haiku-4-5-20251001',
+      'claude-fable-5-1[1m]',
+      'claude-fable-5[1m]',
+      'claude-opus-5-5[1m]',
+      'claude-opus-5[1m]',
       'claude-opus-4-8[1m]',
       'claude-opus-4-7[1m]',
       'claude-opus-4-6[1m]',
+      'gpt-5.5',
+      'gpt-5.6-sol',
+      'gpt-5.6-sol[1m]',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
+      'gpt-6-astra',
+      'gpt-6-astra[1m]',
+      'grok-4.6',
     ]);
   });
 
-  it('AVAILABLE_MODELS has no claude-fable-5[1m] variant (native-1M on bare id)', () => {
-    // Fable 5 serves 1M without a suffix; a `[1m]` variant would wrongly route
-    // through the opus beta-header path. Guard against it being re-added.
-    expect(AVAILABLE_MODELS as readonly string[]).not.toContain('claude-fable-5[1m]');
+  it('AVAILABLE_MODELS carries the literal claude-fable-5[1m] variant', () => {
+    // Superseded 2026-08-26: the old guard FORBADE this id, on the theory that
+    // the SDK `[1m]` path would inject the opus beta header for a native-1M
+    // model. The live llmux probe disproved it — literal `claude-fable-5[1m]`
+    // is accepted upstream AND is the only spelling for which Claude Code
+    // reports contextWindow=1,000,000 (bare `fable` reports 200,000). Both
+    // spellings stay selectable; the aliases point at the literal one.
+    expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5[1m]');
+    expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-fable-5');
   });
 
-  it('MODEL_ALIASES has exactly the 16 expected key→value mappings', () => {
-    // `fable` / `fable-5` → Fable 5 (no `[1m]` alias — native-1M bare id).
-    // `opus` / `opus[1m]` follow "latest opus" semantics → 4.8. Version-pinned
-    // aliases (`opus-4.7`, `opus-4.6`, ...) remain pinned to their generation.
+  it('MODEL_ALIASES has exactly the 34 expected key→value mappings', () => {
+    // `fable` / `fable[1m]` → the literal 1M id. `opus` / `opus[1m]` follow
+    // "latest opus" semantics → Opus 5.5, and both land on the `[1m]` variant
+    // because that is the id whose client-side denominator is 1M. Version-
+    // pinned aliases (`opus-4.8`, `opus-4.7`, ...) remain pinned.
     expect(MODEL_ALIASES).toEqual({
-      fable: 'claude-fable-5',
-      'fable-5': 'claude-fable-5',
+      fable: 'claude-fable-5-1[1m]',
+      'fable-5-1': 'claude-fable-5-1[1m]',
+      'fable-5-1[1m]': 'claude-fable-5-1[1m]',
+      'fable-5': 'claude-fable-5[1m]',
+      'fable[1m]': 'claude-fable-5-1[1m]',
+      'fable-5[1m]': 'claude-fable-5[1m]',
       sonnet: 'claude-sonnet-4-6',
       'sonnet-4.6': 'claude-sonnet-4-6',
       'sonnet-4.5': 'claude-sonnet-4-5-20250929',
-      opus: 'claude-opus-4-8',
+      opus: 'claude-opus-5-5[1m]',
+      'opus-5-5': 'claude-opus-5-5[1m]',
+      'opus-5': 'claude-opus-5',
       'opus-4.8': 'claude-opus-4-8',
       'opus-4.7': 'claude-opus-4-7',
       'opus-4.6': 'claude-opus-4-6',
       'opus-4.5': 'claude-opus-4-5-20251101',
       haiku: 'claude-haiku-4-5-20251001',
       'haiku-4.5': 'claude-haiku-4-5-20251001',
-      'opus[1m]': 'claude-opus-4-8[1m]',
+      gpt: 'gpt-5.6-sol',
+      'gpt5.5': 'gpt-5.5',
+      'gpt-5.6': 'gpt-5.6-sol',
+      'gpt5.6': 'gpt-5.6-sol',
+      sol: 'gpt-5.6-sol',
+      'sol[1m]': 'gpt-5.6-sol[1m]',
+      terra: 'gpt-5.6-terra',
+      luna: 'gpt-5.6-luna',
+      // gpt-6 (2026-09-07): selectable aliases only — `gpt` above still
+      // points at gpt-5.6-sol, so the default is unchanged. Shorthand
+      // aliases resolve to the `[1m]` opt-in id (same rule as `opus` /
+      // `fable`) so a user typing `astra` doesn't silently get a fifth of
+      // the window they meant; the bare 272k id stays selectable via its
+      // literal spelling. `astra[1m]` mirrors the `sol[1m]` precedent — the
+      // tier shorthand + explicit `[1m]` spelling is real muscle-memory
+      // input and the llmux catalog only advertises the bare `astra`.
+      astra: 'gpt-6-astra[1m]',
+      'astra[1m]': 'gpt-6-astra[1m]',
+      'gpt-6': 'gpt-6-astra[1m]',
+      gpt6: 'gpt-6-astra[1m]',
+      'opus[1m]': 'claude-opus-5-5[1m]',
+      'opus-5-5[1m]': 'claude-opus-5-5[1m]',
+      'opus-5[1m]': 'claude-opus-5[1m]',
       'opus-4.8[1m]': 'claude-opus-4-8[1m]',
       'opus-4.7[1m]': 'claude-opus-4-7[1m]',
       'opus-4.6[1m]': 'claude-opus-4-6[1m]',
@@ -301,7 +382,7 @@ describe('validateCompactThreshold (#617 AC1)', () => {
   });
 });
 
-describe('UserSettingsStore.getUserCompactThreshold / setUserCompactThreshold (#617 AC1, AC2)', () => {
+describe('UserSettingsStore.getUserCompactThreshold / clearUserCompactThreshold (#617 AC2)', () => {
   it('AC2: returns DEFAULT_COMPACT_THRESHOLD=80 when user has no settings', () => {
     const store = makeStore();
     expect(DEFAULT_COMPACT_THRESHOLD).toBe(80);
@@ -315,38 +396,222 @@ describe('UserSettingsStore.getUserCompactThreshold / setUserCompactThreshold (#
     expect(store.getUserCompactThreshold('U1')).toBe(80);
   });
 
-  it('AC1: persists a valid threshold via setUserCompactThreshold', () => {
-    const store = makeStore();
-    store.setUserCompactThreshold('U1', 70);
-    expect(store.getUserCompactThreshold('U1')).toBe(70);
-  });
-
-  it('AC1: round-trips across store reloads', () => {
+  // The per-user percentage is no longer written (session-token thresholds replaced it in
+  // ebf1177a); a persisted legacy value is still read for conversion, then cleared.
+  function dirWithLegacyThresholds(thresholds: Record<string, number>): string {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-compact-'));
-    const s1 = new UserSettingsStore(dir);
-    s1.setUserCompactThreshold('U1', 65);
+    const users = Object.fromEntries(
+      Object.entries(thresholds).map(([userId, compactThreshold]) => [userId, { userId, compactThreshold }]),
+    );
+    fs.writeFileSync(path.join(dir, 'user-settings.json'), JSON.stringify(users), 'utf8');
+    return dir;
+  }
 
-    const s2 = new UserSettingsStore(dir);
-    expect(s2.getUserCompactThreshold('U1')).toBe(65);
-  });
-
-  it('AC1: setUserCompactThreshold throws on out-of-range (30) and does not persist', () => {
-    const store = makeStore();
-    expect(() => store.setUserCompactThreshold('U1', 30)).toThrow();
-    expect(store.getUserCompactThreshold('U1')).toBe(80); // default, not persisted
-  });
-
-  it('AC1: setUserCompactThreshold throws on 100 (above max) and does not persist', () => {
-    const store = makeStore();
-    expect(() => store.setUserCompactThreshold('U1', 100)).toThrow();
-    expect(store.getUserCompactThreshold('U1')).toBe(80);
-  });
-
-  it('AC1: threshold is per-user isolated', () => {
-    const store = makeStore();
-    store.setUserCompactThreshold('U1', 60);
-    store.setUserCompactThreshold('U2', 90);
+  it('reads a legacy persisted threshold per user', () => {
+    const store = new UserSettingsStore(dirWithLegacyThresholds({ U1: 60, U2: 90 }));
     expect(store.getUserCompactThreshold('U1')).toBe(60);
     expect(store.getUserCompactThreshold('U2')).toBe(90);
+  });
+
+  it('clearUserCompactThreshold drops the legacy value, persists, and leaves other users alone', () => {
+    const dir = dirWithLegacyThresholds({ U1: 65, U2: 70 });
+    const store = new UserSettingsStore(dir);
+    store.clearUserCompactThreshold('U1');
+    expect(store.getUserCompactThreshold('U1')).toBe(DEFAULT_COMPACT_THRESHOLD);
+    expect(store.getUserCompactThreshold('U2')).toBe(70);
+    expect(new UserSettingsStore(dir).getUserCompactThreshold('U1')).toBe(DEFAULT_COMPACT_THRESHOLD);
+  });
+});
+
+describe('autogoal mode (S2) + goal max-continuations (S4)', () => {
+  it('autogoal defaults to false and toggles per-user', () => {
+    const store = makeStore();
+    expect(store.getUserAutoGoalEnabled('U1')).toBe(false);
+    expect(store.toggleUserAutoGoalEnabled('U1')).toBe(true);
+    expect(store.getUserAutoGoalEnabled('U1')).toBe(true);
+    expect(store.toggleUserAutoGoalEnabled('U1')).toBe(false);
+    store.setUserAutoGoalEnabled('U2', true);
+    expect(store.getUserAutoGoalEnabled('U1')).toBe(false);
+    expect(store.getUserAutoGoalEnabled('U2')).toBe(true);
+  });
+
+  it('validateGoalMaxContinuations clamps to [1, 1000] and rejects non-integers', () => {
+    expect(validateGoalMaxContinuations(100)).toBe(100);
+    expect(validateGoalMaxContinuations(5000)).toBe(GOAL_MAX_CONTINUATIONS_MAX);
+    expect(validateGoalMaxContinuations(0)).toBe(GOAL_MAX_CONTINUATIONS_MIN);
+    expect(() => validateGoalMaxContinuations(1.5)).toThrow();
+    expect(() => validateGoalMaxContinuations('x' as unknown as number)).toThrow();
+  });
+
+  it('goal max-continuations is undefined until set, then persists per-user', () => {
+    const store = makeStore();
+    expect(store.getUserGoalMaxContinuations('U1')).toBeUndefined();
+    store.setUserGoalMaxContinuations('U1', 50);
+    expect(store.getUserGoalMaxContinuations('U1')).toBe(50);
+    expect(store.getUserGoalMaxContinuations('U2')).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// llmux model catalog — catalog-aware selection (grok-4.5)
+//
+// The static AVAILABLE_MODELS allow-list above stays byte-identical (#656);
+// the catalog is a runtime OVERLAY that extends selection. These tests use
+// the modelCatalog test hooks to seed/clear the overlay.
+// ---------------------------------------------------------------------------
+describe('llmux model catalog overlay (grok-4.5 selection)', () => {
+  const GROK = {
+    id: 'grok-4.5',
+    aliases: ['grok'],
+    name: 'Grok 4.5',
+    efforts: ['low', 'medium', 'high'],
+    max_context: 500_000,
+    group: 'grok',
+  };
+
+  afterEach(() => {
+    modelCatalog.__testReset();
+  });
+
+  it("resolveModelInput('grok') resolves via the catalog alias", () => {
+    modelCatalog.__testSeed([GROK]);
+    const store = makeStore();
+    expect(store.resolveModelInput('grok')).toBe('grok-4.5');
+  });
+
+  it("resolveModelInput('grok-4.5') resolves the catalog id", () => {
+    modelCatalog.__testSeed([GROK]);
+    const store = makeStore();
+    expect(store.resolveModelInput('grok-4.5')).toBe('grok-4.5');
+  });
+
+  it('static ids/aliases still win over the catalog', () => {
+    modelCatalog.__testSeed([GROK]);
+    const store = makeStore();
+    expect(store.resolveModelInput('opus')).toBe('claude-opus-5-5[1m]');
+    expect(store.resolveModelInput('gpt-5.6-sol')).toBe('gpt-5.6-sol');
+  });
+
+  it("coerceToAvailableModel('grok-4.5') preserves the catalog id (not DEFAULT_MODEL)", () => {
+    modelCatalog.__testSeed([GROK]);
+    expect(coerceToAvailableModel('grok-4.5')).toBe('grok-4.5');
+  });
+
+  it("getModelDisplayName('grok-4.5') uses the catalog display name", () => {
+    modelCatalog.__testSeed([GROK]);
+    const store = makeStore();
+    expect(store.getModelDisplayName('grok-4.5')).toBe('Grok 4.5');
+  });
+
+  it('with the catalog empty, unknown ids still coerce to DEFAULT_MODEL', () => {
+    expect(coerceToAvailableModel('grok-4.5')).toBe(DEFAULT_MODEL);
+    const store = makeStore();
+    expect(store.resolveModelInput('grok')).toBeNull();
+    expect(store.getModelDisplayName('grok-4.5')).toBe('grok-4.5');
+  });
+
+  it('the `[1m]` fable catalog variant IS selectable (2026-08-26 probe supersedes the old filter)', () => {
+    // Superseded: `isCatalogIdSelectable` used to drop `claude-fable-5[1m]`.
+    // The live llmux probe showed the literal id is accepted upstream and is
+    // the ONLY spelling for which the client reports a 1M denominator, so the
+    // filter is gone and the id is both catalog- and statically-selectable.
+    modelCatalog.__testSeed([
+      {
+        id: 'claude-fable-5[1m]',
+        aliases: [],
+        name: 'Claude Fable 5',
+        efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        max_context: 1_000_000,
+        group: 'claude',
+      },
+      GROK,
+    ]);
+    const store = makeStore();
+    expect(store.resolveModelInput('claude-fable-5[1m]')).toBe('claude-fable-5[1m]');
+    expect(coerceToAvailableModel('claude-fable-5[1m]')).toBe('claude-fable-5[1m]');
+    // Opus [1m] variants stay selectable (static list) and grok is untouched.
+    expect(store.resolveModelInput('claude-opus-4-8[1m]')).toBe('claude-opus-4-8[1m]');
+    expect(store.resolveModelInput('grok-4.5')).toBe('grok-4.5');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fake `grok-*[1m]` inputs (2026-08-26). llmux's grok provider forwards any
+// `grok-*` id VERBATIM upstream, so `grok-4.6[1m]` would reach xAI as a model
+// name that does not exist — and silently rewriting it to `grok-4.6` would
+// serve a different model than the one asked for. The store must therefore
+// distinguish REJECTED (visible, with a suggestion) from UNKNOWN (typo).
+// ---------------------------------------------------------------------------
+describe('model input resolution — accepted / rejected / unknown', () => {
+  afterEach(() => {
+    modelCatalog.__testReset();
+  });
+
+  it('accepts the requested aliases and canonical ids', () => {
+    const store = makeStore();
+    expect(store.resolveModelInput('fable')).toBe('claude-fable-5-1[1m]');
+    expect(store.resolveModelInput('fable[1m]')).toBe('claude-fable-5-1[1m]');
+    expect(store.resolveModelInput('opus')).toBe('claude-opus-5-5[1m]');
+    expect(store.resolveModelInput('opus[1m]')).toBe('claude-opus-5-5[1m]');
+    expect(store.resolveModelInput('opus-5')).toBe('claude-opus-5');
+    expect(store.resolveModelInput('sol[1m]')).toBe('gpt-5.6-sol[1m]');
+    expect(store.resolveModelInput('grok-4.6')).toBe('grok-4.6');
+  });
+
+  it('resolves bare grok-4.6 with NO llmux catalog snapshot loaded', () => {
+    // Static declaration, not catalog-derived: a cold start must still be able
+    // to select the model whose 450k auto-compact default is declared policy.
+    const store = makeStore();
+    expect(store.resolveModelInput('grok-4.6')).toBe('grok-4.6');
+    expect(coerceToAvailableModel('grok-4.6')).toBe('grok-4.6');
+  });
+
+  it('REJECTS grok-4.6[1m] visibly with a `grok-4.6` suggestion', () => {
+    const store = makeStore();
+    const result = store.resolveModelInputDetailed('grok-4.6[1m]');
+    expect(result.status).toBe('rejected');
+    if (result.status !== 'rejected') throw new Error('unreachable');
+    expect(result.suggestedModel).toBe('grok-4.6');
+    expect(result.rejectedReason).toContain('grok-4.6[1m]');
+    expect(result.rejectedReason).toContain('grok-4.6');
+  });
+
+  it('never normalizes or persists a fake grok `[1m]` id', () => {
+    const store = makeStore();
+    expect(store.resolveModelInput('grok-4.6[1m]')).toBeNull();
+    expect(coerceToAvailableModel('grok-4.6[1m]')).toBe(DEFAULT_MODEL);
+  });
+
+  it('rejects a fake grok `[1m]` id even when the catalog advertises it', () => {
+    // Defence in depth: llmux must never be able to make the harness persist
+    // an id its own grok provider would forward verbatim to xAI.
+    modelCatalog.__testSeed([
+      { id: 'grok-4.6[1m]', aliases: [], name: 'Grok 4.6 1M', efforts: ['low'], max_context: 1_000_000, group: 'grok' },
+    ]);
+    const store = makeStore();
+    expect(store.resolveModelInput('grok-4.6[1m]')).toBeNull();
+    expect(coerceToAvailableModel('grok-4.6[1m]')).toBe(DEFAULT_MODEL);
+  });
+
+  it('does NOT force a catalog refresh for a rejected id (only for unknown ones)', async () => {
+    const store = makeStore();
+    const refresh = vi.spyOn(modelCatalog, 'refresh').mockResolvedValue(undefined as never);
+    try {
+      const rejected = await store.resolveModelInputDetailedWithRefresh('grok-4.6[1m]');
+      expect(rejected.status).toBe('rejected');
+      expect(refresh).not.toHaveBeenCalled();
+
+      const unknown = await store.resolveModelInputDetailedWithRefresh('totally-made-up');
+      expect(unknown.status).toBe('unknown');
+      expect(refresh).toHaveBeenCalledTimes(1);
+    } finally {
+      refresh.mockRestore();
+    }
+  });
+
+  it('reports an unknown typo as `unknown`, not `rejected`', () => {
+    const store = makeStore();
+    expect(store.resolveModelInputDetailed('opuss').status).toBe('unknown');
+    expect(store.resolveModelInputDetailed('').status).toBe('unknown');
   });
 });

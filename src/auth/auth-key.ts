@@ -151,13 +151,3 @@ export function isCctSlot(key: AuthKey): key is CctSlot {
 export function isCctWithSetup(key: AuthKey): key is CctSlotWithSetup {
   return key.kind === 'cct' && key.source === 'setup';
 }
-
-/** Type guard: true for the CCT sub-arm lifted from a v1 oauth-only record. */
-function isCctLegacyAttachmentOnly(key: AuthKey): key is CctSlotLegacyAttachmentOnly {
-  return key.kind === 'cct' && key.source === 'legacy-attachment';
-}
-
-/** Type guard: true for bare API-key slots. */
-function isApiKeySlot(key: AuthKey): key is ApiKeySlot {
-  return key.kind === 'api_key';
-}

@@ -5,6 +5,7 @@
   "main": "./dist/permission-mcp-server.js",
   "types": "./dist/permission-mcp-server.d.ts",
   "exports": {
+    ".": "./dist/permission-mcp-server.js",
     "./bin": "./dist/permission-mcp-server.js"
   },
   "bin": {

@@ -6,9 +6,9 @@
  * adversarial inputs (codex-flagged), and precedence.
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { HandoffContext } from '../../types';
-import { buildPrIssueHookEntries, handlePrIssuePrecondition, type PrIssueHookLogger } from '../pr-issue-guard';
+import { handlePrIssuePrecondition } from '../pr-issue-guard';
 
 const SOURCE = 'https://github.com/2lab-ai/soma-work/issues/696';
 
@@ -306,7 +306,7 @@ describe('pr-issue-guard — Jira source path (Bash)', () => {
   it('T1.24 Jira source + body has lowercase `closes PROJ-4217` → pass (case-insensitive)', () => {
     const result = handlePrIssuePrecondition({
       toolName: 'Bash',
-      toolInput: { command: 'gh pr create --body "closes PROJ-4217 fixes the thing"' },
+      toolInput: { command: 'gh pr create --body "closes proj-4217 fixes the thing"' },
       handoffContext: makeContext({ sourceIssueUrl: JIRA_SOURCE }),
     });
     expect(result.blocked).toBe(false);
@@ -493,9 +493,9 @@ describe('pr-issue-guard — Jira malformed source URLs', () => {
   it('T1.41 lowercase project key → malformed-source-issue-url', () => {
     const result = handlePrIssuePrecondition({
       toolName: 'Bash',
-      toolInput: { command: 'gh pr create --body "Closes PROJ-4217"' },
+      toolInput: { command: 'gh pr create --body "Closes proj-4217"' },
       handoffContext: makeContext({
-        sourceIssueUrl: 'https://yourcompany.atlassian.net/browse/PROJ-4217',
+        sourceIssueUrl: 'https://yourcompany.atlassian.net/browse/proj-4217',
       }),
     });
     expect(result.blocked).toBe(true);
@@ -536,181 +536,5 @@ describe('pr-issue-guard — Jira malformed source URLs', () => {
     });
     expect(result.blocked).toBe(true);
     expect(result.reason).toBe('malformed-source-issue-url');
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Integration tests for the SDK hook factory (S2 — wire into claude-handler.ts)
-// ─────────────────────────────────────────────────────────────────────────────
-
-function makeLogger(): PrIssueHookLogger & { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> } {
-  const info = vi.fn<(msg: string, data?: Record<string, unknown>) => void>();
-  const warn = vi.fn<(msg: string, data?: Record<string, unknown>) => void>();
-  return { info, warn };
-}
-
-describe('buildPrIssueHookEntries — SDK hook factory', () => {
-  const LOG_CTX = { channel: 'C123', threadTs: '171.001' };
-
-  it('returns two entries: one for Bash, one for mcp__', () => {
-    const entries = buildPrIssueHookEntries({
-      getHandoffContext: () => undefined,
-      logger: makeLogger(),
-      logCtx: LOG_CTX,
-    });
-    expect(entries).toHaveLength(2);
-    expect(entries[0].matcher).toBe('Bash');
-    expect(entries[1].matcher).toBe('mcp__');
-    expect(entries[0].hooks).toHaveLength(1);
-    expect(entries[1].hooks).toHaveLength(1);
-  });
-
-  it('T2.1 Bash gh pr create with no-issue handoffContext → permissionDecision=deny + message', async () => {
-    const logger = makeLogger();
-    const ctx = makeContext({ sourceIssueUrl: null, escapeEligible: false });
-    const entries = buildPrIssueHookEntries({
-      getHandoffContext: () => ctx,
-      logger,
-      logCtx: LOG_CTX,
-    });
-    const bashHook = entries[0].hooks[0];
-    const output = await bashHook({
-      hook_event_name: 'PreToolUse',
-      session_id: 'sdk-x',
-      transcript_path: '',
-      cwd: '',
-      tool_name: 'Bash',
-      tool_input: { command: 'gh pr create --title x' },
-    } as Parameters<typeof bashHook>[0]);
-
-    expect(output).toMatchObject({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-      },
-    });
-    const reason = (
-      output as {
-        hookSpecificOutput: { permissionDecisionReason: string };
-      }
-    ).hookSpecificOutput.permissionDecisionReason;
-    expect(reason).toContain('no-issue-no-escape');
-    expect(reason).toContain('test-chain-id');
-    expect(logger.warn).toHaveBeenCalledWith(
-      'PR creation blocked by handoff precondition',
-      expect.objectContaining({
-        channel: 'C123',
-        threadTs: '171.001',
-        tool: 'Bash',
-        reason: 'no-issue-no-escape',
-        chainId: 'test-chain-id',
-      }),
-    );
-  });
-
-  it('T2.2 MCP create_pull_request with no-issue handoffContext → permissionDecision=deny', async () => {
-    const logger = makeLogger();
-    const ctx = makeContext({ sourceIssueUrl: null, escapeEligible: false });
-    const entries = buildPrIssueHookEntries({
-      getHandoffContext: () => ctx,
-      logger,
-      logCtx: LOG_CTX,
-    });
-    const mcpHook = entries[1].hooks[0];
-    const output = await mcpHook({
-      hook_event_name: 'PreToolUse',
-      session_id: 'sdk-x',
-      transcript_path: '',
-      cwd: '',
-      tool_name: 'mcp__github__create_pull_request',
-      tool_input: { body: 'just stuff' },
-    } as Parameters<typeof mcpHook>[0]);
-
-    expect(output).toMatchObject({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-      },
-    });
-    expect(logger.warn).toHaveBeenCalled();
-  });
-
-  it('T2.3 bypass-mode precedence: even with bypass enabled, our hook returns deny → SDK precedence makes deny win', async () => {
-    // The bypass-mode Bash hook (claude-handler.ts:865-907) returns
-    // permissionDecision='allow' for non-dangerous commands. Our hook returns
-    // permissionDecision='deny' for handoff-no-issue. Per SDK runtime
-    // (cli.js:8208-8240), the precedence is `deny > defer > ask > allow`,
-    // so the deny wins regardless of order. We can't directly assert SDK
-    // aggregation in a unit test (no SDK runtime here), but we CAN assert
-    // that our hook unconditionally returns deny in this scenario — which
-    // is the precondition for the SDK rule to take effect.
-    const logger = makeLogger();
-    const ctx = makeContext({ sourceIssueUrl: null, escapeEligible: false });
-    const entries = buildPrIssueHookEntries({
-      getHandoffContext: () => ctx,
-      logger,
-      logCtx: LOG_CTX,
-    });
-    const bashHook = entries[0].hooks[0];
-    const output = await bashHook({
-      hook_event_name: 'PreToolUse',
-      session_id: 'sdk-x',
-      transcript_path: '',
-      cwd: '',
-      tool_name: 'Bash',
-      tool_input: { command: 'gh pr create --title x' },
-    } as Parameters<typeof bashHook>[0]);
-
-    expect(
-      (output as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision,
-    ).toBe('deny');
-    // SDK precedence (deny > allow) is the SDK's responsibility — our contract
-    // is to return deny consistently regardless of whether bypass is enabled.
-  });
-
-  it('skips enforcement (continue: true) when handoffContext is undefined and emits info log', async () => {
-    const logger = makeLogger();
-    const entries = buildPrIssueHookEntries({
-      getHandoffContext: () => undefined,
-      logger,
-      logCtx: LOG_CTX,
-    });
-    const bashHook = entries[0].hooks[0];
-    const output = await bashHook({
-      hook_event_name: 'PreToolUse',
-      session_id: 'sdk-x',
-      transcript_path: '',
-      cwd: '',
-      tool_name: 'Bash',
-      tool_input: { command: 'gh pr create --title x' },
-    } as Parameters<typeof bashHook>[0]);
-
-    expect(output).toEqual({ continue: true });
-    expect(logger.info).toHaveBeenCalledWith(
-      'PR-issue guard skipped: no handoff context on PR-create attempt',
-      LOG_CTX,
-    );
-  });
-
-  it('mcp__ matcher filters: non-create_pull_request mcp__ tools pass through', async () => {
-    const logger = makeLogger();
-    const ctx = makeContext({ sourceIssueUrl: null, escapeEligible: false });
-    const entries = buildPrIssueHookEntries({
-      getHandoffContext: () => ctx,
-      logger,
-      logCtx: LOG_CTX,
-    });
-    const mcpHook = entries[1].hooks[0];
-    const output = await mcpHook({
-      hook_event_name: 'PreToolUse',
-      session_id: 'sdk-x',
-      transcript_path: '',
-      cwd: '',
-      tool_name: 'mcp__github__list_issues',
-      tool_input: { owner: 'x', repo: 'y' },
-    } as Parameters<typeof mcpHook>[0]);
-
-    expect(output).toEqual({ continue: true });
-    expect(logger.warn).not.toHaveBeenCalled();
   });
 });

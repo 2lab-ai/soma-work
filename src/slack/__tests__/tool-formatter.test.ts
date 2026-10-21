@@ -505,13 +505,13 @@ describe('ToolFormatter', () => {
         {
           type: 'tool_use',
           id: 'id1',
-          name: 'mcp__llm__chat',
+          name: 'mcp__agent__chat',
           input: { model: 'opus' },
         },
       ];
       const result = ToolFormatter.formatToolUseCompact(content);
       expect(result).toContain('⏳');
-      expect(result).toContain('MCP: llm → chat');
+      expect(result).toContain('MCP: agent → chat');
       expect(result).toContain('model: opus');
     });
 
@@ -556,8 +556,8 @@ describe('ToolFormatter', () => {
 
   describe('formatOneLineToolUse — MCP params', () => {
     it('should include params for MCP tools', () => {
-      const result = ToolFormatter.formatOneLineToolUse('mcp__llm__chat', { model: 'opus', prompt: 'hello world' });
-      expect(result).toContain('MCP: llm → chat');
+      const result = ToolFormatter.formatOneLineToolUse('mcp__agent__chat', { model: 'opus', prompt: 'hello world' });
+      expect(result).toContain('MCP: agent → chat');
       expect(result).toContain('model: opus');
     });
 
@@ -572,32 +572,6 @@ describe('ToolFormatter', () => {
       // Bash shows command directly, no formatCompactParams
       expect(result).toContain('npm test');
       expect(result).not.toContain('command:');
-    });
-  });
-
-  describe('formatOneLineToolComplete', () => {
-    it('should show 🟢 for success without duration', () => {
-      const result = ToolFormatter.formatOneLineToolComplete('Read', { file_path: '/test.ts' }, false);
-      expect(result).toContain('🟢');
-      expect(result).toContain('Read');
-      expect(result).not.toContain('—');
-    });
-
-    it('should show 🔴 for error', () => {
-      const result = ToolFormatter.formatOneLineToolComplete('Bash', { command: 'exit 1' }, true);
-      expect(result).toContain('🔴');
-    });
-
-    it('should include duration when provided', () => {
-      const result = ToolFormatter.formatOneLineToolComplete('mcp__llm__chat', { model: 'opus' }, false, 5000);
-      expect(result).toContain('🟢');
-      expect(result).toContain('MCP: llm → chat');
-      expect(result).toContain('— 5.0s');
-    });
-
-    it('should skip duration when null', () => {
-      const result = ToolFormatter.formatOneLineToolComplete('Read', { file_path: '/test.ts' }, false, null);
-      expect(result).not.toContain('—');
     });
   });
 

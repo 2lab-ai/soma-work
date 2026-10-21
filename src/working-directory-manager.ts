@@ -4,7 +4,6 @@ import * as path from 'node:path';
 import { config } from './config';
 import { Logger } from './logger';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
-import { DirectoryFormatter } from './slack/formatters';
 
 /**
  * WorkingDirectoryManager - Simplified version with fixed user directories
@@ -117,51 +116,10 @@ export class WorkingDirectoryManager {
   }
 
   /**
-   * @deprecated - Working directories are now fixed per user
-   * This method is kept for backward compatibility but does nothing
-   */
-  setWorkingDirectory(
-    _channelId: string,
-    _directory: string,
-    _threadTs?: string,
-    _userId?: string,
-  ): { success: boolean; resolvedPath?: string; error?: string } {
-    return {
-      success: false,
-      error: 'Working directory setting is disabled. Each user has a fixed directory.',
-    };
-  }
-
-  /**
-   * @deprecated - Working directories are now fixed per user
-   */
-  removeWorkingDirectory(_channelId: string, _threadTs?: string, _userId?: string): boolean {
-    return false;
-  }
-
-  /**
-   * @deprecated - No longer used with fixed directories
-   */
-  listConfigurations(): never[] {
-    return [];
-  }
-
-  /**
-   * @deprecated - Use getWorkingDirectory instead
-   */
-  getChannelWorkingDirectory(_channelId: string): string | undefined {
-    return undefined;
-  }
-
-  /**
    * @deprecated - No longer used with fixed directories
    */
   hasChannelWorkingDirectory(_channelId: string): boolean {
     return false;
-  }
-
-  formatChannelSetupMessage(_channelId: string, _channelName: string): string {
-    return DirectoryFormatter.formatChannelSetupMessage(_channelId, _channelName);
   }
 
   /**
@@ -180,46 +138,5 @@ export class WorkingDirectoryManager {
 
     const dirName = `session_${Date.now()}_${this.uniqueSuffix()}`;
     return this.createUserScopedDir(slackId, dirName, 'session base directory');
-  }
-
-  /**
-   * Create a unique session-scoped working directory under /tmp/{slackId}/.
-   *
-   * Pattern: /tmp/{slackId}/{repoName}_{epochMs}_{sanitizedPrName}
-   *
-   * Each invocation produces a unique directory (epoch ms timestamp),
-   * so concurrent sessions for the same user/repo never collide.
-   */
-  createSessionWorkingDir(slackId: string, repoUrl: string, prName: string): string | undefined {
-    if (!this.isValidSlackId(slackId)) {
-      this.logger.warn('Invalid or empty slackId for createSessionWorkingDir', { slackId });
-      return undefined;
-    }
-
-    // Extract repo name from URL
-    let repoName: string;
-    try {
-      const url = new URL(repoUrl);
-      const pathname = url.pathname.replace(/\/+$/, '');
-      const lastSegment = pathname.split('/').pop();
-      repoName = lastSegment?.replace(/\.git$/, '') || '';
-      if (!repoName) {
-        this.logger.error('Could not extract repo name from URL', { repoUrl });
-        return undefined;
-      }
-    } catch (error) {
-      this.logger.error('Invalid repoUrl', { repoUrl, error });
-      return undefined;
-    }
-
-    // Sanitize prName for filesystem safety
-    const safePrName = prName
-      .replace(/[^a-zA-Z0-9_-]/g, '_')
-      .replace(/_+/g, '_')
-      .replace(/^_|_$/g, '')
-      .substring(0, 50);
-
-    const dirName = `${repoName}_${Date.now()}_${this.uniqueSuffix()}_${safePrName}`;
-    return this.createUserScopedDir(slackId, dirName, 'session working directory');
   }
 }

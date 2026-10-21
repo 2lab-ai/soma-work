@@ -3,9 +3,13 @@
  * Extracted from claude-handler.ts (Phase 5.3)
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
+import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
+import { createPermissionPromptHandler, type PermissionRequestContext } from '@soma/mcp-server-permission';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
+import { z } from 'zod';
 import { isAdminUser } from './admin-utils';
 import type { PermissionMode } from './agent-runtime/policy/permission-mode';
 import { substituteEnvVars } from './config-env-substitution';
@@ -21,7 +25,6 @@ import type { McpManager } from './mcp-manager';
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
 import {
   getPermissionGatedServers,
-  getRequiredLevel,
   levelSatisfies,
   loadMcpToolPermissions,
   type McpToolPermissionConfig,
@@ -29,20 +32,6 @@ import {
 } from './mcp-tool-permission-config';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import { userSettingsStore } from './user-settings-store';
-
-const PERMISSION_SERVER_BASENAME = 'permission-mcp-server';
-const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
-const LLM_SERVER_BASENAME = 'llm-mcp-server';
-const SLACK_MCP_SERVER_BASENAME = 'slack-mcp-server';
-const SERVER_TOOLS_BASENAME = 'server-tools-mcp-server';
-const CRON_SERVER_BASENAME = 'cron-mcp-server';
-const MCP_TOOL_PERMISSION_SERVER_BASENAME = 'mcp-tool-permission-mcp-server';
-const AGENT_SERVER_BASENAME = 'agent-mcp-server';
-
-/** Root of the project (one level up from src/) */
-const PROJECT_ROOT = path.resolve(__dirname, '..');
-/** Directory containing extracted MCP servers */
-const MCP_SERVERS_DIR = path.join(PROJECT_ROOT, 'packages', 'mcp-servers');
 
 /** Native SDK tools that require terminal interaction — disallowed in Slack context */
 const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
@@ -52,51 +41,6 @@ const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
  * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 1
  */
 const NATIVE_CRON_TOOLS = ['CronCreate', 'CronDelete', 'CronList'];
-
-export interface PermissionServerPathResult {
-  resolvedPath: string | null;
-  fallbackUsed: boolean;
-  triedPaths: string[];
-}
-
-export function resolveInternalMcpServer(
-  baseDir: string,
-  basename: string,
-  runtimeExt: '.ts' | '.js',
-  existsSync: (path: string) => boolean = fs.existsSync,
-): PermissionServerPathResult {
-  const basePath = path.join(baseDir, basename);
-  const preferredPath = `${basePath}${runtimeExt}`;
-  const fallbackExt = runtimeExt === '.ts' ? '.js' : '.ts';
-  const fallbackPath = `${basePath}${fallbackExt}`;
-  const triedPaths = [preferredPath, fallbackPath];
-
-  if (existsSync(preferredPath)) {
-    return { resolvedPath: preferredPath, fallbackUsed: false, triedPaths };
-  }
-
-  if (existsSync(fallbackPath)) {
-    return { resolvedPath: fallbackPath, fallbackUsed: true, triedPaths };
-  }
-
-  return { resolvedPath: null, fallbackUsed: false, triedPaths };
-}
-
-export function resolvePermissionServerPath(
-  baseDir: string,
-  runtimeExt: '.ts' | '.js',
-  existsSync: (path: string) => boolean = fs.existsSync,
-): PermissionServerPathResult {
-  return resolveInternalMcpServer(baseDir, PERMISSION_SERVER_BASENAME, runtimeExt, existsSync);
-}
-
-export function resolveModelCommandServerPath(
-  baseDir: string,
-  runtimeExt: '.ts' | '.js',
-  existsSync: (path: string) => boolean = fs.existsSync,
-): PermissionServerPathResult {
-  return resolveInternalMcpServer(baseDir, MODEL_COMMAND_SERVER_BASENAME, runtimeExt, existsSync);
-}
 
 /** True when the bot was mentioned inside an existing thread (not at the root). */
 export function isMidThreadMention(ctx?: { mentionTs?: string; threadTs?: string } | null): boolean {
@@ -185,20 +129,23 @@ export class McpConfigBuilder {
 
     // `legacy` → SDK prompts the user for every tool (the old accept/reject).
     // `auto` / `bypass` → the SDK runs without its own prompt; the unified
-    // PreToolUse policy hook decides allow / ask / classify per `somaPermissionMode`.
+    // PreToolUse policy hook decides allow / deny / classify / pass per `somaPermissionMode`
+    // (a `classify` the classifier escalates reaches the user as an SDK `ask`).
     // (`auto` still gets the permission-prompt server below — the classifier may
     // escalate a dangerous command to the Slack UI.)
     const userBypass = somaPermissionMode !== 'legacy';
     const config: McpConfig = userBypass
-      ? { permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true, userBypass, somaPermissionMode }
+      ? {
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+          userBypass,
+          somaPermissionMode,
+        }
       : { permissionMode: 'default', userBypass, somaPermissionMode };
 
     // Get base MCP server configuration
     const mcpServers = await this.mcpManager.getServerConfiguration();
     const internalServers: Record<string, any> = {};
-
-    // Always add LLM aggregate server (wraps codex + gemini)
-    internalServers['llm'] = this.buildLlmServer();
 
     // Add agent MCP server when agents are configured (Trace: docs/current/plans/multi-agent/trace.md, S4)
     if (this.agentConfigs && Object.keys(this.agentConfigs).length > 0) {
@@ -286,19 +233,20 @@ export class McpConfigBuilder {
       }
     }
 
-    // Build allowed tools list
-    if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
-      config.allowedTools = this.buildAllowedTools(slackContext, userBypass);
+    // Build allowed tools list. Always — it also carries native tools (Skill,
+    // EnterPlanMode/ExitPlanMode, bypass allow-list), so it must not depend on
+    // whether any MCP server happened to be registered (the retired `llm`
+    // server used to make that condition unconditionally true).
+    config.allowedTools = this.buildAllowedTools(slackContext, userBypass);
 
-      this.logger.debug('Added MCP configuration', {
-        serverCount: Object.keys(config.mcpServers).length,
-        servers: Object.keys(config.mcpServers),
-        allowedTools: config.allowedTools,
-        hasSlackContext: !!slackContext,
-        userBypass,
-        permissionMode: config.permissionMode,
-      });
-    }
+    this.logger.debug('Added MCP configuration', {
+      serverCount: Object.keys(config.mcpServers ?? {}).length,
+      servers: Object.keys(config.mcpServers ?? {}),
+      allowedTools: config.allowedTools,
+      hasSlackContext: !!slackContext,
+      userBypass,
+      permissionMode: config.permissionMode,
+    });
 
     // Disallow native interactive tools and SDK cron tools in Slack context
     // Interactive tools expect terminal input; cron tools conflict with soma's CronScheduler
@@ -317,19 +265,44 @@ export class McpConfigBuilder {
   }
 
   /**
-   * Build the permission prompt MCP server configuration
+   * Build the permission prompt as an in-process SDK MCP server.
+   *
+   * The handler remains owned by @soma/mcp-server-permission so the SDK and
+   * stdio entrypoints share the same Slack approval semantics.
    */
-  private buildPermissionServer(slackContext: SlackContext): Record<string, any> {
-    const command = this.getInternalServerCommand('permission');
-    return {
-      'permission-prompt': {
-        command: command.command,
-        args: command.args,
-        env: {
-          SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
-          SLACK_CONTEXT: JSON.stringify(slackContext),
-        },
+  private buildPermissionServer(slackContext: SlackContext): Record<string, McpSdkServerConfigWithInstance> {
+    const handler = createPermissionPromptHandler({
+      slackToken: process.env.SLACK_BOT_TOKEN,
+      slackContext: {
+        channel: slackContext.channel,
+        threadTs: slackContext.threadTs,
+        user: slackContext.user,
       },
+    });
+    const permissionPrompt = tool(
+      'permission_prompt',
+      'Request user permission for tool execution via Slack button',
+      {
+        tool_name: z.string().describe('Name of the tool requesting permission'),
+        input: z.record(z.string(), z.unknown()).describe('Input parameters for the tool'),
+        channel: z.string().optional().describe('Slack channel ID'),
+        thread_ts: z.string().optional().describe('Slack thread timestamp'),
+        user: z.string().optional().describe('User ID requesting permission'),
+      },
+      async (args, extra) => {
+        const context: PermissionRequestContext = {};
+        if (typeof extra === 'object' && extra !== null && 'signal' in extra && extra.signal instanceof AbortSignal) {
+          context.signal = extra.signal;
+        }
+        return await handler.handleTool('permission_prompt', args, context);
+      },
+    );
+
+    return {
+      'permission-prompt': createSdkMcpServer({
+        name: 'permission-prompt',
+        tools: [permissionPrompt],
+      }),
     };
   }
 
@@ -367,6 +340,10 @@ export class McpConfigBuilder {
       user: slackContext.user,
       channel: slackContext.channel,
       threadTs: slackContext.threadTs,
+      // Trusted admin flag — computed here (parent process, ADMIN_USERS env),
+      // so the model-facing cron MCP server can scope list/update/delete
+      // without being forgeable from the model side.
+      isAdmin: isAdminUser(slackContext.user),
     };
 
     return {
@@ -377,87 +354,6 @@ export class McpConfigBuilder {
         SOMA_DATA_DIR: DATA_DIR,
       },
     };
-  }
-
-  /**
-   * Resolve and cache an internal MCP server path with logging.
-   * Deduplicates the resolve/log/throw pattern used by all internal servers.
-   */
-  private resolveServerPath(
-    label: string,
-    basename: string,
-    serverDir: string,
-    cache: { path: string | null; checked: boolean; triedPaths: string[] },
-  ): string {
-    if (!cache.checked) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      const result = resolveInternalMcpServer(serverDir, basename, runtimeExt);
-      cache.checked = true;
-      cache.path = result.resolvedPath;
-      cache.triedPaths = result.triedPaths;
-
-      if (!result.resolvedPath) {
-        this.logger.error(`${label} MCP server file not found`, {
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      } else if (result.fallbackUsed) {
-        this.logger.warn(`${label} MCP server path fallback used`, {
-          resolvedPath: result.resolvedPath,
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      }
-    }
-
-    if (!cache.path) {
-      throw new Error(`${label} MCP server file not found. Tried: ${cache.triedPaths.join(', ')}`);
-    }
-
-    return cache.path;
-  }
-
-  /** Registry of server path caches — replaces 5 individual cache fields */
-  private serverPathRegistry = new Map<string, { path: string | null; checked: boolean; triedPaths: string[] }>();
-
-  /**
-   * Resolve an internal MCP server path with caching.
-   * Single entry point for all server path lookups.
-   */
-  private getServerPath(label: string, basename: string, subdir: string): string {
-    if (!this.serverPathRegistry.has(basename)) {
-      this.serverPathRegistry.set(basename, { path: null, checked: false, triedPaths: [] });
-    }
-    return this.resolveServerPath(
-      label,
-      basename,
-      path.join(MCP_SERVERS_DIR, subdir),
-      this.serverPathRegistry.get(basename)!,
-    );
-  }
-
-  private getPermissionServerPath(): string {
-    return this.getServerPath('Permission', PERMISSION_SERVER_BASENAME, 'permission');
-  }
-
-  private getModelCommandServerPath(): string {
-    return this.getServerPath('Model-command', MODEL_COMMAND_SERVER_BASENAME, 'model-command');
-  }
-
-  private getSlackMcpServerPath(): string {
-    return this.getServerPath('Slack-mcp', SLACK_MCP_SERVER_BASENAME, 'slack-mcp');
-  }
-
-  private getLlmServerPath(): string {
-    return this.getServerPath('LLM', LLM_SERVER_BASENAME, 'llm');
-  }
-
-  private getServerToolsServerPath(): string {
-    return this.getServerPath('Server-tools', SERVER_TOOLS_BASENAME, 'server-tools');
-  }
-
-  private getCronServerPath(): string {
-    return this.getServerPath('Cron', CRON_SERVER_BASENAME, 'cron');
   }
 
   /**
@@ -494,17 +390,6 @@ export class McpConfigBuilder {
     };
   }
 
-  private buildLlmServer(): Record<string, any> {
-    const command = this.getInternalServerCommand('llm');
-    return {
-      command: command.command,
-      args: command.args,
-      env: {
-        SOMA_CONFIG_FILE: CONFIG_FILE,
-      },
-    };
-  }
-
   /**
    * Build agent MCP server configuration.
    * Passes agent configs via env so the MCP server can validate agent names.
@@ -533,10 +418,6 @@ export class McpConfigBuilder {
     };
   }
 
-  private getAgentServerPath(): string {
-    return this.getServerPath('Agent', AGENT_SERVER_BASENAME, 'agent');
-  }
-
   /**
    * Build the list of allowed tools.
    * Filters permission-gated MCP servers based on user's active grants.
@@ -548,9 +429,6 @@ export class McpConfigBuilder {
 
     // Add Skill tool for local plugins
     allowedTools.push('Skill');
-
-    // Always allow LLM aggregate tools
-    allowedTools.push('mcp__llm');
 
     // Allow agent tools when agents are configured
     if (this.agentConfigs && Object.keys(this.agentConfigs).length > 0) {
@@ -751,10 +629,6 @@ export class McpConfigBuilder {
         SOMA_CONFIG_FILE: CONFIG_FILE,
       },
     };
-  }
-
-  private getMcpToolPermissionServerPath(): string {
-    return this.getServerPath('Mcp-tool-permission', MCP_TOOL_PERMISSION_SERVER_BASENAME, 'mcp-tool-permission');
   }
 
   /**

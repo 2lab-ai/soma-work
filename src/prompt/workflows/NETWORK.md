@@ -107,7 +107,7 @@ Used in:
 - `pr-fix-and-update` -> `pr-review` (re-review after fix)
 - `pr-review` -> `pr-review` (when rerun_review is selected)
 
-### UIAskUserQuestion (User Choice-Based Transition)
+### local:UIAskUserQuestion (User Choice-Based Transition)
 
 Transitions by letting the user select the next step. Uses the `local:UIAskUserQuestion` skill.
 
@@ -130,8 +130,8 @@ Foundation shared by all workflows via `{{include:./common.prompt}}`:
 
 - **Working folder rules**: Unique folder creation + git clone
 - **Disk space check**: fast_fail if under 512MB
-- **Model-command-tool priority**: UIAskUserQuestion, session links, etc. prioritize MCP
-- **Sub-models (MCP)**: codex (highest performance), gemini (good performance)
+- **Model-command-tool priority**: `local:UIAskUserQuestion`, session links, etc. prioritize MCP
+- **Sub-models (MCP)**: codex (highest performance). Fallback / tiebreaker: `subagent (opus)` (gemini is not used in workflows)
 - **Auto session title update**: On issue link, on PR merge
 
 ## Key Skill Dependencies
@@ -146,15 +146,15 @@ zwork:
 pr-review:
   - local:github-pr (PR data collection)
   - local:review-pr (executor)
-  - local:oracle-reviewer, local:oracle-gemini-reviewer (3-reviewer vote)
+  - local:oracle-reviewer + subagent (opus) (3-reviewer vote)
   - local:UIAskUserQuestion (user questions)
   - local:decision-gate (autonomous/user classification)
   - mcp__jira__getJiraIssue / mcp__github__get_issue (issue retrieval)
 
 pr-fix-and-update:
   - local:github-pr (PR data collection)
-  - local:oracle-reviewer, local:oracle-gemini-reviewer (fix direction vote)
-  - code-simplifier (code cleanup)
+  - local:oracle-reviewer + subagent (opus) (fix direction vote)
+  - local:simplify (over-engineering review + fix skill, adapted from ponytail)
 
 jira-*:
   - mcp__jira__* (Jira API)

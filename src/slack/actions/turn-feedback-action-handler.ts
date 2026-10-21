@@ -12,6 +12,7 @@
 
 import {
   buildFeedbackAckBlock,
+  isStreamHostedFeedbackBlockId,
   keepIconButtonsOnly,
   parseFeedbackValue,
 } from '@soma/slack/turn-feedback-block-builder';
@@ -30,7 +31,7 @@ export class TurnFeedbackActionHandler {
 
   constructor(private ctx: TurnFeedbackActionContext) {}
 
-  async handleFeedback(body: any, _respond: RespondFn): Promise<void> {
+  async handleFeedback(body: any, respond: RespondFn): Promise<void> {
     const action = body?.actions?.[0];
     const parsed = parseFeedbackValue(action?.value);
     if (!parsed) {
@@ -68,11 +69,29 @@ export class TurnFeedbackActionHandler {
       sentiment: parsed.sentiment,
     });
 
+    const currentBlocks: any[] = Array.isArray(body?.message?.blocks) ? body.message.blocks : [];
+
+    // A32 — the feedback row can be hosted ON the streamed answer message
+    // (marker `block_id`). A `chat.update` there would overwrite the answer the
+    // user is reading ("답변 보존 방식" forbids it), so the ack is an ephemeral
+    // respond() and the host message is left untouched.
+    if (currentBlocks.some((b) => isStreamHostedFeedbackBlockId(b?.block_id))) {
+      try {
+        await respond({ response_type: 'ephemeral', replace_original: false, text: '🙏 피드백 감사합니다' });
+      } catch (err) {
+        // Persisted already — a failed cosmetic ack must not lose the signal.
+        this.logger.warn('turn_feedback_v1: ephemeral ack failed', {
+          turnId: parsed.turnId,
+          err: (err as Error)?.message ?? String(err),
+        });
+      }
+      return;
+    }
+
     // Acknowledge the feedback in place: insert a plain `context` ack block and
     // drop the answered `feedback_buttons` — but KEEP any `icon_button` (the 🗑
     // dismiss) so the card stays dismissible. Swapping interactive elements for
     // a plain `context` block also avoids stale `block_id` reuse (docs §1.2).
-    const currentBlocks: any[] = Array.isArray(body?.message?.blocks) ? body.message.blocks : [];
     const ackBlock = buildFeedbackAckBlock(parsed.sentiment);
     const nextBlocks = currentBlocks.length
       ? currentBlocks.flatMap((b) => {

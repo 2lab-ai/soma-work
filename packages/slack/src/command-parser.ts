@@ -13,6 +13,21 @@ export type CctAction =
   | { action: 'rm-forbidden' }
   | { action: 'auto'; dry: boolean };
 
+/**
+ * Auth backend command (#llmux runtime switch).
+ *   - `auth`                        → { action: 'status' }  (mode card)
+ *   - `auth llmux` / `auth cct|ccp` → { action: 'set-mode', mode }
+ *   - `set auth llmux|cct|ccp`      → same (legacy `set auth` form)
+ *   - `auth switch <name>`          → { action: 'switch', target } (llmux manual switch)
+ *   - `auth key` / bare `key`       → { action: 'key' } (DM the caller their
+ *     personal llmux client key + local Claude Code setup; non-admin allowed)
+ */
+export type AuthCommandAction =
+  | { action: 'status' }
+  | { action: 'set-mode'; mode: 'llmux' | 'ccp' }
+  | { action: 'switch'; target: string }
+  | { action: 'key' };
+
 export type BypassAction = 'on' | 'off' | 'status';
 export type SandboxAction = 'on' | 'off' | 'status';
 export type SandboxTarget = 'sandbox' | 'network';
@@ -21,7 +36,15 @@ export type PersonaAction = { action: 'list' | 'status' | 'set'; persona?: strin
 export type MemoryAction =
   | { action: 'show' }
   | { action: 'clear'; index?: number }
-  | { action: 'save'; target: 'memory' | 'user'; content: string };
+  | { action: 'save'; target: 'memory' | 'user'; content: string }
+  // Hierarchical (taxonomy) memory — user-facing text interface.
+  | { action: 'pages' } // list the semantic page index + episodic days
+  | { action: 'page'; id: string } // show one semantic page (e.g. agent/foo, project/x/1)
+  | { action: 'search'; query: string } // search pages by keyword
+  | { action: 'episodic'; date?: string } // show episodic observations for a day
+  | { action: 'note'; content: string } // append an episodic observation (manage)
+  | { action: 'rmpage'; id: string } // remove a semantic page (manage)
+  | { action: 'help' }; // list all memory subcommands
 export type ModelAction = { action: 'list' | 'status' | 'set'; model?: string };
 export type NewCommandResult = { prompt?: string };
 export type GoalAction =
@@ -31,7 +54,13 @@ export type GoalAction =
   | { action: 'resume' }
   | { action: 'complete' }
   | { action: 'clear' }
-  | { action: 'invalid'; reason: 'missing_objective' };
+  // `goal auto` / `set goal auto` — toggle (or explicitly set) the per-user
+  // autogoal mode. `mode` undefined ⇒ toggle the current value.
+  | { action: 'auto'; mode?: 'on' | 'off' }
+  // `goal max <N>` / `set goal <N>` — override the auto-continuation cap.
+  // The parser passes the raw integer through; the handler clamps/validates.
+  | { action: 'max'; max: number }
+  | { action: 'invalid'; reason: 'missing_objective' | 'invalid_max' };
 export type OnboardingCommandResult = { prompt?: string };
 export type SessionsCommandResult = { isPublic: boolean };
 export type SessionThemeCommandResult = { theme: string | null } | null;
@@ -43,6 +72,19 @@ export type SessionCommandAction =
   | { type: 'effort'; action: 'status' | 'set'; level?: string }
   | { type: 'thinking'; action: 'status' | 'set'; value?: string }
   | { type: 'thinking_summary'; action: 'status' | 'set'; value?: string };
+
+/**
+ * Leading inline session directives parsed off an instruction message.
+ * See `CommandParser.parseInlineSessionDirectives`.
+ */
+export interface InlineSessionDirectives {
+  /** Raw model input from a leading `%model <value>` directive (unresolved alias). */
+  model?: string;
+  /** True when a leading `%nogoal` directive was present. */
+  noGoal: boolean;
+  /** Instruction text remaining after stripping the leading directives. */
+  remainder: string;
+}
 
 export type MarketplaceAction =
   | { action: 'list' }
@@ -58,6 +100,13 @@ export type PluginsAction =
   | { action: 'backups'; pluginRef: string };
 
 export type EmailAction = { action: 'status' } | { action: 'set'; email: string };
+
+/**
+ * Autoskill command actions. `status` renders the management card (bare
+ * `autoskill`); `set` replaces the registered list (`set autoskill a, b`),
+ * with an empty list meaning "clear".
+ */
+export type AutoskillAction = { action: 'status' } | { action: 'set'; skills: string[] };
 
 export type RateAction = { action: 'status' } | { action: 'up' } | { action: 'down' };
 
@@ -163,6 +212,37 @@ export class CommandParser {
     }
 
     return null;
+  }
+
+  /**
+   * Check if text is an auth command (#llmux runtime switch).
+   *
+   * Accepted: `auth`, `auth llmux`, `auth cct`, `auth ccp`,
+   * `set auth llmux|cct|ccp`, `auth switch <name>`, `auth key`, and the bare
+   * `key` shorthand (exact word only — prose starting with "key" stays chat).
+   */
+  static isAuthCommand(text: string): boolean {
+    const trimmed = text.trim();
+    if (/^\/?key$/i.test(trimmed)) return true;
+    return /^\/?(?:set\s+)?auth(?:\s+(?:llmux|cct|ccp|key|switch\s+\S+))?$/i.test(trimmed);
+  }
+
+  /** Parse an auth command. See {@link AuthCommandAction}. */
+  static parseAuthCommand(text: string): AuthCommandAction {
+    const trimmed = text.trim();
+    if (/^\/?key$/i.test(trimmed) || /^\/?(?:set\s+)?auth\s+key$/i.test(trimmed)) {
+      return { action: 'key' };
+    }
+    const modeMatch = trimmed.match(/^\/?(?:set\s+)?auth\s+(llmux|cct|ccp)$/i);
+    if (modeMatch) {
+      const raw = modeMatch[1].toLowerCase();
+      return { action: 'set-mode', mode: raw === 'llmux' ? 'llmux' : 'ccp' };
+    }
+    const switchMatch = trimmed.match(/^\/?auth\s+switch\s+(\S+)$/i);
+    if (switchMatch) {
+      return { action: 'switch', target: switchMatch[1] };
+    }
+    return { action: 'status' };
   }
 
   /**
@@ -353,11 +433,18 @@ export class CommandParser {
    */
   static isMemoryCommand(text: string): boolean {
     const t = text.trim();
-    return /^\/?memory(?:\s+(?:show|clear(?:\s+\d+)?|save\s+(?:user|memory)\s+.+))?$/i.test(t);
+    // L1 verbs (show/clear/save) plus the hierarchical-memory verbs
+    // (pages/index/list/page/search/episodic/note/rmpage/help). Only known
+    // verbs route here so plain prose starting with "memory" is left to the agent.
+    return /^\/?memory(?:\s+(?:show(?:\s+.+)?|clear(?:\s+\d+)?|save\s+(?:user|memory)\s+.+|pages|index|list|page\s+.+|search\s+.+|episodic(?:\s+\S+)?|note\s+.+|rmpage\s+.+|help))?$/i.test(
+      t,
+    );
   }
 
   /**
-   * Parse memory command
+   * Parse memory command. Recognizes the flat L1 verbs (show/save/clear) and
+   * the hierarchical-memory text interface (pages/page/search/episodic/note/
+   * rmpage/help).
    */
   static parseMemoryCommand(text: string): MemoryAction {
     const trimmed = text.trim();
@@ -375,6 +462,43 @@ export class CommandParser {
 
     if (/^\/?memory\s+clear$/i.test(trimmed)) {
       return { action: 'clear' };
+    }
+
+    // ── Hierarchical memory verbs ──
+    if (/^\/?memory\s+(pages|index|list)$/i.test(trimmed)) {
+      return { action: 'pages' };
+    }
+
+    if (/^\/?memory\s+help$/i.test(trimmed)) {
+      return { action: 'help' };
+    }
+
+    // memory rmpage <id>  |  memory page rm <id>
+    const rmMatch = trimmed.match(/^\/?memory\s+(?:rmpage|page\s+rm)\s+(.+)$/i);
+    if (rmMatch) {
+      return { action: 'rmpage', id: rmMatch[1].trim() };
+    }
+
+    // memory page <id>  |  memory show <id>
+    const pageMatch = trimmed.match(/^\/?memory\s+(?:page|show)\s+(.+)$/i);
+    if (pageMatch) {
+      return { action: 'page', id: pageMatch[1].trim() };
+    }
+
+    const searchMatch = trimmed.match(/^\/?memory\s+search\s+(.+)$/i);
+    if (searchMatch) {
+      return { action: 'search', query: searchMatch[1].trim() };
+    }
+
+    // memory episodic [YYYY-MM-DD]
+    const epMatch = trimmed.match(/^\/?memory\s+episodic(?:\s+(\S+))?$/i);
+    if (epMatch) {
+      return { action: 'episodic', date: epMatch[1]?.trim() };
+    }
+
+    const noteMatch = trimmed.match(/^\/?memory\s+note\s+(.+)$/is);
+    if (noteMatch) {
+      return { action: 'note', content: noteMatch[1].trim() };
     }
 
     return { action: 'show' };
@@ -482,7 +606,7 @@ export class CommandParser {
    *
    * `/z` refactor (#506): legacy `credentials` / `credentials status` aliases
    * are removed — only `restore` / `restore status` / `restore restore` forms
-   * are accepted (tombstone redirects legacy callers).
+   * are accepted; a removed alias falls through as an unhandled command.
    */
   static isRestoreCommand(text: string): boolean {
     return /^\/?restore(?:\s+(?:restore|status))?$/i.test(text.trim());
@@ -512,7 +636,7 @@ export class CommandParser {
    * Check if text is a help command.
    *
    * `/z` refactor (#506): legacy `commands` / `command` / `?` suffix aliases
-   * are removed — only `help` is accepted (tombstone redirects `commands`).
+   * are removed — only `help` is accepted.
    */
   static isHelpCommand(text: string): boolean {
     return /^\/?help$/i.test(text.trim());
@@ -605,6 +729,18 @@ export class CommandParser {
     return { rawArg: match[1] };
   }
 
+  /** Check if text is the session-scoped token autocompact command. */
+  static isAutoCompactCommand(text: string): boolean {
+    return /^\/?autocompact(?:\s+\S+)?$/i.test(text.trim());
+  }
+
+  /** Parse `/autocompact [tokens|reset]`. */
+  static parseAutoCompactCommand(text: string): { rawArg?: string } {
+    const match = text.trim().match(/^\/?autocompact(?:\s+(\S+))?$/i);
+    if (!match) return {};
+    return { rawArg: match[1] };
+  }
+
   /**
    * Check if text is a /new command
    */
@@ -621,16 +757,29 @@ export class CommandParser {
 
   /**
    * Check if text is a goal command.
+   *
+   * Matches the canonical `goal …` root, plus the literal aliases the user
+   * asked for: `set goal auto` and `set goal <N>` (digits). `set goal <text>`
+   * is intentionally NOT a general objective setter — only the `auto` and
+   * numeric-cap forms are aliased so the command surface stays unfragmented.
    */
   static isGoalCommand(text: string): boolean {
-    return /^\/?goal(?:\s+[\s\S]*)?$/i.test(text.trim());
+    const trimmed = text.trim();
+    if (/^\/?goal(?:\s+[\s\S]*)?$/i.test(trimmed)) return true;
+    return /^\/?set\s+goal\s+(?:auto|max\b|\d+)\b[\s\S]*$/i.test(trimmed);
   }
 
   /**
    * Parse goal command variants.
+   *
+   * The `set goal auto` / `set goal <N>` aliases are normalized to their
+   * canonical `goal auto` / `goal <N>` form up front so the rest of the
+   * parser only deals with the `goal …` root.
    */
   static parseGoalCommand(text: string): GoalAction {
-    const match = text.trim().match(/^\/?goal(?:\s+([\s\S]*))?$/i);
+    // Normalize the `set goal auto` / `set goal <N>` aliases → `goal …`.
+    const aliasNormalized = text.trim().replace(/^\/?set\s+goal\b/i, 'goal');
+    const match = aliasNormalized.match(/^\/?goal(?:\s+([\s\S]*))?$/i);
     const rest = match?.[1]?.trim();
     if (!rest || /^(?:status|show)$/i.test(rest)) {
       return { action: 'status' };
@@ -640,6 +789,29 @@ export class CommandParser {
     if (/^resume$/i.test(rest)) return { action: 'resume' };
     if (/^(?:done|complete|completed)$/i.test(rest)) return { action: 'complete' };
     if (/^(?:clear|remove|delete)$/i.test(rest)) return { action: 'clear' };
+
+    // Autogoal mode toggle: `goal auto` (toggle), `goal auto on`, `goal auto off`.
+    const autoMatch = rest.match(/^auto(?:\s+(on|off|enable|disable|true|false))?$/i);
+    if (autoMatch) {
+      const word = autoMatch[1]?.toLowerCase();
+      if (!word) return { action: 'auto' };
+      const on = word === 'on' || word === 'enable' || word === 'true';
+      return { action: 'auto', mode: on ? 'on' : 'off' };
+    }
+
+    // Max-continuation override: `goal max <N>` or the bare `goal <N>` /
+    // `set goal <N>` form. A purely numeric argument is a cap override, never
+    // an objective (an all-digit objective is meaningless). Explicit
+    // `goal set <N>` still routes to the objective setter below.
+    const maxMatch = rest.match(/^max(?:\s+(\S+))?$/i);
+    if (maxMatch) {
+      const n = Number(maxMatch[1]);
+      if (!maxMatch[1] || !Number.isInteger(n)) return { action: 'invalid', reason: 'invalid_max' };
+      return { action: 'max', max: n };
+    }
+    if (/^\d+$/.test(rest)) {
+      return { action: 'max', max: Number(rest) };
+    }
 
     const setMatch = rest.match(/^set(?:\s+([\s\S]+))?$/i);
     if (setMatch) {
@@ -801,6 +973,43 @@ export class CommandParser {
   }
 
   /**
+   * Check if text is an autoskill command.
+   * Matches: bare `autoskill`, `set autoskill`, `set autoskill <list>`.
+   */
+  static isAutoskillCommand(text: string): boolean {
+    return /^\/?(?:set\s+)?autoskill\b/i.test(text.trim());
+  }
+
+  /**
+   * Parse an autoskill command.
+   *
+   * - `autoskill`                       → status (render card)
+   * - `set autoskill`                   → status (no list ⇒ show card)
+   * - `set autoskill a, b c`            → set ['a','b','c'] (comma/space split)
+   * - `set autoskill clear` / `none`    → set [] (clear all)
+   * - `autoskill clear`                 → set [] (clear all)
+   */
+  static parseAutoskillCommand(text: string): AutoskillAction {
+    const trimmed = text.trim();
+    const match = trimmed.match(/^\/?(?:set\s+)?autoskill\b\s*(.*)$/i);
+    const rest = (match?.[1] ?? '').trim();
+
+    if (!rest) {
+      return { action: 'status' };
+    }
+    if (/^(clear|none|off|reset)$/i.test(rest)) {
+      return { action: 'set', skills: [] };
+    }
+    // Split on commas and/or whitespace; drop a leading `$` so `$using-ssot`
+    // and `using-ssot` are equivalent. Keep only kebab-ish tokens.
+    const skills = rest
+      .split(/[\s,]+/)
+      .map((s) => s.replace(/^\$/, '').trim())
+      .filter((s) => s.length > 0);
+    return { action: 'set', skills };
+  }
+
+  /**
    * Check if text is a rate command (rate / rate + / rate -)
    */
   static isRateCommand(text: string): boolean {
@@ -865,8 +1074,7 @@ export class CommandParser {
    * Check if text is a plugins command.
    *
    * `/z` refactor (#506): Korean alias `플러그인 업데이트` is removed — only
-   * the English `plugins <verb>` / `plugin <verb>` forms are accepted (the
-   * tombstone hint redirects `플러그인` callers to `/z plugin update`).
+   * the English `plugins <verb>` / `plugin <verb>` forms are accepted.
    */
   static isPluginsCommand(text: string): boolean {
     return /^\/?plugins?(?:\s+(?:add|remove|rollback|backups)\s+\S+|\s+update)?$/i.test(text.trim());
@@ -983,9 +1191,56 @@ export class CommandParser {
   }
 
   /**
+   * Parse LEADING inline session directives off an instruction message.
+   *
+   * Two directives are recognized, in any order and combination:
+   *   - `%model <value> {instruction}` — a session-scoped model change that must
+   *     be applied BEFORE the remaining instruction is processed. The message is
+   *     treated as TWO actions: the model change, then the instruction (which
+   *     re-enters the normal pipeline — commands, `$skill`, autogoal, dispatch).
+   *   - `%nogoal {instruction}` — suppress autogoal promotion for this message;
+   *     the instruction is followed without becoming the session goal.
+   *
+   * Returns `null` when the text carries no inline directive. Notably:
+   *   - Bare `%model <value>` (no remainder) is NOT inline — it keeps its
+   *     existing full-match session-command routing (`isSessionCommand`).
+   *   - Mid-text occurrences (`please run %model x`) are NOT directives; only
+   *     leading prefixes count.
+   *
+   * Bare `%nogoal` (no remainder) IS returned (with `remainder: ''`) so the
+   * caller can answer with a usage hint instead of dispatching the literal text.
+   */
+  static parseInlineSessionDirectives(text: string): InlineSessionDirectives | null {
+    let rest = (text ?? '').trim();
+    let model: string | undefined;
+    let noGoal = false;
+    let matched = false;
+
+    for (;;) {
+      const modelMatch = rest.match(/^%model\s+(\S+)\s+([\s\S]+)$/i);
+      if (modelMatch) {
+        model = modelMatch[1];
+        rest = modelMatch[2].trim();
+        matched = true;
+        continue;
+      }
+      const noGoalMatch = rest.match(/^%nogoal(?:\s+([\s\S]*))?$/i);
+      if (noGoalMatch) {
+        noGoal = true;
+        rest = (noGoalMatch[1] ?? '').trim();
+        matched = true;
+        continue;
+      }
+      break;
+    }
+
+    return matched ? { model, noGoal, remainder: rest } : null;
+  }
+
+  /**
    * Known command keywords (for `isPotentialCommand` hint detection).
    *
-   * `/z` refactor (#506) — removed aliases (all now tombstone-redirected):
+   * `/z` refactor (#506) — removed aliases (they fall through unhandled, #530):
    *  - `set_cct`, `nextcct` — underscore form
    *  - `servers` — use `mcp [list|reload]`
    *  - `credentials` — use `restore`
@@ -1002,6 +1257,8 @@ export class CommandParser {
     'config',
     // Token management
     'cct',
+    // Auth backend (#llmux runtime switch)
+    'auth',
     // Working directory
     'cwd',
     // MCP
@@ -1027,6 +1284,7 @@ export class CommandParser {
     'context',
     'renew',
     'compact',
+    'autocompact',
     'goal',
     'close',
     'link',
@@ -1162,9 +1420,18 @@ export class CommandParser {
       '• `context` or `/context` - Show current session token usage and cost',
       '• `renew` or `/renew` - Save context, reset session, and reload (for long sessions)',
       '• `compact` or `/compact` - Force context compaction (for testing compression)',
+      '• `autocompact` - Show the current session token threshold',
+      '• `autocompact <tokens>` - Set a session threshold (100k–1M; e.g. 800k)',
+      '• `autocompact reset` - Return to the model/default threshold',
       '• `goal` or `/goal` - Set or view the active session goal',
       '• `goal <objective>` - Set/replace the active goal and continue working',
       '• `goal pause|resume|done|clear` - Manage the active goal state',
+      '',
+      '*Cron:*',
+      '• `cron` or `schedule` (크론/스케줄) - List cron jobs (admins see all users with owner)',
+      "• `cron model <name> <default|fast|model>` - Change job model (default = creator's current model)",
+      '• `cron target <name> <channel|dm|thread>` - Change where results are delivered',
+      "• `cron delete <name>` - Delete a job (admins: append `<@owner>` to address another user's job)",
       '',
       '*Links:*',
       '• `link issue <url>` - Attach issue link to current session',
@@ -1217,6 +1484,8 @@ export class CommandParser {
       '• `%` - Show current session info (model, effort, verbosity, context, etc.)',
       '• `%model` - Show session model',
       '• `%model <name>` - Change model for this session only',
+      '• `%model <name> <지시>` - Change session model, then run the instruction (model applies before autogoal)',
+      '• `%nogoal <지시>` - Run the instruction WITHOUT autogoal promotion',
       '• `%effort` - Show session effort level',
       `• \`%effort <level>\` - Change effort for this session only (${EFFORT_LEVELS.join('/')})`,
       '• `%verbosity` - Show session verbosity',
@@ -1242,6 +1511,11 @@ export class CommandParser {
       '*Prompt & Instructions (Admin):*',
       '• `show prompt` - Show the system prompt used in this session',
       '• `show instructions` - Show user instructions stored in this session',
+      '',
+      '*Auth Backend:*',
+      '• `auth` - Show auth backend card: current mode (llmux/cct), llmux pool usage, settings',
+      '• `auth llmux` / `auth cct` - Switch auth backend at runtime (Admin only; llmux is default, cct is legacy)',
+      '• `auth switch <name>` - Manually switch the llmux account (Admin only)',
       '',
       '*Token Management (Admin):*',
       '• `cct` - Show OAuth token pool status (Block Kit card)',
