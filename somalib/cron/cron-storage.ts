@@ -66,6 +66,68 @@ export interface CronJob {
    * carries the grants and a delete disposes of them.
    */
   runAllowlist?: string[];
+  /**
+   * The owner's opt-in to deploy-triggered fires: when a deploy of `repo` into
+   * branch `target` completes (a `deploy_completed` directive from ANY session),
+   * the job fires as if run now — owner identity, its own target/mode/model.
+   * Stored normalized (see normalizeDeployTriggers). Omitted = never.
+   */
+  onDeploy?: CronDeployTrigger[];
+}
+
+/** One `onDeploy` entry. `repo` is `owner/repo`, lower-cased; `target` a branch without `refs/heads/`. */
+export interface CronDeployTrigger {
+  repo: string;
+  target: string;
+}
+
+const DEPLOY_REPO_PATTERN = /^[\w.-]+\/[\w.-]+$/;
+
+/** Branch name as matched: trimmed, any leading `refs/heads/` stripped. Case is kept. */
+export function normalizeDeployTarget(target: string): string {
+  return target.trim().replace(/^refs\/heads\//, '');
+}
+
+/**
+ * Validate + normalize `onDeploy` input. Throws `INVALID_ON_DEPLOY: …` on the
+ * first bad entry; duplicates (after normalization) collapse. `[]` is valid and
+ * means "no triggers".
+ */
+export function normalizeDeployTriggers(input: unknown): CronDeployTrigger[] {
+  if (!Array.isArray(input)) {
+    throw new Error('INVALID_ON_DEPLOY: onDeploy must be an array of { repo, target }');
+  }
+  const out: CronDeployTrigger[] = [];
+  for (const entry of input) {
+    const repo = typeof entry?.repo === 'string' ? entry.repo.trim().toLowerCase() : '';
+    if (!DEPLOY_REPO_PATTERN.test(repo)) {
+      throw new Error(`INVALID_ON_DEPLOY: repo '${entry?.repo}' must be owner/repo`);
+    }
+    const target = typeof entry?.target === 'string' ? normalizeDeployTarget(entry.target) : '';
+    if (!target || /\s/.test(target)) {
+      throw new Error(`INVALID_ON_DEPLOY: target '${entry?.target}' must be a branch name`);
+    }
+    if (!out.some((t) => t.repo === repo && t.target === target)) out.push({ repo, target });
+  }
+  return out;
+}
+
+/**
+ * Does a deploy of `repo` into `target` fire this job? Repo is compared
+ * case-insensitively, target exactly after normalization — `dev2` does not
+ * match `deploy/dev2`. Tolerates a hand-edited (malformed) stored list.
+ */
+export function jobMatchesDeploy(job: CronJob, repo: string, target: string): boolean {
+  if (!Array.isArray(job.onDeploy)) return false;
+  const wantRepo = repo.trim().toLowerCase();
+  const wantTarget = normalizeDeployTarget(target);
+  return job.onDeploy.some(
+    (t) =>
+      typeof t?.repo === 'string' &&
+      typeof t?.target === 'string' &&
+      t.repo.toLowerCase() === wantRepo &&
+      normalizeDeployTarget(t.target) === wantTarget,
+  );
 }
 
 /** May `userId` fire this job on demand? Owner always may; others need the allowlist. */
@@ -84,6 +146,7 @@ interface CronData {
  * - `target: null` → remove override (deliver as new channel message)
  * - `mode: null` → remove override (default queueing)
  * - `threadTs: null` → clear thread anchor
+ * - `onDeploy: null` (or `[]`) → stop firing on deploys
  */
 export interface CronJobPatch {
   /** Rename. Throws DUPLICATE_NAME when another job of the same owner already uses it. */
@@ -97,6 +160,8 @@ export interface CronJobPatch {
   target?: CronTarget | null;
   /** `null` clears every on-demand run grant. */
   runAllowlist?: string[] | null;
+  /** Replaces the whole list (validated); `null` clears it. */
+  onDeploy?: CronDeployTrigger[] | null;
 }
 
 // --- Execution History Types ---
@@ -181,6 +246,8 @@ export class CronStorage {
 
   /** Add a new job. Throws on duplicate name for same owner. */
   addJob(job: Omit<CronJob, 'id' | 'createdAt' | 'lastRunAt' | 'lastRunMinute' | 'lastRunDate'>): CronJob {
+    // Validate before touching the file: a bad trigger must not leave a half-made job.
+    const onDeploy = job.onDeploy === undefined ? undefined : normalizeDeployTriggers(job.onDeploy);
     const data = this.load();
 
     // Check duplicate
@@ -196,6 +263,8 @@ export class CronStorage {
       lastRunAt: null,
       lastRunMinute: null,
     };
+    if (onDeploy?.length) newJob.onDeploy = onDeploy;
+    else delete newJob.onDeploy;
 
     data.jobs.push(newJob);
     this.save(data);
@@ -226,6 +295,8 @@ export class CronStorage {
    * are always preserved. Returns the updated job, or null if not found.
    */
   updateJob(owner: string, name: string, patch: CronJobPatch): CronJob | null {
+    // Validated up front so a bad trigger list rejects the whole patch.
+    const onDeploy = patch.onDeploy ? normalizeDeployTriggers(patch.onDeploy) : patch.onDeploy;
     const data = this.load();
     const job = data.jobs.find((j) => j.owner === owner && j.name === name);
     if (!job) return null;
@@ -259,6 +330,10 @@ export class CronStorage {
     if (patch.runAllowlist !== undefined) {
       if (patch.runAllowlist === null) delete job.runAllowlist;
       else job.runAllowlist = [...new Set(patch.runAllowlist)];
+    }
+    if (onDeploy !== undefined) {
+      if (onDeploy === null || onDeploy.length === 0) delete job.onDeploy;
+      else job.onDeploy = onDeploy;
     }
 
     this.save(data);
