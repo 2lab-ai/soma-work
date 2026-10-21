@@ -154,73 +154,48 @@ canInterrupt(
 
 ## 6. Session Expiry
 
-### 6.1 Timeout Configuration
+### 6.1 Lifecycle policy
 
-```typescript
-const DEFAULT_SESSION_TIMEOUT = 24 * 60 * 60 * 1000;  // 24시간
-```
+The durations are an admin setting, not constants. `src/session-lifecycle-policy.ts` holds them in
+`<DATA_DIR>/session-lifecycle.json` (one file per instance, `atomicWriteJson` + `.bak`):
 
-### 6.2 Warning Intervals
+| Field | Default | Bounds | Effect |
+|---|---|---|---|
+| `sleepAfterMs` | 24 hours | 1 hour to 30 days | idle time before an active session goes to `SLEEPING` |
+| `archiveAfterMs` | 7 days | 1 hour to 365 days | time asleep before the session is archived (ended, work dirs removed) |
+| `boardArchiveWindowMs` | 48 hours | 0 to 365 days | how long an archived session stays in the dashboard DONE column |
 
-```typescript
-const WARNING_INTERVALS = [
-  10 * 60 * 1000,  // 만료 10분 전
-];
-```
+Admins change them in the dashboard (**Lifecycle** button → `PUT /api/dashboard/lifecycle`, admin with
+Admin mode on, or the viewer token). A change that would sleep or end live sessions on the next sweep
+is answered `409` with the counts until it is repeated with `?confirm=1`; every change is logged with
+the actor and the before/after values. Readers call `getSessionLifecyclePolicy()` at use time, so a
+change applies on the next sweep without a restart.
 
-### 6.3 Cleanup Process
+If the saved file and its `.bak` are both unreadable the policy is *degraded*: the defaults could be
+far shorter than what an admin chose, so the sweep and the loader skip every sleep / archive
+transition until an admin saves a policy again. A missing file is not degraded — it means defaults.
 
-```typescript
-async cleanupInactiveSessions(maxAge: number = DEFAULT_SESSION_TIMEOUT) {
-  const now = Date.now();
+### 6.2 Warning intervals
 
-  for (const [key, session] of this.sessions.entries()) {
-    const sessionAge = now - session.lastActivity.getTime();
-    const timeUntilExpiry = maxAge - sessionAge;
+`WARNING_INTERVALS` is 12 hours (idle check) and 10 minutes before the session goes to sleep. An
+interval that is not shorter than `sleepAfterMs` is skipped — under a 6-hour policy the 12-hour check
+would otherwise fire on the first sweep after any activity.
 
-    // 만료된 세션 처리
-    if (timeUntilExpiry <= 0) {
-      if (this.expiryCallbacks) {
-        await this.expiryCallbacks.onExpiry(session);
-      }
-      this.sessions.delete(key);
-      continue;
-    }
+### 6.3 Cleanup process
 
-    // 경고 전송 체크
-    if (this.expiryCallbacks) {
-      for (const warningInterval of WARNING_INTERVALS) {
-        if (timeUntilExpiry <= warningInterval) {
-          const lastWarningSent = session.lastWarningSentAt || Infinity;
+`cleanupInactiveSessions()` (every sweep):
 
-          if (warningInterval < lastWarningSent) {
-            const newMessageTs = await this.expiryCallbacks.onWarning(
-              session,
-              timeUntilExpiry,
-              session.warningMessageTs
-            );
+1. `SLEEPING` and asleep for `archiveAfterMs` or longer → `onExpiry`, archive (`sleep_expired`), delete.
+2. Otherwise idle for `sleepAfterMs` or longer → `SLEEPING` (`sleepStartedAt = now`), `onSleep`.
+3. Otherwise → expiry warnings (6.2).
 
-            session.lastWarningSentAt = warningInterval;
-            if (newMessageTs) {
-              session.warningMessageTs = newMessageTs;
-            }
-          }
-          break;
-        }
-      }
-    }
-  }
-}
-```
+`loadSessions()` (restart) applies the same two steps to what was saved: a `SLEEPING` session asleep
+past `archiveAfterMs` is archived; an active session idle past `sleepAfterMs + archiveAfterMs` is
+archived; an active session idle past `sleepAfterMs` only loads as `SLEEPING` with
+`sleepStartedAt = lastActivity + sleepAfterMs`, and is never auto-resumed.
 
-### 6.4 Periodic Cleanup
-
-```typescript
-// 5분마다 정리 실행
-setInterval(async () => {
-  await this.claudeHandler.cleanupInactiveSessions();
-}, 5 * 60 * 1000);
-```
+Slack's sleep / expiry notices and the session list countdowns state the policy durations
+(`getSessionLifecycle` provider of `@soma/slack/session-manager`, wired in `src/slack/session-manager.ts`).
 
 ## 7. Session Expiry Callbacks
 
@@ -264,7 +239,8 @@ private async handleSessionWarning(
 
 ```typescript
 private async handleSessionExpiry(session: ConversationSession): Promise<void> {
-  const expiryText = `🔒 *세션이 종료되었습니다*\n\n24시간 동안 활동이 없어 이 세션이 종료되었습니다.\n새로운 대화를 시작하려면 다시 메시지를 보내주세요.`;
+  // The durations come from the lifecycle policy (6.1), formatted by MessageFormatter.formatLifecycleDuration.
+  const expiryText = `🔒 *세션이 종료되었습니다*\n\nSleep 모드가 ${asleep} 경과하여 세션이 종료되었습니다.\n새로운 대화를 시작하려면 다시 메시지를 보내주세요.`;
 
   if (session.warningMessageTs) {
     await this.app.client.chat.update({ ... });
