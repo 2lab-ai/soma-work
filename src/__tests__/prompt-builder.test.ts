@@ -151,6 +151,9 @@ describe('PromptBuilder', () => {
       // The guard rails the harness relies on.
       expect(section).toMatch(/never emit/i);
       expect(section).toContain('baseRefName');
+      // A merged-but-unconfirmed deploy is said explicitly, not left silent.
+      expect(section).toContain('"confirmed": false');
+      expect(section).toMatch(/"type"`? is the first key/);
     });
 
     it('should fallback to default for unknown workflow', () => {

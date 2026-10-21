@@ -788,6 +788,31 @@ describe('onDeploy', () => {
     expect(storage.getJobsByOwner('U_OWNER')[0].onDeploy).toBeUndefined();
   });
 
+  it('cron_update clears onDeploy with onDeploy: null, like clear_onDeploy', () => {
+    seedJob(storage, { onDeploy: [lane] });
+    const r = handleUpdate({ name: 'daily', onDeploy: null }, ownerContext, storage);
+    expect(r.isError).toBe(false);
+    expect(storage.getJobsByOwner('U_OWNER')[0].onDeploy).toBeUndefined();
+  });
+
+  it('cron_update rejects a trigger list together with clear_onDeploy and changes nothing', () => {
+    seedJob(storage, { onDeploy: [lane] });
+    const r = handleUpdate({ name: 'daily', onDeploy: [lane], clear_onDeploy: true }, ownerContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toBe('Error: pass either onDeploy or clear_onDeploy, not both');
+    expect(storage.getJobsByOwner('U_OWNER')[0].onDeploy).toEqual([{ repo: 'acme/app', target: 'deploy/dev2' }]);
+  });
+
+  it('cron_create treats onDeploy: null as no triggers', () => {
+    const r = handleCreate(
+      { name: 'qa-lane', expression: '0 0 31 2 *', prompt: 'QA', onDeploy: null },
+      ownerContext,
+      storage,
+    );
+    expect(r.isError).toBe(false);
+    expect('onDeploy' in storage.getJobsByOwner('U_OWNER')[0]).toBe(false);
+  });
+
   it('cron_update rejects invalid onDeploy and leaves the job unchanged', () => {
     seedJob(storage, { onDeploy: [lane] });
     const r = handleUpdate({ name: 'daily', onDeploy: [{ repo: 'nope', target: 'x' }] }, ownerContext, storage);

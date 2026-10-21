@@ -157,13 +157,14 @@ function buildModelConfig(args: Record<string, any>): ModelConfigResult {
 }
 
 /**
- * Validate the optional `onDeploy` argument. `[]` normalizes to "no triggers".
- * Storage re-validates; this only turns its INVALID_ON_DEPLOY into a tool error.
+ * Validate the optional `onDeploy` argument. `null` and `[]` both mean "no
+ * triggers". Storage re-validates; this only turns its INVALID_ON_DEPLOY into a
+ * tool error.
  */
 function parseOnDeploy(
   raw: unknown,
 ): { ok: true; onDeploy: CronDeployTrigger[] | undefined } | { ok: false; errorText: string } {
-  if (raw === undefined) return { ok: true, onDeploy: undefined };
+  if (raw === undefined || raw === null) return { ok: true, onDeploy: undefined };
   try {
     return { ok: true, onDeploy: normalizeDeployTriggers(raw) };
   } catch (error: any) {
@@ -381,12 +382,15 @@ function buildUpdatePatch(
     }
   }
 
+  if (args.clear_onDeploy === true && args.onDeploy !== undefined && args.onDeploy !== null) {
+    return { ok: false, errorText: 'Error: pass either onDeploy or clear_onDeploy, not both' };
+  }
   if (args.onDeploy !== undefined) {
     const onDeployResult = parseOnDeploy(args.onDeploy);
     if (!onDeployResult.ok) {
       return { ok: false, errorText: onDeployResult.errorText };
     }
-    // Replaces the whole list; an empty one stops deploy fires.
+    // Replaces the whole list; null or an empty one stops deploy fires.
     patch.onDeploy = onDeployResult.onDeploy?.length ? onDeployResult.onDeploy : null;
   }
   if (args.clear_onDeploy === true) {
@@ -528,7 +532,8 @@ export function handleList(context: CronContext, storage: CronStorage): { text: 
 const ON_DEPLOY_SCHEMA = {
   type: 'array',
   description:
-    'Also fire this job when a deploy completes: the deploy workflow signals each repo it merged into a branch, from whichever session ran the deploy, and every job listing that repo + branch fires as if run now (owner identity, its own target/mode/model). ' +
+    'Also fire this job when a deploy completes: the deploy workflow signals each repo it merged and deployed into a branch, from whichever session ran the deploy, and every job listing that repo + branch fires as its owner, with its own model, always in a NEW thread in the job channel (target/mode are ignored for these fires). ' +
+    'The fired prompt ends with a line "[deploy_completed repo=… target=… before=… after=<merge sha> by=<deployer>]" naming the deploy; the job should verify that deploy itself and be safe to run twice. ' +
     'target is the full branch name as merged into (e.g. "deploy/dev2", "develop"), matched exactly — an environment nickname does not match. ' +
     'A job that should run ONLY on deploys can use an expression that never matches, e.g. "0 0 31 2 *".',
   items: {
@@ -653,9 +658,12 @@ class CronMcpServer {
               },
               onDeploy: {
                 ...ON_DEPLOY_SCHEMA,
-                description: `${ON_DEPLOY_SCHEMA.description} Replaces the whole list; [] stops deploy fires.`,
+                description: `${ON_DEPLOY_SCHEMA.description} Replaces the whole list; [] or null stops deploy fires.`,
               },
-              clear_onDeploy: { type: 'boolean', description: 'Stop firing this job on deploys' },
+              clear_onDeploy: {
+                type: 'boolean',
+                description: 'Stop firing this job on deploys. Do not combine with an onDeploy list.',
+              },
             },
             required: ['name'],
           },

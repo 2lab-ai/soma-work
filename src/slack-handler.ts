@@ -613,8 +613,8 @@ export class SlackHandler {
       }) => this.settleSteeredFollowup(args),
       // A deploy turn's `deploy_completed` directive fires the cron jobs whose
       // owners registered `onDeploy` for that repo + branch, whoever ran the
-      // deploy. The executor posts the returned line in the deploy thread.
-      onDeployCompleted: (payload, ctx) => deployLanes.handle(payload, ctx),
+      // deploy. The trigger answers in the deploy thread through ctx.reply.
+      onDeployCompleted: (signal, ctx) => deployLanes.handle(signal, ctx),
     });
 
     // EventRouter for event handling
