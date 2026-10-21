@@ -8,6 +8,8 @@ import type { AgentStreamEvent, AgentStreamEventOf, AgentUsage } from './agent-s
 import type { SlackMessagePayload } from './choice-message-builder';
 import {
   ChannelMessageDirectiveHandler,
+  DeployCompletedDirectiveHandler,
+  type DeployCompletedPayload,
   SessionLinkDirectiveHandler,
   SourceWorkingDirDirectiveHandler,
 } from './directives';
@@ -522,6 +524,8 @@ export interface StreamCallbacks {
   onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
   /** Called when model outputs channel_message JSON directive */
   onChannelMessageDetected?: (messageText: string, context: StreamContext) => Promise<void>;
+  /** Called once per valid deploy_completed JSON directive (a multi-repo deploy emits several) */
+  onDeployCompletedDetected?: (payload: DeployCompletedPayload, context: StreamContext) => Promise<void>;
   /** Called when model outputs source_working_dir JSON directive */
   onSourceWorkingDirDetected?: (dirPath: string, context: StreamContext) => Promise<void>;
   /** Called when a user choice UI is rendered */
@@ -1530,7 +1534,8 @@ export class AgentStreamProcessor {
 
   /**
    * Extract and dispatch all response directives (session links, channel messages,
-   * source working dirs) from text content. Returns the cleaned text with directives stripped.
+   * deploy_completed signals, source working dirs) from text content. Returns the
+   * cleaned text with directives stripped.
    */
   private async extractAndDispatchDirectives(text: string, context: StreamContext): Promise<string> {
     let cleaned = text;
@@ -1558,6 +1563,24 @@ export class AgentStreamProcessor {
       }
     } catch (error) {
       this.logger.error('Failed to process channel message directive', { error });
+    }
+
+    // A multi-repo deploy emits one per repo: each payload is dispatched in its
+    // own try, so a failing callback for one repo cannot skip the next.
+    try {
+      const deployResult = DeployCompletedDirectiveHandler.extract(cleaned);
+      if (deployResult.payloads.length > 0) {
+        cleaned = deployResult.cleanedText;
+        for (const payload of deployResult.payloads) {
+          try {
+            await this.callbacks.onDeployCompletedDetected?.(payload, context);
+          } catch (error) {
+            this.logger.error('Failed to dispatch deploy_completed directive', { repo: payload.repo, error });
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.error('Failed to process deploy_completed directive', { error });
     }
 
     try {
