@@ -1052,6 +1052,19 @@ export class SlackHandler {
       return;
     }
 
+    // A goal command changes the goal list the moment it runs — mid-turn
+    // intake, initial run or drained follow-up alike — so a Slack redelivery
+    // of the same event must not run it a second time, whichever path the
+    // first delivery took. The verbatim opening turn a goal command admits
+    // reuses the command's `ts` and is exempt.
+    if (this.isRedeliveredGoalCommand(event)) {
+      this.logger.info('Goal command redelivered — already handled, ignored', {
+        channel: event.channel,
+        ts: event.ts,
+      });
+      return;
+    }
+
     // Shutdown has begun recording its state: DISPATCHING now would start a
     // turn the process is about to kill. The instruction itself is still
     // parked durably — see below.
@@ -2652,11 +2665,6 @@ export class SlackHandler {
       return;
     }
 
-    if (!this.claimGoalIntake(event)) {
-      this.logger.info('Goal command redelivered — already run, ignored', { sessionKey, ts: event.ts });
-      return;
-    }
-
     const wrappedSay = async (args: any) => {
       const result = await say({
         text: args.text,
@@ -2787,13 +2795,20 @@ export class SlackHandler {
   }
 
   /**
-   * Goal commands already run by {@link runGoalCommandNow}, by Slack event
-   * (`channel:ts` → when). The queue path dedupes a redelivered event by its
-   * key; this path runs the command at once, so it keeps its own record —
+   * Goal-command Slack events already handled, by `channel:ts` → when. The
+   * follow-up queue only dedupes an event while it holds it; a goal command
+   * runs at once (or as an initial run), so the host keeps its own record —
    * a retried `goal X` must not append the same goal twice.
    */
   private goalIntakeSeen = new Map<string, number>();
   private static readonly GOAL_INTAKE_DEDUPE_MS = 10 * 60 * 1000;
+
+  /** A goal-command event already seen (records it the first time). See `handleMessage`. */
+  private isRedeliveredGoalCommand(event: MessageEvent): boolean {
+    if (event.synthetic || isVerbatimPrompt(event) || !event.ts) return false;
+    if (this.commandRouter?.routesToGoal?.((event.text ?? '').trim()) !== true) return false;
+    return !this.claimGoalIntake(event);
+  }
 
   /** `true` the first time an event is seen (and records it); `false` for a redelivery. */
   private claimGoalIntake(event: MessageEvent): boolean {
@@ -5978,8 +5993,21 @@ export class SlackHandler {
       this.claudeHandler.saveSessions();
       return { outcome: 'deleted', goalId };
     }
-    this.persistHostGoalMutation(live);
     const promoted = deleted.promoted;
+    // The queue may have changed during the anchor await: check the goal that
+    // ACTUALLY got promoted, not the one checked before posting.
+    try {
+      this.assertGoalOpeningAuthor(sessionKey, promoted.createdBy || actor, channel, threadTs);
+    } catch (error) {
+      restoreGoalState(live, snapshot);
+      await this.postGoalNoticeBestEffort(
+        channel,
+        threadTs,
+        '⚠️ 위 삭제는 취소되었습니다 — 다음 goal을 시작할 수 없습니다.',
+      );
+      throw error;
+    }
+    this.persistHostGoalMutation(live);
     const admission = this.admitGoalOpeningTurn(
       sessionKey,
       { channel, threadTs, ts: anchorTs, user: promoted.createdBy || actor, say: this.threadSay(channel, threadTs) },

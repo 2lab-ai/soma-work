@@ -374,6 +374,21 @@ export class CommandRouter {
    *  - the `goal … $skill` split, which also starts a forced-skill turn,
    *  - any text an earlier handler in the loop would claim first.
    */
+  /**
+   * Does this text route to a goal command at all — including the
+   * `goal … $skill` split? Pure. The host uses it to dedupe a redelivered
+   * Slack event for anything that changes the goal list, whichever path
+   * (immediate intake, initial run, follow-up queue) the first delivery took.
+   */
+  routesToGoal(text: string): boolean {
+    const trimmed = (text ?? '').trim();
+    if (!trimmed || CommandParser.parseInlineSessionDirectives(trimmed)) return false;
+    const zPrefixRemainder = stripZPrefix(trimmed);
+    if (zPrefixRemainder !== null && !zPrefixRemainder) return false;
+    const routedText = zPrefixRemainder !== null ? translateToLegacy(zPrefixRemainder) : trimmed;
+    return !!routedText && !CommandParser.isNewCommand(routedText) && CommandParser.isGoalCommand(routedText);
+  }
+
   isGoalCommandText(text: string, user?: string): boolean {
     if (!this.goalHandler) return false;
     const trimmed = (text ?? '').trim();
