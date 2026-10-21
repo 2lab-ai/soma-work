@@ -312,28 +312,105 @@ export function deleteGoalById(
     return { deleted: true, wasActive: false };
   }
   if (session.goal?.goalId === goalId) {
-    const finished = session.goal;
-    const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
-    if (next) {
-      const now = Date.now();
-      next.status = 'active';
-      next.continuationCount = 0;
-      next.epoch = (finished.epoch ?? 0) + 1;
-      next.updatedAt = now;
-      next.pendingEval = undefined;
-      next.lastEvalReason = undefined;
-      next.lastEvalSummaryHash = undefined;
-      next.lastAssistantTurnSummary = undefined;
-      next.capDmPendingAt = undefined;
-      applyGoalToSession(session, next);
-      return { deleted: true, wasActive: true, promoted: next };
-    }
-    session.goal = undefined;
-    session.goalLastTurnText = undefined;
-    session.systemPrompt = undefined;
-    return { deleted: true, wasActive: true };
+    return { ...deleteCurrentGoal(session), wasActive: true };
   }
   return { deleted: false, wasActive: false };
+}
+
+/**
+ * Delete the CURRENT goal (`session.goal`) whatever its status — the
+ * dashboard's "delete current goal". Unlike {@link deleteGoalById} it never
+ * resolves the id against the history first: after the last goal completes,
+ * the same goal sits in both `session.goal` and `goalHistory`, and deleting by
+ * id would only drop the history row. The next queued goal (if any) is
+ * promoted to a fresh active run; the deleted goal is not archived (a
+ * deletion is not a completion). Persistence is the caller's job.
+ */
+export function deleteCurrentGoal(session: GoalQueueSession): { deleted: boolean; promoted?: SessionGoalState } {
+  const finished = session.goal;
+  if (!finished) return { deleted: false };
+  const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
+  if (next) {
+    const now = Date.now();
+    next.status = 'active';
+    next.continuationCount = 0;
+    next.epoch = (finished.epoch ?? 0) + 1;
+    next.updatedAt = now;
+    next.pendingEval = undefined;
+    next.lastEvalReason = undefined;
+    next.lastEvalSummaryHash = undefined;
+    next.lastAssistantTurnSummary = undefined;
+    next.capDmPendingAt = undefined;
+    applyGoalToSession(session, next);
+    return { deleted: true, promoted: next };
+  }
+  session.goal = undefined;
+  session.goalLastTurnText = undefined;
+  session.systemPrompt = undefined;
+  return { deleted: true };
+}
+
+/** One goal object as it was: the object itself plus a deep copy of its fields. */
+interface GoalSnapshotEntry {
+  ref: SessionGoalState;
+  fields: SessionGoalState;
+}
+
+/** Everything a goal mutation touches, captured by {@link snapshotGoalState}. */
+export interface GoalStateSnapshot {
+  goal?: GoalSnapshotEntry;
+  goalQueue?: GoalSnapshotEntry[];
+  goalHistory?: GoalSnapshotEntry[];
+  goalLastTurnText?: string;
+  systemPrompt?: string;
+}
+
+const captureGoal = (goal: SessionGoalState): GoalSnapshotEntry => ({
+  ref: goal,
+  fields: structuredClone({ ...goal }),
+});
+
+/** Put a goal object's fields back IN PLACE and return the same object. */
+function restoreGoal(entry: GoalSnapshotEntry): SessionGoalState {
+  const target = entry.ref as unknown as Record<string, unknown>;
+  for (const key of Object.keys(target)) {
+    if (!(key in entry.fields)) delete target[key];
+  }
+  Object.assign(target, entry.fields);
+  return entry.ref;
+}
+
+/**
+ * The goal-bearing session fields, taken right before a goal mutation whose
+ * follow-through (admitting the goal's opening turn) can still fail.
+ * {@link restoreGoalState} puts the session back exactly — epochs included —
+ * so a refused admission never leaves an ACTIVE goal behind with no opening
+ * turn and nothing to drive it.
+ *
+ * Object IDENTITY is part of "exactly": the completion eval holds the goal
+ * object it was dispatched for and applies its verdict to that object, so the
+ * restore writes the saved fields back into the same objects and re-installs
+ * them, instead of installing copies the in-flight eval would never see.
+ */
+export function snapshotGoalState(session: GoalQueueSession): GoalStateSnapshot {
+  return {
+    goal: session.goal ? captureGoal(session.goal) : undefined,
+    goalQueue: session.goalQueue?.map(captureGoal),
+    goalHistory: session.goalHistory?.map(captureGoal),
+    goalLastTurnText: session.goalLastTurnText,
+    systemPrompt: session.systemPrompt,
+  };
+}
+
+/** Undo a goal mutation — see {@link snapshotGoalState}. Persistence is the caller's job. */
+export function restoreGoalState(session: GoalQueueSession, snapshot: GoalStateSnapshot): void {
+  session.goal = snapshot.goal ? restoreGoal(snapshot.goal) : undefined;
+  session.goalQueue = snapshot.goalQueue?.map(restoreGoal);
+  session.goalHistory = snapshot.goalHistory?.map(restoreGoal);
+  session.goalLastTurnText = snapshot.goalLastTurnText;
+  // The cached prompt was built against the restored goal; keeping it is safe
+  // because the snapshot is the same state the cache was built for.
+  session.systemPrompt = snapshot.systemPrompt;
 }
 
 /**

@@ -16,6 +16,7 @@
  *   POST /api/dashboard/session/:key/close   → Close/terminate a session
  *   POST /api/dashboard/session/:key/trash   → Trash (hide) a closed session
  *   POST /api/dashboard/session/:key/command → Send command to session
+ *   POST /api/dashboard/session/:key/goal    → Add a goal / delete the current or a queued goal
  *   POST /api/dashboard/session/:conversationId/resummarize/:turnId → Retry summary generation
  *   WS   /ws/dashboard                       → Real-time session state updates (WebSocket),
  *                                              incl. `work_log` entries (owner/admin scoped)
@@ -29,6 +30,7 @@ import { MetricsEventStore } from '../metrics/event-store';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
+import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from '../slack/goal-host-actions';
 import { getSurfaceLines } from '../slack/surface-config';
 import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, type EffortLevel, userSettingsStore } from '../user-settings-store';
@@ -129,6 +131,12 @@ export interface KanbanSession {
     port: number;
     host: string;
   };
+  /**
+   * The session's goal list (SSOT 2026-10-21 T2): the current goal with its
+   * state, and the goals queued behind it in start order. Absent when the
+   * session has never had a goal.
+   */
+  goal?: KanbanGoal;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -148,6 +156,22 @@ export interface KanbanSession {
     title?: string;
     description?: string;
   };
+}
+
+export interface KanbanGoal {
+  current?: {
+    goalId: string;
+    objective: string;
+    /** `active` drives the loop; `paused` keeps the objective but stops injecting it; `complete` is the last finished goal. */
+    status: 'active' | 'paused' | 'complete';
+    /** Auto-continuation turns since the last real user message, and the cap. */
+    continuationCount: number;
+    maxContinuations: number;
+    /** The last completion-eval verdict that said "not yet" — what is still missing. */
+    lastEvalReason?: string;
+  };
+  queue: Array<{ goalId: string; objective: string }>;
+  completedCount: number;
 }
 
 export interface KanbanBoard {
@@ -423,6 +447,22 @@ export function setDashboardCommandHandler(fn: CommandHandler): void {
   _commandHandlerFn = fn;
 }
 
+/**
+ * Goal list actions from the work item (SSOT 2026-10-21 T3). The handler is
+ * `SlackHandler.handleHostGoalAction`; it throws `HostGoalActionError` for
+ * every refusal, whose `statusCode` the route answers with.
+ */
+type GoalActionHandler = (
+  sessionKey: string,
+  action: HostGoalAction,
+  actorUserId?: string,
+) => Promise<HostGoalActionResult>;
+let _goalActionHandlerFn: GoalActionHandler | null = null;
+
+export function setDashboardGoalHandler(fn: GoalActionHandler): void {
+  _goalActionHandlerFn = fn;
+}
+
 type ChoiceAnswerHandler = (sessionKey: string, choiceId: string, label: string, question: string) => Promise<void>;
 let _choiceAnswerHandlerFn: ChoiceAnswerHandler | null = null;
 
@@ -528,6 +568,35 @@ function cardDerivedFields(src: {
   };
 }
 
+const KANBAN_GOAL_STATUSES = new Set(['active', 'paused', 'complete']);
+
+/** The goal list of a live session, shaped for the card (`KanbanSession.goal`). */
+function goalToKanban(s: any): KanbanGoal | undefined {
+  const goal = s.goal;
+  const queue: any[] = Array.isArray(s.goalQueue) ? s.goalQueue : [];
+  const history: any[] = Array.isArray(s.goalHistory) ? s.goalHistory : [];
+  if (!goal && queue.length === 0 && history.length === 0) return undefined;
+  return {
+    current:
+      goal && typeof goal.goalId === 'string' && KANBAN_GOAL_STATUSES.has(goal.status)
+        ? {
+            goalId: goal.goalId,
+            objective: String(goal.objective ?? ''),
+            status: goal.status,
+            continuationCount: Number(goal.continuationCount) || 0,
+            maxContinuations: Number(goal.maxContinuations) || 0,
+            ...(typeof goal.lastEvalReason === 'string' && goal.lastEvalReason
+              ? { lastEvalReason: goal.lastEvalReason }
+              : {}),
+          }
+        : undefined,
+    queue: queue
+      .filter((g) => g && typeof g.goalId === 'string')
+      .map((g) => ({ goalId: g.goalId, objective: String(g.objective ?? '') })),
+    completedCount: history.length,
+  };
+}
+
 function sessionToKanban(key: string, s: any): KanbanSession {
   const tasks = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
@@ -597,6 +666,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     // badge for self cards too — siblings get their env from the
     // aggregator's mergeBoards stamp.
     environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
+    goal: goalToKanban(s),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -1529,6 +1599,66 @@ export async function registerDashboardRoutes(
         reply.send({ ok: true });
       } catch (error) {
         logger.error('Error sending command to session', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // ── Goal list (work item) ──
+
+  server.post<{
+    Params: { key: string };
+    Body: { action?: unknown; objective?: unknown; goalId?: unknown; expect?: unknown };
+  }>(
+    '/api/dashboard/session/:key/goal',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const body = request.body || {};
+      let action: HostGoalAction;
+      if (body.action === 'add') {
+        if (typeof body.objective !== 'string' || !body.objective.trim()) {
+          reply.status(400).send({ error: 'objective is required and must be a non-empty string' });
+          return;
+        }
+        if (body.objective.length > 4000) {
+          reply.status(400).send({ error: 'objective exceeds max length (4000 chars)' });
+          return;
+        }
+        action = { action: 'add', objective: body.objective };
+      } else if (body.action === 'delete') {
+        if (typeof body.goalId !== 'string' || !body.goalId || body.goalId.length > 200) {
+          reply.status(400).send({ error: 'goalId is required and must be a string' });
+          return;
+        }
+        if (body.expect !== 'current' && body.expect !== 'queued') {
+          reply.status(400).send({ error: "expect must be 'current' or 'queued'" });
+          return;
+        }
+        action = { action: 'delete', goalId: body.goalId, expect: body.expect };
+      } else {
+        reply.status(400).send({ error: "action must be 'add' or 'delete'" });
+        return;
+      }
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { originalKey } = resolved;
+      if (!_goalActionHandlerFn) {
+        reply.status(501).send({ error: 'Goal action handler not configured' });
+        return;
+      }
+      try {
+        // The acting dashboard user (owner, or an admin in admin mode); a bearer
+        // client has none and the handler falls back to the session owner.
+        const actorUserId = (request as { authContext?: { userId?: string } }).authContext?.userId;
+        const result = await _goalActionHandlerFn(originalKey, action, actorUserId);
+        broadcastSessionUpdate();
+        reply.send({ ok: true, result });
+      } catch (error) {
+        if (error instanceof HostGoalActionError) {
+          reply.status(error.statusCode).send({ error: error.message });
+          return;
+        }
+        logger.error('Error applying goal action from dashboard', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
     },
@@ -2508,6 +2638,74 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .btn-action.btn-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); }
 .btn-action.btn-stop { color: var(--st-fail); }
 .btn-action.btn-trash { color: var(--ib-muted); }
+
+/* ── GOAL LIST (work item, SSOT 2026-10-21 T2/T3) ── */
+.card-goal {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--ib-card-border);
+  border-radius: 8px;
+  background: var(--ib-card-dim);
+  font-size: 12.5px;
+}
+.card-goal .cg-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.card-goal .cg-label { font-weight: 600; color: var(--ib-text); }
+.card-goal .cg-status {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  line-height: 1.5;
+}
+.card-goal .cg-status.cg-active { color: var(--st-run); }
+.card-goal .cg-status.cg-paused { color: var(--st-wait); }
+.card-goal .cg-status.cg-complete { color: var(--st-done); }
+.card-goal .cg-progress { margin-left: auto; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
+.card-goal .cg-objective {
+  color: var(--ib-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.card-goal .cg-gap { margin-top: 3px; color: var(--ib-muted); overflow-wrap: anywhere; }
+.card-goal .cg-empty { color: var(--ib-muted); }
+.card-goal .cg-row { display: flex; align-items: flex-start; gap: 6px; }
+.card-goal .cg-row > :first-child { flex: 1; min-width: 0; }
+.card-goal .cg-queue-title { margin-top: 8px; color: var(--ib-muted); font-size: 11.5px; }
+.card-goal .cg-queue { list-style: decimal; margin: 2px 0 0 18px; }
+.card-goal .cg-queue li { padding: 2px 0; }
+.card-goal .cg-q-text { overflow-wrap: anywhere; color: var(--ib-text); }
+.card-goal .cg-done { margin-top: 6px; color: var(--ib-muted); font-size: 11.5px; }
+.card-goal .cg-btn {
+  flex: none;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border: 1px solid var(--ib-card-border);
+  border-radius: 6px;
+  background: var(--ib-card);
+  color: var(--ib-text);
+  cursor: pointer;
+}
+.card-goal .cg-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.card-goal .cg-btn.cg-danger { color: var(--st-fail); }
+.card-goal .cg-add { display: flex; gap: 6px; margin-top: 8px; }
+.card-goal .cg-add-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 8px;
+  border: 1px solid var(--ib-card-border);
+  border-radius: 6px;
+  background: var(--ib-card);
+  color: var(--ib-text);
+}
+.card-goal .cg-add-input:focus { outline: none; border-color: var(--border-focus); }
+.card-goal .cg-error { margin-top: 6px; color: var(--st-fail); overflow-wrap: anywhere; }
 
 /* ── PENDING QUESTION (dashboard choice buttons) ── */
 .card-question {
@@ -4571,9 +4769,11 @@ function applyCardParts(el, p) {
     updateTimersIn(el._faceEl);
     changed = true;
   }
-  if (el._bodyHtml !== p.body) {
+  if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl)) {
+    var goalDraft = captureGoalDraft(el._bodyEl);
     el._bodyEl.innerHTML = p.body;
     el._bodyHtml = p.body;
+    restoreGoalDraft(el._bodyEl, goalDraft);
     updateTimersIn(el._bodyEl);
     changed = true;
   }
@@ -5098,12 +5298,157 @@ function renderCardBody(s, col) {
     + metaHtml
     + refsHtml
     + subtitlesHtml
+    + renderCardGoal(s, col, isOwner && !isSibling)
     + renderTimeline(s)
     + ioHtml
     + questionHtml
     + statsHtml
     + actionsHtml
     + '</div>';
+}
+
+// ── Goal list on the work item (SSOT 2026-10-21 T2/T3) ──
+// The card shows the current goal, its state and the goals queued behind it,
+// and lets the owner add a goal, delete the current goal (the next queued one
+// starts — never \`goal clear\`, which also drops the queue) or delete a queued
+// goal. Every write names WHERE the goal was seen (current / queued), so a goal
+// that moved in the meantime is refused (409) instead of deleting the wrong one.
+var GOAL_STATUS_LABELS = { active: '진행 중', paused: '일시정지', complete: '완료' };
+var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
+
+function renderCardGoal(s, col, canEdit) {
+  var g = s.goal || null;
+  var live = col !== 'closed' && !s.terminated;
+  // Read-only viewers and closed sessions only see a goal list that exists.
+  if (!g && !(canEdit && live)) return '';
+  var editable = canEdit && live;
+  var dis = editable ? '' : ' disabled';
+  var key = escJs(s.key);
+  var queue = (g && g.queue) || [];
+  var cur = g && g.current;
+  var html = '<div class="card-goal">';
+  html += '<div class="cg-head"><span class="cg-label">&#x1F3AF; Goal</span>';
+  if (cur) {
+    html += '<span class="cg-status cg-' + escAttr(cur.status) + '">' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
+    if (cur.status === 'active' && toNum(cur.maxContinuations) > 0) {
+      html += '<span class="cg-progress" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
+    }
+  }
+  html += '</div>';
+  if (cur) {
+    var dropLabel = queue.length ? '현재 goal 삭제 · 다음 시작' : '현재 goal 삭제';
+    html += '<div class="cg-row"><div class="cg-objective" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
+      + '<button type="button" class="cg-btn cg-danger"' + dis
+      + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(cur.goalId) + '\\',expect:\\'current\\'},this)">'
+      + dropLabel + '</button></div>';
+    if (cur.status === 'active' && cur.lastEvalReason) {
+      html += '<div class="cg-gap">남은 것: ' + esc(String(cur.lastEvalReason).slice(0, 300)) + '</div>';
+    }
+  } else {
+    html += '<div class="cg-empty">현재 goal 없음</div>';
+  }
+  if (queue.length) {
+    html += '<div class="cg-queue-title">대기 중인 goal ' + queue.length + '개</div><ol class="cg-queue">';
+    for (var i = 0; i < queue.length; i++) {
+      var q = queue[i];
+      html += '<li><div class="cg-row"><span class="cg-q-text">' + esc(q.objective) + '</span>'
+        + '<button type="button" class="cg-btn cg-danger" title="대기 goal 삭제" aria-label="대기 goal 삭제"' + dis
+        + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(q.goalId) + '\\',expect:\\'queued\\'},this)">삭제</button></div></li>';
+    }
+    html += '</ol>';
+  }
+  if (g && toNum(g.completedCount) > 0) html += '<div class="cg-done">완료된 goal ' + toNum(g.completedCount) + '개</div>';
+  if (editable) {
+    html += '<form class="cg-add" onsubmit="event.preventDefault();event.stopPropagation();addGoalFromCard(\\'' + key + '\\',this)">'
+      + '<input class="cg-add-input" name="objective" maxlength="4000" autocomplete="off" aria-label="goal 추가"'
+      + ' placeholder="' + (cur && cur.status !== 'complete' ? 'goal 추가 (현재 goal 다음에 시작)' : 'goal 추가 (바로 시작)') + '"'
+      + ' onblur="goalInputBlur(\\'' + key + '\\')">'
+      + '<button type="submit" class="cg-btn">추가</button></form>';
+  }
+  if (_goalErrors[s.key]) html += '<div class="cg-error" role="alert">' + esc(_goalErrors[s.key]) + '</div>';
+  return html + '</div>';
+}
+
+// The goal input survives the card's live re-render: while it has focus the
+// body is not replaced at all (typing and IME composition stay intact), and an
+// unfocused draft is carried into the new body.
+function isEditingGoal(root) {
+  var a = document.activeElement;
+  return !!(a && a.classList && a.classList.contains('cg-add-input') && root.contains(a));
+}
+function captureGoalDraft(root) {
+  var input = root.querySelector('.cg-add-input');
+  return input && input.value ? input.value : '';
+}
+function restoreGoalDraft(root, value) {
+  if (!value) return;
+  var input = root.querySelector('.cg-add-input');
+  if (input && !input.value) input.value = value;
+}
+function goalInputBlur(key) {
+  // Let a click on 추가 land before the deferred re-render replaces the form.
+  setTimeout(function() {
+    var el = _cardEls[key];
+    if (el && !isEditingGoal(el._bodyEl)) refreshCard(key);
+  }, 200);
+}
+
+async function postGoalAction(key, payload) {
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/goal';
+  var body = JSON.stringify(payload);
+  var headers = { 'Content-Type': 'application/json' };
+  if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+  var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+  if (res.status === 403) {
+    await refreshCsrfToken();
+    var retryHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+    res = await fetch(url, { method: 'POST', headers: retryHeaders, body: body });
+  }
+  var data = null;
+  try { data = await res.json(); } catch (_e) {}
+  return { ok: res.ok, error: (data && data.error) || ('HTTP ' + res.status) };
+}
+function setGoalError(key, message) {
+  if (message) _goalErrors[key] = message;
+  else delete _goalErrors[key];
+  refreshCard(key);
+}
+async function goalAction(key, payload, btn) {
+  if (btn) btn.disabled = true;
+  var r;
+  try { r = await postGoalAction(key, payload); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+  setGoalError(key, r.ok ? '' : r.error);
+  if (!r.ok && btn) btn.disabled = false;
+  loadSessions();
+}
+// One add in flight per card. The input is NOT disabled while it is sent:
+// keeping its focus is what keeps a live re-render from replacing the form
+// (and resurrecting the sent text as a fresh, submittable draft).
+var _goalAdding = Object.create(null);
+async function addGoalFromCard(key, form) {
+  if (_goalAdding[key]) return;
+  var input = form.querySelector('.cg-add-input');
+  var objective = input ? input.value.trim() : '';
+  if (!objective) return;
+  _goalAdding[key] = true;
+  var btn = form.querySelector('button');
+  if (btn) btn.disabled = true;
+  var r;
+  try { r = await postGoalAction(key, { action: 'add', objective: objective }); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+  delete _goalAdding[key];
+  // The form on screen may have been re-rendered meanwhile — act on the live one.
+  var el = _cardEls[key];
+  var live = (el && el._bodyEl.querySelector('.cg-add-input')) || input;
+  var liveBtn = live.form ? live.form.querySelector('button') : btn;
+  if (liveBtn) liveBtn.disabled = false;
+  if (btn && btn !== liveBtn) btn.disabled = false;
+  if (r.ok) {
+    if (live.value.trim() === objective) live.value = '';
+    live.blur();
+  }
+  setGoalError(key, r.ok ? '' : r.error);
+  loadSessions();
 }
 
 // Card click = expand / collapse in place (§3.1-4). Keyboard toggles skip the

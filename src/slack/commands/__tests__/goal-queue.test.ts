@@ -287,3 +287,55 @@ describe('GoalHandler — status with list + metrics (T3)', () => {
     expect(actionIds.some((id) => id.startsWith('goal_update:'))).toBe(true);
   });
 });
+
+/**
+ * Snapshot / restore — the rollback a refused opening-turn admission relies
+ * on (SSOT 2026-10-21). The restore must hand back the SAME goal objects: the
+ * completion eval applies its verdict to the object it was dispatched for, so
+ * a restore that installed copies would strand the verdict on an orphan and
+ * leave the live goal with a `pendingEval` nothing clears.
+ */
+describe('snapshotGoalState / restoreGoalState', () => {
+  it('restores fields in place and keeps object identity across a goal-done advance', async () => {
+    const { snapshotGoalState, restoreGoalState } = await import('../../session-goal');
+    const session: any = {};
+    const g1 = createActiveSessionGoal('first', 'U1');
+    g1.pendingEval = { requestedAt: 1, turnId: 't1' };
+    g1.continuationCount = 3;
+    session.goal = g1;
+    session.goalQueue = [];
+    enqueueOrActivateGoal(session, 'second', 'U1');
+    const g2 = session.goalQueue[0];
+
+    const snapshot = snapshotGoalState(session);
+    // What `goal done` does before its opening turn is admitted.
+    g1.status = 'complete';
+    g1.pendingEval = undefined;
+    g1.completedAt = 5;
+    advanceGoalQueue(session);
+    expect(session.goal).toBe(g2);
+
+    restoreGoalState(session, snapshot);
+
+    expect(session.goal).toBe(g1);
+    expect(g1).toMatchObject({ status: 'active', pendingEval: { requestedAt: 1, turnId: 't1' }, continuationCount: 3 });
+    expect(g1.completedAt).toBeUndefined();
+    expect(session.goalQueue).toHaveLength(1);
+    expect(session.goalQueue[0]).toBe(g2);
+    expect(g2.status).toBe('queued');
+    expect(session.goalHistory ?? []).toHaveLength(0);
+  });
+});
+
+describe('deleteCurrentGoal', () => {
+  it('drops a completed current goal even though the history holds the same id', async () => {
+    const { deleteCurrentGoal } = await import('../../session-goal');
+    const done = { ...createActiveSessionGoal('done', 'U1'), status: 'complete' as const };
+    const session: any = { goal: done, goalQueue: [], goalHistory: [done] };
+
+    expect(deleteCurrentGoal(session)).toEqual({ deleted: true });
+    expect(session.goal).toBeUndefined();
+    // By id the history row would have gone instead, leaving the card's goal in place.
+    expect(deleteGoalById({ goal: done, goalHistory: [done] } as any, done.goalId)).toMatchObject({ wasActive: false });
+  });
+});
