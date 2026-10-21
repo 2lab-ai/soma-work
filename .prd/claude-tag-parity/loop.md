@@ -27,4 +27,6 @@ Status: in-progress · 스펙 = [`../11-claude-tag-parity-spec.md`](../11-claude
 
 ## 다음 착수점
 
-- G1부터. 유저 확정 전에는 이슈를 만들지 않는다.
+- G2 답 대기 (2026-10-20 09:28Z 질문, 10:53Z·21:44Z 재게시, 2026-10-21 08:08Z 텍스트 답 안내; 2026-10-21 08:11Z 기준 답 없음). 유저 확정 전에는 이슈를 만들지 않는다.
+- 답이 오면 G3: 스펙 §3 표 한 행 = 이슈 하나. 제목 `[Claude Tag parity] F-xx <피처>`, 본문 = 스펙 §4 해당 절 + CT 근거 링크(대조표 출처 열) + 의존 이슈 번호 + 공통 이음매(§5). 라벨 = `feature` + 우선순위(`P0`–`P3`) + 묶음 영역(A `security` · B·D `slack` · C `agent-architecture` · E `interop` · F `observability`) + 크기 L·XL·F-02는 `idea`, 나머지는 `ready-to-agent`. 에픽을 고르면 에픽 이슈를 먼저 만들고 피처 이슈를 sub-issue로 연결한다.
+- G4: 스펙 §3 표에 이슈 열을 추가하고 이 브랜치에 커밋한다. G2에서 PR을 고르면 그 뒤 main으로 PR을 연다 (2026-10-20 첫 PR 생성 시도는 유저 승인 거절로 보류됨).
