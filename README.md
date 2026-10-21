@@ -381,6 +381,8 @@ The Codex block in the key DM points `OPENAI_BASE_URL` at the advertised server'
 
 Any free-form text that no command handler claims is treated as a chat / workflow dispatch prompt.
 
+**Deploy-triggered cron lanes**: a cron job created or updated with `onDeploy: [{ repo, target }]` also fires, as its owner, when the deploy workflow — run from anyone's session — reports that a deploy of that repo into that exact branch succeeded (`deploy_completed` directive). The deploy thread gets one line naming the lanes started. See [docs/current/spec/cron-deploy-lanes.md](docs/current/spec/cron-deploy-lanes.md).
+
 **Bare commands (#531)**: Bare forms such as `persona linus` or `model sonnet` run directly through their handlers. The one-time tombstone hint that #506 Phase 1 showed for them was removed in #531. `SOMA_ENABLE_LEGACY_SLASH=true` only restores the legacy `/soma`, `/session` and `/new` slash commands.
 
 ---
