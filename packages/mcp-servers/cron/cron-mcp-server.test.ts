@@ -721,3 +721,95 @@ describe('advertised tool schema', () => {
     expect(props).not.toHaveProperty('fast_mode');
   });
 });
+
+// ---------------------------------------------------------------------------
+// onDeploy — deploy-triggered lanes. The owner opts a job into firing when a
+// deploy of `repo` into branch `target` completes.
+// ---------------------------------------------------------------------------
+
+describe('onDeploy', () => {
+  let storage: CronStorage;
+  let cleanup: () => void;
+
+  beforeEach(() => {
+    ({ storage, cleanup } = freshStorage());
+  });
+  afterEach(() => cleanup());
+
+  const lane = { repo: 'Acme/App', target: 'refs/heads/deploy/dev2' };
+
+  it('cron_create stores normalized triggers and echoes them', () => {
+    const r = handleCreate(
+      { name: 'qa-lane', expression: '0 0 31 2 *', prompt: 'QA', onDeploy: [lane] },
+      ownerContext,
+      storage,
+    );
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain('On deploy: acme/app → deploy/dev2');
+    expect(storage.getJobsByOwner('U_OWNER')[0].onDeploy).toEqual([{ repo: 'acme/app', target: 'deploy/dev2' }]);
+  });
+
+  it('cron_create without onDeploy stores no field and prints no line', () => {
+    const r = handleCreate({ name: 'plain', expression: '0 9 * * *', prompt: 'x' }, ownerContext, storage);
+    expect(r.text).not.toContain('On deploy');
+    expect('onDeploy' in storage.getJobsByOwner('U_OWNER')[0]).toBe(false);
+  });
+
+  it.each([
+    ['not an array', { repo: 'acme/app', target: 'deploy/dev2' }],
+    ['bad repo', [{ repo: 'app', target: 'deploy/dev2' }]],
+    ['empty target', [{ repo: 'acme/app', target: '' }]],
+  ])('cron_create rejects invalid onDeploy (%s) and creates nothing', (_label, onDeploy) => {
+    const r = handleCreate(
+      { name: 'qa-lane', expression: '0 0 31 2 *', prompt: 'QA', onDeploy },
+      ownerContext,
+      storage,
+    );
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/^Error: .*onDeploy|^Error: .*repo|^Error: .*target/);
+    expect(storage.getAll()).toHaveLength(0);
+  });
+
+  it('cron_update sets onDeploy (a patch on its own is enough)', () => {
+    seedJob(storage);
+    const r = handleUpdate({ name: 'daily', onDeploy: [lane] }, ownerContext, storage);
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain('On deploy: acme/app → deploy/dev2');
+    expect(storage.getJobsByOwner('U_OWNER')[0].onDeploy).toEqual([{ repo: 'acme/app', target: 'deploy/dev2' }]);
+  });
+
+  it('cron_update clears onDeploy with clear_onDeploy or an empty list', () => {
+    seedJob(storage, { onDeploy: [lane] });
+    expect(handleUpdate({ name: 'daily', clear_onDeploy: true }, ownerContext, storage).isError).toBe(false);
+    expect(storage.getJobsByOwner('U_OWNER')[0].onDeploy).toBeUndefined();
+
+    handleUpdate({ name: 'daily', onDeploy: [lane] }, ownerContext, storage);
+    expect(handleUpdate({ name: 'daily', onDeploy: [] }, ownerContext, storage).isError).toBe(false);
+    expect(storage.getJobsByOwner('U_OWNER')[0].onDeploy).toBeUndefined();
+  });
+
+  it('cron_update rejects invalid onDeploy and leaves the job unchanged', () => {
+    seedJob(storage, { onDeploy: [lane] });
+    const r = handleUpdate({ name: 'daily', onDeploy: [{ repo: 'nope', target: 'x' }] }, ownerContext, storage);
+    expect(r.isError).toBe(true);
+    expect(storage.getJobsByOwner('U_OWNER')[0].onDeploy).toEqual([{ repo: 'acme/app', target: 'deploy/dev2' }]);
+  });
+
+  it('cron_list shows the triggers only when a job has them', () => {
+    seedJob(storage, { onDeploy: [lane, { repo: 'acme/api', target: 'develop' }] });
+    seedJob(storage, { name: 'plain' });
+    const text = handleList(ownerContext, storage).text;
+    expect(text).toContain('on-deploy:acme/app→deploy/dev2,acme/api→develop');
+    expect(text.split('\n').filter((l) => l.includes('on-deploy:'))).toHaveLength(1);
+  });
+
+  it('advertises onDeploy on cron_create / cron_update and clear_onDeploy on cron_update', async () => {
+    getCronServer();
+    const list = mcpHandlers.get('ListToolsRequestSchema');
+    const { tools } = await list!();
+    const props = new Map(tools.map((t: any) => [t.name, t.inputSchema.properties]));
+    expect(props.get('cron_create')).toHaveProperty('onDeploy');
+    expect(props.get('cron_update')).toHaveProperty('onDeploy');
+    expect(props.get('cron_update')).toHaveProperty('clear_onDeploy');
+  });
+});
