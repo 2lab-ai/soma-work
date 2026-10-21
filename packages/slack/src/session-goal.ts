@@ -336,6 +336,45 @@ export function deleteGoalById(
   return { deleted: false, wasActive: false };
 }
 
+/** Everything a goal mutation touches, captured by {@link snapshotGoalState}. */
+export interface GoalStateSnapshot {
+  goal?: SessionGoalState;
+  goalQueue?: SessionGoalState[];
+  goalHistory?: SessionGoalState[];
+  goalLastTurnText?: string;
+  systemPrompt?: string;
+}
+
+/**
+ * Deep copy of the goal-bearing session fields, taken right before a goal
+ * mutation whose follow-through (admitting the goal's opening turn) can still
+ * fail. {@link restoreGoalState} puts the session back exactly — epochs
+ * included — so a refused admission never leaves an ACTIVE goal behind with no
+ * opening turn and nothing to drive it.
+ */
+export function snapshotGoalState(session: GoalQueueSession): GoalStateSnapshot {
+  const copy = <T>(value: T): T => (value === undefined ? value : structuredClone(value));
+  return {
+    goal: copy(session.goal),
+    goalQueue: copy(session.goalQueue),
+    goalHistory: copy(session.goalHistory),
+    goalLastTurnText: session.goalLastTurnText,
+    systemPrompt: session.systemPrompt,
+  };
+}
+
+/** Undo a goal mutation — see {@link snapshotGoalState}. Persistence is the caller's job. */
+export function restoreGoalState(session: GoalQueueSession, snapshot: GoalStateSnapshot): void {
+  session.goal = snapshot.goal;
+  session.goalQueue = snapshot.goalQueue;
+  session.goalHistory = snapshot.goalHistory;
+  session.goalLastTurnText = snapshot.goalLastTurnText;
+  // The cached prompt was built against the restored goal; dropping it is
+  // always safe (it is rebuilt on the next turn), keeping it is only safe
+  // because the snapshot is the same state the cache was built for.
+  session.systemPrompt = snapshot.systemPrompt;
+}
+
 /**
  * Render an objective for a Slack notice: whitespace-normalized, clipped to
  * 900 chars, backticks neutralized, wrapped in inline code. Single source for
