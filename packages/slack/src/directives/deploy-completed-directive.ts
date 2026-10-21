@@ -162,15 +162,19 @@ export class DeployCompletedDirectiveHandler {
   /**
    * A fence whose directives were all cut out is left holding nothing but
    * whitespace, commas and array brackets: drop it, as stripping a one-directive
-   * fence does.
+   * fence does. The line breaks right around it go with it — replaced by one
+   * blank line between the text on either side, or by nothing at the start or
+   * end — and nothing else in the text is touched.
    */
   private static dropEmptyFences(text: string): string {
-    const cleaned = text.replace(/```json\s*\n?([\s\S]*?)\n?```/g, (fence, body: string) =>
-      /^[\s,[\]]*$/.test(body) ? '' : fence,
+    return text.replace(
+      /(?:[ \t]*\n)*[ \t]*```json\s*\n?([\s\S]*?)\n?```[ \t]*(?:\n[ \t]*)*/g,
+      (fence: string, body: string, offset: number) => {
+        if (!/^[\s,[\]]*$/.test(body)) return fence;
+        const atEdge = offset === 0 || offset + fence.length === text.length;
+        return atEdge ? '' : '\n\n';
+      },
     );
-    if (cleaned === text) return text;
-    // Only the gap the fence left: collapse its blank lines, touch nothing else.
-    return cleaned.replace(/\n[ \t]*(\n[ \t]*)+\n/g, '\n\n').trim();
   }
 
   /**

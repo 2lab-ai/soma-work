@@ -140,6 +140,39 @@ Next?`;
       expect(result.cleanedText).toBe('Both repos deployed.\n\nDone.');
     });
 
+    it('removing an emptied fence leaves blank lines elsewhere untouched', () => {
+      const text = [
+        'Intro.',
+        '',
+        '```py',
+        'def a():',
+        '    pass',
+        '',
+        '',
+        'def b():',
+        '    pass',
+        '```',
+        '',
+        'keep',
+        '',
+        '',
+        '',
+        'this',
+        '',
+        '```json',
+        '{"type":"deploy_completed","repo":"acme/app","target":"deploy/dev2","after":"aaaaaaa"}',
+        '{"type":"deploy_completed","repo":"acme/api","target":"deploy/dev2","after":"bbbbbbb"}',
+        '```',
+        'Done.',
+      ].join('\n');
+      const result = DeployCompletedDirectiveHandler.extract(text);
+      expect(result.payloads).toHaveLength(2);
+      expect(result.cleanedText).toContain('    pass\n\n\ndef b():');
+      expect(result.cleanedText).toContain('keep\n\n\n\nthis');
+      expect(result.cleanedText).not.toContain('```json');
+      expect(result.cleanedText.endsWith('this\n\nDone.')).toBe(true);
+    });
+
     it('still reports a fence of broken JSON once', () => {
       const text = '```json\n{"type":"deploy_completed","repo":"acme/app", oops\n```';
       const result = DeployCompletedDirectiveHandler.extract(text);
