@@ -46,6 +46,11 @@ export interface LegacyCommandRouter {
     awaitingPermission?: boolean;
     verbatimPrompt?: boolean;
   }>;
+  /**
+   * The host's "goal command run at once" predicate (`CommandRouter.isGoalIntakeText`).
+   * Optional: a router without it keeps every `/z goal` on the ZRouter path.
+   */
+  isGoalIntakeText?(text: string, user?: string): boolean;
 }
 
 export interface ZRouterDeps {

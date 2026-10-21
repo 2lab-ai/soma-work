@@ -147,6 +147,9 @@ updates inside its terminal-cleanup boundary, including setup failures.
 ### Observability (`src/metrics/`, `src/conversation/`)
 - 이벤트 기반 텔레메트리(토큰·툴콜·레이턴시), 주기 리포트
 - 대화 레코더 + 웹 대시보드(`src/conversation/dashboard.ts`)
+- 채팅 goal 명령: 스레드 입력·`@bot goal`·`@bot /z goal`(세션 있는 스레드는 `EventRouter.isThreadGoalCommand`가 ZRouter 대신 호스트로 넘김)·파일 업로드가
+  모두 `CommandRouter.isGoalIntakeText` 하나로 판정 → follow-up fence의 `SlackHandler.runGoalCommandNow`가 즉시 처리(스티어링 큐 아님).
+  상세 `docs/goal-command/spec.md` §Goal Commands While a Turn Runs
 - 작업 아이템 goal 목록: 카드 데이터 `KanbanSession.goal`(현재 goal·상태·대기 목록), 쓰기 `POST /api/dashboard/session/:key/goal`
   → `setDashboardGoalHandler` → `SlackHandler.handleHostGoalAction`(Slack goal 목록 Delete 버튼도 `setHostGoalActionHandler`로 같은 경로).
   새로 시작되는 goal의 첫 턴은 follow-up fence로 접수(`admitGoalOpeningTurn`). 상세 `docs/goal-command/spec.md` §Dashboard Goal List

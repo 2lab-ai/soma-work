@@ -46,7 +46,17 @@ export interface CommandContext {
    * (`@soma/slack/commands/command-router`) for the contract. Supplied only by
    * the host's goal intake while a turn runs.
    */
-  admitOpening?: (opening: { goalId: string; objective: string }) => GoalOpeningAdmission;
+  admitOpening?: (opening: GoalOpening) => GoalOpeningAdmission;
+}
+
+/** The opening turn `admitOpening` admits — see the package `GoalOpening`. */
+export interface GoalOpening {
+  goalId: string;
+  objective: string;
+  /** `set` — the goal this command set; `promoted` — the next goal `goal done` started; `resumed` — `goal resume` of a goal whose first turn never ran. */
+  cause: 'set' | 'promoted' | 'resumed';
+  /** Opening text when it is not the objective (the `$skill` part of a split). */
+  prompt?: string;
 }
 
 /** `queued` | `started` | `{ failed: reason }` — see {@link CommandContext.admitOpening}. */
@@ -123,6 +133,12 @@ export interface CommandResult {
    * a command, an inline directive, or the `!` abort marker again.
    */
   verbatimPrompt?: boolean;
+  /**
+   * `goal <objective>` appended the goal to the queue behind the goal in
+   * flight — no opening turn exists for it yet, so nothing else the message
+   * carried (a `$skill` part, attachments) can ride along.
+   */
+  goalQueued?: boolean;
 }
 
 /**
