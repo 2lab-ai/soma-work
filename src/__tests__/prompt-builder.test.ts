@@ -139,6 +139,20 @@ describe('PromptBuilder', () => {
       expect(prompt!.toLowerCase()).toContain('deploy workflow');
     });
 
+    it('deploy workflow ends with the post-deploy lane signal (deploy_completed directive)', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const section = prompt.slice(prompt.indexOf('### 7) Post-Deploy Lane Signal (Required)'));
+
+      expect(prompt).toContain('### 7) Post-Deploy Lane Signal (Required)');
+      // After the release-notes step, and it carries the exact directive shape.
+      expect(prompt.indexOf('### 7) Post-Deploy Lane Signal')).toBeGreaterThan(prompt.indexOf('### 6) Release Notes'));
+      expect(section).toContain('"type": "deploy_completed"');
+      for (const field of ['"repo"', '"target"', '"before"', '"after"']) expect(section).toContain(field);
+      // The guard rails the harness relies on.
+      expect(section).toMatch(/never emit/i);
+      expect(section).toContain('baseRefName');
+    });
+
     it('should fallback to default for unknown workflow', () => {
       const prompt = builder.loadWorkflowPrompt('nonexistent-workflow' as any);
 
