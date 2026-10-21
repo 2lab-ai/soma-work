@@ -173,6 +173,41 @@ Next?`;
       expect(result.cleanedText.endsWith('this\n\nDone.')).toBe(true);
     });
 
+    it('keeps the indentation of the line after a removed fence', () => {
+      const text = [
+        'Before.',
+        '```json',
+        '{"type":"deploy_completed","repo":"acme/app","target":"deploy/dev2","after":"aaaaaaa"}',
+        '{"type":"deploy_completed","repo":"acme/api","target":"deploy/dev2","after":"bbbbbbb"}',
+        '```',
+        '    - indented item',
+      ].join('\n');
+      const result = DeployCompletedDirectiveHandler.extract(text);
+      expect(result.payloads).toHaveLength(2);
+      expect(result.cleanedText).toBe('Before.\n\n    - indented item');
+    });
+
+    it('leaves one blank line where two adjacent fences were removed', () => {
+      const text = [
+        'Before.',
+        '```json',
+        '{"type":"deploy_completed","repo":"acme/app","target":"deploy/dev2","after":"aaaaaaa"}',
+        '{"type":"deploy_completed","repo":"acme/api","target":"deploy/dev2","after":"bbbbbbb"}',
+        '```',
+        '```json',
+        '[',
+        '  {"type":"deploy_completed","repo":"acme/web","target":"deploy/dev2","after":"ccccccc"},',
+        '  {"type":"deploy_completed","repo":"acme/cli","target":"deploy/dev2","after":"ddddddd"}',
+        ']',
+        '```',
+        'After.',
+      ].join('\n');
+      const result = DeployCompletedDirectiveHandler.extract(text);
+      expect(result.payloads).toHaveLength(4);
+      expect(result.rejections).toEqual([]);
+      expect(result.cleanedText).toBe('Before.\n\nAfter.');
+    });
+
     it('still reports a fence of broken JSON once', () => {
       const text = '```json\n{"type":"deploy_completed","repo":"acme/app", oops\n```';
       const result = DeployCompletedDirectiveHandler.extract(text);
