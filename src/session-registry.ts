@@ -14,6 +14,7 @@ import { getMetricsEmitter } from './metrics/event-emitter';
 import { normalizeTmpPath } from './path-utils';
 import { getArchiveStore } from './session-archive';
 import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from './session-identity';
+import { getSessionLifecyclePolicy, isSessionLifecyclePolicyDegraded } from './session-lifecycle-policy';
 import { DEFAULT_AUTO_HANDOFF_BUDGET } from './slack/handoff-budget';
 import {
   creditActiveGoalMs,
@@ -40,21 +41,18 @@ import type {
   SessionState,
   WorkflowType,
 } from './types';
-
 import { coerceToAvailableModel, type EffortLevel, userSettingsStore } from './user-settings-store';
 
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
-
-// Default session timeout: 24 hours (Active → Sleep)
-const DEFAULT_SESSION_TIMEOUT = 24 * 60 * 60 * 1000;
 
 // Dashboard improvements (v2.1): max duration of a single active-leg before we
 // assume the process missed an endTurn (crash / OS sleep) and cap the accumulator.
 // 30min default. idle은 대부분 이내 재개, OS sleep/crash는 이보다 길다고 가정.
 export const MAX_LEG_MS = Number(process.env.MAX_LEG_MS) || 30 * 60 * 1000;
 
-// Maximum sleep duration: 7 days (Sleep → Delete)
-const MAX_SLEEP_DURATION = 7 * 24 * 60 * 60 * 1000;
+// Active → Sleep (idle) and Sleep → archive durations come from the admin-set
+// lifecycle policy (session-lifecycle-policy.ts; defaults 24h / 7d), read at use
+// time so a dashboard change applies on the next sweep.
 
 // Session expiry warning intervals in milliseconds (from session expiry time)
 // Sorted descending: most urgent first
@@ -223,7 +221,7 @@ export interface SessionExpiryCallbacks {
 /**
  * Why a session is about to be deleted from the registry.
  * `terminated` = explicit `terminateSession()`; `sleep-expired` = the sleeping
- * session outlived MAX_SLEEP_DURATION during `cleanupInactiveSessions()`.
+ * session outlived the policy archiveAfterMs during `cleanupInactiveSessions()`.
  */
 export type SessionDeletionReason = 'terminated' | 'sleep-expired';
 
@@ -1641,19 +1639,30 @@ export class SessionRegistry {
 
   /**
    * Clean up inactive sessions based on max age
-   * 3-stage lifecycle: Active → Sleep (24h) → Delete (7d sleep)
+   * 3-stage lifecycle: Active → Sleep (policy sleepAfterMs, 24h default) →
+   * Delete (policy archiveAfterMs asleep, 7d default). `maxAge` overrides the
+   * idle limit (tests, explicit callers).
    */
-  async cleanupInactiveSessions(maxAge: number = DEFAULT_SESSION_TIMEOUT): Promise<void> {
+  async cleanupInactiveSessions(maxAge?: number): Promise<void> {
+    if (isSessionLifecyclePolicyDegraded()) {
+      // The saved policy is unreadable; its defaults may be far shorter than what
+      // an admin chose. Sleeping or ending sessions on them could not be undone.
+      this.logger.warn('Session lifecycle policy unreadable — sleep/archive sweep skipped until an admin saves one');
+      return;
+    }
     const now = Date.now();
+    const policy = getSessionLifecyclePolicy();
+    const sleepAfterMs = maxAge ?? policy.sleepAfterMs;
+    const archiveAfterMs = policy.archiveAfterMs;
     let cleaned = 0;
     let slept = 0;
 
     for (const [key, session] of this.sessions.entries()) {
-      // Stage 1: SLEEPING sessions - check if sleep duration exceeded (7 days)
+      // Stage 1: SLEEPING sessions - check if sleep duration exceeded (policy archiveAfterMs)
       if (session.state === 'SLEEPING') {
-        const sleepAge = session.sleepStartedAt ? now - session.sleepStartedAt.getTime() : MAX_SLEEP_DURATION + 1; // Force expire if no sleepStartedAt
+        const sleepAge = session.sleepStartedAt ? now - session.sleepStartedAt.getTime() : archiveAfterMs + 1; // Force expire if no sleepStartedAt
 
-        if (sleepAge >= MAX_SLEEP_DURATION) {
+        if (sleepAge >= archiveAfterMs) {
           // Same seam as terminateSession, before notification and deletion.
           // A refusal is per-session here: the sweep keeps that session and
           // moves on, so one host failure cannot stall everyone else's expiry.
@@ -1688,9 +1697,14 @@ export class SessionRegistry {
         continue;
       }
 
-      // Stage 2: Active sessions - check if inactive for 24h → transition to Sleep
+      // A turn in progress is not idle: lastActivity only moves on user input, so
+      // a long autonomous turn would otherwise be put to sleep (and its work dirs
+      // removed) mid-run once a short policy is set.
+      if (session.activityState === 'working') continue;
+
+      // Stage 2: Active sessions - check if idle past the policy limit → transition to Sleep
       const sessionAge = now - session.lastActivity.getTime();
-      const timeUntilExpiry = maxAge - sessionAge;
+      const timeUntilExpiry = sleepAfterMs - sessionAge;
 
       if (timeUntilExpiry <= 0) {
         // Transition to sleep instead of deleting
@@ -1727,7 +1741,7 @@ export class SessionRegistry {
 
       // Stage 3: Active sessions with time remaining - check for warnings
       if (this.expiryCallbacks) {
-        await this.checkAndSendWarning(key, session, timeUntilExpiry);
+        await this.checkAndSendWarning(key, session, timeUntilExpiry, sleepAfterMs);
       }
     }
 
@@ -1747,8 +1761,12 @@ export class SessionRegistry {
     sessionKey: string,
     session: ConversationSession,
     timeUntilExpiry: number,
+    sleepAfterMs: number,
   ): Promise<void> {
     for (const warningInterval of WARNING_INTERVALS) {
+      // A warning not shorter than the idle limit itself would fire on the first
+      // sweep after any activity (e.g. the 12h check under a 2h policy) — skip it.
+      if (warningInterval >= sleepAfterMs) continue;
       if (timeUntilExpiry <= warningInterval) {
         const lastWarningSent = session.lastWarningSentAt || Infinity;
 
@@ -1992,30 +2010,41 @@ export class SessionRegistry {
 
       let loaded = 0;
       const now = Date.now();
-      const maxAge = DEFAULT_SESSION_TIMEOUT;
+      const { sleepAfterMs: maxAge, archiveAfterMs } = getSessionLifecyclePolicy();
+      // Unreadable saved policy: load every session as it was (see cleanupInactiveSessions).
+      const applyLifecycle = !isSessionLifecyclePolicyDegraded();
+      let sleptOnLoadCount = 0;
       this._crashRecoveredSessions = [];
 
       for (const serialized of sessionsArray) {
         const lastActivity = new Date(serialized.lastActivity);
-        const sleepStartedAt = serialized.sleepStartedAt ? new Date(serialized.sleepStartedAt) : undefined;
+        let sleepStartedAt = serialized.sleepStartedAt ? new Date(serialized.sleepStartedAt) : undefined;
+        // Set when an active session went idle past the policy limit while the
+        // process was down: it loads asleep, as the sweep would leave it.
+        let sleptOnLoad = false;
 
-        // For SLEEPING sessions: check against MAX_SLEEP_DURATION
-        if (serialized.state === 'SLEEPING') {
-          const sleepAge = sleepStartedAt ? now - sleepStartedAt.getTime() : MAX_SLEEP_DURATION + 1;
-          if (sleepAge >= MAX_SLEEP_DURATION) {
+        // For SLEEPING sessions: check against the policy sleep time
+        if (applyLifecycle && serialized.state === 'SLEEPING') {
+          const sleepAge = sleepStartedAt ? now - sleepStartedAt.getTime() : archiveAfterMs + 1;
+          if (sleepAge >= archiveAfterMs) {
             // Archive expired session before discarding (#401)
             this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
             serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
             continue;
           }
-        } else {
-          // For active sessions: check against 24h timeout
+        } else if (applyLifecycle) {
+          // Active session idle past the policy limit while the process was down:
+          // the same step the sweep takes when it notices — asleep from now, ended
+          // only after archiveAfter more. Never ended outright on load, so a
+          // restart cannot shorten the sleep a running process would have given.
           const sessionAge = now - lastActivity.getTime();
-          if (sessionAge >= maxAge) {
-            // Archive expired session before discarding (#401)
-            this.archiveSerializedOnLoad(serialized, lastActivity, 'terminated');
-            serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
-            continue;
+          // A session with an active goal is resumed after restart (resumeActiveGoals),
+          // which runs turns without waking a sleeper — leave it awake for that.
+          const hasActiveGoal = serialized.goal?.status === 'active';
+          if (sessionAge >= maxAge && !hasActiveGoal) {
+            sleptOnLoad = true;
+            sleptOnLoadCount++;
+            sleepStartedAt = new Date(now);
           }
         }
 
@@ -2036,14 +2065,16 @@ export class SessionRegistry {
           // to DEFAULT_MODEL. Preserves undefined when the session was saved
           // without a model (unchanged behavior from verbatim passthrough).
           model: serialized.model === undefined ? undefined : coerceToAvailableModel(serialized.model),
-          state: serialized.state || 'MAIN', // Default to MAIN for legacy sessions
+          state: sleptOnLoad ? 'SLEEPING' : serialized.state || 'MAIN', // Default to MAIN for legacy sessions
           workflow: serialized.workflow || 'default', // Default to 'default' for legacy sessions
           links: serialized.links,
           linkHistory: serialized.linkHistory,
           linkSequence: serialized.linkSequence,
           linkRefreshGeneration: serialized.linkRefreshGeneration,
           sleepStartedAt,
-          activityState: serialized.activityState || 'idle', // Preserve saved state for correct dashboard display; crash recovery handles auto-resume
+          // Preserve saved state for correct dashboard display; crash recovery handles auto-resume.
+          // A session put to sleep on load is idle by definition.
+          activityState: sleptOnLoad ? 'idle' : serialized.activityState || 'idle',
           // Restore restart-notification markers so we can still drive the
           // symmetric restart message (and the correct auto-resume decision)
           // even if a save happened after notifyShutdown but before exit.
@@ -2234,6 +2265,8 @@ export class SessionRegistry {
         //   (uncaughtException path saves but doesn't notify). Fall back to
         //   the persisted `activityState`: if non-idle, the session was
         //   actively processing and the user is still waiting for output.
+        // A session that went to sleep while the process was down is not resumed:
+        // it still gets the restart notice it was promised (symmetry), never an auto-resume.
         if (serialized.shutdownNotificationSent) {
           this._crashRecoveredSessions.push({
             channelId: serialized.channelId,
@@ -2244,9 +2277,9 @@ export class SessionRegistry {
             sessionKey: derivedKey,
             title: serialized.title,
             workflow: serialized.workflow,
-            shouldAutoResume: serialized.wasWorkingAtShutdown === true,
+            shouldAutoResume: !sleptOnLoad && serialized.wasWorkingAtShutdown === true,
           });
-        } else if (serialized.activityState && serialized.activityState !== 'idle') {
+        } else if (!sleptOnLoad && serialized.activityState && serialized.activityState !== 'idle') {
           this._crashRecoveredSessions.push({
             channelId: serialized.channelId,
             threadTs: serialized.threadTs,
@@ -2262,6 +2295,12 @@ export class SessionRegistry {
       }
 
       this.logger.info(`Loaded ${loaded} sessions from file (${sessionsArray.length - loaded} expired)`);
+      // Persist sessions put to sleep on load now, as the sweep does: otherwise a
+      // crash before the next save reloads them awake and restarts their clock.
+      if (sleptOnLoadCount > 0) {
+        this.logger.info(`Put ${sleptOnLoadCount} stale session(s) to sleep on load`);
+        this.saveSessions();
+      }
 
       return loaded;
     } catch (error) {

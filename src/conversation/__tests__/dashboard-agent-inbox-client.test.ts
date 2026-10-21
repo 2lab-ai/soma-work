@@ -2282,6 +2282,7 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
         _cardEls: cardEls,
         _expanded: new Set<string>(),
         showArchives: !!opts.showArchives,
+        showSleeping: true,
         showOlderClosed: false,
         _revealedKey: null,
         localStorage: {
@@ -2451,4 +2452,179 @@ describe('muted text contrast ≥ 4.5:1 on every surface it sits on (CSS tokens)
       }
     });
   }
+});
+
+describe('DONE column: sleeping cards hide behind the Sleeping toggle (shipped planDoneColumn)', () => {
+  type Opts = {
+    now: number;
+    showOlder: boolean;
+    showArchives: boolean;
+    showSleeping?: boolean;
+    revealKey: string | null;
+  };
+  const { planDoneColumn } = load<{
+    planDoneColumn(idle: DoneCard[], closed: DoneCard[], o: Opts): DonePlan & { sleepingCount: number };
+  }>(['planDoneColumn'], []);
+  const NOW = Date.parse('2026-03-20T12:00:00Z');
+  const DAY = 24 * 60 * 60 * 1000;
+  const ago = (days: number) => new Date(NOW - days * DAY).toISOString();
+  const IDLE = [{ key: 'idle-1', lastActivity: ago(0) }];
+  const CLOSED: DoneCard[] = [
+    { key: 'sleeping-recent', lastActivity: ago(1) },
+    { key: 'archived-recent', lastActivity: ago(2), terminated: true },
+    { key: 'sleeping-mid', lastActivity: ago(4) },
+    { key: 'sleeping-old', lastActivity: ago(8) },
+  ];
+  const plan = (o: Partial<Opts> = {}) =>
+    planDoneColumn(IDLE, CLOSED, { now: NOW, showOlder: false, showArchives: false, revealKey: null, ...o });
+  const keys = (p: DonePlan) => p.done.map((d) => d.s.key);
+
+  it('shows sleeping cards unless the toggle is off, and always counts them', () => {
+    expect(keys(plan())).toEqual(['idle-1', 'sleeping-recent', 'sleeping-mid']);
+    expect(plan()).toMatchObject({ sleepingCount: 3, archivedCount: 1, olderCount: 1 });
+    const off = plan({ showSleeping: false });
+    expect(keys(off)).toEqual(['idle-1']);
+    // Hidden sleeping cards are not "older" cards either: Show older would add nothing.
+    expect(off).toMatchObject({ sleepingCount: 3, archivedCount: 1, olderCount: 0 });
+    expect(keys(plan({ showSleeping: false, showOlder: true }))).toEqual(['idle-1']);
+  });
+
+  it('hiding sleeping leaves archives to their own toggle', () => {
+    expect(keys(plan({ showSleeping: false, showArchives: true }))).toEqual(['idle-1', 'archived-recent']);
+  });
+
+  it('a revealed (deep-linked) sleeping card shows while sleeping cards are hidden', () => {
+    expect(keys(plan({ showSleeping: false, revealKey: 'sleeping-old' }))).toEqual(['idle-1', 'sleeping-old']);
+  });
+});
+
+describe('Sleeping choice persists (shipped readShowSleeping + toggleSleeping)', () => {
+  function page(stored: Record<string, string>) {
+    const store = new Map(Object.entries(stored));
+    const localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+    };
+    let loads = 0;
+    const m = load<{
+      readShowSleeping(): boolean;
+      toggleSleeping(): void;
+      state(): { show: boolean; revealed: string | null };
+    }>(
+      ['readShowSleeping', 'toggleSleeping'],
+      ['SHOW_SLEEPING_KEY'],
+      {
+        localStorage,
+        showSleeping: true,
+        _revealedKey: 'deep-linked',
+        loadSessions: () => {
+          loads++;
+        },
+      },
+      ['function state() { return { show: showSleeping, revealed: _revealedKey }; }'],
+    );
+    return { m, store, loads: () => loads };
+  }
+
+  it('reads shown unless "off" was stored (sleeping cards were always shown before)', () => {
+    expect(page({}).m.readShowSleeping()).toBe(true);
+    expect(page({ 'soma-show-sleeping': 'on' }).m.readShowSleeping()).toBe(true);
+    expect(page({ 'soma-show-sleeping': 'off' }).m.readShowSleeping()).toBe(false);
+  });
+
+  it('the toggle flips, stores on / off, re-renders, and ends a deep-link reveal', () => {
+    const p = page({});
+    p.m.toggleSleeping();
+    expect(p.m.state()).toEqual({ show: false, revealed: null });
+    expect(p.store.get('soma-show-sleeping')).toBe('off');
+    p.m.toggleSleeping();
+    expect(p.m.state().show).toBe(true);
+    expect(p.store.get('soma-show-sleeping')).toBe('on');
+    expect(p.loads()).toBe(2);
+  });
+});
+
+describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinkedSession)', () => {
+  it('reveals the sleeping card for this page load without touching the stored choice', () => {
+    const KEY = 'inst::work:C1:1700000000.000900';
+    let loads = 0;
+    const m = load<{ openDeepLinkedSession(): void; state(): { revealed: string | null; showOlder: boolean } }>(
+      ['resolveDeepLinkKey', 'openDeepLinkedSession'],
+      [],
+      {
+        _deepLinkSession: 'work:C1:1700000000.000900',
+        _deepLinkDeadline: Date.now() + 10_000,
+        _sessionCache: { [KEY]: { key: KEY, lastActivity: new Date().toISOString() } },
+        SELF_INSTANCE_NAME: 'inst',
+        _cardEls: Object.create(null),
+        _expanded: new Set<string>(),
+        showArchives: false,
+        showSleeping: false,
+        showOlderClosed: false,
+        _revealedKey: null,
+        loadSessions: () => {
+          loads++;
+        },
+        toggleCard: () => {},
+        openPanel: () => {},
+      },
+      ['function state() { return { revealed: _revealedKey, showOlder: showOlderClosed }; }'],
+    );
+    m.openDeepLinkedSession();
+    expect(m.state()).toEqual({ revealed: KEY, showOlder: false });
+    expect(loads).toBe(1);
+  });
+});
+
+describe('admin lifecycle form (shipped lifecycleToForm + lifecycleFromForm)', () => {
+  const HOUR = 60 * 60 * 1000;
+  const DAY = 24 * HOUR;
+  const m = load<{
+    lifecycleToForm(p: Record<string, number>): Record<string, number>;
+    lifecycleFromForm(
+      f: Record<string, unknown>,
+    ): { ok: true; patch: Record<string, number> } | { ok: false; field: string };
+  }>(['lifecycleToForm', 'lifecycleFromForm'], ['LIFECYCLE_FIELDS']);
+
+  it('shows sleep and the board archive window in hours, the archive time in days', () => {
+    expect(
+      m.lifecycleToForm({ sleepAfterMs: 24 * HOUR, archiveAfterMs: 7 * DAY, boardArchiveWindowMs: 48 * HOUR }),
+    ).toEqual({ sleepAfterHours: 24, archiveAfterDays: 7, boardArchiveWindowHours: 48 });
+  });
+
+  it('turns the form back into a millisecond patch, rounding to whole minutes', () => {
+    expect(
+      m.lifecycleFromForm({
+        sleepAfterHours: '6',
+        archiveAfterDays: '1.5',
+        boardArchiveWindowHours: '0',
+      }),
+    ).toEqual({ ok: true, patch: { sleepAfterMs: 6 * HOUR, archiveAfterMs: 36 * HOUR, boardArchiveWindowMs: 0 } });
+  });
+
+  it('names the first field that is not a non-negative number', () => {
+    expect(
+      m.lifecycleFromForm({
+        sleepAfterHours: '6',
+        archiveAfterDays: 'abc',
+        boardArchiveWindowHours: '1',
+      }),
+    ).toEqual({ ok: false, field: 'archiveAfterDays' });
+    expect(
+      m.lifecycleFromForm({
+        sleepAfterHours: '',
+        archiveAfterDays: '1',
+        boardArchiveWindowHours: '1',
+      }),
+    ).toEqual({ ok: false, field: 'sleepAfterHours' });
+    expect(
+      m.lifecycleFromForm({
+        sleepAfterHours: '1',
+        archiveAfterDays: '1',
+        boardArchiveWindowHours: '-1',
+      }),
+    ).toEqual({ ok: false, field: 'boardArchiveWindowHours' });
+  });
 });
