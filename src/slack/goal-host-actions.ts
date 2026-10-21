@@ -31,7 +31,7 @@ export type HostGoalActionResult =
 /** A refusal with the HTTP status the dashboard answers with; the message is user-facing. */
 export class HostGoalActionError extends Error {
   constructor(
-    readonly statusCode: 400 | 404 | 409 | 502 | 503,
+    readonly statusCode: 400 | 403 | 404 | 409 | 502 | 503,
     message: string,
   ) {
     super(message);

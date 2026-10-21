@@ -4764,6 +4764,25 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.goal).toMatchObject({ goalId: 'g2', status: 'active' });
     });
 
+    it('refuses (403) to start a goal whose opening turn the drain would refuse — nothing posted, nothing changed', async () => {
+      vi.spyOn(userSettingsStore, 'isUserAccepted').mockImplementation((user: string) => user !== 'U_PENDING');
+
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '새 목표' }, 'U_PENDING'),
+      ).rejects.toMatchObject({ statusCode: 403 });
+
+      registrySession.goal = goalOf();
+      registrySession.goalQueue = [
+        goalOf({ goalId: 'g2', objective: '다음', status: 'queued', createdBy: 'U_PENDING' }),
+      ];
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'delete', goalId: 'g1', expect: 'current' }),
+      ).rejects.toMatchObject({ statusCode: 403 });
+
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1' });
+      expect(postSystemMessage).not.toHaveBeenCalled();
+    });
+
     it('delete queued removes only that goal', async () => {
       registrySession.goal = goalOf();
       registrySession.goalQueue = [
