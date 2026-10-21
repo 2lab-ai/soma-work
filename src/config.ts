@@ -418,7 +418,8 @@ export const config = {
      * Empty = the public viewer URL. Set it to the previous public origin while the
      * provider console still lists only that callback: the provider returns there,
      * the canonical-origin redirect forwards the callback to the public URL, and
-     * the code exchange repeats this same redirect_uri.
+     * the code exchange repeats this same redirect_uri. The forwarding redirect only
+     * exists when the viewer URL is https (web-server.ts registerCanonicalOriginRedirect).
      */
     callbackBaseUrl: process.env.SOMA_OAUTH_CALLBACK_BASE_URL || '',
     /** Seconds until dashboard JWT expires (default: 7 days) */
