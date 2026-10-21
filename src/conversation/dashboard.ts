@@ -5422,20 +5422,30 @@ async function goalAction(key, payload, btn) {
   if (!r.ok && btn) btn.disabled = false;
   loadSessions();
 }
+// One add in flight per card. The input is NOT disabled while it is sent:
+// keeping its focus is what keeps a live re-render from replacing the form
+// (and resurrecting the sent text as a fresh, submittable draft).
+var _goalAdding = Object.create(null);
 async function addGoalFromCard(key, form) {
+  if (_goalAdding[key]) return;
   var input = form.querySelector('.cg-add-input');
   var objective = input ? input.value.trim() : '';
   if (!objective) return;
+  _goalAdding[key] = true;
   var btn = form.querySelector('button');
   if (btn) btn.disabled = true;
-  input.disabled = true;
   var r;
   try { r = await postGoalAction(key, { action: 'add', objective: objective }); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
-  input.disabled = false;
-  if (btn) btn.disabled = false;
+  delete _goalAdding[key];
+  // The form on screen may have been re-rendered meanwhile — act on the live one.
+  var el = _cardEls[key];
+  var live = (el && el._bodyEl.querySelector('.cg-add-input')) || input;
+  var liveBtn = live.form ? live.form.querySelector('button') : btn;
+  if (liveBtn) liveBtn.disabled = false;
+  if (btn && btn !== liveBtn) btn.disabled = false;
   if (r.ok) {
-    input.value = '';
-    input.blur();
+    if (live.value.trim() === objective) live.value = '';
+    live.blur();
   }
   setGoalError(key, r.ok ? '' : r.error);
   loadSessions();
