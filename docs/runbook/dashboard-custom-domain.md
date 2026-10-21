@@ -26,6 +26,23 @@ With an `https` value the server:
 Keep the viewer bound to loopback (`CONVERSATION_VIEWER_HOST=127.0.0.1`, the default) when the
 proxy runs on the same host.
 
+## Sign-in providers (Google, Microsoft)
+
+The OAuth callback follows the public URL: `https://agent.example.com/auth/google/callback`.
+The provider rejects a callback it does not list (`redirect_uri_mismatch`), so add the new one to
+the OAuth client before you switch. Slack `dashboard` sign-in links do not depend on this.
+
+If you cannot update the provider console yet, keep the callback on the origin it already lists:
+
+```env
+SOMA_OAUTH_CALLBACK_BASE_URL=https://old-host.example.net:33443
+```
+
+The provider then returns to the old origin, which must still reach this instance (for example the
+old tailnet name). The canonical-origin redirect forwards the callback, code and state intact, to
+the public URL, and the code exchange repeats the same registered `redirect_uri`. Remove the
+setting once the new callback is registered.
+
 ## Before you expose it: authentication
 
 A domain makes the dashboard reachable from the whole network. Check that the instance has
