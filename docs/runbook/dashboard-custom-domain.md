@@ -40,8 +40,10 @@ SOMA_OAUTH_CALLBACK_BASE_URL=https://old-host.example.net:33443
 
 The provider then returns to the old origin, which must still reach this instance (for example the
 old tailnet name). The canonical-origin redirect forwards the callback, code and state intact, to
-the public URL, and the code exchange repeats the same registered `redirect_uri`. Remove the
-setting once the new callback is registered.
+the public URL, and the code exchange repeats the same registered `redirect_uri`. That redirect is
+only installed when `CONVERSATION_VIEWER_URL` is `https`; with an `http` public URL, start sign-in
+from the old origin itself so the state cookie and the callback share a host. Remove the setting
+once the new callback is registered — a callback origin you no longer control would receive codes.
 
 ## Before you expose it: authentication
 
