@@ -227,6 +227,22 @@ export interface FollowupActionsDeps {
    */
   onItemProcessed?(sessionKey: string, itemId: string): void;
   /**
+   * Refuse a Cancel the host cannot allow for THIS item, with the user-facing
+   * reason; `undefined` lets it through. Asked after the click and interrupt
+   * checks, before the queue write — a cancel that also changes host state
+   * (a goal's opening turn: cancelling it deletes the goal) may need a stricter
+   * rule than "may interrupt this session".
+   */
+  vetoCancel?(sessionKey: string, item: FollowupItem, clicker: string): string | undefined;
+  /**
+   * A Cancel was committed. `previousState` is where the row was before it.
+   * Called synchronously, right after the queue write and before any await, so
+   * the host can fence its own state in the same step. Best effort like
+   * {@link onItemProcessed}: a throwing hook never turns a done cancel into a
+   * failed click.
+   */
+  onItemCancelled?(sessionKey: string, item: FollowupItem, clicker: string, previousState: FollowupItemState): void;
+  /**
    * The item CHANGED but did not leave the pending set — re-render whatever the
    * host posted for it (S2).
    *
@@ -755,6 +771,18 @@ export async function handleCancel(
   // refusal text depends on where the item WAS.
   const previousState = item.state;
   try {
+    let veto: string | undefined;
+    try {
+      veto = deps.vetoCancel?.(value.sessionKey, item, click.clicker);
+    } catch (error) {
+      // A rule that cannot be evaluated is a refusal, not a yes.
+      report(deps, 'cancel veto', error);
+      veto = '취소가 거부되었습니다: 이 항목을 확인하지 못했습니다 — 다시 시도해 주세요.';
+    }
+    if (veto) {
+      await refuse(respond, veto);
+      return;
+    }
     // A steered message lives in the SDK's input queue, not only in ours — the
     // host has to ask the SDK first, so this is a different door, not a
     // different reason code on the same one.
@@ -769,6 +797,7 @@ export async function handleCancel(
       `<@${click.clicker}> 님이 취소했습니다`,
     );
     if (result.ok) {
+      announceCancelled(deps, value.sessionKey, item, click.clicker, previousState);
       announceProcessed(deps, value.sessionKey, value.itemId);
       await reply(respond, CANCEL_OK_TEXT);
       return;
@@ -1052,6 +1081,20 @@ async function sweepSteered(deps: FollowupActionsDeps, sessionKey: string): Prom
  * outcomes where the row really left the pending set; a throwing hook is
  * reported, never allowed to invert the cancel the user just completed.
  */
+function announceCancelled(
+  deps: FollowupActionsDeps,
+  sessionKey: string,
+  item: FollowupItem,
+  clicker: string,
+  previousState: FollowupItemState,
+): void {
+  try {
+    deps.onItemCancelled?.(sessionKey, item, clicker, previousState);
+  } catch (error) {
+    report(deps, 'queue item cancelled hook', error);
+  }
+}
+
 function announceProcessed(deps: FollowupActionsDeps, sessionKey: string, itemId: string): void {
   try {
     deps.onItemProcessed?.(sessionKey, itemId);

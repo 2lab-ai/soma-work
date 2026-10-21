@@ -656,6 +656,27 @@ export class FollowupQueue {
     });
   }
 
+  /**
+   * Attach files that arrived late to a `queued` item — the same message's
+   * attachments delivered in a second Slack envelope (`app_mention` can omit
+   * them; `file_share` carries them). `queued` only, for the reason
+   * {@link editQueued} gives: anything handed over keeps what was handed over.
+   * Files already on the item are kept; the epoch bumps like an edit.
+   */
+  attachFilesQueued(
+    sessionKey: string,
+    itemId: string,
+    expectedEpoch: number,
+    files: NonNullable<MessageEvent['files']>,
+  ): FollowupOpResult {
+    return this.mutate(sessionKey, itemId, expectedEpoch, (item) => {
+      if (item.state !== 'queued') return 'invalid-state';
+      item.message = { ...item.message, files: [...(item.message.files ?? []), ...cloneJson(files)] };
+      this.enter(item, 'queued', '첨부 추가됨');
+      return undefined;
+    });
+  }
+
   // ------------------------------------------------------------- auto-steering
   //
   // `steered` = "pushed into the RUNNING turn's SDK input channel; the model has

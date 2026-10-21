@@ -420,3 +420,84 @@ describe('EventRouter.app_mention — /z routing (FIX #1)', () => {
     expect(mockMessageHandler).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * SSOT 2026-10-21 T1, mention variant: `@bot /z goal …` in a thread that
+ * already has a session is the same instruction as typing `/z goal …` there.
+ * It must reach the host's follow-up fence (which runs a goal command at once
+ * and admits the new goal's opening turn with the goal change) instead of
+ * running `GoalHandler` inside ZRouter ahead of the fence.
+ */
+describe('EventRouter.app_mention — `/z goal` in a thread with a session takes the typed path', () => {
+  let eventHandlers: Record<string, Function>;
+  let mockDeps: ReturnType<typeof buildMockDeps>;
+  let eventRouter: any;
+  let mockMessageHandler: any;
+  let dispatch: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    ({ eventHandlers, mockDeps, eventRouter, mockMessageHandler } = await setupRouter());
+    dispatch = vi.fn().mockResolvedValue({ handled: true, continueWithPrompt: 'x', verbatimPrompt: true });
+    eventRouter.zRouter = { dispatch };
+  });
+
+  afterEach(() => {
+    eventRouter.cleanup?.();
+  });
+
+  const mention = (text: string, overrides: Record<string, unknown> = {}) =>
+    eventHandlers['app_mention']({
+      event: { user: 'U_X', channel: 'C_X', ts: '2.1', thread_ts: '1.0', text, team: 'T_X', ...overrides },
+      say: vi.fn(),
+    });
+
+  for (const text of ['/z goal 새 목표', '/z goal done', '/z goal 새 목표 $local:z', '/z goal']) {
+    it(`hands \`@bot ${text}\` to the host pipeline as typed — never through ZRouter`, async () => {
+      mockDeps.claudeHandler.getSession.mockReturnValue({ ownerId: 'U_X' });
+
+      await mention(`<@B_BOT> ${text}`);
+
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(mockDeps.claudeHandler.getSession).toHaveBeenCalledWith('C_X', '1.0');
+      expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+      const forwarded = mockMessageHandler.mock.calls[0][0];
+      expect(forwarded.text).toBe(text);
+      expect(forwarded.routeContext?.verbatimPrompt, 'still a command, not an objective').toBeUndefined();
+    });
+  }
+
+  it('keeps ZRouter for `/z goal` when the thread has no session (nothing can be running)', async () => {
+    mockDeps.claudeHandler.getSession.mockReturnValue(undefined);
+
+    await mention('<@B_BOT> /z goal 새 목표');
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps ZRouter for `/z goal` at the channel top level', async () => {
+    mockDeps.claudeHandler.getSession.mockReturnValue({ ownerId: 'U_X' });
+
+    await mention('<@B_BOT> /z goal 새 목표', { thread_ts: undefined });
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps ZRouter for every other `/z` command in a thread with a session', async () => {
+    mockDeps.claudeHandler.getSession.mockReturnValue({ ownerId: 'U_X' });
+    dispatch.mockResolvedValue({ handled: true, consumed: true });
+
+    await mention('<@B_BOT> /z persona');
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(mockMessageHandler).not.toHaveBeenCalled();
+  });
+
+  it('bare `@bot goal …` already reaches the host pipeline with the bot mention stripped', async () => {
+    mockDeps.claudeHandler.getSession.mockReturnValue({ ownerId: 'U_X' });
+
+    await mention('<@B_BOT> goal 새 목표');
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(mockMessageHandler.mock.calls[0][0].text).toBe('goal 새 목표');
+  });
+});
