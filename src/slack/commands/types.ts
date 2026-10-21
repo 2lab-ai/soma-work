@@ -53,8 +53,8 @@ export interface CommandContext {
 export interface GoalOpening {
   goalId: string;
   objective: string;
-  /** `set` — the goal this command set; `promoted` — the next goal `goal done` started. */
-  cause: 'set' | 'promoted';
+  /** `set` — the goal this command set; `promoted` — the next goal `goal done` started; `resumed` — `goal resume` of a goal whose first turn never ran. */
+  cause: 'set' | 'promoted' | 'resumed';
   /** Opening text when it is not the objective (the `$skill` part of a split). */
   prompt?: string;
 }

@@ -1067,6 +1067,14 @@ export class SlackHandler {
         channel: event.channel,
         ts: event.ts,
       });
+      // A mention with attachments can arrive twice — `app_mention` without
+      // the files, then `file_share` with them. The command already ran from
+      // the first copy, so the files cannot ride along any more: say so.
+      const seen = this.goalIntakeSeen.get(`${event.channel}:${event.ts}`);
+      if (event.files?.length && seen && !seen.hadFiles) {
+        seen.hadFiles = true;
+        await this.attachLateGoalFiles(event, seen.setGoalId);
+      }
       return;
     }
 
@@ -1977,6 +1985,8 @@ export class SlackHandler {
         await this.postStaleGoalOpeningNotice(channel, originalThreadTs);
         return { result: 'safe' };
       }
+      // The opening reaches the model now: the goal has had its first turn.
+      this.markGoalOpeningStarted(event, channel, originalThreadTs);
 
       agentSession = this.createAgentSession(sessionResult, wrappedSay, {
         channel: activeChannel,
@@ -2709,7 +2719,13 @@ export class SlackHandler {
             },
             opening,
           );
-          if (carry && typeof admission !== 'object') filesCarried = true;
+          if (typeof admission !== 'object') {
+            if (carry) filesCarried = true;
+            if (opening.cause === 'set') {
+              const seen = this.goalIntakeSeen.get(`${event.channel}:${event.ts}`);
+              if (seen) seen.setGoalId = opening.goalId;
+            }
+          }
           return admission;
         },
       });
@@ -2776,6 +2792,30 @@ export class SlackHandler {
     },
     opening: { goalId: string; objective: string; prompt?: string },
   ): GoalOpeningAdmission {
+    try {
+      return this.admitGoalOpeningTurnOrThrow(sessionKey, anchor, opening);
+    } catch (error) {
+      // The caller restores its snapshot on a failure: a throw here must be
+      // one, never an active goal left behind with nothing to start it.
+      const detail = (error as Error)?.message ?? String(error);
+      this.logger.error('Goal opening admission threw — reported as a failure', { sessionKey, detail });
+      return { failed: detail };
+    }
+  }
+
+  private admitGoalOpeningTurnOrThrow(
+    sessionKey: string,
+    anchor: {
+      channel: string;
+      threadTs: string;
+      ts: string;
+      user: string;
+      team?: string;
+      say: any;
+      files?: MessageEvent['files'];
+    },
+    opening: { goalId: string; objective: string; prompt?: string },
+  ): GoalOpeningAdmission {
     const dispatcher = this.followupDispatcher;
     const queue = this.followupQueue;
     if (!dispatcher || !queue || this.followupReadFailed) {
@@ -2802,6 +2842,15 @@ export class SlackHandler {
           ? { verbatimPrompt: true, goalOpeningId: opening.goalId }
           : { goalOpeningId: opening.goalId },
     } as MessageEvent;
+
+    // Marked BEFORE the turn is handed over (the callers' snapshots predate
+    // it, so a refused admission's restore removes it again); cleared at the
+    // opening's model boundary in `processMessage`.
+    const liveGoal = this.claudeHandler.getSessionByKey?.(sessionKey)?.goal;
+    if (liveGoal?.goalId === opening.goalId) {
+      liveGoal.openingPending = true;
+      this.claudeHandler.saveSessions?.();
+    }
 
     void this.handleMessage(openingEvent, anchor.say).catch((error) => {
       this.logger.error('Goal opening turn failed', {
@@ -2863,7 +2912,9 @@ export class SlackHandler {
   ): Promise<Awaited<ReturnType<InputProcessor['routeCommand']>>> {
     const goalId = event.routeContext?.goalOpeningId;
     if (goalId === undefined || isVerbatimPrompt(event)) return routed;
-    if (!routed.handled || routed.continueWithPrompt || routed.awaitingPermission) return routed;
+    // `handled:false` too: a `$skill` that no longer resolves at all would
+    // otherwise run its raw `$skill …` text as the goal's first prompt.
+    if (routed.continueWithPrompt || routed.awaitingPermission) return routed;
     const goal = this.claudeHandler.getSession?.(channel, threadTs)?.goal;
     if (!goal || goal.goalId !== goalId || goal.status !== 'active') return routed;
     this.logger.info('Goal opening skill produced no turn — running the objective instead', {
@@ -2880,10 +2931,20 @@ export class SlackHandler {
     return { handled: true, continueWithPrompt: goal.objective, verbatimPrompt: true };
   }
 
+  /** A goal's opening turn passed its last stale check — clear `openingPending`. */
+  private markGoalOpeningStarted(event: MessageEvent, channel: string, threadTs: string): void {
+    const goalId = event.routeContext?.goalOpeningId;
+    if (goalId === undefined) return;
+    const goal = this.claudeHandler.getSession?.(channel, threadTs)?.goal;
+    if (goal?.goalId !== goalId || !goal.openingPending) return;
+    goal.openingPending = undefined;
+    this.claudeHandler.saveSessions?.();
+  }
+
   private async postStaleGoalOpeningNotice(channel: string, threadTs: string): Promise<void> {
     await this.slackApi.postSystemMessage(
       channel,
-      '⏭️ 이 goal은 시작 전에 삭제·일시정지되었거나 다른 goal로 바뀌어서 첫 턴을 실행하지 않았습니다. `goal resume`은 첫 턴을 다시 실행하지 않습니다 — 필요하면 목표를 다시 보내 주세요.',
+      '⏭️ 이 goal은 시작 전에 삭제·일시정지되었거나 다른 goal로 바뀌어서 첫 턴을 실행하지 않았습니다. 일시정지된 goal은 `goal resume`하면 첫 턴부터 다시 시작합니다.',
       { threadTs },
     );
   }
@@ -2894,7 +2955,7 @@ export class SlackHandler {
    * runs at once (or as an initial run), so the host keeps its own record —
    * a retried `goal X` must not append the same goal twice.
    */
-  private goalIntakeSeen = new Map<string, number>();
+  private goalIntakeSeen = new Map<string, { at: number; hadFiles: boolean; setGoalId?: string }>();
   private static readonly GOAL_INTAKE_DEDUPE_MS = 10 * 60 * 1000;
 
   /** A goal-command event already seen (records it the first time). See `handleMessage`. */
@@ -2907,14 +2968,54 @@ export class SlackHandler {
   /** `true` the first time an event is seen (and records it); `false` for a redelivery. */
   private claimGoalIntake(event: MessageEvent): boolean {
     const now = Date.now();
-    for (const [key, at] of this.goalIntakeSeen) {
-      if (now - at <= SlackHandler.GOAL_INTAKE_DEDUPE_MS) break; // insertion order = age order
+    for (const [key, seen] of this.goalIntakeSeen) {
+      if (now - seen.at <= SlackHandler.GOAL_INTAKE_DEDUPE_MS) break; // insertion order = age order
       this.goalIntakeSeen.delete(key);
     }
     const key = `${event.channel}:${event.ts}`;
     if (this.goalIntakeSeen.has(key)) return false;
-    this.goalIntakeSeen.set(key, now);
+    this.goalIntakeSeen.set(key, { at: now, hadFiles: Boolean(event.files?.length) });
     return true;
+  }
+
+  /**
+   * The attachments of a goal command arrived in a second envelope after the
+   * command already ran from the first (`app_mention` without `files`, then
+   * `file_share`). They belong on the opening turn of the goal that message
+   * SET: attached while that opening still waits in the queue, otherwise the
+   * thread is told — never dropped silently.
+   */
+  private async attachLateGoalFiles(event: MessageEvent, setGoalId: string | undefined): Promise<void> {
+    const files = event.files ?? [];
+    const sessionKey = this.resolveFollowupSessionKey(event);
+    const queue = this.followupQueue;
+    const opening =
+      setGoalId !== undefined && sessionKey && queue
+        ? queue
+            .list(sessionKey)
+            .find(
+              (item) =>
+                item.message?.routeContext?.goalOpeningId === setGoalId &&
+                item.eventKey === `${event.channel}:${event.ts}` &&
+                item.state === 'queued',
+            )
+        : undefined;
+    if (opening && sessionKey && queue) {
+      const attached = queue.attachFilesQueued(sessionKey, opening.id, opening.epoch, files);
+      if (attached.ok) {
+        this.logger.info('Late goal-command attachments added to its queued opening turn', {
+          sessionKey,
+          itemId: opening.id,
+          files: files.length,
+        });
+        return;
+      }
+    }
+    await this.postGoalNoticeBestEffort(
+      event.channel,
+      event.thread_ts || event.ts,
+      '📎 첨부 파일이 goal 명령보다 늦게 도착해 전달되지 않았습니다 — 필요하면 파일을 다시 보내 주세요.',
+    );
   }
 
   /** Forget a claim whose command failed before it changed anything (see `runGoalCommandNow`). */
@@ -6024,7 +6125,9 @@ export class SlackHandler {
         await this.postGoalNoticeBestEffort(
           channel,
           threadTs,
-          '⚠️ 위 goal은 설정되지 않았습니다 — 세션이 바뀌었습니다.',
+          error instanceof HostGoalActionError && error.statusCode === 403
+            ? '⚠️ 위 goal은 설정되지 않았습니다 — 작성자의 실행 권한이 바뀌었습니다.'
+            : '⚠️ 위 goal은 설정되지 않았습니다 — 세션이 바뀌었습니다.',
         );
         throw error;
       }
@@ -6153,29 +6256,21 @@ export class SlackHandler {
 
   /**
    * The live ACTIVE goal whose opening turn `item` is, while that opening has
-   * never run — or `undefined` (an ordinary item, a stale opening, an opening
-   * that already ran or failed mid-flight).
+   * never reached the model (`goal.openingPending`) — or `undefined` (an
+   * ordinary item, a stale opening, an opening that already ran).
    */
   private goalOfUnstartedOpening(
     sessionKey: string,
     item: { id: string; message?: MessageEvent },
-    previousState: string,
   ): { session: ConversationSession; goal: NonNullable<ConversationSession['goal']> } | undefined {
     const goalId = item.message?.routeContext?.goalOpeningId;
     if (goalId === undefined) return undefined;
-    if (previousState !== 'queued' && previousState !== 'paused') return undefined;
     const session = this.claudeHandler.getSessionByKey?.(sessionKey);
     const goal = session?.goal;
     if (!session || !goal || goal.goalId !== goalId || goal.status !== 'active') return undefined;
-    const ranBefore = this.followupQueue
-      ?.list(sessionKey)
-      .some(
-        (other) =>
-          other.id !== item.id &&
-          other.message?.routeContext?.goalOpeningId === goalId &&
-          !['queued', 'paused', 'cancelled'].includes(other.state),
-      );
-    return ranBefore ? undefined : { session, goal };
+    // Recorded on the goal, not inferred from the row: a Retry puts a row that
+    // already ran back into `queued`, and only the model boundary knows.
+    return goal.openingPending === true ? { session, goal } : undefined;
   }
 
   /**
@@ -6188,7 +6283,7 @@ export class SlackHandler {
     item: { id: string; state: string; message?: MessageEvent },
     clicker: string,
   ): string | undefined {
-    const found = this.goalOfUnstartedOpening(sessionKey, item, item.state);
+    const found = this.goalOfUnstartedOpening(sessionKey, item);
     if (!found) return undefined;
     if (clicker === found.session.ownerId || clicker === found.goal.createdBy) return undefined;
     return '이 메시지는 goal의 첫 턴입니다 — 취소하면 goal이 삭제되므로 세션 소유자나 goal을 만든 사람만 취소할 수 있습니다.';
@@ -6213,7 +6308,7 @@ export class SlackHandler {
     clicker: string,
     previousState: string,
   ): void {
-    const found = this.goalOfUnstartedOpening(sessionKey, item, previousState);
+    const found = this.goalOfUnstartedOpening(sessionKey, item);
     if (!found) return;
     const { session, goal } = found;
     goal.status = 'paused';
@@ -6239,7 +6334,7 @@ export class SlackHandler {
         await this.postGoalNoticeBestEffort(
           session.channelId,
           session.threadTs,
-          `⏸️ 첫 턴이 취소되어 goal을 일시정지했습니다 — 삭제하지 못했습니다 (${reason}). \`goal resume\`은 첫 턴을 다시 실행하지 않습니다. 대시보드나 \`goal\` 목록에서 삭제해 주세요.`,
+          `⏸️ 첫 턴이 취소되어 goal을 일시정지했습니다 — 삭제하지 못했습니다 (${reason}). 대시보드나 \`goal\` 목록에서 삭제하거나, \`goal resume\`으로 첫 턴부터 다시 시작하세요.`,
         );
       }
     }
