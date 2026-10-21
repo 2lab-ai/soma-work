@@ -103,6 +103,15 @@ export interface MessageEvent {
      */
     verbatimPrompt?: boolean;
     /**
+     * The opening turn of the goal with this id (always together with
+     * `verbatimPrompt`). Set by the host when a goal command or a dashboard
+     * goal action starts a goal while it cannot dispatch directly; the message
+     * path runs it only while that goal is still the ACTIVE goal — a goal
+     * deleted or replaced while its opening turn waited in the follow-up queue
+     * never runs. Survives the queue for the same reason as `verbatimPrompt`.
+     */
+    goalOpeningId?: string;
+    /**
      * Present ONLY on a turn the incident ingress itself built after the
      * contract accepted it (`event-router.ts` → `evaluateIncidentIngress`).
      * Internal: it never survives a round-trip through Slack, so a message

@@ -42,6 +42,7 @@
 
 - [runbook/](./runbook/) — deployment, rollback, operational fix procedures
 - [Eagle-eye incident receiver](./runbook/eagle-incident-receiver.md) — config env, 기본 비활성 게이트, read-only 시도 표면, rollout/rollback
+- [Dashboard on your own domain](./runbook/dashboard-custom-domain.md) — `CONVERSATION_VIEWER_URL`, auth prerequisite, DNS, reverse proxy + DNS-01 certificate, cross-host tunnel
 
 ## 6. Misc
 

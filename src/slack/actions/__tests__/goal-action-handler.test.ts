@@ -16,14 +16,19 @@ import { GoalActionHandler } from '../goal-action-handler';
 vi.mock('../../goal-loop-resume', () => ({
   resumeGoalLoop: vi.fn(),
   setGoalLoopResumeHandler: vi.fn(),
+  getHostGoalActionHandler: vi.fn(() => undefined),
 }));
 
-import { resumeGoalLoop } from '../../goal-loop-resume';
+import { HostGoalActionError } from '../../goal-host-actions';
+import { getHostGoalActionHandler, resumeGoalLoop } from '../../goal-loop-resume';
 
 const resumeGoalLoopMock = vi.mocked(resumeGoalLoop);
+const getHostGoalActionHandlerMock = vi.mocked(getHostGoalActionHandler);
 
 beforeEach(() => {
   resumeGoalLoopMock.mockClear();
+  getHostGoalActionHandlerMock.mockReset();
+  getHostGoalActionHandlerMock.mockReturnValue(undefined);
 });
 
 const SESSION_KEY = 'C1:T1';
@@ -96,6 +101,73 @@ describe('GoalActionHandler — delete (S1)', () => {
 
     expect(saveSessions).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('소유자') }));
+  });
+});
+
+/**
+ * SSOT 2026-10-21: with the host wired, the Delete button takes the SAME path
+ * as the dashboard — the promoted goal starts with its opening turn admitted
+ * through the follow-up fence, not with a bare loop kick.
+ */
+describe('GoalActionHandler — delete through the host goal action', () => {
+  it('delegates deleting the current goal with expect=current and never mutates locally', async () => {
+    const session = makeSession({
+      goal: makeGoal({ goalId: 'g-active' }),
+      goalQueue: [makeGoal({ goalId: 'g-next', objective: 'next', status: 'queued' })],
+    });
+    const hostAction = vi.fn().mockResolvedValue({
+      outcome: 'deleted',
+      goalId: 'g-active',
+      promoted: { goalId: 'g-next', objective: 'next' },
+    });
+    getHostGoalActionHandlerMock.mockReturnValue(hostAction);
+    const { handler, saveSessions } = makeHandler(session);
+    const respond = vi.fn().mockResolvedValue(undefined);
+
+    await handler.handleDelete(body('g-active'), respond);
+
+    expect(hostAction).toHaveBeenCalledWith(
+      SESSION_KEY,
+      { action: 'delete', goalId: 'g-active', expect: 'current' },
+      'U-owner',
+    );
+    expect(session.goal?.goalId, 'the host owns the mutation').toBe('g-active');
+    expect(saveSessions).not.toHaveBeenCalled();
+    expect(resumeGoalLoopMock).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('next') }));
+  });
+
+  it('delegates a queued goal with expect=queued', async () => {
+    const session = makeSession({
+      goal: makeGoal({ goalId: 'g-active' }),
+      goalQueue: [makeGoal({ goalId: 'g-next', objective: 'next', status: 'queued' })],
+    });
+    const hostAction = vi.fn().mockResolvedValue({ outcome: 'deleted', goalId: 'g-next' });
+    getHostGoalActionHandlerMock.mockReturnValue(hostAction);
+    const { handler } = makeHandler(session);
+
+    await handler.handleDelete(body('g-next'), vi.fn().mockResolvedValue(undefined));
+
+    expect(hostAction).toHaveBeenCalledWith(
+      SESSION_KEY,
+      { action: 'delete', goalId: 'g-next', expect: 'queued' },
+      'U-owner',
+    );
+  });
+
+  it('shows a host refusal (stale / not started) as an ephemeral warning', async () => {
+    const session = makeSession({ goal: makeGoal({ goalId: 'g-active' }) });
+    getHostGoalActionHandlerMock.mockReturnValue(
+      vi.fn().mockRejectedValue(new HostGoalActionError(409, 'The current goal has changed — refresh and try again')),
+    );
+    const { handler } = makeHandler(session);
+    const respond = vi.fn().mockResolvedValue(undefined);
+
+    await handler.handleDelete(body('g-active'), respond);
+
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({ response_type: 'ephemeral', text: expect.stringContaining('changed') }),
+    );
   });
 });
 
