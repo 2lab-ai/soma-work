@@ -82,8 +82,7 @@ export class GoalHandler implements CommandHandler {
         await this.pauseGoal(channel, threadTs, session);
         return { handled: true };
       case 'resume':
-        await this.resumeGoal(channel, threadTs, session);
-        return { handled: true };
+        return this.resumeGoal(channel, threadTs, session, ctx.admitOpening);
       case 'complete':
         return this.completeGoal(channel, threadTs, session, user, ctx.admitOpening);
       case 'clear':
@@ -192,12 +191,15 @@ export class GoalHandler implements CommandHandler {
       // eval). The running goal owns the loop untouched until it completes and
       // advances the queue. Just persist the appended queue entry.
       this.deps.claudeHandler.saveSessions();
-      await this.deps.slackApi.postSystemMessage(
-        ctx.channel,
-        `📋 Goal queued at position ${result.position}: ${this.formatObjectiveForSlack(objective)}\n_It will start automatically when the current goal completes._`,
-        { threadTs: ctx.threadTs },
-      );
-      return { handled: true };
+      const queuedNotice = `📋 Goal queued at position ${result.position}: ${this.formatObjectiveForSlack(objective)}\n_It will start automatically when the current goal completes._`;
+      if (ctx.admitOpening) {
+        // The queue entry is already saved: a Slack failure must not turn a
+        // done change into a crash (the host keeps the redelivery claim).
+        await this.notifyBestEffort(ctx.channel, ctx.threadTs, queuedNotice);
+      } else {
+        await this.deps.slackApi.postSystemMessage(ctx.channel, queuedNotice, { threadTs: ctx.threadTs });
+      }
+      return { handled: true, goalQueued: true };
     }
 
     this.persistGoalChange(session);
@@ -206,7 +208,7 @@ export class GoalHandler implements CommandHandler {
       // Outside a dispatch slot (a turn is running): the opening turn is
       // admitted HERE, in the same synchronous step as the mutation, never
       // handed back after the notice below (see `CommandContext.admitOpening`).
-      const admission = ctx.admitOpening({ goalId: result.goal.goalId, objective });
+      const admission = ctx.admitOpening({ goalId: result.goal.goalId, objective, cause: 'set' });
       if (typeof admission === 'object') {
         restoreGoalState(session, snapshot);
         this.deps.claudeHandler.saveSessions();
@@ -255,23 +257,67 @@ export class GoalHandler implements CommandHandler {
     });
   }
 
-  private async resumeGoal(channel: string, threadTs: string, session: ConversationSession): Promise<void> {
+  private async resumeGoal(
+    channel: string,
+    threadTs: string,
+    session: ConversationSession,
+    admitOpening?: CommandContext['admitOpening'],
+  ): Promise<CommandResult> {
     if (!session.goal) {
       await this.postNoGoal(channel, threadTs);
-      return;
+      return { handled: true };
     }
     if (session.goal.status === 'complete') {
       await this.deps.slackApi.postSystemMessage(channel, '✅ Current goal is complete. Set a new goal to continue.', {
         threadTs,
       });
-      return;
+      return { handled: true };
     }
-    session.goal.status = 'active';
-    session.goal.updatedAt = Date.now();
+    const goal = session.goal;
+    // A goal paused before its first turn ever reached the model (its opening
+    // was skipped or cancelled): resuming it must START it, or it would sit
+    // active with no first turn, judged on whatever unrelated turn ends next.
+    const needsOpening = goal.status === 'paused' && goal.openingPending === true;
+    const snapshot = needsOpening && admitOpening ? snapshotGoalState(session) : undefined;
+    goal.status = 'active';
+    goal.updatedAt = Date.now();
     this.persistGoalChange(session);
+
+    if (needsOpening && admitOpening && snapshot) {
+      const admission = admitOpening({ goalId: goal.goalId, objective: goal.objective, cause: 'resumed' });
+      if (typeof admission === 'object') {
+        restoreGoalState(session, snapshot);
+        this.deps.claudeHandler.saveSessions();
+        await this.notifyBestEffort(
+          channel,
+          threadTs,
+          `⚠️ Goal was NOT resumed — its first turn could not be scheduled (${admission.failed}). Try \`goal resume\` again.`,
+        );
+        return { handled: true };
+      }
+      await this.notifyBestEffort(
+        channel,
+        threadTs,
+        `▶️ Goal resumed from its first turn: ${this.formatObjectiveForSlack(goal.objective)}\n_${GoalHandler.openingHint(admission)}_`,
+      );
+      return { handled: true };
+    }
+    if (needsOpening) {
+      // Inside a dispatch slot (no host intake): the objective is this turn.
+      goal.openingPending = undefined;
+      this.deps.claudeHandler.saveSessions();
+      await this.deps.slackApi.postSystemMessage(
+        channel,
+        `▶️ Goal resumed from its first turn: ${this.formatObjectiveForSlack(goal.objective)}`,
+        { threadTs },
+      );
+      return { handled: true, continueWithPrompt: goal.objective, verbatimPrompt: true };
+    }
+
     await this.deps.slackApi.postSystemMessage(channel, '▶️ Goal resumed. It will be injected into future prompts.', {
       threadTs,
     });
+    return { handled: true };
   }
 
   private async completeGoal(
@@ -312,7 +358,7 @@ export class GoalHandler implements CommandHandler {
     if (next && admitOpening && snapshot) {
       // Same contract as `setGoal`: the promoted goal's opening turn is
       // admitted with the mutation, or the completion is undone.
-      const admission = admitOpening({ goalId: next.goalId, objective: next.objective });
+      const admission = admitOpening({ goalId: next.goalId, objective: next.objective, cause: 'promoted' });
       if (typeof admission === 'object') {
         restoreGoalState(session, snapshot);
         this.deps.claudeHandler.saveSessions();
