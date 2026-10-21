@@ -188,7 +188,13 @@ function _getCurrentSession(request: FastifyRequest): CurrentSession | null {
   const cookieHeader = request.headers.cookie || '';
   const match = cookieHeader.match(new RegExp(`${COOKIE_NAME}=([^;]+)`));
   if (!match) return null;
-  const cookieVal = decodeURIComponent(match[1]);
+  // A malformed cookie is no session — /login must still render for it.
+  let cookieVal: string;
+  try {
+    cookieVal = decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
   if (
     cookieVal.startsWith('bearer:') &&
     config.conversation.viewerToken &&
@@ -862,7 +868,12 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
   }
 
   // ── Logout ──
+  // A plain GET, deliberately CSRF-free: it only clears cookies, so a forged
+  // request can sign a browser out but never into anything. It also forgets
+  // `soma_next`, so the next account signed in here does not land on the
+  // previous account's deep link.
   server.get('/auth/logout', async (_request, reply) => {
+    reply.header('Set-Cookie', `${LOGIN_RETURN_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
     clearCookieAndRedirect(reply, '/login');
   });
 
