@@ -92,6 +92,8 @@ describe('session lifecycle policy store', () => {
     fs.writeFileSync(file, '{ truncated');
     __resetSessionLifecyclePolicyForTests(file);
     expect(getSessionLifecyclePolicy().sleepAfterMs).toBe(2 * HOUR);
+    // The .bak is the previous save — maybe shorter than the lost one: shown, but transitions pause.
+    expect(isSessionLifecyclePolicyDegraded()).toBe(true);
   });
 
   it('a missing file is not degraded; an unusable file and .bak are, until the next save', () => {
@@ -124,6 +126,14 @@ describe('countLifecycleTransitions', () => {
     ).toEqual({
       willSleep: 1,
       willArchive: 1,
+    });
+  });
+
+  it('a running turn is never counted — the sweep does not sleep it', () => {
+    const running = [{ state: 'MAIN', activityState: 'working', lastActivity: new Date(NOW - 3 * HOUR) }];
+    expect(countLifecycleTransitions(running, from, { ...from, sleepAfterMs: HOUR }, NOW)).toEqual({
+      willSleep: 0,
+      willArchive: 0,
     });
   });
 

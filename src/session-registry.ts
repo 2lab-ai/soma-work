@@ -1697,6 +1697,11 @@ export class SessionRegistry {
         continue;
       }
 
+      // A turn in progress is not idle: lastActivity only moves on user input, so
+      // a long autonomous turn would otherwise be put to sleep (and its work dirs
+      // removed) mid-run once a short policy is set.
+      if (session.activityState === 'working') continue;
+
       // Stage 2: Active sessions - check if idle past the policy limit → transition to Sleep
       const sessionAge = now - session.lastActivity.getTime();
       const timeUntilExpiry = sleepAfterMs - sessionAge;
@@ -2033,7 +2038,10 @@ export class SessionRegistry {
           // only after archiveAfter more. Never ended outright on load, so a
           // restart cannot shorten the sleep a running process would have given.
           const sessionAge = now - lastActivity.getTime();
-          if (sessionAge >= maxAge) {
+          // A session with an active goal is resumed after restart (resumeActiveGoals),
+          // which runs turns without waking a sleeper — leave it awake for that.
+          const hasActiveGoal = serialized.goal?.status === 'active';
+          if (sessionAge >= maxAge && !hasActiveGoal) {
             sleptOnLoad = true;
             sleptOnLoadCount++;
             sleepStartedAt = new Date(now);

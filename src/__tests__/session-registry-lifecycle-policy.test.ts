@@ -205,4 +205,40 @@ describe('SessionRegistry — lifecycle policy', () => {
     );
     expect(new SessionRegistry().loadSessions()).toBe(1);
   });
+
+  it('never puts a running turn to sleep, however long it has been since the last user message', async () => {
+    updateSessionLifecyclePolicy({ sleepAfterMs: HOUR });
+    const reg = new SessionRegistry();
+    const session = reg.createSession('U1', 'User', 'C1', '900.001');
+    session.lastActivity = new Date(Date.now() - 5 * HOUR);
+    session.activityState = 'working';
+
+    await reg.cleanupInactiveSessions();
+    expect(session.state).not.toBe('SLEEPING');
+
+    session.activityState = 'idle';
+    await reg.cleanupInactiveSessions();
+    expect(session.state).toBe('SLEEPING');
+  });
+
+  it('the loader leaves a stale session with an active goal awake for goal resume', () => {
+    updateSessionLifecyclePolicy({ sleepAfterMs: 2 * HOUR });
+    const saved = [
+      {
+        ownerId: 'U1',
+        userId: 'U1',
+        channelId: 'C1',
+        threadTs: '900.002',
+        sessionId: 's-goal',
+        isActive: true,
+        state: 'MAIN',
+        lastActivity: new Date(Date.now() - 5 * HOUR).toISOString(),
+        goal: { id: 'g1', objective: 'keep going', status: 'active', createdAt: Date.now() - 6 * HOUR },
+      },
+    ];
+    fs.writeFileSync(path.join(TEST_DATA_DIR, 'sessions.json'), JSON.stringify(saved));
+    const reg = new SessionRegistry();
+    expect(reg.loadSessions()).toBe(1);
+    expect(reg.getSession('C1', '900.002')?.state).not.toBe('SLEEPING');
+  });
 });

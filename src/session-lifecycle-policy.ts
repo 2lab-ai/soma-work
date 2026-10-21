@@ -10,11 +10,11 @@
  * Every reader calls getSessionLifecyclePolicy() at use time — a change takes
  * effect on the next sweep / board build without a restart.
  *
- * Missing file = defaults. A file that exists but is unusable together with its
- * `.bak` is different: the saved values are unknown, and the defaults may be far
- * shorter than what an admin chose (a 90-day archive time falling back to 7 days
- * would end sessions in bulk). That state is `degraded`: the registry skips the
- * sleep / archive transitions until an admin saves a policy again.
+ * Missing file = defaults. An unreadable live file is different: the saved
+ * values are unknown, and both the defaults and the `.bak` (the previous save)
+ * may be far shorter than what an admin chose (a 90-day archive time falling
+ * back to 7 days would end sessions in bulk). That state is `degraded`: the
+ * registry skips the sleep / archive transitions until an admin saves again.
  */
 
 import * as path from 'node:path';
@@ -111,11 +111,23 @@ function filePath(): string {
 }
 
 function load(): { policy: SessionLifecyclePolicy; degraded: boolean } {
+  // readJsonWithBackup warns exactly when it serves the .bak. That generation is
+  // the PREVIOUS save — possibly shorter than the unreadable live one — so it is
+  // shown, but transitions stay paused until an admin saves again.
+  let servedBackup = false;
   try {
     const stored = readJsonWithBackup(filePath(), validateStored, {
-      warn: (message, detail) => logger.warn(message, detail),
+      warn: (message, detail) => {
+        servedBackup = true;
+        logger.warn(message, detail);
+      },
     });
-    return { policy: stored ?? { ...DEFAULT_SESSION_LIFECYCLE_POLICY }, degraded: false };
+    if (servedBackup) {
+      logger.error(
+        'Session lifecycle policy served from .bak — sleep/archive transitions are paused until an admin saves',
+      );
+    }
+    return { policy: stored ?? { ...DEFAULT_SESSION_LIFECYCLE_POLICY }, degraded: servedBackup };
   } catch (error) {
     logger.error(
       'Session lifecycle policy file and its .bak are unusable — sleep/archive transitions are paused until an admin saves a policy',
@@ -173,6 +185,7 @@ export function updateSessionLifecyclePolicy(raw: unknown): SessionLifecyclePoli
 /** What a sweep looks at in a session. */
 export interface LifecycleSessionView {
   state?: string;
+  activityState?: string;
   lastActivity: Date | string;
   sleepStartedAt?: Date | string;
 }
@@ -198,6 +211,7 @@ export function countLifecycleTransitions(
   let willSleep = 0;
   let willArchive = 0;
   for (const s of sessions) {
+    if (s.activityState === 'working') continue; // the sweep never sleeps a running turn
     if (s.state === 'SLEEPING') {
       const started = ms(s.sleepStartedAt);
       const age = Number.isFinite(started) ? now - started : Number.POSITIVE_INFINITY;
