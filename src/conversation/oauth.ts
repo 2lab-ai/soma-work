@@ -491,8 +491,13 @@ export function getDashboardUser(request: FastifyRequest): DashboardUser | null 
 // ── OAuth helpers ──
 
 function getCallbackUrl(provider: 'google' | 'microsoft'): string {
-  const base = config.conversation.viewerUrl || `http://localhost:${config.conversation.viewerPort || 3000}`;
-  return `${base}/auth/${provider}/callback`;
+  // SOMA_OAUTH_CALLBACK_BASE_URL wins: a previously registered origin keeps sign-in
+  // working after the public URL moves (see config.oauth.callbackBaseUrl).
+  const base =
+    config.oauth.callbackBaseUrl ||
+    config.conversation.viewerUrl ||
+    `http://localhost:${config.conversation.viewerPort || 3000}`;
+  return `${base.replace(/\/+$/, '')}/auth/${provider}/callback`;
 }
 
 function isOAuthConfigured(provider: 'google' | 'microsoft'): boolean {
