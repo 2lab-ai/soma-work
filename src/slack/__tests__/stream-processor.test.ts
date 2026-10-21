@@ -417,11 +417,11 @@ describe('StreamProcessor', () => {
       // The first callback threw; the second payload still went out.
       expect(onDeployCompletedDetected).toHaveBeenCalledTimes(2);
       expect(onDeployCompletedDetected).toHaveBeenCalledWith(
-        { repo: 'acme/app', target: 'deploy/dev2', after: 'aaaaaaa' },
+        { repo: 'acme/app', target: 'deploy/dev2', after: 'aaaaaaa', confirmed: true },
         mockContext,
       );
       expect(onDeployCompletedDetected).toHaveBeenCalledWith(
-        { repo: 'acme/api', target: 'deploy/dev2', before: 'ccccccc', after: 'bbbbbbb' },
+        { repo: 'acme/api', target: 'deploy/dev2', before: 'ccccccc', after: 'bbbbbbb', confirmed: true },
         mockContext,
       );
       expect(mockSay).toHaveBeenCalledWith(expect.objectContaining({ text: 'Deploy complete.' }));

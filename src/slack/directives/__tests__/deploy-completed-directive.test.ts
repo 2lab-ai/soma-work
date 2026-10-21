@@ -10,6 +10,7 @@ describe('DeployCompletedDirectiveHandler', () => {
     it('returns no payloads for plain text', () => {
       const result = DeployCompletedDirectiveHandler.extract('hello');
       expect(result.payloads).toEqual([]);
+      expect(result.rejections).toEqual([]);
       expect(result.cleanedText).toBe('hello');
     });
 
@@ -21,7 +22,9 @@ describe('DeployCompletedDirectiveHandler', () => {
 Thread summary`;
 
       const result = DeployCompletedDirectiveHandler.extract(text);
-      expect(result.payloads).toEqual([{ repo: 'acme/app', target: 'deploy/dev2', before: BEFORE, after: AFTER }]);
+      expect(result.payloads).toEqual([
+        { repo: 'acme/app', target: 'deploy/dev2', before: BEFORE, after: AFTER, confirmed: true },
+      ]);
       expect(result.cleanedText).toBe('Deploy done\n\nThread summary');
     });
 
@@ -31,7 +34,7 @@ Thread summary`;
 Next?`;
 
       const result = DeployCompletedDirectiveHandler.extract(text);
-      expect(result.payloads).toEqual([{ repo: 'acme/app', target: 'deploy/dev2', after: 'abc1234' }]);
+      expect(result.payloads).toEqual([{ repo: 'acme/app', target: 'deploy/dev2', after: 'abc1234', confirmed: true }]);
       expect(result.cleanedText).toBe('Merged.\n\nNext?');
     });
 
@@ -43,11 +46,14 @@ Next?`;
       expect(result.cleanedText).toBe('');
     });
 
-    it('ignores a directive without `after` and leaves it visible', () => {
+    it('rejects a directive without `after`, leaves it visible and reports it with the raw fields', () => {
       const text = '{"type":"deploy_completed","repo":"acme/app","target":"deploy/dev2"}';
       const result = DeployCompletedDirectiveHandler.extract(text);
       expect(result.payloads).toEqual([]);
       expect(result.cleanedText).toBe(text);
+      expect(result.rejections).toEqual([
+        { problem: 'after must be a 7-40 char hex sha', repo: 'acme/app', target: 'deploy/dev2' },
+      ]);
     });
 
     it.each([
@@ -59,17 +65,61 @@ Next?`;
       ['repo with a space', { after: AFTER, repo: 'acme/my app' }],
       ['empty target', { after: AFTER, target: '  ' }],
       ['non-string target', { after: AFTER, target: 7 }],
-    ])('ignores an invalid directive (%s)', (_label, over) => {
+      ['non-boolean confirmed', { after: AFTER, confirmed: 'yes' }],
+    ])('rejects an invalid directive (%s)', (_label, over) => {
       const directive = { type: 'deploy_completed', repo: 'acme/app', target: 'deploy/dev2', ...over };
       const result = DeployCompletedDirectiveHandler.extract(`ok\n${JSON.stringify(directive)}`);
       expect(result.payloads).toEqual([]);
+      expect(result.rejections).toHaveLength(1);
+      expect(result.rejections[0].problem).toMatch(/must be/);
+    });
+
+    it('reads `confirmed`: absent or true = confirmed, false = merged but deployment unconfirmed', () => {
+      const base = { type: 'deploy_completed', repo: 'acme/app', target: 'deploy/dev2', after: AFTER };
+      expect(DeployCompletedDirectiveHandler.extract(JSON.stringify(base)).payloads[0].confirmed).toBe(true);
+      expect(
+        DeployCompletedDirectiveHandler.extract(JSON.stringify({ ...base, confirmed: true })).payloads[0].confirmed,
+      ).toBe(true);
+      const unconfirmed = DeployCompletedDirectiveHandler.extract(JSON.stringify({ ...base, confirmed: false }));
+      expect(unconfirmed.payloads).toEqual([
+        { repo: 'acme/app', target: 'deploy/dev2', after: AFTER, confirmed: false },
+      ]);
+      expect(unconfirmed.cleanedText).toBe('');
+    });
+
+    it('reports unparseable JSON and a raw directive whose "type" is not the first key', () => {
+      const broken = DeployCompletedDirectiveHandler.extract('{"type":"deploy_completed","repo":"acme/app", oops');
+      expect(broken.payloads).toEqual([]);
+      expect(broken.rejections).toEqual([{ problem: 'unparseable JSON, or "type" is not the first key' }]);
+
+      const reordered = DeployCompletedDirectiveHandler.extract(
+        `{"repo":"acme/app","type":"deploy_completed","target":"deploy/dev2","after":"${AFTER}"}`,
+      );
+      expect(reordered.payloads).toEqual([]);
+      expect(reordered.rejections).toEqual([{ problem: 'unparseable JSON, or "type" is not the first key' }]);
+    });
+
+    it('reports a broken json code block once, not once per scan', () => {
+      const text = '```json\n{"type":"deploy_completed","repo":"acme/app","target":"deploy/dev2","after":"zz"}\n```';
+      const result = DeployCompletedDirectiveHandler.extract(text);
+      expect(result.rejections).toHaveLength(1);
+      expect(result.rejections[0]).toMatchObject({ problem: 'after must be a 7-40 char hex sha', after: 'zz' });
+    });
+
+    it('does not treat prose that names the directive without quotes as an attempt', () => {
+      const result = DeployCompletedDirectiveHandler.extract(
+        'No `deploy_completed` signal was sent: the deploy failed.',
+      );
+      expect(result.payloads).toEqual([]);
+      expect(result.rejections).toEqual([]);
     });
 
     it('treats a null or empty `before` as unknown, not invalid', () => {
       for (const before of [null, '']) {
         const directive = { type: 'deploy_completed', repo: 'acme/app', target: 'deploy/dev2', before, after: AFTER };
         const result = DeployCompletedDirectiveHandler.extract(JSON.stringify(directive));
-        expect(result.payloads).toEqual([{ repo: 'acme/app', target: 'deploy/dev2', after: AFTER }]);
+        expect(result.payloads).toEqual([{ repo: 'acme/app', target: 'deploy/dev2', after: AFTER, confirmed: true }]);
+        expect(result.rejections).toEqual([]);
       }
     });
 
@@ -99,6 +149,9 @@ All done.`;
       const result = DeployCompletedDirectiveHandler.extract(text);
       expect(result.payloads.map((p) => p.repo)).toEqual(['acme/app']);
       expect(result.cleanedText).toBe(bad);
+      expect(result.rejections).toEqual([
+        { problem: 'after must be a 7-40 char hex sha', repo: 'acme/api', target: 'deploy/dev2', after: 'nope' },
+      ]);
     });
 
     it('trims fields and lower-cases the SHAs', () => {
@@ -106,7 +159,7 @@ All done.`;
         '{"type":"deploy_completed","repo":" Acme/App ","target":" deploy/dev2 ","before":"ABCDEF1","after":"ABCDEF2"}',
       );
       expect(result.payloads).toEqual([
-        { repo: 'Acme/App', target: 'deploy/dev2', before: 'abcdef1', after: 'abcdef2' },
+        { repo: 'Acme/App', target: 'deploy/dev2', before: 'abcdef1', after: 'abcdef2', confirmed: true },
       ]);
     });
 
@@ -114,6 +167,7 @@ All done.`;
       const text = '{"type":"channel_message","text":"Release notes"}';
       const result = DeployCompletedDirectiveHandler.extract(text);
       expect(result.payloads).toEqual([]);
+      expect(result.rejections).toEqual([]);
       expect(result.cleanedText).toBe(text);
     });
 
@@ -129,7 +183,7 @@ Done.`;
       const channel = ChannelMessageDirectiveHandler.extract(text);
       expect(channel.messageText).toBe('Release notes');
       const deploy = DeployCompletedDirectiveHandler.extract(channel.cleanedText);
-      expect(deploy.payloads).toEqual([{ repo: 'acme/app', target: 'deploy/dev2', after: AFTER }]);
+      expect(deploy.payloads).toEqual([{ repo: 'acme/app', target: 'deploy/dev2', after: AFTER, confirmed: true }]);
       expect(deploy.cleanedText).toBe('Deployed.\n\nDone.');
     });
   });
