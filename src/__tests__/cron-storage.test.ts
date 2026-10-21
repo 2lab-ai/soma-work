@@ -462,3 +462,42 @@ describe('jobMatchesDeploy', () => {
     expect(jobMatchesDeploy(job([null as any, { repo: 'acme/app' } as any]), 'acme/app', 'deploy/dev2')).toBe(false);
   });
 });
+
+// getAllStrict — for callers that must tell "no jobs" from "could not read the jobs".
+// getAll() swallows a parse error and returns [], which is right for the scheduler
+// tick and wrong for a deploy lane that would then report "no lane registered".
+describe('CronStorage.getAllStrict', () => {
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `cron-strict-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  });
+
+  afterEach(() => {
+    try {
+      fs.unlinkSync(tmpFile);
+    } catch {}
+  });
+
+  it('returns [] when the file does not exist yet', () => {
+    expect(new CronStorage(tmpFile).getAllStrict()).toEqual([]);
+  });
+
+  it('returns the jobs of a valid file', () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({ name: 'a', expression: '0 9 * * *', prompt: 'x', owner: 'U1', channel: 'C1', threadTs: null });
+    expect(storage.getAllStrict().map((j) => j.name)).toEqual(['a']);
+  });
+
+  it('throws on an unparseable file instead of returning []', () => {
+    fs.writeFileSync(tmpFile, '{ not json');
+    const storage = new CronStorage(tmpFile);
+    expect(storage.getAll()).toEqual([]);
+    expect(() => storage.getAllStrict()).toThrow();
+  });
+
+  it('throws on a file without a jobs array', () => {
+    fs.writeFileSync(tmpFile, JSON.stringify({ history: [] }));
+    expect(() => new CronStorage(tmpFile).getAllStrict()).toThrow(/jobs array/);
+  });
+});

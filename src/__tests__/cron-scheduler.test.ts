@@ -1245,3 +1245,155 @@ describe('CronScheduler.runJobNow', () => {
     expect(history[0].triggeredBy).toBe('U_GUEST');
   });
 });
+
+// --- runJobNow({ forceNewThread, note }) — deploy-triggered fires ---
+// A deploy lane must start NOW in its own thread: queued behind the owner's busy
+// session it would be reported as started and may never run. The note tells the
+// lane which deploy fired it.
+describe('CronScheduler.runJobNow — forceNewThread + note', () => {
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `cron-force-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  });
+
+  const NOTE = '\n\n[deploy_completed repo=acme/app target=deploy/dev2 before=- after=abc1234 by=U_DEPLOYER]';
+
+  function busyOwnerSession(deps: CronSchedulerDeps) {
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'working');
+  }
+
+  it('without forceNewThread a default-mode job queues behind the owner busy session (the reported-but-not-run path)', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'lane',
+      expression: '0 0 31 2 *',
+      prompt: 'QA',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+    });
+    const { deps, injectedMessages } = createMockDeps(storage);
+    busyOwnerSession(deps);
+
+    const result = await new CronScheduler(deps).runJobNow('U123', 'lane');
+    expect(result).toEqual({ ok: true, message: 'busy_queue' });
+    expect(injectedMessages).toHaveLength(0);
+  });
+
+  it('forceNewThread opens a new thread even when the owner session is busy (mode default)', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'lane',
+      expression: '0 0 31 2 *',
+      prompt: 'QA',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+    });
+    const { deps, injectedMessages, createdThreads } = createMockDeps(storage);
+    busyOwnerSession(deps);
+    const scheduler = new CronScheduler(deps);
+
+    const result = await scheduler.runJobNow('U123', 'lane', {
+      triggeredBy: 'U_DEPLOYER',
+      forceNewThread: true,
+      note: NOTE,
+    });
+
+    expect(result).toEqual({ ok: true, message: 'new_thread' });
+    expect(createdThreads).toEqual([{ channel: 'C456', text: '[cron:lane] Scheduled task' }]);
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0].thread_ts).toBe('new-thread-ts');
+    expect(injectedMessages[0].text).toBe(`[cron:lane] QA${NOTE}`);
+    expect(scheduler.getPendingQueueSize('work:C456:thread-1')).toBe(0);
+    const [record] = storage.getExecutionHistory('lane');
+    expect(record.executionPath).toBe('new_thread');
+    expect(record.triggeredBy).toBe('U_DEPLOYER');
+  });
+
+  it('forceNewThread ignores a dm / thread target and opens a thread in the job channel', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'dm-lane',
+      expression: '0 0 31 2 *',
+      prompt: 'QA',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+      target: 'dm',
+    });
+    const { deps, injectedMessages, createdThreads } = createMockDeps(storage);
+    deps.dmSender = vi.fn(async () => {});
+
+    const result = await new CronScheduler(deps).runJobNow('U123', 'dm-lane', { forceNewThread: true, note: NOTE });
+
+    expect(result.message).toBe('new_thread');
+    expect(deps.dmSender).not.toHaveBeenCalled();
+    expect(createdThreads).toHaveLength(1);
+    expect(injectedMessages[0].text).toBe(`[cron:dm-lane] QA${NOTE}`);
+  });
+
+  it('appends the note on every delivery path, queued entries included', async () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({
+      name: 'idle',
+      expression: '0 0 31 2 *',
+      prompt: 'p',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+    });
+    storage.addJob({
+      name: 'dm',
+      expression: '0 0 31 2 *',
+      prompt: 'p',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: null,
+      target: 'dm',
+    });
+    storage.addJob({
+      name: 'thr',
+      expression: '0 0 31 2 *',
+      prompt: 'p',
+      owner: 'U123',
+      channel: 'C456',
+      threadTs: '9.9',
+      target: 'thread',
+    });
+    const { deps, injectedMessages } = createMockDeps(storage);
+    const dms: string[] = [];
+    const replies: string[] = [];
+    deps.dmSender = vi.fn(async (_u: string, text: string) => {
+      dms.push(text);
+    });
+    deps.threadReplier = vi.fn(async (_c: string, _t: string, text: string) => {
+      replies.push(text);
+    });
+    deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
+    const scheduler = new CronScheduler(deps);
+
+    await scheduler.runJobNow('U123', 'idle', { note: NOTE });
+    expect(injectedMessages[0].text).toBe(`[cron:idle] p${NOTE}`);
+
+    await scheduler.runJobNow('U123', 'dm', { note: NOTE });
+    expect(dms).toEqual([`[cron:dm] p${NOTE}`]);
+
+    await scheduler.runJobNow('U123', 'thr', { note: NOTE });
+    expect(replies).toEqual([`[cron:thr] p${NOTE}`]);
+
+    // Busy → queued; the drained injection still carries the note.
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'working');
+    const queued = await scheduler.runJobNow('U123', 'idle', { note: NOTE });
+    expect(queued.message).toBe('busy_queue');
+    deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(injectedMessages).toHaveLength(2);
+    expect(injectedMessages[1].text).toBe(`[cron:idle] p${NOTE}`);
+  });
+});

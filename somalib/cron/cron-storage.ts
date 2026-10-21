@@ -239,6 +239,20 @@ export class CronStorage {
     return this.load().jobs;
   }
 
+  /**
+   * Like getAll(), but a file that exists and cannot be read as `{ jobs: [...] }`
+   * throws instead of reading as "no jobs". For callers whose answer to an
+   * empty list is a user-facing "nothing is registered" (deploy lanes).
+   */
+  getAllStrict(): CronJob[] {
+    if (!fs.existsSync(this.filePath)) return [];
+    const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf-8')) as Partial<CronData> | null;
+    if (!parsed || !Array.isArray(parsed.jobs)) {
+      throw new Error(`cron jobs file has no jobs array: ${this.filePath}`);
+    }
+    return parsed.jobs;
+  }
+
   /** Get jobs for a specific owner. */
   getJobsByOwner(owner: string): CronJob[] {
     return this.load().jobs.filter((j) => j.owner === owner);
