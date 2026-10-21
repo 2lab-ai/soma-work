@@ -2833,7 +2833,7 @@ export class SlackHandler {
           item.message?.routeContext?.goalOpeningId === opening.goalId &&
           (SlackHandler.OUTSTANDING_FOLLOWUP_STATES.has(item.state) ||
             item.state === 'paused' ||
-            item.state === 'dispatched'),
+            (item.state === 'dispatched' && !this.skippedGoalOpenings.has(item.eventKey))),
       );
     if (existing) return existing.state === 'dispatched' ? 'started' : 'queued';
 
@@ -2900,6 +2900,10 @@ export class SlackHandler {
     const live = this.claudeHandler.getSession?.(channel, threadTs)?.goal;
     const stale = !live || live.goalId !== openingGoalId || live.status !== 'active';
     if (stale) {
+      // Committed to skipping from here, whatever the goal does during the
+      // awaits that follow: a `goal resume` meanwhile must not count this
+      // dispatched row as the goal's opening (`admitGoalOpeningTurnOrThrow`).
+      this.skippedGoalOpenings.add(`${event.channel}:${event.ts}`);
       this.logger.info('Goal opening turn skipped — its goal is no longer the active goal', {
         channel,
         threadTs,
@@ -3034,6 +3038,13 @@ export class SlackHandler {
       '📎 첨부 파일이 goal 명령보다 늦게 도착해 전달되지 않았습니다 — 필요하면 파일을 다시 보내 주세요.',
     );
   }
+
+  /**
+   * Opening rows (`channel:ts`) whose dispatch already decided to skip them
+   * (`isStaleGoalOpening`). Process-lifetime and tiny: one key per skipped
+   * opening, which only a delete / pause / replace before the first turn makes.
+   */
+  private skippedGoalOpenings = new Set<string>();
 
   /** Forget a claim whose command failed before it changed anything (see `runGoalCommandNow`). */
   private releaseGoalIntake(event: MessageEvent): void {
