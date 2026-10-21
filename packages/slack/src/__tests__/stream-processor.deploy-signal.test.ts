@@ -187,4 +187,27 @@ describe('AgentStreamProcessor — deploy_completed still buffered when the turn
     expect(onDeployCompletedDetected).toHaveBeenCalledTimes(1);
     expect(onDeployCompletedDetected).toHaveBeenCalledWith(PAYLOAD, ctx);
   });
+
+  it('dispatches a cut turn at most once, even when the exit path then throws', async () => {
+    const onDeployCompletedRejected = vi.fn().mockResolvedValue(undefined);
+    const processor = new AgentStreamProcessor({ onDeployCompletedRejected });
+    // The abort exit dispatches, then its interrupt rescue throws into the
+    // outer catch — which must not dispatch the same buffer again.
+    vi.spyOn(
+      processor as unknown as { flushTextOnExplicitInterrupt: () => Promise<unknown> },
+      'flushTextOnExplicitInterrupt',
+    ).mockRejectedValue(new Error('rescue broke'));
+    const bad = '{"type":"deploy_completed","repo":"acme/app","target":"deploy/dev2","after":"nope"}';
+    const abort = new AbortController();
+
+    await expect(
+      processor.process(
+        eventsThen([{ type: 'assistant_delta', text: bad }], () => abort.abort('user-interrupted'), abort.signal),
+        context(),
+        abort.signal,
+      ),
+    ).rejects.toThrow('rescue broke');
+
+    expect(onDeployCompletedRejected).toHaveBeenCalledTimes(1);
+  });
 });

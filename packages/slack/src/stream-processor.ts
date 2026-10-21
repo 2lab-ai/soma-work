@@ -849,6 +849,8 @@ export class AgentStreamProcessor {
   private suppressedByTrimmed = new Map<string, SegmentFate>();
   /** The latest withheld segment — the answer of a turn with no usable `finalText`. */
   private lastWithheld: SegmentFate | undefined;
+  /** Set once a cut turn's buffered deploy_completed has been dispatched (see dispatchDeployCompletedOnCut). */
+  private deployCutDispatched = false;
   /**
    * The latest segment that showed any text. When it is a suppressed
    * transport-error leak, the turn ends on that error (the executor recovers
@@ -970,6 +972,7 @@ export class AgentStreamProcessor {
     this.lastShownSegment = undefined;
     this.pendingNarration = undefined;
     this.slackTextPosted = false;
+    this.deployCutDispatched = false;
     // Note: per-turn state fields (_lastAssistantTurnUsage, _lastToolName,
     // _endTurnInfo, _sdkResultError) are NOT reset
     // here — stream-executor constructs a fresh AgentStreamProcessor per turn,
@@ -1576,6 +1579,10 @@ export class AgentStreamProcessor {
    * the buffer for the interrupt rescue.
    */
   private async dispatchDeployCompletedOnCut(textBuf: string[], context: StreamContext): Promise<void> {
+    // At most once per turn: an exit path that dispatched and then threw lands
+    // in the outer catch with the same buffer (rejections stay in it).
+    if (this.deployCutDispatched) return;
+    this.deployCutDispatched = true;
     if (context.incidentAttempt) return;
     const pending = textBuf.join('');
     if (!pending.includes('deploy_completed')) return;
