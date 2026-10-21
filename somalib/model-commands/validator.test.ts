@@ -339,9 +339,9 @@ describe('Rule 4 — forbidden meta labels', () => {
       ],
     });
     const w = warnings(q);
-    expect(
-      w.some((s) => s.includes("option [1] label 'approve (Recommended · 1/2)' is a meta/approval verb")),
-    ).toBe(true);
+    expect(w.some((s) => s.includes("option [1] label 'approve (Recommended · 1/2)' is a meta/approval verb"))).toBe(
+      true,
+    );
   });
 });
 
@@ -1310,5 +1310,71 @@ describe('MANAGE_SKILL get action — validator', () => {
     if (result.ok) throw new Error('unreachable');
     expect(result.error.code).toBe('INVALID_ARGS');
     expect(result.error.message).toContain('get');
+  });
+});
+
+describe('MEMORY command — validator allow-list (regression: listed-but-uninvokable)', () => {
+  // Guard against the bug where the MEMORY handler branch existed but the early
+  // commandId allow-list did not include 'MEMORY', so every MEMORY call was
+  // rejected with INVALID_COMMAND before reaching its handler.
+  it('accepts MEMORY op=index (passes the allow-list guard)', () => {
+    const result = validateModelCommandRunArgs({ commandId: 'MEMORY', params: { op: 'index' } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.request.commandId).toBe('MEMORY');
+  });
+
+  it('accepts MEMORY op=page_get with a locator', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'page_get', type: 'agent', slug: 'build' },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts MEMORY op=episodic_append', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'episodic_append', content: 'observed a thing' },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects an invalid MEMORY op with INVALID_ARGS (reaches the handler, not INVALID_COMMAND)', () => {
+    const result = validateModelCommandRunArgs({ commandId: 'MEMORY', params: { op: 'bogus' } });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_ARGS');
+  });
+
+  it('still rejects a genuinely unknown commandId with INVALID_COMMAND', () => {
+    const result = validateModelCommandRunArgs({ commandId: 'NOT_A_COMMAND', params: {} });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error.code).toBe('INVALID_COMMAND');
+  });
+
+  // The validator rebuilds params from an explicit allow-list, so a key it does
+  // not know is dropped silently and the handler sees an empty locator. `id`
+  // (and its `path` alias) is the form the prompt index advertises, so it has
+  // to survive the rebuild.
+  it('carries `id` through to the handler params', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'page_get', id: 'agent/build-system' },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect((result.request.params as { id?: string }).id).toBe('agent/build-system');
+  });
+
+  it('normalizes the `path` alias into `id`', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'page_get', path: 'project/soma-work/1234' },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect((result.request.params as { id?: string }).id).toBe('project/soma-work/1234');
   });
 });

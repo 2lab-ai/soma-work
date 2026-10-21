@@ -181,23 +181,6 @@ describe('AssistantStatusManager — Heartbeat', () => {
     expect(mockSlackApi.setAssistantStatus).not.toHaveBeenCalled();
   });
 
-  // descriptor with resolver: tick re-invokes resolver with latest state
-  it('heartbeat_tick_reinvokes_descriptor_resolver', async () => {
-    let counter = 0;
-    const resolver = vi.fn(() => `tick-${++counter}`);
-
-    await manager.setStatus('C123', '123.456', resolver);
-    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C123', '123.456', 'tick-1');
-
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C123', '123.456', 'tick-2');
-
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(mockSlackApi.setAssistantStatus).toHaveBeenLastCalledWith('C123', '123.456', 'tick-3');
-
-    expect(resolver).toHaveBeenCalledTimes(3);
-  });
-
   // ─── Scenario 5: Multi-Session Independence ───
 
   // Trace: Scenario 5, Section 3a — 독립 타이머

@@ -99,6 +99,7 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     commandId !== 'SAVE_CONTEXT_RESULT' &&
     commandId !== 'SAVE_MEMORY' &&
     commandId !== 'GET_MEMORY' &&
+    commandId !== 'MEMORY' &&
     commandId !== 'MANAGE_SKILL' &&
     commandId !== 'RATE' &&
     commandId !== 'SET_GOAL'
@@ -208,6 +209,65 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
     };
   }
 
+  if (commandId === 'MEMORY') {
+    if (!isRecord(params)) {
+      return invalidArgsFor('MEMORY', 'MEMORY params must be an object with an `op` field');
+    }
+    const op = params.op;
+    const validOps = ['page_upsert', 'page_get', 'page_remove', 'episodic_append', 'episodic_get', 'search', 'index'];
+    if (typeof op !== 'string' || !validOps.includes(op)) {
+      return invalidArgsFor('MEMORY', `MEMORY op must be one of ${validOps.join(', ')}, got: ${String(op)}`);
+    }
+    const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+    const type = params.type;
+    if (
+      type !== undefined &&
+      type !== 'agent' &&
+      type !== 'sites' &&
+      type !== 'concepts' &&
+      type !== 'project' &&
+      type !== 'cron'
+    ) {
+      return invalidArgsFor('MEMORY', `MEMORY type must be agent|sites|concepts|project|cron, got: ${String(type)}`);
+    }
+    const aliases = Array.isArray(params.aliases)
+      ? params.aliases.filter((a): a is string => typeof a === 'string')
+      : undefined;
+    return {
+      ok: true,
+      request: {
+        commandId: 'MEMORY',
+        params: {
+          op: op as
+            | 'page_upsert'
+            | 'page_get'
+            | 'page_remove'
+            | 'episodic_append'
+            | 'episodic_get'
+            | 'search'
+            | 'index',
+          type: type as 'agent' | 'sites' | 'concepts' | 'project' | 'cron' | undefined,
+          // The prompt's MEMORY INDEX shows page ids and nothing else, so the
+          // id form has to survive this rebuild. `path` is the other spelling
+          // the id invites; normalize it here rather than letting the params
+          // rebuild drop it silently.
+          id: str(params.id) ?? str(params.path),
+          slug: str(params.slug),
+          project: str(params.project),
+          issue: str(params.issue),
+          routine: str(params.routine),
+          title: str(params.title),
+          aliases,
+          current: str(params.current),
+          history: str(params.history),
+          content: str(params.content),
+          date: str(params.date),
+          query: str(params.query),
+        },
+      },
+    };
+  }
+
   if (commandId === 'MANAGE_SKILL') {
     if (!isRecord(params)) {
       return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL params must be an object with action');
@@ -220,11 +280,12 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       action !== 'list' &&
       action !== 'share' &&
       action !== 'rename' &&
-      action !== 'get'
+      action !== 'get' &&
+      action !== 'copy'
     ) {
       return invalidArgsFor(
         'MANAGE_SKILL',
-        `MANAGE_SKILL action must be 'create', 'update', 'delete', 'list', 'share', 'rename', or 'get', got: ${String(action)}`,
+        `MANAGE_SKILL action must be 'create', 'update', 'delete', 'list', 'share', 'rename', 'get', or 'copy', got: ${String(action)}`,
       );
     }
     if (
@@ -233,10 +294,25 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
         action === 'delete' ||
         action === 'share' ||
         action === 'rename' ||
-        action === 'get') &&
+        action === 'get' ||
+        action === 'copy') &&
       typeof params.name !== 'string'
     ) {
-      return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL name is required for create/update/delete/share/rename/get');
+      return invalidArgsFor(
+        'MANAGE_SKILL',
+        'MANAGE_SKILL name is required for create/update/delete/share/rename/get/copy',
+      );
+    }
+    // copy installs another user's skill into the caller's set — it needs a
+    // sourceUser and must not carry SKILL.md bytes (the server reads the
+    // source's content).
+    if (action === 'copy') {
+      if (typeof params.sourceUser !== 'string') {
+        return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL copy requires sourceUser');
+      }
+      if (params.content !== undefined) {
+        return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL copy does not accept content');
+      }
     }
     if ((action === 'create' || action === 'update') && typeof params.content !== 'string') {
       return invalidArgsFor('MANAGE_SKILL', 'MANAGE_SKILL content is required for create/update');
@@ -270,9 +346,10 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
       request: {
         commandId: 'MANAGE_SKILL',
         params: {
-          action: action as 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename' | 'get',
+          action: action as 'create' | 'update' | 'delete' | 'list' | 'share' | 'rename' | 'get' | 'copy',
           name: typeof params.name === 'string' ? params.name : undefined,
           newName: typeof params.newName === 'string' ? params.newName : undefined,
+          sourceUser: typeof params.sourceUser === 'string' ? params.sourceUser : undefined,
           content: typeof params.content === 'string' ? params.content : undefined,
         },
       },

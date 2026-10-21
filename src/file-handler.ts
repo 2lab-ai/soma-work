@@ -382,13 +382,4 @@ export class FileHandler {
       }
     }
   }
-
-  getSupportedFileTypes(): string[] {
-    return [
-      'Images: jpg, png, gif, webp, svg',
-      'Text files: txt, md, json, js, ts, py, java, etc.',
-      'Documents: pdf, docx (limited support)',
-      'Code files: most programming languages',
-    ];
-  }
 }

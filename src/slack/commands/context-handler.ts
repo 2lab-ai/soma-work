@@ -42,6 +42,13 @@ export class ContextHandler implements CommandHandler {
     const currentContext = ContextWindowManager.computeUsedTokens(usage);
     const contextWindow = usage.contextWindow;
     const availablePercent = ContextWindowManager.computeRemainingPercent(usage);
+    // Displayed as USED, matching the `X / Y` pair above it, the bar's fill,
+    // and the turn-completion footer. This card used to print the remaining
+    // share in the same shape the footer used for the consumed share, so the
+    // two disagreed about the same session (issue #196). `availablePercent`
+    // stays as the input to the low-context warning below, where "how much is
+    // left" is the question actually being asked.
+    const usedPercent = 100 - availablePercent;
 
     // Context bar visualization
     const contextBar = ThreadHeaderBuilder.formatContextBar(usage) || '░░░░░';
@@ -56,7 +63,7 @@ export class ContextHandler implements CommandHandler {
     // Current context window usage with visual bar
     lines.push(`*Context Window:* ${contextBar}`);
     lines.push(
-      `  ${ThreadHeaderBuilder.formatTokenCount(currentContext)} / ${ThreadHeaderBuilder.formatTokenCount(contextWindow)} (${availablePercent.toFixed(0)}% available)`,
+      `  ${ThreadHeaderBuilder.formatTokenCount(currentContext)} / ${ThreadHeaderBuilder.formatTokenCount(contextWindow)} (${Number.isInteger(usedPercent) ? usedPercent : usedPercent.toFixed(1)}% used)`,
     );
 
     // Cache info
@@ -70,10 +77,31 @@ export class ContextHandler implements CommandHandler {
     lines.push('*Session Totals:*');
     lines.push(`  • Input: ${ThreadHeaderBuilder.formatTokenCount(usage.totalInputTokens)}`);
     lines.push(`  • Output: ${ThreadHeaderBuilder.formatTokenCount(usage.totalOutputTokens)}`);
+    if (usage.totalCacheCreateTokens > 0) {
+      lines.push(`  • Cache write: ${ThreadHeaderBuilder.formatTokenCount(usage.totalCacheCreateTokens)}`);
+    }
+    if (usage.totalCacheReadTokens > 0) {
+      lines.push(`  • Cache read: ${ThreadHeaderBuilder.formatTokenCount(usage.totalCacheReadTokens)}`);
+    }
 
     // Cost
     if (usage.totalCostUsd > 0) {
       lines.push(`  • Cost: $${usage.totalCostUsd.toFixed(4)}`);
+    }
+
+    // Per-model breakdown: real tokens and cost PER MODEL actually used in
+    // this session (survives model switches — each bucket is priced at that
+    // model's own rates).
+    const modelTotals = usage.modelTotals;
+    if (modelTotals && Object.keys(modelTotals).length > 0) {
+      lines.push('');
+      lines.push('*Per-Model Usage:*');
+      for (const [model, t] of Object.entries(modelTotals)) {
+        const fmt = ThreadHeaderBuilder.formatTokenCount;
+        lines.push(
+          `  • \`${model}\` — in ${fmt(t.inputTokens)} · out ${fmt(t.outputTokens)} · cache w ${fmt(t.cacheCreateTokens)} · cache r ${fmt(t.cacheReadTokens)} · $${t.costUsd.toFixed(4)}`,
+        );
+      }
     }
 
     // Warning if context is getting full

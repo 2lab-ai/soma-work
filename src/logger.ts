@@ -1,1 +1,6 @@
-export { installConsoleRedaction, Logger, redactAnthropicSecrets } from '@soma/common/logger';
+export {
+  installConsoleRedaction,
+  Logger,
+  type RedactOptions,
+  redactAnthropicSecrets,
+} from '@soma/common/logger';

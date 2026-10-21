@@ -10,11 +10,11 @@
 
 ### 1.1 `/z` 통합 명령 표면 (Phase 1 — #506)
 
-Phase 1부터 모든 명령은 `/z <topic> [verb] [args…]` 통합 문법으로 접근하는 것이 권장됩니다. 기존 네이키드 문법(`persona linus`, `model sonnet`, …)은 사용자당 한 번만 마이그레이션 힌트(`tombstone`)를 보여주고 이후 드롭됩니다. 화이트리스트(`session`, `sessions public`, `new`, `renew`, `theme`, `$*`)는 계속 네이키드로 동작합니다.
+Phase 1부터 모든 명령은 `/z <topic> [verb] [args…]` 통합 문법으로 접근하는 것이 권장됩니다. 기존 네이키드 문법(`persona linus`, `model sonnet`, …)도 `CommandRouter` 핸들러가 그대로 실행합니다 — Phase 1의 사용자당 1회 마이그레이션 힌트(`tombstone`)는 #531에서 제거됐습니다.
 
 - 아키텍처: `docs/current/spec/01-slack-integration.md` §10
 - 롤백 절차: `docs/runbook/rollback-z-refactor.md`
-- 롤백 플래그: `SOMA_ENABLE_LEGACY_SLASH=true` (Tier 1 — 즉시)
+- 롤백 플래그: `SOMA_ENABLE_LEGACY_SLASH=true` (Tier 1 — 즉시, legacy 슬래시 `/soma`·`/session`·`/new`만 해당)
 - 제거된 별칭(#506): `set_cct` → `cct set`, `nextcct` → `cct next`, `플러그인 업데이트` → `plugin update`, `show_prompt` → `show prompt`, `show_instructions` → `show instructions`, `servers` → `mcp list`, `credentials` → `restore`, `commands`/`?`·`commands?` → `help`, `kill`/`end` → `terminate`, `report help` → `/z help`.
 
 ## 2. Working Directory Commands

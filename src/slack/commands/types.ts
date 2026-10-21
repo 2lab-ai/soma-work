@@ -1,3 +1,4 @@
+import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import type { ClaudeHandler } from '../../claude-handler';
 import type { McpManager } from '../../mcp-manager';
 import type { WorkflowType } from '../../types';
@@ -33,7 +34,33 @@ export interface CommandContext {
    * the channel.
    */
   postEphemeral?: PostEphemeralFn;
+  /**
+   * When true, a forced `$skill` defers its banner + `<invoked_skills>` block
+   * (returned as `deferredSkillFire`) instead of firing during routing — so a
+   * fresh-context start fires it AFTER session init / autogoal / autoskill.
+   */
+  deferSkillFire?: boolean;
+  /**
+   * Admit the opening turn of a goal the command just started, synchronously
+   * with the mutation — see the package `CommandContext.admitOpening`
+   * (`@soma/slack/commands/command-router`) for the contract. Supplied only by
+   * the host's goal intake while a turn runs.
+   */
+  admitOpening?: (opening: GoalOpening) => GoalOpeningAdmission;
 }
+
+/** The opening turn `admitOpening` admits — see the package `GoalOpening`. */
+export interface GoalOpening {
+  goalId: string;
+  objective: string;
+  /** `set` — the goal this command set; `promoted` — the next goal `goal done` started; `resumed` — `goal resume` of a goal whose first turn never ran. */
+  cause: 'set' | 'promoted' | 'resumed';
+  /** Opening text when it is not the objective (the `$skill` part of a split). */
+  prompt?: string;
+}
+
+/** `queued` | `started` | `{ failed: reason }` — see {@link CommandContext.admitOpening}. */
+export type GoalOpeningAdmission = 'queued' | 'started' | { failed: string };
 
 /**
  * Dependencies injected into command handlers
@@ -49,6 +76,24 @@ export interface CommandDependencies {
   contextWindowManager: ContextWindowManager;
   // Compaction Tracking (#617): required by /compact-threshold handler for per-user persistence.
   userSettingsStore: UserSettingsStore;
+  /**
+   * Live follow-up queue view for a session key (A40 `queue`/`큐`). Optional:
+   * only the host wires it (`slack-handler.ts` passes its own
+   * `getFollowupView`), and a router built without it answers "대기 중인
+   * 메시지가 없습니다" rather than failing.
+   */
+  getFollowupView?: (sessionKey: string) => FollowupQueueView | undefined;
+}
+
+/**
+ * A forced `$skill` invocation that was deferred (see {@link CommandContext.deferSkillFire}).
+ * Banner is the RPG attachment; `invokedBlock` is the `<invoked_skills>` block
+ * byte-identical to what `SkillForceHandler` would have appended.
+ */
+export interface DeferredSkillFire {
+  keys: string[];
+  invokedBlock: string;
+  banner: { text: string; color: string };
 }
 
 /**
@@ -68,6 +113,32 @@ export interface CommandResult {
    * created session BEFORE the first dispatch.
    */
   setGoalObjective?: string;
+  /**
+   * Set when a forced `$skill` was deferred (ctx.deferSkillFire). slack-handler
+   * posts the banner + appends the block AFTER autogoal + autoskill. When
+   * present, `continueWithPrompt` holds the RAW instruction text (no block).
+   */
+  deferredSkillFire?: DeferredSkillFire;
+  /**
+   * Set when the command consumed the message but parked it behind a user
+   * decision (cross-user `$skill` awaiting the owner's permission). The
+   * dispatch outcome is then `blocked` (item `uncertain`), not `safe`.
+   */
+  awaitingPermission?: boolean;
+  /**
+   * `continueWithPrompt` is the user's own free text (a goal objective), not
+   * a host-built prompt. It has already been through command routing, so the
+   * `/z` callers (DM branch, app_mention) must mark the re-entered event
+   * `routeContext.verbatimPrompt` instead of letting the pipeline parse it as
+   * a command, an inline directive, or the `!` abort marker again.
+   */
+  verbatimPrompt?: boolean;
+  /**
+   * `goal <objective>` appended the goal to the queue behind the goal in
+   * flight — no opening turn exists for it yet, so nothing else the message
+   * carried (a `$skill` part, attachments) can ride along.
+   */
+  goalQueued?: boolean;
 }
 
 /**

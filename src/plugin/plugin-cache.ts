@@ -50,13 +50,3 @@ export function hasCachedPlugin(pluginsDir: string, pluginName: string): boolean
     return false;
   }
 }
-
-/** Remove a cached plugin directory entirely. */
-export function removeCachedPlugin(pluginsDir: string, pluginName: string): void {
-  const pluginDir = path.join(pluginsDir, pluginName);
-  try {
-    fs.rmSync(pluginDir, { recursive: true, force: true });
-  } catch (error) {
-    logger.warn('Failed to remove cached plugin', { pluginName, error });
-  }
-}

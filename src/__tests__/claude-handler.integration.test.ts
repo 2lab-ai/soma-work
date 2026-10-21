@@ -14,35 +14,28 @@ import { ClaudeHandler } from '../claude-handler';
 import { McpManager } from '../mcp-manager';
 import type { ConversationSession } from '../types';
 
-// Skip if running inside Claude Code session (nested sessions crash)
-// Run from a regular terminal: npx vitest run src/claude-handler.integration.test.ts
-const isNestedSession = !!process.env.CLAUDECODE;
-const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
+// Real-SDK suite: consumes real Claude credentials, so it is explicit opt-in.
+// Run this file alone (not the full suite) from a regular terminal, through
+// llmux — the CCT slot store is always an empty scratch dir under test:
+//   SOMA_TEST_REAL_SDK=1 AUTH_MODE=llmux ANTHROPIC_BASE_URL=http://localhost:3456 \
+//     npx vitest run src/__tests__/claude-handler.integration.test.ts
+// Only with that flag does the test-env isolation (src/test-utils/hermetic-test-env.ts)
+// pass AUTH_MODE / ANTHROPIC_* / CLAUDE_CODE_OAUTH_TOKEN through. It used to
+// auto-enable whenever ~/.claude existed, which ran it (and failed it) on any
+// host with Claude installed, including self-hosted CI runners.
+const isNestedSession = !!process.env.CLAUDECODE; // nested sessions crash
+const isCI = !!process.env.CI;
+const optedIn = process.env.SOMA_TEST_REAL_SDK === '1';
 
-const canRun =
-  !isNestedSession &&
-  (hasApiKey ||
-    (() => {
-      try {
-        const fs = require('fs');
-        const os = require('os');
-        const path = require('path');
-        // Claude subscription auth
-        const authDir = path.join(os.homedir(), '.claude');
-        return fs.existsSync(authDir);
-      } catch {
-        return false;
-      }
-    })());
+const canRun = optedIn && !isNestedSession && !isCI;
 
 const describeWithCredentials = canRun ? describe : describe.skip;
 
-if (isNestedSession) {
+if (optedIn && isNestedSession) {
   console.warn('⚠️  Skipped: running inside Claude Code session (nested sessions not allowed)');
-  console.warn('   Run from terminal: npx vitest run src/claude-handler.integration.test.ts');
 }
-if (!canRun && !isNestedSession) {
-  console.warn('⚠️  Skipped: no Claude credentials found');
+if (optedIn && isCI) {
+  console.warn('⚠️  Skipped: CI environment (no real Claude credentials in CI)');
 }
 
 function createMockSession(overrides: Partial<ConversationSession> = {}): ConversationSession {

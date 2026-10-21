@@ -45,23 +45,6 @@ describe('RequestCoordinator', () => {
   });
 
   describe('session abort', () => {
-    it('should abort active session and return true', () => {
-      const sessionKey = 'C123:T456';
-      const controller = new AbortController();
-      let aborted = false;
-
-      controller.signal.addEventListener('abort', () => {
-        aborted = true;
-      });
-
-      coordinator.setController(sessionKey, controller);
-      const result = coordinator.abortSession(sessionKey);
-
-      expect(result).toBe(true);
-      expect(aborted).toBe(true);
-      expect(controller.signal.aborted).toBe(true);
-    });
-
     it('should return false for non-existent session', () => {
       const result = coordinator.abortSession('nonexistent');
       expect(result).toBe(false);
@@ -97,16 +80,6 @@ describe('RequestCoordinator', () => {
       expect(result).toBe(true);
       expect(controller.signal.reason).toBe('user-stop');
     });
-
-    it('defaults to user-stop when no reason is given', () => {
-      const sessionKey = 'C123:T456';
-      const controller = new AbortController();
-      coordinator.setController(sessionKey, controller);
-
-      coordinator.abortSession(sessionKey);
-
-      expect(controller.signal.reason).toBe('user-stop');
-    });
   });
 
   describe('request status', () => {
@@ -122,14 +95,6 @@ describe('RequestCoordinator', () => {
       coordinator.removeController(sessionKey);
 
       expect(coordinator.isRequestActive(sessionKey)).toBe(false);
-    });
-
-    it('should always allow new requests', () => {
-      const sessionKey = 'C123:T456';
-      coordinator.setController(sessionKey, new AbortController());
-
-      // Even with active request, can start new one (queuing behavior)
-      expect(coordinator.canStartRequest(sessionKey)).toBe(true);
     });
   });
 

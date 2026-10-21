@@ -1,75 +1,39 @@
 import { describe, expect, it } from 'vitest';
 
-import { isWhitelistedNaked } from '../whitelist';
+import { isDmAllowedForNonAdmin } from '../whitelist';
 
-describe('isWhitelistedNaked — table-driven', () => {
-  const ACCEPT: string[] = [
-    // session variants
-    'session',
-    'sessions',
-    'Session',
-    'SESSIONS',
-    'session public',
-    'sessions public',
-    'session terminate abc-123',
-    'sessions terminate my-key',
-    'session theme',
-    'session theme dark',
-    'session theme set dark',
-    'sessions theme=dark',
-
-    // theme variants
-    'theme',
-    'theme dark',
-    'theme set dark',
-    'theme=dark',
-
-    // new / renew with optional prompt
-    'new',
-    'new hello world',
-    'renew',
-    'renew continue writing',
-
-    // $ prefix
-    '$',
-    '$model',
-    '$model sonnet',
-    '$verbosity',
-    '$verbosity 3',
-    '$effort high',
-    '$thinking on',
-    '$thinking_summary off',
-  ];
-
-  ACCEPT.forEach((input) => {
-    it(`accepts "${input}"`, () => {
-      expect(isWhitelistedNaked(input)).toBe(true);
-    });
+describe('isDmAllowedForNonAdmin — personal llmux key command', () => {
+  it('allows the naked `key` / `auth key` forms (users fetch their own key via DM)', () => {
+    expect(isDmAllowedForNonAdmin('key')).toBe(true);
+    expect(isDmAllowedForNonAdmin('KEY')).toBe(true);
+    expect(isDmAllowedForNonAdmin('auth key')).toBe(true);
+    expect(isDmAllowedForNonAdmin('/z auth key')).toBe(true);
   });
 
-  const REJECT: string[] = [
-    '',
-    '   ',
-    'persona set linus', // legacy naked
-    'model sonnet',
-    'hello', // prose
-    'news article about AI', // starts with "new" but not tokenized
-    'newer prompt style', // same
-    'resession', // not a session command
-    '$$model', // double $
-    '/z session', // /z prefix not naked
-    '$ extra trailing', // 3 tokens is still allowed actually — let me check
-  ];
-
-  REJECT.forEach((input) => {
-    it(`rejects "${input}"`, () => {
-      expect(isWhitelistedNaked(input)).toBe(false);
-    });
+  it('accepts every form CommandParser.isAuthCommand routes (grammar parity)', () => {
+    expect(isDmAllowedForNonAdmin('/key')).toBe(true);
+    expect(isDmAllowedForNonAdmin('/auth key')).toBe(true);
+    expect(isDmAllowedForNonAdmin('set auth key')).toBe(true);
   });
 
-  it('is case-insensitive for session/new/renew', () => {
-    expect(isWhitelistedNaked('SESSION')).toBe(true);
-    expect(isWhitelistedNaked('New prompt')).toBe(true);
-    expect(isWhitelistedNaked('Renew')).toBe(true);
+  it('still rejects prose that merely contains "key"', () => {
+    expect(isDmAllowedForNonAdmin('key rotate please')).toBe(false);
+    expect(isDmAllowedForNonAdmin('monkey')).toBe(false);
+  });
+});
+
+describe('isDmAllowedForNonAdmin — autocompact (config-only, never spawns a prompt)', () => {
+  it('allows status/set/reset forms matching CommandParser.isAutoCompactCommand grammar', () => {
+    expect(isDmAllowedForNonAdmin('autocompact')).toBe(true);
+    expect(isDmAllowedForNonAdmin('AUTOCOMPACT')).toBe(true);
+    expect(isDmAllowedForNonAdmin('/autocompact')).toBe(true);
+    expect(isDmAllowedForNonAdmin('autocompact 800k')).toBe(true);
+    expect(isDmAllowedForNonAdmin('/autocompact 800k')).toBe(true);
+    expect(isDmAllowedForNonAdmin('autocompact reset')).toBe(true);
+  });
+
+  it('still rejects prose that merely contains "autocompact"', () => {
+    expect(isDmAllowedForNonAdmin('please autocompact this')).toBe(false);
+    expect(isDmAllowedForNonAdmin('autocompacting now')).toBe(false);
   });
 });

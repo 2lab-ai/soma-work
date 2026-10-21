@@ -41,10 +41,6 @@ export class McpConfigLoader {
     this.configPath = path.resolve(configPath);
   }
 
-  getConfigPath(): string {
-    return this.configPath;
-  }
-
   loadConfiguration(): McpConfiguration | null {
     if (this.config) {
       return this.config;

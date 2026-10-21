@@ -1,4 +1,6 @@
+import type { TurnCompletionEvent } from '@soma/slack/turn-notifier';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AssistantStatusManager } from '../assistant-status-manager';
 import { type TurnAddress, TurnSurface } from '../turn-surface';
 
 /**
@@ -54,17 +56,25 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1.0', sessionKey: 'C1:t1.0', turnId: 'C1:t1.0:1000' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:1000',
+      };
       await surface.begin(ctx);
       await surface.appendText(ctx.turnId, 'hello ');
       await surface.appendText(ctx.turnId, 'world');
       await surface.end(ctx.turnId, 'completed');
 
-      // startStream called once with channel + thread_ts
+      // startStream called once with channel + thread_ts + the U10a plan
+      // display mode (Slack defaults to 'timeline'; without this field the
+      // native task chunks render as a timeline and no plan card appears).
       expect(client.chat.startStream).toHaveBeenCalledTimes(1);
       expect(client.chat.startStream).toHaveBeenCalledWith({
         channel: 'C1',
         thread_ts: 't1.0',
+        task_display_mode: 'plan',
       });
 
       // appendStream called twice with chunks-mode payload
@@ -132,13 +142,18 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'D1', sessionKey: 'D1:root', turnId: 'D1:root:1000' };
+      const ctx = {
+        channelId: 'D1',
+        sessionKey: 'D1:root',
+        turnId: 'D1:root:1000',
+      };
       await surface.begin(ctx);
       await surface.end(ctx.turnId, 'completed');
 
       // thread_ts must NOT appear in startStream args — Slack treats its
       // absence as "open a new DM stream at root", which is the intent.
-      expect(client.chat.startStream).toHaveBeenCalledWith({ channel: 'D1' });
+      // (task_display_mode is unconditional — see the U10a test above.)
+      expect(client.chat.startStream).toHaveBeenCalledWith({ channel: 'D1', task_display_mode: 'plan' });
     });
 
     it('appendText is a no-op when startStream returned no ts', async () => {
@@ -149,7 +164,12 @@ describe('TurnSurface', () => {
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await surface.appendText(ctx.turnId, 'should drop');
 
@@ -166,7 +186,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await surface.appendText(ctx.turnId, '');
       await surface.end(ctx.turnId, 'completed');
@@ -179,7 +204,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       // Whitespace-only chunks would otherwise be billed as chunks and
       // render as empty blobs — match handleTextMessage's `!text.trim()`
@@ -203,7 +233,12 @@ describe('TurnSurface', () => {
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       const endPromise = surface.end(ctx.turnId, 'completed');
       // end() has set closing=true and is awaiting stopStream — racing append
@@ -218,12 +253,326 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await surface.end(ctx.turnId, 'completed');
       await surface.end(ctx.turnId, 'completed'); // should silently no-op
 
       expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // noStream — a turn that publishes its own text (an incident conclusion)
+  // -------------------------------------------------------------------------
+
+  describe('noStream turn', () => {
+    const ctx = {
+      channelId: 'C1',
+      threadTs: 't1.0',
+      sessionKey: 'C1:t1.0',
+      turnId: 'C1:t1.0:incident',
+      noStream: true,
+    };
+
+    it('registers the turn and runs native status, but never opens, writes or stops a stream', async () => {
+      const client = makeClient();
+      const mgr = {
+        isEnabled: vi.fn().mockReturnValue(true),
+        bumpEpoch: vi.fn().mockReturnValue(3),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+      };
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        assistantStatusManager: mgr as unknown as AssistantStatusManager,
+      });
+
+      await surface.begin(ctx);
+
+      expect(client.chat.startStream).not.toHaveBeenCalled();
+      expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(true);
+      expect(mgr.setStatus).toHaveBeenCalledWith('C1', 't1.0', 'is thinking...', { expectedEpoch: 3 });
+      // No stream to write to: the caller is told to post instead.
+      await expect(surface.appendText(ctx.turnId, 'tool result')).resolves.toBe(false);
+      expect(client.chat.appendStream).not.toHaveBeenCalled();
+
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(client.chat.stopStream).not.toHaveBeenCalled();
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C1', 't1.0', { expectedEpoch: 3 });
+      expect(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
+    });
+
+    it('sends the completion card as its own message, since there is no stream to append it to', async () => {
+      const client = makeClient();
+      const evt = { category: 'WorkflowComplete' } as unknown as TurnCompletionEvent;
+      const channel = {
+        send: vi.fn().mockResolvedValue(undefined),
+        buildCompletionBlocks: vi.fn().mockReturnValue({ blocks: [], fallbackText: 'done', withFeedback: false }),
+      };
+      const surface = new TurnSurface({
+        slackApi: makeSlackApi(client),
+        slackBlockKitChannel: channel,
+        isCompletionMarkerActive: () => true,
+      });
+
+      await surface.begin({ ...ctx, buildCompletionEvent: () => Promise.resolve(evt) });
+      const result = await surface.end(ctx.turnId, 'completed');
+
+      expect(result).toEqual({ snapshotResolved: true });
+      expect(client.chat.stopStream).not.toHaveBeenCalled();
+      expect(channel.buildCompletionBlocks).not.toHaveBeenCalled();
+      expect(channel.send).toHaveBeenCalledWith(evt);
+    });
+
+    // The two non-success exits. Driven through the REAL status manager so
+    // "epoch-safe" is the manager's own verdict on the clear, not a mock's
+    // record of the arguments it was handed.
+    describe('fail() and supersede', () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+
+      afterEach(() => {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      });
+
+      function makeHarness() {
+        const client = makeClient();
+        let remoteStatus = '';
+        const slackApi = Object.assign(makeSlackApi(client), {
+          setAssistantStatus: vi.fn(async (_channelId: string, _threadTs: string, status: string) => {
+            remoteStatus = status;
+          }),
+          setAssistantTitle: vi.fn().mockResolvedValue(undefined),
+        });
+        const manager = new AssistantStatusManager(slackApi);
+        const channel = {
+          send: vi.fn().mockResolvedValue(undefined),
+          buildCompletionBlocks: vi.fn().mockReturnValue({ blocks: [], fallbackText: 'done', withFeedback: false }),
+        };
+        const surface = new TurnSurface({
+          slackApi,
+          assistantStatusManager: manager,
+          slackBlockKitChannel: channel,
+          isCompletionMarkerActive: () => true,
+        });
+        return { client, manager, channel, surface, remoteStatus: () => remoteStatus };
+      }
+
+      const cardFor = (turn: string) => ({ category: 'WorkflowComplete', turn }) as unknown as TurnCompletionEvent;
+
+      it('fail() closes a noStream turn: state removed, status cleared once, no stream call, no card', async () => {
+        const { client, manager, channel, surface, remoteStatus } = makeHarness();
+        const clearStatus = vi.spyOn(manager, 'clearStatus');
+        await surface.begin({ ...ctx, buildCompletionEvent: () => Promise.resolve(cardFor('A')) });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(remoteStatus()).toBe('is thinking...');
+        expect(clearStatus).not.toHaveBeenCalled();
+
+        await surface.fail(ctx.turnId, new Error('boom'));
+        // A late end() after fail() is a no-op: it must not post a card.
+        await surface.end(ctx.turnId, 'completed');
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
+        expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+        expect(clearStatus).toHaveBeenCalledTimes(1);
+        expect(clearStatus).toHaveBeenCalledWith('C1', 't1.0', { expectedEpoch: 1 });
+        expect(remoteStatus()).toBe('');
+        expect(client.chat.startStream).not.toHaveBeenCalled();
+        expect(client.chat.appendStream).not.toHaveBeenCalled();
+        expect(client.chat.stopStream).not.toHaveBeenCalled();
+        expect(channel.send).not.toHaveBeenCalled();
+        expect(channel.buildCompletionBlocks).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['another noStream turn (an incident retry)', true],
+        ['a streaming turn', false],
+      ] as const)('a replacement by %s closes the open noStream turn without touching the new one', async (_shape, replacementNoStream) => {
+        const { client, manager, channel, surface, remoteStatus } = makeHarness();
+        const clearStatus = vi.spyOn(manager, 'clearStatus');
+        const ctxA = { ...ctx, turnId: 'C1:t1.0:A', buildCompletionEvent: () => Promise.resolve(cardFor('A')) };
+        const ctxB = {
+          ...ctx,
+          turnId: 'C1:t1.0:B',
+          noStream: replacementNoStream,
+          buildCompletionEvent: () => Promise.resolve(cardFor('B')),
+        };
+
+        await surface.begin(ctxA);
+        await vi.advanceTimersByTimeAsync(0);
+        await surface.begin(ctxB);
+        await vi.advanceTimersByTimeAsync(0);
+
+        // A is gone; B owns the session.
+        expect(surface._getTurnStateSnapshot(ctxA.turnId)).toBeUndefined();
+        expect(surface._getActiveTurnId(ctx.sessionKey)).toBe(ctxB.turnId);
+        // A's clear carried A's epoch and the manager dropped it as stale: the
+        // spinner B set is still up.
+        expect(clearStatus).toHaveBeenCalledTimes(1);
+        expect(clearStatus).toHaveBeenCalledWith('C1', 't1.0', { expectedEpoch: 1 });
+        expect(remoteStatus()).toBe('is thinking...');
+        // A had no stream, so the supersede stopped nothing; only a streaming
+        // B opens one.
+        expect(client.chat.stopStream).not.toHaveBeenCalled();
+        expect(client.chat.startStream).toHaveBeenCalledTimes(replacementNoStream ? 0 : 1);
+        expect(client.chat.appendStream).not.toHaveBeenCalled();
+        // A superseded turn posts no card.
+        expect(channel.send).not.toHaveBeenCalled();
+        expect(channel.buildCompletionBlocks).not.toHaveBeenCalled();
+
+        await surface.end(ctxB.turnId, 'completed');
+        await vi.advanceTimersByTimeAsync(0);
+
+        // Exactly one card, and it is B's: detached for a noStream B, appended
+        // to the stream by stopStream for a streaming B.
+        if (replacementNoStream) {
+          expect(channel.send.mock.calls).toEqual([[cardFor('B')]]);
+          expect(channel.buildCompletionBlocks).not.toHaveBeenCalled();
+          expect(client.chat.stopStream).not.toHaveBeenCalled();
+        } else {
+          expect(channel.send).not.toHaveBeenCalled();
+          expect(channel.buildCompletionBlocks.mock.calls).toEqual([[cardFor('B')]]);
+          expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
+        }
+        expect(clearStatus).toHaveBeenLastCalledWith('C1', 't1.0', { expectedEpoch: 2 });
+        expect(remoteStatus()).toBe('');
+        expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Tail anchoring — the B1 stream is a thread message the panel must know about
+  // -------------------------------------------------------------------------
+
+  describe('thread-post notification', () => {
+    it('announces the opened stream so the thread panel can re-anchor below it', async () => {
+      const client = makeClient();
+      const notifyThreadPost = vi.fn();
+      const surface = new TurnSurface({
+        slackApi: { getClient: vi.fn().mockReturnValue(client), notifyThreadPost } as any,
+      });
+
+      const ctx = { channelId: 'C1', threadTs: 't1.0', sessionKey: 'C1:t1.0', turnId: 'C1:t1.0:1' };
+      await surface.begin(ctx);
+
+      expect(notifyThreadPost).toHaveBeenCalledTimes(1);
+      expect(notifyThreadPost).toHaveBeenCalledWith({
+        channel: 'C1',
+        threadTs: 't1.0',
+        ts: 'stream-ts-1',
+        kind: 'stream',
+      });
+
+      // The close APPENDS to that same message — nothing moved, nothing to say.
+      await surface.end(ctx.turnId, 'completed');
+      expect(notifyThreadPost).toHaveBeenCalledTimes(1);
+    });
+
+    it('says nothing when the stream never opened', async () => {
+      const client = makeClient({ startStream: vi.fn().mockResolvedValue({}) });
+      const notifyThreadPost = vi.fn();
+      const surface = new TurnSurface({
+        slackApi: { getClient: vi.fn().mockReturnValue(client), notifyThreadPost } as any,
+      });
+
+      await surface.begin({ channelId: 'C1', threadTs: 't1.0', sessionKey: 'C1:t1.0', turnId: 'C1:t1.0:1' });
+
+      expect(notifyThreadPost).not.toHaveBeenCalled();
+    });
+
+    // Every raw `chat.postMessage` in this file is a message the panel cannot
+    // see (it bypasses SlackApiHelper), so each one has to announce itself or
+    // the panel silently stops being the last message in the thread.
+    it('announces the B2 plan message posted outside the stream, and stays silent on its updates', async () => {
+      vi.useFakeTimers();
+      try {
+        const client = makeClient({ postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-adhoc' }) });
+        const notifyThreadPost = vi.fn();
+        const surface = new TurnSurface({
+          slackApi: { getClient: vi.fn().mockReturnValue(client), notifyThreadPost } as any,
+        });
+        const address: TurnAddress = { channelId: 'C1', threadTs: 't1.0', sessionKey: 'C1:t1.0' };
+        const todos = [{ id: '1', content: 'first', status: 'pending', priority: 'high' }];
+
+        // No begin() → no stream → the plan goes out as its own message.
+        await surface.renderTasks('ad-hoc-turn', todos as any, address);
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+        expect(notifyThreadPost).toHaveBeenCalledTimes(1);
+        expect(notifyThreadPost).toHaveBeenCalledWith({
+          channel: 'C1',
+          threadTs: 't1.0',
+          ts: 'plan-ts-adhoc',
+          kind: 'post',
+        });
+
+        // A rerender UPDATES that message: nothing moved, nothing to announce.
+        await surface.renderTasks('ad-hoc-turn', [
+          ...todos,
+          { id: '2', content: 'second', status: 'pending', priority: 'high' },
+        ] as any);
+        await vi.advanceTimersByTimeAsync(500);
+        expect(client.chat.update).toHaveBeenCalled();
+        expect(notifyThreadPost).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('announces an askUser choice post', async () => {
+      const client = makeClient({ postMessage: vi.fn().mockResolvedValue({ ts: 'choice-ts' }) });
+      const notifyThreadPost = vi.fn();
+      const surface = new TurnSurface({
+        slackApi: { getClient: vi.fn().mockReturnValue(client), notifyThreadPost } as any,
+      });
+      const address: TurnAddress = { channelId: 'C1', threadTs: 't1.0', sessionKey: 'C1:t1.0' };
+
+      await surface.askUser('C1:t1.0:1', { blocks: [{ type: 'section' }] }, 'pick one', address);
+
+      expect(notifyThreadPost).toHaveBeenCalledTimes(1);
+      expect(notifyThreadPost).toHaveBeenCalledWith({
+        channel: 'C1',
+        threadTs: 't1.0',
+        ts: 'choice-ts',
+        kind: 'post',
+      });
+    });
+
+    it('says nothing for a DM-root post that has no thread anchor', async () => {
+      const client = makeClient({ postMessage: vi.fn().mockResolvedValue({ ts: 'dm-ts' }) });
+      const notifyThreadPost = vi.fn();
+      const surface = new TurnSurface({
+        slackApi: { getClient: vi.fn().mockReturnValue(client), notifyThreadPost } as any,
+      });
+
+      await surface.askUser('D1::1', { blocks: [{ type: 'section' }] }, 'pick one', {
+        channelId: 'D1',
+        sessionKey: 'D1:',
+      });
+
+      expect(notifyThreadPost).not.toHaveBeenCalled();
+    });
+
+    it('works against a helper that has no hook at all', async () => {
+      const client = makeClient();
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      await expect(
+        surface.begin({ channelId: 'C1', threadTs: 't1.0', sessionKey: 'C1:t1.0', turnId: 'C1:t1.0:1' }),
+      ).resolves.toBeUndefined();
+      expect(client.chat.startStream).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -238,7 +587,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await surface.appendText(ctx.turnId, 'partial');
       await surface.fail(ctx.turnId, new Error('boom'));
@@ -270,7 +624,12 @@ describe('TurnSurface', () => {
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
       (surface as any).logger.warn = warnSpy;
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await expect(surface.fail(ctx.turnId, new Error('upstream'))).resolves.toBeUndefined();
 
@@ -305,7 +664,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await surface.fail(ctx.turnId, new Error('first'));
       await surface.fail(ctx.turnId, new Error('second'));
@@ -328,8 +692,18 @@ describe('TurnSurface', () => {
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
       const sessionKey = 'C1:t1';
-      const ctxA = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:A' };
-      const ctxB = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:B' };
+      const ctxA = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey,
+        turnId: 'C1:t1:A',
+      };
+      const ctxB = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey,
+        turnId: 'C1:t1:B',
+      };
 
       await surface.begin(ctxA);
       await surface.begin(ctxB);
@@ -361,7 +735,12 @@ describe('TurnSurface', () => {
       const client = makeClient({ startStream });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await surface.begin(ctx); // duplicate begin() — short-circuits without a second startStream
 
@@ -389,8 +768,18 @@ describe('TurnSurface', () => {
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
       const sessionKey = 'C1:t1';
-      const ctxA = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:A' };
-      const ctxB = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:B' };
+      const ctxA = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey,
+        turnId: 'C1:t1:A',
+      };
+      const ctxB = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey,
+        turnId: 'C1:t1:B',
+      };
 
       // Kick off A; don't await — it's still pending on startStream.
       const aPromise = surface.begin(ctxA);
@@ -426,7 +815,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await expect(surface.appendText(ctx.turnId, 'ok')).resolves.toBe(true);
       await surface.end(ctx.turnId, 'completed');
@@ -438,7 +832,12 @@ describe('TurnSurface', () => {
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx); // swallows the error, no streamTs recorded
 
       // appendText detects the missing streamTs and surfaces false so the
@@ -453,7 +852,12 @@ describe('TurnSurface', () => {
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await expect(surface.appendText(ctx.turnId, 'reply')).resolves.toBe(false);
       await surface.end(ctx.turnId, 'completed');
@@ -464,12 +868,38 @@ describe('TurnSurface', () => {
   // B2 plan block (P2) — renderTasks
   // -------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // B2 task surface (P2, re-pointed by U10a)
+  //
+  // U10a unified the two progress surfaces: a turn that owns a stream now
+  // renders its task list as native `plan_update` / `task_update` chunks
+  // INSIDE that stream, so `chat.postMessage` + `chat.update` are no longer
+  // part of the contract for those turns. The separate plan message survives
+  // ONLY where there is no stream to write into (ad-hoc renderTasks before
+  // begin()), and those cases are asserted unchanged below.
+  // ---------------------------------------------------------------------------
   describe('renderTasks (PHASE>=2)', () => {
     const todos = [
       { id: '1', content: 'done task', status: 'completed', priority: 'high' },
-      { id: '2', content: 'running task', status: 'in_progress', priority: 'high' },
-      { id: '3', content: 'waiting task', status: 'pending', priority: 'medium' },
+      {
+        id: '2',
+        content: 'running task',
+        status: 'in_progress',
+        priority: 'high',
+      },
+      {
+        id: '3',
+        content: 'waiting task',
+        status: 'pending',
+        priority: 'medium',
+      },
     ];
+
+    /** `chat.appendStream` payloads carrying task_update chunks, in call order. */
+    const taskAppends = (client: MockClient) =>
+      client.chat.appendStream.mock.calls
+        .map((call: any[]) => call[0])
+        .filter((args: any) => (args?.chunks ?? []).some((c: any) => c.type === 'task_update'));
 
     beforeEach(() => {
       vi.useFakeTimers();
@@ -479,78 +909,91 @@ describe('TurnSurface', () => {
       vi.useRealTimers();
     });
 
-    it('first call posts a new message and stores planTs on turn state', async () => {
+    it('second call reuses the same stream ts; an unchanged snapshot spends no write', async () => {
       const client = makeClient({
         postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-1' }),
+        update: vi.fn().mockResolvedValue(undefined),
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
-      await expect(surface.renderTasks(ctx.turnId, todos as any)).resolves.toBe(true);
-      // Drain the 500ms debounce window.
+
+      await surface.renderTasks(ctx.turnId, todos as any);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(taskAppends(client).length).toBe(1);
+
+      // Re-rendering the SAME snapshot is a no-op on the wire (TodoWrite
+      // re-emits the full list every tick) — the pre-U10a plan message would
+      // have burned a chat.update here.
+      await surface.renderTasks(ctx.turnId, todos as any);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(taskAppends(client).length).toBe(1);
+
+      // A real state change writes again — same ts, still one surface.
+      const advanced = todos.map((t) => (t.id === '2' ? { ...t, status: 'completed' } : t));
+      await surface.renderTasks(ctx.turnId, advanced as any);
       await vi.advanceTimersByTimeAsync(500);
 
-      expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
-      const postArgs = client.chat.postMessage.mock.calls[0][0];
-      expect(postArgs.channel).toBe('C1');
-      expect(postArgs.thread_ts).toBe('t1');
-      expect(typeof postArgs.text).toBe('string');
-      expect(Array.isArray(postArgs.blocks)).toBe(true);
-      // chat.update NOT called on first render
+      const appends = taskAppends(client);
+      expect(appends.length).toBe(2);
+      expect(appends[1].ts).toBe('stream-ts-1');
+      expect(appends[1].chunks).toContainEqual({
+        type: 'task_update',
+        id: '2',
+        title: 'running task',
+        status: 'complete',
+      });
+      expect(client.chat.postMessage).not.toHaveBeenCalled();
       expect(client.chat.update).not.toHaveBeenCalled();
 
       await surface.end(ctx.turnId, 'completed');
     });
 
-    it('second call uses chat.update with the stored planTs (no second postMessage)', async () => {
+    it('5 rapid calls coalesce into 1 trailing stream write (debounce)', async () => {
       const client = makeClient({
         postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-1' }),
         update: vi.fn().mockResolvedValue(undefined),
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
 
+      // First render — drain debounce so the baseline write is committed.
       await surface.renderTasks(ctx.turnId, todos as any);
       await vi.advanceTimersByTimeAsync(500);
-      expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+      expect(taskAppends(client).length).toBe(1);
 
-      await surface.renderTasks(ctx.turnId, todos as any);
-      await vi.advanceTimersByTimeAsync(500);
-
-      expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
-      expect(client.chat.update).toHaveBeenCalledTimes(1);
-      expect(client.chat.update.mock.calls[0][0]).toMatchObject({
-        channel: 'C1',
-        ts: 'plan-ts-1',
-      });
-
-      await surface.end(ctx.turnId, 'completed');
-    });
-
-    it('5 rapid calls coalesce into 1 trailing update (debounce)', async () => {
-      const client = makeClient({
-        postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-1' }),
-        update: vi.fn().mockResolvedValue(undefined),
-      });
-      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
-
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
-      await surface.begin(ctx);
-
-      // First render: postMessage — drain debounce so planTs is committed
-      await surface.renderTasks(ctx.turnId, todos as any);
-      await vi.advanceTimersByTimeAsync(500);
-      expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
-
-      // 5 rapid updates — only 1 trailing chat.update call
+      // 5 rapid renders, each a distinct snapshot (so dedup can't be what
+      // collapses them) — only the trailing one reaches Slack.
       for (let i = 0; i < 5; i += 1) {
-        await surface.renderTasks(ctx.turnId, todos as any);
+        const tick = todos.map((t) => (t.id === '3' ? { ...t, content: `waiting task ${i}` } : t));
+        await surface.renderTasks(ctx.turnId, tick as any);
       }
       await vi.advanceTimersByTimeAsync(500);
-      expect(client.chat.update).toHaveBeenCalledTimes(1);
+
+      const appends = taskAppends(client);
+      expect(appends.length).toBe(2);
+      // The LAST snapshot won (trailing edge), not an earlier tick.
+      expect(appends[1].chunks).toContainEqual({
+        type: 'task_update',
+        id: '3',
+        title: 'waiting task 4',
+        status: 'pending',
+      });
+      expect(client.chat.update).not.toHaveBeenCalled();
+      expect(client.chat.postMessage).not.toHaveBeenCalled();
 
       await surface.end(ctx.turnId, 'completed');
     });
@@ -591,7 +1034,12 @@ describe('TurnSurface', () => {
       const client = makeClient();
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:1' };
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey: 'C1:t1',
+        turnId: 'C1:t1:1',
+      };
       await surface.begin(ctx);
       await expect(surface.renderTasks(ctx.turnId, [])).resolves.toBe(false);
       await vi.advanceTimersByTimeAsync(500);
@@ -601,44 +1049,62 @@ describe('TurnSurface', () => {
       await surface.end(ctx.turnId, 'completed');
     });
 
-    it('supersede: planTs on the old turn survives but is finalized (in_progress demoted) so no stale spinner', async () => {
-      // Under PHASE>=2, the B2 plan message is a separate ts from B1 streamTs.
-      // Supersede closes B1 (stream); the planTs Slack message is preserved
-      // in history but receives ONE final `chat.update` that demotes any
-      // lingering `in_progress` task_cards to `pending`. Without that step,
-      // Slack's native loading indicator on `task_card.status='in_progress'`
-      // would keep spinning forever on the orphaned plan message ("hang
-      // state"). The message itself is intentionally NOT deleted — users
-      // still see the final plan, just without the misleading spinner.
+    it('supersede: the old turn’s task list is finalized (in_progress demoted) so no stale spinner', async () => {
+      // The superseded turn's stream message stays in Slack history, so its
+      // task list must stop claiming work is in flight. Supersede closes B1
+      // AND writes ONE final chunk batch demoting any lingering `in_progress`
+      // to `pending` — without it, Slack's native loading indicator keeps
+      // spinning forever on the orphaned message ("hang state"). Nothing is
+      // deleted: users still see the final task list, just without the
+      // misleading spinner.
+      const startStream = vi.fn().mockResolvedValueOnce({ ts: 'stream-A' }).mockResolvedValueOnce({ ts: 'stream-B' });
       const client = makeClient({
+        startStream,
         postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-A' }),
         update: vi.fn().mockResolvedValue(undefined),
       });
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
       const sessionKey = 'C1:t1';
-      const ctxA = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:A' };
-      const ctxB = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:B' };
+      const ctxA = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey,
+        turnId: 'C1:t1:A',
+      };
+      const ctxB = {
+        channelId: 'C1',
+        threadTs: 't1',
+        sessionKey,
+        turnId: 'C1:t1:B',
+      };
 
       await surface.begin(ctxA);
       await surface.renderTasks(ctxA.turnId, todos as any);
       await vi.advanceTimersByTimeAsync(500);
-      expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+      expect(taskAppends(client).length).toBe(1);
 
       // Supersede — fail(A) runs synchronously inside begin(B).
       await surface.begin(ctxB);
 
       // B1 stream for A was stopped (supersede).
       expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
-      // B2 plan for A received exactly one finalize update — same channel +
-      // ts, with no `in_progress` task_cards in the rendered blocks.
-      const updatesAgainstA = (client.chat.update?.mock.calls ?? []).filter(
-        (call: any[]) => call[0]?.ts === 'plan-ts-A',
-      );
-      expect(updatesAgainstA.length).toBe(1);
-      const finalPlanBlock = updatesAgainstA[0][0].blocks?.find((b: any) => b.type === 'plan');
-      expect(finalPlanBlock).toBeDefined();
-      expect(finalPlanBlock.tasks.filter((tc: any) => tc.status === 'in_progress')).toEqual([]);
+      // A's stream received exactly one finalize write, with no in_progress
+      // rows left, and it landed BEFORE the stop.
+      const againstA = taskAppends(client).filter((args: any) => args.ts === 'stream-A');
+      expect(againstA.length).toBe(2);
+      expect(againstA[1].chunks.filter((c: any) => c.status === 'in_progress')).toEqual([]);
+      expect(againstA[1].chunks).toContainEqual({
+        type: 'task_update',
+        id: '2',
+        title: 'running task',
+        status: 'pending',
+      });
+      const lastAppendToA = Math.max(...client.chat.appendStream.mock.invocationCallOrder);
+      expect(lastAppendToA).toBeLessThan(client.chat.stopStream.mock.invocationCallOrder[0]);
+      // No separate plan message was ever created for A.
+      expect(client.chat.postMessage).not.toHaveBeenCalled();
+      expect(client.chat.update).not.toHaveBeenCalled();
 
       await surface.end(ctxB.turnId, 'completed');
     });
@@ -650,7 +1116,11 @@ describe('TurnSurface', () => {
       const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
       const turnId = 'ad-hoc-end-test';
-      await surface.renderTasks(turnId, todos as any, { channelId: 'C', threadTs: 't', sessionKey: 'C:t' });
+      await surface.renderTasks(turnId, todos as any, {
+        channelId: 'C',
+        threadTs: 't',
+        sessionKey: 'C:t',
+      });
       await vi.advanceTimersByTimeAsync(500);
       await surface.end(turnId, 'completed');
       expect(client.chat.stopStream).not.toHaveBeenCalled();
@@ -669,45 +1139,54 @@ describe('TurnSurface', () => {
     // visible forever unless we explicitly demote the card on close.
     // ─────────────────────────────────────────────────────────────────────────
 
-    describe('end-of-turn plan finalize (demotes lingering in_progress task_cards)', () => {
-      it('end("completed") with a lingering in_progress todo issues a final chat.update against planTs with demoted statuses', async () => {
+    describe('end-of-turn finalize (demotes lingering in_progress tasks)', () => {
+      it('end("completed") with a lingering in_progress todo writes one final demoted chunk batch before the stream stops', async () => {
         const client = makeClient({
           postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-fin' }),
           update: vi.fn().mockResolvedValue(undefined),
         });
         const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-        const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:fin' };
+        const ctx = {
+          channelId: 'C1',
+          threadTs: 't1',
+          sessionKey: 'C1:t1',
+          turnId: 'C1:t1:fin',
+        };
         await surface.begin(ctx);
 
-        // Initial render — postMessage commits planTs.
+        // Initial render — native chunks on the turn's own stream.
         await surface.renderTasks(ctx.turnId, todos as any);
         await vi.advanceTimersByTimeAsync(500);
-        expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+        expect(taskAppends(client).length).toBe(1);
+        expect(client.chat.postMessage).not.toHaveBeenCalled();
         expect(client.chat.update).not.toHaveBeenCalled();
 
         // Turn ends WITHOUT marking the in_progress todo as completed.
         await surface.end(ctx.turnId, 'completed');
 
-        // Exactly ONE final chat.update against planTs.
-        const planUpdates = client.chat.update.mock.calls.filter((call: any[]) => call[0]?.ts === 'plan-ts-fin');
-        expect(planUpdates.length).toBe(1);
-
-        const finalArgs = planUpdates[0][0];
-        expect(finalArgs.channel).toBe('C1');
-        const finalPlanBlock = finalArgs.blocks?.find((b: any) => b.type === 'plan');
-        expect(finalPlanBlock).toBeDefined();
+        // Exactly ONE final write, on the same stream ts.
+        const appends = taskAppends(client);
+        expect(appends.length).toBe(2);
+        expect(appends[1].channel).toBe('C1');
+        expect(appends[1].ts).toBe('stream-ts-1');
         // Every in_progress arm of `todos` should be demoted to `pending`.
-        const inProgressInFinal = finalPlanBlock.tasks.filter((tc: any) => tc.status === 'in_progress');
-        expect(inProgressInFinal).toEqual([]);
+        expect(appends[1].chunks.filter((c: any) => c.status === 'in_progress')).toEqual([]);
         // The lingering todo's title is preserved as `pending` so users see WHAT
         // was left unfinished — no ghost spinner, no silent loss of context.
-        const demoted = finalPlanBlock.tasks.find((tc: any) => tc.title === 'running task');
-        expect(demoted).toBeDefined();
-        expect(demoted.status).toBe('pending');
+        expect(appends[1].chunks).toContainEqual({
+          type: 'task_update',
+          id: '2',
+          title: 'running task',
+          status: 'pending',
+        });
+        // Slack drops chunks written after the stop, so ordering is part of
+        // the contract, not an implementation detail.
+        const lastAppend = Math.max(...client.chat.appendStream.mock.invocationCallOrder);
+        expect(lastAppend).toBeLessThan(client.chat.stopStream.mock.invocationCallOrder[0]);
       });
 
-      it('end("completed") with all-completed todos does NOT issue an extra chat.update (idempotent)', async () => {
+      it('end("completed") with all-completed todos does NOT issue an extra write (idempotent)', async () => {
         const allDoneTodos = todos.map((t) => ({ ...t, status: 'completed' }));
         const client = makeClient({
           postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-alldone' }),
@@ -715,65 +1194,97 @@ describe('TurnSurface', () => {
         });
         const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-        const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:alldone' };
+        const ctx = {
+          channelId: 'C1',
+          threadTs: 't1',
+          sessionKey: 'C1:t1',
+          turnId: 'C1:t1:alldone',
+        };
         await surface.begin(ctx);
         await surface.renderTasks(ctx.turnId, allDoneTodos as any);
         await vi.advanceTimersByTimeAsync(500);
-        expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+        expect(taskAppends(client).length).toBe(1);
 
         await surface.end(ctx.turnId, 'completed');
 
         // No final demotion render needed when nothing was in_progress.
-        const planUpdates = client.chat.update.mock.calls.filter((call: any[]) => call[0]?.ts === 'plan-ts-alldone');
-        expect(planUpdates.length).toBe(0);
+        expect(taskAppends(client).length).toBe(1);
+        expect(client.chat.update).not.toHaveBeenCalled();
+        expect(client.chat.postMessage).not.toHaveBeenCalled();
       });
 
-      it('fail() with a lingering in_progress todo also demotes the plan block to pending', async () => {
+      it('fail() with a lingering in_progress todo also demotes the task list to pending', async () => {
         const client = makeClient({
           postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-fail' }),
           update: vi.fn().mockResolvedValue(undefined),
         });
         const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
-        const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:fail' };
+        const ctx = {
+          channelId: 'C1',
+          threadTs: 't1',
+          sessionKey: 'C1:t1',
+          turnId: 'C1:t1:fail',
+        };
         await surface.begin(ctx);
         await surface.renderTasks(ctx.turnId, todos as any);
         await vi.advanceTimersByTimeAsync(500);
 
         await surface.fail(ctx.turnId, new Error('aborted'));
 
-        const planUpdates = client.chat.update.mock.calls.filter((call: any[]) => call[0]?.ts === 'plan-ts-fail');
-        expect(planUpdates.length).toBe(1);
-        const finalPlanBlock = planUpdates[0][0].blocks?.find((b: any) => b.type === 'plan');
-        const inProgressInFinal = finalPlanBlock.tasks.filter((tc: any) => tc.status === 'in_progress');
-        expect(inProgressInFinal).toEqual([]);
-      });
-
-      it('end() without renderTasks ever called → no chat.update (nothing to finalize)', async () => {
-        const client = makeClient();
-        const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
-
-        const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:bare' };
-        await surface.begin(ctx);
-        // No renderTasks call — no plan message exists.
-        await surface.end(ctx.turnId, 'completed');
-
+        const appends = taskAppends(client);
+        expect(appends.length).toBe(2);
+        expect(appends[1].ts).toBe('stream-ts-1');
+        expect(appends[1].chunks.filter((c: any) => c.status === 'in_progress')).toEqual([]);
         expect(client.chat.update).not.toHaveBeenCalled();
       });
 
-      it('supersede (begin B over A with A still in_progress) finalizes A’s plan before B opens', async () => {
-        // Supersede routes through fail(A) — A's plan must still get its
-        // demotion render so the old plan-ts message stops showing a spinner
-        // before the new turn's plan posts.
+      it('end() without renderTasks ever called → no task write (nothing to finalize)', async () => {
+        const client = makeClient();
+        const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+        const ctx = {
+          channelId: 'C1',
+          threadTs: 't1',
+          sessionKey: 'C1:t1',
+          turnId: 'C1:t1:bare',
+        };
+        await surface.begin(ctx);
+        // No renderTasks call — no task surface exists.
+        await surface.end(ctx.turnId, 'completed');
+
+        expect(client.chat.update).not.toHaveBeenCalled();
+        expect(taskAppends(client)).toEqual([]);
+      });
+
+      it('supersede (begin B over A with A still in_progress) finalizes A’s tasks before B opens', async () => {
+        // Supersede routes through fail(A) — A's task list must still get its
+        // demotion write so the old stream message stops showing a spinner
+        // before the new turn opens.
+        const startStream = vi
+          .fn()
+          .mockResolvedValueOnce({ ts: 'stream-A2' })
+          .mockResolvedValueOnce({ ts: 'stream-B2' });
         const client = makeClient({
+          startStream,
           postMessage: vi.fn().mockResolvedValue({ ts: 'plan-ts-A' }),
           update: vi.fn().mockResolvedValue(undefined),
         });
         const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
 
         const sessionKey = 'C1:t1';
-        const ctxA = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:A2' };
-        const ctxB = { channelId: 'C1', threadTs: 't1', sessionKey, turnId: 'C1:t1:B2' };
+        const ctxA = {
+          channelId: 'C1',
+          threadTs: 't1',
+          sessionKey,
+          turnId: 'C1:t1:A2',
+        };
+        const ctxB = {
+          channelId: 'C1',
+          threadTs: 't1',
+          sessionKey,
+          turnId: 'C1:t1:B2',
+        };
 
         await surface.begin(ctxA);
         await surface.renderTasks(ctxA.turnId, todos as any);
@@ -782,11 +1293,12 @@ describe('TurnSurface', () => {
         // Supersede — fail(A) runs synchronously inside begin(B).
         await surface.begin(ctxB);
 
-        const planUpdatesA = client.chat.update.mock.calls.filter((call: any[]) => call[0]?.ts === 'plan-ts-A');
-        expect(planUpdatesA.length).toBe(1);
-        const finalPlanBlock = planUpdatesA[0][0].blocks?.find((b: any) => b.type === 'plan');
-        const inProgressInFinal = finalPlanBlock.tasks.filter((tc: any) => tc.status === 'in_progress');
-        expect(inProgressInFinal).toEqual([]);
+        const againstA = taskAppends(client).filter((args: any) => args.ts === 'stream-A2');
+        expect(againstA.length).toBe(2);
+        expect(againstA[1].chunks.filter((c: any) => c.status === 'in_progress')).toEqual([]);
+        // The finalize landed on A's stream, never on B's.
+        expect(taskAppends(client).filter((args: any) => args.ts === 'stream-B2')).toEqual([]);
+        expect(client.chat.update).not.toHaveBeenCalled();
 
         // Clean up B so the test does not leak state.
         await surface.end(ctxB.turnId, 'completed');
@@ -815,7 +1327,11 @@ describe('TurnSurface', () => {
       const { surface, client } = makeSurfaceWithApi({
         postMessage: vi.fn().mockResolvedValue({ ts: 'msg-1' }),
       });
-      const addr: TurnAddress = { channelId: 'C1', threadTs: 'thr-1', sessionKey: 'C1:thr-1' };
+      const addr: TurnAddress = {
+        channelId: 'C1',
+        threadTs: 'thr-1',
+        sessionKey: 'C1:thr-1',
+      };
       const ts = await surface.askUser('turn-1', { blocks: [{ type: 'section' }] }, 'Q?', addr);
       expect(ts).toBe('msg-1');
       expect(client.chat.postMessage).toHaveBeenCalledWith(
@@ -832,8 +1348,17 @@ describe('TurnSurface', () => {
       const { surface } = makeSurfaceWithApi({
         postMessage: vi.fn().mockResolvedValue({ ts: 'msg-stamped' }),
       });
-      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'turn-1' });
-      const addr: TurnAddress = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr' };
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'turn-1',
+      });
+      const addr: TurnAddress = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+      };
       await surface.askUser('turn-1', { blocks: [] }, 'Q?', addr);
       expect(surface._getChoiceTs('turn-1')).toBe('msg-stamped');
       await surface.end('turn-1', 'completed');
@@ -871,8 +1396,17 @@ describe('TurnSurface', () => {
       const { surface, client } = makeSurfaceWithApi({
         postMessage: vi.fn().mockResolvedValueOnce({ ts: 'msg-1' }).mockResolvedValueOnce({ ts: 'msg-2' }),
       });
-      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'turn-1' });
-      const addr: TurnAddress = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr' };
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'turn-1',
+      });
+      const addr: TurnAddress = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+      };
       const ts1 = await surface.askUserForm('turn-1', { blocks: [] }, 'Q1', addr);
       const ts2 = await surface.askUserForm('turn-1', { blocks: [] }, 'Q2', addr);
       expect(ts1).toBe('msg-1');
@@ -897,7 +1431,10 @@ describe('TurnSurface', () => {
 
     it('resolveChoice swallows message_not_found (idempotent)', async () => {
       const { surface, slackApi } = makeSurfaceWithApi();
-      slackApi.updateMessage = vi.fn().mockRejectedValue({ data: { error: 'message_not_found' }, message: 'gone' });
+      slackApi.updateMessage = vi.fn().mockRejectedValue({
+        data: { error: 'message_not_found' },
+        message: 'gone',
+      });
       await expect(surface.resolveChoice('C', 'gone-ts', 'x', [])).resolves.toBeUndefined();
     });
 
@@ -935,11 +1472,355 @@ describe('TurnSurface', () => {
         postMessage: vi.fn().mockResolvedValue({ ts: 'msg-1' }),
       });
       slackApi.updateMessage = vi.fn();
-      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'turn-1' });
-      const addr: TurnAddress = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr' };
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'turn-1',
+      });
+      const addr: TurnAddress = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+      };
       await surface.askUser('turn-1', { blocks: [] }, 'Q', addr);
       await surface.end('turn-1', 'completed');
       expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('native status during pending stream startup', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+
+    function makeStatusSurface(client: MockClient) {
+      let remoteStatus = '';
+      const setAssistantStatus = vi.fn(async (_channelId: string, _threadTs: string, status: string) => {
+        await Promise.resolve();
+        remoteStatus = status;
+      });
+      const slackApi = Object.assign(makeSlackApi(client), {
+        setAssistantStatus,
+        setAssistantTitle: vi.fn().mockResolvedValue(undefined),
+      });
+      const manager = new AssistantStatusManager(slackApi);
+      const surface = new TurnSurface({
+        slackApi,
+        assistantStatusManager: manager,
+      });
+      return {
+        surface,
+        manager,
+        setAssistantStatus,
+        getRemoteStatus: () => remoteStatus,
+      };
+    }
+
+    it.each([
+      ['stopStream', 'end'],
+      ['flush', 'end'],
+      ['stopStream', 'supersede'],
+      ['flush', 'supersede'],
+      ['stopStream', 'duplicate'],
+      ['flush', 'duplicate'],
+    ] as const)('[prereg] pending A %s allows B %s without late startup', async (step, action) => {
+      let releaseA: () => void = () => {};
+      const pendingA = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+      const client = makeClient();
+      const { surface, manager, setAssistantStatus } = makeStatusSurface(client);
+      const ctx = { channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 'A' };
+      await surface.begin(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      if (step === 'stopStream') client.chat.stopStream.mockReturnValueOnce(pendingA);
+      else vi.spyOn((surface as any).renderDebouncer, 'flush').mockReturnValueOnce(pendingA);
+      const setStatus = vi.spyOn(manager, 'setStatus');
+      const bumpEpoch = vi.spyOn(manager, 'bumpEpoch');
+      client.chat.startStream.mockClear();
+      setAssistantStatus.mockClear();
+
+      let beganB = false;
+      const beginningB = surface.begin({ ...ctx, turnId: 'B' }).then(() => {
+        beganB = true;
+      });
+      try {
+        // Registration and the legacy epoch belong to B before any cleanup wait.
+        expect.soft(surface._getActiveTurnId(ctx.sessionKey)).toBe('B');
+        expect.soft(surface._getTurnStateSnapshot('B')).toMatchObject({ closing: false });
+        expect.soft(bumpEpoch).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(5_001);
+        expect(beganB).toBe(false);
+        expect(setStatus).not.toHaveBeenCalled();
+        expect(client.chat.startStream).not.toHaveBeenCalled();
+
+        if (action === 'end') await surface.end('B', 'completed');
+        else if (action === 'supersede') await surface.begin({ ...ctx, turnId: 'C' });
+        else await surface.begin({ ...ctx, turnId: 'B' });
+
+        if (action === 'duplicate') {
+          expect.soft(setStatus).not.toHaveBeenCalled();
+          expect.soft(client.chat.startStream).not.toHaveBeenCalled();
+          expect.soft(bumpEpoch).toHaveBeenCalledTimes(1);
+        } else {
+          expect.soft(surface._getTurnStateSnapshot('B')).toBeUndefined();
+        }
+
+        releaseA();
+        await beginningB;
+        await vi.advanceTimersByTimeAsync(0);
+        const expectedStarts = action === 'end' ? 0 : 1;
+        // One live start gets initial status and the post-stream lifecycle refresh.
+        expect.soft(setStatus).toHaveBeenCalledTimes(expectedStarts * 2);
+        expect.soft(client.chat.startStream).toHaveBeenCalledTimes(expectedStarts);
+        expect.soft(setAssistantStatus.mock.calls.filter(([, , text]) => text !== '')).toHaveLength(expectedStarts * 2);
+        expect.soft(surface._getTurnStateSnapshot('A')).toBeUndefined();
+        if (action === 'duplicate') {
+          expect.soft(surface._getActiveTurnId(ctx.sessionKey)).toBe('B');
+          expect.soft(surface._getTurnStateSnapshot('B')).toMatchObject({ streamTs: 'stream-ts-1', closing: false });
+        } else {
+          expect.soft(surface._getTurnStateSnapshot('B')).toBeUndefined();
+          expect.soft(surface._getActiveTurnId(ctx.sessionKey)).toBe(action === 'supersede' ? 'C' : undefined);
+        }
+      } finally {
+        releaseA();
+        await beginningB;
+        await surface.end('B', 'completed');
+        await surface.end('C', 'completed');
+        setStatus.mockRestore();
+        bumpEpoch.mockRestore();
+      }
+      expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+    });
+
+    it.each([
+      'end',
+      'fail',
+    ] as const)('[review] %s times out waiting for a hung set but preserves eventual remote clear', async (method) => {
+      let releaseSet: () => void = () => {};
+      const pending = new Promise<void>((resolve) => {
+        releaseSet = resolve;
+      });
+      let remoteStatus = '';
+      const setAssistantStatus = vi.fn(async (_channel: string, _thread: string, text: string) => {
+        if (text !== '') await pending;
+        remoteStatus = text;
+      });
+      const client = makeClient();
+      const slackApi = Object.assign(makeSlackApi(client), {
+        setAssistantStatus,
+        setAssistantTitle: vi.fn(),
+      });
+      const manager = new AssistantStatusManager(slackApi);
+      const send = vi.fn().mockResolvedValue(undefined);
+      const surface = new TurnSurface({
+        slackApi,
+        assistantStatusManager: manager,
+        slackBlockKitChannel: { send },
+        isCompletionMarkerActive: () => true,
+      });
+      const warn = vi.spyOn((surface as any).logger, 'warn');
+      const event = {
+        category: 'WorkflowComplete' as const,
+        userId: 'U',
+        channel: 'C',
+        threadTs: 'thr',
+        durationMs: 1,
+      };
+      const ctx = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'hung-close',
+        buildCompletionEvent: async () => event,
+      };
+      await surface.begin(ctx);
+      let closed = false;
+      const closing = (
+        method === 'end' ? surface.end(ctx.turnId, 'completed') : surface.fail(ctx.turnId, new Error('failed'))
+      ).then(() => {
+        closed = true;
+      });
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(closed).toBe(false);
+      expect(setAssistantStatus).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect.soft(closed).toBe(true);
+      expect.soft(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
+      expect.soft(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+      expect
+        .soft(warn)
+        .toHaveBeenCalledWith(expect.stringMatching(/B4.*(timeout|timed out|finish in time)/), expect.any(Object));
+      expect.soft(send).toHaveBeenCalledTimes(method === 'end' ? 1 : 0);
+      // Timeout only releases the surface waiter, never the manager writer lane.
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(setAssistantStatus).toHaveBeenCalledTimes(1);
+      releaseSet();
+      await vi.advanceTimersByTimeAsync(0);
+      await closing;
+      expect(remoteStatus).toBe('');
+      expect(setAssistantStatus.mock.calls.map(([, , text]) => text)).toEqual(['is thinking...', '']);
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(setAssistantStatus).toHaveBeenCalledTimes(2);
+    });
+
+    it('[T1] a hung native status request does not delay stream startup or begin completion', async () => {
+      const client = makeClient();
+      const { surface, setAssistantStatus } = makeStatusSurface(client);
+      let releaseStatus: () => void = () => {};
+      setAssistantStatus.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseStatus = resolve;
+          }),
+      );
+      const ctx = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'hung-status',
+      };
+      let began = false;
+      const beginning = surface.begin(ctx).then(() => {
+        began = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect.soft(client.chat.startStream).toHaveBeenCalledTimes(1);
+      expect.soft(began).toBe(true);
+      releaseStatus();
+      await beginning;
+      await surface.end(ctx.turnId, 'completed');
+    });
+
+    it.each(['end', 'fail'] as const)('[T2] %s clears immediately while stopStream is pending', async (method) => {
+      let releaseStop: () => void = () => {};
+      const stopPromise = new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+      const client = makeClient({
+        stopStream: vi.fn().mockReturnValue(stopPromise),
+      });
+      const { surface, manager, getRemoteStatus, setAssistantStatus } = makeStatusSurface(client);
+      const ctx = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'pending-stop',
+        statusEpoch: manager.bumpEpoch('C', 'thr'),
+      };
+      await surface.begin(ctx);
+      const closing =
+        method === 'end' ? surface.end(ctx.turnId, 'completed') : surface.fail(ctx.turnId, new Error('failure'));
+      await manager.setStatus('C', 'thr', 'late work', {
+        expectedEpoch: ctx.statusEpoch,
+      });
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect.soft(getRemoteStatus()).toBe('');
+      expect.soft(setAssistantStatus.mock.calls.map(([, , status]) => status)).toEqual(['is thinking...', '']);
+      releaseStop();
+      await closing;
+      expect(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
+    });
+
+    it.each([
+      ['end', 'flush'],
+      ['fail', 'flush'],
+      ['end', 'finalize'],
+      ['fail', 'finalize'],
+    ] as const)('[T2] %s cleans up even when pending %s rejects', async (method, step) => {
+      const { surface, getRemoteStatus } = makeStatusSurface(makeClient());
+      const ctx = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'flush-failure',
+      };
+      await surface.begin(ctx);
+      let rejectFlush: (error: Error) => void = () => {};
+      const flushing = new Promise<void>((_resolve, reject) => {
+        rejectFlush = reject;
+      });
+      if (step === 'flush') vi.spyOn((surface as any).renderDebouncer, 'flush').mockReturnValue(flushing);
+      // Renamed from `finalizePlanIfNeeded` when the task finalize stopped being
+      // plan-message-only (U10a native task chunks); same close-path step.
+      else vi.spyOn(surface as any, 'finalizeTasksIfNeeded').mockReturnValue(flushing);
+      const closing = (
+        method === 'end' ? surface.end(ctx.turnId, 'completed') : surface.fail(ctx.turnId, new Error('failure'))
+      ).catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      expect.soft(getRemoteStatus()).toBe('');
+      rejectFlush(new Error('flush failed'));
+      await closing;
+      expect(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
+      expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+    });
+
+    it('[T1] native status starts while startStream is still pending', async () => {
+      let releaseStart: (value: { ts: string }) => void = () => {};
+      const startPromise = new Promise<{ ts: string }>((resolve) => {
+        releaseStart = resolve;
+      });
+      const client = makeClient({
+        startStream: vi.fn().mockReturnValue(startPromise),
+      });
+      const { surface, setAssistantStatus, getRemoteStatus } = makeStatusSurface(client);
+      const ctx = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'pending-start',
+      };
+      const beginning = surface.begin(ctx);
+
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(client.chat.startStream).toHaveBeenCalledTimes(1);
+        expect.soft(getRemoteStatus()).toBe('is thinking...');
+        expect.soft(setAssistantStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...');
+      } finally {
+        releaseStart({ ts: 'stream-ts-1' });
+        await beginning;
+        await surface.end(ctx.turnId, 'completed');
+      }
+    });
+
+    it('[T1] late rejected startStream after end cannot resurrect native status', async () => {
+      let rejectStart: (error: Error) => void = () => {};
+      const startPromise = new Promise<{ ts: string }>((_resolve, reject) => {
+        rejectStart = reject;
+      });
+      const client = makeClient({
+        startStream: vi.fn().mockReturnValue(startPromise),
+      });
+      const { surface, setAssistantStatus, getRemoteStatus } = makeStatusSurface(client);
+      const ctx = {
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 'rejected-start',
+      };
+      const beginning = surface.begin(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      await surface.end(ctx.turnId, 'completed');
+      expect(surface._getTurnStateSnapshot(ctx.turnId)).toBeUndefined();
+      expect(surface._hasActiveTurn(ctx.sessionKey)).toBe(false);
+      expect(getRemoteStatus()).toBe('');
+      const callsAfterEnd = setAssistantStatus.mock.calls.length;
+
+      rejectStart(new Error('late startStream failure'));
+      await beginning;
+      expect.soft(getRemoteStatus()).toBe('');
+      expect.soft(setAssistantStatus).toHaveBeenCalledTimes(callsAfterEnd);
+
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect.soft(getRemoteStatus()).toBe('');
+      expect(setAssistantStatus).toHaveBeenCalledTimes(callsAfterEnd);
     });
   });
 
@@ -947,20 +1828,29 @@ describe('TurnSurface', () => {
   describe('B4 native-status wiring', () => {
     const makeMgr = (enabled: boolean) => ({
       isEnabled: vi.fn().mockReturnValue(enabled),
+      bumpEpoch: vi.fn().mockReturnValue(1),
       setStatus: vi.fn().mockResolvedValue(undefined),
       clearStatus: vi.fn().mockResolvedValue(undefined),
     });
 
-    it('begin calls setStatus("is thinking...") once', async () => {
+    it('begin sets status before startup and refreshes it after stream creation', async () => {
       const client = makeClient();
       const mgr = makeMgr(true);
       const surface = new TurnSurface({
         slackApi: makeSlackApi(client),
         assistantStatusManager: mgr as any,
       });
-      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4' });
-      expect(mgr.setStatus).toHaveBeenCalledTimes(1);
-      expect(mgr.setStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...');
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4',
+      });
+      expect(mgr.setStatus).toHaveBeenCalledTimes(2);
+      expect(mgr.bumpEpoch).toHaveBeenCalledWith('C', 'thr');
+      expect(mgr.setStatus).toHaveBeenCalledWith('C', 'thr', 'is thinking...', {
+        expectedEpoch: 1,
+      });
     });
 
     it('end calls clearStatus once', async () => {
@@ -970,13 +1860,18 @@ describe('TurnSurface', () => {
         slackApi: makeSlackApi(client),
         assistantStatusManager: mgr as any,
       });
-      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4-e' });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4-e',
+      });
       await surface.end('t-b4-e', 'completed');
       expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
-      // Issue #688 — third arg is the optional expectedEpoch options bag.
-      // When TurnContext omits `statusEpoch` (this test does) end()/fail()
-      // pass `undefined`, which `clearStatus` treats as "no epoch guard".
-      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', undefined);
+      // Legacy callers receive a turn epoch at begin, shared by set and clear.
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', {
+        expectedEpoch: 1,
+      });
     });
 
     // Issue #688 — when TurnContext threads a `statusEpoch`, end()/fail()
@@ -998,7 +1893,9 @@ describe('TurnSurface', () => {
       });
       await surface.end('t-b4-epoch', 'completed');
       expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
-      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 7 });
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', {
+        expectedEpoch: 7,
+      });
     });
 
     it('statusEpoch: fail forwards expectedEpoch to clearStatus', async () => {
@@ -1017,7 +1914,9 @@ describe('TurnSurface', () => {
       });
       await surface.fail('t-b4-epoch-f', new Error('boom'));
       expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
-      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', { expectedEpoch: 11 });
+      expect(mgr.clearStatus).toHaveBeenCalledWith('C', 'thr', {
+        expectedEpoch: 11,
+      });
     });
 
     it('fail calls clearStatus (idempotent — fail twice → 1 call total)', async () => {
@@ -1027,7 +1926,12 @@ describe('TurnSurface', () => {
         slackApi: makeSlackApi(client),
         assistantStatusManager: mgr as any,
       });
-      await surface.begin({ channelId: 'C', threadTs: 'thr', sessionKey: 'C:thr', turnId: 't-b4-f' });
+      await surface.begin({
+        channelId: 'C',
+        threadTs: 'thr',
+        sessionKey: 'C:thr',
+        turnId: 't-b4-f',
+      });
       await surface.fail('t-b4-f', new Error('boom'));
       await surface.fail('t-b4-f', new Error('boom again'));
       expect(mgr.clearStatus).toHaveBeenCalledTimes(1);
@@ -1047,7 +1951,10 @@ describe('TurnSurface', () => {
       } as any;
       const { AssistantStatusManager } = await import('../assistant-status-manager');
       const mgr = new AssistantStatusManager(slackApi);
-      const surface = new TurnSurface({ slackApi, assistantStatusManager: mgr });
+      const surface = new TurnSurface({
+        slackApi,
+        assistantStatusManager: mgr,
+      });
       let epochB = 0;
       try {
         // Turn A opens at epoch 1
@@ -1254,7 +2161,9 @@ describe('TurnSurface', () => {
 
     it('send throwing does not prevent cleanupTurn (state removed, activeTurn cleared)', async () => {
       const client = makeClient();
-      const channel = { send: vi.fn().mockRejectedValue(new Error('slack down')) };
+      const channel = {
+        send: vi.fn().mockRejectedValue(new Error('slack down')),
+      };
       const surface = new TurnSurface({
         slackApi: makeSlackApi(client),
         slackBlockKitChannel: channel as any,
@@ -1523,6 +2432,677 @@ describe('TurnSurface', () => {
 
       expect(result).toBeDefined();
       expect((result as any).snapshotResolved).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // A32 — consolidated completion close ("답변 보존 방식")
+  //
+  // The B5 result blocks + feedback row land on the SAME streamed message at
+  // stream close (`chat.stopStream` blocks are APPENDED by Slack), so the
+  // original answer is never deleted, overwritten or duplicated. The separate
+  // detached `slackBlockKitChannel.send()` card survives only as the fallback
+  // for a Slack refusal of the appended blocks, for channels that don't expose
+  // the pure block builder, and for the no-stream path.
+  // -------------------------------------------------------------------------
+  describe('A32 consolidated completion close', () => {
+    const COMPLETION_BLOCKS = [{ type: 'section', text: { type: 'mrkdwn', text: '✅ *작업 완료*' } }];
+
+    function makeEvent() {
+      return {
+        category: 'WorkflowComplete' as const,
+        userId: 'U1',
+        channel: 'C1',
+        threadTs: 't1.0',
+        turnId: 'C1:t1.0:a32',
+        sessionTitle: 'Session X',
+      };
+    }
+
+    /** Channel double that DOES expose the A32 optional deps. */
+    function makeConsolidatingChannel() {
+      return {
+        send: vi.fn().mockResolvedValue(undefined),
+        buildCompletionBlocks: vi.fn().mockReturnValue({
+          blocks: COMPLETION_BLOCKS,
+          fallbackText: 'Session X',
+          withFeedback: true,
+        }),
+        protectMessageTs: vi.fn(),
+      };
+    }
+
+    function makeSurface(client: MockClient, channel: any) {
+      return new TurnSurface({
+        slackApi: makeSlackApi(client),
+        slackBlockKitChannel: channel,
+        isCompletionMarkerActive: () => true,
+      } as any);
+    }
+
+    function makeCtx(turnId: string, evt: ReturnType<typeof makeEvent>) {
+      return {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId,
+        buildCompletionEvent: () => Promise.resolve(evt),
+      };
+    }
+
+    it('closes the stream ONCE with chunks:[] + completion blocks + a dismiss-less feedback row, and does not send a second card', async () => {
+      const client = makeClient();
+      const channel = makeConsolidatingChannel();
+      const surface = makeSurface(client, channel);
+      const evt = makeEvent();
+      const ctx = makeCtx('C1:t1.0:a32-1', evt);
+
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(channel.buildCompletionBlocks).toHaveBeenCalledWith(evt);
+      expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
+      const payload = client.chat.stopStream.mock.calls[0][0];
+      expect(payload.channel).toBe('C1');
+      expect(payload.ts).toBe('stream-ts-1');
+      expect(payload.chunks).toEqual([]);
+      expect(payload.blocks.slice(0, 1)).toEqual(COMPLETION_BLOCKS);
+
+      const feedbackRow = payload.blocks[payload.blocks.length - 1];
+      expect(feedbackRow.type).toBe('context_actions');
+      expect(feedbackRow.block_id).toBe('turn_feedback_v1:C1:t1.0:a32');
+      // No dismiss: deleting the host message would delete the answer.
+      expect(feedbackRow.elements).toHaveLength(1);
+      expect(feedbackRow.elements[0].type).toBe('feedback_buttons');
+
+      // Single surface — the detached card must NOT also be posted.
+      expect(channel.send).not.toHaveBeenCalled();
+      expect(client.chat.postMessage).not.toHaveBeenCalled();
+    });
+
+    it('never re-sends the streamed answer text on close (append-only close, original preserved)', async () => {
+      const client = makeClient();
+      const channel = makeConsolidatingChannel();
+      const surface = makeSurface(client, channel);
+      const ctx = makeCtx('C1:t1.0:a32-2', makeEvent());
+
+      await surface.begin(ctx as any);
+      await surface.appendText(ctx.turnId, 'the streamed answer body');
+      await surface.end(ctx.turnId, 'completed');
+
+      const payload = client.chat.stopStream.mock.calls[0][0];
+      expect(JSON.stringify(payload)).not.toContain('the streamed answer body');
+      expect(payload.markdown_text).toBeUndefined();
+    });
+
+    it('protects the stream ts instead of tracking it for deletion', async () => {
+      const client = makeClient();
+      const channel = makeConsolidatingChannel();
+      const surface = makeSurface(client, channel);
+      const evt = makeEvent();
+      const ctx = makeCtx('C1:t1.0:a32-3', evt);
+
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(channel.protectMessageTs).toHaveBeenCalledWith(evt, 'stream-ts-1');
+    });
+
+    it('resolves the snapshot BEFORE closing the stream (blocks cannot be appended after stop)', async () => {
+      const client = makeClient();
+      const channel = makeConsolidatingChannel();
+      const surface = makeSurface(client, channel);
+
+      let resolveSnapshot!: (evt: ReturnType<typeof makeEvent> | undefined) => void;
+      const snapshotPromise = new Promise<ReturnType<typeof makeEvent> | undefined>((resolve) => {
+        resolveSnapshot = resolve;
+      });
+      const ctx = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:a32-order',
+        buildCompletionEvent: () => snapshotPromise,
+      };
+      await surface.begin(ctx as any);
+
+      const endPromise = surface.end(ctx.turnId, 'completed');
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      // Still open: the close is blocked on the snapshot.
+      expect(client.chat.stopStream).not.toHaveBeenCalled();
+
+      resolveSnapshot(makeEvent());
+      await endPromise;
+
+      expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
+      expect(client.chat.stopStream.mock.calls[0][0].blocks).toBeDefined();
+    });
+
+    it('snapshot timeout → plain chunks:[] close, no blocks, snapshotResolved=false', async () => {
+      vi.useFakeTimers();
+      try {
+        const client = makeClient();
+        const channel = makeConsolidatingChannel();
+        const surface = makeSurface(client, channel);
+
+        const ctx = {
+          channelId: 'C1',
+          threadTs: 't1.0',
+          sessionKey: 'C1:t1.0',
+          turnId: 'C1:t1.0:a32-timeout',
+          buildCompletionEvent: () =>
+            new Promise<ReturnType<typeof makeEvent> | undefined>(() => {
+              /* never settle */
+            }),
+        };
+        await surface.begin(ctx as any);
+
+        const endPromise = surface.end(ctx.turnId, 'completed');
+        await vi.advanceTimersByTimeAsync(3000);
+        const result = await endPromise;
+
+        expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
+        expect(client.chat.stopStream).toHaveBeenCalledWith({
+          channel: 'C1',
+          ts: 'stream-ts-1',
+          chunks: [],
+        });
+        expect(channel.send).not.toHaveBeenCalled();
+        expect((result as any).snapshotResolved).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('Slack refuses the appended blocks (invalid_blocks) → plain close + detached send() fallback', async () => {
+      const slackErr: any = new Error('invalid_blocks');
+      slackErr.data = { error: 'invalid_blocks' };
+      const client = makeClient({
+        stopStream: vi.fn().mockRejectedValueOnce(slackErr).mockResolvedValue(undefined),
+      });
+      const channel = makeConsolidatingChannel();
+      const surface = makeSurface(client, channel);
+      const evt = makeEvent();
+      const ctx = makeCtx('C1:t1.0:a32-invalid', evt);
+
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(client.chat.stopStream).toHaveBeenCalledTimes(2);
+      // Second attempt closes the stream without the rejected blocks.
+      expect(client.chat.stopStream).toHaveBeenNthCalledWith(2, {
+        channel: 'C1',
+        ts: 'stream-ts-1',
+        chunks: [],
+      });
+      expect(channel.send).toHaveBeenCalledTimes(1);
+      expect(channel.send).toHaveBeenCalledWith(evt);
+    });
+
+    it('streaming_mode_mismatch → plain close + detached send() fallback', async () => {
+      const slackErr: any = new Error('streaming_mode_mismatch');
+      slackErr.data = { error: 'streaming_mode_mismatch' };
+      const client = makeClient({
+        stopStream: vi.fn().mockRejectedValueOnce(slackErr).mockResolvedValue(undefined),
+      });
+      const channel = makeConsolidatingChannel();
+      const surface = makeSurface(client, channel);
+      const ctx = makeCtx('C1:t1.0:a32-mismatch', makeEvent());
+
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(client.chat.stopStream).toHaveBeenCalledTimes(2);
+      expect(channel.send).toHaveBeenCalledTimes(1);
+    });
+
+    // An AMBIGUOUS failure (rate limit / transport / 5xx — anything that is NOT
+    // a platform refusal of the appended blocks) may still have applied the
+    // close server-side. The no-duplicate policy stands (no retry, no detached
+    // card), which is exactly why the ts MUST be protected on this path too: if
+    // the close DID apply, the answer message now carries the completion card
+    // and the tracker's deleteAll sweep would delete the user's answer,
+    // breaking the "답변 보존" decision. Protecting a ts whose close never
+    // applied is harmless.
+    it('ambiguous stopStream failure (ratelimited) → protects the stream ts, no retry, no detached card', async () => {
+      const slackErr: any = new Error('ratelimited');
+      slackErr.data = { error: 'ratelimited' };
+      const client = makeClient({ stopStream: vi.fn().mockRejectedValue(slackErr) });
+      const channel = makeConsolidatingChannel();
+      const surface = makeSurface(client, channel);
+      const evt = makeEvent();
+      const ctx = makeCtx('C1:t1.0:a32-ambiguous', evt);
+
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(channel.protectMessageTs).toHaveBeenCalledWith(evt, 'stream-ts-1');
+      // No duplicate: neither a second close attempt nor a detached card.
+      expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
+      expect(channel.send).not.toHaveBeenCalled();
+      expect(client.chat.postMessage).not.toHaveBeenCalled();
+    });
+
+    it('transport failure with no Slack error code is treated as ambiguous and still protects the ts', async () => {
+      const client = makeClient({ stopStream: vi.fn().mockRejectedValue(new Error('socket hang up')) });
+      const channel = makeConsolidatingChannel();
+      const surface = makeSurface(client, channel);
+      const evt = makeEvent();
+      const ctx = makeCtx('C1:t1.0:a32-transport', evt);
+
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(channel.protectMessageTs).toHaveBeenCalledWith(evt, 'stream-ts-1');
+      expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
+      expect(channel.send).not.toHaveBeenCalled();
+    });
+
+    it('a REFUSED close does not protect the ts (the detached card owns its own message)', async () => {
+      const slackErr: any = new Error('invalid_blocks');
+      slackErr.data = { error: 'invalid_blocks' };
+      const client = makeClient({
+        stopStream: vi.fn().mockRejectedValueOnce(slackErr).mockResolvedValue(undefined),
+      });
+      const channel = makeConsolidatingChannel();
+      const surface = makeSurface(client, channel);
+      const ctx = makeCtx('C1:t1.0:a32-refused-noprotect', makeEvent());
+
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(channel.protectMessageTs).not.toHaveBeenCalled();
+      expect(channel.send).toHaveBeenCalledTimes(1);
+    });
+
+    it("end('aborted') closes exactly as before: chunks:[] only, no block build", async () => {
+      const client = makeClient();
+      const channel = makeConsolidatingChannel();
+      const surface = makeSurface(client, channel);
+      const ctx = makeCtx('C1:t1.0:a32-abort', makeEvent());
+
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'aborted');
+
+      expect(client.chat.stopStream).toHaveBeenCalledWith({
+        channel: 'C1',
+        ts: 'stream-ts-1',
+        chunks: [],
+      });
+      expect(channel.buildCompletionBlocks).not.toHaveBeenCalled();
+      expect(channel.send).not.toHaveBeenCalled();
+    });
+
+    it('channel without buildCompletionBlocks (legacy double) keeps the detached send path', async () => {
+      const client = makeClient();
+      const channel = { send: vi.fn().mockResolvedValue(undefined) };
+      const surface = makeSurface(client, channel);
+      const evt = makeEvent();
+      const ctx = makeCtx('C1:t1.0:a32-legacy', evt);
+
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(client.chat.stopStream).toHaveBeenCalledWith({
+        channel: 'C1',
+        ts: 'stream-ts-1',
+        chunks: [],
+      });
+      expect(channel.send).toHaveBeenCalledWith(evt);
+    });
+
+    it('no stream (never began) → detached send() still posts the card', async () => {
+      const client = makeClient();
+      const channel = makeConsolidatingChannel();
+      const surface = makeSurface(client, channel);
+      const evt = makeEvent();
+      const ctx: TurnAddress & { turnId: string } = {
+        channelId: 'C1',
+        threadTs: 't1.0',
+        sessionKey: 'C1:t1.0',
+        turnId: 'C1:t1.0:a32-nostream',
+        buildCompletionEvent: () => Promise.resolve(evt),
+      } as any;
+
+      // renderTasks creates an ad-hoc turn entry with no streamTs.
+      await surface.renderTasks(ctx.turnId, [{ content: 'x', status: 'pending' }] as any, ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(client.chat.stopStream).not.toHaveBeenCalled();
+      expect(channel.send).toHaveBeenCalledWith(evt);
+    });
+
+    it('withFeedback false → completion blocks appended without a feedback row', async () => {
+      const client = makeClient();
+      const channel = makeConsolidatingChannel();
+      channel.buildCompletionBlocks.mockReturnValue({
+        blocks: COMPLETION_BLOCKS,
+        fallbackText: 'Session X',
+        withFeedback: false,
+      });
+      const surface = makeSurface(client, channel);
+      const ctx = makeCtx('C1:t1.0:a32-nofb', makeEvent());
+
+      await surface.begin(ctx as any);
+      await surface.end(ctx.turnId, 'completed');
+
+      expect(client.chat.stopStream.mock.calls[0][0].blocks).toEqual(COMPLETION_BLOCKS);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // A11 — the sticky flag must not swallow a FAILED marker write
+  //
+  // The flag is set BEFORE the Slack call on purpose (it fences the two entry
+  // points that routinely race: the ThreadPanel click and end()'s teardown).
+  // But leaving it set after a REJECTED append turns "one marker per turn" into
+  // "zero markers, silently": every later attempt short-circuits on the flag and
+  // the user's explicit interruption never appears in the transcript.
+  // -------------------------------------------------------------------------
+  describe('A11 user-interrupted marker — failed write stays retryable', () => {
+    it('clears the sticky flag when the append rejects, so the next attempt retries and warns with the Slack code', async () => {
+      const slackErr: any = new Error('slack down');
+      slackErr.data = { error: 'ratelimited' };
+      const client = makeClient({
+        appendStream: vi.fn().mockRejectedValueOnce(slackErr).mockResolvedValue(undefined),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+      const warnSpy = vi.fn();
+      (surface as any).logger.warn = warnSpy;
+
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:int-retry' };
+      await surface.begin(ctx);
+
+      await expect(surface.markUserInterrupted(ctx.turnId)).resolves.toBe(false);
+      expect(warnSpy).toHaveBeenCalledWith(
+        'user-interrupted marker append failed',
+        expect.objectContaining({
+          turnId: ctx.turnId,
+          streamTs: 'stream-ts-1',
+          error: expect.objectContaining({ code: 'ratelimited' }),
+        }),
+      );
+
+      // The loss is recoverable: the flag was rolled back, so the retry lands.
+      await expect(surface.markUserInterrupted(ctx.turnId)).resolves.toBe(true);
+      expect(client.chat.appendStream).toHaveBeenCalledTimes(2);
+      expect(client.chat.appendStream.mock.calls[1][0]).toMatchObject({
+        channel: 'C1',
+        ts: 'stream-ts-1',
+        chunks: [{ type: 'markdown_text', text: 'user-interrupted' }],
+      });
+    });
+
+    it("a failed append still lets end('user-interrupted') stamp the marker", async () => {
+      const client = makeClient({
+        appendStream: vi.fn().mockRejectedValueOnce(new Error('transport')).mockResolvedValue(undefined),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:int-end' };
+      await surface.begin(ctx);
+      await expect(surface.markUserInterrupted(ctx.turnId)).resolves.toBe(false);
+      await surface.end(ctx.turnId, 'user-interrupted');
+
+      const markers = client.chat.appendStream.mock.calls.filter(
+        (call: any[]) => call[0]?.chunks?.[0]?.text === 'user-interrupted',
+      );
+      // Two attempts, exactly one of which actually landed.
+      expect(markers).toHaveLength(2);
+    });
+
+    it('rolls the flag back on the no-stream plain-text fallback too', async () => {
+      const client = makeClient({
+        startStream: vi.fn().mockRejectedValue(new Error('slack 500')),
+        postMessage: vi.fn().mockRejectedValueOnce(new Error('transport')).mockResolvedValue({ ts: 'm1' }),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+
+      const ctx = { channelId: 'C9', threadTs: 't9', sessionKey: 'C9:t9', turnId: 'C9:t9:int-nostream' };
+      await surface.begin(ctx);
+
+      await expect(surface.markUserInterrupted(ctx.turnId)).resolves.toBe(false);
+      await expect(surface.markUserInterrupted(ctx.turnId)).resolves.toBe(true);
+      expect(client.chat.postMessage).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // A11 — the two entry points OVERLAP, so the fence must be the write itself
+  //
+  // `markUserInterrupted()` (click/abort) and `end('user-interrupted')`
+  // (teardown) routinely run concurrently. A boolean fence lets the loser
+  // report "already written" and walk on to `stopStream` while the winner's
+  // write is still open — if that write then fails, the marker was written
+  // ZERO times and the stream is already closed. Sharing the in-flight promise
+  // is what makes the loser wait for the real outcome (and retry it).
+  // -------------------------------------------------------------------------
+  describe('A11 user-interrupted marker — concurrent writers share one in-flight write', () => {
+    /** Marker-only append calls, in order. */
+    function markerCalls(client: MockClient): any[] {
+      return client.chat.appendStream.mock.calls.filter(
+        (call: any[]) => call[0]?.chunks?.[0]?.text === 'user-interrupted',
+      );
+    }
+
+    it('end() joins an in-flight click write and retries it when that write fails', async () => {
+      // First marker append hangs until we fail it — that open window is
+      // exactly when end() reaches its own marker step.
+      let failFirst: ((err: Error) => void) | undefined;
+      const firstAttempt = new Promise<void>((_resolve, reject) => {
+        failFirst = reject;
+      });
+      const order: string[] = [];
+      let markerAttempts = 0;
+      const client = makeClient({
+        appendStream: vi.fn(async (args: any) => {
+          if (args?.chunks?.[0]?.text !== 'user-interrupted') return undefined;
+          markerAttempts += 1;
+          if (markerAttempts === 1) return firstAttempt;
+          order.push('marker');
+          return undefined;
+        }),
+        stopStream: vi.fn(async () => {
+          order.push('stop');
+          return undefined;
+        }),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:int-race' };
+      await surface.begin(ctx);
+
+      const click = surface.markUserInterrupted(ctx.turnId);
+      const teardown = surface.end(ctx.turnId, 'user-interrupted');
+      // Let end() walk its teardown steps and arrive at the marker while the
+      // click's append is still open.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      failFirst?.(new Error('transport'));
+      const [clicked] = await Promise.all([click, teardown]);
+
+      // The click lost its write…
+      expect(clicked).toBe(false);
+      // …and end() retried it instead of trusting a fence it never verified.
+      expect(markerCalls(client)).toHaveLength(2);
+      // The retry has to land BEFORE the close, or it lands nowhere.
+      expect(order).toEqual(['marker', 'stop']);
+    });
+
+    it('a click racing end() appends the marker exactly once when the write succeeds', async () => {
+      let release: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const client = makeClient({
+        appendStream: vi.fn(async (args: any) => {
+          if (args?.chunks?.[0]?.text === 'user-interrupted') await gate;
+          return undefined;
+        }),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:int-race-ok' };
+      await surface.begin(ctx);
+
+      const click = surface.markUserInterrupted(ctx.turnId);
+      const teardown = surface.end(ctx.turnId, 'user-interrupted');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      release?.();
+      const [clicked] = await Promise.all([click, teardown]);
+
+      expect(clicked).toBe(true);
+      expect(markerCalls(client)).toHaveLength(1);
+    });
+
+    it('when both attempts fail the loss is warned and the stream still closes', async () => {
+      const slackErr: any = new Error('slack down');
+      slackErr.data = { error: 'ratelimited' };
+      const client = makeClient({
+        appendStream: vi.fn(async (args: any) => {
+          if (args?.chunks?.[0]?.text === 'user-interrupted') throw slackErr;
+          return undefined;
+        }),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+      const warnSpy = vi.fn();
+      (surface as any).logger.warn = warnSpy;
+
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:int-both-fail' };
+      await surface.begin(ctx);
+
+      await expect(surface.markUserInterrupted(ctx.turnId)).resolves.toBe(false);
+      await surface.end(ctx.turnId, 'user-interrupted');
+
+      expect(markerCalls(client)).toHaveLength(2);
+      const failWarns = warnSpy.mock.calls.filter((call) => call[0] === 'user-interrupted marker append failed');
+      expect(failWarns).toHaveLength(2);
+      // A lost marker must not also cost the user their stream close.
+      expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // A11 — ONE retry per turn, not one retry per waiter
+  //
+  // "At most one attempt per call" is not the same guarantee as "at most one
+  // retry". When the shared in-flight write resolves `false`, EVERY caller
+  // parked on it wakes up and falls through — so three overlapping callers
+  // (two ThreadPanel clicks + end()'s teardown) each created their own
+  // "single retry", appending the marker up to three times and overwriting
+  // each other's slot. The retry budget has to live on the TURN: whoever
+  // still sees the failed promise in the slot creates the one retry, everyone
+  // else joins it, and the turn spends at most two physical attempts.
+  // -------------------------------------------------------------------------
+  describe('A11 user-interrupted marker — retry budget is per turn, not per caller', () => {
+    /** Marker-only append calls, in order. */
+    function markerCalls(client: MockClient): any[] {
+      return client.chat.appendStream.mock.calls.filter(
+        (call: any[]) => call[0]?.chunks?.[0]?.text === 'user-interrupted',
+      );
+    }
+
+    it('three concurrent callers share ONE retry when the first write fails (2 appends, marker before stop)', async () => {
+      // The first marker append hangs until we fail it — that open window is
+      // where both the second click and end() park on the same promise.
+      let failFirst: ((err: Error) => void) | undefined;
+      const firstAttempt = new Promise<void>((_resolve, reject) => {
+        failFirst = reject;
+      });
+      const order: string[] = [];
+      let markerAttempts = 0;
+      const client = makeClient({
+        appendStream: vi.fn(async (args: any) => {
+          if (args?.chunks?.[0]?.text !== 'user-interrupted') return undefined;
+          markerAttempts += 1;
+          if (markerAttempts === 1) return firstAttempt;
+          order.push('marker');
+          return undefined;
+        }),
+        stopStream: vi.fn(async () => {
+          order.push('stop');
+          return undefined;
+        }),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:int-fanout' };
+      await surface.begin(ctx);
+
+      const clickA = surface.markUserInterrupted(ctx.turnId);
+      const clickB = surface.markUserInterrupted(ctx.turnId);
+      const teardown = surface.end(ctx.turnId, 'user-interrupted');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      failFirst?.(new Error('transport'));
+      const [a] = await Promise.all([clickA, clickB, teardown]);
+
+      // The first click owned the write that died.
+      expect(a).toBe(false);
+      // One failure + one retry — NOT one retry per parked caller.
+      expect(markerCalls(client)).toHaveLength(2);
+      // The retry still has to land before the close, or it lands nowhere.
+      expect(order).toEqual(['marker', 'stop']);
+    });
+
+    it('three concurrent callers append exactly one marker when the first write succeeds', async () => {
+      let release: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const client = makeClient({
+        appendStream: vi.fn(async (args: any) => {
+          if (args?.chunks?.[0]?.text === 'user-interrupted') await gate;
+          return undefined;
+        }),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:int-fanout-ok' };
+      await surface.begin(ctx);
+
+      const clickA = surface.markUserInterrupted(ctx.turnId);
+      const clickB = surface.markUserInterrupted(ctx.turnId);
+      const teardown = surface.end(ctx.turnId, 'user-interrupted');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      release?.();
+      const [a, b] = await Promise.all([clickA, clickB, teardown]);
+
+      expect(a).toBe(true);
+      expect(b).toBe(false);
+      expect(markerCalls(client)).toHaveLength(1);
+    });
+
+    it('stops at two physical attempts when both fail, warns the loss, and still closes the stream', async () => {
+      const slackErr: any = new Error('slack down');
+      slackErr.data = { error: 'ratelimited' };
+      const client = makeClient({
+        appendStream: vi.fn(async (args: any) => {
+          if (args?.chunks?.[0]?.text === 'user-interrupted') throw slackErr;
+          return undefined;
+        }),
+      });
+      const surface = new TurnSurface({ slackApi: makeSlackApi(client) });
+      const warnSpy = vi.fn();
+      (surface as any).logger.warn = warnSpy;
+
+      const ctx = { channelId: 'C1', threadTs: 't1', sessionKey: 'C1:t1', turnId: 'C1:t1:int-fanout-fail' };
+      await surface.begin(ctx);
+
+      const clickA = surface.markUserInterrupted(ctx.turnId);
+      const clickB = surface.markUserInterrupted(ctx.turnId);
+      const teardown = surface.end(ctx.turnId, 'user-interrupted');
+      const [a, b] = await Promise.all([clickA, clickB, teardown]);
+
+      expect(a).toBe(false);
+      expect(b).toBe(false);
+      // Two attempts is the whole budget — the third caller must not append.
+      expect(markerCalls(client)).toHaveLength(2);
+      const failWarns = warnSpy.mock.calls.filter((call) => call[0] === 'user-interrupted marker append failed');
+      expect(failWarns).toHaveLength(2);
+      // The exhausted caller reports the loss instead of retrying silently.
+      expect(warnSpy).toHaveBeenCalledWith(
+        'user-interrupted marker retry budget spent — marker lost',
+        expect.objectContaining({ turnId: ctx.turnId, attempts: 2 }),
+      );
+      // A lost marker must not also cost the user their stream close.
+      expect(client.chat.stopStream).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -4,10 +4,13 @@
   "private": true,
   "description": "",
   "main": "index.js",
+  "bin": {
+    "somawork": "dist/cli/index.js"
+  },
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "build": "npm run check && npm run build:somalib && npm run build:packages && tsc && cp -r src/prompt dist/ && cp -r src/persona dist/ && cp -r src/local dist/ && mkdir -p dist/metrics/usage-render && cp -r src/metrics/usage-render/assets dist/metrics/usage-render/",
+    "build": "npm run check && npm run build:somalib && npm run build:packages && tsc && cp -r src/prompt dist/ && cp -r src/persona dist/ && cp -r src/local dist/ && mkdir -p dist/metrics/usage-render && cp -r src/metrics/usage-render/assets dist/metrics/usage-render/ && chmod +x dist/cli/index.js",
     "build:somalib": "tsc -p somalib/tsconfig.json",
     "build:packages": "npm run build --workspaces --if-present",
     "prod": "node dist/index.js",
@@ -16,13 +19,20 @@
     "format": "biome check --write src/ somalib/ scripts/ packages/",
     "format:check": "biome format src/ somalib/ scripts/ packages/",
     "test": "vitest run",
+    "test:release": "vitest run --pool=forks --isolate --maxWorkers=1 --testTimeout=30000 --hookTimeout=120000",
     "test:watch": "vitest",
+    "verify:lean": "bash scripts/verification/lean-verify.sh",
     "smoke:mcp-bins": "node scripts/smoke/mcp-bins.js",
     "smoke:assets": "npm run smoke:assets --workspaces --if-present",
     "smoke:deploy-bundle": "node scripts/smoke/deploy-bundle.js",
+    "smoke:setup-package": "node scripts/smoke/setup-package.js",
+    "smoke:package-archives": "node scripts/smoke/package-archives.js",
+    "package:somawork": "bash scripts/release/package-somawork.sh",
+    "stage:bundle": "bash scripts/deploy/stage-bundle.sh",
     "mapping:list": "tsx scripts/update-slack-jira-mapping.ts list",
     "mapping:sync": "tsx scripts/update-slack-jira-mapping.ts sync",
-    "mapping:add": "tsx scripts/update-slack-jira-mapping.ts add"
+    "mapping:add": "tsx scripts/update-slack-jira-mapping.ts add",
+    "deadcode": "knip --no-config-hints --include files,exports"
   },
   "workspaces": [
     "somalib",
@@ -34,16 +44,16 @@
   "license": "ISC",
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
-    "@types/ioredis": "^4.28.10",
     "@types/node": "=24.0.4",
     "@types/proper-lockfile": "^4.1.4",
+    "esbuild": "0.25.5",
+    "knip": "^6.25.0",
     "tsx": "=4.20.3",
     "typescript": "^5.9.3",
     "vitest": "^4.0.15"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.111",
-    "@clickhouse/client": "^1.18.2",
+    "@anthropic-ai/claude-agent-sdk": "0.3.284",
     "@fastify/formbody": "^8.0.2",
     "@fastify/websocket": "^11.2.0",
     "@modelcontextprotocol/sdk": "^1.27.0",
@@ -51,19 +61,16 @@
     "@slack/bolt": "=4.7.0",
     "@slack/web-api": "^7.15.1",
     "@types/jsonwebtoken": "=9.0.10",
-    "@types/node-fetch": "=2.6.12",
     "dotenv": "=16.6.0",
     "echarts": "^6.0.0",
     "fastify": "^5.7.2",
-    "ioredis": "^5.10.1",
     "jsonwebtoken": "=9.0.2",
-    "markdown-to-slack-blocks": "^1.4.1",
-    "mongodb": "^7.1.1",
-    "mysql2": "^3.20.0",
     "node-fetch": "=3.3.2",
     "playwright": "^1.60.0",
     "proper-lockfile": "^4.1.2",
     "rotating-file-stream": "^3.2.9",
-    "ulid": "^3.0.2"
+    "soma-lib": "https://github.com/2lab-ai/soma-lib/releases/download/v0.8.0/soma-lib-0.8.0.tgz",
+    "ulid": "^3.0.2",
+    "zod": "^4.3.6"
   }
 }

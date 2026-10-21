@@ -1,3 +1,4 @@
+import { UnsafePathError } from '@soma/common/atomic-write';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -514,5 +515,97 @@ describe('PluginManager', () => {
       const resolved = mgr.getResolvedPlugins();
       expect(resolved[0].source).toBe('marketplace');
     });
+  });
+});
+
+/**
+ * NN-2 — persistence refusal must not escape a `CrudResult` method.
+ *
+ * `config.json` is now written through the hardened atomic helper, which
+ * refuses a symlinked target or ancestor with `UnsafePathError`. That is a new
+ * throw on a runtime write path whose four CRUD entry points declare they
+ * return `{success, error}` — an operator whose `~/.config` is a symlink into a
+ * dotfiles repo would get an exception instead, after the in-memory config had
+ * already been mutated.
+ */
+describe('PluginManager — persistence refusal', () => {
+  let tmpDir: string;
+  let configFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-mgr-refuse-test-'));
+    configFile = path.join(tmpDir, 'config.json');
+    vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({});
+    mockSaveConfig.mockImplementation(() => {
+      throw new UnsafePathError('Refusing to use "/Users/secret/.config/somawork/config.json": path is a symlink.');
+    });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function manager(config: PluginConfig = {}): PluginManager {
+    return new PluginManager(config, tmpDir, configFile);
+  }
+
+  it('addPlugin returns a failure instead of throwing', () => {
+    const mgr = manager();
+    const result = mgr.addPlugin('omc@soma-work');
+    expect(result.success).toBe(false);
+    expect(result.error).toBeTruthy();
+  });
+
+  it('addPlugin leaves the in-memory plugin list unchanged after a refusal', () => {
+    const mgr = manager({ plugins: ['existing@soma-work'] });
+    mgr.addPlugin('omc@soma-work');
+    expect(mgr.getInstalledPlugins()).toEqual(['existing@soma-work']);
+  });
+
+  it('removePlugin returns a failure and keeps the plugin installed', () => {
+    const mgr = manager({ plugins: ['omc@soma-work'] });
+    const result = mgr.removePlugin('omc@soma-work');
+    expect(result.success).toBe(false);
+    expect(mgr.getInstalledPlugins()).toEqual(['omc@soma-work']);
+  });
+
+  it('addMarketplace returns a failure and keeps the marketplace list unchanged', () => {
+    const mgr = manager({ marketplace: [{ name: 'a', repo: 'o/a', ref: 'main' }] });
+    const result = mgr.addMarketplace({ name: 'b', repo: 'o/b', ref: 'main' });
+    expect(result.success).toBe(false);
+    expect(mgr.getMarketplaces()).toEqual([{ name: 'a', repo: 'o/a', ref: 'main' }]);
+  });
+
+  it('removeMarketplace returns a failure and keeps the marketplace present', () => {
+    const mgr = manager({ marketplace: [{ name: 'a', repo: 'o/a', ref: 'main' }] });
+    const result = mgr.removeMarketplace('a');
+    expect(result.success).toBe(false);
+    expect(mgr.getMarketplaces()).toEqual([{ name: 'a', repo: 'o/a', ref: 'main' }]);
+  });
+
+  it('never echoes the refused path or a symlink target in the error', () => {
+    const mgr = manager();
+    const result = mgr.addPlugin('omc@soma-work');
+    expect(result.error).not.toContain('/Users/secret');
+    expect(result.error).not.toContain('.config');
+    expect(result.error).not.toMatch(/\//);
+  });
+
+  it('reports the same fixed error from every CRUD entry point', () => {
+    const errors = new Set<string | undefined>([
+      manager().addPlugin('omc@soma-work').error,
+      manager({ plugins: ['omc@soma-work'] }).removePlugin('omc@soma-work').error,
+      manager().addMarketplace({ name: 'b', repo: 'o/b', ref: 'main' }).error,
+      manager({ marketplace: [{ name: 'a', repo: 'o/a', ref: 'main' }] }).removeMarketplace('a').error,
+    ]);
+    expect(errors.size).toBe(1);
+  });
+
+  it('still surfaces an unexpected programmer error rather than swallowing it', () => {
+    mockSaveConfig.mockImplementation(() => {
+      throw new TypeError('cannot read properties of undefined');
+    });
+    expect(() => manager().addPlugin('omc@soma-work')).toThrow(TypeError);
   });
 });

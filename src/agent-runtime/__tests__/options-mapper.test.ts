@@ -45,6 +45,7 @@ describe('toSdkOptions', () => {
     expect(out.plugins).toEqual([]);
     expect(out.thinking).toEqual({ type: 'disabled' });
     expect(out.stderr).toBe(stderr);
+    expect(out.spawnClaudeCodeProcess).toBeTypeOf('function');
   });
 
   it('defaults tools/settingSources/plugins to empty arrays when omitted', () => {

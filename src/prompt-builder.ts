@@ -7,6 +7,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SYSTEM_PROMPT_FILE } from './env-paths';
+import { formatSemanticIndexForPrompt } from './hierarchical-memory';
 import { Logger } from './logger';
 import { buildSessionGoalBlock } from './prompt/session-goal-block';
 import { buildUserInstructionsBlock } from './prompt/user-instructions-block';
@@ -427,11 +428,13 @@ export class PromptBuilder {
   private applyPersistentMemory(prompt: string, userId?: string): string {
     if (!userId) return prompt;
     const memoryBlock = formatMemoryForPrompt(userId);
-    if (!memoryBlock) return prompt;
+    const semanticIndex = formatSemanticIndexForPrompt(userId);
+    if (!memoryBlock && !semanticIndex) return prompt;
 
-    const guidance = `\nYou have persistent memory across sessions. Save durable facts using the SAVE_MEMORY model-command: user preferences, environment details, tool quirks, and stable conventions. Memory is injected into every turn, so keep it compact and focused on facts that will still matter later.\nPrioritize what reduces future user steering -- the most valuable memory is one that prevents the user from having to correct or remind you again.\nDo NOT save: task progress, session outcomes, completed-work logs, or temporary TODO state.\n`;
-    this.logger.debug('Injected persistent memory', { user: userId });
-    return prompt ? `${prompt}\n\n${guidance}\n${memoryBlock}` : `${guidance}\n${memoryBlock}`;
+    const guidance = `\nYou have persistent memory across sessions, organized as a per-user taxonomy.\nL1 (always loaded): flat MEMORY.md (agent notes) + USER.md (user profile), written via SAVE_MEMORY. Keep these compact — facts that matter at the start of every session.\nHierarchical memory (loaded as an INDEX below; fetch a page on demand with the MEMORY command, op=page_get, passing the listed page id verbatim as \`id\` — e.g. {op:"page_get", id:"agent/foo"}): semantic pages under agent/sites/concepts/projects/cron, plus append-only episodic observations.\nWrite durable knowledge with the MEMORY command: op=page_upsert for stable subject pages (Current + History), op=episodic_append for sparse/dated observations. Promote repeated episodic facts into a page once durable.\nPrioritize what reduces future user steering. Do NOT save task progress, session outcomes, or temporary TODO state into L1.\n`;
+    const blocks = [memoryBlock, semanticIndex].filter((b) => b).join('\n\n');
+    this.logger.debug('Injected persistent memory', { user: userId, hasIndex: Boolean(semanticIndex) });
+    return prompt ? `${prompt}\n\n${guidance}\n${blocks}` : `${guidance}\n${blocks}`;
   }
 
   /**
@@ -446,7 +449,11 @@ export class PromptBuilder {
       const skillList = userSkills
         .map((s) => `- \`$user:${s.name}\`: ${s.description || '(no description)'}`)
         .join('\n');
-      const skillBlock = `\n## Your Personal Skills\nYou have ${userSkills.length} personal skill(s). Invoke with \`$user:skill-name\`. Manage with MANAGE_SKILL command (create/update/delete/rename/list/share/get).\n${skillList}`;
+      const crossUserNote =
+        '\n_Cross-user (다른 유저 스킬): `${user}:{skill}` or `<@uid>:{skill}` force-invokes another user’s skill; ' +
+        '`{user}:{skill}` (no $) softly uses it; `$user:{user}` lists their skills with 보기/copy. ' +
+        'Copy with MANAGE_SKILL `action=copy sourceUser=<uid|name> name=<skill>`._';
+      const skillBlock = `\n## Your Personal Skills\nYou have ${userSkills.length} personal skill(s). Invoke with \`$user:skill-name\`. Manage with MANAGE_SKILL command (create/update/delete/rename/list/share/get/copy).\n${skillList}${crossUserNote}`;
       return prompt ? `${prompt}\n${skillBlock}` : skillBlock;
     } catch {
       // Skills dir may not exist — that's fine, no skills to inject
@@ -473,16 +480,6 @@ export class PromptBuilder {
     const instructionsBlock = buildUserInstructionsBlock(session);
     if (!instructionsBlock) return prompt;
     return prompt ? `${prompt}\n\n${instructionsBlock}` : instructionsBlock;
-  }
-
-  /**
-   * Get the default system prompt without persona (includes .system.prompt if exists)
-   */
-  getDefaultPrompt(): string | undefined {
-    if (this.defaultSystemPrompt) {
-      return this.appendLocalSystemPrompt(this.defaultSystemPrompt);
-    }
-    return this.localSystemPrompt;
   }
 }
 

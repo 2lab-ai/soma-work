@@ -118,7 +118,16 @@ export interface ActionHandlerDelegates {
     handleAccept(body: any, respond: RespondFn): Promise<void>;
     handleDeny(body: any, respond: RespondFn): Promise<void>;
   };
+  autoskillActionHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
+  autoskillAddSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
+  /** Cron management card (model/target/mode selects, run/edit/delete buttons). */
+  cronActionHandler: { handleAction(body: any, respond: RespondFn, client?: any): Promise<void> };
+  /** Cron edit modal submit (name/schedule/channel/prompt). */
+  cronEditSubmitHandler: { handleSubmit(ack: ViewAck, body: any): Promise<void> };
+  /** Owner-facing buttons of the `cron run` permission prompt (once/always/deny). */
+  cronRunPermissionHandler: { handleAction(body: any, respond: RespondFn): Promise<void> };
   userSkillMenuHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
+  userSkillPermissionHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   userSkillEditSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
   userSkillRenameSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
   userSkillDeleteSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
@@ -137,9 +146,18 @@ export interface ActionHandlerDelegates {
   };
   feedbackHandler: { handleFeedback(body: any, respond: RespondFn): Promise<void> };
   dismissHandler: { handleDismiss(body: any, respond: RespondFn): Promise<void> };
+  goalHandler: {
+    handleDelete(body: any, respond: RespondFn): Promise<void>;
+    handleUpdate(body: any, respond: RespondFn, client: any): Promise<void>;
+    handleUpdateSubmit(ack: ViewAck, body: any, client: any): Promise<void>;
+    handleContinueDm(body: any, respond: RespondFn): Promise<void>;
+    handleCancelDm(body: any, respond: RespondFn): Promise<void>;
+  };
   zSettingsHandler: { register(app: App): void };
   zTopicRegistry: ZTopicRegistryLike;
   registerCctActions(app: App): void;
+  /** Auth card actions (#llmux runtime switch). Optional for older delegate providers. */
+  registerAuthActions?(app: App): void;
 }
 
 export interface ActionHandlersProviders {
@@ -159,6 +177,9 @@ export function setActionHandlersProviders(next: ActionHandlersProviders): void 
   if (next.isAdminUser) providers.isAdminUser = next.isAdminUser;
 }
 
+const GOAL_UPDATE_MODAL_CALLBACK_ID = 'goal_update_modal_submit';
+const AUTOSKILL_ADD_MODAL_CALLBACK_ID = 'autoskill_add_modal_submit';
+const CRON_EDIT_MODAL_CALLBACK_ID = 'cron_edit_modal_submit';
 const USER_SKILL_EDIT_MODAL_CALLBACK_ID = 'user_skill_edit_modal_submit';
 const USER_SKILL_RENAME_MODAL_CALLBACK_ID = 'user_skill_rename_modal_submit';
 const USER_SKILL_DELETE_MODAL_CALLBACK_ID = 'user_skill_delete_modal_submit';
@@ -189,10 +210,6 @@ export class ActionHandlers {
 
   getZTopicRegistry(): ZTopicRegistryLike {
     return this.delegates.zTopicRegistry;
-  }
-
-  getPendingInstructionConfirmStore(): PendingInstructionConfirmStore {
-    return this.pendingInstructionConfirmStore;
   }
 
   registerHandlers(app: App): void {
@@ -266,6 +283,34 @@ export class ActionHandlers {
       await this.delegates.choiceHandler.handleUserChoice(body);
     });
 
+    app.action(/^autoskill_/, async ({ ack, body, respond, client }) => {
+      await ack();
+      await this.delegates.autoskillActionHandler.handleAction(body, respond as RespondFn, client);
+    });
+
+    // Cron management card: cron_<kind>:: — the `::` addressing suffix keeps
+    // this disjoint from any future bare cron_* ids. `client` is needed by the
+    // ✏️ edit button (views.open).
+    app.action(/^cron_(model|target|mode|edit|run|delete)::/, async ({ ack, body, respond, client }) => {
+      await ack();
+      await this.delegates.cronActionHandler.handleAction(body, respond as RespondFn, client);
+    });
+
+    // Owner's answer to a cross-user `cron run` request (DM'd prompt, or the
+    // in-thread fallback when the DM could not be delivered).
+    app.action(/^cron_run_perm_/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.cronRunPermissionHandler.handleAction(body, respond as RespondFn);
+    });
+
+    app.view(CRON_EDIT_MODAL_CALLBACK_ID, async ({ ack, body }) => {
+      await this.delegates.cronEditSubmitHandler.handleSubmit(ack as ViewAck, body);
+    });
+
+    app.view(AUTOSKILL_ADD_MODAL_CALLBACK_ID, async ({ ack, body, client }) => {
+      await this.delegates.autoskillAddSubmitHandler.handleSubmit(ack as ViewAck, body, client);
+    });
+
     app.action(/^user_skill_menu_/, async ({ ack, body, respond, client }) => {
       await ack();
       await this.delegates.userSkillMenuHandler.handleAction(body, respond as RespondFn, client);
@@ -274,6 +319,11 @@ export class ActionHandlers {
     app.action(/^user_skill_invoke_/, async ({ ack, body, respond, client }) => {
       await ack();
       await this.delegates.userSkillMenuHandler.handleAction(body, respond as RespondFn, client);
+    });
+
+    app.action(/^skill_perm_/, async ({ ack, body, respond, client }) => {
+      await ack();
+      await this.delegates.userSkillPermissionHandler.handleAction(body, respond as RespondFn, client);
     });
 
     app.view(USER_SKILL_EDIT_MODAL_CALLBACK_ID, async ({ ack, body, client }) => {
@@ -441,8 +491,34 @@ export class ActionHandlers {
       await this.delegates.formHandler.handleCustomInputSubmit(body, view);
     });
 
+    // ── Interactive goal list (S1) + cap-reached owner DM (S3) ──────────────
+    app.action(/^goal_delete:/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.goalHandler.handleDelete(body, respond as RespondFn);
+    });
+
+    app.action(/^goal_update:/, async ({ ack, body, respond, client }) => {
+      await ack();
+      await this.delegates.goalHandler.handleUpdate(body, respond as RespondFn, client);
+    });
+
+    app.view(GOAL_UPDATE_MODAL_CALLBACK_ID, async ({ ack, body, client }) => {
+      await this.delegates.goalHandler.handleUpdateSubmit(ack as ViewAck, body, client);
+    });
+
+    app.action('goal_continue_dm', async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.goalHandler.handleContinueDm(body, respond as RespondFn);
+    });
+
+    app.action('goal_cancel_dm', async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.goalHandler.handleCancelDm(body, respond as RespondFn);
+    });
+
     this.delegates.zSettingsHandler.register(app);
     this.delegates.registerCctActions(app);
+    this.delegates.registerAuthActions?.(app);
   }
 
   async handleDashboardChoiceAnswer(
@@ -715,6 +791,30 @@ export class ActionHandlers {
     }
   }
 
+  /**
+   * End the session anchored to a thread whose root is about to be (or has just
+   * been) deleted.
+   *
+   * Keyed on channel AND thread together: a thread ts is only unique within its
+   * channel, so terminating on the ts alone could reach into another channel's
+   * session. Best-effort by design — no session for this thread is the normal
+   * case, and a failure here must never abort the deletion the admin asked for.
+   */
+  private terminateSessionForThread(channel: string, threadTs: string): void {
+    try {
+      const claudeHandler = this.ctx.claudeHandler;
+      const sessionKey = claudeHandler?.getSessionKey?.(channel, threadTs);
+      if (!sessionKey) {
+        return;
+      }
+      if (claudeHandler?.terminateSession?.(sessionKey)) {
+        this.logger.info('Terminated session bound to a deleted thread root', { channel, threadTs, sessionKey });
+      }
+    } catch (error) {
+      this.logger.warn('Failed to terminate session for deleted thread root', { channel, threadTs, error });
+    }
+  }
+
   private async handleDmDeleteThreadConfirm(body: any, respond: RespondFn): Promise<void> {
     const rawValue = body.actions?.[0]?.value || '{}';
     const value = this.parseDmDeleteThreadValue(rawValue);
@@ -788,6 +888,28 @@ export class ActionHandlers {
       });
 
       await this.ctx.slackApi.deleteMessage(value.targetChannel, value.threadTs);
+
+      // The thread is gone; now the session that was anchored to it must go too.
+      //
+      // A session holds its thread by ts. Once the root is deleted that anchor
+      // dangles, and Slack does not reject a post against a dead thread_ts — it
+      // quietly drops the threading and publishes to the whole channel. A session
+      // left alive keeps its sweeper timers, so its expiry/sleep notices resurface
+      // as top-level channel messages hours later.
+      //
+      // Ordering is the point: terminateSession is irreversible (it archives,
+      // cleans up working directories and drops the registry entry), while every
+      // delete above can fail. Running it first would let a failed delete leave
+      // the session destroyed and the thread still standing — the user loses the
+      // session AND keeps the mess. Running it here means the two states only ever
+      // move together. Same rule as the single-message delete path.
+      //
+      // If this itself fails it is logged and swallowed, and the session is left
+      // dangling — which is precisely the case the post-time thread-root gate in
+      // SessionUiManager exists to absorb. Two layers, so neither has to be
+      // perfect.
+      this.terminateSessionForThread(value.targetChannel, value.threadTs);
+
       await this.ctx.slackApi.addReaction?.(value.linkChannel, value.linkTs, 'white_check_mark');
 
       const total = result?.total ?? 0;

@@ -9,7 +9,9 @@
 
 - [current/plans/](./current/plans/) — active feature specs, traces, plans
 - [current/spec/](./current/spec/) — evergreen product/system specs
+- [llmux SDK authentication](current/spec/llmux-sdk-auth.md) — per-call tenant identity and parent-environment isolation, verified through the actual SDK.
 - [`/z` command master spec](./current/spec/z-command-master-spec.md)
+- [goal-command/](./goal-command/) — goal command spec (top-level legacy location; new specs go under `current/`)
 
 ## 2. Stale Plans
 
@@ -39,6 +41,8 @@
 운영자가 절차대로 실행하는 배포, 롤백, 장애 대응 문서.
 
 - [runbook/](./runbook/) — deployment, rollback, operational fix procedures
+- [Eagle-eye incident receiver](./runbook/eagle-incident-receiver.md) — config env, 기본 비활성 게이트, read-only 시도 표면, rollout/rollback
+- [Dashboard on your own domain](./runbook/dashboard-custom-domain.md) — `CONVERSATION_VIEWER_URL`, auth prerequisite, DNS, reverse proxy + DNS-01 certificate, cross-host tunnel
 
 ## 6. Misc
 
@@ -48,6 +52,7 @@
 - [misc/guides/](./misc/guides/) — how-to and migration guides
 - [misc/research/](./misc/research/) — dated research notes
 - [misc/debugging/current/](./misc/debugging/current/) — current debug traces not yet archived
+- [debugging/](./debugging/) — top-level legacy debug traces (new traces go under `misc/debugging/current/`)
 - [misc/issues/current/](./misc/issues/current/) — issue-oriented helper docs
 - [misc/configuration/current/](./misc/configuration/current/) — configuration notes
 - [misc/handoffs/](./misc/handoffs/) — handoff notes
@@ -60,3 +65,8 @@
 - repo-wide 결정은 `docs/adr/`로 승격한다.
 - 운영자가 순서대로 실행하는 절차서는 `docs/runbook/`에 둔다.
 - Slack UI/API payload를 건드릴 때는 [Slack Block Kit reference](./misc/reference/slack-block-kit.md)를 먼저 확인한다.
+- [verification/LEDGER.md](../verification/LEDGER.md)에서 `T2:<Module>`인 파일의 동작을 바꿀 때는 `verification/lean/SomaVerify/<Module>/`의 모델·증명을 함께 고치고 `npm run verify:lean`으로 벡터를 재생성한다 (방법: [verification/README.md](../verification/README.md)).
+
+### Active onboarding design
+- [somawork setup onboarding](superpowers/specs/2026-08-23-somawork-setup-onboarding-design.md) — brew/xbrew install → terminal setup wizard → Slack + local llmux Claude/Codex → service receipt.
+- [2026-09-11 status](misc/handoffs/2026-09-11-setup-onboarding-status.md) — packaging code merged; clean-machine live acceptance still incomplete, read before claiming this feature is done.

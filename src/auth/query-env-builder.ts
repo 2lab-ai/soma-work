@@ -1,4 +1,6 @@
 import type { SlotAuthLease } from '../credentials-manager';
+import { getAuthMode, getLlmuxSettings } from './auth-runtime';
+import type { TenantKeyLease } from './llmux-tenant-keys';
 
 /**
  * Result of {@link buildQueryEnv}: a fresh env map suitable for the Claude
@@ -11,6 +13,16 @@ import type { SlotAuthLease } from '../credentials-manager';
  */
 export interface QueryEnvResult {
   env: Record<string, string>;
+}
+
+/** Per-call inputs that only some dispatches can supply. */
+export interface QueryEnvOptions {
+  /**
+   * Per-user llmux credential from `ensureTenantKey` — the secret AND the
+   * daemon it is valid at; llmux mode only. `null`/omitted → the shared key
+   * against the live daemon (legacy tenant).
+   */
+  llmuxTenant?: TenantKeyLease | null;
 }
 
 /**
@@ -84,6 +96,36 @@ export function getQueryEnvAdditional(): Record<string, string> {
   return { ..._additionalEnv };
 }
 
+/** Provider selectors recognized by the pinned SDK; llmux owns routing instead. */
+const LLMUX_COMPETING_ENV_KEYS = [
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+  'CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD',
+  'CLAUDE_CODE_USE_MANTLE',
+  'CLAUDE_CODE_USE_GATEWAY',
+] as const;
+
+/** Custom headers are applied after SDK credentials, so strip identity overrides only. */
+function isolateLlmuxAuth(env: Record<string, string>): void {
+  // The pinned SDK copies options.env as the complete child environment.
+  // Remove competing values after both of our environment layers are applied.
+  for (const key of LLMUX_COMPETING_ENV_KEYS) delete env[key];
+  if (env.ANTHROPIC_CUSTOM_HEADERS === undefined) return;
+  const headers = env.ANTHROPIC_CUSTOM_HEADERS.split(/\r?\n/)
+    .filter((line) => {
+      const separator = line.indexOf(':');
+      const name = line.slice(0, separator).trim().toLowerCase();
+      return separator < 0 || (name !== 'authorization' && name !== 'x-api-key');
+    })
+    .join('\n');
+  if (headers.trim()) env.ANTHROPIC_CUSTOM_HEADERS = headers;
+  else delete env.ANTHROPIC_CUSTOM_HEADERS;
+}
+
 /**
  * Build a per-call env map that carries the lease's fresh access token to the
  * Claude Agent SDK via `options.env`.
@@ -101,17 +143,33 @@ export function getQueryEnvAdditional(): Record<string, string> {
  *   2. Operator-controlled additional env from `config.json#claude.env`,
  *      installed via {@link setQueryEnvAdditional}. Operator intent overrides
  *      the inherited shell environment.
- *   3. `CLAUDE_CODE_OAUTH_TOKEN = lease.accessToken`. ALWAYS last — defense
- *      in depth even if the load-time denylist in `parseClaudeEnv` is
- *      bypassed, the lease's fresh token cannot be overridden by config.
+ *   3. Auth backend (`config.auth.mode`):
+ *        - `'ccp'` (default): `CLAUDE_CODE_OAUTH_TOKEN = lease.accessToken`.
+ *          ALWAYS last — defense in depth even if the load-time denylist in
+ *          `parseClaudeEnv` is bypassed, the lease's fresh token cannot be
+ *          overridden by config.
+ *        - `'llmux'`: set `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` and remove
+ *          competing credentials/provider selectors so llmux owns upstream auth.
+ *          The lease token is unused in this mode. When the dispatch has a user
+ *          identity, BOTH values come from `opts.llmuxTenant` — the
+ *          triggering user's own llmux client key and the daemon that issued
+ *          it, taken as an atomic pair so a mid-dispatch daemon flip can never
+ *          combine one daemon's key with another's URL (the flip applies from
+ *          the next dispatch, matching auth-runtime's "in-flight calls keep the
+ *          env they were built with" contract). Without a tenant lease the live
+ *          settings + shared key are used — what identity-less system
+ *          dispatches run on (the legacy tenant).
  *
  * Contract:
  *   - NEVER mutates `process.env`.
  *   - Returns a new object each call; callers hold no aliases to a shared
  *     map, so parallel calls are trivially isolated.
- *   - `CLAUDE_CODE_OAUTH_TOKEN` is always set to `lease.accessToken`.
+ *   - In ccp mode, `CLAUDE_CODE_OAUTH_TOKEN` is set to `lease.accessToken`.
  *     For both current lease kinds (`setup_token`, `oauth_credentials`) this
  *     is the value the Agent SDK hands to the Claude CLI over OAuth.
+ *   - In llmux mode, the `LLMUX_COMPETING_ENV_KEYS` credentials/provider
+ *     selectors are removed after both layers, and `authorization` /
+ *     `x-api-key` lines are filtered out of `ANTHROPIC_CUSTOM_HEADERS`.
  *   - All other `process.env` variables are copied through, then the
  *     operator-controlled additional env overlays them.
  *
@@ -119,7 +177,7 @@ export function getQueryEnvAdditional(): Record<string, string> {
  *   - `api_key` lease kind + `ANTHROPIC_API_KEY` env var.
  *   - `CLAUDE_CONFIG_DIR` credential-directory isolation.
  */
-export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
+export function buildQueryEnv(lease: SlotAuthLease, opts?: QueryEnvOptions): QueryEnvResult {
   // Shallow-copy process.env into a plain record. process.env is a proxy
   // whose enumerable string values are what Node forwards to subprocesses,
   // so copying owned string entries is both correct and explicit.
@@ -135,9 +193,43 @@ export function buildQueryEnv(lease: SlotAuthLease): QueryEnvResult {
     env[key] = value;
   }
 
-  // Layer 3 — lease token override. ALWAYS last. Defense in depth: even if a
-  // future code path forgets to deny `CLAUDE_CODE_OAUTH_TOKEN` at load time,
-  // the lease's fresh token wins here. process.env is never touched.
+  // Hook-proxy opt-in. The zworkflow plugin's hook-proxy.sh defaults to the
+  // self-contained shell call tracker (`HOOKS_PROXY_ENABLED` unset → standalone)
+  // so external Claude Code installs work without a localhost service. soma-work
+  // DOES run the Fastify hook service, so it opts spawned agents into the HTTP
+  // proxy here. Only defaults when unset — an explicit process.env / operator
+  // value (layers 1–2) still wins, e.g. for local debugging. Set before the
+  // auth-backend branch so both llmux and ccp dispatches carry it.
+  if (env.HOOKS_PROXY_ENABLED === undefined) {
+    env.HOOKS_PROXY_ENABLED = 'true';
+  }
+
+  // Layer 3 — auth backend. Read from the RUNTIME state (auth-runtime.ts),
+  // not static config: `auth llmux|cct` flips the mode live and the flip must
+  // apply to the next dispatch without a restart. AUTH_MODE env remains the
+  // boot-time default only.
+  if (getAuthMode() === 'llmux') {
+    // llmux mode: the local proxy (https://github.com/2lab-ai/llmux) owns the
+    // real upstream account pool. Point the SDK at it with the caller's llmux
+    // key and remove competing credentials/provider selectors from the child
+    // environment. `lease.accessToken` is intentionally
+    // unused here; the synthetic llmux lease carries the placeholder key for
+    // symmetry only.
+    // Per-user tenant credential when the dispatch knows who triggered it (so
+    // llmux meters that user separately), else the live shared settings. URL
+    // and key ALWAYS come from the same source — mixing a tenant key with a
+    // different daemon's URL 401s instead of degrading to the shared key.
+    const llmux = getLlmuxSettings();
+    const tenant = opts?.llmuxTenant;
+    env.ANTHROPIC_BASE_URL = tenant ? tenant.baseUrl : llmux.baseUrl;
+    env.ANTHROPIC_API_KEY = tenant ? tenant.secret : llmux.apiKey;
+    isolateLlmuxAuth(env);
+    return { env };
+  }
+
+  // ccp mode (default) — lease token override. ALWAYS last. Defense in depth:
+  // even if a future code path forgets to deny `CLAUDE_CODE_OAUTH_TOKEN` at
+  // load time, the lease's fresh token wins here. process.env is never touched.
   env.CLAUDE_CODE_OAUTH_TOKEN = lease.accessToken;
 
   return { env };

@@ -1,5 +1,5 @@
+import { TurnRenderDebouncer } from '@soma/slack/turn-render-debouncer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TurnRenderDebouncer } from '../turn-render-debouncer';
 
 /**
  * TurnRenderDebouncer unit tests (Issue #525, P2).

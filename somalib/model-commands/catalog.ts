@@ -1,3 +1,5 @@
+import type { MemoryIndex, MemoryIndexEntry, SemanticPage } from './hierarchical-memory-store';
+import { isSemanticPageType, type PageLocator, pageIdSegments, parsePageId } from './memory-page-id';
 import type {
   SessionInstruction,
   SessionInstructionOperation,
@@ -30,6 +32,36 @@ function getMemoryStore(): MemoryStore {
     throw new Error('Memory store not registered. Call registerMemoryStore() before using SAVE_MEMORY/GET_MEMORY.');
   }
   return _memoryStore;
+}
+
+// Hierarchical (taxonomy-based) memory store — injected by the host app.
+// Backs the MEMORY command (semantic pages, episodic, index, search).
+export interface HierarchicalMemoryStore {
+  upsertPage(
+    user: string,
+    loc: PageLocator,
+    fields: { title?: string; aliases?: string[]; current?: string; historyEntry?: string },
+  ): { ok: boolean; message: string; id: string };
+  getPage(user: string, loc: PageLocator): SemanticPage | null;
+  removePage(user: string, loc: PageLocator): { ok: boolean; message: string };
+  appendEpisodic(user: string, content: string, date?: string): { ok: boolean; message: string; relPath: string };
+  readEpisodic(user: string, date?: string): string;
+  readIndex(user: string): MemoryIndex;
+  search(user: string, query: string): MemoryIndexEntry[];
+}
+
+let _hierMemoryStore: HierarchicalMemoryStore | null = null;
+
+/** Register the hierarchical memory store implementation. Required for the MEMORY command. */
+export function registerHierarchicalMemoryStore(store: HierarchicalMemoryStore): void {
+  _hierMemoryStore = store;
+}
+
+function getHierarchicalMemoryStore(): HierarchicalMemoryStore {
+  if (!_hierMemoryStore) {
+    throw new Error('Hierarchical memory store not registered. Call registerHierarchicalMemoryStore() before MEMORY.');
+  }
+  return _hierMemoryStore;
 }
 
 // Skill store interface — injected by the host app via registerSkillStore().
@@ -73,6 +105,19 @@ export interface SkillStore {
     name: string,
     newName: string,
   ): { ok: boolean; message: string; error?: 'NOT_FOUND' | 'EEXIST' | 'INVALID' | 'IO' };
+  /**
+   * Copy another user's skill into `user`'s own set (S1/S8).
+   *
+   * `sourceUser` is a Slack identifier (uid or display name) — the
+   * implementation resolves it to a uid, reads the source SKILL.md, and writes
+   * a copy into `user`'s skills dir with an embedded `copied_from` attribution
+   * so the copy's owner-relative refs keep resolving to the original author.
+   * `newName` optionally renames the installed copy.
+   *
+   *   - happy:        `{ ok: true, message }`
+   *   - source gone / unresolved user / name collision / cap → `{ ok: false, message }`
+   */
+  copySkill(user: string, sourceUser: string, name: string, newName?: string): { ok: boolean; message: string };
 }
 
 let _skillStore: SkillStore | null = null;
@@ -116,6 +161,7 @@ import {
 import type {
   ContinueSessionParams,
   ManageSkillParams,
+  MemoryParams,
   ModelCommandContext,
   ModelCommandDescriptor,
   ModelCommandError,
@@ -336,25 +382,69 @@ const SAVE_MEMORY_SCHEMA = {
   required: ['action', 'target'],
 };
 
+const MEMORY_SCHEMA = {
+  type: 'object',
+  properties: {
+    op: {
+      type: 'string',
+      enum: ['page_upsert', 'page_get', 'page_remove', 'episodic_append', 'episodic_get', 'search', 'index'],
+      description: 'Operation to perform',
+    },
+    id: {
+      type: 'string',
+      description:
+        'Canonical page id as listed in MEMORY INDEX (agent/foo, project/soma-work/1234, cron/daily). ' +
+        'Enough on its own for page_* ops — no need to split it into type + slug.',
+    },
+    type: {
+      type: 'string',
+      enum: ['agent', 'sites', 'concepts', 'project', 'cron'],
+      description: 'Semantic page category (only needed for page_* ops when `id` is not given)',
+    },
+    slug: { type: 'string', description: 'Page slug for agent|sites|concepts' },
+    project: { type: 'string', description: 'Project name for type=project' },
+    issue: { type: 'string', description: 'Issue id under a project (omit for project-level page)' },
+    routine: { type: 'string', description: 'Routine name for type=cron' },
+    title: { type: 'string', description: 'Page title (page_upsert)' },
+    aliases: { type: 'array', items: { type: 'string' }, description: 'Page aliases (page_upsert)' },
+    current: { type: 'string', description: 'Replacement text for the Current section (page_upsert)' },
+    history: { type: 'string', description: 'Dated bullet appended to History (page_upsert)' },
+    content: { type: 'string', description: 'Raw observation text (episodic_append)' },
+    date: { type: 'string', description: 'YYYY-MM-DD for episodic ops (default today)' },
+    query: { type: 'string', description: 'Keyword for search' },
+  },
+  required: ['op'],
+};
+
 const MANAGE_SKILL_SCHEMA = {
   type: 'object',
   properties: {
     action: {
       type: 'string',
-      enum: ['create', 'update', 'delete', 'list', 'share', 'rename', 'get'],
+      enum: ['create', 'update', 'delete', 'list', 'share', 'rename', 'get', 'copy'],
       description:
         'create: new skill, update: overwrite existing, delete: remove, ' +
         'list: show all, share: return full content for cross-user copy-paste install, ' +
         'rename: move SKILL.md directory from `name` to `newName`, ' +
-        'get: read back the full SKILL.md of one of your own skills (self-fetch, no share cap)',
+        'get: read back the full SKILL.md of one of your own skills (self-fetch, no share cap), ' +
+        "copy: install another user's skill `name` (from `sourceUser`) into your own set",
     },
     name: {
       type: 'string',
-      description: 'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete/share/rename/get.',
+      description:
+        'Skill name in kebab-case (e.g. my-deploy). Required for create/update/delete/share/rename/get/copy.',
     },
     newName: {
       type: 'string',
-      description: 'New skill name (kebab-case). Required for rename only — must differ from `name`.',
+      description:
+        'New skill name (kebab-case). Required for rename (must differ from `name`); optional for copy ' +
+        '(install the copied skill under a different name).',
+    },
+    sourceUser: {
+      type: 'string',
+      description:
+        'Source user for copy — a Slack uid (e.g. U094E5L4A15) or display name (e.g. Zhuge) whose skill ' +
+        '`name` will be copied into your own set. Required for copy only.',
     },
     content: {
       type: 'string',
@@ -501,6 +591,22 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
         paramsSchema: { type: 'object', properties: {}, additionalProperties: false },
       },
       {
+        id: 'MEMORY',
+        description:
+          'Hierarchical taxonomy memory beyond the flat MEMORY.md/USER.md. Organize durable knowledge into ' +
+          'semantic pages and date-grouped episodic observations. Ops: ' +
+          'page_upsert (create/update a page: pass type + locator + title/current/history); ' +
+          'page_get (read one page); page_remove (delete a page); ' +
+          'episodic_append (append a raw dated observation: pass content); episodic_get (read a day); ' +
+          'search (find pages by query); index (list all pages). ' +
+          'Page ops take `id` — the canonical id listed in MEMORY INDEX (agent/foo, project/soma-work/1234, ' +
+          'cron/daily) — or, if you have no id, `type` plus a locator field: ' +
+          'type=agent|sites|concepts use `slug`; type=project uses `project` (+ optional `issue`); ' +
+          'type=cron uses `routine`. Pages carry a Current section (stable understanding) and a History log. ' +
+          'Use episodic for sparse/uncertain events; promote to a page once a fact is durable.',
+        paramsSchema: MEMORY_SCHEMA,
+      },
+      {
         id: 'MANAGE_SKILL',
         description:
           'Create, update, delete, rename, list, share, or get user personal skills. ' +
@@ -552,6 +658,15 @@ export function listModelCommands(context: ModelCommandContext): ModelCommandDes
   }
 
   return commands;
+}
+
+/** Compact human-readable rendering of a semantic page for page_get. */
+function renderPageForRead(page: SemanticPage): string {
+  const lines = [`# ${page.title} (${page.id})`, '', '## Current', '', page.current || '(empty)'];
+  if (page.history.length > 0) {
+    lines.push('', '## History', '', ...page.history.slice(0, 20).map((h) => `- ${h}`));
+  }
+  return lines.join('\n');
 }
 
 function toRunError(commandId: ModelCommandRunRequest['commandId'], error: ModelCommandError): ModelCommandRunResponse {
@@ -791,6 +906,152 @@ export function runModelCommand(
     };
   }
 
+  if (request.commandId === 'MEMORY') {
+    if (!context.user) {
+      return toRunError('MEMORY', { code: 'CONTEXT_ERROR', message: 'No user context available' });
+    }
+    const params = request.params as MemoryParams;
+    const store = getHierarchicalMemoryStore();
+    const user = context.user;
+
+    /**
+     * Resolve the caller's params into a page locator.
+     *
+     * The MEMORY INDEX injected into the system prompt lists canonical page ids
+     * (`agent/foo`, `project/soma-work/1234`) and nothing else, so `id` is a
+     * first-class locator here — decomposing an id back into type + slug is not
+     * the caller's job.
+     *
+     * Precedence: a locator field (`project` / `routine` / `slug`) names the
+     * page when one is given, and `id` is read only when none is. A `slug` may
+     * carry its own type prefix, since that is exactly what the index shows.
+     * Whenever the caller's fields disagree with each other this errors rather
+     * than picking a winner — resolving to the wrong page would mean
+     * `page_upsert` writing over an unrelated one.
+     */
+    const buildLocator = (): PageLocator | { error: string } => {
+      const text = (v: unknown): string | undefined => {
+        const s = typeof v === 'string' ? v.trim() : '';
+        return s.length > 0 ? s : undefined;
+      };
+      const type = text(params.type);
+      const slug = text(params.slug);
+      const project = text(params.project);
+      const issue = text(params.issue);
+      const routine = text(params.routine);
+
+      const mismatch = (field: string, expected: string) =>
+        `\`${field}\` is only valid with type=${expected}, but type=${type} was given`;
+
+      let id: string | undefined;
+      if (project) {
+        // A project (or issue) is a name, never a type-prefixed id — a project
+        // legitimately named `agent` must not be read as an agent page.
+        if (type && type !== 'project') return { error: mismatch('project', 'project') };
+        id = issue ? `project/${project}/${issue}` : `project/${project}`;
+      } else if (routine) {
+        if (type && type !== 'cron') return { error: mismatch('routine', 'cron') };
+        id = `cron/${routine}`;
+      } else if (slug) {
+        const prefix = slug.includes('/') ? pageIdSegments(slug)[0] : undefined;
+        if (prefix && isSemanticPageType(prefix)) {
+          if (type && type !== prefix) {
+            return { error: `\`slug\` "${slug}" belongs to type=${prefix}, but type=${type} was given` };
+          }
+          id = slug;
+        } else if (type) {
+          id = `${type}/${slug}`;
+        } else {
+          return {
+            error: `\`slug\` "${slug}" needs a \`type\`, or pass the whole id (e.g. id="agent/${slug}")`,
+          };
+        }
+      } else {
+        id = text(params.id);
+      }
+
+      if (!id) {
+        return {
+          error:
+            'page ops need a locator: pass `id` as listed in MEMORY INDEX (e.g. "agent/build-system", ' +
+            '"project/soma-work/1234", "cron/daily"), or `type` plus slug/project/routine',
+        };
+      }
+      try {
+        return parsePageId(id);
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+    };
+
+    const ok = (payload: Record<string, unknown>) =>
+      ({ type: 'model_command_result', commandId: 'MEMORY', ok: true, payload }) as ModelCommandRunResponse;
+
+    try {
+      if (params.op === 'page_upsert') {
+        const loc = buildLocator();
+        if ('error' in loc) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: loc.error });
+        const res = store.upsertPage(user, loc, {
+          title: params.title,
+          aliases: params.aliases,
+          current: params.current,
+          historyEntry: params.history,
+        });
+        const page = store.getPage(user, loc);
+        return ok({
+          ok: res.ok,
+          message: res.message,
+          id: res.id,
+          ...(page ? { page: page.current } : {}),
+          ...(res.ok ? { mutated: { kind: 'memory' as const, user } } : {}),
+        });
+      }
+      if (params.op === 'page_get') {
+        const loc = buildLocator();
+        if ('error' in loc) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: loc.error });
+        const page = store.getPage(user, loc);
+        if (!page) return ok({ ok: false, message: 'Page not found' });
+        return ok({
+          ok: true,
+          message: `Loaded ${page.id}`,
+          id: page.id,
+          page: renderPageForRead(page),
+        });
+      }
+      if (params.op === 'page_remove') {
+        const loc = buildLocator();
+        if ('error' in loc) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: loc.error });
+        const res = store.removePage(user, loc);
+        return ok({
+          ok: res.ok,
+          message: res.message,
+          ...(res.ok ? { mutated: { kind: 'memory' as const, user } } : {}),
+        });
+      }
+      if (params.op === 'episodic_append') {
+        if (!params.content) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: 'content is required' });
+        const res = store.appendEpisodic(user, params.content, params.date);
+        return ok({ ok: res.ok, message: res.message });
+      }
+      if (params.op === 'episodic_get') {
+        const text = store.readEpisodic(user, params.date);
+        return ok({ ok: true, message: text ? 'Loaded episodic' : 'No episodic entries', episodic: text });
+      }
+      if (params.op === 'search') {
+        if (!params.query) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: 'query is required' });
+        const entries = store.search(user, params.query);
+        return ok({ ok: true, message: `${entries.length} matches`, entries });
+      }
+      if (params.op === 'index') {
+        const index = store.readIndex(user);
+        return ok({ ok: true, message: `${index.entries.length} pages`, entries: index.entries });
+      }
+      return toRunError('MEMORY', { code: 'INVALID_ARGS', message: `Unknown op: ${params.op}` });
+    } catch (err) {
+      return toRunError('MEMORY', { code: 'INVALID_ARGS', message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   if (request.commandId === 'MANAGE_SKILL') {
     if (!context.user) {
       return toRunError('MANAGE_SKILL', { code: 'CONTEXT_ERROR', message: 'No user context available' });
@@ -956,6 +1217,28 @@ export function runModelCommand(
           message: shareSuccessMessage(params.name),
           name: params.name,
           content: result.content,
+        },
+      };
+    }
+    if (params.action === 'copy') {
+      if (!params.name || !params.sourceUser) {
+        return toRunError('MANAGE_SKILL', {
+          code: 'INVALID_ARGS',
+          message: 'name and sourceUser required for copy',
+        });
+      }
+      const result = store.copySkill(context.user, params.sourceUser, params.name, params.newName);
+      return {
+        type: 'model_command_result',
+        commandId: 'MANAGE_SKILL',
+        ok: true,
+        payload: {
+          ok: result.ok,
+          message: result.message,
+          // Copy creates a new skill in the caller's set — same emit-on-success
+          // invariant as create. `action: 'create'` so the host invalidates the
+          // caller's cached system prompt (the new skill must appear).
+          ...(result.ok ? { mutated: { kind: 'skill' as const, user: context.user, action: 'create' as const } } : {}),
         },
       };
     }

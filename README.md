@@ -9,7 +9,7 @@
   <a href="https://github.com/2lab-ai/soma-work/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" /></a>
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white" alt="Node.js" />
-  <img src="https://img.shields.io/badge/Claude_Code_SDK-0.2-7C3AED?logo=anthropic&logoColor=white" alt="Claude Code SDK" />
+  <img src="https://img.shields.io/badge/Claude_Code_SDK-0.3-7C3AED?logo=anthropic&logoColor=white" alt="Claude Code SDK" />
 </p>
 
 <p align="center">
@@ -62,18 +62,20 @@ The bot classifies user input and routes it to the optimal workflow — no manua
 | **Onboarding** | New user / `onboarding` | Interactive guided setup |
 | **Default** | Everything else | General-purpose coding assistant |
 
-### 🎭 12 Genius Personas
+Additional session-handoff entrypoints (`z-plan-to-work`, `z-epic-update`) exist for z controller handoffs (#695) — they enter via `CONTINUE_SESSION` handoff, not free-text classification. Source of truth: `WorkflowType` in [`somalib/model-commands/session-types.ts`](./somalib/model-commands/session-types.ts) and `VALID_WORKFLOWS` in [`src/dispatch-service.ts`](./src/dispatch-service.ts); prompt files live in [`src/prompt/workflows/`](./src/prompt/workflows/).
+
+### 🎭 Genius Personas
 
 Switch the bot's personality and reasoning style. Each persona brings a distinct approach to problem-solving.
 
 ```
-persona einstein    → First-principles physics thinking
-persona linus       → Ruthless code review, no BS
-persona feynman     → "If I can't explain it simply..."
-persona vonneumann  → Mathematical precision
+/z persona set einstein    → First-principles physics thinking
+/z persona set linus       → Ruthless code review, no BS
+/z persona set feynman     → "If I can't explain it simply..."
+/z persona set vonneumann  → Mathematical precision
 ```
 
-Available: `default` · `chaechae` · `linus` · `buddha` · `davinci` · `einstein` · `elon` · `feynman` · `jesus` · `newton` · `turing` · `vonneumann`
+Available: `default` · `linus` · `buddha` · `davinci` · `einstein` · `elon` · `feynman` · `jesus` · `newton` · `turing` · `vonneumann` — source of truth: [`src/persona/`](./src/persona/)
 
 ### 🔌 MCP Tool Ecosystem
 
@@ -101,14 +103,14 @@ Run multiple independent AI agents within a single process. Each sub-agent is a 
 @soma-gwanu    → DevOps & infrastructure (관우 persona)
 ```
 
-- **Direct mention**: Users @mention sub-agents directly for specialized tasks
-- **Delegation**: Main bot delegates via `agent_chat` MCP tool
+- **Direct mention** *(pending)*: sub-agent apps connect via Socket Mode and receive @mentions/DMs, but handling is not yet wired (see TODO in `src/agent-instance.ts`)
+- **Delegation** *(partial)*: main bot reaches agents via the `agent_chat` MCP tool; Claude SDK query integration is still a placeholder
 - **Zero-config scaling**: Add agents by editing `config.json` — no code changes needed
 - **Error isolation**: One agent crashing doesn't affect others
 
-> **Note**: Direct @mention/DM handling and `agent_chat` query integration are being wired up (Phase 2). Agents currently connect via Socket Mode and receive events, but full ClaudeHandler integration is in progress.
+> **Note**: multi-agent integration is partial. The agent MCP server ([`packages/mcp-servers/agent/`](./packages/mcp-servers/agent/)) exposes `agent_chat`/`agent_reply` and routes to configured agents, but the actual Claude SDK query integration is still a placeholder (see TODO in `agent-mcp-server.ts`). Direct @mention/DM handling on sub-agent apps is likewise pending full `SlackHandler` integration (see TODO in `src/agent-instance.ts`).
 
-See [How to Add a New Agent](./docs/misc/guides/how-to-new-agent.md) for setup instructions.
+Status and architecture note: [Sub-Agents](./docs/misc/guides/how-to-new-agent.md). It is **not** setup instructions — there is no supported path for provisioning an additional sub-agent today, and `somawork setup` creates the profile's primary Slack app only.
 
 ---
 
@@ -133,7 +135,7 @@ See [How to Add a New Agent](./docs/misc/guides/how-to-new-agent.md) for setup i
 └─┬──┘ └──┬───┘ └────┬───┘         └───────────────────┘
   │        │          │
   │  ┌─────▼────┐ ┌───▼──────┐
-  │  │ 27 Cmd   │ │ Pipeline │
+  │  │ Command  │ │ Pipeline │
   │  │ Handlers │ │ in→sess→ │
   │  └──────────┘ │ stream   │
   │               └────┬─────┘
@@ -173,8 +175,8 @@ Four prefix families — each with a clear, non-overlapping purpose:
 |--------|-------|-------------|---------|
 | `/z <topic> …` | Primary command surface (Block Kit UI where it makes sense) | User-global | `/z persona set linus` |
 | `%<sub> …` | **Current session only** — override without saving | Ephemeral (reset on `new`/`renew`) | `%model opus` |
-| `$<skill>` / `$<plugin>:<skill>` | **Force skill invocation** (reads `SKILL.md`, emits RPG banner) | Per-message | `$z`, `$stv:new-task` |
-| naked text | Whitelisted bare forms (see below) or chat / workflow dispatch | n/a | `sessions`, `new`, `fix PR 123` |
+| `$<skill>` / `$<plugin>:<skill>` | **Force skill invocation** (reads `SKILL.md`, emits RPG banner at `compact` and above — at `minimal` it is not posted; recorded in the dashboard work log when the session has a conversation) | Per-message | `$z`, `$stv:new-task` |
+| naked text | Bare command forms (see below) or chat / workflow dispatch | n/a | `sessions`, `new`, `fix PR 123` |
 
 > **Split history (#508)**: `$` used to double as both "force skill" and "session setting". It was split — `%` took over session settings, `$` is now skill-only. Legacy `$model` / `$verbosity` / `$effort` / `$thinking` / `$thinking_summary` still work during the deprecation grace period but emit a one-line notice nudging users to `%`.
 
@@ -190,7 +192,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z bypass [set on\|off]` | Toggle permission bypass |
 | `/z persona [set <name>\|list]` | Switch persona |
 | `/z model [set <name>\|list]` | Switch model (sonnet, opus, haiku) |
-| `/z verbosity [set <level>]` | Set output verbosity |
+| `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list, questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |
 | `/z session` · `sessions` | List active sessions (`sessions` naked form still accepted) |
 | `/z new` · `/z renew` | Reset / renew session (naked `new` / `renew` also accepted) |
 | `/z close` | Close current thread session |
@@ -200,10 +202,131 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z onboarding` | Run onboarding workflow |
 | `/z admin [accept\|deny\|users\|config\|llmchat\|session list]` | Admin commands |
 | `/z cct [set <name>\|next]` | CCT token status / manual switch |
+| `/z auth [llmux\|cct\|switch <name>\|key]` | Auth backend card: read-only capacity overview by provider (see [Auth capacity overview](#auth-capacity-overview)) + runtime mode switch (llmux default / cct legacy) and account switch/add/remove behind explicit Admin mode; `key` DMs your personal llmux client key |
 | `/z marketplace [add <x>]` | Plugin marketplace |
 | `/z plugin [add\|update\|remove\|rollback\|backups]` | Manage installed plugins |
 | `/z skill [list\|download]` | Skills directory |
 | `/z report [today\|daily\|weekly]` | Usage reports |
+
+### llmux SDK authentication
+
+Soma-work uses the Claude Agent SDK's Messages transport with llmux, including
+Codex-backed models from its model catalog. Each SDK call carries its selected
+llmux URL and key together: the personal tenant pair when available, otherwise
+the existing shared-key fallback (including helper calls without a tenant lease).
+Inherited OAuth/bearer credentials,
+alternative-provider selectors, and authentication custom headers cannot replace
+that choice; unrelated custom headers remain available. See the [SDK authentication contract](docs/current/spec/llmux-sdk-auth.md).
+
+### Auth capacity overview
+
+In llmux mode the `auth` card is first and foremost a **read-only capacity
+overview** of the llmux account pool (`GET /llmux/status`), rendered the same
+for everyone — admins included:
+
+- **Grouped by provider** — Claude → Codex → Grok, then any other groups
+  alphabetically; within a group, accounts follow the scheduler's selection
+  order.
+- **Normalized account equivalents, not tokens** — per-group totals sum the
+  remaining `5h` / `7d` (and scoped weekly, e.g. `7d-fable`) window ratios as
+  account equivalents: 100% of one account = 1, with no plan weighting. The
+  llmux status contract carries only utilization ratios and reset times — no
+  token denominators exist, so a token balance is never shown or implied, and
+  cumulative token totals are labelled as consumption, not remaining budget.
+- **Reset planning** — every known reset renders as a Slack-local absolute
+  timestamp plus relative time remaining, and each group summary names the
+  next upcoming reset: which window, which account, and the normalized
+  percentage points it recovers (valid only with no further usage; other
+  windows, cooldowns and auth failures stay as reported).
+- **Unknown stays unknown** — missing, expired or out-of-range windows render
+  as "not supplied / re-query needed", never as 0% or 100%; model-scoped
+  windows are listed separately from the shared limits, and cold/null values
+  are excluded from totals with the measured coverage shown (`measured n/m`).
+- **Grok / API-key accounts** — upstream llmux collapses raw request/token
+  counts into a utilization ratio and attaches a synthetic short reset horizon
+  to Grok's reset-less burst limits; the card shows the rate-limit ratio but
+  suppresses that synthetic reset instead of presenting it as a real quota
+  window with a countdown.
+- **Codex manual resets** — observed `usage_control` counters (owned /
+  currently applicable) display read-only; soma-work never redeems them
+  automatically.
+- **Admin is explicit opt-in** — every entry point renders readonly; eligible
+  admins get an [Admin mode] button, and only that opens the mode switch /
+  settings / add / remove / switch controls. A forged or stale admin click
+  from a non-admin is demoted to readonly server-side.
+- **Pagination** — large pools page at a fixed size with prev/next buttons so
+  every account is reachable; Refresh and paging preserve the chosen view and
+  page. The legacy CCT view embedded in `auth` also pages slots; its management
+  buttons and modal submissions return to the same auth view and page. The
+  separate `cct` command keeps its existing behavior.
+
+Wiring: [`src/slack/z/topics/auth-topic.ts`](./src/slack/z/topics/auth-topic.ts)
+→ [`src/auth/llmux-client.ts`](./src/auth/llmux-client.ts) →
+[`src/slack/auth/capacity.ts`](./src/slack/auth/capacity.ts) →
+[`src/slack/auth/builder.ts`](./src/slack/auth/builder.ts). Details and pinned
+upstream source verification:
+[`.prd/07-auth-capacity-spec.md`](./.prd/07-auth-capacity-spec.md).
+
+### Auto-compact thresholds (`autocompact` / `compact-threshold`)
+
+If the provider rejects a compact request, the failure notice includes the provider's error details with credentials redacted. Slack details are length-limited with an explicit truncation note; server logs retain the full redacted reason. A failure notice does not mean compaction succeeded.
+
+`autocompact` is a message command (the message may also start with `/`, as in
+`/autocompact`; it is not a separately registered Slack slash command). It sets
+how many used tokens a session may reach before soma-work schedules `/compact`.
+The setting is **session-scoped** — it lives on the conversation session and
+persists with that session across process restarts. Use `reset` to clear it and
+return to the model/default threshold.
+
+| Form | Effect |
+|------|--------|
+| `/autocompact` · `autocompact` | Show the effective threshold and which source it came from |
+| `/autocompact <value>` · `autocompact <value>` | Set the session threshold. Accepts `800k`, `800K`, `0.8M`, `800000`, or bare `800` (read as thousands — `autocompact 800` = 800,000); the general range is 100k–1M, but a model's own safe maximum can reject a syntactically valid value |
+| `/autocompact reset` · `autocompact reset` | Clear the session override — falls back to the model default |
+
+**Precedence** (highest wins): session override (`/autocompact <value>`) → the
+model's canonical default → the legacy per-user percentage, converted against
+the current model's context window.
+
+**Model defaults** — resolved by `resolveModelProfile` in
+[`src/metrics/model-profile.ts`](./src/metrics/model-profile.ts), which is the
+source of truth for any model not listed here:
+
+| Model | Context window | Auto-compact default |
+|---|---|---|
+| `claude-fable-5-1[1m]` (aliases `fable`, `fable[1m]`, `fable-5-1`) | 1,000,000 | 750,000 |
+| `claude-fable-5[1m]` (version-pinned alias `fable-5`) | 1,000,000 | 750,000 |
+| `claude-opus-5-5[1m]` (aliases `opus`, `opus[1m]`, `opus-5-5`) | 1,000,000 | 750,000 |
+| `claude-opus-5[1m]` (version-pinned alias `opus-5[1m]`) | 1,000,000 | 750,000 |
+| `claude-opus-5-5` (bare, no `[1m]`) | 200,000 | none — falls back to the legacy per-user percentage below |
+| `claude-opus-5` (bare, no `[1m]`) | 200,000 | none — falls back to the legacy per-user percentage below |
+| `gpt-5.6-sol[1m]` (alias `sol[1m]`) | 1,000,000 | 600,000 |
+| `gpt-5.6-sol` (bare) | 372,000 | 340,000 |
+| `gpt-6-astra[1m]` (aliases `astra`, `astra[1m]`, `gpt-6`, `gpt6`) | 1,000,000 | 600,000 |
+| `gpt-6-astra` (bare literal only) | 272,000 | 240,000 |
+| `grok-4.6` | 500,000 | 450,000 |
+
+Every `gpt-…[1m]` profile, including future supported models, automatically uses
+Sol's 1M window, 977,000 SDK blocking limit and 600,000 auto-compact default.
+No per-model threshold registration is needed. This policy does not create
+unsupported model variants or change explicitly selected bare model IDs.
+Session overrides still take precedence.
+
+`grok-4.6[1m]` is not a real model — grok has no 1M variant, and llmux forwards
+grok ids verbatim upstream — so it is rejected everywhere a model id is
+accepted (model set, session model, `/autocompact`) with a visible
+`use grok-4.6` message rather than being silently rewritten.
+
+`/compact-threshold <percent>` is a **deprecated** compatibility adapter, not a
+second setting: it converts `<percent>` against the *current* model's context
+window, writes the result into the same session token slot `/autocompact`
+uses, and removes the old stored per-user percentage once the conversion
+succeeds. A conversion that would land above the model's safe maximum fails
+visibly instead of silently clamping.
+
+soma-work's own turn-end checker is the sole automatic-compaction authority —
+the Claude Agent SDK's built-in autocompaction is disabled for every resolved
+model profile, so exactly one scheduler ever decides when a session compacts.
 
 ### `%` — session-scoped (ephemeral)
 
@@ -213,7 +336,7 @@ Overrides that apply **only to the current session** and do not persist. Cleared
 |---------|-------------|
 | `%` | Show session info (model, verbosity, effort, thinking flags) |
 | `%model [<name>]` | Get / set session model (e.g. `%model opus`) |
-| `%verbosity [<level>]` | Get / set session verbosity |
+| `%verbosity [<level>]` | Get / set session verbosity (same levels; default `minimal`, see `/z verbosity`) |
 | `%effort [<level>]` | Get / set session effort |
 | `%thinking [on\|off]` | Toggle extended thinking for this session |
 | `%thinking_summary [on\|off]` | Toggle thinking-output display |
@@ -222,7 +345,7 @@ Overrides that apply **only to the current session** and do not persist. Cleared
 
 ### `$` — forced skill invocation
 
-Forces the bot to read a skill's `SKILL.md` and follow it. Emits a red RPG banner ("⚡ skill 강제 발동") on resolution.
+Forces the bot to read a skill's `SKILL.md` and follow it. Emits a red RPG banner ("⚡ skill 강제 발동") on resolution at `compact` and above; at `minimal` the banner is not posted (the skill still runs). At every level the banner is recorded in the dashboard work log when the session has a conversation.
 
 | Syntax | Resolves to |
 |--------|-------------|
@@ -237,7 +360,7 @@ Nested `$plugin:skill` references inside skill content are resolved recursively 
 
 ### naked — bare-text compatibility
 
-A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Source of truth: [`src/slack/z/whitelist.ts`](./src/slack/z/whitelist.ts).
+Bare (no-prefix) `[cmd] [args]` forms run through the same command handlers as their `/z` counterparts. The source of truth is the handler chain of [`CommandRouter`](./packages/slack/src/commands/command-router.ts) and its `CommandParser.is*Command` matchers (including operational cards such as `auth`, `cct`). In a DM, a non-admin may send only the inputs [`isDmAllowedForNonAdmin`](./packages/slack/src/z/whitelist.ts) accepts. Common forms:
 
 | Form | Notes |
 |------|-------|
@@ -247,17 +370,95 @@ A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Sour
 | `theme` · `theme <name>` · `theme set <name>` · `theme=<name>` | Theme get/set (both `set`-prefixed and bare-value forms accepted) |
 | `sessions theme [<name>]` · `sessions theme=<name>` | Session-scoped theme |
 | `new [<prompt>]` · `renew [<prompt>]` | Reset / renew session, optional prompt carries over |
+| `auth` · `auth llmux\|cct` · `set auth <mode>` · `auth switch <name>` | Auth backend card / runtime mode switch (#1189; defaults to the read-only [capacity overview](#auth-capacity-overview) for everyone, mutations admin-only behind Admin mode) |
+| `key` · `auth key` | DM yourself your personal llmux client key + local Claude Code (`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`) and Codex (`OPENAI_BASE_URL`/`OPENAI_API_KEY`) setup. Same user always gets the same key; llmux meters bot + local usage as one tenant. Works for every user (it is your own key) |
+| `cct` · `cct set <n>` · `cct next` · `cct usage [<n>]` · `cct auto [dry]` | CCT token status / rotation; `auto` = admin-only manual auto-rotate (token mutation is card-only since #569) |
+| `cron` · `schedule` (also `크론` · `스케줄`) | Interactive cron card — per-job model/output-target dropdowns + delete button; routed as a command so autogoal can never swallow it; admins see all users' jobs with the owner shown |
+| `cron model <name> <default\|opus\|fable\|fast\|model>` · `cron target <name> <channel\|dm\|thread>` · `cron delete <name>` | Change a job's model (`default` = creator's current model at fire time; `opus`/`fable` = latest opus/fable resolved at fire time) / delivery target / delete; admins address another user's job by appending `<@owner>` |
 | `$` · `$model <v>` · `$verbosity <v>` · `$effort <v>` · `$thinking <v>` · `$thinking_summary <v>` | **Legacy** session prefix during deprecation grace period (emits one-line notice, use `%` going forward) |
 
-Any free-form text not matching the whitelist is treated as a chat / workflow dispatch prompt.
+The Codex block in the key DM points `OPENAI_BASE_URL` at the advertised server's `/v1` endpoint and uses your same tenant key. Copy the complete `codex --model … -c …` invocation: its explicit Responses provider reads `OPENAI_API_KEY` even when you already use ChatGPT login or another provider. The exports apply to the current terminal; the invocation does not rewrite Codex config or login credentials. Use that invocation again for later llmux sessions. See [Codex gateway authentication](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway).
 
-**Migration (#506)**: Legacy naked command forms (`persona linus`, `model sonnet`, `show_prompt`, …) outside this whitelist are deprecated. First use per user shows a tombstone hint; subsequent uses are dropped. Set `SOMA_ENABLE_LEGACY_SLASH=true` to restore the pre-refactor behavior during rollback.
+Any free-form text that no command handler claims is treated as a chat / workflow dispatch prompt.
+
+**Bare commands (#531)**: Bare forms such as `persona linus` or `model sonnet` run directly through their handlers. The one-time tombstone hint that #506 Phase 1 showed for them was removed in #531. `SOMA_ENABLE_LEGACY_SLASH=true` only restores the legacy `/soma`, `/session` and `/new` slash commands.
 
 ---
 
-## Quick Start
+## Getting soma-work running
 
-### 1. Clone & Install
+There are **two** ways in, and they are not interchangeable.
+
+| Path | What it is | Where it stands today |
+|---|---|---|
+| **Packaged onboarding** — `somawork setup` | An installed, immutable macOS ARM64 runtime plus one resumable terminal wizard that brings up llmux, authorizes Slack, mints and captures the runtime tokens for you, materializes a profile, runs a doctor gate, and installs the background service. | The controller, the wizard and the runtime bundle **are implemented on this branch and pass a local staged-bundle smoke**. The Homebrew/xbrew formula is **not published**, and no clean-user or live-Slack receipt has been taken. See the status box below before following it. |
+| **Source development** — clone and run | The historical path: clone the repo, create the Slack app by hand, put tokens in a local `.env`, `npm run dev`. | Supported today, and what contributors and the existing fleet deploy use. |
+
+### Status of the packaged path
+
+Read this before typing any command from it.
+
+**Landed on this branch, and locally verified**
+
+- `somawork setup | doctor | status | service | profile | sessions`, profile materialization, the Slack manifest hook, and the staged runtime-bundle contract.
+- `npm run stage:bundle && npm run smoke:setup-package` stages the bundle and exercises the **staged** controller as an external consumer would: a hermetic `SOMAWORK_HOME`, a fake `HOME`, no Homebrew on `PATH`, no provider call. It checks the required paths and modes, the forbidden-file scan, `--help` / `--version`, the private Slack manifest hook against the packaged manifest, single-document JSON output, profile isolation, and a profile materialization at 0700/0600 that writes nothing into the runtime root.
+
+**Not done yet — do not read the above as a release**
+
+- There is **no published Homebrew formula and no xbrew recipe**. `brew install somawork` does not resolve today. Packaging, release archives and tap changes belong to a separate workstream that has not run.
+- There has been **no clean-machine install, no real Slack workspace app creation, and no real `launchd` receipt**. Everything above was proved against a staged bundle on a development machine.
+- Platform is **macOS ARM64 only**. No Linux support is claimed or implemented.
+
+### A. Packaged onboarding — the supported flow once it ships
+
+```bash
+xbrew install somawork-preview   # or: xbrew install somawork   ← formula NOT published yet
+somawork setup                   # profile inferred when exactly one runtime is installed
+```
+
+`somawork setup` is the whole of onboarding. It is resumable: rerun it (or `somawork setup --resume`) after any interruption and it revalidates the world rather than trusting a stale marker.
+
+What it does, and what it deliberately does not ask you for:
+
+| Step | Handled by | You are never asked for |
+|---|---|---|
+| Claude / Codex provider auth | llmux, through the official browser OAuth flows | an API key |
+| Slack app create + install | Slack CLI ticket/challenge, then the packaged app manifest | a manifest paste |
+| Slack runtime credentials | captured from the Slack CLI's own hook into a `0600 secrets.env` over a profile-scoped Unix socket | a `xoxb-` / `xapp-` copy-paste |
+| Signing secret | not used — the manifest enables Socket Mode | a signing secret |
+| Profile config, prompt, data dirs | materialized from the packaged `config.default.json` and `.system.prompt.example` | a hand-written `.env` |
+| Background service | a per-profile launchd user agent | a plist |
+
+Controller commands:
+
+| Command | Purpose |
+|---|---|
+| `somawork setup [--profile preview\|production] [--resume]` | Run or resume onboarding. |
+| `somawork doctor [--profile <p>] [--json]` | Diagnose a profile. `--json` emits exactly one document, with no filesystem paths in the details. |
+| `somawork status [--profile <p>] [--json]` | Profile and service state. `status --json` **does** contain absolute paths (plist, pid file, log dir), so it is less safe to paste into a public issue than `doctor --json`. |
+| `somawork service <install\|start\|stop\|restart\|status> [--profile <p>]` | Manage the background service. |
+| `somawork profile <list\|show> [--profile <p>] [--json]` | Inspect installed profiles. `profile remove` is not available in this release and refuses. |
+| `somawork sessions <list\|show> [--profile <p>] [filters]` | Query archived sessions. |
+| `somawork help` · `somawork version` | Both answer without touching a runtime, a profile, or a provider. |
+
+Profiles are fully isolated — `preview` and `production` coexist on one machine and share no path or service identity:
+
+| | `preview` | `production` |
+|---|---|---|
+| config | `~/.config/somawork/profiles/preview` | `~/.config/somawork/profiles/production` |
+| data | `~/.local/share/somawork/preview` | `~/.local/share/somawork/production` |
+| state | `~/.local/state/somawork/preview` | `~/.local/state/somawork/production` |
+| service label | `ai.2lab.somawork.preview` | `ai.2lab.somawork.production` |
+
+`SOMAWORK_HOME` overrides the profile root and is the supported override for hermetic tests. `SOMA_HOME` is accepted as a **deprecated** alias; when both are set, `SOMAWORK_HOME` wins.
+
+**Legacy setup entry points are compatibility shims, not a second way in.** `scripts/setup-wizard.sh`, `scripts/setup-wizard-macos.sh` and `scripts/new-deploy-setup.sh` print a deprecation notice and `exec somawork setup`. They no longer collect tokens, no longer write a repo-relative `.env`, and no longer materialize `/opt/soma-work`. `scripts/provision-agent.ts` is likewise a hard deprecation wrapper.
+
+### B. Source development path
+
+This is the path to use today for contributing, and the one the existing fleet deploy is built on. It is unchanged.
+
+#### 1. Clone & install
 
 ```bash
 git clone https://github.com/2lab-ai/soma-work.git
@@ -265,16 +466,25 @@ cd soma-work
 npm install
 ```
 
-### 2. Create Slack App
+#### 2. Create a Slack app by hand
 
 1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest**
 2. Paste the contents of [`infra/slack/slack-app-manifest.json`](./infra/slack/slack-app-manifest.json)
+
+   > **The manifest's app name is `Somawork`** (previously `[DEV] Claude Code Bot`). Pasting this
+   > manifest into an app that was created from the older file **renames that app and its bot** in
+   > the workspace. Edit the two `name` / `display_name` fields before saving if you need to keep
+   > the existing name.
 3. After creation:
    - **OAuth & Permissions** → copy Bot User OAuth Token (`xoxb-...`)
    - **Basic Information** → generate App-Level Token with `connections:write` scope (`xapp-...`)
    - **Basic Information** → copy Signing Secret
 
-### 3. Configure Environment
+> On the packaged path none of this is manual — the wizard drives Slack CLI and captures the tokens
+> without ever printing them. This section stays because the source checkout has no packaged runtime
+> to read the manifest out of.
+
+#### 3. Configure environment
 
 ```bash
 cp .env.example .env
@@ -284,7 +494,7 @@ cp .env.example .env
 # Required
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
-SLACK_SIGNING_SECRET=...
+# SLACK_SIGNING_SECRET=...  # optional: HTTP signature verification only (Socket Mode does not need it)
 BASE_DIRECTORY=/path/to/code/
 
 # Optional
@@ -298,7 +508,7 @@ CLAUDE_CODE_USE_VERTEX=1           # Use Google Vertex AI
 DEBUG=true
 ```
 
-### 4. Configure MCP Servers (Optional)
+#### 4. Configure MCP servers (optional)
 
 Edit the `mcpServers` section of `config.json`:
 
@@ -322,7 +532,9 @@ cp config.example.json config.json
 }
 ```
 
-### 5. Inject env vars into the Claude Agent SDK (Optional)
+#### 5. Inject env vars into the Claude Agent SDK (optional)
+
+The SDK is pinned to `0.3.284` (native Claude Code `2.1.284`) for Fable 5.1 and Opus 5.5 (`claude-opus-5-5`, requires Claude Code ≥ 2.1.280) support. Streaming turns force `CLAUDE_CODE_ENABLE_TASKS=false` and `MCP_CONNECTION_NONBLOCKING=0` to preserve the Slack TodoWrite snapshot adapter and first-turn MCP initialization. These compatibility settings are owned by the stream-options builder; they are not operator overrides.
 
 Sometimes you need to set env vars on the SDK subprocess only (not on the
 host process), for example to disable a built-in MCP server bundled with the
@@ -369,7 +581,15 @@ misconfigurations are visible.
 interpolation, set the variable in the host environment before launch
 instead of in `claude.env`.
 
-### 6. Run
+#### 6. Customize UI surfaces (optional)
+
+The `ui` section of `config.json` controls what the thread header, turn-end
+card and dashboard card header show, and how each field renders. Inspect the
+built-in defaults in `config.default.json` (generated, do not edit), copy the
+sections you want to change into `config.json`, and restart. Schema and
+examples: [docs/ui-surfaces.md](docs/ui-surfaces.md).
+
+#### 7. Run
 
 ```bash
 npm run dev                        # Development (watch mode)
@@ -381,14 +601,25 @@ npm run build && npm run prod      # Production
 
 ## Deployment
 
-### Docker
+Two deployment models coexist, and they do not share paths, service labels, or
+a setup procedure. Pick by which of the two paths above you are on.
+
+| | Fleet deploy (legacy, in use) | Profile package (new) |
+|---|---|---|
+| Unit | a checkout or synced bundle at `/opt/soma-work/<env>` on a node | an installed immutable runtime + a per-user profile |
+| Setup | GitHub self-hosted runner, hand-made Slack app, `.env` on the node | `somawork setup` |
+| Service | `scripts/service.sh` → `ai.2lab.soma-work[.<env>]` | `somawork service install` → `ai.2lab.somawork.<profile>` |
+| Runbook | [docs/runbook/add-new-deploy.md](./docs/runbook/add-new-deploy.md) | this README's packaged-onboarding section |
+| Status | current — this is what the running fleet uses | implemented, not published (see the status box above) |
+
+### Fleet deploy — Docker
 
 ```bash
-docker-compose up -d
-docker-compose logs -f
+docker compose -f infra/docker/docker-compose.yml up -d
+docker compose -f infra/docker/docker-compose.yml logs -f
 ```
 
-### macOS LaunchAgent
+### Fleet deploy — macOS LaunchAgent
 
 ```bash
 ./scripts/service.sh install     # Install as LaunchAgent
@@ -399,6 +630,27 @@ docker-compose logs -f
 Service identifier: `ai.2lab.soma-work` — auto-restarts on crash.
 
 > ⚠️ **Do not run `scripts/service.sh` during development.** Multiple instances with the same Slack token cause message conflicts.
+
+### The runtime bundle both models are built from
+
+`scripts/deploy/stage-bundle.sh` stages one immutable tree. The fleet deploy
+rsyncs it to a node; the packaged path installs it as a runtime root. It carries
+the daemon, the service supervisor, the executable controller entry, and the
+three canonical setup assets (`config.default.json`, `.system.prompt.example`,
+`infra/slack/slack-app-manifest.json`), and it carries no credential, no profile
+state, no test, no source map and no TypeScript source.
+
+```bash
+npm run build
+npm run stage:bundle              # → .deploy-bundle
+npm run smoke:deploy-bundle       # deployment + workspace-package contract
+npm run smoke:setup-package       # setup/runtime contract, as an external consumer
+```
+
+`smoke:setup-package` also mutates temporary hardlinked copies of the staged
+tree — removing each setup asset and each runtime entry in turn, and injecting
+each forbidden file — so a green run means the *bundle* satisfies the contract,
+not merely that the source checkout happens to contain the files.
 
 ---
 
@@ -424,16 +676,21 @@ GitHub App takes priority when configured. Falls back to PAT automatically.
 
 ## Project Structure
 
+> Counts drift — always check the directories themselves. Full component wiring: [docs/misc/reference/architecture.md](./docs/misc/reference/architecture.md).
+
 ```
 src/                                # TypeScript source
 ├── agent-manager.ts                # Sub-agent lifecycle management
 ├── agent-instance.ts               # Individual agent (Slack App + Handler)
+├── agent-runtime/                  # Claude Agent SDK execution runtime
 ├── slack/                          # Slack integration layer
-│   ├── actions/                    # Interactive action handlers (10)
-│   ├── commands/                   # Command handlers (27)
+│   ├── actions/                    # Interactive action handlers
+│   ├── commands/                   # Command handlers
 │   ├── pipeline/                   # Stream processing pipeline
 │   ├── directives/                 # Channel/session link directives
-│   └── formatters/                 # Output formatters
+│   ├── formatters/                 # Output formatters
+│   └── z/                          # /z command surface + non-admin DM input gate
+├── auth/                           # CCT lease + query env injection
 ├── conversation/                   # Conversation recording & replay
 ├── model-commands/                 # Model command catalog & validation
 ├── mcp/                            # MCP server management
@@ -441,36 +698,41 @@ src/                                # TypeScript source
 ├── permission/                     # Permission service + Slack UI
 ├── plugin/                         # Plugin system (marketplace, cache)
 ├── prompt/                         # System prompts
-│   ├── workflows/                  # Workflow prompts (10 workflows)
+│   ├── workflows/                  # Dispatch workflow prompts
 │   ├── jangbi/                     # Sub-agent: code review specialist
 │   └── gwanu/                      # Sub-agent: DevOps specialist
-├── persona/                        # Bot personas (12 personas)
+├── persona/                        # Bot personas
+├── sandbox/                        # Execution sandbox gate
+├── metrics/                        # Token/cost telemetry
+├── notification-channels/          # Slack · DM · Telegram · Webhook routing
 └── local/                          # Claude Code SDK extensions
-    ├── agents/                     # Agent definitions (11)
+    ├── agents/                     # Agent definitions
     ├── skills/                     # Skill implementations
     ├── hooks/                      # Git/build hooks
     ├── commands/                   # Local slash commands
     └── prompts/                    # Local prompts
 
-mcp-servers/                        # Internal MCP servers (extracted)
-├── agent/                          # agent_chat / agent_reply tools
-├── llm/                            # LLM aggregate (codex + gemini)
-├── model-command/                  # Session/UI model commands
-├── slack-mcp/                      # Thread context + file upload
-├── cron/                           # Cron job management
-├── server-tools/                   # Server administration
-├── permission/                     # Permission prompt service
-└── mcp-tool-permission/            # Per-tool permission gating
+packages/                           # Workspace packages
+├── mcp-servers/                    # Internal MCP servers
+│   ├── agent/                      # agent_chat / agent_reply tools
+│   ├── model-command/              # Session/UI model commands
+│   ├── slack-mcp/                  # Thread context + file upload
+│   ├── cron/                       # Cron job management
+│   ├── server-tools/               # Server administration
+│   ├── permission/                 # Permission prompt service
+│   └── mcp-tool-permission/        # Per-tool permission gating
+├── common/ · slack/ · process-shared/ · test-utils/
 
-scripts/                            # Utility scripts
-├── provision-agent.ts              # Automated sub-agent provisioning
-├── create-agent.sh                 # Semi-automated agent creation
-└── ...
+somalib/                            # Shared soma-family library
+services/a2t/                       # Audio-to-text Python worker
+infra/                              # docker / slack manifest / claude config
+scripts/                            # deploy staging, smokes, service.sh, deprecation shims
+├── deploy/stage-bundle.sh          # builds the immutable runtime bundle
+├── smoke/setup-package.js          # staged-bundle setup/runtime contract
+└── setup/                          # DEPRECATED shell collector — unreachable, not bundled
 
 docs/                               # Architecture & feature specs
-├── how-to-new-agent.md             # Guide: adding new sub-agents
-├── multi-agent/                    # Multi-agent spec & trace
-└── ...
+└── README.md                       # Docs routing map — start here
 ```
 
 ## Design Principles
@@ -491,25 +753,26 @@ docs/                               # Architecture & feature specs
 
 Add sub-agents to `config.json` (or `config.dev.json` on non-`main` branches):
 
-```json
-{
-  "agents": {
-    "jangbi": {
-      "slackBotToken": "xoxb-...",
-      "slackAppToken": "xapp-...",
-      "signingSecret": "...",
-      "description": "Code review specialist"
-    }
-  }
-}
-```
+**There is no supported way to provision an additional sub-agent today.** `somawork setup`
+creates the profile's primary Slack app and nothing else, and the two old provisioning scripts are
+not a substitute:
 
-Automated provisioning:
-```bash
-npx tsx scripts/provision-agent.ts jangbi "코드 리뷰 전문 에이전트"
-```
+- `scripts/provision-agent.ts` is a hard deprecation wrapper — it provisions nothing and exits
+  nonzero. Its configuration-token storage, OAuth-callback capture and manual app-token prompt were
+  removed as forbidden credential paths.
+- `scripts/create-agent.sh` still runs, but it reads raw tokens from the terminal and writes them
+  into a plaintext config file. **Do not run it to mint, copy, or store credentials.** It is not
+  part of the packaged runtime.
 
-Full guide: [docs/misc/guides/how-to-new-agent.md](./docs/misc/guides/how-to-new-agent.md)
+Each sub-agent needs two long-lived Slack credentials, and nothing today mints or stores those the
+way the primary app's are handled — so additional-agent provisioning is **unsupported, pending a
+secrets-store-backed design**. An operator running sub-agents on a source checkout is accepting
+plaintext credentials in a local (git-ignored) config file.
+
+The runtime architecture, the `agents` config schema, and what a supported path would have to
+provide are described in the status note:
+[docs/misc/guides/how-to-new-agent.md](./docs/misc/guides/how-to-new-agent.md). `AgentConfig` in
+`src/types.ts` is the schema's source of truth.
 
 ---
 
@@ -534,6 +797,9 @@ Test coverage includes: event routing, stream processing, command parsing, permi
 | Session conflicts | Multiple instances running with same Slack token |
 | Sub-agent not starting | Verify `slackBotToken`/`slackAppToken` format in `config.json` |
 | `agent_chat` "Unknown agent" | Agent name must match `config.json` key (case-sensitive) |
+| Packaged path: anything wrong with a profile | `somawork doctor --profile <p>` — it is the gate the wizard itself runs, and its details carry no filesystem paths, so `doctor --json` is safe to paste into an issue |
+| Packaged path: service not running | `somawork status --profile <p>` — note this one **does** print absolute paths |
+| `brew install somawork` does not resolve | Expected. No formula is published yet; see [Status of the packaged path](#status-of-the-packaged-path) |
 
 ---
 

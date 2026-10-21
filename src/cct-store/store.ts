@@ -122,13 +122,10 @@ function randomHex(bytes: number): string {
  * Single-file, revision-CAS, durable-write store for AuthKey slot state.
  *
  * Concurrency model:
- *   - `withLock` acquires an inter-process advisory lock via `proper-lockfile`
- *     on `${filePath}.lock`. Inside the lock it is safe to read-then-write
- *     without another process racing you.
- *   - `save(expected, next)` enforces optimistic CAS on `revision`: if the
- *     on-disk revision differs from `expected`, it throws
- *     `RevisionConflictError`. `save` holds the lock internally so callers
- *     of `save()` do not need to pre-lock.
+ *   - `save(expected, next)` takes an inter-process advisory lock via
+ *     `proper-lockfile` on `${filePath}.lock` and enforces optimistic CAS on
+ *     `revision`: if the on-disk revision differs from `expected`, it throws
+ *     `RevisionConflictError`. Callers of `save()` do not need to pre-lock.
  *   - `mutate(fn)` = load + deep-clone + apply + increment revision + save,
  *     retrying up to 5 times on CAS conflict with short jittered backoff.
  *
@@ -261,29 +258,6 @@ export class CctStore {
     }
     // Unreachable — the loop either returns or throws — but keep TS happy.
     throw lastConflict ?? new Error('CctStore.mutate: exhausted retries');
-  }
-
-  /**
-   * Run `fn` under the inter-process advisory lock. Use this when you need
-   * to perform multi-step work (e.g. load + decide + call save explicitly)
-   * without another process racing you. Most callers should prefer
-   * `mutate` for simple read-modify-write flows.
-   */
-  async withLock<T>(fn: () => Promise<T>): Promise<T> {
-    await this.ensureDir();
-    await this.ensureFileForLock();
-    const release = await lockfile.lock(this.filePath, {
-      lockfilePath: this.lockPath,
-      stale: 30_000,
-      update: 5_000,
-      realpath: true,
-      retries: { retries: 50, minTimeout: 10, maxTimeout: 100 },
-    });
-    try {
-      return await fn();
-    } finally {
-      await release();
-    }
   }
 
   // ── internals ────────────────────────────────────────────────

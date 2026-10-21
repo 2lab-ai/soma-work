@@ -5,10 +5,29 @@
 
 import { randomUUID } from 'crypto';
 import { Logger } from '../logger';
+import { buildWorkSessionKey } from '../session-identity';
 import { MetricsEventStore } from './event-store';
-import type { MetricsEvent, MetricsEventType, TokenUsageMetadata } from './types';
+import type { FollowupQueueMetric, MetricsEvent, MetricsEventType, TokenUsageMetadata } from './types';
 
 const logger = new Logger('MetricsEventEmitter');
+
+/**
+ * Required counter: finite and non-negative, else 0.
+ * Best-effort like the rest of the emitter — a bad reading must not drop the event.
+ */
+function sanitizeCount(value: number, field: string): number {
+  if (Number.isFinite(value) && value >= 0) return value;
+  logger.warn(`followup_queue: invalid ${field} (${value}) — clamped to 0`);
+  return 0;
+}
+
+/** Optional duration/timestamp: kept only when finite and non-negative, else omitted. */
+function sanitizeOptionalMs(value: number | undefined, field: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (Number.isFinite(value) && value >= 0) return value;
+  logger.warn(`followup_queue: invalid ${field} (${value}) — omitted`);
+  return undefined;
+}
 
 // Minimal session interface to avoid circular dependency on full ConversationSession
 interface SessionLike {
@@ -20,7 +39,7 @@ interface SessionLike {
 }
 
 function sessionKeyFrom(session: SessionLike): string {
-  return `${session.channelId}-${session.threadTs || 'direct'}`;
+  return buildWorkSessionKey(session.channelId, session.threadTs);
 }
 
 export class MetricsEventEmitter {
@@ -123,6 +142,40 @@ export class MetricsEventEmitter {
     await this.emit(event);
   }
 
+  // === Followup Queue Observability (U13a) ===
+
+  /**
+   * Emit a followup-queue observation. Observations only — never a control path.
+   *
+   * Metadata is built from a fixed whitelist, so callers cannot leak message
+   * text / file paths / cwd / credentials by attaching extra properties. The
+   * original author identity is whatever the host passes as userId/userName.
+   */
+  async emitFollowupQueue(
+    sessionKey: string | undefined,
+    userId: string,
+    userName: string,
+    metric: FollowupQueueMetric,
+  ): Promise<void> {
+    const metadata: Record<string, unknown> = {
+      operation: metric.operation,
+      depth: sanitizeCount(metric.depth, 'depth'),
+      uncertainCount: sanitizeCount(metric.uncertainCount, 'uncertainCount'),
+    };
+    if (typeof metric.itemId === 'string' && metric.itemId) metadata.itemId = metric.itemId;
+    if (typeof metric.reason === 'string' && metric.reason) metadata.reason = metric.reason;
+
+    const drainLatencyMs = sanitizeOptionalMs(metric.drainLatencyMs, 'drainLatencyMs');
+    if (drainLatencyMs !== undefined) metadata.drainLatencyMs = drainLatencyMs;
+    const interruptLatencyMs = sanitizeOptionalMs(metric.interruptLatencyMs, 'interruptLatencyMs');
+    if (interruptLatencyMs !== undefined) metadata.interruptLatencyMs = interruptLatencyMs;
+    const lastProgressAt = sanitizeOptionalMs(metric.lastProgressAt, 'lastProgressAt');
+    if (lastProgressAt !== undefined) metadata.lastProgressAt = lastProgressAt;
+
+    const event = this.buildEvent('followup_queue', userId, userName, sessionKey, metadata);
+    await this.emit(event);
+  }
+
   // === GitHub Events (Scenario 3) ===
 
   async emitGitHubEvent(
@@ -151,10 +204,5 @@ export function getMetricsEmitter(): MetricsEventEmitter {
   if (!_instance) {
     _instance = new MetricsEventEmitter(new MetricsEventStore());
   }
-  return _instance;
-}
-
-function initMetricsEmitter(store: MetricsEventStore): MetricsEventEmitter {
-  _instance = new MetricsEventEmitter(store);
   return _instance;
 }

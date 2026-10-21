@@ -196,7 +196,17 @@ export function formatUsageBar(
   nowMs: number,
   label: UsageWindowLabel,
 ): string {
-  const padded = LABEL_PADDED[label];
+  return renderUsageBar(util, resetsAtIso, nowMs, LABEL_PADDED[label], WINDOW_DURATION_MS[label]);
+}
+
+/** Core renderer behind {@link formatUsageBar}. */
+function renderUsageBar(
+  util: number | undefined,
+  resetsAtIso: string | undefined,
+  nowMs: number,
+  padded: string,
+  windowMs: number,
+): string {
   if (util === undefined || !Number.isFinite(util) || !resetsAtIso) {
     return `${padded} (no data)`;
   }
@@ -204,7 +214,6 @@ export function formatUsageBar(
   const filled = Math.max(0, Math.min(PROGRESS_BAR_CELLS, Math.round((pct / 100) * PROGRESS_BAR_CELLS)));
   const utilBar = '█'.repeat(filled) + '░'.repeat(PROGRESS_BAR_CELLS - filled);
   const resetMs = new Date(resetsAtIso).getTime();
-  const windowMs = WINDOW_DURATION_MS[label];
   let remainingBar: string;
   let hint: string;
   if (!Number.isFinite(resetMs)) {
@@ -589,6 +598,7 @@ export function formatRateLimitedSegment(state: SlotState | undefined, userTz?: 
  * Legacy compat: snapshots written before #871 may still carry the removed
  * `'inferred_shared'` enum value. Treat any source not in the current union
  * as missing so the UI degrades to the bare `rate-limited <ts>` form.
+ * @public — exported for tests (src/slack/cct/__tests__/builder.test.ts).
  */
 export function formatRateLimitSource(source: SlotState['rateLimitSource'] | string | undefined): string {
   if (!source) return '';

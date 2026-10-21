@@ -36,6 +36,11 @@ describe('redactAnthropicSecrets', () => {
       expect(redactAnthropicSecrets('sk-ant-oat01-short')).toBe('sk-ant-oat01-short'); // < 8 chars
       expect(redactAnthropicSecrets('')).toBe('');
     });
+
+    it('redacts llmux client keys (lmk-…) with last4 preserved', () => {
+      expect(redactAnthropicSecrets('key=lmk-xWKZI1ICaaaabbbbcccc')).toBe('key=[REDACTED lmk-...cccc]');
+      expect(redactAnthropicSecrets('lmk-short')).toBe('lmk-short'); // < 8 chars
+    });
   });
 
   describe('non-string primitives', () => {

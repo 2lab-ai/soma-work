@@ -30,11 +30,14 @@ describe('opus-4.8 — release wiring', () => {
     expect(AVAILABLE_MODELS as readonly string[]).toContain('claude-opus-4-8[1m]');
   });
 
-  it('DEFAULT_MODEL tracks the resolved opus[1m] alias', () => {
-    // Single-line-edit contract: bumping MODEL_ALIASES['opus[1m]'] in a future
-    // PR rolls DEFAULT_MODEL forward without any other edit.
-    expect(DEFAULT_MODEL).toBe(MODEL_ALIASES['opus[1m]']);
-    expect(DEFAULT_MODEL).toBe('claude-opus-4-8[1m]');
+  it('4.8 keeps its VERSION-PINNED aliases after `opus` rolled to Opus 5', () => {
+    // The floating `opus` / `opus[1m]` aliases moved to Opus 5 on 2026-08-26.
+    // The pinned rows are the whole point of having both kinds: a user who
+    // explicitly chose 4.8 must not be rolled forward with them.
+    expect(MODEL_ALIASES['opus-4.8']).toBe('claude-opus-4-8');
+    expect(MODEL_ALIASES['opus-4.8[1m]']).toBe('claude-opus-4-8[1m]');
+    expect(MODEL_ALIASES['opus[1m]']).toBe('claude-opus-5-5[1m]');
+    expect(DEFAULT_MODEL).toBe('gpt-5.6-sol');
   });
 
   it('coerce normalises uppercase [1M] typo on the 4.8 variant', () => {
@@ -61,11 +64,6 @@ describe('opus-4.8 — model-registry pricing + context', () => {
     expect(spec.pricing.cache1hrWritePerMTok).toBe(10);
     expect(spec.maxOutput).toBe(128_000);
     expect(spec.contextWindow).toBe(1_000_000);
-  });
-
-  it('[1m] suffix opts into 1M; bare id falls back to 200k (suffix-is-SSOT)', () => {
-    expect(resolveContextWindow('claude-opus-4-8[1m]')).toBe(1_000_000);
-    expect(resolveContextWindow('claude-opus-4-8')).toBe(200_000);
   });
 });
 

@@ -217,7 +217,7 @@ describe('main-env-bootstrap', () => {
     const sessions = JSON.parse(fs.readFileSync(path.join(targetDir, 'data', 'sessions.json'), 'utf8'));
 
     expect(settings.U1.accepted).toBe(true);
-    expect(settings.U1.defaultModel).toBe('claude-opus-4-8[1m]'); // bootstrap DEFAULT_MODEL
+    expect(settings.U1.defaultModel).toBe('gpt-5.6-sol'); // bootstrap DEFAULT_MODEL
     expect(sessions[0].ownerId).toBe('U1');
     expect(sessions[0].state).toBe('MAIN');
     expect(sessions[0].workflow).toBe('default');
@@ -367,6 +367,15 @@ describe('main-env-bootstrap', () => {
       expect(__TEST_ONLY_VALID_MODELS.has('claude-opus-4-6[1m]')).toBe(true);
     });
 
+    it('includes the 2026-08-26 additions so a fresh deploy cannot normalize them away', () => {
+      // A model that survives `resolveModelInput` but is missing from the
+      // bootstrap's duplicated set gets silently coerced to DEFAULT_MODEL the
+      // first time a deploy normalizes the data dir.
+      for (const model of ['claude-opus-5', 'claude-opus-5[1m]', 'claude-fable-5[1m]', 'gpt-5.6-sol[1m]', 'grok-4.6']) {
+        expect(__TEST_ONLY_VALID_MODELS.has(model)).toBe(true);
+      }
+    });
+
     it('includes all pre-existing models (no silent drops)', () => {
       for (const model of [
         'claude-opus-4-7',
@@ -400,13 +409,123 @@ describe('main-env-bootstrap', () => {
 
     it('falls back to DEFAULT_MODEL for unknown / empty / non-string', () => {
       // Fallback target mirrors user-settings-store DEFAULT_MODEL — keep both
-      // in sync when bumping the `opus[1m]` alias generation.
-      expect(__TEST_ONLY_coerceModel('gpt-99-turbo')).toBe('claude-opus-4-8[1m]');
-      expect(__TEST_ONLY_coerceModel('')).toBe('claude-opus-4-8[1m]');
-      expect(__TEST_ONLY_coerceModel('   ')).toBe('claude-opus-4-8[1m]');
-      expect(__TEST_ONLY_coerceModel(undefined)).toBe('claude-opus-4-8[1m]');
-      expect(__TEST_ONLY_coerceModel(null)).toBe('claude-opus-4-8[1m]');
-      expect(__TEST_ONLY_coerceModel(42)).toBe('claude-opus-4-8[1m]');
+      // in sync when bumping the default-model generation (gpt-5.6 since
+      // 2026-07-10).
+      expect(__TEST_ONLY_coerceModel('gpt-99-turbo')).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('')).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('   ')).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel(undefined)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel(null)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel(42)).toBe('gpt-5.6-sol');
+    });
+  });
+
+  describe('coerceModel — llmux catalog snapshot overlay', () => {
+    const GROK_SNAPSHOT = {
+      fetchedAt: 1,
+      models: [
+        {
+          id: 'grok-4.5',
+          aliases: ['grok'],
+          name: 'Grok 4.5',
+          efforts: ['low', 'medium', 'high'],
+          maxContext: 500_000,
+          group: 'grok',
+        },
+      ],
+    };
+
+    it('preserves a catalog id when the snapshot file lists it', () => {
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      writeJson(path.join(dataDir, 'model-catalog.json'), GROK_SNAPSHOT);
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('grok-4.5');
+    });
+
+    it('falls back to DEFAULT_MODEL without a snapshot file', () => {
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('grok-4.5')).toBe('gpt-5.6-sol');
+    });
+
+    it('fails soft on a corrupt snapshot file (static behavior)', () => {
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(path.join(dataDir, 'model-catalog.json'), '{ nope', 'utf8');
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('claude-opus-4-7', dataDir)).toBe('claude-opus-4-7');
+    });
+
+    it('falls back to the `.bak` snapshot when the live file is corrupt (mirrors loadSnapshotSync)', () => {
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(path.join(dataDir, 'model-catalog.json'), '{ nope', 'utf8');
+      writeJson(path.join(dataDir, 'model-catalog.json.bak'), GROK_SNAPSHOT);
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('grok-4.5');
+    });
+
+    it('rejects fake grok [1m] ids even when the catalog snapshot advertises them', () => {
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      writeJson(path.join(dataDir, 'model-catalog.json'), {
+        fetchedAt: 1,
+        models: [{ id: 'grok-4.6[1m]' }, { id: 'claude-fable-5[1m]' }],
+      });
+      expect(__TEST_ONLY_coerceModel('grok-4.6[1m]', dataDir)).toBe('gpt-5.6-sol');
+      expect(__TEST_ONLY_coerceModel('claude-fable-5[1m]', dataDir)).toBe('claude-fable-5[1m]');
+    });
+
+    it('preserves the literal fable [1m] id (the 2026-08-26 filter removal)', () => {
+      // The import-lean duplicate of `isCatalogIdSelectable` used to drop
+      // `claude-fable-5[1m]` here, so a deploy-time normalize downgraded any
+      // user or session on that id to DEFAULT_MODEL. Both the static entry and
+      // the catalog snapshot path must now keep it.
+      const dataDir = makeTempDir('bootstrap-catalog-');
+      writeJson(path.join(dataDir, 'model-catalog.json'), {
+        fetchedAt: 1,
+        models: [{ id: 'claude-fable-5[1m]' }, ...GROK_SNAPSHOT.models],
+      });
+      expect(__TEST_ONLY_coerceModel('claude-fable-5[1m]', dataDir)).toBe('claude-fable-5[1m]');
+      expect(__TEST_ONLY_coerceModel('claude-fable-5[1m]')).toBe('claude-fable-5[1m]');
+      expect(__TEST_ONLY_coerceModel('grok-4.5', dataDir)).toBe('grok-4.5');
+    });
+
+    it('normalizeMainTargetData preserves the new [1m] ids on user settings AND sessions', async () => {
+      const targetDir = makeTempDir('bootstrap-1m-target-');
+      const dataDir = path.join(targetDir, 'data');
+      writeJson(path.join(dataDir, 'user-settings.json'), {
+        U1: { userId: 'U1', defaultModel: 'claude-fable-5[1m]', accepted: true },
+        U2: { userId: 'U2', defaultModel: 'claude-opus-5[1m]', accepted: true },
+        U3: { userId: 'U3', defaultModel: 'gpt-5.6-sol[1m]', accepted: true },
+        U4: { userId: 'U4', defaultModel: 'grok-4.6', accepted: true },
+      });
+      writeJson(path.join(dataDir, 'sessions.json'), [
+        { sessionKey: 'C1:1.1', userId: 'U1', model: 'claude-fable-5[1m]' },
+      ]);
+
+      await normalizeMainTargetData(targetDir);
+
+      const settings = JSON.parse(fs.readFileSync(path.join(dataDir, 'user-settings.json'), 'utf8'));
+      expect(settings.U1.defaultModel).toBe('claude-fable-5[1m]');
+      expect(settings.U2.defaultModel).toBe('claude-opus-5[1m]');
+      expect(settings.U3.defaultModel).toBe('gpt-5.6-sol[1m]');
+      expect(settings.U4.defaultModel).toBe('grok-4.6');
+      const sessions = JSON.parse(fs.readFileSync(path.join(dataDir, 'sessions.json'), 'utf8'));
+      expect(sessions[0].model).toBe('claude-fable-5[1m]');
+    });
+
+    it('normalizeMainTargetData preserves grok-4.5 settings when the data dir has the snapshot', async () => {
+      const targetDir = makeTempDir('bootstrap-catalog-target-');
+      const dataDir = path.join(targetDir, 'data');
+      writeJson(path.join(dataDir, 'model-catalog.json'), GROK_SNAPSHOT);
+      writeJson(path.join(dataDir, 'user-settings.json'), {
+        U1: { userId: 'U1', defaultModel: 'grok-4.5', accepted: true },
+        U2: { userId: 'U2', defaultModel: 'not-a-model', accepted: true },
+      });
+
+      await normalizeMainTargetData(targetDir);
+
+      const settings = JSON.parse(fs.readFileSync(path.join(dataDir, 'user-settings.json'), 'utf8'));
+      expect(settings.U1.defaultModel).toBe('grok-4.5');
+      expect(settings.U2.defaultModel).toBe('gpt-5.6-sol');
     });
   });
 

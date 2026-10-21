@@ -8,7 +8,7 @@ import * as path from 'path';
 import type { ClaudeHandler } from './claude-handler';
 import { type ComplexityResult, scoreComplexity } from './complexity-scorer';
 import { Logger } from './logger';
-import { SessionLink, type SessionLinks, type WorkflowType } from './types';
+import type { SessionLinks, WorkflowType } from './types';
 
 /**
  * Decode Slack HTML entities in text.
@@ -26,9 +26,6 @@ const FALLBACK_DISPATCH_MODEL = 'claude-haiku-4-5-20251001';
 
 // Dispatch prompt file path
 const DISPATCH_PROMPT_PATH = path.join(__dirname, 'prompt', 'dispatch.prompt');
-
-// Fallback counter for monitoring
-let dispatchFallbackCount = 0;
 
 /**
  * Result of dispatch classification
@@ -110,13 +107,6 @@ class DispatchService {
   }
 
   /**
-   * Get current fallback count for monitoring
-   */
-  static getFallbackCount(): number {
-    return dispatchFallbackCount;
-  }
-
-  /**
    * Classify user message and determine workflow
    * Uses ClaudeHandler.dispatchOneShot for unified auth
    * @param userMessage - The user's message to classify
@@ -131,7 +121,6 @@ class DispatchService {
       this.logger.warn(
         `📍 DISPATCH → [default] (unconfigured - no dispatch prompt) complexity=${complexity.score}/${complexity.tier}`,
       );
-      dispatchFallbackCount++;
       return {
         workflow: 'default',
         title: this.generateFallbackTitle(userMessage),
@@ -141,7 +130,6 @@ class DispatchService {
 
     if (!this.claudeHandler) {
       this.logger.warn(`📍 DISPATCH → [default] (no ClaudeHandler) complexity=${complexity.score}/${complexity.tier}`);
-      dispatchFallbackCount++;
       return {
         workflow: 'default',
         title: this.generateFallbackTitle(userMessage),
@@ -213,7 +201,6 @@ class DispatchService {
       } else {
         this.logger.error(`📍 DISPATCH → [default] (error after ${elapsed}ms: ${(error as Error).message})`, error);
       }
-      dispatchFallbackCount++;
       return {
         workflow: 'default',
         title: this.generateFallbackTitle(userMessage),

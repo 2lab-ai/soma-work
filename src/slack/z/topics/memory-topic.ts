@@ -8,6 +8,7 @@
  */
 
 import type { WebClient } from '@slack/web-api';
+import { formatHierarchicalCardText } from '../../../hierarchical-memory';
 import { Logger } from '../../../logger';
 import {
   addMemory,
@@ -456,6 +457,15 @@ export async function renderMemoryCard(args: { userId: string; issuedAt: number 
       usr.percentUsed,
       { memCollapseN, usrCollapseN: usrCount },
     );
+  }
+
+  // Surface the NEW hierarchical (taxonomy) memory in the default card, so a
+  // bare `memory` shows pages + episodic alongside the flat L1 store instead of
+  // only the old flat entries. Inserted before the bottom actions/help rows.
+  const hierText = formatHierarchicalCardText(userId);
+  if (hierText) {
+    const insertAt = Math.max(0, blocks.length - 2); // before bottomActions + help
+    blocks.splice(insertAt, 0, dividerBlock(), { type: 'section', text: { type: 'mrkdwn', text: hierText } } as ZBlock);
   }
 
   blocks = enforceSectionCharCap(blocks);

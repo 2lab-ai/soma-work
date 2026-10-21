@@ -2,12 +2,16 @@ import { setCommandRouterProviders } from '@soma/slack/commands/command-router';
 import type { ClaudeHandler } from '../../claude-handler';
 import { getReportDeps } from '../../metrics';
 import { AdminHandler } from './admin-handler';
+import { AuthHandler } from './auth-handler';
+import { AutoCompactHandler } from './autocompact-handler';
+import { AutoskillHandler } from './autoskill-handler';
 import { BypassHandler } from './bypass-handler';
 import { CctHandler } from './cct-handler';
 import { CloseHandler } from './close-handler';
 import { CompactHandler } from './compact-handler';
 import { CompactThresholdHandler } from './compact-threshold-handler';
 import { ContextHandler } from './context-handler';
+import { CronCommandHandler } from './cron-handler';
 import { CwdHandler } from './cwd-handler';
 import { DashboardHandler } from './dashboard-handler';
 import { EffortHandler } from './effort-handler';
@@ -26,6 +30,7 @@ import { OnboardingHandler } from './onboarding-handler';
 import { PersonaHandler } from './persona-handler';
 import { PluginsHandler } from './plugins-handler';
 import { PromptHandler } from './prompt-handler';
+import { QueueHandler } from './queue-handler';
 import { RateHandler } from './rate-handler';
 import { RenewHandler } from './renew-handler';
 import { ReportHandler } from './report-handler';
@@ -44,7 +49,7 @@ import { WebhookHandler } from './webhook-handler';
 setCommandRouterProviders({
   createHandlers: (deps) => {
     const newHandler = new NewHandler(deps as any);
-    const skillForceHandler = new SkillForceHandler();
+    const skillForceHandler = new SkillForceHandler(undefined, deps as any);
     const goalHandler = new GoalHandler(deps as any);
 
     const claudeHandler = (deps as { claudeHandler: ClaudeHandler }).claudeHandler;
@@ -79,11 +84,20 @@ setCommandRouterProviders({
         promptHandler,
         instructionsHandler,
         cctHandler,
+        // Auth backend (#llmux runtime switch). Non-admin `auth` renders the
+        // readonly card; mutating arms are admin-gated inside the handler.
+        // slackApi + userSettingsStore power the `key` personal-key DM path.
+        new AuthHandler(deps as any),
         new CwdHandler(deps as any),
         new McpHandler(deps as any),
         new DashboardHandler(),
         new MarketplaceHandler(deps as any),
         pluginsHandler,
+        // Must precede `skillForceHandler`: `set autoskill $a, $b` contains
+        // `$skill` tokens that SkillForceHandler would otherwise intercept and
+        // inject instead of registering. AutoskillHandler.canHandle is narrow
+        // (`^/?(set )?autoskill\b`) so it never steals unrelated messages.
+        new AutoskillHandler(),
         new UserSkillsListHandler(),
         skillForceHandler,
         new SessionCommandHandler(deps as any),
@@ -95,6 +109,10 @@ setCommandRouterProviders({
         new PersonaHandler(),
         new SkillsHandler(),
         new MemoryHandler(),
+        // Cron manage command — `cron`/`schedule` must be a routed command,
+        // not plain text: plain text reaches the dispatch path where autogoal
+        // can promote it to a session goal before the model sees it.
+        new CronCommandHandler(undefined, { slackApi: (deps as any).slackApi }),
         new ModelHandler(deps as any),
         new VerbosityHandler(deps as any),
         new EffortHandler(deps as any),
@@ -105,6 +123,7 @@ setCommandRouterProviders({
         new OnboardingHandler(deps as any),
         new ContextHandler(deps as any),
         new RenewHandler(deps as any),
+        new AutoCompactHandler(deps as any),
         new CompactThresholdHandler(deps as any),
         new CompactHandler(deps as any),
         goalHandler,
@@ -112,6 +131,11 @@ setCommandRouterProviders({
         new CloseHandler(deps as any),
         new ReportHandler(getReportDeps()),
         new UsageHandler(deps as any),
+        // `queue`/`큐` (A40). Registered like any other handler so
+        // `classifyText` calls it a `control` through the same `canHandle`
+        // probe — which is what lets it answer WHILE a turn is running, the
+        // only time the follow-up queue is non-empty.
+        new QueueHandler(deps as any),
         new HelpHandler(),
         new SessionHandler(deps as any),
       ],

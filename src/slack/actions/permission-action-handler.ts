@@ -1,10 +1,18 @@
-import { type PermissionResponse, sharedStore } from 'somalib/permission/shared-store';
+import { type PendingApproval, type PermissionResponse, sharedStore } from 'somalib/permission/shared-store';
 import { Logger } from '../../logger';
 import type { SessionRegistry } from '../../session-registry';
 import type { RespondFn } from './types';
 
 /**
  * 권한 승인/거부 액션 핸들러
+ *
+ * Requester-only: the prompt is an ordinary thread message, so anyone in the
+ * channel can click its buttons. Every action first loads the pending approval
+ * and answers it only when the clicker is the user it was raised for
+ * (`PendingApproval.user`) — the same owner-bound rule the cron-run and skill
+ * permission prompts enforce. An unknown requester, a missing click user, or
+ * a missing/expired record fails closed: nothing is stored, so the permission
+ * MCP server keeps waiting and times out to deny.
  *
  * `sessionRegistry` is optional so callers that don't need the session-scoped
  * rule-disable action (`handleApproveDisableRule`) can instantiate the handler
@@ -45,8 +53,9 @@ export class PermissionActionHandler {
    * Looks up the pending approval in the shared-store to recover the
    * (channel, thread_ts, rule_ids) triple the permission-mcp-server persisted,
    * maps the first two to a session key, and mutates the session's
-   * `disabledDangerousRules` set so subsequent bypass-mode hook invocations
-   * short-circuit to allow. The disable is in-memory only — restarting the
+   * `disabledDangerousRules` set so subsequent auto-mode Bash commands matching
+   * only those rules no longer escalate (evaluateToolPolicy reads the set through
+   * `isDangerousRuleDisabled`). The disable is in-memory only — restarting the
    * bot or ending the session drops it (intentional; re-enable UI is out of
    * scope for this PR).
    */
@@ -61,6 +70,9 @@ export class PermissionActionHandler {
     }
 
     try {
+      const pending = await this.loadIfRequester(approvalId, user, respond, 'approve_disable_rule_session');
+      if (!pending) return;
+
       if (!this.sessionRegistry) {
         // Without a SessionRegistry we can't disable rules — but still honor
         // the approve intent so the request doesn't hang until timeout.
@@ -69,16 +81,6 @@ export class PermissionActionHandler {
           user,
         });
         await sharedStore.storePermissionResponse(approvalId, { behavior: 'allow', message: 'Approved by user' });
-        return;
-      }
-
-      const pending = await sharedStore.getPendingApproval(approvalId);
-      if (!pending) {
-        this.logger.warn('approve_disable_rule_session: pending approval not found (may have expired)', {
-          approvalId,
-          user,
-        });
-        await this.ephemeralError(respond, '⚠️ The permission request expired before it could be handled.');
         return;
       }
 
@@ -131,12 +133,48 @@ export class PermissionActionHandler {
     try {
       const approvalId = body.actions[0].value;
       const user = body.user?.id;
+      const pending = await this.loadIfRequester(approvalId, user, respond, noun);
+      if (!pending) return;
       this.logger.info(logLabel, { approvalId, user });
       await sharedStore.storePermissionResponse(approvalId, response);
     } catch (error) {
       this.logger.error(`Error processing tool ${noun}`, error);
       await this.ephemeralError(respond, `❌ Error processing ${noun}. The request may have already been handled.`);
     }
+  }
+
+  /**
+   * Load the pending approval and return it only when `clicker` is its
+   * requester. Otherwise tell the clicker why (ephemeral) and return null —
+   * the caller must then store nothing.
+   */
+  private async loadIfRequester(
+    approvalId: string,
+    clicker: string | undefined,
+    respond: RespondFn,
+    action: string,
+  ): Promise<PendingApproval | null> {
+    const pending = await sharedStore.getPendingApproval(approvalId);
+    if (!pending) {
+      this.logger.warn(`${action}: pending approval not found (may have expired)`, { approvalId, user: clicker });
+      await this.ephemeralError(respond, '⚠️ The permission request expired before it could be handled.');
+      return null;
+    }
+    if (!clicker || !pending.user || clicker !== pending.user) {
+      this.logger.warn(`${action}: click from a user other than the requester ignored`, {
+        approvalId,
+        clicker,
+        requester: pending.user,
+      });
+      await this.ephemeralError(
+        respond,
+        pending.user
+          ? `⚠️ Only <@${pending.user}>, who this permission request is for, can answer it.`
+          : '⚠️ This permission request has no recorded requester, so it cannot be answered from Slack.',
+      );
+      return null;
+    }
+    return pending;
   }
 
   private async ephemeralError(respond: RespondFn, text: string): Promise<void> {

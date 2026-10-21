@@ -48,8 +48,14 @@ export const OutputFlag = {
   SYSTEM: 1 << 18,
   /** Raw model response data (debug) */
   RAW_DATA: 1 << 19,
-  /** Skill invocation announcement (shown even in minimal) */
+  /** Skill invocation announcement */
   SKILL_INVOCATION: 1 << 20,
+  /**
+   * Mid-turn model narration — assistant text segments streamed while the turn
+   * runs. Without it only the turn's final answer reaches Slack; the narration
+   * still goes to the dashboard work log (`StreamContext.workLog`).
+   */
+  NARRATION: 1 << 21,
 } as const;
 
 export type OutputFlagValue = (typeof OutputFlag)[keyof typeof OutputFlag];
@@ -61,18 +67,19 @@ export type LogVerbosity = 'minimal' | 'compact' | 'detail' | 'verbose';
 /** Flags that are ALWAYS active regardless of log level */
 const ALWAYS = OutputFlag.USER_CHOICE | OutputFlag.PERMISSION | OutputFlag.ERROR;
 
-/** MINIMAL — final result + essential interactions + long-running status + task progress + skill announcements */
-const LOG_MINIMAL =
-  ALWAYS |
-  OutputFlag.FINAL_RESULT |
-  OutputFlag.MCP_PROGRESS |
-  OutputFlag.TODO_UPDATE |
-  OutputFlag.TODO_REACTION |
-  OutputFlag.SKILL_INVOCATION;
+/**
+ * MINIMAL — task list + final answer + essential interactions, nothing else
+ * (spec 10 §3.2-2). Narration, MCP/subagent/background progress and skill
+ * banners go to the dashboard work log instead.
+ */
+export const LOG_MINIMAL = ALWAYS | OutputFlag.FINAL_RESULT | OutputFlag.TODO_UPDATE | OutputFlag.TODO_REACTION;
 
-/** COMPACT — thinking + tool names (no detail) + status/meta */
+/** COMPACT — narration + long-running status + thinking + tool names (no detail) + status/meta */
 const LOG_COMPACT =
   LOG_MINIMAL |
+  OutputFlag.NARRATION |
+  OutputFlag.MCP_PROGRESS |
+  OutputFlag.SKILL_INVOCATION |
   OutputFlag.THINKING |
   OutputFlag.TOOL_CALL |
   OutputFlag.STATUS_MESSAGE |
@@ -100,9 +107,54 @@ const VERBOSITY_MAP: Record<LogVerbosity, number> = {
 
 export const DEFAULT_LOG_VERBOSITY: LogVerbosity = 'minimal';
 
+/**
+ * A stored verbosity mask as every consumer reads it: a missing or
+ * non-numeric value (e.g. an unmigrated or hand-edited record) is the default
+ * `detail` — one rule, so no consumer reads it as "everything off".
+ */
+export function resolveVerbosityMask(mask: unknown): number {
+  return typeof mask === 'number' && Number.isFinite(mask) ? mask : LOG_DETAIL;
+}
+
 /** Resolve a verbosity name to its flag mask */
 export function getVerbosityFlags(level: LogVerbosity): number {
   return VERBOSITY_MAP[level];
+}
+
+/**
+ * Version of the mask encoding, persisted next to every stored mask
+ * (sessions.json `logVerbosityVersion`). 2 = masks that carry `NARRATION`.
+ * A stored mask WITHOUT it predates this release and is the only kind
+ * {@link upgradeLegacyVerbosityMask} may rewrite — a current custom mask that
+ * happens to equal an old preset number is left alone.
+ */
+export const LOG_VERBOSITY_MASK_VERSION = 2;
+
+/**
+ * The preset masks as stored before `NARRATION` (bit 21) existed — the values
+ * of `getVerbosityFlags()` at main e992de7c, pinned in
+ * `__tests__/output-flags.minimal.test.ts`. Kept only to upgrade masks that
+ * were persisted then (sessions.json); never produced any more.
+ */
+const LEGACY_PRESET_MASKS: ReadonlyMap<number, LogVerbosity> = new Map<number, LogVerbosity>([
+  [LOG_MINIMAL | OutputFlag.MCP_PROGRESS | OutputFlag.SKILL_INVOCATION, 'minimal'],
+  [LOG_COMPACT & ~OutputFlag.NARRATION, 'compact'],
+  [LOG_DETAIL & ~OutputFlag.NARRATION, 'detail'],
+  [LOG_VERBOSE & ~OutputFlag.NARRATION, 'verbose'],
+]);
+
+/**
+ * Map a persisted mask that equals a pre-`NARRATION` preset to the current
+ * preset of the same name; anything else (current presets, custom masks,
+ * `undefined`) passes through. Without it a restored thread at an old
+ * compact/detail/verbose mask would silently lose its narration and show a
+ * `custom` chip. Callers apply it only to masks stored without
+ * {@link LOG_VERBOSITY_MASK_VERSION}.
+ */
+export function upgradeLegacyVerbosityMask(mask: number | undefined): number | undefined {
+  if (mask === undefined) return undefined;
+  const level = LEGACY_PRESET_MASKS.get(mask);
+  return level ? VERBOSITY_MAP[level] : mask;
 }
 
 /** Check whether a given output flag is enabled for the active verbosity mask */
