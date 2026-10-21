@@ -1,6 +1,6 @@
 # Verification ledger
 
-Snapshot of 2026-10-20. Every production TypeScript file (the set the ImportGraph extractor reads
+Snapshot of 2026-10-21. Every production TypeScript file (the set the ImportGraph extractor reads
 from `git ls-files`: `*.ts`, `*.tsx`, `*.mts`, `*.cts`, minus declaration files, tests, specs
 and fixtures), and how far `verification/` covers it. Written by
 `node scripts/verification/ledger.cjs`. Nothing checks this file against the tree; the live
@@ -19,13 +19,13 @@ current file set on every run.
 | `packages/common/` | 13 | 0 | 13 |
 | `packages/process-shared/` | 21 | 0 | 21 |
 | `packages/slack/` | 95 | 2 | 93 |
-| `src/` | 393 | 5 | 388 |
+| `src/` | 395 | 5 | 390 |
 | `somalib/` | 17 | 0 | 17 |
 | `packages/test-utils/` | 4 | 0 | 4 |
 | `packages/mcp-servers/` | 11 | 0 | 11 |
 | `scripts/` | 7 | 0 | 7 |
 | other | 1 | 0 | 1 |
-| **total** | **562** | **7** | **555** |
+| **total** | **564** | **7** | **557** |
 
 ## Files
 
@@ -277,6 +277,7 @@ current file set on every run.
 | `src/conversation/link-derived-title.ts` | `src/` | T1 |
 | `src/conversation/oauth.ts` | `src/` | T1 |
 | `src/conversation/recorder.ts` | `src/` | T1 |
+| `src/conversation/slack-directory-lookup.ts` | `src/` | T1 |
 | `src/conversation/storage.ts` | `src/` | T1 |
 | `src/conversation/summarizer.ts` | `src/` | T1 |
 | `src/conversation/title-generator.ts` | `src/` | T1 |
@@ -514,6 +515,7 @@ current file set on every run.
 | `src/slack/goal-blocks.ts` | `src/` | T1 |
 | `src/slack/goal-completion-evaluator.ts` | `src/` | T1 |
 | `src/slack/goal-continuation.ts` | `src/` | T1 |
+| `src/slack/goal-host-actions.ts` | `src/` | T1 |
 | `src/slack/goal-loop-controller.ts` | `src/` | T1 |
 | `src/slack/goal-loop-resume.ts` | `src/` | T1 |
 | `src/slack/handoff-budget.ts` | `src/` | T1 |

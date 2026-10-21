@@ -1407,3 +1407,50 @@ describe('CommandRouter — forced $skill banner reads the routed session verbos
     expect(result.continueWithPrompt).toContain('<local:z>');
   });
 });
+
+/**
+ * SSOT 2026-10-21 T1 — a goal command typed while a turn runs is run NOW by
+ * the host (it must never be parked in the follow-up/steering queue). The
+ * host asks this pure predicate which texts `route` would hand to
+ * `GoalHandler` alone; a `goal … $skill` split also starts a forced-skill
+ * turn, so it keeps the queue path.
+ */
+describe('CommandRouter.isGoalCommandText — pure goal commands only', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('claims every goal form, including the `/z goal` spelling', () => {
+    stubSkillFs({ localSkills: [] });
+    const router = new CommandRouter(buildDeps());
+    for (const text of [
+      'goal 두번째 목표',
+      'goal set ship it',
+      'goal',
+      'goal status',
+      'goal done',
+      'goal pause',
+      'goal resume',
+      'goal clear',
+      '/z goal 다음 목표',
+      'set goal auto',
+    ]) {
+      expect(router.isGoalCommandText(text, 'U1'), text).toBe(true);
+    }
+  });
+
+  it('rejects instructions, other commands and the goal+skill split', () => {
+    stubSkillFs({ localSkills: ['z'] });
+    const router = new CommandRouter(buildDeps());
+    for (const text of [
+      '',
+      '진행중인거 알려줘?',
+      'goals are fun',
+      'new goal ship it',
+      '%nogoal goal 무시',
+      'goal ship the feature $z proceed',
+    ]) {
+      expect(router.isGoalCommandText(text, 'U1'), text).toBe(false);
+    }
+  });
+});

@@ -40,7 +40,17 @@ export interface CommandContext {
    * fresh-context start fires it AFTER session init / autogoal / autoskill.
    */
   deferSkillFire?: boolean;
+  /**
+   * Admit the opening turn of a goal the command just started, synchronously
+   * with the mutation — see the package `CommandContext.admitOpening`
+   * (`@soma/slack/commands/command-router`) for the contract. Supplied only by
+   * the host's goal intake while a turn runs.
+   */
+  admitOpening?: (opening: { goalId: string; objective: string }) => GoalOpeningAdmission;
 }
+
+/** `queued` | `started` | `{ failed: reason }` — see {@link CommandContext.admitOpening}. */
+export type GoalOpeningAdmission = 'queued' | 'started' | { failed: string };
 
 /**
  * Dependencies injected into command handlers
