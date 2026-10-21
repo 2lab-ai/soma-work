@@ -171,9 +171,10 @@ is answered `409` with the counts until it is repeated with `?confirm=1`; every 
 the actor and the before/after values. Readers call `getSessionLifecyclePolicy()` at use time, so a
 change applies on the next sweep without a restart.
 
-If the saved file and its `.bak` are both unreadable the policy is *degraded*: the defaults could be
-far shorter than what an admin chose, so the sweep and the loader skip every sleep / archive
-transition until an admin saves a policy again. A missing file is not degraded — it means defaults.
+If the live file is unreadable the policy is *degraded*: the values in use (the `.bak`, which is the
+previous save, or the defaults when that is unreadable too) could be far shorter than what an admin
+chose, so the sweep and the loader skip every sleep / archive transition until an admin saves a
+policy again. A missing file is not degraded — it means defaults.
 
 ### 6.2 Warning intervals
 
@@ -186,12 +187,14 @@ would otherwise fire on the first sweep after any activity.
 `cleanupInactiveSessions()` (every sweep):
 
 1. `SLEEPING` and asleep for `archiveAfterMs` or longer → `onExpiry`, archive (`sleep_expired`), delete.
-2. Otherwise idle for `sleepAfterMs` or longer → `SLEEPING` (`sleepStartedAt = now`), `onSleep`.
+2. Otherwise, unless a turn is running (`activityState: 'working'` — `lastActivity` only moves on
+   user input), idle for `sleepAfterMs` or longer → `SLEEPING` (`sleepStartedAt = now`), `onSleep`.
 3. Otherwise → expiry warnings (6.2).
 
 `loadSessions()` (restart) takes the sweep's step for what was saved: a `SLEEPING` session asleep
 past `archiveAfterMs` is archived; an active session idle past `sleepAfterMs` loads as `SLEEPING`
-with `sleepStartedAt = now` — the moment it is noticed, as in the sweep — and is never auto-resumed.
+with `sleepStartedAt = now` — the moment it is noticed, as in the sweep — is saved at once, and is
+never auto-resumed. A session with an active goal stays awake so `resumeActiveGoals` can resume it.
 An active session is never ended on load, so a restart cannot shorten the sleep a running process
 would have given it.
 
