@@ -213,4 +213,30 @@ describe('Dashboard lifecycle policy API', () => {
     const res = await injectWebServer({ method: 'GET', url: '/api/dashboard/sessions', headers: AUTH_HEADER });
     expect(JSON.parse(res.body).lifecycle).toEqual({ ...DEFAULTS, degraded: true });
   });
+
+  it('while degraded, saving counts every session the resumed sweep would move', async () => {
+    fs.writeFileSync(path.join(dir, 'session-lifecycle.json'), '{ broken');
+    fs.writeFileSync(path.join(dir, 'session-lifecycle.json.bak'), '{ broken');
+    const policy = await import('../../session-lifecycle-policy');
+    policy.__resetSessionLifecyclePolicyForTests(path.join(dir, 'session-lifecycle.json'));
+    // Asleep 10 days: past the 7-day default the sweep would have applied had it not been paused.
+    sessions.set('C1:t9', {
+      sessionId: 's9',
+      ownerId: 'U1',
+      channelId: 'C1',
+      threadTs: 't9',
+      state: 'SLEEPING',
+      activityState: 'idle',
+      lastActivity: new Date(Date.now() - 11 * DAY),
+      sleepStartedAt: new Date(Date.now() - 10 * DAY),
+    });
+    const res = await injectWebServer({
+      method: 'PUT',
+      url: '/api/dashboard/lifecycle',
+      headers: { ...AUTH_HEADER, 'content-type': 'application/json' },
+      payload: { boardArchiveWindowMs: 24 * HOUR },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toEqual({ needsConfirm: true, willSleep: 0, willArchive: 1 });
+  });
 });
