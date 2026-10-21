@@ -777,7 +777,7 @@ export async function handleCancel(
     } catch (error) {
       // A rule that cannot be evaluated is a refusal, not a yes.
       report(deps, 'cancel veto', error);
-      veto = 'Cancel rejected: this item could not be checked. Try again.';
+      veto = '취소가 거부되었습니다: 이 항목을 확인하지 못했습니다 — 다시 시도해 주세요.';
     }
     if (veto) {
       await refuse(respond, veto);

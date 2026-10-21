@@ -4816,6 +4816,136 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    it('records on the goal that its opening has not reached the model — and clears it once it does', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      expect(registrySession.goal.openingPending).toBe(true);
+
+      await settle();
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+      expect(registrySession.goal.openingPending).toBeUndefined();
+    });
+
+    it('a Cancel on an opening row whose goal already had its first turn (a retried row) is an ordinary cancel', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await tick();
+      // What the model boundary records once the opening ran (a run that later
+      // failed and was retried back into `queued` keeps it cleared).
+      registrySession.goal.openingPending = undefined;
+
+      await handlerAny.handleFollowupReactionControl({
+        channel: CHANNEL,
+        ts: '333.444',
+        reaction: 'ui_cancel',
+        user: 'U_OWNER',
+      });
+      await tick();
+      await tick();
+
+      expect(items()[0].state).toBe('cancelled');
+      expect(registrySession.goal).toMatchObject({ objective: '새 목표', status: 'active' });
+      await settle();
+    });
+
+    it('`goal resume` of a goal paused before its first turn re-admits that first turn (cancel whose delete failed)', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await tick();
+      postSystemMessage.mockRejectedValueOnce(new Error('slack down'));
+      await handlerAny.handleFollowupReactionControl({
+        channel: CHANNEL,
+        ts: '333.444',
+        reaction: 'ui_cancel',
+        user: 'U_OWNER',
+      });
+      await vi.waitFor(() => expect(registrySession.goal?.status).toBe('paused'));
+      expect(registrySession.goal.openingPending).toBe(true);
+
+      await handler.handleMessage(message({ ts: '555.666', text: 'goal resume' }), say());
+
+      expect(registrySession.goal).toMatchObject({ objective: '새 목표', status: 'active' });
+      const reopened = items().find(
+        (item: any) =>
+          item.message.ts === '555.666' && item.message.routeContext?.goalOpeningId === registrySession.goal.goalId,
+      );
+      expect(reopened?.state, 'a fresh first turn waits behind the running turn').toBe('queued');
+      expect(reopened.message.text).toBe('새 목표');
+
+      await settle();
+      expect(startWithContinuation, 'the resumed goal got its first turn').toHaveBeenCalledTimes(2);
+      expect(registrySession.goal.openingPending).toBeUndefined();
+    });
+
+    it('`goal resume` after the first turn was skipped because the goal was paused starts it from its first turn', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await handler.handleMessage(message({ ts: '333.555', text: 'goal pause' }), say());
+      await settle();
+      expect(startWithContinuation, 'the opening was skipped (paused)').toHaveBeenCalledTimes(1);
+      expect(registrySession.goal).toMatchObject({ status: 'paused', openingPending: true });
+
+      await handler.handleMessage(message({ ts: '555.666', text: 'goal resume' }), say());
+      await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalledTimes(2));
+
+      expect(registrySession.goal).toMatchObject({ status: 'active' });
+      expect(registrySession.goal.openingPending).toBeUndefined();
+    });
+
+    it('an opening `$skill` that no handler claims any more still runs the objective (handled:false)', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표 $local:z' }), say());
+      routeCommand.mockResolvedValueOnce({ handled: false });
+
+      await settle();
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+      expect(postSystemMessage).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('스킬 없이'), expect.anything());
+    });
+
+    it('a goal command whose attachments arrive in a second envelope gets them on its queued first turn', async () => {
+      const { settle } = await startBusyTurn();
+      // `app_mention` without files, then `file_share` with them — same message.
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표', files: attachment }), say());
+
+      expect(items()).toHaveLength(1);
+      expect(items()[0].message.files).toEqual([expect.objectContaining({ id: 'F1' })]);
+      expect(registrySession.goalQueue ?? [], 'the goal is not added twice').toHaveLength(0);
+      await settle();
+      expect(processFiles).toHaveBeenLastCalledWith(
+        expect.objectContaining({ files: [expect.objectContaining({ id: 'F1' })] }),
+        expect.anything(),
+      );
+    });
+
+    it('says so when late attachments can no longer ride along (the goal queued behind the one in flight)', async () => {
+      registrySession.goal = activeGoal();
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표', files: attachment }), say());
+
+      expect(registrySession.goalQueue).toHaveLength(1);
+      expect(postSystemMessage).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('늦게 도착'), expect.anything());
+      await settle();
+    });
+
+    it('rolls the goal back when admitting its first turn throws', async () => {
+      const { settle } = await startBusyTurn();
+      vi.spyOn(handlerAny.followupQueue, 'list').mockImplementationOnce(() => {
+        throw new Error('queue read failed');
+      });
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+
+      expect(registrySession.goal, 'no active goal without its first turn').toBeUndefined();
+      expect(goalNotices).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('Goal was NOT set'), expect.anything());
+      await settle();
+    });
+
     it('T1.6 an edit of the goal message never rewrites its queued opening turn', async () => {
       const { settle } = await startBusyTurn();
       await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
@@ -5083,6 +5213,21 @@ describe('SlackHandler — follow-up queue host', () => {
         expect.stringContaining('position 1'),
         expect.anything(),
       );
+    });
+
+    it('says the author lost the right — not that the session changed — when the re-check after the anchor refuses', async () => {
+      const accepted = vi.spyOn(userSettingsStore, 'isUserAccepted').mockReturnValue(true);
+      postSystemMessage.mockImplementationOnce(async () => {
+        accepted.mockReturnValue(false);
+        return { ts: 'anchor' };
+      });
+
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '다음 목표' }),
+      ).rejects.toMatchObject({ statusCode: 403 });
+
+      expect(registrySession.goal).toBeUndefined();
+      expect(postSystemMessage).toHaveBeenLastCalledWith(CHANNEL, expect.stringContaining('권한'), expect.anything());
     });
 
     it('checks the author before posting anything, even when the add would only queue', async () => {

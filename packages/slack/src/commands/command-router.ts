@@ -45,14 +45,18 @@ export interface GoalOpening {
   objective: string;
   /**
    * `set` — the goal this command itself set; `promoted` — the next queued
-   * goal that `goal done` started. Anything the message carried besides its
-   * text (attachments) belongs to the goal it SET, never to a promoted one.
+   * goal that `goal done` started; `resumed` — a paused goal whose first turn
+   * never ran, re-opened by `goal resume`. Anything the message carried
+   * besides its text (attachments) belongs to the goal it SET, never to a
+   * promoted or resumed one.
    */
-  cause: 'set' | 'promoted';
+  cause: 'set' | 'promoted' | 'resumed';
   /**
    * The opening turn's text when it is not the objective: the `$skill` part
    * of a `goal … $skill` split, run as a command (not verbatim) so the skill
-   * is resolved when the turn runs.
+   * is resolved when the turn runs. It applies to whichever opening the split
+   * command produced (`goal done $skill` → the promoted goal's), exactly as
+   * the drained split's turn always ran the skill.
    */
   prompt?: string;
 }
@@ -290,7 +294,7 @@ export class CommandRouter {
             // turn to carry the skill — say so instead of dropping it silently.
             try {
               await say({
-                text: `ℹ️ \`${split.skillText.split(/\s+/)[0]}\` was not run — the goal is queued behind the current one. Invoke the skill again once it starts.`,
+                text: `ℹ️ \`${split.skillText.split(/\s+/)[0].replace(/`/g, '')}\` was not run — the goal is queued behind the current one. Invoke the skill again once it starts.`,
                 thread_ts: threadTs,
               });
             } catch {
@@ -430,31 +434,14 @@ export class CommandRouter {
   }
 
   /**
-   * Would {@link route} hand this text to `GoalHandler` ALONE?
-   *
-   * Pure, like {@link classifyText}: nothing is executed. The host asks it for
-   * a message that arrives while the session's turn runs — a goal command is
-   * run at once instead of waiting in the follow-up queue (SSOT 2026-10-21:
-   * an added goal must become a goal, not a steering-queue item). Every goal
-   * form counts (`goal <objective>`, `goal done|pause|…`, `/z goal …`), so
-   * the host has one predicate for all of them. Excluded:
-   *  - an inline `%` directive (`%nogoal goal …` is an instruction),
-   *  - the `goal … $skill` split, which also starts a forced-skill turn,
-   *  - any text an earlier handler in the loop would claim first.
-   */
-  /**
    * Does this text route to a goal command at all — including the
    * `goal … $skill` split? Pure. The host uses it to dedupe a redelivered
    * Slack event for anything that changes the goal list, whichever path
    * (immediate intake, initial run, follow-up queue) the first delivery took.
    */
   routesToGoal(text: string): boolean {
-    const trimmed = (text ?? '').trim();
-    if (!trimmed || CommandParser.parseInlineSessionDirectives(trimmed)) return false;
-    const zPrefixRemainder = stripZPrefix(trimmed);
-    if (zPrefixRemainder !== null && !zPrefixRemainder) return false;
-    const routedText = zPrefixRemainder !== null ? translateToLegacy(zPrefixRemainder) : trimmed;
-    return !!routedText && !CommandParser.isNewCommand(routedText) && CommandParser.isGoalCommand(routedText);
+    const routedText = this.goalRoutedText(text);
+    return routedText !== null && CommandParser.isGoalCommand(routedText);
   }
 
   /**
@@ -489,16 +476,19 @@ export class CommandRouter {
     return routedText;
   }
 
+  /**
+   * Would {@link route} hand this text to `GoalHandler` ALONE?
+   *
+   * Pure, like {@link classifyText}: nothing is executed. Every goal form
+   * counts (`goal <objective>`, `goal done|pause|…`, `/z goal …`). Excluded:
+   *  - an inline `%` directive (`%nogoal goal …` is an instruction),
+   *  - the `goal … $skill` split ({@link isGoalSkillSplitText}),
+   *  - any text an earlier handler in the loop would claim first.
+   */
   isGoalCommandText(text: string, user?: string): boolean {
     if (!this.goalHandler) return false;
-    const trimmed = (text ?? '').trim();
-    if (!trimmed || CommandParser.parseInlineSessionDirectives(trimmed)) return false;
-    const zPrefixRemainder = stripZPrefix(trimmed);
-    if (zPrefixRemainder !== null && !zPrefixRemainder) return false;
-    const routedText = zPrefixRemainder !== null ? translateToLegacy(zPrefixRemainder) : trimmed;
-    if (!routedText || CommandParser.isNewCommand(routedText) || !CommandParser.isGoalCommand(routedText)) {
-      return false;
-    }
+    const routedText = this.goalRoutedText(text);
+    if (!routedText || !CommandParser.isGoalCommand(routedText)) return false;
     if (this.findGoalSkillSplit(routedText, user)) return false;
     return this.handlers.find((handler) => handler.canHandle(routedText, user)) === this.goalHandler;
   }
