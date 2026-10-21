@@ -1222,7 +1222,12 @@ export async function registerDashboardRoutes(
       try {
         const before = getSessionLifecyclePolicy();
         const next = previewSessionLifecyclePolicy(request.body);
-        const impact = countLifecycleTransitions(getAllSessions().values(), before, next, Date.now());
+        // While degraded the sweep has been paused, so nothing has moved under
+        // `before`: count every session the resumed sweep would move.
+        const from = isSessionLifecyclePolicyDegraded()
+          ? { ...before, sleepAfterMs: Number.POSITIVE_INFINITY, archiveAfterMs: Number.POSITIVE_INFINITY }
+          : before;
+        const impact = countLifecycleTransitions(getAllSessions().values(), from, next, Date.now());
         if ((impact.willSleep > 0 || impact.willArchive > 0) && request.query.confirm !== '1') {
           reply.status(409).send({ needsConfirm: true, ...impact });
           return;
@@ -5418,6 +5423,13 @@ async function saveLifecycle(ev) {
   }
   var parsed = lifecycleFromForm(form);
   if (!parsed.ok) { setLifecycleStatus(LIFECYCLE_LABELS[parsed.field] + ': 0 이상의 숫자를 입력하세요.', true); return; }
+  // Send only what the admin changed: the dialog shows rounded values, and
+  // re-saving an untouched field must not rewrite it.
+  var shown = lifecycleToForm(_lifecycle || {});
+  for (var j = 0; j < LIFECYCLE_FIELDS.length; j++) {
+    if (Number(form[LIFECYCLE_FIELDS[j][0]]) === shown[LIFECYCLE_FIELDS[j][0]]) delete parsed.patch[LIFECYCLE_FIELDS[j][1]];
+  }
+  if (Object.keys(parsed.patch).length === 0) { closeLifecycleDialog(); return; }
   // The server answers 409 with counts when the change would sleep or end live
   // sessions. The dialog shows them and arms the Save button; saving the same
   // values again sends ?confirm=1. Any edit disarms it.
