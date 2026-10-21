@@ -2014,7 +2014,7 @@ export class SessionRegistry {
         const lastActivity = new Date(serialized.lastActivity);
         let sleepStartedAt = serialized.sleepStartedAt ? new Date(serialized.sleepStartedAt) : undefined;
         // Set when an active session went idle past the policy limit while the
-        // process was down: it loads asleep, as the sweep would have left it.
+        // process was down: it loads asleep, as the sweep would leave it.
         let sleptOnLoad = false;
 
         // For SLEEPING sessions: check against the policy sleep time
@@ -2027,19 +2027,14 @@ export class SessionRegistry {
             continue;
           }
         } else if (applyLifecycle) {
-          // Active session idle past the policy limit while the process was down.
-          // Apply the sweep's two steps instead of ending it outright: asleep from
-          // lastActivity + sleepAfter, ended once it has slept archiveAfter.
+          // Active session idle past the policy limit while the process was down:
+          // the same step the sweep takes when it notices — asleep from now, ended
+          // only after archiveAfter more. Never ended outright on load, so a
+          // restart cannot shorten the sleep a running process would have given.
           const sessionAge = now - lastActivity.getTime();
-          if (sessionAge >= maxAge + archiveAfterMs) {
-            // Archive expired session before discarding (#401)
-            this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
-            serialized.sourceWorkingDirs?.forEach((dir) => this.safeRemoveSourceDir(dir));
-            continue;
-          }
           if (sessionAge >= maxAge) {
             sleptOnLoad = true;
-            sleepStartedAt = new Date(lastActivity.getTime() + maxAge);
+            sleepStartedAt = new Date(now);
           }
         }
 
