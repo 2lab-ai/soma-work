@@ -224,13 +224,12 @@ If no matching server exists in server-tools, skip this step.
 
 ### 7) Post-Deploy Lane Signal (Required)
 
-Other work (for example a QA pass over the deployed PRs) can be registered to start when a deploy lands. Signal it with exactly one `deploy_completed` directive per repo — **only** when both are true:
+Other work (for example a QA pass over the deployed PRs) can be registered to start when a deploy lands. Signal it with exactly one `deploy_completed` directive per repo, once the merge succeeded (step 4). What you put in it depends on whether the deployment of the merge commit is confirmed:
 
-1. The merge succeeded (step 4).
-2. The deployment of the merge commit is confirmed:
-   - If CD runs for the target branch, the run for the merge commit concluded `success`. Wait for it **in-turn**, the same way you wait for CI (e.g. `timeout 1200 gh run watch <run-id> --exit-status`, finding the run with `gh run list --commit <after_sha>`).
-   - If there is no CD signal, step 5's healthcheck passed.
-   - If neither signal exists, do not emit. Say in the thread that no lane signal was sent because the deployment could not be confirmed.
+- **Confirmed**: emit it as shown below (no `confirmed` field). Confirmed means one of:
+  - If CD runs for the target branch, the run for the merge commit concluded `success`. Wait for it **in-turn**, the same way you wait for CI (e.g. `timeout 1200 gh run watch <run-id> --exit-status`, finding the run with `gh run list --commit <after_sha>`).
+  - If there is no CD signal, step 5's healthcheck passed.
+- **Merged but not confirmed**: there is neither a CD run nor a healthcheck to confirm it. Emit the directive with `"confirmed": false`. The harness then starts nothing and tells the lane owners that the deploy is unconfirmed.
 
 Fields:
 
@@ -238,6 +237,7 @@ Fields:
 - `target`: the PR's base branch exactly as merged into — read it with `gh pr view <pr-number> --json baseRefName` (e.g. `deploy/dev2`, `develop`). Never the user's shorthand (`dev2`) and never a `refs/heads/` form: lanes match the branch name exactly, so a shorthand silently starts nothing.
 - `before`: the target SHA before the merge (the same `before_sha` as step 6).
 - `after`: the merge commit SHA (`gh pr view <pr-number> --json mergeCommit`).
+- `confirmed`: only when the deploy is unconfirmed, as `false`.
 
 ```json
 {
@@ -249,6 +249,8 @@ Fields:
 }
 ```
 
-The harness starts every lane registered for that repo and target, and replies with one line in this thread naming the lanes it started. Each lane reports in its own place. Do not wait for a lane, do not check on it, and do not run its work yourself.
+Write it exactly in this shape: `"type"` is the first key, and the SHAs are plain hex. A directive the harness cannot read starts nothing, and the harness says so in this thread. When you mention the signal in prose, write `deploy_completed` in backticks, never the quoted JSON value.
 
-**Never emit** on a held, failed, cancelled, or unmerged deploy, or before the deployment is confirmed. **Never emit twice** for the same merge — not in a summary, a retry, or a later turn.
+The harness starts every lane registered for that repo and target, each in a new thread of its own, and replies with one line in this thread naming the lanes it started. Each lane reports in its own place. Do not wait for a lane, do not check on it, and do not run its work yourself.
+
+**Never emit** on a held, failed, cancelled, or unmerged deploy. A CD run for the merge commit that failed is a failed deploy, not an unconfirmed one. **Never emit twice** for the same merge — not in a summary, a retry, or a later turn.
