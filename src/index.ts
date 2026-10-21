@@ -62,6 +62,7 @@ import {
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
+  setDashboardGoalHandler,
   setDashboardMultiChoiceAnswerHandler,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
@@ -106,7 +107,7 @@ import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
 import { GoalLoopController } from './slack/goal-loop-controller';
-import { setGoalLoopResumeHandler } from './slack/goal-loop-resume';
+import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
 import { setUiSurfacesConfig } from './slack/surface-config';
 import { setThreadHeaderProviders } from './slack/thread-header-builder';
@@ -804,6 +805,12 @@ async function start() {
       logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
     });
 
+    // Connect dashboard: goal list on the work item (SSOT 2026-10-21 T3) —
+    // add / delete-current (promotes the next goal) / delete-queued.
+    setDashboardGoalHandler((sessionKey, action, actorUserId) =>
+      slackHandler.handleHostGoalAction(sessionKey, action, actorUserId),
+    );
+
     // Connect dashboard: choice answer handler (dashboard button click → same path as Slack button)
     setDashboardChoiceAnswerHandler(async (sessionKey: string, choiceId: string, label: string, question: string) => {
       try {
@@ -1214,6 +1221,11 @@ async function start() {
       setGoalLoopResumeHandler((sessionKey: string) => {
         goalLoopController.onTurnSettled(sessionKey);
       });
+      // SSOT 2026-10-21: the goal-list Delete button and the dashboard share
+      // ONE host path for goal-list changes (opening turn through the fence).
+      setHostGoalActionHandler((sessionKey, action, actorUserId) =>
+        slackHandler.handleHostGoalAction(sessionKey, action, actorUserId),
+      );
       timing('Goal turn-settled driver installed');
     } catch (error) {
       logger.warn('Failed to install goal turn-settled driver (non-critical)', error);
