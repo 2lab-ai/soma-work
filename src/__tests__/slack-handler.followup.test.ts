@@ -4534,7 +4534,8 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     it("`goal done` is undone when the next goal's opening turn cannot be stored", async () => {
-      registrySession.goal = activeGoal();
+      const runningGoal = activeGoal();
+      registrySession.goal = runningGoal;
       registrySession.goalQueue = [
         { ...activeGoal({ goalId: 'g2', objective: '다음 목표', status: 'queued', epoch: 0 }) },
       ];
@@ -4543,6 +4544,7 @@ describe('SlackHandler — follow-up queue host', () => {
 
       await handler.handleMessage(message({ ts: '333.444', text: 'goal done' }), say());
 
+      expect(registrySession.goal, 'the same object an in-flight eval holds').toBe(runningGoal);
       expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active' });
       expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g2']);
       expect(registrySession.goalHistory ?? []).toHaveLength(0);
@@ -4555,6 +4557,18 @@ describe('SlackHandler — follow-up queue host', () => {
       saveError = undefined;
       await settle();
       expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    it('runs a redelivered goal event once — the same goal is not appended twice', async () => {
+      registrySession.goal = activeGoal();
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+
+      expect(registrySession.goalQueue).toHaveLength(1);
+      expect(items()).toHaveLength(0);
+      await settle();
     });
 
     it('keeps the queue path for a goal+skill split (it also starts a forced-skill turn)', async () => {
@@ -4781,6 +4795,37 @@ describe('SlackHandler — follow-up queue host', () => {
 
       expect(registrySession.goal).toMatchObject({ goalId: 'g1' });
       expect(postSystemMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not run an opening turn whose goal is deleted during the awaits before the model call', async () => {
+      // The goal disappears while the opening turn is being acknowledged.
+      addReaction.mockImplementation(async (_c: string, _t: string, name: string) => {
+        if (name === 'eyes') registrySession.goal = undefined;
+      });
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '곧 지워질 목표' });
+      await tick();
+      await tick();
+
+      expect(result).toMatchObject({ outcome: 'started', opening: 'started' });
+      expect(startWithContinuation, 'the model never sees the deleted goal').not.toHaveBeenCalled();
+      expect(postSystemMessage).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('시작 전에'), expect.anything());
+      expect(handlerAny.followupDispatcher.isBusy(SESSION_KEY)).toBe(false);
+    });
+
+    it('delete current removes a COMPLETED current goal (it is also in the history under the same id)', async () => {
+      const done = goalOf({ status: 'complete' });
+      registrySession.goal = done;
+      registrySession.goalHistory = [done];
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, {
+        action: 'delete',
+        goalId: 'g1',
+        expect: 'current',
+      });
+
+      expect(result).toEqual({ outcome: 'deleted', goalId: 'g1' });
+      expect(registrySession.goal).toBeUndefined();
     });
 
     it('delete queued removes only that goal', async () => {

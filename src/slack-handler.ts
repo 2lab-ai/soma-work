@@ -94,6 +94,7 @@ import { buildCompactHooks } from './slack/hooks/compact-hooks';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
 import {
   advanceGoalQueue,
+  deleteCurrentGoal,
   deleteGoalById,
   enqueueOrActivateGoal,
   formatGoalObjectiveForSlack,
@@ -1329,24 +1330,11 @@ export class SlackHandler {
     // The opening turn of a goal runs only while that goal is still the active
     // one — on the first dispatch, after a wait in the follow-up queue, and on
     // `Send now` alike. A goal deleted or replaced in the meantime must not run.
-    const openingGoalId = event.routeContext?.goalOpeningId;
-    if (openingGoalId !== undefined) {
-      const live = this.claudeHandler.getSession?.(channel, originalThreadTs)?.goal;
-      if (!live || live.goalId !== openingGoalId || live.status !== 'active') {
-        this.logger.info('Goal opening turn skipped — its goal is no longer the active goal', {
-          channel,
-          threadTs: originalThreadTs,
-          openingGoalId,
-          liveGoalId: live?.goalId,
-        });
-        await this.slackApi.postSystemMessage(
-          channel,
-          '⏭️ 이 goal은 시작 전에 삭제·일시정지되었거나 다른 goal로 바뀌어서 첫 턴을 실행하지 않았습니다.',
-          { threadTs: originalThreadTs },
-        );
-        // `safe`: the message is fully answered — nothing ran, nothing is owed.
-        return { result: 'safe' };
-      }
+    // Checked again right before the model call (see `isStaleGoalOpening`).
+    if (this.isStaleGoalOpening(event, channel, originalThreadTs)) {
+      await this.postStaleGoalOpeningNotice(channel, originalThreadTs);
+      // `safe`: the message is fully answered — nothing ran, nothing is owed.
+      return { result: 'safe' };
     }
 
     // Immediately acknowledge the message with eyes emoji
@@ -1958,6 +1946,17 @@ export class SlackHandler {
       const sourceThreadTs =
         activeThreadTs !== originalThreadTs ? originalThreadTs : sessionResult.session.sourceThread?.threadTs;
       const sourceChannel = activeChannel !== channel ? channel : sessionResult.session.sourceThread?.channel;
+
+      // The last host-side point before the model sees the prompt: a goal
+      // deleted or replaced during the awaits above (reactions, session
+      // init, panel) must not have its opening turn run after all.
+      if (this.isStaleGoalOpening(event, channel, originalThreadTs)) {
+        this.requestCoordinator.removeController(sessionResult.sessionKey, sessionResult.abortController);
+        if (hasPendingChoice) this.claudeHandler.setActivityStateByKey(sessionResult.sessionKey, 'idle');
+        await this.slackApi.removeReaction(channel, ts, 'brain');
+        await this.postStaleGoalOpeningNotice(channel, originalThreadTs);
+        return { result: 'safe' };
+      }
 
       agentSession = this.createAgentSession(sessionResult, wrappedSay, {
         channel: activeChannel,
@@ -2653,6 +2652,11 @@ export class SlackHandler {
       return;
     }
 
+    if (!this.claimGoalIntake(event)) {
+      this.logger.info('Goal command redelivered — already run, ignored', { sessionKey, ts: event.ts });
+      return;
+    }
+
     const wrappedSay = async (args: any) => {
       const result = await say({
         text: args.text,
@@ -2749,6 +2753,59 @@ export class SlackHandler {
     if (parked) return 'queued';
     if (!wasBusy && busy()) return 'started';
     return { failed: this.followupDegradedReason ?? 'the follow-up queue did not accept it' };
+  }
+
+  /**
+   * Is this the opening turn of a goal that is no longer the ACTIVE goal
+   * (deleted, paused, replaced while the turn waited)? Asked twice by
+   * `processMessage`: on entry, and again right before the model call, because
+   * the awaits in between are long enough for a dashboard delete or an
+   * immediate `goal clear` to land.
+   */
+  private isStaleGoalOpening(event: MessageEvent, channel: string, threadTs: string): boolean {
+    const openingGoalId = event.routeContext?.goalOpeningId;
+    if (openingGoalId === undefined) return false;
+    const live = this.claudeHandler.getSession?.(channel, threadTs)?.goal;
+    const stale = !live || live.goalId !== openingGoalId || live.status !== 'active';
+    if (stale) {
+      this.logger.info('Goal opening turn skipped — its goal is no longer the active goal', {
+        channel,
+        threadTs,
+        openingGoalId,
+        liveGoalId: live?.goalId,
+      });
+    }
+    return stale;
+  }
+
+  private async postStaleGoalOpeningNotice(channel: string, threadTs: string): Promise<void> {
+    await this.slackApi.postSystemMessage(
+      channel,
+      '⏭️ 이 goal은 시작 전에 삭제·일시정지되었거나 다른 goal로 바뀌어서 첫 턴을 실행하지 않았습니다.',
+      { threadTs },
+    );
+  }
+
+  /**
+   * Goal commands already run by {@link runGoalCommandNow}, by Slack event
+   * (`channel:ts` → when). The queue path dedupes a redelivered event by its
+   * key; this path runs the command at once, so it keeps its own record —
+   * a retried `goal X` must not append the same goal twice.
+   */
+  private goalIntakeSeen = new Map<string, number>();
+  private static readonly GOAL_INTAKE_DEDUPE_MS = 10 * 60 * 1000;
+
+  /** `true` the first time an event is seen (and records it); `false` for a redelivery. */
+  private claimGoalIntake(event: MessageEvent): boolean {
+    const now = Date.now();
+    for (const [key, at] of this.goalIntakeSeen) {
+      if (now - at <= SlackHandler.GOAL_INTAKE_DEDUPE_MS) break; // insertion order = age order
+      this.goalIntakeSeen.delete(key);
+    }
+    const key = `${event.channel}:${event.ts}`;
+    if (this.goalIntakeSeen.has(key)) return false;
+    this.goalIntakeSeen.set(key, now);
+    return true;
   }
 
   /** Follow-up states that are still user work waiting to run (`shouldDeferGoalDriver`). */
@@ -5914,7 +5971,9 @@ export class SlackHandler {
       throw error;
     }
     const snapshot = snapshotGoalState(live);
-    const deleted = deleteGoalById(live, goalId);
+    // By position, not by id: a completed current goal is also in the history
+    // under the same id, and deleting by id would only drop that row.
+    const deleted = deleteCurrentGoal(live);
     if (!deleted.promoted) {
       this.claudeHandler.saveSessions();
       return { outcome: 'deleted', goalId };
