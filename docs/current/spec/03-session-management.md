@@ -189,10 +189,11 @@ would otherwise fire on the first sweep after any activity.
 2. Otherwise idle for `sleepAfterMs` or longer → `SLEEPING` (`sleepStartedAt = now`), `onSleep`.
 3. Otherwise → expiry warnings (6.2).
 
-`loadSessions()` (restart) applies the same two steps to what was saved: a `SLEEPING` session asleep
-past `archiveAfterMs` is archived; an active session idle past `sleepAfterMs + archiveAfterMs` is
-archived; an active session idle past `sleepAfterMs` only loads as `SLEEPING` with
-`sleepStartedAt = lastActivity + sleepAfterMs`, and is never auto-resumed.
+`loadSessions()` (restart) takes the sweep's step for what was saved: a `SLEEPING` session asleep
+past `archiveAfterMs` is archived; an active session idle past `sleepAfterMs` loads as `SLEEPING`
+with `sleepStartedAt = now` — the moment it is noticed, as in the sweep — and is never auto-resumed.
+An active session is never ended on load, so a restart cannot shorten the sleep a running process
+would have given it.
 
 Slack's sleep / expiry notices and the session list countdowns state the policy durations
 (`getSessionLifecycle` provider of `@soma/slack/session-manager`, wired in `src/slack/session-manager.ts`).

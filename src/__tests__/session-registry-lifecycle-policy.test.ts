@@ -99,35 +99,32 @@ describe('SessionRegistry — lifecycle policy', () => {
     expect(cb.onWarning).toHaveBeenCalledTimes(1);
   });
 
-  it("the restart loader applies the sweep's two steps: sleep past the idle limit, end past the sleep time", () => {
+  it("the restart loader takes the sweep's step: a stale active session sleeps from now, a sleeping one ends past the sleep time", () => {
     updateSessionLifecyclePolicy({ sleepAfterMs: 2 * HOUR, archiveAfterMs: HOUR });
     const now = Date.now();
     const base = { ownerId: 'U1', userId: 'U1', channelId: 'C1', isActive: true };
     const saved = [
-      // idle 4h ≥ 2h + 1h: it would have slept and then ended — archived.
+      // idle 40h — far past sleep + archive, but it never slept: it sleeps now, it is not ended.
       {
         ...base,
-        key: 'k1',
         threadTs: '700.001',
-        sessionId: 's-gone',
+        sessionId: 's-stale',
         state: 'MAIN',
-        lastActivity: new Date(now - 4 * HOUR).toISOString(),
+        lastActivity: new Date(now - 40 * HOUR).toISOString(),
         activityState: 'working',
       },
-      // idle 2.5h: past the idle limit, not yet slept 1h — loads asleep (since lastActivity + 2h), never auto-resumed.
+      // idle 2.5h: past the idle limit — loads asleep, never auto-resumed.
       {
         ...base,
-        key: 'k2',
         threadTs: '700.002',
         sessionId: 's-sleepy',
         state: 'MAIN',
         lastActivity: new Date(now - 2.5 * HOUR).toISOString(),
         activityState: 'working',
       },
-      // asleep 2h ≥ 1h — archived.
+      // asleep 2h >= 1h — archived.
       {
         ...base,
-        key: 'k3',
         threadTs: '700.003',
         sessionId: 's-slept-out',
         state: 'SLEEPING',
@@ -137,7 +134,6 @@ describe('SessionRegistry — lifecycle policy', () => {
       // fresh — loads as it was.
       {
         ...base,
-        key: 'k4',
         threadTs: '700.004',
         sessionId: 's-fresh',
         state: 'MAIN',
@@ -147,15 +143,16 @@ describe('SessionRegistry — lifecycle policy', () => {
     fs.writeFileSync(path.join(TEST_DATA_DIR, 'sessions.json'), JSON.stringify(saved));
 
     const reg = new SessionRegistry();
-    expect(reg.loadSessions()).toBe(2);
-    expect(reg.getSession('C1', '700.001')).toBeUndefined();
+    expect(reg.loadSessions()).toBe(3);
     expect(reg.getSession('C1', '700.003')).toBeUndefined();
     expect(reg.getSession('C1', '700.004')?.state).toBe('MAIN');
-    const sleepy = reg.getSession('C1', '700.002');
-    expect(sleepy?.state).toBe('SLEEPING');
-    expect(sleepy?.activityState).toBe('idle');
-    expect(sleepy?.sleepStartedAt?.getTime()).toBe(Date.parse(saved[1].lastActivity) + 2 * HOUR);
-    expect(reg.getCrashRecoveredSessions().map((c) => c.threadTs)).not.toContain('700.002');
+    for (const ts of ['700.001', '700.002']) {
+      const s = reg.getSession('C1', ts);
+      expect(s?.state).toBe('SLEEPING');
+      expect(s?.activityState).toBe('idle');
+      expect(s?.sleepStartedAt?.getTime()).toBeGreaterThanOrEqual(now);
+    }
+    expect(reg.getCrashRecoveredSessions().map((c) => c.threadTs)).toEqual([]);
   });
 
   it('an unreadable saved policy pauses the sweep and the loader instead of falling back to shorter defaults', async () => {
