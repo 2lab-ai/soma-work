@@ -75,6 +75,13 @@ export interface SessionUiManagerProviders {
   isPRMergeable?: (details: GitHubPRDetails) => boolean;
   getUserSessionTheme?: (userId: string) => SessionTheme;
   getModelDisplayName?: (model: string) => string;
+  /** Idle-to-sleep and sleep-to-end durations the host's lifecycle policy uses. */
+  getSessionLifecycle?: () => SessionLifecycleDurations;
+}
+
+export interface SessionLifecycleDurations {
+  sleepAfterMs: number;
+  archiveAfterMs: number;
 }
 
 const THEME_NAMES: Record<SessionTheme, string> = {
@@ -94,6 +101,7 @@ let sessionUiManagerProviders: Required<SessionUiManagerProviders> = {
   isPRMergeable: () => false,
   getUserSessionTheme: () => 'default',
   getModelDisplayName: (model) => model,
+  getSessionLifecycle: () => ({ sleepAfterMs: 24 * 60 * 60 * 1000, archiveAfterMs: 7 * 24 * 60 * 60 * 1000 }),
 };
 
 export function setSessionUiManagerProviders(providers: SessionUiManagerProviders): void {
@@ -101,6 +109,11 @@ export function setSessionUiManagerProviders(providers: SessionUiManagerProvider
     ...sessionUiManagerProviders,
     ...providers,
   };
+}
+
+/** The lifecycle durations notices and countdowns state (host policy; 24h / 7d default). */
+export function getSessionLifecycleDurations(): SessionLifecycleDurations {
+  return sessionUiManagerProviders.getSessionLifecycle();
 }
 
 export interface FormatSessionsOptions {
@@ -303,14 +316,15 @@ export class SessionUiManager {
     }
 
     const isSleeping = session.state === 'SLEEPING';
-    const expiresText = isSleeping
-      ? `💤 ⏳ ${session.sleepStartedAt ? MessageFormatter.formatSleepExpiresIn(session.sleepStartedAt) : '?'}`
-      : `⏳ ${MessageFormatter.formatExpiresIn(session.lastActivity)}`;
+    const lifecycle = getSessionLifecycleDurations();
+    const sleepCountdown = session.sleepStartedAt
+      ? MessageFormatter.formatSleepExpiresIn(session.sleepStartedAt, lifecycle.archiveAfterMs)
+      : '?';
+    const awakeCountdown = MessageFormatter.formatExpiresIn(session.lastActivity, lifecycle.sleepAfterMs);
+    const expiresText = isSleeping ? `💤 ⏳ ${sleepCountdown}` : `⏳ ${awakeCountdown}`;
 
     // Shorter expiry for compact themes
-    const expiresShort = isSleeping
-      ? `💤 ${session.sleepStartedAt ? MessageFormatter.formatSleepExpiresIn(session.sleepStartedAt) : '?'}`
-      : MessageFormatter.formatExpiresIn(session.lastActivity);
+    const expiresShort = isSleeping ? `💤 ${sleepCountdown}` : awakeCountdown;
 
     // Conversation viewer URL (if conversation was recorded)
     const conversationUrl = session.conversationId
@@ -663,7 +677,10 @@ export class SessionUiManager {
       for (const { session } of sessions) {
         const channelName = await this.slackApi.getChannelName(session.channelId);
         const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
-        const expiresIn = MessageFormatter.formatExpiresIn(session.lastActivity);
+        const expiresIn = MessageFormatter.formatExpiresIn(
+          session.lastActivity,
+          getSessionLifecycleDurations().sleepAfterMs,
+        );
         const initiator =
           session.currentInitiatorName && session.currentInitiatorId !== session.ownerId
             ? ` | 🎯 ${session.currentInitiatorName}`
@@ -828,7 +845,10 @@ export class SessionUiManager {
    * 세션 Sleep 전환 처리
    */
   async handleSessionSleep(session: ConversationSession): Promise<void> {
-    const sleepText = `💤 *세션이 Sleep 모드로 전환되었습니다*\n\n24시간 동안 활동이 없어 세션이 Sleep 상태로 전환되었습니다.\n메시지를 보내면 다시 대화를 이어갈 수 있습니다.\n\n> Sleep 모드는 7일간 유지되며, 이후 자동으로 종료됩니다.`;
+    const { sleepAfterMs, archiveAfterMs } = getSessionLifecycleDurations();
+    const idle = MessageFormatter.formatLifecycleDuration(sleepAfterMs);
+    const asleep = MessageFormatter.formatLifecycleDuration(archiveAfterMs);
+    const sleepText = `💤 *세션이 Sleep 모드로 전환되었습니다*\n\n${idle} 동안 활동이 없어 세션이 Sleep 상태로 전환되었습니다.\n메시지를 보내면 다시 대화를 이어갈 수 있습니다.\n\n> Sleep 모드는 ${asleep} 동안 유지되며, 이후 자동으로 종료됩니다.`;
 
     // Add zzz emoji to thread
     const sessionKey = this.claudeHandler.getSessionKey(session.channelId, session.threadTs);
@@ -871,7 +891,8 @@ export class SessionUiManager {
    * 세션 만료 처리
    */
   async handleSessionExpiry(session: ConversationSession): Promise<void> {
-    const expiryText = `🔒 *세션이 종료되었습니다*\n\nSleep 모드가 7일 경과하여 세션이 종료되었습니다.\n새로운 대화를 시작하려면 다시 메시지를 보내주세요.`;
+    const asleep = MessageFormatter.formatLifecycleDuration(getSessionLifecycleDurations().archiveAfterMs);
+    const expiryText = `🔒 *세션이 종료되었습니다*\n\nSleep 모드가 ${asleep} 경과하여 세션이 종료되었습니다.\n새로운 대화를 시작하려면 다시 메시지를 보내주세요.`;
 
     // Add zzz emoji (may already be there from sleep transition)
     const sessionKey = this.claudeHandler.getSessionKey(session.channelId, session.threadTs);
