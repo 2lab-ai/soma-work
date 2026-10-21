@@ -6,6 +6,7 @@ vi.mock('../../user-settings-store', () => ({
   },
 }));
 
+import { buildWorkSessionKey } from '../../session-identity';
 import { CompletionMessageTracker } from '../../slack/completion-message-tracker';
 import type { TurnCompletionEvent } from '../../turn-notifier';
 import { SlackBlockKitChannel } from '../slack-block-kit-channel';
@@ -295,7 +296,7 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
       await channel.send(makeEvent({ channel: 'C-TEST', threadTs: '111.222' }));
 
       // The tracker should contain the POSTED message ts, not the threadTs
-      const sessionKey = 'C-TEST-111.222';
+      const sessionKey = buildWorkSessionKey('C-TEST', '111.222');
       expect(tracker.has(sessionKey)).toBe(true);
       expect(tracker.count(sessionKey)).toBe(1);
 
@@ -320,7 +321,7 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
 
       await channel.send(makeEvent({ category: 'Exception', channel: 'C-X', threadTs: '111.222' }));
 
-      expect(tracker.has('C-X-111.222')).toBe(false);
+      expect(tracker.has(buildWorkSessionKey('C-X', '111.222'))).toBe(false);
     });
 
     it('does NOT track when postMessage returns no ts', async () => {
@@ -330,7 +331,7 @@ describe('SlackBlockKitChannel — Rich Turn Notification', () => {
 
       await channel.send(makeEvent({ channel: 'C-X', threadTs: '111.222' }));
 
-      expect(tracker.has('C-X-111.222')).toBe(false);
+      expect(tracker.has(buildWorkSessionKey('C-X', '111.222'))).toBe(false);
     });
 
     it('works without tracker (backward compatibility)', async () => {

@@ -467,6 +467,27 @@ describe('CommandParser', () => {
       expect(CommandParser.parseGoalCommand('goal remove')).toEqual({ action: 'clear' });
       expect(CommandParser.parseGoalCommand('goal delete')).toEqual({ action: 'clear' });
     });
+
+    // ── S2: autogoal mode toggle ──────────────────────────────────────────
+    it('parses `goal auto` and the `set goal auto` alias to the auto toggle', () => {
+      expect(CommandParser.isGoalCommand('set goal auto')).toBe(true);
+      expect(CommandParser.parseGoalCommand('goal auto')).toEqual({ action: 'auto' });
+      expect(CommandParser.parseGoalCommand('set goal auto')).toEqual({ action: 'auto' });
+      expect(CommandParser.parseGoalCommand('/set goal auto')).toEqual({ action: 'auto' });
+      expect(CommandParser.parseGoalCommand('goal auto on')).toEqual({ action: 'auto', mode: 'on' });
+      expect(CommandParser.parseGoalCommand('goal auto off')).toEqual({ action: 'auto', mode: 'off' });
+    });
+
+    // ── S4: max-continuation override ─────────────────────────────────────
+    it('parses `goal max <N>`, bare `goal <N>`, and the `set goal <N>` alias', () => {
+      expect(CommandParser.isGoalCommand('set goal 100')).toBe(true);
+      expect(CommandParser.parseGoalCommand('goal max 100')).toEqual({ action: 'max', max: 100 });
+      expect(CommandParser.parseGoalCommand('goal 100')).toEqual({ action: 'max', max: 100 });
+      expect(CommandParser.parseGoalCommand('set goal 100')).toEqual({ action: 'max', max: 100 });
+      expect(CommandParser.parseGoalCommand('goal max abc')).toEqual({ action: 'invalid', reason: 'invalid_max' });
+      // `goal set <N>` is an explicit objective setter, not a cap override.
+      expect(CommandParser.parseGoalCommand('goal set 100')).toEqual({ action: 'set', objective: '100' });
+    });
   });
 
   describe('isOnboardingCommand', () => {
@@ -1201,8 +1222,8 @@ describe('CommandParser', () => {
       expect(CommandParser.isShowPromptCommand('show prompt extra')).toBe(false);
     });
 
-    it('should not match "show llm_chat"', () => {
-      expect(CommandParser.isShowPromptCommand('show llm_chat')).toBe(false);
+    it('should not match "show astra"', () => {
+      expect(CommandParser.isShowPromptCommand('show astra')).toBe(false);
     });
   });
 
@@ -1525,6 +1546,246 @@ describe('CommandParser', () => {
       expect(CommandParser.parseCompactCommand('/compact --yes')).toEqual({ confirmed: true });
       expect(CommandParser.parseCompactCommand('compact --yes')).toEqual({ confirmed: true });
       expect(CommandParser.parseCompactCommand('/COMPACT --YES')).toEqual({ confirmed: true });
+    });
+  });
+
+  describe('memory command — hierarchical text interface', () => {
+    it('routes bare + L1 verbs', () => {
+      expect(CommandParser.isMemoryCommand('memory')).toBe(true);
+      expect(CommandParser.isMemoryCommand('memory show')).toBe(true);
+      expect(CommandParser.isMemoryCommand('memory save memory bun builds')).toBe(true);
+      expect(CommandParser.isMemoryCommand('memory clear 2')).toBe(true);
+    });
+
+    it('recognizes hierarchical verbs', () => {
+      for (const t of [
+        'memory pages',
+        'memory index',
+        'memory list',
+        'memory page agent/foo',
+        'memory show agent/foo',
+        'memory search bun',
+        'memory episodic',
+        'memory episodic 2026-07-01',
+        'memory note observed a thing',
+        'memory rmpage agent/foo',
+        'memory page rm agent/foo',
+        'memory help',
+      ]) {
+        expect(CommandParser.isMemoryCommand(t)).toBe(true);
+      }
+    });
+
+    it('does not route plain prose starting with memory', () => {
+      expect(CommandParser.isMemoryCommand('memory is important to me')).toBe(false);
+      expect(CommandParser.isMemoryCommand('memory of a good day')).toBe(false);
+    });
+
+    it('parses hierarchical actions', () => {
+      expect(CommandParser.parseMemoryCommand('memory pages')).toEqual({ action: 'pages' });
+      expect(CommandParser.parseMemoryCommand('memory index')).toEqual({ action: 'pages' });
+      expect(CommandParser.parseMemoryCommand('memory page agent/foo')).toEqual({ action: 'page', id: 'agent/foo' });
+      expect(CommandParser.parseMemoryCommand('memory show project/soma/123')).toEqual({
+        action: 'page',
+        id: 'project/soma/123',
+      });
+      expect(CommandParser.parseMemoryCommand('memory search bun')).toEqual({ action: 'search', query: 'bun' });
+      expect(CommandParser.parseMemoryCommand('memory episodic')).toEqual({ action: 'episodic', date: undefined });
+      expect(CommandParser.parseMemoryCommand('memory episodic 2026-07-01')).toEqual({
+        action: 'episodic',
+        date: '2026-07-01',
+      });
+      expect(CommandParser.parseMemoryCommand('memory note hi there')).toEqual({ action: 'note', content: 'hi there' });
+      expect(CommandParser.parseMemoryCommand('memory rmpage agent/foo')).toEqual({
+        action: 'rmpage',
+        id: 'agent/foo',
+      });
+      expect(CommandParser.parseMemoryCommand('memory page rm sites/x')).toEqual({ action: 'rmpage', id: 'sites/x' });
+      expect(CommandParser.parseMemoryCommand('memory help')).toEqual({ action: 'help' });
+    });
+
+    it('keeps L1 parsing intact', () => {
+      expect(CommandParser.parseMemoryCommand('memory')).toEqual({ action: 'show' });
+      expect(CommandParser.parseMemoryCommand('memory show')).toEqual({ action: 'show' });
+      expect(CommandParser.parseMemoryCommand('memory clear')).toEqual({ action: 'clear' });
+      expect(CommandParser.parseMemoryCommand('memory clear 3')).toEqual({ action: 'clear', index: 3 });
+      expect(CommandParser.parseMemoryCommand('memory save user likes terse')).toEqual({
+        action: 'save',
+        target: 'user',
+        content: 'likes terse',
+      });
+    });
+  });
+
+  describe('auth command (#llmux runtime switch)', () => {
+    it('isAuthCommand matches the documented grammar', () => {
+      expect(CommandParser.isAuthCommand('auth')).toBe(true);
+      expect(CommandParser.isAuthCommand('/auth')).toBe(true);
+      expect(CommandParser.isAuthCommand('auth llmux')).toBe(true);
+      expect(CommandParser.isAuthCommand('auth cct')).toBe(true);
+      expect(CommandParser.isAuthCommand('auth ccp')).toBe(true);
+      expect(CommandParser.isAuthCommand('set auth llmux')).toBe(true);
+      expect(CommandParser.isAuthCommand('set auth cct')).toBe(true);
+      expect(CommandParser.isAuthCommand('auth switch claude:me@example.com')).toBe(true);
+      expect(CommandParser.isAuthCommand('auth bogus')).toBe(false);
+      expect(CommandParser.isAuthCommand('auth switch')).toBe(false);
+      expect(CommandParser.isAuthCommand('authll')).toBe(false);
+      expect(CommandParser.isAuthCommand('oauth')).toBe(false);
+    });
+
+    it('parseAuthCommand maps modes (cct alias -> ccp) and switch targets', () => {
+      expect(CommandParser.parseAuthCommand('auth')).toEqual({ action: 'status' });
+      expect(CommandParser.parseAuthCommand('auth llmux')).toEqual({ action: 'set-mode', mode: 'llmux' });
+      expect(CommandParser.parseAuthCommand('auth cct')).toEqual({ action: 'set-mode', mode: 'ccp' });
+      expect(CommandParser.parseAuthCommand('auth ccp')).toEqual({ action: 'set-mode', mode: 'ccp' });
+      expect(CommandParser.parseAuthCommand('set auth llmux')).toEqual({ action: 'set-mode', mode: 'llmux' });
+      expect(CommandParser.parseAuthCommand('auth switch api-1')).toEqual({ action: 'switch', target: 'api-1' });
+    });
+
+    it('accepts the personal llmux key forms (`key` / `auth key`)', () => {
+      expect(CommandParser.isAuthCommand('key')).toBe(true);
+      expect(CommandParser.isAuthCommand('/key')).toBe(true);
+      expect(CommandParser.isAuthCommand('KEY')).toBe(true);
+      expect(CommandParser.isAuthCommand('auth key')).toBe(true);
+      expect(CommandParser.isAuthCommand('/auth key')).toBe(true);
+      // bare-word only — prose that merely starts with "key" must stay chat text
+      expect(CommandParser.isAuthCommand('key rotate')).toBe(false);
+      expect(CommandParser.isAuthCommand('keys')).toBe(false);
+      expect(CommandParser.isAuthCommand('monkey')).toBe(false);
+      expect(CommandParser.parseAuthCommand('key')).toEqual({ action: 'key' });
+      expect(CommandParser.parseAuthCommand('auth key')).toEqual({ action: 'key' });
+    });
+  });
+
+  // Inline session directives — `%model <v> {instruction}` / `%nogoal {instruction}`.
+  // A leading `%model <v>` WITH a remainder is TWO actions (session model change +
+  // instruction); a leading `%nogoal` suppresses autogoal promotion for the message.
+  describe('parseInlineSessionDirectives', () => {
+    it('parses `%model fable do the thing` into model + remainder', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%model fable do the thing')).toEqual({
+        model: 'fable',
+        noGoal: false,
+        remainder: 'do the thing',
+      });
+    });
+
+    it('parses `%nogoal deploy it` into noGoal + remainder', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%nogoal deploy it')).toEqual({
+        model: undefined,
+        noGoal: true,
+        remainder: 'deploy it',
+      });
+    });
+
+    it('parses chained `%model fable %nogoal do X`', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%model fable %nogoal do X')).toEqual({
+        model: 'fable',
+        noGoal: true,
+        remainder: 'do X',
+      });
+    });
+
+    it('parses chained `%nogoal %model fable do X` (order independent)', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%nogoal %model fable do X')).toEqual({
+        model: 'fable',
+        noGoal: true,
+        remainder: 'do X',
+      });
+    });
+
+    it('bare `%nogoal` yields empty remainder (caller posts usage hint)', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%nogoal')).toEqual({
+        model: undefined,
+        noGoal: true,
+        remainder: '',
+      });
+    });
+
+    it('bare `%model fable` is NOT an inline directive (stays a session command)', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%model fable')).toBeNull();
+    });
+
+    it('bare `%model` is NOT an inline directive', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%model')).toBeNull();
+    });
+
+    it('plain text is NOT an inline directive', () => {
+      expect(CommandParser.parseInlineSessionDirectives('hello world')).toBeNull();
+      expect(CommandParser.parseInlineSessionDirectives('50% done, continue')).toBeNull();
+    });
+
+    it('is case-insensitive on the directive keyword', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%MODEL fable do x')).toEqual({
+        model: 'fable',
+        noGoal: false,
+        remainder: 'do x',
+      });
+    });
+
+    it('keeps a multiline remainder intact', () => {
+      expect(CommandParser.parseInlineSessionDirectives('%model fable\n지시 첫 줄\n지시 둘째 줄')).toEqual({
+        model: 'fable',
+        noGoal: false,
+        remainder: '지시 첫 줄\n지시 둘째 줄',
+      });
+    });
+
+    it('does NOT treat mid-text `%model` as a directive', () => {
+      expect(CommandParser.parseInlineSessionDirectives('please run %model fable')).toBeNull();
+    });
+  });
+
+  describe('isAutoCompactCommand / parseAutoCompactCommand', () => {
+    it.each([
+      'autocompact',
+      '/autocompact',
+      'autocompact 800k',
+      '/autocompact reset',
+      'autocompact abc',
+    ])('accepts "%s"', (cmd) => {
+      expect(CommandParser.isAutoCompactCommand(cmd)).toBe(true);
+    });
+
+    it.each([
+      'compact',
+      '/compact',
+      '/compact --yes',
+      'compact-threshold',
+      '/compact-threshold 80',
+      'autocompacting',
+    ])('rejects "%s"', (cmd) => {
+      expect(CommandParser.isAutoCompactCommand(cmd)).toBe(false);
+    });
+
+    it('does not let /autocompact leak into the compact commands', () => {
+      expect(CommandParser.isCompactCommand('/autocompact')).toBe(false);
+      expect(CommandParser.isCompactCommand('autocompact 800k')).toBe(false);
+      expect(CommandParser.isCompactThresholdCommand('/autocompact')).toBe(false);
+      expect(CommandParser.isCompactThresholdCommand('autocompact reset')).toBe(false);
+    });
+
+    it('returns the raw argument when present, undefined when absent', () => {
+      expect(CommandParser.parseAutoCompactCommand('/autocompact')).toEqual({});
+      expect(CommandParser.parseAutoCompactCommand('autocompact 800k')).toEqual({ rawArg: '800k' });
+      expect(CommandParser.parseAutoCompactCommand('/autocompact reset')).toEqual({ rawArg: 'reset' });
+    });
+
+    it('is recognized as a command keyword so unknown forms still hint', () => {
+      expect(CommandParser.isPotentialCommand('autocompact')).toEqual({
+        isPotential: true,
+        keyword: 'autocompact',
+      });
+      expect(CommandParser.isPotentialCommand('/autocompact')).toEqual({
+        isPotential: true,
+        keyword: 'autocompact',
+      });
+    });
+
+    it('documents the command in the help message', () => {
+      const help = CommandParser.getHelpMessage();
+      expect(help).toContain('`autocompact`');
+      expect(help).toContain('autocompact <tokens>');
+      expect(help).toContain('autocompact reset');
     });
   });
 });

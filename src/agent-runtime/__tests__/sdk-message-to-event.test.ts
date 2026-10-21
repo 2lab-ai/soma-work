@@ -262,6 +262,64 @@ describe('createSdkMessageMapper — golden (epic #1023 P3)', () => {
       expect(calc).toHaveBeenCalledWith('claude-sonnet-4-5', 100, 10, 0, 0);
     });
 
+    it('assistant message with ALL-ZERO usage → NO per-turn usage event (llmux/codex final message)', () => {
+      // Root cause of `/context` showing `0/372k (100% available)` on gpt-5.6
+      // sessions: llmux/codex assistant messages carry an all-zero `usage`.
+      // Forwarding it as `lastTurn* = 0` overwrites the real context state
+      // downstream. An all-zero per-turn usage carries no information — the
+      // mapper must not emit it.
+      const events = mapper().map(
+        sdk({
+          type: 'assistant',
+          message: {
+            model: 'gpt-5.6-sol',
+            usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+            content: [{ type: 'text', text: 'done' }],
+          },
+        }),
+      );
+      expect(events).toEqual([{ type: 'assistant_delta', text: 'done' }]);
+    });
+
+    it('modelUsage → per-model breakdown preserved with per-model cost (sdk or calculated)', () => {
+      const calc = vi.fn((_m: string | undefined, input: number) => input * 0.01);
+      const events = mapper(calc).map(
+        sdk({
+          type: 'result',
+          subtype: 'success',
+          result: 'x',
+          modelUsage: {
+            'claude-opus-4-8': {
+              inputTokens: 100,
+              outputTokens: 10,
+              cacheReadInputTokens: 50,
+              cacheCreationInputTokens: 5,
+              costUSD: 1.5,
+              contextWindow: 200000,
+            },
+            'gpt-5.6-sol': { inputTokens: 200, outputTokens: 20 },
+          },
+        }),
+      );
+      const usage = events.find((e) => e.type === 'usage') as { usage?: { modelBreakdown?: unknown } } | undefined;
+      expect(usage?.usage?.modelBreakdown).toEqual({
+        'claude-opus-4-8': {
+          inputTokens: 100,
+          outputTokens: 10,
+          cacheReadInputTokens: 50,
+          cacheCreationInputTokens: 5,
+          costUsd: 1.5,
+        },
+        'gpt-5.6-sol': {
+          inputTokens: 200,
+          outputTokens: 20,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 2, // calculated: 200 * 0.01
+        },
+      });
+    });
+
     it('direct usage: total_cost_usd>0 → sdk; zero → calculated via injected calc and lastAssistantModelName', () => {
       const m = mapper();
       // Prime lastAssistantModelName via a prior assistant message.

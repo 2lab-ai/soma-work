@@ -7,6 +7,13 @@ export interface FileHandlerReader {
   downloadAndProcessFiles(files: NonNullable<MessageEvent['files']>): Promise<ProcessedFile[]>;
 }
 
+/** See `DeferredSkillFire` in `commands/command-router.ts`. */
+export interface DeferredSkillFireResult {
+  keys: string[];
+  invokedBlock: string;
+  banner: { text: string; color: string };
+}
+
 export interface CommandRouteResult {
   handled: boolean;
   continueWithPrompt?: string;
@@ -17,6 +24,14 @@ export interface CommandRouteResult {
    * `commands/command-router.ts`.
    */
   setGoalObjective?: string;
+  /** Deferred forced `$skill` (banner + block) for a fresh-context start. */
+  deferredSkillFire?: DeferredSkillFireResult;
+  /** Router-caught handler crash (the failure notice is already posted). */
+  error?: string;
+  /** A cross-user `$skill` parked until its owner answers the permission request. */
+  awaitingPermission?: boolean;
+  /** `continueWithPrompt` is a goal objective (user text) — see `CommandResult.verbatimPrompt`. */
+  verbatimPrompt?: boolean;
 }
 
 export interface CommandRouterReader {
@@ -27,6 +42,7 @@ export interface CommandRouterReader {
     text: string;
     say: SayFn;
     postEphemeral?: (msg: { text: string; blocks?: any[] }) => Promise<void>;
+    deferSkillFire?: boolean;
   }): Promise<CommandRouteResult>;
 }
 
@@ -112,11 +128,16 @@ export class InputProcessor {
   async routeCommand(
     event: MessageEvent,
     say: SayFn,
+    options?: { deferSkillFire?: boolean },
   ): Promise<{
     handled: boolean;
     continueWithPrompt?: string;
     forceWorkflow?: WorkflowType;
     setGoalObjective?: string;
+    deferredSkillFire?: DeferredSkillFireResult;
+    error?: string;
+    awaitingPermission?: boolean;
+    verbatimPrompt?: boolean;
   }> {
     const { user, channel, thread_ts, ts, text } = event;
 
@@ -150,7 +171,10 @@ export class InputProcessor {
           user,
         });
       } else {
-        session.pendingUserText = text;
+        // Preserve leading inline session directives (`%model <v>` / `%nogoal`)
+        // that the message handler stripped off `event.text` — the post-compact
+        // replay re-enters the handler and re-parses them.
+        session.pendingUserText = event.inlineDirectiveRawText || text;
         session.pendingEventContext = { channel, threadTs, user, ts };
 
         // Notice post is decorative — fire-and-forget so Slack latency cannot
@@ -185,6 +209,7 @@ export class InputProcessor {
       text,
       say,
       postEphemeral,
+      deferSkillFire: options?.deferSkillFire,
     });
 
     return {
@@ -195,6 +220,16 @@ export class InputProcessor {
       // session — must survive this field-by-field rebuild to reach
       // slack-handler.
       setGoalObjective: commandResult.setGoalObjective,
+      // Deferred forced `$skill` — fired by slack-handler after autoskill.
+      deferredSkillFire: commandResult.deferredSkillFire,
+      // Outcome qualifiers for a message the command consumed WITHOUT a
+      // prompt: slack-handler maps a crash to `error` and a pending
+      // permission to `blocked`; everything else consumed is `safe`.
+      error: commandResult.error,
+      awaitingPermission: commandResult.awaitingPermission,
+      // `continueWithPrompt` is a goal objective (user text): slack-handler
+      // dispatches it as a literal turn, never as an SDK slash command.
+      verbatimPrompt: commandResult.verbatimPrompt,
     };
   }
 }

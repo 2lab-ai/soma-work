@@ -12,7 +12,6 @@ import {
   buildAssistantConfig,
   createAssistantContainer,
   SUGGESTED_PROMPTS,
-  SUGGESTED_PROMPTS_PLACEHOLDER,
 } from '../assistant-container';
 
 const createDeps = () => {
@@ -58,7 +57,7 @@ describe('assistant-container — buildAssistantConfig', () => {
     const payload = setSuggestedPrompts.mock.calls[0][0];
     expect(payload.title).toBe(ASSISTANT_VIEW_TITLE);
     expect(payload.prompts).toHaveLength(4);
-    expect(payload.prompts).toEqual(SUGGESTED_PROMPTS_PLACEHOLDER);
+    expect(payload.prompts).toEqual(SUGGESTED_PROMPTS);
   });
 
   // Case 3b — saves initial assistant-thread context (codex P1)
@@ -155,10 +154,6 @@ describe('assistant-container — buildAssistantConfig', () => {
     expect(blob).toMatch(/구현/);
     expect(blob).toMatch(/배포/);
     expect(blob).toMatch(/디버그/);
-  });
-
-  it('SUGGESTED_PROMPTS_PLACEHOLDER remains an alias for back-compat', () => {
-    expect(SUGGESTED_PROMPTS_PLACEHOLDER).toBe(SUGGESTED_PROMPTS);
   });
 });
 

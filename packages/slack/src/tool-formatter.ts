@@ -485,16 +485,6 @@ export class ToolFormatter {
     }
   }
 
-  /** Format a completed tool line with status icon and optional duration */
-  static formatOneLineToolComplete(toolName: string, input: any, isError: boolean, duration?: number | null): string {
-    const icon = isError ? '🔴' : '🟢';
-    const line = ToolFormatter.formatOneLineToolUse(toolName, input);
-    if (duration !== null && duration !== undefined) {
-      return `${icon} ${line} — ${formatDuration(duration)}`;
-    }
-    return `${icon} ${line}`;
-  }
-
   private static getToolEmoji(toolName: string): string {
     if (toolName === 'Edit' || toolName === 'MultiEdit') return '📝';
     if (toolName === 'Write') return '📄';
@@ -656,12 +646,6 @@ export class ToolFormatter {
       text: `⚡ '${casterName}'가(이) ${skills}을 *강제 발동*했습니다. 데미지 ${dmgText}${suffix}`,
       color: '#FF0000',
     };
-  }
-
-  /** Format a compact completion line for in-place tool message update */
-  static formatCompactToolDone(toolName: string, input: any, isError: boolean): string {
-    const icon = isError ? '🔴' : '🟢';
-    return `${icon} ${ToolFormatter.formatOneLineToolUse(toolName, input)}`;
   }
 
   /**

@@ -1,5 +1,5 @@
+import { SourceWorkingDirDirectiveHandler } from '@soma/slack/directives/source-working-dir-directive';
 import { describe, expect, it } from 'vitest';
-import { SourceWorkingDirDirectiveHandler } from '../source-working-dir-directive';
 
 describe('SourceWorkingDirDirectiveHandler', () => {
   describe('extract', () => {

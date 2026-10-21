@@ -1,4 +1,3 @@
-import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock env-paths to use a non-existent config file, preventing test pollution
@@ -11,55 +10,7 @@ vi.mock('../env-paths', async (importOriginal) => {
   };
 });
 
-import {
-  isMidThreadMention,
-  type McpConfig,
-  McpConfigBuilder,
-  resolveInternalMcpServer,
-  resolveModelCommandServerPath,
-  resolvePermissionServerPath,
-} from '../mcp-config-builder';
-
-describe('MCP server path resolver', () => {
-  it('prefers runtime extension when present', () => {
-    const baseDir = '/app/dist';
-    const preferred = path.join(baseDir, 'permission-mcp-server.js');
-    const fallback = path.join(baseDir, 'permission-mcp-server.ts');
-    const existsSync = vi.fn((candidate: string) => candidate === preferred);
-
-    const result = resolvePermissionServerPath(baseDir, '.js', existsSync);
-
-    expect(result.resolvedPath).toBe(preferred);
-    expect(result.fallbackUsed).toBe(false);
-    expect(result.triedPaths).toEqual([preferred, fallback]);
-  });
-
-  it('falls back when runtime extension is missing', () => {
-    const baseDir = '/app/src';
-    const preferred = path.join(baseDir, 'model-command-mcp-server.js');
-    const fallback = path.join(baseDir, 'model-command-mcp-server.ts');
-    const existsSync = vi.fn((candidate: string) => candidate === fallback);
-
-    const result = resolveModelCommandServerPath(baseDir, '.js', existsSync);
-
-    expect(result.resolvedPath).toBe(fallback);
-    expect(result.fallbackUsed).toBe(true);
-    expect(result.triedPaths).toEqual([preferred, fallback]);
-  });
-
-  it('supports generic resolver utility', () => {
-    const baseDir = '/tmp/internal';
-    const preferred = path.join(baseDir, 'internal-server.ts');
-    const fallback = path.join(baseDir, 'internal-server.js');
-    const existsSync = vi.fn((candidate: string) => candidate === preferred);
-
-    const result = resolveInternalMcpServer(baseDir, 'internal-server', '.ts', existsSync);
-
-    expect(result.resolvedPath).toBe(preferred);
-    expect(result.fallbackUsed).toBe(false);
-    expect(result.triedPaths).toEqual([preferred, fallback]);
-  });
-});
+import { isMidThreadMention, type McpConfig, McpConfigBuilder } from '../mcp-config-builder';
 
 describe('McpConfigBuilder disallowedTools', () => {
   function createMockMcpManager() {
@@ -229,13 +180,6 @@ describe('McpConfigBuilder server-tools wiring', () => {
     expect(config.allowedTools).toContain('Skill');
     expect(config.allowedTools).toContain('EnterPlanMode');
     expect(config.allowedTools).toContain('ExitPlanMode');
-  });
-
-  it('always includes mcp__llm in allowedTools', async () => {
-    const builder = new McpConfigBuilder(createMockMcpManager());
-    const config = await builder.buildConfig({ channel: 'C1', user: 'U1' });
-
-    expect(config.allowedTools).toContain('mcp__llm');
   });
 });
 

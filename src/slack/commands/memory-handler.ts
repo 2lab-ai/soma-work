@@ -1,3 +1,12 @@
+import {
+  addUserNote,
+  formatEpisodicForDisplay,
+  formatMemoryHelp,
+  formatPageForDisplay,
+  formatPagesForDisplay,
+  formatSearchForDisplay,
+  removeUserPage,
+} from '../../hierarchical-memory';
 import { addMemory, clearAllMemory, formatMemoryForDisplay, removeMemoryByIndex } from '../../user-memory-store';
 import { CommandParser } from '../command-parser';
 import { renderMemoryCard } from '../z/topics/memory-topic';
@@ -59,6 +68,22 @@ export class MemoryHandler implements CommandHandler {
         clearAllMemory(user);
         await say({ text: '🗑️ All memory and user profile entries cleared.', thread_ts: threadTs });
       }
+    } else if (action.action === 'pages') {
+      await say({ text: formatPagesForDisplay(user), thread_ts: threadTs });
+    } else if (action.action === 'page') {
+      await say({ text: formatPageForDisplay(user, action.id), thread_ts: threadTs });
+    } else if (action.action === 'search') {
+      await say({ text: formatSearchForDisplay(user, action.query), thread_ts: threadTs });
+    } else if (action.action === 'episodic') {
+      await say({ text: formatEpisodicForDisplay(user, action.date), thread_ts: threadTs });
+    } else if (action.action === 'note') {
+      const res = addUserNote(user, action.content);
+      await say({ text: res.ok ? `✅ episodic 관찰 추가됨.` : `❌ ${res.message}`, thread_ts: threadTs });
+    } else if (action.action === 'rmpage') {
+      const res = removeUserPage(user, action.id);
+      await say({ text: res.ok ? `✅ 페이지 삭제됨: \`${action.id}\`` : `❌ ${res.message}`, thread_ts: threadTs });
+    } else if (action.action === 'help') {
+      await say({ text: formatMemoryHelp(), thread_ts: threadTs });
     }
 
     return { handled: true };

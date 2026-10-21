@@ -82,15 +82,6 @@ describe('McpConfigBuilder tool permission integration', () => {
     expect(serverToolsAllowed).toBe(false);
   });
 
-  // ── S2: Admin accesses write tool without grant ──
-  it('adminAccessesWriteToolWithoutGrant', async () => {
-    const builder = new McpConfigBuilder(createMockMcpManager());
-    const config = await builder.buildConfig({ channel: 'C1', user: 'U_ADMIN' });
-
-    // Admin should get mcp__server-tools (which includes db_query)
-    expect(config.allowedTools).toContain('mcp__server-tools');
-  });
-
   // ── Always includes mcp-tool-permission server for requesting access ──
   it('mcpToolPermissionServerAlwaysAvailableInSlackContext', async () => {
     const builder = new McpConfigBuilder(createMockMcpManager());

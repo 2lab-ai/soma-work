@@ -1,26 +1,25 @@
 #!/usr/bin/env bash
 # verify-no-removed-tools.sh
 #
-# CI guardrail (plan v8 test 67): assert that no caller references the five
-# legacy `mcp__llm__*` tools that were collapsed into a single `chat` tool.
+# CI guardrail: the internal `llm` MCP server (`mcp__llm__chat` and its four
+# legacy siblings) was removed — external-model consults now dispatch the
+# zworkflow subagents (`astra-zhuge` / `grok-elon` / `fable-zhuge`) directly.
+# Assert that no caller references ANY `mcp__llm__*` tool.
 #
 # Exits 0 on zero matches, 1 otherwise.
 #
-# Run against source + docs + built output so we catch both hand-written and
-# stale-build residue.
+# Run against source + current docs + scripts + built output so we catch both
+# hand-written and stale-build residue. `docs/archive` is historical and is
+# intentionally excluded.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# The `chat` tool survives, so we search for the four removed names only.
-# If a new caller accidentally re-introduces `mcp__llm__chat-reply` (note the
-# hyphen), this regex catches it; the plain `chat` match is explicitly
-# excluded via the alternation.
-PATTERN='mcp__llm__(chat-reply|status|result|cancel)'
+PATTERN='mcp__llm__'
 
 SEARCH_PATHS=()
-for p in src docs mcp-servers/llm/README.md; do
+for p in src docs scripts packages; do
   if [ -e "$p" ]; then SEARCH_PATHS+=("$p"); fi
 done
 # `dist` is the CI-built artifact directory. Include only if it exists
@@ -37,8 +36,9 @@ fi
 EXCLUDES=(
   --exclude-dir=node_modules
   --exclude-dir=.git
+  --exclude-dir=archive
   --exclude='verify-no-removed-tools.sh'
-  --exclude='*llm-mcp-server*.test.ts'
+  --exclude='llm-mcp-removal-contract.test.ts'
 )
 
 set +e
@@ -46,10 +46,10 @@ MATCHES="$(grep -RnE "${EXCLUDES[@]}" "$PATTERN" "${SEARCH_PATHS[@]}" || true)"
 set -e
 
 if [ -n "$MATCHES" ]; then
-  echo "ERROR: found references to removed llm MCP tools:"
+  echo "ERROR: found references to the removed llm MCP server tools (mcp__llm__*):"
   echo "$MATCHES"
   exit 1
 fi
 
-echo "OK: no references to mcp__llm__(chat-reply|status|result|cancel) found."
+echo "OK: no references to mcp__llm__* found."
 exit 0

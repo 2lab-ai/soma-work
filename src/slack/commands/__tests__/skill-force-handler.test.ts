@@ -444,7 +444,9 @@ describe('SkillForceHandler', () => {
 
       expect(result.handled).toBe(true);
       const prompt = result.continueWithPrompt as string;
-      expect(prompt).toContain('<user:z>');
+      // Owner-aware tag: user-namespace skills carry the resolved owner uid so
+      // borrowed skills from different owners can't collide (cross-user feature).
+      expect(prompt).toContain('<user:U1:z>');
       expect(prompt).toContain('# Z User');
     });
 
@@ -578,7 +580,8 @@ describe('SkillForceHandler', () => {
 
       expect(result.handled).toBe(true);
       const prompt = result.continueWithPrompt as string;
-      expect(prompt).toContain('<user:my-skill>');
+      // Owner-aware tag carries the resolved owner uid (cross-user feature).
+      expect(prompt).toContain('<user:U1:my-skill>');
       expect(vi.mocked(fs.existsSync)).toHaveBeenCalledWith(
         expect.stringContaining('/mock/data/U1/skills/my-skill/SKILL.md'),
       );

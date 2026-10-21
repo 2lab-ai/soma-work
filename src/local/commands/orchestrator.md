@@ -2,7 +2,9 @@
 description: "Multi-agent work coordinator. Delegates to Oracle/Explore/Librarian. Runs in current context (can use AskUserQuestion)."
 argument-hint: "TASK"
 allowed-tools:
+  - Agent
   - Task
+  - Skill
   - TaskOutput
   - TodoWrite
   - AskUserQuestion
@@ -14,7 +16,6 @@ allowed-tools:
   - Bash
   - mcp__plugin_ohmyclaude_claude-as-mcp__chat
   - mcp__plugin_ohmyclaude_claude-as-mcp__chat-reply
-  - mcp__llm__chat
 ---
 
 **Always read commands body** even if you knew it.**

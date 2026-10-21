@@ -60,57 +60,6 @@ describe('Hook routes (integration)', () => {
     expect(body.action).toBe('pass');
   });
 
-  it('POST /api/hooks/v1/pre_tool_use over threshold returns 403 with message', async () => {
-    // First, fill up to threshold
-    for (let i = 0; i < 5; i++) {
-      await server.inject({
-        method: 'POST',
-        url: '/api/hooks/v1/pre_tool_use',
-        payload: {
-          session_id: 'sess-block',
-          tool_name: 'Bash',
-        },
-      });
-    }
-
-    // This should be blocked (6th call, count is already at 5+)
-    const res = await server.inject({
-      method: 'POST',
-      url: '/api/hooks/v1/pre_tool_use',
-      payload: {
-        session_id: 'sess-block',
-        tool_name: 'Bash',
-      },
-    });
-
-    expect(res.statusCode).toBe(403);
-    const body = JSON.parse(res.body);
-    expect(body.message).toContain('TodoWrite');
-  });
-
-  it('POST /api/hooks/v1/pre_tool_use at warn threshold returns 200 action=warn with message', async () => {
-    // Calls 1, 2 → pass
-    for (let i = 0; i < 2; i++) {
-      const r = await server.inject({
-        method: 'POST',
-        url: '/api/hooks/v1/pre_tool_use',
-        payload: { session_id: 'sess-warn', tool_name: 'Bash' },
-      });
-      expect(JSON.parse(r.body).action).toBe('pass');
-    }
-
-    // Call 3 → non-blocking warning (still 200, tool proceeds)
-    const res = await server.inject({
-      method: 'POST',
-      url: '/api/hooks/v1/pre_tool_use',
-      payload: { session_id: 'sess-warn', tool_name: 'Bash' },
-    });
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.action).toBe('warn');
-    expect(body.message).toContain('TaskCreate');
-  });
-
   it('POST /api/hooks/v1/post_tool_use returns 200', async () => {
     const res = await server.inject({
       method: 'POST',
@@ -128,9 +77,16 @@ describe('Hook routes (integration)', () => {
   });
 
   it('POST /api/hooks/v1/cleanup returns 200 and cleans session', async () => {
-    // Set up some state first
-    hookState.incrementTodoGuard('sess-cleanup');
-    expect(hookState.getTodoGuardState('sess-cleanup')).toBeDefined();
+    // Set up some state first — a Task call that never got a post_tool_use
+    await server.inject({
+      method: 'POST',
+      url: '/api/hooks/v1/pre_tool_use',
+      payload: {
+        session_id: 'sess-cleanup',
+        tool_name: 'Task',
+        tool_input: { description: 'orphan subtask' },
+      },
+    });
 
     const res = await server.inject({
       method: 'POST',
@@ -144,8 +100,8 @@ describe('Hook routes (integration)', () => {
     const body = JSON.parse(res.body);
     expect(body.status).toBe('ok');
 
-    // State should be cleaned
-    expect(hookState.getTodoGuardState('sess-cleanup')).toBeUndefined();
+    // Pending call is gone — nothing left to match on end.
+    expect(hookState.recordCallEnd('sess-cleanup', 'Task', 'ok')).toBeNull();
   });
 
   it('should fail-open on internal error (returns 200)', async () => {
@@ -160,7 +116,7 @@ describe('Hook routes (integration)', () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it('POST /api/hooks/v1/pre_tool_use with exempt tool (ToolSearch) returns pass', async () => {
+  it('POST /api/hooks/v1/pre_tool_use with an untracked tool (ToolSearch) returns pass', async () => {
     const res = await server.inject({
       method: 'POST',
       url: '/api/hooks/v1/pre_tool_use',

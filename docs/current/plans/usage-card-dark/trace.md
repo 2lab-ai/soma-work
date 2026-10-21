@@ -130,6 +130,10 @@ Total: 15 scenarios. Medium: 1, 2, 10. Rest small/tiny. Surgical delta over v1.
 
 ### Scenario 4 — `activeDays`
 
+> Status: superseded. `ReportAggregator` counts active days from each tab's `daySet`
+> (`src/metrics/report-aggregator.ts`). The `streaks.ts::activeDays` helper below never had a
+> production caller and was deleted in the 2026-10 dead-code audit.
+
 **Entry**: `src/metrics/usage-render/streaks.ts::activeDays(events, windowStart, windowEnd)`
 **Definition**: count of distinct KST `YYYY-MM-DD` strings among events whose ts ∈ [windowStart, windowEnd].
 **Contract**:
@@ -211,7 +215,7 @@ class TabCache {
 
 ### Scenario 8 — `usage_card_tab` action → client.chat.update
 
-**Entry**: `src/slack/action-handlers.ts::ActionHandlers.registerHandlers(app)` — register `app.action('usage_card_tab', handler)`
+**Entry**: `src/slack/actions/index.ts::ActionHandlers.registerHandlers(app)` — register `app.action('usage_card_tab', handler)`
 **Flow on click** (`{ack, body, client, respond}`):
 1. `ack()` (< 3s, before any other work)
 2. `messageTs = body.container.message_ts` — Bolt-provided on block_actions payload
@@ -233,8 +237,8 @@ class TabCache {
 **RED**: `action-handlers.test.ts` describe `usage_card_tab` happy — fake tabCache with populated entry, body.user.id matches entry.userId, body.actions[0].value='7d', body.container={message_ts:'X', channel_id:'C1'}. Assert `client.chat.update` called with `{channel:'C1', ts:'X', blocks:<7d-selected>}`. Assert `respond` NOT called.
 
 **File touch**:
-- Modify: `src/slack/action-handlers.ts` (add handler + bind to injected tabCache + client from DI)
-- Modify: `src/slack/action-handlers.test.ts`
+- Modify: `src/slack/actions/` (add handler + bind to injected tabCache + client from DI; `src/slack/action-handlers.ts` compat file removed 2026-07 — PR #1209)
+- Modify: `src/slack/__tests__/action-handlers.test.ts`
 
 ---
 
@@ -449,8 +453,8 @@ export const HEATMAP_SCALE = ['#1F1F1F', '#3A231C', '#6B3F30', '#A06048', '#CD7F
 - `src/metrics/report-aggregator.test.ts` (extend)
 - `src/slack/commands/usage-handler.ts` (`handleCard` body replaced — gates kept)
 - `src/slack/commands/usage-handler.test.ts` (extend + regression describe)
-- `src/slack/action-handlers.ts` (register `usage_card_tab`)
-- `src/slack/action-handlers.test.ts` (extend)
+- `src/slack/actions/index.ts` (register `usage_card_tab`; `action-handlers.ts` compat file removed 2026-07 — PR #1209)
+- `src/slack/__tests__/action-handlers.test.ts` (extend)
 - `src/slack/z/topics/usage-topic.ts` (help text reflects "4기간 캐러셀" not "30일")
 
 ### Existing test files extended

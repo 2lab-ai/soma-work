@@ -154,12 +154,12 @@ describe('ContextHandler', () => {
 
       const postSystemMessage = mockDeps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>;
       const message = postSystemMessage.mock.calls[0][1];
-      // (200000 - 50000) / 200000 * 100 = 75%
-      expect(message).toContain('75% available');
+      // 50000 / 200000 * 100 = 25% used (issue #196: surfaces report USED)
+      expect(message).toContain('25% used');
     });
 
     it('should show warning when context is nearly full', async () => {
-      // Total used = 150k + 30k + 5k(cacheRead) + 2k(cacheCreate) = 187k of 200k = 7% remaining
+      // Total used = 150k + 30k + 5k(cacheRead) + 2k(cacheCreate) = 187k of 200k = 93.5% used
       const usage: SessionUsage = {
         currentInputTokens: 150000,
         currentOutputTokens: 30000,
@@ -186,7 +186,8 @@ describe('ContextHandler', () => {
 
       const postSystemMessage = mockDeps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>;
       const message = postSystemMessage.mock.calls[0][1];
-      expect(message).toContain('7% available');
+      expect(message).toContain('93.5% used');
+      // The low-context warning still asks "how much is LEFT" — 6.5% here.
       expect(message).toContain('⚠️ Context running low');
       expect(message).toContain('/renew');
     });
@@ -222,6 +223,100 @@ describe('ContextHandler', () => {
       expect(message).toContain('9.5k/200k');
       expect(message).toContain('Cache read: 3k');
       expect(message).toContain('Cache created: 500');
+    });
+  });
+
+  describe('execute - per-model usage breakdown', () => {
+    /**
+     * Requirement: `/context` must show, PER MODEL actually used in the
+     * session, the real input / output / cache-write / cache-read tokens and
+     * the cost computed at that model's rates. A session that switched
+     * opus[1m] → gpt-5.6-sol must show both buckets separately.
+     */
+    it('should display per-model input/output/cache-write/cache-read and per-model cost', async () => {
+      const usage = {
+        currentInputTokens: 120000,
+        currentOutputTokens: 400,
+        currentCacheReadTokens: 0,
+        currentCacheCreateTokens: 0,
+        contextWindow: 372000,
+        totalInputTokens: 134300,
+        totalOutputTokens: 881,
+        totalCacheReadTokens: 200000,
+        totalCacheCreateTokens: 30000,
+        totalCostUsd: 3.8988,
+        lastUpdated: Date.now(),
+        modelTotals: {
+          'claude-opus-4-8[1m]': {
+            inputTokens: 1000,
+            outputTokens: 500,
+            cacheReadTokens: 200000,
+            cacheCreateTokens: 30000,
+            costUsd: 1.23,
+          },
+          'gpt-5.6-sol': {
+            inputTokens: 133300,
+            outputTokens: 381,
+            cacheReadTokens: 0,
+            cacheCreateTokens: 0,
+            costUsd: 2.6688,
+          },
+        },
+      } as SessionUsage;
+
+      (mockDeps.claudeHandler.getSession as any).mockReturnValue({ usage, model: 'gpt-5.6-sol' });
+
+      await handler.execute({
+        channel: 'C123',
+        threadTs: 'ts',
+        user: 'U123',
+        text: 'context',
+        say: mockSay,
+      });
+
+      const postSystemMessage = mockDeps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>;
+      const message = postSystemMessage.mock.calls[0][1];
+
+      // Both models listed
+      expect(message).toContain('claude-opus-4-8[1m]');
+      expect(message).toContain('gpt-5.6-sol');
+      // Per-model token detail: in / out / cache write / cache read
+      expect(message).toContain('in 133.3k');
+      expect(message).toContain('out 381');
+      expect(message).toContain('cache w 30k');
+      expect(message).toContain('cache r 200k');
+      // Per-model cost at that model's rates
+      expect(message).toContain('$1.2300');
+      expect(message).toContain('$2.6688');
+    });
+
+    it('should omit per-model section when modelTotals is absent (legacy sessions)', async () => {
+      const usage: SessionUsage = {
+        currentInputTokens: 1000,
+        currentOutputTokens: 100,
+        currentCacheReadTokens: 0,
+        currentCacheCreateTokens: 0,
+        contextWindow: 200000,
+        totalInputTokens: 1000,
+        totalOutputTokens: 100,
+        totalCacheReadTokens: 0,
+        totalCacheCreateTokens: 0,
+        totalCostUsd: 0.01,
+        lastUpdated: Date.now(),
+      };
+      (mockDeps.claudeHandler.getSession as any).mockReturnValue({ usage });
+
+      await handler.execute({
+        channel: 'C123',
+        threadTs: 'ts',
+        user: 'U123',
+        text: 'context',
+        say: mockSay,
+      });
+
+      const postSystemMessage = mockDeps.slackApi.postSystemMessage as ReturnType<typeof vi.fn>;
+      const message = postSystemMessage.mock.calls[0][1];
+      expect(message).not.toContain('Per-Model');
     });
   });
 

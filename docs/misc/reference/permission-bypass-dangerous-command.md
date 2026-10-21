@@ -1,5 +1,18 @@
 # Permission System: Bypass + Dangerous Command Filtering
 
+> **역사 기록 (2026-09-29).** 이 문서는 bypass + 위험 명령 필터링의 설계 기록으로, 쓸 당시의 코드를
+> 기준으로 한다. 구현 스니펫과 분기표, 위험 명령 목록 표, lockdown 룰의 enforcement 경로,
+> "Approve & disable rule" 버튼의 렌더 조건은 지금 코드와 맞지 않고, "남은 문제" 절은 그때의 미해결
+> 목록이다.
+>
+> 지금은 `PreToolUse` 훅 하나가 툴 가드 판단을 모두 `evaluateToolPolicy`
+> (`src/agent-runtime/policy/tool-policy.ts`)에 맡긴다. 모드와 무관한 deny 계층이 먼저 Bash의
+> cross-user 접근(항상)과 ssh(admin이 아닌 유저)를 막고, 그다음 모드가 정한다. `bypass`는 Bash를 위험
+> 명령 판정 없이 허용하고, `auto`는 `bypassBashPermissionDecision`(`src/dangerous-command-filter.ts`)으로
+> 판정해 `ask`를 `classify`(안전 분류기)로 넘기며, 분류기가 허용하지 않으면 Slack 퍼미션 프롬프트가
+> 뜬다. `legacy`는 판단을 SDK에 넘긴다(`pass`). 룰 카탈로그는 soma-lib의 `DANGEROUS_RULES`
+> (`somalib/permission/dangerous-rules.ts`가 re-export)다. 현행 결정 파이프라인은 `rules/permission.md`.
+
 ## 배경
 
 Slack에서 Claude가 툴을 실행할 때, SDK `permissionMode`가 동작을 결정한다:
@@ -115,6 +128,8 @@ const config: McpConfig = !slackContext || userBypass
   ? { permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true, userBypass }
   : { permissionMode: 'default', userBypass };
 ```
+
+> 당시 코드다 — `isDangerousCommand`는 삭제됐다. 현행 경로는 문서 맨 위 역사 기록 참고.
 
 `claude-handler.ts`:
 

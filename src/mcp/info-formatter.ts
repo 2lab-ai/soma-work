@@ -62,13 +62,4 @@ export class McpInfoFormatter {
     }
     return '';
   }
-
-  /**
-   * Format server status for monitoring
-   */
-  formatServerStatus(serverName: string, serverConfig: McpServerConfig, isActive: boolean): string {
-    const type = serverConfig.type || 'stdio';
-    const status = isActive ? '✅' : '❌';
-    return `${status} **${serverName}** (${type})`;
-  }
 }

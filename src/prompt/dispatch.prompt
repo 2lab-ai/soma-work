@@ -37,10 +37,10 @@ If multiple patterns overlap, match in **top-to-bottom order of the table**.
   "links": {
     "issue": "issue_URL (if present)",
     "pr": "PR_URL (if present)",
-    "doc": "doc_URL (if present)"
-    "issues" [ ... ],
-    "prs" [ ... ],
-    "docs" [ ... ],
+    "doc": "doc_URL (if present)",
+    "issues": [ "..." ],
+    "prs": [ "..." ],
+    "docs": [ "..." ]
   }
 }
 ```

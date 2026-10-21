@@ -9,6 +9,7 @@
  * then persist to config.json via saveConfig.
  */
 
+import { UnsafePathError } from '@soma/common/atomic-write';
 import * as fs from 'fs';
 import * as path from 'path';
 import { loadConfig, saveConfig } from '../config-loader';
@@ -32,6 +33,16 @@ import type {
 } from './types';
 
 const logger = new Logger('PluginManager');
+
+/**
+ * Operator-facing text for a refused `config.json` write.
+ *
+ * Deliberately path-free: the underlying `UnsafePathError` names the refused
+ * path and, when the refusal is a symlink, effectively points at its target.
+ * Neither is something a plugin CRUD result should carry into a UI or a log.
+ */
+const PERSIST_REFUSED_ERROR =
+  'Plugin configuration could not be saved: somawork refuses to write through a symlinked config path. Replace the link with a real file or directory and retry.';
 
 /** Standardised result for CRUD operations. */
 export interface CrudResult {
@@ -588,14 +599,9 @@ export class PluginManager {
       return { success: false, error: `Marketplace "${entry.name}" already exists` };
     }
 
-    this.pluginConfig = {
-      ...this.pluginConfig,
-      marketplace: [...existing, entry],
-    };
-
-    this.saveConfig();
-    logger.info('Marketplace added', { name: entry.name, repo: entry.repo });
-    return { success: true };
+    return this.commit({ ...this.pluginConfig, marketplace: [...existing, entry] }, () =>
+      logger.info('Marketplace added', { name: entry.name, repo: entry.repo }),
+    );
   }
 
   /** Remove a marketplace by name. Persists to config.json when configFile is set. */
@@ -608,14 +614,9 @@ export class PluginManager {
       return { success: false, error: `Marketplace "${name}" not found` };
     }
 
-    this.pluginConfig = {
-      ...this.pluginConfig,
-      marketplace: existing.filter((m) => m.name !== name),
-    };
-
-    this.saveConfig();
-    logger.info('Marketplace removed', { name });
-    return { success: true };
+    return this.commit({ ...this.pluginConfig, marketplace: existing.filter((m) => m.name !== name) }, () =>
+      logger.info('Marketplace removed', { name }),
+    );
   }
 
   /** Add a plugin ref (e.g., "omc@soma-work"). Persists to config.json when configFile is set. */
@@ -630,14 +631,9 @@ export class PluginManager {
       return { success: false, error: `Plugin "${pluginRef}" is already installed` };
     }
 
-    this.pluginConfig = {
-      ...this.pluginConfig,
-      plugins: [...existing, pluginRef],
-    };
-
-    this.saveConfig();
-    logger.info('Plugin added', { pluginRef });
-    return { success: true };
+    return this.commit({ ...this.pluginConfig, plugins: [...existing, pluginRef] }, () =>
+      logger.info('Plugin added', { pluginRef }),
+    );
   }
 
   /** Remove a plugin ref. Persists to config.json when configFile is set. */
@@ -650,19 +646,48 @@ export class PluginManager {
       return { success: false, error: `Plugin "${pluginRef}" not found` };
     }
 
-    this.pluginConfig = {
-      ...this.pluginConfig,
-      plugins: existing.filter((p) => p !== pluginRef),
-    };
-
-    this.saveConfig();
-    logger.info('Plugin removed', { pluginRef });
-    return { success: true };
+    return this.commit({ ...this.pluginConfig, plugins: existing.filter((p) => p !== pluginRef) }, () =>
+      logger.info('Plugin removed', { pluginRef }),
+    );
   }
 
   // =========================================================================
   // Config persistence
   // =========================================================================
+
+  /**
+   * Apply an in-memory plugin-config mutation and persist it, as one unit.
+   *
+   * The four CRUD methods declare `CrudResult`, so a persistence failure has to
+   * come back as `{success:false}` rather than as a throw — and the in-memory
+   * config must not be left carrying a change that never reached disk. Both
+   * halves live here rather than in four copies, so the rollback cannot drift
+   * between the plugin and marketplace paths.
+   *
+   * Only {@link UnsafePathError} is converted. `config.json` is written through
+   * the hardened atomic helper, which refuses a symlinked target or ancestor —
+   * a real operator configuration (`~/.config` symlinked into a dotfiles repo)
+   * and therefore a legitimate `CrudResult` failure. Anything else is a bug or
+   * a disk fault and keeps propagating; a catch-all here would turn a
+   * programmer error into a polite red message.
+   */
+  private commit(next: PluginConfig, onSuccess: () => void): CrudResult {
+    const previous = this.pluginConfig;
+    this.pluginConfig = next;
+    try {
+      this.saveConfig();
+    } catch (err) {
+      this.pluginConfig = previous;
+      if (err instanceof UnsafePathError) {
+        // Fixed text: the error names the refused path and, for a symlink,
+        // points at its target. Neither belongs in a UI string.
+        return { success: false, error: PERSIST_REFUSED_ERROR };
+      }
+      throw err;
+    }
+    onSuccess();
+    return { success: true };
+  }
 
   /**
    * Reload the full unified config from disk, update the plugin section,

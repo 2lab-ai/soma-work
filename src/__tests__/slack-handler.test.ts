@@ -3,6 +3,245 @@ import { describe, expect, it, vi } from 'vitest';
 import { SlackHandler } from '../slack-handler';
 
 describe('SlackHandler', () => {
+  describe('accepted instruction setup status', () => {
+    function fixture() {
+      const handler = new SlackHandler({ client: {}, assistant: vi.fn() } as any, {} as any, {} as any);
+      const internals = handler as any;
+      const status = {
+        bumpEpoch: vi.fn().mockReturnValue(7),
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+      };
+      const sessionResult = {
+        session: { ownerId: 'U123', channelId: 'C123', threadTs: '111.222', sessionId: 'existing' },
+        sessionKey: 'C123:111.222',
+        isNewSession: false,
+        userName: 'Test User',
+        workingDirectory: '/tmp',
+        abortController: new AbortController(),
+        halted: false,
+      };
+      internals.assistantStatusManager = status;
+      internals.requestCoordinator = { isRequestActive: vi.fn().mockReturnValue(false) };
+      internals.logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      internals.slackApi = {
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+      };
+      internals.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+        routeCommand: vi.fn().mockResolvedValue({ handled: false }),
+      };
+      internals.sessionInitializer = {
+        validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+        initialize: vi.fn().mockResolvedValue(sessionResult),
+      };
+      internals.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+      internals.streamExecutor = { execute: vi.fn().mockResolvedValue({ success: true, messageCount: 1 }) };
+      const event = { user: 'U123', channel: 'C123', ts: '333.444', thread_ts: '111.222', text: 'hello' };
+      const say = vi.fn().mockResolvedValue({ ts: 'msg' });
+      return { handler, internals, status, sessionResult, event, say };
+    }
+
+    it('sets source status before pending initialization without awaiting the status write', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      let finishInitialize!: (result: any) => void;
+      internals.sessionInitializer.initialize.mockReturnValue(
+        new Promise((resolve) => {
+          finishInitialize = resolve;
+        }),
+      );
+      status.setStatus.mockReturnValue(new Promise(() => {}));
+      const handling = handler.handleMessage(event as any, say);
+      try {
+        await vi.waitFor(() => expect(internals.sessionInitializer.initialize).toHaveBeenCalledOnce());
+        expect(internals.requestCoordinator.isRequestActive).toHaveBeenCalledWith('C123:111.222');
+        expect(status.bumpEpoch).toHaveBeenCalledWith('C123', '111.222');
+        expect(status.setStatus).toHaveBeenCalledWith('C123', '111.222', 'is thinking...', { expectedEpoch: 7 });
+        expect(status.setStatus.mock.invocationCallOrder[0]).toBeLessThan(
+          internals.sessionInitializer.initialize.mock.invocationCallOrder[0],
+        );
+        expect(status.clearStatus).not.toHaveBeenCalled();
+      } finally {
+        finishInitialize({ halted: true });
+        await handling;
+      }
+    });
+
+    it('clears the captured source epoch when initialization rejects', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      const failure = new Error('initialization failed');
+      internals.sessionInitializer.initialize.mockRejectedValue(failure);
+      await expect(handler.handleMessage(event as any, say)).rejects.toBe(failure);
+      expect(status.clearStatus).toHaveBeenCalledExactlyOnceWith('C123', '111.222', { expectedEpoch: 7 });
+      expect(internals.streamExecutor.execute).not.toHaveBeenCalled();
+    });
+
+    it('clears the captured source epoch when initialization halts', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      internals.sessionInitializer.initialize.mockResolvedValue({ halted: true });
+      await handler.handleMessage(event as any, say);
+      expect(status.clearStatus).toHaveBeenCalledExactlyOnceWith('C123', '111.222', { expectedEpoch: 7 });
+      expect(internals.streamExecutor.execute).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['C123', '222.333'],
+      ['C456', '111.222'],
+    ])('clears only the source before slow setup and execution on migrated %s/%s', async (channelId, threadRootTs) => {
+      const { handler, internals, status, sessionResult, event, say } = fixture();
+      sessionResult.session = { ...sessionResult.session, channelId, threadRootTs } as any;
+      sessionResult.sessionKey = `${channelId}:${threadRootTs}`;
+      internals.threadPanel.create.mockImplementation(async () => {
+        expect(status.clearStatus).toHaveBeenCalledWith('C123', '111.222', { expectedEpoch: 7 });
+      });
+      await handler.handleMessage(event as any, say);
+      expect(internals.streamExecutor.execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: channelId,
+          threadTs: threadRootTs,
+        }),
+      );
+      expect(
+        status.clearStatus.mock.calls.every(
+          ([channel, thread, options]) => channel === 'C123' && thread === '111.222' && options?.expectedEpoch === 7,
+        ),
+      ).toBe(true);
+      expect(status.bumpEpoch).toHaveBeenCalledExactlyOnceWith('C123', '111.222');
+    });
+
+    it.each([
+      'migration',
+      'halt',
+      'initialization error',
+    ] as const)('bounds a hung setup clear to 3000ms on %s and observes a late rejection', async (outcome) => {
+      const { handler, internals, status, sessionResult, event, say } = fixture();
+      const initializationError = new Error('initialization failed');
+      if (outcome === 'migration') {
+        sessionResult.session = { ...sessionResult.session, channelId: 'C456', threadRootTs: '222.333' } as any;
+        sessionResult.sessionKey = 'C456:222.333';
+      } else if (outcome === 'halt') {
+        internals.sessionInitializer.initialize.mockResolvedValue({ halted: true });
+      } else {
+        internals.sessionInitializer.initialize.mockRejectedValue(initializationError);
+      }
+
+      let finishSet!: () => void;
+      let rejectClear!: (error: Error) => void;
+      status.setStatus.mockReturnValue(
+        new Promise<void>((resolve) => {
+          finishSet = resolve;
+        }),
+      );
+      status.clearStatus.mockReturnValue(
+        new Promise<void>((_resolve, reject) => {
+          rejectClear = reject;
+        }),
+      );
+      const unhandledRejection = vi.fn();
+      process.on('unhandledRejection', unhandledRejection);
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      let settled = false;
+      let handlingError: unknown;
+      const handling = handler.handleMessage(event as any, say).then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          handlingError = error;
+        },
+      );
+      const lateError = new Error('late setup clear failure');
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(internals.sessionInitializer.initialize).toHaveBeenCalledOnce();
+        expect(status.setStatus).toHaveBeenCalledWith('C123', '111.222', 'is thinking...', { expectedEpoch: 7 });
+        expect(status.clearStatus).toHaveBeenCalledExactlyOnceWith('C123', '111.222', { expectedEpoch: 7 });
+        await vi.advanceTimersByTimeAsync(2999);
+        expect(settled).toBe(false);
+        expect(internals.streamExecutor.execute).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(settled).toBe(true);
+        expect(handlingError).toBe(outcome === 'initialization error' ? initializationError : undefined);
+        if (outcome === 'migration') {
+          expect(internals.streamExecutor.execute).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ channel: 'C456', threadTs: '222.333' }),
+          );
+        } else {
+          expect(internals.streamExecutor.execute).not.toHaveBeenCalled();
+        }
+        expect(internals.logger.warn).toHaveBeenCalledWith(
+          expect.stringMatching(/setup.*C123.*111\.222.*did not finish in time/),
+          { timeoutMs: 3000 },
+        );
+        expect(status.clearStatus).toHaveBeenCalledOnce();
+
+        finishSet();
+        rejectClear(lateError);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(unhandledRejection).not.toHaveBeenCalled();
+      } finally {
+        finishSet();
+        rejectClear(lateError);
+        await handling;
+        process.off('unhandledRejection', unhandledRejection);
+        vi.useRealTimers();
+      }
+    });
+
+    it('retains the setup epoch for final cleanup after execution acquires a newer epoch', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      internals.streamExecutor.execute.mockImplementation(async () => {
+        expect(status.clearStatus).not.toHaveBeenCalled();
+        status.bumpEpoch.mockReturnValue(8);
+        status.bumpEpoch('C123', '111.222');
+        return { success: true, messageCount: 1 };
+      });
+      await handler.handleMessage(event as any, say);
+      expect(status.clearStatus).toHaveBeenCalledExactlyOnceWith('C123', '111.222', { expectedEpoch: 7 });
+    });
+
+    it('does not bump, set, or clear status for an existing active request', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      internals.requestCoordinator.isRequestActive.mockReturnValue(true);
+      await handler.handleMessage(event as any, say);
+      expect(internals.sessionInitializer.initialize).toHaveBeenCalledOnce();
+      expect(status.bumpEpoch).not.toHaveBeenCalled();
+      expect(status.setStatus).not.toHaveBeenCalled();
+      expect(status.clearStatus).not.toHaveBeenCalled();
+    });
+
+    it('leaves synthetic turn status to execution', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      await handler.handleMessage({ ...event, synthetic: true } as any, say);
+      expect(internals.streamExecutor.execute).toHaveBeenCalledOnce();
+      expect(status.bumpEpoch).not.toHaveBeenCalled();
+      expect(status.setStatus).not.toHaveBeenCalled();
+      expect(status.clearStatus).not.toHaveBeenCalled();
+    });
+
+    it('logs unexpected status failures without blocking initialization or masking its error', async () => {
+      const { handler, internals, status, event, say } = fixture();
+      const failure = new Error('initialization failed');
+      status.setStatus.mockRejectedValue(new Error('status write failed'));
+      status.clearStatus.mockRejectedValue(new Error('status clear failed'));
+      internals.sessionInitializer.initialize.mockRejectedValue(failure);
+      await expect(handler.handleMessage(event as any, say)).rejects.toBe(failure);
+      expect(status.setStatus).toHaveBeenCalledOnce();
+      expect(status.clearStatus).toHaveBeenCalledOnce();
+      expect(internals.logger.warn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ error: 'status write failed' }),
+      );
+      expect(internals.logger.warn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ error: 'status clear failed' }),
+      );
+    });
+  });
+
   it('creates thread panel after session initialization', async () => {
     const app = { client: {}, assistant: vi.fn() } as any;
     const claudeHandler = {};
@@ -53,6 +292,126 @@ describe('SlackHandler', () => {
 
     expect(create).toHaveBeenCalledTimes(1);
     expect(create).toHaveBeenCalledWith(sessionResult.session, sessionResult.sessionKey);
+  });
+
+  // The incident conclusion turns Slack's own processing of its text off
+  // (caller obligation 2 in `incident-result.ts`). The `say` handed to the
+  // executor is this handler's wrapper around Bolt's, which spreads its argument
+  // into `chat.postMessage`; the wrapper must forward those switches and add
+  // nothing to any other post.
+  it('forwards the post switches through the say it hands the executor, and adds none to an ordinary post', async () => {
+    const app = { client: {}, assistant: vi.fn() };
+    const handler = new SlackHandler(app as never, {} as never, {} as never);
+    const handlerAny = handler as unknown as Record<string, unknown>;
+    handlerAny.slackApi = {
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+    handlerAny.inputProcessor = {
+      processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+      routeCommand: vi.fn().mockResolvedValue({ handled: false, continueWithPrompt: undefined }),
+    };
+    handlerAny.sessionInitializer = {
+      validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+      initialize: vi.fn().mockResolvedValue({
+        session: { ownerId: 'U123' },
+        sessionKey: 'C123:thread123',
+        isNewSession: true,
+        userName: 'Test User',
+        workingDirectory: '/tmp',
+        abortController: new AbortController(),
+        halted: false,
+      }),
+    };
+    const execute = vi.fn().mockResolvedValue({ success: true, messageCount: 1 });
+    handlerAny.streamExecutor = { execute };
+    handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: 'hello' } as never, say);
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    const executorSay = execute.mock.calls[0][0].say;
+    say.mockClear();
+
+    await executorSay({
+      text: 'conclusion',
+      thread_ts: 't1',
+      unfurl_links: false,
+      unfurl_media: false,
+      parse: 'none',
+      mrkdwn: false,
+    });
+    await executorSay({ text: 'ordinary', thread_ts: 't1' });
+
+    expect(say.mock.calls[0][0]).toMatchObject({
+      text: 'conclusion',
+      thread_ts: 't1',
+      unfurl_links: false,
+      unfurl_media: false,
+      parse: 'none',
+      mrkdwn: false,
+    });
+    expect(Object.keys(say.mock.calls[1][0]).sort()).toEqual(['attachments', 'blocks', 'text', 'thread_ts']);
+  });
+
+  it('passes deferSkillFire on a fresh context and fires the deferred forced $skill banner', async () => {
+    const app = { client: {}, assistant: vi.fn() } as any;
+    // No pre-route session → fresh context → deferSkillFire must be true.
+    const claudeHandler = {
+      getSession: vi.fn().mockReturnValue(undefined),
+      getSessionByKey: vi.fn().mockReturnValue(undefined),
+      saveSessions: vi.fn(),
+    };
+    const handler = new SlackHandler(app as any, claudeHandler as any, {} as any);
+    const handlerAny = handler as any;
+
+    const postMessage = vi.fn().mockResolvedValue({ ts: 'm' });
+    handlerAny.slackApi = {
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+    };
+
+    const routeCommand = vi.fn().mockResolvedValue({
+      handled: true,
+      continueWithPrompt: '$z foo', // raw remainder (block deferred)
+      deferredSkillFire: {
+        keys: ['local:z'],
+        invokedBlock: '<invoked_skills>\n<local:z>\nBODY\n</local:z>\n</invoked_skills>',
+        banner: { text: '⚡ DEFERRED-FIRE-BANNER', color: '#FF0000' },
+      },
+    });
+    handlerAny.inputProcessor = {
+      processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: true }),
+      routeCommand,
+    };
+    handlerAny.sessionInitializer = {
+      validateWorkingDirectory: vi.fn().mockResolvedValue({ valid: true, workingDirectory: '/tmp' }),
+      initialize: vi.fn().mockResolvedValue({
+        session: { ownerId: 'U123', channelId: 'C123', threadTs: '111.222', sessionId: undefined },
+        sessionKey: 'C123:111.222',
+        isNewSession: true,
+        userName: 'T',
+        workingDirectory: '/tmp',
+        abortController: new AbortController(),
+        halted: false,
+      }),
+    };
+    handlerAny.streamExecutor = { execute: vi.fn().mockResolvedValue({ success: true, messageCount: 1 }) };
+    handlerAny.threadPanel = { create: vi.fn().mockResolvedValue(undefined) };
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg' });
+    await handler.handleMessage({ user: 'U123', channel: 'C123', ts: '111.222', text: '$z foo' } as any, say);
+
+    // routeCommand was told to defer the forced `$skill` (fresh context start).
+    expect(routeCommand.mock.calls[0][2]).toEqual({ deferSkillFire: true });
+    // The deferred forced-skill banner was posted as a red attachment.
+    const bannerCall = postMessage.mock.calls.find(
+      (c: any[]) => c[2]?.attachments?.[0]?.text === '⚡ DEFERRED-FIRE-BANNER',
+    );
+    expect(bannerCall).toBeDefined();
+    expect(bannerCall?.[2].attachments[0].color).toBe('#FF0000');
   });
 
   it('streams into bot-initiated thread when initializer returns migrated session', async () => {
@@ -568,6 +927,58 @@ describe('SlackHandler', () => {
     resetAdminUsersCache();
   });
 
+  it('ends the session anchored to a deleted message, even when it has no replies yet', async () => {
+    // isThreadRoot() only recognises a root once it HAS replies, so a bot thread
+    // card that nobody has answered yet skips the confirmation and is deleted
+    // outright. Its session used to survive with a threadTs pointing at nothing,
+    // and Slack drops a dead thread_ts and publishes to the channel instead — so
+    // that session's later expiry/sleep notices went out as public channel posts.
+    // Registry lookup, not message shape, decides whether a session dies here.
+    const { resetAdminUsersCache } = await import('../admin-utils');
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
+
+    const app = { client: {}, assistant: vi.fn() } as any;
+    const handler = new SlackHandler(app as any, {} as any, {} as any);
+    const handlerAny = handler as any;
+
+    const mockSlackApi = {
+      // reply_count absent → isThreadRoot() is false → no confirmation prompt.
+      getMessage: vi.fn().mockResolvedValue({ ts: '111222.000000', user: 'B999' }),
+      getThreadMessage: vi.fn(),
+      getBotUserId: vi.fn().mockResolvedValue('B999'),
+      deleteMessage: vi.fn().mockResolvedValue(undefined),
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+    const mockClaudeHandler = {
+      getSessionKey: vi.fn((ch: string, ts?: string) => `${ch}:${ts ?? ''}`),
+      terminateSession: vi.fn().mockReturnValue(true),
+    };
+
+    handlerAny.slackApi = mockSlackApi;
+    handlerAny.claudeHandler = mockClaudeHandler;
+    handlerAny.inputProcessor = { processFiles: vi.fn(), routeCommand: vi.fn() };
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    await handler.handleMessage(
+      {
+        user: 'U_ADMIN',
+        channel: 'D123',
+        ts: '555.666',
+        text: 'https://workspace.slack.com/archives/C999/p111222000000',
+      } as any,
+      say,
+    );
+
+    expect(mockClaudeHandler.getSessionKey).toHaveBeenCalledWith('C999', '111222.000000');
+    expect(mockClaudeHandler.terminateSession).toHaveBeenCalledWith('C999:111222.000000');
+    expect(mockSlackApi.deleteMessage).toHaveBeenCalledWith('C999', '111222.000000');
+
+    delete process.env.ADMIN_USERS;
+    resetAdminUsersCache();
+  });
+
   it('admin gets a Yes/No confirmation when the link is a channel thread ROOT', async () => {
     const { resetAdminUsersCache } = await import('../admin-utils');
     process.env.ADMIN_USERS = 'U_ADMIN';
@@ -932,6 +1343,71 @@ describe('SlackHandler', () => {
       expect(handlerAny.inputProcessor.processFiles).toHaveBeenCalledTimes(1);
       const forwardedEvent = handlerAny.inputProcessor.processFiles.mock.calls[0][0];
       expect(forwardedEvent.text).toBe('write a failing test');
+      // `/z new` keeps the re-route (a deferred `$skill` remainder relies on it).
+      expect(forwardedEvent.routeContext?.verbatimPrompt).toBeUndefined();
+
+      // `/z goal <objective>`: the objective is marked verbatim so the
+      // pipeline never parses it as a command.
+      dispatch.mockResolvedValueOnce({ handled: true, continueWithPrompt: 'new dashboard', verbatimPrompt: true });
+      await handler.handleMessage({ ...event, ts: '555.667', text: '/z goal new dashboard' } as any, say);
+      const goalEvent = handlerAny.inputProcessor.processFiles.mock.calls[1][0];
+      expect(goalEvent.text).toBe('new dashboard');
+      expect(goalEvent.routeContext?.verbatimPrompt).toBe(true);
+    } finally {
+      if (prevAdmins === undefined) {
+        delete process.env.ADMIN_USERS;
+      } else {
+        process.env.ADMIN_USERS = prevAdmins;
+      }
+      resetAdminUsersCache();
+    }
+  });
+
+  // PR #305 round-4 review (astra): a goal objective replayed into an admin DM
+  // (`routeContext.verbatimPrompt`) is the user's words. If it starts with
+  // `/z` or carries a Slack permalink, the DM branch must not run it as a
+  // `/z` command (`/z new …` would reset the session) or as a cleanup link.
+  it('DM: a verbatim objective is not re-run as `/z` or as a cleanup link (admin)', async () => {
+    const { resetAdminUsersCache } = await import('../admin-utils');
+    const prevAdmins = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
+
+    try {
+      const handler = new SlackHandler({ client: {}, assistant: vi.fn() } as any, {} as any, {} as any);
+      const handlerAny = handler as any;
+      const dispatch = vi.fn().mockResolvedValue({ handled: true, continueWithPrompt: 'x' });
+      handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
+      handlerAny.slackApi = {
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+      };
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: false }),
+        routeCommand: vi.fn(),
+      };
+      const cleanup = vi.spyOn(handlerAny, 'handleDmCleanupRequest');
+
+      for (const text of [
+        '/z new dashboard 구현',
+        '이 메시지 https://example.slack.com/archives/C0123ABCD/p1700000000123456 분석해줘',
+      ]) {
+        await handler.handleMessage(
+          {
+            user: 'U_ADMIN',
+            channel: 'D123',
+            ts: `9.${text.length}`,
+            text,
+            routeContext: { verbatimPrompt: true },
+          } as any,
+          vi.fn(),
+        );
+        const calls = handlerAny.inputProcessor.processFiles.mock.calls;
+        const forwarded = calls[calls.length - 1][0];
+        expect(forwarded.text).toBe(text);
+      }
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(cleanup).not.toHaveBeenCalled();
     } finally {
       if (prevAdmins === undefined) {
         delete process.env.ADMIN_USERS;
@@ -1022,6 +1498,33 @@ describe('SlackHandler', () => {
         expect(forwardedEvent.text).toBe('hello');
       });
     });
+
+    // Goal-loop stall fix — a terminal `/z` result is mapped to the dispatch
+    // outcome the follow-up queue records: a full answer is `safe`, a crashed
+    // legacy handler (`handled: true` + `error`) is `error`, and a cross-user
+    // `$skill` parked on permission is `blocked`. Reporting the last two as
+    // `safe` would resolve a queued DM command that never ran.
+    for (const [label, dispatchResult, expected] of [
+      ['full answer', { handled: true, consumed: true }, { result: 'safe' }],
+      [
+        'crashed legacy handler',
+        { handled: true, error: 'invalid_blocks' },
+        { result: 'error', reason: 'invalid_blocks' },
+      ],
+      ['permission pending', { handled: true, awaitingPermission: true }, { result: 'blocked' }],
+    ] as const) {
+      it(`maps an admin DM \`/z\` terminal result (${label}) to its dispatch outcome`, async () => {
+        await withAdmins(async () => {
+          const { handlerAny } = buildHandler({ dispatchResult });
+          const event = { user: 'U_ADMIN', channel: 'D123', ts: '9.9', text: '/z goal 다음 목표' };
+
+          const outcome = await handlerAny.processMessage(event, vi.fn());
+
+          expect(outcome).toMatchObject(expected);
+          expect(handlerAny.inputProcessor.processFiles).not.toHaveBeenCalled();
+        });
+      });
+    }
 
     // T2 — Non-admin plain text DM is rejected by Gate A.
     it('T2: non-admin DM plain text is rejected by Gate A (ephemeral + ❎)', async () => {
@@ -2019,7 +2522,7 @@ describe('SlackHandler — #1082 goal-prefixed first message', () => {
     return { handler, handlerAny, claudeHandler, fullSession, execute, dispatchSnapshots };
   }
 
-  it('applies the goal to the new session and dispatches the continuation prompt', async () => {
+  it('applies the goal to the new session and dispatches the raw objective', async () => {
     const { handler, handlerAny, claudeHandler, fullSession, execute, dispatchSnapshots } = buildGoalHarness({
       handled: false,
       setGoalObjective: 'ship the feature',
@@ -2069,11 +2572,117 @@ describe('SlackHandler — #1082 goal-prefixed first message', () => {
       expect.anything(),
     );
 
-    // 4. Model-turn text is the goal continuation prompt, not the raw text.
+    // 4. D1: the model turn is the raw objective — no continuation wrapper.
+    // Goal rules reach the model through the rebuilt <session-goal> block.
     expect(execute).toHaveBeenCalledTimes(1);
     const dispatched = execute.mock.calls[0][0].text as string;
-    expect(dispatched).toContain('Continue working toward the active session goal');
-    expect(dispatched).toContain('ship the feature');
+    expect(dispatched).toBe('ship the feature');
+  });
+
+  // Review P1 (PR #305): `/z goal <objective>` hands the RAW objective back as
+  // `continueWithPrompt`, and both `/z` consumers (DM branch, app_mention)
+  // feed it into the full pipeline again. It must dispatch verbatim — never
+  // parsed as a command, an inline directive, or the `!` abort marker.
+  it.each([
+    ['a command form', 'new dashboard 구현'],
+    ['the abort marker', '!stop the flaky test'],
+    ['an inline directive', '%nogoal ship it'],
+  ])('a verbatim prompt that looks like %s is dispatched as-is, never re-routed', async (_label, objective) => {
+    const { handler, handlerAny, execute } = buildGoalHarness({ handled: false });
+    const abortSpy = vi.spyOn(handlerAny.requestCoordinator, 'abortSession');
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    await handler.handleMessage(
+      {
+        user: 'U123',
+        channel: 'C123',
+        ts: '111.222',
+        text: objective,
+        routeContext: { verbatimPrompt: true },
+      } as any,
+      say,
+    );
+
+    expect(handlerAny.inputProcessor.routeCommand).not.toHaveBeenCalled();
+    expect(abortSpy).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0][0].text).toBe(objective);
+  });
+
+  // Review P1 (PR #305, round 2): the opening turn of a goal is the objective
+  // itself. An objective starting with an SDK slash command must reach the
+  // model as text, so the executor gets `literalPrompt` on that turn.
+  it.each([
+    [
+      'goal command (channel)',
+      { handled: true, continueWithPrompt: '/compact 명령의 버그를 고쳐라', verbatimPrompt: true },
+      'goal /compact 명령의 버그를 고쳐라',
+    ],
+    [
+      'goal-prefixed first message',
+      { handled: false, setGoalObjective: '/clear 명령을 문서화해' },
+      'goal /clear 명령을 문서화해',
+    ],
+  ])('marks the opening turn literal: %s', async (_label, routeResult, text) => {
+    const { handler, execute } = buildGoalHarness(routeResult);
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0][0].literalPrompt).toBe(true);
+  });
+
+  // Round-3 review (astra): a goal command already ran when the turn reaches
+  // session init. If init stashes the turn for a post-compact replay, the
+  // stash must replay the objective verbatim — so the event handed to
+  // `initialize` carries the marker the stash copies onto its context.
+  it('hands session init a verbatim-marked event after a goal command ran', async () => {
+    const { handler, handlerAny } = buildGoalHarness({
+      handled: true,
+      continueWithPrompt: 'new dashboard 구현',
+      verbatimPrompt: true,
+    });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: 'goal new dashboard 구현' } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    const [initEvent, , initText] = handlerAny.sessionInitializer.initialize.mock.calls[0];
+    expect(initText).toBe('new dashboard 구현');
+    expect(initEvent.routeContext?.verbatimPrompt).toBe(true);
+  });
+
+  it('does not mark an ordinary message for verbatim replay', async () => {
+    const { handler, handlerAny } = buildGoalHarness({ handled: false });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: 'new dashboard 구현' } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    expect(handlerAny.sessionInitializer.initialize.mock.calls[0][0].routeContext?.verbatimPrompt).toBeUndefined();
+  });
+
+  it('a verbatim `/z goal` objective is a literal turn too', async () => {
+    const { handler, execute } = buildGoalHarness({ handled: false });
+    await handler.handleMessage(
+      {
+        user: 'U123',
+        channel: 'C123',
+        ts: '111.222',
+        text: '/compact 명령의 버그를 고쳐라',
+        routeContext: { verbatimPrompt: true },
+      } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    expect(execute.mock.calls[0][0].literalPrompt).toBe(true);
+  });
+
+  it('a plain message is not literal — a typed `/compact` stays an SDK command', async () => {
+    const { handler, execute } = buildGoalHarness({ handled: false });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: '/compact' } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    expect(execute.mock.calls[0][0].literalPrompt).toBeFalsy();
   });
 
   it('continueWithPrompt (goal+skill split) wins as dispatch text while the goal is still applied', async () => {

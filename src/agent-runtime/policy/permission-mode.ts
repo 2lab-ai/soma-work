@@ -21,7 +21,7 @@
  *     offered as a user-selectable option any more.
  *
  * The hard-deny tier in `evaluateToolPolicy` is mode-independent and always
- * runs first; mode only governs the allow / ask / classify decision that
+ * runs first; mode only governs the allow / classify / pass decision that
  * follows.
  */
 

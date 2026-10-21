@@ -10,6 +10,7 @@
  */
 
 import { ZTopicRegistry } from '../../actions/z-settings-actions';
+import { createAuthTopicBinding } from './auth-topic';
 import { createBypassTopicBinding } from './bypass-topic';
 import { createCctTopicBinding } from './cct-topic';
 import { createCwdTopicBinding } from './cwd-topic';
@@ -31,6 +32,7 @@ import { createVerbosityTopicBinding } from './verbosity-topic';
  * `ZTopicRegistry` stores one binding per topic name.
  */
 export function registerAllTopics(registry: ZTopicRegistry): void {
+  registry.register(createAuthTopicBinding());
   registry.register(createBypassTopicBinding());
   registry.register(createCctTopicBinding());
   registry.register(createCwdTopicBinding());

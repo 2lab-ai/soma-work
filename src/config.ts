@@ -1,5 +1,9 @@
 import { WebClient } from '@slack/web-api';
+import { parseBgKeepaliveMaxMs } from './agent-runtime/background-keepalive';
+import { resolveIncidentEvidenceOrigin } from './incident/evidence';
 import { Logger } from './logger';
+import { DEFAULT_OAUTH_REFRESH_INTERVAL_MS } from './oauth/oauth-refresh-scheduler';
+import { normalizeSigningSecret, SIGNING_SECRET_MIN_LENGTH } from './slack-signing-secret';
 
 // Logger for preflight checks and config validation
 const logger = new Logger('Config');
@@ -100,15 +104,271 @@ export function parseUnitIntervalEnv(name: string, fallback: number, minimum: nu
   return n;
 }
 
+/**
+ * Default per-session cap on pending follow-up items (`.prd/slack-agent-ui/ssot.md:93-96`).
+ * 100 is a reversible choice with no measured basis (ssot §8 R1), not a limit
+ * derived from Slack or storage.
+ */
+export const FOLLOWUP_QUEUE_CAPACITY_DEFAULT = 100;
+
+/**
+ * Typed accessor for `SOMA_FOLLOWUP_QUEUE_CAPACITY` — the ONLY read of that
+ * variable in the process (`rules/config.md` §절대규칙 1, `:12` `SOMA_` prefix).
+ * The follow-up queue and its host import this; neither touches `process.env`.
+ *
+ * A function rather than a field on {@link config} because the queue is built
+ * per `SlackHandler` instance: reading at construction time keeps the value
+ * correct for an agent constructed after the env is loaded, and lets the unit
+ * test move the knob without re-importing this module.
+ *
+ * Safe integer, not merely integer: `Number.isInteger(1e21)` is `true`, and a
+ * capacity of 1e21 would silently disable the visible overflow rejection the
+ * contract requires (ssot §3.1) instead of raising the cap.
+ */
+export function getFollowupQueueCapacity(): number {
+  const raw = process.env.SOMA_FOLLOWUP_QUEUE_CAPACITY;
+  if (raw === undefined || raw.trim() === '') return FOLLOWUP_QUEUE_CAPACITY_DEFAULT;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    logger.warn(
+      `SOMA_FOLLOWUP_QUEUE_CAPACITY="${raw}" invalid (expected positive safe integer); ` +
+        `falling back to ${FOLLOWUP_QUEUE_CAPACITY_DEFAULT}`,
+    );
+    return FOLLOWUP_QUEUE_CAPACITY_DEFAULT;
+  }
+  return parsed;
+}
+
+/**
+ * Typed accessor for `SOMA_BG_KEEPALIVE_MAX_MS` — the ONLY read of that
+ * variable in the process (`rules/config.md` §절대규칙 1, `:12` `SOMA_` prefix).
+ * The longest a turn may stay open for the background agents it launched
+ * (#257); `0` disables the keepalive. `ClaudeHandler` imports this and never
+ * touches `process.env`.
+ *
+ * A function rather than a field on {@link config}, read once per turn, so an
+ * operator change applies to the next turn and a test can move the knob
+ * without re-importing this module. Parsing is the pure
+ * `parseBgKeepaliveMaxMs` (`agent-runtime/background-keepalive.ts`); this
+ * accessor only reads the value and reports a rejected one.
+ */
+export function getBgKeepaliveMaxMs(): number {
+  const raw = process.env.SOMA_BG_KEEPALIVE_MAX_MS;
+  const { value, invalid } = parseBgKeepaliveMaxMs(raw);
+  if (invalid) {
+    logger.warn(
+      `SOMA_BG_KEEPALIVE_MAX_MS="${raw}" invalid (expected 0 or a positive number of ms up to 2147483647); ` +
+        `falling back to ${value}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Backend auth backend selector (#llmux). See {@link config.auth}.
+ */
+export type AuthMode = 'ccp' | 'llmux';
+
+/**
+ * Parse the `AUTH_MODE` knob into a typed {@link AuthMode}.
+ *
+ *   - unset / empty           → `'ccp'` (default; existing OAuth-lease path)
+ *   - `ccp`   (any case)      → `'ccp'`
+ *   - `llmux` (any case)      → `'llmux'`
+ *   - anything else           → warn + fall back to `'ccp'` so an operator
+ *     typo (`AUTH_MODE=lmux`) surfaces instead of silently mis-routing auth.
+ *
+ * Exported for unit tests.
+ */
+export function parseAuthMode(raw: string | undefined): AuthMode {
+  if (raw === undefined) return 'ccp';
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === '') return 'ccp';
+  if (normalized === 'ccp' || normalized === 'llmux') return normalized;
+  logger.warn(`AUTH_MODE="${raw}" unrecognized (expected ccp|llmux); falling back to ccp`);
+  return 'ccp';
+}
+
+/**
+ * Sentinel used for `config.auth.llmux.apiKey` when `ANTHROPIC_API_KEY` is
+ * unset. It is a placeholder, NOT a credential: llmux accepts any value on the
+ * data plane for loopback callers. Its presence therefore means "the operator
+ * never configured an llmux key", which `getLlmuxAdminKey()`
+ * (auth/auth-runtime.ts) uses to decide whether it may fall back to the
+ * co-located llmux config file for a real admin credential.
+ */
+export const LLMUX_PLACEHOLDER_API_KEY = 'llmux-local';
+
+/**
+ * Server-side trust anchor for the Eagle incident receiver.
+ *
+ * Structural mirror of `IncidentRequest`'s companion type
+ * `TrustedIncidentSource` in `packages/slack/src/incident-contract.ts` (the
+ * SSOT). It is re-declared here rather than imported because root `src/`
+ * resolves `@soma/slack/*` through the repo-root workspace symlink to the
+ * package's COMPILED `dist/`, which is not guaranteed to exist when this file
+ * is typechecked. Assignability is structural, so the adapter can hand this
+ * value straight to the contract.
+ */
+export interface IncidentTrustedSource {
+  readonly teamId: string;
+  readonly appId: string;
+  readonly botUserId: string;
+  readonly botId: string;
+  readonly channelIds: readonly string[];
+}
+
+/**
+ * Evidence API the incident runtime may read from. Absent ⇒ no evidence
+ * access. `baseUrl` is the ORIGIN returned by `resolveIncidentEvidenceOrigin`,
+ * never the operator's raw string.
+ */
+export interface IncidentEvidenceConfig {
+  readonly baseUrl: string;
+}
+
+const SLACK_CHANNEL_ID_PATTERN = /^[CGD][A-Z0-9]{1,20}$/;
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+/**
+ * Typed getter for `SOMA_INCIDENT_TRUSTED_SOURCE` (JSON object).
+ *
+ * Unset, unparseable, or incomplete ⇒ `null` (receiver disabled). Every id is
+ * required and every channel must be an explicit Slack channel id: a partially
+ * filled or wildcard config would widen who can drive the receiver, so it is
+ * rejected outright instead of being repaired with defaults.
+ *
+ * Read at call time (not at module load) so an operator config change takes
+ * effect on restart of the reader, and so tests can drive it.
+ */
+export function getIncidentTrustedSource(): IncidentTrustedSource | null {
+  const raw = process.env.SOMA_INCIDENT_TRUSTED_SOURCE;
+  if (raw === undefined || raw.trim() === '') return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    logger.warn('SOMA_INCIDENT_TRUSTED_SOURCE is not valid JSON — incident receiver stays disabled');
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    logger.warn('SOMA_INCIDENT_TRUSTED_SOURCE must be a JSON object — incident receiver stays disabled');
+    return null;
+  }
+
+  const candidate = parsed as Record<string, unknown>;
+  const { teamId, appId, botUserId, botId, channelIds } = candidate;
+  if (![teamId, appId, botUserId, botId].every(isNonEmptyString)) {
+    logger.warn('SOMA_INCIDENT_TRUSTED_SOURCE needs teamId/appId/botUserId/botId — incident receiver stays disabled');
+    return null;
+  }
+  if (!Array.isArray(channelIds) || channelIds.length === 0) {
+    logger.warn('SOMA_INCIDENT_TRUSTED_SOURCE needs a non-empty channelIds list — incident receiver stays disabled');
+    return null;
+  }
+  if (!channelIds.every((id) => typeof id === 'string' && SLACK_CHANNEL_ID_PATTERN.test(id))) {
+    logger.warn('SOMA_INCIDENT_TRUSTED_SOURCE channelIds must be exact Slack channel ids — receiver stays disabled');
+    return null;
+  }
+
+  return {
+    teamId: teamId as string,
+    appId: appId as string,
+    botUserId: botUserId as string,
+    botId: botId as string,
+    channelIds: [...(channelIds as string[])],
+  };
+}
+
+/**
+ * Typed getter for `SOMA_INCIDENT_EVIDENCE_BASE_URL`. Unset ⇒ `null`.
+ *
+ * The env read lives here (config is the only place that touches
+ * `process.env`); the *rule* — https, or http on loopback, origin only, no
+ * credentials/query/fragment — belongs to the evidence domain and is applied
+ * by `resolveIncidentEvidenceOrigin`. A rejected value disables evidence
+ * access rather than degrading to the raw string.
+ */
+export function getIncidentEvidenceConfig(): IncidentEvidenceConfig | null {
+  const raw = process.env.SOMA_INCIDENT_EVIDENCE_BASE_URL;
+  if (raw === undefined || raw.trim() === '') return null;
+
+  try {
+    return { baseUrl: resolveIncidentEvidenceOrigin(raw.trim()) };
+  } catch (err) {
+    logger.warn(
+      `SOMA_INCIDENT_EVIDENCE_BASE_URL rejected (${(err as Error)?.message ?? String(err)}) — incident evidence stays disabled`,
+    );
+    return null;
+  }
+}
+
 export const config = {
   slack: {
     botToken: process.env.SLACK_BOT_TOKEN!,
     appToken: process.env.SLACK_APP_TOKEN!,
-    signingSecret: process.env.SLACK_SIGNING_SECRET!,
+    /**
+     * OPTIONAL. Only an HTTP receiver needs this — it verifies the
+     * `X-Slack-Signature` header on requests Slack POSTs to a public URL.
+     * This runtime speaks Socket Mode (outbound wss keyed by `SLACK_APP_TOKEN`),
+     * where no signature is exchanged, so `undefined` is a valid steady state.
+     * Blank / whitespace-only env values normalize to `undefined`.
+     */
+    signingSecret: normalizeSigningSecret(process.env.SLACK_SIGNING_SECRET),
   },
   claude: {
     useBedrock: process.env.CLAUDE_CODE_USE_BEDROCK === '1',
     useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
+    /**
+     * Emergency compaction model. When a non-1M model hard-fails with
+     * "Prompt is too long" before the normal threshold checker can schedule
+     * `/compact`, the session temporarily switches to this 1M-capable model,
+     * runs `/compact`, then restores the original model.
+     */
+    autoFallbackCompactModel: process.env.AUTO_FALLBACK_COMPACT_MODEL || 'opus[1m]',
+  },
+  /**
+   * Backend auth mode (#llmux). Selects how every Claude Agent SDK
+   * subprocess authenticates upstream. Set once at boot; restart required to
+   * change (mirrors `config.json#claude.env` — there is no hot reload).
+   *
+   *   - `'ccp'` (default): Claude Code Pro/Max OAuth via CCT slot leases
+   *     (`CLAUDE_CODE_OAUTH_TOKEN`). Multi-account rotation, usage tracking,
+   *     and the `/z cct` card all operate in this mode. Direct API keys are
+   *     managed through the existing cct token store.
+   *
+   *   - `'llmux'`: point the SDK at a locally-installed llmux proxy
+   *     (https://github.com/2lab-ai/llmux). `buildQueryEnv` injects
+   *     `ANTHROPIC_BASE_URL` + a throwaway `ANTHROPIC_API_KEY` and suppresses
+   *     the OAuth token; llmux owns the real upstream account pool. No CCT
+   *     slot is required — lease acquisition is short-circuited with a
+   *     synthetic lease.
+   *
+   * Configure with:
+   *   AUTH_MODE=llmux
+   *   ANTHROPIC_BASE_URL=http://localhost:3456   # llmux's default port
+   *   ANTHROPIC_API_KEY=<anything>               # llmux ignores the value
+   */
+  auth: {
+    mode: parseAuthMode(process.env.AUTH_MODE),
+    llmux: {
+      /**
+       * llmux proxy base URL — `ANTHROPIC_BASE_URL=http://localhost:3456` is
+       * the entire llmux integration contract. Only consulted in `'llmux'`
+       * mode; ignored in `'ccp'` mode.
+       */
+      baseUrl: process.env.ANTHROPIC_BASE_URL || 'http://localhost:3456',
+      /**
+       * API key forwarded to llmux. llmux owns the real upstream auth, so any
+       * non-empty placeholder works ("API_KEY 아무거나"); a sentinel is used
+       * when `ANTHROPIC_API_KEY` is unset. Only consulted in `'llmux'` mode.
+       */
+      apiKey: process.env.ANTHROPIC_API_KEY || LLMUX_PLACEHOLDER_API_KEY,
+    },
   },
   credentials: {
     enabled: process.env.ENABLE_LOCAL_FILE_CREDENTIALS_JSON === '1',
@@ -153,6 +413,15 @@ export const config = {
       clientSecret: process.env.MICROSOFT_CLIENT_SECRET || '',
     },
     jwtSecret: process.env.DASHBOARD_JWT_SECRET || '',
+    /**
+     * Origin the OAuth provider redirects back to (`<base>/auth/<provider>/callback`).
+     * Empty = the public viewer URL. Set it to the previous public origin while the
+     * provider console still lists only that callback: the provider returns there,
+     * the canonical-origin redirect forwards the callback to the public URL, and
+     * the code exchange repeats this same redirect_uri. The forwarding redirect only
+     * exists when the viewer URL is https (web-server.ts registerCanonicalOriginRedirect).
+     */
+    callbackBaseUrl: process.env.SOMA_OAUTH_CALLBACK_BASE_URL || '',
     /** Seconds until dashboard JWT expires (default: 7 days) */
     jwtExpiresIn: parseInt(process.env.DASHBOARD_JWT_EXPIRES_IN || '604800', 10),
   },
@@ -205,7 +474,7 @@ export const config = {
      * the scheduler churns refresh endpoints faster than the 8-hour token
      * TTL warrants, which burns Anthropic-side rate limit for no gain.
      */
-    intervalMs: parsePositiveIntEnv('OAUTH_REFRESH_INTERVAL_MS', 60 * 60_000, 5 * 60_000),
+    intervalMs: parsePositiveIntEnv('OAUTH_REFRESH_INTERVAL_MS', DEFAULT_OAUTH_REFRESH_INTERVAL_MS, 5 * 60_000),
     /**
      * ms deadline for each fan-out; default 30s. Per-slot HTTP call has
      * its own 10s timeout inside `refreshClaudeCredentials`, so 30s is
@@ -255,7 +524,10 @@ export const config = {
 };
 
 export function validateConfig() {
-  const required = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'SLACK_SIGNING_SECRET'];
+  // `SLACK_SIGNING_SECRET` is deliberately NOT here: it only verifies the
+  // `X-Slack-Signature` header on HTTP delivery, and this runtime is Socket
+  // Mode (outbound wss authenticated by SLACK_APP_TOKEN).
+  const required = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'];
 
   const missing = required.filter((key) => !process.env[key]);
 
@@ -263,8 +535,24 @@ export function validateConfig() {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
 
-  // Auth is handled exclusively via Agent SDK (OAuth)
-  logger.info('Auth: Agent SDK (OAuth via CLAUDE_CODE_OAUTH_TOKEN)');
+  // A secret that IS configured must look real — a truncated paste would
+  // silently disable verification on any future HTTP receiver. Report the
+  // length only; never echo the value.
+  const signingSecret = normalizeSigningSecret(process.env.SLACK_SIGNING_SECRET);
+  if (signingSecret !== undefined && signingSecret.length < SIGNING_SECRET_MIN_LENGTH) {
+    throw new Error(
+      `SLACK_SIGNING_SECRET is too short (${signingSecret.length} chars; ` +
+        `minimum ${SIGNING_SECRET_MIN_LENGTH}). It is only needed for HTTP signature ` +
+        'verification — unset it entirely to run Socket Mode without one.',
+    );
+  }
+
+  // Auth is handled exclusively via Agent SDK. The backend depends on AUTH_MODE.
+  if (config.auth.mode === 'llmux') {
+    logger.info(`Auth: llmux proxy (ANTHROPIC_BASE_URL=${config.auth.llmux.baseUrl}, throwaway API key)`);
+  } else {
+    logger.info('Auth: Agent SDK (OAuth via CLAUDE_CODE_OAUTH_TOKEN)');
+  }
 }
 
 /** Outcome of {@link probeSlackApi}. */
@@ -368,7 +656,7 @@ export async function runPreflightChecks(): Promise<PreflightResult> {
   // ===== 1. Slack Token Format Validation =====
   const slackBotToken = process.env.SLACK_BOT_TOKEN || '';
   const slackAppToken = process.env.SLACK_APP_TOKEN || '';
-  const slackSigningSecret = process.env.SLACK_SIGNING_SECRET || '';
+  const slackSigningSecret = normalizeSigningSecret(process.env.SLACK_SIGNING_SECRET);
 
   // Bot token format
   if (!slackBotToken) {
@@ -392,11 +680,19 @@ export async function runPreflightChecks(): Promise<PreflightResult> {
     logger.info('SLACK_APP_TOKEN: Format OK (xapp-...)');
   }
 
-  // Signing secret
-  if (!slackSigningSecret) {
-    errors.push('❌ SLACK_SIGNING_SECRET: Missing');
-  } else if (slackSigningSecret.length < 20) {
-    warnings.push(`⚠️ SLACK_SIGNING_SECRET: Unusually short (${slackSigningSecret.length} chars)`);
+  // Signing secret — OPTIONAL under Socket Mode. It verifies the
+  // `X-Slack-Signature` header on HTTP delivery only, so its absence is a
+  // valid configuration and produces neither an error nor a warning. A secret
+  // that IS provided must be plausible: a truncated paste is an operator error
+  // and hard-fails (never a warning) so it is fixed rather than tolerated.
+  if (slackSigningSecret === undefined) {
+    logger.info('SLACK_SIGNING_SECRET: Not set (not required for Socket Mode)');
+  } else if (slackSigningSecret.length < SIGNING_SECRET_MIN_LENGTH) {
+    errors.push(
+      `❌ SLACK_SIGNING_SECRET: Too short (${slackSigningSecret.length} chars; ` +
+        `minimum ${SIGNING_SECRET_MIN_LENGTH})`,
+    );
+    errors.push('   → Only HTTP signature verification uses it; unset it entirely for Socket Mode.');
   } else {
     logger.info('SLACK_SIGNING_SECRET: Present');
   }
@@ -425,9 +721,23 @@ export async function runPreflightChecks(): Promise<PreflightResult> {
     }
   }
 
-  // ===== 3. Auth: Agent SDK Only (no ANTHROPIC_API_KEY needed) =====
-  if (process.env.ANTHROPIC_API_KEY) {
-    warnings.push('⚠️ ANTHROPIC_API_KEY is set but unused — all auth uses Agent SDK (OAuth)');
+  // ===== 3. Auth backend (AUTH_MODE: ccp | llmux) =====
+  if (config.auth.mode === 'llmux') {
+    // llmux mode: the SDK is pointed at the local proxy. ANTHROPIC_API_KEY is
+    // a throwaway forwarded to llmux (which owns real upstream auth), so its
+    // presence is expected — not the "set but unused" footgun of ccp mode.
+    logger.info(`Auth mode: llmux → ${config.auth.llmux.baseUrl} (throwaway API key, OAuth token suppressed)`);
+    if (!process.env.ANTHROPIC_BASE_URL) {
+      warnings.push(
+        `⚠️ AUTH_MODE=llmux but ANTHROPIC_BASE_URL is unset — defaulting to ${config.auth.llmux.baseUrl}. ` +
+          'Ensure llmux is running there (https://github.com/2lab-ai/llmux).',
+      );
+    }
+  } else {
+    logger.info('Auth mode: ccp (Agent SDK OAuth via CLAUDE_CODE_OAUTH_TOKEN)');
+    if (process.env.ANTHROPIC_API_KEY) {
+      warnings.push('⚠️ ANTHROPIC_API_KEY is set but unused in ccp mode — all auth uses Agent SDK (OAuth)');
+    }
   }
 
   // ===== 4. GitHub Configuration =====

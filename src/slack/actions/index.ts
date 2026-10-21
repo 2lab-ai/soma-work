@@ -1,14 +1,21 @@
 import { setActionHandlersProviders } from '@soma/slack/actions';
 import { isAdminUser } from '../../admin-utils';
 import { getTokenManager } from '../../token-manager';
+import { registerAuthActions } from '../auth/actions';
 import { registerCctActions } from '../cct/actions';
 import { defaultTabCache } from '../commands/usage-carousel-cache';
 import { buildDefaultTopicRegistry } from '../z/topics';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
+import { AutoskillActionHandler } from './autoskill-action-handler';
+import { AutoskillAddViewSubmissionHandler } from './autoskill-add-view-submission-handler';
 import { ChannelRouteActionHandler } from './channel-route-action-handler';
 import { ChoiceActionHandler } from './choice-action-handler';
 import { CompactActionHandler } from './compact-action-handler';
+import { CronActionHandler } from './cron-action-handler';
+import { CronEditViewSubmissionHandler } from './cron-edit-view-submission-handler';
+import { CronRunPermissionActionHandler } from './cron-run-permission-action-handler';
 import { FormActionHandler } from './form-action-handler';
+import { GoalActionHandler } from './goal-action-handler';
 import { InstructionConfirmActionHandler } from './instruction-confirm-action-handler';
 import { JiraActionHandler } from './jira-action-handler';
 import { McpToolPermissionActionHandler } from './mcp-tool-permission-action-handler';
@@ -16,6 +23,7 @@ import { PermissionActionHandler } from './permission-action-handler';
 import { PluginUpdateActionHandler } from './plugin-update-action-handler';
 import { PRActionHandler } from './pr-action-handler';
 import { SessionActionHandler } from './session-action-handler';
+import { SkillPermissionActionHandler } from './skill-permission-action-handler';
 import { TurnDismissActionHandler } from './turn-dismiss-action-handler';
 import { TurnFeedbackActionHandler } from './turn-feedback-action-handler';
 import { UsageCardActionHandler } from './usage-card-action-handler';
@@ -101,7 +109,27 @@ setActionHandlersProviders({
       userAcceptanceHandler: new UserAcceptanceActionHandler({
         slackApi: ctx.slackApi as any,
       }),
+      autoskillActionHandler: new AutoskillActionHandler({
+        slackApi: ctx.slackApi as any,
+      }),
+      autoskillAddSubmitHandler: new AutoskillAddViewSubmissionHandler({
+        slackApi: ctx.slackApi as any,
+      }),
+      cronActionHandler: new CronActionHandler({
+        slackApi: ctx.slackApi as any,
+      }),
+      cronEditSubmitHandler: new CronEditViewSubmissionHandler({
+        slackApi: ctx.slackApi as any,
+      }),
+      cronRunPermissionHandler: new CronRunPermissionActionHandler({
+        slackApi: ctx.slackApi as any,
+      }),
       userSkillMenuHandler: new UserSkillMenuActionHandler({
+        slackApi: ctx.slackApi as any,
+        claudeHandler: ctx.claudeHandler,
+        messageHandler: ctx.messageHandler as any,
+      }),
+      userSkillPermissionHandler: new SkillPermissionActionHandler({
         slackApi: ctx.slackApi as any,
         claudeHandler: ctx.claudeHandler,
         messageHandler: ctx.messageHandler as any,
@@ -135,11 +163,16 @@ setActionHandlersProviders({
         slackApi: ctx.slackApi as any,
         completionMessageTracker: ctx.completionMessageTracker,
       }),
+      goalHandler: new GoalActionHandler({
+        slackApi: ctx.slackApi as any,
+        claudeHandler: ctx.claudeHandler,
+      }),
       zSettingsHandler: new ZSettingsActionHandler({
         registry: zTopicRegistry,
       }),
       zTopicRegistry,
       registerCctActions: (app) => registerCctActions(app as any, getTokenManager()),
+      registerAuthActions: (app) => registerAuthActions(app as any),
     };
   },
 });

@@ -3,21 +3,23 @@
 # Basic Rules
 - fast_fail: Check available space in the working folder. If it is 1024 MB or less, immediately ask the user to free up space.
 - fast_fail: If the user's email is unresolved or empty, instruct them to set it with `set email <your-email>` and stop all work.
-- working folder: Always create a new unique working folder and git clone the source into it (for example, `/tmp/{slackId}/{repoName}_{timestamp}_{prName}`) to avoid conflicts with other agents.
-- tool usage: Use model-command-tool as the top priority. Use UIAskUserQuestion instead of AskUserQuestion.
+- working folder: Always create a new unique working folder **inside `<cwd>`** and git clone the source into it (for example, `<cwd>/{repoName}_{timestamp}_{prName}`). Never create folders outside `<cwd>`.
+- tool usage: Use model-command-tool as the top priority. Use `local:UIAskUserQuestion` instead of AskUserQuestion.
 - commits and PRs: Add the current user as Co-Authored-By in all git commits and pull requests:
   `Co-Authored-By: {{user.displayName}} <{{user.email}}>`
-  If `{{user.email}}` is empty or unresolved, you MUST ask the user for their email via UIAskUserQuestion before making any commit. Never guess or fabricate an email.
+  If `{{user.email}}` is empty or unresolved, you MUST ask the user for their email via `local:UIAskUserQuestion` before making any commit. Never guess or fabricate an email.
 
 ## GitHub Workflows
 - Bot tokens cannot modify `.github/workflows/`. Use `gh` CLI instead.
 
-## Smart Subordinate Model (MCP)
-Delegate to a subordinate model only when the user explicitly requests it or when task complexity clearly justifies it.
+## Smart Subordinate Models (subagents)
+Delegate to a subordinate model only when the user explicitly requests it or when task complexity clearly justifies it. External engines are reached by spawning the zworkflow subagents directly (`Agent` tool, `subagent_type: "zworkflow:<name>"` — the plugin namespace is mandatory, bare names do not resolve) — there is no LLM MCP tool.
 
-Available subordinate MCPs:
-- `llm_chat(model: codex)` — strongest option
-- `llm_chat(model: gemini)` — useful secondary option
+Available subordinate subagents:
+- `zworkflow:astra-zhuge` (model: astra) — strategist, strongest option for review / decision briefs
+- `zworkflow:grok-elon` (model: grok) — physics-first / cost-structure counterpart
+- `zworkflow:fable-zhuge` (model: fable) — anthropic-engine strategist, tiebreaker
+- Consensus on a brief → `local:trinity` (runs all three until unanimous)
 
 ## Slack Output Formatting
 Your replies are rendered as Slack messages (streamed `markdown_text`, or Block Kit on fallback). Slack's renderer is NOT full GitHub Markdown — write so it renders cleanly:

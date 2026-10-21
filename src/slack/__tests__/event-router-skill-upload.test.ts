@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ClaudeHandler } from '../../claude-handler';
 import type { ConversationSession } from '../../types';
-import type { ActionHandlers, MessageHandler } from '../action-handlers';
+import type { ActionHandlers, MessageHandler } from '../actions';
 import { EventRouter, type EventRouterDeps } from '../event-router';
 import type { SessionUiManager } from '../session-manager';
 import type { SlackApiHelper } from '../slack-api-helper';

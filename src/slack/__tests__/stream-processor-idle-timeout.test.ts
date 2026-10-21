@@ -16,15 +16,20 @@
  * `aborted: true` — even if the underlying SDK never honors the abort.
  */
 
+import {
+  AgentStreamProcessor,
+  readIdleTimeoutMs,
+  type StreamCallbacks,
+  type StreamContext,
+} from '@soma/slack/stream-processor';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import { AgentStreamProcessor, readIdleTimeoutMs, type StreamCallbacks, type StreamContext } from '../stream-processor';
 
 const baseContext = (): StreamContext => ({
   channel: 'C1',
   threadTs: 'T1',
   sessionKey: 'C1:T1',
   sessionId: 's1',
+  incidentAttempt: false,
   say: vi.fn().mockResolvedValue({ ts: 'm' }) as unknown as StreamContext['say'],
 });
 

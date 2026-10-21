@@ -76,6 +76,27 @@ export class MessageFormatter {
   }
 
   /**
+   * A lifecycle duration in Korean for notices: whole days from 2 days up
+   * ("7일"), hours below that ("24시간", "36시간", "1시간 30분"), minutes under
+   * an hour ("30분"), and "N일 M시간" for a non-whole day count of 2+ days.
+   */
+  static formatLifecycleDuration(ms: number): string {
+    const minuteMs = 60 * 1000;
+    const hourMs = 60 * minuteMs;
+    const dayMs = 24 * hourMs;
+    const total = Math.max(0, Math.round(ms / minuteMs) * minuteMs);
+    if (total >= 2 * dayMs) {
+      const days = Math.floor(total / dayMs);
+      const hours = Math.floor((total % dayMs) / hourMs);
+      return hours > 0 ? `${days}일 ${hours}시간` : `${days}일`;
+    }
+    const hours = Math.floor(total / hourMs);
+    const minutes = Math.floor((total % hourMs) / minuteMs);
+    if (hours === 0) return `${minutes}분`;
+    return minutes > 0 ? `${hours}시간 ${minutes}분` : `${hours}시간`;
+  }
+
+  /**
    * Format sleep expiry countdown
    */
   static formatSleepExpiresIn(sleepStartedAt: Date, maxSleepMs: number = 7 * 24 * 60 * 60 * 1000): string {

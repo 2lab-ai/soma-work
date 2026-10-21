@@ -47,8 +47,9 @@ describe('memory-topic — preview', () => {
 
   it('writes preview JSON when MEMORY_CARD_PREVIEW=1', async () => {
     const card = await renderMemoryCard({ userId: 'U_PREVIEW', issuedAt: 1 });
-    // Per-entry section (4 memory + 3 user) + 7 fixed = 14 blocks.
-    expect(card.blocks.length).toBe(14);
+    // Per-entry section (4 memory + 3 user) + 7 fixed + hierarchical
+    // (divider + section) 2 = 16 blocks.
+    expect(card.blocks.length).toBe(16);
 
     if (process.env.MEMORY_CARD_PREVIEW === '1') {
       const outDir = process.env.TMPDIR || '/tmp';

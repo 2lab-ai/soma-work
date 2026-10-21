@@ -1,7 +1,7 @@
+import { getVerbosityFlags, getVerbosityName, LOG_DETAIL, VERBOSITY_NAMES } from '@soma/slack/output-flags';
+import { resolveContextWindow } from '../../metrics/model-registry';
 import {
   DEFAULT_EFFORT,
-  DEFAULT_SHOW_THINKING,
-  DEFAULT_THINKING_ENABLED,
   EFFORT_LEVELS,
   MODEL_ALIASES,
   type ModelId,
@@ -9,7 +9,7 @@ import {
 } from '../../user-settings-store';
 import { formatBytes as formatBytesUtil, getDirSizeBytes } from '../../utils/dir-size';
 import { CommandParser } from '../command-parser';
-import { getVerbosityFlags, getVerbosityName, LOG_DETAIL, VERBOSITY_NAMES } from '../output-flags';
+import { ContextWindowManager } from '../context-window-manager';
 import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 
 /**
@@ -33,7 +33,7 @@ export class SessionCommandHandler implements CommandHandler {
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const { user, channel, threadTs, say } = ctx;
+    const { channel, threadTs, say } = ctx;
     const session = this.deps.claudeHandler.getSession(channel, threadTs);
 
     // Emit deprecation notice if the user still uses the legacy `$` prefix.
@@ -137,12 +137,17 @@ export class SessionCommandHandler implements CommandHandler {
       lines.push(`*Conversation:* \`${session.conversationId}\``);
     }
 
-    // Context usage
+    // Context usage. Two corrections, both issue #196: this used to sum only
+    // input+output — cache-read and cache-creation tokens occupy the window
+    // too, so a cache-heavy session under-reported badly — and it printed the
+    // remaining share while `/context` and the turn footer printed the
+    // consumed one. `computeUsedTokens` is the shared formula; `used` is the
+    // shared reading.
     if (session.usage) {
       const u = session.usage;
-      const current = u.currentInputTokens + u.currentOutputTokens;
-      const pct = u.contextWindow > 0 ? (((u.contextWindow - current) / u.contextWindow) * 100).toFixed(0) : '?';
-      lines.push(`*Context:* ${formatTokens(current)} / ${formatTokens(u.contextWindow)} (${pct}% available)`);
+      const current = ContextWindowManager.computeUsedTokens(u);
+      const pct = u.contextWindow > 0 ? (100 - ContextWindowManager.computeRemainingPercent(u)).toFixed(0) : '?';
+      lines.push(`*Context:* ${formatTokens(current)} / ${formatTokens(u.contextWindow)} (${pct}% used)`);
       if (u.totalCostUsd > 0) {
         lines.push(`*Cost:* $${u.totalCostUsd.toFixed(4)}`);
       }
@@ -226,9 +231,22 @@ export class SessionCommandHandler implements CommandHandler {
 
   private async setSessionModel(ctx: CommandContext, session: any, input: string): Promise<CommandResult> {
     const { say, threadTs } = ctx;
-    const resolved = userSettingsStore.resolveModelInput(input);
+    // Cache miss → forced llmux catalog re-fetch + one retry before erroring.
+    // A REFUSED id (e.g. the fake `grok-4.6[1m]`) skips the refresh entirely.
+    const resolution = await userSettingsStore.resolveModelInputDetailedWithRefresh(input);
 
-    if (!resolved) {
+    if (resolution.status === 'rejected') {
+      // Distinct from the typo path below on purpose: the alias dump would
+      // read as "you misspelled it" and bury the fact that this id would be
+      // forwarded verbatim to a provider that does not have it.
+      await say({
+        text: `❌ ${resolution.rejectedReason}\n*Use* \`${resolution.suggestedModel}\` instead.`,
+        thread_ts: threadTs,
+      });
+      return { handled: true };
+    }
+
+    if (resolution.status === 'unknown') {
       const aliases = Object.keys(MODEL_ALIASES)
         .map((a) => `\`${a}\``)
         .join(', ');
@@ -239,7 +257,15 @@ export class SessionCommandHandler implements CommandHandler {
       return { handled: true };
     }
 
+    const resolved = resolution.modelId;
     session.model = resolved;
+    // Re-anchor the context window to the NEW model immediately. Without this
+    // the session keeps the previous model's window (e.g. 1M from opus[1m])
+    // until the next turn's usage event, so `/context` reports remaining
+    // space against the wrong denominator.
+    if (session.usage) {
+      session.usage.contextWindow = resolveContextWindow(resolved);
+    }
     const displayName = userSettingsStore.getModelDisplayName(resolved);
     await say({
       text: `⚡ *Session Model Changed*\n\nThis session now uses: *${displayName}* (\`${resolved}\`)\n_User default unchanged. Use \`model ${input}\` to change permanently._`,

@@ -75,6 +75,13 @@ export interface SessionUiManagerProviders {
   isPRMergeable?: (details: GitHubPRDetails) => boolean;
   getUserSessionTheme?: (userId: string) => SessionTheme;
   getModelDisplayName?: (model: string) => string;
+  /** Idle-to-sleep and sleep-to-end durations the host's lifecycle policy uses. */
+  getSessionLifecycle?: () => SessionLifecycleDurations;
+}
+
+export interface SessionLifecycleDurations {
+  sleepAfterMs: number;
+  archiveAfterMs: number;
 }
 
 const THEME_NAMES: Record<SessionTheme, string> = {
@@ -94,6 +101,7 @@ let sessionUiManagerProviders: Required<SessionUiManagerProviders> = {
   isPRMergeable: () => false,
   getUserSessionTheme: () => 'default',
   getModelDisplayName: (model) => model,
+  getSessionLifecycle: () => ({ sleepAfterMs: 24 * 60 * 60 * 1000, archiveAfterMs: 7 * 24 * 60 * 60 * 1000 }),
 };
 
 export function setSessionUiManagerProviders(providers: SessionUiManagerProviders): void {
@@ -101,6 +109,11 @@ export function setSessionUiManagerProviders(providers: SessionUiManagerProvider
     ...sessionUiManagerProviders,
     ...providers,
   };
+}
+
+/** The lifecycle durations notices and countdowns state (host policy; 24h / 7d default). */
+export function getSessionLifecycleDurations(): SessionLifecycleDurations {
+  return sessionUiManagerProviders.getSessionLifecycle();
 }
 
 export interface FormatSessionsOptions {
@@ -303,14 +316,15 @@ export class SessionUiManager {
     }
 
     const isSleeping = session.state === 'SLEEPING';
-    const expiresText = isSleeping
-      ? `💤 ⏳ ${session.sleepStartedAt ? MessageFormatter.formatSleepExpiresIn(session.sleepStartedAt) : '?'}`
-      : `⏳ ${MessageFormatter.formatExpiresIn(session.lastActivity)}`;
+    const lifecycle = getSessionLifecycleDurations();
+    const sleepCountdown = session.sleepStartedAt
+      ? MessageFormatter.formatSleepExpiresIn(session.sleepStartedAt, lifecycle.archiveAfterMs)
+      : '?';
+    const awakeCountdown = MessageFormatter.formatExpiresIn(session.lastActivity, lifecycle.sleepAfterMs);
+    const expiresText = isSleeping ? `💤 ⏳ ${sleepCountdown}` : `⏳ ${awakeCountdown}`;
 
     // Shorter expiry for compact themes
-    const expiresShort = isSleeping
-      ? `💤 ${session.sleepStartedAt ? MessageFormatter.formatSleepExpiresIn(session.sleepStartedAt) : '?'}`
-      : MessageFormatter.formatExpiresIn(session.lastActivity);
+    const expiresShort = isSleeping ? `💤 ${sleepCountdown}` : awakeCountdown;
 
     // Conversation viewer URL (if conversation was recorded)
     const conversationUrl = session.conversationId
@@ -663,7 +677,10 @@ export class SessionUiManager {
       for (const { session } of sessions) {
         const channelName = await this.slackApi.getChannelName(session.channelId);
         const timeAgo = MessageFormatter.formatTimeAgo(session.lastActivity);
-        const expiresIn = MessageFormatter.formatExpiresIn(session.lastActivity);
+        const expiresIn = MessageFormatter.formatExpiresIn(
+          session.lastActivity,
+          getSessionLifecycleDurations().sleepAfterMs,
+        );
         const initiator =
           session.currentInitiatorName && session.currentInitiatorId !== session.ownerId
             ? ` | 🎯 ${session.currentInitiatorName}`
@@ -737,21 +754,110 @@ export class SessionUiManager {
   }
 
   /**
+   * Deliver a session lifecycle notice into that session's own thread — or say
+   * nothing at all.
+   *
+   * The sweeper fires these minutes to days after the session last spoke, so by
+   * the time it runs the thread may be gone: an admin full-thread wipe, an admin
+   * single-message delete that happened to hit the root, or a human deleting the
+   * bot's thread card in Slack. `session.threadTs` keeps pointing at it either
+   * way, and `chat.postMessage` does not object — it drops the dead `thread_ts`
+   * and publishes the notice to the whole channel. That is the bug this guards.
+   *
+   * Every lifecycle notice comes through here, whether it is posted fresh or
+   * edited into an earlier one. Both need the same gate. Editing looks harmless
+   * because `chat.update` cannot create a new channel-root message — but it can
+   * REWRITE one. A `warningMessageTs` recorded before this fix may itself be a
+   * leaked channel-root message, and editing it would keep that public surface
+   * alive under new text. When the anchor is gone, nothing is sent by any route.
+   *
+   * `unknown` is treated like `missing`: staying quiet costs one skipped notice,
+   * guessing wrong costs a public channel post. An inconclusive probe never
+   * mutates session state.
+   *
+   * Returns the ts of the surviving thread reply, or undefined when nothing was
+   * (or could safely be) delivered.
+   */
+  private async deliverSessionLifecycleNotice(
+    session: ConversationSession,
+    text: string,
+    options: { existingMessageTs?: string; blocks?: any[] } = {},
+  ): Promise<string | undefined> {
+    const { existingMessageTs, blocks } = options;
+    const { channelId, threadTs } = session;
+
+    if (!threadTs) {
+      // No anchor was ever recorded, so there is no thread to speak into and a
+      // post would go straight to the channel.
+      this.logger.debug('Skipping session lifecycle notice: session has no thread anchor', { channelId });
+      return undefined;
+    }
+
+    const rootState = await this.slackApi.getThreadRootState(channelId, threadTs);
+    if (rootState !== 'exists') {
+      this.logger.info('Skipping session lifecycle notice: thread root not usable', {
+        channelId,
+        threadTs,
+        rootState,
+        wouldHaveEdited: existingMessageTs ?? null,
+      });
+      return undefined;
+    }
+
+    if (existingMessageTs) {
+      // The anchor is alive, so this ts is a reply beneath it: either posted by
+      // an earlier gated call, or posted while the root was alive (a root cannot
+      // come back once deleted, so a live root means this was never a leak).
+      await this.slackApi.updateMessage(channelId, existingMessageTs, text);
+      return existingMessageTs;
+    }
+
+    const result = await this.slackApi.postMessage(channelId, text, { threadTs, blocks });
+
+    // Only act on positive evidence. `threadTs` is meaningful when Slack echoed
+    // the created message back (`echoedMessage`); if it did not, we know nothing
+    // about how the message was threaded and must not delete it on a guess.
+    if (result.ts && result.echoedMessage && result.threadTs !== threadTs) {
+      // Slack accepted the call but did not thread it — the anchor died inside
+      // the gap above. What we just created is a top-level channel message.
+      this.logger.warn('Session lifecycle notice landed at channel root — reverting', {
+        channelId,
+        requestedThreadTs: threadTs,
+        actualThreadTs: result.threadTs ?? null,
+        postedTs: result.ts,
+      });
+      try {
+        await this.slackApi.deleteMessage(channelId, result.ts);
+      } catch (error) {
+        this.logger.error('Failed to revert channel-root session lifecycle notice', {
+          channelId,
+          postedTs: result.ts,
+          error,
+        });
+      }
+      return undefined;
+    }
+
+    return result.ts;
+  }
+
+  /**
    * 세션 Sleep 전환 처리
    */
   async handleSessionSleep(session: ConversationSession): Promise<void> {
-    const sleepText = `💤 *세션이 Sleep 모드로 전환되었습니다*\n\n24시간 동안 활동이 없어 세션이 Sleep 상태로 전환되었습니다.\n메시지를 보내면 다시 대화를 이어갈 수 있습니다.\n\n> Sleep 모드는 7일간 유지되며, 이후 자동으로 종료됩니다.`;
+    const { sleepAfterMs, archiveAfterMs } = getSessionLifecycleDurations();
+    const idle = MessageFormatter.formatLifecycleDuration(sleepAfterMs);
+    const asleep = MessageFormatter.formatLifecycleDuration(archiveAfterMs);
+    const sleepText = `💤 *세션이 Sleep 모드로 전환되었습니다*\n\n${idle} 동안 활동이 없어 세션이 Sleep 상태로 전환되었습니다.\n메시지를 보내면 다시 대화를 이어갈 수 있습니다.\n\n> Sleep 모드는 ${asleep} 동안 유지되며, 이후 자동으로 종료됩니다.`;
 
     // Add zzz emoji to thread
     const sessionKey = this.claudeHandler.getSessionKey(session.channelId, session.threadTs);
     await this.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
 
     try {
-      if (session.warningMessageTs) {
-        await this.slackApi.updateMessage(session.channelId, session.warningMessageTs, sleepText);
-      } else {
-        await this.slackApi.postMessage(session.channelId, sleepText, { threadTs: session.threadTs });
-      }
+      await this.deliverSessionLifecycleNotice(session, sleepText, {
+        existingMessageTs: session.warningMessageTs,
+      });
 
       this.logger.info('Session transitioned to sleep', {
         userId: session.userId,
@@ -772,17 +878,9 @@ export class SessionUiManager {
     existingMessageTs?: string,
   ): Promise<string | undefined> {
     const warningText = `⚠️ *세션 만료 예정*\n\n이 세션은 *${MessageFormatter.formatTimeRemaining(timeRemaining)}* 후에 만료됩니다.\n세션을 유지하려면 메시지를 보내주세요.`;
-    const threadTs = session.threadTs;
-    const channel = session.channelId;
 
     try {
-      if (existingMessageTs) {
-        await this.slackApi.updateMessage(channel, existingMessageTs, warningText);
-        return existingMessageTs;
-      } else {
-        const result = await this.slackApi.postMessage(channel, warningText, { threadTs });
-        return result.ts;
-      }
+      return await this.deliverSessionLifecycleNotice(session, warningText, { existingMessageTs });
     } catch (error) {
       this.logger.error('Failed to send/update session warning message', error);
       return undefined;
@@ -793,18 +891,17 @@ export class SessionUiManager {
    * 세션 만료 처리
    */
   async handleSessionExpiry(session: ConversationSession): Promise<void> {
-    const expiryText = `🔒 *세션이 종료되었습니다*\n\nSleep 모드가 7일 경과하여 세션이 종료되었습니다.\n새로운 대화를 시작하려면 다시 메시지를 보내주세요.`;
+    const asleep = MessageFormatter.formatLifecycleDuration(getSessionLifecycleDurations().archiveAfterMs);
+    const expiryText = `🔒 *세션이 종료되었습니다*\n\nSleep 모드가 ${asleep} 경과하여 세션이 종료되었습니다.\n새로운 대화를 시작하려면 다시 메시지를 보내주세요.`;
 
     // Add zzz emoji (may already be there from sleep transition)
     const sessionKey = this.claudeHandler.getSessionKey(session.channelId, session.threadTs);
     await this.reactionManager?.setSessionExpired(sessionKey, session.channelId, session.threadTs);
 
     try {
-      if (session.warningMessageTs) {
-        await this.slackApi.updateMessage(session.channelId, session.warningMessageTs, expiryText);
-      } else {
-        await this.slackApi.postMessage(session.channelId, expiryText, { threadTs: session.threadTs });
-      }
+      await this.deliverSessionLifecycleNotice(session, expiryText, {
+        existingMessageTs: session.warningMessageTs,
+      });
 
       this.logger.info('Session expired', {
         userId: session.userId,
@@ -970,8 +1067,6 @@ export class SessionUiManager {
     existingMessageTs?: string,
   ): Promise<string | undefined> {
     const sessionKey = this.claudeHandler.getSessionKey(session.channelId, session.threadTs);
-    const threadTs = session.threadTs;
-    const channel = session.channelId;
 
     // 12h idle check (when more than 10 minutes remain = not yet at final warning stage)
     if (timeRemaining > 60 * 60 * 1000) {
@@ -1014,11 +1109,13 @@ export class SessionUiManager {
       ];
 
       try {
-        const result = await this.slackApi.postMessage(channel, '💤 세션 활동 확인', {
-          threadTs,
-          blocks,
-        });
-        return result.ts;
+        // Gated like every other lifecycle notice — and this is the one that
+        // matters most. WARNING_INTERVALS starts at 12h, which is above the 1h
+        // idle-check threshold, so this is the FIRST notice every session gets.
+        // Posted ungated against a dead anchor it lands in the channel, and its
+        // ts then becomes session.warningMessageTs — which the sleep notice
+        // later edits, dragging the leak forward into a second message.
+        return await this.deliverSessionLifecycleNotice(session, '💤 세션 활동 확인', { blocks });
       } catch (error) {
         this.logger.error('Failed to send idle check message', error);
         return undefined;

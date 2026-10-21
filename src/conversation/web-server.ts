@@ -1,5 +1,8 @@
+import type { IncomingHttpHeaders } from 'node:http';
 import * as os from 'node:os';
 import fastifyFormbody from '@fastify/formbody';
+// Type-only: the plugin itself is registered by dashboard.ts via dynamic import.
+import type { WebSocket } from '@fastify/websocket';
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -17,10 +20,9 @@ import { registerDashboardRoutes, setSelfInstanceEnv } from './dashboard';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
 import {
   type AuthContext,
-  generateCsrfToken,
-  generateCsrfTokenForAdmin,
-  getDashboardUser,
+  exceedsAbsoluteSessionLifetime,
   getJwtSecret,
+  loginReturnCookieFor,
   registerOAuthRoutes,
   validateCsrfToken,
   verifyDashboardTokenRaw,
@@ -28,6 +30,7 @@ import {
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
 import type { ConversationTurn } from './types';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
+import { registerWorkLogRoutes } from './work-log-routes';
 
 const logger = new Logger('ConversationWebServer');
 
@@ -69,11 +72,7 @@ function buildAuthContext(request: FastifyRequest): AuthContext | null {
     const payload = verifyDashboardTokenRaw(cookieVal);
     if (payload) {
       // Enforce absolute max lifetime — reject sessions that exceeded 4x expiry (min 30 days)
-      const originalIat = (payload as any).originalIat || payload.iat;
-      const expiresIn = config.oauth.jwtExpiresIn;
-      const absoluteMax = Math.max(expiresIn * 4, 30 * 86400);
-      const now = Math.floor(Date.now() / 1000);
-      if (now - originalIat > absoluteMax) {
+      if (exceedsAbsoluteSessionLifetime(payload)) {
         // Session exceeded absolute max — force re-login
         return null;
       }
@@ -122,11 +121,10 @@ function maybeRotateJwt(request: FastifyRequest, reply: FastifyReply): void {
   const now = Math.floor(Date.now() / 1000);
   const expiresIn = config.oauth.jwtExpiresIn;
   const refreshWindow = Math.min(Math.floor(expiresIn * 0.15), 86400); // 15% of expiry, max 24h
-  const absoluteMax = Math.max(expiresIn * 4, 30 * 86400); // 4x expiry, min 30 days
-  const originalIat = (payload as any).originalIat || payload.iat;
+  const originalIat = payload.originalIat || payload.iat;
 
   // Force re-login if absolute max exceeded
-  if (now - originalIat > absoluteMax) return;
+  if (exceedsAbsoluteSessionLifetime(payload)) return;
 
   // Rotate if within refresh window
   const timeUntilExpiry = payload.exp - now;
@@ -165,6 +163,9 @@ async function authMiddleware(request: FastifyRequest, reply: FastifyReply): Pro
         message: 'Valid Authorization header required',
       });
     } else {
+      // Remember a dashboard deep link so the next login lands on it (spec §3.4-3).
+      const nextCookie = request.method === 'GET' ? loginReturnCookieFor(request.url) : undefined;
+      if (nextCookie) reply.header('Set-Cookie', nextCookie);
       reply.redirect('/login');
     }
     return;
@@ -302,6 +303,8 @@ export { requireWriteAccess };
 
 let server: FastifyInstance | null = null;
 let activePort: number | null = null;
+/** True only between a successful listen() and stop/failure — links handed to Slack must resolve. */
+let listening = false;
 let heartbeatHandle: NodeJS.Timeout | null = null;
 let heartbeatPort: number | null = null;
 
@@ -335,8 +338,8 @@ function getPort(): number {
  *   1. `config.conversation.viewerHost` when it's an externally meaningful
  *      bind address (not `127.0.0.1` / `localhost` / `0.0.0.0` which are
  *      bind-only tokens, not reachable hostnames).
- *   2. `os.hostname()` — the OS-reported short hostname (e.g. `oudwood-512`,
- *      `mac-mini-dev`), resolvable on the local network via DNS/mDNS.
+ *   2. `os.hostname()` — the OS-reported short hostname, resolvable on the
+ *      local network via DNS/mDNS.
  *   3. `localhost` as a last resort (matches prior behaviour for single-box
  *      dev where hostname resolution isn't available).
  */
@@ -368,11 +371,95 @@ export function getViewerBaseUrl(): string {
   return `http://${_resolveViewerHost()}:${port}`;
 }
 
+const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1']);
+
+interface HostPort {
+  hostname: string;
+  port: string;
+}
+
+/**
+ * Split a Host value (`name`, `name:port`, `[v6]`, `[v6]:port`) into a
+ * lowercased hostname and port. A bare IPv6 literal (`::1`) has no port.
+ */
+function splitHost(value: string): HostPort {
+  const host = value.trim().toLowerCase();
+  if (host.startsWith('[')) {
+    const end = host.indexOf(']');
+    if (end === -1) return { hostname: host, port: '' };
+    const rest = host.slice(end + 1);
+    return { hostname: host.slice(1, end), port: rest.startsWith(':') ? rest.slice(1) : '' };
+  }
+  const colon = host.indexOf(':');
+  if (colon === -1 || colon !== host.lastIndexOf(':')) return { hostname: host, port: '' };
+  return { hostname: host.slice(0, colon), port: host.slice(colon + 1) };
+}
+
+/**
+ * Redirect browsers that reach the viewer on a non-canonical origin to the
+ * https `viewerUrl`.
+ *
+ * Once `viewerUrl` is https every auth cookie carries `Secure` (oauth.ts), and
+ * a browser on plain `http://<host>:<port>` — the shape of links minted before
+ * `viewerUrl` was set — never stores it, so login from an old Slack link fails
+ * silently. Only GET/HEAD are redirected; loopback Hosts (health checks,
+ * in-process callers), `/health` and WebSocket upgrades are left alone, and
+ * nothing is installed unless `viewerUrl` is a valid https URL.
+ */
+function registerCanonicalOriginRedirect(instance: FastifyInstance): void {
+  let canonical: URL;
+  try {
+    canonical = new URL(config.conversation.viewerUrl || '');
+  } catch {
+    return;
+  }
+  if (canonical.protocol !== 'https:') return;
+
+  const origin = canonical.origin;
+  // URL.host omits the default port, and so do browsers in the Host header.
+  const target = splitHost(canonical.host);
+  const targetPort = target.port || '443';
+
+  instance.addHook('onRequest', async (request, reply) => {
+    if (request.method !== 'GET' && request.method !== 'HEAD') return;
+    // Origin-form only; anything else is not a path we can append to origin.
+    if (!request.url.startsWith('/')) return;
+    if (request.url.split('?')[0] === '/health') return;
+    const upgrade = request.headers.upgrade;
+    if (typeof upgrade === 'string' && upgrade.toLowerCase().includes('websocket')) return;
+    const hostHeader = request.headers.host;
+    if (!hostHeader) return;
+
+    const { hostname, port } = splitHost(hostHeader);
+    if (LOOPBACK_HOSTNAMES.has(hostname)) return;
+    if (hostname === target.hostname && (port || '443') === targetPort) return;
+
+    // 302, not 301: viewerUrl is ops config that may be rolled back, and browsers cache a 301 past that.
+    return reply.redirect(`${origin}${request.url}`, 302);
+  });
+  logger.info(`Canonical-origin redirect enabled: ${origin}`);
+}
+
 /**
  * Get the full URL for a specific conversation
+ * @public — consumed dynamically via `import * as conversation` + `(conversation as any).getConversationUrl` in src/slack/session-manager.ts; knip cannot see that.
  */
 export function getConversationUrl(conversationId: string): string {
   return `${getViewerBaseUrl()}/conversations/${conversationId}`;
+}
+
+/**
+ * Deep link to one session's card on the owner's dashboard
+ * (`/dashboard/<ownerId>?session=<sessionKey>`). Undefined unless the viewer is
+ * actually listening — a Slack thread must not carry a dead link when the
+ * viewer failed to start or has stopped — or when there is no owner or key.
+ * @public — injected once in src/index.ts (`setThreadHeaderProviders`).
+ */
+export function getDashboardSessionUrl(ownerId: string, sessionKey: string): string | undefined {
+  if (!listening || !ownerId || !sessionKey) return undefined;
+  const base = getViewerBaseUrl().replace(/\/+$/, '');
+  if (!base) return undefined;
+  return `${base}/dashboard/${encodeURIComponent(ownerId)}?session=${encodeURIComponent(sessionKey)}`;
 }
 
 /**
@@ -385,6 +472,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   }
 
   server = Fastify({ logger: false });
+
+  // Old `http://<host>:<port>` links → https viewerUrl, before any route runs.
+  registerCanonicalOriginRedirect(server);
 
   // Required for HTML form POSTs (e.g. the SSO session-switch interstitial
   // at `POST /auth/sso/confirm`, #704). Fastify does not parse
@@ -557,6 +647,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   // ---- Dashboard Routes ----
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
+  await registerWorkLogRoutes(server, authMiddleware);
 
   // Health check
   server.get('/health', async (_request, reply) => {
@@ -586,6 +677,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     try {
       await server.listen({ port, host });
       activePort = port;
+      listening = true;
       logger.info(`Conversation viewer started on ${host}:${port}`);
       logger.info(`View at: ${getViewerBaseUrl()}/conversations`);
       if (config.conversation.viewerToken) {
@@ -623,6 +715,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
       return;
     } catch (error) {
+      listening = false;
       if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE' && attempt < MAX_PORT_RETRIES - 1) {
         logger.warn(`Port ${port} in use, trying ${port + 1}...`);
         continue;
@@ -637,6 +730,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
  * Stop the web server
  */
 export async function stopWebServer(): Promise<void> {
+  // Stop handing out dashboard links before the listener goes away.
+  listening = false;
   if (server) {
     // Flush hook state before closing
     try {
@@ -676,6 +771,27 @@ export async function injectWebServer(request: InjectRequest): Promise<InjectRes
   }
 
   return server.inject(request);
+}
+
+/**
+ * Open an in-process WebSocket (for tests) through `@fastify/websocket`'s
+ * `injectWS`, so upgrade requests run the same route + auth preHandler as a
+ * real browser. `onInit` sees the socket before it opens — attach `message`
+ * listeners there to catch the initial frames.
+ */
+export async function injectWebServerWS(
+  path: string,
+  upgradeContext: { headers?: IncomingHttpHeaders } = {},
+  onInit?: (ws: WebSocket) => void,
+): Promise<WebSocket> {
+  if (!server) {
+    throw new Error('Conversation web server is not running');
+  }
+  // Decorated only when dashboard.ts managed to register @fastify/websocket.
+  if (typeof server.injectWS !== 'function') {
+    throw new Error('WebSocket support is not registered');
+  }
+  return server.injectWS(path, upgradeContext, onInit ? { onInit } : {});
 }
 
 /**

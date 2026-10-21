@@ -8,7 +8,7 @@ import type { AgentStreamEventOf } from './agent-stream-types';
 import type { AssistantStatusManager } from './assistant-status-manager';
 import type { McpHealthMonitor } from './mcp-health-monitor';
 import type { McpStatusDisplay } from './mcp-status-tracker';
-import { getToolResultRenderMode, LOG_DETAIL, OutputFlag, shouldOutput } from './output-flags';
+import { getToolResultRenderMode, OutputFlag, resolveVerbosityMask, shouldOutput } from './output-flags';
 import { AgentTaskLifecycleTracker, parseBackgroundLaunchId } from './pipeline/background-task-tracker';
 import type { ReactionManager } from './reaction-manager';
 import { extractTaskIdFromResult } from './stream-processor';
@@ -95,12 +95,6 @@ class BackgroundBashRegistry {
     this.map.delete(sessionKey);
     return entries;
   }
-
-  /** Non-destructive count of live entries for a session (still running at
-   *  turn end, before `drain()`). Used by the background-work resume guard. */
-  countFor(sessionKey: string): number {
-    return this.map.get(sessionKey)?.size ?? 0;
-  }
 }
 
 /**
@@ -157,14 +151,6 @@ class BackgroundTaskRegistry {
     return entries;
   }
 
-  /** Non-destructive subagent labels of live entries for a turn (still running
-   *  at turn end, before `drain()`). Used by the background-work resume guard. */
-  labelsFor(turnId: string): string[] {
-    const bucket = this.map.get(turnId);
-    if (!bucket) return [];
-    return Array.from(bucket.values()).map((e) => e.subagentLabel);
-  }
-
   /**
    * Spawn-ack detection runs before `context.turnId` is guaranteed; scan
    * every turn bucket for `toolUseId`. `toolUseId` is unique per stream
@@ -214,6 +200,13 @@ export interface ToolEventContext {
    * format (`${sessionKey}:${ms}:${uuid}`).
    */
   turnId?: string;
+  /**
+   * True once the session this context belongs to was deleted. Deletion
+   * drains the background-task tracker; a spawn-ack processed afterwards (a
+   * later result of the same batch, after an await) must not re-add under a
+   * key a new session in the thread reuses. Absent = never terminated.
+   */
+  isSessionTerminated?: () => boolean;
 }
 
 /**
@@ -398,7 +391,7 @@ export class ToolEventProcessor {
       paramsSummary: ToolFormatter.formatCompactParams(toolUse.input),
     };
 
-    if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
+    if (shouldOutput(OutputFlag.MCP_PROGRESS, resolveVerbosityMask(context.logVerbosity))) {
       this.mcpStatusDisplay.registerCall(context.sessionKey, callId, config, context.channel, context.threadTs);
     }
   }
@@ -451,7 +444,7 @@ export class ToolEventProcessor {
       paramsSummary: summary.promptPreview ? `(${ToolFormatter.truncateString(summary.promptPreview, 50)})` : '',
     };
 
-    if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
+    if (shouldOutput(OutputFlag.MCP_PROGRESS, resolveVerbosityMask(context.logVerbosity))) {
       this.mcpStatusDisplay.registerCall(context.sessionKey, callId, config, context.channel, context.threadTs);
     }
   }
@@ -490,7 +483,7 @@ export class ToolEventProcessor {
       paramsSummary: '',
     };
 
-    if (shouldOutput(OutputFlag.MCP_PROGRESS, context.logVerbosity ?? LOG_DETAIL)) {
+    if (shouldOutput(OutputFlag.MCP_PROGRESS, resolveVerbosityMask(context.logVerbosity))) {
       this.mcpStatusDisplay.registerCall(context.sessionKey, callId, config, context.channel, context.threadTs);
     }
   }
@@ -520,7 +513,7 @@ export class ToolEventProcessor {
         // adding it here too guarantees we never miss a launch even if a
         // `task_started` is ever dropped. Idempotent by task_id. Drained ONLY
         // by the authoritative `task_notification` (no consumer-tool polling).
-        if (context.sessionKey) {
+        if (context.sessionKey && !context.isSessionTerminated?.()) {
           const taskId = parseBackgroundLaunchId(toolResult.result);
           if (taskId) {
             this.backgroundTaskTracker.trackStart(context.sessionKey, taskId, {
@@ -709,7 +702,7 @@ export class ToolEventProcessor {
     context: ToolEventContext,
   ): Promise<void> {
     // In compact mode, results are handled via in-place updates — skip separate messages
-    const resultMode = getToolResultRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    const resultMode = getToolResultRenderMode(resolveVerbosityMask(context.logVerbosity));
     if (resultMode === 'compact' || resultMode === 'hidden') return;
 
     const result: ToolResult = {
@@ -814,7 +807,8 @@ export class ToolEventProcessor {
   }
 
   /**
-   * Drop all background-task tracking for a session. SESSION TEARDOWN ONLY.
+   * Drop all background-task tracking for a session. SESSION TEARDOWN ONLY —
+   * the host calls it from the session registry's before-delete seam.
    * NOTE: this is no longer called on resume-cap exhaustion — the cap is now a
    * NON-destructive suppression in StreamExecutor (it must not falsify the
    * authoritative live state). Draining authoritative state on cap would lie

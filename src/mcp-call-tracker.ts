@@ -104,13 +104,6 @@ export class McpCallTracker {
   }
 
   /**
-   * Get active call info
-   */
-  getActiveCall(callId: string): McpCallRecord | null {
-    return this.activeCalls.get(callId) || null;
-  }
-
-  /**
    * Get predicted duration for a tool based on historical data
    */
   getPredictedDuration(serverName: string, toolName: string): number | null {
@@ -130,13 +123,6 @@ export class McpCallTracker {
   getToolStats(serverName: string, toolName: string): McpCallStats | null {
     const key = this.getStatsKey(serverName, toolName);
     return this.stats.get(key) || null;
-  }
-
-  /**
-   * Get all stats
-   */
-  getAllStats(): McpCallStats[] {
-    return Array.from(this.stats.values());
   }
 
   /**

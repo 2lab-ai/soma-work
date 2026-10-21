@@ -3,9 +3,16 @@ import { installConsoleRedaction } from './logger';
 installConsoleRedaction();
 
 import './env-paths';
-import { registerMemoryStore, registerSkillStore } from 'somalib/model-commands/catalog';
+import {
+  registerHierarchicalMemoryStore,
+  registerMemoryStore,
+  registerSkillStore,
+} from 'somalib/model-commands/catalog';
+import { hierarchicalMemoryStore, setHierarchicalMemoryPromptInvalidationHook } from './hierarchical-memory';
+import { consolidateUserMemory } from './memory-auto-capture';
 import * as userMemoryStore from './user-memory-store';
-import { setSettingsPromptInvalidationHook } from './user-settings-store';
+import { setSettingsPromptInvalidationHook, userSettingsStore } from './user-settings-store';
+import { gatedManageSkillCopy } from './user-skill-copy-gate';
 import {
   createUserSkill,
   deleteUserSkill,
@@ -17,6 +24,7 @@ import {
 } from './user-skill-store';
 
 registerMemoryStore(userMemoryStore);
+registerHierarchicalMemoryStore(hierarchicalMemoryStore);
 registerSkillStore({
   listSkills: listUserSkills,
   createSkill: createUserSkill,
@@ -24,6 +32,9 @@ registerSkillStore({
   deleteSkill: deleteUserSkill,
   shareSkill: shareUserSkill,
   renameSkill: renameUserSkill,
+  // Copy is permission-gated (S1/S6/S8 + owner permission): A may only copy B's
+  // skill when B granted access — see `gatedManageSkillCopy`.
+  copySkill: (user, sourceUser, name, newName) => gatedManageSkillCopy(user, sourceUser, name, newName),
 });
 
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
@@ -31,6 +42,9 @@ import type { WebClient } from '@slack/web-api';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
+import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-process-registry';
+import { initAuthRuntimeDefault } from './auth/auth-runtime';
+import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
@@ -41,16 +55,21 @@ import {
   broadcastSessionUpdate,
   broadcastSummaryTitleChanged,
   broadcastTaskUpdate,
+  broadcastWorkLog,
+  getDashboardSessionUrl,
   initRecorder,
+  matchSlackUsersByEmail,
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
+  setDashboardGoalHandler,
   setDashboardMultiChoiceAnswerHandler,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
   setDashboardTaskAccessor,
   setDashboardTrashHandler,
+  setOAuthDirectoryLookup,
   setOAuthUserLookup,
   setOnSummaryGeneratedCallback,
   setOnTurnRecordedCallback,
@@ -58,14 +77,22 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
-import { CronScheduler, type SyntheticMessageEvent } from './cron-scheduler';
+import { slackDirectoryLookup } from './conversation/slack-directory-lookup';
+import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
+import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
+import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
+import { migrateAllUsersMinimalOnce } from './deploy/migrate-all-users-minimal-once';
+import { migrateAllUsersOpusOnce } from './deploy/migrate-all-users-opus-once';
+import { migrateCronOpusOnce } from './deploy/migrate-cron-opus-once';
+import { migrateThreadHeaderDashboardLinkOnce } from './deploy/migrate-threadheader-dashboard-link-once';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
+import { bootModelCatalog } from './model-catalog-boot';
 import {
   evaluateAndMaybeRotate,
   notifyAutoRotation,
@@ -78,8 +105,14 @@ import { acquirePidLock, releasePidLock } from './pid-lock';
 import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
+import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
 import { GoalLoopController } from './slack/goal-loop-controller';
+import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
+import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
+import { setUiSurfacesConfig } from './slack/surface-config';
+import { setThreadHeaderProviders } from './slack/thread-header-builder';
 import { SlackHandler } from './slack-handler';
+import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
 import { getTokenManager } from './token-manager';
@@ -107,6 +140,14 @@ async function start() {
     }
     timing('PID lock acquired');
 
+    // Only now. A readiness marker that outlived its daemon would have the
+    // service manager read a previous run's "I am connected" and call this boot
+    // green before it has done anything — but clearing it BEFORE the lock would
+    // be worse: a second startup that is about to lose the lock race would
+    // erase the RUNNING daemon's valid marker on its way out. Holding the lock
+    // is what makes a non-matching marker provably stale.
+    clearStaleDaemonReady(DATA_DIR);
+
     // #1003 — release the PID lock on EVERY exit path, not just SIGINT/SIGTERM.
     // The socket-watchdog trip (`process.exit(1)`), the preflight-failure exit,
     // and the uncaughtException/unhandledRejection crash handlers all bypass
@@ -117,6 +158,11 @@ async function start() {
     // synchronous — `releasePidLock` uses sync fs only, and only unlinks when
     // the lock file still holds THIS pid (safe no-op otherwise).
     process.on('exit', () => {
+      getClaudeChildProcessRegistry().killAllSync('SIGKILL');
+      // Same reasoning as the lock, and the same exit-path coverage: readiness
+      // is a claim about a LIVE socket, so it must not survive the process that
+      // made it. Synchronous and self-silencing, like `releasePidLock`.
+      clearDaemonReady(DATA_DIR);
       releasePidLock(DATA_DIR);
     });
 
@@ -128,16 +174,132 @@ async function start() {
     await tokenManager.init({ startReaper: true });
     timing('TokenManager initialized');
 
-    // One-shot force-migration: every existing user.defaultModel that isn't
-    // already `claude-opus-4-8[1m]` is rewritten to it. Gated by a dedicated
-    // marker in DATA_DIR so a re-deploy of the same host doesn't re-touch.
-    // MUST run before UserSettingsStore.load (further down) so the store
-    // sees the migrated file.
-    const opus1mResult = forceMigrateOpus1m({ dataDir: DATA_DIR });
+    // One-shot OPUS-FAMILY migration: user defaults on any `claude-opus-*`
+    // generation (bare or `[1m]`) are rewritten to `claude-opus-5-5[1m]`. Every
+    // other user is left untouched — the all-user rewrite this used to
+    // perform was retired on 2026-08-26. Gated by a TARGET-AWARE marker in
+    // DATA_DIR, so a host carrying the retired `gpt-5.6-sol` marker re-runs
+    // exactly once for the new target and then skips.
+    const opusDefaultMigration = forceMigrateOpus1m({ dataDir: DATA_DIR });
     logger.info(
-      `opus[1m] migration: ${opus1mResult.status} (migrated=${opus1mResult.migrated}/${opus1mResult.total}, marker=${opus1mResult.markerFile})`,
+      `opus default-model migration: ${opusDefaultMigration.status} (migrated=${opusDefaultMigration.migrated}/${opusDefaultMigration.total}, marker=${opusDefaultMigration.markerFile})`,
     );
-    timing('opus[1m] migration evaluated');
+    // The settings singleton loaded during MODULE IMPORT (see the static
+    // import above), i.e. before this migration ran, so it is holding the
+    // pre-migration defaults. Re-read the file the migration just wrote —
+    // otherwise this very process serves stale defaults until the next boot.
+    // Only when something was actually written: a `skipped` (or applied-but-
+    // zero) run leaves the file untouched, so a reload would be pure I/O.
+    if (opusDefaultMigration.status === 'applied' && opusDefaultMigration.migrated > 0) {
+      userSettingsStore.reloadSettings();
+      logger.info(`reloaded user settings after opus migration (migrated=${opusDefaultMigration.migrated})`);
+    }
+    timing('opus default-model migration evaluated');
+
+    // 2026-09-28 one-time ALL-USER rewrite: every user's default → the latest
+    // opus (`MODEL_ALIASES.opus`). Unlike the opus-family migration above,
+    // the marker is PRESENCE-only and written BEFORE the data, so this never
+    // runs twice on a host and a user who switches back afterwards keeps their
+    // choice. A throw before the marker (unreadable / mis-shaped file) wrote
+    // nothing and is retried next boot; a throw after it is a missed one-shot
+    // (logged below), never a replay. Either way it must not stop the boot.
+    // The singleton loaded at import time may be stale whenever the migration
+    // got past the marker check, so reload unless it was a clean skip —
+    // including after a throw.
+    let allUsersOpusStatus: 'skipped' | 'applied' | 'failed' = 'failed';
+    try {
+      const allUsersOpus = migrateAllUsersOpusOnce({ dataDir: DATA_DIR });
+      allUsersOpusStatus = allUsersOpus.status;
+      logger.info(
+        `all-users opus one-time migration: ${allUsersOpus.status} (target=${allUsersOpus.target}, migrated=${allUsersOpus.migrated}/${allUsersOpus.total}, marker=${allUsersOpus.markerFile})`,
+      );
+    } catch (error) {
+      logger.error('all-users opus one-time migration FAILED — check the marker before assuming a retry', error);
+    } finally {
+      if (allUsersOpusStatus !== 'skipped') {
+        try {
+          userSettingsStore.reloadSettings();
+          logger.info(`reloaded user settings after all-users opus migration (status=${allUsersOpusStatus})`);
+        } catch (error) {
+          logger.error('reloadSettings after all-users opus migration failed', error);
+        }
+      }
+    }
+    timing('all-users opus migration evaluated');
+
+    // 2026-10-16 one-time ALL-USER Slack verbosity rewrite (spec 10 §3.2-1):
+    // every user default → `minimal` and every persisted session mask in
+    // sessions.json → LOG_MINIMAL. Same presence-only, marker-first contract
+    // as the opus rewrite above. Runs BEFORE `slackHandler.loadSavedSessions()`
+    // further down, so the restored sessions read the rewritten masks. No
+    // second writer can race it: the O_EXCL pid lock `acquirePidLock(DATA_DIR)`
+    // (src/pid-lock.ts) is held from the top of start() above. Own try/catch;
+    // never blocks boot, and the settings singleton is reloaded unless it was
+    // a clean skip (including after a throw).
+    let allUsersMinimalStatus: 'skipped' | 'applied' | 'failed' = 'failed';
+    try {
+      const allUsersMinimal = migrateAllUsersMinimalOnce({ dataDir: DATA_DIR });
+      allUsersMinimalStatus = allUsersMinimal.status;
+      logger.info(
+        `all-users log-minimal one-time migration: ${allUsersMinimal.status} (migrated users ${allUsersMinimal.users.migrated}/${allUsersMinimal.users.total}, sessions ${allUsersMinimal.sessions.migrated}/${allUsersMinimal.sessions.total}, marker=${allUsersMinimal.markerFile})`,
+      );
+    } catch (error) {
+      logger.error('all-users log-minimal one-time migration FAILED — check the marker before assuming a retry', error);
+    } finally {
+      if (allUsersMinimalStatus !== 'skipped') {
+        try {
+          userSettingsStore.reloadSettings();
+          logger.info(`reloaded user settings after all-users log-minimal migration (status=${allUsersMinimalStatus})`);
+        } catch (error) {
+          logger.error('reloadSettings after all-users log-minimal migration failed', error);
+        }
+      }
+    }
+    timing('all-users log-minimal migration evaluated');
+
+    // 2026-09-28 one-time cron rewrite: every job's model → `{type:'opus'}`
+    // (resolved to the latest opus at fire time). Same presence-only,
+    // marker-first contract as above. Runs here — BEFORE `app.start()` — so no
+    // Slack event can have spawned a session whose cron MCP subprocess writes
+    // cron-jobs.json concurrently. Own try/catch: a failure never blocks boot.
+    try {
+      const cronOpus = migrateCronOpusOnce({ cronFile: path.join(DATA_DIR, 'cron-jobs.json'), dataDir: DATA_DIR });
+      logger.info(
+        `cron opus one-time migration: ${cronOpus.status} (migrated=${cronOpus.migrated}/${cronOpus.total}, marker=${cronOpus.markerFile})`,
+      );
+    } catch (error) {
+      logger.error('cron opus one-time migration FAILED — check the marker before assuming a retry', error);
+    }
+    timing('cron opus migration evaluated');
+
+    // 2026-10-16 one-time ADDITIVE config.json rewrite: every `ui.threadheader`
+    // lines array (base + each theme) that never mentions `dashboardLink` gets
+    // the 📋 작업 로그 field — seeded or edited copies alike, since a seeded
+    // config.json never sees new built-in defaults. Runs BEFORE loadConfig below
+    // so this boot already renders it; marker in DATA_DIR, so an operator who
+    // removes the link afterwards keeps it removed. The DATA_DIR PID lock
+    // (acquirePidLock above) only excludes a second daemon boot; other
+    // config.json writers (CLI setup, plugin saves) take no lock, so the
+    // migration writes compare-and-swap and reports `contended` if they keep
+    // changing the file. Non-fatal: a failure or contention writes no marker and
+    // is retried next boot.
+    try {
+      const headerLink = migrateThreadHeaderDashboardLinkOnce({ configFile: CONFIG_FILE, dataDir: DATA_DIR });
+      logger.info(
+        `threadheader dashboardLink one-time migration: ${headerLink.outcome} (arrays changed ${headerLink.arraysChanged}, config=${CONFIG_FILE}, marker=${headerLink.markerFile})`,
+      );
+    } catch (error) {
+      logger.warn(
+        `threadheader dashboardLink one-time migration: failed (non-fatal, retried next boot): ${(error as Error).message}`,
+      );
+    }
+    timing('threadheader dashboardLink migration evaluated');
+
+    // llmux-dependent boot steps (codex pin sync + model-catalog fetch) run
+    // AFTER initAuthRuntimeDefault below — gating them on the static
+    // `config.auth.mode` missed hosts that boot as ccp and only flip to
+    // llmux via the runtime reachability probe (work-m64 dev: no grok in the
+    // model list because the catalog was never fetched).
 
     // Run preflight checks
     const preflight = await runPreflightChecks();
@@ -188,9 +350,13 @@ async function start() {
       pingPongLoggingEnabled: true,
       logLevel: slackLogLevel,
     });
+    // `signingSecret` is spread in only when configured: Socket Mode verifies
+    // no request signature (that is an HTTP-receiver concern). Bolt would
+    // accept an explicit `undefined` identically — the spread keeps the option
+    // object canonical so nothing downstream reads a declared-but-empty key.
     const app = new App({
       token: config.slack.botToken,
-      signingSecret: config.slack.signingSecret,
+      ...signingSecretOption(config.slack.signingSecret),
       receiver: slackReceiver,
       logLevel: slackLogLevel,
     });
@@ -317,6 +483,22 @@ async function start() {
     const appConfig = loadConfig(CONFIG_FILE);
     timing('Config loaded');
 
+    // Install UI surface composition overrides (config.json#ui) — single
+    // injection point for @soma/slack/surface-config (thread header /
+    // turn-end card / dashboard card header). See docs/ui-surfaces.md and
+    // config.default.json for the schema + inspectable defaults.
+    const uiConfigResult = setUiSurfacesConfig(appConfig.ui);
+    for (const warning of uiConfigResult.warnings) {
+      logger.warn(`config.json#ui: ${warning}`);
+    }
+    if (appConfig.ui) {
+      timing(`UI surface config applied (${Object.keys(uiConfigResult.config).length} surfaces overridden)`);
+    }
+    // The one injection point for the dashboard deep link: the thread header
+    // `dashboardLink` field and the user-started thread link both resolve
+    // through it (undefined = viewer not listening = no link).
+    setThreadHeaderProviders({ getDashboardSessionUrl });
+
     // Install operator-controlled additional env (config.json#claude.env)
     // BEFORE any ClaudeHandler / SDK consumers are constructed, so every
     // subsequent buildQueryEnv() call across all 7 callsites in the repo
@@ -330,6 +512,46 @@ async function start() {
       // Keys-only — values are operator-supplied and may be secrets.
       timing(`claude.env applied (${claudeEnvKeys.length} vars): [${claudeEnvKeys.join(', ')}]`);
     }
+
+    // Resolve the runtime auth backend (#llmux runtime switch) BEFORE any
+    // dispatch: persisted data/auth-runtime.json > AUTH_MODE env > llmux
+    // boot probe (reachable -> llmux default; down -> legacy ccp). The mode
+    // stays runtime-mutable afterwards via the `auth` command / card.
+    const authState = await initAuthRuntimeDefault((baseUrl) => isLlmuxUp(baseUrl));
+    timing(
+      authState.mode === 'llmux'
+        ? `Auth runtime: llmux -> ${authState.llmux.baseUrl} (runtime-switchable via \`auth\`)`
+        : 'Auth runtime: ccp (legacy CCT slot leases; runtime-switchable via `auth`)',
+    );
+
+    // llmux-dependent boot steps — gated on the RUNTIME auth mode resolved
+    // above (NOT the static config.auth.mode, which is `ccp` on hosts that
+    // rely on the boot probe to default to llmux). Both are fail-soft.
+    if (authState.mode === 'llmux') {
+      // Align the local llmux codex pin with the gpt-5.6 default. gpt-* ids
+      // only ROUTE via llmux; the upstream slug is pinned in llmux's own
+      // config, which deploys never touch. A stale gpt-5.5 pin would serve a
+      // 272k-input model under soma-work's 372k window math.
+      const llmuxSync = await syncLlmuxCodexModel({ baseUrl: authState.llmux.baseUrl });
+      if (llmuxSync.status === 'failed') {
+        logger.warn(
+          `llmux codex pin sync FAILED (${llmuxSync.error}) — verify codex.default_model is ${GPT_5_6_UPSTREAM_SLUG} in the llmux config, or gpt-5.6 sessions will overrun the upstream window`,
+        );
+      } else {
+        logger.info(
+          `llmux codex pin sync: ${llmuxSync.status}${llmuxSync.before ? ` (before=${llmuxSync.before}${llmuxSync.after ? `, after=${llmuxSync.after}` : ''})` : ''}`,
+        );
+      }
+      timing('llmux codex pin sync evaluated');
+    }
+
+    // Fetch the llmux model catalog (GET /llmux/models) so catalog models
+    // (grok-4.5 et al) are selectable from the first turn. Always wires the
+    // fetcher (live runtime settings) so a later runtime switch to llmux
+    // can populate the catalog via TTL background refreshes; the boot fetch
+    // itself runs only in llmux mode. Fail-soft — boot never blocks.
+    await bootModelCatalog(authState.mode);
+    timing('llmux model catalog boot evaluated');
 
     // Initialize MCP manager from config.json#mcpServers.
     // Empty section ⇒ start with no remote MCP servers; default/internal
@@ -467,7 +689,14 @@ async function start() {
         registry.invalidateSystemPromptForUser(userId);
       };
       userMemoryStore.setMemoryPromptInvalidationHook(invalidate);
+      setHierarchicalMemoryPromptInvalidationHook(invalidate);
       setSettingsPromptInvalidationHook(invalidate);
+      // Auto-update memory on session sleep/expiry: run a best-effort LLM
+      // "dreaming" pass that promotes recent episodic observations into the
+      // owner's durable L1 memory. Fire-and-forget; never blocks cleanup.
+      registry.setOnSessionConsolidateHook((ownerId: string) => {
+        void consolidateUserMemory(ownerId);
+      });
       // Personal skills are injected into every system prompt by
       // `prompt-builder.ts`, so create/update/delete/rename mutations must
       // also drop cached snapshots for the affected user. (#774)
@@ -576,6 +805,12 @@ async function start() {
       logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
     });
 
+    // Connect dashboard: goal list on the work item (SSOT 2026-10-21 T3) —
+    // add / delete-current (promotes the next goal) / delete-queued.
+    setDashboardGoalHandler((sessionKey, action, actorUserId) =>
+      slackHandler.handleHostGoalAction(sessionKey, action, actorUserId),
+    );
+
     // Connect dashboard: choice answer handler (dashboard button click → same path as Slack button)
     setDashboardChoiceAnswerHandler(async (sessionKey: string, choiceId: string, label: string, question: string) => {
       try {
@@ -640,6 +875,25 @@ async function start() {
 
     // Connect dashboard: real-time conversation turn updates
     setOnTurnRecordedCallback(broadcastConversationUpdate);
+
+    // Connect dashboard: work log (spec §3.3). The stream executor emits every
+    // instruction / narration / tool step through `appendWorkLog`; each entry is
+    // persisted and pushed to the owner's and admins' dashboards.
+    // setStreamExecutorProviders merges, so this adds one field on top of the
+    // set wired in src/slack/pipeline/stream-executor.ts. The intersection type
+    // keeps it compiling whether or not StreamExecutorProviders declares
+    // `appendWorkLog` yet (both declare the same WorkLogInput shape).
+    // Fire-and-forget: the turn never waits on the disk; every failure is
+    // already logged inside work-log.ts.
+    setOnWorkLogAppendedCallback(broadcastWorkLog);
+    const workLogProviders: StreamExecutorProviders & {
+      appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
+    } = {
+      appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
+        appendWorkLog(conversationId, entry).catch(() => {});
+      },
+    };
+    setStreamExecutorProviders(workLogProviders);
 
     // Dashboard v2.1 — wire session title bridge so the recorder can
     // regenerate session summaryTitle without importing session-registry
@@ -735,16 +989,9 @@ async function start() {
     // Connect OAuth: email → Slack user lookup for dashboard login
     {
       const { userSettingsStore } = await import('./user-settings-store');
-      setOAuthUserLookup((email: string) => {
-        const allUsers = userSettingsStore.getAllUsers();
-        const emailLower = email.toLowerCase();
-        for (const u of allUsers) {
-          if (u.email && u.email.toLowerCase() === emailLower) {
-            return { userId: u.userId, name: u.slackName || u.userId };
-          }
-        }
-        return null;
-      });
+      setOAuthUserLookup((email: string) => matchSlackUsersByEmail(userSettingsStore.getAllUsers(), email));
+      // Google logins that no `/z email` matches fall back to the Slack account email.
+      setOAuthDirectoryLookup(slackDirectoryLookup((args) => app.client.users.lookupByEmail(args)));
     }
 
     // Start conversation viewer web server (includes dashboard)
@@ -758,6 +1005,19 @@ async function start() {
     // Start the app
     await app.start();
     timing('Slack socket connected');
+
+    // The socket is up: publish readiness for THIS instance. This is the only
+    // call site, and it is deliberately on the far side of `app.start()` —
+    // everything before this line is a process that exists, not a service that
+    // works, and the PID lock already covers the former.
+    //
+    // `publishDaemonReadiness` cannot throw: a marker write that fails (a
+    // symlinked `~/.local/share`, EROFS, ENOSPC) must not reach the outer
+    // `catch`, whose handler is `process.exit(1)` — under the plist's
+    // `KeepAlive` that would crashloop a bot that HAS connected. It also
+    // publishes nothing for a source-tree run, where `DATA_DIR` is a directory
+    // inside the operator's checkout.
+    publishDaemonReadiness({ dataDir: DATA_DIR, warn: (message) => logger.warn(message) });
 
     // Wire AFTER app.start() so boot-time reconnects don't count against
     // the storm threshold. exit(1) → supervisor (launchd/systemd) recycles.
@@ -869,6 +1129,8 @@ async function start() {
         threadReplier,
       });
       cronScheduler.start();
+      // Expose to the cron card's ▶ run-now action (real-fire path).
+      setActiveCronScheduler(cronScheduler);
       timing('Cron scheduler initialized');
     } catch (error) {
       logger.warn('Failed to start cron scheduler (non-critical)', error);
@@ -896,6 +1158,13 @@ async function start() {
       const goalSlackApi = slackHandler.getSlackApi();
       const postGoalNotice = (channel: string, threadTs: string | undefined, text: string): Promise<unknown> =>
         goalSlackApi.postSystemMessage(channel, text, { threadTs });
+
+      // S3: DM the goal owner a "keep going?" decision when the
+      // auto-continuation budget is exhausted (Continue/Cancel buttons).
+      const postGoalOwnerDm = async (userId: string, text: string, blocks: unknown[]): Promise<unknown> => {
+        const dmChannel = await goalSlackApi.openDmChannel(userId);
+        return goalSlackApi.postMessage(dmChannel, text, { blocks: blocks as any[] });
+      };
 
       // Synthetic-turn injector for goal continuations — same surface as
       // the cron-scheduler injection path (chat.postMessage say-builder →
@@ -932,6 +1201,7 @@ async function start() {
           claudeHandler.dispatchOneShot(userPrompt, systemPrompt, model, abortController, undefined, cwd, effort),
         injectContinuation: goalMessageInjector,
         postNotice: postGoalNotice,
+        postOwnerDm: postGoalOwnerDm,
         logger,
         fallbackModel: 'claude-sonnet-4-20250514',
         // S9: optional cheaper eval tier. Unset → eval matches the work model.
@@ -946,6 +1216,16 @@ async function start() {
       slackHandler.setGoalTurnSettledHandler((sessionKey: string) => {
         goalLoopController.onTurnSettled(sessionKey);
       });
+      // S1/S3: let goal action handlers (Delete-advance, owner-DM Continue)
+      // kick the loop without holding a direct controller reference.
+      setGoalLoopResumeHandler((sessionKey: string) => {
+        goalLoopController.onTurnSettled(sessionKey);
+      });
+      // SSOT 2026-10-21: the goal-list Delete button and the dashboard share
+      // ONE host path for goal-list changes (opening turn through the fence).
+      setHostGoalActionHandler((sessionKey, action, actorUserId) =>
+        slackHandler.handleHostGoalAction(sessionKey, action, actorUserId),
+      );
       timing('Goal turn-settled driver installed');
     } catch (error) {
       logger.warn('Failed to install goal turn-settled driver (non-critical)', error);
@@ -957,6 +1237,17 @@ async function start() {
       .then((notified) => {
         if (notified > 0) {
           timing(`Crash recovery notifications sent (${notified} sessions)`);
+        }
+        // T1 — after the restart notices are posted, re-enter the goal loop
+        // for any session that still has an unfinished (active) goal so it is
+        // driven to completion across the restart. Runs after the goal loop
+        // controller is wired above and after crash-recovery's no-double-resume
+        // guard has skipped these sessions.
+        try {
+          const resumed = slackHandler.resumeActiveGoals();
+          if (resumed > 0) timing(`Resumed ${resumed} active goal(s) after restart`);
+        } catch (error) {
+          logger.warn('Resuming active goals after restart failed (non-critical)', error);
         }
       })
       .catch((error) => {
@@ -1001,8 +1292,49 @@ async function start() {
 
       logger.info('Shutting down gracefully...');
 
+      // Stop accepting work and abort every active Agent SDK query before
+      // notifying/saving sessions. The SDK child registry below then owns the
+      // bounded TERM→KILL drain before process.exit.
+      //
+      // U8: `clearAll()` is fail-closed — it asks the host to record the stop
+      // (durable follow-up-queue freeze) BEFORE aborting, and throws when that
+      // write refuses, leaving that session's query LIVE and its controller
+      // registered. Two outcomes, and the second one must NOT fall through:
+      // continuing would reach the child drain / crash-handler `killAllSync`
+      // and SIGKILL a query the queue still believes is running — the exact
+      // silent damage the freeze seam exists to prevent. So a refusal stops
+      // the attempt here, before anything is torn down, and re-arms the guard
+      // so a later SIGTERM can retry once the queue store recovers. Staying up
+      // and saying why beats a half-shutdown that kills live work.
       try {
-        // Stop report scheduler
+        // Idle sessions — queued items, nobody running — have no controller,
+        // so `clearAll()` never visits them and their `beforeAbort` observer
+        // never fires. `prepareFollowupShutdown()` walks those through the same
+        // single freeze owner and closes admission so nothing new is parked
+        // into a queue we are freezing. It throws on a store failure, which is
+        // why it belongs INSIDE this try, immediately before the sweep.
+        slackHandler.prepareFollowupShutdown();
+        slackHandler.getRequestCoordinator().clearAll();
+      } catch (error) {
+        // `prepare` may have SUCCEEDED and `clearAll` refused afterwards, in
+        // which case admission is still closed. Re-open it before re-arming
+        // the shutdown guard: a bot that stays up but silently refuses every
+        // message is a worse outage than the shutdown we just declined.
+        slackHandler.cancelFollowupShutdownPreparation();
+        // Wording matters operationally: `clearAll()` aborts session-by-session,
+        // so a refusal partway through leaves a MIX — earlier sessions already
+        // stopped, the refused one (and any after it) still live. Claiming
+        // "nothing was torn down" would send the operator looking for work that
+        // is already gone.
+        logger.error(
+          'Shutdown stopped: follow-up queue freeze refused. Sessions whose freeze refused are still live; queries aborted before the refusal have already stopped. No subsequent teardown ran — retry the shutdown signal after the queue store recovers.',
+          error,
+        );
+        isShuttingDown = false;
+        return;
+      }
+
+      try {
         stopReportScheduler();
 
         // Stop cron scheduler
@@ -1064,7 +1396,35 @@ async function start() {
         logger.error('Error stopping conversation viewer:', error);
       }
 
-      // Release PID lock last — after all connections are torn down
+      // Land queued work-log lines before exit; bounded so a stuck disk cannot
+      // hold the shutdown.
+      {
+        let flushTimer: NodeJS.Timeout | undefined;
+        const flushed = await Promise.race([
+          flushWorkLog().then(() => true),
+          new Promise<false>((resolve) => {
+            flushTimer = setTimeout(() => resolve(false), 2000);
+          }),
+        ]);
+        clearTimeout(flushTimer);
+        if (!flushed) logger.warn('Work log flush timed out during shutdown');
+      }
+
+      // SDK transport.close() escalates with timers, but timers cannot run after
+      // process.exit(). Drain host-tracked Claude children first. A surviving
+      // child is a failed shutdown: log it explicitly and exit non-zero instead
+      // of relying on an unhandled rejection to reach the crash handler.
+      try {
+        await getClaudeChildProcessRegistry().drain();
+      } catch (error) {
+        logger.error('Claude child cleanup failed during shutdown:', error);
+        clearDaemonReady(DATA_DIR);
+        releasePidLock(DATA_DIR);
+        process.exit(1);
+      }
+
+      // Release PID lock last — after all connections and children are torn down
+      clearDaemonReady(DATA_DIR);
       releasePidLock(DATA_DIR);
 
       process.exit(0);
@@ -1085,6 +1445,7 @@ async function start() {
       } catch (saveError) {
         console.error('CRASH: failed to save sessions', saveError);
       }
+      getClaudeChildProcessRegistry().killAllSync('SIGKILL');
       process.exit(1);
     });
 
@@ -1097,6 +1458,7 @@ async function start() {
       } catch (saveError) {
         console.error('CRASH: failed to save sessions', saveError);
       }
+      getClaudeChildProcessRegistry().killAllSync('SIGKILL');
       process.exit(1);
     });
 

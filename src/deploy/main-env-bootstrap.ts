@@ -4,18 +4,23 @@ import path from 'path';
 const DEFAULT_DEV_SOURCE_DIR = '/opt/soma-work/dev';
 const DEFAULT_LEGACY_ROOT_DIR = '/Users/dd/app.claude-code-slack-bot';
 const MARKER_FILE_NAME = '.main-bootstrap.json';
-// Mirrors user-settings-store.DEFAULT_MODEL — the resolved `opus[1m]` alias.
-// Bootstrap is import-lean (runs before the main process and must not pull in
-// the settings store), so the literal is duplicated here. Drift is caught by
-// `VALID_MODELS + DEFAULT_MODEL stay in sync` in main-env-bootstrap.test.ts.
-const DEFAULT_MODEL = 'claude-opus-4-8[1m]';
+// Mirrors user-settings-store.DEFAULT_MODEL — the resolved `gpt` alias
+// (gpt-5.6-sol since 2026-07-10). Bootstrap is import-lean (runs before the main
+// process and must not pull in the settings store), so the literal is
+// duplicated here. Drift is caught by `VALID_MODELS + DEFAULT_MODEL stay in
+// sync` in main-env-bootstrap.test.ts.
+const DEFAULT_MODEL = 'gpt-5.6-sol';
 
 // Duplicated from user-settings-store.AVAILABLE_MODELS because bootstrap is
 // import-lean (it runs before the main process and must not pull in the
 // settings store). Drift is guarded by an exact-set equality test in
 // main-env-bootstrap.test.ts — that test imports AVAILABLE_MODELS directly.
 const VALID_MODELS = new Set([
+  'claude-fable-5-1',
+  'claude-fable-5-1[1m]',
   'claude-fable-5',
+  'claude-opus-5-5',
+  'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
@@ -23,24 +28,80 @@ const VALID_MODELS = new Set([
   'claude-sonnet-4-5-20250929',
   'claude-opus-4-5-20251101',
   'claude-haiku-4-5-20251001',
+  'claude-fable-5[1m]',
+  'claude-opus-5-5[1m]',
+  'claude-opus-5[1m]',
   'claude-opus-4-8[1m]',
   'claude-opus-4-7[1m]',
   'claude-opus-4-6[1m]',
+  'gpt-5.5',
+  'gpt-5.6-sol',
+  'gpt-5.6-sol[1m]',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-6-astra',
+  'gpt-6-astra[1m]',
+  'grok-4.6',
 ]);
 
 /** Exposed for drift tests only — asserts exact-set equality with AVAILABLE_MODELS. */
 export const __TEST_ONLY_VALID_MODELS: ReadonlySet<string> = VALID_MODELS;
 
 /**
+ * Read the llmux model-catalog snapshot ids from `${dataDir}/model-catalog.json`
+ * (written by `src/model-catalog.ts`). Fail-soft: any fs/parse problem →
+ * empty set (static VALID_MODELS behavior). Import-lean by design — the
+ * bootstrap must not pull in the runtime catalog module.
+ */
+function readCatalogSnapshotIds(dataDir: string | undefined): Set<string> {
+  const ids = new Set<string>();
+  if (!dataDir) return ids;
+  const file = path.join(dataDir, 'model-catalog.json');
+  // Mirror modelCatalog.loadSnapshotSync: try the live snapshot, then the
+  // `.bak` kept by the atomic writer — a corrupt live file must not coerce
+  // persisted catalog models (e.g. grok-4.5) down to DEFAULT_MODEL when the
+  // backup still knows them.
+  for (const candidate of [file, `${file}.bak`]) {
+    try {
+      const raw = fs.readFileSync(candidate, 'utf8');
+      const parsed = JSON.parse(raw) as { models?: Array<{ id?: unknown }> };
+      if (!Array.isArray(parsed?.models)) continue;
+      for (const entry of parsed.models) {
+        if (entry && typeof entry.id === 'string' && entry.id.trim().length > 0) {
+          const id = entry.id.trim().toLowerCase();
+          // Keep the runtime store's refusal contract import-lean: llmux's
+          // grok provider forwards `grok-*` ids verbatim, so a fake `[1m]`
+          // spelling must never survive deploy-time normalization even if a
+          // stale or malformed catalog snapshot advertises it. Fable `[1m]`
+          // remains a valid first-class id.
+          if (/^grok-.*\[1m\]$/i.test(id)) continue;
+          ids.add(id);
+        }
+      }
+      return ids;
+    } catch {
+      // fail-soft: missing/corrupt candidate → try the next one
+    }
+  }
+  return ids;
+}
+
+/**
  * Coerce persisted model strings to a VALID_MODELS entry, falling back to
  * DEFAULT_MODEL. Trims + lowercases so hand-edited JSON with stray whitespace
  * or `[1M]` uppercase round-trips cleanly.
+ *
+ * When `dataDir` is given, ids present in the llmux model-catalog snapshot
+ * (`${dataDir}/model-catalog.json`, e.g. `grok-4.5`) are also preserved —
+ * mirroring user-settings-store's catalog-aware `coerceToAvailableModel`.
  */
-function coerceModel(raw: unknown): string {
+function coerceModel(raw: unknown, dataDir?: string): string {
   if (typeof raw !== 'string') return DEFAULT_MODEL;
   const normalized = raw.trim().toLowerCase();
   if (normalized.length === 0) return DEFAULT_MODEL;
-  return VALID_MODELS.has(normalized) ? normalized : DEFAULT_MODEL;
+  if (VALID_MODELS.has(normalized)) return normalized;
+  if (readCatalogSnapshotIds(dataDir).has(normalized)) return normalized;
+  return DEFAULT_MODEL;
 }
 
 /** Exposed for tests. */
@@ -159,7 +220,7 @@ export async function normalizeMainTargetData(targetDir: string): Promise<void> 
     for (const userSettings of Object.values(settings)) {
       // Coerce to VALID_MODELS. Known-legacy ids (sonnet-4-6, opus-4-5-20251101, etc.)
       // pass through; only unknown/missing values fall back to DEFAULT_MODEL.
-      userSettings.defaultModel = coerceModel(userSettings.defaultModel);
+      userSettings.defaultModel = coerceModel(userSettings.defaultModel, dataDir);
       if (userSettings.accepted === undefined) {
         userSettings.accepted = true;
       }
@@ -185,7 +246,7 @@ export async function normalizeMainTargetData(targetDir: string): Promise<void> 
       // stale model id that was valid at some point but is no longer in
       // VALID_MODELS. Missing/non-string fields are left untouched.
       if (typeof session.model === 'string') {
-        session.model = coerceModel(session.model);
+        session.model = coerceModel(session.model, dataDir);
       }
     }
 

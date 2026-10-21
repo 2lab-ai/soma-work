@@ -77,7 +77,16 @@ function updateSessionUsage(
   }
 
   // CURRENT values: prefer per-turn (actual context state) over aggregate (billing)
-  const hasPerTurn = usageData.lastTurnInputTokens !== undefined;
+  // Mirrors `selectCurrentContextTokens` (@soma/slack/session-usage-math):
+  // per-turn wins only when present AND non-zero — llmux/codex assistant
+  // messages carry all-zero usage, which must fall back to the aggregate
+  // instead of blanking the context display.
+  const perTurnSum =
+    (usageData.lastTurnInputTokens ?? 0) +
+    (usageData.lastTurnOutputTokens ?? 0) +
+    (usageData.lastTurnCacheReadTokens ?? 0) +
+    (usageData.lastTurnCacheCreateTokens ?? 0);
+  const hasPerTurn = usageData.lastTurnInputTokens !== undefined && perTurnSum > 0;
   session.usage.currentInputTokens = hasPerTurn ? usageData.lastTurnInputTokens! : usageData.inputTokens;
   session.usage.currentOutputTokens = hasPerTurn ? usageData.lastTurnOutputTokens! : usageData.outputTokens;
   session.usage.currentCacheReadTokens = hasPerTurn
@@ -97,6 +106,38 @@ function updateSessionUsage(
 }
 
 describe('Session Usage Tracking', () => {
+  /**
+   * PROOF: llmux/codex all-zero per-turn usage must not blank the context.
+   *
+   * Observed in dev logs (2026-07-13): gpt-5.6 sessions logged
+   * `usageSource: "per-turn"` with `currentContext: 0` — the codex backend
+   * attaches all-zero usage to assistant messages, and treating "defined"
+   * as "valid" overwrote the real context state with zeros. `/context` then
+   * showed `0/372k (100% available)` and the fixed-token auto-compact
+   * trigger never fired.
+   */
+  it('should FALL BACK to aggregates when per-turn fields are defined but all-zero (llmux/codex)', () => {
+    const session: { usage?: SessionUsage; model?: string } = { model: 'gpt-5.6-sol' };
+
+    updateSessionUsage(session, {
+      inputTokens: 133_300,
+      outputTokens: 381,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalCostUsd: 2.6688,
+      lastTurnInputTokens: 0,
+      lastTurnOutputTokens: 0,
+      lastTurnCacheReadTokens: 0,
+      lastTurnCacheCreateTokens: 0,
+    });
+
+    // Current context reflects the aggregate, NOT zeros.
+    expect(session.usage!.currentInputTokens).toBe(133_300);
+    expect(session.usage!.currentOutputTokens).toBe(381);
+    // gpt-5.6 window from model lookup.
+    expect(session.usage!.contextWindow).toBe(372_000);
+  });
+
   /**
    * PROOF: Multi-turn conversation context tracking
    */

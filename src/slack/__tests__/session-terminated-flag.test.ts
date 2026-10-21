@@ -36,9 +36,10 @@ describe('session.terminated Flag (Ghost Session Fix #99)', () => {
     // Inject session directly into the registry's internal Map
     // We access the private sessions Map via any cast
     const sessionsMap = (registry as any).sessions as Map<string, any>;
-    sessionsMap.set('C1-171.100', session);
+    sessionsMap.set('work:C1:171.100', session);
 
-    // Terminate the session
+    // Terminate via the LEGACY key form — also pins Step 4d's
+    // normalization path (pre-deploy Slack buttons carry old keys).
     registry.terminateSession('C1-171.100');
 
     // After termination, the session object (held by in-flight code) should have terminated=true
