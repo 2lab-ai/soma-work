@@ -117,6 +117,14 @@ describe('login page', () => {
       expect(html).not.toContain('href="/auth/logout"');
     });
 
+    it('a malformed cookie is no session — the page still renders', async () => {
+      mockConfig.oauth.google = { clientId: 'gid', clientSecret: 'gsecret' };
+      const res = await getLogin('soma_dash_token=%E0%A4%A');
+      expect(res.statusCode).toBe(200);
+      expect(markup(res.body)).toContain('Sign in with Google');
+      expect(markup(res.body)).not.toContain('Signed in as');
+    });
+
     it('a cookie signed with another secret is not a session', async () => {
       mockConfig.oauth.google = { clientId: 'gid', clientSecret: 'gsecret' };
       const res = await getLogin(
@@ -213,6 +221,19 @@ describe('login page', () => {
       expect(res.headers.location).toBe('/login');
       expect(String(res.headers['set-cookie'])).toMatch(/soma_dash_token=;.*Max-Age=0/);
     });
+
+    it('sign out also forgets a remembered deep link, so the next account does not inherit it', async () => {
+      await web.startWebServer({ listen: false });
+      const res = await web.injectWebServer({
+        method: 'GET',
+        url: '/auth/logout',
+        headers: { cookie: `soma_next=${encodeURIComponent('/dashboard/U_PREV?session=C1%3A1')}` },
+      });
+      const raw = res.headers['set-cookie'];
+      const cookies = raw === undefined ? [] : Array.isArray(raw) ? raw.map(String) : [String(raw)];
+      expect(cookies.find((c) => c.startsWith('soma_next='))).toMatch(/^soma_next=;.*Max-Age=0/);
+      expect(cookies.find((c) => c.startsWith('soma_dash_token='))).toMatch(/Max-Age=0/);
+    });
   });
 });
 
@@ -224,5 +245,7 @@ describe('dashboard account pill (T1 entry point)', () => {
     expect(pill).toContain('href="/login"');
     expect(DASHBOARD_TS).not.toContain('title="Click to logout"');
     expect(DASHBOARD_TS).not.toContain("location.href = '/auth/logout'");
+    // A link is always clickable — no click-gating attribute left behind.
+    expect(DASHBOARD_TS).not.toContain('data-clickable');
   });
 });

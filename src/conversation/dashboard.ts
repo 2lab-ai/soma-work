@@ -2029,7 +2029,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   font-weight: 600;
   line-height: 1;
   min-height: 32px;
-  cursor: default;
+  cursor: pointer;
+  transition: border-color var(--speed) var(--ease);
   white-space: nowrap;
   max-width: 260px;
   min-width: 0;
@@ -2048,8 +2049,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   display: inline-block;
 }
 .topbar .user-pill.is-admin b::before { content: '★ '; color: var(--accent); }
-.topbar .user-pill[data-clickable="true"] { cursor: pointer; transition: border-color var(--speed) var(--ease); }
-.topbar .user-pill[data-clickable="true"]:hover { border-color: var(--accent); color: var(--text); }
+.topbar .user-pill:hover { border-color: var(--accent); color: var(--text); }
 .topbar .user-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 
 /* ── ADMIN MODE TOGGLE — visible only for ADMIN_USERS (#716) ── */
@@ -3440,7 +3440,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         id="user-pill"
         href="/login"
         title="Account — switch account or sign out"
-        data-clickable="false"
       ><span class="user-pill-prefix">Logged in as </span><b id="user-pill-name">…</b></a>
       <button id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
     </div>
@@ -3851,14 +3850,12 @@ function _applyUserPill(data) {
   }
   if (!label) {
     pill.style.display = 'none';
-    pill.setAttribute('data-clickable', 'false');
     return;
   }
   nameEl.textContent = label;
   nameEl.title = label; // the name may end in an ellipsis
   pill.style.display = 'inline-flex';
   pill.classList.toggle('is-admin', isAdmin);
-  pill.setAttribute('data-clickable', 'true');
 
   // #716: admin-mode toggle visibility. Only ADMIN_USERS members see
   // the button; clicking it stores soma_admin_mode in localStorage and
