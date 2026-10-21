@@ -14,7 +14,7 @@
  *     with a background reaper sweeping expired leases.
  *   - Refresh OAuth credentials proactively (7 h before expiry) with
  *     in-process `Map<keyId, Promise<string>>` dedupe and cross-process
- *     serialisation via `store.withLock`.
+ *     serialisation via the store's CAS writes (`store.mutate`).
  *   - Fetch and persist usage snapshots with 429 backoff, 401-then-refresh
  *     retry, and 403 → authState=revoked transitions.
  *
@@ -28,8 +28,8 @@
  *     `kind === 'cct'` + `source === 'setup' | 'legacy-attachment'`.
  *
  * Lock ordering (STRICT):
- *   The ONLY cross-process lock is `cct-store.lock`, obtained via
- *   `CctStore.withLock(fn)` or `CctStore.save(...)`. Refresh-token and
+ *   The ONLY cross-process lock is `cct-store.lock`, obtained inside
+ *   `CctStore.save(...)` (and so `CctStore.mutate(...)`). Refresh-token and
  *   usage-cache serialisation is achieved by the combination of in-process
  *   dedupe maps (`Map<keyId, Promise>`) and the single store lock — we
  *   deliberately avoid a second lockfile to keep the lock ordering trivial:
@@ -397,9 +397,13 @@ export class TokenManager {
    */
   private readonly refreshInFlight: Map<string, Promise<string>> = new Map();
   /**
-   * Per-keyId dedupe for `fetchAndStoreUsage`. Mirrors the `refreshInFlight`
-   * pattern so multiple `fetchUsageForAllAttached` fan-outs racing on the
-   * same slot hit the upstream usage endpoint once. Cleanup in `finally`.
+   * Per-generation dedupe for `fetchAndStoreUsage`, keyed
+   * `${keyId}:${attachedAt ?? "legacy"}` like `refreshInFlight`, so multiple
+   * `fetchUsageForAllAttached` fan-outs racing on the same slot hit the
+   * upstream usage endpoint once per attachment generation. A re-attached
+   * slot gets its own bucket: sharing the old generation's fetch would have
+   * its write dropped by the generation guard, leaving the fresh attachment
+   * with no usage. Cleanup in `finally`.
    */
   private readonly usageFetchInFlight: Map<string, Promise<UsageSnapshot | null>> = new Map();
   private reaperTimer: NodeJS.Timeout | null = null;
@@ -880,17 +884,6 @@ export class TokenManager {
       }
       if (cooldownUntil !== undefined) state.cooldownUntil = cooldownUntil;
       snap.state[keyId] = state;
-    });
-    await this.refreshCache();
-  }
-
-  async clearRateLimitFlag(keyId: string): Promise<void> {
-    await this.store.mutate((snap) => {
-      const state = snap.state[keyId];
-      if (!state) return;
-      delete state.rateLimitedAt;
-      delete state.rateLimitSource;
-      delete state.cooldownUntil;
     });
     await this.refreshCache();
   }
@@ -1870,25 +1863,13 @@ export class TokenManager {
    * standard backoff ladder — `force` only skips the LOCAL gate. The
    * Slack "Refresh" button + `/cct refresh` admin command set this.
    *
-   * The per-keyId in-flight dedupe is ALWAYS on. If a force-fetch is
+   * The per-generation in-flight dedupe is ALWAYS on. If a force-fetch is
    * requested while a non-force fetch is already pending for the same
-   * keyId, we reuse the pending Promise — another round-trip would
-   * race against persistence and is not what the caller wants.
+   * keyId and attachment generation, we reuse the pending Promise — another
+   * round-trip would race against persistence and is not what the caller
+   * wants. A caller on a newer generation never joins an older one's fetch.
    */
   async fetchAndStoreUsage(keyId: string, opts: { force?: boolean } = {}): Promise<UsageSnapshot | null> {
-    // Z1 — Per-keyId in-flight dedupe: if another `fetchUsageForAllAttached`
-    // fan-out or a parallel caller is already fetching for this keyId,
-    // reuse that Promise to avoid hammering the usage endpoint.
-    const existing = this.usageFetchInFlight.get(keyId);
-    if (existing) return existing;
-    const promise = this.#doFetchAndStoreUsage(keyId, opts).finally(() => {
-      this.usageFetchInFlight.delete(keyId);
-    });
-    this.usageFetchInFlight.set(keyId, promise);
-    return promise;
-  }
-
-  async #doFetchAndStoreUsage(keyId: string, opts: { force?: boolean } = {}): Promise<UsageSnapshot | null> {
     const snap = await this.store.load();
     const slot = snap.registry.slots.find((s) => s.keyId === keyId);
     if (!slot || !hasOAuthAttachment(slot)) return null;
@@ -1897,7 +1878,28 @@ export class TokenManager {
     // land before persist, the fingerprint differs and the write is dropped.
     // `undefined` is a valid (pre-Z2) generation and compares strictly.
     const preAttachedAt: number | undefined = slot.oauthAttachment.attachedAt;
-    const state = snap.state[keyId];
+    // Z1 — in-flight dedupe per keyId and attachment generation: if another
+    // `fetchUsageForAllAttached` fan-out or a parallel caller is already
+    // fetching for this generation, reuse that Promise to avoid hammering the
+    // usage endpoint. The key is built from the same snapshot that hands
+    // `preAttachedAt` to the persist guard, so the bucket and the guard always
+    // agree on the generation.
+    const dedupeKey = `${keyId}:${preAttachedAt ?? 'legacy'}`;
+    const existing = this.usageFetchInFlight.get(dedupeKey);
+    if (existing) return existing;
+    const promise = this.#doFetchAndStoreUsage(keyId, preAttachedAt, snap.state[keyId], opts).finally(() => {
+      if (this.usageFetchInFlight.get(dedupeKey) === promise) this.usageFetchInFlight.delete(dedupeKey);
+    });
+    this.usageFetchInFlight.set(dedupeKey, promise);
+    return promise;
+  }
+
+  async #doFetchAndStoreUsage(
+    keyId: string,
+    preAttachedAt: number | undefined,
+    state: SlotState | undefined,
+    opts: { force?: boolean },
+  ): Promise<UsageSnapshot | null> {
     const nowMs = Date.now();
     // PR#1 M1-S4: `force` bypasses the local throttle but NOT any server-side
     // backoff — a 429 response still advances `nextUsageFetchAllowedAt` via
@@ -2045,7 +2047,7 @@ export class TokenManager {
    * whatever results have landed so far — the card renderer will fall
    * back to cached percentages (or blank) for the laggards.
    *
-   * Concurrency: per-keyId dedupe via `usageFetchInFlight` prevents the
+   * Concurrency: per-generation dedupe via `usageFetchInFlight` prevents the
    * same slot being hit by multiple fan-outs (e.g. a /cct open racing a
    * backend refresh). Slots without an oauthAttachment (bare setup
    * tokens, api_key slots, fresh slots) are skipped.
@@ -2058,12 +2060,13 @@ export class TokenManager {
     const results: Record<string, UsageSnapshot | null> = {};
     const promises = keyIds.map(async (keyId) => {
       try {
-        // `force` is deliberately dropped — per-keyId in-flight dedupe
-        // shares any overlapping tick, and bypassing every slot's
-        // `nextUsageFetchAllowedAt` gate would defeat the local throttle
-        // that protects Anthropic from refresh storms. The card-level
-        // [Refresh] button (actions.ts `cct_refresh_card`) fans out with
-        // `{ force: true }` per-slot for human-initiated refreshes.
+        // `force` is deliberately dropped — the in-flight dedupe (per keyId
+        // and attachment generation) shares any overlapping tick, and
+        // bypassing every slot's `nextUsageFetchAllowedAt` gate would defeat
+        // the local throttle that protects Anthropic from refresh storms.
+        // The card-level [Refresh] button (actions.ts `cct_refresh_card`)
+        // fans out with `{ force: true }` per-slot for human-initiated
+        // refreshes.
         results[keyId] = await this.fetchAndStoreUsage(keyId, {});
       } catch {
         results[keyId] = null;
@@ -2108,12 +2111,4 @@ export function getTokenManager(): TokenManager {
     singleton = new TokenManager(new CctStore(storePath));
   }
   return singleton;
-}
-
-/**
- * Reset the singleton (test-only).
- */
-function __resetTokenManagerSingleton(): void {
-  if (singleton) singleton.stop();
-  singleton = null;
 }

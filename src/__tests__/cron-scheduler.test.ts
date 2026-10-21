@@ -16,6 +16,7 @@ import {
 } from '../cron-scheduler';
 import { SessionRegistry } from '../session-registry';
 import { ConversationSession } from '../types';
+import { MODEL_ALIASES } from '../user-settings-store';
 
 function createTestJob(overrides: Partial<CronJob> = {}): CronJob {
   return {
@@ -233,7 +234,7 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
     // Should NOT inject immediately
     expect(injectedMessages).toHaveLength(0);
     // Should be in pending queue
-    expect(scheduler.getPendingQueueSize('C456-thread-1')).toBe(1);
+    expect(scheduler.getPendingQueueSize('work:C456:thread-1')).toBe(1);
   });
 
   // Trace: S5, Section 3b-3d — Happy Path
@@ -299,7 +300,7 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
     await scheduler.tick();
 
     // Both jobs queued
-    expect(scheduler.getPendingQueueSize('C456-thread-1')).toBe(2);
+    expect(scheduler.getPendingQueueSize('work:C456:thread-1')).toBe(2);
 
     // First idle → drains one job
     deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
@@ -332,11 +333,11 @@ describe('CronScheduler — Busy Queue + Idle Drain', () => {
 
     const scheduler = new CronScheduler(deps);
     await scheduler.tick();
-    expect(scheduler.getPendingQueueSize('C456-thread-1')).toBe(1);
+    expect(scheduler.getPendingQueueSize('work:C456:thread-1')).toBe(1);
 
     // Simulate session cleanup
-    scheduler.clearPendingQueue('C456-thread-1');
-    expect(scheduler.getPendingQueueSize('C456-thread-1')).toBe(0);
+    scheduler.clearPendingQueue('work:C456:thread-1');
+    expect(scheduler.getPendingQueueSize('work:C456:thread-1')).toBe(0);
   });
 });
 
@@ -732,6 +733,37 @@ describe('CronScheduler — Model Override', () => {
     expect(injectedMessages[0].modelOverride).toBe('claude-sonnet-4-20250514');
   });
 
+  it('opus / fable alias types resolve to the latest MODEL_ALIASES target at fire time', async () => {
+    for (const [type, expected] of [
+      ['opus', MODEL_ALIASES.opus],
+      ['fable', MODEL_ALIASES.fable],
+    ] as const) {
+      const storage = new CronStorage(`${tmpFile}-${type}`);
+      storage.addJob({
+        name: `${type}-model`,
+        expression: '* * * * *',
+        prompt: 'Alias task',
+        owner: 'U123',
+        channel: 'C456',
+        threadTs: null,
+        modelConfig: { type },
+      });
+
+      const { deps, injectedMessages } = createMockDeps(storage);
+      deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
+      deps.sessionRegistry.transitionToMain('C456', 'thread-1', 'default');
+      deps.sessionRegistry.setActivityState('C456', 'thread-1', 'idle');
+
+      const scheduler = new CronScheduler(deps);
+      await scheduler.tick();
+
+      expect(injectedMessages).toHaveLength(1);
+      expect(injectedMessages[0].modelOverride).toBe(expected);
+    }
+    expect(resolveModelOverride({ type: 'opus' })).toBe('claude-opus-5-5[1m]');
+    expect(resolveModelOverride({ type: 'fable' })).toBe('claude-fable-5-1[1m]');
+  });
+
   it('custom model type sets modelOverride to specified model', async () => {
     const storage = new CronStorage(tmpFile);
     storage.addJob({
@@ -1091,5 +1123,125 @@ describe('CronScheduler — Error Paths', () => {
     await scheduler.tick();
 
     expect(deps.threadReplier).toHaveBeenCalledOnce();
+  });
+});
+
+// --- runJobNow — manual fire via the real execution path (cron card ▶) ---
+describe('CronScheduler.runJobNow', () => {
+  it('reports ok:false when delivery fails (helpers swallow internally)', async () => {
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { CronStorage } = await import('somalib/cron/cron-storage');
+    const { CronScheduler } = await import('../cron-scheduler');
+    const file = path.join(os.tmpdir(), `cron-runnow-${Date.now()}.json`);
+    const storage = new CronStorage(file);
+    storage.addJob({
+      name: 'dm-job',
+      expression: '0 9 * * *',
+      prompt: 'p',
+      owner: 'U1',
+      channel: 'C1',
+      threadTs: null,
+      target: 'dm',
+    });
+    const scheduler = new CronScheduler({
+      storage,
+      sessionRegistry: { getAllSessions: () => new Map() } as any,
+      messageInjector: async () => {},
+      threadCreator: async () => undefined,
+      dmSender: async () => {
+        throw new Error('slack down');
+      },
+    });
+    const fail = await scheduler.runJobNow('U1', 'dm-job');
+    expect(fail.ok).toBe(false);
+    expect(fail.message).toContain('dm');
+
+    const scheduler2 = new CronScheduler({
+      storage,
+      sessionRegistry: { getAllSessions: () => new Map() } as any,
+      messageInjector: async () => {},
+      threadCreator: async () => undefined,
+      dmSender: async () => {},
+    });
+    const ok = await scheduler2.runJobNow('U1', 'dm-job');
+    expect(ok.ok).toBe(true);
+    expect(ok.message).toBe('dm');
+
+    const missing = await scheduler2.runJobNow('U1', 'nope');
+    expect(missing.ok).toBe(false);
+  });
+
+  // A permission feature whose history cannot answer "who fired this" is not
+  // auditable. The job runs as the owner; the trigger is attributed separately.
+  it('records triggeredBy when a non-owner pulled the trigger, and omits it for the owner', async () => {
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { CronStorage } = await import('somalib/cron/cron-storage');
+    const { CronScheduler } = await import('../cron-scheduler');
+    const file = path.join(os.tmpdir(), `cron-attr-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    const storage = new CronStorage(file);
+    storage.addJob({
+      name: 'dm-job',
+      expression: '0 9 * * *',
+      prompt: 'p',
+      owner: 'U_OWNER',
+      channel: 'C1',
+      threadTs: null,
+      target: 'dm',
+    });
+    const scheduler = new CronScheduler({
+      storage,
+      sessionRegistry: { getAllSessions: () => new Map() } as any,
+      messageInjector: async () => {},
+      threadCreator: async () => undefined,
+      dmSender: async () => {},
+    });
+
+    await scheduler.runJobNow('U_OWNER', 'dm-job', { triggeredBy: 'U_GUEST' });
+    await scheduler.runJobNow('U_OWNER', 'dm-job', { triggeredBy: 'U_OWNER' });
+    await scheduler.runJobNow('U_OWNER', 'dm-job');
+
+    const history = storage.getExecutionHistory('dm-job');
+    expect(history).toHaveLength(3);
+    // most recent first: plain fire, owner fire, guest fire
+    expect(history[0].triggeredBy).toBeUndefined();
+    expect(history[1].triggeredBy).toBeUndefined();
+    expect(history[2].triggeredBy).toBe('U_GUEST');
+  });
+
+  // A dm/thread job with no deliverer configured falls back to a new thread.
+  // The fallback used to drop the attribution, so the one fire most likely to
+  // surprise an owner was the one with no "who" in its history.
+  it('keeps the attribution through the new-thread fallback', async () => {
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { CronStorage } = await import('somalib/cron/cron-storage');
+    const { CronScheduler } = await import('../cron-scheduler');
+    const file = path.join(os.tmpdir(), `cron-attr2-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    const storage = new CronStorage(file);
+    storage.addJob({
+      name: 'dm-job',
+      expression: '0 9 * * *',
+      prompt: 'p',
+      owner: 'U_OWNER',
+      channel: 'C1',
+      threadTs: null,
+      target: 'dm',
+    });
+    const scheduler = new CronScheduler({
+      storage,
+      sessionRegistry: { getAllSessions: () => new Map() } as any,
+      messageInjector: async () => {},
+      threadCreator: async () => 'ts-1',
+      // no dmSender → executeWithDm falls back to executeWithNewThread
+    });
+
+    await scheduler.runJobNow('U_OWNER', 'dm-job', { triggeredBy: 'U_GUEST' });
+
+    const history = storage.getExecutionHistory('dm-job');
+    expect(history).toHaveLength(1);
+    expect(history[0].executionPath).toBe('new_thread');
+    expect(history[0].triggeredBy).toBe('U_GUEST');
   });
 });

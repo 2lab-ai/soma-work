@@ -23,13 +23,14 @@ export type CronTarget = 'channel' | 'thread' | 'dm';
 
 /** Model override config attached to a cron job. */
 export interface CronModelConfig {
-  type: 'default' | 'fast' | 'custom';
+  /**
+   * `opus` / `fable` are floating aliases: the job stores only the type and
+   * the scheduler resolves it to the latest generation at FIRE time, so a
+   * model bump never needs a data migration. `custom` pins `model`.
+   */
+  type: 'default' | 'opus' | 'fable' | 'fast' | 'custom';
   /** Model identifier for custom type (e.g. "claude-sonnet-4-20250514") */
   model?: string;
-  /** Reasoning effort for custom type */
-  reasoningEffort?: 'low' | 'medium' | 'high';
-  /** Fast mode for custom type */
-  fastMode?: boolean;
 }
 
 export interface CronJob {
@@ -41,6 +42,12 @@ export interface CronJob {
   channel: string;
   threadTs: string | null;
   createdAt: string;
+  /**
+   * When `expression` last changed (ISO). The scheduler's catch-up never reaches
+   * a minute before it, as it never reaches one before `createdAt`. Absent until
+   * the first schedule edit.
+   */
+  scheduleChangedAt?: string;
   lastRunAt: string | null;
   /** Dedup key: YYYY-MM-DDTHH:mm — prevents re-fire within the same minute */
   lastRunMinute: string | null;
@@ -52,10 +59,44 @@ export interface CronJob {
   modelConfig?: CronModelConfig;
   /** Delivery target. Omitted = 'channel' (new channel message). */
   target?: CronTarget;
+  /**
+   * Non-owner uids the owner allowed to fire this job on demand (`cron run` /
+   * the ▶ card button). The fire still runs with OWNER identity — the allowlist
+   * only decides who may pull the trigger. Lives on the job, so a rename
+   * carries the grants and a delete disposes of them.
+   */
+  runAllowlist?: string[];
+}
+
+/** May `userId` fire this job on demand? Owner always may; others need the allowlist. */
+export function isRunAllowed(job: CronJob, userId: string): boolean {
+  return job.owner === userId || (job.runAllowlist?.includes(userId) ?? false);
 }
 
 interface CronData {
   jobs: CronJob[];
+}
+
+/**
+ * Presence-aware patch for updateJob. Omitted key = no change.
+ * `null` on nullable/optional keys = clear the field:
+ * - `modelConfig: null` → remove override (fire-time model = creator's current default model)
+ * - `target: null` → remove override (deliver as new channel message)
+ * - `mode: null` → remove override (default queueing)
+ * - `threadTs: null` → clear thread anchor
+ */
+export interface CronJobPatch {
+  /** Rename. Throws DUPLICATE_NAME when another job of the same owner already uses it. */
+  name?: string;
+  expression?: string;
+  prompt?: string;
+  channel?: string;
+  threadTs?: string | null;
+  mode?: CronMode | null;
+  modelConfig?: CronModelConfig | null;
+  target?: CronTarget | null;
+  /** `null` clears every on-demand run grant. */
+  runAllowlist?: string[] | null;
 }
 
 // --- Execution History Types ---
@@ -68,6 +109,12 @@ export interface CronExecutionRecord {
   executionPath: 'idle_inject' | 'busy_queue' | 'new_thread' | 'dm' | 'thread_reply';
   error?: string;
   sessionKey?: string;
+  /**
+   * Who pulled the trigger when it was NOT the owner — an allowlisted user or
+   * an owner-approved one-off `cron run`. Absent for scheduled fires and for
+   * the owner firing their own job.
+   */
+  triggeredBy?: string;
 }
 
 interface CronHistoryData {
@@ -77,132 +124,12 @@ interface CronHistoryData {
 const MAX_HISTORY_PER_JOB = 20;
 
 // --- 5-field cron expression matching ---
-
-/**
- * Match a 5-field cron expression (min hour dom mon dow) against a Date.
- * Supports: numbers, *, comma-separated lists, ranges (1-5), step values (star/N).
- */
-export function matchesCronExpression(expression: string, date: Date): boolean {
-  const fields = expression.trim().split(/\s+/);
-  if (fields.length !== 5) return false;
-
-  // Use UTC methods — cron expressions are evaluated in UTC
-  const minute = date.getUTCMinutes();
-  const hour = date.getUTCHours();
-  const dom = date.getUTCDate();
-  const month = date.getUTCMonth() + 1; // 1-based
-  const dow = date.getUTCDay(); // 0=Sunday
-
-  return (
-    matchField(fields[0], minute, 0, 59) &&
-    matchField(fields[1], hour, 0, 23) &&
-    matchField(fields[2], dom, 1, 31) &&
-    matchField(fields[3], month, 1, 12) &&
-    matchField(fields[4], dow, 0, 7) // 0 and 7 both = Sunday
-  );
-}
-
-function matchField(field: string, value: number, min: number, max: number): boolean {
-  // Handle comma-separated values
-  const parts = field.split(',');
-  return parts.some((part) => matchPart(part.trim(), value, min, max));
-}
-
-function matchPart(part: string, value: number, min: number, max: number): boolean {
-  // Wildcard
-  if (part === '*') return true;
-
-  // Step: */N or range/N
-  if (part.includes('/')) {
-    const [rangePart, stepStr] = part.split('/');
-    const step = parseInt(stepStr, 10);
-    if (isNaN(step) || step <= 0) return false;
-
-    let start = min;
-    let end = max;
-    if (rangePart !== '*') {
-      if (rangePart.includes('-')) {
-        [start, end] = rangePart.split('-').map(Number);
-      } else {
-        start = parseInt(rangePart, 10);
-      }
-    }
-
-    for (let i = start; i <= end; i += step) {
-      if (i === value) return true;
-    }
-    return false;
-  }
-
-  // Range: N-M
-  if (part.includes('-')) {
-    const [startStr, endStr] = part.split('-');
-    const start = parseInt(startStr, 10);
-    const end = parseInt(endStr, 10);
-    return value >= start && value <= end;
-  }
-
-  // Exact number
-  const num = parseInt(part, 10);
-  return num === value || (max === 7 && num === 7 && value === 0); // Sunday: 0 === 7
-}
-
-// --- Validation ---
-
-export function isValidCronExpression(expression: string): boolean {
-  const fields = expression.trim().split(/\s+/);
-  if (fields.length !== 5) return false;
-
-  // Regex: *, N, N-M, */N, N-M/N, comma-separated combinations
-  const cronFieldRegex = /^((\*|\d+(-\d+)?)(\/\d+)?)(,((\*|\d+(-\d+)?)(\/\d+)?))*$/;
-  if (!fields.every((f) => cronFieldRegex.test(f))) return false;
-
-  // Range validation per field: [min, max]
-  const ranges: [number, number][] = [
-    [0, 59], // minute
-    [0, 23], // hour
-    [1, 31], // day of month
-    [1, 12], // month
-    [0, 7], // day of week (0 and 7 = Sunday)
-  ];
-
-  for (let i = 0; i < 5; i++) {
-    const [min, max] = ranges[i];
-    const parts = fields[i].split(',');
-    for (const part of parts) {
-      // Check step value: */0 is invalid (division by zero)
-      if (part.includes('/')) {
-        const step = parseInt(part.split('/')[1], 10);
-        if (isNaN(step) || step <= 0) return false;
-      }
-      // Check reversed ranges: 5-1 is invalid
-      if (part.includes('-') && !part.startsWith('*')) {
-        const rangePart = part.split('/')[0]; // strip step
-        const [startStr, endStr] = rangePart.split('-');
-        const start = parseInt(startStr, 10);
-        const end = parseInt(endStr, 10);
-        if (!isNaN(start) && !isNaN(end) && start > end) return false;
-      }
-    }
-    // Check numeric values in range
-    const nums = fields[i].match(/\d+/g);
-    if (
-      nums &&
-      nums.some((n) => {
-        const v = parseInt(n, 10);
-        return v < min || v > max;
-      })
-    ) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-export function isValidCronName(name: string): boolean {
-  return /^[a-zA-Z0-9_-]{1,64}$/.test(name);
-}
+// The hand-rolled engine (matchesCronExpression / isValidCronExpression /
+// isValidCronName) moved verbatim to the shared soma-lib package in v0.3.0
+// (src/domain/cron-expression — Step 3 of the convergence roadmap). Re-export
+// so every existing import path keeps working unchanged. UTC semantics and
+// the B1 timezone contract are pinned by soma-lib's own test suite.
+export { isValidCronExpression, isValidCronName, matchesCronExpression } from 'soma-lib';
 
 // --- Storage class ---
 
@@ -292,6 +219,106 @@ export class CronStorage {
     return true;
   }
 
+  /**
+   * Patch a job addressed by (owner, name). Presence-aware: omitted keys are
+   * untouched; `null` clears optional overrides (see CronJobPatch).
+   * Bookkeeping fields (id, createdAt, lastRunAt, lastRunMinute, lastRunDate)
+   * are always preserved. Returns the updated job, or null if not found.
+   */
+  updateJob(owner: string, name: string, patch: CronJobPatch): CronJob | null {
+    const data = this.load();
+    const job = data.jobs.find((j) => j.owner === owner && j.name === name);
+    if (!job) return null;
+
+    if (patch.name !== undefined && patch.name !== job.name) {
+      const clash = data.jobs.some((j) => j.owner === owner && j.name === patch.name);
+      if (clash) {
+        throw new Error(`DUPLICATE_NAME: Cron job '${patch.name}' already exists for this user`);
+      }
+      job.name = patch.name;
+    }
+    if (patch.expression !== undefined && patch.expression !== job.expression) {
+      job.expression = patch.expression;
+      job.scheduleChangedAt = new Date().toISOString();
+    }
+    if (patch.prompt !== undefined) job.prompt = patch.prompt;
+    if (patch.channel !== undefined) job.channel = patch.channel;
+    if (patch.threadTs !== undefined) job.threadTs = patch.threadTs;
+    if (patch.mode !== undefined) {
+      if (patch.mode === null) delete job.mode;
+      else job.mode = patch.mode;
+    }
+    if (patch.modelConfig !== undefined) {
+      if (patch.modelConfig === null) delete job.modelConfig;
+      else job.modelConfig = patch.modelConfig;
+    }
+    if (patch.target !== undefined) {
+      if (patch.target === null) delete job.target;
+      else job.target = patch.target;
+    }
+    if (patch.runAllowlist !== undefined) {
+      if (patch.runAllowlist === null) delete job.runAllowlist;
+      else job.runAllowlist = [...new Set(patch.runAllowlist)];
+    }
+
+    this.save(data);
+    logger.info('Cron job updated', { id: job.id, name: job.name, owner: job.owner });
+    return job;
+  }
+
+  /**
+   * Add a user to the job's on-demand run allowlist (idempotent).
+   * Returns the updated job, or null when the job is gone.
+   */
+  allowRun(owner: string, name: string, userId: string): CronJob | null {
+    return this.mutateAllowlist(
+      (j) => j.owner === owner && j.name === name,
+      (list) => (list.includes(userId) ? list : [...list, userId]),
+    );
+  }
+
+  /**
+   * Same as {@link allowRun} but addressed by the job's immutable id — the
+   * form the grant flow uses, because a job can be renamed between the ask
+   * and the owner's click and consent belongs to the JOB, not to a name.
+   */
+  allowRunById(jobId: string, userId: string): CronJob | null {
+    return this.mutateAllowlist(
+      (j) => j.id === jobId,
+      (list) => (list.includes(userId) ? list : [...list, userId]),
+    );
+  }
+
+  /** Remove a user from the job's run allowlist. Null when the job is gone. */
+  revokeRun(owner: string, name: string, userId: string): CronJob | null {
+    return this.mutateAllowlist(
+      (j) => j.owner === owner && j.name === name,
+      (list) => list.filter((u) => u !== userId),
+    );
+  }
+
+  /**
+   * Read-modify-write of one job's allowlist. Narrow on purpose: it reloads
+   * immediately before mutating and writes only that field's new value, so a
+   * concurrent writer (the MCP cron server process) can at worst lose this
+   * one grant/revoke instead of a whole stale list clobbering theirs.
+   */
+  private mutateAllowlist(match: (j: CronJob) => boolean, next: (list: string[]) => string[]): CronJob | null {
+    const data = this.load();
+    const job = data.jobs.find(match);
+    if (!job) return null;
+
+    const updated = next(job.runAllowlist ?? []);
+    const current = job.runAllowlist ?? [];
+    if (updated.length === current.length && updated.every((u, i) => u === current[i])) return job;
+
+    if (updated.length === 0) delete job.runAllowlist;
+    else job.runAllowlist = updated;
+    this.save(data);
+    logger.info('Cron run allowlist updated', { name: job.name, owner: job.owner, allowlist: updated });
+    return job;
+  }
+
   /** Update lastRunAt and lastRunMinute for a job. */
   updateLastRun(jobId: string, now: Date): void {
     const data = this.load();
@@ -305,15 +332,31 @@ export class CronStorage {
 
   // --- Execution History ---
 
+  /**
+   * History lives in a sibling file. The canonical `cron-jobs.json` maps to
+   * `cron-history.json`; ANY other filename derives `<name>-history.json`.
+   *
+   * The previous `String.replace(/cron-jobs\.json$/…)` silently returned the
+   * jobs path itself for every other filename, so the first `addExecution`
+   * would write the history array over the jobs array. It only ever appeared
+   * benign because the resulting `data.history.push` on a jobs object threw
+   * and the caller swallowed it — losing history instead of losing jobs.
+   */
   private get historyFilePath(): string {
-    return this.filePath.replace(/cron-jobs\.json$/, 'cron-history.json');
+    const dir = path.dirname(this.filePath);
+    const base = path.basename(this.filePath);
+    if (base === 'cron-jobs.json') return path.join(dir, 'cron-history.json');
+    return path.join(dir, `${base.replace(/\.json$/, '')}-history.json`);
   }
 
   private loadHistory(): CronHistoryData {
     try {
       if (fs.existsSync(this.historyFilePath)) {
         const raw = fs.readFileSync(this.historyFilePath, 'utf-8');
-        return JSON.parse(raw) as CronHistoryData;
+        const parsed = JSON.parse(raw) as Partial<CronHistoryData>;
+        // A file that parses but has no `history` array (wrong file, older
+        // shape) must not hand callers `undefined` to iterate over.
+        return { history: Array.isArray(parsed?.history) ? parsed.history : [] };
       }
     } catch (error) {
       logger.warn('Failed to load cron history, returning empty', error);

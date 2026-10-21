@@ -154,50 +154,6 @@ function buildLinkSection(
 }
 
 /**
- * Build Block Kit blocks for the "request start" message posted to
- * the original thread when a mid-thread mention creates a new work session.
- *
- * Layout (Bauhaus — 2 blocks):
- *   header: session title
- *   section: text(목표) + fields(상태/담당/실행) + accessory(스레드 button)
- */
-export function buildRequestStartBlocks(
-  session: SourceThreadConversationSession,
-  workThreadPermalink?: string | null,
-): { text: string; blocks: SlackBlock[] } {
-  const title = session.title || 'Session';
-  const safeTitle = truncate(title, SLACK_LIMITS.HEADER_TEXT);
-  const model = session.model ? formatModelName(session.model) : undefined;
-  const workflow = session.workflow || 'default';
-
-  const fields: SlackField[] = [{ type: 'mrkdwn', text: truncate('*상태*\n시작', SLACK_LIMITS.FIELD_TEXT) }];
-
-  fields.push(...buildMetaFields(session, workflow, model));
-
-  const section: SlackSectionBlock = {
-    type: 'section',
-    text: { type: 'mrkdwn', text: safeTruncate(`*목표*\n${escapeMrkdwn(title)}`, SLACK_LIMITS.SECTION_TEXT) },
-    fields,
-  };
-
-  if (workThreadPermalink) {
-    section.accessory = {
-      type: 'button',
-      text: { type: 'plain_text', text: truncate('스레드', SLACK_LIMITS.BUTTON_TEXT), emoji: true },
-      url: workThreadPermalink,
-      action_id: 'source_open_thread',
-    };
-  }
-
-  const headerBlock: SlackHeaderBlock = { type: 'header', text: { type: 'plain_text', text: safeTitle } };
-
-  return {
-    text: stripSlackTokens(`${safeTitle} — 시작`),
-    blocks: [headerBlock, section],
-  };
-}
-
-/**
  * Build Block Kit blocks for the "request complete" message posted back
  * to the original thread when a session closes or a PR is merged.
  *

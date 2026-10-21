@@ -62,7 +62,12 @@ export type SessionState = 'INITIALIZING' | 'MAIN' | 'SLEEPING';
  * - waiting: Waiting for user input (choice/permission prompt shown)
  * - idle: Response completed, no active processing
  */
-export type ActivityState = 'working' | 'waiting' | 'idle';
+// Shared vocabulary since soma-lib v0.5.0 (convergence roadmap Step 4a) —
+// soma's session state machine declares the identical union; re-exported here
+// so every existing `from './types'` import path keeps working.
+export type { ActivityState } from 'soma-lib';
+
+import type { ActivityState } from 'soma-lib';
 
 /**
  * Token usage tracking for a session.
@@ -86,6 +91,23 @@ export interface SessionUsage {
   totalCacheReadTokens: number;
   totalCacheCreateTokens: number;
   totalCostUsd: number;
+
+  /**
+   * Per-model cumulative totals (input/output/cache write/cache read/cost),
+   * keyed by the model id the SDK reported. Survives session model switches —
+   * each model keeps its own bucket priced at its own rates. Rendered by the
+   * `/context` command. Optional: absent on legacy persisted sessions.
+   */
+  modelTotals?: Record<
+    string,
+    {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreateTokens: number;
+      costUsd: number;
+    }
+  >;
 
   lastUpdated: number; // Timestamp of last update
 }
@@ -142,7 +164,15 @@ export interface ActionPanelState {
   summaryBlocks?: any[];
 }
 
-export type SessionGoalStatus = 'active' | 'paused' | 'complete';
+/**
+ * `queued` is a goal that has been added to `ConversationSession.goalQueue`
+ * but is NOT yet the active goal — it waits behind the current goal and is
+ * promoted to `active` by `advanceGoalQueue` when the current goal completes.
+ * It is never assigned to `session.goal` directly; every `status !== 'active'`
+ * guard (idle-driver gate, `<session-goal>` block injection) already excludes
+ * it, so queued goals never drive the loop or leak into the prompt.
+ */
+export type SessionGoalStatus = 'active' | 'paused' | 'complete' | 'queued';
 
 /**
  * Default cap for `maxContinuations`. Each user-driven turn resets
@@ -167,6 +197,15 @@ export interface SessionGoalPendingEval {
 }
 
 export interface SessionGoal {
+  /**
+   * Stable identity for this goal, independent of `createdAt` (which can
+   * collide in same-ms test/advance paths). The completion-eval snapshot
+   * guard (M1) keys on `goalId` so a verdict can never apply against a
+   * different goal that happens to share a `createdAt`. Assigned once at
+   * creation and preserved across queue promotion. See
+   * `GoalLoopController` and `createActiveSessionGoal`.
+   */
+  goalId: string;
   objective: string;
   status: SessionGoalStatus;
   createdAt: number;
@@ -177,6 +216,25 @@ export interface SessionGoal {
   completedBy?: string;
   /** Audit trail — which path closed this goal. */
   completedVia?: GoalCompletedVia;
+  /**
+   * Human-readable close-out reason shown in `goal` status history. For
+   * eval-driven completion this is the eval verdict `reason`; for
+   * user-driven completion (`goal done`) it is the literal `user`.
+   */
+  completionReason?: string;
+
+  // ── Per-goal accounting (live-accumulated; survives compaction) ────────
+  // Credited while THIS goal is the active goal: ms from the turn timer
+  // (begin/end/orphan-sweep) and the same aggregate token deltas added to
+  // `session.usage.total*`. `session.usage` is in-memory and reset on
+  // compaction, so we accumulate per-goal at the source rather than diffing.
+  /** Wall-clock active turn time attributed to this goal (ms). */
+  activeMsUsed?: number;
+  tokensInput?: number;
+  tokensOutput?: number;
+  tokensCacheRead?: number;
+  tokensCacheCreate?: number;
+  costUsd?: number;
 
   // ── Ralph loop (auto-continuation) control ─────────────────────────────
   /** How many synthetic continuation turns have fired since the last user message. */
@@ -185,6 +243,22 @@ export interface SessionGoal {
   maxContinuations: number;
   /** ms epoch of the last continuation injection. */
   lastContinuationAt?: number;
+  /**
+   * Set to the ms epoch when a cap-reached "continue?" DM was sent to the
+   * goal owner (S3). Acts as a dedup guard so the loop sends exactly one DM
+   * per cap event; cleared when the owner answers (continue/cancel) or any
+   * real user message resets the loop. Undefined ⇒ no decision pending.
+   */
+  capDmPendingAt?: number;
+
+  /**
+   * The goal's opening turn was admitted but has not reached the model yet
+   * (set by the host when it admits the opening, cleared right before the
+   * opening's model call). While set, cancelling the opening cancels the
+   * goal, and `goal resume` re-admits the opening instead of resuming a goal
+   * that never had its first turn.
+   */
+  openingPending?: boolean;
 
   // ── Host-side completion evaluation ────────────────────────────────────
   /**
@@ -203,6 +277,26 @@ export interface SessionGoal {
   lastEvalReason?: string;
   /** Counts how many eval cycles have run for this goal. */
   evalAttemptCount?: number;
+  /**
+   * Consecutive completion-eval DISPATCH failures (API error / rate limit /
+   * timeout — never completed eval cycles). While below
+   * `GOAL_EVAL_DISPATCH_MAX_RETRIES` the loop self-heals by scheduling a
+   * re-eval after the failure's advertised/backoff delay instead of stopping
+   * with a manual `goal done` notice. Cleared by a successful eval dispatch
+   * and by any real user message (`resetGoalContinuationOnUserMessage`).
+   */
+  evalDispatchRetryCount?: number;
+  /**
+   * ms epoch before which NO eval may dispatch (transient-failure backoff,
+   * typically the gateway-advertised 429 window). Ordinary turn-settled
+   * triggers that land during the window are skipped — otherwise a queued
+   * duplicate settle would re-dispatch immediately and burn the retry budget
+   * against the same rate limit. The scheduled retry clears it when it fires;
+   * it also self-expires by timestamp so a lost timer (restart) can never
+   * wedge the loop. Cleared by a successful dispatch and by any real user
+   * message.
+   */
+  evalBackoffUntil?: number;
 
   /**
    * Monotonic intent epoch. Bumped by every goal mutation (set / pause /
@@ -231,6 +325,27 @@ export interface SessionGoal {
    * (S9). Cleared on a `complete` verdict so it never sticks.
    */
   lastEvalSummaryHash?: string;
+}
+
+/**
+ * The verified Eagle incident request that owns a session.
+ *
+ * Structural mirror of `IncidentRequest` in
+ * `packages/slack/src/incident-contract.ts` (the SSOT — that module is the
+ * only place a request is ever parsed or validated). It is re-declared here
+ * because root `src/` resolves `@soma/slack/*` through the workspace symlink
+ * to the package's compiled `dist/`, which is not guaranteed to exist when
+ * this file is typechecked.
+ */
+export interface SessionIncidentRequest {
+  readonly version: 1;
+  readonly incident_id: string;
+  readonly lifecycle_id: string;
+  readonly attempt_id: string;
+  readonly channel_id: string;
+  readonly parent_ts: string;
+  readonly env: string;
+  readonly summary: string;
 }
 
 export interface ConversationSession {
@@ -368,6 +483,22 @@ export interface ConversationSession {
   isOnboarding?: boolean;
   // Session-unique base working directory (auto-created on new session, cleaned up on end)
   sessionWorkingDir?: string;
+  /**
+   * Set once by `SessionInitializer` from a verified incident turn; makes this
+   * session incident-owned (restricted runtime, ordinary traffic refused in
+   * the thread). Persisted so a restart cannot launder the restriction away,
+   * and deliberately NOT cleared by `resetSessionContext` for the same reason.
+   */
+  incidentRequest?: SessionIncidentRequest;
+  /**
+   * `attempt_id` of the incident attempt whose run the HOST observed finish
+   * (completion path only — never the model, message text, or a command).
+   * The ingress requires it to equal the currently owning attempt before it
+   * admits a retry on the same incident parent, and clears it during the
+   * handover. Persisted so a restart mid-incident keeps the distinction
+   * between "still running" and "finished, retryable".
+   */
+  incidentAttemptFinishedId?: string;
   // Source working directories created during PR review/fix (tracked for cleanup on session end)
   sourceWorkingDirs?: string[];
   // Compaction-Aware Context Preservation (#196):
@@ -465,6 +596,24 @@ export interface ConversationSession {
   goal?: SessionGoal;
 
   /**
+   * Pending goals waiting behind the active `goal` (FIFO). Typing
+   * `goal <text>` while a goal is already active/paused APPENDS here instead
+   * of replacing the current goal; `advanceGoalQueue` promotes the head to
+   * `session.goal` (status → `active`) when the current goal completes. Each
+   * entry has `status: 'queued'`. Persisted so the queue survives a restart.
+   */
+  goalQueue?: SessionGoal[];
+
+  /**
+   * Completed (and cleared-on-advance) goals, newest last, capped at
+   * `MAX_GOAL_HISTORY` (20, enforced in `@soma/slack/session-goal`). Surfaced
+   * by the `goal` status command so each
+   * finished goal's time / token spend / completion reason stays visible.
+   * Persisted.
+   */
+  goalHistory?: SessionGoal[];
+
+  /**
    * Runtime-only: the assistant text of the most recently completed turn,
    * stashed by the goal turn-end observer so the idle-settle goal driver
    * can feed it to the completion eval when the session settles. NOT
@@ -529,6 +678,16 @@ export interface ConversationSession {
   compactTickInterval?: ReturnType<typeof setInterval>;
   // Threshold-checker → input-processor signal that next /compact-threshold-violating user turn must be compacted.
   autoCompactPending?: boolean;
+  /**
+   * Session-scoped auto-compact threshold in TOKENS, set by `/autocompact
+   * <tokens>` and cleared by `/autocompact reset`. Wins over the model's
+   * declared default and over the legacy per-user percent (see
+   * `session/autocompact-policy.ts`). Persisted. Deliberately kept verbatim
+   * across model switches — the resolver clamps it for the CURRENT model
+   * instead of rewriting it, so switching back restores the user's number.
+   * `null` / `undefined` = no override.
+   */
+  autoCompactTokens?: number | null;
   // One-shot suppression for `checkAndSchedulePendingCompact`. Set to `true`
   // by `postCompactCompleteIfNeeded` when a compact cycle seals; cleared by
   // the very next threshold check. Prevents the "Compaction completed →
@@ -537,6 +696,19 @@ export interface ConversationSession {
   // carries inflated cache-read tokens that re-trip the threshold even
   // though the SDK has actually shrunk the conversation.
   skipThresholdCheckOnce?: boolean;
+  // Issue #196 — turn-scoped shield for the occupancy adopted from
+  // `compact_boundary.post_tokens`. `StreamProcessor` delivers one usage
+  // sample per turn, after the stream loop, so on a compacted turn that
+  // sample always predates the boundary and would restore the pre-compact
+  // number. Holds the `turnId` that established the shield; cleared by that
+  // same turn's `finally` (compare-and-clear) so the NEXT turn resumes normal
+  // context tracking.
+  //
+  // A `turnId` rather than a boolean because same-session turns overlap: a
+  // supersede aborts the previous turn's controller without awaiting its
+  // `finally`, so an aborted turn must neither suppress the successor's usage
+  // sample nor strip the shield the successor just installed.
+  postCompactOccupancyTurnId?: string;
   // Slack ts of the just-posted "Compaction completed" message — set ONLY
   // when the message rendered with `now ~?%` because no SDK-authoritative
   // post-compact tokens were available at PostCompact time. The next
@@ -545,12 +717,78 @@ export interface ConversationSession {
   // %, then nulls it (one-shot). Honest user-facing recovery for the case
   // where `onCompactBoundary` doesn't supply `post_tokens`.
   compactCompletionMessageTs?: string | null;
+  // Prompt-too-long emergency compact fallback. When a non-1M model cannot fit
+  // the next prompt before normal threshold compaction fires, the error path
+  // temporarily switches `model` to a 1M compact model, retries with `/compact`,
+  // then restores the original model after the compact boundary.
+  fallbackCompactOriginalModel?: string | null;
+  fallbackCompactActive?: boolean;
+  // User message that triggered the prompt-too-long fallback. Re-dispatched
+  // after the fallback `/compact` finishes, mirroring the normal auto-compact
+  // pending-user path.
+  fallbackCompactPendingUserText?: string | null;
+  fallbackCompactPendingEventContext?: {
+    channel: string;
+    threadTs: string;
+    user: string;
+    ts: string;
+    verbatimPrompt?: boolean;
+  } | null;
+  // Wall-clock ms of the last transcript empty-text-block repair attempt
+  // (proactive at fallback-compact arming, or reactive on a content-shaped
+  // `400 text content blocks must be non-empty`). Bounds the repair→retry
+  // loop: within TRANSCRIPT_REPAIR_COOLDOWN_MS a second failure is terminal.
+  transcriptRepairAttemptedAtMs?: number | null;
+  // Wall-clock ms of the last TERMINAL fallback-compact failure (compaction
+  // errored and the original model was restored). `applyAutoFallbackCompact`
+  // refuses to re-arm within its cooldown so goal-continuation auto-turns
+  // cannot spin an arm→fail→arm notice loop.
+  fallbackCompactFailedAtMs?: number | null;
   // User message text captured when auto-compact intercepts the turn; re-dispatched after PostCompact.
   pendingUserText?: string | null;
   // Slack event context captured alongside `pendingUserText` for synthetic re-dispatch via event-router.
   pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
+  // Deferred post-compact re-dispatch queue (arrival order, one entry per
+  // author burst). `postCompactCompleteIfNeeded` promotes
+  // `pendingUserText`/`pendingEventContext` here when a compact cycle seals;
+  // the /compact turn's stream-end cleanup (stream-executor `finally`)
+  // consumes it and re-enters the pipeline. Deferral is load-bearing: the
+  // PostCompact hook fires BEFORE the CLI persists the compacted transcript,
+  // so dispatching from inside the hook lets the new turn's concurrency
+  // control abort the still-running /compact process and lose the compaction
+  // entirely (observed as `now ~85% ← was ~85%` immediate re-compact loops).
+  compactPendingDispatches?: Array<{
+    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean };
+    text: string;
+  }> | null;
+  // Runtime-only exact-once guard while the queue is handed back to EventRouter.
+  compactDispatchInFlight?: boolean;
+  // Runtime-only: true while a dedicated `/compact` SDK turn is executing.
+  // Set at query start (local slash command bypass), cleared in the
+  // stream-executor `finally`. Covers the post-PostCompact/pre-result window
+  // where the epoch marker is already sealed but the CLI has not yet flushed
+  // the compacted transcript (codex review F1) and the pre-PreCompact query
+  // init window.
+  compactTurnActive?: boolean;
   // Wall-clock timestamp (ms) when the current active turn leg started. `undefined` when idle.
   activeLegStartedAtMs?: number;
+  /**
+   * `goalId` of the goal that was active when the current turn leg STARTED.
+   * Captured at `beginTurn` so per-goal time/token accounting credits the
+   * goal that owned the leg, even if the goal is completed/advanced before the
+   * leg closes (`goal done` mid-turn). Persisted so the load-time orphan sweep
+   * credits the right goal. `undefined` when no goal was active at leg start.
+   */
+  activeLegGoalId?: string;
+  /**
+   * Intent `epoch` of the goal that was active when the current turn leg
+   * STARTED (captured at `beginTurn` alongside {@link activeLegGoalId}). Lets
+   * the turn-end goal-evidence stash detect an in-turn objective change
+   * (Update bumps the epoch on the same `goalId`) and skip crediting the
+   * finished turn's output against the changed objective. `undefined` when no
+   * goal was active at leg start.
+   */
+  activeLegGoalEpoch?: number;
   // Accumulated busy time (ms) across closed legs of the current session.
   activeAccumulatedMs?: number;
   // LLM-generated concise task title (falls back to `title` when absent).
@@ -564,8 +802,8 @@ export interface ConversationSession {
   lastAssistantTurnId?: string;
 
   // Session-scoped disabled dangerous-rule ids. Populated via the Slack
-  // "Approve & disable rule for this session" button (see
-  // src/dangerous-command-filter.ts for the rule catalog).
+  // "Approve & disable rule for this session" button. The rule catalog is
+  // soma-lib's `DANGEROUS_RULES`, re-exported by somalib/permission/dangerous-rules.ts.
   //
   // Runtime-only — intentionally NOT serialized to disk so a restart always
   // re-prompts the user (safety default). Mirrors the `pendingRetryTimer`
@@ -585,7 +823,13 @@ export interface ConversationSession {
 export interface AgentConfig {
   slackBotToken: string;
   slackAppToken: string;
-  signingSecret: string;
+  /**
+   * OPTIONAL. Verifies the `X-Slack-Signature` header on HTTP delivery only.
+   * Every agent runs Socket Mode (outbound wss keyed by `slackAppToken`), so
+   * no request signature is exchanged and this may be omitted entirely. When
+   * declared it must be at least `SIGNING_SECRET_MIN_LENGTH` chars.
+   */
+  signingSecret?: string;
   promptDir?: string; // default: src/prompt/{agentName}
   persona?: string; // default: 'default'
   description?: string;

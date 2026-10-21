@@ -2,9 +2,6 @@
  * StreamProcessor tests
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSdkMessageMapper } from '../../agent-runtime/claude-code/sdk-message-to-event';
-import { calculateTokenCost } from '../../metrics/model-registry';
 import {
   AgentStreamProcessor,
   extractTaskIdFromResult,
@@ -12,7 +9,10 @@ import {
   type SayFunction,
   type StreamCallbacks,
   type StreamContext,
-} from '../stream-processor';
+} from '@soma/slack/stream-processor';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createSdkMessageMapper } from '../../agent-runtime/claude-code/sdk-message-to-event';
+import { calculateTokenCost } from '../../metrics/model-registry';
 
 // epic #1023 P4: the processor now consumes the neutral AgentStreamEvent stream.
 // To keep these behavior tests' SDKMessage inputs AND callback assertions
@@ -41,6 +41,7 @@ describe('StreamProcessor', () => {
       threadTs: 'thread_ts',
       sessionKey: 'session_key',
       sessionId: 'session_id',
+      incidentAttempt: false,
       say: mockSay,
     };
   });
@@ -858,5 +859,64 @@ describe('extractTaskIdFromResult', () => {
   it('null/undefined result: returns undefined', () => {
     expect(extractTaskIdFromResult(undefined)).toBeUndefined();
     expect(extractTaskIdFromResult(null)).toBeUndefined();
+  });
+});
+
+// Field incident 2026-07-07 (session ccee16e0): the SDK seals a FAILED
+// /compact as a successful assistant turn whose content is the raw stderr
+// line, and a transcript poisoned with empty text blocks surfaces Anthropic's
+// 400 validation error as assistant content on every turn. Neither transport
+// error may stream to Slack — stream-executor inspects collectedText and
+// routes them into the transcript-repair / terminal-failure rails, which
+// surface ONE condensed notice instead.
+describe('compaction-error leak suppression', () => {
+  let mockSay: SayFunction;
+  let mockContext: StreamContext;
+  let abortController: AbortController;
+
+  beforeEach(() => {
+    mockSay = vi.fn().mockResolvedValue({ ts: 'msg_ts' }) as unknown as SayFunction;
+    abortController = new AbortController();
+    mockContext = {
+      channel: 'C123',
+      threadTs: 'thread_ts',
+      sessionKey: 'session_key',
+      sessionId: 'session_id',
+      incidentAttempt: false,
+      say: mockSay,
+    };
+  });
+
+  async function processText(text: string) {
+    const messages = [{ type: 'assistant', message: { content: [{ type: 'text', text }] } }];
+    const processor = new AgentStreamProcessor();
+    return processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
+  }
+
+  it('does not stream the raw "Error during compaction" stderr line, but still collects it', async () => {
+    const leak =
+      'Error: Error during compaction: API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"messages: text content blocks must be non-empty"},"request_id":"req_x"}';
+    const result = await processText(leak);
+
+    expect(mockSay).not.toHaveBeenCalled();
+    // stream-executor must still see the text to route recovery.
+    expect(result.collectedText).toContain('Error during compaction');
+  });
+
+  it('does not stream the bare empty-text-block 400 error either', async () => {
+    const leak =
+      'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"messages: text content blocks must be non-empty"},"request_id":"req_y"}';
+    const result = await processText(leak);
+
+    expect(mockSay).not.toHaveBeenCalled();
+    expect(result.collectedText).toContain('must be non-empty');
+  });
+
+  it('still streams prose that merely DISCUSSES compaction errors', async () => {
+    const prose =
+      'The failure you saw earlier happened because compaction replays the transcript. When a record contains an empty text block, the API responds with a validation error and the message "Error during compaction" appears in the thread. The fix repairs the transcript before compacting, so you should not see it again.';
+    await processText(prose);
+
+    expect(mockSay).toHaveBeenCalled();
   });
 });

@@ -1,6 +1,6 @@
 # Completed Work Ledger
 
-> Last audited: 2026-05-18
+> Last audited: 2026-08-25
 
 이 원장은 "이미 완료된 내용"을 새 agent가 빠르게 찾기 위한 색인이다. 완료 판정은 문서 안의 명시적 `Done`, `Complete`, `Implemented`, `구현 완료`, archive 이동 기록 같은 증거에 기반한다.
 
@@ -10,6 +10,14 @@
 - **Archived**: 완료되었거나 historical reference로 분류되어 `docs/archive/`로 이동됨.
 - **Partial**: 일부 scenario/task만 완료 증거가 있고 전체 feature 완료는 확정하지 않음.
 - **Unclassified**: feature directory는 있으나 완료 증거가 애매함. 이 원장에 올리지 않는다.
+
+## Refactoring
+
+| Work | Status | Evidence |
+|------|--------|----------|
+| Refactoring hotspots (delete-first, 4 PRs) | Archived / Completed | [archive/plans/refactoring-hotspots/spec.md](./plans/refactoring-hotspots/spec.md) — PRs #1208 #1209 #1213 #1219 merged; follow-ups #1220-#1223 |
+| MCP server extraction + server-tools-mcp (2026-03) | Archived / Completed | [archive/plans/mcp-extraction/trace.md](./plans/mcp-extraction/trace.md) — implemented: `packages/mcp-servers/*` populated, `mcp-client` moved to `packages/process-shared/src/mcp/`; the `llm` server it extracted was later removed in PR #254 |
+| MCP servers refactoring (BaseMcpServer / ConfigCache, 2026-03) | Archived / Completed | [archive/plans/mcp-refactor/trace.md](./plans/mcp-refactor/trace.md) — implemented: `packages/process-shared/src/mcp/{base-mcp-server,config-cache}.ts`; llm-server consumer removed in PR #254 |
 
 ## Documentation Cleanup
 
@@ -44,7 +52,6 @@ These are not the default starting point for current implementation work. Use th
 | Dispatch safe-stop | [archive/features/dispatch-safe-stop/](./features/dispatch-safe-stop/) |
 | Handoff budget and recursion guard | [archive/features/handoff-budget/](./features/handoff-budget/) |
 | Handoff deterministic entrypoints | [archive/features/handoff-entrypoints/](./features/handoff-entrypoints/) |
-| PR issue precondition | [archive/features/pr-issue-precondition/](./features/pr-issue-precondition/) |
 | PR workflow transition command | [archive/features/pr-workflow-transition-command/](./features/pr-workflow-transition-command/) |
 | Rich turn notification | [archive/features/rich-turn-notification/](./features/rich-turn-notification/) |
 | SDK abort crash defense | [archive/features/sdk-abort-crash-defense/](./features/sdk-abort-crash-defense/) |
@@ -57,7 +64,31 @@ These are not the default starting point for current implementation work. Use th
 | Slack UI phase docs | [archive/features/slack-ui/](./features/slack-ui/) |
 | Turn summary lifecycle | [archive/features/turn-summary-lifecycle/](./features/turn-summary-lifecycle/) |
 | Turn notification | [archive/features/turn-notification/](./features/turn-notification/) |
-| User profile variables | [archive/features/user-profile-variables/](./features/user-profile-variables/) |
+
+## somawork Setup Onboarding (core)
+
+| Work | Status | Evidence |
+|------|--------|----------|
+| `somawork` controller CLI, setup orchestrator, profile materialization, launchd service manager, legacy setup shims | Completed on `feat/somawork-setup-onboarding` | [design](../superpowers/specs/2026-08-23-somawork-setup-onboarding-design.md), [verification](../superpowers/specs/2026-08-23-somawork-setup-onboarding-verification.md), [core plan](../superpowers/plans/2026-08-23-somawork-setup-core-plan.md) |
+| Runtime bundle contract — canonical setup assets staged, forbidden-file exclusion, staged-artifact behaviour smoke | Completed on `feat/somawork-setup-onboarding` | `scripts/deploy/stage-bundle.sh`, `scripts/smoke/setup-package.js`, `scripts/smoke/deploy-bundle.js` |
+
+**Scope of that claim — read before citing it as shipped.** What landed is the core
+implementation plus a runtime bundle whose contract is proved **locally, against a staged
+artifact**: `npm run build && npm run stage:bundle && npm run smoke:setup-package` runs the staged
+controller in a hermetic `SOMAWORK_HOME` with a fake `HOME`, no Homebrew on `PATH`, and no provider
+call, and it mutates hardlinked copies of the staged tree to prove each required asset and each
+forbidden-file rule is load-bearing.
+
+Explicitly **not** evidenced here, and not to be claimed from this row:
+
+- no Homebrew formula or xbrew recipe exists or is published;
+- no release archive, preview publication, or stable release has been cut;
+- no clean-user install, no real Slack workspace app creation, and no real `launchd` receipt;
+- no successful call against a real Claude/Codex/Slack provider.
+
+Those belong to the packaging and clean-machine workstreams, which have not run. `scripts/setup/*.sh`
+is deprecated and excluded from the bundle but **not yet deleted** — its deletion is gated on the
+clean-machine receipt.
 
 ## Archived Plans
 
@@ -92,7 +123,6 @@ Use [adr/README.md](../adr/README.md) as the durable decision index. Existing de
 - [slack-block-kit.md](../misc/reference/slack-block-kit.md)
 - [archive/features/handoff-budget/spec.md](./features/handoff-budget/spec.md)
 - [archive/features/dispatch-safe-stop/spec.md](./features/dispatch-safe-stop/spec.md)
-- [archive/features/pr-issue-precondition/spec.md](./features/pr-issue-precondition/spec.md)
 - [archive/features/project-gardening/spec.md](./features/project-gardening/spec.md)
 
 ## Maintenance

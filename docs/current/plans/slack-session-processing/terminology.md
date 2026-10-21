@@ -83,7 +83,7 @@
 ### 2.2 session key / SessionKey
 
 - **정의:** `${channelId}-${threadTs || 'direct'}` — [src/session-registry.ts:216](../../src/session-registry.ts).
-- **주의:** userId는 키에 포함되지 않는다. `getSessionKeyWithUser`는 legacy alias — [src/session-registry.ts:223](../../src/session-registry.ts).
+- **주의:** userId는 키에 포함되지 않는다. (legacy alias `getSessionKeyWithUser`는 2026-10에 삭제됐다.)
 
 ### 2.3 `threadModel` enum
 
@@ -154,7 +154,7 @@
 ### 2.15 `SAFE_Z_TOPICS` (비-admin DM 화이트리스트)
 
 - **정의:** 비-admin 유저가 DM에서 쏠 수 있는 텍스트 패턴 regex — [src/slack/z/whitelist.ts:93](../../src/slack/z/whitelist.ts).
-- **체크 함수:** `isWhitelistedNaked(text)` — [src/slack/z/whitelist.ts:30](../../src/slack/z/whitelist.ts).
+- **체크 함수:** `isDmAllowedForNonAdmin(text)` — [packages/slack/src/z/whitelist.ts](../../../../packages/slack/src/z/whitelist.ts).
 
 ### 2.16 `slack-mcp`
 

@@ -394,7 +394,7 @@ describe('Auto-Resume: CrashRecoveredSession sessionKey field', () => {
 
     const recovered = registry.getCrashRecoveredSessions();
     expect(recovered.length).toBe(1);
-    expect(recovered[0].sessionKey).toBe('C123-1700000000.000100');
+    expect(recovered[0].sessionKey).toBe('work:C123:1700000000.000100');
 
     // Cleanup
     fs.rmSync(TEST_DIR, { recursive: true, force: true });

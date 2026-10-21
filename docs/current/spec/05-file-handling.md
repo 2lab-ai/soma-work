@@ -281,20 +281,7 @@ catch (error) {
 
 ## 7. Supported File Types
 
-### 7.1 Method
-
-```typescript
-getSupportedFileTypes(): string[] {
-  return [
-    'Images: jpg, png, gif, webp, svg',
-    'Text files: txt, md, json, js, ts, py, java, etc.',
-    'Documents: pdf, docx (limited support)',
-    'Code files: most programming languages',
-  ];
-}
-```
-
-### 7.2 Full List
+### 7.1 Full List
 
 | Category | Types | Processing |
 |----------|-------|------------|

@@ -1,8 +1,8 @@
 ---
 name: html
-description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
+description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. The visual design is driven by the `ui-ux` skill as the main design engine — applied by default on EVERY invocation, whether or not the user mentions design (design-system + named references; default reference `openai`) — with the `design` skill applied on top as the anti-AI-slop layer and the `motion-design`/`apple-design` standards governing all CSS motion and display typography. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
-version: 0.2.0
+version: 0.4.0
 license: ISC
 ---
 
@@ -90,11 +90,64 @@ typography constraints, palette). The agent obeys this contract when
 generating HTML. If the upstream template's `SKILL.md` is in Chinese or
 mixed CJK, that's fine — the structural intent translates.
 
-### 3.5. Consult the `design` skill for a visual direction
+### 3.4. Drive the design from the `ui-ux` skill (MAIN driver — always on)
 
-Before writing any HTML, read the **`design`** skill — it is what stops the
-output from looking like a model's reflexive default and makes it read like a
-real design team's work.
+The **`ui-ux`** skill is the **main design driver** for this skill, and this
+step is **not opt-in**: run it on every invocation, even when the user says
+nothing about design, style, or references. The user asking for "HTML" IS the
+request for a designed page — do not wait for a design keyword, and do not
+skip to raw markup because the content seems plain. Skip this step only when
+the user explicitly opts out (e.g. asks for "unstyled/bare HTML").
+
+Before any visual decision, read `ui-ux` and run its engine — it owns palette,
+typography, layout system, and the named visual reference. (The `design` skill
+in Step 3.5 then runs *on top* of the ui-ux output as the anti-AI-slop
+refinement layer; it is no longer the primary source of the visual voice.)
+
+```bash
+UIUX="$CLAUDE_PLUGIN_ROOT/skills/ui-ux"
+[ -d "$UIUX" ] || UIUX="$(git rev-parse --show-toplevel 2>/dev/null)/src/local/skills/ui-ux"
+cat "$UIUX/SKILL.md"
+```
+
+Operate `ui-ux` in its non-interactive path (you are on the critical path of one
+Slack request — *do not ask the user anything*):
+
+1. **Run the design-system engine (REQUIRED).** This is `ui-ux` Step 2 — it
+   returns the pattern, style, colors, typography, and effects with reasoning:
+   ```bash
+   python3 "$UIUX/scripts/search.py" "<product/content type> <industry> <keywords>" --design-system -f markdown
+   ```
+   Derive the keywords from the content + the template chosen in Step 2.
+2. **Apply the active named reference as the visual North Star.** Resolve which
+   reference is active, in priority order:
+   - the reference the user explicitly named ("use the `<name>` reference"), else
+   - real brand context the user supplied (palette / codebase / screenshot), else
+   - the **default reference** — the entry with `"default": true` in
+     `$UIUX/references/index.json` (currently **`openai`**).
+   ```bash
+   REF=$(python3 -c "import json,sys; d=json.load(open('$UIUX/references/index.json')); print(next(r['name'] for r in d['references'] if r.get('default')))")
+   cat "$UIUX/references/$REF/design.md"
+   ```
+   The reference's palette, typography, layout, and motion language **override**
+   the engine's generic output and this skill's default palette when they
+   conflict (per the `ui-ux` skill's Named Design References contract). The engine
+   output fills the gaps the reference is silent on.
+3. **Honor ui-ux quality gates.** The reference sets aesthetic direction, never
+   permission to break ui-ux Quick Reference §1–§3 (accessibility, touch targets,
+   performance) — verify color pairs meet the §1 contrast rules.
+4. **Record the choice** as a one-line HTML comment at the top of the file, e.g.
+   `<!-- ui-ux: reference=openai · design-system=Dark Mode/Inter · template=data-report -->`,
+   so the decision is auditable. Do not narrate it in the Slack reply.
+
+This step never blocks and never asks a question — it is a deterministic engine
+lookup + reference read. The classifier in Step 2 and the auto-flow are unchanged.
+
+### 3.5. Apply the `design` skill as the anti-AI-slop layer
+
+After the `ui-ux` driver (Step 3.4) has set the visual voice, read the
+**`design`** skill and apply it *on top* — it is the anti-AI-slop discipline that
+stops the output from sliding back into a model's reflexive default.
 
 ```bash
 cat "$CLAUDE_PLUGIN_ROOT/skills/design/SKILL.md"
@@ -103,25 +156,62 @@ cat "$CLAUDE_PLUGIN_ROOT/skills/design/SKILL.md"
 Operate the `design` skill in its **programmatic mode** (Mode A — *do not ask
 the user anything*; you are on the critical path of one Slack request):
 
-1. **Pick exactly one design direction** using the `design` skill's
-   deterministic style selector. If the user supplied brand context (palette,
-   codebase, reference screenshot), lift that real system instead of the
-   library. Otherwise map this step's chosen template → its default
-   HTML-friendly direction from the selector table (e.g. `data-report` → Fathom,
-   `deck-simple` → Pentagram, `doc-kami-parchment` → Takram).
-2. **Apply the `design` skill's anti-AI-slop hard rules** on top of the
-   template's structural contract. These are the priority order: the template
-   SKILL.md governs *structure/layout*, the chosen direction governs *visual
-   voice*, and the anti-slop rules govern *what never to do* (no rainbow
+1. **The visual direction is already set by `ui-ux` (Step 3.4).** Do not let the
+   `design` skill's style selector override the active ui-ux reference — use the
+   `design` skill only to *enforce* its **anti-AI-slop hard rules** on top of the
+   ui-ux palette/type. Priority order: the active **ui-ux reference governs the
+   visual voice**, the template SKILL.md governs *structure/layout*, and the
+   `design` skill's anti-slop rules govern *what never to do* (no rainbow
    gradients, no left-border accent cards, no decorative emoji, no SVG hero
-   imagery, no invented stats/fonts/colors).
-3. **Record the choice** as a one-line HTML comment at the top of the file,
-   e.g. `<!-- design: 04 Fathom — dense quantitative data, scientific restraint -->`,
-   so the decision is auditable. Do not narrate it in the Slack reply.
+   imagery, no invented stats/fonts/colors). Only fall back to the `design`
+   skill's own style selector if Step 3.4 produced no usable reference.
+2. **Record nothing extra** — the auditable choice line is already written in
+   Step 3.4. Do not narrate the design decision in the Slack reply.
 
-This step never blocks and never asks a question — it is a deterministic lookup
-that raises design quality. The classifier in Step 2 and the auto-flow are
+This step never blocks and never asks a question — it is a deterministic anti-slop
+pass layered on the ui-ux driver. The classifier in Step 2 and the auto-flow are
 unchanged.
+
+### 3.6. CSS motion & typography craft (`motion-design` + `apple-design` layer)
+
+Lottie (Step 3.7) is the *decorative* motion layer. Every **authored CSS
+transition/animation** on the page (entrances, hover states, links, buttons)
+is governed by the motion-design standards instead. Read the shared source of
+truth before writing any `transition`/`@keyframes`/`@starting-style` rule:
+
+```bash
+cat "$CLAUDE_PLUGIN_ROOT/skills/motion-design/references/motion-standards.md"
+```
+
+Apply these non-negotiables to all authored CSS motion:
+
+- **Entrances** use `@starting-style` (no JS) with a strong custom ease-out —
+  `cubic-bezier(0.23, 1, 0.32, 1)`, never a weak built-in easing and never
+  `ease-in`. Never enter from `scale(0)` — start `scale(0.95–0.97)` + opacity.
+  Groups of items (cards, list rows, KPI tiles) get a 30–80ms stagger, not an
+  everything-at-once pop.
+- **Durations**: UI elements ≤ 300ms; only slow ambient/decorative motion may
+  exceed it. Never `transition: all` — name exact properties.
+- **Compositor-only**: animate `transform` and `opacity`; never layout
+  properties (`width`/`height`/`margin`/`top`…).
+- **Hover/press**: hover motion gated behind
+  `@media (hover: hover) and (pointer: fine)`; pressable elements get
+  `transform: scale(0.97)` on `:active`.
+- **Reduced motion**: one `@media (prefers-reduced-motion: reduce)` block
+  covers *both* the CSS motion and the Lottie layer — keep opacity/color
+  changes, drop movement.
+
+Typography refinement, from the [`apple-design`](../apple-design/SKILL.md)
+skill (§15 Typography, §12 Materials): tracking is **size-specific** — display
+headings get negative letter-spacing (≈ `-0.02em`) and tight leading
+(`1.05–1.15`); body copy stays near `0` tracking with comfortable leading
+(`1.5`). Sticky headers/toolbars may use the translucent-material treatment
+(`backdrop-filter: blur() + semi-transparent background`) — never stack two
+light translucent surfaces, and pair it with `prefers-reduced-transparency`
+fallback when used.
+
+This step is deterministic reference reading — it never blocks and never asks
+the user anything.
 
 ### 3.7. Plan the motion layer (`lottie` skill)
 
@@ -180,12 +270,22 @@ the model from freestyling AI-slop defaults):
   multiple of 8 (allowed mid-step: 4 for hairline details).
 - **Contrast ≥ 4.5** for any body text against its background. WCAG AA.
 - **No pure black / pure white** — use `#0f172a` (slate-900) for ink,
-  `#fafaf9` (stone-50) for paper, unless the template's palette overrides.
+  `#fafaf9` (stone-50) for paper, **unless** the template's palette or the active
+  `ui-ux` reference (Step 3.4) intentionally specifies pure values. A named
+  reference's palette wins over this default (e.g. the `openai` reference uses
+  true `#000`/`#FFF`) as long as it still clears the contrast gate.
 - **No lorem ipsum** — use the user's real data. If the user's data has a
   hole the template requires, leave it blank with a visible placeholder
   (e.g., `[—]`), do **not** invent content.
 - **Rounded corners + soft shadow + real `:focus`** on interactive elements
   (buttons / links).
+- **CSS motion follows Step 3.6** — strong custom easing (never `ease-in`,
+  never `transition: all`), UI durations ≤ 300ms, `transform`/`opacity` only,
+  entrances ≥ `scale(0.95)` via `@starting-style`, 30–80ms stagger on groups,
+  hover gated behind `@media (hover: hover) and (pointer: fine)`,
+  `prefers-reduced-motion` honored.
+- **Display typography is size-specific** (Step 3.6) — negative tracking
+  (≈ `-0.02em`) + tight leading on large headings; body near `0` tracking.
 - **Motion stays inline and quiet** — Lottie JSON from Step 3.7 is embedded
   as `animationData` (single-file rule: no `path:` fetches of separate
   `.json` files), ≤ 3 animations per page, each loop seamless and
@@ -237,23 +337,56 @@ with open(p, "rb") as f:
 PY
 ```
 
-### 7. Publish to the local web server (access link)
+### 7. Publish to the local web server (access link + durable archive)
 
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/skills/html/server/serve.mjs" \
   --file "$(pwd)/html-<slug>-<ts>.html"
 ```
 
-This copies the HTML into the serve root (`/tmp/soma-html-serve`), ensures a
-long-lived static-server daemon is listening (spawned detached on first use —
-idempotent, survives the agent turn, reused across sessions), and prints
-JSON:
+This copies the HTML into the **serve root, which doubles as the permanent
+artifact archive**, ensures a long-lived static-server daemon is listening
+(spawned detached on first use — idempotent, survives the agent turn, reused
+across sessions), and prints JSON:
 
 ```json
 { "url": "http://<lan-ip>:8763/html-<slug>-<ts>.html",
   "localUrl": "http://localhost:8763/html-<slug>-<ts>.html",
-  "port": 8763, "file": "/tmp/soma-html-serve/html-<slug>-<ts>.html" }
+  "port": 8763, "file": "<serve-root>/html-<slug>-<ts>.html" }
 ```
+
+**Serve root = archive.** The root resolves in this order (first hit wins):
+`SOMA_HTML_SERVE_ROOT` env override → `$XDG_DATA_HOME/soma-html-serve` →
+`~/.local/share/soma-html-serve` (the default on macOS and Linux) → the
+legacy `/tmp/soma-html-serve` only when no home directory is resolvable.
+Never point the root at a system temp directory yourself: OS temp cleanup
+deletes every published artifact — a week of reports once vanished this way
+and had to be reconstructed from session transcripts. Archive policy:
+artifacts are timestamped by the Step 4 filename, retained indefinitely
+(no auto-pruning), and listable at the daemon's `/` index newest-first;
+reclaiming disk is a human decision, not the server's.
+
+**Migration & mixed versions** (automatic): every publish and daemon start
+sweeps regular files still in the legacy `/tmp` root into the durable
+archive (existing names are never overwritten; symlinks are never followed).
+Sweep failures don't block publishing but are surfaced on stderr and as a
+`migrationErrors` count in the JSON — a silent sweep is not assumed to have
+worked. The printed link is **verified with a real HTTP 200 before it is
+handed out**: if an older daemon is still serving a different root, publish
+places a compat copy, verifies, and marks the JSON with a `note`; if the old
+daemon can't be verified, publish starts a fresh daemon on the next free
+port instead of printing a dead link. (Old publishers meeting a new daemon
+read its health reply as foreign and self-heal onto another port — accepted
+port drift, never a silent 404.) Re-publishing the same filename refreshes
+that artifact in place — timestamps in the filename are what make archive
+entries distinct.
+
+**The archive is LAN-readable, indefinitely.** With the default `0.0.0.0`
+bind, everything published is listable and readable by anyone on the local
+network for as long as it stays in the archive — never publish pages
+containing secrets, tokens, or personal data. If something sensitive was
+published, delete that file from the serve root yourself (that is the
+removal procedure; there is no expiry).
 
 Use `url` (LAN IP) as the access link you hand to the user — `localhost`
 only works on the host machine itself; include it as a secondary mention.
@@ -316,6 +449,9 @@ look.
   URLs, or off-palette colors are all slop.
 - Do **not** hand the user a link you haven't `curl`-verified, and do not
   ship `localhost` as the primary link — it only resolves on the host.
+- Do **not** point `SOMA_HTML_SERVE_ROOT` at a system temp directory, and do
+  not "clean up" the serve root as part of a task — it is the artifact
+  archive; pruning it is the user's call.
 
 ## Adding more templates
 
@@ -333,9 +469,22 @@ V1 ships 8 templates. To add more from the html-anything catalog (75 total):
 
 ## References
 
-- [`../design/SKILL.md`](../design/SKILL.md) — the `design` skill. Step 3.5
-  consults it for the visual direction + anti-AI-slop discipline before
+- [`../ui-ux/SKILL.md`](../ui-ux/SKILL.md) — the `ui-ux` skill, the **main
+  design driver**. Step 3.4 runs its `--design-system` engine and applies its
+  active named reference (default `openai`) as the visual North Star before
   generating HTML.
+- [`../ui-ux/references/index.json`](../ui-ux/references/index.json) — the named
+  design reference registry; the entry with `"default": true` is what Step 3.4
+  applies when the user names no reference.
+- [`../design/SKILL.md`](../design/SKILL.md) — the `design` skill. Step 3.5
+  applies it *on top of* the ui-ux driver as the anti-AI-slop discipline before
+  generating HTML.
+- [`../motion-design/references/motion-standards.md`](../motion-design/references/motion-standards.md)
+  — the shared motion standards (easing curves, duration budgets, reduced-motion
+  rules). Step 3.6 applies them to every authored CSS transition/animation.
+- [`../apple-design/SKILL.md`](../apple-design/SKILL.md) — Apple's fluid-interface
+  craft (vendored from emilkowalski/skills, MIT). Step 3.6 pulls its
+  size-specific typography (§15) and translucent-material (§12) rules.
 - [`../lottie/SKILL.md`](../lottie/SKILL.md) — the `lottie` skill
   (vendored from diffusionstudio/lottie). Step 3.7 consults it to author the
   inline motion layer.

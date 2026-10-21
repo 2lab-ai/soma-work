@@ -13,6 +13,7 @@
 import type { CompletionMessageTracker } from '@soma/slack/completion-message-tracker';
 import { parseDismissValue } from '@soma/slack/turn-feedback-block-builder';
 import { Logger } from '../../logger';
+import { buildWorkSessionKey } from '../../session-identity';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { RespondFn } from './types';
 
@@ -62,8 +63,8 @@ export class TurnDismissActionHandler {
     }
 
     // Forget BEFORE deleting so a racing auto-delete can't re-add it.
-    // sessionKey mirrors SlackBlockKitChannel.track(): `${channel}-${threadTs}`.
-    this.ctx.completionMessageTracker?.untrack(`${channel}-${threadTs}`, messageTs);
+    // sessionKey mirrors SlackBlockKitChannel.track(): the session-registry key.
+    this.ctx.completionMessageTracker?.untrack(buildWorkSessionKey(channel, threadTs), messageTs);
 
     try {
       await this.ctx.slackApi.deleteMessage(channel, messageTs);

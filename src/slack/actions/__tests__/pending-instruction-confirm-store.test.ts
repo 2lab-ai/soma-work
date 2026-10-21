@@ -47,11 +47,9 @@ describe('PendingInstructionConfirmStore', () => {
     };
     expect(store.set(entry)).toBeUndefined();
     expect(store.get('r1')).toEqual(entry);
-    expect(store.getBySession('C1|T1')).toEqual(entry);
     const deleted = store.delete('r1');
     expect(deleted).toEqual(entry);
     expect(store.get('r1')).toBeUndefined();
-    expect(store.getBySession('C1|T1')).toBeUndefined();
   });
 
   it('overwrites existing entry for same sessionKey and returns evicted', () => {
@@ -72,7 +70,8 @@ describe('PendingInstructionConfirmStore', () => {
     expect(evicted).toEqual(a);
     expect(store.get('r1')).toBeUndefined();
     expect(store.get('r2')).toEqual(b);
-    expect(store.getBySession('C1|T1')).toEqual(b);
+    // The session slot now names b: the next entry for the session evicts it.
+    expect(store.set({ ...a, requestId: 'r3' })).toEqual(b);
   });
 
   it('updateMessageTs mutates in place', () => {
@@ -159,8 +158,8 @@ describe('PendingInstructionConfirmStore', () => {
   it('get(requestId) treats expired entries as gone and deletes them', () => {
     // Runtime TTL guard — before the fix the expiry check only ran at
     // loadForms time, so a long-running process could serve entries past
-    // their 24h window. Force an expired createdAt and verify get/
-    // getBySession sweep it lazily.
+    // their 24h window. Force an expired createdAt and verify get sweeps it
+    // lazily.
     const store = new PendingInstructionConfirmStore();
     store.set({
       requestId: 'stale',
@@ -172,7 +171,6 @@ describe('PendingInstructionConfirmStore', () => {
       requesterId: DEFAULT_REQUESTER,
     });
     expect(store.get('stale')).toBeUndefined();
-    expect(store.getBySession('C5|T5')).toBeUndefined();
     // Should also have been purged from the snapshot list.
     expect(store.list()).toHaveLength(0);
   });

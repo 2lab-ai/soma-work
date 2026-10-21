@@ -16,10 +16,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Mock the MCP SDK so importing the module under test does not pull in real
 // stdio plumbing. The `if (require.main === module)` guard already prevents
 // auto-start, but the imports themselves still need to resolve.
+const mcpHandlers = vi.hoisted(() => new Map<string, (request?: any) => Promise<any>>());
+
 vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
   Server: class MockServer {
     constructor(_info: any, _opts?: any) {}
-    setRequestHandler(_schema: any, _handler: any) {}
+    setRequestHandler(schema: any, handler: any) {
+      mcpHandlers.set(schema, handler);
+    }
     connect() {}
   },
 }));
@@ -43,7 +47,7 @@ vi.mock('@soma/process-shared/stderr-logger.js', () => ({
 }));
 
 import { CronStorage } from '@soma/process-shared/cron/cron-storage';
-import { handleCreate } from './cron-mcp-server';
+import { getCronServer, handleCreate } from './cron-mcp-server';
 
 const baseContext = { user: 'U_TEST', channel: 'C_DEFAULT' };
 
@@ -197,7 +201,7 @@ describe('handleCreate', () => {
       storage,
     );
     expect(r.isError).toBe(true);
-    expect(r.text).toBe("Error: Invalid model_type 'wizard'. Use 'default', 'fast', or 'custom'");
+    expect(r.text).toBe("Error: Invalid model_type 'wizard'. Use 'default', 'opus', 'fable', 'fast', or 'custom'");
   });
 
   it('rejects model_type=custom without model_name', () => {
@@ -288,10 +292,46 @@ describe('handleCreate', () => {
     expect(r.text).not.toContain(' | model: fast(');
   });
 
+  it('creates job with the floating model_type=opus / fable (no pinned model id stored)', () => {
+    for (const type of ['opus', 'fable'] as const) {
+      const r = handleCreate(
+        { name: `alias-${type}`, expression: '* * * * *', prompt: 'hi', channel: 'C100', model_type: type },
+        baseContext,
+        storage,
+      );
+      expect(r.isError).toBe(false);
+      expect(r.text).toContain(` | model: ${type}`);
+      const job = storage.getAll().find((j) => j.name === `alias-${type}`);
+      expect(job?.modelConfig).toEqual({ type });
+    }
+  });
+
   it('creates job with model_type=custom + model_name (modelStr includes model)', () => {
     const r = handleCreate(
       {
         name: 'custom-model',
+        expression: '* * * * *',
+        prompt: 'hi',
+        channel: 'C100',
+        model_type: 'custom',
+        model_name: 'claude-sonnet-4-20250514',
+      },
+      baseContext,
+      storage,
+    );
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain(' | model: custom(claude-sonnet-4-20250514)');
+    const job = storage.getAll().find((j) => j.name === 'custom-model');
+    expect(job?.modelConfig).toEqual({ type: 'custom', model: 'claude-sonnet-4-20250514' });
+  });
+
+  it('stores no reasoning_effort / fast_mode even when a caller still sends them', () => {
+    // Nothing on the fire path reads them (resolveModelOverride returns a
+    // model id only), so persisting them would record a setting that never
+    // takes effect.
+    const r = handleCreate(
+      {
+        name: 'custom-legacy-args',
         expression: '* * * * *',
         prompt: 'hi',
         channel: 'C100',
@@ -304,7 +344,8 @@ describe('handleCreate', () => {
       storage,
     );
     expect(r.isError).toBe(false);
-    expect(r.text).toContain(' | model: custom(claude-sonnet-4-20250514)');
+    const job = storage.getAll().find((j) => j.name === 'custom-legacy-args');
+    expect(job?.modelConfig).toEqual({ type: 'custom', model: 'claude-sonnet-4-20250514' });
   });
 
   it('creates job with model_type=default (no modelStr)', () => {
@@ -388,5 +429,295 @@ describe('handleCreate', () => {
     );
     expect(r.isError).toBe(false);
     expect(r.text).toContain('Channel: C_FROM_CTX');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cron manage UI (cron/schedule keyword flow) — handleUpdate / handleList /
+// handleDelete admin scoping. Trace: session goal "cron 스케줄러 관리 UI"
+// ---------------------------------------------------------------------------
+
+import { handleDelete, handleList, handleUpdate } from './cron-mcp-server';
+
+const ownerContext = { user: 'U_OWNER', channel: 'C_DEFAULT' };
+const otherContext = { user: 'U_OTHER', channel: 'C_DEFAULT' };
+const adminContext = { user: 'U_ADMIN', channel: 'C_DEFAULT', isAdmin: true };
+
+function freshStorage(): { storage: CronStorage; cleanup: () => void } {
+  const file = path.join(os.tmpdir(), `cron-mcp-mgmt-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const storage = new CronStorage(file);
+  return {
+    storage,
+    cleanup: () => {
+      for (const f of [file, file + '.tmp', file.replace(/\.json$/, '-history.json')]) {
+        try {
+          fs.unlinkSync(f);
+        } catch {}
+      }
+    },
+  };
+}
+
+function seedJob(storage: CronStorage, over: Record<string, any> = {}) {
+  return storage.addJob({
+    name: 'daily',
+    expression: '0 9 * * *',
+    prompt: 'standup',
+    owner: 'U_OWNER',
+    channel: 'C111',
+    threadTs: null,
+    ...over,
+  });
+}
+
+describe('handleUpdate', () => {
+  let storage: CronStorage;
+  let cleanup: () => void;
+
+  beforeEach(() => {
+    ({ storage, cleanup } = freshStorage());
+  });
+  afterEach(() => cleanup());
+
+  it('rejects missing name', () => {
+    const r = handleUpdate({}, ownerContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toBe('Error: name is required');
+  });
+
+  it('rejects unknown job', () => {
+    const r = handleUpdate({ name: 'nope', prompt: 'x' }, ownerContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("Cron job 'nope' not found");
+  });
+
+  it('rejects empty patch (nothing to update)', () => {
+    seedJob(storage);
+    const r = handleUpdate({ name: 'daily' }, ownerContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('nothing to update');
+  });
+
+  it('changes model to a specific model (model_type=custom)', () => {
+    seedJob(storage);
+    const r = handleUpdate({ name: 'daily', model_type: 'custom', model_name: 'gpt-5.5' }, ownerContext, storage);
+    expect(r.isError).toBe(false);
+    expect(storage.getJobsByOwner('U_OWNER')[0].modelConfig).toEqual({ type: 'custom', model: 'gpt-5.5' });
+  });
+
+  it('changes model to the floating opus alias (model_type=opus) and lists it as opus(latest)', () => {
+    seedJob(storage, { modelConfig: { type: 'custom', model: 'gpt-5.5' } });
+    const r = handleUpdate({ name: 'daily', model_type: 'opus' }, ownerContext, storage);
+    expect(r.isError).toBe(false);
+    expect(storage.getJobsByOwner('U_OWNER')[0].modelConfig).toEqual({ type: 'opus' });
+    expect(handleList(ownerContext, storage).text).toContain('model:opus(latest)');
+  });
+
+  it('model_type=default clears override → creator current model at fire time', () => {
+    seedJob(storage, { modelConfig: { type: 'custom', model: 'gpt-5.5' } });
+    const r = handleUpdate({ name: 'daily', model_type: 'default' }, ownerContext, storage);
+    expect(r.isError).toBe(false);
+    expect(storage.getJobsByOwner('U_OWNER')[0].modelConfig).toBeUndefined();
+  });
+
+  it('rejects model_type=custom without model_name', () => {
+    seedJob(storage);
+    const r = handleUpdate({ name: 'daily', model_type: 'custom' }, ownerContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toBe('Error: model_name is required when model_type is "custom"');
+  });
+
+  it('changes target to dm and clears threadTs', () => {
+    seedJob(storage, { target: 'thread', threadTs: '1.2' });
+    const r = handleUpdate({ name: 'daily', target: 'dm' }, ownerContext, storage);
+    expect(r.isError).toBe(false);
+    const job = storage.getJobsByOwner('U_OWNER')[0];
+    expect(job.target).toBe('dm');
+    expect(job.threadTs).toBeNull();
+  });
+
+  it('changes target to channel: clears target key and threadTs', () => {
+    seedJob(storage, { target: 'dm', threadTs: '1.2' });
+    const r = handleUpdate({ name: 'daily', target: 'channel' }, ownerContext, storage);
+    expect(r.isError).toBe(false);
+    const job = storage.getJobsByOwner('U_OWNER')[0];
+    expect(job.target).toBeUndefined();
+    expect(job.threadTs).toBeNull();
+  });
+
+  it('target=thread requires a threadTs (arg or existing)', () => {
+    seedJob(storage);
+    const r = handleUpdate({ name: 'daily', target: 'thread' }, ownerContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toBe('Error: threadTs is required when target is "thread"');
+
+    const ok = handleUpdate({ name: 'daily', target: 'thread', threadTs: '9.9' }, ownerContext, storage);
+    expect(ok.isError).toBe(false);
+    const job = storage.getJobsByOwner('U_OWNER')[0];
+    expect(job.target).toBe('thread');
+    expect(job.threadTs).toBe('9.9');
+  });
+
+  it('rejects invalid expression', () => {
+    seedJob(storage);
+    const r = handleUpdate({ name: 'daily', expression: 'nope' }, ownerContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('Invalid cron expression');
+  });
+
+  it('rejects invalid channel', () => {
+    seedJob(storage);
+    const r = handleUpdate({ name: 'daily', channel: 'bad' }, ownerContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toBe("Error: Invalid channel 'bad'");
+  });
+
+  it('non-admin cannot pass owner to touch another user job', () => {
+    seedJob(storage);
+    const r = handleUpdate({ name: 'daily', owner: 'U_OWNER', prompt: 'x' }, otherContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('admin');
+  });
+
+  it('admin updates another user job via owner param', () => {
+    seedJob(storage);
+    const r = handleUpdate({ name: 'daily', owner: 'U_OWNER', model_type: 'fast' }, adminContext, storage);
+    expect(r.isError).toBe(false);
+    expect(storage.getJobsByOwner('U_OWNER')[0].modelConfig).toEqual({ type: 'fast' });
+  });
+
+  it('admin without owner param does not silently edit others — requires owner', () => {
+    seedJob(storage);
+    const r = handleUpdate({ name: 'daily', prompt: 'x' }, adminContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('owner');
+  });
+
+  it('admin name-only call with cross-owner name collision is rejected as ambiguous', () => {
+    seedJob(storage); // U_OWNER's 'daily'
+    seedJob(storage, { owner: 'U_ADMIN' }); // admin's own 'daily'
+    const r = handleUpdate({ name: 'daily', prompt: 'x' }, adminContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('ambiguous');
+    expect(r.text).toContain('U_ADMIN');
+    expect(r.text).toContain('U_OWNER');
+    // nothing was modified
+    expect(storage.getJobsByOwner('U_ADMIN')[0].prompt).toBe('standup');
+    expect(storage.getJobsByOwner('U_OWNER')[0].prompt).toBe('standup');
+  });
+
+  it('admin resolves collision by passing owner explicitly (own job included)', () => {
+    seedJob(storage);
+    seedJob(storage, { owner: 'U_ADMIN' });
+    const r = handleUpdate({ name: 'daily', owner: 'U_ADMIN', prompt: 'mine' }, adminContext, storage);
+    expect(r.isError).toBe(false);
+    expect(storage.getJobsByOwner('U_ADMIN')[0].prompt).toBe('mine');
+    expect(storage.getJobsByOwner('U_OWNER')[0].prompt).toBe('standup');
+  });
+
+  it('admin name-only call without collision still edits own job', () => {
+    seedJob(storage, { owner: 'U_ADMIN' });
+    const r = handleUpdate({ name: 'daily', prompt: 'mine' }, adminContext, storage);
+    expect(r.isError).toBe(false);
+    expect(storage.getJobsByOwner('U_ADMIN')[0].prompt).toBe('mine');
+  });
+});
+
+describe('handleList admin scoping', () => {
+  let storage: CronStorage;
+  let cleanup: () => void;
+
+  beforeEach(() => {
+    ({ storage, cleanup } = freshStorage());
+    seedJob(storage); // U_OWNER
+    seedJob(storage, {
+      name: 'other-job',
+      owner: 'U_OTHER',
+      target: 'dm',
+      modelConfig: { type: 'custom', model: 'gpt-5.5' },
+    });
+  });
+  afterEach(() => cleanup());
+
+  it('non-admin sees only own jobs, without owner column', () => {
+    const r = handleList(ownerContext, storage);
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain('daily');
+    expect(r.text).not.toContain('other-job');
+    expect(r.text).not.toContain('owner:');
+  });
+
+  it('admin sees all jobs with owner shown', () => {
+    const r = handleList(adminContext, storage);
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain('daily');
+    expect(r.text).toContain('other-job');
+    expect(r.text).toContain('owner:<@U_OWNER>');
+    expect(r.text).toContain('owner:<@U_OTHER>');
+  });
+
+  it('renders model and output target explicitly, including defaults', () => {
+    const r = handleList(ownerContext, storage);
+    // default model = creator's current model at fire time
+    expect(r.text).toContain('model:default(creator current model)');
+    expect(r.text).toContain('target:channel');
+    const rAdmin = handleList(adminContext, storage);
+    expect(rAdmin.text).toContain('model:custom(gpt-5.5)');
+    expect(rAdmin.text).toContain('target:dm');
+  });
+});
+
+describe('handleDelete admin scoping', () => {
+  let storage: CronStorage;
+  let cleanup: () => void;
+
+  beforeEach(() => {
+    ({ storage, cleanup } = freshStorage());
+    seedJob(storage);
+  });
+  afterEach(() => cleanup());
+
+  it('non-admin cannot delete another user job via owner param', () => {
+    const r = handleDelete({ name: 'daily', owner: 'U_OWNER' }, otherContext, storage);
+    expect(r.isError).toBe(true);
+    expect(storage.getJobsByOwner('U_OWNER')).toHaveLength(1);
+  });
+
+  it('admin deletes another user job via owner param', () => {
+    const r = handleDelete({ name: 'daily', owner: 'U_OWNER' }, adminContext, storage);
+    expect(r.isError).toBe(false);
+    expect(storage.getJobsByOwner('U_OWNER')).toHaveLength(0);
+  });
+
+  it('admin name-only delete with cross-owner collision is rejected as ambiguous', () => {
+    seedJob(storage, { owner: 'U_ADMIN' });
+    const r = handleDelete({ name: 'daily' }, adminContext, storage);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('ambiguous');
+    expect(storage.getJobsByOwner('U_OWNER')).toHaveLength(1);
+    expect(storage.getJobsByOwner('U_ADMIN')).toHaveLength(1);
+  });
+});
+
+describe('advertised tool schema', () => {
+  // The schema is what the model reads to decide which arguments exist. It
+  // must not offer a setting the scheduler never applies: cron dispatch has a
+  // per-event model override (`SyntheticMessageEvent.modelOverride`) but no
+  // effort or fast-mode channel, so `reasoning_effort` / `fast_mode` were
+  // accepted, stored, and silently ignored.
+  async function toolSchemas(): Promise<Map<string, Record<string, unknown>>> {
+    getCronServer();
+    const list = mcpHandlers.get('ListToolsRequestSchema');
+    if (!list) throw new Error('ListTools handler was not registered');
+    const { tools } = await list();
+    return new Map(tools.map((t: any) => [t.name, t.inputSchema.properties]));
+  }
+
+  it.each(['cron_create', 'cron_update'])('%s offers no reasoning_effort / fast_mode', async (tool) => {
+    const props = (await toolSchemas()).get(tool);
+    expect(props).toBeDefined();
+    expect(Object.keys(props!)).toEqual(expect.arrayContaining(['model_type', 'model_name']));
+    expect(props).not.toHaveProperty('reasoning_effort');
+    expect(props).not.toHaveProperty('fast_mode');
   });
 });

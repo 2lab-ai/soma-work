@@ -1,6 +1,6 @@
 ---
 name: zcheck
-description: "**Trigger always** before ask user fopr Approval. Also trigger just after you think work done."
+description: "Post-implementation gate. Trigger before asking the user for approval, and just after you think work is done. Runs CI + review-comment resolution + ztrace coverage check. Invoked by local:z phase3 after zwork produces a PR."
 ---
 
 # zcheck — Post-Implementation Verification Gate
@@ -11,10 +11,10 @@ PR이 mergeable 상태가 될 때까지 루프
 
 - PR URL or `owner/repo#number`
 
-## Step 0: Update bracnh
+## Step 0: Update branch
 
 1. base branch로 새로 `rebase` 한다. 충돌이 발생하면 충돌을 처리한다.
-2. Invoke `simplify`
+2. Invoke `local:simplify` (fix mode) on the `origin/main...HEAD` diff.
 
 ## Step 1: CI Must Pass
 
@@ -33,8 +33,10 @@ gh run list --branch <BRANCH> --repo <OWNER/REPO> --limit 1 --json status,conclu
 ## Step 2: Resolve All PR Review Comments
 
 1. `local:github-pr`로 리뷰 코멘트 가져오기.
-2. Unresolved 쓰레드마다: 코드 확인 → 수정 필요시 fix+commit+push+reply+resolve, 이미 해결됐으면 reply+resolve.
-3. 0 unresolved까지 루프.
+2. Unresolved 쓰레드마다 심각도로 나눈다:
+   - **P0/P1, 또는 심각도 태그 없음** → 코드 확인 → 수정 필요시 fix+commit+push+reply+resolve, 이미 해결됐으면 reply+resolve.
+   - **P2/P3 태그** (`[P2]`·`[P3]`, `P2 Badge` 등) → 이 PR에서 코드를 고치지 않는다. PR당 **후속 이슈 하나**에 쓰레드 링크를 모으고(이미 있으면 그 이슈에 추가), 쓰레드마다 그 이슈 링크로 reply+resolve.
+3. 0 unresolved까지 루프. P2/P3 이관은 코드 변경이 아니므로 Step 1 재시작을 일으키지 않는다.
 
 
 ## Step 3: 유저 설득 (`local:using-ssot` Hook 4)
@@ -58,16 +60,19 @@ gh run list --branch <BRANCH> --repo <OWNER/REPO> --limit 1 --json status,conclu
 
 tier ≤ `small`로 ztrace가 과한 경우: RED→GREEN 테스트 출력을 ztrace 대체로 허용. 1:N 매핑 규율은 유지.
 
-## Step 4: Request Approve
+## Step 4: Readiness Verdict & Approve Handoff
 
-1. 유저애게 이슈와 approve를 요청할 **PR 링크**를 보낸다 `local:UIAskUserQuestion`으로 approve 요청. 템플릿: `../UIAskUserQuestion/templates/zcheck-pr-approve.json`
-리뷰 코멘트 해결 수, CI 상태, 변경 범위를 보낸다. 네 점수가 -10점 이하로 떨어지면 너는 대체될 것이다. 
-선택지:
-- 잘했다! Apporve했으니 계속 절차대로 끝까지 진행 (RATE +1)
-- local:ztrace를 절차대로 다시 해라 (RATE -2)
-- local:zcheck를 다시 invoke하고 다시 CI 체크부터 진행 (RATE: -3)
-- local:z를 다시 invoke하고 처음부터 빠진 절차대로 진행 (RATE: -5)
-  
+**zcheck 자체는 approve/merge를 실행하지 않는다** (`local:using-z` 라우팅표: approve는 `local:z` phase4 소유). zcheck의 산출물은 **readiness 판정**이다:
+
+1. Coverage 완전 + CI green + unresolved 0 → **READY** 판정. 유저에게 **PR 링크** + 리뷰 코멘트 해결 수, CI 상태, 변경 범위를 첨부해 `local:UIAskUserQuestion`으로 approve 여부를 묻는다 — 이 질문은 `local:z` phase4 approve 게이트를 대행하는 것이며, 머지·`local:es` 진행은 유저 approve 후 `local:z` phase4/5 절차가 이어받는다. **autoz 하에서는 이 질문을 생략한다** (autoz Rule 4) — READY 판정만 반환하고, approve는 autoz Rule 8 trinity 리뷰 게이트 통과 후 autoz Rule 5가 직접 수행한다.
+
+옵션 텍스트는 `../UIAskUserQuestion/templates/zcheck-pr-approve.json` 템플릿을 그대로 사용한다 (question / context / choices A~D 전부 그 파일이 단일 진실원 — 여기서 재정의하지 않는다). 각 옵션의 의미만 요약:
+- Option A: approve — 이후 머지 → `local:es` → 다음 phase는 `local:z` phase4/5가 절차대로 수행 (RATE +1).
+- Option B: `local:ztrace` 재실행 요청, 더 엄격한 브리핑 (RATE -2).
+- Option C: `local:zcheck` 재실행 요청, CI 체크부터 다시 (RATE -3).
+- Option D: `local:z` 처음부터 재실행 요청, 빠진 절차 복구 (RATE -5).
+
+
 ## Invariants
 
 - Unresolved 코멘트 있으면 approve 요청 금지.

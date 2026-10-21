@@ -2,7 +2,6 @@ export {
   buildConfirmationCard,
   buildHelpCard,
   buildSettingCard,
-  buildTombstoneCard,
   type ConfirmationCardOptions,
   DEFAULT_HELP_CATEGORIES,
   type HelpCardOptions,
@@ -10,6 +9,5 @@ export {
   type SettingCardExtraAction,
   type SettingCardOption,
   type SettingCardOptions,
-  type TombstoneCardOptions,
   zBlockId,
 } from '@soma/slack/z/ui-builder';

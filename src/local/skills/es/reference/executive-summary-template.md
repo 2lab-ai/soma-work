@@ -1,20 +1,26 @@
 # 🎯 {ISSUE_KEY} Executive Summary
 
+> **Synthetic example.** The filled-in section 0 below is invented, like every value in
+> `reference/executive-summary-example.md`. This file ships inside a public package: keep the
+> placeholders and the synthetic sample, never paste a real report from a private or customer
+> codebase into it.
+
 ## 0. SSOT
 - SSOT
 ```
-@Z [2026/03/30 11:52 AM] @사마중달 (Beta) Research job
+@reporter [2026/03/30 11:52 AM] @assistant Research job
 Intent:
-- Service separation work for tasks that can run in parallel, such as bonus scan and vsports polling. Providing a db read-only context for most of them would be ideal
+- Split the jobs that can run in parallel (feed polling, digest scan) out of the main worker.
+  A read-only database context would be ideal for most of them
 - Thoughts
-  - Separate bg worker jobs executors
-  - Periodically execute scheduled tasks and finalize by calling the settlements_service API
-  - Can only directly access the replicated ro db
-@Z [2026/03/30 12:49 PM] I approved it, so you wrap it up
+  - Separate the background job executors
+  - Run the scheduled jobs periodically and finalize by calling the notifier service API
+  - Only the read-only replica should be reachable from there
+@reporter [2026/03/30 12:49 PM] Approved — wrap it up
 ```
-- PROJ-3231: https://yourcompany.atlassian.net/browse/PROJ-3231 - QA
-- PR #1462: https://github.com/yourcompany/projalpha/pull/1462 - Merged
-- PR #1455: https://github.com/yourcompany/projalpha/pull/1455 - Merged
+- EXAMPLE-42: https://example.atlassian.net/browse/EXAMPLE-42 - QA
+- PR #12: https://github.com/example-org/example-service/pull/12 - Merged
+- PR #15: https://github.com/example-org/example-service/pull/15 - Merged
 
 ## 1. Problem Background
 

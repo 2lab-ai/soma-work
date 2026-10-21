@@ -17,7 +17,7 @@ export class LinkHandler implements CommandHandler {
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const { user, channel, threadTs, text, say } = ctx;
+    const { channel, threadTs, text, say } = ctx;
 
     try {
       const parsed = CommandParser.parseLinkCommand(text);

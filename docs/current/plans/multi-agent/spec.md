@@ -109,7 +109,6 @@ soma-work 단일 프로세스 내에서 메인 봇(@제갈량) 외에 독립 Sla
     "jangbi": {
       "slackBotToken": "xoxb-...",
       "slackAppToken": "xapp-...",
-      "signingSecret": "...",
       "promptDir": "src/prompt/jangbi",
       "persona": "default",
       "description": "코드 리뷰 전문 에이전트",
@@ -118,7 +117,6 @@ soma-work 단일 프로세스 내에서 메인 봇(@제갈량) 외에 독립 Sla
     "gwanu": {
       "slackBotToken": "xoxb-...",
       "slackAppToken": "xapp-...",
-      "signingSecret": "...",
       "promptDir": "src/prompt/gwanu",
       "persona": "default",
       "description": "배포 및 인프라 전문 에이전트"
@@ -133,7 +131,9 @@ soma-work 단일 프로세스 내에서 메인 봇(@제갈량) 외에 독립 Sla
 export interface AgentConfig {
   slackBotToken: string;
   slackAppToken: string;
-  signingSecret: string;
+  // optional: HTTP 서명 검증 전용이라 Socket Mode 에이전트에는 불필요.
+  // 선언한 경우에만 검증(20자 이상), 미선언이면 키 자체가 없다.
+  signingSecret?: string;
   promptDir?: string;      // default: src/prompt/{agentName}
   persona?: string;        // default: 'default'
   description?: string;
@@ -163,7 +163,7 @@ export interface AgentQueryResult {
 
 ### 5.6 Agent MCP Server
 
-`llm-mcp-server.ts` 패턴을 미러링:
+공유 internal MCP server 패턴(`packages/mcp-servers/*` + `BaseMcpServer`; 원형이던 llm 서버는 PR #254에서 제거됨)을 미러링:
 
 ```typescript
 // Tools:

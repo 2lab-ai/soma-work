@@ -4,6 +4,40 @@
  * Last updated: 2026-06-09 (Claude Fable 5 release, 2026-06-09)
  */
 
+import { resolveModelProfile } from './model-profile';
+
+/**
+ * Context-window / auto-compact / blocking-limit facts now live in
+ * `model-profile.ts` (the single canonical resolver). They are re-exported
+ * here so the many existing importers of this module keep working unchanged.
+ */
+export {
+  FALLBACK_CONTEXT_WINDOW,
+  GPT_5_5_AUTO_COMPACT_TOKENS,
+  GPT_5_5_CONTEXT_WINDOW,
+  GPT_5_5_SDK_BLOCKING_LIMIT,
+  GPT_5_6_AUTO_COMPACT_TOKENS,
+  GPT_5_6_CONTEXT_WINDOW,
+  GPT_5_6_SDK_BLOCKING_LIMIT,
+  GPT_6_AUTO_COMPACT_TOKENS,
+  GPT_6_CONTEXT_WINDOW,
+  GPT_6_SDK_BLOCKING_LIMIT,
+  hasOneMSuffix,
+  isGpt6Model,
+  isGpt55Model,
+  isGpt56Model,
+  isNativeOneMModel,
+  isRejectedModelInput,
+  type ModelInputAccepted,
+  type ModelInputCompatibility,
+  type ModelInputRejected,
+  type ModelProfile,
+  ONE_M_SUFFIX_RE,
+  resolveModelInputCompatibility,
+  resolveModelProfile,
+  stripOneMSuffix,
+} from './model-profile';
+
 export const PRICING_VERSION = '2026-06-09';
 
 export interface ModelPricingSpec {
@@ -18,6 +52,14 @@ export interface ModelPricingSpec {
 
 export interface ModelSpec {
   pricing: ModelPricingSpec;
+  /**
+   * LEGACY, NOT AUTHORITATIVE. The registry is substring-matched, so one row
+   * covers a family including its `[1m]` variant and it cannot express the
+   * suffix opt-in at all (the `opus-4-8` row says 1M while bare
+   * `claude-opus-4-8` is a 200k profile). The effective window every consumer
+   * must use is `resolveModelProfile(id).contextWindow` — this field survives
+   * only because `getModelSpec` is a public shape. Nothing in `src/` reads it.
+   */
   contextWindow: number;
   maxOutput: number;
 }
@@ -43,6 +85,134 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
         cache1hrWritePerMTok: 20,
       },
       contextWindow: 1_000_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // Claude Opus 5 (2026-08-26) — Opus tier, same rates as the 4.x opus rows
+  // ($5 in / $25 out / $0.5 cache-read; 5min write 1.25×input, 1hr 2×input).
+  // Cross-checked against llmux, which is the component that actually bills
+  // this traffic: `llmux/src/pricing.rs:103-105` maps `claude-opus-5` to
+  // `OPUS_TIER` = ModelPrice::new(5.0, 25.0, 0.5, 6.25).
+  //
+  // MUST stay above the generic `sonnet-4-` / `haiku-4-` fallbacks — and it
+  // must exist at all: `claude-opus-5` matches NO other pattern in this table
+  // (`opus-4-8`, `opus-4-5`, … all carry a `4-`), so without this row every
+  // Opus 5 turn was priced at FALLBACK_SPEC's Sonnet rates. `opus-5` does not
+  // collide with `claude-opus-4-5-*` either — that id spells `opus-4-5`.
+  [
+    'opus-5',
+    {
+      pricing: {
+        inputPerMTok: 5,
+        outputPerMTok: 25,
+        cacheReadPerMTok: 0.5,
+        cache5minWritePerMTok: 6.25,
+        cache1hrWritePerMTok: 10,
+      },
+      contextWindow: 1_000_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // OpenAI gpt-6-astra — the gpt-6 generation (2026-09-03 release; $10 in /
+  // $50 out / $1 cache-read per MTok, 2026-09 launch standard-tier rates; no
+  // cache-creation charge on codex, same as every other gpt row). 272k
+  // window — the openai/codex model catalog value (context_window 272000),
+  // the same class as gpt-5.5's 272k input cap, NOT gpt-5.6's 372k. Context
+  // numbers are policy and live in model-profile.ts; this row is pricing.
+  [
+    'gpt-6-astra',
+    {
+      pricing: {
+        inputPerMTok: 10,
+        outputPerMTok: 50,
+        cacheReadPerMTok: 1,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 272_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // OpenAI gpt-5.6-terra — mid tier of the gpt-5.6 family ($2.50 in / $15
+  // out / $0.25 cache-read per MTok, 2026-07-09 launch rates; no
+  // cache-creation charge on codex). Same 372k window as sol — official
+  // value from the openai/codex model catalog (models-manager/models.json),
+  // probe-consistent (369,755-token input accepted, ~380k rejected).
+  // MUST stay ABOVE the 'gpt-5.6' entry — patterns are substring-matched
+  // first-wins, and 'gpt-5.6' would swallow 'gpt-5.6-terra'.
+  [
+    'gpt-5.6-terra',
+    {
+      pricing: {
+        inputPerMTok: 2.5,
+        outputPerMTok: 15,
+        cacheReadPerMTok: 0.25,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 372_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // OpenAI gpt-5.6-luna — budget tier ($1 in / $6 out / $0.1 cache-read per
+  // MTok, 2026-07-09 launch rates; no cache-creation charge on codex). Same
+  // 372k catalog window. MUST stay above the generic 'gpt-5.6' pattern.
+  [
+    'gpt-5.6-luna',
+    {
+      pricing: {
+        inputPerMTok: 1,
+        outputPerMTok: 6,
+        cacheReadPerMTok: 0.1,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 372_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // OpenAI gpt-5.6 family fallback (sol rates) — served via llmux's codex
+  // backend group. There is no bare `gpt-5.6` model; this pattern catches
+  // `gpt-5.6-sol` plus the legacy bare-id spelling in old transcripts and
+  // future dated sol snapshots. Rates match OpenAI's 2026-07-09 launch
+  // pricing for the sol flagship: $5 in / $30 out / $0.5 cache-read per
+  // MTok, no cache-creation charge on codex. Context window is 372k — the
+  // official openai/codex catalog value (models-manager/models.json:
+  // context_window 372000 for sol/terra/luna alike), probe-consistent
+  // (369,755-token input accepted, ~380k rejected) — with harness-side
+  // auto-compact at 340k (see GPT_5_6_* constants below). Terra/luna have
+  // their own entries ABOVE this one (substring matching is first-wins).
+  [
+    'gpt-5.6',
+    {
+      pricing: {
+        inputPerMTok: 5,
+        outputPerMTok: 30,
+        cacheReadPerMTok: 0.5,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 372_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // OpenAI gpt-5.5 — served via llmux's codex backend group (llmux routes
+  // `gpt-` prefixed ids to codex; see llmux src/routing.rs). Rates mirror
+  // llmux's built-in gpt-5.5 pricing (2026-04-23): $5 in / $30 out /
+  // $0.5 cache-read per MTok, and NO cache-creation charge (codex has no
+  // cache-write billing — both write rates are 0). Context window is 275k
+  // with harness-side auto-compact at 250k (see GPT_5_5_* constants below).
+  [
+    'gpt-5.5',
+    {
+      pricing: {
+        inputPerMTok: 5,
+        outputPerMTok: 30,
+        cacheReadPerMTok: 0.5,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 275_000,
       maxOutput: 128_000,
     },
   ],
@@ -212,53 +382,17 @@ export function getModelPricing(modelName?: string): ModelPricingSpec {
   return getModelSpec(modelName).pricing;
 }
 
-/** Fallback context window size when SDK/registry haven't reported one yet. */
-export const FALLBACK_CONTEXT_WINDOW = 200_000;
-
 /**
- * Suffix marker for the 1M-context variant of a model id.
- * Convention: `{baseModelId}[1m]` enables the 1M beta context window.
- * The Claude Agent SDK (≥ 0.2.111) detects this suffix, strips it before the
- * API call, and injects the `context-1m-2025-08-07` beta header uniformly
- * across API-key and OAuth auth — so no runtime beta-header injection is needed.
- */
-export const ONE_M_SUFFIX_RE = /\[1m\]$/i;
-
-/** Returns true when `model` ends with the 1M suffix (case-insensitive). */
-export function hasOneMSuffix(model: string): boolean {
-  return ONE_M_SUFFIX_RE.test(model);
-}
-
-/**
- * Models that serve a 1M context window on the BARE id — no `[1m]` suffix and
- * no `context-1m-2025-08-07` beta header.
+ * Fixed token-count auto-compact trigger for models whose compaction point
+ * is defined in absolute tokens rather than the per-user percent threshold.
+ * Returns `undefined` for every other model — callers fall back to the
+ * percent-based check (#617).
  *
- * Fable 5 ships 1M as its native, generally-available context (Anthropic docs,
- * 2026-06-09), unlike opus where 1M is a beta opt-in gated behind the `[1m]`
- * suffix + beta header. So `claude-fable-5` must resolve to 1M directly; it has
- * no `[1m]` variant and must NOT go through the suffix/beta-header path.
+ * Thin delegate over the canonical resolver (`model-profile.ts`), which owns
+ * both the exact-id policy overlay and the family defaults.
  */
-export const NATIVE_ONE_M_RE = /fable-5/i;
-
-/** Returns true when `model` serves 1M context on its bare id (no suffix). */
-export function isNativeOneMModel(model: string): boolean {
-  return NATIVE_ONE_M_RE.test(model);
-}
-
-/**
- * `CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE` value injected for native-1M models:
- * the SDK's own input hard-block formula (`window − 20k output reserve − 3k
- * safety`) evaluated on the true 1M window.
- *
- * See the native-1M workaround block in `build-stream-options.ts` for the
- * full story (the pinned SDK resolves native-1M ids to 200k); remove this
- * constant together with that injection.
- */
-export const NATIVE_ONE_M_SDK_BLOCKING_LIMIT = 977_000;
-
-/** Strips the `[1m]` suffix from `model` if present. Case-insensitive. */
-export function stripOneMSuffix(model: string): string {
-  return model.replace(ONE_M_SUFFIX_RE, '');
+export function resolveAutoCompactTokens(modelName?: string): number | undefined {
+  return resolveModelProfile(modelName).autoCompactTokens;
 }
 
 /**
@@ -333,29 +467,15 @@ export function classifyOneMUnavailable(text: string): OneMUnavailableKind {
 /**
  * Resolve context window for a model by name.
  *
- * Two signals resolve to a 1M window:
- *   1. The `[1m]` suffix (opus beta opt-in) — strips + injects the beta header.
- *   2. A native-1M model id (e.g. `claude-fable-5`) — 1M on the bare id, no
- *      suffix and no beta header. See `isNativeOneMModel`.
- * Every other bare model id resolves to `FALLBACK_CONTEXT_WINDOW` (200k), even
- * for specs that used to be 1M — matching the user-facing contract where 1M is
- * otherwise an opt-in via the `[1m]` variant.
+ * Thin delegate over the canonical resolver (`model-profile.ts`): exact-id
+ * policy overlay → `[1m]` opt-in → native-1M → gpt families → llmux catalog
+ * (non-claude groups only) → 200k fallback.
  *
  * Used by stream-executor hot paths and threshold checks that need a non-zero
  * denominator before the SDK reports `contextWindow`.
  */
 export function resolveContextWindow(modelName?: string): number {
-  if (!modelName) return FALLBACK_CONTEXT_WINDOW;
-  if (hasOneMSuffix(modelName)) return 1_000_000;
-  if (isNativeOneMModel(modelName)) return 1_000_000;
-  return FALLBACK_CONTEXT_WINDOW;
-}
-
-/**
- * Get max output token count for a model.
- */
-export function getMaxOutput(modelName?: string): number {
-  return getModelSpec(modelName).maxOutput;
+  return resolveModelProfile(modelName).contextWindow;
 }
 
 /**

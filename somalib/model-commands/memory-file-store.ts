@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { MemoryStore } from './catalog';
+import { l1FilePath, migrateLegacyL1 } from './hierarchical-memory-store';
 
 const ENTRY_DELIMITER = '\n§\n';
 const DEFAULT_MEMORY_CHAR_LIMIT = 2200;
@@ -25,8 +26,11 @@ export class MemoryFileStore implements MemoryStore {
 
   private filePath(user: string, target: string): string {
     if (!isSafeSegment(user)) throw new Error(`Invalid userId: ${user}`);
-    const fileName = target === 'memory' ? 'MEMORY.md' : 'USER.md';
-    return path.join(this.dataDir, user, fileName);
+    const l1 = target === 'memory' ? 'memory' : 'user';
+    // Keep L1 location in lockstep with the in-process store: files live under
+    // `memory/`, with one-way migration that removes the legacy root-level path.
+    migrateLegacyL1(this.dataDir, user, l1);
+    return l1FilePath(this.dataDir, user, l1);
   }
 
   private charLimit(target: string): number {
@@ -39,7 +43,10 @@ export class MemoryFileStore implements MemoryStore {
       if (!fs.existsSync(fp)) return [];
       const raw = fs.readFileSync(fp, 'utf-8');
       if (!raw.trim()) return [];
-      return raw.split(ENTRY_DELIMITER).map((e) => e.trim()).filter((e) => e.length > 0);
+      return raw
+        .split(ENTRY_DELIMITER)
+        .map((e) => e.trim())
+        .filter((e) => e.length > 0);
     } catch {
       return [];
     }
@@ -62,7 +69,10 @@ export class MemoryFileStore implements MemoryStore {
     const next = [...entries, trimmed];
     const limit = this.charLimit(target);
     if (charCount(next) > limit) {
-      return { ok: false, message: `Would exceed char limit (${charCount(entries)}/${limit} used). Remove old entries first.` };
+      return {
+        ok: false,
+        message: `Would exceed char limit (${charCount(entries)}/${limit} used). Remove old entries first.`,
+      };
     }
 
     this.writeEntries(user, target, next);
@@ -107,10 +117,18 @@ export class MemoryFileStore implements MemoryStore {
     return { ok: true, message: 'Entry removed' };
   }
 
-  loadMemory(user: string, target: string): { entries: string[]; charLimit: number; totalChars: number; percentUsed: number } {
+  loadMemory(
+    user: string,
+    target: string,
+  ): { entries: string[]; charLimit: number; totalChars: number; percentUsed: number } {
     const entries = this.readEntries(user, target);
     const limit = this.charLimit(target);
     const total = charCount(entries);
-    return { entries, charLimit: limit, totalChars: total, percentUsed: limit > 0 ? Math.round((total / limit) * 100) : 0 };
+    return {
+      entries,
+      charLimit: limit,
+      totalChars: total,
+      percentUsed: limit > 0 ? Math.round((total / limit) * 100) : 0,
+    };
   }
 }

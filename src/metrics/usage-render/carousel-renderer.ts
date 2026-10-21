@@ -31,18 +31,11 @@ const CANVAS_HEIGHT = 2200;
 // Module-level font cache.
 const FONT_PATH = path.join(__dirname, 'assets', 'NotoSansKR.ttf');
 let fontPathPromise: Promise<string> | null = null;
-let testFontPath: string | null = null;
 const MIN_FONT_BYTES = 1024 * 100; // 100KB
-
-/** Test-only: override font path (resets cache). */
-function __setCarouselFontPathForTests(p: string | null): void {
-  fontPathPromise = null;
-  testFontPath = p;
-}
 
 async function loadFontPath(): Promise<string> {
   if (fontPathPromise) return fontPathPromise;
-  const resolvedPath = testFontPath || FONT_PATH;
+  const resolvedPath = FONT_PATH;
   fontPathPromise = (async () => {
     try {
       await fs.access(resolvedPath, fs.constants.R_OK);

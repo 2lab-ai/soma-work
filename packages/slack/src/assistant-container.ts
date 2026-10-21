@@ -62,12 +62,6 @@ export const SUGGESTED_PROMPTS: ReadonlyArray<{ title: string; message: string }
 ];
 
 /**
- * @deprecated Use {@link SUGGESTED_PROMPTS}. Retained as an alias so external
- * importers don't break during the rename.
- */
-export const SUGGESTED_PROMPTS_PLACEHOLDER = SUGGESTED_PROMPTS;
-
-/**
  * Title shown above the suggested prompts in the Assistant sidebar.
  * Keep in sync with `infra/slack/slack-app-manifest.json#features.assistant_view.assistant_description`.
  */

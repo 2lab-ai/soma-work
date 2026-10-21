@@ -20,35 +20,18 @@ import {
   shouldOutput as checkOutputFlag,
   getThinkingRenderMode,
   getToolCallRenderMode,
-  LOG_DETAIL,
   OutputFlag,
+  resolveVerbosityMask,
   verboseTag,
 } from './output-flags';
+// Type-only: the interrupt-flush guard compares `AbortSignal.reason` against
+// the producer-side reason union (no runtime import, no cycle).
+import type { RequestAbortReason } from './request-coordinator';
 import type { SessionLinks } from './thread-header-builder';
 import type { EndTurnInfo } from './thread-surface';
 import { ToolFormatter } from './tool-formatter';
 import { UserChoiceHandler } from './user-choice-handler';
-
-export interface StreamProcessorProviders {
-  calculateTokenCost?: (
-    model: string | undefined,
-    inputTokens: number,
-    outputTokens: number,
-    cacheReadInputTokens: number,
-    cacheCreationInputTokens: number,
-  ) => number;
-}
-
-let streamProcessorProviders: Required<StreamProcessorProviders> = {
-  calculateTokenCost: () => 0,
-};
-
-export function setStreamProcessorProviders(providers: StreamProcessorProviders): void {
-  streamProcessorProviders = {
-    ...streamProcessorProviders,
-    ...providers,
-  };
-}
+import { WORK_LOG_RAW_MAX_BYTES, type WorkLogInput } from './work-log';
 
 /**
  * Context for stream processing
@@ -83,12 +66,45 @@ export interface StreamContext {
    * user message. Absent on turns with no prompt text — SET_GOAL fails closed.
    */
   currentUserText?: string;
+  /** Allows long compact diagnostics to be withheld for terminal error formatting. */
+  isCompactTurn?: boolean;
   /**
    * Issue #1082 T2: true ONLY when this turn originates from a real user
    * message (`params.isUserInput === true`); synthetic turns (auto-resume,
    * goal continuation, renew, …) must never present as user input.
    */
   isUserInputTurn?: boolean;
+  /**
+   * The turn is an Eagle incident attempt (the session owns an
+   * `incidentRequest`). Its text is the host's own conclusion
+   * (`src/incident/attempt-output.ts`), and that conclusion echoes validated
+   * MODEL strings — the summary and the proposal's action. So it is handed to
+   * `say` verbatim, as a plain post, and read for nothing: no response directives (a
+   * `channel_message` JSON in a summary would post to the channel root), no
+   * choice UI, and none of the transport-error guards that hold back a short
+   * error-looking text (a summary quoting one would silence the only line
+   * eagle-eye is waiting for).
+   *
+   * Required, with no default: a construction site that forgot it would turn
+   * every one of those protections off without a sound. Set it from the session
+   * (`session.incidentRequest !== undefined`), never from a literal.
+   */
+  incidentAttempt: boolean;
+  /**
+   * Spec 10 §3.3 work-log sink. Every narration segment, tool call, tool
+   * result and final answer is handed here at EVERY verbosity — Slack
+   * verbosity decides what reaches the thread, never what reaches the work
+   * log. Bound by stream-executor to `appendWorkLog(conversationId, …)` when
+   * the session has a conversation; absent otherwise. A throw is swallowed.
+   */
+  workLog?: (entry: WorkLogInput) => void;
+  /**
+   * True once the HOST posted a user-choice form this turn (the model-command
+   * ASK_USER_QUESTION path in stream-executor) — a post this processor never
+   * sees. A turn that ends on such a form must not get withheld narration
+   * posted under it as a fallback answer.
+   */
+  hostChoicePosted?: () => boolean;
 }
 
 /**
@@ -103,14 +119,217 @@ export interface ThreadPanelFacade {
 }
 
 /**
+ * `chat.postMessage` switches that turn Slack's own processing of `text` off.
+ * Set only by the incident conclusion (`publishIncidentText`); every other post
+ * leaves them unset and gets Slack's defaults. Meanings, from the
+ * `@slack/web-api` 7.15.1 types (`dist/types/request/chat.d.ts`) and the
+ * chat.postMessage / message-formatting docs:
+ *   - `unfurl_links` / `unfurl_media` — `false` disables link / media unfurls.
+ *   - `parse` — `'none'` stops Slack auto-linking bare URLs.
+ *   - `mrkdwn` — `false` disables markup parsing of the top-level `text`.
+ * `link_names` is deliberately absent: leaving it out is what keeps name
+ * linking off.
+ */
+export interface SayPostSwitches {
+  unfurl_links?: boolean;
+  unfurl_media?: boolean;
+  parse?: 'full' | 'none';
+  mrkdwn?: boolean;
+}
+
+/**
+ * The switches `message` sets, and no others. `say` wrappers spread this into
+ * the payload they forward, so a post that sets none sends exactly the keys it
+ * always did.
+ */
+export function sayPostSwitches(message: SayPostSwitches): SayPostSwitches {
+  const switches: SayPostSwitches = {};
+  if (message.unfurl_links !== undefined) switches.unfurl_links = message.unfurl_links;
+  if (message.unfurl_media !== undefined) switches.unfurl_media = message.unfurl_media;
+  if (message.parse !== undefined) switches.parse = message.parse;
+  if (message.mrkdwn !== undefined) switches.mrkdwn = message.mrkdwn;
+  return switches;
+}
+
+/**
  * Slack say function type
  */
-export type SayFunction = (message: {
+export type SayFunction = (
+  message: {
+    text: string;
+    thread_ts: string;
+    blocks?: any[];
+    attachments?: any[];
+  } & SayPostSwitches,
+) => Promise<{ ts?: string }>;
+
+function textIndicatesPromptTooLong(text: unknown): boolean {
+  if (typeof text !== 'string') return false;
+  const t = text.trim().toLowerCase();
+  if (t.length === 0 || t.length > 160) return false;
+  return (
+    t.includes('prompt is too long') || t.includes('context length exceeded') || t.includes('maximum context length')
+  );
+}
+
+/**
+ * Transport-error text leaked as assistant content that must NOT stream to
+ * Slack (stream-executor inspects collectedText after process() and routes it
+ * into the compaction-failure / transcript-repair recovery rails — see field
+ * incident 2026-07-07, session ccee16e0):
+ *   - `Error: Error during compaction: …` — the SDK's local-command stderr
+ *     for a FAILED `/compact`, sealed as a successful turn.
+ *   - `API Error: 400 … text content blocks must be non-empty` — Anthropic
+ *     validation rejecting a transcript poisoned with empty text blocks.
+ * Compact turns allow long stderr diagnostics; ordinary turns retain the
+ * length bound so prose that merely discusses these errors is not eaten.
+ */
+function textIndicatesCompactionErrorLeak(text: unknown, isCompactTurn = false): boolean {
+  if (typeof text !== 'string') return false;
+  const t = text.trim().toLowerCase();
+  if (!isCompactTurn && t.length > 1500) return false;
+  if (t.startsWith('error: error during compaction') || t.startsWith('error during compaction')) return true;
+  if (t.length === 0 || t.length > 1500) return false;
+  return t.includes('api error: 400') && t.includes('text content blocks must be non-empty');
+}
+
+/** Work-log `tool` entries carry at most this many characters (spec 10 §3.3). */
+const WORK_LOG_TOOL_TEXT_MAX = 200;
+
+/**
+ * One-line work-log text for a tool call: the tool name and its input as JSON,
+ * internal `_`-prefixed keys dropped, capped at {@link WORK_LOG_TOOL_TEXT_MAX}.
+ */
+function summarizeToolCall(name: string, input: unknown): string {
+  let args = '';
+  try {
+    const visible =
+      input && typeof input === 'object' && !Array.isArray(input)
+        ? Object.fromEntries(Object.entries(input as Record<string, unknown>).filter(([key]) => !key.startsWith('_')))
+        : input;
+    args = visible === undefined ? '' : (JSON.stringify(visible) ?? '');
+  } catch {
+    args = '';
+  }
+  if (args === '{}') args = '';
+  const text = args ? `${name} ${args}` : name;
+  return text.length <= WORK_LOG_TOOL_TEXT_MAX ? text : ToolFormatter.truncateString(text, WORK_LOG_TOOL_TEXT_MAX - 3);
+}
+
+/** `String(value)`, or undefined when even that throws (e.g. a null-prototype object). */
+function safeString(value: unknown): string | undefined {
+  try {
+    return String(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Work-log `raw` for a tool call: its whole input, pretty-printed. None without input. */
+function toolInputRaw(input: unknown): string | undefined {
+  if (input === undefined || input === null) return undefined;
+  try {
+    return JSON.stringify(input, null, 2) ?? safeString(input);
+  } catch {
+    return safeString(input); // circular, BigInt, a throwing toJSON
+  }
+}
+
+const IMAGE_BLOCK_TEXT = '[image]';
+
+/** A text block's own text, when the block is one. */
+function textOfBlock(block: unknown): string | undefined {
+  const typed = block as { type?: unknown; text?: unknown } | null;
+  return typed?.type === 'text' && typeof typed.text === 'string' ? typed.text : undefined;
+}
+
+/** One tool-result block as raw text: a text block's text, `[image]`, anything else as JSON. */
+function resultBlockText(block: unknown): string {
+  const text = textOfBlock(block);
+  if (text !== undefined) return text;
+  if ((block as { type?: unknown } | null)?.type === 'image') return IMAGE_BLOCK_TEXT;
+  try {
+    return JSON.stringify(block) ?? safeString(block) ?? '';
+  } catch {
+    return safeString(block) ?? '';
+  }
+}
+
+/**
+ * UTF-8 size of {@link resultBlockText}(block). A text block is measured in
+ * place and an image is a constant, so neither builds a string; other blocks
+ * have no size without their JSON.
+ */
+function resultBlockBytes(block: unknown): number {
+  const text = textOfBlock(block);
+  if (text !== undefined) return Buffer.byteLength(text, 'utf-8');
+  if ((block as { type?: unknown } | null)?.type === 'image') return IMAGE_BLOCK_TEXT.length;
+  return Buffer.byteLength(resultBlockText(block), 'utf-8');
+}
+
+/**
+ * Work-log `raw` for a tool result: the content as the SDK delivered it. A
+ * string as-is; a block array as its blocks' raw text ({@link resultBlockText})
+ * one per line; any other value as pretty JSON. None without content. A block
+ * array stops accumulating once the join passes WORK_LOG_RAW_MAX_BYTES (the
+ * store cuts the rest anyway), and then `rawBytes` reports the whole output's
+ * size — the later blocks are measured ({@link resultBlockBytes}), not joined.
+ */
+function toolResultRaw(result: unknown): { raw: string; rawBytes?: number } | undefined {
+  if (result === undefined || result === null) return undefined;
+  if (typeof result === 'string') return { raw: result };
+  if (Array.isArray(result)) {
+    const kept: string[] = [];
+    let keptBytes = 0;
+    let totalBytes = 0;
+    result.forEach((block, i) => {
+      const newline = i > 0 ? 1 : 0; // the joining newline
+      if (keptBytes <= WORK_LOG_RAW_MAX_BYTES) {
+        const text = resultBlockText(block);
+        const bytes = Buffer.byteLength(text, 'utf-8') + newline;
+        kept.push(text);
+        keptBytes += bytes;
+        totalBytes += bytes;
+      } else {
+        totalBytes += resultBlockBytes(block) + newline;
+      }
+    });
+    const raw = kept.join('\n');
+    return totalBytes > keptBytes ? { raw, rawBytes: totalBytes } : { raw };
+  }
+  try {
+    const raw = JSON.stringify(result, null, 2) ?? safeString(result);
+    return raw === undefined ? undefined : { raw };
+  } catch {
+    const raw = safeString(result);
+    return raw === undefined ? undefined : { raw };
+  }
+}
+
+/**
+ * One assistant text segment's delivery state. `withheld` = narration kept off
+ * Slack by the verbosity, still owed if it turns out to be the final answer;
+ * `settled` = posted (or nothing to show: directive-only text) — never posted
+ * again; `suppressed` = a transport-error leak the guards kept off Slack — the
+ * executor turns it into a recovery path, so it must not trigger the
+ * withheld-narration fallback either.
+ */
+interface SegmentFate {
+  /** The text as the user reads it (directives stripped). */
+  shown: string;
+  fate: 'withheld' | 'settled' | 'suppressed';
+}
+
+/**
+ * The latest narration entry, held back until the turn proves it is not the
+ * final answer — so the final answer is recorded once, as `final`, never also
+ * as `narration`. `ts` is the time the segment streamed.
+ */
+interface PendingNarration {
+  segment: SegmentFate | undefined;
   text: string;
-  thread_ts: string;
-  blocks?: any[];
-  attachments?: any[];
-}) => Promise<{ ts?: string }>;
+  ts: number;
+}
 
 /**
  * Handler for assistant text messages
@@ -238,6 +457,52 @@ export interface FinalResponseFooterParams {
 /**
  * Stream processor callbacks
  */
+/**
+ * The event kinds that count as REAL progress for {@link StreamCallbacks.onProgress}.
+ * Deliberately a closed union rather than "every AgentStreamEvent type": adding
+ * a new bookkeeping frame must not silently start advancing the header's
+ * progress clock.
+ */
+export type ProgressSignalType =
+  | 'thought_delta'
+  | 'assistant_delta'
+  | 'tool_call'
+  | 'tool_result'
+  | 'plan_update'
+  | 'agent_task_lifecycle';
+
+/**
+ * Classify one stream event as progress (→ its {@link ProgressSignalType}) or
+ * as a non-progress frame (→ `undefined`).
+ *
+ * Pure + exported so the rule is testable without driving a whole stream:
+ *   - `assistant_delta` counts only when it carries non-whitespace text. The
+ *     SDK emits empty text blocks around tool use; an empty delta moved
+ *     nothing.
+ *   - `thought_delta` counts even though the user may have thinking hidden —
+ *     the MODEL moved, which is what liveness asks about.
+ *   - `usage` / `status` / `compact_boundary` / `result` / `session_start` are
+ *     bookkeeping or terminal frames: heartbeat, not progress.
+ */
+export function classifyProgressSignal(event: AgentStreamEvent): ProgressSignalType | undefined {
+  switch (event.type) {
+    case 'thought_delta':
+      return 'thought_delta';
+    case 'assistant_delta':
+      return typeof event.text === 'string' && event.text.trim().length > 0 ? 'assistant_delta' : undefined;
+    case 'tool_call':
+      return 'tool_call';
+    case 'tool_result':
+      return 'tool_result';
+    case 'plan_update':
+      return 'plan_update';
+    case 'agent_task_lifecycle':
+      return 'agent_task_lifecycle';
+    default:
+      return undefined;
+  }
+}
+
 export interface StreamCallbacks {
   onToolUse?: (toolUses: ToolUseEvent[], context: StreamContext) => Promise<void>;
   onToolResult?: (toolResults: ToolResultEvent[], context: StreamContext) => Promise<void>;
@@ -276,14 +541,42 @@ export interface StreamCallbacks {
     event: AgentStreamEventOf<'agent_task_lifecycle'>,
     context: StreamContext,
   ) => void | Promise<void>;
+  /**
+   * Lifecycle of a user message injected into THIS running turn (user
+   * steering). The `uuid` is the host-minted send id that binds a queued Slack
+   * message to the turn that consumed it — the host's join key for "did my
+   * follow-up land?". Like {@link onAgentTaskLifecycle} this is pure
+   * bookkeeping: no Slack rendering, and the processor must not flush the
+   * render groups for it.
+   *
+   * Throws/rejections are swallowed (logged at debug): the steering registry
+   * lives in the host, and a bug there must not kill the user's turn.
+   */
+  onSteerLifecycle?: (event: AgentStreamEventOf<'steer_lifecycle'>, context: StreamContext) => void | Promise<void>;
   /** Called before sending the final assistant message to append footer text */
   buildFinalResponseFooter?: (params: FinalResponseFooterParams) => Promise<string | undefined> | string | undefined;
   /**
    * Called for every SDK message the dispatcher forwards — a "sign of life"
    * signal for stall-detection heuristics. Must be cheap; throws are
    * swallowed by the caller so a callback bug cannot abort the stream loop.
+   *
+   * HEARTBEAT ONLY. "The transport is alive" is not "the work moved" — a
+   * session can emit usage/status frames forever while producing nothing.
+   * Consumers that want the latter must use {@link onProgress} (U9).
    */
   onSdkActivity?: () => void;
+  /**
+   * U9 — called only when the stream carried REAL work: model output
+   * (thinking / non-empty assistant text), a tool call, a tool result, or a
+   * plan / background-task lifecycle update. Bookkeeping frames (usage,
+   * status, compact_boundary, the terminal result) deliberately do NOT fire
+   * it: the header's "마지막 활동" must never be advanced by a frame that
+   * moved nothing the user can see.
+   *
+   * Same contract as {@link onSdkActivity}: must be cheap, and throws are
+   * swallowed by the caller.
+   */
+  onProgress?: (progress: { at: number; type: ProgressSignalType }) => void;
   /**
    * Called when the SDK iterator's `.next()` has not resolved within
    * {@link StreamProcessorOptions.idleTimeoutMs}. Wired by the stream
@@ -369,6 +662,24 @@ export interface StreamResult {
   aborted: boolean;
   /** All collected text from the response (for renew pattern detection) */
   collectedText?: string;
+  /**
+   * The transport-error leak the turn ENDED on (a segment the leak guards
+   * kept off Slack: prompt-too-long, compaction failure, empty-text-block
+   * 400) — its text alone. `collectedText` joins every segment, so after any
+   * narration the executor's content guards (short-text / starts-with) could
+   * no longer see the leak; they read this first. Absent when the turn went
+   * on to show other text after the leak.
+   */
+  transportLeak?: string;
+  /**
+   * What the executor's content guards should read: `transportLeak` when the
+   * turn ended on a leak, else every NON-suppressed segment joined. A
+   * suppressed leak followed by a real answer must not reach the guards as
+   * "leak\nanswer" — short and containing the leak, it would fire recovery on
+   * a turn that recovered by itself. `collectedText` (the recorder's copy)
+   * keeps every segment.
+   */
+  guardText?: string;
   /** Usage data from the result message */
   usage?: UsageData;
   /** Whether the response ended with a user choice/form prompt */
@@ -381,6 +692,35 @@ export interface StreamResult {
     errors: string[];
     numTurns?: number;
   };
+  /**
+   * A11 — set ONLY when an explicit interrupt left partial answer text that
+   * Slack refused twice (see {@link InterruptFlushOutcome}). The caller owns
+   * the user-facing consequence: the text the user asked to keep is gone, and
+   * a turn that ends with a silent hole looks like the model simply stopped.
+   */
+  interruptFlushFailed?: InterruptFlushFailure;
+}
+
+/**
+ * A11 — what an undelivered interrupt rescue costs, in the two facts an
+ * operator (and the degraded header) needs: how much text was lost and why
+ * Slack refused it. `code` is absent when the stream merely returned `false`
+ * (no Slack error to quote).
+ */
+export interface InterruptFlushFailure {
+  length: number;
+  code?: string;
+}
+
+/**
+ * A11 — outcome of the interrupted-text rescue. A bare boolean conflated
+ * "nothing to rescue" with "the user's answer was destroyed"; `failure` is
+ * present only for the second, so the caller can degrade the surface instead
+ * of ending the turn with a silent hole.
+ */
+export interface InterruptFlushOutcome {
+  delivered: boolean;
+  failure?: InterruptFlushFailure;
 }
 
 export type { EndTurnInfo };
@@ -480,19 +820,41 @@ export class AgentStreamProcessor {
     cacheReadTokens: number;
     cacheCreateTokens: number;
   } | null = null;
-  /**
-   * Model name captured from the most recent SDKAssistantMessage
-   * (BetaMessage.model). Used by extractUsageData's direct-usage fallback
-   * so calculateTokenCost prices the correct tier when the result message
-   * itself does not carry `model`.
-   */
-  private _lastAssistantModelName: string | undefined;
   /** EndTurn info from the result message stop_reason (Issue #42 S3) */
   private _endTurnInfo: EndTurnInfo | undefined;
   /** Last tool name seen in assistant messages (for endTurnInfo.lastToolUse) */
   private _lastToolName: string | undefined;
   /** SDK result error details from SDKResultError (Issue #122) */
   private _sdkResultError: StreamResult['sdkResultError'] | undefined;
+  /** tool_use_id → tool name, so a `tool_result` work-log entry can name its tool. */
+  private toolNamesById = new Map<string, string>();
+  /**
+   * What became of every assistant text segment this turn, keyed by BOTH its
+   * raw text (directives included — what the SDK `finalText` usually carries)
+   * and its shown text (directives stripped). The result event dedupes against
+   * this delivery record, never against `currentMessages` (the recorder's
+   * copy): a segment's directives were dispatched when it streamed, so a
+   * `finalText` naming a known segment is never dispatched again, and is
+   * posted only if that segment was withheld (spec 10 §3.2-3).
+   */
+  private segments = new Map<string, SegmentFate>();
+  /** Suppressed leak segments keyed by trimmed text (see the result-time lookup). */
+  private suppressedByTrimmed = new Map<string, SegmentFate>();
+  /** The latest withheld segment — the answer of a turn with no usable `finalText`. */
+  private lastWithheld: SegmentFate | undefined;
+  /**
+   * The latest segment that showed any text. When it is a suppressed
+   * transport-error leak, the turn ends on that error (the executor recovers
+   * it), and earlier withheld narration must not be posted as its answer.
+   */
+  private lastShownSegment: SegmentFate | undefined;
+  private pendingNarration: PendingNarration | undefined;
+  /**
+   * Set by every assistant-text post (narration, final, choice, incident);
+   * gates the "never end a turn silent" fallback in
+   * {@link postLastWithheldIfSilent}.
+   */
+  private slackTextPosted = false;
   /**
    * Max ms between iterator `.next()` resolutions before
    * {@link StreamCallbacks.onIdleTimeout} fires and the loop returns
@@ -507,12 +869,73 @@ export class AgentStreamProcessor {
 
   /** Check whether a given output flag is enabled for the stream's verbosity */
   private shouldOutput(flag: number, context: StreamContext): boolean {
-    return checkOutputFlag(flag, context.logVerbosity ?? LOG_DETAIL);
+    return checkOutputFlag(flag, resolveVerbosityMask(context.logVerbosity));
   }
 
   /** Returns verbose category tag prefix (empty string when not verbose) */
   private vtag(flag: number, context: StreamContext): string {
-    return verboseTag(flag, context.logVerbosity ?? LOG_DETAIL);
+    return verboseTag(flag, resolveVerbosityMask(context.logVerbosity));
+  }
+
+  /**
+   * Hand one entry to the work log (spec 10 §3.3). Stamped with this turn's id
+   * and the emission time; a throwing sink is logged and ignored — the work
+   * log is a side record and must never break the user's turn.
+   */
+  private emitWorkLog(context: StreamContext, entry: WorkLogInput): void {
+    // Anything recorded after a held narration proves it was not the answer.
+    this.settleNarration(context);
+    this.writeWorkLog(context, entry);
+  }
+
+  /**
+   * Hold a narration entry until the turn shows whether this segment is the
+   * final answer (see {@link PendingNarration}). A previous held entry is
+   * settled first, so order is preserved.
+   */
+  private holdNarration(context: StreamContext, segment: SegmentFate | undefined, text: string): void {
+    this.settleNarration(context);
+    this.pendingNarration = { segment, text, ts: Date.now() };
+  }
+
+  /** Record the held entry as `narration` — the turn moved on past it. */
+  private settleNarration(context: StreamContext): void {
+    const pending = this.pendingNarration;
+    if (!pending) return;
+    this.pendingNarration = undefined;
+    this.writeWorkLog(context, { kind: 'narration', text: pending.text, ts: pending.ts });
+  }
+
+  /**
+   * Record the turn's final answer — always exactly one `final` entry. When it
+   * IS the held segment, the held entry becomes that `final` (no narration).
+   * Work-log contract: a segment already recorded as `narration` (the turn
+   * moved on past it) that the fallback later posts as the answer appears
+   * once as `narration` and once as `final` — never two of either.
+   */
+  private emitFinal(context: StreamContext, text: string, segment?: SegmentFate): void {
+    if (segment && this.pendingNarration?.segment === segment) {
+      this.pendingNarration = undefined;
+    } else {
+      this.settleNarration(context);
+    }
+    this.writeWorkLog(context, { kind: 'final', text });
+  }
+
+  private writeWorkLog(context: StreamContext, entry: WorkLogInput): void {
+    if (!context.workLog) return;
+    try {
+      context.workLog({
+        ...(context.turnId ? { turnId: context.turnId } : {}),
+        ts: Date.now(),
+        ...entry,
+      });
+    } catch (err) {
+      this.logger.debug('workLog sink threw — ignored', {
+        kind: entry.kind,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
   }
 
   /**
@@ -532,9 +955,16 @@ export class AgentStreamProcessor {
   ): Promise<StreamResult> {
     const currentMessages: string[] = [];
     let lastUsage: UsageData | undefined;
+    let sawResult = false;
     this._hasUserChoice = false;
+    this.segments.clear();
+    this.suppressedByTrimmed.clear();
+    this.lastWithheld = undefined;
+    this.lastShownSegment = undefined;
+    this.pendingNarration = undefined;
+    this.slackTextPosted = false;
     // Note: per-turn state fields (_lastAssistantTurnUsage, _lastToolName,
-    // _endTurnInfo, _sdkResultError, _lastAssistantModelName) are NOT reset
+    // _endTurnInfo, _sdkResultError) are NOT reset
     // here — stream-executor constructs a fresh AgentStreamProcessor per turn,
     // so they start at their declared initializers (matches the old class).
 
@@ -591,7 +1021,14 @@ export class AgentStreamProcessor {
     try {
       while (true) {
         if (abortSignal.aborted) {
-          return { success: true, messageCount: currentMessages.length, aborted: true };
+          const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
+          this.settleNarration(context);
+          return {
+            success: true,
+            messageCount: currentMessages.length,
+            aborted: true,
+            ...(rescue.failure ? { interruptFlushFailed: rescue.failure } : {}),
+          };
         }
 
         const step = await this.raceNextStep(iterator, abortSignal);
@@ -602,7 +1039,14 @@ export class AgentStreamProcessor {
           // any sockets it holds, in case the SDK didn't honor the abort
           // signal on its own. Throws are harmless here.
           await this.tryReturnIterator(iterator, 'abort');
-          return { success: true, messageCount: currentMessages.length, aborted: true };
+          const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
+          this.settleNarration(context);
+          return {
+            success: true,
+            messageCount: currentMessages.length,
+            aborted: true,
+            ...(rescue.failure ? { interruptFlushFailed: rescue.failure } : {}),
+          };
         }
         if (step.kind === 'idleTimeout') {
           // Notify the executor so it can tag the local controller with
@@ -619,6 +1063,7 @@ export class AgentStreamProcessor {
             }
           }
           await this.tryReturnIterator(iterator, 'idle timeout');
+          this.settleNarration(context);
           return { success: true, messageCount: currentMessages.length, aborted: true };
         }
 
@@ -638,28 +1083,53 @@ export class AgentStreamProcessor {
           }
         }
 
+        // U9: the narrower "work actually moved" signal. Fires right after the
+        // heartbeat and before the per-type handlers, so the timestamp is when
+        // the agent emitted the event — not when a slow renderer returned.
+        // Swallow throws for the same reason as the heartbeat.
+        if (this.callbacks.onProgress) {
+          const progressType = classifyProgressSignal(event);
+          if (progressType) {
+            try {
+              this.callbacks.onProgress({ at: Date.now(), type: progressType });
+            } catch (err) {
+              this.logger.debug('onProgress callback threw — ignored', {
+                error: (err as Error)?.message ?? String(err),
+              });
+            }
+          }
+        }
+
         this.logger.debug('Received agent stream event', { type: event.type });
 
         // Delta/tool events buffer per render group (flushing the others first
         // so only one group is pending); everything else flushes all pending
         // groups, then handles the terminal/usage/status event.
         switch (event.type) {
+          // A held narration (see PendingNarration) is settled by every event
+          // that proves the turn went on past it — thinking, more text, a tool
+          // call or result — but not by bookkeeping frames (usage, status,
+          // compact_boundary, side-band lifecycle), which can arrive between
+          // the answer and `result`.
           case 'thought_delta':
             await flushText();
             await flushToolCalls();
             await flushToolResults();
+            this.settleNarration(context);
             thinkingBuf.push(event.text);
             break;
           case 'assistant_delta':
             await flushThinking();
             await flushToolCalls();
             await flushToolResults();
+            this.settleNarration(context);
             textBuf.push(event.text);
             break;
           case 'tool_call':
             await flushThinking();
             await flushText();
             await flushToolResults();
+            this.settleNarration(context);
             this._lastToolName = event.name;
             toolCallBuf.push({ type: 'tool_use', id: event.toolCallId, name: event.name, input: event.input });
             break;
@@ -667,6 +1137,7 @@ export class AgentStreamProcessor {
             await flushThinking();
             await flushText();
             await flushToolCalls();
+            this.settleNarration(context);
             toolResultBuf.push({
               type: 'tool_result',
               tool_use_id: event.toolCallId,
@@ -698,6 +1169,27 @@ export class AgentStreamProcessor {
             // update) so an interleaved task_progress can't fragment streaming.
             await this.callbacks.onAgentTaskLifecycle?.(event, context);
             break;
+          case 'steer_lifecycle':
+            // Side-band steering signal (which queued user message this turn
+            // consumed). Same contract as `agent_task_lifecycle`: no render
+            // groups are flushed, because a frame that produces no Slack
+            // output must not be able to split the streaming text the user is
+            // reading. Unlike that case the callback is guarded — the host's
+            // steering registry is bookkeeping, so a throw there is swallowed
+            // like the other side-band hooks (onSdkActivity / onProgress)
+            // rather than aborting the turn.
+            if (this.callbacks.onSteerLifecycle) {
+              try {
+                await this.callbacks.onSteerLifecycle(event, context);
+              } catch (err) {
+                this.logger.debug('onSteerLifecycle callback threw — ignored', {
+                  uuid: event.uuid,
+                  phase: event.phase,
+                  error: (err as Error)?.message ?? String(err),
+                });
+              }
+            }
+            break;
           case 'result': {
             await flushAll();
             // §C-7: `result` is the turn-terminal signal — final output, usage
@@ -706,6 +1198,7 @@ export class AgentStreamProcessor {
             // terminal `done` on long turns (prod hang 2026-05-29), and nothing
             // is consumed after `result`. Best-effort bounded close, then break
             // to post-loop finalization.
+            sawResult = true;
             lastUsage = await this.handleResultEvent(event, context, currentMessages, lastUsage);
             await this.tryReturnIterator(iterator, 'result');
             break;
@@ -721,6 +1214,12 @@ export class AgentStreamProcessor {
       // The stream ended without a terminal `result` (e.g. transport closed) —
       // flush any text/tool groups still buffered so nothing is dropped.
       await flushAll();
+      // No `result` means no `finalText` will ever arrive: a narration-gated
+      // turn would otherwise end with nothing in the thread.
+      if (!sawResult) {
+        await this.postLastWithheldIfSilent(context, lastUsage, undefined);
+      }
+      this.settleNarration(context);
 
       // Merge per-turn usage from the last assistant message into the
       // aggregate UsageData so consumers can distinguish billing totals
@@ -742,12 +1241,15 @@ export class AgentStreamProcessor {
         messageCount: currentMessages.length,
         aborted: false,
         collectedText: currentMessages.join('\n'),
+        ...this.transportLeakResult(),
+        guardText: this.guardTextFor(currentMessages),
         usage: lastUsage,
         hasUserChoice: this._hasUserChoice,
         endTurnInfo: this._endTurnInfo,
         sdkResultError: this._sdkResultError,
       };
     } catch (error: any) {
+      this.settleNarration(context);
       if (error.name === 'AbortError') {
         return { success: true, messageCount: currentMessages.length, aborted: true };
       }
@@ -891,7 +1393,7 @@ export class AgentStreamProcessor {
     const inTurn = Boolean(context.turnId && context.threadPanel?.isTurnSurfaceActive());
     if (inTurn) return;
 
-    const thinkingMode = getThinkingRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    const thinkingMode = getThinkingRenderMode(resolveVerbosityMask(context.logVerbosity));
     if (thinkingMode === 'hidden') return;
 
     const thinkingParts = content
@@ -980,7 +1482,7 @@ export class AgentStreamProcessor {
     });
 
     // Format and send tool use messages (render mode dispatch) — PHASE=0 only.
-    const toolCallMode = getToolCallRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    const toolCallMode = getToolCallRenderMode(resolveVerbosityMask(context.logVerbosity));
     if (!inTurn && toolCallMode !== 'hidden') {
       const toolContent = ToolFormatter.formatToolUse(enrichedContent, toolCallMode);
       if (toolContent) {
@@ -1006,6 +1508,14 @@ export class AgentStreamProcessor {
         'Received tool_use',
         ToolFormatter.buildToolUseLogSummary(toolUse.id, toolUse.name, toolUse.input),
       );
+      this.toolNamesById.set(toolUse.id, toolUse.name);
+      const raw = toolInputRaw(toolUse.input);
+      this.emitWorkLog(context, {
+        kind: 'tool',
+        tool: toolUse.name,
+        text: summarizeToolCall(toolUse.name, toolUse.input),
+        ...(raw !== undefined ? { raw } : {}),
+      });
     }
 
     // Track last tool name for endTurnInfo (Issue #42 S3)
@@ -1072,13 +1582,56 @@ export class AgentStreamProcessor {
     let textContent = this.extractTextContent(content);
     if (!textContent) return;
 
+    // Host-authored incident conclusion: published as is, interpreted not at
+    // all (see `StreamContext.incidentAttempt`). Recorded unmodified, so the
+    // identical SDK result that follows dedupes against it.
+    if (context.incidentAttempt) {
+      if (!textContent.trim()) return;
+      currentMessages.push(textContent);
+      const incidentSegment: SegmentFate = { shown: textContent, fate: 'settled' };
+      this.recordSegment(textContent, incidentSegment);
+      this.lastShownSegment = incidentSegment;
+      this.holdNarration(context, incidentSegment, textContent);
+      await this.publishIncidentText(textContent, context);
+      return;
+    }
+
+    const rawSegment = textContent;
     textContent = await this.extractAndDispatchDirectives(textContent, context);
+    // Recorded as soon as its directives are dispatched — including a
+    // directive-only segment that shows nothing — so a `finalText` naming it
+    // is never dispatched a second time.
+    const segment: SegmentFate = { shown: textContent, fate: 'settled' };
+    this.recordSegment(rawSegment, segment);
 
     if (!textContent.trim()) {
       return;
     }
 
     currentMessages.push(textContent);
+    this.recordSegment(textContent, segment);
+    this.lastShownSegment = segment;
+    // Work log first — before any of the suppressions below (spec 10 §3.3).
+    // Held: if this segment turns out to be the final answer it is recorded
+    // once, as `final`.
+    this.holdNarration(context, segment, textContent);
+
+    // Claude SDK can surface a context overflow as a successful assistant text
+    // turn. Do not stream that raw transport error to Slack; stream-executor
+    // inspects collectedText after process() and routes it into fallback compact.
+    if (textIndicatesPromptTooLong(textContent)) {
+      this.suppressLeak(context, segment);
+      return;
+    }
+
+    // Same class of leak for FAILED compaction / empty-text-block 400 errors
+    // (field incident 2026-07-07): the raw transport error must not stream to
+    // Slack — stream-executor routes collectedText into the transcript-repair
+    // / terminal-failure rails, which surface one condensed notice instead.
+    if (textIndicatesCompactionErrorLeak(textContent, context.isCompactTurn)) {
+      this.suppressLeak(context, segment);
+      return;
+    }
 
     // Check for user choice JSON
     const { choice, choices, textWithoutChoice } = UserChoiceHandler.extractUserChoice(textContent);
@@ -1089,6 +1642,12 @@ export class AgentStreamProcessor {
     } else if (choice) {
       this._hasUserChoice = true;
       await this.handleSingleChoiceMessage(choice, textWithoutChoice, context);
+    } else if (!this.shouldOutput(OutputFlag.NARRATION, context)) {
+      // Spec 10 §3.2-3: below `compact` the running narration stays off
+      // Slack (it is in the work log). Held so the result event can post the
+      // segment that turns out to be the final answer.
+      segment.fate = 'withheld';
+      this.lastWithheld = segment;
     } else {
       // Regular message — convert to Block Kit
       await this.sayWithBlockKit(textContent, context);
@@ -1108,6 +1667,7 @@ export class AgentStreamProcessor {
     textWithoutChoice: string,
     context: StreamContext,
   ): Promise<void> {
+    this.slackTextPosted = true;
     const questions = choices.questions || [];
     const questionCount = questions.length;
 
@@ -1235,6 +1795,7 @@ export class AgentStreamProcessor {
     textWithoutChoice: string,
     context: StreamContext,
   ): Promise<void> {
+    this.slackTextPosted = true;
     // Log the original model output for debugging
     this.logger.debug('Received single choice from model', {
       question: choice.question,
@@ -1351,6 +1912,19 @@ export class AgentStreamProcessor {
     // Correlate Task results with background task IDs for TaskOutput display
     this.correlateTaskResults(toolResults);
 
+    for (const toolResult of toolResults) {
+      const tool = toolResult.toolName ?? this.toolNamesById.get(toolResult.toolUseId) ?? 'unknown';
+      this.toolNamesById.delete(toolResult.toolUseId);
+      const ok = toolResult.isError !== true;
+      this.emitWorkLog(context, {
+        kind: 'tool_result',
+        tool,
+        ok,
+        text: `${tool} ${ok ? 'ok' : 'error'}`,
+        ...toolResultRaw(toolResult.result),
+      });
+    }
+
     if (toolResults.length > 0 && this.callbacks.onToolResult) {
       await this.callbacks.onToolResult(toolResults, context);
     }
@@ -1412,6 +1986,7 @@ export class AgentStreamProcessor {
     const usage = cumulativeUsage ?? (event.usage ? this.toUsageData(event.usage) : undefined);
 
     if (event.error) {
+      this.settleNarration(context);
       this.logger.error('Agent result error', {
         subtype: event.error.subtype,
         numTurns: event.error.numTurns,
@@ -1422,15 +1997,112 @@ export class AgentStreamProcessor {
         errors: event.error.errors ?? [],
         numTurns: event.error.numTurns,
       };
-    } else if (typeof event.finalText === 'string') {
-      const finalResult = event.finalText;
-      if (finalResult && !currentMessages.includes(finalResult)) {
+    } else {
+      const finalResult = typeof event.finalText === 'string' ? event.finalText : '';
+      // A finalText that differs from a suppressed leak only by whitespace is
+      // that same leak — matched trimmed, so it is not logged a second time.
+      const known = finalResult
+        ? (this.segments.get(finalResult) ?? this.suppressedByTrimmed.get(finalResult.trim()))
+        : undefined;
+      if (known) {
+        // The answer already streamed as a segment: its directives fired then.
+        // A suppressed leak is never the answer: it was recorded as `error`.
+        if (known.fate !== 'suppressed' && known.shown.trim()) {
+          this.emitFinal(context, known.shown, known);
+          if (this.mayPromoteWithheld(known, context)) {
+            // Spec 10 §3.2-3: kept off Slack as narration, but it IS the final
+            // answer — post it once, without dispatching its directives again.
+            // A throw here propagates out of process(); the turn fails on that
+            // error (handleError) and no leak recovery runs this turn.
+            known.fate = 'settled';
+            await this.postFinalAnswer(known.shown, context, usage, event.durationMs);
+          }
+          // Spec 10 §3.2-3: the final answer — or the host's question form,
+          // which is why it was not promoted — reached Slack this turn, so the
+          // turn did not end on a leak: this segment is terminal, and there is
+          // no `transportLeak` and no recovery (guardText agrees).
+          this.lastShownSegment = known;
+        }
+      } else if (finalResult) {
         currentMessages.push(finalResult);
         await this.handleFinalResult(finalResult, context, usage, event.durationMs);
       }
+      // Nothing reached Slack yet — no `finalText`, or one that showed nothing
+      // (directive-only / whitespace): the withheld narration is the answer.
+      // Never after a transport-error leak: the executor recovers that turn.
+      if (known?.fate !== 'suppressed') {
+        await this.postLastWithheldIfSilent(context, usage, event.durationMs);
+      }
+      this.settleNarration(context);
     }
 
     return usage;
+  }
+
+  /**
+   * Whether a withheld segment may be promoted onto Slack as the answer.
+   * Question-form policy: once the HOST posted a question form this turn
+   * (`StreamContext.hostChoicePosted`), that form is what the user answers —
+   * no withheld narration is posted under it, whatever `finalText` says. A
+   * final text the stream never carried is new text and still posts.
+   */
+  private mayPromoteWithheld(segment: SegmentFate, context: StreamContext): boolean {
+    return segment.fate === 'withheld' && !context.hostChoicePosted?.();
+  }
+
+  /**
+   * Mark a segment as a suppressed transport-error leak: never posted, and in
+   * the work log once as `error` — never as `narration` or `final`, whatever
+   * the turn's ending. A held narration entry for this segment is replaced.
+   */
+  private suppressLeak(context: StreamContext, segment: SegmentFate): void {
+    segment.fate = 'suppressed';
+    this.suppressedByTrimmed.set(segment.shown.trim(), segment);
+    if (this.pendingNarration?.segment === segment) this.pendingNarration = undefined;
+    this.emitWorkLog(context, { kind: 'error', text: segment.shown });
+  }
+
+  /** See {@link StreamResult.guardText}. */
+  private guardTextFor(currentMessages: string[]): string {
+    const last = this.lastShownSegment;
+    if (last?.fate === 'suppressed') return last.shown;
+    return currentMessages.filter((text) => this.segments.get(text)?.fate !== 'suppressed').join('\n');
+  }
+
+  /** `{ transportLeak }` when the turn's last visible segment was a suppressed leak. */
+  private transportLeakResult(): Pick<StreamResult, 'transportLeak'> {
+    const last = this.lastShownSegment;
+    return last?.fate === 'suppressed' ? { transportLeak: last.shown } : {};
+  }
+
+  /** Index one segment under one of its identities (raw or shown text). */
+  private recordSegment(identity: string, segment: SegmentFate): void {
+    if (identity.trim()) this.segments.set(identity, segment);
+  }
+
+  /**
+   * A narration-gated turn whose final answer showed nothing (no `finalText`,
+   * an empty or directive-only one, or no `result` at all) must not end with
+   * nothing in the thread: post the last withheld segment as the answer —
+   * unless some assistant text or a choice (the processor's own, or one the
+   * host posted, `StreamContext.hostChoicePosted`) already reached Slack this
+   * turn. Not used on an SDK result error (the executor surfaces that one) nor
+   * after a transport-error leak (the executor recovers that turn). Records
+   * exactly one `final` entry for what it posts.
+   */
+  private async postLastWithheldIfSilent(
+    context: StreamContext,
+    usage: UsageData | undefined,
+    durationMs: number | undefined,
+  ): Promise<void> {
+    const segment = this.lastWithheld;
+    if (this.slackTextPosted || !segment || !this.mayPromoteWithheld(segment, context)) return;
+    // The turn's last visible text was a transport-error leak: it ends on that
+    // error (the executor recovers it), not on the earlier narration.
+    if (this.lastShownSegment?.fate === 'suppressed') return;
+    segment.fate = 'settled';
+    this.emitFinal(context, segment.shown, segment);
+    await this.postFinalAnswer(segment.shown, context, usage, durationMs);
   }
 
   /**
@@ -1458,12 +2130,18 @@ export class AgentStreamProcessor {
       u.lastTurnCacheReadTokens !== undefined ||
       u.lastTurnCacheCreateTokens !== undefined
     ) {
-      this._lastAssistantTurnUsage = {
+      const perTurn = {
         inputTokens: u.lastTurnInputTokens ?? 0,
         outputTokens: u.lastTurnOutputTokens ?? 0,
         cacheReadTokens: u.lastTurnCacheReadTokens ?? 0,
         cacheCreateTokens: u.lastTurnCacheCreateTokens ?? 0,
       };
+      // Defense in depth (the SDK mapper already drops these): an ALL-ZERO
+      // per-turn usage carries no context-state information — keep the last
+      // meaningful snapshot instead of blanking the context display.
+      if (perTurn.inputTokens + perTurn.outputTokens + perTurn.cacheReadTokens + perTurn.cacheCreateTokens > 0) {
+        this._lastAssistantTurnUsage = perTurn;
+      }
     }
 
     return current;
@@ -1486,6 +2164,7 @@ export class AgentStreamProcessor {
       lastTurnOutputTokens: u.lastTurnOutputTokens,
       lastTurnCacheReadTokens: u.lastTurnCacheReadTokens,
       lastTurnCacheCreateTokens: u.lastTurnCacheCreateTokens,
+      modelBreakdown: u.modelBreakdown,
     };
   }
 
@@ -1498,6 +2177,17 @@ export class AgentStreamProcessor {
     usage?: UsageData,
     durationMs?: number,
   ): Promise<void> {
+    // An incident conclusion reaches here only when no identical assistant text
+    // preceded it. Same rule as `handleTextMessage`: the host's bytes, nothing
+    // read out of them and nothing (not even the footer) added after the marker.
+    if (context.incidentAttempt) {
+      if (result.trim()) {
+        this.emitFinal(context, result);
+        await this.publishIncidentText(result, context);
+      }
+      return;
+    }
+
     // Extract response directives before user choice
     const processedResult = await this.extractAndDispatchDirectives(result, context);
 
@@ -1505,6 +2195,41 @@ export class AgentStreamProcessor {
       return;
     }
 
+    // A final text the stream never carried is a segment shown this turn —
+    // tracked like a streamed one, so a leak before it no longer counts as
+    // the turn's ending (`transportLeak`).
+    const segment: SegmentFate = { shown: processedResult, fate: 'settled' };
+    this.recordSegment(result, segment);
+    this.recordSegment(processedResult, segment);
+    this.lastShownSegment = segment;
+
+    // Same leak guards as a streamed segment: a transport error that arrives
+    // only as `finalText` is never posted, at any level, and is handed to the
+    // executor's recovery as `transportLeak`.
+    if (
+      textIndicatesPromptTooLong(processedResult) ||
+      textIndicatesCompactionErrorLeak(processedResult, context.isCompactTurn)
+    ) {
+      this.suppressLeak(context, segment);
+      return;
+    }
+
+    this.emitFinal(context, processedResult);
+    await this.postFinalAnswer(processedResult, context, usage, durationMs);
+  }
+
+  /**
+   * Post a final answer whose directives are already dispatched: footer, then
+   * choice extraction, then Block Kit / the turn stream. Shared by
+   * {@link handleFinalResult} and the withheld-final path, which must not
+   * dispatch the segment's directives a second time.
+   */
+  private async postFinalAnswer(
+    processedResult: string,
+    context: StreamContext,
+    usage?: UsageData,
+    durationMs?: number,
+  ): Promise<void> {
     let footer: string | undefined;
     if (this.callbacks.buildFinalResponseFooter) {
       footer = await this.callbacks.buildFinalResponseFooter({
@@ -1530,10 +2255,175 @@ export class AgentStreamProcessor {
   }
 
   /**
+   * A11 — rescue the assistant text still sitting in the render-group buffer
+   * when an EXPLICIT user interrupt (`Send now`, `RequestAbortReason
+   * 'user-interrupted'`) ends the turn.
+   *
+   * Without this, text that arrived after the last group boundary is dropped:
+   * both abort exits return from inside the loop, skipping the post-loop
+   * `flushAll()`. The user asked to be interrupted, not to lose what the model
+   * already wrote.
+   *
+   * Deliberate limits:
+   *   - TEXT ONLY. Buffered `tool_call`s are NOT flushed — rendering a tool
+   *     call implies it ran, and the interrupt is precisely what stopped it.
+   *     Tool results/thinking stay buffered for the same "no side effects on
+   *     the way out" reason.
+   *   - OWN TURN STREAM ONLY. Appends to this turn's open B1 stream; when the
+   *     stream is gone/unusable it is dropped, never re-posted as a NEW
+   *     message — a fresh block landing after the interrupt would attach the
+   *     dying turn's output to the turn the user just started.
+   *   - No directive dispatch. `extractAndDispatchDirectives` has side effects
+   *     (session links, channel posts); an interrupted turn must not fire them.
+   *   - The transport-error leak guards still apply, so a partial
+   *     "Prompt is too long" / compaction-failure frame is not shown raw.
+   *   - Below `compact` (no `NARRATION` flag) nothing is appended: with no
+   *     final answer, the partial text is narration and goes to the work log
+   *     only (spec 10 §3.2-3).
+   *
+   * Any other abort reason (`user-stop`, `supersede`, `stall-timeout`, …)
+   * keeps the historical drop behaviour — untouched.
+   *
+   * `delivered` is `true` only when rescued text actually landed on the stream.
+   * `failure` is set only in the one case this method exists to prevent — text
+   * existed and Slack would not take it — and is what the caller turns into a
+   * user-visible degradation ("nothing to rescue" carries no `failure`).
+   *
+   * Two ordering rules make the loss real rather than notional:
+   *   - the buffer is cleared ONLY after Slack accepted the append. Clearing
+   *     first and then failing destroys the only copy of the text.
+   *   - a rejected/refused append is RETRIED once. A `Send now` interrupt lands
+   *     on a stream that is being torn down, so the first write is the one most
+   *     likely to hit a transient refusal.
+   *
+   * A LOST rescue logs at warn (with the Slack error code and the dropped
+   * length) rather than debug — the answer the user asked to keep is gone, and
+   * nothing else in the abort path reports it.
+   */
+  private async flushTextOnExplicitInterrupt(
+    textBuf: string[],
+    context: StreamContext,
+    abortSignal: AbortSignal,
+  ): Promise<InterruptFlushOutcome> {
+    if (textBuf.length === 0) return { delivered: false };
+    const interrupted: RequestAbortReason = 'user-interrupted';
+    if (abortSignal.reason !== interrupted) return { delivered: false };
+
+    const pending = textBuf.join('');
+    // Everything below this line is a DELIBERATE drop (nothing to rescue, or
+    // content that must not be shown), so the buffer is consumed as before.
+    // Only the Slack write defers the clear.
+    if (!pending.trim()) {
+      textBuf.length = 0;
+      return { delivered: false };
+    }
+    // The partial text never reaches handleTextMessage, so it joins the work
+    // log here — before the suppressions below, like every other segment.
+    if (textIndicatesPromptTooLong(pending) || textIndicatesCompactionErrorLeak(pending)) {
+      this.emitWorkLog(context, { kind: 'error', text: pending });
+      textBuf.length = 0;
+      return { delivered: false };
+    }
+    this.emitWorkLog(context, { kind: 'narration', text: pending });
+    if (!this.shouldOutput(OutputFlag.NARRATION, context)) {
+      // Spec 10 §3.2-3: an interrupted turn has no final answer, so what is
+      // left is narration — kept in the work log, not on Slack, below
+      // `compact`. A deliberate drop, not a lost rescue (no `failure`).
+      textBuf.length = 0;
+      return { delivered: false };
+    }
+
+    if (!context.turnId || !context.threadPanel?.isTurnSurfaceActive()) {
+      // Not a failure: by contract the rescue never opens a NEW message, so a
+      // turn whose stream is already gone has nowhere to write. Stays debug.
+      textBuf.length = 0;
+      this.logger.debug('interrupt flush: no open turn stream — partial text dropped', {
+        sessionKey: context.sessionKey,
+        length: pending.length,
+      });
+      return { delivered: false };
+    }
+
+    // Attempt + one retry. `code` carries the LAST Slack reason so the operator
+    // sees why the final attempt failed, not why the first one did.
+    let code: string | undefined;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const delivered = await context.threadPanel.appendText(context.turnId, pending);
+        if (delivered) {
+          textBuf.length = 0;
+          return { delivered: true };
+        }
+        code = undefined;
+        this.logger.warn('interrupt flush: stream rejected the partial text — rescue lost', {
+          sessionKey: context.sessionKey,
+          turnId: context.turnId,
+          length: pending.length,
+          attempt,
+        });
+      } catch (err) {
+        // Best-effort: the turn is already ending. A failed rescue must not
+        // replace the abort path's outcome with a throw — but it must be visible.
+        const slackErr = err as { data?: { error?: string }; code?: string };
+        code = slackErr?.data?.error ?? slackErr?.code;
+        this.logger.warn('interrupt flush threw — rescue lost', {
+          sessionKey: context.sessionKey,
+          turnId: context.turnId,
+          length: pending.length,
+          attempt,
+          ...(code ? { code } : {}),
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+    }
+
+    // Both attempts failed: KEEP the buffer (the text was never handed over)
+    // and hand the loss up so the turn can say so on the surface.
+    return {
+      delivered: false,
+      failure: { length: pending.length, ...(code ? { code } : {}) },
+    };
+  }
+
+  /**
+   * Publish an incident attempt's conclusion — byte-for-byte up to the `say`
+   * call.
+   *
+   * Always a plain post of the raw text — no blocks, no verbosity tag — on
+   * every phase. The `text` Slack stores is what eagle-eye reads back from the
+   * thread, and the validated marker line must arrive unchanged (caller
+   * obligation 2 in `incident-result.ts`). This method controls only what it
+   * hands to `say`; whether Slack stores that `text` unchanged is NOT shown by
+   * any test here — it is the pre-activation receipt in
+   * docs/runbook/eagle-incident-receiver.md §6. Neither alternative can even
+   * get the line to `say` intact:
+   * `sayWithBlockKit` re-renders the text as mrkdwn (`**x**` → `*x*`), and the
+   * PHASE>=1 turn stream sends it as a `markdown_text` chunk that Slack
+   * interprets server-side. The executor opens no stream for an incident turn
+   * (`TurnContext.noStream`), so there is no empty stream message left behind
+   * either. Every documented switch that turns Slack's own processing of `text`
+   * off is set (`SayPostSwitches`): no unfurls, no automatic URL linking, no
+   * markup parsing. The conclusion is bounded (one wire line of at most 16384
+   * bytes plus a few short lines), so it needs no overflow splitting.
+   */
+  private async publishIncidentText(text: string, context: StreamContext): Promise<void> {
+    this.slackTextPosted = true;
+    await context.say({
+      text,
+      thread_ts: context.threadTs,
+      unfurl_links: false,
+      unfurl_media: false,
+      parse: 'none',
+      mrkdwn: false,
+    });
+  }
+
+  /**
    * Send message with Block Kit blocks, with fallback to plain text.
    * Handles overflow messages (content exceeding 45-block limit).
    */
   private async sayWithBlockKit(text: string, context: StreamContext): Promise<void> {
+    this.slackTextPosted = true;
     // Issue #525 P1: PHASE>=1 routes assistant text into the B1 stream via
     // TurnSurface.appendText (chat.appendStream) instead of opening a new
     // Block Kit message per chunk. Verbosity tags are dropped in the stream

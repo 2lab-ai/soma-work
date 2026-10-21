@@ -3,7 +3,7 @@
   "_comment": "Reference template for local:z phase2.9 PR approval (after ztrace briefing). Passes validateModelCommandRunArgs + checkAskUserQuestionQuality. Placeholders {braces} substituted by caller. Use zcheck-pr-approve.json for the 4-option zcheck variant.",
   "type": "user_choice",
   "question": "[small] PR #{pr_number} 머지 승인?",
-  "context": "CI: {ci_status} (run {ci_run_id}). 리뷰 스레드: {unresolved_threads} unresolved. 변경: {files_changed} 파일 {loc_add}/{loc_del} LoC. 머지 상태: {merge_state} · {mergeable}. Codex 리뷰: {codex_summary}. ztrace 결과: {ztrace_verdict}. Approve 시 squash merge → branch delete → phase3 local:es executive summary 생성하여 stakeholder에게 전달.",
+  "context": "CI: {ci_status} (run {ci_run_id}). 리뷰 스레드: {unresolved_threads} unresolved. 변경: {files_changed} 파일 {loc_add}/{loc_del} LoC. 머지 상태: {merge_state} · {mergeable}. trinity 리뷰: {review_summary} (tier: {review_tier}). ztrace 결과: {ztrace_verdict}. Approve 시 squash merge → branch delete → phase3 local:es executive summary 생성하여 stakeholder에게 전달.",
   "choices": [
     {
       "id": "a",

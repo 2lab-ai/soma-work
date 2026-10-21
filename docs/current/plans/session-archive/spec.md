@@ -154,25 +154,13 @@ class SessionArchiveStore {
   // 최근 N시간 내 아카이브 목록 (대시보드용)
   listRecent(maxAgeMs: number): ArchivedSession[]
 
-  // 전체 아카이브 목록 (CLI용, 필터 지원)
-  list(filter?: ArchiveFilter): ArchivedSession[]
-
-  // 특정 아카이브 로드
-  load(sessionKey: string): ArchivedSession | null
-
   // 아카이브 존재 확인
   exists(sessionKey: string): boolean
 }
-
-interface ArchiveFilter {
-  ownerId?: string;
-  model?: string;
-  after?: number;    // Unix ms
-  before?: number;   // Unix ms
-  workflow?: string;
-  limit?: number;
-}
 ```
+
+> 2026-10: CLI용 `list(filter)` / `ArchiveFilter` / `load()`는 삭제됐다. CLI 조회는
+> `src/cli/sessions.ts`(`somawork sessions list|show`)가 자체 parser·filter로 담당한다.
 
 ### 5.6 Integration Points
 

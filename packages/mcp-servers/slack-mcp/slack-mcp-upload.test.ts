@@ -1,75 +1,16 @@
 /**
- * Behavioral tests for send_file / send_media upload functionality.
+ * Behavioral tests for send_file / send_media upload helpers.
  *
- * Tests validateFilePath with real filesystem operations and
- * handler logic with mocked Slack API.
+ * validateFilePath runs against the real filesystem; getMediaType and ALLOWED_MEDIA_EXTENSIONS
+ * are the real exports of helpers/file-validator.ts.
  */
 
-import * as fsSyncModule from 'fs';
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ALLOWED_MEDIA_EXTENSIONS, getMediaType, validateFilePath } from './helpers/file-validator.js';
 
 // ── validateFilePath tests (real filesystem) ──────────────────
-
-// We dynamically import the server module to test validateFilePath.
-// Since it's not exported, we test indirectly by reading the source and eval-ing
-// the function in isolation. However, the cleaner approach is to extract
-// validateFilePath. For now, we replicate the logic identically for testing.
-
-// Replicated from slack-mcp-server.ts — kept in sync via contract tests
-const MAX_FILE_SIZE = 1_073_741_824;
-const ALLOWED_UPLOAD_ROOTS = ['/tmp', '/private/tmp'];
-
-async function validateFilePath(filePath: string): Promise<{ resolvedPath: string; size: number }> {
-  if (!filePath) {
-    throw new Error('file_path is required');
-  }
-
-  const resolvedPath = path.resolve(filePath);
-
-  if (!path.isAbsolute(resolvedPath)) {
-    throw new Error(`file_path must be absolute: ${filePath}`);
-  }
-
-  const segments = resolvedPath.split(path.sep);
-  if (segments.some((seg) => seg === '..')) {
-    throw new Error(`Path traversal not allowed: ${filePath}`);
-  }
-
-  const underAllowedRoot = ALLOWED_UPLOAD_ROOTS.some((root) => resolvedPath.startsWith(root + path.sep));
-  if (!underAllowedRoot) {
-    throw new Error(`Upload restricted to /tmp directory. Rejected: ${resolvedPath}`);
-  }
-
-  let lstatResult;
-  try {
-    lstatResult = await fs.lstat(resolvedPath);
-  } catch {
-    throw new Error(`File not found or not readable: ${resolvedPath}`);
-  }
-
-  if (lstatResult.isSymbolicLink()) {
-    throw new Error(`Symlinks not allowed for security: ${resolvedPath}`);
-  }
-
-  if (!lstatResult.isFile()) {
-    throw new Error(`Not a regular file: ${resolvedPath}`);
-  }
-
-  try {
-    await fs.access(resolvedPath, fsSyncModule.constants.R_OK);
-  } catch {
-    throw new Error(`File not found or not readable: ${resolvedPath}`);
-  }
-
-  if (lstatResult.size > MAX_FILE_SIZE) {
-    throw new Error(`File too large: ${lstatResult.size} bytes. Maximum: ${MAX_FILE_SIZE} bytes (1GB)`);
-  }
-
-  return { resolvedPath, size: lstatResult.size };
-}
 
 describe('validateFilePath — real filesystem', () => {
   let tmpDir: string;
@@ -136,73 +77,9 @@ describe('validateFilePath — real filesystem', () => {
   });
 });
 
-// ── handleSendFile / handleSendMedia response parsing ─────────
-
-describe('Upload response parsing', () => {
-  it('extracts file_id from nested Slack response', () => {
-    // Simulate Slack SDK response shape: { files: [{ files: [{ id, permalink }] }] }
-    const result = {
-      files: [{ files: [{ id: 'F12345', permalink: 'https://slack.com/files/F12345' }] }],
-    };
-    const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
-    expect(uploadedFile?.id).toBe('F12345');
-  });
-
-  it('extracts file_id from flat Slack response', () => {
-    // Alternative shape: { files: [{ id, permalink }] }
-    const result = {
-      files: [{ id: 'F67890', permalink: 'https://slack.com/files/F67890' }],
-    };
-    const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
-    expect(uploadedFile?.id).toBe('F67890');
-  });
-
-  it('returns null for empty response (triggers error)', () => {
-    const result = { ok: true };
-    const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
-    expect(uploadedFile?.id).toBeUndefined();
-    // This should trigger the "no file metadata" error in production code
-    expect(!uploadedFile?.id).toBe(true);
-  });
-
-  it('returns null for empty files array', () => {
-    const result = { files: [] };
-    const uploadedFile = (result as any).files?.[0]?.files?.[0] || (result as any).files?.[0] || null;
-    // undefined || null falls through to null — no file_id available
-    expect(!uploadedFile?.id).toBe(true);
-  });
-});
-
 // ── Media type validation ─────────────────────────────────────
 
 describe('Media type classification', () => {
-  // Replicated from server for behavioral testing
-  const IMAGE_EXTENSIONS = new Set([
-    'jpg',
-    'jpeg',
-    'png',
-    'gif',
-    'webp',
-    'svg',
-    'bmp',
-    'ico',
-    'tiff',
-    'tif',
-    'heic',
-    'heif',
-    'avif',
-  ]);
-  const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']);
-  const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v', 'mpg', 'mpeg', '3gp']);
-  const ALLOWED_MEDIA_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS, ...VIDEO_EXTENSIONS]);
-
-  function getMediaType(ext: string): 'image' | 'audio' | 'video' | null {
-    if (IMAGE_EXTENSIONS.has(ext)) return 'image';
-    if (AUDIO_EXTENSIONS.has(ext)) return 'audio';
-    if (VIDEO_EXTENSIONS.has(ext)) return 'video';
-    return null;
-  }
-
   it('classifies image extensions correctly', () => {
     expect(getMediaType('png')).toBe('image');
     expect(getMediaType('jpg')).toBe('image');

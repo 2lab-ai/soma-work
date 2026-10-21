@@ -1,50 +1,32 @@
 /**
- * Bypass-mode permission guard for native non-Bash tools.
+ * Native non-Bash tools that run without a Slack permission prompt when the
+ * user is in bypass (or auto) mode.
  *
  * In Slack context, `mcp-config-builder` always installs
- * `permissionPromptToolName`. Without an explicit `permissionDecision: 'allow'`
- * from a PreToolUse hook, the SDK routes every tool call through that prompt
- * tool — popping a Slack permission UI even when the user has bypass enabled.
- * The existing bypass-Bash-gate hook in `claude-handler.ts` covers `Bash`
- * (with dangerous-rule escalation). This module covers the remaining native
- * tools so Write/Edit/Read/etc. do not pop a UI under bypass=ON.
+ * `permissionPromptToolName`. Without an explicit allow, the SDK routes every
+ * tool call through that prompt tool — popping a Slack permission UI even when
+ * the user has bypass enabled. Two consumers read this list:
  *
- * SDK matcher syntax: the hook matcher accepts a `tool1|tool2|...` alternation
- * string. The handshake in `@anthropic-ai/claude-agent-sdk@0.2.111`
- * (`cli.js: FeY`) splits on `|` and matches each token as a literal tool name,
- * so we collapse all covered tools into one HookCallbackMatcher entry.
+ * - `agent-runtime/policy/tool-policy.ts` (`evaluateToolPolicy`) returns
+ *   `allow` for these tools outside legacy mode, and joins them into the
+ *   `tool1|tool2|...` PreToolUse matcher (`TOOL_POLICY_MATCHERS`).
+ * - `mcp-config-builder.ts` adds them to `allowedTools` when bypass is on.
  *
- * Callers MUST gate this on bypass=ON themselves (see `claude-handler.ts`
- * inside the existing `if (mcpConfig.userBypass)` block). This module never
- * decides whether bypass applies; it only encodes the per-tool decision when
- * it does.
+ * Deny decisions (sensitive-path, cross-user, ssh-ban, abort-guard, mcp-grant,
+ * pr-issue) are evaluated first in the tool policy, so listing a tool here does
+ * not weaken any block.
  */
-
-import type { HookInput, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
-
-/**
- * Matches the inline shape of `preToolUseHooks` in `claude-handler.ts` rather
- * than `HookCallbackMatcher` from the SDK — the SDK's `HookCallback` requires
- * `(input, toolUseId, signal)` arity but this codebase consistently registers
- * 1-arg hooks. Keeping the local shape avoids touching the other registration
- * sites just to add structural typing for this one entry.
- */
-export interface PreToolUseHookEntry {
-  matcher: string;
-  hooks: Array<(input: HookInput) => Promise<HookJSONOutput>>;
-}
 
 /**
  * Native tools that need an explicit `'allow'` decision under bypass mode.
  *
- * - `Bash` is excluded: its existing `bypass-Bash-gate` hook in
- *   `claude-handler.ts` emits `'allow'` or `'ask'` based on dangerous-rule
- *   escalation. Adding Bash here would conflict with that escalation flow.
+ * - `Bash` is excluded: the tool policy runs it through dangerous-rule
+ *   escalation (`'ask'` / `'classify'`). Adding Bash here would bypass that.
  * - `Skill`, `EnterPlanMode`, `ExitPlanMode` are excluded: already listed in
  *   `allowedTools` (`mcp-config-builder.ts`), so the SDK never invokes the
  *   prompt tool for them.
  * - `AskUserQuestion`, `CronCreate`, `CronDelete`, `CronList` are excluded:
- *   they live in `disallowedTools` (`mcp-config-builder.ts:282`) so the SDK
+ *   they live in `disallowedTools` (`mcp-config-builder.ts`) so the SDK
  *   refuses them outright.
  *
  * The list is the complement of allowedTools ∪ disallowedTools against the
@@ -62,45 +44,8 @@ export const NATIVE_BYPASS_TOOLS: ReadonlyArray<string> = [
   'Glob',
   'Grep',
   'Task',
+  'Agent',
   'WebFetch',
   'WebSearch',
   'KillShell',
 ];
-
-const BYPASS_ALLOW_MATCHER: string = NATIVE_BYPASS_TOOLS.join('|');
-
-const allowDecision = async (): Promise<HookJSONOutput> => ({
-  hookSpecificOutput: {
-    hookEventName: 'PreToolUse',
-    permissionDecision: 'allow',
-  },
-});
-
-/**
- * Build the single PreToolUse hook entry that explicitly approves the native
- * non-Bash tools listed in `NATIVE_BYPASS_TOOLS`.
- *
- * SDK merge semantics (verified against `@anthropic-ai/claude-agent-sdk@
- * 0.2.111`): `deny` from any matching hook wins over the `allow` this function
- * emits, so the existing sensitive-path / cross-user / ssh-ban / abort-guard
- * deny hooks continue to block what they used to block.
- */
-export function buildBypassPermissionHookEntry(): PreToolUseHookEntry {
-  return {
-    matcher: BYPASS_ALLOW_MATCHER,
-    hooks: [allowDecision],
-  };
-}
-
-/**
- * Test-only: the exact matcher string the entry will register with the SDK.
- * Exposed for unit-test pinning of the covered tool set.
- */
-export const BYPASS_ALLOW_MATCHER_FOR_TEST = BYPASS_ALLOW_MATCHER;
-
-/**
- * Test-only re-export. Kept for backward-compat with the existing test that
- * imports `NATIVE_BYPASS_TOOLS_FOR_TEST`. New consumers should import
- * `NATIVE_BYPASS_TOOLS` directly.
- */
-export const NATIVE_BYPASS_TOOLS_FOR_TEST: ReadonlyArray<string> = NATIVE_BYPASS_TOOLS;

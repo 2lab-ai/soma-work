@@ -36,6 +36,9 @@ description: "Scenario-driven workflow analysis at callstack depth. Triggered by
 **유저가 시나리오를 제공한 경우:**
 → Phase 1로 직행
 
+**자율 파이프라인(`local:autoz` 등 no-question 컨텍스트)에서 호출된 경우:**
+→ SSOT-TASK-TREE(또는 호출자가 넘긴 시나리오 입력)에서 시나리오를 도출하고 유저 확인 없이 Phase 1로 직행. 도출 근거는 출력에 명시.
+
 ### Phase 1: 소스 전수 탐색
 
 1. 대상 기능의 모든 관련 파일 식별 (Explore agent)

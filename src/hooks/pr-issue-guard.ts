@@ -1,8 +1,8 @@
 /**
  * PR-issue precondition guard (#696, Jira-extension #885).
  *
- * Pure function called by the in-process SDK PreToolUse hook in
- * `src/claude-handler.ts`. Enforces the issue-link precondition documented in
+ * Pure function called by the unified tool policy
+ * (`src/agent-runtime/policy/tool-policy.ts`, `evaluateToolPolicy`). Enforces the issue-link precondition documented in
  * `src/local/skills/using-z/SKILL.md` §Session Handoff Protocol on PR-creation
  * tool calls (`Bash gh pr create` and `mcp__github__create_pull_request`)
  * for sessions started via z handoff.
@@ -10,7 +10,7 @@
  * Spec: docs/archive/features/pr-issue-precondition/spec.md (v2.1; #885 adds Jira branch)
  * Trace: docs/archive/features/pr-issue-precondition/trace.md (v2.1)
  *
- * Activation: caller (the hook closure) only invokes this guard when
+ * Activation: the caller (tool policy) only invokes this guard when
  * `session.handoffContext` is set — guard takes it as a REQUIRED arg.
  * Sessions without handoffContext (legacy / non-z) bypass enforcement
  * entirely (out of scope for #696).
@@ -23,7 +23,6 @@
  *   scope: only Atlassian Cloud `/browse` is recognized.
  */
 
-import type { HookInput, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import type { HandoffContext } from '../types';
 
 export interface PrIssueGuardInput {
@@ -404,106 +403,4 @@ export function handlePrIssuePrecondition(input: PrIssueGuardInput): PrIssueGuar
     reason: 'no-issue-no-escape',
     message: formatBlockMessage('no-issue-no-escape', ctx, toolName),
   };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SDK Hook factory — wires the pure guard into the in-process PreToolUse hook
-// system used by ClaudeHandler. Injecting the lookup + logger keeps the
-// factory unit-testable without spinning up a full ClaudeHandler.
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface PrIssueHookLogger {
-  info(msg: string, data?: Record<string, unknown>): void;
-  warn(msg: string, data?: Record<string, unknown>): void;
-}
-
-export interface PrIssueHookDeps {
-  /**
-   * Resolves the active session's handoffContext at hook invocation time.
-   * Return `undefined` when:
-   *   - no session exists for the current channel/threadTs (orphaned hook), OR
-   *   - the session exists but has no handoffContext (legacy/non-z workflow).
-   * The factory will skip enforcement and emit a structured `info` log.
-   */
-  getHandoffContext(): HandoffContext | undefined;
-  logger: PrIssueHookLogger;
-  /** Static log enrichment (channel, threadTs) added to every emitted log line. */
-  logCtx: Record<string, unknown>;
-}
-
-export interface SdkHookEntry {
-  matcher: string;
-  hooks: Array<(input: HookInput) => Promise<HookJSONOutput>>;
-}
-
-/**
- * Build the two PreToolUse hook entries (Bash + mcp__) for the PR-issue
- * precondition. Caller pushes these into `preToolUseHooks` at
- * `claude-handler.ts:~949`.
- *
- * The mcp__ matcher fires for ALL mcp__* tools — the hook filters to
- * `mcp__github__create_pull_request` BEFORE the session lookup so unrelated
- * MCP calls in handoff sessions don't pay the lookup cost. Same for the Bash
- * matcher: it short-circuits before lookup when the command isn't a PR-create.
- *
- * Hook return contract per SDK 0.2.111 `PreToolUseHookSpecificOutput`:
- *   - block: `{ hookSpecificOutput: { hookEventName, permissionDecision: 'deny',
- *             permissionDecisionReason } }` — `permissionDecisionReason` surfaces
- *             to the model.
- *   - pass:  `{ continue: true }` — defers to other hooks / SDK default.
- *
- * SDK multi-hook precedence is `deny > defer > ask > allow > undefined`, so this
- * `deny` wins over an earlier bypass-mode `allow` from the same matcher.
- */
-export function buildPrIssueHookEntries(deps: PrIssueHookDeps): SdkHookEntry[] {
-  const makeHook =
-    (matcherKind: 'bash' | 'mcp') =>
-    async (input: HookInput): Promise<HookJSONOutput> => {
-      const toolName = (input as { tool_name?: string }).tool_name || '';
-      const toolInput = (input as { tool_input?: Record<string, unknown> }).tool_input;
-
-      // Cheap gate: skip lookup entirely for tool calls that can't create a PR.
-      if (matcherKind === 'mcp') {
-        if (toolName !== 'mcp__github__create_pull_request') return { continue: true };
-      } else {
-        const cmd = typeof toolInput?.command === 'string' ? toolInput.command : '';
-        if (!/\bgh\s+pr\s+create\b/.test(cmd)) return { continue: true };
-      }
-
-      // Now we know this IS a PR-creation attempt. Resolve handoff context.
-      const ctx = deps.getHandoffContext();
-      if (!ctx) {
-        deps.logger.info('PR-issue guard skipped: no handoff context on PR-create attempt', deps.logCtx);
-        return { continue: true };
-      }
-
-      const result = handlePrIssuePrecondition({
-        toolName,
-        toolInput,
-        handoffContext: ctx,
-      });
-
-      if (result.blocked) {
-        deps.logger.warn('PR creation blocked by handoff precondition', {
-          ...deps.logCtx,
-          tool: toolName,
-          reason: result.reason,
-          chainId: ctx.chainId,
-        });
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            permissionDecision: 'deny',
-            permissionDecisionReason: result.message,
-          },
-        };
-      }
-
-      return { continue: true };
-    };
-
-  return [
-    { matcher: 'Bash', hooks: [makeHook('bash')] },
-    { matcher: 'mcp__', hooks: [makeHook('mcp')] },
-  ];
 }

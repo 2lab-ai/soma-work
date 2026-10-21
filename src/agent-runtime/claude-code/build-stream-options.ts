@@ -34,15 +34,19 @@ import {
   resolveShowSummary,
 } from '../../claude-handler';
 import { CONFIG_FILE } from '../../env-paths';
+import type { IncidentEvidence, IncidentEvidenceConfig } from '../../incident/evidence';
+import { assertIncidentRequest, buildIncidentSdkOptions, type IncidentRequestLike } from '../../incident/sdk-options';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
-import { isNativeOneMModel, NATIVE_ONE_M_SDK_BLOCKING_LIMIT } from '../../metrics/model-registry';
+import { resolveModelProfile } from '../../metrics/model-profile';
+import { clampEffortToModel } from '../../model-catalog';
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
+import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
 import type { SafetyClassifier } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
 
@@ -83,6 +87,21 @@ export interface BuildStreamOptionsDeps {
    * the old "dangerous → ask the human" behaviour.
    */
   safetyClassifier?: SafetyClassifier;
+  /**
+   * Operator config for the incident evidence collector (`rules/config.md` owns
+   * the getter's name; this dep only needs the value). Consulted **only** on the
+   * incident path. Absent there is fatal, not a fallback — see
+   * `buildIncidentSdkOptions`.
+   */
+  getIncidentEvidenceConfig?: () => IncidentEvidenceConfig | null | undefined;
+  /**
+   * Host-side registry of what an incident attempt actually collected (the
+   * collector's records, never a model-produced string), so the later result
+   * validator can check the final message's citations against real observations
+   * instead of trusting the model's prose. The request is passed alongside so
+   * the registry can key by attempt without re-deriving it.
+   */
+  onIncidentEvidence?: (request: IncidentRequestLike, evidence: IncidentEvidence) => void;
 }
 
 export interface BuildStreamOptionsInput {
@@ -114,6 +133,36 @@ export async function buildStreamOptions(
   const { queryEnv, session, abortController, workingDirectory, slackContext } = input;
   const { logger } = deps;
 
+  // SDK 0.3 child-process env, set BEFORE the incident branch on purpose: both
+  // flags remove behaviour rather than grant capability, and the incident path
+  // shares this `queryEnv` by reference, so it needs them too.
+  //   - The Slack adapter consumes TodoWrite snapshots, not SDK 0.3 task deltas.
+  //   - First-turn tool/approval availability: an incident attempt is usually a
+  //     single turn against an in-process MCP evidence tool, so a non-blocking
+  //     connect would let that turn run with no evidence tool at all.
+  queryEnv.CLAUDE_CODE_ENABLE_TASKS = 'false';
+  queryEnv.MCP_CONNECTION_NONBLOCKING = '0';
+
+  // Incident receiver sessions take a separate, minimal option surface and the
+  // ordinary assembly below never runs — no MCP servers, no plugins, no
+  // persona/skills/channel prompt, no sandboxed shell. Returning early (rather
+  // than narrowing the ordinary options afterwards) is the point: a capability
+  // added below can never leak into an incident attempt by omission.
+  const incidentRequest = readIncidentRequest(session);
+  if (incidentRequest) {
+    const incidentModel =
+      session?.model ?? (slackContext?.user ? userSettingsStore.getUserDefaultModel(slackContext.user) : undefined);
+    const incidentOptions = buildIncidentSdkOptions(
+      { request: incidentRequest, queryEnv, model: incidentModel, abortController },
+      {
+        logger,
+        getIncidentEvidenceConfig: deps.getIncidentEvidenceConfig,
+        onEvidence: deps.onIncidentEvidence,
+      },
+    );
+    return attachStderrCapture(incidentOptions, logger);
+  }
+
   const options: Options = {
     // Load settings from filesystem for backward compatibility (Agent SDK v0.1.0 breaking change)
     settingSources: ['project'],
@@ -141,17 +190,23 @@ export async function buildStreamOptions(
   }
   if (mcpConfig.permissionPromptToolName) {
     options.permissionPromptToolName = mcpConfig.permissionPromptToolName;
+    // SDK MCP calls default to a 60s stream-close timeout. Slack approvals
+    // intentionally wait up to five minutes, so keep the SDK bridge open past
+    // the handler timeout while preserving an operator override.
+    if (slackContext && options.env && options.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT === undefined) {
+      options.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '310000';
+    }
   }
 
   // PreToolUse hooks
   if (slackContext) {
     // PreToolUse: a single unified policy hook (epic #1023 P5). All tool guards
     // — abort, ssh-ban, sensitive-path, cross-user, MCP grant, PR-issue
-    // precondition, bypass-mode allow/ask — collapse into `evaluateToolPolicy`,
-    // whose deny>ask>allow precedence reproduces the prior multi-hook SDK merge
-    // exactly (deny from any guard wins over the bypass allow; dangerous-Bash
-    // escalates to ask). Live state (abort signal, handoff context) is resolved
-    // per call so mid-session aborts and handoff changes are honored.
+    // precondition, mode allow/classify — collapse into `evaluateToolPolicy`,
+    // whose deny > classify/allow > pass precedence reproduces the prior multi-hook
+    // SDK merge (deny from any guard wins over the bypass allow; a dangerous Bash
+    // in auto mode goes to the safety classifier). Live state (abort signal, handoff
+    // context) is resolved per call so mid-session aborts and handoff changes are honored.
     const policyUser = slackContext.user;
     const policyIsAdmin = isAdminUser(slackContext.user);
     const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
@@ -185,13 +240,6 @@ export async function buildStreamOptions(
               ...(result.denyMessage ? { permissionDecisionReason: result.denyMessage } : {}),
             },
           };
-        case 'ask':
-          logger.warn('Tool policy escalating to Slack permission UI', {
-            tool: toolName,
-            user: policyUser,
-            reason: result.reason,
-          });
-          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } };
         case 'classify': {
           // Auto mode: a dangerous-rule hit. Consult the guardian classifier;
           // fail closed to `ask` when no classifier is wired or it errors.
@@ -275,50 +323,83 @@ export async function buildStreamOptions(
     logger.debug('Using user default model', { model: userModel, user: slackContext.user });
   }
 
-  // Native-1M SDK context-window workaround.
+  // Context-window env, driven by the canonical model profile
+  // (`metrics/model-profile.ts` — the single resolver for window / blocking
+  // limit / auto-compact trigger, so those three can no longer disagree. The
+  // regex ladder that used to live here handed a `gpt-5.6-sol[1m]` session the
+  // BARE model's 349k blocking limit while model-registry advertised 1M).
   //
-  // The pinned Agent SDK (0.2.111, CLI bundled pre fable-5) does not know
-  // native-1M model ids: its internal window resolver only honors the `[1m]`
-  // suffix / 1M beta header / a sonnet-4-6 experiment, and falls back to 200k
-  // for everything else — including `claude-fable-5`. Observed consequence:
-  // SDK-side autocompact fired at 200k − 33k = 167k while the thread showed
-  // "17% (167k/1.0M)", and the SDK would hard-block input at ~177k. The
-  // harness itself resolves these models to 1M correctly (model-registry
-  // NATIVE_ONE_M_RE), so only the SDK's internal math needs correcting:
+  // Automatic compaction has ONE authority: the harness turn-end scheduler
+  // (`session/compact-threshold-checker.ts#checkAndSchedulePendingCompact`),
+  // which sizes every model from `resolveModelProfile` (ruling 2026-08-26).
+  // The SDK's own automatic compaction is therefore switched off:
   //
-  //   • DISABLE_AUTO_COMPACT=1 — kill the SDK's 200k-calibrated autocompact.
-  //     Compaction is still driven by the turn-end threshold checker (#617,
-  //     % of the true 1M window → next turn becomes `/compact`); the
-  //     `/compact` command itself stays enabled (only DISABLE_COMPACT would
-  //     remove it). CLAUDE_CODE_AUTO_COMPACT_WINDOW is NOT usable here — the
-  //     SDK caps it at its own (wrong) model window.
-  //   • CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE — lift the SDK's input
-  //     hard-block to the 1M equivalent of its own formula (977k), so long
-  //     sessions don't get refused at ~177k.
+  //   • DISABLE_AUTO_COMPACT=1 — read by the pinned SDK's `z0()` gate
+  //     (cli.js: `if(S6(process.env.DISABLE_AUTO_COMPACT))return!1`), which
+  //     guards the whole autocompact path. The `/compact` command itself stays
+  //     enabled (only DISABLE_COMPACT would remove it), so the scheduler's
+  //     next-turn `/compact` interception keeps working.
+  //   • CLAUDE_CODE_AUTO_COMPACT_WINDOW is NEVER injected. It cannot be a
+  //     second authority: `Jn()` clamps it with `Math.min(ff(model), value)`
+  //     and `ff()` returns `WR1` = 200,000 for every id the pinned SDK does
+  //     not know — so a declared 750k trigger on `claude-fable-5[1m]` would
+  //     still fire at ~167k, the exact premature compaction this work exists
+  //     to remove.
+  //   • CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE — the SDK's own formula on the
+  //     profile's TRUE window (window − 20k output reserve − 3k safety),
+  //     injected for EVERY model. There is no "does the SDK know this id?"
+  //     classifier: where it does (bare claude ids, the generic `[1m]`
+  //     opt-in) the value equals what it would have computed itself, and
+  //     where it does not (native-1M claude, the llmux codex family,
+  //     non-claude catalog models) it replaces the ~177k hard block. One rule
+  //     beats a tier nobody can keep in sync with the pinned CLI.
   //
   // Operator-provided values (process env / config.json#claude.env) win — we
-  // only fill keys that are unset. Remove this block once the pinned SDK CLI
-  // resolves fable-5 to 1M natively.
-  if (options.model && isNativeOneMModel(options.model)) {
+  // only fill keys that are unset, so an operator can hand SDK-native
+  // compaction back by setting `DISABLE_AUTO_COMPACT=0` themselves.
+  if (options.model) {
+    const profile = resolveModelProfile(options.model);
     if (!options.env) options.env = {};
     const env = options.env;
+    const wrote: string[] = [];
     if (env.DISABLE_AUTO_COMPACT === undefined) {
       env.DISABLE_AUTO_COMPACT = '1';
+      wrote.push('DISABLE_AUTO_COMPACT');
     }
     if (env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE === undefined) {
-      env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = String(NATIVE_ONE_M_SDK_BLOCKING_LIMIT);
+      env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = String(profile.sdkBlockingLimit);
+      wrote.push('CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE');
     }
-    logger.info('Native-1M model: injected SDK context-window workaround env', {
-      model: options.model,
-      disableAutoCompact: env.DISABLE_AUTO_COMPACT,
-      blockingLimitOverride: env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE,
-    });
+    // Report the WRITE, not the visit: when the operator already set both keys
+    // this block changed nothing, and an "Injected …" line every turn would be
+    // a lie printed at one line per query.
+    if (wrote.length > 0) {
+      logger.info('Injected SDK context-window env from model profile', {
+        model: options.model,
+        contextWindow: profile.contextWindow,
+        wrote,
+        disableAutoCompact: env.DISABLE_AUTO_COMPACT,
+        blockingLimitOverride: env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE,
+      });
+    }
   }
 
-  // Set effort level only when explicitly configured
+  // Set effort level only when explicitly configured. The value is clamped
+  // to the model's llmux-catalog effort menu (e.g. grok-4.5 has no
+  // xhigh/max → clamp to high) — the SAVED session/user effort is never
+  // mutated, only this per-query option.
   if (session?.effort) {
-    options.effort = session.effort;
-    logger.debug('Using session effort', { effort: session.effort });
+    const clamped = options.model ? clampEffortToModel(options.model, session.effort) : session.effort;
+    options.effort = clamped as typeof options.effort;
+    if (clamped !== session.effort) {
+      logger.debug('Clamped session effort to model catalog menu', {
+        model: options.model,
+        requested: session.effort,
+        effort: clamped,
+      });
+    } else {
+      logger.debug('Using session effort', { effort: session.effort });
+    }
   }
 
   // Set thinking config (adaptive reasoning toggle).
@@ -476,18 +557,49 @@ export async function buildStreamOptions(
     options.abortController = abortController;
   }
 
-  // Capture Claude process stderr for debugging exit code 1 etc. Buffer
-  // every chunk in `stderrBuffer` so rate-limit messages can be extracted
-  // on the error path — `handleClaudeStderrChunk` is logging-policy only
-  // and does NOT participate in buffering.
+  return attachStderrCapture(options, logger);
+}
+
+/**
+ * Capture Claude process stderr for debugging exit code 1 etc. Buffer every
+ * chunk in `stderrBuffer` so rate-limit messages can be extracted on the error
+ * path — `handleClaudeStderrChunk` is logging-policy only (it applies the
+ * redaction/verbosity rules) and does NOT participate in buffering.
+ *
+ * Shared by both paths: an incident attempt spawns the same child process, so it
+ * needs the same tracked spawner (abort must kill its children) and the same
+ * stderr policy. Nothing here touches evidence or the auth env — the buffer
+ * carries the child's stderr only.
+ */
+function attachStderrCapture(options: Options, logger: BuildStreamOptionsDeps['logger']): BuildStreamOptionsResult {
   let stderrBuffer = '';
   options.stderr = (data: string) => {
     stderrBuffer += data;
     handleClaudeStderrChunk(logger, data);
   };
+  options.spawnClaudeCodeProcess = createTrackedClaudeProcessSpawner(options.stderr);
 
   return {
     options,
     getStderrBuffer: () => stderrBuffer,
   };
+}
+
+/**
+ * Read the incident request off the session, structurally (the ingress unit owns
+ * `types.ts`).
+ *
+ * **Absent is the only answer that means "ordinary session".** Anything present
+ * must be a complete v1 request or the build throws: `session-registry.ts:2202`
+ * restores `incidentRequest` verbatim for any non-null object — "any present
+ * value keeps the session restricted (fail closed)" — so a truncated write or a
+ * hand-edited sessions file really can present `{}` here. Answering "not an
+ * incident" for that value would assemble the ORDINARY options (project
+ * settings, plugins, skills, every MCP server, Bash) for a thread the handler
+ * still treats as incident-owned and nobody is watching.
+ */
+function readIncidentRequest(session: ConversationSession | undefined): IncidentRequestLike | undefined {
+  const candidate = (session as { incidentRequest?: unknown } | undefined)?.incidentRequest;
+  if (candidate === undefined) return undefined;
+  return assertIncidentRequest(candidate);
 }

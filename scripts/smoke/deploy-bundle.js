@@ -21,6 +21,15 @@ const requiredRootFiles = [
   // service that cannot start, so fail the smoke check loudly.
   'dist/run-with-rotating-logs.js',
   'dist/deploy/main-env-bootstrap.js',
+  // The `somawork setup` runtime layout. This file keeps its own
+  // deployment/workspace-package responsibilities; the setup contract's
+  // *behaviour* (the CLI actually runs, the manifest helper answers, a profile
+  // materializes at 0700/0600) belongs to scripts/smoke/setup-package.js. What
+  // is asserted here is only that no bundle can be staged without them.
+  'dist/cli/index.js',
+  'config.default.json',
+  '.system.prompt.example',
+  'infra/slack/slack-app-manifest.json',
 ];
 
 const protectedPaths = ['.env', '.system.prompt', 'config.json', 'mcp-servers.json', 'data/', 'logs/', '.claude/'];
@@ -91,6 +100,24 @@ if (!fs.existsSync(bundleRoot)) {
       fail(`Deploy bundle contains test file: ${relativePath}`);
     }
   });
+
+  // Closure, not just validity: `listPackageJsons` validates the manifests it
+  // FINDS, so deleting one was invisible to this smoke. `npm ci --omit=dev
+  // --workspaces --include-workspace-root` on the target needs every workspace
+  // manifest present — that requirement is the stated reason test-only
+  // `packages/test-utils` is staged, and it had no test until now. The
+  // expansion has one owner, in setup-package.js, so the two smokes cannot
+  // disagree about what the workspace set is.
+  const { expectedWorkspaceManifests } = require('./setup-package.js');
+  const expectedWorkspaces = expectedWorkspaceManifests();
+  for (const pattern of expectedWorkspaces.unsupported) {
+    fail(`Unsupported workspace pattern in the root manifest: ${pattern}`);
+  }
+  for (const relative of expectedWorkspaces.manifests) {
+    if (!exists(relative)) {
+      fail(`Missing staged workspace manifest: ${relative}`);
+    }
+  }
 
   const packageJsons = listPackageJsons();
   if (packageJsons.length === 0) {
