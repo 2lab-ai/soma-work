@@ -98,21 +98,25 @@ export class DeployCompletedDirectiveHandler {
     const strip: Range[] = [];
     let accounted = 0;
 
-    // Code blocks first. A block is examined once: the raw scan below skips it.
+    // Code blocks first: a fence that IS one directive is stripped whole. A
+    // fence the block parse settles (payload or rejection) is skipped by the
+    // raw scan below; any other fence — several objects, an array, broken JSON
+    // — is left to the raw scan, which reads each object inside it.
     const blocks: Range[] = [];
     const jsonBlockPattern = /```json\s*\n?([\s\S]*?)\n?```/g;
     let match;
     while ((match = jsonBlockPattern.exec(text)) !== null) {
-      const range: Range = [match.index, match.index + match[0].length];
-      blocks.push(range);
       if (!match[1].includes(MARKER)) continue;
+      const range: Range = [match.index, match.index + match[0].length];
       const result = DeployCompletedDirectiveHandler.parse(match[1].trim());
       if (result && 'payload' in result) {
         payloads.push(result.payload);
         strip.push(range);
+        blocks.push(range);
         accounted++;
       } else if (result) {
         rejections.push(result.rejection);
+        blocks.push(range);
         accounted++;
       }
     }
@@ -151,7 +155,22 @@ export class DeployCompletedDirectiveHandler {
       return { payloads, rejections, cleanedText: text };
     }
     strip.sort((a, b) => a[0] - b[0]);
-    return { payloads, rejections, cleanedText: DeployCompletedDirectiveHandler.strip(text, strip) };
+    const stripped = DeployCompletedDirectiveHandler.strip(text, strip);
+    return { payloads, rejections, cleanedText: DeployCompletedDirectiveHandler.dropEmptyFences(stripped) };
+  }
+
+  /**
+   * A fence whose directives were all cut out is left holding nothing but
+   * whitespace, commas and array brackets: drop it, as stripping a one-directive
+   * fence does.
+   */
+  private static dropEmptyFences(text: string): string {
+    const cleaned = text.replace(/```json\s*\n?([\s\S]*?)\n?```/g, (fence, body: string) =>
+      /^[\s,[\]]*$/.test(body) ? '' : fence,
+    );
+    if (cleaned === text) return text;
+    // Only the gap the fence left: collapse its blank lines, touch nothing else.
+    return cleaned.replace(/\n[ \t]*(\n[ \t]*)+\n/g, '\n\n').trim();
   }
 
   /**

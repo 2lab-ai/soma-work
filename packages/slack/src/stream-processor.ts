@@ -1259,6 +1259,10 @@ export class AgentStreamProcessor {
         sdkResultError: this._sdkResultError,
       };
     } catch (error: any) {
+      // The turn dies here with text still buffered (a transport error, or an
+      // AbortError surfacing from a handler): a deploy it already reported must
+      // not be lost with it.
+      await this.dispatchDeployCompletedOnCut(textBuf, context);
       this.settleNarration(context);
       if (error.name === 'AbortError') {
         return { success: true, messageCount: currentMessages.length, aborted: true };
