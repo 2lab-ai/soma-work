@@ -69,8 +69,9 @@ export interface ReleaseNotesSlackApi {
     channel: string,
     text: string,
     options?: { threadTs?: string; blocks?: any[] },
-  ): Promise<{ ts?: string; channel?: string }>;
+  ): Promise<{ ts?: string; channel?: string; threadTs?: string; echoedMessage?: boolean }>;
   getPermalink(channel: string, messageTs: string): Promise<string | null>;
+  deleteMessage(channel: string, ts: string): Promise<void>;
 }
 
 export interface ReleaseNotesPostRequest {
@@ -96,6 +97,43 @@ export function splitLossless(text: string, max: number): string[] {
   }
   if (rest.length > 0) chunks.push(rest);
   return chunks;
+}
+
+/**
+ * Break Slack's notifying control sequences (`<!channel>`, `<!here>`,
+ * `<!subteam^…>`, `<@U…>`) with a zero-width space so notes quoting them
+ * (commit messages do) never ping anyone. Every visible character is kept.
+ */
+export function neutralizeSlackMentions(text: string): string {
+  return text.replace(/<([!@])/g, '<\u200B$1');
+}
+
+/**
+ * Post a reply under `threadTs`. Slack silently drops a dead `thread_ts` and
+ * posts at the channel root instead (`SlackApiHelper.getThreadRootState`), so a
+ * reply that came back unthreaded is deleted and reported as a failure — a
+ * "thread only" destination must never become a channel-root post.
+ */
+async function postReply(
+  slackApi: ReleaseNotesSlackApi,
+  channel: string,
+  threadTs: string,
+  text: string,
+  blocks?: any[],
+): Promise<void> {
+  const result = await slackApi.postMessage(channel, text, blocks ? { threadTs, blocks } : { threadTs });
+  if (result.echoedMessage && result.threadTs !== threadTs) {
+    if (result.ts) {
+      await slackApi.deleteMessage(result.channel ?? channel, result.ts).catch((error) => {
+        logger.error('release notes reply leaked to the channel root and could not be deleted', {
+          channel,
+          ts: result.ts,
+          error: errorText(error),
+        });
+      });
+    }
+    throw new Error(`thread ${threadTs} is gone — the reply landed at the channel root and was removed`);
+  }
 }
 
 function clip(text: string, max: number): string {
@@ -138,11 +176,11 @@ async function postBody(
   threadTs: string,
   text: string,
 ): Promise<boolean> {
-  for (const chunk of splitLossless(text, BODY_CHUNK)) {
+  for (const chunk of splitLossless(neutralizeSlackMentions(text), BODY_CHUNK)) {
     let posted = false;
     for (let attempt = 1; attempt <= 2 && !posted; attempt++) {
       try {
-        await slackApi.postMessage(channel, chunk, { threadTs, blocks: [{ type: 'markdown', text: chunk }] });
+        await postReply(slackApi, channel, threadTs, chunk, [{ type: 'markdown', text: chunk }]);
         posted = true;
       } catch (error) {
         logger.warn('release notes body chunk failed', { channel, attempt, error: errorText(error) });
@@ -156,13 +194,34 @@ async function postBody(
 /** Header + notes as replies in the deploy thread — the destination when no channel root may be used. */
 async function postIntoDeployThread(slackApi: ReleaseNotesSlackApi, req: ReleaseNotesPostRequest): Promise<void> {
   const header = buildReleaseNotesHeader(req.payload);
-  await slackApi.postMessage(req.sessionChannel, header.text, {
-    threadTs: req.sessionThreadTs,
-    blocks: header.blocks,
-  });
+  await postReply(slackApi, req.sessionChannel, req.sessionThreadTs, header.text, header.blocks);
   if (!(await postBody(slackApi, req.sessionChannel, req.sessionThreadTs, req.payload.text))) {
     throw new Error('release notes could not be posted in the deploy thread');
   }
+}
+
+async function notify(slackApi: ReleaseNotesSlackApi, channel: string, threadTs: string, line: string): Promise<void> {
+  try {
+    await postReply(slackApi, channel, threadTs, line);
+  } catch (error) {
+    logger.warn('release notes notice could not be posted in the deploy thread', { channel, error: errorText(error) });
+  }
+}
+
+/** Last-resort line in the deploy thread when posting the notes failed outright (best-effort). */
+export async function reportReleaseNotesFailure(
+  slackApi: ReleaseNotesSlackApi,
+  channel: string,
+  threadTs: string,
+  payload: ReleaseNotesPayload,
+  error: unknown,
+): Promise<void> {
+  await notify(
+    slackApi,
+    channel,
+    threadTs,
+    `⚠️ \`${payload.repo}@${payload.target}\` 릴리즈노트를 올리지 못했습니다 (${errorText(error)}). 노트는 이 세션 로그에만 남아 있습니다.`,
+  );
 }
 
 function describeDestination(destination: ReleaseNotesDestination): string {
@@ -174,7 +233,8 @@ function describeDestination(destination: ReleaseNotesDestination): string {
 export async function postReleaseNotes(slackApi: ReleaseNotesSlackApi, req: ReleaseNotesPostRequest): Promise<void> {
   const { payload, sessionChannel, sessionThreadTs, routing } = req;
   const key = `${payload.repo}@${payload.target}`;
-  const say = (line: string) => slackApi.postMessage(sessionChannel, line, { threadTs: sessionThreadTs });
+  // Notices are best-effort: a failed notice must not cost the notes themselves.
+  const say = (line: string) => notify(slackApi, sessionChannel, sessionThreadTs, line);
   const { destination } = routing;
 
   if (routing.invalid.length > 0) {

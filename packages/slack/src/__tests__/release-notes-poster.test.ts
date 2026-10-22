@@ -22,6 +22,7 @@ function fakeSlack(rootChannel = DEV2) {
       channel: channel.startsWith('#') ? rootChannel : channel,
     })),
     getPermalink: vi.fn(async (channel: string, ts: string) => `https://slack.test/archives/${channel}/p${ts}`),
+    deleteMessage: vi.fn(async (_channel: string, _ts: string) => {}),
   };
 }
 
@@ -319,6 +320,71 @@ describe('postReleaseNotes — notices', () => {
     expect(warning[2]).toEqual({ threadTs: SESSION_THREAD });
     expect(warning[1]).toContain('foo=session');
     expect(root[0]).toBe(DEV2);
+  });
+});
+
+describe('postReleaseNotes — review gate fixes', () => {
+  it('neutralizes notifying mentions in the notes, keeping every visible character', async () => {
+    const slack = fakeSlack();
+    const text = 'Fixed by <@U0AUTHOR1>, ping <!channel> and <!subteam^S1|devs>; see <#C0OTHER01>.';
+    await postReleaseNotes(slack, {
+      payload: { ...PAYLOAD, text },
+      sessionChannel: SESSION_CHANNEL,
+      sessionThreadTs: SESSION_THREAD,
+      routing: routed(DEV2),
+    });
+
+    const body = calls(slack)[1];
+    for (const field of [body[1], body[2]!.blocks![0].text]) {
+      expect(field).not.toMatch(/<[!@]/);
+      expect(field.replace(/\u200B/g, '')).toBe(text);
+    }
+  });
+
+  it('a deploy-thread destination whose thread is gone never leaves a channel-root post behind', async () => {
+    const slack = fakeSlack();
+    // Slack drops a dead thread_ts and answers with an unthreaded message.
+    slack.postMessage.mockImplementation(async (channel: string) => ({
+      ts: '1792660999.000100',
+      channel,
+      threadTs: undefined,
+      echoedMessage: true,
+    }));
+    await expect(
+      postReleaseNotes(slack, {
+        payload: PAYLOAD,
+        sessionChannel: SESSION_CHANNEL,
+        sessionThreadTs: SESSION_THREAD,
+        routing: { destination: { kind: 'deploy-thread' }, unmapped: true, keys: [], nearMisses: [], invalid: [] },
+      }),
+    ).rejects.toThrow(/thread .* is gone/);
+
+    // Every reply that leaked was removed again.
+    expect(slack.deleteMessage).toHaveBeenCalledTimes(slack.postMessage.mock.calls.length);
+  });
+
+  it('a failed notice does not stop the notes from being posted', async () => {
+    const slack = fakeSlack();
+    slack.postMessage.mockImplementationOnce(async () => {
+      throw new Error('ratelimited');
+    });
+    await postReleaseNotes(slack, {
+      payload: PAYLOAD,
+      sessionChannel: SESSION_CHANNEL,
+      sessionThreadTs: SESSION_THREAD,
+      routing: {
+        destination: { kind: 'session' },
+        unmapped: true,
+        keys: ['deploy/stage'],
+        nearMisses: [],
+        invalid: [],
+      },
+    });
+
+    const [, root, body] = calls(slack);
+    expect(root[0]).toBe(SESSION_CHANNEL);
+    expect(root[2]?.blocks?.[0]?.type).toBe('header');
+    expect(body[2]?.threadTs).toBe(ROOT_TS);
   });
 });
 

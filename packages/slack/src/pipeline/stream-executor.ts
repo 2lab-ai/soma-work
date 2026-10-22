@@ -22,7 +22,12 @@ import {
 } from '../instruction-confirm-blocks';
 import { OutputFlag, resolveVerbosityMask, shouldOutput, verboseTag } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
-import { postReleaseNotes, type ReleaseNotesRouting, SESSION_ROUTING } from '../release-notes-poster';
+import {
+  postReleaseNotes,
+  type ReleaseNotesRouting,
+  reportReleaseNotesFailure,
+  SESSION_ROUTING,
+} from '../release-notes-poster';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
 // Issue #1082 T2: shared goal-apply helpers (same pair T1's slack-handler
 // uses for goal-prefixed first messages) — epoch bump + cache invalidation
@@ -1927,6 +1932,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               target: payload.target,
               error: (error as Error)?.message,
             });
+            // The directive is already stripped from the reply: say so where the deployer looks.
+            await reportReleaseNotesFailure(this.deps.slackApi, channel, threadTs, payload, error);
           }
         },
         onDeployCompletedDetected: async (payload) => {
