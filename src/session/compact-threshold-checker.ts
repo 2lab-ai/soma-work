@@ -16,6 +16,7 @@
  * (continuation, `/compact` loop) don't double-post.
  */
 
+import { isAutoCompactPaused } from '@soma/slack/compact-state';
 import { OutputFlag, resolveVerbosityMask, shouldOutput } from '@soma/slack/output-flags';
 import type { WorkLogInput } from '@soma/slack/work-log';
 import type { Logger } from '../logger';
@@ -114,6 +115,17 @@ export async function checkAndSchedulePendingCompact(args: CheckAndSchedulePendi
     contextWindow: effective.contextWindow,
   });
   if (usedTokens < effective.tokens) return false;
+  // A `/compact` just failed and left usage where it was — re-arming now would
+  // intercept the replayed message straight back into `/compact` (the compact
+  // retry loop, 2026-10-22). Stay quiet until the failure pause ends.
+  if (isAutoCompactPaused(session)) {
+    logger?.info('auto-compact paused after a failed /compact — not re-arming', {
+      usedTokens,
+      thresholdTokens: effective.tokens,
+      pausedUntil: new Date(session.autoCompactSuppressedUntilMs as number).toISOString(),
+    });
+    return false;
+  }
   const announcement = `🗜️ Context usage ${Math.round(usedTokens / 1000)}k tokens ≥ ${Math.round(effective.tokens / 1000)}k (${effective.source}) — next turn will auto /compact`;
 
   session.autoCompactPending = true;

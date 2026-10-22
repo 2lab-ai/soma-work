@@ -11,7 +11,12 @@ import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier'
 import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
 import type { AgentStreamEventOf } from '../agent-stream-types';
 import type { AssistantStatusManager } from '../assistant-status-manager';
-import { type CompactStateSession, promotePendingToDispatchQueue } from '../compact-state';
+import {
+  type CompactStateSession,
+  isAutoCompactPaused,
+  pauseAutoCompactAfterFailure,
+  promotePendingToDispatchQueue,
+} from '../compact-state';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
 import type { ContextWindowManager } from '../context-window-manager';
 import type { DeployCompletedHookContext, DeployCompletedSignal } from '../directives/deploy-completed-directive';
@@ -2912,6 +2917,28 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           error: (err as Error)?.message ?? String(err),
         });
       }
+      // Compact retry loop breaker (field incident 2026-10-22). A failed
+      // `/compact` leaves usage where it was, so this turn's `finally`
+      // threshold check would re-arm `autoCompactPending` and the replay of
+      // the intercepted message would be intercepted straight back into
+      // `/compact` — compact → fail → compact every few seconds. Pause the
+      // threshold-triggered auto-compact first (handleError's failure notice
+      // reports the pause). Exempt: the transcript-repair retry (Rail 1, one
+      // bounded re-run) and aborts the user chose.
+      if (
+        session.compactTurnActive === true &&
+        !(error as any)?.compactRetryAfterRepair &&
+        !(requestAborted && abortReason !== undefined && QUIET_ABORT_REASONS.has(abortReason))
+      ) {
+        const failureText = String((error as Error)?.message ?? error);
+        const advertisedRetryMs = textIndicatesRetryableRateLimit(failureText) ? parseRetryAfterMs(failureText) : null;
+        const pausedUntilMs = pauseAutoCompactAfterFailure(session as CompactStateSession, advertisedRetryMs);
+        this.logger.warn('Auto-compact paused after failed /compact turn', {
+          sessionKey,
+          pausedUntil: new Date(pausedUntilMs).toISOString(),
+          advertisedRetryMs,
+        });
+      }
       let retryAfterMs: number | undefined;
       try {
         retryAfterMs = await this.handleError(
@@ -3298,7 +3325,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         .replace(/\x60/g, 'ˋ');
       const detail =
         escapedReason.length > 2500 ? `${escapedReason.slice(0, 2500)}… (이하 생략 — 상세 로그 확인)` : escapedReason;
-      const condensed = `🔴 컴팩트 실패 — 대화 요약 중 오류가 발생했습니다.${restoreNote}${sessionResetNote}\n원인: ${detail}`;
+      const pausedUntilMs = session.autoCompactSuppressedUntilMs;
+      const pauseNote =
+        typeof pausedUntilMs === 'number' && isAutoCompactPaused(session as CompactStateSession)
+          ? ` 자동 compact는 ${Math.ceil((pausedUntilMs - Date.now()) / 60_000)}분간 중지합니다 (수동 \`/compact\`는 가능).`
+          : '';
+      const condensed = `🔴 컴팩트 실패 — 대화 요약 중 오류가 발생했습니다.${restoreNote}${sessionResetNote}${pauseNote}\n원인: ${detail}`;
       await runWithTimeout(() => say({ text: condensed, thread_ts: threadTs }), DEFAULT_CLEANUP_TIMEOUT_MS, {
         what: 'handleError say(compactTerminalFailure)',
         logger: this.logger,
