@@ -28,6 +28,8 @@ type LiveUsageHolder = {
   liveUsageSettledTurnId?: string;
   /** The turn that adopted a compact boundary's occupancy (stream executor, issue #196). */
   postCompactOccupancyTurnId?: string;
+  /** Calls the running turn made before its compact boundary (they read the pre-compact context). */
+  liveUsagePreBoundaryKeys?: string[];
   // A session object carries many other fields.
   [key: string]: unknown;
 };
@@ -46,6 +48,7 @@ export function recordLiveUsage(session: LiveUsageHolder, call: LiveUsageCall, t
   if (turnId !== undefined && session.liveUsageTurnId !== turnId) {
     session.liveUsage = undefined;
     session.liveUsageTurnId = turnId;
+    session.liveUsagePreBoundaryKeys = undefined;
   }
   const map = session.liveUsage ?? {};
   session.liveUsage = map;
@@ -70,6 +73,51 @@ export function sumLiveUsage(map: Record<string, LiveUsageTotals> | undefined): 
     total.cacheCreateTokens += count(c?.cacheCreateTokens);
   }
   return total;
+}
+
+function callTotal(c: LiveUsageTotals): number {
+  return count(c.inputTokens) + count(c.outputTokens) + count(c.cacheReadTokens) + count(c.cacheCreateTokens);
+}
+
+/**
+ * The running turn crossed a compact boundary: its calls so far read the
+ * pre-compact context. Remembered so only the calls after it count as the
+ * context the turn holds (`liveOccupancyCall`). Ignored for another turn.
+ */
+export function markLiveUsageBoundary(session: LiveUsageHolder, turnId: string | undefined): void {
+  if (turnId !== undefined && session.liveUsageTurnId !== undefined && session.liveUsageTurnId !== turnId) return;
+  session.liveUsagePreBoundaryKeys = Object.keys(session.liveUsage ?? {});
+}
+
+/**
+ * The call that shows how full the context is now: the running turn's
+ * largest. After a compact boundary in this turn (the executor's occupancy
+ * shield, issue #196) only the calls made after it count — the earlier ones
+ * read the pre-compact transcript; with no boundary mark, none do.
+ */
+export function liveOccupancyCall(
+  session: Pick<
+    LiveUsageHolder,
+    'liveUsage' | 'liveUsageTurnId' | 'postCompactOccupancyTurnId' | 'liveUsagePreBoundaryKeys'
+  >,
+): LiveUsageTotals | undefined {
+  const turnId = session.liveUsageTurnId;
+  const shielded = turnId !== undefined && session.postCompactOccupancyTurnId === turnId;
+  const before = shielded ? session.liveUsagePreBoundaryKeys : undefined;
+  if (shielded && !before) return undefined;
+  let top: LiveUsageTotals | undefined;
+  let topTotal = 0;
+  for (const k of Object.keys(session.liveUsage ?? {})) {
+    if (before?.includes(k)) continue;
+    const c = session.liveUsage?.[k];
+    if (!c) continue;
+    const n = callTotal(c);
+    if (n > topTotal) {
+      topTotal = n;
+      top = c;
+    }
+  }
+  return top;
 }
 
 /**
@@ -101,19 +149,11 @@ export function foldLiveUsage(
     return false;
   }
   const t = sumLiveUsage(session.liveUsage);
-  // The context the turn reached: its largest call. It becomes the current
-  // occupancy when larger, so a later switch still sees how full it is.
-  let top: LiveUsageTotals | undefined;
-  let topTotal = 0;
-  for (const k of Object.keys(session.liveUsage ?? {})) {
-    const c = session.liveUsage?.[k];
-    if (!c) continue;
-    const n = count(c.inputTokens) + count(c.outputTokens) + count(c.cacheReadTokens) + count(c.cacheCreateTokens);
-    if (n > topTotal) {
-      topTotal = n;
-      top = c;
-    }
-  }
+  // The context the turn reached: its largest call (after its compact
+  // boundary, when it had one). It becomes the current occupancy when larger,
+  // so a later switch still sees how full it is.
+  const top = liveOccupancyCall(session);
+  const topTotal = top ? callTotal(top) : 0;
   const any = t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheCreateTokens > 0;
   if (any && session.usage) {
     session.usage.totalInputTokens += t.inputTokens;
@@ -133,11 +173,7 @@ export function foldLiveUsage(
       count(u.currentOutputTokens) +
       count(u.currentCacheReadTokens) +
       count(u.currentCacheCreateTokens);
-    // The turn that crossed a compact boundary keeps the boundary's
-    // `post_tokens` as its occupancy (the executor's shield, issue #196): its
-    // calls read the pre-compact transcript and would put that number back.
-    const shielded = turnId !== undefined && session.postCompactOccupancyTurnId === turnId;
-    if (top && topTotal > current && !shielded) {
+    if (top && topTotal > current) {
       u.currentInputTokens = count(top.inputTokens);
       u.currentOutputTokens = count(top.outputTokens);
       u.currentCacheReadTokens = count(top.cacheReadTokens);
@@ -162,4 +198,5 @@ export function clearLiveUsage(session: LiveUsageHolder, turnId?: string): void 
   if (turnId !== undefined && session.liveUsageTurnId !== undefined && session.liveUsageTurnId !== turnId) return;
   session.liveUsage = undefined;
   session.liveUsageTurnId = undefined;
+  session.liveUsagePreBoundaryKeys = undefined;
 }

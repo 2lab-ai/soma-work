@@ -4,11 +4,12 @@
  * context already above the target's threshold compacts on the current model
  * first and switches at that compact's boundary.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   listRepresentativeModels,
   type ModelSwitchDeps,
   ModelSwitchError,
+  QUEUED_COMPACT_WATCH_MS,
   REPRESENTATIVE_MODEL_NICKNAMES,
   switchSessionModel,
 } from '../model-switch';
@@ -277,5 +278,68 @@ describe('switchSessionModel (T4/T5)', () => {
     const { d, calls } = deps(session);
     expect((await switchSessionModel('k', 'opus[1m]', d)).status).toBe('unchanged');
     expect(calls.saves).toBe(0);
+  });
+});
+
+describe('a switch whose compact is queued behind another turn (review R4)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const big = () => ({ model: 'claude-opus-5-5[1m]', usage: usage(600_000), sessionId: 's' }) as Record<string, any>;
+  function queuedDeps(session: Record<string, any>, stillQueued: () => boolean, now: () => number = () => 42) {
+    return deps(session, {
+      dispatchCompact: async (_key, onSent) => {
+        onSent?.({ channel: 'C1', ts: '100.1' });
+        return 'queued' as const;
+      },
+      isCompactQueued: vi.fn(() => stillQueued()),
+      now,
+    });
+  }
+
+  it('is un-parked as soon as its queued compact will no longer run (cancelled, stopped, failed)', async () => {
+    vi.useFakeTimers();
+    let queued = true;
+    const session = big();
+    const { d, calls } = queuedDeps(session, () => queued);
+    expect((await switchSessionModel('k', 'grok[1m]', d)).status).toBe('compacting');
+    await vi.advanceTimersByTimeAsync(QUEUED_COMPACT_WATCH_MS);
+    expect(session.pendingModelSwitch).toMatchObject({ nickname: 'grok[1m]', compactTs: '100.1' });
+    expect(d.isCompactQueued).toHaveBeenCalledWith({ channel: 'C1', ts: '100.1' });
+    queued = false; // the user cancelled it from the queue panel
+    await vi.advanceTimersByTimeAsync(QUEUED_COMPACT_WATCH_MS);
+    expect(session.pendingModelSwitch).toBeUndefined();
+    expect(session.model).toBe('claude-opus-5-5[1m]');
+    expect(calls.broadcasts).toBe(2);
+  });
+
+  it('once its own compact turn armed it, the watch leaves it to that turn', async () => {
+    vi.useFakeTimers();
+    let queued = true;
+    const session = big();
+    const { d } = queuedDeps(session, () => queued);
+    await switchSessionModel('k', 'grok[1m]', d);
+    await vi.advanceTimersByTimeAsync(QUEUED_COMPACT_WATCH_MS);
+    session.pendingModelSwitch.armed = true; // the drain ran it: the /compact turn is on
+    queued = false;
+    await vi.advanceTimersByTimeAsync(QUEUED_COMPACT_WATCH_MS * 3);
+    expect(session.pendingModelSwitch).toMatchObject({ armed: true });
+  });
+
+  it('a queued switch still waiting when its TTL runs out is un-parked', async () => {
+    vi.useFakeTimers();
+    let t = 1_000;
+    const session = big();
+    const { d } = queuedDeps(
+      session,
+      () => true,
+      () => t,
+    );
+    await switchSessionModel('k', 'grok[1m]', d);
+    await vi.advanceTimersByTimeAsync(QUEUED_COMPACT_WATCH_MS);
+    expect(session.pendingModelSwitch).toBeDefined();
+    t += 30 * 60 * 1000 + 1;
+    await vi.advanceTimersByTimeAsync(QUEUED_COMPACT_WATCH_MS);
+    expect(session.pendingModelSwitch).toBeUndefined();
   });
 });

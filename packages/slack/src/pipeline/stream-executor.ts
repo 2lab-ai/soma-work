@@ -20,7 +20,13 @@ import {
   buildInstructionConfirmFallbackText,
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
-import { clearLiveUsage, foldLiveUsage, markLiveUsageSettled, recordLiveUsage } from '../live-usage';
+import {
+  clearLiveUsage,
+  foldLiveUsage,
+  markLiveUsageBoundary,
+  markLiveUsageSettled,
+  recordLiveUsage,
+} from '../live-usage';
 import { applyPendingModelSwitch, armPendingModelSwitch, settlePendingModelSwitch } from '../model-switch';
 import { OutputFlag, resolveVerbosityMask, shouldOutput, verboseTag } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
@@ -2109,6 +2115,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               // or let the aborted turn's cleanup erase a shield the successor
               // had just established.
               session.postCompactOccupancyTurnId = turnId;
+              // The live calls so far read the pre-compact context; only the
+              // ones after this point show what the turn holds now (T5).
+              markLiveUsageBoundary(session, turnId);
               this.logger.info('Adopted post-compact occupancy from compact_boundary', {
                 sessionKey,
                 postTokens: m.post_tokens,

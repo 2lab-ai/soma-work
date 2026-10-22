@@ -16,7 +16,8 @@
  * is refused (409) until the turn ends.
  */
 
-import { applyModelSwitch } from '@soma/slack/model-switch';
+import { liveOccupancyCall } from '@soma/slack/live-usage';
+import { applyModelSwitch, PENDING_MODEL_SWITCH_TTL_MS } from '@soma/slack/model-switch';
 import type { ConversationSession } from '../types';
 
 export const REPRESENTATIVE_MODEL_NICKNAMES = [
@@ -66,12 +67,21 @@ export interface ModelSwitchDeps extends ModelCatalogDeps {
     sessionKey: string,
     onSent?: (message: { channel: string; ts: string }) => void,
   ): Promise<CompactDispatchOutcome | undefined | void>;
+  /**
+   * Is that message still parked in the follow-up queue to run (or running)?
+   * Watched while a switch waits on a queued compact: once it will not run
+   * (cancelled, stopped, failed), the switch is un-parked.
+   */
+  isCompactQueued?(message: { channel: string; ts: string }): boolean;
   save(): void;
   broadcast(): void;
   now?: () => number;
 }
 
 export type CompactDispatchOutcome = 'queued' | 'settled';
+
+/** How often a switch waiting on a queued compact checks that compact is still ahead. */
+export const QUEUED_COMPACT_WATCH_MS = 2_000;
 
 export interface ModelSwitchResult {
   /** `switched` now · `compacting` first, switching at the compact boundary · `unchanged`. */
@@ -109,14 +119,11 @@ export function listRepresentativeModels(deps: ModelCatalogDeps, ownerId?: strin
   return out;
 }
 
-/** The context the running turn's latest call read (largest per-call total), 0 when none. */
-function liveContextTokens(session: Pick<ConversationSession, 'liveUsage'>): number {
-  let top = 0;
-  for (const c of Object.values(session.liveUsage ?? {})) {
-    const n = (c.inputTokens || 0) + (c.outputTokens || 0) + (c.cacheReadTokens || 0) + (c.cacheCreateTokens || 0);
-    if (n > top) top = n;
-  }
-  return top;
+/** The context the running turn's calls read (largest call, after its compact boundary), 0 when none. */
+function liveContextTokens(session: ConversationSession): number {
+  const c = liveOccupancyCall(session);
+  if (!c) return 0;
+  return (c.inputTokens || 0) + (c.outputTokens || 0) + (c.cacheReadTokens || 0) + (c.cacheCreateTokens || 0);
 }
 
 /** Tokens the context holds now (the four `current*` usage fields). */
@@ -223,13 +230,42 @@ export async function switchSessionModel(
       deps.save();
       deps.broadcast();
     };
-    const onSent = ({ ts }: { channel: string; ts: string }) => {
-      if (session.pendingModelSwitch === parked) parked.compactTs = ts;
+    let sent: { channel: string; ts: string } | undefined;
+    const onSent = (message: { channel: string; ts: string }) => {
+      sent = message;
+      if (session.pendingModelSwitch === parked) parked.compactTs = message.ts;
+    };
+    // Queued: watch it. Its own /compact turn arms the switch and takes it
+    // from there; a compact that will no longer run (cancelled, stopped,
+    // failed) or a switch past its TTL is un-parked — never left to lock the
+    // card or to wait on a compact that is gone.
+    const watchQueued = (message: { channel: string; ts: string }) => {
+      const probe = deps.isCompactQueued;
+      if (!probe) return;
+      const now = deps.now ?? Date.now;
+      const timer = setInterval(() => {
+        if (session.pendingModelSwitch !== parked || parked.armed) {
+          clearInterval(timer);
+          return;
+        }
+        let ahead = false;
+        try {
+          ahead = probe(message);
+        } catch {
+          ahead = false;
+        }
+        if (!ahead || now() - parked.requestedAt > PENDING_MODEL_SWITCH_TTL_MS) {
+          clearInterval(timer);
+          unpark();
+        }
+      }, QUEUED_COMPACT_WATCH_MS);
+      (timer as { unref?: () => void }).unref?.();
     };
     void Promise.resolve()
       .then(() => deps.dispatchCompact(sessionKey, onSent))
       .then((outcome) => {
         if (outcome !== 'queued') unpark();
+        else if (sent) watchQueued(sent);
       }, unpark);
     return result('compacting');
   }

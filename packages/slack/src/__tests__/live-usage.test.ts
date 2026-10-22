@@ -4,7 +4,15 @@
  * its end.
  */
 import { describe, expect, it } from 'vitest';
-import { clearLiveUsage, foldLiveUsage, markLiveUsageSettled, recordLiveUsage, sumLiveUsage } from '../live-usage';
+import {
+  clearLiveUsage,
+  foldLiveUsage,
+  liveOccupancyCall,
+  markLiveUsageBoundary,
+  markLiveUsageSettled,
+  recordLiveUsage,
+  sumLiveUsage,
+} from '../live-usage';
 
 const call = (messageId: string | undefined, n: number) => ({
   messageId,
@@ -163,6 +171,52 @@ describe('live usage of the running turn', () => {
       totalCacheReadTokens: 670_000,
       totalCostUsd: 2,
     });
+  });
+
+  it('after the boundary, the turn’s later calls are the real occupancy — only the pre-boundary ones are held back (review R4)', () => {
+    // A turn that compacted mid-way and went on working, then was stopped: its
+    // calls after the boundary read the compacted context and are genuine.
+    const session: Record<string, any> = {
+      usage: {
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreateTokens: 0,
+        totalCostUsd: 0,
+        currentInputTokens: 700_000,
+        currentOutputTokens: 0,
+        currentCacheReadTokens: 0,
+        currentCacheCreateTokens: 0,
+      },
+    };
+    recordLiveUsage(session, call('pre', 700_000), 't');
+    // The boundary: occupancy = post_tokens, shielded for this turn.
+    session.usage.currentInputTokens = 30_000;
+    session.postCompactOccupancyTurnId = 't';
+    markLiveUsageBoundary(session, 't');
+    recordLiveUsage(session, call('pre', 700_000), 't'); // a late re-report of the pre-boundary call
+    recordLiveUsage(session, call('post', 600_000), 't');
+    expect(liveOccupancyCall(session)?.inputTokens).toBe(600_000);
+    foldLiveUsage(session, 't', () => 0);
+    expect(session.usage.currentInputTokens).toBe(600_000);
+    expect(session.usage.totalInputTokens).toBe(1_300_000);
+  });
+
+  it('a shield with no boundary mark holds every call back (never restores pre-compact occupancy)', () => {
+    const session: Record<string, any> = { postCompactOccupancyTurnId: 't' };
+    recordLiveUsage(session, call('a', 700_000), 't');
+    expect(liveOccupancyCall(session)).toBeUndefined();
+  });
+
+  it('the boundary mark belongs to its turn: a new turn starts without one', () => {
+    const session: Record<string, any> = {};
+    recordLiveUsage(session, call('a', 5), 't');
+    markLiveUsageBoundary(session, 't');
+    expect(session.liveUsagePreBoundaryKeys).toEqual(['m:a']);
+    markLiveUsageBoundary(session, 'other'); // not the running turn's: ignored
+    expect(session.liveUsagePreBoundaryKeys).toEqual(['m:a']);
+    recordLiveUsage(session, call('b', 5), 't2');
+    expect(session.liveUsagePreBoundaryKeys).toBeUndefined();
   });
 
   it('a shield another turn set does not hold this turn’s occupancy (review R3-1)', () => {

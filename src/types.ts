@@ -707,6 +707,8 @@ export interface ConversationSession {
   >;
   /** The turn `liveUsage` belongs to (same-session turns can overlap). Runtime-only. */
   liveUsageTurnId?: string;
+  /** `liveUsage` keys recorded before the running turn's compact boundary. Runtime-only. */
+  liveUsagePreBoundaryKeys?: string[];
   /**
    * SSOT 2026-10-22 T5 — a dashboard model switch that waits for the compact
    * the current model must run first (context above the target model's
