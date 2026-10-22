@@ -1306,6 +1306,15 @@ async function start() {
         } catch (error) {
           logger.warn('Resuming active goals after restart failed (non-critical)', error);
         }
+        // #351 — re-arm error auto-retries whose timer died with the previous
+        // process. Runs last so crash recovery and the goal loop have already
+        // claimed the sessions they resume (no double resume).
+        try {
+          const rearmed = slackHandler.resumePendingErrorRetries();
+          if (rearmed > 0) timing(`Re-armed ${rearmed} pending error auto-retry(ies) after restart`);
+        } catch (error) {
+          logger.warn('Re-arming pending error auto-retries failed (non-critical)', error);
+        }
       })
       .catch((error) => {
         logger.warn('Crash recovery notifications failed (non-critical)', error);
