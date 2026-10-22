@@ -556,10 +556,13 @@ describe('SessionRegistry persistence', () => {
     session.sessionId = 'session-timer';
     const callback = vi.fn();
     session.pendingRetryTimer = setTimeout(callback, 60_000);
+    session.pendingRetry = { at: Date.now() + 60_000, attempt: 1, maxAttempts: 3, reason: '429' };
 
     registry.clearSessionId('C_TIMER', '171.T1');
 
     expect(session.pendingRetryTimer).toBeUndefined();
+    // The dashboard must not keep promising a resume whose timer is gone.
+    expect(session.pendingRetry).toBeUndefined();
   });
 
   it('resetSessionContext cancels pendingRetryTimer', () => {
@@ -568,10 +571,24 @@ describe('SessionRegistry persistence', () => {
     session.sessionId = 'session-timer2';
     const callback = vi.fn();
     session.pendingRetryTimer = setTimeout(callback, 60_000);
+    session.pendingRetry = { at: Date.now() + 60_000, attempt: 1, maxAttempts: 3, reason: '429' };
 
     registry.resetSessionContext('C_TIMER', '171.T2');
 
     expect(session.pendingRetryTimer).toBeUndefined();
+    expect(session.pendingRetry).toBeUndefined();
+  });
+
+  it('pendingRetry is runtime-only: a restart (save/load) never resurrects it', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U123', 'Tester', 'C_TIMER', '171.T3');
+    session.sessionId = 'session-timer3';
+    session.pendingRetry = { at: Date.now() + 60_000, attempt: 1, maxAttempts: 3, reason: '429' };
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(reader.getSession('C_TIMER', '171.T3')?.pendingRetry).toBeUndefined();
   });
 
   // === Issue #391: Preserve activityState on restart ===

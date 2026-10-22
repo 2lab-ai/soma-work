@@ -54,6 +54,7 @@ import {
   SessionLifecyclePolicyError,
   updateSessionLifecyclePolicy,
 } from '../session-lifecycle-policy';
+import { GOAL_EVAL_DISPATCH_MAX_RETRIES } from '../slack/goal-completion-evaluator';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from '../slack/goal-host-actions';
 import { getSurfaceLines } from '../slack/surface-config';
 import { buildThreadPermalink } from '../turn-notifier';
@@ -182,6 +183,12 @@ export interface KanbanSession {
    * session has never had a goal.
    */
   goal?: KanbanGoal;
+  /**
+   * Set when the session is idle only because the system will start it again
+   * by itself (see {@link KanbanAutoResume}). Such a card is unfinished work:
+   * the board puts it in `working`, not `idle`. Absent otherwise.
+   */
+  autoResume?: KanbanAutoResume;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -249,6 +256,27 @@ export interface KanbanGoalHistoryItem {
   costUsd?: number;
   /** Auto-continuation turns it took. */
   continuationCount?: number;
+}
+
+/**
+ * Why an idle session is not done: something the system armed will start it
+ * again without the user.
+ *
+ * - `error-retry` — the last turn failed with a recoverable error (429 pool
+ *   rate limit, transient API error) and is re-run at `at`.
+ * - `goal-eval-retry` — the goal's completion check failed the same way and
+ *   is re-run at `at`; the next turn follows if the goal is not met.
+ * - `goal-eval` — the goal's completion check is running now.
+ */
+export interface KanbanAutoResume {
+  kind: 'error-retry' | 'goal-eval-retry' | 'goal-eval';
+  /** Epoch ms the resume fires. Absent for `goal-eval` (already running). */
+  at?: number;
+  /** Which retry this is, and the budget — "attempt 1/3". */
+  attempt?: number;
+  maxAttempts?: number;
+  /** First line of the error that caused the retry. */
+  reason?: string;
 }
 
 export interface KanbanBoard {
@@ -658,6 +686,97 @@ function cardDerivedFields(src: {
 
 const KANBAN_GOAL_STATUSES = new Set(['active', 'paused', 'complete']);
 
+function positiveCount(v: unknown): number | undefined {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * The armed automatic resume of a live session, if any (see
+ * {@link KanbanAutoResume}). Reads the persisted markers the resume machinery
+ * itself trusts: an error auto-retry counts only while its marker belongs to
+ * the current run (`pendingRetrySessionId === sessionId`) and the session is
+ * not asleep — the same rule `resumePendingErrorRetries` uses to re-arm it
+ * after a restart (#351); `goal.evalBackoffUntil` is re-armed by the
+ * post-restart goal resume (`resumeActiveGoals` → backoff gate). The soonest
+ * action wins: a turn retry before a goal re-check.
+ */
+export function deriveAutoResume(s: any, now: number): KanbanAutoResume | undefined {
+  const retryAt = Number(s?.pendingRetryAt);
+  if (
+    Number.isFinite(retryAt) &&
+    retryAt > now &&
+    s.state !== 'SLEEPING' &&
+    s.pendingRetrySessionId !== undefined &&
+    s.pendingRetrySessionId === s.sessionId
+  ) {
+    const detail = s.pendingRetryDetail ?? {};
+    return {
+      kind: 'error-retry',
+      at: retryAt,
+      attempt: positiveCount(detail.attempt),
+      maxAttempts: positiveCount(detail.maxAttempts),
+      reason: typeof detail.reason === 'string' && detail.reason ? detail.reason : undefined,
+    };
+  }
+  const goal = s?.goal;
+  if (!goal || goal.status !== 'active') return undefined;
+  const backoffUntil = Number(goal.evalBackoffUntil);
+  if (Number.isFinite(backoffUntil) && backoffUntil > now) {
+    return {
+      kind: 'goal-eval-retry',
+      at: backoffUntil,
+      attempt: positiveCount(goal.evalDispatchRetryCount),
+      maxAttempts: GOAL_EVAL_DISPATCH_MAX_RETRIES,
+      reason: typeof goal.evalRetryReason === 'string' && goal.evalRetryReason ? goal.evalRetryReason : undefined,
+    };
+  }
+  if (goal.pendingEval) return { kind: 'goal-eval' };
+  return undefined;
+}
+
+/**
+ * The task list as the dashboard shows it: at most ONE task in progress.
+ *
+ * TodoWrite is a model-written snapshot and the model does mark several
+ * tasks `in_progress` at once (parallel background work) — shown verbatim,
+ * the timeline and panel spun two or three "current" tasks side by side. The
+ * one current task is the first `in_progress` in list order (the task the
+ * card's task row already names — `cardCurrentTask`); any later `in_progress`
+ * reads as `pending`. A session with no work in flight (`hasCurrent` false —
+ * see {@link sessionHasCurrentTask}) has no current task at all: every
+ * `in_progress` reads as `pending`, the rule the Slack plan block applies when
+ * a turn ends (`task-list-block-builder` finalize demotion). Display-only: the
+ * stored snapshot (and its timestamps) is untouched, so the choice is stable
+ * across updates.
+ */
+export function normalizeTaskProgress<T extends { status: string }>(
+  tasks: readonly T[] | undefined,
+  hasCurrent: boolean,
+): T[] | undefined {
+  if (!tasks) return undefined;
+  let currentTaken = !hasCurrent;
+  return tasks.map((t) => {
+    if (t.status !== 'in_progress') return t;
+    if (!currentTaken) {
+      currentTaken = true;
+      return t;
+    }
+    return { ...t, status: 'pending' };
+  });
+}
+
+/**
+ * Does this live session have work in flight, so one task may read as
+ * current? A running turn, a question waiting on the user (the card's task row
+ * names what it was doing), or an armed automatic resume (the task it will
+ * pick up again). An idle session in DONE has none.
+ */
+export function sessionHasCurrentTask(s: any, autoResume: KanbanAutoResume | undefined): boolean {
+  const state = s?.activityState;
+  return state === 'working' || state === 'waiting' || autoResume !== undefined;
+}
+
 /** The goal list of a live session, shaped for the card (`KanbanSession.goal`). */
 function goalToKanban(s: any): KanbanGoal | undefined {
   const goal = s.goal;
@@ -775,6 +894,7 @@ function liveDoneAt(s: any): number | undefined {
 }
 
 function sessionToKanban(key: string, s: any): KanbanSession {
+  const autoResume = deriveAutoResume(s, Date.now());
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
@@ -816,7 +936,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     tokenUsage: tokenUsageOf(s),
     doneAt: liveDoneAt(s),
     ...modelFields(s),
-    tasks: taskView?.current,
+    tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume)),
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
     slackThreadUrl:
       s.channelId && s.threadTs ? (buildThreadPermalink(s.channelId, s.threadTs) ?? undefined) : undefined,
@@ -833,6 +953,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     // aggregator's mergeBoards stamp.
     environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
     goal: goalToKanban(s),
+    ...(autoResume ? { autoResume } : {}),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -876,7 +997,11 @@ function archivedTasks(archived: ArchivedSession): Pick<KanbanSession, 'tasks' |
   const ledger = sanitizeTaskLedger(archived.taskLedger);
   if (!ledger) return {};
   const view = ledgerTasks(ledger);
-  return { tasks: view.current, earlierTasks: view.earlier.length ? view.earlier : undefined };
+  // An archived session runs nothing: no task reads as current.
+  return {
+    tasks: normalizeTaskProgress(view.current, false),
+    earlierTasks: view.earlier.length ? view.earlier : undefined,
+  };
 }
 
 /**
@@ -970,7 +1095,10 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
           board.waiting.push(kanban);
           break;
         default:
-          board.idle.push(kanban);
+          // Idle but with an armed automatic resume (turn retry, goal
+          // re-check) is unfinished work — RUNNING, not DONE.
+          if (kanban.autoResume) board.working.push(kanban);
+          else board.idle.push(kanban);
           break;
       }
     }
@@ -1180,7 +1308,14 @@ export function broadcastTaskUpdate(
     // Compose the wire-format key here so the client cache (keyed by
     // composite `${instanceName}::${rawKey}`) finds the card.
     const wireKey = composeSessionKey(sessionKey);
-    const payload = JSON.stringify({ type: 'task_update', sessionKey: wireKey, tasks, earlierTasks });
+    // Same one-current-task view as the board payload (sessionToKanban).
+    const live = _getSessionsFn?.().get(sessionKey);
+    const payload = JSON.stringify({
+      type: 'task_update',
+      sessionKey: wireKey,
+      tasks: normalizeTaskProgress(tasks, sessionHasCurrentTask(live, deriveAutoResume(live, Date.now()))),
+      earlierTasks,
+    });
     for (const client of wsClients) {
       try {
         client.send(payload);
@@ -2805,6 +2940,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card-usage .cnt { color: var(--ib-text); font-weight: 600; }
 .card-usage .cu-unit { margin-left: 3px; color: var(--ib-muted); }
 .card-usage .cu-sep { color: var(--ib-muted); }
+/* Armed automatic resume (turn retry / goal re-check): the clock in the status
+   line and the open card's resume row take the "waiting" hue, not the run hue. */
+.st-icon.is-resume, .card-resume svg { color: var(--st-wait); }
+.card-resume { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; background: var(--ib-pill); font-size: 12.5px; line-height: 1.45; color: var(--ib-text-2); }
+.card-resume svg { width: 13px; height: 13px; flex-shrink: 0; margin-top: 2px; }
+.card-resume .cr-when { font-weight: 600; color: var(--ib-text); }
+.card-resume .cr-reason { overflow-wrap: anywhere; }
 
 /* Expansion — grid row 0fr → 1fr. min-height/overflow live on the grid item
    so the row can collapse to zero; siblings below move with the animated row. */
@@ -4888,6 +5030,7 @@ var SPARK_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"
 var WAIT_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.8 15 14H1z"/></svg>';
 var TASKS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.2l1.4 1.4 2.4-2.6M2.5 10.2l1.4 1.4 2.4-2.6M9 4.5h4.5M9 10.5h4.5"/></svg>';
 var CTX_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 8V2.4A5.6 5.6 0 0 1 13.6 8z" fill="currentColor" stroke="none"/></svg>';
+var RESUME_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.3 1.5"/></svg>';
 
 // Board state that survives re-renders — the DOM is reused, never rebuilt.
 // Every dictionary keyed by a session key or conversation id is prototype-free,
@@ -5405,6 +5548,9 @@ function cardSummary(s, col, headline) {
   }
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
+  // Waiting out a retry: the error behind it is what this card is "doing".
+  var resume = pendingAutoResume(s, col);
+  if (resume && resume.reason) return '오류: ' + resume.reason;
   // The task row (renderCardTaskRow) names the running task — the summary
   // only does when that row is hidden.
   if (col === 'working' && current && !dhShow('tasks')) return current.content;
@@ -5415,9 +5561,35 @@ function cardSummary(s, col, headline) {
   return '';
 }
 
+// The armed automatic resume (server KanbanAutoResume) of a RUNNING card that
+// is not running a turn right now — idle until a retry timer or a goal
+// re-check starts it again. null when the card is running or has none.
+function pendingAutoResume(s, col) {
+  if (col !== 'working' || s.activityState === 'working' || !s.autoResume) return null;
+  return s.autoResume;
+}
+
+// One line for an armed resume: what starts the session again, when, which
+// attempt. Absolute clock time (no countdown), so equal data renders equal HTML.
+function autoResumeLabel(r) {
+  if (!r) return '';
+  if (r.kind === 'goal-eval') return 'Goal 완료 판정 중';
+  var at = Number(r.at) || 0;
+  var what = r.kind === 'goal-eval-retry' ? 'Goal 판정 재시도' : '자동 재개';
+  var text = (at ? formatTaskTime(at) + ' ' : '') + what;
+  var attempt = Number(r.attempt) || 0;
+  var max = Number(r.maxAttempts) || 0;
+  if (attempt && max) text += ' · 시도 ' + attempt + '/' + max;
+  return text;
+}
+
 // Status at the foot of the card. Board shows the bare timer; List adds the
 // "Running · " / "Done in " prefix via CSS — same DOM in both views.
 function renderCardStatus(s, col) {
+  var resume = pendingAutoResume(s, col);
+  if (resume) {
+    return '<span class="st-icon is-resume">' + RESUME_SVG + '</span><span class="st-text" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</span>';
+  }
   if (col === 'waiting') {
     return '<span class="st-icon">' + WAIT_SVG + '</span><span class="st-text">Waiting for you</span>';
   }
@@ -5816,6 +5988,17 @@ function invalidateCardIo(cid) {
 // Expanded body: model·effort → meta (env/workflow/owner/last activity) →
 // refs → task timeline → instruction/response → pending question → stats →
 // buttons. Every field the old card face showed is still gated by dhShow().
+// The open card's resume row: when / which attempt, and the full error line
+// the collapsed face clamps to two lines.
+function renderCardResume(s, col) {
+  var r = pendingAutoResume(s, col);
+  if (!r) return '';
+  return '<div class="card-resume">' + RESUME_SVG + '<div>'
+    + '<div class="cr-when">' + esc(autoResumeLabel(r)) + '</div>'
+    + (r.reason ? '<div class="cr-reason">' + esc(r.reason) + '</div>' : '')
+    + '</div></div>';
+}
+
 function renderCardBody(s, col) {
   // Owner gating — server-side requireSessionOwner is the authoritative guard;
   // this is UX only. Fail closed: if ownerId is missing (legacy record) the
@@ -5955,9 +6138,12 @@ function renderCardBody(s, col) {
     // with same-instance cards but the click is impossible.
     var label = (col === 'working') ? 'Stop' : (col === 'closed' && s.terminated ? 'Trash' : 'Close');
     actionBtn = '<button class="btn-action btn-stop" disabled' + siblingTitle + '>' + label + ' \u2192 ' + esc(s.environment.instanceName) + '</button>';
-  } else if (col === 'working') {
+  } else if (col === 'working' && !pendingAutoResume(s, col)) {
     actionBtn = '<button class="btn-action btn-stop"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'stop\\')">Stop</button>';
-  } else if (col === 'waiting' || col === 'idle') {
+  } else if (col === 'waiting' || col === 'idle' || col === 'working') {
+    // A RUNNING card waiting out a retry has no turn to stop — Close it
+    // instead (terminating the session also drops the armed retry).
+
     actionBtn = '<button class="btn-action btn-close"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'close\\')">Close</button>';
   } else if (col === 'closed') {
     // SLEEPING (live) sessions → Close (terminate); archived sessions → Trash (hide)
@@ -5979,6 +6165,7 @@ function renderCardBody(s, col) {
     + metaHtml
     + refsHtml
     + subtitlesHtml
+    + renderCardResume(s, col)
     + renderCardGoal(s, col, isOwner && !isSibling)
     + renderTimeline(s)
     + ioHtml
@@ -7143,6 +7330,9 @@ function connectWs() {
         if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
           var panelS = _sessionCache[panelSessionKey];
           renderPanelQuestion(panelS);
+          // The board carries the server's one-current-task view; a turn that
+          // just ended must stop spinning its task in the open panel too.
+          renderPanelTasks(panelS.tasks);
           // If session no longer has pending multi-choice, clear mc state
           if (!panelS.pendingQuestion || panelS.pendingQuestion.type !== 'user_choices') {
             if (_mcState[panelSessionKey]) delete _mcState[panelSessionKey];

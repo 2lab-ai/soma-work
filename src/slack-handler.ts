@@ -43,6 +43,7 @@ import { TelegramChannel } from './notification-channels/telegram-channel';
 import { WebhookChannel } from './notification-channels/webhook-channel';
 import { validateSessionGoalObjective } from './prompt/session-goal-block';
 import { routeReleaseNotes } from './release-notes-routes';
+import { retryReasonLine } from './retry-reason';
 import {
   type ActionHandlerContext,
   ActionHandlers,
@@ -2237,6 +2238,21 @@ export class SlackHandler {
           delayMs: retryAfterMs,
         });
 
+        // What the dashboard card says next to the due time while the retry
+        // waits: the session is idle but NOT finished — it stays in RUNNING
+        // with "HH:MM 자동 재개 (시도 n/3)" and the error behind it. The attempt
+        // is the counter the stream executor just consumed (file-access errors
+        // keep their own budget and are the only ones that set
+        // lastErrorContext). Persisted with the marker below (#351).
+        if (currentSession) {
+          currentSession.pendingRetryDetail = {
+            attempt: currentSession.lastErrorContext
+              ? currentSession.fileAccessRetryCount
+              : currentSession.errorRetryCount,
+            maxAttempts: StreamExecutor.MAX_ERROR_RETRIES,
+            reason: retryReasonLine(error),
+          };
+        }
         // Schedule retry after delay using autoResumeSession pattern; the due
         // time is persisted so a restart before it fires can re-arm it (#351).
         this.scheduleErrorRetry(
@@ -2245,6 +2261,10 @@ export class SlackHandler {
           retryAfterMs,
           currentSession?.lastErrorContext,
         );
+        // The idle transition already pushed a board without the retry; push
+        // again so the card moves back out of DONE now, not at the next
+        // unrelated update.
+        this.claudeHandler.broadcastSessionUpdate();
         // Retry scheduled — don't re-throw. The turn did NOT succeed, so this is
         // an `error`: the drain stays halted until the retry (or the user) says
         // otherwise, instead of racing the timer for the same session.
@@ -6085,6 +6105,7 @@ export class SlackHandler {
     session.pendingRetryTimer = undefined;
     session.pendingRetryAt = undefined;
     session.pendingRetrySessionId = undefined;
+    session.pendingRetryDetail = undefined;
   }
 
   /**

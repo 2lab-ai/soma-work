@@ -40,6 +40,7 @@ import { boundRateLimitDelayMs, parseRetryAfterMs, textIndicatesRetryableRateLim
 import { OutputFlag } from '@soma/slack/output-flags';
 import type { SyntheticMessageEvent } from '../cron-scheduler';
 import { buildGoalContinuationPrompt } from '../prompt/session-goal-block';
+import { retryReasonLine } from '../retry-reason';
 import type { ConversationSession, SessionGoal } from '../types';
 import type { EffortLevel } from '../user-settings-store';
 import { buildCapDecisionDmBlocks } from './goal-blocks';
@@ -47,6 +48,7 @@ import {
   applyGoalEvalDispatchFailure,
   decideGoalEvalOutcome,
   evaluateGoalCompletion,
+  GOAL_EVAL_DISPATCH_MAX_RETRIES,
   type GoalEvalDispatcher,
   type GoalEvalVerdict,
   shouldRunGoalIdleDriver,
@@ -58,13 +60,8 @@ import { announceSessionNotice, recordSessionNotice } from './session-notice';
 /** Default ceiling for a single completion eval before it is aborted. */
 const DEFAULT_GOAL_EVAL_TIMEOUT_MS = 120_000;
 
-/**
- * Consecutive eval-dispatch failures the loop self-heals before falling back
- * to the terminal "run `goal done` / `goal pause`" notice. Counts transient
- * API failures (429 pool rate limit, 529 overloaded, timeouts, flaky JSON),
- * NOT completed eval cycles.
- */
-export const GOAL_EVAL_DISPATCH_MAX_RETRIES = 3;
+// Re-exported for existing importers; defined in the evaluator (leaf module).
+export { GOAL_EVAL_DISPATCH_MAX_RETRIES };
 
 /**
  * Backoff before a scheduled re-eval when the failure carries no explicit
@@ -114,6 +111,13 @@ export interface GoalLoopRegistry {
   getSessionByKey(sessionKey: string): ConversationSession | undefined;
   getActivityStateByKey(sessionKey: string): string | undefined;
   saveSessions(): void;
+  /**
+   * Push the dashboard board. Called after every loop-state change (eval
+   * started, retry armed or lifted, goal advanced): the session sits idle
+   * through all of them, so no activity-state transition would push them.
+   * Optional — hosts without a dashboard (and test doubles) omit it.
+   */
+  broadcastSessionUpdate?(): void;
 }
 
 /** Request-coordinator surface the controller needs. */
@@ -310,7 +314,7 @@ export class GoalLoopController {
     activeGoal.pendingEval = { requestedAt: startedAt, turnId: `${startedAt}` };
     activeGoal.updatedAt = startedAt;
     session.systemPrompt = undefined;
-    registry.saveSessions();
+    this.persist();
 
     const evalUserSummary = [
       'Eval trigger: idle-settle (work turn ended)',
@@ -333,6 +337,7 @@ export class GoalLoopController {
     // streak — the retry budget only measures CONSECUTIVE dispatch failures.
     activeGoal.evalDispatchRetryCount = undefined;
     activeGoal.evalBackoffUntil = undefined;
+    activeGoal.evalRetryReason = undefined;
 
     // M1 epoch guard — if the user changed the goal or sent a message while
     // the eval ran, the live goal no longer matches what we evaluated.
@@ -348,7 +353,7 @@ export class GoalLoopController {
       // never touch it.
       if (live && live.goalId === snapshot.goalId && live.pendingEval?.requestedAt === startedAt) {
         live.pendingEval = undefined;
-        registry.saveSessions();
+        this.persist();
       }
       return;
     }
@@ -368,7 +373,7 @@ export class GoalLoopController {
     verdict: GoalEvalVerdict,
     summaryHash: string,
   ): Promise<void> {
-    const { registry, requestCoordinator, logger } = this.deps;
+    const { requestCoordinator, logger } = this.deps;
     const outcome = decideGoalEvalOutcome(activeGoal, verdict, this.now());
     // Remember which summary produced this verdict so an identical next turn
     // can short-circuit (S9). A `complete` verdict stops the loop, so clear it.
@@ -389,7 +394,7 @@ export class GoalLoopController {
       // only scans active goals). One durable write = a consistent state:
       // either the next goal is active, or the goal is closed with an empty queue.
       const next = advanceGoalQueue(session);
-      registry.saveSessions();
+      this.persist();
 
       await this.postResultNotice(
         session,
@@ -413,7 +418,7 @@ export class GoalLoopController {
     // (`continuationCount`, `lastEvalReason`, `lastContinuationAt`) that
     // `decideGoalEvalOutcome` applied. The complete branch above owns its own
     // single post-advance save and returns before reaching here.
-    registry.saveSessions();
+    this.persist();
 
     const remaining = verdict.remaining.length
       ? verdict.remaining.map((r) => `• ${r}`).join('\n')
@@ -459,7 +464,7 @@ export class GoalLoopController {
         }
         if (dmSent) {
           activeGoal.capDmPendingAt = this.now();
-          registry.saveSessions();
+          this.persist();
           await this.postResultNotice(
             session,
             `⏸️ Goal auto-continuation reached its ${activeGoal.maxContinuations}-turn budget. Asked the owner via DM whether to keep going.`,
@@ -512,6 +517,23 @@ export class GoalLoopController {
   private async postResultNotice(session: ConversationSession, text: string): Promise<void> {
     recordSessionNotice(session, text);
     await this.deps.postNotice(session.channelId, session.threadTs, text);
+  }
+
+  /**
+   * Persist loop state AND push it to the dashboard. The session is idle
+   * through every loop step (eval in flight, retry backoff, queue advance),
+   * so without this push the card would keep whatever the idle transition
+   * showed — DONE — while the loop is still driving the goal.
+   */
+  private persist(): void {
+    this.deps.registry.saveSessions();
+    try {
+      this.deps.registry.broadcastSessionUpdate?.();
+    } catch (err: unknown) {
+      this.deps.logger.debug('Goal loop dashboard push failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /** Stable hash of the work summary for the S9 unchanged-summary check. */
@@ -594,7 +616,7 @@ export class GoalLoopController {
     if (!epochValid) {
       if (live && live.goalId === snapshot.goalId && live.pendingEval?.requestedAt === startedAt) {
         live.pendingEval = undefined;
-        registry.saveSessions();
+        this.persist();
       }
       logger.info('Goal eval dispatch failure discarded — goal epoch moved during eval', { sessionKey });
       return;
@@ -605,7 +627,7 @@ export class GoalLoopController {
     if (live) {
       applyGoalEvalDispatchFailure(live, this.now());
       session.systemPrompt = undefined;
-      registry.saveSessions();
+      this.persist();
     }
 
     // Self-heal transient API failures (429 pool rate limit, 529, timeouts,
@@ -620,7 +642,8 @@ export class GoalLoopController {
         // fires is skipped by the runOnce gate, so queued duplicate triggers
         // can never hammer the same 429 window and burn the budget instantly.
         live.evalBackoffUntil = this.now() + delayMs;
-        registry.saveSessions();
+        live.evalRetryReason = retryReasonLine(err);
+        this.persist();
         logger.warn('Scheduling goal eval retry after transient dispatch failure', {
           sessionKey,
           attempt: live.evalDispatchRetryCount,
@@ -641,7 +664,8 @@ export class GoalLoopController {
       // Budget exhausted — reset the streak so a user nudge starts a fresh
       // budget instead of landing straight back on the terminal notice.
       live.evalDispatchRetryCount = undefined;
-      registry.saveSessions();
+      live.evalRetryReason = undefined;
+      this.persist();
     }
 
     void this.deps
@@ -682,7 +706,8 @@ export class GoalLoopController {
       // OUR window elapsed — lift the backoff gate so the retry (and any
       // later natural settle) can dispatch again.
       liveAtFire.evalBackoffUntil = undefined;
-      this.deps.registry.saveSessions();
+      liveAtFire.evalRetryReason = undefined;
+      this.persist();
       this.onTurnSettled(sessionKey);
     }, delayMs);
   }

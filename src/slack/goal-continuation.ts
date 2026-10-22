@@ -59,6 +59,7 @@ export function resetGoalContinuationOnUserMessage(session: { goal?: Conversatio
   // self-healing retry machinery.
   session.goal.evalDispatchRetryCount = undefined;
   session.goal.evalBackoffUntil = undefined;
+  session.goal.evalRetryReason = undefined;
   // Invalidate any in-flight completion eval — the user just weighed in, so
   // a verdict about the pre-message work must not apply (M1).
   bumpGoalEpoch(session.goal);
