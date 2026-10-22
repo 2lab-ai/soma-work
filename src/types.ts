@@ -528,8 +528,12 @@ export interface ConversationSession {
   // to adapt its approach instead of repeating the same failed action.
   lastErrorContext?: string;
   // Handle for pending auto-retry setTimeout — stored so session reset can cancel it (Issue #215).
-  // Not serialized to disk (runtime-only).
+  // The handle is runtime-only; its due time is persisted as `pendingRetryAt` (#351).
   pendingRetryTimer?: ReturnType<typeof setTimeout>;
+  // Epoch ms the scheduled error auto-retry is due (#351). Persisted so startup can
+  // re-arm a retry whose timer died with the previous process; cleared when the
+  // retry fires or the session resets.
+  pendingRetryAt?: number;
   /**
    * Pending personal-skill SKILL.md file roundtrip — set when the user clicks
    * "✏️ 편집" on a skill whose body exceeds `MAX_INLINE_EDIT_CHARS`. The

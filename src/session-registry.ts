@@ -123,6 +123,11 @@ interface SerializedSession {
   shutdownNotificationSent?: boolean;
   shutdownNotifiedAt?: number;
   wasWorkingAtShutdown?: boolean;
+  // Error auto-retry (#351): due time, budget and error context of a pending
+  // retry, so a restart can re-arm it. The timer handle is runtime-only.
+  pendingRetryAt?: number;
+  errorRetryCount?: number;
+  lastErrorContext?: string;
   // Log verbosity bitmask
   logVerbosity?: number;
   /**
@@ -1329,6 +1334,8 @@ export class SessionRegistry {
         clearTimeout(session.pendingRetryTimer);
         session.pendingRetryTimer = undefined;
       }
+      // ...and its persisted due time, so a restart cannot re-arm it (#351)
+      session.pendingRetryAt = undefined;
       // Drop any armed SKILL.md edit-roundtrip marker — the user is starting
       // a fresh logical session, an inbound `SKILL.md` upload should NOT
       // silently apply to a skill the user clicked 편집 on in the previous
@@ -1445,6 +1452,8 @@ export class SessionRegistry {
       clearTimeout(session.pendingRetryTimer);
       session.pendingRetryTimer = undefined;
     }
+    // ...and its persisted due time, so a restart cannot re-arm it (#351)
+    session.pendingRetryAt = undefined;
     // Drop any armed SKILL.md edit-roundtrip marker — `/new` / `/renew` starts
     // a fresh logical session and an inbound `SKILL.md` upload should not
     // resurrect an edit click from the previous one.
@@ -1896,6 +1905,11 @@ export class SessionRegistry {
             shutdownNotificationSent: session.shutdownNotificationSent,
             shutdownNotifiedAt: session.shutdownNotifiedAt,
             wasWorkingAtShutdown: session.wasWorkingAtShutdown,
+            // Pending error auto-retry (#351): the timer dies with the process,
+            // so its due time, budget and context are what startup re-arms from.
+            pendingRetryAt: session.pendingRetryAt,
+            errorRetryCount: session.errorRetryCount,
+            lastErrorContext: session.lastErrorContext,
             logVerbosity: session.logVerbosity,
             logVerbosityVersion: session.logVerbosity === undefined ? undefined : LOG_VERBOSITY_MASK_VERSION,
             effort: session.effort,
@@ -2092,6 +2106,21 @@ export class SessionRegistry {
           shutdownNotificationSent: serialized.shutdownNotificationSent,
           shutdownNotifiedAt: serialized.shutdownNotifiedAt,
           wasWorkingAtShutdown: serialized.wasWorkingAtShutdown,
+          // Pending error auto-retry (#351), re-armed by resumePendingErrorRetries.
+          // A session that loads asleep is never auto-resumed, so its due time is
+          // dropped rather than re-armed.
+          pendingRetryAt:
+            !sleptOnLoad &&
+            serialized.state !== 'SLEEPING' &&
+            typeof serialized.pendingRetryAt === 'number' &&
+            Number.isFinite(serialized.pendingRetryAt)
+              ? serialized.pendingRetryAt
+              : undefined,
+          errorRetryCount:
+            typeof serialized.errorRetryCount === 'number' && Number.isFinite(serialized.errorRetryCount)
+              ? serialized.errorRetryCount
+              : undefined,
+          lastErrorContext: typeof serialized.lastErrorContext === 'string' ? serialized.lastErrorContext : undefined,
           // A mask stored before the NARRATION flag (no version marker) maps
           // to its current preset (spec 10 §3.2) — otherwise the thread
           // silently loses narration. A versioned mask is used as stored.
