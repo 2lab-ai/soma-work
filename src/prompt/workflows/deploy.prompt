@@ -234,7 +234,7 @@ Other work (for example a QA pass over the deployed PRs) can be registered to st
 Fields:
 
 - `repo`: the normalized `owner/repo`.
-- `target`: the PR's base branch exactly as merged into — read it with `gh pr view <pr-number> --json baseRefName` (e.g. `deploy/dev2`, `develop`). Never the user's shorthand (`dev2`) and never a `refs/heads/` form: lanes match the branch name exactly, so a shorthand silently starts nothing.
+- `target`: the PR's base branch exactly as merged into — read it with `gh pr view <pr-number> --json baseRefName` (e.g. `deploy/staging`, `develop`). Never the user's shorthand (`staging`) and never a `refs/heads/` form: lanes match the branch name exactly, so a shorthand silently starts nothing.
 - `before`: the target SHA before the merge (the same `before_sha` as step 6).
 - `after`: the merge commit SHA (`gh pr view <pr-number> --json mergeCommit`).
 - `confirmed`: only when the deploy is unconfirmed, as `false`.
@@ -243,7 +243,7 @@ Fields:
 {
   "type": "deploy_completed",
   "repo": "acme/app",
-  "target": "deploy/dev2",
+  "target": "deploy/staging",
   "before": "<target sha before merge>",
   "after": "<merge commit sha>"
 }
