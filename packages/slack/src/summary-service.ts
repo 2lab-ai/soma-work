@@ -50,7 +50,19 @@ export const SUMMARY_PROMPT = `Based on the conversation history in this session
 
 You MUST use ONLY the conversation history you already have. Do NOT attempt to call any tools, APIs, or external services.
 
-Top-of-document invariant (applies to every mode that has artifacts):
+TL;DR envelope (required in every mode):
+- Open the response with a TL;DR block in exactly this shape, each tag on its own line:
+<tldr>
+first line
+second line
+third line
+</tldr>
+- Exactly 3 lines. Each line is one plain sentence of at most 100 characters — no bullets, headings, code or tables.
+- Line 1 is the outcome: what changed, was decided or was answered. Lines 2 and 3 carry the most important supporting fact and the next step or open risk.
+- Use only facts that also appear in the document below the block.
+- The host removes this block from the document and shows it alone on the channel-visible thread surface; the full document is posted inside the thread. The block is an envelope, not part of the document — the document after it still starts with SSOT.
+
+Top-of-document invariant (applies to the document after the TL;DR block, in every mode that has artifacts):
 1. **SSOT** — quote the user's instruction verbatim. Never paraphrase.
 2. **Status** — issue/PR links with current state (Open / Draft / Merged / Closed / QA / etc.) and any state changes that happened in this session. In \`brief\` mode with no link at all, omit Status entirely rather than render an empty section.
 
@@ -69,7 +81,7 @@ Rules:
 - Reference real artifacts from the conversation: file paths, function names, PR numbers, error messages, command names. Never invent values you did not see in history.
 - If the session has truly no meaningful work history, say so in one sentence — do NOT ask the user for additional context or tool access.
 - Write in the same language the conversation was conducted in.
-- Respond with the summary only — no preamble, no markdown fences wrapping the whole response.`;
+- Respond with the leading TL;DR block followed by the summary only — the TL;DR block is the only thing allowed before the document; no other preamble, no markdown fences wrapping the whole response.`;
 
 /**
  * Per-mode template body, inlined so the host fork — which has no tool access
@@ -126,6 +138,117 @@ Forbidden at epic mode: file paths, function names, commit hashes, long multi-li
 };
 
 const MODE_RANK: Record<ExecutiveSummaryMode, number> = { brief: 0, issue: 1, epic: 2 };
+
+/** The channel-visible thread surface never shows more than this many TL;DR lines. */
+const TLDR_MAX_LINES = 3;
+/**
+ * Host hard cap per TL;DR line. The prompt asks for ≤100 characters; the
+ * extra room is a safety margin for a slightly long line, not a second
+ * contract.
+ */
+const TLDR_MAX_LINE_CHARS = 140;
+/**
+ * Shown on the surface when the model returned no usable TL;DR. It states the
+ * failure and points at the thread; it does not claim the in-thread post
+ * succeeded (that post's errors are swallowed). English, like the surface
+ * header it sits under.
+ */
+export const TLDR_MISSING_POINTER = 'TL;DR not generated — see the thread for the full summary.';
+
+const TLDR_OPEN_LINE = /^\s*<tldr>\s*$/i;
+const TLDR_CLOSE_LINE = /^\s*<\/tldr>\s*$/i;
+const FENCE_LINE = /^\s*```/;
+const LIST_MARKER = /^(?:[-*•+]|\d+[.)])\s+/;
+
+/** Where the surface TL;DR came from. Logged so model compliance with the envelope stays observable. */
+export type TldrSource = 'model' | 'missing';
+
+export interface ParsedExecutiveSummary {
+  /** At most {@link TLDR_MAX_LINES} plain lines (list markers stripped), each capped in length. Empty when missing. */
+  tldr: string[];
+  /** The full Executive Summary with the `<tldr>` envelope removed. */
+  body: string;
+  tldrSource: TldrSource;
+}
+
+function capTldrLine(line: string): string {
+  const chars = Array.from(line);
+  if (chars.length <= TLDR_MAX_LINE_CHARS) return line;
+  return `${chars
+    .slice(0, TLDR_MAX_LINE_CHARS - 1)
+    .join('')
+    .trimEnd()}…`;
+}
+
+function cleanTldrLines(lines: string[]): string[] {
+  return lines
+    .map((line) => line.trim().replace(LIST_MARKER, '').trim())
+    .filter((line) => line.length > 0)
+    .slice(0, TLDR_MAX_LINES)
+    .map(capTldrLine);
+}
+
+/**
+ * Split a raw Executive Summary response into the TL;DR envelope and the
+ * full document.
+ *
+ * Only a LEADING, CLOSED envelope counts: the first non-blank line must be a
+ * standalone `<tldr>` and a standalone `</tldr>` line must follow. Anywhere
+ * else, `<tldr>` is document content (an ES about this very feature quotes
+ * it) and is left untouched, so the in-thread copy stays complete.
+ *
+ * Failure handling never invents a summary from the body — the body starts
+ * with the verbatim SSOT quote, so "first lines of the body" would put the
+ * user's own instruction on the channel as if it were a conclusion:
+ * - no leading envelope → `missing`, body unchanged;
+ * - leading `<tldr>` never closed → `missing`, only that opener line is
+ *   dropped (protocol must not leak), every other line is kept;
+ * - closed but empty envelope → `missing`, envelope removed.
+ * A model TL;DR longer than 3 lines is cut to 3, never padded.
+ */
+export function parseExecutiveSummary(raw: string): ParsedExecutiveSummary {
+  const lines = raw.split('\n');
+  let open = 0;
+  while (open < lines.length && lines[open].trim() === '') open++;
+  if (open >= lines.length || !TLDR_OPEN_LINE.test(lines[open])) {
+    return { tldr: [], body: raw, tldrSource: 'missing' };
+  }
+
+  // The envelope must close before the first code fence: a `</tldr>` inside a
+  // fenced example further down is document content, not our terminator.
+  let close = -1;
+  for (let i = open + 1; i < lines.length && !FENCE_LINE.test(lines[i]); i++) {
+    if (TLDR_CLOSE_LINE.test(lines[i])) {
+      close = i;
+      break;
+    }
+  }
+  if (close === -1) {
+    const body = lines
+      .filter((_, i) => i !== open)
+      .join('\n')
+      .trim();
+    return { tldr: [], body, tldrSource: 'missing' };
+  }
+
+  const tldr = cleanTldrLines(lines.slice(open + 1, close));
+  const body = lines
+    .slice(close + 1)
+    .join('\n')
+    .trim();
+  return { tldr, body, tldrSource: tldr.length > 0 ? 'model' : 'missing' };
+}
+
+/**
+ * Text of the in-thread ES message: the TL;DR (same lines as the surface)
+ * followed by the whole document. Rendered through `buildSummaryBlocks`, so
+ * it gets the same markdown rewrite and 3000-char chunking.
+ */
+function composeInThreadSummary({ tldr, body }: ParsedExecutiveSummary): string {
+  if (tldr.length === 0) return body;
+  const tldrSection = ['**TL;DR**', ...tldr.map((line) => `• ${line}`)].join('\n');
+  return body ? `${tldrSection}\n\n${body}` : tldrSection;
+}
 
 /**
  * Format a remaining-time duration as `{m}m {s}s` / `{m}m` / `{s}s`.
@@ -431,14 +554,42 @@ export class SummaryService {
       return;
     }
 
-    const summaryBlocks = this.buildSummaryBlocks(summaryText);
+    // The surface is the channel-visible thread root, so it carries only the
+    // TL;DR. The full ES goes inside the thread via `postInThread`.
+    const { tldr, tldrSource } = parseExecutiveSummary(summaryText);
+    const summaryBlocks = this.buildTldrBlocks(tldr);
     session.actionPanel.summaryBlocks = summaryBlocks;
     session.lastSummaryMode = selectExecutiveSummaryMode(session);
 
-    logger.info('Summary displayed on thread', {
+    if (tldrSource === 'missing') {
+      logger.warn('Executive Summary has no <tldr> envelope — surface shows the pointer line', {
+        mode: session.lastSummaryMode,
+      });
+    }
+    logger.info('Summary TL;DR displayed on thread surface', {
       blockCount: summaryBlocks.length,
       mode: session.lastSummaryMode,
+      tldrSource,
+      tldrLines: tldr.length,
     });
+  }
+
+  /**
+   * Thread-surface blocks: a divider plus one section holding the header and
+   * at most {@link TLDR_MAX_LINES} TL;DR lines. With no TL;DR, a single pointer
+   * line stands in — the surface is never left blank, because it is also the
+   * "summary arrived" signal.
+   */
+  buildTldrBlocks(tldr: string[]): any[] {
+    const lines =
+      tldr.length > 0 ? tldr.map((line) => `• ${SummaryService.formatSummaryForSlack(line)}`) : [TLDR_MISSING_POINTER];
+    return [
+      { type: 'divider' },
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*Executive Summary · TL;DR*\n${lines.join('\n')}` },
+      },
+    ];
   }
 
   /**
@@ -523,7 +674,9 @@ export class SummaryService {
       return;
     }
 
-    const blocks = this.buildSummaryBlocks(summaryText);
+    // Full ES in the thread: TL;DR on top (same lines as the surface), then
+    // the whole document with the `<tldr>` envelope removed.
+    const blocks = this.buildSummaryBlocks(composeInThreadSummary(parseExecutiveSummary(summaryText)));
     const fallbackText = session.sessionTitle ? `Executive Summary — ${session.sessionTitle}` : 'Executive Summary';
 
     try {
