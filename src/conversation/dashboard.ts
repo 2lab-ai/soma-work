@@ -29,9 +29,12 @@ import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
 import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
+import { sumLiveUsage } from '@soma/slack/live-usage';
 import { MetricsEventStore } from '../metrics/event-store';
+import { calculateTokenCost } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
+import { ledgerTasks, sanitizeTaskLedger } from '../session/task-ledger';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
 import {
   countLifecycleTransitions,
@@ -97,13 +100,25 @@ export interface KanbanSession {
     totalLinesAdded: number;
     totalLinesDeleted: number;
   };
-  /** Token usage */
+  /**
+   * Token usage — session totals of every token kind and the API-equivalent
+   * cost. While a turn runs, the calls it has made so far are folded in
+   * (SSOT 2026-10-22 T1/T2), so the numbers grow during the turn.
+   */
   tokenUsage?: {
     totalInputTokens: number;
     totalOutputTokens: number;
+    totalCacheReadTokens: number;
+    totalCacheCreateTokens: number;
     totalCostUsd: number;
     contextUsagePercent: number;
   };
+  /**
+   * SSOT 2026-10-22 T11 — when the work finished (epoch ms): an idle / sleeping
+   * card when it last went idle (else its last activity), an archived card at
+   * its last activity. Absent while the session works or waits.
+   */
+  doneAt?: number;
   /**
    * Task list — the model's latest TodoWrite list, from the session's task
    * ledger (SSOT 2026-10-22 T7/T8): each task has its own id (`T<n>`), its
@@ -195,6 +210,27 @@ export interface KanbanGoal {
   };
   queue: Array<{ goalId: string; objective: string }>;
   completedCount: number;
+  /** SSOT 2026-10-22 T6 — completed goals with their details, newest first. */
+  history: KanbanGoalHistoryItem[];
+}
+
+/** One completed goal as the card lists it (SSOT 2026-10-22 T6). */
+export interface KanbanGoalHistoryItem {
+  goalId: string;
+  objective: string;
+  createdAt?: number;
+  completedAt?: number;
+  /** `user` (goal done) or `eval-model` (the completion evaluator). */
+  completedVia?: string;
+  /** The evaluator's verdict, or `user`. Capped. */
+  completionReason?: string;
+  /** Active turn time spent on the goal (ms). */
+  activeMsUsed?: number;
+  /** Every token kind spent on the goal. */
+  tokens?: number;
+  costUsd?: number;
+  /** Auto-continuation turns it took. */
+  continuationCount?: number;
 }
 
 export interface KanbanBoard {
@@ -598,6 +634,7 @@ function goalToKanban(s: any): KanbanGoal | undefined {
   const queue: any[] = Array.isArray(s.goalQueue) ? s.goalQueue : [];
   const history: any[] = Array.isArray(s.goalHistory) ? s.goalHistory : [];
   if (!goal && queue.length === 0 && history.length === 0) return undefined;
+  const currentId = goal && typeof goal.goalId === 'string' ? goal.goalId : undefined;
   return {
     current:
       goal && typeof goal.goalId === 'string' && KANBAN_GOAL_STATUSES.has(goal.status)
@@ -616,7 +653,78 @@ function goalToKanban(s: any): KanbanGoal | undefined {
       .filter((g) => g && typeof g.goalId === 'string')
       .map((g) => ({ goalId: g.goalId, objective: String(g.objective ?? '') })),
     completedCount: history.length,
+    history: history
+      .filter((g) => g && typeof g.goalId === 'string' && g.goalId !== currentId)
+      .map(goalHistoryItem)
+      .reverse(),
   };
+}
+
+const GOAL_REASON_MAX = 1000;
+function finiteNumber(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+/** A completed goal's details for the card (T6) — known fields only, numbers as numbers. */
+function goalHistoryItem(g: any): KanbanGoalHistoryItem {
+  const tokenParts = [g.tokensInput, g.tokensOutput, g.tokensCacheRead, g.tokensCacheCreate].map(finiteNumber);
+  const item: KanbanGoalHistoryItem = { goalId: g.goalId, objective: String(g.objective ?? '') };
+  const createdAt = finiteNumber(g.createdAt);
+  if (createdAt !== undefined) item.createdAt = createdAt;
+  const completedAt = finiteNumber(g.completedAt);
+  if (completedAt !== undefined) item.completedAt = completedAt;
+  if (typeof g.completedVia === 'string') item.completedVia = g.completedVia;
+  if (typeof g.completionReason === 'string' && g.completionReason) {
+    item.completionReason = g.completionReason.slice(0, GOAL_REASON_MAX);
+  }
+  const activeMsUsed = finiteNumber(g.activeMsUsed);
+  if (activeMsUsed !== undefined) item.activeMsUsed = activeMsUsed;
+  if (tokenParts.some((n) => n !== undefined)) item.tokens = tokenParts.reduce<number>((a, n) => a + (n ?? 0), 0);
+  const costUsd = finiteNumber(g.costUsd);
+  if (costUsd !== undefined) item.costUsd = costUsd;
+  const continuationCount = finiteNumber(g.continuationCount);
+  if (continuationCount !== undefined) item.continuationCount = continuationCount;
+  return item;
+}
+
+/**
+ * Session token totals for the card (T1/T2): the committed `usage.total*` plus
+ * the calls of the turn still running (`liveUsage`), those priced at the
+ * session model like the rest of the session's cost.
+ */
+function tokenUsageOf(s: any): KanbanSession['tokenUsage'] {
+  const live = sumLiveUsage(s.liveUsage);
+  const liveTokens = live.inputTokens + live.outputTokens + live.cacheReadTokens + live.cacheCreateTokens;
+  if (!s.usage && liveTokens === 0) return undefined;
+  const u = s.usage || {};
+  const liveCost =
+    liveTokens > 0
+      ? calculateTokenCost(s.model, live.inputTokens, live.outputTokens, live.cacheReadTokens, live.cacheCreateTokens)
+      : 0;
+  return {
+    totalInputTokens: (u.totalInputTokens || 0) + live.inputTokens,
+    totalOutputTokens: (u.totalOutputTokens || 0) + live.outputTokens,
+    totalCacheReadTokens: (u.totalCacheReadTokens || 0) + live.cacheReadTokens,
+    totalCacheCreateTokens: (u.totalCacheCreateTokens || 0) + live.cacheCreateTokens,
+    totalCostUsd: (u.totalCostUsd || 0) + liveCost,
+    contextUsagePercent: u.contextWindow
+      ? (((u.currentInputTokens || 0) +
+          (u.currentCacheReadTokens || 0) +
+          (u.currentCacheCreateTokens || 0) +
+          (u.currentOutputTokens || 0)) /
+          u.contextWindow) *
+        100
+      : 0,
+  };
+}
+
+/** T11 — when a live session's work finished; undefined while it works or waits. */
+function liveDoneAt(s: any): number | undefined {
+  const state = s.activityState || 'idle';
+  if (state !== 'idle') return undefined;
+  const changed = finiteNumber(s.activityStateChangedAt);
+  if (changed) return changed;
+  const last = s.lastActivity instanceof Date ? s.lastActivity.getTime() : Date.parse(String(s.lastActivity));
+  return Number.isFinite(last) ? last : undefined;
 }
 
 function sessionToKanban(key: string, s: any): KanbanSession {
@@ -658,21 +766,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
           totalLinesDeleted: s.mergeStats.totalLinesDeleted,
         }
       : undefined,
-    tokenUsage: s.usage
-      ? {
-          totalInputTokens: s.usage.totalInputTokens || 0,
-          totalOutputTokens: s.usage.totalOutputTokens || 0,
-          totalCostUsd: s.usage.totalCostUsd || 0,
-          contextUsagePercent: s.usage.contextWindow
-            ? (((s.usage.currentInputTokens || 0) +
-                (s.usage.currentCacheReadTokens || 0) +
-                (s.usage.currentCacheCreateTokens || 0) +
-                (s.usage.currentOutputTokens || 0)) /
-                s.usage.contextWindow) *
-              100
-            : 0,
-        }
-      : undefined,
+    tokenUsage: tokenUsageOf(s),
+    doneAt: liveDoneAt(s),
     tasks: taskView?.current,
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
     slackThreadUrl:
@@ -728,6 +823,14 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   };
 }
 
+/** The task ledger an archive kept (T7/T8), as the card carries it. */
+function archivedTasks(archived: ArchivedSession): Pick<KanbanSession, 'tasks' | 'earlierTasks'> {
+  const ledger = sanitizeTaskLedger(archived.taskLedger);
+  if (!ledger) return {};
+  const view = ledgerTasks(ledger);
+  return { tasks: view.current, earlierTasks: view.earlier.length ? view.earlier : undefined };
+}
+
 /**
  * Convert an ArchivedSession to KanbanSession for the closed column.
  * Trace: Scenario 3, Section 3a transformation
@@ -771,10 +874,15 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
       ? {
           totalInputTokens: archived.usage.totalInputTokens || 0,
           totalOutputTokens: archived.usage.totalOutputTokens || 0,
+          totalCacheReadTokens: archived.usage.totalCacheReadTokens || 0,
+          totalCacheCreateTokens: archived.usage.totalCacheCreateTokens || 0,
           totalCostUsd: archived.usage.totalCostUsd || 0,
           contextUsagePercent: 0, // No active context for archived sessions
         }
       : undefined,
+    doneAt: Number.isFinite(Date.parse(archived.lastActivity)) ? Date.parse(archived.lastActivity) : undefined,
+    ...archivedTasks(archived),
+    goal: goalToKanban(archived),
     slackThreadUrl:
       archived.channelId && archived.threadTs
         ? (buildThreadPermalink(archived.channelId, archived.threadTs) ?? undefined)
@@ -1163,6 +1271,36 @@ export function broadcastSingleSessionUpdate(sessionKey: string): void {
     logger.error('Failed to broadcast single session update', error);
   }
 }
+
+/**
+ * At most one push per key per `intervalMs`: the first call sends at once, the
+ * calls inside the window collapse into one trailing send at its end — so the
+ * last value always arrives (SSOT 2026-10-22 T1/T2 live usage).
+ */
+export function createLiveUpdateThrottle(send: (key: string) => void, intervalMs: number): (key: string) => void {
+  const state = new Map<string, { last: number; timer?: ReturnType<typeof setTimeout> }>();
+  return (key: string) => {
+    const now = Date.now();
+    const st = state.get(key) ?? { last: Number.NEGATIVE_INFINITY };
+    state.set(key, st);
+    if (st.timer) return;
+    const wait = st.last + intervalMs - now;
+    if (wait <= 0) {
+      st.last = now;
+      send(key);
+      return;
+    }
+    st.timer = setTimeout(() => {
+      st.timer = undefined;
+      st.last = Date.now();
+      send(key);
+    }, wait);
+    st.timer.unref?.();
+  };
+}
+
+/** Push a running card whose live usage grew — once a second at most per session. */
+export const scheduleLiveSessionUpdate = createLiveUpdateThrottle((key) => broadcastSingleSessionUpdate(key), 1000);
 
 /** Broadcast session action feedback to all connected WebSocket clients */
 function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | 'trash'): void {

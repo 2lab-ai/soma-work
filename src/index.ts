@@ -59,6 +59,7 @@ import {
   getDashboardSessionUrl,
   initRecorder,
   matchSlackUsersByEmail,
+  scheduleLiveSessionUpdate,
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
@@ -883,7 +884,11 @@ async function start() {
     setOnWorkLogAppendedCallback(broadcastWorkLog);
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
+      notifyLiveUsage: (sessionKey: string) => void;
     } = {
+      // SSOT 2026-10-22 T1/T2 — a running turn made another API call: push the
+      // card (≤ 1/s per session) so its token / cost totals grow live.
+      notifyLiveUsage: (sessionKey: string) => scheduleLiveSessionUpdate(sessionKey),
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
         // SSOT 2026-10-22 T7/T10: the entry carries the task in progress (the
         // dashboard folds the log under it) and a tool call counts on that task.

@@ -165,6 +165,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
     // before any of that turn's text renders.
     events.push(...steerStartedEventsFor(message as unknown as Record<string, unknown>));
     const inner = message.message as unknown as {
+      id?: unknown;
       usage?: Record<string, number>;
       model?: unknown;
       content?: unknown[];
@@ -197,6 +198,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
             lastTurnOutputTokens,
             lastTurnCacheReadTokens,
             lastTurnCacheCreateTokens,
+            ...(typeof inner.id === 'string' && inner.id ? { lastTurnMessageId: inner.id } : {}),
           },
         });
       }
