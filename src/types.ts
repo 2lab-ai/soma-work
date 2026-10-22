@@ -679,6 +679,11 @@ export interface ConversationSession {
   compactTickInterval?: ReturnType<typeof setInterval>;
   // Threshold-checker → input-processor signal that next /compact-threshold-violating user turn must be compacted.
   autoCompactPending?: boolean;
+  // Runtime-only (not serialized): wall-clock ms until which the threshold-
+  // triggered auto-compact stays paused after a `/compact` turn failed —
+  // breaks the compact → fail → compact loop. Cleared by a successful
+  // compaction. See `pauseAutoCompactAfterFailure` in @soma/slack/compact-state.
+  autoCompactSuppressedUntilMs?: number | null;
   /**
    * Session-scoped auto-compact threshold in TOKENS, set by `/autocompact
    * <tokens>` and cleared by `/autocompact reset`. Wins over the model's
