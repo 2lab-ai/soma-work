@@ -402,6 +402,13 @@ export const config = {
      * heartbeat record has a non-empty `instanceName`.
      */
     instanceName: process.env.INSTANCE_NAME || '',
+    /**
+     * Opt-in: while another server answers at `viewerUrl` and the OAuth callback
+     * origin (`SOMA_OAUTH_CALLBACK_BASE_URL`) answers as this instance, mint links
+     * on the callback origin (conversation/public-url.ts). Off: the mismatch is
+     * only logged and reported on /health.
+     */
+    publicUrlFallback: parseBool(process.env.SOMA_PUBLIC_URL_FALLBACK, false),
   },
   oauth: {
     google: {

@@ -77,7 +77,7 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
-import { slackDirectoryLookup } from './conversation/slack-directory-lookup';
+import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
 import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
@@ -990,8 +990,9 @@ async function start() {
     {
       const { userSettingsStore } = await import('./user-settings-store');
       setOAuthUserLookup((email: string) => matchSlackUsersByEmail(userSettingsStore.getAllUsers(), email));
-      // Google logins that no `/z email` matches fall back to the Slack account email.
-      setOAuthDirectoryLookup(slackDirectoryLookup((args) => app.client.users.lookupByEmail(args)));
+      // Google logins that no `/z email` matches fall back to the Slack account email,
+      // on a client of their own: a rate limit on the bot's client pauses all its calls.
+      setOAuthDirectoryLookup(createSlackDirectoryLookup(config.slack.botToken));
     }
 
     // Start conversation viewer web server (includes dashboard)
