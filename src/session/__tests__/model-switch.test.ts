@@ -216,6 +216,20 @@ describe('switchSessionModel (T4/T5)', () => {
     expect(calls.broadcasts).toBe(1);
   });
 
+  it('the parked switch records which message carries its compact, so only that compact applies it (review R4)', async () => {
+    const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', usage: usage(600_000), sessionId: 's' };
+    const { d } = deps(session, {
+      dispatchCompact: async (_key, onSent) => {
+        onSent?.({ channel: 'C1', ts: '100.1' });
+        return 'queued' as const;
+      },
+    });
+    expect((await switchSessionModel('k', 'grok[1m]', d)).status).toBe('compacting');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(session.pendingModelSwitch).toMatchObject({ nickname: 'grok[1m]', compactTs: '100.1' });
+    expect(session.pendingModelSwitch.armed).toBeUndefined();
+  });
+
   it('a dispatch that reports it settled without taking the compact un-parks the switch (review R3-2)', async () => {
     const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', usage: usage(600_000), sessionId: 's' };
     const { d } = deps(session, { dispatchCompact: async () => 'settled' as const });

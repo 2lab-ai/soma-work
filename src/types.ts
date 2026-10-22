@@ -710,11 +710,13 @@ export interface ConversationSession {
   /**
    * SSOT 2026-10-22 T5 — a dashboard model switch that waits for the compact
    * the current model must run first (context above the target model's
-   * auto-compact threshold). Applied at the compact boundary, cancelled when
-   * the compact turn ends without one. Runtime-only — NOT persisted, so a
-   * restart cancels it instead of applying it to some unrelated later compact.
+   * auto-compact threshold). Only the compact turn of the message the switch
+   * dispatched (`compactTs`) arms it (`armed`); that turn applies it at its
+   * boundary, or cancels it when it ends without one — any other compact
+   * leaves it alone. Runtime-only — NOT persisted, so a restart cancels it
+   * instead of applying it to some unrelated later compact.
    */
-  pendingModelSwitch?: { model: string; nickname: string; requestedAt: number };
+  pendingModelSwitch?: { model: string; nickname: string; requestedAt: number; compactTs?: string; armed?: boolean };
   // One-shot suppression for `checkAndSchedulePendingCompact`. Set to `true`
   // by `postCompactCompleteIfNeeded` when a compact cycle seals; cleared by
   // the very next threshold check. Prevents the "Compaction completed →

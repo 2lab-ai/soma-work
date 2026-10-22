@@ -10,15 +10,23 @@
  *
  * When the context already holds more than the target model's threshold, the
  * host compacts on the CURRENT model first and parks the switch on the session
- * (`pendingModelSwitch`, runtime-only); the executor applies it at that
- * compact's boundary, or — when the compact turn ends — applies it if the turn
- * compacted after all (boundary callback missed) and cancels it otherwise.
+ * (`pendingModelSwitch`, runtime-only) with the ts of the `compact --yes`
+ * message it sent. The compact turn of THAT message arms it
+ * (`armPendingModelSwitch`); the executor applies an armed switch at the
+ * compact's boundary, or — when that compact turn ends — applies it if the
+ * turn compacted after all (boundary callback missed) and cancels it
+ * otherwise. Any other compact (an auto-compact, one the user typed) leaves
+ * the switch waiting for its own.
  */
 
 export interface PendingModelSwitch {
   model: string;
   nickname: string;
   requestedAt: number;
+  /** Slack ts of the `compact --yes` message the switch dispatched (set once it is sent). */
+  compactTs?: string;
+  /** The compact turn running now is that message's. */
+  armed?: boolean;
 }
 
 type SwitchHolder = {
@@ -50,6 +58,22 @@ export function livePendingModelSwitch(
   return now - pending.requestedAt <= PENDING_MODEL_SWITCH_TTL_MS ? pending : undefined;
 }
 
+/**
+ * A compact turn starts: arm the parked switch when this turn runs the
+ * message the switch dispatched (`messageTs` = the turn's Slack message ts).
+ */
+export function armPendingModelSwitch(
+  session: Pick<SwitchHolder, 'pendingModelSwitch'>,
+  messageTs: string | undefined,
+): boolean {
+  const pending = session.pendingModelSwitch;
+  if (!pending || pending.compactTs === undefined || messageTs === undefined || pending.compactTs !== messageTs) {
+    return false;
+  }
+  pending.armed = true;
+  return true;
+}
+
 /** Switch now: model, its auto-compact threshold (override dropped), its window. */
 export function applyModelSwitch(
   session: SwitchHolder,
@@ -63,16 +87,17 @@ export function applyModelSwitch(
 }
 
 /**
- * At a compact boundary: apply the switch that waited for this compact.
- * An emergency fallback compact that has not restored its original model yet
- * keeps it parked (that restore runs first).
+ * At a compact boundary: apply the switch that waited for this compact (armed
+ * by this turn — another compact's boundary leaves it waiting). An emergency
+ * fallback compact that has not restored its original model yet keeps it
+ * parked (that restore runs first).
  */
 export function applyPendingModelSwitch(
   session: SwitchHolder,
   resolveContextWindow: (model?: string) => number,
   now: number = Date.now(),
 ): PendingModelSwitch | undefined {
-  if (!session.pendingModelSwitch || session.fallbackCompactActive) return undefined;
+  if (!session.pendingModelSwitch?.armed || session.fallbackCompactActive) return undefined;
   const pending = livePendingModelSwitch(session, now);
   if (!pending) {
     session.pendingModelSwitch = undefined;
@@ -82,13 +107,16 @@ export function applyPendingModelSwitch(
   return pending;
 }
 
-/** When a compact turn ends: never leave a switch parked for some later compact. */
+/**
+ * When the compact turn the switch waited for ends: never leave it parked for
+ * some later compact. Another compact turn's end leaves it alone.
+ */
 export function settlePendingModelSwitch(
   session: SwitchHolder,
   resolveContextWindow: (model?: string) => number,
   now: number = Date.now(),
 ): 'none' | 'applied' | 'cancelled' {
-  if (!session.pendingModelSwitch) return 'none';
+  if (!session.pendingModelSwitch?.armed) return 'none';
   if (session.compactionOccurred && applyPendingModelSwitch(session, resolveContextWindow, now)) return 'applied';
   session.pendingModelSwitch = undefined;
   return 'cancelled';

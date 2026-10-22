@@ -744,6 +744,7 @@ async function start() {
     const injectDashboardMessage = async (
       sessionKey: string,
       message: string,
+      onSent?: (sent: { channel: string; ts: string }) => void,
     ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
@@ -799,6 +800,7 @@ async function start() {
         logger.warn('Dashboard echo: using fabricated timestamp (echo failed or was skipped)', { sessionKey });
       }
       const ts = echoTs || String(Date.now() / 1000);
+      onSent?.({ channel: session.channelId, ts });
       await slackHandler.handleMessage(
         {
           type: 'message',
@@ -832,8 +834,8 @@ async function start() {
         // `handleMessage` returns as soon as the follow-up queue holds the
         // command when another turn has the slot — the compact is still ahead
         // then, and the switch keeps waiting for it (review R3-2).
-        dispatchCompact: async (key) => {
-          const sent = await injectDashboardMessage(key, 'compact --yes');
+        dispatchCompact: async (key, onSent) => {
+          const sent = await injectDashboardMessage(key, 'compact --yes', onSent);
           return sent && slackHandler.isFollowupPending(sent.channel, sent.ts) ? 'queued' : 'settled';
         },
         save: () => claudeHandler.saveSessions(),
