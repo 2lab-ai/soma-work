@@ -3453,7 +3453,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .wl-group-head .wl-g-meta { flex-shrink: 0; font-size: 11px; font-weight: 500; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .wl-group-body { display: flex; flex-direction: column; gap: 4px; padding-left: 12px; border-left: 2px solid var(--border); margin-left: 6px; }
 .wl-group-body[hidden] { display: none; }
-@media (prefers-reduced-motion: reduce) { .wl-group-head .wl-g-chev { transition: none; } }
 .wl-head { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-tertiary); }
 .wl-label { font-weight: 700; letter-spacing: 0.04em; }
 .wl-head .wl-time { margin-left: auto; }
@@ -3684,7 +3683,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .btn-send:hover { background: var(--accent-hover); }
 .btn-send:disabled { background: var(--surface-raised); color: var(--text-tertiary); cursor: default; }
 
-/* ── CLOSED CARDS — 7-day "Show older" toggle at the foot of DONE ── */
+/* ── DONE by finish day (SSOT 2026-10-22 T11/T12) ── */
+#cards-done { gap: 4px; }
+.done-group { display: flex; flex-direction: column; gap: 8px; }
+.done-group.is-stale { display: none; }
+.done-group-head { display: flex; align-items: center; gap: 8px; width: 100%; font: inherit; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; color: var(--ib-text-2); background: none; border: 0; border-radius: 8px; padding: 6px 8px; min-height: 32px; cursor: pointer; text-align: left; }
+.done-group-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.done-group-head .dg-chev { width: 12px; height: 12px; flex-shrink: 0; color: var(--ib-muted); transition: transform var(--dur-press) var(--ease-out); }
+.done-group-head[aria-expanded="true"] .dg-chev { transform: rotate(90deg); }
+.done-group-head .dg-label { flex: 1 1 auto; }
+.done-group-head .count { background: var(--ib-pill); color: var(--ib-text-2); border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.done-group-cards[hidden] { display: none; }
+/* ── CLOSED CARDS — legacy foot of DONE (now always empty) ── */
 .show-older-btn {
   background: transparent;
   border: 1px dashed var(--ib-card-border);
@@ -3817,6 +3827,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
+  .wl-group-head .wl-g-chev, .done-group-head .dg-chev { transition: none; }
   .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
 }
 /* ── TOUCH — coarse pointer enlargement ── */
@@ -4057,7 +4068,6 @@ let ws = null;
 let panelOpen = false;
 let panelSessionKey = null;
 let panelConvId = null;
-let showOlderClosed = false;
 let _panelTasksExpanded = false;
 
 // ── Theme toggle — sun/moon ──
@@ -4769,9 +4779,10 @@ function _envCount() {
 
 // ── Agent inbox board (.prd/10 §3.1, §4) ──
 // NEEDS YOU = waiting · RUNNING = working · DONE = idle, then closed (SLEEPING +
-// archives; older than 7 days stays behind "Show older", archives behind "Show
-// archives"). The server buckets (KanbanBoard) are unchanged — only the client
-// folds idle + closed into one column.
+// archives; archives behind the Archives toggle, sleeping cards behind the
+// Sleeping toggle), filed under the day the work finished (T11/T12). The server
+// buckets (KanbanBoard) are unchanged — only the client folds idle + closed
+// into one column.
 var BOARD_COLS = ['waiting', 'working', 'done'];
 var SPARK_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg>';
 var WAIT_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.8 15 14H1z"/></svg>';
@@ -4812,16 +4823,14 @@ function isSiblingSession(s) {
   return !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
 }
 
-// Pure: the DONE column for this render. idle cards, then closed cards from the
-// last 7 days, then — when "Show older" is open — the older ones.
+// Pure: the cards DONE holds for this render — idle cards, then closed cards.
 // An archived (terminated) closed card is left out unless archives are shown;
 // a sleeping one (closed, not terminated) unless sleeping cards are shown
 // (showSleeping, on unless false). The one key a deep link revealed (revealKey)
-// is always in, whatever its age. olderCount = what "Show older" would add;
-// archivedCount / sleepingCount = those cards in the board data.
+// is always in. archivedCount / sleepingCount = those cards in the board data.
+// The cards are then grouped by the day they finished (planDoneGroups).
 function planDoneColumn(idle, closed, o) {
-  var cutoff = o.now - 7 * 24 * 60 * 60 * 1000;
-  var recent = [], older = [], archivedCount = 0, sleepingCount = 0;
+  var shown = [], archivedCount = 0, sleepingCount = 0;
   for (var i = 0; i < closed.length; i++) {
     var s = closed[i];
     var archived = s.terminated === true;
@@ -4830,14 +4839,72 @@ function planDoneColumn(idle, closed, o) {
     else sleepingCount++;
     if (archived && !o.showArchives && !revealed) continue;
     if (!archived && o.showSleeping === false && !revealed) continue;
-    if (!revealed && new Date(s.lastActivity).getTime() < cutoff) older.push(s);
-    else recent.push(s);
+    shown.push(s);
   }
   var done = idle.map(function(s) { return { s: s, col: 'idle' }; })
-    .concat(recent.map(function(s) { return { s: s, col: 'closed' }; }));
-  if (o.showOlder) done = done.concat(older.map(function(s) { return { s: s, col: 'closed' }; }));
-  return { done: done, olderCount: older.length, archivedCount: archivedCount, sleepingCount: sleepingCount };
+    .concat(shown.map(function(s) { return { s: s, col: 'closed' }; }));
+  return { done: done, archivedCount: archivedCount, sleepingCount: sleepingCount };
 }
+
+// ── DONE by finish day (SSOT 2026-10-22 T11/T12) ──
+// Each DONE card sits under the day its work finished (s.doneAt — the server's
+// finish time; else its last activity), in the viewer's calendar: Today, 어제,
+// then every earlier day, newest first, the cards in a day newest first. Today
+// and 어제 start open; earlier days start closed and open on a click. The
+// reader's choice per day lasts for the page (_doneGroupOpen).
+var _doneGroupOpen = Object.create(null); // day key → open (reader's choice)
+var DAY_MS = 24 * 60 * 60 * 1000;
+function doneTimeOf(s) {
+  var t = toNum(s && s.doneAt);
+  if (t > 0) return t;
+  var last = Date.parse(s && s.lastActivity);
+  return isFinite(last) ? last : 0;
+}
+function dayKeyOf(ms) {
+  var d = new Date(ms);
+  var m = d.getMonth() + 1;
+  var day = d.getDate();
+  return d.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
+}
+function doneDayLabel(key, now) {
+  if (key === dayKeyOf(now)) return 'Today';
+  var y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  if (key === dayKeyOf(y.getTime())) return '어제';
+  var parts = key.split('-');
+  var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  var opts = { month: 'long', day: 'numeric', weekday: 'short' };
+  if (d.getFullYear() !== new Date(now).getFullYear()) opts.year = 'numeric';
+  return d.toLocaleDateString('ko-KR', opts);
+}
+// Pure: [{ key, label, open, items }] — opened = the reader's choices.
+function planDoneGroups(done, now, opened) {
+  var byKey = Object.create(null);
+  var keys = [];
+  for (var i = 0; i < done.length; i++) {
+    var t = doneTimeOf(done[i].s);
+    var k = dayKeyOf(t);
+    if (!byKey[k]) { byKey[k] = []; keys.push(k); }
+    byKey[k].push({ item: done[i], t: t });
+  }
+  keys.sort(function(a, b) { return a < b ? 1 : a > b ? -1 : 0; });
+  var today = dayKeyOf(now);
+  var y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  var yesterday = dayKeyOf(y.getTime());
+  return keys.map(function(k) {
+    var list = byKey[k].slice().sort(function(a, b) { return b.t - a.t; });
+    var open = opened && Object.prototype.hasOwnProperty.call(opened, k) ? !!opened[k] : (k === today || k === yesterday);
+    return { key: k, label: doneDayLabel(k, now), open: open, items: list.map(function(x) { return x.item; }) };
+  });
+}
+function toggleDoneGroup(key) {
+  var g = (_lastDoneGroups || []).filter(function(x) { return x.key === key; })[0];
+  _doneGroupOpen[key] = !(g && g.open);
+  if (_lastBoardData) renderBoard(_lastBoardData);
+}
+var _lastDoneGroups = null;
+var _lastBoardData = null;
 
 function renderBoard(board) {
   _sessionCache = Object.create(null); // Clear stale cache each render cycle
@@ -4857,25 +4924,25 @@ function renderBoard(board) {
   for (var ok in _sessionCache) owners.push(_sessionCache[ok].ownerId || _sessionCache[ok].ownerName || '');
   _ownerIndex = assignOwnerHues(owners);
   function tag(col) { return function(s) { return { s: s, col: col }; }; }
+  _lastBoardData = board;
   var plan = planDoneColumn(board.idle || [], board.closed || [], {
-    now: Date.now(),
-    showOlder: showOlderClosed,
     showArchives: showArchives,
     showSleeping: showSleeping,
     revealKey: _revealedKey,
   });
+  var doneGroups = planDoneGroups(plan.done, Date.now(), _doneGroupOpen);
+  _lastDoneGroups = doneGroups;
   reconcileBoard({
     waiting: (board.waiting || []).map(tag('waiting')),
     working: (board.working || []).map(tag('working')),
-    done: plan.done,
+    doneGroups: doneGroups,
   }, {
     waiting: (board.waiting || []).length,
     working: (board.working || []).length,
-    // The DONE badge counts the cards DONE shows (hidden archives and the
-    // collapsed older group are not in it).
+    // The DONE badge counts every card under its day groups, open or closed
+    // (hidden archives / sleeping cards are not in it).
     done: plan.done.length,
   });
-  renderOlderToggle(plan.olderCount);
   renderArchivesToggle(plan.archivedCount);
   renderSleepingToggle(plan.sleepingCount);
   // The #814 tokens tooltip describes this board (user switch, WS push).
@@ -4893,46 +4960,131 @@ function renderBoard(board) {
 // leaves a running entrance or exit alone.
 function reconcileBoard(plan, counts) {
   var wanted = Object.create(null);
-  var cols = [];
+  var slots = [];
   var changed = false;
-  for (var c = 0; c < BOARD_COLS.length; c++) {
-    var colId = BOARD_COLS[c];
-    var container = document.getElementById('cards-' + colId);
+  // NEEDS YOU and RUNNING: one card container each. DONE: one per finish day
+  // (T11), whose cards are in the DOM only while the day is open (T12).
+  ['waiting', 'working'].forEach(function(colId) {
+    slots.push({ colId: colId, container: document.getElementById('cards-' + colId), items: plan[colId] || [] });
+  });
+  var doneRoot = document.getElementById('cards-done');
+  var groups = plan.doneGroups || [];
+  var sig = doneGroupsSig(groups);
+  if (doneRoot && doneRoot._sig !== sig) changed = true;
+  for (var gi = 0; gi < groups.length; gi++) {
+    slots.push({
+      colId: 'done',
+      day: groups[gi].key,
+      container: doneRoot ? doneGroupCards(doneRoot, groups[gi].key) : null,
+      items: groups[gi].open ? groups[gi].items : [],
+    });
+  }
+  for (var c = 0; c < slots.length; c++) {
+    var slot = slots[c];
     var rows = [];
-    var items = plan[colId] || [];
-    for (var i = 0; i < items.length; i++) {
-      var s = items[i].s;
+    for (var i = 0; i < slot.items.length; i++) {
+      var s = slot.items[i].s;
       if (wanted[s.key]) continue; // a key listed twice renders once
       wanted[s.key] = true;
-      var parts = cardParts(s, items[i].col);
+      var parts = cardParts(s, slot.items[i].col);
       var el = _cardEls[s.key];
-      if (!el || container.children[rows.length] !== el || cardPartsDiffer(el, parts)) changed = true;
+      if (!el || !slot.container || slot.container.children[rows.length] !== el || cardPartsDiffer(el, parts)) changed = true;
       rows.push({ key: s.key, parts: parts });
     }
-    if (container.children.length !== rows.length) changed = true;
-    cols.push({ colId: colId, container: container, rows: rows });
-    // Counts and empty hints are compared before they are written.
+    if (!slot.container || slot.container.children.length !== rows.length) changed = true;
+    slot.rows = rows;
+  }
+  // Counts and empty hints are compared before they are written.
+  for (var b = 0; b < BOARD_COLS.length; b++) {
+    var colId = BOARD_COLS[b];
     setTextIfChanged(document.getElementById('count-' + colId), String(counts[colId] || 0));
+    var has = colId === 'done' ? groups.length > 0 : (plan[colId] || []).length > 0;
     var empty = document.getElementById('empty-' + colId);
-    if (empty && empty.hidden !== rows.length > 0) empty.hidden = rows.length > 0;
+    if (empty && empty.hidden !== has) empty.hidden = has;
   }
   for (var g in _cardEls) {
     if (!wanted[g]) { changed = true; break; }
   }
-  if (changed) applyBoardPlan(cols, wanted);
+  if (changed) applyBoardPlan(slots, wanted, doneRoot, groups, sig);
   // Open cards keep their 지시/응답 current (no DOM write unless a fetch settles).
   _expanded.forEach(function(key) { if (_cardEls[key]) ensureCardIo(key, false); });
 }
 
-function applyBoardPlan(cols, wanted) {
+// What the DONE day sections look like (label, count, open) — a change re-plans.
+function doneGroupsSig(groups) {
+  return groups.map(function(g) { return g.key + '|' + g.label + '|' + g.items.length + '|' + (g.open ? 1 : 0); }).join(';');
+}
+function doneGroupSection(doneRoot, key) {
+  var kids = doneRoot.children;
+  for (var i = 0; i < kids.length; i++) if (kids[i].getAttribute('data-day') === key && !kids[i]._stale) return kids[i];
+  return null;
+}
+function doneGroupCards(doneRoot, key) {
+  var sec = doneGroupSection(doneRoot, key);
+  return sec ? sec._cardsEl : null;
+}
+function renderDoneGroupHead(g) {
+  return '<svg class="dg-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>'
+    + '<span class="dg-label">' + esc(g.label) + '</span><span class="count">' + g.items.length + '</span>';
+}
+// Make #cards-done hold one section per day, in order, with current heads.
+// A day that is gone leaves once its cards have faded out.
+function syncDoneGroups(doneRoot, groups, sig) {
+  var keep = Object.create(null);
+  for (var i = 0; i < groups.length; i++) {
+    var g = groups[i];
+    keep[g.key] = true;
+    var sec = doneGroupSection(doneRoot, g.key);
+    if (!sec) {
+      sec = document.createElement('section');
+      sec.className = 'done-group';
+      sec.setAttribute('data-day', g.key);
+      var head = document.createElement('button');
+      head.type = 'button';
+      head.className = 'done-group-head';
+      head.addEventListener('click', function(ev) {
+        var day = ev.currentTarget.parentNode.getAttribute('data-day');
+        toggleDoneGroup(day);
+      });
+      var cards = document.createElement('div');
+      cards.className = 'cards done-group-cards';
+      sec.appendChild(head);
+      sec.appendChild(cards);
+      sec._headEl = head;
+      sec._cardsEl = cards;
+      sec._headHtml = null;
+    }
+    var html = renderDoneGroupHead(g);
+    if (sec._headHtml !== html) { sec._headEl.innerHTML = html; sec._headHtml = html; }
+    var exp = g.open ? 'true' : 'false';
+    if (sec._headEl.getAttribute('aria-expanded') !== exp) sec._headEl.setAttribute('aria-expanded', exp);
+    if (sec._cardsEl.hidden === g.open) sec._cardsEl.hidden = !g.open;
+    if (doneRoot.children[i] !== sec) doneRoot.insertBefore(sec, doneRoot.children[i] || null);
+  }
+  var kids = Array.prototype.slice.call(doneRoot.children);
+  for (var j = 0; j < kids.length; j++) {
+    var old = kids[j];
+    if (keep[old.getAttribute('data-day')] && !old._stale) continue;
+    if (old._stale) continue;
+    old._stale = true;
+    old.classList.add('is-stale');
+    setTimeout(function(node) { return function() { if (node.parentNode) node.parentNode.removeChild(node); }; }(old), MOTION.fade + 40);
+  }
+  doneRoot._sig = sig;
+}
+
+function applyBoardPlan(slots, wanted, doneRoot, groups, sig) {
   var animate = canAnimate();
   var first = animate ? measureCards() : null;
   var firstCol = Object.create(null);
   for (var k0 in _cardEls) firstCol[k0] = _cardEls[k0]._colId;
-  for (var c = 0; c < cols.length; c++) {
-    var col = cols[c];
-    for (var r = 0; r < col.rows.length; r++) {
-      var row = col.rows[r];
+  if (doneRoot) syncDoneGroups(doneRoot, groups || [], sig);
+  for (var c = 0; c < slots.length; c++) {
+    var slot = slots[c];
+    var container = slot.container || (slot.day && doneRoot ? doneGroupCards(doneRoot, slot.day) : null);
+    if (!container) continue;
+    for (var r = 0; r < slot.rows.length; r++) {
+      var row = slot.rows[r];
       var el = _cardEls[row.key];
       if (!el) {
         el = createCardShell(row.key);
@@ -4940,9 +5092,9 @@ function applyBoardPlan(cols, wanted) {
         el._isNew = true;
       }
       applyCardParts(el, row.parts);
-      el._colId = col.colId;
+      el._colId = slot.colId;
       applyExpanded(el, _expanded.has(row.key));
-      if (col.container.children[r] !== el) col.container.insertBefore(el, col.container.children[r] || null);
+      if (container.children[r] !== el) container.insertBefore(el, container.children[r] || null);
     }
   }
   for (var gone in _cardEls) {
@@ -5963,23 +6115,6 @@ function collectViewMovers() {
   return out;
 }
 
-function renderOlderToggle(olderCount) {
-  var foot = document.getElementById('foot-done');
-  if (!foot) return;
-  var html = olderCount > 0
-    ? '<button type="button" class="show-older-btn" onclick="toggleOlderClosed()">'
-      + (showOlderClosed ? '&#x25B2; Hide older (' : '&#x25BC; Show older (') + olderCount + ')</button>'
-    : '';
-  if ((foot._html || '') === html) return;
-  foot._html = html;
-  foot.innerHTML = html;
-}
-
-function toggleOlderClosed() {
-  showOlderClosed = !showOlderClosed;
-  loadSessions();
-}
-
 // ── Show archives (.prd/10 §3.1-1) — archived (terminated) cards are hidden
 // unless the user turned them on (localStorage['soma-show-archives'] = 'on').
 // The button sits in the board header and only appears while the board holds
@@ -6214,9 +6349,10 @@ function openDeepLinkedSession() {
       loadSessions();
       return;
     }
-    // Closed more than 7 days ago — reveal the older group and retry on that render.
-    if (!showOlderClosed) {
-      showOlderClosed = true;
+    // In a closed DONE day (T12) — open that day and retry on that render.
+    var day = linked ? dayKeyOf(doneTimeOf(linked)) : null;
+    if (day && _doneGroupOpen[day] !== true) {
+      _doneGroupOpen[day] = true;
       loadSessions();
     } else {
       _deepLinkSession = null;

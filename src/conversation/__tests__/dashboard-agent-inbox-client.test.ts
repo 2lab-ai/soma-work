@@ -1528,7 +1528,6 @@ describe('WS session_update keeps sibling-instance cards (shipped mergeSiblingCa
 type DoneCard = { key: string; lastActivity: string; terminated?: boolean };
 type DonePlan = {
   done: Array<{ s: DoneCard; col: string }>;
-  olderCount: number;
   archivedCount: number;
 };
 
@@ -2195,34 +2194,29 @@ describe('DONE column: archived cards hide behind Show archives (shipped planDon
     planDoneColumn(IDLE, CLOSED, { now: NOW, showOlder: false, showArchives: false, revealKey: null, ...o });
   const keys = (p: DonePlan) => p.done.map((d) => d.s.key);
 
-  it('hides archived cards by default; sleeping ones stay', () => {
+  // SSOT 2026-10-22 T11/T12: no 7-day cutoff any more — every age is in, and
+  // planDoneGroups files the cards under the day they finished (earlier days
+  // start closed).
+  it('hides archived cards by default; sleeping ones stay, of any age', () => {
     const p = plan();
-    expect(keys(p)).toEqual(['idle-1', 'sleeping-recent']);
-    expect(p.done.map((d) => d.col)).toEqual(['idle', 'closed']);
-    expect(p).toMatchObject({ olderCount: 1, archivedCount: 2 });
+    expect(keys(p)).toEqual(['idle-1', 'sleeping-recent', 'sleeping-old']);
+    expect(p.done.map((d) => d.col)).toEqual(['idle', 'closed', 'closed']);
+    expect(p).toMatchObject({ archivedCount: 2 });
+    expect('olderCount' in p).toBe(false);
   });
 
-  it('Show older counts only cards that would appear: older non-archived unless archives are shown', () => {
-    expect(keys(plan({ showOlder: true }))).toEqual(['idle-1', 'sleeping-recent', 'sleeping-old']);
+  it('Show archives adds every archive, of any age', () => {
     const shown = plan({ showArchives: true });
-    expect(keys(shown)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent']);
-    expect(shown).toMatchObject({ olderCount: 2, archivedCount: 2 });
-    expect(keys(plan({ showArchives: true, showOlder: true }))).toEqual([
-      'idle-1',
-      'sleeping-recent',
-      'archived-recent',
-      'sleeping-old',
-      'archived-old',
-    ]);
+    expect(keys(shown)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent', 'sleeping-old', 'archived-old']);
+    expect(shown).toMatchObject({ archivedCount: 2 });
   });
 
-  it('a revealed (deep-linked) archive shows on its own, also when older than 7 days', () => {
+  it('a revealed (deep-linked) archive shows on its own, whatever its age', () => {
     const recent = plan({ revealKey: 'archived-recent' });
-    expect(keys(recent)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent']);
-    expect(recent).toMatchObject({ olderCount: 1, archivedCount: 2 });
+    expect(keys(recent)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent', 'sleeping-old']);
     const old = plan({ revealKey: 'archived-old' });
-    expect(keys(old)).toEqual(['idle-1', 'sleeping-recent', 'archived-old']);
-    expect(old).toMatchObject({ olderCount: 1, archivedCount: 2 });
+    expect(keys(old)).toEqual(['idle-1', 'sleeping-recent', 'sleeping-old', 'archived-old']);
+    expect(old).toMatchObject({ archivedCount: 2 });
   });
 });
 
@@ -2288,11 +2282,12 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
   function page(card: Card, opts: { showArchives?: boolean } = {}) {
     const calls = { loads: 0, toggled: [] as string[], panel: [] as unknown[][], scrolled: 0, stored: 0 };
     const cardEls: Record<string, { scrollIntoView(): void }> = Object.create(null);
+    const dayOpen: Record<string, boolean> = Object.create(null);
     const m = load<{
       openDeepLinkedSession(): void;
-      state(): { revealed: string | null; showOlder: boolean; link: string | null; showArchives: boolean };
+      state(): { revealed: string | null; dayOpen: string[]; link: string | null; showArchives: boolean };
     }>(
-      ['resolveDeepLinkKey', 'openDeepLinkedSession'],
+      ['toNum', 'doneTimeOf', 'dayKeyOf', 'resolveDeepLinkKey', 'openDeepLinkedSession'],
       [],
       {
         _deepLinkSession: 'work:C1:1700000000.000700',
@@ -2303,7 +2298,7 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
         _expanded: new Set<string>(),
         showArchives: !!opts.showArchives,
         showSleeping: true,
-        showOlderClosed: false,
+        _doneGroupOpen: dayOpen,
         _revealedKey: null,
         localStorage: {
           setItem: () => {
@@ -2317,7 +2312,7 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
         openPanel: (...a: unknown[]) => calls.panel.push(a),
       },
       [
-        'function state() { return { revealed: _revealedKey, showOlder: showOlderClosed, link: _deepLinkSession, showArchives: showArchives }; }',
+        'function state() { return { revealed: _revealedKey, dayOpen: Object.keys(_doneGroupOpen), link: _deepLinkSession, showArchives: showArchives }; }',
       ],
     );
     const render = () => {
@@ -2337,7 +2332,7 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
     p.m.openDeepLinkedSession(); // the card is hidden: reveal + re-render
     expect(p.m.state()).toEqual({
       revealed: KEY,
-      showOlder: false,
+      dayOpen: [],
       link: 'work:C1:1700000000.000700',
       showArchives: false,
     });
@@ -2351,10 +2346,14 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
     expect(p.calls.stored).toBe(0); // the stored Show archives choice is untouched
   });
 
-  it('an older sleeping card still opens the older group, as before', () => {
-    const p = page({ key: KEY });
+  it('a card in a closed DONE day opens that day (T12), then gives up if it still is not drawn', () => {
+    const p = page({ key: KEY, lastActivity: '2026-10-01T03:00:00.000Z' });
     p.m.openDeepLinkedSession();
-    expect(p.m.state()).toMatchObject({ revealed: null, showOlder: true });
+    expect(p.m.state().revealed).toBeNull();
+    expect(p.m.state().dayOpen).toHaveLength(1);
+    expect(p.calls.loads).toBe(1);
+    p.m.openDeepLinkedSession();
+    expect(p.m.state().link).toBeNull();
     expect(p.calls.loads).toBe(1);
   });
 });
@@ -2500,13 +2499,11 @@ describe('DONE column: sleeping cards hide behind the Sleeping toggle (shipped p
   const keys = (p: DonePlan) => p.done.map((d) => d.s.key);
 
   it('shows sleeping cards unless the toggle is off, and always counts them', () => {
-    expect(keys(plan())).toEqual(['idle-1', 'sleeping-recent', 'sleeping-mid']);
-    expect(plan()).toMatchObject({ sleepingCount: 3, archivedCount: 1, olderCount: 1 });
+    expect(keys(plan())).toEqual(['idle-1', 'sleeping-recent', 'sleeping-mid', 'sleeping-old']);
+    expect(plan()).toMatchObject({ sleepingCount: 3, archivedCount: 1 });
     const off = plan({ showSleeping: false });
     expect(keys(off)).toEqual(['idle-1']);
-    // Hidden sleeping cards are not "older" cards either: Show older would add nothing.
-    expect(off).toMatchObject({ sleepingCount: 3, archivedCount: 1, olderCount: 0 });
-    expect(keys(plan({ showSleeping: false, showOlder: true }))).toEqual(['idle-1']);
+    expect(off).toMatchObject({ sleepingCount: 3, archivedCount: 1 });
   });
 
   it('hiding sleeping leaves archives to their own toggle', () => {
@@ -2570,8 +2567,8 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
   it('reveals the sleeping card for this page load without touching the stored choice', () => {
     const KEY = 'inst::work:C1:1700000000.000900';
     let loads = 0;
-    const m = load<{ openDeepLinkedSession(): void; state(): { revealed: string | null; showOlder: boolean } }>(
-      ['resolveDeepLinkKey', 'openDeepLinkedSession'],
+    const m = load<{ openDeepLinkedSession(): void; state(): { revealed: string | null; dayOpen: string[] } }>(
+      ['toNum', 'doneTimeOf', 'dayKeyOf', 'resolveDeepLinkKey', 'openDeepLinkedSession'],
       [],
       {
         _deepLinkSession: 'work:C1:1700000000.000900',
@@ -2582,7 +2579,7 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
         _expanded: new Set<string>(),
         showArchives: false,
         showSleeping: false,
-        showOlderClosed: false,
+        _doneGroupOpen: Object.create(null),
         _revealedKey: null,
         loadSessions: () => {
           loads++;
@@ -2590,10 +2587,10 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
         toggleCard: () => {},
         openPanel: () => {},
       },
-      ['function state() { return { revealed: _revealedKey, showOlder: showOlderClosed }; }'],
+      ['function state() { return { revealed: _revealedKey, dayOpen: Object.keys(_doneGroupOpen) }; }'],
     );
     m.openDeepLinkedSession();
-    expect(m.state()).toEqual({ revealed: KEY, showOlder: false });
+    expect(m.state()).toEqual({ revealed: KEY, dayOpen: [] });
     expect(loads).toBe(1);
   });
 });

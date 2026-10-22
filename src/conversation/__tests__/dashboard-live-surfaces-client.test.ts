@@ -551,3 +551,65 @@ describe('work log folds under the task each entry was made in (T10)', () => {
     expect(html).not.toMatch(/<img|<script/);
   });
 });
+
+describe('DONE grouped by the day the work finished (T11/T12)', () => {
+  const m = load<{
+    planDoneGroups(
+      done: Array<{ s: any; col: string }>,
+      now: number,
+      opened: Record<string, boolean>,
+    ): Array<{ key: string; label: string; open: boolean; items: Array<{ s: any; col: string }> }>;
+    doneTimeOf(s: unknown): number;
+  }>(['toNum', 'doneTimeOf', 'dayKeyOf', 'doneDayLabel', 'planDoneGroups'], []);
+  // Local wall-clock times: the groups follow the viewer's calendar.
+  const NOW = new Date(2026, 9, 22, 15, 0).getTime();
+  const at = (d: number, h: number) => new Date(2026, 9, d, h, 0).getTime();
+  const item = (key: string, doneAt: number | undefined, extra: Record<string, unknown> = {}) => ({
+    s: { key, doneAt, lastActivity: new Date(at(1, 0)).toISOString(), ...extra },
+    col: 'idle',
+  });
+  const done = [
+    item('older-2', at(19, 9)),
+    item('today-early', at(22, 1)),
+    item('yesterday', at(21, 23)),
+    item('today-late', at(22, 14)),
+    item('older-1', at(20, 10)),
+    item('older-1b', at(20, 18)),
+  ];
+
+  it('groups by finish day — Today, 어제, then each earlier day — newest first, cards newest first', () => {
+    const g = m.planDoneGroups(done, NOW, {});
+    expect(g.map((x) => [x.label, x.items.map((i) => i.s.key)])).toEqual([
+      ['Today', ['today-late', 'today-early']],
+      ['어제', ['yesterday']],
+      [expect.stringContaining('10월 20일'), ['older-1b', 'older-1']],
+      [expect.stringContaining('10월 19일'), ['older-2']],
+    ]);
+    expect(g.map((x) => x.key)).toEqual(['2026-10-22', '2026-10-21', '2026-10-20', '2026-10-19']);
+  });
+
+  it('Today and 어제 start open; earlier days start closed', () => {
+    expect(m.planDoneGroups(done, NOW, {}).map((x) => x.open)).toEqual([true, true, false, false]);
+  });
+
+  it('the reader’s choice wins over the default, both ways', () => {
+    const g = m.planDoneGroups(done, NOW, { '2026-10-20': true, '2026-10-22': false });
+    expect(g.map((x) => x.open)).toEqual([false, true, true, false]);
+  });
+
+  it('a card without a finish time falls back to its last activity', () => {
+    const s = { key: 'x', lastActivity: new Date(at(21, 8)).toISOString() };
+    expect(m.doneTimeOf(s)).toBe(at(21, 8));
+    const g = m.planDoneGroups([{ s, col: 'closed' }], NOW, {});
+    expect(g.map((x) => x.label)).toEqual(['어제']);
+  });
+
+  it('a day of another year names the year', () => {
+    const g = m.planDoneGroups([item('last-year', new Date(2025, 11, 31, 10).getTime())], NOW, {});
+    expect(g[0].label).toContain('2025');
+  });
+
+  it('no cards, no groups', () => {
+    expect(m.planDoneGroups([], NOW, {})).toEqual([]);
+  });
+});
