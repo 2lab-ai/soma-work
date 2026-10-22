@@ -210,7 +210,7 @@ describe('SummaryService', () => {
     it('displayOnThread() produces valid Block Kit structure with divider + section', () => {
       const service = new SummaryService();
       const session = makeSession();
-      service.displayOnThread(session, 'Test summary');
+      service.displayOnThread(session, '<tldr>\nTest summary\n</tldr>\nFull body');
 
       const blocks = session.actionPanel!.summaryBlocks!;
       expect(blocks[0]).toEqual({ type: 'divider' });
@@ -221,21 +221,20 @@ describe('SummaryService', () => {
       expect(blocks[1].text.text).toContain('Test summary');
     });
 
-    it('displayOnThread() splits long text into multiple blocks (Slack 3000 char limit)', () => {
+    // The thread surface is the channel-visible root message, so it carries
+    // only the TL;DR. Chunking of the full text now applies to the in-thread
+    // post (see summary-in-thread-post.test.ts / summary-surface-tldr.test.ts).
+    it('displayOnThread() keeps the surface to divider + one section for long text', () => {
       const service = new SummaryService();
       const session = makeSession();
-      // Generate text that exceeds 3000 chars
-      const longText = 'A'.repeat(4000);
+      const longText = `<tldr>\nshort line\n</tldr>\n${'A'.repeat(4000)}`;
       service.displayOnThread(session, longText);
 
       const blocks = session.actionPanel!.summaryBlocks!;
-      // divider + at least 2 section blocks
-      expect(blocks.length).toBeGreaterThanOrEqual(3);
+      expect(blocks).toHaveLength(2);
       expect(blocks[0]).toEqual({ type: 'divider' });
-      // Each section block text should be ≤ 3000 chars
-      for (let i = 1; i < blocks.length; i++) {
-        expect(blocks[i].text.text.length).toBeLessThanOrEqual(3000);
-      }
+      expect(blocks[1].text.text).toContain('short line');
+      expect(blocks[1].text.text).not.toContain('AAAA');
     });
 
     // Regression: the LLM emits github-flavored markdown (`**bold**`, `## H2`,
@@ -243,12 +242,10 @@ describe('SummaryService', () => {
     // heading syntax. Without conversion, the thread surface renders the raw
     // `##` and `**` characters verbatim. Pinning the conversion here is the
     // smallest signal that prevents that regression from returning.
-    describe('displayOnThread() — markdown → Slack mrkdwn conversion', () => {
+    describe('buildSummaryBlocks() — markdown → Slack mrkdwn conversion (full in-thread ES)', () => {
       it('converts **bold** to *bold*', () => {
         const service = new SummaryService();
-        const session = makeSession();
-        service.displayOnThread(session, 'a **bold** word and __italic__ word');
-        const text = (session.actionPanel!.summaryBlocks![1] as any).text.text as string;
+        const text = (service.buildSummaryBlocks('a **bold** word and __italic__ word')[1] as any).text.text as string;
         expect(text).toContain('*bold*');
         expect(text).not.toContain('**bold**');
         expect(text).toContain('_italic_');
@@ -257,10 +254,8 @@ describe('SummaryService', () => {
 
       it('converts ## / ### headers to *bold* lines (Slack has no native headings)', () => {
         const service = new SummaryService();
-        const session = makeSession();
         const input = '## Executive Summary\n### 1. What was done\n- did stuff';
-        service.displayOnThread(session, input);
-        const text = (session.actionPanel!.summaryBlocks![1] as any).text.text as string;
+        const text = (service.buildSummaryBlocks(input)[1] as any).text.text as string;
         // Raw `##` / `###` must not leak into the rendered text body.
         expect(text).not.toMatch(/^##\s|\n##\s/);
         expect(text).not.toMatch(/^###\s|\n###\s/);
@@ -270,10 +265,8 @@ describe('SummaryService', () => {
 
       it('preserves code fences (does not touch ** inside ```code``` blocks)', () => {
         const service = new SummaryService();
-        const session = makeSession();
         const input = 'before\n```ts\nconst x = "**not bold**";\n```\nafter';
-        service.displayOnThread(session, input);
-        const text = (session.actionPanel!.summaryBlocks![1] as any).text.text as string;
+        const text = (service.buildSummaryBlocks(input)[1] as any).text.text as string;
         // The triple-fence must still wrap the code, and ** inside the fence
         // must NOT be rewritten to *.
         expect(text).toContain('```');
@@ -282,10 +275,8 @@ describe('SummaryService', () => {
 
       it('strips the language tag from fenced code blocks (```ts → ```)', () => {
         const service = new SummaryService();
-        const session = makeSession();
         const input = '```bash\necho hi\n```';
-        service.displayOnThread(session, input);
-        const text = (session.actionPanel!.summaryBlocks![1] as any).text.text as string;
+        const text = (service.buildSummaryBlocks(input)[1] as any).text.text as string;
         // Slack mrkdwn fenced blocks have no language; the `bash` tag must be
         // stripped so it doesn't appear as plain text on the first fence line.
         expect(text).not.toContain('```bash');
