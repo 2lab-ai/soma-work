@@ -45,6 +45,31 @@ only installed when `CONVERSATION_VIEWER_URL` is `https`; with an `http` public 
 from the old origin itself so the state cookie and the callback share a host. Remove the setting
 once the new callback is registered — a callback origin you no longer control would receive codes.
 
+## When the public URL does not reach the instance
+
+After it starts listening, and every 10 minutes, the instance requests `<public URL>/health` and
+looks for its own per-process id in the `x-soma-instance` response header. `/health` also reports
+the last result as `publicUrl` (`unchecked`, `verified` or `mismatch`).
+
+- Another server answered there (for example a hosting provider's 404 because the name's DNS points
+  somewhere else): the log carries an error naming the URL and `/health` reports `mismatch`.
+  Links stay on the public URL unless you opt in:
+
+  ```env
+  SOMA_PUBLIC_URL_FALLBACK=true
+  ```
+
+  Then, if `SOMA_OAUTH_CALLBACK_BASE_URL` answers as this instance, every link, the same-origin
+  check, cookies and the canonical-origin redirect use that origin instead, so Slack links keep
+  opening. Without a proven alternative, links stay on the public URL.
+- The result is not certain — no answer, a name this host cannot resolve, `401`/`403`/`407`, a
+  `5xx`, a redirect to another host, or `/health` behind a proxy that drops the header: nothing
+  changes. Split-horizon DNS and sign-in proxies keep their links.
+- Once the public URL answers as this instance again, links return to it within one check.
+
+Fix the DNS record or the proxy, or correct `CONVERSATION_VIEWER_URL`; links already posted in Slack
+keep the old address until their message is redrawn.
+
 ## Before you expose it: authentication
 
 A domain makes the dashboard reachable from the whole network. Check that the instance has
