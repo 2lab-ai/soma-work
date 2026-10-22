@@ -146,6 +146,10 @@ export async function switchSessionModel(
       );
     }
     session.pendingModelSwitch = { model, nickname, requestedAt: (deps.now ?? Date.now)() };
+    // This compact is the one the context needs: a threshold compact already
+    // parked for the next message would otherwise swallow our `compact --yes`,
+    // compact, and then replay it — compacting twice.
+    session.autoCompactPending = false;
     deps.save();
     deps.broadcast();
     try {
