@@ -383,7 +383,7 @@ Any free-form text that no command handler claims is treated as a chat / workflo
 
 **Deploy-triggered cron lanes**: a cron job created or updated with `onDeploy: [{ repo, target }]` also fires, as its owner and in a new thread of its channel, when the deploy workflow — run from anyone's session — reports that a deploy of that repo into that exact branch succeeded (`deploy_completed` directive). The fired prompt names the deploy (repo, branch, merge SHA, deployer). The deploy thread gets one line: the lanes started, or why a registered lane did not start (unconfirmed deploy, failure, unreadable directive), with the `cron run` to recover. See [docs/current/spec/cron-deploy-lanes.md](docs/current/spec/cron-deploy-lanes.md).
 
-**Deploy release notes**: after a deploy, the deploy workflow writes the notes with `local:release-notes` and emits one `release_notes` directive per repo. The host posts a short root message — `repo target · version` plus up to three TL;DR lines — and the full notes as replies in its thread (cut losslessly, never truncated). The operator decides the channel with `SOMA_RELEASE_NOTES_CHANNELS` in the host's `.env` (for example `acme/app@deploy/dev2=C0DEV2CHAN1,*=session`): an exact `owner/repo@branch` or `branch` match goes to that channel, `*=session` keeps unmatched deploys in the deploy session's channel, and without `*` an unmatched deploy stays in the deploy thread. Unset means the deploy session's channel, as before. A failed post never moves the notes to another channel's root; they land in the deploy thread with a warning.
+**Deploy release notes**: after a deploy, the deploy workflow writes the notes with `local:release-notes` and emits one `release_notes` directive per repo. The host posts a short root message — `repo target · version` plus up to three TL;DR lines — and the full notes as replies in its thread (cut losslessly, never truncated). The operator decides the channel with `SOMA_RELEASE_NOTES_CHANNELS` in the host's `.env` (for example `acme/app@deploy/staging=C0STAGING01,*=session`): an exact `owner/repo@branch` or `branch` match goes to that channel, `*=session` keeps unmatched deploys in the deploy session's channel, and without `*` an unmatched deploy stays in the deploy thread. Unset means the deploy session's channel, as before. A failed post never moves the notes to another channel's root; they land in the deploy thread with a warning.
 
 **Bare commands (#531)**: Bare forms such as `persona linus` or `model sonnet` run directly through their handlers. The one-time tombstone hint that #506 Phase 1 showed for them was removed in #531. `SOMA_ENABLE_LEGACY_SLASH=true` only restores the legacy `/soma`, `/session` and `/new` slash commands.
 
@@ -510,7 +510,7 @@ GITHUB_TOKEN=ghp_...               # Fallback when GitHub App not configured
 CLAUDE_CODE_USE_BEDROCK=1          # Use AWS Bedrock
 CLAUDE_CODE_USE_VERTEX=1           # Use Google Vertex AI
 DEBUG=true
-SOMA_RELEASE_NOTES_CHANNELS=acme/app@deploy/dev2=C0123456789,*=session  # Where deploy release notes go
+SOMA_RELEASE_NOTES_CHANNELS=acme/app@deploy/staging=C0123456789,*=session  # Where deploy release notes go
 ```
 
 #### 4. Configure MCP servers (optional)
