@@ -12,6 +12,7 @@ import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { normalizeTmpPath } from './path-utils';
+import { closeTaskList, sanitizeTaskLedger } from './session/task-ledger';
 import { getArchiveStore } from './session-archive';
 import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from './session-identity';
 import { getSessionLifecyclePolicy, isSessionLifecyclePolicyDegraded } from './session-lifecycle-policy';
@@ -169,6 +170,10 @@ interface SerializedSession {
   // Multi-goal queue + completed history (persisted — T1/T2).
   goalQueue?: SessionGoal[];
   goalHistory?: SessionGoal[];
+  // SSOT 2026-10-22 T7/T8 — task ledger (ids, times, tool calls); sanitized on load.
+  taskLedger?: unknown;
+  // When the activity state last changed — the DONE column's completion time for an idle card.
+  activityStateChangedAt?: number;
   /**
    * Cached summary of completed instructions. Persisted so that
    * restart after a long session doesn't force a fresh summary re-build
@@ -1373,6 +1378,9 @@ export class SessionRegistry {
     session.sessionId = undefined;
     session.title = undefined;
     session.lastActivity = new Date();
+    // The old task list stays as history; none of it is in progress any more,
+    // so the new conversation's work is not attributed to it (dashboard T7/T10).
+    session.taskLedger = closeTaskList(session.taskLedger);
 
     // Reset state to INITIALIZING to trigger re-dispatch on next message
     session.state = 'INITIALIZING';
@@ -1914,6 +1922,8 @@ export class SessionRegistry {
             // survives a restart — T1/T2).
             goalQueue: session.goalQueue,
             goalHistory: session.goalHistory,
+            taskLedger: session.taskLedger,
+            activityStateChangedAt: session.activityStateChangedAt,
             // Cached completed-summary (persisted so the next turn after restart
             // doesn't pay a cold summary rebuild). Safe to omit — the block
             // builder falls back to a placeholder and the async regen kicks in.
@@ -1985,6 +1995,7 @@ export class SessionRegistry {
         goal: migrateLegacyGoal(serialized.goal),
         goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
         goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
+        taskLedger: sanitizeTaskLedger(serialized.taskLedger),
         activityState: serialized.activityState || 'idle',
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
@@ -2160,6 +2171,11 @@ export class SessionRegistry {
           // Multi-goal queue + completed history (restored — T1/T2).
           goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
           goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
+          taskLedger: sanitizeTaskLedger(serialized.taskLedger),
+          activityStateChangedAt:
+            typeof serialized.activityStateChangedAt === 'number' && Number.isFinite(serialized.activityStateChangedAt)
+              ? serialized.activityStateChangedAt
+              : undefined,
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
           // Dashboard v2.1 — restore aggregate snapshot

@@ -67,6 +67,12 @@ export interface AgentUsage {
   lastTurnCacheReadTokens?: number;
   lastTurnCacheCreateTokens?: number;
   /**
+   * Id of the API message the `lastTurn*` usage belongs to. The SDK may repeat
+   * one call's usage on several assistant frames (one per content block); the
+   * dashboard's live total keys on this id so a call counts once.
+   */
+  lastTurnMessageId?: string;
+  /**
    * Per-model billing breakdown for the turn, preserved from the SDK's
    * `modelUsage` map before aggregation. `costUsd` is the SDK-reported
    * cost when available, otherwise calculated at that model's rates.

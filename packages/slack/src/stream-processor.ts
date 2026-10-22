@@ -20,6 +20,7 @@ import { markdownToBlocks, thinkingToQuoteBlock } from './formatters';
 // Direct module imports — going through the barrel (`./index`) creates a
 // `slack/index.ts → stream-processor.ts → index.ts` cycle that breaks
 // tree-shaking and risks init-order issues. See #745.
+import type { LiveUsageCall } from './live-usage';
 import { MessageFormatter } from './message-formatter';
 import {
   shouldOutput as checkOutputFlag,
@@ -523,6 +524,13 @@ export interface StreamCallbacks {
   onInvalidateOldForms?: (sessionKey: string, newFormId: string) => Promise<void>;
   /** Called with usage data when stream completes */
   onUsageUpdate?: (usage: UsageData) => void;
+  /**
+   * SSOT 2026-10-22 T1/T2 — one API call's usage, reported while the turn
+   * runs (the result usage arrives only at its end). `messageId` identifies
+   * the call: a call reported on several frames carries the same id. Pure
+   * bookkeeping — a throw is swallowed.
+   */
+  onLiveUsage?: (call: LiveUsageCall) => void;
   /** Called when model outputs session_links JSON directive */
   onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
   /** Called when model outputs channel_message JSON directive */
@@ -2238,6 +2246,13 @@ export class AgentStreamProcessor {
       // meaningful snapshot instead of blanking the context display.
       if (perTurn.inputTokens + perTurn.outputTokens + perTurn.cacheReadTokens + perTurn.cacheCreateTokens > 0) {
         this._lastAssistantTurnUsage = perTurn;
+        if (this.callbacks.onLiveUsage) {
+          try {
+            this.callbacks.onLiveUsage({ messageId: u.lastTurnMessageId, ...perTurn });
+          } catch (error) {
+            this.logger.debug('onLiveUsage callback failed', { error: (error as Error)?.message ?? String(error) });
+          }
+        }
       }
     }
 
