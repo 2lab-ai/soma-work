@@ -1250,6 +1250,9 @@ async function start() {
           getSessionByKey: (key) => registry.getSessionByKey(key),
           getActivityStateByKey: (key) => registry.getActivityStateByKey(key),
           saveSessions: () => registry.saveSessions(),
+          // Loop steps happen while the session is idle — push each one so the
+          // dashboard card leaves DONE while an eval runs or a retry waits.
+          broadcastSessionUpdate: () => registry.broadcastSessionUpdate(),
         },
         requestCoordinator: {
           isRequestActive: (key) => requestCoordinator.isRequestActive(key),

@@ -124,6 +124,7 @@ describe('SlackHandler — follow-up queue host', () => {
       saveSessions: vi.fn(),
       canInterrupt: vi.fn().mockReturnValue(true),
       setActivityStateByKey: vi.fn(),
+      broadcastSessionUpdate: vi.fn(),
     };
 
     const store = {
@@ -727,6 +728,73 @@ describe('SlackHandler — follow-up queue host', () => {
    * the slot's live counter, and the release raises the work key's own counter
    * to it — never a copy that could outlive a supersede of the slot.
    */
+  /**
+   * dev fleet (2026-10-22): a turn hit a 429 and the handler armed a one-hour
+   * auto-retry, but the dashboard put the idle session in DONE and said
+   * nothing about the retry. Arming it must record when / which attempt / why
+   * on the session (what the card shows) and push the board.
+   */
+  describe('error auto-retry is visible on the dashboard', () => {
+    it('arming the retry records when, which attempt and the error, then pushes the board', async () => {
+      registrySession.errorRetryCount = 1;
+      registrySession.sessionId = 'sid-retry';
+      const reason =
+        'Claude pool rate-limited (surfaced as turn content): All 10 eligible accounts are rate-limited right now; retry in 6016s.';
+      startWithContinuation.mockRejectedValueOnce(new Error(`${reason}\nsecond line`));
+      createAgentSession.mockImplementationOnce(() => ({
+        startWithContinuation,
+        getLastTurnSucceeded: () => false,
+        getRetryAfterMs: () => 3_600_000,
+      }));
+
+      const before = Date.now();
+      await handler.handleMessage(message(), say());
+      try {
+        expect(registrySession.pendingRetryDetail).toEqual({ attempt: 1, maxAttempts: 3, reason });
+        expect(registrySession.pendingRetryAt).toBeGreaterThanOrEqual(before + 3_600_000);
+        expect(registrySession.pendingRetryTimer).toBeDefined();
+        expect(claudeHandler.broadcastSessionUpdate).toHaveBeenCalled();
+      } finally {
+        clearTimeout(registrySession.pendingRetryTimer);
+      }
+    });
+
+    it('the timer firing clears the record before it resumes the session', async () => {
+      registrySession.errorRetryCount = 1;
+      registrySession.sessionId = 'sid-retry';
+      startWithContinuation.mockRejectedValueOnce(new Error('429 rate-limited'));
+      createAgentSession.mockImplementationOnce(() => ({
+        startWithContinuation,
+        getLastTurnSucceeded: () => false,
+        getRetryAfterMs: () => 3_600_000,
+      }));
+      const resume = vi.fn().mockResolvedValue(undefined);
+      handlerAny.autoResumeSession = resume;
+      const realSetTimeout = globalThis.setTimeout;
+      let fire: (() => void) | undefined;
+      const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+        if (ms === 3_600_000) {
+          fire = fn;
+          return realSetTimeout(() => undefined, 0);
+        }
+        return realSetTimeout(fn, ms);
+      }) as any);
+      try {
+        await handler.handleMessage(message(), say());
+      } finally {
+        spy.mockRestore();
+      }
+      expect(registrySession.pendingRetryDetail).toBeDefined();
+      expect(fire).toBeTypeOf('function');
+
+      fire!();
+      expect(registrySession.pendingRetryDetail).toBeUndefined();
+      expect(registrySession.pendingRetryAt).toBeUndefined();
+      expect(registrySession.pendingRetryTimer).toBeUndefined();
+      expect(resume).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('bot-thread migration — the work-thread key reads the live slot generation', () => {
     const WORK_KEY = 'C123:999.000';
     let workSession: any;

@@ -520,6 +520,9 @@ export class GoalHandler implements CommandHandler {
     if (session.goal) bumpGoalEpoch(session.goal);
     session.systemPrompt = undefined;
     this.deps.claudeHandler.saveSessions();
+    // Goal state is on the dashboard card (status, queue, a scheduled
+    // re-check the bump just dropped) — push it now, not at the next poll.
+    this.deps.claudeHandler.broadcastSessionUpdate?.();
   }
 
   private async postNoGoal(channel: string, threadTs: string): Promise<void> {
