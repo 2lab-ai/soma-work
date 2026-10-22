@@ -104,13 +104,14 @@ export interface KanbanSession {
     totalCostUsd: number;
     contextUsagePercent: number;
   };
-  /** Task list */
-  tasks?: Array<{
-    content: string;
-    status: 'pending' | 'in_progress' | 'completed';
-    startedAt?: number;
-    completedAt?: number;
-  }>;
+  /**
+   * Task list — the model's latest TodoWrite list, from the session's task
+   * ledger (SSOT 2026-10-22 T7/T8): each task has its own id (`T<n>`), its
+   * elapsed time and the tool calls made while it ran.
+   */
+  tasks?: DashboardTask[];
+  /** Tasks a later list no longer holds (completed earlier), newest first. */
+  earlierTasks?: DashboardTask[];
   /** Slack thread permalink */
   slackThreadUrl?: string;
   /** Dashboard v2.1 — live turn timer + counters (per session) */
@@ -167,6 +168,17 @@ export interface KanbanSession {
     title?: string;
     description?: string;
   };
+}
+
+/** One task as the dashboard shows it (a `TaskRecord` of `session/task-ledger.ts`). */
+export interface DashboardTask {
+  id: string;
+  content: string;
+  activeForm?: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  startedAt?: number;
+  completedAt?: number;
+  toolCalls: number;
 }
 
 export interface KanbanGoal {
@@ -424,14 +436,7 @@ function requireConversationWriteAccess(request: any, reply: any, ownerId: strin
 
 // ── Task accessor ──────────────────────────────────────────────────
 
-type TaskAccessor = (sessionKey: string) =>
-  | Array<{
-      content: string;
-      status: 'pending' | 'in_progress' | 'completed';
-      startedAt?: number;
-      completedAt?: number;
-    }>
-  | undefined;
+type TaskAccessor = (sessionKey: string) => { current: DashboardTask[]; earlier: DashboardTask[] } | undefined;
 let _getTasksFn: TaskAccessor | null = null;
 
 /** Register task accessor (called once at startup) */
@@ -615,7 +620,7 @@ function goalToKanban(s: any): KanbanGoal | undefined {
 }
 
 function sessionToKanban(key: string, s: any): KanbanSession {
-  const tasks = _getTasksFn ? _getTasksFn(key) : undefined;
+  const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
   return {
@@ -668,7 +673,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
             : 0,
         }
       : undefined,
-    tasks,
+    tasks: taskView?.current,
+    earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
     slackThreadUrl:
       s.channelId && s.threadTs ? (buildThreadPermalink(s.channelId, s.threadTs) ?? undefined) : undefined,
     // Dashboard v2.1 — timer + compaction fields
@@ -1007,23 +1013,14 @@ export function broadcastSessionUpdate(): void {
 }
 
 /** Broadcast task update to all connected WebSocket clients */
-export function broadcastTaskUpdate(
-  sessionKey: string,
-  tasks: Array<{
-    content: string;
-    status: 'pending' | 'in_progress' | 'completed';
-    activeForm?: string;
-    startedAt?: number;
-    completedAt?: number;
-  }>,
-): void {
+export function broadcastTaskUpdate(sessionKey: string, tasks: DashboardTask[], earlierTasks: DashboardTask[] = []): void {
   if (wsClients.size === 0) return;
   try {
     // #814 External callers (e.g. Slack handler) pass the raw session key.
     // Compose the wire-format key here so the client cache (keyed by
     // composite `${instanceName}::${rawKey}`) finds the card.
     const wireKey = composeSessionKey(sessionKey);
-    const payload = JSON.stringify({ type: 'task_update', sessionKey: wireKey, tasks });
+    const payload = JSON.stringify({ type: 'task_update', sessionKey: wireKey, tasks, earlierTasks });
     for (const client of wsClients) {
       try {
         client.send(payload);
@@ -2567,6 +2564,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card-metrics .metric + .metric { border-left: 1px solid var(--ib-card-border); }
 .card-metrics .metric:last-child { padding-right: 0; }
 .card-metrics svg { width: 13px; height: 13px; }
+/* SSOT 2026-10-22 T3 — the task in progress on the collapsed face. */
+.card-task { margin-top: 8px; display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; color: var(--ib-text); background: var(--ib-pill); border-radius: 8px; padding: 5px 9px; }
+.card-task .ct-id { flex-shrink: 0; color: var(--ib-muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+.card-task .ct-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-task .ct-time { flex-shrink: 0; color: var(--ib-text-2); font-variant-numeric: tabular-nums; }
+/* SSOT 2026-10-22 T1/T2 — total tokens · cost, counted up live (startCountUp). */
+.card-usage { margin-top: 8px; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--ib-text-2); font-variant-numeric: tabular-nums; }
+.card-usage .cnt { color: var(--ib-text); font-weight: 600; }
+.card-usage .cu-unit { margin-left: 3px; color: var(--ib-muted); }
+.card-usage .cu-sep { color: var(--ib-muted); }
 
 /* Expansion — grid row 0fr → 1fr. min-height/overflow live on the grid item
    so the row can collapse to zero; siblings below move with the animated row. */
@@ -2687,6 +2694,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .tl-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .tl-time { flex-shrink: 0; color: var(--ib-muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .tl-more { font-size: 12px; color: var(--ib-muted); padding: 0 0 6px 16px; }
+.tl-id { flex-shrink: 0; color: var(--ib-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.tl-tools { white-space: nowrap; }
+.tl-earlier-title { margin: 8px 0 4px; font-size: 11.5px; color: var(--ib-muted); }
+.tl-earlier .tl-item { color: var(--ib-muted); }
+.tl-toggle { margin-top: 6px; font: inherit; font-size: 12px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 3px 10px; min-height: 28px; cursor: pointer; }
 .spin { display: inline-block; animation: spin 1.5s linear infinite; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
@@ -3233,6 +3245,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .panel-task-item .task-icon { flex-shrink: 0; font-size: 12px; }
 .panel-task-item .task-text { flex: 1; min-width: 0; }
+.panel-task-item .task-id { flex-shrink: 0; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .panel-task-item.completed .task-text { color: var(--text-tertiary); opacity: 0.6; }
 .panel-task-item.in_progress .task-text { color: var(--text); font-weight: 600; }
 .panel-task-item.pending .task-text { color: var(--text-secondary); }
@@ -4103,6 +4116,10 @@ function renderPanelTaskItem(t) {
     var elapsed = Date.now() - t.startedAt;
     timeInfo = formatDuration(elapsed) + '...';
   }
+  // SSOT 2026-10-22 T7: tool calls made while the task ran.
+  if (t.status !== 'pending' && t.toolCalls !== undefined) {
+    timeInfo = (timeInfo ? timeInfo + ' · ' : '') + '툴 ' + toNum(t.toolCalls) + '회';
+  }
 
   var timeHtml = '';
   if (t.startedAt || t.completedAt) {
@@ -4112,8 +4129,10 @@ function renderPanelTaskItem(t) {
     timeHtml = '<div class="task-time" title="' + parts.join(' → ') + '">' + (timeInfo || parts.join('→')) + '</div>';
   }
 
+  if (!timeHtml && timeInfo) timeHtml = '<div class="task-time">' + timeInfo + '</div>';
   return '<div class="panel-task-item ' + cls + '">'
     + '<span class="task-icon">' + icon + '</span>'
+    + (t.id ? '<span class="task-id">#' + esc(t.id) + '</span>' : '')
     + '<span class="task-text">' + esc(t.content) + '</span>'
     + timeHtml
     + '</div>';
@@ -4338,6 +4357,66 @@ function formatTokens(n) {
     if (n < 999.95) return n.toFixed(1) + units[i];
   }
   return '999.9T+';
+}
+// ── Live usage on the collapsed face (SSOT 2026-10-22 T1/T2) ──
+// The session total of every token its API calls processed — input, output,
+// cache read and cache write — the same tokens its API-equivalent cost is
+// computed from. The server folds the running turn's usage in, so the numbers
+// grow during a turn, not only when it ends.
+function cardTotalTokens(u) {
+  if (!u) return 0;
+  return toNum(u.totalInputTokens) + toNum(u.totalOutputTokens) + toNum(u.totalCacheReadTokens) + toNum(u.totalCacheCreateTokens);
+}
+// Full digits for tokens (a count-up should visibly count), dollars for cost.
+function formatCount(kind, v) {
+  v = Math.max(0, toNum(v));
+  if (kind === 'cost') return '$' + v.toFixed(2);
+  return Math.round(v).toLocaleString('en-US');
+}
+// Count-up (§4 motion tokens: ease-out). Each card number remembers what it
+// shows across face re-renders ("<card key>|<kind>"); a higher value counts up
+// from there, a new value mid-count continues from the number on screen. The
+// first paint, a lower value, background tabs and reduced motion set the value
+// at once.
+var COUNT_UP_MS = 900;
+var _counters = Object.create(null); // "<card key>|<kind>" → { shown, raf, el }
+function countUpValue(from, to, p) {
+  var e = 1 - Math.pow(1 - p, 3);
+  return p >= 1 ? to : from + (to - from) * e;
+}
+function startCountUp(el, id) {
+  var kind = el.getAttribute('data-cnt');
+  var to = toNum(el.getAttribute('data-to'));
+  var c = _counters[id];
+  if (!c) { _counters[id] = { shown: to, raf: 0, el: el }; return; }
+  c.el = el;
+  if (c.raf) { cancelAnimationFrame(c.raf); c.raf = 0; }
+  var from = c.shown;
+  if (from === to || to < from || !canAnimate() || reduceMotion()) {
+    c.shown = to;
+    el.textContent = formatCount(kind, to);
+    return;
+  }
+  el.textContent = formatCount(kind, from);
+  var t0 = performance.now();
+  function step(now) {
+    var p = Math.min(1, (now - t0) / COUNT_UP_MS);
+    c.shown = countUpValue(from, to, p);
+    c.el.textContent = formatCount(kind, c.shown);
+    c.raf = p < 1 ? requestAnimationFrame(step) : 0;
+  }
+  c.raf = requestAnimationFrame(step);
+}
+function animateCountersIn(root, key) {
+  var els = root.querySelectorAll('.cnt');
+  for (var i = 0; i < els.length; i++) startCountUp(els[i], key + '|' + els[i].getAttribute('data-cnt'));
+}
+function dropCounters(key) {
+  ['tok', 'cost'].forEach(function(kind) {
+    var c = _counters[key + '|' + kind];
+    if (c && c.raf) cancelAnimationFrame(c.raf);
+    delete _counters[key + '|' + kind];
+  });
 }
 // Dashboard v2.1 — \`Nm SSs\` for the 1s live tick. Mirrors packages/common/src/format/duration.ts.
 function formatNmSSs(ms) {
@@ -4714,6 +4793,7 @@ function applyBoardPlan(cols, wanted) {
     var goneCid = _cardEls[gone]._cid;
     exitCard(_cardEls[gone], first ? first[gone] : null);
     delete _cardEls[gone];
+    dropCounters(gone);
     releaseCardIoTimer(goneCid);
   }
   for (var key in _cardEls) {
@@ -4866,6 +4946,7 @@ function applyCardParts(el, p) {
     el._faceEl.innerHTML = p.face;
     el._faceHtml = p.face;
     updateTimersIn(el._faceEl);
+    animateCountersIn(el._faceEl, el.getAttribute('data-session-key'));
     changed = true;
   }
   if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl)) {
@@ -4906,7 +4987,9 @@ function cardSummary(s, col, headline) {
   }
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
-  if (col === 'working' && current) return current.content;
+  // The task row (renderCardTaskRow) names the running task — the summary
+  // only does when that row is hidden.
+  if (col === 'working' && current && !dhShow('tasks')) return current.content;
   if (s.summaryTitle && s.summaryTitle !== headline) return s.summaryTitle;
   var lastTask = lastDone || (tasks.length ? tasks[tasks.length - 1] : null);
   if (lastTask) return lastTask.content;
@@ -4981,6 +5064,44 @@ function renderOwnerBadge(s) {
   return '<span class="owner-badge" data-hue="' + ownerBadgeHue(s.ownerId || name) + '" title="' + escAttr(name) + '">' + esc(name) + '</span>';
 }
 
+// The task in progress (SSOT 2026-10-22 T3): first in_progress task in list order.
+function cardCurrentTask(s) {
+  var tasks = (s && s.tasks) || [];
+  for (var i = 0; i < tasks.length; i++) if (tasks[i] && tasks[i].status === 'in_progress') return tasks[i];
+  return null;
+}
+// Collapsed face row (T3): "#T2 Write the parser · 3m 12s" — while the session
+// runs or waits on the user. The time is filled by the 1 Hz tick.
+function renderCardTaskRow(s, col) {
+  if (!dhShow('tasks') || (col !== 'working' && col !== 'waiting')) return '';
+  var t = cardCurrentTask(s);
+  if (!t) return '';
+  var started = Number(t.startedAt) || 0;
+  return '<div class="card-task" title="' + escAttr(t.activeForm || t.content || '') + '">'
+    + (t.id ? '<span class="ct-id">#' + esc(t.id) + '</span>' : '')
+    + '<span class="ct-name">' + esc(t.content || '') + '</span>'
+    + (started ? '<span class="ct-time task-elapsed" data-since="' + started + '"></span>' : '')
+    + '</div>';
+}
+// Collapsed face row (T1/T2): total tokens · API-equivalent cost, each a
+// count-up target (startCountUp). Gated by the 'tokens' / 'cost' header fields.
+function renderCardUsage(s) {
+  var u = s.tokenUsage;
+  if (!u) return '';
+  var parts = [];
+  if (dhShow('tokens')) {
+    var tok = cardTotalTokens(u);
+    var tip = '입력 ' + formatTokens(u.totalInputTokens) + ' · 출력 ' + formatTokens(u.totalOutputTokens)
+      + ' · 캐시 읽기 ' + formatTokens(u.totalCacheReadTokens) + ' · 캐시 쓰기 ' + formatTokens(u.totalCacheCreateTokens);
+    parts.push('<span class="cu-item" title="' + escAttr('총 토큰 — ' + tip) + '"><span class="cnt" data-cnt="tok" data-to="' + tok + '">' + formatCount('tok', tok) + '</span><span class="cu-unit">tok</span></span>');
+  }
+  if (dhShow('cost')) {
+    var cost = toNum(u.totalCostUsd);
+    parts.push('<span class="cu-item" title="API 환산 비용"><span class="cnt" data-cnt="cost" data-to="' + cost + '">' + formatCount('cost', cost) + '</span></span>');
+  }
+  return parts.length ? '<div class="card-usage">' + parts.join('<span class="cu-sep" aria-hidden="true">&middot;</span>') + '</div>' : '';
+}
+
 // Collapsed face (§2.1 reference anatomy): ✦ + headline [+ owner badge] /
 // 2-line summary / status · tasks done/total · context %.
 function renderCardFace(s, col) {
@@ -5005,45 +5126,78 @@ function renderCardFace(s, col) {
   }
   return '<div class="card-head"><span class="card-spark">' + SPARK_SVG + '</span>' + titleHtml + renderOwnerBadge(s) + '</div>'
     + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
+    + renderCardTaskRow(s, col)
+    + renderCardUsage(s)
     + '<div class="card-foot"><span class="card-status">' + renderCardStatus(s, col) + '</span>'
     + (metrics.length ? '<span class="card-metrics">' + metrics.join('') + '</span>' : '')
     + '</div>';
 }
 
-// Task timeline (§3.1-4): list order, the in-progress step is the solid dot,
-// completed steps show how long they took. Over the dhMax('tasks') budget the
-// earliest completed steps fold into "+N completed" first.
+// Task timeline (§3.1-4): list order, the in-progress step is the solid dot.
+// Every task shows its id (SSOT 2026-10-22 T8); a completed task its elapsed
+// time and the tool calls made while it ran, the running one its live time and
+// calls so far (T7). Over the dhMax('tasks') budget the earliest completed
+// steps fold away first; "전체 task 보기" opens every task of the list plus the
+// tasks of earlier lists (s.earlierTasks), per card.
+var _tasksOpen = Object.create(null); // card key → every task shown
+function renderTaskMeta(t) {
+  // Task timestamps come from the ledger: numbers only.
+  var started = Number(t.startedAt) || 0;
+  var completed = Number(t.completedAt) || 0;
+  var parts = [];
+  if (t.status === 'completed' && started && completed) parts.push(formatDuration(completed - started) || '0s');
+  else if (t.status === 'in_progress' && started) parts.push('<span class="task-elapsed" data-since="' + started + '"></span>');
+  if (t.status !== 'pending') parts.push('<span class="tl-tools" title="툴 호출 수">툴 ' + toNum(t.toolCalls) + '회</span>');
+  return parts.join(' &middot; ');
+}
+function renderTimelineItem(t) {
+  var cls = t.status === 'in_progress' ? ' is-current' : (t.status === 'completed' ? ' is-done' : ' is-pending');
+  var meta = renderTaskMeta(t);
+  return '<li class="tl-item' + cls + '">'
+    + (t.id ? '<span class="tl-id">#' + esc(t.id) + '</span>' : '')
+    + '<span class="tl-text">' + esc(t.content) + '</span>'
+    + (meta ? '<span class="tl-time">' + meta + '</span>' : '') + '</li>';
+}
 function renderTimeline(s) {
-  if (!dhShow('tasks') || !s.tasks || s.tasks.length === 0) return '';
+  if (!dhShow('tasks')) return '';
+  var tasks = s.tasks || [];
+  var earlier = s.earlierTasks || [];
+  if (tasks.length === 0 && earlier.length === 0) return '';
+  var open = !!_tasksOpen[s.key];
   var max = dhMax('tasks', 5);
-  var drop = Math.max(0, s.tasks.length - max);
   var folded = 0;
-  var shown = [];
-  for (var i = 0; i < s.tasks.length; i++) {
-    if (drop > 0 && s.tasks[i].status === 'completed') { drop--; folded++; continue; }
-    shown.push(s.tasks[i]);
-  }
   var tail = 0;
-  if (shown.length > max) { tail = shown.length - max; shown = shown.slice(0, max); }
-  var items = shown.map(function(t) {
-    var cls = t.status === 'in_progress' ? ' is-current' : (t.status === 'completed' ? ' is-done' : ' is-pending');
-    var time = '';
-    // Task timestamps come from model-written TodoWrite input: numbers only.
-    var started = Number(t.startedAt) || 0;
-    var completed = Number(t.completedAt) || 0;
-    if (t.status === 'completed' && started && completed) {
-      time = formatDuration(completed - started);
-    } else if (t.status === 'in_progress' && started) {
-      time = '<span class="task-elapsed" data-since="' + started + '"></span>';
+  var shown = [];
+  if (open) {
+    shown = tasks.slice();
+  } else {
+    var drop = Math.max(0, tasks.length - max);
+    for (var i = 0; i < tasks.length; i++) {
+      if (drop > 0 && tasks[i].status === 'completed') { drop--; folded++; continue; }
+      shown.push(tasks[i]);
     }
-    return '<li class="tl-item' + cls + '"><span class="tl-text">' + esc(t.content) + '</span>'
-      + (time ? '<span class="tl-time">' + time + '</span>' : '') + '</li>';
-  }).join('');
-  return '<div class="tl-wrap">'
-    + (folded > 0 ? '<div class="tl-more">+' + folded + ' completed</div>' : '')
-    + '<ul class="tl">' + items + '</ul>'
-    + (tail > 0 ? '<div class="tl-more">+' + tail + ' more</div>' : '')
-    + '</div>';
+    if (shown.length > max) { tail = shown.length - max; shown = shown.slice(0, max); }
+  }
+  var hidden = folded + tail + earlier.length;
+  var html = '<div class="tl-wrap">';
+  if (folded > 0) html += '<div class="tl-more">+' + folded + ' completed</div>';
+  if (shown.length) html += '<ul class="tl">' + shown.map(renderTimelineItem).join('') + '</ul>';
+  if (tail > 0) html += '<div class="tl-more">+' + tail + ' more</div>';
+  if (open && earlier.length) {
+    html += '<div class="tl-earlier-title">이전 task ' + earlier.length + '개</div>'
+      + '<ul class="tl tl-earlier">' + earlier.map(renderTimelineItem).join('') + '</ul>';
+  }
+  if (open || hidden > 0) {
+    html += '<button type="button" class="tl-toggle" aria-expanded="' + (open ? 'true' : 'false') + '"'
+      + ' onclick="event.stopPropagation();toggleCardTasks(\\'' + escJs(s.key) + '\\')">'
+      + (open ? '접기' : '전체 task 보기 (' + hidden + ')') + '</button>';
+  }
+  return html + '</div>';
+}
+function toggleCardTasks(key) {
+  if (_tasksOpen[key]) delete _tasksOpen[key];
+  else _tasksOpen[key] = true;
+  refreshCard(key);
 }
 
 // Latest user instruction + model response (§3.1-4), fetched lazily on
@@ -6471,6 +6625,7 @@ function connectWs() {
         // Update cached session tasks and re-render
         if (_sessionCache[msg.sessionKey]) {
           _sessionCache[msg.sessionKey].tasks = msg.tasks;
+          _sessionCache[msg.sessionKey].earlierTasks = msg.earlierTasks && msg.earlierTasks.length ? msg.earlierTasks : undefined;
         }
         loadSessions();
         // Also update panel tasks if panel is open for this session

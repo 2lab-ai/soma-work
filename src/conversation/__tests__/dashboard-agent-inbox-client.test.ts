@@ -1218,10 +1218,14 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
   const cards = load<{
     renderTimeline(s: unknown): string;
     renderCardStatus(s: unknown, col: string): string;
-  }>(['esc', 'formatDuration', 'renderTimeline', 'renderCardStatus'], ['WAIT_SVG'], {
-    dhShow: () => true,
-    dhMax: (_f: string, d: number) => d,
-  });
+  }>(
+    ['esc', 'escJs', 'toNum', 'formatDuration', 'renderTaskMeta', 'renderTimelineItem', 'renderTimeline', 'renderCardStatus'],
+    ['WAIT_SVG', '_tasksOpen'],
+    {
+      dhShow: () => true,
+      dhMax: (_f: string, d: number) => d,
+    },
+  );
   const tags = (html: string) => (html.match(/<([a-z0-9]+)/gi) ?? []).map((t) => t.slice(1).toLowerCase());
 
   it('a string startedAt / completedAt cannot open a tag or an attribute in the task timeline', () => {
