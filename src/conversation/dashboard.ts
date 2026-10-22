@@ -6303,18 +6303,19 @@ function resetMultiChoice(key) {
 
 // Hero "Submit All Recommended" — group-only one-click. Mirrors the CSRF retry
 // pattern used by submitMultiChoice. Server derives selections from session
-// state, so the body is empty.
+// state, so the request has no body — and therefore no Content-Type, like
+// doAction: Fastify refuses a JSON Content-Type with an empty body (400).
 async function submitAllRecommended(key) {
   var heroBtn = document.querySelector('.btn-hero-recommended');
   if (heroBtn) { heroBtn.disabled = true; heroBtn.setAttribute('aria-disabled', 'true'); }
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended';
   try {
-    var headers = { 'Content-Type': 'application/json' };
+    var headers = {};
     if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
     var res = await fetch(url, { method: 'POST', headers: headers });
     if (res.status === 403) {
       await refreshCsrfToken();
-      var retryHeaders = { 'Content-Type': 'application/json' };
+      var retryHeaders = {};
       if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
       res = await fetch(url, { method: 'POST', headers: retryHeaders });
     }
