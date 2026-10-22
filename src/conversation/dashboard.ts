@@ -2913,7 +2913,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card-goal .cg-queue { list-style: decimal; margin: 2px 0 0 18px; }
 .card-goal .cg-queue li { padding: 2px 0; }
 .card-goal .cg-q-text { overflow-wrap: anywhere; color: var(--ib-text); }
-.card-goal .cg-done { margin-top: 6px; color: var(--ib-muted); font-size: 11.5px; }
+.card-goal .cg-history-toggle { margin-left: auto; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 2px 8px; min-height: 26px; cursor: pointer; white-space: nowrap; }
+.card-goal .cg-progress + .cg-history-toggle { margin-left: 8px; }
+.card-goal .cg-history { list-style: none; margin: 4px 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.card-goal .cg-h-item { border-left: 2px solid var(--st-done); padding: 2px 0 2px 8px; }
+.card-goal .cg-h-obj { color: var(--ib-text); overflow-wrap: anywhere; }
+.card-goal .cg-h-meta { margin-top: 2px; color: var(--ib-muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.card-goal .cg-h-reason { margin-top: 2px; color: var(--ib-text-2); font-size: 11.5px; overflow-wrap: anywhere; }
 .card-goal .cg-btn {
   flex: none;
   font: inherit;
@@ -5705,6 +5711,40 @@ function renderCardBody(s, col) {
 // goal. Every write names WHERE the goal was seen (current / queued), so a goal
 // that moved in the meantime is refused (409) instead of deleting the wrong one.
 var GOAL_STATUS_LABELS = { active: '진행 중', paused: '일시정지', complete: '완료' };
+var GOAL_VIA_LABELS = { user: '직접 완료', 'eval-model': '평가 모델 완료' };
+// SSOT 2026-10-22 T6 — completed goals open from the goal head, per card.
+var _goalHistoryOpen = Object.create(null); // card key → completed goals shown
+function formatGoalTime(ms) {
+  var n = Number(ms) || 0;
+  if (!n) return '';
+  return new Date(n).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+// One completed goal: objective, then when it closed · time spent · tokens ·
+// cost · continuation turns · how it closed, then the evaluator's reason.
+function renderGoalHistory(history) {
+  var items = (history || []).map(function(h) {
+    var meta = [];
+    var at = formatGoalTime(h.completedAt);
+    if (at) meta.push('완료 ' + at);
+    if (toNum(h.activeMsUsed) > 0) meta.push('소요 ' + formatDuration(toNum(h.activeMsUsed)));
+    if (h.tokens !== undefined) meta.push(formatTokens(h.tokens) + ' tok');
+    if (h.costUsd !== undefined) meta.push('$' + toNum(h.costUsd).toFixed(2));
+    if (toNum(h.continuationCount) > 0) meta.push('이어하기 ' + toNum(h.continuationCount) + '회');
+    if (h.completedVia) meta.push(esc(GOAL_VIA_LABELS[h.completedVia] || h.completedVia));
+    var reason = h.completionReason && h.completionReason !== 'user' ? h.completionReason : '';
+    return '<li class="cg-h-item">'
+      + '<div class="cg-h-obj">' + esc(h.objective) + '</div>'
+      + (meta.length ? '<div class="cg-h-meta">' + meta.join(' &middot; ') + '</div>' : '')
+      + (reason ? '<div class="cg-h-reason">' + esc(reason) + '</div>' : '')
+      + '</li>';
+  }).join('');
+  return '<ol class="cg-history">' + items + '</ol>';
+}
+function toggleGoalHistory(key) {
+  if (_goalHistoryOpen[key]) delete _goalHistoryOpen[key];
+  else _goalHistoryOpen[key] = true;
+  refreshCard(key);
+}
 var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
 
 function renderCardGoal(s, col, canEdit) {
@@ -5725,7 +5765,16 @@ function renderCardGoal(s, col, canEdit) {
       html += '<span class="cg-progress" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
     }
   }
+  // T6: the completed goals open from the head (any viewer, any column).
+  var doneCount = g ? toNum(g.completedCount) : 0;
+  var historyOpen = doneCount > 0 && !!_goalHistoryOpen[s.key];
+  if (doneCount > 0) {
+    html += '<button type="button" class="cg-history-toggle" aria-expanded="' + (historyOpen ? 'true' : 'false') + '"'
+      + ' onclick="event.stopPropagation();toggleGoalHistory(\\'' + key + '\\')">완료된 goal ' + doneCount + '개 '
+      + (historyOpen ? '&#x25B2;' : '&#x25BC;') + '</button>';
+  }
   html += '</div>';
+  if (historyOpen) html += renderGoalHistory(g.history);
   if (cur) {
     var dropLabel = queue.length ? '현재 goal 삭제 · 다음 시작' : '현재 goal 삭제';
     html += '<div class="cg-row"><div class="cg-objective" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
@@ -5748,7 +5797,6 @@ function renderCardGoal(s, col, canEdit) {
     }
     html += '</ol>';
   }
-  if (g && toNum(g.completedCount) > 0) html += '<div class="cg-done">완료된 goal ' + toNum(g.completedCount) + '개</div>';
   if (editable) {
     html += '<form class="cg-add" onsubmit="event.preventDefault();event.stopPropagation();addGoalFromCard(\\'' + key + '\\',this)">'
       + '<input class="cg-add-input" name="objective" maxlength="4000" autocomplete="off" aria-label="goal 추가"'

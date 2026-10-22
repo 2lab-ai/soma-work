@@ -324,3 +324,73 @@ describe('panel task rows carry id, elapsed time and tool calls (T7/T8)', () => 
     expect(html).toContain('툴 12회');
   });
 });
+
+describe('goals: completed goals open with their details (T6)', () => {
+  const open: Record<string, boolean> = {};
+  const m = load<{ renderCardGoal(s: unknown, col: string, canEdit: boolean): string }>(
+    ['esc', 'escAttr', 'escJs', 'toNum', 'formatTokens', 'formatDuration', 'formatGoalTime', 'renderGoalHistory', 'renderCardGoal'],
+    ['GOAL_STATUS_LABELS', '_goalErrors', 'GOAL_VIA_LABELS'],
+    { _goalHistoryOpen: open },
+  );
+  const card = (history: unknown[], over: Record<string, unknown> = {}) => ({
+    key: 'inst::C1:t1',
+    terminated: false,
+    goal: {
+      current: { goalId: 'g9', objective: '지금 goal', status: 'active', continuationCount: 1, maxContinuations: 10 },
+      queue: [],
+      completedCount: history.length,
+      history,
+    },
+    ...over,
+  });
+  const H = [
+    {
+      goalId: 'g2',
+      objective: '두번째 끝난 goal',
+      createdAt: Date.parse('2026-10-21T01:00:00Z'),
+      completedAt: Date.parse('2026-10-21T01:12:00Z'),
+      completedVia: 'eval-model',
+      completionReason: '모든 요건에 증거가 있다',
+      activeMsUsed: 600_000,
+      tokens: 1_500_000,
+      costUsd: 3.4,
+      continuationCount: 4,
+    },
+    { goalId: 'g1', objective: '<b>첫</b>', completedVia: 'user', completionReason: 'user' },
+  ];
+
+  it('closed: the head offers the completed goals with their count; no details yet', () => {
+    const html = m.renderCardGoal(card(H), 'working', true);
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('완료된 goal 2개');
+    expect(html).not.toContain('두번째 끝난 goal');
+  });
+
+  it('open: every completed goal with when it closed, time spent, tokens, cost, continuations, how and why', () => {
+    open['inst::C1:t1'] = true;
+    const html = m.renderCardGoal(card(H), 'working', true);
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('두번째 끝난 goal');
+    expect(html).toContain('10m 0s');
+    expect(html).toContain('1.5M tok');
+    expect(html).toContain('$3.40');
+    expect(html).toContain('이어하기 4회');
+    expect(html).toContain('평가 모델 완료');
+    expect(html).toContain('모든 요건에 증거가 있다');
+    expect(html).toContain('직접 완료');
+    // Newest first, as the server sends them.
+    expect(html.indexOf('두번째 끝난 goal')).toBeLessThan(html.indexOf('&lt;b&gt;첫&lt;/b&gt;'));
+    expect(html).not.toContain('<b>첫');
+    delete open['inst::C1:t1'];
+  });
+
+  it('a read-only viewer and a closed card can open the history too', () => {
+    open['inst::C1:t1'] = true;
+    expect(m.renderCardGoal(card(H), 'closed', false)).toContain('두번째 끝난 goal');
+    delete open['inst::C1:t1'];
+  });
+
+  it('no completed goals: no history control', () => {
+    expect(m.renderCardGoal(card([]), 'working', true)).not.toContain('cg-history');
+  });
+});
