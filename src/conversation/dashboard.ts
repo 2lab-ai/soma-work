@@ -663,7 +663,6 @@ function goalToKanban(s: any): KanbanGoal | undefined {
   const queue: any[] = Array.isArray(s.goalQueue) ? s.goalQueue : [];
   const history: any[] = Array.isArray(s.goalHistory) ? s.goalHistory : [];
   if (!goal && queue.length === 0 && history.length === 0) return undefined;
-  const currentId = goal && typeof goal.goalId === 'string' ? goal.goalId : undefined;
   return {
     current:
       goal && typeof goal.goalId === 'string' && KANBAN_GOAL_STATUSES.has(goal.status)
@@ -683,7 +682,10 @@ function goalToKanban(s: any): KanbanGoal | undefined {
       .map((g) => ({ goalId: g.goalId, objective: String(g.objective ?? '') })),
     completedCount: history.length,
     history: history
-      .filter((g) => g && typeof g.goalId === 'string' && g.goalId !== currentId)
+      // A finished goal stays current when its queue is empty and is ALSO in the
+      // history; the current block shows only objective + state, so the list
+      // keeps it — the count and the list always agree.
+      .filter((g) => g && typeof g.goalId === 'string')
       .map(goalHistoryItem)
       .reverse(),
   };
