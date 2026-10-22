@@ -378,7 +378,10 @@ describe('OAuth module', () => {
         });
       });
 
-      it('a directory that throws → no_match (302, not 500), warn carries only the message', async () => {
+      // A failed or slow lookup says nothing about the account. Reporting it as
+      // no_match ("No matching Slack account … contact your admin") sent a user
+      // whose account Slack did return — 6 s late — to an admin for nothing.
+      it('a directory that throws → lookup_unavailable (302, not 500), warn carries only the message', async () => {
         const oauth = await startServer('google');
         oauth.setOAuthUserLookup(() => ({ kind: 'none' }));
         const failure = Object.assign(new Error('boom'), {
@@ -391,7 +394,7 @@ describe('OAuth module', () => {
 
         const res = await callback('google');
         expect(res.statusCode).toBe(302);
-        expect(res.headers.location).toBe('/login?error=no_match&email=nobody%40x.com');
+        expect(res.headers.location).toBe('/login?error=lookup_unavailable');
         expect(issuedSession(res)).toBe(false);
         expect(logWarn).toHaveBeenCalledWith('OAuth login: Slack workspace email lookup failed', {
           email: 'nobody@x.com',
@@ -400,7 +403,21 @@ describe('OAuth module', () => {
         expect(JSON.stringify(logWarn.mock.calls)).not.toContain('payload-marker');
       });
 
-      it('a directory that never answers → no_match once the timeout passes, not before', async () => {
+      it('a directory that cannot work until an admin fixes it → lookup_misconfigured, not no_match', async () => {
+        const oauth = await startServer('google');
+        oauth.setOAuthUserLookup(() => ({ kind: 'none' }));
+        oauth.setOAuthDirectoryLookup(async () => {
+          throw new oauth.DirectoryLookupMisconfigured('missing_scope');
+        });
+        stubProviderFetch({ email: 'dana@x.com', name: 'Dana', verified_email: true });
+
+        const res = await callback('google');
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe('/login?error=lookup_misconfigured');
+        expect(issuedSession(res)).toBe(false);
+      });
+
+      it('a directory that never answers → lookup_unavailable once the timeout passes, not before', async () => {
         const oauth = await startServer('google');
         oauth.setOAuthUserLookup(() => ({ kind: 'none' }));
         oauth.setOAuthDirectoryLookup(() => new Promise(() => {}));
@@ -419,7 +436,7 @@ describe('OAuth module', () => {
         const res = await pending;
         expect(oauth.OAUTH_DIRECTORY_LOOKUP_TIMEOUT_MS).toBe(5000);
         expect(res.statusCode).toBe(302);
-        expect(res.headers.location).toBe('/login?error=no_match&email=nobody%40x.com');
+        expect(res.headers.location).toBe('/login?error=lookup_unavailable');
         expect(issuedSession(res)).toBe(false);
         expect(logWarn).toHaveBeenCalledWith('OAuth login: Slack workspace email lookup failed', {
           email: 'nobody@x.com',
