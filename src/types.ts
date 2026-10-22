@@ -298,6 +298,12 @@ export interface SessionGoal {
    * message.
    */
   evalBackoffUntil?: number;
+  /**
+   * The dispatch error behind the current `evalBackoffUntil` window (first
+   * line, bounded) — what the dashboard card says the scheduled re-eval is
+   * waiting out. Set and cleared together with `evalBackoffUntil`.
+   */
+  evalRetryReason?: string;
 
   /**
    * Monotonic intent epoch. Bumped by every goal mutation (set / pause /
@@ -538,6 +544,14 @@ export interface ConversationSession {
   // retry whose run was replaced is dropped instead of resuming the new run.
   // Persisted and cleared together with `pendingRetryAt`.
   pendingRetrySessionId?: string;
+  /**
+   * What the dashboard card says about the pending error auto-retry next to
+   * its due time (`pendingRetryAt`): which attempt of how many, and the first
+   * line of the error behind it. Recorded where the retry is armed; persisted
+   * and cleared together with `pendingRetryAt`, so a retry re-armed after a
+   * restart (#351) still reads "HH:MM 자동 재개 · 시도 n/3".
+   */
+  pendingRetryDetail?: { attempt?: number; maxAttempts?: number; reason?: string };
   /**
    * Pending personal-skill SKILL.md file roundtrip — set when the user clicks
    * "✏️ 편집" on a skill whose body exceeds `MAX_INLINE_EDIT_CHARS`. The

@@ -1221,15 +1221,19 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
   }>(
     [
       'esc',
+      'escAttr',
       'escJs',
       'toNum',
       'formatDuration',
+      'formatTaskTime',
       'renderTaskMeta',
       'renderTimelineItem',
       'renderTimeline',
+      'pendingAutoResume',
+      'autoResumeLabel',
       'renderCardStatus',
     ],
-    ['WAIT_SVG', '_tasksOpen'],
+    ['WAIT_SVG', 'RESUME_SVG', '_tasksOpen'],
     {
       dhShow: () => true,
       dhMax: (_f: string, d: number) => d,
