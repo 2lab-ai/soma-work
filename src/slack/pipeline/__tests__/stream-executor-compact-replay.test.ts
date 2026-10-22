@@ -695,6 +695,93 @@ describe('failed /compact does not re-arm auto-compact (compact retry loop)', ()
     expect(session.autoCompactSuppressedUntilMs).toBeGreaterThan(Date.now());
   });
 
+  it('SDK error-result /compact (no throw): loop is still cut', async () => {
+    // Review (astra P1): a `/compact` whose SDK result is `error_during_execution`
+    // returns normally through the sdkResultError branch — it never reaches the
+    // catch block, so the pause must also be armed on that exit.
+    const { InputProcessor } = await import('../input-processor');
+    const session = thresholdSession({
+      autoCompactPending: false,
+      autoCompactTokens: 100_000,
+      usage: overThresholdUsage(),
+    });
+    const processor = new InputProcessor({
+      fileHandler: {} as any,
+      commandRouter: { route: vi.fn().mockResolvedValue({ handled: false }) } as any,
+      claudeHandler: { getSession: () => session } as any,
+      slackApi: { postSystemMessage: vi.fn().mockResolvedValue(undefined) } as any,
+    });
+    let compactTurns = 0;
+    let nextCompact = true;
+    const dispatch = vi.fn(async (ctx: any, text: string) => {
+      await settle();
+      const routed = await processor.routeCommand(
+        { type: 'message', channel: ctx.channel, thread_ts: ctx.threadTs, user: ctx.user, ts: ctx.ts, text } as any,
+        vi.fn() as any,
+      );
+      nextCompact = routed.continueWithPrompt === '/compact';
+    });
+    const deps = createDeps(
+      () =>
+        toAgentEvents(
+          (async function* () {
+            yield {
+              type: 'result',
+              subtype: 'error_during_execution',
+              is_error: true,
+              errors: [POOL_429_COMPACT_TEXT],
+              num_turns: 1,
+            };
+          })(),
+        ),
+      dispatch,
+    );
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    while (nextCompact && compactTurns < 5) {
+      nextCompact = false;
+      compactTurns += 1;
+      await new StreamExecutor(deps).execute(executeParams(session, say, '/compact'));
+      await settle();
+    }
+
+    expect(compactTurns).toBe(1);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(session.autoCompactPending).toBe(false);
+    expect(session.autoCompactSuppressedUntilMs).toBeGreaterThanOrEqual(Date.now() + 3600_000);
+  });
+
+  it('recoverable thrown /compact error: no generic auto-resume on top of the replay', async () => {
+    // Review (astra P1): the deferred replay already re-runs the user's
+    // message; a 30s auto-resume scheduled for the failed `/compact` would
+    // fire a stray continuation after that work completed.
+    const rec = createDispatchRecorder();
+    const session = thresholdSession({
+      autoCompactPending: false,
+      autoCompactTokens: 100_000,
+      usage: overThresholdUsage(),
+    });
+    const deps = createDeps(
+      () =>
+        toAgentEvents(
+          (async function* () {
+            yield* [];
+            throw new Error('read ECONNRESET');
+          })(),
+        ),
+      rec.fn,
+    );
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    const result = await new StreamExecutor(deps).execute(executeParams(session, say, '/compact'));
+    await settle();
+
+    expect(result.success).toBe(false);
+    expect(result.retryAfterMs).toBeUndefined();
+    expect(rec.delivered).toEqual([STASHED]);
+    expect(session.autoCompactSuppressedUntilMs).toBeGreaterThan(Date.now());
+  });
+
   it('successful /compact clears an earlier failure pause', async () => {
     const session = thresholdSession({ autoCompactSuppressedUntilMs: Date.now() + 60_000 });
     const deps = createDeps(() => toAgentEvents(compactBoundarySdk()), createDispatchRecorder().fn);
