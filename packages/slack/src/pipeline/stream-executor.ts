@@ -2406,8 +2406,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Issue #122 followup: treat SDK result errors as failures
       const hasSdkError = !!streamResult.sdkResultError;
 
-      // Update reaction based on whether user choice is pending
-      const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
+      // Update reaction based on whether user choice is pending.
+      // A choice this turn asked can already be answered before the turn ends
+      // (a dashboard or Slack click while the model is still streaming), and
+      // every answer path clears `actionPanel.waitingForChoice`. Only a choice
+      // that is still open keeps the session waiting — otherwise the dashboard
+      // shows a NEEDS YOU card with no question to answer. `undefined` (no
+      // thread panel ever wrote the bit) keeps the asked-this-turn behaviour.
+      const askedChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
+      const hasPendingChoice = askedChoice && session.actionPanel?.waitingForChoice !== false;
       const finalStatus = hasSdkError ? 'error' : hasPendingChoice ? 'waiting' : 'completed';
       if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
         await this.deps.reactionManager.updateReaction(
