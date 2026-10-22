@@ -41,9 +41,7 @@ describe('parseReleaseNotesChannels (SOMA_RELEASE_NOTES_CHANNELS)', () => {
 });
 
 describe('routeReleaseNotes', () => {
-  const MAPPED = parseReleaseNotesChannels(
-    `acme/app@deploy/dev2=${DEV2},deploy/dev2=C0GENERIC1,deploy/stage=#stage`,
-  );
+  const MAPPED = parseReleaseNotesChannels(`acme/app@deploy/dev2=${DEV2},deploy/dev2=C0GENERIC1,deploy/stage=#stage`);
 
   it('is the session channel, silently, when nothing is configured', () => {
     expect(routeReleaseNotes(parseReleaseNotesChannels(''), 'acme/app', 'deploy/dev2')).toEqual({
@@ -91,11 +89,7 @@ describe('routeReleaseNotes', () => {
       ['a typo the near rule misses', 'deploy/dv2', []],
       ['a bare-name typo', 'dev2', [{ key: 'acme/app@deploy/dev2', channel: DEV2 }]],
       ['a case typo', 'deploy/DEV2', [{ key: 'acme/app@deploy/dev2', channel: DEV2 }]],
-      [
-        'another branch with the same last segment',
-        'hotfix/dev2',
-        [{ key: 'acme/app@deploy/dev2', channel: DEV2 }],
-      ],
+      ['another branch with the same last segment', 'hotfix/dev2', [{ key: 'acme/app@deploy/dev2', channel: DEV2 }]],
     ])('%s (%s) never reaches C0DEV2CHAN1', (_label, target, nearMisses) => {
       // No `*`: no channel root at all — not the session channel either.
       expect(routeReleaseNotes(NO_FALLBACK, 'acme/app', target)).toEqual({
@@ -138,14 +132,12 @@ describe('routeReleaseNotes', () => {
   });
 
   it('a config holding only malformed entries still counts as configured, and carries them for the warning', () => {
-    expect(routeReleaseNotes(parseReleaseNotesChannels('foo=session'), 'acme/app', 'deploy/dev2')).toEqual(
-      {
-        destination: { kind: 'deploy-thread' },
-        unmapped: true,
-        keys: [],
-        nearMisses: [],
-        invalid: ['foo=session'],
-      },
-    );
+    expect(routeReleaseNotes(parseReleaseNotesChannels('foo=session'), 'acme/app', 'deploy/dev2')).toEqual({
+      destination: { kind: 'deploy-thread' },
+      unmapped: true,
+      keys: [],
+      nearMisses: [],
+      invalid: ['foo=session'],
+    });
   });
 });
