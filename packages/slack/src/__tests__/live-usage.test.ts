@@ -206,10 +206,29 @@ describe('live usage of the running turn', () => {
     // SDK auto-compact on a resumed turn, before its first assistant message.
     const session: Record<string, any> = { postCompactOccupancyTurnId: 't' };
     markLiveUsageBoundary(session, 't');
-    expect(session.liveUsagePreBoundaryKeys).toEqual([]);
     recordLiveUsage(session, call('post', 600_000), 't');
-    expect(session.liveUsagePreBoundaryKeys).toEqual([]);
     expect(liveOccupancyCall(session)?.inputTokens).toBe(600_000);
+  });
+
+  it('overlapping turns: the turn holding the shield holds the mark, whoever claimed the map first (review R6)', () => {
+    const session: Record<string, any> = {};
+    // A compacts before its first call and is superseded by B, which does the same.
+    session.postCompactOccupancyTurnId = 'A';
+    markLiveUsageBoundary(session, 'A');
+    session.postCompactOccupancyTurnId = 'B';
+    markLiveUsageBoundary(session, 'B');
+    recordLiveUsage(session, call('post', 600_000), 'B');
+    expect(liveOccupancyCall(session)?.inputTokens).toBe(600_000);
+  });
+
+  it('the superseded turn’s late boundary marks only itself: B’s calls are untouched and A’s fold is a no-op', () => {
+    const session: Record<string, any> = { postCompactOccupancyTurnId: 'B' };
+    markLiveUsageBoundary(session, 'B');
+    recordLiveUsage(session, call('post', 600_000), 'B');
+    markLiveUsageBoundary(session, 'A'); // A's stack, late: B owns the map — A has no calls in it
+    expect(foldLiveUsage(session, 'A', () => 0)).toBe(false);
+    clearLiveUsage(session, 'A');
+    expect(sumLiveUsage(session.liveUsage).inputTokens).toBe(600_000);
   });
 
   it('a shield with no boundary mark holds every call back (never restores pre-compact occupancy)', () => {
@@ -218,15 +237,15 @@ describe('live usage of the running turn', () => {
     expect(liveOccupancyCall(session)).toBeUndefined();
   });
 
-  it('the boundary mark belongs to its turn: a new turn starts without one', () => {
-    const session: Record<string, any> = {};
+  it('the boundary mark belongs to its turn and goes with that turn’s clear', () => {
+    const session: Record<string, any> = { postCompactOccupancyTurnId: 't' };
     recordLiveUsage(session, call('a', 5), 't');
     markLiveUsageBoundary(session, 't');
-    expect(session.liveUsagePreBoundaryKeys).toEqual(['m:a']);
-    markLiveUsageBoundary(session, 'other'); // not the running turn's: ignored
-    expect(session.liveUsagePreBoundaryKeys).toEqual(['m:a']);
-    recordLiveUsage(session, call('b', 5), 't2');
-    expect(session.liveUsagePreBoundaryKeys).toBeUndefined();
+    expect(liveOccupancyCall(session)).toBeUndefined(); // only a pre-boundary call so far
+    recordLiveUsage(session, call('b', 7), 't');
+    expect(liveOccupancyCall(session)?.inputTokens).toBe(7);
+    clearLiveUsage(session, 't');
+    expect(session.liveUsageBoundary).toBeUndefined();
   });
 
   it('a shield another turn set does not hold this turn’s occupancy (review R3-1)', () => {

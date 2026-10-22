@@ -28,8 +28,13 @@ type LiveUsageHolder = {
   liveUsageSettledTurnId?: string;
   /** The turn that adopted a compact boundary's occupancy (stream executor, issue #196). */
   postCompactOccupancyTurnId?: string;
-  /** Calls the running turn made before its compact boundary (they read the pre-compact context). */
-  liveUsagePreBoundaryKeys?: string[];
+  /**
+   * The latest compact boundary: its turn and the calls that turn had made
+   * before it (they read the pre-compact context). Keyed by turn like the
+   * executor's shield, not by who owns the call map — same-session turns
+   * overlap.
+   */
+  liveUsageBoundary?: { turnId?: string; keys: string[] };
   // A session object carries many other fields.
   [key: string]: unknown;
 };
@@ -48,7 +53,6 @@ export function recordLiveUsage(session: LiveUsageHolder, call: LiveUsageCall, t
   if (turnId !== undefined && session.liveUsageTurnId !== turnId) {
     session.liveUsage = undefined;
     session.liveUsageTurnId = turnId;
-    session.liveUsagePreBoundaryKeys = undefined;
   }
   const map = session.liveUsage ?? {};
   session.liveUsage = map;
@@ -80,16 +84,17 @@ function callTotal(c: LiveUsageTotals): number {
 }
 
 /**
- * The running turn crossed a compact boundary: its calls so far read the
- * pre-compact context. Remembered so only the calls after it count as the
- * context the turn holds (`liveOccupancyCall`). Ignored for another turn. A
- * boundary before the turn's first call claims the map for the turn, so that
- * first call does not start it afresh and drop the mark (review R5-1).
+ * A turn crossed a compact boundary: the calls it made so far read the
+ * pre-compact context. Remembered so only its calls after the boundary count
+ * as the context it holds (`liveOccupancyCall`). Recorded against the turn —
+ * the same turn the executor's occupancy shield names — so a superseded turn's
+ * boundary can neither block nor erase its successor's (review R5-1, R6). A
+ * turn that has no calls in the map yet (none made, or the map is another
+ * turn's) had none before the boundary.
  */
 export function markLiveUsageBoundary(session: LiveUsageHolder, turnId: string | undefined): void {
-  if (turnId !== undefined && session.liveUsageTurnId !== undefined && session.liveUsageTurnId !== turnId) return;
-  if (turnId !== undefined) session.liveUsageTurnId = turnId;
-  session.liveUsagePreBoundaryKeys = Object.keys(session.liveUsage ?? {});
+  const own = turnId === undefined || session.liveUsageTurnId === turnId;
+  session.liveUsageBoundary = { turnId, keys: own ? Object.keys(session.liveUsage ?? {}) : [] };
 }
 
 /**
@@ -99,14 +104,12 @@ export function markLiveUsageBoundary(session: LiveUsageHolder, turnId: string |
  * read the pre-compact transcript; with no boundary mark, none do.
  */
 export function liveOccupancyCall(
-  session: Pick<
-    LiveUsageHolder,
-    'liveUsage' | 'liveUsageTurnId' | 'postCompactOccupancyTurnId' | 'liveUsagePreBoundaryKeys'
-  >,
+  session: Pick<LiveUsageHolder, 'liveUsage' | 'liveUsageTurnId' | 'postCompactOccupancyTurnId' | 'liveUsageBoundary'>,
 ): LiveUsageTotals | undefined {
   const turnId = session.liveUsageTurnId;
   const shielded = turnId !== undefined && session.postCompactOccupancyTurnId === turnId;
-  const before = shielded ? session.liveUsagePreBoundaryKeys : undefined;
+  const mark = session.liveUsageBoundary;
+  const before = shielded && mark && mark.turnId === turnId ? mark.keys : undefined;
   if (shielded && !before) return undefined;
   let top: LiveUsageTotals | undefined;
   let topTotal = 0;
@@ -198,8 +201,8 @@ export function markLiveUsageSettled(session: LiveUsageHolder, turnId: string | 
  * cleanup must not wipe its successor's.
  */
 export function clearLiveUsage(session: LiveUsageHolder, turnId?: string): void {
+  if (turnId === undefined || session.liveUsageBoundary?.turnId === turnId) session.liveUsageBoundary = undefined;
   if (turnId !== undefined && session.liveUsageTurnId !== undefined && session.liveUsageTurnId !== turnId) return;
   session.liveUsage = undefined;
   session.liveUsageTurnId = undefined;
-  session.liveUsagePreBoundaryKeys = undefined;
 }
