@@ -63,12 +63,15 @@ const FACE_FNS = [
   'cardCurrentTask',
   'renderCardTaskRow',
   'renderCardUsage',
+  'formatTaskTime',
+  'pendingAutoResume',
+  'autoResumeLabel',
   'cardSummary',
   'renderCardStatus',
   'renderOwnerBadge',
   'renderCardFace',
 ];
-const FACE_VARS = ['SPARK_SVG', 'WAIT_SVG', 'TASKS_SVG', 'CTX_SVG'];
+const FACE_VARS = ['SPARK_SVG', 'WAIT_SVG', 'TASKS_SVG', 'CTX_SVG', 'RESUME_SVG'];
 
 function workingCard(over: Record<string, unknown> = {}) {
   return {

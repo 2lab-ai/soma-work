@@ -127,6 +127,7 @@ interface SerializedSession {
   // a pending retry, so a restart can re-arm it. The timer handle is runtime-only.
   pendingRetryAt?: number;
   pendingRetrySessionId?: string;
+  pendingRetryDetail?: { attempt?: number; maxAttempts?: number; reason?: string };
   errorRetryCount?: number;
   lastErrorContext?: string;
   // Log verbosity bitmask
@@ -305,6 +306,22 @@ export interface CrashRecoveredSession {
    * actually mid-work.
    */
   shouldAutoResume: boolean;
+}
+
+/**
+ * A persisted `pendingRetryDetail` back as the session carries it — finite
+ * counts and a string reason only; anything else is dropped (disk JSON is
+ * untrusted shape).
+ */
+function restorePendingRetryDetail(raw: unknown): ConversationSession['pendingRetryDetail'] {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const count = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+  return {
+    attempt: count(r.attempt),
+    maxAttempts: count(r.maxAttempts),
+    reason: typeof r.reason === 'string' ? r.reason : undefined,
+  };
 }
 
 export class SessionRegistry {
@@ -1338,6 +1355,7 @@ export class SessionRegistry {
       // ...and its persisted marker, so a restart cannot re-arm it (#351)
       session.pendingRetryAt = undefined;
       session.pendingRetrySessionId = undefined;
+      session.pendingRetryDetail = undefined;
       // Drop any armed SKILL.md edit-roundtrip marker — the user is starting
       // a fresh logical session, an inbound `SKILL.md` upload should NOT
       // silently apply to a skill the user clicked 편집 on in the previous
@@ -1457,6 +1475,7 @@ export class SessionRegistry {
     // ...and its persisted marker, so a restart cannot re-arm it (#351)
     session.pendingRetryAt = undefined;
     session.pendingRetrySessionId = undefined;
+    session.pendingRetryDetail = undefined;
     // Drop any armed SKILL.md edit-roundtrip marker — `/new` / `/renew` starts
     // a fresh logical session and an inbound `SKILL.md` upload should not
     // resurrect an edit click from the previous one.
@@ -1912,6 +1931,7 @@ export class SessionRegistry {
             // so its due time, budget and context are what startup re-arms from.
             pendingRetryAt: session.pendingRetryAt,
             pendingRetrySessionId: session.pendingRetrySessionId,
+            pendingRetryDetail: session.pendingRetryDetail,
             errorRetryCount: session.errorRetryCount,
             lastErrorContext: session.lastErrorContext,
             logVerbosity: session.logVerbosity,
@@ -2126,6 +2146,8 @@ export class SessionRegistry {
             restoredRetryAt !== undefined && typeof serialized.pendingRetrySessionId === 'string'
               ? serialized.pendingRetrySessionId
               : undefined,
+          pendingRetryDetail:
+            restoredRetryAt !== undefined ? restorePendingRetryDetail(serialized.pendingRetryDetail) : undefined,
           errorRetryCount:
             typeof serialized.errorRetryCount === 'number' && Number.isFinite(serialized.errorRetryCount)
               ? serialized.errorRetryCount
