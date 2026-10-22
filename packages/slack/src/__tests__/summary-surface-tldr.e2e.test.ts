@@ -120,9 +120,16 @@ describe('Executive Summary end to end — channel surface gets the TL;DR, the t
   it('chat.update on the thread root carries only the 3 TL;DR lines', async () => {
     const { slackApi } = await fireSummaryTimer(ES_RESPONSE);
 
-    const rootUpdates = slackApi.updates.filter((u) => u.ts === ROOT_TS);
-    expect(rootUpdates.length).toBeGreaterThan(0);
-    const surface = allText(rootUpdates.at(-1)!.blocks);
+    // Every surface write goes to the thread root in this channel, and none
+    // of them — not only the last — may leak the ES body.
+    expect(slackApi.updates.length).toBeGreaterThan(0);
+    for (const update of slackApi.updates) {
+      expect(update).toMatchObject({ channel: 'C1', ts: ROOT_TS });
+      expect(allText(update.blocks)).not.toContain(BODY_MARKER);
+    }
+    // Nothing is posted to the channel root: every post is a thread reply.
+    for (const post of slackApi.posts) expect(post.threadTs).toBe(ROOT_TS);
+    const surface = allText(slackApi.updates.at(-1)!.blocks);
 
     expect(surface).toContain('Executive Summary · TL;DR');
     expect(surface).toContain('PR #332 merged: the channel now shows a 3-line TL;DR.');
@@ -137,14 +144,15 @@ describe('Executive Summary end to end — channel surface gets the TL;DR, the t
   it('chat.postMessage into the thread carries the TL;DR and the full summary', async () => {
     const { slackApi } = await fireSummaryTimer(ES_RESPONSE);
 
-    const threadPosts = slackApi.posts.filter(
-      (p) => p.threadTs === ROOT_TS && allText(p.blocks).includes('Executive Summary'),
-    );
-    expect(threadPosts).toHaveLength(1);
-    const thread = allText(threadPosts[0].blocks);
+    const summaryPosts = slackApi.posts.filter((p) => allText(p.blocks).includes('Executive Summary'));
+    expect(summaryPosts).toHaveLength(1);
+    expect(summaryPosts[0]).toMatchObject({ channel: 'C1', threadTs: ROOT_TS });
+    const thread = allText(summaryPosts[0].blocks);
 
-    expect(thread).toContain('TL;DR');
+    expect(thread).toContain('*TL;DR*');
     expect(thread).toContain('PR #332 merged: the channel now shows a 3-line TL;DR.');
+    expect(thread).toContain('The full Executive Summary is posted inside the thread.');
+    expect(thread).toContain('Next: deploy to dev and check one real turn.');
     expect(thread).toContain('스레드 서피스에는 tldr만 출력');
     expect(thread).toContain('pull/332 — Merged');
     expect(thread).toContain(BODY_MARKER);
@@ -160,7 +168,7 @@ describe('Executive Summary end to end — channel surface gets the TL;DR, the t
   });
 
   it('a summary without a TL;DR still keeps the channel to one pointer line and the thread complete', async () => {
-    const untagged = ES_RESPONSE.split('\n').slice(6).join('\n');
+    const untagged = ES_RESPONSE.slice(ES_RESPONSE.indexOf('## SSOT'));
     const { slackApi } = await fireSummaryTimer(untagged);
 
     const surface = allText(slackApi.updates.filter((u) => u.ts === ROOT_TS).at(-1)!.blocks);
