@@ -21,7 +21,7 @@ import {
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
 import { clearLiveUsage, foldLiveUsage, markLiveUsageSettled, recordLiveUsage } from '../live-usage';
-import { applyPendingModelSwitch, settlePendingModelSwitch } from '../model-switch';
+import { applyPendingModelSwitch, armPendingModelSwitch, settlePendingModelSwitch } from '../model-switch';
 import { OutputFlag, resolveVerbosityMask, shouldOutput, verboseTag } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
@@ -1340,6 +1340,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // transcript and emits `result`). Cleared in this turn's `finally`.
         if (trimmedText.split(/\s/)[0] === '/compact') {
           session.compactTurnActive = true;
+          // T5: the compact a dashboard model switch dispatched arms it — only
+          // this turn's boundary may apply it (review R4).
+          if (armPendingModelSwitch(session, params.mentionTs)) {
+            this.logger.info('Dashboard model switch armed by its compact turn', { sessionKey });
+          }
         }
         this.logger.info('Bypassing preparePrompt for SDK local slash command', {
           sessionKey,

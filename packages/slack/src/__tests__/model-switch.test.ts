@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyModelSwitch,
   applyPendingModelSwitch,
+  armPendingModelSwitch,
   livePendingModelSwitch,
   PENDING_MODEL_SWITCH_TTL_MS,
   settlePendingModelSwitch,
@@ -37,7 +38,8 @@ describe('applyModelSwitch', () => {
 });
 
 describe('a switch waiting for its compact', () => {
-  const pending = () => ({ model: 'grok-4.6', nickname: 'grok[1m]', requestedAt: 1 });
+  // Armed: the compact turn running now is the one this switch dispatched.
+  const pending = () => ({ model: 'grok-4.6', nickname: 'grok[1m]', requestedAt: 1, compactTs: '100.1', armed: true });
 
   it('is applied at the compact boundary', () => {
     const s: Record<string, any> = {
@@ -59,11 +61,36 @@ describe('a switch waiting for its compact', () => {
   it('a switch that waited too long is dropped at the next boundary, not applied to an unrelated compact (review P1)', () => {
     const s: Record<string, any> = {
       model: 'claude-opus-5-5[1m]',
-      pendingModelSwitch: { model: 'grok-4.6', nickname: 'grok[1m]', requestedAt: 1_000 },
+      pendingModelSwitch: { model: 'grok-4.6', nickname: 'grok[1m]', requestedAt: 1_000, armed: true },
     };
     expect(applyPendingModelSwitch(s, cw, 1_000 + PENDING_MODEL_SWITCH_TTL_MS + 1)).toBeUndefined();
     expect(s.model).toBe('claude-opus-5-5[1m]');
     expect(s.pendingModelSwitch).toBeUndefined();
+  });
+
+  it('is armed only by the compact turn of the message it dispatched (review R4)', () => {
+    const s: Record<string, any> = {
+      pendingModelSwitch: { model: 'grok-4.6', nickname: 'grok[1m]', requestedAt: 1, compactTs: '100.1' },
+    };
+    expect(armPendingModelSwitch(s, '200.2')).toBe(false);
+    expect(armPendingModelSwitch(s, undefined)).toBe(false);
+    expect(s.pendingModelSwitch.armed).toBeUndefined();
+    expect(armPendingModelSwitch(s, '100.1')).toBe(true);
+    expect(s.pendingModelSwitch.armed).toBe(true);
+    // Not yet sent (no ts recorded): nothing can arm it.
+    expect(armPendingModelSwitch({ pendingModelSwitch: { model: 'a', nickname: 'a', requestedAt: 1 } }, '100.1')).toBe(
+      false,
+    );
+    expect(armPendingModelSwitch({}, '100.1')).toBe(false);
+  });
+
+  it('another compact’s boundary or turn end leaves an unarmed switch waiting for its own compact (review R4)', () => {
+    const waiting = () => ({ model: 'grok-4.6', nickname: 'grok[1m]', requestedAt: 1, compactTs: '100.1' });
+    const s: Record<string, any> = { model: 'a', compactionOccurred: true, pendingModelSwitch: waiting() };
+    expect(applyPendingModelSwitch(s, cw, 2)).toBeUndefined();
+    expect(settlePendingModelSwitch(s, cw, 2)).toBe('none');
+    expect(s.model).toBe('a');
+    expect(s.pendingModelSwitch).toMatchObject({ compactTs: '100.1' });
   });
 
   it('nothing pending, nothing applied', () => {

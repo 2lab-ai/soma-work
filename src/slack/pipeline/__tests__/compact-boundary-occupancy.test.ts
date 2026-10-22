@@ -168,10 +168,13 @@ function makeSession() {
   } as any;
 }
 
-async function runCompactTurn(stream: () => AsyncIterable<any>) {
+async function runCompactTurn(
+  stream: () => AsyncIterable<any>,
+  opts: { session?: Record<string, unknown>; mentionTs?: string } = {},
+) {
   const deps = createDeps(stream);
   const executor = new StreamExecutor(deps);
-  const session = makeSession();
+  const session = Object.assign(makeSession(), opts.session ?? {});
   const result = await executor.execute({
     session,
     sessionKey: 'C1:t1',
@@ -184,6 +187,7 @@ async function runCompactTurn(stream: () => AsyncIterable<any>) {
     threadTs: 't1',
     user: 'U_TEST',
     say: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
+    mentionTs: opts.mentionTs,
     isUserInput: false,
   } as any);
   return { session, result, deps };
@@ -345,5 +349,29 @@ describe('no post_tokens → unchanged behaviour (T2.1)', () => {
     expect(occupancyOf(session)).toBe(PRE_COMPACT_TOTAL);
     expect(occupancyOf(session)).not.toBe(500_000);
     expect(session.postCompactOccupancyTurnId).toBeUndefined();
+  });
+});
+
+describe('a dashboard model switch waits for the compact it dispatched (SSOT 2026-10-22 T5, review R4)', () => {
+  async function* stream() {
+    yield {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'manual', pre_tokens: PRE_COMPACT_TOTAL, post_tokens: POST_TOKENS },
+    };
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: PRE_COMPACT_AGGREGATE };
+  }
+  const parked = () => ({ model: 'grok-4.6', nickname: 'grok[1m]', requestedAt: Date.now(), compactTs: '100.1' });
+
+  it('the compact turn of the dispatched message applies the switch at its boundary', async () => {
+    const { session } = await runCompactTurn(stream, { mentionTs: '100.1', session: { pendingModelSwitch: parked() } });
+    expect(session.model).toBe('grok-4.6');
+    expect(session.pendingModelSwitch).toBeUndefined();
+  });
+
+  it('another compact (auto-compact, a typed compact) leaves the switch waiting for its own', async () => {
+    const { session } = await runCompactTurn(stream, { mentionTs: '200.2', session: { pendingModelSwitch: parked() } });
+    expect(session.model).toBe('claude-fable-5[1m]');
+    expect(session.pendingModelSwitch).toMatchObject({ nickname: 'grok[1m]', compactTs: '100.1' });
   });
 });

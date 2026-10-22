@@ -56,11 +56,16 @@ export interface ModelSwitchDeps extends ModelCatalogDeps {
   currentAutoCompact?(session: ConversationSession): number;
   /**
    * Start a compact on the session's current model (as if the owner typed
-   * `compact --yes`). Resolves once the message was handled: `queued` when it
-   * is parked behind another turn and has not run yet, otherwise `settled`
-   * (it ran, or it was dropped).
+   * `compact --yes`). `onSent` gets the message's identity before it is
+   * handled — its compact turn is the only one that applies the switch.
+   * Resolves once the message was handled: `queued` when it is parked behind
+   * another turn and has not run yet, otherwise `settled` (it ran, or it was
+   * dropped).
    */
-  dispatchCompact(sessionKey: string): Promise<CompactDispatchOutcome | undefined | void>;
+  dispatchCompact(
+    sessionKey: string,
+    onSent?: (message: { channel: string; ts: string }) => void,
+  ): Promise<CompactDispatchOutcome | undefined | void>;
   save(): void;
   broadcast(): void;
   now?: () => number;
@@ -189,7 +194,12 @@ export async function switchSessionModel(
         `지금 컨텍스트 ${k(usedTokens)}가 ${nickname}의 auto-compact ${k(autoCompactTokens)}보다 커서 먼저 compact해야 합니다 — 진행 중인 턴이 끝난 뒤 다시 시도하세요`,
       );
     }
-    session.pendingModelSwitch = { model, nickname, requestedAt: (deps.now ?? Date.now)() };
+    const parked: NonNullable<ConversationSession['pendingModelSwitch']> = {
+      model,
+      nickname,
+      requestedAt: (deps.now ?? Date.now)(),
+    };
+    session.pendingModelSwitch = parked;
     // This compact is the one the context needs: a threshold compact already
     // parked for the next message would otherwise swallow our `compact --yes`,
     // compact, and then replay it — compacting twice.
@@ -197,7 +207,9 @@ export async function switchSessionModel(
     deps.save();
     deps.broadcast();
     // The compact is a whole turn: answer now and let the card follow it (the
-    // waiting switch is on the card until the boundary applies it).
+    // waiting switch is on the card until the boundary applies it). Only the
+    // compact turn of the message sent here applies it (`compactTs`): an
+    // auto-compact or a typed compact in between leaves it waiting.
     // The dispatch returns once the message was handled. Ran: the compact
     // turn is over, and its boundary applied the switch (or its end cancelled
     // it). Queued behind another turn: the compact is still ahead — the switch
@@ -205,15 +217,17 @@ export async function switchSessionModel(
     // expires after `PENDING_MODEL_SWITCH_TTL_MS`). Anything else — dropped,
     // or the dispatch failed — left no compact to wait for: un-park it and
     // push the card again.
-    const parked = session.pendingModelSwitch;
     const unpark = () => {
       if (session.pendingModelSwitch !== parked) return;
       session.pendingModelSwitch = undefined;
       deps.save();
       deps.broadcast();
     };
+    const onSent = ({ ts }: { channel: string; ts: string }) => {
+      if (session.pendingModelSwitch === parked) parked.compactTs = ts;
+    };
     void Promise.resolve()
-      .then(() => deps.dispatchCompact(sessionKey))
+      .then(() => deps.dispatchCompact(sessionKey, onSent))
       .then((outcome) => {
         if (outcome !== 'queued') unpark();
       }, unpark);

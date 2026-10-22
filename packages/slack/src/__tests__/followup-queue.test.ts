@@ -1763,4 +1763,12 @@ describe('FollowupQueue holdsPending (dashboard model switch, review R3-2)', () 
     queue.cancelItem(SESSION, second.id, second.epoch);
     expect(queue.holdsPending('C1', '1.2')).toBe(false);
   });
+
+  it('a message frozen by a stop or a restart waits for an explicit resume — not pending (review R4)', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.freeze(SESSION, 'stopped');
+    expect(queue.list(SESSION)[0].state).toBe('paused');
+    expect(queue.holdsPending('C1', '1.1')).toBe(false);
+  });
 });
