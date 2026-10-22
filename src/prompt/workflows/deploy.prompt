@@ -8,7 +8,7 @@ The four core objectives are:
 1. Accurately parse the deployment target (repo/source/target) from user input
 2. Safely execute the clone -> PR creation -> merge flow for each repo
 3. Detect conflicts/risks and handle them safely with branching logic
-4. Post release notes separately to the channel root after deployment completes
+4. Post release notes after deployment completes: a short header in the environment's release-notes channel, the full notes in its thread
 
 ## Trigger Input Parsing Rules
 
@@ -205,22 +205,31 @@ If no matching server exists in server-tools, skip this step.
 
 ### 6) Release Notes Generation/Posting
 
-**You must use only the `local:release-notes` skill. Do not write release notes inline.**
+**You must use only the `local:release-notes` skill to write the notes. Do not write release notes inline.**
 
 1. Identify the target's SHA before and after the merge.
 2. Invoke the `local:release-notes` skill with `<before_sha> <after_sha>` arguments.
-3. Post the generated release notes to the channel root using the `channel_message` directive.
+3. Work out the two header fields from what you already have:
+   - `version`: what this deploy ships, plus the short merge SHA — e.g. `0.2.58 (c8a026e)`. Take the version from the repo itself (a tag such as `git describe --tags <after_sha>`, a version file, or the CD run output). If the repo has no version, use the short SHA alone. Never invent one.
+   - `tldr`: three one-line summaries of the most important changes, taken from the notes' Highlights, in the user's language, each under about 80 characters, no headings or markdown. Write fewer only when the release has fewer than three changes.
+4. Emit exactly one `release_notes` directive per repo:
 
 ```json
 {
-  "type": "channel_message",
+  "type": "release_notes",
+  "repo": "acme/app",
+  "target": "deploy/dev2",
+  "version": "0.2.58 (c8a026e)",
+  "tldr": ["...", "...", "..."],
   "text": "Release notes body (verbatim EN/KO bilingual output from local:release-notes skill)"
 }
 ```
 
-4. After posting to the channel, briefly report "Release notes posted" in the thread.
+Use the same `repo` and `target` strings you put in the step 7 `deploy_completed` directive: the normalized `owner/repo`, and the PR's base branch exactly as merged into (`gh pr view <pr-number> --json baseRefName`). The operator's channel mapping matches that branch name exactly.
 
-**Prohibited**: Do not generate release notes by any other means. Each repo gets exactly one `channel_message` per invocation of this skill — do not issue additional duplicate directives.
+5. The harness posts the header (repo, target, version, TL;DR) as a channel-root message and the full `text` as replies in its thread. Where is the operator's choice, not yours: the host's `SOMA_RELEASE_NOTES_CHANNELS` maps `repo@target` to a channel, and its `*` entry decides for a deploy no mapping matches (this channel, a fixed channel, or this thread only). With nothing configured, the notes go to this channel. When the notes land elsewhere, the harness replies in this thread with a link — do not post your own "release notes posted" line, and do not pick a channel.
+
+**Prohibited**: Do not generate or post release notes by any other means — no `channel_message` directive, no Slack tool. Each repo gets exactly one `release_notes` directive per deploy. Never emit twice — not in a summary, a retry, or a later turn.
 
 ### 7) Post-Deploy Lane Signal (Required)
 

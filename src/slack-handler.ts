@@ -28,7 +28,7 @@ import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
-import { getFollowupQueueCapacity } from './config';
+import { getFollowupQueueCapacity, getReleaseNotesChannels } from './config';
 import { DeployLaneTrigger } from './deploy-lanes';
 import { FileHandler, type ProcessedFile } from './file-handler';
 import { Logger } from './logger';
@@ -42,6 +42,7 @@ import { SlackDmChannel } from './notification-channels/slack-dm-channel';
 import { TelegramChannel } from './notification-channels/telegram-channel';
 import { WebhookChannel } from './notification-channels/webhook-channel';
 import { validateSessionGoalObjective } from './prompt/session-goal-block';
+import { routeReleaseNotes } from './release-notes-routes';
 import {
   type ActionHandlerContext,
   ActionHandlers,
@@ -626,6 +627,10 @@ export class SlackHandler {
       // owners registered `onDeploy` for that repo + branch, whoever ran the
       // deploy. The trigger answers in the deploy thread through ctx.reply.
       onDeployCompleted: (signal, ctx) => deployLanes.handle(signal, ctx),
+      // A deploy turn's `release_notes` directive goes where the operator mapped
+      // that repo + branch (SOMA_RELEASE_NOTES_CHANNELS); the executor asks only
+      // for deploy-workflow sessions.
+      routeReleaseNotes: (repo, target) => routeReleaseNotes(getReleaseNotesChannels(), repo, target),
     });
 
     // EventRouter for event handling
