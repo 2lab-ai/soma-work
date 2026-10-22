@@ -6069,7 +6069,7 @@ function renderGoalHistory(history) {
     if (h.tokens !== undefined) meta.push(formatTokens(h.tokens) + ' tok');
     if (h.costUsd !== undefined) meta.push('$' + toNum(h.costUsd).toFixed(2));
     if (toNum(h.continuationCount) > 0) meta.push('이어하기 ' + toNum(h.continuationCount) + '회');
-    if (h.completedVia) meta.push(esc(GOAL_VIA_LABELS[h.completedVia] || h.completedVia));
+    if (h.completedVia) meta.push(esc(Object.prototype.hasOwnProperty.call(GOAL_VIA_LABELS, h.completedVia) ? GOAL_VIA_LABELS[h.completedVia] : h.completedVia));
     var reason = h.completionReason && h.completionReason !== 'user' ? h.completionReason : '';
     return '<li class="cg-h-item">'
       + '<div class="cg-h-obj">' + esc(h.objective) + '</div>'

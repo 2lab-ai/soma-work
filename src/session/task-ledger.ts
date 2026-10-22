@@ -188,7 +188,9 @@ export function sanitizeTaskLedger(raw: unknown): TaskLedger | undefined {
   const current = Array.isArray(r.current)
     ? r.current.filter((id): id is string => typeof id === 'string' && seen.has(id))
     : [];
-  return { nextSeq: Math.floor(nextSeq), tasks: tasks.slice(-TASK_LEDGER_MAX), current };
+  // Never mint an id that is already taken, even from a damaged file.
+  const highest = tasks.reduce((m, t) => Math.max(m, Number(t.id.slice(1))), 0);
+  return { nextSeq: Math.max(Math.floor(nextSeq), highest + 1), tasks: tasks.slice(-TASK_LEDGER_MAX), current };
 }
 
 /** Work-log kinds that belong to the task in progress. Instructions and final answers frame the turn. */

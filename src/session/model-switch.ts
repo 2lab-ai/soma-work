@@ -152,14 +152,18 @@ export async function switchSessionModel(
     session.autoCompactPending = false;
     deps.save();
     deps.broadcast();
-    try {
-      await deps.dispatchCompact(sessionKey);
-    } catch (error) {
-      session.pendingModelSwitch = undefined;
-      deps.save();
-      deps.broadcast();
-      throw new ModelSwitchError(500, `compact를 시작하지 못했습니다: ${(error as Error)?.message ?? String(error)}`);
-    }
+    // The compact is a whole turn: answer now and let the card follow it (the
+    // waiting switch is on the card until the boundary applies it). A dispatch
+    // that fails un-parks the switch and pushes the card again.
+    const parked = session.pendingModelSwitch;
+    void Promise.resolve()
+      .then(() => deps.dispatchCompact(sessionKey))
+      .catch(() => {
+        if (session.pendingModelSwitch !== parked) return;
+        session.pendingModelSwitch = undefined;
+        deps.save();
+        deps.broadcast();
+      });
     return result('compacting');
   }
 
