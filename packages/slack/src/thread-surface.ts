@@ -553,6 +553,14 @@ export class ThreadSurface {
     hasPendingChoice: boolean,
     options?: ThreadSurfaceWriteOptions,
   ): Promise<void> {
+    // `hasPendingChoice` is the turn result, taken before this write. An answer
+    // that landed since (a dashboard / Slack click during end-of-turn cleanup)
+    // already cleared the open-choice bit, and an open choice already has it
+    // up (raised when the choice was registered, or by the executor's
+    // end-of-turn status write). So the snapshot may lower the bit here but
+    // never re-open an answered choice — that left a NEEDS YOU card with no
+    // question to answer.
+    hasPendingChoice = hasPendingChoice && session.actionPanel?.waitingForChoice !== false;
     let agentPhase: string;
     if (hasPendingChoice) {
       agentPhase = '입력 대기';

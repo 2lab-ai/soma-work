@@ -26,7 +26,7 @@ import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
-import { TurnRunner, V1QueryAdapter } from './agent-session';
+import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
 import { getFollowupQueueCapacity, getReleaseNotesChannels } from './config';
 import { DeployLaneTrigger } from './deploy-lanes';
@@ -5085,8 +5085,10 @@ export class SlackHandler {
       return { result: 'interrupted', reason: String(signal.reason ?? 'aborted') };
     }
 
-    const pendingChoice =
-      turnResult?.hasPendingChoice === true || sessionResult?.session?.actionPanel?.waitingForChoice === true;
+    const pendingChoice = isAwaitingUserChoice(
+      turnResult?.hasPendingChoice,
+      sessionResult?.session?.actionPanel?.waitingForChoice,
+    );
     if (pendingChoice) {
       // The session belongs to the user until they answer (§3.2 ASK pause).
       return { result: 'blocked', reason: 'awaiting user choice' };

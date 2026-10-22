@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { EndTurnInfo } from '../agent-session-types.js';
-import { deriveStatus } from '../derive-status.js';
+import { deriveStatus, isAwaitingUserChoice } from '../derive-status.js';
 
 // Trace: Scenario 1 — IAgentSession interface + deriveStatus
 
@@ -33,5 +33,24 @@ describe('deriveStatus', () => {
   it('pendingChoice takes priority over max_tokens', () => {
     const info: EndTurnInfo = { reason: 'max_tokens', timestamp: Date.now() };
     expect(deriveStatus(info, true)).toBe('입력 대기');
+  });
+});
+
+// A turn result is a snapshot. The session's open-choice bit is the live
+// truth: every answer path clears it, so a snapshot taken before an answer
+// must not hold the follow-up drain as "awaiting user choice".
+describe('isAwaitingUserChoice', () => {
+  it('follows the live bit when the session has one', () => {
+    expect(isAwaitingUserChoice(true, true)).toBe(true);
+    expect(isAwaitingUserChoice(false, true)).toBe(true);
+    // answered after the turn result was taken
+    expect(isAwaitingUserChoice(true, false)).toBe(false);
+    expect(isAwaitingUserChoice(false, false)).toBe(false);
+  });
+
+  it('falls back to the turn result when no thread panel ever wrote the bit', () => {
+    expect(isAwaitingUserChoice(true, undefined)).toBe(true);
+    expect(isAwaitingUserChoice(false, undefined)).toBe(false);
+    expect(isAwaitingUserChoice(undefined, undefined)).toBe(false);
   });
 });

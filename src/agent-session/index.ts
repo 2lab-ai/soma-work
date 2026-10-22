@@ -14,6 +14,7 @@ export type {
   UsageData,
   UserChoiceQuestion,
 } from './agent-session-types.js';
+export { isAwaitingUserChoice } from './derive-status.js';
 export type { TurnObserver } from './turn-observer.js';
 export type { TurnRunnerDeps, TurnRunnerSurface } from './turn-runner.js';
 export { TurnRunner } from './turn-runner.js';
