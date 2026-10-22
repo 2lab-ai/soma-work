@@ -22,6 +22,7 @@ import {
   type AuthContext,
   exceedsAbsoluteSessionLifetime,
   getJwtSecret,
+  hasOAuthStateCookie,
   loginReturnCookieFor,
   registerOAuthRoutes,
   validateCsrfToken,
@@ -447,6 +448,10 @@ function registerCanonicalOriginRedirect(instance: FastifyInstance): void {
     if (!hostHeader) return;
     const target = httpsCanonical(effectiveViewerUrl());
     if (!target) return;
+    // A sign-in that started on this origin finishes here: its state cookie is
+    // host-only, and the public URL may have changed while the user was away.
+    const callback = /^\/auth\/(google|microsoft)\/callback$/.exec(request.url.split('?')[0]);
+    if (callback && hasOAuthStateCookie(request, callback[1])) return;
 
     const { hostname, port } = splitHost(hostHeader);
     if (LOOPBACK_HOSTNAMES.has(hostname)) return;

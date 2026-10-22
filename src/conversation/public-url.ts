@@ -42,6 +42,8 @@ export type ProbeResult = 'verified' | 'mismatch' | 'inconclusive';
 
 const PROBE_TIMEOUT_MS = 5000;
 const MAX_SAME_HOST_REDIRECTS = 3;
+/** Our /health body is under 100 bytes; reading more of a foreign body proves nothing. */
+const MAX_BODY_BYTES = 4096;
 const ACCESS_GATE_STATUSES = new Set([401, 403, 407]);
 /** Re-check period; links return to the public URL within one period of a DNS fix. */
 const PUBLIC_URL_CHECK_INTERVAL_MS = 10 * 60 * 1000;
@@ -60,8 +62,39 @@ function isOwnHealthBody(body: string): boolean {
 }
 
 /**
- * Who answers `GET <origin>/health`. Redirects are followed only while they stay
- * on the same hostname (an http → https upgrade); never throws.
+ * Up to MAX_BODY_BYTES of a response body, then hang up — a foreign server
+ * decides how much it sends. `failed` when the stream errors or the deadline
+ * cuts it off.
+ */
+async function readBodyPrefix(res: Response, signal: AbortSignal): Promise<{ text: string; failed: boolean }> {
+  const reader = res.body?.getReader();
+  if (!reader) return { text: '', failed: false };
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size <= MAX_BODY_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.byteLength;
+    }
+  } catch {
+    return { text: '', failed: true };
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  if (signal.aborted) return { text: '', failed: true };
+  return {
+    text: Buffer.concat(chunks)
+      .subarray(0, MAX_BODY_BYTES + 1)
+      .toString('utf8'),
+    failed: false,
+  };
+}
+
+/**
+ * Who answers `GET <origin>/health`. A redirect is followed only when it keeps
+ * the hostname and the /health path (an http → https upgrade); never throws.
  */
 export async function probeOrigin(
   origin: string,
@@ -104,11 +137,11 @@ export async function probeOrigin(
       } catch {
         next = null;
       }
-      if (next && next.hostname === hostname && hop < MAX_SAME_HOST_REDIRECTS) {
+      if (next && next.hostname === hostname && next.pathname === '/health' && hop < MAX_SAME_HOST_REDIRECTS) {
         target = next;
         continue;
       }
-      return { result: 'inconclusive', detail: `HTTP ${res.status} redirect away from ${hostname}` };
+      return { result: 'inconclusive', detail: `HTTP ${res.status} redirect away from ${hostname}/health` };
     }
 
     if (ACCESS_GATE_STATUSES.has(res.status)) {
@@ -120,10 +153,10 @@ export async function probeOrigin(
       return { result: 'inconclusive', detail: `HTTP ${res.status} (proxy upstream down?)` };
     }
 
-    const body = await res.text().catch(() => '');
-    // A body cut off by the timeout proves nothing about who answered.
-    if (signal.aborted) return { result: 'inconclusive', detail: 'timeout' };
-    if (isOwnHealthBody(body)) {
+    const body = await readBodyPrefix(res, signal);
+    // A body cut off by a reset or the deadline proves nothing about who answered.
+    if (body.failed) return { result: 'inconclusive', detail: 'response body cut off' };
+    if (isOwnHealthBody(body.text)) {
       return { result: 'inconclusive', detail: `${INSTANCE_HEADER} header missing (dropped by a proxy?)` };
     }
     return { result: 'mismatch', detail: `HTTP ${res.status} from another server` };
@@ -193,7 +226,11 @@ export async function checkPublicUrl(): Promise<void> {
   const optedIn = !!config.conversation.publicUrlFallback;
   let nextFallback = '';
   if (optedIn && callbackBase && callbackBase !== trimSlash(configured)) {
-    if ((await probeOrigin(callbackBase)).result === 'verified') nextFallback = callbackBase;
+    const callback = (await probeOrigin(callbackBase)).result;
+    // An uncertain answer keeps an established fallback; only proof drops it.
+    if (callback === 'verified' || (callback === 'inconclusive' && fallback === callbackBase)) {
+      nextFallback = callbackBase;
+    }
   }
 
   if (status !== 'mismatch' || nextFallback !== fallback) {

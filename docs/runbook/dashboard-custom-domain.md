@@ -63,9 +63,11 @@ the last result as `publicUrl` (`unchecked`, `verified` or `mismatch`).
   check, cookies and the canonical-origin redirect use that origin instead, so Slack links keep
   opening. Without a proven alternative, links stay on the public URL.
 - The result is not certain — no answer, a name this host cannot resolve, `401`/`403`/`407`, a
-  `5xx`, a redirect to another host, or `/health` behind a proxy that drops the header: nothing
-  changes. Split-horizon DNS and sign-in proxies keep their links.
-- Once the public URL answers as this instance again, links return to it within one check.
+  `5xx`, a redirect to another host or path, a response cut off mid-body, or `/health` behind a
+  proxy that drops the header: nothing changes, and an established fallback stays. Split-horizon
+  DNS and sign-in proxies keep their links. The probe reads at most a few KB of any answer.
+- Once the public URL answers as this instance again, links return to it within one check. A
+  Google or Microsoft sign-in already under way finishes on the origin it started on.
 
 Fix the DNS record or the proxy, or correct `CONVERSATION_VIEWER_URL`; links already posted in Slack
 keep the old address until their message is redrawn. The check catches misconfiguration; it is not a

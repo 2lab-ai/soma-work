@@ -741,6 +741,15 @@ function getOAuthStateCookieName(provider: string): string {
   return `soma_oauth_state_${provider}`;
 }
 
+/**
+ * True when the request carries this host's sign-in state cookie for
+ * `provider` — the sign-in started on this origin and must finish here.
+ */
+export function hasOAuthStateCookie(request: FastifyRequest, provider: string): boolean {
+  const cookieHeader = request.headers.cookie || '';
+  return new RegExp(`(?:^|;\\s*)${getOAuthStateCookieName(provider)}=[^;]`).test(cookieHeader);
+}
+
 function setOAuthStateCookie(reply: any, provider: string, state: string): void {
   const secure = isSecureViewerOrigin();
   const cookieName = getOAuthStateCookieName(provider);
