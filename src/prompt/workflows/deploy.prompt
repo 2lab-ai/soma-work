@@ -218,7 +218,7 @@ If no matching server exists in server-tools, skip this step.
 {
   "type": "release_notes",
   "repo": "acme/app",
-  "target": "deploy/dev2",
+  "target": "deploy/staging",
   "version": "0.2.58 (c8a026e)",
   "tldr": ["...", "...", "..."],
   "text": "Release notes body (verbatim EN/KO bilingual output from local:release-notes skill)"
