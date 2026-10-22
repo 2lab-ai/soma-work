@@ -3,7 +3,7 @@
  *
  * Operator config, per instance (the host's `.env`), read once by `config.ts`:
  *
- *   SOMA_RELEASE_NOTES_CHANNELS=acme/app@deploy/dev2=C0DEV2CHAN1,*=session
+ *   SOMA_RELEASE_NOTES_CHANNELS=acme/app@deploy/staging=C0STAGING01,*=session
  *
  * Entries are separated by commas or newlines:
  *   - `owner/repo@branch=<channel>` — that repo's deploys into that branch (repo
@@ -17,7 +17,7 @@
  * A malformed entry is dropped alone (the rest still apply) and reported.
  *
  * A branch that only differs in spelling from a mapped one (same last path
- * segment, case-insensitive: `dev2` / `deploy/DEV2` vs `deploy/dev2`) is a
+ * segment, case-insensitive: `staging` / `deploy/STAGING` vs `deploy/staging`) is a
  * near-miss. It is diagnostic only — it never routes to that entry's channel and
  * never changes the fallback's destination; it only turns the notice into a warning.
  *
