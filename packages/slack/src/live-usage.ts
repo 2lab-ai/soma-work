@@ -24,6 +24,8 @@ export interface LiveUsageCall extends LiveUsageTotals {
 type LiveUsageHolder = {
   liveUsage?: Record<string, LiveUsageTotals>;
   liveUsageTurnId?: string;
+  /** The turn whose result usage is already in the totals — never folded again. */
+  liveUsageSettledTurnId?: string;
   // A session object carries many other fields.
   [key: string]: unknown;
 };
@@ -82,13 +84,34 @@ export function foldLiveUsage(
       totalCacheReadTokens: number;
       totalCacheCreateTokens: number;
       totalCostUsd: number;
+      currentInputTokens?: number;
+      currentOutputTokens?: number;
+      currentCacheReadTokens?: number;
+      currentCacheCreateTokens?: number;
     };
   },
   turnId: string | undefined,
   price: (totals: LiveUsageTotals) => number,
 ): boolean {
   if (turnId !== undefined && session.liveUsageTurnId !== undefined && session.liveUsageTurnId !== turnId) return false;
+  if (turnId !== undefined && session.liveUsageSettledTurnId === turnId) {
+    clearLiveUsage(session, turnId);
+    return false;
+  }
   const t = sumLiveUsage(session.liveUsage);
+  // The context the turn reached: its largest call. It becomes the current
+  // occupancy when larger, so a later switch still sees how full it is.
+  let top: LiveUsageTotals | undefined;
+  let topTotal = 0;
+  for (const k of Object.keys(session.liveUsage ?? {})) {
+    const c = session.liveUsage?.[k];
+    if (!c) continue;
+    const n = count(c.inputTokens) + count(c.outputTokens) + count(c.cacheReadTokens) + count(c.cacheCreateTokens);
+    if (n > topTotal) {
+      topTotal = n;
+      top = c;
+    }
+  }
   const any = t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheCreateTokens > 0;
   if (any && session.usage) {
     session.usage.totalInputTokens += t.inputTokens;
@@ -102,9 +125,26 @@ export function foldLiveUsage(
       cost = 0;
     }
     if (Number.isFinite(cost) && cost > 0) session.usage.totalCostUsd += cost;
+    const u = session.usage;
+    const current =
+      count(u.currentInputTokens) +
+      count(u.currentOutputTokens) +
+      count(u.currentCacheReadTokens) +
+      count(u.currentCacheCreateTokens);
+    if (top && topTotal > current) {
+      u.currentInputTokens = count(top.inputTokens);
+      u.currentOutputTokens = count(top.outputTokens);
+      u.currentCacheReadTokens = count(top.cacheReadTokens);
+      u.currentCacheCreateTokens = count(top.cacheCreateTokens);
+    }
   }
   clearLiveUsage(session, turnId);
   return any && !!session.usage;
+}
+
+/** The turn's result usage is in the totals: its live calls must never be folded on top. */
+export function markLiveUsageSettled(session: LiveUsageHolder, turnId: string | undefined): void {
+  if (turnId !== undefined) session.liveUsageSettledTurnId = turnId;
 }
 
 /**

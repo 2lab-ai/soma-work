@@ -4,7 +4,7 @@
  * its end.
  */
 import { describe, expect, it } from 'vitest';
-import { clearLiveUsage, foldLiveUsage, recordLiveUsage, sumLiveUsage } from '../live-usage';
+import { clearLiveUsage, foldLiveUsage, markLiveUsageSettled, recordLiveUsage, sumLiveUsage } from '../live-usage';
 
 const call = (messageId: string | undefined, n: number) => ({
   messageId,
@@ -100,5 +100,48 @@ describe('live usage of the running turn', () => {
     recordLiveUsage(session, call('b', 5), 't2');
     expect(foldLiveUsage(session, 't1', () => 1)).toBe(false);
     expect(sumLiveUsage(session.liveUsage).inputTokens).toBe(5);
+  });
+
+  it('folding keeps the context the interrupted turn reached as the current occupancy (review R2-1)', () => {
+    const session: Record<string, any> = {
+      usage: {
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreateTokens: 0,
+        totalCostUsd: 0,
+        currentInputTokens: 300_000,
+        currentOutputTokens: 0,
+        currentCacheReadTokens: 0,
+        currentCacheCreateTokens: 0,
+      },
+    };
+    recordLiveUsage(
+      session,
+      { messageId: 'a', inputTokens: 10_000, outputTokens: 1_000, cacheReadTokens: 589_000, cacheCreateTokens: 0 },
+      't',
+    );
+    foldLiveUsage(session, 't', () => 0);
+    expect(session.usage).toMatchObject({
+      currentInputTokens: 10_000,
+      currentCacheReadTokens: 589_000,
+      currentOutputTokens: 1_000,
+    });
+  });
+
+  it('a turn whose result usage was applied is never folded again (review: double count)', () => {
+    const session: Record<string, any> = {
+      usage: {
+        totalInputTokens: 5,
+        totalOutputTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreateTokens: 0,
+        totalCostUsd: 0,
+      },
+    };
+    recordLiveUsage(session, call('a', 100), 't');
+    markLiveUsageSettled(session, 't');
+    expect(foldLiveUsage(session, 't', () => 1)).toBe(false);
+    expect(session.usage.totalInputTokens).toBe(5);
   });
 });

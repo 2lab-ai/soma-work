@@ -194,6 +194,24 @@ describe('switchSessionModel (T4/T5)', () => {
     expect(r).toMatchObject({ status: 'compacting', usedTokens: 600_000 });
   });
 
+  it('a compact that was dropped (slot taken) un-parks the switch once the dispatch returns (review R2 F1)', async () => {
+    const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', usage: usage(600_000), sessionId: 's' };
+    const { d, calls } = deps(session, { dispatchCompact: async () => {} }); // resolved, but no compact ran
+    expect((await switchSessionModel('k', 'grok[1m]', d)).status).toBe('compacting');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(session.pendingModelSwitch).toBeUndefined();
+    expect(session.model).toBe('claude-opus-5-5[1m]');
+    expect(calls.broadcasts).toBe(2);
+  });
+
+  it('shrinking is judged against the session’s effective threshold, override included (review R2-3)', async () => {
+    // Opus 1M at a 900k override, size unknown after a restart; sonnet[1m] compacts at 750k.
+    const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', autoCompactTokens: 900_000, sessionId: 's' };
+    const { d, calls } = deps(session);
+    expect((await switchSessionModel('k', 'sonnet[1m]', d)).status).toBe('compacting');
+    expect(calls.compact).toEqual(['k']);
+  });
+
   it('a compact cannot start mid-turn: 409, nothing parked', async () => {
     const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', usage: usage(600_000), sessionId: 's' };
     const { d, calls } = deps(session, { isRequestActive: () => true });

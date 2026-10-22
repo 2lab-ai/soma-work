@@ -7509,8 +7509,12 @@ function wlRecover(state, fetchJson, onAdded, reason) {
 // log's size.
 function wlLoadOlder(state, fetchJson, onAdded) {
   if (state.closed || state.denied || !state.olderPending) return Promise.resolve(null);
-  var stopAt = state.entries.length ? state.entries[0].seq : Infinity;
-  var from = 0;
+  // The range to fill is fixed by the first attempt (below the latest window)
+  // and progress is kept, so a retry after a failed page resumes where it
+  // stopped instead of mistaking the pages it already holds for the boundary.
+  if (state.olderStopAt === undefined) state.olderStopAt = state.entries.length ? state.entries[0].seq : Infinity;
+  var stopAt = state.olderStopAt;
+  var from = state.olderFrom || 0;
   var pages = 0;
   var gathered = [];
   // ok = the range up to the held entries is complete; a failed page keeps
@@ -7532,6 +7536,7 @@ function wlLoadOlder(state, fetchJson, onAdded) {
       var more = !!(data && data.hasMore === true);
       if (more && top > from && top < stopAt && pages < WL_BACKFILL_MAX_PAGES) {
         from = top;
+        state.olderFrom = top;
         return step();
       }
       return finish(true);
