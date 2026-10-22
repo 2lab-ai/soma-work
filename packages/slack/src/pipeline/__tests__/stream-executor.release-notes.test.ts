@@ -252,13 +252,18 @@ describe('StreamExecutor — release_notes directive', () => {
     expect(deps.slackApi.postMessage.mock.calls[0][2].threadTs).toBeUndefined();
   });
 
-  it('a poster failure never fails the turn', async () => {
+  it('a poster failure never fails the turn and is reported in the deploy thread', async () => {
     const deps = createDeps(`Merged.\n${NOTES}`);
-    deps.slackApi.postMessage.mockRejectedValue(new Error('boom'));
+    deps.slackApi.postMessage.mockRejectedValueOnce(new Error('boom'));
 
     const result = await new StreamExecutor(deps).execute(createParams(createSession({ workflow: 'deploy' })));
     await settle();
 
     expect(result.success).toBe(true);
+    const report = deps.slackApi.postMessage.mock.calls.find((call: unknown[]) => String(call[1]).includes('⚠️'));
+    expect(report).toBeDefined();
+    expect(report[0]).toBe(CHANNEL);
+    expect(report[2]).toEqual({ threadTs: THREAD });
+    expect(String(report[1])).toContain('boom');
   });
 });

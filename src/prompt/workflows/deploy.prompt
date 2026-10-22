@@ -227,7 +227,7 @@ If no matching server exists in server-tools, skip this step.
 
 Use the same `repo` and `target` strings you put in the step 7 `deploy_completed` directive: the normalized `owner/repo`, and the PR's base branch exactly as merged into (`gh pr view <pr-number> --json baseRefName`). The operator's channel mapping matches that branch name exactly.
 
-5. The harness posts the header (repo, target, version, TL;DR) as a channel-root message and the full `text` as replies in its thread. Where is the operator's choice, not yours: the host's `SOMA_RELEASE_NOTES_CHANNELS` maps `repo@target` to a channel; without a mapping the notes go to this channel, or stay in this thread if the operator configured that. When the notes land elsewhere, the harness replies in this thread with a link — do not post your own "release notes posted" line, and do not pick a channel.
+5. The harness posts the header (repo, target, version, TL;DR) as a channel-root message and the full `text` as replies in its thread. Where is the operator's choice, not yours: the host's `SOMA_RELEASE_NOTES_CHANNELS` maps `repo@target` to a channel, and its `*` entry decides for a deploy no mapping matches (this channel, a fixed channel, or this thread only). With nothing configured, the notes go to this channel. When the notes land elsewhere, the harness replies in this thread with a link — do not post your own "release notes posted" line, and do not pick a channel.
 
 **Prohibited**: Do not generate or post release notes by any other means — no `channel_message` directive, no Slack tool. Each repo gets exactly one `release_notes` directive per deploy. Never emit twice — not in a summary, a retry, or a later turn.
 

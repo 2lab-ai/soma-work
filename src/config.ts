@@ -308,25 +308,19 @@ export function getIncidentEvidenceConfig(): IncidentEvidenceConfig | null {
   }
 }
 
-let releaseNotesChannels: ReleaseNotesChannelsConfig | undefined;
-
 /**
  * Typed getter for `SOMA_RELEASE_NOTES_CHANNELS` (grammar in
- * `release-notes-routes.ts`). Parsed once per process — the value only changes
- * with the host's `.env`, which needs a restart anyway. Malformed entries are
- * dropped individually and logged here; the poster also reports them in the
- * deploy thread.
+ * `release-notes-routes.ts`). Read on every call — it runs once per deploy, and
+ * a cached parse would outlive the env it was read from (tests reset env per
+ * file). Malformed entries are dropped individually and logged here; the
+ * poster also reports them in the deploy thread.
  */
 export function getReleaseNotesChannels(): ReleaseNotesChannelsConfig {
-  if (!releaseNotesChannels) {
-    releaseNotesChannels = parseReleaseNotesChannels(process.env.SOMA_RELEASE_NOTES_CHANNELS);
-    if (releaseNotesChannels.invalid.length > 0) {
-      logger.warn('SOMA_RELEASE_NOTES_CHANNELS has malformed entries — they are ignored', {
-        invalid: releaseNotesChannels.invalid,
-      });
-    }
+  const parsed = parseReleaseNotesChannels(process.env.SOMA_RELEASE_NOTES_CHANNELS);
+  if (parsed.invalid.length > 0) {
+    logger.warn('SOMA_RELEASE_NOTES_CHANNELS has malformed entries — they are ignored', { invalid: parsed.invalid });
   }
-  return releaseNotesChannels;
+  return parsed;
 }
 
 export const config = {
