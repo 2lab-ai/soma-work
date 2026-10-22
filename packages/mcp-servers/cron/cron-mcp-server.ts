@@ -534,13 +534,13 @@ const ON_DEPLOY_SCHEMA = {
   description:
     'Also fire this job when a deploy completes: the deploy workflow signals each repo it merged and deployed into a branch, from whichever session ran the deploy, and every job listing that repo + branch fires as its owner, with its own model, always in a NEW thread in the job channel (target/mode are ignored for these fires). ' +
     'The fired prompt ends with a line "[deploy_completed repo=… target=… before=… after=<merge sha> by=<deployer>]" naming the deploy; the job should verify that deploy itself and be safe to run twice. ' +
-    'target is the full branch name as merged into (e.g. "deploy/dev2", "develop"), matched exactly — an environment nickname does not match. ' +
+    'target is the full branch name as merged into (e.g. "deploy/staging", "develop"), matched exactly — an environment nickname does not match. ' +
     'A job that should run ONLY on deploys can use an expression that never matches, e.g. "0 0 31 2 *".',
   items: {
     type: 'object',
     properties: {
       repo: { type: 'string', description: 'owner/repo, case-insensitive (e.g. "acme/app")' },
-      target: { type: 'string', description: 'Branch the deploy merges into (e.g. "deploy/dev2")' },
+      target: { type: 'string', description: 'Branch the deploy merges into (e.g. "deploy/staging")' },
     },
     required: ['repo', 'target'],
   },
