@@ -168,10 +168,13 @@ function makeSession() {
   } as any;
 }
 
-async function runCompactTurn(stream: () => AsyncIterable<any>) {
+async function runCompactTurn(
+  stream: () => AsyncIterable<any>,
+  opts: { session?: Record<string, unknown>; mentionTs?: string } = {},
+) {
   const deps = createDeps(stream);
   const executor = new StreamExecutor(deps);
-  const session = makeSession();
+  const session = Object.assign(makeSession(), opts.session ?? {});
   const result = await executor.execute({
     session,
     sessionKey: 'C1:t1',
@@ -184,6 +187,7 @@ async function runCompactTurn(stream: () => AsyncIterable<any>) {
     threadTs: 't1',
     user: 'U_TEST',
     say: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
+    mentionTs: opts.mentionTs,
     isUserInput: false,
   } as any);
   return { session, result, deps };
@@ -272,6 +276,68 @@ describe("the turn's own usage sample cannot undo the boundary (T2.2)", () => {
     expect(occupancyOf(session)).not.toBe(PRE_COMPACT_TOTAL);
   });
 
+  it('a turn that compacted mid-way, worked on and was cut off keeps its post-boundary occupancy (review R4-2)', async () => {
+    // SDK auto-compaction (DISABLE_AUTO_COMPACT=0): the turn goes on after the
+    // boundary, its later call reads the compacted-then-regrown context, and
+    // the turn ends without a result (stopped) — the live calls are folded.
+    const assistant = (id: string, cacheRead: number) => ({
+      type: 'assistant',
+      message: {
+        id,
+        model: 'claude-fable-5',
+        usage: {
+          input_tokens: 1_000,
+          output_tokens: 1_000,
+          cache_read_input_tokens: cacheRead,
+          cache_creation_input_tokens: 0,
+        },
+        content: [{ type: 'text', text: id }],
+      },
+    });
+    async function* stream() {
+      yield assistant('msg_pre', 670_000);
+      yield {
+        type: 'system',
+        subtype: 'compact_boundary',
+        compact_metadata: { trigger: 'auto', pre_tokens: PRE_COMPACT_TOTAL, post_tokens: POST_TOKENS },
+      };
+      yield assistant('msg_post', 598_000);
+    }
+
+    const { session } = await runCompactTurn(stream);
+
+    expect(occupancyOf(session)).toBe(600_000);
+    expect(session.usage.totalCacheReadTokens).toBe(670_000 + 598_000);
+  });
+
+  it('a boundary before the turn’s first call, then growth, then cut off: occupancy is the post-boundary call (review R5-1)', async () => {
+    async function* stream() {
+      yield {
+        type: 'system',
+        subtype: 'compact_boundary',
+        compact_metadata: { trigger: 'auto', pre_tokens: PRE_COMPACT_TOTAL, post_tokens: POST_TOKENS },
+      };
+      yield {
+        type: 'assistant',
+        message: {
+          id: 'msg_post',
+          model: 'claude-fable-5',
+          usage: {
+            input_tokens: 1_000,
+            output_tokens: 1_000,
+            cache_read_input_tokens: 598_000,
+            cache_creation_input_tokens: 0,
+          },
+          content: [{ type: 'text', text: 'post' }],
+        },
+      };
+    }
+
+    const { session } = await runCompactTurn(stream);
+
+    expect(occupancyOf(session)).toBe(600_000);
+  });
+
   it("a shield left by another turn does not swallow this turn's usage sample", async () => {
     // Same-session turns overlap: a supersede aborts the previous turn's
     // controller and installs its own without awaiting the old executor's
@@ -345,5 +411,29 @@ describe('no post_tokens → unchanged behaviour (T2.1)', () => {
     expect(occupancyOf(session)).toBe(PRE_COMPACT_TOTAL);
     expect(occupancyOf(session)).not.toBe(500_000);
     expect(session.postCompactOccupancyTurnId).toBeUndefined();
+  });
+});
+
+describe('a dashboard model switch waits for the compact it dispatched (SSOT 2026-10-22 T5, review R4)', () => {
+  async function* stream() {
+    yield {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'manual', pre_tokens: PRE_COMPACT_TOTAL, post_tokens: POST_TOKENS },
+    };
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: PRE_COMPACT_AGGREGATE };
+  }
+  const parked = () => ({ model: 'grok-4.6', nickname: 'grok[1m]', requestedAt: Date.now(), compactTs: '100.1' });
+
+  it('the compact turn of the dispatched message applies the switch at its boundary', async () => {
+    const { session } = await runCompactTurn(stream, { mentionTs: '100.1', session: { pendingModelSwitch: parked() } });
+    expect(session.model).toBe('grok-4.6');
+    expect(session.pendingModelSwitch).toBeUndefined();
+  });
+
+  it('another compact (auto-compact, a typed compact) leaves the switch waiting for its own', async () => {
+    const { session } = await runCompactTurn(stream, { mentionTs: '200.2', session: { pendingModelSwitch: parked() } });
+    expect(session.model).toBe('claude-fable-5[1m]');
+    expect(session.pendingModelSwitch).toMatchObject({ nickname: 'grok[1m]', compactTs: '100.1' });
   });
 });

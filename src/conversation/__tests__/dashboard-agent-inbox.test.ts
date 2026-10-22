@@ -66,9 +66,11 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(TEMPLATE).not.toContain('id="cards-closed"');
   });
 
-  it('keeps the 7-day Show older toggle for closed cards', () => {
-    expect(TEMPLATE).toContain('Show older');
-    expect(TEMPLATE).toContain('function toggleOlderClosed()');
+  it('DONE files closed cards under the day they finished instead of a 7-day Show older toggle (T11/T12)', () => {
+    expect(TEMPLATE).not.toContain('Show older');
+    expect(TEMPLATE).not.toContain('function toggleOlderClosed()');
+    expect(TEMPLATE).toContain('function planDoneGroups(');
+    expect(TEMPLATE).toContain('function toggleDoneGroup(');
   });
 
   it('the stats strip leads the page and the board follows it (§3.1-2)', () => {
@@ -125,11 +127,12 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(toggle).toContain("btn.setAttribute('aria-pressed', pressed)");
   });
 
-  it('the DONE count is the cards it shows; Show older counts what expanding would add (§3.1-1)', () => {
+  it('the DONE count is every card under its day groups; the days come from planDoneGroups (T11/T12)', () => {
     const body = fnBody('renderBoard');
     expect(body).toContain('planDoneColumn(board.idle || [], board.closed || [], {');
     expect(body).toContain('done: plan.done.length');
-    expect(body).toContain('renderOlderToggle(plan.olderCount)');
+    expect(body).toContain('planDoneGroups(plan.done, Date.now(), _doneGroupOpen)');
+    expect(body).not.toContain('renderOlderToggle');
     expect(body).toContain('renderArchivesToggle(plan.archivedCount)');
     // The #814 tokens tooltip follows the board it describes.
     expect(body).toContain('updateTokenBreakdown();');

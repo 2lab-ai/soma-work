@@ -20,6 +20,14 @@ import {
   buildInstructionConfirmFallbackText,
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
+import {
+  clearLiveUsage,
+  foldLiveUsage,
+  markLiveUsageBoundary,
+  markLiveUsageSettled,
+  recordLiveUsage,
+} from '../live-usage';
+import { applyPendingModelSwitch, armPendingModelSwitch, settlePendingModelSwitch } from '../model-switch';
 import { OutputFlag, resolveVerbosityMask, shouldOutput, verboseTag } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
 import {
@@ -191,6 +199,17 @@ export interface StreamExecutorProviders {
   getAutoFallbackCompactModel?: () => string;
   postCompactCompleteIfNeeded?: (...args: any[]) => Promise<unknown>;
   postCompactStartingIfNeeded?: (...args: any[]) => Promise<unknown>;
+  /**
+   * SSOT 2026-10-22 T1/T2 — the session's live usage changed (one more API
+   * call of the running turn). The host pushes the card to the dashboard
+   * (throttled). Must be cheap and never throw. No-op by default.
+   */
+  notifyLiveUsage?: (sessionKey: string) => void;
+  /** API-equivalent cost of calls folded from an interrupted turn. 0 by default. */
+  priceLiveUsage?: (
+    model: string | undefined,
+    totals: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+  ) => number;
 }
 
 const FALLBACK_CONTEXT_WINDOW = 200_000;
@@ -244,6 +263,8 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   getAutoFallbackCompactModel: () => process.env.AUTO_FALLBACK_COMPACT_MODEL || 'opus[1m]',
   postCompactCompleteIfNeeded: async () => undefined,
   postCompactStartingIfNeeded: async () => undefined,
+  notifyLiveUsage: () => {},
+  priceLiveUsage: () => 0,
 };
 
 export function setStreamExecutorProviders(providers: StreamExecutorProviders): void {
@@ -1337,6 +1358,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // transcript and emits `result`). Cleared in this turn's `finally`.
         if (trimmedText.split(/\s/)[0] === '/compact') {
           session.compactTurnActive = true;
+          // T5: the compact a dashboard model switch dispatched arms it — only
+          // this turn's boundary may apply it (review R4).
+          if (armPendingModelSwitch(session, params.mentionTs)) {
+            this.logger.info('Dashboard model switch armed by its compact turn', { sessionKey });
+          }
         }
         this.logger.info('Bypassing preparePrompt for SDK local slash command', {
           sessionKey,
@@ -1964,6 +1990,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             });
           }
         },
+        // SSOT 2026-10-22 T1/T2 — each API call of this turn, as it lands, so
+        // the dashboard's token / cost totals grow during the turn.
+        onLiveUsage: (call) => {
+          recordLiveUsage(session, call, turnId);
+          try {
+            streamExecutorProviders.notifyLiveUsage(sessionKey);
+          } catch (err) {
+            this.logger.debug('notifyLiveUsage failed', { error: (err as Error)?.message ?? String(err) });
+          }
+        },
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, sessionKey, usage, turnId);
 
@@ -2039,6 +2075,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               });
             }
           }
+          // SSOT 2026-10-22 T5 — a dashboard model switch that waited for this
+          // compact (the context was above the target model's auto-compact
+          // threshold) takes effect now, after the compact ran on the old model.
+          const switched = applyPendingModelSwitch(session, resolveContextWindow);
+          if (switched) {
+            this.logger.info('Dashboard model switch applied at compact boundary', {
+              sessionKey,
+              model: switched.model,
+              nickname: switched.nickname,
+            });
+          }
           // Dashboard v2.1 — bump compaction counter. Guarded so any failure
           // in the dashboard/broadcast path cannot interrupt compaction.
           try {
@@ -2112,6 +2159,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               // or let the aborted turn's cleanup erase a shield the successor
               // had just established.
               session.postCompactOccupancyTurnId = turnId;
+              // The live calls so far read the pre-compact context; only the
+              // ones after this point show what the turn holds now (T5).
+              markLiveUsageBoundary(session, turnId);
               this.logger.info('Adopted post-compact occupancy from compact_boundary', {
                 sessionKey,
                 postTokens: m.post_tokens,
@@ -3086,6 +3136,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // already ran endTurn, activeLegStartedAtMs is undefined and this is
       // a no-op. Guarantees the accumulator is correct on every exit path.
       try {
+        // A turn that ended without its result usage (abort, error): its
+        // reported calls were spent — fold them into the totals (priced at the
+        // session model) instead of letting the live numbers fall back.
+        if (session.liveUsage && Object.keys(session.liveUsage).length) {
+          this.ensureSessionUsage(session);
+          foldLiveUsage(session, turnId, (t) => streamExecutorProviders.priceLiveUsage(session.model, t));
+        }
+        clearLiveUsage(session, turnId);
         this.deps.claudeHandler.getSessionRegistry().endTurn(session);
         this.deps.claudeHandler.getSessionRegistry().broadcastSessionUpdate();
       } catch (err) {
@@ -3131,6 +3189,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
       if (wasCompactTurn) {
         promotePendingToDispatchQueue(session as CompactStateSession);
+        // T5: a model switch that waited for this compact never outlives it —
+        // applied if the turn compacted after all, cancelled if it did not.
+        const settled = settlePendingModelSwitch(session, resolveContextWindow);
+        if (settled !== 'none') {
+          this.logger.info('Dashboard model switch settled at compact turn end', { sessionKey, settled });
+        }
       }
       // Codex review F2: if ANOTHER turn started in the tiny window between
       // `cleanup()` removing this turn's controller and this consumption
@@ -5003,6 +5067,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session.usage.totalCacheCreateTokens += usage.cacheCreationInputTokens;
     session.usage.totalCostUsd += usage.totalCostUsd;
     session.usage.lastUpdated = Date.now();
+    // The turn's calls are in the totals now — the live view stops adding them,
+    // and the turn's end never folds them a second time.
+    markLiveUsageSettled(session, turnId);
+    clearLiveUsage(session, turnId);
 
     // Per-model cumulative totals (input/output/cache write/cache read/cost),
     // rendered by `/context`. Survives model switches — each model keeps its

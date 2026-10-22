@@ -20,18 +20,31 @@
  *   POST /api/dashboard/session/:key/trash   → Trash (hide) a closed session
  *   POST /api/dashboard/session/:key/command → Send command to session
  *   POST /api/dashboard/session/:key/goal    → Add a goal / delete the current or a queued goal
+ *   POST /api/dashboard/session/:key/model   → Switch to a representative model (compacts first when needed)
  *   POST /api/dashboard/session/:conversationId/resummarize/:turnId → Retry summary generation
  *   WS   /ws/dashboard                       → Real-time session state updates (WebSocket),
  *                                              incl. `work_log` entries (owner/admin scoped)
  */
 
+import { sumLiveUsage } from '@soma/slack/live-usage';
+import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
 import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
+import { calculateTokenCost } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
+import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
+import { productionModelCatalogDeps } from '../session/model-catalog-deps';
+import {
+  listRepresentativeModels,
+  ModelSwitchError,
+  type ModelSwitchResult,
+  usedContextTokens,
+} from '../session/model-switch';
+import { ledgerTasks, sanitizeTaskLedger } from '../session/task-ledger';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
 import {
   countLifecycleTransitions,
@@ -97,20 +110,41 @@ export interface KanbanSession {
     totalLinesAdded: number;
     totalLinesDeleted: number;
   };
-  /** Token usage */
+  /**
+   * Token usage — session totals of every token kind and the API-equivalent
+   * cost. While a turn runs, the calls it has made so far are folded in
+   * (SSOT 2026-10-22 T1/T2), so the numbers grow during the turn.
+   */
   tokenUsage?: {
     totalInputTokens: number;
     totalOutputTokens: number;
+    totalCacheReadTokens: number;
+    totalCacheCreateTokens: number;
     totalCostUsd: number;
     contextUsagePercent: number;
   };
-  /** Task list */
-  tasks?: Array<{
-    content: string;
-    status: 'pending' | 'in_progress' | 'completed';
-    startedAt?: number;
-    completedAt?: number;
-  }>;
+  /**
+   * SSOT 2026-10-22 T11 — when the work finished (epoch ms): an idle / sleeping
+   * card when it last went idle (else its last activity), an archived card at
+   * its last activity. Absent while the session works or waits.
+   */
+  doneAt?: number;
+  /**
+   * SSOT 2026-10-22 T4/T5 — tokens the context holds now, the threshold it
+   * auto-compacts at (follows the model), and the representative model a
+   * switch waits to apply once the running compact seals.
+   */
+  contextTokens?: number;
+  autoCompactTokens?: number;
+  pendingModel?: string;
+  /**
+   * Task list — the model's latest TodoWrite list, from the session's task
+   * ledger (SSOT 2026-10-22 T7/T8): each task has its own id (`T<n>`), its
+   * elapsed time and the tool calls made while it ran.
+   */
+  tasks?: DashboardTask[];
+  /** Tasks a later list no longer holds (completed earlier), newest first. */
+  earlierTasks?: DashboardTask[];
   /** Slack thread permalink */
   slackThreadUrl?: string;
   /** Dashboard v2.1 — live turn timer + counters (per session) */
@@ -169,6 +203,17 @@ export interface KanbanSession {
   };
 }
 
+/** One task as the dashboard shows it (a `TaskRecord` of `session/task-ledger.ts`). */
+export interface DashboardTask {
+  id: string;
+  content: string;
+  activeForm?: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  startedAt?: number;
+  completedAt?: number;
+  toolCalls: number;
+}
+
 export interface KanbanGoal {
   current?: {
     goalId: string;
@@ -183,6 +228,27 @@ export interface KanbanGoal {
   };
   queue: Array<{ goalId: string; objective: string }>;
   completedCount: number;
+  /** SSOT 2026-10-22 T6 — completed goals with their details, newest first. */
+  history: KanbanGoalHistoryItem[];
+}
+
+/** One completed goal as the card lists it (SSOT 2026-10-22 T6). */
+export interface KanbanGoalHistoryItem {
+  goalId: string;
+  objective: string;
+  createdAt?: number;
+  completedAt?: number;
+  /** `user` (goal done) or `eval-model` (the completion evaluator). */
+  completedVia?: string;
+  /** The evaluator's verdict, or `user`. Capped. */
+  completionReason?: string;
+  /** Active turn time spent on the goal (ms). */
+  activeMsUsed?: number;
+  /** Every token kind spent on the goal. */
+  tokens?: number;
+  costUsd?: number;
+  /** Auto-continuation turns it took. */
+  continuationCount?: number;
 }
 
 export interface KanbanBoard {
@@ -424,14 +490,7 @@ function requireConversationWriteAccess(request: any, reply: any, ownerId: strin
 
 // ── Task accessor ──────────────────────────────────────────────────
 
-type TaskAccessor = (sessionKey: string) =>
-  | Array<{
-      content: string;
-      status: 'pending' | 'in_progress' | 'completed';
-      startedAt?: number;
-      completedAt?: number;
-    }>
-  | undefined;
+type TaskAccessor = (sessionKey: string) => { current: DashboardTask[]; earlier: DashboardTask[] } | undefined;
 let _getTasksFn: TaskAccessor | null = null;
 
 /** Register task accessor (called once at startup) */
@@ -478,6 +537,18 @@ let _goalActionHandlerFn: GoalActionHandler | null = null;
 
 export function setDashboardGoalHandler(fn: GoalActionHandler): void {
   _goalActionHandlerFn = fn;
+}
+
+/**
+ * SSOT 2026-10-22 T4/T5 — switch a session to a representative model
+ * (`session/model-switch.ts` `switchSessionModel`). Throws `ModelSwitchError`
+ * for every refusal, whose `statusCode` the route answers with.
+ */
+type ModelSwitchHandler = (sessionKey: string, nickname: string) => Promise<ModelSwitchResult>;
+let _modelSwitchHandlerFn: ModelSwitchHandler | null = null;
+
+export function setDashboardModelHandler(fn: ModelSwitchHandler): void {
+  _modelSwitchHandlerFn = fn;
 }
 
 type ChoiceAnswerHandler = (sessionKey: string, choiceId: string, label: string, question: string) => Promise<void>;
@@ -611,11 +682,100 @@ function goalToKanban(s: any): KanbanGoal | undefined {
       .filter((g) => g && typeof g.goalId === 'string')
       .map((g) => ({ goalId: g.goalId, objective: String(g.objective ?? '') })),
     completedCount: history.length,
+    history: history
+      // A finished goal stays current when its queue is empty and is ALSO in the
+      // history; the current block shows only objective + state, so the list
+      // keeps it — the count and the list always agree.
+      .filter((g) => g && typeof g.goalId === 'string')
+      .map(goalHistoryItem)
+      .reverse(),
   };
 }
 
+const GOAL_REASON_MAX = 1000;
+function finiteNumber(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+/** A completed goal's details for the card (T6) — known fields only, numbers as numbers. */
+function goalHistoryItem(g: any): KanbanGoalHistoryItem {
+  const tokenParts = [g.tokensInput, g.tokensOutput, g.tokensCacheRead, g.tokensCacheCreate].map(finiteNumber);
+  const item: KanbanGoalHistoryItem = { goalId: g.goalId, objective: String(g.objective ?? '') };
+  const createdAt = finiteNumber(g.createdAt);
+  if (createdAt !== undefined) item.createdAt = createdAt;
+  const completedAt = finiteNumber(g.completedAt);
+  if (completedAt !== undefined) item.completedAt = completedAt;
+  if (typeof g.completedVia === 'string') item.completedVia = g.completedVia;
+  if (typeof g.completionReason === 'string' && g.completionReason) {
+    item.completionReason = g.completionReason.slice(0, GOAL_REASON_MAX);
+  }
+  const activeMsUsed = finiteNumber(g.activeMsUsed);
+  if (activeMsUsed !== undefined) item.activeMsUsed = activeMsUsed;
+  if (tokenParts.some((n) => n !== undefined)) item.tokens = tokenParts.reduce<number>((a, n) => a + (n ?? 0), 0);
+  const costUsd = finiteNumber(g.costUsd);
+  if (costUsd !== undefined) item.costUsd = costUsd;
+  const continuationCount = finiteNumber(g.continuationCount);
+  if (continuationCount !== undefined) item.continuationCount = continuationCount;
+  return item;
+}
+
+/**
+ * Session token totals for the card (T1/T2): the committed `usage.total*` plus
+ * the calls of the turn still running (`liveUsage`), those priced at the
+ * session model like the rest of the session's cost.
+ */
+function tokenUsageOf(s: any): KanbanSession['tokenUsage'] {
+  const live = sumLiveUsage(s.liveUsage);
+  const liveTokens = live.inputTokens + live.outputTokens + live.cacheReadTokens + live.cacheCreateTokens;
+  if (!s.usage && liveTokens === 0) return undefined;
+  const u = s.usage || {};
+  const liveCost =
+    liveTokens > 0
+      ? calculateTokenCost(s.model, live.inputTokens, live.outputTokens, live.cacheReadTokens, live.cacheCreateTokens)
+      : 0;
+  return {
+    totalInputTokens: (u.totalInputTokens || 0) + live.inputTokens,
+    totalOutputTokens: (u.totalOutputTokens || 0) + live.outputTokens,
+    totalCacheReadTokens: (u.totalCacheReadTokens || 0) + live.cacheReadTokens,
+    totalCacheCreateTokens: (u.totalCacheCreateTokens || 0) + live.cacheCreateTokens,
+    totalCostUsd: (u.totalCostUsd || 0) + liveCost,
+    contextUsagePercent: u.contextWindow
+      ? (((u.currentInputTokens || 0) +
+          (u.currentCacheReadTokens || 0) +
+          (u.currentCacheCreateTokens || 0) +
+          (u.currentOutputTokens || 0)) /
+          u.contextWindow) *
+        100
+      : 0,
+  };
+}
+
+/** T4/T5 — context fill, the auto-compact threshold of the current model, a waiting switch. */
+function modelFields(s: any): Pick<KanbanSession, 'contextTokens' | 'autoCompactTokens' | 'pendingModel'> {
+  const out: Pick<KanbanSession, 'contextTokens' | 'autoCompactTokens' | 'pendingModel'> = {};
+  if (s.usage) out.contextTokens = usedContextTokens(s);
+  try {
+    if (s.model) out.autoCompactTokens = resolveEffectiveAutoCompact(s, s.ownerId || '', userSettingsStore).tokens;
+  } catch (error) {
+    logger.debug('auto-compact threshold unavailable for the card', { error: (error as Error)?.message });
+  }
+  // Past its TTL the switch no longer counts: the picker unlocks.
+  const pending = livePendingModelSwitch(s);
+  if (pending && typeof pending.nickname === 'string') out.pendingModel = pending.nickname;
+  return out;
+}
+
+/** T11 — when a live session's work finished; undefined while it works or waits. */
+function liveDoneAt(s: any): number | undefined {
+  const state = s.activityState || 'idle';
+  if (state !== 'idle') return undefined;
+  const changed = finiteNumber(s.activityStateChangedAt);
+  if (changed) return changed;
+  const last = s.lastActivity instanceof Date ? s.lastActivity.getTime() : Date.parse(String(s.lastActivity));
+  return Number.isFinite(last) ? last : undefined;
+}
+
 function sessionToKanban(key: string, s: any): KanbanSession {
-  const tasks = _getTasksFn ? _getTasksFn(key) : undefined;
+  const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
   return {
@@ -653,22 +813,11 @@ function sessionToKanban(key: string, s: any): KanbanSession {
           totalLinesDeleted: s.mergeStats.totalLinesDeleted,
         }
       : undefined,
-    tokenUsage: s.usage
-      ? {
-          totalInputTokens: s.usage.totalInputTokens || 0,
-          totalOutputTokens: s.usage.totalOutputTokens || 0,
-          totalCostUsd: s.usage.totalCostUsd || 0,
-          contextUsagePercent: s.usage.contextWindow
-            ? (((s.usage.currentInputTokens || 0) +
-                (s.usage.currentCacheReadTokens || 0) +
-                (s.usage.currentCacheCreateTokens || 0) +
-                (s.usage.currentOutputTokens || 0)) /
-                s.usage.contextWindow) *
-              100
-            : 0,
-        }
-      : undefined,
-    tasks,
+    tokenUsage: tokenUsageOf(s),
+    doneAt: liveDoneAt(s),
+    ...modelFields(s),
+    tasks: taskView?.current,
+    earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
     slackThreadUrl:
       s.channelId && s.threadTs ? (buildThreadPermalink(s.channelId, s.threadTs) ?? undefined) : undefined,
     // Dashboard v2.1 — timer + compaction fields
@@ -722,6 +871,14 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   };
 }
 
+/** The task ledger an archive kept (T7/T8), as the card carries it. */
+function archivedTasks(archived: ArchivedSession): Pick<KanbanSession, 'tasks' | 'earlierTasks'> {
+  const ledger = sanitizeTaskLedger(archived.taskLedger);
+  if (!ledger) return {};
+  const view = ledgerTasks(ledger);
+  return { tasks: view.current, earlierTasks: view.earlier.length ? view.earlier : undefined };
+}
+
 /**
  * Convert an ArchivedSession to KanbanSession for the closed column.
  * Trace: Scenario 3, Section 3a transformation
@@ -765,10 +922,15 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
       ? {
           totalInputTokens: archived.usage.totalInputTokens || 0,
           totalOutputTokens: archived.usage.totalOutputTokens || 0,
+          totalCacheReadTokens: archived.usage.totalCacheReadTokens || 0,
+          totalCacheCreateTokens: archived.usage.totalCacheCreateTokens || 0,
           totalCostUsd: archived.usage.totalCostUsd || 0,
           contextUsagePercent: 0, // No active context for archived sessions
         }
       : undefined,
+    doneAt: Number.isFinite(Date.parse(archived.lastActivity)) ? Date.parse(archived.lastActivity) : undefined,
+    ...archivedTasks(archived),
+    goal: goalToKanban(archived),
     slackThreadUrl:
       archived.channelId && archived.threadTs
         ? (buildThreadPermalink(archived.channelId, archived.threadTs) ?? undefined)
@@ -1009,13 +1171,8 @@ export function broadcastSessionUpdate(): void {
 /** Broadcast task update to all connected WebSocket clients */
 export function broadcastTaskUpdate(
   sessionKey: string,
-  tasks: Array<{
-    content: string;
-    status: 'pending' | 'in_progress' | 'completed';
-    activeForm?: string;
-    startedAt?: number;
-    completedAt?: number;
-  }>,
+  tasks: DashboardTask[],
+  earlierTasks: DashboardTask[] = [],
 ): void {
   if (wsClients.size === 0) return;
   try {
@@ -1023,7 +1180,7 @@ export function broadcastTaskUpdate(
     // Compose the wire-format key here so the client cache (keyed by
     // composite `${instanceName}::${rawKey}`) finds the card.
     const wireKey = composeSessionKey(sessionKey);
-    const payload = JSON.stringify({ type: 'task_update', sessionKey: wireKey, tasks });
+    const payload = JSON.stringify({ type: 'task_update', sessionKey: wireKey, tasks, earlierTasks });
     for (const client of wsClients) {
       try {
         client.send(payload);
@@ -1166,6 +1323,36 @@ export function broadcastSingleSessionUpdate(sessionKey: string): void {
     logger.error('Failed to broadcast single session update', error);
   }
 }
+
+/**
+ * At most one push per key per `intervalMs`: the first call sends at once, the
+ * calls inside the window collapse into one trailing send at its end — so the
+ * last value always arrives (SSOT 2026-10-22 T1/T2 live usage).
+ */
+export function createLiveUpdateThrottle(send: (key: string) => void, intervalMs: number): (key: string) => void {
+  const state = new Map<string, { last: number; timer?: ReturnType<typeof setTimeout> }>();
+  return (key: string) => {
+    const now = Date.now();
+    const st = state.get(key) ?? { last: Number.NEGATIVE_INFINITY };
+    state.set(key, st);
+    if (st.timer) return;
+    const wait = st.last + intervalMs - now;
+    if (wait <= 0) {
+      st.last = now;
+      send(key);
+      return;
+    }
+    st.timer = setTimeout(() => {
+      st.timer = undefined;
+      st.last = Date.now();
+      send(key);
+    }, wait);
+    st.timer.unref?.();
+  };
+}
+
+/** Push a running card whose live usage grew — once a second at most per session. */
+export const scheduleLiveSessionUpdate = createLiveUpdateThrottle((key) => broadcastSingleSessionUpdate(key), 1000);
 
 /** Broadcast session action feedback to all connected WebSocket clients */
 function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | 'trash'): void {
@@ -1735,6 +1922,38 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Model switch (SSOT 2026-10-22 T4/T5) ──
+
+  server.post<{ Params: { key: string }; Body: { model?: unknown } }>(
+    '/api/dashboard/session/:key/model',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const nickname = (request.body || {}).model;
+      if (typeof nickname !== 'string' || !nickname || nickname.length > 64) {
+        reply.status(400).send({ error: 'model is required and must be a representative model nickname' });
+        return;
+      }
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      if (!_modelSwitchHandlerFn) {
+        reply.status(501).send({ error: 'Model switch handler not configured' });
+        return;
+      }
+      try {
+        const result = await _modelSwitchHandlerFn(resolved.originalKey, nickname);
+        broadcastSessionUpdate();
+        reply.send({ ok: true, result });
+      } catch (error) {
+        if (error instanceof ModelSwitchError) {
+          reply.status(error.statusCode).send({ error: error.message });
+          return;
+        }
+        logger.error('Error switching model from dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── Answer choice from dashboard ──
 
   server.post<{ Params: { key: string }; Body: { choiceId: string; label: string; question: string } }>(
@@ -1968,6 +2187,15 @@ function renderDashboardPage(userId?: string): string {
     /</g,
     '\\u003c',
   );
+  // SSOT 2026-10-22 T4 — the representative models a card can switch to, with
+  // their window and auto-compact threshold (escaped like the header config).
+  let representativeModels: unknown[] = [];
+  try {
+    representativeModels = listRepresentativeModels(productionModelCatalogDeps());
+  } catch (error) {
+    logger.warn('Representative models unavailable for the dashboard', error);
+  }
+  const initRepresentativeModels = JSON.stringify(representativeModels).replace(/</g, '\\u003c');
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -2567,6 +2795,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card-metrics .metric + .metric { border-left: 1px solid var(--ib-card-border); }
 .card-metrics .metric:last-child { padding-right: 0; }
 .card-metrics svg { width: 13px; height: 13px; }
+/* SSOT 2026-10-22 T3 — the task in progress on the collapsed face. */
+.card-task { margin-top: 8px; display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; color: var(--ib-text); background: var(--ib-pill); border-radius: 8px; padding: 5px 9px; }
+.card-task .ct-id { flex-shrink: 0; color: var(--ib-muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+.card-task .ct-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-task .ct-time { flex-shrink: 0; color: var(--ib-text-2); font-variant-numeric: tabular-nums; }
+/* SSOT 2026-10-22 T1/T2 — total tokens · cost, counted up live (startCountUp). */
+.card-usage { margin-top: 8px; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--ib-text-2); font-variant-numeric: tabular-nums; }
+.card-usage .cnt { color: var(--ib-text); font-weight: 600; }
+.card-usage .cu-unit { margin-left: 3px; color: var(--ib-muted); }
+.card-usage .cu-sep { color: var(--ib-muted); }
 
 /* Expansion — grid row 0fr → 1fr. min-height/overflow live on the grid item
    so the row can collapse to zero; siblings below move with the animated row. */
@@ -2576,7 +2814,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card.is-expanded .card-expand-inner { opacity: 1; }
 .card.no-motion .card-expand, .card.no-motion .card-expand-inner { transition: none; }
 .card-body { margin: 0 14px; padding: 12px 0 14px; border-top: 1px solid var(--ib-card-border); font-size: 13px; color: var(--ib-text-2); }
-.cb-model { color: var(--ib-muted); font-size: 13px; }
+.cb-model { color: var(--ib-muted); font-size: 13px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
+.cb-model-select { font: inherit; font-size: 13px; color: var(--ib-text); background: var(--ib-seg); border: 1px solid var(--ib-card-border); border-radius: 8px; padding: 4px 8px; min-height: 30px; max-width: 100%; cursor: pointer; }
+.cb-model-select:disabled { opacity: 0.6; cursor: progress; }
+.cb-ac { font-variant-numeric: tabular-nums; }
+.cb-model-note { margin-top: 4px; font-size: 12px; color: var(--ib-text-2); overflow-wrap: anywhere; }
+.cb-model-note.is-error { color: var(--st-fail); }
 
 /* ── EXPANDED META — moved from the old card face, same dhShow() gates ── */
 .card .card-meta {
@@ -2687,6 +2930,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .tl-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .tl-time { flex-shrink: 0; color: var(--ib-muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .tl-more { font-size: 12px; color: var(--ib-muted); padding: 0 0 6px 16px; }
+.tl-id { flex-shrink: 0; color: var(--ib-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.tl-tools { white-space: nowrap; }
+.tl-earlier-title { margin: 8px 0 4px; font-size: 11.5px; color: var(--ib-muted); }
+.tl-earlier .tl-item { color: var(--ib-muted); }
+.tl-toggle { margin-top: 6px; font: inherit; font-size: 12px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 3px 10px; min-height: 28px; cursor: pointer; }
 .spin { display: inline-block; animation: spin 1.5s linear infinite; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
@@ -2763,7 +3011,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card-goal .cg-queue { list-style: decimal; margin: 2px 0 0 18px; }
 .card-goal .cg-queue li { padding: 2px 0; }
 .card-goal .cg-q-text { overflow-wrap: anywhere; color: var(--ib-text); }
-.card-goal .cg-done { margin-top: 6px; color: var(--ib-muted); font-size: 11.5px; }
+.card-goal .cg-history-toggle { margin-left: auto; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 2px 8px; min-height: 26px; cursor: pointer; white-space: nowrap; }
+.card-goal .cg-progress + .cg-history-toggle { margin-left: 8px; }
+.card-goal .cg-history { list-style: none; margin: 4px 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.card-goal .cg-h-item { border-left: 2px solid var(--st-done); padding: 2px 0 2px 8px; }
+.card-goal .cg-h-obj { color: var(--ib-text); overflow-wrap: anywhere; }
+.card-goal .cg-h-meta { margin-top: 2px; color: var(--ib-muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.card-goal .cg-h-reason { margin-top: 2px; color: var(--ib-text-2); font-size: 11.5px; overflow-wrap: anywhere; }
 .card-goal .cg-btn {
   flex: none;
   font: inherit;
@@ -3233,6 +3487,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .panel-task-item .task-icon { flex-shrink: 0; font-size: 12px; }
 .panel-task-item .task-text { flex: 1; min-width: 0; }
+.panel-task-item .task-id { flex-shrink: 0; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .panel-task-item.completed .task-text { color: var(--text-tertiary); opacity: 0.6; }
 .panel-task-item.in_progress .task-text { color: var(--text); font-weight: 600; }
 .panel-task-item.pending .task-text { color: var(--text-secondary); }
@@ -3284,6 +3539,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .worklog-list[hidden] { display: none; }
 .wl-empty { color: var(--text-tertiary); font-size: 12px; padding: 6px 0; }
 .wl-entry { color: var(--text); min-width: 0; }
+/* SSOT 2026-10-22 T10 — entries folded under the task they were made in. */
+.wl-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.wl-group-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 6px; border-radius: 6px; background: var(--surface-raised); cursor: pointer; font-weight: 600; }
+.wl-group-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.wl-group-head .wl-g-chev { flex-shrink: 0; display: inline-block; color: var(--text-tertiary); transition: transform var(--dur-press) var(--ease-out); }
+.wl-group-head[aria-expanded="true"] .wl-g-chev { transform: rotate(90deg); }
+.wl-group-head .wl-g-id { flex-shrink: 0; color: var(--text-tertiary); font-variant-numeric: tabular-nums; font-weight: 500; }
+.wl-group-head .wl-g-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-group-head .wl-g-count { flex-shrink: 0; background: var(--surface); border-radius: 6px; padding: 0 6px; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.wl-group-head .wl-g-meta { flex-shrink: 0; font-size: 11px; font-weight: 500; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.wl-group-body { display: flex; flex-direction: column; gap: 4px; padding-left: 12px; border-left: 2px solid var(--border); margin-left: 6px; }
+.wl-group-body[hidden] { display: none; }
 .wl-head { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-tertiary); }
 .wl-label { font-weight: 700; letter-spacing: 0.04em; }
 .wl-head .wl-time { margin-left: auto; }
@@ -3514,7 +3781,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .btn-send:hover { background: var(--accent-hover); }
 .btn-send:disabled { background: var(--surface-raised); color: var(--text-tertiary); cursor: default; }
 
-/* ── CLOSED CARDS — 7-day "Show older" toggle at the foot of DONE ── */
+/* ── DONE by finish day (SSOT 2026-10-22 T11/T12) ── */
+#cards-done { gap: 4px; }
+.done-group { display: flex; flex-direction: column; gap: 8px; }
+.done-group.is-stale { display: none; }
+.done-group-head { display: flex; align-items: center; gap: 8px; width: 100%; font: inherit; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; color: var(--ib-text-2); background: none; border: 0; border-radius: 8px; padding: 6px 8px; min-height: 32px; cursor: pointer; text-align: left; }
+.done-group-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.done-group-head .dg-chev { width: 12px; height: 12px; flex-shrink: 0; color: var(--ib-muted); transition: transform var(--dur-press) var(--ease-out); }
+.done-group-head[aria-expanded="true"] .dg-chev { transform: rotate(90deg); }
+.done-group-head .dg-label { flex: 1 1 auto; }
+.done-group-head .count { background: var(--ib-pill); color: var(--ib-text-2); border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.done-group-cards[hidden] { display: none; }
+/* ── CLOSED CARDS — legacy foot of DONE (now always empty) ── */
 .show-older-btn {
   background: transparent;
   border: 1px dashed var(--ib-card-border);
@@ -3647,6 +3925,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
+  .wl-group-head .wl-g-chev, .done-group-head .dg-chev { transition: none; }
   .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
 }
 /* ── TOUCH — coarse pointer enlargement ── */
@@ -3859,6 +4138,8 @@ const SELF_INSTANCE_NAME = ${initSelfInstance};
 // what limits. Fields absent from the lines are hidden (isFieldVisible
 // semantics on the server side).
 const DASHBOARD_HEADER_CONFIG = ${initDashboardHeaderConfig};
+// SSOT 2026-10-22 T4: [{ nickname, model, label, contextWindow, autoCompactTokens }]
+const REPRESENTATIVE_MODELS = ${initRepresentativeModels};
 // field → first config entry map (show/max/truncate lookups in renderCard).
 const _dhFieldMap = {};
 for (const _dhLine of DASHBOARD_HEADER_CONFIG) {
@@ -3887,7 +4168,6 @@ let ws = null;
 let panelOpen = false;
 let panelSessionKey = null;
 let panelConvId = null;
-let showOlderClosed = false;
 let _panelTasksExpanded = false;
 
 // ── Theme toggle — sun/moon ──
@@ -4103,6 +4383,10 @@ function renderPanelTaskItem(t) {
     var elapsed = Date.now() - t.startedAt;
     timeInfo = formatDuration(elapsed) + '...';
   }
+  // SSOT 2026-10-22 T7: tool calls made while the task ran.
+  if (t.status !== 'pending' && t.toolCalls !== undefined) {
+    timeInfo = (timeInfo ? timeInfo + ' · ' : '') + '툴 ' + toNum(t.toolCalls) + '회';
+  }
 
   var timeHtml = '';
   if (t.startedAt || t.completedAt) {
@@ -4112,8 +4396,10 @@ function renderPanelTaskItem(t) {
     timeHtml = '<div class="task-time" title="' + parts.join(' → ') + '">' + (timeInfo || parts.join('→')) + '</div>';
   }
 
+  if (!timeHtml && timeInfo) timeHtml = '<div class="task-time">' + timeInfo + '</div>';
   return '<div class="panel-task-item ' + cls + '">'
     + '<span class="task-icon">' + icon + '</span>'
+    + (t.id ? '<span class="task-id">#' + esc(t.id) + '</span>' : '')
     + '<span class="task-text">' + esc(t.content) + '</span>'
     + timeHtml
     + '</div>';
@@ -4339,6 +4625,66 @@ function formatTokens(n) {
   }
   return '999.9T+';
 }
+// ── Live usage on the collapsed face (SSOT 2026-10-22 T1/T2) ──
+// The session total of every token its API calls processed — input, output,
+// cache read and cache write — the same tokens its API-equivalent cost is
+// computed from. The server folds the running turn's usage in, so the numbers
+// grow during a turn, not only when it ends.
+function cardTotalTokens(u) {
+  if (!u) return 0;
+  return toNum(u.totalInputTokens) + toNum(u.totalOutputTokens) + toNum(u.totalCacheReadTokens) + toNum(u.totalCacheCreateTokens);
+}
+// Full digits for tokens (a count-up should visibly count), dollars for cost.
+function formatCount(kind, v) {
+  v = Math.max(0, toNum(v));
+  if (kind === 'cost') return '$' + v.toFixed(2);
+  return Math.round(v).toLocaleString('en-US');
+}
+// Count-up (§4 motion tokens: ease-out). Each card number remembers what it
+// shows across face re-renders ("<card key>|<kind>"); a higher value counts up
+// from there, a new value mid-count continues from the number on screen. The
+// first paint, a lower value, background tabs and reduced motion set the value
+// at once.
+var COUNT_UP_MS = 900;
+var _counters = Object.create(null); // "<card key>|<kind>" → { shown, raf, el }
+function countUpValue(from, to, p) {
+  var e = 1 - Math.pow(1 - p, 3);
+  return p >= 1 ? to : from + (to - from) * e;
+}
+function startCountUp(el, id) {
+  var kind = el.getAttribute('data-cnt');
+  var to = toNum(el.getAttribute('data-to'));
+  var c = _counters[id];
+  if (!c) { _counters[id] = { shown: to, raf: 0, el: el }; return; }
+  c.el = el;
+  if (c.raf) { cancelAnimationFrame(c.raf); c.raf = 0; }
+  var from = c.shown;
+  if (from === to || to < from || !canAnimate() || reduceMotion()) {
+    c.shown = to;
+    el.textContent = formatCount(kind, to);
+    return;
+  }
+  el.textContent = formatCount(kind, from);
+  var t0 = performance.now();
+  function step(now) {
+    var p = Math.min(1, (now - t0) / COUNT_UP_MS);
+    c.shown = countUpValue(from, to, p);
+    c.el.textContent = formatCount(kind, c.shown);
+    c.raf = p < 1 ? requestAnimationFrame(step) : 0;
+  }
+  c.raf = requestAnimationFrame(step);
+}
+function animateCountersIn(root, key) {
+  var els = root.querySelectorAll('.cnt');
+  for (var i = 0; i < els.length; i++) startCountUp(els[i], key + '|' + els[i].getAttribute('data-cnt'));
+}
+function dropCounters(key) {
+  ['tok', 'cost'].forEach(function(kind) {
+    var c = _counters[key + '|' + kind];
+    if (c && c.raf) cancelAnimationFrame(c.raf);
+    delete _counters[key + '|' + kind];
+  });
+}
 // Dashboard v2.1 — \`Nm SSs\` for the 1s live tick. Mirrors packages/common/src/format/duration.ts.
 function formatNmSSs(ms) {
   if (!ms || ms < 0 || isNaN(ms)) return '0m 00s';
@@ -4533,9 +4879,10 @@ function _envCount() {
 
 // ── Agent inbox board (.prd/10 §3.1, §4) ──
 // NEEDS YOU = waiting · RUNNING = working · DONE = idle, then closed (SLEEPING +
-// archives; older than 7 days stays behind "Show older", archives behind "Show
-// archives"). The server buckets (KanbanBoard) are unchanged — only the client
-// folds idle + closed into one column.
+// archives; archives behind the Archives toggle, sleeping cards behind the
+// Sleeping toggle), filed under the day the work finished (T11/T12). The server
+// buckets (KanbanBoard) are unchanged — only the client folds idle + closed
+// into one column.
 var BOARD_COLS = ['waiting', 'working', 'done'];
 var SPARK_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg>';
 var WAIT_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.8 15 14H1z"/></svg>';
@@ -4576,16 +4923,14 @@ function isSiblingSession(s) {
   return !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
 }
 
-// Pure: the DONE column for this render. idle cards, then closed cards from the
-// last 7 days, then — when "Show older" is open — the older ones.
+// Pure: the cards DONE holds for this render — idle cards, then closed cards.
 // An archived (terminated) closed card is left out unless archives are shown;
 // a sleeping one (closed, not terminated) unless sleeping cards are shown
 // (showSleeping, on unless false). The one key a deep link revealed (revealKey)
-// is always in, whatever its age. olderCount = what "Show older" would add;
-// archivedCount / sleepingCount = those cards in the board data.
+// is always in. archivedCount / sleepingCount = those cards in the board data.
+// The cards are then grouped by the day they finished (planDoneGroups).
 function planDoneColumn(idle, closed, o) {
-  var cutoff = o.now - 7 * 24 * 60 * 60 * 1000;
-  var recent = [], older = [], archivedCount = 0, sleepingCount = 0;
+  var shown = [], archivedCount = 0, sleepingCount = 0;
   for (var i = 0; i < closed.length; i++) {
     var s = closed[i];
     var archived = s.terminated === true;
@@ -4594,13 +4939,80 @@ function planDoneColumn(idle, closed, o) {
     else sleepingCount++;
     if (archived && !o.showArchives && !revealed) continue;
     if (!archived && o.showSleeping === false && !revealed) continue;
-    if (!revealed && new Date(s.lastActivity).getTime() < cutoff) older.push(s);
-    else recent.push(s);
+    shown.push(s);
   }
   var done = idle.map(function(s) { return { s: s, col: 'idle' }; })
-    .concat(recent.map(function(s) { return { s: s, col: 'closed' }; }));
-  if (o.showOlder) done = done.concat(older.map(function(s) { return { s: s, col: 'closed' }; }));
-  return { done: done, olderCount: older.length, archivedCount: archivedCount, sleepingCount: sleepingCount };
+    .concat(shown.map(function(s) { return { s: s, col: 'closed' }; }));
+  return { done: done, archivedCount: archivedCount, sleepingCount: sleepingCount };
+}
+
+// ── DONE by finish day (SSOT 2026-10-22 T11/T12) ──
+// Each DONE card sits under the day its work finished (s.doneAt — the server's
+// finish time; else its last activity), in the viewer's calendar: Today, 어제,
+// then every earlier day, newest first, the cards in a day newest first. Today
+// and 어제 start open; earlier days start closed and open on a click. The
+// reader's choice per day lasts for the page (_doneGroupOpen).
+var _doneGroupOpen = Object.create(null); // day key → open (reader's choice)
+var DAY_MS = 24 * 60 * 60 * 1000;
+function doneTimeOf(s) {
+  var t = toNum(s && s.doneAt);
+  if (t > 0) return t;
+  var last = Date.parse(s && s.lastActivity);
+  return isFinite(last) ? last : 0;
+}
+function dayKeyOf(ms) {
+  var d = new Date(ms);
+  var m = d.getMonth() + 1;
+  var day = d.getDate();
+  return d.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
+}
+function doneDayLabel(key, now) {
+  if (key === dayKeyOf(now)) return 'Today';
+  var y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  if (key === dayKeyOf(y.getTime())) return '어제';
+  var parts = key.split('-');
+  var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  var opts = { month: 'long', day: 'numeric', weekday: 'short' };
+  if (d.getFullYear() !== new Date(now).getFullYear()) opts.year = 'numeric';
+  return d.toLocaleDateString('ko-KR', opts);
+}
+// Pure: [{ key, label, open, items }] — opened = the reader's choices.
+function planDoneGroups(done, now, opened) {
+  var byKey = Object.create(null);
+  var keys = [];
+  for (var i = 0; i < done.length; i++) {
+    var t = doneTimeOf(done[i].s);
+    var k = dayKeyOf(t);
+    if (!byKey[k]) { byKey[k] = []; keys.push(k); }
+    byKey[k].push({ item: done[i], t: t });
+  }
+  keys.sort(function(a, b) { return a < b ? 1 : a > b ? -1 : 0; });
+  var today = dayKeyOf(now);
+  var y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  var yesterday = dayKeyOf(y.getTime());
+  return keys.map(function(k) {
+    var list = byKey[k].slice().sort(function(a, b) { return b.t - a.t; });
+    var open = opened && Object.prototype.hasOwnProperty.call(opened, k) ? !!opened[k] : (k === today || k === yesterday);
+    return { key: k, label: doneDayLabel(k, now), open: open, items: list.map(function(x) { return x.item; }) };
+  });
+}
+function toggleDoneGroup(key) {
+  var g = (_lastDoneGroups || []).filter(function(x) { return x.key === key; })[0];
+  _doneGroupOpen[key] = !(g && g.open);
+  if (_lastBoardData) renderBoard(_lastBoardData);
+}
+var _lastDoneGroups = null;
+var _lastBoardData = null;
+// A targeted card push (sessionUpdated) lands in the last board too, so a
+// re-render from it (a DONE day toggle) never rolls the card back.
+function patchLastBoard(s) {
+  if (!_lastBoardData || !s || !s.key) return;
+  ['working', 'waiting', 'idle', 'closed'].forEach(function(col) {
+    var arr = _lastBoardData[col] || [];
+    for (var i = 0; i < arr.length; i++) if (arr[i] && arr[i].key === s.key) arr[i] = s;
+  });
 }
 
 function renderBoard(board) {
@@ -4621,25 +5033,25 @@ function renderBoard(board) {
   for (var ok in _sessionCache) owners.push(_sessionCache[ok].ownerId || _sessionCache[ok].ownerName || '');
   _ownerIndex = assignOwnerHues(owners);
   function tag(col) { return function(s) { return { s: s, col: col }; }; }
+  _lastBoardData = board;
   var plan = planDoneColumn(board.idle || [], board.closed || [], {
-    now: Date.now(),
-    showOlder: showOlderClosed,
     showArchives: showArchives,
     showSleeping: showSleeping,
     revealKey: _revealedKey,
   });
+  var doneGroups = planDoneGroups(plan.done, Date.now(), _doneGroupOpen);
+  _lastDoneGroups = doneGroups;
   reconcileBoard({
     waiting: (board.waiting || []).map(tag('waiting')),
     working: (board.working || []).map(tag('working')),
-    done: plan.done,
+    doneGroups: doneGroups,
   }, {
     waiting: (board.waiting || []).length,
     working: (board.working || []).length,
-    // The DONE badge counts the cards DONE shows (hidden archives and the
-    // collapsed older group are not in it).
+    // The DONE badge counts every card under its day groups, open or closed
+    // (hidden archives / sleeping cards are not in it).
     done: plan.done.length,
   });
-  renderOlderToggle(plan.olderCount);
   renderArchivesToggle(plan.archivedCount);
   renderSleepingToggle(plan.sleepingCount);
   // The #814 tokens tooltip describes this board (user switch, WS push).
@@ -4657,46 +5069,131 @@ function renderBoard(board) {
 // leaves a running entrance or exit alone.
 function reconcileBoard(plan, counts) {
   var wanted = Object.create(null);
-  var cols = [];
+  var slots = [];
   var changed = false;
-  for (var c = 0; c < BOARD_COLS.length; c++) {
-    var colId = BOARD_COLS[c];
-    var container = document.getElementById('cards-' + colId);
+  // NEEDS YOU and RUNNING: one card container each. DONE: one per finish day
+  // (T11), whose cards are in the DOM only while the day is open (T12).
+  ['waiting', 'working'].forEach(function(colId) {
+    slots.push({ colId: colId, container: document.getElementById('cards-' + colId), items: plan[colId] || [] });
+  });
+  var doneRoot = document.getElementById('cards-done');
+  var groups = plan.doneGroups || [];
+  var sig = doneGroupsSig(groups);
+  if (doneRoot && doneRoot._sig !== sig) changed = true;
+  for (var gi = 0; gi < groups.length; gi++) {
+    slots.push({
+      colId: 'done',
+      day: groups[gi].key,
+      container: doneRoot ? doneGroupCards(doneRoot, groups[gi].key) : null,
+      items: groups[gi].open ? groups[gi].items : [],
+    });
+  }
+  for (var c = 0; c < slots.length; c++) {
+    var slot = slots[c];
     var rows = [];
-    var items = plan[colId] || [];
-    for (var i = 0; i < items.length; i++) {
-      var s = items[i].s;
+    for (var i = 0; i < slot.items.length; i++) {
+      var s = slot.items[i].s;
       if (wanted[s.key]) continue; // a key listed twice renders once
       wanted[s.key] = true;
-      var parts = cardParts(s, items[i].col);
+      var parts = cardParts(s, slot.items[i].col);
       var el = _cardEls[s.key];
-      if (!el || container.children[rows.length] !== el || cardPartsDiffer(el, parts)) changed = true;
+      if (!el || !slot.container || slot.container.children[rows.length] !== el || cardPartsDiffer(el, parts)) changed = true;
       rows.push({ key: s.key, parts: parts });
     }
-    if (container.children.length !== rows.length) changed = true;
-    cols.push({ colId: colId, container: container, rows: rows });
-    // Counts and empty hints are compared before they are written.
+    if (!slot.container || slot.container.children.length !== rows.length) changed = true;
+    slot.rows = rows;
+  }
+  // Counts and empty hints are compared before they are written.
+  for (var b = 0; b < BOARD_COLS.length; b++) {
+    var colId = BOARD_COLS[b];
     setTextIfChanged(document.getElementById('count-' + colId), String(counts[colId] || 0));
+    var has = colId === 'done' ? groups.length > 0 : (plan[colId] || []).length > 0;
     var empty = document.getElementById('empty-' + colId);
-    if (empty && empty.hidden !== rows.length > 0) empty.hidden = rows.length > 0;
+    if (empty && empty.hidden !== has) empty.hidden = has;
   }
   for (var g in _cardEls) {
     if (!wanted[g]) { changed = true; break; }
   }
-  if (changed) applyBoardPlan(cols, wanted);
+  if (changed) applyBoardPlan(slots, wanted, doneRoot, groups, sig);
   // Open cards keep their 지시/응답 current (no DOM write unless a fetch settles).
   _expanded.forEach(function(key) { if (_cardEls[key]) ensureCardIo(key, false); });
 }
 
-function applyBoardPlan(cols, wanted) {
+// What the DONE day sections look like (label, count, open) — a change re-plans.
+function doneGroupsSig(groups) {
+  return groups.map(function(g) { return g.key + '|' + g.label + '|' + g.items.length + '|' + (g.open ? 1 : 0); }).join(';');
+}
+function doneGroupSection(doneRoot, key) {
+  var kids = doneRoot.children;
+  for (var i = 0; i < kids.length; i++) if (kids[i].getAttribute('data-day') === key && !kids[i]._stale) return kids[i];
+  return null;
+}
+function doneGroupCards(doneRoot, key) {
+  var sec = doneGroupSection(doneRoot, key);
+  return sec ? sec._cardsEl : null;
+}
+function renderDoneGroupHead(g) {
+  return '<svg class="dg-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>'
+    + '<span class="dg-label">' + esc(g.label) + '</span><span class="count">' + g.items.length + '</span>';
+}
+// Make #cards-done hold one section per day, in order, with current heads.
+// A day that is gone leaves once its cards have faded out.
+function syncDoneGroups(doneRoot, groups, sig) {
+  var keep = Object.create(null);
+  for (var i = 0; i < groups.length; i++) {
+    var g = groups[i];
+    keep[g.key] = true;
+    var sec = doneGroupSection(doneRoot, g.key);
+    if (!sec) {
+      sec = document.createElement('section');
+      sec.className = 'done-group';
+      sec.setAttribute('data-day', g.key);
+      var head = document.createElement('button');
+      head.type = 'button';
+      head.className = 'done-group-head';
+      head.addEventListener('click', function(ev) {
+        var day = ev.currentTarget.parentNode.getAttribute('data-day');
+        toggleDoneGroup(day);
+      });
+      var cards = document.createElement('div');
+      cards.className = 'cards done-group-cards';
+      sec.appendChild(head);
+      sec.appendChild(cards);
+      sec._headEl = head;
+      sec._cardsEl = cards;
+      sec._headHtml = null;
+    }
+    var html = renderDoneGroupHead(g);
+    if (sec._headHtml !== html) { sec._headEl.innerHTML = html; sec._headHtml = html; }
+    var exp = g.open ? 'true' : 'false';
+    if (sec._headEl.getAttribute('aria-expanded') !== exp) sec._headEl.setAttribute('aria-expanded', exp);
+    if (sec._cardsEl.hidden === g.open) sec._cardsEl.hidden = !g.open;
+    if (doneRoot.children[i] !== sec) doneRoot.insertBefore(sec, doneRoot.children[i] || null);
+  }
+  var kids = Array.prototype.slice.call(doneRoot.children);
+  for (var j = 0; j < kids.length; j++) {
+    var old = kids[j];
+    if (keep[old.getAttribute('data-day')] && !old._stale) continue;
+    if (old._stale) continue;
+    old._stale = true;
+    old.classList.add('is-stale');
+    setTimeout(function(node) { return function() { if (node.parentNode) node.parentNode.removeChild(node); }; }(old), MOTION.fade + 40);
+  }
+  doneRoot._sig = sig;
+}
+
+function applyBoardPlan(slots, wanted, doneRoot, groups, sig) {
   var animate = canAnimate();
   var first = animate ? measureCards() : null;
   var firstCol = Object.create(null);
   for (var k0 in _cardEls) firstCol[k0] = _cardEls[k0]._colId;
-  for (var c = 0; c < cols.length; c++) {
-    var col = cols[c];
-    for (var r = 0; r < col.rows.length; r++) {
-      var row = col.rows[r];
+  if (doneRoot) syncDoneGroups(doneRoot, groups || [], sig);
+  for (var c = 0; c < slots.length; c++) {
+    var slot = slots[c];
+    var container = slot.container || (slot.day && doneRoot ? doneGroupCards(doneRoot, slot.day) : null);
+    if (!container) continue;
+    for (var r = 0; r < slot.rows.length; r++) {
+      var row = slot.rows[r];
       var el = _cardEls[row.key];
       if (!el) {
         el = createCardShell(row.key);
@@ -4704,9 +5201,9 @@ function applyBoardPlan(cols, wanted) {
         el._isNew = true;
       }
       applyCardParts(el, row.parts);
-      el._colId = col.colId;
+      el._colId = slot.colId;
       applyExpanded(el, _expanded.has(row.key));
-      if (col.container.children[r] !== el) col.container.insertBefore(el, col.container.children[r] || null);
+      if (container.children[r] !== el) container.insertBefore(el, container.children[r] || null);
     }
   }
   for (var gone in _cardEls) {
@@ -4714,6 +5211,7 @@ function applyBoardPlan(cols, wanted) {
     var goneCid = _cardEls[gone]._cid;
     exitCard(_cardEls[gone], first ? first[gone] : null);
     delete _cardEls[gone];
+    dropCounters(gone);
     releaseCardIoTimer(goneCid);
   }
   for (var key in _cardEls) {
@@ -4866,9 +5364,10 @@ function applyCardParts(el, p) {
     el._faceEl.innerHTML = p.face;
     el._faceHtml = p.face;
     updateTimersIn(el._faceEl);
+    animateCountersIn(el._faceEl, el.getAttribute('data-session-key'));
     changed = true;
   }
-  if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl)) {
+  if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl) && !isPickingModel(el._bodyEl)) {
     var goalDraft = captureGoalDraft(el._bodyEl);
     el._bodyEl.innerHTML = p.body;
     el._bodyHtml = p.body;
@@ -4906,7 +5405,9 @@ function cardSummary(s, col, headline) {
   }
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
-  if (col === 'working' && current) return current.content;
+  // The task row (renderCardTaskRow) names the running task — the summary
+  // only does when that row is hidden.
+  if (col === 'working' && current && !dhShow('tasks')) return current.content;
   if (s.summaryTitle && s.summaryTitle !== headline) return s.summaryTitle;
   var lastTask = lastDone || (tasks.length ? tasks[tasks.length - 1] : null);
   if (lastTask) return lastTask.content;
@@ -4981,6 +5482,44 @@ function renderOwnerBadge(s) {
   return '<span class="owner-badge" data-hue="' + ownerBadgeHue(s.ownerId || name) + '" title="' + escAttr(name) + '">' + esc(name) + '</span>';
 }
 
+// The task in progress (SSOT 2026-10-22 T3): first in_progress task in list order.
+function cardCurrentTask(s) {
+  var tasks = (s && s.tasks) || [];
+  for (var i = 0; i < tasks.length; i++) if (tasks[i] && tasks[i].status === 'in_progress') return tasks[i];
+  return null;
+}
+// Collapsed face row (T3): "#T2 Write the parser · 3m 12s" — while the session
+// runs or waits on the user. The time is filled by the 1 Hz tick.
+function renderCardTaskRow(s, col) {
+  if (!dhShow('tasks') || (col !== 'working' && col !== 'waiting')) return '';
+  var t = cardCurrentTask(s);
+  if (!t) return '';
+  var started = Number(t.startedAt) || 0;
+  return '<div class="card-task" title="' + escAttr(t.activeForm || t.content || '') + '">'
+    + (t.id ? '<span class="ct-id">#' + esc(t.id) + '</span>' : '')
+    + '<span class="ct-name">' + esc(t.content || '') + '</span>'
+    + (started ? '<span class="ct-time task-elapsed" data-since="' + started + '"></span>' : '')
+    + '</div>';
+}
+// Collapsed face row (T1/T2): total tokens · API-equivalent cost, each a
+// count-up target (startCountUp). Gated by the 'tokens' / 'cost' header fields.
+function renderCardUsage(s) {
+  var u = s.tokenUsage;
+  if (!u) return '';
+  var parts = [];
+  if (dhShow('tokens')) {
+    var tok = cardTotalTokens(u);
+    var tip = '입력 ' + formatTokens(u.totalInputTokens) + ' · 출력 ' + formatTokens(u.totalOutputTokens)
+      + ' · 캐시 읽기 ' + formatTokens(u.totalCacheReadTokens) + ' · 캐시 쓰기 ' + formatTokens(u.totalCacheCreateTokens);
+    parts.push('<span class="cu-item" title="' + escAttr('총 토큰 — ' + tip) + '"><span class="cnt" data-cnt="tok" data-to="' + tok + '">' + formatCount('tok', tok) + '</span><span class="cu-unit">tok</span></span>');
+  }
+  if (dhShow('cost')) {
+    var cost = toNum(u.totalCostUsd);
+    parts.push('<span class="cu-item" title="API 환산 비용"><span class="cnt" data-cnt="cost" data-to="' + cost + '">' + formatCount('cost', cost) + '</span></span>');
+  }
+  return parts.length ? '<div class="card-usage">' + parts.join('<span class="cu-sep" aria-hidden="true">&middot;</span>') + '</div>' : '';
+}
+
 // Collapsed face (§2.1 reference anatomy): ✦ + headline [+ owner badge] /
 // 2-line summary / status · tasks done/total · context %.
 function renderCardFace(s, col) {
@@ -5005,45 +5544,78 @@ function renderCardFace(s, col) {
   }
   return '<div class="card-head"><span class="card-spark">' + SPARK_SVG + '</span>' + titleHtml + renderOwnerBadge(s) + '</div>'
     + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
+    + renderCardTaskRow(s, col)
+    + renderCardUsage(s)
     + '<div class="card-foot"><span class="card-status">' + renderCardStatus(s, col) + '</span>'
     + (metrics.length ? '<span class="card-metrics">' + metrics.join('') + '</span>' : '')
     + '</div>';
 }
 
-// Task timeline (§3.1-4): list order, the in-progress step is the solid dot,
-// completed steps show how long they took. Over the dhMax('tasks') budget the
-// earliest completed steps fold into "+N completed" first.
+// Task timeline (§3.1-4): list order, the in-progress step is the solid dot.
+// Every task shows its id (SSOT 2026-10-22 T8); a completed task its elapsed
+// time and the tool calls made while it ran, the running one its live time and
+// calls so far (T7). Over the dhMax('tasks') budget the earliest completed
+// steps fold away first; "전체 task 보기" opens every task of the list plus the
+// tasks of earlier lists (s.earlierTasks), per card.
+var _tasksOpen = Object.create(null); // card key → every task shown
+function renderTaskMeta(t) {
+  // Task timestamps come from the ledger: numbers only.
+  var started = Number(t.startedAt) || 0;
+  var completed = Number(t.completedAt) || 0;
+  var parts = [];
+  if (t.status === 'completed' && started && completed) parts.push(formatDuration(completed - started) || '0s');
+  else if (t.status === 'in_progress' && started) parts.push('<span class="task-elapsed" data-since="' + started + '"></span>');
+  if (t.status !== 'pending') parts.push('<span class="tl-tools" title="툴 호출 수">툴 ' + toNum(t.toolCalls) + '회</span>');
+  return parts.join(' &middot; ');
+}
+function renderTimelineItem(t) {
+  var cls = t.status === 'in_progress' ? ' is-current' : (t.status === 'completed' ? ' is-done' : ' is-pending');
+  var meta = renderTaskMeta(t);
+  return '<li class="tl-item' + cls + '">'
+    + (t.id ? '<span class="tl-id">#' + esc(t.id) + '</span>' : '')
+    + '<span class="tl-text">' + esc(t.content) + '</span>'
+    + (meta ? '<span class="tl-time">' + meta + '</span>' : '') + '</li>';
+}
 function renderTimeline(s) {
-  if (!dhShow('tasks') || !s.tasks || s.tasks.length === 0) return '';
+  if (!dhShow('tasks')) return '';
+  var tasks = s.tasks || [];
+  var earlier = s.earlierTasks || [];
+  if (tasks.length === 0 && earlier.length === 0) return '';
+  var open = !!_tasksOpen[s.key];
   var max = dhMax('tasks', 5);
-  var drop = Math.max(0, s.tasks.length - max);
   var folded = 0;
-  var shown = [];
-  for (var i = 0; i < s.tasks.length; i++) {
-    if (drop > 0 && s.tasks[i].status === 'completed') { drop--; folded++; continue; }
-    shown.push(s.tasks[i]);
-  }
   var tail = 0;
-  if (shown.length > max) { tail = shown.length - max; shown = shown.slice(0, max); }
-  var items = shown.map(function(t) {
-    var cls = t.status === 'in_progress' ? ' is-current' : (t.status === 'completed' ? ' is-done' : ' is-pending');
-    var time = '';
-    // Task timestamps come from model-written TodoWrite input: numbers only.
-    var started = Number(t.startedAt) || 0;
-    var completed = Number(t.completedAt) || 0;
-    if (t.status === 'completed' && started && completed) {
-      time = formatDuration(completed - started);
-    } else if (t.status === 'in_progress' && started) {
-      time = '<span class="task-elapsed" data-since="' + started + '"></span>';
+  var shown = [];
+  if (open) {
+    shown = tasks.slice();
+  } else {
+    var drop = Math.max(0, tasks.length - max);
+    for (var i = 0; i < tasks.length; i++) {
+      if (drop > 0 && tasks[i].status === 'completed') { drop--; folded++; continue; }
+      shown.push(tasks[i]);
     }
-    return '<li class="tl-item' + cls + '"><span class="tl-text">' + esc(t.content) + '</span>'
-      + (time ? '<span class="tl-time">' + time + '</span>' : '') + '</li>';
-  }).join('');
-  return '<div class="tl-wrap">'
-    + (folded > 0 ? '<div class="tl-more">+' + folded + ' completed</div>' : '')
-    + '<ul class="tl">' + items + '</ul>'
-    + (tail > 0 ? '<div class="tl-more">+' + tail + ' more</div>' : '')
-    + '</div>';
+    if (shown.length > max) { tail = shown.length - max; shown = shown.slice(0, max); }
+  }
+  var hidden = folded + tail + earlier.length;
+  var html = '<div class="tl-wrap">';
+  if (folded > 0) html += '<div class="tl-more">+' + folded + ' completed</div>';
+  if (shown.length) html += '<ul class="tl">' + shown.map(renderTimelineItem).join('') + '</ul>';
+  if (tail > 0) html += '<div class="tl-more">+' + tail + ' more</div>';
+  if (open && earlier.length) {
+    html += '<div class="tl-earlier-title">이전 task ' + earlier.length + '개</div>'
+      + '<ul class="tl tl-earlier">' + earlier.map(renderTimelineItem).join('') + '</ul>';
+  }
+  if (open || hidden > 0) {
+    html += '<button type="button" class="tl-toggle" aria-expanded="' + (open ? 'true' : 'false') + '"'
+      + ' onclick="event.stopPropagation();toggleCardTasks(\\'' + escJs(s.key) + '\\')">'
+      + (open ? '접기' : '전체 task 보기 (' + hidden + ')') + '</button>';
+  }
+  return html + '</div>';
+}
+function toggleCardTasks(key) {
+  if (_tasksOpen[key]) delete _tasksOpen[key];
+  else _tasksOpen[key] = true;
+  refreshCard(key);
 }
 
 // Latest user instruction + model response (§3.1-4), fetched lazily on
@@ -5255,11 +5827,20 @@ function renderCardBody(s, col) {
   const readOnlyAttrs = isOwner ? '' : ' disabled';
 
   // Model · effort — the first line of the open card (reference: "Opus 5.5").
+  // SSOT 2026-10-22 T4/T5: the owner switches it here, among the
+  // representative models; the auto-compact threshold follows.
   const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
   const modelParts = [];
-  if (dhShow('model') && modelShort) modelParts.push(modelShort);
+  const canSwitchModel = isOwner && col !== 'closed' && !s.terminated && !isSiblingSession(s);
+  if (dhShow('model') && (modelShort || canSwitchModel)) modelParts.push(renderModelPicker(s, canSwitchModel, modelShort));
   if (s.effort) modelParts.push('<span class="meta-effort" title="Power level">' + esc(s.effort) + '</span>');
-  const modelHtml = modelParts.length ? '<div class="cb-model">' + modelParts.join(' &middot; ') + '</div>' : '';
+  if (dhShow('model') && toNum(s.autoCompactTokens) > 0) {
+    modelParts.push('<span class="cb-ac" title="이 모델의 auto-compact 기준">autocompact ' + formatTokens(s.autoCompactTokens) + '</span>');
+  }
+  const modelNote = renderModelNote(s);
+  const modelHtml = modelParts.length || modelNote
+    ? '<div class="cb-model">' + modelParts.join(' &middot; ') + '</div>' + modelNote
+    : '';
 
   // #814 env badge — only shown when multiple distinct envs are present in
   // the current cache. Single-env (sibling 0 + INSTANCE_NAME unset) suppresses
@@ -5305,7 +5886,8 @@ function renderCardBody(s, col) {
   // Numbers are coerced before they reach markup (defence in depth — a
   // non-number field must render as text, never as markup).
   const num = toNum;
-  if (s.tokenUsage && dhShow('tokens')) statParts.push('<span class="card-tokens">' + formatTokens(num(s.tokenUsage.totalInputTokens) + num(s.tokenUsage.totalOutputTokens)) + ' tok</span>');
+  // Every token kind, like the collapsed face (T1); the tooltip splits it.
+  if (s.tokenUsage && dhShow('tokens')) statParts.push('<span class="card-tokens" title="' + escAttr('입력 ' + formatTokens(s.tokenUsage.totalInputTokens) + ' · 출력 ' + formatTokens(s.tokenUsage.totalOutputTokens) + ' · 캐시 ' + formatTokens(num(s.tokenUsage.totalCacheReadTokens) + num(s.tokenUsage.totalCacheCreateTokens))) + '">' + formatTokens(cardTotalTokens(s.tokenUsage)) + ' tok</span>');
   if (s.tokenUsage && dhShow('cost')) statParts.push('<span class="card-tokens"><span class="cost">$' + num(s.tokenUsage.totalCostUsd).toFixed(2) + '</span></span>');
   if (dhShow('mergestats') && s.mergeStats) statParts.push('<span class="card-merge">+' + num(s.mergeStats.totalLinesAdded) + ' / -' + num(s.mergeStats.totalLinesDeleted) + '</span>');
   statParts.push('<span class="card-timer-row">'
@@ -5406,6 +5988,73 @@ function renderCardBody(s, col) {
     + '</div>';
 }
 
+// ── Model switch on the open card (SSOT 2026-10-22 T4/T5) ──
+// A <select> of the representative models (REPRESENTATIVE_MODELS). An option
+// whose auto-compact threshold is below what the context holds now says the
+// switch compacts first: the server compacts on the current model and switches
+// at the compact's boundary (the card shows the waiting switch meanwhile).
+var _modelNotes = Object.create(null); // card key → { text, error }
+function renderModelPicker(s, canSwitch, modelShort) {
+  var models = REPRESENTATIVE_MODELS || [];
+  var current = null;
+  for (var i = 0; i < models.length; i++) if (models[i].model === s.model) current = models[i];
+  if (!canSwitch || !models.length) return '<span class="cb-model-name">' + modelShort + '</span>';
+  var used = toNum(s.contextTokens);
+  var opts = '';
+  if (!current) opts += '<option value="" selected disabled>' + (modelShort || '모델 선택') + '</option>';
+  for (var j = 0; j < models.length; j++) {
+    var m = models[j];
+    var label = m.nickname + ' · autocompact ' + formatTokens(m.autoCompactTokens)
+      + (m !== current && used > toNum(m.autoCompactTokens) ? ' · compact 후 전환' : '');
+    opts += '<option value="' + escAttr(m.nickname) + '"' + (m === current ? ' selected' : '') + '>' + esc(label) + '</option>';
+  }
+  return '<select class="cb-model-select" aria-label="모델 변경"' + (s.pendingModel ? ' disabled' : '')
+    + ' onclick="event.stopPropagation()" onchange="changeModel(\\'' + escJs(s.key) + '\\',this)">' + opts + '</select>';
+}
+function renderModelNote(s) {
+  if (s.pendingModel) {
+    return '<div class="cb-model-note" role="status">compact 후 ' + esc(s.pendingModel) + '(으)로 전환합니다…</div>';
+  }
+  var n = _modelNotes[s.key];
+  if (!n) return '';
+  return '<div class="cb-model-note' + (n.error ? ' is-error' : '') + '"' + (n.error ? ' role="alert"' : ' role="status"') + '>' + esc(n.text) + '</div>';
+}
+async function postModelSwitch(key, nickname) {
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/model';
+  var body = JSON.stringify({ model: nickname });
+  var headers = { 'Content-Type': 'application/json' };
+  if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+  var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+  if (res.status === 403) {
+    await refreshCsrfToken();
+    var retryHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+    res = await fetch(url, { method: 'POST', headers: retryHeaders, body: body });
+  }
+  var data = null;
+  try { data = await res.json(); } catch (_e) {}
+  return { ok: res.ok, result: data && data.result, error: (data && data.error) || ('HTTP ' + res.status) };
+}
+// What the card says after a switch request.
+function modelSwitchNote(r) {
+  if (!r.ok) return { text: r.error, error: true };
+  var res = r.result || {};
+  if (res.status === 'compacting') return { text: '컨텍스트가 ' + res.nickname + '의 autocompact ' + formatTokens(res.autoCompactTokens) + '보다 커서 지금 모델로 compact한 뒤 전환합니다', error: false };
+  if (res.status === 'unchanged') return { text: '이미 ' + res.nickname + '입니다', error: false };
+  return { text: res.nickname + '(으)로 전환 · autocompact ' + formatTokens(res.autoCompactTokens), error: false };
+}
+async function changeModel(key, select) {
+  var nickname = select && select.value;
+  if (!nickname) return;
+  if (select) select.disabled = true;
+  var r;
+  try { r = await postModelSwitch(key, nickname); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+  _modelNotes[key] = modelSwitchNote(r);
+  if (select) { select.disabled = false; select.blur(); }
+  refreshCard(key);
+  loadSessions();
+}
+
 // ── Goal list on the work item (SSOT 2026-10-21 T2/T3) ──
 // The card shows the current goal, its state and the goals queued behind it,
 // and lets the owner add a goal, delete the current goal (the next queued one
@@ -5413,6 +6062,40 @@ function renderCardBody(s, col) {
 // goal. Every write names WHERE the goal was seen (current / queued), so a goal
 // that moved in the meantime is refused (409) instead of deleting the wrong one.
 var GOAL_STATUS_LABELS = { active: '진행 중', paused: '일시정지', complete: '완료' };
+var GOAL_VIA_LABELS = { user: '직접 완료', 'eval-model': '평가 모델 완료' };
+// SSOT 2026-10-22 T6 — completed goals open from the goal head, per card.
+var _goalHistoryOpen = Object.create(null); // card key → completed goals shown
+function formatGoalTime(ms) {
+  var n = Number(ms) || 0;
+  if (!n) return '';
+  return new Date(n).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+// One completed goal: objective, then when it closed · time spent · tokens ·
+// cost · continuation turns · how it closed, then the evaluator's reason.
+function renderGoalHistory(history) {
+  var items = (history || []).map(function(h) {
+    var meta = [];
+    var at = formatGoalTime(h.completedAt);
+    if (at) meta.push('완료 ' + at);
+    if (toNum(h.activeMsUsed) > 0) meta.push('소요 ' + formatDuration(toNum(h.activeMsUsed)));
+    if (h.tokens !== undefined) meta.push(formatTokens(h.tokens) + ' tok');
+    if (h.costUsd !== undefined) meta.push('$' + toNum(h.costUsd).toFixed(2));
+    if (toNum(h.continuationCount) > 0) meta.push('이어하기 ' + toNum(h.continuationCount) + '회');
+    if (h.completedVia) meta.push(esc(Object.prototype.hasOwnProperty.call(GOAL_VIA_LABELS, h.completedVia) ? GOAL_VIA_LABELS[h.completedVia] : h.completedVia));
+    var reason = h.completionReason && h.completionReason !== 'user' ? h.completionReason : '';
+    return '<li class="cg-h-item">'
+      + '<div class="cg-h-obj">' + esc(h.objective) + '</div>'
+      + (meta.length ? '<div class="cg-h-meta">' + meta.join(' &middot; ') + '</div>' : '')
+      + (reason ? '<div class="cg-h-reason">' + esc(reason) + '</div>' : '')
+      + '</li>';
+  }).join('');
+  return '<ol class="cg-history">' + items + '</ol>';
+}
+function toggleGoalHistory(key) {
+  if (_goalHistoryOpen[key]) delete _goalHistoryOpen[key];
+  else _goalHistoryOpen[key] = true;
+  refreshCard(key);
+}
 var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
 
 function renderCardGoal(s, col, canEdit) {
@@ -5432,6 +6115,14 @@ function renderCardGoal(s, col, canEdit) {
     if (cur.status === 'active' && toNum(cur.maxContinuations) > 0) {
       html += '<span class="cg-progress" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
     }
+  }
+  // T6: the completed goals open from the head (any viewer, any column).
+  var doneCount = g ? toNum(g.completedCount) : 0;
+  var historyOpen = doneCount > 0 && !!_goalHistoryOpen[s.key];
+  if (doneCount > 0) {
+    html += '<button type="button" class="cg-history-toggle" aria-expanded="' + (historyOpen ? 'true' : 'false') + '"'
+      + ' onclick="event.stopPropagation();toggleGoalHistory(\\'' + key + '\\')">완료된 goal ' + doneCount + '개 '
+      + (historyOpen ? '&#x25B2;' : '&#x25BC;') + '</button>';
   }
   html += '</div>';
   if (cur) {
@@ -5456,7 +6147,8 @@ function renderCardGoal(s, col, canEdit) {
     }
     html += '</ol>';
   }
-  if (g && toNum(g.completedCount) > 0) html += '<div class="cg-done">완료된 goal ' + toNum(g.completedCount) + '개</div>';
+  // The completed goals open under the current goal and its queue (T6).
+  if (historyOpen) html += '<div class="cg-queue-title">완료된 goal</div>' + renderGoalHistory(g.history);
   if (editable) {
     html += '<form class="cg-add" onsubmit="event.preventDefault();event.stopPropagation();addGoalFromCard(\\'' + key + '\\',this)">'
       + '<input class="cg-add-input" name="objective" maxlength="4000" autocomplete="off" aria-label="goal 추가"'
@@ -5474,6 +6166,11 @@ function renderCardGoal(s, col, canEdit) {
 function isEditingGoal(root) {
   var a = document.activeElement;
   return !!(a && a.classList && a.classList.contains('cg-add-input') && root.contains(a));
+}
+// An open model <select> survives live re-renders the same way (T4).
+function isPickingModel(root) {
+  var a = document.activeElement;
+  return !!(a && a.classList && a.classList.contains('cb-model-select') && root.contains(a));
 }
 function captureGoalDraft(root) {
   var input = root.querySelector('.cg-add-input');
@@ -5608,23 +6305,6 @@ function collectViewMovers() {
   for (var i = 0; i < heads.length; i++) out.push(heads[i]);
   for (var k in _cardEls) out.push(_cardEls[k]);
   return out;
-}
-
-function renderOlderToggle(olderCount) {
-  var foot = document.getElementById('foot-done');
-  if (!foot) return;
-  var html = olderCount > 0
-    ? '<button type="button" class="show-older-btn" onclick="toggleOlderClosed()">'
-      + (showOlderClosed ? '&#x25B2; Hide older (' : '&#x25BC; Show older (') + olderCount + ')</button>'
-    : '';
-  if ((foot._html || '') === html) return;
-  foot._html = html;
-  foot.innerHTML = html;
-}
-
-function toggleOlderClosed() {
-  showOlderClosed = !showOlderClosed;
-  loadSessions();
 }
 
 // ── Show archives (.prd/10 §3.1-1) — archived (terminated) cards are hidden
@@ -5861,9 +6541,10 @@ function openDeepLinkedSession() {
       loadSessions();
       return;
     }
-    // Closed more than 7 days ago — reveal the older group and retry on that render.
-    if (!showOlderClosed) {
-      showOlderClosed = true;
+    // In a closed DONE day (T12) — open that day and retry on that render.
+    var day = linked ? dayKeyOf(doneTimeOf(linked)) : null;
+    if (day && _doneGroupOpen[day] !== true) {
+      _doneGroupOpen[day] = true;
       loadSessions();
     } else {
       _deepLinkSession = null;
@@ -6471,11 +7152,13 @@ function connectWs() {
         // Update cached session tasks and re-render
         if (_sessionCache[msg.sessionKey]) {
           _sessionCache[msg.sessionKey].tasks = msg.tasks;
+          _sessionCache[msg.sessionKey].earlierTasks = msg.earlierTasks && msg.earlierTasks.length ? msg.earlierTasks : undefined;
         }
         loadSessions();
         // Also update panel tasks if panel is open for this session
         if (panelOpen && panelSessionKey === msg.sessionKey) {
           renderPanelTasks(msg.tasks);
+          wlRefreshGroupHeads();
         }
       } else if (msg.type === 'conversation_update') {
         // A turn landed — an open card's 지시/응답 pair may be stale now.
@@ -6530,6 +7213,7 @@ function connectWs() {
         // (an open card stays open). The column comes from the card's data-col.
         var updatedKey = msg.session.key;
         _sessionCache[updatedKey] = msg.session;
+        patchLastBoard(msg.session);
         var existingCard = _cardEls[updatedKey];
         if (existingCard) {
           patchCard(existingCard, msg.session, existingCard.getAttribute('data-col') || 'idle');
@@ -6629,7 +7313,9 @@ function updateTokenBreakdown() {
 // a gap → backfill from the cursor; once the backfill is done the gap is closed
 // even if nothing came back (the hole is permanent). A reconnect pages forward
 // the same way (afterSeq=0 when the log was empty) while hasMore === true.
-var WL_BACKFILL_MAX_PAGES = 20;
+// A safety bound against a server that never stops saying hasMore — not a
+// size limit: 2000 pages of 500 is a million entries (SSOT 2026-10-22 T9).
+var WL_BACKFILL_MAX_PAGES = 2000;
 var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
 var WL_EMPTY_MSG = '작업 로그 없음';
 var WL_FORBIDDEN_MSG = '작업 로그는 세션 소유자만 볼 수 있어요';
@@ -6735,6 +7421,8 @@ function wlLoadLatest(state, fetchJson, onAdded) {
     var added = wlMerge(state, page);
     state.loaded = true;
     state.latestOk = true;
+    // Entries older than this window exist: wlLoadOlder brings them in (T9).
+    state.olderPending = !!(data && data.hasMore === true);
     wlConfirm(state, Math.max(wlPageMaxSeq(page), sentMax));
     if (added.length) onAdded(state, added);
     if (wlHasGap(state)) wlRecover(state, fetchJson, onAdded, 'gap');
@@ -6810,6 +7498,55 @@ function wlRecover(state, fetchJson, onAdded, reason) {
   });
   state.recovering = run;
   return run;
+}
+
+// Every entry, not just the latest window (SSOT 2026-10-22 T9): when the
+// latest page said older entries exist, page forward from the start of the log
+// (afterSeq=0, 500 per page) up to the oldest entry held, merging each page.
+// Older entries sit below the cursor, so the live / gap bookkeeping is
+// untouched. Stops on the last page, at the held entries, when the panel moved
+// on, on 403, or after WL_BACKFILL_MAX_PAGES pages. The pages are painted ONCE,
+// after the last one — a full re-render per page would be quadratic in the
+// log's size.
+function wlLoadOlder(state, fetchJson, onAdded) {
+  if (state.closed || state.denied || !state.olderPending) return Promise.resolve(null);
+  // The range to fill is fixed by the first attempt (below the latest window)
+  // and progress is kept, so a retry after a failed page resumes where it
+  // stopped instead of mistaking the pages it already holds for the boundary.
+  if (state.olderStopAt === undefined) state.olderStopAt = state.entries.length ? state.entries[0].seq : Infinity;
+  var stopAt = state.olderStopAt;
+  var from = state.olderFrom || 0;
+  var pages = 0;
+  var gathered = [];
+  // ok = the range up to the held entries is complete; a failed page keeps
+  // olderPending so the next recovery (reconnect) tries again.
+  function finish(ok) {
+    if (ok) state.olderPending = false;
+    if (gathered.length && !state.closed && !state.denied) onAdded(state, gathered);
+    return null;
+  }
+  function step() {
+    if (state.closed || state.denied) return null;
+    pages++;
+    return fetchJson(wlUrl(state.convId, from)).then(function(data) {
+      if (state.closed) return null;
+      var page = (data && data.entries) || [];
+      var older = page.filter(function(e) { return e && wlValidSeq(e.seq) && e.seq < stopAt; });
+      gathered = gathered.concat(wlMerge(state, older));
+      var top = wlPageMaxSeq(page);
+      var more = !!(data && data.hasMore === true);
+      if (more && top > from && top < stopAt && pages < WL_BACKFILL_MAX_PAGES) {
+        from = top;
+        state.olderFrom = top;
+        return step();
+      }
+      return finish(true);
+    }, function(err) {
+      if (wlStatusOf(err) === 'denied') wlDeny(state);
+      return finish(false);
+    });
+  }
+  return step();
 }
 
 // Raw output of one entry (§3.1-6). An entry with rawBytes has its full output
@@ -6909,12 +7646,16 @@ function loadWorkLog() {
     if (st.closed) return;
     // 'denied' was already shown by showWorkLogDenied (state.onDenied).
     if (result !== 'denied' && !st.entries.length) showWorkLogEmpty(WL_EMPTY_MSG);
+    // T9: the whole log, not just its latest 500 entries.
+    if (result === 'ok') wlLoadOlder(st, wlFetchJson, paintWorkLog);
     // No re-landing here: the log is collapsed, so its arrival moves nothing,
     // and a reader who already scrolled is left where they are.
   });
 }
 function recoverWorkLog() {
   if (_wl) wlRecover(_wl, wlFetchJson, paintWorkLog);
+  // An older page that failed earlier is asked for again (T9).
+  if (_wl && _wl.olderPending && _wl.loaded) wlLoadOlder(_wl, wlFetchJson, paintWorkLog);
 }
 function pushLiveWorkLog(convId, entry) {
   if (!_wl || _wl.convId !== convId) return;
@@ -7026,7 +7767,181 @@ function copyWorkLogDetail(seq, btn) {
   } catch (_e) { selectIt(); }
 }
 
-// Insert the merged entries at their seq position (the list mirrors state.entries).
+// ── Work log under its tasks (SSOT 2026-10-22 T10) ──
+// An entry made while a task was in progress carries that task (taskId /
+// taskTitle). The list shows such entries folded under one header per task —
+// at the place of the task's first entry, titled by its latest — and every
+// other entry (instructions, final answers, anything outside a task) in line.
+// A header is a row button: it opens / closes its entries. A task's group
+// starts open when it is the newest group the list has seen, closed otherwise;
+// the reader's choice then stays (state.groupOpen).
+function wlGroupOf(e) {
+  return e && typeof e.taskId === 'string' && e.taskId ? e.taskId : '';
+}
+// Pure: the list as rows, in seq order of first appearance.
+function wlBuildRows(entries) {
+  var rows = [];
+  var groups = Object.create(null);
+  var list = entries || [];
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    var g = wlGroupOf(e);
+    if (!g) { rows.push({ entry: e }); continue; }
+    var grp = groups[g];
+    if (!grp) {
+      grp = groups[g] = { taskId: g, title: '', entries: [] };
+      rows.push({ group: grp });
+    }
+    grp.entries.push(e);
+    if (e.taskTitle) grp.title = String(e.taskTitle);
+  }
+  return rows;
+}
+// The task behind a group, from the open session's task ledger (status, time, tool calls).
+function wlTaskInfo(taskId) {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var all = ((s && s.tasks) || []).concat((s && s.earlierTasks) || []);
+  for (var i = 0; i < all.length; i++) if (all[i] && all[i].id === taskId) return all[i];
+  return null;
+}
+function renderWorkLogGroupHead(grp, open, task) {
+  var meta = task ? renderTaskMeta(task) : '';
+  var title = (task && task.content) || grp.title || '';
+  return '<div class="wl-group-head" role="button" tabindex="-1" aria-expanded="' + (open ? 'true' : 'false') + '">'
+    + '<span class="wl-g-chev" aria-hidden="true">&#x25B8;</span>'
+    + '<span class="wl-g-id">#' + esc(grp.taskId) + '</span>'
+    + '<span class="wl-g-title">' + esc(title) + '</span>'
+    + '<span class="wl-g-count">' + grp.entries.length + '</span>'
+    + (meta ? '<span class="wl-g-meta">' + meta + '</span>' : '')
+    + '</div>';
+}
+// A closed group holds no entry nodes: its entries are rendered when it opens
+// (wlFillGroupBody), so a long log's DOM stays the size of what is open.
+function renderWorkLogGroup(grp, open, task) {
+  return '<div class="wl-group" data-task-id="' + escAttr(grp.taskId) + '">'
+    + renderWorkLogGroupHead(grp, open, task)
+    + (open
+      ? '<div class="wl-group-body" data-filled="1">' + grp.entries.map(renderWorkLogEntry).join('') + '</div>'
+      : '<div class="wl-group-body" hidden></div>')
+    + '</div>';
+}
+// Render a group's entries into its (empty) body; open details come back open.
+function wlFillGroupBody(state, grpEl, taskId) {
+  var body = grpEl.querySelector('.wl-group-body');
+  if (!body || body.getAttribute('data-filled') === '1') return;
+  var entries = state.entries.filter(function(x) { return wlGroupOf(x) === taskId; });
+  body.innerHTML = entries.map(renderWorkLogEntry).join('');
+  body.setAttribute('data-filled', '1');
+  for (var i = 0; i < entries.length; i++) {
+    var seq = entries[i].seq;
+    if (!state.open || !state.open.has(seq)) continue;
+    var el = wlEntryEl(seq);
+    var row = el && el.querySelector('.wl-row');
+    var detail = el && el.querySelector('.wl-detail');
+    if (!row || !detail) continue;
+    row.setAttribute('aria-expanded', 'true');
+    detail.hidden = false;
+    loadWorkLogDetail(state, seq);
+  }
+  updateTimersIn(body);
+}
+// Open state of a group: the reader's choice, else open when it is the newest group.
+function wlGroupOpen(state, taskId, newest) {
+  var map = state.groupOpen || (state.groupOpen = Object.create(null));
+  if (!(taskId in map)) map[taskId] = !!newest;
+  return map[taskId];
+}
+function wlGroupEl(list, taskId) {
+  var groups = list.querySelectorAll('.wl-group');
+  for (var i = 0; i < groups.length; i++) if (groups[i].getAttribute('data-task-id') === taskId) return groups[i];
+  return null;
+}
+// The whole list from state.entries; open details are re-opened (raw output is cached on the state).
+function wlRenderList(state, list) {
+  var rows = wlBuildRows(state.entries);
+  var newest = null;
+  for (var i = rows.length - 1; i >= 0; i--) if (rows[i].group) { newest = rows[i].group; break; }
+  list.innerHTML = rows.map(function(r) {
+    if (r.entry) return renderWorkLogEntry(r.entry);
+    return renderWorkLogGroup(r.group, wlGroupOpen(state, r.group.taskId, r.group === newest), wlTaskInfo(r.group.taskId));
+  }).join('');
+  if (state.open) state.open.forEach(function(seq) {
+    var el = wlEntryEl(seq);
+    var row = el && el.querySelector('.wl-row');
+    var detail = el && el.querySelector('.wl-detail');
+    if (!row || !detail) return;
+    row.setAttribute('aria-expanded', 'true');
+    detail.hidden = false;
+    loadWorkLogDetail(state, seq);
+  });
+}
+// Live entries at the end of the log: append in place (a task's entry into its
+// group, a new task as a new — open — group at the end).
+function wlAppendTail(state, list, added) {
+  var tmp = document.createElement('div');
+  for (var i = 0; i < added.length; i++) {
+    var e = added[i].entry;
+    var g = wlGroupOf(e);
+    if (!g) {
+      tmp.innerHTML = renderWorkLogEntry(e);
+      if (tmp.firstElementChild) list.appendChild(tmp.firstElementChild);
+      continue;
+    }
+    var grpEl = wlGroupEl(list, g);
+    if (!grpEl) {
+      var grp = { taskId: g, title: e.taskTitle ? String(e.taskTitle) : '', entries: [e] };
+      tmp.innerHTML = renderWorkLogGroup(grp, wlGroupOpen(state, g, true), wlTaskInfo(g));
+      if (tmp.firstElementChild) list.appendChild(tmp.firstElementChild);
+      continue;
+    }
+    var body = grpEl.querySelector('.wl-group-body');
+    // A closed group renders its entries when it opens; only its head changes now.
+    if (body && body.getAttribute('data-filled') === '1') {
+      tmp.innerHTML = renderWorkLogEntry(e);
+      if (tmp.firstElementChild) body.appendChild(tmp.firstElementChild);
+    }
+    wlRefreshGroupHead(state, grpEl, g);
+  }
+}
+function wlRefreshGroupHead(state, grpEl, taskId) {
+  var head = grpEl.querySelector('.wl-group-head');
+  if (!head) return;
+  var entries = state.entries.filter(function(x) { return wlGroupOf(x) === taskId; });
+  var title = '';
+  for (var i = 0; i < entries.length; i++) if (entries[i].taskTitle) title = String(entries[i].taskTitle);
+  var tmp = document.createElement('div');
+  tmp.innerHTML = renderWorkLogGroupHead({ taskId: taskId, title: title, entries: entries }, head.getAttribute('aria-expanded') === 'true', wlTaskInfo(taskId));
+  var fresh = tmp.firstElementChild;
+  if (!fresh) return;
+  if (head.getAttribute('tabindex') === '0') fresh.setAttribute('tabindex', '0');
+  grpEl.replaceChild(fresh, head);
+  updateTimersIn(fresh);
+}
+// Task status / time / tool calls changed (task_update): refresh every group head.
+function wlRefreshGroupHeads() {
+  var list = document.getElementById('worklog-list');
+  if (!list || !_wl) return;
+  var groups = list.querySelectorAll('.wl-group');
+  for (var i = 0; i < groups.length; i++) wlRefreshGroupHead(_wl, groups[i], groups[i].getAttribute('data-task-id'));
+}
+function toggleWorkLogGroup(taskId) {
+  var st = _wl;
+  var list = document.getElementById('worklog-list');
+  if (!st || st.closed || !list) return;
+  var grpEl = wlGroupEl(list, taskId);
+  if (!grpEl) return;
+  var head = grpEl.querySelector('.wl-group-head');
+  var body = grpEl.querySelector('.wl-group-body');
+  var open = !(head && head.getAttribute('aria-expanded') === 'true');
+  (st.groupOpen || (st.groupOpen = Object.create(null)))[taskId] = open;
+  if (open) wlFillGroupBody(st, grpEl, taskId);
+  if (head) head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (body) body.hidden = !open;
+}
+
+// Paint merged entries: live entries at the end are appended in place; any
+// other batch (the older pages, a backfill) re-renders the list from
+// state.entries, which keeps seq order and the task groups exact.
 function paintWorkLog(state, added) {
   if (state !== _wl || !added.length) return;
   var list = document.getElementById('worklog-list');
@@ -7034,16 +7949,19 @@ function paintWorkLog(state, added) {
   var atBottom = list.scrollHeight - list.scrollTop <= list.clientHeight + 40;
   var placeholder = list.querySelector('.wl-empty');
   if (placeholder) placeholder.remove();
-  var tmp = document.createElement('div');
-  for (var i = 0; i < added.length; i++) {
-    tmp.innerHTML = renderWorkLogEntry(added[i].entry);
-    var node = tmp.firstElementChild;
-    if (node) list.insertBefore(node, list.children[added[i].index] || null);
-  }
-  setTextIfChanged(document.getElementById('worklog-count'), String(state.entries.length));
+  var n = state.entries.length;
+  var tail = state.painted;
+  for (var i = 0; tail && i < added.length; i++) if (added[i].index !== n - added.length + i) tail = false;
+  var keepTop = !tail && state.painted ? list.scrollHeight - list.scrollTop : null;
+  if (tail) wlAppendTail(state, list, added);
+  else wlRenderList(state, list);
+  updateTimersIn(list);
+  setTextIfChanged(document.getElementById('worklog-count'), String(n));
   wlEnsureTabStop(list);
-  // Tail-follow, unless the reader has an entry's detail open.
+  // Tail-follow, unless the reader has an entry's detail open; older entries
+  // arriving above keep the reader's place.
   if (!state.painted || (atBottom && !wlDetailOpen(state))) list.scrollTop = list.scrollHeight;
+  else if (keepTop !== null) list.scrollTop = list.scrollHeight - keepTop;
   state.painted = true;
 }
 
@@ -7116,13 +8034,25 @@ function wlRovingIndex(key, i, n) {
   if (key === 'End') return n - 1;
   return -1;
 }
+// The rows the arrows move between: entry rows and task-group heads that are
+// on screen (a closed group's entries are not).
+function wlNavRows(list) {
+  var all = list.querySelectorAll('.wl-group-head, .wl-row');
+  var out = [];
+  for (var i = 0; i < all.length; i++) {
+    var body = all[i].closest ? all[i].closest('.wl-group-body') : null;
+    if (body && body.hidden) continue;
+    out.push(all[i]);
+  }
+  return out;
+}
 function wlEnsureTabStop(list) {
-  if (!list || !list.querySelector || list.querySelector('.wl-row[tabindex="0"]')) return;
-  var rows = list.querySelectorAll('.wl-row');
+  if (!list || !list.querySelector || list.querySelector('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"]')) return;
+  var rows = wlNavRows(list);
   if (rows.length) rows[rows.length - 1].setAttribute('tabindex', '0');
 }
 function wlSetTabStop(list, row) {
-  var old = list.querySelectorAll('.wl-row[tabindex="0"]');
+  var old = list.querySelectorAll('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"]');
   for (var i = 0; i < old.length; i++) if (old[i] !== row) old[i].setAttribute('tabindex', '-1');
   if (row.getAttribute('tabindex') !== '0') row.setAttribute('tabindex', '0');
 }
@@ -7145,6 +8075,12 @@ function wlSetTabStop(list, row) {
       return;
     }
     if (e.target.closest('.wl-detail')) return;
+    var head = e.target.closest('.wl-group-head');
+    if (head && list.contains(head)) {
+      var grp = head.closest('.wl-group');
+      if (grp) toggleWorkLogGroup(grp.getAttribute('data-task-id'));
+      return;
+    }
     var row = e.target.closest('.wl-row');
     if (!row || !list.contains(row)) return;
     // Finishing a text selection inside the row is not a toggle.
@@ -7153,13 +8089,19 @@ function wlSetTabStop(list, row) {
   });
   list.addEventListener('keydown', function(e) {
     var row = e.target;
-    if (!row.classList || !row.classList.contains('wl-row')) return;
+    var isHead = !!(row.classList && row.classList.contains('wl-group-head'));
+    if (!row.classList || (!isHead && !row.classList.contains('wl-row'))) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      toggleWorkLogEntry(seqOf(row));
+      if (isHead) {
+        var grp = row.closest('.wl-group');
+        if (grp) toggleWorkLogGroup(grp.getAttribute('data-task-id'));
+      } else {
+        toggleWorkLogEntry(seqOf(row));
+      }
       return;
     }
-    var rows = Array.prototype.slice.call(list.querySelectorAll('.wl-row'));
+    var rows = wlNavRows(list);
     var j = wlRovingIndex(e.key, rows.indexOf(row), rows.length);
     if (j < 0) return;
     e.preventDefault();
@@ -7167,7 +8109,7 @@ function wlSetTabStop(list, row) {
   });
   list.addEventListener('focusin', function(e) {
     var row = e.target;
-    if (row && row.classList && row.classList.contains('wl-row')) wlSetTabStop(list, row);
+    if (row && row.classList && (row.classList.contains('wl-row') || row.classList.contains('wl-group-head'))) wlSetTabStop(list, row);
   });
 })();
 

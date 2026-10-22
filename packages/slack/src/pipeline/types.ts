@@ -42,6 +42,8 @@ export interface ConversationSession {
     threadTs?: string;
     [key: string]: any;
   };
+  /** SSOT 2026-10-22 T5 — a dashboard model switch waiting for its compact (runtime-only). */
+  pendingModelSwitch?: { model: string; nickname: string; requestedAt: number; compactTs?: string; armed?: boolean };
   [key: string]: any;
 }
 
