@@ -68,7 +68,8 @@ the last result as `publicUrl` (`unchecked`, `verified` or `mismatch`).
 - Once the public URL answers as this instance again, links return to it within one check.
 
 Fix the DNS record or the proxy, or correct `CONVERSATION_VIEWER_URL`; links already posted in Slack
-keep the old address until their message is redrawn.
+keep the old address until their message is redrawn. The check catches misconfiguration; it is not a
+security control — the instance id on `/health` is readable by anyone who can reach it.
 
 ## Before you expose it: authentication
 

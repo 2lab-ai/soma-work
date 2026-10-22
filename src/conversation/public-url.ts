@@ -121,6 +121,8 @@ export async function probeOrigin(
     }
 
     const body = await res.text().catch(() => '');
+    // A body cut off by the timeout proves nothing about who answered.
+    if (signal.aborted) return { result: 'inconclusive', detail: 'timeout' };
     if (isOwnHealthBody(body)) {
       return { result: 'inconclusive', detail: `${INSTANCE_HEADER} header missing (dropped by a proxy?)` };
     }
@@ -134,6 +136,8 @@ let status: PublicUrlStatus = 'unchecked';
 /** The proven origin links use while the public URL is a mismatch; '' = none. */
 let fallback = '';
 let timer: ReturnType<typeof setInterval> | null = null;
+/** Last probe result of the public URL; logs inconclusive spells once. */
+let lastResult: ProbeResult | null = null;
 
 /** Result of the last conclusive check of the public URL. */
 export function getPublicUrlStatus(): PublicUrlStatus {
@@ -153,7 +157,11 @@ export function effectiveViewerUrl(): string {
 
 /** True when cookies should carry `Secure` (the effective origin is https). */
 export function isSecureViewerOrigin(): boolean {
-  return effectiveViewerUrl().startsWith('https');
+  try {
+    return new URL(effectiveViewerUrl()).protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 /** Probe the public URL (and, if it is a mismatch, the callback origin) once. */
@@ -163,11 +171,14 @@ export async function checkPublicUrl(): Promise<void> {
 
   const probe = await probeOrigin(configured);
   if (probe.result === 'inconclusive') {
-    if (status === 'unchecked') {
-      logger.warn(`Could not confirm that ${configured} reaches this instance (${probe.detail}); links keep using it`);
+    if (lastResult !== 'inconclusive') {
+      const keeps = status === 'mismatch' ? 'keeping the previous decision' : 'links keep using it';
+      logger.warn(`Could not confirm that ${configured} reaches this instance (${probe.detail}); ${keeps}`);
     }
+    lastResult = 'inconclusive';
     return;
   }
+  lastResult = probe.result;
 
   if (probe.result === 'verified') {
     if (status === 'mismatch') {

@@ -409,6 +409,7 @@ function splitHost(value: string): HostPort {
 
 /** The https origin browsers are sent to, or null when `url` is not https. */
 function httpsCanonical(url: string): { origin: string; hostname: string; port: string } | null {
+  if (!url) return null;
   let canonical: URL;
   try {
     canonical = new URL(url);
