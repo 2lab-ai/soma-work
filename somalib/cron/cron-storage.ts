@@ -114,8 +114,8 @@ export function normalizeDeployTriggers(input: unknown): CronDeployTrigger[] {
 
 /**
  * Does a deploy of `repo` into `target` fire this job? Repo is compared
- * case-insensitively, target exactly after normalization — `dev2` does not
- * match `deploy/dev2`. Tolerates a hand-edited (malformed) stored list.
+ * case-insensitively, target exactly after normalization — `staging` does not
+ * match `deploy/staging`. Tolerates a hand-edited (malformed) stored list.
  */
 export function jobMatchesDeploy(job: CronJob, repo: string, target: string): boolean {
   if (!Array.isArray(job.onDeploy)) return false;
