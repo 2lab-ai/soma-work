@@ -150,6 +150,17 @@ describe('ledger bounds and persistence', () => {
     expect(view.current[0].id).toBe(`T${TASK_LEDGER_MAX + 30}`);
   });
 
+  it('a persisted next number below an existing id is raised, so no id is ever minted twice (review P3)', () => {
+    const l = sanitizeTaskLedger({
+      nextSeq: 2,
+      current: ['T7'],
+      tasks: [{ id: 'T7', content: 'old', status: 'completed', toolCalls: 5 }],
+    });
+    expect(l?.nextSeq).toBe(8);
+    const next = applyTodoList(l, [todo('old', 'completed'), todo('new')], 1);
+    expect(ledgerTasks(next).current.map((t) => t.id)).toEqual(['T7', 'T8']);
+  });
+
   it('sanitizes a persisted ledger: unknown shapes are dropped, numbers stay numbers', () => {
     expect(sanitizeTaskLedger(null)).toBeUndefined();
     expect(sanitizeTaskLedger({ nextSeq: 'x' })).toBeUndefined();

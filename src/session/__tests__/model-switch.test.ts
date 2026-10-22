@@ -160,13 +160,22 @@ describe('switchSessionModel (T4/T5)', () => {
     expect(calls.compact).toEqual([]);
   });
 
-  it('a compact that fails to start un-parks the switch', async () => {
+  it('answers at once — it does not hold the request open for the whole compact turn (review P2)', async () => {
     const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', usage: usage(600_000), sessionId: 's' };
-    const { d } = deps(session, {
+    const { d } = deps(session, { dispatchCompact: () => new Promise<void>(() => {}) }); // never settles
+    await expect(switchSessionModel('k', 'grok[1m]', d)).resolves.toMatchObject({ status: 'compacting' });
+  });
+
+  it('a compact that fails to start un-parks the switch and says so to the dashboard', async () => {
+    const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', usage: usage(600_000), sessionId: 's' };
+    const { d, calls } = deps(session, {
       dispatchCompact: vi.fn().mockRejectedValue(new Error('slack down')),
     });
-    await expect(switchSessionModel('k', 'grok[1m]', d)).rejects.toMatchObject({ statusCode: 500 });
+    expect((await switchSessionModel('k', 'grok[1m]', d)).status).toBe('compacting');
+    await new Promise((r) => setTimeout(r, 0));
     expect(session.pendingModelSwitch).toBeUndefined();
+    expect(session.model).toBe('claude-opus-5-5[1m]');
+    expect(calls.broadcasts).toBe(2);
   });
 
   it('the same model and no override: unchanged, nothing written', async () => {
