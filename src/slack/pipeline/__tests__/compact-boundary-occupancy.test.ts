@@ -276,6 +276,40 @@ describe("the turn's own usage sample cannot undo the boundary (T2.2)", () => {
     expect(occupancyOf(session)).not.toBe(PRE_COMPACT_TOTAL);
   });
 
+  it('a turn that compacted mid-way, worked on and was cut off keeps its post-boundary occupancy (review R4-2)', async () => {
+    // SDK auto-compaction (DISABLE_AUTO_COMPACT=0): the turn goes on after the
+    // boundary, its later call reads the compacted-then-regrown context, and
+    // the turn ends without a result (stopped) — the live calls are folded.
+    const assistant = (id: string, cacheRead: number) => ({
+      type: 'assistant',
+      message: {
+        id,
+        model: 'claude-fable-5',
+        usage: {
+          input_tokens: 1_000,
+          output_tokens: 1_000,
+          cache_read_input_tokens: cacheRead,
+          cache_creation_input_tokens: 0,
+        },
+        content: [{ type: 'text', text: id }],
+      },
+    });
+    async function* stream() {
+      yield assistant('msg_pre', 670_000);
+      yield {
+        type: 'system',
+        subtype: 'compact_boundary',
+        compact_metadata: { trigger: 'auto', pre_tokens: PRE_COMPACT_TOTAL, post_tokens: POST_TOKENS },
+      };
+      yield assistant('msg_post', 598_000);
+    }
+
+    const { session } = await runCompactTurn(stream);
+
+    expect(occupancyOf(session)).toBe(600_000);
+    expect(session.usage.totalCacheReadTokens).toBe(670_000 + 598_000);
+  });
+
   it("a shield left by another turn does not swallow this turn's usage sample", async () => {
     // Same-session turns overlap: a supersede aborts the previous turn's
     // controller and installs its own without awaiting the old executor's

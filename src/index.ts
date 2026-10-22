@@ -838,6 +838,7 @@ async function start() {
           const sent = await injectDashboardMessage(key, 'compact --yes', onSent);
           return sent && slackHandler.isFollowupPending(sent.channel, sent.ts) ? 'queued' : 'settled';
         },
+        isCompactQueued: ({ channel, ts }) => slackHandler.isFollowupPending(channel, ts),
         save: () => claudeHandler.saveSessions(),
         broadcast: () => broadcastSessionUpdate(),
       }),
