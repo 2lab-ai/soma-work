@@ -11,7 +11,12 @@ import * as path from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { CronStorage, isValidCronExpression, isValidCronName } from '@soma/process-shared/cron/cron-storage.js';
+import {
+  CronStorage,
+  isValidCronExpression,
+  isValidCronName,
+  normalizeDeployTriggers,
+} from '@soma/process-shared/cron/cron-storage.js';
 import { StderrLogger } from '@soma/process-shared/stderr-logger.js';
 
 const logger = new StderrLogger('CronMcpServer');
@@ -44,6 +49,7 @@ function parseCronContext(raw?: string): CronContext {
 type CronModelConfig = import('@soma/process-shared/cron/cron-storage.js').CronModelConfig;
 type CronJobPatch = import('@soma/process-shared/cron/cron-storage.js').CronJobPatch;
 type CronJob = import('@soma/process-shared/cron/cron-storage.js').CronJob;
+type CronDeployTrigger = import('@soma/process-shared/cron/cron-storage.js').CronDeployTrigger;
 
 interface ValidatedCreateInput {
   name: string;
@@ -150,8 +156,38 @@ function buildModelConfig(args: Record<string, any>): ModelConfigResult {
   };
 }
 
+/**
+ * Validate the optional `onDeploy` argument. `null` and `[]` both mean "no
+ * triggers". Storage re-validates; this only turns its INVALID_ON_DEPLOY into a
+ * tool error.
+ */
+function parseOnDeploy(
+  raw: unknown,
+): { ok: true; onDeploy: CronDeployTrigger[] | undefined } | { ok: false; errorText: string } {
+  if (raw === undefined || raw === null) return { ok: true, onDeploy: undefined };
+  try {
+    return { ok: true, onDeploy: normalizeDeployTriggers(raw) };
+  } catch (error: any) {
+    return {
+      ok: false,
+      errorText: `Error: Invalid onDeploy: ${String(error?.message).replace(/^INVALID_ON_DEPLOY: /, '')}`,
+    };
+  }
+}
+
+function describeOnDeploy(onDeploy: CronDeployTrigger[] | undefined, sep: string): string {
+  return (onDeploy ?? []).map((t) => `${t.repo}${sep}${t.target}`).join(', ');
+}
+
 function formatCreateSuccess(
-  job: { name: string; id: string; expression: string; channel: string; prompt: string },
+  job: {
+    name: string;
+    id: string;
+    expression: string;
+    channel: string;
+    prompt: string;
+    onDeploy?: CronDeployTrigger[];
+  },
   effectiveMode: 'default' | 'fastlane',
   modelConfig: CronModelConfig | undefined,
   effectiveTarget: 'channel' | 'thread' | 'dm',
@@ -161,7 +197,8 @@ function formatCreateSuccess(
     ? ` | model: ${modelConfig.type}${modelConfig.model ? `(${modelConfig.model})` : ''}`
     : '';
   const targetStr = effectiveTarget !== 'channel' ? ` | target: ${effectiveTarget}` : '';
-  return `Cron job '${job.name}' created.\nID: ${job.id}\nExpression: ${job.expression}\nChannel: ${job.channel}${modeStr}${modelStr}${targetStr}\nPrompt: ${job.prompt}`;
+  const onDeployLine = job.onDeploy?.length ? `\nOn deploy: ${describeOnDeploy(job.onDeploy, ' → ')}` : '';
+  return `Cron job '${job.name}' created.\nID: ${job.id}\nExpression: ${job.expression}\nChannel: ${job.channel}${modeStr}${modelStr}${targetStr}${onDeployLine}\nPrompt: ${job.prompt}`;
 }
 
 export function handleCreate(
@@ -181,6 +218,11 @@ export function handleCreate(
   }
   const { modelConfig } = modelResult;
 
+  const onDeployResult = parseOnDeploy(args.onDeploy);
+  if (!onDeployResult.ok) {
+    return { text: onDeployResult.errorText, isError: true };
+  }
+
   try {
     const job = storage.addJob({
       name,
@@ -192,6 +234,7 @@ export function handleCreate(
       mode: effectiveMode === 'default' ? undefined : effectiveMode,
       modelConfig,
       target: effectiveTarget === 'channel' ? undefined : effectiveTarget,
+      onDeploy: onDeployResult.onDeploy,
     });
     return { text: formatCreateSuccess(job, effectiveMode, modelConfig, effectiveTarget), isError: false };
   } catch (error: any) {
@@ -339,6 +382,21 @@ function buildUpdatePatch(
     }
   }
 
+  if (args.clear_onDeploy === true && args.onDeploy !== undefined && args.onDeploy !== null) {
+    return { ok: false, errorText: 'Error: pass either onDeploy or clear_onDeploy, not both' };
+  }
+  if (args.onDeploy !== undefined) {
+    const onDeployResult = parseOnDeploy(args.onDeploy);
+    if (!onDeployResult.ok) {
+      return { ok: false, errorText: onDeployResult.errorText };
+    }
+    // Replaces the whole list; null or an empty one stops deploy fires.
+    patch.onDeploy = onDeployResult.onDeploy?.length ? onDeployResult.onDeploy : null;
+  }
+  if (args.clear_onDeploy === true) {
+    patch.onDeploy = null;
+  }
+
   if (Object.keys(patch).length === 0) {
     return { ok: false, errorText: 'Error: nothing to update — provide at least one field to change' };
   }
@@ -399,13 +457,14 @@ export function handleUpdate(
 
   const ownerNote = ownerResult.owner !== context.user ? ` (owner: ${ownerResult.owner})` : '';
   const modeLine = updated.mode === 'fastlane' ? '\nMode: fastlane' : '';
+  const onDeployLine = updated.onDeploy?.length ? `\nOn deploy: ${describeOnDeploy(updated.onDeploy, ' → ')}` : '';
   return {
     text:
       `Cron job '${updated.name}' updated${ownerNote}.\n` +
       `Expression: ${updated.expression}\n` +
       `Channel: ${updated.channel}${modeLine}\n` +
       `Model: ${describeModel(updated.modelConfig)}\n` +
-      `Target: ${describeTarget(updated)}\n` +
+      `Target: ${describeTarget(updated)}${onDeployLine}\n` +
       `Prompt: ${updated.prompt.substring(0, 200)}`,
     isError: false,
   };
@@ -455,7 +514,11 @@ export function handleList(context: CronContext, storage: CronStorage): { text: 
     // listing is unchanged, shown otherwise — a grant nobody can see is a
     // grant nobody audits.
     const allowStr = j.runAllowlist?.length ? ` | run-allow:${j.runAllowlist.map((u) => `<@${u}>`).join(',')}` : '';
-    return `- **${j.name}**${ownerStr} | \`${j.expression}\` | ch:${j.channel}${modeStr}${modelStr}${targetStr}${allowStr} | last: ${j.lastRunMinute || 'never'}\n  prompt: ${j.prompt.substring(0, 100)}`;
+    // Deploy triggers, hidden when absent like the allowlist above.
+    const onDeployStr = j.onDeploy?.length
+      ? ` | on-deploy:${describeOnDeploy(j.onDeploy, '→').replace(/, /g, ',')}`
+      : '';
+    return `- **${j.name}**${ownerStr} | \`${j.expression}\` | ch:${j.channel}${modeStr}${modelStr}${targetStr}${allowStr}${onDeployStr} | last: ${j.lastRunMinute || 'never'}\n  prompt: ${j.prompt.substring(0, 100)}`;
   });
 
   const header = isAdmin
@@ -465,6 +528,23 @@ export function handleList(context: CronContext, storage: CronStorage): { text: 
 }
 
 // --- Server ---
+
+const ON_DEPLOY_SCHEMA = {
+  type: 'array',
+  description:
+    'Also fire this job when a deploy completes: the deploy workflow signals each repo it merged and deployed into a branch, from whichever session ran the deploy, and every job listing that repo + branch fires as its owner, with its own model, always in a NEW thread in the job channel (target/mode are ignored for these fires). ' +
+    'The fired prompt ends with a line "[deploy_completed repo=… target=… before=… after=<merge sha> by=<deployer>]" naming the deploy; the job should verify that deploy itself and be safe to run twice. ' +
+    'target is the full branch name as merged into (e.g. "deploy/dev2", "develop"), matched exactly — an environment nickname does not match. ' +
+    'A job that should run ONLY on deploys can use an expression that never matches, e.g. "0 0 31 2 *".',
+  items: {
+    type: 'object',
+    properties: {
+      repo: { type: 'string', description: 'owner/repo, case-insensitive (e.g. "acme/app")' },
+      target: { type: 'string', description: 'Branch the deploy merges into (e.g. "deploy/dev2")' },
+    },
+    required: ['repo', 'target'],
+  },
+};
 
 class CronMcpServer {
   private server: Server;
@@ -530,6 +610,7 @@ class CronMcpServer {
                 type: 'string',
                 description: 'Model identifier when model_type=custom (e.g. "claude-sonnet-4-20250514")',
               },
+              onDeploy: ON_DEPLOY_SCHEMA,
             },
             required: ['name', 'expression', 'prompt'],
           },
@@ -574,6 +655,14 @@ class CronMcpServer {
               model_name: {
                 type: 'string',
                 description: 'Model identifier when model_type=custom (e.g. "claude-sonnet-4-20250514")',
+              },
+              onDeploy: {
+                ...ON_DEPLOY_SCHEMA,
+                description: `${ON_DEPLOY_SCHEMA.description} Replaces the whole list; [] or null stops deploy fires.`,
+              },
+              clear_onDeploy: {
+                type: 'boolean',
+                description: 'Stop firing this job on deploys. Do not combine with an onDeploy list.',
               },
             },
             required: ['name'],

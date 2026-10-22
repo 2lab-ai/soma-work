@@ -173,6 +173,7 @@ app-token 프롬프트는 금지된 자격증명 경로라 삭제됨), `scripts/
 - 모델 별칭 `fable`·`fable[1m]`·`fable-5-1`은 `claude-fable-5-1[1m]`을 선택한다. 1M 컨텍스트와 750k 자동 압축 기본값을 유지하며, 버전을 지정한 `fable-5`는 기존 `claude-fable-5[1m]`을 선택한다.
 - 모델 별칭 `opus`·`opus[1m]`·`opus-5-5`는 `claude-opus-5-5[1m]`(1M 컨텍스트, 750k 자동 압축 기본값)을 선택한다. 버전을 지정한 `opus-5`/`opus-5[1m]`은 기존 Opus 5 id를 그대로 선택한다.
 - naked `cron`/`schedule`(크론/스케줄): 잡별 모델/출력 대상 드롭다운 + 삭제 버튼이 달린 인터랙티브 카드로 목록·수정. 텍스트 명령도 지원 — `cron model <name> <default|opus|fable|fast|모델>` (default = 만든 사람의 현재 모델, opus/fable = 실행 시점의 최신 opus/fable) · `cron target <name> <channel|dm|thread>` · `cron delete <name>`; admin은 전체 유저 잡을 owner와 함께 보고 `<@owner>` 후행 인자 또는 카드에서 직접 타인 잡을 수정. 커맨드로 라우팅되므로 autogoal이 삼키지 않음.
+- **배포 트리거 크론 레인**: `onDeploy: [{ repo, target }]`를 등록한 크론 잡은 누구의 세션에서 돌린 배포든 해당 repo가 정확히 그 브랜치로 배포 성공했다고 deploy 워크플로우가 알리면(`deploy_completed` 디렉티브) 오너 권한으로, 그 잡 채널의 새 스레드에서 발동한다. 발동 프롬프트에는 어떤 배포인지(repo·브랜치·머지 SHA·배포한 사람)가 붙는다. 배포 스레드에는 한 줄로 시작된 레인, 또는 등록된 레인이 왜 시작되지 않았는지(배포 미확인·실패·읽을 수 없는 디렉티브)와 복구용 `cron run`을 알린다. 상세: [docs/current/spec/cron-deploy-lanes.md](docs/current/spec/cron-deploy-lanes.md).
 - naked `key` (= `auth key`): 자기 전용 llmux 클라이언트 키 + 로컬 Claude Code(`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`)와 Codex(`OPENAI_BASE_URL`/`OPENAI_API_KEY`) 실행법을 DM으로 받음. 같은 유저는 항상 같은 키 — 봇 사용량과 로컬 사용량이 한 테넌트로 계측된다. 모든 유저 사용 가능(자기 키이므로), 시크릿은 DM으로만 전달.
   Codex 안내는 안내된 서버 주소의 `/v1`과 같은 테넌트 키를 사용한다. `codex --model … -c …` 명령 전체를 복사해야 기존 ChatGPT 로그인이나 다른 provider 설정이 있어도 명시한 Responses provider가 환경변수의 키를 사용한다. 환경변수는 현재 터미널에 적용되며, Codex 설정 파일과 로그인 정보는 덮어쓰지 않는다. 다음 llmux 세션도 같은 명령으로 시작한다. [Codex 게이트웨이 인증 문서](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway).
 - `auth`(= `/z auth`) **용량 오버뷰**: llmux 모드에서 `auth` 카드는 admin 포함 모두에게 **읽기 전용 용량 오버뷰**가 기본이다. Claude → Codex → Grok 순 그룹화(그 외 그룹은 알파벳순, 그룹 안은 스케줄러 선택 순서); 그룹 합계는 5h/7d(및 `7d-fable` 등 scoped weekly) 잔여 비율을 **정규화된 계정분**(계정 1개 100% = 1, 플랜 가중치 없음)으로 합산 — llmux status 계약에는 utilization 비율과 리셋 시각만 있고 토큰 분모가 없으므로 토큰 잔고를 표시하거나 암시하지 않는다(누적 토큰은 소비량으로만 표기); 리셋은 Slack 로컬 절대 시각 + 남은 시간으로 표시하고 다음 리셋의 창·계정·회복 %p를 예고(추가 사용이 없을 때만 유효); 미제공·만료·범위 밖 값은 0%/100%가 아니라 "미제공"으로 표시, scoped 창은 공통 한도와 분리, cold/null 값은 합계에서 제외하고 측정 커버리지(n/m)를 표기; Grok/API-key는 llmux가 원시 요청·토큰 카운트를 비율로 접고 리셋 없는 버스트 한도에 합성 단기 리셋을 붙이는데, 카드는 그 합성 리셋을 실제 쿼터 창 카운트다운처럼 보여주지 않고 억제한다; Codex 수동 리셋 카운터(보유/현재 적용 가능)는 읽기 전용 표시(자동 사용 없음); 관리 컨트롤(모드 전환·설정·추가·삭제·계정 전환)은 [어드민 모드] 버튼 **명시 클릭**으로만 열리고 위조/스테일 admin 클릭은 서버에서 readonly로 강등; 큰 풀은 고정 페이지 크기로 페이지네이션되어 모든 계정에 도달 가능하며 Refresh/페이징은 현재 보기와 페이지를 유지한다. 레거시 CCT를 `auth` 안에 표시할 때도 페이지를 나누며, 변경 버튼과 모달 제출 후 같은 auth 보기로 돌아온다. 별도 `cct` 명령은 기존 동작을 유지한다. 상세: [README.md의 Auth capacity overview](./README.md#auth-capacity-overview) · 스펙/업스트림 검증: [`.prd/07-auth-capacity-spec.md`](./.prd/07-auth-capacity-spec.md)
@@ -432,7 +433,7 @@ src/                                # TypeScript 소스
 │   ├── actions/                    # 인터랙티브 액션 핸들러
 │   ├── commands/                   # 명령어 핸들러
 │   ├── pipeline/                   # 스트림 처리 파이프라인
-│   ├── directives/                 # 채널/세션 링크 디렉티브
+│   ├── directives/                 # 채널/세션 링크·배포 완료 디렉티브
 │   ├── formatters/                 # 출력 포맷터
 │   └── z/                          # /z 명령어 surface + 비-admin DM 입력 게이트
 ├── auth/                           # CCT lease + query env 주입
