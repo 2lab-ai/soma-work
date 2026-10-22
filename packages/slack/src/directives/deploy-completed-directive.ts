@@ -10,7 +10,7 @@
  * {
  *   "type": "deploy_completed",
  *   "repo": "acme/app",
- *   "target": "deploy/dev2",
+ *   "target": "deploy/staging",
  *   "before": "<sha>",      // optional
  *   "after": "<sha>",
  *   "confirmed": false      // optional, default true
@@ -32,7 +32,7 @@ const logger = new Logger('DeployCompletedDirective');
 export interface DeployCompletedPayload {
   /** `owner/repo` as emitted (trimmed). Matching is case-insensitive. */
   repo: string;
-  /** The branch the deploy merged into, e.g. `deploy/dev2`. */
+  /** The branch the deploy merged into, e.g. `deploy/staging`. */
   target: string;
   /** Target SHA before the merge (lower-case hex), when known. */
   before?: string;

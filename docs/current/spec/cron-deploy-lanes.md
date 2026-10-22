@@ -1,7 +1,7 @@
 # Deploy-triggered cron lanes
 
 A cron job can also fire when a deploy lands. The job's owner opts in with
-`onDeploy: [{ "repo": "acme/app", "target": "deploy/dev2" }]` (cron MCP
+`onDeploy: [{ "repo": "acme/app", "target": "deploy/staging" }]` (cron MCP
 `cron_create` / `cron_update`; `clear_onDeploy`, `null` or `[]` removes it). The
 deploy workflow runs in the session of whoever asked for the deploy and, for
 each repo whose merge succeeded, emits one `deploy_completed` directive
@@ -10,7 +10,7 @@ neither a CD run nor a healthcheck could confirm the deployment. Only a
 deploy-workflow session's directive is acted on; anywhere else it is stripped
 and ignored, so a lane cannot re-trigger lanes. The harness matches it against
 every job's `onDeploy` (repo case-insensitive, target exact after dropping
-`refs/heads/` — `dev2` does not match `deploy/dev2`) and fires each match
+`refs/heads/` — `staging` does not match `deploy/staging`) and fires each match
 through `CronScheduler.runJobNow` with the owner's identity and the job's model,
 always in a **new thread in the job's channel** (`forceNewThread`; the job's
 `mode`/`target` do not apply), with the deployer recorded as `triggeredBy`. The
@@ -24,7 +24,7 @@ permission prompt. The deploy turn never waits for a lane.
 {
   "type": "deploy_completed",
   "repo": "acme/app",
-  "target": "deploy/dev2",
+  "target": "deploy/staging",
   "before": "<target sha before the merge, optional>",
   "after": "<merge commit sha, required>",
   "confirmed": false
