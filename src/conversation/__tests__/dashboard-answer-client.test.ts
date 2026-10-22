@@ -98,6 +98,9 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
   let requests: Array<{ url: string; headers: Record<string, string>; body: unknown }>;
   let alerts: string[];
   let client: AnswerClient;
+  /** When set, the next request is refused 403 as csrfMiddleware does after a JWT rotation. */
+  let staleCsrfOnce: boolean;
+  let csrfRefreshes: number;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -110,14 +113,22 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
 
     requests = [];
     alerts = [];
+    staleCsrfOnce = false;
+    csrfRefreshes = 0;
     // The browser's fetch, bridged onto the real Fastify app. Auth rides on the
     // bearer header (the browser's cookie); every other header and the body
-    // are exactly what the client function passed.
+    // are exactly what the client function passed. Bearer auth skips the CSRF
+    // check, so a stale-token 403 is stood in by `staleCsrfOnce`; the retry
+    // that follows goes to the real server like any other request.
     const fetchBridge = async (
       url: string,
       init: { method?: string; headers?: Record<string, string>; body?: string },
     ) => {
       requests.push({ url, headers: { ...(init.headers ?? {}) }, body: init.body });
+      if (staleCsrfOnce) {
+        staleCsrfOnce = false;
+        return { ok: false, status: 403, json: async () => ({ error: 'CSRF token validation failed' }) };
+      }
       const res = await injectWebServer({
         method: init.method ?? 'GET',
         url,
@@ -140,7 +151,9 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
       setTimeout: () => 0,
       console: { error() {}, warn() {} },
       _csrfToken: 'csrf-1',
-      refreshCsrfToken: async () => {},
+      refreshCsrfToken: async () => {
+        csrfRefreshes++;
+      },
       _sessionCache: { [KEY]: { key: KEY, pendingQuestion: twoQuestions } },
       _mcState: {
         [KEY]: {
@@ -192,5 +205,41 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
 
     expect(handler).toHaveBeenCalledWith(KEY, '2', 'manual-deploy', 'macmini:main prod 배포');
     expect(btn.style.color).toBeUndefined();
+  });
+
+  // After a JWT rotation the first POST is refused 403; each answer button
+  // refreshes the CSRF token and retries once. The retry is a request of its
+  // own (separate header object), so it must reach the handler too.
+  it.each([
+    {
+      name: '⭐ 추천대로 모두 선택',
+      run: () => client.submitAllRecommended(KEY),
+      register: (h: any) => dashboard.setDashboardSubmitRecommendedHandler(h),
+    },
+    {
+      name: '제출하기',
+      run: () => client.submitMultiChoice(KEY),
+      register: (h: any) => dashboard.setDashboardMultiChoiceAnswerHandler(h),
+    },
+    {
+      name: 'single choice',
+      run: () => client.answerChoice(KEY, '2', 'manual-deploy', 'macmini:main prod 배포', fakeNode()),
+      register: (h: any) => dashboard.setDashboardChoiceAnswerHandler(h),
+    },
+  ])('T1 — $name retried after a stale-CSRF 403 still reaches its handler', async ({ run, register }) => {
+    const handler = vi.fn().mockResolvedValue(undefined);
+    register(handler);
+    staleCsrfOnce = true;
+
+    await run();
+
+    expect(csrfRefreshes).toBe(1);
+    expect(requests).toHaveLength(2);
+    expect(alerts).toEqual([]);
+    expect(handler).toHaveBeenCalledTimes(1);
+    const retry = requests[1];
+    expect(retry.headers['X-CSRF-Token']).toBe('csrf-1');
+    const claimsJson = Object.keys(retry.headers).some((h) => h.toLowerCase() === 'content-type');
+    expect(claimsJson).toBe(retry.body !== undefined);
   });
 });
