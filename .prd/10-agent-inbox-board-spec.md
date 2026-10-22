@@ -78,7 +78,7 @@ task list와 유저가 꼭 알아야 할 것만 남고, 모델의 실시간 작�
 
 ### 3.1 보드 (`src/conversation/dashboard.ts` 템플릿)
 1. 칸 3개: `NEEDS YOU` = `waiting` · `RUNNING` = `working` · `DONE` = `idle` 다음에 `closed`(동면·아카이브). closed 카드는 흐리게,
-   상태 `Sleeping`/`Archived`, 7일 지난 것은 `Show older` 뒤에 숨는다. 서버 버킷(`KanbanBoard`)은 그대로다. 빈 칸 = `Nothing here`.
+   상태 `Sleeping`/`Archived`. (2026-10-22: 7일 `Show older`는 끝난 날짜별 그룹으로 대체 — [`11-dashboard-live-surfaces-spec.md`](11-dashboard-live-surfaces-spec.md) T11/T12.) 서버 버킷(`KanbanBoard`)은 그대로다. 빈 칸 = `Nothing here`.
    **아카이브**(closed 칸의 `terminated` 카드, 상태 `Archived`)는 기본으로 그리지 않는다 — `Sleeping` 카드는 그대로 보인다. 보드 머리의
    `Board | List` 왼쪽에 토글 버튼 `Archives (N)`(N = 보드의 아카이브 수, 라벨은 상태에 따라 바뀌지 않는다)이 있고 켜짐/꺼짐은
    `aria-pressed`가 나른다. 켜지면 아카이브가 보이고 버튼은 `Board | List`의 선택된 칸과 같은 모양(밝은 바탕·그림자·진한 글자)이 된다.

@@ -5874,7 +5874,8 @@ function renderCardBody(s, col) {
   // Numbers are coerced before they reach markup (defence in depth — a
   // non-number field must render as text, never as markup).
   const num = toNum;
-  if (s.tokenUsage && dhShow('tokens')) statParts.push('<span class="card-tokens">' + formatTokens(num(s.tokenUsage.totalInputTokens) + num(s.tokenUsage.totalOutputTokens)) + ' tok</span>');
+  // Every token kind, like the collapsed face (T1); the tooltip splits it.
+  if (s.tokenUsage && dhShow('tokens')) statParts.push('<span class="card-tokens" title="' + escAttr('입력 ' + formatTokens(s.tokenUsage.totalInputTokens) + ' · 출력 ' + formatTokens(s.tokenUsage.totalOutputTokens) + ' · 캐시 ' + formatTokens(num(s.tokenUsage.totalCacheReadTokens) + num(s.tokenUsage.totalCacheCreateTokens))) + '">' + formatTokens(cardTotalTokens(s.tokenUsage)) + ' tok</span>');
   if (s.tokenUsage && dhShow('cost')) statParts.push('<span class="card-tokens"><span class="cost">$' + num(s.tokenUsage.totalCostUsd).toFixed(2) + '</span></span>');
   if (dhShow('mergestats') && s.mergeStats) statParts.push('<span class="card-merge">+' + num(s.mergeStats.totalLinesAdded) + ' / -' + num(s.mergeStats.totalLinesDeleted) + '</span>');
   statParts.push('<span class="card-timer-row">'
@@ -6112,7 +6113,6 @@ function renderCardGoal(s, col, canEdit) {
       + (historyOpen ? '&#x25B2;' : '&#x25BC;') + '</button>';
   }
   html += '</div>';
-  if (historyOpen) html += renderGoalHistory(g.history);
   if (cur) {
     var dropLabel = queue.length ? '현재 goal 삭제 · 다음 시작' : '현재 goal 삭제';
     html += '<div class="cg-row"><div class="cg-objective" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
@@ -6135,6 +6135,8 @@ function renderCardGoal(s, col, canEdit) {
     }
     html += '</ol>';
   }
+  // The completed goals open under the current goal and its queue (T6).
+  if (historyOpen) html += '<div class="cg-queue-title">완료된 goal</div>' + renderGoalHistory(g.history);
   if (editable) {
     html += '<form class="cg-add" onsubmit="event.preventDefault();event.stopPropagation();addGoalFromCard(\\'' + key + '\\',this)">'
       + '<input class="cg-add-input" name="objective" maxlength="4000" autocomplete="off" aria-label="goal 추가"'
