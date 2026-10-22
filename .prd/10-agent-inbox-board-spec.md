@@ -86,11 +86,12 @@ task list와 유저가 꼭 알아야 할 것만 남고, 모델의 실시간 작�
    카드 수(아카이브는 보일 때만 센다).
    **자동 재개 대기**: `idle`이어도 시스템이 스스로 다시 시작할 세션은 `DONE`이 아니라 `RUNNING`에 둔다 — 서버가 카드에
    `autoResume`(`deriveAutoResume`)을 싣고 `working` 버킷에 넣는다. 종류: `error-retry`(턴이 429 등 복구 가능한 오류로 끝나
-   `pendingRetry` 타이머로 재실행 대기) · `goal-eval-retry`(goal 완료 판정이 같은 이유로 실패해 `goal.evalBackoffUntil`까지 대기) ·
+   `pendingRetryAt`까지 재실행 대기) · `goal-eval-retry`(goal 완료 판정이 같은 이유로 실패해 `goal.evalBackoffUntil`까지 대기) ·
    `goal-eval`(goal 완료 판정 진행 중). 카드 상태줄 = 시계 아이콘 + `HH:MM 자동 재개 · 시도 n/3`(goal은 `Goal 판정 재시도`,
    진행 중은 `Goal 완료 판정 중`), 요약 줄 = `오류: <오류 첫 줄>`, 펼침 = 같은 내용의 재개 줄. 실행 중인 턴이 없으므로 `Stop` 대신
-   `Close`. 재개 정보는 타이머와 같이 사라지는 상태만 읽는다(`pendingRetry`는 런타임 전용 — 재시작으로 타이머가 사라지면 표시도
-   사라진다). 질문 대기(`waiting`)는 언제나 `NEEDS YOU`가 이긴다.
+   `Close`. 재개 정보는 재개 장치 자신이 믿는 영속 마커만 읽는다: 에러 재시도는 `pendingRetryAt`이 현재 run의 것
+   (`pendingRetrySessionId === sessionId`)이고 세션이 동면이 아닐 때만 — 재시작 후 `resumePendingErrorRetries`(#351)가 다시
+   거는 조건과 같다. 시도·사유는 마커와 함께 영속되는 `pendingRetryDetail`. 질문 대기(`waiting`)는 언제나 `NEEDS YOU`가 이긴다.
 2. 상단: 상단 바 바로 아래에 **통계 줄**이 먼저 오고 보드가 그 뒤에 온다. 통계 줄 = 기간 선택(`오늘`·`지난 7일`·`지난 30일`)
    + `세션`·`토큰`·`비용` 세 숫자 + `자세히` 버튼(`aria-expanded`). 기본은 접힘이고, `자세히`는 나머지 다섯 칸(턴 사용·PR 생성·
    PR 머지·머지 코드·워크플로우)과 차트를 통계 줄과 보드 사이에 펼친다. 선택은 `localStorage['soma-stats-detail']`(`open`/`closed`,

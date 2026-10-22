@@ -750,13 +750,8 @@ describe('SlackHandler — follow-up queue host', () => {
       const before = Date.now();
       await handler.handleMessage(message(), say());
       try {
-        expect(registrySession.pendingRetry).toEqual({
-          at: expect.any(Number),
-          attempt: 1,
-          maxAttempts: 3,
-          reason,
-        });
-        expect(registrySession.pendingRetry.at).toBeGreaterThanOrEqual(before + 3_600_000);
+        expect(registrySession.pendingRetryDetail).toEqual({ attempt: 1, maxAttempts: 3, reason });
+        expect(registrySession.pendingRetryAt).toBeGreaterThanOrEqual(before + 3_600_000);
         expect(registrySession.pendingRetryTimer).toBeDefined();
         expect(claudeHandler.broadcastSessionUpdate).toHaveBeenCalled();
       } finally {
@@ -789,11 +784,12 @@ describe('SlackHandler — follow-up queue host', () => {
       } finally {
         spy.mockRestore();
       }
-      expect(registrySession.pendingRetry).toBeDefined();
+      expect(registrySession.pendingRetryDetail).toBeDefined();
       expect(fire).toBeTypeOf('function');
 
       fire!();
-      expect(registrySession.pendingRetry).toBeUndefined();
+      expect(registrySession.pendingRetryDetail).toBeUndefined();
+      expect(registrySession.pendingRetryAt).toBeUndefined();
       expect(registrySession.pendingRetryTimer).toBeUndefined();
       expect(resume).toHaveBeenCalledTimes(1);
     });
