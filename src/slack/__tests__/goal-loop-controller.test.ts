@@ -589,3 +589,107 @@ describe('extractEvalRetryDelayMs', () => {
     expect(extractEvalRetryDelayMs('string failure')).toBe(GOAL_EVAL_RETRY_DEFAULT_DELAY_MS);
   });
 });
+
+/**
+ * dev fleet (2026-10-22): a goal session sat in the dashboard's DONE column
+ * for an hour while its completion check waited out a 429. Every loop step
+ * runs while the session is idle, so no activity-state transition pushes it —
+ * the controller itself must push the board, and leave the error line the
+ * card shows next to "re-check at HH:MM".
+ */
+describe('GoalLoopController — dashboard visibility of loop steps', () => {
+  function harness(dispatcher: GoalLoopControllerDeps['dispatcher']) {
+    const goal = makeGoal();
+    const session = makeSession(goal);
+    const pushes: Array<{ pendingEval: boolean; backoffUntil?: number; reason?: string }> = [];
+    const scheduledRetries: Array<{ fn: () => void; delayMs: number }> = [];
+    let now = 1_000_000;
+    const controller = new GoalLoopController({
+      registry: {
+        getSessionByKey: () => session,
+        getActivityStateByKey: () => 'idle',
+        saveSessions: () => undefined,
+        broadcastSessionUpdate: () => {
+          pushes.push({
+            pendingEval: goal.pendingEval !== undefined,
+            backoffUntil: goal.evalBackoffUntil,
+            reason: goal.evalRetryReason,
+          });
+        },
+      },
+      requestCoordinator: { isRequestActive: () => false },
+      dispatcher,
+      injectContinuation: async () => undefined,
+      postNotice: async () => undefined,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      fallbackModel: 'claude-sonnet-4',
+      now: () => now,
+      scheduleEvalRetry: (fn, delayMs) => {
+        scheduledRetries.push({ fn, delayMs });
+      },
+    });
+    return {
+      controller,
+      goal,
+      pushes,
+      scheduledRetries,
+      advance: (ms: number) => {
+        now += ms;
+      },
+    };
+  }
+
+  const rateLimited = () =>
+    Object.assign(new Error('one-shot dispatch aborted during pool rate-limit retry wait\nstack noise'), {
+      poolRateLimitRetryMs: 3_600_000,
+    });
+
+  it('pushes the board when the check starts and when a 429 arms the retry, with the error line', async () => {
+    const h = harness(async () => {
+      throw rateLimited();
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+
+    // Eval started → pushed with the lease set (card: "Goal 완료 판정 중").
+    expect(h.pushes.some((p) => p.pendingEval)).toBe(true);
+    // Retry armed → pushed with the window and the first line of the error.
+    const armed = h.pushes[h.pushes.length - 1];
+    expect(armed?.pendingEval).toBe(false);
+    expect(armed?.backoffUntil).toBe(1_000_000 + 3_600_000);
+    expect(armed?.reason).toBe('one-shot dispatch aborted during pool rate-limit retry wait');
+    expect(h.goal.evalRetryReason).toBe('one-shot dispatch aborted during pool rate-limit retry wait');
+    expect(h.goal.evalDispatchRetryCount).toBe(1);
+  });
+
+  it('the retry firing lifts the window and its error line, and pushes; a good verdict keeps them clear', async () => {
+    let fail = true;
+    const h = harness(async () => {
+      if (fail) throw rateLimited();
+      return JSON.stringify({ completed: false, reason: 'still missing the review', remaining: ['post review'] });
+    });
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.scheduledRetries).toHaveLength(1);
+
+    fail = false;
+    h.advance(3_600_000);
+    const before = h.pushes.length;
+    h.scheduledRetries[0].fn();
+    await h.controller.settled(SESSION_KEY);
+
+    expect(h.pushes.length).toBeGreaterThan(before);
+    expect(h.pushes[before]).toEqual({ pendingEval: false, backoffUntil: undefined, reason: undefined });
+    expect(h.goal.evalBackoffUntil).toBeUndefined();
+    expect(h.goal.evalRetryReason).toBeUndefined();
+    expect(h.goal.evalDispatchRetryCount).toBeUndefined();
+  });
+
+  it('a real user message clears the retry error line with the window', async () => {
+    const { resetGoalContinuationOnUserMessage } = await import('../goal-continuation');
+    const s = { goal: makeGoal({ evalBackoffUntil: 5, evalDispatchRetryCount: 1, evalRetryReason: 'x' }) };
+    resetGoalContinuationOnUserMessage(s);
+    expect(s.goal.evalBackoffUntil).toBeUndefined();
+    expect(s.goal.evalRetryReason).toBeUndefined();
+  });
+});

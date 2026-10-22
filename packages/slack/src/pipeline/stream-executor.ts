@@ -3350,8 +3350,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
   }
 
-  /** Max auto-retries per error sequence before giving up */
-  private static readonly MAX_ERROR_RETRIES = 3;
+  /**
+   * Max auto-retries per error sequence before giving up. Public so the host
+   * can say "attempt n/MAX" wherever it shows the armed retry (dashboard card).
+   */
+  static readonly MAX_ERROR_RETRIES = 3;
   /** Delay in ms before auto-retry on recoverable errors */
   private static readonly ERROR_RETRY_DELAY_MS = 30_000;
   /**
