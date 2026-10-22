@@ -82,10 +82,13 @@ function callTotal(c: LiveUsageTotals): number {
 /**
  * The running turn crossed a compact boundary: its calls so far read the
  * pre-compact context. Remembered so only the calls after it count as the
- * context the turn holds (`liveOccupancyCall`). Ignored for another turn.
+ * context the turn holds (`liveOccupancyCall`). Ignored for another turn. A
+ * boundary before the turn's first call claims the map for the turn, so that
+ * first call does not start it afresh and drop the mark (review R5-1).
  */
 export function markLiveUsageBoundary(session: LiveUsageHolder, turnId: string | undefined): void {
   if (turnId !== undefined && session.liveUsageTurnId !== undefined && session.liveUsageTurnId !== turnId) return;
+  if (turnId !== undefined) session.liveUsageTurnId = turnId;
   session.liveUsagePreBoundaryKeys = Object.keys(session.liveUsage ?? {});
 }
 

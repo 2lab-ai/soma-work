@@ -202,6 +202,16 @@ describe('live usage of the running turn', () => {
     expect(session.usage.totalInputTokens).toBe(1_300_000);
   });
 
+  it('a boundary before the turn’s first call still marks it: every later call is post-boundary (review R5-1)', () => {
+    // SDK auto-compact on a resumed turn, before its first assistant message.
+    const session: Record<string, any> = { postCompactOccupancyTurnId: 't' };
+    markLiveUsageBoundary(session, 't');
+    expect(session.liveUsagePreBoundaryKeys).toEqual([]);
+    recordLiveUsage(session, call('post', 600_000), 't');
+    expect(session.liveUsagePreBoundaryKeys).toEqual([]);
+    expect(liveOccupancyCall(session)?.inputTokens).toBe(600_000);
+  });
+
   it('a shield with no boundary mark holds every call back (never restores pre-compact occupancy)', () => {
     const session: Record<string, any> = { postCompactOccupancyTurnId: 't' };
     recordLiveUsage(session, call('a', 700_000), 't');

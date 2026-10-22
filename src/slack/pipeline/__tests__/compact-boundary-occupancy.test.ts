@@ -310,6 +310,34 @@ describe("the turn's own usage sample cannot undo the boundary (T2.2)", () => {
     expect(session.usage.totalCacheReadTokens).toBe(670_000 + 598_000);
   });
 
+  it('a boundary before the turn’s first call, then growth, then cut off: occupancy is the post-boundary call (review R5-1)', async () => {
+    async function* stream() {
+      yield {
+        type: 'system',
+        subtype: 'compact_boundary',
+        compact_metadata: { trigger: 'auto', pre_tokens: PRE_COMPACT_TOTAL, post_tokens: POST_TOKENS },
+      };
+      yield {
+        type: 'assistant',
+        message: {
+          id: 'msg_post',
+          model: 'claude-fable-5',
+          usage: {
+            input_tokens: 1_000,
+            output_tokens: 1_000,
+            cache_read_input_tokens: 598_000,
+            cache_creation_input_tokens: 0,
+          },
+          content: [{ type: 'text', text: 'post' }],
+        },
+      };
+    }
+
+    const { session } = await runCompactTurn(stream);
+
+    expect(occupancyOf(session)).toBe(600_000);
+  });
+
   it("a shield left by another turn does not swallow this turn's usage sample", async () => {
     // Same-session turns overlap: a supersede aborts the previous turn's
     // controller and installs its own without awaiting the old executor's
