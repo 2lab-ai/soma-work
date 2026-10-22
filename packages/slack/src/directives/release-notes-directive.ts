@@ -12,7 +12,7 @@
  * {
  *   "type": "release_notes",
  *   "repo": "acme/app",
- *   "target": "deploy/dev2",
+ *   "target": "deploy/staging",
  *   "version": "0.2.58 (c8a026e)",
  *   "tldr": ["...", "...", "..."],   // 1 to 3 one-line summaries
  *   "text": "<full release notes>"
@@ -38,7 +38,7 @@ const BRANCH_PATTERN = /^[\w./-]+$/;
 export interface ReleaseNotesPayload {
   /** `owner/repo` as emitted (trimmed). */
   repo: string;
-  /** The branch the deploy merged into, e.g. `deploy/dev2`. */
+  /** The branch the deploy merged into, e.g. `deploy/staging`. */
   target: string;
   /** What shipped, e.g. `0.2.58 (c8a026e)` — one line. */
   version: string;
