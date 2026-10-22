@@ -116,7 +116,7 @@ task list와 유저가 꼭 알아야 할 것만 남고, 모델의 실시간 작�
    있다. 유저를 고르면 배지는 없다. Board·List 모두 같고 390px에서도 제목을 덮지 않는다.
 4. 카드 클릭 = 제자리 펼침/접힘. 펼친 영역: 모델·effort → task 타임라인(현재 task만 진한 점, 완료 task는 소요시간 — **현재 task는
    최대 1개**: 모델의 TodoWrite가 `in_progress`를 여러 개 써도 서버(`normalizeTaskProgress`)가 목록 순서상 첫 번째만 현재로 두고
-   나머지는 `pending`으로 보낸다. 턴이 돌고 있지 않은 세션은 현재 task가 없다 — Slack 플랜 블록의 턴 종료 demotion과 같은 규칙.
+   나머지는 `pending`으로 보낸다. `DONE` 칸 세션(실행 중·질문 대기·자동 재개 대기 어느 것도 아님)은 현재 task가 없다 — Slack 플랜 블록의 턴 종료 demotion과 같은 규칙. 아카이브 카드도 같다.
    보드 payload·`task_update` 푸시·열린 패널 Tasks 모두 같은 규칙이고, 저장된 스냅샷은 바꾸지 않는다) → **지시 / 응답**
    (최근 1쌍, 펼칠 때 `GET /api/dashboard/session/:conversationId?limit=2`로 지연 로드) → 대기 질문 선택지 → 버튼: 상태별 Stop / Close /
    Trash + `작업 로그`(패널 열기) + `Slack`(스레드 링크). 드래그 앤 드롭과 `confirm()`은 없다.
