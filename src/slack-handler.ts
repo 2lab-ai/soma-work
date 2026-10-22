@@ -29,6 +29,7 @@ import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
 import { getFollowupQueueCapacity } from './config';
+import { DeployLaneTrigger } from './deploy-lanes';
 import { FileHandler, type ProcessedFile } from './file-handler';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
@@ -586,6 +587,9 @@ export class SlackHandler {
     // Inject slackApi so SummaryService can post the summary as a permanent
     // in-thread message (in addition to editing the volatile surface header).
     const summaryService = new SummaryService(forkExecutor, this.slackApi);
+    // One per handler: its dedupe (same lane, same merge commit) spans every
+    // session this handler runs.
+    const deployLanes = new DeployLaneTrigger();
 
     this.streamExecutor = new StreamExecutor({
       claudeHandler: this.claudeHandler,
@@ -618,6 +622,10 @@ export class SlackHandler {
         uuid: string;
         phase: 'started' | 'completed' | 'cancelled' | 'discarded' | 'observed';
       }) => this.settleSteeredFollowup(args),
+      // A deploy turn's `deploy_completed` directive fires the cron jobs whose
+      // owners registered `onDeploy` for that repo + branch, whoever ran the
+      // deploy. The trigger answers in the deploy thread through ctx.reply.
+      onDeployCompleted: (signal, ctx) => deployLanes.handle(signal, ctx),
     });
 
     // EventRouter for event handling

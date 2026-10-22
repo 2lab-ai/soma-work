@@ -377,6 +377,59 @@ describe('StreamProcessor', () => {
       expect(mockSay).not.toHaveBeenCalled();
     });
 
+    it('should forward every deploy_completed directive once and strip them from the thread text', async () => {
+      const onChannelMessageDetected = vi.fn();
+      const onDeployCompletedDetected = vi.fn().mockRejectedValueOnce(new Error('lane hook broke'));
+      const messages = [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'text',
+                text: `Deploy complete.
+\`\`\`json
+{"type":"channel_message","text":"Release notes"}
+\`\`\`
+{"type":"deploy_completed","repo":"acme/app","target":"deploy/dev2","after":"aaaaaaa"}
+{"type":"deploy_completed","repo":"acme/api","target":"deploy/dev2","before":"ccccccc","after":"bbbbbbb"}`,
+              },
+            ],
+          },
+        },
+        // The SDK result repeats the same text: its directives must not fire again.
+        {
+          type: 'result',
+          subtype: 'success',
+          result: `Deploy complete.
+\`\`\`json
+{"type":"channel_message","text":"Release notes"}
+\`\`\`
+{"type":"deploy_completed","repo":"acme/app","target":"deploy/dev2","after":"aaaaaaa"}
+{"type":"deploy_completed","repo":"acme/api","target":"deploy/dev2","before":"ccccccc","after":"bbbbbbb"}`,
+        },
+      ];
+
+      const processor = new AgentStreamProcessor({ onChannelMessageDetected, onDeployCompletedDetected });
+      await processor.process(createMockStream(messages) as any, mockContext, abortController.signal);
+
+      expect(onChannelMessageDetected).toHaveBeenCalledTimes(1);
+      // The first callback threw; the second payload still went out.
+      expect(onDeployCompletedDetected).toHaveBeenCalledTimes(2);
+      expect(onDeployCompletedDetected).toHaveBeenCalledWith(
+        { repo: 'acme/app', target: 'deploy/dev2', after: 'aaaaaaa', confirmed: true },
+        mockContext,
+      );
+      expect(onDeployCompletedDetected).toHaveBeenCalledWith(
+        { repo: 'acme/api', target: 'deploy/dev2', before: 'ccccccc', after: 'bbbbbbb', confirmed: true },
+        mockContext,
+      );
+      expect(mockSay).toHaveBeenCalledWith(expect.objectContaining({ text: 'Deploy complete.' }));
+      for (const [arg] of (mockSay as any).mock.calls) {
+        expect(JSON.stringify(arg)).not.toContain('deploy_completed');
+      }
+    });
+
     it('should not duplicate final result if already in currentMessages', async () => {
       const messages = [
         { type: 'assistant', message: { content: [{ type: 'text', text: 'Same message' }] } },
