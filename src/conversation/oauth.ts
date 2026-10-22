@@ -30,6 +30,7 @@ import * as jwt from 'jsonwebtoken';
 import { isAdminUser } from '../admin-utils';
 import { config } from '../config';
 import { Logger } from '../logger';
+import { effectiveViewerUrl, isSecureViewerOrigin } from './public-url';
 
 const logger = new Logger('OAuth');
 
@@ -118,7 +119,9 @@ function _consumeSsoJti(jti: string, expSec: number): boolean {
 }
 
 /**
- * Returns the configured viewer base URL host ("host:port" — no scheme).
+ * Returns the viewer base URL host ("host:port" — no scheme) that links are
+ * minted on (`effectiveViewerUrl`: the configured public URL, or the proven
+ * callback origin while the public URL reaches another server).
  * Used by `_isSameOriginRequest` to compare against incoming `Origin`
  * / `Referer` headers. Falls back to the `Host` request header when
  * `config.conversation.viewerUrl` isn't set (dev mode) — in that case
@@ -126,7 +129,7 @@ function _consumeSsoJti(jti: string, expSec: number): boolean {
  * accepted as same-origin.
  */
 function _viewerOriginHost(request: FastifyRequest): string | null {
-  const configured = config.conversation.viewerUrl;
+  const configured = effectiveViewerUrl();
   if (configured) {
     try {
       return new URL(configured).host;
@@ -281,13 +284,25 @@ export const OAUTH_DIRECTORY_LOOKUP_TIMEOUT_MS = 5000;
 const DIRECTORY_TIMEOUT = Symbol('directory-timeout');
 
 /**
- * A failing or slow directory is a miss, never a 500 or a hung login; the
- * warning carries the message (or 'timeout') only.
+ * Thrown by a directory lookup that cannot work until an admin changes the
+ * setup (for example a missing Slack scope) — neither "no such account" nor
+ * worth retrying.
+ */
+export class DirectoryLookupMisconfigured extends Error {}
+
+/** A directory that failed or did not answer in time says nothing about the account. */
+const DIRECTORY_UNAVAILABLE = Symbol('directory-unavailable');
+const DIRECTORY_MISCONFIGURED = Symbol('directory-misconfigured');
+
+/**
+ * A failing or slow directory is never a 500 or a hung login, and never a
+ * "no such account" either: it resolves DIRECTORY_UNAVAILABLE. The warning
+ * carries the message (or 'timeout') only.
  */
 async function lookupInDirectory(
   directory: OAuthDirectoryLookupFn,
   email: string,
-): Promise<{ userId: string; name: string } | null> {
+): Promise<{ userId: string; name: string } | null | typeof DIRECTORY_UNAVAILABLE | typeof DIRECTORY_MISCONFIGURED> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<typeof DIRECTORY_TIMEOUT>((resolve) => {
     timer = setTimeout(() => resolve(DIRECTORY_TIMEOUT), OAUTH_DIRECTORY_LOOKUP_TIMEOUT_MS);
@@ -296,7 +311,7 @@ async function lookupInDirectory(
     const result = await Promise.race([directory(email.toLowerCase()), timeout]);
     if (result === DIRECTORY_TIMEOUT) {
       logger.warn('OAuth login: Slack workspace email lookup failed', { email, error: 'timeout' });
-      return null;
+      return DIRECTORY_UNAVAILABLE;
     }
     return result;
   } catch (error) {
@@ -304,7 +319,7 @@ async function lookupInDirectory(
       email,
       error: error instanceof Error ? error.message : 'unknown',
     });
-    return null;
+    return error instanceof DirectoryLookupMisconfigured ? DIRECTORY_MISCONFIGURED : DIRECTORY_UNAVAILABLE;
   } finally {
     clearTimeout(timer);
   }
@@ -316,7 +331,9 @@ async function lookupInDirectory(
  * returns null. The ambiguity warning carries the count, never the user ids.
  *
  * `directory` is consulted only when no `/z email` matches at all (an
- * ambiguous one still refuses). Only the Google callback passes it: Google
+ * ambiguous one still refuses). A directory that fails or times out sends the
+ * user to `lookup_unavailable` (try again), one an admin must fix to
+ * `lookup_misconfigured` — neither is `no_match`. Only the Google callback passes it: Google
  * has verified that the user owns the address, Microsoft's `mail` /
  * `userPrincipalName` claim proves no such thing.
  */
@@ -333,6 +350,14 @@ async function matchedSlackUserOrRedirect(
     return null;
   }
   const listed = directory ? await lookupInDirectory(directory, email) : null;
+  if (listed === DIRECTORY_UNAVAILABLE) {
+    reply.redirect('/login?error=lookup_unavailable');
+    return null;
+  }
+  if (listed === DIRECTORY_MISCONFIGURED) {
+    reply.redirect('/login?error=lookup_misconfigured');
+    return null;
+  }
   if (listed) {
     logger.info('OAuth login: matched by Slack workspace email', { email, slackUserId: listed.userId });
     return listed;
@@ -594,7 +619,7 @@ async function exchangeMicrosoftCode(code: string): Promise<{ email: string; nam
 
 function setCookieAndRedirect(reply: FastifyReply, token: string, redirectTo: string): void {
   const maxAge = config.oauth.jwtExpiresIn;
-  const secure = (config.conversation.viewerUrl || '').startsWith('https');
+  const secure = isSecureViewerOrigin();
   reply.header(
     'Set-Cookie',
     `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`,
@@ -649,7 +674,7 @@ export function isSafeLoginReturnPath(value: string): boolean {
  */
 export function loginReturnCookieFor(url: string): string | undefined {
   if (!isSafeLoginReturnPath(url) || url === '/dashboard' || url === '/dashboard/') return undefined;
-  const secure = (config.conversation.viewerUrl || '').startsWith('https');
+  const secure = isSecureViewerOrigin();
   return `${LOGIN_RETURN_COOKIE}=${encodeURIComponent(url)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${LOGIN_RETURN_MAX_AGE_SEC}${secure ? '; Secure' : ''}`;
 }
 
@@ -716,8 +741,17 @@ function getOAuthStateCookieName(provider: string): string {
   return `soma_oauth_state_${provider}`;
 }
 
+/**
+ * True when the request carries this host's sign-in state cookie for
+ * `provider` — the sign-in started on this origin and must finish here.
+ */
+export function hasOAuthStateCookie(request: FastifyRequest, provider: string): boolean {
+  const cookieHeader = request.headers.cookie || '';
+  return new RegExp(`(?:^|;\\s*)${getOAuthStateCookieName(provider)}=[^;]`).test(cookieHeader);
+}
+
 function setOAuthStateCookie(reply: any, provider: string, state: string): void {
-  const secure = (config.conversation.viewerUrl || '').startsWith('https');
+  const secure = isSecureViewerOrigin();
   const cookieName = getOAuthStateCookieName(provider);
   reply.header(
     'Set-Cookie',
@@ -1021,7 +1055,7 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
     // URL — standard POST-redirect-GET, also keeps the form resubmit
     // prompt out of the back button.
     const maxAge = config.oauth.jwtExpiresIn;
-    const secure = (config.conversation.viewerUrl || '').startsWith('https');
+    const secure = isSecureViewerOrigin();
     reply.header(
       'Set-Cookie',
       `${COOKIE_NAME}=${encodeURIComponent(sessionToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`,
@@ -1353,6 +1387,8 @@ if (err) {
     // emailParam is inserted as text only via _showError — do NOT switch
     // this branch back to innerHTML.
     'no_match': 'No matching Slack account found for ' + emailParam + '. Contact your admin.',
+    'lookup_unavailable': 'Could not reach Slack to look up your account. Please try again in a moment.',
+    'lookup_misconfigured': 'This server cannot look up Slack accounts for Google sign-in yet. Contact your admin, or sign in with the Slack dashboard link.',
     'ambiguous_email': 'Several Slack users registered this email via /z email, so the dashboard cannot pick one account. Keep it on one Slack user, or sign in with the Slack dashboard link.',
     'state_mismatch': 'Authentication state mismatch. Please try again.',
     'sso_missing': 'Slack SSO link is missing a token. Request a new dashboard link in Slack.',
