@@ -268,6 +268,10 @@ Slack action은 `src/slack/actions/index.ts`에서 등록됩니다:
 
 **Endpoint**: `POST /api/dashboard/session/:key/submit-recommended` (CSRF + auth + ownership)
 
+요청에는 body가 없고, 그래서 `Content-Type` 헤더도 보내지 않는다. Fastify는 `Content-Type: application/json` + 빈 body를
+라우트에 닿기 전에 400(`FST_ERR_CTP_EMPTY_JSON_BODY`, 응답 `error: "Bad Request"`)으로 거절한다 — 대시보드 버튼이
+`❌ Bad Request`를 띄우던 원인. `dashboard-answer-client.test.ts`가 배포되는 클라이언트 함수를 실제 서버에 연결해 이 모양을 고정한다.
+
 | 상태 코드 | 조건 |
 |-----------|------|
 | 200 | 정상 처리 |
