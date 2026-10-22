@@ -244,7 +244,7 @@ describe('SummaryService.displayCountdownOnThread()', () => {
     const countdownBlocks = session.actionPanel!.summaryBlocks!;
     expect((countdownBlocks[1] as any).text.text as string).toMatch(/Executive Summary in/);
 
-    service.displayOnThread(session, 'Final real summary body');
+    service.displayOnThread(session, '<tldr>\nFinal real summary body\n</tldr>\nfull document');
     const finalBlocks = session.actionPanel!.summaryBlocks!;
     const finalText = (finalBlocks[1] as any).text.text as string;
     expect(finalText).toContain('Final real summary body');

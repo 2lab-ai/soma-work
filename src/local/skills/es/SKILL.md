@@ -31,6 +31,8 @@ Active ES mode: <brief|issue|epic> (host-selected; do not reclassify)
 
 When you (the LLM) see this header, **trust it**. Do not second-guess. The host knows `links.pr`, `linkHistory.prs`, `linkHistory.issues`, `workflow`, and `handoffContext.parentEpicUrl` directly — the conversation transcript does not.
 
+The Path B response is a leading `<tldr>` block (exactly 3 lines) followed by the ES document; the section order above (SSOT → Status → …) applies to the document after the block. The host shows only the TL;DR on the channel-visible thread surface and posts TL;DR + full document inside the thread. The contract itself lives in `SUMMARY_PROMPT` (`packages/slack/src/summary-service.ts`) — this note only describes it.
+
 ### Path A — invoked at z phase5, or manually via `$es` outside the z pipeline
 
 Inside the z pipeline `es` runs at **phase5**, after `zcheck` has already passed at phase3 and `ztrace`+approve completed at phase4. The direct `zwork` exit → `es` shortcut applies only when `es` is invoked outside the z pipeline (standalone `$es` or a Path B harness call).
