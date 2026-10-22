@@ -182,17 +182,65 @@ describe('probeOrigin — who answers at an origin', () => {
     expect(followed).toBe(false);
   });
 
-  it('a redirect on the same host (scheme or path change) is followed', async () => {
-    let origin = '';
-    origin = await serve((req, res) => {
+  it('a redirect that keeps the host and the /health path (an http → https style upgrade) is followed', async () => {
+    const target = await serve(self());
+    const targetPort = new URL(target).port;
+    const origin = await serve((_req, res) => {
+      res.writeHead(308, { location: `http://127.0.0.1:${targetPort}/health` });
+      res.end();
+    });
+    expect((await pub.probeOrigin(origin)).result).toBe('verified');
+  });
+
+  it('a same-host redirect to another path (a sign-in page) → inconclusive, not followed', async () => {
+    let followed = false;
+    const origin = await serve((req, res) => {
       if (req.url === '/health') {
-        res.writeHead(308, { location: `${origin}/v/health` });
+        res.writeHead(302, { location: '/sign-in?rd=%2Fhealth' });
         res.end();
         return;
       }
-      self()(req, res);
+      followed = true;
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<form>sign in</form>');
     });
-    expect((await pub.probeOrigin(origin)).result).toBe('verified');
+    expect((await pub.probeOrigin(origin)).result).toBe('inconclusive');
+    expect(followed).toBe(false);
+  });
+
+  it('a body cut off mid-read (connection reset) → inconclusive, not another server', async () => {
+    const origin = await serve((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': '1000' });
+      res.write('{"status":"ok","serv');
+      setTimeout(() => res.destroy(), 20);
+    });
+    expect((await pub.probeOrigin(origin)).result).toBe('inconclusive');
+  });
+
+  it('reads only a few KB of a foreign body, then hangs up (memory stays bounded)', async () => {
+    let sent = 0;
+    let closed = false;
+    const origin = await serve((_req, res) => {
+      res.writeHead(404, { 'content-type': 'text/html' });
+      const chunk = Buffer.alloc(16 * 1024, 'x');
+      const pump = () => {
+        if (closed || sent >= 8 * 1024 * 1024) {
+          res.end();
+          return;
+        }
+        sent += chunk.length;
+        if (res.write(chunk)) setImmediate(pump);
+        else res.once('drain', pump);
+      };
+      res.on('close', () => {
+        closed = true;
+      });
+      pump();
+    });
+    const probe = await pub.probeOrigin(origin);
+    expect(probe.result).toBe('mismatch');
+    await vi.waitFor(() => expect(closed).toBe(true));
+    expect(sent).toBeLessThan(2 * 1024 * 1024);
   });
 
   it('a name that does not resolve → inconclusive (split-horizon DNS may still serve users)', async () => {
@@ -270,6 +318,41 @@ describe('checkPublicUrl — which origin links use', () => {
     expect(pub.effectiveViewerUrl()).toBe(mockConfig.conversation.viewerUrl);
     expect(pub.getPublicUrlStatus()).toBe('verified');
     expect(logInfo).toHaveBeenCalledWith(expect.stringContaining('reaches this instance again'));
+  });
+
+  it('an inconclusive callback probe keeps an established fallback', async () => {
+    let callbackDown = false;
+    mockConfig.conversation.viewerUrl = await serve(foreignNotFound);
+    mockConfig.oauth.callbackBaseUrl = await serve((req, res) => {
+      if (callbackDown) {
+        res.writeHead(503);
+        res.end('upstream down');
+        return;
+      }
+      self()(req, res);
+    });
+
+    await pub.checkPublicUrl();
+    expect(pub.effectiveViewerUrl()).toBe(mockConfig.oauth.callbackBaseUrl);
+
+    callbackDown = true;
+    await pub.checkPublicUrl();
+    expect(pub.effectiveViewerUrl()).toBe(mockConfig.oauth.callbackBaseUrl);
+  });
+
+  it('a callback origin proven to be another server drops the fallback', async () => {
+    let callbackForeign = false;
+    mockConfig.conversation.viewerUrl = await serve(foreignNotFound);
+    mockConfig.oauth.callbackBaseUrl = await serve((req, res) =>
+      callbackForeign ? foreignNotFound(req, res) : self()(req, res),
+    );
+
+    await pub.checkPublicUrl();
+    expect(pub.effectiveViewerUrl()).toBe(mockConfig.oauth.callbackBaseUrl);
+
+    callbackForeign = true;
+    await pub.checkPublicUrl();
+    expect(pub.effectiveViewerUrl()).toBe(mockConfig.conversation.viewerUrl);
   });
 
   it('an inconclusive probe keeps the previous decision (no flapping)', async () => {
@@ -428,6 +511,69 @@ describe('the running viewer follows the check (T1 end to end)', () => {
       });
       expect(back.headers.location).toBe('/dashboard/U_D');
       expect([back.headers['set-cookie']].flat().join(';')).toContain('soma_dash_token=');
+    } finally {
+      mockConfig.oauth.google = { clientId: '', clientSecret: '' };
+    }
+  });
+
+  // Sign-in started on the fallback origin; before the provider returns, the
+  // public URL is fixed and links move back. The callback carries the state
+  // cookie of the origin it started on, so it must finish there.
+  it('a sign-in in flight when the public URL recovers still completes on the origin it started on', async () => {
+    const CALLBACK = 'https://old-host.example.net:33443';
+    const HOST = 'old-host.example.net:33443';
+    let primaryFixed = false;
+    mockConfig.conversation.viewerUrl = 'https://agent.example.com';
+    mockConfig.oauth.callbackBaseUrl = CALLBACK;
+    mockConfig.oauth.google = { clientId: 'cid', clientSecret: 'csecret' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url);
+        const ours = () => new Response('{}', { status: 200, headers: { [pub.INSTANCE_HEADER]: pub.getInstanceId() } });
+        if (u.startsWith(CALLBACK)) return ours();
+        if (u.startsWith('https://agent.example.com')) {
+          return primaryFixed ? ours() : new Response('DEPLOYMENT_NOT_FOUND', { status: 404 });
+        }
+        if (u.includes('oauth2.googleapis.com/token')) return Response.json({ access_token: 'at' });
+        if (u.includes('googleapis.com/oauth2')) {
+          return Response.json({ email: 'dana@x.com', name: 'Dana', verified_email: true });
+        }
+        return new Response('nope', { status: 404 });
+      }),
+    );
+    try {
+      await web.startWebServer({ listen: false });
+      const oauth = await import('../oauth');
+      oauth.setOAuthUserLookup(() => ({ kind: 'match', userId: 'U_D', name: 'Dana' }));
+      await pub.checkPublicUrl();
+      expect(pub.effectiveViewerUrl()).toBe(CALLBACK);
+
+      const start = await web.injectWebServer({ method: 'GET', url: '/auth/google', headers: { host: HOST } });
+      const state = new URL(String(start.headers.location)).searchParams.get('state') ?? '';
+      const stateCookie = [start.headers['set-cookie']]
+        .flat()
+        .map(String)
+        .find((c) => c.startsWith('soma_oauth_state_google='));
+
+      primaryFixed = true;
+      await pub.checkPublicUrl();
+      expect(pub.effectiveViewerUrl()).toBe('https://agent.example.com');
+
+      const back = await web.injectWebServer({
+        method: 'GET',
+        url: `/auth/google/callback?code=c&state=${encodeURIComponent(state)}`,
+        headers: { host: HOST, cookie: String(stateCookie).split(';')[0] },
+      });
+      expect(back.headers.location).toBe('/dashboard/U_D');
+
+      // Without the state cookie the callback still goes to the public URL (unchanged).
+      const fresh = await web.injectWebServer({
+        method: 'GET',
+        url: '/auth/google/callback?code=c&state=x',
+        headers: { host: HOST },
+      });
+      expect(fresh.headers.location).toBe('https://agent.example.com/auth/google/callback?code=c&state=x');
     } finally {
       mockConfig.oauth.google = { clientId: '', clientSecret: '' };
     }
