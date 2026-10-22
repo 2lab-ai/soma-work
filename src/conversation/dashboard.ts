@@ -5004,6 +5004,15 @@ function toggleDoneGroup(key) {
 }
 var _lastDoneGroups = null;
 var _lastBoardData = null;
+// A targeted card push (sessionUpdated) lands in the last board too, so a
+// re-render from it (a DONE day toggle) never rolls the card back.
+function patchLastBoard(s) {
+  if (!_lastBoardData || !s || !s.key) return;
+  ['working', 'waiting', 'idle', 'closed'].forEach(function(col) {
+    var arr = _lastBoardData[col] || [];
+    for (var i = 0; i < arr.length; i++) if (arr[i] && arr[i].key === s.key) arr[i] = s;
+  });
+}
 
 function renderBoard(board) {
   _sessionCache = Object.create(null); // Clear stale cache each render cycle
@@ -7203,6 +7212,7 @@ function connectWs() {
         // (an open card stays open). The column comes from the card's data-col.
         var updatedKey = msg.session.key;
         _sessionCache[updatedKey] = msg.session;
+        patchLastBoard(msg.session);
         var existingCard = _cardEls[updatedKey];
         if (existingCard) {
           patchCard(existingCard, msg.session, existingCard.getAttribute('data-col') || 'idle');
@@ -7503,8 +7513,10 @@ function wlLoadOlder(state, fetchJson, onAdded) {
   var from = 0;
   var pages = 0;
   var gathered = [];
-  function finish() {
-    state.olderPending = false;
+  // ok = the range up to the held entries is complete; a failed page keeps
+  // olderPending so the next recovery (reconnect) tries again.
+  function finish(ok) {
+    if (ok) state.olderPending = false;
     if (gathered.length && !state.closed && !state.denied) onAdded(state, gathered);
     return null;
   }
@@ -7522,10 +7534,10 @@ function wlLoadOlder(state, fetchJson, onAdded) {
         from = top;
         return step();
       }
-      return finish();
+      return finish(true);
     }, function(err) {
       if (wlStatusOf(err) === 'denied') wlDeny(state);
-      return finish();
+      return finish(false);
     });
   }
   return step();
@@ -7636,6 +7648,8 @@ function loadWorkLog() {
 }
 function recoverWorkLog() {
   if (_wl) wlRecover(_wl, wlFetchJson, paintWorkLog);
+  // An older page that failed earlier is asked for again (T9).
+  if (_wl && _wl.olderPending && _wl.loaded) wlLoadOlder(_wl, wlFetchJson, paintWorkLog);
 }
 function pushLiveWorkLog(convId, entry) {
   if (!_wl || _wl.convId !== convId) return;

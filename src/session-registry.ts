@@ -12,7 +12,7 @@ import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { normalizeTmpPath } from './path-utils';
-import { sanitizeTaskLedger } from './session/task-ledger';
+import { closeTaskList, sanitizeTaskLedger } from './session/task-ledger';
 import { getArchiveStore } from './session-archive';
 import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from './session-identity';
 import { getSessionLifecyclePolicy, isSessionLifecyclePolicyDegraded } from './session-lifecycle-policy';
@@ -1378,6 +1378,9 @@ export class SessionRegistry {
     session.sessionId = undefined;
     session.title = undefined;
     session.lastActivity = new Date();
+    // The old task list stays as history; none of it is in progress any more,
+    // so the new conversation's work is not attributed to it (dashboard T7/T10).
+    session.taskLedger = closeTaskList(session.taskLedger);
 
     // Reset state to INITIALIZING to trigger re-dispatch on next message
     session.state = 'INITIALIZING';
@@ -1992,6 +1995,7 @@ export class SessionRegistry {
         goal: migrateLegacyGoal(serialized.goal),
         goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
         goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
+        taskLedger: sanitizeTaskLedger(serialized.taskLedger),
         activityState: serialized.activityState || 'idle',
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,

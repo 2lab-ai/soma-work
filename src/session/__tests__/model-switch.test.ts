@@ -152,6 +152,48 @@ describe('switchSessionModel (T4/T5)', () => {
     expect(calls.compact).toEqual(['k']);
   });
 
+  it('context size unknown (restart: usage not restored) and a smaller target threshold: compact first (review P1)', async () => {
+    const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', sessionId: 's' };
+    const { d, calls } = deps(session);
+    expect((await switchSessionModel('k', 'grok[1m]', d)).status).toBe('compacting');
+    expect(calls.compact).toEqual(['k']);
+  });
+
+  it('context size unknown but the target allows at least as much: switch at once', async () => {
+    const session: Record<string, any> = { model: 'grok-4.6', sessionId: 's' };
+    const { d, calls } = deps(session);
+    expect((await switchSessionModel('k', 'opus[1m]', d)).status).toBe('switched');
+    expect(calls.compact).toEqual([]);
+  });
+
+  it('mid-turn, a smaller target threshold is refused even if the committed usage looks small (review P1)', async () => {
+    const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', usage: usage(300_000), sessionId: 's' };
+    const { d, calls } = deps(session, { isRequestActive: () => true });
+    await expect(switchSessionModel('k', 'grok[1m]', d)).rejects.toMatchObject({ statusCode: 409 });
+    expect(session.model).toBe('claude-opus-5-5[1m]');
+    expect(calls.compact).toEqual([]);
+  });
+
+  it('mid-turn, a target with at least the same threshold switches (next turn uses it)', async () => {
+    const session: Record<string, any> = { model: 'grok-4.6', usage: usage(300_000), sessionId: 's' };
+    const { d } = deps(session, { isRequestActive: () => true });
+    expect((await switchSessionModel('k', 'opus[1m]', d)).status).toBe('switched');
+  });
+
+  it('the running turn’s latest call counts toward the context it holds', async () => {
+    const session: Record<string, any> = {
+      model: 'claude-opus-5-5[1m]',
+      usage: usage(300_000),
+      sessionId: 's',
+      liveUsage: {
+        'm:a': { inputTokens: 1_000, outputTokens: 2_000, cacheReadTokens: 590_000, cacheCreateTokens: 7_000 },
+      },
+    };
+    const { d } = deps(session);
+    const r = await switchSessionModel('k', 'grok[1m]', d);
+    expect(r).toMatchObject({ status: 'compacting', usedTokens: 600_000 });
+  });
+
   it('a compact cannot start mid-turn: 409, nothing parked', async () => {
     const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', usage: usage(600_000), sessionId: 's' };
     const { d, calls } = deps(session, { isRequestActive: () => true });

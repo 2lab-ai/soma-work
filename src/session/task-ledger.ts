@@ -56,9 +56,6 @@ export interface TodoInput {
   content: string;
   status: TaskStatus;
   activeForm?: string;
-  /** Only seeds a task the ledger has not seen yet (e.g. TodoManager's own stamps); a known task keeps the ledger's. */
-  startedAt?: number;
-  completedAt?: number;
 }
 
 function stamp(rec: TaskRecord, status: TaskStatus, now: number): void {
@@ -89,10 +86,6 @@ export function applyTodoList(ledger: TaskLedger | undefined, todos: readonly To
     let rec = previousList.find((t) => !used.has(t.id) && t.content === item.content);
     if (!rec) {
       rec = { id: `T${nextSeq++}`, content: item.content, status: 'pending', toolCalls: 0 };
-      const seedStart = finitePositive(item.startedAt);
-      const seedEnd = finitePositive(item.completedAt);
-      if (seedStart) rec.startedAt = seedStart;
-      if (seedEnd) rec.completedAt = seedEnd;
       byId.set(rec.id, rec);
     }
     used.add(rec.id);
@@ -190,7 +183,22 @@ export function sanitizeTaskLedger(raw: unknown): TaskLedger | undefined {
     : [];
   // Never mint an id that is already taken, even from a damaged file.
   const highest = tasks.reduce((m, t) => Math.max(m, Number(t.id.slice(1))), 0);
-  return { nextSeq: Math.max(Math.floor(nextSeq), highest + 1), tasks: tasks.slice(-TASK_LEDGER_MAX), current };
+  // Over the bound: keep every task of the current list, then the newest others.
+  const inList = new Set(current);
+  const others = tasks.filter((t) => !inList.has(t.id));
+  const room = Math.max(0, TASK_LEDGER_MAX - (tasks.length - others.length));
+  const keepOthers = new Set(others.slice(Math.max(0, others.length - room)).map((t) => t.id));
+  const kept = tasks.filter((t) => inList.has(t.id) || keepOthers.has(t.id));
+  return { nextSeq: Math.max(Math.floor(nextSeq), highest + 1), tasks: kept, current };
+}
+
+/**
+ * The session starts over (`/new`, renew, handoff): no task of the old list is
+ * in progress any more — it stays in the history (`earlier`), and nothing new
+ * is attributed to it.
+ */
+export function closeTaskList(ledger: TaskLedger | undefined): TaskLedger | undefined {
+  return ledger ? { ...ledger, current: [] } : undefined;
 }
 
 /** Work-log kinds that belong to the task in progress. Instructions and final answers frame the turn. */

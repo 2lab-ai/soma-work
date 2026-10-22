@@ -488,6 +488,23 @@ describe('work log: every entry, however many (T9)', () => {
     expect(paints).toBe(1);
   });
 
+  it('an older page that fails keeps the history pending, so the next try asks again (review F8)', async () => {
+    const srv = server(range(1, 1200), 500);
+    const st = wl.wlNewState('c');
+    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+    await wl.wlLoadOlder(
+      st,
+      async () => {
+        throw Object.assign(new Error('HTTP 500'), { status: 500 });
+      },
+      () => {},
+    );
+    expect(st.olderPending).toBe(true);
+    await wl.wlLoadOlder(st, srv.fetchJson, () => {});
+    expect(st.entries).toHaveLength(1200);
+    expect(st.olderPending).toBe(false);
+  });
+
   it('a log that fits the latest window asks for nothing more', async () => {
     const srv = server(range(1, 40), 500);
     const st = wl.wlNewState('c');
@@ -733,5 +750,16 @@ describe('model switch on the open card (T4/T5)', () => {
       }).text,
     ).toContain('compact한 뒤 전환');
     expect(m.modelSwitchNote({ ok: false, error: '먼저 compact' })).toEqual({ text: '먼저 compact', error: true });
+  });
+});
+
+describe('a DONE day toggle re-renders from the latest card data (review F9)', () => {
+  it('a targeted card push lands in the last board', () => {
+    const board = { working: [{ key: 'a', v: 100 }], waiting: [], idle: [{ key: 'b', v: 1 }], closed: [] };
+    const m = load<{ patchLastBoard(s: unknown): void }>(['patchLastBoard'], [], { _lastBoardData: board });
+    m.patchLastBoard({ key: 'a', v: 200 });
+    expect(board.working[0]).toEqual({ key: 'a', v: 200 });
+    m.patchLastBoard({ key: 'zz', v: 1 });
+    expect(board.idle).toEqual([{ key: 'b', v: 1 }]);
   });
 });

@@ -94,6 +94,7 @@ import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from '
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
+import { calculateTokenCost } from './metrics/model-registry';
 import { bootModelCatalog } from './model-catalog-boot';
 import {
   evaluateAndMaybeRotate,
@@ -905,10 +906,16 @@ async function start() {
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       notifyLiveUsage: (sessionKey: string) => void;
+      priceLiveUsage: (
+        model: string | undefined,
+        t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+      ) => number;
     } = {
       // SSOT 2026-10-22 T1/T2 — a running turn made another API call: push the
       // card (≤ 1/s per session) so its token / cost totals grow live.
       notifyLiveUsage: (sessionKey: string) => scheduleLiveSessionUpdate(sessionKey),
+      priceLiveUsage: (model, t) =>
+        calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
         // SSOT 2026-10-22 T7/T10: the entry carries the task in progress (the
         // dashboard folds the log under it) and a tool call counts on that task.

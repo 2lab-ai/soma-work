@@ -4,7 +4,7 @@
  * its end.
  */
 import { describe, expect, it } from 'vitest';
-import { clearLiveUsage, recordLiveUsage, sumLiveUsage } from '../live-usage';
+import { clearLiveUsage, foldLiveUsage, recordLiveUsage, sumLiveUsage } from '../live-usage';
 
 const call = (messageId: string | undefined, n: number) => ({
   messageId,
@@ -80,5 +80,25 @@ describe('live usage of the running turn', () => {
     expect(sumLiveUsage(session.liveUsage).inputTokens).toBe(7);
     clearLiveUsage(session, 'turn-2');
     expect(session.liveUsage).toBeUndefined();
+  });
+
+  it('a turn that ends without its result folds its reported calls into the totals (review F4)', () => {
+    const session: Record<string, any> = {
+      usage: {
+        totalInputTokens: 10,
+        totalOutputTokens: 1,
+        totalCacheReadTokens: 0,
+        totalCacheCreateTokens: 0,
+        totalCostUsd: 1,
+      },
+    };
+    recordLiveUsage(session, call('a', 100), 't1');
+    expect(foldLiveUsage(session, 't1', () => 0.5)).toBe(true);
+    expect(session.usage).toMatchObject({ totalInputTokens: 110, totalOutputTokens: 201, totalCostUsd: 1.5 });
+    expect(session.liveUsage).toBeUndefined();
+    // Another turn's calls are not this turn's to fold.
+    recordLiveUsage(session, call('b', 5), 't2');
+    expect(foldLiveUsage(session, 't1', () => 1)).toBe(false);
+    expect(sumLiveUsage(session.liveUsage).inputTokens).toBe(5);
   });
 });

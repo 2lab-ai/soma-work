@@ -95,6 +95,16 @@ export function listRepresentativeModels(deps: ModelCatalogDeps, ownerId?: strin
   return out;
 }
 
+/** The context the running turn's latest call read (largest per-call total), 0 when none. */
+function liveContextTokens(session: Pick<ConversationSession, 'liveUsage'>): number {
+  let top = 0;
+  for (const c of Object.values(session.liveUsage ?? {})) {
+    const n = (c.inputTokens || 0) + (c.outputTokens || 0) + (c.cacheReadTokens || 0) + (c.cacheCreateTokens || 0);
+    if (n > top) top = n;
+  }
+  return top;
+}
+
 /** Tokens the context holds now (the four `current*` usage fields). */
 export function usedContextTokens(session: Pick<ConversationSession, 'usage'>): number {
   const u = session.usage;
@@ -126,7 +136,16 @@ export async function switchSessionModel(
   if (session.terminated) throw new ModelSwitchError(409, '종료된 세션은 모델을 바꿀 수 없습니다');
 
   const autoCompactTokens = deps.autoCompactFor(model, session.ownerId);
-  const usedTokens = usedContextTokens(session);
+  // The committed usage is measured at turn end; a running turn's calls may
+  // already hold more.
+  const usedTokens = Math.max(usedContextTokens(session), liveContextTokens(session));
+  // A target that compacts earlier than the current model is the dangerous
+  // direction: it needs the context's real size.
+  const currentAutoCompact = session.model
+    ? deps.autoCompactFor(session.model, session.ownerId)
+    : Number.POSITIVE_INFINITY;
+  const shrinking = autoCompactTokens < currentAutoCompact;
+  const sizeKnown = !!session.usage || !!(session.liveUsage && Object.keys(session.liveUsage).length);
   const result = (status: ModelSwitchResult['status']): ModelSwitchResult => ({
     status,
     nickname,
@@ -138,8 +157,20 @@ export async function switchSessionModel(
   const hasOverride = typeof session.autoCompactTokens === 'number';
   if (session.model === model && !session.pendingModelSwitch && !hasOverride) return result('unchanged');
 
-  if (usedTokens > autoCompactTokens) {
-    if (deps.isRequestActive(sessionKey)) {
+  const busy = deps.isRequestActive(sessionKey);
+  if (busy && shrinking) {
+    // Mid-turn the context keeps growing and a compact cannot start: a target
+    // that compacts earlier waits for the turn to end.
+    throw new ModelSwitchError(
+      409,
+      `${nickname}의 auto-compact(${k(autoCompactTokens)})가 지금 모델보다 작아 컨텍스트 확인·compact가 필요합니다 — 진행 중인 턴이 끝난 뒤 다시 시도하세요`,
+    );
+  }
+  // Unknown size (usage is not restored across a restart) is treated as too
+  // big when the target compacts earlier: compact first, never switch blind.
+  const needsCompact = usedTokens > autoCompactTokens || (shrinking && !sizeKnown && !!session.sessionId);
+  if (needsCompact) {
+    if (busy) {
       throw new ModelSwitchError(
         409,
         `지금 컨텍스트 ${k(usedTokens)}가 ${nickname}의 auto-compact ${k(autoCompactTokens)}보다 커서 먼저 compact해야 합니다 — 진행 중인 턴이 끝난 뒤 다시 시도하세요`,
