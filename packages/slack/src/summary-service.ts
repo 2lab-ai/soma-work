@@ -157,7 +157,7 @@ export const TLDR_MISSING_POINTER = 'TL;DR not generated — see the thread for 
 
 const TLDR_OPEN_LINE = /^\s*<tldr>\s*$/i;
 const TLDR_CLOSE_LINE = /^\s*<\/tldr>\s*$/i;
-const FENCE_LINE = /^\s*```/;
+const FENCE_LINE = /^\s*(?:```|~~~)/;
 const LIST_MARKER = /^(?:[-*•+]|\d+[.)])\s+/;
 
 /** Where the surface TL;DR came from. Logged so model compliance with the envelope stays observable. */
@@ -214,8 +214,9 @@ export function parseExecutiveSummary(raw: string): ParsedExecutiveSummary {
     return { tldr: [], body: raw, tldrSource: 'missing' };
   }
 
-  // The envelope must close before the first code fence: a `</tldr>` inside a
-  // fenced example further down is document content, not our terminator.
+  // The envelope must close before the first code fence (``` or ~~~): a
+  // `</tldr>` inside a fenced example further down is document content, not
+  // our terminator.
   let close = -1;
   for (let i = open + 1; i < lines.length && !FENCE_LINE.test(lines[i]); i++) {
     if (TLDR_CLOSE_LINE.test(lines[i])) {

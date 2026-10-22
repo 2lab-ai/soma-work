@@ -159,6 +159,13 @@ describe('T3 — parseExecutiveSummary()', () => {
     expect(parsed.body).toBe('first\n```\n</tldr>\n```\nafter');
   });
 
+  it('does not let a </tldr> inside a ~~~ fenced example close an unclosed leading opener', () => {
+    const raw = '<tldr>\nfirst\n## SSOT\nquote\n~~~xml\n</tldr>\n~~~\nafter';
+    const parsed = parseExecutiveSummary(raw);
+    expect(parsed.tldrSource).toBe('missing');
+    expect(parsed.body).toBe('first\n## SSOT\nquote\n~~~xml\n</tldr>\n~~~\nafter');
+  });
+
   it('treats a closed but empty block as missing and removes the envelope', () => {
     const parsed = parseExecutiveSummary('<tldr>\n\n</tldr>\nreal content');
     expect(parsed.tldrSource).toBe('missing');
