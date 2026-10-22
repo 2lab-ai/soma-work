@@ -20,7 +20,7 @@ import {
   buildInstructionConfirmFallbackText,
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
-import { clearLiveUsage, foldLiveUsage, recordLiveUsage } from '../live-usage';
+import { clearLiveUsage, foldLiveUsage, markLiveUsageSettled, recordLiveUsage } from '../live-usage';
 import { applyPendingModelSwitch, settlePendingModelSwitch } from '../model-switch';
 import { OutputFlag, resolveVerbosityMask, shouldOutput, verboseTag } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
@@ -5009,7 +5009,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session.usage.totalCacheCreateTokens += usage.cacheCreationInputTokens;
     session.usage.totalCostUsd += usage.totalCostUsd;
     session.usage.lastUpdated = Date.now();
-    // The turn's calls are in the totals now — the live view stops adding them.
+    // The turn's calls are in the totals now — the live view stops adding them,
+    // and the turn's end never folds them a second time.
+    markLiveUsageSettled(session, turnId);
     clearLiveUsage(session, turnId);
 
     // Per-model cumulative totals (input/output/cache write/cache read/cost),

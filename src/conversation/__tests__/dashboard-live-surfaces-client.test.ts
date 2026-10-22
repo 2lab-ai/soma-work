@@ -505,6 +505,26 @@ describe('work log: every entry, however many (T9)', () => {
     expect(st.olderPending).toBe(false);
   });
 
+  it('a retry after a partial success resumes where it stopped — no gap is left (review R2-2)', async () => {
+    const srv = server(range(1, 1200), 500);
+    const st = wl.wlNewState('c');
+    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+    let n = 0;
+    await wl.wlLoadOlder(
+      st,
+      async (u: string) => {
+        n++;
+        if (n === 2) throw Object.assign(new Error('HTTP 500'), { status: 500 });
+        return srv.fetchJson(u);
+      },
+      () => {},
+    );
+    expect(st.olderPending).toBe(true);
+    await wl.wlLoadOlder(st, srv.fetchJson, () => {});
+    expect(st.entries.map((e: E) => e.seq)).toEqual(range(1, 1200).map((e) => e.seq));
+    expect(st.olderPending).toBe(false);
+  });
+
   it('a log that fits the latest window asks for nothing more', async () => {
     const srv = server(range(1, 40), 500);
     const st = wl.wlNewState('c');

@@ -109,6 +109,7 @@ import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
+import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
 import { applyTodoList, ledgerTasks, stampWorkLogTask } from './session/task-ledger';
@@ -818,6 +819,8 @@ async function start() {
         ...productionModelCatalogDeps(),
         getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
         isRequestActive: (key) => slackHandler.getRequestCoordinator().isRequestActive(key),
+        currentAutoCompact: (session) =>
+          resolveEffectiveAutoCompact(session, session.ownerId || '', userSettingsStore).tokens,
         dispatchCompact: (key) => injectDashboardMessage(key, 'compact --yes'),
         save: () => claudeHandler.saveSessions(),
         broadcast: () => broadcastSessionUpdate(),

@@ -52,6 +52,8 @@ export interface ModelCatalogDeps {
 export interface ModelSwitchDeps extends ModelCatalogDeps {
   getSession(sessionKey: string): ConversationSession | undefined;
   isRequestActive(sessionKey: string): boolean;
+  /** The threshold the session compacts at now — its override included. */
+  currentAutoCompact?(session: ConversationSession): number;
   /** Start a compact on the session's current model (as if the owner typed `compact --yes`). */
   dispatchCompact(sessionKey: string): Promise<void>;
   save(): void;
@@ -139,11 +141,15 @@ export async function switchSessionModel(
   // The committed usage is measured at turn end; a running turn's calls may
   // already hold more.
   const usedTokens = Math.max(usedContextTokens(session), liveContextTokens(session));
-  // A target that compacts earlier than the current model is the dangerous
-  // direction: it needs the context's real size.
-  const currentAutoCompact = session.model
-    ? deps.autoCompactFor(session.model, session.ownerId)
-    : Number.POSITIVE_INFINITY;
+  // A target that compacts earlier than the session does now (its override
+  // included) is the dangerous direction: it needs the context's real size.
+  const currentAutoCompact = deps.currentAutoCompact
+    ? deps.currentAutoCompact(session)
+    : typeof session.autoCompactTokens === 'number'
+      ? session.autoCompactTokens
+      : session.model
+        ? deps.autoCompactFor(session.model, session.ownerId)
+        : Number.POSITIVE_INFINITY;
   const shrinking = autoCompactTokens < currentAutoCompact;
   const sizeKnown = !!session.usage || !!(session.liveUsage && Object.keys(session.liveUsage).length);
   const result = (status: ModelSwitchResult['status']): ModelSwitchResult => ({
@@ -186,15 +192,20 @@ export async function switchSessionModel(
     // The compact is a whole turn: answer now and let the card follow it (the
     // waiting switch is on the card until the boundary applies it). A dispatch
     // that fails un-parks the switch and pushes the card again.
+    // The dispatch returns once the message was handled — normally after the
+    // compact turn, whose boundary has applied the switch by then. A switch
+    // still parked at that point was not taken by any compact (the slot was
+    // busy and the command dropped, or it failed): un-park it.
     const parked = session.pendingModelSwitch;
+    const unpark = () => {
+      if (session.pendingModelSwitch !== parked) return;
+      session.pendingModelSwitch = undefined;
+      deps.save();
+      deps.broadcast();
+    };
     void Promise.resolve()
       .then(() => deps.dispatchCompact(sessionKey))
-      .catch(() => {
-        if (session.pendingModelSwitch !== parked) return;
-        session.pendingModelSwitch = undefined;
-        deps.save();
-        deps.broadcast();
-      });
+      .then(unpark, unpark);
     return result('compacting');
   }
 
