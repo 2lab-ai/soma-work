@@ -106,6 +106,7 @@ import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
+import { applyTodoList, ledgerTasks, stampWorkLogTask } from './session/task-ledger';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
@@ -115,6 +116,7 @@ import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
+import type { ConversationSession } from './types';
 import { getTokenManager } from './token-manager';
 
 const logger = new Logger('Main');
@@ -703,17 +705,12 @@ async function start() {
       setSkillPromptInvalidationHook(invalidate);
     }
 
-    // Connect dashboard: task accessor (resolve sessionKey → sessionId for TodoManager)
+    // Connect dashboard: task accessor — the session's task ledger (SSOT
+    // 2026-10-22 T7/T8: ids, elapsed time, tool calls; kept across TodoWrite
+    // list replacements and the TodoManager's post-turn cleanup).
     setDashboardTaskAccessor((sessionKey: string) => {
       const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
-      const lookupId = session?.sessionId || sessionKey;
-      const todos = slackHandler.getTodoManager().getTodos(lookupId);
-      return todos.map((t) => ({
-        content: t.content,
-        status: t.status,
-        startedAt: t.startedAt,
-        completedAt: t.completedAt,
-      }));
+      return session?.taskLedger ? ledgerTasks(session.taskLedger) : undefined;
     });
 
     // Connect dashboard: stop handler (abort running session). Dashboard
@@ -852,25 +849,23 @@ async function start() {
     // Connect dashboard: real-time task updates
     // TodoManager fires with sessionId, but dashboard caches by sessionKey.
     // Resolve sessionId → sessionKey so WebSocket clients can match the update.
+    // Every TodoWrite list is merged into the session's task ledger first, so
+    // the update carries ledger ids, times and tool-call counts.
     slackHandler.getTodoManager().setOnUpdateCallback((sessionId, todos) => {
       let sessionKey = sessionId;
+      let owner: ConversationSession | undefined;
       const allSessions = claudeHandler.getSessionRegistry().getAllSessions();
       for (const [key, session] of allSessions) {
         if (session.sessionId === sessionId) {
           sessionKey = key;
+          owner = session;
           break;
         }
       }
-      broadcastTaskUpdate(
-        sessionKey,
-        todos.map((t) => ({
-          content: t.content,
-          status: t.status,
-          activeForm: t.activeForm,
-          startedAt: t.startedAt,
-          completedAt: t.completedAt,
-        })),
-      );
+      if (!owner) return;
+      owner.taskLedger = applyTodoList(owner.taskLedger, todos, Date.now());
+      const view = ledgerTasks(owner.taskLedger);
+      broadcastTaskUpdate(sessionKey, view.current, view.earlier);
     });
 
     // Connect dashboard: real-time conversation turn updates
@@ -890,7 +885,16 @@ async function start() {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
     } = {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
-        appendWorkLog(conversationId, entry).catch(() => {});
+        // SSOT 2026-10-22 T7/T10: the entry carries the task in progress (the
+        // dashboard folds the log under it) and a tool call counts on that task.
+        let ledger: ConversationSession['taskLedger'];
+        for (const session of claudeHandler.getAllSessions().values()) {
+          if (session.conversationId === conversationId) {
+            ledger = session.taskLedger;
+            break;
+          }
+        }
+        appendWorkLog(conversationId, stampWorkLogTask(ledger, entry)).catch(() => {});
       },
     };
     setStreamExecutorProviders(workLogProviders);

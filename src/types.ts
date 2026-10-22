@@ -49,6 +49,7 @@ import type {
   UserChoices,
   WorkflowType,
 } from 'somalib/model-commands/session-types';
+import type { TaskLedger } from './session/task-ledger';
 import type { EffortLevel } from './user-settings-store';
 
 /**
@@ -688,6 +689,30 @@ export interface ConversationSession {
    * `null` / `undefined` = no override.
    */
   autoCompactTokens?: number | null;
+  /**
+   * SSOT 2026-10-22 T7/T8 — the session's task ledger: every TodoWrite task
+   * with its own id, elapsed time and tool-call count, kept across list
+   * replacements (see `session/task-ledger.ts`). Persisted.
+   */
+  taskLedger?: TaskLedger;
+  /**
+   * SSOT 2026-10-22 T1/T2 — usage of the RUNNING turn, one entry per API
+   * message id (each assistant message carries its own call's usage). Folded
+   * into the dashboard's totals until the turn's result usage lands in
+   * `usage.total*`, then cleared. Runtime-only — NOT persisted.
+   */
+  liveUsage?: Record<
+    string,
+    { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number }
+  >;
+  /**
+   * SSOT 2026-10-22 T5 — a dashboard model switch that waits for the compact
+   * the current model must run first (context above the target model's
+   * auto-compact threshold). Applied at the compact boundary, cancelled when
+   * the compact turn ends without one. Runtime-only — NOT persisted, so a
+   * restart cancels it instead of applying it to some unrelated later compact.
+   */
+  pendingModelSwitch?: { model: string; nickname: string; requestedAt: number };
   // One-shot suppression for `checkAndSchedulePendingCompact`. Set to `true`
   // by `postCompactCompleteIfNeeded` when a compact cycle seals; cleared by
   // the very next threshold check. Prevents the "Compaction completed →
