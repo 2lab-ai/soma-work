@@ -109,6 +109,13 @@ export interface WorkLogInput {
   ok?: boolean;
   turnId?: string;
   ts?: number;
+  /**
+   * SSOT 2026-10-22 T10 — the task (`T<n>` of the session's task ledger) that
+   * was in progress when this entry was made, and its title then. The
+   * dashboard folds the log under these. Absent outside any task.
+   */
+  taskId?: string;
+  taskTitle?: string;
   /** Full content behind `text` (tool input / result); stored apart, served only by readWorkLogRaw. */
   raw?: string;
   /** UTF-8 size of the original when the emitter already cut `raw`; ignored unless larger than `raw`. */
@@ -151,7 +158,7 @@ export interface WorkLogPage {
 
 /** Max characters kept per entry `text` (spec §3.3). */
 export const WORK_LOG_TEXT_MAX = 4000;
-/** Max characters kept for `tool` and `turnId`. */
+/** Max characters kept for `tool`, `turnId`, `taskId` and `taskTitle`. */
 export const WORK_LOG_FIELD_MAX = 200;
 /** Max UTF-8 bytes kept per raw — defined once, next to the emitter's types. */
 export { WORK_LOG_RAW_MAX_BYTES };
@@ -1146,6 +1153,8 @@ export function appendWorkLog(conversationId: string, input: WorkLogInput): Prom
   if (input.tool !== undefined) fields.tool = clampChars(String(input.tool), WORK_LOG_FIELD_MAX);
   if (input.ok !== undefined) fields.ok = input.ok;
   if (input.turnId !== undefined) fields.turnId = clampChars(String(input.turnId), WORK_LOG_FIELD_MAX);
+  if (input.taskId !== undefined) fields.taskId = clampChars(String(input.taskId), WORK_LOG_FIELD_MAX);
+  if (input.taskTitle !== undefined) fields.taskTitle = clampChars(String(input.taskTitle), WORK_LOG_FIELD_MAX);
   const raw =
     input.raw != null
       ? pendingRaw(String(input.raw), input.rawBytes)

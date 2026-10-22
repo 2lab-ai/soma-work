@@ -34,6 +34,7 @@ const VALID_MODELS = new Set([
   'claude-opus-4-8[1m]',
   'claude-opus-4-7[1m]',
   'claude-opus-4-6[1m]',
+  'claude-sonnet-4-6[1m]',
   'gpt-5.5',
   'gpt-5.6-sol',
   'gpt-5.6-sol[1m]',

@@ -26,6 +26,13 @@ export interface WorkLogInput {
   turnId?: string;
   ts?: number;
   /**
+   * SSOT 2026-10-22 T10 — the task (`T<n>` of the session's task ledger) that
+   * was in progress when this entry was made, and its title then. The
+   * dashboard folds the log under these. Absent outside any task.
+   */
+  taskId?: string;
+  taskTitle?: string;
+  /**
    * The full content behind the one-line `text`: a tool call's whole input, a
    * tool result's output. The store keeps it (size-capped, in a file of its
    * own) and serves it on demand only; pages and the live broadcast carry
