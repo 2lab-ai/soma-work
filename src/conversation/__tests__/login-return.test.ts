@@ -22,6 +22,11 @@ const mockConfig = {
 
 vi.mock('../../config', () => ({ config: mockConfig }));
 vi.mock('../../env-paths', () => ({ IS_DEV: true, DATA_DIR: '/tmp/test-data' }));
+// The listening server would probe its public URL over the real network.
+vi.mock('../public-url', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../public-url')>()),
+  startPublicUrlCheck: vi.fn(),
+}));
 vi.mock('../recorder', () => ({
   listConversations: vi.fn().mockResolvedValue([]),
   getConversation: vi.fn().mockResolvedValue(null),

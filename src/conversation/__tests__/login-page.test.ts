@@ -106,6 +106,28 @@ describe('login page', () => {
     });
   });
 
+  describe('sign-in errors', () => {
+    // A Slack lookup that failed or timed out is not "no account": the page must
+    // say to retry, not send the user to an admin (T2).
+    it('lookup_misconfigured points at the admin and the Slack link, not at retrying', async () => {
+      const res = await getLogin();
+      const script = res.body.match(/<script>([\s\S]*?)<\/script>\s*<\/body>/)?.[1] ?? '';
+      const line = script.split('\n').find((l) => l.includes("'lookup_misconfigured'")) ?? '';
+      expect(line).toContain('admin');
+      expect(line).toContain('dashboard link');
+      expect(line).not.toContain('try again');
+    });
+
+    it('lookup_unavailable asks to retry and does not blame the account', async () => {
+      const res = await getLogin();
+      const script = res.body.match(/<script>([\s\S]*?)<\/script>\s*<\/body>/)?.[1] ?? '';
+      const line = script.split('\n').find((l) => l.includes("'lookup_unavailable'")) ?? '';
+      expect(line).toContain('try again');
+      expect(line).not.toContain('No matching Slack account');
+      expect(line).not.toContain('Contact your admin');
+    });
+  });
+
   describe('signed-out browser', () => {
     it('shows the sign-in options and no account card', async () => {
       mockConfig.oauth.google = { clientId: 'gid', clientSecret: 'gsecret' };
