@@ -1897,6 +1897,7 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
     const toggle = fakeEl();
     const count = fakeEl();
     const list = fakeEl({ hidden: true, scrollHeight: 900, clientHeight: 300, scrollTop: 600 });
+    (list as unknown as { appendChild(n: unknown): void }).appendChild = (n: unknown) => list.children.push(n);
     const document = {
       getElementById: (id: string) =>
         ({ 'worklog-toggle': toggle, 'worklog-count': count, 'worklog-list': list })[id] ?? null,
@@ -1914,16 +1915,29 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
       [
         'esc',
         'escAttr',
+        'toNum',
+        'formatDuration',
         'decodeSlackEntities',
         'setTextIfChanged',
+        'renderTaskMeta',
         'renderWorkLogEntry',
+        'wlGroupOf',
+        'wlBuildRows',
+        'wlTaskInfo',
+        'renderWorkLogGroupHead',
+        'renderWorkLogGroup',
+        'wlGroupOpen',
+        'wlGroupEl',
+        'wlRenderList',
+        'wlAppendTail',
         'wlDetailOpen',
+        'wlNavRows',
         'wlEnsureTabStop',
         'setWorkLogOpen',
         'paintWorkLog',
       ],
       ['WL_LABELS'],
-      { document, _wl: state },
+      { document, _wl: state, panelSessionKey: null, _sessionCache: {}, updateTimersIn: () => {} },
     );
     return { m, toggle, count, list };
   }
@@ -1948,13 +1962,15 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
   });
 
   it('tail-follow stops while an entry’s detail is open', () => {
-    const st = { entries: [{ seq: 1 }], painted: true, open: new Set([1]) };
+    // As wlMerge leaves it: state.entries already holds the added entry.
+    const st = { entries: [{ seq: 1 }, { seq: 2 }] as Array<{ seq: number }>, painted: true, open: new Set([1]) };
     const p = page(st);
     p.list.hidden = false;
     p.list.scrollTop = 600; // at the bottom (900 - 600 <= 300 + 40)
     p.m.paintWorkLog(st, [{ entry: { seq: 2, kind: 'tool', text: 'x' }, index: 1 }]);
     expect(p.list.scrollTop).toBe(600);
     st.open.clear();
+    st.entries.push({ seq: 3 });
     p.m.paintWorkLog(st, [{ entry: { seq: 3, kind: 'tool', text: 'y' }, index: 2 }]);
     expect(p.list.scrollTop).toBe(900);
   });
