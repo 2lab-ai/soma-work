@@ -360,13 +360,35 @@ describe('Dashboard — live surfaces (SSOT 2026-10-22)', () => {
               liveSession({
                 model: 'grok-4.6',
                 usage: usage({ currentInputTokens: 300_000, currentCacheReadTokens: 20_000 }),
-                pendingModelSwitch: { model: 'claude-opus-5-5[1m]', nickname: 'opus[1m]', requestedAt: 1 },
+                pendingModelSwitch: { model: 'claude-opus-5-5[1m]', nickname: 'opus[1m]', requestedAt: Date.now() },
               }),
             ],
           ]),
         )
       ).working[0];
       expect(card).toMatchObject({ contextTokens: 320_000, autoCompactTokens: 450_000, pendingModel: 'opus[1m]' });
+    });
+
+    it('a waiting switch past its TTL no longer locks the picker (its queued compact never came, review R3-2)', async () => {
+      const card = (
+        await board(
+          new Map([
+            [
+              'C1:t1',
+              liveSession({
+                model: 'grok-4.6',
+                usage: usage({ currentInputTokens: 300_000 }),
+                pendingModelSwitch: {
+                  model: 'claude-opus-5-5[1m]',
+                  nickname: 'opus[1m]',
+                  requestedAt: Date.now() - 31 * 60 * 1000,
+                },
+              }),
+            ],
+          ]),
+        )
+      ).working[0];
+      expect(card.pendingModel).toBeUndefined();
     });
 
     it('the page lists the six representative models with their auto-compact thresholds', async () => {

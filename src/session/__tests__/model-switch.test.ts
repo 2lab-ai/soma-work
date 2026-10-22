@@ -204,6 +204,26 @@ describe('switchSessionModel (T4/T5)', () => {
     expect(calls.broadcasts).toBe(2);
   });
 
+  it('a compact queued behind a running turn keeps the switch parked until that compact runs (review R3-2)', async () => {
+    // `handleMessage` returns as soon as the follow-up queue has the command:
+    // the compact has not run yet, so the switch must still be waiting for it.
+    const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', usage: usage(600_000), sessionId: 's' };
+    const { d, calls } = deps(session, { dispatchCompact: async () => 'queued' as const });
+    expect((await switchSessionModel('k', 'grok[1m]', d)).status).toBe('compacting');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(session.pendingModelSwitch).toMatchObject({ model: 'grok-4.6', nickname: 'grok[1m]' });
+    expect(session.model).toBe('claude-opus-5-5[1m]');
+    expect(calls.broadcasts).toBe(1);
+  });
+
+  it('a dispatch that reports it settled without taking the compact un-parks the switch (review R3-2)', async () => {
+    const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', usage: usage(600_000), sessionId: 's' };
+    const { d } = deps(session, { dispatchCompact: async () => 'settled' as const });
+    expect((await switchSessionModel('k', 'grok[1m]', d)).status).toBe('compacting');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(session.pendingModelSwitch).toBeUndefined();
+  });
+
   it('shrinking is judged against the session’s effective threshold, override included (review R2-3)', async () => {
     // Opus 1M at a 900k override, size unknown after a restart; sonnet[1m] compacts at 750k.
     const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', autoCompactTokens: 900_000, sessionId: 's' };

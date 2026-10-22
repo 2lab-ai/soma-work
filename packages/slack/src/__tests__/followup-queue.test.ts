@@ -1745,3 +1745,22 @@ describe('FollowupQueue editQueued (06 §3.4 Edit)', () => {
     expect(queue.get(SESSION, target.id)?.epoch).toBe(target.epoch);
   });
 });
+
+describe('FollowupQueue holdsPending (dashboard model switch, review R3-2)', () => {
+  it('a message parked for a later turn is still to run; one that ran, failed or was cancelled is not', () => {
+    const queue = new FollowupQueue();
+    expect(queue.holdsPending('C1', '1.1')).toBe(false); // never queued
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.enqueue(SESSION, event({ ts: '1.2' }));
+    expect(queue.holdsPending('C1', '1.1')).toBe(true);
+    expect(queue.holdsPending('C2', '1.1')).toBe(false); // same ts, other channel
+    const ran = dispatchFirst(queue); // 1.1 is running now — its compact can still land
+    expect(queue.holdsPending('C1', '1.1')).toBe(true);
+    queue.markInterrupted(SESSION, ran.id, ran.epoch, 'test'); // stopped mid-run: re-runs only on an explicit retry
+    expect(queue.holdsPending('C1', '1.1')).toBe(false);
+    const second = queue.list(SESSION).find((i) => i.message.ts === '1.2');
+    if (!second) throw new Error('missing item');
+    queue.cancelItem(SESSION, second.id, second.epoch);
+    expect(queue.holdsPending('C1', '1.2')).toBe(false);
+  });
+});

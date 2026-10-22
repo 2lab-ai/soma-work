@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyModelSwitch,
   applyPendingModelSwitch,
+  livePendingModelSwitch,
   PENDING_MODEL_SWITCH_TTL_MS,
   settlePendingModelSwitch,
 } from '../model-switch';
@@ -78,5 +79,16 @@ describe('a switch waiting for its compact', () => {
     expect(failed.model).toBe('a');
     expect(failed.pendingModelSwitch).toBeUndefined();
     expect(settlePendingModelSwitch({ model: 'a' }, cw)).toBe('none');
+  });
+});
+
+describe('livePendingModelSwitch', () => {
+  it('a parked switch counts until its TTL runs out (review R3-2: a queued compact that never comes)', () => {
+    const pendingModelSwitch = { model: 'grok-4.6', nickname: 'grok[1m]', requestedAt: 1_000 };
+    expect(livePendingModelSwitch({ pendingModelSwitch }, 1_000 + PENDING_MODEL_SWITCH_TTL_MS)).toBe(
+      pendingModelSwitch,
+    );
+    expect(livePendingModelSwitch({ pendingModelSwitch }, 1_001 + PENDING_MODEL_SWITCH_TTL_MS)).toBeUndefined();
+    expect(livePendingModelSwitch({}, 0)).toBeUndefined();
   });
 });

@@ -129,6 +129,62 @@ describe('live usage of the running turn', () => {
     });
   });
 
+  it('the turn that compacted keeps the post-compact occupancy; its spend still folds (review R3-1)', () => {
+    // An interrupted /compact turn: the boundary set the occupancy to post_tokens
+    // and shielded it for this turn; its summarization call read the whole
+    // pre-compact transcript and must not put that number back.
+    const session: Record<string, any> = {
+      postCompactOccupancyTurnId: 't',
+      usage: {
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreateTokens: 0,
+        totalCostUsd: 0,
+        currentInputTokens: 30_000,
+        currentOutputTokens: 0,
+        currentCacheReadTokens: 0,
+        currentCacheCreateTokens: 0,
+      },
+    };
+    recordLiveUsage(
+      session,
+      { messageId: 'a', inputTokens: 4_000, outputTokens: 800, cacheReadTokens: 670_000, cacheCreateTokens: 0 },
+      't',
+    );
+    expect(foldLiveUsage(session, 't', () => 2)).toBe(true);
+    expect(session.usage).toMatchObject({
+      currentInputTokens: 30_000,
+      currentOutputTokens: 0,
+      currentCacheReadTokens: 0,
+      currentCacheCreateTokens: 0,
+      totalInputTokens: 4_000,
+      totalOutputTokens: 800,
+      totalCacheReadTokens: 670_000,
+      totalCostUsd: 2,
+    });
+  });
+
+  it('a shield another turn set does not hold this turn’s occupancy (review R3-1)', () => {
+    const session: Record<string, any> = {
+      postCompactOccupancyTurnId: 'older',
+      usage: {
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreateTokens: 0,
+        totalCostUsd: 0,
+        currentInputTokens: 30_000,
+        currentOutputTokens: 0,
+        currentCacheReadTokens: 0,
+        currentCacheCreateTokens: 0,
+      },
+    };
+    recordLiveUsage(session, call('a', 90_000), 't');
+    foldLiveUsage(session, 't', () => 0);
+    expect(session.usage.currentInputTokens).toBe(90_000);
+  });
+
   it('a turn whose result usage was applied is never folded again (review: double count)', () => {
     const session: Record<string, any> = {
       usage: {

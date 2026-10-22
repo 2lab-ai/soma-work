@@ -456,6 +456,22 @@ export class FollowupQueue {
     return item ? cloneJson(item) : undefined;
   }
 
+  /**
+   * Is the Slack message `channel:ts` parked here and still going to run (or
+   * running now)? A host that injected a message and needs to know whether
+   * it is still ahead — the dashboard's model switch waits on its queued
+   * `compact --yes` — asks this after `handleMessage` returns. A stopped item
+   * (`uncertain`) re-runs only on an explicit retry, so it is not pending.
+   */
+  holdsPending(channel: string, ts: string): boolean {
+    const eventKey = `${channel}:${ts}`;
+    return this.state.sessions.some((session) =>
+      session.items.some(
+        (item) => item.eventKey === eventKey && item.state !== 'uncertain' && !TERMINAL_STATES.includes(item.state),
+      ),
+    );
+  }
+
   /** Full persistable state (defensive clone). */
   snapshot(): FollowupQueueSnapshot {
     return cloneJson(this.state);

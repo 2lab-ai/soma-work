@@ -27,6 +27,7 @@
  */
 
 import { sumLiveUsage } from '@soma/slack/live-usage';
+import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
 import { displayTitle } from '../format/display-title';
@@ -757,9 +758,9 @@ function modelFields(s: any): Pick<KanbanSession, 'contextTokens' | 'autoCompact
   } catch (error) {
     logger.debug('auto-compact threshold unavailable for the card', { error: (error as Error)?.message });
   }
-  if (s.pendingModelSwitch && typeof s.pendingModelSwitch.nickname === 'string') {
-    out.pendingModel = s.pendingModelSwitch.nickname;
-  }
+  // Past its TTL the switch no longer counts: the picker unlocks.
+  const pending = livePendingModelSwitch(s);
+  if (pending && typeof pending.nickname === 'string') out.pendingModel = pending.nickname;
   return out;
 }
 
