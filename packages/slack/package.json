@@ -24,6 +24,7 @@
     "./directives": "./dist/directives/index.js",
     "./directives/channel-message-directive": "./dist/directives/channel-message-directive.js",
     "./directives/deploy-completed-directive": "./dist/directives/deploy-completed-directive.js",
+    "./directives/release-notes-directive": "./dist/directives/release-notes-directive.js",
     "./directives/session-link-directive": "./dist/directives/session-link-directive.js",
     "./context-window-manager": "./dist/context-window-manager.js",
     "./session-usage-math": "./dist/session-usage-math.js",
@@ -50,6 +51,7 @@
     "./pipeline/transcript-sanitizer": "./dist/pipeline/transcript-sanitizer.js",
     "./pipeline/types": "./dist/pipeline/types.js",
     "./reaction-manager": "./dist/reaction-manager.js",
+    "./release-notes-poster": "./dist/release-notes-poster.js",
     "./release-notifier": "./dist/release-notifier.js",
     "./request-coordinator": "./dist/request-coordinator.js",
     "./session-manager": "./dist/session-manager.js",
@@ -155,6 +157,9 @@
       "directives/channel-message-directive": [
         "dist/directives/channel-message-directive.d.ts"
       ],
+      "directives/release-notes-directive": [
+        "dist/directives/release-notes-directive.d.ts"
+      ],
       "directives/session-link-directive": [
         "dist/directives/session-link-directive.d.ts"
       ],
@@ -223,6 +228,9 @@
       ],
       "reaction-manager": [
         "dist/reaction-manager.d.ts"
+      ],
+      "release-notes-poster": [
+        "dist/release-notes-poster.d.ts"
       ],
       "release-notifier": [
         "dist/release-notifier.d.ts"

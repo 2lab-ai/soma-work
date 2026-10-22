@@ -22,6 +22,7 @@ import {
 } from '../instruction-confirm-blocks';
 import { OutputFlag, resolveVerbosityMask, shouldOutput, verboseTag } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
+import { postReleaseNotes, type ReleaseNotesRouting, SESSION_ROUTING } from '../release-notes-poster';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
 // Issue #1082 T2: shared goal-apply helpers (same pair T1's slack-handler
 // uses for goal-prefixed first messages) — epoch bump + cache invalidation
@@ -494,6 +495,12 @@ interface StreamExecutorDeps {
    * without it the directive is still stripped from the visible text.
    */
   onDeployCompleted?: (signal: DeployCompletedSignal, ctx: DeployCompletedHookContext) => Promise<void>;
+  /**
+   * Operator routing for `release_notes` (SOMA_RELEASE_NOTES_CHANNELS, parsed by
+   * the host). Consulted only for a DEPLOY-workflow session; any other session,
+   * or a host without it, posts the notes in its own channel (SESSION_ROUTING).
+   */
+  routeReleaseNotes?: (repo: string, target: string) => ReleaseNotesRouting;
 }
 
 interface StreamExecuteParams {
@@ -1889,6 +1896,36 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               sessionKey,
               channel,
               error: (error as Error).message,
+            });
+          }
+        },
+        onReleaseNotesDetected: async (payload) => {
+          // Cross-channel posting is a deploy-workflow privilege, like deploy_completed:
+          // any other session echoing the directive stays in its own channel.
+          const routing =
+            session.workflow === 'deploy' && this.deps.routeReleaseNotes
+              ? this.deps.routeReleaseNotes(payload.repo, payload.target)
+              : SESSION_ROUTING;
+          try {
+            await postReleaseNotes(this.deps.slackApi, {
+              payload,
+              sessionChannel: channel,
+              sessionThreadTs: threadTs,
+              routing,
+            });
+            this.logger.info('Release notes posted from model directive', {
+              sessionKey,
+              repo: payload.repo,
+              target: payload.target,
+              destination: routing.destination.kind,
+              unmapped: routing.unmapped,
+            });
+          } catch (error) {
+            this.logger.error('Failed to post release notes from model directive', {
+              sessionKey,
+              repo: payload.repo,
+              target: payload.target,
+              error: (error as Error)?.message,
             });
           }
         },
