@@ -11,6 +11,8 @@ import {
   DeployCompletedDirectiveHandler,
   type DeployCompletedPayload,
   type DeployCompletedRejection,
+  ReleaseNotesDirectiveHandler,
+  type ReleaseNotesPayload,
   SessionLinkDirectiveHandler,
   SourceWorkingDirDirectiveHandler,
 } from './directives';
@@ -525,6 +527,8 @@ export interface StreamCallbacks {
   onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
   /** Called when model outputs channel_message JSON directive */
   onChannelMessageDetected?: (messageText: string, context: StreamContext) => Promise<void>;
+  /** Called once per valid release_notes JSON directive (a multi-repo deploy emits several) */
+  onReleaseNotesDetected?: (payload: ReleaseNotesPayload, context: StreamContext) => Promise<void>;
   /** Called once per valid deploy_completed JSON directive (a multi-repo deploy emits several) */
   onDeployCompletedDetected?: (payload: DeployCompletedPayload, context: StreamContext) => Promise<void>;
   /** Called once per text segment whose deploy_completed attempts yielded no payload (bad field, broken JSON) */
@@ -1597,7 +1601,7 @@ export class AgentStreamProcessor {
 
   /**
    * Extract and dispatch all response directives (session links, channel messages,
-   * deploy_completed signals, source working dirs) from text content. Returns the
+   * release notes, deploy_completed signals, source working dirs) from text content. Returns the
    * cleaned text with directives stripped.
    */
   private async extractAndDispatchDirectives(text: string, context: StreamContext): Promise<string> {
@@ -1626,6 +1630,23 @@ export class AgentStreamProcessor {
       }
     } catch (error) {
       this.logger.error('Failed to process channel message directive', { error });
+    }
+
+    // release_notes: one per repo, each dispatched in its own try.
+    try {
+      const releaseNotesResult = ReleaseNotesDirectiveHandler.extract(cleaned);
+      if (releaseNotesResult.payloads.length > 0) {
+        cleaned = releaseNotesResult.cleanedText;
+        for (const payload of releaseNotesResult.payloads) {
+          try {
+            await this.callbacks.onReleaseNotesDetected?.(payload, context);
+          } catch (error) {
+            this.logger.error('Failed to handle release_notes directive', { repo: payload.repo, error });
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.error('Failed to process release_notes directive', { error });
     }
 
     // A multi-repo deploy emits one per repo: each payload is dispatched in its
