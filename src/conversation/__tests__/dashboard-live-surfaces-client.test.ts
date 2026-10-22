@@ -394,3 +394,160 @@ describe('goals: completed goals open with their details (T6)', () => {
     expect(m.renderCardGoal(card([]), 'working', true)).not.toContain('cg-history');
   });
 });
+
+describe('work log: every entry, however many (T9)', () => {
+  type E = { seq: number; taskId?: string };
+  const range = (a: number, b: number): E[] => Array.from({ length: b - a + 1 }, (_, i) => ({ seq: a + i }));
+  const wl = load<{
+    wlNewState(c: string): any;
+    wlLoadLatest(st: any, f: (u: string) => Promise<unknown>, on: (s: any, a: any[]) => void): Promise<string>;
+    wlLoadOlder(st: any, f: (u: string) => Promise<unknown>, on: (s: any, a: any[]) => void): Promise<unknown>;
+  }>(
+    [
+      'wlNewState',
+      'wlUrl',
+      'wlValidSeq',
+      'wlMerge',
+      'wlPageMaxSeq',
+      'wlAdvance',
+      'wlConfirm',
+      'wlHasGap',
+      'wlStatusOf',
+      'wlDeny',
+      'wlLoadLatest',
+      'wlOnLive',
+      'wlRecover',
+      'wlLoadOlder',
+    ],
+    ['WL_BACKFILL_MAX_PAGES'],
+  );
+  /** The real API: no afterSeq = the latest `size`; afterSeq = the first `size` after it. */
+  function server(log: E[], size: number) {
+    const calls: Array<string | null> = [];
+    const fetchJson = async (url: string) => {
+      const q = new URL(url, 'http://h').searchParams.get('afterSeq');
+      calls.push(q);
+      const rest = q === null ? log : log.filter((e) => e.seq > Number(q));
+      return { entries: q === null ? rest.slice(-size) : rest.slice(0, size), hasMore: rest.length > size };
+    };
+    return { calls, fetchJson };
+  }
+
+  it('after the latest window, pages the older entries in until the log is whole', async () => {
+    const srv = server(range(1, 1200), 500);
+    const st = wl.wlNewState('c');
+    const painted: number[] = [];
+    const onAdded = (_s: unknown, a: Array<{ entry: E }>) => painted.push(...a.map((x) => x.entry.seq));
+    expect(await wl.wlLoadLatest(st, srv.fetchJson, onAdded)).toBe('ok');
+    expect(st.entries).toHaveLength(500);
+    await wl.wlLoadOlder(st, srv.fetchJson, onAdded);
+    expect(st.entries.map((e: E) => e.seq)).toEqual(range(1, 1200).map((e) => e.seq));
+    expect(srv.calls).toEqual([null, '0', '500']);
+    expect(new Set(painted).size).toBe(1200);
+  });
+
+  it('a log that fits the latest window asks for nothing more', async () => {
+    const srv = server(range(1, 40), 500);
+    const st = wl.wlNewState('c');
+    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+    await wl.wlLoadOlder(st, srv.fetchJson, () => {});
+    expect(srv.calls).toEqual([null]);
+  });
+
+  it('stops for a closed panel and on 403', async () => {
+    const srv = server(range(1, 1200), 500);
+    const st = wl.wlNewState('c');
+    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+    st.closed = true;
+    await wl.wlLoadOlder(st, srv.fetchJson, () => {});
+    expect(srv.calls).toEqual([null]);
+    const st2 = wl.wlNewState('c');
+    await wl.wlLoadLatest(st2, srv.fetchJson, () => {});
+    await wl.wlLoadOlder(
+      st2,
+      async () => {
+        throw Object.assign(new Error('HTTP 403'), { status: 403 });
+      },
+      () => {},
+    );
+    expect(st2.denied).toBe(true);
+  });
+
+  it('recovery no longer stops at 20 pages (10,000 entries)', () => {
+    expect(Number(clientVar('WL_BACKFILL_MAX_PAGES').match(/\d+/)?.[0])).toBeGreaterThanOrEqual(1000);
+  });
+});
+
+describe('work log folds under the task each entry was made in (T10)', () => {
+  const m = load<{
+    wlBuildRows(entries: unknown[]): Array<{ entry?: any; group?: any }>;
+    renderWorkLogGroup(group: unknown, open: boolean, task: unknown): string;
+  }>(
+    [
+      'esc',
+      'escAttr',
+      'toNum',
+      'formatDuration',
+      'decodeSlackEntities',
+      'renderTaskMeta',
+      'renderWorkLogEntry',
+      'wlGroupOf',
+      'wlBuildRows',
+      'renderWorkLogGroupHead',
+      'renderWorkLogGroup',
+    ],
+    ['WL_LABELS'],
+  );
+  const E = (seq: number, taskId?: string, taskTitle?: string, kind = 'tool') => ({
+    seq,
+    ts: 0,
+    kind,
+    text: `e${seq}`,
+    ...(taskId ? { taskId, taskTitle } : {}),
+  });
+
+  it('entries of one task gather under it, at its first entry; entries outside any task stay in line', () => {
+    const rows = m.wlBuildRows([
+      E(1, undefined, undefined, 'instruction'),
+      E(2, 'T1', 'Explore'),
+      E(3, 'T1', 'Explore'),
+      E(4, 'T2', 'Build'),
+      E(5, undefined, undefined, 'final'),
+      E(6, 'T1', 'Explore again'),
+    ]);
+    expect(rows.map((r) => (r.entry ? r.entry.seq : `${r.group.taskId}:${r.group.entries.map((e: any) => e.seq).join(',')}`))).toEqual([
+      1,
+      'T1:2,3,6',
+      'T2:4',
+      5,
+    ]);
+    // The group is titled by its latest entry.
+    expect(rows[1].group.title).toBe('Explore again');
+  });
+
+  it('a group renders as a header button (id, title, count, task time / tools) over its entries', () => {
+    const html = m.renderWorkLogGroup(
+      { taskId: 'T1', title: 'Explore', entries: [E(2, 'T1', 'Explore'), E(3, 'T1', 'Explore')] },
+      false,
+      { id: 'T1', content: 'Explore', status: 'completed', startedAt: 1000, completedAt: 61_000, toolCalls: 2 },
+    );
+    expect(html).toContain('<div class="wl-group" data-task-id="T1">');
+    expect(html).toContain('role="button"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('#T1');
+    expect(html).toContain('<span class="wl-g-count">2</span>');
+    expect(html).toContain('1m 0s');
+    expect(html).toContain('툴 2회');
+    expect(html).toContain('<div class="wl-group-body" hidden>');
+    expect(html).toContain('data-seq="2"');
+    expect(html).toContain('data-seq="3"');
+    expect(m.renderWorkLogGroup({ taskId: 'T1', title: 'x', entries: [] }, true, null)).toContain(
+      '<div class="wl-group-body">',
+    );
+  });
+
+  it('escapes task ids and titles', () => {
+    const html = m.renderWorkLogGroup({ taskId: '"><img src=x>', title: '<script>', entries: [] }, true, null);
+    expect(html).not.toMatch(/<img|<script/);
+  });
+});

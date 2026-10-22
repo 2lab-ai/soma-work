@@ -3441,6 +3441,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .worklog-list[hidden] { display: none; }
 .wl-empty { color: var(--text-tertiary); font-size: 12px; padding: 6px 0; }
 .wl-entry { color: var(--text); min-width: 0; }
+/* SSOT 2026-10-22 T10 — entries folded under the task they were made in. */
+.wl-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.wl-group-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 6px; border-radius: 6px; background: var(--surface-raised); cursor: pointer; font-weight: 600; }
+.wl-group-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.wl-group-head .wl-g-chev { flex-shrink: 0; display: inline-block; color: var(--text-tertiary); transition: transform var(--dur-press) var(--ease-out); }
+.wl-group-head[aria-expanded="true"] .wl-g-chev { transform: rotate(90deg); }
+.wl-group-head .wl-g-id { flex-shrink: 0; color: var(--text-tertiary); font-variant-numeric: tabular-nums; font-weight: 500; }
+.wl-group-head .wl-g-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-group-head .wl-g-count { flex-shrink: 0; background: var(--surface); border-radius: 6px; padding: 0 6px; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.wl-group-head .wl-g-meta { flex-shrink: 0; font-size: 11px; font-weight: 500; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.wl-group-body { display: flex; flex-direction: column; gap: 4px; padding-left: 12px; border-left: 2px solid var(--border); margin-left: 6px; }
+.wl-group-body[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { .wl-group-head .wl-g-chev { transition: none; } }
 .wl-head { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-tertiary); }
 .wl-label { font-weight: 700; letter-spacing: 0.04em; }
 .wl-head .wl-time { margin-left: auto; }
@@ -6817,6 +6830,7 @@ function connectWs() {
         // Also update panel tasks if panel is open for this session
         if (panelOpen && panelSessionKey === msg.sessionKey) {
           renderPanelTasks(msg.tasks);
+          wlRefreshGroupHeads();
         }
       } else if (msg.type === 'conversation_update') {
         // A turn landed — an open card's 지시/응답 pair may be stale now.
@@ -6970,7 +6984,9 @@ function updateTokenBreakdown() {
 // a gap → backfill from the cursor; once the backfill is done the gap is closed
 // even if nothing came back (the hole is permanent). A reconnect pages forward
 // the same way (afterSeq=0 when the log was empty) while hasMore === true.
-var WL_BACKFILL_MAX_PAGES = 20;
+// A safety bound against a server that never stops saying hasMore — not a
+// size limit: 2000 pages of 500 is a million entries (SSOT 2026-10-22 T9).
+var WL_BACKFILL_MAX_PAGES = 2000;
 var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
 var WL_EMPTY_MSG = '작업 로그 없음';
 var WL_FORBIDDEN_MSG = '작업 로그는 세션 소유자만 볼 수 있어요';
@@ -7076,6 +7092,8 @@ function wlLoadLatest(state, fetchJson, onAdded) {
     var added = wlMerge(state, page);
     state.loaded = true;
     state.latestOk = true;
+    // Entries older than this window exist: wlLoadOlder brings them in (T9).
+    state.olderPending = !!(data && data.hasMore === true);
     wlConfirm(state, Math.max(wlPageMaxSeq(page), sentMax));
     if (added.length) onAdded(state, added);
     if (wlHasGap(state)) wlRecover(state, fetchJson, onAdded, 'gap');
@@ -7151,6 +7169,42 @@ function wlRecover(state, fetchJson, onAdded, reason) {
   });
   state.recovering = run;
   return run;
+}
+
+// Every entry, not just the latest window (SSOT 2026-10-22 T9): when the
+// latest page said older entries exist, page forward from the start of the log
+// (afterSeq=0, 500 per page) up to the oldest entry held, merging each page.
+// Older entries sit below the cursor, so the live / gap bookkeeping is
+// untouched. Stops on the last page, at the held entries, when the panel moved
+// on, on 403, or after WL_BACKFILL_MAX_PAGES pages.
+function wlLoadOlder(state, fetchJson, onAdded) {
+  if (state.closed || state.denied || !state.olderPending) return Promise.resolve(null);
+  var stopAt = state.entries.length ? state.entries[0].seq : Infinity;
+  var from = 0;
+  var pages = 0;
+  function step() {
+    if (state.closed || state.denied) return null;
+    pages++;
+    return fetchJson(wlUrl(state.convId, from)).then(function(data) {
+      if (state.closed) return null;
+      var page = (data && data.entries) || [];
+      var older = page.filter(function(e) { return e && wlValidSeq(e.seq) && e.seq < stopAt; });
+      var added = wlMerge(state, older);
+      if (added.length) onAdded(state, added);
+      var top = wlPageMaxSeq(page);
+      var more = !!(data && data.hasMore === true);
+      if (more && top > from && top < stopAt && pages < WL_BACKFILL_MAX_PAGES) {
+        from = top;
+        return step();
+      }
+      state.olderPending = false;
+      return null;
+    }, function(err) {
+      if (wlStatusOf(err) === 'denied') wlDeny(state);
+      return null;
+    });
+  }
+  return step();
 }
 
 // Raw output of one entry (§3.1-6). An entry with rawBytes has its full output
@@ -7250,6 +7304,8 @@ function loadWorkLog() {
     if (st.closed) return;
     // 'denied' was already shown by showWorkLogDenied (state.onDenied).
     if (result !== 'denied' && !st.entries.length) showWorkLogEmpty(WL_EMPTY_MSG);
+    // T9: the whole log, not just its latest 500 entries.
+    if (result === 'ok') wlLoadOlder(st, wlFetchJson, paintWorkLog);
     // No re-landing here: the log is collapsed, so its arrival moves nothing,
     // and a reader who already scrolled is left where they are.
   });
@@ -7367,7 +7423,153 @@ function copyWorkLogDetail(seq, btn) {
   } catch (_e) { selectIt(); }
 }
 
-// Insert the merged entries at their seq position (the list mirrors state.entries).
+// ── Work log under its tasks (SSOT 2026-10-22 T10) ──
+// An entry made while a task was in progress carries that task (taskId /
+// taskTitle). The list shows such entries folded under one header per task —
+// at the place of the task's first entry, titled by its latest — and every
+// other entry (instructions, final answers, anything outside a task) in line.
+// A header is a row button: it opens / closes its entries. A task's group
+// starts open when it is the newest group the list has seen, closed otherwise;
+// the reader's choice then stays (state.groupOpen).
+function wlGroupOf(e) {
+  return e && typeof e.taskId === 'string' && e.taskId ? e.taskId : '';
+}
+// Pure: the list as rows, in seq order of first appearance.
+function wlBuildRows(entries) {
+  var rows = [];
+  var groups = Object.create(null);
+  var list = entries || [];
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    var g = wlGroupOf(e);
+    if (!g) { rows.push({ entry: e }); continue; }
+    var grp = groups[g];
+    if (!grp) {
+      grp = groups[g] = { taskId: g, title: '', entries: [] };
+      rows.push({ group: grp });
+    }
+    grp.entries.push(e);
+    if (e.taskTitle) grp.title = String(e.taskTitle);
+  }
+  return rows;
+}
+// The task behind a group, from the open session's task ledger (status, time, tool calls).
+function wlTaskInfo(taskId) {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var all = ((s && s.tasks) || []).concat((s && s.earlierTasks) || []);
+  for (var i = 0; i < all.length; i++) if (all[i] && all[i].id === taskId) return all[i];
+  return null;
+}
+function renderWorkLogGroupHead(grp, open, task) {
+  var meta = task ? renderTaskMeta(task) : '';
+  var title = (task && task.content) || grp.title || '';
+  return '<div class="wl-group-head" role="button" tabindex="-1" aria-expanded="' + (open ? 'true' : 'false') + '">'
+    + '<span class="wl-g-chev" aria-hidden="true">&#x25B8;</span>'
+    + '<span class="wl-g-id">#' + esc(grp.taskId) + '</span>'
+    + '<span class="wl-g-title">' + esc(title) + '</span>'
+    + '<span class="wl-g-count">' + grp.entries.length + '</span>'
+    + (meta ? '<span class="wl-g-meta">' + meta + '</span>' : '')
+    + '</div>';
+}
+function renderWorkLogGroup(grp, open, task) {
+  return '<div class="wl-group" data-task-id="' + escAttr(grp.taskId) + '">'
+    + renderWorkLogGroupHead(grp, open, task)
+    + '<div class="wl-group-body"' + (open ? '' : ' hidden') + '>' + grp.entries.map(renderWorkLogEntry).join('') + '</div>'
+    + '</div>';
+}
+// Open state of a group: the reader's choice, else open when it is the newest group.
+function wlGroupOpen(state, taskId, newest) {
+  var map = state.groupOpen || (state.groupOpen = Object.create(null));
+  if (!(taskId in map)) map[taskId] = !!newest;
+  return map[taskId];
+}
+function wlGroupEl(list, taskId) {
+  var groups = list.querySelectorAll('.wl-group');
+  for (var i = 0; i < groups.length; i++) if (groups[i].getAttribute('data-task-id') === taskId) return groups[i];
+  return null;
+}
+// The whole list from state.entries; open details are re-opened (raw output is cached on the state).
+function wlRenderList(state, list) {
+  var rows = wlBuildRows(state.entries);
+  var newest = null;
+  for (var i = rows.length - 1; i >= 0; i--) if (rows[i].group) { newest = rows[i].group; break; }
+  list.innerHTML = rows.map(function(r) {
+    if (r.entry) return renderWorkLogEntry(r.entry);
+    return renderWorkLogGroup(r.group, wlGroupOpen(state, r.group.taskId, r.group === newest), wlTaskInfo(r.group.taskId));
+  }).join('');
+  if (state.open) state.open.forEach(function(seq) {
+    var el = wlEntryEl(seq);
+    var row = el && el.querySelector('.wl-row');
+    var detail = el && el.querySelector('.wl-detail');
+    if (!row || !detail) return;
+    row.setAttribute('aria-expanded', 'true');
+    detail.hidden = false;
+    loadWorkLogDetail(state, seq);
+  });
+}
+// Live entries at the end of the log: append in place (a task's entry into its
+// group, a new task as a new — open — group at the end).
+function wlAppendTail(state, list, added) {
+  var tmp = document.createElement('div');
+  for (var i = 0; i < added.length; i++) {
+    var e = added[i].entry;
+    var g = wlGroupOf(e);
+    if (!g) {
+      tmp.innerHTML = renderWorkLogEntry(e);
+      if (tmp.firstElementChild) list.appendChild(tmp.firstElementChild);
+      continue;
+    }
+    var grpEl = wlGroupEl(list, g);
+    if (!grpEl) {
+      var grp = { taskId: g, title: e.taskTitle ? String(e.taskTitle) : '', entries: [e] };
+      tmp.innerHTML = renderWorkLogGroup(grp, wlGroupOpen(state, g, true), wlTaskInfo(g));
+      if (tmp.firstElementChild) list.appendChild(tmp.firstElementChild);
+      continue;
+    }
+    tmp.innerHTML = renderWorkLogEntry(e);
+    var body = grpEl.querySelector('.wl-group-body');
+    if (body && tmp.firstElementChild) body.appendChild(tmp.firstElementChild);
+    wlRefreshGroupHead(state, grpEl, g);
+  }
+}
+function wlRefreshGroupHead(state, grpEl, taskId) {
+  var head = grpEl.querySelector('.wl-group-head');
+  if (!head) return;
+  var entries = state.entries.filter(function(x) { return wlGroupOf(x) === taskId; });
+  var title = '';
+  for (var i = 0; i < entries.length; i++) if (entries[i].taskTitle) title = String(entries[i].taskTitle);
+  var tmp = document.createElement('div');
+  tmp.innerHTML = renderWorkLogGroupHead({ taskId: taskId, title: title, entries: entries }, head.getAttribute('aria-expanded') === 'true', wlTaskInfo(taskId));
+  var fresh = tmp.firstElementChild;
+  if (!fresh) return;
+  if (head.getAttribute('tabindex') === '0') fresh.setAttribute('tabindex', '0');
+  grpEl.replaceChild(fresh, head);
+  updateTimersIn(fresh);
+}
+// Task status / time / tool calls changed (task_update): refresh every group head.
+function wlRefreshGroupHeads() {
+  var list = document.getElementById('worklog-list');
+  if (!list || !_wl) return;
+  var groups = list.querySelectorAll('.wl-group');
+  for (var i = 0; i < groups.length; i++) wlRefreshGroupHead(_wl, groups[i], groups[i].getAttribute('data-task-id'));
+}
+function toggleWorkLogGroup(taskId) {
+  var st = _wl;
+  var list = document.getElementById('worklog-list');
+  if (!st || st.closed || !list) return;
+  var grpEl = wlGroupEl(list, taskId);
+  if (!grpEl) return;
+  var head = grpEl.querySelector('.wl-group-head');
+  var body = grpEl.querySelector('.wl-group-body');
+  var open = !(head && head.getAttribute('aria-expanded') === 'true');
+  (st.groupOpen || (st.groupOpen = Object.create(null)))[taskId] = open;
+  if (head) head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (body) body.hidden = !open;
+}
+
+// Paint merged entries: live entries at the end are appended in place; any
+// other batch (the older pages, a backfill) re-renders the list from
+// state.entries, which keeps seq order and the task groups exact.
 function paintWorkLog(state, added) {
   if (state !== _wl || !added.length) return;
   var list = document.getElementById('worklog-list');
@@ -7375,16 +7577,19 @@ function paintWorkLog(state, added) {
   var atBottom = list.scrollHeight - list.scrollTop <= list.clientHeight + 40;
   var placeholder = list.querySelector('.wl-empty');
   if (placeholder) placeholder.remove();
-  var tmp = document.createElement('div');
-  for (var i = 0; i < added.length; i++) {
-    tmp.innerHTML = renderWorkLogEntry(added[i].entry);
-    var node = tmp.firstElementChild;
-    if (node) list.insertBefore(node, list.children[added[i].index] || null);
-  }
-  setTextIfChanged(document.getElementById('worklog-count'), String(state.entries.length));
+  var n = state.entries.length;
+  var tail = state.painted;
+  for (var i = 0; tail && i < added.length; i++) if (added[i].index !== n - added.length + i) tail = false;
+  var keepTop = !tail && state.painted ? list.scrollHeight - list.scrollTop : null;
+  if (tail) wlAppendTail(state, list, added);
+  else wlRenderList(state, list);
+  updateTimersIn(list);
+  setTextIfChanged(document.getElementById('worklog-count'), String(n));
   wlEnsureTabStop(list);
-  // Tail-follow, unless the reader has an entry's detail open.
+  // Tail-follow, unless the reader has an entry's detail open; older entries
+  // arriving above keep the reader's place.
   if (!state.painted || (atBottom && !wlDetailOpen(state))) list.scrollTop = list.scrollHeight;
+  else if (keepTop !== null) list.scrollTop = list.scrollHeight - keepTop;
   state.painted = true;
 }
 
@@ -7457,13 +7662,25 @@ function wlRovingIndex(key, i, n) {
   if (key === 'End') return n - 1;
   return -1;
 }
+// The rows the arrows move between: entry rows and task-group heads that are
+// on screen (a closed group's entries are not).
+function wlNavRows(list) {
+  var all = list.querySelectorAll('.wl-group-head, .wl-row');
+  var out = [];
+  for (var i = 0; i < all.length; i++) {
+    var body = all[i].closest ? all[i].closest('.wl-group-body') : null;
+    if (body && body.hidden) continue;
+    out.push(all[i]);
+  }
+  return out;
+}
 function wlEnsureTabStop(list) {
-  if (!list || !list.querySelector || list.querySelector('.wl-row[tabindex="0"]')) return;
-  var rows = list.querySelectorAll('.wl-row');
+  if (!list || !list.querySelector || list.querySelector('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"]')) return;
+  var rows = wlNavRows(list);
   if (rows.length) rows[rows.length - 1].setAttribute('tabindex', '0');
 }
 function wlSetTabStop(list, row) {
-  var old = list.querySelectorAll('.wl-row[tabindex="0"]');
+  var old = list.querySelectorAll('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"]');
   for (var i = 0; i < old.length; i++) if (old[i] !== row) old[i].setAttribute('tabindex', '-1');
   if (row.getAttribute('tabindex') !== '0') row.setAttribute('tabindex', '0');
 }
@@ -7486,6 +7703,12 @@ function wlSetTabStop(list, row) {
       return;
     }
     if (e.target.closest('.wl-detail')) return;
+    var head = e.target.closest('.wl-group-head');
+    if (head && list.contains(head)) {
+      var grp = head.closest('.wl-group');
+      if (grp) toggleWorkLogGroup(grp.getAttribute('data-task-id'));
+      return;
+    }
     var row = e.target.closest('.wl-row');
     if (!row || !list.contains(row)) return;
     // Finishing a text selection inside the row is not a toggle.
@@ -7494,13 +7717,19 @@ function wlSetTabStop(list, row) {
   });
   list.addEventListener('keydown', function(e) {
     var row = e.target;
-    if (!row.classList || !row.classList.contains('wl-row')) return;
+    var isHead = !!(row.classList && row.classList.contains('wl-group-head'));
+    if (!row.classList || (!isHead && !row.classList.contains('wl-row'))) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      toggleWorkLogEntry(seqOf(row));
+      if (isHead) {
+        var grp = row.closest('.wl-group');
+        if (grp) toggleWorkLogGroup(grp.getAttribute('data-task-id'));
+      } else {
+        toggleWorkLogEntry(seqOf(row));
+      }
       return;
     }
-    var rows = Array.prototype.slice.call(list.querySelectorAll('.wl-row'));
+    var rows = wlNavRows(list);
     var j = wlRovingIndex(e.key, rows.indexOf(row), rows.length);
     if (j < 0) return;
     e.preventDefault();
@@ -7508,7 +7737,7 @@ function wlSetTabStop(list, row) {
   });
   list.addEventListener('focusin', function(e) {
     var row = e.target;
-    if (row && row.classList && row.classList.contains('wl-row')) wlSetTabStop(list, row);
+    if (row && row.classList && (row.classList.contains('wl-row') || row.classList.contains('wl-group-head'))) wlSetTabStop(list, row);
   });
 })();
 
