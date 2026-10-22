@@ -54,12 +54,19 @@ export interface ModelSwitchDeps extends ModelCatalogDeps {
   isRequestActive(sessionKey: string): boolean;
   /** The threshold the session compacts at now — its override included. */
   currentAutoCompact?(session: ConversationSession): number;
-  /** Start a compact on the session's current model (as if the owner typed `compact --yes`). */
-  dispatchCompact(sessionKey: string): Promise<void>;
+  /**
+   * Start a compact on the session's current model (as if the owner typed
+   * `compact --yes`). Resolves once the message was handled: `queued` when it
+   * is parked behind another turn and has not run yet, otherwise `settled`
+   * (it ran, or it was dropped).
+   */
+  dispatchCompact(sessionKey: string): Promise<CompactDispatchOutcome | undefined | void>;
   save(): void;
   broadcast(): void;
   now?: () => number;
 }
+
+export type CompactDispatchOutcome = 'queued' | 'settled';
 
 export interface ModelSwitchResult {
   /** `switched` now · `compacting` first, switching at the compact boundary · `unchanged`. */
@@ -190,12 +197,14 @@ export async function switchSessionModel(
     deps.save();
     deps.broadcast();
     // The compact is a whole turn: answer now and let the card follow it (the
-    // waiting switch is on the card until the boundary applies it). A dispatch
-    // that fails un-parks the switch and pushes the card again.
-    // The dispatch returns once the message was handled — normally after the
-    // compact turn, whose boundary has applied the switch by then. A switch
-    // still parked at that point was not taken by any compact (the slot was
-    // busy and the command dropped, or it failed): un-park it.
+    // waiting switch is on the card until the boundary applies it).
+    // The dispatch returns once the message was handled. Ran: the compact
+    // turn is over, and its boundary applied the switch (or its end cancelled
+    // it). Queued behind another turn: the compact is still ahead — the switch
+    // keeps waiting for it (its own turn end settles it; a switch nobody takes
+    // expires after `PENDING_MODEL_SWITCH_TTL_MS`). Anything else — dropped,
+    // or the dispatch failed — left no compact to wait for: un-park it and
+    // push the card again.
     const parked = session.pendingModelSwitch;
     const unpark = () => {
       if (session.pendingModelSwitch !== parked) return;
@@ -205,7 +214,9 @@ export async function switchSessionModel(
     };
     void Promise.resolve()
       .then(() => deps.dispatchCompact(sessionKey))
-      .then(unpark, unpark);
+      .then((outcome) => {
+        if (outcome !== 'queued') unpark();
+      }, unpark);
     return result('compacting');
   }
 

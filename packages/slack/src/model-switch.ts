@@ -37,6 +37,19 @@ type SwitchHolder = {
  */
 export const PENDING_MODEL_SWITCH_TTL_MS = 30 * 60 * 1000;
 
+/**
+ * The parked switch while it still counts — undefined once its TTL ran out
+ * (the compact it waited for was queued and never came, or was swallowed).
+ */
+export function livePendingModelSwitch(
+  session: Pick<SwitchHolder, 'pendingModelSwitch'>,
+  now: number = Date.now(),
+): PendingModelSwitch | undefined {
+  const pending = session.pendingModelSwitch;
+  if (!pending) return undefined;
+  return now - pending.requestedAt <= PENDING_MODEL_SWITCH_TTL_MS ? pending : undefined;
+}
+
 /** Switch now: model, its auto-compact threshold (override dropped), its window. */
 export function applyModelSwitch(
   session: SwitchHolder,
@@ -59,9 +72,9 @@ export function applyPendingModelSwitch(
   resolveContextWindow: (model?: string) => number,
   now: number = Date.now(),
 ): PendingModelSwitch | undefined {
-  const pending = session.pendingModelSwitch;
-  if (!pending || session.fallbackCompactActive) return undefined;
-  if (!(now - pending.requestedAt <= PENDING_MODEL_SWITCH_TTL_MS)) {
+  if (!session.pendingModelSwitch || session.fallbackCompactActive) return undefined;
+  const pending = livePendingModelSwitch(session, now);
+  if (!pending) {
     session.pendingModelSwitch = undefined;
     return undefined;
   }

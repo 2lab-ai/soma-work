@@ -740,11 +740,15 @@ async function start() {
     });
 
     // Connect dashboard: command handler (inject message as if user typed in Slack)
-    const injectDashboardMessage = async (sessionKey: string, message: string) => {
+    /** Returns the injected message's identity (channel + ts), undefined when nothing was sent. */
+    const injectDashboardMessage = async (
+      sessionKey: string,
+      message: string,
+    ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
         logger.warn('Dashboard command: session not found', { sessionKey });
-        return;
+        return undefined;
       }
       // Post the user's message to the Slack thread so it's visible,
       // styled as a quote block with dashboard origin indicator.
@@ -755,7 +759,7 @@ async function start() {
           channelId: session.channelId,
           threadTs: session.threadTs,
         });
-        return;
+        return undefined;
       }
 
       let echoTs: string | undefined;
@@ -794,6 +798,7 @@ async function start() {
       if (!echoTs) {
         logger.warn('Dashboard echo: using fabricated timestamp (echo failed or was skipped)', { sessionKey });
       }
+      const ts = echoTs || String(Date.now() / 1000);
       await slackHandler.handleMessage(
         {
           type: 'message',
@@ -801,13 +806,16 @@ async function start() {
           thread_ts: session.threadTs,
           text: message,
           user: session.ownerId,
-          ts: echoTs || String(Date.now() / 1000),
+          ts,
         } as any,
         dashboardSay,
       );
       logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
+      return { channel: session.channelId, ts };
     };
-    setDashboardCommandHandler(injectDashboardMessage);
+    setDashboardCommandHandler(async (sessionKey: string, message: string) => {
+      await injectDashboardMessage(sessionKey, message);
+    });
 
     // Connect dashboard: model switch (SSOT 2026-10-22 T4/T5) — representative
     // models only; a context above the target's auto-compact threshold is
@@ -821,7 +829,13 @@ async function start() {
         isRequestActive: (key) => slackHandler.getRequestCoordinator().isRequestActive(key),
         currentAutoCompact: (session) =>
           resolveEffectiveAutoCompact(session, session.ownerId || '', userSettingsStore).tokens,
-        dispatchCompact: (key) => injectDashboardMessage(key, 'compact --yes'),
+        // `handleMessage` returns as soon as the follow-up queue holds the
+        // command when another turn has the slot — the compact is still ahead
+        // then, and the switch keeps waiting for it (review R3-2).
+        dispatchCompact: async (key) => {
+          const sent = await injectDashboardMessage(key, 'compact --yes');
+          return sent && slackHandler.isFollowupPending(sent.channel, sent.ts) ? 'queued' : 'settled';
+        },
         save: () => claudeHandler.saveSessions(),
         broadcast: () => broadcastSessionUpdate(),
       }),

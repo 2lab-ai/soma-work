@@ -2475,6 +2475,15 @@ export class SlackHandler {
     return this.followupQueue;
   }
 
+  /**
+   * Is the message `channel:ts` parked in the follow-up queue and still to
+   * run? `handleMessage` returns once a message behind a busy slot is queued,
+   * so a host that injected one asks this to tell "ran" from "still ahead".
+   */
+  isFollowupPending(channel: string, ts: string): boolean {
+    return this.followupQueue?.holdsPending(channel, ts) ?? false;
+  }
+
   /** The dispatcher (`Send now`, drain, busy state), for the next unit's button handler. */
   getFollowupDispatcher(): FollowupDispatcher | undefined {
     return this.followupDispatcher;

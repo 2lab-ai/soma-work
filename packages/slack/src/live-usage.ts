@@ -26,6 +26,8 @@ type LiveUsageHolder = {
   liveUsageTurnId?: string;
   /** The turn whose result usage is already in the totals — never folded again. */
   liveUsageSettledTurnId?: string;
+  /** The turn that adopted a compact boundary's occupancy (stream executor, issue #196). */
+  postCompactOccupancyTurnId?: string;
   // A session object carries many other fields.
   [key: string]: unknown;
 };
@@ -131,7 +133,11 @@ export function foldLiveUsage(
       count(u.currentOutputTokens) +
       count(u.currentCacheReadTokens) +
       count(u.currentCacheCreateTokens);
-    if (top && topTotal > current) {
+    // The turn that crossed a compact boundary keeps the boundary's
+    // `post_tokens` as its occupancy (the executor's shield, issue #196): its
+    // calls read the pre-compact transcript and would put that number back.
+    const shielded = turnId !== undefined && session.postCompactOccupancyTurnId === turnId;
+    if (top && topTotal > current && !shielded) {
       u.currentInputTokens = count(top.inputTokens);
       u.currentOutputTokens = count(top.outputTokens);
       u.currentCacheReadTokens = count(top.cacheReadTokens);
