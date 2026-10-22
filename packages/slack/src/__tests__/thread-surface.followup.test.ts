@@ -537,6 +537,38 @@ describe('ThreadSurface — turn-epoch gated writes (A12/A28)', () => {
     expect(session.actionPanel?.agentPhase).toBe('작업 중');
   });
 
+  // The turn result handed to finalizeOnEndTurn is a snapshot taken before the
+  // write. An answer that landed since (a dashboard / Slack click during
+  // end-of-turn cleanup) already cleared the open-choice bit; the snapshot
+  // must not re-open it — that left a NEEDS YOU card with no question.
+  it('finalizeOnEndTurn does not re-open a choice answered after the turn result was taken', async () => {
+    const session = makeSession();
+    session.actionPanel!.waitingForChoice = false; // cleared by the answer path
+    const slackApi = makeSlackApi();
+    const surface = new ThreadSurface(makeDeps(session, slackApi, { getFollowupView: () => view({ turnEpoch: 5 }) }));
+
+    await surface.finalizeOnEndTurn(session, KEY, { reason: 'end_turn', timestamp: 1 }, true, {
+      expectedTurnEpoch: 5,
+    });
+
+    expect(session.actionPanel?.waitingForChoice).toBe(false);
+    expect(session.actionPanel?.agentPhase).toBe('사용자 액션 대기');
+  });
+
+  it('finalizeOnEndTurn keeps an open choice waiting', async () => {
+    const session = makeSession();
+    session.actionPanel!.waitingForChoice = true;
+    const slackApi = makeSlackApi();
+    const surface = new ThreadSurface(makeDeps(session, slackApi, { getFollowupView: () => view({ turnEpoch: 5 }) }));
+
+    await surface.finalizeOnEndTurn(session, KEY, { reason: 'end_turn', timestamp: 1 }, true, {
+      expectedTurnEpoch: 5,
+    });
+
+    expect(session.actionPanel?.waitingForChoice).toBe(true);
+    expect(session.actionPanel?.agentPhase).toBe('입력 대기');
+  });
+
   it('applies finalizeOnEndTurn when the epoch still matches', async () => {
     const session = makeSession();
     const slackApi = makeSlackApi();

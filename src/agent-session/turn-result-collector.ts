@@ -27,6 +27,7 @@ export class TurnResultCollector implements TurnObserver {
 
   private endTurnInfo: EndTurnInfo | null = null;
   private _hasPendingChoice = false;
+  private _pendingChoiceProbe: (() => boolean) | null = null;
   private _continuation: unknown | null = null;
   private _usage: UsageData | undefined;
   private currentPhase: AgentPhase = '생각 중';
@@ -95,6 +96,16 @@ export class TurnResultCollector implements TurnObserver {
     this._hasPendingChoice = value;
   }
 
+  /**
+   * Live "is the asked choice still open" read, evaluated by getResult().
+   * The executor sets it at end of turn; the adapter reads the result only
+   * after the turn's teardown awaits, so an answer landing during teardown
+   * is reflected instead of a stale snapshot.
+   */
+  setPendingChoiceProbe(probe: () => boolean): void {
+    this._pendingChoiceProbe = probe;
+  }
+
   /** StreamResult.usage에서 수집한 토큰 사용량 설정 (Issue #84) */
   setUsage(usage: UsageData): void {
     this._usage = usage;
@@ -124,7 +135,7 @@ export class TurnResultCollector implements TurnObserver {
         timestamp: Date.now(),
       },
       continuation: this._continuation,
-      hasPendingChoice: this._hasPendingChoice,
+      hasPendingChoice: this._pendingChoiceProbe ? this._pendingChoiceProbe() : this._hasPendingChoice,
       usage: this._usage,
     };
   }

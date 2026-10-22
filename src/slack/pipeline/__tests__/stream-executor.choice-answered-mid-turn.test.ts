@@ -20,6 +20,7 @@
  */
 
 import { LOG_DETAIL } from '@soma/slack/output-flags';
+import { ThreadSurface } from '@soma/slack/thread-surface';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runAgentStreamFromSdk } from '../../../agent-runtime/claude-code/stream-runner';
 import { TurnRunner } from '../../../agent-session/turn-runner';
@@ -359,15 +360,18 @@ describe('adapter → runner end of turn after ASK_USER_QUESTION', () => {
     vi.clearAllMocks();
   });
 
-  async function runThroughAdapter(answered: boolean) {
+  async function runThroughAdapter(answered: boolean, duringEndTurn = false) {
     const session = createSession();
     const deps = createDeps(session, askingStream(), answered ? answerPath(session) : undefined);
-    const finalizeOnEndTurn = vi
-      .fn()
-      .mockImplementation(async (s: any, _key: string, _endTurn: any, hasPendingChoice: boolean) => {
-        s.actionPanel = s.actionPanel ?? {};
-        s.actionPanel.waitingForChoice = hasPendingChoice; // ThreadSurface.finalizeOnEndTurn
+    if (duringEndTurn) {
+      deps.threadPanel.endTurn.mockImplementation(async () => {
+        expect(session.actionPanel.waitingForChoice).toBe(true);
+        answerPath(session)();
       });
+    }
+    const realSurface = new ThreadSurface({ requestCoordinator: {} } as any);
+    vi.spyOn(realSurface as any, 'renderViaFlush').mockResolvedValue(undefined);
+    const finalizeOnEndTurn = vi.fn().mockImplementation(realSurface.finalizeOnEndTurn.bind(realSurface));
     const surface = { setStatus: vi.fn().mockResolvedValue(undefined), finalizeOnEndTurn } as any;
     const adapter = new V1QueryAdapter({
       streamExecutor: new StreamExecutor(deps),
@@ -377,6 +381,14 @@ describe('adapter → runner end of turn after ASK_USER_QUESTION', () => {
     const result = await adapter.startWithContinuation('hello', { shouldContinue: () => ({ continue: false }) });
     return { session, deps, result, finalizeOnEndTurn };
   }
+
+  it('T2 — an answer landing during end-of-turn cleanup (endTurn) is not re-opened by the runner', async () => {
+    const { session, result, finalizeOnEndTurn } = await runThroughAdapter(false, true);
+    expect(session.actionPanel.pendingQuestion).toBeUndefined();
+    expect(result.hasPendingChoice).toBe(false);
+    expect(finalizeOnEndTurn.mock.lastCall?.[3]).toBe(false);
+    expect(session.actionPanel.waitingForChoice).toBe(false);
+  });
 
   it('control — unanswered: the runner keeps the choice open', async () => {
     const { session, result, finalizeOnEndTurn } = await runThroughAdapter(false);
