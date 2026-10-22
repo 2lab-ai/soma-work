@@ -64,6 +64,7 @@ import {
   setDashboardCloseHandler,
   setDashboardCommandHandler,
   setDashboardGoalHandler,
+  setDashboardModelHandler,
   setDashboardMultiChoiceAnswerHandler,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
@@ -107,6 +108,8 @@ import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
+import { productionModelCatalogDeps } from './session/model-catalog-deps';
+import { switchSessionModel } from './session/model-switch';
 import { applyTodoList, ledgerTasks, stampWorkLogTask } from './session/task-ledger';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
@@ -117,8 +120,8 @@ import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
-import type { ConversationSession } from './types';
 import { getTokenManager } from './token-manager';
+import type { ConversationSession } from './types';
 
 const logger = new Logger('Main');
 
@@ -735,7 +738,7 @@ async function start() {
     });
 
     // Connect dashboard: command handler (inject message as if user typed in Slack)
-    setDashboardCommandHandler(async (sessionKey: string, message: string) => {
+    const injectDashboardMessage = async (sessionKey: string, message: string) => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
         logger.warn('Dashboard command: session not found', { sessionKey });
@@ -801,7 +804,24 @@ async function start() {
         dashboardSay,
       );
       logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
-    });
+    };
+    setDashboardCommandHandler(injectDashboardMessage);
+
+    // Connect dashboard: model switch (SSOT 2026-10-22 T4/T5) — representative
+    // models only; a context above the target's auto-compact threshold is
+    // compacted on the current model first (the owner's own `compact --yes`,
+    // echoed to the thread like any dashboard message) and the switch lands
+    // at that compact's boundary.
+    setDashboardModelHandler((sessionKey: string, nickname: string) =>
+      switchSessionModel(sessionKey, nickname, {
+        ...productionModelCatalogDeps(),
+        getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+        isRequestActive: (key) => slackHandler.getRequestCoordinator().isRequestActive(key),
+        dispatchCompact: (key) => injectDashboardMessage(key, 'compact --yes'),
+        save: () => claudeHandler.saveSessions(),
+        broadcast: () => broadcastSessionUpdate(),
+      }),
+    );
 
     // Connect dashboard: goal list on the work item (SSOT 2026-10-21 T3) —
     // add / delete-current (promotes the next goal) / delete-queued.

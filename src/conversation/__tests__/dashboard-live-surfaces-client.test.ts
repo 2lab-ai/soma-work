@@ -46,7 +46,12 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
-const SHOW_ALL = { dhShow: () => true, dhMax: (_f: string, d: number) => d, dhTruncate: () => null, currentUserId: 'U1' };
+const SHOW_ALL = {
+  dhShow: () => true,
+  dhMax: (_f: string, d: number) => d,
+  dhTruncate: () => null,
+  currentUserId: 'U1',
+};
 const FACE_FNS = [
   'esc',
   'escAttr',
@@ -84,7 +89,14 @@ function workingCard(over: Record<string, unknown> = {}) {
     },
     tasks: [
       { id: 'T1', content: 'Explore code', status: 'completed', startedAt: 1000, completedAt: 61_000, toolCalls: 7 },
-      { id: 'T2', content: 'Write the parser', activeForm: 'Writing the parser', status: 'in_progress', startedAt: 61_000, toolCalls: 3 },
+      {
+        id: 'T2',
+        content: 'Write the parser',
+        activeForm: 'Writing the parser',
+        status: 'in_progress',
+        startedAt: 61_000,
+        toolCalls: 3,
+      },
       { id: 'T3', content: 'Ship it', status: 'pending', toolCalls: 0 },
     ],
     ...over,
@@ -153,7 +165,10 @@ describe('collapsed card: the task in progress (T3)', () => {
   });
 
   it('the summary line no longer repeats the task the task row already shows', () => {
-    const html = face.renderCardFace(workingCard({ summaryTitle: 'Parser rewrite', displayHeadline: 'Headline' }), 'working');
+    const html = face.renderCardFace(
+      workingCard({ summaryTitle: 'Parser rewrite', displayHeadline: 'Headline' }),
+      'working',
+    );
     expect(html).toContain('<div class="card-summary">Parser rewrite</div>');
     expect(html.match(/Write the parser/g)).toHaveLength(1);
   });
@@ -168,7 +183,9 @@ describe('collapsed card: the task in progress (T3)', () => {
   it('escapes the task name and id', () => {
     const html = face.renderCardFace(
       workingCard({
-        tasks: [{ id: '<b>', content: '<img src=x onerror=alert(1)>', status: 'in_progress', startedAt: 'x', toolCalls: 0 }],
+        tasks: [
+          { id: '<b>', content: '<img src=x onerror=alert(1)>', status: 'in_progress', startedAt: 'x', toolCalls: 0 },
+        ],
       }),
       'working',
     );
@@ -283,7 +300,9 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
         completedAt: 2000,
         toolCalls: i,
       })),
-      earlierTasks: [{ id: 'T0', content: 'old plan', status: 'completed', startedAt: 1, completedAt: 2, toolCalls: 4 }],
+      earlierTasks: [
+        { id: 'T0', content: 'old plan', status: 'completed', startedAt: 1, completedAt: 2, toolCalls: 4 },
+      ],
     });
     const closed = tl.renderTimeline(many);
     expect(closed).not.toContain('old plan');
@@ -328,7 +347,17 @@ describe('panel task rows carry id, elapsed time and tool calls (T7/T8)', () => 
 describe('goals: completed goals open with their details (T6)', () => {
   const open: Record<string, boolean> = {};
   const m = load<{ renderCardGoal(s: unknown, col: string, canEdit: boolean): string }>(
-    ['esc', 'escAttr', 'escJs', 'toNum', 'formatTokens', 'formatDuration', 'formatGoalTime', 'renderGoalHistory', 'renderCardGoal'],
+    [
+      'esc',
+      'escAttr',
+      'escJs',
+      'toNum',
+      'formatTokens',
+      'formatDuration',
+      'formatGoalTime',
+      'renderGoalHistory',
+      'renderCardGoal',
+    ],
     ['GOAL_STATUS_LABELS', '_goalErrors', 'GOAL_VIA_LABELS'],
     { _goalHistoryOpen: open },
   );
@@ -515,12 +544,11 @@ describe('work log folds under the task each entry was made in (T10)', () => {
       E(5, undefined, undefined, 'final'),
       E(6, 'T1', 'Explore again'),
     ]);
-    expect(rows.map((r) => (r.entry ? r.entry.seq : `${r.group.taskId}:${r.group.entries.map((e: any) => e.seq).join(',')}`))).toEqual([
-      1,
-      'T1:2,3,6',
-      'T2:4',
-      5,
-    ]);
+    expect(
+      rows.map((r) =>
+        r.entry ? r.entry.seq : `${r.group.taskId}:${r.group.entries.map((e: any) => e.seq).join(',')}`,
+      ),
+    ).toEqual([1, 'T1:2,3,6', 'T2:4', 5]);
     // The group is titled by its latest entry.
     expect(rows[1].group.title).toBe('Explore again');
   });
@@ -611,5 +639,79 @@ describe('DONE grouped by the day the work finished (T11/T12)', () => {
 
   it('no cards, no groups', () => {
     expect(m.planDoneGroups([], NOW, {})).toEqual([]);
+  });
+});
+
+describe('model switch on the open card (T4/T5)', () => {
+  const MODELS = [
+    { nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', autoCompactTokens: 750_000 },
+    { nickname: 'fable[1m]', model: 'claude-fable-5-1[1m]', autoCompactTokens: 750_000 },
+    { nickname: 'sonnet[1m]', model: 'claude-sonnet-4-6[1m]', autoCompactTokens: 750_000 },
+    { nickname: 'sol[1m]', model: 'gpt-5.6-sol[1m]', autoCompactTokens: 600_000 },
+    { nickname: 'astra[1m]', model: 'gpt-6-astra[1m]', autoCompactTokens: 600_000 },
+    { nickname: 'grok[1m]', model: 'grok-4.6', autoCompactTokens: 450_000 },
+  ];
+  const notes: Record<string, unknown> = {};
+  const m = load<{
+    renderModelPicker(s: unknown, canSwitch: boolean, short: string): string;
+    renderModelNote(s: unknown): string;
+    modelSwitchNote(r: unknown): { text: string; error: boolean };
+  }>(
+    ['esc', 'escAttr', 'escJs', 'toNum', 'formatTokens', 'renderModelPicker', 'renderModelNote', 'modelSwitchNote'],
+    [],
+    {
+      REPRESENTATIVE_MODELS: MODELS,
+      _modelNotes: notes,
+    },
+  );
+  const s = (over: Record<string, unknown> = {}) => ({
+    key: 'inst::C1:t1',
+    model: 'claude-opus-5-5[1m]',
+    contextTokens: 500_000,
+    ...over,
+  });
+
+  it('offers exactly the six representative models, the current one selected', () => {
+    const html = m.renderModelPicker(s(), true, 'opus-5-5[1m]');
+    const values = [...html.matchAll(/<option value="([^"]*)"/g)].map((x) => x[1]);
+    expect(values).toEqual(['opus[1m]', 'fable[1m]', 'sonnet[1m]', 'sol[1m]', 'astra[1m]', 'grok[1m]']);
+    expect(html).toMatch(/<option value="opus\[1m\]" selected>/);
+    expect(html).toContain('aria-label="모델 변경"');
+    expect(html).toContain('onchange="changeModel(\'inst::C1:t1\',this)"');
+  });
+
+  it('shows each model’s auto-compact threshold; a target below the context says it compacts first', () => {
+    const html = m.renderModelPicker(s(), true, 'opus');
+    expect(html).toContain('grok[1m] · autocompact 450.0K · compact 후 전환');
+    expect(html).toContain('fable[1m] · autocompact 750.0K<');
+    // The current model never says so.
+    expect(html).not.toContain('opus[1m] · autocompact 750.0K · compact');
+  });
+
+  it('a model outside the list is shown as the current, unselectable entry', () => {
+    const html = m.renderModelPicker(s({ model: 'claude-haiku-4-5-20251001' }), true, 'haiku-4-5');
+    expect(html).toContain('<option value="" selected disabled>haiku-4-5</option>');
+  });
+
+  it('read-only viewers see the model name, no control; a waiting switch disables the control and says so', () => {
+    expect(m.renderModelPicker(s(), false, 'opus-5-5[1m]')).toBe('<span class="cb-model-name">opus-5-5[1m]</span>');
+    expect(m.renderModelPicker(s({ pendingModel: 'grok[1m]' }), true, 'opus')).toContain(
+      '<select class="cb-model-select" aria-label="모델 변경" disabled',
+    );
+    expect(m.renderModelNote(s({ pendingModel: 'grok[1m]' }))).toContain('compact 후 grok[1m](으)로 전환합니다');
+  });
+
+  it('says what the switch did', () => {
+    expect(
+      m.modelSwitchNote({ ok: true, result: { status: 'switched', nickname: 'grok[1m]', autoCompactTokens: 450_000 } })
+        .text,
+    ).toBe('grok[1m](으)로 전환 · autocompact 450.0K');
+    expect(
+      m.modelSwitchNote({
+        ok: true,
+        result: { status: 'compacting', nickname: 'grok[1m]', autoCompactTokens: 450_000 },
+      }).text,
+    ).toContain('compact한 뒤 전환');
+    expect(m.modelSwitchNote({ ok: false, error: '먼저 compact' })).toEqual({ text: '먼저 compact', error: true });
   });
 });

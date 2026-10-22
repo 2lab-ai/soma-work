@@ -20,20 +20,29 @@
  *   POST /api/dashboard/session/:key/trash   → Trash (hide) a closed session
  *   POST /api/dashboard/session/:key/command → Send command to session
  *   POST /api/dashboard/session/:key/goal    → Add a goal / delete the current or a queued goal
+ *   POST /api/dashboard/session/:key/model   → Switch to a representative model (compacts first when needed)
  *   POST /api/dashboard/session/:conversationId/resummarize/:turnId → Retry summary generation
  *   WS   /ws/dashboard                       → Real-time session state updates (WebSocket),
  *                                              incl. `work_log` entries (owner/admin scoped)
  */
 
+import { sumLiveUsage } from '@soma/slack/live-usage';
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
 import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
-import { sumLiveUsage } from '@soma/slack/live-usage';
 import { MetricsEventStore } from '../metrics/event-store';
 import { calculateTokenCost } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
+import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
+import { productionModelCatalogDeps } from '../session/model-catalog-deps';
+import {
+  listRepresentativeModels,
+  ModelSwitchError,
+  type ModelSwitchResult,
+  usedContextTokens,
+} from '../session/model-switch';
 import { ledgerTasks, sanitizeTaskLedger } from '../session/task-ledger';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
 import {
@@ -119,6 +128,14 @@ export interface KanbanSession {
    * its last activity. Absent while the session works or waits.
    */
   doneAt?: number;
+  /**
+   * SSOT 2026-10-22 T4/T5 — tokens the context holds now, the threshold it
+   * auto-compacts at (follows the model), and the representative model a
+   * switch waits to apply once the running compact seals.
+   */
+  contextTokens?: number;
+  autoCompactTokens?: number;
+  pendingModel?: string;
   /**
    * Task list — the model's latest TodoWrite list, from the session's task
    * ledger (SSOT 2026-10-22 T7/T8): each task has its own id (`T<n>`), its
@@ -521,6 +538,18 @@ export function setDashboardGoalHandler(fn: GoalActionHandler): void {
   _goalActionHandlerFn = fn;
 }
 
+/**
+ * SSOT 2026-10-22 T4/T5 — switch a session to a representative model
+ * (`session/model-switch.ts` `switchSessionModel`). Throws `ModelSwitchError`
+ * for every refusal, whose `statusCode` the route answers with.
+ */
+type ModelSwitchHandler = (sessionKey: string, nickname: string) => Promise<ModelSwitchResult>;
+let _modelSwitchHandlerFn: ModelSwitchHandler | null = null;
+
+export function setDashboardModelHandler(fn: ModelSwitchHandler): void {
+  _modelSwitchHandlerFn = fn;
+}
+
 type ChoiceAnswerHandler = (sessionKey: string, choiceId: string, label: string, question: string) => Promise<void>;
 let _choiceAnswerHandlerFn: ChoiceAnswerHandler | null = null;
 
@@ -717,6 +746,21 @@ function tokenUsageOf(s: any): KanbanSession['tokenUsage'] {
   };
 }
 
+/** T4/T5 — context fill, the auto-compact threshold of the current model, a waiting switch. */
+function modelFields(s: any): Pick<KanbanSession, 'contextTokens' | 'autoCompactTokens' | 'pendingModel'> {
+  const out: Pick<KanbanSession, 'contextTokens' | 'autoCompactTokens' | 'pendingModel'> = {};
+  if (s.usage) out.contextTokens = usedContextTokens(s);
+  try {
+    if (s.model) out.autoCompactTokens = resolveEffectiveAutoCompact(s, s.ownerId || '', userSettingsStore).tokens;
+  } catch (error) {
+    logger.debug('auto-compact threshold unavailable for the card', { error: (error as Error)?.message });
+  }
+  if (s.pendingModelSwitch && typeof s.pendingModelSwitch.nickname === 'string') {
+    out.pendingModel = s.pendingModelSwitch.nickname;
+  }
+  return out;
+}
+
 /** T11 — when a live session's work finished; undefined while it works or waits. */
 function liveDoneAt(s: any): number | undefined {
   const state = s.activityState || 'idle';
@@ -768,6 +812,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       : undefined,
     tokenUsage: tokenUsageOf(s),
     doneAt: liveDoneAt(s),
+    ...modelFields(s),
     tasks: taskView?.current,
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
     slackThreadUrl:
@@ -1121,7 +1166,11 @@ export function broadcastSessionUpdate(): void {
 }
 
 /** Broadcast task update to all connected WebSocket clients */
-export function broadcastTaskUpdate(sessionKey: string, tasks: DashboardTask[], earlierTasks: DashboardTask[] = []): void {
+export function broadcastTaskUpdate(
+  sessionKey: string,
+  tasks: DashboardTask[],
+  earlierTasks: DashboardTask[] = [],
+): void {
   if (wsClients.size === 0) return;
   try {
     // #814 External callers (e.g. Slack handler) pass the raw session key.
@@ -1870,6 +1919,38 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Model switch (SSOT 2026-10-22 T4/T5) ──
+
+  server.post<{ Params: { key: string }; Body: { model?: unknown } }>(
+    '/api/dashboard/session/:key/model',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const nickname = (request.body || {}).model;
+      if (typeof nickname !== 'string' || !nickname || nickname.length > 64) {
+        reply.status(400).send({ error: 'model is required and must be a representative model nickname' });
+        return;
+      }
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      if (!_modelSwitchHandlerFn) {
+        reply.status(501).send({ error: 'Model switch handler not configured' });
+        return;
+      }
+      try {
+        const result = await _modelSwitchHandlerFn(resolved.originalKey, nickname);
+        broadcastSessionUpdate();
+        reply.send({ ok: true, result });
+      } catch (error) {
+        if (error instanceof ModelSwitchError) {
+          reply.status(error.statusCode).send({ error: error.message });
+          return;
+        }
+        logger.error('Error switching model from dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── Answer choice from dashboard ──
 
   server.post<{ Params: { key: string }; Body: { choiceId: string; label: string; question: string } }>(
@@ -2103,6 +2184,15 @@ function renderDashboardPage(userId?: string): string {
     /</g,
     '\\u003c',
   );
+  // SSOT 2026-10-22 T4 — the representative models a card can switch to, with
+  // their window and auto-compact threshold (escaped like the header config).
+  let representativeModels: unknown[] = [];
+  try {
+    representativeModels = listRepresentativeModels(productionModelCatalogDeps());
+  } catch (error) {
+    logger.warn('Representative models unavailable for the dashboard', error);
+  }
+  const initRepresentativeModels = JSON.stringify(representativeModels).replace(/</g, '\\u003c');
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -2721,7 +2811,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card.is-expanded .card-expand-inner { opacity: 1; }
 .card.no-motion .card-expand, .card.no-motion .card-expand-inner { transition: none; }
 .card-body { margin: 0 14px; padding: 12px 0 14px; border-top: 1px solid var(--ib-card-border); font-size: 13px; color: var(--ib-text-2); }
-.cb-model { color: var(--ib-muted); font-size: 13px; }
+.cb-model { color: var(--ib-muted); font-size: 13px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
+.cb-model-select { font: inherit; font-size: 13px; color: var(--ib-text); background: var(--ib-seg); border: 1px solid var(--ib-card-border); border-radius: 8px; padding: 4px 8px; min-height: 30px; max-width: 100%; cursor: pointer; }
+.cb-model-select:disabled { opacity: 0.6; cursor: progress; }
+.cb-ac { font-variant-numeric: tabular-nums; }
+.cb-model-note { margin-top: 4px; font-size: 12px; color: var(--ib-text-2); overflow-wrap: anywhere; }
+.cb-model-note.is-error { color: var(--st-fail); }
 
 /* ── EXPANDED META — moved from the old card face, same dhShow() gates ── */
 .card .card-meta {
@@ -4040,6 +4135,8 @@ const SELF_INSTANCE_NAME = ${initSelfInstance};
 // what limits. Fields absent from the lines are hidden (isFieldVisible
 // semantics on the server side).
 const DASHBOARD_HEADER_CONFIG = ${initDashboardHeaderConfig};
+// SSOT 2026-10-22 T4: [{ nickname, model, label, contextWindow, autoCompactTokens }]
+const REPRESENTATIVE_MODELS = ${initRepresentativeModels};
 // field → first config entry map (show/max/truncate lookups in renderCard).
 const _dhFieldMap = {};
 for (const _dhLine of DASHBOARD_HEADER_CONFIG) {
@@ -5258,7 +5355,7 @@ function applyCardParts(el, p) {
     animateCountersIn(el._faceEl, el.getAttribute('data-session-key'));
     changed = true;
   }
-  if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl)) {
+  if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl) && !isPickingModel(el._bodyEl)) {
     var goalDraft = captureGoalDraft(el._bodyEl);
     el._bodyEl.innerHTML = p.body;
     el._bodyHtml = p.body;
@@ -5718,11 +5815,20 @@ function renderCardBody(s, col) {
   const readOnlyAttrs = isOwner ? '' : ' disabled';
 
   // Model · effort — the first line of the open card (reference: "Opus 5.5").
+  // SSOT 2026-10-22 T4/T5: the owner switches it here, among the
+  // representative models; the auto-compact threshold follows.
   const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
   const modelParts = [];
-  if (dhShow('model') && modelShort) modelParts.push(modelShort);
+  const canSwitchModel = isOwner && col !== 'closed' && !s.terminated && !isSiblingSession(s);
+  if (dhShow('model') && (modelShort || canSwitchModel)) modelParts.push(renderModelPicker(s, canSwitchModel, modelShort));
   if (s.effort) modelParts.push('<span class="meta-effort" title="Power level">' + esc(s.effort) + '</span>');
-  const modelHtml = modelParts.length ? '<div class="cb-model">' + modelParts.join(' &middot; ') + '</div>' : '';
+  if (dhShow('model') && toNum(s.autoCompactTokens) > 0) {
+    modelParts.push('<span class="cb-ac" title="이 모델의 auto-compact 기준">autocompact ' + formatTokens(s.autoCompactTokens) + '</span>');
+  }
+  const modelNote = renderModelNote(s);
+  const modelHtml = modelParts.length || modelNote
+    ? '<div class="cb-model">' + modelParts.join(' &middot; ') + '</div>' + modelNote
+    : '';
 
   // #814 env badge — only shown when multiple distinct envs are present in
   // the current cache. Single-env (sibling 0 + INSTANCE_NAME unset) suppresses
@@ -5869,6 +5975,73 @@ function renderCardBody(s, col) {
     + '</div>';
 }
 
+// ── Model switch on the open card (SSOT 2026-10-22 T4/T5) ──
+// A <select> of the representative models (REPRESENTATIVE_MODELS). An option
+// whose auto-compact threshold is below what the context holds now says the
+// switch compacts first: the server compacts on the current model and switches
+// at the compact's boundary (the card shows the waiting switch meanwhile).
+var _modelNotes = Object.create(null); // card key → { text, error }
+function renderModelPicker(s, canSwitch, modelShort) {
+  var models = REPRESENTATIVE_MODELS || [];
+  var current = null;
+  for (var i = 0; i < models.length; i++) if (models[i].model === s.model) current = models[i];
+  if (!canSwitch || !models.length) return '<span class="cb-model-name">' + modelShort + '</span>';
+  var used = toNum(s.contextTokens);
+  var opts = '';
+  if (!current) opts += '<option value="" selected disabled>' + (modelShort || '모델 선택') + '</option>';
+  for (var j = 0; j < models.length; j++) {
+    var m = models[j];
+    var label = m.nickname + ' · autocompact ' + formatTokens(m.autoCompactTokens)
+      + (m !== current && used > toNum(m.autoCompactTokens) ? ' · compact 후 전환' : '');
+    opts += '<option value="' + escAttr(m.nickname) + '"' + (m === current ? ' selected' : '') + '>' + esc(label) + '</option>';
+  }
+  return '<select class="cb-model-select" aria-label="모델 변경"' + (s.pendingModel ? ' disabled' : '')
+    + ' onclick="event.stopPropagation()" onchange="changeModel(\\'' + escJs(s.key) + '\\',this)">' + opts + '</select>';
+}
+function renderModelNote(s) {
+  if (s.pendingModel) {
+    return '<div class="cb-model-note" role="status">compact 후 ' + esc(s.pendingModel) + '(으)로 전환합니다…</div>';
+  }
+  var n = _modelNotes[s.key];
+  if (!n) return '';
+  return '<div class="cb-model-note' + (n.error ? ' is-error' : '') + '"' + (n.error ? ' role="alert"' : ' role="status"') + '>' + esc(n.text) + '</div>';
+}
+async function postModelSwitch(key, nickname) {
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/model';
+  var body = JSON.stringify({ model: nickname });
+  var headers = { 'Content-Type': 'application/json' };
+  if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+  var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+  if (res.status === 403) {
+    await refreshCsrfToken();
+    var retryHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+    res = await fetch(url, { method: 'POST', headers: retryHeaders, body: body });
+  }
+  var data = null;
+  try { data = await res.json(); } catch (_e) {}
+  return { ok: res.ok, result: data && data.result, error: (data && data.error) || ('HTTP ' + res.status) };
+}
+// What the card says after a switch request.
+function modelSwitchNote(r) {
+  if (!r.ok) return { text: r.error, error: true };
+  var res = r.result || {};
+  if (res.status === 'compacting') return { text: '컨텍스트가 ' + res.nickname + '의 autocompact ' + formatTokens(res.autoCompactTokens) + '보다 커서 지금 모델로 compact한 뒤 전환합니다', error: false };
+  if (res.status === 'unchanged') return { text: '이미 ' + res.nickname + '입니다', error: false };
+  return { text: res.nickname + '(으)로 전환 · autocompact ' + formatTokens(res.autoCompactTokens), error: false };
+}
+async function changeModel(key, select) {
+  var nickname = select && select.value;
+  if (!nickname) return;
+  if (select) select.disabled = true;
+  var r;
+  try { r = await postModelSwitch(key, nickname); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+  _modelNotes[key] = modelSwitchNote(r);
+  if (select) { select.disabled = false; select.blur(); }
+  refreshCard(key);
+  loadSessions();
+}
+
 // ── Goal list on the work item (SSOT 2026-10-21 T2/T3) ──
 // The card shows the current goal, its state and the goals queued behind it,
 // and lets the owner add a goal, delete the current goal (the next queued one
@@ -5979,6 +6152,11 @@ function renderCardGoal(s, col, canEdit) {
 function isEditingGoal(root) {
   var a = document.activeElement;
   return !!(a && a.classList && a.classList.contains('cg-add-input') && root.contains(a));
+}
+// An open model <select> survives live re-renders the same way (T4).
+function isPickingModel(root) {
+  var a = document.activeElement;
+  return !!(a && a.classList && a.classList.contains('cb-model-select') && root.contains(a));
 }
 function captureGoalDraft(root) {
   var input = root.querySelector('.cg-add-input');

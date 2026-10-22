@@ -144,7 +144,10 @@ export function ledgerTasks(ledger: TaskLedger): { current: TaskRecord[]; earlie
   const inList = new Set(ledger.current);
   const byId = new Map(ledger.tasks.map((t) => [t.id, t]));
   return {
-    current: ledger.current.map((id) => byId.get(id)).filter((t): t is TaskRecord => !!t).map((t) => ({ ...t })),
+    current: ledger.current
+      .map((id) => byId.get(id))
+      .filter((t): t is TaskRecord => !!t)
+      .map((t) => ({ ...t })),
     earlier: ledger.tasks
       .filter((t) => !inList.has(t.id))
       .reverse()
@@ -182,7 +185,9 @@ export function sanitizeTaskLedger(raw: unknown): TaskLedger | undefined {
     if (completedAt) rec.completedAt = completedAt;
     tasks.push(rec);
   }
-  const current = Array.isArray(r.current) ? r.current.filter((id): id is string => typeof id === 'string' && seen.has(id)) : [];
+  const current = Array.isArray(r.current)
+    ? r.current.filter((id): id is string => typeof id === 'string' && seen.has(id))
+    : [];
   return { nextSeq: Math.floor(nextSeq), tasks: tasks.slice(-TASK_LEDGER_MAX), current };
 }
 

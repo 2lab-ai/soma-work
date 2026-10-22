@@ -186,9 +186,7 @@ describe('work item goal list — controls (T3)', () => {
       const all = html.match(/<button[^>]*>/g) ?? [];
       // Opening the completed goals (T6) is reading, so it stays enabled.
       const buttons = all.filter((b) => !b.includes('cg-history-toggle'));
-      expect(all.filter((b) => b.includes('cg-history-toggle'))).toEqual([
-        expect.not.stringContaining(' disabled'),
-      ]);
+      expect(all.filter((b) => b.includes('cg-history-toggle'))).toEqual([expect.not.stringContaining(' disabled')]);
       expect(buttons.length).toBe(3);
       for (const b of buttons) expect(b).toContain(' disabled');
       expect(html).not.toContain('cg-add-input');
@@ -278,11 +276,12 @@ describe('work item goal list — the goal being typed survives a live re-render
   it('does not replace the body while the goal input has focus (typing / IME untouched)', () => {
     const { el, body, document } = fakeCard(true, '쓰는 중');
     const { applyCardParts } = load<any>(
-      ['isEditingGoal', 'captureGoalDraft', 'restoreGoalDraft', 'applyCardParts'],
+      ['isEditingGoal', 'isPickingModel', 'captureGoalDraft', 'restoreGoalDraft', 'applyCardParts'],
       [],
       {
         document,
         updateTimersIn: () => {},
+        animateCountersIn: () => {},
       },
     );
 
@@ -296,11 +295,12 @@ describe('work item goal list — the goal being typed survives a live re-render
     const { el, body, document } = fakeCard(false, '나중에 보낼 goal');
     const fresh = { classList: { contains: () => true }, value: '' };
     const { applyCardParts } = load<any>(
-      ['isEditingGoal', 'captureGoalDraft', 'restoreGoalDraft', 'applyCardParts'],
+      ['isEditingGoal', 'isPickingModel', 'captureGoalDraft', 'restoreGoalDraft', 'applyCardParts'],
       [],
       {
         document,
         updateTimersIn: () => {},
+        animateCountersIn: () => {},
       },
     );
     // innerHTML assignment builds a fresh, empty input.
