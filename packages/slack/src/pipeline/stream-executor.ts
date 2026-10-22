@@ -11,7 +11,12 @@ import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier'
 import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
 import type { AgentStreamEventOf } from '../agent-stream-types';
 import type { AssistantStatusManager } from '../assistant-status-manager';
-import { type CompactStateSession, promotePendingToDispatchQueue } from '../compact-state';
+import {
+  type CompactStateSession,
+  isAutoCompactPaused,
+  pauseAutoCompactAfterFailure,
+  promotePendingToDispatchQueue,
+} from '../compact-state';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
 import type { ContextWindowManager } from '../context-window-manager';
 import type { DeployCompletedHookContext, DeployCompletedSignal } from '../directives/deploy-completed-directive';
@@ -1311,6 +1316,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // must name the loss lives on the far side of that boundary.
     let interruptFlushFailed: InterruptFlushFailure | undefined;
 
+    // Compact retry loop breaker (field incident 2026-10-22). A `/compact`
+    // turn that ends WITHOUT a compact boundary failed — however it ended:
+    // a throw (handled in catch), an SDK error result, or a result that never
+    // compacted. Declared outside the try so `finally` can see all three.
+    let compactBoundarySeen = false;
+    let compactFailureHandled = false;
+    let compactFailureText: string | undefined;
+
     try {
       if (this.deps.threadPanel) {
         await runWithTimeout(() => this.deps.threadPanel!.beginTurn(turnContext), 5_000, {
@@ -2042,6 +2055,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // at turn-end and is stale between PreCompact and PostCompact).
         onCompactBoundary: (metadata) => {
           session.compactionOccurred = true;
+          compactBoundarySeen = true;
 
           // Auto fallback compact (prompt-too-long emergency path): the
           // compaction that just sealed ran on the temporary 1M compact model.
@@ -2552,6 +2566,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Issue #122: Surface SDK result errors to user (errors[] from SDKResultError)
       if (streamResult.sdkResultError) {
         const { subtype, errors, numTurns } = streamResult.sdkResultError;
+        compactFailureText = [subtype, ...errors].join(': ');
         const escMrkdwn = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         const errorLines = [`⚠️ *[SDK Result Error]* ${escMrkdwn(subtype)}`, `> *Turns:* ${numTurns ?? 'unknown'}`];
         if (errors.length > 0) {
@@ -3006,6 +3021,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           error: (err as Error)?.message ?? String(err),
         });
       }
+      // Compact retry loop breaker (field incident 2026-10-22). A failed
+      // `/compact` leaves usage where it was, so this turn's `finally`
+      // threshold check would re-arm `autoCompactPending` and the replay of
+      // the intercepted message would be intercepted straight back into
+      // `/compact` — compact → fail → compact every few seconds. Pause the
+      // threshold-triggered auto-compact first (handleError's failure notice
+      // reports the pause). Exempt: the transcript-repair retry (Rail 1, one
+      // bounded re-run) and aborts the user chose.
+      if (session.compactTurnActive === true) {
+        compactFailureHandled = true;
+        if (
+          !(error as any)?.compactRetryAfterRepair &&
+          !(requestAborted && abortReason !== undefined && QUIET_ABORT_REASONS.has(abortReason))
+        ) {
+          this.pauseAutoCompactAfterCompactFailure(session, sessionKey, String((error as Error)?.message ?? error));
+        }
+      }
       let retryAfterMs: number | undefined;
       try {
         retryAfterMs = await this.handleError(
@@ -3111,6 +3143,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           DEFAULT_CLEANUP_TIMEOUT_MS,
           this.logger,
         );
+      }
+      // Compact retry loop breaker, non-throwing exits: a `/compact` turn that
+      // returned normally (SDK error result, or a result that never compacted)
+      // without a compact boundary failed too. Must run BEFORE the threshold
+      // check below, which would otherwise re-arm auto-compact.
+      if (session.compactTurnActive === true && !compactBoundarySeen && !compactFailureHandled) {
+        this.pauseAutoCompactAfterCompactFailure(session, sessionKey, compactFailureText);
       }
       // #617 AC3: threshold check at turn-end. Must run AFTER endTurn so
       // session.usage reflects the just-completed turn. Fire-and-forget —
@@ -3253,6 +3292,26 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         }
       }
     }
+  }
+
+  /**
+   * Compact retry loop breaker — pause threshold-triggered auto-compact after
+   * a failed `/compact` turn (see `pauseAutoCompactAfterFailure`). A pool-429
+   * `retry in Ns` hint in `failureText` sets the pause length.
+   */
+  private pauseAutoCompactAfterCompactFailure(
+    session: ConversationSession,
+    sessionKey: string,
+    failureText: string | undefined,
+  ): void {
+    const advertisedRetryMs =
+      failureText && textIndicatesRetryableRateLimit(failureText) ? parseRetryAfterMs(failureText) : null;
+    const pausedUntilMs = pauseAutoCompactAfterFailure(session as CompactStateSession, advertisedRetryMs);
+    this.logger.warn('Auto-compact paused after failed /compact turn', {
+      sessionKey,
+      pausedUntil: new Date(pausedUntilMs).toISOString(),
+      advertisedRetryMs,
+    });
   }
 
   /** Max auto-retries per error sequence before giving up */
@@ -3406,7 +3465,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         .replace(/\x60/g, 'ˋ');
       const detail =
         escapedReason.length > 2500 ? `${escapedReason.slice(0, 2500)}… (이하 생략 — 상세 로그 확인)` : escapedReason;
-      const condensed = `🔴 컴팩트 실패 — 대화 요약 중 오류가 발생했습니다.${restoreNote}${sessionResetNote}\n원인: ${detail}`;
+      const pausedUntilMs = session.autoCompactSuppressedUntilMs;
+      const pauseNote =
+        typeof pausedUntilMs === 'number' && isAutoCompactPaused(session as CompactStateSession)
+          ? ` 자동 compact는 ${Math.ceil((pausedUntilMs - Date.now()) / 60_000)}분간 중지합니다 (수동 \`/compact\`는 가능).`
+          : '';
+      const condensed = `🔴 컴팩트 실패 — 대화 요약 중 오류가 발생했습니다.${restoreNote}${sessionResetNote}${pauseNote}\n원인: ${detail}`;
       await runWithTimeout(() => say({ text: condensed, thread_ts: threadTs }), DEFAULT_CLEANUP_TIMEOUT_MS, {
         what: 'handleError say(compactTerminalFailure)',
         logger: this.logger,
@@ -3700,7 +3764,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // 30s recoverable backoff, which would just re-hit the same wall and
         // burn the budget in ~90s. `poolRateLimitRetryMs` is stashed by the
         // content-guard; otherwise it is parsed from message + stderr.
-        const poolRateLimitRetryMs = this.detectPoolRateLimitRetryMs(error);
+        //
+        // A failed threshold/manual `/compact` is never auto-resumed: the
+        // deferred replay in `finally` re-runs the intercepted message and the
+        // auto-compact pause decides when compaction is tried again, so an
+        // auto-resume would fire a stray continuation after that replay. The
+        // emergency fallback compact keeps its own retry rails.
+        const failedCompactTurn = session.compactTurnActive === true && !session.fallbackCompactActive;
+        const poolRateLimitRetryMs = failedCompactTurn ? null : this.detectPoolRateLimitRetryMs(error);
         if (poolRateLimitRetryMs !== null) {
           const retryCount = session.errorRetryCount ?? 0;
           if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
@@ -3729,7 +3800,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Auto-retry only for known recoverable errors.
         // Unknown errors are preserved but not auto-retried — the user
         // decides whether to continue or `/reset`.
-        if (!poolRateLimitHandled && isRecoverable) {
+        if (!poolRateLimitHandled && isRecoverable && !failedCompactTurn) {
           const retryCount = session.errorRetryCount ?? 0;
           if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
             session.errorRetryCount = retryCount + 1;
