@@ -69,6 +69,45 @@ export function sumLiveUsage(map: Record<string, LiveUsageTotals> | undefined): 
 }
 
 /**
+ * A turn that ended without its result usage (stopped, transport lost) still
+ * spent its reported calls: add them to the committed totals — priced by
+ * `price` — so the live numbers the dashboard showed do not fall back. Only
+ * this turn's calls; returns whether anything was folded. Clears the calls.
+ */
+export function foldLiveUsage(
+  session: LiveUsageHolder & {
+    usage?: {
+      totalInputTokens: number;
+      totalOutputTokens: number;
+      totalCacheReadTokens: number;
+      totalCacheCreateTokens: number;
+      totalCostUsd: number;
+    };
+  },
+  turnId: string | undefined,
+  price: (totals: LiveUsageTotals) => number,
+): boolean {
+  if (turnId !== undefined && session.liveUsageTurnId !== undefined && session.liveUsageTurnId !== turnId) return false;
+  const t = sumLiveUsage(session.liveUsage);
+  const any = t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheCreateTokens > 0;
+  if (any && session.usage) {
+    session.usage.totalInputTokens += t.inputTokens;
+    session.usage.totalOutputTokens += t.outputTokens;
+    session.usage.totalCacheReadTokens += t.cacheReadTokens;
+    session.usage.totalCacheCreateTokens += t.cacheCreateTokens;
+    let cost = 0;
+    try {
+      cost = price(t);
+    } catch {
+      cost = 0;
+    }
+    if (Number.isFinite(cost) && cost > 0) session.usage.totalCostUsd += cost;
+  }
+  clearLiveUsage(session, turnId);
+  return any && !!session.usage;
+}
+
+/**
  * Drop the running turn's calls — its result usage is in the totals now (or the
  * turn is over). With a turnId, only that turn's calls: a superseded turn's
  * cleanup must not wipe its successor's.

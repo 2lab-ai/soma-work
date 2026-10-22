@@ -20,7 +20,7 @@ import {
   buildInstructionConfirmFallbackText,
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
-import { clearLiveUsage, recordLiveUsage } from '../live-usage';
+import { clearLiveUsage, foldLiveUsage, recordLiveUsage } from '../live-usage';
 import { applyPendingModelSwitch, settlePendingModelSwitch } from '../model-switch';
 import { OutputFlag, resolveVerbosityMask, shouldOutput, verboseTag } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
@@ -193,6 +193,11 @@ export interface StreamExecutorProviders {
    * (throttled). Must be cheap and never throw. No-op by default.
    */
   notifyLiveUsage?: (sessionKey: string) => void;
+  /** API-equivalent cost of calls folded from an interrupted turn. 0 by default. */
+  priceLiveUsage?: (
+    model: string | undefined,
+    totals: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+  ) => number;
 }
 
 const FALLBACK_CONTEXT_WINDOW = 200_000;
@@ -247,6 +252,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   postCompactCompleteIfNeeded: async () => undefined,
   postCompactStartingIfNeeded: async () => undefined,
   notifyLiveUsage: () => {},
+  priceLiveUsage: () => 0,
 };
 
 export function setStreamExecutorProviders(providers: StreamExecutorProviders): void {
@@ -3072,8 +3078,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // already ran endTurn, activeLegStartedAtMs is undefined and this is
       // a no-op. Guarantees the accumulator is correct on every exit path.
       try {
-        // A turn that ended without its result usage (abort, error) leaves no
-        // live calls behind for the next one to add on top of.
+        // A turn that ended without its result usage (abort, error): its
+        // reported calls were spent — fold them into the totals (priced at the
+        // session model) instead of letting the live numbers fall back.
+        if (session.liveUsage && Object.keys(session.liveUsage).length) {
+          this.ensureSessionUsage(session);
+          foldLiveUsage(session, turnId, (t) => streamExecutorProviders.priceLiveUsage(session.model, t));
+        }
         clearLiveUsage(session, turnId);
         this.deps.claudeHandler.getSessionRegistry().endTurn(session);
         this.deps.claudeHandler.getSessionRegistry().broadcastSessionUpdate();

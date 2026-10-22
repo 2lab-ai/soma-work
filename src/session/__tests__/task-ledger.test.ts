@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyTodoList,
+  closeTaskList,
   currentTask,
   ledgerTasks,
   recordToolCall,
@@ -111,11 +112,11 @@ describe('elapsed time and tool calls of a task (T7)', () => {
     expect(b).toMatchObject({ startedAt: 2000, completedAt: 9000 });
   });
 
-  it('a new task may be seeded with the times the todo list already stamped; a known task keeps the ledger’s', () => {
-    let l = applyTodoList(undefined, [{ content: 'A', status: 'completed', startedAt: 100, completedAt: 900 }], 5000);
-    expect(ledgerTasks(l).current[0]).toMatchObject({ startedAt: 100, completedAt: 900 });
-    l = applyTodoList(l, [{ content: 'A', status: 'completed', startedAt: 4000, completedAt: 4500 }], 6000);
-    expect(ledgerTasks(l).current[0]).toMatchObject({ startedAt: 100, completedAt: 900 });
+  it('times come from the ledger clock only — a todo list’s own stamps are ignored (review P2: equal titles share them)', () => {
+    let l = applyTodoList(undefined, [{ content: 'A', status: 'in_progress', startedAt: 100 } as any], 5000);
+    expect(ledgerTasks(l).current[0]).toMatchObject({ startedAt: 5000 });
+    l = applyTodoList(l, [{ content: 'A', status: 'completed', startedAt: 4000, completedAt: 4500 } as any], 6000);
+    expect(ledgerTasks(l).current[0]).toMatchObject({ startedAt: 5000, completedAt: 6000 });
   });
 
   it('a task that jumps straight to completed starts and ends at the same moment', () => {
@@ -159,6 +160,26 @@ describe('ledger bounds and persistence', () => {
     expect(l?.nextSeq).toBe(8);
     const next = applyTodoList(l, [todo('old', 'completed'), todo('new')], 1);
     expect(ledgerTasks(next).current.map((t) => t.id)).toEqual(['T7', 'T8']);
+  });
+
+  it('a restored ledger over the bound keeps the tasks of the current list (review P2)', () => {
+    const tasks = Array.from({ length: TASK_LEDGER_MAX + 1 }, (_, i) => ({
+      id: `T${i + 1}`,
+      content: `t${i + 1}`,
+      status: i === 0 ? 'in_progress' : 'completed',
+      toolCalls: 0,
+    }));
+    const l = sanitizeTaskLedger({ nextSeq: TASK_LEDGER_MAX + 2, current: ['T1'], tasks });
+    expect(l?.tasks).toHaveLength(TASK_LEDGER_MAX);
+    expect(currentTask(l)?.id).toBe('T1');
+  });
+
+  it('closing the list (new / renew) keeps the history but no task is in progress any more (review P2)', () => {
+    const l = applyTodoList(undefined, [todo('A', 'in_progress')], 1);
+    const closed = closeTaskList(l);
+    expect(currentTask(closed)).toBeUndefined();
+    expect(ledgerTasks(closed!).earlier.map((t) => t.id)).toEqual(['T1']);
+    expect(closeTaskList(undefined)).toBeUndefined();
   });
 
   it('sanitizes a persisted ledger: unknown shapes are dropped, numbers stay numbers', () => {
