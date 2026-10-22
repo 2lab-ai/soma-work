@@ -316,6 +316,14 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
     compactHeadroom: DEFAULT_COMPACT_HEADROOM,
   },
   {
+    // Sonnet's 1M opt-in — same Claude 1M policy as fable / opus (750k).
+    modelId: 'claude-sonnet-4-6[1m]',
+    contextWindow: 1_000_000,
+    sdkBlockingLimit: ONE_M_SDK_BLOCKING_LIMIT,
+    autoCompactTokens: 750_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
     modelId: 'claude-opus-5[1m]',
     contextWindow: 1_000_000,
     sdkBlockingLimit: ONE_M_SDK_BLOCKING_LIMIT,

@@ -59,10 +59,12 @@ import {
   getDashboardSessionUrl,
   initRecorder,
   matchSlackUsersByEmail,
+  scheduleLiveSessionUpdate,
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
   setDashboardGoalHandler,
+  setDashboardModelHandler,
   setDashboardMultiChoiceAnswerHandler,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
@@ -92,6 +94,7 @@ import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from '
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
+import { calculateTokenCost } from './metrics/model-registry';
 import { bootModelCatalog } from './model-catalog-boot';
 import {
   evaluateAndMaybeRotate,
@@ -106,6 +109,10 @@ import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
+import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
+import { productionModelCatalogDeps } from './session/model-catalog-deps';
+import { switchSessionModel } from './session/model-switch';
+import { applyTodoList, ledgerTasks, stampWorkLogTask } from './session/task-ledger';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
@@ -116,6 +123,7 @@ import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
 import { getTokenManager } from './token-manager';
+import type { ConversationSession } from './types';
 
 const logger = new Logger('Main');
 
@@ -703,17 +711,12 @@ async function start() {
       setSkillPromptInvalidationHook(invalidate);
     }
 
-    // Connect dashboard: task accessor (resolve sessionKey → sessionId for TodoManager)
+    // Connect dashboard: task accessor — the session's task ledger (SSOT
+    // 2026-10-22 T7/T8: ids, elapsed time, tool calls; kept across TodoWrite
+    // list replacements and the TodoManager's post-turn cleanup).
     setDashboardTaskAccessor((sessionKey: string) => {
       const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
-      const lookupId = session?.sessionId || sessionKey;
-      const todos = slackHandler.getTodoManager().getTodos(lookupId);
-      return todos.map((t) => ({
-        content: t.content,
-        status: t.status,
-        startedAt: t.startedAt,
-        completedAt: t.completedAt,
-      }));
+      return session?.taskLedger ? ledgerTasks(session.taskLedger) : undefined;
     });
 
     // Connect dashboard: stop handler (abort running session). Dashboard
@@ -737,11 +740,16 @@ async function start() {
     });
 
     // Connect dashboard: command handler (inject message as if user typed in Slack)
-    setDashboardCommandHandler(async (sessionKey: string, message: string) => {
+    /** Returns the injected message's identity (channel + ts), undefined when nothing was sent. */
+    const injectDashboardMessage = async (
+      sessionKey: string,
+      message: string,
+      onSent?: (sent: { channel: string; ts: string }) => void,
+    ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
         logger.warn('Dashboard command: session not found', { sessionKey });
-        return;
+        return undefined;
       }
       // Post the user's message to the Slack thread so it's visible,
       // styled as a quote block with dashboard origin indicator.
@@ -752,7 +760,7 @@ async function start() {
           channelId: session.channelId,
           threadTs: session.threadTs,
         });
-        return;
+        return undefined;
       }
 
       let echoTs: string | undefined;
@@ -791,6 +799,8 @@ async function start() {
       if (!echoTs) {
         logger.warn('Dashboard echo: using fabricated timestamp (echo failed or was skipped)', { sessionKey });
       }
+      const ts = echoTs || String(Date.now() / 1000);
+      onSent?.({ channel: session.channelId, ts });
       await slackHandler.handleMessage(
         {
           type: 'message',
@@ -798,12 +808,41 @@ async function start() {
           thread_ts: session.threadTs,
           text: message,
           user: session.ownerId,
-          ts: echoTs || String(Date.now() / 1000),
+          ts,
         } as any,
         dashboardSay,
       );
       logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
+      return { channel: session.channelId, ts };
+    };
+    setDashboardCommandHandler(async (sessionKey: string, message: string) => {
+      await injectDashboardMessage(sessionKey, message);
     });
+
+    // Connect dashboard: model switch (SSOT 2026-10-22 T4/T5) — representative
+    // models only; a context above the target's auto-compact threshold is
+    // compacted on the current model first (the owner's own `compact --yes`,
+    // echoed to the thread like any dashboard message) and the switch lands
+    // at that compact's boundary.
+    setDashboardModelHandler((sessionKey: string, nickname: string) =>
+      switchSessionModel(sessionKey, nickname, {
+        ...productionModelCatalogDeps(),
+        getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+        isRequestActive: (key) => slackHandler.getRequestCoordinator().isRequestActive(key),
+        currentAutoCompact: (session) =>
+          resolveEffectiveAutoCompact(session, session.ownerId || '', userSettingsStore).tokens,
+        // `handleMessage` returns as soon as the follow-up queue holds the
+        // command when another turn has the slot — the compact is still ahead
+        // then, and the switch keeps waiting for it (review R3-2).
+        dispatchCompact: async (key, onSent) => {
+          const sent = await injectDashboardMessage(key, 'compact --yes', onSent);
+          return sent && slackHandler.isFollowupPending(sent.channel, sent.ts) ? 'queued' : 'settled';
+        },
+        isCompactQueued: ({ channel, ts }) => slackHandler.isFollowupPending(channel, ts),
+        save: () => claudeHandler.saveSessions(),
+        broadcast: () => broadcastSessionUpdate(),
+      }),
+    );
 
     // Connect dashboard: goal list on the work item (SSOT 2026-10-21 T3) —
     // add / delete-current (promotes the next goal) / delete-queued.
@@ -852,25 +891,23 @@ async function start() {
     // Connect dashboard: real-time task updates
     // TodoManager fires with sessionId, but dashboard caches by sessionKey.
     // Resolve sessionId → sessionKey so WebSocket clients can match the update.
+    // Every TodoWrite list is merged into the session's task ledger first, so
+    // the update carries ledger ids, times and tool-call counts.
     slackHandler.getTodoManager().setOnUpdateCallback((sessionId, todos) => {
       let sessionKey = sessionId;
+      let owner: ConversationSession | undefined;
       const allSessions = claudeHandler.getSessionRegistry().getAllSessions();
       for (const [key, session] of allSessions) {
         if (session.sessionId === sessionId) {
           sessionKey = key;
+          owner = session;
           break;
         }
       }
-      broadcastTaskUpdate(
-        sessionKey,
-        todos.map((t) => ({
-          content: t.content,
-          status: t.status,
-          activeForm: t.activeForm,
-          startedAt: t.startedAt,
-          completedAt: t.completedAt,
-        })),
-      );
+      if (!owner) return;
+      owner.taskLedger = applyTodoList(owner.taskLedger, todos, Date.now());
+      const view = ledgerTasks(owner.taskLedger);
+      broadcastTaskUpdate(sessionKey, view.current, view.earlier);
     });
 
     // Connect dashboard: real-time conversation turn updates
@@ -888,9 +925,28 @@ async function start() {
     setOnWorkLogAppendedCallback(broadcastWorkLog);
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
+      notifyLiveUsage: (sessionKey: string) => void;
+      priceLiveUsage: (
+        model: string | undefined,
+        t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+      ) => number;
     } = {
+      // SSOT 2026-10-22 T1/T2 — a running turn made another API call: push the
+      // card (≤ 1/s per session) so its token / cost totals grow live.
+      notifyLiveUsage: (sessionKey: string) => scheduleLiveSessionUpdate(sessionKey),
+      priceLiveUsage: (model, t) =>
+        calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
-        appendWorkLog(conversationId, entry).catch(() => {});
+        // SSOT 2026-10-22 T7/T10: the entry carries the task in progress (the
+        // dashboard folds the log under it) and a tool call counts on that task.
+        let ledger: ConversationSession['taskLedger'];
+        for (const session of claudeHandler.getAllSessions().values()) {
+          if (session.conversationId === conversationId) {
+            ledger = session.taskLedger;
+            break;
+          }
+        }
+        appendWorkLog(conversationId, stampWorkLogTask(ledger, entry)).catch(() => {});
       },
     };
     setStreamExecutorProviders(workLogProviders);
@@ -1249,6 +1305,15 @@ async function start() {
           if (resumed > 0) timing(`Resumed ${resumed} active goal(s) after restart`);
         } catch (error) {
           logger.warn('Resuming active goals after restart failed (non-critical)', error);
+        }
+        // #351 — re-arm error auto-retries whose timer died with the previous
+        // process. Runs last so crash recovery and the goal loop have already
+        // claimed the sessions they resume (no double resume).
+        try {
+          const rearmed = slackHandler.resumePendingErrorRetries();
+          if (rearmed > 0) timing(`Re-armed ${rearmed} pending error auto-retry(ies) after restart`);
+        } catch (error) {
+          logger.warn('Re-arming pending error auto-retries failed (non-critical)', error);
         }
       })
       .catch((error) => {

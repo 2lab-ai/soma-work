@@ -11,6 +11,8 @@ import {
   DeployCompletedDirectiveHandler,
   type DeployCompletedPayload,
   type DeployCompletedRejection,
+  ReleaseNotesDirectiveHandler,
+  type ReleaseNotesPayload,
   SessionLinkDirectiveHandler,
   SourceWorkingDirDirectiveHandler,
 } from './directives';
@@ -18,6 +20,7 @@ import { markdownToBlocks, thinkingToQuoteBlock } from './formatters';
 // Direct module imports — going through the barrel (`./index`) creates a
 // `slack/index.ts → stream-processor.ts → index.ts` cycle that breaks
 // tree-shaking and risks init-order issues. See #745.
+import type { LiveUsageCall } from './live-usage';
 import { MessageFormatter } from './message-formatter';
 import {
   shouldOutput as checkOutputFlag,
@@ -521,10 +524,19 @@ export interface StreamCallbacks {
   onInvalidateOldForms?: (sessionKey: string, newFormId: string) => Promise<void>;
   /** Called with usage data when stream completes */
   onUsageUpdate?: (usage: UsageData) => void;
+  /**
+   * SSOT 2026-10-22 T1/T2 — one API call's usage, reported while the turn
+   * runs (the result usage arrives only at its end). `messageId` identifies
+   * the call: a call reported on several frames carries the same id. Pure
+   * bookkeeping — a throw is swallowed.
+   */
+  onLiveUsage?: (call: LiveUsageCall) => void;
   /** Called when model outputs session_links JSON directive */
   onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
   /** Called when model outputs channel_message JSON directive */
   onChannelMessageDetected?: (messageText: string, context: StreamContext) => Promise<void>;
+  /** Called once per valid release_notes JSON directive (a multi-repo deploy emits several) */
+  onReleaseNotesDetected?: (payload: ReleaseNotesPayload, context: StreamContext) => Promise<void>;
   /** Called once per valid deploy_completed JSON directive (a multi-repo deploy emits several) */
   onDeployCompletedDetected?: (payload: DeployCompletedPayload, context: StreamContext) => Promise<void>;
   /** Called once per text segment whose deploy_completed attempts yielded no payload (bad field, broken JSON) */
@@ -1597,7 +1609,7 @@ export class AgentStreamProcessor {
 
   /**
    * Extract and dispatch all response directives (session links, channel messages,
-   * deploy_completed signals, source working dirs) from text content. Returns the
+   * release notes, deploy_completed signals, source working dirs) from text content. Returns the
    * cleaned text with directives stripped.
    */
   private async extractAndDispatchDirectives(text: string, context: StreamContext): Promise<string> {
@@ -1626,6 +1638,23 @@ export class AgentStreamProcessor {
       }
     } catch (error) {
       this.logger.error('Failed to process channel message directive', { error });
+    }
+
+    // release_notes: one per repo, each dispatched in its own try.
+    try {
+      const releaseNotesResult = ReleaseNotesDirectiveHandler.extract(cleaned);
+      if (releaseNotesResult.payloads.length > 0) {
+        cleaned = releaseNotesResult.cleanedText;
+        for (const payload of releaseNotesResult.payloads) {
+          try {
+            await this.callbacks.onReleaseNotesDetected?.(payload, context);
+          } catch (error) {
+            this.logger.error('Failed to handle release_notes directive', { repo: payload.repo, error });
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.error('Failed to process release_notes directive', { error });
     }
 
     // A multi-repo deploy emits one per repo: each payload is dispatched in its
@@ -2217,6 +2246,13 @@ export class AgentStreamProcessor {
       // meaningful snapshot instead of blanking the context display.
       if (perTurn.inputTokens + perTurn.outputTokens + perTurn.cacheReadTokens + perTurn.cacheCreateTokens > 0) {
         this._lastAssistantTurnUsage = perTurn;
+        if (this.callbacks.onLiveUsage) {
+          try {
+            this.callbacks.onLiveUsage({ messageId: u.lastTurnMessageId, ...perTurn });
+          } catch (error) {
+            this.logger.debug('onLiveUsage callback failed', { error: (error as Error)?.message ?? String(error) });
+          }
+        }
       }
     }
 

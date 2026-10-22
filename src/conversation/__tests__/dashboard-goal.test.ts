@@ -133,6 +133,8 @@ describe('Dashboard — work item goal list (SSOT T2/T3)', () => {
           { goalId: 'g3', objective: '세번째' },
         ],
         completedCount: 1,
+        // SSOT 2026-10-22 T6 — the completed goals themselves, newest first.
+        history: [{ goalId: 'g0', objective: '대시보드 개선', createdAt: 1, continuationCount: 2 }],
       });
     });
 
