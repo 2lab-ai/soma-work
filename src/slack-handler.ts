@@ -2264,7 +2264,7 @@ export class SlackHandler {
         // The idle transition already pushed a board without the retry; push
         // again so the card moves back out of DONE now, not at the next
         // unrelated update.
-        this.claudeHandler.broadcastSessionUpdate();
+        this.claudeHandler.broadcastSessionUpdate?.();
         // Retry scheduled — don't re-throw. The turn did NOT succeed, so this is
         // an `error`: the drain stays halted until the retry (or the user) says
         // otherwise, instead of racing the timer for the same session.

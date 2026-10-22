@@ -556,13 +556,13 @@ describe('SessionRegistry persistence', () => {
     session.sessionId = 'session-timer';
     const callback = vi.fn();
     session.pendingRetryTimer = setTimeout(callback, 60_000);
-    session.pendingRetry = { at: Date.now() + 60_000, attempt: 1, maxAttempts: 3, reason: '429' };
+    session.pendingRetryDetail = { attempt: 1, maxAttempts: 3, reason: '429' };
 
     registry.clearSessionId('C_TIMER', '171.T1');
 
     expect(session.pendingRetryTimer).toBeUndefined();
     // The dashboard must not keep promising a resume whose timer is gone.
-    expect(session.pendingRetry).toBeUndefined();
+    expect(session.pendingRetryDetail).toBeUndefined();
   });
 
   it('resetSessionContext cancels pendingRetryTimer', () => {
@@ -571,24 +571,35 @@ describe('SessionRegistry persistence', () => {
     session.sessionId = 'session-timer2';
     const callback = vi.fn();
     session.pendingRetryTimer = setTimeout(callback, 60_000);
-    session.pendingRetry = { at: Date.now() + 60_000, attempt: 1, maxAttempts: 3, reason: '429' };
+    session.pendingRetryDetail = { attempt: 1, maxAttempts: 3, reason: '429' };
 
     registry.resetSessionContext('C_TIMER', '171.T2');
 
     expect(session.pendingRetryTimer).toBeUndefined();
-    expect(session.pendingRetry).toBeUndefined();
+    expect(session.pendingRetryDetail).toBeUndefined();
   });
 
-  it('pendingRetry is runtime-only: a restart (save/load) never resurrects it', () => {
+  it('pendingRetryDetail travels with the persisted retry marker (#351) and is dropped without it', () => {
     const writer = new SessionRegistry();
-    const session = writer.createSession('U123', 'Tester', 'C_TIMER', '171.T3');
-    session.sessionId = 'session-timer3';
-    session.pendingRetry = { at: Date.now() + 60_000, attempt: 1, maxAttempts: 3, reason: '429' };
+    const kept = writer.createSession('U123', 'Tester', 'C_TIMER', '171.T3');
+    kept.sessionId = 'session-timer3';
+    kept.pendingRetryAt = Date.now() + 60_000;
+    kept.pendingRetrySessionId = 'session-timer3';
+    kept.pendingRetryDetail = { attempt: 1, maxAttempts: 3, reason: '429' };
+    const orphan = writer.createSession('U123', 'Tester', 'C_TIMER', '171.T4');
+    orphan.sessionId = 'session-timer4';
+    orphan.pendingRetryDetail = { attempt: 2, maxAttempts: 3, reason: 'stale' };
     writer.saveSessions();
 
     const reader = new SessionRegistry();
     reader.loadSessions();
-    expect(reader.getSession('C_TIMER', '171.T3')?.pendingRetry).toBeUndefined();
+    expect(reader.getSession('C_TIMER', '171.T3')?.pendingRetryDetail).toEqual({
+      attempt: 1,
+      maxAttempts: 3,
+      reason: '429',
+    });
+    // No marker → no detail (a card never shows a reason for a retry that is not armed).
+    expect(reader.getSession('C_TIMER', '171.T4')?.pendingRetryDetail).toBeUndefined();
   });
 
   // === Issue #391: Preserve activityState on restart ===

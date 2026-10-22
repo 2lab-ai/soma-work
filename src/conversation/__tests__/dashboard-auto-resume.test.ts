@@ -64,6 +64,11 @@ function goal(overrides: Record<string, any> = {}) {
   };
 }
 
+/** The persisted error auto-retry marker (#351) plus the card detail, for run `sid1`. */
+function retry(at: number, detail: Record<string, unknown> = {}) {
+  return { pendingRetryAt: at, pendingRetrySessionId: 'sid1', pendingRetryDetail: detail };
+}
+
 function session(overrides: Record<string, any> = {}) {
   return {
     sessionId: 'sid1',
@@ -110,7 +115,7 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
     it('a turn that failed with a 429 and re-runs later is RUNNING, not DONE', async () => {
       const at = Date.now() + HOUR;
       const b = await board(
-        new Map([['C1:t1', session({ pendingRetry: { at, attempt: 1, maxAttempts: 3, reason: RATE_LIMIT } })]]),
+        new Map([['C1:t1', session(retry(at, { attempt: 1, maxAttempts: 3, reason: RATE_LIMIT }))]]),
       );
 
       expect(b.idle).toHaveLength(0);
@@ -167,7 +172,7 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
           [
             'C1:t1',
             session({
-              pendingRetry: { at, attempt: 2, maxAttempts: 3, reason: RATE_LIMIT },
+              ...retry(at, { attempt: 2, maxAttempts: 3, reason: RATE_LIMIT }),
               goal: goal({ evalBackoffUntil: Date.now() + 2 * HOUR, evalDispatchRetryCount: 1 }),
             }),
           ],
@@ -182,7 +187,7 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
       const b = await board(
         new Map<string, any>([
           ['C1:a', session({ threadTs: 'a' })],
-          ['C1:b', session({ threadTs: 'b', pendingRetry: { at: past, attempt: 1, maxAttempts: 3 } })],
+          ['C1:b', session({ threadTs: 'b', ...retry(past, { attempt: 1, maxAttempts: 3 }) })],
           ['C1:c', session({ threadTs: 'c', goal: goal({ evalBackoffUntil: past }) })],
           ['C1:d', session({ threadTs: 'd', goal: goal({ status: 'paused', evalBackoffUntil: Date.now() + HOUR }) })],
           ['C1:e', session({ threadTs: 'e', goal: goal() })],
@@ -193,11 +198,21 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
       for (const card of b.idle) expect(card.autoResume).toBeUndefined();
     });
 
+    it('a marker of a previous run or of a sleeping session is not a resume (same rule as the restart re-arm, #351)', async () => {
+      const at = Date.now() + HOUR;
+      const b = await board(
+        new Map<string, any>([
+          ['C1:a', session({ threadTs: 'a', ...retry(at), pendingRetrySessionId: 'old-run' })],
+          ['C1:b', session({ threadTs: 'b', ...retry(at), state: 'SLEEPING' })],
+        ]),
+      );
+      expect(b.working).toHaveLength(0);
+      for (const card of [...b.idle, ...b.closed]) expect(card.autoResume).toBeUndefined();
+    });
+
     it('a question to the user still wins: waiting stays in NEEDS YOU', async () => {
       const b = await board(
-        new Map([
-          ['C1:t1', session({ activityState: 'waiting', pendingRetry: { at: Date.now() + HOUR, attempt: 1 } })],
-        ]),
+        new Map([['C1:t1', session({ activityState: 'waiting', ...retry(Date.now() + HOUR, { attempt: 1 }) })]]),
       );
       expect(b.waiting).toHaveLength(1);
       expect(b.working).toHaveLength(0);
@@ -206,9 +221,19 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
     it('deriveAutoResume never reports garbage counts or a blank reason', () => {
       const now = 1_000;
       expect(
-        dashboard.deriveAutoResume({ pendingRetry: { at: 2_000, attempt: 'x', maxAttempts: -1, reason: '' } }, now),
+        dashboard.deriveAutoResume(
+          {
+            sessionId: 's',
+            pendingRetryAt: 2_000,
+            pendingRetrySessionId: 's',
+            pendingRetryDetail: { attempt: 'x', maxAttempts: -1, reason: '' },
+          },
+          now,
+        ),
       ).toEqual({ kind: 'error-retry', at: 2_000, attempt: undefined, maxAttempts: undefined, reason: undefined });
-      expect(dashboard.deriveAutoResume({ pendingRetry: { at: 'soon' } }, now)).toBeUndefined();
+      expect(
+        dashboard.deriveAutoResume({ sessionId: 's', pendingRetryAt: 'soon', pendingRetrySessionId: 's' }, now),
+      ).toBeUndefined();
       expect(dashboard.deriveAutoResume(undefined, now)).toBeUndefined();
     });
   });
@@ -244,7 +269,7 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
       dashboard.setDashboardTaskAccessor(() => ({ current: snapshot(), earlier: [] }));
       const b = await board(
         new Map<string, any>([
-          ['C1:resume', session({ threadTs: 'resume', pendingRetry: { at: Date.now() + HOUR, attempt: 1 } })],
+          ['C1:resume', session({ threadTs: 'resume', ...retry(Date.now() + HOUR, { attempt: 1 }) })],
           ['C1:ask', session({ threadTs: 'ask', activityState: 'waiting' })],
         ]),
       );
