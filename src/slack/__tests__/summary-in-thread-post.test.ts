@@ -2,6 +2,10 @@
  * Tests for posting the Executive Summary as an in-thread message in
  * addition to the floating thread-surface header.
  *
+ * Since 2026-10-22 the two outputs differ: the thread surface (the
+ * channel-visible root message) shows only the 3-line TL;DR, and this
+ * in-thread message carries the full ES. See summary-surface-tldr.test.ts.
+ *
  * Z's complaint: "이 excutive summary를 thread surface에도 지금처럼
  * 출력해주고 '작업 완료' 메세지 이후에도 thread안에도 메세지로 출력해줘".
  *
@@ -20,10 +24,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { SummaryService, type SummarySessionInfo } from '../summary-service.js';
 
 describe('SummaryService — buildSummaryBlocks is publicly callable', () => {
-  // Required for the in-thread post: stream-executor needs to call this so
-  // both the surface header AND the in-thread post share the same blocks.
-  // Without exposing it, the in-thread post path would re-implement
-  // chunking + markdown rewrite.
+  // Required for the in-thread post: it is the full-text renderer (chunking +
+  // markdown rewrite) that the in-thread ES message is built from.
   it('buildSummaryBlocks(text) returns Block Kit blocks usable as postMessage args', () => {
     const service = new SummaryService();
     // Method exists on the public surface.
@@ -39,7 +41,7 @@ describe('SummaryService — buildSummaryBlocks is publicly callable', () => {
     });
   });
 
-  it('buildSummaryBlocks chunks long text the same way displayOnThread does', () => {
+  it('buildSummaryBlocks chunks long text under the 3000-char section limit', () => {
     const service = new SummaryService();
     const longText = 'B'.repeat(4000);
     const blocks = (service as any).buildSummaryBlocks(longText) as any[];
@@ -59,7 +61,7 @@ describe('SummaryService.postInThread() — in-thread ES message', () => {
     };
   }
 
-  it('postInThread posts the same blocks to slackApi.postMessage with threadTs', async () => {
+  it('postInThread posts the full summary blocks to slackApi.postMessage with threadTs', async () => {
     const postMessage = vi.fn().mockResolvedValue({ ts: '1.234' });
     const service = new SummaryService(undefined, { postMessage });
     const session = makeSession({ channelId: 'C999', threadTs: '1700000000.000', sessionTitle: 'work' });
