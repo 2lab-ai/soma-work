@@ -117,6 +117,8 @@ interface TurnResultCollectorLike {
   onEndTurn(info: any): void;
   onText(text: string): void;
   setContinuation(continuation: Continuation): void;
+  setHasPendingChoice(value: boolean): void;
+  setPendingChoiceProbe?(probe: () => boolean): void;
   getResult(): any;
 }
 
@@ -128,6 +130,7 @@ const createNoopTurnResultCollector = (): TurnResultCollectorLike => ({
   onEndTurn: () => {},
   onText: () => {},
   setContinuation: () => {},
+  setHasPendingChoice: () => {},
   getResult: () => ({
     text: '',
     toolCalls: [],
@@ -1153,6 +1156,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
 
     let toolChoicePending = false;
+    /**
+     * A choice this turn asked was registered as open — the open-choice bit
+     * (`actionPanel.waitingForChoice`) went up. Only then can a cleared bit at
+     * turn end mean "answered"; a choice that never registered (its buttons
+     * failed to post, a plain-text fallback went out) is still unanswered.
+     */
+    let choiceRegistered = false;
     let toolContinuation: Continuation | undefined;
     const requestStartedAt = new Date();
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
@@ -1847,6 +1857,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           const commandResult = await this.handleModelCommandToolResults(toolResults, session, ctx, turnEpochToken);
           if (commandResult.hasPendingChoice) {
             toolChoicePending = true;
+            // renderAskUserQuestionFromCommand raised the open-choice bit.
+            choiceRegistered = true;
           }
           if (commandResult.continuation) {
             toolContinuation = commandResult.continuation;
@@ -2043,6 +2055,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             },
             turnEpochToken,
           );
+          choiceRegistered = true;
           await this.deps.threadPanel?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
           // Issue #42 S3: observer — 선택 대기 상태 수집
           turnCollector.onPhaseChange('입력 대기');
@@ -2514,8 +2527,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Issue #122 followup: treat SDK result errors as failures
       const hasSdkError = !!streamResult.sdkResultError;
 
-      // Update reaction based on whether user choice is pending
-      const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
+      // Update reaction based on whether user choice is pending.
+      // A choice this turn asked can already be answered before the turn ends
+      // (a dashboard or Slack click while the model is still streaming), and
+      // every answer path clears `actionPanel.waitingForChoice`. A registered
+      // choice whose bit is cleared is answered, so the turn must not end
+      // waiting — otherwise the dashboard shows a NEEDS YOU card with no
+      // question to answer, and the follow-up drain stays held. An unregistered
+      // choice (plain-text fallback) or a bit no thread panel ever wrote keeps
+      // the asked-this-turn behaviour.
+      const askedChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
+      const choiceStillOpen = () =>
+        askedChoice && !(choiceRegistered && session.actionPanel?.waitingForChoice === false);
+      let hasPendingChoice = choiceStillOpen();
       const finalStatus = hasSdkError ? 'error' : hasPendingChoice ? 'waiting' : 'completed';
       if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
         await this.deps.reactionManager.updateReaction(
@@ -2523,6 +2547,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.deps.statusReporter.getStatusEmoji(finalStatus),
         );
       }
+      // Re-read after the reaction write: an answer can land during that await.
+      hasPendingChoice = choiceStillOpen();
       // Transition activity state
       // Issue #391: Skip idle transition when continuation exists — next turn starts immediately,
       // so transitioning to idle would cause dashboard to briefly flicker to "대기" column.
@@ -2535,11 +2561,21 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           {
             agentPhase: hasPendingChoice ? '입력 대기' : '사용자 액션 대기',
             activeTool: undefined,
-            waitingForChoice: hasPendingChoice,
+            // A registered open choice already has its bit up. Re-writing `true`
+            // here would re-open an answer that lands during this write, so
+            // only an unregistered choice (or a cleared one) is written.
+            waitingForChoice: hasPendingChoice && choiceRegistered ? undefined : hasPendingChoice,
           },
           turnEpochToken,
         );
       }
+      // The turn result is read by the adapter only after this turn's teardown
+      // awaits (endTurn, permalink, …), and TurnRunner.finish / the host's
+      // drain decision consume it. Hand it the live read, not a snapshot, so
+      // an answer landing during teardown is not re-opened.
+      hasPendingChoice = choiceStillOpen();
+      turnCollector.setHasPendingChoice(hasPendingChoice);
+      turnCollector.setPendingChoiceProbe?.(choiceStillOpen);
 
       // Update action panel with turn summary and latest response permalink
       await this.updateActionPanelTurnMeta(session, channel, requestStartedAt, toolStats, latestResponseTs);
