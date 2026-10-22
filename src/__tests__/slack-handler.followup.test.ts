@@ -763,6 +763,40 @@ describe('SlackHandler — follow-up queue host', () => {
         clearTimeout(registrySession.pendingRetryTimer);
       }
     });
+
+    it('the timer firing clears the record before it resumes the session', async () => {
+      registrySession.errorRetryCount = 1;
+      registrySession.sessionId = 'sid-retry';
+      startWithContinuation.mockRejectedValueOnce(new Error('429 rate-limited'));
+      createAgentSession.mockImplementationOnce(() => ({
+        startWithContinuation,
+        getLastTurnSucceeded: () => false,
+        getRetryAfterMs: () => 3_600_000,
+      }));
+      const resume = vi.fn().mockResolvedValue(undefined);
+      handlerAny.autoResumeSession = resume;
+      const realSetTimeout = globalThis.setTimeout;
+      let fire: (() => void) | undefined;
+      const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+        if (ms === 3_600_000) {
+          fire = fn;
+          return realSetTimeout(() => undefined, 0);
+        }
+        return realSetTimeout(fn, ms);
+      }) as any);
+      try {
+        await handler.handleMessage(message(), say());
+      } finally {
+        spy.mockRestore();
+      }
+      expect(registrySession.pendingRetry).toBeDefined();
+      expect(fire).toBeTypeOf('function');
+
+      fire!();
+      expect(registrySession.pendingRetry).toBeUndefined();
+      expect(registrySession.pendingRetryTimer).toBeUndefined();
+      expect(resume).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('bot-thread migration — the work-thread key reads the live slot generation', () => {

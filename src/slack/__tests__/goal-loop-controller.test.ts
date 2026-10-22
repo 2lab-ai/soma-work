@@ -660,6 +660,35 @@ describe('GoalLoopController — dashboard visibility of loop steps', () => {
     expect(armed?.reason).toBe('one-shot dispatch aborted during pool rate-limit retry wait');
     expect(h.goal.evalRetryReason).toBe('one-shot dispatch aborted during pool rate-limit retry wait');
     expect(h.goal.evalDispatchRetryCount).toBe(1);
+    // Never a push with neither a lease nor a window: that frame would fly
+    // the card into DONE and back between "판정 중" and "재시도".
+    expect(h.pushes.every((p) => p.pendingEval || p.backoffUntil !== undefined)).toBe(true);
+  });
+
+  it('an epoch bump (goal command) drops the window, so the next settle re-checks instead of waiting for nothing', async () => {
+    const { bumpGoalEpoch } = await import('../goal-continuation');
+    let fail = true;
+    const dispatcher = vi.fn(async () => {
+      if (fail) throw rateLimited();
+      return JSON.stringify({ completed: false, reason: 'still missing', remaining: [] });
+    });
+    const h = harness(dispatcher);
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(h.goal.evalBackoffUntil).toBeDefined();
+
+    bumpGoalEpoch(h.goal); // e.g. `goal max 20` while the retry waits
+    expect(h.goal.evalBackoffUntil).toBeUndefined();
+    expect(h.goal.evalRetryReason).toBeUndefined();
+
+    // The armed retry no-ops (epoch moved) — but the gate is open again, so
+    // the next settle actually re-checks.
+    h.scheduledRetries[0].fn();
+    fail = false;
+    h.controller.onTurnSettled(SESSION_KEY);
+    await h.controller.settled(SESSION_KEY);
+    expect(dispatcher).toHaveBeenCalledTimes(2);
+    expect(h.goal.lastEvalReason).toBe('still missing');
   });
 
   it('the retry firing lifts the window and its error line, and pushes; a good verdict keeps them clear', async () => {

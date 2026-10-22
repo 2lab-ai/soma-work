@@ -140,11 +140,55 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
     }
   });
 
-  it('the open card offers Close, not Stop, while it waits (no turn to stop)', () => {
-    const body = TEMPLATE.slice(TEMPLATE.indexOf('\nfunction renderCardBody('));
-    expect(body).toContain("} else if (col === 'working' && !pendingAutoResume(s, col)) {");
-    expect(body).toContain("} else if (col === 'waiting' || col === 'idle' || col === 'working') {");
-    expect(body).toContain('+ renderCardResume(s, col)');
+  it('the open card offers Close, not Stop, while it waits (no turn to stop); a running card keeps Stop', () => {
+    const body = load<{ renderCardBody(s: unknown, col: string): string }>(
+      [
+        'esc',
+        'escAttr',
+        'escJs',
+        'toNum',
+        'formatTaskTime',
+        'pendingAutoResume',
+        'autoResumeLabel',
+        'cardSummary',
+        'renderCardResume',
+        'renderCardBody',
+      ],
+      ['RESUME_SVG'],
+      {
+        dhShow: () => false,
+        formatTokens: () => '0',
+        formatNmSSs: () => '0',
+        safeHref: (u: string) => u,
+        getEnvBadgeColor: () => '#000',
+        _envCount: () => 1,
+        isSiblingSession: () => false,
+        renderCardIo: () => '',
+        resolveRecommendedId: () => null,
+        stripRecommendedMarker: (l: string) => l,
+        choiceDataAttrs: () => '',
+        renderMultiChoiceCard: () => '',
+        renderCardGoal: () => '',
+        renderTimeline: () => '',
+        currentUserId: 'U1',
+        SELF_INSTANCE_NAME: '',
+        READ_ONLY_MSG: 'read only',
+      },
+    );
+    const waiting = {
+      ...resuming({ kind: 'error-retry', at: AT, attempt: 1, maxAttempts: 3, reason: RATE_LIMIT }),
+      ownerId: 'U1',
+      model: 'claude-opus',
+      lastActivity: '2026-10-22T09:24:00Z',
+    };
+    const waitingHtml = body.renderCardBody(waiting, 'working');
+    expect(waitingHtml).toContain('btn-close');
+    expect(waitingHtml).not.toContain('btn-stop');
+    expect(waitingHtml).toContain('class="card-resume"');
+
+    const runningHtml = body.renderCardBody({ ...waiting, activityState: 'working' }, 'working');
+    expect(runningHtml).toContain('btn-stop');
+    expect(runningHtml).not.toContain('class="card-resume"');
   });
 
   it('an open panel re-renders its tasks on every board push (a finished turn stops spinning)', () => {

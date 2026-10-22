@@ -627,7 +627,11 @@ export class GoalLoopController {
     if (live) {
       applyGoalEvalDispatchFailure(live, this.now());
       session.systemPrompt = undefined;
-      this.persist();
+      // Save only — no board push yet. With the lease cleared and the retry
+      // not decided, a push here would show the card in DONE for one frame
+      // between "판정 중" and "재시도"; the retry/exhausted branch below
+      // persists and pushes the settled state.
+      this.deps.registry.saveSessions();
     }
 
     // Self-heal transient API failures (429 pool rate limit, 529, timeouts,

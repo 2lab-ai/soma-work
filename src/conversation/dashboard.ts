@@ -6136,7 +6136,7 @@ function renderCardBody(s, col) {
   if (isSibling) {
     // Sibling card — emit a disabled placeholder so the layout is consistent
     // with same-instance cards but the click is impossible.
-    var label = (col === 'working') ? 'Stop' : (col === 'closed' && s.terminated ? 'Trash' : 'Close');
+    var label = (col === 'working' && !pendingAutoResume(s, col)) ? 'Stop' : (col === 'closed' && s.terminated ? 'Trash' : 'Close');
     actionBtn = '<button class="btn-action btn-stop" disabled' + siblingTitle + '>' + label + ' \u2192 ' + esc(s.environment.instanceName) + '</button>';
   } else if (col === 'working' && !pendingAutoResume(s, col)) {
     actionBtn = '<button class="btn-action btn-stop"' + readOnlyAttrs + readOnlyTitle + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'stop\\')">Stop</button>';

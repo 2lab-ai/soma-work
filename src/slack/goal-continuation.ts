@@ -26,6 +26,14 @@ export const GOAL_CONTINUATION_TEXT_PREFIX = '[goal-continuation]';
  */
 export function bumpGoalEpoch(goal: SessionGoal): void {
   goal.epoch = (goal.epoch ?? 0) + 1;
+  // A scheduled eval retry is armed for ONE epoch and no-ops at fire time once
+  // the epoch moved, so its backoff window no longer schedules anything. Drop
+  // the window with the bump: left in place it keeps the runOnce gate shut for
+  // a wait nobody will end, and the dashboard card keeps advertising a
+  // re-check that never runs. The user's newer intent outranks the retry
+  // machinery (same rule as a real user message).
+  goal.evalBackoffUntil = undefined;
+  goal.evalRetryReason = undefined;
 }
 
 /**
