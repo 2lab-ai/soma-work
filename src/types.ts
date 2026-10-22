@@ -534,6 +534,10 @@ export interface ConversationSession {
   // re-arm a retry whose timer died with the previous process; cleared when the
   // retry fires or the session resets.
   pendingRetryAt?: number;
+  // `sessionId` of the run the pending error auto-retry belongs to (#351). A
+  // retry whose run was replaced is dropped instead of resuming the new run.
+  // Persisted and cleared together with `pendingRetryAt`.
+  pendingRetrySessionId?: string;
   /**
    * Pending personal-skill SKILL.md file roundtrip — set when the user clicks
    * "✏️ 편집" on a skill whose body exceeds `MAX_INLINE_EDIT_CHARS`. The
