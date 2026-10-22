@@ -243,11 +243,14 @@ describe('Dashboard — live surfaces (SSOT 2026-10-22)', () => {
       ]);
     });
 
-    it('the finished current goal is not listed twice', async () => {
+    it('a finished goal that stays current (queue empty) still opens with its details (review: T6)', async () => {
       const g = done('g1', 1000);
-      const card = (await board(new Map([['C1:t1', liveSession({ goal: g, goalHistory: [g, done('g0', 500)] })]])))
+      const card = (await board(new Map([['C1:t1', liveSession({ goal: g, goalHistory: [done('g0', 500), g] })]])))
         .working[0];
-      expect(card.goal.history.map((h: any) => h.goalId)).toEqual(['g0']);
+      // The current block shows only its objective and state; the details live in the list.
+      expect(card.goal.completedCount).toBe(2);
+      expect(card.goal.history.map((h: any) => h.goalId)).toEqual(['g1', 'g0']);
+      expect(card.goal.history[0]).toMatchObject({ completedAt: 1000, costUsd: 0.25 });
     });
 
     it('caps a long completion reason', async () => {
