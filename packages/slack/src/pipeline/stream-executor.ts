@@ -32,6 +32,7 @@ import {
   formatGoalObjectiveForSlack,
   type GoalQueueSession,
 } from '../session-goal';
+import { clearLiveUsage, recordLiveUsage } from '../live-usage';
 import { accumulateModelTotals, applyPostCompactOccupancy, selectCurrentContextTokens } from '../session-usage-math';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
@@ -185,6 +186,12 @@ export interface StreamExecutorProviders {
   getAutoFallbackCompactModel?: () => string;
   postCompactCompleteIfNeeded?: (...args: any[]) => Promise<unknown>;
   postCompactStartingIfNeeded?: (...args: any[]) => Promise<unknown>;
+  /**
+   * SSOT 2026-10-22 T1/T2 — the session's live usage changed (one more API
+   * call of the running turn). The host pushes the card to the dashboard
+   * (throttled). Must be cheap and never throw. No-op by default.
+   */
+  notifyLiveUsage?: (sessionKey: string) => void;
 }
 
 const FALLBACK_CONTEXT_WINDOW = 200_000;
@@ -238,6 +245,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   getAutoFallbackCompactModel: () => process.env.AUTO_FALLBACK_COMPACT_MODEL || 'opus[1m]',
   postCompactCompleteIfNeeded: async () => undefined,
   postCompactStartingIfNeeded: async () => undefined,
+  notifyLiveUsage: () => {},
 };
 
 export function setStreamExecutorProviders(providers: StreamExecutorProviders): void {
@@ -1920,6 +1928,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             });
           }
         },
+        // SSOT 2026-10-22 T1/T2 — each API call of this turn, as it lands, so
+        // the dashboard's token / cost totals grow during the turn.
+        onLiveUsage: (call) => {
+          recordLiveUsage(session, call, turnId);
+          try {
+            streamExecutorProviders.notifyLiveUsage(sessionKey);
+          } catch (err) {
+            this.logger.debug('notifyLiveUsage failed', { error: (err as Error)?.message ?? String(err) });
+          }
+        },
         onUsageUpdate: async (usage: UsageData) => {
           this.updateSessionUsage(session, sessionKey, usage, turnId);
 
@@ -3042,6 +3060,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // already ran endTurn, activeLegStartedAtMs is undefined and this is
       // a no-op. Guarantees the accumulator is correct on every exit path.
       try {
+        // A turn that ended without its result usage (abort, error) leaves no
+        // live calls behind for the next one to add on top of.
+        clearLiveUsage(session, turnId);
         this.deps.claudeHandler.getSessionRegistry().endTurn(session);
         this.deps.claudeHandler.getSessionRegistry().broadcastSessionUpdate();
       } catch (err) {
@@ -4959,6 +4980,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session.usage.totalCacheCreateTokens += usage.cacheCreationInputTokens;
     session.usage.totalCostUsd += usage.totalCostUsd;
     session.usage.lastUpdated = Date.now();
+    // The turn's calls are in the totals now — the live view stops adding them.
+    clearLiveUsage(session, turnId);
 
     // Per-model cumulative totals (input/output/cache write/cache read/cost),
     // rendered by `/context`. Survives model switches — each model keeps its

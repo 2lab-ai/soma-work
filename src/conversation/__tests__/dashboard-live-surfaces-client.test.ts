@@ -216,7 +216,7 @@ describe('count-up animation of the usage numbers (T1/T2)', () => {
       r.run(50);
       seen.push(Number(b.textContent.replace(/,/g, '')));
     }
-    expect(seen.at(-1)).toBe(2000);
+    expect(seen[seen.length - 1]).toBe(2000);
     expect(seen.every((v, i) => i === 0 || v >= seen[i - 1])).toBe(true);
     expect(seen.some((v) => v > 1000 && v < 2000)).toBe(true);
   });
