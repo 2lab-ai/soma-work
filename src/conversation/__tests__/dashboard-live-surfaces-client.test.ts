@@ -475,6 +475,19 @@ describe('work log: every entry, however many (T9)', () => {
     expect(new Set(painted).size).toBe(1200);
   });
 
+  it('the older pages paint once, after the last page — not a full re-render per page (review P1)', async () => {
+    const srv = server(range(1, 5000), 500);
+    const st = wl.wlNewState('c');
+    let paints = 0;
+    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+    await wl.wlLoadOlder(st, srv.fetchJson, () => {
+      paints++;
+    });
+    expect(st.entries).toHaveLength(5000);
+    expect(srv.calls.length).toBe(11); // the latest window + 10 forward pages
+    expect(paints).toBe(1);
+  });
+
   it('a log that fits the latest window asks for nothing more', async () => {
     const srv = server(range(1, 40), 500);
     const st = wl.wlNewState('c');
@@ -566,11 +579,18 @@ describe('work log folds under the task each entry was made in (T10)', () => {
     expect(html).toContain('<span class="wl-g-count">2</span>');
     expect(html).toContain('1m 0s');
     expect(html).toContain('툴 2회');
-    expect(html).toContain('<div class="wl-group-body" hidden>');
-    expect(html).toContain('data-seq="2"');
-    expect(html).toContain('data-seq="3"');
+    // A closed group holds no entry nodes until it is opened (review P1: DOM size).
+    expect(html).toContain('<div class="wl-group-body" hidden></div>');
+    expect(html).not.toContain('data-seq="2"');
+    const open = m.renderWorkLogGroup(
+      { taskId: 'T1', title: 'Explore', entries: [E(2, 'T1', 'Explore'), E(3, 'T1', 'Explore')] },
+      true,
+      null,
+    );
+    expect(open).toContain('data-seq="2"');
+    expect(open).toContain('data-seq="3"');
     expect(m.renderWorkLogGroup({ taskId: 'T1', title: 'x', entries: [] }, true, null)).toContain(
-      '<div class="wl-group-body">',
+      '<div class="wl-group-body" data-filled="1">',
     );
   });
 

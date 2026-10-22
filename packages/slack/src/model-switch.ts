@@ -30,6 +30,13 @@ type SwitchHolder = {
   compactionOccurred?: boolean;
 };
 
+/**
+ * A parked switch older than this is not applied to whatever compact comes
+ * next — the compact it asked for has long been and gone (failed, swallowed,
+ * restarted); it is dropped instead.
+ */
+export const PENDING_MODEL_SWITCH_TTL_MS = 30 * 60 * 1000;
+
 /** Switch now: model, its auto-compact threshold (override dropped), its window. */
 export function applyModelSwitch(
   session: SwitchHolder,
@@ -50,9 +57,14 @@ export function applyModelSwitch(
 export function applyPendingModelSwitch(
   session: SwitchHolder,
   resolveContextWindow: (model?: string) => number,
+  now: number = Date.now(),
 ): PendingModelSwitch | undefined {
   const pending = session.pendingModelSwitch;
   if (!pending || session.fallbackCompactActive) return undefined;
+  if (!(now - pending.requestedAt <= PENDING_MODEL_SWITCH_TTL_MS)) {
+    session.pendingModelSwitch = undefined;
+    return undefined;
+  }
   applyModelSwitch(session, pending.model, resolveContextWindow);
   return pending;
 }
@@ -61,9 +73,10 @@ export function applyPendingModelSwitch(
 export function settlePendingModelSwitch(
   session: SwitchHolder,
   resolveContextWindow: (model?: string) => number,
+  now: number = Date.now(),
 ): 'none' | 'applied' | 'cancelled' {
   if (!session.pendingModelSwitch) return 'none';
-  if (session.compactionOccurred && applyPendingModelSwitch(session, resolveContextWindow)) return 'applied';
+  if (session.compactionOccurred && applyPendingModelSwitch(session, resolveContextWindow, now)) return 'applied';
   session.pendingModelSwitch = undefined;
   return 'cancelled';
 }

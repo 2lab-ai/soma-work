@@ -139,6 +139,19 @@ describe('switchSessionModel (T4/T5)', () => {
     expect(calls.compact).toEqual(['k']);
   });
 
+  it('its own compact replaces a pending auto-compact, so the context is compacted once (review P1)', async () => {
+    const session: Record<string, any> = {
+      model: 'claude-opus-5-5[1m]',
+      usage: usage(600_000),
+      sessionId: 's',
+      autoCompactPending: true,
+    };
+    const { d, calls } = deps(session);
+    await switchSessionModel('k', 'grok[1m]', d);
+    expect(session.autoCompactPending).toBe(false);
+    expect(calls.compact).toEqual(['k']);
+  });
+
   it('a compact cannot start mid-turn: 409, nothing parked', async () => {
     const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', usage: usage(600_000), sessionId: 's' };
     const { d, calls } = deps(session, { isRequestActive: () => true });

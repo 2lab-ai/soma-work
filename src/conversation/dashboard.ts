@@ -7492,12 +7492,20 @@ function wlRecover(state, fetchJson, onAdded, reason) {
 // (afterSeq=0, 500 per page) up to the oldest entry held, merging each page.
 // Older entries sit below the cursor, so the live / gap bookkeeping is
 // untouched. Stops on the last page, at the held entries, when the panel moved
-// on, on 403, or after WL_BACKFILL_MAX_PAGES pages.
+// on, on 403, or after WL_BACKFILL_MAX_PAGES pages. The pages are painted ONCE,
+// after the last one — a full re-render per page would be quadratic in the
+// log's size.
 function wlLoadOlder(state, fetchJson, onAdded) {
   if (state.closed || state.denied || !state.olderPending) return Promise.resolve(null);
   var stopAt = state.entries.length ? state.entries[0].seq : Infinity;
   var from = 0;
   var pages = 0;
+  var gathered = [];
+  function finish() {
+    state.olderPending = false;
+    if (gathered.length && !state.closed && !state.denied) onAdded(state, gathered);
+    return null;
+  }
   function step() {
     if (state.closed || state.denied) return null;
     pages++;
@@ -7505,19 +7513,17 @@ function wlLoadOlder(state, fetchJson, onAdded) {
       if (state.closed) return null;
       var page = (data && data.entries) || [];
       var older = page.filter(function(e) { return e && wlValidSeq(e.seq) && e.seq < stopAt; });
-      var added = wlMerge(state, older);
-      if (added.length) onAdded(state, added);
+      gathered = gathered.concat(wlMerge(state, older));
       var top = wlPageMaxSeq(page);
       var more = !!(data && data.hasMore === true);
       if (more && top > from && top < stopAt && pages < WL_BACKFILL_MAX_PAGES) {
         from = top;
         return step();
       }
-      state.olderPending = false;
-      return null;
+      return finish();
     }, function(err) {
       if (wlStatusOf(err) === 'denied') wlDeny(state);
-      return null;
+      return finish();
     });
   }
   return step();
@@ -7787,11 +7793,35 @@ function renderWorkLogGroupHead(grp, open, task) {
     + (meta ? '<span class="wl-g-meta">' + meta + '</span>' : '')
     + '</div>';
 }
+// A closed group holds no entry nodes: its entries are rendered when it opens
+// (wlFillGroupBody), so a long log's DOM stays the size of what is open.
 function renderWorkLogGroup(grp, open, task) {
   return '<div class="wl-group" data-task-id="' + escAttr(grp.taskId) + '">'
     + renderWorkLogGroupHead(grp, open, task)
-    + '<div class="wl-group-body"' + (open ? '' : ' hidden') + '>' + grp.entries.map(renderWorkLogEntry).join('') + '</div>'
+    + (open
+      ? '<div class="wl-group-body" data-filled="1">' + grp.entries.map(renderWorkLogEntry).join('') + '</div>'
+      : '<div class="wl-group-body" hidden></div>')
     + '</div>';
+}
+// Render a group's entries into its (empty) body; open details come back open.
+function wlFillGroupBody(state, grpEl, taskId) {
+  var body = grpEl.querySelector('.wl-group-body');
+  if (!body || body.getAttribute('data-filled') === '1') return;
+  var entries = state.entries.filter(function(x) { return wlGroupOf(x) === taskId; });
+  body.innerHTML = entries.map(renderWorkLogEntry).join('');
+  body.setAttribute('data-filled', '1');
+  for (var i = 0; i < entries.length; i++) {
+    var seq = entries[i].seq;
+    if (!state.open || !state.open.has(seq)) continue;
+    var el = wlEntryEl(seq);
+    var row = el && el.querySelector('.wl-row');
+    var detail = el && el.querySelector('.wl-detail');
+    if (!row || !detail) continue;
+    row.setAttribute('aria-expanded', 'true');
+    detail.hidden = false;
+    loadWorkLogDetail(state, seq);
+  }
+  updateTimersIn(body);
 }
 // Open state of a group: the reader's choice, else open when it is the newest group.
 function wlGroupOpen(state, taskId, newest) {
@@ -7842,9 +7872,12 @@ function wlAppendTail(state, list, added) {
       if (tmp.firstElementChild) list.appendChild(tmp.firstElementChild);
       continue;
     }
-    tmp.innerHTML = renderWorkLogEntry(e);
     var body = grpEl.querySelector('.wl-group-body');
-    if (body && tmp.firstElementChild) body.appendChild(tmp.firstElementChild);
+    // A closed group renders its entries when it opens; only its head changes now.
+    if (body && body.getAttribute('data-filled') === '1') {
+      tmp.innerHTML = renderWorkLogEntry(e);
+      if (tmp.firstElementChild) body.appendChild(tmp.firstElementChild);
+    }
     wlRefreshGroupHead(state, grpEl, g);
   }
 }
@@ -7879,6 +7912,7 @@ function toggleWorkLogGroup(taskId) {
   var body = grpEl.querySelector('.wl-group-body');
   var open = !(head && head.getAttribute('aria-expanded') === 'true');
   (st.groupOpen || (st.groupOpen = Object.create(null)))[taskId] = open;
+  if (open) wlFillGroupBody(st, grpEl, taskId);
   if (head) head.setAttribute('aria-expanded', open ? 'true' : 'false');
   if (body) body.hidden = !open;
 }
