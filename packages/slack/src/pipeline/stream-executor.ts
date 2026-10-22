@@ -99,6 +99,7 @@ interface TurnResultCollectorLike {
   onText(text: string): void;
   setContinuation(continuation: Continuation): void;
   setHasPendingChoice(value: boolean): void;
+  setPendingChoiceProbe?(probe: () => boolean): void;
   getResult(): any;
 }
 
@@ -2460,10 +2461,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           turnEpochToken,
         );
       }
-      // Final read for the turn result: TurnRunner.finish re-writes the bit from
-      // it, and the host holds the follow-up drain while it says "pending".
+      // The turn result is read by the adapter only after this turn's teardown
+      // awaits (endTurn, permalink, …), and TurnRunner.finish / the host's
+      // drain decision consume it. Hand it the live read, not a snapshot, so
+      // an answer landing during teardown is not re-opened.
       hasPendingChoice = choiceStillOpen();
       turnCollector.setHasPendingChoice(hasPendingChoice);
+      turnCollector.setPendingChoiceProbe?.(choiceStillOpen);
 
       // Update action panel with turn summary and latest response permalink
       await this.updateActionPanelTurnMeta(session, channel, requestStartedAt, toolStats, latestResponseTs);
