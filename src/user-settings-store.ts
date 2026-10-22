@@ -113,6 +113,9 @@ export const AVAILABLE_MODELS = [
   'claude-opus-4-8[1m]',
   'claude-opus-4-7[1m]',
   'claude-opus-4-6[1m]',
+  // Sonnet's 1M opt-in — one of the dashboard's representative models
+  // (SSOT 2026-10-22 T4: opus / fable / sonnet / sol / astra [1m] + grok).
+  'claude-sonnet-4-6[1m]',
   'gpt-5.5',
   'gpt-5.6-sol',
   'gpt-5.6-sol[1m]',
@@ -156,6 +159,8 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'fable-5[1m]': 'claude-fable-5[1m]',
   sonnet: 'claude-sonnet-4-6',
   'sonnet-4.6': 'claude-sonnet-4-6',
+  'sonnet[1m]': 'claude-sonnet-4-6[1m]',
+  'sonnet-4.6[1m]': 'claude-sonnet-4-6[1m]',
   'sonnet-4.5': 'claude-sonnet-4-5-20250929',
   // `opus` / `opus[1m]` follow the current latest opus — bump these two rows
   // (plus AVAILABLE_MODELS) when a new generation lands. Both point at the
@@ -1260,6 +1265,8 @@ export class UserSettingsStore {
         return 'Opus 4.6 (1M)';
       case 'claude-sonnet-4-6':
         return 'Sonnet 4.6';
+      case 'claude-sonnet-4-6[1m]':
+        return 'Sonnet 4.6 (1M)';
       case 'claude-sonnet-4-5-20250929':
         return 'Sonnet 4.5';
       case 'claude-opus-4-5-20251101':

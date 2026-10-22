@@ -1219,7 +1219,16 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
     renderTimeline(s: unknown): string;
     renderCardStatus(s: unknown, col: string): string;
   }>(
-    ['esc', 'escJs', 'toNum', 'formatDuration', 'renderTaskMeta', 'renderTimelineItem', 'renderTimeline', 'renderCardStatus'],
+    [
+      'esc',
+      'escJs',
+      'toNum',
+      'formatDuration',
+      'renderTaskMeta',
+      'renderTimelineItem',
+      'renderTimeline',
+      'renderCardStatus',
+    ],
     ['WAIT_SVG', '_tasksOpen'],
     {
       dhShow: () => true,

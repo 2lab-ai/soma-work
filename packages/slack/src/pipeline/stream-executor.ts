@@ -20,6 +20,8 @@ import {
   buildInstructionConfirmFallbackText,
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
+import { clearLiveUsage, recordLiveUsage } from '../live-usage';
+import { applyPendingModelSwitch, settlePendingModelSwitch } from '../model-switch';
 import { OutputFlag, resolveVerbosityMask, shouldOutput, verboseTag } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
@@ -32,7 +34,6 @@ import {
   formatGoalObjectiveForSlack,
   type GoalQueueSession,
 } from '../session-goal';
-import { clearLiveUsage, recordLiveUsage } from '../live-usage';
 import { accumulateModelTotals, applyPostCompactOccupancy, selectCurrentContextTokens } from '../session-usage-math';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
@@ -2013,6 +2014,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               });
             }
           }
+          // SSOT 2026-10-22 T5 — a dashboard model switch that waited for this
+          // compact (the context was above the target model's auto-compact
+          // threshold) takes effect now, after the compact ran on the old model.
+          const switched = applyPendingModelSwitch(session, resolveContextWindow);
+          if (switched) {
+            this.logger.info('Dashboard model switch applied at compact boundary', {
+              sessionKey,
+              model: switched.model,
+              nickname: switched.nickname,
+            });
+          }
           // Dashboard v2.1 — bump compaction counter. Guarded so any failure
           // in the dashboard/broadcast path cannot interrupt compaction.
           try {
@@ -3108,6 +3120,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
       if (wasCompactTurn) {
         promotePendingToDispatchQueue(session as CompactStateSession);
+        // T5: a model switch that waited for this compact never outlives it —
+        // applied if the turn compacted after all, cancelled if it did not.
+        const settled = settlePendingModelSwitch(session, resolveContextWindow);
+        if (settled !== 'none') {
+          this.logger.info('Dashboard model switch settled at compact turn end', { sessionKey, settled });
+        }
       }
       // Codex review F2: if ANOTHER turn started in the tiny window between
       // `cleanup()` removing this turn's controller and this consumption

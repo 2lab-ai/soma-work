@@ -43,9 +43,25 @@ describe('live usage of the running turn', () => {
 
   it('ignores non-numbers and negatives; an empty or missing map sums to zero', () => {
     const session: Record<string, any> = {};
-    recordLiveUsage(session, { messageId: 'm', inputTokens: -5, outputTokens: Number.NaN, cacheReadTokens: 'x' as any, cacheCreateTokens: 3 });
-    expect(sumLiveUsage(session.liveUsage)).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 3 });
-    expect(sumLiveUsage(undefined)).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 });
+    recordLiveUsage(session, {
+      messageId: 'm',
+      inputTokens: -5,
+      outputTokens: Number.NaN,
+      cacheReadTokens: 'x' as any,
+      cacheCreateTokens: 3,
+    });
+    expect(sumLiveUsage(session.liveUsage)).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreateTokens: 3,
+    });
+    expect(sumLiveUsage(undefined)).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreateTokens: 0,
+    });
   });
 
   it('clearing drops the running turn once its result usage is in the totals', () => {

@@ -90,7 +90,14 @@ describe('elapsed time and tool calls of a task (T7)', () => {
     const view = ledgerTasks(l);
     expect(view.current.map((t) => t.id)).toEqual(['T2']);
     expect(view.earlier).toEqual([
-      expect.objectContaining({ id: 'T1', content: 'A', status: 'completed', startedAt: 1000, completedAt: 5000, toolCalls: 2 }),
+      expect.objectContaining({
+        id: 'T1',
+        content: 'A',
+        status: 'completed',
+        startedAt: 1000,
+        completedAt: 5000,
+        toolCalls: 2,
+      }),
     ]);
   });
 

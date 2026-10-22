@@ -220,7 +220,9 @@ describe('Dashboard — live surfaces (SSOT 2026-10-22)', () => {
     it('lists completed goals newest first, with time, tokens, cost, how and why they closed', async () => {
       const card = (
         await board(
-          new Map([['C1:t1', liveSession({ goalHistory: [done('g1', 1000), done('g2', 2000, { completedVia: 'user' })] })]]),
+          new Map([
+            ['C1:t1', liveSession({ goalHistory: [done('g1', 1000), done('g2', 2000, { completedVia: 'user' })] })],
+          ]),
         )
       ).working[0];
       expect(card.goal.completedCount).toBe(2);
@@ -250,7 +252,9 @@ describe('Dashboard — live surfaces (SSOT 2026-10-22)', () => {
 
     it('caps a long completion reason', async () => {
       const card = (
-        await board(new Map([['C1:t1', liveSession({ goalHistory: [done('g1', 1, { completionReason: 'x'.repeat(5000) })] })]]))
+        await board(
+          new Map([['C1:t1', liveSession({ goalHistory: [done('g1', 1, { completionReason: 'x'.repeat(5000) })] })]]),
+        )
       ).working[0];
       expect(card.goal.history[0].completionReason.length).toBeLessThanOrEqual(1000);
     });
@@ -298,6 +302,89 @@ describe('Dashboard — live surfaces (SSOT 2026-10-22)', () => {
       const b = await board(new Map([['C1:t1', liveSession()]]));
       expect(b.working[0].doneAt).toBeUndefined();
       expect(b.closed[0].doneAt).toBe(Date.parse('2026-10-19T08:00:00.000Z'));
+    });
+  });
+
+  describe('T4/T5 — model switch route and card fields', () => {
+    async function post(payload: any, key = 'C1:t1') {
+      return injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent(key)}/model`,
+        headers: AUTH_HEADER,
+        payload,
+      });
+    }
+
+    beforeEach(() => {
+      dashboard.setDashboardSessionAccessor(() => new Map([['C1:t1', liveSession()]]));
+    });
+
+    it('switches through the host handler and answers with its result', async () => {
+      const result = {
+        status: 'compacting',
+        nickname: 'grok[1m]',
+        model: 'grok-4.6',
+        autoCompactTokens: 450_000,
+        usedTokens: 600_000,
+      };
+      const handler = vi.fn().mockResolvedValue(result);
+      dashboard.setDashboardModelHandler(handler);
+      const res = await post({ model: 'grok[1m]' });
+      expect(res.statusCode).toBe(200);
+      expect(handler).toHaveBeenCalledWith('C1:t1', 'grok[1m]');
+      expect(JSON.parse(res.body)).toEqual({ ok: true, result });
+    });
+
+    it.each([[{}], [{ model: 5 }], [{ model: '' }], [{ model: 'x'.repeat(65) }]])('400 for %j', async (body) => {
+      dashboard.setDashboardModelHandler(vi.fn());
+      expect((await post(body)).statusCode).toBe(400);
+    });
+
+    it('answers a refusal with its status and message', async () => {
+      const { ModelSwitchError } = await import('../../session/model-switch');
+      dashboard.setDashboardModelHandler(vi.fn().mockRejectedValue(new ModelSwitchError(409, '먼저 compact')));
+      const res = await post({ model: 'grok[1m]' });
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body)).toEqual({ error: '먼저 compact' });
+    });
+
+    it('the card carries context tokens, the model’s auto-compact threshold and a waiting switch', async () => {
+      const card = (
+        await board(
+          new Map([
+            [
+              'C1:t1',
+              liveSession({
+                model: 'grok-4.6',
+                usage: usage({ currentInputTokens: 300_000, currentCacheReadTokens: 20_000 }),
+                pendingModelSwitch: { model: 'claude-opus-5-5[1m]', nickname: 'opus[1m]', requestedAt: 1 },
+              }),
+            ],
+          ]),
+        )
+      ).working[0];
+      expect(card).toMatchObject({ contextTokens: 320_000, autoCompactTokens: 450_000, pendingModel: 'opus[1m]' });
+    });
+
+    it('the page lists the six representative models with their auto-compact thresholds', async () => {
+      const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
+      const m = /const REPRESENTATIVE_MODELS = (\[.*?\]);\n/.exec(res.body);
+      expect(m).not.toBeNull();
+      const list = JSON.parse(m![1]);
+      expect(list.map((x: any) => x.nickname)).toEqual([
+        'opus[1m]',
+        'fable[1m]',
+        'sonnet[1m]',
+        'sol[1m]',
+        'astra[1m]',
+        'grok[1m]',
+      ]);
+      expect(list.find((x: any) => x.nickname === 'grok[1m]')).toMatchObject({
+        model: 'grok-4.6',
+        contextWindow: 500_000,
+        autoCompactTokens: 450_000,
+      });
+      expect(list.find((x: any) => x.nickname === 'sonnet[1m]')).toMatchObject({ model: 'claude-sonnet-4-6[1m]' });
     });
   });
 });
