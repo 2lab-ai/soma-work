@@ -177,7 +177,7 @@ describe('createSlackDirectoryLookup (dedicated client)', () => {
   });
 
   it('answers while the shared client is paused by another method’s 429', async () => {
-    slack = await startFakeSlack({ 'chat.update': 2 });
+    slack = await startFakeSlack({ 'chat.update': 3 });
     const shared = new WebClient('xoxb-test', {
       slackApiUrl: slack.url,
       retryConfig: { retries: 0 },

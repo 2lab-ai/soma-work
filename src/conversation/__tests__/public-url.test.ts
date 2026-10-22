@@ -380,6 +380,59 @@ describe('the running viewer follows the check (T1 end to end)', () => {
     expect(onCallback.headers.location).not.toBe(`${CALLBACK}/dashboard`);
   });
 
+  // The provider returns to SOMA_OAUTH_CALLBACK_BASE_URL — the same origin the
+  // fallback uses — so the state cookie set when sign-in starts there is sent
+  // back with the callback, and no canonical redirect moves it to another origin.
+  it('Google sign-in started on the https fallback origin completes there (state cookie survives)', async () => {
+    const CALLBACK = 'https://old-host.example.net:33443';
+    const HOST = 'old-host.example.net:33443';
+    mockConfig.conversation.viewerUrl = 'https://agent.example.com';
+    mockConfig.oauth.callbackBaseUrl = CALLBACK;
+    mockConfig.oauth.google = { clientId: 'cid', clientSecret: 'csecret' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.startsWith(CALLBACK)) {
+          return new Response('{}', { status: 200, headers: { [pub.INSTANCE_HEADER]: pub.getInstanceId() } });
+        }
+        if (u.includes('oauth2.googleapis.com/token')) return Response.json({ access_token: 'at' });
+        if (u.includes('googleapis.com/oauth2')) {
+          return Response.json({ email: 'dana@x.com', name: 'Dana', verified_email: true });
+        }
+        return new Response('DEPLOYMENT_NOT_FOUND', { status: 404 });
+      }),
+    );
+    try {
+      await web.startWebServer({ listen: false });
+      const oauth = await import('../oauth');
+      oauth.setOAuthUserLookup(() => ({ kind: 'match', userId: 'U_D', name: 'Dana' }));
+      await pub.checkPublicUrl();
+      expect(pub.effectiveViewerUrl()).toBe(CALLBACK);
+
+      const start = await web.injectWebServer({ method: 'GET', url: '/auth/google', headers: { host: HOST } });
+      expect(start.statusCode).toBe(302);
+      const authorize = new URL(String(start.headers.location));
+      expect(authorize.searchParams.get('redirect_uri')).toBe(`${CALLBACK}/auth/google/callback`);
+      const state = authorize.searchParams.get('state') ?? '';
+      const stateCookie = [start.headers['set-cookie']]
+        .flat()
+        .map(String)
+        .find((c) => c.startsWith('soma_oauth_state_google='));
+      expect(stateCookie).toContain('Secure');
+
+      const back = await web.injectWebServer({
+        method: 'GET',
+        url: `/auth/google/callback?code=c&state=${encodeURIComponent(state)}`,
+        headers: { host: HOST, cookie: String(stateCookie).split(';')[0] },
+      });
+      expect(back.headers.location).toBe('/dashboard/U_D');
+      expect([back.headers['set-cookie']].flat().join(';')).toContain('soma_dash_token=');
+    } finally {
+      mockConfig.oauth.google = { clientId: '', clientSecret: '' };
+    }
+  });
+
   describe('sign-in on the callback origin while the https public URL is dead', () => {
     const DEAD = 'https://agent.example.com';
     const CALLBACK = 'http://old-host.example.net:33443';
