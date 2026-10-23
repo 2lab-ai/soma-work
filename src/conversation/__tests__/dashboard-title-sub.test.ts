@@ -433,6 +433,12 @@ describe('panel subtitle client (shipped code)', () => {
     expect(none.regen).toBe(false);
   });
 
+  it('a CSRF rejection that survives the retry is a plain failure with 🔄, not "read-only"', () => {
+    const c = client();
+    const v = c.titleSubView(403, { code: 'csrf_failed' }, false, '');
+    expect(v).toEqual({ text: 'Title generation failed', titleSub: '', regen: true });
+  });
+
   it('T1/T2 — the panel wires the helpers: open → ensure path, 🔄 → regenerate only over a stored subtitle', () => {
     expect(TEMPLATE.includes('generateTitleSub(loadingConvId, false)')).toBe(true);
     expect(TEMPLATE.includes('generateTitleSub(panelConvId, !!_panelTitleSub)')).toBe(true);

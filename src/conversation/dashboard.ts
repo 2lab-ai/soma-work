@@ -8744,7 +8744,9 @@ function isCsrfRejection(status, data) {
 // generation failure: it keeps whatever was there and offers no 🔄.
 function titleSubView(status, data, canRegen, previous) {
   if (data && data.titleSub) return { text: data.titleSub, titleSub: data.titleSub, regen: canRegen };
-  if (status === 403) return { text: previous || READ_ONLY_MSG, titleSub: previous || '', regen: false };
+  if (status === 403 && !isCsrfRejection(status, data)) {
+    return { text: previous || READ_ONLY_MSG, titleSub: previous || '', regen: false };
+  }
   var code = data && data.code;
   var text = code === 'cooldown' ? 'Title generation failed — retry in a minute'
     : code === 'no_content' ? 'No conversation to title yet'
