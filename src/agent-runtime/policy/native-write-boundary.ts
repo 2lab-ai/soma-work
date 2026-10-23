@@ -15,9 +15,12 @@
  * `NotebookEdit` (`notebook_path`), `Artifact` `read_asset` (`out_dir`), and the
  * git worktree that `EnterWorktree` (`name`) and `Agent` (`isolation:
  * "worktree"`) create under the repository's `.claude/worktrees/` — a symbolic
- * link there would put the checkout anywhere. `Monitor` runs its command in the
- * same SDK sandbox as Bash. Other tools write nothing local, or only the SDK's
- * own state. `evaluateToolPolicy` applies it to non-admins
+ * link there would put the checkout anywhere. Also held to the roots: the
+ * directory a session's working directory moves to — `EnterWorktree` `path`
+ * and an `Agent` `cwd` — because the SDK sandbox lets Bash write the current
+ * working directory, so a switch outside the roots would widen what Bash may
+ * write. `Monitor` runs its command in the same SDK sandbox as Bash. Other
+ * tools write nothing local, or only the SDK's own state. `evaluateToolPolicy` applies it to non-admins
  * (`ToolPolicyContext.checkNativeWrite`); a session whose sandbox an admin
  * turned off has no boundary, as its Bash has none either.
  *
@@ -78,19 +81,37 @@ function requiredPath(toolName: string, input: Record<string, unknown>, property
 
 /**
  * Where the SDK puts a new git worktree: `<repository root>/.claude/worktrees/<name>`,
- * the repository being the one `cwd` is in. Outside a repository the SDK
- * cannot create one, so nothing is written.
+ * the repository being the one `cwd` is in. From a linked worktree that can be
+ * the main repository (the one `--git-common-dir` belongs to), so both count.
+ * Outside a repository the SDK cannot create one, so nothing is written; when
+ * git cannot say, the write is refused.
  */
 function worktreeTargets(toolName: string, cwd: string, name: unknown): Targets {
   if (name !== undefined && (typeof name !== 'string' || name === '')) {
     return { ok: false, reason: `${toolName} names no usable worktree (name)` };
   }
-  const git = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', timeout: 5000 });
+  const git = spawnSync('git', ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'], {
+    cwd,
+    encoding: 'utf8',
+    timeout: 5000,
+    env: { ...process.env, LC_ALL: 'C' },
+  });
   if (git.error)
     return { ok: false, reason: `${toolName}: cannot tell where the worktree goes (${git.error.message})` };
-  const root = git.status === 0 ? git.stdout.trim() : '';
-  if (!root) return { ok: true, targets: [] };
-  return { ok: true, targets: [`${root}/.claude/worktrees/${name ?? 'new-worktree'}`] };
+  if (git.status !== 0) {
+    return /not a git repository/i.test(git.stderr)
+      ? { ok: true, targets: [] }
+      : {
+          ok: false,
+          reason: `${toolName}: cannot tell where the worktree goes (${git.stderr.trim() || `git exit ${git.status}`})`,
+        };
+  }
+  const [top, common] = git.stdout.trim().split('\n');
+  const repositories = new Set<string>();
+  if (top) repositories.add(top);
+  if (common) repositories.add(path.basename(common) === '.git' ? path.dirname(common) : common);
+  if (repositories.size === 0) return { ok: false, reason: `${toolName}: cannot tell where the worktree goes` };
+  return { ok: true, targets: [...repositories].map((r) => `${r}/.claude/worktrees/${name ?? 'new-worktree'}`) };
 }
 
 /** The local paths a call writes, as the call names them (relative ones against `cwd`). */
@@ -108,12 +129,25 @@ function writeTargets(toolName: string, input: Record<string, unknown>, cwd: str
       return dir.ok ? { ok: true, targets: [`${dir.targets[0]}/asset`] } : dir;
     }
     case 'EnterWorktree':
-      // `path` switches into an existing worktree: nothing is created.
+      // `path` switches into an existing worktree: nothing is created, but the session's
+      // working directory moves there, and sandboxed Bash writes its working directory.
       return input.path !== undefined && input.name === undefined
-        ? { ok: true, targets: [] }
+        ? requiredPath(toolName, input, 'path')
         : worktreeTargets(toolName, cwd, input.name);
-    case 'Agent':
-      return input.isolation === 'worktree' ? worktreeTargets(toolName, cwd, undefined) : { ok: true, targets: [] };
+    case 'Agent': {
+      // `cwd` (in the CLI's schema; the public 0.3.284 one omits it) is the subagent's
+      // working directory, which its sandboxed Bash writes, as above.
+      const targets: string[] = [];
+      for (const part of [
+        input.cwd === undefined ? null : requiredPath(toolName, input, 'cwd'),
+        input.isolation === 'worktree' ? worktreeTargets(toolName, cwd, undefined) : null,
+      ]) {
+        if (part === null) continue;
+        if (!part.ok) return part;
+        targets.push(...part.targets);
+      }
+      return { ok: true, targets };
+    }
     default:
       return { ok: true, targets: [] };
   }
