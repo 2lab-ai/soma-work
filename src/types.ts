@@ -49,6 +49,7 @@ import type {
   UserChoices,
   WorkflowType,
 } from 'somalib/model-commands/session-types';
+import type { AgentRegistry } from './session/agent-registry';
 import type { TaskLedger } from './session/task-ledger';
 import type { EffortLevel } from './user-settings-store';
 
@@ -741,6 +742,12 @@ export interface ConversationSession {
    * replacements (see `session/task-ledger.ts`). Persisted.
    */
   taskLedger?: TaskLedger;
+  /**
+   * Spec 12 — the subagents this session started, each with its own task
+   * ledger, tool-call count and status (see `session/agent-registry.ts`). The
+   * main agent's tasks stay in {@link taskLedger}. Persisted.
+   */
+  agents?: AgentRegistry;
   /**
    * SSOT 2026-10-22 T1/T2 — usage of the RUNNING turn, one entry per API
    * message id (each assistant message carries its own call's usage). Folded

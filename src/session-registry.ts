@@ -12,6 +12,7 @@ import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { normalizeTmpPath } from './path-utils';
+import { loseRunningAgents, sanitizeAgentRegistry } from './session/agent-registry';
 import { sanitizeCronJob } from './session/cron-job';
 import { closeTaskList, sanitizeTaskLedger } from './session/task-ledger';
 import { getArchiveStore } from './session-archive';
@@ -184,6 +185,8 @@ interface SerializedSession {
   goalHistory?: SessionGoal[];
   // SSOT 2026-10-22 T7/T8 — task ledger (ids, times, tool calls); sanitized on load.
   taskLedger?: unknown;
+  // Spec 12 — the session's subagents (registry); sanitized on load.
+  agents?: unknown;
   // When the activity state last changed — the DONE column's completion time for an idle card.
   activityStateChangedAt?: number;
   /**
@@ -1420,6 +1423,8 @@ export class SessionRegistry {
     // The old task list stays as history; none of it is in progress any more,
     // so the new conversation's work is not attributed to it (dashboard T7/T10).
     session.taskLedger = closeTaskList(session.taskLedger);
+    // Spec 12: the old conversation's subagents are history; none is watched now.
+    session.agents = loseRunningAgents(session.agents, Date.now());
 
     // Reset state to INITIALIZING to trigger re-dispatch on next message
     session.state = 'INITIALIZING';
@@ -1973,6 +1978,7 @@ export class SessionRegistry {
             goalQueue: session.goalQueue,
             goalHistory: session.goalHistory,
             taskLedger: session.taskLedger,
+            agents: session.agents,
             activityStateChangedAt: session.activityStateChangedAt,
             // Cached completed-summary (persisted so the next turn after restart
             // doesn't pay a cold summary rebuild). Safe to omit — the block
@@ -2048,6 +2054,8 @@ export class SessionRegistry {
         goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
         goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
         taskLedger: sanitizeTaskLedger(serialized.taskLedger),
+        // Spec 12: nothing that ran before this process is watched any more.
+        agents: loseRunningAgents(sanitizeAgentRegistry(serialized.agents), Date.now()),
         activityState: serialized.activityState || 'idle',
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
@@ -2249,6 +2257,8 @@ export class SessionRegistry {
           goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
           goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
           taskLedger: sanitizeTaskLedger(serialized.taskLedger),
+          // Spec 12: nothing that ran before this process is watched any more.
+          agents: loseRunningAgents(sanitizeAgentRegistry(serialized.agents), Date.now()),
           activityStateChangedAt:
             typeof serialized.activityStateChangedAt === 'number' && Number.isFinite(serialized.activityStateChangedAt)
               ? serialized.activityStateChangedAt

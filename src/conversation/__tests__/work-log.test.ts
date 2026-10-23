@@ -173,6 +173,37 @@ describe('work log store', () => {
     expect('taskId' in plain).toBe(false);
   });
 
+  it('keeps who made an entry (agentId) and which agent it starts (agentRef), and marks it attributed — spec 12 §2.4', async () => {
+    const sub = await wl.appendWorkLog('conv-agent', {
+      kind: 'tool',
+      text: 'Grep x',
+      tool: 'Grep',
+      agentId: 'toolu_agent_1',
+    });
+    expect(sub).toMatchObject({ agentId: 'toolu_agent_1', attributed: true });
+    const spawn = await wl.appendWorkLog('conv-agent', {
+      kind: 'tool',
+      text: 'Agent {...}',
+      tool: 'Agent',
+      agentRef: 'x'.repeat(5000),
+    });
+    expect(spawn.agentRef?.length).toBe(wl.WORK_LOG_FIELD_MAX);
+    const main = await wl.appendWorkLog('conv-agent', { kind: 'narration', text: 'main' });
+    expect('agentId' in main).toBe(false);
+    expect('agentRef' in main).toBe(false);
+    expect(main.attributed).toBe(true);
+    const page = await wl.readWorkLog('conv-agent');
+    expect(page.entries.map((e) => [e.agentId, e.agentRef?.length, e.attributed])).toEqual([
+      ['toolu_agent_1', undefined, true],
+      [undefined, wl.WORK_LOG_FIELD_MAX, true],
+      [undefined, undefined, true],
+    ]);
+    // An entry written before attribution existed reads back without the mark.
+    appendRaw('conv-agent', `${JSON.stringify({ seq: 9000, ts: 1, kind: 'tool', tool: 'Bash', text: 'Bash ls' })}\n`);
+    const again = await (await loadFresh()).readWorkLog('conv-agent');
+    expect(again.entries[again.entries.length - 1].attributed).toBeUndefined();
+  });
+
   it('serializes concurrent appends so every line stays whole and ordered', async () => {
     const all = Array.from({ length: 50 }, (_, i) =>
       wl.appendWorkLog('conv-c', { kind: 'narration', text: `step ${i}` }),
@@ -1331,7 +1362,8 @@ describe('work log store', () => {
   it('stores only contract fields', async () => {
     await wl.appendWorkLog('conv-h', { kind: 'notice', text: 'compacting', extra: 'nope' } as never);
     const [entry] = (await wl.readWorkLog('conv-h')).entries;
-    expect(Object.keys(entry).sort()).toEqual(['kind', 'seq', 'text', 'ts']);
+    // `attributed` (spec 12): written by a store that records who made each entry.
+    expect(Object.keys(entry).sort()).toEqual(['attributed', 'kind', 'seq', 'text', 'ts']);
   });
 
   it('rejects conversation ids that are not a safe filename', async () => {
@@ -1547,6 +1579,7 @@ describe('work log store', () => {
         text: 'Bash ok',
         tool: 'Bash',
         ok: true,
+        attributed: true,
         rawBytes: Buffer.byteLength(raw),
       });
       expect(seen).toHaveLength(3);
@@ -1690,9 +1723,15 @@ describe('work log store', () => {
       failNextWriteTo(rawFile('conv-rawfail'), 9); // lands `{"seq":2,` then fails
 
       const lost = await wl.appendWorkLog('conv-rawfail', { kind: 'tool_result', text: 'Bash ok', raw: 'two' });
-      expect(lost).toEqual({ seq: 2, ts: lost.ts, kind: 'tool_result', text: 'Bash ok' });
+      expect(lost).toEqual({ seq: 2, ts: lost.ts, kind: 'tool_result', text: 'Bash ok', attributed: true });
       expect(seen[1]).toEqual(lost);
-      expect(storedLines('conv-rawfail')[1]).toEqual({ seq: 2, ts: lost.ts, kind: 'tool_result', text: 'Bash ok' });
+      expect(storedLines('conv-rawfail')[1]).toEqual({
+        seq: 2,
+        ts: lost.ts,
+        kind: 'tool_result',
+        text: 'Bash ok',
+        attributed: true,
+      });
       expect(await wl.readWorkLogRaw('conv-rawfail', 2)).toBeNull();
       expect(warn.mock.calls.filter(([m]) => String(m).includes('raw'))).toHaveLength(1);
 

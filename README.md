@@ -89,6 +89,10 @@ Slack-native button/form UX for permission approvals, option selection, and sess
 
 Upload images (JPG/PNG/GIF/WebP), text, or code files directly in Slack. 50MB limit per file.
 
+### 🆕 Start a task from the dashboard
+
+The dashboard's **New task** button (top bar on desktop, `N` shortcut; floating button on phones) opens a composer: model (with a shared-pool quota battery), effort, Slack channel, per-task `autogoal` and `autoz` toggles, the instruction, and attachments — files, pasted screenshots, the phone camera and voice notes. The task starts as your own message on a new thread in the chosen channel, so its progress is visible in Slack. The channel list is the repo-mapped channels you are a member of; it defaults to the channel you last gave a command in. Turning `autoz` on appends `$autoz` to the instruction.
+
 ### 🔑 GitHub Integration
 
 GitHub App (recommended) or Personal Access Token authentication with automatic token renewal.
@@ -192,7 +196,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z bypass [set on\|off]` | Toggle permission bypass |
 | `/z persona [set <name>\|list]` | Switch persona |
 | `/z model [set <name>\|list]` | Switch model (sonnet, opus, haiku) |
-| `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list, questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |
+| `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list (the main agent's — a subagent's own list lives on its dashboard entry), questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |
 | `/z session` · `sessions` | List active sessions (`sessions` naked form still accepted) |
 | `/z new` · `/z renew` | Reset / renew session (naked `new` / `renew` also accepted) |
 | `/z close` | Close current thread session |
