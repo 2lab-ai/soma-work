@@ -580,6 +580,8 @@ async function loadDay(date) {
 // there, whatever day the view shows by then (review R6).
 var _epEditor = null;
 function renderDay(editIndex, draft) {
+  // "수정" waits while an episodic write is out: its answer re-renders the day (review R8).
+  if (typeof editIndex === 'number' && draft === undefined && epBusy()) return;
   var el = document.getElementById('mem-ep-body');
   var entries = (_memDay && _memDay.entries) || [];
   var edited = typeof editIndex === 'number' ? entries[editIndex] : undefined;
@@ -624,7 +626,16 @@ async function epWrite(method, url, payload, draft, at, orig, origTime) {
     fillDateSelect();
     return true;
   }
-  if (r.ok) { _memDay = r.data.day; renderDay(); refreshDatesIfEmptied(); return true; }
+  if (r.ok) {
+    // An editor of another record of this day stays open with its draft, re-attached to
+    // that record by its time and text (never by position) (review R8).
+    var open = method === 'DELETE' ? openEpEditor() : null;
+    _memDay = r.data.day;
+    if (open) reopenEpEditor(open);
+    else renderDay();
+    refreshDatesIfEmptied();
+    return true;
+  }
   if (r.status === 409) {
     await loadDay(date);
     if (!_memDay || _memDay.date !== date) { var box = document.getElementById('mem-ep-new'); if (draft && box) box.value = draft; memStatus('그사이 이 날의 기록이 바뀌었습니다. 작성하던 내용은 메모 칸에 옮겼습니다.', true); return false; }
@@ -654,6 +665,31 @@ async function epWrite(method, url, payload, draft, at, orig, origTime) {
   }
   memStatus('저장하지 못했습니다: ' + r.error, true);
   return false;
+}
+// The open episodic editor with what is typed in it, or null.
+function openEpEditor() {
+  var box = document.getElementById('ep-edit');
+  return _epEditor && box ? { time: _epEditor.time, content: _epEditor.content, draft: box.value } : null;
+}
+// Re-open an editor on the record of the current day with the same time and text, if
+// there is exactly one; otherwise close it and move the draft to the note box.
+function reopenEpEditor(open) {
+  var ents = (_memDay && _memDay.entries) || [];
+  var at = -1;
+  var same = 0;
+  for (var k = 0; k < ents.length; k++) {
+    if (ents[k].time === open.time && ents[k].content === open.content) {
+      if (at < 0) at = k;
+      same++;
+    }
+  }
+  if (same === 1) { renderDay(at, open.draft); return; }
+  renderDay();
+  var note = document.getElementById('mem-ep-new');
+  if (note && !note.value && open.draft !== open.content) {
+    note.value = open.draft;
+    memStatus('수정하던 기록을 찾을 수 없어 작성하던 내용을 메모 칸에 옮겼습니다.', true);
+  }
 }
 async function epSave(i) {
   if (epBusy()) return;
@@ -687,8 +723,12 @@ async function epAdd() {
   // The note box is locked while the note is out: a double click adds nothing more, and
   // nothing typed meanwhile is cleared with it (review R8).
   ta.disabled = true;
+  // A note holds the day on screen like any episodic write (review R8).
+  var view = _memDay;
+  if (view) view.saving = Date.now();
   var r;
   try { r = await apiWrite('POST', '/api/memory/episodic', { text: text }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
+  if (view) view.saving = 0;
   ta.disabled = false;
   if (!r.ok) { memStatus('추가하지 못했습니다: ' + r.error, true); return; }
   ta.value = '';
