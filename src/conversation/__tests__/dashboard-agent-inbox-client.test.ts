@@ -2874,6 +2874,16 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         renderPanelTasks: () => {},
         renderTurn: (t: { id: string }) => `<div class="turn assistant" data-turn-id="${t.id}"></div>`,
         attachRawToggleHandlers: () => {},
+        // Session artifacts (SSOT 2026-10-23): the panel strip and per-answer chips.
+        renderPanelArtifactsSection: () => {},
+        ensureArtifacts: () => {},
+        decoratePanelTurns: () => {},
+        isSiblingSession: () => false,
+        // main's own openPanel deps since this harness was written (#372 panel controls, spec 12 agent views).
+        renderPanelControls: () => {},
+        renderPanelAgents: () => {},
+        panelAgentTasks: () => [],
+        panelAgentLabel: () => '',
         generateTitleSub: () => {},
         _panelTitleSub: '',
         panelTitleSubCanRegen: () => true,
