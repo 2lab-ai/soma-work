@@ -134,6 +134,13 @@ describe('resolveAccountTier — explicit → upstream → defaults → unknown'
     );
   });
 
+  // trinity round 6 (astra P2): a full-email key written without the group.
+  it('a full-email key without the group still matches (and beats the default)', () => {
+    expect(
+      resolveAccountTier({ name: 'codex:ai5@corp.example', group: 'codex' }, { 'ai5@corp.example': 'chatgpt-pro-200' }),
+    ).toBe('chatgpt-pro-200');
+  });
+
   it('llmuxAccountLocalName strips the group prefix and the domain', () => {
     expect(llmuxAccountLocalName('claude:ai7@corp.example', 'claude')).toBe('ai7');
     expect(llmuxAccountLocalName('ai7', 'claude')).toBe('ai7');

@@ -139,10 +139,14 @@ export function resolveAccountTier(
 ): LlmuxTierId | undefined {
   const group = (account.group || '').toLowerCase();
   const full = account.name.toLowerCase();
+  // `codex:ai5@corp.example` → `ai5@corp.example` (the name without its group).
+  const prefix = `${group}:`;
+  const ungrouped = group && full.startsWith(prefix) ? full.slice(prefix.length) : full;
   const local = llmuxAccountLocalName(full, group);
-  // Most specific first: the exact name (group-scoped, then bare), then the
-  // short form (group-scoped, then bare). A key never matches across groups.
-  const keys = [...new Set([`${group}:${full}`, full, `${group}:${local}`, local])];
+  // Most specific first: the full name (group-scoped, then without the group,
+  // then as llmux wrote it), then the short form (group-scoped, then bare).
+  // A tier of another provider never matches (see `fits`).
+  const keys = [...new Set([`${group}:${ungrouped}`, ungrouped, full, `${group}:${local}`, local])];
   // A tier only ever applies to its own provider: live llmux has ai5 in both
   // the claude and the codex group, so a bare `ai5=pro500` must not colour
   // claude:ai5. A mismatched entry is skipped, not an answer.
