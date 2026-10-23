@@ -165,8 +165,11 @@ function resultFrame(
   };
 }
 
-async function runTurn(session: any, frame: any): Promise<void> {
+async function runTurn(session: any, frame: any, initSessionId?: string): Promise<void> {
   async function* stream() {
+    // What `ClaudeHandler.streamQuery` does on the turn's `system`/`init`
+    // frame: the SDK session id lands on the session BEFORE the result.
+    if (initSessionId) session.sessionId = initSessionId;
     yield frame;
   }
   const executor = new StreamExecutor(createDeps(stream));
@@ -263,6 +266,28 @@ describe('StreamExecutor — cumulative SDK usage is counted once', () => {
 
     expect(restored.usage.totalCostUsd).toBeCloseTo(0.25);
     expect(restored.goal.costUsd).toBeCloseTo(1.25);
+  });
+
+  it('after /new (sessionId cleared, new id assigned at init inside the turn) the first result counts in full', async () => {
+    const session = newSession();
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 10_000, output: 1000, cacheRead: 0, cacheCreate: 0, cost: 10 } }),
+    );
+
+    // `resetSessionContext` / `clearSessionId`: no SDK session to resume; the
+    // baseline from the old SDK session is still on the session object.
+    session.sessionId = undefined;
+    session.usage = undefined;
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 400, output: 40, cacheRead: 0, cacheCreate: 0, cost: 0.4 } }),
+      'sdk-session-B',
+    );
+
+    expect(session.usage.totalCostUsd).toBeCloseTo(0.4);
+    expect(session.usage.totalInputTokens).toBe(400);
+    expect(emitted.tokenUsage.at(-1)?.metadata.costUsd).toBeCloseTo(0.4);
   });
 
   it('a new SDK session after a reset counts its first result in full', async () => {

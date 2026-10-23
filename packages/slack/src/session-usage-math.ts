@@ -237,8 +237,9 @@ export interface TurnUsageInput {
  * - All-zero breakdown (crash/startup-error result): nothing spent, baseline
  *   kept — the next resumed result continues from the saved total.
  * - Different SDK session id: a new running total — counts from zero.
- * - Any model's total went down (mid-session `/clear`): the running total
- *   restarted — this result counts in full and becomes the new baseline.
+ * - A model's total went down: that model's total restarted — it counts in
+ *   full. When EVERY model seen before went down (mid-session `/clear`), the
+ *   whole running total restarted and this result becomes the baseline.
  *
  * Models that did not grow are left out of the turn's breakdown. Everything
  * else on `usage` (per-turn context fields, model name, cost source) is kept.
@@ -255,15 +256,20 @@ export function toTurnUsage<U extends TurnUsageInput>(
 
   const id = sdkSessionId ?? null;
   const previous = baseline && baseline.sdkSessionId === id ? baseline.models : {};
-  const restarted = entries.some(([model, c]) => {
-    const p = previous[model];
-    return !!p && COUNTER_FIELDS.some((f) => p[f] - c[f] > (f === 'costUsd' ? COST_EPSILON : 0));
-  });
-  const base = restarted ? {} : previous;
+  const seen = entries.filter(([model]) => previous[model]);
+  const dropped = new Set(
+    seen
+      .filter(([model, c]) =>
+        COUNTER_FIELDS.some((f) => previous[model][f] - c[f] > (f === 'costUsd' ? COST_EPSILON : 0)),
+      )
+      .map(([model]) => model),
+  );
+  const cleared = seen.length > 0 && dropped.size === seen.length;
+  const base = cleared ? {} : previous;
 
   const breakdown: Record<string, ModelUsageCounters> = {};
   for (const [model, c] of entries) {
-    const b = base[model];
+    const b = dropped.has(model) ? undefined : base[model];
     const d = {
       inputTokens: Math.max(0, c.inputTokens - (b?.inputTokens ?? 0)),
       outputTokens: Math.max(0, c.outputTokens - (b?.outputTokens ?? 0)),
