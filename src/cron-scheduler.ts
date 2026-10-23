@@ -130,6 +130,12 @@ function cronText(job: CronJob, note?: string): string {
   return `[cron:${job.name}] ${job.prompt}${note ?? ''}`;
 }
 
+/**
+ * What {@link CronScheduler.fireDeployLane} runs: a deploy-only lane
+ * (src/deploy-lanes.ts) — the parts of a cron job a fire needs, without being one.
+ */
+export type DeployLaneSpec = Pick<CronJob, 'name' | 'owner' | 'channel' | 'prompt' | 'modelConfig'>;
+
 export class CronScheduler {
   private deps: CronSchedulerDeps;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -212,6 +218,40 @@ export class CronScheduler {
     } catch (error: any) {
       logger.error('Manual cron fire failed', { name: job.name, error: error?.message });
       this.recordExecution(job, 'failed', 'idle_inject', undefined, error?.message, opts?.triggeredBy);
+      return { ok: false, message: error?.message ?? 'unknown error' };
+    }
+  }
+
+  /**
+   * Start a deploy-only lane (src/deploy-lanes.ts) in a new thread of its
+   * channel: the new-thread path of a cron fire — owner identity, the lane's
+   * model, never queued behind a busy session — for something that is not a
+   * cron job. So it touches neither cron storage nor cron history; the log is
+   * its only record. The thread's root is `rootText`, the injected prompt
+   * `[deploy-lane:<name>] <prompt><note>`.
+   *
+   * Same contract as {@link runJobNow}: resolves when the injected turn ends,
+   * `{ ok: false }` when the thread could not be created or the fire threw.
+   */
+  async fireDeployLane(
+    lane: DeployLaneSpec,
+    opts: { triggeredBy?: string; note?: string; rootText: string },
+  ): Promise<{ ok: boolean; message: string }> {
+    logger.info('Deploy lane fire', { name: lane.name, owner: lane.owner, triggeredBy: opts.triggeredBy });
+    try {
+      const rootTs = await this.injectInNewThread(
+        lane,
+        opts.rootText,
+        `[deploy-lane:${lane.name}] ${lane.prompt}${opts.note ?? ''}`,
+      );
+      if (!rootTs) {
+        logger.error('Deploy lane thread not created (no ts returned)', { name: lane.name, channel: lane.channel });
+        return { ok: false, message: 'thread creation returned no ts' };
+      }
+      logger.info('Deploy lane turn ended', { name: lane.name, owner: lane.owner, channel: lane.channel, rootTs });
+      return { ok: true, message: 'new_thread' };
+    } catch (error: any) {
+      logger.error('Deploy lane fire failed', { name: lane.name, error: error?.message });
       return { ok: false, message: error?.message ?? 'unknown error' };
     }
   }
@@ -531,28 +571,18 @@ export class CronScheduler {
 
     let openedTs: string | undefined;
     try {
-      const rootTs = await this.deps.threadCreator(job.channel, `[cron:${job.name}] Scheduled task`);
-      openedTs = rootTs;
+      const rootTs = await this.injectInNewThread(job, `[cron:${job.name}] Scheduled task`, cronText(job, note), {
+        cron: cronOrigin(job),
+        onOpened: (ts) => {
+          openedTs = ts;
+        },
+      });
       if (!rootTs) {
         logger.warn('Failed to create thread (no ts returned)', { name: job.name });
         this.recordExecution(job, 'failed', 'new_thread', undefined, 'thread creation returned no ts', triggeredBy);
         return false;
       }
 
-      const syntheticEvent: SyntheticMessageEvent = {
-        user: job.owner,
-        channel: job.channel,
-        thread_ts: rootTs,
-        ts: `${Date.now() / 1000}`,
-        text: cronText(job, note),
-        synthetic: true,
-        skipDispatch: true,
-        modelOverride: resolveModelOverride(job.modelConfig),
-        cron: cronOrigin(job),
-        routeContext: { skipAutoBotThread: true },
-      };
-
-      await this.deps.messageInjector(syntheticEvent);
       this.deps.storage.updateLastRun(job.id, now);
       // The session this fire opened, in the same shape idle_inject records —
       // the dashboard's run history links the run to it (SSOT 2026-10-23 T5).
@@ -572,6 +602,44 @@ export class CronScheduler {
       );
       return false;
     }
+  }
+
+  /**
+   * Open a bot thread in `fire.channel` with `rootText` and inject `text` into
+   * it as `fire.owner`, on the fire's model. Resolves with the root ts once the
+   * injected turn ends, or undefined when Slack returned no ts (nothing
+   * injected). Throws what the thread creator or the injector throws.
+   */
+  private async injectInNewThread(
+    fire: DeployLaneSpec,
+    rootText: string,
+    text: string,
+    opts: {
+      /** A cron job's fire names and files the session it opens (SSOT 2026-10-23 T1). */
+      cron?: { jobId: string; jobName: string };
+      /** Told the root ts as soon as the thread exists, before the turn runs. */
+      onOpened?: (rootTs: string) => void;
+    } = {},
+  ): Promise<string | undefined> {
+    const rootTs = await this.deps.threadCreator(fire.channel, rootText);
+    if (!rootTs) return undefined;
+    opts.onOpened?.(rootTs);
+
+    const syntheticEvent: SyntheticMessageEvent = {
+      user: fire.owner,
+      channel: fire.channel,
+      thread_ts: rootTs,
+      ts: `${Date.now() / 1000}`,
+      text,
+      synthetic: true,
+      skipDispatch: true,
+      modelOverride: resolveModelOverride(fire.modelConfig),
+      ...(opts.cron ? { cron: opts.cron } : {}),
+      routeContext: { skipAutoBotThread: true },
+    };
+
+    await this.deps.messageInjector(syntheticEvent);
+    return rootTs;
   }
 
   /**
