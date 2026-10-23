@@ -81,15 +81,22 @@ async function loadProjects() {
 }
 function paintProjectBanner() {
   var el = document.getElementById('pm-banner');
-  if (!pmIsAdmin()) {
-    el.innerHTML = '<div class="pm-banner is-locked" role="note"><span><span aria-hidden="true">&#x1F512;</span> 읽기 전용 — 관리자만 수정할 수 있습니다.</span></div>';
+  // The server could not load the stored notes: say so — an empty list here would be a lie.
+  var html = _pm && _pm.storeError
+    ? '<div class="notice is-error" role="alert">' + esc(_pm.storeError) + '</div>'
+    : '';
+  if (!pmIsAdmin() && _pm && _pm.readOnlyReason === 'anonymous') {
+    html += '<div class="pm-banner is-locked" role="note"><span><span aria-hidden="true">&#x1F512;</span> 읽기 전용 — 이 대시보드는 인증이 설정되지 않아 아무도 수정할 수 없습니다. 관리자 로그인을 설정하세요.</span></div>';
+  } else if (!pmIsAdmin()) {
+    html += '<div class="pm-banner is-locked" role="note"><span><span aria-hidden="true">&#x1F512;</span> 읽기 전용 — 관리자만 수정할 수 있습니다.</span></div>';
   } else if (!adminModeOn()) {
-    el.innerHTML = '<div class="pm-banner is-admin" role="note"><span>관리자입니다. 수정하려면 관리자 모드를 켜세요.</span>'
+    html += '<div class="pm-banner is-admin" role="note"><span>관리자입니다. 수정하려면 관리자 모드를 켜세요.</span>'
       + '<button type="button" class="btn" onclick="setAdminModeHere(true)">관리자 모드 켜기</button></div>';
   } else {
-    el.innerHTML = '<div class="pm-banner is-admin" role="note"><span>관리자 모드 — 바꾼 내용은 이 저장소 채널의 모든 세션에 적용됩니다.</span>'
+    html += '<div class="pm-banner is-admin" role="note"><span>관리자 모드 — 바꾼 내용은 이 저장소 채널의 모든 세션에 적용됩니다.</span>'
       + '<button type="button" class="btn" onclick="setAdminModeHere(false)">관리자 모드 끄기</button></div>';
   }
+  el.innerHTML = html;
   var box = document.getElementById('pm-new-box');
   box.innerHTML = pmCanEdit()
     ? '<div class="line"><input type="text" id="pm-new-slug" placeholder="owner/repo" aria-label="새 프로젝트 (owner/repo)"><button type="button" class="btn" onclick="pmNewProject()">추가</button></div>'

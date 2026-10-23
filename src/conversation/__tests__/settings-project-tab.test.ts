@@ -96,6 +96,23 @@ describe('프로젝트 메모리 tab', () => {
     expect(els['pm-new-box'].innerHTML).toContain('owner/repo');
   });
 
+  it('the banner explains an anonymous dashboard and an unreadable store instead of looking empty (#380 review)', () => {
+    const els: Record<string, any> = { 'pm-banner': { innerHTML: '' }, 'pm-new-box': { innerHTML: '' } };
+    const run = (pm: Record<string, unknown>) =>
+      load<any>(['esc', 'pmIsAdmin', 'pmCanEdit', 'paintProjectBanner'], {
+        document: { getElementById: (id: string) => els[id] },
+        _pm: pm,
+        adminModeOn: () => true,
+      }).paintProjectBanner();
+    run({ isAdmin: false, readOnlyReason: 'anonymous' });
+    expect(els['pm-banner'].innerHTML).toContain('인증이 설정되지 않아');
+    expect(els['pm-new-box'].innerHTML).toBe('');
+    run({ isAdmin: true, storeError: '파일을 <읽을> 수 없어' });
+    expect(els['pm-banner'].innerHTML).toContain('role="alert"');
+    expect(els['pm-banner'].innerHTML).toContain('파일을 &lt;읽을&gt; 수 없어');
+    expect(els['pm-banner'].innerHTML).toContain('모든 세션에 적용'); // the admin banner is still there
+  });
+
   it('add sends project, text and the loaded revision; a 409 reloads and keeps the draft', async () => {
     const status: any = { textContent: '', setAttribute() {} };
     const apiWrite = vi

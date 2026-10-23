@@ -164,7 +164,7 @@ updates inside its terminal-cleanup boundary, including setup failures.
   host·MCP·대시보드 모든 메모리 쓰기는 `somalib/model-commands/memory-lock.ts`(`{DATA_DIR}/{uid}/memory/.lock`, mkdir 원자 획득, 죽은 소유자·stale 탈취, 프로세스 내 재진입)를 잡는다.
   `SLACK_MEMORY_COVERAGE` 계약 테스트가 Slack 메모리 쓰기 전수와 대조
 - 공유 프로젝트 메모리: `src/project-memory-store.ts`(`DATA_DIR/project-memory.json`, 키 `owner/repo`, revision 조건부, atomicWriteJson) ←
-  `src/conversation/project-memory-routes.ts` `/api/project-memory`(읽기: 로그인 사용자, 쓰기: `requireWriteAccess(req, reply, undefined)` 관리자 게이트 + CSRF).
+  `src/conversation/project-memory-routes.ts` `/api/project-memory`(읽기: 로그인 사용자, 쓰기: `requireWriteAccess(req, reply, undefined)` 관리자 게이트 + CSRF, 인증 미설정(`mode:none`)은 쓰기 403).
   프롬프트 주입: `build-stream-options.ts`가 `<channel-repository>` 뒤에 `projectMemoryPromptBlock(slackContext.repos)`.
   `src/index.ts`가 채널 레지스트리(`getAllChannels`)를 저장소 목록 소스로, 변경 훅을 `SessionRegistry.invalidateSystemPromptWhere`(해당 저장소 채널 세션)로 연결
 - 작업 로그 방출 이음매: 턴 안의 항목(지시·서술·도구·최종 답변·오류, 임계치 자동 압축 예고)은
