@@ -31,6 +31,7 @@ import type { ClaudeHandler } from './claude-handler';
 import { getFollowupQueueCapacity, getReleaseNotesChannels } from './config';
 import { DeployLaneTrigger } from './deploy-lanes';
 import { FileHandler, type ProcessedFile } from './file-handler';
+import { getLastCommandChannelStore } from './last-command-channel-store';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
 import type { McpManager } from './mcp-manager';
@@ -1304,6 +1305,14 @@ export class SlackHandler {
       return { result: 'blocked', reason: 'incident-owned thread: ordinary message dropped' };
     }
 
+    // SSOT 2026-10-23 T5 — "the channel the user last gave a command in" is the
+    // dashboard composer's default channel. Real user messages only: a goal
+    // loop / cron / auto-resume turn is not the user commanding anything.
+    // DMs are ignored by the store itself.
+    if (!event.synthetic && !incidentTurn && event.user) {
+      getLastCommandChannelStore().record(event.user, channel);
+    }
+
     if (channel.startsWith('D')) {
       // A replayed goal objective (`routeContext.verbatimPrompt`) was routed
       // already: it is the user's words, never a cleanup link or a `/z`
@@ -1867,7 +1876,11 @@ export class SlackHandler {
         // A typed SDK slash command (`/compact focus on X`) is a request to the
         // CLI, not an instruction — promoting it would name a goal after it.
         !isLocalSlashCommand(effectiveText.trim()) &&
-        userSettingsStore.getUserAutoGoalEnabled(event.user)
+        // A dashboard task carries its composer toggle (SSOT 2026-10-23 T6):
+        // per task, in both directions; otherwise the user's setting decides.
+        (typeof event.autoGoalOverride === 'boolean'
+          ? event.autoGoalOverride
+          : userSettingsStore.getUserAutoGoalEnabled(event.user))
       ) {
         const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
         const inFlight =
