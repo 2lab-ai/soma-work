@@ -347,3 +347,72 @@ describe('T1 — markdown answers render as documents, safely', () => {
     expect(out).not.toContain('href="javascript');
   });
 });
+
+describe('T5/T6 — a new artifact reaches the open card and panel at once (review gate P1)', () => {
+  function live(cache: Record<string, unknown>, opts: { expanded?: string[]; panelConvId?: string | null } = {}) {
+    const fetched: Array<[string, boolean]> = [];
+    const settled: string[] = [];
+    const fns = load<{ onArtifactUpdate(cid: string, a: unknown): void }>(['onArtifactUpdate'], [], {
+      _artCache: cache,
+      _expanded: new Set(opts.expanded ?? []),
+      _sessionCache: { k1: { conversationId: 'c1' }, k2: { conversationId: 'c2' } },
+      panelOpen: !!opts.panelConvId,
+      panelConvId: opts.panelConvId ?? null,
+      ensureArtifacts: (cid: string, force: boolean) => {
+        fetched.push([cid, force]);
+        return Promise.resolve([]);
+      },
+      artSettle: (cid: string) => settled.push(cid),
+    });
+    return { ...fns, fetched, settled };
+  }
+
+  it('a card opened before its first artifact fetches the full list when one lands', () => {
+    const t = live({}, { expanded: ['k1'] });
+    t.onArtifactUpdate('c1', png);
+    expect(t.fetched).toEqual([['c1', true]]);
+  });
+
+  it('a cached list merges the new artifact and re-renders; an unrelated conversation fetches nothing', () => {
+    const cache: Record<string, { state: string; list: Art[] }> = { c1: { state: 'ok', list: [html] } };
+    const t = live(cache, { expanded: ['k1'] });
+    t.onArtifactUpdate('c1', png);
+    expect(cache.c1.list.map((a) => a.id)).toEqual(['A1', 'A2']);
+    expect(t.settled).toEqual(['c1']);
+    const idle = live({}, { expanded: ['k2'] });
+    idle.onArtifactUpdate('c1', png);
+    expect(idle.fetched).toEqual([]);
+  });
+
+  it('the open panel fetches too', () => {
+    const t = live({}, { panelConvId: 'c1' });
+    t.onArtifactUpdate('c1', png);
+    expect(t.fetched).toEqual([['c1', true]]);
+  });
+});
+
+describe('review gate — viewer keys and minimap fetch', () => {
+  it('← / → page the viewer, but not while a media control has focus (seeking stays native)', () => {
+    const steps: number[] = [];
+    const { artHandleKey } = load<{ artHandleKey(e: unknown): void }>(['artHandleKey'], [], {
+      artModalIsOpen: () => true,
+      artModalStep: (d: number) => steps.push(d),
+      hideArtPeek: () => {},
+      _artPeek: { anchor: null },
+    });
+    const ev = (tag: string, key: string) => ({
+      key,
+      target: { tagName: tag },
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    artHandleKey(ev('BUTTON', 'ArrowRight'));
+    artHandleKey(ev('AUDIO', 'ArrowRight'));
+    artHandleKey(ev('VIDEO', 'ArrowLeft'));
+    expect(steps).toEqual([1]);
+  });
+
+  it('the minimap asks for the first 64 KB of a text artifact, not the whole file', () => {
+    expect(clientFn('fillArtDocs')).toContain("Range: 'bytes=0-65535'");
+  });
+});

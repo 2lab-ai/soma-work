@@ -83,6 +83,10 @@ export const MAX_STORED_BYTES = 100 * 1024 * 1024;
 /** The only roots an upload is read from — the same allowlist slack-mcp enforces. */
 const UPLOAD_ROOTS = ['/tmp/', '/private/tmp/'];
 const SUMMARY_RECENT = 4;
+/** A snapshot still waiting for its upload's result is `.pending-<id>` until recorded. */
+const PENDING_PREFIX = '.pending-';
+/** A pending snapshot older than this lost its result (abort, crash, restart) and is swept. */
+const PENDING_TTL_MS = 60 * 60 * 1000;
 const EXCERPT_MAX = 140;
 
 const EXT_TABLE: Record<string, [ArtifactKind, string]> = {
@@ -262,6 +266,7 @@ export class ArtifactStore {
     const dir = this.dir(conversationId);
     let loaded: ArtifactIndex = { version: 1, artifacts: [] };
     if (dir) {
+      sweepStalePending(dir);
       try {
         loaded = readJsonWithBackup(path.join(dir, 'index.json'), validateIndex) ?? loaded;
       } catch (err) {
@@ -335,13 +340,14 @@ export class ArtifactStore {
     const src = await readableUpload(filePath);
     if (!dir || !src || src.size > MAX_STORED_BYTES) return null;
     const id = ulid();
+    const staged = path.join(dir, PENDING_PREFIX + id);
     try {
       await fs.promises.mkdir(dir, { recursive: true });
-      await fs.promises.copyFile(src.real, path.join(dir, id));
+      await fs.promises.copyFile(src.real, staged);
       return { id, size: src.size };
     } catch (err) {
       logger.warn(`Could not snapshot an upload for ${conversationId}`, err);
-      await fs.promises.unlink(path.join(dir, id)).catch(() => {});
+      await fs.promises.unlink(staged).catch(() => {});
       return null;
     }
   }
@@ -350,8 +356,27 @@ export class ArtifactStore {
   async discardSnapshot(conversationId: string, snap: ArtifactSnapshot | null | undefined): Promise<void> {
     const dir = this.dir(conversationId);
     if (!dir || !snap || safeSegment(snap.id) !== snap.id) return;
-    if (this.get(conversationId, snap.id)) return; // already recorded — keep it
-    await fs.promises.unlink(path.join(dir, snap.id)).catch(() => {});
+    await fs.promises.unlink(path.join(dir, PENDING_PREFIX + snap.id)).catch(() => {});
+  }
+
+  /** Promote a snapshot to the artifact's blob; false when it is gone or does not match `size`. */
+  private async adopt(conversationId: string, snap: ArtifactSnapshot, size: number | undefined): Promise<boolean> {
+    const dir = this.dir(conversationId);
+    if (!dir || safeSegment(snap.id) !== snap.id) return false;
+    // The bytes must be the ones Slack received: the tool reports the size it uploaded.
+    // (A backfill copies whatever sits at the old path now — another session may have
+    // written a different file there since.)
+    if (typeof size === 'number' && size >= 0 && snap.size !== size) {
+      await this.discardSnapshot(conversationId, snap);
+      return false;
+    }
+    try {
+      await fs.promises.rename(path.join(dir, PENDING_PREFIX + snap.id), path.join(dir, snap.id));
+      return true;
+    } catch (err) {
+      logger.warn(`Could not keep an upload snapshot for ${conversationId}`, err);
+      return false;
+    }
   }
 
   /**
@@ -381,10 +406,12 @@ export class ArtifactStore {
     }
     if (key) this.reserved.add(key);
     try {
-      const snap = input.snapshot ?? (input.filePath ? await this.snapshot(conversationId, input.filePath) : null);
+      const reported = typeof input.size === 'number' && input.size >= 0 ? input.size : undefined;
+      let snap = input.snapshot ?? (input.filePath ? await this.snapshot(conversationId, input.filePath) : null);
+      if (snap && !(await this.adopt(conversationId, snap, reported))) snap = null;
       const name = (input.filename || (input.filePath ? path.basename(input.filePath) : '') || 'file').slice(0, 200);
       const { kind, mime } = classifyArtifact(name);
-      const size = snap?.size ?? (typeof input.size === 'number' && input.size >= 0 ? input.size : 0);
+      const size = snap?.size ?? reported ?? 0;
       const turnStartedAt = turnStartFromTurnId(input.turnId);
       const artifact: SessionArtifact = {
         id: snap?.id ?? ulid(),
@@ -470,6 +497,26 @@ export class ArtifactStore {
       } catch (err) {
         logger.warn('Artifact listener threw', err);
       }
+    }
+  }
+}
+
+/** Drop `.pending-*` snapshots older than PENDING_TTL_MS (best effort, once per index load). */
+function sweepStalePending(dir: string): void {
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return; // no directory yet
+  }
+  const cutoff = Date.now() - PENDING_TTL_MS;
+  for (const name of names) {
+    if (!name.startsWith(PENDING_PREFIX)) continue;
+    const file = path.join(dir, name);
+    try {
+      if (fs.statSync(file).mtimeMs < cutoff) fs.unlinkSync(file);
+    } catch {
+      // raced with a record or another sweep — nothing to do
     }
   }
 }

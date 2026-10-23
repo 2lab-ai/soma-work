@@ -10061,14 +10061,22 @@ function artSettle(cid) {
 }
 
 // WS artifact_update: a new file or answer landed in a conversation.
+// A list already fetched merges the push; otherwise anything showing this
+// conversation right now (an open card — even one opened before its first
+// artifact — or the panel) fetches the full list.
 function onArtifactUpdate(cid, artifact) {
   var c = _artCache[cid];
   if (c && c.list && artifact && artifact.id) {
     if (!c.list.some(function(a) { return a.id === artifact.id; })) c.list = c.list.concat([artifact]);
     artSettle(cid);
-  } else if (panelOpen && panelConvId === cid) {
-    ensureArtifacts(cid, true);
+    return;
   }
+  var shown = panelOpen && panelConvId === cid;
+  _expanded.forEach(function(key) {
+    var s = _sessionCache[key];
+    if (s && s.conversationId === cid) shown = true;
+  });
+  if (shown) ensureArtifacts(cid, true);
 }
 
 function renderPanelArtifactsSection() {
@@ -10164,9 +10172,16 @@ function fillArtDocs(root) {
       n.innerHTML = kind === 'markdown' ? '<div class="md-doc">' + renderMarkdownDoc(src) + '</div>' : '<pre class="art-text">' + esc(src) + '</pre>';
     };
     if (_artDocCache[key] != null) { paint(_artDocCache[key]); return; }
-    fetch(artUrl(key.slice(0, sep), key.slice(sep + 1)))
+    // The minimap needs the head only: ask for the first 64 KB (the route serves
+    // ranges); the viewer fetches, and caches, the whole document.
+    var peek = !!n.closest('#art-peek');
+    fetch(artUrl(key.slice(0, sep), key.slice(sep + 1)), peek ? { headers: { Range: 'bytes=0-65535' } } : undefined)
       .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-      .then(function(t) { _artDocCache[key] = t.length > 2000000 ? t.slice(0, 2000000) : t; paint(_artDocCache[key]); })
+      .then(function(t) {
+        if (peek) { paint(t); return; }
+        _artDocCache[key] = t.length > 2000000 ? t.slice(0, 2000000) : t;
+        paint(_artDocCache[key]);
+      })
       .catch(function() { if (n.isConnected) n.innerHTML = '<span class="art-doc-loading">불러오지 못했습니다</span>'; });
   });
 }
@@ -10290,6 +10305,9 @@ function artAudioMark(key) {
 // viewer pages with ← / →; Escape with only the minimap open closes the minimap.
 function artHandleKey(e) {
   if (artModalIsOpen()) {
+    // A focused audio / video / field keeps its own arrow keys (seeking, caret).
+    var tag = e.target && e.target.tagName ? String(e.target.tagName).toUpperCase() : '';
+    if (tag === 'AUDIO' || tag === 'VIDEO' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
     if (e.key === 'ArrowRight') { e.preventDefault(); artModalStep(1); }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); artModalStep(-1); }
     return;
