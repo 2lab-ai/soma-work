@@ -223,6 +223,62 @@ describe('memory routes (SSOT 2026-10-23 T3)', () => {
     expect((await call('GET', '/api/memory')).body.pages.map((p: any) => p.id)).toEqual(['concepts/ssot']);
   });
 
+  it('a page the form cannot hold losslessly is never saved through the form; it is edited as raw markdown (review R3 P1)', async () => {
+    const store = hier.hierarchicalMemoryStore;
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    // written the way the agent writes it: a sub-heading inside Current, a multi-line History entry
+    store.upsertPage(
+      user,
+      { type: 'concepts', slug: 'lossy' },
+      { title: 'Lossy', current: 'intro\n## Details\nimportant text', historyEntry: 'line one\nline two' },
+    );
+    const { memoryRoot } = await import('somalib/model-commands/hierarchical-memory-store');
+    const { DATA_DIR } = await import('../../env-paths');
+    const file = path.join(memoryRoot(DATA_DIR, user), 'concepts', 'lossy.md');
+    const before = fs.readFileSync(file, 'utf-8');
+    expect(before).toContain('important text');
+
+    let r = await call('GET', '/api/memory/page?id=concepts/lossy');
+    expect(r.status).toBe(200);
+    expect(r.body.representable).toBe(false);
+    expect(r.body.raw).toBe(before);
+
+    // the form path refuses — saving the parsed fields would drop "important text" and "line two"
+    r = await call('PUT', '/api/memory/page', {
+      id: 'concepts/lossy',
+      title: 'Lossy renamed',
+      aliases: [],
+      current: r.body.page.current,
+      history: r.body.page.history,
+      revision: r.body.revision,
+    });
+    expect(r.status).toBe(400);
+    expect(fs.readFileSync(file, 'utf-8')).toBe(before);
+
+    // raw markdown: whatever the file holds can be edited, revision-checked
+    const rev = (await call('GET', '/api/memory/page?id=concepts/lossy')).body.revision;
+    const edited = before.replace('important text', 'important text, edited');
+    r = await call('PUT', '/api/memory/page/raw', { id: 'concepts/lossy', raw: edited, revision: rev });
+    expect(r.status).toBe(200);
+    expect(fs.readFileSync(file, 'utf-8')).toBe(edited);
+    expect(
+      (await call('PUT', '/api/memory/page/raw', { id: 'concepts/lossy', raw: before, revision: rev })).status,
+    ).toBe(409);
+    expect(
+      (await call('PUT', '/api/memory/page/raw', { id: 'concepts/lossy', raw: '  ', revision: r.body.revision }))
+        .status,
+    ).toBe(400);
+
+    // a page the form round-trips exactly stays on the form
+    store.upsertPage(
+      user,
+      { type: 'concepts', slug: 'plain' },
+      { title: 'Plain', current: 'v1', historyEntry: 'first' },
+    );
+    expect((await call('GET', '/api/memory/page?id=concepts/plain')).body.representable).toBe(true);
+  });
+
   it('a malformed page id is a 400, never a path outside the memory root', async () => {
     expect((await call('GET', '/api/memory/page?id=../../etc/passwd')).status).toBe(400);
     expect((await call('GET', '/api/memory/page?id=agent/..')).status).toBe(400);

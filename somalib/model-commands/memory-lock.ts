@@ -9,21 +9,27 @@
  * revision and replaces it inside the lock — an append from another process
  * waits instead of landing between the check and the rename and being lost.
  *
- * Protocol:
- *   - acquire: write `owner.json` = `{ pid, host, startedAt, token, at }` into a
- *     private temp dir, then `rename` it to `{memoryRoot}/.lock` — atomic, and
- *     the lock never exists without its owner (rename onto a held, non-empty
- *     lock fails).
- *   - release: only when `owner.json` still carries our token.
+ * Protocol — the owner file is named after its token, `.lock/owner-<token>.json`,
+ * so "remove the lock only if it is still T's" is ONE atomic call:
+ * `rename(.lock/owner-T.json, …)` succeeds only while T's lock is in place; a
+ * newer owner's lock holds a different file name, so the rename fails (ENOENT).
+ *   - acquire: write `owner-<token>.json` = `{ pid, host, startedAt, token, at }`
+ *     into a private temp dir, then `rename` it to `{memoryRoot}/.lock` — atomic,
+ *     and the lock never exists without its owner (rename onto a held, non-empty
+ *     lock fails; onto an empty leftover dir it succeeds).
+ *   - release / reap: move our (or the judged) owner file out — the atomic
+ *     compare-and-delete — then `rmdir` the now empty dir. If a new owner renamed
+ *     its lock onto the emptied dir first, `rmdir` fails (not empty) and that
+ *     lock stays. No reaper lock, nothing reclaimed by age on this host: a
+ *     reaper frozen between its judgement and its commit just fails the rename
+ *     (review R3).
  *   - abandoned, on this host: the owner pid is dead (after a 1 s grace), or the
  *     pid now belongs to a different process (its start time differs — pid
  *     reuse). A live owner is NEVER taken over by age. Another host's pid cannot
  *     be checked: such a lock is abandoned only after `staleMs` (several hosts
- *     sharing one DATA_DIR is not a supported setup).
- *   - reap: serialized by a second lock (`.lock.reap`); inside it the reaper
- *     re-checks the judged token, moves the lock aside and deletes it. On one
- *     host a judged owner is dead or gone, so it cannot release concurrently —
- *     the reaper can never move a lock taken after its judgement.
+ *     sharing one DATA_DIR is not a supported setup). A `.lock` without an owner
+ *     file is never removed: empty, the next acquire replaces it; with anything
+ *     else in it, writers time out and a human looks.
  * Re-entrant within one module instance (a write that calls another locked
  * write does not deadlock).
  *
@@ -59,9 +65,7 @@ interface Owner {
   at?: unknown;
 }
 
-const OWNERLESS_MS = 2_000;
 const DEAD_GRACE_MS = 1_000;
-const REAP_STALE_MS = 5_000;
 /** A live owner holding this long is checked for pid reuse (one `ps` call). */
 const PID_REUSE_CHECK_MS = 10_000;
 const START_TOLERANCE_MS = 3_000;
@@ -96,11 +100,39 @@ function pidAlive(pid: unknown): boolean {
   }
 }
 
-function readOwner(lockPath: string): Owner | null {
+const OWNER_FILE = /^owner-([A-Za-z0-9-]+)\.json$/;
+
+function ownerFile(lockPath: string, token: string): string {
+  return path.join(lockPath, `owner-${token}.json`);
+}
+
+/** The lock's owner record and the token its FILE NAME carries (what a compare-and-delete targets). */
+function readOwner(lockPath: string): { owner: Owner; token: string } | null {
+  let names: string[];
   try {
-    return JSON.parse(fs.readFileSync(path.join(lockPath, 'owner.json'), 'utf-8')) as Owner;
+    names = fs.readdirSync(lockPath);
   } catch {
     return null;
+  }
+  for (const name of names) {
+    const m = OWNER_FILE.exec(name);
+    if (!m) continue;
+    try {
+      return { owner: JSON.parse(fs.readFileSync(path.join(lockPath, name), 'utf-8')) as Owner, token: m[1] };
+    } catch {
+      return null; // being moved out right now (or unreadable): never judged abandoned on a guess
+    }
+  }
+  return null;
+}
+
+/** `rmdir` the lock dir if it is empty; a lock another owner renamed onto it meanwhile stays. */
+function removeEmptyLockDir(lockPath: string): void {
+  try {
+    fs.rmdirSync(lockPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOTEMPTY' && code !== 'EEXIST' && code !== 'ENOENT') throw err;
   }
 }
 
@@ -120,17 +152,11 @@ function processStartedAt(pid: number): number | null {
   }
 }
 
-/** The token of the holding judged abandoned (`''` for an ownerless lock), or null when it is live. */
+/** The token of the holding judged abandoned, or null when it is live (or has no owner file). */
 function abandonedToken(lockPath: string, staleMs: number): string | null {
-  const owner = readOwner(lockPath);
-  if (!owner) {
-    try {
-      return Date.now() - fs.statSync(lockPath).mtimeMs > OWNERLESS_MS ? '' : null;
-    } catch {
-      return null;
-    }
-  }
-  const token = typeof owner.token === 'string' ? owner.token : '';
+  const found = readOwner(lockPath);
+  if (!found) return null;
+  const { owner, token } = found;
   const age = typeof owner.at === 'number' ? Date.now() - owner.at : Number.POSITIVE_INFINITY;
   if (owner.host !== HOST) return age > staleMs ? token : null;
   if (!pidAlive(owner.pid)) return age > DEAD_GRACE_MS ? token : null;
@@ -144,40 +170,21 @@ function abandonedToken(lockPath: string, staleMs: number): string | null {
 }
 
 /**
- * Remove the lock only if it still carries `judgedToken`. Serialized by the
- * reaper lock; returns false when another reaper is at work or the lock has
- * changed hands since it was judged.
+ * Remove the lock only if it is still `judgedToken`'s: move that owner file out
+ * (fails once the lock changed hands), then drop the emptied dir. `beforeCommit`
+ * is a test seam — a reaper frozen right before its commit.
  */
-export function reapIfStill(lockPath: string, judgedToken: string): boolean {
-  const reapLock = `${lockPath}.reap`;
+export function reapIfStill(lockPath: string, judgedToken: string, hooks: { beforeCommit?: () => void } = {}): boolean {
+  hooks.beforeCommit?.();
+  const grave = `${lockPath}.dead.${newToken()}.json`;
   try {
-    fs.mkdirSync(reapLock);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    // A reaper that died mid-reap: its own lock is tiny-lived.
-    try {
-      if (Date.now() - fs.statSync(reapLock).mtimeMs > REAP_STALE_MS)
-        fs.rmSync(reapLock, { recursive: true, force: true });
-    } catch {
-      /* gone already */
-    }
+    fs.renameSync(ownerFile(lockPath, judgedToken), grave);
+  } catch {
     return false;
   }
-  try {
-    const owner = readOwner(lockPath);
-    const current = owner && typeof owner.token === 'string' ? owner.token : '';
-    if (!fs.existsSync(lockPath) || current !== judgedToken) return false;
-    const grave = `${lockPath}.dead.${newToken()}`;
-    try {
-      fs.renameSync(lockPath, grave);
-    } catch {
-      return false;
-    }
-    fs.rmSync(grave, { recursive: true, force: true });
-    return true;
-  } finally {
-    fs.rmSync(reapLock, { recursive: true, force: true });
-  }
+  removeEmptyLockDir(lockPath);
+  fs.rmSync(grave, { force: true });
+  return true;
 }
 
 function acquire(lockPath: string, opts: MemoryLockOptions): string {
@@ -190,7 +197,7 @@ function acquire(lockPath: string, opts: MemoryLockOptions): string {
     const staged = `${lockPath}.new.${token}`;
     fs.mkdirSync(staged);
     fs.writeFileSync(
-      path.join(staged, 'owner.json'),
+      ownerFile(staged, token),
       JSON.stringify({ pid: process.pid, host: HOST, startedAt: PROCESS_STARTED_AT, token, at: Date.now() }),
     );
     try {
@@ -210,15 +217,15 @@ function acquire(lockPath: string, opts: MemoryLockOptions): string {
 }
 
 function release(lockPath: string, token: string): void {
-  const owner = readOwner(lockPath);
-  if (!owner || owner.token !== token) return; // reaped meanwhile — the lock is someone else's now
-  const grave = `${lockPath}.done.${token}`;
+  // Our owner file is gone only if we were reaped meanwhile — then the lock is someone else's now.
+  const grave = `${lockPath}.done.${token}.json`;
   try {
-    fs.renameSync(lockPath, grave);
+    fs.renameSync(ownerFile(lockPath, token), grave);
   } catch {
     return;
   }
-  fs.rmSync(grave, { recursive: true, force: true });
+  removeEmptyLockDir(lockPath);
+  fs.rmSync(grave, { force: true });
 }
 
 /** Run `fn` holding the user's memory lock. */

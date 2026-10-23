@@ -113,7 +113,8 @@ export const SLACK_MEMORY_COVERAGE: Readonly<Record<string, string>> = {
   appendEpisodic: 'POST /api/memory/episodic — 관찰 기록 "메모 추가"',
   removeUserPage: 'DELETE /api/memory/page — 지식 페이지 "페이지 삭제"',
   removePage: 'DELETE /api/memory/page — 지식 페이지 "페이지 삭제"',
-  upsertPage: 'PUT /api/memory/page — 지식 페이지 "저장" (title / aliases / Current / History)',
+  upsertPage:
+    'PUT /api/memory/page — 지식 페이지 "저장" (title / aliases / Current / History); 양식에 담기지 않는 페이지는 PUT /api/memory/page/raw (원문)',
 };
 
 export function registerMemoryRoutes(
@@ -273,9 +274,32 @@ export function registerMemoryRoutes(
       if (!r.ok) return fail(reply, r);
       // The page as written: parsed from the same bytes the returned revision hashes.
       const written = hierarchicalMemoryStore.getPageWithRevision(userId, locator);
-      reply.send({ ok: true, page: written?.page ?? null, revision: written?.revision ?? r.revision });
+      reply.send({ ok: true, ...(written ?? { page: null, revision: r.revision }) });
     });
   });
+
+  // Raw markdown — a page the form cannot hold losslessly (review R3), or anyone who wants the file as it is.
+  server.put<{ Body: { id?: unknown; raw?: unknown; revision?: unknown } }>(
+    '/api/memory/page/raw',
+    write,
+    async (request, reply) => {
+      const userId = requireSelfUser(request, reply);
+      if (!userId) return;
+      const b = request.body || {};
+      if (typeof b.id !== 'string' || typeof b.raw !== 'string' || typeof b.revision !== 'string') {
+        reply.status(400).send({ error: 'id, raw and revision are required' });
+        return;
+      }
+      const { id, raw, revision } = b as { id: string; raw: string; revision: string };
+      await guarded(reply, 'page raw write', () => {
+        const locator = parseLocator(id);
+        const r = hierarchicalMemoryStore.writePageRaw(userId, locator, raw, revision);
+        if (!r.ok) return fail(reply, r);
+        const written = hierarchicalMemoryStore.getPageWithRevision(userId, locator);
+        reply.send({ ok: true, ...(written ?? { page: null, revision: r.revision }) });
+      });
+    },
+  );
 
   server.delete<{ Body: { id?: unknown; revision?: unknown } }>('/api/memory/page', write, async (request, reply) => {
     const userId = requireSelfUser(request, reply);

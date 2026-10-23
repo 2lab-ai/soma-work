@@ -122,6 +122,22 @@ describe('개인 메모리 writes', () => {
     return { fns, deps, status, mem };
   }
 
+  it('after a 409 a draft for one of two identical notes goes to the add box, not the first match (review R3 P1)', async () => {
+    const apiWrite = vi.fn(async () => ({ ok: false, status: 409, error: 'conflict' }));
+    const { fns, deps, mem } = env(apiWrite);
+    mem.l1.memory = block({ entries: ['dup', 'dup'], revision: 'r1' });
+    deps.document.getElementById = (id: string) =>
+      id === 'l1-edit-memory'
+        ? { value: 'mine' }
+        : id === 'l1-new-memory'
+          ? addBox
+          : { textContent: '', setAttribute() {} };
+    const addBox: any = { value: '' };
+    await fns.l1Save('memory', 1);
+    expect(deps.paintL1).not.toHaveBeenCalledWith(expect.objectContaining({ text: 'mine' }));
+    expect(addBox.value).toBe('mine');
+  });
+
   it('add / save / delete send the loaded revision to the right route', async () => {
     const apiWrite = vi.fn(async () => ({ ok: true, data: { l1: block({ revision: 'r2' }) } }));
     const { fns } = env(apiWrite);
@@ -205,7 +221,7 @@ describe('지식 페이지 editor', () => {
       history: ['2026-10-22: a', '2026-10-21: b'],
       updated: '2026-10-22',
     };
-    const fns = load<any>(['esc', 'escAttr', 'renderPageEditor'], ['PAGE_GROUPS'], {
+    const fns = load<any>(['esc', 'escAttr', 'renderPageEditor'], ['PAGE_GROUPS', '_memPageRaw'], {
       document: doc,
       _memPage: { page, revision: 'p1' },
     });
@@ -215,7 +231,7 @@ describe('지식 페이지 editor', () => {
     expect(el.innerHTML).toContain('<textarea id="pg-current" rows="8">v2</textarea>');
     expect(el.innerHTML.match(/class="pg-hist"/g)).toHaveLength(2);
     expect(el.innerHTML).toContain('페이지 삭제');
-    const fresh = load<any>(['esc', 'escAttr', 'renderPageEditor'], ['PAGE_GROUPS'], {
+    const fresh = load<any>(['esc', 'escAttr', 'renderPageEditor'], ['PAGE_GROUPS', '_memPageRaw'], {
       document: doc,
       _memPage: { page: { id: '', title: '', aliases: [], current: '', history: [] }, revision: null },
     });
@@ -223,6 +239,79 @@ describe('지식 페이지 editor', () => {
     expect(el.innerHTML).toContain('<select id="pg-type">');
     expect(el.innerHTML).toContain('id="pg-name"');
     expect(el.innerHTML).toContain('만들기');
+  });
+
+  it('a page the form cannot hold opens as raw markdown, saved with its revision; 409 keeps the draft (review R3 P1)', async () => {
+    const el: any = { innerHTML: '' };
+    const conflictBox: any = { innerHTML: '' };
+    const rawBox: any = { value: '' };
+    const status: any = { textContent: '', setAttribute() {} };
+    const raw = '---\ntitle: L\n---\n\n## Current\n\nintro\n## Details\nimportant <text>\n';
+    const memPage: any = {
+      page: { id: 'concepts/lossy', title: 'L', aliases: [], current: 'intro', history: [], updated: '2026-10-23' },
+      revision: 'p1',
+      raw,
+      representable: false,
+    };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-page-detail' ? el : id === 'pg-conflict' ? conflictBox : id === 'pg-raw' ? rawBox : status,
+    };
+    const view = load<any>(['esc', 'escAttr', 'renderPageEditor'], ['PAGE_GROUPS', '_memPageRaw'], {
+      document: doc,
+      _memPage: memPage,
+    });
+    view.renderPageEditor();
+    expect(el.innerHTML).toContain('<textarea id="pg-raw"');
+    expect(el.innerHTML).toContain('important &lt;text&gt;');
+    expect(el.innerHTML).toContain('양식에 담기지 않는');
+    expect(el.innerHTML).not.toContain('id="pg-current"');
+    expect(el.innerHTML).toContain('onclick="savePageRaw()"');
+
+    rawBox.value = raw.replace('important', 'very important');
+    const apiWrite = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 409, error: 'conflict' })
+      .mockResolvedValueOnce({ ok: true, data: { ...memPage, revision: 'p3' } });
+    const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ ...memPage, revision: 'p2' }) }));
+    const fns = load<any>(
+      ['esc', 'savePageRaw', 'memStatus', 'renderPageConflict', 'overwritePage'],
+      ['_memPageConflict', '_memPageRaw'],
+      {
+        document: doc,
+        fetch,
+        _memPage: memPage,
+        apiWrite,
+        refreshPageIndex: async () => {},
+        renderPageEditor: () => {},
+      },
+    );
+    await fns.savePageRaw();
+    expect(apiWrite).toHaveBeenLastCalledWith('PUT', '/api/memory/page/raw', {
+      id: 'concepts/lossy',
+      raw: rawBox.value,
+      revision: 'p1',
+    });
+    expect(conflictBox.innerHTML).toContain('내 수정본으로 덮어쓰기');
+    expect(rawBox.value).toContain('very important'); // the draft is still in the editor
+    await fns.overwritePage();
+    expect(apiWrite).toHaveBeenLastCalledWith('PUT', '/api/memory/page/raw', {
+      id: 'concepts/lossy',
+      raw: rawBox.value,
+      revision: 'p2',
+    });
+  });
+
+  it('any page can be switched to raw markdown editing', () => {
+    const el: any = { innerHTML: '' };
+    const page = { id: 'concepts/a', title: 'A', aliases: [], current: 'v', history: [], updated: '2026-10-23' };
+    const fns = load<any>(['esc', 'escAttr', 'renderPageEditor'], ['PAGE_GROUPS', '_memPageRaw'], {
+      document: { getElementById: () => el },
+      _memPage: { page, revision: 'p1', raw: '# A\n', representable: true },
+    });
+    fns.renderPageEditor();
+    expect(el.innerHTML).toContain('id="pg-current"');
+    expect(el.innerHTML).toContain('onclick="pageRawMode(true)"');
   });
 
   it('save sends the whole page with the loaded revision; a new page is created with revision null', async () => {
@@ -332,6 +421,112 @@ describe('관찰 기록 (에피소딕)', () => {
     expect(noteBox.value).toBe('A fixed');
   });
 
+  it('after a 409 a draft for one of two identical records goes back to the one with its time, never the first match (review R3 P1)', async () => {
+    const renderDay = vi.fn();
+    const noteBox: any = { value: '' };
+    const status: any = { textContent: '', setAttribute() {} };
+    const day = {
+      date: '2026-10-20',
+      revision: 'd2',
+      entries: [
+        { time: '01:00', content: 'same' },
+        { time: '02:00', content: 'same' },
+      ],
+    };
+    const w = load<any>(['epWrite', 'memStatus'], [], {
+      document: { getElementById: (id: string) => (id === 'mem-ep-new' ? noteBox : status) },
+      _memDay: day,
+      apiWrite: async () => ({ ok: false, status: 409, error: 'conflict' }),
+      renderDay,
+      loadDay: async () => {},
+    });
+    await w.epWrite(
+      'PUT',
+      '/api/memory/episodic/2026-10-20/1',
+      { content: 'mine', revision: 'd1' },
+      'mine',
+      1,
+      'same',
+      '02:00',
+    );
+    expect(renderDay).toHaveBeenLastCalledWith(1, 'mine');
+    // identical in time AND text: there is no telling them apart — the draft goes to the note box
+    day.entries[0].time = '02:00';
+    renderDay.mockClear();
+    await w.epWrite(
+      'PUT',
+      '/api/memory/episodic/2026-10-20/1',
+      { content: 'mine', revision: 'd1' },
+      'mine',
+      1,
+      'same',
+      '02:00',
+    );
+    expect(renderDay).not.toHaveBeenCalledWith(expect.anything(), 'mine');
+    expect(noteBox.value).toBe('mine');
+  });
+
+  it('a delete sends the date, entry and revision the confirmation showed, even if the view moved meanwhile (review R3 P1)', async () => {
+    const day: any = {
+      date: '2026-10-20',
+      revision: 'd20',
+      entries: [{ time: '05:09', content: 'the 20th' }],
+    };
+    const apiWrite = vi.fn(async () => ({ ok: true, data: { day: { ...day, entries: [] } } }));
+    const w = load<any>(['epWrite', 'epDelete', 'memStatus', 'refreshDatesIfEmptied'], [], {
+      document: { getElementById: () => ({ textContent: '', setAttribute() {} }) },
+      _memDay: day,
+      apiWrite,
+      renderDay: () => {},
+      loadDay: async () => {},
+      // while the dialog is open the date picker finished loading another day
+      confirmDialog: async () => {
+        Object.assign(day, { date: '2026-10-21', revision: 'd21', entries: [{ time: '07:00', content: 'the 21st' }] });
+        return true;
+      },
+      refreshPageIndex: async () => {},
+      paintDates: () => {},
+    });
+    await w.epDelete(0);
+    expect(apiWrite).toHaveBeenCalledWith('DELETE', '/api/memory/episodic/2026-10-20/0', { revision: 'd20' });
+  });
+
+  it('clear-all and page delete send the revision the confirmation was about (review R3 P1)', async () => {
+    const apiWrite = vi.fn(async () => ({ ok: true, data: { l1: block({ entries: [], revision: 'r9' }) } }));
+    const mem: any = { l1: { memory: block(), user: block({ revision: 'u1' }) } };
+    const fns = load<any>(['memStatus', 'restoreL1Draft', 'l1Write', 'l1Clear'], ['L1_LABELS'], {
+      _mem: mem,
+      document: { getElementById: () => ({ textContent: '', setAttribute() {} }) },
+      apiWrite,
+      paintL1: () => {},
+      loadMemory: async () => {},
+      confirmDialog: async () => {
+        // the list was reloaded under the open dialog: more entries, a newer revision
+        mem.l1.memory = block({ entries: ['a', 'b', 'c'], revision: 'r-newer' });
+        return true;
+      },
+    });
+    await fns.l1Clear('memory');
+    expect(apiWrite).toHaveBeenLastCalledWith('DELETE', '/api/memory/l1/memory', { revision: 'r1' });
+
+    const pageApi = vi.fn(async () => ({ ok: true, data: {} }));
+    const memPage: any = { page: { id: 'concepts/a', title: 'A' }, revision: 'pa' };
+    const w = load<any>(['deletePage', 'memStatus'], [], {
+      document: { getElementById: () => ({ textContent: '', setAttribute() {}, innerHTML: '' }) },
+      _memPage: memPage,
+      apiWrite: pageApi,
+      confirmDialog: async () => {
+        Object.assign(memPage, { page: { id: 'concepts/b', title: 'B' }, revision: 'pb' });
+        return true;
+      },
+      refreshPageIndex: async () => {},
+      renderPageEditor: () => {},
+      paintPageList: () => {},
+    });
+    await w.deletePage();
+    expect(pageApi).toHaveBeenCalledWith('DELETE', '/api/memory/page', { id: 'concepts/a', revision: 'pa' });
+  });
+
   it('a 409 on a day reloads it and reopens the edit with the whole draft (review P1)', async () => {
     const loadDay = vi.fn(async () => {});
     const renderDay = vi.fn();
@@ -387,7 +582,7 @@ describe('관찰 기록 (에피소딕)', () => {
     const openPage = vi.fn();
     const fns = load<any>(
       ['esc', 'pageDraft', 'savePage', 'memStatus', 'renderPageConflict', 'overwritePage'],
-      ['_memPageConflict'],
+      ['_memPageConflict', '_memPageRaw'],
       {
         document: doc,
         fetch,
