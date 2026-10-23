@@ -156,7 +156,7 @@ export function registerMemoryRoutes(
     reply.send({ ok: true, l1: { ...r.block, perEntryCap: getPerEntryCap(target), revision: r.revision } });
   }
 
-  server.post<{ Params: { target: string }; Body: { text?: unknown; revision?: unknown } }>(
+  server.post<{ Params: { target: string }; Body: { text?: unknown; revision?: unknown; restore?: unknown } }>(
     '/api/memory/l1/:target',
     write,
     async (request, reply) => {
@@ -167,7 +167,10 @@ export function registerMemoryRoutes(
         reply.status(400).send({ error: 'text is required' });
         return;
       }
-      await guarded(reply, 'l1 add', () => l1Edit(request, reply, target, { kind: 'add', text }));
+      // `restore: true` is the tab's undo of a delete: it takes back the exact note, which
+      // may be longer than a new note may be (Slack saves up to the total limit).
+      const kind = request.body?.restore === true ? 'restore' : 'add';
+      await guarded(reply, 'l1 add', () => l1Edit(request, reply, target, { kind, text }));
     },
   );
 
