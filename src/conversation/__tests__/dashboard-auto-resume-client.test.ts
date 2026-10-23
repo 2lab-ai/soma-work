@@ -164,6 +164,7 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
         _envCount: () => 1,
         isSiblingSession: () => false,
         renderCardIo: () => '',
+        renderAgentTree: () => '',
         resolveRecommendedId: () => null,
         stripRecommendedMarker: (l: string) => l,
         choiceDataAttrs: () => '',
@@ -197,6 +198,7 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
 
   it('an open panel re-renders its tasks on every board push (a finished turn stops spinning)', () => {
     const ws = TEMPLATE.slice(TEMPLATE.indexOf('\nfunction connectWs('));
-    expect(ws).toContain('renderPanelTasks(panelS.tasks);');
+    // Spec 12: the tasks of the agent the panel shows (the main agent by default).
+    expect(ws).toContain('renderPanelTasks(panelAgentTasks(), panelAgentLabel());');
   });
 });
