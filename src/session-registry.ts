@@ -2056,6 +2056,8 @@ export class SessionRegistry {
         taskLedger: sanitizeTaskLedger(serialized.taskLedger),
         // Spec 12: nothing that ran before this process is watched any more.
         agents: loseRunningAgents(sanitizeAgentRegistry(serialized.agents), Date.now()),
+        // A cron run archived while the process was down stays filed under its job.
+        cronJob: sanitizeCronJob(serialized.cronJob),
         activityState: serialized.activityState || 'idle',
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,

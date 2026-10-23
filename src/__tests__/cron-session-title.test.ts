@@ -16,6 +16,7 @@ vi.mock('../env-paths', () => ({
   DATA_DIR: '/tmp/soma-work-cron-session-title-test',
 }));
 
+import { getArchiveStore } from '../session-archive';
 import { SessionRegistry } from '../session-registry';
 import { canApplySummaryTitle } from '../session-title-policy';
 
@@ -80,6 +81,35 @@ describe('provisional (cron job-name) titles', () => {
 
     expect(restored?.cronJob).toEqual({ id: 'job-1', name: 'nightly-qa' });
     expect(restored?.titleProvisional).toBe(true);
+  });
+
+  // trinity round 5 (fable P3): a cron session that expires while the process
+  // is down is archived during load — it must stay filed under its job.
+  it('a cron session archived during load keeps its job', () => {
+    const writer = new SessionRegistry();
+    const session = writer.createSession('U1', 'Z', 'C1', '100.005');
+    session.sessionId = 'sess-5';
+    session.state = 'MAIN';
+    session.title = 'QA pass: orders API';
+    session.cronJob = { id: 'job-1', name: 'nightly-qa' };
+    writer.saveSessions();
+
+    // Asleep since an unknown time: past the archive limit, so load archives it.
+    const file = `${TEST_DATA_DIR}/sessions.json`;
+    const saved = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    for (const s of saved) {
+      s.state = 'SLEEPING';
+      delete s.sleepStartedAt;
+    }
+    fs.writeFileSync(file, JSON.stringify(saved));
+
+    new SessionRegistry().loadSessions();
+
+    const archived = getArchiveStore()
+      .listRecent(24 * 60 * 60 * 1000)
+      .find((a) => a.sessionId === 'sess-5');
+    expect(archived?.archiveReason).toBe('sleep_expired');
+    expect(archived?.cronJob).toEqual({ id: 'job-1', name: 'nightly-qa' });
   });
 });
 
