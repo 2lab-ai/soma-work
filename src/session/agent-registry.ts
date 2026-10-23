@@ -80,6 +80,8 @@ export const AGENT_REGISTRY_MAX = 100;
 export const AGENT_LEDGER_KEEP = 40;
 const TEXT_MAX = 300;
 const TYPE_MAX = 80;
+/** Ids are clipped like the work log clips `agentId` / `agentRef` (WORK_LOG_FIELD_MAX), so both always match. */
+const ID_MAX = 200;
 const STATUSES = new Set<AgentStatus>(['running', 'completed', 'failed', 'stopped', 'unknown']);
 
 const clip = (v: string, max: number) => (v.length > max ? v.slice(0, max) : v);
@@ -90,8 +92,9 @@ export interface AgentHolder {
   taskLedger?: TaskLedger;
 }
 
-export function agentById(reg: AgentRegistry | undefined, id: string | undefined): AgentRecord | undefined {
-  if (!reg || !id) return undefined;
+export function agentById(reg: AgentRegistry | undefined, rawId: string | undefined): AgentRecord | undefined {
+  if (!reg || !rawId) return undefined;
+  const id = clip(rawId, ID_MAX);
   for (const a of reg.agents) if (a.id === id) return a;
   return undefined;
 }
@@ -111,7 +114,8 @@ function isFinished(a: AgentRecord): boolean {
 }
 
 /** Create the agent `id` if it is new. Returns it and whether it was created. */
-function ensureAgent(h: AgentHolder, id: string, ts: number): { agent: AgentRecord; created: boolean } {
+function ensureAgent(h: AgentHolder, rawId: string, ts: number): { agent: AgentRecord; created: boolean } {
+  const id = clip(rawId, ID_MAX);
   const reg = ensureRegistry(h);
   const known = agentById(reg, id);
   if (known) return { agent: known, created: false };
@@ -144,7 +148,7 @@ export function applyAgentEvent(h: AgentHolder, event: AgentTreeEvent): boolean 
     case 'spawn': {
       const { agent, created } = ensureAgent(h, event.agentId, event.ts);
       let changed = created;
-      changed = fill(agent, 'parentId', event.parentAgentId, TEXT_MAX) || changed;
+      changed = fill(agent, 'parentId', event.parentAgentId, ID_MAX) || changed;
       changed = fill(agent, 'type', event.agentType, TYPE_MAX) || changed;
       changed = fill(agent, 'description', event.description, TEXT_MAX) || changed;
       if (event.background === true && agent.background !== true) {
@@ -329,13 +333,13 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
     if (typeof a.id !== 'string' || !a.id || seen.has(a.id) || !n || !startedAt) continue;
     seen.add(a.id);
     const rec: AgentRecord = {
-      id: a.id,
+      id: clip(a.id, ID_MAX),
       n: Math.floor(n),
       status: STATUSES.has(a.status as AgentStatus) ? (a.status as AgentStatus) : 'unknown',
       startedAt,
       toolCalls: Math.floor(finitePositive(a.toolCalls) ?? 0),
     };
-    if (typeof a.parentId === 'string' && a.parentId) rec.parentId = clip(a.parentId, TEXT_MAX);
+    if (typeof a.parentId === 'string' && a.parentId) rec.parentId = clip(a.parentId, ID_MAX);
     if (typeof a.type === 'string' && a.type) rec.type = clip(a.type, TYPE_MAX);
     if (typeof a.description === 'string' && a.description) rec.description = clip(a.description, TEXT_MAX);
     if (typeof a.background === 'boolean') rec.background = a.background;

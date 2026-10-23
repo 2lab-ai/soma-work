@@ -1091,6 +1091,7 @@ export class AgentStreamProcessor {
           await this.dispatchDeployCompletedOnCut(textBuf, context);
           const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
           this.settleNarration(context);
+          this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
           return {
             success: true,
             messageCount: currentMessages.length,
@@ -1110,6 +1111,7 @@ export class AgentStreamProcessor {
           await this.dispatchDeployCompletedOnCut(textBuf, context);
           const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
           this.settleNarration(context);
+          this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
           return {
             success: true,
             messageCount: currentMessages.length,
@@ -1134,6 +1136,7 @@ export class AgentStreamProcessor {
           await this.tryReturnIterator(iterator, 'idle timeout');
           await this.dispatchDeployCompletedOnCut(textBuf, context);
           this.settleNarration(context);
+          this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
           return { success: true, messageCount: currentMessages.length, aborted: true };
         }
 
@@ -1211,7 +1214,8 @@ export class AgentStreamProcessor {
             await flushText();
             await flushToolResults();
             this.settleNarration(context);
-            this._lastToolName = event.name;
+            // The turn's last tool is the main agent's (a subagent's is its own).
+            if (!event.parentToolUseId) this._lastToolName = event.name;
             toolCallBuf.push({
               type: 'tool_use',
               id: event.toolCallId,
@@ -1604,7 +1608,7 @@ export class AgentStreamProcessor {
     // is dropped from the P1 consolidated stream per plan v2 §5.1).
     if (!inTurn && this.shouldOutput(OutputFlag.SKILL_INVOCATION, context)) {
       for (const part of content) {
-        if (part.type === 'tool_use' && part.name === 'Skill') {
+        if (part.type === 'tool_use' && part.name === 'Skill' && !part.parent_tool_use_id) {
           const skillName = part.input?.skill || part.input?.name || 'unknown';
           const casterName = context.botUserId ? `<@${context.botUserId}>` : 'AI';
           const rpgMsg = ToolFormatter.formatSkillInvocationRPG(skillName, casterName);
@@ -1615,7 +1619,7 @@ export class AgentStreamProcessor {
 
     // Track Task tool inputs for TaskOutput correlation
     for (const part of content) {
-      if (part.type === 'tool_use' && isAgentSpawnTool(part.name) && part.id) {
+      if (part.type === 'tool_use' && part.name === 'Task' && part.id) {
         this.pendingTaskInputs.set(part.id, part.input);
       }
     }
@@ -1631,7 +1635,10 @@ export class AgentStreamProcessor {
     // Format and send tool use messages (render mode dispatch) — PHASE=0 only.
     const toolCallMode = getToolCallRenderMode(resolveVerbosityMask(context.logVerbosity));
     if (!inTurn && toolCallMode !== 'hidden') {
-      const toolContent = ToolFormatter.formatToolUse(enrichedContent, toolCallMode);
+      const toolContent = ToolFormatter.formatToolUse(
+        enrichedContent.filter((part: any) => !part.parent_tool_use_id),
+        toolCallMode,
+      );
       if (toolContent) {
         const tag = this.vtag(OutputFlag.TOOL_CALL, context);
         await context.say({
@@ -1673,13 +1680,18 @@ export class AgentStreamProcessor {
       });
     }
 
+    // Spec 12: what the main agent is doing — the thread header's current tool,
+    // the Slack tool rows, the request's tool stats — is the main agent's calls
+    // only. A subagent's calls are in its own work log.
+    const mainToolUses = toolUses.filter((t) => !parentOfCall.has(t.id));
+
     // Track last tool name for endTurnInfo (Issue #42 S3)
-    if (toolUses.length > 0) {
-      this._lastToolName = toolUses[toolUses.length - 1].name;
+    if (mainToolUses.length > 0) {
+      this._lastToolName = mainToolUses[mainToolUses.length - 1].name;
     }
 
-    if (toolUses.length > 0 && this.callbacks.onToolUse) {
-      await this.callbacks.onToolUse(toolUses, context);
+    if (mainToolUses.length > 0 && this.callbacks.onToolUse) {
+      await this.callbacks.onToolUse(mainToolUses, context);
     }
   }
 
@@ -2171,7 +2183,9 @@ export class AgentStreamProcessor {
         const outcome = outcomeOfResult.get(toolResult.toolUseId);
         // A background start only acknowledges the run: the structured
         // outcome decides, then the spawn input, then (last resort) the text.
-        const ack = outcome ? outcome.status !== 'completed' : spawned || isBackgroundAckText(rawFields?.raw ?? '');
+        // An error is never an acknowledgement — the agent did not start.
+        const ack =
+          ok && (outcome ? outcome.status !== 'completed' : spawned || isBackgroundAckText(rawFields?.raw ?? ''));
         this.emitAgentEvent(context, {
           kind: 'returned',
           agentId: toolResult.toolUseId,
@@ -2184,8 +2198,10 @@ export class AgentStreamProcessor {
       }
     }
 
-    if (toolResults.length > 0 && this.callbacks.onToolResult) {
-      await this.callbacks.onToolResult(toolResults, context);
+    // Spec 12: only the main agent's results continue to the Slack side (their calls did too).
+    const mainResults = toolResults.filter((r) => !parentOfResult.has(r.toolUseId));
+    if (mainResults.length > 0 && this.callbacks.onToolResult) {
+      await this.callbacks.onToolResult(mainResults, context);
     }
   }
 
