@@ -238,8 +238,12 @@ export class ProjectMemoryStore {
  * (`</project-</project-memory>memory>`); the escape adds no `<`, so it cannot.
  */
 function neutralizeBlockTags(entry: string): string {
-  // `[\s\u200b-\u200d\u2060\ufeff]`: whitespace plus the zero-width characters `\s` does not cover.
-  return entry.replace(/<(?=[\s\u200b-\u200d\u2060\ufeff]*\/?[\s\u200b-\u200d\u2060\ufeff]*project-memory)/gi, '&lt;');
+  // The prompt copy drops the zero-width characters first, so none can split the tag name
+  // (`</project-\u200bmemory>`) and slip past the match (review R3); the stored note keeps them.
+  // `[\s\u200b-\u200d\u2060\ufeff]` in the match: whitespace plus the zero-width characters `\s` does not cover.
+  return entry
+    .replace(/[\u200b-\u200d\u2060\ufeff]/g, '')
+    .replace(/<(?=[\s\u200b-\u200d\u2060\ufeff]*\/?[\s\u200b-\u200d\u2060\ufeff]*project-memory)/gi, '&lt;');
 }
 
 /**

@@ -173,7 +173,11 @@ async function pmWrite(method, url, payload, draft) {
   }
   if (r.status === 409) {
     await loadProjects();
-    pmStatus('그사이 다른 관리자가 바꿔 최신 내용을 불러왔습니다. 다시 적용하세요.' + (draft ? ' 작성하던 내용: ' + draft.slice(0, 200) : ''), true);
+    // The reload re-renders the detail: the whole draft goes back into the add box,
+    // where the admin can check it against the latest notes and save it again (review R3).
+    var box = draft ? document.getElementById('pm-new') : null;
+    if (box) box.value = draft;
+    pmStatus('그사이 다른 관리자가 바꿔 최신 내용을 불러왔습니다.' + (draft ? (box ? ' 작성하던 내용은 새 항목 칸에 옮겼습니다 — 확인하고 다시 저장하세요.' : ' 작성하던 내용: ' + draft) : ' 다시 적용하세요.'), true);
     return false;
   }
   pmStatus((r.status === 403 ? '권한이 없습니다: ' : '저장하지 못했습니다: ') + r.error, true);
