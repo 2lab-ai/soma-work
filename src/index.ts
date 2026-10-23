@@ -80,6 +80,7 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
+import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
 import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
@@ -127,6 +128,7 @@ import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './
 import { notifyStartup } from './startup-notifier';
 import { getTokenManager } from './token-manager';
 import type { ConversationSession } from './types';
+import { productionSettingsRegistry } from './user-settings-registry-production';
 
 const logger = new Logger('Main');
 
@@ -846,6 +848,10 @@ async function start() {
         broadcast: () => broadcastSessionUpdate(),
       }),
     );
+
+    // Connect dashboard: personal settings (SSOT 2026-10-23 T2) — the same
+    // validators / `/z` apply functions the Slack commands use.
+    setSettingsRegistry(productionSettingsRegistry());
 
     // Connect dashboard: session effort (SSOT 2026-10-23 T1) — the `%effort`
     // scope: this session only, read by the next turn's SDK call.

@@ -33,10 +33,10 @@ import { config } from '../config';
 import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
-import { clampEffortToModel } from '../model-catalog';
 import { calculateTokenCost } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
+import { clampEffortToModel } from '../model-catalog';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
 import { EffortSwitchError, type EffortSwitchResult } from '../session/effort-switch';
 import { productionModelCatalogDeps } from '../session/model-catalog-deps';
@@ -2572,6 +2572,29 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    whole at 1024px even with "Reconnecting..." and touch padding. */
 .topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; flex: none; }
 .topbar .topbar-account { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 0 1 auto; }
+/* SSOT 2026-10-23 T6 — the owner's default model / effort, one click from the top. */
+.topbar .topbar-defaults { position: relative; display: flex; gap: 6px; align-items: center; flex: none; }
+.topbar .topbar-defaults[hidden] { display: none; }
+.topbar .td-chip { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 12px; color: var(--text-secondary); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; min-height: 30px; cursor: pointer; white-space: nowrap; transition: border-color var(--dur-press) var(--ease-out), transform var(--dur-press) var(--ease-out); }
+.topbar .td-chip b { color: var(--text); font-weight: 700; }
+.topbar .td-chip[aria-expanded="true"] { border-color: var(--accent); }
+.topbar .td-chip:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.topbar .td-chip:active:not(:focus-visible) { transform: scale(0.97); }
+@media (hover: hover) and (pointer: fine) { .topbar .td-chip:hover { border-color: var(--accent); color: var(--text); } }
+.topbar .td-caret { font-size: 10px; color: var(--text-tertiary); }
+.td-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 120; min-width: 260px; max-width: min(360px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 14px 32px rgba(0,0,0,0.35); padding: 6px; }
+.td-menu[hidden] { display: none; }
+.td-menu .tdm-head { font-size: 11px; font-weight: 700; color: var(--text-tertiary); padding: 6px 8px 4px; }
+.td-menu .tdm-item { display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: 8px; text-align: left; font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 6px; padding: 8px; min-height: 36px; cursor: pointer; }
+.td-menu .tdm-item[aria-checked="true"] { background: var(--surface-raised); font-weight: 700; }
+.td-menu .tdm-item[aria-checked="true"]::after { content: '✓'; color: var(--accent); }
+.td-menu .tdm-item:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
+@media (hover: hover) and (pointer: fine) { .td-menu .tdm-item:hover { background: var(--surface-raised); } }
+.td-menu .tdm-sub { font-size: 11px; color: var(--text-tertiary); font-weight: 400; }
+.td-menu .tdm-scope { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--text-secondary); padding: 8px; border-top: 1px solid var(--border); margin-top: 4px; }
+.td-menu .tdm-scope input { margin-top: 2px; }
+.topbar .td-status { font-size: 12px; color: var(--text-secondary); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar .td-status.is-error { color: var(--red); }
 .topbar .nav a,
 .topbar .nav .user-select {
   background: var(--surface-raised);
@@ -4066,6 +4089,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .topbar .nav .user-select { max-inline-size: 100%; }
 }
 @media (max-width: 639px) {
+  .topbar .td-prefix, .topbar .td-status { display: none; }
   .main { padding: 14px 12px; }
   .panel-tasks { max-height: min(22vh, 160px); }
   /* Stats strip: period control + 자세히 on the first row, the numbers on the
@@ -4186,6 +4210,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   <div class="topbar">
     <h1>&#x26A1; soma-work</h1>
     <span class="ws-badge" id="ws-status" role="status" aria-label="WebSocket: Connecting">Connecting...</span>
+    <div class="topbar-defaults" id="topbar-defaults" hidden>
+      <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><span class="td-caret" aria-hidden="true">&#x25BE;</span></button>
+      <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><span class="td-caret" aria-hidden="true">&#x25BE;</span></button>
+      <div class="td-menu" id="td-menu" role="menu" hidden></div>
+      <span class="td-status" id="td-status" role="status" aria-live="polite"></span>
+    </div>
     <div class="nav">
       <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">All Users</span><select id="user-select" title="All Users" onchange="selectUser(this.value)">
         <option value="">All Users</option>
@@ -4746,6 +4776,157 @@ async function refreshCsrfToken() {
   } catch {}
 }
 refreshCsrfToken();
+
+// ── Top bar: the owner's default model / effort (SSOT 2026-10-23 T6) ──
+// One click opens a menu; picking saves the default at once (PATCH
+// /api/settings/:key — the same path as Slack "model set" / "effort"). When the
+// owner has a session panel open, "이 세션에도 적용" (on by default) also
+// switches that session, like Slack's bare "effort <level>" applies to the
+// current thread. Hidden when there is no signed-in Slack user (viewer token).
+var _myDefaults = null; // { model: settingRow, effort: settingRow }
+var _tdMenuKind = null;
+async function loadMyDefaults() {
+  var box = document.getElementById('topbar-defaults');
+  if (!box) return;
+  try {
+    var res = await fetch('/api/settings');
+    if (!res.ok) { box.hidden = true; return; }
+    var data = await res.json();
+    var rows = (data && data.settings) || [];
+    var model = null, effort = null;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].key === 'defaultModel') model = rows[i];
+      if (rows[i].key === 'defaultEffort') effort = rows[i];
+    }
+    if (!model || !effort) { box.hidden = true; return; }
+    _myDefaults = { model: model, effort: effort };
+    renderDefaultsChips();
+    box.hidden = false;
+  } catch (_e) { box.hidden = true; }
+}
+function optionLabel(row, value) {
+  var opts = (row && row.options) || [];
+  for (var i = 0; i < opts.length; i++) if (opts[i].value === value) return opts[i].label;
+  return String(value || '');
+}
+function renderDefaultsChips() {
+  if (!_myDefaults) return;
+  var m = document.getElementById('td-model-value');
+  var e = document.getElementById('td-effort-value');
+  if (m) m.textContent = optionLabel(_myDefaults.model, _myDefaults.model.value);
+  if (e) e.textContent = optionLabel(_myDefaults.effort, _myDefaults.effort.value);
+}
+// The open session the owner may switch together with the default, or null.
+function defaultsScopeSession() {
+  if (!panelOpen || !panelSessionKey) return null;
+  var s = _sessionCache[panelSessionKey];
+  if (!s || !s.ownerId || s.ownerId !== currentUserId || s.terminated || isSiblingSession(s)) return null;
+  return s;
+}
+function renderDefaultsMenu(kind) {
+  var row = _myDefaults && (kind === 'model' ? _myDefaults.model : _myDefaults.effort);
+  if (!row) return '';
+  var html = '<div class="tdm-head">' + (kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 effort') + '</div>';
+  var opts = row.options || [];
+  for (var i = 0; i < opts.length; i++) {
+    var o = opts[i];
+    var on = o.value === row.value;
+    html += '<button type="button" role="menuitemradio" class="tdm-item" aria-checked="' + (on ? 'true' : 'false') + '"'
+      + ' data-td-kind="' + escAttr(kind) + '" data-td-value="' + escAttr(o.value) + '" onclick="pickDefaultFrom(this)">'
+      + '<span>' + esc(o.label) + (o.description && kind === 'model' ? ' <span class="tdm-sub">' + esc(o.description) + '</span>' : '') + '</span></button>';
+  }
+  var s = defaultsScopeSession();
+  if (s) {
+    html += '<label class="tdm-scope"><input type="checkbox" id="tdm-also-session" checked>'
+      + '<span>열린 세션에도 적용 &mdash; ' + esc(s.displayHeadline || s.title || s.key) + '</span></label>';
+  }
+  return html;
+}
+function openDefaultsMenu(kind, btn) {
+  var menu = document.getElementById('td-menu');
+  if (!menu || !_myDefaults) return;
+  if (!menu.hidden && _tdMenuKind === kind) { closeDefaultsMenu(); return; }
+  _tdMenuKind = kind;
+  menu.innerHTML = renderDefaultsMenu(kind);
+  menu.style.left = btn ? btn.offsetLeft + 'px' : '0';
+  menu.hidden = false;
+  var chips = document.querySelectorAll('.td-chip');
+  for (var i = 0; i < chips.length; i++) chips[i].setAttribute('aria-expanded', chips[i] === btn ? 'true' : 'false');
+  var first = menu.querySelector('.tdm-item[aria-checked="true"]') || menu.querySelector('.tdm-item');
+  if (first) first.focus();
+}
+function closeDefaultsMenu() {
+  var menu = document.getElementById('td-menu');
+  if (menu) menu.hidden = true;
+  _tdMenuKind = null;
+  var chips = document.querySelectorAll('.td-chip');
+  for (var i = 0; i < chips.length; i++) chips[i].setAttribute('aria-expanded', 'false');
+}
+document.addEventListener('click', function(ev) {
+  var box = document.getElementById('topbar-defaults');
+  if (_tdMenuKind && box && !box.contains(ev.target)) closeDefaultsMenu();
+});
+document.addEventListener('keydown', function(ev) {
+  if (ev.key === 'Escape' && _tdMenuKind) {
+    var chip = document.getElementById(_tdMenuKind === 'model' ? 'td-model' : 'td-effort');
+    closeDefaultsMenu();
+    if (chip) chip.focus();
+  }
+});
+// Settings changed in Slack show up when the tab comes back.
+document.addEventListener('visibilitychange', function() { if (!document.hidden) loadMyDefaults(); });
+async function patchSetting(key, value) {
+  var url = '/api/settings/' + encodeURIComponent(key);
+  var body = JSON.stringify({ value: value });
+  var headers = { 'Content-Type': 'application/json' };
+  if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+  var res = await fetch(url, { method: 'PATCH', headers: headers, body: body });
+  if (res.status === 403) {
+    await refreshCsrfToken();
+    var retryHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+    res = await fetch(url, { method: 'PATCH', headers: retryHeaders, body: body });
+  }
+  var data = null;
+  try { data = await res.json(); } catch (_e) {}
+  return { ok: res.ok, setting: data && data.setting, error: (data && data.error) || ('HTTP ' + res.status) };
+}
+function setDefaultsStatus(text, isError) {
+  var el = document.getElementById('td-status');
+  if (!el) return;
+  el.textContent = text || '';
+  el.title = text || '';
+  el.classList.toggle('is-error', !!isError);
+}
+// Option values travel in attribute-escaped data-* (never inside inline JS).
+function pickDefaultFrom(el) {
+  return pickDefault(el.getAttribute('data-td-kind'), el.getAttribute('data-td-value'));
+}
+async function pickDefault(kind, value) {
+  var also = document.getElementById('tdm-also-session');
+  var session = also && also.checked ? defaultsScopeSession() : null;
+  closeDefaultsMenu();
+  var key = kind === 'model' ? 'defaultModel' : 'defaultEffort';
+  setDefaultsStatus('저장 중…', false);
+  var r;
+  try { r = await patchSetting(key, value); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+  if (!r.ok) { setDefaultsStatus('저장하지 못했습니다: ' + r.error, true); return; }
+  _myDefaults[kind] = r.setting;
+  renderDefaultsChips();
+  var msg = '기본 ' + (kind === 'model' ? '모델' : 'effort') + ' → ' + optionLabel(r.setting, r.setting.value) + ' (새 세션부터)';
+  if (session) {
+    var sr;
+    try {
+      sr = kind === 'model' ? await postModelSwitch(session.key, value) : await postEffortSwitch(session.key, value);
+    } catch (e) { sr = { ok: false, error: String(e && e.message || e) }; }
+    _modelNotes[session.key] = kind === 'model' ? modelSwitchNote(sr) : effortSwitchNote(sr);
+    msg += sr.ok ? ' · 열린 세션에도 적용' : ' · 열린 세션은 바꾸지 못함: ' + sr.error;
+    refreshCard(session.key);
+    loadSessions();
+  }
+  setDefaultsStatus(msg, false);
+}
+loadMyDefaults();
 
 // ── Utility ──
 function decodeSlackEntities(s) {
