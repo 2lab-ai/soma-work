@@ -4643,9 +4643,13 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-submit:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
 .nt-submit.is-busy svg { animation: nt-spin 0.9s linear infinite; }
 
-.nt-toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 90; display: flex; align-items: center; gap: 10px; max-width: min(560px, calc(100vw - 24px)); padding: 10px 10px 10px 14px; translate: -50% 0; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-raised); color: var(--text); box-shadow: var(--ib-shadow-raised); font-size: 13px; animation: nt-toast-in 320ms var(--ease-out) both; }
+.nt-toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 90; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 10px; width: max-content; max-width: min(560px, calc(100vw - 24px)); padding: 10px 10px 10px 14px; translate: -50% 0; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-raised); color: var(--text); box-shadow: var(--ib-shadow-raised); font-size: 13px; animation: nt-toast-in 320ms var(--ease-out) both; }
 .nt-toast[hidden] { display: none; }
-.nt-toast-text { min-width: 0; }
+/* left: 50% leaves only half the viewport for a shrink-to-fit box, so the
+   width is the content's own (capped) and the actions wrap under the message
+   on a narrow screen instead of squeezing it into a column. */
+.nt-toast-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.nt-toast-actions { display: flex; flex: none; gap: 8px; margin-left: auto; }
 .nt-toast a, .nt-toast button { flex: none; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; cursor: pointer; }
 
 @keyframes nt-sheen { to { rotate: 360deg; } }
@@ -4700,6 +4704,7 @@ body.nt-open .new-task-fab { display: none !important; }
   /* New task — touch: 44px targets, 16px text (iOS does not zoom into it),
      and the camera button (capture="environment" opens the camera directly). */
   .nt-tool, .nt-close, .nt-battery-btn, .nt-toggle, .nt-chip, .nt-rec-btn { min-height: 44px; min-width: 44px; }
+  .nt-toast a, .nt-toast button { height: 44px; padding: 0 14px; font-size: 13px; }
   .nt-tool { width: 44px; height: 44px; }
   .nt-att-remove { width: 28px; height: 28px; }
   .nt-prompt, .nt-chip select { font-size: 16px; }
@@ -10581,10 +10586,12 @@ function ntShowToast(data, channelName) {
   if (!t) return;
   var head = data.status === 'running' ? '✅ 작업을 시작했습니다' : '⏳ 작업을 접수했습니다';
   var html = '<span class="nt-toast-text">' + head + ' — #' + esc(channelName) + '</span>';
+  // The actions wrap as one group: never one beside the message, one below.
+  html += '<span class="nt-toast-actions">';
   if (data.permalink) {
     html += '<a href="' + escAttr(data.permalink) + '" target="_blank" rel="noopener">Slack에서 보기</a>';
   }
-  html += '<button type="button" onclick="ntOpenLaunched()">카드 열기</button>';
+  html += '<button type="button" onclick="ntOpenLaunched()">카드 열기</button></span>';
   t.innerHTML = html;
   t.hidden = false;
   _ntLastLaunch = data;
