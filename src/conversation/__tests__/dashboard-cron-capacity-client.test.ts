@@ -64,6 +64,9 @@ const FACE_FNS = [
   'cardTotalTokens',
   'cardCurrentTask',
   'renderCardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'renderCardAgents',
   'renderCardUsage',
   'formatTaskTime',
   'pendingAutoResume',
@@ -74,7 +77,17 @@ const FACE_FNS = [
   'renderCronBadge',
   'renderCardFace',
 ];
-const FACE_VARS = ['SPARK_SVG', 'WAIT_SVG', 'TASKS_SVG', 'CTX_SVG', 'RESUME_SVG', 'CLOCK_SVG'];
+const FACE_VARS = [
+  'SPARK_SVG',
+  'WAIT_SVG',
+  'TASKS_SVG',
+  'CTX_SVG',
+  'RESUME_SVG',
+  'CLOCK_SVG',
+  'AGENT_STATUS_LABEL',
+  'AGENT_DOTS_MAX',
+  'AGENTS_SVG',
+];
 
 function card(over: Record<string, unknown> = {}) {
   return {

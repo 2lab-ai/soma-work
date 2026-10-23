@@ -1977,16 +1977,30 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         'renderWorkLogGroup',
         'wlGroupOpen',
         'wlGroupEl',
+        // Spec 12: the list shows the scope of the agent the panel shows (main here).
+        'wlScopeEntry',
+        'wlScopeEntries',
+        'wlLegacyMixed',
         'wlRenderList',
         'wlAppendTail',
         'wlDetailOpen',
         'wlNavRows',
         'wlEnsureTabStop',
+        'wlNamesNewAgent',
         'setWorkLogOpen',
         'paintWorkLog',
       ],
       ['WL_LABELS'],
-      { document, _wl: state, panelSessionKey: null, _sessionCache: {}, updateTimersIn: () => {} },
+      {
+        document,
+        _wl: state,
+        panelSessionKey: null,
+        _sessionCache: {},
+        updateTimersIn: () => {},
+        _panelAgent: '',
+        _panelAgentIdsShown: {},
+        renderPanelAgents: () => {},
+      },
     );
     return { m, toggle, count, list };
   }
@@ -2033,12 +2047,17 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
     {
       document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
       _panelTasksExpanded: false,
+      // The browser morphs the block; this fake writes it.
+      morphInnerHtml: (el: { innerHTML: string }, html: string) => {
+        el.innerHTML = html;
+      },
     },
   );
 
   it('zero or missing tasks show the header and an empty line', () => {
     for (const t of [[], undefined, null]) {
       container.innerHTML = '';
+      (container as { _html?: string })._html = undefined; // a fresh block (the same data on a live block writes nothing)
       renderPanelTasks(t);
       expect(container.style.display).toBe('');
       expect(container.innerHTML).toBe(
@@ -2693,5 +2712,312 @@ describe('admin lifecycle form (shipped lifecycleToForm + lifecycleFromForm)', (
         boardArchiveWindowHours: '-1',
       }),
     ).toEqual({ ok: false, field: 'boardArchiveWindowHours' });
+  });
+});
+
+describe('답변하기 opens the panel on the open question (shipped renderMultiChoiceCard → openPanel)', () => {
+  // A panel-scroll model: question (when shown) · collapsed work-log header · turns,
+  // in that order (the template's #panel-scroll). The browser clamps scrollTop to
+  // the content, so a stale position from the previous opening shrinks with it.
+  const KEY = 'inst::work:C1:1700000000.000100';
+  const AREA_TOP = 200;
+  const VIEW = 600;
+  const WL_HEADER = 40;
+  const TURNS_LOADED = 4000;
+  const TURNS_PLACEHOLDER = 60;
+  type Session = Record<string, unknown>;
+  type Panel = {
+    openPanel(key: string, focusWorkLog?: boolean): void;
+    renderMultiChoiceCard(s: Session, faceSummary: string): string;
+    renderPanelQuestion(s: Session): void;
+    olderTurnsZone(firstTurnTop: number, areaTop: number): boolean;
+    panelOlderStep(armed: boolean, inZone: boolean, canLoad: boolean): { load: boolean; armed: boolean };
+    stick(): boolean;
+    armed(): boolean;
+  };
+
+  const waitingMulti = (over: Session = {}): Session => ({
+    key: KEY,
+    conversationId: 'conv1',
+    ownerId: 'U1',
+    activityState: 'waiting',
+    title: 'S',
+    pendingQuestion: {
+      type: 'user_choices',
+      title: '두 가지 확인',
+      questions: [
+        {
+          id: 'q1',
+          question: '첫 질문?',
+          choices: [
+            { id: '1', label: 'a' },
+            { id: '2', label: 'b' },
+          ],
+          recommendedChoiceId: '1',
+        },
+        { id: 'q2', question: '둘째 질문?', choices: [{ id: '1', label: 'c' }], recommendedChoiceId: '1' },
+      ],
+    },
+    ...over,
+  });
+
+  function page(opts: {
+    session: Session;
+    questionHeight?: number;
+    prevScrollTop?: number;
+    turns?: 'ok' | 'empty' | 'fail' | 'held';
+    settle?: 'ok' | 'empty' | 'fail';
+  }) {
+    const els: Record<string, FakeEl & Record<string, unknown>> = {};
+    const el = (id: string) => {
+      els[id] ??= Object.assign(fakeEl({ id }), { classList: { add() {}, remove() {} } });
+      return els[id];
+    };
+    const question = el('panel-question');
+    question.style.display = 'none';
+    el('panel-worklog').style.display = '';
+    const turns = el('panel-turns');
+    // openPanel's .then and .catch both end in a landing, so a harness gap (a new
+    // dependency of openPanel that is not injected) would silently run the
+    // failure path and still land. Make that loud: only a 'fail' run may show it.
+    const outcome = opts.turns === 'held' ? (opts.settle ?? 'ok') : (opts.turns ?? 'ok');
+    let turnsHtml = '';
+    Object.defineProperty(turns, 'innerHTML', {
+      get: () => turnsHtml,
+      set: (v: string) => {
+        if (v.includes('Failed to load conversation') && outcome !== 'fail')
+          throw new Error('openPanel took its failure path on a successful load: the harness is missing a dependency');
+        turnsHtml = v;
+      },
+      configurable: true,
+    });
+    const qH = () => (question.style.display === 'none' ? 0 : (opts.questionHeight ?? 420));
+    const tH = () => (turns.innerHTML.includes('class="turn') ? TURNS_LOADED : TURNS_PLACEHOLDER);
+    const scroll = el('panel-scroll');
+    let stored = opts.prevScrollTop ?? 0;
+    const height = () => qH() + WL_HEADER + tH();
+    const max = () => Math.max(0, height() - VIEW);
+    Object.defineProperties(scroll, {
+      scrollHeight: { get: height, configurable: true },
+      clientHeight: { value: VIEW, configurable: true },
+      scrollTop: {
+        get: () => Math.min(stored, max()),
+        set: (v: number) => {
+          stored = Math.max(0, Math.min(v, max()));
+        },
+        configurable: true,
+      },
+    });
+    Object.assign(scroll, {
+      scrollTo: ({ top }: { top: number }) => {
+        scroll.scrollTop = top;
+      },
+      getBoundingClientRect: () => ({ top: AREA_TOP, bottom: AREA_TOP + VIEW, height: VIEW }),
+    });
+    Object.assign(question, { getBoundingClientRect: () => ({ top: AREA_TOP - scroll.scrollTop, height: qH() }) });
+    Object.assign(el('panel-worklog'), {
+      getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: WL_HEADER }),
+    });
+    Object.assign(el('worklog-toggle'), { getBoundingClientRect: () => ({ top: 0, height: WL_HEADER }) });
+
+    let release: () => void = () => {};
+    const payload = { id: 'conv1', titleSub: 'sub', hasMore: false, turns: [{ id: 't1', role: 'assistant' }] };
+    const fetchImpl = () => {
+      if (opts.turns === 'fail') return Promise.reject(new Error('down'));
+      const res = { json: async () => (outcome === 'empty' ? { ...payload, turns: [] } : payload) };
+      if (opts.turns === 'held')
+        return new Promise((r, j) => (release = () => (outcome === 'fail' ? j(new Error('down')) : r(res))));
+      return Promise.resolve(res);
+    };
+    const cache: Record<string, Session> = { [KEY]: opts.session };
+    const m = load<Panel>(
+      [
+        'openPanel',
+        'renderPanelQuestion',
+        'renderMultiChoicePanel',
+        'renderMultiChoiceCard',
+        'esc',
+        'escAttr',
+        'escJs',
+        'choiceDataAttrs',
+        'stripRecommendedMarker',
+        'resolveRecommendedId',
+        'scrollPanelToWorkLog',
+        'workLogLandingTop',
+        'landPanel',
+        'olderTurnsZone',
+        'panelOlderStep',
+      ],
+      [
+        '_mcState',
+        '_panelFocusWorkLog',
+        '_panelTurnsHasMore',
+        '_panelTurnsLoading',
+        '_panelTurnsOldestId',
+        '_panelGen',
+        '_panelOlderArmed',
+        '_panelStickBottom',
+        '_panelOnQuestion',
+      ],
+      {
+        document: { getElementById: el },
+        fetch: fetchImpl,
+        _sessionCache: cache,
+        currentUserId: 'U1',
+        READ_ONLY_MSG: 'read-only',
+        panelOpen: false,
+        panelSessionKey: null,
+        panelConvId: null,
+        _panelTasksExpanded: false,
+        resetWorkLog: () => {},
+        setWorkLogOpen: () => {},
+        renderPanelTasks: () => {},
+        // #366 (spec 12 agent tree) gave openPanel these dependencies.
+        renderPanelControls: () => {},
+        renderPanelAgents: () => {},
+        panelAgentTasks: () => [],
+        panelAgentLabel: () => '',
+        _panelAgent: '',
+        _panelAgentListOpen: false,
+        renderTurn: (t: { id: string }) => `<div class="turn assistant" data-turn-id="${t.id}"></div>`,
+        attachRawToggleHandlers: () => {},
+        generateTitleSub: () => {},
+        _panelTitleSub: '',
+        panelTitleSubCanRegen: () => true,
+        loadWorkLog: () => {},
+        renderMdBasic: String, // carries backticks, so it cannot be cooked; no question here has context
+        timeAgo: () => '',
+        safeHref: (u: string) => u,
+        formatTokens: String,
+        toNum: Number,
+      },
+      ['function stick() { return _panelStickBottom; }', 'function armed() { return _panelOlderArmed; }'],
+    );
+    /** Click the card's 답변하기 button: run its shipped onclick against the shipped openPanel. */
+    const clickAnswer = () => {
+      const html = m.renderMultiChoiceCard(cache[KEY], '');
+      const btn = /<button class="btn-choice" onclick="([^"]+)"[^>]*>답변하기<\/button>/.exec(html);
+      if (!btn) throw new Error('no 답변하기 button on the card');
+      new Function('event', 'openPanel', btn[1])({ stopPropagation() {} }, m.openPanel);
+    };
+    /** The answer form's top edge is inside the visible scroll area. */
+    const formInView = () => {
+      const top = AREA_TOP - scroll.scrollTop;
+      return question.style.display !== 'none' && top >= AREA_TOP && top < AREA_TOP + VIEW;
+    };
+    return { m, scroll, question, cache, clickAnswer, formInView, release: () => release(), bottom: max };
+  }
+
+  it('lands on the answer form, not on the newest turns, and stays there while the panel settles', async () => {
+    const p = page({ session: waitingMulti() });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+    expect(p.scroll.scrollTop).toBe(0);
+    // A later resize (subtitle, Tasks) must not drag the reader to the bottom.
+    expect(p.m.stick()).toBe(false);
+    // The first scroll event after this landing (first turn right under the form)
+    // loads no older turns by itself, like the 작업 로그 landing at the top.
+    const firstTurnTop = AREA_TOP + 420 + WL_HEADER - p.scroll.scrollTop;
+    const step = p.m.panelOlderStep(p.m.armed(), p.m.olderTurnsZone(firstTurnTop, AREA_TOP), true);
+    expect(step).toEqual({ load: false, armed: false });
+  });
+
+  it('lands on the form even when the panel was left scrolled down by the previous opening', async () => {
+    const p = page({ session: waitingMulti(), prevScrollTop: 3000 });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('the form is in view as soon as the panel opens, before the turns arrive', () => {
+    const p = page({ session: waitingMulti(), questionHeight: 900, prevScrollTop: 3000, turns: 'held' });
+    p.clickAnswer();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it.each([
+    'ok',
+    'empty',
+    'fail',
+  ] as const)('a reader who scrolls down a tall form while the turns load is not pulled back (turns: %s)', async (outcome) => {
+    const p = page({ session: waitingMulti(), questionHeight: 900, turns: 'held', settle: outcome });
+    p.clickAnswer();
+    p.scroll.scrollTop = 200; // the reader moves to a later question before the response
+    p.release();
+    await flush();
+    await flush();
+    expect(p.scroll.scrollTop).toBe(200);
+  });
+
+  it('every 답변하기 opening lands on the form again, not only the first', async () => {
+    const p = page({ session: waitingMulti(), questionHeight: 900 });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    p.scroll.scrollTop = 700; // read down past the form, then open it again
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('a tall form whose turns fail to load still opens at its top', async () => {
+    const p = page({ session: waitingMulti(), questionHeight: 900, prevScrollTop: 3000, turns: 'fail' });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('a tall form whose conversation has no turns yet still opens at its top', async () => {
+    const p = page({ session: waitingMulti(), questionHeight: 900, prevScrollTop: 3000, turns: 'empty' });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('a waiting session with no recorded conversation opens at the top of its form', () => {
+    const p = page({ session: waitingMulti({ conversationId: undefined }), questionHeight: 900, prevScrollTop: 3000 });
+    p.clickAnswer();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('a question answered before the turns arrive lands on the newest turns instead', async () => {
+    const p = page({ session: waitingMulti(), turns: 'held' });
+    p.clickAnswer();
+    // The answer lands (here or in Slack): the WS session_update re-renders the panel question.
+    p.cache[KEY] = waitingMulti({ activityState: 'working', pendingQuestion: undefined });
+    p.m.renderPanelQuestion(p.cache[KEY]);
+    p.release();
+    await flush();
+    await flush();
+    expect(p.scroll.scrollTop).toBe(p.bottom());
+    expect(p.m.stick()).toBe(true);
+  });
+
+  it('an opening without an open question still lands on the newest turns and holds them', async () => {
+    const p = page({ session: waitingMulti({ activityState: 'idle', pendingQuestion: undefined }) });
+    p.m.openPanel(KEY);
+    await flush();
+    await flush();
+    expect(p.scroll.scrollTop).toBe(p.bottom());
+    expect(p.m.stick()).toBe(true);
+  });
+
+  it('작업 로그 on a waiting session keeps the work-log landing (top, or the header for a tall question)', async () => {
+    const short = page({ session: waitingMulti() });
+    short.m.openPanel(KEY, true);
+    await flush();
+    await flush();
+    expect(short.scroll.scrollTop).toBe(0);
+    const tall = page({ session: waitingMulti(), questionHeight: 900 });
+    tall.m.openPanel(KEY, true);
+    await flush();
+    await flush();
+    expect(tall.scroll.scrollTop).toBe(900);
   });
 });
