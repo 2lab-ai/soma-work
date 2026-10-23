@@ -10,6 +10,7 @@ import type { ActionHandlers } from '../actions';
 import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
 import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
 import type { AgentStreamEventOf } from '../agent-stream-types';
+import type { AgentTreeEvent } from '../agent-tree';
 import type { AssistantStatusManager } from '../assistant-status-manager';
 import {
   type CompactStateSession,
@@ -213,6 +214,13 @@ export interface StreamExecutorProviders {
    * (throttled). Must be cheap and never throw. No-op by default.
    */
   notifyLiveUsage?: (sessionKey: string) => void;
+  /**
+   * Spec 12 — one agent-tree event of this session's turn (a subagent
+   * started, listed its tasks, returned, changed task state; the turn ended).
+   * The host folds it into the session's agent registry. Must be cheap and
+   * never throw. No-op by default.
+   */
+  recordAgentEvent?: (sessionKey: string, event: AgentTreeEvent) => void;
   /** API-equivalent cost of calls folded from an interrupted turn. 0 by default. */
   priceLiveUsage?: (
     model: string | undefined,
@@ -238,6 +246,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   recordAssistantTurn: () => {},
   recordUserTurn: () => {},
   appendWorkLog: () => {},
+  recordAgentEvent: () => {},
   captureMemoryTurn: () => {},
   scheduleLinkDerivedTitleRefresh: () => {},
   isMidThreadMention: () => false,
@@ -1895,6 +1904,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             uuid: event.uuid,
             phase: event.phase,
           });
+        },
+        // Spec 12 — the session's agent tree (subagent spawn / tasks / result /
+        // lifecycle, turn end). Bookkeeping only; a throw is the processor's to swallow.
+        onAgentEvent: (event) => {
+          streamExecutorProviders.recordAgentEvent(sessionKey, event);
         },
         onTodoUpdate: async (input, ctx) => {
           // Task list is part of thread header — always update regardless of verbosity.
