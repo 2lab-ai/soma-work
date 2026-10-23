@@ -49,6 +49,16 @@ describe('settings page shell', () => {
     expect(html).toContain('<dialog id="confirm"');
   });
 
+  it('a hidden tab is really hidden: no author rule may give [hidden] tab pages a display (review P1)', () => {
+    // `.page { display: grid }` beats the UA `[hidden] { display: none }` — a tab
+    // toggled with the hidden attribute would keep rendering under the visible one.
+    const css = /<style>([\s\S]*?)<\/style>/.exec(renderSettingsPage())![1];
+    expect(css).toMatch(/\.page\[hidden\]\s*\{\s*display:\s*none;?\s*\}/);
+    const pageRule = css.indexOf('.page {');
+    const hiddenRule = css.indexOf('.page[hidden]');
+    expect(hiddenRule).toBeGreaterThan(pageRule);
+  });
+
   it('the client script carries no template-literal syntax (it ships byte for byte)', () => {
     expect(SETTINGS_CLIENT_JS).not.toContain('`');
     expect(SETTINGS_CLIENT_JS).not.toContain('${');
@@ -204,11 +214,32 @@ describe('saving', () => {
     expect(deps.apiWrite).toHaveBeenCalledTimes(1);
   });
 
+  function csrf403(error = 'CSRF token validation failed') {
+    const res: any = { ok: false, status: 403, json: async () => ({ error }) };
+    res.clone = () => res;
+    return res;
+  }
+
+  it('a real refusal (403 that is not a CSRF failure) is not sent twice', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(csrf403('관리자 승인을 받은 뒤에 설정을 바꿀 수 있습니다'));
+    const refresh = vi.fn();
+    const { apiWrite } = new Function(
+      'fetch',
+      'refreshCsrfToken',
+      'localStorage',
+      `var _csrfToken = 't';\n${clientFn('adminModeOn')}\n${clientFn('apiWrite')}\nreturn { apiWrite };`,
+    )(fetch, refresh, { getItem: () => null });
+    const r = await apiWrite('PATCH', '/api/settings/rating', { value: 7 });
+    expect(r).toMatchObject({ ok: false, status: 403, error: '관리자 승인을 받은 뒤에 설정을 바꿀 수 있습니다' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   it('every write carries the CSRF token and the admin-mode header, and retries once after a 403', async () => {
     let token = 'old';
     const fetch = vi
       .fn()
-      .mockResolvedValueOnce({ ok: false, status: 403, json: async () => ({ error: 'CSRF' }) })
+      .mockResolvedValueOnce(csrf403())
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ ok: true }) });
     const { apiWrite } = new Function(
       'fetch',

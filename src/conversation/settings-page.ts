@@ -56,11 +56,15 @@ code { font-family: "SF Mono", "Fira Code", ui-monospace, monospace; font-size: 
 .topbar .account { margin-left: auto; display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--text-secondary); }
 .topbar button.theme { font: inherit; background: var(--surface-raised); color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; cursor: pointer; }
 .page { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; max-width: 1080px; margin: 0 auto; padding: 24px 20px 64px; }
+/* An author display beats the UA [hidden] rule — tabs are switched with the hidden attribute. */
+.page[hidden] { display: none; }
 .side { position: sticky; top: 16px; align-self: start; display: flex; flex-direction: column; gap: 12px; }
 .side input[type="search"] { width: 100%; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
 .side .only-modified { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--text-secondary); }
 .side nav { display: flex; flex-direction: column; gap: 2px; }
 .side nav a { font-size: 13px; text-decoration: none; color: var(--text-secondary); padding: 6px 10px; border-radius: 6px; }
+.side nav .navbtn { font: inherit; font-size: 13px; text-align: left; color: var(--text-secondary); background: none; border: 0; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+.side nav .navbtn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .side nav a:focus-visible, .side input:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .intro { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
 .notice { font-size: 13px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
@@ -157,8 +161,15 @@ async function apiWrite(method, url, payload) {
   }
   var res = await fetch(url, { method: method, headers: headers(), body: body });
   if (res.status === 403) {
-    await refreshCsrfToken();
-    res = await fetch(url, { method: method, headers: headers(), body: body });
+    // Retry once only when the CSRF token went stale (JWT rotation) — not after a real refusal.
+    var first = null;
+    try { first = await res.clone().json(); } catch (_e) {}
+    if (first && /CSRF/i.test(String(first.error || ''))) {
+      await refreshCsrfToken();
+      res = await fetch(url, { method: method, headers: headers(), body: body });
+    } else {
+      return { ok: false, status: 403, data: first, error: (first && first.error) || 'HTTP 403' };
+    }
   }
   var data = null;
   try { data = await res.json(); } catch (_e) {}
@@ -266,12 +277,17 @@ function renderPreferences(snapshot) {
     var grp = groups[g];
     var inGroup = rows.filter(function (r) { return r.group === grp.id; });
     if (!inGroup.length) continue;
-    nav += '<a href="#g-' + escAttr(grp.id) + '">' + esc(grp.label) + '</a>';
+    nav += '<button type="button" class="navbtn" data-target="g-' + escAttr(grp.id) + '" onclick="jumpTo(this.getAttribute(\'data-target\'))">' + esc(grp.label) + '</button>';
     body += '<section class="group' + (grp.id === 'permissions' ? ' danger' : '') + '" id="g-' + escAttr(grp.id) + '" aria-labelledby="h-' + escAttr(grp.id) + '">'
       + '<header><h2 id="h-' + escAttr(grp.id) + '">' + esc(grp.label) + '</h2><p>' + esc(grp.description) + '</p></header>'
       + inGroup.map(renderRow).join('') + '</section>';
   }
   return { nav: nav, body: body };
+}
+// Section links scroll; they never touch location.hash (that selects tabs).
+function jumpTo(id) {
+  var el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 function findRow(key) {
   var rows = (_snapshot && _snapshot.settings) || [];
