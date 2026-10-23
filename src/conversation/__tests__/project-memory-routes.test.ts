@@ -255,4 +255,25 @@ describe('project memory routes (SSOT 2026-10-23 T4)', () => {
     expect(r.status).toBe(200);
     expect(r.body.storeError).toMatch(/읽을 수 없/);
   });
+
+  it('the empty-project revision does not depend on any real project, not even one named new/project (#380 review R2)', async () => {
+    const on = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+    const empty = (await list(on)).body.emptyRevision;
+    let res = await inject({
+      method: 'POST',
+      url: '/api/project-memory/entries',
+      headers: on,
+      payload: { project: 'new/project', text: 'a project that happens to have this name', revision: empty },
+    });
+    expect(res.statusCode).toBe(200);
+    const after = (await list(on)).body.emptyRevision;
+    expect(after).toBe(empty);
+    res = await inject({
+      method: 'POST',
+      url: '/api/project-memory/entries',
+      headers: on,
+      payload: { project: 'acme/fresh', text: 'first note', revision: after },
+    });
+    expect(res.statusCode).toBe(200);
+  });
 });
