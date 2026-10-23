@@ -9,6 +9,7 @@
     "./actions/pending-form-store": "./dist/actions/pending-form-store.js",
     "./actions/pending-instruction-confirm-store": "./dist/actions/pending-instruction-confirm-store.js",
     "./actions/user-skill-action-kinds": "./dist/actions/user-skill-action-kinds.js",
+    "./agent-tree": "./dist/agent-tree.js",
     "./assistant-container": "./dist/assistant-container.js",
     "./assistant-status-manager": "./dist/assistant-status-manager.js",
     "./channel-description-cache": "./dist/channel-description-cache.js",

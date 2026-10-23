@@ -1,0 +1,314 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  createSettingsRegistry,
+  SettingsError,
+  type SettingsRegistryDeps,
+  type SettingsStoreLike,
+} from '../user-settings-registry';
+
+// SSOT 2026-10-23 T2 — every personal setting a Slack command can change is
+// readable and writable through one registry, and every write goes through the
+// same mutation path Slack uses (the `/z` apply function or the same
+// validator + setter).
+
+function memoryStore(): SettingsStoreLike & { data: Record<string, any> } {
+  const data: Record<string, any> = {};
+  const u = (id: string) => (data[id] ??= {});
+  return {
+    data,
+    getUserDefaultModel: (id) => u(id).model ?? 'claude-opus-5-5[1m]',
+    setUserDefaultModel: (id, m) => {
+      u(id).model = m;
+    },
+    getModelDisplayName: (m) => `Display(${m})`,
+    getUserDefaultEffort: (id) => u(id).effort ?? 'xhigh',
+    setUserDefaultEffort: (id, e) => {
+      u(id).effort = e;
+    },
+    resolveEffortInput: (input) => {
+      const n = input.toLowerCase().trim();
+      return ['low', 'medium', 'high', 'xhigh', 'max'].includes(n) ? (n as any) : null;
+    },
+    getUserDefaultLogVerbosity: (id) => u(id).verbosity ?? 'minimal',
+    getUserSessionTheme: (id) => u(id).theme ?? 'default',
+    getUserPersona: (id) => u(id).persona ?? 'default',
+    getUserEmail: (id) => u(id).email,
+    getUserSettings: (id) => ({ notification: u(id).notification }),
+    patchNotification: (id, patch) => {
+      u(id).notification = { ...(u(id).notification || {}), ...patch };
+    },
+    getUserAutoGoalEnabled: (id) => !!u(id).autoGoal,
+    setUserAutoGoalEnabled: (id, v) => {
+      u(id).autoGoal = v;
+    },
+    getUserGoalMaxContinuations: (id) => u(id).goalMax,
+    setUserGoalMaxContinuations: (id, v) => {
+      u(id).goalMax = v;
+    },
+    getUserAutoskills: (id) => [...(u(id).autoskills || [])],
+    setUserAutoskills: (id, s) => {
+      u(id).autoskills = s;
+    },
+    getUserRating: (id) => u(id).rating ?? 5,
+    changeUserRating: (id, r) => {
+      const from = u(id).rating ?? 5;
+      u(id).rating = r;
+      if (from !== r) u(id).pending = { from, to: r };
+      return { from, to: r };
+    },
+    getUserPermissionMode: (id) => u(id).mode ?? 'auto',
+    getUserSandboxDisabled: (id) => !!u(id).sandboxOff,
+    getUserNetworkDisabled: (id) => !!u(id).networkOff,
+  };
+}
+
+function setup(over: Partial<SettingsRegistryDeps> = {}) {
+  const store = memoryStore();
+  const ok = (summary = 'ok') => vi.fn(async () => ({ ok: true, summary }));
+  const apply = {
+    persona: ok(),
+    theme: ok(),
+    verbosity: ok(),
+    permissionMode: ok(),
+    sandbox: vi.fn(async ({ userId, value }: { userId: string; value: string }) =>
+      (value === 'on' || value === 'off') && userId !== 'U_ADMIN'
+        ? { ok: false, summary: '🚫 Admin only: sandbox on/off는 관리자만 변경 가능합니다.' }
+        : { ok: true, summary: 'ok' },
+    ),
+    notify: ok(),
+    email: ok(),
+  };
+  const resolveModel = vi.fn(async (value: string) =>
+    value === 'nope'
+      ? { ok: false as const, summary: '❌ Unknown model: `nope`', description: 'Available aliases: `opus`' }
+      : { ok: true as const, modelId: value },
+  );
+  const deps: SettingsRegistryDeps = {
+    store,
+    resolveModel,
+    apply,
+    effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    verbosityLevels: ['minimal', 'compact', 'detail', 'verbose'],
+    themes: { default: 'Default', compact: 'Compact', minimal: 'Minimal' },
+    defaults: {
+      model: 'claude-opus-5-5[1m]',
+      effort: 'xhigh',
+      verbosity: 'minimal',
+      theme: 'default',
+      goalMaxContinuations: 10,
+    },
+    goalMaxBounds: { min: 1, max: 1000 },
+    maxAutoskills: 20,
+    validateGoalMax: (v) => {
+      if (typeof v !== 'number' || !Number.isInteger(v)) throw new Error('goal max must be an integer');
+      return Math.min(1000, Math.max(1, v));
+    },
+    listPersonas: () => ['default', 'linus'],
+    listModels: () => [
+      { nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', label: 'Opus 5.5' },
+      { nickname: 'grok[1m]', model: 'grok-4.6', label: 'Grok 4.6' },
+    ],
+    listSkills: () => [{ name: 'local:z' }, { name: 'local:autoz' }],
+    skillExists: (name) => name.startsWith('local:'),
+    validateWebhookUrl: (url) =>
+      url.startsWith('https://') && !url.includes('127.0.0.1')
+        ? { valid: true }
+        : { valid: false, error: 'HTTPS URL만 등록 가능합니다.' },
+    workingDirectoryFor: (id) => `/work/${id}`,
+    isAdmin: (id) => id === 'U_ADMIN',
+    isAccepted: (id) => id !== 'U_DENIED',
+    ...over,
+  };
+  // `apply.model` is the model resolver (the save itself is the store setter).
+  return { registry: createSettingsRegistry(deps), store, apply: { ...apply, model: deps.resolveModel } };
+}
+
+async function refused(p: Promise<unknown>, status: number): Promise<string> {
+  try {
+    await p;
+  } catch (e) {
+    expect(e).toBeInstanceOf(SettingsError);
+    expect((e as SettingsError).statusCode).toBe(status);
+    return (e as Error).message;
+  }
+  throw new Error('expected a refusal');
+}
+
+describe('settings registry — read', () => {
+  it('lists every Slack-changeable personal setting, grouped, with its Slack command', () => {
+    const { registry } = setup();
+    const snap = registry.read('U1');
+    expect(snap.settings.map((s) => s.key)).toEqual([
+      'defaultModel',
+      'defaultEffort',
+      'logVerbosity',
+      'sessionTheme',
+      'persona',
+      'notifySlackDm',
+      'notifyTelegram',
+      'notifyWebhook',
+      'autoGoal',
+      'goalMaxContinuations',
+      'autoskills',
+      'email',
+      'rating',
+      'workingDirectory',
+      'permissionMode',
+      'sandbox',
+      'sandboxNetwork',
+    ]);
+    for (const s of snap.settings) {
+      expect(s.slackCommand).toBeTruthy();
+      expect(snap.groups.map((g) => g.id)).toContain(s.group);
+    }
+  });
+
+  it('shows the default model as its representative nickname and marks unmodified rows', () => {
+    const { registry } = setup();
+    const model = registry.read('U1').settings.find((s) => s.key === 'defaultModel')!;
+    expect(model.value).toBe('opus[1m]');
+    expect(model.modified).toBe(false);
+    expect(model.options!.map((o) => o.value)).toEqual(['opus[1m]', 'grok[1m]']);
+  });
+
+  it('keeps a non-representative default model visible as the first option', () => {
+    const { registry, store } = setup();
+    store.data.U1 = { model: 'claude-sonnet-4-6' };
+    const model = registry.read('U1').settings.find((s) => s.key === 'defaultModel')!;
+    expect(model.value).toBe('claude-sonnet-4-6');
+    expect(model.options![0]).toMatchObject({ value: 'claude-sonnet-4-6', label: 'Display(claude-sonnet-4-6)' });
+    expect(model.modified).toBe(true);
+  });
+
+  it('locks sandbox for a non-admin and opens it for an admin; cwd is read-only', () => {
+    const { registry } = setup();
+    const plainUser = registry.read('U1').settings;
+    expect(plainUser.find((s) => s.key === 'sandbox')).toMatchObject({ editable: false, adminOnly: true });
+    expect(plainUser.find((s) => s.key === 'workingDirectory')).toMatchObject({ editable: false, value: '/work/U1' });
+    expect(registry.read('U_ADMIN').settings.find((s) => s.key === 'sandbox')).toMatchObject({ editable: true });
+  });
+});
+
+describe('settings registry — write', () => {
+  it('default model goes through the /z model resolver and returns the fresh view', async () => {
+    const { registry, apply } = setup();
+    const v = await registry.write('U1', 'defaultModel', 'grok[1m]');
+    expect(apply.model).toHaveBeenCalledWith('grok-4.6');
+    expect(v.value).toBe('grok[1m]');
+    expect(v.modified).toBe(true);
+  });
+
+  it('an apply refusal becomes a 400 with the card text, minus Slack markup', async () => {
+    const { registry } = setup();
+    const msg = await refused(registry.write('U1', 'defaultModel', 'nope'), 400);
+    expect(msg).toBe('❌ Unknown model: nope — Available aliases: opus');
+  });
+
+  it('default effort is validated like the Slack resolver', async () => {
+    const { registry, store } = setup();
+    await registry.write('U1', 'defaultEffort', 'HIGH');
+    expect(store.data.U1.effort).toBe('high');
+    await refused(registry.write('U1', 'defaultEffort', 'ultra'), 400);
+  });
+
+  it('notification: DM via the card, Telegram id and webhook validated, empty clears', async () => {
+    const { registry, apply, store } = setup();
+    await registry.write('U1', 'notifySlackDm', true);
+    expect(apply.notify).toHaveBeenCalledWith({ userId: 'U1', value: 'dm_on' });
+    await registry.write('U1', 'notifyTelegram', '-100123');
+    expect(store.data.U1.notification.telegramChatId).toBe('-100123');
+    await refused(registry.write('U1', 'notifyTelegram', '12ab'), 400);
+    await registry.write('U1', 'notifyTelegram', '');
+    expect(apply.notify).toHaveBeenCalledWith({ userId: 'U1', value: 'tg_clear' });
+    await registry.write('U1', 'notifyWebhook', 'https://hooks.example.com/x');
+    expect(store.data.U1.notification.webhookUrl).toBe('https://hooks.example.com/x');
+    expect(await refused(registry.write('U1', 'notifyWebhook', 'http://127.0.0.1/x'), 400)).toContain('HTTPS');
+    await registry.write('U1', 'notifyWebhook', '');
+    expect(store.data.U1.notification.webhookUrl).toBeUndefined();
+  });
+
+  it('goal max clamps like Slack; a non-integer is refused', async () => {
+    const { registry, store } = setup();
+    await registry.write('U1', 'goalMaxContinuations', 5000);
+    expect(store.data.U1.goalMax).toBe(1000);
+    await refused(registry.write('U1', 'goalMaxContinuations', 2.5), 400);
+  });
+
+  it('autoskills: unknown names refused, duplicates collapsed, cap enforced', async () => {
+    const { registry, store } = setup();
+    await registry.write('U1', 'autoskills', ['local:z', 'local:z', ' local:autoz ']);
+    expect(store.data.U1.autoskills).toEqual(['local:z', 'local:autoz']);
+    expect(await refused(registry.write('U1', 'autoskills', ['ghost']), 400)).toContain('ghost');
+    await refused(registry.write('U1', 'autoskills', 'local:z'), 400);
+  });
+
+  it('rating records the pending change the agent is told about, like `rate +`', async () => {
+    const { registry, store } = setup();
+    await registry.write('U1', 'rating', 8);
+    expect(store.data.U1).toMatchObject({ rating: 8, pending: { from: 5, to: 8 } });
+    await refused(registry.write('U1', 'rating', 11), 400);
+  });
+
+  it('sandbox: a non-admin is refused before any write; an admin goes through applySandbox', async () => {
+    const { registry, apply } = setup();
+    await refused(registry.write('U1', 'sandbox', false), 403);
+    expect(apply.sandbox).not.toHaveBeenCalled();
+    await registry.write('U_ADMIN', 'sandbox', false);
+    expect(apply.sandbox).toHaveBeenCalledWith({ userId: 'U_ADMIN', value: 'off' });
+    await registry.write('U1', 'sandboxNetwork', false);
+    expect(apply.sandbox).toHaveBeenCalledWith({ userId: 'U1', value: 'network_off' });
+  });
+
+  it('read-only and unknown keys are refused; wrong value types are 400', async () => {
+    const { registry } = setup();
+    await refused(registry.write('U1', 'workingDirectory', '/tmp'), 403);
+    await refused(registry.write('U1', 'bogus', 1), 400);
+    await refused(registry.write('U1', 'autoGoal', 'yes'), 400);
+    await refused(registry.write('U1', 'email', 42), 400);
+  });
+
+  it('a user without admin acceptance (denied or never accepted) cannot write — a write must not re-create the record', async () => {
+    const { registry, store, apply } = setup();
+    expect(await refused(registry.write('U_DENIED', 'defaultEffort', 'low'), 403)).toContain('승인');
+    await refused(registry.write('U_DENIED', 'defaultModel', 'grok[1m]'), 403);
+    expect(store.data.U_DENIED).toBeUndefined();
+    expect(apply.model).not.toHaveBeenCalled();
+    expect(registry.read('U_DENIED').accepted).toBe(false);
+    expect(registry.read('U1').accepted).toBe(true);
+  });
+
+  it('an admin deny that lands while the model is still being resolved wins: no write, 403, no record (review R2 P1)', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let accepted = true;
+    const { registry, store } = setup({
+      isAccepted: () => accepted,
+      resolveModel: vi.fn(async (value: string) => {
+        await gate; // the catalog refresh Slack's /z model also waits on
+        return { ok: true as const, modelId: value };
+      }),
+    });
+    const pending = registry.write('U1', 'defaultModel', 'claude-sonnet-4-6');
+    accepted = false; // admin deny + removeUserSettings meanwhile
+    delete store.data.U1;
+    release();
+    await refused(pending, 403);
+    expect(store.data.U1).toBeUndefined();
+  });
+
+  it('a representative nickname is saved as the model id it stands for (grok[1m] → grok-4.6)', async () => {
+    const { registry, apply } = setup();
+    await registry.write('U1', 'defaultModel', 'grok[1m]');
+    expect(apply.model).toHaveBeenCalledWith('grok-4.6');
+    await registry.write('U1', 'defaultModel', 'claude-sonnet-4-6');
+    expect(apply.model).toHaveBeenLastCalledWith('claude-sonnet-4-6');
+  });
+
+  it('email: empty clears through the card', async () => {
+    const { registry, apply } = setup();
+    await registry.write('U1', 'email', '  ');
+    expect(apply.email).toHaveBeenCalledWith({ userId: 'U1', value: 'clear' });
+  });
+});
