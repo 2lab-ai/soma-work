@@ -83,6 +83,7 @@ import { UserChoiceHandler } from '../user-choice-handler';
 import type { WorkLogInput } from '../work-log';
 import { decideBackgroundWaitContinuation, getBackgroundWaitCap } from './background-wait';
 import { shouldForwardAsLocalSlashCommand } from './local-slash-command';
+import { SESSION_TITLE_PENDING_NOTICE, shouldInjectSessionTitleNotice } from './session-title-notice';
 import { cleanupWithTimeout, DEFAULT_CLEANUP_TIMEOUT_MS, runWithTimeout } from './stream-executor-cleanup-helpers';
 import { sanitizeTranscriptEmptyTextBlocks } from './transcript-sanitizer';
 import type { ConversationSession, ProcessedFile, SayFn } from './types';
@@ -1466,6 +1467,27 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           });
         }
         session.pendingInstructionRejection = undefined;
+      }
+
+      // Voice / image-only first message → host stand-in title ("New Session").
+      // Only the model can read the attachment, so ask it to resolve the
+      // user's intent and write the title (fill-only). Real user turns only;
+      // stops once the title is real or the budget is spent.
+      if (
+        shouldInjectSessionTitleNotice({
+          title: session.title,
+          isUserInput: params.isUserInput,
+          isSlashCommand,
+          noticeCount: session.titleNoticeCount,
+        })
+      ) {
+        finalPrompt = `${SESSION_TITLE_PENDING_NOTICE}\n\n${finalPrompt}`;
+        session.titleNoticeCount = (session.titleNoticeCount ?? 0) + 1;
+        this.logger.info('Injected session-title-pending notice', {
+          sessionKey,
+          title: session.title,
+          noticeCount: session.titleNoticeCount,
+        });
       }
 
       // Record user turn (fire-and-forget, non-blocking)
@@ -5690,14 +5712,31 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           await this.interceptInstructionOperationsForConfirm(request, session, context);
         }
 
-        // Apply title update only if no operations or operations succeeded
-        const titleUpdate = (parsed.payload as Record<string, unknown>).title as string | undefined;
+        // Apply title update only if no operations or operations succeeded.
+        // `titleFillOnly` (intent titles for stand-in sessions) writes only
+        // while the session still has a host stand-in title; a plain `title`
+        // stays an unconditional rename (e.g. pr-review after a merge).
+        const payload = parsed.payload as Record<string, unknown>;
+        const titleUpdate = payload.title as string | undefined;
         if (titleUpdate && operationsOk) {
-          this.deps.claudeHandler.updateSessionTitle(context.channel, context.threadTs, titleUpdate);
-          this.logger.info('Applied session title update from UPDATE_SESSION', {
-            sessionKey: context.sessionKey,
-            title: titleUpdate,
-          });
+          if (payload.titleFillOnly === true) {
+            const applied = this.deps.claudeHandler.fillPlaceholderSessionTitle(
+              context.channel,
+              context.threadTs,
+              titleUpdate,
+            );
+            this.logger.info('Fill-only session title from UPDATE_SESSION', {
+              sessionKey: context.sessionKey,
+              title: titleUpdate,
+              applied,
+            });
+          } else {
+            this.deps.claudeHandler.updateSessionTitle(context.channel, context.threadTs, titleUpdate);
+            this.logger.info('Applied session title update from UPDATE_SESSION', {
+              sessionKey: context.sessionKey,
+              title: titleUpdate,
+            });
+          }
         }
       }
     }

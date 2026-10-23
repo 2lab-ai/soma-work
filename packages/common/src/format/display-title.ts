@@ -39,3 +39,40 @@ export function displayTitle(session: DisplayTitleSource): string {
     'Untitled'
   );
 }
+
+/**
+ * Host-written stand-in titles. The host writes one of these only when it has
+ * no real title to give a session:
+ *   • `PLACEHOLDER_SESSION_TITLE` — the first message carried no usable text
+ *     (voice memo / image / file only), a forced workflow, a dispatch wait
+ *     timeout, or a dispatch title that sanitized to nothing.
+ *   • `SESSION_RESET_TITLE` — re-dispatch after a context reset with no text.
+ *   • `SKIP_DISPATCH_TITLE` — cron / auto-resume / goal turns that bypass the
+ *     workflow classifier.
+ *
+ * A session wearing one of these has a dashboard card that says nothing about
+ * the work, so the host asks the model to replace it once it knows the intent
+ * (`packages/slack/src/pipeline/session-title-notice.ts`), and the fill-only
+ * title write (`SessionRegistry.fillPlaceholderSessionTitle`) only overwrites
+ * these. Producers must use the constants — a fourth literal copy would
+ * silently fall out of both.
+ */
+export const PLACEHOLDER_SESSION_TITLE = 'New Session';
+export const SESSION_RESET_TITLE = 'Session Reset';
+export const SKIP_DISPATCH_TITLE = 'Direct (skipDispatch)';
+
+const PLACEHOLDER_SESSION_TITLES: ReadonlySet<string> = new Set([
+  PLACEHOLDER_SESSION_TITLE,
+  SESSION_RESET_TITLE,
+  SKIP_DISPATCH_TITLE,
+]);
+
+/**
+ * True only for a host-written stand-in title. An empty title is NOT a stand-in:
+ * empty titles belong to the per-turn summary fallback (src/index.ts
+ * onSummaryGenerated), and claiming them here would race that path.
+ */
+export function isPlaceholderSessionTitle(title: string | undefined | null): boolean {
+  const trimmed = nonBlank(title);
+  return trimmed !== undefined && PLACEHOLDER_SESSION_TITLES.has(trimmed);
+}
