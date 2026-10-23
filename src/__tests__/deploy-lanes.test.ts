@@ -10,10 +10,20 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
-import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import type { CronScheduler } from '../cron-scheduler';
 import { DEPLOY_LANE_DEDUPE_MS, DeployLaneTrigger } from '../deploy-lanes';
 import { Logger } from '../logger';
+
+// Pass-through by default; a test makes one read fail the way a real lookup can.
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
+  return { ...actual, existsSync: vi.fn(actual.existsSync), readFileSync: vi.fn(actual.readFileSync) };
+});
+let realFs: typeof import('fs');
+beforeAll(async () => {
+  realFs = await vi.importActual<typeof import('fs')>('fs');
+});
 
 const AFTER = '0123456789abcdef0123456789abcdef01234567';
 const BEFORE = 'fedcba9876543210fedcba9876543210fedcba98';
@@ -85,6 +95,8 @@ describe('DeployLaneTrigger', () => {
   }
 
   beforeEach(() => {
+    vi.mocked(fs.existsSync).mockImplementation(realFs.existsSync);
+    vi.mocked(fs.readFileSync).mockImplementation(realFs.readFileSync);
     file = path.join(os.tmpdir(), `deploy-lanes-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
     registry = file.replace(/\.json$/, '-registry.json');
     storage = new CronStorage(file);
@@ -464,6 +476,8 @@ describe('DeployLaneTrigger', () => {
         registryLane({ name: 'bad-repo', onDeploy: [{ repo: 'app', target: 'deploy/staging' }] }),
         registryLane({ name: 'bad-target', onDeploy: [{ repo: 'acme/app', target: 'deploy staging' }] }),
         registryLane({ name: 'bad-model', modelConfig: 'opus' }),
+        registryLane({ name: 'unknown-model-type', modelConfig: { type: 'sonnet' } }),
+        registryLane({ name: 'custom-without-model', modelConfig: { type: 'custom' } }),
         registryLane(),
         // (owner, name) is the identity: a second entry for it is skipped, not fired twice.
         registryLane({ prompt: 'a second qa-lane of the same owner' }),
@@ -477,21 +491,84 @@ describe('DeployLaneTrigger', () => {
         `▶ 배포 레인 시작 — acme/app → deploy/staging (${SHA7}): *qa-lane* → <#C_QA> 새 스레드`,
       ]);
       const skipped = warn.mock.calls.filter(([message]) => message === 'deploy-lanes.json entry skipped');
-      expect(skipped).toHaveLength(13);
+      expect(skipped).toHaveLength(15);
     });
 
-    it('reports an unreadable file instead of "no lane", and fires nothing — not even a matching cron job', async () => {
+    // Lanes are independent: a source that cannot be read gets its own ⚠️ line
+    // and contributes no lanes; the other source's lanes still fire.
+    const REGISTRY_UNREADABLE = `⚠️ 배포 레인 확인 불가 — acme/app → deploy/staging (${SHA7}): deploy-lanes.json을 읽지 못함 (owner: 레인 프롬프트 직접 실행)`;
+    const CRON_LANE_STARTED = `▶ 배포 레인 시작 — acme/app → deploy/staging (${SHA7}): *cron-lane* → <#C_QA> 새 스레드`;
+
+    it('reports an unreadable file with a line of its own and still fires the cron lanes', async () => {
       addLane({ name: 'cron-lane' });
       fs.writeFileSync(registry, '{ not json');
       await trigger().handle(deploy(), ctx);
 
-      expect(runJobNow).not.toHaveBeenCalled();
+      expect(runJobNow).toHaveBeenCalledWith('U_OWNER', 'cron-lane', expect.objectContaining({ forceNewThread: true }));
       expect(fireDeployLane).not.toHaveBeenCalled();
       // Generic text only: the parse error carries the server's absolute path.
-      expect(replies).toEqual([
-        `⚠️ 배포 레인 확인 불가 — acme/app → deploy/staging (${SHA7}): deploy-lanes.json을 읽지 못함 (owner: 레인 프롬프트 직접 실행)`,
-      ]);
+      expect(replies).toEqual([REGISTRY_UNREADABLE, CRON_LANE_STARTED]);
       expect(replies[0]).not.toContain(registry);
+    });
+
+    it('reports an unreadable cron file with a line of its own and still fires the registry lanes', async () => {
+      fs.writeFileSync(file, '{ not json');
+      writeRegistry([registryLane()]);
+      await trigger().handle(deploy(), ctx);
+
+      expect(runJobNow).not.toHaveBeenCalled();
+      expect(fireDeployLane).toHaveBeenCalledTimes(1);
+      expect(replies).toEqual([
+        `⚠️ 배포 레인 확인 불가 — acme/app → deploy/staging (${SHA7}): cron 설정 파일을 읽지 못함 (owner: cron run 레인 이름)`,
+        `▶ 배포 레인 시작 — acme/app → deploy/staging (${SHA7}): *qa-lane* → <#C_QA> 새 스레드`,
+      ]);
+    });
+
+    it('drops the near-miss line while a source cannot be read — it would name half the targets', async () => {
+      addLane({ name: 'cron-lane', onDeploy: [{ repo: 'acme/app', target: 'develop' }] });
+      fs.writeFileSync(registry, '{ not json');
+      await trigger().handle(deploy(), ctx);
+
+      expect(runJobNow).not.toHaveBeenCalled();
+      expect(replies).toEqual([REGISTRY_UNREADABLE]);
+    });
+
+    // Only a missing file is "no lanes". A lookup that fails any other way also
+    // makes existsSync() say false — it must read as unreadable, not as empty,
+    // or the matching cron jobs fire with no word about the registry.
+    it('reads a registry that cannot be accessed (EACCES) as unreadable, not as absent', async () => {
+      addLane({ name: 'cron-lane' });
+      writeRegistry([registryLane()]);
+      // What an unreadable parent dir does: the lookup fails, so existsSync says false and the read throws.
+      vi.mocked(fs.existsSync).mockImplementation((target) => target !== registry && realFs.existsSync(target));
+      vi.mocked(fs.readFileSync).mockImplementation(((target: fs.PathOrFileDescriptor, options?: unknown) => {
+        if (target === registry) {
+          throw Object.assign(new Error(`EACCES: permission denied, open '${registry}'`), { code: 'EACCES' });
+        }
+        return realFs.readFileSync(target, options as BufferEncoding);
+      }) as typeof fs.readFileSync);
+
+      await trigger().handle(deploy(), ctx);
+
+      expect(runJobNow).toHaveBeenCalledTimes(1);
+      expect(fireDeployLane).not.toHaveBeenCalled();
+      expect(replies).toEqual([REGISTRY_UNREADABLE, CRON_LANE_STARTED]);
+      expect(replies[0]).not.toContain(registry);
+    });
+
+    it('reads a registry path that cannot be looked up (ENOTDIR) as unreadable, not as absent', async () => {
+      addLane({ name: 'cron-lane' });
+      const notADir = `${registry}.file`;
+      fs.writeFileSync(notADir, '');
+      registry = path.join(notADir, 'deploy-lanes.json');
+      try {
+        await trigger().handle(deploy(), ctx);
+      } finally {
+        fs.unlinkSync(notADir);
+      }
+
+      expect(runJobNow).toHaveBeenCalledTimes(1);
+      expect(replies).toEqual([REGISTRY_UNREADABLE, CRON_LANE_STARTED]);
     });
 
     it.each([
@@ -503,15 +580,15 @@ describe('DeployLaneTrigger', () => {
       writeRegistry([]);
       fs.writeFileSync(registry, raw);
       await trigger().handle(deploy(), ctx);
-      expect(replies).toEqual([
-        `⚠️ 배포 레인 확인 불가 — acme/app → deploy/staging (${SHA7}): deploy-lanes.json을 읽지 못함 (owner: 레인 프롬프트 직접 실행)`,
-      ]);
+      expect(replies).toEqual([REGISTRY_UNREADABLE]);
     });
 
-    it('names both files in one line when neither can be read', async () => {
+    it('names both files in one line when neither can be read, and fires nothing', async () => {
       fs.writeFileSync(file, '{ not json');
       fs.writeFileSync(registry, '{ not json');
       await trigger().handle(deploy(), ctx);
+      expect(runJobNow).not.toHaveBeenCalled();
+      expect(fireDeployLane).not.toHaveBeenCalled();
       expect(replies).toEqual([
         `⚠️ 배포 레인 확인 불가 — acme/app → deploy/staging (${SHA7}): cron 설정 파일, deploy-lanes.json을 읽지 못함 (owner: cron run 레인 이름 · 레인 프롬프트 직접 실행)`,
       ]);

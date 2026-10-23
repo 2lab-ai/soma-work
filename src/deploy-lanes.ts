@@ -131,24 +131,25 @@ export class DeployLaneTrigger {
   private async handleCompleted(payload: DeployCompletedPayload, ctx: DeployCompletedHookContext): Promise<void> {
     const deploy = `${payload.repo} → ${payload.target} (${payload.after.slice(0, 7)})`;
 
-    // A source that cannot be read stops every fire: matching, the near-miss
-    // line and the dedupe would all be answered from half the lanes.
+    // Lanes are independent and deduped one by one, so a source that cannot be
+    // read costs only its own lanes: it gets one ⚠️ line, the other source's
+    // lanes still fire. Both unreadable = one line naming both, nothing fires.
     const { lanes, unreadable } = this.readLanes();
     if (unreadable.length > 0) {
       // The detail (it names the server's file path) goes to the log only.
-      logger.error('deploy_completed: lanes unreadable — no lane can be matched', { deploy, unreadable });
+      logger.error('deploy_completed: lane source unreadable — its lanes cannot be matched', { deploy, unreadable });
       const sources = unreadable.map((u) => u.source);
       await ctx.reply(
         `⚠️ 배포 레인 확인 불가 — ${deploy}: ${sources.map((s) => SOURCE_FILE[s]).join(', ')}을 읽지 못함 ${recovery([], sources)}`,
       );
-      return;
     }
 
     const matched = lanes.filter((lane) => jobMatchesDeploy(lane, payload.repo, payload.target));
     if (matched.length === 0) {
       const registered = targetsForRepo(lanes, payload.repo);
       logger.info('deploy_completed matched no lane', { deploy, registered });
-      if (registered.length > 0) {
+      // With a source unread, the registered targets would be half the list.
+      if (registered.length > 0 && unreadable.length === 0) {
         await ctx.reply(`ℹ️ ${payload.repo} → ${payload.target}: 레인 없음 (등록: ${registered.join(', ')})`);
       }
       return;
@@ -332,16 +333,25 @@ export class DeployLaneTrigger {
   }
 
   /**
-   * The deploy-only lanes, read strictly: no file = no lanes; a file that is not
-   * `{ lanes: [...] }` throws. An entry that is not a lane — not an object, a
-   * blank name/owner/channel/prompt, an `onDeploy` that does not validate, a
-   * malformed `modelConfig`, or a second entry for the same (owner, name) — is
-   * skipped with a warning rather than left to throw inside matching.
+   * The deploy-only lanes, read strictly: no file (ENOENT) = no lanes; any other
+   * read error, or a file that is not `{ lanes: [...] }`, throws. existsSync()
+   * is not the test: it also says false when the lookup itself fails (EACCES,
+   * ELOOP, ENOTDIR), which would read an inaccessible registry as an empty one.
+   * An entry that is not a lane — not an object, a blank name/owner/channel/
+   * prompt, an `onDeploy` that does not validate, a `modelConfig` the cron tool
+   * would reject, or a second entry for the same (owner, name) — is skipped
+   * with a warning rather than left to throw inside matching.
    */
   private readRegistry(): RegistryLane[] {
     const file = this.opts.registryPath ?? path.join(DATA_DIR, REGISTRY_FILE);
-    if (!fs.existsSync(file)) return [];
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as { lanes?: unknown } | null;
+    let raw: string;
+    try {
+      raw = fs.readFileSync(file, 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
+      throw error;
+    }
+    const parsed = JSON.parse(raw) as { lanes?: unknown } | null;
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.lanes)) {
       throw new Error(`deploy lanes file has no lanes array: ${file}`);
     }
@@ -373,7 +383,8 @@ function toRegistryLane(entry: unknown): RegistryLane | string {
     (key) => typeof e[key] !== 'string' || !(e[key] as string).trim(),
   );
   if (missing.length > 0) return `missing ${missing.join(', ')}`;
-  if (e.modelConfig != null && !isModelConfig(e.modelConfig)) return 'modelConfig must be { type, model? }';
+  const modelConfig = toModelConfig(e.modelConfig);
+  if (typeof modelConfig === 'string') return modelConfig;
   let onDeploy: CronDeployTrigger[];
   try {
     onDeploy = normalizeDeployTriggers(e.onDeploy);
@@ -388,14 +399,28 @@ function toRegistryLane(entry: unknown): RegistryLane | string {
     prompt: e.prompt as string,
     onDeploy,
   };
-  if (e.modelConfig != null) lane.modelConfig = e.modelConfig as CronModelConfig;
+  if (modelConfig) lane.modelConfig = modelConfig;
   return lane;
 }
 
-function isModelConfig(value: unknown): value is CronModelConfig {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const { type, model } = value as Record<string, unknown>;
-  return typeof type === 'string' && (model === undefined || typeof model === 'string');
+const MODEL_TYPES: ReadonlyArray<CronModelConfig['type']> = ['default', 'opus', 'fable', 'fast', 'custom'];
+
+/**
+ * A registry `modelConfig` held to the rules a cron job's is held to by the
+ * cron MCP tool (`buildModelConfig` in packages/mcp-servers/cron/cron-mcp-server.ts):
+ * one of the cron model types, `custom` with a non-empty `model`. Absent or
+ * `default` = the session default (undefined); otherwise why it is not valid.
+ */
+function toModelConfig(value: unknown): CronModelConfig | undefined | string {
+  if (value == null) return undefined;
+  const { type, model } = (typeof value === 'object' && !Array.isArray(value) ? value : {}) as Record<string, unknown>;
+  if (!MODEL_TYPES.includes(type as CronModelConfig['type'])) {
+    return `modelConfig.type must be one of ${MODEL_TYPES.join(', ')}`;
+  }
+  if (type === 'default') return undefined;
+  if (type !== 'custom') return { type: type as CronModelConfig['type'] };
+  if (typeof model !== 'string' || !model) return 'modelConfig.model is required when type is "custom"';
+  return { type: 'custom', model };
 }
 
 /** A cron job is its id; a deploy-only lane has none, so it is its (owner, name). */
