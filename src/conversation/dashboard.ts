@@ -4348,6 +4348,7 @@ let panelConvId = null;
 let _panelTasksExpanded = false;
 let _panelTitleSub = ''; // the subtitle the open panel shows ('' = none yet)
 let _viewerIsAdmin = false; // /auth/me says ADMIN_USERS (or viewer token); UX only, the server re-checks
+let _viewerUserId = ''; // the signed-in user (/auth/me) — not currentUserId, which is the board filter
 
 // ── Theme toggle — sun/moon ──
 function getPreferredTheme() {
@@ -4626,6 +4627,7 @@ function _applyUserPill(data) {
   // also gets the toggle.
   const isAdminCapable = !!(data && (data.isAdmin || (data.user && data.user.name && data.isAdmin)));
   _viewerIsAdmin = isAdminCapable;
+  _viewerUserId = (data && data.user && data.user.slackUserId) || '';
   const lifecycleBtn = document.getElementById('lifecycle-btn');
   if (lifecycleBtn) lifecycleBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
   const toggle = document.getElementById('admin-mode-toggle');
@@ -8731,7 +8733,7 @@ function titleSubCanRegen(ownerId, viewerId, viewerIsAdmin, adminModeOn) {
 }
 function panelTitleSubCanRegen() {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  return titleSubCanRegen(s && s.ownerId, currentUserId, _viewerIsAdmin, _isAdminModeOn());
+  return titleSubCanRegen(s && s.ownerId, _viewerUserId, _viewerIsAdmin, _isAdminModeOn());
 }
 function titleSubEndpoint(convId, regenerate) {
   return '/api/dashboard/session/' + encodeURIComponent(convId) + (regenerate ? '/generate-title' : '/ensure-title');

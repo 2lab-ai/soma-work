@@ -1427,7 +1427,7 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
         _panelTitleSub: '',
         panelSessionKey: 'C1:t1',
         _sessionCache: { 'C1:t1': { ownerId: 'U1' } },
-        currentUserId: 'U1',
+        _viewerUserId: 'U1',
         _viewerIsAdmin: false,
         _isAdminModeOn: () => false,
         READ_ONLY_MSG: 'Read-only — not your session',
