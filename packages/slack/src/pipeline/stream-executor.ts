@@ -56,6 +56,7 @@ import {
   accumulateModelTotals,
   applyPostCompactOccupancy,
   selectCurrentContextTokens,
+  settleFoldedLiveUsage,
   toTurnUsage,
 } from '../session-usage-math';
 import type { SlackApiHelper } from '../slack-api-helper';
@@ -1201,6 +1202,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // turnId) would silently skip — leaving the second turn without an open
     // B1 stream.
     const turnId = `${sessionKey}:${requestStartedAt.getTime()}:${randomUUID()}`;
+    // The SDK session this turn resumes (none → a new one starts). Read before
+    // the stream: the turn's `system`/`init` frame overwrites `session.sessionId`.
+    const resumedSdkSessionId: string | undefined = session.sessionId;
 
     // P5 B5 marker snapshot.
     //
@@ -2059,7 +2063,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onUsageUpdate: async (usage: UsageData) => {
-          this.updateSessionUsage(session, sessionKey, usage, turnId);
+          this.updateSessionUsage(session, sessionKey, usage, turnId, resumedSdkSessionId);
 
           // Update context window emoji
           if (session.usage && isOutputEnabled(OutputFlag.CONTEXT_EMOJI)) {
@@ -5141,6 +5145,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     sessionKey: string,
     reported: UsageData,
     turnId?: string,
+    resumedSdkSessionId?: string,
   ): void {
     this.ensureSessionUsage(session);
 
@@ -5148,7 +5153,22 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // every turn resumes the same SDK session — so adding it as-is re-counted
     // every earlier turn. Every total below (session, per-model, goal,
     // token_usage) reads this turn's own spend. See `toTurnUsage`.
-    const { turn: usage, baseline } = toTurnUsage(reported, session.sdkUsageBaseline, session.sessionId);
+    //
+    // A session saved before baselines existed resumes with its whole history
+    // in this running total, and that history is already in its goal's spend:
+    // take the total as the baseline and count nothing for this one turn.
+    const legacyResume =
+      !session.sdkUsageBaseline && !!resumedSdkSessionId && resumedSdkSessionId === session.sessionId;
+    const baselineIn = legacyResume
+      ? toTurnUsage(reported, undefined, session.sessionId).baseline
+      : session.sdkUsageBaseline;
+    if (legacyResume && baselineIn) {
+      this.logger.info('Usage baseline seeded from a resumed session without one — this turn counts no spend', {
+        conversationId: session.conversationId,
+        sdkSessionId: session.sessionId,
+      });
+    }
+    const { turn: usage, baseline } = toTurnUsage(reported, baselineIn, session.sessionId);
     session.sdkUsageBaseline = baseline;
 
     // Update model name on session (useful for display)
@@ -5210,12 +5230,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       session.usage.currentCacheCreateTokens = current.cacheCreateTokens;
     }
 
-    // Accumulate totals (billing-oriented: use aggregate values, not per-turn)
-    session.usage.totalInputTokens += usage.inputTokens;
-    session.usage.totalOutputTokens += usage.outputTokens;
-    session.usage.totalCacheReadTokens += usage.cacheReadInputTokens;
-    session.usage.totalCacheCreateTokens += usage.cacheCreationInputTokens;
-    session.usage.totalCostUsd += usage.totalCostUsd;
+    // Accumulate totals (billing-oriented: use aggregate values, not per-turn).
+    // Spend an earlier result-less turn already folded in is settled, not re-added.
+    const { spend, folded } = settleFoldedLiveUsage(usage, session.usage.foldedLiveUsage);
+    session.usage.foldedLiveUsage = folded;
+    session.usage.totalInputTokens += spend.inputTokens;
+    session.usage.totalOutputTokens += spend.outputTokens;
+    session.usage.totalCacheReadTokens += spend.cacheReadInputTokens;
+    session.usage.totalCacheCreateTokens += spend.cacheCreationInputTokens;
+    session.usage.totalCostUsd += spend.totalCostUsd;
     session.usage.lastUpdated = Date.now();
     // The turn's calls are in the totals now — the live view stops adding them,
     // and the turn's end never folds them a second time.

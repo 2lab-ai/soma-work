@@ -169,7 +169,8 @@ async function runTurn(session: any, frame: any, initSessionId?: string): Promis
   async function* stream() {
     // What `ClaudeHandler.streamQuery` does on the turn's `system`/`init`
     // frame: the SDK session id lands on the session BEFORE the result.
-    if (initSessionId) session.sessionId = initSessionId;
+    // A resumed turn keeps its id; a turn with nothing to resume starts `sdk-session-A`.
+    session.sessionId = initSessionId ?? session.sessionId ?? 'sdk-session-A';
     yield frame;
   }
   const executor = new StreamExecutor(createDeps(stream));
@@ -189,9 +190,10 @@ async function runTurn(session: any, frame: any, initSessionId?: string): Promis
   } as any);
 }
 
+/** A session that has not started an SDK session yet (its first turn's init assigns one). */
 function newSession(): any {
   return {
-    sessionId: 'sdk-session-A',
+    sessionId: undefined,
     ownerId: 'U_TEST',
     ownerName: 'tester',
     channelId: CHANNEL,
@@ -305,5 +307,61 @@ describe('StreamExecutor — cumulative SDK usage is counted once', () => {
     );
 
     expect(session.usage.totalCostUsd).toBeCloseTo(4);
+  });
+
+  it('a turn that ended without its result is folded once, then settled by the next result', async () => {
+    const session = newSession();
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 1000, output: 100, cacheRead: 0, cacheCreate: 0, cost: 1 } }),
+    );
+
+    // Turn 2 makes one API call (200 input tokens), then dies before its result.
+    await runTurn(session, {
+      type: 'assistant',
+      message: {
+        id: 'msg-interrupted',
+        model: OPUS,
+        role: 'assistant',
+        content: [{ type: 'text', text: 'working' }],
+        usage: { input_tokens: 200, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      },
+    });
+    expect(session.usage.totalInputTokens).toBe(1200);
+
+    // Turn 3 resumes: the transcript kept turn 2's call, so the running total includes it.
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 1300, output: 130, cacheRead: 0, cacheCreate: 0, cost: 1.3 } }),
+    );
+
+    // Session totals = the running total, not 1500 (turn 2 counted twice).
+    expect(session.usage.totalInputTokens).toBe(1300);
+    expect(session.usage.totalOutputTokens).toBe(130);
+    expect(session.usage.totalCostUsd).toBeCloseTo(1.3);
+    expect(session.usage.foldedLiveUsage).toBeUndefined();
+    // The goal and the metric were never folded: they take the whole growth.
+    expect(session.goal.tokensInput).toBe(1300);
+    expect(session.goal.costUsd).toBeCloseTo(1.3);
+    expect(emitted.tokenUsage.map((e) => Number(e.metadata.costUsd.toFixed(6)))).toEqual([1, 0.3]);
+  });
+
+  it('a session saved before baselines existed seeds the baseline instead of re-counting its history', async () => {
+    // Loaded from sessions.json: resumes SDK session A, no baseline, goal already carries the history.
+    const session = { ...newSession(), sessionId: 'sdk-session-A' };
+    session.goal.costUsd = 100;
+
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 100_000, output: 0, cacheRead: 0, cacheCreate: 0, cost: 101 } }),
+    );
+    expect(session.goal.costUsd).toBeCloseTo(100);
+    expect(session.sdkUsageBaseline?.models[OPUS].costUsd).toBeCloseTo(101);
+
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 100_500, output: 0, cacheRead: 0, cacheCreate: 0, cost: 101.5 } }),
+    );
+    expect(session.goal.costUsd).toBeCloseTo(100.5);
   });
 });

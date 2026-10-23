@@ -310,3 +310,64 @@ export function sanitizeSdkUsageBaseline(raw: unknown): SdkUsageBaseline | undef
   }
   return { sdkSessionId, models: out };
 }
+
+/**
+ * Spend a turn that ended WITHOUT its result folded into the session totals
+ * (`foldLiveUsage`). Runtime-only, kept on `session.usage` next to the totals
+ * it was added to.
+ */
+export interface FoldedLiveUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  costUsd: number;
+}
+
+/** A turn's spend in the session-total shape. */
+export interface SessionSpend {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  totalCostUsd: number;
+}
+
+/**
+ * What the session totals take from this turn's spend, given earlier folded
+ * spend.
+ *
+ * The transcript keeps every completed API call, so the next resumed result's
+ * running total already includes the calls of a turn that ended without its
+ * result — the ones `foldLiveUsage` put into the session totals. Those totals
+ * take the turn's spend minus what was folded (never below zero); the goal,
+ * the per-model buckets and `token_usage` were never folded and take the full
+ * turn spend. Settles on the first result that spent anything; a zero spend
+ * (crash result) keeps the fold for the next one. Usage without a per-model
+ * breakdown is per-turn — it never includes folded calls — so it is taken
+ * whole and the fold is dropped.
+ */
+export function settleFoldedLiveUsage(
+  turn: TurnUsageInput,
+  folded: FoldedLiveUsage | undefined,
+): { spend: SessionSpend; folded: FoldedLiveUsage | undefined } {
+  const spend: SessionSpend = {
+    inputTokens: turn.inputTokens,
+    outputTokens: turn.outputTokens,
+    cacheReadInputTokens: turn.cacheReadInputTokens,
+    cacheCreationInputTokens: turn.cacheCreationInputTokens,
+    totalCostUsd: turn.totalCostUsd,
+  };
+  if (!folded || !turn.modelBreakdown) return { spend, folded: undefined };
+  if (Object.values(spend).every((v) => !v)) return { spend, folded };
+  return {
+    spend: {
+      inputTokens: Math.max(0, spend.inputTokens - folded.inputTokens),
+      outputTokens: Math.max(0, spend.outputTokens - folded.outputTokens),
+      cacheReadInputTokens: Math.max(0, spend.cacheReadInputTokens - folded.cacheReadTokens),
+      cacheCreationInputTokens: Math.max(0, spend.cacheCreationInputTokens - folded.cacheCreateTokens),
+      totalCostUsd: Math.max(0, spend.totalCostUsd - folded.costUsd),
+    },
+    folded: undefined,
+  };
+}
