@@ -139,6 +139,29 @@ describe('프로젝트 메모리 tab', () => {
     await fns.pmAdd();
     expect(loadProjects).toHaveBeenCalled();
     expect(status.textContent).toContain('다른 관리자');
-    expect(status.textContent).toContain('새 규칙');
+    expect(status.textContent).toContain('새 항목 칸');
+  });
+
+  it('a 409 puts the whole draft back into the add box after the reload, however long (review R3)', async () => {
+    const status: any = { textContent: '', setAttribute() {} };
+    const newBox: any = { value: '' };
+    const long = '긴 규칙 '.repeat(195); // 975 chars, under the 1,000-character cap
+    const loadProjects = vi.fn(async () => {
+      newBox.value = ''; // the reload re-renders the detail: the add box comes back empty
+    });
+    const fns = load<any>(['pmStatus', 'pmWrite'], {
+      document: { getElementById: (id: string) => (id === 'pm-new' ? newBox : status) },
+      _pm: { isAdmin: true, projects: [{ ...PROJECT }] },
+      apiWrite: async () => ({ ok: false, status: 409, error: 'conflict' }),
+      loadProjects,
+      paintProjectList: () => {},
+      renderProjectDetail: () => {},
+    });
+    expect(await fns.pmWrite('PUT', '/api/project-memory/entries/0', { project: PROJECT.slug, text: long }, long)).toBe(
+      false,
+    );
+    expect(loadProjects).toHaveBeenCalled();
+    expect(newBox.value).toBe(long);
+    expect(status.textContent).toContain('새 항목 칸');
   });
 });
