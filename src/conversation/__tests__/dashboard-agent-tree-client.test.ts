@@ -335,7 +335,8 @@ describe('panel scope (§4.3)', () => {
     expect(fnBody('selectPanelAgent')).toContain('renderPanelTasks(panelAgentTasks(), panelAgentLabel());');
     expect(fnBody('selectPanelAgent')).toContain('repaintWorkLogScope();');
     expect(fnBody('wlRenderList')).toContain('wlBuildRows(wlScopeEntries(state.entries))');
-    expect(fnBody('paintWorkLog')).toContain('String(wlScopeEntries(state.entries).length)');
+    expect(fnBody('paintWorkLog')).toContain('var scopedCount = wlScopeEntries(state.entries).length;');
+    expect(fnBody('paintWorkLog')).toContain("if (!scopedCount) showWorkLogEmpty('이 에이전트의 작업 로그 없음');");
     expect(fnBody('connectWs')).toContain('panelSessionKey === msg.sessionKey && !_panelAgent');
     expect(fnBody('renderCardFace')).toContain('+ renderCardAgents(s)');
     expect(fnBody('renderCardBody')).toContain('+ renderAgentTree(s)');
