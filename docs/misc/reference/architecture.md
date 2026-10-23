@@ -20,7 +20,7 @@ soma-work (Slack multi-tenant AI Assistant) 아키텍처 문서. 2026-06-10 기�
 | AgentManager | 멀티 에이전트 인스턴스 기동 | `src/agent-manager.ts`, `src/agent-instance.ts` |
 | Claude Child Registry | Agent SDK 자식 프로세스 소유, 종료 시 bounded TERM→KILL 회수 | `src/agent-runtime/claude-child-process-registry.ts` |
 | A2T Service | 음성→텍스트 (Python worker) | `services/a2t/worker.py` |
-| CronScheduler | 예약 synthetic 메시지 트리거. `onDeploy` 잡은 배포 세션의 `deploy_completed` 디렉티브로도 발동(`StreamExecutor.onDeployCompleted` → `DeployLaneTrigger` → `runJobNow`) | `src/cron-scheduler.ts`, `src/deploy-lanes.ts` |
+| CronScheduler | 예약 synthetic 메시지 트리거. `onDeploy` 잡은 배포 세션의 `deploy_completed` 디렉티브로도 발동(`StreamExecutor.onDeployCompleted` → `DeployLaneTrigger` → `runJobNow`); `deploy-lanes.json`의 배포 전용 레인(크론 잡 아님)은 `DeployLaneTrigger` → `fireDeployLane`. 발동 note가 배포 스레드(채널 + 스레드 ts)를 알려 주고, 레인이 세션의 Slack 접근 수단(예: 환경의 봇 토큰으로 Slack Web API)으로 직접 올린다. `send_thread_message`는 레인 자신의 스레드에만 올리며 하네스는 대신 올리지 않음 | `src/cron-scheduler.ts`, `src/deploy-lanes.ts` |
 | Release notes | deploy 워크플로우의 `release_notes` 디렉티브 → `StreamExecutor` (deploy 세션만 `routeReleaseNotes` 조회) → `postReleaseNotes`: 채널 루트 헤더 + 스레드 전문. 채널은 `SOMA_RELEASE_NOTES_CHANNELS` (`config.getReleaseNotesChannels` → `routeReleaseNotes`) | `packages/slack/src/directives/release-notes-directive.ts`, `packages/slack/src/release-notes-poster.ts`, `src/release-notes-routes.ts` |
 | Conversation Recorder | 대화 기록 + 리플레이 웹 대시보드 | `src/conversation/` |
 | Metrics Schedulers | 토큰/비용 텔레메트리 집계·리포트 | `src/metrics/` |
@@ -148,6 +148,8 @@ updates inside its terminal-cleanup boundary, including setup failures.
 ### Observability (`src/metrics/`, `src/conversation/`)
 - 이벤트 기반 텔레메트리(토큰·툴콜·레이턴시), 주기 리포트
 - 대화 레코더 + 웹 대시보드(`src/conversation/dashboard.ts`)
+- 패널 부제(`titleSub`, `src/conversation/title-sub.ts`): 비어 있으면 로그인한 누구나 `POST /api/dashboard/session/:id/ensure-title`로
+  채운다(덮어쓰지 않음, 대화별 LLM 호출 1회, 실패 후 1분 쿨다운). 바꾸기는 `POST …/generate-title` — owner 또는 Admin mode admin만(#716 쓰기 게이트)
 - 채팅 goal 명령: 스레드 입력·`@bot goal`·`@bot /z goal`(세션 있는 스레드는 `EventRouter.isThreadGoalCommand`가 ZRouter 대신 호스트로 넘김)·파일 업로드가
   모두 `CommandRouter.isGoalIntakeText` 하나로 판정 → follow-up fence의 `SlackHandler.runGoalCommandNow`가 즉시 처리(스티어링 큐 아님).
   상세 `docs/goal-command/spec.md` §Goal Commands While a Turn Runs
