@@ -113,11 +113,12 @@ export function normalizeDeployTriggers(input: unknown): CronDeployTrigger[] {
 }
 
 /**
- * Does a deploy of `repo` into `target` fire this job? Repo is compared
- * case-insensitively, target exactly after normalization — `staging` does not
- * match `deploy/staging`. Tolerates a hand-edited (malformed) stored list.
+ * Does a deploy of `repo` into `target` fire this job (or deploy-only lane)?
+ * Repo is compared case-insensitively, target exactly after normalization —
+ * `staging` does not match `deploy/staging`. Tolerates a hand-edited
+ * (malformed) stored list.
  */
-export function jobMatchesDeploy(job: CronJob, repo: string, target: string): boolean {
+export function jobMatchesDeploy(job: Pick<CronJob, 'onDeploy'>, repo: string, target: string): boolean {
   if (!Array.isArray(job.onDeploy)) return false;
   const wantRepo = repo.trim().toLowerCase();
   const wantTarget = normalizeDeployTarget(target);
@@ -240,13 +241,21 @@ export class CronStorage {
   }
 
   /**
-   * Like getAll(), but a file that exists and cannot be read as `{ jobs: [...] }`
-   * throws instead of reading as "no jobs". For callers whose answer to an
-   * empty list is a user-facing "nothing is registered" (deploy lanes).
+   * Like getAll(), but a file that cannot be read as `{ jobs: [...] }` throws
+   * instead of reading as "no jobs". For callers whose answer to an empty list
+   * is a user-facing "nothing is registered" (deploy lanes). Only a missing
+   * file (ENOENT) is "no jobs": existsSync() also says false when the lookup
+   * itself fails (EACCES, ELOOP, ENOTDIR), and that file is unreadable.
    */
   getAllStrict(): CronJob[] {
-    if (!fs.existsSync(this.filePath)) return [];
-    const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf-8')) as Partial<CronData> | null;
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.filePath, 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
+      throw error;
+    }
+    const parsed = JSON.parse(raw) as Partial<CronData> | null;
     if (!parsed || !Array.isArray(parsed.jobs)) {
       throw new Error(`cron jobs file has no jobs array: ${this.filePath}`);
     }
