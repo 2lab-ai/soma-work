@@ -89,6 +89,10 @@ Slack-native button/form UX for permission approvals, option selection, and sess
 
 Upload images (JPG/PNG/GIF/WebP), text, or code files directly in Slack. 50MB limit per file.
 
+### 🆕 Start a task from the dashboard
+
+The dashboard's **New task** button (top bar on desktop, `N` shortcut; floating button on phones) opens a composer: model (with a shared-pool quota battery), effort, Slack channel, per-task `autogoal` and `autoz` toggles, the instruction, and attachments — files, pasted screenshots, the phone camera and voice notes. The task starts as your own message on a new thread in the chosen channel, so its progress is visible in Slack. The channel list is the repo-mapped channels you are a member of; it defaults to the channel you last gave a command in. Turning `autoz` on appends `$autoz` to the instruction.
+
 ### 🔑 GitHub Integration
 
 GitHub App (recommended) or Personal Access Token authentication with automatic token renewal.

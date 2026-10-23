@@ -256,6 +256,9 @@ export class FileHandler {
 
   private isVideoFile(mimetype: string, filename?: string): boolean {
     if (mimetype.startsWith('video/')) return true;
+    // An explicit audio type wins over the extension: a browser voice note in
+    // a .webm container (dashboard recorder) is audio and goes to transcription.
+    if (mimetype.startsWith('audio/')) return false;
     if (filename) {
       const ext = filename.split('.').pop()?.toLowerCase() || '';
       if (FileHandler.VIDEO_EXTENSIONS.has(ext)) return true;
