@@ -1940,6 +1940,10 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         'renderWorkLogGroup',
         'wlGroupOpen',
         'wlGroupEl',
+        // Spec 12: the list shows the scope of the agent the panel shows (main here).
+        'wlScopeEntry',
+        'wlScopeEntries',
+        'wlLegacyMixed',
         'wlRenderList',
         'wlAppendTail',
         'wlDetailOpen',
@@ -1949,7 +1953,7 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         'paintWorkLog',
       ],
       ['WL_LABELS'],
-      { document, _wl: state, panelSessionKey: null, _sessionCache: {}, updateTimersIn: () => {} },
+      { document, _wl: state, panelSessionKey: null, _sessionCache: {}, updateTimersIn: () => {}, _panelAgent: '' },
     );
     return { m, toggle, count, list };
   }

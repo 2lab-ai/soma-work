@@ -3031,6 +3031,59 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card-usage .cnt { color: var(--ib-text); font-weight: 600; }
 .card-usage .cu-unit { margin-left: 3px; color: var(--ib-muted); }
 .card-usage .cu-sep { color: var(--ib-muted); }
+
+/* ═══ AGENT TREE (.prd/12 §4) — the main agent and the subagents it started ═══
+   Status always reads as icon + word; colour is a third cue, never the only one. */
+.card-agents { margin-top: 8px; display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12.5px; color: var(--ib-text-2); }
+.card-agents > svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--ib-muted); }
+.ag-dots { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; }
+.ag-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ib-muted); display: inline-block; }
+.ag-dot.is-running { background: var(--st-run); animation: agPulse 1.6s ease-in-out infinite; }
+.ag-dot.is-completed { background: var(--st-done); }
+.ag-dot.is-failed { background: var(--st-fail); }
+.ag-dot.is-stopped { background: var(--ib-muted); border-radius: 2px; }
+.ag-dot.is-unknown { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ib-muted); }
+.ag-dots-more { font-size: 11px; color: var(--ib-muted); margin-left: 2px; font-variant-numeric: tabular-nums; }
+.ca-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ca-text b { color: var(--ib-text); font-weight: 600; }
+.ca-text .ca-fail { color: var(--st-fail); font-weight: 600; }
+@keyframes agPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes agSweep { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+.ag-tree { margin: 12px 0 2px; border: 1px solid var(--ib-card-border); border-radius: 10px; overflow: hidden; background: var(--ib-card); }
+.ag-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; background: var(--ib-pill); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ib-muted); }
+.ag-head .ag-count { letter-spacing: 0; text-transform: none; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ag-row { --ag-c: var(--ib-muted); position: relative; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 2px; align-items: center; width: 100%; margin: 0; padding: 8px 12px 8px calc(12px + (var(--ag-depth, 0) * 16px)); border: 0; border-top: 1px solid var(--ib-card-border); background: none; color: var(--ib-text); font: inherit; text-align: left; cursor: pointer; transition: background-color 150ms ease; }
+.ag-row.is-main { --ag-c: var(--ib-text); border-top: 0; }
+.ag-row.is-running { --ag-c: var(--st-run); }
+.ag-row.is-completed { --ag-c: var(--st-done); }
+.ag-row.is-failed { --ag-c: var(--st-fail); }
+.ag-row.is-stopped, .ag-row.is-unknown { --ag-c: var(--ib-muted); }
+/* Tree lines (CSS borders, not glyphs): a rail down from the parent and an elbow into the row. */
+.ag-row.is-sub::before { content: ''; position: absolute; left: calc(12px + (var(--ag-depth, 1) - 1) * 16px + 7px); top: 0; bottom: 0; width: 1px; background: var(--ib-card-border); }
+.ag-row.is-sub.is-last::before { bottom: auto; height: 17px; }
+.ag-row.is-sub::after { content: ''; position: absolute; left: calc(12px + (var(--ag-depth, 1) - 1) * 16px + 7px); top: 17px; width: 7px; height: 1px; background: var(--ib-card-border); }
+.ag-row[aria-current="true"] { background: var(--ib-pill); box-shadow: inset 2px 0 0 var(--accent); }
+.ag-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ag-icon { grid-column: 1; grid-row: 1; width: 16px; height: 16px; display: grid; place-items: center; color: var(--ag-c); }
+.ag-icon svg { width: 14px; height: 14px; }
+.ag-icon .ag-spinner { width: 11px; height: 11px; border-width: 1.8px; }
+.ag-line { grid-column: 2; grid-row: 1; display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 13px; line-height: 1.35; }
+.ag-id { flex-shrink: 0; font-size: 11.5px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
+.ag-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.ag-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ib-text-2); }
+.ag-desc { grid-column: 2 / 4; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--ib-text-2); }
+.ag-meta { grid-column: 3; grid-row: 1; display: inline-flex; align-items: baseline; gap: 7px; font-size: 12px; color: var(--ib-text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ag-st { color: var(--ag-c); font-weight: 600; }
+.ag-row.is-main .ag-st { color: var(--ib-text-2); }
+.ag-bg { font-size: 10.5px; line-height: 16px; padding: 0 6px; border-radius: 99px; border: 1px solid var(--ib-card-border); color: var(--ib-muted); }
+.ag-row.is-sub::before, .ag-row.is-sub::after { pointer-events: none; }
+.ag-sub { grid-column: 2 / 4; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--ib-muted); }
+.ag-span { grid-column: 2 / 4; position: relative; height: 3px; margin-top: 3px; border-radius: 2px; background: var(--ib-pill); overflow: hidden; }
+.ag-span i { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: var(--ag-c); opacity: 0.7; }
+.ag-row.is-running .ag-span i { background-image: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.55) 50%, transparent 100%); background-size: 200% 100%; animation: agSweep 1.8s linear infinite; }
+.ag-toggle { display: block; width: 100%; padding: 8px 12px; border: 0; border-top: 1px solid var(--ib-card-border); background: none; color: var(--ib-text-2); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
+.ag-more { padding: 7px 12px; border-top: 1px solid var(--ib-card-border); font-size: 12px; color: var(--ib-muted); }
 /* Armed automatic resume (turn retry / goal re-check): the clock in the status
    line and the open card's resume row take the "waiting" hue, not the run hue. */
 .st-icon.is-resume, .card-resume svg { color: var(--st-wait); }
@@ -3684,6 +3737,34 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* Panel tasks (.prd/10 §3.1-6) — pinned between the token badges and the
    scroll area: always shown (an empty line when there are none yet), with its
    own scroll so a long list never pushes the work log and turns away. */
+/* Agent bar (.prd/12 §4.3): one pinned row — the path to the agent shown and
+   the tree on demand (vertical at every width). */
+.panel-agents { flex: none; padding: 6px 16px 8px; border-bottom: 1px solid var(--border); }
+.pa-bar { display: flex; align-items: center; gap: 8px; min-height: 32px; min-width: 0; }
+.pa-path { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 13px; }
+.pa-crumb { min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 6px; border: 0; border-radius: 6px; background: none; color: var(--text-secondary); font: inherit; cursor: pointer; }
+.pa-crumb:first-child { flex-shrink: 0; }
+.pa-crumb[aria-current="true"] { color: var(--text); font-weight: 600; cursor: default; }
+.pa-crumb:focus-visible, .pa-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pa-sep { flex-shrink: 0; color: var(--text-tertiary); }
+.pa-toggle { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 99px; background: var(--surface-raised); color: var(--text-secondary); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; cursor: pointer; }
+.pa-toggle svg { width: 13px; height: 13px; }
+.pa-toggle .pa-chev { transition: transform var(--dur-expand) var(--ease-out); }
+.pa-toggle[aria-expanded="true"] .pa-chev { transform: rotate(180deg); }
+.pa-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; margin-top: 4px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.pa-st { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
+.pa-st svg, .pa-st .spinner { width: 12px; height: 12px; }
+.pa-st.is-running { color: var(--st-run); } .pa-st.is-completed { color: var(--st-done); } .pa-st.is-failed { color: var(--st-fail); } .pa-st.is-stopped, .pa-st.is-unknown { color: var(--text-tertiary); }
+.pa-dot { color: var(--text-tertiary); }
+.pa-note { width: 100%; font-size: 11px; color: var(--text-tertiary); }
+.pa-desc { margin-top: 2px; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pa-desc .pa-act { color: var(--text-tertiary); }
+.pa-list { margin-top: 6px; max-height: min(32vh, 260px); overflow-y: auto; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--ib-card); overscroll-behavior: contain; }
+.tasks-scope { text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--text); }
+.wl-role { flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 4px; background: var(--ib-pill); color: var(--text); }
+.wl-agent-io .wl-row { background: var(--ib-pill); }
+.wl-agent-link { display: block; margin: 0 0 4px 22px; padding: 2px 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; }
+.wl-legacy { margin: 4px 0 6px; padding: 6px 10px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 12px; }
 .panel-tasks {
   flex: none;
   padding: 8px 16px;
@@ -4094,6 +4175,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (max-width: 639px) {
   .main { padding: 14px 12px; }
   .panel-tasks { max-height: min(22vh, 160px); }
+  /* Agent tree (.prd/12 §4.4): status · time · tools drop under the name; 44px targets. */
+  .ag-row { grid-template-columns: 16px minmax(0, 1fr); min-height: 44px; padding-top: 10px; padding-bottom: 10px; }
+  .ag-meta { grid-column: 2; grid-row: auto; }
+  .ag-desc, .ag-sub, .ag-span { grid-column: 2; }
+  .ag-toggle, .pa-toggle, .pa-crumb { min-height: 44px; }
+  .pa-list { max-height: min(40vh, 300px); }
+
   /* Stats strip: period control + 자세히 on the first row, the numbers on the
      second. The period tabs share the row's width and keep 44px height with
      narrower sides, so the row fits 320px with the coarse-pointer padding. */
@@ -4149,8 +4237,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .chart-row { flex-direction: column; }
   .slide-panel { width: 100vw; right: -100vw; }
 }
+@media (hover: hover) and (pointer: fine) {
+  .ag-row:hover, .ag-toggle:hover { background: var(--ib-pill); }
+  .pa-crumb:not([aria-current="true"]):hover { background: var(--surface-raised); color: var(--text); }
+  .pa-toggle:hover { color: var(--text); border-color: var(--border-focus); }
+  .wl-agent-link:hover { text-decoration: underline; }
+}
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  /* Agent tree: a static running indicator, no sweep across the waterfall bar. */
+  .ag-dot.is-running, .ag-row.is-running .ag-span i { animation: none !important; }
   /* §4-8: no movement or scale — the expanded body only cross-fades. These
      selectors are more specific than the * rule above, so they win. */
   .card-expand { transition: none !important; }
@@ -4335,6 +4431,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     <div class="panel-meta" id="panel-meta"></div>
     <div class="panel-links" id="panel-links"></div>
     <div class="panel-tokens" id="panel-tokens"></div>
+    <!-- Agent bar (.prd/12 §4.3): path 메인 › A2 …, the tree on demand; it scopes Tasks and the work log. -->
+    <div class="panel-agents" id="panel-agents" style="display:none"></div>
     <!-- Tasks are pinned (.prd/10 §3.1-6): always shown, never scrolled away. -->
     <div class="panel-tasks" id="panel-tasks"></div>
     <!-- Scroll area: question + work log (collapsed unless opened from 작업 로그) + turns. -->
@@ -4553,12 +4651,14 @@ function renderPanelQuestion(s) {
 
 // Pinned Tasks block (.prd/10 §3.1-6): always rendered — with no tasks yet it
 // says so instead of disappearing.
-function renderPanelTasks(tasks) {
+function renderPanelTasks(tasks, scopeLabel) {
   var container = document.getElementById('panel-tasks');
   if (!container) return;
   container.style.display = '';
+  // Spec 12: a subagent's own tasks are labelled with that agent.
+  var title = 'Tasks' + (scopeLabel ? ' <span class="tasks-scope">&middot; ' + esc(scopeLabel) + '</span>' : '');
   if (!tasks || tasks.length === 0) {
-    container.innerHTML = '<div class="panel-tasks-header"><span>Tasks</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>';
+    container.innerHTML = '<div class="panel-tasks-header"><span>' + title + '</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>';
     return;
   }
 
@@ -4572,7 +4672,7 @@ function renderPanelTasks(tasks) {
   var pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
   var html = '<div class="panel-tasks-header">'
-    + '<span>Tasks</span>'
+    + '<span>' + title + '</span>'
     + '<span class="tasks-progress">' + doneCount + '/' + total + ' (' + pct + '%)</span>'
     + '</div>';
 
@@ -4593,9 +4693,9 @@ function renderPanelTasks(tasks) {
 
   if (hiddenCount > 0) {
     if (_panelTasksExpanded) {
-      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;renderPanelTasks(_sessionCache[panelSessionKey]&&_sessionCache[panelSessionKey].tasks)">&#x25B2; Hide completed</button>';
+      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;renderPanelTasks(panelAgentTasks(),panelAgentLabel())">&#x25B2; Hide completed</button>';
     } else {
-      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;renderPanelTasks(_sessionCache[panelSessionKey]&&_sessionCache[panelSessionKey].tasks)">&#x25BC; Show ' + hiddenCount + ' more completed</button>';
+      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;renderPanelTasks(panelAgentTasks(),panelAgentLabel())">&#x25BC; Show ' + hiddenCount + ' more completed</button>';
     }
   }
 
@@ -5808,6 +5908,7 @@ function renderCardFace(s, col) {
   return '<div class="card-head"><span class="card-spark">' + SPARK_SVG + '</span>' + titleHtml + renderOwnerBadge(s) + '</div>'
     + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
     + renderCardTaskRow(s, col)
+    + renderCardAgents(s)
     + renderCardUsage(s)
     + '<div class="card-foot"><span class="card-status">' + renderCardStatus(s, col) + '</span>'
     + (metrics.length ? '<span class="card-metrics">' + metrics.join('') + '</span>' : '')
@@ -5879,6 +5980,374 @@ function toggleCardTasks(key) {
   if (_tasksOpen[key]) delete _tasksOpen[key];
   else _tasksOpen[key] = true;
   refreshCard(key);
+}
+
+// ── Agent tree (spec 12 §4, .prd/12-dashboard-agent-tree-spec.md) ──
+// A card is the main agent; s.agents are the subagents it (or another
+// subagent) started, in spawn order. Each has its own tasks and its own work
+// log (entries with its agentId). Status always shows as an icon AND a word.
+var AGENT_STATUS_LABEL = { running: '실행 중', completed: '완료', failed: '실패', stopped: '중단', unknown: '확인 불가' };
+var AGENT_TREE_ROWS = 8; // rows of an open card's tree before 전체 N개 보기
+var AGENT_DOTS_MAX = 6; // status dots on the collapsed face before +N
+var AGENTS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="3.5" r="1.8"/><circle cx="12" cy="8" r="1.8"/><circle cx="12" cy="13" r="1.8"/><path d="M4 5.3v5.2c0 1.4 1.1 2.5 2.5 2.5h3.7M4 8h6.2"/></svg>';
+var _agentTreeOpen = Object.create(null); // card key → every agent row shown
+var _panelAgent = ''; // the agent the open panel shows ('' = the main agent)
+var _panelAgentListOpen = false;
+var _panelAgentIdsShown = Object.create(null); // agent ids the agent bar lists now
+
+function agentStatusOf(a) {
+  return a && Object.prototype.hasOwnProperty.call(AGENT_STATUS_LABEL, a.status) ? a.status : 'unknown';
+}
+function agentName(a) {
+  return 'A' + toNum(a && a.n) + (a && a.type ? ' ' + a.type : '');
+}
+// Pure: the agents in tree order — each followed by the agents it started —
+// with their depth (1 = started by the main agent). An agent whose parent is
+// not on the card hangs from the main agent. isLast = last child of its parent.
+function agentTreeOrder(agents) {
+  var list = agents || [];
+  var ids = Object.create(null);
+  for (var i = 0; i < list.length; i++) if (list[i] && list[i].id) ids[list[i].id] = true;
+  var kids = Object.create(null);
+  var roots = [];
+  for (var j = 0; j < list.length; j++) {
+    var a = list[j];
+    if (!a || !a.id) continue;
+    var p = a.parentId && ids[a.parentId] && a.parentId !== a.id ? a.parentId : '';
+    if (p) (kids[p] = kids[p] || []).push(a);
+    else roots.push(a);
+  }
+  var out = [];
+  var seen = Object.create(null);
+  function walk(node, depth, last) {
+    if (seen[node.id]) return;
+    seen[node.id] = true;
+    out.push({ agent: node, depth: depth, isLast: last });
+    var c = kids[node.id] || [];
+    for (var k = 0; k < c.length; k++) walk(c[k], depth + 1, k === c.length - 1);
+  }
+  for (var r = 0; r < roots.length; r++) walk(roots[r], 1, r === roots.length - 1);
+  // A parent cycle leaves agents unreached: list them under the main agent.
+  for (var m = 0; m < list.length; m++) if (list[m] && list[m].id && !seen[list[m].id]) walk(list[m], 1, true);
+  return out;
+}
+function agentCounts(agents) {
+  var c = { running: 0, completed: 0, failed: 0, stopped: 0, unknown: 0 };
+  var list = agents || [];
+  for (var i = 0; i < list.length; i++) c[agentStatusOf(list[i])]++;
+  return c;
+}
+// Collapsed face row (§4.1): status dots + "서브에이전트 4 · 실행 2 · 실패 1".
+function renderCardAgents(s) {
+  var list = (s && s.agents) || [];
+  if (!list.length) return '';
+  var total = Math.max(toNum(s.agentsTotal), list.length);
+  var c = agentCounts(list);
+  var dots = '';
+  for (var i = 0; i < list.length && i < AGENT_DOTS_MAX; i++) dots += '<i class="ag-dot is-' + agentStatusOf(list[i]) + '"></i>';
+  if (list.length > AGENT_DOTS_MAX) dots += '<span class="ag-dots-more">+' + (list.length - AGENT_DOTS_MAX) + '</span>';
+  var parts = ['서브에이전트 <b>' + total + '</b>'];
+  if (c.running) parts.push('실행 ' + c.running);
+  if (c.failed) parts.push('<span class="ca-fail">실패 ' + c.failed + '</span>');
+  var words = '서브에이전트 ' + total + (c.running ? ', 실행 ' + c.running : '') + (c.failed ? ', 실패 ' + c.failed : '');
+  return '<div class="card-agents" title="' + escAttr(words) + '">' + AGENTS_SVG
+    + '<span class="ag-dots" aria-hidden="true">' + dots + '</span>'
+    + '<span class="ca-text">' + parts.join(' &middot; ') + '</span></div>';
+}
+function agentIconHtml(st) {
+  if (st === 'running') return '<span class="spinner ag-spinner" aria-hidden="true"></span>';
+  if (st === 'completed') return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>';
+  if (st === 'failed') return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>';
+  if (st === 'stopped') return '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.2"/></svg>';
+  return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="8" cy="8" r="4.5" stroke-dasharray="2.2 2"/></svg>';
+}
+// Elapsed of a running agent (filled by the 1 Hz tick), else its run time.
+function agentTimeHtml(a) {
+  var started = Number(a.startedAt) || 0;
+  if (agentStatusOf(a) === 'running') return started ? '<span class="task-elapsed" data-since="' + started + '"></span>' : '';
+  var ms = toNum(a.durationMs) || (Number(a.endedAt) && started ? Number(a.endedAt) - started : 0);
+  return ms > 0 ? (formatDuration(ms) || '0s') : '';
+}
+// The line under an agent: its task in progress, else the SDK's summary, else its last tool.
+function agentActivity(a) {
+  var tasks = a.tasks || [];
+  for (var i = 0; i < tasks.length; i++) if (tasks[i] && tasks[i].status === 'in_progress') return '#' + tasks[i].id + ' ' + (tasks[i].activeForm || tasks[i].content || '');
+  if (a.summary) return a.summary;
+  if (a.lastTool) return '마지막 도구 ' + a.lastTool;
+  return '';
+}
+// Pure: the waterfall's time axis (§4.2) — the agent set's first start to its
+// last end (or the session's last activity while one runs). Stable between
+// pushes, so an unchanged card renders the same markup.
+function agentSpanAxis(agents, lastActivityMs) {
+  var t0 = 0;
+  var t1 = 0;
+  var list = agents || [];
+  for (var i = 0; i < list.length; i++) {
+    var a = list[i];
+    var st = Number(a.startedAt) || 0;
+    if (!st) continue;
+    if (!t0 || st < t0) t0 = st;
+    var end = Number(a.endedAt) || st;
+    if (end > t1) t1 = end;
+  }
+  if (lastActivityMs > t1) t1 = lastActivityMs;
+  if (t1 - t0 < 1000) t1 = t0 + 1000;
+  return { t0: t0, t1: t1 };
+}
+function agentSpanStyle(a, axis) {
+  var st = Number(a.startedAt) || axis.t0;
+  var end = agentStatusOf(a) === 'running' ? axis.t1 : (Number(a.endedAt) || st);
+  var w = axis.t1 - axis.t0;
+  var left = Math.max(0, Math.min(100, ((st - axis.t0) / w) * 100));
+  var width = Math.max(1.5, Math.min(100 - left, ((end - st) / w) * 100));
+  return 'left:' + left.toFixed(1) + '%;width:' + width.toFixed(1) + '%';
+}
+// One agent row (card tree and panel list share it). act = the data attribute
+// a delegated click handler reads (data-agent-open on a card, data-agent-select
+// in the panel) — no inline JS, so no id ever has to survive JS-in-HTML escaping.
+function renderAgentRow(a, depth, isLast, axis, act, current) {
+  var st = agentStatusOf(a);
+  var time = agentTimeHtml(a);
+  var activity = agentActivity(a);
+  var meta = '<span class="ag-st">' + esc(AGENT_STATUS_LABEL[st]) + '</span>'
+    + (time ? '<span class="ag-time">' + time + '</span>' : '')
+    + '<span class="ag-tools" title="툴 호출 수">툴 ' + toNum(a.toolCalls) + '</span>'
+    + (a.background ? '<span class="ag-bg">배경</span>' : '');
+  return '<button type="button" class="ag-row is-sub is-' + st + (isLast ? ' is-last' : '') + '"'
+    + ' style="--ag-depth:' + Math.max(1, Math.min(6, toNum(depth) || 1)) + '"'
+    + (current ? ' aria-current="true"' : '')
+    + act
+    + ' title="' + escAttr(agentName(a) + (a.description ? ' — ' + a.description : '') + ' · ' + AGENT_STATUS_LABEL[st]) + '">'
+    + '<span class="ag-icon">' + agentIconHtml(st) + '</span>'
+    + '<span class="ag-line"><span class="ag-id">A' + toNum(a.n) + '</span>'
+    + '<span class="ag-type">' + esc(a.type || 'agent') + '</span></span>'
+    + '<span class="ag-meta">' + meta + '</span>'
+    + (a.description ? '<span class="ag-desc">' + esc(a.description) + '</span>' : '')
+    + (activity ? '<span class="ag-sub">' + esc(activity) + '</span>' : '')
+    + (axis ? '<span class="ag-span" aria-hidden="true"><i style="' + agentSpanStyle(a, axis) + '"></i></span>' : '')
+    + '</button>';
+}
+function renderMainAgentRow(s, act, current) {
+  var tasks = s.tasks || [];
+  var done = 0;
+  for (var i = 0; i < tasks.length; i++) if (tasks[i] && tasks[i].status === 'completed') done++;
+  var model = String(s.model || '').replace(/^claude-/, '');
+  return '<button type="button" class="ag-row is-main"' + (current ? ' aria-current="true"' : '')
+    + act + '>'
+    + '<span class="ag-icon"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.8l6.2 6.2L8 14.2 1.8 8z"/></svg></span>'
+    + '<span class="ag-line"><span class="ag-type">메인</span>' + (model ? '<span class="ag-model">' + esc(model) + '</span>' : '') + '</span>'
+    + '<span class="ag-meta">' + (tasks.length ? '<span class="ag-tools">task ' + done + '/' + tasks.length + '</span>' : '') + '</span>'
+    + '</button>';
+}
+// Open card (§4.2): 메인 → subagents tree with a waterfall bar per agent.
+function renderAgentTree(s) {
+  var list = s.agents || [];
+  if (!list.length) return '';
+  var rows = agentTreeOrder(list);
+  var open = !!_agentTreeOpen[s.key];
+  var shown = open ? rows : rows.slice(0, AGENT_TREE_ROWS);
+  var axis = agentSpanAxis(list, new Date(s.lastActivity).getTime() || 0);
+  var total = Math.max(toNum(s.agentsTotal), list.length);
+  var html = '<div class="ag-tree" role="group" aria-label="에이전트">'
+    + '<div class="ag-head"><span>에이전트</span><span class="ag-count">메인 + ' + total + '</span></div>'
+    + renderMainAgentRow(s, ' data-agent-open=""', false);
+  for (var i = 0; i < shown.length; i++) {
+    var a = shown[i].agent;
+    html += renderAgentRow(a, shown[i].depth, shown[i].isLast, axis, ' data-agent-open="' + escAttr(a.id) + '"', false);
+  }
+  if (rows.length > AGENT_TREE_ROWS) {
+    html += '<button type="button" class="ag-toggle" data-agent-tree-toggle="1" aria-expanded="' + (open ? 'true' : 'false') + '">'
+      + (open ? '접기' : '전체 ' + rows.length + '개 보기') + '</button>';
+  }
+  if (total > list.length) html += '<div class="ag-more">이전 에이전트 ' + (total - list.length) + '개는 카드 목록 밖 — 작업 로그에서 볼 수 있어요</div>';
+  return html + '</div>';
+}
+function toggleAgentTree(key) {
+  if (_agentTreeOpen[key]) delete _agentTreeOpen[key];
+  else _agentTreeOpen[key] = true;
+  refreshCard(key);
+}
+function openPanelAgent(key, agentId) {
+  openPanel(key, true, agentId || '');
+}
+
+// ── Panel scope: which agent's tasks and work log the panel shows (§4.3) ──
+function panelAgentOf(s) {
+  if (!_panelAgent || !s || !s.agents) return null;
+  for (var i = 0; i < s.agents.length; i++) if (s.agents[i] && s.agents[i].id === _panelAgent) return s.agents[i];
+  return null;
+}
+function panelAgentTasks() {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  if (!s) return undefined;
+  if (!_panelAgent) return s.tasks;
+  var a = panelAgentOf(s);
+  return a ? (a.tasks || []) : [];
+}
+function panelAgentLabel() {
+  if (!_panelAgent) return '';
+  var a = panelAgentOf(panelSessionKey ? _sessionCache[panelSessionKey] : null);
+  return a ? agentName(a) : '에이전트';
+}
+// Agents that wrote to the open log but are not on the card (over its bound): reachable all the same.
+function panelLogOnlyAgents(s) {
+  var known = Object.create(null);
+  var list = (s && s.agents) || [];
+  for (var i = 0; i < list.length; i++) known[list[i].id] = true;
+  var out = [];
+  var entries = (_wl && _wl.entries) || [];
+  for (var j = 0; j < entries.length; j++) {
+    var id = entries[j] && entries[j].agentId;
+    if (id && !known[id]) { known[id] = true; out.push(String(id)); }
+  }
+  return out;
+}
+function renderPanelAgents() {
+  var el = document.getElementById('panel-agents');
+  if (!el) return;
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var list = (s && s.agents) || [];
+  var extra = panelLogOnlyAgents(s);
+  _panelAgentIdsShown = Object.create(null);
+  for (var q = 0; q < list.length; q++) _panelAgentIdsShown[list[q].id] = true;
+  for (var w = 0; w < extra.length; w++) _panelAgentIdsShown[extra[w]] = true;
+  if (!s || (!list.length && !extra.length)) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  el.style.display = '';
+  var byId = Object.create(null);
+  for (var i = 0; i < list.length; i++) byId[list[i].id] = list[i];
+  var sel = _panelAgent ? byId[_panelAgent] : null;
+  // Path: 메인 › … › the selected agent (each step a button back to it).
+  var chain = [];
+  for (var cur = sel, guard = 0; cur && guard < 8; guard++) {
+    chain.unshift(cur);
+    cur = cur.parentId ? byId[cur.parentId] : null;
+  }
+  var path = '<button type="button" class="pa-crumb"' + (_panelAgent ? '' : ' aria-current="true"') + ' data-agent-select="">메인</button>';
+  for (var c = 0; c < chain.length; c++) {
+    var isCur = chain[c].id === _panelAgent;
+    path += '<span class="pa-sep" aria-hidden="true">&rsaquo;</span><button type="button" class="pa-crumb"'
+      + (isCur ? ' aria-current="true"' : '') + ' data-agent-select="' + escAttr(chain[c].id) + '">' + esc(agentName(chain[c])) + '</button>';
+  }
+  if (_panelAgent && !sel) path += '<span class="pa-sep" aria-hidden="true">&rsaquo;</span><span class="pa-crumb" aria-current="true">에이전트 ' + esc(_panelAgent.slice(-6)) + '</span>';
+  var total = Math.max(toNum(s.agentsTotal), list.length) + extra.length;
+  var html = '<div class="pa-bar"><nav class="pa-path" aria-label="에이전트 경로">' + path + '</nav>'
+    + '<button type="button" class="pa-toggle" id="pa-toggle" data-agent-list-toggle="1" aria-expanded="' + (_panelAgentListOpen ? 'true' : 'false') + '" aria-controls="pa-list">'
+    + AGENTS_SVG + '<span>에이전트 ' + total + '</span><svg class="pa-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button></div>';
+  if (sel) {
+    var st = agentStatusOf(sel);
+    var bits = ['<span class="pa-st is-' + st + '">' + agentIconHtml(st) + esc(AGENT_STATUS_LABEL[st]) + '</span>'];
+    var time = agentTimeHtml(sel);
+    if (time) bits.push(time);
+    bits.push('툴 ' + toNum(sel.toolCalls));
+    if (toNum(sel.tokens) > 0) bits.push(formatTokens(sel.tokens) + ' tok');
+    if (sel.background) bits.push('배경 실행');
+    html += '<div class="pa-sum">' + bits.join('<span class="pa-dot" aria-hidden="true">&middot;</span>')
+      + '<span class="pa-note">토큰 배지·대화 내역은 세션 전체</span></div>';
+    var line = sel.description || '';
+    var act = agentActivity(sel);
+    if (line || act) html += '<div class="pa-desc">' + esc(line) + (line && act ? ' — ' : '') + (act ? '<span class="pa-act">' + esc(act) + '</span>' : '') + '</div>';
+  } else if (_panelAgent) {
+    html += '<div class="pa-sum">카드 목록 밖의 에이전트 — 작업 로그만 있어요</div>';
+  }
+  html += '<div class="pa-list" id="pa-list"' + (_panelAgentListOpen ? '' : ' hidden') + '>';
+  if (_panelAgentListOpen) {
+    var axis = agentSpanAxis(list, new Date(s.lastActivity).getTime() || 0);
+    html += renderMainAgentRow(s, ' data-agent-select=""', !_panelAgent);
+    var rows = agentTreeOrder(list);
+    for (var r = 0; r < rows.length; r++) {
+      var a = rows[r].agent;
+      html += renderAgentRow(a, rows[r].depth, rows[r].isLast, axis, ' data-agent-select="' + escAttr(a.id) + '"', a.id === _panelAgent);
+    }
+    for (var x = 0; x < extra.length; x++) {
+      html += '<button type="button" class="ag-row is-sub is-unknown is-last" style="--ag-depth:1"' + (extra[x] === _panelAgent ? ' aria-current="true"' : '')
+        + ' data-agent-select="' + escAttr(extra[x]) + '"><span class="ag-icon">' + agentIconHtml('unknown') + '</span>'
+        + '<span class="ag-line"><span class="ag-type">기타 에이전트</span><span class="ag-model">' + esc(extra[x].slice(-6)) + '</span></span><span class="ag-meta"></span></button>';
+    }
+  }
+  html += '</div>';
+  el.innerHTML = html;
+  updateTimersIn(el);
+}
+function togglePanelAgentList() {
+  _panelAgentListOpen = !_panelAgentListOpen;
+  renderPanelAgents();
+  var t = document.getElementById('pa-toggle');
+  if (t) t.focus();
+}
+// Switch the panel's scope: its Tasks and work log follow the chosen agent.
+// The work log keeps one open/closed map of task groups per agent.
+function selectPanelAgent(agentId) {
+  var next = agentId || '';
+  if (_wl) {
+    var saved = _wl.groupOpenBy || (_wl.groupOpenBy = Object.create(null));
+    saved[_panelAgent] = _wl.groupOpen || Object.create(null);
+    _wl.groupOpen = saved[next] || Object.create(null);
+  }
+  _panelAgent = next;
+  _panelAgentListOpen = false;
+  _panelTasksExpanded = false;
+  renderPanelAgents();
+  renderPanelTasks(panelAgentTasks(), panelAgentLabel());
+  repaintWorkLogScope();
+}
+function repaintWorkLogScope() {
+  var list = document.getElementById('worklog-list');
+  if (!_wl || !list) return;
+  if (!_wl.entries.length) return;
+  wlRenderList(_wl, list);
+  updateTimersIn(list);
+  setTextIfChanged(document.getElementById('worklog-count'), String(wlScopeEntries(_wl.entries).length));
+  wlEnsureTabStop(list);
+  if (!wlScopeEntries(_wl.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
+}
+// Pure: how an entry reads in the scope of the given agent ('' = main), or null
+// when it is not in that scope. The main agent's scope = entries without an
+// agentId; a subagent's = its own entries plus the call that started it and
+// that call's result (made by its parent: shown as 지시 / 결과, outside any task).
+function wlScopeEntry(e, agent) {
+  if (!e) return null;
+  var who = e.agentId ? String(e.agentId) : '';
+  if (who === agent) return e;
+  if (agent && e.agentRef === agent) {
+    var role = e.kind === 'tool' ? 'spawn' : 'result';
+    var copy = {};
+    for (var k in e) if (Object.prototype.hasOwnProperty.call(e, k) && k !== 'taskId' && k !== 'taskTitle') copy[k] = e[k];
+    copy._role = role;
+    return copy;
+  }
+  return null;
+}
+function wlScopeEntries(entries) {
+  var out = [];
+  var list = entries || [];
+  // A background agent's spawn result only acknowledges its start.
+  var bg = false;
+  if (_panelAgent) {
+    var a = panelAgentOf(panelSessionKey ? _sessionCache[panelSessionKey] : null);
+    bg = !!(a && a.background);
+  }
+  for (var i = 0; i < list.length; i++) {
+    var v = wlScopeEntry(list[i], _panelAgent);
+    if (!v) continue;
+    if (bg && v._role === 'result') v._role = 'ack';
+    out.push(v);
+  }
+  return out;
+}
+// Pure: the log predates agent attribution and holds a subagent call, so its
+// "main" entries may be a subagent's (spec 12 §2.4).
+function wlLegacyMixed(entries) {
+  var list = entries || [];
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (e && !e.attributed && e.kind === 'tool' && (e.tool === 'Agent' || e.tool === 'Task')) return true;
+  }
+  return false;
 }
 
 // Latest user instruction + model response (§3.1-4), fetched lazily on
@@ -6258,6 +6727,7 @@ function renderCardBody(s, col) {
     + subtitlesHtml
     + renderCardResume(s, col)
     + renderCardGoal(s, col, isOwner && !isSibling)
+    + renderAgentTree(s)
     + renderTimeline(s)
     + ioHtml
     + questionHtml
@@ -7422,8 +7892,10 @@ function connectWs() {
           var panelS = _sessionCache[panelSessionKey];
           renderPanelQuestion(panelS);
           // The board carries the server's one-current-task view; a turn that
-          // just ended must stop spinning its task in the open panel too.
-          renderPanelTasks(panelS.tasks);
+          // just ended must stop spinning its task in the open panel too —
+          // the main agent's or, when one is chosen, a subagent's (spec 12).
+          renderPanelAgents();
+          renderPanelTasks(panelAgentTasks(), panelAgentLabel());
           // If session no longer has pending multi-choice, clear mc state
           if (!panelS.pendingQuestion || panelS.pendingQuestion.type !== 'user_choices') {
             if (_mcState[panelSessionKey]) delete _mcState[panelSessionKey];
@@ -7437,7 +7909,9 @@ function connectWs() {
         }
         loadSessions();
         // Also update panel tasks if panel is open for this session
-        if (panelOpen && panelSessionKey === msg.sessionKey) {
+        // task_update is the main agent's list: it repaints the panel only
+        // while the panel shows the main agent (spec 12 §4.3).
+        if (panelOpen && panelSessionKey === msg.sessionKey && !_panelAgent) {
           renderPanelTasks(msg.tasks);
           wlRefreshGroupHeads();
         }
@@ -7502,6 +7976,12 @@ function connectWs() {
         if (panelOpen && panelSessionKey === updatedKey) {
           var pt2 = document.getElementById('panel-title');
           if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || 'Untitled';
+          // Spec 12: the agent tree moved (spawn, status, tool count, a subagent's tasks).
+          renderPanelAgents();
+          if (_panelAgent) {
+            renderPanelTasks(panelAgentTasks(), panelAgentLabel());
+            wlRefreshGroupHeads();
+          }
         }
       } else if (msg.type === 'work_log' && msg.entry) {
         // .prd/10 §3.3 — live work-log entry. Append when its conversation is
@@ -7929,6 +8409,8 @@ function loadWorkLog() {
     if (result !== 'denied' && !st.entries.length) showWorkLogEmpty(WL_EMPTY_MSG);
     // T9: the whole log, not just its latest 500 entries.
     if (result === 'ok') wlLoadOlder(st, wlFetchJson, paintWorkLog);
+    // Spec 12: agents that wrote to the log but are not on the card get a place in the agent bar.
+    if (result === 'ok') renderPanelAgents();
     // No re-landing here: the log is collapsed, so its arrival moves nothing,
     // and a reader who already scrolled is left where they are.
   });
@@ -7941,6 +8423,8 @@ function recoverWorkLog() {
 function pushLiveWorkLog(convId, entry) {
   if (!_wl || _wl.convId !== convId) return;
   wlOnLive(_wl, entry, wlFetchJson, paintWorkLog);
+  // Spec 12: a live entry of an agent the card does not list yet.
+  if (entry && entry.agentId && !_panelAgentIdsShown[entry.agentId]) renderPanelAgents();
 }
 
 // Work-log section open / closed (§3.1-6). Every panel opening starts closed
@@ -8081,7 +8565,9 @@ function wlBuildRows(entries) {
 // The task behind a group, from the open session's task ledger (status, time, tool calls).
 function wlTaskInfo(taskId) {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  var all = ((s && s.tasks) || []).concat((s && s.earlierTasks) || []);
+  // Spec 12: task ids belong to one agent — look in the agent the panel shows.
+  var owner = s && _panelAgent ? panelAgentOf(s) : s;
+  var all = ((owner && owner.tasks) || []).concat((owner && owner.earlierTasks) || []);
   for (var i = 0; i < all.length; i++) if (all[i] && all[i].id === taskId) return all[i];
   return null;
 }
@@ -8110,7 +8596,7 @@ function renderWorkLogGroup(grp, open, task) {
 function wlFillGroupBody(state, grpEl, taskId) {
   var body = grpEl.querySelector('.wl-group-body');
   if (!body || body.getAttribute('data-filled') === '1') return;
-  var entries = state.entries.filter(function(x) { return wlGroupOf(x) === taskId; });
+  var entries = wlScopeEntries(state.entries).filter(function(x) { return wlGroupOf(x) === taskId; });
   body.innerHTML = entries.map(renderWorkLogEntry).join('');
   body.setAttribute('data-filled', '1');
   for (var i = 0; i < entries.length; i++) {
@@ -8139,10 +8625,16 @@ function wlGroupEl(list, taskId) {
 }
 // The whole list from state.entries; open details are re-opened (raw output is cached on the state).
 function wlRenderList(state, list) {
-  var rows = wlBuildRows(state.entries);
+  // Spec 12: only the agent the panel shows (the main agent by default).
+  var rows = wlBuildRows(wlScopeEntries(state.entries));
   var newest = null;
   for (var i = rows.length - 1; i >= 0; i--) if (rows[i].group) { newest = rows[i].group; break; }
-  list.innerHTML = rows.map(function(r) {
+  // A log from before agent attribution that started subagents: its "main"
+  // entries may be a subagent's — say so instead of claiming they are main's.
+  var legacy = !_panelAgent && wlLegacyMixed(state.entries)
+    ? '<div class="wl-legacy" role="note">이전 통합 로그 — 메인/서브 귀속 미확인</div>'
+    : '';
+  list.innerHTML = legacy + rows.map(function(r) {
     if (r.entry) return renderWorkLogEntry(r.entry);
     return renderWorkLogGroup(r.group, wlGroupOpen(state, r.group.taskId, r.group === newest), wlTaskInfo(r.group.taskId));
   }).join('');
@@ -8160,8 +8652,9 @@ function wlRenderList(state, list) {
 // group, a new task as a new — open — group at the end).
 function wlAppendTail(state, list, added) {
   var tmp = document.createElement('div');
-  for (var i = 0; i < added.length; i++) {
-    var e = added[i].entry;
+  var scoped = wlScopeEntries(added.map(function(a) { return a.entry; }));
+  for (var i = 0; i < scoped.length; i++) {
+    var e = scoped[i];
     var g = wlGroupOf(e);
     if (!g) {
       tmp.innerHTML = renderWorkLogEntry(e);
@@ -8187,7 +8680,7 @@ function wlAppendTail(state, list, added) {
 function wlRefreshGroupHead(state, grpEl, taskId) {
   var head = grpEl.querySelector('.wl-group-head');
   if (!head) return;
-  var entries = state.entries.filter(function(x) { return wlGroupOf(x) === taskId; });
+  var entries = wlScopeEntries(state.entries).filter(function(x) { return wlGroupOf(x) === taskId; });
   var title = '';
   for (var i = 0; i < entries.length; i++) if (entries[i].taskTitle) title = String(entries[i].taskTitle);
   var tmp = document.createElement('div');
@@ -8237,7 +8730,7 @@ function paintWorkLog(state, added) {
   if (tail) wlAppendTail(state, list, added);
   else wlRenderList(state, list);
   updateTimersIn(list);
-  setTextIfChanged(document.getElementById('worklog-count'), String(n));
+  setTextIfChanged(document.getElementById('worklog-count'), String(wlScopeEntries(state.entries).length));
   wlEnsureTabStop(list);
   // Tail-follow, unless the reader has an entry's detail open; older entries
   // arriving above keep the reader's place.
@@ -8286,11 +8779,19 @@ function renderWorkLogEntry(e) {
     var tool = e.tool ? String(e.tool) : '';
     if (tool && text === tool) shown = '';
     else if (tool && text.indexOf(tool + ' ') === 0) shown = text.slice(tool.length + 1);
-    return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + '"' + seqAttr + '>' + rowOpen()
+    // Spec 12: in a subagent's scope the call that started it reads 지시 and
+    // its result 결과 (a background start: 배경 실행 시작); elsewhere a spawn
+    // call offers a way to that subagent.
+    var role = e._role === 'spawn' ? '지시' : e._role === 'result' ? '결과' : e._role === 'ack' ? '배경 실행 시작' : '';
+    var link = kind === 'tool' && e.agentRef && !e._role
+      ? '<button type="button" class="wl-agent-link" tabindex="-1" data-agent="' + escAttr(e.agentRef) + '">서브에이전트 열기 &rarr;</button>'
+      : '';
+    return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + (role ? ' wl-agent-io' : '') + '"' + seqAttr + '>' + rowOpen()
       + '<span class="wl-mark">' + mark + '</span>'
+      + (role ? '<span class="wl-role">' + role + '</span>' : '')
       + (tool ? '<span class="wl-tool-name">' + esc(tool) + '</span>' : '')
       + '<span class="wl-text" title="' + escAttr(text) + '">' + esc(shown) + '</span>'
-      + timeHtml + '</div>' + detailHtml + '</div>';
+      + timeHtml + '</div>' + link + detailHtml + '</div>';
   }
   if (kind === 'instruction') text = decodeSlackEntities(text);
   var label = WL_LABELS[kind];
@@ -8348,6 +8849,12 @@ function wlSetTabStop(list, row) {
     return entry ? Math.floor(Number(entry.getAttribute('data-seq')) || 0) : 0;
   }
   list.addEventListener('click', function(e) {
+    // Spec 12: a spawn row's 열기 → switches the panel to that subagent.
+    var agentLink = e.target.closest('.wl-agent-link');
+    if (agentLink && list.contains(agentLink)) {
+      selectPanelAgent(agentLink.getAttribute('data-agent') || '');
+      return;
+    }
     var btn = e.target.closest('.wl-detail-btn');
     if (btn && list.contains(btn)) {
       var act = btn.getAttribute('data-wl-act');
@@ -8415,10 +8922,13 @@ function scrollPanelToWorkLog() {
 // focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link:
 // the work log stays collapsed like every opening, but the panel lands with its
 // header in view instead of on the newest turns.
-function openPanel(sessionKey, focusWorkLog) {
+function openPanel(sessionKey, focusWorkLog, agentId) {
   const s = _sessionCache[sessionKey];
   if (!s) return;
   _panelFocusWorkLog = !!focusWorkLog;
+  // Spec 12 §4.3: the agent whose tasks and work log the panel shows ('' = main).
+  _panelAgent = agentId ? String(agentId) : '';
+  _panelAgentListOpen = false;
 
   // Unconditional UI reset on card switch — an in-flight send from a previous
   // card must never leak "Sending..." / disabled state into this card. The
@@ -8495,9 +9005,10 @@ function openPanel(sessionKey, focusWorkLog) {
   // Pending question in panel
   renderPanelQuestion(s);
 
-  // Tasks (panel card view)
+  // Agent bar (spec 12 §4.3), then the chosen agent's tasks.
+  renderPanelAgents();
   _panelTasksExpanded = false;
-  renderPanelTasks(s.tasks);
+  renderPanelTasks(panelAgentTasks(), panelAgentLabel());
 
   // Conversation turns — paginated (infinite scroll: latest 30, load older on scroll-up)
   const turnsEl = document.getElementById('panel-turns');
@@ -8819,6 +9330,8 @@ function closePanel() {
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
+  _panelAgent = '';
+  _panelAgentListOpen = false;
   _rawLoadedCache = Object.create(null);
   _panelGen++;
   _panelTurnsHasMore = false;
@@ -8974,6 +9487,21 @@ function sendRetry(msg) {
 (function initBoardInteractions() {
   var kb = document.getElementById('kanban');
   kb.addEventListener('click', function(e) {
+    // Spec 12: an open card's agent tree — a row opens the panel on that agent.
+    var agentRow = e.target.closest('[data-agent-open]');
+    if (agentRow && kb.contains(agentRow)) {
+      var cardEl = agentRow.closest('.card');
+      var cardKey = cardEl && cardEl.getAttribute('data-session-key');
+      if (cardKey) openPanelAgent(cardKey, agentRow.getAttribute('data-agent-open') || '');
+      return;
+    }
+    var treeToggle = e.target.closest('[data-agent-tree-toggle]');
+    if (treeToggle && kb.contains(treeToggle)) {
+      var tCard = treeToggle.closest('.card');
+      var tKey = tCard && tCard.getAttribute('data-session-key');
+      if (tKey) toggleAgentTree(tKey);
+      return;
+    }
     var face = e.target.closest('.card-face');
     if (!face || !kb.contains(face)) return;
     var key = face.parentNode.getAttribute('data-session-key');
@@ -8994,6 +9522,21 @@ function sendRetry(msg) {
   var saved = null;
   try { saved = localStorage.getItem('soma-board-view'); } catch (_e) {}
   setBoardView(saved === 'board' || saved === 'list' ? saved : (window.innerWidth < 640 ? 'list' : 'board'));
+})();
+// Spec 12 §4.3 — the panel's agent bar: path steps and list rows choose the agent, the toggle opens the list.
+(function initPanelAgentInteractions() {
+  var bar = document.getElementById('panel-agents');
+  if (!bar) return;
+  bar.addEventListener('click', function(e) {
+    var pick = e.target.closest('[data-agent-select]');
+    if (pick && bar.contains(pick)) {
+      if (pick.getAttribute('aria-current') === 'true' && !pick.classList.contains('ag-row')) return;
+      selectPanelAgent(pick.getAttribute('data-agent-select') || '');
+      return;
+    }
+    var toggle = e.target.closest('[data-agent-list-toggle]');
+    if (toggle && bar.contains(toggle)) togglePanelAgentList();
+  });
 })();
 
 // ── Init ──

@@ -93,6 +93,10 @@ Upload images (JPG/PNG/GIF/WebP), text, or code files directly in Slack. 50MB li
 
 GitHub App (recommended) or Personal Access Token authentication with automatic token renewal.
 
+### 📋 Agent Inbox Dashboard
+
+A web dashboard (`dashboard` in a Slack thread gives a login link) shows every session as a card on a NEEDS YOU / RUNNING / DONE board. A card is the main agent; the SDK subagents it starts with the `Agent` tool (and the ones they start) are listed inside it as a tree — each with its status, run time, tool calls and its own task list and work log. The side panel switches between agents (`메인 › A2 Explore`), so the main agent's tasks and log never mix with a subagent's. Spec: [`.prd/12-dashboard-agent-tree-spec.md`](./.prd/12-dashboard-agent-tree-spec.md).
+
 ### 🤖 Multi-Agent Architecture
 
 Run multiple independent AI agents within a single process. Each sub-agent is a separate Slack App with its own persona, system prompt, and session isolation.
