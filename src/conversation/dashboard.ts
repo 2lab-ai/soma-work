@@ -37,6 +37,7 @@ import { MetricsEventStore } from '../metrics/event-store';
 import { calculateTokenCost } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
+import { type AgentRegistry, loseRunningAgents, sanitizeAgentRegistry } from '../session/agent-registry';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
 import { productionModelCatalogDeps } from '../session/model-catalog-deps';
 import {
@@ -156,6 +157,15 @@ export interface KanbanSession {
   tasks?: DashboardTask[];
   /** Tasks a later list no longer holds (completed earlier), newest first. */
   earlierTasks?: DashboardTask[];
+  /**
+   * Spec 12 — the subagents of this session (the main agent is the card
+   * itself), in spawn order, each with its own tasks. At most
+   * {@link AGENTS_ON_CARD_MAX}: running agents and their ancestors first, then
+   * the newest. Absent when the session never started one.
+   */
+  agents?: DashboardAgent[];
+  /** How many subagents the session has in all (≥ `agents.length`). */
+  agentsTotal?: number;
   /** Slack thread permalink */
   slackThreadUrl?: string;
   /** Dashboard v2.1 — live turn timer + counters (per session) */
@@ -229,6 +239,85 @@ export interface DashboardTask {
   startedAt?: number;
   completedAt?: number;
   toolCalls: number;
+}
+
+/** One subagent as the card carries it (an `AgentRecord` of `session/agent-registry.ts`). */
+export interface DashboardAgent {
+  /** The id of the tool call that started it (work-log entries carry it as `agentId` / `agentRef`). */
+  id: string;
+  /** Spawn order (`A<n>`). */
+  n: number;
+  parentId?: string;
+  type?: string;
+  description?: string;
+  background?: boolean;
+  status: 'running' | 'completed' | 'failed' | 'stopped' | 'unknown';
+  startedAt: number;
+  endedAt?: number;
+  toolCalls: number;
+  lastTool?: string;
+  tokens?: number;
+  durationMs?: number;
+  summary?: string;
+  /** Its latest TodoWrite list — at most one current task, none unless it runs. */
+  tasks?: DashboardTask[];
+  earlierTasks?: DashboardTask[];
+}
+
+/** Most subagents one card carries. */
+export const AGENTS_ON_CARD_MAX = 40;
+
+/**
+ * Spec 12 — a registry as the card carries it. `live` = the session can still
+ * run them; an archive cannot, so an agent it still thought running reads
+ * `unknown`.
+ */
+export function agentsToKanban(
+  registry: AgentRegistry | undefined,
+  live: boolean,
+): Pick<KanbanSession, 'agents' | 'agentsTotal'> {
+  const reg = live ? registry : loseRunningAgents(registry, Date.now());
+  const all = reg?.agents ?? [];
+  if (all.length === 0) return {};
+  let chosen = all;
+  if (all.length > AGENTS_ON_CARD_MAX) {
+    const byId = new Map(all.map((a) => [a.id, a]));
+    const keep = new Set<string>();
+    for (const a of all) {
+      if (a.status !== 'running') continue;
+      for (let cur: (typeof all)[number] | undefined = a; cur && !keep.has(cur.id); ) {
+        keep.add(cur.id);
+        cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+      }
+    }
+    for (let i = all.length - 1; i >= 0 && keep.size < AGENTS_ON_CARD_MAX; i--) keep.add(all[i].id);
+    chosen = all.filter((a) => keep.has(a.id));
+  }
+  return {
+    agents: chosen.map((a) => {
+      const view = a.ledger ? ledgerTasks(a.ledger) : undefined;
+      const tasks = normalizeTaskProgress(view?.current, a.status === 'running');
+      return {
+        id: a.id,
+        n: a.n,
+        ...(a.parentId ? { parentId: a.parentId } : {}),
+        ...(a.type ? { type: a.type } : {}),
+        ...(a.description ? { description: a.description } : {}),
+        ...(a.background !== undefined ? { background: a.background } : {}),
+        status: a.status,
+        startedAt: a.startedAt,
+        ...(a.endedAt ? { endedAt: a.endedAt } : {}),
+        toolCalls: a.toolCalls,
+        ...(a.lastTool ? { lastTool: a.lastTool } : {}),
+        ...(a.tokens ? { tokens: a.tokens } : {}),
+        ...(a.durationMs ? { durationMs: a.durationMs } : {}),
+        ...(a.summary ? { summary: a.summary } : {}),
+        ...(tasks?.length ? { tasks } : {}),
+        ...(view?.earlier.length ? { earlierTasks: view.earlier } : {}),
+      };
+    }),
+    agentsTotal: all.length,
+  };
 }
 
 export interface KanbanGoal {
@@ -994,6 +1083,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...modelFields(s),
     tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume)),
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
+    ...agentsToKanban(s.agents, true),
     slackThreadUrl:
       s.channelId && s.threadTs ? (buildThreadPermalink(s.channelId, s.threadTs) ?? undefined) : undefined,
     // Dashboard v2.1 — timer + compaction fields
@@ -1111,6 +1201,7 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
       : undefined,
     doneAt: Number.isFinite(Date.parse(archived.lastActivity)) ? Date.parse(archived.lastActivity) : undefined,
     ...archivedTasks(archived),
+    ...agentsToKanban(sanitizeAgentRegistry(archived.agents), false),
     goal: goalToKanban(archived),
     slackThreadUrl:
       archived.channelId && archived.threadTs

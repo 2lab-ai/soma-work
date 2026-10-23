@@ -196,7 +196,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z bypass [set on\|off]` | Toggle permission bypass |
 | `/z persona [set <name>\|list]` | Switch persona |
 | `/z model [set <name>\|list]` | Switch model (sonnet, opus, haiku) |
-| `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list, questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |
+| `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list (the main agent's — a subagent's own list lives on its dashboard entry), questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |
 | `/z session` · `sessions` | List active sessions (`sessions` naked form still accepted) |
 | `/z new` · `/z renew` | Reset / renew session (naked `new` / `renew` also accepted) |
 | `/z close` | Close current thread session |
