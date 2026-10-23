@@ -22,11 +22,21 @@ import {
   type AuthContext,
   exceedsAbsoluteSessionLifetime,
   getJwtSecret,
+  hasOAuthStateCookie,
   loginReturnCookieFor,
   registerOAuthRoutes,
   validateCsrfToken,
   verifyDashboardTokenRaw,
 } from './oauth';
+import {
+  effectiveViewerUrl,
+  getInstanceId,
+  getPublicUrlStatus,
+  INSTANCE_HEADER,
+  isSecureViewerOrigin,
+  startPublicUrlCheck,
+  stopPublicUrlCheck,
+} from './public-url';
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
 import type { ConversationTurn } from './types';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
@@ -139,7 +149,7 @@ function maybeRotateJwt(request: FastifyRequest, reply: FastifyReply): void {
       originalIat,
     };
     const newToken = jwt.sign(newPayload, secret, { expiresIn });
-    const secure = (config.conversation.viewerUrl || '').startsWith('https');
+    const secure = isSecureViewerOrigin();
     reply.header(
       'Set-Cookie',
       `${COOKIE_NAME}=${encodeURIComponent(newToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${expiresIn}${secure ? '; Secure' : ''}`,
@@ -217,7 +227,8 @@ async function csrfMiddleware(request: FastifyRequest, reply: FastifyReply): Pro
   }
 
   if (!isValid) {
-    reply.status(403).send({ error: 'CSRF token validation failed' });
+    // `code` lets a client tell a stale token (refresh + retry) from a permission refusal.
+    reply.status(403).send({ error: 'CSRF token validation failed', code: 'csrf_failed' });
     return;
   }
 }
@@ -358,7 +369,9 @@ function _resolveViewerHost(): string {
  *
  * `config.conversation.viewerUrl` (env `CONVERSATION_VIEWER_URL`) wins —
  * an explicit URL is the operator's intent and may include a scheme,
- * port, or reverse-proxy hostname that host-detection cannot infer.
+ * port, or reverse-proxy hostname that host-detection cannot infer —
+ * unless the public URL check proved another server answers there and the
+ * OAuth callback origin reaches this one (`effectiveViewerUrl`, public-url.ts).
  * Only when it's unset do we fall back to the detected hostname so that
  * links shared via Slack (e.g. the `dashboard` SSO URL, `/conversations`
  * links) are reachable from other devices on the network — `localhost`
@@ -366,7 +379,8 @@ function _resolveViewerHost(): string {
  * fail.
  */
 export function getViewerBaseUrl(): string {
-  if (config.conversation.viewerUrl) return config.conversation.viewerUrl;
+  const configured = effectiveViewerUrl();
+  if (configured) return configured;
   const port = activePort || getPort();
   return `http://${_resolveViewerHost()}:${port}`;
 }
@@ -395,31 +409,35 @@ function splitHost(value: string): HostPort {
   return { hostname: host.slice(0, colon), port: host.slice(colon + 1) };
 }
 
+/** The https origin browsers are sent to, or null when `url` is not https. */
+function httpsCanonical(url: string): { origin: string; hostname: string; port: string } | null {
+  if (!url) return null;
+  let canonical: URL;
+  try {
+    canonical = new URL(url);
+  } catch {
+    return null;
+  }
+  if (canonical.protocol !== 'https:') return null;
+  // URL.host omits the default port, and so do browsers in the Host header.
+  const target = splitHost(canonical.host);
+  return { origin: canonical.origin, hostname: target.hostname, port: target.port || '443' };
+}
+
 /**
  * Redirect browsers that reach the viewer on a non-canonical origin to the
- * https `viewerUrl`.
+ * https public URL links are minted on (`effectiveViewerUrl`: `viewerUrl`, or
+ * the proven callback origin while `viewerUrl` reaches another server).
  *
- * Once `viewerUrl` is https every auth cookie carries `Secure` (oauth.ts), and
+ * Once that URL is https every auth cookie carries `Secure` (oauth.ts), and
  * a browser on plain `http://<host>:<port>` — the shape of links minted before
  * `viewerUrl` was set — never stores it, so login from an old Slack link fails
  * silently. Only GET/HEAD are redirected; loopback Hosts (health checks,
  * in-process callers), `/health` and WebSocket upgrades are left alone, and
- * nothing is installed unless `viewerUrl` is a valid https URL.
+ * nothing is redirected while that URL is not a valid https URL. The target is
+ * resolved per request, so it follows the public URL check.
  */
 function registerCanonicalOriginRedirect(instance: FastifyInstance): void {
-  let canonical: URL;
-  try {
-    canonical = new URL(config.conversation.viewerUrl || '');
-  } catch {
-    return;
-  }
-  if (canonical.protocol !== 'https:') return;
-
-  const origin = canonical.origin;
-  // URL.host omits the default port, and so do browsers in the Host header.
-  const target = splitHost(canonical.host);
-  const targetPort = target.port || '443';
-
   instance.addHook('onRequest', async (request, reply) => {
     if (request.method !== 'GET' && request.method !== 'HEAD') return;
     // Origin-form only; anything else is not a path we can append to origin.
@@ -429,15 +447,22 @@ function registerCanonicalOriginRedirect(instance: FastifyInstance): void {
     if (typeof upgrade === 'string' && upgrade.toLowerCase().includes('websocket')) return;
     const hostHeader = request.headers.host;
     if (!hostHeader) return;
+    const target = httpsCanonical(effectiveViewerUrl());
+    if (!target) return;
+    // A sign-in that started on this origin finishes here: its state cookie is
+    // host-only, and the public URL may have changed while the user was away.
+    const callback = /^\/auth\/(google|microsoft)\/callback$/.exec(request.url.split('?')[0]);
+    if (callback && hasOAuthStateCookie(request, callback[1])) return;
 
     const { hostname, port } = splitHost(hostHeader);
     if (LOOPBACK_HOSTNAMES.has(hostname)) return;
-    if (hostname === target.hostname && (port || '443') === targetPort) return;
+    if (hostname === target.hostname && (port || '443') === target.port) return;
 
     // 302, not 301: viewerUrl is ops config that may be rolled back, and browsers cache a 301 past that.
-    return reply.redirect(`${origin}${request.url}`, 302);
+    return reply.redirect(`${target.origin}${request.url}`, 302);
   });
-  logger.info(`Canonical-origin redirect enabled: ${origin}`);
+  const configured = httpsCanonical(config.conversation.viewerUrl || '');
+  if (configured) logger.info(`Canonical-origin redirect enabled: ${configured.origin}`);
 }
 
 /**
@@ -651,7 +676,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   // Health check
   server.get('/health', async (_request, reply) => {
-    reply.send({ status: 'ok', service: 'conversation-viewer' });
+    // The id lets this instance recognise itself behind its public URL (public-url.ts).
+    reply.header(INSTANCE_HEADER, getInstanceId());
+    reply.send({ status: 'ok', service: 'conversation-viewer', publicUrl: getPublicUrlStatus() });
   });
 
   // Hook routes (no auth — localhost only)
@@ -713,6 +740,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       // self cards and the handler can fan out to siblings.
       setSelfInstanceEnv({ instanceName: resolvedInstanceName, port, host: heartbeatHost });
 
+      // Confirm the public URL reaches this instance, now and periodically.
+      startPublicUrlCheck();
+
       return;
     } catch (error) {
       listening = false;
@@ -732,6 +762,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 export async function stopWebServer(): Promise<void> {
   // Stop handing out dashboard links before the listener goes away.
   listening = false;
+  stopPublicUrlCheck();
   if (server) {
     // Flush hook state before closing
     try {

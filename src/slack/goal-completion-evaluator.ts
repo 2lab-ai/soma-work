@@ -22,6 +22,15 @@ import type { EffortLevel } from '../user-settings-store';
 
 const logger = new Logger('GoalEval');
 
+/**
+ * Consecutive eval-dispatch failures the loop self-heals before falling back
+ * to the terminal "run `goal done` / `goal pause`" notice. Counts transient
+ * API failures (429 pool rate limit, 529 overloaded, timeouts, flaky JSON),
+ * NOT completed eval cycles. Lives here (a leaf module) so the dashboard can
+ * print "attempt n/MAX" without importing the loop controller.
+ */
+export const GOAL_EVAL_DISPATCH_MAX_RETRIES = 3;
+
 /** Strict shape the eval model must emit (single JSON object). */
 export interface GoalEvalVerdict {
   completed: boolean;

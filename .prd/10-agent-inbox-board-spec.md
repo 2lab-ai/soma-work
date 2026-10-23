@@ -78,12 +78,20 @@ task list와 유저가 꼭 알아야 할 것만 남고, 모델의 실시간 작�
 
 ### 3.1 보드 (`src/conversation/dashboard.ts` 템플릿)
 1. 칸 3개: `NEEDS YOU` = `waiting` · `RUNNING` = `working` · `DONE` = `idle` 다음에 `closed`(동면·아카이브). closed 카드는 흐리게,
-   상태 `Sleeping`/`Archived`, 7일 지난 것은 `Show older` 뒤에 숨는다. 서버 버킷(`KanbanBoard`)은 그대로다. 빈 칸 = `Nothing here`.
+   상태 `Sleeping`/`Archived`. (2026-10-22: 7일 `Show older`는 끝난 날짜별 그룹으로 대체 — [`11-dashboard-live-surfaces-spec.md`](11-dashboard-live-surfaces-spec.md) T11/T12.) 서버 버킷(`KanbanBoard`)은 그대로다. 빈 칸 = `Nothing here`.
    **아카이브**(closed 칸의 `terminated` 카드, 상태 `Archived`)는 기본으로 그리지 않는다 — `Sleeping` 카드는 그대로 보인다. 보드 머리의
    `Board | List` 왼쪽에 토글 버튼 `Archives (N)`(N = 보드의 아카이브 수, 라벨은 상태에 따라 바뀌지 않는다)이 있고 켜짐/꺼짐은
    `aria-pressed`가 나른다. 켜지면 아카이브가 보이고 버튼은 `Board | List`의 선택된 칸과 같은 모양(밝은 바탕·그림자·진한 글자)이 된다.
    선택은 `localStorage['soma-show-archives']`(`on`/`off`, 없으면 숨김). 보드에 아카이브가 하나도 없으면 버튼은 숨는다. `DONE` 개수 배지 = `DONE`에 지금 그려진 카드 수(숨은 아카이브·접힌 7일 전 묶음은 빠진다), `Show older (N)` = 펼치면 더해질
    카드 수(아카이브는 보일 때만 센다).
+   **자동 재개 대기**: `idle`이어도 시스템이 스스로 다시 시작할 세션은 `DONE`이 아니라 `RUNNING`에 둔다 — 서버가 카드에
+   `autoResume`(`deriveAutoResume`)을 싣고 `working` 버킷에 넣는다. 종류: `error-retry`(턴이 429 등 복구 가능한 오류로 끝나
+   `pendingRetryAt`까지 재실행 대기) · `goal-eval-retry`(goal 완료 판정이 같은 이유로 실패해 `goal.evalBackoffUntil`까지 대기) ·
+   `goal-eval`(goal 완료 판정 진행 중). 카드 상태줄 = 시계 아이콘 + `HH:MM 자동 재개 · 시도 n/3`(goal은 `Goal 판정 재시도`,
+   진행 중은 `Goal 완료 판정 중`), 요약 줄 = `오류: <오류 첫 줄>`, 펼침 = 같은 내용의 재개 줄. 실행 중인 턴이 없으므로 `Stop` 대신
+   `Close`. 재개 정보는 재개 장치 자신이 믿는 영속 마커만 읽는다: 에러 재시도는 `pendingRetryAt`이 현재 run의 것
+   (`pendingRetrySessionId === sessionId`)이고 세션이 동면이 아닐 때만 — 재시작 후 `resumePendingErrorRetries`(#351)가 다시
+   거는 조건과 같다. 시도·사유는 마커와 함께 영속되는 `pendingRetryDetail`. 질문 대기(`waiting`)는 언제나 `NEEDS YOU`가 이긴다.
 2. 상단: 상단 바 바로 아래에 **통계 줄**이 먼저 오고 보드가 그 뒤에 온다. 통계 줄 = 기간 선택(`오늘`·`지난 7일`·`지난 30일`)
    + `세션`·`토큰`·`비용` 세 숫자 + `자세히` 버튼(`aria-expanded`). 기본은 접힘이고, `자세히`는 나머지 다섯 칸(턴 사용·PR 생성·
    PR 머지·머지 코드·워크플로우)과 차트를 통계 줄과 보드 사이에 펼친다. 선택은 `localStorage['soma-stats-detail']`(`open`/`closed`,
@@ -107,7 +115,10 @@ task list와 유저가 꼭 알아야 할 것만 남고, 모델의 실시간 작�
    렌더에서도 같은 색이다(숨은 아카이브의 소유자도 집합에 들어가 `Archives` 토글이 색을 바꾸지 않는다). 보드에 아직 없는 소유자는 해시
    칸을 쓴다. 각 색의 글자는 라이트·다크 모두 배지 바탕에 4.5:1 이상이다. 제목이 먼저 줄고(말줄임표), 배지는 상한(카드 폭 45%·168px)을 넘는 이름만 말줄임표로 줄며 전체 이름은 `title`에
    있다. 유저를 고르면 배지는 없다. Board·List 모두 같고 390px에서도 제목을 덮지 않는다.
-4. 카드 클릭 = 제자리 펼침/접힘. 펼친 영역: 모델·effort → task 타임라인(현재 task만 진한 점, 완료 task는 소요시간) → **지시 / 응답**
+4. 카드 클릭 = 제자리 펼침/접힘. 펼친 영역: 모델·effort → task 타임라인(현재 task만 진한 점, 완료 task는 소요시간 — **현재 task는
+   최대 1개**: 모델의 TodoWrite가 `in_progress`를 여러 개 써도 서버(`normalizeTaskProgress`)가 목록 순서상 첫 번째만 현재로 두고
+   나머지는 `pending`으로 보낸다. `DONE` 칸 세션(실행 중·질문 대기·자동 재개 대기 어느 것도 아님)은 현재 task가 없다 — Slack 플랜 블록의 턴 종료 demotion과 같은 규칙. 아카이브 카드도 같다.
+   보드 payload·`task_update` 푸시·열린 패널 Tasks 모두 같은 규칙이고, 저장된 스냅샷은 바꾸지 않는다) → **지시 / 응답**
    (최근 1쌍, 펼칠 때 `GET /api/dashboard/session/:conversationId?limit=2`로 지연 로드) → 대기 질문 선택지 → 버튼: 상태별 Stop / Close /
    Trash + `작업 로그`(패널 열기) + `Slack`(스레드 링크). 드래그 앤 드롭과 `confirm()`은 없다.
 5. 렌더 = 키 기반 재조정: 카드는 `data-session-key`로 식별해 DOM 노드를 재사용하고, 바뀐 카드만 교체한다. 같은 데이터면 DOM을 건드리지 않는다.

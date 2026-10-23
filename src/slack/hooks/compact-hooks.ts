@@ -652,6 +652,8 @@ export async function postCompactCompleteIfNeeded(
   // Clear the "pending" flag so InputProcessor stops intercepting.
   // Idempotent (already false on re-entry), so safe outside the IIFE.
   session.autoCompactPending = false;
+  // A compaction succeeded — lift any pause an earlier failed `/compact` set.
+  session.autoCompactSuppressedUntilMs = null;
 
   // Consume pending atomically so a second END signal in the same cycle
   // cannot double-fire — but DEFER the actual re-dispatch to the /compact

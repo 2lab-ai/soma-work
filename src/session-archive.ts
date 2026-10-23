@@ -12,9 +12,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
+import type { TaskLedger } from './session/task-ledger';
 import type {
   ActivityState,
   ConversationSession,
+  SessionGoal,
   SessionInstruction,
   SessionLinkHistory,
   SessionLinks,
@@ -80,6 +82,11 @@ export interface ArchivedSession {
   busyMs?: number;
   compactionCount?: number;
   summaryTitle?: string;
+
+  // SSOT 2026-10-22 — so a closed card keeps its goals (T6) and tasks (T7/T8).
+  goal?: SessionGoal;
+  goalHistory?: SessionGoal[];
+  taskLedger?: TaskLedger;
 }
 
 /**
@@ -135,6 +142,9 @@ function sessionToArchive(
     busyMs: session.activeAccumulatedMs,
     compactionCount: session.compactionCount,
     summaryTitle: session.summaryTitle,
+    goal: session.goal ? JSON.parse(JSON.stringify(session.goal)) : undefined,
+    goalHistory: session.goalHistory ? JSON.parse(JSON.stringify(session.goalHistory)) : undefined,
+    taskLedger: session.taskLedger ? JSON.parse(JSON.stringify(session.taskLedger)) : undefined,
   };
 }
 

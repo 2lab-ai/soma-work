@@ -1218,10 +1218,27 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
   const cards = load<{
     renderTimeline(s: unknown): string;
     renderCardStatus(s: unknown, col: string): string;
-  }>(['esc', 'formatDuration', 'renderTimeline', 'renderCardStatus'], ['WAIT_SVG'], {
-    dhShow: () => true,
-    dhMax: (_f: string, d: number) => d,
-  });
+  }>(
+    [
+      'esc',
+      'escAttr',
+      'escJs',
+      'toNum',
+      'formatDuration',
+      'formatTaskTime',
+      'renderTaskMeta',
+      'renderTimelineItem',
+      'renderTimeline',
+      'pendingAutoResume',
+      'autoResumeLabel',
+      'renderCardStatus',
+    ],
+    ['WAIT_SVG', 'RESUME_SVG', '_tasksOpen'],
+    {
+      dhShow: () => true,
+      dhMax: (_f: string, d: number) => d,
+    },
+  );
   const tags = (html: string) => (html.match(/<([a-z0-9]+)/gi) ?? []).map((t) => t.slice(1).toLowerCase());
 
   it('a string startedAt / completedAt cannot open a tag or an attribute in the task timeline', () => {
@@ -1387,10 +1404,17 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     };
     let csrfRefreshes = 0;
     const io = load<{
-      generateTitleSub(convId: string): Promise<void>;
+      generateTitleSub(convId: string, regenerate?: boolean): Promise<void>;
       switchPanel(): void;
     }>(
-      ['generateTitleSub'],
+      [
+        'titleSubCanRegen',
+        'panelTitleSubCanRegen',
+        'titleSubEndpoint',
+        'isCsrfRejection',
+        'titleSubView',
+        'generateTitleSub',
+      ],
       ['_panelGen'],
       {
         document: { getElementById: (id: string) => (id === 'panel-title-sub-text' ? textEl : btn) },
@@ -1399,6 +1423,14 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
         refreshCsrfToken: async () => {
           csrfRefreshes++;
         },
+        // The viewer owns the open panel, so 🔄 is offered over a filled subtitle.
+        _panelTitleSub: '',
+        panelSessionKey: 'C1:t1',
+        _sessionCache: { 'C1:t1': { ownerId: 'U1' } },
+        _viewerUserId: 'U1',
+        _viewerIsAdmin: false,
+        _isAdminModeOn: () => false,
+        READ_ONLY_MSG: 'Read-only — not your session',
       },
       // What openPanel / closePanel do to the panel identity (dashboard.ts: _panelGen++).
       ['function switchPanel() { _panelGen++; }'],
@@ -1446,14 +1478,36 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     expect(h.textEl.textContent).toBe('Generating title...');
   });
 
-  it('the current panel still gets its subtitle (and its 403 retry)', async () => {
+  it('the current panel still gets its subtitle (and its stale-CSRF retry)', async () => {
     const h = harness();
     let n = 0;
-    h.answers['conv-a'] = () => (++n === 1 ? { status: 403, json: async () => ({}) } : h.ok('A subtitle'));
+    const stale = { status: 403, json: async () => ({ error: 'CSRF token validation failed', code: 'csrf_failed' }) };
+    h.answers['conv-a'] = () => (++n === 1 ? stale : h.ok('A subtitle'));
     await h.io.generateTitleSub('conv-a');
     expect(h.posts).toHaveLength(2);
     expect(h.csrfRefreshes()).toBe(1);
     expect(h.textEl.textContent).toBe('A subtitle');
+  });
+
+  it('a permission 403 is not retried and is not shown as "Title generation failed"', async () => {
+    const h = harness();
+    h.answers['conv-a'] = () => ({ status: 403, json: async () => ({ error: 'Forbidden — write requires …' }) });
+    await h.io.generateTitleSub('conv-a');
+    expect(h.posts).toHaveLength(1);
+    expect(h.csrfRefreshes()).toBe(0);
+    expect(h.textEl.textContent).not.toBe('Title generation failed');
+    expect(h.btn.style.display).toBe('none');
+  });
+
+  it('a missing subtitle is filled through ensure-title; 🔄 over a stored one regenerates', async () => {
+    const h = harness();
+    h.answers['conv-a'] = () => h.ok('A subtitle');
+    await h.io.generateTitleSub('conv-a', false);
+    await h.io.generateTitleSub('conv-a', true);
+    expect(h.posts).toEqual([
+      '/api/dashboard/session/conv-a/ensure-title',
+      '/api/dashboard/session/conv-a/generate-title',
+    ]);
   });
 });
 
@@ -1524,7 +1578,6 @@ describe('WS session_update keeps sibling-instance cards (shipped mergeSiblingCa
 type DoneCard = { key: string; lastActivity: string; terminated?: boolean };
 type DonePlan = {
   done: Array<{ s: DoneCard; col: string }>;
-  olderCount: number;
   archivedCount: number;
 };
 
@@ -1893,6 +1946,7 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
     const toggle = fakeEl();
     const count = fakeEl();
     const list = fakeEl({ hidden: true, scrollHeight: 900, clientHeight: 300, scrollTop: 600 });
+    (list as unknown as { appendChild(n: unknown): void }).appendChild = (n: unknown) => list.children.push(n);
     const document = {
       getElementById: (id: string) =>
         ({ 'worklog-toggle': toggle, 'worklog-count': count, 'worklog-list': list })[id] ?? null,
@@ -1910,16 +1964,29 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
       [
         'esc',
         'escAttr',
+        'toNum',
+        'formatDuration',
         'decodeSlackEntities',
         'setTextIfChanged',
+        'renderTaskMeta',
         'renderWorkLogEntry',
+        'wlGroupOf',
+        'wlBuildRows',
+        'wlTaskInfo',
+        'renderWorkLogGroupHead',
+        'renderWorkLogGroup',
+        'wlGroupOpen',
+        'wlGroupEl',
+        'wlRenderList',
+        'wlAppendTail',
         'wlDetailOpen',
+        'wlNavRows',
         'wlEnsureTabStop',
         'setWorkLogOpen',
         'paintWorkLog',
       ],
       ['WL_LABELS'],
-      { document, _wl: state },
+      { document, _wl: state, panelSessionKey: null, _sessionCache: {}, updateTimersIn: () => {} },
     );
     return { m, toggle, count, list };
   }
@@ -1944,13 +2011,15 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
   });
 
   it('tail-follow stops while an entry’s detail is open', () => {
-    const st = { entries: [{ seq: 1 }], painted: true, open: new Set([1]) };
+    // As wlMerge leaves it: state.entries already holds the added entry.
+    const st = { entries: [{ seq: 1 }, { seq: 2 }] as Array<{ seq: number }>, painted: true, open: new Set([1]) };
     const p = page(st);
     p.list.hidden = false;
     p.list.scrollTop = 600; // at the bottom (900 - 600 <= 300 + 40)
     p.m.paintWorkLog(st, [{ entry: { seq: 2, kind: 'tool', text: 'x' }, index: 1 }]);
     expect(p.list.scrollTop).toBe(600);
     st.open.clear();
+    st.entries.push({ seq: 3 });
     p.m.paintWorkLog(st, [{ entry: { seq: 3, kind: 'tool', text: 'y' }, index: 2 }]);
     expect(p.list.scrollTop).toBe(900);
   });
@@ -2175,34 +2244,29 @@ describe('DONE column: archived cards hide behind Show archives (shipped planDon
     planDoneColumn(IDLE, CLOSED, { now: NOW, showOlder: false, showArchives: false, revealKey: null, ...o });
   const keys = (p: DonePlan) => p.done.map((d) => d.s.key);
 
-  it('hides archived cards by default; sleeping ones stay', () => {
+  // SSOT 2026-10-22 T11/T12: no 7-day cutoff any more — every age is in, and
+  // planDoneGroups files the cards under the day they finished (earlier days
+  // start closed).
+  it('hides archived cards by default; sleeping ones stay, of any age', () => {
     const p = plan();
-    expect(keys(p)).toEqual(['idle-1', 'sleeping-recent']);
-    expect(p.done.map((d) => d.col)).toEqual(['idle', 'closed']);
-    expect(p).toMatchObject({ olderCount: 1, archivedCount: 2 });
+    expect(keys(p)).toEqual(['idle-1', 'sleeping-recent', 'sleeping-old']);
+    expect(p.done.map((d) => d.col)).toEqual(['idle', 'closed', 'closed']);
+    expect(p).toMatchObject({ archivedCount: 2 });
+    expect('olderCount' in p).toBe(false);
   });
 
-  it('Show older counts only cards that would appear: older non-archived unless archives are shown', () => {
-    expect(keys(plan({ showOlder: true }))).toEqual(['idle-1', 'sleeping-recent', 'sleeping-old']);
+  it('Show archives adds every archive, of any age', () => {
     const shown = plan({ showArchives: true });
-    expect(keys(shown)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent']);
-    expect(shown).toMatchObject({ olderCount: 2, archivedCount: 2 });
-    expect(keys(plan({ showArchives: true, showOlder: true }))).toEqual([
-      'idle-1',
-      'sleeping-recent',
-      'archived-recent',
-      'sleeping-old',
-      'archived-old',
-    ]);
+    expect(keys(shown)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent', 'sleeping-old', 'archived-old']);
+    expect(shown).toMatchObject({ archivedCount: 2 });
   });
 
-  it('a revealed (deep-linked) archive shows on its own, also when older than 7 days', () => {
+  it('a revealed (deep-linked) archive shows on its own, whatever its age', () => {
     const recent = plan({ revealKey: 'archived-recent' });
-    expect(keys(recent)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent']);
-    expect(recent).toMatchObject({ olderCount: 1, archivedCount: 2 });
+    expect(keys(recent)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent', 'sleeping-old']);
     const old = plan({ revealKey: 'archived-old' });
-    expect(keys(old)).toEqual(['idle-1', 'sleeping-recent', 'archived-old']);
-    expect(old).toMatchObject({ olderCount: 1, archivedCount: 2 });
+    expect(keys(old)).toEqual(['idle-1', 'sleeping-recent', 'sleeping-old', 'archived-old']);
+    expect(old).toMatchObject({ archivedCount: 2 });
   });
 });
 
@@ -2268,11 +2332,12 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
   function page(card: Card, opts: { showArchives?: boolean } = {}) {
     const calls = { loads: 0, toggled: [] as string[], panel: [] as unknown[][], scrolled: 0, stored: 0 };
     const cardEls: Record<string, { scrollIntoView(): void }> = Object.create(null);
+    const dayOpen: Record<string, boolean> = Object.create(null);
     const m = load<{
       openDeepLinkedSession(): void;
-      state(): { revealed: string | null; showOlder: boolean; link: string | null; showArchives: boolean };
+      state(): { revealed: string | null; dayOpen: string[]; link: string | null; showArchives: boolean };
     }>(
-      ['resolveDeepLinkKey', 'openDeepLinkedSession'],
+      ['toNum', 'doneTimeOf', 'dayKeyOf', 'resolveDeepLinkKey', 'openDeepLinkedSession'],
       [],
       {
         _deepLinkSession: 'work:C1:1700000000.000700',
@@ -2283,7 +2348,7 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
         _expanded: new Set<string>(),
         showArchives: !!opts.showArchives,
         showSleeping: true,
-        showOlderClosed: false,
+        _doneGroupOpen: dayOpen,
         _revealedKey: null,
         localStorage: {
           setItem: () => {
@@ -2297,7 +2362,7 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
         openPanel: (...a: unknown[]) => calls.panel.push(a),
       },
       [
-        'function state() { return { revealed: _revealedKey, showOlder: showOlderClosed, link: _deepLinkSession, showArchives: showArchives }; }',
+        'function state() { return { revealed: _revealedKey, dayOpen: Object.keys(_doneGroupOpen), link: _deepLinkSession, showArchives: showArchives }; }',
       ],
     );
     const render = () => {
@@ -2317,7 +2382,7 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
     p.m.openDeepLinkedSession(); // the card is hidden: reveal + re-render
     expect(p.m.state()).toEqual({
       revealed: KEY,
-      showOlder: false,
+      dayOpen: [],
       link: 'work:C1:1700000000.000700',
       showArchives: false,
     });
@@ -2331,10 +2396,14 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
     expect(p.calls.stored).toBe(0); // the stored Show archives choice is untouched
   });
 
-  it('an older sleeping card still opens the older group, as before', () => {
-    const p = page({ key: KEY });
+  it('a card in a closed DONE day opens that day (T12), then gives up if it still is not drawn', () => {
+    const p = page({ key: KEY, lastActivity: '2026-10-01T03:00:00.000Z' });
     p.m.openDeepLinkedSession();
-    expect(p.m.state()).toMatchObject({ revealed: null, showOlder: true });
+    expect(p.m.state().revealed).toBeNull();
+    expect(p.m.state().dayOpen).toHaveLength(1);
+    expect(p.calls.loads).toBe(1);
+    p.m.openDeepLinkedSession();
+    expect(p.m.state().link).toBeNull();
     expect(p.calls.loads).toBe(1);
   });
 });
@@ -2480,13 +2549,11 @@ describe('DONE column: sleeping cards hide behind the Sleeping toggle (shipped p
   const keys = (p: DonePlan) => p.done.map((d) => d.s.key);
 
   it('shows sleeping cards unless the toggle is off, and always counts them', () => {
-    expect(keys(plan())).toEqual(['idle-1', 'sleeping-recent', 'sleeping-mid']);
-    expect(plan()).toMatchObject({ sleepingCount: 3, archivedCount: 1, olderCount: 1 });
+    expect(keys(plan())).toEqual(['idle-1', 'sleeping-recent', 'sleeping-mid', 'sleeping-old']);
+    expect(plan()).toMatchObject({ sleepingCount: 3, archivedCount: 1 });
     const off = plan({ showSleeping: false });
     expect(keys(off)).toEqual(['idle-1']);
-    // Hidden sleeping cards are not "older" cards either: Show older would add nothing.
-    expect(off).toMatchObject({ sleepingCount: 3, archivedCount: 1, olderCount: 0 });
-    expect(keys(plan({ showSleeping: false, showOlder: true }))).toEqual(['idle-1']);
+    expect(off).toMatchObject({ sleepingCount: 3, archivedCount: 1 });
   });
 
   it('hiding sleeping leaves archives to their own toggle', () => {
@@ -2550,8 +2617,8 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
   it('reveals the sleeping card for this page load without touching the stored choice', () => {
     const KEY = 'inst::work:C1:1700000000.000900';
     let loads = 0;
-    const m = load<{ openDeepLinkedSession(): void; state(): { revealed: string | null; showOlder: boolean } }>(
-      ['resolveDeepLinkKey', 'openDeepLinkedSession'],
+    const m = load<{ openDeepLinkedSession(): void; state(): { revealed: string | null; dayOpen: string[] } }>(
+      ['toNum', 'doneTimeOf', 'dayKeyOf', 'resolveDeepLinkKey', 'openDeepLinkedSession'],
       [],
       {
         _deepLinkSession: 'work:C1:1700000000.000900',
@@ -2562,7 +2629,7 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
         _expanded: new Set<string>(),
         showArchives: false,
         showSleeping: false,
-        showOlderClosed: false,
+        _doneGroupOpen: Object.create(null),
         _revealedKey: null,
         loadSessions: () => {
           loads++;
@@ -2570,10 +2637,10 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
         toggleCard: () => {},
         openPanel: () => {},
       },
-      ['function state() { return { revealed: _revealedKey, showOlder: showOlderClosed }; }'],
+      ['function state() { return { revealed: _revealedKey, dayOpen: Object.keys(_doneGroupOpen) }; }'],
     );
     m.openDeepLinkedSession();
-    expect(m.state()).toEqual({ revealed: KEY, showOlder: false });
+    expect(m.state()).toEqual({ revealed: KEY, dayOpen: [] });
     expect(loads).toBe(1);
   });
 });

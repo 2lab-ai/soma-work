@@ -289,6 +289,38 @@ describe('GoalHandler', () => {
     expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
   });
 
+  it('a goal command during a scheduled re-check drops the retry window and pushes the dashboard', async () => {
+    // The retry was armed for the old epoch and no-ops once the epoch moves —
+    // keeping its window would shut the eval gate for nothing and leave the
+    // dashboard card advertising a re-check that never runs.
+    const session = makeSession({
+      goal: {
+        goalId: 'goal-test',
+        objective: 'finish migration',
+        status: 'active',
+        createdAt: 1,
+        updatedAt: 2,
+        createdBy: 'U123',
+        continuationCount: 0,
+        maxContinuations: 10,
+        epoch: 3,
+        evalDispatchRetryCount: 1,
+        evalBackoffUntil: Date.now() + 3_600_000,
+        evalRetryReason: 'one-shot dispatch aborted during pool rate-limit retry wait',
+      },
+    });
+    const deps = makeDeps(session);
+    const broadcastSessionUpdate = vi.fn();
+    (deps.claudeHandler as any).broadcastSessionUpdate = broadcastSessionUpdate;
+
+    await new GoalHandler(deps).execute(makeCtx({ text: 'goal resume' }));
+
+    expect(session.goal?.epoch).toBe(4);
+    expect(session.goal?.evalBackoffUntil).toBeUndefined();
+    expect(session.goal?.evalRetryReason).toBeUndefined();
+    expect(broadcastSessionUpdate).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses to pause/resume/done/clear when no goal exists, no state mutation', async () => {
     // Hardens the "no goal" branch on every lifecycle verb. Regression guard
     // for accidental future refactors that route a lifecycle verb through
