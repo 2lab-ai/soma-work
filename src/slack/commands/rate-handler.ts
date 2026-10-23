@@ -23,23 +23,19 @@ export class RateHandler implements CommandHandler {
         thread_ts: threadTs,
       });
     } else if (action.action === 'up') {
-      const oldRating = userSettingsStore.getUserRating(user);
-      const newRating = Math.min(10, oldRating + 1);
-      userSettingsStore.setUserRating(user, newRating);
-      if (newRating !== oldRating) {
-        userSettingsStore.setPendingRatingChange(user, { from: oldRating, to: newRating });
-      }
+      const { from: oldRating, to: newRating } = userSettingsStore.changeUserRating(
+        user,
+        userSettingsStore.getUserRating(user) + 1,
+      );
       await say({
         text: `⭐ *Rating*: \`${oldRating}\` → \`${newRating}/10\` (+1)`,
         thread_ts: threadTs,
       });
     } else if (action.action === 'down') {
-      const oldRating = userSettingsStore.getUserRating(user);
-      const newRating = Math.max(0, oldRating - 1);
-      userSettingsStore.setUserRating(user, newRating);
-      if (newRating !== oldRating) {
-        userSettingsStore.setPendingRatingChange(user, { from: oldRating, to: newRating });
-      }
+      const { from: oldRating, to: newRating } = userSettingsStore.changeUserRating(
+        user,
+        userSettingsStore.getUserRating(user) - 1,
+      );
       await say({
         text: `⭐ *Rating*: \`${oldRating}\` → \`${newRating}/10\` (-1)`,
         thread_ts: threadTs,
