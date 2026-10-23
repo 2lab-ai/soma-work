@@ -618,3 +618,29 @@ describe('model input resolution — accepted / rejected / unknown', () => {
     expect(store.resolveModelInputDetailed('').status).toBe('unknown');
   });
 });
+
+// SSOT 2026-10-23 T2 — the dashboard settings page writes through this store,
+// so a save must never leave a torn live file (rules/config.md rule 3), and a
+// rating change from the page records the same pending note `rate +` does.
+describe('dashboard settings writes (SSOT 2026-10-23 T2)', () => {
+  it('changeUserRating clamps, stores and records the pending change only when it moved', () => {
+    const s = makeStore();
+    expect(s.changeUserRating('U1', 8)).toEqual({ from: 5, to: 8 });
+    expect(s.getUserRating('U1')).toBe(8);
+    expect(s.consumePendingRatingChange('U1')).toEqual({ from: 5, to: 8 });
+    expect(s.changeUserRating('U1', 8)).toEqual({ from: 8, to: 8 });
+    expect(s.consumePendingRatingChange('U1')).toBeNull();
+    expect(s.changeUserRating('U1', 42)).toEqual({ from: 8, to: 10 });
+  });
+
+  it('saves through atomicWriteJson: the previous generation is kept as .bak', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'uss-atomic-'));
+    const s = new UserSettingsStore(dir);
+    s.setUserEmail('U1', 'a@example.com');
+    s.setUserEmail('U1', 'b@example.com');
+    const live = JSON.parse(fs.readFileSync(path.join(dir, 'user-settings.json'), 'utf8'));
+    const bak = JSON.parse(fs.readFileSync(path.join(dir, 'user-settings.json.bak'), 'utf8'));
+    expect(live.U1.email).toBe('b@example.com');
+    expect(bak.U1.email).toBe('a@example.com');
+  });
+});

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ConversationSession } from '../../types';
-import { EffortSwitchError, type EffortSwitchDeps, switchSessionEffort } from '../effort-switch';
+import { type EffortSwitchDeps, EffortSwitchError, switchSessionEffort } from '../effort-switch';
 
 // SSOT T1 — the dashboard changes a session's reasoning effort (one click on the
 // card or at the top of the session panel). The switch only touches the session
