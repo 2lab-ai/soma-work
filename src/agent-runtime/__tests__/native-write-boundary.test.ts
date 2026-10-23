@@ -87,10 +87,10 @@ describe('createNativeWriteCheck — where a native write lands', () => {
     );
     fs.renameSync(cwd, `${cwd}-old`);
     fs.symlinkSync(OUTSIDE, cwd);
-    const after = createNativeWriteCheck(roots, cwd);
-    expect(after('Write', { file_path: path.join(OUTSIDE, 'secret.json') })).toMatch(/lands outside/);
-    expect(after('Write', { file_path: path.join(cwd, 'secret.json') })).toMatch(/lands outside/);
-    expect(after('Write', { file_path: '/etc/hosts' })).toMatch(/lands outside/);
+    const relinked = createNativeWriteCheck(roots, cwd);
+    expect(relinked('Write', { file_path: path.join(OUTSIDE, 'secret.json') })).toMatch(/lands outside/);
+    expect(relinked('Write', { file_path: path.join(cwd, 'secret.json') })).toMatch(/lands outside/);
+    expect(relinked('Write', { file_path: '/etc/hosts' })).toMatch(/lands outside/);
     // the user directory itself, linked away
     const user2 = path.join(SCRATCH, 'user2');
     fs.symlinkSync(OUTSIDE, user2);
@@ -153,10 +153,53 @@ describe('createNativeWriteCheck — where a native write lands', () => {
     fs.symlinkSync(OUTSIDE, path.join(repo, '.claude', 'worktrees'));
     expect(inRepo('EnterWorktree', { name: 'feat' })).toMatch(/lands outside/);
     expect(inRepo('Agent', { description: 'd', prompt: 'p', isolation: 'worktree' })).toMatch(/lands outside/);
-    // switching into an existing worktree, a plain subagent, and no repository write nothing
+    // switching into a worktree inside the roots, a plain subagent, and no repository write nothing
     expect(inRepo('EnterWorktree', { path: path.join(repo, 'x') })).toBeNull();
     expect(inRepo('Agent', { description: 'd', prompt: 'p' })).toBeNull();
     expect(createNativeWriteCheck([ROOT], OUTSIDE)('EnterWorktree', { name: 'feat' })).toBeNull();
+  });
+
+  it('a session never moves its working directory outside the roots: EnterWorktree `path`, Agent `cwd` (self-check before review R2)', () => {
+    // The SDK sandbox lets Bash write the session's current directory, so the
+    // directory a switch lands in is one Bash writes next. The SDK lists any
+    // worktree `git worktree list` names, and the session owns its repository's
+    // registrations, so it could list a directory outside its roots.
+    const repo = path.join(ROOT, 'wt-switch');
+    fs.mkdirSync(path.join(repo, '.claude', 'worktrees', 'feat'), { recursive: true });
+    const inRepo = createNativeWriteCheck([ROOT], repo);
+    expect(inRepo('EnterWorktree', { path: path.join(repo, '.claude', 'worktrees', 'feat') })).toBeNull();
+    expect(inRepo('EnterWorktree', { path: '.claude/worktrees/feat' })).toBeNull();
+    expect(inRepo('EnterWorktree', { path: OUTSIDE })).toMatch(/lands outside/);
+    expect(inRepo('EnterWorktree', { path: '' })).toMatch(/names no target/);
+    // an Agent `cwd` (in the CLI's schema, not yet in the public one) is the subagent's working directory
+    expect(inRepo('Agent', { description: 'd', prompt: 'p', cwd: OUTSIDE })).toMatch(/lands outside/);
+    expect(inRepo('Agent', { description: 'd', prompt: 'p', cwd: repo })).toBeNull();
+  });
+
+  it('a new worktree from a linked worktree goes under the main repository: both are held to the roots (self-check before review R2)', () => {
+    // The main repository outside the roots, a linked worktree of it inside them.
+    const main = path.join(OUTSIDE, 'main-repo');
+    fs.mkdirSync(main, { recursive: true });
+    const git = (cwd: string, ...args: string[]) => spawnSync('git', args, { cwd, encoding: 'utf8' });
+    expect(git(main, 'init', '-q').status).toBe(0);
+    expect(
+      git(main, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init').status,
+    ).toBe(0);
+    const linked = path.join(ROOT, 'linked-wt');
+    expect(git(main, 'worktree', 'add', '-q', '--detach', linked).status).toBe(0);
+    const fromLinked = createNativeWriteCheck([ROOT], linked);
+    expect(fromLinked('EnterWorktree', { name: 'feat' })).toMatch(/lands outside/);
+    expect(fromLinked('Agent', { description: 'd', prompt: 'p', isolation: 'worktree' })).toMatch(/lands outside/);
+    // a linked worktree of a repository inside the roots stays allowed
+    const inner = path.join(ROOT, 'inner-repo');
+    fs.mkdirSync(inner, { recursive: true });
+    expect(git(inner, 'init', '-q').status).toBe(0);
+    expect(
+      git(inner, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init').status,
+    ).toBe(0);
+    const innerLinked = path.join(inner, '.claude', 'worktrees', 'one');
+    expect(git(inner, 'worktree', 'add', '-q', '--detach', innerLinked).status).toBe(0);
+    expect(createNativeWriteCheck([ROOT], innerLinked)('EnterWorktree', { name: 'two' })).toBeNull();
   });
 
   it('with no roots, refuses every write', () => {

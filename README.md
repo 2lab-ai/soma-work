@@ -84,7 +84,7 @@ Connect any MCP-compatible server (stdio/SSE/HTTP) to extend Claude's capabiliti
 ### 🔐 Interactive Permissions
 
 Slack-native button/form UX for permission approvals, option selection, and session management. Bypass mode available for trusted users.
-In every mode a non-admin session writes files only where its sandboxed shell may: the native `Write` / `Edit` / `NotebookEdit` tools, `Artifact` asset saves and new git worktrees are held to the working directory and the user's own temp directory, like Bash — a symbolic link the session puts in its own directories does not move that boundary.
+In every mode a non-admin session writes files only where its sandboxed shell may: the native `Write` / `Edit` / `NotebookEdit` tools, `Artifact` asset saves, new git worktrees and switches of the working directory (into a worktree, or a subagent's) are held to the working directory and the user's own temp directory, like Bash — a symbolic link the session puts in its own directories does not move that boundary.
 
 ### 📎 File Analysis
 
