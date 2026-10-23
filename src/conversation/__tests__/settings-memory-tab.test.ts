@@ -300,7 +300,7 @@ describe('지식 페이지 editor', () => {
       .mockResolvedValueOnce({ ok: true, data: { ...memPage, revision: 'p3' } });
     const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ ...memPage, revision: 'p2' }) }));
     const fns = load<any>(
-      ['esc', 'savePageRaw', 'memStatus', 'renderPageConflict', 'overwritePage'],
+      ['esc', 'savePageRaw', 'memStatus', 'renderPageConflict', 'overwritePage', 'pageSaveBusy'],
       ['_memPageConflict', '_memPageRaw'],
       {
         document: doc,
@@ -354,7 +354,7 @@ describe('지식 페이지 editor', () => {
     };
     const apiWrite = vi.fn(async () => ({ ok: true, data: { page: { id: 'x' }, revision: 'p2' } }));
     const memPage: any = { page: { id: 'concepts/ssot' }, revision: 'p1' };
-    const fns = load<any>(['pageDraft', 'savePage', 'memStatus'], [], {
+    const fns = load<any>(['pageDraft', 'savePage', 'memStatus', 'pageSaveBusy'], [], {
       document: doc,
       _memPage: memPage,
       apiWrite,
@@ -371,7 +371,7 @@ describe('지식 페이지 editor', () => {
       history: ['2026-10-23: x'],
       revision: 'p1',
     });
-    const fresh = load<any>(['pageDraft', 'savePage', 'memStatus'], [], {
+    const fresh = load<any>(['pageDraft', 'savePage', 'memStatus', 'pageSaveBusy'], [], {
       document: doc,
       _memPage: { page: { id: '' }, revision: null },
       apiWrite,
@@ -388,11 +388,71 @@ describe('지식 페이지 editor', () => {
   });
 });
 
+describe('관찰 기록 (에피소딕) — the editor is bound to its day (review R6)', () => {
+  it('a note added to today while a past day is being edited never retargets that editor', async () => {
+    const body: any = { innerHTML: '' };
+    const editBox: any = { value: 'OLD DAY EDITED' };
+    const noteBox: any = { value: 'a note for today' };
+    const status: any = { textContent: '', setAttribute() {} };
+    const dateSel: any = { value: '2026-01-01', innerHTML: '' };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-ep-body'
+          ? body
+          : id === 'ep-edit'
+            ? editBox
+            : id === 'mem-ep-new'
+              ? noteBox
+              : id === 'mem-ep-date'
+                ? dateSel
+                : status,
+    };
+    const pastDay = { date: '2026-01-01', revision: 'p1', entries: [{ time: '09:00', content: 'OLD DAY ORIGINAL' }] };
+    const today = {
+      date: '2026-10-23',
+      revision: 't2',
+      entries: [
+        { time: '08:00', content: 'TODAY IMPORTANT ORIGINAL' },
+        { time: '10:00', content: 'a note for today' },
+      ],
+    };
+    let indexDone: () => void = () => {};
+    const apiWrite = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, data: { ok: true, day: today } }) // the note
+      .mockResolvedValueOnce({ ok: true, data: { ok: true, day: pastDay } }); // the edit
+    const fns = load<any>(
+      ['esc', 'escAttr', 'renderDay', 'epSave', 'epWrite', 'epAdd', 'memStatus', 'refreshDatesIfEmptied'],
+      ['_epEditor'],
+      {
+        document: doc,
+        _memDay: pastDay,
+        _mem: { episodicDates: ['2026-10-23', '2026-01-01'] },
+        apiWrite,
+        refreshPageIndex: () => new Promise<void>((res) => (indexDone = res)),
+        paintDates: () => {},
+        loadDay: async () => {},
+      },
+    );
+    fns.renderDay(0); // the past day's record is open for editing
+    const adding = fns.epAdd(); // a note goes to today; the list refresh is slow
+    await Promise.resolve();
+    await Promise.resolve();
+    await fns.epSave(0); // the user saves the open editor in that window
+    indexDone();
+    await adding;
+    expect(apiWrite).toHaveBeenLastCalledWith('PUT', '/api/memory/episodic/2026-01-01/0', {
+      content: 'OLD DAY EDITED',
+      revision: 'p1',
+    });
+  });
+});
+
 describe('관찰 기록 (에피소딕)', () => {
   it('a day shows entries with time, edit and delete; the edit sends the day revision', async () => {
     const el: any = { innerHTML: '' };
     const day = { date: '2026-10-20', revision: 'd1', entries: [{ time: '05:09', title: 'Ask', content: 'Ask: <x>' }] };
-    const fns = load<any>(['esc', 'escAttr', 'renderDay'], [], {
+    const fns = load<any>(['esc', 'escAttr', 'renderDay'], ['_epEditor'], {
       document: { getElementById: () => el },
       _memDay: day,
     });
@@ -408,6 +468,8 @@ describe('관찰 기록 (에피소딕)', () => {
           id === 'ep-edit' ? { value: '고친 기록' } : { textContent: '', setAttribute() {} },
       },
       _memDay: day,
+      // the editor renderDay(0) opened: bound to the day and revision it showed (review R6)
+      _epEditor: { date: '2026-10-20', revision: 'd1', index: 0, time: '05:09', content: 'Ask: <x>' },
       apiWrite,
       renderDay: () => {},
       loadDay: async () => {},
@@ -536,7 +598,7 @@ describe('관찰 기록 (에피소딕)', () => {
 
     const pageApi = vi.fn(async () => ({ ok: true, data: {} }));
     const memPage: any = { page: { id: 'concepts/a', title: 'A' }, revision: 'pa' };
-    const w = load<any>(['deletePage', 'memStatus'], [], {
+    const w = load<any>(['deletePage', 'memStatus', 'pageSaveBusy'], [], {
       document: { getElementById: () => ({ textContent: '', setAttribute() {}, innerHTML: '' }) },
       _memPage: memPage,
       apiWrite: pageApi,
@@ -649,7 +711,7 @@ describe('관찰 기록 (에피소딕)', () => {
     const renderPageEditor = vi.fn();
     const openPage = vi.fn();
     const fns = load<any>(
-      ['esc', 'pageDraft', 'savePage', 'memStatus', 'renderPageConflict', 'overwritePage'],
+      ['esc', 'pageDraft', 'savePage', 'memStatus', 'renderPageConflict', 'overwritePage', 'pageSaveBusy'],
       ['_memPageConflict', '_memPageRaw'],
       {
         document: doc,
@@ -717,6 +779,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'overwritePage',
         'renderPageEditor',
         'pageRawMode',
+        'pageSaveBusy',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -736,84 +799,6 @@ describe('관찰 기록 (에피소딕)', () => {
     fns.pageRawMode(true);
     expect(detail.innerHTML).toContain('LATEST RAW v2');
     expect(detail.innerHTML).not.toContain('STALE RAW');
-  });
-
-  it('a save that fails after another page was opened keeps the draft: reopening the page puts it back beside the newer version (self-check before review R6)', async () => {
-    let detailHtml = '';
-    const status: any = { textContent: '', setAttribute() {} };
-    const conflict: any = { innerHTML: '' };
-    // the form the user typed into: page A's draft
-    const values: Record<string, string> = {
-      'pg-title': 'A title',
-      'pg-aliases': 'x, y',
-      'pg-current': 'my long draft',
-    };
-    const doc = {
-      getElementById: (id: string) =>
-        id === 'mem-page-detail'
-          ? {
-              set innerHTML(v: string) {
-                detailHtml = v;
-              },
-              get innerHTML() {
-                return detailHtml;
-              },
-            }
-          : id === 'pg-conflict'
-            ? conflict
-            : id in values
-              ? { value: values[id] }
-              : status,
-      querySelectorAll: () => [],
-    };
-    const pageA = { id: 'concepts/a', title: 'A', aliases: [], current: 'a', history: [], updated: '2026-10-23' };
-    const pageA2 = { ...pageA, current: 'a, changed by the agent', updated: '2026-10-24' };
-    const pageB = { id: 'concepts/b', title: 'B', aliases: [], current: 'b', history: [], updated: '2026-10-23' };
-    let answerA: (v: unknown) => void = () => {};
-    const apiWrite = vi.fn().mockImplementationOnce(() => new Promise((res) => (answerA = res)));
-    const pages: Record<string, unknown> = {
-      'concepts/a': { page: pageA2, revision: 'a2', raw: '# A\n', representable: true },
-      'concepts/b': { page: pageB, revision: 'b1', raw: '# B\n', representable: true },
-    };
-    const fns = load<any>(
-      [
-        'esc',
-        'escAttr',
-        'pageDraft',
-        'savePage',
-        'pageAnswerElsewhere',
-        'memStatus',
-        'renderPageConflict',
-        'renderPageEditor',
-        'openPage',
-      ],
-      ['_memPageConflict', '_memPageRaw', '_memPageUnsent', 'PAGE_GROUPS'],
-      {
-        document: doc,
-        _memPage: { page: pageA, revision: 'a1', raw: '# A\n', representable: true },
-        apiWrite,
-        fetch: vi.fn(async (url: string) => {
-          const id = decodeURIComponent(String(url).split('id=')[1]);
-          return { ok: true, json: async () => pages[id] };
-        }),
-        refreshPageIndex: async () => {},
-        paintPageList: () => {},
-      },
-    );
-    const savingA = fns.savePage(); // A's save goes out ...
-    await fns.openPage('concepts/b'); // ... the user opens B ...
-    answerA({ ok: false, status: 409, error: 'changed' }); // ... and A's save is refused
-    await savingA;
-    expect(status.textContent).toContain('보관');
-    expect(detailHtml).toContain('concepts/b'); // B stays open, untouched
-    await fns.openPage('concepts/a');
-    // the draft is back in the editor, and the newer version is offered beside it
-    expect(detailHtml).toContain('my long draft');
-    expect(detailHtml).toContain('A title');
-    expect(conflict.innerHTML).toContain('덮어쓰기');
-    // opened once more, the page is the stored one (the draft is handed back once)
-    await fns.openPage('concepts/a');
-    expect(detailHtml).not.toContain('my long draft');
   });
 
   it('a save answer that arrives after another page was opened never retargets the open editor (review R5)', async () => {
@@ -837,6 +822,7 @@ describe('관찰 기록 (에피소딕)', () => {
         data: { ok: true, page: pageB, revision: 'b2', raw: '# B\n', representable: true },
       });
     const pendingIndex: Array<() => void> = [];
+    const editorA: any = { page: pageA, revision: 'a1', raw: '# A\n', representable: true };
     const fns = load<any>(
       [
         'esc',
@@ -848,11 +834,12 @@ describe('관찰 기록 (에피소딕)', () => {
         'renderPageEditor',
         'openPage',
         'pageAnswerElsewhere',
+        'pageSaveBusy',
       ],
-      ['_memPageConflict', '_memPageRaw', '_memPageUnsent', 'PAGE_GROUPS'],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
         document: doc,
-        _memPage: { page: pageA, revision: 'a1', raw: '# A\n', representable: true },
+        _memPage: editorA,
         apiWrite,
         fetch: vi.fn(async () => ({
           ok: true,
@@ -863,6 +850,7 @@ describe('관찰 기록 (에피소딕)', () => {
       },
     );
     const savingA = fns.savePage(); // the save of A goes out ...
+    editorA.saving = Date.now() - 60_000; // ... hangs past the hold (review R6) ...
     await fns.openPage('concepts/b'); // ... and the user opens B before it is answered
     answerA({
       ok: true,
@@ -886,6 +874,65 @@ describe('관찰 기록 (에피소딕)', () => {
     expect(detail.innerHTML).not.toContain('concepts/a');
   });
 
+  it('while a page save is in flight, a second save and a switch to another page wait (review R6)', async () => {
+    const detail: any = { innerHTML: '' };
+    const status: any = { textContent: '', innerHTML: '', setAttribute() {} };
+    const values: Record<string, string> = { 'pg-title': 'A', 'pg-aliases': '', 'pg-current': 'a draft' };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-page-detail' ? detail : id in values ? { value: values[id] } : status,
+      querySelectorAll: () => [],
+    };
+    const pageA = { id: 'concepts/a', title: 'A', aliases: [], current: 'a', history: [], updated: '2026-10-23' };
+    let answer: (v: unknown) => void = () => {};
+    const apiWrite = vi.fn().mockImplementationOnce(() => new Promise((res) => (answer = res)));
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
+    const fns = load<any>(
+      [
+        'esc',
+        'escAttr',
+        'pageDraft',
+        'savePage',
+        'savePageRaw',
+        'memStatus',
+        'renderPageConflict',
+        'renderPageEditor',
+        'openPage',
+        'newPageForm',
+        'pageSaveBusy',
+      ],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      {
+        document: doc,
+        _memPage: { page: pageA, revision: 'a1', raw: '# A\n', representable: true },
+        apiWrite,
+        fetch: fetchMock,
+        refreshPageIndex: async () => {},
+        paintPageList: () => {},
+      },
+    );
+    const first = fns.savePage();
+    await fns.savePage(); // a double click
+    await fns.savePageRaw();
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+    await fns.openPage('concepts/b'); // the user clicks another page
+    fns.newPageForm();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(status.textContent).toContain('저장 중');
+    answer({
+      ok: true,
+      data: { ok: true, page: { ...pageA, current: 'a draft' }, revision: 'a2', raw: '# A\n', representable: true },
+    });
+    await first;
+    // once answered, the next save goes out on the saved revision
+    apiWrite.mockResolvedValueOnce({
+      ok: true,
+      data: { ok: true, page: pageA, revision: 'a3', raw: '# A\n', representable: true },
+    });
+    await fns.savePage();
+    expect(apiWrite).toHaveBeenLastCalledWith('PUT', '/api/memory/page', expect.objectContaining({ revision: 'a2' }));
+  });
+
   it('a successful form save keeps the saved raw markdown for a later switch to raw editing (review R4)', async () => {
     const detail: any = { innerHTML: '' };
     const status: any = { textContent: '', setAttribute() {} };
@@ -901,7 +948,17 @@ describe('관찰 기록 (에피소딕)', () => {
       data: { ok: true, page, revision: 'p2', raw: 'SAVED RAW v2\n', representable: true },
     });
     const fns = load<any>(
-      ['esc', 'escAttr', 'pageDraft', 'savePage', 'memStatus', 'renderPageConflict', 'renderPageEditor', 'pageRawMode'],
+      [
+        'esc',
+        'escAttr',
+        'pageDraft',
+        'savePage',
+        'memStatus',
+        'renderPageConflict',
+        'renderPageEditor',
+        'pageRawMode',
+        'pageSaveBusy',
+      ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
         document: doc,

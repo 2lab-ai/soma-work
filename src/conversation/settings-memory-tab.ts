@@ -307,7 +307,17 @@ function paintPageList() {
   }
   document.getElementById('mem-page-list').innerHTML = html || '<p class="lock">' + (q ? '맞는 페이지가 없습니다.' : '아직 페이지가 없습니다. 에이전트가 오래 남길 지식을 정리하면 여기에 생깁니다.') + '</p>';
 }
+// A page save or delete in flight holds the editor (review R6): a second click and a
+// switch to another page wait for the answer, so an answer always lands on the editor
+// it was sent from, with nothing typed elsewhere in between. A request that hangs past
+// the hold lets the user move on; its late answer then only reports (review R5).
+function pageSaveBusy() {
+  if (!_memPage || !_memPage.saving || Date.now() - _memPage.saving > 20000) return false;
+  memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
+  return true;
+}
 async function openPage(id) {
+  if (pageSaveBusy()) return;
   var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
   var data = null;
   try { data = await res.json(); } catch (_e) {}
@@ -315,26 +325,11 @@ async function openPage(id) {
   _memPage = data;
   _memPageConflict = null;
   _memPageRaw = false;
-  var unsent = _memPageUnsent[id];
-  if (unsent) {
-    // A draft whose save failed after the user had opened another page: back in the editor,
-    // on the revision it was written against, with the newer version beside it when the
-    // page changed meanwhile — the same choice as a 409 in place.
-    delete _memPageUnsent[id];
-    _memPage = {
-      page: unsent.fields ? Object.assign({}, data.page, unsent.fields) : data.page,
-      revision: unsent.revision,
-      raw: unsent.raw !== undefined ? unsent.raw : data.raw,
-      representable: data.representable,
-    };
-    _memPageRaw = unsent.raw !== undefined;
-    if (unsent.revision !== data.revision) _memPageConflict = data;
-  }
   renderPageEditor();
-  renderPageConflict();
   paintPageList();
 }
 function pageRawMode(on) {
+  if (pageSaveBusy()) return;
   _memPageRaw = !!on;
   renderPageEditor();
 }
@@ -386,6 +381,7 @@ function addHistoryLine() {
   row.firstChild.focus();
 }
 function newPageForm() {
+  if (pageSaveBusy()) return;
   _memPage = { page: { id: '', title: '', aliases: [], current: '', history: [] }, revision: null };
   renderPageEditor();
   paintPageList();
@@ -398,6 +394,7 @@ function pageDraft() {
   return { title: document.getElementById('pg-title').value, aliases: aliases, current: document.getElementById('pg-current').value, history: hist };
 }
 async function savePage() {
+  if (pageSaveBusy()) return;
   var d = pageDraft();
   // The editor this save was sent from. If another page is opened before the answer
   // arrives, the answer must not retarget that editor: its id, revision and fields
@@ -411,9 +408,10 @@ async function savePage() {
     id = document.getElementById('pg-type').value + '/' + name;
   }
   var r;
+  sentFrom.saving = Date.now();
   try { r = await apiWrite('PUT', '/api/memory/page', { id: id, title: d.title, aliases: d.aliases, current: d.current, history: d.history, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
-  var unsentForm = { fields: d, revision: sentFrom.revision };
-  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, unsentForm);
+  sentFrom.saving = 0;
+  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
   if (r.ok) {
     // Keep the saved bytes too: a later switch to raw editing starts from them (review R4).
     // The editor is updated in one step, before anything else is awaited (review R5).
@@ -429,7 +427,7 @@ async function savePage() {
     var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
     var latest = null;
     try { latest = await res.json(); } catch (_e) {}
-    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, unsentForm);
+    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
     _memPageConflict = res.ok && latest ? latest : { page: null, revision: null };
     renderPageConflict();
     memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집기에 그대로 있습니다.', true);
@@ -437,29 +435,24 @@ async function savePage() {
   }
   memStatus('저장하지 못했습니다: ' + r.error, true);
 }
-// Drafts whose save failed after the user had opened another page, by page id. Opening
-// that page again hands the draft back to the editor, once (self-check before review R6).
-var _memPageUnsent = {};
 // A page answer that came back after the user opened another page: report it,
-// refresh the list, leave the open editor alone (review R5). A refused draft is kept.
-async function pageAnswerElsewhere(r, id, unsent) {
+// refresh the list, leave the open editor alone (review R5).
+async function pageAnswerElsewhere(r, id) {
   if (r.ok) memStatus(id + ' 페이지를 저장했습니다 (지금 연 페이지는 그대로)', false);
-  else {
-    if (unsent) _memPageUnsent[id] = unsent;
-    memStatus(id + ' 페이지를 저장하지 못했습니다' + (r.status === 409 ? ' — 그사이 바뀌었습니다' : ': ' + r.error)
-      + (unsent ? '. 작성한 내용은 보관했습니다 — 그 페이지를 다시 열면 편집기에 돌아옵니다' : ''), true);
-  }
+  else memStatus(id + ' 페이지를 저장하지 못했습니다' + (r.status === 409 ? ' — 그사이 바뀌었습니다. 다시 열어 확인하세요' : ': ' + r.error), true);
   await refreshPageIndex();
 }
 async function savePageRaw() {
+  if (pageSaveBusy()) return;
   var ta = document.getElementById('pg-raw');
   var raw = ta ? ta.value : '';
   var sentFrom = _memPage; // as in savePage (review R5)
   var id = _memPage.page.id;
   var r;
+  sentFrom.saving = Date.now();
   try { r = await apiWrite('PUT', '/api/memory/page/raw', { id: id, raw: raw, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
-  var unsentRaw = { raw: raw, revision: sentFrom.revision };
-  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, unsentRaw);
+  sentFrom.saving = 0;
+  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
   if (r.ok) {
     _memPage = r.data;
     _memPageRaw = !(r.data && r.data.representable);
@@ -473,7 +466,7 @@ async function savePageRaw() {
     var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
     var latest = null;
     try { latest = await res.json(); } catch (_e) {}
-    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, unsentRaw);
+    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
     _memPageConflict = res.ok && latest ? latest : { page: null, revision: null };
     renderPageConflict();
     memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집기에 그대로 있습니다.', true);
@@ -510,12 +503,17 @@ function discardPageDraft() {
   if (id) openPage(id);
 }
 async function deletePage() {
+  if (pageSaveBusy()) return;
   var p = _memPage.page;
   var revision = _memPage.revision; // the page the dialog names, as it was shown (review R3)
   var ok = await confirmDialog({ title: p.title + ' 페이지를 지울까요?', body: p.id + ' — Current와 History가 모두 사라집니다.', action: '페이지 삭제' });
   if (!ok) return;
   var sentFrom = _memPage;
-  var r = await apiWrite('DELETE', '/api/memory/page', { id: p.id, revision: revision });
+  if (pageSaveBusy()) return; // a save started while the dialog was open
+  sentFrom.saving = Date.now();
+  var r;
+  try { r = await apiWrite('DELETE', '/api/memory/page', { id: p.id, revision: revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
+  sentFrom.saving = 0;
   if (!r.ok) { memStatus((r.status === 409 ? '그사이 바뀌었습니다 — 다시 열어 확인하세요: ' : '지우지 못했습니다: ') + r.error, true); return; }
   // Close the editor only if it still shows the deleted page (review R5).
   if (_memPage === sentFrom) { _memPage = null; renderPageEditor(); }
@@ -548,9 +546,14 @@ async function loadDay(date) {
   document.getElementById('mem-ep-date').value = date;
   renderDay();
 }
+// The open episodic editor: the day, record and revision it was opened on. A save goes
+// there, whatever day the view shows by then (review R6).
+var _epEditor = null;
 function renderDay(editIndex, draft) {
   var el = document.getElementById('mem-ep-body');
   var entries = (_memDay && _memDay.entries) || [];
+  var edited = typeof editIndex === 'number' ? entries[editIndex] : undefined;
+  _epEditor = edited ? { date: _memDay.date, revision: _memDay.revision, index: editIndex, time: edited.time, content: edited.content } : null;
   if (!entries.length) { el.innerHTML = '<p class="lock">이 날의 기록이 없습니다.</p>'; return; }
   var html = '';
   for (var i = 0; i < entries.length; i++) {
@@ -600,11 +603,12 @@ async function epWrite(method, url, payload, draft, at, orig, origTime) {
   return false;
 }
 async function epSave(i) {
+  var ed = _epEditor;
   var ta = document.getElementById('ep-edit');
-  var text = ta ? ta.value : '';
+  if (!ed || ed.index !== i || !ta) return;
+  var text = ta.value;
   if (!text.trim()) { memStatus('비어 있는 기록은 저장할 수 없습니다 — 지우려면 삭제를 쓰세요', true); return; }
-  var e = _memDay.entries[i];
-  if (await epWrite('PUT', '/api/memory/episodic/' + _memDay.date + '/' + i, { content: text, revision: _memDay.revision }, text, i, e && e.content, e && e.time)) memStatus('저장했습니다', false);
+  if (await epWrite('PUT', '/api/memory/episodic/' + ed.date + '/' + ed.index, { content: text, revision: ed.revision }, text, ed.index, ed.content, ed.time)) memStatus('저장했습니다', false);
 }
 async function epDelete(i) {
   // Date, index and revision as the dialog shows them: if the view moves to another day
@@ -629,7 +633,19 @@ async function epAdd() {
   var r = await apiWrite('POST', '/api/memory/episodic', { text: text });
   if (!r.ok) { memStatus('추가하지 못했습니다: ' + r.error, true); return; }
   ta.value = '';
+  if (_epEditor && document.getElementById('ep-edit') && _epEditor.date !== r.data.day.date) {
+    // A record of another day is open for editing: keep it (and its draft) on screen;
+    // today's note shows when that day is opened (review R6).
+    var keptDate = _epEditor.date;
+    await refreshPageIndex();
+    memStatus('오늘 기록에 추가했습니다 (수정 중인 ' + keptDate + ' 기록은 그대로)', false);
+    return;
+  }
+  // The view and its state move to today together, before anything is awaited (review R6).
   _memDay = r.data.day;
+  renderDay();
+  var sel = document.getElementById('mem-ep-date');
+  if (sel) sel.value = _memDay.date;
   await refreshPageIndex();
   paintDates();
   memStatus('오늘 기록에 추가했습니다', false);
