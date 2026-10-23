@@ -260,6 +260,6 @@ Fields:
 
 Write it exactly in this shape: `"type"` is the first key, and the SHAs are plain hex. A directive the harness cannot read starts nothing, and the harness says so in this thread. When you mention the signal in prose, write `deploy_completed` in backticks, never the quoted JSON value.
 
-The harness starts every lane registered for that repo and target and replies with one line in this thread naming the lanes it started. Each lane runs in a thread of its own and posts its result back into this thread when it finishes. Do not wait for a lane, do not check on it, and do not run its work yourself.
+The harness starts every lane registered for that repo and target and replies with one line in this thread naming the lanes it started. Each lane runs in a thread of its own; it is told this thread, so it can post its result back here. Do not wait for a lane, do not check on it, and do not run its work yourself.
 
 **Never emit** on a held, failed, cancelled, or unmerged deploy. A CD run for the merge commit that failed is a failed deploy, not an unconfirmed one. **Never emit twice** for the same merge — not in a summary, a retry, or a later turn.
