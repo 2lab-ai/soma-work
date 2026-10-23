@@ -309,6 +309,78 @@ describe('stream-processor — subagent routing (spec 12 §2.2)', () => {
     expect(r.agentEvents[r.agentEvents.length - 1]).toMatchObject({ kind: 'turn_end' });
   });
 
+  it('a failed background spawn is not an acknowledgement — the agent never started (review P1)', async () => {
+    const r = await run([
+      { type: 'tool_call', toolCallId: 'toolu_bad', name: 'Agent', input: { ...SPAWN_INPUT, run_in_background: true } },
+      {
+        type: 'tool_result',
+        toolCallId: 'toolu_bad',
+        content: [{ type: 'text', text: 'Agent type not found' }],
+        isError: true,
+      },
+      { type: 'result', stopReason: 'end_turn', finalText: 'done' },
+    ]);
+    expect(r.agentEvents).toContainEqual(
+      expect.objectContaining({ kind: 'returned', agentId: 'toolu_bad', ok: false, ack: false }),
+    );
+  });
+
+  it('a turn cut short (stopped by the user) still announces its end (review P1)', async () => {
+    const agentEvents: AgentTreeEvent[] = [];
+    const ctrl = new AbortController();
+    ctrl.abort();
+    await new AgentStreamProcessor({ onAgentEvent: (e) => agentEvents.push(e) }).process(
+      events([{ type: 'tool_call', toolCallId: 'toolu_a', name: 'Agent', input: SPAWN_INPUT }]),
+      {
+        channel: 'C1',
+        threadTs: 'T1',
+        sessionKey: 'C1:T1',
+        sessionId: 's1',
+        incidentAttempt: false,
+        logVerbosity: LOG_MINIMAL,
+        say: vi.fn().mockResolvedValue({ ts: 'm' }) as unknown as StreamContext['say'],
+      },
+      ctrl.signal,
+    );
+    expect(agentEvents.map((e) => e.kind)).toContain('turn_end');
+  });
+
+  it("a subagent's tool calls and results are not the main agent's activity (thread header, Slack tool rows) (review P1)", async () => {
+    const used: string[] = [];
+    const results: string[] = [];
+    await run(
+      [
+        { type: 'tool_call', toolCallId: 'toolu_agent_1', name: 'Agent', input: SPAWN_INPUT },
+        {
+          type: 'tool_call',
+          toolCallId: 'tu_sub',
+          name: 'Grep',
+          input: { pattern: 'x' },
+          parentToolUseId: 'toolu_agent_1',
+        },
+        {
+          type: 'tool_result',
+          toolCallId: 'tu_sub',
+          content: [{ type: 'text', text: 'hit' }],
+          parentToolUseId: 'toolu_agent_1',
+        },
+        { type: 'tool_call', toolCallId: 'tu_main', name: 'Bash', input: { command: 'ls' } },
+        { type: 'tool_result', toolCallId: 'tu_main', content: [{ type: 'text', text: 'ok' }] },
+        { type: 'result', stopReason: 'end_turn', finalText: 'done' },
+      ],
+      {
+        onToolUse: async (uses) => {
+          for (const u of uses) used.push(u.name);
+        },
+        onToolResult: async (res) => {
+          for (const t of res) results.push(t.toolUseId);
+        },
+      },
+    );
+    expect(used).toEqual(['Agent', 'Bash']);
+    expect(results).toEqual(['tu_main']);
+  });
+
   it('a session without subagents emits nothing new beyond the turn end', async () => {
     const r = await run([
       { type: 'tool_call', toolCallId: 'tu_1', name: 'Read', input: { file_path: '/a' } },

@@ -54,7 +54,10 @@ SSOT: [`agent-tree/ssot.md`](agent-tree/ssot.md) · 앞선 계약: [`10-agent-in
   `agentOutcome.status !== 'completed'` → 스폰 입력 `run_in_background` → 결과 텍스트(`isBackgroundAckText`, 최후 폴백).
 - 서브의 호출별 usage → `onLiveUsage({…, sidechain: true})`, `_lastAssistantTurnUsage`는 메인 것만.
 - `agent_task_lifecycle` → `lifecycle{agentId?(tool_use_id), taskId, phase, taskType, status, …}`.
-- 턴 끝(정상·중단 모두) → `turn_end`.
+- 서브의 도구 호출·결과는 `onToolUse`/`onToolResult`(스레드 헤더의 현재 도구, Slack 도구 행, 요청 툴 통계)와 Slack 스킬 배너로
+  가지 않는다 — 메인이 하는 일만 Slack 표면에 남고, 서브의 것은 그 서브의 작업 로그에 있다. 마지막 도구(`endTurnInfo`)도 메인 것.
+- 스폰의 tool_result가 오류면 `ack`가 아니다(시작되지 않았다) → `failed`.
+- 턴 끝(정상·사용자 중단·stall 타임아웃·예외 모두) → `turn_end`.
 - `forwardSubagentText`·`agentProgressSummaries`는 켜지 않는다(설계 자문 Q2·Q3: 누출 위험·비용 대비 이득 부족). 켜도 위 분기가
   서브의 text를 그 서브 로그로만 보낸다.
 
