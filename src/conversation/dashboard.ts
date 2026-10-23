@@ -9483,7 +9483,10 @@ function cronCardAsRun(g, s) {
 function cronGroupRuns(g) {
   var runs = g.job && Array.isArray(g.job.runs) ? g.job.runs.slice() : [];
   var linked = Object.create(null);
-  for (var i = 0; i < runs.length; i++) if (runs[i].session && runs[i].session.boardKey) linked[runs[i].session.boardKey] = true;
+  // A queue entry links to the thread but is not the run that owns it, so it
+  // never stands in for the thread's card: the fire it waits behind may have
+  // no record yet (records are written when a fire ends).
+  for (var i = 0; i < runs.length; i++) if (runs[i].status !== 'queued' && runs[i].session && runs[i].session.boardKey) linked[runs[i].session.boardKey] = true;
   for (var j = 0; j < g.cards.length; j++) if (!linked[g.cards[j].key]) runs.push(cronCardAsRun(g, g.cards[j]));
   runs.sort(function(a, b) { return b.executedAt - a.executedAt; });
   return runs;
