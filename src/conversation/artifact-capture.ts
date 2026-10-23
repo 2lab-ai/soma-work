@@ -36,6 +36,8 @@ export interface CaptureEntry {
   text: string;
   tool?: string;
   toolUseId?: string;
+  /** Set on a subagent's entries (spec 12). Its final text goes to the main agent, not to Slack. */
+  agentId?: string;
   ok?: boolean;
   turnId?: string;
   ts?: number;
@@ -156,7 +158,7 @@ export function captureArtifactFromWorkLog(
       })().catch((err) => logger.warn(`Upload artifact not recorded for ${conversationId}`, err));
     }
 
-    if (entry.kind === 'final' && typeof entry.text === 'string') {
+    if (entry.kind === 'final' && typeof entry.text === 'string' && !entry.agentId) {
       return store
         .recordAnswer({
           conversationId,
@@ -234,7 +236,7 @@ export function backfillArtifactsFromWorkLog(
             turnId: e.turnId,
             now: e.ts,
           });
-        } else if (e.kind === 'final') {
+        } else if (e.kind === 'final' && !e.agentId) {
           const text = e.rawBytes ? ((await rawOf(e.seq)) ?? e.text) : e.text;
           await store.recordAnswer({
             conversationId,
