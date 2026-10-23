@@ -114,6 +114,26 @@ describe('resolveAccountTier — explicit → upstream → defaults → unknown'
     expect(resolveAccountTier({ name: 'claude:ai1@corp.example', group: 'claude' }, {})).toBeUndefined();
   });
 
+  // trinity round 6 (fable P2): live llmux has ai5 / ai6 / ai2 in both the
+  // claude and the codex group — a tier only ever applies to its own provider.
+  it("a tier never lands on another provider's account, however the key is written", () => {
+    expect(resolveAccountTier({ name: 'claude:ai5@corp.example', group: 'claude' }, { ai5: 'chatgpt-pro-500' })).toBe(
+      undefined,
+    );
+    expect(resolveAccountTier({ name: 'ai5', group: 'claude' }, { ai5: 'chatgpt-pro-500' })).toBeUndefined();
+    expect(
+      resolveAccountTier({ name: 'claude:ai5@corp.example', group: 'claude' }, { 'claude:ai5': 'chatgpt-pro-500' }),
+    ).toBeUndefined();
+    // the same bare key still serves its own provider
+    expect(resolveAccountTier({ name: 'codex:ai5@corp.example', group: 'codex' }, { ai5: 'chatgpt-pro-500' })).toBe(
+      'chatgpt-pro-500',
+    );
+    // and a mismatched bare key does not hide the provider's own default
+    expect(resolveAccountTier({ name: 'codex:ai1@corp.example', group: 'codex' }, { ai1: 'claude-max-20x' })).toBe(
+      'chatgpt-pro-200',
+    );
+  });
+
   it('llmuxAccountLocalName strips the group prefix and the domain', () => {
     expect(llmuxAccountLocalName('claude:ai7@corp.example', 'claude')).toBe('ai7');
     expect(llmuxAccountLocalName('ai7', 'claude')).toBe('ai7');
