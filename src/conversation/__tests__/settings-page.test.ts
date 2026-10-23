@@ -1,0 +1,233 @@
+/**
+ * SSOT 2026-10-23 T2/T5 — the settings page and its 개인 설정 tab, client half.
+ * Runs the shipped client script (`SETTINGS_CLIENT_JS`, a String.raw literal
+ * that reaches the browser unchanged) with stubbed fetch / DOM.
+ */
+
+import { describe, expect, it, vi } from 'vitest';
+import { renderSettingsPage, SETTINGS_CLIENT_JS } from '../settings-page';
+
+function clientFn(name: string): string {
+  const plain = SETTINGS_CLIENT_JS.indexOf(`\nfunction ${name}(`);
+  const start = plain >= 0 ? plain : SETTINGS_CLIENT_JS.indexOf(`\nasync function ${name}(`);
+  if (start < 0) throw new Error(`client function ${name} not found`);
+  const end = SETTINGS_CLIENT_JS.indexOf('\n}\n', start);
+  return SETTINGS_CLIENT_JS.slice(start + 1, end + 2);
+}
+function load<T>(fns: string[], inject: Record<string, unknown> = {}): T {
+  const names = Object.keys(inject);
+  const body = `${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
+  return new Function(...names, body)(...names.map((n) => inject[n])) as T;
+}
+
+const RENDER = ['esc', 'escAttr', 'valueText', 'renderSegmented', 'renderSelect', 'renderControl', 'renderRow'];
+
+function row(over: Record<string, unknown> = {}) {
+  return {
+    key: 'defaultEffort',
+    group: 'model',
+    label: '기본 effort',
+    description: '새 세션의 추론 강도',
+    kind: 'choice',
+    value: 'xhigh',
+    defaultValue: 'xhigh',
+    modified: false,
+    options: ['low', 'medium', 'high', 'xhigh', 'max'].map((v) => ({ value: v, label: v.toUpperCase() })),
+    editable: true,
+    slackCommand: 'effort <level>',
+    ...over,
+  };
+}
+
+describe('settings page shell', () => {
+  it('the whole page script parses, and the page links back to the dashboard', () => {
+    const html = renderSettingsPage();
+    const script = /<script>([\s\S]*)<\/script>\s*<\/body>/.exec(html)![1];
+    expect(() => new Function(script)).not.toThrow();
+    expect(html).toContain('<a class="back" href="/dashboard">');
+    expect(html).toContain('<a href="#preferences">개인 설정</a>');
+    expect(html).toContain('<dialog id="confirm"');
+  });
+
+  it('the client script carries no template-literal syntax (it ships byte for byte)', () => {
+    expect(SETTINGS_CLIENT_JS).not.toContain('`');
+    expect(SETTINGS_CLIENT_JS).not.toContain('${');
+  });
+});
+
+describe('개인 설정 rows', () => {
+  const r = load<{ renderRow(row: any): string }>(RENDER, { _rowStatus: {} });
+
+  it('a short choice is a native radio group that saves on change, with the Slack command beside it', () => {
+    const html = r.renderRow(row());
+    expect(html).toContain('<fieldset class="seg"><legend>기본 effort</legend>');
+    expect(html.match(/type="radio"/g)).toHaveLength(5);
+    expect(html).toContain('value="xhigh" checked');
+    expect(html).toContain('onchange="onChoice(this)"');
+    expect(html).toContain('Slack: <code>effort &lt;level&gt;</code>');
+    expect(html).not.toContain('기본값으로');
+  });
+
+  it('a modified row is marked and offers a reset; a long list is a select with a custom entry', () => {
+    const html = r.renderRow(
+      row({
+        key: 'defaultModel',
+        label: '기본 모델',
+        value: 'grok[1m]',
+        defaultValue: 'claude-opus-5-5[1m]',
+        modified: true,
+        allowCustom: true,
+      }),
+    );
+    expect(html).toContain('class="row is-modified"');
+    expect(html).toContain('onclick="resetRow(this.getAttribute(\'data-key\'))">기본값으로</button>');
+    expect(html).toContain('<select id="f-defaultModel"');
+    expect(html).toContain('id="c-defaultModel" data-key="defaultModel"');
+  });
+
+  it('an admin-only row for a non-admin is read-only with its reason, and no control', () => {
+    const html = r.renderRow(
+      row({
+        key: 'sandbox',
+        kind: 'toggle',
+        value: true,
+        defaultValue: true,
+        editable: false,
+        adminOnly: true,
+        lockedReason: '관리자만 바꿀 수 있습니다.',
+      }),
+    );
+    expect(html).toContain('(관리자)');
+    expect(html).toContain('관리자만 바꿀 수 있습니다.');
+    expect(html).not.toContain('<input');
+  });
+
+  it('toggle, typed and list rows', () => {
+    expect(r.renderRow(row({ key: 'autoGoal', kind: 'toggle', value: false, options: undefined }))).toContain(
+      'role="switch"',
+    );
+    const typed = r.renderRow(row({ key: 'email', kind: 'text', value: 'a@b.co', options: undefined }));
+    expect(typed).toContain('value="a@b.co"');
+    expect(typed).toContain('>저장</button>');
+    expect(typed).toContain('>지우기</button>');
+    const list = r.renderRow(
+      row({
+        key: 'autoskills',
+        kind: 'list',
+        value: ['local:z'],
+        defaultValue: [],
+        options: [
+          { value: 'local:z', label: 'local:z' },
+          { value: 'local:autoz', label: 'local:autoz' },
+        ],
+        maxItems: 20,
+      }),
+    );
+    expect(list).toContain('data-item="local:z"');
+    expect(list).toContain('<option value="local:autoz">');
+    expect(list).not.toContain('<option value="local:z">');
+  });
+
+  it('without admin acceptance every row is read-only with the reason (the server refuses writes)', () => {
+    const { lockIfNotAccepted } = load<{ lockIfNotAccepted(d: any): any }>(['lockIfNotAccepted']);
+    const snap = lockIfNotAccepted({ accepted: false, settings: [row(), row({ key: 'email', kind: 'text' })] });
+    expect(snap.settings.every((s: any) => s.editable === false && s.lockedReason.includes('승인'))).toBe(true);
+    const html = r.renderRow(snap.settings[0]);
+    expect(html).not.toContain('<input');
+    expect(html).toContain('관리자 승인 전에는 바꿀 수 없습니다.');
+    const ok = lockIfNotAccepted({ accepted: true, settings: [row()] });
+    expect(ok.settings[0].editable).toBe(true);
+  });
+
+  it('user text is escaped everywhere', () => {
+    const html = r.renderRow(
+      row({ key: 'email', kind: 'text', value: '"><img src=x onerror=alert(1)>', options: undefined }),
+    );
+    expect(html).not.toContain('<img');
+  });
+});
+
+describe('saving', () => {
+  function env(over: Record<string, unknown> = {}) {
+    const snapshot = {
+      settings: [row(), row({ key: 'permissionMode', kind: 'choice', value: 'auto', danger: true, options: [] })],
+    };
+    const deps: Record<string, any> = {
+      _snapshot: snapshot,
+      _rowStatus: {} as Record<string, any>,
+      document: { getElementById: () => null },
+      apiWrite: vi.fn(async (_m: string, _u: string, p: any) => ({
+        ok: true,
+        data: { setting: row({ value: p.value, modified: p.value !== 'xhigh' }) },
+      })),
+      confirmDialog: vi.fn(async () => true),
+      repaintRow: vi.fn(),
+      ...over,
+    };
+    const fns = load<{ saveSetting(key: string, value: unknown): Promise<boolean> }>(
+      ['findRow', 'valueText', 'needsConfirm', 'saveSetting', 'esc'],
+      deps,
+    );
+    return { ...fns, deps, snapshot };
+  }
+
+  it('PATCHes /api/settings/:key with { value } and repaints the row with the server answer', async () => {
+    const { saveSetting, deps, snapshot } = env();
+    expect(await saveSetting('defaultEffort', 'high')).toBe(true);
+    expect(deps.apiWrite).toHaveBeenCalledWith('PATCH', '/api/settings/defaultEffort', { value: 'high' });
+    expect(snapshot.settings[0].value).toBe('high');
+    expect(deps._rowStatus.defaultEffort).toEqual({ text: '저장됨 — HIGH', error: false });
+    expect(deps.repaintRow).toHaveBeenCalledWith('defaultEffort');
+  });
+
+  it('a refusal keeps the old value and says why', async () => {
+    const { saveSetting, deps, snapshot } = env({
+      apiWrite: vi.fn(async () => ({ ok: false, error: 'effort는 … 중 하나여야 합니다' })),
+    });
+    expect(await saveSetting('defaultEffort', 'turbo')).toBe(false);
+    expect(snapshot.settings[0].value).toBe('xhigh');
+    expect(deps._rowStatus.defaultEffort).toEqual({
+      text: '저장하지 못했습니다: effort는 … 중 하나여야 합니다',
+      error: true,
+    });
+  });
+
+  it('turning on bypass asks first; cancelling sends nothing', async () => {
+    const confirmDialog = vi.fn(async () => false);
+    const { saveSetting, deps } = env({ confirmDialog });
+    expect(await saveSetting('permissionMode', 'bypass')).toBe(false);
+    expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({ action: '확인 없이 실행 켜기' }));
+    expect(deps.apiWrite).not.toHaveBeenCalled();
+    // Back to the safe value needs no confirmation.
+    await saveSetting('permissionMode', 'auto');
+    expect(confirmDialog).toHaveBeenCalledTimes(1);
+    expect(deps.apiWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it('every write carries the CSRF token and the admin-mode header, and retries once after a 403', async () => {
+    let token = 'old';
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 403, json: async () => ({ error: 'CSRF' }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ ok: true }) });
+    const { apiWrite } = new Function(
+      'fetch',
+      'refreshCsrfToken',
+      'getToken',
+      'localStorage',
+      `${clientFn('adminModeOn')}\n${clientFn('apiWrite').replace(/_csrfToken/g, 'getToken()')}\nreturn { apiWrite };`,
+    )(
+      fetch,
+      async () => {
+        token = 'new';
+      },
+      () => token,
+      { getItem: () => 'on' },
+    );
+    const r = await apiWrite('PATCH', '/api/settings/rating', { value: 7 });
+    expect(r.ok).toBe(true);
+    expect(fetch.mock.calls[0][1].headers).toMatchObject({ 'X-CSRF-Token': 'old', 'X-Admin-Mode': 'on' });
+    expect(fetch.mock.calls[1][1].headers['X-CSRF-Token']).toBe('new');
+    expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ value: 7 });
+  });
+});
