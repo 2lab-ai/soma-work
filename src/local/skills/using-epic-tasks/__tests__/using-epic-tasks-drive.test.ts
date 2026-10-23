@@ -24,7 +24,7 @@ const DRIVE_MD = resolve(SKILL_ROOT, 'reference', 'epic-drive.md');
 const STEPS = ['목표·계기판 고정', '스펙 먼저', '작업 단위 PR 루프', '실측·종결'];
 const ROLES = ['디스패처', '작업자', '외부 리뷰 엔진', '머지 담당', '오너'];
 const RULES = ['위임', '단위', '증거', '결정', '질문', '돈', '비밀', '범위', '글', '머지', '장애', '중복'];
-const RECEIPT_ROWS = ['시험 먼저', '변이', '게이트', '기준선', '외부 리뷰', '반영 후 확인'];
+const RECEIPT_ROWS = ['시험 먼저', '변이', '게이트', '기준선 분리', '외부 리뷰', 'PR 본문', '반영 후 확인'];
 const ABSOLUTE_DATE = /\d{4}-\d{2}-\d{2}/;
 
 function skill(): string {
@@ -46,11 +46,25 @@ function section(md: string, heading: RegExp): string {
   return next === -1 ? rest : rest.slice(0, next + 1);
 }
 
+/** Cells of every data row of the first markdown table in `md`. */
+function tableRows(md: string): string[][] {
+  const lines = md.split('\n');
+  const start = lines.findIndex((line) => line.startsWith('|'));
+  if (start === -1) return [];
+  const end = lines.findIndex((line, i) => i > start && !line.startsWith('|'));
+  const table = lines.slice(start, end === -1 ? undefined : end);
+  // table[0] = header, table[1] = separator.
+  return table.slice(2).map((line) =>
+    line
+      .split('|')
+      .slice(1, -1)
+      .map((cell) => cell.trim()),
+  );
+}
+
 /** First cell of every data row of the first markdown table in `md`. */
 function firstCells(md: string): string[] {
-  const rows = md.split('\n').filter((line) => line.startsWith('|'));
-  // rows[0] = header, rows[1] = separator.
-  return rows.slice(2).map((line) => line.split('|')[1].trim());
+  return tableRows(md).map((cells) => cells[0]);
 }
 
 function expectAscending(md: string, patterns: RegExp[]): void {
@@ -104,13 +118,15 @@ describe('local:using-epic-tasks — reference/epic-drive.md detail contract (T2
     expect(firstCells(section(drive(), /^## 공통 규칙$/m))).toEqual(RULES);
   });
 
-  it('carries the per-PR receipt table inside step 3', () => {
+  it('pins the per-PR receipt table in step 3: exact items, in order, each with evidence', () => {
     const step3 = section(drive(), /^## 3\. /m);
     const at = step3.search(/^### 리시트 표/m);
     expect(at).toBeGreaterThan(-1);
-    const receipt = step3.slice(at);
-    for (const row of RECEIPT_ROWS) {
-      expect(receipt).toMatch(new RegExp(`^\\| ${row}`, 'm'));
+    // Scoped to the first table under the `### 리시트 표` heading.
+    const rows = tableRows(step3.slice(at));
+    expect(rows.map((cells) => cells[0])).toEqual(RECEIPT_ROWS);
+    for (const [item, evidence] of rows) {
+      expect(evidence ?? '', `empty evidence cell for ${item}`).not.toBe('');
     }
   });
 });
