@@ -109,7 +109,7 @@ var _memDay = null;       // { date, revision, entries }
 var _memUndo = null;      // { target, text } last single delete
 var L1_LABELS = { memory: '에이전트 노트', user: '사용자 프로필' };
 var L1_FILES = { memory: 'MEMORY.md', user: 'USER.md' };
-var PAGE_GROUPS = [['agent', '에이전트'], ['sites', '사이트'], ['concepts', '개념'], ['project', '프로젝트'], ['cron', '반복 작업']];
+var PAGE_GROUPS = [['agent', '에이전트'], ['sites', '사이트'], ['concepts', '개념'], ['project', '내 프로젝트 페이지'], ['cron', '반복 작업']];
 
 function memJump(id) {
   var el = document.getElementById(id);

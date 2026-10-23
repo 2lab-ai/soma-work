@@ -23,6 +23,7 @@
  */
 
 import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from './settings-memory-tab';
+import { PROJECT_CLIENT_JS, PROJECT_TAB_CSS, PROJECT_TAB_HTML } from './settings-project-tab';
 
 export interface SettingsPageTab {
   id: string;
@@ -33,6 +34,7 @@ export interface SettingsPageTab {
 export const SETTINGS_TABS: SettingsPageTab[] = [
   { id: 'preferences', label: '개인 설정' },
   { id: 'memory', label: '기억' },
+  { id: 'project', label: '프로젝트 메모리' },
 ];
 
 export const SETTINGS_PAGE_CSS = String.raw`
@@ -489,6 +491,7 @@ function preferencesTab(): string {
 const TAB_HOOKS_JS = String.raw`
 function onTabShown(id) {
   if (id === 'memory' && !_memLoaded) loadMemory();
+  if (id === 'project' && !_pmLoaded) loadProjects();
 }
 `;
 
@@ -503,7 +506,7 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): str
 <script data-fouc>
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
 </script>
-<style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}</style>
+<style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}${PROJECT_TAB_CSS}</style>
 </head>
 <body>
 <div class="topbar">
@@ -514,6 +517,7 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): str
 </div>
 ${preferencesTab()}
 ${MEMORY_TAB_HTML}
+${PROJECT_TAB_HTML}
 <dialog id="confirm" aria-labelledby="confirm-title">
   <form method="dialog">
     <h3 id="confirm-title"></h3>
@@ -524,7 +528,7 @@ ${MEMORY_TAB_HTML}
     </div>
   </form>
 </dialog>
-<script>${MEMORY_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
+<script>${MEMORY_CLIENT_JS}${PROJECT_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
 </body>
 </html>`;
 }

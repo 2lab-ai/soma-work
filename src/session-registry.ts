@@ -543,6 +543,22 @@ export class SessionRegistry {
   }
 
   /**
+   * Clear the cached `systemPrompt` of every session `pick` selects — for SSOT
+   * that is not per-owner, e.g. a repo's shared project memory (SSOT
+   * 2026-10-23 T4). Returns the number of sessions touched.
+   */
+  invalidateSystemPromptWhere(pick: (session: ConversationSession) => boolean): number {
+    let count = 0;
+    for (const session of this.sessions.values()) {
+      if (session.systemPrompt === undefined || !pick(session)) continue;
+      session.systemPrompt = undefined;
+      count += 1;
+    }
+    if (count > 0) this.logger.debug('Invalidated systemPrompt for selected sessions', { count });
+    return count;
+  }
+
+  /**
    * Dashboard v2.1 — Turn timer hooks (called from stream-executor).
    * Kept on the registry so tests can exercise the timer + persistence path
    * without booting the full Slack pipeline.

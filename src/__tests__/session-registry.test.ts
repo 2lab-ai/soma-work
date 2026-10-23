@@ -1097,6 +1097,20 @@ describe('invalidateSystemPromptForUser', () => {
   });
 });
 
+describe('invalidateSystemPromptWhere (SSOT 2026-10-23 T4)', () => {
+  it('clears the cached prompt of the sessions the predicate picks (a project memory change)', () => {
+    const registry = new SessionRegistry();
+    const inRepoChannel = registry.createSession('U-a', 'a', 'C_REPO', 't1');
+    inRepoChannel.systemPrompt = 'cached-1';
+    const elsewhere = registry.createSession('U-b', 'b', 'C_OTHER', 't2');
+    elsewhere.systemPrompt = 'cached-2';
+    const count = registry.invalidateSystemPromptWhere((s) => s.channelId === 'C_REPO');
+    expect(count).toBe(1);
+    expect(inRepoChannel.systemPrompt).toBeUndefined();
+    expect(elsewhere.systemPrompt).toBe('cached-2');
+  });
+});
+
 describe('SessionRegistry per-goal time attribution (T3)', () => {
   it('credits the leg-owner goal, not a goal promoted mid-turn (codex blocking #2)', () => {
     const registry = new SessionRegistry();
