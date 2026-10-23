@@ -129,9 +129,12 @@ export function buildCronJobsView(args: {
       let session: KanbanCronRunSession | undefined = found?.session;
       if (session && found && key) {
         const createdByJob = found.cronJobId ? found.cronJobId === job.id : found.cronJobName === job.name;
+        // A queued fire is an event that never ran yet: it links the thread but
+        // owns neither its activity nor its usage (and does not claim the thread).
+        const queued = record.status === 'queued';
         const earlier = threadSeen.has(key);
-        threadSeen.add(key);
-        if (earlier) {
+        if (!queued) threadSeen.add(key);
+        if (earlier || queued) {
           session = {
             headline: session.headline,
             conversationId: session.conversationId,
@@ -139,7 +142,7 @@ export function buildCronJobsView(args: {
             boardKey: session.boardKey,
             live: false,
             activityState: 'idle',
-            earlierInThread: true,
+            ...(queued ? {} : { earlierInThread: true }),
           };
         } else if (!createdByJob) {
           // Injected into someone else's session: whatever runs there now is

@@ -358,6 +358,70 @@ describe('Dashboard — cron lane + capacity (SSOT 2026-10-23)', () => {
       expect(jobs[0].runs[0].session.costUsd).toBeUndefined();
     });
 
+    it("a queued fire on the job's own busy thread is an event: no live activity, no usage", async () => {
+      dashboard.setDashboardCronSource({
+        listJobs: () => [
+          {
+            id: 'job-8',
+            name: 'busy-job',
+            expression: '0 * * * *',
+            prompt: 'x',
+            owner: 'U1',
+            channel: 'C1',
+            threadTs: null,
+            createdAt: '2026-10-01T00:00:00Z',
+            lastRunAt: null,
+            lastRunMinute: null,
+          },
+        ],
+        listHistory: () => [
+          {
+            jobId: 'job-8',
+            jobName: 'busy-job',
+            executedAt: '2026-10-23T03:00:00Z',
+            status: 'success',
+            executionPath: 'new_thread',
+            sessionKey: 'C1-t8',
+          },
+          {
+            jobId: 'job-8',
+            jobName: 'busy-job',
+            executedAt: '2026-10-23T04:10:00Z',
+            status: 'queued',
+            executionPath: 'busy_queue',
+            sessionKey: 'work:C1:t8',
+          },
+        ],
+      });
+      dashboard.setDashboardSessionAccessor(
+        () =>
+          new Map([
+            [
+              'C1:t8',
+              liveSession({
+                threadTs: 't8',
+                cronJob: { id: 'job-8', name: 'busy-job' },
+                activityState: 'working',
+                usage: {
+                  totalInputTokens: 1,
+                  totalOutputTokens: 1,
+                  totalCacheReadTokens: 0,
+                  totalCacheCreateTokens: 0,
+                  totalCostUsd: 3,
+                },
+              }),
+            ],
+          ]),
+      );
+      const { jobs } = await get('/api/dashboard/cron');
+      const [queued, running] = jobs[0].runs;
+      expect(queued).toMatchObject({ status: 'queued' });
+      expect(queued.session).toMatchObject({ activityState: 'idle', live: false });
+      expect(queued.session.costUsd).toBeUndefined();
+      // The run that is actually in progress keeps the thread's state and usage.
+      expect(running.session).toMatchObject({ activityState: 'working', live: true, costUsd: 3 });
+    });
+
     it('filters by owner when a user is selected', async () => {
       dashboard.setDashboardCronSource(source());
       dashboard.setDashboardSessionAccessor(() => new Map());

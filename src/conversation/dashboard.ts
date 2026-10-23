@@ -9417,12 +9417,14 @@ function pad2(n) {
 }
 // Every run state has its own glyph — colour is never the only signal (T5).
 function cronRunGlyph(run) {
+  // A queue entry is an event, not a state: the drain that follows is not
+  // recorded, and the thread's current activity is not this entry's run.
+  if (run && run.status === 'queued') return { cls: 'none', glyph: '◌', label: '대기열에 넣음 (세션 사용 중 — 이후 실행 결과는 기록 없음)' };
+  // A recorded failure stands even if the thread still reads as busy.
+  if (run && run.status === 'failed') return { cls: 'fail', glyph: '✗', label: '실패' };
   var s = run && run.session;
   if (s && s.live && s.activityState === 'waiting') return { cls: 'wait', glyph: '▲', label: '응답 필요' };
   if (s && s.live && s.activityState === 'working') return { cls: 'run', glyph: '●', label: '실행 중' };
-  if (run && run.status === 'failed') return { cls: 'fail', glyph: '✗', label: '실패' };
-  // A queue entry is an event, not a state: the drain that follows is not recorded.
-  if (run && run.status === 'queued') return { cls: 'none', glyph: '◌', label: '대기열에 넣음 (세션 사용 중 — 이후 실행 결과는 기록 없음)' };
   if (run && run.status === 'unrecorded') return { cls: 'none', glyph: '◌', label: '실행 기록 없음 (보드 카드만 있음)' };
   if (run && run.executionPath === 'dm') return { cls: 'none', glyph: '◌', label: 'DM 전송 (세션 없음)' };
   if (run && run.executionPath === 'thread_reply') return { cls: 'none', glyph: '◌', label: '스레드 답글 (세션 없음)' };

@@ -207,6 +207,14 @@ describe('T5 — run glyphs and schedule label', () => {
       glyph: '◌',
       cls: 'none',
     });
+    // Queued wins over the thread's live state: the entry has not run yet.
+    expect(
+      fns.cronRunGlyph({
+        status: 'queued',
+        executionPath: 'busy_queue',
+        session: { activityState: 'working', live: true },
+      }),
+    ).toMatchObject({ glyph: '◌', cls: 'none' });
     expect(fns.cronRunGlyph({ status: 'queued', executionPath: 'busy_queue' })).toMatchObject({
       glyph: '◌',
       cls: 'none',
