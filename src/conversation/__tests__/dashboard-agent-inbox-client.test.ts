@@ -1977,16 +1977,30 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         'renderWorkLogGroup',
         'wlGroupOpen',
         'wlGroupEl',
+        // Spec 12: the list shows the scope of the agent the panel shows (main here).
+        'wlScopeEntry',
+        'wlScopeEntries',
+        'wlLegacyMixed',
         'wlRenderList',
         'wlAppendTail',
         'wlDetailOpen',
         'wlNavRows',
         'wlEnsureTabStop',
+        'wlNamesNewAgent',
         'setWorkLogOpen',
         'paintWorkLog',
       ],
       ['WL_LABELS'],
-      { document, _wl: state, panelSessionKey: null, _sessionCache: {}, updateTimersIn: () => {} },
+      {
+        document,
+        _wl: state,
+        panelSessionKey: null,
+        _sessionCache: {},
+        updateTimersIn: () => {},
+        _panelAgent: '',
+        _panelAgentIdsShown: {},
+        renderPanelAgents: () => {},
+      },
     );
     return { m, toggle, count, list };
   }
@@ -2033,12 +2047,17 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
     {
       document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
       _panelTasksExpanded: false,
+      // The browser morphs the block; this fake writes it.
+      morphInnerHtml: (el: { innerHTML: string }, html: string) => {
+        el.innerHTML = html;
+      },
     },
   );
 
   it('zero or missing tasks show the header and an empty line', () => {
     for (const t of [[], undefined, null]) {
       container.innerHTML = '';
+      (container as { _html?: string })._html = undefined; // a fresh block (the same data on a live block writes nothing)
       renderPanelTasks(t);
       expect(container.style.display).toBe('');
       expect(container.innerHTML).toBe(
