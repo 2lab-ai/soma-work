@@ -37,8 +37,8 @@ any other, so a wrong argument or a wrong check fails the replay.
   including `Task` and `Agent`, and tools the policy has never heard of.
 * `native-write`: the only rows with `ctx.checkNativeWrite` set, as `checkNativeWrite`: what it
   returns (`null`, a reason, the empty reason) with every pattern of `patterns`, in every mode, for
-  admins and non-admins, with and without the live incident context. Each row calls the three
-  native write tools with and without a target, near misses of their names, and the tools of the
+  admins and non-admins, with and without the live incident context. Each row calls the six
+  native write tools, with and without a target, near misses of their names, and the tools of the
   other steps. The replay answers every call with the row's value and fails when the policy asks
   for a tool outside `NATIVE_WRITE_TOOLS`.
 
@@ -400,9 +400,14 @@ def nativeWriteCalls : List Call :=
       ("new_string", .str "b")])⟩,
     ⟨"NotebookEdit", some (.obj [("notebook_path", .str "/tmp/U0VECTOR01/n.ipynb"),
       ("new_source", .str "x")])⟩,
-    ⟨"Write", empty⟩, ⟨"Edit", none⟩,
+    ⟨"Artifact", some (.obj [("action", .str "read_asset"), ("url", .str "u"), ("asset_id", .str "a"),
+      ("out_dir", .str "/tmp/U0VECTOR01")])⟩,
+    ⟨"EnterWorktree", some (.obj [("name", .str "feat")])⟩,
+    ⟨"Agent", some (.obj [("description", .str "d"), ("prompt", .str "p"), ("isolation", .str "worktree")])⟩,
+    ⟨"Write", empty⟩, ⟨"Edit", none⟩, ⟨"Artifact", empty⟩, ⟨"Agent", empty⟩,
     ⟨"write", empty⟩, ⟨"WRITE", empty⟩, ⟨"Write ", empty⟩, ⟨"MultiEdit", empty⟩,
-    ⟨"NotebookEdit2", empty⟩, ⟨"Edits", empty⟩, ⟨"mcp__x__Write", empty⟩,
+    ⟨"NotebookEdit2", empty⟩, ⟨"Edits", empty⟩, ⟨"mcp__x__Write", empty⟩, ⟨"artifact", empty⟩,
+    ⟨"ExitWorktree", empty⟩, ⟨"Monitor", empty⟩,
     ⟨"Bash", empty⟩, ⟨"Read", some (.obj [("file_path", .str "/tmp/U0VECTOR01/a.txt")])⟩,
     ⟨"Glob", empty⟩, ⟨"Grep", grepPath⟩, ⟨"TodoWrite", empty⟩, ⟨"Task", empty⟩,
     ⟨"mcp__server-tools__db_query", empty⟩, ⟨prCreateMcpTool, empty⟩, ⟨"Skill", empty⟩,
