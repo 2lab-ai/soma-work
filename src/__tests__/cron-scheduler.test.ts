@@ -1263,7 +1263,7 @@ describe('CronScheduler.runJobNow — forceNewThread + note', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  const NOTE = '\n\n[deploy_completed repo=acme/app target=deploy/dev2 before=- after=abc1234 by=U_DEPLOYER]';
+  const NOTE = '\n\n[deploy_completed repo=acme/app target=deploy/staging before=- after=abc1234 by=U_DEPLOYER]';
 
   function busyOwnerSession(deps: CronSchedulerDeps) {
     deps.sessionRegistry.createSession('U123', 'TestUser', 'C456', 'thread-1');
@@ -1401,5 +1401,156 @@ describe('CronScheduler.runJobNow — forceNewThread + note', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(injectedMessages).toHaveLength(2);
     expect(injectedMessages[1].text).toBe(`[cron:idle] p${NOTE}`);
+  });
+});
+
+// --- fireDeployLane — a deploy-only lane (deploy-lanes.json) is not a cron job ---
+// It takes the new-thread path of a cron fire, but nothing of it lands in cron
+// storage or cron history: `cron list` and the cron card never see it.
+describe('CronScheduler.fireDeployLane', () => {
+  let tmpDir: string;
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cron-lane-'));
+    tmpFile = path.join(tmpDir, 'cron-jobs.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const NOTE =
+    '\n\n[deploy_completed repo=acme/app target=deploy/staging before=- after=abc1234 by=U_DEPLOYER channel=C_DEPLOY thread=111.222]';
+  const ROOT = '▶ acme/app → deploy/staging (abc1234) 배포 후 레인 *qa-lane* — 배포 스레드: <#C_DEPLOY>';
+  const LANE = { name: 'qa-lane', owner: 'U_OWNER', channel: 'C_QA', prompt: 'QA the deployed PRs' };
+
+  function setup() {
+    const storage = new CronStorage(tmpFile);
+    const mocks = createMockDeps(storage);
+    const touched = {
+      updateLastRun: vi.spyOn(storage, 'updateLastRun'),
+      addExecution: vi.spyOn(storage, 'addExecution'),
+      getJobsByOwner: vi.spyOn(storage, 'getJobsByOwner'),
+    };
+    return { ...mocks, storage, touched, scheduler: new CronScheduler(mocks.deps) };
+  }
+
+  it('opens a new thread in the lane channel with the given root line and injects the lane prompt as its owner', async () => {
+    const { scheduler, createdThreads, injectedMessages } = setup();
+
+    const result = await scheduler.fireDeployLane(
+      { ...LANE, modelConfig: { type: 'custom', model: 'claude-test-model' } },
+      { triggeredBy: 'U_DEPLOYER', note: NOTE, rootText: ROOT },
+    );
+
+    expect(result).toEqual({ ok: true, message: 'new_thread' });
+    expect(createdThreads).toEqual([{ channel: 'C_QA', text: ROOT }]);
+    expect(createdThreads[0].text).not.toMatch(/cron/i);
+    expect(injectedMessages).toHaveLength(1);
+    expect(injectedMessages[0]).toMatchObject({
+      user: 'U_OWNER',
+      channel: 'C_QA',
+      thread_ts: 'new-thread-ts',
+      text: `[deploy-lane:qa-lane] QA the deployed PRs${NOTE}`,
+      synthetic: true,
+      skipDispatch: true,
+      modelOverride: 'claude-test-model',
+      routeContext: { skipAutoBotThread: true },
+    });
+  });
+
+  it('without a note or model config injects the bare prompt on the session default model', async () => {
+    const { scheduler, injectedMessages } = setup();
+    await scheduler.fireDeployLane(LANE, { rootText: ROOT });
+    expect(injectedMessages[0].text).toBe('[deploy-lane:qa-lane] QA the deployed PRs');
+    expect(injectedMessages[0].modelOverride).toBeUndefined();
+  });
+
+  it('touches neither cron storage nor cron history', async () => {
+    const { scheduler, storage, touched } = setup();
+    await scheduler.fireDeployLane(LANE, { triggeredBy: 'U_DEPLOYER', note: NOTE, rootText: ROOT });
+
+    expect(touched.updateLastRun).not.toHaveBeenCalled();
+    expect(touched.addExecution).not.toHaveBeenCalled();
+    expect(touched.getJobsByOwner).not.toHaveBeenCalled();
+    expect(storage.getExecutionHistory('qa-lane')).toEqual([]);
+    expect(fs.existsSync(tmpFile)).toBe(false);
+  });
+
+  it('starts now even when the owner session in that channel is busy — nothing is queued', async () => {
+    const { scheduler, deps, injectedMessages } = setup();
+    deps.sessionRegistry.createSession('U_OWNER', 'Owner', 'C_QA', 'thread-1');
+    deps.sessionRegistry.transitionToMain('C_QA', 'thread-1', 'default');
+    deps.sessionRegistry.setActivityState('C_QA', 'thread-1', 'working');
+
+    const result = await scheduler.fireDeployLane(LANE, { rootText: ROOT });
+
+    expect(result).toEqual({ ok: true, message: 'new_thread' });
+    expect(injectedMessages[0].thread_ts).toBe('new-thread-ts');
+    expect(scheduler.getPendingQueueSize('work:C_QA:thread-1')).toBe(0);
+  });
+
+  it('resolves only when the injected turn ends', async () => {
+    const { scheduler, deps } = setup();
+    let endTurn: () => void = () => {};
+    deps.messageInjector = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          endTurn = resolve;
+        }),
+    );
+
+    let settled = false;
+    const fire = scheduler.fireDeployLane(LANE, { rootText: ROOT }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(deps.messageInjector).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+
+    endTurn();
+    expect(await fire).toEqual({ ok: true, message: 'new_thread' });
+  });
+
+  it('reports ok:false without injecting when Slack returns no thread ts — and still writes no cron record', async () => {
+    const { scheduler, deps, injectedMessages, touched } = setup();
+    deps.threadCreator = vi.fn(async () => undefined);
+
+    const result = await scheduler.fireDeployLane(LANE, { rootText: ROOT });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe('thread creation returned no ts');
+    expect(result.message).not.toContain('cron');
+    expect(injectedMessages).toHaveLength(0);
+    expect(touched.updateLastRun).not.toHaveBeenCalled();
+    expect(touched.addExecution).not.toHaveBeenCalled();
+  });
+
+  it('reports ok:false when creating the thread throws', async () => {
+    const { scheduler, deps, injectedMessages, touched } = setup();
+    deps.threadCreator = vi.fn(async () => {
+      throw new Error('Slack API error');
+    });
+
+    const result = await scheduler.fireDeployLane(LANE, { rootText: ROOT });
+
+    expect(result).toEqual({ ok: false, message: 'Slack API error' });
+    expect(injectedMessages).toHaveLength(0);
+    expect(touched.addExecution).not.toHaveBeenCalled();
+  });
+
+  it('reports ok:false when the injected turn throws', async () => {
+    const { scheduler, deps, touched } = setup();
+    deps.messageInjector = vi.fn(async () => {
+      throw new Error('turn failed');
+    });
+
+    const result = await scheduler.fireDeployLane(LANE, { rootText: ROOT });
+
+    expect(result).toEqual({ ok: false, message: 'turn failed' });
+    expect(touched.updateLastRun).not.toHaveBeenCalled();
+    expect(touched.addExecution).not.toHaveBeenCalled();
   });
 });
