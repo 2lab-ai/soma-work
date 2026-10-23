@@ -10,7 +10,7 @@
 - [current/plans/](./current/plans/) — active feature specs, traces, plans
 - [current/spec/](./current/spec/) — evergreen product/system specs
 - [llmux SDK authentication](current/spec/llmux-sdk-auth.md) — per-call tenant identity and parent-environment isolation, verified through the actual SDK.
-- [Deploy-triggered cron lanes](current/spec/cron-deploy-lanes.md) — `onDeploy` on a cron job + the deploy workflow's `deploy_completed` directive.
+- [Deploy-triggered cron lanes](current/spec/cron-deploy-lanes.md) — `onDeploy` on a cron job, or a deploy-only lane in `deploy-lanes.json`, + the deploy workflow's `deploy_completed` directive; the note names the deploy thread (channel + thread ts) and the lane posts there itself with its session's Slack access (e.g. the Slack Web API with the bot token from its environment) — `send_thread_message` reaches only the lane's own thread, and the harness does not post for it.
 - [`/z` command master spec](./current/spec/z-command-master-spec.md)
 - [goal-command/](./goal-command/) — goal command spec (top-level legacy location; new specs go under `current/`)
 

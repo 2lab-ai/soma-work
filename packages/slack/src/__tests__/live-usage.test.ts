@@ -35,6 +35,24 @@ describe('live usage of the running turn', () => {
     });
   });
 
+  it("a subagent's call (sidechain) counts in the totals but never as the main context's occupancy — spec 12 §2.5", () => {
+    const session: Record<string, any> = {};
+    recordLiveUsage(session, call('msg_main', 1));
+    recordLiveUsage(session, { ...call('msg_sub', 1000), sidechain: true });
+    expect(sumLiveUsage(session.liveUsage).inputTokens).toBe(1001);
+    expect(liveOccupancyCall(session)).toEqual({
+      inputTokens: 1,
+      outputTokens: 2,
+      cacheReadTokens: 3,
+      cacheCreateTokens: 4,
+    });
+    // Only sidechain calls so far: no occupancy reading at all.
+    const sub: Record<string, any> = {};
+    recordLiveUsage(sub, { ...call('msg_sub', 5), sidechain: true });
+    expect(liveOccupancyCall(sub)).toBeUndefined();
+    expect(sumLiveUsage(sub.liveUsage).inputTokens).toBe(5);
+  });
+
   it('a call reported on several frames (same message id) counts once — the latest report wins', () => {
     const session: Record<string, any> = {};
     recordLiveUsage(session, call('msg_1', 1));
