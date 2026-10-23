@@ -16,6 +16,7 @@ import { config } from '../config';
 import { IS_DEV } from '../env-paths';
 import { registerHookRoutes } from '../hooks';
 import { Logger } from '../logger';
+import { registerArtifactRoutes } from './artifact-routes';
 import { registerDashboardRoutes, setSelfInstanceEnv } from './dashboard';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
 import {
@@ -673,6 +674,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // ---- Dashboard Routes ----
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
   await registerWorkLogRoutes(server, authMiddleware);
+  await registerArtifactRoutes(server, authMiddleware);
 
   // Health check
   server.get('/health', async (_request, reply) => {

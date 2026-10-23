@@ -94,6 +94,10 @@ describe('minimal verbosity — narration goes to the work log, Slack gets the f
     expect(h.log[1]?.text).toContain('/repo/config.ts');
     expect(h.log[2]).toMatchObject({ kind: 'tool_result', tool: 'Read', ok: true });
     expect(h.log[3]).toMatchObject({ kind: 'final', text: FINAL });
+    // SSOT 2026-10-23 T1 — a call and its result carry the same tool-use id, so the
+    // dashboard's artifact capture pairs an upload with its reply exactly.
+    expect(h.log[1]?.toolUseId).toBe('tu_1');
+    expect(h.log[2]?.toolUseId).toBe('tu_1');
     for (const entry of h.log) {
       expect(entry.turnId).toBe('C1:T1:turn-1');
       expect(typeof entry.ts).toBe('number');

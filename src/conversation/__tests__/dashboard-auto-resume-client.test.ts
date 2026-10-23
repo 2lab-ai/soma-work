@@ -164,6 +164,7 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
         _envCount: () => 1,
         isSiblingSession: () => false,
         renderCardIo: () => '',
+        renderCardArtifacts: () => '',
         resolveRecommendedId: () => null,
         stripRecommendedMarker: (l: string) => l,
         choiceDataAttrs: () => '',

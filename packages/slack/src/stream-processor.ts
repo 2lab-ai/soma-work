@@ -1698,6 +1698,7 @@ export class AgentStreamProcessor {
       this.emitWorkLog(context, {
         kind: 'tool',
         tool: toolUse.name,
+        toolUseId: toolUse.id,
         text: summarizeToolCall(toolUse.name, toolUse.input),
         ...(raw !== undefined ? { raw } : {}),
         ...(agentId ? { agentId } : {}),
@@ -2204,6 +2205,7 @@ export class AgentStreamProcessor {
       this.emitWorkLog(context, {
         kind: 'tool_result',
         tool,
+        toolUseId: toolResult.toolUseId,
         ok,
         text: `${tool} ${ok ? 'ok' : 'error'}`,
         ...rawFields,

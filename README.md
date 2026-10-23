@@ -93,6 +93,10 @@ Upload images (JPG/PNG/GIF/WebP), text, or code files directly in Slack. 50MB li
 
 The dashboard's **New task** button (top bar on desktop, `N` shortcut; floating button on phones) opens a composer: model (with a shared-pool quota battery), effort, Slack channel, per-task `autogoal` and `autoz` toggles, the instruction, and attachments — files, pasted screenshots, the phone camera and voice notes. The task starts as your own message on a new thread in the chosen channel, so its progress is visible in Slack. The channel list is the repo-mapped channels you are a member of; it defaults to the channel you last gave a command in. Turning `autoz` on appends `$autoz` to the instruction.
 
+### 🖼️ Dashboard Artifacts
+
+Every file the model sends to Slack (HTML reports, PNG, WAV/voice, video, PDF, text) and every markdown final answer shows up in the web dashboard: as chips on the session card, a thumbnail strip in the opened card, and a pinned strip in the session panel with each answer's own files under it. Hover for a minimap preview, click for a full-size viewer (HTML runs sandboxed; audio plays straight from the card). Uploads made before the feature are backfilled from the session's work log.
+
 ### 🔑 GitHub Integration
 
 GitHub App (recommended) or Personal Access Token authentication with automatic token renewal.

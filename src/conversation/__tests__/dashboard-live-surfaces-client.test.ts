@@ -51,6 +51,9 @@ const SHOW_ALL = {
   dhMax: (_f: string, d: number) => d,
   dhTruncate: () => null,
   currentUserId: 'U1',
+  // The artifact row has its own suite (dashboard-artifacts-client.test.ts).
+  isSiblingSession: () => false,
+  artFaceChips: () => '',
 };
 const FACE_FNS = [
   'esc',
