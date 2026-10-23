@@ -89,6 +89,14 @@ Slack 네이티브 버튼/폼 UX로 권한 승인, 선택지, 세션 관리를 �
 
 이미지(JPG/PNG/GIF/WebP), 텍스트, 코드 파일을 Slack에서 직접 업로드 가능. 파일당 50MB 제한.
 
+### 🆕 대시보드에서 작업 시작
+
+대시보드의 **New task** 버튼(PC는 상단 바·`N` 단축키, 휴대폰은 플로팅 버튼)으로 작성 창을 엽니다. 모델(공유 풀 잔여량 배터리 표시), effort, Slack 채널, 작업 단위 `autogoal`·`autoz` 토글, 지시문, 첨부(파일·붙여넣은 스크린샷·휴대폰 카메라·음성 녹음)를 정하면, 고른 채널의 새 스레드에 내 메시지로 작업이 시작되어 진행이 Slack에 그대로 보입니다. 채널 목록은 내가 속한 repo 매핑 채널이고, 기본값은 마지막으로 명령을 내린 채널입니다. `autoz`를 켜면 지시 끝에 `$autoz`가 붙습니다.
+
+### 🖼️ 대시보드 산출물
+
+모델이 Slack으로 보낸 파일(HTML 리포트, PNG, WAV·음성, 영상, PDF, 텍스트)과 마크다운 최종 답변이 웹 대시보드에 모두 보인다: 세션 카드의 칩, 펼친 카드의 썸네일 스트립, 세션 패널의 고정 스트립과 답변마다 그 턴의 파일. 마우스를 올리면 미니맵 미리보기, 누르면 풀사이즈 뷰어(HTML은 샌드박스에서 실행, 오디오는 카드에서 바로 재생). 기능 도입 전 업로드는 세션 작업 로그에서 백필한다.
+
 ### 🔑 GitHub 연동
 
 GitHub App(권장) 또는 Personal Access Token 인증. 자동 토큰 갱신 지원.
@@ -97,6 +105,7 @@ GitHub App(권장) 또는 Personal Access Token 인증. 자동 토큰 갱신 지
 
 대시보드(`/dashboard`, Slack 로그인)는 모든 세션을 카드로 보여주고, 세션 소유자가 바로 조작할 수 있게 한다.
 
+- **메인 에이전트와 서브에이전트를 따로**: 카드 하나가 메인 에이전트이고, 메인이 `Agent` 도구로 띄운 SDK 서브에이전트(와 그들이 다시 띄운 것)가 카드 안에 트리로 들어간다 — 각자 상태·실행 시간·툴 호출 수와 자기 태스크 목록·작업 로그를 가진다. 사이드 패널에서 에이전트를 바꿔 보면(`메인 › A2 Explore`) 메인의 태스크·로그가 서브의 것과 섞이지 않는다. 스펙: [`.prd/12-dashboard-agent-tree-spec.md`](./.prd/12-dashboard-agent-tree-spec.md).
 - **최상단에서 모델·effort 원클릭 변경**: top bar에 새 세션의 기본 모델과 기본 effort가 있다. 값을 고르면 바로 저장된다 — Slack `model set <m>`, `effort <level>`과 같은 설정이다. 세션 패널이 열려 있으면 "이 세션에도 적용"(기본 켜짐)으로 그 세션도 함께 바뀐다.
 - **세션별 모델·effort**: 카드와 세션 패널 맨 위에서 그 세션만 바꾼다(`%effort <level>`과 같은 범위). 다음 턴부터 적용되고, 모델이 effort를 낮춰 실행하면 실제 실행 값을 함께 보여준다.
 - **설정 페이지**(`/dashboard/settings`, top bar의 "⚙ 설정"): Slack 명령으로 바꿀 수 있는 개인 설정 전부를 그룹(모델·effort, 출력, 알림, 목표, 자동 스킬, 계정, 권한)으로 보여준다. 선택형은 바로 저장되고, 직접 입력하는 값은 저장 버튼으로 저장한다. 행마다 기본값, 다를 때 "기본값으로" 되돌리기, 같은 일을 하는 Slack 명령이 보인다. 위험한 변경(bypass, 샌드박스 끄기, 네트워크 허용 목록 끄기)은 먼저 묻고, 관리자 전용 행은 잠긴 이유를 보여준다.
@@ -176,13 +185,13 @@ app-token 프롬프트는 금지된 자격증명 경로라 삭제됨), `scripts/
 
 주요 `/z` 명령: `help` · `cwd` · `mcp` · `bypass` · `persona` · `model` · `verbosity` · `session` · `new`/`renew` · `close` · `restore` · `context`/`compact` · `link` · `onboarding` · `admin` · `cct` · `auth` · `marketplace` · `plugin` · `skill` · `report`
 
-- 출력 수준(`/z verbosity`, 세션 한정 `%verbosity`): `minimal` · `compact` · `detail` · `verbose`. 기본값은 `minimal`이다 — 스레드에는 task list, 질문/승인, 최종 답변, 오류만 남고, 모델의 실시간 작업 설명·도구 호출·압축 공지·스킬 발동 배너(`$skill`·autoskill 포함)는 대시보드 작업 로그로 간다.
+- 출력 수준(`/z verbosity`, 세션 한정 `%verbosity`): `minimal` · `compact` · `detail` · `verbose`. 기본값은 `minimal`이다 — 스레드에는 task list(메인 에이전트의 것 — 서브에이전트의 목록은 대시보드의 그 서브에이전트 항목에 있다), 질문/승인, 최종 답변, 오류만 남고, 모델의 실시간 작업 설명·도구 호출·압축 공지·스킬 발동 배너(`$skill`·autoskill 포함)는 대시보드 작업 로그로 간다.
 
 - Fable 5.1·Opus 5.5(`claude-opus-5-5`, Claude Code 2.1.280 이상 필요) 지원을 위해 SDK를 `0.3.284`(네이티브 Claude Code `2.1.284`)로 고정한다. 스트리밍 턴은 `CLAUDE_CODE_ENABLE_TASKS=false`와 `MCP_CONNECTION_NONBLOCKING=0`을 강제하여 기존 Slack TodoWrite 스냅샷 처리와 첫 턴 MCP 초기화를 유지한다. 이 호환성 설정은 stream-options builder가 관리하며 운영자 설정으로 덮어쓰지 않는다.
 - 모델 별칭 `fable`·`fable[1m]`·`fable-5-1`은 `claude-fable-5-1[1m]`을 선택한다. 1M 컨텍스트와 750k 자동 압축 기본값을 유지하며, 버전을 지정한 `fable-5`는 기존 `claude-fable-5[1m]`을 선택한다.
 - 모델 별칭 `opus`·`opus[1m]`·`opus-5-5`는 `claude-opus-5-5[1m]`(1M 컨텍스트, 750k 자동 압축 기본값)을 선택한다. 버전을 지정한 `opus-5`/`opus-5[1m]`은 기존 Opus 5 id를 그대로 선택한다.
 - naked `cron`/`schedule`(크론/스케줄): 잡별 모델/출력 대상 드롭다운 + 삭제 버튼이 달린 인터랙티브 카드로 목록·수정. 텍스트 명령도 지원 — `cron model <name> <default|opus|fable|fast|모델>` (default = 만든 사람의 현재 모델, opus/fable = 실행 시점의 최신 opus/fable) · `cron target <name> <channel|dm|thread>` · `cron delete <name>`; admin은 전체 유저 잡을 owner와 함께 보고 `<@owner>` 후행 인자 또는 카드에서 직접 타인 잡을 수정. 커맨드로 라우팅되므로 autogoal이 삼키지 않음.
-- **배포 트리거 크론 레인**: `onDeploy: [{ repo, target }]`를 등록한 크론 잡은 누구의 세션에서 돌린 배포든 해당 repo가 정확히 그 브랜치로 배포 성공했다고 deploy 워크플로우가 알리면(`deploy_completed` 디렉티브) 오너 권한으로, 그 잡 채널의 새 스레드에서 발동한다. 발동 프롬프트에는 어떤 배포인지(repo·브랜치·머지 SHA·배포한 사람)가 붙는다. 배포 스레드에는 한 줄로 시작된 레인, 또는 등록된 레인이 왜 시작되지 않았는지(배포 미확인·실패·읽을 수 없는 디렉티브)와 복구용 `cron run`을 알린다. 상세: [docs/current/spec/cron-deploy-lanes.md](docs/current/spec/cron-deploy-lanes.md).
+- **배포 트리거 크론 레인**: `onDeploy: [{ repo, target }]`를 등록한 크론 잡은 누구의 세션에서 돌린 배포든 해당 repo가 정확히 그 브랜치로 배포 성공했다고 deploy 워크플로우가 알리면(`deploy_completed` 디렉티브) 오너 권한으로, 그 잡 채널의 새 스레드에서 발동한다. 발동 프롬프트에는 어떤 배포인지(repo·브랜치·머지 SHA·배포한 사람)와 배포 스레드(채널 + 스레드 ts)가 붙는다. 레인은 세션이 가진 Slack 접근 수단으로 그 스레드에 직접 올린다(예: 환경의 봇 토큰으로 Slack Web API 호출). 내장 `send_thread_message` 도구는 레인 자신의 스레드에만 올리고, 하네스가 대신 올리지 않는다. 배포 스레드에는 한 줄로 시작된 레인, 또는 등록된 레인이 왜 시작되지 않았는지(배포 미확인·실패·읽을 수 없는 디렉티브)와 복구용 `cron run`을 알린다. 배포 때만 도는 레인은 크론 잡 대신 `DATA_DIR/deploy-lanes.json`의 항목(`name`·`owner`·`channel`·`prompt`·`onDeploy`)으로 등록한다 — 스케줄이 없고 크론 잡이 아니어서 `cron list`에 나오지 않는다. 상세: [docs/current/spec/cron-deploy-lanes.md](docs/current/spec/cron-deploy-lanes.md).
 - **배포 릴리즈노트**: 배포가 끝나면 deploy 워크플로우가 `local:release-notes`로 노트를 쓰고 repo마다 `release_notes` 디렉티브를 하나 낸다. 호스트는 채널 루트에 짧은 헤더(`repo target · 버전` + TL;DR 최대 3줄)를, 그 스레드에 전문을 잘림 없이 나눠 올린다. 채널은 운영자가 호스트 `.env`의 `SOMA_RELEASE_NOTES_CHANNELS`로 정한다(예: `acme/app@deploy/dev2=C0DEV2CHAN1,*=session`). `owner/repo@branch` 또는 `branch`가 정확히 맞으면 그 채널, `*=session`이면 매핑 안 된 배포는 배포 세션 채널, `*`가 없으면 매핑 안 된 배포는 배포 스레드에만 남는다. 설정하지 않으면 예전처럼 배포 세션 채널이다. 게시가 실패해도 다른 채널 루트로 옮기지 않고 경고와 함께 배포 스레드에 남긴다.
 - naked `key` (= `auth key`): 자기 전용 llmux 클라이언트 키 + 로컬 Claude Code(`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`)와 Codex(`OPENAI_BASE_URL`/`OPENAI_API_KEY`) 실행법을 DM으로 받음. 같은 유저는 항상 같은 키 — 봇 사용량과 로컬 사용량이 한 테넌트로 계측된다. 모든 유저 사용 가능(자기 키이므로), 시크릿은 DM으로만 전달.
   Codex 안내는 안내된 서버 주소의 `/v1`과 같은 테넌트 키를 사용한다. `codex --model … -c …` 명령 전체를 복사해야 기존 ChatGPT 로그인이나 다른 provider 설정이 있어도 명시한 Responses provider가 환경변수의 키를 사용한다. 환경변수는 현재 터미널에 적용되며, Codex 설정 파일과 로그인 정보는 덮어쓰지 않는다. 다음 llmux 세션도 같은 명령으로 시작한다. [Codex 게이트웨이 인증 문서](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway).
