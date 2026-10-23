@@ -7,8 +7,9 @@
  * in a channel mapped to the repo get the notes in their system prompt
  * (`projectMemoryPromptBlock`, wired in `build-stream-options.ts`). No model
  * command writes it, and the native write boundary (#389) keeps a non-admin
- * session's file tools off `DATA_DIR`. A session whose sandbox an admin turned
- * off still holds the host env, dashboard credentials included (#391).
+ * session's file tools off `DATA_DIR`. Every session inherits the host env,
+ * dashboard credentials included (#391); with the sandbox off nothing keeps the
+ * model from using them against the dashboard API.
  *
  * This is NOT the per-user `project/<name>` knowledge pages (each user's own
  * memory tree) — those stay personal.
