@@ -143,6 +143,10 @@ updates inside its terminal-cleanup boundary, including setup failures.
 
 ### Security (`src/sandbox/`, `somalib/permission/`, `src/dangerous-command-filter.ts`)
 - 도메인 allowlist, 툴 권한 레벨(admin/elevated/user), dangerous command 감지
+- 쓰기 경계: SDK 샌드박스가 Bash 쓰기를 작업 디렉터리 + `/tmp/{userId}`(`allowWrite`)로 묶고, 네이티브 `Write`/`Edit`/`NotebookEdit`는
+  `build-stream-options.ts` → `ToolPolicyContext.checkNativeWrite` → `evaluateToolPolicy` 3b단계가 같은 루트로 묶는다(비관리자, 샌드박스 ON일 때.
+  `src/agent-runtime/policy/native-write-boundary.ts`: realpath 해석 · `..`·끊긴 심볼릭 링크·하드 링크 거부). 계획 파일은 `plansDirectory: .claude/plans`로
+  작업 디렉터리 안에 둔다. 남은 틈: 판정과 SDK 쓰기 사이에 심볼릭 링크를 바꿔 끼우는 경합. Lean: `verification/lean/SomaVerify/ToolPolicy/ProofsNativeWrite.lean`
 - 권한 승인 UI는 Slack 액션으로 처리 (`src/slack/actions/permission-action-handler.ts`)
 
 ### Observability (`src/metrics/`, `src/conversation/`)

@@ -271,13 +271,13 @@ namespace SomaVerify.ToolPolicy
 
 open SomaVerify.JsString
 
-/-- 101-102: "`isAdmin` is ignored (the deny tier checks every caller as a non-admin)"; 197: "an
+/-- 111-112: "`isAdmin` is ignored (the deny tier checks every caller as a non-admin)"; 207: "an
 incident session gets no admin privilege". The deny conditions of an incident call are those of
 the same call made by a non-admin. -/
 def IncidentDenyCond (i : Input) : Prop :=
   Original.DenyCond { i with isAdmin := false }
 
-/-- (a) 157-160: "Never returns `pass` or falls through: an unknown tool (a future native tool, a
+/-- (a) 167-170: "Never returns `pass` or falls through: an unknown tool (a future native tool, a
 browser tool, a subagent) lands on the final deny, because `pass` would hand an unattended session
 back to the SDK's own permission logic." -/
 def IncidentNeverPass (ev : Option IncidentReadOnly → Input → Result) : Prop :=
@@ -288,10 +288,10 @@ def IncidentAllowOrDeny (ev : Option IncidentReadOnly → Input → Result) : Pr
   ∀ (inc : IncidentReadOnly) (i : Input),
     (ev (some inc) i).decision = .allow ∨ (ev (some inc) i).decision = .deny
 
-/-- (b) 109-111: "a list of exact MCP tool names. Everything else — Bash, every native tool,
-subagents, unknown tools — is denied"; 124: "matching is exact, never by prefix, wildcard or
-name inference"; 167-168: "Exact match, `mcp__` tools only: a native tool name in the allowlist
-can never reach this branch"; 162-163: the tier "Runs *after* the hard-deny tier". -/
+/-- (b) 119-121: "a list of exact MCP tool names. Everything else — Bash, every native tool,
+subagents, unknown tools — is denied"; 134: "matching is exact, never by prefix, wildcard or
+name inference"; 177-178: "Exact match, `mcp__` tools only: a native tool name in the allowlist
+can never reach this branch"; 172-173: the tier "Runs *after* the hard-deny tier". -/
 def IncidentAllowIff (ev : Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ (inc : IncidentReadOnly) (i : Input),
     (ev (some inc) i).decision = .allow ↔
@@ -305,7 +305,7 @@ def IncidentDeniesOffAllowList (ev : Option IncidentReadOnly → Input → Resul
     ¬(jsStartsWith i.toolName "mcp__" = true ∧ i.toolName ∈ inc.allowedMcpTools) →
       (ev (some inc) i).decision = .deny
 
-/-- (c) 101-103: "`isAdmin` is ignored ... so `mode` is never read either"; 238: "(hard, mode- and
+/-- (c) 111-113: "`isAdmin` is ignored ... so `mode` is never read either"; 255: "(hard, mode- and
 admin-independent)". Changing the mode and the admin flag together changes nothing in the result,
 reason included. -/
 def IncidentModeAdminIndependent (ev : Option IncidentReadOnly → Input → Result) : Prop :=
@@ -322,13 +322,13 @@ def IncidentModeIndependent (ev : Option IncidentReadOnly → Input → Result) 
   ∀ (inc : IncidentReadOnly) (i : Input) (mode : Mode),
     ev (some inc) { i with mode := mode } = ev (some inc) i
 
-/-- (c) 102-103: "the incident tier alone decides what it lets through". When no hard deny fires,
+/-- (c) 112-113: "the incident tier alone decides what it lets through". When no hard deny fires,
 the result is the incident tier's, which takes only the tool name and the allowlist. -/
 def IncidentTierDecides (ev : Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ (inc : IncidentReadOnly) (i : Input), ¬IncidentDenyCond i →
     ev (some inc) i = evaluateIncidentReadOnly i.toolName inc
 
-/-- (d) 162-163: "Runs *after* the hard-deny tier, so a revoked MCP grant or an aborted session
+/-- (d) 172-173: "Runs *after* the hard-deny tier, so a revoked MCP grant or an aborted session
 still wins over an allow-listed evidence tool". Under a met deny condition the result is that of
 the same call by a non-admin without an incident context: a denial, with the hard-deny guard's own
 reason. -/
@@ -336,9 +336,66 @@ def IncidentHardDenyWins (ev : Option IncidentReadOnly → Input → Result) : P
   ∀ (inc : IncidentReadOnly) (i : Input), IncidentDenyCond i →
     ev (some inc) i = ev none { i with isAdmin := false } ∧ (ev (some inc) i).decision = .deny
 
-/-- (e) 100: "**Absent (the default) → nothing changes.**" Without an incident context the result
+/-- (e) 110: "**Absent (the default) → nothing changes.**" Without an incident context the result
 is `evaluate`'s, the function `Simplification.lean` carries every statement above over to. -/
 def IncidentAbsentUnchanged (ev : Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ i : Input, ev none i = evaluate i
+
+end SomaVerify.ToolPolicy
+
+/-!
+## The native write boundary
+
+Statements about an evaluation function
+`ev : Option (Option String) → Option IncidentReadOnly → Input → Result` of the current model,
+where `ev nativeWrite incident i` is the call with `ctx.checkNativeWrite` giving `nativeWrite`
+(`none`: the property is undefined; `some v`: it returns `v`, `null` being `none`).
+`ProofsNativeWrite.lean` proves each one for `evaluateToolPolicyWith`. As in the incident section,
+a bare line number refers to `src/agent-runtime/policy/tool-policy.ts` as it is now.
+-/
+
+namespace SomaVerify.ToolPolicy
+
+/-- (a) 103-105: "**Absent → native writes are not confined**". Without the property nothing
+changes: the result is `evaluateToolPolicy`'s, the function every statement above is about. -/
+def NativeWriteAbsentUnchanged (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) :
+    Prop :=
+  ∀ (inc : Option IncidentReadOnly) (i : Input), ev none inc i = evaluateToolPolicy inc i
+
+/-- (b) 102-103: "a deny reason when its target lands outside the roots sandboxed Bash may write";
+218: step 3b. For a non-admin, or in an incident session, a native write tool whose target the
+boundary puts outside is denied with that reason, which is also the deny message — whatever the
+mode (bypass included), the abort and handoff state and the other primitives. -/
+def NativeWriteDeniesOutside
+    (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (outside : String) (inc : Option IncidentReadOnly) (i : Input),
+    (i.isAdmin = false ∨ inc.isSome = true) → i.toolName ∈ nativeWriteTools →
+      ev (some (some outside)) inc i =
+        { decision := .deny, reason := "write-boundary: " ++ outside, denyMessage := some outside }
+
+/-- (c) 106: "Admins are exempt, as from the other guards of the block". Outside an incident
+session an admin's call is decided as without a boundary. -/
+def NativeWriteAdminExempt
+    (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (nw : Option (Option String)) (i : Input), i.isAdmin = true → ev nw none i = evaluate i
+
+/-- (d) 101-102: the boundary is "for a `Write` / `Edit` / `NotebookEdit` call". Every other tool
+is decided as without a boundary, whatever the boundary would say. -/
+def NativeWriteOnlyWriteTools
+    (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (nw : Option (Option String)) (inc : Option IncidentReadOnly) (i : Input),
+    i.toolName ∉ nativeWriteTools → ev nw inc i = evaluateToolPolicy inc i
+
+/-- (e) 103: "else null". A target inside the roots changes nothing. -/
+def NativeWriteInsideUnchanged
+    (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (inc : Option IncidentReadOnly) (i : Input), ev (some none) inc i = evaluateToolPolicy inc i
+
+/-- (f) The boundary only adds denials: every result is the one without a boundary, or a denial.
+It never allows, classifies or passes what the policy without it would deny. -/
+def NativeWriteOnlyAddsDenies
+    (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (nw : Option (Option String)) (inc : Option IncidentReadOnly) (i : Input),
+    ev nw inc i = evaluateToolPolicy inc i ∨ (ev nw inc i).decision = .deny
 
 end SomaVerify.ToolPolicy
