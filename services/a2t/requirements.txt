@@ -1,2 +1,5 @@
 faster-whisper>=1.0.0
+# faster-whisper calls av.open(..., metadata_errors="ignore"); PyAV 16 removed
+# that keyword, so an unpinned install (PyAV 19) fails every transcription.
+av>=11,<16
 psutil>=5.9.0
