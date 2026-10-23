@@ -279,6 +279,41 @@ describe('memory routes (SSOT 2026-10-23 T3)', () => {
     expect((await call('GET', '/api/memory/page?id=concepts/plain')).body.representable).toBe(true);
   });
 
+  it("every page write from the tab — form, raw markdown, delete — clears the user's cached prompt (review R4)", async () => {
+    const store = hier.hierarchicalMemoryStore;
+    store.upsertPage(user, { type: 'concepts', slug: 'cache' }, { title: 'Cache', current: 'v1' });
+    const fired: string[] = [];
+    hier.setHierarchicalMemoryPromptInvalidationHook((u: string) => fired.push(u));
+    try {
+      let page = (await call('GET', '/api/memory/page?id=concepts/cache')).body;
+      let r = await call('PUT', '/api/memory/page/raw', {
+        id: 'concepts/cache',
+        raw: page.raw.replace(/Cache/g, 'Cache renamed'), // frontmatter title and heading, so the page stays form-editable
+        revision: page.revision,
+      });
+      expect(r.status).toBe(200);
+      expect(fired).toEqual([user]);
+
+      page = (await call('GET', '/api/memory/page?id=concepts/cache')).body;
+      r = await call('PUT', '/api/memory/page', {
+        id: 'concepts/cache',
+        title: 'Cache again',
+        aliases: [],
+        current: 'v2',
+        history: page.page.history,
+        revision: page.revision,
+      });
+      expect(r.status).toBe(200);
+      expect(fired).toEqual([user, user]);
+
+      r = await call('DELETE', '/api/memory/page', { id: 'concepts/cache', revision: r.body.revision });
+      expect(r.status).toBe(200);
+      expect(fired).toEqual([user, user, user]);
+    } finally {
+      hier.setHierarchicalMemoryPromptInvalidationHook(undefined as never);
+    }
+  });
+
   it('a malformed page id is a 400, never a path outside the memory root', async () => {
     expect((await call('GET', '/api/memory/page?id=../../etc/passwd')).status).toBe(400);
     expect((await call('GET', '/api/memory/page?id=agent/..')).status).toBe(400);
