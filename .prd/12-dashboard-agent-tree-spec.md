@@ -1,6 +1,6 @@
 # 12 — 대시보드 에이전트 트리: 메인 에이전트 → 서브에이전트, 에이전트별 작업 로그·태스크
 
-Status: PR-A(귀속·저장·payload) 구현 · PR-B(대시보드 UI) 진행 · Date: 2026-10-23 · 기준 main `3c9576a`
+Status: PR-A(귀속·저장·payload, #362) · PR-B(대시보드 UI) 구현 · Date: 2026-10-23 · 기준 main `3c9576a` · 이슈 #361
 SSOT: [`agent-tree/ssot.md`](agent-tree/ssot.md) · 앞선 계약: [`10-agent-inbox-board-spec.md`](10-agent-inbox-board-spec.md),
 [`11-dashboard-live-surfaces-spec.md`](11-dashboard-live-surfaces-spec.md)
 
@@ -152,4 +152,8 @@ CSS 테두리 트리 선(글리프 아님). 행 = 상태 아이콘+단어 · `A<
 - 단위(PR-A): `src/agent-runtime/__tests__/sdk-message-to-event.subagent.test.ts`, `packages/slack/src/__tests__/stream-processor.subagent.test.ts`,
   `src/session/__tests__/agent-registry.test.ts`, `src/conversation/__tests__/work-log.test.ts`(agentId/agentRef/attributed),
   `packages/slack/src/__tests__/live-usage.test.ts`(sidechain), `src/conversation/__tests__/dashboard-agent-tree.test.ts`(payload).
-- PR-B: 클라이언트 함수 테스트 + Playwright 실측(1280/820/390 × 라이트/다크, 가짜 세션에 서브 트리).
+- PR-B: `src/conversation/__tests__/dashboard-agent-tree-client.test.ts`(트리 순서·접힌 줄·펼친 트리·워터폴 축·패널 범위·지시/결과 행·
+  귀속 이전 로그 표시·배선) + 브라우저 실측 `scripts/screenshot-agent-tree.ts`(1280/820/390 × 라이트/다크: 가로 넘침 0, <640px 44px,
+  서브 선택 시 경로·Tasks·작업 로그 범위, `서브에이전트 열기 →` 전환 — 100개 검사).
+- 실행: `env -i PATH="$PATH" HOME="$HOME" SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst CONVERSATION_VIEWER_PORT=33918 npx tsx scripts/screenshot-agent-tree.ts [outDir]`
+  — 봇이 띄운 셸에서는 `env -i`로 배포 환경 변수(뷰어 포트·URL·토큰)를 끊는다.

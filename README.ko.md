@@ -93,6 +93,10 @@ Slack 네이티브 버튼/폼 UX로 권한 승인, 선택지, 세션 관리를 �
 
 GitHub App(권장) 또는 Personal Access Token 인증. 자동 토큰 갱신 지원.
 
+### 📋 Agent inbox 대시보드
+
+웹 대시보드(Slack 스레드에서 `dashboard`를 입력하면 로그인 링크를 받는다)는 세션마다 카드 하나를 NEEDS YOU / RUNNING / DONE 보드에 보여 준다. 카드 하나가 메인 에이전트이고, 메인이 `Agent` 도구로 띄운 SDK 서브에이전트(와 그들이 다시 띄운 것)가 카드 안에 트리로 들어간다 — 각자 상태·실행 시간·툴 호출 수와 자기 task 목록·작업 로그를 가진다. 사이드 패널은 에이전트를 오가며(`메인 › A2 Explore`) 보여 주므로 메인의 task·로그에 서브의 것이 섞이지 않는다. 스펙: [`.prd/12-dashboard-agent-tree-spec.md`](./.prd/12-dashboard-agent-tree-spec.md).
+
 ### 🤖 서브 에이전트 (부분 구현 · 프로비저닝 미지원)
 
 서브 에이전트는 같은 프로세스 안에서 각자의 Slack App·Socket Mode 연결·세션 레지스트리를 갖는다.
