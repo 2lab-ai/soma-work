@@ -33,6 +33,16 @@ export interface WorkLogInput {
   taskId?: string;
   taskTitle?: string;
   /**
+   * Spec 12 — the subagent that made this entry: the id of the tool call that
+   * started it (SDK `parent_tool_use_id`). Absent = the main agent.
+   */
+  agentId?: string;
+  /**
+   * Spec 12 — the subagent this entry starts or returns: set on an `Agent` /
+   * `Task` call and on its tool result, whoever made the call.
+   */
+  agentRef?: string;
+  /**
    * The full content behind the one-line `text`: a tool call's whole input, a
    * tool result's output. The store keeps it (size-capped, in a file of its
    * own) and serves it on demand only; pages and the live broadcast carry
@@ -51,4 +61,10 @@ export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
   rawBytes?: number;
   /** The stored raw is cut short of the original. */
   rawTruncated?: true;
+  /**
+   * Spec 12 — written by a store that records who made each entry. An entry
+   * without it predates agent attribution: a subagent's work may be filed in
+   * it as the main agent's, so the dashboard does not claim it is.
+   */
+  attributed?: true;
 }
