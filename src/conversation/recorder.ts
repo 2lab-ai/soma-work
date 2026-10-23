@@ -87,17 +87,28 @@ export function setOnSummaryGeneratedCallback(
  * Each conversation's writes are queued so only one writeFile runs at a time.
  */
 async function serializedSave(conversationId: string, record: ConversationRecord): Promise<void> {
+  await inWriteChain(conversationId, () => getStorage().save(record));
+}
+
+/**
+ * Run `task` in this conversation's write chain: after every write queued
+ * before it has landed on disk, and before any write queued after it.
+ */
+async function inWriteChain<T>(conversationId: string, task: () => Promise<T>): Promise<T> {
   savesInFlight.set(conversationId, (savesInFlight.get(conversationId) ?? 0) + 1);
   const previous = writeLocks.get(conversationId) || Promise.resolve();
-  const current = previous.then(() => getStorage().save(record));
+  const current = previous.then(task);
   writeLocks.set(
     conversationId,
-    current.catch((err) => {
-      logger.error(`Write chain: prior save failed for ${conversationId}, next write will proceed`, err);
-    }),
+    current.then(
+      () => undefined,
+      (err) => {
+        logger.error(`Write chain: prior save failed for ${conversationId}, next write will proceed`, err);
+      },
+    ),
   );
   try {
-    await current;
+    return await current;
   } finally {
     const left = (savesInFlight.get(conversationId) ?? 1) - 1;
     if (left > 0) savesInFlight.set(conversationId, left);
@@ -490,17 +501,31 @@ export async function updateConversationTitleSub(conversationId: string, titleSu
 /**
  * Fill titleSub only while it is still empty, and return the stored value.
  * A subtitle written while the caller was generating (the owner's regenerate,
- * another viewer's fill) wins — a fill never overwrites. The check and the
- * set happen with no await between them, so concurrent callers cannot both
- * see "empty". Returns null when the conversation does not exist.
+ * another viewer's fill) wins — a fill never overwrites.
+ *
+ * The check runs inside this conversation's write chain against the file on
+ * disk, not against the cached object: every save queued before it has landed,
+ * so the file is the truth even if the cached object was evicted and replaced
+ * by an older read in the meantime. The fill writes onto that file's record (so
+ * it cannot roll back anything else on disk) and mirrors titleSub into the
+ * cached object. updatedAt is left alone: filling derived data is not
+ * conversation activity. Returns null when the conversation does not exist.
  */
 export async function fillConversationTitleSub(conversationId: string, titleSub: string): Promise<string | null> {
-  const record = await getOrLoadConversation(conversationId);
-  if (!record) return null;
-  if (record.titleSub) return record.titleSub;
-  // updatedAt is left alone: filling derived data is not conversation activity,
-  // and a viewer opening the panel must not move the conversation in the list.
-  record.titleSub = titleSub;
-  await serializedSave(conversationId, record);
-  return titleSub;
+  return inWriteChain(conversationId, async () => {
+    const stored = await getStorage().load(conversationId);
+    const cached = activeConversations.get(conversationId);
+    const target = stored ?? cached;
+    if (!target) return null;
+    // The cached object may hold a newer value whose save is queued after us.
+    const existing = cached?.titleSub || stored?.titleSub;
+    if (existing) {
+      if (cached && !cached.titleSub) cached.titleSub = existing;
+      return existing;
+    }
+    target.titleSub = titleSub;
+    if (cached) cached.titleSub = titleSub;
+    await getStorage().save(target);
+    return titleSub;
+  });
 }
