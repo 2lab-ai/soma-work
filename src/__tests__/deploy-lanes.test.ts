@@ -524,6 +524,25 @@ describe('DeployLaneTrigger', () => {
       ]);
     });
 
+    it('reads a cron path that cannot be looked up (ENOTDIR) as unreadable, not as "no cron jobs"', async () => {
+      writeRegistry([registryLane()]);
+      const notADir = `${file}.file`;
+      fs.writeFileSync(notADir, '');
+      file = path.join(notADir, 'cron-jobs.json');
+      try {
+        await trigger().handle(deploy(), ctx);
+      } finally {
+        fs.unlinkSync(notADir);
+      }
+
+      expect(runJobNow).not.toHaveBeenCalled();
+      expect(fireDeployLane).toHaveBeenCalledTimes(1);
+      expect(replies).toEqual([
+        `⚠️ 배포 레인 확인 불가 — acme/app → deploy/staging (${SHA7}): cron 설정 파일을 읽지 못함 (owner: cron run 레인 이름)`,
+        `▶ 배포 레인 시작 — acme/app → deploy/staging (${SHA7}): *qa-lane* → <#C_QA> 새 스레드`,
+      ]);
+    });
+
     it('drops the near-miss line while a source cannot be read — it would name half the targets', async () => {
       addLane({ name: 'cron-lane', onDeploy: [{ repo: 'acme/app', target: 'develop' }] });
       fs.writeFileSync(registry, '{ not json');
