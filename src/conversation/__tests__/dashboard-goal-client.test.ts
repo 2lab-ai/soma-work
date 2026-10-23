@@ -282,6 +282,10 @@ describe('work item goal list — the goal being typed survives a live re-render
         document,
         updateTimersIn: () => {},
         animateCountersIn: () => {},
+        // The browser morphs the body; this fake body rebuilds on write.
+        morphInnerHtml: (b: { innerHTML: string }, html: string) => {
+          b.innerHTML = html;
+        },
       },
     );
 
@@ -301,6 +305,10 @@ describe('work item goal list — the goal being typed survives a live re-render
         document,
         updateTimersIn: () => {},
         animateCountersIn: () => {},
+        // The browser morphs the body; this fake body rebuilds on write.
+        morphInnerHtml: (b: { innerHTML: string }, html: string) => {
+          b.innerHTML = html;
+        },
       },
     );
     // innerHTML assignment builds a fresh, empty input.

@@ -1977,16 +1977,30 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         'renderWorkLogGroup',
         'wlGroupOpen',
         'wlGroupEl',
+        // Spec 12: the list shows the scope of the agent the panel shows (main here).
+        'wlScopeEntry',
+        'wlScopeEntries',
+        'wlLegacyMixed',
         'wlRenderList',
         'wlAppendTail',
         'wlDetailOpen',
         'wlNavRows',
         'wlEnsureTabStop',
+        'wlNamesNewAgent',
         'setWorkLogOpen',
         'paintWorkLog',
       ],
       ['WL_LABELS'],
-      { document, _wl: state, panelSessionKey: null, _sessionCache: {}, updateTimersIn: () => {} },
+      {
+        document,
+        _wl: state,
+        panelSessionKey: null,
+        _sessionCache: {},
+        updateTimersIn: () => {},
+        _panelAgent: '',
+        _panelAgentIdsShown: {},
+        renderPanelAgents: () => {},
+      },
     );
     return { m, toggle, count, list };
   }
@@ -2033,12 +2047,17 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
     {
       document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
       _panelTasksExpanded: false,
+      // The browser morphs the block; this fake writes it.
+      morphInnerHtml: (el: { innerHTML: string }, html: string) => {
+        el.innerHTML = html;
+      },
     },
   );
 
   it('zero or missing tasks show the header and an empty line', () => {
     for (const t of [[], undefined, null]) {
       container.innerHTML = '';
+      (container as { _html?: string })._html = undefined; // a fresh block (the same data on a live block writes nothing)
       renderPanelTasks(t);
       expect(container.style.display).toBe('');
       expect(container.innerHTML).toBe(
@@ -2855,6 +2874,16 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         renderPanelTasks: () => {},
         renderTurn: (t: { id: string }) => `<div class="turn assistant" data-turn-id="${t.id}"></div>`,
         attachRawToggleHandlers: () => {},
+        // Session artifacts (SSOT 2026-10-23): the panel strip and per-answer chips.
+        renderPanelArtifactsSection: () => {},
+        ensureArtifacts: () => {},
+        decoratePanelTurns: () => {},
+        isSiblingSession: () => false,
+        // main's own openPanel deps since this harness was written (#372 panel controls, spec 12 agent views).
+        renderPanelControls: () => {},
+        renderPanelAgents: () => {},
+        panelAgentTasks: () => [],
+        panelAgentLabel: () => '',
         generateTitleSub: () => {},
         _panelTitleSub: '',
         panelTitleSubCanRegen: () => true,

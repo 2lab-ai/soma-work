@@ -64,6 +64,8 @@ import { getSurfaceLines } from '../slack/surface-config';
 import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
+import { backfillArtifactsFromWorkLog } from './artifact-capture';
+import { type ArtifactSummary, getArtifactStore, type SessionArtifact } from './artifacts';
 import { readAllInstances } from './instance-registry';
 import {
   createNewTaskGate,
@@ -213,6 +215,13 @@ export interface KanbanSession {
    * the board puts it in `working`, not `idle`. Absent otherwise.
    */
   autoResume?: KanbanAutoResume;
+  /**
+   * SSOT 2026-10-23 T1/T5 — what the model produced in this conversation: the
+   * files it sent to Slack and its markdown final answers. The count and the
+   * few newest, so the card face shows them without a fetch; the full list is
+   * `GET /api/dashboard/session/:conversationId/artifacts`. Absent when none.
+   */
+  artifacts?: ArtifactSummary;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -1060,6 +1069,55 @@ function liveDoneAt(s: any): number | undefined {
   return Number.isFinite(last) ? last : undefined;
 }
 
+// ── Artifacts (SSOT 2026-10-23) ──
+
+/** One work-log backfill at a time: a board of old cards must not read every log at once. */
+let artifactBackfillChain: Promise<void> = Promise.resolve();
+const artifactBackfillQueued = new Set<string>();
+
+/**
+ * The card's artifact summary. A conversation whose work log was never scanned
+ * gets a backfill queued; what it finds arrives as `artifact_update` + a card patch.
+ */
+function cardArtifacts(conversationId: string | undefined): ArtifactSummary | undefined {
+  if (!conversationId) return undefined;
+  const store = getArtifactStore();
+  if (!store.isBackfilled(conversationId) && !artifactBackfillQueued.has(conversationId)) {
+    artifactBackfillQueued.add(conversationId);
+    artifactBackfillChain = artifactBackfillChain
+      .then(() => backfillArtifactsFromWorkLog(conversationId, store))
+      .catch(() => {})
+      .finally(() => artifactBackfillQueued.delete(conversationId));
+  }
+  return store.summary(conversationId);
+}
+
+/**
+ * A new artifact: tell every dashboard (the list is readable by any signed-in
+ * user — artifact-routes.ts) and re-push the live card so its face row grows.
+ */
+export function broadcastArtifactUpdate(artifact: SessionArtifact): void {
+  if (wsClients.size > 0) {
+    try {
+      const payload = JSON.stringify({ type: 'artifact_update', conversationId: artifact.conversationId, artifact });
+      for (const client of wsClients) {
+        try {
+          client.send(payload);
+        } catch {
+          wsClients.delete(client);
+        }
+      }
+    } catch (error) {
+      logger.error('Failed to broadcast artifact update', error);
+    }
+  }
+  const sessions = _getSessionsFn?.();
+  if (!sessions) return;
+  for (const [key, s] of sessions) {
+    if (s?.conversationId === artifact.conversationId) scheduleLiveSessionUpdate(key);
+  }
+}
+
 function sessionToKanban(key: string, s: any): KanbanSession {
   const autoResume = deriveAutoResume(s, Date.now());
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
@@ -1128,6 +1186,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     environment: _selfInstanceEnv ? { ..._selfInstanceEnv } : undefined,
     goal: goalToKanban(s),
     ...(autoResume ? { autoResume } : {}),
+    artifacts: cardArtifacts(s.conversationId),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -1231,6 +1290,7 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
     ...archivedTasks(archived),
     ...agentsToKanban(sanitizeAgentRegistry(archived.agents), false),
     goal: goalToKanban(archived),
+    artifacts: cardArtifacts(archived.conversationId),
     slackThreadUrl:
       archived.channelId && archived.threadTs
         ? (buildThreadPermalink(archived.channelId, archived.threadTs) ?? undefined)
@@ -3245,6 +3305,59 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card-usage .cnt { color: var(--ib-text); font-weight: 600; }
 .card-usage .cu-unit { margin-left: 3px; color: var(--ib-muted); }
 .card-usage .cu-sep { color: var(--ib-muted); }
+
+/* ═══ AGENT TREE (.prd/12 §4) — the main agent and the subagents it started ═══
+   Status always reads as icon + word; colour is a third cue, never the only one. */
+.card-agents { margin-top: 8px; display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12.5px; color: var(--ib-text-2); }
+.card-agents > svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--ib-muted); }
+.ag-dots { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; }
+.ag-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ib-muted); display: inline-block; }
+.ag-dot.is-running { background: var(--st-run); animation: agPulse 1.6s ease-in-out infinite; }
+.ag-dot.is-completed { background: var(--st-done); }
+.ag-dot.is-failed { background: var(--st-fail); }
+.ag-dot.is-stopped { background: var(--ib-muted); border-radius: 2px; }
+.ag-dot.is-unknown { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ib-muted); }
+.ag-dots-more { font-size: 11px; color: var(--ib-muted); margin-left: 2px; font-variant-numeric: tabular-nums; }
+.ca-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ca-text b { color: var(--ib-text); font-weight: 600; }
+.ca-text .ca-fail { color: var(--st-fail); font-weight: 600; }
+@keyframes agPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes agSweep { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+.ag-tree { margin: 12px 0 2px; border: 1px solid var(--ib-card-border); border-radius: 10px; overflow: hidden; background: var(--ib-card); }
+.ag-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; background: var(--ib-pill); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ib-muted); }
+.ag-head .ag-count { letter-spacing: 0; text-transform: none; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ag-row { --ag-c: var(--ib-muted); position: relative; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 2px; align-items: center; width: 100%; margin: 0; padding: 8px 12px 8px calc(12px + (var(--ag-depth, 0) * 16px)); border: 0; border-top: 1px solid var(--ib-card-border); background: none; color: var(--ib-text); font: inherit; text-align: left; cursor: pointer; transition: background-color 150ms ease; }
+.ag-row.is-main { --ag-c: var(--ib-text); border-top: 0; }
+.ag-row.is-running { --ag-c: var(--st-run); }
+.ag-row.is-completed { --ag-c: var(--st-done); }
+.ag-row.is-failed { --ag-c: var(--st-fail); }
+.ag-row.is-stopped, .ag-row.is-unknown { --ag-c: var(--ib-muted); }
+/* Tree lines (CSS borders, not glyphs): a rail down from the parent and an elbow into the row. */
+.ag-row.is-sub::before { content: ''; position: absolute; left: calc(12px + (var(--ag-depth, 1) - 1) * 16px + 7px); top: 0; bottom: 0; width: 1px; background: var(--ib-card-border); }
+.ag-row.is-sub.is-last::before { bottom: auto; height: 17px; }
+.ag-row.is-sub::after { content: ''; position: absolute; left: calc(12px + (var(--ag-depth, 1) - 1) * 16px + 7px); top: 17px; width: 7px; height: 1px; background: var(--ib-card-border); }
+.ag-row[aria-current="true"] { background: var(--ib-pill); box-shadow: inset 2px 0 0 var(--accent); }
+.ag-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ag-icon { grid-column: 1; grid-row: 1; width: 16px; height: 16px; display: grid; place-items: center; color: var(--ag-c); }
+.ag-icon svg { width: 14px; height: 14px; }
+.ag-icon .ag-spinner { width: 11px; height: 11px; border-width: 1.8px; }
+.ag-line { grid-column: 2; grid-row: 1; display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 13px; line-height: 1.35; }
+.ag-id { flex-shrink: 0; font-size: 11.5px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
+.ag-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.ag-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ib-text-2); }
+.ag-desc { grid-column: 2 / 4; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--ib-text-2); }
+.ag-meta { grid-column: 3; grid-row: 1; display: inline-flex; align-items: baseline; gap: 7px; font-size: 12px; color: var(--ib-text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ag-st { color: var(--ag-c); font-weight: 600; }
+.ag-row.is-main .ag-st { color: var(--ib-text-2); }
+.ag-bg { font-size: 10.5px; line-height: 16px; padding: 0 6px; border-radius: 99px; border: 1px solid var(--ib-card-border); color: var(--ib-muted); }
+.ag-row.is-sub::before, .ag-row.is-sub::after { pointer-events: none; }
+.ag-sub { grid-column: 2 / 4; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--ib-muted); }
+.ag-span { grid-column: 2 / 4; position: relative; height: 3px; margin-top: 3px; border-radius: 2px; background: var(--ib-pill); overflow: hidden; }
+.ag-span i { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: var(--ag-c); opacity: 0.7; }
+.ag-row.is-running .ag-span i { background-image: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.55) 50%, transparent 100%); background-size: 200% 100%; animation: agSweep 1.8s linear infinite; }
+.ag-toggle { display: block; width: 100%; padding: 8px 12px; border: 0; border-top: 1px solid var(--ib-card-border); background: none; color: var(--ib-text-2); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
+.ag-more { padding: 7px 12px; border-top: 1px solid var(--ib-card-border); font-size: 12px; color: var(--ib-muted); }
 /* Armed automatic resume (turn retry / goal re-check): the clock in the status
    line and the open card's resume row take the "waiting" hue, not the run hue. */
 .st-icon.is-resume, .card-resume svg { color: var(--st-wait); }
@@ -3903,6 +4016,35 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* Panel tasks (.prd/10 §3.1-6) — pinned between the token badges and the
    scroll area: always shown (an empty line when there are none yet), with its
    own scroll so a long list never pushes the work log and turns away. */
+/* Agent bar (.prd/12 §4.3): one pinned row — the path to the agent shown and
+   the tree on demand (vertical at every width). */
+.panel-agents { flex: none; padding: 6px 16px 8px; border-bottom: 1px solid var(--border); }
+.pa-bar { display: flex; align-items: center; gap: 8px; min-height: 32px; min-width: 0; }
+.pa-path { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 13px; }
+.pa-crumb { min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 6px; border: 0; border-radius: 6px; background: none; color: var(--text-secondary); font: inherit; cursor: pointer; }
+.pa-crumb:first-child { flex-shrink: 0; }
+.pa-crumb[aria-current="true"] { color: var(--text); font-weight: 600; cursor: default; }
+.pa-crumb:focus-visible, .pa-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pa-sep { flex-shrink: 0; color: var(--text-tertiary); }
+.pa-toggle { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 99px; background: var(--surface-raised); color: var(--text-secondary); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; cursor: pointer; }
+.pa-toggle svg { width: 13px; height: 13px; }
+.pa-toggle .pa-chev { transition: transform var(--dur-expand) var(--ease-out); }
+.pa-toggle[aria-expanded="true"] .pa-chev { transform: rotate(180deg); }
+.pa-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; margin-top: 4px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.pa-st { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
+.pa-st svg, .pa-st .spinner { width: 12px; height: 12px; }
+.pa-st.is-running { color: var(--st-run); } .pa-st.is-completed { color: var(--st-done); } .pa-st.is-failed { color: var(--st-fail); } .pa-st.is-stopped, .pa-st.is-unknown { color: var(--text-tertiary); }
+.pa-dot { color: var(--text-tertiary); }
+.pa-note { width: 100%; font-size: 11px; color: var(--text-tertiary); }
+.pa-desc { margin-top: 2px; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pa-desc .pa-act { color: var(--text-tertiary); }
+.pa-list { margin-top: 6px; max-height: min(32vh, 260px); overflow-y: auto; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--ib-card); overscroll-behavior: contain; }
+.tasks-scope { text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--text); }
+.wl-role { flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 4px; background: var(--ib-pill); color: var(--text); }
+.wl-agent-io .wl-row { background: var(--ib-pill); }
+.wl-agent-link { display: block; margin: 0 0 4px 22px; padding: 2px 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; }
+.wl-agent-link:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; border-radius: 4px; }
+.wl-legacy { margin: 4px 0 6px; padding: 6px 10px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 12px; }
 .panel-tasks {
   flex: none;
   padding: 8px 16px;
@@ -4314,6 +4456,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .topbar .td-prefix, .topbar .td-status { display: none; }
   .main { padding: 14px 12px; }
   .panel-tasks { max-height: min(22vh, 160px); }
+  /* Agent tree (.prd/12 §4.4): status · time · tools drop under the name; 44px targets. */
+  .ag-row { grid-template-columns: 16px minmax(0, 1fr); min-height: 44px; padding-top: 10px; padding-bottom: 10px; }
+  .ag-meta { grid-column: 2; grid-row: auto; }
+  .ag-desc, .ag-sub, .ag-span { grid-column: 2; }
+  .ag-toggle, .pa-toggle, .pa-crumb { min-height: 44px; }
+  .pa-list { max-height: min(40vh, 300px); }
+
   /* Stats strip: period control + 자세히 on the first row, the numbers on the
      second. The period tabs share the row's width and keep 44px height with
      narrower sides, so the row fits 320px with the coarse-pointer padding. */
@@ -4369,8 +4518,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .chart-row { flex-direction: column; }
   .slide-panel { width: 100vw; right: -100vw; }
 }
+@media (hover: hover) and (pointer: fine) {
+  .ag-row:hover, .ag-toggle:hover { background: var(--ib-pill); }
+  .pa-crumb:not([aria-current="true"]):hover { background: var(--surface-raised); color: var(--text); }
+  .pa-toggle:hover { color: var(--text); border-color: var(--border-focus); }
+  .wl-agent-link:hover { text-decoration: underline; }
+}
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  /* Agent tree: a static running indicator, no sweep across the waterfall bar. */
+  .ag-dot.is-running, .ag-row.is-running .ag-span i { animation: none !important; }
   /* §4-8: no movement or scale — the expanded body only cross-fades. These
      selectors are more specific than the * rule above, so they win. */
   .card-expand { transition: none !important; }
@@ -4716,6 +4873,129 @@ body.nt-open .new-task-fab { display: none !important; }
   .new-task-btn, .new-task-btn::before, .new-task-fab, .new-task-fab::after, .nt-dialog, .nt-att, .nt-toast,
   .nt-rec-dot, .nt-battery-fill, .nt-plus, .nt-fab-label, .nt-fab-icon, .nt-submit svg { animation: none !important; transition: none !important; }
 }
+/* ── Session artifacts (SSOT 2026-10-23): face chips, strips, minimap, viewer ── */
+.art-glyph { width: 14px; height: 14px; flex-shrink: 0; }
+.art-k-image { --art-tint: var(--green); }
+.art-k-html { --art-tint: var(--orange); }
+.art-k-audio { --art-tint: var(--purple); }
+.art-k-video { --art-tint: var(--red); }
+.art-k-markdown { --art-tint: var(--accent); }
+.art-k-pdf { --art-tint: var(--red); }
+.art-k-text, .art-k-file { --art-tint: var(--text-secondary); }
+.card-arts { display: flex; align-items: center; gap: 5px; margin-top: 8px; min-width: 0; overflow: hidden; }
+.card-arts-label { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; font-size: 11px; font-weight: 600; color: var(--ib-text-2); font-variant-numeric: tabular-nums; }
+.art-chip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 150px; height: 24px; padding: 0 8px; border: 1px solid var(--ib-card-border); border-radius: 999px; background: var(--ib-pill); color: var(--ib-text); font: inherit; font-size: 11.5px; line-height: 1; cursor: zoom-in; transition: border-color var(--speed) var(--ease), background var(--speed) var(--ease), transform var(--dur-press) var(--ease-out); }
+.art-chip .art-glyph { color: var(--art-tint); }
+.art-chip:focus-visible { border-color: var(--art-tint, var(--accent)); background: var(--surface-raised); outline: none; }
+.art-chip:active:not(:focus-visible) { transform: scale(0.97); }
+.art-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-arts .art-chip { flex: 1 1 0; max-width: 160px; }
+.art-more { flex-shrink: 0; font-size: 11px; color: var(--ib-muted); }
+.card-artifacts { margin-top: 12px; }
+.art-section-label { display: flex; align-items: center; gap: 6px; }
+.art-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.art-strip { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 8px; scroll-snap-type: x proximity; scrollbar-width: thin; overscroll-behavior-x: contain; }
+.art-tile { position: relative; flex: 0 0 auto; width: 128px; scroll-snap-align: start; }
+.art-open { display: flex; flex-direction: column; width: 100%; padding: 0; overflow: hidden; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--surface); color: var(--ib-text); font: inherit; text-align: left; cursor: zoom-in; transition: border-color var(--speed) var(--ease), box-shadow var(--speed) var(--ease), transform var(--dur-press) var(--ease-out); }
+.art-open:focus-visible { border-color: var(--art-tint, var(--accent)); box-shadow: var(--ib-shadow-raised); outline: none; }
+.art-open:active:not(:focus-visible) { transform: scale(0.97); }
+.art-thumb { position: relative; display: flex; align-items: center; justify-content: center; height: 76px; border-bottom: 1px solid var(--ib-card-border); background: var(--ib-col); color: var(--art-tint, var(--text-secondary)); }
+.art-thumb .art-glyph { width: 28px; height: 28px; }
+.art-thumb-img img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.art-thumb-ext { position: absolute; left: 6px; bottom: 5px; padding: 1px 5px; border-radius: 4px; background: var(--surface-raised); color: var(--text-secondary); font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; }
+.art-tile-name { padding: 6px 8px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 600; }
+.art-tile-meta { padding: 2px 8px 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--ib-muted); }
+.art-tile.is-remote .art-thumb { opacity: 0.55; }
+.art-play { position: absolute; top: 46px; right: 6px; display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: var(--purple); color: #fff; box-shadow: var(--ib-shadow); cursor: pointer; transition: transform var(--dur-press) var(--ease-out); }
+.art-play svg { width: 14px; height: 14px; }
+.art-play:active:not(:focus-visible) { transform: scale(0.97); }
+@media (hover: hover) and (pointer: fine) {
+  .art-chip:hover { border-color: var(--art-tint, var(--accent)); background: var(--surface-raised); }
+  .art-open:hover { border-color: var(--art-tint, var(--accent)); box-shadow: var(--ib-shadow-raised); transform: translateY(-1px); }
+  .art-play:hover { transform: scale(1.06); }
+}
+.art-play .ic-pause, .art-play.is-playing .ic-play { display: none; }
+.art-play.is-playing .ic-pause { display: block; }
+.art-play.is-playing { box-shadow: 0 0 0 4px color-mix(in srgb, var(--purple) 30%, transparent); }
+.panel-artifacts { padding: 10px 16px 4px; border-bottom: 1px solid var(--border); }
+.panel-arts-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--text); }
+.panel-arts-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
+.art-strip-panel .art-tile { width: 152px; }
+.art-strip-panel .art-thumb { height: 94px; }
+.turn-arts-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.art-peek { position: fixed; z-index: 1000; left: 0; top: 0; width: 360px; max-width: calc(100vw - 16px); overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45); opacity: 0; visibility: hidden; transform: translateY(4px) scale(0.98); transform-origin: top left; pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), visibility 0s linear var(--dur-fade); }
+.art-peek.open { opacity: 1; visibility: visible; transform: none; pointer-events: auto; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out); }
+.art-peek-media { position: relative; display: flex; align-items: center; justify-content: center; height: 225px; overflow: hidden; background: var(--bg); cursor: zoom-in; color: var(--art-tint, var(--text-secondary)); }
+.art-peek-img, .art-peek-video { max-width: 100%; max-height: 100%; object-fit: contain; }
+.art-peek-frame { position: absolute; inset: 0; overflow: hidden; background: #fff; }
+.art-peek-frame iframe { width: 1280px; height: 800px; border: 0; transform: scale(0.28125); transform-origin: 0 0; pointer-events: none; }
+.art-peek-doc { align-self: stretch; width: 100%; padding: 10px 14px; overflow: hidden; color: var(--text); font-size: 11px; line-height: 1.5; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.art-peek-doc .md-doc h1, .art-peek-doc .md-doc h2, .art-peek-doc .md-doc h3 { font-size: 13px; margin: 4px 0; }
+.art-peek-audio { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; padding: 0 16px; }
+.art-peek-audio .art-glyph { width: 48px; height: 48px; }
+.art-peek-audio audio { width: 100%; }
+.art-peek-meta { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0 18px; text-align: center; }
+.art-peek-meta .art-glyph { width: 36px; height: 36px; }
+.art-peek-sub { font-size: 12px; color: var(--text-secondary); word-break: break-all; }
+.art-peek-foot { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px 10px; border-top: 1px solid var(--border); }
+.art-peek-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--text); }
+.art-peek-info { font-size: 11px; color: var(--text-tertiary); }
+.art-doc-loading { color: var(--text-tertiary); font-size: 12px; }
+.art-modal { width: min(1240px, 94vw); height: 90vh; max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--text); }
+.art-modal[open] { display: flex; flex-direction: column; animation: art-modal-in var(--dur-expand) var(--ease-out); }
+.art-modal::backdrop { background: rgba(0, 0, 0, 0.62); }
+@keyframes art-modal-in { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+.art-modal-head { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border); }
+.art-modal-kind { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 3px 9px; border-radius: 999px; background: var(--ib-pill); color: var(--text-secondary); font-size: 11px; font-weight: 700; }
+.art-modal-title { flex: 1; min-width: 0; }
+.art-modal-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.art-modal-meta { font-size: 11.5px; color: var(--text-tertiary); }
+.art-modal-nav, .art-modal-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.art-modal-pos { min-width: 40px; font-size: 12px; color: var(--text-secondary); text-align: center; font-variant-numeric: tabular-nums; }
+.art-nav-btn, .art-modal-close { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); color: var(--text); font-size: 16px; cursor: pointer; }
+.art-nav-btn:disabled { opacity: 0.35; cursor: default; }
+.art-modal-actions .btn-action[hidden] { display: none; }
+.art-modal-body { position: relative; display: flex; flex: 1; min-height: 0; align-items: center; justify-content: center; overflow: auto; background: var(--bg); }
+.art-full-imgwrap { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: auto; }
+.art-full-img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; }
+.art-full-imgwrap.is-zoomed { display: block; }
+.art-full-imgwrap.is-zoomed .art-full-img { max-width: none; max-height: none; cursor: zoom-out; }
+.art-full-frame { width: 100%; height: 100%; border: 0; background: #fff; }
+.art-full-video { max-width: 100%; max-height: 100%; background: #000; }
+.art-full-audio { display: flex; flex-direction: column; align-items: center; gap: 18px; width: min(560px, 90%); color: var(--purple); }
+.art-full-audio .art-glyph { width: 72px; height: 72px; }
+.art-full-audio audio { width: 100%; }
+.art-full-meta { display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 460px; padding: 24px; text-align: center; color: var(--text-secondary); }
+.art-full-meta .art-glyph { width: 56px; height: 56px; }
+.art-full-meta-name { font-size: 15px; font-weight: 600; color: var(--text); word-break: break-all; }
+.art-full-meta-sub { font-size: 12px; color: var(--text-tertiary); }
+.art-full-doc { align-self: stretch; width: 100%; max-width: 880px; height: max-content; margin: 0 auto; padding: 28px 32px 56px; }
+.art-text { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.6 'SF Mono', 'Fira Code', monospace; }
+.md-doc { font-size: 14px; line-height: 1.65; color: var(--text); word-break: break-word; }
+.md-doc h1, .md-doc h2, .md-doc h3, .md-doc h4, .md-doc h5, .md-doc h6 { margin: 1.3em 0 0.5em; line-height: 1.3; letter-spacing: -0.01em; }
+.md-doc h1 { font-size: 1.6em; } .md-doc h2 { font-size: 1.3em; } .md-doc h3 { font-size: 1.12em; } .md-doc h4, .md-doc h5, .md-doc h6 { font-size: 1em; }
+.md-doc > :first-child { margin-top: 0; }
+.md-doc p, .md-doc ul, .md-doc ol, .md-doc blockquote, .md-doc pre, .md-doc .md-table { margin: 0 0 0.9em; }
+.md-doc ul, .md-doc ol { padding-left: 1.4em; }
+.md-doc li + li { margin-top: 0.2em; }
+.md-doc code { padding: 0.1em 0.35em; border-radius: 4px; background: var(--ib-pill); font: 0.88em 'SF Mono', 'Fira Code', monospace; }
+.md-doc pre { padding: 12px 14px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--ib-col); }
+.md-doc pre code { padding: 0; background: none; font-size: 12.5px; line-height: 1.55; }
+.md-doc blockquote { padding: 2px 0 2px 12px; border-left: 3px solid var(--border-focus); color: var(--text-secondary); }
+.md-doc hr { margin: 1.4em 0; border: 0; border-top: 1px solid var(--border); }
+.md-doc a { color: var(--accent); }
+.md-doc .md-table { overflow-x: auto; }
+.md-doc table { border-collapse: collapse; font-size: 0.93em; }
+.md-doc th, .md-doc td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+.md-doc th { background: var(--ib-col); font-weight: 600; }
+@media (prefers-reduced-motion: reduce) {
+  .art-chip, .art-open, .art-play, .art-peek, .art-peek.open { transition: none; }
+  .art-modal[open] { animation: none; }
+}
+@media (hover: none) {
+  .art-chip { height: 32px; }
+  .art-play { width: 40px; height: 40px; top: 40px; }
+}
 </style>
 </head>
 <body>
@@ -4854,8 +5134,12 @@ body.nt-open .new-task-fab { display: none !important; }
     <div class="panel-meta" id="panel-meta"></div>
     <div class="panel-links" id="panel-links"></div>
     <div class="panel-tokens" id="panel-tokens"></div>
+    <!-- Agent bar (.prd/12 §4.3): path 메인 › A2 …, the tree on demand; it scopes Tasks and the work log. -->
+    <div class="panel-agents" id="panel-agents" style="display:none"></div>
     <!-- Tasks are pinned (.prd/10 §3.1-6): always shown, never scrolled away. -->
     <div class="panel-tasks" id="panel-tasks"></div>
+    <!-- Artifacts are pinned too (SSOT 2026-10-23 T6): in view wherever the conversation is scrolled. -->
+    <div class="panel-artifacts" id="panel-artifacts" style="display:none"></div>
     <!-- Scroll area: question + work log (collapsed unless opened from 작업 로그) + turns. -->
     <div class="panel-scroll" id="panel-scroll">
       <div class="panel-question" id="panel-question" style="display:none"></div>
@@ -4926,6 +5210,26 @@ body.nt-open .new-task-fab { display: none !important; }
   </dialog>
   <div class="nt-toast" id="nt-toast" role="status" aria-live="polite" hidden></div>
 </div>
+<!-- Artifacts (SSOT 2026-10-23): hover minimap + full-size viewer, shared by board and panel. -->
+<div id="art-peek" class="art-peek" role="tooltip" aria-hidden="true"></div>
+<dialog id="art-modal" class="art-modal" aria-labelledby="art-modal-name">
+  <div class="art-modal-head">
+    <span class="art-modal-kind" id="art-modal-kind"></span>
+    <div class="art-modal-title"><div class="art-modal-name" id="art-modal-name"></div><div class="art-modal-meta" id="art-modal-meta"></div></div>
+    <div class="art-modal-nav">
+      <button type="button" class="art-nav-btn" id="art-modal-prev" aria-label="이전 산출물" onclick="artModalStep(-1)">&#x2039;</button>
+      <span class="art-modal-pos" id="art-modal-pos"></span>
+      <button type="button" class="art-nav-btn" id="art-modal-next" aria-label="다음 산출물" onclick="artModalStep(1)">&#x203A;</button>
+    </div>
+    <div class="art-modal-actions">
+      <a class="btn-action" id="art-modal-open" target="_blank" rel="noopener">새 탭</a>
+      <a class="btn-action" id="art-modal-download">다운로드</a>
+      <a class="btn-action" id="art-modal-slack" target="_blank" rel="noopener">Slack</a>
+      <button type="button" class="art-modal-close" aria-label="닫기" onclick="closeArtifactModal()">&#x2715;</button>
+    </div>
+  </div>
+  <div class="art-modal-body" id="art-modal-body"></div>
+</dialog>
 
 <script>
 const INIT_USER = ${initUser};
@@ -5125,12 +5429,14 @@ function renderPanelQuestion(s) {
 
 // Pinned Tasks block (.prd/10 §3.1-6): always rendered — with no tasks yet it
 // says so instead of disappearing.
-function renderPanelTasks(tasks) {
+function renderPanelTasks(tasks, scopeLabel) {
   var container = document.getElementById('panel-tasks');
   if (!container) return;
   container.style.display = '';
+  // Spec 12: a subagent's own tasks are labelled with that agent.
+  var title = 'Tasks' + (scopeLabel ? ' <span class="tasks-scope">&middot; ' + esc(scopeLabel) + '</span>' : '');
   if (!tasks || tasks.length === 0) {
-    container.innerHTML = '<div class="panel-tasks-header"><span>Tasks</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>';
+    writePanelTasks(container, '<div class="panel-tasks-header"><span>' + title + '</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>');
     return;
   }
 
@@ -5144,7 +5450,7 @@ function renderPanelTasks(tasks) {
   var pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
   var html = '<div class="panel-tasks-header">'
-    + '<span>Tasks</span>'
+    + '<span>' + title + '</span>'
     + '<span class="tasks-progress">' + doneCount + '/' + total + ' (' + pct + '%)</span>'
     + '</div>';
 
@@ -5165,13 +5471,20 @@ function renderPanelTasks(tasks) {
 
   if (hiddenCount > 0) {
     if (_panelTasksExpanded) {
-      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;renderPanelTasks(_sessionCache[panelSessionKey]&&_sessionCache[panelSessionKey].tasks)">&#x25B2; Hide completed</button>';
+      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;renderPanelTasks(panelAgentTasks(),panelAgentLabel())">&#x25B2; Hide completed</button>';
     } else {
-      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;renderPanelTasks(_sessionCache[panelSessionKey]&&_sessionCache[panelSessionKey].tasks)">&#x25BC; Show ' + hiddenCount + ' more completed</button>';
+      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;renderPanelTasks(panelAgentTasks(),panelAgentLabel())">&#x25BC; Show ' + hiddenCount + ' more completed</button>';
     }
   }
 
-  container.innerHTML = html;
+  writePanelTasks(container, html);
+  // Same data (a session push while a subagent is shown) writes nothing; a
+  // change is morphed, so the focused toggle or task row stays.
+  function writePanelTasks(el, markup) {
+    if (el._html === markup) return;
+    morphInnerHtml(el, markup);
+    el._html = markup;
+  }
 }
 
 function renderPanelTaskItem(t) {
@@ -6339,9 +6652,13 @@ function applyCardParts(el, p) {
   }
   if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl) && !isPickingModel(el._bodyEl)) {
     var goalDraft = captureGoalDraft(el._bodyEl);
-    el._bodyEl.innerHTML = p.body;
-    el._bodyHtml = p.body;
+    // Spec 12 §4.4: morphed, not rewritten — while a subagent runs the body
+    // changes every push (its tool count, the waterfall axis, the last-activity
+    // stamp), and the focused agent row, a running spinner and a scrolled list
+    // must survive that.
+    morphInnerHtml(el._bodyEl, p.body);
     restoreGoalDraft(el._bodyEl, goalDraft);
+    el._bodyHtml = p.body;
     updateTimersIn(el._bodyEl);
     changed = true;
   }
@@ -6544,7 +6861,9 @@ function renderCardFace(s, col) {
   return '<div class="card-head"><span class="card-spark">' + SPARK_SVG + '</span>' + titleHtml + renderOwnerBadge(s) + '</div>'
     + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
     + renderCardTaskRow(s, col)
+    + renderCardAgents(s)
     + renderCardUsage(s)
+    + (isSiblingSession(s) ? '' : artFaceChips(s))
     + '<div class="card-foot"><span class="card-status">' + renderCardStatus(s, col) + '</span>'
     + (metrics.length ? '<span class="card-metrics">' + metrics.join('') + '</span>' : '')
     + '</div>';
@@ -6615,6 +6934,479 @@ function toggleCardTasks(key) {
   if (_tasksOpen[key]) delete _tasksOpen[key];
   else _tasksOpen[key] = true;
   refreshCard(key);
+}
+
+// ── Agent tree (spec 12 §4, .prd/12-dashboard-agent-tree-spec.md) ──
+// A card is the main agent; s.agents are the subagents it (or another
+// subagent) started, in spawn order. Each has its own tasks and its own work
+// log (entries with its agentId). Status always shows as an icon AND a word.
+var AGENT_STATUS_LABEL = { running: '실행 중', completed: '완료', failed: '실패', stopped: '중단', unknown: '확인 불가' };
+var AGENT_TREE_ROWS = 8; // rows of an open card's tree before 전체 N개 보기
+var AGENT_DOTS_MAX = 6; // status dots on the collapsed face before +N
+var AGENTS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="3.5" r="1.8"/><circle cx="12" cy="8" r="1.8"/><circle cx="12" cy="13" r="1.8"/><path d="M4 5.3v5.2c0 1.4 1.1 2.5 2.5 2.5h3.7M4 8h6.2"/></svg>';
+var _agentTreeOpen = Object.create(null); // card key → every agent row shown
+var _panelAgent = ''; // the agent the open panel shows ('' = the main agent)
+var _panelAgentListOpen = false;
+var _panelAgentIdsShown = Object.create(null); // agent ids the agent bar lists now
+var _panelAgentsHtml = ''; // what the agent bar last rendered (a live update with the same data writes nothing)
+
+function agentStatusOf(a) {
+  return a && Object.prototype.hasOwnProperty.call(AGENT_STATUS_LABEL, a.status) ? a.status : 'unknown';
+}
+function agentName(a) {
+  return 'A' + toNum(a && a.n) + (a && a.type ? ' ' + a.type : '');
+}
+// Pure: the agents in tree order — each followed by the agents it started —
+// with their depth (1 = started by the main agent). An agent whose parent is
+// not on the card hangs from the main agent. isLast = last child of its parent.
+function agentTreeOrder(agents) {
+  var list = agents || [];
+  var ids = Object.create(null);
+  for (var i = 0; i < list.length; i++) if (list[i] && list[i].id) ids[list[i].id] = true;
+  var kids = Object.create(null);
+  var roots = [];
+  for (var j = 0; j < list.length; j++) {
+    var a = list[j];
+    if (!a || !a.id) continue;
+    var p = a.parentId && ids[a.parentId] && a.parentId !== a.id ? a.parentId : '';
+    if (p) (kids[p] = kids[p] || []).push(a);
+    else roots.push(a);
+  }
+  var out = [];
+  var seen = Object.create(null);
+  function walk(node, depth, last) {
+    if (seen[node.id]) return;
+    seen[node.id] = true;
+    out.push({ agent: node, depth: depth, isLast: last });
+    var c = kids[node.id] || [];
+    for (var k = 0; k < c.length; k++) walk(c[k], depth + 1, k === c.length - 1);
+  }
+  for (var r = 0; r < roots.length; r++) walk(roots[r], 1, r === roots.length - 1);
+  // A parent cycle leaves agents unreached: list them under the main agent.
+  for (var m = 0; m < list.length; m++) if (list[m] && list[m].id && !seen[list[m].id]) walk(list[m], 1, true);
+  return out;
+}
+function agentCounts(agents) {
+  var c = { running: 0, completed: 0, failed: 0, stopped: 0, unknown: 0 };
+  var list = agents || [];
+  for (var i = 0; i < list.length; i++) c[agentStatusOf(list[i])]++;
+  return c;
+}
+// Collapsed face row (§4.1): status dots + "서브에이전트 4 · 실행 2 · 실패 1".
+function renderCardAgents(s) {
+  var list = (s && s.agents) || [];
+  if (!list.length) return '';
+  var total = Math.max(toNum(s.agentsTotal), list.length);
+  var c = agentCounts(list);
+  var dots = '';
+  for (var i = 0; i < list.length && i < AGENT_DOTS_MAX; i++) dots += '<i class="ag-dot is-' + agentStatusOf(list[i]) + '"></i>';
+  if (list.length > AGENT_DOTS_MAX) dots += '<span class="ag-dots-more">+' + (list.length - AGENT_DOTS_MAX) + '</span>';
+  var parts = ['서브에이전트 <b>' + total + '</b>'];
+  if (c.running) parts.push('실행 ' + c.running);
+  if (c.failed) parts.push('<span class="ca-fail">실패 ' + c.failed + '</span>');
+  var words = '서브에이전트 ' + total + (c.running ? ', 실행 ' + c.running : '') + (c.failed ? ', 실패 ' + c.failed : '');
+  return '<div class="card-agents" title="' + escAttr(words) + '">' + AGENTS_SVG
+    + '<span class="ag-dots" aria-hidden="true">' + dots + '</span>'
+    + '<span class="ca-text">' + parts.join(' &middot; ') + '</span></div>';
+}
+function agentIconHtml(st) {
+  if (st === 'running') return '<span class="spinner ag-spinner" aria-hidden="true"></span>';
+  if (st === 'completed') return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>';
+  if (st === 'failed') return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>';
+  if (st === 'stopped') return '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.2"/></svg>';
+  return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="8" cy="8" r="4.5" stroke-dasharray="2.2 2"/></svg>';
+}
+// Elapsed of a running agent (filled by the 1 Hz tick), else its run time.
+function agentTimeHtml(a) {
+  var started = Number(a.startedAt) || 0;
+  if (agentStatusOf(a) === 'running') return started ? '<span class="task-elapsed" data-since="' + started + '"></span>' : '';
+  var ms = toNum(a.durationMs) || (Number(a.endedAt) && started ? Number(a.endedAt) - started : 0);
+  return ms > 0 ? (formatDuration(ms) || '0s') : '';
+}
+// The line under an agent: its task in progress, else the SDK's summary, else its last tool.
+function agentActivity(a) {
+  var tasks = a.tasks || [];
+  for (var i = 0; i < tasks.length; i++) if (tasks[i] && tasks[i].status === 'in_progress') return '#' + tasks[i].id + ' ' + (tasks[i].activeForm || tasks[i].content || '');
+  if (a.summary) return a.summary;
+  if (a.lastTool) return '마지막 도구 ' + a.lastTool;
+  return '';
+}
+// Pure: the waterfall's time axis (§4.2) — the agent set's first start to its
+// last end (or the session's last activity while one runs). Stable between
+// pushes, so an unchanged card renders the same markup.
+function agentSpanAxis(agents, lastActivityMs) {
+  var t0 = 0;
+  var t1 = 0;
+  var list = agents || [];
+  for (var i = 0; i < list.length; i++) {
+    var a = list[i];
+    var st = Number(a.startedAt) || 0;
+    if (!st) continue;
+    if (!t0 || st < t0) t0 = st;
+    var end = Number(a.endedAt) || st;
+    if (end > t1) t1 = end;
+  }
+  if (lastActivityMs > t1) t1 = lastActivityMs;
+  if (t1 - t0 < 1000) t1 = t0 + 1000;
+  return { t0: t0, t1: t1 };
+}
+function agentSpanStyle(a, axis) {
+  var st = Number(a.startedAt) || axis.t0;
+  var end = agentStatusOf(a) === 'running' ? axis.t1 : (Number(a.endedAt) || st);
+  var w = axis.t1 - axis.t0;
+  var left = Math.max(0, Math.min(100, ((st - axis.t0) / w) * 100));
+  var width = Math.max(1.5, Math.min(100 - left, ((end - st) / w) * 100));
+  return 'left:' + left.toFixed(1) + '%;width:' + width.toFixed(1) + '%';
+}
+// One agent row (card tree and panel list share it). act = the data attribute
+// a delegated click handler reads (data-agent-open on a card, data-agent-select
+// in the panel) — no inline JS, so no id ever has to survive JS-in-HTML escaping.
+function renderAgentRow(a, depth, isLast, axis, act, current) {
+  var st = agentStatusOf(a);
+  var time = agentTimeHtml(a);
+  var activity = agentActivity(a);
+  var meta = '<span class="ag-st">' + esc(AGENT_STATUS_LABEL[st]) + '</span>'
+    + (time ? '<span class="ag-time">' + time + '</span>' : '')
+    + '<span class="ag-tools" title="툴 호출 수">툴 ' + toNum(a.toolCalls) + '</span>'
+    + (a.background ? '<span class="ag-bg">배경</span>' : '');
+  return '<button type="button" class="ag-row is-sub is-' + st + (isLast ? ' is-last' : '') + '"'
+    + ' style="--ag-depth:' + Math.max(1, Math.min(6, toNum(depth) || 1)) + '"'
+    + (current ? ' aria-current="true"' : '')
+    + act
+    + ' title="' + escAttr(agentName(a) + (a.description ? ' — ' + a.description : '') + ' · ' + AGENT_STATUS_LABEL[st]) + '">'
+    + '<span class="ag-icon">' + agentIconHtml(st) + '</span>'
+    + '<span class="ag-line"><span class="ag-id">A' + toNum(a.n) + '</span>'
+    + '<span class="ag-type">' + esc(a.type || 'agent') + '</span></span>'
+    + '<span class="ag-meta">' + meta + '</span>'
+    + (a.description ? '<span class="ag-desc">' + esc(a.description) + '</span>' : '')
+    + (activity ? '<span class="ag-sub">' + esc(activity) + '</span>' : '')
+    + (axis ? '<span class="ag-span" aria-hidden="true"><i style="' + agentSpanStyle(a, axis) + '"></i></span>' : '')
+    + '</button>';
+}
+function renderMainAgentRow(s, act, current) {
+  var tasks = s.tasks || [];
+  var done = 0;
+  for (var i = 0; i < tasks.length; i++) if (tasks[i] && tasks[i].status === 'completed') done++;
+  var model = String(s.model || '').replace(/^claude-/, '');
+  return '<button type="button" class="ag-row is-main"' + (current ? ' aria-current="true"' : '')
+    + act + '>'
+    + '<span class="ag-icon"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.8l6.2 6.2L8 14.2 1.8 8z"/></svg></span>'
+    + '<span class="ag-line"><span class="ag-type">메인</span>' + (model ? '<span class="ag-model">' + esc(model) + '</span>' : '') + '</span>'
+    + '<span class="ag-meta">' + (tasks.length ? '<span class="ag-tools">task ' + done + '/' + tasks.length + '</span>' : '') + '</span>'
+    + '</button>';
+}
+// Spec 12: bring a live node in line with freshly rendered markup, keeping
+// every node whose place did not change — so focus, a list's scroll and a
+// running spinner's animation survive a live update. Children pair up in
+// order; an agent row pairs only with the row of the same agent.
+function domKeyOf(n) {
+  if (n.nodeType !== 1) return '#' + n.nodeType;
+  var k = n.getAttribute('data-agent-open');
+  if (k === null) k = n.getAttribute('data-agent-select');
+  if (k !== null) return n.tagName + '|@' + k;
+  // Unkeyed: tag + id + the base class (the first token — state classes come
+  // after it), so a section inserted before others does not shift them onto
+  // each other.
+  var cls = n.getAttribute('class') || '';
+  var sp = cls.indexOf(' ');
+  return n.tagName + '|' + (n.id || '') + '.' + (sp < 0 ? cls : cls.slice(0, sp));
+}
+function domMorph(a, b) {
+  if (a.nodeType !== 1) {
+    if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue;
+    return;
+  }
+  var i;
+  for (i = a.attributes.length - 1; i >= 0; i--) {
+    if (!b.hasAttribute(a.attributes[i].name)) a.removeAttribute(a.attributes[i].name);
+  }
+  for (i = 0; i < b.attributes.length; i++) {
+    var at = b.attributes[i];
+    if (a.getAttribute(at.name) !== at.value) a.setAttribute(at.name, at.value);
+  }
+  domMorphChildren(a, b);
+  // What a user changed in a control is live state, not an attribute: follow
+  // the fresh markup (a rejected model pick shows the session's model again).
+  // A control in use is never morphed (isEditingGoal / isPickingModel).
+  var tag = a.tagName;
+  if (tag === 'SELECT') {
+    if (a.selectedIndex !== b.selectedIndex) a.selectedIndex = b.selectedIndex;
+  } else if (tag === 'INPUT' || tag === 'TEXTAREA') {
+    if (a.value !== b.value) a.value = b.value;
+    if (a.checked !== b.checked) a.checked = b.checked;
+  }
+}
+function domKeyLater(n, key) {
+  for (; n; n = n.nextSibling) if (domKeyOf(n) === key) return true;
+  return false;
+}
+function domMorphChildren(a, b) {
+  var cur = a.firstChild;
+  var next = b.firstChild;
+  while (next) {
+    // A live node the fresh markup no longer has (an agent row that left)
+    // goes first, so the rows after it still pair with their own nodes.
+    if (cur && domKeyOf(cur) !== domKeyOf(next) && !domKeyLater(next, domKeyOf(cur))) {
+      var dropped = cur;
+      cur = cur.nextSibling;
+      a.removeChild(dropped);
+      continue;
+    }
+    var after = next.nextSibling;
+    if (cur && domKeyOf(cur) === domKeyOf(next)) {
+      domMorph(cur, next);
+      cur = cur.nextSibling;
+    } else {
+      a.insertBefore(next, cur); // moved out of the fresh tree, which is thrown away
+    }
+    next = after;
+  }
+  while (cur) {
+    var gone = cur;
+    cur = cur.nextSibling;
+    a.removeChild(gone);
+  }
+}
+// Write html into el's children through domMorph (one fresh parse, no node
+// rebuilt that did not change).
+function morphInnerHtml(el, html) {
+  var tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  domMorphChildren(el, tmp);
+}
+// Open card (§4.2): 메인 → subagents tree with a waterfall bar per agent.
+function renderAgentTree(s) {
+  var list = s.agents || [];
+  if (!list.length) return '';
+  var rows = agentTreeOrder(list);
+  var open = !!_agentTreeOpen[s.key];
+  var shown = open ? rows : rows.slice(0, AGENT_TREE_ROWS);
+  var axis = agentSpanAxis(list, new Date(s.lastActivity).getTime() || 0);
+  var total = Math.max(toNum(s.agentsTotal), list.length);
+  var html = '<div class="ag-tree" role="group" aria-label="에이전트">'
+    + '<div class="ag-head"><span>에이전트</span><span class="ag-count">메인 + ' + total + '</span></div>'
+    + renderMainAgentRow(s, ' data-agent-open=""', false);
+  for (var i = 0; i < shown.length; i++) {
+    var a = shown[i].agent;
+    html += renderAgentRow(a, shown[i].depth, shown[i].isLast, axis, ' data-agent-open="' + escAttr(a.id) + '"', false);
+  }
+  if (rows.length > AGENT_TREE_ROWS) {
+    html += '<button type="button" class="ag-toggle" data-agent-tree-toggle="1" aria-expanded="' + (open ? 'true' : 'false') + '">'
+      + (open ? '접기' : '전체 ' + rows.length + '개 보기') + '</button>';
+  }
+  if (total > list.length) html += '<div class="ag-more">이전 에이전트 ' + (total - list.length) + '개는 카드 목록 밖 — 작업 로그에서 볼 수 있어요</div>';
+  return html + '</div>';
+}
+function toggleAgentTree(key) {
+  if (_agentTreeOpen[key]) delete _agentTreeOpen[key];
+  else _agentTreeOpen[key] = true;
+  refreshCard(key);
+}
+function openPanelAgent(key, agentId) {
+  openPanel(key, true, agentId || '');
+}
+
+// ── Panel scope: which agent's tasks and work log the panel shows (§4.3) ──
+function panelAgentOf(s) {
+  if (!_panelAgent || !s || !s.agents) return null;
+  for (var i = 0; i < s.agents.length; i++) if (s.agents[i] && s.agents[i].id === _panelAgent) return s.agents[i];
+  return null;
+}
+function panelAgentTasks() {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  if (!s) return undefined;
+  if (!_panelAgent) return s.tasks;
+  var a = panelAgentOf(s);
+  return a ? (a.tasks || []) : [];
+}
+function panelAgentLabel() {
+  if (!_panelAgent) return '';
+  var a = panelAgentOf(panelSessionKey ? _sessionCache[panelSessionKey] : null);
+  return a ? agentName(a) : '에이전트';
+}
+// Agents that wrote to the open log but are not on the card (over its bound): reachable all the same.
+function panelLogOnlyAgents(s) {
+  var known = Object.create(null);
+  var list = (s && s.agents) || [];
+  for (var i = 0; i < list.length; i++) known[list[i].id] = true;
+  var out = [];
+  var entries = (_wl && _wl.entries) || [];
+  for (var j = 0; j < entries.length; j++) {
+    var e = entries[j];
+    if (!e) continue;
+    // Its own entries or only the call that started it and that call's result.
+    var ids = [e.agentId, e.agentRef];
+    for (var k = 0; k < ids.length; k++) {
+      var id = ids[k];
+      if (id && !known[id]) { known[id] = true; out.push(String(id)); }
+    }
+  }
+  return out;
+}
+function renderPanelAgents() {
+  var el = document.getElementById('panel-agents');
+  if (!el) return;
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var list = (s && s.agents) || [];
+  var extra = panelLogOnlyAgents(s);
+  _panelAgentIdsShown = Object.create(null);
+  for (var q = 0; q < list.length; q++) _panelAgentIdsShown[list[q].id] = true;
+  for (var w = 0; w < extra.length; w++) _panelAgentIdsShown[extra[w]] = true;
+  // An agent the panel shows that is gone from both lists keeps the bar (its
+  // path is the way back to 메인).
+  if (!s || (!list.length && !extra.length && !_panelAgent)) {
+    el.style.display = 'none';
+    if (_panelAgentsHtml) el.innerHTML = '';
+    _panelAgentsHtml = '';
+    return;
+  }
+  var byId = Object.create(null);
+  for (var i = 0; i < list.length; i++) byId[list[i].id] = list[i];
+  var sel = _panelAgent ? byId[_panelAgent] : null;
+  // Path: 메인 › … › the selected agent (each step a button back to it).
+  var chain = [];
+  for (var cur = sel, guard = 0; cur && guard < 8; guard++) {
+    chain.unshift(cur);
+    cur = cur.parentId ? byId[cur.parentId] : null;
+  }
+  var path = '<button type="button" class="pa-crumb"' + (_panelAgent ? '' : ' aria-current="true"') + ' data-agent-select="">메인</button>';
+  for (var c = 0; c < chain.length; c++) {
+    var isCur = chain[c].id === _panelAgent;
+    path += '<span class="pa-sep" aria-hidden="true">&rsaquo;</span><button type="button" class="pa-crumb"'
+      + (isCur ? ' aria-current="true"' : '') + ' data-agent-select="' + escAttr(chain[c].id) + '">' + esc(agentName(chain[c])) + '</button>';
+  }
+  if (_panelAgent && !sel) path += '<span class="pa-sep" aria-hidden="true">&rsaquo;</span><span class="pa-crumb" aria-current="true">에이전트 ' + esc(_panelAgent.slice(-6)) + '</span>';
+  // agentsTotal already counts the agents beyond the card; the log-only ones are among them.
+  var total = Math.max(toNum(s.agentsTotal), list.length + extra.length);
+  var html = '<div class="pa-bar"><nav class="pa-path" aria-label="에이전트 경로">' + path + '</nav>'
+    + '<button type="button" class="pa-toggle" id="pa-toggle" data-agent-list-toggle="1" aria-expanded="' + (_panelAgentListOpen ? 'true' : 'false') + '" aria-controls="pa-list">'
+    + AGENTS_SVG + '<span>에이전트 ' + total + '</span><svg class="pa-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button></div>';
+  if (sel) {
+    var st = agentStatusOf(sel);
+    var bits = ['<span class="pa-st is-' + st + '">' + agentIconHtml(st) + esc(AGENT_STATUS_LABEL[st]) + '</span>'];
+    var time = agentTimeHtml(sel);
+    if (time) bits.push(time);
+    bits.push('툴 ' + toNum(sel.toolCalls));
+    if (toNum(sel.tokens) > 0) bits.push(formatTokens(sel.tokens) + ' tok');
+    if (sel.background) bits.push('배경 실행');
+    html += '<div class="pa-sum">' + bits.join('<span class="pa-dot" aria-hidden="true">&middot;</span>')
+      + '<span class="pa-note">토큰 배지·대화 내역은 세션 전체</span></div>';
+    var line = sel.description || '';
+    var act = agentActivity(sel);
+    if (line || act) html += '<div class="pa-desc">' + esc(line) + (line && act ? ' — ' : '') + (act ? '<span class="pa-act">' + esc(act) + '</span>' : '') + '</div>';
+  } else if (_panelAgent) {
+    html += '<div class="pa-sum">카드 목록 밖의 에이전트 — 작업 로그만 있어요</div>';
+  }
+  html += '<div class="pa-list" id="pa-list"' + (_panelAgentListOpen ? '' : ' hidden') + '>';
+  if (_panelAgentListOpen) {
+    var axis = agentSpanAxis(list, new Date(s.lastActivity).getTime() || 0);
+    html += renderMainAgentRow(s, ' data-agent-select=""', !_panelAgent);
+    var rows = agentTreeOrder(list);
+    for (var r = 0; r < rows.length; r++) {
+      var a = rows[r].agent;
+      html += renderAgentRow(a, rows[r].depth, rows[r].isLast, axis, ' data-agent-select="' + escAttr(a.id) + '"', a.id === _panelAgent);
+    }
+    for (var x = 0; x < extra.length; x++) {
+      html += '<button type="button" class="ag-row is-sub is-unknown is-last" style="--ag-depth:1"' + (extra[x] === _panelAgent ? ' aria-current="true"' : '')
+        + ' data-agent-select="' + escAttr(extra[x]) + '"><span class="ag-icon">' + agentIconHtml('unknown') + '</span>'
+        + '<span class="ag-line"><span class="ag-type">기타 에이전트</span><span class="ag-model">' + esc(extra[x].slice(-6)) + '</span></span><span class="ag-meta"></span></button>';
+    }
+  }
+  html += '</div>';
+  // A live update (sessionUpdated, a board push) with the same data writes
+  // nothing; a changed bar is morphed, so the focused button (a crumb, the
+  // toggle, a list row), the list's scroll and a running spinner stay.
+  if (html === _panelAgentsHtml && el.style.display === '') return;
+  el.style.display = '';
+  morphInnerHtml(el, html);
+  _panelAgentsHtml = html;
+  updateTimersIn(el);
+}
+function togglePanelAgentList() {
+  _panelAgentListOpen = !_panelAgentListOpen;
+  renderPanelAgents();
+  var t = document.getElementById('pa-toggle');
+  if (t) t.focus();
+}
+// Switch the panel's scope: its Tasks and work log follow the chosen agent.
+// The work log keeps one open/closed map of task groups per agent.
+function selectPanelAgent(agentId) {
+  var before = document.activeElement;
+  var focusInPanel = !!(before && before !== document.body && before.closest && before.closest('#slide-panel'));
+  var next = agentId || '';
+  if (_wl) {
+    var saved = _wl.groupOpenBy || (_wl.groupOpenBy = Object.create(null));
+    saved[_panelAgent] = _wl.groupOpen || Object.create(null);
+    _wl.groupOpen = saved[next] || Object.create(null);
+  }
+  _panelAgent = next;
+  _panelAgentListOpen = false;
+  _panelTasksExpanded = false;
+  renderPanelAgents();
+  renderPanelTasks(panelAgentTasks(), panelAgentLabel());
+  repaintWorkLogScope();
+  // A keyboard choice (a list row, 서브에이전트 열기) went with the list it was
+  // in: focus lands on the agent now shown, not on <body>.
+  var after = document.activeElement;
+  if (focusInPanel && (!after || after === document.body || !document.body.contains(after))) {
+    var here = document.querySelector('#panel-agents button.pa-crumb[aria-current="true"]') || document.getElementById('pa-toggle');
+    if (here && here.focus) here.focus();
+  }
+}
+function repaintWorkLogScope() {
+  var list = document.getElementById('worklog-list');
+  if (!_wl || !list) return;
+  if (!_wl.entries.length) return;
+  wlRenderList(_wl, list);
+  updateTimersIn(list);
+  setTextIfChanged(document.getElementById('worklog-count'), String(wlScopeEntries(_wl.entries).length));
+  wlEnsureTabStop(list);
+  if (!wlScopeEntries(_wl.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
+}
+// Pure: how an entry reads in the scope of the given agent ('' = main), or null
+// when it is not in that scope. The main agent's scope = entries without an
+// agentId; a subagent's = its own entries plus the call that started it and
+// that call's result (made by its parent: shown as 지시 / 결과, outside any task).
+function wlScopeEntry(e, agent) {
+  if (!e) return null;
+  var who = e.agentId ? String(e.agentId) : '';
+  if (who === agent) return e;
+  if (agent && e.agentRef === agent) {
+    var role = e.kind === 'tool' ? 'spawn' : 'result';
+    var copy = {};
+    for (var k in e) if (Object.prototype.hasOwnProperty.call(e, k) && k !== 'taskId' && k !== 'taskTitle') copy[k] = e[k];
+    copy._role = role;
+    return copy;
+  }
+  return null;
+}
+function wlScopeEntries(entries) {
+  var out = [];
+  var list = entries || [];
+  // A background agent's spawn result only acknowledges its start.
+  var bg = false;
+  if (_panelAgent) {
+    var a = panelAgentOf(panelSessionKey ? _sessionCache[panelSessionKey] : null);
+    bg = !!(a && a.background);
+  }
+  for (var i = 0; i < list.length; i++) {
+    var v = wlScopeEntry(list[i], _panelAgent);
+    if (!v) continue;
+    // …but a failed result is the spawn failing, never a background start.
+    if (bg && v._role === 'result' && v.ok !== false) v._role = 'ack';
+    out.push(v);
+  }
+  return out;
+}
+// Pure: the log predates agent attribution and holds a subagent call, so its
+// "main" entries may be a subagent's (spec 12 §2.4).
+function wlLegacyMixed(entries) {
+  var list = entries || [];
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (e && !e.attributed && e.kind === 'tool' && (e.tool === 'Agent' || e.tool === 'Task')) return true;
+  }
+  return false;
 }
 
 // Latest user instruction + model response (§3.1-4), fetched lazily on
@@ -6913,6 +7705,8 @@ function renderCardBody(s, col) {
   const statsHtml = '<div class="card-stats">' + statParts.join('') + '</div>' + ctxBar;
 
   const ioHtml = isSiblingSession(s) ? '' : renderCardIo(s);
+  // Artifacts live on this instance's disk: a sibling instance's card links nowhere here.
+  const artsHtml = isSiblingSession(s) ? '' : renderCardArtifacts(s);
   // The collapsed face already shows the pending question as its summary; the
   // open card then keeps only the choices, not the same sentence twice.
   const faceSummary = cardSummary(s, col, s.displayHeadline || s.summaryTitle || s.title);
@@ -6994,8 +7788,10 @@ function renderCardBody(s, col) {
     + subtitlesHtml
     + renderCardResume(s, col)
     + renderCardGoal(s, col, isOwner && !isSibling)
+    + renderAgentTree(s)
     + renderTimeline(s)
     + ioHtml
+    + artsHtml
     + questionHtml
     + statsHtml
     + actionsHtml
@@ -7064,7 +7860,16 @@ async function changeModel(key, select) {
   var r;
   try { r = await postModelSwitch(key, nickname); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
   _modelNotes[key] = modelSwitchNote(r);
-  if (select) { select.disabled = false; select.blur(); }
+  if (select) {
+    select.disabled = false;
+    select.blur();
+    // A refused switch puts the picker back on the session's model (the
+    // option the card rendered as selected) — also when the same refusal
+    // leaves the card's markup unchanged and the refresh writes nothing.
+    if (!r.ok) {
+      for (var i = 0; i < select.options.length; i++) if (select.options[i].defaultSelected) select.selectedIndex = i;
+    }
+  }
   refreshCard(key);
   loadSessions();
 }
@@ -7351,7 +8156,11 @@ function toggleCard(key, instant) {
     void el.offsetHeight;
     el.classList.remove('no-motion');
   }
-  if (open) ensureCardIo(key, true);
+  if (open) {
+    ensureCardIo(key, true);
+    var opened = _sessionCache[key];
+    if (opened && opened.conversationId && opened.artifacts && !isSiblingSession(opened)) ensureArtifacts(opened.conversationId);
+  }
 }
 
 // Board ↔ List (§3.1-2, §4-4): CSS re-lays out the very same nodes and each
@@ -8234,8 +9043,10 @@ function connectWs() {
           renderPanelQuestion(panelS);
           renderPanelControls(panelS);
           // The board carries the server's one-current-task view; a turn that
-          // just ended must stop spinning its task in the open panel too.
-          renderPanelTasks(panelS.tasks);
+          // just ended must stop spinning its task in the open panel too —
+          // the main agent's or, when one is chosen, a subagent's (spec 12).
+          renderPanelAgents();
+          renderPanelTasks(panelAgentTasks(), panelAgentLabel());
           // If session no longer has pending multi-choice, clear mc state
           if (!panelS.pendingQuestion || panelS.pendingQuestion.type !== 'user_choices') {
             if (_mcState[panelSessionKey]) delete _mcState[panelSessionKey];
@@ -8249,7 +9060,9 @@ function connectWs() {
         }
         loadSessions();
         // Also update panel tasks if panel is open for this session
-        if (panelOpen && panelSessionKey === msg.sessionKey) {
+        // task_update is the main agent's list: it repaints the panel only
+        // while the panel shows the main agent (spec 12 §4.3).
+        if (panelOpen && panelSessionKey === msg.sessionKey && !_panelAgent) {
           renderPanelTasks(msg.tasks);
           wlRefreshGroupHeads();
         }
@@ -8314,7 +9127,17 @@ function connectWs() {
         if (panelOpen && panelSessionKey === updatedKey) {
           var pt2 = document.getElementById('panel-title');
           if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || 'Untitled';
+          // Spec 12: the agent tree moved (spawn, status, tool count, a subagent's tasks).
+          renderPanelAgents();
+          if (_panelAgent) {
+            renderPanelTasks(panelAgentTasks(), panelAgentLabel());
+            wlRefreshGroupHeads();
+          }
         }
+      } else if (msg.type === 'artifact_update' && msg.conversationId) {
+        // SSOT 2026-10-23 — a new file / markdown answer; the card face itself
+        // follows through the sessionUpdated push the server sends with it.
+        onArtifactUpdate(msg.conversationId, msg.artifact);
       } else if (msg.type === 'work_log' && msg.entry) {
         // .prd/10 §3.3 — live work-log entry. Append when its conversation is
         // open in the panel (seq-deduped against the initial fetch).
@@ -8741,6 +9564,8 @@ function loadWorkLog() {
     if (result !== 'denied' && !st.entries.length) showWorkLogEmpty(WL_EMPTY_MSG);
     // T9: the whole log, not just its latest 500 entries.
     if (result === 'ok') wlLoadOlder(st, wlFetchJson, paintWorkLog);
+    // Spec 12: agents that wrote to the log but are not on the card get a place in the agent bar.
+    if (result === 'ok') renderPanelAgents();
     // No re-landing here: the log is collapsed, so its arrival moves nothing,
     // and a reader who already scrolled is left where they are.
   });
@@ -8753,6 +9578,18 @@ function recoverWorkLog() {
 function pushLiveWorkLog(convId, entry) {
   if (!_wl || _wl.convId !== convId) return;
   wlOnLive(_wl, entry, wlFetchJson, paintWorkLog);
+}
+// Spec 12: entries that name an agent the bar does not show yet (their own
+// entries, or a spawn/result row's agentRef) — on a live entry, an older page
+// or a recovery merge alike.
+function wlNamesNewAgent(added) {
+  for (var i = 0; i < added.length; i++) {
+    var e = added[i] && added[i].entry;
+    if (!e) continue;
+    if (e.agentId && !_panelAgentIdsShown[e.agentId]) return true;
+    if (e.agentRef && !_panelAgentIdsShown[e.agentRef]) return true;
+  }
+  return false;
 }
 
 // Work-log section open / closed (§3.1-6). Every panel opening starts closed
@@ -8893,7 +9730,9 @@ function wlBuildRows(entries) {
 // The task behind a group, from the open session's task ledger (status, time, tool calls).
 function wlTaskInfo(taskId) {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  var all = ((s && s.tasks) || []).concat((s && s.earlierTasks) || []);
+  // Spec 12: task ids belong to one agent — look in the agent the panel shows.
+  var owner = s && _panelAgent ? panelAgentOf(s) : s;
+  var all = ((owner && owner.tasks) || []).concat((owner && owner.earlierTasks) || []);
   for (var i = 0; i < all.length; i++) if (all[i] && all[i].id === taskId) return all[i];
   return null;
 }
@@ -8922,7 +9761,7 @@ function renderWorkLogGroup(grp, open, task) {
 function wlFillGroupBody(state, grpEl, taskId) {
   var body = grpEl.querySelector('.wl-group-body');
   if (!body || body.getAttribute('data-filled') === '1') return;
-  var entries = state.entries.filter(function(x) { return wlGroupOf(x) === taskId; });
+  var entries = wlScopeEntries(state.entries).filter(function(x) { return wlGroupOf(x) === taskId; });
   body.innerHTML = entries.map(renderWorkLogEntry).join('');
   body.setAttribute('data-filled', '1');
   for (var i = 0; i < entries.length; i++) {
@@ -8951,10 +9790,16 @@ function wlGroupEl(list, taskId) {
 }
 // The whole list from state.entries; open details are re-opened (raw output is cached on the state).
 function wlRenderList(state, list) {
-  var rows = wlBuildRows(state.entries);
+  // Spec 12: only the agent the panel shows (the main agent by default).
+  var rows = wlBuildRows(wlScopeEntries(state.entries));
   var newest = null;
   for (var i = rows.length - 1; i >= 0; i--) if (rows[i].group) { newest = rows[i].group; break; }
-  list.innerHTML = rows.map(function(r) {
+  // A log from before agent attribution that started subagents: its "main"
+  // entries may be a subagent's — say so instead of claiming they are main's.
+  var legacy = !_panelAgent && wlLegacyMixed(state.entries)
+    ? '<div class="wl-legacy" role="note">이전 통합 로그 — 메인/서브 귀속 미확인</div>'
+    : '';
+  list.innerHTML = legacy + rows.map(function(r) {
     if (r.entry) return renderWorkLogEntry(r.entry);
     return renderWorkLogGroup(r.group, wlGroupOpen(state, r.group.taskId, r.group === newest), wlTaskInfo(r.group.taskId));
   }).join('');
@@ -8972,8 +9817,9 @@ function wlRenderList(state, list) {
 // group, a new task as a new — open — group at the end).
 function wlAppendTail(state, list, added) {
   var tmp = document.createElement('div');
-  for (var i = 0; i < added.length; i++) {
-    var e = added[i].entry;
+  var scoped = wlScopeEntries(added.map(function(a) { return a.entry; }));
+  for (var i = 0; i < scoped.length; i++) {
+    var e = scoped[i];
     var g = wlGroupOf(e);
     if (!g) {
       tmp.innerHTML = renderWorkLogEntry(e);
@@ -8999,16 +9845,21 @@ function wlAppendTail(state, list, added) {
 function wlRefreshGroupHead(state, grpEl, taskId) {
   var head = grpEl.querySelector('.wl-group-head');
   if (!head) return;
-  var entries = state.entries.filter(function(x) { return wlGroupOf(x) === taskId; });
+  var entries = wlScopeEntries(state.entries).filter(function(x) { return wlGroupOf(x) === taskId; });
   var title = '';
   for (var i = 0; i < entries.length; i++) if (entries[i].taskTitle) title = String(entries[i].taskTitle);
+  var html = renderWorkLogGroupHead({ taskId: taskId, title: title, entries: entries }, head.getAttribute('aria-expanded') === 'true', wlTaskInfo(taskId));
+  if (head._html === html) return; // same data → the head (and its focus) is left alone
   var tmp = document.createElement('div');
-  tmp.innerHTML = renderWorkLogGroupHead({ taskId: taskId, title: title, entries: entries }, head.getAttribute('aria-expanded') === 'true', wlTaskInfo(taskId));
+  tmp.innerHTML = html;
   var fresh = tmp.firstElementChild;
   if (!fresh) return;
-  if (head.getAttribute('tabindex') === '0') fresh.setAttribute('tabindex', '0');
-  grpEl.replaceChild(fresh, head);
-  updateTimersIn(fresh);
+  fresh.setAttribute('tabindex', head.getAttribute('tabindex') === '0' ? '0' : '-1');
+  // Morphed, not replaced: a reader whose focus is on the head keeps it (Spec 12 —
+  // a subagent scope refreshes its heads on every session push).
+  domMorph(head, fresh);
+  head._html = html;
+  updateTimersIn(head);
 }
 // Task status / time / tool calls changed (task_update): refresh every group head.
 function wlRefreshGroupHeads() {
@@ -9049,8 +9900,12 @@ function paintWorkLog(state, added) {
   if (tail) wlAppendTail(state, list, added);
   else wlRenderList(state, list);
   updateTimersIn(list);
-  setTextIfChanged(document.getElementById('worklog-count'), String(n));
+  var scopedCount = wlScopeEntries(state.entries).length;
+  setTextIfChanged(document.getElementById('worklog-count'), String(scopedCount));
+  // Spec 12: entries of another agent arrived while this agent's log is empty — keep the empty line.
+  if (!scopedCount) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
   wlEnsureTabStop(list);
+  if (wlNamesNewAgent(added)) renderPanelAgents();
   // Tail-follow, unless the reader has an entry's detail open; older entries
   // arriving above keep the reader's place.
   if (!state.painted || (atBottom && !wlDetailOpen(state))) list.scrollTop = list.scrollHeight;
@@ -9098,11 +9953,19 @@ function renderWorkLogEntry(e) {
     var tool = e.tool ? String(e.tool) : '';
     if (tool && text === tool) shown = '';
     else if (tool && text.indexOf(tool + ' ') === 0) shown = text.slice(tool.length + 1);
-    return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + '"' + seqAttr + '>' + rowOpen()
+    // Spec 12: in a subagent's scope the call that started it reads 지시 and
+    // its result 결과 (a background start: 배경 실행 시작); elsewhere a spawn
+    // call offers a way to that subagent.
+    var role = e._role === 'spawn' ? '지시' : e._role === 'result' ? '결과' : e._role === 'ack' ? '배경 실행 시작' : '';
+    var link = kind === 'tool' && e.agentRef && !e._role
+      ? '<button type="button" class="wl-agent-link" tabindex="-1" data-agent="' + escAttr(e.agentRef) + '">서브에이전트 열기 &rarr;</button>'
+      : '';
+    return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + (role ? ' wl-agent-io' : '') + '"' + seqAttr + '>' + rowOpen()
       + '<span class="wl-mark">' + mark + '</span>'
+      + (role ? '<span class="wl-role">' + role + '</span>' : '')
       + (tool ? '<span class="wl-tool-name">' + esc(tool) + '</span>' : '')
       + '<span class="wl-text" title="' + escAttr(text) + '">' + esc(shown) + '</span>'
-      + timeHtml + '</div>' + detailHtml + '</div>';
+      + timeHtml + '</div>' + link + detailHtml + '</div>';
   }
   if (kind === 'instruction') text = decodeSlackEntities(text);
   var label = WL_LABELS[kind];
@@ -9127,10 +9990,10 @@ function wlRovingIndex(key, i, n) {
   if (key === 'End') return n - 1;
   return -1;
 }
-// The rows the arrows move between: entry rows and task-group heads that are
-// on screen (a closed group's entries are not).
+// The rows the arrows move between: entry rows, task-group heads and a spawn
+// row's 서브에이전트 열기 (Spec 12) that are on screen (a closed group's are not).
 function wlNavRows(list) {
-  var all = list.querySelectorAll('.wl-group-head, .wl-row');
+  var all = list.querySelectorAll('.wl-group-head, .wl-row, .wl-agent-link');
   var out = [];
   for (var i = 0; i < all.length; i++) {
     var body = all[i].closest ? all[i].closest('.wl-group-body') : null;
@@ -9140,12 +10003,12 @@ function wlNavRows(list) {
   return out;
 }
 function wlEnsureTabStop(list) {
-  if (!list || !list.querySelector || list.querySelector('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"]')) return;
+  if (!list || !list.querySelector || list.querySelector('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"], .wl-agent-link[tabindex="0"]')) return;
   var rows = wlNavRows(list);
   if (rows.length) rows[rows.length - 1].setAttribute('tabindex', '0');
 }
 function wlSetTabStop(list, row) {
-  var old = list.querySelectorAll('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"]');
+  var old = list.querySelectorAll('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"], .wl-agent-link[tabindex="0"]');
   for (var i = 0; i < old.length; i++) if (old[i] !== row) old[i].setAttribute('tabindex', '-1');
   if (row.getAttribute('tabindex') !== '0') row.setAttribute('tabindex', '0');
 }
@@ -9160,6 +10023,12 @@ function wlSetTabStop(list, row) {
     return entry ? Math.floor(Number(entry.getAttribute('data-seq')) || 0) : 0;
   }
   list.addEventListener('click', function(e) {
+    // Spec 12: a spawn row's 열기 → switches the panel to that subagent.
+    var agentLink = e.target.closest('.wl-agent-link');
+    if (agentLink && list.contains(agentLink)) {
+      selectPanelAgent(agentLink.getAttribute('data-agent') || '');
+      return;
+    }
     var btn = e.target.closest('.wl-detail-btn');
     if (btn && list.contains(btn)) {
       var act = btn.getAttribute('data-wl-act');
@@ -9183,7 +10052,10 @@ function wlSetTabStop(list, row) {
   list.addEventListener('keydown', function(e) {
     var row = e.target;
     var isHead = !!(row.classList && row.classList.contains('wl-group-head'));
-    if (!row.classList || (!isHead && !row.classList.contains('wl-row'))) return;
+    var isLink = !!(row.classList && row.classList.contains('wl-agent-link'));
+    if (!row.classList || (!isHead && !isLink && !row.classList.contains('wl-row'))) return;
+    // 서브에이전트 열기 is a real button: Enter / Space click it (the delegated handler opens the agent).
+    if (isLink && (e.key === 'Enter' || e.key === ' ')) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       if (isHead) {
@@ -9202,7 +10074,7 @@ function wlSetTabStop(list, row) {
   });
   list.addEventListener('focusin', function(e) {
     var row = e.target;
-    if (row && row.classList && (row.classList.contains('wl-row') || row.classList.contains('wl-group-head'))) wlSetTabStop(list, row);
+    if (row && row.classList && (row.classList.contains('wl-row') || row.classList.contains('wl-group-head') || row.classList.contains('wl-agent-link'))) wlSetTabStop(list, row);
   });
 })();
 
@@ -9248,10 +10120,13 @@ function landPanel() {
 // focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link:
 // the work log stays collapsed like every opening, but the panel lands with its
 // header in view instead of on the newest turns.
-function openPanel(sessionKey, focusWorkLog) {
+function openPanel(sessionKey, focusWorkLog, agentId) {
   const s = _sessionCache[sessionKey];
   if (!s) return;
   _panelFocusWorkLog = !!focusWorkLog;
+  // Spec 12 §4.3: the agent whose tasks and work log the panel shows ('' = main).
+  _panelAgent = agentId ? String(agentId) : '';
+  _panelAgentListOpen = false;
 
   // Unconditional UI reset on card switch — an in-flight send from a previous
   // card must never leak "Sending..." / disabled state into this card. The
@@ -9274,6 +10149,9 @@ function openPanel(sessionKey, focusWorkLog) {
   panelSessionKey = sessionKey;
   panelConvId = s.conversationId || null;
   resetWorkLog(panelConvId, true);
+  // Artifacts (T6): the summary now, the full list as soon as it arrives.
+  renderPanelArtifactsSection();
+  if (panelConvId && !isSiblingSession(s)) ensureArtifacts(panelConvId, true);
   setWorkLogOpen(false); // every opening starts collapsed (§3.1-6)
   _panelOlderArmed = false; // a landing never loads older turns by itself
   _panelStickBottom = false;
@@ -9331,9 +10209,10 @@ function openPanel(sessionKey, focusWorkLog) {
   // Pending question in panel
   renderPanelQuestion(s);
 
-  // Tasks (panel card view)
+  // Agent bar (spec 12 §4.3), then the chosen agent's tasks.
+  renderPanelAgents();
   _panelTasksExpanded = false;
-  renderPanelTasks(s.tasks);
+  renderPanelTasks(panelAgentTasks(), panelAgentLabel());
 
   // Conversation turns — paginated (infinite scroll: latest 30, load older on scroll-up)
   const turnsEl = document.getElementById('panel-turns');
@@ -9371,6 +10250,7 @@ function openPanel(sessionKey, focusWorkLog) {
         _panelTurnsOldestId = data.turns[0] && data.turns[0].id;
         turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
         attachRawToggleHandlers();
+        decoratePanelTurns();
         landPanel();
         _panelTurnsLoading = false;
       })
@@ -9478,6 +10358,7 @@ async function loadMorePanelTurns() {
       var html = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
       turnsEl.insertAdjacentHTML('afterbegin', html);
       attachRawToggleHandlers();
+      decoratePanelTurns();
       // Restore scroll position so the user stays anchored on what they were reading.
       // behavior 'instant': .panel-scroll is scroll-behavior: smooth, which would
       // otherwise show the jump and then glide back.
@@ -9515,7 +10396,7 @@ async function loadMorePanelTurns() {
 function renderTurn(t, _idx, _arr, convId) {
   const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   const initial = (t.userName || 'U').charAt(0).toUpperCase();
-  var turnIdAttr = t.id ? ' data-turn-id="' + esc(t.id) + '"' : '';
+  var turnIdAttr = (t.id ? ' data-turn-id="' + esc(t.id) + '"' : '') + ' data-ts="' + toNum(t.timestamp) + '"';
   if (t.role === 'user') {
     return '<div class="turn user"' + turnIdAttr + '>'
       + '<div class="turn-avatar user-avatar">' + initial + '</div>'
@@ -9541,11 +10422,17 @@ function renderTurn(t, _idx, _arr, convId) {
         + '<div class="turn-raw-content"><span class="turn-raw-loading">Loading...</span></div>'
         + '</details>';
     }
+    // SSOT 2026-10-23 T6 — the files and markdown answer this turn produced, under
+    // it. decoratePanelTurns() re-files them whenever turns or artifacts change.
+    var artsStart = 0;
+    if (_arr && typeof _idx === 'number' && _idx > 0 && _arr[_idx - 1]) artsStart = toNum(_arr[_idx - 1].timestamp);
+    var artCached = cid ? _artCache[cid] : null;
+    var turnArts = '<div class="turn-arts">' + (artCached && artCached.list ? renderTurnArtifacts(artCached.list, cid, artsStart, toNum(t.timestamp)) : '') + '</div>';
     return '<div class="turn assistant"' + turnIdAttr + '>'
       + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">Assistant</span><span class="turn-time">' + time + '</span></div>'
-      + title + body + rawToggle
+      + title + body + turnArts + rawToggle
       + '</div></div>';
   }
 }
@@ -9559,6 +10446,7 @@ function appendTurnToPanel(turn) {
   turnsEl.insertAdjacentHTML('beforeend', renderTurn(turn));
   if (wasAtBottom) scrollEl.scrollTop = scrollEl.scrollHeight;
   attachRawToggleHandlers();
+  decoratePanelTurns();
 }
 
 /** Replace an existing turn element in-place (e.g., when summary arrives for an assistant turn). */
@@ -9569,6 +10457,7 @@ function updateTurnInPanel(existingEl, turn) {
   if (newEl) {
     existingEl.replaceWith(newEl);
     attachRawToggleHandlers();
+    decoratePanelTurns();
   } else {
     console.warn('updateTurnInPanel: no element for turn', turn.id);
   }
@@ -9682,6 +10571,11 @@ function closePanel() {
   panelOpen = false;
   panelSessionKey = null;
   panelConvId = null;
+  var panelArts = document.getElementById('panel-artifacts');
+  if (panelArts) { panelArts.innerHTML = ''; panelArts.style.display = 'none'; }
+  _panelAgent = '';
+  _panelAgentListOpen = false;
+  _panelAgentsHtml = '';
   _rawLoadedCache = Object.create(null);
   _panelGen++;
   _panelTurnsHasMore = false;
@@ -9694,7 +10588,8 @@ function closePanel() {
 }
 
 document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape' && panelOpen) closePanel();
+  // Escape in the artifact viewer closes the viewer only (the dialog's own cancel).
+  if (e.key === 'Escape' && panelOpen && !artModalIsOpen()) closePanel();
 });
 
 // Scroll-up-to-load-more handler (bound once on panel-scroll).
@@ -9831,6 +10726,689 @@ function sendRetry(msg) {
   sendCommand();
 }
 
+// ── Session artifacts (SSOT 2026-10-23) ──
+// What the model produced: the files it sent to Slack (html / png / wav …) and
+// its markdown final answers. The card face shows glyph chips (no image is
+// fetched for the board), the open card a thumbnail strip, the panel a pinned
+// strip plus the files each answer turn produced. Hover (or keyboard focus) →
+// minimap preview in #art-peek; click → full-size viewer in <dialog #art-modal>.
+// Every render function here is pure; the DOM work sits in the functions after
+// renderArtModalBody and in initArtifactInteractions.
+var ART_KIND_LABEL = { image: '이미지', audio: '오디오', video: '비디오', html: 'HTML', markdown: '답변', pdf: 'PDF', text: '텍스트', file: '파일' };
+var ART_GLYPH = { image: '<rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="6.5" r="1.2"/><path d="M14 11l-3.5-3.5L4 13"/>', audio: '<path d="M2.5 7.5v1M5 5.5v5M7.5 3v10M10 5v6M12.5 6.5v3"/>', video: '<rect x="2" y="4" width="9" height="8" rx="1.5"/><path d="M11 7l3-2v6l-3-2z"/>', html: '<path d="M5.5 5L2.5 8l3 3M10.5 5l3 3-3 3M9 3.5l-2 9"/>', markdown: '<path d="M4 2h5l3 3v9H4z"/><path d="M6 8h4M6 10.5h4M6 5.5h1.5"/>', pdf: '<path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3M6 10h4"/>', text: '<path d="M3 4h10M3 7h10M3 10h7M3 13h5"/>', file: '<path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/>' };
+var ART_PEEK_DELAY_MS = 350; // hover intent before the minimap opens (300–500 ms keeps a sweep across chips quiet)
+var ART_PEEK_CLOSE_MS = 200; // grace to move the pointer into the minimap (WCAG 1.4.13: hoverable)
+var _artCache = Object.create(null); // conversationId → { state: 'loading'|'ok'|'error', list, promise }
+var _artDocCache = Object.create(null); // 'cid|id' → text of a markdown / text artifact
+var _artPeek = { anchor: null, openTimer: null, closeTimer: null };
+var _artModal = { cid: null, list: [], idx: 0, opener: null };
+var _artAudio = { el: null, key: null };
+
+function artUrl(cid, id, download) {
+  return '/api/dashboard/session/' + encodeURIComponent(cid) + '/artifacts/' + encodeURIComponent(id) + '/content' + (download ? '?download=1' : '');
+}
+
+function artFormatSize(n) {
+  n = toNum(n);
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' KB';
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+  return (n / 1073741824).toFixed(1) + ' GB';
+}
+
+function artKindLabel(a) {
+  return ART_KIND_LABEL[a && a.kind] || '파일';
+}
+
+function artGlyph(kind) {
+  return '<svg class="art-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ART_GLYPH[kind] || ART_GLYPH.file) + '</svg>';
+}
+
+// "HTML · 47 KB · 14:23" — and says so when only Slack has the bytes.
+function artMeta(a) {
+  var parts = [artKindLabel(a)];
+  if (toNum(a.size) > 0) parts.push(artFormatSize(a.size));
+  var d = new Date(toNum(a.createdAt));
+  if (toNum(a.createdAt) > 0 && !isNaN(d.getTime())) parts.push(d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }));
+  if (!a.stored) parts.push('Slack에만 있음');
+  return parts.join(' · ');
+}
+
+// One chip: glyph + name. data-art-cid / data-art-id drive hover and click.
+function artChip(cid, a) {
+  return '<button type="button" class="art-chip art-k-' + escAttr(a.kind || 'file') + '" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id)
+    + '" aria-label="' + escAttr(artKindLabel(a) + ' ' + a.name + ' — 크게 보기') + '">'
+    + artGlyph(a.kind) + '<span class="art-chip-name">' + esc(a.name) + '</span></button>';
+}
+
+// Collapsed card (T5): the newest few as chips + "+N". The face never fetches an
+// image — a board of cards must not pull every PNG; thumbnails start in the body.
+function artFaceChips(s) {
+  var sum = s && s.artifacts;
+  if (!s || !s.conversationId || !sum || !(toNum(sum.count) > 0) || !sum.recent || !sum.recent.length) return '';
+  var shown = sum.recent.slice(0, 4);
+  var more = toNum(sum.count) - shown.length;
+  return '<div class="card-arts" data-art-cid="' + escAttr(s.conversationId) + '">'
+    + '<span class="card-arts-label" title="모델이 만든 산출물">' + artGlyph('file') + toNum(sum.count) + '</span>'
+    + shown.map(function(a) { return artChip(s.conversationId, a); }).join('')
+    + (more > 0 ? '<span class="art-more">+' + more + '</span>' : '')
+    + '</div>';
+}
+
+// Files newest first, then answers newest first: the html/png the user looks for
+// is never buried under a long chat's answers.
+function artSortForDisplay(list) {
+  var files = [];
+  var answers = [];
+  (list || []).forEach(function(a) { if (a) (a.source === 'final_answer' ? answers : files).push(a); });
+  var newest = function(x, y) { return toNum(y.createdAt) - toNum(x.createdAt); };
+  return files.sort(newest).concat(answers.sort(newest));
+}
+
+function artThumb(cid, a) {
+  if (a.kind === 'image' && a.stored) {
+    return '<span class="art-thumb art-thumb-img"><img src="' + escAttr(artUrl(cid, a.id)) + '" alt="" loading="lazy" decoding="async"></span>';
+  }
+  var name = String(a.name || '');
+  var dot = name.lastIndexOf('.');
+  var ext = a.source === 'final_answer' ? 'MD' : (dot > 0 && name.length - dot <= 6 ? name.slice(dot + 1).toUpperCase() : artKindLabel(a));
+  return '<span class="art-thumb">' + artGlyph(a.kind) + '<span class="art-thumb-ext">' + esc(ext) + '</span></span>';
+}
+
+// Is this clip the one the shared inline player is playing right now?
+function artAudioPlaying(cid, id) {
+  return !!(_artAudio.el && !_artAudio.el.paused && _artAudio.key === cid + '|' + id);
+}
+
+// A strip tile: open button (thumbnail, name, meta) + a play button for audio (T8).
+// The play state is part of the markup: a live card body is morphed to it on every push.
+function artTile(cid, a) {
+  var attrs = ' data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id) + '"';
+  var on = a.kind === 'audio' && a.stored && artAudioPlaying(cid, a.id);
+  var play = (a.kind === 'audio' && a.stored)
+    ? '<button type="button" class="art-play' + (on ? ' is-playing' : '') + '" data-art-play="1"' + attrs + ' aria-pressed="' + (on ? 'true' : 'false') + '" aria-label="' + escAttr(a.name + ' 재생/일시정지') + '" title="재생">'
+      + '<svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7.5-4.5z" fill="currentColor"/></svg>'
+      + '<svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.5h2.5v9H4.5zM9 3.5h2.5v9H9z" fill="currentColor"/></svg></button>'
+    : '';
+  return '<div class="art-tile art-k-' + escAttr(a.kind || 'file') + (a.stored ? '' : ' is-remote') + '">'
+    + '<button type="button" class="art-open"' + attrs + ' aria-label="' + escAttr(artKindLabel(a) + ' ' + a.name + ' — 크게 보기') + '">'
+    + artThumb(cid, a)
+    + '<span class="art-tile-name">' + esc(a.name) + '</span>'
+    + '<span class="art-tile-meta">' + esc(artMeta(a)) + '</span>'
+    + '</button>' + play + '</div>';
+}
+
+// The full list once fetched, else the card's summary (the newest few).
+function artListFor(s) {
+  var c = s && s.conversationId ? _artCache[s.conversationId] : null;
+  if (c && c.list) return c.list;
+  return (s && s.artifacts && s.artifacts.recent) || [];
+}
+
+// Open card (T5): "산출물 N" + a horizontal strip of tiles.
+function renderCardArtifacts(s) {
+  if (!s || !s.conversationId) return '';
+  var list = artSortForDisplay(artListFor(s));
+  if (!list.length) return '';
+  var c = _artCache[s.conversationId];
+  var total = c && c.list ? c.list.length : Math.max(toNum(s.artifacts && s.artifacts.count), list.length);
+  return '<div class="card-artifacts"><div class="io-label art-section-label">산출물 <span class="art-count">' + total + '</span></div>'
+    + '<div class="art-strip">' + list.map(function(a) { return artTile(s.conversationId, a); }).join('') + '</div></div>';
+}
+
+// Panel (T6): pinned above the conversation, so it is in view wherever the reader is.
+function renderPanelArtifacts(list, cid) {
+  var sorted = artSortForDisplay(list);
+  if (!sorted.length || !cid) return '';
+  return '<div class="panel-arts-head"><span>산출물</span><span class="art-count">' + sorted.length + '</span>'
+    + '<span class="panel-arts-hint">올리면 미리보기 · 누르면 크게</span></div>'
+    + '<div class="art-strip art-strip-panel">' + sorted.map(function(a) { return artTile(cid, a); }).join('') + '</div>';
+}
+
+// Did this artifact come from the turn that ran between startTs and endTs?
+// turnStartedAt is the turn's own start (from its work-log turn id) — it sits at
+// the user message that began it, so a 5 s slack covers recording order.
+function artInTurn(a, startTs, endTs) {
+  var t = toNum(a.turnStartedAt) || toNum(a.createdAt);
+  return t > 0 && t >= toNum(startTs) - 5000 && t <= toNum(endTs);
+}
+
+function renderTurnArtifacts(list, cid, startTs, endTs) {
+  if (!cid) return '';
+  var hits = artSortForDisplay((list || []).filter(function(a) { return artInTurn(a, startTs, endTs); }));
+  if (!hits.length) return '';
+  return '<div class="turn-arts-row">' + hits.map(function(a) { return artChip(cid, a); }).join('') + '</div>';
+}
+
+// Hover minimap (T2). html renders live but WITHOUT scripts (sandbox=""), media
+// never autoplays, markdown/text are fetched and drawn small.
+function renderArtPeekBody(cid, a) {
+  var url = escAttr(artUrl(cid, a.id));
+  var media;
+  if (!a.stored) {
+    media = '<div class="art-peek-meta">' + artGlyph(a.kind) + '<span class="art-peek-sub">' + esc(a.name) + '</span><span class="art-peek-sub">대시보드에 사본이 없습니다 — Slack에서 열 수 있습니다</span></div>';
+  } else if (a.kind === 'image') {
+    media = '<img class="art-peek-img" src="' + url + '" alt="' + escAttr(a.name) + '">';
+  } else if (a.kind === 'html') {
+    media = '<div class="art-peek-frame"><iframe sandbox="" src="' + url + '" title="' + escAttr(a.name) + '" tabindex="-1" loading="lazy" referrerpolicy="no-referrer"></iframe></div>';
+  } else if (a.kind === 'audio') {
+    media = '<div class="art-peek-audio">' + artGlyph('audio') + '<audio controls preload="metadata" src="' + url + '"></audio></div>';
+  } else if (a.kind === 'video') {
+    media = '<video class="art-peek-video" preload="metadata" muted playsinline src="' + url + '#t=0.1"></video>';
+  } else if (a.kind === 'markdown' || a.kind === 'text') {
+    media = '<div class="art-peek-doc" data-art-doc="' + escAttr(cid + '|' + a.id) + '" data-art-doc-kind="' + escAttr(a.kind) + '"><span class="art-doc-loading">불러오는 중…</span></div>';
+  } else {
+    media = '<div class="art-peek-meta">' + artGlyph(a.kind) + '<span class="art-peek-sub">' + esc(a.name) + '</span></div>';
+  }
+  return '<div class="art-peek-media art-k-' + escAttr(a.kind || 'file') + '">' + media + '</div>'
+    + '<div class="art-peek-foot"><span class="art-peek-name">' + esc(a.title || a.name) + '</span>'
+    + '<span class="art-peek-info">' + esc(artMeta(a)) + ' · 클릭하면 크게</span></div>';
+}
+
+// Full-size viewer body (T3/T8). html: scripts only — never same-origin, no
+// popups (the header's buttons open a tab or download). Audio and video start at once.
+function renderArtModalBody(cid, a) {
+  var url = escAttr(artUrl(cid, a.id));
+  var title = escAttr(a.name);
+  if (!a.stored) {
+    var link = /^https:\\/\\//i.test(String(a.permalink || '')) ? '<a class="btn-action btn-primary" href="' + escAttr(a.permalink) + '" target="_blank" rel="noopener">Slack에서 열기</a>' : '';
+    return '<div class="art-full-meta">' + artGlyph(a.kind) + '<div class="art-full-meta-name">' + esc(a.name) + '</div>'
+      + '<div class="art-full-meta-sub">' + esc(artMeta(a)) + '</div>'
+      + '<p>이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).</p>' + link + '</div>';
+  }
+  if (a.kind === 'image') return '<div class="art-full-imgwrap"><img class="art-full-img" src="' + url + '" alt="' + title + '" data-art-zoom="1"></div>';
+  if (a.kind === 'html') return '<iframe class="art-full-frame" sandbox="allow-scripts" src="' + url + '" title="' + title + '" referrerpolicy="no-referrer"></iframe>';
+  if (a.kind === 'pdf') return '<iframe class="art-full-frame" src="' + url + '" title="' + title + '"></iframe>';
+  if (a.kind === 'audio') return '<div class="art-full-audio">' + artGlyph('audio') + '<div class="art-full-meta-name">' + esc(a.name) + '</div><audio controls autoplay preload="auto" src="' + url + '"></audio></div>';
+  if (a.kind === 'video') return '<video class="art-full-video" controls autoplay playsinline preload="metadata" src="' + url + '"></video>';
+  if (a.kind === 'markdown' || a.kind === 'text') {
+    return '<div class="art-full-doc" data-art-doc="' + escAttr(cid + '|' + a.id) + '" data-art-doc-kind="' + escAttr(a.kind) + '"><span class="art-doc-loading">불러오는 중…</span></div>';
+  }
+  return '<div class="art-full-meta">' + artGlyph(a.kind) + '<div class="art-full-meta-name">' + esc(a.name) + '</div>'
+    + '<div class="art-full-meta-sub">' + esc(artMeta(a)) + '</div>'
+    + '<a class="btn-action btn-primary" href="' + escAttr(artUrl(cid, a.id, true)) + '">다운로드</a></div>';
+}
+
+// Inline marks on one line: escape first, then code spans, links (http(s) only),
+// bold, italic, strike. Raw HTML never survives.
+function mdInline(s) {
+  var codes = [];
+  var t = String(s == null ? '' : s).replace(/\\x60([^\\x60]+)\\x60/g, function(_m, c) {
+    codes.push('<code>' + esc(c) + '</code>');
+    return '\\u0000' + (codes.length - 1) + '\\u0000';
+  });
+  t = esc(t);
+  t = t.replace(/!?\\[([^\\]]+)\\]\\(([^)\\s]+)\\)/g, function(_m, label, href) {
+    var h = safeHref(href.replace(/&amp;/g, '&'));
+    return h === '#' ? label : '<a href="' + h + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+  });
+  t = t.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
+  t = t.replace(/(^|[^*\\w])\\*([^*\\s][^*]*?)\\*(?!\\w)/g, '$1<em>$2</em>');
+  t = t.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+  return t.replace(/\\u0000(\\d+)\\u0000/g, function(_m, i) { return codes[Number(i)] || ''; });
+}
+
+// Markdown answers as documents (T1): headings, paragraphs, lists (nested),
+// tables, fenced code, quotes, rules. Everything is escaped before it is marked up.
+function renderMarkdownDoc(src) {
+  var lines = String(src == null ? '' : src).replace(/\\r\\n?/g, '\\n').split('\\n');
+  var out = [];
+  var para = [];
+  var i = 0;
+  var flush = function() {
+    if (para.length) out.push('<p>' + para.map(mdInline).join('<br>') + '</p>');
+    para = [];
+  };
+  var cells = function(l) {
+    return l.trim().replace(/^\\|/, '').replace(/\\|$/, '').split('|').map(function(c) { return c.trim(); });
+  };
+  var listRe = /^(\\s*)([-*+]|\\d{1,3}[.)])\\s+(.*)$/;
+  while (i < lines.length) {
+    var line = lines[i];
+    var fence = line.match(/^\\s{0,3}(\\x60{3,}|~{3,})\\s*([\\w+#.-]*)/);
+    if (fence) {
+      flush();
+      var code = [];
+      i++;
+      while (i < lines.length && lines[i].trim().indexOf(fence[1]) !== 0) { code.push(lines[i]); i++; }
+      i++;
+      out.push('<pre class="md-code"><code' + (fence[2] ? ' data-lang="' + escAttr(fence[2]) + '"' : '') + '>' + esc(code.join('\\n')) + '</code></pre>');
+      continue;
+    }
+    if (!line.trim()) { flush(); i++; continue; }
+    var h = line.match(/^\\s{0,3}(#{1,6})\\s+(.*?)\\s*#*\\s*$/);
+    if (h) {
+      flush();
+      out.push('<h' + h[1].length + '>' + mdInline(h[2]) + '</h' + h[1].length + '>');
+      i++;
+      continue;
+    }
+    if (/^\\s{0,3}([-*_])(\\s*\\1){2,}\\s*$/.test(line)) { flush(); out.push('<hr>'); i++; continue; }
+    if (/^\\s{0,3}>/.test(line)) {
+      flush();
+      var quote = [];
+      while (i < lines.length && /^\\s{0,3}>/.test(lines[i])) { quote.push(lines[i].replace(/^\\s{0,3}>\\s?/, '')); i++; }
+      out.push('<blockquote>' + renderMarkdownDoc(quote.join('\\n')) + '</blockquote>');
+      continue;
+    }
+    if (line.indexOf('|') >= 0 && i + 1 < lines.length && /^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)*\\|?\\s*$/.test(lines[i + 1])) {
+      flush();
+      var head = cells(line);
+      var rows = [];
+      i += 2;
+      while (i < lines.length && lines[i].indexOf('|') >= 0 && lines[i].trim()) { rows.push(cells(lines[i])); i++; }
+      out.push('<div class="md-table"><table><thead><tr>' + head.map(function(c) { return '<th>' + mdInline(c) + '</th>'; }).join('') + '</tr></thead><tbody>'
+        + rows.map(function(r) { return '<tr>' + head.map(function(_c, k) { return '<td>' + mdInline(r[k] || '') + '</td>'; }).join('') + '</tr>'; }).join('')
+        + '</tbody></table></div>');
+      continue;
+    }
+    if (listRe.test(line)) {
+      flush();
+      var items = [];
+      while (i < lines.length) {
+        var m = lines[i].match(listRe);
+        if (m) { items.push({ indent: m[1].replace(/\\t/g, '    ').length, ordered: /\\d/.test(m[2]), text: m[3] }); i++; continue; }
+        if (items.length && /^\\s{2,}\\S/.test(lines[i])) { items[items.length - 1].text += ' ' + lines[i].trim(); i++; continue; }
+        break;
+      }
+      var html = '';
+      var stack = [];
+      items.forEach(function(it) {
+        while (stack.length > 1 && it.indent < stack[stack.length - 1].indent) html += '</li></' + stack.pop().tag + '>';
+        var top = stack[stack.length - 1];
+        if (!top || it.indent > top.indent) {
+          var tag = it.ordered ? 'ol' : 'ul';
+          stack.push({ indent: it.indent, tag: tag });
+          html += '<' + tag + '><li>';
+        } else {
+          html += '</li><li>';
+        }
+        html += mdInline(it.text);
+      });
+      while (stack.length) html += '</li></' + stack.pop().tag + '>';
+      out.push(html);
+      continue;
+    }
+    para.push(line.trim());
+    i++;
+  }
+  flush();
+  return out.join('\\n');
+}
+
+// ── Artifact DOM: fetch, settle, peek, viewer, inline audio ──
+
+function artFind(cid, id) {
+  var c = _artCache[cid];
+  var hit = c && c.list ? c.list.find(function(a) { return a.id === id; }) : null;
+  if (hit) return hit;
+  for (var k in _sessionCache) {
+    var s = _sessionCache[k];
+    if (s && s.conversationId === cid && s.artifacts && s.artifacts.recent) {
+      hit = s.artifacts.recent.find(function(a) { return a.id === id; });
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+// The conversation's full list, fetched once and kept fresh by artifact_update.
+function ensureArtifacts(cid, force) {
+  if (!cid) return Promise.resolve([]);
+  var c = _artCache[cid];
+  if (c && c.state === 'loading') return c.promise;
+  if (c && c.state === 'ok' && !force) return Promise.resolve(c.list);
+  var entry = { state: 'loading', list: c ? c.list : null, promise: null };
+  _artCache[cid] = entry;
+  entry.promise = fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '/artifacts')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) {
+      entry.state = 'ok';
+      entry.list = Array.isArray(data && data.artifacts) ? data.artifacts : [];
+      artSettle(cid);
+      return entry.list;
+    })
+    .catch(function() { entry.state = 'error'; return entry.list || []; });
+  return entry.promise;
+}
+
+// Re-render what shows this conversation's artifacts: open cards, the panel strip,
+// the turn chips and the viewer's position counter.
+function artSettle(cid) {
+  _expanded.forEach(function(key) {
+    var s = _sessionCache[key];
+    if (s && s.conversationId === cid) refreshCard(key);
+  });
+  if (panelOpen && panelConvId === cid) renderPanelArtifactsSection();
+  if (artModalIsOpen() && _artModal.cid === cid) {
+    var cur = _artModal.list[_artModal.idx];
+    var list = artSortForDisplay((_artCache[cid] && _artCache[cid].list) || []);
+    var at = cur ? list.findIndex(function(a) { return a.id === cur.id; }) : -1;
+    if (at >= 0) { _artModal.list = list; _artModal.idx = at; renderArtModal(true); }
+  }
+  artAudioMark(_artAudio.el && !_artAudio.el.paused ? _artAudio.key : null);
+}
+
+// WS artifact_update: a new file or answer landed in a conversation.
+// A list already fetched merges the push; otherwise anything showing this
+// conversation right now (an open card — even one opened before its first
+// artifact — or the panel) fetches the full list.
+function onArtifactUpdate(cid, artifact) {
+  var c = _artCache[cid];
+  if (c && c.list && artifact && artifact.id) {
+    if (!c.list.some(function(a) { return a.id === artifact.id; })) c.list = c.list.concat([artifact]);
+    artSettle(cid);
+    return;
+  }
+  var shown = panelOpen && panelConvId === cid;
+  _expanded.forEach(function(key) {
+    var s = _sessionCache[key];
+    if (s && s.conversationId === cid) shown = true;
+  });
+  if (shown) ensureArtifacts(cid, true);
+}
+
+function renderPanelArtifactsSection() {
+  var el = document.getElementById('panel-artifacts');
+  if (!el) return;
+  var cid = panelConvId;
+  var c = cid ? _artCache[cid] : null;
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var list = c && c.list ? c.list : ((s && s.artifacts && s.artifacts.recent) || []);
+  var html = cid ? renderPanelArtifacts(list, cid) : '';
+  el.innerHTML = html;
+  el.style.display = html ? '' : 'none';
+  decoratePanelTurns();
+}
+
+// Files each answer produced, under that answer: walk the turns in order; an
+// artifact goes to the first answer whose turn window holds its turn start.
+function decoratePanelTurns() {
+  var turnsEl = document.getElementById('panel-turns');
+  var cid = panelConvId;
+  if (!turnsEl || !cid) return;
+  var c = _artCache[cid];
+  var list = (c && c.list) || [];
+  var used = Object.create(null);
+  var start = 0;
+  var nodes = turnsEl.querySelectorAll('.turn[data-ts]');
+  for (var i = 0; i < nodes.length; i++) {
+    var ts = toNum(nodes[i].getAttribute('data-ts'));
+    var slot = nodes[i].querySelector('.turn-arts');
+    if (slot) {
+      var mine = list.filter(function(a) { return !used[a.id] && artInTurn(a, start, ts); });
+      mine.forEach(function(a) { used[a.id] = true; });
+      slot.innerHTML = renderTurnArtifacts(mine, cid, start, ts);
+    }
+    start = ts;
+  }
+}
+
+function artPeekEl() {
+  return document.getElementById('art-peek');
+}
+
+function showArtPeek(anchor) {
+  var el = artPeekEl();
+  if (!el || !anchor || !anchor.isConnected) return;
+  var cid = anchor.getAttribute('data-art-cid');
+  var a = artFind(cid, anchor.getAttribute('data-art-id'));
+  if (!a) return;
+  clearTimeout(_artPeek.closeTimer);
+  if (_artPeek.anchor === anchor && el.classList.contains('open')) return;
+  _artPeek.anchor = anchor;
+  el.innerHTML = renderArtPeekBody(cid, a);
+  el.classList.add('open');
+  el.setAttribute('aria-hidden', 'false');
+  // Beside the trigger, inside the viewport; never following the pointer.
+  var r = anchor.getBoundingClientRect();
+  var w = el.offsetWidth || 360;
+  var h = el.offsetHeight || 270;
+  var left = Math.min(Math.max(8, r.left), window.innerWidth - w - 8);
+  var top = r.bottom + 8;
+  if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 8);
+  el.style.left = left + 'px';
+  el.style.top = top + 'px';
+  fillArtDocs(el);
+}
+
+function hideArtPeek(now) {
+  clearTimeout(_artPeek.openTimer);
+  clearTimeout(_artPeek.closeTimer);
+  var done = function() {
+    var el = artPeekEl();
+    _artPeek.anchor = null;
+    if (!el) return;
+    el.classList.remove('open');
+    el.setAttribute('aria-hidden', 'true');
+    el.innerHTML = ''; // stops a playing preview and drops the iframe
+  };
+  if (now) done();
+  else _artPeek.closeTimer = setTimeout(done, ART_PEEK_CLOSE_MS);
+}
+
+// Fill markdown / text containers ([data-art-doc]) from the content route.
+function fillArtDocs(root) {
+  if (!root) return;
+  Array.prototype.forEach.call(root.querySelectorAll('[data-art-doc]'), function(n) {
+    var key = n.getAttribute('data-art-doc') || '';
+    var kind = n.getAttribute('data-art-doc-kind');
+    var sep = key.indexOf('|');
+    if (sep < 0) return;
+    var paint = function(text) {
+      if (!n.isConnected) return;
+      var src = n.closest('#art-peek') ? text.slice(0, 6000) : text;
+      n.innerHTML = kind === 'markdown' ? '<div class="md-doc">' + renderMarkdownDoc(src) + '</div>' : '<pre class="art-text">' + esc(src) + '</pre>';
+    };
+    if (_artDocCache[key] != null) { paint(_artDocCache[key]); return; }
+    // The minimap needs the head only: ask for the first 64 KB (the route serves
+    // ranges); the viewer fetches, and caches, the whole document.
+    var peek = !!n.closest('#art-peek');
+    fetch(artUrl(key.slice(0, sep), key.slice(sep + 1)), peek ? { headers: { Range: 'bytes=0-65535' } } : undefined)
+      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+      .then(function(t) {
+        if (peek) { paint(t); return; }
+        _artDocCache[key] = t.length > 2000000 ? t.slice(0, 2000000) : t;
+        paint(_artDocCache[key]);
+      })
+      .catch(function() { if (n.isConnected) n.innerHTML = '<span class="art-doc-loading">불러오지 못했습니다</span>'; });
+  });
+}
+
+function artModalIsOpen() {
+  var d = document.getElementById('art-modal');
+  return !!(d && (d.open || d.hasAttribute('open')));
+}
+
+function openArtifactModal(cid, id, opener) {
+  var dlg = document.getElementById('art-modal');
+  if (!dlg || !cid || !id) return;
+  var c = _artCache[cid];
+  var list = artSortForDisplay((c && c.list) || []);
+  if (!list.some(function(a) { return a.id === id; })) {
+    var one = artFind(cid, id);
+    if (!one) return;
+    list = artSortForDisplay(list.concat([one]));
+  }
+  if (_artAudio.el) _artAudio.el.pause();
+  _artModal.cid = cid;
+  _artModal.list = list;
+  _artModal.idx = Math.max(0, list.findIndex(function(a) { return a.id === id; }));
+  _artModal.opener = opener || null;
+  renderArtModal(false);
+  if (!artModalIsOpen()) {
+    if (typeof dlg.showModal === 'function') dlg.showModal();
+    else dlg.setAttribute('open', '');
+  }
+  if (!c || c.state !== 'ok') ensureArtifacts(cid);
+}
+
+function renderArtModal(headerOnly) {
+  var a = _artModal.list[_artModal.idx];
+  if (!a) return;
+  var cid = _artModal.cid;
+  var n = _artModal.list.length;
+  document.getElementById('art-modal-kind').innerHTML = artGlyph(a.kind) + esc(artKindLabel(a));
+  document.getElementById('art-modal-name').textContent = a.title && a.title !== a.name ? a.title + ' — ' + a.name : a.name;
+  document.getElementById('art-modal-meta').textContent = artMeta(a);
+  document.getElementById('art-modal-pos').textContent = n > 1 ? (_artModal.idx + 1) + ' / ' + n : '';
+  document.getElementById('art-modal-prev').disabled = _artModal.idx <= 0;
+  document.getElementById('art-modal-next').disabled = _artModal.idx >= n - 1;
+  var openA = document.getElementById('art-modal-open');
+  var dlA = document.getElementById('art-modal-download');
+  var slackA = document.getElementById('art-modal-slack');
+  openA.hidden = !a.stored;
+  dlA.hidden = !a.stored;
+  if (a.stored) {
+    openA.href = artUrl(cid, a.id);
+    dlA.href = artUrl(cid, a.id, true);
+  }
+  var slackOk = /^https:\\/\\//i.test(String(a.permalink || ''));
+  slackA.hidden = !slackOk;
+  if (slackOk) slackA.href = a.permalink;
+  if (headerOnly) return;
+  var body = document.getElementById('art-modal-body');
+  body.innerHTML = renderArtModalBody(cid, a);
+  body.scrollTop = 0;
+  fillArtDocs(body);
+  // Start audio / video now: the autoplay attribute alone is not honoured for
+  // markup inserted after load in every browser.
+  var media = body.querySelector('audio, video');
+  if (media && typeof media.play === 'function') {
+    var started = media.play();
+    if (started && typeof started.catch === 'function') started.catch(function() {});
+  }
+}
+
+function artModalStep(delta) {
+  var next = _artModal.idx + delta;
+  if (next < 0 || next >= _artModal.list.length) return;
+  _artModal.idx = next;
+  renderArtModal(false);
+}
+
+function closeArtifactModal() {
+  var dlg = document.getElementById('art-modal');
+  if (!dlg) return;
+  if (typeof dlg.close === 'function' && dlg.open) dlg.close();
+  else { dlg.removeAttribute('open'); artModalClosed(); }
+}
+
+// Runs on every close (button, Escape, backdrop): stop media, give focus back.
+function artModalClosed() {
+  var body = document.getElementById('art-modal-body');
+  if (body) body.innerHTML = '';
+  var opener = _artModal.opener;
+  _artModal.opener = null;
+  if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus({ preventScroll: true });
+}
+
+// Inline audio (T8): one shared player; ▶ on a tile plays, again pauses.
+function toggleArtAudio(btn) {
+  var cid = btn.getAttribute('data-art-cid');
+  var id = btn.getAttribute('data-art-id');
+  var key = cid + '|' + id;
+  if (!_artAudio.el) {
+    _artAudio.el = new Audio();
+    _artAudio.el.preload = 'auto';
+    _artAudio.el.addEventListener('play', function() { artAudioMark(_artAudio.key); });
+    _artAudio.el.addEventListener('pause', function() { artAudioMark(null); });
+    _artAudio.el.addEventListener('ended', function() { artAudioMark(null); });
+  }
+  var au = _artAudio.el;
+  if (_artAudio.key === key && !au.paused) { au.pause(); return; }
+  _artAudio.key = key;
+  au.src = artUrl(cid, id);
+  au.play().catch(function() { artAudioMark(null); });
+}
+
+function artAudioMark(key) {
+  Array.prototype.forEach.call(document.querySelectorAll('[data-art-play]'), function(b) {
+    var on = !!key && b.getAttribute('data-art-cid') + '|' + b.getAttribute('data-art-id') === key;
+    b.classList.toggle('is-playing', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+// Keys, in the capture phase so they are seen before the panel's Escape: the
+// viewer pages with ← / →; Escape with only the minimap open closes the minimap.
+function artHandleKey(e) {
+  if (artModalIsOpen()) {
+    // A focused audio / video / field keeps its own arrow keys (seeking, caret).
+    var tag = e.target && e.target.tagName ? String(e.target.tagName).toUpperCase() : '';
+    if (tag === 'AUDIO' || tag === 'VIDEO' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (e.key === 'ArrowRight') { e.preventDefault(); artModalStep(1); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); artModalStep(-1); }
+    return;
+  }
+  if (e.key === 'Escape' && _artPeek.anchor) {
+    e.stopPropagation();
+    hideArtPeek(true);
+  }
+}
+
+(function initArtifactInteractions() {
+  var canHover = !!(window.matchMedia && window.matchMedia('(hover: hover)').matches);
+  var trigger = function(t) { return t && t.closest ? t.closest('[data-art-id]:not([data-art-play])') : null; };
+  document.addEventListener('pointerover', function(e) {
+    if (!canHover || e.pointerType === 'touch') return;
+    var t = trigger(e.target);
+    if (t) {
+      clearTimeout(_artPeek.closeTimer);
+      if (_artPeek.anchor === t) return;
+      clearTimeout(_artPeek.openTimer);
+      // Moving between chips while a minimap is open swaps it quickly.
+      var warm = !!_artPeek.anchor;
+      _artPeek.openTimer = setTimeout(function() { showArtPeek(t); }, warm ? 90 : ART_PEEK_DELAY_MS);
+    } else if (e.target.closest && e.target.closest('#art-peek')) {
+      clearTimeout(_artPeek.closeTimer);
+    }
+  });
+  document.addEventListener('pointerout', function(e) {
+    var from = e.target.closest ? (trigger(e.target) || e.target.closest('#art-peek')) : null;
+    if (!from) return;
+    var to = e.relatedTarget;
+    if (to && to.closest && (to.closest('#art-peek') || trigger(to) === from)) return;
+    clearTimeout(_artPeek.openTimer);
+    if (_artPeek.anchor) hideArtPeek(false);
+  });
+  document.addEventListener('focusin', function(e) {
+    var t = trigger(e.target);
+    if (t && !t.closest('#art-modal') && t.matches(':focus-visible')) { clearTimeout(_artPeek.openTimer); showArtPeek(t); }
+  });
+  document.addEventListener('focusout', function(e) {
+    if (trigger(e.target)) hideArtPeek(false);
+  });
+  document.addEventListener('click', function(e) {
+    var play = e.target.closest ? e.target.closest('[data-art-play]') : null;
+    if (play) { e.preventDefault(); toggleArtAudio(play); return; }
+    var t = trigger(e.target);
+    if (t && !t.closest('#art-modal')) {
+      e.preventDefault();
+      hideArtPeek(true);
+      openArtifactModal(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);
+      return;
+    }
+    // A click on the minimap itself opens the same artifact full size (its audio controls excepted).
+    if (e.target.closest && e.target.closest('#art-peek .art-peek-media') && !e.target.closest('audio') && _artPeek.anchor) {
+      var anchor = _artPeek.anchor;
+      hideArtPeek(true);
+      openArtifactModal(anchor.getAttribute('data-art-cid'), anchor.getAttribute('data-art-id'), anchor);
+      return;
+    }
+    var zoom = e.target.closest ? e.target.closest('.art-full-img') : null;
+    if (zoom) zoom.parentNode.classList.toggle('is-zoomed');
+  });
+  window.addEventListener('keydown', artHandleKey, true);
+  window.addEventListener('scroll', function() { if (_artPeek.anchor) hideArtPeek(true); }, true);
+  var dlg = document.getElementById('art-modal');
+  if (dlg) {
+    dlg.addEventListener('close', artModalClosed);
+    // A click on the backdrop (the dialog element itself, outside its box) closes.
+    dlg.addEventListener('click', function(e) { if (e.target === dlg) closeArtifactModal(); });
+  }
+})();
+
 // ── Board interactions — card face click / Enter / Space expands in place.
 // Delegated from #kanban so the reconciler never re-binds per card. (Drag and
 // drop and its confirm dialogs were removed: .prd/10 §3.1-5 — the same Stop / Close / Trash
@@ -9838,6 +11416,23 @@ function sendRetry(msg) {
 (function initBoardInteractions() {
   var kb = document.getElementById('kanban');
   kb.addEventListener('click', function(e) {
+    // An artifact chip on the face opens its viewer (initArtifactInteractions), not the card.
+    if (e.target.closest('[data-art-id]')) return;
+    // Spec 12: an open card's agent tree — a row opens the panel on that agent.
+    var agentRow = e.target.closest('[data-agent-open]');
+    if (agentRow && kb.contains(agentRow)) {
+      var cardEl = agentRow.closest('.card');
+      var cardKey = cardEl && cardEl.getAttribute('data-session-key');
+      if (cardKey) openPanelAgent(cardKey, agentRow.getAttribute('data-agent-open') || '');
+      return;
+    }
+    var treeToggle = e.target.closest('[data-agent-tree-toggle]');
+    if (treeToggle && kb.contains(treeToggle)) {
+      var tCard = treeToggle.closest('.card');
+      var tKey = tCard && tCard.getAttribute('data-session-key');
+      if (tKey) toggleAgentTree(tKey);
+      return;
+    }
     var face = e.target.closest('.card-face');
     if (!face || !kb.contains(face)) return;
     var key = face.parentNode.getAttribute('data-session-key');
@@ -9858,6 +11453,21 @@ function sendRetry(msg) {
   var saved = null;
   try { saved = localStorage.getItem('soma-board-view'); } catch (_e) {}
   setBoardView(saved === 'board' || saved === 'list' ? saved : (window.innerWidth < 640 ? 'list' : 'board'));
+})();
+// Spec 12 §4.3 — the panel's agent bar: path steps and list rows choose the agent, the toggle opens the list.
+(function initPanelAgentInteractions() {
+  var bar = document.getElementById('panel-agents');
+  if (!bar) return;
+  bar.addEventListener('click', function(e) {
+    var pick = e.target.closest('[data-agent-select]');
+    if (pick && bar.contains(pick)) {
+      if (pick.getAttribute('aria-current') === 'true' && !pick.classList.contains('ag-row')) return;
+      selectPanelAgent(pick.getAttribute('data-agent-select') || '');
+      return;
+    }
+    var toggle = e.target.closest('[data-agent-list-toggle]');
+    if (toggle && bar.contains(toggle)) togglePanelAgentList();
+  });
 })();
 
 // ── New task (SSOT 2026-10-23) ──

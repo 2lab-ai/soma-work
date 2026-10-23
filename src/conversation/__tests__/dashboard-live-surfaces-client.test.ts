@@ -51,6 +51,9 @@ const SHOW_ALL = {
   dhMax: (_f: string, d: number) => d,
   dhTruncate: () => null,
   currentUserId: 'U1',
+  // The artifact row has its own suite (dashboard-artifacts-client.test.ts).
+  isSiblingSession: () => false,
+  artFaceChips: () => '',
 };
 const FACE_FNS = [
   'esc',
@@ -62,6 +65,9 @@ const FACE_FNS = [
   'cardTotalTokens',
   'cardCurrentTask',
   'renderCardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'renderCardAgents',
   'renderCardUsage',
   'formatTaskTime',
   'pendingAutoResume',
@@ -71,7 +77,16 @@ const FACE_FNS = [
   'renderOwnerBadge',
   'renderCardFace',
 ];
-const FACE_VARS = ['SPARK_SVG', 'WAIT_SVG', 'TASKS_SVG', 'CTX_SVG', 'RESUME_SVG'];
+const FACE_VARS = [
+  'SPARK_SVG',
+  'WAIT_SVG',
+  'TASKS_SVG',
+  'CTX_SVG',
+  'RESUME_SVG',
+  'AGENT_STATUS_LABEL',
+  'AGENT_DOTS_MAX',
+  'AGENTS_SVG',
+];
 
 function workingCard(over: Record<string, unknown> = {}) {
   return {
