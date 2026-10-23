@@ -44,6 +44,11 @@ export interface SyntheticMessageEvent {
   skipDispatch?: boolean;
   /** Model override for cron jobs with non-default model config */
   modelOverride?: string;
+  /**
+   * The job behind this fire (SSOT 2026-10-23 T1): a session the fire creates
+   * is named after it and filed under it on the dashboard.
+   */
+  cron?: { jobId: string; jobName: string };
   /** Route context — skipAutoBotThread prevents duplicate root message creation */
   routeContext?: {
     skipAutoBotThread?: boolean;
@@ -113,6 +118,11 @@ export interface CronFireOptions {
 interface QueuedCron {
   job: CronJob;
   note?: string;
+}
+
+/** The structured origin every injected fire carries. */
+function cronOrigin(job: CronJob): { jobId: string; jobName: string } {
+  return { jobId: job.id, jobName: job.name };
 }
 
 /** The text a fire injects / posts. */
@@ -403,6 +413,7 @@ export class CronScheduler {
       synthetic: true,
       skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig),
+      cron: cronOrigin(job),
       routeContext: { skipAutoBotThread: true },
     };
 
@@ -493,12 +504,21 @@ export class CronScheduler {
       synthetic: true,
       skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig),
+      cron: cronOrigin(job),
       routeContext: { skipAutoBotThread: true },
     };
 
-    this.deps.messageInjector(syntheticEvent).catch((err: any) => {
-      logger.error('Drain inject failed', { name: job.name, error: err?.message });
-    });
+    // The queued record says when the fire waited; this one says how the run
+    // that finally went in ended (SSOT 2026-10-23 T5 — the run history must
+    // not show a drained fire as still queued).
+    const drainedKey = `${session.channelId}-${session.threadTs}`;
+    this.deps
+      .messageInjector(syntheticEvent)
+      .then(() => this.recordExecution(job, 'success', 'idle_inject', drainedKey))
+      .catch((err: any) => {
+        logger.error('Drain inject failed', { name: job.name, error: err?.message });
+        this.recordExecution(job, 'failed', 'idle_inject', drainedKey, err?.message);
+      });
 
     // If more jobs remain, re-register for next idle cycle
     if (queue.length > 0) {
@@ -534,12 +554,15 @@ export class CronScheduler {
         synthetic: true,
         skipDispatch: true,
         modelOverride: resolveModelOverride(job.modelConfig),
+        cron: cronOrigin(job),
         routeContext: { skipAutoBotThread: true },
       };
 
       await this.deps.messageInjector(syntheticEvent);
       this.deps.storage.updateLastRun(job.id, now);
-      this.recordExecution(job, 'success', 'new_thread', undefined, undefined, triggeredBy);
+      // The session this fire opened, in the same shape idle_inject records —
+      // the dashboard's run history links the run to it (SSOT 2026-10-23 T5).
+      this.recordExecution(job, 'success', 'new_thread', `${job.channel}-${rootTs}`, undefined, triggeredBy);
       return true;
     } catch (error: any) {
       logger.error('New thread creation failed', { name: job.name, error: error?.message });

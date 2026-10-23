@@ -17,6 +17,7 @@ import type { RequestAbortReason, RequestCoordinator } from '../request-coordina
 import type { SlackApiHelper } from '../slack-api-helper';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
+import { resolveCronOrigin, skipDispatchTitle } from './cron-origin';
 import type { ConversationSession, MessageEvent, SayFn, SessionInitResult } from './types';
 
 export type { WorkflowType } from '../dispatch-abort';
@@ -503,7 +504,23 @@ export class SessionInitializer {
     // skipDispatch: explicit flag to bypass workflow classification (cron, auto-resume, etc.)
     if (event.skipDispatch && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       this.logger.info('skipDispatch — bypassing workflow classification, using default', { sessionKey });
-      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'Direct (skipDispatch)');
+      // SSOT 2026-10-23 T1/T2: a session a cron fire creates starts under the
+      // job's name, marked provisional so the first clear title (turn summary,
+      // linked issue/PR) replaces it, and stamped with its job so the dashboard
+      // files it in the CRON lane. Every other bypass keeps its old title.
+      // Only a session this fire created: a restored session still in
+      // INITIALIZING (a stuck dispatch after a restart) is someone's thread,
+      // and a cron fire injected into it must not re-file it.
+      const cronOrigin = isNewSession ? resolveCronOrigin(event) : undefined;
+      if (cronOrigin) {
+        session.cronJob = cronOrigin.jobId
+          ? { id: cronOrigin.jobId, name: cronOrigin.jobName }
+          : { name: cronOrigin.jobName };
+        // Marked before transitionToMain persists the session, so a crash
+        // right after cannot turn the job name into a deliberate title.
+        if (!session.title) session.titleProvisional = true;
+      }
+      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', skipDispatchTitle(cronOrigin));
     } else if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       if (forceWorkflow) {
         if (forceWorkflow === 'onboarding') {
