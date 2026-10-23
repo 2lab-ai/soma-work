@@ -490,7 +490,10 @@ function h(tag: string, attrs: Record<string, string>, ...kids: Array<FakeNode |
   for (const k of kids) n.insertBefore(typeof k === 'string' ? new FakeNode(null, k) : k, null);
   return n;
 }
-const morph = load<{ domMorph(a: FakeNode, b: FakeNode): void }>(['domKeyOf', 'domMorph', 'domMorphChildren'], []);
+const morph = load<{ domMorph(a: FakeNode, b: FakeNode): void }>(
+  ['domKeyOf', 'domKeyLater', 'domMorph', 'domMorphChildren'],
+  [],
+);
 
 describe('live morph (review B r2) — a live update keeps the nodes that did not move', () => {
   const tree = (tools: string, width: string, second: string) =>
@@ -546,6 +549,16 @@ describe('live morph (review B r2) — a live update keeps the nodes that did no
     expect(btn.hasAttribute('aria-current')).toBe(false);
   });
 
+  it('an agent row that leaves from the middle goes; the row after it keeps its node (review B r3)', () => {
+    const live = tree('툴 3', 'w', 'running');
+    const b = live.kids[2];
+    const fresh = tree('툴 3', 'w', 'running');
+    fresh.removeChild(fresh.kids[1]);
+    morph.domMorph(live, fresh);
+    expect(live.kids.map((k) => k.getAttribute('data-agent-open'))).toEqual(['', 'toolu_b']);
+    expect(live.kids[1]).toBe(b);
+  });
+
   it('a removed agent row goes; the rest stay', () => {
     const live = tree('툴 3', 'w', 'running');
     const a = live.kids[1];
@@ -563,6 +576,11 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
     expect(fnBody('wlSetTabStop')).toContain('.wl-agent-link[tabindex="0"]');
     expect(fnBody('wlEnsureTabStop')).toContain('.wl-agent-link[tabindex="0"]');
     expect(TEMPLATE).toContain("if (isLink && (e.key === 'Enter' || e.key === ' ')) return;");
+  });
+  it('choosing an agent by keyboard leaves focus on the agent now shown, not on <body> (review B r3)', () => {
+    const body = fnBody('selectPanelAgent');
+    expect(body).toContain("before.closest('#slide-panel')");
+    expect(body).toContain('#panel-agents button.pa-crumb[aria-current="true"]');
   });
   it('a group head is morphed, not replaced, and skipped when its markup is unchanged', () => {
     const body = fnBody('wlRefreshGroupHead');
