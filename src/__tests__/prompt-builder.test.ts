@@ -139,6 +139,51 @@ describe('PromptBuilder', () => {
       expect(prompt!.toLowerCase()).toContain('deploy workflow');
     });
 
+    it('deploy workflow posts release notes through the release_notes directive, not channel_message', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const section = prompt.slice(
+        prompt.indexOf('### 6) Release Notes'),
+        prompt.indexOf('### 7) Post-Deploy Lane Signal'),
+      );
+
+      expect(section).toContain('local:release-notes');
+      expect(section).toContain('"type": "release_notes"');
+      for (const field of ['"repo"', '"target"', '"version"', '"tldr"', '"text"']) expect(section).toContain(field);
+      // The channel is the operator's mapping, never the model's pick.
+      expect(section).toContain('SOMA_RELEASE_NOTES_CHANNELS');
+      expect(section).not.toContain('"type": "channel_message"');
+      // Same repo/target strings as the deploy_completed signal, so the mapping key matches.
+      expect(section).toMatch(/same `repo` and `target`[^.]*deploy_completed/);
+      expect(section).toMatch(/never emit twice/i);
+    });
+
+    it('deploy workflow ends with the post-deploy lane signal (deploy_completed directive)', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const section = prompt.slice(prompt.indexOf('### 7) Post-Deploy Lane Signal (Required)'));
+
+      expect(prompt).toContain('### 7) Post-Deploy Lane Signal (Required)');
+      // After the release-notes step, and it carries the exact directive shape.
+      expect(prompt.indexOf('### 7) Post-Deploy Lane Signal')).toBeGreaterThan(prompt.indexOf('### 6) Release Notes'));
+      expect(section).toContain('"type": "deploy_completed"');
+      for (const field of ['"repo"', '"target"', '"before"', '"after"']) expect(section).toContain(field);
+      // The guard rails the harness relies on.
+      expect(section).toMatch(/never emit/i);
+      expect(section).toContain('baseRefName');
+      // A merged-but-unconfirmed deploy is said explicitly, not left silent.
+      expect(section).toContain('"confirmed": false');
+      // A CD run still going when the in-turn wait ends is not a confirmation.
+      expect(section).toMatch(/still in progress when the wait ends[^.]*unconfirmed/);
+      expect(section).toMatch(/"type"`? is the first key/);
+      // A lane is told this thread so it can post its result back; the harness does not post for it,
+      // and the deploy turn never waits for it.
+      expect(section).toContain(
+        'Each lane runs in a thread of its own; it is told this thread, so it can post its result back here.',
+      );
+      expect(section).not.toContain('Each lane reports in its own place');
+      expect(section).not.toMatch(/posts its result back into this thread/);
+      expect(section).toContain('Do not wait for a lane, do not check on it, and do not run its work yourself.');
+    });
+
     it('should fallback to default for unknown workflow', () => {
       const prompt = builder.loadWorkflowPrompt('nonexistent-workflow' as any);
 

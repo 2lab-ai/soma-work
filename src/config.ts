@@ -3,6 +3,7 @@ import { parseBgKeepaliveMaxMs } from './agent-runtime/background-keepalive';
 import { resolveIncidentEvidenceOrigin } from './incident/evidence';
 import { Logger } from './logger';
 import { DEFAULT_OAUTH_REFRESH_INTERVAL_MS } from './oauth/oauth-refresh-scheduler';
+import { parseReleaseNotesChannels, type ReleaseNotesChannelsConfig } from './release-notes-routes';
 import { normalizeSigningSecret, SIGNING_SECRET_MIN_LENGTH } from './slack-signing-secret';
 
 // Logger for preflight checks and config validation
@@ -307,6 +308,21 @@ export function getIncidentEvidenceConfig(): IncidentEvidenceConfig | null {
   }
 }
 
+/**
+ * Typed getter for `SOMA_RELEASE_NOTES_CHANNELS` (grammar in
+ * `release-notes-routes.ts`). Read on every call — it runs once per deploy, and
+ * a cached parse would outlive the env it was read from (tests reset env per
+ * file). Malformed entries are dropped individually and logged here; the
+ * poster also reports them in the deploy thread.
+ */
+export function getReleaseNotesChannels(): ReleaseNotesChannelsConfig {
+  const parsed = parseReleaseNotesChannels(process.env.SOMA_RELEASE_NOTES_CHANNELS);
+  if (parsed.invalid.length > 0) {
+    logger.warn('SOMA_RELEASE_NOTES_CHANNELS has malformed entries — they are ignored', { invalid: parsed.invalid });
+  }
+  return parsed;
+}
+
 export const config = {
   slack: {
     botToken: process.env.SLACK_BOT_TOKEN!,
@@ -402,6 +418,13 @@ export const config = {
      * heartbeat record has a non-empty `instanceName`.
      */
     instanceName: process.env.INSTANCE_NAME || '',
+    /**
+     * Opt-in: while another server answers at `viewerUrl` and the OAuth callback
+     * origin (`SOMA_OAUTH_CALLBACK_BASE_URL`) answers as this instance, mint links
+     * on the callback origin (conversation/public-url.ts). Off: the mismatch is
+     * only logged and reported on /health.
+     */
+    publicUrlFallback: parseBool(process.env.SOMA_PUBLIC_URL_FALLBACK, false),
   },
   oauth: {
     google: {

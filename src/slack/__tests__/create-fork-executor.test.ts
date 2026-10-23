@@ -33,6 +33,20 @@ describe('createForkExecutor', () => {
     );
   });
 
+  // The fork's system prompt must not contradict SUMMARY_PROMPT's leading
+  // <tldr> envelope: a bare "summary only — no preamble" makes the model drop
+  // the TL;DR, and the channel surface then only ever shows the pointer line.
+  it('system prompt asks for the leading <tldr> envelope instead of forbidding any preamble', async () => {
+    mockHandler.dispatchOneShot.mockResolvedValue('ok');
+    const executor = createForkExecutor(mockHandler as any);
+
+    await executor('Generate a summary');
+
+    const systemPrompt = mockHandler.dispatchOneShot.mock.calls[0][1] as string;
+    expect(systemPrompt).toContain('<tldr>');
+    expect(systemPrompt).not.toMatch(/summary only — no preamble/);
+  });
+
   it('passes model as undefined when not provided', async () => {
     mockHandler.dispatchOneShot.mockResolvedValue('Summary');
     const executor = createForkExecutor(mockHandler as any);

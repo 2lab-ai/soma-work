@@ -157,6 +157,22 @@ describe('work log store', () => {
     expect(JSON.parse(lines[1]).seq).toBe(2);
   });
 
+  it('keeps the task an entry was made in (taskId + taskTitle, capped) — SSOT 2026-10-22 T10', async () => {
+    const e = await wl.appendWorkLog('conv-task', {
+      kind: 'tool',
+      text: 'Read x',
+      tool: 'Read',
+      taskId: 'T3',
+      taskTitle: 'y'.repeat(5000),
+    });
+    expect(e.taskId).toBe('T3');
+    expect(e.taskTitle?.length).toBe(wl.WORK_LOG_FIELD_MAX);
+    const page = await wl.readWorkLog('conv-task');
+    expect(page.entries[0]).toMatchObject({ taskId: 'T3', taskTitle: e.taskTitle });
+    const plain = await wl.appendWorkLog('conv-task', { kind: 'instruction', text: 'go' });
+    expect('taskId' in plain).toBe(false);
+  });
+
   it('serializes concurrent appends so every line stays whole and ordered', async () => {
     const all = Array.from({ length: 50 }, (_, i) =>
       wl.appendWorkLog('conv-c', { kind: 'narration', text: `step ${i}` }),

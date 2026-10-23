@@ -323,6 +323,29 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
     expect(session.autoCompactPending).toBe(true);
   });
 
+  it('compact retry loop: a failure pause blocks re-arming even far above the threshold', async () => {
+    session.usage = makeUsage(190_000, 200_000); // would normally fire
+    session.autoCompactSuppressedUntilMs = Date.now() + 60_000;
+
+    const result = await run();
+
+    expect(result).toBe(false);
+    expect(session.autoCompactPending).toBe(false);
+    expect(slackApi.postSystemMessage).not.toHaveBeenCalled();
+    // Usage is still observed while paused.
+    expect(session.lastKnownUsagePct).toBe(95);
+  });
+
+  it('compact retry loop: an expired failure pause re-arms normally', async () => {
+    session.usage = makeUsage(190_000, 200_000);
+    session.autoCompactSuppressedUntilMs = Date.now() - 1;
+
+    const result = await run();
+
+    expect(result).toBe(true);
+    expect(session.autoCompactPending).toBe(true);
+  });
+
   it('AC3: slackPost failure does NOT revert autoCompactPending — next turn still compacts', async () => {
     session.usage = makeUsage(180_000, 200_000);
     slackApi.postSystemMessage.mockRejectedValueOnce(new Error('slack 503'));

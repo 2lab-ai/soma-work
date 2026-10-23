@@ -26,10 +26,12 @@ import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
 import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
-import { TurnRunner, V1QueryAdapter } from './agent-session';
+import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
-import { getFollowupQueueCapacity } from './config';
+import { getFollowupQueueCapacity, getReleaseNotesChannels } from './config';
+import { DeployLaneTrigger } from './deploy-lanes';
 import { FileHandler, type ProcessedFile } from './file-handler';
+import { getLastCommandChannelStore } from './last-command-channel-store';
 import { Logger } from './logger';
 import { mcpCallTracker } from './mcp-call-tracker';
 import type { McpManager } from './mcp-manager';
@@ -41,6 +43,8 @@ import { SlackDmChannel } from './notification-channels/slack-dm-channel';
 import { TelegramChannel } from './notification-channels/telegram-channel';
 import { WebhookChannel } from './notification-channels/webhook-channel';
 import { validateSessionGoalObjective } from './prompt/session-goal-block';
+import { routeReleaseNotes } from './release-notes-routes';
+import { retryReasonLine } from './retry-reason';
 import {
   type ActionHandlerContext,
   ActionHandlers,
@@ -586,6 +590,9 @@ export class SlackHandler {
     // Inject slackApi so SummaryService can post the summary as a permanent
     // in-thread message (in addition to editing the volatile surface header).
     const summaryService = new SummaryService(forkExecutor, this.slackApi);
+    // One per handler: its dedupe (same lane, same merge commit) spans every
+    // session this handler runs.
+    const deployLanes = new DeployLaneTrigger();
 
     this.streamExecutor = new StreamExecutor({
       claudeHandler: this.claudeHandler,
@@ -618,6 +625,14 @@ export class SlackHandler {
         uuid: string;
         phase: 'started' | 'completed' | 'cancelled' | 'discarded' | 'observed';
       }) => this.settleSteeredFollowup(args),
+      // A deploy turn's `deploy_completed` directive fires the cron jobs whose
+      // owners registered `onDeploy` for that repo + branch, whoever ran the
+      // deploy. The trigger answers in the deploy thread through ctx.reply.
+      onDeployCompleted: (signal, ctx) => deployLanes.handle(signal, ctx),
+      // A deploy turn's `release_notes` directive goes where the operator mapped
+      // that repo + branch (SOMA_RELEASE_NOTES_CHANNELS); the executor asks only
+      // for deploy-workflow sessions.
+      routeReleaseNotes: (repo, target) => routeReleaseNotes(getReleaseNotesChannels(), repo, target),
     });
 
     // EventRouter for event handling
@@ -1290,6 +1305,14 @@ export class SlackHandler {
       return { result: 'blocked', reason: 'incident-owned thread: ordinary message dropped' };
     }
 
+    // SSOT 2026-10-23 T5 — "the channel the user last gave a command in" is the
+    // dashboard composer's default channel. Real user messages only: a goal
+    // loop / cron / auto-resume turn is not the user commanding anything.
+    // DMs are ignored by the store itself.
+    if (!event.synthetic && !incidentTurn && event.user) {
+      getLastCommandChannelStore().record(event.user, channel);
+    }
+
     if (channel.startsWith('D')) {
       // A replayed goal objective (`routeContext.verbatimPrompt`) was routed
       // already: it is the user's words, never a cleanup link or a `/z`
@@ -1853,7 +1876,11 @@ export class SlackHandler {
         // A typed SDK slash command (`/compact focus on X`) is a request to the
         // CLI, not an instruction — promoting it would name a goal after it.
         !isLocalSlashCommand(effectiveText.trim()) &&
-        userSettingsStore.getUserAutoGoalEnabled(event.user)
+        // A dashboard task carries its composer toggle (SSOT 2026-10-23 T6):
+        // per task, in both directions; otherwise the user's setting decides.
+        (typeof event.autoGoalOverride === 'boolean'
+          ? event.autoGoalOverride
+          : userSettingsStore.getUserAutoGoalEnabled(event.user))
       ) {
         const fullSession = this.claudeHandler.getSessionByKey?.(sessionResult.sessionKey);
         const inFlight =
@@ -2224,44 +2251,33 @@ export class SlackHandler {
           delayMs: retryAfterMs,
         });
 
-        // Schedule retry after delay using autoResumeSession pattern.
-        // Store timer handle so session reset can cancel it (Issue #215).
-        const errorContext = currentSession?.lastErrorContext;
-        const sessionIdAtSchedule = currentSession?.sessionId;
-        const timer = setTimeout(() => {
-          // Verify session hasn't been reset since retry was scheduled (Issue #215)
-          const freshSession = this.claudeHandler.getSession(activeChannel, activeThreadTs);
-          if (!freshSession || freshSession.sessionId !== sessionIdAtSchedule) {
-            this.logger.info('Skipping stale auto-retry — session was reset', {
-              channelId: activeChannel,
-              threadTs: activeThreadTs,
-            });
-            return;
-          }
-          freshSession.pendingRetryTimer = undefined;
-          this.autoResumeSession(
-            { channelId: activeChannel, threadTs: activeThreadTs, ownerId: event.user },
-            undefined,
-            errorContext,
-          )
-            .then(() => {
-              this.logger.info('Error auto-retry completed', {
-                channelId: activeChannel,
-                threadTs: activeThreadTs,
-              });
-            })
-            .catch((retryError) => {
-              this.logger.error('Error auto-retry failed', {
-                channelId: activeChannel,
-                threadTs: activeThreadTs,
-                error: (retryError as Error).message,
-              });
-            });
-        }, retryAfterMs);
-        // Store handle for cancellation on session reset
+        // What the dashboard card says next to the due time while the retry
+        // waits: the session is idle but NOT finished — it stays in RUNNING
+        // with "HH:MM 자동 재개 (시도 n/3)" and the error behind it. The attempt
+        // is the counter the stream executor just consumed (file-access errors
+        // keep their own budget and are the only ones that set
+        // lastErrorContext). Persisted with the marker below (#351).
         if (currentSession) {
-          currentSession.pendingRetryTimer = timer;
+          currentSession.pendingRetryDetail = {
+            attempt: currentSession.lastErrorContext
+              ? currentSession.fileAccessRetryCount
+              : currentSession.errorRetryCount,
+            maxAttempts: StreamExecutor.MAX_ERROR_RETRIES,
+            reason: retryReasonLine(error),
+          };
         }
+        // Schedule retry after delay using autoResumeSession pattern; the due
+        // time is persisted so a restart before it fires can re-arm it (#351).
+        this.scheduleErrorRetry(
+          { channelId: activeChannel, threadTs: activeThreadTs, ownerId: event.user },
+          Date.now() + retryAfterMs,
+          retryAfterMs,
+          currentSession?.lastErrorContext,
+        );
+        // The idle transition already pushed a board without the retry; push
+        // again so the card moves back out of DONE now, not at the next
+        // unrelated update.
+        this.claudeHandler.broadcastSessionUpdate?.();
         // Retry scheduled — don't re-throw. The turn did NOT succeed, so this is
         // an `error`: the drain stays halted until the retry (or the user) says
         // otherwise, instead of racing the timer for the same session.
@@ -2465,6 +2481,15 @@ export class SlackHandler {
   /** The queue service, for the action handler wired in the next unit. */
   getFollowupQueue(): FollowupQueue | undefined {
     return this.followupQueue;
+  }
+
+  /**
+   * Is the message `channel:ts` parked in the follow-up queue and still to
+   * run? `handleMessage` returns once a message behind a busy slot is queued,
+   * so a host that injected one asks this to tell "ran" from "still ahead".
+   */
+  isFollowupPending(channel: string, ts: string): boolean {
+    return this.followupQueue?.holdsPending(channel, ts) ?? false;
   }
 
   /** The dispatcher (`Send now`, drain, busy state), for the next unit's button handler. */
@@ -5063,8 +5088,10 @@ export class SlackHandler {
       return { result: 'interrupted', reason: String(signal.reason ?? 'aborted') };
     }
 
-    const pendingChoice =
-      turnResult?.hasPendingChoice === true || sessionResult?.session?.actionPanel?.waitingForChoice === true;
+    const pendingChoice = isAwaitingUserChoice(
+      turnResult?.hasPendingChoice,
+      sessionResult?.session?.actionPanel?.waitingForChoice,
+    );
     if (pendingChoice) {
       // The session belongs to the user until they answer (§3.2 ASK pause).
       return { result: 'blocked', reason: 'awaiting user choice' };
@@ -5775,12 +5802,16 @@ export class SlackHandler {
   /** Delay between processing crash-recovered sessions (ms) */
   private static readonly CRASH_RECOVERY_DELAY_MS = 2000;
 
+  /** Floor for an error auto-retry re-armed at startup, so startup settles first (ms, #351) */
+  private static readonly MIN_REARM_DELAY_MS = 5000;
+
   async notifyCrashRecovery(): Promise<number> {
     const recovered = this.claudeHandler.getCrashRecoveredSessions();
     if (recovered.length === 0) return 0;
 
     let notified = 0;
     let autoResumed = 0;
+    let retriesSuperseded = 0;
     for (let i = 0; i < recovered.length; i++) {
       const session = recovered[i];
       // Use the authoritative auto-resume decision captured at shutdown
@@ -5794,12 +5825,19 @@ export class SlackHandler {
       const isWorking =
         typeof session.shouldAutoResume === 'boolean' ? session.shouldAutoResume : session.activityState === 'working';
 
+      // #351: an idle session whose error auto-retry is still pending is
+      // resumed by resumePendingErrorRetries — say when, instead of asking the
+      // user to retry by hand.
+      const retryInMinutes = isWorking ? undefined : this.pendingRetryNoticeMinutes(session.sessionKey);
+
       // Post notification message and capture its ts for use as synthetic event anchor
       let notificationTs: string | undefined;
       try {
         const notificationText = isWorking
           ? `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 자동으로 재개합니다...`
-          : `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 다시 시도해주세요.`;
+          : retryInMinutes !== undefined
+            ? `⚠️ 서비스가 재시작되었습니다. 예약된 자동 재시도는 약 ${retryInMinutes}분 후 이어서 진행합니다.`
+            : `⚠️ 서비스가 재시작되었습니다. 이전 작업(${session.activityState})이 중단되었을 수 있습니다. 다시 시도해주세요.`;
 
         const result = await this.app.client.chat.postMessage({
           channel: session.channelId,
@@ -5847,6 +5885,14 @@ export class SlackHandler {
           threadTs: session.threadTs,
           ownerId: session.ownerId,
         });
+        // #351 no-double-resume: this resume supersedes a pending error
+        // auto-retry, so drop its marker before resumePendingErrorRetries
+        // can re-arm it as a second turn.
+        const liveForResume = this.claudeHandler.getSessionByKey?.(session.sessionKey);
+        if (liveForResume?.pendingRetryAt !== undefined) {
+          this.clearPendingErrorRetry(liveForResume);
+          retriesSuperseded++;
+        }
         this.autoResumeSession(session, notificationTs)
           .then(() => {
             this.logger.info('Auto-resume completed', {
@@ -5884,9 +5930,10 @@ export class SlackHandler {
         cleared++;
       }
     }
-    if (cleared > 0) {
-      // Persist the cleared markers so a fast follow-up restart (no new
-      // session activity in between) doesn't resurrect them.
+    if (cleared > 0 || retriesSuperseded > 0) {
+      // Persist the cleared markers (and superseded retry due times) so a fast
+      // follow-up restart (no new session activity in between) doesn't
+      // resurrect them.
       this.claudeHandler.saveSessions();
     }
     this.logger.info(
@@ -5928,6 +5975,7 @@ export class SlackHandler {
     let resumed = 0;
     let forcedIdle = 0;
     let repaired = 0;
+    let retriesClaimed = 0;
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       // Repair a stranded queue (defense for the eval-complete crash window):
       // if the current goal is genuinely closed (completed) or absent but goals
@@ -5960,6 +6008,13 @@ export class SlackHandler {
       try {
         handler(sessionKey);
         resumed++;
+        // #351 no-double-resume: the goal loop now drives this session, so a
+        // pending error auto-retry must not fire a second turn. Only a claim
+        // that succeeded takes it — otherwise resumePendingErrorRetries re-arms it.
+        if (session.pendingRetryAt !== undefined) {
+          this.clearPendingErrorRetry(session);
+          retriesClaimed++;
+        }
       } catch (error) {
         this.logger.error('Failed to resume active goal after restart', {
           sessionKey,
@@ -5967,11 +6022,175 @@ export class SlackHandler {
         });
       }
     }
-    if (forcedIdle > 0 || repaired > 0) this.claudeHandler.saveSessions();
+    if (forcedIdle > 0 || repaired > 0 || retriesClaimed > 0) this.claudeHandler.saveSessions();
     if (resumed > 0 || repaired > 0) {
       this.logger.info(`Resumed ${resumed} active goal(s) after restart (repaired ${repaired} stranded queue(s))`);
     }
     return resumed;
+  }
+
+  /**
+   * #351 — re-arm error auto-retries whose timer died with the previous process.
+   *
+   * The recoverable-error path persists the retry's marker (`pendingRetryAt` +
+   * `pendingRetrySessionId`), but the `setTimeout` itself is lost on restart,
+   * and crash recovery only resumes sessions that were `working` at shutdown —
+   * a session waiting on an error retry is idle. This scans ALL live sessions
+   * and re-arms each pending retry for its original due time (a past-due one
+   * after `MIN_REARM_DELAY_MS`, so startup settles first).
+   *
+   * No double resume: whoever actually claimed a session at startup
+   * (`notifyCrashRecovery`'s auto-resume, `resumeActiveGoals`' goal loop)
+   * already dropped its marker, so anything still carrying one is re-armed. A
+   * session whose retry timer is already armed in this process is left alone.
+   * A sleeper, or a retry whose run was replaced (`sessionId` changed since
+   * scheduling), is dropped instead. Must be called AFTER `notifyCrashRecovery`
+   * and `resumeActiveGoals`. Returns the count re-armed.
+   */
+  resumePendingErrorRetries(): number {
+    const now = Date.now();
+    let rearmed = 0;
+    let dropped = 0;
+    for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
+      const dueAt = session.pendingRetryAt;
+      if (dueAt === undefined) continue;
+      // Already armed in this process (e.g. a crash-recovery resume that failed
+      // again and scheduled a fresh retry) — arming again would fire it twice.
+      if (session.pendingRetryTimer) continue;
+      const dropReason =
+        session.state === 'SLEEPING'
+          ? 'session is asleep'
+          : session.sessionId !== session.pendingRetrySessionId
+            ? 'retry belongs to a previous run'
+            : undefined;
+      if (dropReason) {
+        this.clearPendingErrorRetry(session);
+        dropped++;
+        this.logger.info('Dropping pending error auto-retry after restart', { sessionKey, reason: dropReason });
+        continue;
+      }
+      const delayMs = Math.max(SlackHandler.MIN_REARM_DELAY_MS, dueAt - now);
+      this.logger.info('Re-arming error auto-retry after restart', {
+        sessionKey,
+        retryCount: session.errorRetryCount ?? 0,
+        delayMs,
+      });
+      this.scheduleErrorRetry(
+        { channelId: session.channelId, threadTs: session.threadTs, ownerId: session.ownerId },
+        dueAt,
+        delayMs,
+        session.lastErrorContext,
+      );
+      rearmed++;
+    }
+    if (dropped > 0) this.claudeHandler.saveSessions();
+    if (rearmed > 0 || dropped > 0) {
+      this.logger.info(`Re-armed ${rearmed} pending error auto-retry(ies) after restart (dropped ${dropped})`);
+    }
+    return rearmed;
+  }
+
+  /**
+   * Minutes until a crash-recovered idle session's pending error auto-retry
+   * continues (#351), for the restart notice — `undefined` when no valid retry
+   * is pending: none, a previous run's, a sleeper's, or an active-goal
+   * session's (the goal loop drives that one).
+   */
+  private pendingRetryNoticeMinutes(sessionKey: string): number | undefined {
+    const live = this.claudeHandler.getSessionByKey?.(sessionKey);
+    if (
+      live?.pendingRetryAt === undefined ||
+      live.pendingRetrySessionId !== live.sessionId ||
+      live.state === 'SLEEPING' ||
+      live.goal?.status === 'active'
+    ) {
+      return undefined;
+    }
+    return Math.ceil(Math.max(SlackHandler.MIN_REARM_DELAY_MS, live.pendingRetryAt - Date.now()) / 60_000);
+  }
+
+  /**
+   * Drop a session's pending error auto-retry (#351): cancel its timer and clear
+   * the persisted marker. The caller saves.
+   */
+  private clearPendingErrorRetry(session: ConversationSession): void {
+    if (session.pendingRetryTimer) clearTimeout(session.pendingRetryTimer);
+    session.pendingRetryTimer = undefined;
+    session.pendingRetryAt = undefined;
+    session.pendingRetrySessionId = undefined;
+    session.pendingRetryDetail = undefined;
+  }
+
+  /**
+   * Arm the error auto-retry for a thread — shared by the recoverable-error
+   * path and the restart re-arm (`resumePendingErrorRetries`, #351).
+   *
+   * The marker — `dueAt` as `pendingRetryAt` plus the current `sessionId` as
+   * `pendingRetrySessionId` — is recorded on the session and, when new, saved
+   * at once: a restart can SIGKILL before the shutdown save, and the persisted
+   * marker is what the next process re-arms from. One live timer per session:
+   * a newer schedule cancels the one it supersedes, and the handle is stored so
+   * a session reset can cancel it (Issue #215).
+   *
+   * The timer resumes only if the session still exists, has the `sessionId` it
+   * had at scheduling (Issue #215), and still owns this exact due time — a
+   * reset clears it and a newer schedule replaces it. Firing clears and saves
+   * the marker before resuming.
+   */
+  private scheduleErrorRetry(
+    target: { channelId: string; threadTs?: string; ownerId: string },
+    dueAt: number,
+    delayMs: number,
+    errorContext: string | undefined,
+  ): void {
+    const { channelId, threadTs } = target;
+    const session = this.claudeHandler.getSession(channelId, threadTs);
+    const sessionIdAtSchedule = session?.sessionId;
+    if (session?.pendingRetryTimer) clearTimeout(session.pendingRetryTimer);
+    const timer = setTimeout(() => {
+      // Verify session hasn't been reset since retry was scheduled (Issue #215)
+      const freshSession = this.claudeHandler.getSession(channelId, threadTs);
+      if (!freshSession || freshSession.sessionId !== sessionIdAtSchedule) {
+        this.logger.info('Skipping stale auto-retry — session was reset', { channelId, threadTs });
+        // The run was replaced without a registry reset (e.g. an ingress
+        // hand-over clearing sessionId): drop the marker this retry still owns,
+        // or the next restart would re-arm it into the new run.
+        if (freshSession && freshSession.pendingRetryAt === dueAt) {
+          this.clearPendingErrorRetry(freshSession);
+          this.claudeHandler.saveSessions();
+        }
+        return;
+      }
+      if (freshSession.pendingRetryAt !== dueAt) {
+        this.logger.info('Skipping superseded auto-retry — pending retry was cleared or rescheduled', {
+          channelId,
+          threadTs,
+        });
+        return;
+      }
+      this.clearPendingErrorRetry(freshSession);
+      this.claudeHandler.saveSessions();
+      this.autoResumeSession(target, undefined, errorContext)
+        .then(() => {
+          this.logger.info('Error auto-retry completed', { channelId, threadTs });
+        })
+        .catch((retryError) => {
+          this.logger.error('Error auto-retry failed', {
+            channelId,
+            threadTs,
+            error: (retryError as Error).message,
+          });
+        });
+    }, delayMs);
+    // Store handle for cancellation on session reset
+    if (session) {
+      session.pendingRetryTimer = timer;
+      if (session.pendingRetryAt !== dueAt || session.pendingRetrySessionId !== sessionIdAtSchedule) {
+        session.pendingRetryAt = dueAt;
+        session.pendingRetrySessionId = sessionIdAtSchedule;
+        this.claudeHandler.saveSessions();
+      }
+    }
   }
 
   /**

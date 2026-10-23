@@ -89,6 +89,10 @@ Slack-native button/form UX for permission approvals, option selection, and sess
 
 Upload images (JPG/PNG/GIF/WebP), text, or code files directly in Slack. 50MB limit per file.
 
+### 🆕 Start a task from the dashboard
+
+The dashboard's **New task** button (top bar on desktop, `N` shortcut; floating button on phones) opens a composer: model (with a shared-pool quota battery), effort, Slack channel, per-task `autogoal` and `autoz` toggles, the instruction, and attachments — files, pasted screenshots, the phone camera and voice notes. The task starts as your own message on a new thread in the chosen channel, so its progress is visible in Slack. The channel list is the repo-mapped channels you are a member of; it defaults to the channel you last gave a command in. Turning `autoz` on appends `$autoz` to the instruction.
+
 ### 🔑 GitHub Integration
 
 GitHub App (recommended) or Personal Access Token authentication with automatic token renewal.
@@ -381,6 +385,10 @@ The Codex block in the key DM points `OPENAI_BASE_URL` at the advertised server'
 
 Any free-form text that no command handler claims is treated as a chat / workflow dispatch prompt.
 
+**Deploy-triggered cron lanes**: a cron job created or updated with `onDeploy: [{ repo, target }]` also fires, as its owner and in a new thread of its channel, when the deploy workflow — run from anyone's session — reports that a deploy of that repo into that exact branch succeeded (`deploy_completed` directive). The fired prompt names the deploy (repo, branch, merge SHA, deployer) and the deploy thread (channel + thread ts); the lane posts there itself with whatever Slack access its session has (e.g. the Slack Web API with the bot token from its environment); the built-in `send_thread_message` tool posts only to the lane's own thread, and the harness does not post for it. The deploy thread gets one line: the lanes started, or why a registered lane did not start (unconfirmed deploy, failure, unreadable directive), with the `cron run` to recover. A lane that should run only on deploys is instead an entry of `DATA_DIR/deploy-lanes.json` (`name`, `owner`, `channel`, `prompt`, `onDeploy`): no schedule, not a cron job (not in `cron list`). See [docs/current/spec/cron-deploy-lanes.md](docs/current/spec/cron-deploy-lanes.md).
+
+**Deploy release notes**: after a deploy, the deploy workflow writes the notes with `local:release-notes` and emits one `release_notes` directive per repo. The host posts a short root message — `repo target · version` plus up to three TL;DR lines — and the full notes as replies in its thread (cut losslessly, never truncated). The operator decides the channel with `SOMA_RELEASE_NOTES_CHANNELS` in the host's `.env` (for example `acme/app@deploy/dev2=C0DEV2CHAN1,*=session`): an exact `owner/repo@branch` or `branch` match goes to that channel, `*=session` keeps unmatched deploys in the deploy session's channel, and without `*` an unmatched deploy stays in the deploy thread. Unset means the deploy session's channel, as before. A failed post never moves the notes to another channel's root; they land in the deploy thread with a warning.
+
 **Bare commands (#531)**: Bare forms such as `persona linus` or `model sonnet` run directly through their handlers. The one-time tombstone hint that #506 Phase 1 showed for them was removed in #531. `SOMA_ENABLE_LEGACY_SLASH=true` only restores the legacy `/soma`, `/session` and `/new` slash commands.
 
 ---
@@ -506,6 +514,7 @@ GITHUB_TOKEN=ghp_...               # Fallback when GitHub App not configured
 CLAUDE_CODE_USE_BEDROCK=1          # Use AWS Bedrock
 CLAUDE_CODE_USE_VERTEX=1           # Use Google Vertex AI
 DEBUG=true
+SOMA_RELEASE_NOTES_CHANNELS=acme/app@deploy/dev2=C0123456789,*=session  # Where deploy release notes go
 ```
 
 #### 4. Configure MCP servers (optional)
@@ -687,7 +696,7 @@ src/                                # TypeScript source
 │   ├── actions/                    # Interactive action handlers
 │   ├── commands/                   # Command handlers
 │   ├── pipeline/                   # Stream processing pipeline
-│   ├── directives/                 # Channel/session link directives
+│   ├── directives/                 # Channel/session link + deploy-completed directives
 │   ├── formatters/                 # Output formatters
 │   └── z/                          # /z command surface + non-admin DM input gate
 ├── auth/                           # CCT lease + query env injection

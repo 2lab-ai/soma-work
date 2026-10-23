@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { CronStorage } from 'somalib/cron/cron-storage';
+import { type CronJob, CronStorage, jobMatchesDeploy } from 'somalib/cron/cron-storage';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 describe('CronStorage', () => {
@@ -332,5 +332,186 @@ describe('CronStorage.updateJob', () => {
     expect(updated!.lastRunAt).toBe('2026-01-02T03:04:00.000Z');
     expect(updated!.lastRunMinute).toBe('2026-01-02T03:04');
     expect(updated!.expression).toBe('*/5 * * * *');
+  });
+});
+
+// --- onDeploy — deploy-triggered lanes ---
+// The owner's opt-in: "fire me when a deploy of `repo` into branch `target` completes".
+describe('CronStorage onDeploy', () => {
+  let storage: CronStorage;
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `cron-ondeploy-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    storage = new CronStorage(tmpFile);
+  });
+
+  afterEach(() => {
+    for (const f of [tmpFile, tmpFile + '.tmp']) {
+      try {
+        fs.unlinkSync(f);
+      } catch {}
+    }
+  });
+
+  function seed(onDeploy?: Array<{ repo: string; target: string }>) {
+    return storage.addJob({
+      name: 'qa-lane',
+      expression: '0 0 31 2 *',
+      prompt: 'QA',
+      owner: 'U_OWNER',
+      channel: 'C1',
+      threadTs: null,
+      ...(onDeploy ? { onDeploy } : {}),
+    });
+  }
+
+  it('round-trips onDeploy through the file, normalized (repo lower-cased, refs/heads/ stripped)', () => {
+    seed([
+      { repo: 'Acme/App', target: 'refs/heads/deploy/dev2' },
+      { repo: 'acme/api', target: 'develop' },
+    ]);
+    const raw = JSON.parse(fs.readFileSync(tmpFile, 'utf-8'));
+    expect(raw.jobs[0].onDeploy).toEqual([
+      { repo: 'acme/app', target: 'deploy/dev2' },
+      { repo: 'acme/api', target: 'develop' },
+    ]);
+    expect(new CronStorage(tmpFile).getAll()[0].onDeploy).toEqual(raw.jobs[0].onDeploy);
+  });
+
+  it('collapses duplicate entries after normalization', () => {
+    const job = seed([
+      { repo: 'acme/app', target: 'deploy/dev2' },
+      { repo: 'ACME/APP', target: 'refs/heads/deploy/dev2' },
+    ]);
+    expect(job.onDeploy).toEqual([{ repo: 'acme/app', target: 'deploy/dev2' }]);
+  });
+
+  it('omits the field for a job without triggers (and for an empty list)', () => {
+    seed();
+    storage.addJob({
+      name: 'b',
+      expression: '0 9 * * *',
+      prompt: 'x',
+      owner: 'U_OWNER',
+      channel: 'C1',
+      threadTs: null,
+      onDeploy: [],
+    });
+    for (const job of JSON.parse(fs.readFileSync(tmpFile, 'utf-8')).jobs) {
+      expect('onDeploy' in job).toBe(false);
+    }
+  });
+
+  it.each([
+    ['repo without owner', { repo: 'app', target: 'deploy/dev2' }],
+    ['repo with a space', { repo: 'acme/my app', target: 'deploy/dev2' }],
+    ['repo with two slashes', { repo: 'acme/app/x', target: 'deploy/dev2' }],
+    ['empty target', { repo: 'acme/app', target: '   ' }],
+    ['bare refs/heads/ target', { repo: 'acme/app', target: 'refs/heads/' }],
+    ['target with whitespace', { repo: 'acme/app', target: 'deploy dev2' }],
+  ])('addJob rejects an invalid trigger (%s)', (_label, trigger) => {
+    expect(() => seed([trigger])).toThrow(/INVALID_ON_DEPLOY/);
+    expect(storage.getAll()).toHaveLength(0);
+  });
+
+  it('updateJob sets, replaces and (with null) clears onDeploy', () => {
+    seed();
+    const set = storage.updateJob('U_OWNER', 'qa-lane', { onDeploy: [{ repo: 'Acme/App', target: 'deploy/dev2' }] });
+    expect(set!.onDeploy).toEqual([{ repo: 'acme/app', target: 'deploy/dev2' }]);
+
+    const replaced = storage.updateJob('U_OWNER', 'qa-lane', { onDeploy: [{ repo: 'acme/api', target: 'develop' }] });
+    expect(replaced!.onDeploy).toEqual([{ repo: 'acme/api', target: 'develop' }]);
+
+    const cleared = storage.updateJob('U_OWNER', 'qa-lane', { onDeploy: null });
+    expect(cleared!.onDeploy).toBeUndefined();
+    expect('onDeploy' in storage.getJobsByOwner('U_OWNER')[0]).toBe(false);
+  });
+
+  it('updateJob rejects an invalid trigger and leaves the job unchanged', () => {
+    seed([{ repo: 'acme/app', target: 'deploy/dev2' }]);
+    expect(() => storage.updateJob('U_OWNER', 'qa-lane', { onDeploy: [{ repo: 'nope', target: 'x' }] })).toThrow(
+      /INVALID_ON_DEPLOY/,
+    );
+    expect(storage.getJobsByOwner('U_OWNER')[0].onDeploy).toEqual([{ repo: 'acme/app', target: 'deploy/dev2' }]);
+  });
+
+  it('other patches keep onDeploy', () => {
+    seed([{ repo: 'acme/app', target: 'deploy/dev2' }]);
+    const updated = storage.updateJob('U_OWNER', 'qa-lane', { prompt: 'new' });
+    expect(updated!.onDeploy).toEqual([{ repo: 'acme/app', target: 'deploy/dev2' }]);
+  });
+});
+
+describe('jobMatchesDeploy', () => {
+  const job = (onDeploy?: Array<{ repo: string; target: string }>) =>
+    ({ id: 'j', name: 'n', owner: 'U', onDeploy }) as unknown as CronJob;
+
+  it('matches repo case-insensitively and target exactly after stripping refs/heads/', () => {
+    const lane = job([{ repo: 'acme/app', target: 'deploy/dev2' }]);
+    expect(jobMatchesDeploy(lane, 'ACME/App', 'deploy/dev2')).toBe(true);
+    expect(jobMatchesDeploy(lane, 'acme/app', 'refs/heads/deploy/dev2')).toBe(true);
+    expect(jobMatchesDeploy(lane, 'acme/app', 'dev2')).toBe(false);
+    expect(jobMatchesDeploy(lane, 'acme/app', 'Deploy/Dev2')).toBe(false);
+    expect(jobMatchesDeploy(lane, 'acme/api', 'deploy/dev2')).toBe(false);
+  });
+
+  it('never matches a job without triggers or with a malformed stored list', () => {
+    expect(jobMatchesDeploy(job(), 'acme/app', 'deploy/dev2')).toBe(false);
+    expect(jobMatchesDeploy(job('garbage' as any), 'acme/app', 'deploy/dev2')).toBe(false);
+    expect(jobMatchesDeploy(job([null as any, { repo: 'acme/app' } as any]), 'acme/app', 'deploy/dev2')).toBe(false);
+  });
+});
+
+// getAllStrict — for callers that must tell "no jobs" from "could not read the jobs".
+// getAll() swallows a parse error and returns [], which is right for the scheduler
+// tick and wrong for a deploy lane that would then report "no lane registered".
+describe('CronStorage.getAllStrict', () => {
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `cron-strict-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  });
+
+  afterEach(() => {
+    try {
+      fs.unlinkSync(tmpFile);
+    } catch {}
+  });
+
+  it('returns [] when the file does not exist yet', () => {
+    expect(new CronStorage(tmpFile).getAllStrict()).toEqual([]);
+  });
+
+  it('returns the jobs of a valid file', () => {
+    const storage = new CronStorage(tmpFile);
+    storage.addJob({ name: 'a', expression: '0 9 * * *', prompt: 'x', owner: 'U1', channel: 'C1', threadTs: null });
+    expect(storage.getAllStrict().map((j) => j.name)).toEqual(['a']);
+  });
+
+  it('throws on an unparseable file instead of returning []', () => {
+    fs.writeFileSync(tmpFile, '{ not json');
+    const storage = new CronStorage(tmpFile);
+    expect(storage.getAll()).toEqual([]);
+    expect(() => storage.getAllStrict()).toThrow();
+  });
+
+  it('throws on a file without a jobs array', () => {
+    fs.writeFileSync(tmpFile, JSON.stringify({ history: [] }));
+    expect(() => new CronStorage(tmpFile).getAllStrict()).toThrow(/jobs array/);
+  });
+
+  // Only a missing file is "no jobs". existsSync() also says false when the
+  // lookup itself fails (EACCES on a parent dir, ELOOP, ENOTDIR) — that file is
+  // unreadable, not absent.
+  it('throws when the path cannot be looked up (ENOTDIR) instead of returning []', () => {
+    fs.writeFileSync(tmpFile, '');
+    expect(() => new CronStorage(path.join(tmpFile, 'cron-jobs.json')).getAllStrict()).toThrow(
+      expect.objectContaining({ code: 'ENOTDIR' }),
+    );
+  });
+
+  it('returns [] when a parent directory does not exist yet (ENOENT)', () => {
+    expect(new CronStorage(path.join(`${tmpFile}.dir`, 'cron-jobs.json')).getAllStrict()).toEqual([]);
   });
 });
