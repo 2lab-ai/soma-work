@@ -44,7 +44,8 @@ SSOT: [`agent-tree/ssot.md`](agent-tree/ssot.md) · 앞선 계약: [`10-agent-in
 (`packages/slack/src/agent-tree.ts`), 실행기가 `streamExecutorProviders.recordAgentEvent(sessionKey, event)`로 묶는다.
 
 - `Agent`·`Task` 호출(`isAgentSpawnTool`) → `spawn{agentId, parentAgentId?(그 호출 프레임의 parentToolUseId), agentType=subagent_type,
-  description, background=run_in_background===true}`. 그 호출의 작업 로그 `tool` 항목에 `agentRef`.
+  description, background=run_in_background===true}`. 그 호출의 작업 로그 `tool` 항목에 `agentRef`. spawn은 호출 이벤트가 **도착한 즉시**
+  알린다 — 호출은 렌더 버퍼에서 기다리지만 SDK `task_started`는 그 버퍼보다 먼저 올 수 있다.
 - 처음 보는 부모 id의 프레임(이전 턴의 배경 에이전트, Agent가 아닌 스포너) → id만 있는 `spawn` 한 번.
 - 메인의 TodoWrite → `onTodoUpdate`(종전 그대로). 서브의 TodoWrite → `todos{agentId, todos}`만 — Slack 플랜 블록·메인 ledger·
   TodoManager는 건드리지 않는다.
@@ -79,9 +80,11 @@ interface AgentRegistry { nextN; agents: AgentRecord[] /* 오래된 순 */ }
   턴 끝에 아직 running인 전경 에이전트 = `unknown`(관측 끊김 — "멈춤을 봤다"가 아님). 재기동 복원(`sessions.json` 로드)과
   `/new`·renew 리셋 = running → `unknown`(`loseRunningAgents`). `unknown`에 progress가 오면 running으로 돌아오고, 끝난 에이전트는
   어떤 이벤트로도 running이 되지 않는다.
-- 도구 수 = 그 에이전트의 `tool` 작업 로그 항목 수와 SDK가 보고한 `tool_uses` 중 큰 값. 토큰·소요 = SDK 보고값.
+- 도구 수 = 그 에이전트의 `tool` 작업 로그 항목 수(`loggedTools`)와 SDK가 보고한 누적 `tool_uses`(`reportedTools`) 중 큰 값 — 합이 아니다.
+  토큰·소요 = SDK 보고값.
 - 상한: 레코드 `AGENT_REGISTRY_MAX` = 100 — 오래된 끝난 에이전트부터 지우되, 실행 중인 에이전트와 그 조상은 지우지 않는다
-  (그때는 상한을 넘을 수 있다). task ledger는 끝난 에이전트 중 최신 `AGENT_LEDGER_KEEP` = 40개만 유지.
+  (그때는 상한을 넘을 수 있다). 정리는 레코드가 완성된 뒤(부모가 채워진 뒤)와 모든 종료 전이·복원 뒤에 돈다 — 실행 중 에이전트 때문에
+  넘었던 초과분은 그들이 끝나면 해소된다. task ledger는 끝난 에이전트 중 최신 `AGENT_LEDGER_KEEP` = 40개만 유지.
 - 영속: `sessions.json`(`sanitizeAgentRegistry`), 아카이브(`ArchivedSession.agents`).
 
 ### 2.4 작업 로그 (`packages/slack/src/work-log.ts` ≡ `src/conversation/work-log.ts`)
