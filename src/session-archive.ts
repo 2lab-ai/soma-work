@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
+import type { AgentRegistry } from './session/agent-registry';
 import type { TaskLedger } from './session/task-ledger';
 import type {
   ActivityState,
@@ -87,6 +88,8 @@ export interface ArchivedSession {
   goal?: SessionGoal;
   goalHistory?: SessionGoal[];
   taskLedger?: TaskLedger;
+  // Spec 12 — so a closed card keeps its subagents.
+  agents?: AgentRegistry;
 }
 
 /**
@@ -145,6 +148,7 @@ function sessionToArchive(
     goal: session.goal ? JSON.parse(JSON.stringify(session.goal)) : undefined,
     goalHistory: session.goalHistory ? JSON.parse(JSON.stringify(session.goalHistory)) : undefined,
     taskLedger: session.taskLedger ? JSON.parse(JSON.stringify(session.taskLedger)) : undefined,
+    agents: session.agents ? JSON.parse(JSON.stringify(session.agents)) : undefined,
   };
 }
 

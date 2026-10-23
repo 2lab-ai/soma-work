@@ -97,6 +97,14 @@ Slack 네이티브 버튼/폼 UX로 권한 승인, 선택지, 세션 관리를 �
 
 GitHub App(권장) 또는 Personal Access Token 인증. 자동 토큰 갱신 지원.
 
+### 🖥️ 웹 대시보드
+
+대시보드(`/dashboard`, Slack 로그인)는 모든 세션을 카드로 보여주고, 세션 소유자가 바로 조작할 수 있게 한다.
+
+- **최상단에서 모델·effort 원클릭 변경**: top bar에 새 세션의 기본 모델과 기본 effort가 있다. 값을 고르면 바로 저장된다 — Slack `model set <m>`, `effort <level>`과 같은 설정이다. 세션 패널이 열려 있으면 "이 세션에도 적용"(기본 켜짐)으로 그 세션도 함께 바뀐다.
+- **세션별 모델·effort**: 카드와 세션 패널 맨 위에서 그 세션만 바꾼다(`%effort <level>`과 같은 범위). 다음 턴부터 적용되고, 모델이 effort를 낮춰 실행하면 실제 실행 값을 함께 보여준다.
+- **개인 설정 API**: `GET /api/settings`, `PATCH /api/settings/:key`로 Slack 명령으로 바꿀 수 있는 개인 설정 전부를 로그인한 본인 것만 읽고 바꾼다. 쓰기는 Slack과 같은 검증기·`/z` 카드 핸들러를 거치고, 대시보드에 없는 Slack 설정 명령이 생기면 계약 테스트가 실패한다.
+
 ### 🤖 서브 에이전트 (부분 구현 · 프로비저닝 미지원)
 
 서브 에이전트는 같은 프로세스 안에서 각자의 Slack App·Socket Mode 연결·세션 레지스트리를 갖는다.
@@ -171,7 +179,7 @@ app-token 프롬프트는 금지된 자격증명 경로라 삭제됨), `scripts/
 
 주요 `/z` 명령: `help` · `cwd` · `mcp` · `bypass` · `persona` · `model` · `verbosity` · `session` · `new`/`renew` · `close` · `restore` · `context`/`compact` · `link` · `onboarding` · `admin` · `cct` · `auth` · `marketplace` · `plugin` · `skill` · `report`
 
-- 출력 수준(`/z verbosity`, 세션 한정 `%verbosity`): `minimal` · `compact` · `detail` · `verbose`. 기본값은 `minimal`이다 — 스레드에는 task list, 질문/승인, 최종 답변, 오류만 남고, 모델의 실시간 작업 설명·도구 호출·압축 공지·스킬 발동 배너(`$skill`·autoskill 포함)는 대시보드 작업 로그로 간다.
+- 출력 수준(`/z verbosity`, 세션 한정 `%verbosity`): `minimal` · `compact` · `detail` · `verbose`. 기본값은 `minimal`이다 — 스레드에는 task list(메인 에이전트의 것 — 서브에이전트의 목록은 대시보드의 그 서브에이전트 항목에 있다), 질문/승인, 최종 답변, 오류만 남고, 모델의 실시간 작업 설명·도구 호출·압축 공지·스킬 발동 배너(`$skill`·autoskill 포함)는 대시보드 작업 로그로 간다.
 
 - Fable 5.1·Opus 5.5(`claude-opus-5-5`, Claude Code 2.1.280 이상 필요) 지원을 위해 SDK를 `0.3.284`(네이티브 Claude Code `2.1.284`)로 고정한다. 스트리밍 턴은 `CLAUDE_CODE_ENABLE_TASKS=false`와 `MCP_CONNECTION_NONBLOCKING=0`을 강제하여 기존 Slack TodoWrite 스냅샷 처리와 첫 턴 MCP 초기화를 유지한다. 이 호환성 설정은 stream-options builder가 관리하며 운영자 설정으로 덮어쓰지 않는다.
 - 모델 별칭 `fable`·`fable[1m]`·`fable-5-1`은 `claude-fable-5-1[1m]`을 선택한다. 1M 컨텍스트와 750k 자동 압축 기본값을 유지하며, 버전을 지정한 `fable-5`는 기존 `claude-fable-5[1m]`을 선택한다.

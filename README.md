@@ -97,6 +97,14 @@ The dashboard's **New task** button (top bar on desktop, `N` shortcut; floating 
 
 GitHub App (recommended) or Personal Access Token authentication with automatic token renewal.
 
+### 🖥️ Web dashboard
+
+The dashboard (`/dashboard`, sign in with Slack) shows every session as a card and lets the session owner act on it:
+
+- **Model and effort, one click from the top**: the top bar shows your default model and effort for new sessions. Pick a value and it is saved at once — the same setting as `model set <m>` and `effort <level>`. With a session panel open, "이 세션에도 적용" (on by default) also switches that session.
+- **Per-session model and effort**: the card and the top of the session panel switch one session only, like `%effort <level>`; the change applies from the next turn. When the model caps the level, the card shows the level that really runs.
+- **Personal settings API**: `GET /api/settings` and `PATCH /api/settings/:key` read and change every personal setting a Slack command can change, for the signed-in user only. Writes go through the same validators and `/z` card handlers as Slack; a contract test fails when a Slack settings command has no dashboard row.
+
 ### 🤖 Multi-Agent Architecture
 
 Run multiple independent AI agents within a single process. Each sub-agent is a separate Slack App with its own persona, system prompt, and session isolation.
@@ -196,7 +204,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z bypass [set on\|off]` | Toggle permission bypass |
 | `/z persona [set <name>\|list]` | Switch persona |
 | `/z model [set <name>\|list]` | Switch model (sonnet, opus, haiku) |
-| `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list, questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |
+| `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list (the main agent's — a subagent's own list lives on its dashboard entry), questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |
 | `/z session` · `sessions` | List active sessions (`sessions` naked form still accepted) |
 | `/z new` · `/z renew` | Reset / renew session (naked `new` / `renew` also accepted) |
 | `/z close` | Close current thread session |
