@@ -304,6 +304,82 @@ describe('panel scope (§4.3)', () => {
     expect(r.renderWorkLogEntry(LOG[4])).not.toContain('wl-agent-link');
   });
 
+  it('a failed background spawn result is not labelled a background start (review B-P2)', () => {
+    const failed = { ...LOG[4], ok: false };
+    const m = load<{ wlScopeEntries(e: unknown[]): any[] }>(
+      ['agentStatusOf', 'panelAgentOf', 'wlScopeEntry', 'wlScopeEntries'],
+      ['AGENT_STATUS_LABEL'],
+      {
+        _panelAgent: 'toolu_explore',
+        panelSessionKey: 'k',
+        _sessionCache: { k: { agents: AGENTS } },
+      },
+    );
+    expect(m.wlScopeEntries([failed]).map((e) => e._role)).toEqual(['result']);
+  });
+
+  it('agents known only from the log (their own entries or a spawn/result) are listed (review B-P2)', () => {
+    const m = load<{ panelLogOnlyAgents(s: unknown): string[] }>(['panelLogOnlyAgents'], [], {
+      _wl: {
+        entries: [E(1, { agentId: 'onlyOwn' }), E(2, { agentRef: 'onlyRef' }), E(3, { agentRef: 'toolu_explore' })],
+      },
+    });
+    expect(m.panelLogOnlyAgents({ agents: AGENTS })).toEqual(['onlyOwn', 'onlyRef']);
+  });
+
+  it('an unchanged agent bar is not rewritten — focus and the list scroll survive a live update (review B-P1)', () => {
+    let writes = 0;
+    let html = '';
+    const el = {
+      style: {} as Record<string, string>,
+      get innerHTML() {
+        return html;
+      },
+      set innerHTML(v: string) {
+        writes++;
+        html = v;
+      },
+      querySelector: () => null,
+    };
+    const m = load<{ renderPanelAgents(): void }>(
+      [
+        'esc',
+        'escAttr',
+        'toNum',
+        'formatDuration',
+        'agentStatusOf',
+        'agentName',
+        'agentTreeOrder',
+        'agentIconHtml',
+        'agentTimeHtml',
+        'agentActivity',
+        'agentSpanAxis',
+        'agentSpanStyle',
+        'renderAgentRow',
+        'renderMainAgentRow',
+        'panelLogOnlyAgents',
+        'renderPanelAgents',
+      ],
+      ['AGENT_STATUS_LABEL', 'AGENTS_SVG'],
+      {
+        document: { getElementById: (id: string) => (id === 'panel-agents' ? el : null), activeElement: null },
+        panelSessionKey: 'k',
+        _sessionCache: { k: card() },
+        _panelAgent: 'toolu_explore',
+        _panelAgentListOpen: true,
+        _panelAgentIdsShown: {},
+        _wl: { entries: [] },
+        _panelAgentsHtml: '',
+        formatTokens: (n: number) => String(n),
+        updateTimersIn: () => {},
+      },
+    );
+    m.renderPanelAgents();
+    m.renderPanelAgents();
+    expect(writes).toBe(1);
+    expect(html).toContain('<span>에이전트 3</span>');
+  });
+
   it('a log from before attribution that started subagents is flagged, an attributed one is not', () => {
     const m = load<{ wlLegacyMixed(e: unknown[]): boolean }>(['wlLegacyMixed'], []);
     expect(m.wlLegacyMixed([E(1, { tool: 'Agent' }), E(2, { tool: 'Grep' })])).toBe(true);

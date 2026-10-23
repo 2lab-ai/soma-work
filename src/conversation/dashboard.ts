@@ -5994,6 +5994,7 @@ var _agentTreeOpen = Object.create(null); // card key → every agent row shown
 var _panelAgent = ''; // the agent the open panel shows ('' = the main agent)
 var _panelAgentListOpen = false;
 var _panelAgentIdsShown = Object.create(null); // agent ids the agent bar lists now
+var _panelAgentsHtml = ''; // what the agent bar last rendered (a live update with the same data writes nothing)
 
 function agentStatusOf(a) {
   return a && Object.prototype.hasOwnProperty.call(AGENT_STATUS_LABEL, a.status) ? a.status : 'unknown';
@@ -6198,8 +6199,14 @@ function panelLogOnlyAgents(s) {
   var out = [];
   var entries = (_wl && _wl.entries) || [];
   for (var j = 0; j < entries.length; j++) {
-    var id = entries[j] && entries[j].agentId;
-    if (id && !known[id]) { known[id] = true; out.push(String(id)); }
+    var e = entries[j];
+    if (!e) continue;
+    // Its own entries or only the call that started it and that call's result.
+    var ids = [e.agentId, e.agentRef];
+    for (var k = 0; k < ids.length; k++) {
+      var id = ids[k];
+      if (id && !known[id]) { known[id] = true; out.push(String(id)); }
+    }
   }
   return out;
 }
@@ -6214,10 +6221,10 @@ function renderPanelAgents() {
   for (var w = 0; w < extra.length; w++) _panelAgentIdsShown[extra[w]] = true;
   if (!s || (!list.length && !extra.length)) {
     el.style.display = 'none';
-    el.innerHTML = '';
+    if (_panelAgentsHtml) el.innerHTML = '';
+    _panelAgentsHtml = '';
     return;
   }
-  el.style.display = '';
   var byId = Object.create(null);
   for (var i = 0; i < list.length; i++) byId[list[i].id] = list[i];
   var sel = _panelAgent ? byId[_panelAgent] : null;
@@ -6234,7 +6241,8 @@ function renderPanelAgents() {
       + (isCur ? ' aria-current="true"' : '') + ' data-agent-select="' + escAttr(chain[c].id) + '">' + esc(agentName(chain[c])) + '</button>';
   }
   if (_panelAgent && !sel) path += '<span class="pa-sep" aria-hidden="true">&rsaquo;</span><span class="pa-crumb" aria-current="true">에이전트 ' + esc(_panelAgent.slice(-6)) + '</span>';
-  var total = Math.max(toNum(s.agentsTotal), list.length) + extra.length;
+  // agentsTotal already counts the agents beyond the card; the log-only ones are among them.
+  var total = Math.max(toNum(s.agentsTotal), list.length + extra.length);
   var html = '<div class="pa-bar"><nav class="pa-path" aria-label="에이전트 경로">' + path + '</nav>'
     + '<button type="button" class="pa-toggle" id="pa-toggle" data-agent-list-toggle="1" aria-expanded="' + (_panelAgentListOpen ? 'true' : 'false') + '" aria-controls="pa-list">'
     + AGENTS_SVG + '<span>에이전트 ' + total + '</span><svg class="pa-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button></div>';
@@ -6270,8 +6278,26 @@ function renderPanelAgents() {
     }
   }
   html += '</div>';
+  // A live update (sessionUpdated, a board push) with the same data must not
+  // touch the bar: rewriting it would drop the reader's focus and list scroll.
+  if (html === _panelAgentsHtml && el.style.display === '') return;
+  var oldList = el.querySelector ? el.querySelector('#pa-list') : null;
+  var keepScroll = oldList ? oldList.scrollTop : 0;
+  var active = document.activeElement;
+  var keepFocus = active && el.contains && el.contains(active)
+    ? (active.id === 'pa-toggle' ? '#pa-toggle' : active.getAttribute && active.getAttribute('data-agent-select'))
+    : null;
+  el.style.display = '';
   el.innerHTML = html;
+  _panelAgentsHtml = html;
   updateTimersIn(el);
+  var newList = el.querySelector ? el.querySelector('#pa-list') : null;
+  if (newList && keepScroll) newList.scrollTop = keepScroll;
+  if (keepFocus !== null && keepFocus !== undefined && el.querySelector) {
+    var target = keepFocus === '#pa-toggle' ? el.querySelector('#pa-toggle')
+      : el.querySelector('#pa-list [data-agent-select="' + escAttr(keepFocus) + '"]');
+    if (target && target.focus) target.focus();
+  }
 }
 function togglePanelAgentList() {
   _panelAgentListOpen = !_panelAgentListOpen;
@@ -6334,7 +6360,8 @@ function wlScopeEntries(entries) {
   for (var i = 0; i < list.length; i++) {
     var v = wlScopeEntry(list[i], _panelAgent);
     if (!v) continue;
-    if (bg && v._role === 'result') v._role = 'ack';
+    // …but a failed result is the spawn failing, never a background start.
+    if (bg && v._role === 'result' && v.ok !== false) v._role = 'ack';
     out.push(v);
   }
   return out;
