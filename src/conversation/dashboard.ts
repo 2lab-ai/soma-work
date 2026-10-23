@@ -6915,7 +6915,16 @@ async function changeModel(key, select) {
   var r;
   try { r = await postModelSwitch(key, nickname); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
   _modelNotes[key] = modelSwitchNote(r);
-  if (select) { select.disabled = false; select.blur(); }
+  if (select) {
+    select.disabled = false;
+    select.blur();
+    // A refused switch puts the picker back on the session's model (the
+    // option the card rendered as selected) — also when the same refusal
+    // leaves the card's markup unchanged and the refresh writes nothing.
+    if (!r.ok) {
+      for (var i = 0; i < select.options.length; i++) if (select.options[i].defaultSelected) select.selectedIndex = i;
+    }
+  }
   refreshCard(key);
   loadSessions();
 }

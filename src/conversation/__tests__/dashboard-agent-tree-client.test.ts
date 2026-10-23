@@ -32,7 +32,8 @@ function assertUnique(name: string) {
 }
 function clientFn(name: string): string {
   assertUnique(name);
-  const start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  let start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  if (start < 0) start = TEMPLATE.indexOf(`\nasync function ${name}(`);
   if (start < 0) throw new Error(`client function ${name} not found`);
   const end = TEMPLATE.indexOf('\n}\n', start);
   return cook(TEMPLATE.slice(start + 1, end + 2));
@@ -666,6 +667,31 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
     m.renderPanelTasks([...tasks, { id: 'T2', content: 'b', status: 'pending' }], 'A1 Explore');
     expect(writes).toBe(2);
     expect(fnBody('renderPanelTasks')).not.toContain('container.innerHTML =');
+  });
+  it('a refused model switch puts the picker back on the session model — also the second time, when the card markup does not change (review B r4 astra)', async () => {
+    const select = {
+      value: 'sonnet',
+      disabled: false,
+      selectedIndex: 1,
+      options: [{ defaultSelected: true }, { defaultSelected: false }],
+      blur() {},
+    };
+    let refreshed = 0;
+    const m = load<{ changeModel(k: string, s: unknown): Promise<void> }>(['modelSwitchNote', 'changeModel'], [], {
+      postModelSwitch: async () => ({ ok: false, error: 'rejected' }),
+      _modelNotes: {},
+      formatTokens: String,
+      refreshCard: () => {
+        refreshed++; // same markup on the second refusal: the card writes nothing
+      },
+      loadSessions: () => {},
+    });
+    await m.changeModel('k', select);
+    expect(select.selectedIndex).toBe(0);
+    select.selectedIndex = 1;
+    await m.changeModel('k', select);
+    expect(select.selectedIndex).toBe(0);
+    expect(refreshed).toBe(2);
   });
   it('a group head is morphed, not replaced, and skipped when its markup is unchanged', () => {
     const body = fnBody('wlRefreshGroupHead');
