@@ -2758,6 +2758,20 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     question.style.display = 'none';
     el('panel-worklog').style.display = '';
     const turns = el('panel-turns');
+    // openPanel's .then and .catch both end in a landing, so a harness gap (a new
+    // dependency of openPanel that is not injected) would silently run the
+    // failure path and still land. Make that loud: only a 'fail' run may show it.
+    const outcome = opts.turns === 'held' ? (opts.settle ?? 'ok') : (opts.turns ?? 'ok');
+    let turnsHtml = '';
+    Object.defineProperty(turns, 'innerHTML', {
+      get: () => turnsHtml,
+      set: (v: string) => {
+        if (v.includes('Failed to load conversation') && outcome !== 'fail')
+          throw new Error('openPanel took its failure path on a successful load: the harness is missing a dependency');
+        turnsHtml = v;
+      },
+      configurable: true,
+    });
     const qH = () => (question.style.display === 'none' ? 0 : (opts.questionHeight ?? 420));
     const tH = () => (turns.innerHTML.includes('class="turn') ? TURNS_LOADED : TURNS_PLACEHOLDER);
     const scroll = el('panel-scroll');
@@ -2791,7 +2805,6 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     const payload = { id: 'conv1', titleSub: 'sub', hasMore: false, turns: [{ id: 't1', role: 'assistant' }] };
     const fetchImpl = () => {
       if (opts.turns === 'fail') return Promise.reject(new Error('down'));
-      const outcome = opts.turns === 'held' ? (opts.settle ?? 'ok') : opts.turns;
       const res = { json: async () => (outcome === 'empty' ? { ...payload, turns: [] } : payload) };
       if (opts.turns === 'held')
         return new Promise((r, j) => (release = () => (outcome === 'fail' ? j(new Error('down')) : r(res))));
@@ -2843,6 +2856,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         renderTurn: (t: { id: string }) => `<div class="turn assistant" data-turn-id="${t.id}"></div>`,
         attachRawToggleHandlers: () => {},
         generateTitleSub: () => {},
+        _panelTitleSub: '',
+        panelTitleSubCanRegen: () => true,
         loadWorkLog: () => {},
         renderMdBasic: String, // carries backticks, so it cannot be cooked; no question here has context
         timeAgo: () => '',
