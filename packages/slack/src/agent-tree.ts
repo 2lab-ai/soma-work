@@ -30,6 +30,23 @@ export function isBackgroundAckText(text: unknown): boolean {
   );
 }
 
+/** Longest agent id kept anywhere (the work log clips `agentId` / `agentRef` to the same length). */
+export const AGENT_ID_MAX = 200;
+
+/**
+ * The one way an agent id is shortened, so the registry and the work log always
+ * hold the same string for the same agent. SDK ids are ~30 chars; this only
+ * matters for a hostile or broken producer. Same rule as the work log's
+ * field clamp: keep `max - 1` units, never split a surrogate pair, add `…`.
+ */
+export function normalizeAgentId(id: string): string {
+  if (id.length <= AGENT_ID_MAX) return id;
+  let end = AGENT_ID_MAX - 1;
+  const lastKept = id.charCodeAt(end - 1);
+  if (lastKept >= 0xd800 && lastKept <= 0xdbff) end -= 1;
+  return `${id.slice(0, end)}…`;
+}
+
 export type AgentTaskStatus = 'pending' | 'in_progress' | 'completed';
 
 export interface AgentLifecycleUsage {

@@ -1749,7 +1749,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onIdleTimeout: () => {
           abortController.abort('stall-timeout' satisfies RequestAbortReason);
         },
-        onToolUse: async (toolUses, ctx) => {
+        onToolUse: async (allToolUses, ctx) => {
           // Ghost Session Fix #99: self-terminate if session was terminated while streaming.
           // Tag the abort with `'ghost-session'` so handleError surfaces a
           // 🔴 terminal card. An untagged abort here previously fell
@@ -1760,6 +1760,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
+          // Spec 12 §2.2: what the main agent is doing — the thread header's
+          // current tool, the Slack tool rows, the request's tool stats — is
+          // the main agent's calls only. A subagent's are in its own work log.
+          const toolUses = allToolUses.filter((tu) => !tu.parentToolUseId);
+          if (toolUses.length === 0) return;
           if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
             await this.deps.reactionManager.updateReaction(
               sessionKey,
@@ -1804,13 +1809,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
           turnCollector.onPhaseChange('도구 실행 중');
         },
-        onToolResult: async (toolResults, ctx) => {
+        onToolResult: async (allToolResults, ctx) => {
           // Ghost Session Fix #99: self-terminate if session was terminated while streaming.
           // Same tagging rationale as onToolUse above — see §B-1.
           if (session.terminated) {
             abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
+          // Spec 12 §2.2: the Slack tool surfaces (stats, status, tool rows,
+          // the turn observer) take the main agent's results; the host's own
+          // work on a result — git metrics, model commands — takes every
+          // agent's, as before attribution (review round 2).
+          const toolResults = allToolResults.filter((tr) => !tr.parentToolUseId);
           // Accumulate per-request tool stats
           for (const tr of toolResults) {
             const name = tr.toolName || 'unknown';
@@ -1823,15 +1833,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             toolStats[name].count++;
             toolStats[name].totalDurationMs += duration;
           }
-          await this.updateRuntimeStatus(
-            session,
-            ctx.sessionKey,
-            {
-              agentPhase: '결과 반영 중',
-              activeTool: undefined,
-            },
-            turnEpochToken,
-          );
+          if (toolResults.length > 0) {
+            await this.updateRuntimeStatus(
+              session,
+              ctx.sessionKey,
+              {
+                agentPhase: '결과 반영 중',
+                activeTool: undefined,
+              },
+              turnEpochToken,
+            );
+          }
           // Re-check after the await: a delete during the status write has
           // already drained this session's background tracking, and the
           // spawn-ack below would re-add an entry nothing will ever settle.
@@ -1839,22 +1851,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
-          await this.deps.toolEventProcessor.handleToolResult(toolResults, {
-            channel: ctx.channel,
-            threadTs: ctx.threadTs,
-            sessionKey: ctx.sessionKey,
-            say: ctx.say,
-            logVerbosity: getVerbosity(),
-            // Checked at the tracker mutation itself: a delete can land while an
-            // earlier result of this batch awaits, after the guard above.
-            isSessionTerminated: () => session.terminated === true,
-            // #664 P2 absorb: same turnId as the matching tool_use event,
-            // so sink-side lookups stay on one B1 stream handle.
-            turnId,
-          });
-          // Metrics: detect git/gh commands in Bash output (fire-and-forget)
+          if (toolResults.length > 0)
+            await this.deps.toolEventProcessor.handleToolResult(toolResults, {
+              channel: ctx.channel,
+              threadTs: ctx.threadTs,
+              sessionKey: ctx.sessionKey,
+              say: ctx.say,
+              logVerbosity: getVerbosity(),
+              // Checked at the tracker mutation itself: a delete can land while an
+              // earlier result of this batch awaits, after the guard above.
+              isSessionTerminated: () => session.terminated === true,
+              // #664 P2 absorb: same turnId as the matching tool_use event,
+              // so sink-side lookups stay on one B1 stream handle.
+              turnId,
+            });
+          // Metrics: detect git/gh commands in Bash output (fire-and-forget) — every agent's.
           interceptToolResults(
-            toolResults,
+            allToolResults,
             session.ownerId,
             session.ownerName || 'unknown',
             ctx.sessionKey,
@@ -1863,7 +1876,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
             },
           );
-          const commandResult = await this.handleModelCommandToolResults(toolResults, session, ctx, turnEpochToken);
+          const commandResult = await this.handleModelCommandToolResults(allToolResults, session, ctx, turnEpochToken);
           if (commandResult.hasPendingChoice) {
             toolChoicePending = true;
             // renderAskUserQuestionFromCommand raised the open-choice bit.

@@ -55,8 +55,10 @@ SSOT: [`agent-tree/ssot.md`](agent-tree/ssot.md) · 앞선 계약: [`10-agent-in
   `agentOutcome.status !== 'completed'` → 스폰 입력 `run_in_background` → 결과 텍스트(`isBackgroundAckText`, 최후 폴백).
 - 서브의 호출별 usage → `onLiveUsage({…, sidechain: true})`, `_lastAssistantTurnUsage`는 메인 것만.
 - `agent_task_lifecycle` → `lifecycle{agentId?(tool_use_id), taskId, phase, taskType, status, …}`.
-- 서브의 도구 호출·결과는 `onToolUse`/`onToolResult`(스레드 헤더의 현재 도구, Slack 도구 행, 요청 툴 통계)와 Slack 스킬 배너로
-  가지 않는다 — 메인이 하는 일만 Slack 표면에 남고, 서브의 것은 그 서브의 작업 로그에 있다. 마지막 도구(`endTurnInfo`)도 메인 것.
+- 서브의 도구 호출·결과도 `onToolUse`/`onToolResult`로 넘어가되 `parentToolUseId`(결과는 `toolName`까지)를 싣는다. 실행기는 Slack 표면
+  (스레드 헤더의 현재 도구·Slack 도구 행·요청 툴 통계·턴 관측기)을 메인 것으로만 그리고, 호스트 처리(모델 커맨드 — `ASK_USER_QUESTION`·
+  `UPDATE_SESSION` 등, git 메트릭)는 모든 에이전트의 결과에 돈다. Slack 스킬 배너·레거시 도구 행·마지막 도구(`endTurnInfo`)도 메인 것.
+- 에이전트 id는 `normalizeAgentId`(≤200, 작업 로그 필드 클램프와 같은 규칙) 하나로 줄여 레지스트리와 작업 로그가 같은 문자열을 갖는다.
 - 스폰의 tool_result가 오류면 `ack`가 아니다(시작되지 않았다) → `failed`.
 - 턴 끝(정상·사용자 중단·stall 타임아웃·예외 모두) → `turn_end`.
 - `forwardSubagentText`·`agentProgressSummaries`는 켜지 않는다(설계 자문 Q2·Q3: 누출 위험·비용 대비 이득 부족). 켜도 위 분기가
