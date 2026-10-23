@@ -394,6 +394,8 @@ export function loadMemoryWithRevision(userId: string, target: MemoryTarget): Me
 
 export type MemoryEdit =
   | { kind: 'add'; text: string }
+  /** The tab's undo of a delete: the exact note back, held to the total limit and duplicates like Slack's add, not to the per-entry cap of a new note. */
+  | { kind: 'restore'; text: string }
   | { kind: 'replace'; index: number; text: string }
   | { kind: 'remove'; index: number }
   | { kind: 'clear' };
@@ -425,9 +427,9 @@ export function editMemoryAt(
     const entries = readEntries(userId, target);
     const inRange = (i: number) => Number.isInteger(i) && i >= 0 && i < entries.length;
     let r: { ok: boolean; message?: string; reason?: string };
-    if (edit.kind === 'add') {
+    if (edit.kind === 'add' || edit.kind === 'restore') {
       const text = String(edit.text ?? '').trim();
-      if (text.length > getPerEntryCap(target)) {
+      if (edit.kind === 'add' && text.length > getPerEntryCap(target)) {
         return {
           ok: false,
           reason: 'invalid',

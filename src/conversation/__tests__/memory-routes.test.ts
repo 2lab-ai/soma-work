@@ -100,6 +100,22 @@ describe('memory routes (SSOT 2026-10-23 T3)', () => {
     expect(r.body.episodicDates).toEqual(['2026-10-22', '2026-10-01']);
   });
 
+  it('L1 undo restores a long note Slack saved; a plain add keeps the per-entry cap (review R5)', async () => {
+    const long = 'x'.repeat(700); // over the 660-character cap of a new note, within the 2,200 total
+    expect(mem.addMemory(user, 'memory', long).ok).toBe(true); // what Slack allows
+    let rev = (await call('GET', '/api/memory')).body.l1.memory.revision;
+    let r = await call('DELETE', '/api/memory/l1/memory/0', { revision: rev });
+    expect(r.status).toBe(200);
+    rev = r.body.l1.revision;
+    expect((await call('POST', '/api/memory/l1/memory', { text: long, revision: rev })).status).toBe(400);
+    r = await call('POST', '/api/memory/l1/memory', { text: long, revision: rev, restore: true });
+    expect(r.status).toBe(200);
+    expect(r.body.l1.entries).toEqual([long]);
+    // a restore still respects the total limit and duplicates
+    r = await call('POST', '/api/memory/l1/memory', { text: long, revision: r.body.l1.revision, restore: true });
+    expect(r.status).toBe(400);
+  });
+
   it('L1: add, replace, delete and clear — each conditional on the loaded revision', async () => {
     mem.addMemory(user, 'memory', 'one');
     let rev = (await call('GET', '/api/memory')).body.l1.memory.revision;
