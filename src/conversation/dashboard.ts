@@ -9222,6 +9222,27 @@ function scrollPanelToWorkLog() {
   var headerHeight = toggle ? toggle.getBoundingClientRect().height : 0;
   scrollEl.scrollTo({ top: workLogLandingTop(sectionTop, headerHeight, scrollEl.clientHeight), behavior: 'instant' });
 }
+// Where an opening lands (§3.1-6) — on open, and again once the scroll area
+// has its content. 작업 로그 / ?session=: the work-log header. Any other
+// opening (답변하기): the open question, which heads the scroll area, so the
+// answer form is in view at once; with no question shown (none, or answered
+// while the turns loaded) the newest turns, held while the panel settles until
+// the reader acts. The question landing is made once per opening: turns load
+// below the form and do not move it, and a reader who scrolled meanwhile stays.
+var _panelOnQuestion = false;
+function landPanel() {
+  var scrollEl = document.getElementById('panel-scroll');
+  if (!scrollEl) return;
+  if (_panelFocusWorkLog) { scrollPanelToWorkLog(); return; }
+  var question = document.getElementById('panel-question');
+  var onQuestion = !!question && question.style.display !== 'none';
+  if (onQuestion && _panelOnQuestion) return;
+  _panelOnQuestion = onQuestion;
+  // Instant: under scroll-behavior: smooth the glide down from 0 passed
+  // through scrollTop < 100 and set off the load-older-turns handler.
+  scrollEl.scrollTo({ top: onQuestion ? 0 : scrollEl.scrollHeight, behavior: 'instant' });
+  _panelStickBottom = !onQuestion;
+}
 
 // ── Slide Panel ──
 // focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link:
@@ -9256,6 +9277,7 @@ function openPanel(sessionKey, focusWorkLog) {
   setWorkLogOpen(false); // every opening starts collapsed (§3.1-6)
   _panelOlderArmed = false; // a landing never loads older turns by itself
   _panelStickBottom = false;
+  _panelOnQuestion = false;
 
   // #762 — single source of truth for headline. displayHeadline carries the
   // server-resolved priority chain; older WS messages without it still get a
@@ -9317,6 +9339,7 @@ function openPanel(sessionKey, focusWorkLog) {
   const turnsEl = document.getElementById('panel-turns');
   if (s.conversationId) {
     turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Loading...</p>';
+    landPanel(); // the answer form is in view while the turns load
     _panelTurnsLoading = true;
     var loadingConvId = s.conversationId;
     var loadingGen = _panelGen;
@@ -9339,6 +9362,7 @@ function openPanel(sessionKey, focusWorkLog) {
 
         if (!data.turns || data.turns.length === 0) {
           turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation turns</p>';
+          landPanel();
           _panelTurnsLoading = false;
           return;
         }
@@ -9347,27 +9371,18 @@ function openPanel(sessionKey, focusWorkLog) {
         _panelTurnsOldestId = data.turns[0] && data.turns[0].id;
         turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
         attachRawToggleHandlers();
-        // Jump to bottom on fresh load — or to the collapsed work-log header when
-        // that is what the user asked for (작업 로그 button / ?session= deep link).
-        var scrollEl = document.getElementById('panel-scroll');
-        // Instant: under scroll-behavior: smooth the glide down from 0 passed
-        // through scrollTop < 100 and set off the load-older-turns handler.
-        if (_panelFocusWorkLog) scrollPanelToWorkLog();
-        else if (scrollEl) {
-          scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
-          // Stay on the newest turns while the panel settles (the subtitle
-          // arriving later makes the scroll area shorter) until the reader scrolls.
-          _panelStickBottom = true;
-        }
+        landPanel();
         _panelTurnsLoading = false;
       })
       .catch(function() {
         if (loadingGen !== _panelGen) return;
         turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Failed to load conversation</p>';
+        landPanel();
         _panelTurnsLoading = false;
       });
   } else {
     turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation recorded</p>';
+    landPanel();
   }
 
   // Command input — always visible; disabled + hint for terminated / sleeping
@@ -9675,6 +9690,7 @@ function closePanel() {
   resetWorkLog(null, false);
   _panelFocusWorkLog = false;
   _panelStickBottom = false;
+  _panelOnQuestion = false;
 }
 
 document.addEventListener('keydown', function(e) {
