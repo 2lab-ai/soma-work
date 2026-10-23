@@ -370,17 +370,28 @@ const visibleSeqs = (page: Page) =>
   });
 
 // Spec 12 §4.4 — push a sessionUpdated over the stubbed socket: the session as
-// the page holds it, changed by `edit` (a JS function body over `s`).
-async function pushSession(page: Page, key: string, edit: string) {
+// the page holds it, with one agent's tool count raised and the last activity
+// moved (both optional; no edit = the same payload again).
+interface SessionEdit {
+  agent?: string;
+  tools?: number;
+  shiftMs?: number;
+}
+// The page's own session cache (a top-level `let` of the dashboard script).
+declare const _sessionCache: Record<
+  string,
+  { agents?: Array<{ id: string; toolCalls: number }>; lastActivity: string }
+>;
+async function pushSession(page: Page, key: string, edit: SessionEdit = {}) {
   await page.evaluate(
-    ([k, body]) => {
-      // biome-ignore lint/suspicious/noExplicitAny: page globals are untyped client code
-      const w = window as any;
-      const s = JSON.parse(JSON.stringify(w.eval('_sessionCache')[k]));
-      new Function('s', body)(s);
-      w.__ws.onmessage({ data: JSON.stringify({ type: 'sessionUpdated', session: s }) });
+    ({ k, e }) => {
+      const s = JSON.parse(JSON.stringify(_sessionCache[k]));
+      for (const a of s.agents ?? []) if (a.id === e.agent) a.toolCalls += e.tools ?? 0;
+      if (e.shiftMs) s.lastActivity = new Date(Date.parse(s.lastActivity) + e.shiftMs).toISOString();
+      // biome-ignore lint/suspicious/noExplicitAny: the stub socket the page opened
+      (window as any).__ws.onmessage({ data: JSON.stringify({ type: 'sessionUpdated', session: s }) });
     },
-    [key, edit] as const,
+    { k: key, e: edit },
   );
   await page.waitForTimeout(120);
 }
@@ -454,11 +465,7 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
     (row.querySelector('.ag-span i') as any).__mark = 1;
   }, K('200'));
-  await pushSession(
-    page,
-    K('200'),
-    's.agents.forEach(function (a) { if (a.id === "toolu_explore") a.toolCalls += 1; }); s.lastActivity = new Date(Date.parse(s.lastActivity) + 60000).toISOString();',
-  );
+  await pushSession(page, K('200'), { agent: 'toolu_explore', tools: 1, shiftMs: 60_000 });
   const liveCard = await page.evaluate((key) => {
     // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
     const row = document.querySelector(`[data-session-key="${key}"] .ag-row[data-agent-open="toolu_explore"]`) as any;
@@ -523,8 +530,8 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
       head.focus();
       head.__mark = 1;
     });
-    await pushSession(page, K('200'), '');
-    await pushSession(page, K('200'), 's.agents[0].toolCalls += 1;');
+    await pushSession(page, K('200'));
+    await pushSession(page, K('200'), { agent: 'toolu_explore', tools: 1 });
     return page.evaluate(() => {
       // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
       const a = document.activeElement as any;
@@ -542,7 +549,7 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
       crumb.focus();
       crumb.__mark = 1;
     });
-    await pushSession(page, K('200'), 's.agents[0].toolCalls += 1;');
+    await pushSession(page, K('200'), { agent: 'toolu_explore', tools: 1 });
     return page.evaluate(() => {
       // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
       const a = document.activeElement as any;
@@ -586,6 +593,13 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
       .map((b) => b.textContent)
       .join(' › '),
   );
+  const kbFocus = await page.evaluate(() => {
+    const a = document.activeElement;
+    return a?.classList.contains('pa-crumb') && a.getAttribute('aria-current') === 'true'
+      ? a.textContent
+      : (a?.tagName ?? '');
+  });
+  check(kbFocus === 'A1 Explore', `${tag}: after the keyboard switch focus is on the shown agent's crumb (${kbFocus})`);
   check(
     onLink && kbPath === '메인 › A1 Explore',
     `${tag}: keyboard ↓ + Enter on 서브에이전트 열기 opens it (${onLink}, ${kbPath})`,

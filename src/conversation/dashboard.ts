@@ -6171,10 +6171,22 @@ function domMorph(a, b) {
   }
   domMorphChildren(a, b);
 }
+function domKeyLater(n, key) {
+  for (; n; n = n.nextSibling) if (domKeyOf(n) === key) return true;
+  return false;
+}
 function domMorphChildren(a, b) {
   var cur = a.firstChild;
   var next = b.firstChild;
   while (next) {
+    // A live node the fresh markup no longer has (an agent row that left)
+    // goes first, so the rows after it still pair with their own nodes.
+    if (cur && domKeyOf(cur) !== domKeyOf(next) && !domKeyLater(next, domKeyOf(cur))) {
+      var dropped = cur;
+      cur = cur.nextSibling;
+      a.removeChild(dropped);
+      continue;
+    }
     var after = next.nextSibling;
     if (cur && domKeyOf(cur) === domKeyOf(next)) {
       domMorph(cur, next);
@@ -6354,6 +6366,8 @@ function togglePanelAgentList() {
 // Switch the panel's scope: its Tasks and work log follow the chosen agent.
 // The work log keeps one open/closed map of task groups per agent.
 function selectPanelAgent(agentId) {
+  var before = document.activeElement;
+  var focusInPanel = !!(before && before !== document.body && before.closest && before.closest('#slide-panel'));
   var next = agentId || '';
   if (_wl) {
     var saved = _wl.groupOpenBy || (_wl.groupOpenBy = Object.create(null));
@@ -6366,6 +6380,13 @@ function selectPanelAgent(agentId) {
   renderPanelAgents();
   renderPanelTasks(panelAgentTasks(), panelAgentLabel());
   repaintWorkLogScope();
+  // A keyboard choice (a list row, 서브에이전트 열기) went with the list it was
+  // in: focus lands on the agent now shown, not on <body>.
+  var after = document.activeElement;
+  if (focusInPanel && (!after || after === document.body || !document.body.contains(after))) {
+    var here = document.querySelector('#panel-agents button.pa-crumb[aria-current="true"]') || document.getElementById('pa-toggle');
+    if (here && here.focus) here.focus();
+  }
 }
 function repaintWorkLogScope() {
   var list = document.getElementById('worklog-list');
