@@ -17,7 +17,12 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { applyPostCompactOccupancy, selectCurrentContextTokens, toTurnUsage } from '../session-usage-math';
+import {
+  applyPostCompactOccupancy,
+  selectCurrentContextTokens,
+  settleFoldedLiveUsage,
+  toTurnUsage,
+} from '../session-usage-math';
 
 describe('selectCurrentContextTokens', () => {
   const aggregates = {
@@ -295,5 +300,55 @@ describe('toTurnUsage', () => {
 
     expect(turn).toBe(perTurn);
     expect(next).toBe(baseline);
+  });
+});
+
+describe('settleFoldedLiveUsage', () => {
+  const turn = (input: number, cost: number, breakdown = true) => ({
+    inputTokens: input,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    totalCostUsd: cost,
+    ...(breakdown
+      ? {
+          modelBreakdown: {
+            opus: {
+              inputTokens: input,
+              outputTokens: 0,
+              cacheReadInputTokens: 0,
+              cacheCreationInputTokens: 0,
+              costUsd: cost,
+            },
+          },
+        }
+      : {}),
+  });
+  const folded = { inputTokens: 200, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, costUsd: 0.2 };
+
+  it('takes the turn spend minus what was already folded, and settles the fold', () => {
+    const { spend, folded: rest } = settleFoldedLiveUsage(turn(300, 0.3), folded);
+    expect(spend.inputTokens).toBe(100);
+    expect(spend.totalCostUsd).toBeCloseTo(0.1);
+    expect(rest).toBeUndefined();
+  });
+
+  it('never goes below zero when the result carries less than was folded', () => {
+    const { spend, folded: rest } = settleFoldedLiveUsage(turn(50, 0.05), folded);
+    expect(spend.inputTokens).toBe(0);
+    expect(spend.totalCostUsd).toBe(0);
+    expect(rest).toBeUndefined();
+  });
+
+  it('keeps the fold across a zero-spend (crash) result', () => {
+    const { spend, folded: rest } = settleFoldedLiveUsage(turn(0, 0), folded);
+    expect(spend.totalCostUsd).toBe(0);
+    expect(rest).toBe(folded);
+  });
+
+  it('per-turn usage (no breakdown) is taken whole and drops the fold', () => {
+    const { spend, folded: rest } = settleFoldedLiveUsage(turn(300, 0.3, false), folded);
+    expect(spend.inputTokens).toBe(300);
+    expect(rest).toBeUndefined();
   });
 });

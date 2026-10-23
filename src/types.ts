@@ -112,6 +112,18 @@ export interface SessionUsage {
     }
   >;
 
+  /**
+   * Spend a result-less turn folded into the totals above, until the next
+   * resumed result settles it (`settleFoldedLiveUsage`). Runtime-only.
+   */
+  foldedLiveUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreateTokens: number;
+    costUsd: number;
+  };
+
   lastUpdated: number; // Timestamp of last update
 }
 
