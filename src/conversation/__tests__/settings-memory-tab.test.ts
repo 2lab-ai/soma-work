@@ -95,6 +95,30 @@ describe('개인 메모리 cards', () => {
   });
 });
 
+describe('개인 메모리 undo (review R5)', () => {
+  it('undo asks for an exact restore, and a refused restore keeps the text in the add box and the undo offered', async () => {
+    const addBox: any = { value: '' };
+    const status: any = { textContent: '', setAttribute() {} };
+    const long = '긴 노트 '.repeat(140); // 700 chars: more than a new note may have, saved by Slack
+    const apiWrite = vi.fn().mockResolvedValueOnce({ ok: false, status: 400, error: '저장 실패' });
+    const fns = load<any>(['l1Undo', 'l1Write', 'memStatus', 'restoreL1Draft'], [], {
+      document: { getElementById: (id: string) => (id === 'l1-new-memory' ? addBox : status) },
+      _mem: { l1: { memory: { entries: [], revision: 'r2' } } },
+      _memUndo: { target: 'memory', text: long },
+      apiWrite,
+      paintL1: () => {},
+      loadMemory: async () => {},
+    });
+    await fns.l1Undo();
+    expect(apiWrite).toHaveBeenCalledWith('POST', '/api/memory/l1/memory', {
+      text: long,
+      revision: 'r2',
+      restore: true,
+    });
+    expect(addBox.value).toBe(long);
+  });
+});
+
 describe('개인 메모리 writes', () => {
   function env(apiWrite: any, extra: Record<string, unknown> = {}) {
     const status: any = { textContent: '', className: '', setAttribute: vi.fn() };
@@ -179,6 +203,7 @@ describe('개인 메모리 writes', () => {
     expect(apiWrite).toHaveBeenLastCalledWith('POST', '/api/memory/l1/memory', {
       text: '배포는 dev 먼저',
       revision: 'r9',
+      restore: true, // the exact note back (review R5)
     });
   });
 
@@ -711,6 +736,76 @@ describe('관찰 기록 (에피소딕)', () => {
     fns.pageRawMode(true);
     expect(detail.innerHTML).toContain('LATEST RAW v2');
     expect(detail.innerHTML).not.toContain('STALE RAW');
+  });
+
+  it('a save answer that arrives after another page was opened never retargets the open editor (review R5)', async () => {
+    const detail: any = { innerHTML: '' };
+    const status: any = { textContent: '', setAttribute() {} };
+    // what the editor shows: page B, as the user typed into it
+    const values: Record<string, string> = { 'pg-title': 'B title', 'pg-aliases': '', 'pg-current': 'b user edit' };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-page-detail' ? detail : id in values ? { value: values[id] } : { innerHTML: '', ...status },
+      querySelectorAll: () => [],
+    };
+    const pageA = { id: 'concepts/a', title: 'A', aliases: [], current: 'a', history: [], updated: '2026-10-23' };
+    const pageB = { id: 'concepts/b', title: 'B', aliases: [], current: 'b', history: [], updated: '2026-10-23' };
+    let answerA: (v: unknown) => void = () => {};
+    const apiWrite = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise((res) => (answerA = res)))
+      .mockResolvedValue({
+        ok: true,
+        data: { ok: true, page: pageB, revision: 'b2', raw: '# B\n', representable: true },
+      });
+    const pendingIndex: Array<() => void> = [];
+    const fns = load<any>(
+      [
+        'esc',
+        'escAttr',
+        'pageDraft',
+        'savePage',
+        'memStatus',
+        'renderPageConflict',
+        'renderPageEditor',
+        'openPage',
+        'pageAnswerElsewhere',
+      ],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      {
+        document: doc,
+        _memPage: { page: pageA, revision: 'a1', raw: '# A\n', representable: true },
+        apiWrite,
+        fetch: vi.fn(async () => ({
+          ok: true,
+          json: async () => ({ page: pageB, revision: 'b1', raw: '# B\n', representable: true }),
+        })),
+        refreshPageIndex: () => new Promise<void>((res) => pendingIndex.push(res)),
+        paintPageList: () => {},
+      },
+    );
+    const savingA = fns.savePage(); // the save of A goes out ...
+    await fns.openPage('concepts/b'); // ... and the user opens B before it is answered
+    answerA({
+      ok: true,
+      data: { ok: true, page: { ...pageA, title: 'A' }, revision: 'a2', raw: '# A\n', representable: true },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    // while the page list refreshes, the user saves B
+    const savingB = fns.savePage();
+    // let both saves finish: every page-list refresh completes
+    for (let k = 0; k < 10; k++) {
+      while (pendingIndex.length) pendingIndex.shift()?.();
+      await Promise.resolve();
+    }
+    await Promise.all([savingA, savingB]);
+    expect(apiWrite).toHaveBeenLastCalledWith(
+      'PUT',
+      '/api/memory/page',
+      expect.objectContaining({ id: 'concepts/b', revision: 'b1', current: 'b user edit' }),
+    );
+    expect(detail.innerHTML).not.toContain('concepts/a');
   });
 
   it('a successful form save keeps the saved raw markdown for a later switch to raw editing (review R4)', async () => {
