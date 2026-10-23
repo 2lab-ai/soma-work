@@ -138,6 +138,15 @@ describe('settings routes (SSOT 2026-10-23 T2)', () => {
     expect(JSON.parse(res.body)).toEqual({ error: '관리자만 바꿀 수 있습니다.' });
   });
 
+  it('a failing read answers a plain 500 without internal details', async () => {
+    registry.read.mockImplementationOnce(() => {
+      throw new Error('ENOENT /secret/path');
+    });
+    const res = await injectWebServer({ method: 'GET', url: '/api/settings', headers: await signIn('U1') });
+    expect(res.statusCode).toBe(500);
+    expect(res.body).not.toContain('/secret/path');
+  });
+
   it('503 when no registry is wired', async () => {
     routes.setSettingsRegistry(null);
     expect(

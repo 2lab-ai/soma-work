@@ -93,6 +93,8 @@ export interface SettingView {
 export interface SettingsSnapshot {
   userId: string;
   isAdmin: boolean;
+  /** Admin acceptance — without it the page is read-only. */
+  accepted: boolean;
   groups: typeof SETTING_GROUPS;
   settings: SettingView[];
 }
@@ -168,6 +170,12 @@ export interface SettingsRegistryDeps {
   validateWebhookUrl(url: string): { valid: boolean; error?: string };
   workingDirectoryFor(userId: string): string | undefined;
   isAdmin(userId: string): boolean;
+  /**
+   * Admin acceptance. A write for a user without it is refused: every store
+   * setter re-creates a missing record as accepted, so a settings write would
+   * otherwise undo an admin's deny (design review P1).
+   */
+  isAccepted(userId: string): boolean;
 }
 
 const EFFORT_LABELS: Record<string, string> = {
@@ -569,8 +577,14 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
 
   async function apply(userId: string, key: SettingKey, value: unknown): Promise<void> {
     switch (key) {
-      case 'defaultModel':
-        return viaApply(deps.apply.model, userId, expectString(value, key).trim());
+      case 'defaultModel': {
+        // A representative nickname (what the menus offer, e.g. grok[1m]) is
+        // saved as the model id it stands for — the /z model resolver does not
+        // know every nickname (grok[1m] → grok-4.6 lives in model-switch).
+        const input = expectString(value, key).trim();
+        const rep = deps.listModels(userId).find((m) => m.nickname === input);
+        return viaApply(deps.apply.model, userId, rep ? rep.model : input);
+      }
       case 'defaultEffort': {
         const effort = store.resolveEffortInput(expectString(value, key));
         if (!effort) throw new SettingsError(400, `effort는 ${deps.effortLevels.join(', ')} 중 하나여야 합니다`);
@@ -657,12 +671,16 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
       return {
         userId,
         isAdmin: deps.isAdmin(userId),
+        accepted: deps.isAccepted(userId),
         groups: SETTING_GROUPS,
         settings: ORDER.map((k) => view(userId, k)),
       };
     },
     async write(userId, key, value) {
       if (!(ORDER as string[]).includes(key)) throw new SettingsError(400, `알 수 없는 설정: ${key}`);
+      if (!deps.isAccepted(userId)) {
+        throw new SettingsError(403, '관리자 승인을 받은 뒤에 설정을 바꿀 수 있습니다');
+      }
       const k = key as SettingKey;
       const before = view(userId, k);
       if (!before.editable) throw new SettingsError(403, before.lockedReason || '바꿀 수 없는 설정입니다');

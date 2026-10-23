@@ -74,5 +74,6 @@ export function productionSettingsRegistry(): SettingsRegistry {
     // The same fixed path WorkingDirectoryManager resolves (no mkdir on read).
     workingDirectoryFor: (userId) => (config.baseDirectory ? path.join(config.baseDirectory, userId) : undefined),
     isAdmin: isAdminUser,
+    isAccepted: (userId) => userSettingsStore.isUserAccepted(userId),
   });
 }

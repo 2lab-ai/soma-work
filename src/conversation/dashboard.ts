@@ -2573,7 +2573,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; flex: none; }
 .topbar .topbar-account { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 0 1 auto; }
 /* SSOT 2026-10-23 T6 — the owner's default model / effort, one click from the top. */
-.topbar .topbar-defaults { position: relative; display: flex; gap: 6px; align-items: center; flex: none; }
+/* Above the full-screen panel overlay (99) and the panel (100): the chips stay
+   clickable while a session panel is open — that is when "열린 세션에도 적용" exists. */
+.topbar .topbar-defaults { position: relative; z-index: 101; display: flex; gap: 6px; align-items: center; flex: none; }
 .topbar .topbar-defaults[hidden] { display: none; }
 .topbar .td-chip { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 12px; color: var(--text-secondary); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; min-height: 30px; cursor: pointer; white-space: nowrap; transition: border-color var(--dur-press) var(--ease-out), transform var(--dur-press) var(--ease-out); }
 .topbar .td-chip b { color: var(--text); font-weight: 700; }
@@ -4816,6 +4818,12 @@ function renderDefaultsChips() {
   if (m) m.textContent = optionLabel(_myDefaults.model, _myDefaults.model.value);
   if (e) e.textContent = optionLabel(_myDefaults.effort, _myDefaults.effort.value);
 }
+// The session model switch takes representative nicknames only.
+function sessionAcceptsModel(value) {
+  var models = REPRESENTATIVE_MODELS || [];
+  for (var i = 0; i < models.length; i++) if (models[i].nickname === value) return true;
+  return false;
+}
 // The open session the owner may switch together with the default, or null.
 function defaultsScopeSession() {
   if (!panelOpen || !panelSessionKey) return null;
@@ -4905,6 +4913,8 @@ function pickDefaultFrom(el) {
 async function pickDefault(kind, value) {
   var also = document.getElementById('tdm-also-session');
   var session = also && also.checked ? defaultsScopeSession() : null;
+  var skipSession = !!session && kind === 'model' && !sessionAcceptsModel(value);
+  if (skipSession) session = null;
   closeDefaultsMenu();
   var key = kind === 'model' ? 'defaultModel' : 'defaultEffort';
   setDefaultsStatus('저장 중…', false);
@@ -4914,6 +4924,7 @@ async function pickDefault(kind, value) {
   _myDefaults[kind] = r.setting;
   renderDefaultsChips();
   var msg = '기본 ' + (kind === 'model' ? '모델' : 'effort') + ' → ' + optionLabel(r.setting, r.setting.value) + ' (새 세션부터)';
+  if (skipSession) msg += ' · 이 모델은 세션 전환 목록에 없어 열린 세션은 그대로';
   if (session) {
     var sr;
     try {
