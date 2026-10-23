@@ -153,6 +153,57 @@ function mapCommandLifecycle(m: Record<string, unknown>): AgentStreamEvent[] {
   return [{ type: 'steer_lifecycle', uuid, phase }];
 }
 
+/**
+ * Spec 12 §2.1 — the subagent a frame came from: the SDK stamps every frame a
+ * subagent produces with the id of the tool call that started it. Absent (no
+ * key) on the main agent's frames.
+ */
+function parentOf(message: unknown): { parentToolUseId?: string } {
+  const p = (message as { parent_tool_use_id?: unknown } | undefined)?.parent_tool_use_id;
+  return typeof p === 'string' && p.length > 0 ? { parentToolUseId: p } : {};
+}
+
+const AGENT_OUTCOME_STATUSES = new Set(['completed', 'async_launched', 'remote_launched']);
+
+/**
+ * Spec 12 §2.1 — an `Agent` call's structured outcome (SDK
+ * `tool_use_result`): whether it only launched a background run, and the run
+ * totals of a completed one. Any other tool's structured output is ignored.
+ */
+function agentOutcomeOf(message: unknown): {
+  agentOutcome?: { status: string; toolUses?: number; durationMs?: number };
+} {
+  const r = (message as { tool_use_result?: unknown } | undefined)?.tool_use_result;
+  if (!r || typeof r !== 'object') return {};
+  const o = r as Record<string, unknown>;
+  if (typeof o.status !== 'string' || !AGENT_OUTCOME_STATUSES.has(o.status)) return {};
+  const finite = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+  const toolUses = finite(o.totalToolUseCount);
+  const durationMs = finite(o.totalDurationMs);
+  return {
+    agentOutcome: {
+      status: o.status,
+      ...(toolUses !== undefined ? { toolUses } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+    },
+  };
+}
+
+/** Spec 12 — the lifecycle fields the agent tree shows (present only when the SDK sent them). */
+function lifecycleDetails(m: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (typeof m.subagent_type === 'string' && m.subagent_type) out.subagentType = m.subagent_type;
+  if (typeof m.description === 'string' && m.description) out.description = m.description;
+  if (typeof m.is_backgrounded === 'boolean') out.background = m.is_backgrounded;
+  const u = m.usage as Record<string, unknown> | undefined;
+  if (u && typeof u === 'object') {
+    const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+    out.usage = { totalTokens: n(u.total_tokens), toolUses: n(u.tool_uses), durationMs: n(u.duration_ms) };
+  }
+  if (typeof m.last_tool_name === 'string' && m.last_tool_name) out.lastToolName = m.last_tool_name;
+  return out;
+}
+
 export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMapper {
   // Carried across messages so the direct-usage fallback prices the correct
   // model tier when the result message itself does not carry `model`.
@@ -170,6 +221,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
       model?: unknown;
       content?: unknown[];
     };
+    const parent = parentOf(message);
 
     if (typeof inner.model === 'string' && inner.model.length > 0) {
       lastAssistantModelName = inner.model;
@@ -200,6 +252,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
             lastTurnCacheCreateTokens,
             ...(typeof inner.id === 'string' && inner.id ? { lastTurnMessageId: inner.id } : {}),
           },
+          ...parent,
         });
       }
     }
@@ -210,7 +263,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
     // Thinking always emits, regardless of the tool-use branch.
     for (const part of content) {
       if (part.type === 'thinking' && part.thinking) {
-        events.push({ type: 'thought_delta', text: String(part.thinking) });
+        events.push({ type: 'thought_delta', text: String(part.thinking), ...parent });
       }
     }
 
@@ -224,6 +277,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
             toolCallId: String(part.id),
             name: String(part.name),
             input: part.input,
+            ...parent,
           });
         }
       }
@@ -232,7 +286,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
       // parsing is a P4 concern, applied to the committed buffer).
       for (const part of content) {
         if (part.type === 'text' && typeof part.text === 'string') {
-          events.push({ type: 'assistant_delta', text: part.text });
+          events.push({ type: 'assistant_delta', text: part.text, ...parent });
         }
       }
     }
@@ -245,19 +299,23 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
     const content = (inner?.content ?? (message as { content?: unknown }).content) as unknown;
     if (!Array.isArray(content)) return [];
     const events: AgentStreamEvent[] = [];
-    for (const block of content as Array<Record<string, unknown>>) {
-      if (block.type === 'tool_result') {
-        events.push({
-          type: 'tool_result',
-          toolCallId: String(block.tool_use_id ?? ''),
-          content: normalizeToolResultContent(block.content),
-          // Preserve absence: a tool_result without `is_error` maps to
-          // `undefined` (not `false`) so downstream ToolFormatter output is
-          // byte-identical to the prior SDK-message path.
-          isError: typeof block.is_error === 'boolean' ? block.is_error : undefined,
-          rawOutput: block.content,
-        });
-      }
+    const parent = parentOf(message);
+    const blocks = (content as Array<Record<string, unknown>>).filter((block) => block.type === 'tool_result');
+    // The structured outcome belongs to the message's one tool result.
+    const outcome = blocks.length === 1 ? agentOutcomeOf(message) : {};
+    for (const block of blocks) {
+      events.push({
+        type: 'tool_result',
+        toolCallId: String(block.tool_use_id ?? ''),
+        content: normalizeToolResultContent(block.content),
+        // Preserve absence: a tool_result without `is_error` maps to
+        // `undefined` (not `false`) so downstream ToolFormatter output is
+        // byte-identical to the prior SDK-message path.
+        isError: typeof block.is_error === 'boolean' ? block.is_error : undefined,
+        rawOutput: block.content,
+        ...parent,
+        ...outcome,
+      });
     }
     return events;
   }
@@ -471,6 +529,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
           taskId,
           toolUseId: typeof m.tool_use_id === 'string' ? m.tool_use_id : undefined,
           taskType: typeof m.task_type === 'string' ? m.task_type : undefined,
+          ...lifecycleDetails(m),
         },
       ];
     }
@@ -484,6 +543,8 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
           phase: 'progress',
           taskId,
           toolUseId: typeof m.tool_use_id === 'string' ? m.tool_use_id : undefined,
+          ...lifecycleDetails(m),
+          ...(typeof m.summary === 'string' && m.summary ? { summary: m.summary } : {}),
         },
       ];
     }
@@ -503,6 +564,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
           status,
           outputFile: typeof m.output_file === 'string' ? m.output_file : undefined,
           summary: typeof m.summary === 'string' ? m.summary : undefined,
+          ...lifecycleDetails(m),
         },
       ];
     }

@@ -39,6 +39,7 @@ registerSkillStore({
 
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
+import type { AgentTreeEvent } from '@soma/slack/agent-tree';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
@@ -67,6 +68,7 @@ import {
   setDashboardGoalHandler,
   setDashboardModelHandler,
   setDashboardMultiChoiceAnswerHandler,
+  setDashboardNewTaskProvider,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
@@ -80,6 +82,7 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
+import { createNewTaskProvider } from './conversation/new-task-provider';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
 import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
@@ -110,10 +113,11 @@ import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
+import { applyAgentEvent, stampWorkLogAgent } from './session/agent-registry';
 import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
-import { applyTodoList, ledgerTasks, stampWorkLogTask } from './session/task-ledger';
+import { applyTodoList, ledgerTasks } from './session/task-ledger';
 import { canApplySummaryTitle } from './session-title-policy';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
@@ -890,6 +894,29 @@ async function start() {
       }
     });
 
+    // Connect dashboard: "New task" (SSOT 2026-10-23) — the composer's
+    // context and the launch. A task is the user's own message on a fresh
+    // thread in the chosen channel, so it runs through handleMessage like a
+    // message typed in Slack (autogoal, autoskills, `$autoz` included).
+    setDashboardNewTaskProvider(
+      createNewTaskProvider({
+        client: app.client,
+        handleMessage: (event, say) => slackHandler.handleMessage(event as any, say),
+        getSessionKey: (channel, threadTs) => claudeHandler.getSessionKey(channel, threadTs),
+        hasSession: (sessionKey) => !!claudeHandler.getSessionRegistry().getSessionByKey(sessionKey),
+        listUserSessions: (userId) => {
+          const out: Array<{ channelId: string; lastActivity: number }> = [];
+          for (const session of claudeHandler.getAllSessions().values()) {
+            if (session.ownerId !== userId && session.currentInitiatorId !== userId) continue;
+            if (!session.channelId) continue;
+            const at = session.lastActivity ? new Date(session.lastActivity).getTime() : 0;
+            out.push({ channelId: session.channelId, lastActivity: Number.isFinite(at) ? at : 0 });
+          }
+          return out;
+        },
+      }),
+    );
+
     // Connect dashboard: real-time task updates
     // TodoManager fires with sessionId, but dashboard caches by sessionKey.
     // Resolve sessionId → sessionKey so WebSocket clients can match the update.
@@ -927,6 +954,7 @@ async function start() {
     setOnWorkLogAppendedCallback(broadcastWorkLog);
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
+      recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
       notifyLiveUsage: (sessionKey: string) => void;
       priceLiveUsage: (
         model: string | undefined,
@@ -941,14 +969,28 @@ async function start() {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
         // SSOT 2026-10-22 T7/T10: the entry carries the task in progress (the
         // dashboard folds the log under it) and a tool call counts on that task.
-        let ledger: ConversationSession['taskLedger'];
-        for (const session of claudeHandler.getAllSessions().values()) {
+        // Spec 12: the task — and the tool count — of the agent that made the
+        // entry: a subagent's own ledger, the session's for the main agent.
+        let owner: ConversationSession | undefined;
+        let ownerKey: string | undefined;
+        for (const [key, session] of claudeHandler.getAllSessions()) {
           if (session.conversationId === conversationId) {
-            ledger = session.taskLedger;
+            owner = session;
+            ownerKey = key;
             break;
           }
         }
-        appendWorkLog(conversationId, stampWorkLogTask(ledger, entry)).catch(() => {});
+        const stamped = stampWorkLogAgent(owner ?? {}, entry, Date.now());
+        // A subagent's tool count grew: push the card (throttled, ≤ 1/s).
+        if (entry.agentId && entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);
+        appendWorkLog(conversationId, stamped).catch(() => {});
+      },
+      // Spec 12 — the session's agent tree: fold the event into its registry
+      // and push the card when something changed (throttled, ≤ 1/s per session).
+      recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => {
+        const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
+        if (!session) return;
+        if (applyAgentEvent(session, event)) scheduleLiveSessionUpdate(sessionKey);
       },
     };
     setStreamExecutorProviders(workLogProviders);

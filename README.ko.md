@@ -89,6 +89,10 @@ Slack 네이티브 버튼/폼 UX로 권한 승인, 선택지, 세션 관리를 �
 
 이미지(JPG/PNG/GIF/WebP), 텍스트, 코드 파일을 Slack에서 직접 업로드 가능. 파일당 50MB 제한.
 
+### 🆕 대시보드에서 작업 시작
+
+대시보드의 **New task** 버튼(PC는 상단 바·`N` 단축키, 휴대폰은 플로팅 버튼)으로 작성 창을 엽니다. 모델(공유 풀 잔여량 배터리 표시), effort, Slack 채널, 작업 단위 `autogoal`·`autoz` 토글, 지시문, 첨부(파일·붙여넣은 스크린샷·휴대폰 카메라·음성 녹음)를 정하면, 고른 채널의 새 스레드에 내 메시지로 작업이 시작되어 진행이 Slack에 그대로 보입니다. 채널 목록은 내가 속한 repo 매핑 채널이고, 기본값은 마지막으로 명령을 내린 채널입니다. `autoz`를 켜면 지시 끝에 `$autoz`가 붙습니다.
+
 ### 🔑 GitHub 연동
 
 GitHub App(권장) 또는 Personal Access Token 인증. 자동 토큰 갱신 지원.
@@ -167,7 +171,7 @@ app-token 프롬프트는 금지된 자격증명 경로라 삭제됨), `scripts/
 
 주요 `/z` 명령: `help` · `cwd` · `mcp` · `bypass` · `persona` · `model` · `verbosity` · `session` · `new`/`renew` · `close` · `restore` · `context`/`compact` · `link` · `onboarding` · `admin` · `cct` · `auth` · `marketplace` · `plugin` · `skill` · `report`
 
-- 출력 수준(`/z verbosity`, 세션 한정 `%verbosity`): `minimal` · `compact` · `detail` · `verbose`. 기본값은 `minimal`이다 — 스레드에는 task list, 질문/승인, 최종 답변, 오류만 남고, 모델의 실시간 작업 설명·도구 호출·압축 공지·스킬 발동 배너(`$skill`·autoskill 포함)는 대시보드 작업 로그로 간다.
+- 출력 수준(`/z verbosity`, 세션 한정 `%verbosity`): `minimal` · `compact` · `detail` · `verbose`. 기본값은 `minimal`이다 — 스레드에는 task list(메인 에이전트의 것 — 서브에이전트의 목록은 대시보드의 그 서브에이전트 항목에 있다), 질문/승인, 최종 답변, 오류만 남고, 모델의 실시간 작업 설명·도구 호출·압축 공지·스킬 발동 배너(`$skill`·autoskill 포함)는 대시보드 작업 로그로 간다.
 
 - Fable 5.1·Opus 5.5(`claude-opus-5-5`, Claude Code 2.1.280 이상 필요) 지원을 위해 SDK를 `0.3.284`(네이티브 Claude Code `2.1.284`)로 고정한다. 스트리밍 턴은 `CLAUDE_CODE_ENABLE_TASKS=false`와 `MCP_CONNECTION_NONBLOCKING=0`을 강제하여 기존 Slack TodoWrite 스냅샷 처리와 첫 턴 MCP 초기화를 유지한다. 이 호환성 설정은 stream-options builder가 관리하며 운영자 설정으로 덮어쓰지 않는다.
 - 모델 별칭 `fable`·`fable[1m]`·`fable-5-1`은 `claude-fable-5-1[1m]`을 선택한다. 1M 컨텍스트와 750k 자동 압축 기본값을 유지하며, 버전을 지정한 `fable-5`는 기존 `claude-fable-5[1m]`을 선택한다.

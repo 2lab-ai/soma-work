@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import { Logger } from '@soma/common/logger';
 import type { AssistantStatusManager } from '../assistant-status-manager';
+import { EFFORT_LEVELS } from '../command-parser';
 import { type CompactStateSession, isCompactionInProgress, stashUserMessageDuringCompaction } from '../compact-state';
 import type { ContextWindowManager } from '../context-window-manager';
 import {
@@ -377,6 +378,14 @@ export class SessionInitializer {
     if (!isNewSession && event.modelOverride && session.model !== event.modelOverride) {
       session.model = event.modelOverride;
       this.logger.info('Applied cron model override to existing session', { sessionKey, model: event.modelOverride });
+    }
+
+    // Per-task effort (dashboard "New task"): new or existing session alike.
+    if (event.effortOverride && (EFFORT_LEVELS as readonly string[]).includes(event.effortOverride)) {
+      if (session.effort !== event.effortOverride) {
+        session.effort = event.effortOverride;
+        this.logger.info('Applied per-task effort override', { sessionKey, effort: event.effortOverride });
+      }
     }
 
     if (isNewSession) {
