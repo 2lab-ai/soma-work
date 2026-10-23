@@ -4466,7 +4466,8 @@ body.nt-open .new-task-fab { display: none !important; }
 /* left: 50% leaves only half the viewport for a shrink-to-fit box, so the
    width is the content's own (capped) and the actions wrap under the message
    on a narrow screen instead of squeezing it into a column. */
-.nt-toast-text { flex: 1 1 auto; min-width: 0; }
+.nt-toast-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.nt-toast-actions { display: flex; flex: none; gap: 8px; margin-left: auto; }
 .nt-toast a, .nt-toast button { flex: none; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; cursor: pointer; }
 
 @keyframes nt-sheen { to { rotate: 360deg; } }
@@ -10156,10 +10157,12 @@ function ntShowToast(data, channelName) {
   if (!t) return;
   var head = data.status === 'running' ? '✅ 작업을 시작했습니다' : '⏳ 작업을 접수했습니다';
   var html = '<span class="nt-toast-text">' + head + ' — #' + esc(channelName) + '</span>';
+  // The actions wrap as one group: never one beside the message, one below.
+  html += '<span class="nt-toast-actions">';
   if (data.permalink) {
     html += '<a href="' + escAttr(data.permalink) + '" target="_blank" rel="noopener">Slack에서 보기</a>';
   }
-  html += '<button type="button" onclick="ntOpenLaunched()">카드 열기</button>';
+  html += '<button type="button" onclick="ntOpenLaunched()">카드 열기</button></span>';
   t.innerHTML = html;
   t.hidden = false;
   _ntLastLaunch = data;
