@@ -14,7 +14,8 @@
  *                                              409 + counts when it would sleep/end sessions, unless ?confirm=1
  *   GET  /api/dashboard/session/:id          → Session detail turns (JSON)
  *   GET  /api/dashboard/session/:id/worklog  → Work log entries (JSON, registered in work-log-routes.ts)
- *   POST /api/dashboard/session/:id/generate-title → Generate titleSub via codex model
+ *   POST /api/dashboard/session/:id/ensure-title   → Fill a missing titleSub (any signed-in viewer; never overwrites)
+ *   POST /api/dashboard/session/:id/generate-title → Regenerate titleSub (owner, or ADMIN_USERS + X-Admin-Mode: on)
  *   POST /api/dashboard/session/:key/stop    → Stop a working session
  *   POST /api/dashboard/session/:key/close   → Close/terminate a session
  *   POST /api/dashboard/session/:key/trash   → Trash (hide) a closed session
@@ -68,8 +69,8 @@ import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggreg
 import { buildCapacityView, type CapacityView } from './capacity-view';
 import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
 import { readAllInstances } from './instance-registry';
-import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
-import { generateTitle } from './title-generator';
+import { getConversation, resummarizeTurn } from './recorder';
+import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
@@ -684,6 +685,28 @@ function requireConversationWriteAccess(request: any, reply: any, ownerId: strin
     error: 'Forbidden — write requires conversation ownership, or admin user with X-Admin-Mode: on header (#716)',
   });
   return false;
+}
+
+/** One wire shape for both subtitle routes; `code` lets the panel tell the cases apart. */
+function sendTitleSubResult(reply: any, result: TitleSubResult): void {
+  if (result.ok) {
+    reply.send({ ok: true, titleSub: result.titleSub });
+    return;
+  }
+  switch (result.reason) {
+    case 'no_content':
+      reply.status(422).send({ error: 'No conversation text to title yet', code: 'no_content' });
+      return;
+    case 'cooldown':
+      reply
+        .status(429)
+        .header('Retry-After', String(Math.ceil(result.retryAfterMs / 1000)))
+        .send({ error: 'Title generation failed recently', code: 'cooldown', retryAfterMs: result.retryAfterMs });
+      return;
+    case 'generation_failed':
+      reply.status(502).send({ error: 'Title generation failed', code: 'generation_failed' });
+      return;
+  }
 }
 
 // ── Task accessor ──────────────────────────────────────────────────
@@ -2075,7 +2098,32 @@ export async function registerDashboardRoutes(
     },
   );
 
-  // Generate titleSub for a conversation
+  // Subtitle (titleSub). #716 makes reads world-readable and writes owner-only;
+  // #717 P2 put generate-title behind that write gate. The panel fills a missing
+  // subtitle on open for every viewer, so filling has its own route that only
+  // needs sign-in + CSRF: titleSub is derived data with no author (the caller
+  // picks when it is generated, never what it says), and a fill never
+  // overwrites. This exception covers filling an EMPTY titleSub and nothing
+  // else — replacing one stays on generate-title behind the write gate.
+  server.post<{ Params: { conversationId: string } }>(
+    '/api/dashboard/session/:conversationId/ensure-title',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      try {
+        const record = await getConversation(request.params.conversationId);
+        if (!record) {
+          reply.status(404).send({ error: 'Not found' });
+          return;
+        }
+        sendTitleSubResult(reply, await ensureTitleSub(record));
+      } catch (error) {
+        logger.error('Error filling title', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // Regenerate (overwrite) titleSub — owner, or admin with X-Admin-Mode: on.
   server.post<{ Params: { conversationId: string } }>(
     '/api/dashboard/session/:conversationId/generate-title',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
@@ -2089,20 +2137,7 @@ export async function registerDashboardRoutes(
         // #716 / Oracle re-review P2: same write-access policy as
         // resummarize and kanban actions.
         if (!requireConversationWriteAccess(request, reply, record.ownerId)) return;
-
-        // Build conversation content from first few turns
-        const contentParts = record.turns
-          .slice(0, 6)
-          .map((t) => `[${t.role}]: ${t.rawContent?.substring(0, 500) || t.summaryTitle || ''}`);
-        const content = contentParts.join('\n\n');
-
-        const titleSub = await generateTitle(content);
-        if (titleSub) {
-          await updateConversationTitleSub(record.id, titleSub);
-          reply.send({ ok: true, titleSub });
-        } else {
-          reply.status(500).send({ error: 'Title generation failed' });
-        }
+        sendTitleSubResult(reply, await regenerateTitleSub(record));
       } catch (error) {
         logger.error('Error generating title', error);
         reply.status(500).send({ error: 'Internal Server Error' });
@@ -4663,7 +4698,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         <h3 id="panel-title">Session Detail</h3>
         <div id="panel-title-sub" style="font-size:11px;color:var(--text-secondary);margin-top:2px;display:flex;align-items:center;gap:6px">
           <span id="panel-title-sub-text"></span>
-          <button id="panel-title-sub-regen" class="btn-action" style="font-size:10px;padding:1px 6px;display:none" onclick="event.stopPropagation();generateTitleSub(panelConvId)">&#x1F504;</button>
+          <button id="panel-title-sub-regen" class="btn-action" style="font-size:10px;padding:1px 6px;display:none" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)">&#x1F504;</button>
         </div>
       </div>
       <button class="panel-close" onclick="closePanel()">&#x2715;</button>
@@ -4738,6 +4773,9 @@ let panelOpen = false;
 let panelSessionKey = null;
 let panelConvId = null;
 let _panelTasksExpanded = false;
+let _panelTitleSub = ''; // the subtitle the open panel shows ('' = none yet)
+let _viewerIsAdmin = false; // /auth/me says ADMIN_USERS (or viewer token); UX only, the server re-checks
+let _viewerUserId = ''; // the signed-in user (/auth/me) — not currentUserId, which is the board filter
 
 // ── Theme toggle — sun/moon ──
 function getPreferredTheme() {
@@ -5015,6 +5053,8 @@ function _applyUserPill(data) {
   // Bearer-cookie admin (viewer token) is treated as always-admin and
   // also gets the toggle.
   const isAdminCapable = !!(data && (data.isAdmin || (data.user && data.user.name && data.isAdmin)));
+  _viewerIsAdmin = isAdminCapable;
+  _viewerUserId = (data && data.user && data.user.slackUserId) || '';
   const lifecycleBtn = document.getElementById('lifecycle-btn');
   if (lifecycleBtn) lifecycleBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
   const toggle = document.getElementById('admin-mode-toggle');
@@ -8821,6 +8861,7 @@ function openPanel(sessionKey, focusWorkLog) {
   var titleSubBtn = document.getElementById('panel-title-sub-regen');
   titleSubTextEl.textContent = '';
   titleSubBtn.style.display = 'none';
+  _panelTitleSub = '';
 
   // Meta
   const metaEl = document.getElementById('panel-meta');
@@ -8882,10 +8923,11 @@ function openPanel(sessionKey, focusWorkLog) {
         var tSubText = document.getElementById('panel-title-sub-text');
         var tSubBtn = document.getElementById('panel-title-sub-regen');
         if (data.titleSub) {
+          _panelTitleSub = data.titleSub;
           tSubText.textContent = data.titleSub;
-          tSubBtn.style.display = 'inline-block';
+          tSubBtn.style.display = panelTitleSubCanRegen() ? 'inline-block' : 'none';
         } else if (loadingConvId) {
-          generateTitleSub(loadingConvId);
+          generateTitleSub(loadingConvId, false); // fill: allowed for every signed-in viewer
         }
 
         if (!data.turns || data.turns.length === 0) {
@@ -9137,45 +9179,78 @@ function attachRawToggleHandlers() {
   });
 }
 
-async function generateTitleSub(convId) {
+// Panel subtitle (titleSub). Reads are open to every signed-in viewer (#716);
+// so is filling a MISSING subtitle (POST ensure-title — it never overwrites).
+// Replacing one (POST generate-title) stays with the owner or an admin in Admin
+// mode, so 🔄 over an existing subtitle is offered to them only. 🔄 on a
+// missing subtitle retries the fill and is offered to everyone.
+function titleSubCanRegen(ownerId, viewerId, viewerIsAdmin, adminModeOn) {
+  if (ownerId && ownerId === viewerId) return true;
+  return !!(viewerIsAdmin && adminModeOn);
+}
+function panelTitleSubCanRegen() {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  return titleSubCanRegen(s && s.ownerId, _viewerUserId, _viewerIsAdmin, _isAdminModeOn());
+}
+function titleSubEndpoint(convId, regenerate) {
+  return '/api/dashboard/session/' + encodeURIComponent(convId) + (regenerate ? '/generate-title' : '/ensure-title');
+}
+// Only a stale CSRF token earns the refresh + retry; any other 403 is a refusal.
+function isCsrfRejection(status, data) {
+  return status === 403 && !!data && data.code === 'csrf_failed';
+}
+// What the subtitle row shows after a reply. A permission refusal is not a
+// generation failure: it keeps whatever was there and offers no 🔄.
+function titleSubView(status, data, canRegen, previous) {
+  if (data && data.titleSub) return { text: data.titleSub, titleSub: data.titleSub, regen: canRegen };
+  if (status === 403 && !isCsrfRejection(status, data)) {
+    return { text: previous || READ_ONLY_MSG, titleSub: previous || '', regen: false };
+  }
+  var code = data && data.code;
+  var text = code === 'cooldown' ? 'Title generation failed — retry in a minute'
+    : code === 'no_content' ? 'No conversation to title yet'
+    : 'Title generation failed';
+  return { text: text, titleSub: previous || '', regen: true };
+}
+
+async function generateTitleSub(convId, regenerate) {
   // The panel opening this request belongs to: once another panel opens (or
   // this one closes) the subtitle element shows someone else, so drop the result.
   var gen = _panelGen;
   var textEl = document.getElementById('panel-title-sub-text');
   var btn = document.getElementById('panel-title-sub-regen');
+  var previous = _panelTitleSub;
   textEl.textContent = 'Generating title...';
   btn.style.display = 'none';
   try {
-    // #771 — CSRF-protected POST. Mirror doAction / answerChoice pattern:
-    // attach X-CSRF-Token, and on 403 (JWT rotation invalidated the token)
-    // refresh and retry once. The route applies csrfMiddleware so the prior
-    // header-less fetch was an immediate 403.
-    const url = '/api/dashboard/session/' + encodeURIComponent(convId) + '/generate-title';
-    const headers = {};
-    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
-    var res = await fetch(url, { method: 'POST', headers });
+    // #771 — CSRF-protected POST: attach X-CSRF-Token; when the server says the
+    // token went stale (JWT rotation), refresh it and retry once.
+    var url = titleSubEndpoint(convId, regenerate);
+    var post = function() {
+      var headers = {};
+      if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+      return fetch(url, { method: 'POST', headers: headers });
+    };
+    var res = await post();
     if (gen !== _panelGen) return;
-    if (res.status === 403) {
+    var data = await res.json().catch(function() { return null; });
+    if (gen !== _panelGen) return;
+    if (isCsrfRejection(res.status, data)) {
       await refreshCsrfToken();
       if (gen !== _panelGen) return;
-      const retryHeaders = {};
-      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
-      res = await fetch(url, { method: 'POST', headers: retryHeaders });
+      res = await post();
+      if (gen !== _panelGen) return;
+      data = await res.json().catch(function() { return null; });
       if (gen !== _panelGen) return;
     }
-    var data = await res.json();
-    if (gen !== _panelGen) return;
-    if (data.titleSub) {
-      textEl.textContent = data.titleSub;
-      btn.style.display = 'inline-block';
-    } else {
-      textEl.textContent = 'Title generation failed';
-      btn.style.display = 'inline-block';
-    }
+    var view = titleSubView(res.status, data, panelTitleSubCanRegen(), previous);
+    _panelTitleSub = view.titleSub;
+    textEl.textContent = view.text;
+    btn.style.display = view.regen ? 'inline-block' : 'none';
   } catch(e) {
     if (gen !== _panelGen) return;
-    textEl.textContent = 'Error';
-    btn.style.display = 'inline-block';
+    textEl.textContent = previous || 'Error';
+    btn.style.display = !previous || panelTitleSubCanRegen() ? 'inline-block' : 'none';
   }
 }
 
