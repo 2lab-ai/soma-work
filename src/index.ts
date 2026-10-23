@@ -63,6 +63,7 @@ import {
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
+  setDashboardEffortHandler,
   setDashboardGoalHandler,
   setDashboardModelHandler,
   setDashboardMultiChoiceAnswerHandler,
@@ -95,6 +96,7 @@ import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
 import { calculateTokenCost } from './metrics/model-registry';
+import { clampEffortToModel } from './model-catalog';
 import { bootModelCatalog } from './model-catalog-boot';
 import {
   evaluateAndMaybeRotate,
@@ -110,6 +112,7 @@ import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
 import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
+import { switchSessionEffort } from './session/effort-switch';
 import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
 import { applyTodoList, ledgerTasks, stampWorkLogTask } from './session/task-ledger';
@@ -839,6 +842,17 @@ async function start() {
           return sent && slackHandler.isFollowupPending(sent.channel, sent.ts) ? 'queued' : 'settled';
         },
         isCompactQueued: ({ channel, ts }) => slackHandler.isFollowupPending(channel, ts),
+        save: () => claudeHandler.saveSessions(),
+        broadcast: () => broadcastSessionUpdate(),
+      }),
+    );
+
+    // Connect dashboard: session effort (SSOT 2026-10-23 T1) — the `%effort`
+    // scope: this session only, read by the next turn's SDK call.
+    setDashboardEffortHandler((sessionKey: string, effort: string) =>
+      switchSessionEffort(sessionKey, effort, {
+        getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+        clamp: clampEffortToModel,
         save: () => claudeHandler.saveSessions(),
         broadcast: () => broadcastSessionUpdate(),
       }),
