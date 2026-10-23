@@ -1,7 +1,8 @@
 /**
- * DeployLaneTrigger — a deploy_completed directive fires the cron jobs whose
- * owner opted in with `onDeploy` for that repo + target branch, and says so in
- * the deploy thread.
+ * DeployLaneTrigger — a deploy_completed directive fires the lanes registered
+ * for that repo + target branch — cron jobs whose owner opted in with
+ * `onDeploy`, and deploy-only lanes in deploy-lanes.json — and says so in the
+ * deploy thread.
  */
 
 import type { DeployCompletedPayload } from '@soma/slack/directives/deploy-completed-directive';
@@ -12,17 +13,22 @@ import { CronStorage } from 'somalib/cron/cron-storage';
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import type { CronScheduler } from '../cron-scheduler';
 import { DEPLOY_LANE_DEDUPE_MS, DeployLaneTrigger } from '../deploy-lanes';
+import { Logger } from '../logger';
 
 const AFTER = '0123456789abcdef0123456789abcdef01234567';
 const BEFORE = 'fedcba9876543210fedcba9876543210fedcba98';
 /** Every ⚠️ line ends with what the owner can do about it — and pings the owner when the lane is known. */
 const RECOVERY = /\(<@U_OWNER> cron run qa-lane\)$/;
 const GENERIC_RECOVERY = /\(owner: cron run 레인 이름\)$/;
+/** A deploy-only lane is not a cron job: its recovery is running its prompt by hand. */
+const LANE_RECOVERY = /\(<@U_OWNER> 직접 실행: `QA the deployed PRs`\)$/;
 
 describe('DeployLaneTrigger', () => {
   let file: string;
+  let registry: string;
   let storage: CronStorage;
   let runJobNow: Mock<CronScheduler['runJobNow']>;
+  let fireDeployLane: Mock<CronScheduler['fireDeployLane']>;
   let clock: number;
   let replies: string[];
   let ctx: { channel: string; threadTs: string; user: string; reply: (line: string) => Promise<void> };
@@ -30,7 +36,8 @@ describe('DeployLaneTrigger', () => {
   function trigger(over: { scheduler?: null; settleMs?: number } = {}) {
     return new DeployLaneTrigger({
       storagePath: file,
-      getScheduler: () => (over.scheduler === null ? null : { runJobNow }),
+      registryPath: registry,
+      getScheduler: () => (over.scheduler === null ? null : { runJobNow, fireDeployLane }),
       now: () => clock,
       settleMs: over.settleMs ?? 20,
     });
@@ -39,7 +46,7 @@ describe('DeployLaneTrigger', () => {
   function deploy(over: Partial<DeployCompletedPayload> = {}) {
     return {
       kind: 'completed' as const,
-      payload: { repo: 'acme/app', target: 'deploy/dev2', after: AFTER, confirmed: true, ...over },
+      payload: { repo: 'acme/app', target: 'deploy/staging', after: AFTER, confirmed: true, ...over },
     };
   }
 
@@ -51,9 +58,25 @@ describe('DeployLaneTrigger', () => {
       owner: 'U_OWNER',
       channel: 'C_QA',
       threadTs: null,
-      onDeploy: [{ repo: 'acme/app', target: 'deploy/dev2' }],
+      onDeploy: [{ repo: 'acme/app', target: 'deploy/staging' }],
       ...over,
     });
+  }
+
+  /** A deploy-only lane entry (deploy-lanes.json), defaults matching `addLane`. */
+  function registryLane(over: Record<string, unknown> = {}) {
+    return {
+      name: 'qa-lane',
+      owner: 'U_OWNER',
+      channel: 'C_QA',
+      prompt: 'QA the deployed PRs',
+      onDeploy: [{ repo: 'acme/app', target: 'deploy/staging' }],
+      ...over,
+    };
+  }
+
+  function writeRegistry(lanes: unknown[]) {
+    fs.writeFileSync(registry, JSON.stringify({ lanes }));
   }
 
   /** Let a late fire settle and its follow-up post. */
@@ -63,8 +86,10 @@ describe('DeployLaneTrigger', () => {
 
   beforeEach(() => {
     file = path.join(os.tmpdir(), `deploy-lanes-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    registry = file.replace(/\.json$/, '-registry.json');
     storage = new CronStorage(file);
     runJobNow = vi.fn<CronScheduler['runJobNow']>().mockResolvedValue({ ok: true, message: 'new_thread' });
+    fireDeployLane = vi.fn<CronScheduler['fireDeployLane']>().mockResolvedValue({ ok: true, message: 'new_thread' });
     clock = Date.UTC(2026, 9, 21, 9, 0, 0);
     replies = [];
     ctx = {
@@ -78,14 +103,15 @@ describe('DeployLaneTrigger', () => {
   });
 
   afterEach(() => {
-    for (const f of [file, `${file}.tmp`, file.replace(/\.json$/, '-history.json')]) {
+    vi.restoreAllMocks();
+    for (const f of [file, `${file}.tmp`, file.replace(/\.json$/, '-history.json'), registry]) {
       try {
         fs.unlinkSync(f);
       } catch {}
     }
   });
 
-  it('fires a matching job as its owner in a new thread, tells it which deploy fired it, and says where it posts', async () => {
+  it('fires a matching job as its owner in a new thread, tells it which deploy fired it and where the deploy thread is, and says where it posts', async () => {
     addLane();
     await trigger().handle(deploy({ before: BEFORE }), ctx);
 
@@ -93,12 +119,13 @@ describe('DeployLaneTrigger', () => {
     expect(runJobNow).toHaveBeenCalledWith('U_OWNER', 'qa-lane', {
       triggeredBy: 'U_DEPLOYER',
       forceNewThread: true,
-      note: `\n\n[deploy_completed repo=acme/app target=deploy/dev2 before=${BEFORE} after=${AFTER} by=U_DEPLOYER]`,
+      note: `\n\n[deploy_completed repo=acme/app target=deploy/staging before=${BEFORE} after=${AFTER} by=U_DEPLOYER channel=C_DEPLOY thread=111.222]`,
     });
+    expect(fireDeployLane).not.toHaveBeenCalled();
     expect(replies).toHaveLength(1);
     expect(replies[0]).toContain('배포 레인 시작');
     expect(replies[0]).toContain('*qa-lane* → <#C_QA> 새 스레드');
-    expect(replies[0]).toContain(`acme/app → deploy/dev2 (${AFTER.slice(0, 7)})`);
+    expect(replies[0]).toContain(`acme/app → deploy/staging (${AFTER.slice(0, 7)})`);
     expect(replies[0]).not.toContain('\n');
   });
 
@@ -109,15 +136,15 @@ describe('DeployLaneTrigger', () => {
   });
 
   it('normalizes the target: refs/heads/ on either side still matches', async () => {
-    addLane({ onDeploy: [{ repo: 'acme/app', target: 'refs/heads/deploy/dev2' }] });
+    addLane({ onDeploy: [{ repo: 'acme/app', target: 'refs/heads/deploy/staging' }] });
     const t = trigger();
     await t.handle(deploy({ after: 'aaaaaaa' }), ctx);
-    await t.handle(deploy({ target: 'refs/heads/deploy/dev2', after: 'bbbbbbb' }), ctx);
+    await t.handle(deploy({ target: 'refs/heads/deploy/staging', after: 'bbbbbbb' }), ctx);
     expect(runJobNow).toHaveBeenCalledTimes(2);
   });
 
   it('matches the repo case-insensitively', async () => {
-    addLane({ onDeploy: [{ repo: 'Acme/App', target: 'deploy/dev2' }] });
+    addLane({ onDeploy: [{ repo: 'Acme/App', target: 'deploy/staging' }] });
     await trigger().handle(deploy({ repo: 'ACME/app' }), ctx);
     expect(runJobNow).toHaveBeenCalledTimes(1);
   });
@@ -125,12 +152,12 @@ describe('DeployLaneTrigger', () => {
   it('matches the target exactly; a near miss on the same repo names the registered targets', async () => {
     addLane();
     const t = trigger();
-    await t.handle(deploy({ target: 'dev2' }), ctx);
-    await t.handle(deploy({ target: 'Deploy/Dev2' }), ctx);
+    await t.handle(deploy({ target: 'staging' }), ctx);
+    await t.handle(deploy({ target: 'Deploy/Staging' }), ctx);
     expect(runJobNow).not.toHaveBeenCalled();
     expect(replies).toEqual([
-      'ℹ️ acme/app → dev2: 레인 없음 (등록: deploy/dev2)',
-      'ℹ️ acme/app → Deploy/Dev2: 레인 없음 (등록: deploy/dev2)',
+      'ℹ️ acme/app → staging: 레인 없음 (등록: deploy/staging)',
+      'ℹ️ acme/app → Deploy/Staging: 레인 없음 (등록: deploy/staging)',
     ]);
   });
 
@@ -160,7 +187,7 @@ describe('DeployLaneTrigger', () => {
     expect(replies).toHaveLength(2);
     // 09:00Z fire = 18:00 KST.
     expect(replies[1]).toBe(
-      `ℹ️ 배포 레인 이미 발동됨 18:00 KST — acme/app → deploy/dev2 (${AFTER.slice(0, 7)}): *qa-lane*`,
+      `ℹ️ 배포 레인 이미 발동됨 18:00 KST — acme/app → deploy/staging (${AFTER.slice(0, 7)}): *qa-lane*`,
     );
   });
 
@@ -213,7 +240,7 @@ describe('DeployLaneTrigger', () => {
     await t.handle(deploy(), ctx);
 
     expect(replies[0]).toBe(
-      `⚠️ 배포 레인 미발동 — acme/app → deploy/dev2 (${AFTER.slice(0, 7)}): *qa-lane* (delivery failed (new_thread)) (<@U_OWNER> cron run qa-lane)`,
+      `⚠️ 배포 레인 미발동 — acme/app → deploy/staging (${AFTER.slice(0, 7)}): *qa-lane* (delivery failed (new_thread)) (<@U_OWNER> cron run qa-lane)`,
     );
     expect(replies[0]).toMatch(RECOVERY);
 
@@ -256,7 +283,7 @@ describe('DeployLaneTrigger', () => {
 
     expect(replies).toHaveLength(2);
     expect(replies[1]).toBe(
-      `⚠️ 배포 레인 실패 — acme/app → deploy/dev2 (${AFTER.slice(0, 7)}): *qa-lane* (delivery failed (new_thread)) (<@U_OWNER> cron run qa-lane)`,
+      `⚠️ 배포 레인 실패 — acme/app → deploy/staging (${AFTER.slice(0, 7)}): *qa-lane* (delivery failed (new_thread)) (<@U_OWNER> cron run qa-lane)`,
     );
 
     await t.handle(deploy(), ctx);
@@ -278,7 +305,7 @@ describe('DeployLaneTrigger', () => {
     expect(replies).toHaveLength(1);
     // Generic text only: the parse error carries the server's absolute path.
     expect(replies[0]).toBe(
-      `⚠️ 배포 레인 확인 불가 — acme/app → deploy/dev2 (${AFTER.slice(0, 7)}): cron 설정 파일을 읽지 못함 (owner: cron run 레인 이름)`,
+      `⚠️ 배포 레인 확인 불가 — acme/app → deploy/staging (${AFTER.slice(0, 7)}): cron 설정 파일을 읽지 못함 (owner: cron run 레인 이름)`,
     );
     expect(replies[0]).not.toContain(file);
     expect(replies[0]).toMatch(GENERIC_RECOVERY);
@@ -317,7 +344,7 @@ describe('DeployLaneTrigger', () => {
     await trigger().handle(deploy({ confirmed: false }), ctx);
     expect(runJobNow).not.toHaveBeenCalled();
     expect(replies).toEqual([
-      '⚠️ acme/app → deploy/dev2 머지됨, 배포 미확인 — 레인 미발동: *qa-lane* (<@U_OWNER> cron run qa-lane)',
+      '⚠️ acme/app → deploy/staging 머지됨, 배포 미확인 — 레인 미발동: *qa-lane* (<@U_OWNER> cron run qa-lane)',
     ]);
   });
 
@@ -346,5 +373,252 @@ describe('DeployLaneTrigger', () => {
       '⚠️ deploy_completed 무시됨 — Acme/App: after must be a 7-40 char hex sha; 레인 미발동 (<@U_OWNER> cron run qa-lane)',
       '⚠️ deploy_completed 무시됨 — unparseable JSON, or "type" is not the first key; 레인 미발동 (owner: cron run 레인 이름)',
     ]);
+  });
+
+  // A deploy-only lane (DATA_DIR/deploy-lanes.json) is not a cron job: no
+  // schedule, not in `cron list`. It fires only on a deploy, through
+  // CronScheduler.fireDeployLane, and reports back into the deploy thread the
+  // note names.
+  describe('deploy-only lanes (deploy-lanes.json)', () => {
+    const SHA7 = AFTER.slice(0, 7);
+    const NOTE = `\n\n[deploy_completed repo=acme/app target=deploy/staging before=${BEFORE} after=${AFTER} by=U_DEPLOYER channel=C_DEPLOY thread=111.222]`;
+
+    it('fires a registry lane through fireDeployLane — never runJobNow — with a root line naming the deploy thread and the same note', async () => {
+      writeRegistry([registryLane({ modelConfig: { type: 'opus' } })]);
+      await trigger().handle(deploy({ before: BEFORE }), ctx);
+
+      expect(runJobNow).not.toHaveBeenCalled();
+      expect(fireDeployLane).toHaveBeenCalledTimes(1);
+      const [lane, opts] = fireDeployLane.mock.calls[0];
+      expect(lane).toMatchObject({
+        name: 'qa-lane',
+        owner: 'U_OWNER',
+        channel: 'C_QA',
+        prompt: 'QA the deployed PRs',
+        modelConfig: { type: 'opus' },
+      });
+      expect(opts).toEqual({
+        triggeredBy: 'U_DEPLOYER',
+        note: NOTE,
+        rootText: `▶ acme/app → deploy/staging (${SHA7}) 배포 후 레인 *qa-lane* — 배포 스레드: <#C_DEPLOY>`,
+      });
+      expect(opts.rootText).not.toMatch(/cron/i);
+      expect(replies).toEqual([
+        `▶ 배포 레인 시작 — acme/app → deploy/staging (${SHA7}): *qa-lane* → <#C_QA> 새 스레드`,
+      ]);
+    });
+
+    it('fires the cron jobs and the registry lanes of one deploy together, with one note, in one line', async () => {
+      addLane({ name: 'cron-lane' });
+      writeRegistry([registryLane({ channel: 'C_SMOKE' })]);
+      await trigger().handle(deploy({ before: BEFORE }), ctx);
+
+      expect(runJobNow).toHaveBeenCalledWith('U_OWNER', 'cron-lane', {
+        triggeredBy: 'U_DEPLOYER',
+        forceNewThread: true,
+        note: NOTE,
+      });
+      expect(fireDeployLane).toHaveBeenCalledWith(expect.objectContaining({ name: 'qa-lane' }), expect.anything());
+      expect(fireDeployLane.mock.calls[0][1].note).toBe(NOTE);
+      expect(replies).toHaveLength(1);
+      expect(replies[0]).toContain('*cron-lane* → <#C_QA> 새 스레드, *qa-lane* → <#C_SMOKE> 새 스레드');
+    });
+
+    it('matches like onDeploy: repo case-insensitive, refs/heads/ dropped, target exact', async () => {
+      writeRegistry([registryLane({ onDeploy: [{ repo: 'Acme/App', target: 'refs/heads/deploy/staging' }] })]);
+      const t = trigger();
+      await t.handle(deploy({ repo: 'ACME/app', after: 'aaaaaaa' }), ctx);
+      await t.handle(deploy({ target: 'staging', after: 'bbbbbbb' }), ctx);
+
+      expect(fireDeployLane).toHaveBeenCalledTimes(1);
+      expect(replies[1]).toBe('ℹ️ acme/app → staging: 레인 없음 (등록: deploy/staging)');
+    });
+
+    it('names the targets of both sources in the near-miss line', async () => {
+      addLane({ name: 'cron-lane', onDeploy: [{ repo: 'acme/app', target: 'develop' }] });
+      writeRegistry([registryLane()]);
+      await trigger().handle(deploy({ target: 'main' }), ctx);
+      expect(replies).toEqual(['ℹ️ acme/app → main: 레인 없음 (등록: develop, deploy/staging)']);
+    });
+
+    it('stays quiet without the file, and for a repo no lane lists', async () => {
+      await trigger().handle(deploy(), ctx);
+      writeRegistry([registryLane()]);
+      await trigger().handle(deploy({ repo: 'acme/other' }), ctx);
+      expect(replies).toEqual([]);
+      expect(fireDeployLane).not.toHaveBeenCalled();
+    });
+
+    it('skips entries that are not lanes with a warning — never throws — and fires the valid one', async () => {
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+      writeRegistry([
+        null,
+        'junk',
+        7,
+        [],
+        registryLane({ name: '' }),
+        registryLane({ name: 'no-owner', owner: undefined }),
+        registryLane({ name: 'no-channel', channel: 7 }),
+        registryLane({ name: 'no-prompt', prompt: '   ' }),
+        registryLane({ name: 'no-on-deploy', onDeploy: undefined }),
+        registryLane({ name: 'bad-repo', onDeploy: [{ repo: 'app', target: 'deploy/staging' }] }),
+        registryLane({ name: 'bad-target', onDeploy: [{ repo: 'acme/app', target: 'deploy staging' }] }),
+        registryLane({ name: 'bad-model', modelConfig: 'opus' }),
+        registryLane(),
+        // (owner, name) is the identity: a second entry for it is skipped, not fired twice.
+        registryLane({ prompt: 'a second qa-lane of the same owner' }),
+      ]);
+
+      await trigger().handle(deploy(), ctx);
+
+      expect(fireDeployLane).toHaveBeenCalledTimes(1);
+      expect(fireDeployLane.mock.calls[0][0]).toMatchObject({ name: 'qa-lane', prompt: 'QA the deployed PRs' });
+      expect(replies).toEqual([
+        `▶ 배포 레인 시작 — acme/app → deploy/staging (${SHA7}): *qa-lane* → <#C_QA> 새 스레드`,
+      ]);
+      const skipped = warn.mock.calls.filter(([message]) => message === 'deploy-lanes.json entry skipped');
+      expect(skipped).toHaveLength(13);
+    });
+
+    it('reports an unreadable file instead of "no lane", and fires nothing — not even a matching cron job', async () => {
+      addLane({ name: 'cron-lane' });
+      fs.writeFileSync(registry, '{ not json');
+      await trigger().handle(deploy(), ctx);
+
+      expect(runJobNow).not.toHaveBeenCalled();
+      expect(fireDeployLane).not.toHaveBeenCalled();
+      // Generic text only: the parse error carries the server's absolute path.
+      expect(replies).toEqual([
+        `⚠️ 배포 레인 확인 불가 — acme/app → deploy/staging (${SHA7}): deploy-lanes.json을 읽지 못함 (owner: 레인 프롬프트 직접 실행)`,
+      ]);
+      expect(replies[0]).not.toContain(registry);
+    });
+
+    it.each([
+      ['a top-level array', '[]'],
+      ['lanes that is not an array', '{ "lanes": {} }'],
+      ['no lanes key', '{ "jobs": [] }'],
+      ['null', 'null'],
+    ])('reads a file holding %s as unreadable', async (_label, raw) => {
+      writeRegistry([]);
+      fs.writeFileSync(registry, raw);
+      await trigger().handle(deploy(), ctx);
+      expect(replies).toEqual([
+        `⚠️ 배포 레인 확인 불가 — acme/app → deploy/staging (${SHA7}): deploy-lanes.json을 읽지 못함 (owner: 레인 프롬프트 직접 실행)`,
+      ]);
+    });
+
+    it('names both files in one line when neither can be read', async () => {
+      fs.writeFileSync(file, '{ not json');
+      fs.writeFileSync(registry, '{ not json');
+      await trigger().handle(deploy(), ctx);
+      expect(replies).toEqual([
+        `⚠️ 배포 레인 확인 불가 — acme/app → deploy/staging (${SHA7}): cron 설정 파일, deploy-lanes.json을 읽지 못함 (owner: cron run 레인 이름 · 레인 프롬프트 직접 실행)`,
+      ]);
+    });
+
+    it('ends a failure with running the prompt by hand — on one line — not `cron run`, and lets the same commit retry', async () => {
+      writeRegistry([registryLane({ prompt: 'QA the\n  deployed\tPRs' })]);
+      fireDeployLane.mockResolvedValueOnce({ ok: false, message: 'thread creation returned no ts' });
+      const t = trigger();
+      await t.handle(deploy(), ctx);
+
+      expect(replies[0]).toBe(
+        `⚠️ 배포 레인 미발동 — acme/app → deploy/staging (${SHA7}): *qa-lane* (thread creation returned no ts) (<@U_OWNER> 직접 실행: \`QA the deployed PRs\`)`,
+      );
+      expect(replies[0]).toMatch(LANE_RECOVERY);
+      expect(replies[0]).not.toContain('cron run');
+      // The lane itself still gets its prompt as written.
+      expect(fireDeployLane.mock.calls[0][0].prompt).toBe('QA the\n  deployed\tPRs');
+
+      await t.handle(deploy(), ctx);
+      expect(fireDeployLane).toHaveBeenCalledTimes(2);
+      expect(replies[1]).toContain('배포 레인 시작');
+    });
+
+    it('gives each lane its own recovery when a deploy is unconfirmed or the scheduler is down', async () => {
+      addLane({ name: 'cron-lane' });
+      writeRegistry([registryLane()]);
+      await trigger().handle(deploy({ confirmed: false }), ctx);
+      await trigger({ scheduler: null }).handle(deploy(), ctx);
+
+      expect(runJobNow).not.toHaveBeenCalled();
+      expect(fireDeployLane).not.toHaveBeenCalled();
+      expect(replies).toEqual([
+        '⚠️ acme/app → deploy/staging 머지됨, 배포 미확인 — 레인 미발동: *cron-lane*, *qa-lane* (<@U_OWNER> cron run cron-lane · <@U_OWNER> 직접 실행: `QA the deployed PRs`)',
+        '⚠️ 배포 레인 미발동 — cron scheduler not running: *cron-lane*, *qa-lane* (<@U_OWNER> cron run cron-lane · <@U_OWNER> 직접 실행: `QA the deployed PRs`)',
+      ]);
+    });
+
+    it('dedupes by (owner, name, after) across re-reads of the file, apart from a cron job of the same name', async () => {
+      addLane();
+      writeRegistry([registryLane()]);
+      const t = trigger();
+      await t.handle(deploy(), ctx);
+      expect(runJobNow).toHaveBeenCalledTimes(1);
+      expect(fireDeployLane).toHaveBeenCalledTimes(1);
+
+      clock += 5 * 60 * 1000;
+      await t.handle(deploy({ after: AFTER.toUpperCase() }), ctx);
+      expect(runJobNow).toHaveBeenCalledTimes(1);
+      expect(fireDeployLane).toHaveBeenCalledTimes(1);
+      expect(replies[1]).toBe(
+        `ℹ️ 배포 레인 이미 발동됨 18:00 KST — acme/app → deploy/staging (${SHA7}): *qa-lane*, *qa-lane*`,
+      );
+
+      await t.handle(deploy({ after: 'bbbbbbb' }), ctx);
+      expect(fireDeployLane).toHaveBeenCalledTimes(2);
+    });
+
+    it('follows up when a started registry lane fails after the settle window, and frees the commit for a retry', async () => {
+      writeRegistry([registryLane()]);
+      let finish: (value: { ok: boolean; message: string }) => void = () => {};
+      fireDeployLane.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      const t = trigger({ settleMs: 10 });
+      await t.handle(deploy(), ctx);
+      expect(replies).toHaveLength(1);
+      expect(replies[0]).toContain('배포 레인 시작');
+
+      finish({ ok: false, message: 'turn failed' });
+      await flush();
+
+      expect(replies[1]).toBe(
+        `⚠️ 배포 레인 실패 — acme/app → deploy/staging (${SHA7}): *qa-lane* (turn failed) (<@U_OWNER> 직접 실행: \`QA the deployed PRs\`)`,
+      );
+      await t.handle(deploy(), ctx);
+      expect(fireDeployLane).toHaveBeenCalledTimes(2);
+    });
+
+    it('names the registry lanes of a rejected directive, and its generic hint covers them', async () => {
+      writeRegistry([registryLane()]);
+      const t = trigger();
+      await t.handle(
+        { kind: 'rejected', rejections: [{ problem: 'after must be a 7-40 char hex sha', repo: 'acme/app' }] },
+        ctx,
+      );
+      await t.handle(
+        { kind: 'rejected', rejections: [{ problem: 'unparseable JSON, or "type" is not the first key' }] },
+        ctx,
+      );
+
+      expect(fireDeployLane).not.toHaveBeenCalled();
+      expect(replies).toEqual([
+        '⚠️ deploy_completed 무시됨 — acme/app: after must be a 7-40 char hex sha; 레인 미발동 (<@U_OWNER> 직접 실행: `QA the deployed PRs`)',
+        '⚠️ deploy_completed 무시됨 — unparseable JSON, or "type" is not the first key; 레인 미발동 (owner: 레인 프롬프트 직접 실행)',
+      ]);
+    });
+
+    it('still names the cron lanes of a rejected directive when the registry file cannot be read', async () => {
+      addLane({ name: 'cron-lane' });
+      fs.writeFileSync(registry, '{ not json');
+      await trigger().handle({ kind: 'rejected', rejections: [{ problem: 'bad sha', repo: 'acme/app' }] }, ctx);
+      expect(replies).toEqual([
+        '⚠️ deploy_completed 무시됨 — acme/app: bad sha; 레인 미발동 (<@U_OWNER> cron run cron-lane)',
+      ]);
+    });
   });
 });
