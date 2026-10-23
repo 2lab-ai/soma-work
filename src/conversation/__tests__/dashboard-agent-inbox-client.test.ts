@@ -2010,12 +2010,17 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
     {
       document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
       _panelTasksExpanded: false,
+      // The browser morphs the block; this fake writes it.
+      morphInnerHtml: (el: { innerHTML: string }, html: string) => {
+        el.innerHTML = html;
+      },
     },
   );
 
   it('zero or missing tasks show the header and an empty line', () => {
     for (const t of [[], undefined, null]) {
       container.innerHTML = '';
+      (container as { _html?: string })._html = undefined; // a fresh block (the same data on a live block writes nothing)
       renderPanelTasks(t);
       expect(container.style.display).toBe('');
       expect(container.innerHTML).toBe(
