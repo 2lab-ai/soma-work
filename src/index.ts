@@ -46,7 +46,7 @@ import { getClaudeChildProcessRegistry } from './agent-runtime/claude-child-proc
 import { initAuthRuntimeDefault } from './auth/auth-runtime';
 import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
-import { scanChannels } from './channel-registry';
+import { getAllChannels, getChannel, scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
 import { config, runPreflightChecks, validateConfig } from './config';
 import { loadConfig } from './config-loader';
@@ -80,6 +80,7 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
+import { setProjectRepoSource } from './conversation/project-memory-routes';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
 import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
@@ -110,6 +111,7 @@ import {
 import { acquirePidLock, releasePidLock } from './pid-lock';
 import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
+import { getProjectMemoryStore, normalizeProjectSlug } from './project-memory-store';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
 import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
@@ -848,6 +850,29 @@ async function start() {
         broadcast: () => broadcastSessionUpdate(),
       }),
     );
+
+    // Connect dashboard: shared project memory (SSOT 2026-10-23 T4) — projects
+    // come from the channel registry's repo mapping; a change clears the cached
+    // prompt of the sessions in channels mapped to that repo.
+    setProjectRepoSource(() => {
+      const byRepo = new Map<string, string[]>();
+      for (const ch of getAllChannels()) {
+        for (const repo of ch.repos) byRepo.set(repo, [...(byRepo.get(repo) ?? []), ch.name]);
+      }
+      return [...byRepo].map(([repo, channels]) => ({ repo, channels }));
+    });
+    getProjectMemoryStore().setInvalidationHook((slug) => {
+      const sameRepo = (repo: string) => {
+        try {
+          return normalizeProjectSlug(repo) === slug;
+        } catch {
+          return false;
+        }
+      };
+      claudeHandler
+        .getSessionRegistry()
+        .invalidateSystemPromptWhere((session) => (getChannel(session.channelId)?.repos ?? []).some(sameRepo));
+    });
 
     // Connect dashboard: personal settings (SSOT 2026-10-23 T2) — the same
     // validators / `/z` apply functions the Slack commands use.

@@ -29,6 +29,7 @@ import {
   validateCsrfToken,
   verifyDashboardTokenRaw,
 } from './oauth';
+import { registerProjectMemoryRoutes } from './project-memory-routes';
 import {
   effectiveViewerUrl,
   getInstanceId,
@@ -678,6 +679,10 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   registerSettingsRoutes(server, authMiddleware, csrfMiddleware);
   // Personal memory — the settings page "기억" tab (SSOT 2026-10-23 T3).
   registerMemoryRoutes(server, authMiddleware, csrfMiddleware);
+  // Shared project memory — read: any signed-in user; write: admin (SSOT 2026-10-23 T4).
+  registerProjectMemoryRoutes(server, authMiddleware, csrfMiddleware, (request, reply) =>
+    requireWriteAccess(request, reply, undefined),
+  );
 
   // Health check
   server.get('/health', async (_request, reply) => {
