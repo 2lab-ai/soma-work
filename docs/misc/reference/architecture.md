@@ -143,9 +143,9 @@ updates inside its terminal-cleanup boundary, including setup failures.
 
 ### Security (`src/sandbox/`, `somalib/permission/`, `src/dangerous-command-filter.ts`)
 - 도메인 allowlist, 툴 권한 레벨(admin/elevated/user), dangerous command 감지
-- 쓰기 경계: SDK 샌드박스가 Bash 쓰기를 작업 디렉터리 + `/tmp/{userId}`(`allowWrite`)로 묶고, 네이티브 `Write`/`Edit`/`NotebookEdit`는
+- 쓰기 경계: SDK 샌드박스가 Bash(·`Monitor`) 쓰기를 작업 디렉터리 + `/tmp/{userId}`(`allowWrite`)로 묶고, 호출이 고른 로컬 경로에 쓰는 네이티브 도구(`NATIVE_WRITE_TOOLS`: `Write`/`Edit`/`NotebookEdit`, `Artifact` `read_asset`의 `out_dir`, `EnterWorktree`·`Agent(isolation: worktree)`가 만드는 `.claude/worktrees/`)는
   `build-stream-options.ts` → `ToolPolicyContext.checkNativeWrite` → `evaluateToolPolicy` 3b단계가 같은 루트로 묶는다(비관리자, 샌드박스 ON일 때.
-  `src/agent-runtime/policy/native-write-boundary.ts`: realpath 해석 · `..`·끊긴 심볼릭 링크·하드 링크 거부). 계획 파일은 `plansDirectory: .claude/plans`로
+  `src/agent-runtime/policy/native-write-boundary.ts`: 대상은 realpath 해석, 루트는 세션이 쓸 수 있는 부분에 심볼릭 링크가 있으면 신뢰하지 않음 · `..`·끊긴 심볼릭 링크·하드 링크 거부, 훅 매처는 `TOOL_POLICY_MATCHERS` 4번째 항목). 계획 파일은 `plansDirectory: .claude/plans`로
   작업 디렉터리 안에 둔다. 남은 틈: 판정과 SDK 쓰기 사이에 심볼릭 링크를 바꿔 끼우는 경합. Lean: `verification/lean/SomaVerify/ToolPolicy/ProofsNativeWrite.lean`
 - 권한 승인 UI는 Slack 액션으로 처리 (`src/slack/actions/permission-action-handler.ts`)
 

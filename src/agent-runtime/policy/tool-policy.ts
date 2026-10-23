@@ -99,9 +99,9 @@ export interface ToolPolicyContext {
   /** Returns a deny reason for a permission-gated MCP tool, else null. */
   checkMcpToolPermission: (toolName: string) => string | null;
   /**
-   * Native write boundary (`native-write-boundary.ts`): for a `Write` / `Edit` /
-   * `NotebookEdit` call, a deny reason when its target lands outside the roots
-   * sandboxed Bash may write, else null. **Absent → native writes are not
+   * Native write boundary (`native-write-boundary.ts`): for a call of a
+   * `NATIVE_WRITE_TOOLS` tool, a deny reason when a path it writes lands outside
+   * the roots sandboxed Bash may write, else null. **Absent → native writes are not
    * confined** — a session whose sandbox an admin turned off, whose Bash is not
    * confined either. Admins are exempt, as from the other guards of the block.
    */
@@ -215,7 +215,7 @@ export function evaluateToolPolicy(
     if (sensitive?.isSensitive) {
       return { decision: 'deny', reason: `sensitive-path: ${sensitive.reason ?? 'sensitive location'}` };
     }
-    // 3b. Native write boundary (Write/Edit/NotebookEdit): the roots sandboxed Bash may write.
+    // 3b. Native write boundary (NATIVE_WRITE_TOOLS): the roots sandboxed Bash may write.
     if (ctx.checkNativeWrite && NATIVE_WRITE_TOOLS.includes(toolName)) {
       const outside = ctx.checkNativeWrite(toolName, input);
       if (outside !== null) {
@@ -291,8 +291,16 @@ export function evaluateToolPolicy(
   return { decision: 'pass', reason: 'no policy opinion' };
 }
 
-/** Hook matchers covering every tool the policy decides on: Bash, the native tools, `mcp__` (deny tier only). */
-export const TOOL_POLICY_MATCHERS: readonly string[] = ['Bash', NATIVE_BYPASS_TOOLS.join('|'), 'mcp__'];
+/**
+ * Hook matchers covering every tool the policy decides on: Bash, the native tools, `mcp__` (deny tier only),
+ * and the native write tools outside `NATIVE_BYPASS_TOOLS` (step 3b only; the policy passes them otherwise).
+ */
+export const TOOL_POLICY_MATCHERS: readonly string[] = [
+  'Bash',
+  NATIVE_BYPASS_TOOLS.join('|'),
+  'mcp__',
+  NATIVE_WRITE_TOOLS.filter((tool) => !NATIVE_BYPASS_TOOLS.includes(tool)).join('|'),
+];
 
 /**
  * Matchers for an incident READ-ONLY session — a single *catch-all* entry.

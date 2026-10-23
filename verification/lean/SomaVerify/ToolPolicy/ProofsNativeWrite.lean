@@ -48,9 +48,10 @@ theorem nativeWriteCheck_some {nw : Option (Option String)} {i : Input} {r : Res
       exact ⟨outside, rfl, hw, h.symm⟩
     · simp [nativeWriteCheck, hw] at h
 
-/-- A native write tool is one of the three names. -/
+/-- A native write tool is one of the six names. -/
 theorem nativeWriteTools_cases {t : String} (h : t ∈ nativeWriteTools) :
-    t = "Write" ∨ t = "Edit" ∨ t = "NotebookEdit" := by
+    t = "Write" ∨ t = "Edit" ∨ t = "NotebookEdit" ∨ t = "Artifact" ∨ t = "EnterWorktree" ∨
+      t = "Agent" := by
   simpa [nativeWriteTools] using h
 
 /-! ## When step 3b is silent, nothing changes -/
@@ -93,13 +94,13 @@ theorem nativeWrite_denies_outside (outside : String) {inc : Option IncidentRead
   have ht := nativeWriteTools_cases hw
   have h1 : abortGuard i = none := by
     unfold abortGuard
-    rcases ht with h | h | h <;> simp [h]
+    rcases ht with h | h | h | h | h | h <;> simp [h]
   have h2 : sshCheck i = none := by
     unfold sshCheck
-    rcases ht with h | h | h <;> simp [h]
+    rcases ht with h | h | h | h | h | h <;> simp [h]
   have h3 : sensitiveCheck i = none := by
     unfold sensitiveCheck checkSensitiveForTool
-    rcases ht with h | h | h <;> simp [h]
+    rcases ht with h | h | h | h | h | h <;> simp [h]
   have h4 : nativeWriteCheck (some (some outside)) i =
       some { decision := .deny, reason := "write-boundary: " ++ outside,
              denyMessage := some outside } := by

@@ -379,8 +379,8 @@ def NativeWriteAdminExempt
     (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ (nw : Option (Option String)) (i : Input), i.isAdmin = true → ev nw none i = evaluate i
 
-/-- (d) 101-102: the boundary is "for a `Write` / `Edit` / `NotebookEdit` call". Every other tool
-is decided as without a boundary, whatever the boundary would say. -/
+/-- (d) 101-102: the boundary is "for a call of a `NATIVE_WRITE_TOOLS` tool". Every other tool is
+decided as without a boundary, whatever the boundary would say. -/
 def NativeWriteOnlyWriteTools
     (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ (nw : Option (Option String)) (inc : Option IncidentReadOnly) (i : Input),

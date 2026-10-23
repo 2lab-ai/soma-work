@@ -47,7 +47,7 @@ import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
 import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
-import { createNativeWriteCheck, type NativeWriteCheck } from '../policy/native-write-boundary';
+import { createNativeWriteCheck } from '../policy/native-write-boundary';
 import type { SafetyClassifier } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
 
@@ -208,12 +208,9 @@ export async function buildStreamOptions(
     slackContext?.user && isSafePathSegment(slackContext.user)
       ? normalizeTmpPath(path.join('/tmp', slackContext.user))
       : undefined;
-  const nativeWriteCheck: NativeWriteCheck | undefined = sandboxDisabled
+  const nativeWriteRoots: readonly string[] | undefined = sandboxDisabled
     ? undefined
-    : createNativeWriteCheck(
-        [...(workingDirectory ? [workingDirectory] : []), ...(sandboxUserDir ? [sandboxUserDir] : [])],
-        workingDirectory ?? process.cwd(),
-      );
+    : [...(workingDirectory ? [workingDirectory] : []), ...(sandboxUserDir ? [sandboxUserDir] : [])];
 
   // PreToolUse hooks
   if (slackContext) {
@@ -233,6 +230,9 @@ export async function buildStreamOptions(
     const policyHook = async (input: HookInput): Promise<HookJSONOutput> => {
       const toolName = (input as { tool_name?: string }).tool_name || '';
       const toolInput = (input as { tool_input?: Record<string, unknown> }).tool_input;
+      // The session's directory now (a worktree switch moves it): relative targets and
+      // the repository of a new worktree are resolved from it, as the SDK does.
+      const hookCwd = (input as { cwd?: string }).cwd || workingDirectory || process.cwd();
       const ctx: ToolPolicyContext = {
         user: policyUser,
         isAdmin: policyIsAdmin,
@@ -244,7 +244,7 @@ export async function buildStreamOptions(
           gatedServerNames.length > 0
             ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
             : null,
-        ...(nativeWriteCheck ? { checkNativeWrite: nativeWriteCheck } : {}),
+        ...(nativeWriteRoots ? { checkNativeWrite: createNativeWriteCheck(nativeWriteRoots, hookCwd) } : {}),
       };
 
       const result = evaluateToolPolicy(toolName, toolInput, ctx);

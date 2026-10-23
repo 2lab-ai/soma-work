@@ -6,9 +6,9 @@
 -- models: src/agent-runtime/policy/tool-policy.ts:150-163 (checkSensitiveForTool: the call it makes and its result)
 -- models: src/agent-runtime/policy/tool-policy.ts:176-183 (evaluateIncidentReadOnly)
 -- models: src/agent-runtime/policy/tool-policy.ts:189-292 (evaluateToolPolicy)
--- models: src/agent-runtime/policy/tool-policy.ts:295 (TOOL_POLICY_MATCHERS)
--- models: src/agent-runtime/policy/tool-policy.ts:312 (INCIDENT_TOOL_POLICY_MATCHERS)
--- models: src/agent-runtime/policy/native-write-boundary.ts:35 (NATIVE_WRITE_TOOLS)
+-- models: src/agent-runtime/policy/tool-policy.ts:298-303 (TOOL_POLICY_MATCHERS)
+-- models: src/agent-runtime/policy/tool-policy.ts:320 (INCIDENT_TOOL_POLICY_MATCHERS)
+-- models: src/agent-runtime/policy/native-write-boundary.ts:53-60 (NATIVE_WRITE_TOOLS)
 -- models: src/agent-runtime/policy/permission-mode.ts:28 (PermissionMode)
 -- models: src/hooks/bypass-permission-guard.ts:56-69 (NATIVE_BYPASS_TOOLS)
 import SomaVerify.Support.Json
@@ -231,12 +231,19 @@ def nativeBypassTools : List String :=
   ["Write", "Edit", "NotebookEdit", "TodoWrite", "Read", "Glob", "Grep", "Task", "Agent",
     "WebFetch", "WebSearch", "KillShell"]
 
-/-- `TOOL_POLICY_MATCHERS` — line 295: `['Bash', NATIVE_BYPASS_TOOLS.join('|'), 'mcp__']`. -/
-def toolPolicyMatchers : List String :=
-  ["Bash", "|".intercalate nativeBypassTools, "mcp__"]
+/-- `NATIVE_WRITE_TOOLS` — native-write-boundary.ts:53-60, in source order: the native tools that
+can write a local path the call chooses. -/
+def nativeWriteTools : List String :=
+  ["Write", "Edit", "NotebookEdit", "Artifact", "EnterWorktree", "Agent"]
 
-/-- `INCIDENT_TOOL_POLICY_MATCHERS` — line 312: `[undefined]`, one entry without a matcher, which
-the SDK fires for every tool (lines 298-311). `none` is `undefined`. -/
+/-- `TOOL_POLICY_MATCHERS` — lines 298-303: `['Bash', NATIVE_BYPASS_TOOLS.join('|'), 'mcp__',
+NATIVE_WRITE_TOOLS.filter((tool) => !NATIVE_BYPASS_TOOLS.includes(tool)).join('|')]`. -/
+def toolPolicyMatchers : List String :=
+  ["Bash", "|".intercalate nativeBypassTools, "mcp__",
+    "|".intercalate (nativeWriteTools.filter fun t => !nativeBypassTools.contains t)]
+
+/-- `INCIDENT_TOOL_POLICY_MATCHERS` — line 320: `[undefined]`, one entry without a matcher, which
+the SDK fires for every tool (lines 305-319). `none` is `undefined`. -/
 def incidentToolPolicyMatchers : List (Option String) :=
   [none]
 
@@ -334,10 +341,6 @@ set and the call returns `v` (`null` is `none`). The TS asks it only for a tool 
 `NATIVE_WRITE_TOOLS` (`&&`, line 219); the model takes the value as given, as it does for every
 primitive. The tool sets of steps 1-4 and 3b do not meet, so the step can only change the result
 of a call to a native write tool. -/
-
-/-- `NATIVE_WRITE_TOOLS` — native-write-boundary.ts:35, in source order. -/
-def nativeWriteTools : List String :=
-  ["Write", "Edit", "NotebookEdit"]
 
 /-- 3b. Native write boundary — lines 218-224: for a tool of `NATIVE_WRITE_TOOLS`, when
 `ctx.checkNativeWrite` is set, any non-null value is a deny reason (`outside !== null`), the empty
