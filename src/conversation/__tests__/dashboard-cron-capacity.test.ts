@@ -323,6 +323,41 @@ describe('Dashboard — cron lane + capacity (SSOT 2026-10-23)', () => {
       expect(earlier.session.costUsd).toBeUndefined();
     });
 
+    it("a run injected into someone else's busy session does not read as this job running", async () => {
+      dashboard.setDashboardCronSource({
+        listJobs: () => [
+          {
+            id: 'job-5',
+            name: 'inject-only',
+            expression: '0 * * * *',
+            prompt: 'x',
+            owner: 'U1',
+            channel: 'C1',
+            threadTs: null,
+            createdAt: '2026-10-01T00:00:00Z',
+            lastRunAt: null,
+            lastRunMinute: null,
+          },
+        ],
+        listHistory: () => [
+          {
+            jobId: 'job-5',
+            jobName: 'inject-only',
+            executedAt: '2026-10-23T04:00:00Z',
+            status: 'success',
+            executionPath: 'idle_inject',
+            sessionKey: 'C1-t3',
+          },
+        ],
+      });
+      dashboard.setDashboardSessionAccessor(
+        () => new Map([['C1:t3', liveSession({ threadTs: 't3', activityState: 'working', title: 'human work' })]]),
+      );
+      const { jobs } = await get('/api/dashboard/cron');
+      expect(jobs[0].runs[0].session).toMatchObject({ activityState: 'idle', live: true });
+      expect(jobs[0].runs[0].session.costUsd).toBeUndefined();
+    });
+
     it('filters by owner when a user is selected', async () => {
       dashboard.setDashboardCronSource(source());
       dashboard.setDashboardSessionAccessor(() => new Map());

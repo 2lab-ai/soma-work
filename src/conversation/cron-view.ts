@@ -142,8 +142,10 @@ export function buildCronJobsView(args: {
             earlierInThread: true,
           };
         } else if (!createdByJob) {
+          // Injected into someone else's session: whatever runs there now is
+          // not this job's run — link it, but no live activity and no usage.
           const { tokens: _t, costUsd: _c, activeMs: _a, ...shared } = session;
-          session = shared;
+          session = { ...shared, activityState: 'idle' };
         }
       }
       return {

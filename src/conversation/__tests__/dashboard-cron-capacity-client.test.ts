@@ -202,6 +202,11 @@ describe('T5 — run glyphs and schedule label', () => {
       cls: 'wait',
     });
     expect(fns.cronRunGlyph({ status: 'success', executionPath: 'dm' })).toMatchObject({ glyph: '◌', cls: 'none' });
+    // A board card no history record backs is never shown as a success.
+    expect(fns.cronRunGlyph({ status: 'unrecorded', session: { activityState: 'idle', live: true } })).toMatchObject({
+      glyph: '◌',
+      cls: 'none',
+    });
     expect(fns.cronRunGlyph({ status: 'queued', executionPath: 'busy_queue' })).toMatchObject({
       glyph: '◌',
       cls: 'none',

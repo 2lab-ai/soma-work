@@ -7169,7 +7169,7 @@ function openDeepLinkedSession() {
     var linked = _sessionCache[key];
     // An older run of a cron job (the CRON lane shows one card per job): show
     // that run as the job's card and retry on that render.
-    if (linked && isCronCard(linked) && _cronRevealKey !== key) {
+    if (linked && linked.cronJob && linked.cronJob.name && _cronRevealKey !== key) {
       _cronRevealKey = key;
       renderBoard(_lastBoardData);
       return;
@@ -7194,6 +7194,8 @@ function openDeepLinkedSession() {
     return;
   }
   _deepLinkSession = null;
+  // The revealed older cron run only had to be on screen for the link.
+  _cronRevealKey = null;
   if (!_expanded.has(key)) toggleCard(key, true);
   _cardEls[key].scrollIntoView({ block: 'center' });
   openPanel(key, true);
@@ -9419,7 +9421,9 @@ function cronRunGlyph(run) {
   if (s && s.live && s.activityState === 'waiting') return { cls: 'wait', glyph: '▲', label: '응답 필요' };
   if (s && s.live && s.activityState === 'working') return { cls: 'run', glyph: '●', label: '실행 중' };
   if (run && run.status === 'failed') return { cls: 'fail', glyph: '✗', label: '실패' };
-  if (run && run.status === 'queued') return { cls: 'none', glyph: '◌', label: '대기열 (세션 사용 중이라 나중에 실행)' };
+  // A queue entry is an event, not a state: the drain that follows is not recorded.
+  if (run && run.status === 'queued') return { cls: 'none', glyph: '◌', label: '대기열에 넣음 (세션 사용 중 — 이후 실행 결과는 기록 없음)' };
+  if (run && run.status === 'unrecorded') return { cls: 'none', glyph: '◌', label: '실행 기록 없음 (보드 카드만 있음)' };
   if (run && run.executionPath === 'dm') return { cls: 'none', glyph: '◌', label: 'DM 전송 (세션 없음)' };
   if (run && run.executionPath === 'thread_reply') return { cls: 'none', glyph: '◌', label: '스레드 답글 (세션 없음)' };
   return { cls: 'ok', glyph: '✓', label: '성공' };
@@ -9465,9 +9469,11 @@ function cronRunWhen(ms, nowMs) {
 // group without local job data (another instance) has only its cards.
 function cronCardAsRun(g, s) {
   var col = g.colOf[s.key];
+  // No history record backs this card: its outcome is unknown unless it is
+  // live (running / waiting, read from the card itself).
   return {
     executedAt: Number(s.activeLegStartedAtMs) || cronCardTime(s),
-    status: 'success',
+    status: 'unrecorded',
     executionPath: 'new_thread',
     session: { headline: s.displayHeadline || s.title, activityState: col === 'closed' ? 'idle' : col, live: col !== 'closed', boardKey: s.key, conversationId: s.conversationId, slackThreadUrl: s.slackThreadUrl },
   };
