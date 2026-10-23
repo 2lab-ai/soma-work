@@ -4659,7 +4659,7 @@ function renderPanelTasks(tasks, scopeLabel) {
   // Spec 12: a subagent's own tasks are labelled with that agent.
   var title = 'Tasks' + (scopeLabel ? ' <span class="tasks-scope">&middot; ' + esc(scopeLabel) + '</span>' : '');
   if (!tasks || tasks.length === 0) {
-    container.innerHTML = '<div class="panel-tasks-header"><span>' + title + '</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>';
+    writePanelTasks(container, '<div class="panel-tasks-header"><span>' + title + '</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>');
     return;
   }
 
@@ -4700,7 +4700,14 @@ function renderPanelTasks(tasks, scopeLabel) {
     }
   }
 
-  container.innerHTML = html;
+  writePanelTasks(container, html);
+  // Same data (a session push while a subagent is shown) writes nothing; a
+  // change is morphed, so the focused toggle or task row stays.
+  function writePanelTasks(el, markup) {
+    if (el._html === markup) return;
+    morphInnerHtml(el, markup);
+    el._html = markup;
+  }
 }
 
 function renderPanelTaskItem(t) {
@@ -6154,7 +6161,13 @@ function domKeyOf(n) {
   if (n.nodeType !== 1) return '#' + n.nodeType;
   var k = n.getAttribute('data-agent-open');
   if (k === null) k = n.getAttribute('data-agent-select');
-  return n.tagName + '|' + (k === null ? (n.id || '') : '@' + k);
+  if (k !== null) return n.tagName + '|@' + k;
+  // Unkeyed: tag + id + the base class (the first token — state classes come
+  // after it), so a section inserted before others does not shift them onto
+  // each other.
+  var cls = n.getAttribute('class') || '';
+  var sp = cls.indexOf(' ');
+  return n.tagName + '|' + (n.id || '') + '.' + (sp < 0 ? cls : cls.slice(0, sp));
 }
 function domMorph(a, b) {
   if (a.nodeType !== 1) {
@@ -6170,6 +6183,16 @@ function domMorph(a, b) {
     if (a.getAttribute(at.name) !== at.value) a.setAttribute(at.name, at.value);
   }
   domMorphChildren(a, b);
+  // What a user changed in a control is live state, not an attribute: follow
+  // the fresh markup (a rejected model pick shows the session's model again).
+  // A control in use is never morphed (isEditingGoal / isPickingModel).
+  var tag = a.tagName;
+  if (tag === 'SELECT') {
+    if (a.selectedIndex !== b.selectedIndex) a.selectedIndex = b.selectedIndex;
+  } else if (tag === 'INPUT' || tag === 'TEXTAREA') {
+    if (a.value !== b.value) a.value = b.value;
+    if (a.checked !== b.checked) a.checked = b.checked;
+  }
 }
 function domKeyLater(n, key) {
   for (; n; n = n.nextSibling) if (domKeyOf(n) === key) return true;

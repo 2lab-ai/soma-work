@@ -435,6 +435,10 @@ class FakeNode {
   nodeType: number;
   tagName: string;
   nodeValue: string | null;
+  // Live form state (what the user changed; attributes hold only the defaults).
+  value = '';
+  checked = false;
+  selectedIndex = -1;
   attrs: Array<{ name: string; value: string }> = [];
   kids: FakeNode[] = [];
   parent: FakeNode | null = null;
@@ -559,6 +563,65 @@ describe('live morph (review B r2) — a live update keeps the nodes that did no
     expect(live.kids[1]).toBe(b);
   });
 
+  it('a row that leaves while a new one arrives keeps the survivor: [메인, A, B] → [메인, B, C] (review B r3 astra)', () => {
+    const live = tree('툴 3', 'w', 'running');
+    const b = live.kids[2];
+    const fresh = tree('툴 3', 'w', 'running');
+    fresh.removeChild(fresh.kids[1]);
+    fresh.insertBefore(h('button', { class: 'ag-row is-sub', 'data-agent-open': 'toolu_c' }, 'c'), null);
+    morph.domMorph(live, fresh);
+    expect(live.kids.map((k) => k.getAttribute('data-agent-open'))).toEqual(['', 'toolu_b', 'toolu_c']);
+    expect(live.kids[1]).toBe(b);
+  });
+
+  it('a section inserted before others does not shift them onto each other (review B r3 astra)', () => {
+    const body = (withSub: boolean) =>
+      h(
+        'div',
+        { class: 'card-body' },
+        ...(withSub ? [h('div', { class: 'card-sub' }, 'issue title')] : []),
+        h('div', { class: 'card-meta' }, 'meta'),
+        h('div', { class: 'ag-tree' }, h('button', { class: 'ag-row is-sub', 'data-agent-open': 'toolu_a' }, 'A')),
+      );
+    const live = body(false);
+    const meta = live.kids[0];
+    const agTree = live.kids[1];
+    const row = agTree.kids[0];
+    morph.domMorph(live, body(true));
+    expect(live.kids.map((k) => k.getAttribute('class'))).toEqual(['card-sub', 'card-meta', 'ag-tree']);
+    expect(live.kids[1]).toBe(meta);
+    expect(live.kids[2]).toBe(agTree);
+    expect(agTree.kids[0]).toBe(row);
+  });
+
+  it('form state follows the fresh markup — a model picker the server rejected shows the session model again (review B r3 astra)', () => {
+    const live = h(
+      'select',
+      { class: 'model-pick' },
+      h('option', { value: 'opus' }, 'Opus'),
+      h('option', { value: 'sonnet' }, 'Sonnet'),
+    );
+    live.selectedIndex = 1; // the user picked Sonnet; the change was rejected
+    const fresh = h(
+      'select',
+      { class: 'model-pick' },
+      h('option', { value: 'opus' }, 'Opus'),
+      h('option', { value: 'sonnet' }, 'Sonnet'),
+    );
+    fresh.selectedIndex = 0; // the session is still on Opus
+    morph.domMorph(live, fresh);
+    expect(live.selectedIndex).toBe(0);
+    const box = h('input', { type: 'checkbox' });
+    box.checked = true;
+    const freshBox = h('input', { type: 'checkbox' });
+    morph.domMorph(box, freshBox);
+    expect(box.checked).toBe(false);
+    const field = h('input', { class: 'x' });
+    field.value = 'typed';
+    morph.domMorph(field, h('input', { class: 'x' }));
+    expect(field.value).toBe('');
+  });
+
   it('a removed agent row goes; the rest stay', () => {
     const live = tree('툴 3', 'w', 'running');
     const a = live.kids[1];
@@ -581,6 +644,28 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
     const body = fnBody('selectPanelAgent');
     expect(body).toContain("before.closest('#slide-panel')");
     expect(body).toContain('#panel-agents button.pa-crumb[aria-current="true"]');
+  });
+  it('the panel Tasks block writes nothing for the same data and morphs a change (review B r3 astra)', () => {
+    let writes = 0;
+    const container = { style: {} as Record<string, string> } as Record<string, unknown>;
+    const m = load<{ renderPanelTasks(t: unknown, l?: string): void }>(
+      ['esc', 'renderPanelTaskItem', 'renderPanelTasks'],
+      [],
+      {
+        document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
+        _panelTasksExpanded: false,
+        morphInnerHtml: () => {
+          writes++;
+        },
+      },
+    );
+    const tasks = [{ id: 'T1', content: 'a', status: 'completed' }];
+    m.renderPanelTasks(tasks, 'A1 Explore');
+    m.renderPanelTasks(tasks, 'A1 Explore');
+    expect(writes).toBe(1);
+    m.renderPanelTasks([...tasks, { id: 'T2', content: 'b', status: 'pending' }], 'A1 Explore');
+    expect(writes).toBe(2);
+    expect(fnBody('renderPanelTasks')).not.toContain('container.innerHTML =');
   });
   it('a group head is morphed, not replaced, and skipped when its markup is unchanged', () => {
     const body = fnBody('wlRefreshGroupHead');
