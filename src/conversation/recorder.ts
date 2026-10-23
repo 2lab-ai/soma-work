@@ -17,6 +17,15 @@ const activeConversations = new Map<string, ConversationRecord>();
 // Per-conversation write locks to serialize disk writes and prevent race conditions
 const writeLocks = new Map<string, Promise<void>>();
 
+// One disk read per conversation at a time: concurrent cold reads share it, so
+// two snapshots of the same conversation can never both be live.
+const pendingLoads = new Map<string, Promise<ConversationRecord | null>>();
+
+// Saves not yet on disk, per conversation. An entry here is never evicted from
+// the cache — otherwise the next cold read could load the pre-save file and
+// publish it over the writes still in flight.
+const savesInFlight = new Map<string, number>();
+
 // Optional callback fired after each turn is recorded
 let _onTurnRecorded: ((conversationId: string, turn: ConversationTurn) => void) | null = null;
 
@@ -78,15 +87,33 @@ export function setOnSummaryGeneratedCallback(
  * Each conversation's writes are queued so only one writeFile runs at a time.
  */
 async function serializedSave(conversationId: string, record: ConversationRecord): Promise<void> {
+  await inWriteChain(conversationId, () => getStorage().save(record));
+}
+
+/**
+ * Run `task` in this conversation's write chain: after every write queued
+ * before it has landed on disk, and before any write queued after it.
+ */
+async function inWriteChain<T>(conversationId: string, task: () => Promise<T>): Promise<T> {
+  savesInFlight.set(conversationId, (savesInFlight.get(conversationId) ?? 0) + 1);
   const previous = writeLocks.get(conversationId) || Promise.resolve();
-  const current = previous.then(() => getStorage().save(record));
+  const current = previous.then(task);
   writeLocks.set(
     conversationId,
-    current.catch((err) => {
-      logger.error(`Write chain: prior save failed for ${conversationId}, next write will proceed`, err);
-    }),
+    current.then(
+      () => undefined,
+      (err) => {
+        logger.error(`Write chain: prior save failed for ${conversationId}, next write will proceed`, err);
+      },
+    ),
   );
-  await current;
+  try {
+    return await current;
+  } finally {
+    const left = (savesInFlight.get(conversationId) ?? 1) - 1;
+    if (left > 0) savesInFlight.set(conversationId, left);
+    else savesInFlight.delete(conversationId);
+  }
 }
 
 /**
@@ -98,9 +125,12 @@ function cacheRecord(id: string, record: ConversationRecord): void {
   if (activeConversations.has(id)) {
     activeConversations.delete(id);
   }
-  // Evict oldest entries if at capacity
-  while (activeConversations.size >= MAX_CACHE_SIZE) {
-    const oldest = activeConversations.keys().next().value!;
+  // Evict oldest entries if at capacity — skipping any with a save still in
+  // flight (see savesInFlight). If every entry is mid-save the cache briefly
+  // exceeds the cap rather than dropping unsaved state.
+  for (const oldest of activeConversations.keys()) {
+    if (activeConversations.size < MAX_CACHE_SIZE) break;
+    if (savesInFlight.has(oldest)) continue;
     activeConversations.delete(oldest);
     writeLocks.delete(oldest);
     logger.debug(`Evicted conversation ${oldest} from cache (LRU)`);
@@ -409,8 +439,22 @@ async function getOrLoadConversation(id: string): Promise<ConversationRecord | n
   const cached = activeConversations.get(id);
   if (cached) return cached;
 
-  // Load from disk
+  // Load from disk — one read per conversation at a time (see pendingLoads).
+  const pending = pendingLoads.get(id);
+  if (pending) return pending;
+  const load = loadAndCache(id).finally(() => pendingLoads.delete(id));
+  pendingLoads.set(id, load);
+  return load;
+}
+
+async function loadAndCache(id: string): Promise<ConversationRecord | null> {
   const record = await getStorage().load(id);
+  // A writer that does not read first (createConversation) may have cached this
+  // id while we were on the disk. That object is the live one; publishing our
+  // snapshot over it would roll back its writes — e.g. a titleSub fill would
+  // then see "empty" and overwrite the owner's subtitle.
+  const raced = activeConversations.get(id);
+  if (raced) return raced;
   if (record) {
     cacheRecord(id, record);
   }
@@ -452,4 +496,36 @@ export async function updateConversationTitleSub(conversationId: string, titleSu
   record.updatedAt = Date.now();
   await serializedSave(conversationId, record);
   return true;
+}
+
+/**
+ * Fill titleSub only while it is still empty, and return the stored value.
+ * A subtitle written while the caller was generating (the owner's regenerate,
+ * another viewer's fill) wins — a fill never overwrites.
+ *
+ * The check runs inside this conversation's write chain against the file on
+ * disk, not against the cached object: every save queued before it has landed,
+ * so the file is the truth even if the cached object was evicted and replaced
+ * by an older read in the meantime. The fill writes onto that file's record (so
+ * it cannot roll back anything else on disk) and mirrors titleSub into the
+ * cached object. updatedAt is left alone: filling derived data is not
+ * conversation activity. Returns null when the conversation does not exist.
+ */
+export async function fillConversationTitleSub(conversationId: string, titleSub: string): Promise<string | null> {
+  return inWriteChain(conversationId, async () => {
+    const stored = await getStorage().load(conversationId);
+    const cached = activeConversations.get(conversationId);
+    const target = stored ?? cached;
+    if (!target) return null;
+    // The cached object may hold a newer value whose save is queued after us.
+    const existing = cached?.titleSub || stored?.titleSub;
+    if (existing) {
+      if (cached && !cached.titleSub) cached.titleSub = existing;
+      return existing;
+    }
+    target.titleSub = titleSub;
+    if (cached) cached.titleSub = titleSub;
+    await getStorage().save(target);
+    return titleSub;
+  });
 }

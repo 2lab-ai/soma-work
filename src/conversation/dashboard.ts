@@ -14,7 +14,8 @@
  *                                              409 + counts when it would sleep/end sessions, unless ?confirm=1
  *   GET  /api/dashboard/session/:id          → Session detail turns (JSON)
  *   GET  /api/dashboard/session/:id/worklog  → Work log entries (JSON, registered in work-log-routes.ts)
- *   POST /api/dashboard/session/:id/generate-title → Generate titleSub via codex model
+ *   POST /api/dashboard/session/:id/ensure-title   → Fill a missing titleSub (any signed-in viewer; never overwrites)
+ *   POST /api/dashboard/session/:id/generate-title → Regenerate titleSub (owner, or ADMIN_USERS + X-Admin-Mode: on)
  *   POST /api/dashboard/session/:key/stop    → Stop a working session
  *   POST /api/dashboard/session/:key/close   → Close/terminate a session
  *   POST /api/dashboard/session/:key/trash   → Trash (hide) a closed session
@@ -37,6 +38,7 @@ import { calculateTokenCost } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
 import { clampEffortToModel } from '../model-catalog';
+import { type AgentRegistry, loseRunningAgents, sanitizeAgentRegistry } from '../session/agent-registry';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
 import { EffortSwitchError, type EffortSwitchResult } from '../session/effort-switch';
 import { productionModelCatalogDeps } from '../session/model-catalog-deps';
@@ -63,8 +65,17 @@ import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
 import { readAllInstances } from './instance-registry';
-import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
-import { generateTitle } from './title-generator';
+import {
+  createNewTaskGate,
+  NEW_TASK_BODY_LIMIT,
+  type NewTaskContext,
+  NewTaskError,
+  type NewTaskSubmission,
+  parseNewTaskSubmission,
+} from './new-task';
+import type { NewTaskLaunchResult } from './new-task-launcher';
+import { getConversation, resummarizeTurn } from './recorder';
+import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
@@ -148,6 +159,15 @@ export interface KanbanSession {
   tasks?: DashboardTask[];
   /** Tasks a later list no longer holds (completed earlier), newest first. */
   earlierTasks?: DashboardTask[];
+  /**
+   * Spec 12 — the subagents of this session (the main agent is the card
+   * itself), in spawn order, each with its own tasks. At most
+   * {@link AGENTS_ON_CARD_MAX}: running agents and their ancestors first, then
+   * the newest. Absent when the session never started one.
+   */
+  agents?: DashboardAgent[];
+  /** How many subagents the session has in all (≥ `agents.length`). */
+  agentsTotal?: number;
   /** Slack thread permalink */
   slackThreadUrl?: string;
   /** Dashboard v2.1 — live turn timer + counters (per session) */
@@ -223,6 +243,85 @@ export interface DashboardTask {
   startedAt?: number;
   completedAt?: number;
   toolCalls: number;
+}
+
+/** One subagent as the card carries it (an `AgentRecord` of `session/agent-registry.ts`). */
+export interface DashboardAgent {
+  /** The id of the tool call that started it (work-log entries carry it as `agentId` / `agentRef`). */
+  id: string;
+  /** Spawn order (`A<n>`). */
+  n: number;
+  parentId?: string;
+  type?: string;
+  description?: string;
+  background?: boolean;
+  status: 'running' | 'completed' | 'failed' | 'stopped' | 'unknown';
+  startedAt: number;
+  endedAt?: number;
+  toolCalls: number;
+  lastTool?: string;
+  tokens?: number;
+  durationMs?: number;
+  summary?: string;
+  /** Its latest TodoWrite list — at most one current task, none unless it runs. */
+  tasks?: DashboardTask[];
+  earlierTasks?: DashboardTask[];
+}
+
+/** Most subagents one card carries. */
+export const AGENTS_ON_CARD_MAX = 40;
+
+/**
+ * Spec 12 — a registry as the card carries it. `live` = the session can still
+ * run them; an archive cannot, so an agent it still thought running reads
+ * `unknown`.
+ */
+export function agentsToKanban(
+  registry: AgentRegistry | undefined,
+  live: boolean,
+): Pick<KanbanSession, 'agents' | 'agentsTotal'> {
+  const reg = live ? registry : loseRunningAgents(registry, Date.now());
+  const all = reg?.agents ?? [];
+  if (all.length === 0) return {};
+  let chosen = all;
+  if (all.length > AGENTS_ON_CARD_MAX) {
+    const byId = new Map(all.map((a) => [a.id, a]));
+    const keep = new Set<string>();
+    for (const a of all) {
+      if (a.status !== 'running') continue;
+      for (let cur: (typeof all)[number] | undefined = a; cur && !keep.has(cur.id); ) {
+        keep.add(cur.id);
+        cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+      }
+    }
+    for (let i = all.length - 1; i >= 0 && keep.size < AGENTS_ON_CARD_MAX; i--) keep.add(all[i].id);
+    chosen = all.filter((a) => keep.has(a.id));
+  }
+  return {
+    agents: chosen.map((a) => {
+      const view = a.ledger ? ledgerTasks(a.ledger) : undefined;
+      const tasks = normalizeTaskProgress(view?.current, a.status === 'running');
+      return {
+        id: a.id,
+        n: a.n,
+        ...(a.parentId ? { parentId: a.parentId } : {}),
+        ...(a.type ? { type: a.type } : {}),
+        ...(a.description ? { description: a.description } : {}),
+        ...(a.background !== undefined ? { background: a.background } : {}),
+        status: a.status,
+        startedAt: a.startedAt,
+        ...(a.endedAt ? { endedAt: a.endedAt } : {}),
+        toolCalls: a.toolCalls,
+        ...(a.lastTool ? { lastTool: a.lastTool } : {}),
+        ...(a.tokens ? { tokens: a.tokens } : {}),
+        ...(a.durationMs ? { durationMs: a.durationMs } : {}),
+        ...(a.summary ? { summary: a.summary } : {}),
+        ...(tasks?.length ? { tasks } : {}),
+        ...(view?.earlier.length ? { earlierTasks: view.earlier } : {}),
+      };
+    }),
+    agentsTotal: all.length,
+  };
 }
 
 export interface KanbanGoal {
@@ -520,6 +619,28 @@ function requireConversationWriteAccess(request: any, reply: any, ownerId: strin
   return false;
 }
 
+/** One wire shape for both subtitle routes; `code` lets the panel tell the cases apart. */
+function sendTitleSubResult(reply: any, result: TitleSubResult): void {
+  if (result.ok) {
+    reply.send({ ok: true, titleSub: result.titleSub });
+    return;
+  }
+  switch (result.reason) {
+    case 'no_content':
+      reply.status(422).send({ error: 'No conversation text to title yet', code: 'no_content' });
+      return;
+    case 'cooldown':
+      reply
+        .status(429)
+        .header('Retry-After', String(Math.ceil(result.retryAfterMs / 1000)))
+        .send({ error: 'Title generation failed recently', code: 'cooldown', retryAfterMs: result.retryAfterMs });
+      return;
+    case 'generation_failed':
+      reply.status(502).send({ error: 'Title generation failed', code: 'generation_failed' });
+      return;
+  }
+}
+
 // ── Task accessor ──────────────────────────────────────────────────
 
 type TaskAccessor = (sessionKey: string) => { current: DashboardTask[]; earlier: DashboardTask[] } | undefined;
@@ -622,6 +743,30 @@ let _submitRecommendedHandlerFn: SubmitRecommendedHandler | null = null;
 
 export function setDashboardSubmitRecommendedHandler(fn: SubmitRecommendedHandler): void {
   _submitRecommendedHandlerFn = fn;
+}
+
+/**
+ * Dashboard "New task" (SSOT 2026-10-23) — what the composer offers a user and
+ * how a task starts. Wired in src/index.ts (`new-task.ts` builds the context,
+ * `new-task-launcher.ts` starts the task). `context(userId, {fresh:true})`
+ * re-checks channel membership instead of serving a cached answer: it is the
+ * authorization step right before a task is posted.
+ */
+export interface DashboardNewTaskProvider {
+  context(userId: string, options?: { fresh?: boolean }): Promise<NewTaskContext>;
+  start(userId: string, submission: NewTaskSubmission): Promise<NewTaskLaunchResult>;
+}
+let _newTaskProvider: DashboardNewTaskProvider | null = null;
+const _newTaskGate = createNewTaskGate();
+
+export function setDashboardNewTaskProvider(provider: DashboardNewTaskProvider | null): void {
+  _newTaskProvider = provider;
+}
+
+/** The signed-in Slack user a task runs as — never a body field, never the admin-mode target. */
+function newTaskUserId(request: unknown): string | undefined {
+  const userId = (request as { authContext?: { userId?: string } }).authContext?.userId;
+  return typeof userId === 'string' && userId ? userId : undefined;
 }
 
 // ── Kanban transformation ──────────────────────────────────────────
@@ -960,6 +1105,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...modelFields(s),
     tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume)),
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
+    ...agentsToKanban(s.agents, true),
     slackThreadUrl:
       s.channelId && s.threadTs ? (buildThreadPermalink(s.channelId, s.threadTs) ?? undefined) : undefined,
     // Dashboard v2.1 — timer + compaction fields
@@ -1083,6 +1229,7 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
       : undefined,
     doneAt: Number.isFinite(Date.parse(archived.lastActivity)) ? Date.parse(archived.lastActivity) : undefined,
     ...archivedTasks(archived),
+    ...agentsToKanban(sanitizeAgentRegistry(archived.agents), false),
     goal: goalToKanban(archived),
     slackThreadUrl:
       archived.channelId && archived.threadTs
@@ -1896,7 +2043,32 @@ export async function registerDashboardRoutes(
     },
   );
 
-  // Generate titleSub for a conversation
+  // Subtitle (titleSub). #716 makes reads world-readable and writes owner-only;
+  // #717 P2 put generate-title behind that write gate. The panel fills a missing
+  // subtitle on open for every viewer, so filling has its own route that only
+  // needs sign-in + CSRF: titleSub is derived data with no author (the caller
+  // picks when it is generated, never what it says), and a fill never
+  // overwrites. This exception covers filling an EMPTY titleSub and nothing
+  // else — replacing one stays on generate-title behind the write gate.
+  server.post<{ Params: { conversationId: string } }>(
+    '/api/dashboard/session/:conversationId/ensure-title',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      try {
+        const record = await getConversation(request.params.conversationId);
+        if (!record) {
+          reply.status(404).send({ error: 'Not found' });
+          return;
+        }
+        sendTitleSubResult(reply, await ensureTitleSub(record));
+      } catch (error) {
+        logger.error('Error filling title', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // Regenerate (overwrite) titleSub — owner, or admin with X-Admin-Mode: on.
   server.post<{ Params: { conversationId: string } }>(
     '/api/dashboard/session/:conversationId/generate-title',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
@@ -1910,20 +2082,7 @@ export async function registerDashboardRoutes(
         // #716 / Oracle re-review P2: same write-access policy as
         // resummarize and kanban actions.
         if (!requireConversationWriteAccess(request, reply, record.ownerId)) return;
-
-        // Build conversation content from first few turns
-        const contentParts = record.turns
-          .slice(0, 6)
-          .map((t) => `[${t.role}]: ${t.rawContent?.substring(0, 500) || t.summaryTitle || ''}`);
-        const content = contentParts.join('\n\n');
-
-        const titleSub = await generateTitle(content);
-        if (titleSub) {
-          await updateConversationTitleSub(record.id, titleSub);
-          reply.send({ ok: true, titleSub });
-        } else {
-          reply.status(500).send({ error: 'Title generation failed' });
-        }
+        sendTitleSubResult(reply, await regenerateTitleSub(record));
       } catch (error) {
         logger.error('Error generating title', error);
         reply.status(500).send({ error: 'Internal Server Error' });
@@ -2143,6 +2302,67 @@ export async function registerDashboardRoutes(
           return;
         }
         logger.error('Error switching effort from dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // ── New task (SSOT 2026-10-23) ──
+
+  server.get('/api/dashboard/new-task/context', { preHandler: [authMiddleware] }, async (request, reply) => {
+    const userId = newTaskUserId(request);
+    if (!userId) {
+      reply.status(403).send({ error: 'Slack 계정으로 로그인해야 새 작업을 시작할 수 있습니다' });
+      return;
+    }
+    if (!_newTaskProvider) {
+      reply.status(501).send({ error: 'New task is not configured' });
+      return;
+    }
+    try {
+      reply.send({ context: await _newTaskProvider.context(userId) });
+    } catch (error) {
+      logger.error('Error building the new-task context', error);
+      reply.status(500).send({ error: 'Internal Server Error' });
+    }
+  });
+
+  server.post<{ Body: unknown }>(
+    '/api/dashboard/new-task',
+    {
+      preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])],
+      // Phone photos / voice notes travel as base64 in the JSON body; the
+      // decoded sizes are bounded again by parseNewTaskSubmission.
+      bodyLimit: NEW_TASK_BODY_LIMIT,
+    },
+    async (request, reply) => {
+      const userId = newTaskUserId(request);
+      if (!userId) {
+        reply.status(403).send({ error: 'Slack 계정으로 로그인해야 새 작업을 시작할 수 있습니다' });
+        return;
+      }
+      const provider = _newTaskProvider;
+      if (!provider) {
+        reply.status(501).send({ error: 'New task is not configured' });
+        return;
+      }
+      const requestId = (request.body as { requestId?: unknown } | null)?.requestId;
+      try {
+        const result = await _newTaskGate.run(userId, typeof requestId === 'string' ? requestId : '', async () => {
+          // Authorize against a FRESH context: membership is re-checked right
+          // before anything is posted into the channel.
+          const context = await provider.context(userId, { fresh: true });
+          const parsed = parseNewTaskSubmission(request.body, context);
+          if (!parsed.ok) throw new NewTaskError(400, parsed.error);
+          return provider.start(userId, parsed.value);
+        });
+        reply.send({ ok: true, ...result });
+      } catch (error) {
+        if (error instanceof NewTaskError) {
+          reply.status(error.statusCode).send({ error: error.message });
+          return;
+        }
+        logger.error('Error starting a new task from the dashboard', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
     },
@@ -4205,6 +4425,292 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn, .mc-btn-submit, .mc-btn-reset { min-height: 44px; }
   .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command input { min-height: 44px; }
 }
+/* ═══ New task (SSOT 2026-10-23) — entry button, floating button, composer ═══
+   PC: a gradient pill in the top bar (rotating sheen ring, one attention pulse,
+   N shortcut) opens a centered dialog. Phones: an extended floating button in
+   the thumb zone opens a full-screen sheet sized to the visual viewport, so
+   the toolbar stays above the keyboard. */
+.new-task-btn {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  height: 32px;
+  padding: 0 10px 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 6px 18px -6px rgba(107, 147, 242, 0.75);
+  transition: transform var(--dur-press) var(--ease-out), filter var(--dur-press) var(--ease-out), box-shadow var(--dur-press) var(--ease-out);
+  animation: nt-pulse 2.4s var(--ease-out) 0.8s 2;
+}
+.new-task-btn::before {
+  content: '';
+  position: absolute;
+  z-index: -2;
+  left: -50%;
+  top: 50%;
+  width: 200%;
+  aspect-ratio: 1;
+  translate: 0 -50%;
+  background: conic-gradient(#6b93f2, #b28dff, #3ecf8e, #f6c90e, #6b93f2);
+  animation: nt-sheen 4.5s linear infinite;
+}
+.new-task-btn::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 1.5px;
+  border-radius: inherit;
+  background: linear-gradient(135deg, #3f6fe0, #6d4fe0);
+}
+.new-task-btn:hover { transform: translateY(-1px); filter: brightness(1.08); box-shadow: 0 10px 24px -8px rgba(107, 147, 242, 0.9); }
+.new-task-btn:active:not(:focus-visible) { transform: scale(0.97); }
+.new-task-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.nt-plus { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: rgba(255, 255, 255, 0.2); transition: transform var(--dur-move) var(--ease-out); }
+.nt-plus svg { width: 12px; height: 12px; }
+.new-task-btn:hover .nt-plus { transform: rotate(90deg); }
+.nt-kbd { font: inherit; font-size: 10px; font-weight: 700; line-height: 1; padding: 3px 5px; border-radius: 5px; background: rgba(255, 255, 255, 0.18); color: rgba(255, 255, 255, 0.9); }
+
+.new-task-fab {
+  position: fixed;
+  right: max(16px, env(safe-area-inset-right, 0px));
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  z-index: 60;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  height: 56px;
+  padding: 0 20px 0 17px;
+  border: 0;
+  border-radius: 28px;
+  background: linear-gradient(135deg, #3f6fe0, #6d4fe0);
+  color: #fff;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 12px 30px -10px rgba(79, 123, 232, 0.85), 0 2px 6px rgba(0, 0, 0, 0.35);
+  transition: padding var(--dur-expand) var(--ease-out), gap var(--dur-expand) var(--ease-out), transform var(--dur-press) var(--ease-out);
+  animation: nt-fab-in 420ms var(--ease-out) both;
+  -webkit-tap-highlight-color: transparent;
+}
+.new-task-fab::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; animation: nt-ring 3.2s var(--ease-out) 1.2s infinite; }
+.new-task-fab:active:not(:focus-visible) { transform: scale(0.95); }
+.new-task-fab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 3px; }
+.nt-fab-icon { width: 22px; height: 22px; flex: none; transition: transform var(--dur-move) var(--ease-out); }
+.nt-fab-label { display: inline-block; max-width: 7em; overflow: hidden; white-space: nowrap; transition: max-width var(--dur-expand) var(--ease-out), opacity var(--dur-fade) var(--ease-out); }
+.new-task-fab.is-compact { padding: 0 17px; gap: 0; }
+.new-task-fab.is-compact .nt-fab-label { max-width: 0; opacity: 0; }
+.new-task-fab.is-compact .nt-fab-icon { transform: rotate(90deg); }
+.new-task-fab.is-floating { display: inline-flex; }
+.slide-panel.open ~ .new-task-fab,
+body.nt-open .new-task-fab { display: none !important; }
+
+.nt-dialog {
+  width: min(720px, calc(100vw - 48px));
+  max-height: min(86vh, 880px);
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 32px 90px -24px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(10px) scale(0.97);
+  transition: opacity var(--dur-expand) var(--ease-out), transform var(--dur-expand) var(--ease-out);
+}
+.nt-dialog.is-shown { opacity: 1; transform: none; }
+.nt-dialog::backdrop { background: rgba(8, 8, 10, 0.55); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+.nt-form { display: flex; flex-direction: column; max-height: inherit; height: 100%; }
+.nt-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 4px; }
+.nt-head h2 { flex: 1; margin: 0; font-size: 16px; font-weight: 750; letter-spacing: -0.01em; }
+.nt-head-hint { font-size: 11px; color: var(--text-tertiary); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
+.nt-close { display: inline-grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 9px; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.nt-close:hover { background: var(--surface-raised); color: var(--text); }
+.nt-close svg { width: 16px; height: 16px; }
+.nt-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 10px 16px 14px; overscroll-behavior: contain; }
+.nt-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.nt-config { display: flex; flex-wrap: wrap; gap: 8px; }
+.nt-chip { display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 4px 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); flex: none; max-width: 100%; }
+.nt-chip:focus-within { border-color: var(--border-focus); }
+.nt-chip > label { font-size: 11px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+.nt-chip select {
+  appearance: none;
+  -webkit-appearance: none;
+  min-width: 0;
+  max-width: 220px;
+  height: 100%;
+  padding: 0 20px 0 4px;
+  border: 0;
+  outline: none;
+  background-color: transparent;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 10px) 52%, calc(100% - 6px) 52%;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.nt-chip select option { background: var(--surface); color: var(--text); }
+.nt-battery-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px; border: 0; border-radius: 7px; background: transparent; color: var(--text-tertiary); font: inherit; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; cursor: pointer; }
+.nt-battery-btn:hover { background: var(--bg); }
+.nt-battery { position: relative; display: inline-block; width: 24px; height: 12px; padding: 1px; border: 1.5px solid currentColor; border-radius: 3px; }
+.nt-battery::after { content: ''; position: absolute; right: -4px; top: 2.5px; width: 2px; height: 4px; border-radius: 0 1px 1px 0; background: currentColor; }
+.nt-battery-fill { display: block; width: 0; height: 100%; border-radius: 1px; background: currentColor; transition: width var(--dur-move) var(--ease-out); }
+.nt-batt-high { color: var(--green); }
+.nt-batt-mid { color: var(--yellow); }
+.nt-batt-low { color: var(--red); }
+.nt-batt-low .nt-battery-fill { animation: nt-blink 1.6s ease-in-out infinite; }
+.nt-batt-unknown { color: var(--text-tertiary); }
+.nt-usage { margin: -4px 0 0; padding: 8px 10px; border-radius: 10px; background: var(--bg); color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+
+.nt-toggles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.nt-toggle { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text-secondary); font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; transition: background var(--dur-press) var(--ease-out), color var(--dur-press) var(--ease-out), border-color var(--dur-press) var(--ease-out); }
+.nt-switch { position: relative; flex: none; width: 26px; height: 16px; border-radius: 999px; background: var(--border); transition: background var(--dur-press) var(--ease-out); }
+.nt-switch::after { content: ''; position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); transition: transform var(--dur-press) var(--ease-out); }
+.nt-toggle[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+.nt-toggle[aria-pressed="true"] .nt-switch { background: var(--accent); }
+.nt-toggle[aria-pressed="true"] .nt-switch::after { transform: translateX(10px); }
+#nt-autoz[aria-pressed="true"] { border-color: var(--purple); }
+#nt-autoz[aria-pressed="true"] .nt-switch { background: var(--purple); }
+.nt-toggle-note { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
+
+.nt-compose { position: relative; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); transition: border-color var(--dur-press) var(--ease-out), box-shadow var(--dur-press) var(--ease-out); }
+.nt-compose:focus-within { border-color: var(--border-focus); box-shadow: 0 0 0 3px rgba(77, 157, 224, 0.18); }
+.nt-prompt { display: block; width: 100%; min-height: 150px; max-height: 44vh; padding: 12px 14px; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 1.55; }
+.nt-prompt::placeholder { color: var(--text-tertiary); }
+.nt-drop-hint { position: absolute; inset: 0; display: none; place-items: center; border-radius: inherit; background: rgba(77, 157, 224, 0.12); color: var(--accent); font-size: 13px; font-weight: 700; pointer-events: none; }
+.nt-compose.is-drag { border-color: var(--accent); border-style: dashed; }
+.nt-compose.is-drag .nt-drop-hint { display: grid; }
+.nt-count { align-self: flex-end; padding: 0 10px 6px; font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+
+.nt-attachments { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 4px; scroll-snap-type: x proximity; scrollbar-width: thin; }
+.nt-attachments:empty { display: none; }
+.nt-att { position: relative; flex: none; display: flex; align-items: center; gap: 8px; height: 58px; max-width: 230px; padding: 0 32px 0 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); scroll-snap-align: start; animation: nt-att-in 240ms var(--ease-out) both; }
+.nt-att-thumb { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: 9px; background: var(--bg); color: var(--text-secondary); object-fit: cover; overflow: hidden; }
+.nt-att-thumb svg { width: 20px; height: 20px; }
+.nt-att-text { display: flex; flex-direction: column; min-width: 0; }
+.nt-att-name { font-size: 12px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nt-att-meta { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.nt-att-remove { position: absolute; top: 4px; right: 4px; display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.5); color: #fff; cursor: pointer; }
+.nt-att-remove svg { width: 10px; height: 10px; }
+.nt-att-play { display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 9px; background: var(--bg); color: var(--text); cursor: pointer; flex: none; }
+.nt-att-play svg { width: 18px; height: 18px; }
+
+.nt-recorder { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border: 1px solid rgba(242, 107, 107, 0.45); border-radius: 12px; background: rgba(242, 107, 107, 0.1); font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.nt-recorder[hidden] { display: none; }
+.nt-rec-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--red); animation: nt-rec 1.2s ease-in-out infinite; }
+.nt-rec-meter { flex: 1; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.nt-rec-level { display: block; width: 0; height: 100%; border-radius: 3px; background: var(--red); transition: width 80ms linear; }
+.nt-rec-btn { height: 32px; padding: 0 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.nt-rec-btn.is-primary { border-color: transparent; background: var(--red); color: #fff; }
+.nt-error { margin: 0; padding: 8px 10px; border-radius: 10px; background: rgba(242, 107, 107, 0.12); color: var(--red); font-size: 12.5px; }
+.nt-error[hidden] { display: none; }
+.nt-empty { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
+
+.nt-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px 12px 10px; border-top: 1px solid var(--border); background: var(--surface); }
+.nt-tools { display: flex; align-items: center; gap: 2px; }
+.nt-tool { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border: 0; border-radius: 10px; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background var(--dur-press) var(--ease-out), color var(--dur-press) var(--ease-out), transform var(--dur-press) var(--ease-out); -webkit-tap-highlight-color: transparent; }
+.nt-tool:hover { background: var(--surface-raised); color: var(--text); }
+.nt-tool:active:not(:focus-visible) { transform: scale(0.92); }
+.nt-tool svg { width: 20px; height: 20px; }
+.nt-tool-camera { display: none; }
+.nt-tool-mic[aria-pressed="true"] { background: rgba(242, 107, 107, 0.15); color: var(--red); }
+.nt-status { flex: 1; min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: 12px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.nt-submit-hint { flex: none; font-size: 11px; color: var(--text-tertiary); }
+.nt-submit { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 38px; padding: 0 16px; border: 0; border-radius: 11px; background: linear-gradient(135deg, #3f6fe0, #6d4fe0); color: #fff; font: inherit; font-size: 14px; font-weight: 750; cursor: pointer; box-shadow: 0 6px 16px -6px rgba(79, 123, 232, 0.8); transition: transform var(--dur-press) var(--ease-out), filter var(--dur-press) var(--ease-out), opacity var(--dur-press) var(--ease-out); }
+.nt-submit svg { width: 16px; height: 16px; }
+.nt-submit:hover:not(:disabled) { filter: brightness(1.08); }
+.nt-submit:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+.nt-submit:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+.nt-submit.is-busy svg { animation: nt-spin 0.9s linear infinite; }
+
+.nt-toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 90; display: flex; align-items: center; gap: 10px; max-width: min(560px, calc(100vw - 24px)); padding: 10px 10px 10px 14px; translate: -50% 0; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-raised); color: var(--text); box-shadow: var(--ib-shadow-raised); font-size: 13px; animation: nt-toast-in 320ms var(--ease-out) both; }
+.nt-toast[hidden] { display: none; }
+.nt-toast-text { min-width: 0; }
+.nt-toast a, .nt-toast button { flex: none; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; cursor: pointer; }
+
+@keyframes nt-sheen { to { rotate: 360deg; } }
+@keyframes nt-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(123, 156, 240, 0.6), 0 6px 18px -6px rgba(107, 147, 242, 0.75); }
+  70% { box-shadow: 0 0 0 12px rgba(123, 156, 240, 0), 0 6px 18px -6px rgba(107, 147, 242, 0.75); }
+  100% { box-shadow: 0 0 0 0 rgba(123, 156, 240, 0), 0 6px 18px -6px rgba(107, 147, 242, 0.75); }
+}
+@keyframes nt-fab-in { from { opacity: 0; transform: translateY(16px) scale(0.6); } to { opacity: 1; transform: none; } }
+@keyframes nt-ring { 0% { box-shadow: 0 0 0 0 rgba(123, 156, 240, 0.5); } 60%, 100% { box-shadow: 0 0 0 16px rgba(123, 156, 240, 0); } }
+@keyframes nt-att-in { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
+@keyframes nt-toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes nt-rec { 50% { opacity: 0.35; transform: scale(0.8); } }
+@keyframes nt-blink { 50% { opacity: 0.45; } }
+@keyframes nt-spin { to { rotate: 360deg; } }
+
+@media (max-width: 639px) {
+  /* New task — phones: the floating button replaces the top-bar one, and the
+     composer is a full-screen sheet that follows the visual viewport (the
+     keyboard) and the safe areas. */
+  .new-task-btn { display: none; }
+  .new-task-fab { display: inline-flex; }
+  .nt-dialog {
+    position: fixed;
+    inset: auto 0 auto 0;
+    top: var(--nt-vvt, 0px);
+    width: 100vw;
+    max-width: 100vw;
+    height: var(--nt-vvh, 100dvh);
+    max-height: none;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    opacity: 1;
+    transform: translateY(100%);
+    transition: transform var(--dur-move) var(--ease-out);
+  }
+  .nt-dialog.is-shown { transform: none; }
+  .nt-head { padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 4px; }
+  .nt-body { padding: 8px 14px 10px; gap: 10px; }
+  .nt-config { flex-wrap: nowrap; overflow-x: auto; margin: 0 -14px; padding: 0 14px 2px; scrollbar-width: none; }
+  .nt-config::-webkit-scrollbar { display: none; }
+  .nt-chip select { max-width: 150px; }
+  .nt-compose { flex: 1 1 auto; min-height: 140px; }
+  .nt-prompt { flex: 1; max-height: none; }
+  .nt-toolbar { padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); }
+  .nt-submit { height: 44px; padding: 0 18px; border-radius: 13px; }
+  .nt-submit-hint, .nt-head-hint { display: none; }
+  .nt-toast { bottom: calc(86px + env(safe-area-inset-bottom, 0px)); }
+}
+@media (pointer: coarse) {
+  /* New task — touch: 44px targets, 16px text (iOS does not zoom into it),
+     and the camera button (capture="environment" opens the camera directly). */
+  .nt-tool, .nt-close, .nt-battery-btn, .nt-toggle, .nt-chip, .nt-rec-btn { min-height: 44px; min-width: 44px; }
+  .nt-tool { width: 44px; height: 44px; }
+  .nt-att-remove { width: 28px; height: 28px; }
+  .nt-prompt, .nt-chip select { font-size: 16px; }
+  .nt-tool-camera { display: inline-flex; }
+  .nt-kbd, .nt-submit-hint, .nt-head-hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* New task — no rotation, pulse, ring or slide; changes are instant. */
+  .new-task-btn, .new-task-btn::before, .new-task-fab, .new-task-fab::after, .nt-dialog, .nt-att, .nt-toast,
+  .nt-rec-dot, .nt-battery-fill, .nt-plus, .nt-fab-label, .nt-fab-icon, .nt-submit svg { animation: none !important; transition: none !important; }
+}
 </style>
 </head>
 <body>
@@ -4218,6 +4724,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
       <div class="td-menu" id="td-menu" role="menu" hidden></div>
       <span class="td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
+    <button type="button" class="new-task-btn" id="new-task-btn" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><span class="nt-plus" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></span><span class="nt-btn-label">New task</span><kbd class="nt-kbd" aria-hidden="true">N</kbd></button>
     <div class="nav">
       <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">All Users</span><select id="user-select" title="All Users" onchange="selectUser(this.value)">
         <option value="">All Users</option>
@@ -4335,7 +4842,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         <h3 id="panel-title">Session Detail</h3>
         <div id="panel-title-sub" style="font-size:11px;color:var(--text-secondary);margin-top:2px;display:flex;align-items:center;gap:6px">
           <span id="panel-title-sub-text"></span>
-          <button id="panel-title-sub-regen" class="btn-action" style="font-size:10px;padding:1px 6px;display:none" onclick="event.stopPropagation();generateTitleSub(panelConvId)">&#x1F504;</button>
+          <button id="panel-title-sub-regen" class="btn-action" style="font-size:10px;padding:1px 6px;display:none" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)">&#x1F504;</button>
         </div>
       </div>
       <button class="panel-close" onclick="closePanel()">&#x2715;</button>
@@ -4366,6 +4873,55 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
       </div>
     </div>
   </div>
+
+  <!-- New task (SSOT 2026-10-23): floating button (phones, and PC once the top-bar
+       button scrolls away), the composer dialog, and the launch toast. -->
+  <button type="button" class="new-task-fab" id="new-task-fab" aria-label="새 작업 시작" onclick="openNewTask()"><svg class="nt-fab-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg><span class="nt-fab-label">새 작업</span></button>
+  <dialog id="nt-dialog" class="nt-dialog" aria-labelledby="nt-title" onclose="ntOnClosed()">
+    <form id="nt-form" class="nt-form" onsubmit="submitNewTask(event)" novalidate>
+      <header class="nt-head">
+        <button type="button" class="nt-close" aria-label="닫기" onclick="closeNewTask()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+        <h2 id="nt-title">새 작업</h2>
+        <span class="nt-head-hint" aria-hidden="true">Esc</span>
+      </header>
+      <div class="nt-body" id="nt-body">
+        <div class="nt-config" role="group" aria-label="작업 설정">
+          <div class="nt-chip nt-chip-model"><label for="nt-model">모델</label><select id="nt-model" onchange="ntOnModelChange()"></select><button type="button" class="nt-battery-btn nt-batt-unknown" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><span class="nt-battery" id="nt-battery" role="img" aria-label="잔여량 미확인"><span class="nt-battery-fill" id="nt-battery-fill"></span></span><span class="nt-battery-pct" id="nt-battery-pct">?</span></button></div>
+          <div class="nt-chip"><label for="nt-effort">effort</label><select id="nt-effort" onchange="ntOnEffortChange()"></select></div>
+          <div class="nt-chip nt-chip-channel"><label for="nt-channel">채널</label><select id="nt-channel" onchange="ntOnChannelChange()"></select></div>
+        </div>
+        <p class="nt-usage" id="nt-usage" hidden></p>
+        <div class="nt-toggles" role="group" aria-label="자동 진행">
+          <button type="button" class="nt-toggle" id="nt-autogoal" aria-pressed="false" title="이 작업의 첫 지시에만 적용 — 처음 값은 내 autogoal 설정, 설정 자체는 바뀌지 않습니다" onclick="ntToggle('autogoal')"><span class="nt-switch" aria-hidden="true"></span><span>autogoal</span></button>
+          <button type="button" class="nt-toggle" id="nt-autoz" aria-pressed="false" title="켜면 지시 끝에 $autoz를 붙여 autoz 스킬이 끝까지 자동으로 진행합니다" onclick="ntToggle('autoz')"><span class="nt-switch" aria-hidden="true"></span><span>autoz</span></button>
+          <span class="nt-toggle-note">이 작업에만 적용 · 설정은 그대로</span>
+        </div>
+        <div class="nt-compose" id="nt-compose">
+          <label class="nt-sr" for="nt-prompt">작업 지시</label>
+          <textarea id="nt-prompt" class="nt-prompt" rows="6" placeholder="무엇을 할까요? 예) soma-work 대시보드 개선해줘" oninput="ntOnInput()"></textarea>
+          <span class="nt-count" id="nt-count" aria-hidden="true"></span>
+          <div class="nt-drop-hint" aria-hidden="true">여기에 놓으면 첨부됩니다</div>
+        </div>
+        <div class="nt-attachments" id="nt-attachments" aria-live="polite" aria-label="첨부 파일"></div>
+        <div class="nt-recorder" id="nt-recorder" role="status" aria-label="녹음 중" hidden><span class="nt-rec-dot" aria-hidden="true"></span><span id="nt-rec-time">0:00</span><span class="nt-rec-meter" aria-hidden="true"><span class="nt-rec-level" id="nt-rec-level"></span></span><button type="button" class="nt-rec-btn" onclick="ntStopRecording(false)">취소</button><button type="button" class="nt-rec-btn is-primary" onclick="ntStopRecording(true)">완료</button></div>
+        <p class="nt-error" id="nt-error" role="alert" hidden></p>
+      </div>
+      <footer class="nt-toolbar">
+        <div class="nt-tools">
+          <button type="button" class="nt-tool nt-tool-camera" id="nt-camera" aria-label="사진 찍기" title="사진 찍기" onclick="ntEl('nt-camera-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6.5h3l1.5-2h6l1.5 2h3v9.5h-15z"/><circle cx="10" cy="11" r="3"/></svg></button>
+          <button type="button" class="nt-tool" id="nt-attach" aria-label="파일 첨부" title="파일 첨부" onclick="ntEl('nt-file-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.5 9.5l-5.8 5.8a3.5 3.5 0 0 1-5-5l6.3-6.3a2.3 2.3 0 0 1 3.3 3.3l-6.2 6.2a1.1 1.1 0 0 1-1.6-1.6l5.6-5.6"/></svg></button>
+          <button type="button" class="nt-tool nt-tool-mic" id="nt-mic" aria-label="음성 녹음" aria-pressed="false" title="음성 녹음" onclick="ntToggleRecording()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><rect x="7.5" y="2.5" width="5" height="9.5" rx="2.5"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5"/></svg></button>
+          <input type="file" id="nt-camera-input" accept="image/*" capture="environment" hidden onchange="ntAddFiles(this.files, 'camera'); this.value = ''">
+          <input type="file" id="nt-file-input" multiple hidden onchange="ntAddFiles(this.files, 'file'); this.value = ''">
+          <input type="file" id="nt-audio-input" accept="audio/*" capture hidden onchange="ntAddFiles(this.files, 'voice'); this.value = ''">
+        </div>
+        <span class="nt-status" id="nt-status" role="status" aria-live="polite"></span>
+        <span class="nt-submit-hint" id="nt-submit-hint" aria-hidden="true">⌘↵</span>
+        <button type="submit" class="nt-submit" id="nt-submit">작업 시작<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8h9M8.5 4.5L12 8l-3.5 3.5"/></svg></button>
+      </footer>
+    </form>
+  </dialog>
+  <div class="nt-toast" id="nt-toast" role="status" aria-live="polite" hidden></div>
 </div>
 
 <script>
@@ -4412,6 +4968,9 @@ let panelOpen = false;
 let panelSessionKey = null;
 let panelConvId = null;
 let _panelTasksExpanded = false;
+let _panelTitleSub = ''; // the subtitle the open panel shows ('' = none yet)
+let _viewerIsAdmin = false; // /auth/me says ADMIN_USERS (or viewer token); UX only, the server re-checks
+let _viewerUserId = ''; // the signed-in user (/auth/me) — not currentUserId, which is the board filter
 
 // ── Theme toggle — sun/moon ──
 function getPreferredTheme() {
@@ -4689,6 +5248,8 @@ function _applyUserPill(data) {
   // Bearer-cookie admin (viewer token) is treated as always-admin and
   // also gets the toggle.
   const isAdminCapable = !!(data && (data.isAdmin || (data.user && data.user.name && data.isAdmin)));
+  _viewerIsAdmin = isAdminCapable;
+  _viewerUserId = (data && data.user && data.user.slackUserId) || '';
   const lifecycleBtn = document.getElementById('lifecycle-btn');
   if (lifecycleBtn) lifecycleBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
   const toggle = document.getElementById('admin-mode-toggle');
@@ -8703,6 +9264,7 @@ function openPanel(sessionKey, focusWorkLog) {
   var titleSubBtn = document.getElementById('panel-title-sub-regen');
   titleSubTextEl.textContent = '';
   titleSubBtn.style.display = 'none';
+  _panelTitleSub = '';
 
   // Meta
   const metaEl = document.getElementById('panel-meta');
@@ -8765,10 +9327,11 @@ function openPanel(sessionKey, focusWorkLog) {
         var tSubText = document.getElementById('panel-title-sub-text');
         var tSubBtn = document.getElementById('panel-title-sub-regen');
         if (data.titleSub) {
+          _panelTitleSub = data.titleSub;
           tSubText.textContent = data.titleSub;
-          tSubBtn.style.display = 'inline-block';
+          tSubBtn.style.display = panelTitleSubCanRegen() ? 'inline-block' : 'none';
         } else if (loadingConvId) {
-          generateTitleSub(loadingConvId);
+          generateTitleSub(loadingConvId, false); // fill: allowed for every signed-in viewer
         }
 
         if (!data.turns || data.turns.length === 0) {
@@ -9020,45 +9583,78 @@ function attachRawToggleHandlers() {
   });
 }
 
-async function generateTitleSub(convId) {
+// Panel subtitle (titleSub). Reads are open to every signed-in viewer (#716);
+// so is filling a MISSING subtitle (POST ensure-title — it never overwrites).
+// Replacing one (POST generate-title) stays with the owner or an admin in Admin
+// mode, so 🔄 over an existing subtitle is offered to them only. 🔄 on a
+// missing subtitle retries the fill and is offered to everyone.
+function titleSubCanRegen(ownerId, viewerId, viewerIsAdmin, adminModeOn) {
+  if (ownerId && ownerId === viewerId) return true;
+  return !!(viewerIsAdmin && adminModeOn);
+}
+function panelTitleSubCanRegen() {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  return titleSubCanRegen(s && s.ownerId, _viewerUserId, _viewerIsAdmin, _isAdminModeOn());
+}
+function titleSubEndpoint(convId, regenerate) {
+  return '/api/dashboard/session/' + encodeURIComponent(convId) + (regenerate ? '/generate-title' : '/ensure-title');
+}
+// Only a stale CSRF token earns the refresh + retry; any other 403 is a refusal.
+function isCsrfRejection(status, data) {
+  return status === 403 && !!data && data.code === 'csrf_failed';
+}
+// What the subtitle row shows after a reply. A permission refusal is not a
+// generation failure: it keeps whatever was there and offers no 🔄.
+function titleSubView(status, data, canRegen, previous) {
+  if (data && data.titleSub) return { text: data.titleSub, titleSub: data.titleSub, regen: canRegen };
+  if (status === 403 && !isCsrfRejection(status, data)) {
+    return { text: previous || READ_ONLY_MSG, titleSub: previous || '', regen: false };
+  }
+  var code = data && data.code;
+  var text = code === 'cooldown' ? 'Title generation failed — retry in a minute'
+    : code === 'no_content' ? 'No conversation to title yet'
+    : 'Title generation failed';
+  return { text: text, titleSub: previous || '', regen: true };
+}
+
+async function generateTitleSub(convId, regenerate) {
   // The panel opening this request belongs to: once another panel opens (or
   // this one closes) the subtitle element shows someone else, so drop the result.
   var gen = _panelGen;
   var textEl = document.getElementById('panel-title-sub-text');
   var btn = document.getElementById('panel-title-sub-regen');
+  var previous = _panelTitleSub;
   textEl.textContent = 'Generating title...';
   btn.style.display = 'none';
   try {
-    // #771 — CSRF-protected POST. Mirror doAction / answerChoice pattern:
-    // attach X-CSRF-Token, and on 403 (JWT rotation invalidated the token)
-    // refresh and retry once. The route applies csrfMiddleware so the prior
-    // header-less fetch was an immediate 403.
-    const url = '/api/dashboard/session/' + encodeURIComponent(convId) + '/generate-title';
-    const headers = {};
-    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
-    var res = await fetch(url, { method: 'POST', headers });
+    // #771 — CSRF-protected POST: attach X-CSRF-Token; when the server says the
+    // token went stale (JWT rotation), refresh it and retry once.
+    var url = titleSubEndpoint(convId, regenerate);
+    var post = function() {
+      var headers = {};
+      if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+      return fetch(url, { method: 'POST', headers: headers });
+    };
+    var res = await post();
     if (gen !== _panelGen) return;
-    if (res.status === 403) {
+    var data = await res.json().catch(function() { return null; });
+    if (gen !== _panelGen) return;
+    if (isCsrfRejection(res.status, data)) {
       await refreshCsrfToken();
       if (gen !== _panelGen) return;
-      const retryHeaders = {};
-      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
-      res = await fetch(url, { method: 'POST', headers: retryHeaders });
+      res = await post();
+      if (gen !== _panelGen) return;
+      data = await res.json().catch(function() { return null; });
       if (gen !== _panelGen) return;
     }
-    var data = await res.json();
-    if (gen !== _panelGen) return;
-    if (data.titleSub) {
-      textEl.textContent = data.titleSub;
-      btn.style.display = 'inline-block';
-    } else {
-      textEl.textContent = 'Title generation failed';
-      btn.style.display = 'inline-block';
-    }
+    var view = titleSubView(res.status, data, panelTitleSubCanRegen(), previous);
+    _panelTitleSub = view.titleSub;
+    textEl.textContent = view.text;
+    btn.style.display = view.regen ? 'inline-block' : 'none';
   } catch(e) {
     if (gen !== _panelGen) return;
-    textEl.textContent = 'Error';
-    btn.style.display = 'inline-block';
+    textEl.textContent = previous || 'Error';
+    btn.style.display = !previous || panelTitleSubCanRegen() ? 'inline-block' : 'none';
   }
 }
 
@@ -9245,10 +9841,887 @@ function sendRetry(msg) {
   setBoardView(saved === 'board' || saved === 'list' ? saved : (window.innerWidth < 640 ? 'list' : 'board'));
 })();
 
+// ── New task (SSOT 2026-10-23) ──
+// The composer behind the New task button / floating button. It loads what
+// this user may choose (GET /api/dashboard/new-task/context: models with a
+// shared-pool quota battery, efforts, repo channels, the autogoal default),
+// collects the instruction and attachments (file picker, camera on phones,
+// voice via MediaRecorder, drag-and-drop and pasted screenshots on PC) and
+// starts the task (POST /api/dashboard/new-task, XHR for upload progress).
+// The task then runs in the chosen Slack channel; its card arrives over the
+// WebSocket like any other session.
+var NT_DRAFT_KEY = 'soma-nt-draft';
+var NT_MAX_RECORD_SEC = 600;
+var NT_ICON_X = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+var NT_ICON_FILE = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M5 2.5h6.5L15 6v11.5H5z"/><path d="M11.5 2.5V6H15"/></svg>';
+var NT_ICON_PLAY = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 3.5v9l7.5-4.5z"/></svg>';
+var NT_ICON_PAUSE = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 3.5h2.5v9H4.5zM9 3.5h2.5v9H9z"/></svg>';
+var _ntCtx = null;
+var _ntState = null;
+var _ntFiles = [];
+var _ntSeq = 0;
+var _ntBusy = false;
+var _ntRequestId = null;
+var _ntRec = null;
+var _ntAudio = null;
+var _ntPlayingId = 0;
+var _ntLastLaunch = null;
+var _ntToastTimer = 0;
+
+function ntBatteryView(b) {
+  if (!b || typeof b.level !== 'number') {
+    return { cls: 'nt-batt-unknown', pct: '?', fill: 0, label: '잔여량 미확인 · 공유 풀 추정' };
+  }
+  var pct = Math.round(b.level * 100);
+  var cls = b.level >= 0.5 ? 'nt-batt-high' : b.level >= 0.2 ? 'nt-batt-mid' : 'nt-batt-low';
+  var parts = ['공유 풀 추정 ' + pct + '%'];
+  (b.windows || []).forEach(function (w) {
+    if (typeof w.remaining === 'number') parts.push(w.label + ' ' + Math.round(w.remaining * 100) + '%');
+  });
+  if (b.accounts) parts.push('가용 ' + b.accounts.available + '/' + b.accounts.total);
+  if (typeof b.best === 'number') parts.push('최대 ' + Math.round(b.best * 100) + '%');
+  return { cls: cls, pct: pct + '%', fill: pct, label: parts.join(' · ') };
+}
+
+function ntDefaultState(ctx, draft) {
+  return {
+    model: ctx.defaultModel,
+    effort: ctx.defaultEffort,
+    channelId: ctx.defaultChannelId || null,
+    autogoal: !!ctx.autogoalDefault,
+    autoz: false,
+    prompt: draft && typeof draft.prompt === 'string' ? draft.prompt : '',
+  };
+}
+
+function ntBuildPayload(state, attachments, requestId) {
+  return {
+    requestId: requestId,
+    prompt: state.prompt,
+    model: state.model,
+    effort: state.effort,
+    channelId: state.channelId,
+    autogoal: state.autogoal,
+    autoz: state.autoz,
+    attachments: attachments.map(function (a) {
+      return { name: a.name, mimetype: a.mimetype, data: a.data };
+    }),
+  };
+}
+
+function ntCanSubmit(state, attachments) {
+  if (!state || !state.channelId) return false;
+  return String(state.prompt || '').trim().length > 0 || (attachments || []).length > 0;
+}
+
+function ntPickRecorderMime(isSupported) {
+  // MP4/AAC first (Safari, Chrome, Edge), then Ogg/Opus (Firefox). WebM last:
+  // a .webm file reads as video and would skip transcription.
+  var candidates = ['audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm;codecs=opus', 'audio/webm'];
+  for (var i = 0; i < candidates.length; i++) {
+    try {
+      if (isSupported(candidates[i])) return candidates[i];
+    } catch (e) {}
+  }
+  return '';
+}
+
+function ntExtForMime(m) {
+  var t = String(m || '').toLowerCase();
+  if (t.indexOf('audio/mp4') === 0 || t.indexOf('audio/aac') === 0 || t.indexOf('audio/x-m4a') === 0) return 'm4a';
+  if (t.indexOf('ogg') >= 0) return 'ogg';
+  if (t.indexOf('webm') >= 0) return 'webm';
+  if (t.indexOf('mpeg') >= 0) return 'mp3';
+  if (t.indexOf('wav') >= 0) return 'wav';
+  return 'bin';
+}
+
+function ntFormatBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+  return Math.round((n / 1024 / 1024) * 10) / 10 + ' MB';
+}
+
+function ntFormatDuration(sec) {
+  var s = Math.max(0, Math.floor(sec));
+  var r = s % 60;
+  return Math.floor(s / 60) + ':' + (r < 10 ? '0' : '') + r;
+}
+
+function ntStamp(d) {
+  var p = function (n) {
+    return (n < 10 ? '0' : '') + n;
+  };
+  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+}
+
+function ntEl(id) {
+  return document.getElementById(id);
+}
+
+function ntNewRequestId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  return 'req-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+}
+
+function ntIsTouch() {
+  return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+}
+
+function ntIsTypingTarget(t) {
+  if (document.querySelector('dialog[open]')) return true;
+  if (!t) return false;
+  var tag = String(t.tagName || '').toUpperCase();
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!t.isContentEditable;
+}
+
+function ntReadDraft() {
+  try {
+    return JSON.parse(localStorage.getItem(NT_DRAFT_KEY) || 'null');
+  } catch (e) {
+    return null;
+  }
+}
+
+function ntSaveDraft() {
+  try {
+    if (_ntState && _ntState.prompt) localStorage.setItem(NT_DRAFT_KEY, JSON.stringify({ prompt: _ntState.prompt }));
+    else localStorage.removeItem(NT_DRAFT_KEY);
+  } catch (e) {}
+}
+
+function ntSetStatus(text) {
+  var s = ntEl('nt-status');
+  if (s) s.textContent = text || '';
+}
+
+function ntSetError(text) {
+  var e = ntEl('nt-error');
+  if (!e) return;
+  e.textContent = text || '';
+  e.hidden = !text;
+}
+
+async function openNewTask() {
+  var dlg = ntEl('nt-dialog');
+  if (!dlg || dlg.open) return;
+  document.body.classList.add('nt-open');
+  ntSetError('');
+  if (typeof dlg.showModal === 'function') dlg.showModal();
+  else dlg.setAttribute('open', '');
+  ntSyncViewport();
+  requestAnimationFrame(function () {
+    dlg.classList.add('is-shown');
+  });
+  if (!_ntRequestId) _ntRequestId = ntNewRequestId();
+  if (_ntState) ntRender();
+  else ntEl('nt-submit').disabled = true;
+  if (!ntIsTouch()) {
+    setTimeout(function () {
+      var p = ntEl('nt-prompt');
+      if (p && dlg.open) p.focus();
+    }, 60);
+  }
+  ntSetStatus(_ntCtx ? '' : '불러오는 중…');
+  await ntLoadContext();
+}
+
+function closeNewTask() {
+  var dlg = ntEl('nt-dialog');
+  if (!dlg || !dlg.open) return;
+  if (_ntRec) ntStopRecording(false);
+  dlg.classList.remove('is-shown');
+  var reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  setTimeout(function () {
+    if (dlg.open) dlg.close();
+  }, reduce ? 0 : 240);
+}
+
+function ntOnClosed() {
+  document.body.classList.remove('nt-open');
+  if (_ntRec) ntStopRecording(false);
+  if (_ntAudio) _ntAudio.pause();
+  var dlg = ntEl('nt-dialog');
+  if (dlg) dlg.classList.remove('is-shown');
+}
+
+async function ntLoadContext() {
+  try {
+    var res = await fetch('/api/dashboard/new-task/context');
+    var data = await res.json().catch(function () {
+      return {};
+    });
+    if (!res.ok) {
+      ntSetStatus('');
+      ntSetError(data.error || '새 작업 정보를 불러오지 못했습니다 (' + res.status + ')');
+      return;
+    }
+    _ntCtx = data.context;
+    if (!_ntState) _ntState = ntDefaultState(_ntCtx, ntReadDraft());
+    else ntReconcileState();
+    ntSetStatus('');
+    ntRender();
+  } catch (e) {
+    ntSetStatus('');
+    ntSetError('새 작업 정보를 불러오지 못했습니다 — 네트워크를 확인해 주세요');
+  }
+}
+
+function ntReconcileState() {
+  // A choice that is no longer offered falls back to the default.
+  var hasModel = _ntCtx.models.some(function (m) {
+    return m.nickname === _ntState.model;
+  });
+  if (!hasModel) _ntState.model = _ntCtx.defaultModel;
+  if (_ntCtx.efforts.indexOf(_ntState.effort) < 0) _ntState.effort = _ntCtx.defaultEffort;
+  var hasChannel = _ntCtx.channels.some(function (c) {
+    return c.id === _ntState.channelId;
+  });
+  if (!hasChannel) _ntState.channelId = _ntCtx.defaultChannelId || null;
+}
+
+function ntRender() {
+  if (!_ntCtx || !_ntState) return;
+  ntEl('nt-model').innerHTML = _ntCtx.models
+    .map(function (m) {
+      var sel = m.nickname === _ntState.model ? ' selected' : '';
+      return '<option value="' + escAttr(m.nickname) + '" title="' + escAttr(m.label) + '"' + sel + '>' + esc(m.nickname) + '</option>';
+    })
+    .join('');
+  ntEl('nt-effort').innerHTML = _ntCtx.efforts
+    .map(function (e) {
+      return '<option value="' + escAttr(e) + '"' + (e === _ntState.effort ? ' selected' : '') + '>' + esc(e) + '</option>';
+    })
+    .join('');
+  var channel = ntEl('nt-channel');
+  if (_ntCtx.channels.length) {
+    channel.innerHTML = _ntCtx.channels
+      .map(function (c) {
+        var repos = (c.repos || []).map(function (r) {
+          return r.split('/').pop();
+        });
+        var label = '#' + c.name + (repos.length ? ' · ' + repos.join(', ') : '');
+        return '<option value="' + escAttr(c.id) + '"' + (c.id === _ntState.channelId ? ' selected' : '') + '>' + esc(label) + '</option>';
+      })
+      .join('');
+    channel.disabled = false;
+  } else {
+    channel.innerHTML = '<option value="">' + (_ntCtx.membershipUnknown ? '채널 확인 실패' : '채널 없음') + '</option>';
+    channel.disabled = true;
+    ntSetError(
+      _ntCtx.membershipUnknown
+        ? 'Slack 채널 멤버십을 확인하지 못해 채널을 보여 드릴 수 없습니다 — 잠시 후 다시 열어 주세요'
+        : '작업을 올릴 수 있는 채널이 없습니다 — repo가 연결된 Slack 채널에 참여해 주세요',
+    );
+  }
+  ntEl('nt-autogoal').setAttribute('aria-pressed', _ntState.autogoal ? 'true' : 'false');
+  ntEl('nt-autoz').setAttribute('aria-pressed', _ntState.autoz ? 'true' : 'false');
+  var p = ntEl('nt-prompt');
+  if (p.value !== _ntState.prompt) p.value = _ntState.prompt;
+  ntRenderBattery();
+  ntRenderFiles();
+  ntRenderCount();
+  ntAutosize();
+  ntUpdateSubmit();
+}
+
+function ntRenderBattery() {
+  var m = _ntCtx.models.find(function (x) {
+    return x.nickname === _ntState.model;
+  });
+  var v = ntBatteryView(m ? m.battery : null);
+  var btn = ntEl('nt-battery-btn');
+  btn.className = 'nt-battery-btn ' + v.cls;
+  btn.title = v.label;
+  ntEl('nt-battery-fill').style.width = v.fill + '%';
+  ntEl('nt-battery-pct').textContent = v.pct;
+  ntEl('nt-battery').setAttribute('aria-label', '모델 잔여량 ' + v.label);
+  var usage = _ntCtx.usage || {};
+  var extra = [];
+  if (usage.source) extra.push(usage.source === 'llmux' ? 'llmux 계정 풀' : 'CCT 슬롯');
+  if (usage.fetchedAt) {
+    var min = Math.max(0, Math.round((Date.now() - usage.fetchedAt) / 60000));
+    extra.push(min < 1 ? '방금 측정' : min + '분 전 측정');
+  }
+  ntEl('nt-usage').textContent = v.label + (extra.length ? ' · ' + extra.join(' · ') : '');
+}
+
+function ntToggleUsage() {
+  var u = ntEl('nt-usage');
+  u.hidden = !u.hidden;
+  ntEl('nt-battery-btn').setAttribute('aria-expanded', u.hidden ? 'false' : 'true');
+}
+
+function ntOnModelChange() {
+  _ntState.model = ntEl('nt-model').value;
+  ntRenderBattery();
+}
+
+function ntOnEffortChange() {
+  _ntState.effort = ntEl('nt-effort').value;
+}
+
+function ntOnChannelChange() {
+  _ntState.channelId = ntEl('nt-channel').value || null;
+  ntUpdateSubmit();
+}
+
+function ntToggle(which) {
+  if (!_ntState) return;
+  _ntState[which] = !_ntState[which];
+  ntEl('nt-' + which).setAttribute('aria-pressed', _ntState[which] ? 'true' : 'false');
+  if (navigator.vibrate) {
+    try {
+      navigator.vibrate(8);
+    } catch (e) {}
+  }
+}
+
+function ntOnInput() {
+  if (!_ntState) return;
+  _ntState.prompt = ntEl('nt-prompt').value;
+  ntSaveDraft();
+  ntAutosize();
+  ntRenderCount();
+  ntUpdateSubmit();
+}
+
+function ntRenderCount() {
+  var max = _ntCtx ? _ntCtx.limits.maxPromptChars : 12000;
+  var len = (_ntState && _ntState.prompt ? _ntState.prompt : '').length;
+  var el = ntEl('nt-count');
+  el.textContent = len > max * 0.8 ? len + ' / ' + max : '';
+}
+
+function ntAutosize() {
+  var p = ntEl('nt-prompt');
+  if (!p || (window.matchMedia && window.matchMedia('(max-width: 639px)').matches)) return;
+  p.style.height = 'auto';
+  p.style.height = Math.min(p.scrollHeight + 2, Math.round(window.innerHeight * 0.44)) + 'px';
+}
+
+function ntUpdateSubmit() {
+  var b = ntEl('nt-submit');
+  if (b) b.disabled = _ntBusy || !ntCanSubmit(_ntState, _ntFiles);
+}
+
+function ntKindOf(mime) {
+  var t = String(mime || '');
+  if (t.indexOf('image/') === 0) return 'image';
+  if (t.indexOf('audio/') === 0) return 'audio';
+  if (t.indexOf('video/') === 0) return 'video';
+  return 'file';
+}
+
+function ntAddFiles(list, source) {
+  Array.prototype.slice.call(list || []).forEach(function (f) {
+    var type = f.type || 'application/octet-stream';
+    var name = f.name || 'file';
+    if (source === 'camera' && ntKindOf(type) === 'image') {
+      var ext = (name.split('.').pop() || 'jpg').toLowerCase();
+      name = 'photo-' + ntStamp(new Date()) + '.' + ext;
+    }
+    ntAddBlob(f, name, type, source);
+  });
+}
+
+function ntAddBlob(blob, name, mimetype, source, extra) {
+  var limits = _ntCtx ? _ntCtx.limits : { maxFiles: 10, maxFileBytes: 20971520, maxTotalBytes: 31457280 };
+  if (_ntFiles.length >= limits.maxFiles) {
+    ntSetError('첨부는 최대 ' + limits.maxFiles + '개까지 가능합니다');
+    return;
+  }
+  if (!blob.size) {
+    ntSetError(name + ' — 빈 파일은 첨부할 수 없습니다');
+    return;
+  }
+  if (blob.size > limits.maxFileBytes) {
+    ntSetError(name + ' — 파일 하나는 ' + ntFormatBytes(limits.maxFileBytes) + '까지 첨부할 수 있습니다');
+    return;
+  }
+  var total = _ntFiles.reduce(function (sum, f) {
+    return sum + f.size;
+  }, 0);
+  if (total + blob.size > limits.maxTotalBytes) {
+    ntSetError('첨부는 모두 합쳐 ' + ntFormatBytes(limits.maxTotalBytes) + '까지입니다');
+    return;
+  }
+  ntSetError('');
+  var entry = {
+    id: ++_ntSeq,
+    name: name,
+    mimetype: mimetype,
+    size: blob.size,
+    kind: ntKindOf(mimetype),
+    data: null,
+    url: null,
+    duration: extra && extra.duration ? extra.duration : 0,
+    source: source,
+  };
+  if (entry.kind === 'image' || entry.kind === 'audio') {
+    try {
+      entry.url = URL.createObjectURL(blob);
+    } catch (e) {}
+  }
+  entry.ready = new Promise(function (resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var s = String(reader.result || '');
+      var comma = s.indexOf(',');
+      entry.data = comma >= 0 ? s.slice(comma + 1) : '';
+      resolve();
+    };
+    reader.onerror = function () {
+      reject(new Error(name));
+    };
+    reader.readAsDataURL(blob);
+  });
+  entry.ready.catch(function () {
+    ntRemoveFile(entry.id);
+    ntSetError(name + ' — 파일을 읽지 못했습니다');
+  });
+  _ntFiles.push(entry);
+  ntRenderFiles();
+  ntUpdateSubmit();
+  var box = ntEl('nt-attachments');
+  if (box) box.scrollLeft = box.scrollWidth;
+}
+
+function ntRemoveFile(id) {
+  _ntFiles = _ntFiles.filter(function (f) {
+    if (f.id === id && f.url) {
+      try {
+        URL.revokeObjectURL(f.url);
+      } catch (e) {}
+    }
+    return f.id !== id;
+  });
+  if (_ntPlayingId === id && _ntAudio) _ntAudio.pause();
+  ntRenderFiles();
+  ntUpdateSubmit();
+}
+
+function ntRenderFiles() {
+  var box = ntEl('nt-attachments');
+  if (!box) return;
+  box.innerHTML = _ntFiles
+    .map(function (f) {
+      var thumb;
+      if (f.kind === 'image' && f.url) {
+        thumb = '<img class="nt-att-thumb" src="' + escAttr(f.url) + '" alt="">';
+      } else if (f.kind === 'audio' && f.url) {
+        var playing = _ntPlayingId === f.id;
+        thumb = '<button type="button" class="nt-att-play" aria-label="' + escAttr(f.name) + (playing ? ' 정지' : ' 재생') + '" onclick="ntPlay(' + f.id + ')">' + (playing ? NT_ICON_PAUSE : NT_ICON_PLAY) + '</button>';
+      } else {
+        thumb = '<span class="nt-att-thumb" aria-hidden="true">' + NT_ICON_FILE + '</span>';
+      }
+      var meta = (f.duration ? ntFormatDuration(f.duration) + ' · ' : '') + ntFormatBytes(f.size);
+      return (
+        '<div class="nt-att" data-id="' + f.id + '">' + thumb +
+        '<span class="nt-att-text"><span class="nt-att-name" title="' + escAttr(f.name) + '">' + esc(f.name) + '</span>' +
+        '<span class="nt-att-meta">' + esc(meta) + '</span></span>' +
+        '<button type="button" class="nt-att-remove" aria-label="' + escAttr(f.name) + ' 삭제" onclick="ntRemoveFile(' + f.id + ')">' + NT_ICON_X + '</button></div>'
+      );
+    })
+    .join('');
+}
+
+function ntPlay(id) {
+  var f = _ntFiles.find(function (x) {
+    return x.id === id;
+  });
+  if (!f || !f.url) return;
+  if (!_ntAudio) {
+    _ntAudio = new Audio();
+    _ntAudio.onended = _ntAudio.onpause = function () {
+      _ntPlayingId = 0;
+      ntRenderFiles();
+    };
+  }
+  if (_ntPlayingId === id) {
+    _ntAudio.pause();
+    return;
+  }
+  _ntAudio.src = f.url;
+  _ntPlayingId = id;
+  _ntAudio.play().catch(function () {
+    _ntPlayingId = 0;
+  });
+  ntRenderFiles();
+}
+
+async function ntToggleRecording() {
+  if (_ntRec) {
+    ntStopRecording(true);
+    return;
+  }
+  var canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+  if (!canRecord) {
+    ntEl('nt-audio-input').click();
+    return;
+  }
+  var stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    ntSetError('마이크를 쓸 수 없습니다 (' + (e && e.name ? e.name : '권한 거부') + ') — 기기 녹음기로 녹음해 첨부해 주세요');
+    ntEl('nt-audio-input').click();
+    return;
+  }
+  var mime = ntPickRecorderMime(function (t) {
+    return MediaRecorder.isTypeSupported(t);
+  });
+  var recorder;
+  try {
+    recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+  } catch (e) {
+    recorder = new MediaRecorder(stream);
+  }
+  var state = {
+    recorder: recorder,
+    stream: stream,
+    chunks: [],
+    started: Date.now(),
+    mime: recorder.mimeType || mime || 'audio/mp4',
+    keep: true,
+    finished: false,
+    timer: 0,
+    raf: 0,
+    audioCtx: null,
+  };
+  _ntRec = state;
+  recorder.ondataavailable = function (ev) {
+    if (ev.data && ev.data.size) state.chunks.push(ev.data);
+  };
+  recorder.onstop = function () {
+    ntFinishRecording(state);
+  };
+  recorder.start(1000);
+  try {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    state.audioCtx = new AC();
+    var analyser = state.audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    state.audioCtx.createMediaStreamSource(stream).connect(analyser);
+    var buf = new Uint8Array(analyser.fftSize);
+    var tick = function () {
+      if (_ntRec !== state) return;
+      analyser.getByteTimeDomainData(buf);
+      var peak = 0;
+      for (var i = 0; i < buf.length; i++) {
+        var v = Math.abs(buf[i] - 128);
+        if (v > peak) peak = v;
+      }
+      ntEl('nt-rec-level').style.width = Math.min(100, Math.round((peak / 128) * 160)) + '%';
+      state.raf = requestAnimationFrame(tick);
+    };
+    tick();
+  } catch (e) {}
+  ntEl('nt-recorder').hidden = false;
+  ntEl('nt-rec-time').textContent = '0:00';
+  var mic = ntEl('nt-mic');
+  mic.setAttribute('aria-pressed', 'true');
+  mic.setAttribute('aria-label', '녹음 완료');
+  state.timer = setInterval(function () {
+    var sec = Math.floor((Date.now() - state.started) / 1000);
+    ntEl('nt-rec-time').textContent = ntFormatDuration(sec);
+    if (sec >= NT_MAX_RECORD_SEC) ntStopRecording(true);
+  }, 250);
+  if (navigator.vibrate) {
+    try {
+      navigator.vibrate(12);
+    } catch (e) {}
+  }
+}
+
+function ntStopRecording(keep) {
+  var state = _ntRec;
+  if (!state) return;
+  _ntRec = null;
+  state.keep = keep;
+  state.stoppedAt = Date.now();
+  clearInterval(state.timer);
+  cancelAnimationFrame(state.raf);
+  try {
+    if (state.recorder.state !== 'inactive') state.recorder.stop();
+    else ntFinishRecording(state);
+  } catch (e) {
+    ntFinishRecording(state);
+  }
+  state.stream.getTracks().forEach(function (t) {
+    t.stop();
+  });
+  if (state.audioCtx) {
+    try {
+      state.audioCtx.close();
+    } catch (e) {}
+  }
+  ntEl('nt-recorder').hidden = true;
+  var mic = ntEl('nt-mic');
+  mic.setAttribute('aria-pressed', 'false');
+  mic.setAttribute('aria-label', '음성 녹음');
+}
+
+function ntFinishRecording(state) {
+  if (state.finished) return;
+  state.finished = true;
+  if (!state.keep || !state.chunks.length) return;
+  var type = String(state.mime).split(';')[0] || 'audio/mp4';
+  var blob = new Blob(state.chunks, { type: type });
+  var sec = Math.max(1, Math.round(((state.stoppedAt || Date.now()) - state.started) / 1000));
+  ntAddBlob(blob, 'voice-' + ntStamp(new Date()) + '.' + ntExtForMime(type), type, 'voice', { duration: sec });
+}
+
+async function submitNewTask(ev) {
+  if (ev) ev.preventDefault();
+  if (_ntBusy || !_ntCtx || !_ntState) return;
+  if (_ntRec) {
+    ntStopRecording(true);
+    await new Promise(function (resolve) {
+      setTimeout(resolve, 300);
+    });
+  }
+  _ntState.prompt = ntEl('nt-prompt').value;
+  if (!ntCanSubmit(_ntState, _ntFiles)) {
+    ntSetError(_ntState.channelId ? '작업 지시를 쓰거나 파일을 첨부해 주세요' : '작업을 올릴 채널을 골라 주세요');
+    return;
+  }
+  _ntBusy = true;
+  ntSetError('');
+  var btn = ntEl('nt-submit');
+  btn.classList.add('is-busy');
+  ntUpdateSubmit();
+  try {
+    if (_ntFiles.length) ntSetStatus('첨부 준비 중…');
+    await Promise.all(
+      _ntFiles.map(function (f) {
+        return f.ready;
+      }),
+    );
+    var body = JSON.stringify(ntBuildPayload(_ntState, _ntFiles, _ntRequestId));
+    ntSetStatus('작업을 올리는 중…');
+    var res = await ntPostTask(body);
+    // Only a stale CSRF token is worth one retry (not "no Slack identity").
+    if (res.status === 403 && res.data && /CSRF/i.test(String(res.data.error || ''))) {
+      await refreshCsrfToken();
+      res = await ntPostTask(body);
+    }
+    var data = res.data || {};
+    if (res.status < 200 || res.status >= 300 || !data.ok) {
+      ntSetStatus('');
+      ntSetError(data.error || '작업을 시작하지 못했습니다 (' + res.status + ')');
+      return;
+    }
+    ntOnLaunched(data);
+  } catch (e) {
+    ntSetStatus('');
+    ntSetError('작업을 시작하지 못했습니다 — 네트워크를 확인하고 다시 눌러 주세요 (같은 요청은 두 번 실행되지 않습니다)');
+  } finally {
+    _ntBusy = false;
+    btn.classList.remove('is-busy');
+    ntUpdateSubmit();
+  }
+}
+
+function ntPostTask(body) {
+  return new Promise(function (resolve, reject) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/dashboard/new-task');
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.setRequestHeader('X-CSRF-Token', _csrfToken);
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable && e.total > 65536) {
+        ntSetStatus('업로드 중… ' + Math.round((e.loaded / e.total) * 100) + '%');
+      }
+    };
+    xhr.upload.onload = function () {
+      ntSetStatus('Slack에 작업을 올리는 중…');
+    };
+    xhr.onload = function () {
+      var data = null;
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch (e) {}
+      resolve({ status: xhr.status, data: data });
+    };
+    xhr.onerror = function () {
+      reject(new Error('network'));
+    };
+    xhr.send(body);
+  });
+}
+
+function ntOnLaunched(data) {
+  // The next task starts clean: a new idempotency key, no text, no files;
+  // the channel just used stays selected.
+  _ntRequestId = ntNewRequestId();
+  _ntFiles.forEach(function (f) {
+    if (f.url) {
+      try {
+        URL.revokeObjectURL(f.url);
+      } catch (e) {}
+    }
+  });
+  _ntFiles = [];
+  _ntState = ntDefaultState(_ntCtx, null);
+  _ntState.channelId = data.channel || _ntState.channelId;
+  try {
+    localStorage.removeItem(NT_DRAFT_KEY);
+  } catch (e) {}
+  ntSetStatus('');
+  ntRender();
+  closeNewTask();
+  var channel = _ntCtx.channels.find(function (c) {
+    return c.id === data.channel;
+  });
+  ntShowToast(data, channel ? channel.name : data.channel);
+  if (typeof loadSessions === 'function') setTimeout(loadSessions, 800);
+}
+
+function ntShowToast(data, channelName) {
+  var t = ntEl('nt-toast');
+  if (!t) return;
+  var head = data.status === 'running' ? '✅ 작업을 시작했습니다' : '⏳ 작업을 접수했습니다';
+  var html = '<span class="nt-toast-text">' + head + ' — #' + esc(channelName) + '</span>';
+  if (data.permalink) {
+    html += '<a href="' + escAttr(data.permalink) + '" target="_blank" rel="noopener">Slack에서 보기</a>';
+  }
+  html += '<button type="button" onclick="ntOpenLaunched()">카드 열기</button>';
+  t.innerHTML = html;
+  t.hidden = false;
+  _ntLastLaunch = data;
+  clearTimeout(_ntToastTimer);
+  _ntToastTimer = setTimeout(function () {
+    t.hidden = true;
+  }, 12000);
+}
+
+async function ntOpenLaunched() {
+  var key = _ntLastLaunch && _ntLastLaunch.sessionKey;
+  ntEl('nt-toast').hidden = true;
+  if (!key) return;
+  var find = function () {
+    var cache = typeof _sessionCache === 'object' && _sessionCache ? _sessionCache : {};
+    return Object.keys(cache).find(function (k) {
+      return k === key || k.slice(-(key.length + 2)) === '::' + key;
+    });
+  };
+  var found = find();
+  if (!found && typeof loadSessions === 'function') {
+    await loadSessions();
+    found = find();
+  }
+  if (found) openPanel(found);
+  else if (_ntLastLaunch.permalink) window.open(_ntLastLaunch.permalink, '_blank', 'noopener');
+}
+
+function ntSyncViewport() {
+  var vv = window.visualViewport;
+  var dlg = ntEl('nt-dialog');
+  if (!vv || !dlg) return;
+  dlg.style.setProperty('--nt-vvh', Math.round(vv.height) + 'px');
+  dlg.style.setProperty('--nt-vvt', Math.round(vv.offsetTop) + 'px');
+}
+
+function ntInit() {
+  var dlg = ntEl('nt-dialog');
+  if (!dlg) return;
+  // Esc closes with the same animation as the close button.
+  dlg.addEventListener('cancel', function (e) {
+    e.preventDefault();
+    closeNewTask();
+  });
+  dlg.addEventListener('click', function (e) {
+    if (e.target === dlg) closeNewTask();
+  });
+  // PC: drop files anywhere on the composer; paste screenshots into the text.
+  // (File drop into the composer only — board cards stay non-draggable, §3.1-5.)
+  var compose = ntEl('nt-compose');
+  var hasFiles = function (e) {
+    return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0);
+  };
+  dlg.ondragenter = function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    compose.classList.add('is-drag');
+  };
+  dlg.ondragover = function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    compose.classList.add('is-drag');
+  };
+  dlg.ondragleave = function (e) {
+    if (!e.relatedTarget || !dlg.contains(e.relatedTarget)) compose.classList.remove('is-drag');
+  };
+  dlg.ondrop = function (e) {
+    compose.classList.remove('is-drag');
+    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    ntAddFiles(e.dataTransfer.files, 'dragged');
+  };
+  var prompt = ntEl('nt-prompt');
+  prompt.addEventListener('paste', function (e) {
+    var files = e.clipboardData && e.clipboardData.files ? Array.prototype.slice.call(e.clipboardData.files) : [];
+    if (!files.length) return;
+    if (!e.clipboardData.getData('text/plain')) e.preventDefault();
+    files.forEach(function (f) {
+      var type = f.type || 'application/octet-stream';
+      var generic = !f.name || f.name === 'image.png' || f.name === 'image.jpeg';
+      var name = generic ? 'screenshot-' + ntStamp(new Date()) + '.' + (type.split('/')[1] || 'png') : f.name;
+      ntAddBlob(f, name, type, 'paste');
+    });
+  });
+  prompt.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      submitNewTask();
+    }
+  });
+  // N opens the composer from anywhere outside a text field.
+  document.addEventListener('keydown', function (e) {
+    var key = String(e.key || '').toLowerCase();
+    if (key === 'n' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing && !ntIsTypingTarget(e.target)) {
+      e.preventDefault();
+      openNewTask();
+    }
+  });
+  // Phones: the floating button folds to a circle while scrolling down.
+  var fab = ntEl('new-task-fab');
+  var lastY = window.scrollY;
+  window.addEventListener(
+    'scroll',
+    function () {
+      var y = window.scrollY;
+      if (Math.abs(y - lastY) < 8) return;
+      fab.classList.toggle('is-compact', y > lastY && y > 80);
+      lastY = y;
+    },
+    { passive: true },
+  );
+  // PC: once the top-bar button scrolls out of view, the floating one appears.
+  var topBtn = ntEl('new-task-btn');
+  if (topBtn && 'IntersectionObserver' in window) {
+    new IntersectionObserver(function (entries) {
+      fab.classList.toggle('is-floating', !entries[0].isIntersecting);
+    }).observe(topBtn);
+  }
+  // Phones: keep the sheet (and its toolbar) above the on-screen keyboard.
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', ntSyncViewport);
+    window.visualViewport.addEventListener('scroll', ntSyncViewport);
+  }
+  var isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
+  var hint = ntEl('nt-submit-hint');
+  if (hint) hint.textContent = isMac ? '⌘↵' : 'Ctrl+↵';
+  var nkbd = document.querySelector('#new-task-btn .nt-kbd');
+  if (nkbd && ntIsTouch()) nkbd.hidden = true;
+}
+
 // ── Init ──
 loadUsers();
 loadSessions().then(function() { loadStats(); });
 connectWs();
+ntInit();
 setInterval(loadSessions, 30000);
 </script>
 </body>
