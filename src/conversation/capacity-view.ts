@@ -166,8 +166,10 @@ function accountView(
   // burst (429), not a supply problem (live: "cooldown 6s" on accounts with
   // most of their windows left). It neither zeroes the account nor needs a
   // return marker; a longer cooldown blocks as before.
+  // A snapshot can still say "cooldown" just after cooldown_until passed —
+  // that throttle is over, so it counts the same way.
   const throttled =
-    cooling &&
+    Number.isFinite(account.cooldown_until) &&
     (account.cooldown_until as number) - nowS <= TRANSIENT_COOLDOWN_SECS &&
     (reason === '' || reason.startsWith('cooldown'));
   const exhausted = measured.filter((r) => (r.remaining ?? 1) <= EXHAUSTED);

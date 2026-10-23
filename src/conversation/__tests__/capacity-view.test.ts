@@ -365,6 +365,30 @@ describe('buildCapacityView — live llmux shapes', () => {
     expect(view.groups[0].state).toBe('ok');
   });
 
+  // trinity round 6 (fable P3): the snapshot can still say "cooldown" a moment
+  // after cooldown_until has passed — that is over, not an unknown block.
+  it('a throttle that already ended is not a block', () => {
+    const view = buildCapacityView(
+      {
+        current: null,
+        accounts: [
+          acct({
+            name: 'claude:ai5@corp.example',
+            group: 'claude',
+            status: 'cooldown',
+            blocked: 'cooldown 5s',
+            cooldown_until: NOW_S - 3,
+            five_hour: w(0.2, 4 * H),
+            seven_day: w(0.44, 6 * D),
+          }),
+        ],
+      },
+      {},
+      NOW_MS,
+    );
+    expect(view.groups[0].accounts[0]).toMatchObject({ blocked: false, availablePct: 56 });
+  });
+
   it('a long cooldown still blocks, and the account returns when it lifts', () => {
     const view = buildCapacityView(
       {

@@ -140,17 +140,21 @@ export function resolveAccountTier(
   const group = (account.group || '').toLowerCase();
   const full = account.name.toLowerCase();
   const local = llmuxAccountLocalName(full, group);
-  // Most specific first: the exact name, then its short form; each scoped to
-  // the group before bare. A key never matches across groups.
+  // Most specific first: the exact name (group-scoped, then bare), then the
+  // short form (group-scoped, then bare). A key never matches across groups.
   const keys = [...new Set([`${group}:${full}`, full, `${group}:${local}`, local])];
+  // A tier only ever applies to its own provider: live llmux has ai5 in both
+  // the claude and the codex group, so a bare `ai5=pro500` must not colour
+  // claude:ai5. A mismatched entry is skipped, not an answer.
+  const fits = (tier: LlmuxTierId | undefined): tier is LlmuxTierId => !!tier && LLMUX_TIERS[tier]?.provider === group;
   const lookup = (map: Readonly<Record<string, LlmuxTierId>>) => {
-    for (const k of keys) if (map[k]) return map[k];
+    for (const k of keys) if (fits(map[k])) return map[k];
     return undefined;
   };
   const fromExplicit = lookup(explicit);
   if (fromExplicit) return fromExplicit;
   const upstream =
     typeof account.rate_limit_tier === 'string' ? UPSTREAM_TIERS[account.rate_limit_tier.toLowerCase()] : undefined;
-  if (upstream) return upstream;
+  if (fits(upstream)) return upstream;
   return lookup(defaults);
 }
