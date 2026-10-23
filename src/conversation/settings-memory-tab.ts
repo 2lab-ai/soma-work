@@ -202,7 +202,7 @@ function l1Count(target) {
 // One L1 write. A 409 reloads the stores and puts the WHOLE draft back in an
 // edit box — the entry it was for when it still exists, else the add box —
 // so nothing typed is lost (review P1).
-async function l1Write(method, url, payload, draft, at) {
+async function l1Write(method, url, payload, draft, at, orig) {
   var r;
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   var target = url.split('/')[4];
@@ -213,18 +213,22 @@ async function l1Write(method, url, payload, draft, at) {
   }
   if (r.status === 409) {
     await loadMemory();
-    restoreL1Draft(target, draft, at);
+    restoreL1Draft(target, draft, at, orig);
     memStatus('그사이 다른 곳(에이전트·Slack)에서 바뀌어 최신 내용을 불러왔습니다.' + (draft ? ' 작성하던 내용은 편집 칸에 그대로 있습니다 — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
     return false;
   }
   memStatus('저장하지 못했습니다: ' + r.error, true);
   return false;
 }
-function restoreL1Draft(target, draft, at) {
+// The draft goes back into the editor of the entry it was for — found by its
+// original text, never by position (the list may have shifted) — else into the
+// add box as a recovery draft (review R2).
+function restoreL1Draft(target, draft, at, orig) {
   if (!draft) return;
   var entries = (_mem && _mem.l1[target] && _mem.l1[target].entries) || [];
-  if (typeof at === 'number' && at >= 0 && at < entries.length) {
-    paintL1({ target: target, index: at, text: draft });
+  var idx = typeof orig === 'string' ? entries.indexOf(orig) : -1;
+  if (idx >= 0) {
+    paintL1({ target: target, index: idx, text: draft });
     return;
   }
   var ta = document.getElementById('l1-new-' + target);
@@ -239,7 +243,8 @@ async function l1Save(target, i) {
   var ta = document.getElementById('l1-edit-' + target);
   var text = ta ? ta.value : '';
   if (!text.trim()) { memStatus('비어 있는 항목은 저장할 수 없습니다 — 지우려면 삭제를 쓰세요', true); return; }
-  if (await l1Write('PUT', '/api/memory/l1/' + target + '/' + i, { text: text, revision: _mem.l1[target].revision }, text, i)) memStatus('저장했습니다', false);
+  var orig = _mem.l1[target].entries[i];
+  if (await l1Write('PUT', '/api/memory/l1/' + target + '/' + i, { text: text, revision: _mem.l1[target].revision }, text, i, orig)) memStatus('저장했습니다', false);
 }
 async function l1Add(target) {
   var ta = document.getElementById('l1-new-' + target);
@@ -456,15 +461,19 @@ function renderDay(editIndex, draft) {
   }
   el.innerHTML = html;
 }
-async function epWrite(method, url, payload, draft, at) {
+async function epWrite(method, url, payload, draft, at, orig) {
   var r;
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   if (r.ok) { _memDay = r.data.day; renderDay(); refreshDatesIfEmptied(); return true; }
   if (r.status === 409) {
     await loadDay(_memDay.date);
     // The whole draft goes back into an edit box (review P1).
+    // Back into the editor of the entry it was for (found by its original text,
+    // never by position), else into the note box as a recovery draft (review R2).
     var entries = (_memDay && _memDay.entries) || [];
-    if (draft && typeof at === 'number' && at < entries.length) renderDay(at, draft);
+    var idx = -1;
+    for (var k = 0; k < entries.length; k++) if (typeof orig === 'string' && entries[k].content === orig) { idx = k; break; }
+    if (draft && idx >= 0) renderDay(idx, draft);
     else if (draft) { var ta = document.getElementById('mem-ep-new'); if (ta) ta.value = draft; }
     memStatus('그사이 이 날의 기록이 바뀌어 최신 내용을 불러왔습니다.' + (draft ? ' 작성하던 내용은 편집 칸에 그대로 있습니다 — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
     return false;
@@ -476,7 +485,8 @@ async function epSave(i) {
   var ta = document.getElementById('ep-edit');
   var text = ta ? ta.value : '';
   if (!text.trim()) { memStatus('비어 있는 기록은 저장할 수 없습니다 — 지우려면 삭제를 쓰세요', true); return; }
-  if (await epWrite('PUT', '/api/memory/episodic/' + _memDay.date + '/' + i, { content: text, revision: _memDay.revision }, text, i)) memStatus('저장했습니다', false);
+  var orig = _memDay.entries[i] && _memDay.entries[i].content;
+  if (await epWrite('PUT', '/api/memory/episodic/' + _memDay.date + '/' + i, { content: text, revision: _memDay.revision }, text, i, orig)) memStatus('저장했습니다', false);
 }
 async function epDelete(i) {
   var ok = await confirmDialog({ title: _memDay.date + ' ' + _memDay.entries[i].time + ' 기록을 지울까요?', body: '되돌릴 수 없습니다.', action: '기록 삭제' });

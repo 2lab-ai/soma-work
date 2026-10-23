@@ -269,6 +269,23 @@ describe('episodic edits keep the rest of the day intact', () => {
     expect(store.readEpisodicDay('U1', '2026-10-20').entries).toHaveLength(2);
   });
 
+  it('a note whose FIRST line looks like a header stays one entry, on append and on edit (review R2 P1)', () => {
+    const { store } = mk();
+    store.appendEpisodic('U1', '## 12:00 - Important title\nImportant body', '2026-10-20');
+    let day = store.readEpisodicDay('U1', '2026-10-20');
+    expect(day.entries).toHaveLength(1);
+    expect(day.entries[0].content).toContain('Important body');
+    expect(
+      store.editEpisodicEntry('U1', '2026-10-20', 0, '## 13:00 - Edited title\nEdited body', day.revision!).ok,
+    ).toBe(true);
+    day = store.readEpisodicDay('U1', '2026-10-20');
+    expect(day.entries).toHaveLength(1);
+    expect(day.entries[0].content).toContain('Edited body');
+    // and it stays one entry when edited again from what the tab shows
+    expect(store.editEpisodicEntry('U1', '2026-10-20', 0, day.entries[0].content, day.revision!).ok).toBe(true);
+    expect(store.readEpisodicDay('U1', '2026-10-20').entries).toHaveLength(1);
+  });
+
   it('editing or deleting one entry leaves every other byte of the file as it was', () => {
     const { dir, store } = mk();
     fs.mkdirSync(path.dirname(dayFile(dir)), { recursive: true });

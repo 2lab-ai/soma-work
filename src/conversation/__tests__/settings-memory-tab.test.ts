@@ -133,6 +133,27 @@ describe('개인 메모리 writes', () => {
     expect(apiWrite).toHaveBeenLastCalledWith('DELETE', '/api/memory/l1/memory/0', { revision: 'r2' });
   });
 
+  it('an L1 draft goes back to its own entry only when that entry is unchanged (review R2 P1)', async () => {
+    const apiWrite = vi.fn(async () => ({ ok: false, status: 409, error: 'conflict' }));
+    const addBox: any = { value: '' };
+    const { fns, deps, status } = env(apiWrite);
+    deps.document.getElementById = (id: string) =>
+      id === 'mem-status' ? status : id === 'l1-new-memory' ? addBox : null;
+    // the stores reloaded: entry 1 was "배포는 dev 먼저", now something else sits there
+    deps._mem.l1.memory = block({ entries: ['테스트 전에 빌드', '다른 항목'] });
+    deps.loadMemory = vi.fn(async () => {});
+    await fns.l1Write(
+      'PUT',
+      '/api/memory/l1/memory/1',
+      { text: '고친 배포 규칙', revision: 'r1' },
+      '고친 배포 규칙',
+      1,
+      '배포는 dev 먼저',
+    );
+    expect(deps.paintL1).not.toHaveBeenCalledWith({ target: 'memory', index: 1, text: '고친 배포 규칙' });
+    expect(addBox.value).toBe('고친 배포 규칙');
+  });
+
   it('a single delete offers undo, which adds the text back', async () => {
     const apiWrite = vi.fn(async () => ({ ok: true, data: { l1: block({ revision: 'r9' }) } }));
     const { fns } = env(apiWrite);
@@ -161,7 +182,9 @@ describe('개인 메모리 writes', () => {
     const { fns, deps, status } = env(apiWrite);
     deps.document.getElementById = (id: string) =>
       id === 'mem-status' ? status : id === 'l1-new-memory' ? addBox : null;
-    expect(await fns.l1Write('PUT', '/api/memory/l1/memory/1', { text: long, revision: 'r1' }, long, 1)).toBe(false);
+    expect(
+      await fns.l1Write('PUT', '/api/memory/l1/memory/1', { text: long, revision: 'r1' }, long, 1, '배포는 dev 먼저'),
+    ).toBe(false);
     expect(deps.loadMemory).toHaveBeenCalled();
     expect(deps.paintL1).toHaveBeenLastCalledWith({ target: 'memory', index: 1, text: long });
     expect(status.textContent).toContain('편집 칸에 그대로');
@@ -285,6 +308,30 @@ describe('관찰 기록 (에피소딕)', () => {
     });
   });
 
+  it('after a 409 a draft never lands in ANOTHER entry: only where its original still is, else the note box (review R2 P1)', async () => {
+    const renderDay = vi.fn();
+    const noteBox: any = { value: '' };
+    const status: any = { textContent: '', setAttribute() {} };
+    const w = load<any>(['epWrite', 'memStatus'], [], {
+      document: { getElementById: (id: string) => (id === 'mem-ep-new' ? noteBox : status) },
+      // the entry being edited ("A") was deleted elsewhere: index 0 is now "B"
+      _memDay: { date: '2026-10-20', revision: 'd2', entries: [{ time: '02:00', content: 'B' }] },
+      apiWrite: async () => ({ ok: false, status: 409, error: 'conflict' }),
+      renderDay,
+      loadDay: async () => {},
+    });
+    await w.epWrite(
+      'PUT',
+      '/api/memory/episodic/2026-10-20/0',
+      { content: 'A fixed', revision: 'd1' },
+      'A fixed',
+      0,
+      'A',
+    );
+    expect(renderDay).not.toHaveBeenCalledWith(0, 'A fixed');
+    expect(noteBox.value).toBe('A fixed');
+  });
+
   it('a 409 on a day reloads it and reopens the edit with the whole draft (review P1)', async () => {
     const loadDay = vi.fn(async () => {});
     const renderDay = vi.fn();
@@ -292,13 +339,20 @@ describe('관찰 기록 (에피소딕)', () => {
     const long = '긴 기록 '.repeat(100);
     const w = load<any>(['epWrite', 'memStatus'], [], {
       document: { getElementById: () => status },
-      _memDay: { date: '2026-10-20', revision: 'd1', entries: [{ time: '01:00' }, { time: '02:00' }] },
+      _memDay: {
+        date: '2026-10-20',
+        revision: 'd1',
+        entries: [
+          { time: '01:00', content: 'first' },
+          { time: '02:00', content: 'second' },
+        ],
+      },
       apiWrite: async () => ({ ok: false, status: 409, error: 'conflict' }),
       renderDay,
       loadDay,
     });
     expect(
-      await w.epWrite('PUT', '/api/memory/episodic/2026-10-20/1', { content: long, revision: 'd1' }, long, 1),
+      await w.epWrite('PUT', '/api/memory/episodic/2026-10-20/1', { content: long, revision: 'd1' }, long, 1, 'second'),
     ).toBe(false);
     expect(loadDay).toHaveBeenCalledWith('2026-10-20');
     expect(renderDay).toHaveBeenLastCalledWith(1, long);

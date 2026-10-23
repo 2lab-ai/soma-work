@@ -10,26 +10,27 @@
  * waits instead of landing between the check and the rename and being lost.
  *
  * Protocol:
- *   - acquire: `mkdir {memoryRoot}/.lock` (atomic; EEXIST while held), then
- *     `owner.json` = `{ pid, host, token, at }` — the token names this holding.
- *   - release: only when `owner.json` still carries our token (a holding that
- *     was reaped never deletes the next owner's lock).
- *   - abandoned: no owner file for `ownerlessMs`; or, on this host, a dead pid
- *     after `deadGraceMs`; or any owner older than `staleMs` (a pid from
- *     another host / namespace is never trusted). Holds are milliseconds — all
- *     memory writes are small and synchronous.
+ *   - acquire: write `owner.json` = `{ pid, host, startedAt, token, at }` into a
+ *     private temp dir, then `rename` it to `{memoryRoot}/.lock` — atomic, and
+ *     the lock never exists without its owner (rename onto a held, non-empty
+ *     lock fails).
+ *   - release: only when `owner.json` still carries our token.
+ *   - abandoned, on this host: the owner pid is dead (after a 1 s grace), or the
+ *     pid now belongs to a different process (its start time differs — pid
+ *     reuse). A live owner is NEVER taken over by age. Another host's pid cannot
+ *     be checked: such a lock is abandoned only after `staleMs` (several hosts
+ *     sharing one DATA_DIR is not a supported setup).
  *   - reap: serialized by a second lock (`.lock.reap`); inside it the reaper
- *     re-checks that the lock still carries the token it judged abandoned,
- *     moves it aside and deletes it. Two waiters can therefore never both
- *     reap, and a reaper never removes a lock taken after its judgement.
- *   Residual (documented, review): an owner judged stale only by age (alive
- *   but hung > `staleMs`) can overlap the next owner if it wakes up mid-write.
+ *     re-checks the judged token, moves the lock aside and deletes it. On one
+ *     host a judged owner is dead or gone, so it cannot release concurrently —
+ *     the reaper can never move a lock taken after its judgement.
  * Re-entrant within one module instance (a write that calls another locked
  * write does not deadlock).
  *
  * Synchronous on purpose: the stores are synchronous, and a lock held across
  * an `await` would be an interleaving hazard.
  */
+import { spawnSync } from 'child_process';
 import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -46,13 +47,14 @@ export class MemoryLockTimeoutError extends Error {
 export interface MemoryLockOptions {
   /** Give up after this long (default 5s). */
   timeoutMs?: number;
-  /** An owner stamped longer ago than this is abandoned, whatever its pid (default 60s). */
+  /** A lock of ANOTHER host (or an older build) older than this is abandoned (default 60s). */
   staleMs?: number;
 }
 
 interface Owner {
   pid?: unknown;
   host?: unknown;
+  startedAt?: unknown;
   token?: unknown;
   at?: unknown;
 }
@@ -60,7 +62,11 @@ interface Owner {
 const OWNERLESS_MS = 2_000;
 const DEAD_GRACE_MS = 1_000;
 const REAP_STALE_MS = 5_000;
+/** A live owner holding this long is checked for pid reuse (one `ps` call). */
+const PID_REUSE_CHECK_MS = 10_000;
+const START_TOLERANCE_MS = 3_000;
 const HOST = os.hostname();
+const PROCESS_STARTED_AT = Date.now() - process.uptime() * 1000;
 
 const held = new Map<string, { depth: number; token: string }>();
 const SLEEP = new Int32Array(new SharedArrayBuffer(4));
@@ -98,6 +104,17 @@ function readOwner(lockPath: string): Owner | null {
   }
 }
 
+/** When the process with `pid` started (ms), or null when it cannot be told. */
+function processStartedAt(pid: number): number | null {
+  try {
+    const out = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf-8', timeout: 1_000 });
+    const t = Date.parse(String(out.stdout || '').trim());
+    return Number.isFinite(t) ? t : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The token of the holding judged abandoned (`''` for an ownerless lock), or null when it is live. */
 function abandonedToken(lockPath: string, staleMs: number): string | null {
   const owner = readOwner(lockPath);
@@ -110,9 +127,15 @@ function abandonedToken(lockPath: string, staleMs: number): string | null {
   }
   const token = typeof owner.token === 'string' ? owner.token : '';
   const age = typeof owner.at === 'number' ? Date.now() - owner.at : Number.POSITIVE_INFINITY;
-  if (age > staleMs) return token;
-  if (owner.host === HOST && !pidAlive(owner.pid) && age > DEAD_GRACE_MS) return token;
-  return null;
+  if (owner.host !== HOST) return age > staleMs ? token : null;
+  if (!pidAlive(owner.pid)) return age > DEAD_GRACE_MS ? token : null;
+  // The pid is alive. A live owner is never taken over by age — only when the
+  // pid has been reused by another process since the owner recorded its start.
+  if (age <= PID_REUSE_CHECK_MS) return null;
+  if (typeof owner.startedAt !== 'number') return age > staleMs ? token : null; // owner from an older build
+  const started = processStartedAt(owner.pid as number);
+  if (started === null) return null;
+  return Math.abs(started - owner.startedAt) > START_TOLERANCE_MS ? token : null;
 }
 
 /**
@@ -158,16 +181,20 @@ function acquire(lockPath: string, opts: MemoryLockOptions): string {
   const start = Date.now();
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   for (;;) {
+    const token = newToken();
+    const staged = `${lockPath}.new.${token}`;
+    fs.mkdirSync(staged);
+    fs.writeFileSync(
+      path.join(staged, 'owner.json'),
+      JSON.stringify({ pid: process.pid, host: HOST, startedAt: PROCESS_STARTED_AT, token, at: Date.now() }),
+    );
     try {
-      fs.mkdirSync(lockPath);
-      const token = newToken();
-      fs.writeFileSync(
-        path.join(lockPath, 'owner.json'),
-        JSON.stringify({ pid: process.pid, host: HOST, token, at: Date.now() }),
-      );
+      fs.renameSync(staged, lockPath);
       return token;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      fs.rmSync(staged, { recursive: true, force: true });
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOTEMPTY' && code !== 'EEXIST' && code !== 'EPERM' && code !== 'EISDIR') throw err;
     }
     const judged = abandonedToken(lockPath, staleMs);
     if (judged !== null && reapIfStill(lockPath, judged)) continue;
