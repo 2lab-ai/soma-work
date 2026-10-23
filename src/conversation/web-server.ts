@@ -227,7 +227,8 @@ async function csrfMiddleware(request: FastifyRequest, reply: FastifyReply): Pro
   }
 
   if (!isValid) {
-    reply.status(403).send({ error: 'CSRF token validation failed' });
+    // `code` lets a client tell a stale token (refresh + retry) from a permission refusal.
+    reply.status(403).send({ error: 'CSRF token validation failed', code: 'csrf_failed' });
     return;
   }
 }

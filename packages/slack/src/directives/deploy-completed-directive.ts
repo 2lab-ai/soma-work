@@ -3,8 +3,8 @@
  *
  * The deploy workflow emits one per repo once the merge landed. `confirmed: false`
  * means "merged, but the deployment could not be confirmed"; absent or true means
- * it was. The host matches it against cron jobs whose owner opted in with
- * `onDeploy` and fires them (src/deploy-lanes.ts).
+ * it was. The host matches it against the lanes (cron jobs with onDeploy, or
+ * deploy-lanes.json) and fires them (src/deploy-lanes.ts).
  *
  * JSON format:
  * {

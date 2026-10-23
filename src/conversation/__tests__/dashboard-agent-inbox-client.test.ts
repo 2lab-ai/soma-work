@@ -1404,10 +1404,17 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     };
     let csrfRefreshes = 0;
     const io = load<{
-      generateTitleSub(convId: string): Promise<void>;
+      generateTitleSub(convId: string, regenerate?: boolean): Promise<void>;
       switchPanel(): void;
     }>(
-      ['generateTitleSub'],
+      [
+        'titleSubCanRegen',
+        'panelTitleSubCanRegen',
+        'titleSubEndpoint',
+        'isCsrfRejection',
+        'titleSubView',
+        'generateTitleSub',
+      ],
       ['_panelGen'],
       {
         document: { getElementById: (id: string) => (id === 'panel-title-sub-text' ? textEl : btn) },
@@ -1416,6 +1423,14 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
         refreshCsrfToken: async () => {
           csrfRefreshes++;
         },
+        // The viewer owns the open panel, so 🔄 is offered over a filled subtitle.
+        _panelTitleSub: '',
+        panelSessionKey: 'C1:t1',
+        _sessionCache: { 'C1:t1': { ownerId: 'U1' } },
+        _viewerUserId: 'U1',
+        _viewerIsAdmin: false,
+        _isAdminModeOn: () => false,
+        READ_ONLY_MSG: 'Read-only — not your session',
       },
       // What openPanel / closePanel do to the panel identity (dashboard.ts: _panelGen++).
       ['function switchPanel() { _panelGen++; }'],
@@ -1463,14 +1478,36 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     expect(h.textEl.textContent).toBe('Generating title...');
   });
 
-  it('the current panel still gets its subtitle (and its 403 retry)', async () => {
+  it('the current panel still gets its subtitle (and its stale-CSRF retry)', async () => {
     const h = harness();
     let n = 0;
-    h.answers['conv-a'] = () => (++n === 1 ? { status: 403, json: async () => ({}) } : h.ok('A subtitle'));
+    const stale = { status: 403, json: async () => ({ error: 'CSRF token validation failed', code: 'csrf_failed' }) };
+    h.answers['conv-a'] = () => (++n === 1 ? stale : h.ok('A subtitle'));
     await h.io.generateTitleSub('conv-a');
     expect(h.posts).toHaveLength(2);
     expect(h.csrfRefreshes()).toBe(1);
     expect(h.textEl.textContent).toBe('A subtitle');
+  });
+
+  it('a permission 403 is not retried and is not shown as "Title generation failed"', async () => {
+    const h = harness();
+    h.answers['conv-a'] = () => ({ status: 403, json: async () => ({ error: 'Forbidden — write requires …' }) });
+    await h.io.generateTitleSub('conv-a');
+    expect(h.posts).toHaveLength(1);
+    expect(h.csrfRefreshes()).toBe(0);
+    expect(h.textEl.textContent).not.toBe('Title generation failed');
+    expect(h.btn.style.display).toBe('none');
+  });
+
+  it('a missing subtitle is filled through ensure-title; 🔄 over a stored one regenerates', async () => {
+    const h = harness();
+    h.answers['conv-a'] = () => h.ok('A subtitle');
+    await h.io.generateTitleSub('conv-a', false);
+    await h.io.generateTitleSub('conv-a', true);
+    expect(h.posts).toEqual([
+      '/api/dashboard/session/conv-a/ensure-title',
+      '/api/dashboard/session/conv-a/generate-title',
+    ]);
   });
 });
 

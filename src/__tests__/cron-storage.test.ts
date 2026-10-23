@@ -500,4 +500,18 @@ describe('CronStorage.getAllStrict', () => {
     fs.writeFileSync(tmpFile, JSON.stringify({ history: [] }));
     expect(() => new CronStorage(tmpFile).getAllStrict()).toThrow(/jobs array/);
   });
+
+  // Only a missing file is "no jobs". existsSync() also says false when the
+  // lookup itself fails (EACCES on a parent dir, ELOOP, ENOTDIR) — that file is
+  // unreadable, not absent.
+  it('throws when the path cannot be looked up (ENOTDIR) instead of returning []', () => {
+    fs.writeFileSync(tmpFile, '');
+    expect(() => new CronStorage(path.join(tmpFile, 'cron-jobs.json')).getAllStrict()).toThrow(
+      expect.objectContaining({ code: 'ENOTDIR' }),
+    );
+  });
+
+  it('returns [] when a parent directory does not exist yet (ENOENT)', () => {
+    expect(new CronStorage(path.join(`${tmpFile}.dir`, 'cron-jobs.json')).getAllStrict()).toEqual([]);
+  });
 });
