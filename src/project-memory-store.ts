@@ -5,8 +5,10 @@
  * key the channel registry already maps Slack channels to. Every signed-in
  * user reads it; only admins change it (the HTTP layer enforces that). Sessions
  * in a channel mapped to the repo get the notes in their system prompt
- * (`projectMemoryPromptBlock`, wired in `build-stream-options.ts`). The model
- * has no write path.
+ * (`projectMemoryPromptBlock`, wired in `build-stream-options.ts`). No model
+ * command writes it, and the native write boundary (#389) keeps a non-admin
+ * session's file tools off `DATA_DIR`. A session whose sandbox an admin turned
+ * off still holds the host env, dashboard credentials included (#391).
  *
  * This is NOT the per-user `project/<name>` knowledge pages (each user's own
  * memory tree) — those stay personal.
