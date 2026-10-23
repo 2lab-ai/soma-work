@@ -33,10 +33,12 @@ import { config } from '../config';
 import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
+import { clampEffortToModel } from '../model-catalog';
 import { calculateTokenCost } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
+import { EffortSwitchError, type EffortSwitchResult } from '../session/effort-switch';
 import { productionModelCatalogDeps } from '../session/model-catalog-deps';
 import {
   listRepresentativeModels,
@@ -58,7 +60,7 @@ import { GOAL_EVAL_DISPATCH_MAX_RETRIES } from '../slack/goal-completion-evaluat
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from '../slack/goal-host-actions';
 import { getSurfaceLines } from '../slack/surface-config';
 import { buildThreadPermalink } from '../turn-notifier';
-import { coerceEffort, type EffortLevel, userSettingsStore } from '../user-settings-store';
+import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
 import { readAllInstances } from './instance-registry';
 import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
@@ -158,6 +160,8 @@ export interface KanbanSession {
   threadCompactionCount?: number;
   /** Per-session effort level, normalised via coerceEffort. */
   effort?: EffortLevel;
+  /** The level the session's model actually runs, when it caps `effort` (SSOT 2026-10-23 T1). */
+  effortEffective?: string;
   /** Jira short key like "PROJ-123" derived from issueUrl */
   issueShortRef?: string;
   /** GitHub PR short ref like "PR-123" derived from prUrl */
@@ -579,6 +583,19 @@ export function setDashboardModelHandler(fn: ModelSwitchHandler): void {
   _modelSwitchHandlerFn = fn;
 }
 
+/**
+ * SSOT 2026-10-23 T1 — change one session's reasoning effort
+ * (`session/effort-switch.ts` `switchSessionEffort`, the `%effort` scope).
+ * Throws `EffortSwitchError` for every refusal, whose `statusCode` the route
+ * answers with.
+ */
+type EffortSwitchHandler = (sessionKey: string, effort: string) => EffortSwitchResult | Promise<EffortSwitchResult>;
+let _effortSwitchHandlerFn: EffortSwitchHandler | null = null;
+
+export function setDashboardEffortHandler(fn: EffortSwitchHandler): void {
+  _effortSwitchHandlerFn = fn;
+}
+
 type ChoiceAnswerHandler = (sessionKey: string, choiceId: string, label: string, question: string) => Promise<void>;
 let _choiceAnswerHandlerFn: ChoiceAnswerHandler | null = null;
 
@@ -670,15 +687,20 @@ export function extractPrShortRef(url?: string): string | undefined {
 function cardDerivedFields(src: {
   effort?: unknown;
   ownerId?: string;
+  model?: string;
   links?: { issue?: { url?: string }; pr?: { url?: string } };
   persistedEffort: boolean;
-}): Pick<KanbanSession, 'effort' | 'issueShortRef' | 'prShortRef'> {
+}): Pick<KanbanSession, 'effort' | 'effortEffective' | 'issueShortRef' | 'prShortRef'> {
   const effort =
     src.persistedEffort && src.effort
       ? coerceEffort(src.effort)
       : userSettingsStore.getUserDefaultEffort(src.ownerId || '');
+  // SSOT 2026-10-23 T1 — the level the model really runs (build-stream-options
+  // clamps the same way); present only when the model caps the chosen level.
+  const clamped = src.model ? clampEffortToModel(src.model, effort) : effort;
   return {
     effort,
+    ...(clamped !== effort ? { effortEffective: clamped } : {}),
     issueShortRef: extractIssueShortRef(src.links?.issue?.url),
     prShortRef: extractPrShortRef(src.links?.pr?.url),
   };
@@ -947,7 +969,13 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadTotalActiveMs: aggregate.totalActiveMs,
     threadSessionCount: aggregate.sessionCount,
     threadCompactionCount: aggregate.compactionCount,
-    ...cardDerivedFields({ effort: s.effort, ownerId: s.ownerId, links: s.links, persistedEffort: true }),
+    ...cardDerivedFields({
+      effort: s.effort,
+      ownerId: s.ownerId,
+      model: s.model,
+      links: s.links,
+      persistedEffort: true,
+    }),
     // #814 Stamp self env (when wired) so the frontend renders the env
     // badge for self cards too — siblings get their env from the
     // aggregator's mergeBoards stamp.
@@ -2089,6 +2117,37 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Effort switch (SSOT 2026-10-23 T1) ──
+
+  server.post<{ Params: { key: string }; Body: { effort?: unknown } }>(
+    '/api/dashboard/session/:key/effort',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const effort = (request.body || {}).effort;
+      if (typeof effort !== 'string' || !effort || effort.length > 32) {
+        reply.status(400).send({ error: `effort is required: one of ${EFFORT_LEVELS.join(', ')}` });
+        return;
+      }
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      if (!_effortSwitchHandlerFn) {
+        reply.status(501).send({ error: 'Effort switch handler not configured' });
+        return;
+      }
+      try {
+        const result = await _effortSwitchHandlerFn(resolved.originalKey, effort);
+        reply.send({ ok: true, result });
+      } catch (error) {
+        if (error instanceof EffortSwitchError) {
+          reply.status(error.statusCode).send({ error: error.message });
+          return;
+        }
+        logger.error('Error switching effort from dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── Answer choice from dashboard ──
 
   server.post<{ Params: { key: string }; Body: { choiceId: string; label: string; question: string } }>(
@@ -2331,6 +2390,7 @@ function renderDashboardPage(userId?: string): string {
     logger.warn('Representative models unavailable for the dashboard', error);
   }
   const initRepresentativeModels = JSON.stringify(representativeModels).replace(/</g, '\\u003c');
+  const initEffortLevels = JSON.stringify(EFFORT_LEVELS);
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -2962,6 +3022,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cb-ac { font-variant-numeric: tabular-nums; }
 .cb-model-note { margin-top: 4px; font-size: 12px; color: var(--ib-text-2); overflow-wrap: anywhere; }
 .cb-model-note.is-error { color: var(--st-fail); }
+.panel-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.panel-controls:empty { display: none; }
+.panel-controls .pc-scope { font-size: 12px; font-weight: 700; color: var(--text-tertiary); }
+.panel-controls .cb-model-select { color: var(--text); background: var(--surface-raised); border-color: var(--border); }
+.panel-controls .cb-model-note { flex-basis: 100%; margin-top: 0; }
 
 /* ── EXPANDED META — moved from the old card face, same dhShow() gates ── */
 .card .card-meta {
@@ -4241,6 +4306,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
       </div>
       <button class="panel-close" onclick="closePanel()">&#x2715;</button>
     </div>
+    <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 effort"></div>
     <div class="panel-meta" id="panel-meta"></div>
     <div class="panel-links" id="panel-links"></div>
     <div class="panel-tokens" id="panel-tokens"></div>
@@ -4282,6 +4348,7 @@ const SELF_INSTANCE_NAME = ${initSelfInstance};
 const DASHBOARD_HEADER_CONFIG = ${initDashboardHeaderConfig};
 // SSOT 2026-10-22 T4: [{ nickname, model, label, contextWindow, autoCompactTokens }]
 const REPRESENTATIVE_MODELS = ${initRepresentativeModels};
+const EFFORT_LEVELS = ${initEffortLevels};
 // field → first config entry map (show/max/truncate lookups in renderCard).
 const _dhFieldMap = {};
 for (const _dhLine of DASHBOARD_HEADER_CONFIG) {
@@ -6016,7 +6083,7 @@ function renderCardBody(s, col) {
   const modelParts = [];
   const canSwitchModel = isOwner && col !== 'closed' && !s.terminated && !isSiblingSession(s);
   if (dhShow('model') && (modelShort || canSwitchModel)) modelParts.push(renderModelPicker(s, canSwitchModel, modelShort));
-  if (s.effort) modelParts.push('<span class="meta-effort" title="Power level">' + esc(s.effort) + '</span>');
+  if (s.effort || canSwitchModel) modelParts.push(renderEffortPicker(s, canSwitchModel));
   if (dhShow('model') && toNum(s.autoCompactTokens) > 0) {
     modelParts.push('<span class="cb-ac" title="이 모델의 auto-compact 기준">autocompact ' + formatTokens(s.autoCompactTokens) + '</span>');
   }
@@ -6240,6 +6307,80 @@ async function changeModel(key, select) {
   if (select) { select.disabled = false; select.blur(); }
   refreshCard(key);
   loadSessions();
+}
+
+// ── Effort on the card and at the top of the session panel (SSOT 2026-10-23 T1) ──
+// The owner picks one of the five levels; the session runs it from the next
+// turn (the %effort scope — the owner's default stays). When the session's
+// model caps the level, the note says what actually runs.
+var EFFORT_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
+function effortLabel(level) {
+  return EFFORT_LABELS[level] || String(level || '');
+}
+function renderEffortPicker(s, canSwitch) {
+  var levels = EFFORT_LEVELS || [];
+  var capped = s.effortEffective && s.effortEffective !== s.effort
+    ? ' title="이 모델은 ' + escAttr(effortLabel(s.effortEffective)) + '까지 실행합니다"' : ' title="Reasoning effort"';
+  if (!canSwitch || !levels.length) {
+    return '<span class="meta-effort"' + capped + '>' + esc(effortLabel(s.effort))
+      + (s.effortEffective && s.effortEffective !== s.effort ? ' &rarr; ' + esc(effortLabel(s.effortEffective)) : '') + '</span>';
+  }
+  var opts = '';
+  for (var i = 0; i < levels.length; i++) {
+    opts += '<option value="' + escAttr(levels[i]) + '"' + (levels[i] === s.effort ? ' selected' : '') + '>'
+      + esc('Effort · ' + effortLabel(levels[i])) + '</option>';
+  }
+  return '<select class="cb-model-select cb-effort-select" aria-label="Effort 변경"' + capped
+    + ' onclick="event.stopPropagation()" onchange="changeEffort(\\'' + escJs(s.key) + '\\',this)">' + opts + '</select>';
+}
+async function postEffortSwitch(key, effort) {
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/effort';
+  var body = JSON.stringify({ effort: effort });
+  var headers = { 'Content-Type': 'application/json' };
+  if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+  var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+  if (res.status === 403) {
+    await refreshCsrfToken();
+    var retryHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+    res = await fetch(url, { method: 'POST', headers: retryHeaders, body: body });
+  }
+  var data = null;
+  try { data = await res.json(); } catch (_e) {}
+  return { ok: res.ok, result: data && data.result, error: (data && data.error) || ('HTTP ' + res.status) };
+}
+// What the card says after an effort change.
+function effortSwitchNote(r) {
+  if (!r.ok) return { text: r.error, error: true };
+  var res = r.result || {};
+  if (res.status === 'unchanged') return { text: '이미 effort ' + effortLabel(res.effort) + '입니다', error: false };
+  var capped = res.effective && res.effective !== res.effort ? ' (이 모델은 ' + effortLabel(res.effective) + '까지 실행)' : '';
+  return { text: 'effort ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped, error: false };
+}
+async function changeEffort(key, select) {
+  var effort = select && select.value;
+  if (!effort) return;
+  if (select) select.disabled = true;
+  var r;
+  try { r = await postEffortSwitch(key, effort); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+  _modelNotes[key] = effortSwitchNote(r);
+  if (select) { select.disabled = false; select.blur(); }
+  refreshCard(key);
+  loadSessions();
+}
+// The top of the session panel: this session's model and effort, one click each.
+function renderPanelControls(s) {
+  var el = document.getElementById('panel-controls');
+  if (!el || !s) return;
+  var a = document.activeElement;
+  if (a && el.contains(a) && a.tagName === 'SELECT') return; // an open picker survives live updates
+  var isOwner = !!s.ownerId && s.ownerId === currentUserId;
+  var canSwitch = isOwner && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
+  var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
+  el.innerHTML = '<span class="pc-scope">이 세션</span>'
+    + renderModelPicker(s, canSwitch, modelShort)
+    + renderEffortPicker(s, canSwitch)
+    + renderModelNote(s);
 }
 
 // ── Goal list on the work item (SSOT 2026-10-21 T2/T3) ──
@@ -6769,6 +6910,7 @@ async function loadSessions() {
     _lastPolledBoard = data.board;
     if (data.lifecycle) _lifecycle = data.lifecycle;
     renderBoard(data.board);
+    if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) renderPanelControls(_sessionCache[panelSessionKey]);
   } catch (e) { console.error('Failed to load sessions', e); }
 }
 
@@ -7330,6 +7472,7 @@ function connectWs() {
         if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
           var panelS = _sessionCache[panelSessionKey];
           renderPanelQuestion(panelS);
+          renderPanelControls(panelS);
           // The board carries the server's one-current-task view; a turn that
           // just ended must stop spinning its task in the open panel too.
           renderPanelTasks(panelS.tasks);
@@ -8370,10 +8513,11 @@ function openPanel(sessionKey, focusWorkLog) {
   metaEl.innerHTML = [
     '<span class="meta-item"><span class="meta-label">Owner:</span> <span class="meta-value">' + esc(s.ownerName) + '</span></span>',
     '<span class="meta-item"><span class="meta-label">Workflow:</span> <span class="meta-value">' + esc(s.workflow) + '</span></span>',
-    '<span class="meta-item"><span class="meta-label">Model:</span> <span class="meta-value">' + esc(s.model) + '</span></span>',
     '<span class="meta-item"><span class="meta-label">State:</span> <span class="meta-value">' + esc(s.activityState) + '</span></span>',
     '<span class="meta-item"><span class="meta-label">Last:</span> <span class="meta-value">' + timeAgo(s.lastActivity) + '</span></span>',
   ].join('');
+
+  renderPanelControls(s);
 
   // Links
   const linksEl = document.getElementById('panel-links');
