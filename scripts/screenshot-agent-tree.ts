@@ -369,6 +369,22 @@ const visibleSeqs = (page: Page) =>
     return (w.wlScopeEntries(w._wl.entries) as Array<{ seq: number }>).map((e) => e.seq);
   });
 
+// Spec 12 §4.4 — push a sessionUpdated over the stubbed socket: the session as
+// the page holds it, changed by `edit` (a JS function body over `s`).
+async function pushSession(page: Page, key: string, edit: string) {
+  await page.evaluate(
+    ([k, body]) => {
+      // biome-ignore lint/suspicious/noExplicitAny: page globals are untyped client code
+      const w = window as any;
+      const s = JSON.parse(JSON.stringify(w.eval('_sessionCache')[k]));
+      new Function('s', body)(s);
+      w.__ws.onmessage({ data: JSON.stringify({ type: 'sessionUpdated', session: s }) });
+    },
+    [key, edit] as const,
+  );
+  await page.waitForTimeout(120);
+}
+
 async function scenario(browser: import('playwright').Browser, theme: 'light' | 'dark', width: number) {
   const ctx = await browser.newContext({
     viewport: { width, height: 900 },
@@ -426,6 +442,40 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     );
   check((await overflow(page)) === 0, `${tag}: open card — no page overflow`);
   await shoot(page, `${theme}-${width}-card-tree.png`);
+  // §4.4 live: a running subagent's tool count and the waterfall move; the row
+  // the reader focused, its spinner and its bar are the same nodes after.
+  await page.evaluate((key) => {
+    // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
+    const row = document.querySelector(`[data-session-key="${key}"] .ag-row[data-agent-open="toolu_explore"]`) as any;
+    row.focus();
+    row.__mark = 1;
+    // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
+    (row.querySelector('.ag-spinner') as any).__mark = 1;
+    // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
+    (row.querySelector('.ag-span i') as any).__mark = 1;
+  }, K('200'));
+  await pushSession(
+    page,
+    K('200'),
+    's.agents.forEach(function (a) { if (a.id === "toolu_explore") a.toolCalls += 1; }); s.lastActivity = new Date(Date.parse(s.lastActivity) + 60000).toISOString();',
+  );
+  const liveCard = await page.evaluate((key) => {
+    // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
+    const row = document.querySelector(`[data-session-key="${key}"] .ag-row[data-agent-open="toolu_explore"]`) as any;
+    return {
+      sameRow: row?.__mark === 1,
+      focused: document.activeElement === row,
+      // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
+      spinner: (row?.querySelector('.ag-spinner') as any)?.__mark === 1,
+      // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
+      bar: (row?.querySelector('.ag-span i') as any)?.__mark === 1,
+      tools: row?.querySelector('.ag-tools')?.textContent ?? '',
+    };
+  }, K('200'));
+  check(
+    liveCard.sameRow && liveCard.focused && liveCard.spinner && liveCard.bar && liveCard.tools === '툴 19',
+    `${tag}: live card update keeps the focused row, its spinner and bar (${JSON.stringify(liveCard)})`,
+  );
   const cardBox = await page.locator(`[data-session-key="${K('200')}"]`).boundingBox();
   if (cardBox) await page.screenshot({ path: path.join(OUT, `${theme}-${width}-card-tree-crop.png`), clip: cardBox });
 
@@ -464,6 +514,48 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     );
   check((await overflow(page)) === 0, `${tag}: panel on a subagent — no page overflow`);
   await shoot(page, `${theme}-${width}-panel-subagent.png`, false);
+  // §4.4 live, panel: a task-group head and the 메인 crumb keep focus through
+  // session pushes (the same payload, then a changed tool count).
+  const headLive = await (async () => {
+    await page.evaluate(() => {
+      // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
+      const head = document.querySelector('#worklog-list .wl-group-head') as any;
+      head.focus();
+      head.__mark = 1;
+    });
+    await pushSession(page, K('200'), '');
+    await pushSession(page, K('200'), 's.agents[0].toolCalls += 1;');
+    return page.evaluate(() => {
+      // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
+      const a = document.activeElement as any;
+      return { focusedHead: !!a?.classList.contains('wl-group-head') && a.__mark === 1, tag: a?.tagName };
+    });
+  })();
+  check(
+    headLive.focusedHead,
+    `${tag}: a focused task-group head keeps focus through session pushes (${JSON.stringify(headLive)})`,
+  );
+  const crumbLive = await (async () => {
+    await page.evaluate(() => {
+      // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
+      const crumb = document.querySelector('#panel-agents .pa-crumb[data-agent-select=""]') as any;
+      crumb.focus();
+      crumb.__mark = 1;
+    });
+    await pushSession(page, K('200'), 's.agents[0].toolCalls += 1;');
+    return page.evaluate(() => {
+      // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
+      const a = document.activeElement as any;
+      return {
+        focusedCrumb: a?.__mark === 1 && a.getAttribute('data-agent-select') === '',
+        sum: document.querySelector('#panel-agents .pa-sum')?.textContent ?? '',
+      };
+    });
+  })();
+  check(
+    crumbLive.focusedCrumb && crumbLive.sum.includes('툴 21'),
+    `${tag}: the focused 메인 crumb keeps focus while the summary moves (${JSON.stringify(crumbLive)})`,
+  );
 
   // The agent list, then back to main.
   await page.click('#pa-toggle');
@@ -480,6 +572,26 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   );
   const links = await page.evaluate(() => document.querySelectorAll('#worklog-list .wl-agent-link').length);
   check(links === 3, `${tag}: each spawn row in the main log links to its subagent (${links})`);
+  // Keyboard: ArrowDown from a spawn row lands on its 서브에이전트 열기, Enter opens that agent.
+  await page.evaluate(() => {
+    const link = document.querySelectorAll('#worklog-list .wl-agent-link')[0];
+    (link.parentElement?.querySelector('.wl-row') as HTMLElement).focus();
+  });
+  await page.keyboard.press('ArrowDown');
+  const onLink = await page.evaluate(() => document.activeElement?.classList.contains('wl-agent-link') ?? false);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(250);
+  const kbPath = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('#panel-agents .pa-crumb'))
+      .map((b) => b.textContent)
+      .join(' › '),
+  );
+  check(
+    onLink && kbPath === '메인 › A1 Explore',
+    `${tag}: keyboard ↓ + Enter on 서브에이전트 열기 opens it (${onLink}, ${kbPath})`,
+  );
+  await page.click('#panel-agents .pa-crumb[data-agent-select=""]');
+  await page.waitForTimeout(250);
   await page.click('#worklog-list .wl-agent-link >> nth=1');
   await page.waitForTimeout(250);
   const libPath = await page.evaluate(() =>

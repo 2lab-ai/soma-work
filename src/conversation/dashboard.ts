@@ -3764,6 +3764,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .wl-role { flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 4px; background: var(--ib-pill); color: var(--text); }
 .wl-agent-io .wl-row { background: var(--ib-pill); }
 .wl-agent-link { display: block; margin: 0 0 4px 22px; padding: 2px 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; }
+.wl-agent-link:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; border-radius: 4px; }
 .wl-legacy { margin: 4px 0 6px; padding: 6px 10px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 12px; }
 .panel-tasks {
   flex: none;
@@ -5703,9 +5704,13 @@ function applyCardParts(el, p) {
   }
   if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl) && !isPickingModel(el._bodyEl)) {
     var goalDraft = captureGoalDraft(el._bodyEl);
-    el._bodyEl.innerHTML = p.body;
-    el._bodyHtml = p.body;
+    // Spec 12 §4.4: morphed, not rewritten — while a subagent runs the body
+    // changes every push (its tool count, the waterfall axis, the last-activity
+    // stamp), and the focused agent row, a running spinner and a scrolled list
+    // must survive that.
+    morphInnerHtml(el._bodyEl, p.body);
     restoreGoalDraft(el._bodyEl, goalDraft);
+    el._bodyHtml = p.body;
     updateTimersIn(el._bodyEl);
     changed = true;
   }
@@ -6141,6 +6146,57 @@ function renderMainAgentRow(s, act, current) {
     + '<span class="ag-meta">' + (tasks.length ? '<span class="ag-tools">task ' + done + '/' + tasks.length + '</span>' : '') + '</span>'
     + '</button>';
 }
+// Spec 12: bring a live node in line with freshly rendered markup, keeping
+// every node whose place did not change — so focus, a list's scroll and a
+// running spinner's animation survive a live update. Children pair up in
+// order; an agent row pairs only with the row of the same agent.
+function domKeyOf(n) {
+  if (n.nodeType !== 1) return '#' + n.nodeType;
+  var k = n.getAttribute('data-agent-open');
+  if (k === null) k = n.getAttribute('data-agent-select');
+  return n.tagName + '|' + (k === null ? (n.id || '') : '@' + k);
+}
+function domMorph(a, b) {
+  if (a.nodeType !== 1) {
+    if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue;
+    return;
+  }
+  var i;
+  for (i = a.attributes.length - 1; i >= 0; i--) {
+    if (!b.hasAttribute(a.attributes[i].name)) a.removeAttribute(a.attributes[i].name);
+  }
+  for (i = 0; i < b.attributes.length; i++) {
+    var at = b.attributes[i];
+    if (a.getAttribute(at.name) !== at.value) a.setAttribute(at.name, at.value);
+  }
+  domMorphChildren(a, b);
+}
+function domMorphChildren(a, b) {
+  var cur = a.firstChild;
+  var next = b.firstChild;
+  while (next) {
+    var after = next.nextSibling;
+    if (cur && domKeyOf(cur) === domKeyOf(next)) {
+      domMorph(cur, next);
+      cur = cur.nextSibling;
+    } else {
+      a.insertBefore(next, cur); // moved out of the fresh tree, which is thrown away
+    }
+    next = after;
+  }
+  while (cur) {
+    var gone = cur;
+    cur = cur.nextSibling;
+    a.removeChild(gone);
+  }
+}
+// Write html into el's children through domMorph (one fresh parse, no node
+// rebuilt that did not change).
+function morphInnerHtml(el, html) {
+  var tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  domMorphChildren(el, tmp);
+}
 // Open card (§4.2): 메인 → subagents tree with a waterfall bar per agent.
 function renderAgentTree(s) {
   var list = s.agents || [];
@@ -6219,7 +6275,9 @@ function renderPanelAgents() {
   _panelAgentIdsShown = Object.create(null);
   for (var q = 0; q < list.length; q++) _panelAgentIdsShown[list[q].id] = true;
   for (var w = 0; w < extra.length; w++) _panelAgentIdsShown[extra[w]] = true;
-  if (!s || (!list.length && !extra.length)) {
+  // An agent the panel shows that is gone from both lists keeps the bar (its
+  // path is the way back to 메인).
+  if (!s || (!list.length && !extra.length && !_panelAgent)) {
     el.style.display = 'none';
     if (_panelAgentsHtml) el.innerHTML = '';
     _panelAgentsHtml = '';
@@ -6278,26 +6336,14 @@ function renderPanelAgents() {
     }
   }
   html += '</div>';
-  // A live update (sessionUpdated, a board push) with the same data must not
-  // touch the bar: rewriting it would drop the reader's focus and list scroll.
+  // A live update (sessionUpdated, a board push) with the same data writes
+  // nothing; a changed bar is morphed, so the focused button (a crumb, the
+  // toggle, a list row), the list's scroll and a running spinner stay.
   if (html === _panelAgentsHtml && el.style.display === '') return;
-  var oldList = el.querySelector ? el.querySelector('#pa-list') : null;
-  var keepScroll = oldList ? oldList.scrollTop : 0;
-  var active = document.activeElement;
-  var keepFocus = active && el.contains && el.contains(active)
-    ? (active.id === 'pa-toggle' ? '#pa-toggle' : active.getAttribute && active.getAttribute('data-agent-select'))
-    : null;
   el.style.display = '';
-  el.innerHTML = html;
+  morphInnerHtml(el, html);
   _panelAgentsHtml = html;
   updateTimersIn(el);
-  var newList = el.querySelector ? el.querySelector('#pa-list') : null;
-  if (newList && keepScroll) newList.scrollTop = keepScroll;
-  if (keepFocus !== null && keepFocus !== undefined && el.querySelector) {
-    var target = keepFocus === '#pa-toggle' ? el.querySelector('#pa-toggle')
-      : el.querySelector('#pa-list [data-agent-select="' + escAttr(keepFocus) + '"]');
-    if (target && target.focus) target.focus();
-  }
 }
 function togglePanelAgentList() {
   _panelAgentListOpen = !_panelAgentListOpen;
@@ -8450,8 +8496,18 @@ function recoverWorkLog() {
 function pushLiveWorkLog(convId, entry) {
   if (!_wl || _wl.convId !== convId) return;
   wlOnLive(_wl, entry, wlFetchJson, paintWorkLog);
-  // Spec 12: a live entry of an agent the card does not list yet.
-  if (entry && entry.agentId && !_panelAgentIdsShown[entry.agentId]) renderPanelAgents();
+}
+// Spec 12: entries that name an agent the bar does not show yet (their own
+// entries, or a spawn/result row's agentRef) — on a live entry, an older page
+// or a recovery merge alike.
+function wlNamesNewAgent(added) {
+  for (var i = 0; i < added.length; i++) {
+    var e = added[i] && added[i].entry;
+    if (!e) continue;
+    if (e.agentId && !_panelAgentIdsShown[e.agentId]) return true;
+    if (e.agentRef && !_panelAgentIdsShown[e.agentRef]) return true;
+  }
+  return false;
 }
 
 // Work-log section open / closed (§3.1-6). Every panel opening starts closed
@@ -8710,13 +8766,18 @@ function wlRefreshGroupHead(state, grpEl, taskId) {
   var entries = wlScopeEntries(state.entries).filter(function(x) { return wlGroupOf(x) === taskId; });
   var title = '';
   for (var i = 0; i < entries.length; i++) if (entries[i].taskTitle) title = String(entries[i].taskTitle);
+  var html = renderWorkLogGroupHead({ taskId: taskId, title: title, entries: entries }, head.getAttribute('aria-expanded') === 'true', wlTaskInfo(taskId));
+  if (head._html === html) return; // same data → the head (and its focus) is left alone
   var tmp = document.createElement('div');
-  tmp.innerHTML = renderWorkLogGroupHead({ taskId: taskId, title: title, entries: entries }, head.getAttribute('aria-expanded') === 'true', wlTaskInfo(taskId));
+  tmp.innerHTML = html;
   var fresh = tmp.firstElementChild;
   if (!fresh) return;
-  if (head.getAttribute('tabindex') === '0') fresh.setAttribute('tabindex', '0');
-  grpEl.replaceChild(fresh, head);
-  updateTimersIn(fresh);
+  fresh.setAttribute('tabindex', head.getAttribute('tabindex') === '0' ? '0' : '-1');
+  // Morphed, not replaced: a reader whose focus is on the head keeps it (Spec 12 —
+  // a subagent scope refreshes its heads on every session push).
+  domMorph(head, fresh);
+  head._html = html;
+  updateTimersIn(head);
 }
 // Task status / time / tool calls changed (task_update): refresh every group head.
 function wlRefreshGroupHeads() {
@@ -8762,6 +8823,7 @@ function paintWorkLog(state, added) {
   // Spec 12: entries of another agent arrived while this agent's log is empty — keep the empty line.
   if (!scopedCount) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
   wlEnsureTabStop(list);
+  if (wlNamesNewAgent(added)) renderPanelAgents();
   // Tail-follow, unless the reader has an entry's detail open; older entries
   // arriving above keep the reader's place.
   if (!state.painted || (atBottom && !wlDetailOpen(state))) list.scrollTop = list.scrollHeight;
@@ -8846,10 +8908,10 @@ function wlRovingIndex(key, i, n) {
   if (key === 'End') return n - 1;
   return -1;
 }
-// The rows the arrows move between: entry rows and task-group heads that are
-// on screen (a closed group's entries are not).
+// The rows the arrows move between: entry rows, task-group heads and a spawn
+// row's 서브에이전트 열기 (Spec 12) that are on screen (a closed group's are not).
 function wlNavRows(list) {
-  var all = list.querySelectorAll('.wl-group-head, .wl-row');
+  var all = list.querySelectorAll('.wl-group-head, .wl-row, .wl-agent-link');
   var out = [];
   for (var i = 0; i < all.length; i++) {
     var body = all[i].closest ? all[i].closest('.wl-group-body') : null;
@@ -8859,12 +8921,12 @@ function wlNavRows(list) {
   return out;
 }
 function wlEnsureTabStop(list) {
-  if (!list || !list.querySelector || list.querySelector('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"]')) return;
+  if (!list || !list.querySelector || list.querySelector('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"], .wl-agent-link[tabindex="0"]')) return;
   var rows = wlNavRows(list);
   if (rows.length) rows[rows.length - 1].setAttribute('tabindex', '0');
 }
 function wlSetTabStop(list, row) {
-  var old = list.querySelectorAll('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"]');
+  var old = list.querySelectorAll('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"], .wl-agent-link[tabindex="0"]');
   for (var i = 0; i < old.length; i++) if (old[i] !== row) old[i].setAttribute('tabindex', '-1');
   if (row.getAttribute('tabindex') !== '0') row.setAttribute('tabindex', '0');
 }
@@ -8908,7 +8970,10 @@ function wlSetTabStop(list, row) {
   list.addEventListener('keydown', function(e) {
     var row = e.target;
     var isHead = !!(row.classList && row.classList.contains('wl-group-head'));
-    if (!row.classList || (!isHead && !row.classList.contains('wl-row'))) return;
+    var isLink = !!(row.classList && row.classList.contains('wl-agent-link'));
+    if (!row.classList || (!isHead && !isLink && !row.classList.contains('wl-row'))) return;
+    // 서브에이전트 열기 is a real button: Enter / Space click it (the delegated handler opens the agent).
+    if (isLink && (e.key === 'Enter' || e.key === ' ')) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       if (isHead) {
@@ -8927,7 +8992,7 @@ function wlSetTabStop(list, row) {
   });
   list.addEventListener('focusin', function(e) {
     var row = e.target;
-    if (row && row.classList && (row.classList.contains('wl-row') || row.classList.contains('wl-group-head'))) wlSetTabStop(list, row);
+    if (row && row.classList && (row.classList.contains('wl-row') || row.classList.contains('wl-group-head') || row.classList.contains('wl-agent-link'))) wlSetTabStop(list, row);
   });
 })();
 
@@ -9362,6 +9427,7 @@ function closePanel() {
   panelConvId = null;
   _panelAgent = '';
   _panelAgentListOpen = false;
+  _panelAgentsHtml = '';
   _rawLoadedCache = Object.create(null);
   _panelGen++;
   _panelTurnsHasMore = false;
