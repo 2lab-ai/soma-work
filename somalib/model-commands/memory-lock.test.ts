@@ -114,6 +114,23 @@ describe('memory lock', () => {
     expect(withMemoryLock(data, 'U1', () => 'reused', { timeoutMs: 1_000 })).toBe('reused');
   });
 
+  it('pid reuse is still detected when the shell runs a non-English locale (#379 review R3)', () => {
+    const data = tmpData();
+    const lock = memoryLockPath(data, 'U1');
+    plant(lock, { pid: process.pid, startedAt: PROCESS_STARTED_AT - 10 * 86_400_000, at: Date.now() - 15_000 });
+    const saved = { LC_ALL: process.env.LC_ALL, LANG: process.env.LANG, LC_TIME: process.env.LC_TIME };
+    // `ps -o lstart=` prints a localized date under ko_KR ("2026년 10월 23일 …"), which Date.parse cannot read
+    Object.assign(process.env, { LC_ALL: 'ko_KR.UTF-8', LANG: 'ko_KR.UTF-8', LC_TIME: 'ko_KR.UTF-8' });
+    try {
+      expect(withMemoryLock(data, 'U1', () => 'reused', { timeoutMs: 1_000 })).toBe('reused');
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
   it('release removes only its own lock — a lock that was reaped and re-taken by another owner stays (review P1)', () => {
     const data = tmpData();
     const lock = memoryLockPath(data, 'U1');
