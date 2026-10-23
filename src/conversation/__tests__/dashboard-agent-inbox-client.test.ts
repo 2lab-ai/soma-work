@@ -1949,11 +1949,21 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         'wlDetailOpen',
         'wlNavRows',
         'wlEnsureTabStop',
+        'wlNamesNewAgent',
         'setWorkLogOpen',
         'paintWorkLog',
       ],
       ['WL_LABELS'],
-      { document, _wl: state, panelSessionKey: null, _sessionCache: {}, updateTimersIn: () => {}, _panelAgent: '' },
+      {
+        document,
+        _wl: state,
+        panelSessionKey: null,
+        _sessionCache: {},
+        updateTimersIn: () => {},
+        _panelAgent: '',
+        _panelAgentIdsShown: {},
+        renderPanelAgents: () => {},
+      },
     );
     return { m, toggle, count, list };
   }

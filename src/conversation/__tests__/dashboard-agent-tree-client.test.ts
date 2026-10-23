@@ -330,17 +330,7 @@ describe('panel scope (§4.3)', () => {
   it('an unchanged agent bar is not rewritten — focus and the list scroll survive a live update (review B-P1)', () => {
     let writes = 0;
     let html = '';
-    const el = {
-      style: {} as Record<string, string>,
-      get innerHTML() {
-        return html;
-      },
-      set innerHTML(v: string) {
-        writes++;
-        html = v;
-      },
-      querySelector: () => null,
-    };
+    const el = { style: {} as Record<string, string> };
     const m = load<{ renderPanelAgents(): void }>(
       [
         'esc',
@@ -372,12 +362,32 @@ describe('panel scope (§4.3)', () => {
         _panelAgentsHtml: '',
         formatTokens: (n: number) => String(n),
         updateTimersIn: () => {},
+        morphInnerHtml: (_el: unknown, h: string) => {
+          writes++;
+          html = h;
+        },
       },
     );
     m.renderPanelAgents();
     m.renderPanelAgents();
     expect(writes).toBe(1);
     expect(html).toContain('<span>에이전트 3</span>');
+  });
+
+  it('entries naming an agent the bar does not show — by agentId or agentRef — refresh it, from any paint (review B r2)', () => {
+    const m = load<{ wlNamesNewAgent(a: unknown[]): boolean }>(['wlNamesNewAgent'], [], {
+      _panelAgentIdsShown: { toolu_known: true },
+    });
+    const A = (extra: Record<string, unknown>) => ({ entry: E(1, extra), index: 0 });
+    expect(m.wlNamesNewAgent([A({ agentRef: 'toolu_new' })])).toBe(true);
+    expect(m.wlNamesNewAgent([A({ agentId: 'toolu_new' })])).toBe(true);
+    expect(m.wlNamesNewAgent([A({ agentRef: 'toolu_known' }), A({ agentId: 'toolu_known' }), A({})])).toBe(false);
+    // Live entries, older pages and recovery merges all paint through paintWorkLog.
+    expect(fnBody('paintWorkLog')).toContain('if (wlNamesNewAgent(added)) renderPanelAgents();');
+  });
+
+  it('closing the panel forgets the agent bar it last wrote (review B r2)', () => {
+    expect(fnBody('closePanel')).toContain("_panelAgentsHtml = '';");
   });
 
   it('a log from before attribution that started subagents is flagged, an attributed one is not', () => {
@@ -417,5 +427,152 @@ describe('panel scope (§4.3)', () => {
     expect(fnBody('renderCardFace')).toContain('+ renderCardAgents(s)');
     expect(fnBody('renderCardBody')).toContain('+ renderAgentTree(s)');
     expect(TEMPLATE).toContain('<div class="panel-agents" id="panel-agents" style="display:none"></div>');
+  });
+});
+
+// A just-enough DOM for domMorph: element/text nodes, attributes, sibling links.
+class FakeNode {
+  nodeType: number;
+  tagName: string;
+  nodeValue: string | null;
+  attrs: Array<{ name: string; value: string }> = [];
+  kids: FakeNode[] = [];
+  parent: FakeNode | null = null;
+  constructor(tag: string | null, text: string | null = null) {
+    this.nodeType = tag ? 1 : 3;
+    this.tagName = tag ? tag.toUpperCase() : '';
+    this.nodeValue = tag ? null : text;
+  }
+  get attributes() {
+    return this.attrs;
+  }
+  get id() {
+    return this.getAttribute('id') ?? '';
+  }
+  getAttribute(n: string) {
+    return this.attrs.find((a) => a.name === n)?.value ?? null;
+  }
+  hasAttribute(n: string) {
+    return this.attrs.some((a) => a.name === n);
+  }
+  setAttribute(n: string, v: string) {
+    const a = this.attrs.find((x) => x.name === n);
+    if (a) a.value = v;
+    else this.attrs.push({ name: n, value: v });
+  }
+  removeAttribute(n: string) {
+    this.attrs = this.attrs.filter((a) => a.name !== n);
+  }
+  get firstChild() {
+    return this.kids[0] ?? null;
+  }
+  get nextSibling(): FakeNode | null {
+    if (!this.parent) return null;
+    return this.parent.kids[this.parent.kids.indexOf(this) + 1] ?? null;
+  }
+  insertBefore(n: FakeNode, ref: FakeNode | null) {
+    if (n.parent) n.parent.kids.splice(n.parent.kids.indexOf(n), 1);
+    n.parent = this;
+    const i = ref ? this.kids.indexOf(ref) : -1;
+    if (i < 0) this.kids.push(n);
+    else this.kids.splice(i, 0, n);
+    return n;
+  }
+  removeChild(n: FakeNode) {
+    this.kids.splice(this.kids.indexOf(n), 1);
+    n.parent = null;
+    return n;
+  }
+}
+function h(tag: string, attrs: Record<string, string>, ...kids: Array<FakeNode | string>): FakeNode {
+  const n = new FakeNode(tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  for (const k of kids) n.insertBefore(typeof k === 'string' ? new FakeNode(null, k) : k, null);
+  return n;
+}
+const morph = load<{ domMorph(a: FakeNode, b: FakeNode): void }>(['domKeyOf', 'domMorph', 'domMorphChildren'], []);
+
+describe('live morph (review B r2) — a live update keeps the nodes that did not move', () => {
+  const tree = (tools: string, width: string, second: string) =>
+    h(
+      'div',
+      { class: 'ag-tree' },
+      h('button', { class: 'ag-row is-main', 'data-agent-open': '' }, '메인'),
+      h(
+        'button',
+        { class: 'ag-row is-sub is-running', 'data-agent-open': 'toolu_a' },
+        h('span', { class: 'ag-icon' }, h('span', { class: 'spinner ag-spinner' })),
+        h('span', { class: 'ag-tools' }, tools),
+        h('span', { class: 'ag-span' }, h('i', { style: width })),
+      ),
+      h('button', { class: 'ag-row is-sub is-' + second, 'data-agent-open': 'toolu_b' }, second),
+    );
+
+  it('a tool count and the waterfall move in place — the row, its spinner and its bar are the same nodes', () => {
+    const live = tree('툴 3', 'left:0%;width:40%', 'running');
+    const row = live.kids[1];
+    const spinner = row.kids[0].kids[0];
+    const bar = row.kids[2].kids[0];
+    morph.domMorph(live, tree('툴 4', 'left:0%;width:52%', 'completed'));
+    expect(live.kids[1]).toBe(row);
+    expect(row.kids[0].kids[0]).toBe(spinner);
+    expect(row.kids[2].kids[0]).toBe(bar);
+    expect(bar.getAttribute('style')).toBe('left:0%;width:52%');
+    expect(row.kids[1].kids[0].nodeValue).toBe('툴 4');
+    expect(live.kids[2].getAttribute('class')).toBe('ag-row is-sub is-completed');
+    expect(live.kids[2].kids[0].nodeValue).toBe('completed');
+  });
+
+  it('rows pair by agent, not by position — a new agent between two keeps the second row', () => {
+    const live = tree('툴 3', 'w', 'running');
+    const b = live.kids[2];
+    const fresh = tree('툴 3', 'w', 'running');
+    fresh.insertBefore(h('button', { class: 'ag-row is-sub', 'data-agent-open': 'toolu_new' }, 'new'), fresh.kids[2]);
+    morph.domMorph(live, fresh);
+    expect(live.kids.map((k) => k.getAttribute('data-agent-open'))).toEqual(['', 'toolu_a', 'toolu_new', 'toolu_b']);
+    expect(live.kids[3]).toBe(b);
+  });
+
+  it('attributes the fresh markup drops are removed (aria-current, hidden)', () => {
+    const live = h(
+      'div',
+      { id: 'pa-list', hidden: '' },
+      h('button', { 'data-agent-select': 'x', 'aria-current': 'true' }, 'x'),
+    );
+    const btn = live.kids[0];
+    morph.domMorph(live, h('div', { id: 'pa-list' }, h('button', { 'data-agent-select': 'x' }, 'x')));
+    expect(live.hasAttribute('hidden')).toBe(false);
+    expect(live.kids[0]).toBe(btn);
+    expect(btn.hasAttribute('aria-current')).toBe(false);
+  });
+
+  it('a removed agent row goes; the rest stay', () => {
+    const live = tree('툴 3', 'w', 'running');
+    const a = live.kids[1];
+    const fresh = tree('툴 3', 'w', 'running');
+    fresh.removeChild(fresh.kids[2]);
+    morph.domMorph(live, fresh);
+    expect(live.kids.length).toBe(2);
+    expect(live.kids[1]).toBe(a);
+  });
+});
+
+describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the arrow path', () => {
+  it('the arrow rows include the link, the tab stop can sit on it, and Enter on it is left to the button', () => {
+    expect(fnBody('wlNavRows')).toContain("'.wl-group-head, .wl-row, .wl-agent-link'");
+    expect(fnBody('wlSetTabStop')).toContain('.wl-agent-link[tabindex="0"]');
+    expect(fnBody('wlEnsureTabStop')).toContain('.wl-agent-link[tabindex="0"]');
+    expect(TEMPLATE).toContain("if (isLink && (e.key === 'Enter' || e.key === ' ')) return;");
+  });
+  it('a group head is morphed, not replaced, and skipped when its markup is unchanged', () => {
+    const body = fnBody('wlRefreshGroupHead');
+    expect(body).toContain('if (head._html === html) return;');
+    expect(body).toContain('domMorph(head, fresh);');
+    expect(body).not.toContain('replaceChild');
+  });
+  it('a changed card body is morphed into place, not rewritten', () => {
+    const body = fnBody('applyCardParts');
+    expect(body).toContain('morphInnerHtml(el._bodyEl, p.body);');
+    expect(body).not.toContain('_bodyEl.innerHTML =');
   });
 });
