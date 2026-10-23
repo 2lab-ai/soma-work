@@ -28,10 +28,9 @@ import { Logger } from '../logger';
 import {
   editMemoryAt,
   getPerEntryCap,
-  loadMemory,
+  loadMemoryWithRevision,
   type MemoryEdit,
   type MemoryTarget,
-  memoryRevision,
 } from '../user-memory-store';
 import { requireSelfUser } from './settings-routes';
 
@@ -42,12 +41,9 @@ type Middleware = (request: FastifyRequest, reply: FastifyReply) => Promise<void
 const TARGETS: MemoryTarget[] = ['memory', 'user'];
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// Entries and revision from one read (review P1): never a newer revision on older entries.
 function l1View(userId: string, target: MemoryTarget) {
-  return {
-    ...loadMemory(userId, target),
-    perEntryCap: getPerEntryCap(target),
-    revision: memoryRevision(userId, target),
-  };
+  return { ...loadMemoryWithRevision(userId, target), perEntryCap: getPerEntryCap(target) };
 }
 
 function parseTarget(raw: string, reply: FastifyReply): MemoryTarget | null {
@@ -84,7 +80,12 @@ async function guarded(reply: FastifyReply, what: string, fn: () => void): Promi
       return;
     }
     // Malformed page ids / dates / segments come from the request: a 400, not a 500.
-    if (error instanceof Error && /invalid|requires a safe|malformed/i.test(error.message)) {
+    if (
+      error instanceof Error &&
+      /^(invalid memory page id|Invalid memory page type|Invalid episodic date|invalid `issue` segment|\S+ locator requires a safe)/.test(
+        error.message,
+      )
+    ) {
       reply.status(400).send({ error: error.message });
       return;
     }
@@ -219,13 +220,12 @@ export function registerMemoryRoutes(
       return;
     }
     await guarded(reply, 'page read', () => {
-      const locator = parseLocator(id);
-      const page = hierarchicalMemoryStore.getPage(userId, locator);
-      if (!page) {
+      const found = hierarchicalMemoryStore.getPageWithRevision(userId, parseLocator(id));
+      if (!found) {
         reply.status(404).send({ error: `${id} 페이지가 없습니다` });
         return;
       }
-      reply.send({ page, revision: hierarchicalMemoryStore.pageRevision(userId, locator) });
+      reply.send(found);
     });
   });
 
@@ -271,7 +271,9 @@ export function registerMemoryRoutes(
         revision,
       );
       if (!r.ok) return fail(reply, r);
-      reply.send({ ok: true, page: hierarchicalMemoryStore.getPage(userId, locator), revision: r.revision });
+      // The page as written: parsed from the same bytes the returned revision hashes.
+      const written = hierarchicalMemoryStore.getPageWithRevision(userId, locator);
+      reply.send({ ok: true, page: written?.page ?? null, revision: written?.revision ?? r.revision });
     });
   });
 

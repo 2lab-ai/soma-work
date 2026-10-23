@@ -92,27 +92,57 @@ function readOrNull(filePath: string): string | null {
   }
 }
 
-const ENTRY_HEADER = /^## (\d{2}:\d{2}) - (.*)$/;
+/** An entry header line (`## HH:MM - title`), tolerating a CRLF line end. */
+const ENTRY_HEADER_AT = /(^|\n)## (\d{2}:\d{2}) - ([^\n]*?)\r?(?=\n|$)/g;
+/** A line inside a note that would read as an entry header. */
+const HEADER_LOOKALIKE = /^## \d{2}:\d{2} - /gm;
 
-/** Split an episodic day file into its `## HH:MM - title` blocks. */
-export function parseEpisodicDay(raw: string): EpisodicEntry[] {
-  const entries: EpisodicEntry[] = [];
-  let cur: { time: string; title: string; lines: string[] } | null = null;
-  for (const line of raw.split('\n')) {
-    const m = line.match(ENTRY_HEADER);
-    if (m) {
-      if (cur) entries.push({ time: cur.time, title: cur.title, content: cur.lines.join('\n').trim() });
-      cur = { time: m[1], title: m[2], lines: [] };
-    } else if (cur) {
-      cur.lines.push(line);
-    }
+/**
+ * Normalize note text before it is written into a day file: LF line ends, and
+ * a line that would read as an entry header is indented by one space so a note
+ * can never split into two entries (review P1).
+ */
+export function normalizeEpisodicText(text: string): string {
+  return String(text ?? '')
+    .replace(/\r\n?/g, '\n')
+    .replace(HEADER_LOOKALIKE, ' $&')
+    .trim();
+}
+
+interface EpisodicSpan extends EpisodicEntry {
+  /** [start, end) of the block in the raw file, from the newline before its header. */
+  start: number;
+  end: number;
+}
+
+/** Entries of a day file with the byte range each one occupies (everything else is left alone). */
+function scanEpisodicDay(raw: string): EpisodicSpan[] {
+  const spans: EpisodicSpan[] = [];
+  ENTRY_HEADER_AT.lastIndex = 0;
+  for (let m = ENTRY_HEADER_AT.exec(raw); m; m = ENTRY_HEADER_AT.exec(raw)) {
+    const start = m.index; // the newline before the header (or 0 at the file start)
+    spans.push({ time: m[2], title: m[3], content: '', start, end: raw.length });
+    if (spans.length > 1) spans[spans.length - 2].end = start;
   }
-  if (cur) entries.push({ time: cur.time, title: cur.title, content: cur.lines.join('\n').trim() });
-  return entries;
+  for (const sp of spans) {
+    const block = raw.slice(sp.start, sp.end);
+    const headerEnd = block.indexOf('\n', block.startsWith('\n') ? 1 : 0);
+    sp.content = (headerEnd < 0 ? '' : block.slice(headerEnd + 1)).replace(/\r\n?/g, '\n').trim();
+  }
+  return spans;
+}
+
+/** Split an episodic day file into its `## HH:MM - title` entries. */
+export function parseEpisodicDay(raw: string): EpisodicEntry[] {
+  return scanEpisodicDay(raw).map(({ time, title, content }) => ({ time, title, content }));
+}
+
+function episodicBlock(entry: EpisodicEntry): string {
+  return `\n## ${entry.time} - ${entry.title}\n\n${entry.content}\n`;
 }
 
 export function serializeEpisodicDay(day: string, entries: EpisodicEntry[]): string {
-  return `# ${day}\n${entries.map((e) => `\n## ${e.time} - ${e.title}\n\n${e.content}\n`).join('')}`;
+  return `# ${day}\n${entries.map(episodicBlock).join('')}`;
 }
 
 function oneLine(s: string): string {
@@ -327,7 +357,7 @@ export class HierarchicalMemoryFileStore {
 
   appendEpisodic(user: string, content: string, date?: string): { ok: boolean; message: string; relPath: string } {
     return this.locked(user, () => {
-      const trimmed = (content || '').trim();
+      const trimmed = normalizeEpisodicText(content || '');
       if (!trimmed) return { ok: false, message: 'Empty episodic content', relPath: '' };
       const day = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : todayISO();
       this.ensureTaxonomy(user);
@@ -371,6 +401,14 @@ export class HierarchicalMemoryFileStore {
   }
 
   // ── Dashboard edits (SSOT 2026-10-23 T3) — revision-checked, under the lock ──
+
+  /** A page and its revision from ONE read (null when it does not exist). */
+  getPageWithRevision(user: string, loc: PageLocator): { page: SemanticPage; revision: string } | null {
+    const { relPath, id } = this.resolve(loc);
+    const raw = readOrNull(path.join(this.root(user), relPath));
+    if (raw === null) return null;
+    return { page: parsePage(raw, id, loc.type, relPath), revision: revisionOf(raw) as string };
+  }
 
   /** The revision of a page file (null when it does not exist). */
   pageRevision(user: string, loc: PageLocator): string | null {
@@ -423,7 +461,12 @@ export class HierarchicalMemoryFileStore {
         return {
           ok: false,
           reason: 'conflict',
-          message: before === null ? `${id}는 이미 지워졌습니다` : `${id}가 그사이 바뀌었습니다 — 다시 불러오세요`,
+          message:
+            before === null
+              ? `${id}는 이미 지워졌습니다`
+              : expectedRevision === null
+                ? `${id} 페이지가 이미 있습니다 — 그 페이지를 열어 고치세요`
+                : `${id}가 그사이 바뀌었습니다 — 다시 불러오세요`,
         };
       }
       this.ensureTaxonomy(user);
@@ -476,7 +519,7 @@ export class HierarchicalMemoryFileStore {
     expectedRevision: string,
   ): ConditionalWrite {
     if (!DAY_RE.test(day)) return { ok: false, reason: 'invalid', message: `날짜 형식이 아닙니다: ${day}` };
-    const text = content === null ? null : String(content).trim();
+    const text = content === null ? null : normalizeEpisodicText(String(content));
     if (text !== null && !text)
       return { ok: false, reason: 'invalid', message: '내용이 비어 있습니다 — 지우려면 삭제를 쓰세요' };
     const id = `episodic/${day}`;
@@ -488,17 +531,20 @@ export class HierarchicalMemoryFileStore {
       if (before !== expectedRevision) {
         return { ok: false, reason: 'conflict', message: `${day} 기록이 그사이 바뀌었습니다 — 다시 불러오세요` };
       }
-      const entries = parseEpisodicDay(raw);
-      if (!Number.isInteger(index) || index < 0 || index >= entries.length) {
-        return { ok: false, reason: 'invalid', message: `항목 번호가 범위를 벗어났습니다 (0–${entries.length - 1})` };
+      const spans = scanEpisodicDay(raw);
+      if (!Number.isInteger(index) || index < 0 || index >= spans.length) {
+        return { ok: false, reason: 'invalid', message: `항목 번호가 범위를 벗어났습니다 (0–${spans.length - 1})` };
       }
-      if (text === null) entries.splice(index, 1);
-      else entries[index] = { time: entries[index].time, title: text.split('\n')[0].slice(0, 80), content: text };
-      if (entries.length === 0) {
+      // Only this entry's bytes change; text before the first entry, other
+      // entries and their line ends stay exactly as they were.
+      const sp = spans[index];
+      const replacement =
+        text === null ? '' : episodicBlock({ time: sp.time, title: text.split('\n')[0].slice(0, 80), content: text });
+      const next = raw.slice(0, sp.start) + replacement + raw.slice(sp.end);
+      if (!scanEpisodicDay(next).length && !next.replace(/^# \d{4}-\d{2}-\d{2}\s*/, '').trim()) {
         fs.rmSync(filePath, { force: true });
         return { ok: true, id, revision: null };
       }
-      const next = serializeEpisodicDay(day, entries);
       this.writeFileAtomic(filePath, next);
       return { ok: true, id, revision: revisionOf(next) };
     });

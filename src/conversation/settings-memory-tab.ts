@@ -199,23 +199,36 @@ function l1Count(target) {
   el.textContent = '추가하면 ' + fmtNum(total) + ' / ' + fmtNum(block.charLimit) + '자' + (over ? ' — ' + fmtNum(over) + '자 초과' : '') + (long ? ' — 한 항목 한도 초과' : '');
   el.className = 'counter' + (over || long ? ' is-over' : '');
 }
-// One L1 write; a 409 reloads the stores and keeps the draft in the status line.
-async function l1Write(method, url, payload, draft) {
+// One L1 write. A 409 reloads the stores and puts the WHOLE draft back in an
+// edit box — the entry it was for when it still exists, else the add box —
+// so nothing typed is lost (review P1).
+async function l1Write(method, url, payload, draft, at) {
   var r;
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
+  var target = url.split('/')[4];
   if (r.ok) {
-    var target = url.split('/')[4];
     _mem.l1[target] = r.data.l1;
     paintL1();
     return true;
   }
   if (r.status === 409) {
     await loadMemory();
-    memStatus('그사이 다른 곳(에이전트·Slack)에서 바뀌어 최신 내용을 불러왔습니다. 다시 적용하세요.' + (draft ? ' 작성하던 내용: ' + draft : ''), true);
+    restoreL1Draft(target, draft, at);
+    memStatus('그사이 다른 곳(에이전트·Slack)에서 바뀌어 최신 내용을 불러왔습니다.' + (draft ? ' 작성하던 내용은 편집 칸에 그대로 있습니다 — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
     return false;
   }
   memStatus('저장하지 못했습니다: ' + r.error, true);
   return false;
+}
+function restoreL1Draft(target, draft, at) {
+  if (!draft) return;
+  var entries = (_mem && _mem.l1[target] && _mem.l1[target].entries) || [];
+  if (typeof at === 'number' && at >= 0 && at < entries.length) {
+    paintL1({ target: target, index: at, text: draft });
+    return;
+  }
+  var ta = document.getElementById('l1-new-' + target);
+  if (ta) ta.value = draft;
 }
 function l1EditStart(target, i) {
   paintL1({ target: target, index: i, text: _mem.l1[target].entries[i] });
@@ -226,7 +239,7 @@ async function l1Save(target, i) {
   var ta = document.getElementById('l1-edit-' + target);
   var text = ta ? ta.value : '';
   if (!text.trim()) { memStatus('비어 있는 항목은 저장할 수 없습니다 — 지우려면 삭제를 쓰세요', true); return; }
-  if (await l1Write('PUT', '/api/memory/l1/' + target + '/' + i, { text: text, revision: _mem.l1[target].revision }, text)) memStatus('저장했습니다', false);
+  if (await l1Write('PUT', '/api/memory/l1/' + target + '/' + i, { text: text, revision: _mem.l1[target].revision }, text, i)) memStatus('저장했습니다', false);
 }
 async function l1Add(target) {
   var ta = document.getElementById('l1-new-' + target);
@@ -282,6 +295,7 @@ async function openPage(id) {
   try { data = await res.json(); } catch (_e) {}
   if (!res.ok) { memStatus('페이지를 열지 못했습니다: ' + ((data && data.error) || res.status), true); return; }
   _memPage = data;
+  _memPageConflict = null;
   renderPageEditor();
   paintPageList();
 }
@@ -290,7 +304,7 @@ function renderPageEditor() {
   if (!_memPage) { el.innerHTML = '<p class="lock">왼쪽에서 페이지를 고르세요.</p>'; return; }
   var p = _memPage.page;
   var isNew = _memPage.revision === null;
-  var html = '<div class="meta">' + (isNew ? '새 페이지' : esc(p.id) + ' · 마지막 수정 ' + esc(p.updated)) + '</div>';
+  var html = '<div id="pg-conflict"></div><div class="meta">' + (isNew ? '새 페이지' : esc(p.id) + ' · 마지막 수정 ' + esc(p.updated)) + '</div>';
   if (isNew) {
     var opts = '';
     for (var g = 0; g < PAGE_GROUPS.length; g++) opts += '<option value="' + PAGE_GROUPS[g][0] + '">' + esc(PAGE_GROUPS[g][1] + ' (' + PAGE_GROUPS[g][0] + ')') + '</option>';
@@ -351,12 +365,40 @@ async function savePage() {
     return;
   }
   if (r.status === 409 && !isNew) {
-    var draft = d;
-    await openPage(id);
-    memStatus('그사이 바뀌어 최신 내용을 불러왔습니다. 작성하던 Current: ' + draft.current.slice(0, 200), true);
+    // Keep everything typed in the editor (title, aliases, Current, History) and
+    // let the user choose: overwrite with the draft, or load the latest (review P1).
+    var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
+    var latest = null;
+    try { latest = await res.json(); } catch (_e) {}
+    _memPageConflict = res.ok && latest ? latest : { page: null, revision: null };
+    renderPageConflict();
+    memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집기에 그대로 있습니다.', true);
     return;
   }
   memStatus('저장하지 못했습니다: ' + r.error, true);
+}
+var _memPageConflict = null; // { page, revision } of the newer version after a 409
+function renderPageConflict() {
+  var box = document.getElementById('pg-conflict');
+  if (!box) return;
+  if (!_memPageConflict) { box.innerHTML = ''; return; }
+  var p = _memPageConflict.page;
+  box.innerHTML = '<div class="notice is-error" role="alert"><p>다른 곳(에이전트·Slack)에서 이 페이지를 고쳤습니다' + (p ? ' (마지막 수정 ' + esc(p.updated) + ')' : '') + '.</p>'
+    + (p ? '<details><summary>지금 저장된 Current 보기</summary><pre class="text">' + esc(p.current) + '</pre></details>' : '')
+    + '<div class="line"><button type="button" class="btn danger" onclick="overwritePage()">내 수정본으로 덮어쓰기</button> '
+    + '<button type="button" class="btn" onclick="discardPageDraft()">최신 내용 불러오기 (내 수정 버림)</button></div></div>';
+}
+function overwritePage() {
+  if (!_memPageConflict || !_memPageConflict.revision) return;
+  _memPage.revision = _memPageConflict.revision;
+  _memPageConflict = null;
+  renderPageConflict();
+  return savePage();
+}
+function discardPageDraft() {
+  var id = _memPage && _memPage.page && _memPage.page.id;
+  _memPageConflict = null;
+  if (id) openPage(id);
 }
 async function deletePage() {
   var p = _memPage.page;
@@ -395,7 +437,7 @@ async function loadDay(date) {
   document.getElementById('mem-ep-date').value = date;
   renderDay();
 }
-function renderDay(editIndex) {
+function renderDay(editIndex, draft) {
   var el = document.getElementById('mem-ep-body');
   var entries = (_memDay && _memDay.entries) || [];
   if (!entries.length) { el.innerHTML = '<p class="lock">이 날의 기록이 없습니다.</p>'; return; }
@@ -404,7 +446,7 @@ function renderDay(editIndex) {
     var e = entries[i];
     html += '<div class="ep-entry"><div class="when">' + esc(e.time) + ' UTC</div>';
     if (editIndex === i) {
-      html += '<textarea id="ep-edit" rows="5" aria-label="' + escAttr(e.time + ' 기록 수정') + '">' + esc(e.content) + '</textarea>'
+      html += '<textarea id="ep-edit" rows="5" aria-label="' + escAttr(e.time + ' 기록 수정') + '">' + esc(typeof draft === 'string' ? draft : e.content) + '</textarea>'
         + '<div class="actions"><button type="button" class="btn primary" onclick="epSave(' + i + ')">저장</button> <button type="button" class="btn" onclick="renderDay()">취소</button></div>';
     } else {
       html += '<div class="text">' + esc(e.content) + '</div>'
@@ -414,13 +456,17 @@ function renderDay(editIndex) {
   }
   el.innerHTML = html;
 }
-async function epWrite(method, url, payload, draft) {
+async function epWrite(method, url, payload, draft, at) {
   var r;
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
-  if (r.ok) { _memDay = r.data.day; renderDay(); return true; }
+  if (r.ok) { _memDay = r.data.day; renderDay(); refreshDatesIfEmptied(); return true; }
   if (r.status === 409) {
     await loadDay(_memDay.date);
-    memStatus('그사이 새 기록이 쌓여 최신 내용을 불러왔습니다. 다시 적용하세요.' + (draft ? ' 작성하던 내용: ' + draft.slice(0, 200) : ''), true);
+    // The whole draft goes back into an edit box (review P1).
+    var entries = (_memDay && _memDay.entries) || [];
+    if (draft && typeof at === 'number' && at < entries.length) renderDay(at, draft);
+    else if (draft) { var ta = document.getElementById('mem-ep-new'); if (ta) ta.value = draft; }
+    memStatus('그사이 이 날의 기록이 바뀌어 최신 내용을 불러왔습니다.' + (draft ? ' 작성하던 내용은 편집 칸에 그대로 있습니다 — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
     return false;
   }
   memStatus('저장하지 못했습니다: ' + r.error, true);
@@ -430,12 +476,18 @@ async function epSave(i) {
   var ta = document.getElementById('ep-edit');
   var text = ta ? ta.value : '';
   if (!text.trim()) { memStatus('비어 있는 기록은 저장할 수 없습니다 — 지우려면 삭제를 쓰세요', true); return; }
-  if (await epWrite('PUT', '/api/memory/episodic/' + _memDay.date + '/' + i, { content: text, revision: _memDay.revision }, text)) memStatus('저장했습니다', false);
+  if (await epWrite('PUT', '/api/memory/episodic/' + _memDay.date + '/' + i, { content: text, revision: _memDay.revision }, text, i)) memStatus('저장했습니다', false);
 }
 async function epDelete(i) {
   var ok = await confirmDialog({ title: _memDay.date + ' ' + _memDay.entries[i].time + ' 기록을 지울까요?', body: '되돌릴 수 없습니다.', action: '기록 삭제' });
   if (!ok) return;
   if (await epWrite('DELETE', '/api/memory/episodic/' + _memDay.date + '/' + i, { revision: _memDay.revision })) memStatus('지웠습니다', false);
+}
+// The last entry of a day was deleted (the file is gone): drop the date from the list.
+async function refreshDatesIfEmptied() {
+  if (_memDay && _memDay.entries && _memDay.entries.length) return;
+  await refreshPageIndex();
+  paintDates();
 }
 async function epAdd() {
   var ta = document.getElementById('mem-ep-new');

@@ -423,13 +423,14 @@ function removeListItem(btn) {
 function applyFilter() {
   var q = ((document.getElementById('pref-filter') || {}).value || '').toLowerCase().trim();
   var onlyMod = !!(document.getElementById('pref-modified') || {}).checked;
-  var rows = document.querySelectorAll('.row[data-key]');
+  // Only the 개인 설정 tab: other tabs have sections without setting rows (review P1).
+  var rows = document.querySelectorAll('[data-tab="preferences"] .row[data-key]');
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
     var hit = (!q || r.getAttribute('data-search').indexOf(q) >= 0) && (!onlyMod || r.getAttribute('data-modified') === '1');
     r.hidden = !hit;
   }
-  var groups = document.querySelectorAll('section.group');
+  var groups = document.querySelectorAll('[data-tab="preferences"] section.group');
   for (var g = 0; g < groups.length; g++) groups[g].hidden = !groups[g].querySelector('.row:not([hidden])');
 }
 

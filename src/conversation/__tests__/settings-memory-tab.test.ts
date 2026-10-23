@@ -115,7 +115,7 @@ describe('개인 메모리 writes', () => {
       ...extra,
     };
     const fns = load<any>(
-      ['memStatus', 'l1Write', 'l1Add', 'l1Save', 'l1Delete', 'l1Undo', 'l1Clear'],
+      ['memStatus', 'restoreL1Draft', 'l1Write', 'l1Add', 'l1Save', 'l1Delete', 'l1Undo', 'l1Clear'],
       ['L1_LABELS'],
       deps,
     );
@@ -154,15 +154,19 @@ describe('개인 메모리 writes', () => {
     expect(apiWrite).not.toHaveBeenCalled();
   });
 
-  it('a 409 reloads the stores and keeps the draft in the status line', async () => {
+  it('a 409 reloads the stores and puts the WHOLE draft back in an edit box (review P1)', async () => {
+    const long = '긴 초안 '.repeat(120);
     const apiWrite = vi.fn(async () => ({ ok: false, status: 409, error: 'conflict' }));
+    const addBox: any = { value: '' };
     const { fns, deps, status } = env(apiWrite);
-    expect(await fns.l1Write('POST', '/api/memory/l1/memory', { text: '새 메모', revision: 'r1' }, '새 메모')).toBe(
-      false,
-    );
+    deps.document.getElementById = (id: string) =>
+      id === 'mem-status' ? status : id === 'l1-new-memory' ? addBox : null;
+    expect(await fns.l1Write('PUT', '/api/memory/l1/memory/1', { text: long, revision: 'r1' }, long, 1)).toBe(false);
     expect(deps.loadMemory).toHaveBeenCalled();
-    expect(status.textContent).toContain('최신 내용을 불러왔습니다');
-    expect(status.textContent).toContain('새 메모');
+    expect(deps.paintL1).toHaveBeenLastCalledWith({ target: 'memory', index: 1, text: long });
+    expect(status.textContent).toContain('편집 칸에 그대로');
+    expect(await fns.l1Write('POST', '/api/memory/l1/memory', { text: long, revision: 'r1' }, long)).toBe(false);
+    expect(addBox.value).toBe(long);
   });
 });
 
@@ -261,7 +265,7 @@ describe('관찰 기록 (에피소딕)', () => {
     expect(el.innerHTML).toContain('onclick="epDelete(0)"');
 
     const apiWrite = vi.fn(async () => ({ ok: true, data: { day: { ...day, revision: 'd2' } } }));
-    const w = load<any>(['epWrite', 'epSave', 'epDelete', 'memStatus'], [], {
+    const w = load<any>(['epWrite', 'epSave', 'epDelete', 'memStatus', 'refreshDatesIfEmptied'], [], {
       document: {
         getElementById: (id: string) =>
           id === 'ep-edit' ? { value: '고친 기록' } : { textContent: '', setAttribute() {} },
@@ -271,6 +275,8 @@ describe('관찰 기록 (에피소딕)', () => {
       renderDay: () => {},
       loadDay: async () => {},
       confirmDialog: async () => true,
+      refreshPageIndex: async () => {},
+      paintDates: () => {},
     });
     await w.epSave(0);
     expect(apiWrite).toHaveBeenCalledWith('PUT', '/api/memory/episodic/2026-10-20/0', {
@@ -279,18 +285,74 @@ describe('관찰 기록 (에피소딕)', () => {
     });
   });
 
-  it('a 409 on a day (a turn appended meanwhile) reloads that day', async () => {
+  it('a 409 on a day reloads it and reopens the edit with the whole draft (review P1)', async () => {
     const loadDay = vi.fn(async () => {});
+    const renderDay = vi.fn();
     const status: any = { textContent: '', setAttribute() {} };
+    const long = '긴 기록 '.repeat(100);
     const w = load<any>(['epWrite', 'memStatus'], [], {
       document: { getElementById: () => status },
-      _memDay: { date: '2026-10-20', revision: 'd1', entries: [] },
+      _memDay: { date: '2026-10-20', revision: 'd1', entries: [{ time: '01:00' }, { time: '02:00' }] },
       apiWrite: async () => ({ ok: false, status: 409, error: 'conflict' }),
-      renderDay: () => {},
+      renderDay,
       loadDay,
     });
-    expect(await w.epWrite('DELETE', '/api/memory/episodic/2026-10-20/0', { revision: 'd1' })).toBe(false);
+    expect(
+      await w.epWrite('PUT', '/api/memory/episodic/2026-10-20/1', { content: long, revision: 'd1' }, long, 1),
+    ).toBe(false);
     expect(loadDay).toHaveBeenCalledWith('2026-10-20');
-    expect(status.textContent).toContain('최신 내용을 불러왔습니다');
+    expect(renderDay).toHaveBeenLastCalledWith(1, long);
+    expect(status.textContent).toContain('편집 칸에 그대로');
+  });
+
+  it('a page 409 keeps the editor as typed and offers overwrite with the newer revision (review P1)', async () => {
+    const conflictBox: any = { innerHTML: '' };
+    const status: any = { textContent: '', setAttribute() {} };
+    const values: Record<string, string> = {
+      'pg-title': 'My title',
+      'pg-aliases': 'a',
+      'pg-current': 'my long current',
+    };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'pg-conflict' ? conflictBox : id in values ? { value: values[id] } : status,
+      querySelectorAll: () => [{ value: '2026-10-23: mine' }],
+    };
+    const apiWrite = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 409, error: 'conflict' })
+      .mockResolvedValueOnce({ ok: true, data: { page: { id: 'concepts/ssot' }, revision: 'p3' } });
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        page: { id: 'concepts/ssot', updated: '2026-10-23', current: 'agent wrote this' },
+        revision: 'p2',
+      }),
+    }));
+    const renderPageEditor = vi.fn();
+    const openPage = vi.fn();
+    const fns = load<any>(
+      ['esc', 'pageDraft', 'savePage', 'memStatus', 'renderPageConflict', 'overwritePage'],
+      ['_memPageConflict'],
+      {
+        document: doc,
+        fetch,
+        _memPage: { page: { id: 'concepts/ssot' }, revision: 'p1' },
+        apiWrite,
+        refreshPageIndex: async () => {},
+        renderPageEditor,
+        openPage,
+      },
+    );
+    await fns.savePage();
+    expect(openPage).not.toHaveBeenCalled();
+    expect(conflictBox.innerHTML).toContain('내 수정본으로 덮어쓰기');
+    expect(conflictBox.innerHTML).toContain('agent wrote this');
+    await fns.overwritePage();
+    expect(apiWrite).toHaveBeenLastCalledWith(
+      'PUT',
+      '/api/memory/page',
+      expect.objectContaining({ current: 'my long current', title: 'My title', revision: 'p2' }),
+    );
   });
 });
