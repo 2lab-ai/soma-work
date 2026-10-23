@@ -378,6 +378,7 @@ function renderPageEditor() {
   el.innerHTML = html;
 }
 function addHistoryLine() {
+  if (pageSaveBusy()) return;
   var box = document.getElementById('pg-history');
   var row = document.createElement('div');
   row.className = 'hist';
@@ -564,9 +565,12 @@ function epBusy() {
 }
 async function loadDay(date) {
   if (!date || epBusy()) return;
+  // Only the latest day request paints the view: an older one answering last is dropped (review R8).
+  var seq = (loadDay.seq = (loadDay.seq || 0) + 1);
   var res = await fetch('/api/memory/episodic/' + encodeURIComponent(date));
   var data = null;
   try { data = await res.json(); } catch (_e) {}
+  if (seq !== loadDay.seq) return;
   if (!res.ok) { memStatus('기록을 불러오지 못했습니다: ' + ((data && data.error) || res.status), true); return; }
   _memDay = data;
   document.getElementById('mem-ep-date').value = date;
@@ -603,13 +607,22 @@ async function epWrite(method, url, payload, draft, at, orig, origTime) {
   var date = dayMatch ? decodeURIComponent(dayMatch[1]) : (_memDay && _memDay.date);
   var view = _memDay;
   if (view) view.saving = Date.now();
+  // The open editor is locked while its save is out: a success re-renders it (review R8).
+  var lockBox = method === 'PUT' ? document.getElementById('ep-edit') : null;
+  if (lockBox) lockBox.disabled = true;
   var r;
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   if (view) view.saving = 0;
-  if (_memDay !== view && !(_memDay && _memDay.date === date)) {
-    // The view moved to another day (after the hold): report, leave that day alone (review R7).
-    memStatus(date + ' 기록을 ' + (r.ok ? '저장했습니다' : '저장하지 못했습니다: ' + r.error) + ' (지금 보는 날은 그대로)', !r.ok);
-    return r.ok;
+  if (lockBox) lockBox.disabled = false;
+  // The view shows another day (a day request finished behind a dialog, or the write
+  // outlived the hold): an answer never repaints that day (review R7, R8). A 409 still
+  // recovers on the request's day below, which moves the picker and the body together.
+  var elsewhere = !_memDay || _memDay.date !== date;
+  if (r.ok && elsewhere) {
+    memStatus(date + ' 기록을 ' + (method === 'DELETE' ? '지웠습니다' : '저장했습니다') + ' (지금 보는 날은 그대로)', false);
+    await refreshPageIndex();
+    fillDateSelect();
+    return true;
   }
   if (r.ok) { _memDay = r.data.day; renderDay(); refreshDatesIfEmptied(); return true; }
   if (r.status === 409) {
@@ -631,6 +644,12 @@ async function epWrite(method, url, payload, draft, at, orig, origTime) {
     if (draft && idx >= 0 && matches === 1) renderDay(idx, draft);
     else if (draft) { var ta = document.getElementById('mem-ep-new'); if (ta) ta.value = draft; }
     memStatus('그사이 이 날의 기록이 바뀌어 최신 내용을 불러왔습니다.' + (draft ? ' 작성하던 내용은 편집 칸에 그대로 있습니다 — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
+    return false;
+  }
+  if (elsewhere && draft) {
+    var note = document.getElementById('mem-ep-new');
+    if (note && !note.value) note.value = draft;
+    memStatus(date + ' 기록을 저장하지 못했습니다: ' + r.error + ' — 작성하던 내용은 메모 칸에 옮겼습니다.', true);
     return false;
   }
   memStatus('저장하지 못했습니다: ' + r.error, true);
@@ -664,8 +683,13 @@ async function refreshDatesIfEmptied() {
 async function epAdd() {
   var ta = document.getElementById('mem-ep-new');
   var text = ta ? ta.value : '';
-  if (!text.trim() || epBusy()) return;
-  var r = await apiWrite('POST', '/api/memory/episodic', { text: text });
+  if (!text.trim() || epBusy() || ta.disabled) return;
+  // The note box is locked while the note is out: a double click adds nothing more, and
+  // nothing typed meanwhile is cleared with it (review R8).
+  ta.disabled = true;
+  var r;
+  try { r = await apiWrite('POST', '/api/memory/episodic', { text: text }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
+  ta.disabled = false;
   if (!r.ok) { memStatus('추가하지 못했습니다: ' + r.error, true); return; }
   ta.value = '';
   if (_epEditor && document.getElementById('ep-edit') && _epEditor.date !== r.data.day.date) {
@@ -679,12 +703,24 @@ async function epAdd() {
   }
   var openEdit = document.getElementById('ep-edit');
   if (_epEditor && openEdit && _epEditor.date === r.data.day.date) {
-    // A record of today is open for editing: the note is appended at the end, so the
-    // record keeps its index; the editor stays open with its draft (review R7).
-    var keepIndex = _epEditor.index;
-    var keepDraft = openEdit.value;
-    _memDay = r.data.day;
-    renderDay(keepIndex, keepDraft);
+    // A record of today is open for editing: it stays open with its draft (review R7).
+    // It is re-attached to the new day only to the same record — its time and text, and
+    // only one such — never by position; otherwise it stays bound to what it was opened
+    // on, and its save meets the server's revision check (review R8).
+    var ents = r.data.day.entries || [];
+    var at = -1;
+    var same = 0;
+    for (var k = 0; k < ents.length; k++) {
+      if (ents[k].time === _epEditor.time && ents[k].content === _epEditor.content) {
+        if (at < 0) at = k;
+        same++;
+      }
+    }
+    if (same === 1) {
+      var keepDraft = openEdit.value;
+      _memDay = r.data.day;
+      renderDay(at, keepDraft);
+    }
     await refreshPageIndex();
     fillDateSelect();
     memStatus('오늘 기록에 추가했습니다 (수정 중인 기록은 그대로)', false);

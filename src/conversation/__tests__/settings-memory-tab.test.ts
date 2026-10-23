@@ -458,7 +458,18 @@ describe('in-flight writes hold what they were sent from (review R7)', () => {
     const apiWrite = vi.fn().mockImplementationOnce(() => new Promise((res) => (answer = res)));
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => d21 }));
     const fns = load<any>(
-      ['esc', 'escAttr', 'renderDay', 'epSave', 'epWrite', 'loadDay', 'epBusy', 'memStatus', 'refreshDatesIfEmptied'],
+      [
+        'esc',
+        'escAttr',
+        'renderDay',
+        'epSave',
+        'epWrite',
+        'loadDay',
+        'epBusy',
+        'memStatus',
+        'refreshDatesIfEmptied',
+        'fillDateSelect',
+      ],
       ['_epEditor'],
       {
         document: doc,
@@ -535,6 +546,170 @@ describe('in-flight writes hold what they were sent from (review R7)', () => {
     await fns.epAdd();
     expect(body.innerHTML).toContain('today record, edited'); // the draft is still in the editor
     expect(body.innerHTML).toContain('a new note');
+  });
+});
+
+describe('episodic answers apply only where they belong (review R8)', () => {
+  const EP_FNS = [
+    'esc',
+    'escAttr',
+    'renderDay',
+    'epSave',
+    'epDelete',
+    'epWrite',
+    'epAdd',
+    'loadDay',
+    'epBusy',
+    'memStatus',
+    'fillDateSelect',
+    'refreshDatesIfEmptied',
+  ];
+  function page(day: unknown, extra: Record<string, unknown> = {}) {
+    const els: Record<string, any> = {
+      'mem-ep-body': { innerHTML: '' },
+      'mem-ep-date': { value: (day as { date: string }).date, innerHTML: '' },
+      'mem-ep-new': { value: '', disabled: false },
+      status: { textContent: '', setAttribute() {} },
+    };
+    let editBox: any = null;
+    const doc = {
+      getElementById: (id: string) => {
+        if (id === 'ep-edit') {
+          if (!els['mem-ep-body'].innerHTML.includes('id="ep-edit"')) return null;
+          editBox ??= { value: '', disabled: false };
+          return editBox;
+        }
+        return els[id] ?? els.status;
+      },
+    };
+    return { els, doc, edit: () => doc.getElementById('ep-edit'), extra };
+  }
+
+  it('a note for today re-attaches an open editor only to the same record (time and text), never by position', async () => {
+    const today = {
+      date: '2026-10-23',
+      revision: 't1',
+      entries: [
+        { time: '08:00', content: 'A' },
+        { time: '09:00', content: 'B' },
+        { time: '10:00', content: 'C' },
+      ],
+    };
+    // another client deleted A meanwhile; the note N is appended
+    const after = {
+      date: '2026-10-23',
+      revision: 't3',
+      entries: [
+        { time: '09:00', content: 'B' },
+        { time: '10:00', content: 'C' },
+        { time: '11:00', content: 'N' },
+      ],
+    };
+    const p = page(today);
+    const apiWrite = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, data: { ok: true, day: after } })
+      .mockResolvedValue({ ok: true, data: { ok: true, day: after } });
+    const fns = load<any>(EP_FNS, ['_epEditor'], {
+      document: p.doc,
+      _memDay: today,
+      _mem: { episodicDates: ['2026-10-23'] },
+      apiWrite,
+      refreshPageIndex: async () => {},
+      paintDates: () => {},
+      confirmDialog: async () => true,
+    });
+    fns.renderDay(1); // B is open
+    p.edit().value = 'B, edited';
+    p.els['mem-ep-new'].value = 'N';
+    await fns.epAdd();
+    await fns.epSave(0); // the editor now sits on B at index 0
+    expect(apiWrite).toHaveBeenLastCalledWith('PUT', '/api/memory/episodic/2026-10-23/0', {
+      content: 'B, edited',
+      revision: 't3',
+    });
+  });
+
+  it("a delete answered after the view moved to another day reports, and leaves that day's view alone", async () => {
+    const past = { date: '2026-01-01', revision: 'p1', entries: [{ time: '09:00', content: 'old' }] };
+    const today = { date: '2026-10-23', revision: 't1', entries: [{ time: '08:00', content: 'today' }] };
+    const p = page(past);
+    let release: () => void = () => {};
+    const confirmDialog = () => new Promise<boolean>((res) => (release = () => res(true)));
+    const apiWrite = vi.fn(async () => ({
+      ok: true,
+      data: { ok: true, day: { ...past, revision: 'p2', entries: [] } },
+    }));
+    const fns = load<any>(EP_FNS, ['_epEditor'], {
+      document: p.doc,
+      _memDay: past,
+      _mem: { episodicDates: ['2026-10-23', '2026-01-01'] },
+      apiWrite,
+      fetch: vi.fn(async () => ({ ok: true, json: async () => today })),
+      refreshPageIndex: async () => {},
+      paintDates: () => {},
+      confirmDialog,
+    });
+    const deleting = fns.epDelete(0); // the dialog for the past record is open ...
+    await fns.loadDay('2026-10-23'); // ... and the view moves to today behind it
+    release();
+    await deleting;
+    expect(apiWrite).toHaveBeenCalledWith('DELETE', '/api/memory/episodic/2026-01-01/0', { revision: 'p1' });
+    expect(p.els['mem-ep-date'].value).toBe('2026-10-23');
+    expect(p.els['mem-ep-body'].innerHTML).toContain('today');
+  });
+
+  it('only the latest day request paints the view', async () => {
+    const d1 = { date: '2026-10-21', revision: 'a', entries: [{ time: '01:00', content: 'first day' }] };
+    const d2 = { date: '2026-10-22', revision: 'b', entries: [{ time: '02:00', content: 'second day' }] };
+    const p = page(d1);
+    const answers: Record<string, (v: unknown) => void> = {};
+    const fetchMock = vi.fn((url: string) => new Promise((res) => (answers[url.split('/').pop() as string] = res)));
+    const fns = load<any>(EP_FNS, ['_epEditor'], {
+      document: p.doc,
+      _memDay: null,
+      fetch: fetchMock,
+      apiWrite: vi.fn(),
+    });
+    const a = fns.loadDay('2026-10-21');
+    const b = fns.loadDay('2026-10-22');
+    answers['2026-10-22']({ ok: true, json: async () => d2 });
+    await b;
+    answers['2026-10-21']({ ok: true, json: async () => d1 }); // the older request answers last
+    await a;
+    expect(p.els['mem-ep-date'].value).toBe('2026-10-22');
+    expect(p.els['mem-ep-body'].innerHTML).toContain('second day');
+  });
+
+  it('the episodic editor and the note box are locked while their write is out', async () => {
+    const today = { date: '2026-10-23', revision: 't1', entries: [{ time: '08:00', content: 'A' }] };
+    const p = page(today);
+    let answer: (v: unknown) => void = () => {};
+    const apiWrite = vi.fn().mockImplementation(() => new Promise((res) => (answer = res)));
+    const fns = load<any>(EP_FNS, ['_epEditor'], {
+      document: p.doc,
+      _memDay: today,
+      _mem: { episodicDates: ['2026-10-23'] },
+      apiWrite,
+      refreshPageIndex: async () => {},
+      paintDates: () => {},
+    });
+    fns.renderDay(0);
+    const box = p.edit();
+    box.value = 'A sent';
+    const saving = fns.epSave(0);
+    expect(box.disabled).toBe(true);
+    answer({ ok: false, status: 400, error: 'no' });
+    await saving;
+    expect(box.disabled).toBe(false);
+    p.els['mem-ep-new'].value = 'note';
+    const adding = fns.epAdd();
+    expect(p.els['mem-ep-new'].disabled).toBe(true);
+    await fns.epAdd(); // a double click sends nothing more
+    expect(apiWrite).toHaveBeenCalledTimes(2);
+    answer({ ok: false, status: 400, error: 'no' });
+    await adding;
+    expect(p.els['mem-ep-new'].disabled).toBe(false);
   });
 });
 
@@ -623,21 +798,25 @@ describe('관찰 기록 (에피소딕)', () => {
     expect(el.innerHTML).toContain('onclick="epDelete(0)"');
 
     const apiWrite = vi.fn(async () => ({ ok: true, data: { day: { ...day, revision: 'd2' } } }));
-    const w = load<any>(['epWrite', 'epSave', 'epDelete', 'memStatus', 'refreshDatesIfEmptied', 'epBusy'], [], {
-      document: {
-        getElementById: (id: string) =>
-          id === 'ep-edit' ? { value: '고친 기록' } : { textContent: '', setAttribute() {} },
+    const w = load<any>(
+      ['epWrite', 'epSave', 'epDelete', 'memStatus', 'refreshDatesIfEmptied', 'epBusy', 'fillDateSelect'],
+      [],
+      {
+        document: {
+          getElementById: (id: string) =>
+            id === 'ep-edit' ? { value: '고친 기록' } : { textContent: '', setAttribute() {} },
+        },
+        _memDay: day,
+        // the editor renderDay(0) opened: bound to the day and revision it showed (review R6)
+        _epEditor: { date: '2026-10-20', revision: 'd1', index: 0, time: '05:09', content: 'Ask: <x>' },
+        apiWrite,
+        renderDay: () => {},
+        loadDay: async () => {},
+        confirmDialog: async () => true,
+        refreshPageIndex: async () => {},
+        paintDates: () => {},
       },
-      _memDay: day,
-      // the editor renderDay(0) opened: bound to the day and revision it showed (review R6)
-      _epEditor: { date: '2026-10-20', revision: 'd1', index: 0, time: '05:09', content: 'Ask: <x>' },
-      apiWrite,
-      renderDay: () => {},
-      loadDay: async () => {},
-      confirmDialog: async () => true,
-      refreshPageIndex: async () => {},
-      paintDates: () => {},
-    });
+    );
     await w.epSave(0);
     expect(apiWrite).toHaveBeenCalledWith('PUT', '/api/memory/episodic/2026-10-20/0', {
       content: '고친 기록',
@@ -649,7 +828,7 @@ describe('관찰 기록 (에피소딕)', () => {
     const renderDay = vi.fn();
     const noteBox: any = { value: '' };
     const status: any = { textContent: '', setAttribute() {} };
-    const w = load<any>(['epWrite', 'memStatus', 'epBusy'], [], {
+    const w = load<any>(['epWrite', 'memStatus', 'epBusy', 'fillDateSelect'], [], {
       document: { getElementById: (id: string) => (id === 'mem-ep-new' ? noteBox : status) },
       // the entry being edited ("A") was deleted elsewhere: index 0 is now "B"
       _memDay: { date: '2026-10-20', revision: 'd2', entries: [{ time: '02:00', content: 'B' }] },
@@ -681,7 +860,7 @@ describe('관찰 기록 (에피소딕)', () => {
         { time: '02:00', content: 'same' },
       ],
     };
-    const w = load<any>(['epWrite', 'memStatus', 'epBusy'], [], {
+    const w = load<any>(['epWrite', 'memStatus', 'epBusy', 'fillDateSelect'], [], {
       document: { getElementById: (id: string) => (id === 'mem-ep-new' ? noteBox : status) },
       _memDay: day,
       apiWrite: async () => ({ ok: false, status: 409, error: 'conflict' }),
@@ -721,9 +900,10 @@ describe('관찰 기록 (에피소딕)', () => {
       entries: [{ time: '05:09', content: 'the 20th' }],
     };
     const apiWrite = vi.fn(async () => ({ ok: true, data: { day: { ...day, entries: [] } } }));
-    const w = load<any>(['epWrite', 'epDelete', 'memStatus', 'refreshDatesIfEmptied', 'epBusy'], [], {
+    const w = load<any>(['epWrite', 'epDelete', 'memStatus', 'refreshDatesIfEmptied', 'epBusy', 'fillDateSelect'], [], {
       document: { getElementById: () => ({ textContent: '', setAttribute() {} }) },
       _memDay: day,
+      _mem: { episodicDates: [] },
       apiWrite,
       renderDay: () => {},
       loadDay: async () => {},
@@ -789,7 +969,7 @@ describe('관찰 기록 (에피소딕)', () => {
     };
     const renderDay = vi.fn();
     let apiDone: (v: unknown) => void = () => {};
-    const w = load<any>(['epWrite', 'memStatus', 'epBusy'], [], {
+    const w = load<any>(['epWrite', 'memStatus', 'epBusy', 'fillDateSelect'], [], {
       document: { getElementById: () => status },
       _memDay: view,
       apiWrite: () => new Promise((res) => (apiDone = res)),
@@ -823,7 +1003,7 @@ describe('관찰 기록 (에피소딕)', () => {
     const renderDay = vi.fn();
     const status: any = { textContent: '', setAttribute() {} };
     const long = '긴 기록 '.repeat(100);
-    const w = load<any>(['epWrite', 'memStatus', 'epBusy'], [], {
+    const w = load<any>(['epWrite', 'memStatus', 'epBusy', 'fillDateSelect'], [], {
       document: { getElementById: () => status },
       _memDay: {
         date: '2026-10-20',
