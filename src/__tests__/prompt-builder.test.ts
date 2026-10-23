@@ -174,6 +174,10 @@ describe('PromptBuilder', () => {
       // A CD run still going when the in-turn wait ends is not a confirmation.
       expect(section).toMatch(/still in progress when the wait ends[^.]*unconfirmed/);
       expect(section).toMatch(/"type"`? is the first key/);
+      // Each lane reports back into the deploy thread; the deploy turn never waits for it.
+      expect(section).toMatch(/posts its result back into this thread/);
+      expect(section).not.toContain('Each lane reports in its own place');
+      expect(section).toContain('Do not wait for a lane, do not check on it, and do not run its work yourself.');
     });
 
     it('should fallback to default for unknown workflow', () => {
