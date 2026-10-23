@@ -461,3 +461,45 @@ describe('review gate — snapshots are trustworthy and never leak', () => {
     expect(reads).toBe(1);
   });
 });
+
+describe('subagents (spec 12 work-log entries carry agentId)', () => {
+  it("a subagent's final text is not a Slack answer; its uploads still are files sent to Slack", async () => {
+    await captureArtifactFromWorkLog(
+      'c',
+      {
+        kind: 'final',
+        agentId: 'sub-1',
+        turnId: 'k:1:u',
+        text: '## 서브에이전트 결과\n- 내부 보고\n- 메인 에이전트에게만',
+      },
+      store,
+    );
+    const p = srcFile('sub.png', 'PNG');
+    await captureArtifactFromWorkLog(
+      'c',
+      {
+        kind: 'tool',
+        agentId: 'sub-1',
+        tool: 'mcp__slack-mcp__send_media',
+        toolUseId: 'ts1',
+        text: 'x',
+        raw: JSON.stringify({ file_path: p }),
+      },
+      store,
+    );
+    await captureArtifactFromWorkLog(
+      'c',
+      {
+        kind: 'tool_result',
+        agentId: 'sub-1',
+        tool: 'mcp__slack-mcp__send_media',
+        toolUseId: 'ts1',
+        ok: true,
+        text: 'ok',
+        raw: JSON.stringify({ uploaded: true, file_id: 'FS', filename: 'sub.png', size: 3 }),
+      },
+      store,
+    );
+    expect(store.list('c').map((a) => [a.kind, a.name])).toEqual([['image', 'sub.png']]);
+  });
+});

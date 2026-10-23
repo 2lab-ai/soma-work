@@ -4679,6 +4679,7 @@ body.nt-open .new-task-fab { display: none !important; }
   /* New task — no rotation, pulse, ring or slide; changes are instant. */
   .new-task-btn, .new-task-btn::before, .new-task-fab, .new-task-fab::after, .nt-dialog, .nt-att, .nt-toast,
   .nt-rec-dot, .nt-battery-fill, .nt-plus, .nt-fab-label, .nt-fab-icon, .nt-submit svg { animation: none !important; transition: none !important; }
+}
 /* ── Session artifacts (SSOT 2026-10-23): face chips, strips, minimap, viewer ── */
 .art-glyph { width: 14px; height: 14px; flex-shrink: 0; }
 .art-k-image { --art-tint: var(--green); }
