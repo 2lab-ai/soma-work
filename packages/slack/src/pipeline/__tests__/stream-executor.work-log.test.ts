@@ -260,6 +260,9 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
       {
         kind: 'tool',
         tool: 'Read',
+        // SSOT 2026-10-23 — the call and its result share the SDK tool-use id
+        // (live observers such as the dashboard artifact capture pair on it).
+        toolUseId: 'tu_1',
         text: 'Read {"file_path":"/repo/config.ts"}',
         raw: JSON.stringify({ file_path: '/repo/config.ts' }, null, 2),
         turnId,
@@ -268,6 +271,7 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
       {
         kind: 'tool_result',
         tool: 'Read',
+        toolUseId: 'tu_1',
         ok: true,
         text: 'Read ok',
         raw: 'timeout = 30',
