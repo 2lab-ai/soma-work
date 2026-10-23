@@ -345,7 +345,7 @@ describe('stream-processor — subagent routing (spec 12 §2.2)', () => {
     expect(agentEvents.map((e) => e.kind)).toContain('turn_end');
   });
 
-  it("a subagent's tool calls and results are not the main agent's activity (thread header, Slack tool rows) (review P1)", async () => {
+  it("a subagent's tool calls and results travel on attributed and named — the executor keeps the Slack surfaces to main (review rounds 1–2)", async () => {
     const used: string[] = [];
     const results: string[] = [];
     await run(
@@ -370,15 +370,16 @@ describe('stream-processor — subagent routing (spec 12 §2.2)', () => {
       ],
       {
         onToolUse: async (uses) => {
-          for (const u of uses) used.push(u.name);
+          for (const u of uses) used.push(`${u.name}:${u.parentToolUseId ?? 'main'}`);
         },
         onToolResult: async (res) => {
-          for (const t of res) results.push(t.toolUseId);
+          for (const t of res) results.push(`${t.toolUseId}:${t.toolName ?? '-'}:${t.parentToolUseId ?? 'main'}`);
         },
       },
     );
-    expect(used).toEqual(['Agent', 'Bash']);
-    expect(results).toEqual(['tu_main']);
+    expect(used).toEqual(['Agent:main', 'Grep:toolu_agent_1', 'Bash:main']);
+    // A subagent's result is named here (the Slack tracker that names main results never sees it).
+    expect(results).toEqual(['tu_sub:Grep:toolu_agent_1', 'tu_main:-:main']);
   });
 
   it('a session without subagents emits nothing new beyond the turn end', async () => {

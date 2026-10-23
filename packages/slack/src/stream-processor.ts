@@ -370,6 +370,8 @@ export interface ToolUseEvent {
   id: string;
   name: string;
   input: any;
+  /** Spec 12 — the subagent that made the call; absent = the main agent. */
+  parentToolUseId?: string;
 }
 
 /**
@@ -380,6 +382,8 @@ export interface ToolResultEvent {
   toolName?: string;
   result: any;
   isError?: boolean;
+  /** Spec 12 — the subagent whose call this answers; absent = the main agent. */
+  parentToolUseId?: string;
 }
 
 /**
@@ -1675,6 +1679,7 @@ export class AgentStreamProcessor {
         id: part.id,
         name: part.name,
         input: part.input,
+        ...(part.parent_tool_use_id ? { parentToolUseId: part.parent_tool_use_id } : {}),
       }));
     const parentOfCall = new Map<string, string>();
     for (const part of content) {
@@ -1700,18 +1705,17 @@ export class AgentStreamProcessor {
       });
     }
 
-    // Spec 12: what the main agent is doing — the thread header's current tool,
-    // the Slack tool rows, the request's tool stats — is the main agent's calls
-    // only. A subagent's calls are in its own work log.
-    const mainToolUses = toolUses.filter((t) => !parentOfCall.has(t.id));
-
-    // Track last tool name for endTurnInfo (Issue #42 S3)
+    // Track last tool name for endTurnInfo (Issue #42 S3) — the main agent's
+    // (a subagent's calls are in its own work log).
+    const mainToolUses = toolUses.filter((t) => !t.parentToolUseId);
     if (mainToolUses.length > 0) {
       this._lastToolName = mainToolUses[mainToolUses.length - 1].name;
     }
 
-    if (mainToolUses.length > 0 && this.callbacks.onToolUse) {
-      await this.callbacks.onToolUse(mainToolUses, context);
+    // Every call goes on, attributed: the executor keeps the Slack surfaces
+    // (current tool, tool rows, stats) to the main agent's (spec 12 §2.2).
+    if (toolUses.length > 0 && this.callbacks.onToolUse) {
+      await this.callbacks.onToolUse(toolUses, context);
     }
   }
 
@@ -2188,6 +2192,13 @@ export class AgentStreamProcessor {
       this.toolNamesById.delete(toolResult.toolUseId);
       const ok = toolResult.isError !== true;
       const agentId = parentOfResult.get(toolResult.toolUseId);
+      if (agentId) {
+        // The executor skips a subagent's results on the Slack tool surfaces
+        // (whose tracker would name them), so they travel named and attributed
+        // — the host's model-command and metrics handling reads both.
+        toolResult.parentToolUseId = agentId;
+        if (!toolResult.toolName && tool !== 'unknown') toolResult.toolName = tool;
+      }
       const spawned = this.spawnedAgents.get(toolResult.toolUseId);
       const rawFields = toolResultRaw(toolResult.result);
       this.emitWorkLog(context, {
@@ -2218,10 +2229,9 @@ export class AgentStreamProcessor {
       }
     }
 
-    // Spec 12: only the main agent's results continue to the Slack side (their calls did too).
-    const mainResults = toolResults.filter((r) => !parentOfResult.has(r.toolUseId));
-    if (mainResults.length > 0 && this.callbacks.onToolResult) {
-      await this.callbacks.onToolResult(mainResults, context);
+    // Every result goes on, attributed (see onToolUse above).
+    if (toolResults.length > 0 && this.callbacks.onToolResult) {
+      await this.callbacks.onToolResult(toolResults, context);
     }
   }
 

@@ -37,7 +37,8 @@ Status: 진행 · 작성 2026-10-23 · 기준 커밋 main `3c9576a` · 스펙: [
 
 ## 비목표
 
-- Slack 쪽 `'Task'`만 검사하는 서브에이전트 렌더 분기(`tool-event-processor.ts`, `tool-formatter.ts`) 수리 — Slack 출력이 바뀌는
-  별개 작업. 후속 이슈로 남긴다.
+- Slack 쪽 `'Task'`만 검사하는 서브에이전트 렌더 분기(`tool-event-processor.ts`, `tool-formatter.ts`, TaskOutput 보강) 수리 — 후속 이슈.
+  이번 작업이 Slack에서 바꾸는 것은 섞임 제거뿐이다: 서브의 TodoWrite는 플랜 블록에, 서브의 도구 호출·결과는 헤더의 현재 도구·도구 행·
+  스킬 배너에 가지 않는다(모델 커맨드·git 메트릭 같은 호스트 처리는 서브 결과에도 그대로 돈다).
 - SDK 업그레이드(`agent_id`·`parent_task_id`, 0.3.292+) — 재개된 서브에이전트 결합 개선. 후속.
 - 과거 작업 로그의 추정 귀속(백필) — 하지 않는다.
