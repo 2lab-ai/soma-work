@@ -189,7 +189,13 @@ describe('T1/T7 — capture from the work-log stream', () => {
       'conv-1',
       result(
         'send_file',
-        { uploaded: true, file_id: 'F10', filename: 'report.html', size: 22, permalink: 'https://s/F10' },
+        {
+          uploaded: true,
+          file_id: 'F10',
+          filename: 'report.html',
+          size: fs.statSync(p).size,
+          permalink: 'https://s/F10',
+        },
         'tu_a',
       ),
       store,
@@ -386,5 +392,72 @@ describe('T7 — uploads made before this feature: backfill from the work log', 
       ['끝', 'markdown', true],
     ]);
     expect(store.isBackfilled('conv-old')).toBe(true);
+  });
+});
+
+describe('review gate — concurrent records never lose an index entry', () => {
+  it('two uploads and an answer finishing together are all in index.json', async () => {
+    const a = srcFile('a.png', 'A');
+    const b = srcFile('b.wav', 'B');
+    await Promise.all([
+      store.recordSlackUpload({ conversationId: 'race', filePath: a, filename: 'a.png', slackFileId: 'FA' }),
+      store.recordSlackUpload({ conversationId: 'race', filePath: b, filename: 'b.wav', slackFileId: 'FB' }),
+      store.recordAnswer({ conversationId: 'race', turnId: 't1', markdown: '## 결과\n- 하나\n- 둘 셋 넷 다섯' }),
+    ]);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(root, 'store', 'race', 'index.json'), 'utf-8'));
+    expect(onDisk.artifacts.map((x: { name: string }) => x.name).sort()).toEqual(['a.png', 'b.wav', '결과']);
+    const fresh = new ArtifactStore(path.join(root, 'store'));
+    expect(fresh.list('race')).toHaveLength(3);
+  });
+});
+
+describe('review gate — snapshots are trustworthy and never leak', () => {
+  it('backfill keeps bytes only when the file still has the size Slack reported', async () => {
+    const changed = srcFile('report.html', '<p>someone else wrote this later</p>');
+    const a = await store.recordSlackUpload({
+      conversationId: 'c',
+      filePath: changed,
+      filename: 'report.html',
+      slackFileId: 'F1',
+      size: 12,
+    });
+    expect(a?.stored).toBe(false);
+    expect(a?.size).toBe(12);
+    const same = srcFile('ok.png', '1234567890');
+    const b = await store.recordSlackUpload({
+      conversationId: 'c',
+      filePath: same,
+      filename: 'ok.png',
+      slackFileId: 'F2',
+      size: 10,
+    });
+    expect(b?.stored).toBe(true);
+  });
+
+  it('a snapshot whose upload never reported back is swept once it is stale', async () => {
+    const p = srcFile('abandoned.wav', 'RIFF');
+    const snap = await store.snapshot('c', p);
+    expect(snap).not.toBeNull();
+    const dir = path.join(root, 'store', 'c');
+    const pending = fs.readdirSync(dir).filter((f) => f.startsWith('.pending-'));
+    expect(pending).toHaveLength(1);
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    fs.utimesSync(path.join(dir, pending[0]), old, old);
+    new ArtifactStore(path.join(root, 'store')).list('c');
+    expect(fs.readdirSync(dir).filter((f) => f.startsWith('.pending-'))).toEqual([]);
+  });
+
+  it('a backfill that throws is not retried on every board build', async () => {
+    let reads = 0;
+    const broken: WorkLogReader = {
+      readWorkLog: async () => {
+        reads++;
+        throw new Error('unreadable');
+      },
+      readWorkLogRaw: async () => null,
+    };
+    await backfillArtifactsFromWorkLog('bad', store, broken);
+    await backfillArtifactsFromWorkLog('bad', store, broken);
+    expect(reads).toBe(1);
   });
 });

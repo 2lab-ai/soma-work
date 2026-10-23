@@ -249,7 +249,11 @@ export function backfillArtifactsFromWorkLog(
     // Persist the marker only when there was a log to read; an empty one may still fill later.
     store.markBackfilled(conversationId, sawAny);
   })()
-    .catch((err) => logger.warn(`Artifact backfill failed for ${conversationId}`, err))
+    .catch((err) => {
+      // Not again on every board build this process: an unreadable log stays unreadable.
+      logger.warn(`Artifact backfill failed for ${conversationId}`, err);
+      store.markBackfilled(conversationId, false);
+    })
     .finally(() => backfillInflight.delete(conversationId));
   backfillInflight.set(conversationId, run);
   return run;
