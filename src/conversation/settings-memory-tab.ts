@@ -103,7 +103,8 @@ textarea:focus-visible { outline: 2px solid var(--border-focus); outline-offset:
 export const MEMORY_CLIENT_JS = String.raw`
 var _mem = null;          // GET /api/memory
 var _memLoaded = false;
-var _memPage = null;      // { page, revision } open in the editor (revision null = new)
+var _memPage = null;      // { page, revision, raw, representable } open in the editor (revision null = new)
+var _memPageRaw = false;  // the open page is edited as raw markdown
 var _memDay = null;       // { date, revision, entries }
 var _memUndo = null;      // { target, text } last single delete
 var L1_LABELS = { memory: '에이전트 노트', user: '사용자 프로필' };
@@ -222,12 +223,13 @@ async function l1Write(method, url, payload, draft, at, orig) {
 }
 // The draft goes back into the editor of the entry it was for — found by its
 // original text, never by position (the list may have shifted) — else into the
-// add box as a recovery draft (review R2).
+// add box as a recovery draft (review R2). Two notes with that text cannot be
+// told apart, so that is a recovery draft too (review R3).
 function restoreL1Draft(target, draft, at, orig) {
   if (!draft) return;
   var entries = (_mem && _mem.l1[target] && _mem.l1[target].entries) || [];
   var idx = typeof orig === 'string' ? entries.indexOf(orig) : -1;
-  if (idx >= 0) {
+  if (idx >= 0 && entries.lastIndexOf(orig) === idx) {
     paintL1({ target: target, index: idx, text: draft });
     return;
   }
@@ -266,10 +268,12 @@ async function l1Undo() {
   if (await l1Write('POST', '/api/memory/l1/' + u.target, { text: u.text, revision: _mem.l1[u.target].revision }, u.text)) memStatus('되돌렸습니다 (목록 끝에 다시 추가)', false);
 }
 async function l1Clear(target) {
+  // What the dialog names is what gets cleared: a reload under the open dialog makes it a 409 (review R3).
   var n = _mem.l1[target].entries.length;
+  var revision = _mem.l1[target].revision;
   var ok = await confirmDialog({ title: L1_LABELS[target] + ' 항목 ' + n + '개를 모두 지울까요?', body: '되돌릴 수 없습니다. 에이전트는 다음 세션부터 이 내용을 모릅니다.', action: n + '개 모두 지우기' });
   if (!ok) return;
-  if (await l1Write('DELETE', '/api/memory/l1/' + target, { revision: _mem.l1[target].revision })) memStatus('모두 지웠습니다', false);
+  if (await l1Write('DELETE', '/api/memory/l1/' + target, { revision: revision })) memStatus('모두 지웠습니다', false);
 }
 
 // ── 지식 페이지 ──
@@ -301,8 +305,13 @@ async function openPage(id) {
   if (!res.ok) { memStatus('페이지를 열지 못했습니다: ' + ((data && data.error) || res.status), true); return; }
   _memPage = data;
   _memPageConflict = null;
+  _memPageRaw = false;
   renderPageEditor();
   paintPageList();
+}
+function pageRawMode(on) {
+  _memPageRaw = !!on;
+  renderPageEditor();
 }
 function renderPageEditor() {
   var el = document.getElementById('mem-page-detail');
@@ -310,6 +319,18 @@ function renderPageEditor() {
   var p = _memPage.page;
   var isNew = _memPage.revision === null;
   var html = '<div id="pg-conflict"></div><div class="meta">' + (isNew ? '새 페이지' : esc(p.id) + ' · 마지막 수정 ' + esc(p.updated)) + '</div>';
+  // A page the form cannot hold (a heading inside Current, a multi-line History entry, another
+  // section) is edited as the raw file — saving the form would drop the rest (review R3).
+  if (!isNew && (_memPageRaw || _memPage.representable === false)) {
+    var forced = _memPage.representable === false;
+    html += (forced ? '<div class="notice" role="note">이 페이지에는 편집 양식에 담기지 않는 내용이 있어 원문(markdown) 그대로 고칩니다. 내용은 하나도 빠지지 않습니다.</div>' : '')
+      + '<div class="field"><label for="pg-raw">원문 (markdown)</label><textarea id="pg-raw" rows="18" spellcheck="false">' + esc(_memPage.raw || '') + '</textarea></div>'
+      + '<div class="line"><button type="button" class="btn primary" onclick="savePageRaw()">저장</button> '
+      + (forced ? '' : '<button type="button" class="btn" onclick="pageRawMode(false)">양식으로 돌아가기</button> ')
+      + '<button type="button" class="btn" onclick="deletePage()">페이지 삭제</button></div>';
+    el.innerHTML = html;
+    return;
+  }
   if (isNew) {
     var opts = '';
     for (var g = 0; g < PAGE_GROUPS.length; g++) opts += '<option value="' + PAGE_GROUPS[g][0] + '">' + esc(PAGE_GROUPS[g][1] + ' (' + PAGE_GROUPS[g][0] + ')') + '</option>';
@@ -327,7 +348,7 @@ function renderPageEditor() {
   }
   html += '</div><button type="button" class="btn link" onclick="addHistoryLine()">History 줄 추가</button></div>'
     + '<div class="line"><button type="button" class="btn primary" onclick="savePage()">' + (isNew ? '만들기' : '저장') + '</button> '
-    + (isNew ? '' : '<button type="button" class="btn" onclick="deletePage()">페이지 삭제</button>') + '</div>';
+    + (isNew ? '' : '<button type="button" class="btn" onclick="deletePage()">페이지 삭제</button> <button type="button" class="btn link" onclick="pageRawMode(true)">원문(markdown)으로 편집</button>') + '</div>';
   el.innerHTML = html;
 }
 function addHistoryLine() {
@@ -382,6 +403,32 @@ async function savePage() {
   }
   memStatus('저장하지 못했습니다: ' + r.error, true);
 }
+async function savePageRaw() {
+  var ta = document.getElementById('pg-raw');
+  var raw = ta ? ta.value : '';
+  var id = _memPage.page.id;
+  var r;
+  try { r = await apiWrite('PUT', '/api/memory/page/raw', { id: id, raw: raw, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
+  if (r.ok) {
+    _memPage = r.data;
+    _memPageRaw = !(r.data && r.data.representable);
+    await refreshPageIndex();
+    renderPageEditor();
+    memStatus('저장했습니다', false);
+    return;
+  }
+  if (r.status === 409) {
+    // The draft stays in the editor; overwrite or load the latest (same as the form).
+    var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
+    var latest = null;
+    try { latest = await res.json(); } catch (_e) {}
+    _memPageConflict = res.ok && latest ? latest : { page: null, revision: null };
+    renderPageConflict();
+    memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집기에 그대로 있습니다.', true);
+    return;
+  }
+  memStatus('저장하지 못했습니다: ' + r.error, true);
+}
 var _memPageConflict = null; // { page, revision } of the newer version after a 409
 function renderPageConflict() {
   var box = document.getElementById('pg-conflict');
@@ -398,7 +445,7 @@ function overwritePage() {
   _memPage.revision = _memPageConflict.revision;
   _memPageConflict = null;
   renderPageConflict();
-  return savePage();
+  return _memPageRaw || _memPage.representable === false ? savePageRaw() : savePage();
 }
 function discardPageDraft() {
   var id = _memPage && _memPage.page && _memPage.page.id;
@@ -407,9 +454,10 @@ function discardPageDraft() {
 }
 async function deletePage() {
   var p = _memPage.page;
+  var revision = _memPage.revision; // the page the dialog names, as it was shown (review R3)
   var ok = await confirmDialog({ title: p.title + ' 페이지를 지울까요?', body: p.id + ' — Current와 History가 모두 사라집니다.', action: '페이지 삭제' });
   if (!ok) return;
-  var r = await apiWrite('DELETE', '/api/memory/page', { id: p.id, revision: _memPage.revision });
+  var r = await apiWrite('DELETE', '/api/memory/page', { id: p.id, revision: revision });
   if (!r.ok) { memStatus((r.status === 409 ? '그사이 바뀌었습니다 — 다시 열어 확인하세요: ' : '지우지 못했습니다: ') + r.error, true); return; }
   _memPage = null;
   await refreshPageIndex();
@@ -461,19 +509,26 @@ function renderDay(editIndex, draft) {
   }
   el.innerHTML = html;
 }
-async function epWrite(method, url, payload, draft, at, orig) {
+async function epWrite(method, url, payload, draft, at, orig, origTime) {
   var r;
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   if (r.ok) { _memDay = r.data.day; renderDay(); refreshDatesIfEmptied(); return true; }
   if (r.status === 409) {
     await loadDay(_memDay.date);
     // The whole draft goes back into an edit box (review P1).
-    // Back into the editor of the entry it was for (found by its original text,
-    // never by position), else into the note box as a recovery draft (review R2).
+    // Back into the editor of the entry it was for — found by its original time
+    // and text, never by position — else into the note box as a recovery draft
+    // (review R2). Two records alike in both cannot be told apart: recovery (R3).
     var entries = (_memDay && _memDay.entries) || [];
     var idx = -1;
-    for (var k = 0; k < entries.length; k++) if (typeof orig === 'string' && entries[k].content === orig) { idx = k; break; }
-    if (draft && idx >= 0) renderDay(idx, draft);
+    var matches = 0;
+    for (var k = 0; k < entries.length; k++) {
+      if (typeof orig === 'string' && entries[k].content === orig && (typeof origTime !== 'string' || entries[k].time === origTime)) {
+        if (idx < 0) idx = k;
+        matches++;
+      }
+    }
+    if (draft && idx >= 0 && matches === 1) renderDay(idx, draft);
     else if (draft) { var ta = document.getElementById('mem-ep-new'); if (ta) ta.value = draft; }
     memStatus('그사이 이 날의 기록이 바뀌어 최신 내용을 불러왔습니다.' + (draft ? ' 작성하던 내용은 편집 칸에 그대로 있습니다 — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
     return false;
@@ -485,13 +540,18 @@ async function epSave(i) {
   var ta = document.getElementById('ep-edit');
   var text = ta ? ta.value : '';
   if (!text.trim()) { memStatus('비어 있는 기록은 저장할 수 없습니다 — 지우려면 삭제를 쓰세요', true); return; }
-  var orig = _memDay.entries[i] && _memDay.entries[i].content;
-  if (await epWrite('PUT', '/api/memory/episodic/' + _memDay.date + '/' + i, { content: text, revision: _memDay.revision }, text, i, orig)) memStatus('저장했습니다', false);
+  var e = _memDay.entries[i];
+  if (await epWrite('PUT', '/api/memory/episodic/' + _memDay.date + '/' + i, { content: text, revision: _memDay.revision }, text, i, e && e.content, e && e.time)) memStatus('저장했습니다', false);
 }
 async function epDelete(i) {
-  var ok = await confirmDialog({ title: _memDay.date + ' ' + _memDay.entries[i].time + ' 기록을 지울까요?', body: '되돌릴 수 없습니다.', action: '기록 삭제' });
+  // Date, index and revision as the dialog shows them: if the view moves to another day
+  // under the open dialog, the delete still targets the record that was confirmed (review R3).
+  var date = _memDay.date;
+  var revision = _memDay.revision;
+  var time = _memDay.entries[i].time;
+  var ok = await confirmDialog({ title: date + ' ' + time + ' 기록을 지울까요?', body: '되돌릴 수 없습니다.', action: '기록 삭제' });
   if (!ok) return;
-  if (await epWrite('DELETE', '/api/memory/episodic/' + _memDay.date + '/' + i, { revision: _memDay.revision })) memStatus('지웠습니다', false);
+  if (await epWrite('DELETE', '/api/memory/episodic/' + date + '/' + i, { revision: revision })) memStatus('지웠습니다', false);
 }
 // The last entry of a day was deleted (the file is gone): drop the date from the list.
 async function refreshDatesIfEmptied() {

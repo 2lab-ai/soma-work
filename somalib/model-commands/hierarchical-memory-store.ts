@@ -403,12 +403,22 @@ export class HierarchicalMemoryFileStore {
 
   // ── Dashboard edits (SSOT 2026-10-23 T3) — revision-checked, under the lock ──
 
-  /** A page and its revision from ONE read (null when it does not exist). */
-  getPageWithRevision(user: string, loc: PageLocator): { page: SemanticPage; revision: string } | null {
+  /**
+   * A page, its raw markdown and its revision from ONE read (null when it does
+   * not exist). `representable`: the form (title / aliases / Current / History)
+   * holds the file exactly — false when saving the parsed fields would drop
+   * something the tolerant parser skips (a `## ` heading inside Current, a
+   * multi-line History entry, any other section). Such a page is edited raw.
+   */
+  getPageWithRevision(
+    user: string,
+    loc: PageLocator,
+  ): { page: SemanticPage; revision: string; raw: string; representable: boolean } | null {
     const { relPath, id } = this.resolve(loc);
     const raw = readOrNull(path.join(this.root(user), relPath));
     if (raw === null) return null;
-    return { page: parsePage(raw, id, loc.type, relPath), revision: revisionOf(raw) as string };
+    const page = parsePage(raw, id, loc.type, relPath);
+    return { page, revision: revisionOf(raw) as string, raw, representable: isRepresentable(raw, page, loc) };
   }
 
   /** The revision of a page file (null when it does not exist). */
@@ -457,7 +467,8 @@ export class HierarchicalMemoryFileStore {
 
     return this.locked(user, () => {
       const filePath = path.join(this.root(user), relPath);
-      const before = revisionOf(readOrNull(filePath));
+      const beforeRaw = readOrNull(filePath);
+      const before = revisionOf(beforeRaw);
       if (before !== expectedRevision) {
         return {
           ok: false,
@@ -470,9 +481,41 @@ export class HierarchicalMemoryFileStore {
                 : `${id}가 그사이 바뀌었습니다 — 다시 불러오세요`,
         };
       }
+      // Saving the form over a page it cannot hold would silently drop the rest (review R3).
+      if (beforeRaw !== null && !isRepresentable(beforeRaw, parsePage(beforeRaw, id, loc.type, relPath), loc)) {
+        return {
+          ok: false,
+          reason: 'invalid',
+          message: `${id}에는 편집 양식에 담기지 않는 내용이 있습니다 — 원문(markdown)으로 고치세요`,
+        };
+      }
       this.ensureTaxonomy(user);
       const page: SemanticPage = { id, type: loc.type, title, aliases, updated: todayISO(), current, history, relPath };
       const raw = serializePage(page, loc);
+      this.writeFileAtomic(filePath, raw);
+      this.rebuildIndex(user);
+      return { ok: true, id, revision: revisionOf(raw) };
+    });
+  }
+
+  /**
+   * Replace a page's raw markdown if it is still at `expectedRevision` — for
+   * pages the form cannot hold, and anyone who wants the file as it is.
+   */
+  writePageRaw(user: string, loc: PageLocator, rawInput: string, expectedRevision: string): ConditionalWrite {
+    const { relPath, id } = this.resolve(loc);
+    let raw = String(rawInput ?? '').replace(/\r\n?/g, '\n');
+    if (!raw.trim())
+      return { ok: false, reason: 'invalid', message: '내용이 비어 있습니다 — 지우려면 페이지 삭제를 쓰세요' };
+    if (raw.length > 60_000) return { ok: false, reason: 'invalid', message: '페이지는 60,000자까지입니다' };
+    if (!raw.endsWith('\n')) raw += '\n';
+    return this.locked(user, () => {
+      const filePath = path.join(this.root(user), relPath);
+      const before = revisionOf(readOrNull(filePath));
+      if (before === null) return { ok: false, reason: 'missing', message: `${id}가 없습니다` };
+      if (before !== expectedRevision) {
+        return { ok: false, reason: 'conflict', message: `${id}가 그사이 바뀌었습니다 — 다시 불러오세요` };
+      }
       this.writeFileAtomic(filePath, raw);
       this.rebuildIndex(user);
       return { ok: true, id, revision: revisionOf(raw) };
@@ -694,6 +737,14 @@ function serializePage(page: SemanticPage, loc: PageLocator): string {
     historyBlock,
     '',
   ].join('\n');
+}
+
+/**
+ * Whether the form fields hold `raw` exactly: re-serializing the parsed page
+ * (same `updated`) gives back the same bytes, CRLF aside.
+ */
+function isRepresentable(raw: string, page: SemanticPage, loc: PageLocator): boolean {
+  return serializePage(page, loc) === raw.replace(/\r\n?/g, '\n');
 }
 
 /** Tolerant parser: frontmatter (best-effort) + ## Current + ## History. */

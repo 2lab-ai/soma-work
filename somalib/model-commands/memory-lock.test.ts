@@ -23,7 +23,7 @@ function holdLockElsewhere(lockDir: string, ms: number): Promise<Worker> {
     const fs = require('fs');
     const { parentPort, workerData } = require('worker_threads');
     fs.mkdirSync(workerData.lockDir, { recursive: false });
-    fs.writeFileSync(workerData.lockDir + '/owner.json', JSON.stringify({ pid: process.pid, at: Date.now() }));
+    fs.writeFileSync(workerData.lockDir + '/owner-W.json', JSON.stringify({ pid: process.pid, token: 'W', at: Date.now() }));
     parentPort.postMessage('locked');
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, workerData.ms);
     fs.rmSync(workerData.lockDir, { recursive: true, force: true });
@@ -63,7 +63,10 @@ describe('memory lock', () => {
     const data = tmpData();
     const lock = memoryLockPath(data, 'U1');
     fs.mkdirSync(lock, { recursive: true });
-    fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, at: Date.now() }));
+    fs.writeFileSync(
+      path.join(lock, 'owner-LIVE.json'),
+      JSON.stringify({ pid: process.pid, token: 'LIVE', at: Date.now() }),
+    );
     const t0 = Date.now();
     expect(() => withMemoryLock(data, 'U1', () => 1, { timeoutMs: 150 })).toThrow(MemoryLockTimeoutError);
     expect(Date.now() - t0).toBeGreaterThanOrEqual(140);
@@ -71,8 +74,10 @@ describe('memory lock', () => {
   });
 
   function plant(lock: string, owner: Record<string, unknown>) {
+    fs.rmSync(lock, { recursive: true, force: true });
     fs.mkdirSync(lock, { recursive: true });
-    fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ token: 'T0', host: os.hostname(), ...owner }));
+    const rec = { token: 'T0', host: os.hostname(), ...owner };
+    fs.writeFileSync(path.join(lock, `owner-${rec.token}.json`), JSON.stringify(rec));
   }
   const DEAD_PID = 2 ** 22 + 12345;
 
@@ -139,24 +144,59 @@ describe('memory lock', () => {
       fs.rmSync(lock, { recursive: true, force: true });
       plant(lock, { pid: process.pid, token: 'OTHER', at: Date.now() });
     });
-    expect(JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf-8')).token).toBe('OTHER');
+    expect(ownerToken(lock)).toBe('OTHER');
   });
 
-  it('a reaper removes only the lock it judged abandoned, and reapers are serialized (review P1)', () => {
+  it('a reaper removes only the lock it judged abandoned; of two reapers only one commits (review P1, R3)', () => {
     const data = tmpData();
     const lock = memoryLockPath(data, 'U1');
     // judged T0 abandoned, but the lock now belongs to a new owner T1
     plant(lock, { pid: process.pid, token: 'T1', at: Date.now() });
     expect(reapIfStill(lock, 'T0')).toBe(false);
-    expect(fs.existsSync(lock)).toBe(true);
-    // another reaper is mid-reap: this one backs off
+    expect(ownerToken(lock)).toBe('T1');
+    // two reapers judged the same dead owner: the first commits, the second finds nothing to move
     plant(lock, { pid: DEAD_PID, token: 'T0', at: Date.now() - 5_000 });
-    fs.mkdirSync(`${lock}.reap`);
-    expect(reapIfStill(lock, 'T0')).toBe(false);
-    expect(fs.existsSync(lock)).toBe(true);
-    fs.rmSync(`${lock}.reap`, { recursive: true, force: true });
     expect(reapIfStill(lock, 'T0')).toBe(true);
     expect(fs.existsSync(lock)).toBe(false);
+    expect(reapIfStill(lock, 'T0')).toBe(false);
+  });
+
+  it('an empty .lock left by a crash mid-release is replaced by the next acquire; a .lock with junk is never removed', () => {
+    const data = tmpData();
+    const lock = memoryLockPath(data, 'U1');
+    fs.mkdirSync(lock, { recursive: true });
+    expect(withMemoryLock(data, 'U1', () => 'took-over-empty', { timeoutMs: 500 })).toBe('took-over-empty');
+    expect(fs.existsSync(lock)).toBe(false);
+    fs.mkdirSync(lock, { recursive: true });
+    fs.writeFileSync(path.join(lock, 'something-else'), 'x');
+    expect(() => withMemoryLock(data, 'U1', () => 1, { timeoutMs: 150 })).toThrow(MemoryLockTimeoutError);
+    expect(fs.existsSync(path.join(lock, 'something-else'))).toBe(true);
+  });
+
+  /** The token of the owner the lock dir records. */
+  function ownerToken(lock: string): string | null {
+    if (!fs.existsSync(lock)) return null;
+    for (const f of fs.readdirSync(lock)) {
+      if (/^owner-.+\.json$/.test(f)) {
+        return JSON.parse(fs.readFileSync(path.join(lock, f), 'utf-8')).token ?? null;
+      }
+    }
+    return null;
+  }
+
+  it('a reaper paused right before its commit cannot remove the lock a newer owner took meanwhile (review R3 P1)', () => {
+    const data = tmpData();
+    const lock = memoryLockPath(data, 'U1');
+    plant(lock, { pid: DEAD_PID, token: 'OLD', at: Date.now() - 5_000 });
+    const reaped = reapIfStill(lock, 'OLD', {
+      beforeCommit: () => {
+        // A is frozen here for seconds. Meanwhile another reaper removed the dead owner's lock and B took it.
+        fs.rmSync(lock, { recursive: true, force: true });
+        plant(lock, { pid: process.pid, token: 'B', startedAt: PROCESS_STARTED_AT, at: Date.now() });
+      },
+    });
+    expect(reaped).toBe(false);
+    expect(ownerToken(lock)).toBe('B');
   });
 
   it('an episodic append waits for an edit held by another process, and is not lost', async () => {
