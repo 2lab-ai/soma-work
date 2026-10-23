@@ -155,9 +155,9 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
 describe('T5 — expanded card: the 산출물 strip', () => {
   const body = (cache: Record<string, unknown> = {}) =>
     load<{ renderCardArtifacts(s: unknown): string }>(
-      [...BASE_FNS, 'artSortForDisplay', 'artThumb', 'artTile', 'artListFor', 'renderCardArtifacts'],
+      [...BASE_FNS, 'artSortForDisplay', 'artThumb', 'artAudioPlaying', 'artTile', 'artListFor', 'renderCardArtifacts'],
       BASE_VARS,
-      { _artCache: cache },
+      { _artCache: cache, _artAudio: { el: null, key: null } },
     );
 
   it('lists the full cached list: files newest first, then answers; image tiles are real thumbnails', () => {
@@ -182,6 +182,28 @@ describe('T5 — expanded card: the 산출물 strip', () => {
     expect(out).toContain('Slack');
   });
 
+  it('T8 — a live re-render keeps a playing clip marked playing (the card body is morphed on every push)', () => {
+    const playing = (key: string | null, paused: boolean) =>
+      load<{ renderCardArtifacts(s: unknown): string }>(
+        [
+          ...BASE_FNS,
+          'artSortForDisplay',
+          'artThumb',
+          'artAudioPlaying',
+          'artTile',
+          'artListFor',
+          'renderCardArtifacts',
+        ],
+        BASE_VARS,
+        { _artCache: { c: { state: 'ok', list: [wav] } }, _artAudio: { el: { paused }, key } },
+      ).renderCardArtifacts({ conversationId: 'c', artifacts: { count: 1, recent: [] } });
+    const btn = (out: string) => out.match(/<button[^>]*data-art-play="1"[^>]*>/)?.[0] ?? '';
+    expect(btn(playing('c|A3', false))).toMatch(/class="art-play is-playing"/);
+    expect(btn(playing('c|A3', false))).toContain('aria-pressed="true"');
+    expect(btn(playing('c|A3', true))).not.toContain('is-playing');
+    expect(btn(playing('other|A3', false))).toContain('aria-pressed="false"');
+  });
+
   it('before the list loads, the summary shows; with no artifacts the section is absent', () => {
     const out = body().renderCardArtifacts({ conversationId: 'c', artifacts: { count: 1, recent: [png] } });
     expect(out).toContain('data-art-id="A2"');
@@ -199,12 +221,14 @@ describe('T6 — right panel: pinned strip and per-answer attachments', () => {
         ...BASE_FNS,
         'artSortForDisplay',
         'artThumb',
+        'artAudioPlaying',
         'artTile',
         'artInTurn',
         'renderPanelArtifacts',
         'renderTurnArtifacts',
       ],
       BASE_VARS,
+      { _artAudio: { el: null, key: null } },
     );
 
   it('the strip has a count header and every artifact', () => {

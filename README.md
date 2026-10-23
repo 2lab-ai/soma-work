@@ -105,6 +105,7 @@ GitHub App (recommended) or Personal Access Token authentication with automatic 
 
 The dashboard (`/dashboard`, sign in with Slack) shows every session as a card and lets the session owner act on it:
 
+- **Main agent and its subagents, each on its own**: a card is the main agent; the SDK subagents it starts with the `Agent` tool (and the ones they start) are listed inside it as a tree — each with its status, run time, tool calls and its own task list and work log. The side panel switches between agents (`메인 › A2 Explore`), so the main agent's tasks and log never mix with a subagent's. Spec: [`.prd/12-dashboard-agent-tree-spec.md`](./.prd/12-dashboard-agent-tree-spec.md).
 - **Model and effort, one click from the top**: the top bar shows your default model and effort for new sessions. Pick a value and it is saved at once — the same setting as `model set <m>` and `effort <level>`. With a session panel open, "이 세션에도 적용" (on by default) also switches that session.
 - **Per-session model and effort**: the card and the top of the session panel switch one session only, like `%effort <level>`; the change applies from the next turn. When the model caps the level, the card shows the level that really runs.
 - **Personal settings API**: `GET /api/settings` and `PATCH /api/settings/:key` read and change every personal setting a Slack command can change, for the signed-in user only. Writes go through the same validators and `/z` card handlers as Slack; a contract test fails when a Slack settings command has no dashboard row.
