@@ -47,6 +47,7 @@ import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
 import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
+import { createNativeWriteCheck, type NativeWriteCheck } from '../policy/native-write-boundary';
 import type { SafetyClassifier } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
 
@@ -198,6 +199,22 @@ export async function buildStreamOptions(
     }
   }
 
+  // The roots sandboxed Bash may write: the working directory (the SDK sandbox's
+  // default) and `/tmp/{userId}` (`allowWrite`, mounted below). The policy hook
+  // confines the native file tools of a non-admin to the same roots
+  // (`native-write-boundary.ts`); with the sandbox off neither is confined.
+  const sandboxDisabled = slackContext?.user ? userSettingsStore.getUserSandboxDisabled(slackContext.user) : false;
+  const sandboxUserDir =
+    slackContext?.user && isSafePathSegment(slackContext.user)
+      ? normalizeTmpPath(path.join('/tmp', slackContext.user))
+      : undefined;
+  const nativeWriteCheck: NativeWriteCheck | undefined = sandboxDisabled
+    ? undefined
+    : createNativeWriteCheck(
+        [...(workingDirectory ? [workingDirectory] : []), ...(sandboxUserDir ? [sandboxUserDir] : [])],
+        workingDirectory ?? process.cwd(),
+      );
+
   // PreToolUse hooks
   if (slackContext) {
     // PreToolUse: a single unified policy hook (epic #1023 P5). All tool guards
@@ -227,6 +244,7 @@ export async function buildStreamOptions(
           gatedServerNames.length > 0
             ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
             : null,
+        ...(nativeWriteCheck ? { checkNativeWrite: nativeWriteCheck } : {}),
       };
 
       const result = evaluateToolPolicy(toolName, toolInput, ctx);
@@ -420,43 +438,36 @@ export async function buildStreamOptions(
       logger.debug('Thinking adaptive', { display: showSummary ? 'summarized' : 'omitted' });
     }
   }
-
-  // Sandbox: enabled by default for all users. Only admin-toggled
-  // `sandboxDisabled` skips it. When sandbox is active, a dev-domain
-  // allowlist (`DEV_DOMAIN_ALLOWLIST`) is applied to the network unless the
-  // user has set `networkDisabled=true`, in which case every outbound
-  // domain is blocked by the SDK default.
-  //
-  // Applies from the NEXT user turn \u2014 SDK sandbox config is captured at
-  // `query()` init and OS-enforced (Seatbelt on macOS, bubblewrap on
-  // Linux), so in-flight queries keep the previous policy.
-  {
-    const sandboxDisabled = slackContext?.user ? userSettingsStore.getUserSandboxDisabled(slackContext.user) : false;
-    if (!sandboxDisabled) {
-      const sandboxConfig: NonNullable<Options['sandbox']> = {
-        enabled: true,
-        autoAllowBashIfSandboxed: true,
-        failIfUnavailable: false,
-        allowUnsandboxedCommands: false,
-      };
-      // Mount only the user's /tmp/{userId} directory for writes.
-      if (slackContext?.user && isSafePathSegment(slackContext.user)) {
-        const userDir = normalizeTmpPath(path.join('/tmp', slackContext.user));
-        sandboxConfig.filesystem = { allowWrite: [userDir] };
-      }
-      const networkDisabled = slackContext?.user ? userSettingsStore.getUserNetworkDisabled(slackContext.user) : false;
-      if (!networkDisabled) {
-        sandboxConfig.network = { allowedDomains: [...DEV_DOMAIN_ALLOWLIST] };
-      }
-      options.sandbox = sandboxConfig;
-      logger.debug('Sandbox enabled', {
-        user: slackContext?.user,
-        network: networkDisabled ? 'off' : 'on',
-        domains: networkDisabled ? 0 : DEV_DOMAIN_ALLOWLIST.length,
-      });
-    } else {
-      logger.info('Sandbox disabled by admin setting', { user: slackContext?.user });
+  if (!sandboxDisabled) {
+    const sandboxConfig: NonNullable<Options['sandbox']> = {
+      enabled: true,
+      autoAllowBashIfSandboxed: true,
+      failIfUnavailable: false,
+      allowUnsandboxedCommands: false,
+    };
+    // Mount only the user's /tmp/{userId} directory for writes.
+    if (sandboxUserDir) {
+      sandboxConfig.filesystem = { allowWrite: [sandboxUserDir] };
     }
+    // Plan mode writes its plan file with the native Write tool, by default
+    // to ~/.claude/plans — outside the write boundary of a non-admin. Keep
+    // the plans inside the working directory (the SDK requires a path within
+    // the project root).
+    if (slackContext?.user && !isAdminUser(slackContext.user)) {
+      options.settings = { plansDirectory: '.claude/plans' };
+    }
+    const networkDisabled = slackContext?.user ? userSettingsStore.getUserNetworkDisabled(slackContext.user) : false;
+    if (!networkDisabled) {
+      sandboxConfig.network = { allowedDomains: [...DEV_DOMAIN_ALLOWLIST] };
+    }
+    options.sandbox = sandboxConfig;
+    logger.debug('Sandbox enabled', {
+      user: slackContext?.user,
+      network: networkDisabled ? 'off' : 'on',
+      domains: networkDisabled ? 0 : DEV_DOMAIN_ALLOWLIST.length,
+    });
+  } else {
+    logger.info('Sandbox disabled by admin setting', { user: slackContext?.user });
   }
 
   // Build system prompt with persona and workflow.

@@ -84,6 +84,7 @@ Connect any MCP-compatible server (stdio/SSE/HTTP) to extend Claude's capabiliti
 ### 🔐 Interactive Permissions
 
 Slack-native button/form UX for permission approvals, option selection, and session management. Bypass mode available for trusted users.
+In every mode a non-admin session writes files only where its sandboxed shell may: the native `Write` / `Edit` / `NotebookEdit` tools are held to the working directory and the user's own temp directory, like Bash.
 
 ### 📎 File Analysis
 

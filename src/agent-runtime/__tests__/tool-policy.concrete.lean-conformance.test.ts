@@ -26,6 +26,7 @@ import { NATIVE_BYPASS_TOOLS } from '../../hooks/bypass-permission-guard';
 import { handlePrIssuePrecondition, type PrIssueGuardInput } from '../../hooks/pr-issue-guard';
 import { checkBashSensitivePaths, checkSensitiveGlob, checkSensitivePath } from '../../sensitive-path-filter';
 import type { HandoffContext } from '../../types';
+import { NATIVE_WRITE_TOOLS } from '../policy/native-write-boundary';
 import type { PermissionMode } from '../policy/permission-mode';
 import {
   evaluateToolPolicy,
@@ -72,6 +73,7 @@ interface ConcreteCase {
 interface ConstantsCase {
   kind: 'constants';
   nativeBypassTools: string[];
+  nativeWriteTools: string[];
   toolPolicyMatchers: string[];
   /** A matcher-less entry (`undefined`) is written `null`. */
   incidentToolPolicyMatchers: Array<string | null>;
@@ -158,6 +160,7 @@ describe('tool-policy Lean conformance vectors (real primitives)', () => {
   it('pin the tool lists the model hardcodes', () => {
     expect(constants).toHaveLength(1);
     expect([...NATIVE_BYPASS_TOOLS]).toEqual(constants[0].nativeBypassTools);
+    expect([...NATIVE_WRITE_TOOLS]).toEqual(constants[0].nativeWriteTools);
     expect([...TOOL_POLICY_MATCHERS]).toEqual(constants[0].toolPolicyMatchers);
     expect(INCIDENT_TOOL_POLICY_MATCHERS.map((matcher) => matcher ?? null)).toEqual(
       constants[0].incidentToolPolicyMatchers,
