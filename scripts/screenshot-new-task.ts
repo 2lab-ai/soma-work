@@ -32,6 +32,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { type Browser, type BrowserContextOptions, chromium, devices, type Page, webkit } from 'playwright';
 
+/** Page global (the dashboard's inline script). */
+declare const ntShowToast: (data: { status: string; permalink?: string }, channelName: string) => void;
+
 const OUT = process.argv[2] || path.join(__dirname, '..', 'screenshots', 'new-task');
 fs.mkdirSync(OUT, { recursive: true });
 const PORT = process.env.CONVERSATION_VIEWER_PORT || '33919';
@@ -59,11 +62,13 @@ async function toastLayout(page: Page) {
     const range = document.createRange();
     range.selectNodeContents(text);
     const tops = new Set(Array.from(range.getClientRects()).map((r) => Math.round(r.top)));
-    const actions = Array.from(toast.querySelectorAll('a, button')).map((el) =>
-      Math.round(el.getBoundingClientRect().height),
-    );
+    const actionEls = Array.from(toast.querySelectorAll('a, button'));
+    const actions = actionEls.map((el) => Math.round(el.getBoundingClientRect().height));
+    const actionRows = new Set(actionEls.map((el) => Math.round(el.getBoundingClientRect().top))).size;
     return {
       lines: tops.size,
+      actionRows,
+      overflows: toast.scrollWidth > toast.clientWidth,
       left: Math.round(box.left),
       right: Math.round(box.right),
       width: Math.round(box.width),
@@ -404,16 +409,31 @@ async function phoneChecks(browser: Browser, engine: string, device: string) {
   check(`${tag}: 작업 시작 posts the task`, posted.length === 1 && posted[0].body.attachments.length === 1);
   const phoneToast = await toastLayout(page);
   check(
-    `${tag}: launch toast message ≤ 2 lines, inside the screen, actions ≥ 44px`,
+    `${tag}: launch toast message ≤ 2 lines, inside the screen, actions ≥ 44px on one row`,
     phoneToast.lines <= 2 &&
       phoneToast.left >= 0 &&
       phoneToast.right <= phoneToast.viewport &&
       phoneToast.width >= phoneToast.viewport * 0.6 &&
       phoneToast.actions.length > 0 &&
-      phoneToast.actions.every((h) => h >= 44),
+      phoneToast.actions.every((h) => h >= 44) &&
+      phoneToast.actionRows === 1 &&
+      !phoneToast.overflows,
     JSON.stringify(phoneToast),
   );
   await page.screenshot({ path: path.join(OUT, `${tag}-toast.png`) });
+  // Channel names at both ends: a short one must not split the actions, an
+  // 80-character one with no break opportunity must not overflow the screen.
+  for (const name of ['soma', 'x_'.repeat(40)]) {
+    await page.evaluate((channel) => {
+      ntShowToast({ status: 'running', permalink: 'https://example.slack.com/archives/C1/p1' }, channel);
+    }, name);
+    const t = await toastLayout(page);
+    check(
+      `${tag}: launch toast for #${name.length > 8 ? `${name.slice(0, 6)}…(${name.length})` : name} — actions on one row, inside the screen`,
+      t.actionRows === 1 && !t.overflows && t.left >= 0 && t.right <= t.viewport,
+      JSON.stringify(t),
+    );
+  }
   await page.context().close();
 }
 
