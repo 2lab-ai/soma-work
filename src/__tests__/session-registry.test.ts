@@ -425,6 +425,19 @@ describe('SessionRegistry persistence', () => {
     expect(registry.getSession('C123', '171.022')?.title).toBe('배포 가이드 정리');
   });
 
+  // Entities are decoded BEFORE stripping: an encoded mention must not come
+  // out the other side as a live `<!channel>`.
+  it('updateSessionTitle does not let an entity-encoded mention survive as a live one', () => {
+    const registry = new SessionRegistry();
+    registry.createSession('U123', 'Tester', 'C123', '171.024');
+
+    registry.updateSessionTitle('C123', '171.024', '&lt;!channel&gt; 이미지 분석 &lt;@U999&gt;');
+
+    const title = registry.getSession('C123', '171.024')?.title;
+    expect(title).toBe('이미지 분석');
+    expect(title).not.toContain('<!channel>');
+  });
+
   it('updateSessionTitle keeps the old title when the new one sanitizes to nothing', () => {
     const registry = new SessionRegistry();
     const session = registry.createSession('U123', 'Tester', 'C123', '171.023');
