@@ -118,18 +118,39 @@ export interface TierLookupAccount {
   tier?: string;
 }
 
+/**
+ * The short name of an llmux account. llmux names accounts
+ * `group:local@domain` (e.g. `claude:ai7@corp.example`); the timeline labels
+ * them `ai7`, and operator keys may use that short form.
+ */
+export function llmuxAccountLocalName(name: string, group?: string): string {
+  let local = name;
+  const prefix = group ? `${group}:` : '';
+  if (prefix && local.toLowerCase().startsWith(prefix.toLowerCase())) local = local.slice(prefix.length);
+  const at = local.indexOf('@');
+  return at > 0 ? local.slice(0, at) : local;
+}
+
 /** The account's tier, or undefined when nothing knows it. */
 export function resolveAccountTier(
   account: TierLookupAccount,
   explicit: Readonly<Record<string, LlmuxTierId>>,
   defaults: Readonly<Record<string, LlmuxTierId>> = DEFAULT_LLMUX_ACCOUNT_TIERS,
 ): LlmuxTierId | undefined {
-  const name = account.name.toLowerCase();
-  const scoped = `${(account.group || '').toLowerCase()}:${name}`;
-  const fromExplicit = explicit[scoped] ?? explicit[name];
+  const group = (account.group || '').toLowerCase();
+  const full = account.name.toLowerCase();
+  const local = llmuxAccountLocalName(full, group);
+  // Most specific first: the exact name, then its short form; each scoped to
+  // the group before bare. A key never matches across groups.
+  const keys = [...new Set([`${group}:${full}`, full, `${group}:${local}`, local])];
+  const lookup = (map: Readonly<Record<string, LlmuxTierId>>) => {
+    for (const k of keys) if (map[k]) return map[k];
+    return undefined;
+  };
+  const fromExplicit = lookup(explicit);
   if (fromExplicit) return fromExplicit;
   const upstream =
     typeof account.rate_limit_tier === 'string' ? UPSTREAM_TIERS[account.rate_limit_tier.toLowerCase()] : undefined;
   if (upstream) return upstream;
-  return defaults[scoped] ?? defaults[name];
+  return lookup(defaults);
 }

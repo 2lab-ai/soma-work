@@ -5,7 +5,13 @@
  * Pro $200) layered under SOMA_LLMUX_ACCOUNT_TIERS.
  */
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_LLMUX_ACCOUNT_TIERS, LLMUX_TIERS, parseLlmuxAccountTiers, resolveAccountTier } from '../llmux-tiers';
+import {
+  DEFAULT_LLMUX_ACCOUNT_TIERS,
+  LLMUX_TIERS,
+  llmuxAccountLocalName,
+  parseLlmuxAccountTiers,
+  resolveAccountTier,
+} from '../llmux-tiers';
 
 describe('tier catalog', () => {
   it('has the four subscription tiers the operator uses, two per provider', () => {
@@ -86,6 +92,32 @@ describe('resolveAccountTier — explicit → upstream → defaults → unknown'
 
   it('a bare-name operator entry beats a scoped built-in default', () => {
     expect(resolveAccountTier({ name: 'ai1', group: 'codex' }, { ai1: 'chatgpt-pro-500' })).toBe('chatgpt-pro-500');
+  });
+
+  // Live llmux (2026-10-23) names accounts `group:local@domain`, e.g.
+  // `codex:ai5@corp.example` — every key form must still match.
+  it('matches llmux account names of the form group:local@domain', () => {
+    expect(resolveAccountTier({ name: 'codex:ai5@corp.example', group: 'codex' }, {})).toBe('chatgpt-pro-500');
+    expect(resolveAccountTier({ name: 'codex:ai1@corp.example', group: 'codex' }, {})).toBe('chatgpt-pro-200');
+    expect(resolveAccountTier({ name: 'claude:ai7@corp.example', group: 'claude' }, explicit)).toBe('claude-max-20x');
+    expect(
+      resolveAccountTier({ name: 'claude:ai9@corp.example', group: 'claude' }, { 'claude:ai9': 'claude-max-5x' }),
+    ).toBe('claude-max-5x');
+    // the full name still works as a key
+    expect(
+      resolveAccountTier(
+        { name: 'claude:ai9@corp.example', group: 'claude' },
+        { 'claude:ai9@corp.example': 'claude-max-20x' },
+      ),
+    ).toBe('claude-max-20x');
+    // and still never leaks across groups
+    expect(resolveAccountTier({ name: 'claude:ai1@corp.example', group: 'claude' }, {})).toBeUndefined();
+  });
+
+  it('llmuxAccountLocalName strips the group prefix and the domain', () => {
+    expect(llmuxAccountLocalName('claude:ai7@corp.example', 'claude')).toBe('ai7');
+    expect(llmuxAccountLocalName('ai7', 'claude')).toBe('ai7');
+    expect(llmuxAccountLocalName('kim.lee@corp.example', 'claude')).toBe('kim.lee');
   });
 
   it('never guesses x5/x20 from a bare "max" — unknown instead', () => {

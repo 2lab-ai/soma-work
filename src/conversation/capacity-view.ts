@@ -20,7 +20,7 @@
  */
 
 import type { LlmuxAccount, LlmuxScopedWindow, LlmuxStatus, LlmuxWindow } from '../auth/llmux-client';
-import { type LlmuxTierId, resolveAccountTier } from '../auth/llmux-tiers';
+import { type LlmuxTierId, llmuxAccountLocalName, resolveAccountTier } from '../auth/llmux-tiers';
 import { accountGroup, groupAccounts, providerName, remaining, resetAt } from '../slack/auth/capacity';
 
 /** Below this group % a row reads "low". */
@@ -87,6 +87,8 @@ export interface CapacityView {
 }
 
 const EXHAUSTED = 1e-6;
+/** A cooldown at most this long is throttling, not a block (seconds). */
+export const TRANSIENT_COOLDOWN_SECS = 120;
 
 function current0(pct: number | null): number | null {
   return pct === null ? null : pct / 100;
@@ -98,6 +100,26 @@ function maskName(name: string, anonymous: boolean): string {
   const at = name.indexOf('@');
   if (at <= 0) return name;
   return `${name[0]}***${name.slice(at)}`;
+}
+
+/**
+ * Timeline labels: the account's short name (`claude:ai7@corp.example` →
+ * `ai7`, the operator's own `[ai7]`). When two accounts of a group share a
+ * short name, those keep their domain. Anonymous llmux masks either form.
+ */
+function accountLabels(accounts: LlmuxAccount[], group: string, anonymous: boolean): string[] {
+  const locals = accounts.map((a) => llmuxAccountLocalName(a.name, group));
+  const seen = new Map<string, number>();
+  for (const l of locals) seen.set(l, (seen.get(l) ?? 0) + 1);
+  return accounts.map((a, i) => {
+    if ((seen.get(locals[i]) ?? 0) === 1) {
+      const emailShaped = a.name.indexOf('@') > 0;
+      return anonymous && emailShaped ? `${locals[i][0]}***` : locals[i];
+    }
+    const prefix = `${group}:`;
+    const full = a.name.toLowerCase().startsWith(prefix.toLowerCase()) ? a.name.slice(prefix.length) : a.name;
+    return maskName(full, anonymous);
+  });
 }
 
 function scopedLabel(window: LlmuxScopedWindow, index: number): string {
@@ -139,8 +161,20 @@ function accountView(
   const measured = binding.filter((r) => r.remaining !== undefined);
   const authFailed = account.status === 'auth_failed';
   const cooling = Number.isFinite(account.cooldown_until) && (account.cooldown_until ?? 0) > nowS;
+  const reason = typeof account.blocked === 'string' ? account.blocked.trim().toLowerCase() : '';
+  // A cooldown that lifts within a couple of minutes is llmux backing off a
+  // burst (429), not a supply problem (live: "cooldown 6s" on accounts with
+  // most of their windows left). It neither zeroes the account nor needs a
+  // return marker; a longer cooldown blocks as before.
+  const throttled =
+    cooling &&
+    (account.cooldown_until as number) - nowS <= TRANSIENT_COOLDOWN_SECS &&
+    (reason === '' || reason.startsWith('cooldown'));
   const exhausted = measured.filter((r) => (r.remaining ?? 1) <= EXHAUSTED);
-  const blocked = authFailed || cooling || account.status === 'cooldown' || !!account.blocked || exhausted.length > 0;
+  const blocked =
+    authFailed ||
+    (!throttled && (cooling || account.status === 'cooldown' || !!account.blocked)) ||
+    exhausted.length > 0;
 
   let availablePct: number | null;
   if (blocked) availablePct = 0;
@@ -168,9 +202,8 @@ function accountView(
       else unknown = true;
     };
     for (const r of exhausted) liftAt(r.label);
-    if (cooling) lifts.push({ at: account.cooldown_until as number, label: 'cooldown' });
-    else if (account.status === 'cooldown') unknown = true;
-    const reason = typeof account.blocked === 'string' ? account.blocked.trim().toLowerCase() : '';
+    if (cooling && !throttled) lifts.push({ at: account.cooldown_until as number, label: 'cooldown' });
+    else if (account.status === 'cooldown' && !throttled) unknown = true;
     if (reason) {
       if (reason.startsWith('5h')) liftAt('5h');
       else if (reason.startsWith('7d')) liftAt('7d');
@@ -271,12 +304,13 @@ export function buildCapacityView(
   for (const [group, accounts] of groupAccounts(status.accounts ?? [])) {
     const views: CapacityAccountView[] = [];
     const markers: CapacityMarker[] = [];
-    for (const account of accounts) {
+    const labels = accountLabels(accounts, group, anonymous);
+    for (const [i, account] of accounts.entries()) {
       const tier = resolveAccountTier(
         { name: account.name, group: accountGroup(account), rate_limit_tier: account.rate_limit_tier },
         tiers,
       );
-      const { view, markers: own } = accountView(account, tier, maskName(account.name, anonymous), nowMs);
+      const { view, markers: own } = accountView(account, tier, labels[i], nowMs);
       views.push(view);
       markers.push(...own);
     }

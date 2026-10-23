@@ -300,8 +300,92 @@ describe('buildCapacityView — edge cases', () => {
       {},
       NOW_MS,
     );
-    expect(view.groups[0].accounts[0].name).toBe('k***@corp.example');
-    expect(view.groups[0].markers[0].account).toBe('k***@corp.example');
+    expect(view.groups[0].accounts[0].name).toBe('k***');
+    expect(view.groups[0].markers[0].account).toBe('k***');
+  });
+});
+
+// Live llmux shape (2026-10-23 snapshot): names are `group:local@domain`, and a
+// throttled account sits in a cooldown of a few seconds.
+describe('buildCapacityView — live llmux shapes', () => {
+  it('labels accounts by their local name ([ai7]) and resolves tiers through it', () => {
+    const view = buildCapacityView(
+      {
+        current: null,
+        accounts: [
+          acct({ name: 'codex:ai5@corp.example', group: 'codex', five_hour: w(0.5, H) }),
+          acct({ name: 'claude:ai7@corp.example', group: 'claude', five_hour: w(0.5, H) }),
+        ],
+      },
+      { 'claude:ai7': 'claude-max-20x' },
+      NOW_MS,
+    );
+    const claude = view.groups.find((g) => g.group === 'claude');
+    const codex = view.groups.find((g) => g.group === 'codex');
+    expect(claude?.accounts[0]).toMatchObject({ name: 'ai7', tier: 'claude-max-20x' });
+    expect(claude?.markers[0]).toMatchObject({ account: 'ai7', tier: 'claude-max-20x' });
+    expect(codex?.accounts[0]).toMatchObject({ name: 'ai5', tier: 'chatgpt-pro-500' });
+  });
+
+  it('keeps the domain when two accounts of a group share a local name', () => {
+    const view = buildCapacityView(
+      {
+        current: null,
+        accounts: [
+          acct({ name: 'claude:ai@one.example', group: 'claude', five_hour: w(0.5, H) }),
+          acct({ name: 'claude:ai@two.example', group: 'claude', five_hour: w(0.5, H) }),
+        ],
+      },
+      {},
+      NOW_MS,
+    );
+    expect(view.groups[0].accounts.map((a) => a.name).sort()).toEqual(['ai@one.example', 'ai@two.example']);
+  });
+
+  it('a cooldown of a few seconds is throttling, not a supply problem: the account stays available', () => {
+    const view = buildCapacityView(
+      {
+        current: null,
+        accounts: [
+          acct({
+            name: 'claude:ai41@corp.example',
+            group: 'claude',
+            status: 'cooldown',
+            blocked: 'cooldown 6s',
+            cooldown_until: NOW_S + 6,
+            five_hour: w(0.37, 2 * H),
+            seven_day: w(0.06, 6 * D),
+          }),
+        ],
+      },
+      {},
+      NOW_MS,
+    );
+    expect(view.groups[0].accounts[0]).toMatchObject({ name: 'ai41', blocked: false, availablePct: 63 });
+    expect(view.groups[0].state).toBe('ok');
+  });
+
+  it('a long cooldown still blocks, and the account returns when it lifts', () => {
+    const view = buildCapacityView(
+      {
+        current: null,
+        accounts: [
+          acct({
+            name: 'claude:ai7@corp.example',
+            group: 'claude',
+            status: 'cooldown',
+            blocked: 'cooldown 3d6h',
+            cooldown_until: NOW_S + 3 * D + 6 * H,
+            five_hour: w(0, 5 * H),
+            seven_day: w(1, 3 * D + 6 * H),
+          }),
+        ],
+      },
+      {},
+      NOW_MS,
+    );
+    expect(view.groups[0].accounts[0]).toMatchObject({ blocked: true, availablePct: 0 });
+    expect(view.groups[0].nextReturn).toMatchObject({ account: 'ai7', at: NOW_S + 3 * D + 6 * H });
   });
 
   it('a pool with no accounts is no rows, still available', () => {
