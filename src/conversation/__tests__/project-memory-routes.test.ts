@@ -203,4 +203,56 @@ describe('project memory routes (SSOT 2026-10-23 T4)', () => {
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).project.updatedBy).toBe('viewer-token');
   });
+
+  it('a dashboard with no credentials configured cannot write: the notes reach every session prompt (#380 review)', async () => {
+    const saved = mockConfig.conversation.viewerToken;
+    mockConfig.conversation.viewerToken = '';
+    try {
+      const anon = { 'content-type': 'application/json', 'x-admin-mode': 'on' };
+      const r = await list(anon);
+      expect(r.status).toBe(200); // reading stays open, like the rest of an unauthenticated dashboard
+      expect(r.body.isAdmin).toBe(false);
+      expect(r.body.readOnlyReason).toBe('anonymous');
+      const rev = r.body.projects[1].revision;
+      for (const [method, url, payload] of [
+        ['POST', '/api/project-memory/entries', { project: '2lab-ai/soma-work', text: 'anon', revision: rev }],
+        ['PUT', '/api/project-memory/entries/0', { project: '2lab-ai/soma-work', text: 'anon', revision: rev }],
+        ['DELETE', '/api/project-memory/entries/0', { project: '2lab-ai/soma-work', revision: rev }],
+        ['DELETE', '/api/project-memory', { project: '2lab-ai/soma-work', revision: rev }],
+      ] as const) {
+        const res = await inject({ method, url, headers: anon, payload });
+        expect(res.statusCode).toBe(403);
+      }
+      expect((await list(anon)).body.projects[1].entries).toEqual([]);
+    } finally {
+      mockConfig.conversation.viewerToken = saved;
+    }
+  });
+
+  it('every write verb refuses a non-admin and an admin without a CSRF token', async () => {
+    const plain = { ...(await signIn('U_PLAIN')), 'x-admin-mode': 'on' };
+    const admin = { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' };
+    const { 'x-csrf-token': _drop, ...adminNoCsrf } = admin;
+    const rev = (await list(admin)).body.projects[1].revision;
+    for (const [method, url, payload] of [
+      ['POST', '/api/project-memory/entries', { project: '2lab-ai/soma-work', text: 'x', revision: rev }],
+      ['PUT', '/api/project-memory/entries/0', { project: '2lab-ai/soma-work', text: 'x', revision: rev }],
+      ['DELETE', '/api/project-memory/entries/0', { project: '2lab-ai/soma-work', revision: rev }],
+      ['DELETE', '/api/project-memory', { project: '2lab-ai/soma-work', revision: rev }],
+    ] as const) {
+      expect((await inject({ method, url, headers: plain, payload })).statusCode).toBe(403);
+      expect((await inject({ method, url, headers: adminNoCsrf, payload })).statusCode).toBe(403);
+    }
+  });
+
+  it('an unreadable store is reported to the page instead of looking empty (#380 review)', async () => {
+    const { ProjectMemoryStore } = await import('../../project-memory-store');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'projmem-broken-'));
+    const file = path.join(dir, 'project-memory.json');
+    fs.writeFileSync(file, '{ broken');
+    routes.setProjectMemoryStoreForTests(new ProjectMemoryStore(file));
+    const r = await list(await signIn('U_PLAIN'));
+    expect(r.status).toBe(200);
+    expect(r.body.storeError).toMatch(/읽을 수 없/);
+  });
 });

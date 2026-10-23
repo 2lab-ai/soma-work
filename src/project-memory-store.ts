@@ -28,6 +28,8 @@ const logger = new Logger('ProjectMemory');
 export const PROJECT_MEMORY_LIMITS = { entryChars: 1000, totalChars: 4000, entries: 50 } as const;
 const ENTRY_DELIMITER = '\n§\n';
 const SLUG_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const UNUSABLE_MESSAGE =
+  '프로젝트 메모리 파일을 읽을 수 없어 수정을 막았습니다 — 관리자가 서버의 project-memory.json(.bak)을 확인해야 합니다';
 
 export interface ProjectMemory {
   slug: string;
@@ -76,14 +78,47 @@ function totalChars(entries: string[]): number {
   return entries.length ? entries.join(ENTRY_DELIMITER).length : 0;
 }
 
+/** Hash of the entry LIST (JSON), not of the joined text — `['a\n§\nb']` and `['a','b']` differ. */
 function revisionOf(entries: string[]): string {
-  return createHash('sha1').update(entries.join(ENTRY_DELIMITER)).digest('hex').slice(0, 16);
+  return createHash('sha1').update(JSON.stringify(entries)).digest('hex').slice(0, 16);
 }
 
+/**
+ * The whole shape, entry by entry. A file that only looks right at the top
+ * (`{"entries": 17}`) must fail here: then the loader falls back to `.bak`, and
+ * `atomicWriteJson` never promotes it over the healthy backup.
+ */
 function validateFile(raw: unknown): StoredFile {
   const f = raw as StoredFile;
-  if (!f || typeof f !== 'object' || f.version !== 1 || typeof f.projects !== 'object' || f.projects === null) {
+  if (
+    !f ||
+    typeof f !== 'object' ||
+    f.version !== 1 ||
+    typeof f.projects !== 'object' ||
+    f.projects === null ||
+    Array.isArray(f.projects)
+  ) {
     throw new Error('not a project-memory file');
+  }
+  for (const [slug, p] of Object.entries(f.projects)) {
+    let normalized: string;
+    try {
+      normalized = normalizeProjectSlug(slug);
+    } catch {
+      throw new Error(`project key \`${slug}\` is not owner/repo`);
+    }
+    if (normalized !== slug) throw new Error(`project key \`${slug}\` is not normalized`);
+    if (
+      !p ||
+      typeof p !== 'object' ||
+      !Array.isArray(p.entries) ||
+      !p.entries.length ||
+      p.entries.some((e) => typeof e !== 'string' || !e.trim()) ||
+      typeof p.updatedAt !== 'string' ||
+      typeof p.updatedBy !== 'string'
+    ) {
+      throw new Error(`project \`${slug}\` is malformed`);
+    }
   }
   return f;
 }
@@ -91,7 +126,7 @@ function validateFile(raw: unknown): StoredFile {
 export class ProjectMemoryStore {
   private data: StoredFile = { version: 1, projects: {} };
   private onChange: ((slug: string) => void) | null = null;
-  /** The file exists but cannot be read — refuse writes rather than overwrite it. */
+  /** The file exists but neither it nor `.bak` can be read — refuse writes rather than overwrite it. */
   private unusable = false;
 
   constructor(private readonly filePath: string) {
@@ -102,6 +137,11 @@ export class ProjectMemoryStore {
       logger.error('Project memory file is unusable — writes are refused until it is repaired', error);
       this.unusable = true;
     }
+  }
+
+  /** Whether the stored notes could be loaded — the page says so instead of showing an empty list. */
+  health(): { ok: true } | { ok: false; message: string } {
+    return this.unusable ? { ok: false, message: UNUSABLE_MESSAGE } : { ok: true };
   }
 
   /** Called after every successful write (prompt-cache invalidation, `src/index.ts`). */
@@ -135,11 +175,7 @@ export class ProjectMemoryStore {
   edit(slugInput: string, expectedRevision: string, edit: ProjectMemoryEdit, actor: string): ProjectMemoryEditResult {
     const slug = normalizeProjectSlug(slugInput);
     if (this.unusable) {
-      return {
-        ok: false,
-        reason: 'invalid',
-        message: '프로젝트 메모리 파일을 읽을 수 없어 수정을 막았습니다 — 관리자가 파일을 확인해야 합니다',
-      };
+      return { ok: false, reason: 'invalid', message: UNUSABLE_MESSAGE };
     }
     const current = this.view(slug);
     if (current.revision !== expectedRevision) {
@@ -193,6 +229,16 @@ export class ProjectMemoryStore {
 }
 
 /**
+ * An entry may mention the block's tag but never open or close one: every `<`
+ * that starts a `project-memory` tag (any case, spaces, slash) becomes `&lt;`.
+ * Escaping, not deleting — a deletion can glue the leftovers into a new tag
+ * (`</project-</project-memory>memory>`); the escape adds no `<`, so it cannot.
+ */
+function neutralizeBlockTags(entry: string): string {
+  return entry.replace(/<(?=\s*\/?\s*project-memory)/gi, '&lt;');
+}
+
+/**
  * The system-prompt block for a session whose channel maps to `repos`:
  * the notes of every repo that has any, as admin-curated project context.
  * Entries cannot close the block early.
@@ -209,7 +255,7 @@ export function projectMemoryPromptBlock(store: Pick<ProjectMemoryStore, 'get'>,
     }
     if (seen.has(p.slug) || !p.entries.length) continue;
     seen.add(p.slug);
-    const body = p.entries.map((e) => e.replace(/<\/?project-memory[^>]*>/gi, '')).join(ENTRY_DELIMITER);
+    const body = p.entries.map(neutralizeBlockTags).join(ENTRY_DELIMITER);
     blocks.push(
       `<project-memory project="${p.slug}" curated-by="admins">\n` +
         `Shared notes about this project, kept by the workspace admins for everyone working in it. ` +

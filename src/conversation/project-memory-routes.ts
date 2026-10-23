@@ -12,6 +12,11 @@
  * server, with the dashboard's admin gate (viewer token, or an ADMIN_USERS
  * member with `X-Admin-Mode: on`) plus CSRF. Hiding the edit controls for
  * everyone else is UX, not the access control.
+ *
+ * A dashboard with no credentials configured (`mode: 'none'`) treats every
+ * visitor as admin for the rest of the dashboard; here it may read but never
+ * write — these notes are injected into every session of the repo, so a write
+ * needs an identified admin (or the viewer token).
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -52,6 +57,12 @@ function authOf(request: FastifyRequest): { userId?: string; isAdmin?: boolean; 
   return (request as { authContext?: { userId?: string; isAdmin?: boolean; mode?: string } }).authContext ?? {};
 }
 
+/** Why this caller can never write (before the admin-mode switch), or null when an admin principal is present. */
+function readOnlyReason(auth: ReturnType<typeof authOf>): 'anonymous' | 'not-admin' | null {
+  if (auth.mode === 'none') return 'anonymous';
+  return auth.isAdmin ? null : 'not-admin';
+}
+
 function listProjects() {
   const byRepo = new Map<string, Set<string>>();
   for (const { repo, channels } of _repoSource()) {
@@ -81,10 +92,13 @@ export function registerProjectMemoryRoutes(
 
   server.get('/api/project-memory', read, async (request, reply) => {
     try {
-      const auth = authOf(request);
+      const reason = readOnlyReason(authOf(request));
+      const health = store().health();
       // emptyRevision: the revision of a project with no notes yet (starting a new one).
       reply.send({
-        isAdmin: !!auth.isAdmin,
+        isAdmin: reason === null,
+        ...(reason ? { readOnlyReason: reason } : {}),
+        ...(health.ok ? {} : { storeError: health.message }),
         projects: listProjects(),
         emptyRevision: store().get('new/project').revision,
       });
@@ -99,6 +113,12 @@ export function registerProjectMemoryRoutes(
     reply: FastifyReply,
     build: (body: Record<string, unknown>) => ProjectMemoryEdit | string,
   ): void {
+    if (readOnlyReason(authOf(request)) === 'anonymous') {
+      reply.status(403).send({
+        error: '프로젝트 메모리는 로그인한 관리자만 수정합니다 — 이 대시보드는 인증이 설정되지 않았습니다',
+      });
+      return;
+    }
     if (!requireAdminWrite(request, reply)) return;
     const body = (request.body || {}) as Record<string, unknown>;
     if (typeof body.project !== 'string' || typeof body.revision !== 'string') {
