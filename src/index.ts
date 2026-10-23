@@ -113,6 +113,7 @@ import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
 import { applyTodoList, ledgerTasks, stampWorkLogTask } from './session/task-ledger';
+import { canApplySummaryTitle } from './session-title-policy';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
@@ -1024,8 +1025,9 @@ async function start() {
         return;
       }
       // Guard: only overwrite title when it hasn't been deliberately set
-      // (e.g. by dispatch or issue linking). Treat conversationId-equal titles as "empty".
-      if (session.title && session.title !== session.conversationId) {
+      // (e.g. by dispatch or issue linking). Treat conversationId-equal titles as "empty",
+      // and a provisional cron job-name title as a placeholder (SSOT 2026-10-23 T2).
+      if (!canApplySummaryTitle(session)) {
         logger.debug('Skipping summary title — session already has a deliberate title', {
           conversationId,
           existingTitle: session.title,
@@ -1035,6 +1037,8 @@ async function start() {
       }
       registry.updateSessionTitle(session.channelId, session.threadTs, summaryTitle);
       slackHandler.requestThreadSurfaceRender(session);
+      // The dashboard card shows the new headline now, not at the next poll.
+      scheduleLiveSessionUpdate(registry.getSessionKey(session.channelId, session.threadTs));
       logger.debug('Summary title applied to session', {
         conversationId,
         summaryTitle,
