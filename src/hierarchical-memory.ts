@@ -46,6 +46,12 @@ class HostHierarchicalMemoryStore extends HierarchicalMemoryFileStore {
     return result;
   }
 
+  writePageRaw(...args: Parameters<HierarchicalMemoryFileStore['writePageRaw']>) {
+    const result = super.writePageRaw(...args);
+    if (result.ok) invalidator.fire(args[0]);
+    return result;
+  }
+
   removePageAt(...args: Parameters<HierarchicalMemoryFileStore['removePageAt']>) {
     const result = super.removePageAt(...args);
     if (result.ok) invalidator.fire(args[0]);

@@ -199,17 +199,27 @@ export function migrateLegacyL1(dataDir: string, userId: string, target: 'memory
   if (!fs.existsSync(legacy)) return false;
   const newPath = l1FilePath(dataDir, userId, target);
   try {
-    const legacyContent = fs.readFileSync(legacy, 'utf-8');
-    const newExists = fs.existsSync(newPath);
-    const newEmpty = newExists ? fs.readFileSync(newPath, 'utf-8').trim().length === 0 : true;
-    if ((!newExists || newEmpty) && legacyContent.trim().length > 0) {
-      fs.mkdirSync(path.dirname(newPath), { recursive: true });
-      fs.writeFileSync(newPath, legacyContent, 'utf-8');
-    }
-    // Delete the legacy root file — one-way migration, no rollback leftover.
-    fs.rmSync(legacy, { force: true });
-    return true;
+    // The migration writes `memory/` like every other memory writer, so it takes the
+    // same per-user lock and decides inside it: a check made outside could be followed
+    // by a locked writer's save, which the write below would then erase (review R4).
+    // Re-entrant: a writer already holding the lock runs it in place.
+    return withMemoryLock(dataDir, userId, () => {
+      if (!fs.existsSync(legacy)) return false;
+      const legacyContent = fs.readFileSync(legacy, 'utf-8');
+      const newExists = fs.existsSync(newPath);
+      const newEmpty = newExists ? fs.readFileSync(newPath, 'utf-8').trim().length === 0 : true;
+      if ((!newExists || newEmpty) && legacyContent.trim().length > 0) {
+        fs.mkdirSync(path.dirname(newPath), { recursive: true });
+        const tmp = `${newPath}.tmp-${process.pid}-${Date.now()}`;
+        fs.writeFileSync(tmp, legacyContent, 'utf-8');
+        fs.renameSync(tmp, newPath);
+      }
+      // Delete the legacy root file — one-way migration, no rollback leftover.
+      fs.rmSync(legacy, { force: true });
+      return true;
+    });
   } catch {
+    // Lock timeout or I/O error: the legacy file stays and the next read tries again.
     return false;
   }
 }
@@ -741,7 +751,9 @@ function serializePage(page: SemanticPage, loc: PageLocator): string {
 
 /**
  * Whether the form fields hold `raw` exactly: re-serializing the parsed page
- * (same `updated`) gives back the same bytes, CRLF aside.
+ * (same `updated`) gives back the same bytes. The parser reads LF lines, so a
+ * file with CRLF line ends does not round-trip and opens in the raw editor —
+ * the conservative side.
  */
 function isRepresentable(raw: string, page: SemanticPage, loc: PageLocator): boolean {
   return serializePage(page, loc) === raw.replace(/\r\n?/g, '\n');
