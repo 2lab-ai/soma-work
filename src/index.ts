@@ -67,6 +67,7 @@ import {
   setDashboardGoalHandler,
   setDashboardModelHandler,
   setDashboardMultiChoiceAnswerHandler,
+  setDashboardNewTaskProvider,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
@@ -80,6 +81,7 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
+import { createNewTaskProvider } from './conversation/new-task-provider';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
 import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
@@ -889,6 +891,29 @@ async function start() {
         throw error;
       }
     });
+
+    // Connect dashboard: "New task" (SSOT 2026-10-23) — the composer's
+    // context and the launch. A task is the user's own message on a fresh
+    // thread in the chosen channel, so it runs through handleMessage like a
+    // message typed in Slack (autogoal, autoskills, `$autoz` included).
+    setDashboardNewTaskProvider(
+      createNewTaskProvider({
+        client: app.client,
+        handleMessage: (event, say) => slackHandler.handleMessage(event as any, say),
+        getSessionKey: (channel, threadTs) => claudeHandler.getSessionKey(channel, threadTs),
+        hasSession: (sessionKey) => !!claudeHandler.getSessionRegistry().getSessionByKey(sessionKey),
+        listUserSessions: (userId) => {
+          const out: Array<{ channelId: string; lastActivity: number }> = [];
+          for (const session of claudeHandler.getAllSessions().values()) {
+            if (session.ownerId !== userId && session.currentInitiatorId !== userId) continue;
+            if (!session.channelId) continue;
+            const at = session.lastActivity ? new Date(session.lastActivity).getTime() : 0;
+            out.push({ channelId: session.channelId, lastActivity: Number.isFinite(at) ? at : 0 });
+          }
+          return out;
+        },
+      }),
+    );
 
     // Connect dashboard: real-time task updates
     // TodoManager fires with sessionId, but dashboard caches by sessionKey.

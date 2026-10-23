@@ -530,8 +530,9 @@ interface StreamExecutorDeps {
   }) => void | Promise<void>;
   /**
    * Host sink for `deploy_completed` from a DEPLOY-workflow session: a valid
-   * directive (`kind: 'completed'`) fires the cron lanes registered for that
-   * repo + target (src/deploy-lanes.ts); attempts that yielded no payload
+   * directive (`kind: 'completed'`) fires the lanes (cron jobs with onDeploy,
+   * or deploy-lanes.json) registered for that repo + target
+   * (src/deploy-lanes.ts); attempts that yielded no payload
    * arrive as `kind: 'rejected'`. The host answers through `ctx.reply`, which
    * posts one line in the deploy thread (retried once). Called without being
    * awaited by the turn; a rejection is logged, never surfaced. Optional —
