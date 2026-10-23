@@ -273,6 +273,42 @@ describe('T5 — a run in progress shows before its history record exists', () =
     expect(runs.map((r: any) => r.session.boardKey)).toEqual(['k-now', 'k-old']);
     expect(runs[0].session).toMatchObject({ activityState: 'working', live: true });
   });
+  // trinity round 4 (astra P2): a queue entry is an event, not the run that owns
+  // the thread. The first fire is still running (no record until it ends) and a
+  // second fire queued behind it: the history holds only the queue entry, and
+  // the running fire must still show.
+  it('a queue entry does not hide the running fire it waits behind', () => {
+    const board = {
+      working: [
+        card({
+          key: 'k-now',
+          cronJob: { id: 'job-1', name: 'nightly-qa' },
+          activeLegStartedAtMs: Date.parse('2026-10-23T05:00:10Z'),
+        }),
+      ],
+      waiting: [],
+      idle: [],
+      closed: [],
+    };
+    const jobs = [
+      {
+        id: 'job-1',
+        name: 'nightly-qa',
+        runs: [
+          {
+            executedAt: Date.parse('2026-10-23T05:03:00Z'),
+            status: 'queued',
+            executionPath: 'busy_queue',
+            session: { boardKey: 'k-now', activityState: 'idle', live: false },
+          },
+        ],
+      },
+    ];
+    const g = fns.planCronLane(board, jobs).groups[0];
+    const runs = fns.cronGroupRuns(g);
+    expect(runs.map((r: any) => r.status)).toEqual(['queued', 'unrecorded']);
+    expect(runs[1].session).toMatchObject({ boardKey: 'k-now', activityState: 'working', live: true });
+  });
 });
 
 describe('T9 — capacity axis and markers', () => {
