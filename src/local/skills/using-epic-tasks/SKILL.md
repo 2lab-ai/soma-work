@@ -1,6 +1,6 @@
 ---
 name: using-epic-tasks
-description: "유저의 구현 요청을 받으면 decision-gate로 규모를 판정한 뒤 3 케이스로 라우팅. Case A (이슈 1 + PR 1, tier ≤ large), Case B (에픽 + 서브이슈 N + PR N, tier = xlarge), Case C (에픽 여러 개 분량이면 중지·쪼개기 요청, tier ≥ xxlarge). 작업 시작 전 decision-gate 통과 필수. 각 산출물 본문은 using-ha-thinking의 층 규율을 따른다."
+description: "유저의 구현 요청을 받으면 decision-gate로 규모를 판정한 뒤 3 케이스로 라우팅. Case A (이슈 1 + PR 1, tier ≤ large), Case B (에픽 + 서브이슈 N + PR N, tier = xlarge), Case C (에픽 여러 개 분량이면 중지·쪼개기 요청, tier ≥ xxlarge). 작업 시작 전 decision-gate 통과 필수. 각 산출물 본문은 using-ha-thinking의 층 규율을 따른다. Case B 에픽을 실환경 실측까지 모는 실행 루프는 reference/epic-drive.md."
 ---
 
 # using-epic-tasks
@@ -75,6 +75,15 @@ tier가 `tiny (~5 lines)` 또는 `small (~20 lines)`이면 **이슈 생성 생�
 
 **템플릿**: `reference/templates.md` §Case B.
 
+## Case B 드라이브 — 에픽을 실측까지 모는 루프
+
+**When**: Case B 에픽이 여러 세션·여러 PR에 걸쳐 실환경 실측까지 가야 할 때. 상세 = `reference/epic-drive.md`.
+
+1. **목표·계기판 고정** — 목표 원문과 완료 조건(실환경 실측)을 SSOT로 고정한다. 오너가 보는 페이지 하나를 주기·사건마다 갱신한다. 오너에게 묻기 전에 페이지에 먼저 쓴다.
+2. **스펙 먼저** — 현재 흐름(근거 위치)·설계(결정 번호)·시험 목록을 코드 전에 쓴다. 분해·순서는 `trinity`로 정한다. 설계 문서는 두 엔진이 모두 통과할 때까지 고친다.
+3. **작업 단위 PR 루프** — 서브이슈 1 = 작업자 1 = 워크트리 1 = PR 1. 시험 먼저 → 수정 → 변이 확인 → 게이트 재실행 → 외부 리뷰 → 머지 담당 판단 → 지적 한 묶음 반영 → 머지 → 테스트 환경 반영 후 확인.
+4. **실측·종결** — 사전 조건 확인과 되돌릴 수 있는 설정은 디스패처가 한다. 되돌릴 수 없는 행동만 오너에게 한 번에 모아 요청한다. 결과는 1차 원본으로 대조하고 설정을 되돌린다. 완료 조건 전체가 실측되기 전에는 에픽 완료로 보고하지 않는다.
+
 ## Case C — 중지·분해 요청
 
 **When**: tier ≥ xxlarge. 여러 에픽 분량.
@@ -114,6 +123,10 @@ tier가 `tiny (~5 lines)` 또는 `small (~20 lines)`이면 **이슈 생성 생�
 - Case A짜리 작업에 에픽 씌우기
 - 서브이슈 8개 이상 쪼개기 (xxlarge 신호 무시)
 - tiny/small fix에 이슈 강제 (불필요한 오버헤드)
+- PR만 올리고 멈추기 (테스트 환경 반영·반영 후 확인 없이)
+- 에이전트 보고를 판정으로 쓰기 (1차 원본 재확인 없이)
+- 오너 페이지 갱신 없이 묻기, 질문을 쪼개 여러 번 묻기
+- 다른 세션이 같은 일을 하는데 이어서 하기
 
 ## Integration
 
@@ -124,3 +137,4 @@ tier가 `tiny (~5 lines)` 또는 `small (~20 lines)`이면 **이슈 생성 생�
 - **템플릿** — `reference/templates.md`.
 - **후속 스킬** — 서브이슈/이슈 작업 → `z`; 완료 공지 → `es`.
 - **병렬성** — 독립 서브이슈는 별도 worktree/branch. 동일 파일 건드리는 서브이슈는 직렬 (서브이슈 body의 Dependency 표기 또는 에픽 Checklist 순서).
+- **드라이브** — Case B 에픽 실행 루프 = `reference/epic-drive.md`. 합의 = `trinity`, 보고 = `es`.
