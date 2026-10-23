@@ -453,3 +453,20 @@ export async function updateConversationTitleSub(conversationId: string, titleSu
   await serializedSave(conversationId, record);
   return true;
 }
+
+/**
+ * Fill titleSub only while it is still empty, and return the stored value.
+ * A subtitle written while the caller was generating (the owner's regenerate,
+ * another viewer's fill) wins — a fill never overwrites. The check and the
+ * set happen with no await between them, so concurrent callers cannot both
+ * see "empty". Returns null when the conversation does not exist.
+ */
+export async function fillConversationTitleSub(conversationId: string, titleSub: string): Promise<string | null> {
+  const record = await getOrLoadConversation(conversationId);
+  if (!record) return null;
+  if (record.titleSub) return record.titleSub;
+  record.titleSub = titleSub;
+  record.updatedAt = Date.now();
+  await serializedSave(conversationId, record);
+  return titleSub;
+}
