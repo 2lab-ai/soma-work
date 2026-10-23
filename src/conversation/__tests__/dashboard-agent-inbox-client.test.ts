@@ -2674,7 +2674,10 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     openPanel(key: string, focusWorkLog?: boolean): void;
     renderMultiChoiceCard(s: Session, faceSummary: string): string;
     renderPanelQuestion(s: Session): void;
+    olderTurnsZone(firstTurnTop: number, areaTop: number): boolean;
+    panelOlderStep(armed: boolean, inZone: boolean, canLoad: boolean): { load: boolean; armed: boolean };
     stick(): boolean;
+    armed(): boolean;
   };
 
   const waitingMulti = (over: Session = {}): Session => ({
@@ -2770,6 +2773,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'scrollPanelToWorkLog',
         'workLogLandingTop',
         'landPanel',
+        'olderTurnsZone',
+        'panelOlderStep',
       ],
       [
         '_mcState',
@@ -2804,7 +2809,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         formatTokens: String,
         toNum: Number,
       },
-      ['function stick() { return _panelStickBottom; }'],
+      ['function stick() { return _panelStickBottom; }', 'function armed() { return _panelOlderArmed; }'],
     );
     /** Click the card's 답변하기 button: run its shipped onclick against the shipped openPanel. */
     const clickAnswer = () => {
@@ -2830,6 +2835,11 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     expect(p.scroll.scrollTop).toBe(0);
     // A later resize (subtitle, Tasks) must not drag the reader to the bottom.
     expect(p.m.stick()).toBe(false);
+    // The first scroll event after this landing (first turn right under the form)
+    // loads no older turns by itself, like the 작업 로그 landing at the top.
+    const firstTurnTop = AREA_TOP + 420 + WL_HEADER - p.scroll.scrollTop;
+    const step = p.m.panelOlderStep(p.m.armed(), p.m.olderTurnsZone(firstTurnTop, AREA_TOP), true);
+    expect(step).toEqual({ load: false, armed: false });
   });
 
   it('lands on the form even when the panel was left scrolled down by the previous opening', async () => {
