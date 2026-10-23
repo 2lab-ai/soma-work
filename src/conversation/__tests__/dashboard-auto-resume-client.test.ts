@@ -172,6 +172,7 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
         renderTimeline: () => '',
         renderModelNote: () => '',
         renderModelPicker: () => '',
+        renderEffortPicker: () => '',
         cardTotalTokens: () => 0,
         currentUserId: 'U1',
         SELF_INSTANCE_NAME: '',

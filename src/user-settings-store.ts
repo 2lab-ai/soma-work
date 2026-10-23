@@ -1,3 +1,4 @@
+import { atomicWriteJson } from '@soma/common/atomic-json';
 import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_NAMES } from '@soma/slack/output-flags';
 import fs from 'fs';
 import path from 'path';
@@ -635,7 +636,9 @@ export class UserSettingsStore {
    */
   private saveSettings(): void {
     try {
-      fs.writeFileSync(this.settingsFile, JSON.stringify(this.settings, null, 2), 'utf8');
+      // rules/config.md rule 3 — temp write + rename, previous generation kept
+      // as `.bak`; the dashboard settings page writes here too (SSOT 2026-10-23 T2).
+      atomicWriteJson(this.settingsFile, this.settings);
       logger.debug('Saved user settings to file');
     } catch (error) {
       logger.error('Failed to save user settings', error);
@@ -755,6 +758,20 @@ export class UserSettingsStore {
     const clamped = Math.max(0, Math.min(10, rating));
     this.patchUserSettings(userId, { rating: clamped } as Partial<UserSettings>);
     logger.info('Set user rating', { userId, rating: clamped });
+  }
+
+  /**
+   * Change the rating the way `rate +/-` does — one path for Slack and the
+   * dashboard (SSOT 2026-10-23 T2): clamp to 0–10, store, and record the
+   * pending note the agent is told about, only when the value moved.
+   */
+  changeUserRating(userId: string, rating: number): { from: number; to: number } {
+    const from = this.getUserRating(userId);
+    const to = Math.max(0, Math.min(10, Math.round(rating)));
+    if (to === from) return { from, to };
+    this.setUserRating(userId, to);
+    this.setPendingRatingChange(userId, { from, to });
+    return { from, to };
   }
 
   /**
