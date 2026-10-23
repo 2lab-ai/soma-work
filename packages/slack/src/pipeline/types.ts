@@ -76,6 +76,18 @@ export interface MessageEvent {
   skipDispatch?: boolean;
   /** Model override for cron jobs (e.g. "claude-sonnet-4-20250514"). Applied at session creation. */
   modelOverride?: string;
+  /**
+   * Per-task reasoning effort (dashboard "New task", SSOT 2026-10-23 T4).
+   * Applied to the session the message lands in, like `modelOverride`; an
+   * unknown level is ignored and the user's default stays.
+   */
+  effortOverride?: string;
+  /**
+   * Per-task autogoal toggle (dashboard "New task", SSOT 2026-10-23 T6). When
+   * set, it decides autogoal for this message instead of the sender's
+   * `autoGoalEnabled` setting — in both directions. The setting is unchanged.
+   */
+  autoGoalOverride?: boolean;
   routeContext?: {
     skipAutoBotThread?: boolean;
     sourceChannel?: string;
