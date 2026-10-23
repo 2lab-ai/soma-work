@@ -4794,6 +4794,8 @@ async function loadMyDefaults() {
     var res = await fetch('/api/settings');
     if (!res.ok) { box.hidden = true; return; }
     var data = await res.json();
+    // Without admin acceptance the server refuses every settings write.
+    if (data && data.accepted === false) { box.hidden = true; return; }
     var rows = (data && data.settings) || [];
     var model = null, effort = null;
     for (var i = 0; i < rows.length; i++) {

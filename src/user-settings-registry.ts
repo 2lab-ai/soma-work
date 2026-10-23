@@ -120,6 +120,7 @@ type ApplyFn = (args: { userId: string; value: string }) => Promise<ApplyResultL
 /** The store surface the registry reads and writes (the real one is `userSettingsStore`). */
 export interface SettingsStoreLike {
   getUserDefaultModel(userId: string): string;
+  setUserDefaultModel(userId: string, model: string): void;
   getModelDisplayName(model: string): string;
   getUserDefaultEffort(userId: string): EffortLevel;
   setUserDefaultEffort(userId: string, effort: EffortLevel): void;
@@ -145,8 +146,14 @@ export interface SettingsStoreLike {
 
 export interface SettingsRegistryDeps {
   store: SettingsStoreLike;
+  /**
+   * The /z model resolver without the save (`resolveModelChoice`): the model
+   * write re-checks admin acceptance after this await, right before saving.
+   */
+  resolveModel(
+    value: string,
+  ): Promise<{ ok: true; modelId: string } | { ok: false; summary: string; description?: string }>;
   apply: {
-    model: ApplyFn;
     persona: ApplyFn;
     theme: ApplyFn;
     verbosity: ApplyFn;
@@ -260,6 +267,10 @@ export interface SettingsRegistry {
 
 export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegistry {
   const { store } = deps;
+
+  function assertAccepted(userId: string): void {
+    if (!deps.isAccepted(userId)) throw new SettingsError(403, '관리자 승인을 받은 뒤에 설정을 바꿀 수 있습니다');
+  }
 
   function view(userId: string, key: SettingKey): SettingView {
     const isAdmin = deps.isAdmin(userId);
@@ -583,7 +594,16 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
         // know every nickname (grok[1m] → grok-4.6 lives in model-switch).
         const input = expectString(value, key).trim();
         const rep = deps.listModels(userId).find((m) => m.nickname === input);
-        return viaApply(deps.apply.model, userId, rep ? rep.model : input);
+        const choice = await deps.resolveModel(rep ? rep.model : input);
+        if (!choice.ok) {
+          throw new SettingsError(400, plain([choice.summary, choice.description].filter(Boolean).join(' — ')));
+        }
+        // The resolution may have waited on a catalog refresh: an admin deny in
+        // that window must win — every setter re-creates a missing record as
+        // accepted, so check again right before the synchronous save.
+        assertAccepted(userId);
+        store.setUserDefaultModel(userId, choice.modelId);
+        return;
       }
       case 'defaultEffort': {
         const effort = store.resolveEffortInput(expectString(value, key));
@@ -678,9 +698,7 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
     },
     async write(userId, key, value) {
       if (!(ORDER as string[]).includes(key)) throw new SettingsError(400, `알 수 없는 설정: ${key}`);
-      if (!deps.isAccepted(userId)) {
-        throw new SettingsError(403, '관리자 승인을 받은 뒤에 설정을 바꿀 수 있습니다');
-      }
+      assertAccepted(userId);
       const k = key as SettingKey;
       const before = view(userId, k);
       if (!before.editable) throw new SettingsError(403, before.lockedReason || '바꿀 수 없는 설정입니다');

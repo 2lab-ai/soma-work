@@ -17,6 +17,9 @@ function memoryStore(): SettingsStoreLike & { data: Record<string, any> } {
   return {
     data,
     getUserDefaultModel: (id) => u(id).model ?? 'claude-opus-5-5[1m]',
+    setUserDefaultModel: (id, m) => {
+      u(id).model = m;
+    },
     getModelDisplayName: (m) => `Display(${m})`,
     getUserDefaultEffort: (id) => u(id).effort ?? 'xhigh',
     setUserDefaultEffort: (id, e) => {
@@ -63,12 +66,6 @@ function setup(over: Partial<SettingsRegistryDeps> = {}) {
   const store = memoryStore();
   const ok = (summary = 'ok') => vi.fn(async () => ({ ok: true, summary }));
   const apply = {
-    model: vi.fn(async ({ userId, value }: { userId: string; value: string }) => {
-      if (value === 'nope')
-        return { ok: false, summary: '❌ Unknown model: `nope`', description: 'Available aliases: `opus`' };
-      store.data[userId] = { ...(store.data[userId] || {}), model: value };
-      return { ok: true, summary: 'ok' };
-    }),
     persona: ok(),
     theme: ok(),
     verbosity: ok(),
@@ -81,8 +78,14 @@ function setup(over: Partial<SettingsRegistryDeps> = {}) {
     notify: ok(),
     email: ok(),
   };
+  const resolveModel = vi.fn(async (value: string) =>
+    value === 'nope'
+      ? { ok: false as const, summary: '❌ Unknown model: `nope`', description: 'Available aliases: `opus`' }
+      : { ok: true as const, modelId: value },
+  );
   const deps: SettingsRegistryDeps = {
     store,
+    resolveModel,
     apply,
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
     verbosityLevels: ['minimal', 'compact', 'detail', 'verbose'],
@@ -116,7 +119,8 @@ function setup(over: Partial<SettingsRegistryDeps> = {}) {
     isAccepted: (id) => id !== 'U_DENIED',
     ...over,
   };
-  return { registry: createSettingsRegistry(deps), store, apply };
+  // `apply.model` is the model resolver (the save itself is the store setter).
+  return { registry: createSettingsRegistry(deps), store, apply: { ...apply, model: deps.resolveModel } };
 }
 
 async function refused(p: Promise<unknown>, status: number): Promise<string> {
@@ -186,10 +190,10 @@ describe('settings registry — read', () => {
 });
 
 describe('settings registry — write', () => {
-  it('default model goes through the /z apply function and returns the fresh view', async () => {
+  it('default model goes through the /z model resolver and returns the fresh view', async () => {
     const { registry, apply } = setup();
     const v = await registry.write('U1', 'defaultModel', 'grok[1m]');
-    expect(apply.model).toHaveBeenCalledWith({ userId: 'U1', value: 'grok-4.6' });
+    expect(apply.model).toHaveBeenCalledWith('grok-4.6');
     expect(v.value).toBe('grok[1m]');
     expect(v.modified).toBe(true);
   });
@@ -273,12 +277,33 @@ describe('settings registry — write', () => {
     expect(registry.read('U1').accepted).toBe(true);
   });
 
+  it('an admin deny that lands while the model is still being resolved wins: no write, 403, no record (review R2 P1)', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let accepted = true;
+    const { registry, store } = setup({
+      isAccepted: () => accepted,
+      resolveModel: vi.fn(async (value: string) => {
+        await gate; // the catalog refresh Slack's /z model also waits on
+        return { ok: true as const, modelId: value };
+      }),
+    });
+    const pending = registry.write('U1', 'defaultModel', 'claude-sonnet-4-6');
+    accepted = false; // admin deny + removeUserSettings meanwhile
+    delete store.data.U1;
+    release();
+    await refused(pending, 403);
+    expect(store.data.U1).toBeUndefined();
+  });
+
   it('a representative nickname is saved as the model id it stands for (grok[1m] → grok-4.6)', async () => {
     const { registry, apply } = setup();
     await registry.write('U1', 'defaultModel', 'grok[1m]');
-    expect(apply.model).toHaveBeenCalledWith({ userId: 'U1', value: 'grok-4.6' });
+    expect(apply.model).toHaveBeenCalledWith('grok-4.6');
     await registry.write('U1', 'defaultModel', 'claude-sonnet-4-6');
-    expect(apply.model).toHaveBeenLastCalledWith({ userId: 'U1', value: 'claude-sonnet-4-6' });
+    expect(apply.model).toHaveBeenLastCalledWith('claude-sonnet-4-6');
   });
 
   it('email: empty clears through the card', async () => {

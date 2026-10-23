@@ -14,7 +14,7 @@ import { listRepresentativeModels } from './session/model-switch';
 import { autoskillExists, listAvailableSkills } from './skill-locator';
 import { applyBypass } from './slack/z/topics/bypass-topic';
 import { applyEmail } from './slack/z/topics/email-topic';
-import { applyModel } from './slack/z/topics/model-topic';
+import { resolveModelChoice } from './slack/z/topics/model-topic';
 import { applyNotify } from './slack/z/topics/notify-topic';
 import { applyPersona } from './slack/z/topics/persona-topic';
 import { applySandbox } from './slack/z/topics/sandbox-topic';
@@ -38,8 +38,8 @@ import { validateWebhookUrl } from './webhook-url-validator';
 export function productionSettingsRegistry(): SettingsRegistry {
   return createSettingsRegistry({
     store: userSettingsStore,
+    resolveModel: resolveModelChoice,
     apply: {
-      model: applyModel,
       persona: applyPersona,
       theme: applyTheme,
       verbosity: applyVerbosity,
