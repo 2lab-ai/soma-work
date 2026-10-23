@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { Worker } from 'worker_threads';
 import { HierarchicalMemoryFileStore, memoryRoot } from './hierarchical-memory-store';
 import { MemoryFileStore } from './memory-file-store';
-import { MemoryLockTimeoutError, memoryLockPath, withMemoryLock } from './memory-lock';
+import { MemoryLockTimeoutError, memoryLockPath, reapIfStill, withMemoryLock } from './memory-lock';
 
 // SSOT 2026-10-23 T3 (design review P1) — the dashboard becomes a third writer
 // of a user's memory files, next to the host process and the model-command MCP
@@ -70,16 +70,58 @@ describe('memory lock', () => {
     fs.rmSync(lock, { recursive: true, force: true });
   });
 
-  it('takes over a lock whose owner is gone or that is older than the stale limit', () => {
+  function plant(lock: string, owner: Record<string, unknown>) {
+    fs.mkdirSync(lock, { recursive: true });
+    fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ token: 'T0', host: os.hostname(), ...owner }));
+  }
+  const DEAD_PID = 2 ** 22 + 12345;
+
+  it('takes over a same-host lock whose owner died (after a short grace) or that is older than the stale limit', () => {
     const data = tmpData();
     const lock = memoryLockPath(data, 'U1');
-    fs.mkdirSync(lock, { recursive: true });
-    fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: 2 ** 22 + 12345, at: Date.now() }));
+    plant(lock, { pid: DEAD_PID, at: Date.now() - 5_000 });
     expect(withMemoryLock(data, 'U1', () => 'dead-owner', { timeoutMs: 500 })).toBe('dead-owner');
 
-    fs.mkdirSync(lock, { recursive: true });
-    fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, at: Date.now() - 60_000 }));
-    expect(withMemoryLock(data, 'U1', () => 'stale', { timeoutMs: 500, staleMs: 10_000 })).toBe('stale');
+    plant(lock, { pid: process.pid, at: Date.now() - 120_000 });
+    expect(withMemoryLock(data, 'U1', () => 'stale', { timeoutMs: 500, staleMs: 60_000 })).toBe('stale');
+  });
+
+  it('does not judge a fresh lock by its pid: a just-died owner gets a grace, another host only the stale limit (review P1)', () => {
+    const data = tmpData();
+    const lock = memoryLockPath(data, 'U1');
+    plant(lock, { pid: DEAD_PID, at: Date.now() });
+    expect(() => withMemoryLock(data, 'U1', () => 1, { timeoutMs: 200 })).toThrow(MemoryLockTimeoutError);
+    plant(lock, { pid: DEAD_PID, host: 'some-other-host', at: Date.now() - 5_000 });
+    expect(() => withMemoryLock(data, 'U1', () => 1, { timeoutMs: 200 })).toThrow(MemoryLockTimeoutError);
+    expect(fs.existsSync(lock)).toBe(true);
+  });
+
+  it('release removes only its own lock — a lock that was reaped and re-taken by another owner stays (review P1)', () => {
+    const data = tmpData();
+    const lock = memoryLockPath(data, 'U1');
+    withMemoryLock(data, 'U1', () => {
+      // meanwhile a reaper took the lock over and someone else holds it now
+      fs.rmSync(lock, { recursive: true, force: true });
+      plant(lock, { pid: process.pid, token: 'OTHER', at: Date.now() });
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf-8')).token).toBe('OTHER');
+  });
+
+  it('a reaper removes only the lock it judged abandoned, and reapers are serialized (review P1)', () => {
+    const data = tmpData();
+    const lock = memoryLockPath(data, 'U1');
+    // judged T0 abandoned, but the lock now belongs to a new owner T1
+    plant(lock, { pid: process.pid, token: 'T1', at: Date.now() });
+    expect(reapIfStill(lock, 'T0')).toBe(false);
+    expect(fs.existsSync(lock)).toBe(true);
+    // another reaper is mid-reap: this one backs off
+    plant(lock, { pid: DEAD_PID, token: 'T0', at: Date.now() - 5_000 });
+    fs.mkdirSync(`${lock}.reap`);
+    expect(reapIfStill(lock, 'T0')).toBe(false);
+    expect(fs.existsSync(lock)).toBe(true);
+    fs.rmSync(`${lock}.reap`, { recursive: true, force: true });
+    expect(reapIfStill(lock, 'T0')).toBe(true);
+    expect(fs.existsSync(lock)).toBe(false);
   });
 
   it('an episodic append waits for an edit held by another process, and is not lost', async () => {

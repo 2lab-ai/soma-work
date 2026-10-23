@@ -365,9 +365,31 @@ export function clearAllMemory(userId: string): MemoryOperationResult {
 
 // ── Dashboard memory tab (SSOT 2026-10-23 T3) ──
 
+function revisionOfEntries(entries: string[]): string {
+  return createHash('sha1').update(entries.join(ENTRY_DELIMITER)).digest('hex').slice(0, 16);
+}
+
 /** Revision a dashboard edit is conditional on: a hash of the stored entries. */
 export function memoryRevision(userId: string, target: MemoryTarget): string {
-  return createHash('sha1').update(readEntries(userId, target).join(ENTRY_DELIMITER)).digest('hex').slice(0, 16);
+  return revisionOfEntries(readEntries(userId, target));
+}
+
+/**
+ * The store and its revision from ONE read — a revision computed from a
+ * second read could belong to a newer file than the entries shown, and an
+ * edit made against that pair would overwrite the newer write (review P1).
+ */
+export function loadMemoryWithRevision(userId: string, target: MemoryTarget): MemoryBlock & { revision: string } {
+  const entries = readEntries(userId, target);
+  const charLimit = getCharLimit(target);
+  const chars = totalChars(entries);
+  return {
+    entries,
+    charLimit,
+    totalChars: chars,
+    percentUsed: charLimit > 0 ? Math.round((chars / charLimit) * 100) : 0,
+    revision: revisionOfEntries(entries),
+  };
 }
 
 export type MemoryEdit =
@@ -423,7 +445,8 @@ export function editMemoryAt(
       r = clearMemory(userId, target);
     }
     if (!r.ok) return { ok: false, reason: 'invalid', message: r.message || r.reason || '저장하지 못했습니다' };
-    return { ok: true, block: loadMemory(userId, target), revision: memoryRevision(userId, target) };
+    const { revision, ...block } = loadMemoryWithRevision(userId, target);
+    return { ok: true, block, revision };
   });
 }
 
