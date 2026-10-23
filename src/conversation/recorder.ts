@@ -17,6 +17,15 @@ const activeConversations = new Map<string, ConversationRecord>();
 // Per-conversation write locks to serialize disk writes and prevent race conditions
 const writeLocks = new Map<string, Promise<void>>();
 
+// One disk read per conversation at a time: concurrent cold reads share it, so
+// two snapshots of the same conversation can never both be live.
+const pendingLoads = new Map<string, Promise<ConversationRecord | null>>();
+
+// Saves not yet on disk, per conversation. An entry here is never evicted from
+// the cache — otherwise the next cold read could load the pre-save file and
+// publish it over the writes still in flight.
+const savesInFlight = new Map<string, number>();
+
 // Optional callback fired after each turn is recorded
 let _onTurnRecorded: ((conversationId: string, turn: ConversationTurn) => void) | null = null;
 
@@ -78,6 +87,7 @@ export function setOnSummaryGeneratedCallback(
  * Each conversation's writes are queued so only one writeFile runs at a time.
  */
 async function serializedSave(conversationId: string, record: ConversationRecord): Promise<void> {
+  savesInFlight.set(conversationId, (savesInFlight.get(conversationId) ?? 0) + 1);
   const previous = writeLocks.get(conversationId) || Promise.resolve();
   const current = previous.then(() => getStorage().save(record));
   writeLocks.set(
@@ -86,7 +96,13 @@ async function serializedSave(conversationId: string, record: ConversationRecord
       logger.error(`Write chain: prior save failed for ${conversationId}, next write will proceed`, err);
     }),
   );
-  await current;
+  try {
+    await current;
+  } finally {
+    const left = (savesInFlight.get(conversationId) ?? 1) - 1;
+    if (left > 0) savesInFlight.set(conversationId, left);
+    else savesInFlight.delete(conversationId);
+  }
 }
 
 /**
@@ -98,9 +114,12 @@ function cacheRecord(id: string, record: ConversationRecord): void {
   if (activeConversations.has(id)) {
     activeConversations.delete(id);
   }
-  // Evict oldest entries if at capacity
-  while (activeConversations.size >= MAX_CACHE_SIZE) {
-    const oldest = activeConversations.keys().next().value!;
+  // Evict oldest entries if at capacity — skipping any with a save still in
+  // flight (see savesInFlight). If every entry is mid-save the cache briefly
+  // exceeds the cap rather than dropping unsaved state.
+  for (const oldest of activeConversations.keys()) {
+    if (activeConversations.size < MAX_CACHE_SIZE) break;
+    if (savesInFlight.has(oldest)) continue;
     activeConversations.delete(oldest);
     writeLocks.delete(oldest);
     logger.debug(`Evicted conversation ${oldest} from cache (LRU)`);
@@ -409,12 +428,20 @@ async function getOrLoadConversation(id: string): Promise<ConversationRecord | n
   const cached = activeConversations.get(id);
   if (cached) return cached;
 
-  // Load from disk
+  // Load from disk — one read per conversation at a time (see pendingLoads).
+  const pending = pendingLoads.get(id);
+  if (pending) return pending;
+  const load = loadAndCache(id).finally(() => pendingLoads.delete(id));
+  pendingLoads.set(id, load);
+  return load;
+}
+
+async function loadAndCache(id: string): Promise<ConversationRecord | null> {
   const record = await getStorage().load(id);
-  // Another caller may have cached (and since mutated) this conversation while
-  // we were reading the disk. That object is the live one; publishing our
-  // older snapshot over it would roll back its writes — e.g. a titleSub fill
-  // would then see "empty" and overwrite the owner's subtitle.
+  // A writer that does not read first (createConversation) may have cached this
+  // id while we were on the disk. That object is the live one; publishing our
+  // snapshot over it would roll back its writes — e.g. a titleSub fill would
+  // then see "empty" and overwrite the owner's subtitle.
   const raced = activeConversations.get(id);
   if (raced) return raced;
   if (record) {
