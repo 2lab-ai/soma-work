@@ -130,9 +130,11 @@ export interface WorkLogInput {
   raw?: string;
   /** UTF-8 size of the original when the emitter already cut `raw`; ignored unless larger than `raw`. */
   rawBytes?: number;
+  /** SDK tool-use id of a `tool` / `tool_result` entry, for live observers (artifact capture). Not persisted. */
+  toolUseId?: string;
 }
 /** An entry as pages and the broadcast carry it: its raw is described, never included. */
-export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
+export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes' | 'toolUseId'> {
   seq: number;
   ts: number;
   /** UTF-8 byte length of the original raw; present iff the entry has a stored raw. */

@@ -53,6 +53,9 @@ const SHOW_ALL = {
   dhMax: (_f: string, d: number) => d,
   dhTruncate: () => null,
   currentUserId: 'U1',
+  // #375 artifact chips on the face — not what these tests read.
+  isSiblingSession: () => false,
+  artFaceChips: () => '',
 };
 const FACE_FNS = [
   'esc',
