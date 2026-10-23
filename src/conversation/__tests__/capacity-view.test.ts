@@ -389,6 +389,30 @@ describe('buildCapacityView — live llmux shapes', () => {
     expect(view.groups[0].accounts[0]).toMatchObject({ blocked: false, availablePct: 56 });
   });
 
+  // trinity round 6 (astra P2): a short throttle does not block on its own,
+  // but an account blocked for another reason is back only when it ends too.
+  it('an exhausted account is not promised back before its throttle ends', () => {
+    const view = buildCapacityView(
+      {
+        current: null,
+        accounts: [
+          acct({
+            name: 'claude:ai2@corp.example',
+            group: 'claude',
+            status: 'cooldown',
+            blocked: 'cooldown 90s',
+            cooldown_until: NOW_S + 90,
+            five_hour: w(1, 2),
+            seven_day: w(0.4, 6 * D),
+          }),
+        ],
+      },
+      {},
+      NOW_MS,
+    );
+    expect(view.groups[0].accounts[0]).toMatchObject({ blocked: true, returnAt: NOW_S + 90 });
+  });
+
   it('a long cooldown still blocks, and the account returns when it lifts', () => {
     const view = buildCapacityView(
       {

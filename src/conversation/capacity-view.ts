@@ -204,7 +204,9 @@ function accountView(
       else unknown = true;
     };
     for (const r of exhausted) liftAt(r.label);
-    if (cooling && !throttled) lifts.push({ at: account.cooldown_until as number, label: 'cooldown' });
+    // A throttle never blocks on its own, but an account blocked for another
+    // reason is not back until a running cooldown ends as well.
+    if (cooling) lifts.push({ at: account.cooldown_until as number, label: 'cooldown' });
     else if (account.status === 'cooldown' && !throttled) unknown = true;
     if (reason) {
       if (reason.startsWith('5h')) liftAt('5h');
