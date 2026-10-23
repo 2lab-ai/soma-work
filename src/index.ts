@@ -63,6 +63,7 @@ import {
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
+  setDashboardCronSource,
   setDashboardGoalHandler,
   setDashboardModelHandler,
   setDashboardMultiChoiceAnswerHandler,
@@ -1141,6 +1142,11 @@ async function start() {
     let cronScheduler: CronScheduler | null = null;
     try {
       const cronStorage = new CronStorage(path.join(DATA_DIR, 'cron-jobs.json'));
+      // The dashboard's CRON lane reads this instance's jobs + run history (SSOT 2026-10-23 T5).
+      setDashboardCronSource({
+        listJobs: () => cronStorage.getAll(),
+        listHistory: () => cronStorage.getExecutionHistory(),
+      });
 
       // Build a real say function that posts to Slack via chat.postMessage.
       // noopSay caused drain output to be silently discarded — the model ran
