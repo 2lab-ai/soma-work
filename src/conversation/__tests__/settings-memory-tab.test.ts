@@ -527,6 +527,49 @@ describe('관찰 기록 (에피소딕)', () => {
     expect(pageApi).toHaveBeenCalledWith('DELETE', '/api/memory/page', { id: 'concepts/a', revision: 'pa' });
   });
 
+  it('a 409 reloads the day the request was for, not the day the view moved to meanwhile (review R4)', async () => {
+    const status: any = { textContent: '', setAttribute() {} };
+    const loaded: string[] = [];
+    const view: any = {
+      date: '2026-10-20',
+      revision: 'd1',
+      entries: [{ time: '09:00', content: 'standup' }],
+    };
+    const days: Record<string, any> = {
+      '2026-10-20': { date: '2026-10-20', revision: 'd2', entries: [{ time: '09:00', content: 'standup' }] },
+      '2026-10-21': { date: '2026-10-21', revision: 'e1', entries: [{ time: '09:00', content: 'standup' }] },
+    };
+    const renderDay = vi.fn();
+    let apiDone: (v: unknown) => void = () => {};
+    const w = load<any>(['epWrite', 'memStatus'], [], {
+      document: { getElementById: () => status },
+      _memDay: view,
+      apiWrite: () => new Promise((res) => (apiDone = res)),
+      renderDay,
+      loadDay: async (date: string) => {
+        loaded.push(date);
+        Object.assign(view, days[date]);
+      },
+    });
+    const pending = w.epWrite(
+      'PUT',
+      '/api/memory/episodic/2026-10-20/0',
+      { content: '20th standup corrected', revision: 'd1' },
+      '20th standup corrected',
+      0,
+      'standup',
+      '09:00',
+    );
+    // the user opens the 21st while the request is in flight
+    Object.assign(view, days['2026-10-21']);
+    apiDone({ ok: false, status: 409, error: 'conflict' });
+    expect(await pending).toBe(false);
+    expect(loaded).toEqual(['2026-10-20']);
+    // the draft goes back to the 20th's record, shown again; the 21st's look-alike is untouched
+    expect(view.date).toBe('2026-10-20');
+    expect(renderDay).toHaveBeenLastCalledWith(0, '20th standup corrected');
+  });
+
   it('a 409 on a day reloads it and reopens the edit with the whole draft (review P1)', async () => {
     const loadDay = vi.fn(async () => {});
     const renderDay = vi.fn();
@@ -603,5 +646,99 @@ describe('관찰 기록 (에피소딕)', () => {
       '/api/memory/page',
       expect.objectContaining({ current: 'my long current', title: 'My title', revision: 'p2' }),
     );
+  });
+
+  it('after a 409 and overwrite, the raw editor starts from the latest page, never the stale one (review R4)', async () => {
+    const conflictBox: any = { innerHTML: '' };
+    const detail: any = { innerHTML: '' };
+    const status: any = { textContent: '', setAttribute() {} };
+    const values: Record<string, string> = { 'pg-title': 'Mine', 'pg-aliases': '', 'pg-current': 'my current' };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'pg-conflict'
+          ? conflictBox
+          : id === 'mem-page-detail'
+            ? detail
+            : id in values
+              ? { value: values[id] }
+              : status,
+      querySelectorAll: () => [],
+    };
+    const memPage: any = {
+      page: { id: 'concepts/race', title: 'T', aliases: [], current: 'v1', history: [], updated: '2026-10-23' },
+      revision: 'p1',
+      raw: 'STALE RAW v1\n',
+      representable: true,
+    };
+    // Meanwhile the agent added a sub-heading: the latest page no longer fits the form.
+    const latest = {
+      page: { ...memPage.page, current: 'v2' },
+      revision: 'p2',
+      raw: 'LATEST RAW v2\n## Details\nagent text\n',
+      representable: false,
+    };
+    const apiWrite = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 409, error: 'conflict' })
+      .mockResolvedValueOnce({ ok: false, status: 400, error: '원문(markdown)으로 고치세요' });
+    const fns = load<any>(
+      [
+        'esc',
+        'escAttr',
+        'pageDraft',
+        'savePage',
+        'memStatus',
+        'renderPageConflict',
+        'overwritePage',
+        'renderPageEditor',
+        'pageRawMode',
+      ],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      {
+        document: doc,
+        fetch: vi.fn(async () => ({ ok: true, json: async () => latest })),
+        _memPage: memPage,
+        apiWrite,
+        refreshPageIndex: async () => {},
+        openPage: vi.fn(),
+      },
+    );
+    await fns.savePage();
+    await fns.overwritePage();
+    // the overwrite went out on the form path the user was editing in, with the newer revision
+    expect(apiWrite).toHaveBeenLastCalledWith('PUT', '/api/memory/page', expect.objectContaining({ revision: 'p2' }));
+    // the server refused it (the latest page needs raw editing); raw mode shows the latest bytes
+    fns.pageRawMode(true);
+    expect(detail.innerHTML).toContain('LATEST RAW v2');
+    expect(detail.innerHTML).not.toContain('STALE RAW');
+  });
+
+  it('a successful form save keeps the saved raw markdown for a later switch to raw editing (review R4)', async () => {
+    const detail: any = { innerHTML: '' };
+    const status: any = { textContent: '', setAttribute() {} };
+    const values: Record<string, string> = { 'pg-title': 'T', 'pg-aliases': '', 'pg-current': 'v2' };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-page-detail' ? detail : id in values ? { value: values[id] } : { innerHTML: '', ...status },
+      querySelectorAll: () => [],
+    };
+    const page = { id: 'concepts/kept', title: 'T', aliases: [], current: 'v2', history: [], updated: '2026-10-23' };
+    const apiWrite = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      data: { ok: true, page, revision: 'p2', raw: 'SAVED RAW v2\n', representable: true },
+    });
+    const fns = load<any>(
+      ['esc', 'escAttr', 'pageDraft', 'savePage', 'memStatus', 'renderPageConflict', 'renderPageEditor', 'pageRawMode'],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      {
+        document: doc,
+        _memPage: { page: { ...page, current: 'v1' }, revision: 'p1', raw: 'OLD RAW v1\n', representable: true },
+        apiWrite,
+        refreshPageIndex: async () => {},
+      },
+    );
+    await fns.savePage();
+    fns.pageRawMode(true);
+    expect(detail.innerHTML).toContain('SAVED RAW v2');
   });
 });
