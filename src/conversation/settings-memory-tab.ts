@@ -315,7 +315,23 @@ async function openPage(id) {
   _memPage = data;
   _memPageConflict = null;
   _memPageRaw = false;
+  var unsent = _memPageUnsent[id];
+  if (unsent) {
+    // A draft whose save failed after the user had opened another page: back in the editor,
+    // on the revision it was written against, with the newer version beside it when the
+    // page changed meanwhile — the same choice as a 409 in place.
+    delete _memPageUnsent[id];
+    _memPage = {
+      page: unsent.fields ? Object.assign({}, data.page, unsent.fields) : data.page,
+      revision: unsent.revision,
+      raw: unsent.raw !== undefined ? unsent.raw : data.raw,
+      representable: data.representable,
+    };
+    _memPageRaw = unsent.raw !== undefined;
+    if (unsent.revision !== data.revision) _memPageConflict = data;
+  }
   renderPageEditor();
+  renderPageConflict();
   paintPageList();
 }
 function pageRawMode(on) {
@@ -396,7 +412,8 @@ async function savePage() {
   }
   var r;
   try { r = await apiWrite('PUT', '/api/memory/page', { id: id, title: d.title, aliases: d.aliases, current: d.current, history: d.history, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
-  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
+  var unsentForm = { fields: d, revision: sentFrom.revision };
+  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, unsentForm);
   if (r.ok) {
     // Keep the saved bytes too: a later switch to raw editing starts from them (review R4).
     // The editor is updated in one step, before anything else is awaited (review R5).
@@ -412,7 +429,7 @@ async function savePage() {
     var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
     var latest = null;
     try { latest = await res.json(); } catch (_e) {}
-    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
+    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, unsentForm);
     _memPageConflict = res.ok && latest ? latest : { page: null, revision: null };
     renderPageConflict();
     memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집기에 그대로 있습니다.', true);
@@ -420,11 +437,18 @@ async function savePage() {
   }
   memStatus('저장하지 못했습니다: ' + r.error, true);
 }
+// Drafts whose save failed after the user had opened another page, by page id. Opening
+// that page again hands the draft back to the editor, once (self-check before review R6).
+var _memPageUnsent = {};
 // A page answer that came back after the user opened another page: report it,
-// refresh the list, leave the open editor alone (review R5).
-async function pageAnswerElsewhere(r, id) {
+// refresh the list, leave the open editor alone (review R5). A refused draft is kept.
+async function pageAnswerElsewhere(r, id, unsent) {
   if (r.ok) memStatus(id + ' 페이지를 저장했습니다 (지금 연 페이지는 그대로)', false);
-  else memStatus(id + ' 페이지를 저장하지 못했습니다' + (r.status === 409 ? ' — 그사이 바뀌었습니다. 다시 열어 확인하세요' : ': ' + r.error), true);
+  else {
+    if (unsent) _memPageUnsent[id] = unsent;
+    memStatus(id + ' 페이지를 저장하지 못했습니다' + (r.status === 409 ? ' — 그사이 바뀌었습니다' : ': ' + r.error)
+      + (unsent ? '. 작성한 내용은 보관했습니다 — 그 페이지를 다시 열면 편집기에 돌아옵니다' : ''), true);
+  }
   await refreshPageIndex();
 }
 async function savePageRaw() {
@@ -434,7 +458,8 @@ async function savePageRaw() {
   var id = _memPage.page.id;
   var r;
   try { r = await apiWrite('PUT', '/api/memory/page/raw', { id: id, raw: raw, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
-  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
+  var unsentRaw = { raw: raw, revision: sentFrom.revision };
+  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, unsentRaw);
   if (r.ok) {
     _memPage = r.data;
     _memPageRaw = !(r.data && r.data.representable);
@@ -448,7 +473,7 @@ async function savePageRaw() {
     var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
     var latest = null;
     try { latest = await res.json(); } catch (_e) {}
-    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
+    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, unsentRaw);
     _memPageConflict = res.ok && latest ? latest : { page: null, revision: null };
     renderPageConflict();
     memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집기에 그대로 있습니다.', true);
