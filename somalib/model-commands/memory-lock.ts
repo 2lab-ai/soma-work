@@ -107,7 +107,12 @@ function readOwner(lockPath: string): Owner | null {
 /** When the process with `pid` started (ms), or null when it cannot be told. */
 function processStartedAt(pid: number): number | null {
   try {
-    const out = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf-8', timeout: 1_000 });
+    // C locale: under e.g. ko_KR `ps` prints "2026년 10월 23일 …", which Date.parse cannot read.
+    const out = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      encoding: 'utf-8',
+      timeout: 1_000,
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C', LC_TIME: 'C' },
+    });
     const t = Date.parse(String(out.stdout || '').trim());
     return Number.isFinite(t) ? t : null;
   } catch {
