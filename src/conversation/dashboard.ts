@@ -29,6 +29,9 @@
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import type { FastifyInstance } from 'fastify';
+import type { CronExecutionRecord, CronJob } from 'somalib/cron/cron-storage';
+import type { LlmuxStatus } from '../auth/llmux-client';
+import type { LlmuxTierId } from '../auth/llmux-tiers';
 import { config } from '../config';
 import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
@@ -37,6 +40,7 @@ import { calculateTokenCost } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
+import { sanitizeCronJob } from '../session/cron-job';
 import { productionModelCatalogDeps } from '../session/model-catalog-deps';
 import {
   listRepresentativeModels,
@@ -46,6 +50,7 @@ import {
 } from '../session/model-switch';
 import { ledgerTasks, sanitizeTaskLedger } from '../session/task-ledger';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
+import { buildWorkSessionKey, normalizeSessionKey } from '../session-identity';
 import {
   countLifecycleTransitions,
   getSessionLifecyclePolicy,
@@ -60,6 +65,8 @@ import { getSurfaceLines } from '../slack/surface-config';
 import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
+import { buildCapacityView, type CapacityView } from './capacity-view';
+import { buildCronJobsView, type CronRunSessionLookup } from './cron-view';
 import { readAllInstances } from './instance-registry';
 import { getConversation, resummarizeTurn, updateConversationTitleSub } from './recorder';
 import { generateTitle } from './title-generator';
@@ -86,6 +93,12 @@ export interface KanbanSession {
    * the priority logic, so card and panel surfaces stay in lock-step.
    */
   displayHeadline: string;
+  /**
+   * The cron job whose fire created this session (SSOT 2026-10-23 T3/T4).
+   * The client files the card in the CRON lane under this job and leads its
+   * head with the CRON badge. Absent for every other session.
+   */
+  cronJob?: { id?: string; name: string };
   ownerName: string;
   ownerId: string;
   workflow: string;
@@ -459,6 +472,163 @@ function getAllSessions(): Map<string, any> {
   if (!_getSessionsFn) return new Map();
   return _getSessionsFn();
 }
+
+// ── CRON lane + capacity sources (SSOT 2026-10-23) ─────────────────
+
+/** This instance's cron jobs and their execution history (wired in src/index.ts). */
+export interface DashboardCronSource {
+  listJobs(): CronJob[];
+  listHistory(): CronExecutionRecord[];
+}
+let _cronSource: DashboardCronSource | null = null;
+export function setDashboardCronSource(source: DashboardCronSource | null): void {
+  _cronSource = source;
+}
+
+/** Where the capacity view reads llmux from. Null = the live auth runtime. */
+export interface CapacitySource {
+  enabled(): { ok: true } | { ok: false; reason: string };
+  fetchStatus(): Promise<LlmuxStatus>;
+  tiers(): Record<string, LlmuxTierId>;
+}
+let _capacitySource: CapacitySource | null = null;
+let _capacityCache: { at: number; view: CapacityView } | null = null;
+let _capacityInFlight: Promise<CapacityView> | null = null;
+/** llmux is read at most this often; every browser tab shares the read. */
+const CAPACITY_TTL_MS = 30_000;
+/** A failed read is retried sooner. */
+const CAPACITY_FAIL_TTL_MS = 10_000;
+
+export function setCapacitySource(source: CapacitySource | null): void {
+  _capacitySource = source;
+  _capacityCache = null;
+  _capacityInFlight = null;
+}
+
+async function defaultCapacitySource(): Promise<CapacitySource> {
+  // Loaded on first use, so the dashboard module stays free of auth-runtime
+  // and config side effects at import.
+  const [{ getAuthRuntimeSnapshot }, { fetchLlmuxStatus }, { getLlmuxAccountTiers }] = await Promise.all([
+    import('../auth/auth-runtime'),
+    import('../auth/llmux-client'),
+    import('../config'),
+  ]);
+  return {
+    enabled: () => {
+      const mode = getAuthRuntimeSnapshot().mode;
+      return mode === 'llmux' ? { ok: true } : { ok: false, reason: `auth mode is ${mode} — llmux not in use` };
+    },
+    fetchStatus: () => fetchLlmuxStatus({ timeoutMs: 3_000 }),
+    tiers: () => getLlmuxAccountTiers(),
+  };
+}
+
+/** A fixed, de-identified reason: raw llmux errors can carry hosts and URLs. */
+function capacityFailureReason(err: unknown): string {
+  const status = (err as { status?: unknown } | null)?.status;
+  if (status === 401 || status === 403) return 'llmux admin credential required';
+  if (typeof status === 'number') return `llmux error (HTTP ${status})`;
+  return 'llmux unreachable';
+}
+
+async function readCapacity(): Promise<CapacityView> {
+  const now = Date.now();
+  if (_capacityCache) {
+    const ttl = _capacityCache.view.available ? CAPACITY_TTL_MS : CAPACITY_FAIL_TTL_MS;
+    if (now - _capacityCache.at < ttl) return _capacityCache.view;
+  }
+  if (_capacityInFlight) return _capacityInFlight;
+  _capacityInFlight = (async (): Promise<CapacityView> => {
+    let view: CapacityView;
+    try {
+      const source = _capacitySource ?? (await defaultCapacitySource());
+      const gate = source.enabled();
+      if (!gate.ok) {
+        view = { available: false, reason: gate.reason, fetchedAtMs: Date.now(), groups: [] };
+      } else {
+        const status = await source.fetchStatus();
+        view = buildCapacityView(status, source.tiers(), Date.now());
+      }
+    } catch (err) {
+      logger.warn('Capacity view: llmux status read failed', { error: (err as Error)?.message });
+      view = { available: false, reason: capacityFailureReason(err), fetchedAtMs: Date.now(), groups: [] };
+    }
+    _capacityCache = { at: Date.now(), view };
+    return view;
+  })();
+  try {
+    return await _capacityInFlight;
+  } finally {
+    _capacityInFlight = null;
+  }
+}
+
+/** A cron run's session, live or archived, keyed by its canonical session key. */
+function cronRunSessionIndex(): CronRunSessionLookup {
+  const index = new Map<string, NonNullable<ReturnType<CronRunSessionLookup>> & { archivedAt?: number }>();
+  const usageOf = (u: any) =>
+    u
+      ? {
+          tokens:
+            (u.totalInputTokens || 0) +
+            (u.totalOutputTokens || 0) +
+            (u.totalCacheReadTokens || 0) +
+            (u.totalCacheCreateTokens || 0),
+          costUsd: u.totalCostUsd || 0,
+        }
+      : {};
+  try {
+    for (const archived of getArchiveStore().listRecent(CRON_RUN_ARCHIVE_WINDOW_MS)) {
+      if (!archived?.sessionKey) continue;
+      const key = normalizeSessionKey(archived.sessionKey);
+      // listRecent is not ordered: a thread archived twice keeps its newest archive.
+      const prev = index.get(key);
+      if (prev && (prev.archivedAt ?? 0) >= (archived.archivedAt ?? 0)) continue;
+      index.set(key, {
+        archivedAt: archived.archivedAt,
+        cronJobId: archived.cronJob?.id,
+        cronJobName: archived.cronJob?.name,
+        session: {
+          headline: displayTitle(archived),
+          conversationId: archived.conversationId,
+          activityState: 'idle',
+          live: false,
+          boardKey: composeSessionKey(`archived_${archived.sessionKey}_${archived.archivedAt}`),
+          slackThreadUrl:
+            archived.channelId && archived.threadTs
+              ? (buildThreadPermalink(archived.channelId, archived.threadTs) ?? undefined)
+              : undefined,
+          ...usageOf(archived.usage),
+          activeMs: archived.busyMs || 0,
+        },
+      });
+    }
+  } catch (err) {
+    logger.debug('cron run index: archive read failed', { error: (err as Error)?.message });
+  }
+  for (const [key, s] of getAllSessions().entries()) {
+    if (!s?.channelId) continue;
+    const u = tokenUsageOf(s);
+    index.set(buildWorkSessionKey(s.channelId, s.threadTs), {
+      cronJobId: s.cronJob?.id,
+      cronJobName: s.cronJob?.name,
+      session: {
+        headline: displayTitle(s),
+        conversationId: s.conversationId,
+        activityState: s.state === 'SLEEPING' ? 'sleeping' : s.activityState || 'idle',
+        live: true,
+        boardKey: s.sessionId ? composeSessionKey(key) : undefined,
+        slackThreadUrl:
+          s.channelId && s.threadTs ? (buildThreadPermalink(s.channelId, s.threadTs) ?? undefined) : undefined,
+        ...usageOf(u),
+        activeMs: s.activeAccumulatedMs || 0,
+      },
+    });
+  }
+  return (canonicalKey) => index.get(canonicalKey);
+}
+/** How far back archived sessions are searched to link a cron run. */
+const CRON_RUN_ARCHIVE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** The lifecycle policy as the page sees it; `degraded` only when the saved policy is unreadable. */
 function lifecycleView(): ReturnType<typeof getSessionLifecyclePolicy> & { degraded?: true } {
@@ -904,6 +1074,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     key: composeSessionKey(key),
     title: headline,
     displayHeadline: headline,
+    cronJob: sanitizeCronJob(s.cronJob),
     // Emit summaryTitle so initial board renders (and full-page refresh) match
     // the live broadcastSummaryTitleChanged WS patch. Session registry stores
     // this on the session record itself — see session-registry.ts applyTitle.
@@ -1017,6 +1188,7 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
     key: composeSessionKey(`archived_${archived.sessionKey}_${archived.archivedAt}`),
     title: headline,
     displayHeadline: headline,
+    cronJob: sanitizeCronJob(archived.cronJob),
     summaryTitle:
       typeof archived.summaryTitle === 'string' && archived.summaryTitle.length > 0 ? archived.summaryTitle : undefined,
     ownerName: archived.ownerName || archived.ownerId || 'unknown',
@@ -1594,6 +1766,41 @@ export async function registerDashboardRoutes(
   // Session lifecycle policy (sleep / archive / board windows). Readable by any
   // signed-in user; only an admin may change it — the viewer-token bearer, or an
   // ADMIN_USERS member with X-Admin-Mode: on (same gate as cross-owner writes, #716).
+  // CRON lane (SSOT 2026-10-23 T4/T5): this instance's jobs — prompt never
+  // included — with their runs newest first, each linked to its session.
+  // Readable like the board; `userId` narrows to one owner.
+  server.get<{ Querystring: { userId?: string } }>(
+    '/api/dashboard/cron',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      if (!_cronSource) {
+        reply.send({ jobs: [] });
+        return;
+      }
+      try {
+        const jobs = buildCronJobsView({
+          jobs: _cronSource.listJobs(),
+          history: _cronSource.listHistory(),
+          userId: request.query.userId || undefined,
+          nowMs: Date.now(),
+          findSession: cronRunSessionIndex(),
+        });
+        reply.send({ jobs });
+      } catch (err) {
+        logger.error('Cron lane read failed', err);
+        reply.send({ jobs: [], error: 'cron storage unreadable' });
+      }
+    },
+  );
+
+  // LLM capacity (SSOT 2026-10-23 T7/T9/T10): the llmux cooldown view. Same
+  // exposure as the readonly `auth` card (#803 — account identity visible to
+  // every viewer; infra settings never). Cached; an llmux failure is a 200
+  // with `available:false` and a fixed reason — never a 500.
+  server.get('/api/dashboard/capacity', { preHandler: [authMiddleware] }, async (_request, reply) => {
+    reply.send({ capacity: await readCapacity() });
+  });
+
   server.get('/api/dashboard/lifecycle', { preHandler: [authMiddleware] }, async (_request, reply) => {
     reply.send({ lifecycle: lifecycleView() });
   });
@@ -4114,6 +4321,204 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn, .mc-btn-submit, .mc-btn-reset { min-height: 44px; }
   .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command input { min-height: 44px; }
 }
+
+/* ── CRON badge · lane · drawer (SSOT 2026-10-23 T3/T4/T5) ── */
+.cron-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px 1px 5px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+  color: var(--st-color, var(--ib-text-2));
+  background: color-mix(in srgb, var(--st-color, var(--ib-muted)) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-color, var(--ib-muted)) 45%, transparent);
+}
+.cron-badge svg { width: 12px; height: 12px; }
+.card .card-title-text.is-renamed { animation: title-swap var(--dur-expand) var(--ease-out); }
+@keyframes title-swap { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.cron-lane { background: var(--ib-col); border-radius: 14px; padding: 2px 4px 8px; margin-bottom: 12px; }
+.cron-lane[hidden] { display: none; }
+.cron-lane-head { display: flex; align-items: center; gap: 8px; padding: 10px 8px 8px 10px; min-height: 40px; }
+.cron-lane-head .col-spark { color: var(--ib-muted); }
+.cron-lane-head .col-spark svg { width: 14px; height: 14px; }
+.cron-lane-head h3 { font-size: 12px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ib-muted); margin: 0; }
+.cron-lane-head .count { background: var(--ib-pill); color: var(--ib-text-2); border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 500; min-width: 22px; text-align: center; font-variant-numeric: tabular-nums; }
+.cron-lane-note { font-size: 12px; font-weight: 600; }
+.cron-lane-note.is-run { color: var(--st-run); }
+.cron-lane-note.is-wait { color: var(--st-wait); }
+.cron-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 10px; padding: 0 4px; align-items: start; }
+.cron-group {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px dashed var(--ib-card-border);
+  background: color-mix(in srgb, var(--ib-card) 45%, transparent);
+  transition: border-color 150ms ease;
+}
+.cron-group.is-running { border-style: solid; border-color: color-mix(in srgb, var(--st-run) 55%, transparent); }
+.cron-group.is-waiting { border-style: solid; border-color: var(--st-wait); }
+.cron-tile { display: flex; flex-direction: column; gap: 6px; min-width: 0; --st-color: var(--ib-text-2); }
+.cron-group.is-running .cron-tile { --st-color: var(--st-run); }
+.cron-group.is-waiting .cron-tile { --st-color: var(--st-wait); }
+.cron-tile-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cron-name { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 600; color: var(--ib-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cron-elsewhere { flex-shrink: 0; font-size: 11px; color: var(--ib-muted); border: 1px solid var(--ib-card-border); border-radius: 999px; padding: 0 6px; }
+.cron-history-btn {
+  flex-shrink: 0;
+  margin-left: auto;
+  min-height: 28px;
+  padding: 2px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--ib-card-border);
+  background: var(--ib-card);
+  color: var(--ib-text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: transform var(--dur-press) var(--ease-out), border-color 150ms ease;
+}
+.cron-history-btn:active:not(:focus-visible) { transform: scale(0.97); }
+.cron-history-btn:focus-visible, .cron-strip:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+@media (hover: hover) and (pointer: fine) { .cron-history-btn:hover { border-color: var(--ib-muted); color: var(--ib-text); } }
+.cron-sched { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 12px; color: var(--ib-text-2); font-variant-numeric: tabular-nums; }
+.cron-expr { color: var(--ib-text); }
+.cron-strip { display: flex; align-items: flex-end; gap: 3px; height: 22px; padding: 2px 0; border: 0; background: none; cursor: pointer; width: max-content; max-width: 100%; }
+.cron-strip.is-empty { cursor: default; font-size: 12px; color: var(--ib-muted); height: auto; }
+.cr-tick { display: block; width: 8px; height: 16px; border-radius: 2px; background: var(--st-done); }
+.cr-tick.is-fail { background: var(--st-fail); height: 18px; }
+.cr-tick.is-none { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ib-muted); }
+.cr-tick.is-run { background: var(--st-run); animation: cr-pulse 1.6s ease-in-out infinite; }
+.cr-tick.is-wait { background: var(--st-wait); }
+@keyframes cr-pulse { 50% { opacity: 0.45; } }
+.cron-status { font-size: 12px; color: var(--ib-text-2); }
+.cron-status.is-run { color: var(--st-run); font-weight: 600; }
+.cron-status.is-wait { color: var(--st-wait); font-weight: 600; }
+.cron-status.is-fail { color: var(--st-fail); }
+.cron-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
+.cron-cards:empty { display: none; }
+.cron-drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); opacity: 0; pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out); z-index: 190; }
+.cron-drawer-overlay.open { opacity: 1; pointer-events: auto; }
+.cron-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: min(560px, 100vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  color: var(--text);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--ib-shadow-raised);
+  transform: translateX(100%);
+  transition: transform var(--dur-move) var(--ease-out);
+  z-index: 191;
+}
+.cron-drawer.open { transform: none; }
+.cron-drawer-head { display: flex; align-items: center; gap: 10px; padding: 16px 18px 10px; border-bottom: 1px solid var(--border); }
+.cron-drawer-head h3 { flex: 1; margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cron-drawer-close { min-width: 36px; min-height: 36px; border-radius: 8px; border: 1px solid var(--border); background: none; color: var(--text-secondary); font-size: 18px; cursor: pointer; }
+.cron-drawer-close:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.cron-drawer-meta { padding: 10px 18px 4px; font-size: 13px; color: var(--text-secondary); }
+.cron-dmeta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
+.cron-dmeta dt { color: var(--text-tertiary); }
+.cron-dmeta dd { margin: 0; color: var(--text); }
+.cron-dnote { margin: 8px 0 0; font-size: 12px; color: var(--text-tertiary); }
+.cron-drawer-body { flex: 1; overflow-y: auto; padding: 6px 12px 24px; }
+.cron-runs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.cron-run { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 4px 10px; align-items: start; padding: 10px 6px; border-bottom: 1px solid var(--border); }
+.cr-glyph { font-size: 14px; line-height: 20px; text-align: center; color: var(--st-done); }
+.cron-run.is-fail .cr-glyph { color: var(--st-fail); }
+.cron-run.is-run .cr-glyph { color: var(--st-run); }
+.cron-run.is-wait .cr-glyph { color: var(--st-wait); }
+.cron-run.is-none .cr-glyph { color: var(--text-tertiary); }
+.cr-title { font-weight: 600; font-size: 14px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cr-sub { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.cr-err { font-size: 12px; color: var(--st-fail); margin-top: 2px; }
+.cr-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.cr-actions .btn-action { text-decoration: none; }
+
+/* ── LLM capacity — llmux cooldown timeline (SSOT 2026-10-23 T7/T9/T10) ── */
+.capacity { margin-bottom: 18px; background: var(--ib-col); border-radius: 14px; padding: 12px 14px 6px; color: var(--ib-text); }
+.capacity[hidden] { display: none; }
+.cap-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 4px; }
+.cap-title { margin: 0; font-size: 12px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ib-muted); }
+.cap-sub { font-size: 12px; color: var(--ib-text-2); }
+.cap-legend { margin-left: auto; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--ib-text-2); }
+.cap-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.cap-sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
+.cap-sw.tier-high, .cap-mk.tier-high { background: #e69f00; color: #1b1300; }
+.cap-sw.tier-low, .cap-mk.tier-low { background: #0072b2; color: #ffffff; }
+.cap-sw.tier-none, .cap-mk.tier-none { background: var(--ib-card); color: var(--ib-text); box-shadow: inset 0 0 0 1px var(--ib-muted); }
+.cap-off { font-size: 13px; color: var(--ib-text-2); padding: 8px 0 10px; }
+.cap-row { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 16px; padding: 12px 0; border-top: 1px solid var(--ib-card-border); }
+.cap-rows > .cap-row:first-child { border-top: 0; }
+.cap-meta { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cap-label { font-size: 13px; font-weight: 600; color: var(--ib-text-2); }
+.cap-pct { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.cap-pct-unit { font-size: 12px; font-weight: 500; letter-spacing: 0; margin-left: 6px; color: var(--ib-muted); }
+.cap-gauge { height: 6px; border-radius: 3px; background: var(--ib-pill); overflow: hidden; }
+.cap-gauge > span { display: block; height: 100%; background: var(--st-done); border-radius: 3px; }
+.cap-row.is-low .cap-gauge > span { background: var(--st-wait); }
+.cap-row.is-empty .cap-gauge > span { background: var(--st-fail); }
+.cap-counts { font-size: 12px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
+.cap-next { font-size: 12px; color: var(--ib-text-2); font-variant-numeric: tabular-nums; }
+.cap-row.is-low .cap-next { color: var(--st-wait); font-weight: 600; }
+.cap-row.is-empty .cap-pct { color: var(--st-fail); }
+.cap-row.is-empty .cap-next { color: var(--st-fail); font-weight: 700; font-size: 13px; }
+.cap-track { position: relative; min-height: 96px; }
+.cap-axis { position: absolute; left: 0; right: 0; top: 0; height: 16px; }
+.cap-tick { position: absolute; top: 0; transform: translateX(-50%); font-size: 10px; color: var(--ib-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cap-tick.is-now { transform: none; }
+.cap-tick.is-end { transform: translateX(-100%); }
+.cap-tick.is-break { color: var(--ib-text-2); font-weight: 600; }
+.cap-seg { position: absolute; top: 18px; bottom: 0; }
+.cap-seg.is-hours { left: 0; width: 55%; background: color-mix(in srgb, var(--ib-card) 70%, transparent); border-radius: 6px 0 0 6px; }
+.cap-seg.is-days { left: 55%; right: 0; background: repeating-linear-gradient(90deg, transparent 0 6px, color-mix(in srgb, var(--ib-card) 55%, transparent) 6px 12px); border-radius: 0 6px 6px 0; }
+.cap-shade { position: absolute; left: 0; top: 18px; bottom: 0; background: color-mix(in srgb, var(--st-fail) 16%, transparent); border-right: 2px solid var(--st-fail); }
+.cap-row.is-low .cap-shade { background: color-mix(in srgb, var(--st-wait) 14%, transparent); border-right-color: var(--st-wait); }
+.cap-break { position: absolute; left: 55%; top: 16px; bottom: 0; border-left: 2px dashed var(--ib-muted); }
+.cap-grid { position: absolute; top: 18px; bottom: 0; border-left: 1px solid color-mix(in srgb, var(--ib-muted) 22%, transparent); }
+.cap-pin { position: absolute; top: 18px; width: 2px; height: 6px; margin-left: -1px; border-radius: 1px; }
+.cap-pin.tier-high { background: #e69f00; }
+.cap-pin.tier-low { background: #0072b2; }
+.cap-pin.tier-none { background: var(--ib-muted); }
+.cap-now { position: absolute; left: 0; top: 16px; bottom: 0; border-left: 2px solid var(--ib-text); }
+.cap-mk {
+  position: absolute;
+  transform: translateX(-50%);
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+  box-shadow: var(--ib-shadow);
+  cursor: default;
+}
+.cap-mk b { font-weight: 800; margin-left: 2px; }
+.cap-mk.is-return { outline: 2px solid var(--ib-text); outline-offset: 1px; }
+.cap-mk.is-minor { opacity: 0.55; box-shadow: none; }
+.cap-more { position: absolute; right: 0; bottom: 2px; font-size: 11px; color: var(--ib-text-2); background: var(--ib-pill); border-radius: 6px; padding: 0 6px; }
+@media (max-width: 760px) {
+  .cap-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .cap-legend { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cr-tick.is-run { animation: none; }
+  .cron-drawer, .cron-drawer-overlay { transition: none; }
+  .card .card-title-text.is-renamed { animation: title-fade var(--dur-fade) linear; }
+}
+@keyframes title-fade { from { opacity: 0; } to { opacity: 1; } }
 </style>
 </head>
 <body>
@@ -4178,6 +4583,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
       </div>
     </section>
 
+    <!-- LLM capacity (SSOT 2026-10-23 T7/T9/T10): the llmux cooldown timeline,
+         between the stats strip and the inbox. Hidden until loaded, and on a
+         deployment that does not route through llmux. -->
+    <section class="capacity" id="capacity" aria-label="LLM capacity" hidden></section>
+
     <!-- Agent inbox (.prd/10 §3.1) — the board, right under the stats strip. -->
     <section class="inbox" id="inbox" aria-label="Agent inbox">
       <div class="inbox-head">
@@ -4206,6 +4616,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
           </div>
         </form>
       </dialog>
+      <!-- CRON lane (SSOT 2026-10-23 T4/T5): one tile per cron job, its latest run as a live card. -->
+      <div class="cron-lane" id="cron-lane" aria-label="Cron jobs" hidden>
+        <div class="cron-lane-head" id="cron-lane-head"></div>
+        <div class="cron-groups" id="cron-groups"></div>
+      </div>
       <div class="kanban" id="kanban" data-view="board">
         <div class="kanban-col" id="col-waiting" data-col="waiting">
           <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>NEEDS YOU</h3><span class="count" id="count-waiting">0</span></div>
@@ -4226,6 +4641,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
       </div>
     </section>
   </div>
+
+  <!-- A cron job's past runs (SSOT 2026-10-23 T5). -->
+  <div class="cron-drawer-overlay" id="cron-drawer-overlay" onclick="closeCronDrawer()"></div>
+  <aside class="cron-drawer" id="cron-drawer" role="dialog" aria-modal="true" aria-labelledby="cron-drawer-title" aria-hidden="true" inert>
+    <div class="cron-drawer-head">
+      <span class="cron-badge" id="cron-drawer-badge" aria-hidden="true"></span>
+      <h3 id="cron-drawer-title"></h3>
+      <button type="button" class="cron-drawer-close" id="cron-drawer-close" onclick="closeCronDrawer()" aria-label="&#xB2EB;&#xAE30;">&#xD7;</button>
+    </div>
+    <div class="cron-drawer-meta" id="cron-drawer-meta"></div>
+    <div class="cron-drawer-body" id="cron-drawer-body"></div>
+  </aside>
 
   <!-- Slide Panel for Session Detail -->
   <div class="slide-panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
@@ -4902,6 +5329,7 @@ function selectUser(userId) {
   history.replaceState(null, '', userId ? '/dashboard/' + userId : '/dashboard');
   loadSessions();
   loadStats();
+  loadCronJobs();
 }
 
 // ── Period ──
@@ -5177,6 +5605,12 @@ function renderBoard(board) {
   _ownerIndex = assignOwnerHues(owners);
   function tag(col) { return function(s) { return { s: s, col: col }; }; }
   _lastBoardData = board;
+  // Cron runs leave the columns for the CRON lane, one group per job (SSOT
+  // 2026-10-23 T4); the lane sections exist before the reconciler fills them.
+  var cronPlan = planCronLane(board, _cronJobs, _cronRevealKey);
+  _cronPlan = cronPlan;
+  syncCronLane(cronPlan, Date.now());
+  board = cronPlan.board;
   var plan = planDoneColumn(board.idle || [], board.closed || [], {
     showArchives: showArchives,
     showSleeping: showSleeping,
@@ -5188,6 +5622,7 @@ function renderBoard(board) {
     waiting: (board.waiting || []).map(tag('waiting')),
     working: (board.working || []).map(tag('working')),
     doneGroups: doneGroups,
+    cron: cronLaneSlots(cronPlan),
   }, {
     waiting: (board.waiting || []).length,
     working: (board.working || []).length,
@@ -5197,6 +5632,7 @@ function renderBoard(board) {
   });
   renderArchivesToggle(plan.archivedCount);
   renderSleepingToggle(plan.sleepingCount);
+  paintCronDrawer();
   // The #814 tokens tooltip describes this board (user switch, WS push).
   updateTokenBreakdown();
   _boardRenders++;
@@ -5231,6 +5667,10 @@ function reconcileBoard(plan, counts) {
       items: groups[gi].open ? groups[gi].items : [],
     });
   }
+  // CRON lane: one slot per job section (SSOT 2026-10-23 T4).
+  (plan.cron || []).forEach(function(c) {
+    slots.push({ colId: 'cron', container: c.container, items: c.items });
+  });
   for (var c = 0; c < slots.length; c++) {
     var slot = slots[c];
     var rows = [];
@@ -5504,8 +5944,14 @@ function applyCardParts(el, p) {
   if (el.getAttribute('data-col') !== p.col) { el.setAttribute('data-col', p.col); changed = true; }
   if (el.getAttribute('data-state') !== p.state) { el.setAttribute('data-state', p.state); changed = true; }
   if (el._faceHtml !== p.face) {
+    // A renamed card (a cron run taking its real title, SSOT 2026-10-23 T2)
+    // fades the new title in instead of snapping.
+    var oldTitleEl = el._faceEl.querySelector('.card-title-text');
+    var oldTitle = oldTitleEl ? oldTitleEl.textContent : null;
     el._faceEl.innerHTML = p.face;
     el._faceHtml = p.face;
+    var newTitleEl = el._faceEl.querySelector('.card-title-text');
+    if (oldTitle !== null && newTitleEl && newTitleEl.textContent !== oldTitle && canAnimate()) newTitleEl.classList.add('is-renamed');
     updateTimersIn(el._faceEl);
     animateCountersIn(el._faceEl, el.getAttribute('data-session-key'));
     changed = true;
@@ -5714,7 +6160,9 @@ function renderCardFace(s, col) {
   if (dhShow('contextwindow') && ctxPct > 0) {
     metrics.push('<span class="metric" title="Context window used">' + CTX_SVG + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '%</span>');
   }
-  return '<div class="card-head"><span class="card-spark">' + SPARK_SVG + '</span>' + titleHtml + renderOwnerBadge(s) + '</div>'
+  // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
+  var lead = s.cronJob && s.cronJob.name ? renderCronBadge(s) : '<span class="card-spark">' + SPARK_SVG + '</span>';
+  return '<div class="card-head">' + lead + titleHtml + renderOwnerBadge(s) + '</div>'
     + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
     + renderCardTaskRow(s, col)
     + renderCardUsage(s)
@@ -6718,10 +7166,17 @@ function openDeepLinkedSession() {
   var key = resolveDeepLinkKey(_deepLinkSession, Object.keys(_sessionCache), SELF_INSTANCE_NAME);
   if (!key) return;
   if (!_cardEls[key]) {
+    var linked = _sessionCache[key];
+    // An older run of a cron job (the CRON lane shows one card per job): show
+    // that run as the job's card and retry on that render.
+    if (linked && isCronCard(linked) && _cronRevealKey !== key) {
+      _cronRevealKey = key;
+      renderBoard(_lastBoardData);
+      return;
+    }
     // A card hidden by the Archives / Sleeping toggle (any age): show just this
     // card for this page load — the stored choice stays as it is — and retry on
     // that render.
-    var linked = _sessionCache[key];
     var hiddenByToggle = linked && (linked.terminated === true ? !showArchives : !showSleeping);
     if (hiddenByToggle && _revealedKey !== key) {
       _revealedKey = key;
@@ -8876,28 +9331,550 @@ function sendRetry(msg) {
   sendCommand();
 }
 
+// ── CRON lane (SSOT 2026-10-23 T3/T4/T5) ──
+// Sessions a cron fire created (KanbanSession.cronJob) leave the three columns
+// for one full-width lane above them: one tile per job — schedule, next run, the
+// last runs as a strip of glyph-coded ticks, and the job's latest run as a live
+// card. "지난 실행" opens a drawer with every kept run of the job.
+var CLOCK_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.8V8l2.2 1.4"/></svg>';
+var _cronJobs = [];          // GET /api/dashboard/cron — this instance's jobs
+var _cronPlan = null;        // last planCronLane() result
+var _cronGroupEls = Object.create(null); // group key → persistent lane section
+var _cronDrawerKey = null;   // group key the drawer shows, null when closed
+var _cronRevealKey = null;   // a deep-linked cron run shown as its job's card
+
+function renderCronBadge(s) {
+  var name = (s && s.cronJob && s.cronJob.name) || '';
+  return '<span class="cron-badge" title="' + escAttr('크론 잡: ' + name) + '">' + CLOCK_SVG + '<span class="cron-badge-text">CRON</span></span>';
+}
+function isCronCard(s) {
+  return !!(s && s.cronJob && s.cronJob.name);
+}
+function cronGroupKey(s) {
+  return s.cronJob.id ? 'id:' + s.cronJob.id : 'name:' + s.cronJob.name;
+}
+function cronCardTime(s) {
+  var t = Date.parse(s && s.lastActivity);
+  return isNaN(t) ? 0 : t;
+}
+// Split the board (T4): cron cards leave the columns and group by job. A job of
+// this instance has a group even with no card on the board; a card whose job is
+// not here (a sibling instance) groups by its stamp, without schedule data. A
+// job waiting on the user leads the lane, then running ones, then the newest.
+function planCronLane(board, jobs, revealKey) {
+  var out = { working: [], waiting: [], idle: [], closed: [] };
+  var groups = Object.create(null);
+  var order = [];
+  function group(key, jobId, name) {
+    if (!groups[key]) {
+      groups[key] = { key: key, jobId: jobId || null, name: name, job: null, cards: [], colOf: Object.create(null), waiting: false, running: false };
+      order.push(key);
+    }
+    return groups[key];
+  }
+  (jobs || []).forEach(function(j) { if (j && j.id) group('id:' + j.id, j.id, j.name).job = j; });
+  ['working', 'waiting', 'idle', 'closed'].forEach(function(col) {
+    (board[col] || []).forEach(function(s) {
+      if (!isCronCard(s)) { out[col].push(s); return; }
+      var g = group(cronGroupKey(s), s.cronJob.id, s.cronJob.name);
+      g.cards.push(s);
+      g.colOf[s.key] = col;
+      if (col === 'waiting') g.waiting = true;
+      if (col === 'working') g.running = true;
+    });
+  });
+  var list = order.map(function(k) { return groups[k]; });
+  list.forEach(function(g) {
+    g.cards.sort(function(a, b) { return cronCardTime(b) - cronCardTime(a); });
+    var lead = null;
+    // A deep link to an older run of this job shows that run as the card.
+    for (var r = 0; r < g.cards.length && !lead; r++) if (revealKey && g.cards[r].key === revealKey) lead = g.cards[r];
+    for (var i = 0; i < g.cards.length && !lead; i++) if (g.colOf[g.cards[i].key] === 'waiting') lead = g.cards[i];
+    for (var j = 0; j < g.cards.length && !lead; j++) if (g.colOf[g.cards[j].key] === 'working') lead = g.cards[j];
+    g.lead = lead || g.cards[0] || null;
+    g.latestAt = g.cards.length ? cronCardTime(g.cards[0]) : 0;
+  });
+  list.sort(function(a, b) {
+    if (a.waiting !== b.waiting) return a.waiting ? -1 : 1;
+    if (a.running !== b.running) return a.running ? -1 : 1;
+    if (a.latestAt !== b.latestAt) return b.latestAt - a.latestAt;
+    var an = a.job && a.job.nextRunAt ? a.job.nextRunAt : Infinity;
+    var bn = b.job && b.job.nextRunAt ? b.job.nextRunAt : Infinity;
+    if (an !== bn) return an - bn;
+    return String(a.name).localeCompare(String(b.name));
+  });
+  return {
+    board: out,
+    groups: list,
+    waitingCount: list.filter(function(g) { return g.waiting; }).length,
+    runningCount: list.filter(function(g) { return g.running; }).length,
+  };
+}
+function pad2(n) {
+  return (n < 10 ? '0' : '') + n;
+}
+// Every run state has its own glyph — colour is never the only signal (T5).
+function cronRunGlyph(run) {
+  var s = run && run.session;
+  if (s && s.live && s.activityState === 'waiting') return { cls: 'wait', glyph: '▲', label: '응답 필요' };
+  if (s && s.live && s.activityState === 'working') return { cls: 'run', glyph: '●', label: '실행 중' };
+  if (run && run.status === 'failed') return { cls: 'fail', glyph: '✗', label: '실패' };
+  if (run && run.status === 'queued') return { cls: 'none', glyph: '◌', label: '대기열 (세션 사용 중이라 나중에 실행)' };
+  if (run && run.executionPath === 'dm') return { cls: 'none', glyph: '◌', label: 'DM 전송 (세션 없음)' };
+  if (run && run.executionPath === 'thread_reply') return { cls: 'none', glyph: '◌', label: '스레드 답글 (세션 없음)' };
+  return { cls: 'ok', glyph: '✓', label: '성공' };
+}
+// Schedule in words for the common shapes; anything else stays the raw (UTC)
+// expression. Clock times read in the viewer's zone, from the next fire.
+function cronScheduleLabel(expr, nextRunAt) {
+  var raw = String(expr || '').trim();
+  var f = raw.split(/ +/);
+  if (f.length !== 5) return raw;
+  var min = f[0], hour = f[1], dom = f[2], mon = f[3], dow = f[4];
+  var every = /^[*][/]([0-9]+)$/;
+  var num = /^[0-9]+$/;
+  var m;
+  if (hour === '*' && dom === '*' && mon === '*' && dow === '*') {
+    m = every.exec(min);
+    if (m) return m[1] + '분마다';
+    if (min === '*') return '매분';
+    if (num.test(min)) return Number(min) === 0 ? '매시 정각' : '매시 ' + Number(min) + '분';
+  }
+  if (dom === '*' && mon === '*' && dow === '*' && num.test(min)) {
+    m = every.exec(hour);
+    if (m) return m[1] + '시간마다';
+  }
+  if (dom === '*' && mon === '*' && num.test(min) && num.test(hour) && nextRunAt) {
+    var d = new Date(nextRunAt);
+    var hm = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    if (dow === '*') return '매일 ' + hm;
+    // A weekday set only reads in local words when the zone shift keeps the day.
+    if (dow === '1-5' && d.getDay() === d.getUTCDay()) return '평일 ' + hm;
+  }
+  return raw;
+}
+function cronAgo(ms, nowMs) {
+  return capCountdown((nowMs - ms) / 1000) + ' 전';
+}
+function cronRunWhen(ms, nowMs) {
+  return capClockLabel(ms / 1000, nowMs) + ' · ' + cronAgo(ms, nowMs);
+}
+// The job's runs for the strip and the drawer, newest first: the stored run
+// history plus every card of the job the history does not reference yet — a
+// run still in progress is written to the history only when it ends, and a
+// group without local job data (another instance) has only its cards.
+function cronCardAsRun(g, s) {
+  var col = g.colOf[s.key];
+  return {
+    executedAt: Number(s.activeLegStartedAtMs) || cronCardTime(s),
+    status: 'success',
+    executionPath: 'new_thread',
+    session: { headline: s.displayHeadline || s.title, activityState: col === 'closed' ? 'idle' : col, live: col !== 'closed', boardKey: s.key, conversationId: s.conversationId, slackThreadUrl: s.slackThreadUrl },
+  };
+}
+function cronGroupRuns(g) {
+  var runs = g.job && Array.isArray(g.job.runs) ? g.job.runs.slice() : [];
+  var linked = Object.create(null);
+  for (var i = 0; i < runs.length; i++) if (runs[i].session && runs[i].session.boardKey) linked[runs[i].session.boardKey] = true;
+  for (var j = 0; j < g.cards.length; j++) if (!linked[g.cards[j].key]) runs.push(cronCardAsRun(g, g.cards[j]));
+  runs.sort(function(a, b) { return b.executedAt - a.executedAt; });
+  return runs;
+}
+function renderCronStrip(g, nowMs) {
+  var runs = cronGroupRuns(g).slice(0, 12).reverse();
+  if (!runs.length) return '<div class="cron-strip is-empty">실행 기록 없음</div>';
+  return '<button type="button" class="cron-strip" data-cron-group="' + escAttr(g.key) + '" aria-label="' + escAttr(g.name + ' 최근 실행 ' + runs.length + '회 — 지난 실행 보기') + '">'
+    + runs.map(function(r) {
+      var gl = cronRunGlyph(r);
+      return '<i class="cr-tick is-' + gl.cls + '" title="' + escAttr(gl.glyph + ' ' + gl.label + ' · ' + cronRunWhen(r.executedAt, nowMs) + (r.session && r.session.headline ? ' · ' + r.session.headline : '')) + '"></i>';
+    }).join('')
+    + '</button>';
+}
+function renderCronTileHead(g, nowMs) {
+  var j = g.job;
+  var runs = cronGroupRuns(g);
+  var sched = j ? cronScheduleLabel(j.expression, j.nextRunAt) : '';
+  var next = j && j.nextRunAt ? '다음 ' + capClockLabel(j.nextRunAt / 1000, nowMs) + ' (' + capCountdown((j.nextRunAt - nowMs) / 1000) + ' 후)' : '';
+  var last = runs[0];
+  var lastGl = last ? cronRunGlyph(last) : null;
+  var status = g.waiting ? '▲ 응답 필요'
+    : g.running ? '● 실행 중'
+    : lastGl ? lastGl.glyph + ' ' + lastGl.label + ' · ' + cronAgo(last.executedAt, nowMs)
+    : '아직 실행 없음';
+  return '<div class="cron-tile-head">'
+    + '<span class="cron-badge" aria-hidden="true">' + CLOCK_SVG + '<span class="cron-badge-text">CRON</span></span>'
+    + '<span class="cron-name" title="' + escAttr(g.name) + '">' + esc(g.name) + '</span>'
+    + (j ? '' : '<span class="cron-elsewhere" title="이 인스턴스에 없는 잡 — 삭제됐거나 다른 인스턴스의 잡이라 스케줄 정보가 없습니다">잡 정보 없음</span>')
+    + '<button type="button" class="cron-history-btn" data-cron-group="' + escAttr(g.key) + '">지난 실행 ' + runs.length + '</button>'
+    + '</div>'
+    + '<div class="cron-sched">'
+    + (sched ? '<span class="cron-expr" title="' + escAttr((j ? j.expression : '') + ' — cron 식은 UTC 기준') + '">' + esc(sched) + '</span>' : '')
+    + (next ? '<span class="cron-next">' + esc(next) + '</span>' : '')
+    + '</div>'
+    + renderCronStrip(g, nowMs)
+    + '<div class="cron-status is-' + (g.waiting ? 'wait' : g.running ? 'run' : lastGl ? lastGl.cls : 'none') + '">' + esc(status) + '</div>';
+}
+function renderCronLaneHead(plan) {
+  var n = plan.groups.length;
+  return '<span class="col-spark" aria-hidden="true">' + CLOCK_SVG + '</span><h3>CRON</h3><span class="count">' + n + '</span>'
+    + (plan.runningCount ? '<span class="cron-lane-note is-run">● 실행 중 ' + plan.runningCount + '</span>' : '')
+    + (plan.waitingCount ? '<span class="cron-lane-note is-wait">▲ 응답 필요 ' + plan.waitingCount + '</span>' : '');
+}
+// Keep one persistent section per job group in #cron-groups, in plan order, so
+// the reconciler can move each job's live card into its section.
+function syncCronLane(plan, nowMs) {
+  var lane = document.getElementById('cron-lane');
+  var root = document.getElementById('cron-groups');
+  if (!lane || !root) return;
+  lane.hidden = plan.groups.length === 0;
+  var head = document.getElementById('cron-lane-head');
+  var headHtml = renderCronLaneHead(plan);
+  if (head && head._html !== headHtml) { head.innerHTML = headHtml; head._html = headHtml; }
+  var keep = Object.create(null);
+  for (var i = 0; i < plan.groups.length; i++) {
+    var g = plan.groups[i];
+    keep[g.key] = true;
+    var sec = _cronGroupEls[g.key];
+    if (!sec) {
+      sec = document.createElement('section');
+      sec.className = 'cron-group';
+      sec.setAttribute('data-group', g.key);
+      var top = document.createElement('div');
+      top.className = 'cron-tile';
+      var cards = document.createElement('div');
+      cards.className = 'cards cron-cards';
+      sec.appendChild(top);
+      sec.appendChild(cards);
+      sec._headEl = top;
+      sec._cardsEl = cards;
+      sec._html = null;
+      _cronGroupEls[g.key] = sec;
+    }
+    var html = renderCronTileHead(g, nowMs);
+    if (sec._html !== html) { sec._headEl.innerHTML = html; sec._html = html; }
+    sec.classList.toggle('is-waiting', g.waiting);
+    sec.classList.toggle('is-running', g.running && !g.waiting);
+    sec.setAttribute('aria-label', g.name);
+    if (root.children[i] !== sec) root.insertBefore(sec, root.children[i] || null);
+  }
+  for (var key in _cronGroupEls) {
+    if (keep[key]) continue;
+    var old = _cronGroupEls[key];
+    delete _cronGroupEls[key];
+    setTimeout(function(node) { return function() { if (node.parentNode) node.parentNode.removeChild(node); }; }(old), MOTION.fade + 40);
+  }
+}
+// Reconciler slots: each job group shows its lead card (waiting, else running,
+// else newest) in its own section.
+function cronLaneSlots(plan) {
+  return plan.groups.map(function(g) {
+    var sec = _cronGroupEls[g.key];
+    return { container: sec ? sec._cardsEl : null, items: g.lead ? [{ s: g.lead, col: g.colOf[g.lead.key] }] : [] };
+  });
+}
+
+function renderCronRunRow(run, g, nowMs) {
+  var gl = cronRunGlyph(run);
+  var s = run.session;
+  // An earlier run in a thread a later run reused: the thread's title belongs to the later run.
+  var title = s && s.earlierInThread ? '같은 스레드의 이전 실행' : s && s.headline ? s.headline : gl.label;
+  var bits = [];
+  bits.push('<time datetime="' + escAttr(new Date(run.executedAt).toISOString()) + '">' + esc(cronRunWhen(run.executedAt, nowMs)) + '</time>');
+  bits.push(esc(run.triggeredBy ? '▶ 수동 실행 (' + run.triggeredBy + ')' : '예약 실행'));
+  if (s && s.activeMs) bits.push(esc('소요 ' + capCountdown(s.activeMs / 1000)));
+  if (s && typeof s.tokens === 'number' && s.tokens > 0) bits.push(esc(formatTokens(s.tokens) + ' tok'));
+  if (s && typeof s.costUsd === 'number' && s.costUsd > 0) bits.push(esc('$' + s.costUsd.toFixed(2)));
+  if (!s && run.status === 'success' && run.executionPath !== 'dm' && run.executionPath !== 'thread_reply') bits.push(esc('세션 연결 없음'));
+  var actions = [];
+  if (s && s.boardKey && _sessionCache[s.boardKey]) actions.push('<button type="button" class="btn-action" data-cron-open="' + escAttr(s.boardKey) + '">작업 로그</button>');
+  if (s && s.conversationId) actions.push('<a class="btn-action" href="/conversations/' + encodeURIComponent(s.conversationId) + '" target="_blank" rel="noopener">대화 기록</a>');
+  if (s && s.slackThreadUrl) actions.push('<a class="btn-action" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>');
+  return '<li class="cron-run is-' + gl.cls + '">'
+    + '<span class="cr-glyph" title="' + escAttr(gl.label) + '">' + gl.glyph + '</span>'
+    + '<div class="cr-main"><div class="cr-title">' + esc(title) + '</div>'
+    + '<div class="cr-sub">' + bits.join('<span aria-hidden="true"> · </span>') + '</div>'
+    + (run.error ? '<div class="cr-err">' + esc(run.error) + '</div>' : '')
+    + '</div>'
+    + (actions.length ? '<div class="cr-actions">' + actions.join('') + '</div>' : '')
+    + '</li>';
+}
+function renderCronDrawerMeta(g, nowMs) {
+  var j = g.job;
+  if (!j) return '<p class="cron-dmeta">이 인스턴스에 없는 잡입니다 — 삭제됐거나 다른 인스턴스의 잡이라 스케줄·실행 기록이 없습니다. 보드에 있는 실행만 보입니다.</p>';
+  var rows = [
+    ['스케줄', cronScheduleLabel(j.expression, j.nextRunAt) + ' · ' + j.expression + ' (UTC)'],
+    ['다음 실행', j.nextRunAt ? capClockLabel(j.nextRunAt / 1000, nowMs) + ' (' + capCountdown((j.nextRunAt - nowMs) / 1000) + ' 후)' : '8일 안에 없음'],
+    ['실행 방식', (j.mode === 'fastlane' ? '항상 새 스레드' : '세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model],
+  ];
+  return '<dl class="cron-dmeta">' + rows.map(function(r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('') + '</dl>'
+    + '<p class="cron-dnote">실행 기록은 잡마다 최근 ' + (j.historyCap || 20) + '회까지 보관됩니다.</p>';
+}
+function paintCronDrawer() {
+  if (!_cronDrawerKey) return;
+  var g = null;
+  var groups = _cronPlan ? _cronPlan.groups : [];
+  for (var i = 0; i < groups.length; i++) if (groups[i].key === _cronDrawerKey) g = groups[i];
+  if (!g) { closeCronDrawer(); return; }
+  var now = Date.now();
+  var runs = cronGroupRuns(g);
+  document.getElementById('cron-drawer-title').textContent = g.name;
+  document.getElementById('cron-drawer-badge').innerHTML = CLOCK_SVG + '<span class="cron-badge-text">CRON</span>';
+  document.getElementById('cron-drawer-meta').innerHTML = renderCronDrawerMeta(g, now);
+  document.getElementById('cron-drawer-body').innerHTML = runs.length
+    ? '<ol class="cron-runs">' + runs.map(function(r) { return renderCronRunRow(r, g, now); }).join('') + '</ol>'
+    : '<p class="col-empty">아직 실행 기록이 없습니다</p>';
+}
+var _cronDrawerReturnFocus = null; // the control that opened the drawer
+function openCronDrawer(key) {
+  _cronDrawerReturnFocus = document.activeElement;
+  _cronDrawerKey = key;
+  paintCronDrawer();
+  var d = document.getElementById('cron-drawer');
+  d.classList.add('open');
+  d.removeAttribute('inert');
+  d.setAttribute('aria-hidden', 'false');
+  document.getElementById('cron-drawer-overlay').classList.add('open');
+  var close = document.getElementById('cron-drawer-close');
+  if (close) close.focus();
+}
+function closeCronDrawer() {
+  _cronDrawerKey = null;
+  var d = document.getElementById('cron-drawer');
+  if (!d) return;
+  d.classList.remove('open');
+  d.setAttribute('inert', '');
+  d.setAttribute('aria-hidden', 'true');
+  document.getElementById('cron-drawer-overlay').classList.remove('open');
+  var back = _cronDrawerReturnFocus;
+  _cronDrawerReturnFocus = null;
+  if (back && back.isConnected && typeof back.focus === 'function') back.focus();
+}
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && _cronDrawerKey) closeCronDrawer();
+});
+document.addEventListener('click', function(e) {
+  var t = e.target && e.target.closest ? e.target : null;
+  if (!t) return;
+  var open = t.closest('[data-cron-open]');
+  if (open) { var k = open.getAttribute('data-cron-open'); closeCronDrawer(); openPanel(k, true); return; }
+  var g = t.closest('[data-cron-group]');
+  if (g) openCronDrawer(g.getAttribute('data-cron-group'));
+});
+async function loadCronJobs() {
+  if (document.hidden) return;
+  try {
+    var res = await fetch('/api/dashboard/cron' + (currentUserId ? '?userId=' + encodeURIComponent(currentUserId) : ''));
+    if (!res.ok) return;
+    var data = await res.json();
+    _cronJobs = Array.isArray(data.jobs) ? data.jobs : [];
+    if (_lastBoardData) renderBoard(_lastBoardData);
+  } catch (e) { console.error('Failed to load cron jobs', e); }
+}
+
+// ── LLM capacity — llmux cooldown timeline (SSOT 2026-10-23 T7/T9/T10) ──
+// One row per provider group between the stats strip and the inbox: the
+// group's remaining rate (llmux reports utilization, not tokens), and a
+// timeline from now to +7 days with a marker where each account's window
+// resets (●5h · ◆7d/model-scoped) or a blocked account returns (■). The
+// first 24h take 55% of the width over the stops 0·1·3·6·12·24h; the days
+// after are linear, past a marked boundary. Markers are coloured by plan tier
+// and carry the tier as text; every tooltip states the real time.
+var CAP_STOPS = [0, 3600, 10800, 21600, 43200, 86400];
+var CAP_LANES = 3;
+var CAP_TIERS = { 'claude-max-5x': { rank: 'low', short: 'x5', label: 'Max x5' }, 'claude-max-20x': { rank: 'high', short: 'x20', label: 'Max x20' }, 'chatgpt-pro-200': { rank: 'low', short: '$200', label: 'Pro ($200)' }, 'chatgpt-pro-500': { rank: 'high', short: '$500', label: 'Pro ($500)' } };
+var _capacityView = null;
+
+function capAxisPct(secondsAhead) {
+  var s = Number(secondsAhead) || 0;
+  if (s <= 0) return 0;
+  if (s >= 7 * 86400) return 100;
+  if (s <= 86400) {
+    for (var i = 1; i < CAP_STOPS.length; i++) {
+      if (s <= CAP_STOPS[i]) return (i - 1) * 11 + ((s - CAP_STOPS[i - 1]) / (CAP_STOPS[i] - CAP_STOPS[i - 1])) * 11;
+    }
+  }
+  return 55 + ((s - 86400) / (6 * 86400)) * 45;
+}
+// Floor to the minute and keep the minutes: 3h59m never reads "3h".
+function capCountdown(secs) {
+  var s = Math.max(0, Math.floor(Number(secs) || 0));
+  if (s < 60) return '<1m';
+  var m = Math.floor(s / 60);
+  if (m < 60) return m + 'm';
+  var h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ' + (m % 60) + 'm';
+  return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+}
+function capClockLabel(atSec, nowMs) {
+  var d = new Date(atSec * 1000);
+  var n = new Date(nowMs);
+  var hm = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  if (d.toDateString() === n.toDateString()) return hm;
+  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
+}
+// Lane packing, earliest first: each marker takes the lowest row whose last
+// label ended before it; one that fits nowhere joins the "+N" count — so the
+// earliest refill is never the one hidden.
+function capPackMarkers(markers, nowSec, trackPx) {
+  var px = Number(trackPx) > 0 ? Number(trackPx) : 900;
+  var ends = [];
+  var placed = [];
+  var overflow = 0;
+  var sorted = (markers || []).slice().sort(function(a, b) { return a.at - b.at; });
+  for (var i = 0; i < sorted.length; i++) {
+    var m = sorted[i];
+    var x = capAxisPct(m.at - nowSec);
+    // Label ≈ glyph + name + tier text at 11px, as a share of the track.
+    var half = Math.min(45, ((26 + (String(m.account || '').length + 4) * 7) / px) * 50);
+    // The label stays inside the track; its pin (.cap-pin) keeps the exact time.
+    var cx = Math.max(half, Math.min(100 - half, x));
+    var lane = -1;
+    for (var l = 0; l < CAP_LANES; l++) {
+      if (ends[l] === undefined || ends[l] <= cx - half) { lane = l; break; }
+    }
+    if (lane < 0) { overflow++; continue; }
+    ends[lane] = cx + half;
+    placed.push({ m: m, x: x, cx: cx, lane: lane });
+  }
+  return { placed: placed, overflow: overflow };
+}
+function capTierClass(tier) {
+  var t = CAP_TIERS[tier];
+  return t ? 'tier-' + t.rank : 'tier-none';
+}
+function capTierLabel(tier) {
+  var t = CAP_TIERS[tier];
+  return t ? t.label : '티어 미지정';
+}
+function capMarkerGlyph(m) {
+  if (m.returns) return '■';
+  return m.window === '5h' ? '●' : '◆';
+}
+function renderCapacityAxis() {
+  var ticks = [['지금', 0], ['1h', 3600], ['3h', 10800], ['6h', 21600], ['12h', 43200], ['24h', 86400], ['2d', 172800], ['3d', 259200], ['4d', 345600], ['5d', 432000], ['6d', 518400], ['7d', 604800]];
+  return '<div class="cap-axis" aria-hidden="true">'
+    + ticks.map(function(t) { return '<span class="cap-tick' + (t[1] === 86400 ? ' is-break' : '') + (t[1] === 0 ? ' is-now' : '') + (t[1] === 604800 ? ' is-end' : '') + '" style="left:' + capAxisPct(t[1]) + '%">' + esc(t[0]) + '</span>'; }).join('')
+    + '</div>';
+}
+// Faint gridlines under the tick labels: hour stops, then each day.
+function renderCapacityGrid() {
+  var at = [3600, 10800, 21600, 43200, 172800, 259200, 345600, 432000, 518400];
+  return at.map(function(t) { return '<span class="cap-grid" style="left:' + capAxisPct(t) + '%"></span>'; }).join('');
+}
+function capEventLine(prefix, ev, nowMs) {
+  if (!ev) return '';
+  return prefix + ' ' + ev.account + ' · ' + capCountdown(ev.at - nowMs / 1000) + ' 후 (' + capClockLabel(ev.at, nowMs) + ') · ' + (ev.window === 'cooldown' ? '쿨다운 해제' : ev.window + ' 창');
+}
+function renderCapacityRow(g, nowMs, trackPx) {
+  var nowSec = nowMs / 1000;
+  var state = g.state || 'unknown';
+  var pct = typeof g.availablePct === 'number' ? g.availablePct : null;
+  var pctText = pct === null ? '—' : Math.round(pct) + '%';
+  // Empty: the first account back is what matters. Low: whichever comes first.
+  var focus = state === 'empty' ? g.nextReturn
+    : state === 'low' ? ((g.nextReturn && (!g.nextRefill || g.nextReturn.at < g.nextRefill.at)) ? g.nextReturn : g.nextRefill)
+    : null;
+  var lead = state === 'empty'
+    ? (g.nextReturn ? capEventLine('다음 복귀', g.nextReturn, nowMs) : '복귀 예정 없음 — 계정 인증·상태 확인 필요')
+    : state === 'low' ? capEventLine('잔여 부족 · 다음 공급', focus, nowMs)
+    : state === 'unknown' ? '잔여율 미확인 — llmux 재조회 대기'
+    : capEventLine('다음 리필', g.nextRefill, nowMs) || '가용량을 올리는 리셋 예정 없음';
+  var counts = '가용 ' + g.availableAccounts + '/' + g.totalAccounts + (g.unknownAccounts ? ' · 미확인 ' + g.unknownAccounts : '');
+  var pack = capPackMarkers(g.markers || [], nowSec, trackPx);
+  var markers = pack.placed.map(function(p) {
+    var m = p.m;
+    var t = CAP_TIERS[m.tier];
+    var when = capClockLabel(m.at, nowMs) + ' (' + capCountdown(m.at - nowSec) + ' 후)';
+    var what = m.returns
+      ? (m.window === 'cooldown' ? '쿨다운 해제 — 계정 복귀' : m.window + ' 창 리셋 — 계정 복귀')
+      : m.window + ' 창 리셋 +' + m.gainPct + '%p' + (m.raises === false ? ' (묶인 한도가 아니라 가용량은 그대로)' : '');
+    var tip = m.account + ' · ' + capTierLabel(m.tier) + ' · ' + what + ' · ' + when;
+    return '<span class="cap-pin ' + capTierClass(m.tier) + '" style="left:' + p.x.toFixed(2) + '%"></span>'
+      + '<span class="cap-mk ' + capTierClass(m.tier) + (m.returns ? ' is-return' : '') + (m.raises === false ? ' is-minor' : '') + '" style="left:' + (p.cx === undefined ? p.x : p.cx).toFixed(2) + '%;top:' + (24 + p.lane * 22) + 'px" title="' + escAttr(tip) + '">'
+      + capMarkerGlyph(m) + ' ' + esc(m.account) + (t ? ' <b>' + esc(t.short) + '</b>' : '') + '</span>';
+  }).join('');
+  var shade = focus ? '<span class="cap-shade" style="width:' + capAxisPct(focus.at - nowSec).toFixed(2) + '%"></span>' : '';
+  var more = pack.overflow ? '<span class="cap-more" title="겹쳐서 접힌 마커">+' + pack.overflow + '</span>' : '';
+  return '<section aria-label="' + escAttr(g.label + ' 잔여율 ' + pctText) + '" class="cap-row is-' + state + '">'
+    + '<div class="cap-meta">'
+    + '<div class="cap-label">' + esc(g.label) + '</div>'
+    + '<div class="cap-pct" title="계정별 5h·7d 한도 중 더 작은 잔여율의 평균 (토큰 수 아님)">' + esc(pctText) + '<span class="cap-pct-unit">잔여</span></div>'
+    + '<div class="cap-gauge"><span style="width:' + (pct === null ? 0 : Math.max(0, Math.min(100, pct))) + '%"></span></div>'
+    + '<div class="cap-counts">' + esc(counts) + '</div>'
+    + '<div class="cap-next" role="timer">' + esc(lead) + '</div>'
+    + '</div>'
+    + '<div class="cap-track">'
+    + renderCapacityAxis()
+    + '<span class="cap-seg is-hours"></span><span class="cap-seg is-days"></span>' + renderCapacityGrid() + shade
+    + '<span class="cap-break" title="24h 이후는 일 단위"></span><span class="cap-now"></span>'
+    + markers + more
+    + '</div>'
+    + '</section>';
+}
+function renderCapacity(v, nowMs, trackPx) {
+  if (!v) return '';
+  var age = v.fetchedAtMs ? Math.max(0, Math.round((nowMs - v.fetchedAtMs) / 1000)) : null;
+  var fresh = age === null ? '' : ' · ' + (age < 60 ? age + '초 전' : Math.floor(age / 60) + '분 전') + ' 갱신';
+  var legend = '<div class="cap-legend" aria-label="범례">'
+    + '<span><i class="cap-sw tier-high"></i>상위 티어 (Max x20 · Pro $500)</span>'
+    + '<span><i class="cap-sw tier-low"></i>하위 티어 (Max x5 · Pro $200)</span>'
+    + '<span><i class="cap-sw tier-none"></i>티어 미지정</span>'
+    + '<span>● 5h 리셋 · ◆ 7d/모델별 리셋 · ■ 계정 복귀</span>'
+    + '</div>';
+  var head = '<div class="cap-head"><h2 class="cap-title">LLM 가용량</h2><span class="cap-sub">llmux · 계정별 한도 잔여율' + esc(fresh) + '</span>' + legend + '</div>';
+  if (!v.available) return head + '<div class="cap-off">' + esc('가용량을 불러오지 못했습니다 — ' + (v.reason || '알 수 없는 오류')) + '</div>';
+  if (!v.groups || !v.groups.length) return head + '<div class="cap-off">llmux 풀에 계정이 없습니다</div>';
+  return head + '<div class="cap-rows">' + v.groups.map(function(g) { return renderCapacityRow(g, nowMs, trackPx); }).join('') + '</div>';
+}
+function paintCapacity() {
+  var el = document.getElementById('capacity');
+  if (!el || !_capacityView || document.hidden) return;
+  // A deployment that does not route through llmux shows no section at all.
+  var off = !_capacityView.available && /^auth mode/.test(_capacityView.reason || '');
+  el.hidden = off;
+  if (off) return;
+  // The timeline's width (meta column beside it from 760px) sizes the labels.
+  var trackPx = el.clientWidth - 28 - (window.innerWidth > 760 ? 226 : 0);
+  var html = renderCapacity(_capacityView, Date.now(), trackPx);
+  if (el._html !== html) { el.innerHTML = html; el._html = html; }
+}
+async function loadCapacity() {
+  if (document.hidden) return;
+  try {
+    var res = await fetch('/api/dashboard/capacity');
+    if (!res.ok) return;
+    var data = await res.json();
+    _capacityView = data.capacity || null;
+    paintCapacity();
+  } catch (e) { console.error('Failed to load capacity', e); }
+}
+
 // ── Board interactions — card face click / Enter / Space expands in place.
 // Delegated from #kanban so the reconciler never re-binds per card. (Drag and
 // drop and its confirm dialogs were removed: .prd/10 §3.1-5 — the same Stop / Close / Trash
 // actions live on the open card.)
 (function initBoardInteractions() {
   var kb = document.getElementById('kanban');
-  kb.addEventListener('click', function(e) {
-    var face = e.target.closest('.card-face');
-    if (!face || !kb.contains(face)) return;
-    var key = face.parentNode.getAttribute('data-session-key');
-    if (!key) return;
-    // Finishing a text selection inside the face is not a toggle.
-    if (window.getSelection && String(window.getSelection())) return;
-    toggleCard(key, e.detail === 0);
-  });
-  kb.addEventListener('keydown', function(e) {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    var face = e.target;
-    if (!face.classList || !face.classList.contains('card-face')) return;
-    e.preventDefault();
-    var key = face.parentNode.getAttribute('data-session-key');
-    if (key) toggleCard(key, true);
+  // The CRON lane holds the same cards (SSOT 2026-10-23 T4): same handlers.
+  [kb, document.getElementById('cron-lane')].forEach(function(root) {
+    if (!root) return;
+    root.addEventListener('click', function(e) {
+      var face = e.target.closest('.card-face');
+      if (!face || !root.contains(face)) return;
+      var key = face.parentNode.getAttribute('data-session-key');
+      if (!key) return;
+      // Finishing a text selection inside the face is not a toggle.
+      if (window.getSelection && String(window.getSelection())) return;
+      toggleCard(key, e.detail === 0);
+    });
+    root.addEventListener('keydown', function(e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      var face = e.target;
+      if (!face.classList || !face.classList.contains('card-face')) return;
+      e.preventDefault();
+      var key = face.parentNode.getAttribute('data-session-key');
+      if (key) toggleCard(key, true);
+    });
   });
   // View: the saved choice, else List on narrow screens (§3.1-2).
   var saved = null;
@@ -8910,6 +9887,22 @@ loadUsers();
 loadSessions().then(function() { loadStats(); });
 connectWs();
 setInterval(loadSessions, 30000);
+// CRON lane jobs and the llmux capacity view poll on their own cadence (the
+// server caches llmux for 30s); the timeline re-lays out every 30s so markers
+// slide toward now. A hidden tab polls nothing and catches up when shown.
+loadCronJobs();
+loadCapacity();
+setInterval(loadCronJobs, 60000);
+setInterval(loadCapacity, 60000);
+setInterval(paintCapacity, 30000);
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden) { loadCapacity(); loadCronJobs(); }
+});
+var _capResizeTimer = null;
+window.addEventListener('resize', function() {
+  clearTimeout(_capResizeTimer);
+  _capResizeTimer = setTimeout(paintCapacity, 150);
+});
 </script>
 </body>
 </html>`;
