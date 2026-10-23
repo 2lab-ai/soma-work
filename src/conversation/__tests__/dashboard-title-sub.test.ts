@@ -353,32 +353,77 @@ describe('fill never overwrites — recorder and generation edge cases (review r
     fs.rmSync(paths.dataDir, { recursive: true, force: true });
   });
 
-  it('a slow cold read does not publish its stale snapshot over the live record', async () => {
+  it('concurrent cold reads share one disk read, so no stale snapshot can exist', async () => {
     const { ConversationStorage } = await import('../storage');
     await new ConversationStorage().save(conversation());
     const recorder = await import('../recorder');
 
-    // Read #1 is held on the disk; read #2 completes, gets cached, and the
-    // owner regenerates on that live object. Then read #1 lands with the
-    // pre-regenerate snapshot (no titleSub).
+    // Read #1 is held on the disk. Read #2 must not start its own disk read
+    // (whose older snapshot could later land over the live object).
     const realLoad = ConversationStorage.prototype.load;
-    const held = deferred<ConversationRecord | null>();
-    let calls = 0;
-    vi.spyOn(ConversationStorage.prototype, 'load').mockImplementation(function (this: unknown, id: string) {
-      calls++;
-      return calls === 1 ? held.promise : realLoad.call(this as InstanceType<typeof ConversationStorage>, id);
+    const held = deferred<void>();
+    const load = vi.spyOn(ConversationStorage.prototype, 'load').mockImplementation(async function (
+      this: unknown,
+      id: string,
+    ) {
+      await held.promise;
+      return realLoad.call(this as InstanceType<typeof ConversationStorage>, id);
     });
 
-    const slow = recorder.getConversation(CONV_ID);
-    const live = await recorder.getConversation(CONV_ID);
-    await recorder.updateConversationTitleSub(CONV_ID, 'OWNER-TITLE');
-    held.resolve(conversation());
-    const fromSlow = await slow;
+    const first = recorder.getConversation(CONV_ID);
+    const second = recorder.getConversation(CONV_ID);
+    held.resolve();
+    const [a, b] = await Promise.all([first, second]);
 
-    expect(fromSlow).toBe(live);
-    expect(await recorder.fillConversationTitleSub(CONV_ID, 'late-viewer-fill')).toBe('OWNER-TITLE');
-    expect((await new ConversationStorage().load(CONV_ID))?.titleSub).toBe('OWNER-TITLE');
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(a).not.toBeNull();
+    expect(a).toBe(b);
   }, 60_000);
+
+  // astra-zhuge review round 2: owner regenerates, the record is evicted from
+  // the LRU cache (100 other conversations), then a viewer fills.
+  it('after eviction a fill still sees the owner subtitle and does not overwrite it', async () => {
+    const { ConversationStorage } = await import('../storage');
+    const storage = new ConversationStorage();
+    await storage.save(conversation());
+    for (let i = 0; i < 100; i++) await storage.save(conversation({ id: `other-${i}` }));
+    const recorder = await import('../recorder');
+
+    await recorder.getConversation(CONV_ID);
+    await recorder.updateConversationTitleSub(CONV_ID, 'OWNER-TITLE');
+    for (let i = 0; i < 100; i++) await recorder.getConversation(`other-${i}`);
+
+    expect(await recorder.fillConversationTitleSub(CONV_ID, 'late-viewer-fill')).toBe('OWNER-TITLE');
+    expect((await storage.load(CONV_ID))?.titleSub).toBe('OWNER-TITLE');
+  }, 120_000);
+
+  it('a record with a save still in flight is not evicted', async () => {
+    const { ConversationStorage } = await import('../storage');
+    const storage = new ConversationStorage();
+    await storage.save(conversation());
+    for (let i = 0; i < 100; i++) await storage.save(conversation({ id: `other-${i}` }));
+    const recorder = await import('../recorder');
+
+    const live = await recorder.getConversation(CONV_ID);
+    const realSave = ConversationStorage.prototype.save;
+    const held = deferred<void>();
+    vi.spyOn(ConversationStorage.prototype, 'save').mockImplementation(async function (
+      this: unknown,
+      record: ConversationRecord,
+    ) {
+      if (record.id === CONV_ID) await held.promise;
+      return realSave.call(this as InstanceType<typeof ConversationStorage>, record);
+    });
+    const saving = recorder.updateConversationTitleSub(CONV_ID, 'OWNER-TITLE');
+    for (let i = 0; i < 100; i++) await recorder.getConversation(`other-${i}`);
+
+    // Still cached: the next read is the live object, not the pre-save file.
+    expect(await recorder.getConversation(CONV_ID)).toBe(live);
+    expect(await recorder.fillConversationTitleSub(CONV_ID, 'late-viewer-fill')).toBe('OWNER-TITLE');
+    held.resolve();
+    await saving;
+    expect((await storage.load(CONV_ID))?.titleSub).toBe('OWNER-TITLE');
+  }, 120_000);
 
   it('a fill does not bump updatedAt (derived data is not activity)', async () => {
     const { ConversationStorage } = await import('../storage');
