@@ -76,13 +76,13 @@ describe('memory lock', () => {
   }
   const DEAD_PID = 2 ** 22 + 12345;
 
-  it('takes over a same-host lock whose owner died (after a short grace) or that is older than the stale limit', () => {
+  it('takes over a same-host lock whose owner died (after a short grace), or a foreign-host lock older than the stale limit', () => {
     const data = tmpData();
     const lock = memoryLockPath(data, 'U1');
     plant(lock, { pid: DEAD_PID, at: Date.now() - 5_000 });
     expect(withMemoryLock(data, 'U1', () => 'dead-owner', { timeoutMs: 500 })).toBe('dead-owner');
 
-    plant(lock, { pid: process.pid, at: Date.now() - 120_000 });
+    plant(lock, { pid: process.pid, host: 'some-other-host', at: Date.now() - 120_000 });
     expect(withMemoryLock(data, 'U1', () => 'stale', { timeoutMs: 500, staleMs: 60_000 })).toBe('stale');
   });
 
@@ -94,6 +94,24 @@ describe('memory lock', () => {
     plant(lock, { pid: DEAD_PID, host: 'some-other-host', at: Date.now() - 5_000 });
     expect(() => withMemoryLock(data, 'U1', () => 1, { timeoutMs: 200 })).toThrow(MemoryLockTimeoutError);
     expect(fs.existsSync(lock)).toBe(true);
+  });
+
+  const PROCESS_STARTED_AT = Date.now() - process.uptime() * 1000;
+
+  it('never takes over a same-host lock whose owner process is still alive, however old (review R2 P1)', () => {
+    const data = tmpData();
+    const lock = memoryLockPath(data, 'U1');
+    plant(lock, { pid: process.pid, startedAt: PROCESS_STARTED_AT, at: Date.now() - 10 * 60_000 });
+    expect(() => withMemoryLock(data, 'U1', () => 1, { timeoutMs: 200 })).toThrow(MemoryLockTimeoutError);
+    expect(fs.existsSync(lock)).toBe(true);
+  });
+
+  it('takes over when the recorded pid now belongs to another process (pid reuse)', () => {
+    const data = tmpData();
+    const lock = memoryLockPath(data, 'U1');
+    // the recorded owner started 10 days before the process that now has this pid
+    plant(lock, { pid: process.pid, startedAt: PROCESS_STARTED_AT - 10 * 86_400_000, at: Date.now() - 15_000 });
+    expect(withMemoryLock(data, 'U1', () => 'reused', { timeoutMs: 1_000 })).toBe('reused');
   });
 
   it('release removes only its own lock — a lock that was reaped and re-taken by another owner stays (review P1)', () => {

@@ -103,10 +103,11 @@ const HEADER_LOOKALIKE = /^## \d{2}:\d{2} - /gm;
  * can never split into two entries (review P1).
  */
 export function normalizeEpisodicText(text: string): string {
+  // trim BEFORE indenting, or the guard space of a first-line header is trimmed away (review R2).
   return String(text ?? '')
     .replace(/\r\n?/g, '\n')
-    .replace(HEADER_LOOKALIKE, ' $&')
-    .trim();
+    .trim()
+    .replace(HEADER_LOOKALIKE, ' $&');
 }
 
 interface EpisodicSpan extends EpisodicEntry {
