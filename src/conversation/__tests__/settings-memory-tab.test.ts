@@ -738,6 +738,84 @@ describe('관찰 기록 (에피소딕)', () => {
     expect(detail.innerHTML).not.toContain('STALE RAW');
   });
 
+  it('a save that fails after another page was opened keeps the draft: reopening the page puts it back beside the newer version (self-check before review R6)', async () => {
+    let detailHtml = '';
+    const status: any = { textContent: '', setAttribute() {} };
+    const conflict: any = { innerHTML: '' };
+    // the form the user typed into: page A's draft
+    const values: Record<string, string> = {
+      'pg-title': 'A title',
+      'pg-aliases': 'x, y',
+      'pg-current': 'my long draft',
+    };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-page-detail'
+          ? {
+              set innerHTML(v: string) {
+                detailHtml = v;
+              },
+              get innerHTML() {
+                return detailHtml;
+              },
+            }
+          : id === 'pg-conflict'
+            ? conflict
+            : id in values
+              ? { value: values[id] }
+              : status,
+      querySelectorAll: () => [],
+    };
+    const pageA = { id: 'concepts/a', title: 'A', aliases: [], current: 'a', history: [], updated: '2026-10-23' };
+    const pageA2 = { ...pageA, current: 'a, changed by the agent', updated: '2026-10-24' };
+    const pageB = { id: 'concepts/b', title: 'B', aliases: [], current: 'b', history: [], updated: '2026-10-23' };
+    let answerA: (v: unknown) => void = () => {};
+    const apiWrite = vi.fn().mockImplementationOnce(() => new Promise((res) => (answerA = res)));
+    const pages: Record<string, unknown> = {
+      'concepts/a': { page: pageA2, revision: 'a2', raw: '# A\n', representable: true },
+      'concepts/b': { page: pageB, revision: 'b1', raw: '# B\n', representable: true },
+    };
+    const fns = load<any>(
+      [
+        'esc',
+        'escAttr',
+        'pageDraft',
+        'savePage',
+        'pageAnswerElsewhere',
+        'memStatus',
+        'renderPageConflict',
+        'renderPageEditor',
+        'openPage',
+      ],
+      ['_memPageConflict', '_memPageRaw', '_memPageUnsent', 'PAGE_GROUPS'],
+      {
+        document: doc,
+        _memPage: { page: pageA, revision: 'a1', raw: '# A\n', representable: true },
+        apiWrite,
+        fetch: vi.fn(async (url: string) => {
+          const id = decodeURIComponent(String(url).split('id=')[1]);
+          return { ok: true, json: async () => pages[id] };
+        }),
+        refreshPageIndex: async () => {},
+        paintPageList: () => {},
+      },
+    );
+    const savingA = fns.savePage(); // A's save goes out ...
+    await fns.openPage('concepts/b'); // ... the user opens B ...
+    answerA({ ok: false, status: 409, error: 'changed' }); // ... and A's save is refused
+    await savingA;
+    expect(status.textContent).toContain('보관');
+    expect(detailHtml).toContain('concepts/b'); // B stays open, untouched
+    await fns.openPage('concepts/a');
+    // the draft is back in the editor, and the newer version is offered beside it
+    expect(detailHtml).toContain('my long draft');
+    expect(detailHtml).toContain('A title');
+    expect(conflict.innerHTML).toContain('덮어쓰기');
+    // opened once more, the page is the stored one (the draft is handed back once)
+    await fns.openPage('concepts/a');
+    expect(detailHtml).not.toContain('my long draft');
+  });
+
   it('a save answer that arrives after another page was opened never retargets the open editor (review R5)', async () => {
     const detail: any = { innerHTML: '' };
     const status: any = { textContent: '', setAttribute() {} };
@@ -771,7 +849,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'openPage',
         'pageAnswerElsewhere',
       ],
-      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      ['_memPageConflict', '_memPageRaw', '_memPageUnsent', 'PAGE_GROUPS'],
       {
         document: doc,
         _memPage: { page: pageA, revision: 'a1', raw: '# A\n', representable: true },
