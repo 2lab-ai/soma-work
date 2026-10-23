@@ -264,8 +264,17 @@ async function l1Delete(target, i) {
 async function l1Undo() {
   var u = _memUndo;
   if (!u) return;
-  _memUndo = null;
-  if (await l1Write('POST', '/api/memory/l1/' + u.target, { text: u.text, revision: _mem.l1[u.target].revision }, u.text)) memStatus('되돌렸습니다 (목록 끝에 다시 추가)', false);
+  // Restore exactly what was deleted: a note Slack saved may be longer than a new note
+  // may be (restore skips that cap, not the total). The undo stays offered until the
+  // restore lands, and a refused restore leaves the text in the add box (review R5).
+  if (await l1Write('POST', '/api/memory/l1/' + u.target, { text: u.text, revision: _mem.l1[u.target].revision, restore: true }, u.text)) {
+    if (_memUndo === u) _memUndo = null;
+    paintL1();
+    memStatus('되돌렸습니다 (목록 끝에 다시 추가)', false);
+    return;
+  }
+  var ta = document.getElementById('l1-new-' + u.target);
+  if (ta && !ta.value) ta.value = u.text;
 }
 async function l1Clear(target) {
   // What the dialog names is what gets cleared: a reload under the open dialog makes it a 409 (review R3).
@@ -374,6 +383,10 @@ function pageDraft() {
 }
 async function savePage() {
   var d = pageDraft();
+  // The editor this save was sent from. If another page is opened before the answer
+  // arrives, the answer must not retarget that editor: its id, revision and fields
+  // would no longer belong together (review R5).
+  var sentFrom = _memPage;
   var isNew = _memPage.revision === null;
   var id = _memPage.page.id;
   if (isNew) {
@@ -383,12 +396,14 @@ async function savePage() {
   }
   var r;
   try { r = await apiWrite('PUT', '/api/memory/page', { id: id, title: d.title, aliases: d.aliases, current: d.current, history: d.history, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
+  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
   if (r.ok) {
     // Keep the saved bytes too: a later switch to raw editing starts from them (review R4).
+    // The editor is updated in one step, before anything else is awaited (review R5).
     _memPage = { page: r.data.page, revision: r.data.revision, raw: r.data.raw, representable: r.data.representable };
-    await refreshPageIndex();
     renderPageEditor();
     memStatus(isNew ? id + ' 페이지를 만들었습니다' : '저장했습니다', false);
+    await refreshPageIndex();
     return;
   }
   if (r.status === 409 && !isNew) {
@@ -397,6 +412,7 @@ async function savePage() {
     var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
     var latest = null;
     try { latest = await res.json(); } catch (_e) {}
+    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
     _memPageConflict = res.ok && latest ? latest : { page: null, revision: null };
     renderPageConflict();
     memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집기에 그대로 있습니다.', true);
@@ -404,18 +420,27 @@ async function savePage() {
   }
   memStatus('저장하지 못했습니다: ' + r.error, true);
 }
+// A page answer that came back after the user opened another page: report it,
+// refresh the list, leave the open editor alone (review R5).
+async function pageAnswerElsewhere(r, id) {
+  if (r.ok) memStatus(id + ' 페이지를 저장했습니다 (지금 연 페이지는 그대로)', false);
+  else memStatus(id + ' 페이지를 저장하지 못했습니다' + (r.status === 409 ? ' — 그사이 바뀌었습니다. 다시 열어 확인하세요' : ': ' + r.error), true);
+  await refreshPageIndex();
+}
 async function savePageRaw() {
   var ta = document.getElementById('pg-raw');
   var raw = ta ? ta.value : '';
+  var sentFrom = _memPage; // as in savePage (review R5)
   var id = _memPage.page.id;
   var r;
   try { r = await apiWrite('PUT', '/api/memory/page/raw', { id: id, raw: raw, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
+  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
   if (r.ok) {
     _memPage = r.data;
     _memPageRaw = !(r.data && r.data.representable);
-    await refreshPageIndex();
     renderPageEditor();
     memStatus('저장했습니다', false);
+    await refreshPageIndex();
     return;
   }
   if (r.status === 409) {
@@ -423,6 +448,7 @@ async function savePageRaw() {
     var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
     var latest = null;
     try { latest = await res.json(); } catch (_e) {}
+    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
     _memPageConflict = res.ok && latest ? latest : { page: null, revision: null };
     renderPageConflict();
     memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집기에 그대로 있습니다.', true);
@@ -463,11 +489,12 @@ async function deletePage() {
   var revision = _memPage.revision; // the page the dialog names, as it was shown (review R3)
   var ok = await confirmDialog({ title: p.title + ' 페이지를 지울까요?', body: p.id + ' — Current와 History가 모두 사라집니다.', action: '페이지 삭제' });
   if (!ok) return;
+  var sentFrom = _memPage;
   var r = await apiWrite('DELETE', '/api/memory/page', { id: p.id, revision: revision });
   if (!r.ok) { memStatus((r.status === 409 ? '그사이 바뀌었습니다 — 다시 열어 확인하세요: ' : '지우지 못했습니다: ') + r.error, true); return; }
-  _memPage = null;
+  // Close the editor only if it still shows the deleted page (review R5).
+  if (_memPage === sentFrom) { _memPage = null; renderPageEditor(); }
   await refreshPageIndex();
-  renderPageEditor();
   memStatus('페이지를 지웠습니다', false);
 }
 async function refreshPageIndex() {
