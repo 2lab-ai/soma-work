@@ -384,7 +384,8 @@ async function savePage() {
   var r;
   try { r = await apiWrite('PUT', '/api/memory/page', { id: id, title: d.title, aliases: d.aliases, current: d.current, history: d.history, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   if (r.ok) {
-    _memPage = { page: r.data.page, revision: r.data.revision };
+    // Keep the saved bytes too: a later switch to raw editing starts from them (review R4).
+    _memPage = { page: r.data.page, revision: r.data.revision, raw: r.data.raw, representable: r.data.representable };
     await refreshPageIndex();
     renderPageEditor();
     memStatus(isNew ? id + ' 페이지를 만들었습니다' : '저장했습니다', false);
@@ -442,10 +443,15 @@ function renderPageConflict() {
 }
 function overwritePage() {
   if (!_memPageConflict || !_memPageConflict.revision) return;
+  var rawDraft = _memPageRaw || _memPage.representable === false; // the editor the draft is in
+  // The editor now stands on the newer page: its revision, and its bytes for a later
+  // switch to raw editing — never the ones first opened (review R4).
   _memPage.revision = _memPageConflict.revision;
+  _memPage.raw = _memPageConflict.raw;
+  _memPage.representable = _memPageConflict.representable;
   _memPageConflict = null;
   renderPageConflict();
-  return _memPageRaw || _memPage.representable === false ? savePageRaw() : savePage();
+  return rawDraft ? savePageRaw() : savePage();
 }
 function discardPageDraft() {
   var id = _memPage && _memPage.page && _memPage.page.id;
@@ -510,11 +516,16 @@ function renderDay(editIndex, draft) {
   el.innerHTML = html;
 }
 async function epWrite(method, url, payload, draft, at, orig, origTime) {
+  // The day is part of the record's identity: recover on the day the request was
+  // for, even if the view moved to another day while it was in flight (review R4).
+  var dayMatch = /\/api\/memory\/episodic\/([^/]+)\//.exec(url);
+  var date = dayMatch ? decodeURIComponent(dayMatch[1]) : (_memDay && _memDay.date);
   var r;
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   if (r.ok) { _memDay = r.data.day; renderDay(); refreshDatesIfEmptied(); return true; }
   if (r.status === 409) {
-    await loadDay(_memDay.date);
+    await loadDay(date);
+    if (!_memDay || _memDay.date !== date) { var box = document.getElementById('mem-ep-new'); if (draft && box) box.value = draft; memStatus('그사이 이 날의 기록이 바뀌었습니다. 작성하던 내용은 메모 칸에 옮겼습니다.', true); return false; }
     // The whole draft goes back into an edit box (review P1).
     // Back into the editor of the entry it was for — found by its original time
     // and text, never by position — else into the note box as a recovery draft

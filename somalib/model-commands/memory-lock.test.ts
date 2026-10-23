@@ -3,7 +3,13 @@ import * as os from 'os';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 import { Worker } from 'worker_threads';
-import { HierarchicalMemoryFileStore, memoryRoot } from './hierarchical-memory-store';
+import {
+  HierarchicalMemoryFileStore,
+  l1FilePath,
+  legacyL1FilePath,
+  memoryRoot,
+  migrateLegacyL1,
+} from './hierarchical-memory-store';
 import { MemoryFileStore } from './memory-file-store';
 import { MemoryLockTimeoutError, memoryLockPath, reapIfStill, withMemoryLock } from './memory-lock';
 
@@ -211,6 +217,26 @@ describe('memory lock', () => {
     const raw = fs.readFileSync(path.join(memoryRoot(data, 'U1'), 'episodic', '2026-10-23.md'), 'utf-8');
     expect(raw).toContain('first');
     expect(raw).toContain('second');
+  });
+
+  it("a legacy L1 migration waits for the lock and decides inside it: a locked writer's save survives (review R4)", async () => {
+    const data = tmpData();
+    const legacy = legacyL1FilePath(data, 'U1', 'memory');
+    const canonical = l1FilePath(data, 'U1', 'memory');
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(legacy, 'legacy note', 'utf-8');
+    // Another process holds the lock and saves the canonical file meanwhile.
+    fs.mkdirSync(path.dirname(canonical), { recursive: true });
+    const worker = await holdLockElsewhere(memoryLockPath(data, 'U1'), 300);
+    fs.writeFileSync(canonical, 'legacy note\n§\nnew saved note', 'utf-8');
+    const t0 = Date.now();
+    expect(migrateLegacyL1(data, 'U1', 'memory')).toBe(true);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(200);
+    await worker.terminate();
+    expect(fs.readFileSync(canonical, 'utf-8')).toBe('legacy note\n§\nnew saved note');
+    expect(fs.existsSync(legacy)).toBe(false);
+    const leftovers = fs.readdirSync(path.dirname(canonical)).filter((f) => f.includes('.tmp'));
+    expect(leftovers).toEqual([]);
   });
 
   it('the MCP-side L1 store takes the same lock and writes atomically', async () => {
