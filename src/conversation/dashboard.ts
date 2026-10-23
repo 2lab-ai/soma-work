@@ -8730,7 +8730,10 @@ function paintWorkLog(state, added) {
   if (tail) wlAppendTail(state, list, added);
   else wlRenderList(state, list);
   updateTimersIn(list);
-  setTextIfChanged(document.getElementById('worklog-count'), String(wlScopeEntries(state.entries).length));
+  var scopedCount = wlScopeEntries(state.entries).length;
+  setTextIfChanged(document.getElementById('worklog-count'), String(scopedCount));
+  // Spec 12: entries of another agent arrived while this agent's log is empty — keep the empty line.
+  if (!scopedCount) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
   wlEnsureTabStop(list);
   // Tail-follow, unless the reader has an entry's detail open; older entries
   // arriving above keep the reader's place.
