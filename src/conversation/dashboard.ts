@@ -4223,6 +4223,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
         <option value="">All Users</option>
       </select></span>
       <a href="/conversations"><span aria-hidden="true">&#x1F4DD;</span>Conversations</a>
+      <a href="/dashboard/settings" id="settings-link" title="개인 설정 — Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다"><span aria-hidden="true">&#x2699;&#xFE0F;</span>설정</a>
       <button
         id="admin-mode-toggle"
         type="button"
