@@ -23,7 +23,8 @@
  *     and might never run;
  *   - the prompt carries a note naming the deploy and its thread, so a lane
  *     registered for several repos knows which one it is checking, and can post
- *     its report back where the deploy was asked for.
+ *     its result back into the deploy thread itself (the harness does not post
+ *     for it).
  *
  * Every outcome a lane owner would want to know about gets one line in the
  * deploy thread; every ⚠️ line ends with what the owner can do about it.

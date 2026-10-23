@@ -16,8 +16,9 @@ always in a **new thread in the job's channel** (`forceNewThread`; the job's
 `mode`/`target` do not apply), with the deployer recorded as `triggeredBy`. The
 prompt ends with a line naming the deploy and the thread it was asked for in:
 `[deploy_completed repo=<repo> target=<target> before=<sha|-> after=<sha> by=<user> channel=<deploy channel> thread=<deploy thread ts>]`,
-so a job registered for several repos runs once per repo, scoped by it, and
-knows where to report back. The
+so a job registered for several repos runs once per repo, scoped by it, and is
+told the deploy thread, so it can post its result back there — the harness does
+not post for it. The
 owner's `onDeploy` entry is the consent, so there is no run-allowlist check or
 permission prompt. The deploy turn never waits for a lane.
 
@@ -100,8 +101,9 @@ job. It is an entry of `DATA_DIR/deploy-lanes.json`:
   a new thread of its `channel` whose root is
   `▶ <repo> → <target> (<sha7>) 배포 후 레인 *<name>* — 배포 스레드: <#deploy channel>`.
   The injected prompt is `[deploy-lane:<name>] <prompt>` plus the same
-  `[deploy_completed …]` note as a cron lane; its `channel=` / `thread=` name
-  the deploy thread, where the lane's report belongs.
+  `[deploy_completed …]` note as a cron lane. Its `channel=` / `thread=` name
+  the deploy thread so the lane can post its result back there; the harness
+  does not post for it.
 - Dedupe is per (`owner`, `name`, `after`), like a cron job's per (job, `after`).
 
 Code: `somalib/cron/cron-storage.ts` (`onDeploy`, `jobMatchesDeploy`,

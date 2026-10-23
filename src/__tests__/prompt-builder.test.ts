@@ -174,9 +174,13 @@ describe('PromptBuilder', () => {
       // A CD run still going when the in-turn wait ends is not a confirmation.
       expect(section).toMatch(/still in progress when the wait ends[^.]*unconfirmed/);
       expect(section).toMatch(/"type"`? is the first key/);
-      // Each lane reports back into the deploy thread; the deploy turn never waits for it.
-      expect(section).toMatch(/posts its result back into this thread/);
+      // A lane is told this thread so it can post its result back; the harness does not post for it,
+      // and the deploy turn never waits for it.
+      expect(section).toContain(
+        'Each lane runs in a thread of its own; it is told this thread, so it can post its result back here.',
+      );
       expect(section).not.toContain('Each lane reports in its own place');
+      expect(section).not.toMatch(/posts its result back into this thread/);
       expect(section).toContain('Do not wait for a lane, do not check on it, and do not run its work yourself.');
     });
 
