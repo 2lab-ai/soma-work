@@ -52,6 +52,7 @@ import { ClaudeHandler } from './claude-handler';
 import { config, runPreflightChecks, validateConfig } from './config';
 import { loadConfig } from './config-loader';
 import {
+  broadcastArtifactUpdate,
   broadcastConversationUpdate,
   broadcastSessionUpdate,
   broadcastSummaryTitleChanged,
@@ -81,6 +82,8 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
+import { captureArtifactFromWorkLog } from './conversation/artifact-capture';
+import { getArtifactStore } from './conversation/artifacts';
 import { createNewTaskProvider } from './conversation/new-task-provider';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
 import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
@@ -950,6 +953,8 @@ async function start() {
     // Fire-and-forget: the turn never waits on the disk; every failure is
     // already logged inside work-log.ts.
     setOnWorkLogAppendedCallback(broadcastWorkLog);
+    // A recorded artifact reaches every dashboard and grows its card's face row.
+    getArtifactStore().onRecorded(broadcastArtifactUpdate);
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
@@ -981,6 +986,10 @@ async function start() {
         const stamped = stampWorkLogAgent(owner ?? {}, entry, Date.now());
         // A subagent's tool count grew: push the card (throttled, ≤ 1/s).
         if (entry.agentId && entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);
+        // SSOT 2026-10-23 T1/T7: files the model sends to Slack and its markdown
+        // answers become dashboard artifacts. Before the store sees it, while
+        // `entry` still has the whole final text (the work log caps it).
+        void captureArtifactFromWorkLog(conversationId, entry);
         appendWorkLog(conversationId, stamped).catch(() => {});
       },
       // Spec 12 — the session's agent tree: fold the event into its registry
