@@ -70,8 +70,8 @@ describe('cron fire → structured cron origin', () => {
     expect(injected[0].cron).toEqual({ jobId: job.id, jobName: 'nightly' });
   });
 
-  it('a queued fire that later drains records how that run ended — it never stays "queued"', async () => {
-    const storage = tmpStorage('drain');
+  it('a new-thread fire that fails after opening its thread records the failure against that session', async () => {
+    const storage = tmpStorage('fail');
     storage.addJob({
       name: 'nightly',
       expression: '* * * * *',
@@ -81,18 +81,17 @@ describe('cron fire → structured cron origin', () => {
       threadTs: null,
     });
     const { deps } = setup(storage);
-    deps.sessionRegistry.createSession('U1', 'Z', 'C1', 't-2');
-    deps.sessionRegistry.transitionToMain('C1', 't-2', 'default');
-    deps.sessionRegistry.setActivityState('C1', 't-2', 'working');
+    deps.messageInjector = vi.fn(async () => {
+      throw new Error('turn crashed');
+    });
 
     await new CronScheduler(deps).tick();
-    expect(storage.getExecutionHistory('nightly').map((r) => r.status)).toEqual(['queued']);
 
-    deps.sessionRegistry.setActivityState('C1', 't-2', 'idle');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    const history = storage.getExecutionHistory('nightly');
-    expect(history[0]).toMatchObject({ status: 'success', executionPath: 'idle_inject', sessionKey: 'C1-t-2' });
-    expect(history.map((r) => r.status)).toEqual(['success', 'queued']);
+    expect(storage.getExecutionHistory('nightly')[0]).toMatchObject({
+      status: 'failed',
+      executionPath: 'new_thread',
+      sessionKey: 'C1-1792728682.496489',
+      error: 'turn crashed',
+    });
   });
 });

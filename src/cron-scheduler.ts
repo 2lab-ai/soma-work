@@ -508,17 +508,9 @@ export class CronScheduler {
       routeContext: { skipAutoBotThread: true },
     };
 
-    // The queued record says when the fire waited; this one says how the run
-    // that finally went in ended (SSOT 2026-10-23 T5 — the run history must
-    // not show a drained fire as still queued).
-    const drainedKey = `${session.channelId}-${session.threadTs}`;
-    this.deps
-      .messageInjector(syntheticEvent)
-      .then(() => this.recordExecution(job, 'success', 'idle_inject', drainedKey))
-      .catch((err: any) => {
-        logger.error('Drain inject failed', { name: job.name, error: err?.message });
-        this.recordExecution(job, 'failed', 'idle_inject', drainedKey, err?.message);
-      });
+    this.deps.messageInjector(syntheticEvent).catch((err: any) => {
+      logger.error('Drain inject failed', { name: job.name, error: err?.message });
+    });
 
     // If more jobs remain, re-register for next idle cycle
     if (queue.length > 0) {
@@ -537,8 +529,10 @@ export class CronScheduler {
   private async executeWithNewThread(job: CronJob, now: Date, triggeredBy?: string, note?: string): Promise<boolean> {
     logger.info('No session found, creating new thread', { name: job.name, channel: job.channel });
 
+    let openedTs: string | undefined;
     try {
       const rootTs = await this.deps.threadCreator(job.channel, `[cron:${job.name}] Scheduled task`);
+      openedTs = rootTs;
       if (!rootTs) {
         logger.warn('Failed to create thread (no ts returned)', { name: job.name });
         this.recordExecution(job, 'failed', 'new_thread', undefined, 'thread creation returned no ts', triggeredBy);
@@ -566,7 +560,16 @@ export class CronScheduler {
       return true;
     } catch (error: any) {
       logger.error('New thread creation failed', { name: job.name, error: error?.message });
-      this.recordExecution(job, 'failed', 'new_thread', undefined, error?.message, triggeredBy);
+      // When the thread was opened, the failure belongs to that session too —
+      // the dashboard must not read its card as a separate, successful run.
+      this.recordExecution(
+        job,
+        'failed',
+        'new_thread',
+        openedTs ? `${job.channel}-${openedTs}` : undefined,
+        error?.message,
+        triggeredBy,
+      );
       return false;
     }
   }

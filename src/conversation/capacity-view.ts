@@ -88,6 +88,10 @@ export interface CapacityView {
 
 const EXHAUSTED = 1e-6;
 
+function current0(pct: number | null): number | null {
+  return pct === null ? null : pct / 100;
+}
+
 /** `kim.lee@corp.example` → `k***@corp.example` (only when llmux runs anonymous). */
 function maskName(name: string, anonymous: boolean): string {
   if (!anonymous) return name;
@@ -185,15 +189,27 @@ function accountView(
     }
   }
 
-  // The account's availability right after a window resets, for a usable
-  // account: only a reset of the binding window raises it.
-  const current = availablePct === null ? null : availablePct / 100;
-  const raisesOnReset = (r: WindowReading): boolean => {
-    if (!r.binding || current === null) return false;
-    const others = measured.filter((w) => w !== r).map((w) => w.remaining as number);
-    const after = Math.min(1, ...others);
-    return after - current >= 0.005;
-  };
+  // Which resets raise a usable account's availability: replay its binding
+  // windows' resets in time order (simultaneous ones together) — a reset
+  // raises it when the binding minimum goes up at that moment. With 5h and 7d
+  // both at 50%, the first reset changes nothing and the second does.
+  const raisingAt = new Set<number>();
+  if (current0(availablePct) !== null) {
+    const state = new Map(measured.map((r) => [r.label, r.remaining as number]));
+    const upcoming = measured.filter((r) => r.at && r.at > nowS).sort((a, b) => (a.at as number) - (b.at as number));
+    let level = Math.min(...state.values());
+    for (let i = 0; i < upcoming.length; ) {
+      const at = upcoming[i].at as number;
+      while (i < upcoming.length && upcoming[i].at === at) {
+        state.set(upcoming[i].label, 1);
+        i++;
+      }
+      const next = Math.min(...state.values());
+      if (next - level >= 0.005) raisingAt.add(at);
+      level = next;
+    }
+  }
+  const raisesOnReset = (r: WindowReading): boolean => r.binding && !!r.at && raisingAt.has(r.at);
 
   const markers: CapacityMarker[] = [];
   if (blocked) {

@@ -214,6 +214,13 @@ describe('buildCapacityView — return only when every block lifts (trinity revi
     expect(g.markers).toEqual([]);
   });
 
+  it('two binding windows at the same level: the later reset is the one that raises it', () => {
+    const g = one(acct({ name: 'e', group: 'claude', five_hour: w(0.5, H), seven_day: w(0.5, 2 * D) }));
+    expect(g.markers.find((m) => m.window === '5h')).toMatchObject({ raises: false });
+    expect(g.markers.find((m) => m.window === '7d')).toMatchObject({ raises: true });
+    expect(g.nextRefill).toMatchObject({ window: '7d', at: NOW_S + 2 * D });
+  });
+
   it('next refill is the reset that raises availability, not just the next reset', () => {
     // 7d binds at 10% until +3d; the 5h reset in 1h changes nothing usable.
     const g = one(acct({ name: 'b', group: 'claude', five_hour: w(0.2, H), seven_day: w(0.9, 3 * D) }));
