@@ -52,8 +52,12 @@ export interface AgentRecord {
   startedAt: number;
   /** When it ended — or, for `unknown`, when we lost sight of it. */
   endedAt?: number;
-  /** Tool calls the agent made (counted from its work-log entries; at least the SDK's count). */
+  /** Tool calls the agent made: the larger of the two counts below (never their sum). */
   toolCalls: number;
+  /** Its `tool` work-log entries seen so far. */
+  loggedTools?: number;
+  /** The SDK's own cumulative count (task_progress / settle / Agent outcome). */
+  reportedTools?: number;
   lastTool?: string;
   /** Tokens the SDK reported for the run so far. */
   tokens?: number;
@@ -121,7 +125,6 @@ function ensureAgent(h: AgentHolder, rawId: string, ts: number): { agent: AgentR
   if (known) return { agent: known, created: false };
   const agent: AgentRecord = { id, n: reg.nextN++, status: 'running', startedAt: ts, toolCalls: 0 };
   reg.agents.push(agent);
-  enforceBounds(reg);
   return { agent, created: true };
 }
 
@@ -129,6 +132,16 @@ function ensureAgent(h: AgentHolder, rawId: string, ts: number): { agent: AgentR
 function fill<K extends 'type' | 'description' | 'parentId'>(a: AgentRecord, key: K, v: unknown, max: number): boolean {
   if (a[key] !== undefined || typeof v !== 'string' || !v) return false;
   a[key] = clip(v, max) as AgentRecord[K];
+  return true;
+}
+
+/** Two observations of one count (our log, the SDK's report): show the larger, never the sum (review R4). */
+function setTools(a: AgentRecord, logged: number | undefined, reported: number | undefined): boolean {
+  if (logged !== undefined) a.loggedTools = logged;
+  if (reported !== undefined) a.reportedTools = Math.max(a.reportedTools ?? 0, reported);
+  const next = Math.max(a.loggedTools ?? 0, a.reportedTools ?? 0);
+  if (next === a.toolCalls) return false;
+  a.toolCalls = next;
   return true;
 }
 
@@ -144,6 +157,13 @@ function finish(a: AgentRecord, status: AgentStatus, ts: number): boolean {
  * anything changed (the host pushes the card only then).
  */
 export function applyAgentEvent(h: AgentHolder, event: AgentTreeEvent): boolean {
+  const changed = applyOne(h, event);
+  // Bounds after the record is complete (parent known) and after every end (review R5).
+  if (changed && h.agents) enforceBounds(h.agents);
+  return changed;
+}
+
+function applyOne(h: AgentHolder, event: AgentTreeEvent): boolean {
   switch (event.kind) {
     case 'spawn': {
       const { agent, created } = ensureAgent(h, event.agentId, event.ts);
@@ -174,11 +194,7 @@ export function applyAgentEvent(h: AgentHolder, event: AgentTreeEvent): boolean 
         agent.background = true;
         return true;
       }
-      let changed = false;
-      if (event.toolUses !== undefined && event.toolUses > agent.toolCalls) {
-        agent.toolCalls = event.toolUses;
-        changed = true;
-      }
+      let changed = event.toolUses !== undefined ? setTools(agent, undefined, event.toolUses) : false;
       if (event.durationMs !== undefined && agent.durationMs !== event.durationMs) {
         agent.durationMs = event.durationMs;
         changed = true;
@@ -227,10 +243,7 @@ export function applyAgentEvent(h: AgentHolder, event: AgentTreeEvent): boolean 
           agent.durationMs = event.usage.durationMs;
           changed = true;
         }
-        if (event.usage.toolUses > agent.toolCalls) {
-          agent.toolCalls = event.usage.toolUses;
-          changed = true;
-        }
+        if (event.usage.toolUses > 0) changed = setTools(agent, undefined, event.usage.toolUses) || changed;
       }
       if (event.phase === 'settled' && event.status) {
         agent.settled = true;
@@ -265,21 +278,25 @@ export function stampWorkLogAgent<E extends { kind: string; tool?: string; agent
   now: number,
 ): E & { taskId?: string; taskTitle?: string } {
   if (!entry.agentId) return stampWorkLogTask(h.taskLedger, entry);
-  const { agent } = ensureAgent(h, entry.agentId, now);
+  const { agent, created } = ensureAgent(h, entry.agentId, now);
   if (entry.kind === 'tool') {
-    agent.toolCalls += 1;
+    setTools(agent, (agent.loggedTools ?? 0) + 1, undefined);
     if (entry.tool) agent.lastTool = clip(String(entry.tool), TYPE_MAX);
   }
+  if (created && h.agents) enforceBounds(h.agents);
   return stampWorkLogTask(agent.ledger, entry);
 }
 
 /** After a restart: every agent still marked running is out of sight. Returns a copy. */
 export function loseRunningAgents(reg: AgentRegistry | undefined, now: number): AgentRegistry | undefined {
   if (!reg) return undefined;
-  return {
+  const out: AgentRegistry = {
     nextN: reg.nextN,
     agents: reg.agents.map((a) => (a.status === 'running' ? { ...a, status: 'unknown', endedAt: now } : a)),
   };
+  // Nothing runs now: an excess the running agents held is released.
+  enforceBounds(out);
+  return out;
 }
 
 function enforceBounds(reg: AgentRegistry): void {
@@ -353,11 +370,17 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
     if (typeof a.summary === 'string' && a.summary) rec.summary = clip(a.summary, TEXT_MAX);
     if (typeof a.taskId === 'string' && a.taskId) rec.taskId = clip(a.taskId, TYPE_MAX);
     if (a.settled === true) rec.settled = true;
+    const logged = finitePositive(a.loggedTools);
+    if (logged) rec.loggedTools = Math.floor(logged);
+    const reported = finitePositive(a.reportedTools);
+    if (reported) rec.reportedTools = Math.floor(reported);
     const ledger = sanitizeTaskLedger(a.ledger);
     if (ledger) rec.ledger = ledger;
     agents.push(rec);
   }
   // Never hand out a spawn number that is already taken.
   const highest = agents.reduce((m, a) => Math.max(m, a.n), 0);
-  return { nextN: Math.max(Math.floor(nextN), highest + 1), agents };
+  const reg = { nextN: Math.max(Math.floor(nextN), highest + 1), agents };
+  enforceBounds(reg);
+  return reg;
 }

@@ -972,6 +972,37 @@ export class AgentStreamProcessor {
   }
 
   /**
+   * Spec 12 — a tool call arrived: announce the agent it belongs to (first
+   * frame of an agent not seen before) and, for an `Agent` / `Task` call, the
+   * agent it starts. Once per call id.
+   */
+  private announceAgents(
+    callId: string,
+    name: string,
+    input: unknown,
+    parent: string | undefined,
+    context: StreamContext,
+  ): void {
+    if (!callId || this.spawnedAgents.has(callId)) return;
+    this.toolNamesById.set(callId, name);
+    if (parent) this.noteAgent(parent, context);
+    if (!isAgentSpawnTool(name)) return;
+    const args = (input ?? {}) as Record<string, unknown>;
+    const background = args.run_in_background === true;
+    this.spawnedAgents.set(callId, background);
+    this.seenAgents.add(callId);
+    this.emitAgentEvent(context, {
+      kind: 'spawn',
+      agentId: callId,
+      ...(parent ? { parentAgentId: parent } : {}),
+      ...(typeof args.subagent_type === 'string' && args.subagent_type ? { agentType: args.subagent_type } : {}),
+      ...(typeof args.description === 'string' && args.description ? { description: args.description } : {}),
+      background,
+      ts: Date.now(),
+    });
+  }
+
+  /**
    * Spec 12 — a frame of agent `agentId`. The first one of an agent this turn
    * did not start (a background agent of an earlier turn, a non-Agent spawner)
    * announces it by id; the registry fills in what it knows.
@@ -1216,6 +1247,10 @@ export class AgentStreamProcessor {
             this.settleNarration(context);
             // The turn's last tool is the main agent's (a subagent's is its own).
             if (!event.parentToolUseId) this._lastToolName = event.name;
+            // Spec 12: announce the agent this call belongs to / starts NOW — the
+            // call waits in the render buffer, and the SDK's task_started for a
+            // spawn can arrive before that buffer flushes (review R2).
+            this.announceAgents(event.toolCallId, event.name, event.input, event.parentToolUseId, context);
             toolCallBuf.push({
               type: 'tool_use',
               id: event.toolCallId,
@@ -1561,27 +1596,12 @@ export class AgentStreamProcessor {
       await this.callbacks.onStatusUpdate('working');
     }
 
-    // Spec 12: announce the agents these calls belong to / start, before
-    // anything is recorded under them.
+    // Spec 12: the agents these calls belong to / start were announced when
+    // the calls arrived (announceAgents); this is idempotent for any part that
+    // reached this method another way.
     for (const part of content) {
       if (part.type !== 'tool_use' || !part.id) continue;
-      const parent: string | undefined = part.parent_tool_use_id;
-      if (parent) this.noteAgent(parent, context);
-      if (isAgentSpawnTool(part.name)) {
-        const input = (part.input ?? {}) as Record<string, unknown>;
-        const background = input.run_in_background === true;
-        this.spawnedAgents.set(part.id, background);
-        this.seenAgents.add(part.id);
-        this.emitAgentEvent(context, {
-          kind: 'spawn',
-          agentId: part.id,
-          ...(parent ? { parentAgentId: parent } : {}),
-          ...(typeof input.subagent_type === 'string' && input.subagent_type ? { agentType: input.subagent_type } : {}),
-          ...(typeof input.description === 'string' && input.description ? { description: input.description } : {}),
-          background,
-          ts: Date.now(),
-        });
-      }
+      this.announceAgents(part.id, part.name, part.input, part.parent_tool_use_id, context);
     }
 
     // Check for TodoWrite tool. The main agent's list is the session's task
