@@ -252,6 +252,26 @@ describe('toTurnUsage', () => {
     expect(t2.baseline).toEqual({ sdkSessionId: 'sdk-A', models: { opus: counters(100, 10, 0, 0, 0.1) } });
   });
 
+  it('one model whose total went down restarts only that model', () => {
+    const t1 = toTurnUsage(
+      resultUsage({ opus: counters(10_000, 1000, 0, 0, 10), astra: counters(3000, 300, 0, 0, 3) }),
+      undefined,
+      'sdk-A',
+    );
+    const t2 = toTurnUsage(
+      resultUsage({ opus: counters(11_000, 1100, 0, 0, 11), astra: counters(100, 10, 0, 0, 0.1) }),
+      t1.baseline,
+      'sdk-A',
+    );
+
+    // opus counts its growth (1), astra restarted and counts in full (0.1) — opus is NOT re-counted.
+    expect(t2.turn.modelBreakdown?.opus.costUsd).toBeCloseTo(1);
+    expect(t2.turn.modelBreakdown?.astra.costUsd).toBeCloseTo(0.1);
+    expect(t2.turn.totalCostUsd).toBeCloseTo(1.1);
+    expect(t2.baseline?.models.astra.costUsd).toBeCloseTo(0.1);
+    expect(t2.baseline?.models.opus.costUsd).toBeCloseTo(11);
+  });
+
   it('a zeroed result (crash/startup error) counts nothing and keeps the baseline', () => {
     const t1 = toTurnUsage(resultUsage({ opus: counters(1000, 100, 0, 0, 1) }), undefined, 'sdk-A');
     const zeroed = toTurnUsage(resultUsage({ opus: counters(0, 0, 0, 0, 0) }), t1.baseline, 'sdk-A');
