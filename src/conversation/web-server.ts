@@ -39,6 +39,7 @@ import {
   stopPublicUrlCheck,
 } from './public-url';
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
+import { registerSettingsRoutes } from './settings-routes';
 import type { ConversationTurn } from './types';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
 import { registerWorkLogRoutes } from './work-log-routes';
@@ -675,6 +676,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
   await registerWorkLogRoutes(server, authMiddleware);
   await registerArtifactRoutes(server, authMiddleware);
+  // Personal settings (SSOT 2026-10-23 T2) — self only, auth + CSRF on writes.
+  registerSettingsRoutes(server, authMiddleware, csrfMiddleware);
 
   // Health check
   server.get('/health', async (_request, reply) => {

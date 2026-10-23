@@ -101,6 +101,14 @@ Every file the model sends to Slack (HTML reports, PNG, WAV/voice, video, PDF, t
 
 GitHub App (recommended) or Personal Access Token authentication with automatic token renewal.
 
+### 🖥️ Web dashboard
+
+The dashboard (`/dashboard`, sign in with Slack) shows every session as a card and lets the session owner act on it:
+
+- **Model and effort, one click from the top**: the top bar shows your default model and effort for new sessions. Pick a value and it is saved at once — the same setting as `model set <m>` and `effort <level>`. With a session panel open, "이 세션에도 적용" (on by default) also switches that session.
+- **Per-session model and effort**: the card and the top of the session panel switch one session only, like `%effort <level>`; the change applies from the next turn. When the model caps the level, the card shows the level that really runs.
+- **Personal settings API**: `GET /api/settings` and `PATCH /api/settings/:key` read and change every personal setting a Slack command can change, for the signed-in user only. Writes go through the same validators and `/z` card handlers as Slack; a contract test fails when a Slack settings command has no dashboard row.
+
 ### 🤖 Multi-Agent Architecture
 
 Run multiple independent AI agents within a single process. Each sub-agent is a separate Slack App with its own persona, system prompt, and session isolation.

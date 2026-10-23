@@ -79,8 +79,15 @@ export async function renderModelCard(args: { userId: string; issuedAt: number }
   };
 }
 
-export async function applyModel(args: { userId: string; value: string }): Promise<ApplyResult> {
-  const { userId, value } = args;
+/**
+ * Resolve a model input the way `/z model` does, without saving — the
+ * dashboard settings page uses it so it can re-check the user's admin
+ * acceptance after this (possibly slow) resolution and right before its own
+ * synchronous save (SSOT 2026-10-23 T2, review R2).
+ */
+export async function resolveModelChoice(
+  value: string,
+): Promise<{ ok: true; modelId: string } | { ok: false; summary: string; description?: string }> {
   // Cache miss → forced llmux catalog re-fetch + one retry (models llmux
   // already serves must not be rejected just because the snapshot is stale).
   // A REFUSED id short-circuits before that refresh — no catalog answer can
@@ -109,7 +116,15 @@ export async function applyModel(args: { userId: string; value: string }): Promi
     };
   }
 
-  const resolved = resolution.modelId;
+  return { ok: true, modelId: resolution.modelId };
+}
+
+export async function applyModel(args: { userId: string; value: string }): Promise<ApplyResult> {
+  const { userId, value } = args;
+  const choice = await resolveModelChoice(value);
+  if (!choice.ok) return choice;
+
+  const resolved = choice.modelId;
   userSettingsStore.setUserDefaultModel(userId, resolved);
   return {
     ok: true,
