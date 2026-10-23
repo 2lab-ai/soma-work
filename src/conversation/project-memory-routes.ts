@@ -22,6 +22,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { Logger } from '../logger';
 import {
+  EMPTY_PROJECT_REVISION,
   getProjectMemoryStore,
   normalizeProjectSlug,
   type ProjectMemoryEdit,
@@ -100,7 +101,7 @@ export function registerProjectMemoryRoutes(
         ...(reason ? { readOnlyReason: reason } : {}),
         ...(health.ok ? {} : { storeError: health.message }),
         projects: listProjects(),
-        emptyRevision: store().get('new/project').revision,
+        emptyRevision: EMPTY_PROJECT_REVISION,
       });
     } catch (error) {
       logger.error('Error reading project memory', error);

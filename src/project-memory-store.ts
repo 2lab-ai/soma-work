@@ -29,7 +29,7 @@ export const PROJECT_MEMORY_LIMITS = { entryChars: 1000, totalChars: 4000, entri
 const ENTRY_DELIMITER = '\n§\n';
 const SLUG_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const UNUSABLE_MESSAGE =
-  '프로젝트 메모리 파일을 읽을 수 없어 수정을 막았습니다 — 관리자가 서버의 project-memory.json(.bak)을 확인해야 합니다';
+  '프로젝트 메모리 파일을 읽을 수 없어 수정을 막았습니다 — 관리자가 서버의 project-memory.json(.bak)을 고친 뒤 서비스를 재시작해야 합니다';
 
 export interface ProjectMemory {
   slug: string;
@@ -82,6 +82,9 @@ function totalChars(entries: string[]): number {
 function revisionOf(entries: string[]): string {
   return createHash('sha1').update(JSON.stringify(entries)).digest('hex').slice(0, 16);
 }
+
+/** The revision of a project with no notes — what a first add is conditional on. */
+export const EMPTY_PROJECT_REVISION = revisionOf([]);
 
 /**
  * The whole shape, entry by entry. A file that only looks right at the top
@@ -235,7 +238,8 @@ export class ProjectMemoryStore {
  * (`</project-</project-memory>memory>`); the escape adds no `<`, so it cannot.
  */
 function neutralizeBlockTags(entry: string): string {
-  return entry.replace(/<(?=\s*\/?\s*project-memory)/gi, '&lt;');
+  // `[\s\u200b-\u200d\u2060\ufeff]`: whitespace plus the zero-width characters `\s` does not cover.
+  return entry.replace(/<(?=[\s\u200b-\u200d\u2060\ufeff]*\/?[\s\u200b-\u200d\u2060\ufeff]*project-memory)/gi, '&lt;');
 }
 
 /**
