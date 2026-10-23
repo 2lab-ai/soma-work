@@ -250,3 +250,47 @@ describe('top-bar default chips (T6)', () => {
     expect(postEffortSwitch).not.toHaveBeenCalled();
   });
 });
+
+describe('top-bar chips stay clickable while a session panel is open (T6, review P1)', () => {
+  function zIndexOf(selector: string): number {
+    const re = new RegExp(`^${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`, 'm');
+    const block = re.exec(DASHBOARD_TS)?.[1] ?? '';
+    const z = /z-index:\s*(\d+)/.exec(block);
+    return z ? Number(z[1]) : Number.NaN;
+  }
+
+  it('the defaults group is positioned above the full-screen overlay and the panel', () => {
+    const overlay = zIndexOf('.slide-panel-overlay');
+    const panel = zIndexOf('.slide-panel');
+    const chips = zIndexOf('.topbar .topbar-defaults');
+    expect(overlay).toBe(99);
+    expect(chips).toBeGreaterThan(Math.max(overlay, panel));
+  });
+
+  it('the model scope box is offered only for a model the session switch accepts (a representative nickname)', () => {
+    const fns = load<{ renderDefaultsMenu(kind: string): string }>(
+      ['esc', 'escAttr', 'escJs', 'renderDefaultsMenu'],
+      [],
+      {
+        _myDefaults: {
+          model: {
+            value: 'claude-sonnet-4-6',
+            options: [
+              { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+              { value: 'opus[1m]', label: 'Opus 5.5' },
+            ],
+          },
+        },
+        defaultsScopeSession: () => ({ key: 'k', displayHeadline: 'x' }),
+        REPRESENTATIVE_MODELS: [{ nickname: 'opus[1m]' }],
+      },
+    );
+    expect(fns.renderDefaultsMenu('model')).toContain('tdm-also-session');
+    const picks: string[] = [];
+    const only = load<{ sessionAcceptsModel(v: string): boolean }>(['sessionAcceptsModel'], [], {
+      REPRESENTATIVE_MODELS: [{ nickname: 'opus[1m]' }],
+    });
+    picks.push(String(only.sessionAcceptsModel('opus[1m]')), String(only.sessionAcceptsModel('claude-sonnet-4-6')));
+    expect(picks).toEqual(['true', 'false']);
+  });
+});

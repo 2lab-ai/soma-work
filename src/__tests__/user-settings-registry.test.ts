@@ -66,7 +66,7 @@ function setup(over: Partial<SettingsRegistryDeps> = {}) {
     model: vi.fn(async ({ userId, value }: { userId: string; value: string }) => {
       if (value === 'nope')
         return { ok: false, summary: '❌ Unknown model: `nope`', description: 'Available aliases: `opus`' };
-      store.data[userId] = { ...(store.data[userId] || {}), model: value === 'grok[1m]' ? 'grok-4.6' : value };
+      store.data[userId] = { ...(store.data[userId] || {}), model: value };
       return { ok: true, summary: 'ok' };
     }),
     persona: ok(),
@@ -113,6 +113,7 @@ function setup(over: Partial<SettingsRegistryDeps> = {}) {
         : { valid: false, error: 'HTTPS URL만 등록 가능합니다.' },
     workingDirectoryFor: (id) => `/work/${id}`,
     isAdmin: (id) => id === 'U_ADMIN',
+    isAccepted: (id) => id !== 'U_DENIED',
     ...over,
   };
   return { registry: createSettingsRegistry(deps), store, apply };
@@ -188,7 +189,7 @@ describe('settings registry — write', () => {
   it('default model goes through the /z apply function and returns the fresh view', async () => {
     const { registry, apply } = setup();
     const v = await registry.write('U1', 'defaultModel', 'grok[1m]');
-    expect(apply.model).toHaveBeenCalledWith({ userId: 'U1', value: 'grok[1m]' });
+    expect(apply.model).toHaveBeenCalledWith({ userId: 'U1', value: 'grok-4.6' });
     expect(v.value).toBe('grok[1m]');
     expect(v.modified).toBe(true);
   });
@@ -260,6 +261,24 @@ describe('settings registry — write', () => {
     await refused(registry.write('U1', 'bogus', 1), 400);
     await refused(registry.write('U1', 'autoGoal', 'yes'), 400);
     await refused(registry.write('U1', 'email', 42), 400);
+  });
+
+  it('a user without admin acceptance (denied or never accepted) cannot write — a write must not re-create the record', async () => {
+    const { registry, store, apply } = setup();
+    expect(await refused(registry.write('U_DENIED', 'defaultEffort', 'low'), 403)).toContain('승인');
+    await refused(registry.write('U_DENIED', 'defaultModel', 'grok[1m]'), 403);
+    expect(store.data.U_DENIED).toBeUndefined();
+    expect(apply.model).not.toHaveBeenCalled();
+    expect(registry.read('U_DENIED').accepted).toBe(false);
+    expect(registry.read('U1').accepted).toBe(true);
+  });
+
+  it('a representative nickname is saved as the model id it stands for (grok[1m] → grok-4.6)', async () => {
+    const { registry, apply } = setup();
+    await registry.write('U1', 'defaultModel', 'grok[1m]');
+    expect(apply.model).toHaveBeenCalledWith({ userId: 'U1', value: 'grok-4.6' });
+    await registry.write('U1', 'defaultModel', 'claude-sonnet-4-6');
+    expect(apply.model).toHaveBeenLastCalledWith({ userId: 'U1', value: 'claude-sonnet-4-6' });
   });
 
   it('email: empty clears through the card', async () => {

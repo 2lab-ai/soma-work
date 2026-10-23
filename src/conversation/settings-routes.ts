@@ -50,7 +50,12 @@ export function registerSettingsRoutes(
       reply.status(503).send({ error: 'Settings are not available on this instance' });
       return;
     }
-    reply.send(_registry.read(userId));
+    try {
+      reply.send(_registry.read(userId));
+    } catch (error) {
+      logger.error('Error reading settings for the dashboard', error);
+      reply.status(500).send({ error: 'Internal Server Error' });
+    }
   });
 
   server.patch<{ Params: { key: string }; Body: { value?: unknown } }>(
