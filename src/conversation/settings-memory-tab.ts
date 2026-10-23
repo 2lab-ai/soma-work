@@ -316,6 +316,12 @@ function pageSaveBusy() {
   memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
   return true;
 }
+// The page editor's fields are locked while its save is out: an answer re-renders the
+// editor, so nothing may be typed into it meanwhile (review R7).
+function setPageFieldsDisabled(on) {
+  var els = document.querySelectorAll('#mem-page-detail input, #mem-page-detail textarea, #mem-page-detail select');
+  for (var i = 0; i < els.length; i++) els[i].disabled = !!on;
+}
 async function openPage(id) {
   if (pageSaveBusy()) return;
   var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
@@ -409,9 +415,11 @@ async function savePage() {
   }
   var r;
   sentFrom.saving = Date.now();
+  setPageFieldsDisabled(true);
   try { r = await apiWrite('PUT', '/api/memory/page', { id: id, title: d.title, aliases: d.aliases, current: d.current, history: d.history, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   sentFrom.saving = 0;
   if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
+  setPageFieldsDisabled(false);
   if (r.ok) {
     // Keep the saved bytes too: a later switch to raw editing starts from them (review R4).
     // The editor is updated in one step, before anything else is awaited (review R5).
@@ -450,9 +458,11 @@ async function savePageRaw() {
   var id = _memPage.page.id;
   var r;
   sentFrom.saving = Date.now();
+  setPageFieldsDisabled(true);
   try { r = await apiWrite('PUT', '/api/memory/page/raw', { id: id, raw: raw, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   sentFrom.saving = 0;
   if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
+  setPageFieldsDisabled(false);
   if (r.ok) {
     _memPage = r.data;
     _memPageRaw = !(r.data && r.data.representable);
@@ -527,17 +537,33 @@ async function refreshPageIndex() {
 }
 
 // ── 관찰 기록 (에피소딕) ──
-function paintDates() {
+function fillDateSelect() {
   var sel = document.getElementById('mem-ep-date');
   var dates = (_mem && _mem.episodicDates) || [];
   var html = '';
   for (var i = 0; i < dates.length; i++) html += '<option value="' + escAttr(dates[i]) + '">' + esc(dates[i]) + '</option>';
   sel.innerHTML = html || '<option value="">기록 없음</option>';
+  if (_memDay && dates.indexOf(_memDay.date) >= 0) sel.value = _memDay.date;
+  return dates;
+}
+function paintDates() {
+  var dates = fillDateSelect();
   if (dates.length) loadDay(_memDay && dates.indexOf(_memDay.date) >= 0 ? _memDay.date : dates[0]);
   else document.getElementById('mem-ep-body').innerHTML = '<p class="lock">아직 관찰 기록이 없습니다. 턴이 끝날 때마다 자동으로 쌓입니다.</p>';
 }
+// An episodic write in flight holds the day it was sent from (review R7): switching days,
+// a second save or delete, and a note wait for the answer, so the answer lands on the day
+// the picker shows. A write hung past the hold lets the user move on; its late answer then
+// only reports.
+function epBusy() {
+  if (!_memDay || !_memDay.saving || Date.now() - _memDay.saving > 20000) return false;
+  memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
+  var sel = document.getElementById('mem-ep-date');
+  if (sel) sel.value = _memDay.date;
+  return true;
+}
 async function loadDay(date) {
-  if (!date) return;
+  if (!date || epBusy()) return;
   var res = await fetch('/api/memory/episodic/' + encodeURIComponent(date));
   var data = null;
   try { data = await res.json(); } catch (_e) {}
@@ -575,8 +601,16 @@ async function epWrite(method, url, payload, draft, at, orig, origTime) {
   // for, even if the view moved to another day while it was in flight (review R4).
   var dayMatch = /\/api\/memory\/episodic\/([^/]+)\//.exec(url);
   var date = dayMatch ? decodeURIComponent(dayMatch[1]) : (_memDay && _memDay.date);
+  var view = _memDay;
+  if (view) view.saving = Date.now();
   var r;
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
+  if (view) view.saving = 0;
+  if (_memDay !== view && !(_memDay && _memDay.date === date)) {
+    // The view moved to another day (after the hold): report, leave that day alone (review R7).
+    memStatus(date + ' 기록을 ' + (r.ok ? '저장했습니다' : '저장하지 못했습니다: ' + r.error) + ' (지금 보는 날은 그대로)', !r.ok);
+    return r.ok;
+  }
   if (r.ok) { _memDay = r.data.day; renderDay(); refreshDatesIfEmptied(); return true; }
   if (r.status === 409) {
     await loadDay(date);
@@ -603,6 +637,7 @@ async function epWrite(method, url, payload, draft, at, orig, origTime) {
   return false;
 }
 async function epSave(i) {
+  if (epBusy()) return;
   var ed = _epEditor;
   var ta = document.getElementById('ep-edit');
   if (!ed || ed.index !== i || !ta) return;
@@ -617,7 +652,7 @@ async function epDelete(i) {
   var revision = _memDay.revision;
   var time = _memDay.entries[i].time;
   var ok = await confirmDialog({ title: date + ' ' + time + ' 기록을 지울까요?', body: '되돌릴 수 없습니다.', action: '기록 삭제' });
-  if (!ok) return;
+  if (!ok || epBusy()) return;
   if (await epWrite('DELETE', '/api/memory/episodic/' + date + '/' + i, { revision: revision })) memStatus('지웠습니다', false);
 }
 // The last entry of a day was deleted (the file is gone): drop the date from the list.
@@ -629,7 +664,7 @@ async function refreshDatesIfEmptied() {
 async function epAdd() {
   var ta = document.getElementById('mem-ep-new');
   var text = ta ? ta.value : '';
-  if (!text.trim()) return;
+  if (!text.trim() || epBusy()) return;
   var r = await apiWrite('POST', '/api/memory/episodic', { text: text });
   if (!r.ok) { memStatus('추가하지 못했습니다: ' + r.error, true); return; }
   ta.value = '';
@@ -638,7 +673,21 @@ async function epAdd() {
     // today's note shows when that day is opened (review R6).
     var keptDate = _epEditor.date;
     await refreshPageIndex();
+    fillDateSelect(); // today is listed now; the picker stays on the open day
     memStatus('오늘 기록에 추가했습니다 (수정 중인 ' + keptDate + ' 기록은 그대로)', false);
+    return;
+  }
+  var openEdit = document.getElementById('ep-edit');
+  if (_epEditor && openEdit && _epEditor.date === r.data.day.date) {
+    // A record of today is open for editing: the note is appended at the end, so the
+    // record keeps its index; the editor stays open with its draft (review R7).
+    var keepIndex = _epEditor.index;
+    var keepDraft = openEdit.value;
+    _memDay = r.data.day;
+    renderDay(keepIndex, keepDraft);
+    await refreshPageIndex();
+    fillDateSelect();
+    memStatus('오늘 기록에 추가했습니다 (수정 중인 기록은 그대로)', false);
     return;
   }
   // The view and its state move to today together, before anything is awaited (review R6).

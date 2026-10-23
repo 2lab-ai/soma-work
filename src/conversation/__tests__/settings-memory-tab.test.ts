@@ -281,6 +281,7 @@ describe('지식 페이지 editor', () => {
     const doc = {
       getElementById: (id: string) =>
         id === 'mem-page-detail' ? el : id === 'pg-conflict' ? conflictBox : id === 'pg-raw' ? rawBox : status,
+      querySelectorAll: () => [],
     };
     const view = load<any>(['esc', 'escAttr', 'renderPageEditor'], ['PAGE_GROUPS', '_memPageRaw'], {
       document: doc,
@@ -300,7 +301,15 @@ describe('지식 페이지 editor', () => {
       .mockResolvedValueOnce({ ok: true, data: { ...memPage, revision: 'p3' } });
     const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ ...memPage, revision: 'p2' }) }));
     const fns = load<any>(
-      ['esc', 'savePageRaw', 'memStatus', 'renderPageConflict', 'overwritePage', 'pageSaveBusy'],
+      [
+        'esc',
+        'savePageRaw',
+        'memStatus',
+        'renderPageConflict',
+        'overwritePage',
+        'pageSaveBusy',
+        'setPageFieldsDisabled',
+      ],
       ['_memPageConflict', '_memPageRaw'],
       {
         document: doc,
@@ -354,7 +363,7 @@ describe('지식 페이지 editor', () => {
     };
     const apiWrite = vi.fn(async () => ({ ok: true, data: { page: { id: 'x' }, revision: 'p2' } }));
     const memPage: any = { page: { id: 'concepts/ssot' }, revision: 'p1' };
-    const fns = load<any>(['pageDraft', 'savePage', 'memStatus', 'pageSaveBusy'], [], {
+    const fns = load<any>(['pageDraft', 'savePage', 'memStatus', 'pageSaveBusy', 'setPageFieldsDisabled'], [], {
       document: doc,
       _memPage: memPage,
       apiWrite,
@@ -371,7 +380,7 @@ describe('지식 페이지 editor', () => {
       history: ['2026-10-23: x'],
       revision: 'p1',
     });
-    const fresh = load<any>(['pageDraft', 'savePage', 'memStatus', 'pageSaveBusy'], [], {
+    const fresh = load<any>(['pageDraft', 'savePage', 'memStatus', 'pageSaveBusy', 'setPageFieldsDisabled'], [], {
       document: doc,
       _memPage: { page: { id: '' }, revision: null },
       apiWrite,
@@ -385,6 +394,147 @@ describe('지식 페이지 editor', () => {
       '/api/memory/page',
       expect.objectContaining({ id: 'agent/ci-runner', revision: null }),
     );
+  });
+});
+
+describe('in-flight writes hold what they were sent from (review R7)', () => {
+  it('a page save locks the fields until it is answered, so nothing typed meanwhile is overwritten', async () => {
+    const detail: any = { innerHTML: '' };
+    const status: any = { textContent: '', innerHTML: '', setAttribute() {} };
+    const fields = [{ disabled: false }, { disabled: false }];
+    const values: Record<string, string> = { 'pg-title': 'A', 'pg-aliases': '', 'pg-current': 'a draft' };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-page-detail' ? detail : id in values ? { value: values[id] } : status,
+      querySelectorAll: (sel: string) => (sel.includes('pg-history') ? [] : fields),
+    };
+    const pageA = { id: 'concepts/a', title: 'A', aliases: [], current: 'a', history: [], updated: '2026-10-23' };
+    let answer: (v: unknown) => void = () => {};
+    const apiWrite = vi.fn().mockImplementationOnce(() => new Promise((res) => (answer = res)));
+    const fns = load<any>(
+      [
+        'esc',
+        'escAttr',
+        'pageDraft',
+        'savePage',
+        'memStatus',
+        'renderPageConflict',
+        'renderPageEditor',
+        'pageSaveBusy',
+        'setPageFieldsDisabled',
+      ],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      {
+        document: doc,
+        _memPage: { page: pageA, revision: 'a1', raw: '# A\n', representable: true },
+        apiWrite,
+        fetch: vi.fn(async () => ({
+          ok: true,
+          json: async () => ({ page: pageA, revision: 'a2', raw: '# A\n', representable: true }),
+        })),
+        refreshPageIndex: async () => {},
+        paintPageList: () => {},
+      },
+    );
+    const saving = fns.savePage();
+    expect(fields.every((f) => f.disabled)).toBe(true); // locked while the save is out
+    answer({ ok: false, status: 409, error: 'changed' });
+    await saving;
+    expect(fields.every((f) => !f.disabled)).toBe(true); // the draft is editable again after a refusal
+  });
+
+  it('an episodic save holds the day: switching days waits, and a late answer never repaints another day', async () => {
+    const body: any = { innerHTML: '' };
+    const status: any = { textContent: '', setAttribute() {} };
+    const dateSel: any = { value: '2026-10-20', innerHTML: '' };
+    const editBox: any = { value: '20th edited' };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-ep-body' ? body : id === 'mem-ep-date' ? dateSel : id === 'ep-edit' ? editBox : status,
+    };
+    const d20 = { date: '2026-10-20', revision: 'r20', entries: [{ time: '09:00', content: '20th original' }] };
+    const d21 = { date: '2026-10-21', revision: 'r21', entries: [{ time: '10:00', content: '21st only' }] };
+    let answer: (v: unknown) => void = () => {};
+    const apiWrite = vi.fn().mockImplementationOnce(() => new Promise((res) => (answer = res)));
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => d21 }));
+    const fns = load<any>(
+      ['esc', 'escAttr', 'renderDay', 'epSave', 'epWrite', 'loadDay', 'epBusy', 'memStatus', 'refreshDatesIfEmptied'],
+      ['_epEditor'],
+      {
+        document: doc,
+        _memDay: d20,
+        apiWrite,
+        fetch: fetchMock,
+        refreshPageIndex: async () => {},
+        paintDates: () => {},
+      },
+    );
+    fns.renderDay(0);
+    const saving = fns.epSave(0);
+    await fns.loadDay('2026-10-21'); // the user picks another day while the save is out
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(dateSel.value).toBe('2026-10-20'); // the picker stays on the day the body shows
+    expect(status.textContent).toContain('저장 중');
+    const d20b: any = { ...d20, revision: 'r20b', entries: [{ time: '09:00', content: '20th edited' }] };
+    answer({ ok: true, data: { ok: true, day: d20b } });
+    await saving;
+    expect(body.innerHTML).toContain('20th edited');
+
+    // a save that hung past the hold: the user moves on, and its late answer only reports
+    apiWrite.mockImplementationOnce(() => new Promise((res) => (answer = res)));
+    fns.renderDay(0);
+    const late = fns.epSave(0);
+    d20b.saving = Date.now() - 60_000; // the view the save was sent from
+    await fns.loadDay('2026-10-21');
+    expect(dateSel.value).toBe('2026-10-21');
+    answer({ ok: true, data: { ok: true, day: { ...d20, revision: 'r20c' } } });
+    await late;
+    expect(dateSel.value).toBe('2026-10-21');
+    expect(body.innerHTML).toContain('21st only');
+    expect(body.innerHTML).not.toContain('20th');
+  });
+
+  it('a note for today keeps an open editor of today, with its draft', async () => {
+    const body: any = { innerHTML: '' };
+    const status: any = { textContent: '', setAttribute() {} };
+    const editBox: any = { value: 'today record, edited' };
+    const noteBox: any = { value: 'a new note' };
+    const dateSel: any = { value: '2026-10-23', innerHTML: '' };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-ep-body'
+          ? body
+          : id === 'ep-edit'
+            ? editBox
+            : id === 'mem-ep-new'
+              ? noteBox
+              : id === 'mem-ep-date'
+                ? dateSel
+                : status,
+    };
+    const today = { date: '2026-10-23', revision: 't1', entries: [{ time: '08:00', content: 'today record' }] };
+    const after = {
+      date: '2026-10-23',
+      revision: 't2',
+      entries: [...today.entries, { time: '09:00', content: 'a new note' }],
+    };
+    const fns = load<any>(
+      ['esc', 'escAttr', 'renderDay', 'epAdd', 'epBusy', 'memStatus', 'fillDateSelect'],
+      ['_epEditor'],
+      {
+        document: doc,
+        _memDay: today,
+        _mem: { episodicDates: ['2026-10-23'] },
+        apiWrite: vi.fn(async () => ({ ok: true, data: { ok: true, day: after } })),
+        refreshPageIndex: async () => {},
+        paintDates: () => {},
+        loadDay: async () => {},
+      },
+    );
+    fns.renderDay(0);
+    await fns.epAdd();
+    expect(body.innerHTML).toContain('today record, edited'); // the draft is still in the editor
+    expect(body.innerHTML).toContain('a new note');
   });
 });
 
@@ -422,7 +572,18 @@ describe('관찰 기록 (에피소딕) — the editor is bound to its day (revie
       .mockResolvedValueOnce({ ok: true, data: { ok: true, day: today } }) // the note
       .mockResolvedValueOnce({ ok: true, data: { ok: true, day: pastDay } }); // the edit
     const fns = load<any>(
-      ['esc', 'escAttr', 'renderDay', 'epSave', 'epWrite', 'epAdd', 'memStatus', 'refreshDatesIfEmptied'],
+      [
+        'esc',
+        'escAttr',
+        'renderDay',
+        'epSave',
+        'epWrite',
+        'epAdd',
+        'memStatus',
+        'refreshDatesIfEmptied',
+        'epBusy',
+        'fillDateSelect',
+      ],
       ['_epEditor'],
       {
         document: doc,
@@ -462,7 +623,7 @@ describe('관찰 기록 (에피소딕)', () => {
     expect(el.innerHTML).toContain('onclick="epDelete(0)"');
 
     const apiWrite = vi.fn(async () => ({ ok: true, data: { day: { ...day, revision: 'd2' } } }));
-    const w = load<any>(['epWrite', 'epSave', 'epDelete', 'memStatus', 'refreshDatesIfEmptied'], [], {
+    const w = load<any>(['epWrite', 'epSave', 'epDelete', 'memStatus', 'refreshDatesIfEmptied', 'epBusy'], [], {
       document: {
         getElementById: (id: string) =>
           id === 'ep-edit' ? { value: '고친 기록' } : { textContent: '', setAttribute() {} },
@@ -488,7 +649,7 @@ describe('관찰 기록 (에피소딕)', () => {
     const renderDay = vi.fn();
     const noteBox: any = { value: '' };
     const status: any = { textContent: '', setAttribute() {} };
-    const w = load<any>(['epWrite', 'memStatus'], [], {
+    const w = load<any>(['epWrite', 'memStatus', 'epBusy'], [], {
       document: { getElementById: (id: string) => (id === 'mem-ep-new' ? noteBox : status) },
       // the entry being edited ("A") was deleted elsewhere: index 0 is now "B"
       _memDay: { date: '2026-10-20', revision: 'd2', entries: [{ time: '02:00', content: 'B' }] },
@@ -520,7 +681,7 @@ describe('관찰 기록 (에피소딕)', () => {
         { time: '02:00', content: 'same' },
       ],
     };
-    const w = load<any>(['epWrite', 'memStatus'], [], {
+    const w = load<any>(['epWrite', 'memStatus', 'epBusy'], [], {
       document: { getElementById: (id: string) => (id === 'mem-ep-new' ? noteBox : status) },
       _memDay: day,
       apiWrite: async () => ({ ok: false, status: 409, error: 'conflict' }),
@@ -560,7 +721,7 @@ describe('관찰 기록 (에피소딕)', () => {
       entries: [{ time: '05:09', content: 'the 20th' }],
     };
     const apiWrite = vi.fn(async () => ({ ok: true, data: { day: { ...day, entries: [] } } }));
-    const w = load<any>(['epWrite', 'epDelete', 'memStatus', 'refreshDatesIfEmptied'], [], {
+    const w = load<any>(['epWrite', 'epDelete', 'memStatus', 'refreshDatesIfEmptied', 'epBusy'], [], {
       document: { getElementById: () => ({ textContent: '', setAttribute() {} }) },
       _memDay: day,
       apiWrite,
@@ -628,7 +789,7 @@ describe('관찰 기록 (에피소딕)', () => {
     };
     const renderDay = vi.fn();
     let apiDone: (v: unknown) => void = () => {};
-    const w = load<any>(['epWrite', 'memStatus'], [], {
+    const w = load<any>(['epWrite', 'memStatus', 'epBusy'], [], {
       document: { getElementById: () => status },
       _memDay: view,
       apiWrite: () => new Promise((res) => (apiDone = res)),
@@ -662,7 +823,7 @@ describe('관찰 기록 (에피소딕)', () => {
     const renderDay = vi.fn();
     const status: any = { textContent: '', setAttribute() {} };
     const long = '긴 기록 '.repeat(100);
-    const w = load<any>(['epWrite', 'memStatus'], [], {
+    const w = load<any>(['epWrite', 'memStatus', 'epBusy'], [], {
       document: { getElementById: () => status },
       _memDay: {
         date: '2026-10-20',
@@ -711,7 +872,16 @@ describe('관찰 기록 (에피소딕)', () => {
     const renderPageEditor = vi.fn();
     const openPage = vi.fn();
     const fns = load<any>(
-      ['esc', 'pageDraft', 'savePage', 'memStatus', 'renderPageConflict', 'overwritePage', 'pageSaveBusy'],
+      [
+        'esc',
+        'pageDraft',
+        'savePage',
+        'memStatus',
+        'renderPageConflict',
+        'overwritePage',
+        'pageSaveBusy',
+        'setPageFieldsDisabled',
+      ],
       ['_memPageConflict', '_memPageRaw'],
       {
         document: doc,
@@ -780,6 +950,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'renderPageEditor',
         'pageRawMode',
         'pageSaveBusy',
+        'setPageFieldsDisabled',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -835,6 +1006,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'openPage',
         'pageAnswerElsewhere',
         'pageSaveBusy',
+        'setPageFieldsDisabled',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -900,6 +1072,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'openPage',
         'newPageForm',
         'pageSaveBusy',
+        'setPageFieldsDisabled',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -958,6 +1131,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'renderPageEditor',
         'pageRawMode',
         'pageSaveBusy',
+        'setPageFieldsDisabled',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
