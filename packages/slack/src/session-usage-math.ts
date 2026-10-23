@@ -180,3 +180,127 @@ export function accumulateModelTotals(
   }
   return totals;
 }
+
+/** One model's counters as a result's `modelUsage` reports them (and as `modelBreakdown` carries them). */
+export interface ModelUsageCounters {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUsd: number;
+}
+
+/**
+ * The last per-model running total seen for one SDK session. Persisted on the
+ * session: `session.usage` is runtime-only, but the goal's spend is not, so a
+ * restart must not forget where the running total stood.
+ */
+export interface SdkUsageBaseline {
+  /** SDK session id the totals belong to; a different id means a new running total. */
+  sdkSessionId: string | null;
+  models: Record<string, ModelUsageCounters>;
+}
+
+const COUNTER_FIELDS = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadInputTokens',
+  'cacheCreationInputTokens',
+  'costUsd',
+] as const satisfies readonly (keyof ModelUsageCounters)[];
+
+/** Float slack for cost comparisons: an unchanged running total must never read as a drop. */
+const COST_EPSILON = 1e-9;
+
+/** The slice of a turn's usage `toTurnUsage` rewrites. */
+export interface TurnUsageInput {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  totalCostUsd: number;
+  modelBreakdown?: Record<string, ModelUsageCounters>;
+}
+
+/**
+ * Turn a result's usage into THIS turn's spend.
+ *
+ * A result's `modelUsage` (→ `modelBreakdown` and the aggregates summed from
+ * it) is the SDK session's running total — "cumulative across turns … a
+ * resumed session continues from the totals its transcript saved … read the
+ * latest result rather than summing across results" (sdk.d.ts,
+ * `SDKResultSuccess.modelUsage`). soma-work resumes the same SDK session every
+ * turn, so the turn's spend is the growth since the last total seen for that
+ * SDK session (`baseline`).
+ *
+ * - No breakdown (per-turn shapes, ACP): returned unchanged, baseline kept.
+ * - All-zero breakdown (crash/startup-error result): nothing spent, baseline
+ *   kept — the next resumed result continues from the saved total.
+ * - Different SDK session id: a new running total — counts from zero.
+ * - Any model's total went down (mid-session `/clear`): the running total
+ *   restarted — this result counts in full and becomes the new baseline.
+ *
+ * Models that did not grow are left out of the turn's breakdown. Everything
+ * else on `usage` (per-turn context fields, model name, cost source) is kept.
+ */
+export function toTurnUsage<U extends TurnUsageInput>(
+  usage: U,
+  baseline: SdkUsageBaseline | undefined,
+  sdkSessionId: string | undefined,
+): { turn: U; baseline: SdkUsageBaseline | undefined } {
+  const current = usage.modelBreakdown;
+  if (!current) return { turn: usage, baseline };
+  const entries = Object.entries(current);
+  if (entries.every(([, c]) => COUNTER_FIELDS.every((f) => !c[f]))) return { turn: usage, baseline };
+
+  const id = sdkSessionId ?? null;
+  const previous = baseline && baseline.sdkSessionId === id ? baseline.models : {};
+  const restarted = entries.some(([model, c]) => {
+    const p = previous[model];
+    return !!p && COUNTER_FIELDS.some((f) => p[f] - c[f] > (f === 'costUsd' ? COST_EPSILON : 0));
+  });
+  const base = restarted ? {} : previous;
+
+  const breakdown: Record<string, ModelUsageCounters> = {};
+  for (const [model, c] of entries) {
+    const b = base[model];
+    const d = {
+      inputTokens: Math.max(0, c.inputTokens - (b?.inputTokens ?? 0)),
+      outputTokens: Math.max(0, c.outputTokens - (b?.outputTokens ?? 0)),
+      cacheReadInputTokens: Math.max(0, c.cacheReadInputTokens - (b?.cacheReadInputTokens ?? 0)),
+      cacheCreationInputTokens: Math.max(0, c.cacheCreationInputTokens - (b?.cacheCreationInputTokens ?? 0)),
+      costUsd: Math.max(0, c.costUsd - (b?.costUsd ?? 0)),
+    };
+    if (COUNTER_FIELDS.some((f) => d[f] > 0)) breakdown[model] = d;
+  }
+  const all = Object.values(breakdown);
+  const sum = (f: keyof ModelUsageCounters) => all.reduce((acc, d) => acc + d[f], 0);
+  return {
+    turn: {
+      ...usage,
+      inputTokens: sum('inputTokens'),
+      outputTokens: sum('outputTokens'),
+      cacheReadInputTokens: sum('cacheReadInputTokens'),
+      cacheCreationInputTokens: sum('cacheCreationInputTokens'),
+      totalCostUsd: sum('costUsd'),
+      modelBreakdown: breakdown,
+    },
+    baseline: { sdkSessionId: id, models: { ...base, ...current } },
+  };
+}
+
+/** Restore a persisted baseline; anything malformed is dropped rather than trusted. */
+export function sanitizeSdkUsageBaseline(raw: unknown): SdkUsageBaseline | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const { sdkSessionId, models } = raw as { sdkSessionId?: unknown; models?: unknown };
+  if (sdkSessionId !== null && typeof sdkSessionId !== 'string') return undefined;
+  if (!models || typeof models !== 'object') return undefined;
+  const out: Record<string, ModelUsageCounters> = {};
+  for (const [model, c] of Object.entries(models as Record<string, unknown>)) {
+    if (!c || typeof c !== 'object') return undefined;
+    const counters = c as Record<string, unknown>;
+    if (!COUNTER_FIELDS.every((f) => typeof counters[f] === 'number' && Number.isFinite(counters[f]))) return undefined;
+    out[model] = Object.fromEntries(COUNTER_FIELDS.map((f) => [f, counters[f]])) as unknown as ModelUsageCounters;
+  }
+  return { sdkSessionId, models: out };
+}

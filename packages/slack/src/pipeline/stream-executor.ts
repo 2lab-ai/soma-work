@@ -52,7 +52,12 @@ import {
   formatGoalObjectiveForSlack,
   type GoalQueueSession,
 } from '../session-goal';
-import { accumulateModelTotals, applyPostCompactOccupancy, selectCurrentContextTokens } from '../session-usage-math';
+import {
+  accumulateModelTotals,
+  applyPostCompactOccupancy,
+  selectCurrentContextTokens,
+  toTurnUsage,
+} from '../session-usage-math';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
 import {
@@ -5134,10 +5139,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   private updateSessionUsage(
     session: ConversationSession,
     sessionKey: string,
-    usage: UsageData,
+    reported: UsageData,
     turnId?: string,
   ): void {
     this.ensureSessionUsage(session);
+
+    // The result's per-model usage is the SDK session's RUNNING TOTAL, and
+    // every turn resumes the same SDK session — so adding it as-is re-counted
+    // every earlier turn. Every total below (session, per-model, goal,
+    // token_usage) reads this turn's own spend. See `toTurnUsage`.
+    const { turn: usage, baseline } = toTurnUsage(reported, session.sdkUsageBaseline, session.sessionId);
+    session.sdkUsageBaseline = baseline;
 
     // Update model name on session (useful for display)
     if (usage.modelName && !session.model) {
