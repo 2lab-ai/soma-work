@@ -208,6 +208,17 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
     expect(fh.isVideoFile('application/octet-stream', 'notes.txt')).toBe(false);
   });
 
+  // Dashboard voice notes (SSOT 2026-10-23 T11): a browser recording in a .webm
+  // container with an explicit audio/* type is audio — it must reach
+  // transcription instead of being skipped as a video.
+  it('an explicit audio/* mimetype wins over a video-looking extension', () => {
+    const fh = handler as any;
+    expect(fh.isVideoFile('audio/webm', 'voice-20261023-101500.webm')).toBe(false);
+    expect(fh.isAudioFile('audio/webm', 'voice-20261023-101500.webm')).toBe(true);
+    // Unchanged: a generic type with a video extension is still a video.
+    expect(fh.isVideoFile('application/octet-stream', 'clip.webm')).toBe(true);
+  });
+
   it('isAudioFile detects audio by extension when mimetype is generic', () => {
     const fh = handler as any;
     expect(fh.isAudioFile('application/octet-stream', 'song.mp3')).toBe(true);

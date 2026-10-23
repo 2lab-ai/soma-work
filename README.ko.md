@@ -89,6 +89,10 @@ Slack 네이티브 버튼/폼 UX로 권한 승인, 선택지, 세션 관리를 �
 
 이미지(JPG/PNG/GIF/WebP), 텍스트, 코드 파일을 Slack에서 직접 업로드 가능. 파일당 50MB 제한.
 
+### 🆕 대시보드에서 작업 시작
+
+대시보드의 **New task** 버튼(PC는 상단 바·`N` 단축키, 휴대폰은 플로팅 버튼)으로 작성 창을 엽니다. 모델(공유 풀 잔여량 배터리 표시), effort, Slack 채널, 작업 단위 `autogoal`·`autoz` 토글, 지시문, 첨부(파일·붙여넣은 스크린샷·휴대폰 카메라·음성 녹음)를 정하면, 고른 채널의 새 스레드에 내 메시지로 작업이 시작되어 진행이 Slack에 그대로 보입니다. 채널 목록은 내가 속한 repo 매핑 채널이고, 기본값은 마지막으로 명령을 내린 채널입니다. `autoz`를 켜면 지시 끝에 `$autoz`가 붙습니다.
+
 ### 🔑 GitHub 연동
 
 GitHub App(권장) 또는 Personal Access Token 인증. 자동 토큰 갱신 지원.
@@ -167,13 +171,13 @@ app-token 프롬프트는 금지된 자격증명 경로라 삭제됨), `scripts/
 
 주요 `/z` 명령: `help` · `cwd` · `mcp` · `bypass` · `persona` · `model` · `verbosity` · `session` · `new`/`renew` · `close` · `restore` · `context`/`compact` · `link` · `onboarding` · `admin` · `cct` · `auth` · `marketplace` · `plugin` · `skill` · `report`
 
-- 출력 수준(`/z verbosity`, 세션 한정 `%verbosity`): `minimal` · `compact` · `detail` · `verbose`. 기본값은 `minimal`이다 — 스레드에는 task list, 질문/승인, 최종 답변, 오류만 남고, 모델의 실시간 작업 설명·도구 호출·압축 공지·스킬 발동 배너(`$skill`·autoskill 포함)는 대시보드 작업 로그로 간다.
+- 출력 수준(`/z verbosity`, 세션 한정 `%verbosity`): `minimal` · `compact` · `detail` · `verbose`. 기본값은 `minimal`이다 — 스레드에는 task list(메인 에이전트의 것 — 서브에이전트의 목록은 대시보드의 그 서브에이전트 항목에 있다), 질문/승인, 최종 답변, 오류만 남고, 모델의 실시간 작업 설명·도구 호출·압축 공지·스킬 발동 배너(`$skill`·autoskill 포함)는 대시보드 작업 로그로 간다.
 
 - Fable 5.1·Opus 5.5(`claude-opus-5-5`, Claude Code 2.1.280 이상 필요) 지원을 위해 SDK를 `0.3.284`(네이티브 Claude Code `2.1.284`)로 고정한다. 스트리밍 턴은 `CLAUDE_CODE_ENABLE_TASKS=false`와 `MCP_CONNECTION_NONBLOCKING=0`을 강제하여 기존 Slack TodoWrite 스냅샷 처리와 첫 턴 MCP 초기화를 유지한다. 이 호환성 설정은 stream-options builder가 관리하며 운영자 설정으로 덮어쓰지 않는다.
 - 모델 별칭 `fable`·`fable[1m]`·`fable-5-1`은 `claude-fable-5-1[1m]`을 선택한다. 1M 컨텍스트와 750k 자동 압축 기본값을 유지하며, 버전을 지정한 `fable-5`는 기존 `claude-fable-5[1m]`을 선택한다.
 - 모델 별칭 `opus`·`opus[1m]`·`opus-5-5`는 `claude-opus-5-5[1m]`(1M 컨텍스트, 750k 자동 압축 기본값)을 선택한다. 버전을 지정한 `opus-5`/`opus-5[1m]`은 기존 Opus 5 id를 그대로 선택한다.
 - naked `cron`/`schedule`(크론/스케줄): 잡별 모델/출력 대상 드롭다운 + 삭제 버튼이 달린 인터랙티브 카드로 목록·수정. 텍스트 명령도 지원 — `cron model <name> <default|opus|fable|fast|모델>` (default = 만든 사람의 현재 모델, opus/fable = 실행 시점의 최신 opus/fable) · `cron target <name> <channel|dm|thread>` · `cron delete <name>`; admin은 전체 유저 잡을 owner와 함께 보고 `<@owner>` 후행 인자 또는 카드에서 직접 타인 잡을 수정. 커맨드로 라우팅되므로 autogoal이 삼키지 않음.
-- **배포 트리거 크론 레인**: `onDeploy: [{ repo, target }]`를 등록한 크론 잡은 누구의 세션에서 돌린 배포든 해당 repo가 정확히 그 브랜치로 배포 성공했다고 deploy 워크플로우가 알리면(`deploy_completed` 디렉티브) 오너 권한으로, 그 잡 채널의 새 스레드에서 발동한다. 발동 프롬프트에는 어떤 배포인지(repo·브랜치·머지 SHA·배포한 사람)가 붙는다. 배포 스레드에는 한 줄로 시작된 레인, 또는 등록된 레인이 왜 시작되지 않았는지(배포 미확인·실패·읽을 수 없는 디렉티브)와 복구용 `cron run`을 알린다. 상세: [docs/current/spec/cron-deploy-lanes.md](docs/current/spec/cron-deploy-lanes.md).
+- **배포 트리거 크론 레인**: `onDeploy: [{ repo, target }]`를 등록한 크론 잡은 누구의 세션에서 돌린 배포든 해당 repo가 정확히 그 브랜치로 배포 성공했다고 deploy 워크플로우가 알리면(`deploy_completed` 디렉티브) 오너 권한으로, 그 잡 채널의 새 스레드에서 발동한다. 발동 프롬프트에는 어떤 배포인지(repo·브랜치·머지 SHA·배포한 사람)와 배포 스레드(채널 + 스레드 ts)가 붙는다. 레인은 세션이 가진 Slack 접근 수단으로 그 스레드에 직접 올린다(예: 환경의 봇 토큰으로 Slack Web API 호출). 내장 `send_thread_message` 도구는 레인 자신의 스레드에만 올리고, 하네스가 대신 올리지 않는다. 배포 스레드에는 한 줄로 시작된 레인, 또는 등록된 레인이 왜 시작되지 않았는지(배포 미확인·실패·읽을 수 없는 디렉티브)와 복구용 `cron run`을 알린다. 배포 때만 도는 레인은 크론 잡 대신 `DATA_DIR/deploy-lanes.json`의 항목(`name`·`owner`·`channel`·`prompt`·`onDeploy`)으로 등록한다 — 스케줄이 없고 크론 잡이 아니어서 `cron list`에 나오지 않는다. 상세: [docs/current/spec/cron-deploy-lanes.md](docs/current/spec/cron-deploy-lanes.md).
 - **배포 릴리즈노트**: 배포가 끝나면 deploy 워크플로우가 `local:release-notes`로 노트를 쓰고 repo마다 `release_notes` 디렉티브를 하나 낸다. 호스트는 채널 루트에 짧은 헤더(`repo target · 버전` + TL;DR 최대 3줄)를, 그 스레드에 전문을 잘림 없이 나눠 올린다. 채널은 운영자가 호스트 `.env`의 `SOMA_RELEASE_NOTES_CHANNELS`로 정한다(예: `acme/app@deploy/dev2=C0DEV2CHAN1,*=session`). `owner/repo@branch` 또는 `branch`가 정확히 맞으면 그 채널, `*=session`이면 매핑 안 된 배포는 배포 세션 채널, `*`가 없으면 매핑 안 된 배포는 배포 스레드에만 남는다. 설정하지 않으면 예전처럼 배포 세션 채널이다. 게시가 실패해도 다른 채널 루트로 옮기지 않고 경고와 함께 배포 스레드에 남긴다.
 - naked `key` (= `auth key`): 자기 전용 llmux 클라이언트 키 + 로컬 Claude Code(`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`)와 Codex(`OPENAI_BASE_URL`/`OPENAI_API_KEY`) 실행법을 DM으로 받음. 같은 유저는 항상 같은 키 — 봇 사용량과 로컬 사용량이 한 테넌트로 계측된다. 모든 유저 사용 가능(자기 키이므로), 시크릿은 DM으로만 전달.
   Codex 안내는 안내된 서버 주소의 `/v1`과 같은 테넌트 키를 사용한다. `codex --model … -c …` 명령 전체를 복사해야 기존 ChatGPT 로그인이나 다른 provider 설정이 있어도 명시한 Responses provider가 환경변수의 키를 사용한다. 환경변수는 현재 터미널에 적용되며, Codex 설정 파일과 로그인 정보는 덮어쓰지 않는다. 다음 llmux 세션도 같은 명령으로 시작한다. [Codex 게이트웨이 인증 문서](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway).
