@@ -37,8 +37,10 @@ import { MetricsEventStore } from '../metrics/event-store';
 import { calculateTokenCost } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
+import { clampEffortToModel } from '../model-catalog';
 import { type AgentRegistry, loseRunningAgents, sanitizeAgentRegistry } from '../session/agent-registry';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
+import { EffortSwitchError, type EffortSwitchResult } from '../session/effort-switch';
 import { productionModelCatalogDeps } from '../session/model-catalog-deps';
 import {
   listRepresentativeModels,
@@ -60,7 +62,7 @@ import { GOAL_EVAL_DISPATCH_MAX_RETRIES } from '../slack/goal-completion-evaluat
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from '../slack/goal-host-actions';
 import { getSurfaceLines } from '../slack/surface-config';
 import { buildThreadPermalink } from '../turn-notifier';
-import { coerceEffort, type EffortLevel, userSettingsStore } from '../user-settings-store';
+import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
 import { readAllInstances } from './instance-registry';
 import {
@@ -178,6 +180,8 @@ export interface KanbanSession {
   threadCompactionCount?: number;
   /** Per-session effort level, normalised via coerceEffort. */
   effort?: EffortLevel;
+  /** The level the session's model actually runs, when it caps `effort` (SSOT 2026-10-23 T1). */
+  effortEffective?: string;
   /** Jira short key like "PROJ-123" derived from issueUrl */
   issueShortRef?: string;
   /** GitHub PR short ref like "PR-123" derived from prUrl */
@@ -700,6 +704,19 @@ export function setDashboardModelHandler(fn: ModelSwitchHandler): void {
   _modelSwitchHandlerFn = fn;
 }
 
+/**
+ * SSOT 2026-10-23 T1 — change one session's reasoning effort
+ * (`session/effort-switch.ts` `switchSessionEffort`, the `%effort` scope).
+ * Throws `EffortSwitchError` for every refusal, whose `statusCode` the route
+ * answers with.
+ */
+type EffortSwitchHandler = (sessionKey: string, effort: string) => EffortSwitchResult | Promise<EffortSwitchResult>;
+let _effortSwitchHandlerFn: EffortSwitchHandler | null = null;
+
+export function setDashboardEffortHandler(fn: EffortSwitchHandler): void {
+  _effortSwitchHandlerFn = fn;
+}
+
 type ChoiceAnswerHandler = (sessionKey: string, choiceId: string, label: string, question: string) => Promise<void>;
 let _choiceAnswerHandlerFn: ChoiceAnswerHandler | null = null;
 
@@ -815,15 +832,20 @@ export function extractPrShortRef(url?: string): string | undefined {
 function cardDerivedFields(src: {
   effort?: unknown;
   ownerId?: string;
+  model?: string;
   links?: { issue?: { url?: string }; pr?: { url?: string } };
   persistedEffort: boolean;
-}): Pick<KanbanSession, 'effort' | 'issueShortRef' | 'prShortRef'> {
+}): Pick<KanbanSession, 'effort' | 'effortEffective' | 'issueShortRef' | 'prShortRef'> {
   const effort =
     src.persistedEffort && src.effort
       ? coerceEffort(src.effort)
       : userSettingsStore.getUserDefaultEffort(src.ownerId || '');
+  // SSOT 2026-10-23 T1 — the level the model really runs (build-stream-options
+  // clamps the same way); present only when the model caps the chosen level.
+  const clamped = src.model ? clampEffortToModel(src.model, effort) : effort;
   return {
     effort,
+    ...(clamped !== effort ? { effortEffective: clamped } : {}),
     issueShortRef: extractIssueShortRef(src.links?.issue?.url),
     prShortRef: extractPrShortRef(src.links?.pr?.url),
   };
@@ -1093,7 +1115,13 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     threadTotalActiveMs: aggregate.totalActiveMs,
     threadSessionCount: aggregate.sessionCount,
     threadCompactionCount: aggregate.compactionCount,
-    ...cardDerivedFields({ effort: s.effort, ownerId: s.ownerId, links: s.links, persistedEffort: true }),
+    ...cardDerivedFields({
+      effort: s.effort,
+      ownerId: s.ownerId,
+      model: s.model,
+      links: s.links,
+      persistedEffort: true,
+    }),
     // #814 Stamp self env (when wired) so the frontend renders the env
     // badge for self cards too — siblings get their env from the
     // aggregator's mergeBoards stamp.
@@ -2248,6 +2276,37 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Effort switch (SSOT 2026-10-23 T1) ──
+
+  server.post<{ Params: { key: string }; Body: { effort?: unknown } }>(
+    '/api/dashboard/session/:key/effort',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const effort = (request.body || {}).effort;
+      if (typeof effort !== 'string' || !effort || effort.length > 32) {
+        reply.status(400).send({ error: `effort is required: one of ${EFFORT_LEVELS.join(', ')}` });
+        return;
+      }
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      if (!_effortSwitchHandlerFn) {
+        reply.status(501).send({ error: 'Effort switch handler not configured' });
+        return;
+      }
+      try {
+        const result = await _effortSwitchHandlerFn(resolved.originalKey, effort);
+        reply.send({ ok: true, result });
+      } catch (error) {
+        if (error instanceof EffortSwitchError) {
+          reply.status(error.statusCode).send({ error: error.message });
+          return;
+        }
+        logger.error('Error switching effort from dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── New task (SSOT 2026-10-23) ──
 
   server.get('/api/dashboard/new-task/context', { preHandler: [authMiddleware] }, async (request, reply) => {
@@ -2551,6 +2610,7 @@ function renderDashboardPage(userId?: string): string {
     logger.warn('Representative models unavailable for the dashboard', error);
   }
   const initRepresentativeModels = JSON.stringify(representativeModels).replace(/</g, '\\u003c');
+  const initEffortLevels = JSON.stringify(EFFORT_LEVELS);
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -2732,6 +2792,31 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    whole at 1024px even with "Reconnecting..." and touch padding. */
 .topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; flex: none; }
 .topbar .topbar-account { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 0 1 auto; }
+/* SSOT 2026-10-23 T6 — the owner's default model / effort, one click from the top. */
+/* Above the full-screen panel overlay (99) and the panel (100): the chips stay
+   clickable while a session panel is open — that is when "열린 세션에도 적용" exists. */
+.topbar .topbar-defaults { position: relative; z-index: 101; display: flex; gap: 6px; align-items: center; flex: none; }
+.topbar .topbar-defaults[hidden] { display: none; }
+.topbar .td-chip { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 12px; color: var(--text-secondary); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; min-height: 30px; cursor: pointer; white-space: nowrap; transition: border-color var(--dur-press) var(--ease-out), transform var(--dur-press) var(--ease-out); }
+.topbar .td-chip b { color: var(--text); font-weight: 700; }
+.topbar .td-chip[aria-expanded="true"] { border-color: var(--accent); }
+.topbar .td-chip:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.topbar .td-chip:active:not(:focus-visible) { transform: scale(0.97); }
+@media (hover: hover) and (pointer: fine) { .topbar .td-chip:hover { border-color: var(--accent); color: var(--text); } }
+.topbar .td-caret { font-size: 10px; color: var(--text-tertiary); }
+.td-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 120; min-width: 260px; max-width: min(360px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 14px 32px rgba(0,0,0,0.35); padding: 6px; }
+.td-menu[hidden] { display: none; }
+.td-menu .tdm-head { font-size: 11px; font-weight: 700; color: var(--text-tertiary); padding: 6px 8px 4px; }
+.td-menu .tdm-item { display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: 8px; text-align: left; font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 6px; padding: 8px; min-height: 36px; cursor: pointer; }
+.td-menu .tdm-item[aria-checked="true"] { background: var(--surface-raised); font-weight: 700; }
+.td-menu .tdm-item[aria-checked="true"]::after { content: '✓'; color: var(--accent); }
+.td-menu .tdm-item:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
+@media (hover: hover) and (pointer: fine) { .td-menu .tdm-item:hover { background: var(--surface-raised); } }
+.td-menu .tdm-sub { font-size: 11px; color: var(--text-tertiary); font-weight: 400; }
+.td-menu .tdm-scope { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--text-secondary); padding: 8px; border-top: 1px solid var(--border); margin-top: 4px; }
+.td-menu .tdm-scope input { margin-top: 2px; }
+.topbar .td-status { font-size: 12px; color: var(--text-secondary); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar .td-status.is-error { color: var(--red); }
 .topbar .nav a,
 .topbar .nav .user-select {
   background: var(--surface-raised);
@@ -3235,6 +3320,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cb-ac { font-variant-numeric: tabular-nums; }
 .cb-model-note { margin-top: 4px; font-size: 12px; color: var(--ib-text-2); overflow-wrap: anywhere; }
 .cb-model-note.is-error { color: var(--st-fail); }
+.panel-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.panel-controls:empty { display: none; }
+.panel-controls .pc-scope { font-size: 12px; font-weight: 700; color: var(--text-tertiary); }
+.panel-controls .cb-model-select { color: var(--text); background: var(--surface-raised); border-color: var(--border); }
+.panel-controls .cb-model-note { flex-basis: 100%; margin-top: 0; }
 
 /* ── EXPANDED META — moved from the old card face, same dhShow() gates ── */
 .card .card-meta {
@@ -4303,6 +4393,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .topbar .nav .user-select { max-inline-size: 100%; }
 }
 @media (max-width: 639px) {
+  .topbar .td-prefix, .topbar .td-status { display: none; }
   .main { padding: 14px 12px; }
   .panel-tasks { max-height: min(22vh, 160px); }
   /* Agent tree (.prd/12 §4.4): status · time · tools drop under the name; 44px targets. */
@@ -4649,9 +4740,13 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-submit:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
 .nt-submit.is-busy svg { animation: nt-spin 0.9s linear infinite; }
 
-.nt-toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 90; display: flex; align-items: center; gap: 10px; max-width: min(560px, calc(100vw - 24px)); padding: 10px 10px 10px 14px; translate: -50% 0; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-raised); color: var(--text); box-shadow: var(--ib-shadow-raised); font-size: 13px; animation: nt-toast-in 320ms var(--ease-out) both; }
+.nt-toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 90; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 10px; width: max-content; max-width: min(560px, calc(100vw - 24px)); padding: 10px 10px 10px 14px; translate: -50% 0; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-raised); color: var(--text); box-shadow: var(--ib-shadow-raised); font-size: 13px; animation: nt-toast-in 320ms var(--ease-out) both; }
 .nt-toast[hidden] { display: none; }
-.nt-toast-text { min-width: 0; }
+/* left: 50% leaves only half the viewport for a shrink-to-fit box, so the
+   width is the content's own (capped) and the actions wrap under the message
+   on a narrow screen instead of squeezing it into a column. */
+.nt-toast-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.nt-toast-actions { display: flex; flex: none; gap: 8px; margin-left: auto; }
 .nt-toast a, .nt-toast button { flex: none; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; cursor: pointer; }
 
 @keyframes nt-sheen { to { rotate: 360deg; } }
@@ -4706,6 +4801,7 @@ body.nt-open .new-task-fab { display: none !important; }
   /* New task — touch: 44px targets, 16px text (iOS does not zoom into it),
      and the camera button (capture="environment" opens the camera directly). */
   .nt-tool, .nt-close, .nt-battery-btn, .nt-toggle, .nt-chip, .nt-rec-btn { min-height: 44px; min-width: 44px; }
+  .nt-toast a, .nt-toast button { height: 44px; padding: 0 14px; font-size: 13px; }
   .nt-tool { width: 44px; height: 44px; }
   .nt-att-remove { width: 28px; height: 28px; }
   .nt-prompt, .nt-chip select { font-size: 16px; }
@@ -4724,6 +4820,12 @@ body.nt-open .new-task-fab { display: none !important; }
   <div class="topbar">
     <h1>&#x26A1; soma-work</h1>
     <span class="ws-badge" id="ws-status" role="status" aria-label="WebSocket: Connecting">Connecting...</span>
+    <div class="topbar-defaults" id="topbar-defaults" hidden>
+      <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><span class="td-caret" aria-hidden="true">&#x25BE;</span></button>
+      <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><span class="td-caret" aria-hidden="true">&#x25BE;</span></button>
+      <div class="td-menu" id="td-menu" role="menu" hidden></div>
+      <span class="td-status" id="td-status" role="status" aria-live="polite"></span>
+    </div>
     <button type="button" class="new-task-btn" id="new-task-btn" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><span class="nt-plus" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></span><span class="nt-btn-label">New task</span><kbd class="nt-kbd" aria-hidden="true">N</kbd></button>
     <div class="nav">
       <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">All Users</span><select id="user-select" title="All Users" onchange="selectUser(this.value)">
@@ -4845,6 +4947,7 @@ body.nt-open .new-task-fab { display: none !important; }
       </div>
       <button class="panel-close" onclick="closePanel()">&#x2715;</button>
     </div>
+    <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 effort"></div>
     <div class="panel-meta" id="panel-meta"></div>
     <div class="panel-links" id="panel-links"></div>
     <div class="panel-tokens" id="panel-tokens"></div>
@@ -4937,6 +5040,7 @@ const SELF_INSTANCE_NAME = ${initSelfInstance};
 const DASHBOARD_HEADER_CONFIG = ${initDashboardHeaderConfig};
 // SSOT 2026-10-22 T4: [{ nickname, model, label, contextWindow, autoCompactTokens }]
 const REPRESENTATIVE_MODELS = ${initRepresentativeModels};
+const EFFORT_LEVELS = ${initEffortLevels};
 // field → first config entry map (show/max/truncate lookups in renderCard).
 const _dhFieldMap = {};
 for (const _dhLine of DASHBOARD_HEADER_CONFIG) {
@@ -5348,6 +5452,168 @@ async function refreshCsrfToken() {
   } catch {}
 }
 refreshCsrfToken();
+
+// ── Top bar: the owner's default model / effort (SSOT 2026-10-23 T6) ──
+// One click opens a menu; picking saves the default at once (PATCH
+// /api/settings/:key — the same path as Slack "model set" / "effort"). When the
+// owner has a session panel open, "이 세션에도 적용" (on by default) also
+// switches that session, like Slack's bare "effort <level>" applies to the
+// current thread. Hidden when there is no signed-in Slack user (viewer token).
+var _myDefaults = null; // { model: settingRow, effort: settingRow }
+var _tdMenuKind = null;
+async function loadMyDefaults() {
+  var box = document.getElementById('topbar-defaults');
+  if (!box) return;
+  try {
+    var res = await fetch('/api/settings');
+    if (!res.ok) { box.hidden = true; return; }
+    var data = await res.json();
+    // Without admin acceptance the server refuses every settings write.
+    if (data && data.accepted === false) { box.hidden = true; return; }
+    var rows = (data && data.settings) || [];
+    var model = null, effort = null;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].key === 'defaultModel') model = rows[i];
+      if (rows[i].key === 'defaultEffort') effort = rows[i];
+    }
+    if (!model || !effort) { box.hidden = true; return; }
+    _myDefaults = { model: model, effort: effort };
+    renderDefaultsChips();
+    box.hidden = false;
+  } catch (_e) { box.hidden = true; }
+}
+function optionLabel(row, value) {
+  var opts = (row && row.options) || [];
+  for (var i = 0; i < opts.length; i++) if (opts[i].value === value) return opts[i].label;
+  return String(value || '');
+}
+function renderDefaultsChips() {
+  if (!_myDefaults) return;
+  var m = document.getElementById('td-model-value');
+  var e = document.getElementById('td-effort-value');
+  if (m) m.textContent = optionLabel(_myDefaults.model, _myDefaults.model.value);
+  if (e) e.textContent = optionLabel(_myDefaults.effort, _myDefaults.effort.value);
+}
+// The session model switch takes representative nicknames only.
+function sessionAcceptsModel(value) {
+  var models = REPRESENTATIVE_MODELS || [];
+  for (var i = 0; i < models.length; i++) if (models[i].nickname === value) return true;
+  return false;
+}
+// The open session the owner may switch together with the default, or null.
+function defaultsScopeSession() {
+  if (!panelOpen || !panelSessionKey) return null;
+  var s = _sessionCache[panelSessionKey];
+  if (!s || !s.ownerId || s.ownerId !== currentUserId || s.terminated || isSiblingSession(s)) return null;
+  return s;
+}
+function renderDefaultsMenu(kind) {
+  var row = _myDefaults && (kind === 'model' ? _myDefaults.model : _myDefaults.effort);
+  if (!row) return '';
+  var html = '<div class="tdm-head">' + (kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 effort') + '</div>';
+  var opts = row.options || [];
+  for (var i = 0; i < opts.length; i++) {
+    var o = opts[i];
+    var on = o.value === row.value;
+    html += '<button type="button" role="menuitemradio" class="tdm-item" aria-checked="' + (on ? 'true' : 'false') + '"'
+      + ' data-td-kind="' + escAttr(kind) + '" data-td-value="' + escAttr(o.value) + '" onclick="pickDefaultFrom(this)">'
+      + '<span>' + esc(o.label) + (o.description && kind === 'model' ? ' <span class="tdm-sub">' + esc(o.description) + '</span>' : '') + '</span></button>';
+  }
+  var s = defaultsScopeSession();
+  if (s) {
+    html += '<label class="tdm-scope"><input type="checkbox" id="tdm-also-session" checked>'
+      + '<span>열린 세션에도 적용 &mdash; ' + esc(s.displayHeadline || s.title || s.key) + '</span></label>';
+  }
+  return html;
+}
+function openDefaultsMenu(kind, btn) {
+  var menu = document.getElementById('td-menu');
+  if (!menu || !_myDefaults) return;
+  if (!menu.hidden && _tdMenuKind === kind) { closeDefaultsMenu(); return; }
+  _tdMenuKind = kind;
+  menu.innerHTML = renderDefaultsMenu(kind);
+  menu.style.left = btn ? btn.offsetLeft + 'px' : '0';
+  menu.hidden = false;
+  var chips = document.querySelectorAll('.td-chip');
+  for (var i = 0; i < chips.length; i++) chips[i].setAttribute('aria-expanded', chips[i] === btn ? 'true' : 'false');
+  var first = menu.querySelector('.tdm-item[aria-checked="true"]') || menu.querySelector('.tdm-item');
+  if (first) first.focus();
+}
+function closeDefaultsMenu() {
+  var menu = document.getElementById('td-menu');
+  if (menu) menu.hidden = true;
+  _tdMenuKind = null;
+  var chips = document.querySelectorAll('.td-chip');
+  for (var i = 0; i < chips.length; i++) chips[i].setAttribute('aria-expanded', 'false');
+}
+document.addEventListener('click', function(ev) {
+  var box = document.getElementById('topbar-defaults');
+  if (_tdMenuKind && box && !box.contains(ev.target)) closeDefaultsMenu();
+});
+document.addEventListener('keydown', function(ev) {
+  if (ev.key === 'Escape' && _tdMenuKind) {
+    var chip = document.getElementById(_tdMenuKind === 'model' ? 'td-model' : 'td-effort');
+    closeDefaultsMenu();
+    if (chip) chip.focus();
+  }
+});
+// Settings changed in Slack show up when the tab comes back.
+document.addEventListener('visibilitychange', function() { if (!document.hidden) loadMyDefaults(); });
+async function patchSetting(key, value) {
+  var url = '/api/settings/' + encodeURIComponent(key);
+  var body = JSON.stringify({ value: value });
+  var headers = { 'Content-Type': 'application/json' };
+  if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+  var res = await fetch(url, { method: 'PATCH', headers: headers, body: body });
+  if (res.status === 403) {
+    await refreshCsrfToken();
+    var retryHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+    res = await fetch(url, { method: 'PATCH', headers: retryHeaders, body: body });
+  }
+  var data = null;
+  try { data = await res.json(); } catch (_e) {}
+  return { ok: res.ok, setting: data && data.setting, error: (data && data.error) || ('HTTP ' + res.status) };
+}
+function setDefaultsStatus(text, isError) {
+  var el = document.getElementById('td-status');
+  if (!el) return;
+  el.textContent = text || '';
+  el.title = text || '';
+  el.classList.toggle('is-error', !!isError);
+}
+// Option values travel in attribute-escaped data-* (never inside inline JS).
+function pickDefaultFrom(el) {
+  return pickDefault(el.getAttribute('data-td-kind'), el.getAttribute('data-td-value'));
+}
+async function pickDefault(kind, value) {
+  var also = document.getElementById('tdm-also-session');
+  var session = also && also.checked ? defaultsScopeSession() : null;
+  var skipSession = !!session && kind === 'model' && !sessionAcceptsModel(value);
+  if (skipSession) session = null;
+  closeDefaultsMenu();
+  var key = kind === 'model' ? 'defaultModel' : 'defaultEffort';
+  setDefaultsStatus('저장 중…', false);
+  var r;
+  try { r = await patchSetting(key, value); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+  if (!r.ok) { setDefaultsStatus('저장하지 못했습니다: ' + r.error, true); return; }
+  _myDefaults[kind] = r.setting;
+  renderDefaultsChips();
+  var msg = '기본 ' + (kind === 'model' ? '모델' : 'effort') + ' → ' + optionLabel(r.setting, r.setting.value) + ' (새 세션부터)';
+  if (skipSession) msg += ' · 이 모델은 세션 전환 목록에 없어 열린 세션은 그대로';
+  if (session) {
+    var sr;
+    try {
+      sr = kind === 'model' ? await postModelSwitch(session.key, value) : await postEffortSwitch(session.key, value);
+    } catch (e) { sr = { ok: false, error: String(e && e.message || e) }; }
+    _modelNotes[session.key] = kind === 'model' ? modelSwitchNote(sr) : effortSwitchNote(sr);
+    msg += sr.ok ? ' · 열린 세션에도 적용' : ' · 열린 세션은 바꾸지 못함: ' + sr.error;
+    refreshCard(session.key);
+    loadSessions();
+  }
+  setDefaultsStatus(msg, false);
+}
+loadMyDefaults();
 
 // ── Utility ──
 function decodeSlackEntities(s) {
@@ -7163,7 +7429,7 @@ function renderCardBody(s, col) {
   const modelParts = [];
   const canSwitchModel = isOwner && col !== 'closed' && !s.terminated && !isSiblingSession(s);
   if (dhShow('model') && (modelShort || canSwitchModel)) modelParts.push(renderModelPicker(s, canSwitchModel, modelShort));
-  if (s.effort) modelParts.push('<span class="meta-effort" title="Power level">' + esc(s.effort) + '</span>');
+  if (s.effort || canSwitchModel) modelParts.push(renderEffortPicker(s, canSwitchModel));
   if (dhShow('model') && toNum(s.autoCompactTokens) > 0) {
     modelParts.push('<span class="cb-ac" title="이 모델의 auto-compact 기준">autocompact ' + formatTokens(s.autoCompactTokens) + '</span>');
   }
@@ -7397,6 +7663,80 @@ async function changeModel(key, select) {
   }
   refreshCard(key);
   loadSessions();
+}
+
+// ── Effort on the card and at the top of the session panel (SSOT 2026-10-23 T1) ──
+// The owner picks one of the five levels; the session runs it from the next
+// turn (the %effort scope — the owner's default stays). When the session's
+// model caps the level, the note says what actually runs.
+var EFFORT_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
+function effortLabel(level) {
+  return EFFORT_LABELS[level] || String(level || '');
+}
+function renderEffortPicker(s, canSwitch) {
+  var levels = EFFORT_LEVELS || [];
+  var capped = s.effortEffective && s.effortEffective !== s.effort
+    ? ' title="이 모델은 ' + escAttr(effortLabel(s.effortEffective)) + '까지 실행합니다"' : ' title="Reasoning effort"';
+  if (!canSwitch || !levels.length) {
+    return '<span class="meta-effort"' + capped + '>' + esc(effortLabel(s.effort))
+      + (s.effortEffective && s.effortEffective !== s.effort ? ' &rarr; ' + esc(effortLabel(s.effortEffective)) : '') + '</span>';
+  }
+  var opts = '';
+  for (var i = 0; i < levels.length; i++) {
+    opts += '<option value="' + escAttr(levels[i]) + '"' + (levels[i] === s.effort ? ' selected' : '') + '>'
+      + esc('Effort · ' + effortLabel(levels[i])) + '</option>';
+  }
+  return '<select class="cb-model-select cb-effort-select" aria-label="Effort 변경"' + capped
+    + ' onclick="event.stopPropagation()" onchange="changeEffort(\\'' + escJs(s.key) + '\\',this)">' + opts + '</select>';
+}
+async function postEffortSwitch(key, effort) {
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/effort';
+  var body = JSON.stringify({ effort: effort });
+  var headers = { 'Content-Type': 'application/json' };
+  if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+  var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+  if (res.status === 403) {
+    await refreshCsrfToken();
+    var retryHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+    res = await fetch(url, { method: 'POST', headers: retryHeaders, body: body });
+  }
+  var data = null;
+  try { data = await res.json(); } catch (_e) {}
+  return { ok: res.ok, result: data && data.result, error: (data && data.error) || ('HTTP ' + res.status) };
+}
+// What the card says after an effort change.
+function effortSwitchNote(r) {
+  if (!r.ok) return { text: r.error, error: true };
+  var res = r.result || {};
+  if (res.status === 'unchanged') return { text: '이미 effort ' + effortLabel(res.effort) + '입니다', error: false };
+  var capped = res.effective && res.effective !== res.effort ? ' (이 모델은 ' + effortLabel(res.effective) + '까지 실행)' : '';
+  return { text: 'effort ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped, error: false };
+}
+async function changeEffort(key, select) {
+  var effort = select && select.value;
+  if (!effort) return;
+  if (select) select.disabled = true;
+  var r;
+  try { r = await postEffortSwitch(key, effort); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+  _modelNotes[key] = effortSwitchNote(r);
+  if (select) { select.disabled = false; select.blur(); }
+  refreshCard(key);
+  loadSessions();
+}
+// The top of the session panel: this session's model and effort, one click each.
+function renderPanelControls(s) {
+  var el = document.getElementById('panel-controls');
+  if (!el || !s) return;
+  var a = document.activeElement;
+  if (a && el.contains(a) && a.tagName === 'SELECT') return; // an open picker survives live updates
+  var isOwner = !!s.ownerId && s.ownerId === currentUserId;
+  var canSwitch = isOwner && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
+  var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
+  el.innerHTML = '<span class="pc-scope">이 세션</span>'
+    + renderModelPicker(s, canSwitch, modelShort)
+    + renderEffortPicker(s, canSwitch)
+    + renderModelNote(s);
 }
 
 // ── Goal list on the work item (SSOT 2026-10-21 T2/T3) ──
@@ -7926,6 +8266,7 @@ async function loadSessions() {
     _lastPolledBoard = data.board;
     if (data.lifecycle) _lifecycle = data.lifecycle;
     renderBoard(data.board);
+    if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) renderPanelControls(_sessionCache[panelSessionKey]);
   } catch (e) { console.error('Failed to load sessions', e); }
 }
 
@@ -8487,6 +8828,7 @@ function connectWs() {
         if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
           var panelS = _sessionCache[panelSessionKey];
           renderPanelQuestion(panelS);
+          renderPanelControls(panelS);
           // The board carries the server's one-current-task view; a turn that
           // just ended must stop spinning its task in the open panel too —
           // the main agent's or, when one is chosen, a subagent's (spec 12).
@@ -9590,10 +9932,11 @@ function openPanel(sessionKey, focusWorkLog, agentId) {
   metaEl.innerHTML = [
     '<span class="meta-item"><span class="meta-label">Owner:</span> <span class="meta-value">' + esc(s.ownerName) + '</span></span>',
     '<span class="meta-item"><span class="meta-label">Workflow:</span> <span class="meta-value">' + esc(s.workflow) + '</span></span>',
-    '<span class="meta-item"><span class="meta-label">Model:</span> <span class="meta-value">' + esc(s.model) + '</span></span>',
     '<span class="meta-item"><span class="meta-label">State:</span> <span class="meta-value">' + esc(s.activityState) + '</span></span>',
     '<span class="meta-item"><span class="meta-label">Last:</span> <span class="meta-value">' + timeAgo(s.lastActivity) + '</span></span>',
   ].join('');
+
+  renderPanelControls(s);
 
   // Links
   const linksEl = document.getElementById('panel-links');
@@ -10935,10 +11278,12 @@ function ntShowToast(data, channelName) {
   if (!t) return;
   var head = data.status === 'running' ? '✅ 작업을 시작했습니다' : '⏳ 작업을 접수했습니다';
   var html = '<span class="nt-toast-text">' + head + ' — #' + esc(channelName) + '</span>';
+  // The actions wrap as one group: never one beside the message, one below.
+  html += '<span class="nt-toast-actions">';
   if (data.permalink) {
     html += '<a href="' + escAttr(data.permalink) + '" target="_blank" rel="noopener">Slack에서 보기</a>';
   }
-  html += '<button type="button" onclick="ntOpenLaunched()">카드 열기</button>';
+  html += '<button type="button" onclick="ntOpenLaunched()">카드 열기</button></span>';
   t.innerHTML = html;
   t.hidden = false;
   _ntLastLaunch = data;
