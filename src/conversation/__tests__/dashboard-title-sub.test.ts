@@ -341,6 +341,71 @@ describe('ensureTitleSub cooldown (server module)', () => {
   }, 60_000);
 });
 
+describe('fill never overwrites — recorder and generation edge cases (review round 1)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    llm.generateTitle.mockReset();
+    paths.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'soma-title-sub-race-'));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(paths.dataDir, { recursive: true, force: true });
+  });
+
+  it('a slow cold read does not publish its stale snapshot over the live record', async () => {
+    const { ConversationStorage } = await import('../storage');
+    await new ConversationStorage().save(conversation());
+    const recorder = await import('../recorder');
+
+    // Read #1 is held on the disk; read #2 completes, gets cached, and the
+    // owner regenerates on that live object. Then read #1 lands with the
+    // pre-regenerate snapshot (no titleSub).
+    const realLoad = ConversationStorage.prototype.load;
+    const held = deferred<ConversationRecord | null>();
+    let calls = 0;
+    vi.spyOn(ConversationStorage.prototype, 'load').mockImplementation(function (this: unknown, id: string) {
+      calls++;
+      return calls === 1 ? held.promise : realLoad.call(this as InstanceType<typeof ConversationStorage>, id);
+    });
+
+    const slow = recorder.getConversation(CONV_ID);
+    const live = await recorder.getConversation(CONV_ID);
+    await recorder.updateConversationTitleSub(CONV_ID, 'OWNER-TITLE');
+    held.resolve(conversation());
+    const fromSlow = await slow;
+
+    expect(fromSlow).toBe(live);
+    expect(await recorder.fillConversationTitleSub(CONV_ID, 'late-viewer-fill')).toBe('OWNER-TITLE');
+    expect((await new ConversationStorage().load(CONV_ID))?.titleSub).toBe('OWNER-TITLE');
+  }, 60_000);
+
+  it('a fill does not bump updatedAt (derived data is not activity)', async () => {
+    const { ConversationStorage } = await import('../storage');
+    await new ConversationStorage().save(conversation({ updatedAt: 42 }));
+    const recorder = await import('../recorder');
+
+    expect(await recorder.fillConversationTitleSub(CONV_ID, '부제')).toBe('부제');
+    const saved = await new ConversationStorage().load(CONV_ID);
+    expect(saved?.titleSub).toBe('부제');
+    expect(saved?.updatedAt).toBe(42);
+  }, 60_000);
+
+  it('a generation that throws is a failed fill and starts the cooldown', async () => {
+    const { ConversationStorage } = await import('../storage');
+    await new ConversationStorage().save(conversation());
+    const { getConversation } = await import('../recorder');
+    const { ensureTitleSub } = await import('../title-sub');
+    const record = await getConversation(CONV_ID);
+    if (!record) throw new Error('seeded conversation missing');
+
+    llm.generateTitle.mockRejectedValueOnce(new Error('lease release failed'));
+    expect(await ensureTitleSub(record, 1_000)).toEqual({ ok: false, reason: 'generation_failed' });
+    expect(await ensureTitleSub(record, 1_001)).toMatchObject({ ok: false, reason: 'cooldown' });
+    expect(llm.generateTitle).toHaveBeenCalledTimes(1);
+  }, 60_000);
+});
+
 // ── Client half: the shipped panel code, cut out of renderDashboardPage() ──
 
 const DASHBOARD_TS = fs.readFileSync(path.join(__dirname, '..', 'dashboard.ts'), 'utf-8');
@@ -437,6 +502,15 @@ describe('panel subtitle client (shipped code)', () => {
     const c = client();
     const v = c.titleSubView(403, { code: 'csrf_failed' }, false, '');
     expect(v).toEqual({ text: 'Title generation failed', titleSub: '', regen: true });
+  });
+
+  it('T2 — 🔄 is judged against the signed-in user, not the board filter (currentUserId)', () => {
+    const can = clientFn('panelTitleSubCanRegen');
+    expect(can.includes('_viewerUserId')).toBe(true);
+    expect(can.includes('currentUserId')).toBe(false);
+    expect(clientFn('_applyUserPill').includes('_viewerUserId = (data && data.user && data.user.slackUserId)')).toBe(
+      true,
+    );
   });
 
   it('T1/T2 — the panel wires the helpers: open → ensure path, 🔄 → regenerate only over a stored subtitle', () => {

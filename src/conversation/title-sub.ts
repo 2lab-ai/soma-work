@@ -17,6 +17,7 @@
  *   • after a failed fill, further fills wait out TITLE_SUB_FILL_COOLDOWN_MS;
  *   • no conversation text → no LLM call.
  */
+import { Logger } from '../logger';
 import { fillConversationTitleSub, updateConversationTitleSub } from './recorder';
 import { generateTitle } from './title-generator';
 import type { ConversationRecord } from './types';
@@ -28,6 +29,7 @@ export type TitleSubResult =
   | { ok: false; reason: 'no_content' | 'generation_failed' }
   | { ok: false; reason: 'cooldown'; retryAfterMs: number };
 
+const logger = new Logger('TitleSub');
 const inFlight = new Map<string, Promise<string | null>>();
 const lastFailedFillAt = new Map<string, number>();
 
@@ -44,7 +46,14 @@ export function titleSourceText(record: ConversationRecord): string {
 function generateOnce(conversationId: string, source: string): Promise<string | null> {
   const running = inFlight.get(conversationId);
   if (running) return running;
-  const call = generateTitle(source).finally(() => inFlight.delete(conversationId));
+  // A rejection (e.g. a credential error generateTitle rethrows) is a failed
+  // generation like a null result — so it gets the same cooldown.
+  const call = generateTitle(source)
+    .catch((error) => {
+      logger.warn('Title generation threw', { conversationId, error: String(error) });
+      return null;
+    })
+    .finally(() => inFlight.delete(conversationId));
   inFlight.set(conversationId, call);
   return call;
 }

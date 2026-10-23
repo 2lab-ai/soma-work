@@ -411,6 +411,12 @@ async function getOrLoadConversation(id: string): Promise<ConversationRecord | n
 
   // Load from disk
   const record = await getStorage().load(id);
+  // Another caller may have cached (and since mutated) this conversation while
+  // we were reading the disk. That object is the live one; publishing our
+  // older snapshot over it would roll back its writes — e.g. a titleSub fill
+  // would then see "empty" and overwrite the owner's subtitle.
+  const raced = activeConversations.get(id);
+  if (raced) return raced;
   if (record) {
     cacheRecord(id, record);
   }
@@ -465,8 +471,9 @@ export async function fillConversationTitleSub(conversationId: string, titleSub:
   const record = await getOrLoadConversation(conversationId);
   if (!record) return null;
   if (record.titleSub) return record.titleSub;
+  // updatedAt is left alone: filling derived data is not conversation activity,
+  // and a viewer opening the panel must not move the conversation in the list.
   record.titleSub = titleSub;
-  record.updatedAt = Date.now();
   await serializedSave(conversationId, record);
   return titleSub;
 }
