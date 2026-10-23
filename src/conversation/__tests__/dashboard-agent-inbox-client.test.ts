@@ -2658,3 +2658,242 @@ describe('admin lifecycle form (shipped lifecycleToForm + lifecycleFromForm)', (
     ).toEqual({ ok: false, field: 'boardArchiveWindowHours' });
   });
 });
+
+describe('답변하기 opens the panel on the open question (shipped renderMultiChoiceCard → openPanel)', () => {
+  // A panel-scroll model: question (when shown) · collapsed work-log header · turns,
+  // in that order (the template's #panel-scroll). The browser clamps scrollTop to
+  // the content, so a stale position from the previous opening shrinks with it.
+  const KEY = 'inst::work:C1:1700000000.000100';
+  const AREA_TOP = 200;
+  const VIEW = 600;
+  const WL_HEADER = 40;
+  const TURNS_LOADED = 4000;
+  const TURNS_PLACEHOLDER = 60;
+  type Session = Record<string, unknown>;
+  type Panel = {
+    openPanel(key: string, focusWorkLog?: boolean): void;
+    renderMultiChoiceCard(s: Session, faceSummary: string): string;
+    renderPanelQuestion(s: Session): void;
+    stick(): boolean;
+  };
+
+  const waitingMulti = (over: Session = {}): Session => ({
+    key: KEY,
+    conversationId: 'conv1',
+    ownerId: 'U1',
+    activityState: 'waiting',
+    title: 'S',
+    pendingQuestion: {
+      type: 'user_choices',
+      title: '두 가지 확인',
+      questions: [
+        {
+          id: 'q1',
+          question: '첫 질문?',
+          choices: [
+            { id: '1', label: 'a' },
+            { id: '2', label: 'b' },
+          ],
+          recommendedChoiceId: '1',
+        },
+        { id: 'q2', question: '둘째 질문?', choices: [{ id: '1', label: 'c' }], recommendedChoiceId: '1' },
+      ],
+    },
+    ...over,
+  });
+
+  function page(opts: {
+    session: Session;
+    questionHeight?: number;
+    prevScrollTop?: number;
+    turns?: 'ok' | 'empty' | 'fail' | 'held';
+  }) {
+    const els: Record<string, FakeEl & Record<string, unknown>> = {};
+    const el = (id: string) => {
+      els[id] ??= Object.assign(fakeEl({ id }), { classList: { add() {}, remove() {} } });
+      return els[id];
+    };
+    const question = el('panel-question');
+    question.style.display = 'none';
+    el('panel-worklog').style.display = '';
+    const turns = el('panel-turns');
+    const qH = () => (question.style.display === 'none' ? 0 : (opts.questionHeight ?? 420));
+    const tH = () => (turns.innerHTML.includes('class="turn') ? TURNS_LOADED : TURNS_PLACEHOLDER);
+    const scroll = el('panel-scroll');
+    let stored = opts.prevScrollTop ?? 0;
+    const height = () => qH() + WL_HEADER + tH();
+    const max = () => Math.max(0, height() - VIEW);
+    Object.defineProperties(scroll, {
+      scrollHeight: { get: height, configurable: true },
+      clientHeight: { value: VIEW, configurable: true },
+      scrollTop: {
+        get: () => Math.min(stored, max()),
+        set: (v: number) => {
+          stored = Math.max(0, Math.min(v, max()));
+        },
+        configurable: true,
+      },
+    });
+    Object.assign(scroll, {
+      scrollTo: ({ top }: { top: number }) => {
+        scroll.scrollTop = top;
+      },
+      getBoundingClientRect: () => ({ top: AREA_TOP, bottom: AREA_TOP + VIEW, height: VIEW }),
+    });
+    Object.assign(question, { getBoundingClientRect: () => ({ top: AREA_TOP - scroll.scrollTop, height: qH() }) });
+    Object.assign(el('panel-worklog'), {
+      getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: WL_HEADER }),
+    });
+    Object.assign(el('worklog-toggle'), { getBoundingClientRect: () => ({ top: 0, height: WL_HEADER }) });
+
+    let release: () => void = () => {};
+    const payload = { id: 'conv1', titleSub: 'sub', hasMore: false, turns: [{ id: 't1', role: 'assistant' }] };
+    const fetchImpl = () => {
+      if (opts.turns === 'fail') return Promise.reject(new Error('down'));
+      const res = { json: async () => (opts.turns === 'empty' ? { ...payload, turns: [] } : payload) };
+      if (opts.turns === 'held') return new Promise((r) => (release = () => r(res)));
+      return Promise.resolve(res);
+    };
+    const cache: Record<string, Session> = { [KEY]: opts.session };
+    const m = load<Panel>(
+      [
+        'openPanel',
+        'renderPanelQuestion',
+        'renderMultiChoicePanel',
+        'renderMultiChoiceCard',
+        'esc',
+        'escAttr',
+        'escJs',
+        'choiceDataAttrs',
+        'stripRecommendedMarker',
+        'resolveRecommendedId',
+        'scrollPanelToWorkLog',
+        'workLogLandingTop',
+        'landPanel',
+      ],
+      [
+        '_mcState',
+        '_panelFocusWorkLog',
+        '_panelTurnsHasMore',
+        '_panelTurnsLoading',
+        '_panelTurnsOldestId',
+        '_panelGen',
+        '_panelOlderArmed',
+        '_panelStickBottom',
+      ],
+      {
+        document: { getElementById: el },
+        fetch: fetchImpl,
+        _sessionCache: cache,
+        currentUserId: 'U1',
+        READ_ONLY_MSG: 'read-only',
+        panelOpen: false,
+        panelSessionKey: null,
+        panelConvId: null,
+        _panelTasksExpanded: false,
+        resetWorkLog: () => {},
+        setWorkLogOpen: () => {},
+        renderPanelTasks: () => {},
+        renderTurn: (t: { id: string }) => `<div class="turn assistant" data-turn-id="${t.id}"></div>`,
+        attachRawToggleHandlers: () => {},
+        generateTitleSub: () => {},
+        loadWorkLog: () => {},
+        renderMdBasic: String, // carries backticks, so it cannot be cooked; no question here has context
+        timeAgo: () => '',
+        safeHref: (u: string) => u,
+        formatTokens: String,
+        toNum: Number,
+      },
+      ['function stick() { return _panelStickBottom; }'],
+    );
+    /** Click the card's 답변하기 button: run its shipped onclick against the shipped openPanel. */
+    const clickAnswer = () => {
+      const html = m.renderMultiChoiceCard(cache[KEY], '');
+      const btn = /<button class="btn-choice" onclick="([^"]+)"[^>]*>답변하기<\/button>/.exec(html);
+      if (!btn) throw new Error('no 답변하기 button on the card');
+      new Function('event', 'openPanel', btn[1])({ stopPropagation() {} }, m.openPanel);
+    };
+    /** The answer form's top edge is inside the visible scroll area. */
+    const formInView = () => {
+      const top = AREA_TOP - scroll.scrollTop;
+      return question.style.display !== 'none' && top >= AREA_TOP && top < AREA_TOP + VIEW;
+    };
+    return { m, scroll, question, cache, clickAnswer, formInView, release: () => release(), bottom: max };
+  }
+
+  it('lands on the answer form, not on the newest turns, and stays there while the panel settles', async () => {
+    const p = page({ session: waitingMulti() });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+    expect(p.scroll.scrollTop).toBe(0);
+    // A later resize (subtitle, Tasks) must not drag the reader to the bottom.
+    expect(p.m.stick()).toBe(false);
+  });
+
+  it('lands on the form even when the panel was left scrolled down by the previous opening', async () => {
+    const p = page({ session: waitingMulti(), prevScrollTop: 3000 });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('a tall form whose turns fail to load still opens at its top', async () => {
+    const p = page({ session: waitingMulti(), questionHeight: 900, prevScrollTop: 3000, turns: 'fail' });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('a tall form whose conversation has no turns yet still opens at its top', async () => {
+    const p = page({ session: waitingMulti(), questionHeight: 900, prevScrollTop: 3000, turns: 'empty' });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('a waiting session with no recorded conversation opens at the top of its form', () => {
+    const p = page({ session: waitingMulti({ conversationId: undefined }), questionHeight: 900, prevScrollTop: 3000 });
+    p.clickAnswer();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('a question answered before the turns arrive lands on the newest turns instead', async () => {
+    const p = page({ session: waitingMulti(), turns: 'held' });
+    p.clickAnswer();
+    // The answer lands (here or in Slack): the WS session_update re-renders the panel question.
+    p.cache[KEY] = waitingMulti({ activityState: 'working', pendingQuestion: undefined });
+    p.m.renderPanelQuestion(p.cache[KEY]);
+    p.release();
+    await flush();
+    await flush();
+    expect(p.scroll.scrollTop).toBe(p.bottom());
+    expect(p.m.stick()).toBe(true);
+  });
+
+  it('an opening without an open question still lands on the newest turns and holds them', async () => {
+    const p = page({ session: waitingMulti({ activityState: 'idle', pendingQuestion: undefined }) });
+    p.m.openPanel(KEY);
+    await flush();
+    await flush();
+    expect(p.scroll.scrollTop).toBe(p.bottom());
+    expect(p.m.stick()).toBe(true);
+  });
+
+  it('작업 로그 on a waiting session keeps the work-log landing (top, or the header for a tall question)', async () => {
+    const short = page({ session: waitingMulti() });
+    short.m.openPanel(KEY, true);
+    await flush();
+    await flush();
+    expect(short.scroll.scrollTop).toBe(0);
+    const tall = page({ session: waitingMulti(), questionHeight: 900 });
+    tall.m.openPanel(KEY, true);
+    await flush();
+    await flush();
+    expect(tall.scroll.scrollTop).toBe(900);
+  });
+});
