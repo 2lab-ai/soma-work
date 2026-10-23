@@ -287,7 +287,7 @@ describe('StreamExecutor — cumulative SDK usage is counted once', () => {
 
     expect(session.usage.totalCostUsd).toBeCloseTo(0.4);
     expect(session.usage.totalInputTokens).toBe(400);
-    expect(emitted.tokenUsage.at(-1)?.metadata.costUsd).toBeCloseTo(0.4);
+    expect(emitted.tokenUsage[emitted.tokenUsage.length - 1]?.metadata.costUsd).toBeCloseTo(0.4);
   });
 
   it('a new SDK session after a reset counts its first result in full', async () => {
