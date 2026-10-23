@@ -21,8 +21,10 @@
  *
  * Semantic page format = YAML-ish frontmatter + `## Current` + `## History`.
  */
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { withMemoryLock } from './memory-lock';
 import {
   isSafeSegment,
   isSemanticPageType,
@@ -61,6 +63,61 @@ export interface MemoryIndex {
 }
 
 const INDEX_VERSION = 1;
+
+/** One `## HH:MM - title` block of an episodic day file. */
+export interface EpisodicEntry {
+  time: string;
+  title: string;
+  content: string;
+}
+
+/** Result of a conditional (revision-checked) dashboard write. */
+export type ConditionalWrite =
+  | { ok: true; id: string; revision: string | null }
+  | { ok: false; reason: 'conflict' | 'invalid' | 'missing'; message: string };
+
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Content hash a dashboard edit is conditional on; null when the file does not exist. */
+export function revisionOf(raw: string | null): string | null {
+  return raw === null ? null : createHash('sha1').update(raw).digest('hex').slice(0, 16);
+}
+
+function readOrNull(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+const ENTRY_HEADER = /^## (\d{2}:\d{2}) - (.*)$/;
+
+/** Split an episodic day file into its `## HH:MM - title` blocks. */
+export function parseEpisodicDay(raw: string): EpisodicEntry[] {
+  const entries: EpisodicEntry[] = [];
+  let cur: { time: string; title: string; lines: string[] } | null = null;
+  for (const line of raw.split('\n')) {
+    const m = line.match(ENTRY_HEADER);
+    if (m) {
+      if (cur) entries.push({ time: cur.time, title: cur.title, content: cur.lines.join('\n').trim() });
+      cur = { time: m[1], title: m[2], lines: [] };
+    } else if (cur) {
+      cur.lines.push(line);
+    }
+  }
+  if (cur) entries.push({ time: cur.time, title: cur.title, content: cur.lines.join('\n').trim() });
+  return entries;
+}
+
+export function serializeEpisodicDay(day: string, entries: EpisodicEntry[]): string {
+  return `# ${day}\n${entries.map((e) => `\n## ${e.time} - ${e.title}\n\n${e.content}\n`).join('')}`;
+}
+
+function oneLine(s: string): string {
+  return s.replace(/\s*\n\s*/g, ' ').trim();
+}
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
@@ -133,6 +190,15 @@ export class HierarchicalMemoryFileStore {
 
   private root(user: string): string {
     return memoryRoot(this.dataDir, user);
+  }
+
+  /**
+   * Every write holds the user's memory lock (`memory-lock`) — the host
+   * process, the model-command MCP subprocess and the dashboard all run this
+   * class, so an edit and an append can never interleave (SSOT 2026-10-23 T3).
+   */
+  private locked<T>(user: string, fn: () => T): T {
+    return withMemoryLock(this.dataDir, user, fn);
   }
 
   private ensureDir(p: string): void {
@@ -214,68 +280,74 @@ export class HierarchicalMemoryFileStore {
     loc: PageLocator,
     fields: { title?: string; aliases?: string[]; current?: string; historyEntry?: string },
   ): { ok: boolean; message: string; id: string } {
-    const { relPath, id } = this.resolve(loc);
-    this.ensureTaxonomy(user);
-    const filePath = path.join(this.root(user), relPath);
-    const existing = fs.existsSync(filePath)
-      ? parsePage(fs.readFileSync(filePath, 'utf-8'), id, loc.type, relPath)
-      : null;
+    return this.locked(user, () => {
+      const { relPath, id } = this.resolve(loc);
+      this.ensureTaxonomy(user);
+      const filePath = path.join(this.root(user), relPath);
+      const existing = fs.existsSync(filePath)
+        ? parsePage(fs.readFileSync(filePath, 'utf-8'), id, loc.type, relPath)
+        : null;
 
-    const title = (fields.title || existing?.title || defaultTitle(loc)).trim();
-    const aliases = fields.aliases ?? existing?.aliases ?? [];
-    const current = fields.current !== undefined ? fields.current.trim() : (existing?.current ?? '');
-    const history = existing ? [...existing.history] : [];
-    if (fields.historyEntry && fields.historyEntry.trim()) {
-      history.unshift(`${todayISO()}: ${fields.historyEntry.trim()}`);
-    }
+      const title = (fields.title || existing?.title || defaultTitle(loc)).trim();
+      const aliases = fields.aliases ?? existing?.aliases ?? [];
+      const current = fields.current !== undefined ? fields.current.trim() : (existing?.current ?? '');
+      const history = existing ? [...existing.history] : [];
+      if (fields.historyEntry && fields.historyEntry.trim()) {
+        history.unshift(`${todayISO()}: ${fields.historyEntry.trim()}`);
+      }
 
-    const page: SemanticPage = {
-      id,
-      type: loc.type,
-      title,
-      aliases,
-      updated: todayISO(),
-      current,
-      history,
-      relPath,
-    };
-    this.writeFileAtomic(filePath, serializePage(page, loc));
-    this.rebuildIndex(user);
-    return { ok: true, message: existing ? `Updated ${id}` : `Created ${id}`, id };
+      const page: SemanticPage = {
+        id,
+        type: loc.type,
+        title,
+        aliases,
+        updated: todayISO(),
+        current,
+        history,
+        relPath,
+      };
+      this.writeFileAtomic(filePath, serializePage(page, loc));
+      this.rebuildIndex(user);
+      return { ok: true, message: existing ? `Updated ${id}` : `Created ${id}`, id };
+    });
   }
 
   removePage(user: string, loc: PageLocator): { ok: boolean; message: string } {
-    const { relPath, id } = this.resolve(loc);
-    const filePath = path.join(this.root(user), relPath);
-    if (!fs.existsSync(filePath)) return { ok: false, message: `No page at ${id}` };
-    fs.rmSync(filePath, { force: true });
-    this.rebuildIndex(user);
-    return { ok: true, message: `Removed ${id}` };
+    return this.locked(user, () => {
+      const { relPath, id } = this.resolve(loc);
+      const filePath = path.join(this.root(user), relPath);
+      if (!fs.existsSync(filePath)) return { ok: false, message: `No page at ${id}` };
+      fs.rmSync(filePath, { force: true });
+      this.rebuildIndex(user);
+      return { ok: true, message: `Removed ${id}` };
+    });
   }
 
   // ── Episodic ───────────────────────────────────────────────────────────────
 
   appendEpisodic(user: string, content: string, date?: string): { ok: boolean; message: string; relPath: string } {
-    const trimmed = (content || '').trim();
-    if (!trimmed) return { ok: false, message: 'Empty episodic content', relPath: '' };
-    const day = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : todayISO();
-    this.ensureTaxonomy(user);
-    const relPath = path.join('episodic', `${day}.md`);
-    const filePath = path.join(this.root(user), relPath);
-    const firstLine = trimmed.split('\n')[0].slice(0, 80);
-    const block = `\n## ${nowHM()} - ${firstLine}\n\n${trimmed}\n`;
-    this.ensureDir(path.dirname(filePath));
-    // Race-safe: create the day header exactly once with an exclusive open
-    // (`wx` throws EEXIST if another process already created it), then always
-    // append the block. Using append (never truncating write) means two
-    // concurrent first-writers cannot clobber each other's block — both append.
-    try {
-      fs.writeFileSync(filePath, `# ${day}\n`, { encoding: 'utf-8', flag: 'wx' });
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    }
-    fs.appendFileSync(filePath, block, 'utf-8');
-    return { ok: true, message: `Appended episodic ${day}`, relPath };
+    return this.locked(user, () => {
+      const trimmed = (content || '').trim();
+      if (!trimmed) return { ok: false, message: 'Empty episodic content', relPath: '' };
+      const day = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : todayISO();
+      this.ensureTaxonomy(user);
+      const relPath = path.join('episodic', `${day}.md`);
+      const filePath = path.join(this.root(user), relPath);
+      const firstLine = trimmed.split('\n')[0].slice(0, 80);
+      const block = `\n## ${nowHM()} - ${firstLine}\n\n${trimmed}\n`;
+      this.ensureDir(path.dirname(filePath));
+      // Race-safe: create the day header exactly once with an exclusive open
+      // (`wx` throws EEXIST if another process already created it), then always
+      // append the block. Using append (never truncating write) means two
+      // concurrent first-writers cannot clobber each other's block — both append.
+      try {
+        fs.writeFileSync(filePath, `# ${day}\n`, { encoding: 'utf-8', flag: 'wx' });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      }
+      fs.appendFileSync(filePath, block, 'utf-8');
+      return { ok: true, message: `Appended episodic ${day}`, relPath };
+    });
   }
 
   readEpisodic(user: string, date?: string): string {
@@ -298,6 +370,140 @@ export class HierarchicalMemoryFileStore {
       .slice(0, limit);
   }
 
+  // ── Dashboard edits (SSOT 2026-10-23 T3) — revision-checked, under the lock ──
+
+  /** The revision of a page file (null when it does not exist). */
+  pageRevision(user: string, loc: PageLocator): string | null {
+    const { relPath } = this.resolve(loc);
+    return revisionOf(readOrNull(path.join(this.root(user), relPath)));
+  }
+
+  /**
+   * Replace a page wholesale — title, aliases, Current and the whole History
+   * (the dashboard edits history lines too). `expectedRevision` is the
+   * revision the editor loaded: `null` means "create, must not exist".
+   */
+  writePage(
+    user: string,
+    loc: PageLocator,
+    fields: { title: string; aliases: string[]; current: string; history: string[] },
+    expectedRevision: string | null,
+  ): ConditionalWrite {
+    const { relPath, id } = this.resolve(loc);
+    const title = oneLine(String(fields.title ?? ''));
+    if (!title) return { ok: false, reason: 'invalid', message: '제목이 비어 있습니다' };
+    if (title.length > 200) return { ok: false, reason: 'invalid', message: '제목은 200자까지입니다' };
+    const aliases = (Array.isArray(fields.aliases) ? fields.aliases : [])
+      .map((a) => oneLine(String(a)))
+      .filter(Boolean);
+    if (aliases.some((a) => /[,[\]]/.test(a))) {
+      return { ok: false, reason: 'invalid', message: '별칭에는 쉼표와 대괄호를 쓸 수 없습니다' };
+    }
+    if (aliases.length > 20 || aliases.some((a) => a.length > 80)) {
+      return { ok: false, reason: 'invalid', message: '별칭은 20개, 각 80자까지입니다' };
+    }
+    const current = String(fields.current ?? '').trim();
+    if (/^##\s/m.test(current)) {
+      return {
+        ok: false,
+        reason: 'invalid',
+        message: "Current에는 '## '로 시작하는 줄을 쓸 수 없습니다 ('### '를 쓰세요)",
+      };
+    }
+    if (current.length > 20_000) return { ok: false, reason: 'invalid', message: 'Current는 20,000자까지입니다' };
+    const history = (Array.isArray(fields.history) ? fields.history : [])
+      .map((h) => oneLine(String(h)))
+      .filter((h) => h && h !== '(no history yet)');
+    if (history.length > 500) return { ok: false, reason: 'invalid', message: 'History는 500줄까지입니다' };
+
+    return this.locked(user, () => {
+      const filePath = path.join(this.root(user), relPath);
+      const before = revisionOf(readOrNull(filePath));
+      if (before !== expectedRevision) {
+        return {
+          ok: false,
+          reason: 'conflict',
+          message: before === null ? `${id}는 이미 지워졌습니다` : `${id}가 그사이 바뀌었습니다 — 다시 불러오세요`,
+        };
+      }
+      this.ensureTaxonomy(user);
+      const page: SemanticPage = { id, type: loc.type, title, aliases, updated: todayISO(), current, history, relPath };
+      const raw = serializePage(page, loc);
+      this.writeFileAtomic(filePath, raw);
+      this.rebuildIndex(user);
+      return { ok: true, id, revision: revisionOf(raw) };
+    });
+  }
+
+  /** Delete a page if it is still at `expectedRevision`. */
+  removePageAt(user: string, loc: PageLocator, expectedRevision: string): ConditionalWrite {
+    const { relPath, id } = this.resolve(loc);
+    return this.locked(user, () => {
+      const filePath = path.join(this.root(user), relPath);
+      const before = revisionOf(readOrNull(filePath));
+      if (before === null) return { ok: false, reason: 'missing', message: `${id}가 없습니다` };
+      if (before !== expectedRevision) {
+        return { ok: false, reason: 'conflict', message: `${id}가 그사이 바뀌었습니다 — 다시 불러오세요` };
+      }
+      fs.rmSync(filePath, { force: true });
+      this.rebuildIndex(user);
+      return { ok: true, id, revision: null };
+    });
+  }
+
+  /** Every episodic day, newest first. */
+  listEpisodicDates(user: string): string[] {
+    return this.recentEpisodicDates(user, Number.MAX_SAFE_INTEGER);
+  }
+
+  /** One episodic day split into entries, with the revision edits are conditional on. */
+  readEpisodicDay(user: string, day: string): { date: string; revision: string | null; entries: EpisodicEntry[] } {
+    if (!DAY_RE.test(day)) throw new Error(`Invalid episodic date: ${day}`);
+    const raw = readOrNull(path.join(this.root(user), 'episodic', `${day}.md`));
+    return { date: day, revision: revisionOf(raw), entries: raw === null ? [] : parseEpisodicDay(raw) };
+  }
+
+  /**
+   * Edit (`content` string) or delete (`content` null) entry `index` of a day,
+   * if the day file is still at `expectedRevision`. Holding the lock means an
+   * append from another process waits and lands after this write, never lost.
+   */
+  editEpisodicEntry(
+    user: string,
+    day: string,
+    index: number,
+    content: string | null,
+    expectedRevision: string,
+  ): ConditionalWrite {
+    if (!DAY_RE.test(day)) return { ok: false, reason: 'invalid', message: `날짜 형식이 아닙니다: ${day}` };
+    const text = content === null ? null : String(content).trim();
+    if (text !== null && !text)
+      return { ok: false, reason: 'invalid', message: '내용이 비어 있습니다 — 지우려면 삭제를 쓰세요' };
+    const id = `episodic/${day}`;
+    return this.locked(user, () => {
+      const filePath = path.join(this.root(user), 'episodic', `${day}.md`);
+      const raw = readOrNull(filePath);
+      const before = revisionOf(raw);
+      if (raw === null) return { ok: false, reason: 'missing', message: `${day} 기록이 없습니다` };
+      if (before !== expectedRevision) {
+        return { ok: false, reason: 'conflict', message: `${day} 기록이 그사이 바뀌었습니다 — 다시 불러오세요` };
+      }
+      const entries = parseEpisodicDay(raw);
+      if (!Number.isInteger(index) || index < 0 || index >= entries.length) {
+        return { ok: false, reason: 'invalid', message: `항목 번호가 범위를 벗어났습니다 (0–${entries.length - 1})` };
+      }
+      if (text === null) entries.splice(index, 1);
+      else entries[index] = { time: entries[index].time, title: text.split('\n')[0].slice(0, 80), content: text };
+      if (entries.length === 0) {
+        fs.rmSync(filePath, { force: true });
+        return { ok: true, id, revision: null };
+      }
+      const next = serializeEpisodicDay(day, entries);
+      this.writeFileAtomic(filePath, next);
+      return { ok: true, id, revision: revisionOf(next) };
+    });
+  }
+
   // ── Index ──────────────────────────────────────────────────────────────────
 
   private indexPath(user: string): string {
@@ -306,59 +512,61 @@ export class HierarchicalMemoryFileStore {
 
   /** Scan all semantic dirs and rewrite memory-index.json. Cheap (few files). */
   rebuildIndex(user: string): MemoryIndex {
-    const root = this.root(user);
-    const entries: MemoryIndexEntry[] = [];
-    const pushPage = (relPath: string, type: SemanticPageType, id: string) => {
-      const fp = path.join(root, relPath);
-      try {
-        const page = parsePage(fs.readFileSync(fp, 'utf-8'), id, type, relPath);
-        entries.push({ id, type, title: page.title, aliases: page.aliases, relPath, updated: page.updated });
-      } catch {
-        /* skip unreadable page */
-      }
-    };
+    return this.locked(user, () => {
+      const root = this.root(user);
+      const entries: MemoryIndexEntry[] = [];
+      const pushPage = (relPath: string, type: SemanticPageType, id: string) => {
+        const fp = path.join(root, relPath);
+        try {
+          const page = parsePage(fs.readFileSync(fp, 'utf-8'), id, type, relPath);
+          entries.push({ id, type, title: page.title, aliases: page.aliases, relPath, updated: page.updated });
+        } catch {
+          /* skip unreadable page */
+        }
+      };
 
-    for (const flat of ['agent', 'sites', 'concepts'] as SemanticPageType[]) {
-      const dir = path.join(root, flat);
-      if (!fs.existsSync(dir)) continue;
-      for (const f of fs.readdirSync(dir)) {
-        if (!f.endsWith('.md')) continue;
-        const slug = f.replace(/\.md$/, '');
-        pushPage(path.join(flat, f), flat, `${flat}/${slug}`);
+      for (const flat of ['agent', 'sites', 'concepts'] as SemanticPageType[]) {
+        const dir = path.join(root, flat);
+        if (!fs.existsSync(dir)) continue;
+        for (const f of fs.readdirSync(dir)) {
+          if (!f.endsWith('.md')) continue;
+          const slug = f.replace(/\.md$/, '');
+          pushPage(path.join(flat, f), flat, `${flat}/${slug}`);
+        }
       }
-    }
 
-    const projectsDir = path.join(root, 'projects');
-    if (fs.existsSync(projectsDir)) {
-      for (const project of fs.readdirSync(projectsDir)) {
-        const projDir = path.join(projectsDir, project);
-        if (!fs.statSync(projDir).isDirectory()) continue;
-        const projMem = path.join(projDir, 'MEMORY.md');
-        if (fs.existsSync(projMem))
-          pushPage(path.join('projects', project, 'MEMORY.md'), 'project', `project/${project}`);
-        const issuesDir = path.join(projDir, 'issues');
-        if (fs.existsSync(issuesDir)) {
-          for (const f of fs.readdirSync(issuesDir)) {
-            if (!f.endsWith('.md')) continue;
-            const issue = f.replace(/\.md$/, '');
-            pushPage(path.join('projects', project, 'issues', f), 'project', `project/${project}/${issue}`);
+      const projectsDir = path.join(root, 'projects');
+      if (fs.existsSync(projectsDir)) {
+        for (const project of fs.readdirSync(projectsDir)) {
+          const projDir = path.join(projectsDir, project);
+          if (!fs.statSync(projDir).isDirectory()) continue;
+          const projMem = path.join(projDir, 'MEMORY.md');
+          if (fs.existsSync(projMem))
+            pushPage(path.join('projects', project, 'MEMORY.md'), 'project', `project/${project}`);
+          const issuesDir = path.join(projDir, 'issues');
+          if (fs.existsSync(issuesDir)) {
+            for (const f of fs.readdirSync(issuesDir)) {
+              if (!f.endsWith('.md')) continue;
+              const issue = f.replace(/\.md$/, '');
+              pushPage(path.join('projects', project, 'issues', f), 'project', `project/${project}/${issue}`);
+            }
           }
         }
       }
-    }
 
-    const cronDir = path.join(root, 'cron');
-    if (fs.existsSync(cronDir)) {
-      for (const routine of fs.readdirSync(cronDir)) {
-        const rMem = path.join(cronDir, routine, 'MEMORY.md');
-        if (fs.existsSync(rMem)) pushPage(path.join('cron', routine, 'MEMORY.md'), 'cron', `cron/${routine}`);
+      const cronDir = path.join(root, 'cron');
+      if (fs.existsSync(cronDir)) {
+        for (const routine of fs.readdirSync(cronDir)) {
+          const rMem = path.join(cronDir, routine, 'MEMORY.md');
+          if (fs.existsSync(rMem)) pushPage(path.join('cron', routine, 'MEMORY.md'), 'cron', `cron/${routine}`);
+        }
       }
-    }
 
-    entries.sort((a, b) => (a.id < b.id ? -1 : 1));
-    const index: MemoryIndex = { version: INDEX_VERSION, entries };
-    this.writeFileAtomic(this.indexPath(user), `${JSON.stringify(index, null, 2)}\n`);
-    return index;
+      entries.sort((a, b) => (a.id < b.id ? -1 : 1));
+      const index: MemoryIndex = { version: INDEX_VERSION, entries };
+      this.writeFileAtomic(this.indexPath(user), `${JSON.stringify(index, null, 2)}\n`);
+      return index;
+    });
   }
 
   readIndex(user: string): MemoryIndex {
@@ -392,9 +600,11 @@ export class HierarchicalMemoryFileStore {
 
   /** Write TAXONOMY.md once (never overwrites a user-edited file). */
   ensureTaxonomy(user: string): void {
-    const fp = path.join(this.root(user), 'TAXONOMY.md');
-    if (fs.existsSync(fp)) return;
-    this.writeFileAtomic(fp, TAXONOMY_TEMPLATE);
+    this.locked(user, () => {
+      const fp = path.join(this.root(user), 'TAXONOMY.md');
+      if (fs.existsSync(fp)) return;
+      this.writeFileAtomic(fp, TAXONOMY_TEMPLATE);
+    });
   }
 }
 

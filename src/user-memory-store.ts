@@ -1,7 +1,8 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { l1FilePath, migrateLegacyL1 } from 'somalib/model-commands/hierarchical-memory-store';
+import { withMemoryLock } from 'somalib/model-commands/memory-lock';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { isSafePathSegment } from './path-utils';
@@ -50,6 +51,15 @@ function getFilePath(userId: string, target: MemoryTarget): string {
   // legacy file, so the two locations never coexist ("mixed" state).
   migrateLegacyL1(DATA_DIR, userId, target);
   return l1FilePath(DATA_DIR, userId, target);
+}
+
+/**
+ * Every write holds the user's memory lock (somalib `memory-lock`): the MCP
+ * subprocess and the dashboard write the same files (SSOT 2026-10-23 T3).
+ */
+function locked<T>(userId: string, fn: () => T): T {
+  if (!isSafePathSegment(userId)) throw new Error(`Invalid userId for memory storage: ${userId}`);
+  return withMemoryLock(DATA_DIR, userId, fn);
 }
 
 function getCharLimit(target: MemoryTarget): number {
@@ -122,33 +132,35 @@ export function loadMemory(userId: string, target: MemoryTarget): MemoryBlock {
 }
 
 export function addMemory(userId: string, target: MemoryTarget, content: string): MemoryOperationResult {
-  const trimmed = content.trim();
-  if (!trimmed) {
-    return { ok: false, message: 'Empty content' };
-  }
+  return locked(userId, () => {
+    const trimmed = content.trim();
+    if (!trimmed) {
+      return { ok: false, message: 'Empty content' };
+    }
 
-  const entries = readEntries(userId, target);
-  const charLimit = getCharLimit(target);
+    const entries = readEntries(userId, target);
+    const charLimit = getCharLimit(target);
 
-  // Reject exact duplicates
-  if (entries.some((e) => e === trimmed)) {
-    return { ok: false, message: 'Duplicate entry already exists' };
-  }
+    // Reject exact duplicates
+    if (entries.some((e) => e === trimmed)) {
+      return { ok: false, message: 'Duplicate entry already exists' };
+    }
 
-  // Check char limit
-  const newEntries = [...entries, trimmed];
-  if (totalChars(newEntries) > charLimit) {
-    const used = totalChars(entries);
-    return {
-      ok: false,
-      message: `Would exceed char limit (${used}/${charLimit} used, need ${trimmed.length} more chars). Remove old entries first.`,
-    };
-  }
+    // Check char limit
+    const newEntries = [...entries, trimmed];
+    if (totalChars(newEntries) > charLimit) {
+      const used = totalChars(entries);
+      return {
+        ok: false,
+        message: `Would exceed char limit (${used}/${charLimit} used, need ${trimmed.length} more chars). Remove old entries first.`,
+      };
+    }
 
-  writeEntries(userId, target, newEntries);
-  fireInvalidate(userId);
-  logger.info('Memory added', { userId, target, entryLength: trimmed.length });
-  return { ok: true, message: 'Entry added', entries: newEntries };
+    writeEntries(userId, target, newEntries);
+    fireInvalidate(userId);
+    logger.info('Memory added', { userId, target, entryLength: trimmed.length });
+    return { ok: true, message: 'Entry added', entries: newEntries };
+  });
 }
 
 export function replaceMemory(
@@ -157,71 +169,77 @@ export function replaceMemory(
   oldText: string,
   newContent: string,
 ): MemoryOperationResult {
-  const trimmedNew = newContent.trim();
-  if (!trimmedNew) {
-    return { ok: false, message: 'Replacement content is empty' };
-  }
+  return locked(userId, () => {
+    const trimmedNew = newContent.trim();
+    if (!trimmedNew) {
+      return { ok: false, message: 'Replacement content is empty' };
+    }
 
-  const entries = readEntries(userId, target);
-  const matches = entries.filter((e) => e.includes(oldText));
+    const entries = readEntries(userId, target);
+    const matches = entries.filter((e) => e.includes(oldText));
 
-  if (matches.length === 0) {
-    return { ok: false, message: `No entry matching "${oldText}" found` };
-  }
-  if (matches.length > 1 && new Set(matches).size > 1) {
-    return { ok: false, message: `Multiple entries match "${oldText}". Be more specific.` };
-  }
+    if (matches.length === 0) {
+      return { ok: false, message: `No entry matching "${oldText}" found` };
+    }
+    if (matches.length > 1 && new Set(matches).size > 1) {
+      return { ok: false, message: `Multiple entries match "${oldText}". Be more specific.` };
+    }
 
-  const idx = entries.findIndex((e) => e.includes(oldText));
-  const updated = [...entries];
-  updated[idx] = trimmedNew;
+    const idx = entries.findIndex((e) => e.includes(oldText));
+    const updated = [...entries];
+    updated[idx] = trimmedNew;
 
-  const charLimit = getCharLimit(target);
-  if (totalChars(updated) > charLimit) {
-    return { ok: false, message: `Replacement would exceed char limit (${charLimit})` };
-  }
+    const charLimit = getCharLimit(target);
+    if (totalChars(updated) > charLimit) {
+      return { ok: false, message: `Replacement would exceed char limit (${charLimit})` };
+    }
 
-  writeEntries(userId, target, updated);
-  fireInvalidate(userId);
-  logger.info('Memory replaced', { userId, target, index: idx });
-  return { ok: true, message: 'Entry replaced', entries: updated };
+    writeEntries(userId, target, updated);
+    fireInvalidate(userId);
+    logger.info('Memory replaced', { userId, target, index: idx });
+    return { ok: true, message: 'Entry replaced', entries: updated };
+  });
 }
 
 export function removeMemory(userId: string, target: MemoryTarget, oldText: string): MemoryOperationResult {
-  const entries = readEntries(userId, target);
-  const matches = entries.filter((e) => e.includes(oldText));
+  return locked(userId, () => {
+    const entries = readEntries(userId, target);
+    const matches = entries.filter((e) => e.includes(oldText));
 
-  if (matches.length === 0) {
-    return { ok: false, message: `No entry matching "${oldText}" found` };
-  }
-  if (matches.length > 1 && new Set(matches).size > 1) {
-    return { ok: false, message: `Multiple entries match "${oldText}". Be more specific.` };
-  }
+    if (matches.length === 0) {
+      return { ok: false, message: `No entry matching "${oldText}" found` };
+    }
+    if (matches.length > 1 && new Set(matches).size > 1) {
+      return { ok: false, message: `Multiple entries match "${oldText}". Be more specific.` };
+    }
 
-  const idx = entries.findIndex((e) => e.includes(oldText));
-  const updated = [...entries];
-  updated.splice(idx, 1);
+    const idx = entries.findIndex((e) => e.includes(oldText));
+    const updated = [...entries];
+    updated.splice(idx, 1);
 
-  writeEntries(userId, target, updated);
-  fireInvalidate(userId);
-  logger.info('Memory removed', { userId, target, index: idx });
-  return { ok: true, message: 'Entry removed', entries: updated };
+    writeEntries(userId, target, updated);
+    fireInvalidate(userId);
+    logger.info('Memory removed', { userId, target, index: idx });
+    return { ok: true, message: 'Entry removed', entries: updated };
+  });
 }
 
 export function removeMemoryByIndex(userId: string, target: MemoryTarget, index: number): MemoryOperationResult {
-  const entries = readEntries(userId, target);
+  return locked(userId, () => {
+    const entries = readEntries(userId, target);
 
-  if (index < 1 || index > entries.length) {
-    return { ok: false, message: `Invalid index ${index}. Valid range: 1-${entries.length}` };
-  }
+    if (index < 1 || index > entries.length) {
+      return { ok: false, message: `Invalid index ${index}. Valid range: 1-${entries.length}` };
+    }
 
-  const updated = [...entries];
-  updated.splice(index - 1, 1);
+    const updated = [...entries];
+    updated.splice(index - 1, 1);
 
-  writeEntries(userId, target, updated);
-  fireInvalidate(userId);
-  logger.info('Memory removed by index', { userId, target, index });
-  return { ok: true, message: `Entry #${index} removed`, entries: updated };
+    writeEntries(userId, target, updated);
+    fireInvalidate(userId);
+    logger.info('Memory removed by index', { userId, target, index });
+    return { ok: true, message: `Entry #${index} removed`, entries: updated };
+  });
 }
 
 /**
@@ -240,30 +258,32 @@ export function replaceMemoryByIndex(
   newText: string,
   expectedOldText?: string,
 ): { ok: boolean; reason?: string } {
-  const trimmed = newText.trim();
-  const entries = readEntries(userId, target);
-  if (index < 1 || index > entries.length) {
-    return { ok: false, reason: `index ${index} out of range (1..${entries.length})` };
-  }
-  if (expectedOldText !== undefined && entries[index - 1] !== expectedOldText) {
-    return { ok: false, reason: 'cas mismatch' };
-  }
-  const perEntryCap = getPerEntryCap(target);
-  if (trimmed.length > perEntryCap) {
-    return { ok: false, reason: `entry too long (${trimmed.length} > ${perEntryCap})` };
-  }
-  if (trimmed.length === 0) {
-    return { ok: false, reason: 'empty entry' };
-  }
-  const next = [...entries];
-  next[index - 1] = trimmed;
-  if (totalChars(next) > getCharLimit(target)) {
-    return { ok: false, reason: 'total over charLimit' };
-  }
-  writeEntries(userId, target, next);
-  fireInvalidate(userId);
-  logger.info('Memory replaced by index', { userId, target, index });
-  return { ok: true };
+  return locked(userId, () => {
+    const trimmed = newText.trim();
+    const entries = readEntries(userId, target);
+    if (index < 1 || index > entries.length) {
+      return { ok: false, reason: `index ${index} out of range (1..${entries.length})` };
+    }
+    if (expectedOldText !== undefined && entries[index - 1] !== expectedOldText) {
+      return { ok: false, reason: 'cas mismatch' };
+    }
+    const perEntryCap = getPerEntryCap(target);
+    if (trimmed.length > perEntryCap) {
+      return { ok: false, reason: `entry too long (${trimmed.length} > ${perEntryCap})` };
+    }
+    if (trimmed.length === 0) {
+      return { ok: false, reason: 'empty entry' };
+    }
+    const next = [...entries];
+    next[index - 1] = trimmed;
+    if (totalChars(next) > getCharLimit(target)) {
+      return { ok: false, reason: 'total over charLimit' };
+    }
+    writeEntries(userId, target, next);
+    fireInvalidate(userId);
+    logger.info('Memory replaced by index', { userId, target, index });
+    return { ok: true };
+  });
 }
 
 /**
@@ -282,59 +302,129 @@ export function replaceAllMemory(
   entries: string[],
   expectedOldEntries?: string[],
 ): { ok: boolean; reason?: string } {
-  if (!Array.isArray(entries) || entries.length === 0) {
-    return { ok: false, reason: 'empty entries array' };
-  }
-  if (expectedOldEntries !== undefined) {
-    const current = readEntries(userId, target);
-    if (current.length !== expectedOldEntries.length || current.some((e, i) => e !== expectedOldEntries[i])) {
-      return { ok: false, reason: 'cas mismatch' };
+  return locked(userId, () => {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return { ok: false, reason: 'empty entries array' };
     }
-  }
-  const trimmedEntries: string[] = [];
-  for (const s of entries) {
-    if (typeof s !== 'string') {
-      return { ok: false, reason: 'non-string entry' };
+    if (expectedOldEntries !== undefined) {
+      const current = readEntries(userId, target);
+      if (current.length !== expectedOldEntries.length || current.some((e, i) => e !== expectedOldEntries[i])) {
+        return { ok: false, reason: 'cas mismatch' };
+      }
     }
-    const t = s.trim();
-    if (t.length === 0) {
-      return { ok: false, reason: 'empty entry in array' };
+    const trimmedEntries: string[] = [];
+    for (const s of entries) {
+      if (typeof s !== 'string') {
+        return { ok: false, reason: 'non-string entry' };
+      }
+      const t = s.trim();
+      if (t.length === 0) {
+        return { ok: false, reason: 'empty entry in array' };
+      }
+      trimmedEntries.push(t);
     }
-    trimmedEntries.push(t);
-  }
-  if (new Set(trimmedEntries).size !== trimmedEntries.length) {
-    return { ok: false, reason: 'duplicate entries' };
-  }
-  const perEntryCap = getPerEntryCap(target);
-  for (const s of trimmedEntries) {
-    if (s.length > perEntryCap) {
-      return { ok: false, reason: `entry too long (max ${perEntryCap})` };
+    if (new Set(trimmedEntries).size !== trimmedEntries.length) {
+      return { ok: false, reason: 'duplicate entries' };
     }
-  }
-  if (totalChars(trimmedEntries) > getCharLimit(target)) {
-    return { ok: false, reason: 'total over charLimit' };
-  }
-  writeEntries(userId, target, trimmedEntries);
-  fireInvalidate(userId);
-  logger.info('Memory replaced in full', { userId, target, count: trimmedEntries.length });
-  return { ok: true };
+    const perEntryCap = getPerEntryCap(target);
+    for (const s of trimmedEntries) {
+      if (s.length > perEntryCap) {
+        return { ok: false, reason: `entry too long (max ${perEntryCap})` };
+      }
+    }
+    if (totalChars(trimmedEntries) > getCharLimit(target)) {
+      return { ok: false, reason: 'total over charLimit' };
+    }
+    writeEntries(userId, target, trimmedEntries);
+    fireInvalidate(userId);
+    logger.info('Memory replaced in full', { userId, target, count: trimmedEntries.length });
+    return { ok: true };
+  });
 }
 
 export function clearMemory(userId: string, target: MemoryTarget): MemoryOperationResult {
-  writeEntries(userId, target, []);
-  fireInvalidate(userId);
-  logger.info('Memory cleared', { userId, target });
-  return { ok: true, message: `All ${target} entries cleared`, entries: [] };
+  return locked(userId, () => {
+    writeEntries(userId, target, []);
+    fireInvalidate(userId);
+    logger.info('Memory cleared', { userId, target });
+    return { ok: true, message: `All ${target} entries cleared`, entries: [] };
+  });
 }
 
 export function clearAllMemory(userId: string): MemoryOperationResult {
-  // Write both files, then fire a single invalidation — avoids two full
-  // session-table walks when one is sufficient.
-  writeEntries(userId, 'memory', []);
-  writeEntries(userId, 'user', []);
-  fireInvalidate(userId);
-  logger.info('All memory cleared', { userId });
-  return { ok: true, message: 'All memory and user profile entries cleared', entries: [] };
+  return locked(userId, () => {
+    // Write both files, then fire a single invalidation — avoids two full
+    // session-table walks when one is sufficient.
+    writeEntries(userId, 'memory', []);
+    writeEntries(userId, 'user', []);
+    fireInvalidate(userId);
+    logger.info('All memory cleared', { userId });
+    return { ok: true, message: 'All memory and user profile entries cleared', entries: [] };
+  });
+}
+
+// ── Dashboard memory tab (SSOT 2026-10-23 T3) ──
+
+/** Revision a dashboard edit is conditional on: a hash of the stored entries. */
+export function memoryRevision(userId: string, target: MemoryTarget): string {
+  return createHash('sha1').update(readEntries(userId, target).join(ENTRY_DELIMITER)).digest('hex').slice(0, 16);
+}
+
+export type MemoryEdit =
+  | { kind: 'add'; text: string }
+  | { kind: 'replace'; index: number; text: string }
+  | { kind: 'remove'; index: number }
+  | { kind: 'clear' };
+
+export type MemoryEditResult =
+  | { ok: true; block: MemoryBlock; revision: string }
+  | { ok: false; reason: 'conflict' | 'invalid'; message: string };
+
+/**
+ * Apply one dashboard edit if the store is still at `expectedRevision` (the
+ * revision the page loaded). Check and write happen inside the memory lock,
+ * so a SAVE_MEMORY from the agent lands before (→ conflict, reload) or after
+ * this edit — never in between. `index` is 0-based.
+ */
+export function editMemoryAt(
+  userId: string,
+  target: MemoryTarget,
+  expectedRevision: string,
+  edit: MemoryEdit,
+): MemoryEditResult {
+  return locked(userId, () => {
+    if (memoryRevision(userId, target) !== expectedRevision) {
+      return {
+        ok: false,
+        reason: 'conflict',
+        message: '그사이 다른 곳(에이전트·Slack)에서 바뀌었습니다 — 최신 내용을 불러오세요',
+      };
+    }
+    const entries = readEntries(userId, target);
+    const inRange = (i: number) => Number.isInteger(i) && i >= 0 && i < entries.length;
+    let r: { ok: boolean; message?: string; reason?: string };
+    if (edit.kind === 'add') {
+      const text = String(edit.text ?? '').trim();
+      if (text.length > getPerEntryCap(target)) {
+        return {
+          ok: false,
+          reason: 'invalid',
+          message: `한 항목은 ${getPerEntryCap(target)}자까지입니다 (${text.length}자)`,
+        };
+      }
+      r = addMemory(userId, target, text);
+    } else if (edit.kind === 'replace') {
+      if (!inRange(edit.index)) return { ok: false, reason: 'invalid', message: '항목 번호가 범위를 벗어났습니다' };
+      r = replaceMemoryByIndex(userId, target, edit.index + 1, String(edit.text ?? ''));
+    } else if (edit.kind === 'remove') {
+      if (!inRange(edit.index)) return { ok: false, reason: 'invalid', message: '항목 번호가 범위를 벗어났습니다' };
+      r = removeMemoryByIndex(userId, target, edit.index + 1);
+    } else {
+      r = clearMemory(userId, target);
+    }
+    if (!r.ok) return { ok: false, reason: 'invalid', message: r.message || r.reason || '저장하지 못했습니다' };
+    return { ok: true, block: loadMemory(userId, target), revision: memoryRevision(userId, target) };
+  });
 }
 
 /**

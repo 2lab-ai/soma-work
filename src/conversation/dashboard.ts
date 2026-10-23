@@ -4224,6 +4224,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
       </select></span>
       <a href="/conversations"><span aria-hidden="true">&#x1F4DD;</span>Conversations</a>
       <a href="/dashboard/settings" id="settings-link" title="개인 설정 — Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다"><span aria-hidden="true">&#x2699;&#xFE0F;</span>설정</a>
+      <a href="/dashboard/settings#memory" id="memory-link" title="기억 — 에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다"><span aria-hidden="true">&#x1F9E0;</span>기억</a>
       <button
         id="admin-mode-toggle"
         type="button"
