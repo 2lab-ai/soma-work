@@ -2174,7 +2174,7 @@ export class AgentStreamProcessor {
   private async handleToolResultsContent(content: any[], context: StreamContext): Promise<void> {
     if (!content || content.length === 0) return;
 
-    const toolResults = ToolFormatter.extractToolResults(content);
+    const toolResults: ToolResultEvent[] = ToolFormatter.extractToolResults(content);
     // Spec 12: who each result belongs to, and an Agent call's structured outcome.
     const parentOfResult = new Map<string, string>();
     const outcomeOfResult = new Map<string, { status: string; toolUses?: number; durationMs?: number }>();
