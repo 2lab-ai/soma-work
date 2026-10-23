@@ -2710,6 +2710,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     questionHeight?: number;
     prevScrollTop?: number;
     turns?: 'ok' | 'empty' | 'fail' | 'held';
+    settle?: 'ok' | 'empty' | 'fail';
   }) {
     const els: Record<string, FakeEl & Record<string, unknown>> = {};
     const el = (id: string) => {
@@ -2753,8 +2754,10 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     const payload = { id: 'conv1', titleSub: 'sub', hasMore: false, turns: [{ id: 't1', role: 'assistant' }] };
     const fetchImpl = () => {
       if (opts.turns === 'fail') return Promise.reject(new Error('down'));
-      const res = { json: async () => (opts.turns === 'empty' ? { ...payload, turns: [] } : payload) };
-      if (opts.turns === 'held') return new Promise((r) => (release = () => r(res)));
+      const outcome = opts.turns === 'held' ? (opts.settle ?? 'ok') : opts.turns;
+      const res = { json: async () => (outcome === 'empty' ? { ...payload, turns: [] } : payload) };
+      if (opts.turns === 'held')
+        return new Promise((r, j) => (release = () => (outcome === 'fail' ? j(new Error('down')) : r(res))));
       return Promise.resolve(res);
     };
     const cache: Record<string, Session> = { [KEY]: opts.session };
@@ -2785,6 +2788,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         '_panelGen',
         '_panelOlderArmed',
         '_panelStickBottom',
+        '_panelOnQuestion',
       ],
       {
         document: { getElementById: el },
@@ -2844,6 +2848,38 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
 
   it('lands on the form even when the panel was left scrolled down by the previous opening', async () => {
     const p = page({ session: waitingMulti(), prevScrollTop: 3000 });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('the form is in view as soon as the panel opens, before the turns arrive', () => {
+    const p = page({ session: waitingMulti(), questionHeight: 900, prevScrollTop: 3000, turns: 'held' });
+    p.clickAnswer();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it.each([
+    'ok',
+    'empty',
+    'fail',
+  ] as const)('a reader who scrolls down a tall form while the turns load is not pulled back (turns: %s)', async (outcome) => {
+    const p = page({ session: waitingMulti(), questionHeight: 900, turns: 'held', settle: outcome });
+    p.clickAnswer();
+    p.scroll.scrollTop = 200; // the reader moves to a later question before the response
+    p.release();
+    await flush();
+    await flush();
+    expect(p.scroll.scrollTop).toBe(200);
+  });
+
+  it('every 답변하기 opening lands on the form again, not only the first', async () => {
+    const p = page({ session: waitingMulti(), questionHeight: 900 });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    p.scroll.scrollTop = 700; // read down past the form, then open it again
     p.clickAnswer();
     await flush();
     await flush();
