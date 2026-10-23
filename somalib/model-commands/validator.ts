@@ -452,6 +452,15 @@ function parseUpdateSessionRequest(
   // Extract title
   const title = typeof raw.title === 'string' ? raw.title : undefined;
 
+  // titleFillOnly: optional boolean, only meaningful with a title
+  const titleFillOnly = raw.titleFillOnly;
+  if (titleFillOnly !== undefined && typeof titleFillOnly !== 'boolean') {
+    return invalidArgs('UPDATE_SESSION titleFillOnly must be a boolean');
+  }
+  if (titleFillOnly === true && !title) {
+    return invalidArgs('UPDATE_SESSION titleFillOnly requires title');
+  }
+
   // Operations validation: allow empty/missing if title exists
   const rawOps = raw.operations;
   const operations: SessionResourceOperation[] = [];
@@ -481,6 +490,7 @@ function parseUpdateSessionRequest(
       expectedSequence: expectedSequence as number | undefined,
       operations,
       ...(title ? { title } : {}),
+      ...(title && titleFillOnly === true ? { titleFillOnly: true } : {}),
     },
   };
 }

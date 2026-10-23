@@ -664,6 +664,14 @@ export interface ConversationSession {
    */
   pendingInstructionRejection?: { at: number; request: SessionResourceUpdateRequest };
 
+  /**
+   * How many `<session-title-pending>` notices the stream-executor has injected
+   * while the session wore a host stand-in title (voice / image-only first
+   * message). Capped by SESSION_TITLE_NOTICE_MAX_TURNS. Runtime-only — NOT
+   * persisted (same convention as `pendingInstructionRejection`).
+   */
+  titleNoticeCount?: number;
+
   // Dashboard improvements (v2.1):
   // Number of /compact invocations or SDK-triggered compact_boundary events observed on this session.
   compactionCount?: number;
