@@ -294,3 +294,19 @@ describe('top-bar chips stay clickable while a session panel is open (T6, review
     expect(picks).toEqual(['true', 'false']);
   });
 });
+
+describe('top-bar chips for a user without admin acceptance (T6, review P3)', () => {
+  it('stay hidden — the server would refuse every save', async () => {
+    const box: any = { hidden: true };
+    const { loadMyDefaults } = load<{ loadMyDefaults(): Promise<void> }>(['loadMyDefaults'], [], {
+      document: { getElementById: () => box },
+      fetch: async () => ({
+        ok: true,
+        json: async () => ({ accepted: false, settings: [{ key: 'defaultModel' }, { key: 'defaultEffort' }] }),
+      }),
+      renderDefaultsChips: () => {},
+    });
+    await loadMyDefaults();
+    expect(box.hidden).toBe(true);
+  });
+});
