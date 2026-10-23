@@ -8319,6 +8319,22 @@ function scrollPanelToWorkLog() {
   var headerHeight = toggle ? toggle.getBoundingClientRect().height : 0;
   scrollEl.scrollTo({ top: workLogLandingTop(sectionTop, headerHeight, scrollEl.clientHeight), behavior: 'instant' });
 }
+// Where an opening lands once the scroll area has its content (§3.1-6).
+// 작업 로그 / ?session=: the work-log header. Any other opening (답변하기):
+// the open question, which heads the scroll area, so the answer form is in
+// view; with no question shown (none, or answered while the turns loaded) the
+// newest turns, held while the panel settles until the reader acts.
+function landPanel() {
+  var scrollEl = document.getElementById('panel-scroll');
+  if (!scrollEl) return;
+  if (_panelFocusWorkLog) { scrollPanelToWorkLog(); return; }
+  var question = document.getElementById('panel-question');
+  var onQuestion = !!question && question.style.display !== 'none';
+  // Instant: under scroll-behavior: smooth the glide down from 0 passed
+  // through scrollTop < 100 and set off the load-older-turns handler.
+  scrollEl.scrollTo({ top: onQuestion ? 0 : scrollEl.scrollHeight, behavior: 'instant' });
+  _panelStickBottom = !onQuestion;
+}
 
 // ── Slide Panel ──
 // focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link:
@@ -8433,6 +8449,7 @@ function openPanel(sessionKey, focusWorkLog) {
 
         if (!data.turns || data.turns.length === 0) {
           turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation turns</p>';
+          landPanel();
           _panelTurnsLoading = false;
           return;
         }
@@ -8441,27 +8458,18 @@ function openPanel(sessionKey, focusWorkLog) {
         _panelTurnsOldestId = data.turns[0] && data.turns[0].id;
         turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
         attachRawToggleHandlers();
-        // Jump to bottom on fresh load — or to the collapsed work-log header when
-        // that is what the user asked for (작업 로그 button / ?session= deep link).
-        var scrollEl = document.getElementById('panel-scroll');
-        // Instant: under scroll-behavior: smooth the glide down from 0 passed
-        // through scrollTop < 100 and set off the load-older-turns handler.
-        if (_panelFocusWorkLog) scrollPanelToWorkLog();
-        else if (scrollEl) {
-          scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
-          // Stay on the newest turns while the panel settles (the subtitle
-          // arriving later makes the scroll area shorter) until the reader scrolls.
-          _panelStickBottom = true;
-        }
+        landPanel();
         _panelTurnsLoading = false;
       })
       .catch(function() {
         if (loadingGen !== _panelGen) return;
         turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Failed to load conversation</p>';
+        landPanel();
         _panelTurnsLoading = false;
       });
   } else {
     turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation recorded</p>';
+    landPanel();
   }
 
   // Command input — always visible; disabled + hint for terminated / sleeping
