@@ -5475,6 +5475,9 @@ body.nt-open .new-task-fab { display: none !important; }
 @media (pointer: coarse) {
   /* Responsive (SSOT 2026-10-24) — 16px text: iOS does not zoom into a focused input. */
   .panel-command input, .mc-custom-input input { font-size: 16px; }
+  /* The merged cron drawer and lane (#374): 44px touch targets. */
+  .cron-drawer-close { min-width: 44px; min-height: 44px; }
+  .cron-history-btn { min-height: 44px; }
 }
 @media (max-width: 639px) {
   /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB (a board
@@ -8941,8 +8944,9 @@ function runLayoutCheck() {
   for (var i = 0; i < movers.length; i++) {
     var el = movers[i];
     var cached = _layoutRects.get(el);
-    // The last target, where the reader saw it (scroll since the cache taken out).
-    var target = cached ? { left: cached.left - sx - sk, top: cached.top - sy } : null;
+    // The last target, where the reader saw it (scroll since the cache taken out;
+    // the board's own sideways scroll moves only what is inside it, not the CRON lane).
+    var target = cached ? { left: cached.left - sx - (kb.contains(el) ? sk : 0), top: cached.top - sy } : null;
     // getBoundingClientRect includes a running FLIP; its translate gives the layout spot.
     var t = el._flip ? parseTranslate(getComputedStyle(el).transform) : { x: 0, y: 0 };
     var r = el.getBoundingClientRect();
@@ -11397,7 +11401,8 @@ function closePanel() {
 
 document.addEventListener('keydown', function(e) {
   // Escape in the artifact viewer closes the viewer only (the dialog's own cancel).
-  if (e.key === 'Escape' && panelOpen && !artModalIsOpen()) closePanel();
+  // The cron drawer opens over a docked panel: Escape closes only that, the topmost.
+  if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closePanel();
 });
 
 // Scroll-up-to-load-more handler (bound once on panel-scroll).
@@ -13773,6 +13778,20 @@ window.addEventListener('resize', function() {
   clearTimeout(_capResizeTimer);
   _capResizeTimer = setTimeout(paintCapacity, 150);
 });
+// A docked session panel narrows the page without a window resize (SSOT
+// 2026-10-24): the timeline repacks its labels on its own width.
+(function initCapacityResize() {
+  var cap = document.getElementById('capacity');
+  if (!cap || typeof ResizeObserver === 'undefined') return;
+  var lastW = -1;
+  new ResizeObserver(function(entries) {
+    var w = Math.round(entries[0].contentRect.width);
+    if (w === lastW) return;
+    lastW = w;
+    clearTimeout(_capResizeTimer);
+    _capResizeTimer = setTimeout(paintCapacity, 150);
+  }).observe(cap);
+})();
 </script>
 </body>
 </html>`;
