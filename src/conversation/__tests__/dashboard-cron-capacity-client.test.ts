@@ -426,6 +426,8 @@ describe('T7/T9/T10 — capacity rows', () => {
       'renderCapacityAxis',
       'renderCapacityGrid',
       'capEventLine',
+      'capLeadLine',
+      'renderCapacitySummary',
       'renderCapacityRow',
       'renderCapacity',
     ],

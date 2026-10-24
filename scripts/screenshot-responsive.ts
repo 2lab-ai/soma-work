@@ -92,13 +92,96 @@ async function setupMockSessions() {
   return sessions;
 }
 
-async function preparePage(page: Page, opts: { savedView?: string; savedWidth?: number } = {}) {
+/** LLM capacity (#374) with two provider groups and a CRON job: the merged views at full size. */
+function capacityFixture(nowMs: number) {
+  const nowS = Math.floor(nowMs / 1000);
+  const mk = (account: string, tier: string, window: string, hours: number, gain: number, returns = false) => ({
+    account,
+    tier,
+    window,
+    at: nowS + hours * 3600,
+    gainPct: gain,
+    returns,
+    raises: true,
+  });
+  return {
+    capacity: {
+      available: true,
+      fetchedAtMs: nowMs,
+      groups: [
+        {
+          group: 'claude',
+          label: 'Claude',
+          availablePct: 62,
+          availableAccounts: 3,
+          unknownAccounts: 0,
+          totalAccounts: 4,
+          state: 'ok',
+          nextRefill: { account: 'acct-a', tier: 'claude-max-20x', window: '5h', at: nowS + 2 * 3600 },
+          markers: [
+            mk('acct-a', 'claude-max-20x', '5h', 2, 30),
+            mk('acct-b', 'claude-max-5x', '5h', 3, 20),
+            mk('acct-c', 'claude-max-20x', '7d', 50, 40),
+            mk('acct-d', 'claude-max-5x', 'cooldown', 1, 0, true),
+          ],
+          accounts: [],
+        },
+        {
+          group: 'codex',
+          label: 'Codex',
+          availablePct: 12,
+          availableAccounts: 1,
+          unknownAccounts: 0,
+          totalAccounts: 2,
+          state: 'low',
+          nextRefill: { account: 'acct-e', tier: 'chatgpt-pro-200', window: '5h', at: nowS + 4 * 3600 },
+          markers: [mk('acct-e', 'chatgpt-pro-200', '5h', 4, 50), mk('acct-f', 'chatgpt-pro-500', '7d', 100, 60)],
+          accounts: [],
+        },
+      ],
+    },
+  };
+}
+
+async function preparePage(
+  page: Page,
+  opts: {
+    savedView?: string;
+    savedWidth?: number;
+    seedSecondary?: boolean;
+    openSections?: string[];
+    capacityDelayMs?: number;
+  } = {},
+) {
+  if (opts.seedSecondary) {
+    const now = Date.now();
+    const delay = opts.capacityDelayMs || 0;
+    await page.route('**/api/dashboard/capacity', async (r) => {
+      // A slow llmux: the view lands after the board has settled.
+      if (delay) await new Promise((res) => setTimeout(res, delay));
+      await r.fulfill({ json: capacityFixture(now) });
+    });
+    await page.route('**/api/dashboard/cron*', (r) =>
+      r.fulfill({
+        json: {
+          jobs: [
+            {
+              id: 'job-nightly',
+              name: 'nightly-usage',
+              expression: '0 9 * * *',
+              nextRunAt: now + 3 * 3600e3,
+              runs: [],
+            },
+          ],
+        },
+      }),
+    );
+  }
   // Plain-JS init scripts (tsx would wrap named functions in __name()).
   await page.addInitScript({
     content: [
       'window.WebSocket = function StubWebSocket(url) { this.url = url; };',
       'window.WebSocket.prototype.close = function () {};',
-      'try { localStorage.clear(); } catch (_e) {}',
       // Count the script animations that move board items (the layout-shift FLIPs), so a
       // probe that lands after a 320ms animation ended still sees that it ran.
       'window.__shiftAnims = 0;',
@@ -109,11 +192,16 @@ async function preparePage(page: Page, opts: { savedView?: string; savedWidth?: 
       "  try { if (this.matches('#kanban .card, #kanban .kanban-col-header') && JSON.stringify(kf).indexOf('transform') >= 0) window.__shiftAnims++; } catch (_e) {}",
       "  try { if (this.id === 'slide-panel' && JSON.stringify(kf).indexOf('width') >= 0) window.__panelWidthAnims++; } catch (_e) {}",
       // Where a CRON lane card's layout FLIP starts on screen: its layout spot plus the first translate.
+      "  try { if (this.matches('.card') && kf[0] && kf[0].transform) { var m2 = /translate\\(([-\\d.]+)px, ([-\\d.]+)px\\)/.exec(kf[0].transform); var r2 = this.getBoundingClientRect(); if (m2) { window.__flipStarts = window.__flipStarts || {}; window.__flipStarts[this.getAttribute('data-session-key')] = { left: r2.left + Number(m2[1]), top: r2.top + Number(m2[2]) }; } } } catch (_e) {}",
       "  try { if (this.matches('.cron-lane .card') && kf[0] && kf[0].transform) { var m = /translate\\(([-\\d.]+)px, ([-\\d.]+)px\\)/.exec(kf[0].transform); var r = this.getBoundingClientRect(); if (m) window.__cronFlipStart = { left: r.left + Number(m[1]), top: r.top + Number(m[2]) }; } } catch (_e) {}",
       '  return __animate.call(this, kf, opts);',
       '};',
+      // First load only: a reload keeps what the page itself saved.
+      "try { if (!sessionStorage.getItem('__sweepInit')) { sessionStorage.setItem('__sweepInit', '1'); localStorage.clear();",
       opts.savedView ? `localStorage.setItem('soma-board-view', ${JSON.stringify(opts.savedView)});` : '',
       opts.savedWidth ? `localStorage.setItem('soma-panel-width', '${opts.savedWidth}');` : '',
+      ...(opts.openSections || []).map((sec) => `localStorage.setItem('soma-sec-${sec}', 'open');`),
+      '} } catch (_e) {}',
     ].join('\n'),
   });
 }
@@ -193,6 +281,101 @@ async function checkFab(page: Page): Promise<Check[]> {
     const overlap = c.bottom > f.top && c.top < f.bottom && c.right > f.left && c.left < f.right;
     return [{ ok: !overlap, msg: 'the FAB does not cover the last card at the end of the page' }];
   });
+}
+
+/**
+ * The merged secondary sections (#374 LLM capacity, CRON lane) leave the board on the
+ * first screen: its first card on screens at least 540px tall, its title row on the
+ * short landscape phones. An expanded capacity timeline keeps every marker in its track.
+ */
+async function checkSecondary(page: Page): Promise<Check[]> {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(150);
+  return page.evaluate(() => {
+    const out: { ok: boolean; msg: string }[] = [];
+    const vh = window.innerHeight;
+    const cap = document.getElementById('capacity') as HTMLElement;
+    const lane = document.getElementById('cron-lane') as HTMLElement;
+    out.push({ ok: !cap.hidden && !lane.hidden, msg: 'capacity and the CRON lane are shown (seeded)' });
+    // Collapsed (every posture but a 840×1000+ window): one short row each, chips for capacity.
+    if (cap.classList.contains('is-collapsed')) {
+      const h = cap.getBoundingClientRect().height;
+      out.push({ ok: h <= 64, msg: `collapsed capacity is one row (${Math.round(h)} ≤ 64px)` });
+      const chips = Array.from(cap.querySelectorAll('.cap-chip')).map((c) =>
+        (c as HTMLElement).innerText.replace(/\s+/g, ' '),
+      );
+      out.push({
+        ok:
+          chips.length === 2 &&
+          chips[0].indexOf('62%') >= 0 &&
+          chips[1].indexOf('12%') >= 0 &&
+          chips[1].indexOf('▲') >= 0,
+        msg: `capacity chips: ${chips.join(' / ')}`,
+      });
+    }
+    if (lane.classList.contains('is-collapsed') && !lane.querySelector('.cron-group.is-waiting')) {
+      const h = lane.getBoundingClientRect().height;
+      out.push({ ok: h <= 64, msg: `collapsed CRON lane is one row (${Math.round(h)} ≤ 64px)` });
+    }
+    const card = (document.querySelector('#kanban .card') as HTMLElement).getBoundingClientRect();
+    const head = (document.querySelector('.inbox-head') as HTMLElement).getBoundingClientRect();
+    if (vh >= 540) {
+      out.push({
+        ok: card.top <= vh - 60,
+        msg: `the first board card starts on the first screen (${Math.round(card.top)} ≤ ${vh - 60})`,
+      });
+    } else {
+      out.push({
+        ok: head.top <= vh - 50,
+        msg: `the board title row starts on the first screen (${Math.round(head.top)} ≤ ${vh - 50})`,
+      });
+    }
+    const tracks = Array.from(document.querySelectorAll('#capacity .cap-track')) as HTMLElement[];
+    let outside = 0;
+    for (const t of tracks) {
+      if (t.getBoundingClientRect().width === 0) continue;
+      const tr = t.getBoundingClientRect();
+      for (const m of Array.from(t.querySelectorAll('.cap-mk')) as HTMLElement[]) {
+        const r = m.getBoundingClientRect();
+        if (r.left < tr.left - 1 || r.right > tr.right + 1) outside++;
+      }
+    }
+    out.push({ ok: outside === 0, msg: `capacity markers stay inside their tracks (${outside} outside)` });
+    return out;
+  });
+}
+
+/** Expand the capacity timeline if a disclosure collapsed it, then check its markers. */
+async function checkCapacityExpanded(page: Page, state: string): Promise<Check[]> {
+  await page.evaluate(() => {
+    const t = document.querySelector('[data-sec-toggle="capacity"]') as HTMLElement | null;
+    if (t && t.getAttribute('aria-expanded') === 'false') t.click();
+  });
+  await page.waitForTimeout(400);
+  return page.evaluate((st) => {
+    const out: { ok: boolean; msg: string }[] = [];
+    const vw = document.documentElement.clientWidth;
+    const tracks = Array.from(document.querySelectorAll('#capacity .cap-track')) as HTMLElement[];
+    out.push({
+      ok: tracks.length === 2 && tracks.every((t) => t.getBoundingClientRect().width > 0),
+      msg: `${st}: the capacity timeline shows both groups`,
+    });
+    let outside = 0;
+    for (const t of tracks) {
+      const tr = t.getBoundingClientRect();
+      for (const m of Array.from(t.querySelectorAll('.cap-mk')) as HTMLElement[]) {
+        const r = m.getBoundingClientRect();
+        if (r.left < tr.left - 1 || r.right > tr.right + 1) outside++;
+      }
+    }
+    out.push({ ok: outside === 0, msg: `${st}: capacity markers stay inside their tracks (${outside} outside)` });
+    const capR = (document.getElementById('capacity') as HTMLElement).getBoundingClientRect();
+    out.push({
+      ok: capR.right <= vw + 1,
+      msg: `${st}: capacity has no sideways overflow (${Math.round(capR.right)} ≤ ${vw})`,
+    });
+    return out;
+  }, state);
 }
 
 /** The cron run drawer (#374), opened directly: it fits the viewport and its close button is reachable. */
@@ -338,7 +521,7 @@ async function sweepBrowser(name: string, type: BrowserType, baseUrl: string, ou
       const tag = `${name}-${pos.device}`;
       page.on('pageerror', (e) => failures.push(`${tag}: page error ${e.message}`));
       try {
-        await preparePage(page);
+        await preparePage(page, { seedSecondary: true });
         await openDashboard(page, baseUrl);
         const record = (checks: Check[], state: string) => {
           for (const c of checks) {
@@ -351,8 +534,11 @@ async function sweepBrowser(name: string, type: BrowserType, baseUrl: string, ou
           }
         };
         record(await checkClosed(page), 'closed');
+        record(await checkSecondary(page), 'closed');
         await page.screenshot({ path: path.join(outDir, `${tag}-closed.png`) });
         if (pos.w < 640) record(await checkFab(page), 'closed');
+        record(await checkCapacityExpanded(page, 'expanded'), 'closed');
+        await page.screenshot({ path: path.join(outDir, `${tag}-capacity.png`) });
         await page.evaluate(() => window.scrollTo(0, 0));
         await openFilledPanel(page);
         // Measure the settled drawer, not its slide-in (headless frames can lag).
@@ -361,6 +547,8 @@ async function sweepBrowser(name: string, type: BrowserType, baseUrl: string, ou
         );
         record(await checkOpen(page, touch), 'open');
         await page.screenshot({ path: path.join(outDir, `${tag}-open.png`) });
+        // Docked, the page narrows without a window resize: the timeline repacks.
+        if (pos.w >= 840) record(await checkCapacityExpanded(page, 'docked'), 'open');
         await page.evaluate(() => (window as unknown as { closePanel(): void }).closePanel());
         record(await checkCronDrawer(page, touch), 'cron');
         record(await checkSettings(page, baseUrl, touch), 'settings');
@@ -417,7 +605,16 @@ async function transitions(
       failures.push(`transition: ${msg}`);
     }
   };
-  const fresh = async (opts: { savedView?: string; savedWidth?: number; reduced?: boolean } = {}) => {
+  const fresh = async (
+    opts: {
+      savedView?: string;
+      savedWidth?: number;
+      reduced?: boolean;
+      seedSecondary?: boolean;
+      openSections?: string[];
+      capacityDelayMs?: number;
+    } = {},
+  ) => {
     const ctx = await browser.newContext({
       viewport: { width: 382, height: 580 },
       hasTouch: true,
@@ -626,7 +823,7 @@ async function transitions(
     // 4e. A CRON lane card sits outside the board's sideways scroll: unfolding right after
     //     a board scroll starts it where it was on screen (trinity code review R4, astra/fable).
     {
-      const { ctx, page } = await fresh({ savedView: 'board' });
+      const { ctx, page } = await fresh({ savedView: 'board', openSections: ['cron'] });
       await page.setViewportSize({ width: 669, height: 825 });
       await page.waitForFunction(() => window.innerWidth === 669);
       await page.waitForTimeout(600);
@@ -675,7 +872,7 @@ async function transitions(
     // 4g. The same rule on the cache's write path: a CRON card FLIP that lands right after a
     //     board scroll records its own spot, not one shifted by the board (trinity R5).
     {
-      const { ctx, page } = await fresh({ savedView: 'board' });
+      const { ctx, page } = await fresh({ savedView: 'board', openSections: ['cron'] });
       await page.setViewportSize({ width: 669, height: 825 });
       await page.waitForFunction(() => window.innerWidth === 669);
       await page.waitForTimeout(600);
@@ -726,7 +923,7 @@ async function transitions(
       const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
       const page = await ctx.newPage();
       page.on('pageerror', (e) => failures.push(`transition escape: page error ${e.message}`));
-      await preparePage(page);
+      await preparePage(page, { openSections: ['cron'] });
       await openDashboard(page, baseUrl);
       await openFilledPanel(page);
       await page.click('.cron-history-btn');
@@ -742,6 +939,163 @@ async function transitions(
         panel: (document.getElementById('slide-panel') as HTMLElement).classList.contains('open'),
       }));
       expect(!st.drawer && st.panel, `Escape closes the cron drawer only (drawer ${st.drawer}, panel ${st.panel})`);
+      await ctx.close();
+    }
+    // 4h. The capacity view loads after the board and pushes it down: the shift cache must
+    //     learn that, or the next unfold starts the cards from where they were before.
+    {
+      const { ctx, page } = await fresh({ seedSecondary: true, capacityDelayMs: 1500 });
+      await page.waitForFunction(() => !(document.getElementById('capacity') as HTMLElement).hidden, undefined, {
+        timeout: 10000,
+      });
+      await page.waitForTimeout(300);
+      const before = await page.evaluate(() => {
+        const cards = Array.from(document.querySelectorAll('#kanban .card')) as HTMLElement[];
+        const card = cards.find((c) => {
+          const r = c.getBoundingClientRect();
+          return r.top >= 0 && r.top <= window.innerHeight - 40;
+        });
+        if (!card) return null;
+        (window as unknown as { __flipStarts: Record<string, unknown> }).__flipStarts = {};
+        const r = card.getBoundingClientRect();
+        return { key: card.getAttribute('data-session-key') as string, left: r.left, top: r.top };
+      });
+      expect(before !== null, 'a board card is on the first screen after the capacity view loads (folded)');
+      if (before) {
+        await page.setViewportSize({ width: 951, height: 543 });
+        await page.waitForFunction(() => window.innerWidth === 951);
+        const start = await page.evaluate(
+          (key) =>
+            new Promise<{ left: number; top: number } | null>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => {
+                  const w = window as unknown as { __flipStarts: Record<string, { left: number; top: number }> };
+                  resolve(w.__flipStarts[key] || null);
+                }),
+              ),
+            ),
+          before.key,
+        );
+        expect(
+          start !== null && Math.abs(start.left - before.left) <= 2 && Math.abs(start.top - before.top) <= 2,
+          `after the capacity load, the unfold starts the card where it was (${start ? `${Math.round(start.left)},${Math.round(start.top)}` : 'no FLIP'} vs ${Math.round(before.left)},${Math.round(before.top)})`,
+        );
+      }
+      await ctx.close();
+    }
+    // 4i. The reader's toggle: the board below moves by the coordinator's FLIP (no jump),
+    //     the toggle keeps keyboard focus across a repaint, and the choice survives a reload.
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      const page = await ctx.newPage();
+      page.on('pageerror', (e) => failures.push(`transition toggle: page error ${e.message}`));
+      await preparePage(page, { seedSecondary: true });
+      await openDashboard(page, baseUrl);
+      await page.waitForFunction(() => !(document.getElementById('capacity') as HTMLElement).hidden);
+      await page.waitForTimeout(900);
+      const hasToggle = (await page.$('#capacity-toggle')) !== null;
+      expect(hasToggle, 'capacity has a disclosure toggle');
+      if (hasToggle) {
+        const before = await page.evaluate(() => {
+          const card = document.querySelector('#kanban .card') as HTMLElement;
+          const w = window as unknown as { __flipStarts: Record<string, unknown>; __shiftAnims: number };
+          w.__flipStarts = {};
+          w.__shiftAnims = 0;
+          const r = card.getBoundingClientRect();
+          return {
+            key: card.getAttribute('data-session-key') as string,
+            left: r.left,
+            top: r.top,
+            expanded: (document.getElementById('capacity-toggle') as HTMLElement).getAttribute('aria-expanded'),
+          };
+        });
+        expect(before.expanded === 'false', `1440×900 starts collapsed (${before.expanded})`);
+        await page.focus('#capacity-toggle');
+        await page.keyboard.press('Enter');
+        const seen = await page.evaluate(
+          (key) =>
+            new Promise<{ start: { left: number; top: number } | null; anims: number; now: number }>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => {
+                  const w = window as unknown as {
+                    __flipStarts: Record<string, { left: number; top: number }>;
+                    __shiftAnims: number;
+                  };
+                  const card = document.querySelector(`[data-session-key="${key}"]`) as HTMLElement;
+                  resolve({
+                    start: w.__flipStarts[key] || null,
+                    anims: w.__shiftAnims,
+                    now: card.getBoundingClientRect().top,
+                  });
+                }),
+              ),
+            ),
+          before.key,
+        );
+        expect(
+          seen.anims > 0 && seen.start !== null && Math.abs(seen.start.top - before.top) <= 2,
+          `expanding capacity slides the board from where it was (${seen.anims} FLIPs, from ${seen.start ? Math.round(seen.start.top) : '—'} vs ${Math.round(before.top)})`,
+        );
+        await page.waitForTimeout(500);
+        const kept = await page.evaluate(() => {
+          const w = window as unknown as { paintCapacity(): void };
+          (document.getElementById('capacity-view') as HTMLElement & { _html: unknown })._html = null;
+          w.paintCapacity();
+          const t = document.getElementById('capacity-toggle') as HTMLElement;
+          return { focus: document.activeElement === t, expanded: t.getAttribute('aria-expanded') };
+        });
+        expect(
+          kept.focus && kept.expanded === 'true',
+          `the toggle keeps focus and state across a repaint (${JSON.stringify(kept)})`,
+        );
+        await page.reload();
+        await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length > 0);
+        await page.waitForTimeout(900);
+        const after = await page.evaluate(() =>
+          (document.getElementById('capacity-toggle') as HTMLElement).getAttribute('aria-expanded'),
+        );
+        expect(after === 'true', `the reader's choice survives a reload (${after})`);
+      }
+      await ctx.close();
+    }
+    // 4j. A folded CRON lane still shows a job whose run waits for a reply.
+    {
+      const run = sessions.get(CRON_KEY) as Record<string, unknown>;
+      run.activityState = 'waiting';
+      const { ctx, page } = await fresh({ seedSecondary: true });
+      await page.waitForTimeout(600);
+      const st = await page.evaluate(() => {
+        const lane = document.getElementById('cron-lane') as HTMLElement;
+        const card = lane.querySelector('.card') as HTMLElement | null;
+        return {
+          folded: lane.classList.contains('is-collapsed'),
+          card: !!card && card.getBoundingClientRect().height > 0,
+        };
+      });
+      expect(st.folded && st.card, `a folded CRON lane keeps the waiting job's card (${JSON.stringify(st)})`);
+      run.activityState = 'idle';
+      await ctx.close();
+    }
+    // 4k. llmux unreachable: the collapsed capacity says so in its chip.
+    {
+      const ctx = await browser.newContext({ viewport: { width: 382, height: 580 }, hasTouch: true, isMobile: true });
+      const page = await ctx.newPage();
+      await preparePage(page, { seedSecondary: true });
+      await page.route('**/api/dashboard/capacity', (r) =>
+        r.fulfill({
+          json: { capacity: { available: false, reason: 'llmux unreachable', fetchedAtMs: Date.now(), groups: [] } },
+        }),
+      );
+      await openDashboard(page, baseUrl);
+      await page.waitForFunction(() => !(document.getElementById('capacity') as HTMLElement).hidden);
+      const chip = await page.evaluate(() => {
+        const c = document.querySelector('#capacity .cap-chip') as HTMLElement | null;
+        return c ? c.innerText : '';
+      });
+      expect(
+        chip.indexOf('가용량 미확인') >= 0,
+        `an unreachable llmux shows in the collapsed chip (${chip || 'no chip'})`,
+      );
       await ctx.close();
     }
     // 4. Reduced motion: no movement, a fade only.

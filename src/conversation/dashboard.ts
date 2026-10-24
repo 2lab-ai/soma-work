@@ -5478,6 +5478,7 @@ body.nt-open .new-task-fab { display: none !important; }
   /* The merged cron drawer and lane (#374): 44px touch targets. */
   .cron-drawer-close { min-width: 44px; min-height: 44px; }
   .cron-history-btn { min-height: 44px; }
+  .sec-toggle { min-height: 44px; }
 }
 @media (max-width: 639px) {
   /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB (a board
@@ -5499,6 +5500,57 @@ body.nt-open .new-task-fab { display: none !important; }
 .cron-drawer { width: min(560px, 100%); height: 100vh; height: 100dvh; padding-right: env(safe-area-inset-right, 0px); }
 .cron-drawer-head { padding-top: max(16px, env(safe-area-inset-top, 0px)); }
 .cron-drawer-body { padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
+/* Secondary sections (#374 LLM capacity, CRON lane) — a disclosure each: collapsed
+   unless the window is at least 840×1000 or the reader opened it. Collapsed, the
+   capacity keeps one chip per provider on its title row and the CRON lane keeps its
+   head (count, running, needs-reply) plus every job that waits for a reply. */
+.sec-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 2px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--ib-card-border);
+  background: var(--ib-card);
+  color: var(--ib-text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.sec-toggle svg { width: 12px; height: 12px; transition: transform var(--dur-press) var(--ease-out); }
+.sec-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.sec-toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.capacity { position: relative; }
+.capacity > .sec-toggle { position: absolute; top: 8px; right: 10px; }
+.capacity .cap-head { padding-right: 96px; }
+.capacity.is-collapsed { padding-bottom: 10px; }
+.capacity.is-collapsed .cap-head { flex-wrap: nowrap; align-items: center; margin-bottom: 0; min-height: 32px; }
+.capacity.is-collapsed .cap-sub, .capacity.is-collapsed .cap-legend, .capacity.is-collapsed .cap-rows, .capacity.is-collapsed .cap-off { display: none; }
+.capacity:not(.is-collapsed) .cap-summary { display: none; }
+.cap-summary { display: flex; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.cap-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  color: var(--ib-text-2);
+  background: var(--ib-card);
+  box-shadow: inset 0 0 0 1px var(--ib-card-border);
+}
+.cap-chip b { font-weight: 700; color: var(--ib-text); font-variant-numeric: tabular-nums; }
+.cap-chip.is-low { color: var(--st-wait); box-shadow: inset 0 0 0 1px var(--st-wait); }
+.cap-chip.is-empty, .cap-chip.is-error { color: var(--st-fail); box-shadow: inset 0 0 0 1px var(--st-fail); }
+.cron-lane-bar { display: flex; align-items: center; gap: 8px; padding-right: 8px; }
+.cron-lane-bar .cron-lane-head { flex: 1 1 auto; min-width: 0; }
+.cron-group[hidden] { display: none; }
+.cron-lane.is-collapsed { padding-bottom: 4px; }
 /* A short panel body (landscape phones, the unfolded Duo, a docked drawer under a
    tall top bar; below 560px R/2 cannot hold full thumbnails plus a couple of task
    rows): artifacts become name chips with the play button inline, so the
@@ -5590,7 +5642,10 @@ body.nt-open .new-task-fab { display: none !important; }
     <!-- LLM capacity (SSOT 2026-10-23 T7/T9/T10): the llmux cooldown timeline,
          between the stats strip and the inbox. Hidden until loaded, and on a
          deployment that does not route through llmux. -->
-    <section class="capacity" id="capacity" aria-label="LLM capacity" hidden></section>
+    <section class="capacity" id="capacity" aria-label="LLM capacity" hidden>
+      <button type="button" class="sec-toggle" id="capacity-toggle" data-sec-toggle="capacity" aria-expanded="false" aria-controls="capacity-view"><span class="sec-toggle-text">&#xD3BC;&#xCE58;&#xAE30;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+      <div class="capacity-view" id="capacity-view"></div>
+    </section>
 
     <!-- Agent inbox (.prd/10 §3.1) — the board, right under the stats strip. -->
     <section class="inbox" id="inbox" aria-label="Agent inbox">
@@ -5622,7 +5677,10 @@ body.nt-open .new-task-fab { display: none !important; }
       </dialog>
       <!-- CRON lane (SSOT 2026-10-23 T4/T5): one tile per cron job, its latest run as a live card. -->
       <div class="cron-lane" id="cron-lane" aria-label="Cron jobs" hidden>
-        <div class="cron-lane-head" id="cron-lane-head"></div>
+        <div class="cron-lane-bar">
+          <div class="cron-lane-head" id="cron-lane-head"></div>
+          <button type="button" class="sec-toggle" id="cron-toggle" data-sec-toggle="cron" aria-expanded="false" aria-controls="cron-groups"><span class="sec-toggle-text">&#xD3BC;&#xCE58;&#xAE30;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+        </div>
         <div class="cron-groups" id="cron-groups"></div>
       </div>
       <div class="kanban" id="kanban" data-view="board">
@@ -8768,7 +8826,8 @@ function collectViewMovers() {
   var out = [];
   var heads = document.querySelectorAll('#kanban .kanban-col-header');
   for (var i = 0; i < heads.length; i++) out.push(heads[i]);
-  for (var k in _cardEls) out.push(_cardEls[k]);
+  // Only what is rendered: a hidden element measures as a 0×0 box at the top-left.
+  for (var k in _cardEls) if (_cardEls[k].getClientRects().length) out.push(_cardEls[k]);
   return out;
 }
 
@@ -8796,7 +8855,7 @@ function layoutModeOf(innerW, inboxW, panelOpen, view) {
   };
 }
 function layoutModeKey(m) {
-  return m.cols + '|' + m.panel + '|' + m.view;
+  return m.cols + '|' + m.panel + '|' + m.view + (m.sec ? '|' + m.sec : '');
 }
 function parseTranslate(t) {
   var m = /^matrix(3d)?\\(([^)]*)\\)$/.exec(t || '');
@@ -8825,12 +8884,15 @@ function currentLayoutMode() {
   var inbox = document.getElementById('inbox');
   var panel = document.getElementById('slide-panel');
   var kb = document.getElementById('kanban');
-  return layoutModeOf(
+  var m = layoutModeOf(
     window.innerWidth,
     inbox ? inbox.getBoundingClientRect().width : 0,
     !!(panel && panel.classList.contains('open')),
     kb ? kb.getAttribute('data-view') : ''
   );
+  // The secondary sections above the board (capacity, CRON lane) move it too.
+  m.sec = secStateKey();
+  return m;
 }
 function layoutScrollNow() {
   var kb = document.getElementById('kanban');
@@ -8935,6 +8997,9 @@ function runLayoutCheck() {
   // setBoardView neither saves it nor plays its own FLIP — this runs the only one).
   var autoView = defaultBoardView(window.innerWidth, savedBoardView());
   if (kb.getAttribute('data-view') !== autoView) setBoardView(autoView);
+  // The secondary sections' defaults follow the window in this same frame, so a
+  // fold or a window change that also folds them is one shift.
+  if (applySectionState() && _lastBoardData) renderBoard(_lastBoardData);
   var mode = currentLayoutMode();
   var changed = layoutModeKey(mode) !== _layoutModeKey;
   var flying = Date.now() < _layoutShiftUntil;
@@ -9234,6 +9299,10 @@ function openDeepLinkedSession() {
     // that run as the job's card and retry on that render.
     if (linked && linked.cronJob && linked.cronJob.name && _cronRevealKey !== key) {
       _cronRevealKey = key;
+      // A folded lane holds no card of a job that is not waiting: open it for this
+      // page load (the saved choice stays as it is).
+      _cronLaneRevealed = true;
+      applySectionState();
       renderBoard(_lastBoardData);
       return;
     }
@@ -11545,6 +11614,72 @@ function sendRetry(msg) {
   sendCommand();
 }
 
+// ── Secondary sections: LLM capacity and the CRON lane (SSOT 2026-10-24) ──
+// Both sit above the board and once took the whole first screen of every phone and
+// foldable (the first card at 989–1247px). Each is a disclosure: collapsed unless the
+// window is large (840 wide and 1000 tall — a QHD or full-screen desktop), or as the
+// reader chose. The choice is saved per device; the default never is. A folded CRON
+// lane still shows every job whose run waits for a reply (never hidden behind a fold).
+var SEC_OPEN_QUERY = '(min-width: 840px) and (min-height: 1000px)';
+var _cronLaneRevealed = false; // a deep link into a folded lane opens it for this page load
+var _cronFoldApplied = null;   // the fold the last CRON render used
+function secOpen(saved, large) {
+  if (saved === 'open') return true;
+  if (saved === 'closed') return false;
+  return !!large;
+}
+function secSaved(sec) {
+  try { return localStorage.getItem('soma-sec-' + sec); } catch (_e) { return null; }
+}
+function secIsOpen(sec) {
+  if (sec === 'cron' && _cronLaneRevealed) return true;
+  var large = !!(window.matchMedia && window.matchMedia(SEC_OPEN_QUERY).matches);
+  return secOpen(secSaved(sec), large);
+}
+function cronLaneFolded() { return !secIsOpen('cron'); }
+function secStateKey() { return (secIsOpen('capacity') ? 'C' : 'c') + (secIsOpen('cron') ? 'R' : 'r'); }
+// Classes and toggles follow the state; true when the CRON fold changed (the lane's
+// cards then need a render: a folded lane keeps them out of the DOM).
+function applySectionState() {
+  var pairs = [['capacity', 'capacity'], ['cron', 'cron-lane']];
+  for (var i = 0; i < pairs.length; i++) {
+    var root = document.getElementById(pairs[i][1]);
+    if (!root) continue;
+    var open = secIsOpen(pairs[i][0]);
+    root.classList.toggle('is-collapsed', !open);
+    var t = root.querySelector('[data-sec-toggle]');
+    if (t) {
+      t.setAttribute('aria-expanded', open ? 'true' : 'false');
+      var label = t.querySelector('.sec-toggle-text');
+      if (label) label.textContent = open ? '접기' : '펼치기';
+    }
+  }
+  var folded = cronLaneFolded();
+  var changed = _cronFoldApplied !== null && _cronFoldApplied !== folded;
+  _cronFoldApplied = folded;
+  return changed;
+}
+// The reader's toggle: the board moves by the layout coordinator's FLIP (the state is
+// part of the layout mode), measured from where it is now.
+function toggleSection(sec) {
+  var open = !secIsOpen(sec);
+  layoutBeforeChange();
+  try { localStorage.setItem('soma-sec-' + sec, open ? 'open' : 'closed'); } catch (_e) {}
+  if (sec === 'cron') _cronLaneRevealed = false;
+  var cronChanged = applySectionState();
+  if (cronChanged && _lastBoardData) renderBoard(_lastBoardData);
+  if (sec === 'capacity' && open) {
+    // Repack the timeline at the width it has now.
+    var view = document.getElementById('capacity-view');
+    if (view) view._html = null;
+    paintCapacity();
+  }
+}
+document.addEventListener('click', function(e) {
+  var t = e.target.closest && e.target.closest('[data-sec-toggle]');
+  if (t) toggleSection(t.getAttribute('data-sec-toggle'));
+});
+
 // ── CRON lane (SSOT 2026-10-23 T3/T4/T5) ──
 // Sessions a cron fire created (KanbanSession.cronJob) leave the three columns
 // for one full-width lane above them: one tile per job — schedule, next run, the
@@ -11754,6 +11889,8 @@ function syncCronLane(plan, nowMs) {
   var headHtml = renderCronLaneHead(plan);
   if (head && head._html !== headHtml) { head.innerHTML = headHtml; head._html = headHtml; }
   var keep = Object.create(null);
+  // Folded (SSOT 2026-10-24): only the jobs whose run waits for a reply stay out.
+  var folded = cronLaneFolded();
   for (var i = 0; i < plan.groups.length; i++) {
     var g = plan.groups[i];
     keep[g.key] = true;
@@ -11777,6 +11914,7 @@ function syncCronLane(plan, nowMs) {
     if (sec._html !== html) { sec._headEl.innerHTML = html; sec._html = html; }
     sec.classList.toggle('is-waiting', g.waiting);
     sec.classList.toggle('is-running', g.running && !g.waiting);
+    sec.hidden = folded && !g.waiting;
     sec.setAttribute('aria-label', g.name);
     if (root.children[i] !== sec) root.insertBefore(sec, root.children[i] || null);
   }
@@ -11790,9 +11928,13 @@ function syncCronLane(plan, nowMs) {
 // Reconciler slots: each job group shows its lead card (waiting, else running,
 // else newest) in its own section.
 function cronLaneSlots(plan) {
+  // A folded lane keeps no card of a job that does not wait for a reply in the DOM —
+  // like a closed DONE day (T12) — so the layout coordinator never caches a hidden one.
+  var folded = cronLaneFolded();
   return plan.groups.map(function(g) {
     var sec = _cronGroupEls[g.key];
-    return { container: sec ? sec._cardsEl : null, items: g.lead ? [{ s: g.lead, col: g.colOf[g.lead.key] }] : [] };
+    var show = g.lead && !(folded && !g.waiting);
+    return { container: sec ? sec._cardsEl : null, items: show ? [{ s: g.lead, col: g.colOf[g.lead.key] }] : [] };
   });
 }
 
@@ -11988,6 +12130,32 @@ function capEventLine(prefix, ev, nowMs) {
   if (!ev) return '';
   return prefix + ' ' + ev.account + ' · ' + capCountdown(ev.at - nowMs / 1000) + ' 후 (' + capClockLabel(ev.at, nowMs) + ') · ' + (ev.window === 'cooldown' ? '쿨다운 해제' : ev.window + ' 창');
 }
+// The row's lead sentence: what happens next to this provider's capacity.
+function capLeadLine(g, nowMs) {
+  var state = g.state || 'unknown';
+  var focus = state === 'empty' ? g.nextReturn
+    : state === 'low' ? ((g.nextReturn && (!g.nextRefill || g.nextReturn.at < g.nextRefill.at)) ? g.nextReturn : g.nextRefill)
+    : null;
+  return state === 'empty'
+    ? (g.nextReturn ? capEventLine('다음 복귀', g.nextReturn, nowMs) : '복귀 예정 없음 — 계정 인증·상태 확인 필요')
+    : state === 'low' ? capEventLine('잔여 부족 · 다음 공급', focus, nowMs)
+    : state === 'unknown' ? '잔여율 미확인 — llmux 재조회 대기'
+    : capEventLine('다음 리필', g.nextRefill, nowMs) || '가용량을 올리는 리셋 예정 없음';
+}
+// Collapsed (SSOT 2026-10-24): one chip per provider — label, %, a state glyph (never
+// colour alone), and the lead sentence as its tooltip. Not a live region.
+function renderCapacitySummary(v, nowMs) {
+  if (!v.available) {
+    return '<div class="cap-summary"><span class="cap-chip is-error" title="' + escAttr(v.reason || '') + '">가용량 미확인 · ' + esc(v.reason || '알 수 없는 오류') + '</span></div>';
+  }
+  if (!v.groups || !v.groups.length) return '<div class="cap-summary"><span class="cap-chip is-unknown">계정 없음</span></div>';
+  var GLYPH = { low: ' ▲', empty: ' ✗', unknown: ' ◌' };
+  return '<div class="cap-summary">' + v.groups.map(function(g) {
+    var state = g.state || 'unknown';
+    var pct = typeof g.availablePct === 'number' ? Math.round(g.availablePct) + '%' : '—';
+    return '<span class="cap-chip is-' + state + '" title="' + escAttr(capLeadLine(g, nowMs)) + '">' + esc(g.label) + ' <b>' + esc(pct) + '</b>' + (GLYPH[state] || '') + '</span>';
+  }).join('') + '</div>';
+}
 function renderCapacityRow(g, nowMs, trackPx) {
   var nowSec = nowMs / 1000;
   var state = g.state || 'unknown';
@@ -11997,11 +12165,7 @@ function renderCapacityRow(g, nowMs, trackPx) {
   var focus = state === 'empty' ? g.nextReturn
     : state === 'low' ? ((g.nextReturn && (!g.nextRefill || g.nextReturn.at < g.nextRefill.at)) ? g.nextReturn : g.nextRefill)
     : null;
-  var lead = state === 'empty'
-    ? (g.nextReturn ? capEventLine('다음 복귀', g.nextReturn, nowMs) : '복귀 예정 없음 — 계정 인증·상태 확인 필요')
-    : state === 'low' ? capEventLine('잔여 부족 · 다음 공급', focus, nowMs)
-    : state === 'unknown' ? '잔여율 미확인 — llmux 재조회 대기'
-    : capEventLine('다음 리필', g.nextRefill, nowMs) || '가용량을 올리는 리셋 예정 없음';
+  var lead = capLeadLine(g, nowMs);
   var counts = '가용 ' + g.availableAccounts + '/' + g.totalAccounts + (g.unknownAccounts ? ' · 미확인 ' + g.unknownAccounts : '');
   var pack = capPackMarkers(g.markers || [], nowSec, trackPx);
   var markers = pack.placed.map(function(p) {
@@ -12044,7 +12208,7 @@ function renderCapacity(v, nowMs, trackPx) {
     + '<span><i class="cap-sw tier-none"></i>티어 미지정</span>'
     + '<span>● 5h 리셋 · ◆ 7d/모델별 리셋 · ■ 계정 복귀</span>'
     + '</div>';
-  var head = '<div class="cap-head"><h2 class="cap-title">LLM 가용량</h2><span class="cap-sub">llmux · 계정별 한도 잔여율' + esc(fresh) + '</span>' + legend + '</div>';
+  var head = '<div class="cap-head"><h2 class="cap-title">LLM 가용량</h2><span class="cap-sub">llmux · 계정별 한도 잔여율' + esc(fresh) + '</span>' + renderCapacitySummary(v, nowMs) + legend + '</div>';
   if (!v.available) return head + '<div class="cap-off">' + esc('가용량을 불러오지 못했습니다 — ' + (v.reason || '알 수 없는 오류')) + '</div>';
   if (!v.groups || !v.groups.length) return head + '<div class="cap-off">llmux 풀에 계정이 없습니다</div>';
   return head + '<div class="cap-rows">' + v.groups.map(function(g) { return renderCapacityRow(g, nowMs, trackPx); }).join('') + '</div>';
@@ -12059,7 +12223,17 @@ function paintCapacity() {
   // The timeline's width (meta column beside it from 760px) sizes the labels.
   var trackPx = el.clientWidth - 28 - (window.innerWidth > 760 ? 226 : 0);
   var html = renderCapacity(_capacityView, Date.now(), trackPx);
-  if (el._html !== html) { el.innerHTML = html; el._html = html; }
+  // The view, never the section: its disclosure toggle is static (focus survives).
+  var view = document.getElementById('capacity-view') || el;
+  var shown = el._shown;
+  el._shown = true;
+  if (view._html !== html) {
+    view.innerHTML = html;
+    view._html = html;
+    // The section sits above the board, outside #inbox: no observer sees the board
+    // move when it appears or changes height, so the shift cache learns it here.
+    scheduleLayoutRefresh(40);
+  } else if (!shown) scheduleLayoutRefresh(40);
 }
 async function loadCapacity() {
   if (document.hidden) return;
@@ -12802,6 +12976,8 @@ function artHandleKey(e) {
   // View: the saved choice, else List on narrow screens (§3.1-2); runLayoutCheck
   // re-evaluates the default when a fold or rotation crosses 640px.
   setBoardView(defaultBoardView(window.innerWidth, savedBoardView()));
+  // The secondary sections' disclosure state, before the first board render.
+  applySectionState();
 })();
 // Spec 12 §4.3 — the panel's agent bar: path steps and list rows choose the agent, the toggle opens the list.
 (function initPanelAgentInteractions() {
