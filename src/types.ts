@@ -36,6 +36,7 @@ export type {
   WorkflowType,
 } from 'somalib/model-commands/session-types';
 
+import type { SdkUsageBaseline } from '@soma/slack/session-usage-math';
 import type {
   HandoffContext,
   RenewState,
@@ -110,6 +111,19 @@ export interface SessionUsage {
       costUsd: number;
     }
   >;
+
+  /**
+   * Spend a result-less turn folded into the totals above, until the next
+   * resumed result settles it (`settleFoldedLiveUsage`). Runtime-only.
+   */
+  foldedLiveUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreateTokens: number;
+    costUsd: number;
+    sdkSessionId?: string;
+  };
 
   lastUpdated: number; // Timestamp of last update
 }
@@ -387,6 +401,12 @@ export interface ConversationSession {
   workflow?: WorkflowType; // Determined workflow type
   // Token usage tracking
   usage?: SessionUsage;
+  /**
+   * Last per-model running total the SDK reported for `sessionId` (persisted).
+   * A result's `modelUsage` is cumulative for the SDK session, so each turn
+   * counts only the growth past this — see `toTurnUsage`.
+   */
+  sdkUsageBaseline?: SdkUsageBaseline;
   // Renew command state
   renewState?: RenewState;
   // User message to execute after renew (e.g., "/renew PR 리뷰해줘" → "PR 리뷰해줘")
