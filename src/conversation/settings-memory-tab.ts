@@ -27,6 +27,7 @@ export const MEMORY_TAB_HTML = `<div data-tab="memory" class="page" hidden>
   <main>
     <p class="intro">에이전트가 기억하는 내용입니다. 개인 메모리는 모든 세션의 시작 프롬프트에 들어가고, 지식 페이지는 목록만 들어가며 내용은 에이전트가 필요할 때 읽습니다. 관찰 기록은 턴마다 자동으로 쌓이는 날짜별 기록입니다. 고친 내용은 새 세션부터, 진행 중인 세션은 다음에 프롬프트를 다시 만들 때 반영됩니다.</p>
     <div id="mem-status" class="status" role="status" aria-live="polite"></div>
+    <div id="mem-recover"></div>
     <section class="group" id="m-l1" aria-labelledby="h-m-l1">
       <header><h2 id="h-m-l1">개인 메모리</h2><p>짧은 항목 목록입니다. 용량이 차면 에이전트가 새로 기억하지 못하니, 오래된 항목을 지우거나 합치세요.</p></header>
       <div id="mem-l1-body" class="l1-grid"><div class="notice">불러오는 중…</div></div>
@@ -125,6 +126,43 @@ function memStatus(text, isError) {
 function fmtNum(n) {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
+// One memory write at a time across the tab (review R10): while one is out, every other
+// write, editor opening, day or page switch waits for its answer. A write hung past
+// 20 s lets the user move on (its late answer only reports).
+function memHold() {
+  if (!memHold.at || Date.now() - memHold.at > 20000) return false;
+  memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
+  return true;
+}
+// A draft that has to leave its editor goes into an empty box next to it; if that box is
+// in use, into the recovery box at the top of the tab — never dropped (review R10).
+function memKeepDraft(boxId, text, label) {
+  if (!text) return;
+  var box = document.getElementById(boxId);
+  if (box && box.value === text) return;
+  if (box && !box.value) { box.value = text; return; }
+  memRecover(label, text);
+}
+function memRecover(label, text) {
+  memRecover.items = (memRecover.items || []).concat([{ label: label, text: text }]);
+  paintRecover();
+}
+function paintRecover() {
+  var el = document.getElementById('mem-recover');
+  if (!el) return;
+  var items = memRecover.items || [];
+  var html = '';
+  for (var i = 0; i < items.length; i++) {
+    html += '<div class="notice is-error" role="alert"><p>저장되지 않은 내용 — ' + esc(items[i].label) + '. 필요하면 복사해 다시 저장하세요.</p>'
+      + '<textarea readonly rows="3" aria-label="' + escAttr('저장되지 않은 내용: ' + items[i].label) + '">' + esc(items[i].text) + '</textarea>'
+      + '<button type="button" class="btn link" onclick="memRecoverDismiss(' + i + ')">닫기</button></div>';
+  }
+  el.innerHTML = html;
+}
+function memRecoverDismiss(i) {
+  (memRecover.items || []).splice(i, 1);
+  paintRecover();
+}
 async function loadMemory() {
   var body = document.getElementById('mem-l1-body');
   try {
@@ -190,15 +228,29 @@ function paintL1(editing, opts) {
     var box = document.getElementById('l1-new-' + targets[a]);
     if (box && box.value) adds[targets[a]] = box.value;
   }
-  var open = _mem.editingL1;
+  // The open editor's identity lives on paintL1, not in _mem: a reload replaces _mem (review R10).
+  var open = paintL1.open;
   var openBox = open ? document.getElementById('l1-edit-' + open.target) : null;
+  var lost = null;
+  var unique = null;
   if (!editing && open && openBox && !opts.close) {
     var ents = (_mem.l1[open.target] && _mem.l1[open.target].entries) || [];
     var at = ents.indexOf(open.orig);
-    if (at >= 0 && ents.lastIndexOf(open.orig) === at) editing = { target: open.target, index: at, text: openBox.value };
-    else if (openBox.value !== open.orig && !adds[open.target]) adds[open.target] = openBox.value;
+    // re-attached only to an entry that was unique when the editor opened and is unique now
+    if (open.unique && at >= 0 && ents.lastIndexOf(open.orig) === at) { editing = { target: open.target, index: at, text: openBox.value }; unique = true; }
+    else if (openBox.value !== open.orig) lost = { target: open.target, text: openBox.value };
+  } else if (editing && open && openBox && openBox.value !== open.orig && !(open.target === editing.target && open.orig === (_mem.l1[editing.target].entries || [])[editing.index])) {
+    // opening another editor: the draft of the one it replaces is kept (review R10)
+    lost = { target: open.target, text: openBox.value };
   }
-  _mem.editingL1 = editing ? { target: editing.target, orig: (_mem.l1[editing.target].entries || [])[editing.index] } : null;
+  if (editing) {
+    var cur = (_mem.l1[editing.target].entries || []);
+    var origText = cur[editing.index];
+    if (unique === null) unique = !(open && open.target === editing.target && open.orig === origText) ? cur.indexOf(origText) === cur.lastIndexOf(origText) : open.unique;
+    paintL1.open = { target: editing.target, orig: origText, unique: unique };
+  } else {
+    paintL1.open = null;
+  }
   var html = '';
   for (var i = 0; i < targets.length; i++) {
     var t = targets[i];
@@ -211,12 +263,15 @@ function paintL1(editing, opts) {
     var nb = document.getElementById('l1-new-' + tk);
     if (nb) nb.value = adds[tk];
   }
+  if (lost) memKeepDraft('l1-new-' + lost.target, lost.text, L1_LABELS[lost.target] + ' 수정본');
 }
 function l1Cancel() {
+  if (memHold()) return;
   paintL1(null, { close: true });
 }
 // An L1 write in flight holds its card: a second click waits (review R9).
 function l1Busy(target) {
+  if (memHold()) return true;
   var b = _mem && _mem.l1 && _mem.l1[target];
   if (!b || !b.saving || Date.now() - b.saving > 20000) return false;
   memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
@@ -238,16 +293,18 @@ function l1Count(target) {
 // One L1 write. A 409 reloads the stores and puts the WHOLE draft back in an
 // edit box — the entry it was for when it still exists, else the add box —
 // so nothing typed is lost (review P1).
-async function l1Write(method, url, payload, draft, at, orig) {
+async function l1Write(method, url, payload, draft, at, orig, unique) {
   var target = url.split('/')[4];
   var held = _mem.l1[target];
   if (held) held.saving = Date.now();
+  memHold.at = Date.now();
   // the card's editor and add box are locked while the write is out: its answer repaints them (review R9)
   var locked = [document.getElementById('l1-edit-' + target), document.getElementById('l1-new-' + target)];
   for (var lk = 0; lk < locked.length; lk++) if (locked[lk]) locked[lk].disabled = true;
   var r;
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   if (held) held.saving = 0;
+  memHold.at = 0;
   for (var ul = 0; ul < locked.length; ul++) if (locked[ul]) locked[ul].disabled = false;
   if (r.ok) {
     _mem.l1[target] = r.data.l1;
@@ -257,7 +314,7 @@ async function l1Write(method, url, payload, draft, at, orig) {
   }
   if (r.status === 409) {
     await loadMemory();
-    restoreL1Draft(target, draft, at, orig);
+    restoreL1Draft(target, draft, at, orig, unique);
     memStatus('그사이 다른 곳(에이전트·Slack)에서 바뀌어 최신 내용을 불러왔습니다.' + (draft ? ' 작성하던 내용은 편집 칸에 그대로 있습니다 — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
     return false;
   }
@@ -268,18 +325,19 @@ async function l1Write(method, url, payload, draft, at, orig) {
 // original text, never by position (the list may have shifted) — else into the
 // add box as a recovery draft (review R2). Two notes with that text cannot be
 // told apart, so that is a recovery draft too (review R3).
-function restoreL1Draft(target, draft, at, orig) {
+function restoreL1Draft(target, draft, at, orig, unique) {
   if (!draft) return;
   var entries = (_mem && _mem.l1[target] && _mem.l1[target].entries) || [];
   var idx = typeof orig === 'string' ? entries.indexOf(orig) : -1;
-  if (idx >= 0 && entries.lastIndexOf(orig) === idx) {
+  // only an entry that was unique when the editor opened (review R10) and is unique now
+  if (unique !== false && idx >= 0 && entries.lastIndexOf(orig) === idx) {
     paintL1({ target: target, index: idx, text: draft });
     return;
   }
-  var ta = document.getElementById('l1-new-' + target);
-  if (ta && !ta.value) ta.value = draft;
+  memKeepDraft('l1-new-' + target, draft, L1_LABELS[target] + ' 수정본');
 }
 function l1EditStart(target, i) {
+  if (memHold()) return;
   paintL1({ target: target, index: i, text: _mem.l1[target].entries[i] });
   var ta = document.getElementById('l1-edit-' + target);
   if (ta) ta.focus();
@@ -290,7 +348,9 @@ async function l1Save(target, i) {
   var text = ta ? ta.value : '';
   if (!text.trim()) { memStatus('비어 있는 항목은 저장할 수 없습니다 — 지우려면 삭제를 쓰세요', true); return; }
   var orig = _mem.l1[target].entries[i];
-  if (await l1Write('PUT', '/api/memory/l1/' + target + '/' + i, { text: text, revision: _mem.l1[target].revision }, text, i, orig)) memStatus('저장했습니다', false);
+  var ents = _mem.l1[target].entries;
+  var unique = paintL1.open && paintL1.open.target === target && paintL1.open.orig === orig ? paintL1.open.unique : ents.indexOf(orig) === ents.lastIndexOf(orig);
+  if (await l1Write('PUT', '/api/memory/l1/' + target + '/' + i, { text: text, revision: _mem.l1[target].revision }, text, i, orig, unique)) memStatus('저장했습니다', false);
 }
 async function l1Add(target) {
   if (l1Busy(target)) return;
@@ -319,8 +379,7 @@ async function l1Undo() {
     memStatus('되돌렸습니다 (목록 끝에 다시 추가)', false);
     return;
   }
-  var ta = document.getElementById('l1-new-' + u.target);
-  if (ta && !ta.value) ta.value = u.text;
+  memKeepDraft('l1-new-' + u.target, u.text, L1_LABELS[u.target] + ' 되돌리지 못한 항목');
 }
 async function l1Clear(target) {
   // What the dialog names is what gets cleared: a reload under the open dialog makes it a 409 (review R3).
@@ -358,6 +417,7 @@ function paintPageList() {
 // it was sent from, with nothing typed elsewhere in between. A request that hangs past
 // the hold lets the user move on; its late answer then only reports (review R5).
 function pageSaveBusy() {
+  if (memHold()) return true;
   if (!_memPage || !_memPage.saving || Date.now() - _memPage.saving > 20000) return false;
   memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
   return true;
@@ -465,9 +525,11 @@ async function savePage() {
   }
   var r;
   sentFrom.saving = Date.now();
+  memHold.at = Date.now();
   setPageFieldsDisabled(true);
   try { r = await apiWrite('PUT', '/api/memory/page', { id: id, title: d.title, aliases: d.aliases, current: d.current, history: d.history, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   sentFrom.saving = 0;
+  memHold.at = 0;
   if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
   setPageFieldsDisabled(false);
   if (r.ok) {
@@ -508,9 +570,11 @@ async function savePageRaw() {
   var id = _memPage.page.id;
   var r;
   sentFrom.saving = Date.now();
+  memHold.at = Date.now();
   setPageFieldsDisabled(true);
   try { r = await apiWrite('PUT', '/api/memory/page/raw', { id: id, raw: raw, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   sentFrom.saving = 0;
+  memHold.at = 0;
   if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
   setPageFieldsDisabled(false);
   if (r.ok) {
@@ -573,9 +637,11 @@ async function deletePage() {
   if (!ok) return;
   if (pageSaveBusy()) return; // a save started while the dialog was open
   sentFrom.saving = Date.now();
+  memHold.at = Date.now();
   var r;
   try { r = await apiWrite('DELETE', '/api/memory/page', { id: p.id, revision: revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   sentFrom.saving = 0;
+  memHold.at = 0;
   if (!r.ok) { memStatus((r.status === 409 ? '그사이 바뀌었습니다 — 다시 열어 확인하세요: ' : '지우지 못했습니다: ') + r.error, true); return; }
   // Close the editor only if it still shows the deleted page (review R5).
   if (_memPage === sentFrom) { _memPage = null; renderPageEditor(); }
@@ -608,6 +674,11 @@ function paintDates() {
 // the picker shows. A write hung past the hold lets the user move on; its late answer then
 // only reports.
 function epBusy() {
+  if (memHold()) {
+    var picker = document.getElementById('mem-ep-date');
+    if (picker && _memDay) picker.value = _memDay.date;
+    return true;
+  }
   if (!_memDay || !_memDay.saving || Date.now() - _memDay.saving > 20000) return false;
   memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
   var sel = document.getElementById('mem-ep-date');
@@ -639,6 +710,11 @@ var _epEditor = null;
 function renderDay(editIndex, draft) {
   // "수정" waits while an episodic write is out: its answer re-renders the day (review R8).
   if (typeof editIndex === 'number' && draft === undefined && epBusy()) return;
+  if (typeof editIndex === 'number' && draft === undefined) {
+    // opening another record's editor keeps the draft of the one it replaces (review R10)
+    var replaced = openEpEditor();
+    if (replaced && !(replaced.date === (_memDay && _memDay.date) && replaced.time === (_memDay.entries[editIndex] || {}).time && replaced.content === (_memDay.entries[editIndex] || {}).content)) keepEpDraft(replaced);
+  }
   var el = document.getElementById('mem-ep-body');
   var entries = (_memDay && _memDay.entries) || [];
   var edited = typeof editIndex === 'number' ? entries[editIndex] : undefined;
@@ -663,19 +739,21 @@ function renderDay(editIndex, draft) {
   }
   el.innerHTML = html;
 }
-async function epWrite(method, url, payload, draft, at, orig, origTime) {
+async function epWrite(method, url, payload, draft, at, orig, origTime, unique) {
   // The day is part of the record's identity: recover on the day the request was
   // for, even if the view moved to another day while it was in flight (review R4).
   var dayMatch = /\/api\/memory\/episodic\/([^/]+)\//.exec(url);
   var date = dayMatch ? decodeURIComponent(dayMatch[1]) : (_memDay && _memDay.date);
   var view = _memDay;
   if (view) view.saving = Date.now();
+  memHold.at = Date.now();
   // The open editor is locked while its save is out: a success re-renders it (review R8).
   var lockBox = method === 'PUT' ? document.getElementById('ep-edit') : null;
   if (lockBox) lockBox.disabled = true;
   var r;
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   if (view) view.saving = 0;
+  memHold.at = 0;
   if (lockBox) lockBox.disabled = false;
   // The view shows another day (a day request finished behind a dialog, or the write
   // outlived the hold): an answer never repaints that day (review R7, R8). A 409 still
@@ -697,7 +775,7 @@ async function epWrite(method, url, payload, draft, at, orig, origTime) {
   }
   if (r.status === 409) {
     await loadDay(date);
-    if (!_memDay || _memDay.date !== date) { var box = document.getElementById('mem-ep-new'); if (draft && box && !box.value) box.value = draft; memStatus('그사이 이 날의 기록이 바뀌었습니다. 작성하던 내용은 메모 칸에 옮겼습니다.', true); return false; }
+    if (!_memDay || _memDay.date !== date) { memKeepDraft('mem-ep-new', draft, date + ' 기록 수정본'); memStatus('그사이 이 날의 기록이 바뀌었습니다. 작성하던 내용은 보관했습니다.', true); return false; }
     // The whole draft goes back into an edit box (review P1).
     // Back into the editor of the entry it was for — found by its original time
     // and text, never by position — else into the note box as a recovery draft
@@ -711,15 +789,15 @@ async function epWrite(method, url, payload, draft, at, orig, origTime) {
         matches++;
       }
     }
-    if (draft && idx >= 0 && matches === 1) renderDay(idx, draft);
-    else if (draft) { var ta = document.getElementById('mem-ep-new'); if (ta && !ta.value) ta.value = draft; }
+    // only a record that was unique when the editor opened (review R10) and is unique now
+    if (draft && unique !== false && idx >= 0 && matches === 1) renderDay(idx, draft);
+    else if (draft) memKeepDraft('mem-ep-new', draft, date + ' ' + (origTime || '') + ' 기록 수정본');
     memStatus('그사이 이 날의 기록이 바뀌어 최신 내용을 불러왔습니다.' + (draft ? ' 작성하던 내용은 편집 칸에 그대로 있습니다 — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
     return false;
   }
   if (elsewhere && draft) {
-    var note = document.getElementById('mem-ep-new');
-    if (note && !note.value) note.value = draft;
-    memStatus(date + ' 기록을 저장하지 못했습니다: ' + r.error + ' — 작성하던 내용은 메모 칸에 옮겼습니다.', true);
+    memKeepDraft('mem-ep-new', draft, date + ' 기록 수정본');
+    memStatus(date + ' 기록을 저장하지 못했습니다: ' + r.error + ' — 작성하던 내용은 보관했습니다.', true);
     return false;
   }
   memStatus('저장하지 못했습니다: ' + r.error, true);
@@ -740,11 +818,9 @@ function repaintDay() {
   if (open) keepEpDraft(open);
 }
 function keepEpDraft(open) {
-  var note = document.getElementById('mem-ep-new');
-  if (note && !note.value && open.draft !== open.content) {
-    note.value = open.draft;
-    memStatus('수정하던 ' + open.date + ' ' + open.time + ' 기록의 내용을 메모 칸에 옮겼습니다.', true);
-  }
+  if (open.draft === open.content) return;
+  memKeepDraft('mem-ep-new', open.draft, open.date + ' ' + open.time + ' 기록 수정본');
+  memStatus('수정하던 ' + open.date + ' ' + open.time + ' 기록의 내용을 보관했습니다.', true);
 }
 // Re-open an editor on the record of the current day with the same time and text, if
 // there is exactly one; otherwise close it and move the draft to the note box.
@@ -769,7 +845,7 @@ async function epSave(i) {
   if (!ed || ed.index !== i || !ta) return;
   var text = ta.value;
   if (!text.trim()) { memStatus('비어 있는 기록은 저장할 수 없습니다 — 지우려면 삭제를 쓰세요', true); return; }
-  if (await epWrite('PUT', '/api/memory/episodic/' + ed.date + '/' + ed.index, { content: text, revision: ed.revision }, text, ed.index, ed.content, ed.time)) memStatus('저장했습니다', false);
+  if (await epWrite('PUT', '/api/memory/episodic/' + ed.date + '/' + ed.index, { content: text, revision: ed.revision }, text, ed.index, ed.content, ed.time, ed.unique)) memStatus('저장했습니다', false);
 }
 async function epDelete(i) {
   // Date, index and revision as the dialog shows them: if the view moves to another day
@@ -797,9 +873,11 @@ async function epAdd() {
   // A note holds the day on screen like any episodic write (review R8).
   var view = _memDay;
   if (view) view.saving = Date.now();
+  memHold.at = Date.now();
   var r;
   try { r = await apiWrite('POST', '/api/memory/episodic', { text: text }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   if (view) view.saving = 0;
+  memHold.at = 0;
   ta.disabled = false;
   if (!r.ok) { memStatus('추가하지 못했습니다: ' + r.error, true); return; }
   ta.value = '';
@@ -812,32 +890,12 @@ async function epAdd() {
     memStatus('오늘 기록에 추가했습니다 (수정 중인 ' + keptDate + ' 기록은 그대로)', false);
     return;
   }
-  var openEdit = document.getElementById('ep-edit');
-  if (_epEditor && openEdit && _epEditor.date === r.data.day.date) {
-    // A record of today is open for editing: it stays open with its draft (review R7).
-    // It is re-attached to the new day only to the same record — its time and text, and
-    // only one such — never by position; otherwise it stays bound to what it was opened
-    // on, and its save meets the server's revision check (review R8).
-    var ents = r.data.day.entries || [];
-    var at = -1;
-    var same = 0;
-    for (var k = 0; k < ents.length; k++) {
-      if (ents[k].time === _epEditor.time && ents[k].content === _epEditor.content) {
-        if (at < 0) at = k;
-        same++;
-      }
-    }
-    if (_epEditor.unique && same === 1) {
-      var keepDraft = openEdit.value;
-      _memDay = r.data.day;
-      renderDay(at, keepDraft);
-    } else if (!_epEditor.unique) {
-      // which record it was cannot be told any more: the draft goes to the note box
-      var lost = openEpEditor();
-      _memDay = r.data.day;
-      renderDay();
-      if (lost) keepEpDraft(lost);
-    }
+  var openToday = openEpEditor();
+  if (openToday && openToday.date === r.data.day.date) {
+    // A record of today is open for editing: re-attached to the same record (unique when
+    // it opened and now), else its draft is kept — every case (review R7–R10).
+    _memDay = r.data.day;
+    reopenEpEditor(openToday);
     await refreshPageIndex();
     fillDateSelect();
     memStatus('오늘 기록에 추가했습니다 (수정 중인 기록은 그대로)', false);
