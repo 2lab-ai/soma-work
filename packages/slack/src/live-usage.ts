@@ -19,7 +19,16 @@ export interface LiveUsageTotals {
 
 export interface LiveUsageCall extends LiveUsageTotals {
   messageId?: string;
+  /**
+   * Spec 12 §2.5 — a subagent's call. It is spent (it counts in the totals)
+   * but it read the subagent's own context, not the main agent's: never the
+   * occupancy reading.
+   */
+  sidechain?: boolean;
 }
+
+/** Key prefix of a subagent's call in the live map (see {@link LiveUsageCall.sidechain}). */
+const SIDECHAIN_KEY = 's:';
 
 type LiveUsageHolder = {
   liveUsage?: Record<string, LiveUsageTotals>;
@@ -56,7 +65,8 @@ export function recordLiveUsage(session: LiveUsageHolder, call: LiveUsageCall, t
   }
   const map = session.liveUsage ?? {};
   session.liveUsage = map;
-  const key = call.messageId ? `m:${call.messageId}` : `n:${Object.keys(map).length + 1}`;
+  const base = call.messageId ? `m:${call.messageId}` : `n:${Object.keys(map).length + 1}`;
+  const key = call.sidechain ? `${SIDECHAIN_KEY}${base}` : base;
   map[key] = {
     inputTokens: count(call.inputTokens),
     outputTokens: count(call.outputTokens),
@@ -115,6 +125,7 @@ export function liveOccupancyCall(
   let topTotal = 0;
   for (const k of Object.keys(session.liveUsage ?? {})) {
     if (before?.includes(k)) continue;
+    if (k.startsWith(SIDECHAIN_KEY)) continue;
     const c = session.liveUsage?.[k];
     if (!c) continue;
     const n = callTotal(c);
@@ -144,6 +155,15 @@ export function foldLiveUsage(
       currentOutputTokens?: number;
       currentCacheReadTokens?: number;
       currentCacheCreateTokens?: number;
+      /** What this fold added — the next resumed result settles it (`settleFoldedLiveUsage`). */
+      foldedLiveUsage?: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheCreateTokens: number;
+        costUsd: number;
+        sdkSessionId?: string;
+      };
     };
   },
   turnId: string | undefined,
@@ -172,7 +192,24 @@ export function foldLiveUsage(
     } catch {
       cost = 0;
     }
-    if (Number.isFinite(cost) && cost > 0) session.usage.totalCostUsd += cost;
+    if (!Number.isFinite(cost) || cost < 0) cost = 0;
+    session.usage.totalCostUsd += cost;
+    // The transcript keeps these calls, so the next resumed result's running
+    // total includes them again: remember what was folded so that result can
+    // settle it instead of adding it twice.
+    const folded = session.usage.foldedLiveUsage ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreateTokens: 0,
+      costUsd: 0,
+    };
+    folded.inputTokens += t.inputTokens;
+    folded.outputTokens += t.outputTokens;
+    folded.cacheReadTokens += t.cacheReadTokens;
+    folded.cacheCreateTokens += t.cacheCreateTokens;
+    folded.costUsd += cost;
+    session.usage.foldedLiveUsage = folded;
     const u = session.usage;
     const current =
       count(u.currentInputTokens) +

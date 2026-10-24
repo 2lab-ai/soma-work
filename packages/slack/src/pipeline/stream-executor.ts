@@ -10,6 +10,7 @@ import type { ActionHandlers } from '../actions';
 import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
 import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
 import type { AgentStreamEventOf } from '../agent-stream-types';
+import type { AgentTreeEvent } from '../agent-tree';
 import type { AssistantStatusManager } from '../assistant-status-manager';
 import {
   type CompactStateSession,
@@ -51,7 +52,13 @@ import {
   formatGoalObjectiveForSlack,
   type GoalQueueSession,
 } from '../session-goal';
-import { accumulateModelTotals, applyPostCompactOccupancy, selectCurrentContextTokens } from '../session-usage-math';
+import {
+  accumulateModelTotals,
+  applyPostCompactOccupancy,
+  selectCurrentContextTokens,
+  settleFoldedLiveUsage,
+  toTurnUsage,
+} from '../session-usage-math';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
 import {
@@ -213,6 +220,13 @@ export interface StreamExecutorProviders {
    * (throttled). Must be cheap and never throw. No-op by default.
    */
   notifyLiveUsage?: (sessionKey: string) => void;
+  /**
+   * Spec 12 — one agent-tree event of this session's turn (a subagent
+   * started, listed its tasks, returned, changed task state; the turn ended).
+   * The host folds it into the session's agent registry. Must be cheap and
+   * never throw. No-op by default.
+   */
+  recordAgentEvent?: (sessionKey: string, event: AgentTreeEvent) => void;
   /** API-equivalent cost of calls folded from an interrupted turn. 0 by default. */
   priceLiveUsage?: (
     model: string | undefined,
@@ -238,6 +252,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   recordAssistantTurn: () => {},
   recordUserTurn: () => {},
   appendWorkLog: () => {},
+  recordAgentEvent: () => {},
   captureMemoryTurn: () => {},
   scheduleLinkDerivedTitleRefresh: () => {},
   isMidThreadMention: () => false,
@@ -521,8 +536,9 @@ interface StreamExecutorDeps {
   }) => void | Promise<void>;
   /**
    * Host sink for `deploy_completed` from a DEPLOY-workflow session: a valid
-   * directive (`kind: 'completed'`) fires the cron lanes registered for that
-   * repo + target (src/deploy-lanes.ts); attempts that yielded no payload
+   * directive (`kind: 'completed'`) fires the lanes (cron jobs with onDeploy,
+   * or deploy-lanes.json) registered for that repo + target
+   * (src/deploy-lanes.ts); attempts that yielded no payload
    * arrive as `kind: 'rejected'`. The host answers through `ctx.reply`, which
    * posts one line in the deploy thread (retried once). Called without being
    * awaited by the turn; a rejection is logged, never surfaced. Optional —
@@ -1186,6 +1202,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // turnId) would silently skip — leaving the second turn without an open
     // B1 stream.
     const turnId = `${sessionKey}:${requestStartedAt.getTime()}:${randomUUID()}`;
+    // The SDK session this turn resumes (none → a new one starts). Read before
+    // the stream: the turn's `system`/`init` frame overwrites `session.sessionId`.
+    const resumedSdkSessionId: string | undefined = session.sessionId;
 
     // P5 B5 marker snapshot.
     //
@@ -1740,7 +1759,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onIdleTimeout: () => {
           abortController.abort('stall-timeout' satisfies RequestAbortReason);
         },
-        onToolUse: async (toolUses, ctx) => {
+        onToolUse: async (allToolUses, ctx) => {
           // Ghost Session Fix #99: self-terminate if session was terminated while streaming.
           // Tag the abort with `'ghost-session'` so handleError surfaces a
           // 🔴 terminal card. An untagged abort here previously fell
@@ -1751,6 +1770,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
+          // Spec 12 §2.2: what the main agent is doing — the thread header's
+          // current tool, the Slack tool rows, the request's tool stats — is
+          // the main agent's calls only. A subagent's are in its own work log.
+          const toolUses = allToolUses.filter((tu) => !tu.parentToolUseId);
+          if (toolUses.length === 0) return;
           if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
             await this.deps.reactionManager.updateReaction(
               sessionKey,
@@ -1795,13 +1819,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
           turnCollector.onPhaseChange('도구 실행 중');
         },
-        onToolResult: async (toolResults, ctx) => {
+        onToolResult: async (allToolResults, ctx) => {
           // Ghost Session Fix #99: self-terminate if session was terminated while streaming.
           // Same tagging rationale as onToolUse above — see §B-1.
           if (session.terminated) {
             abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
+          // Spec 12 §2.2: the Slack tool surfaces (stats, status, tool rows,
+          // the turn observer) take the main agent's results; the host's own
+          // work on a result — git metrics, model commands — takes every
+          // agent's, as before attribution (review round 2).
+          const toolResults = allToolResults.filter((tr) => !tr.parentToolUseId);
           // Accumulate per-request tool stats
           for (const tr of toolResults) {
             const name = tr.toolName || 'unknown';
@@ -1814,15 +1843,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             toolStats[name].count++;
             toolStats[name].totalDurationMs += duration;
           }
-          await this.updateRuntimeStatus(
-            session,
-            ctx.sessionKey,
-            {
-              agentPhase: '결과 반영 중',
-              activeTool: undefined,
-            },
-            turnEpochToken,
-          );
+          if (toolResults.length > 0) {
+            await this.updateRuntimeStatus(
+              session,
+              ctx.sessionKey,
+              {
+                agentPhase: '결과 반영 중',
+                activeTool: undefined,
+              },
+              turnEpochToken,
+            );
+          }
           // Re-check after the await: a delete during the status write has
           // already drained this session's background tracking, and the
           // spawn-ack below would re-add an entry nothing will ever settle.
@@ -1830,22 +1861,23 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
-          await this.deps.toolEventProcessor.handleToolResult(toolResults, {
-            channel: ctx.channel,
-            threadTs: ctx.threadTs,
-            sessionKey: ctx.sessionKey,
-            say: ctx.say,
-            logVerbosity: getVerbosity(),
-            // Checked at the tracker mutation itself: a delete can land while an
-            // earlier result of this batch awaits, after the guard above.
-            isSessionTerminated: () => session.terminated === true,
-            // #664 P2 absorb: same turnId as the matching tool_use event,
-            // so sink-side lookups stay on one B1 stream handle.
-            turnId,
-          });
-          // Metrics: detect git/gh commands in Bash output (fire-and-forget)
+          if (toolResults.length > 0)
+            await this.deps.toolEventProcessor.handleToolResult(toolResults, {
+              channel: ctx.channel,
+              threadTs: ctx.threadTs,
+              sessionKey: ctx.sessionKey,
+              say: ctx.say,
+              logVerbosity: getVerbosity(),
+              // Checked at the tracker mutation itself: a delete can land while an
+              // earlier result of this batch awaits, after the guard above.
+              isSessionTerminated: () => session.terminated === true,
+              // #664 P2 absorb: same turnId as the matching tool_use event,
+              // so sink-side lookups stay on one B1 stream handle.
+              turnId,
+            });
+          // Metrics: detect git/gh commands in Bash output (fire-and-forget) — every agent's.
           interceptToolResults(
-            toolResults,
+            allToolResults,
             session.ownerId,
             session.ownerName || 'unknown',
             ctx.sessionKey,
@@ -1854,7 +1886,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
             },
           );
-          const commandResult = await this.handleModelCommandToolResults(toolResults, session, ctx, turnEpochToken);
+          const commandResult = await this.handleModelCommandToolResults(allToolResults, session, ctx, turnEpochToken);
           if (commandResult.hasPendingChoice) {
             toolChoicePending = true;
             // renderAskUserQuestionFromCommand raised the open-choice bit.
@@ -1895,6 +1927,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             uuid: event.uuid,
             phase: event.phase,
           });
+        },
+        // Spec 12 — the session's agent tree (subagent spawn / tasks / result /
+        // lifecycle, turn end). Bookkeeping only; a throw is the processor's to swallow.
+        onAgentEvent: (event) => {
+          streamExecutorProviders.recordAgentEvent(sessionKey, event);
         },
         onTodoUpdate: async (input, ctx) => {
           // Task list is part of thread header — always update regardless of verbosity.
@@ -2026,7 +2063,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onUsageUpdate: async (usage: UsageData) => {
-          this.updateSessionUsage(session, sessionKey, usage, turnId);
+          this.updateSessionUsage(session, sessionKey, usage, turnId, resumedSdkSessionId);
 
           // Update context window emoji
           if (session.usage && isOutputEnabled(OutputFlag.CONTEXT_EMOJI)) {
@@ -3216,7 +3253,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // session model) instead of letting the live numbers fall back.
         if (session.liveUsage && Object.keys(session.liveUsage).length) {
           this.ensureSessionUsage(session);
+          // A pending fold from an SDK session this one replaced will never be
+          // settled (that session is never resumed again) — drop it rather than
+          // let it pile onto, and be retagged as, this session's fold.
+          const stale = session.usage?.foldedLiveUsage;
+          if (session.usage && stale && stale.sdkSessionId !== session.sessionId)
+            session.usage.foldedLiveUsage = undefined;
           foldLiveUsage(session, turnId, (t) => streamExecutorProviders.priceLiveUsage(session.model, t));
+          // The fold belongs to the SDK session this turn ran in — only its next
+          // result carries these calls again (see `settleFoldedLiveUsage`).
+          const folded = session.usage?.foldedLiveUsage;
+          if (folded) folded.sdkSessionId = session.sessionId;
         }
         clearLiveUsage(session, turnId);
         this.deps.claudeHandler.getSessionRegistry().endTurn(session);
@@ -5106,10 +5153,35 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   private updateSessionUsage(
     session: ConversationSession,
     sessionKey: string,
-    usage: UsageData,
+    reported: UsageData,
     turnId?: string,
+    resumedSdkSessionId?: string,
   ): void {
     this.ensureSessionUsage(session);
+
+    // The result's per-model usage is the SDK session's RUNNING TOTAL, and
+    // every turn resumes the same SDK session — so adding it as-is re-counted
+    // every earlier turn. Every total below (session, per-model, goal,
+    // token_usage) reads this turn's own spend. See `toTurnUsage`.
+    //
+    // A session saved before baselines existed resumes with its whole history
+    // in this running total, and that history is already in its goal's spend:
+    // take the total as the baseline and count nothing for this one turn.
+    const legacyResume =
+      !session.sdkUsageBaseline && !!resumedSdkSessionId && resumedSdkSessionId === session.sessionId;
+    const baselineIn = legacyResume
+      ? toTurnUsage(reported, undefined, session.sessionId).baseline
+      : session.sdkUsageBaseline;
+    if (legacyResume && baselineIn) {
+      this.logger.info('Usage baseline seeded from a resumed session without one — this turn counts no spend', {
+        conversationId: session.conversationId,
+        sdkSessionId: session.sessionId,
+      });
+      // Calls folded before the seed are inside the seeded running total now.
+      session.usage.foldedLiveUsage = undefined;
+    }
+    const { turn: usage, baseline } = toTurnUsage(reported, baselineIn, session.sessionId);
+    session.sdkUsageBaseline = baseline;
 
     // Update model name on session (useful for display)
     if (usage.modelName && !session.model) {
@@ -5157,7 +5229,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Only the shield THIS turn established suppresses THIS turn's sample. A
     // shield left by a different (e.g. superseded) turn must not swallow our
     // legitimate reading — that would freeze the display for an extra turn.
-    if (turnId !== undefined && session.postCompactOccupancyTurnId === turnId) {
+    const sampleIsEmpty =
+      current.source === 'aggregate-fallback' &&
+      current.inputTokens + current.outputTokens + current.cacheReadTokens + current.cacheCreateTokens === 0;
+    // A turn that counted no spend (baseline seed, zero result) says nothing
+    // about how full the window is — the last occupancy stands.
+    if (sampleIsEmpty) {
+      this.logger.debug('Keeping occupancy — this turn carried no usage sample', {
+        conversationId: session.conversationId,
+      });
+    } else if (turnId !== undefined && session.postCompactOccupancyTurnId === turnId) {
       this.logger.debug("Keeping post-compact occupancy — ignoring this turn's pre-boundary usage sample", {
         conversationId: session.conversationId,
         ignoredSource: current.source,
@@ -5170,12 +5251,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       session.usage.currentCacheCreateTokens = current.cacheCreateTokens;
     }
 
-    // Accumulate totals (billing-oriented: use aggregate values, not per-turn)
-    session.usage.totalInputTokens += usage.inputTokens;
-    session.usage.totalOutputTokens += usage.outputTokens;
-    session.usage.totalCacheReadTokens += usage.cacheReadInputTokens;
-    session.usage.totalCacheCreateTokens += usage.cacheCreationInputTokens;
-    session.usage.totalCostUsd += usage.totalCostUsd;
+    // Accumulate totals (billing-oriented: use aggregate values, not per-turn).
+    // Spend an earlier result-less turn already folded in is settled, not re-added.
+    const pendingFold = session.usage.foldedLiveUsage;
+    const { spend, folded } = settleFoldedLiveUsage(
+      usage,
+      pendingFold && pendingFold.sdkSessionId === session.sessionId ? pendingFold : undefined,
+    );
+    session.usage.foldedLiveUsage = folded;
+    session.usage.totalInputTokens += spend.inputTokens;
+    session.usage.totalOutputTokens += spend.outputTokens;
+    session.usage.totalCacheReadTokens += spend.cacheReadInputTokens;
+    session.usage.totalCacheCreateTokens += spend.cacheCreationInputTokens;
+    session.usage.totalCostUsd += spend.totalCostUsd;
     session.usage.lastUpdated = Date.now();
     // The turn's calls are in the totals now — the live view stops adding them,
     // and the turn's end never folds them a second time.
