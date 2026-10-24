@@ -180,3 +180,218 @@ export function accumulateModelTotals(
   }
   return totals;
 }
+
+/** One model's counters as a result's `modelUsage` reports them (and as `modelBreakdown` carries them). */
+export interface ModelUsageCounters {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUsd: number;
+}
+
+/**
+ * The last per-model running total seen for one SDK session. Persisted on the
+ * session: `session.usage` is runtime-only, but the goal's spend is not, so a
+ * restart must not forget where the running total stood.
+ */
+export interface SdkUsageBaseline {
+  /** SDK session id the totals belong to; a different id means a new running total. */
+  sdkSessionId: string | null;
+  models: Record<string, ModelUsageCounters>;
+}
+
+const COUNTER_FIELDS = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadInputTokens',
+  'cacheCreationInputTokens',
+  'costUsd',
+] as const satisfies readonly (keyof ModelUsageCounters)[];
+
+/** Float slack for cost comparisons: an unchanged running total must never read as a drop. */
+const COST_EPSILON = 1e-9;
+
+/** The slice of a turn's usage `toTurnUsage` rewrites. */
+export interface TurnUsageInput {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  totalCostUsd: number;
+  modelBreakdown?: Record<string, ModelUsageCounters>;
+}
+
+/**
+ * Turn a result's usage into THIS turn's spend.
+ *
+ * A result's `modelUsage` (→ `modelBreakdown` and the aggregates summed from
+ * it) is the SDK session's running total — "cumulative across turns … a
+ * resumed session continues from the totals its transcript saved … read the
+ * latest result rather than summing across results" (sdk.d.ts,
+ * `SDKResultSuccess.modelUsage`). soma-work resumes the same SDK session every
+ * turn, so the turn's spend is the growth since the last total seen for that
+ * SDK session (`baseline`).
+ *
+ * - No breakdown (per-turn shapes, ACP): returned unchanged, baseline kept.
+ * - All-zero breakdown (crash/startup-error result): nothing spent, baseline
+ *   kept — the next resumed result continues from the saved total.
+ * - Different SDK session id: a new running total — counts from zero.
+ * - A model's total went down: that model's total restarted — it counts in
+ *   full. When EVERY model seen before went down (mid-session `/clear`), the
+ *   whole running total restarted and this result becomes the baseline.
+ *
+ * Models that did not grow are left out of the turn's breakdown. Everything
+ * else on `usage` (per-turn context fields, model name, cost source) is kept.
+ */
+export function toTurnUsage<U extends TurnUsageInput>(
+  usage: U,
+  baseline: SdkUsageBaseline | undefined,
+  sdkSessionId: string | undefined,
+): { turn: U; baseline: SdkUsageBaseline | undefined } {
+  const current = usage.modelBreakdown;
+  if (!current) return { turn: usage, baseline };
+  const entries = Object.entries(current);
+  if (entries.every(([, c]) => COUNTER_FIELDS.every((f) => !c[f]))) return { turn: usage, baseline };
+
+  const id = sdkSessionId ?? null;
+  const previous = baseline && baseline.sdkSessionId === id ? baseline.models : {};
+  const seen = entries.filter(([model]) => previous[model]);
+  const dropped = new Set(
+    seen
+      .filter(([model, c]) =>
+        COUNTER_FIELDS.some((f) => previous[model][f] - c[f] > (f === 'costUsd' ? COST_EPSILON : 0)),
+      )
+      .map(([model]) => model),
+  );
+  const cleared = seen.length > 0 && dropped.size === seen.length;
+  const base = cleared ? {} : previous;
+
+  const breakdown: Record<string, ModelUsageCounters> = {};
+  for (const [model, c] of entries) {
+    const b = dropped.has(model) ? undefined : base[model];
+    const d = {
+      inputTokens: Math.max(0, c.inputTokens - (b?.inputTokens ?? 0)),
+      outputTokens: Math.max(0, c.outputTokens - (b?.outputTokens ?? 0)),
+      cacheReadInputTokens: Math.max(0, c.cacheReadInputTokens - (b?.cacheReadInputTokens ?? 0)),
+      cacheCreationInputTokens: Math.max(0, c.cacheCreationInputTokens - (b?.cacheCreationInputTokens ?? 0)),
+      costUsd: Math.max(0, c.costUsd - (b?.costUsd ?? 0)),
+    };
+    if (COUNTER_FIELDS.some((f) => d[f] > 0)) breakdown[model] = d;
+  }
+  const all = Object.values(breakdown);
+  const sum = (f: keyof ModelUsageCounters) => all.reduce((acc, d) => acc + d[f], 0);
+  return {
+    turn: {
+      ...usage,
+      inputTokens: sum('inputTokens'),
+      outputTokens: sum('outputTokens'),
+      cacheReadInputTokens: sum('cacheReadInputTokens'),
+      cacheCreationInputTokens: sum('cacheCreationInputTokens'),
+      totalCostUsd: sum('costUsd'),
+      modelBreakdown: breakdown,
+    },
+    baseline: { sdkSessionId: id, models: { ...base, ...current } },
+  };
+}
+
+/**
+ * Record the SDK session id a turn's `system`/`init` frame reported.
+ *
+ * A NEW id (nothing resumed, or the SDK started a fresh session) means a
+ * running total that starts at zero in THIS process: seed an empty baseline
+ * for it right away. Otherwise a first turn that ends without its result
+ * would leave "session id set, no baseline" — the shape of a session saved
+ * before baselines existed — and the next result's spend would be taken for
+ * history and dropped. A re-reported (resumed) id changes nothing, so a
+ * genuinely pre-baseline session keeps its missing baseline.
+ */
+export function adoptSdkSessionId(
+  session: { sessionId?: string; sdkUsageBaseline?: SdkUsageBaseline },
+  sdkSessionId: string,
+): void {
+  if (session.sessionId !== sdkSessionId) {
+    session.sdkUsageBaseline = { sdkSessionId, models: {} };
+  }
+  session.sessionId = sdkSessionId;
+}
+
+/** Restore a persisted baseline; anything malformed is dropped rather than trusted. */
+export function sanitizeSdkUsageBaseline(raw: unknown): SdkUsageBaseline | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const { sdkSessionId, models } = raw as { sdkSessionId?: unknown; models?: unknown };
+  if (sdkSessionId !== null && typeof sdkSessionId !== 'string') return undefined;
+  if (!models || typeof models !== 'object') return undefined;
+  const out: Record<string, ModelUsageCounters> = {};
+  for (const [model, c] of Object.entries(models as Record<string, unknown>)) {
+    if (!c || typeof c !== 'object') return undefined;
+    const counters = c as Record<string, unknown>;
+    if (!COUNTER_FIELDS.every((f) => typeof counters[f] === 'number' && Number.isFinite(counters[f]))) return undefined;
+    out[model] = Object.fromEntries(COUNTER_FIELDS.map((f) => [f, counters[f]])) as unknown as ModelUsageCounters;
+  }
+  return { sdkSessionId, models: out };
+}
+
+/**
+ * Spend a turn that ended WITHOUT its result folded into the session totals
+ * (`foldLiveUsage`). Runtime-only, kept on `session.usage` next to the totals
+ * it was added to.
+ */
+export interface FoldedLiveUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  costUsd: number;
+  /** SDK session whose running total will carry these calls; another session's result never settles them. */
+  sdkSessionId?: string;
+}
+
+/** A turn's spend in the session-total shape. */
+export interface SessionSpend {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  totalCostUsd: number;
+}
+
+/**
+ * What the session totals take from this turn's spend, given earlier folded
+ * spend.
+ *
+ * The transcript keeps every completed API call, so the next resumed result's
+ * running total already includes the calls of a turn that ended without its
+ * result — the ones `foldLiveUsage` put into the session totals. Those totals
+ * take the turn's spend minus what was folded (never below zero); the goal,
+ * the per-model buckets and `token_usage` were never folded and take the full
+ * turn spend. Settles on the first result that spent anything; a zero spend
+ * (crash result, empty `modelUsage`) keeps the fold for the next one. Usage
+ * without a per-model breakdown that DID spend is per-turn — it never
+ * includes folded calls — so it is taken whole and the fold is dropped.
+ */
+export function settleFoldedLiveUsage(
+  turn: TurnUsageInput,
+  folded: FoldedLiveUsage | undefined,
+): { spend: SessionSpend; folded: FoldedLiveUsage | undefined } {
+  const spend: SessionSpend = {
+    inputTokens: turn.inputTokens,
+    outputTokens: turn.outputTokens,
+    cacheReadInputTokens: turn.cacheReadInputTokens,
+    cacheCreationInputTokens: turn.cacheCreationInputTokens,
+    totalCostUsd: turn.totalCostUsd,
+  };
+  if (!folded) return { spend, folded: undefined };
+  if (Object.values(spend).every((v) => !v)) return { spend, folded };
+  if (!turn.modelBreakdown) return { spend, folded: undefined };
+  return {
+    spend: {
+      inputTokens: Math.max(0, spend.inputTokens - folded.inputTokens),
+      outputTokens: Math.max(0, spend.outputTokens - folded.outputTokens),
+      cacheReadInputTokens: Math.max(0, spend.cacheReadInputTokens - folded.cacheReadTokens),
+      cacheCreationInputTokens: Math.max(0, spend.cacheCreationInputTokens - folded.cacheCreateTokens),
+      totalCostUsd: Math.max(0, spend.totalCostUsd - folded.costUsd),
+    },
+    folded: undefined,
+  };
+}
