@@ -352,6 +352,30 @@ describe('개인 메모리 — a repaint keeps what is typed (review R9)', () =>
     expect(p.els['l1-edit-memory'].value).toBe('e0, edited');
   });
 
+  it('a save answered after the hold expired closes only its own editor (review R11, fable)', async () => {
+    const p = l1Page();
+    p.els['mem-recover'] = { innerHTML: '' };
+    const mem: any = { l1: { memory: block(['e0', 'e1'], 'r1'), user: block([], 'u1') } };
+    let answer: (v: unknown) => void = () => {};
+    const fns = load<any>([...L1_FNS, 'memHold'], ['L1_LABELS', 'L1_FILES'], {
+      document: p.doc,
+      _mem: mem,
+      _memUndo: null,
+      apiWrite: vi.fn(() => new Promise((res) => (answer = res))),
+      loadMemory: async () => {},
+    });
+    fns.paintL1();
+    fns.l1EditStart('memory', 0);
+    p.els['l1-edit-memory'].value = 'e0, edited';
+    const saving = fns.l1Save('memory', 0);
+    fns.memHold.at = Date.now() - 60_000; // the save hangs past the hold
+    fns.l1EditStart('memory', 1); // the user moves on to another entry
+    p.els['l1-edit-memory'].value = 'e1, edited';
+    answer({ ok: true, data: { ok: true, l1: block(['e0, edited', 'e1'], 'r2') } });
+    await saving;
+    expect(p.els['l1-edit-memory']?.value).toBe('e1, edited');
+  });
+
   it('switching between two identical entries keeps the first draft (review R11, astra)', () => {
     const p = l1Page();
     p.els['mem-recover'] = { innerHTML: '' };
@@ -1252,6 +1276,53 @@ describe('episodic answers apply only where they belong (review R8)', () => {
     expect(p.els['mem-recover'].innerHTML).toContain('x, edited');
   });
 
+  it('an episodic save answered after the hold expired closes only its own editor (review R11, fable)', async () => {
+    const day = {
+      date: '2026-10-23',
+      revision: 't1',
+      entries: [
+        { time: '08:00', content: 'r0' },
+        { time: '09:00', content: 'r1' },
+      ],
+    };
+    const p = page(day);
+    p.els['mem-recover'] = { innerHTML: '' };
+    let answer: (v: unknown) => void = () => {};
+    const fns = load<any>(EP_FNS, ['_epEditor'], {
+      document: p.doc,
+      _memDay: day,
+      _mem: { episodicDates: ['2026-10-23'] },
+      apiWrite: vi.fn(() => new Promise((res) => (answer = res))),
+      refreshPageIndex: async () => {},
+      paintDates: () => {},
+    });
+    fns.renderDay(0);
+    p.edit().value = 'r0, edited';
+    const saving = fns.epSave(0);
+    fns.memHold.at = Date.now() - 60_000;
+    (day as any).saving = 0; // the day hold expired too
+    fns.renderDay(1);
+    p.edit().value = 'r1, edited';
+    answer({
+      ok: true,
+      data: {
+        ok: true,
+        day: {
+          ...day,
+          revision: 't2',
+          entries: [
+            { time: '08:00', content: 'r0, edited' },
+            { time: '09:00', content: 'r1' },
+          ],
+        },
+      },
+    });
+    await saving;
+    expect(p.els['mem-ep-body'].innerHTML + p.els['mem-ep-new'].value + p.els['mem-recover'].innerHTML).toContain(
+      'r1, edited',
+    );
+  });
+
   it('switching between two identical episodic records keeps the first draft (review R11, astra)', () => {
     const twin = { time: '09:00', content: 'same' };
     const day = { date: '2026-10-23', revision: 't1', entries: [twin, { ...twin }] };
@@ -1514,7 +1585,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'paintRecover',
         'epRecover409',
       ],
-      [],
+      ['_epEditor'],
       {
         document: { getElementById: (id: string) => (id === 'mem-ep-new' ? noteBox : status) },
         // the entry being edited ("A") was deleted elsewhere: index 0 is now "B"
@@ -1566,7 +1637,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'paintRecover',
         'epRecover409',
       ],
-      [],
+      ['_epEditor'],
       {
         document: { getElementById: (id: string) => (id === 'mem-ep-new' ? noteBox : status) },
         _memDay: day,
@@ -1628,7 +1699,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'paintRecover',
         'epRecover409',
       ],
-      [],
+      ['_epEditor'],
       {
         document: { getElementById: () => ({ textContent: '', setAttribute() {} }) },
         _memDay: day,
@@ -1737,7 +1808,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'paintRecover',
         'epRecover409',
       ],
-      [],
+      ['_epEditor'],
       {
         document: { getElementById: () => status },
         _memDay: view,
@@ -1791,7 +1862,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'paintRecover',
         'epRecover409',
       ],
-      [],
+      ['_epEditor'],
       {
         document: { getElementById: () => status },
         _memDay: {
