@@ -288,13 +288,23 @@ async function checkFab(page: Page): Promise<Check[]> {
  * first screen: its first card on screens at least 540px tall, its title row on the
  * short landscape phones. An expanded capacity timeline keeps every marker in its track.
  */
-async function checkSecondary(page: Page): Promise<Check[]> {
+async function checkSecondary(page: Page, touch: boolean): Promise<Check[]> {
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(150);
-  return page.evaluate(() => {
+  return page.evaluate((touchArg) => {
     const out: { ok: boolean; msg: string }[] = [];
     const vh = window.innerHeight;
     const cap = document.getElementById('capacity') as HTMLElement;
+    for (const id of ['capacity-toggle', 'cron-toggle']) {
+      const t = document.getElementById(id) as HTMLElement | null;
+      if (!t) continue;
+      const r = t.getBoundingClientRect();
+      const need = touchArg ? 44 : 28;
+      out.push({
+        ok: r.height >= need,
+        msg: `#${id} is ${Math.round(r.height)}px tall (≥ ${need}${touchArg ? ' on touch' : ''})`,
+      });
+    }
     const lane = document.getElementById('cron-lane') as HTMLElement;
     out.push({ ok: !cap.hidden && !lane.hidden, msg: 'capacity and the CRON lane are shown (seeded)' });
     // Collapsed (every posture but a 840×1000+ window): one short row each, chips for capacity.
@@ -312,6 +322,17 @@ async function checkSecondary(page: Page): Promise<Check[]> {
           chips[1].indexOf('▲') >= 0,
         msg: `capacity chips: ${chips.join(' / ')}`,
       });
+      // Whole chips: none runs past the row's visible edge (the glyph and % would hide).
+      const row = (cap.querySelector('.cap-summary') as HTMLElement).getBoundingClientRect();
+      const cut = Array.from(cap.querySelectorAll('.cap-chip')).filter(
+        (c) => (c as HTMLElement).getBoundingClientRect().right > row.right + 0.5,
+      ).length;
+      out.push({
+        ok: cut === 0,
+        msg: `every capacity chip is whole on the row (${cut} cut at ${Math.round(row.right)})`,
+      });
+      const title = (cap.querySelector('.cap-title') as HTMLElement).getBoundingClientRect();
+      out.push({ ok: title.height <= 24, msg: `the capacity title is one line (${Math.round(title.height)}px)` });
     }
     if (lane.classList.contains('is-collapsed') && !lane.querySelector('.cron-group.is-waiting')) {
       const h = lane.getBoundingClientRect().height;
@@ -342,7 +363,7 @@ async function checkSecondary(page: Page): Promise<Check[]> {
     }
     out.push({ ok: outside === 0, msg: `capacity markers stay inside their tracks (${outside} outside)` });
     return out;
-  });
+  }, touch);
 }
 
 /** Expand the capacity timeline if a disclosure collapsed it, then check its markers. */
@@ -534,10 +555,11 @@ async function sweepBrowser(name: string, type: BrowserType, baseUrl: string, ou
           }
         };
         record(await checkClosed(page), 'closed');
-        record(await checkSecondary(page), 'closed');
+        record(await checkSecondary(page, touch), 'closed');
         await page.screenshot({ path: path.join(outDir, `${tag}-closed.png`) });
         if (pos.w < 640) record(await checkFab(page), 'closed');
         record(await checkCapacityExpanded(page, 'expanded'), 'closed');
+        await page.evaluate(() => window.scrollTo(0, 0));
         await page.screenshot({ path: path.join(outDir, `${tag}-capacity.png`) });
         await page.evaluate(() => window.scrollTo(0, 0));
         await openFilledPanel(page);
@@ -1098,6 +1120,83 @@ async function transitions(
       );
       await ctx.close();
     }
+    // 4l. Expanding the CRON lane moves the board from where it was (one FLIP from the
+    //     coordinator, not a render FLIP from a half-revealed lane — trinity R1, astra).
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      const page = await ctx.newPage();
+      page.on('pageerror', (e) => failures.push(`transition cron toggle: page error ${e.message}`));
+      await preparePage(page, { seedSecondary: true });
+      await openDashboard(page, baseUrl);
+      await page.waitForFunction(() => !(document.getElementById('capacity') as HTMLElement).hidden);
+      await page.waitForTimeout(900);
+      const before = await page.evaluate(() => {
+        const card = document.querySelector('#kanban .card') as HTMLElement;
+        const w = window as unknown as { __flipStarts: Record<string, unknown> };
+        w.__flipStarts = {};
+        const r = card.getBoundingClientRect();
+        return { key: card.getAttribute('data-session-key') as string, top: r.top };
+      });
+      await page.click('#cron-toggle');
+      const seen = await page.evaluate(
+        (key) =>
+          new Promise<{ start: { top: number } | null; lane: boolean }>((resolve) =>
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                const w = window as unknown as { __flipStarts: Record<string, { top: number }> };
+                resolve({ start: w.__flipStarts[key] || null, lane: !!document.querySelector('.cron-lane .card') });
+              }),
+            ),
+          ),
+        before.key,
+      );
+      expect(
+        seen.lane && seen.start !== null && Math.abs(seen.start.top - before.top) <= 2,
+        `expanding the CRON lane slides the board from where it was (from ${seen.start ? Math.round(seen.start.top) : '—'} vs ${Math.round(before.top)}, lane card ${seen.lane})`,
+      );
+      await ctx.close();
+    }
+    // 4m. Storage refuses the write (private mode, a full quota): the toggle still works here.
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      const page = await ctx.newPage();
+      await preparePage(page, { seedSecondary: true });
+      await page.addInitScript({
+        content: "Storage.prototype.setItem = function () { throw new Error('QuotaExceededError'); };",
+      });
+      await openDashboard(page, baseUrl);
+      await page.waitForFunction(() => !(document.getElementById('capacity') as HTMLElement).hidden);
+      await page.click('#capacity-toggle');
+      await page.waitForTimeout(200);
+      const expanded = await page.evaluate(() =>
+        (document.getElementById('capacity-toggle') as HTMLElement).getAttribute('aria-expanded'),
+      );
+      expect(expanded === 'true', `the toggle works when storage refuses the write (${expanded})`);
+      await ctx.close();
+    }
+    // 4n. A deep link to a CRON run in a folded lane opens the lane (this load only) and its panel.
+    {
+      const ctx = await browser.newContext({ viewport: { width: 382, height: 580 }, hasTouch: true, isMobile: true });
+      const page = await ctx.newPage();
+      page.on('pageerror', (e) => failures.push(`transition deep link: page error ${e.message}`));
+      await preparePage(page, { seedSecondary: true });
+      await page.goto(`${baseUrl}/dashboard?session=${encodeURIComponent(CRON_KEY)}`);
+      await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length > 0, undefined, {
+        timeout: 15000,
+      });
+      await page.waitForTimeout(1500);
+      const st = await page.evaluate(() => ({
+        lane: (document.getElementById('cron-toggle') as HTMLElement).getAttribute('aria-expanded'),
+        card: !!document.querySelector('.cron-lane .card'),
+        panel: (document.getElementById('slide-panel') as HTMLElement).classList.contains('open'),
+        saved: localStorage.getItem('soma-sec-cron'),
+      }));
+      expect(
+        st.lane === 'true' && st.card && st.panel && st.saved === null,
+        `a deep link opens the folded lane for this load and the run's panel (${JSON.stringify(st)})`,
+      );
+      await ctx.close();
+    }
     // 4. Reduced motion: no movement, a fade only.
     {
       const { ctx, page } = await fresh({ reduced: true });
@@ -1120,8 +1219,11 @@ async function main() {
   const baseUrl = getViewerBaseUrl().replace(/\/\/[^:/]+/, '//127.0.0.1');
   const failures: string[] = [];
   try {
-    await sweepBrowser('chromium', chromium, baseUrl, outDir, failures);
-    await sweepBrowser('webkit', webkit, baseUrl, outDir, failures);
+    // SWEEP_ONLY=transitions reruns just the motion checks (a flake hunt, a quick loop).
+    if (process.env.SWEEP_ONLY !== 'transitions') {
+      await sweepBrowser('chromium', chromium, baseUrl, outDir, failures);
+      await sweepBrowser('webkit', webkit, baseUrl, outDir, failures);
+    }
     await transitions(baseUrl, outDir, failures, sessions);
   } finally {
     await stopWebServer();
