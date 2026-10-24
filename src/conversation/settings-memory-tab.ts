@@ -687,7 +687,7 @@ function renderPageConflict() {
     + '<button type="button" class="btn" onclick="discardPageDraft()">최신 내용 불러오기 (내 수정 버림)</button></div></div>';
 }
 function overwritePage() {
-  if (!_memPageConflict || !_memPageConflict.revision) return;
+  if (!_memPageConflict || !_memPageConflict.revision || pageSaveBusy()) return; // (busy first: the conflict stays offered)
   var rawDraft = _memPageRaw || _memPage.representable === false; // the editor the draft is in
   // The editor now stands on the newer page: its revision, and its bytes for a later
   // switch to raw editing — never the ones first opened (review R4).
@@ -718,21 +718,22 @@ async function deletePage() {
   var sentFrom = _memPage;
   var p = _memPage.page;
   var revision = _memPage.revision;
+  // the editor is locked from the dialog on until the delete is answered: nothing typed in
+  // that span exists to be lost (review R14, R15)
+  setPageFieldsDisabled(true);
   var ok = await confirmDialog({ title: p.title + ' 페이지를 지울까요?', body: p.id + ' — Current와 History가 모두 사라집니다.', action: '페이지 삭제' });
-  if (!ok) return;
-  if (pageSaveBusy()) return; // a save started while the dialog was open
+  if (!ok || pageSaveBusy()) { setPageFieldsDisabled(false); return; } // (a save started while the dialog was open)
   sentFrom.saving = Date.now();
   memHold.at = Date.now();
-  // the editor is locked while the delete is out: nothing typed after the confirmation is lost (review R14)
-  setPageFieldsDisabled(true);
   var r;
   try { r = await apiWrite('DELETE', '/api/memory/page', { id: p.id, revision: revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   sentFrom.saving = 0;
   memHold.at = 0;
   setPageFieldsDisabled(false);
   if (!r.ok) { memStatus((r.status === 409 ? '그사이 바뀌었습니다 — 다시 열어 확인하세요: ' : '지우지 못했습니다: ') + r.error, true); return; }
-  // Close the editor only if it still shows the deleted page (review R5).
-  if (_memPage === sentFrom) { _memPage = null; renderPageEditor(); }
+  // Close the editor only if it still shows the deleted page (review R5); changes it held
+  // that were never saved go to the recovery box first (review R15).
+  if (_memPage === sentFrom) { keepPageDraft(); _memPage = null; renderPageEditor(); }
   await refreshPageIndex();
   memStatus('페이지를 지웠습니다', false);
 }

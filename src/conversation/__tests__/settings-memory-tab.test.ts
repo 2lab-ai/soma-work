@@ -1920,18 +1920,34 @@ describe('관찰 기록 (에피소딕)', () => {
 
     const pageApi = vi.fn(async () => ({ ok: true, data: {} }));
     const memPage: any = { page: { id: 'concepts/a', title: 'A' }, revision: 'pa' };
-    const w = load<any>(['deletePage', 'memStatus', 'pageSaveBusy', 'memHold', 'setPageFieldsDisabled'], [], {
-      document: { getElementById: () => ({ textContent: '', setAttribute() {}, innerHTML: '' }) },
-      _memPage: memPage,
-      apiWrite: pageApi,
-      confirmDialog: async () => {
-        Object.assign(memPage, { page: { id: 'concepts/b', title: 'B' }, revision: 'pb' });
-        return true;
+    const w = load<any>(
+      [
+        'deletePage',
+        'memStatus',
+        'pageSaveBusy',
+        'memHold',
+        'setPageFieldsDisabled',
+        'keepPageDraft',
+        'pageUnsavedText',
+        'pageDraft',
+        'pageDraftText',
+        'memRecover',
+        'paintRecover',
+      ],
+      [],
+      {
+        document: { getElementById: () => ({ textContent: '', setAttribute() {}, innerHTML: '' }) },
+        _memPage: memPage,
+        apiWrite: pageApi,
+        confirmDialog: async () => {
+          Object.assign(memPage, { page: { id: 'concepts/b', title: 'B' }, revision: 'pb' });
+          return true;
+        },
+        refreshPageIndex: async () => {},
+        renderPageEditor: () => {},
+        paintPageList: () => {},
       },
-      refreshPageIndex: async () => {},
-      renderPageEditor: () => {},
-      paintPageList: () => {},
-    });
+    );
     await w.deletePage();
     expect(pageApi).toHaveBeenCalledWith('DELETE', '/api/memory/page', { id: 'concepts/a', revision: 'pa' });
   });
@@ -2641,6 +2657,12 @@ describe('관찰 기록 (에피소딕)', () => {
         'pageSaveBusy',
         'memHold',
         'setPageFieldsDisabled',
+        'keepPageDraft',
+        'pageUnsavedText',
+        'pageDraft',
+        'pageDraftText',
+        'memRecover',
+        'paintRecover',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -2659,6 +2681,72 @@ describe('관찰 기록 (에피소딕)', () => {
     answer({ ok: false, status: 409, error: 'changed' });
     await deleting;
     expect(fields[0].disabled).toBe(false);
+  });
+
+  it('a deleted page keeps its unsaved changes in the recovery box; the fields lock before the dialog (review R15, grok)', async () => {
+    let detailHtml = '';
+    const recover: any = { innerHTML: '' };
+    const status: any = { textContent: '', innerHTML: '', setAttribute() {} };
+    const fields = [{ disabled: false }];
+    const values: Record<string, string> = { 'pg-title': 'A', 'pg-aliases': '', 'pg-current': 'UNSAVED BEFORE DELETE' };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-page-detail'
+          ? {
+              set innerHTML(v: string) {
+                detailHtml = v;
+              },
+              get innerHTML() {
+                return detailHtml;
+              },
+            }
+          : id === 'mem-recover'
+            ? recover
+            : id in values && detailHtml.includes('id="' + id + '"')
+              ? { value: values[id] }
+              : id === 'pg-raw' || id in values
+                ? null
+                : status,
+      querySelectorAll: (sel: string) => (sel.includes('pg-history') ? [] : fields),
+    };
+    const pageA = { id: 'agent/a', title: 'A', aliases: [], current: 'a', history: [], updated: '2026-10-23' };
+    let lockedAtDialog = false;
+    const fns = load<any>(
+      [
+        'esc',
+        'escAttr',
+        'deletePage',
+        'renderPageEditor',
+        'renderPageConflict',
+        'memStatus',
+        'pageSaveBusy',
+        'memHold',
+        'setPageFieldsDisabled',
+        'pageRawMode',
+        'keepPageDraft',
+        'pageUnsavedText',
+        'pageDraft',
+        'pageDraftText',
+        'memRecover',
+        'paintRecover',
+      ],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      {
+        document: doc,
+        _memPage: { page: pageA, revision: 'a1', raw: '# A\n', representable: true },
+        apiWrite: vi.fn(async () => ({ ok: true, data: { ok: true } })),
+        confirmDialog: async () => {
+          lockedAtDialog = fields[0].disabled;
+          return true;
+        },
+        refreshPageIndex: async () => {},
+        paintPageList: () => {},
+      },
+    );
+    fns.pageRawMode(false); // A's form, with the unsaved Current
+    await fns.deletePage();
+    expect(lockedAtDialog).toBe(true);
+    expect(recover.innerHTML).toContain('UNSAVED BEFORE DELETE');
   });
 
   it('a History line can be removed only when no save is out (review R14, astra)', () => {
