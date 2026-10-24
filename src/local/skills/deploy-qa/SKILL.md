@@ -34,7 +34,7 @@ Any entry absent → reply with exactly one line `missing: <field,…>` and stop
 Reply with exactly one line, write nothing:
 1. `applies` absent → `missing: applies`.
 2. `{repo, target}` not in `applies` → `not-applicable`.
-3. Any other profile entry absent, or a tool check fails → `missing: <list>`. Tool checks: `gh repo view <owner/repo>` for every repo; one tracker read per project; `command -v` for each adapter executable (do not open a page); `lockDir` is a writable directory; the bundled files resolve: `test -f` on `$CLAUDE_PLUGIN_ROOT/skills/qa-report/scripts/mask.mjs`, `…/qa-report/scripts/build.mjs`, and `…/html/renderer/render.mjs`.
+3. Any other profile entry absent, or a tool check fails → `missing: <list>`. Tool checks: `gh repo view <owner/repo>` for every repo; one tracker read per project; `command -v` for each adapter executable (do not open a page); `lockDir` is a writable directory; the bundled files resolve: `test -f` on `$CLAUDE_PLUGIN_ROOT/skills/qa-report/scripts/mask.mjs`, `…/qa-report/scripts/build.mjs`, and `…/html/renderer/render.mjs`. `$CLAUDE_PLUGIN_ROOT` is the zworkflow plugin root, two directories above this skill's base directory (`…/skills/deploy-qa` → `…`); shells usually do not set it, so write the absolute path.
 4. Otherwise → `applies`.
 
 ## Excluded PRs (one rule, used everywhere)

@@ -42,7 +42,7 @@ Files: [`template.html`](./template.html) holds the layout. The left pane has ti
 
 ## Steps
 
-Each step is a separate shell call, and shell variables do not carry over between them: paste the paths step 1 prints. Bundled files are reached through `$CLAUDE_PLUGIN_ROOT/skills/<skill>/…`.
+Each step is a separate shell call, and shell variables do not carry over between them: paste the paths step 1 prints. Bundled files are reached through `$CLAUDE_PLUGIN_ROOT/skills/<skill>/…`. `$CLAUDE_PLUGIN_ROOT` is two directories above this skill's base directory (`…/skills/qa-report` → `…`); shells usually do not set it, so write the absolute path.
 
 **1. Build the HTML.** `shots` is the calling profile's screenshots directory (`qaEnv`); standalone, use the `shots=` argument:
 
