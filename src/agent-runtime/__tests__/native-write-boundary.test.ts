@@ -88,14 +88,15 @@ describe('createNativeWriteCheck — where a native write lands', () => {
     fs.renameSync(cwd, `${cwd}-old`);
     fs.symlinkSync(OUTSIDE, cwd);
     const relinked = createNativeWriteCheck(roots, cwd);
-    expect(relinked('Write', { file_path: path.join(OUTSIDE, 'secret.json') })).toMatch(/lands outside/);
-    expect(relinked('Write', { file_path: path.join(cwd, 'secret.json') })).toMatch(/lands outside/);
-    expect(relinked('Write', { file_path: '/etc/hosts' })).toMatch(/lands outside/);
+    expect(relinked('Write', { file_path: path.join(OUTSIDE, 'secret.json') })).toMatch(/cannot be trusted/);
+    expect(relinked('Write', { file_path: path.join(cwd, 'secret.json') })).toMatch(/cannot be trusted/);
+    expect(relinked('Write', { file_path: '/etc/hosts' })).toMatch(/cannot be trusted/);
+    expect(relinked('Write', { file_path: path.join(userDir, 'x.txt') })).toMatch(/cannot be trusted/);
     // the user directory itself, linked away
     const user2 = path.join(SCRATCH, 'user2');
     fs.symlinkSync(OUTSIDE, user2);
     expect(createNativeWriteCheck([user2], user2)('Write', { file_path: path.join(OUTSIDE, 'x.json') })).toMatch(
-      /lands outside/,
+      /cannot be trusted/,
     );
   });
 
@@ -119,10 +120,31 @@ describe('createNativeWriteCheck — where a native write lands', () => {
       expect(createNativeWriteCheck(roots, cwd)('Write', target)).toMatch(/lands outside/);
       fs.renameSync(path.join(real, `u${i}`, 'parent'), path.join(real, `u${i}`, 'parent-old'));
       fs.symlinkSync(away, path.join(real, `u${i}`, 'parent'));
-      expect(createNativeWriteCheck(roots, cwd)('Write', target)).toMatch(/lands outside/);
-      // the user root itself still counts
-      expect(createNativeWriteCheck(roots, cwd)('Write', { file_path: path.join(real, `u${i}`, 'ok.txt') })).toBeNull();
+      expect(createNativeWriteCheck(roots, cwd)('Write', target)).toMatch(/cannot be trusted/);
+      // nothing is written until the roots are restored, the user root included
+      expect(createNativeWriteCheck(roots, cwd)('Write', { file_path: path.join(real, `u${i}`, 'ok.txt') })).toMatch(
+        /cannot be trusted/,
+      );
     }
+  });
+
+  it('refuses every write once a root is relinked, including a root reached through it: the sandbox lets the session replace /tmp/{userId} itself (review R3)', () => {
+    // The sandbox allows writes to the subpath of /tmp/{userId}, the directory's own
+    // name included, so the session can remove it and put a symbolic link there.
+    const user = path.join(SCRATCH, 'r3-user');
+    const cwd = path.join(user, 'session');
+    fs.mkdirSync(cwd, { recursive: true });
+    const away = path.join(OUTSIDE, 'r3-away');
+    fs.mkdirSync(path.join(away, 'session'), { recursive: true });
+    const roots = [cwd, user];
+    const target = { file_path: path.join(away, 'session', 'x.json') };
+    expect(createNativeWriteCheck(roots, cwd)('Write', target)).toMatch(/lands outside/);
+    fs.renameSync(user, `${user}-old`);
+    fs.symlinkSync(away, user);
+    const relinked = createNativeWriteCheck(roots, cwd);
+    expect(relinked('Write', target)).toMatch(/cannot be trusted/);
+    expect(relinked('Write', { file_path: path.join(cwd, 'x.json') })).toMatch(/cannot be trusted/);
+    expect(relinked('Write', { file_path: 'x.json' })).toMatch(/cannot be trusted/);
   });
 
   const caseInsensitive = SCRATCH !== SCRATCH.toUpperCase() && fs.existsSync(SCRATCH.toUpperCase());
@@ -136,7 +158,7 @@ describe('createNativeWriteCheck — where a native write lands', () => {
     fs.renameSync(path.join(user, 'parent'), path.join(user, 'parent-old'));
     fs.symlinkSync(away, path.join(user, 'parent'));
     expect(createNativeWriteCheck(roots, cwd)('Write', { file_path: path.join(away, 'session', 'x.json') })).toMatch(
-      /lands outside/,
+      /cannot be trusted/,
     );
   });
 
@@ -215,7 +237,7 @@ describe('createNativeWriteCheck — where a native write lands', () => {
     expect(inRepo('EnterWorktree', { path: path.join(repo, 'x') })).toBeNull();
     expect(inRepo('Agent', { description: 'd', prompt: 'p' })).toBeNull();
     expect(createNativeWriteCheck([ROOT], OUTSIDE)('EnterWorktree', { name: 'feat' })).toBeNull();
-  });
+  }, 30_000); // git processes: slow on a loaded runner
 
   it('a session never moves its working directory outside the roots: EnterWorktree `path`, Agent `cwd` (self-check before review R2)', () => {
     // The SDK sandbox lets Bash write the session's current directory, so the
@@ -415,7 +437,8 @@ describe('buildStreamOptions — a non-admin session with the sandbox on', () =>
         fs.symlinkSync(away, parent);
         expect((await call('Write', target)).hookSpecificOutput?.permissionDecision).toBe('deny');
         const inUser = await call('Write', { file_path: path.join(realUser, 'ok.txt'), content: 'x' });
-        expect(inUser.hookSpecificOutput?.permissionDecision).toBe('allow');
+        expect(inUser.hookSpecificOutput?.permissionDecision).toBe('deny');
+        expect(inUser.hookSpecificOutput?.permissionDecisionReason).toMatch(/cannot be trusted/);
       } finally {
         fs.rmSync(parent, { force: true });
         fs.rmSync(`${parent}-old`, { recursive: true, force: true });
