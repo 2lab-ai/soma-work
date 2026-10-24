@@ -261,18 +261,20 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(fnBody('resetWorkLog')).toContain('_wl.closed = true');
   });
 
-  it('Tasks sit in a pinned block above the scroll area, after the token badges (§3.1-6)', () => {
+  it('Tasks sit in a pinned block above the scroll area, right under the header (§3.1-6)', () => {
     const panel = TEMPLATE.slice(TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel">'));
-    const tokens = panel.indexOf('id="panel-tokens"');
+    const header = panel.indexOf('<div class="panel-header">');
     const tasks = panel.indexOf('<div class="panel-tasks" id="panel-tasks"></div>');
     const scroll = panel.indexOf('<div class="panel-scroll" id="panel-scroll">');
     const command = panel.indexOf('<div class="panel-command" id="panel-command">');
-    expect(tokens).toBeGreaterThan(0);
-    expect(tasks).toBeGreaterThan(tokens);
+    expect(header).toBeGreaterThan(0);
+    expect(tasks).toBeGreaterThan(header);
     expect(scroll).toBeGreaterThan(tasks);
     expect(panel.slice(scroll, command)).not.toContain('panel-tasks');
+    // SSOT 2026-10-24: still pinned, but it yields height down to one 44px row
+    // (and scrolls inside) so the conversation keeps half the panel body.
     expect(TEMPLATE).toMatch(
-      /\n\.panel-tasks \{[^}]*flex: none;[^}]*max-height: min\(30vh, 240px\);[^}]*overflow-y: auto;/,
+      /\n\.panel-tasks \{[^}]*min-height: 44px;[^}]*max-height: min\(30vh, 240px\);[^}]*overflow-y: auto;/,
     );
     expect(fnBody('panelScrollAnchor')).not.toContain('#panel-tasks');
   });
@@ -481,10 +483,10 @@ describe('agent inbox board — responsive (§5)', () => {
     expect(TEMPLATE).toContain('max-width: 1280px');
   });
 
-  it('640–1023px scrolls the three columns horizontally with snap', () => {
-    const block = TEMPLATE.match(/@media \(max-width: 1023px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  it('a board narrower than 840px scrolls the three columns horizontally with snap (container query, SSOT 2026-10-24)', () => {
+    const block = TEMPLATE.match(/@container inbox \(max-width: 839px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     expect(block).toContain('scroll-snap-type: x mandatory');
-    expect(block).toContain('minmax(300px');
+    expect(block).toContain('minmax(min(300px');
   });
 
   it('<640px raises tap targets to 44px', () => {

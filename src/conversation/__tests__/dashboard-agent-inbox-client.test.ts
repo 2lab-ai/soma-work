@@ -2883,6 +2883,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         isSiblingSession: () => false,
         // main's own openPanel deps since this harness was written (#372 panel controls, spec 12 agent views).
         renderPanelControls: () => {},
+        // SSOT 2026-10-24: openPanel marks the layout before the drawer changes it (layout-shift FLIP).
+        layoutBeforeChange: () => {},
         renderPanelAgents: () => {},
         panelAgentTasks: () => [],
         panelAgentLabel: () => '',
