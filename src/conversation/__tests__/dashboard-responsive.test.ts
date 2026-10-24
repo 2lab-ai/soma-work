@@ -547,11 +547,14 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     );
     expect(html).toContain('class="cap-summary"');
     expect(html).not.toContain('aria-live');
+    // The glyph leads (the state shows first even where the row scrolls); the whole
+    // sentence is the chip's accessible name.
     expect(html).toMatch(/cap-chip is-ok"[^>]*>Claude <b>62%<\/b>/);
-    expect(html).toMatch(/cap-chip is-low"[^>]*>Codex <b>12%<\/b> ▲/);
-    expect(html).toMatch(/cap-chip is-empty"[^>]*>Gemini <b>0%<\/b> ✗/);
-    expect(html).toMatch(/cap-chip is-unknown"[^>]*>Other <b>—<\/b> ◌/);
+    expect(html).toMatch(/cap-chip is-low"[^>]*>▲ Codex <b>12%<\/b>/);
+    expect(html).toMatch(/cap-chip is-empty"[^>]*>✗ Gemini <b>0%<\/b>/);
+    expect(html).toMatch(/cap-chip is-unknown"[^>]*>◌ Other <b>—<\/b>/);
     expect(html).toMatch(/cap-chip is-low" title="[^"]*1h 0m 후/);
+    expect(html).toMatch(/aria-label="Codex 잔여 12% · 부족 — [^"]*1h 0m 후/);
     const off = fns.renderCapacitySummary({ available: false, reason: 'llmux unreachable', groups: [] }, nowS * 1000);
     expect(off).toContain('가용량 미확인');
     expect(off).toContain('llmux unreachable');
@@ -563,9 +566,7 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     );
     expect(TEMPLATE).toContain('.capacity:not(.is-collapsed) .cap-summary { display: none; }');
     expect(TEMPLATE).toContain('.cron-group[hidden] { display: none; }');
-    const resp = TEMPLATE.slice(TEMPLATE.indexOf('/* ═══ Device-responsive layout (SSOT 2026-10-24)'));
-    const coarse = resp.slice(resp.indexOf('@media (pointer: coarse) {'));
-    expect(coarse.slice(0, coarse.indexOf('\n}'))).toContain('.sec-toggle { min-height: 44px; }');
+    expect(TEMPLATE).toContain('@media (pointer: coarse) { .sec-toggle { min-height: 44px; } }');
   });
 
   it('a folded CRON lane drops the cards of every job that does not wait for a reply (out of the DOM, not display:none)', () => {
@@ -598,5 +599,30 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
   it('a deep link into a folded CRON lane opens it for this page load only', () => {
     expect(clientFn('openDeepLinkedSession')).toContain('_cronLaneRevealed = true;');
     expect(clientFn('secIsOpen')).toContain('_cronLaneRevealed');
+  });
+});
+
+describe('secondary sections — trinity code review R1 follow-ups (astra)', () => {
+  it('a disclosure render leaves every board move to the coordinator (no FLIP from a half-revealed lane)', () => {
+    expect(clientFn('applyBoardPlan')).toContain('_boardFlipOff');
+    expect(clientFn('renderBoardForLayout')).toContain('_boardFlipOff = true;');
+    expect(clientFn('toggleSection')).toContain('renderBoardForLayout()');
+    expect(clientFn('runLayoutCheck')).toContain('renderBoardForLayout()');
+    expect(clientFn('toggleSection')).not.toContain('renderBoard(_lastBoardData)');
+  });
+
+  it('the 44px touch size comes after the toggle base rule, so it wins', () => {
+    const base = TEMPLATE.indexOf('.sec-toggle {\n  display: inline-flex;');
+    const touch = TEMPLATE.indexOf('@media (pointer: coarse) { .sec-toggle { min-height: 44px; } }');
+    expect(base).toBeGreaterThan(-1);
+    expect(touch).toBeGreaterThan(base);
+  });
+
+  it('a toggle works for this page even when storage refuses the write', () => {
+    expect(TEMPLATE).toContain('var _secChoice = {};');
+    expect(clientFn('toggleSection')).toMatch(
+      /_secChoice\[sec\] = open \? 'open' : 'closed';[\s\S]*localStorage\.setItem/,
+    );
+    expect(clientFn('secIsOpen')).toContain('_secChoice[sec]');
   });
 });

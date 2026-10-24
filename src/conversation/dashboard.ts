@@ -5478,7 +5478,6 @@ body.nt-open .new-task-fab { display: none !important; }
   /* The merged cron drawer and lane (#374): 44px touch targets. */
   .cron-drawer-close { min-width: 44px; min-height: 44px; }
   .cron-history-btn { min-height: 44px; }
-  .sec-toggle { min-height: 44px; }
 }
 @media (max-width: 639px) {
   /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB (a board
@@ -5519,6 +5518,7 @@ body.nt-open .new-task-fab { display: none !important; }
   cursor: pointer;
   flex-shrink: 0;
 }
+@media (pointer: coarse) { .sec-toggle { min-height: 44px; } }
 .sec-toggle svg { width: 12px; height: 12px; transition: transform var(--dur-press) var(--ease-out); }
 .sec-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
 .sec-toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
@@ -5529,7 +5529,17 @@ body.nt-open .new-task-fab { display: none !important; }
 .capacity.is-collapsed .cap-head { flex-wrap: nowrap; align-items: center; margin-bottom: 0; min-height: 32px; }
 .capacity.is-collapsed .cap-sub, .capacity.is-collapsed .cap-legend, .capacity.is-collapsed .cap-rows, .capacity.is-collapsed .cap-off { display: none; }
 .capacity:not(.is-collapsed) .cap-summary { display: none; }
+.capacity .cap-title { flex: none; white-space: nowrap; }
 .cap-summary { display: flex; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+@media (max-width: 639px) {
+  /* Phones: the collapsed row keeps every chip whole — a short title, an icon toggle
+     (its text stays the accessible name), tighter chips. */
+  .capacity.is-collapsed .cap-title-pre { display: none; }
+  .sec-toggle { padding: 2px 8px; min-width: 44px; justify-content: center; }
+  .sec-toggle .sec-toggle-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .capacity .cap-head { padding-right: 56px; }
+  .cap-chip { padding: 2px 7px; }
+}
 .cap-chip {
   flex: none;
   display: inline-flex;
@@ -7112,7 +7122,9 @@ function applyBoardPlan(slots, wanted, doneRoot, groups, sig) {
       if (animate) enterCard(card);
       continue;
     }
-    if (!animate || !first[key]) continue;
+    // A disclosure render (renderBoardForLayout): the layout coordinator moves every
+    // card from where it was before the section changed — not from this half-step.
+    if (!animate || !first[key] || _boardFlipOff) continue;
     // Interrupted move: the first box was read mid-flight (translate included),
     // so cancelling and re-FLIPping restarts from where the card is drawn.
     var wasFlying = card.classList.contains('is-flying');
@@ -8999,7 +9011,7 @@ function runLayoutCheck() {
   if (kb.getAttribute('data-view') !== autoView) setBoardView(autoView);
   // The secondary sections' defaults follow the window in this same frame, so a
   // fold or a window change that also folds them is one shift.
-  if (applySectionState() && _lastBoardData) renderBoard(_lastBoardData);
+  if (applySectionState()) renderBoardForLayout();
   var mode = currentLayoutMode();
   var changed = layoutModeKey(mode) !== _layoutModeKey;
   var flying = Date.now() < _layoutShiftUntil;
@@ -11621,8 +11633,11 @@ function sendRetry(msg) {
 // reader chose. The choice is saved per device; the default never is. A folded CRON
 // lane still shows every job whose run waits for a reply (never hidden behind a fold).
 var SEC_OPEN_QUERY = '(min-width: 840px) and (min-height: 1000px)';
+var _secMql = window.matchMedia ? window.matchMedia(SEC_OPEN_QUERY) : null;
+var _secChoice = {};           // this page's choices, even when storage refuses the write
 var _cronLaneRevealed = false; // a deep link into a folded lane opens it for this page load
 var _cronFoldApplied = null;   // the fold the last CRON render used
+var _boardFlipOff = false;     // a disclosure render leaves the board's motion to the coordinator
 function secOpen(saved, large) {
   if (saved === 'open') return true;
   if (saved === 'closed') return false;
@@ -11633,8 +11648,15 @@ function secSaved(sec) {
 }
 function secIsOpen(sec) {
   if (sec === 'cron' && _cronLaneRevealed) return true;
-  var large = !!(window.matchMedia && window.matchMedia(SEC_OPEN_QUERY).matches);
-  return secOpen(secSaved(sec), large);
+  var saved = _secChoice[sec] !== undefined ? _secChoice[sec] : secSaved(sec);
+  return secOpen(saved, !!(_secMql && _secMql.matches));
+}
+// A render for a disclosure change: entering and leaving cards animate as usual; the
+// board's moves are the coordinator's, from the spots cached before the change.
+function renderBoardForLayout() {
+  if (!_lastBoardData) return;
+  _boardFlipOff = true;
+  try { renderBoard(_lastBoardData); } finally { _boardFlipOff = false; }
 }
 function cronLaneFolded() { return !secIsOpen('cron'); }
 function secStateKey() { return (secIsOpen('capacity') ? 'C' : 'c') + (secIsOpen('cron') ? 'R' : 'r'); }
@@ -11646,12 +11668,15 @@ function applySectionState() {
     var root = document.getElementById(pairs[i][1]);
     if (!root) continue;
     var open = secIsOpen(pairs[i][0]);
-    root.classList.toggle('is-collapsed', !open);
+    // Runs on every layout check (each resize frame): write only what changed.
+    if (root.classList.contains('is-collapsed') === open) root.classList.toggle('is-collapsed', !open);
     var t = root.querySelector('[data-sec-toggle]');
     if (t) {
-      t.setAttribute('aria-expanded', open ? 'true' : 'false');
+      var expanded = open ? 'true' : 'false';
+      if (t.getAttribute('aria-expanded') !== expanded) t.setAttribute('aria-expanded', expanded);
       var label = t.querySelector('.sec-toggle-text');
-      if (label) label.textContent = open ? '접기' : '펼치기';
+      var text = open ? '접기' : '펼치기';
+      if (label && label.textContent !== text) label.textContent = text;
     }
   }
   var folded = cronLaneFolded();
@@ -11664,10 +11689,11 @@ function applySectionState() {
 function toggleSection(sec) {
   var open = !secIsOpen(sec);
   layoutBeforeChange();
-  try { localStorage.setItem('soma-sec-' + sec, open ? 'open' : 'closed'); } catch (_e) {}
+  // This page first; the device's copy is best-effort (private mode, a full quota).
+  _secChoice[sec] = open ? 'open' : 'closed';
+  try { localStorage.setItem('soma-sec-' + sec, _secChoice[sec]); } catch (_e) {}
   if (sec === 'cron') _cronLaneRevealed = false;
-  var cronChanged = applySectionState();
-  if (cronChanged && _lastBoardData) renderBoard(_lastBoardData);
+  if (applySectionState()) renderBoardForLayout();
   if (sec === 'capacity' && open) {
     // Repack the timeline at the width it has now.
     var view = document.getElementById('capacity-view');
@@ -12149,11 +12175,15 @@ function renderCapacitySummary(v, nowMs) {
     return '<div class="cap-summary"><span class="cap-chip is-error" title="' + escAttr(v.reason || '') + '">가용량 미확인 · ' + esc(v.reason || '알 수 없는 오류') + '</span></div>';
   }
   if (!v.groups || !v.groups.length) return '<div class="cap-summary"><span class="cap-chip is-unknown">계정 없음</span></div>';
-  var GLYPH = { low: ' ▲', empty: ' ✗', unknown: ' ◌' };
+  var GLYPH = { low: '▲ ', empty: '✗ ', unknown: '◌ ' };
+  var WORD = { ok: '', low: ' · 부족', empty: ' · 소진', unknown: ' · 미확인' };
   return '<div class="cap-summary">' + v.groups.map(function(g) {
     var state = g.state || 'unknown';
     var pct = typeof g.availablePct === 'number' ? Math.round(g.availablePct) + '%' : '—';
-    return '<span class="cap-chip is-' + state + '" title="' + escAttr(capLeadLine(g, nowMs)) + '">' + esc(g.label) + ' <b>' + esc(pct) + '</b>' + (GLYPH[state] || '') + '</span>';
+    var lead = capLeadLine(g, nowMs);
+    // The glyph leads, so the state shows first even where the row has to scroll.
+    return '<span class="cap-chip is-' + state + '" title="' + escAttr(lead) + '" aria-label="' + escAttr(g.label + ' 잔여 ' + pct + (WORD[state] || '') + ' — ' + lead) + '">'
+      + (GLYPH[state] || '') + esc(g.label) + ' <b>' + esc(pct) + '</b></span>';
   }).join('') + '</div>';
 }
 function renderCapacityRow(g, nowMs, trackPx) {
@@ -12208,7 +12238,7 @@ function renderCapacity(v, nowMs, trackPx) {
     + '<span><i class="cap-sw tier-none"></i>티어 미지정</span>'
     + '<span>● 5h 리셋 · ◆ 7d/모델별 리셋 · ■ 계정 복귀</span>'
     + '</div>';
-  var head = '<div class="cap-head"><h2 class="cap-title">LLM 가용량</h2><span class="cap-sub">llmux · 계정별 한도 잔여율' + esc(fresh) + '</span>' + renderCapacitySummary(v, nowMs) + legend + '</div>';
+  var head = '<div class="cap-head"><h2 class="cap-title"><span class="cap-title-pre">LLM </span>가용량</h2><span class="cap-sub">llmux · 계정별 한도 잔여율' + esc(fresh) + '</span>' + renderCapacitySummary(v, nowMs) + legend + '</div>';
   if (!v.available) return head + '<div class="cap-off">' + esc('가용량을 불러오지 못했습니다 — ' + (v.reason || '알 수 없는 오류')) + '</div>';
   if (!v.groups || !v.groups.length) return head + '<div class="cap-off">llmux 풀에 계정이 없습니다</div>';
   return head + '<div class="cap-rows">' + v.groups.map(function(g) { return renderCapacityRow(g, nowMs, trackPx); }).join('') + '</div>';
