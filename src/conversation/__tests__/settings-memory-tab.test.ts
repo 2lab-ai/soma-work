@@ -368,7 +368,7 @@ describe('개인 메모리 — a repaint keeps what is typed (review R9)', () =>
     fns.l1EditStart('memory', 0);
     p.els['l1-edit-memory'].value = 'e0, edited';
     const saving = fns.l1Save('memory', 0);
-    fns.memHold.at = Date.now() - 60_000; // the save hangs past the hold
+    fns.memHold.at = 0; // (defense: the hold is gone — the UI never releases it before the answer, review R11)
     fns.l1EditStart('memory', 1); // the user moves on to another entry
     p.els['l1-edit-memory'].value = 'e1, edited';
     answer({ ok: true, data: { ok: true, l1: block(['e0, edited', 'e1'], 'r2') } });
@@ -701,7 +701,7 @@ describe('지식 페이지 editor', () => {
     const apiWrite = vi.fn(async () => ({ ok: true, data: { page: { id: 'x' }, revision: 'p2' } }));
     const memPage: any = { page: { id: 'concepts/ssot' }, revision: 'p1' };
     const fns = load<any>(
-      ['pageDraft', 'savePage', 'memStatus', 'pageSaveBusy', 'setPageFieldsDisabled', 'memHold'],
+      ['pageDraft', 'savePage', 'memStatus', 'pageSaveBusy', 'setPageFieldsDisabled', 'memHold', 'pageDraftText'],
       [],
       {
         document: doc,
@@ -722,7 +722,7 @@ describe('지식 페이지 editor', () => {
       revision: 'p1',
     });
     const fresh = load<any>(
-      ['pageDraft', 'savePage', 'memStatus', 'pageSaveBusy', 'setPageFieldsDisabled', 'memHold'],
+      ['pageDraft', 'savePage', 'memStatus', 'pageSaveBusy', 'setPageFieldsDisabled', 'memHold', 'pageDraftText'],
       [],
       {
         document: doc,
@@ -768,6 +768,7 @@ describe('in-flight writes hold what they were sent from (review R7)', () => {
         'pageSaveBusy',
         'setPageFieldsDisabled',
         'memHold',
+        'pageDraftText',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -852,8 +853,8 @@ describe('in-flight writes hold what they were sent from (review R7)', () => {
     apiWrite.mockImplementationOnce(() => new Promise((res) => (answer = res)));
     fns.renderDay(0);
     const late = fns.epSave(0);
-    d20b.saving = Date.now() - 60_000; // the view the save was sent from
-    fns.memHold.at = Date.now() - 60_000; // and the tab-wide hold (review R10)
+    d20b.saving = 0; // (defense: the holds are gone — the UI never releases them before the answer, review R11)
+    fns.memHold.at = 0;
     expect(apiWrite).toHaveBeenCalledTimes(2); // the second save did go out
     await fns.loadDay('2026-10-21');
     expect(dateSel.value).toBe('2026-10-21');
@@ -1299,8 +1300,8 @@ describe('episodic answers apply only where they belong (review R8)', () => {
     fns.renderDay(0);
     p.edit().value = 'r0, edited';
     const saving = fns.epSave(0);
-    fns.memHold.at = Date.now() - 60_000;
-    (day as any).saving = 0; // the day hold expired too
+    fns.memHold.at = 0; // (defense: the holds are gone, review R11)
+    (day as any).saving = 0;
     fns.renderDay(1);
     p.edit().value = 'r1, edited';
     answer({
@@ -1923,6 +1924,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'pageSaveBusy',
         'setPageFieldsDisabled',
         'memHold',
+        'pageDraftText',
       ],
       ['_memPageConflict', '_memPageRaw'],
       {
@@ -1994,6 +1996,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'pageSaveBusy',
         'setPageFieldsDisabled',
         'memHold',
+        'pageDraftText',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -2051,6 +2054,9 @@ describe('관찰 기록 (에피소딕)', () => {
         'pageSaveBusy',
         'setPageFieldsDisabled',
         'memHold',
+        'pageDraftText',
+        'memRecover',
+        'paintRecover',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -2066,8 +2072,8 @@ describe('관찰 기록 (에피소딕)', () => {
       },
     );
     const savingA = fns.savePage(); // the save of A goes out ...
-    editorA.saving = Date.now() - 60_000; // ... hangs past the hold (review R6) ...
-    fns.memHold.at = Date.now() - 60_000; // (the tab-wide hold too, review R10)
+    editorA.saving = 0; // ... (defense: the holds are gone — the UI never releases them before the answer, review R11) ...
+    fns.memHold.at = 0;
     await fns.openPage('concepts/b'); // ... and the user opens B before it is answered
     answerA({
       ok: true,
@@ -2166,6 +2172,61 @@ describe('관찰 기록 (에피소딕)', () => {
     expect(detailHtml).toContain('concepts/a');
   });
 
+  it('a page save holds the tab until it is answered, however long that takes (review R11, grok)', async () => {
+    const detail: any = { innerHTML: '' };
+    const status: any = { textContent: '', innerHTML: '', setAttribute() {} };
+    const values: Record<string, string> = { 'pg-title': 'A', 'pg-aliases': '', 'pg-current': 'FIRST DRAFT' };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-page-detail' ? detail : id in values ? { value: values[id] } : status,
+      querySelectorAll: () => [],
+    };
+    const pageA = { id: 'agent/x', title: 'A', aliases: [], current: 'a', history: [], updated: '2026-10-23' };
+    const editor: any = { page: pageA, revision: 'p1', raw: '# A\n', representable: true };
+    const apiWrite = vi.fn(() => new Promise(() => {}));
+    const fns = load<any>(
+      [
+        'esc',
+        'escAttr',
+        'pageDraft',
+        'savePage',
+        'memStatus',
+        'renderPageConflict',
+        'renderPageEditor',
+        'pageSaveBusy',
+        'setPageFieldsDisabled',
+        'memHold',
+        'pageDraftText',
+      ],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      {
+        document: doc,
+        _memPage: editor,
+        apiWrite,
+        fetch: vi.fn(),
+        refreshPageIndex: async () => {},
+        paintPageList: () => {},
+      },
+    );
+    void fns.savePage();
+    // a minute later, still unanswered
+    fns.memHold.at = Date.now() - 60_000;
+    editor.saving = Date.now() - 60_000;
+    await fns.savePage();
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it('a refused page answer for an editor no longer open keeps its draft in the recovery box (review R11, grok)', async () => {
+    const recover: any = { innerHTML: '' };
+    const status: any = { textContent: '', setAttribute() {} };
+    const fns = load<any>(['pageAnswerElsewhere', 'memStatus', 'memRecover', 'paintRecover', 'esc', 'escAttr'], [], {
+      document: { getElementById: (id: string) => (id === 'mem-recover' ? recover : status) },
+      refreshPageIndex: async () => {},
+    });
+    await fns.pageAnswerElsewhere({ ok: false, status: 409, error: 'changed' }, 'agent/x', 'FIRST DRAFT');
+    expect(recover.innerHTML).toContain('FIRST DRAFT');
+  });
+
   it('while a page save is in flight, a second save and a switch to another page wait (review R6)', async () => {
     const detail: any = { innerHTML: '' };
     const status: any = { textContent: '', innerHTML: '', setAttribute() {} };
@@ -2194,6 +2255,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'pageSaveBusy',
         'setPageFieldsDisabled',
         'memHold',
+        'pageDraftText',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -2254,6 +2316,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'pageSaveBusy',
         'setPageFieldsDisabled',
         'memHold',
+        'pageDraftText',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {

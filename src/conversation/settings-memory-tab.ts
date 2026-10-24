@@ -127,10 +127,11 @@ function fmtNum(n) {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 // One memory write at a time across the tab (review R10): while one is out, every other
-// write, editor opening, day or page switch waits for its answer. A write hung past
-// 20 s lets the user move on (its late answer only reports).
+// write, editor opening, day or page switch waits for its answer — however long it takes
+// (a timed release let a second write race the first, review R11). The answer always
+// comes: success, refusal, or a network error.
 function memHold() {
-  if (!memHold.at || Date.now() - memHold.at > 20000) return false;
+  if (!memHold.at) return false;
   memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
   return true;
 }
@@ -275,7 +276,7 @@ function l1Cancel() {
 function l1Busy(target) {
   if (memHold()) return true;
   var b = _mem && _mem.l1 && _mem.l1[target];
-  if (!b || !b.saving || Date.now() - b.saving > 20000) return false;
+  if (!b || !b.saving) return false;
   memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
   return true;
 }
@@ -429,7 +430,7 @@ function paintPageList() {
 // the hold lets the user move on; its late answer then only reports (review R5).
 function pageSaveBusy() {
   if (memHold()) return true;
-  if (!_memPage || !_memPage.saving || Date.now() - _memPage.saving > 20000) return false;
+  if (!_memPage || !_memPage.saving) return false;
   memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
   return true;
 }
@@ -541,7 +542,7 @@ async function savePage() {
   try { r = await apiWrite('PUT', '/api/memory/page', { id: id, title: d.title, aliases: d.aliases, current: d.current, history: d.history, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   sentFrom.saving = 0;
   memHold.at = 0;
-  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
+  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, pageDraftText(d));
   setPageFieldsDisabled(false);
   if (r.ok) {
     // Keep the saved bytes too: a later switch to raw editing starts from them (review R4).
@@ -558,7 +559,7 @@ async function savePage() {
     var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
     var latest = null;
     try { latest = await res.json(); } catch (_e) {}
-    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
+    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, pageDraftText(d));
     _memPageConflict = res.ok && latest ? latest : { page: null, revision: null };
     renderPageConflict();
     memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집기에 그대로 있습니다.', true);
@@ -568,10 +569,18 @@ async function savePage() {
 }
 // A page answer that came back after the user opened another page: report it,
 // refresh the list, leave the open editor alone (review R5).
-async function pageAnswerElsewhere(r, id) {
+async function pageAnswerElsewhere(r, id, unsent) {
   if (r.ok) memStatus(id + ' 페이지를 저장했습니다 (지금 연 페이지는 그대로)', false);
-  else memStatus(id + ' 페이지를 저장하지 못했습니다' + (r.status === 409 ? ' — 그사이 바뀌었습니다. 다시 열어 확인하세요' : ': ' + r.error), true);
+  else {
+    // the refused draft has no editor any more: it is kept (review R11)
+    if (unsent) memRecover(id + ' 페이지 수정본', unsent);
+    memStatus(id + ' 페이지를 저장하지 못했습니다' + (r.status === 409 ? ' — 그사이 바뀌었습니다' : ': ' + r.error) + (unsent ? '. 작성한 내용은 보관했습니다' : ''), true);
+  }
   await refreshPageIndex();
+}
+// A form draft as text, for the recovery box.
+function pageDraftText(d) {
+  return '제목: ' + d.title + (d.aliases && d.aliases.length ? '\n별칭: ' + d.aliases.join(', ') : '') + '\n\nCurrent:\n' + d.current + (d.history && d.history.length ? '\n\nHistory:\n' + d.history.join('\n') : '');
 }
 async function savePageRaw() {
   if (pageSaveBusy()) return;
@@ -586,7 +595,7 @@ async function savePageRaw() {
   try { r = await apiWrite('PUT', '/api/memory/page/raw', { id: id, raw: raw, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   sentFrom.saving = 0;
   memHold.at = 0;
-  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
+  if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, raw);
   setPageFieldsDisabled(false);
   if (r.ok) {
     _memPage = r.data;
@@ -601,7 +610,7 @@ async function savePageRaw() {
     var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
     var latest = null;
     try { latest = await res.json(); } catch (_e) {}
-    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id);
+    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, raw);
     _memPageConflict = res.ok && latest ? latest : { page: null, revision: null };
     renderPageConflict();
     memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집기에 그대로 있습니다.', true);
@@ -690,7 +699,7 @@ function epBusy() {
     if (picker && _memDay) picker.value = _memDay.date;
     return true;
   }
-  if (!_memDay || !_memDay.saving || Date.now() - _memDay.saving > 20000) return false;
+  if (!_memDay || !_memDay.saving) return false;
   memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
   var sel = document.getElementById('mem-ep-date');
   if (sel) sel.value = _memDay.date;
@@ -705,7 +714,7 @@ async function loadDay(date, force) {
   try { data = await res.json(); } catch (_e) {}
   if (seq !== loadDay.seq) return;
   // A write that started meanwhile holds the day on screen: this load is dropped (review R9).
-  if (!force && _memDay && _memDay.saving && Date.now() - _memDay.saving < 20000) {
+  if (!force && _memDay && _memDay.saving) {
     var held = document.getElementById('mem-ep-date');
     if (held) held.value = _memDay.date;
     return;
