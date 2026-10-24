@@ -424,6 +424,79 @@ CONFIG_EOF
 
 `mcpServers` 섹션은 `config.json` 안에 통합됨 — 별도 파일 생성 불필요. PR #808 참조.
 
+### 8.5 환경 플러그인 (배포 시 설치)
+
+호스트마다 다른 값 — 배포 후 QA 대상, 트래커, QA 환경 URL, 테스트 계정의 출처 — 은 soma-work에
+넣지 않는다 (공개 레포다). 그런 값은 **환경 플러그인**(호스트별 private 마켓플레이스 플러그인,
+예: `acme-env`)에 두고, 플릿 배포가 runner마다 그 플러그인을 `config.json`에 등록한다. 재시작할 때
+PluginManager가 받아서 로드한다.
+
+설정 위치는 Actions **repo secrets** (Settings > Secrets and variables > Actions > Secrets), 채널마다
+하나다. 배포 대상 목록과 달리 variable이 아니다 — 스텝의 env 헤더는 variable 값을 공개 실행 로그에
+그대로 찍고, secret은 `***`로 찍는다:
+
+| 시크릿 | 채널 | 짝이 되는 대상 목록 (variable) |
+|------|------|------|
+| `PREVIEW_ENV_PLUGINS` | 프리뷰 (`deploy/dev`, main dispatch) | `PREVIEW_DEPLOY_TARGETS` |
+| `PRODUCTION_ENV_PLUGINS` | 프로덕션 (`deploy/prod`) | `PRODUCTION_DEPLOY_TARGETS` |
+
+채널은 **자기 시크릿만** 읽는다. 워크플로우는 두 시크릿을 따로 넘기고 Deploy 스크립트가 배포 환경으로
+고른다: `main`(프로덕션)이면 `PRODUCTION_ENV_PLUGINS`만, 그 밖이면 `PREVIEW_ENV_PLUGINS`만. 고른 시크릿이
+비어 있으면 아무것도 설치하지 않는다 — 프로덕션 시크릿이 없다고 프리뷰 목록으로 넘어가지 않는다.
+
+한 줄에 하나, `#` 주석과 빈 줄은 무시한다:
+
+```text
+# runner-label|marketplace-name|owner/repo[@ref]|plugin[,plugin...]
+soma-staging|acme-env|acme/env-plugins@main|acme-env
+```
+
+Deploy 스텝은 이 스크립트를 두 번 부른다:
+
+1. `service.sh stop` **전에** `node dist/deploy/apply-env-plugins.js --check "$TARGET"` — 아래 합치기를
+   전부 계산하되 아무것도 쓰지 않고, 실제 적용이 하는 대상 검사(symlink·파일 종류·쓰기 권한)를 같이 해서
+   같은 입력에서 같은 이유로 실패한다. 형식이 틀린 시크릿이나 쓸 수 없는 `config.json`은 기존 서비스가 아직
+   도는 동안 배포를 실패시킨다. 타깃 디렉터리가 아직 없으면(첫 배포 — `sync-bundle.sh`가 만든다)
+   `config.json`이 없는 것으로 본다.
+2. `sync-bundle.sh` 직후, `install-target.sh`(재시작) 직전에 `node dist/deploy/apply-env-plugins.js "$TARGET"`
+   — 그 runner의 줄만 골라 `<target>/config.json`에 합친다:
+
+- `plugin.marketplace[]`에 `{name, repo, ref}` (ref를 생략하면 `main`). 같은 이름의 항목은 교체되고,
+  같은 이름이 여러 개면 하나로 합쳐진다 (로더는 뒤의 것을 쓰므로 남은 중복이 교체를 가린다).
+- `plugin.plugins[]`에 `plugin@marketplace-name` — 이미 있으면 다시 넣지 않는다.
+- 다른 키는 건드리지 않는다. 바뀐 것이 없으면 쓰지 않고, 쓸 때는 원자적으로(임시 파일 → rename) 0600으로
+  쓴다. `config.json`이 없으면 `plugin` 섹션만으로 만든다.
+- **추가만 한다.** 시크릿에서 줄을 지워도 `config.json`의 항목은 남는다 — 제거는 `/z plugin remove`
+  또는 손으로 한다.
+- 형식이 틀린 줄이 **하나라도** 있으면 (다른 runner의 줄도) 그 배포는 실패한다. 줄의 runner label이 그
+  채널의 배포 대상 label 집합(`*_DEPLOY_TARGETS` 전체 — 수동 실행의 `targets` 좁히기 전)에 없어도 실패한다.
+  이 레포의 배포 로그는 공개이므로 메시지에는 줄 번호·필드 번호·개수만 나오고, 레포·플러그인·runner
+  이름이나 경로는 나오지 않는다.
+- 두 호출이 끝나면 스크립트는 `ENV_PLUGINS*`·`RUNNER_LABEL`·`CHANNEL_RUNNER_LABELS`를 `unset`한 뒤
+  `install-target.sh`를 부른다 — 재시작된 데몬은 이 값들을 물려받지 않는다.
+- 이 단계는 `npm ci` 전에 돈다 — 타깃에 `node_modules`가 없으므로 스크립트는 node 내장 모듈만 쓴다.
+- 마켓플레이스 fetch는 호스트의 `gh`로 `gh api repos/<owner/repo>/tarball/<ref>`를 부른다. private
+  마켓플레이스라면 그 호스트의 `gh` 인증이 그 레포를 읽을 수 있어야 한다. **fetch 실패는 배포를 실패시키지
+  않는다** (PluginManager는 로그만 남기고 뜬다) — 첫 배포 뒤 다음 deploy 스레드의 프리플라이트 줄을 확인하라:
+  `ℹ️ no post-deploy QA on this host`가 나오면 플러그인이 로드되지 않은 것이고, ⚠️ 줄이면 프로필이 덜 찼다.
+- 호스트를 `onDeploy` QA 레인(크론 잡 또는 `deploy-lanes.json`)에서 환경 플러그인으로 옮길 때는 그 레인을
+  지운다 — 남겨 두면 레인과 8단계가 같은 배포를 두 번 QA한다.
+
+**환경 플러그인 규약 — `post-deploy` 스킬.** 배포 워크플로우(`src/prompt/workflows/deploy.prompt`)는
+환경 값을 모르고, 이름이 고정된 스킬 하나만 찾는다:
+
+- 1단계(Pre-Validation): `<plugin>:post-deploy --preflight repo=<owner/repo> target=<branch>` → 정확히
+  하나를 답한다: `applies` / `not-applicable` / `missing: <fields>`. 아무것도 쓰지 않는다. 다른 답이나
+  스킬 오류는 `missing`과 같게 처리된다 (⚠️ 한 줄 + 요청자 대기).
+- 8단계(Post-Deploy QA): 모든 repo의 배포 결과가 정해진 뒤, 프리플라이트가 `applies`였고 7단계
+  `deploy_completed`가 confirmed인 repo마다 하나씩 `<plugin>:post-deploy repo=<owner/repo> target=<branch>
+  before=<sha> after=<sha>` — 같은 세션에서 배포 후 QA를 끝까지 하고 최종 리포트를 그 스레드에 올린다.
+  QA를 안 한 repo는 이유를 한 줄씩 적는다. 스킬이 오류로 끝나거나 최종 리포트 없이 끝나면 워크플로우가
+  직접 `deployed, QA incomplete`와 재실행 인자를 보고한다. 레인이 아니라 워크플로우 자신의 일이다.
+- 스킬 본문은 그 호스트의 적용표·프로필(`## Environment`)·정책(`## Policy`)을 들고, 절차는
+  soma-work 번들 `zworkflow` 스킬 `deploy-qa` / `qa-issue` / `qa-report`를 호출한다.
+- 이 스킬이 없는 호스트에서는 배포가 `ℹ️ no post-deploy QA on this host` 한 줄을 남기고 QA 없이 진행한다.
+
 ---
 
 ## 9. GitHub Environments 설정

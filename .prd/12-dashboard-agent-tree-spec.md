@@ -1,6 +1,6 @@
 # 12 — 대시보드 에이전트 트리: 메인 에이전트 → 서브에이전트, 에이전트별 작업 로그·태스크
 
-Status: PR-A(귀속·저장·payload) 구현 · PR-B(대시보드 UI) 진행 · Date: 2026-10-23 · 기준 main `3c9576a`
+Status: PR-A(귀속·저장·payload, #362) · PR-B(대시보드 UI) 구현 · Date: 2026-10-23 · 기준 main `3c9576a` · 이슈 #361
 SSOT: [`agent-tree/ssot.md`](agent-tree/ssot.md) · 앞선 계약: [`10-agent-inbox-board-spec.md`](10-agent-inbox-board-spec.md),
 [`11-dashboard-live-surfaces-spec.md`](11-dashboard-live-surfaces-spec.md)
 
@@ -127,7 +127,7 @@ Linear agent activity)와 설계 자문(trinity-fallback astra-zhuge, fable 의�
 
 ### 4.2 펼친 카드 — 에이전트 트리
 
-task 타임라인 앞에 `에이전트` 섹션. 첫 행 `메인` (모델 · task 완료/전체), 그 아래 스폰 순으로 서브 행, 깊이마다 12px 들여쓰기와
+task 타임라인 앞에 `에이전트` 섹션. 첫 행 `메인` (모델 · task 완료/전체), 그 아래 스폰 순으로 서브 행, 깊이마다 16px 들여쓰기와
 CSS 테두리 트리 선(글리프 아님). 행 = 상태 아이콘+단어 · `A<n>` · 타입 · 설명(말줄임) · 경과/소요 · 툴 수 · `배경` 배지, 둘째 줄 =
 그 서브의 현재 task 또는 마지막 도구. 행 아래 얇은 워터폴 막대: 시간축 = 서브 집합의 첫 시작 ~ 마지막 종료(또는 지금) — 겹침이
 병렬로 읽힌다. 각 행은 버튼: 패널을 그 에이전트로 연다. 처음엔 8행까지, 나머지는 `전체 N개 보기`.
@@ -138,7 +138,8 @@ CSS 테두리 트리 선(글리프 아님). 행 = 상태 아이콘+단어 · `A<
   펼치면 세로 트리 목록(높이 상한·자체 스크롤, 모바일도 세로), 항목은 네이티브 버튼 + `aria-current`.
 - 선택한 에이전트가 Tasks 블록과 작업 로그를 정한다(기본 메인). 서브 선택 시 바 아래 요약 한 줄(상태·경과·툴·토큰·배경·SDK 요약).
 - 작업 로그는 선택 범위만: 메인 = `agentId` 없는 항목, 서브 = `agentId`가 그 서브인 항목 + `agentRef`가 그 서브인 항목(맨 앞
-  `지시` = 스폰 호출 raw, 맨 끝 `결과` = 반환 raw — 배경 ack면 `배경 실행 시작`). 메인 로그의 스폰 행에는 `열기 →`.
+  `지시` = 스폰 호출 raw, 맨 끝 `결과` = 반환 raw — 배경 ack면 `배경 실행 시작`; 스폰 결과가 오류면 `결과`). 메인 로그의 스폰 행에는 `서브에이전트 열기 →` — 방향키 탐색의 한
+  정거장이고 Enter/Space로 연다.
   task 그룹·원본 열람·키보드 계약(§10 3.1-6, §11 T10)은 선택 범위 안에서 그대로, 그룹 열림 상태는 (에이전트, task) 단위.
 - `attributed` 없는 항목이 `Agent`/`Task` 호출을 포함하면 메인 범위에서 그 구간 앞에 `이전 통합 로그 — 메인/서브 귀속 미확인`.
 - 목록 밖(상한)으로 밀린 에이전트의 항목도 작업 로그에 있으면 목록 끝 `기타 에이전트`로 도달 가능.
@@ -148,10 +149,16 @@ CSS 테두리 트리 선(글리프 아님). 행 = 상태 아이콘+단어 · `A<
 
 ≥1024 / 640–1023 / <640 보드 계약(§10 5) 그대로. 카드 트리는 <640에서 메타가 둘째 줄로 내려가고 워터폴 막대는 전체 폭.
 패널 바·목록 행 ≥44px(<640·coarse). 상태 스피너는 reduced motion에서 정지, 펼침은 §10 4의 토큰만 쓴다.
+라이브 갱신(보드 푸시·`sessionUpdated`)은 바뀐 노드만 맞춘다(morph): 같은 데이터면 DOM 쓰기 0, 바뀌면 카드 트리·패널 바·task
+그룹 머리의 노드를 유지한 채 속성·텍스트만 고친다 — 포커스, 목록 스크롤, 실행 중 스피너·워터폴 애니메이션이 갱신에 끊기지 않는다.
 
 ## 5. 검증
 
 - 단위(PR-A): `src/agent-runtime/__tests__/sdk-message-to-event.subagent.test.ts`, `packages/slack/src/__tests__/stream-processor.subagent.test.ts`,
   `src/session/__tests__/agent-registry.test.ts`, `src/conversation/__tests__/work-log.test.ts`(agentId/agentRef/attributed),
   `packages/slack/src/__tests__/live-usage.test.ts`(sidechain), `src/conversation/__tests__/dashboard-agent-tree.test.ts`(payload).
-- PR-B: 클라이언트 함수 테스트 + Playwright 실측(1280/820/390 × 라이트/다크, 가짜 세션에 서브 트리).
+- PR-B: `src/conversation/__tests__/dashboard-agent-tree-client.test.ts`(트리 순서·접힌 줄·펼친 트리·워터폴 축·패널 범위·지시/결과 행·
+  귀속 이전 로그 표시·배선) + 브라우저 실측 `scripts/screenshot-agent-tree.ts`(1280/820/390 × 라이트/다크: 가로 넘침 0, <640px 44px,
+  서브 선택 시 경로·Tasks·작업 로그 범위, `서브에이전트 열기 →` 전환 — 100개 검사).
+- 실행: `env -i PATH="$PATH" HOME="$HOME" SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst CONVERSATION_VIEWER_PORT=33918 npx tsx scripts/screenshot-agent-tree.ts [outDir]`
+  — 봇이 띄운 셸에서는 `env -i`로 배포 환경 변수(뷰어 포트·URL·토큰)를 끊는다.

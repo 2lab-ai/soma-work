@@ -17,6 +17,7 @@ import type { TaskLedger } from './session/task-ledger';
 import type {
   ActivityState,
   ConversationSession,
+  SessionCronJob,
   SessionGoal,
   SessionInstruction,
   SessionLinkHistory,
@@ -88,6 +89,9 @@ export interface ArchivedSession {
   goal?: SessionGoal;
   goalHistory?: SessionGoal[];
   taskLedger?: TaskLedger;
+
+  // SSOT 2026-10-23 — a closed cron run stays filed under its job.
+  cronJob?: SessionCronJob;
   // Spec 12 — so a closed card keeps its subagents.
   agents?: AgentRegistry;
 }
@@ -148,6 +152,7 @@ function sessionToArchive(
     goal: session.goal ? JSON.parse(JSON.stringify(session.goal)) : undefined,
     goalHistory: session.goalHistory ? JSON.parse(JSON.stringify(session.goalHistory)) : undefined,
     taskLedger: session.taskLedger ? JSON.parse(JSON.stringify(session.taskLedger)) : undefined,
+    cronJob: session.cronJob ? { ...session.cronJob } : undefined,
     agents: session.agents ? JSON.parse(JSON.stringify(session.agents)) : undefined,
   };
 }

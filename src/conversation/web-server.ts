@@ -16,6 +16,7 @@ import { config } from '../config';
 import { IS_DEV } from '../env-paths';
 import { registerHookRoutes } from '../hooks';
 import { Logger } from '../logger';
+import { registerArtifactRoutes } from './artifact-routes';
 import { registerDashboardRoutes, setSelfInstanceEnv } from './dashboard';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
 import { registerMemoryRoutes } from './memory-routes';
@@ -676,6 +677,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // ---- Dashboard Routes ----
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
   await registerWorkLogRoutes(server, authMiddleware);
+  await registerArtifactRoutes(server, authMiddleware);
   // Personal settings (SSOT 2026-10-23 T2) — self only, auth + CSRF on writes.
   registerSettingsRoutes(server, authMiddleware, csrfMiddleware);
   // Personal memory — the settings page "기억" tab (SSOT 2026-10-23 T3).

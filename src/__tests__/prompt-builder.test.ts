@@ -157,7 +157,7 @@ describe('PromptBuilder', () => {
       expect(section).toMatch(/never emit twice/i);
     });
 
-    it('deploy workflow ends with the post-deploy lane signal (deploy_completed directive)', () => {
+    it('deploy workflow carries the post-deploy lane signal (deploy_completed directive)', () => {
       const prompt = builder.loadWorkflowPrompt('deploy')!;
       const section = prompt.slice(prompt.indexOf('### 7) Post-Deploy Lane Signal (Required)'));
 
@@ -182,6 +182,76 @@ describe('PromptBuilder', () => {
       expect(section).not.toContain('Each lane reports in its own place');
       expect(section).not.toMatch(/posts its result back into this thread/);
       expect(section).toContain('Do not wait for a lane, do not check on it, and do not run its work yourself.');
+    });
+
+    it('deploy workflow preflights post-deploy QA in step 1 through the environment plugin', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const section = prompt.slice(
+        prompt.indexOf('### 1) Pre-Validation'),
+        prompt.indexOf('### 2) Prepare Working Branch'),
+      );
+
+      // The environment lives in a host-installed plugin; the workflow only knows the skill name.
+      expect(section).toContain('`<plugin>:post-deploy`');
+      expect(section).toContain('--preflight repo=<owner/repo> target=<branch>');
+      for (const answer of ['`applies`', '`not-applicable`', '`missing: <fields>`']) expect(section).toContain(answer);
+      // missing -> one warning line, then the requester decides; deploy-only is never reported as QA done.
+      expect(section).toMatch(/`missing: <fields>`[^\n]*⚠️[^\n]*wait for the requester/);
+      expect(section).toMatch(/deploy-only[^.]*only if they say so/);
+      expect(section).toContain('never report QA as done');
+      // Fail closed: an unexpected answer or a skill error is a `missing`, never a silent deploy-only.
+      expect(section).toMatch(
+        /Any other answer, or an error from the skill, is handled like `missing: <fields>`[^\n]*⚠️[^\n]*wait for the requester/,
+      );
+      // No such skill on this host -> say so once and keep deploying.
+      expect(section).toContain('`ℹ️ no post-deploy QA on this host`');
+    });
+
+    it('deploy workflow runs post-deploy QA itself in step 8, after a confirmed deploy_completed', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const step7 = prompt.slice(
+        prompt.indexOf('### 7) Post-Deploy Lane Signal'),
+        prompt.indexOf('### 8) Post-Deploy QA'),
+      );
+      const step8 = prompt.slice(prompt.indexOf('### 8) Post-Deploy QA'));
+
+      expect(prompt.indexOf('### 8) Post-Deploy QA')).toBeGreaterThan(prompt.indexOf('### 7) Post-Deploy Lane Signal'));
+      // Step 7 says so right where it forbids doing a lane's work.
+      expect(step7).toContain(
+        "do not run its work yourself. Step 8 is not a lane: it is this workflow's own work, done in this session after this signal.",
+      );
+      // Gate: the preflight said applies AND step 7 emitted a confirmed signal.
+      expect(step8).toContain('`applies`');
+      expect(step8).toContain('a confirmed `deploy_completed`');
+      expect(step8).toContain(
+        '`<plugin>:post-deploy repo=<owner/repo> target=<branch> before=<before_sha> after=<after_sha>`',
+      );
+      expect(step8).toContain('in this session');
+      expect(step8).toMatch(/until its final report is posted in this thread/);
+      expect(step8).toContain('deployed, QA incomplete');
+      expect(step8).toMatch(/never as done/);
+      expect(step8).toContain('not a lane');
+      // Step 8 never emits the signal itself; step 7 owns it.
+      expect(step8).not.toContain('"type": "deploy_completed"');
+    });
+
+    it('deploy workflow step 8 waits for every repo, states the skipped ones, and reports a broken QA run itself', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const step8 = prompt.slice(prompt.indexOf('### 8) Post-Deploy QA'));
+
+      // Multi-repo: start only after every repo reached a terminal deploy outcome ...
+      expect(step8).toContain('once every repo of this deploy has reached a terminal deploy outcome');
+      // ... then QA each repo that is both applicable and confirmed, serially ...
+      expect(step8).toMatch(
+        /one repo at a time, for each repo whose step 1 preflight answered `applies` and whose step 7 emitted a confirmed `deploy_completed`/,
+      );
+      // ... and say why every other repo got no QA; a failed or held repo never hides the rest.
+      expect(step8).toMatch(/one line in the thread for every other repo saying QA did not run for it and why/);
+      expect(step8).toContain('A failed or held repo is stated; it never silently skips QA for the other repos.');
+      // The skill erroring or never reporting is not a silent end: the workflow reports it itself.
+      expect(step8).toMatch(
+        /If the skill errors, or ends without posting its final report, report `deployed, QA incomplete` for that repo yourself, with the re-run arguments/,
+      );
     });
 
     it('should fallback to default for unknown workflow', () => {
