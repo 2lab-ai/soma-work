@@ -345,6 +345,12 @@ export interface SessionGoal {
  * to the package's compiled `dist/`, which is not guaranteed to exist when
  * this file is typechecked.
  */
+/** The cron job a session was created by (SSOT 2026-10-23). `id` is absent only when the fire carried none. */
+export interface SessionCronJob {
+  id?: string;
+  name: string;
+}
+
 export interface SessionIncidentRequest {
   readonly version: 1;
   readonly incident_id: string;
@@ -491,6 +497,19 @@ export interface ConversationSession {
   isOnboarding?: boolean;
   // Session-unique base working directory (auto-created on new session, cleaned up on end)
   sessionWorkingDir?: string;
+  /**
+   * The cron job whose fire CREATED this session (SSOT 2026-10-23 T1/T3).
+   * Stamped once by `SessionInitializer`'s dispatch-bypass branch; a fire
+   * injected into an existing session never sets it. The dashboard files the
+   * session in the CRON lane under this job. Persisted and archived.
+   */
+  cronJob?: SessionCronJob;
+  /**
+   * The title is a placeholder (the cron job name) that the first clear title
+   * — the turn summary or a linked issue/PR — may replace (T2). Any explicit
+   * title write clears it.
+   */
+  titleProvisional?: boolean;
   /**
    * Set once by `SessionInitializer` from a verified incident turn; makes this
    * session incident-owned (restricted runtime, ordinary traffic refused in

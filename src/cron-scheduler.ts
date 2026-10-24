@@ -44,6 +44,11 @@ export interface SyntheticMessageEvent {
   skipDispatch?: boolean;
   /** Model override for cron jobs with non-default model config */
   modelOverride?: string;
+  /**
+   * The job behind this fire (SSOT 2026-10-23 T1): a session the fire creates
+   * is named after it and filed under it on the dashboard.
+   */
+  cron?: { jobId: string; jobName: string };
   /** Route context — skipAutoBotThread prevents duplicate root message creation */
   routeContext?: {
     skipAutoBotThread?: boolean;
@@ -113,6 +118,11 @@ export interface CronFireOptions {
 interface QueuedCron {
   job: CronJob;
   note?: string;
+}
+
+/** The structured origin every injected fire carries. */
+function cronOrigin(job: CronJob): { jobId: string; jobName: string } {
+  return { jobId: job.id, jobName: job.name };
 }
 
 /** The text a fire injects / posts. */
@@ -443,6 +453,7 @@ export class CronScheduler {
       synthetic: true,
       skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig),
+      cron: cronOrigin(job),
       routeContext: { skipAutoBotThread: true },
     };
 
@@ -533,6 +544,7 @@ export class CronScheduler {
       synthetic: true,
       skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig),
+      cron: cronOrigin(job),
       routeContext: { skipAutoBotThread: true },
     };
 
@@ -557,8 +569,14 @@ export class CronScheduler {
   private async executeWithNewThread(job: CronJob, now: Date, triggeredBy?: string, note?: string): Promise<boolean> {
     logger.info('No session found, creating new thread', { name: job.name, channel: job.channel });
 
+    let openedTs: string | undefined;
     try {
-      const rootTs = await this.injectInNewThread(job, `[cron:${job.name}] Scheduled task`, cronText(job, note));
+      const rootTs = await this.injectInNewThread(job, `[cron:${job.name}] Scheduled task`, cronText(job, note), {
+        cron: cronOrigin(job),
+        onOpened: (ts) => {
+          openedTs = ts;
+        },
+      });
       if (!rootTs) {
         logger.warn('Failed to create thread (no ts returned)', { name: job.name });
         this.recordExecution(job, 'failed', 'new_thread', undefined, 'thread creation returned no ts', triggeredBy);
@@ -566,11 +584,22 @@ export class CronScheduler {
       }
 
       this.deps.storage.updateLastRun(job.id, now);
-      this.recordExecution(job, 'success', 'new_thread', undefined, undefined, triggeredBy);
+      // The session this fire opened, in the same shape idle_inject records —
+      // the dashboard's run history links the run to it (SSOT 2026-10-23 T5).
+      this.recordExecution(job, 'success', 'new_thread', `${job.channel}-${rootTs}`, undefined, triggeredBy);
       return true;
     } catch (error: any) {
       logger.error('New thread creation failed', { name: job.name, error: error?.message });
-      this.recordExecution(job, 'failed', 'new_thread', undefined, error?.message, triggeredBy);
+      // When the thread was opened, the failure belongs to that session too —
+      // the dashboard must not read its card as a separate, successful run.
+      this.recordExecution(
+        job,
+        'failed',
+        'new_thread',
+        openedTs ? `${job.channel}-${openedTs}` : undefined,
+        error?.message,
+        triggeredBy,
+      );
       return false;
     }
   }
@@ -581,9 +610,20 @@ export class CronScheduler {
    * injected turn ends, or undefined when Slack returned no ts (nothing
    * injected). Throws what the thread creator or the injector throws.
    */
-  private async injectInNewThread(fire: DeployLaneSpec, rootText: string, text: string): Promise<string | undefined> {
+  private async injectInNewThread(
+    fire: DeployLaneSpec,
+    rootText: string,
+    text: string,
+    opts: {
+      /** A cron job's fire names and files the session it opens (SSOT 2026-10-23 T1). */
+      cron?: { jobId: string; jobName: string };
+      /** Told the root ts as soon as the thread exists, before the turn runs. */
+      onOpened?: (rootTs: string) => void;
+    } = {},
+  ): Promise<string | undefined> {
     const rootTs = await this.deps.threadCreator(fire.channel, rootText);
     if (!rootTs) return undefined;
+    opts.onOpened?.(rootTs);
 
     const syntheticEvent: SyntheticMessageEvent = {
       user: fire.owner,
@@ -594,6 +634,7 @@ export class CronScheduler {
       synthetic: true,
       skipDispatch: true,
       modelOverride: resolveModelOverride(fire.modelConfig),
+      ...(opts.cron ? { cron: opts.cron } : {}),
       routeContext: { skipAutoBotThread: true },
     };
 
