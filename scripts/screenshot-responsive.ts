@@ -83,6 +83,7 @@ async function setupMockSessions() {
   add(4, 'Ship release notes', 'idle');
   add(5, 'Triage open PRs', 'working');
   setDashboardSessionAccessor(() => sessions);
+  return sessions;
 }
 
 async function preparePage(page: Page, opts: { savedView?: string; savedWidth?: number } = {}) {
@@ -329,7 +330,12 @@ async function resizeAndProbe(page: Page, w: number, h: number, settle = true): 
   });
 }
 
-async function transitions(baseUrl: string, outDir: string, failures: string[]) {
+async function transitions(
+  baseUrl: string,
+  outDir: string,
+  failures: string[],
+  sessions: Map<string, Record<string, unknown>>,
+) {
   const browser = await chromium.launch({ headless: true });
   const expect = (ok: boolean, msg: string) => {
     if (ok) console.log(`[ok] transition: ${msg}`);
@@ -470,6 +476,46 @@ async function transitions(baseUrl: string, outDir: string, failures: string[]) 
       );
       await ctx.close();
     }
+    // 4c. A live render that moves a card to another column while a shift is still
+    //      flying (the docked drawer just narrowed the board) never jumps back past
+    //      where the card was: the render's own FLIP is the one the shift continues
+    //      (trinity code review R2, astra).
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      const page = await ctx.newPage();
+      page.on('pageerror', (e) => failures.push(`transition live render: page error ${e.message}`));
+      await preparePage(page);
+      await openDashboard(page, baseUrl);
+      const moving = sessions.get('C123:170000002.000001') as Record<string, unknown>;
+      const was = moving.activityState;
+      moving.activityState = 'idle'; // RUNNING → DONE on the next load
+      const r = await page.evaluate(async () => {
+        const w = window as unknown as { openPanel(k: string): void; loadSessions(): Promise<void> };
+        const first = document.querySelector('#kanban [data-session-key]') as HTMLElement;
+        const card = document.querySelector('#kanban [data-session-key$="170000002.000001"]') as HTMLElement;
+        w.openPanel(first.getAttribute('data-session-key') as string);
+        await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+        const before = card.getBoundingClientRect().left;
+        void w.loadSessions();
+        const xs: number[] = [];
+        for (let n = 0; n < 45; n++) {
+          xs.push(card.getBoundingClientRect().left);
+          await new Promise((res) => requestAnimationFrame(res));
+        }
+        return { before, xs };
+      });
+      moving.activityState = was;
+      const end = r.xs[r.xs.length - 1];
+      const lo = Math.min(r.before, end) - 2;
+      const hi = Math.max(r.before, end) + 2;
+      const out = r.xs.filter((x) => x < lo || x > hi);
+      expect(Math.abs(end - r.before) > 50, `the render moves the card (${r.before} → ${end})`);
+      expect(
+        out.length === 0,
+        `no frame leaves the path between the old and new spot (${out.slice(0, 3).join(', ') || 'none'})`,
+      );
+      await ctx.close();
+    }
     // 4. Reduced motion: no movement, a fade only.
     {
       const { ctx, page } = await fresh({ reduced: true });
@@ -485,7 +531,7 @@ async function transitions(baseUrl: string, outDir: string, failures: string[]) 
 async function main() {
   const outDir = process.argv[2] || path.join(__dirname, '..', 'screenshots', 'responsive');
   fs.mkdirSync(outDir, { recursive: true });
-  await setupMockSessions();
+  const sessions = await setupMockSessions();
   const { startWebServer, stopWebServer, getViewerBaseUrl } = await import('../src/conversation/web-server');
   await startWebServer({ listen: true });
   // The viewer advertises its LAN host name; the sweep talks to the loopback.
@@ -494,7 +540,7 @@ async function main() {
   try {
     await sweepBrowser('chromium', chromium, baseUrl, outDir, failures);
     await sweepBrowser('webkit', webkit, baseUrl, outDir, failures);
-    await transitions(baseUrl, outDir, failures);
+    await transitions(baseUrl, outDir, failures, sessions);
   } finally {
     await stopWebServer();
   }

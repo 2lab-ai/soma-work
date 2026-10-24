@@ -6635,6 +6635,7 @@ function measureCards() {
 // translate is added on top of whatever runs already, so a card still in its
 // entrance keeps scaling while it moves.
 function playFlip(el, dx, dy, raise) {
+  noteFlipTarget(el);
   if (reduceMotion()) {
     // §4-8: no travel — a card that changed column fades in where it landed.
     if (raise) el._enter = el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
@@ -8400,13 +8401,28 @@ function refreshLayoutCache() {
   if (_layoutModeKey && layoutModeKey(currentLayoutMode()) !== _layoutModeKey) { requestLayoutCheck(); return; }
   measureLayout();
 }
+// Where an element's layout box is now: its drawn box minus a running FLIP's
+// translate, so a card in flight is cached at its landing spot.
+function layoutSpotOf(el) {
+  var t = el._flip ? parseTranslate(getComputedStyle(el).transform) : { x: 0, y: 0 };
+  var r = el.getBoundingClientRect();
+  return { left: r.left - t.x, top: r.top - t.y };
+}
+// Every FLIP (a live board render moving a card, a view switch, a shift) lands its
+// element on a new spot; the shift cache learns it at once, so a shift during the
+// flight starts from where the card really is (in the cache's scroll basis).
+function noteFlipTarget(el) {
+  var r = el.getBoundingClientRect();
+  var now = layoutScrollNow();
+  _layoutRects.set(el, {
+    left: r.left + (now.x - _layoutScroll.x) + (now.k - _layoutScroll.k),
+    top: r.top + (now.y - _layoutScroll.y),
+  });
+}
 function measureLayout() {
   var next = new Map();
   var movers = collectViewMovers();
-  for (var i = 0; i < movers.length; i++) {
-    var r = movers[i].getBoundingClientRect();
-    next.set(movers[i], { left: r.left, top: r.top });
-  }
+  for (var i = 0; i < movers.length; i++) next.set(movers[i], layoutSpotOf(movers[i]));
   _layoutRects = next;
   _layoutScroll = layoutScrollNow();
   _lastScroll = _layoutScroll;
