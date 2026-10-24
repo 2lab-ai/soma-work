@@ -147,6 +147,22 @@ describe('settings routes (SSOT 2026-10-23 T2)', () => {
     expect(res.body).not.toContain('/secret/path');
   });
 
+  it('GET /dashboard/settings serves the settings page, not the board of a user called "settings"', async () => {
+    const res = await injectWebServer({ method: 'GET', url: '/dashboard/settings', headers: await signIn('U1') });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/html');
+    expect(res.body).toContain('<title>soma-work 설정</title>');
+    expect(res.body).toContain('id="pref-body"');
+    const anon = await injectWebServer({ method: 'GET', url: '/dashboard/settings', headers: { accept: 'text/html' } });
+    expect(anon.statusCode).toBe(302);
+    expect(anon.headers.location).toBe('/login');
+  });
+
+  it('the dashboard top bar links to the settings page', async () => {
+    const res = await injectWebServer({ method: 'GET', url: '/dashboard', headers: await signIn('U1') });
+    expect(res.body).toContain('<a href="/dashboard/settings" id="settings-link"');
+  });
+
   it('503 when no registry is wired', async () => {
     routes.setSettingsRegistry(null);
     expect(
