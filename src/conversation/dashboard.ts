@@ -5504,6 +5504,7 @@ body.nt-open .new-task-fab { display: none !important; }
    capacity keeps one chip per provider on its title row and the CRON lane keeps its
    head (count, running, needs-reply) plus every job that waits for a reply. */
 .sec-toggle {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 4px;

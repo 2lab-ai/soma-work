@@ -420,6 +420,13 @@ describe('views merged from #374 follow the same device contract', () => {
 });
 
 describe('settings page — reached from the dashboard top bar', () => {
+  it('every text field on every tab (the #379 memory tab too) is 16px on touch screens', () => {
+    const settingsTs = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
+    expect(settingsTs).toContain(
+      '  input[type="text"], input[type="search"], input[type="number"], select, textarea { font-size: 16px !important; }',
+    );
+  });
+
   const SETTINGS_TS = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
 
   it('its text inputs and selects are 16px on touch screens (iOS does not zoom into them)', () => {
@@ -612,7 +619,7 @@ describe('secondary sections — trinity code review R1 follow-ups (astra)', () 
   });
 
   it('the 44px touch size comes after the toggle base rule, so it wins', () => {
-    const base = TEMPLATE.indexOf('.sec-toggle {\n  display: inline-flex;');
+    const base = TEMPLATE.indexOf('.sec-toggle {\n  position: relative;\n  display: inline-flex;');
     const touch = TEMPLATE.indexOf('@media (pointer: coarse) { .sec-toggle { min-height: 44px; } }');
     expect(base).toBeGreaterThan(-1);
     expect(touch).toBeGreaterThan(base);
