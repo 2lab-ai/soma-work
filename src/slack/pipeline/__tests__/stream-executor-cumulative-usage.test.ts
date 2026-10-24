@@ -13,11 +13,12 @@
  */
 
 import { LOG_DETAIL } from '@soma/slack/output-flags';
+// Imported through the src wrapper (not `@soma/slack/...`): the wrapper is what
+// installs `setStreamExecutorProviders`, including `getMetricsEmitter`.
+import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runAgentStreamFromSdk } from '../../../agent-runtime/claude-code/stream-runner';
 import { buildWorkSessionKey } from '../../../session-identity';
-// Imported through the src wrapper (not `@soma/slack/...`): the wrapper is what
-// installs `setStreamExecutorProviders`, including `getMetricsEmitter`.
 import { StreamExecutor } from '../stream-executor';
 
 const emitted = vi.hoisted(() => ({ tokenUsage: [] as Array<{ userId: string; metadata: any }> }));
@@ -168,9 +169,9 @@ function resultFrame(
 async function runTurn(session: any, frame: any, initSessionId?: string): Promise<void> {
   async function* stream() {
     // What `ClaudeHandler.streamQuery` does on the turn's `system`/`init`
-    // frame: the SDK session id lands on the session BEFORE the result.
+    // frame (same function): the SDK session id lands on the session BEFORE the result.
     // A resumed turn keeps its id; a turn with nothing to resume starts `sdk-session-A`.
-    session.sessionId = initSessionId ?? session.sessionId ?? 'sdk-session-A';
+    adoptSdkSessionId(session, initSessionId ?? session.sessionId ?? 'sdk-session-A');
     yield frame;
   }
   const executor = new StreamExecutor(createDeps(stream));
@@ -363,5 +364,108 @@ describe('StreamExecutor — cumulative SDK usage is counted once', () => {
       resultFrame({ [OPUS]: { input: 100_500, output: 0, cacheRead: 0, cacheCreate: 0, cost: 101.5 } }),
     );
     expect(session.goal.costUsd).toBeCloseTo(100.5);
+  });
+
+  it('a new SDK session whose first turn ended without a result is not mistaken for a pre-baseline session', async () => {
+    const session = newSession();
+    // Turn 1 starts SDK session A, makes one call ($0.20 worth), dies before its result.
+    await runTurn(session, {
+      type: 'assistant',
+      message: {
+        id: 'msg-first-cut',
+        model: OPUS,
+        role: 'assistant',
+        content: [{ type: 'text', text: 'working' }],
+        usage: { input_tokens: 200, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      },
+    });
+    // Turn 2 resumes A: running total = turn 1's call + turn 2's spend.
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 1200, output: 0, cacheRead: 0, cacheCreate: 0, cost: 1.2 } }),
+    );
+
+    // The whole running total is real spend this process started — none of it is history.
+    expect(session.goal.costUsd).toBeCloseTo(1.2);
+    expect(session.goal.tokensInput).toBe(1200);
+    expect(session.usage.totalInputTokens).toBe(1200);
+    expect(emitted.tokenUsage.map((e) => Number(e.metadata.costUsd.toFixed(6)))).toEqual([1.2]);
+  });
+
+  it('folded spend of one SDK session is not subtracted from a different SDK session', async () => {
+    const session = newSession();
+    await runTurn(session, resultFrame({ [OPUS]: { input: 1000, output: 0, cacheRead: 0, cacheCreate: 0, cost: 1 } }));
+    // Result-less turn on A: 200 input folded into the session totals.
+    await runTurn(session, {
+      type: 'assistant',
+      message: {
+        id: 'msg-cut-on-A',
+        model: OPUS,
+        role: 'assistant',
+        content: [{ type: 'text', text: 'working' }],
+        usage: { input_tokens: 200, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      },
+    });
+    // `clearSessionId` (error recovery): no resume, but session.usage is kept.
+    session.sessionId = undefined;
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 300, output: 0, cacheRead: 0, cacheCreate: 0, cost: 0.3 } }),
+      'sdk-session-B',
+    );
+
+    // B's 300 never included A's folded 200: 1000 + 200 + 300.
+    expect(session.usage.totalInputTokens).toBe(1500);
+    expect(session.usage.foldedLiveUsage).toBeUndefined();
+  });
+
+  it('seeding a pre-baseline session retires a fold its running total already contains', async () => {
+    const session = { ...newSession(), sessionId: 'sdk-session-A' };
+    session.usage = undefined;
+    // First post-deploy turn is result-less: 200 input folded.
+    await runTurn(session, {
+      type: 'assistant',
+      message: {
+        id: 'msg-legacy-cut',
+        model: OPUS,
+        role: 'assistant',
+        content: [{ type: 'text', text: 'working' }],
+        usage: { input_tokens: 200, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      },
+    });
+    // Next result seeds the baseline (counts 0); the fold is inside that running total.
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 50_000, output: 0, cacheRead: 0, cacheCreate: 0, cost: 50 } }),
+    );
+    expect(session.usage.foldedLiveUsage).toBeUndefined();
+    // The following 100 tokens are counted, not swallowed by the stale fold.
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 50_100, output: 0, cacheRead: 0, cacheCreate: 0, cost: 50.1 } }),
+    );
+    expect(session.usage.totalInputTokens).toBe(300);
+  });
+
+  it('a seeding (zero-spend) turn does not wipe the context occupancy', async () => {
+    const session = { ...newSession(), sessionId: 'sdk-session-A' };
+    session.usage = {
+      currentInputTokens: 150_000,
+      currentOutputTokens: 0,
+      currentCacheReadTokens: 0,
+      currentCacheCreateTokens: 0,
+      contextWindow: 1_000_000,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheCreateTokens: 0,
+      totalCostUsd: 0,
+      lastUpdated: 0,
+    };
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 150_000, output: 0, cacheRead: 0, cacheCreate: 0, cost: 1 } }),
+    );
+    expect(session.usage.currentInputTokens).toBe(150_000);
   });
 });

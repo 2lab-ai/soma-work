@@ -3254,6 +3254,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         if (session.liveUsage && Object.keys(session.liveUsage).length) {
           this.ensureSessionUsage(session);
           foldLiveUsage(session, turnId, (t) => streamExecutorProviders.priceLiveUsage(session.model, t));
+          // The fold belongs to the SDK session this turn ran in — only its next
+          // result carries these calls again (see `settleFoldedLiveUsage`).
+          const folded = session.usage?.foldedLiveUsage;
+          if (folded) folded.sdkSessionId = session.sessionId;
         }
         clearLiveUsage(session, turnId);
         this.deps.claudeHandler.getSessionRegistry().endTurn(session);
@@ -5167,6 +5171,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         conversationId: session.conversationId,
         sdkSessionId: session.sessionId,
       });
+      // Calls folded before the seed are inside the seeded running total now.
+      session.usage.foldedLiveUsage = undefined;
     }
     const { turn: usage, baseline } = toTurnUsage(reported, baselineIn, session.sessionId);
     session.sdkUsageBaseline = baseline;
@@ -5217,7 +5223,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Only the shield THIS turn established suppresses THIS turn's sample. A
     // shield left by a different (e.g. superseded) turn must not swallow our
     // legitimate reading — that would freeze the display for an extra turn.
-    if (turnId !== undefined && session.postCompactOccupancyTurnId === turnId) {
+    const sampleIsEmpty =
+      current.source === 'aggregate-fallback' &&
+      current.inputTokens + current.outputTokens + current.cacheReadTokens + current.cacheCreateTokens === 0;
+    // A turn that counted no spend (baseline seed, zero result) says nothing
+    // about how full the window is — the last occupancy stands.
+    if (sampleIsEmpty) {
+      this.logger.debug('Keeping occupancy — this turn carried no usage sample', {
+        conversationId: session.conversationId,
+      });
+    } else if (turnId !== undefined && session.postCompactOccupancyTurnId === turnId) {
       this.logger.debug("Keeping post-compact occupancy — ignoring this turn's pre-boundary usage sample", {
         conversationId: session.conversationId,
         ignoredSource: current.source,
@@ -5232,7 +5247,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
     // Accumulate totals (billing-oriented: use aggregate values, not per-turn).
     // Spend an earlier result-less turn already folded in is settled, not re-added.
-    const { spend, folded } = settleFoldedLiveUsage(usage, session.usage.foldedLiveUsage);
+    const pendingFold = session.usage.foldedLiveUsage;
+    const { spend, folded } = settleFoldedLiveUsage(
+      usage,
+      pendingFold && pendingFold.sdkSessionId === session.sessionId ? pendingFold : undefined,
+    );
     session.usage.foldedLiveUsage = folded;
     session.usage.totalInputTokens += spend.inputTokens;
     session.usage.totalOutputTokens += spend.outputTokens;

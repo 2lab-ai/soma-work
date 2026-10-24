@@ -162,6 +162,7 @@ export function foldLiveUsage(
         cacheReadTokens: number;
         cacheCreateTokens: number;
         costUsd: number;
+        sdkSessionId?: string;
       };
     };
   },

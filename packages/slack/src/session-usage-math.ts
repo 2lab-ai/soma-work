@@ -295,6 +295,27 @@ export function toTurnUsage<U extends TurnUsageInput>(
   };
 }
 
+/**
+ * Record the SDK session id a turn's `system`/`init` frame reported.
+ *
+ * A NEW id (nothing resumed, or the SDK started a fresh session) means a
+ * running total that starts at zero in THIS process: seed an empty baseline
+ * for it right away. Otherwise a first turn that ends without its result
+ * would leave "session id set, no baseline" — the shape of a session saved
+ * before baselines existed — and the next result's spend would be taken for
+ * history and dropped. A re-reported (resumed) id changes nothing, so a
+ * genuinely pre-baseline session keeps its missing baseline.
+ */
+export function adoptSdkSessionId(
+  session: { sessionId?: string; sdkUsageBaseline?: SdkUsageBaseline },
+  sdkSessionId: string,
+): void {
+  if (session.sessionId !== sdkSessionId) {
+    session.sdkUsageBaseline = { sdkSessionId, models: {} };
+  }
+  session.sessionId = sdkSessionId;
+}
+
 /** Restore a persisted baseline; anything malformed is dropped rather than trusted. */
 export function sanitizeSdkUsageBaseline(raw: unknown): SdkUsageBaseline | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
@@ -322,6 +343,8 @@ export interface FoldedLiveUsage {
   cacheReadTokens: number;
   cacheCreateTokens: number;
   costUsd: number;
+  /** SDK session whose running total will carry these calls; another session's result never settles them. */
+  sdkSessionId?: string;
 }
 
 /** A turn's spend in the session-total shape. */
@@ -343,9 +366,9 @@ export interface SessionSpend {
  * take the turn's spend minus what was folded (never below zero); the goal,
  * the per-model buckets and `token_usage` were never folded and take the full
  * turn spend. Settles on the first result that spent anything; a zero spend
- * (crash result) keeps the fold for the next one. Usage without a per-model
- * breakdown is per-turn — it never includes folded calls — so it is taken
- * whole and the fold is dropped.
+ * (crash result, empty `modelUsage`) keeps the fold for the next one. Usage
+ * without a per-model breakdown that DID spend is per-turn — it never
+ * includes folded calls — so it is taken whole and the fold is dropped.
  */
 export function settleFoldedLiveUsage(
   turn: TurnUsageInput,
@@ -358,8 +381,9 @@ export function settleFoldedLiveUsage(
     cacheCreationInputTokens: turn.cacheCreationInputTokens,
     totalCostUsd: turn.totalCostUsd,
   };
-  if (!folded || !turn.modelBreakdown) return { spend, folded: undefined };
+  if (!folded) return { spend, folded: undefined };
   if (Object.values(spend).every((v) => !v)) return { spend, folded };
+  if (!turn.modelBreakdown) return { spend, folded: undefined };
   return {
     spend: {
       inputTokens: Math.max(0, spend.inputTokens - folded.inputTokens),

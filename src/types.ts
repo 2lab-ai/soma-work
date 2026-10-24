@@ -122,6 +122,7 @@ export interface SessionUsage {
     cacheReadTokens: number;
     cacheCreateTokens: number;
     costUsd: number;
+    sdkSessionId?: string;
   };
 
   lastUpdated: number; // Timestamp of last update
