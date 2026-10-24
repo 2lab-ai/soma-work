@@ -646,6 +646,7 @@ describe('지식 페이지 editor', () => {
         'pageSaveBusy',
         'setPageFieldsDisabled',
         'memHold',
+        'pageConflict409',
       ],
       ['_memPageConflict', '_memPageRaw'],
       {
@@ -701,7 +702,16 @@ describe('지식 페이지 editor', () => {
     const apiWrite = vi.fn(async () => ({ ok: true, data: { page: { id: 'x' }, revision: 'p2' } }));
     const memPage: any = { page: { id: 'concepts/ssot' }, revision: 'p1' };
     const fns = load<any>(
-      ['pageDraft', 'savePage', 'memStatus', 'pageSaveBusy', 'setPageFieldsDisabled', 'memHold', 'pageDraftText'],
+      [
+        'pageDraft',
+        'savePage',
+        'memStatus',
+        'pageSaveBusy',
+        'setPageFieldsDisabled',
+        'memHold',
+        'pageDraftText',
+        'pageConflict409',
+      ],
       [],
       {
         document: doc,
@@ -722,7 +732,16 @@ describe('지식 페이지 editor', () => {
       revision: 'p1',
     });
     const fresh = load<any>(
-      ['pageDraft', 'savePage', 'memStatus', 'pageSaveBusy', 'setPageFieldsDisabled', 'memHold', 'pageDraftText'],
+      [
+        'pageDraft',
+        'savePage',
+        'memStatus',
+        'pageSaveBusy',
+        'setPageFieldsDisabled',
+        'memHold',
+        'pageDraftText',
+        'pageConflict409',
+      ],
       [],
       {
         document: doc,
@@ -769,6 +788,7 @@ describe('in-flight writes hold what they were sent from (review R7)', () => {
         'setPageFieldsDisabled',
         'memHold',
         'pageDraftText',
+        'pageConflict409',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -1986,6 +2006,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'setPageFieldsDisabled',
         'memHold',
         'pageDraftText',
+        'pageConflict409',
       ],
       ['_memPageConflict', '_memPageRaw'],
       {
@@ -2062,6 +2083,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'memRecover',
         'pageUnsavedText',
         'paintRecover',
+        'pageConflict409',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -2124,6 +2146,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'paintRecover',
         'keepPageDraft',
         'pageUnsavedText',
+        'pageConflict409',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -2332,6 +2355,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'setPageFieldsDisabled',
         'memHold',
         'pageDraftText',
+        'pageConflict409',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -2349,6 +2373,65 @@ describe('관찰 기록 (에피소딕)', () => {
     editor.saving = Date.now() - 60_000;
     await fns.savePage();
     expect(apiWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it('a page 409 holds the tab until the newer version is loaded (review R12, grok)', async () => {
+    const detail: any = { innerHTML: '' };
+    const status: any = { textContent: '', innerHTML: '', setAttribute() {} };
+    const fields = [{ disabled: false }];
+    const values: Record<string, string> = { 'pg-title': 'A', 'pg-aliases': '', 'pg-current': 'FORM DRAFT' };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-page-detail' ? detail : id in values ? { value: values[id] } : status,
+      querySelectorAll: (sel: string) => (sel.includes('pg-history') ? [] : fields),
+    };
+    const pageA = { id: 'agent/x', title: 'A', aliases: [], current: 'a', history: [], updated: '2026-10-23' };
+    let latest: (v: unknown) => void = () => {};
+    const fns = load<any>(
+      [
+        'esc',
+        'escAttr',
+        'pageDraft',
+        'pageDraftText',
+        'savePage',
+        'memStatus',
+        'renderPageConflict',
+        'renderPageEditor',
+        'pageSaveBusy',
+        'setPageFieldsDisabled',
+        'memHold',
+        'pageRawMode',
+        'keepPageDraft',
+        'pageUnsavedText',
+        'memRecover',
+        'paintRecover',
+        'pageConflict409',
+      ],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      {
+        document: doc,
+        _memPage: { page: pageA, revision: 'p1', raw: 'STALE RAW BYTES', representable: true },
+        apiWrite: vi.fn(async () => ({ ok: false, status: 409, error: 'changed' })),
+        fetch: vi.fn(() => new Promise((res) => (latest = res))),
+        refreshPageIndex: async () => {},
+        paintPageList: () => {},
+      },
+    );
+    const saving = fns.savePage();
+    await Promise.resolve();
+    await Promise.resolve();
+    // the newer version is being loaded: still held
+    expect(fns.memHold.at).not.toBe(0);
+    expect(fields[0].disabled).toBe(true);
+    fns.pageRawMode(true);
+    expect(detail.innerHTML).not.toContain('STALE RAW BYTES');
+    latest({
+      ok: true,
+      json: async () => ({ page: { ...pageA, current: 'agent' }, revision: 'p2', raw: '# newer', representable: true }),
+    });
+    await saving;
+    expect(fns.memHold.at).toBe(0);
+    expect(fields[0].disabled).toBe(false);
   });
 
   it('a refused page answer for an editor no longer open keeps its draft in the recovery box (review R11, grok)', async () => {
@@ -2395,6 +2478,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'memRecover',
         'pageUnsavedText',
         'paintRecover',
+        'pageConflict409',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -2460,6 +2544,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'memRecover',
         'pageUnsavedText',
         'paintRecover',
+        'pageConflict409',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
