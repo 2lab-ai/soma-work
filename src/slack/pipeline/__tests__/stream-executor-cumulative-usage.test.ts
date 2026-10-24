@@ -468,4 +468,27 @@ describe('StreamExecutor — cumulative SDK usage is counted once', () => {
     );
     expect(session.usage.currentInputTokens).toBe(150_000);
   });
+
+  it("a stale fold from an abandoned SDK session never piles onto the next session's fold", async () => {
+    const cut = (id: string, input: number) => ({
+      type: 'assistant',
+      message: {
+        id,
+        model: OPUS,
+        role: 'assistant',
+        content: [{ type: 'text', text: 'working' }],
+        usage: { input_tokens: input, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      },
+    });
+    const session = newSession();
+    await runTurn(session, resultFrame({ [OPUS]: { input: 1000, output: 0, cacheRead: 0, cacheCreate: 0, cost: 1 } }));
+    await runTurn(session, cut('msg-cut-A', 200)); // fold 200 on A
+    session.sessionId = undefined; // clearSessionId — A is never resumed again
+    await runTurn(session, cut('msg-cut-B', 50), 'sdk-session-B'); // fold 50 on B
+    // B resumes: its running total = B's cut call (50) + 30 new.
+    await runTurn(session, resultFrame({ [OPUS]: { input: 80, output: 0, cacheRead: 0, cacheCreate: 0, cost: 0.08 } }));
+
+    // 1000 + 200 (A fold) + 50 (B fold) + 30 — only B's own fold is settled.
+    expect(session.usage.totalInputTokens).toBe(1280);
+  });
 });

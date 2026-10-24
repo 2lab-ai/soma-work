@@ -3253,6 +3253,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // session model) instead of letting the live numbers fall back.
         if (session.liveUsage && Object.keys(session.liveUsage).length) {
           this.ensureSessionUsage(session);
+          // A pending fold from an SDK session this one replaced will never be
+          // settled (that session is never resumed again) — drop it rather than
+          // let it pile onto, and be retagged as, this session's fold.
+          const stale = session.usage?.foldedLiveUsage;
+          if (session.usage && stale && stale.sdkSessionId !== session.sessionId)
+            session.usage.foldedLiveUsage = undefined;
           foldLiveUsage(session, turnId, (t) => streamExecutorProviders.priceLiveUsage(session.model, t));
           // The fold belongs to the SDK session this turn ran in — only its next
           // result carries these calls again (see `settleFoldedLiveUsage`).
