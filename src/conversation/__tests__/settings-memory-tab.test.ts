@@ -101,7 +101,7 @@ describe('개인 메모리 undo (review R5)', () => {
     const status: any = { textContent: '', setAttribute() {} };
     const long = '긴 노트 '.repeat(140); // 700 chars: more than a new note may have, saved by Slack
     const apiWrite = vi.fn().mockResolvedValueOnce({ ok: false, status: 400, error: '저장 실패' });
-    const fns = load<any>(['l1Undo', 'l1Write', 'memStatus', 'restoreL1Draft'], [], {
+    const fns = load<any>(['l1Undo', 'l1Write', 'memStatus', 'restoreL1Draft', 'l1Busy'], [], {
       document: { getElementById: (id: string) => (id === 'l1-new-memory' ? addBox : status) },
       _mem: { l1: { memory: { entries: [], revision: 'r2' } } },
       _memUndo: { target: 'memory', text: long },
@@ -116,6 +116,151 @@ describe('개인 메모리 undo (review R5)', () => {
       restore: true,
     });
     expect(addBox.value).toBe(long);
+  });
+});
+
+describe('개인 메모리 — a repaint keeps what is typed (review R9)', () => {
+  const L1_FNS = [
+    'esc',
+    'escAttr',
+    'fmtNum',
+    'renderL1Card',
+    'paintL1',
+    'l1Write',
+    'l1EditStart',
+    'l1Save',
+    'l1Add',
+    'l1Delete',
+    'l1Cancel',
+    'l1Busy',
+    'memStatus',
+    'restoreL1Draft',
+  ];
+  function l1Page() {
+    const els: Record<string, any> = { status: { textContent: '', setAttribute() {} } };
+    const body: any = {};
+    let html = '';
+    Object.defineProperty(body, 'innerHTML', {
+      get: () => html,
+      set: (v: string) => {
+        html = v;
+        for (const k of Object.keys(els)) if (k.startsWith('l1-')) delete els[k];
+        for (const m of v.matchAll(/<textarea id="([^"]+)"[^>]*>([\s\S]*?)<\/textarea>/g)) {
+          els[m[1]] = {
+            value: m[2]
+              .replace(/&lt;/g, '<')
+              .replace(/&gt;/g, '>')
+              .replace(/&quot;/g, '"')
+              .replace(/&#39;/g, "'")
+              .replace(/&amp;/g, '&'),
+            focus() {},
+          };
+        }
+      },
+    });
+    els['mem-l1-body'] = body;
+    return { els, doc: { getElementById: (id: string) => els[id] ?? (id.startsWith('l1-') ? null : els.status) } };
+  }
+  const block = (entries: string[], revision: string) => ({
+    entries,
+    charLimit: 2200,
+    totalChars: 10,
+    percentUsed: 1,
+    perEntryCap: 660,
+    revision,
+  });
+
+  it('deleting one entry keeps the editor of another, re-attached to the same text, and keeps the add boxes', async () => {
+    const p = l1Page();
+    const mem: any = { l1: { memory: block(['e0', 'e1', 'e2'], 'r1'), user: block(['u0'], 'u1') } };
+    const fns = load<any>(L1_FNS, ['L1_LABELS', 'L1_FILES'], {
+      document: p.doc,
+      _mem: mem,
+      _memUndo: null,
+      apiWrite: vi.fn(async () => ({ ok: true, data: { ok: true, l1: block(['e1', 'e2'], 'r2') } })),
+      loadMemory: async () => {},
+    });
+    fns.paintL1();
+    fns.l1EditStart('memory', 1);
+    p.els['l1-edit-memory'].value = 'e1, edited';
+    p.els['l1-new-user'].value = 'a profile note in progress';
+    await fns.l1Delete('memory', 0);
+    expect(p.els['l1-edit-memory']?.value).toBe('e1, edited');
+    expect(p.els['mem-l1-body'].innerHTML).toContain("l1Save('memory',0)"); // now entry 0
+    expect(p.els['l1-new-user'].value).toBe('a profile note in progress');
+  });
+
+  it('a successful save of the editor closes it; cancel closes it; an add clears only its own box', async () => {
+    const p = l1Page();
+    const mem: any = { l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') } };
+    const apiWrite = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, data: { ok: true, l1: block(['e0, edited'], 'r2') } })
+      .mockResolvedValueOnce({ ok: true, data: { ok: true, l1: block(['e0, edited', 'new'], 'r3') } });
+    const fns = load<any>(L1_FNS, ['L1_LABELS', 'L1_FILES'], {
+      document: p.doc,
+      _mem: mem,
+      _memUndo: null,
+      apiWrite,
+      loadMemory: async () => {},
+    });
+    fns.paintL1();
+    fns.l1EditStart('memory', 0);
+    p.els['l1-edit-memory'].value = 'e0, edited';
+    await fns.l1Save('memory', 0);
+    expect(p.els['l1-edit-memory']).toBeUndefined();
+    p.els['l1-new-memory'].value = 'new';
+    p.els['l1-new-user'].value = 'keep me';
+    await fns.l1Add('memory');
+    expect(p.els['l1-new-memory'].value).toBe('');
+    expect(p.els['l1-new-user'].value).toBe('keep me');
+    fns.l1EditStart('memory', 1);
+    fns.l1Cancel();
+    expect(p.els['l1-edit-memory']).toBeUndefined();
+  });
+
+  it('the L1 editor and the add box are locked while their write is out (review R9, astra)', async () => {
+    const p = l1Page();
+    const mem: any = { l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') } };
+    let answer: (v: unknown) => void = () => {};
+    const apiWrite = vi.fn(() => new Promise((res) => (answer = res)));
+    const fns = load<any>(L1_FNS, ['L1_LABELS', 'L1_FILES'], {
+      document: p.doc,
+      _mem: mem,
+      _memUndo: null,
+      apiWrite,
+      loadMemory: async () => {},
+    });
+    fns.paintL1();
+    fns.l1EditStart('memory', 0);
+    p.els['l1-edit-memory'].value = 'e0, edited';
+    const saving = fns.l1Save('memory', 0);
+    expect(p.els['l1-edit-memory'].disabled).toBe(true);
+    expect(p.els['l1-new-memory'].disabled).toBe(true);
+    answer({ ok: false, status: 400, error: 'no' });
+    await saving;
+    expect(p.els['l1-edit-memory'].disabled).toBe(false);
+    expect(p.els['l1-new-memory'].disabled).toBe(false);
+  });
+
+  it('a second click while an L1 write is out sends nothing (no double delete)', async () => {
+    const p = l1Page();
+    const mem: any = { l1: { memory: block(['e0', 'keep me'], 'r1'), user: block([], 'u1') } };
+    let answer: (v: unknown) => void = () => {};
+    const apiWrite = vi.fn(() => new Promise((res) => (answer = res)));
+    const fns = load<any>(L1_FNS, ['L1_LABELS', 'L1_FILES'], {
+      document: p.doc,
+      _mem: mem,
+      _memUndo: null,
+      apiWrite,
+      loadMemory: async () => {},
+    });
+    fns.paintL1();
+    const first = fns.l1Delete('memory', 0);
+    await fns.l1Delete('memory', 0);
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+    answer({ ok: true, data: { ok: true, l1: block(['keep me'], 'r2') } });
+    await first;
   });
 });
 
@@ -139,7 +284,7 @@ describe('개인 메모리 writes', () => {
       ...extra,
     };
     const fns = load<any>(
-      ['memStatus', 'restoreL1Draft', 'l1Write', 'l1Add', 'l1Save', 'l1Delete', 'l1Undo', 'l1Clear'],
+      ['memStatus', 'restoreL1Draft', 'l1Write', 'l1Add', 'l1Save', 'l1Delete', 'l1Undo', 'l1Clear', 'l1Busy'],
       ['L1_LABELS'],
       deps,
     );
@@ -471,6 +616,8 @@ describe('in-flight writes hold what they were sent from (review R7)', () => {
         'fillDateSelect',
         'openEpEditor',
         'reopenEpEditor',
+        'repaintDay',
+        'keepEpDraft',
       ],
       ['_epEditor'],
       {
@@ -567,6 +714,8 @@ describe('episodic answers apply only where they belong (review R8)', () => {
     'refreshDatesIfEmptied',
     'openEpEditor',
     'reopenEpEditor',
+    'repaintDay',
+    'keepEpDraft',
   ];
   function page(day: unknown, extra: Record<string, unknown> = {}) {
     const els: Record<string, any> = {
@@ -757,6 +906,100 @@ describe('episodic answers apply only where they belong (review R8)', () => {
     await adding;
   });
 
+  it('a delete refused with 409 keeps an open editor of the day, with its draft (review R9)', async () => {
+    const day = {
+      date: '2026-10-23',
+      revision: 't1',
+      entries: [
+        { time: '08:00', content: 'r0' },
+        { time: '09:00', content: 'r1' },
+      ],
+    };
+    const latest = {
+      date: '2026-10-23',
+      revision: 't2',
+      entries: [...day.entries, { time: '12:00', content: 'agent wrote this turn' }],
+    };
+    const p = page(day);
+    const fns = load<any>(EP_FNS, ['_epEditor'], {
+      document: p.doc,
+      _memDay: day,
+      _mem: { episodicDates: ['2026-10-23'] },
+      apiWrite: vi.fn(async () => ({ ok: false, status: 409, error: 'changed' })),
+      fetch: vi.fn(async () => ({ ok: true, json: async () => latest })),
+      refreshPageIndex: async () => {},
+      paintDates: () => {},
+      confirmDialog: async () => true,
+    });
+    fns.renderDay(1);
+    p.edit().value = 'r1, edited';
+    await fns.epDelete(0);
+    expect(p.els['mem-ep-body'].innerHTML).toContain('r1, edited');
+  });
+
+  it('an editor opened on one of two identical records is never re-attached; its draft goes to the note box (review R9, astra)', async () => {
+    const twin = { time: '09:00', content: 'same' };
+    const day = { date: '2026-10-23', revision: 't1', entries: [twin, { ...twin }] };
+    // another client deleted the second one; then a note was added
+    const after = { date: '2026-10-23', revision: 't3', entries: [{ ...twin }, { time: '11:00', content: 'N' }] };
+    const p = page(day);
+    const apiWrite = vi.fn(async () => ({ ok: true, data: { ok: true, day: after } }));
+    const fns = load<any>(EP_FNS, ['_epEditor'], {
+      document: p.doc,
+      _memDay: day,
+      _mem: { episodicDates: ['2026-10-23'] },
+      apiWrite,
+      refreshPageIndex: async () => {},
+      paintDates: () => {},
+    });
+    fns.renderDay(1); // the second twin
+    p.edit().value = 'SECOND RECORD DRAFT';
+    p.els['mem-ep-new'].value = 'N';
+    await fns.epAdd();
+    expect(p.els['mem-ep-body'].innerHTML).not.toContain('SECOND RECORD DRAFT');
+    expect(p.els['mem-ep-new'].value).toBe('SECOND RECORD DRAFT');
+    await fns.epSave(0);
+    expect(apiWrite).toHaveBeenCalledTimes(1); // nothing was written onto the first twin
+  });
+
+  it('a note for today does not reload the day it already has', async () => {
+    const today = { date: '2026-10-23', revision: 't1', entries: [{ time: '08:00', content: 'A' }] };
+    const after = { ...today, revision: 't2', entries: [...today.entries, { time: '09:00', content: 'N' }] };
+    const p = page(today);
+    const fetchMock = vi.fn();
+    const paintDates = vi.fn();
+    const fns = load<any>(EP_FNS, ['_epEditor'], {
+      document: p.doc,
+      _memDay: today,
+      _mem: { episodicDates: ['2026-10-23'] },
+      apiWrite: vi.fn(async () => ({ ok: true, data: { ok: true, day: after } })),
+      fetch: fetchMock,
+      refreshPageIndex: async () => {},
+      paintDates,
+    });
+    p.els['mem-ep-new'].value = 'N';
+    await fns.epAdd();
+    expect(paintDates).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(p.els['mem-ep-body'].innerHTML).toContain('N');
+  });
+
+  it('switching days with an editor open moves its draft to the note box', async () => {
+    const d1 = { date: '2026-10-22', revision: 'a', entries: [{ time: '01:00', content: 'x' }] };
+    const d2 = { date: '2026-10-23', revision: 'b', entries: [{ time: '02:00', content: 'y' }] };
+    const p = page(d1);
+    const fns = load<any>(EP_FNS, ['_epEditor'], {
+      document: p.doc,
+      _memDay: d1,
+      fetch: vi.fn(async () => ({ ok: true, json: async () => d2 })),
+      apiWrite: vi.fn(),
+    });
+    fns.renderDay(0);
+    p.edit().value = 'x, edited';
+    await fns.loadDay('2026-10-23');
+    expect(p.els['mem-ep-new'].value).toBe('x, edited');
+  });
+
   it('the episodic editor and the note box are locked while their write is out', async () => {
     const today = { date: '2026-10-23', revision: 't1', entries: [{ time: '08:00', content: 'A' }] };
     const p = page(today);
@@ -836,6 +1079,8 @@ describe('관찰 기록 (에피소딕) — the editor is bound to its day (revie
         'fillDateSelect',
         'openEpEditor',
         'reopenEpEditor',
+        'repaintDay',
+        'keepEpDraft',
       ],
       ['_epEditor'],
       {
@@ -887,6 +1132,8 @@ describe('관찰 기록 (에피소딕)', () => {
         'fillDateSelect',
         'openEpEditor',
         'reopenEpEditor',
+        'repaintDay',
+        'keepEpDraft',
       ],
       [],
       {
@@ -916,14 +1163,27 @@ describe('관찰 기록 (에피소딕)', () => {
     const renderDay = vi.fn();
     const noteBox: any = { value: '' };
     const status: any = { textContent: '', setAttribute() {} };
-    const w = load<any>(['epWrite', 'memStatus', 'epBusy', 'fillDateSelect', 'openEpEditor', 'reopenEpEditor'], [], {
-      document: { getElementById: (id: string) => (id === 'mem-ep-new' ? noteBox : status) },
-      // the entry being edited ("A") was deleted elsewhere: index 0 is now "B"
-      _memDay: { date: '2026-10-20', revision: 'd2', entries: [{ time: '02:00', content: 'B' }] },
-      apiWrite: async () => ({ ok: false, status: 409, error: 'conflict' }),
-      renderDay,
-      loadDay: async () => {},
-    });
+    const w = load<any>(
+      [
+        'epWrite',
+        'memStatus',
+        'epBusy',
+        'fillDateSelect',
+        'openEpEditor',
+        'reopenEpEditor',
+        'repaintDay',
+        'keepEpDraft',
+      ],
+      [],
+      {
+        document: { getElementById: (id: string) => (id === 'mem-ep-new' ? noteBox : status) },
+        // the entry being edited ("A") was deleted elsewhere: index 0 is now "B"
+        _memDay: { date: '2026-10-20', revision: 'd2', entries: [{ time: '02:00', content: 'B' }] },
+        apiWrite: async () => ({ ok: false, status: 409, error: 'conflict' }),
+        renderDay,
+        loadDay: async () => {},
+      },
+    );
     await w.epWrite(
       'PUT',
       '/api/memory/episodic/2026-10-20/0',
@@ -948,13 +1208,26 @@ describe('관찰 기록 (에피소딕)', () => {
         { time: '02:00', content: 'same' },
       ],
     };
-    const w = load<any>(['epWrite', 'memStatus', 'epBusy', 'fillDateSelect', 'openEpEditor', 'reopenEpEditor'], [], {
-      document: { getElementById: (id: string) => (id === 'mem-ep-new' ? noteBox : status) },
-      _memDay: day,
-      apiWrite: async () => ({ ok: false, status: 409, error: 'conflict' }),
-      renderDay,
-      loadDay: async () => {},
-    });
+    const w = load<any>(
+      [
+        'epWrite',
+        'memStatus',
+        'epBusy',
+        'fillDateSelect',
+        'openEpEditor',
+        'reopenEpEditor',
+        'repaintDay',
+        'keepEpDraft',
+      ],
+      [],
+      {
+        document: { getElementById: (id: string) => (id === 'mem-ep-new' ? noteBox : status) },
+        _memDay: day,
+        apiWrite: async () => ({ ok: false, status: 409, error: 'conflict' }),
+        renderDay,
+        loadDay: async () => {},
+      },
+    );
     await w.epWrite(
       'PUT',
       '/api/memory/episodic/2026-10-20/1',
@@ -998,6 +1271,8 @@ describe('관찰 기록 (에피소딕)', () => {
         'fillDateSelect',
         'openEpEditor',
         'reopenEpEditor',
+        'repaintDay',
+        'keepEpDraft',
       ],
       [],
       {
@@ -1027,7 +1302,7 @@ describe('관찰 기록 (에피소딕)', () => {
   it('clear-all and page delete send the revision the confirmation was about (review R3 P1)', async () => {
     const apiWrite = vi.fn(async () => ({ ok: true, data: { l1: block({ entries: [], revision: 'r9' }) } }));
     const mem: any = { l1: { memory: block(), user: block({ revision: 'u1' }) } };
-    const fns = load<any>(['memStatus', 'restoreL1Draft', 'l1Write', 'l1Clear'], ['L1_LABELS'], {
+    const fns = load<any>(['memStatus', 'restoreL1Draft', 'l1Write', 'l1Clear', 'l1Busy'], ['L1_LABELS'], {
       _mem: mem,
       document: { getElementById: () => ({ textContent: '', setAttribute() {} }) },
       apiWrite,
@@ -1074,16 +1349,29 @@ describe('관찰 기록 (에피소딕)', () => {
     };
     const renderDay = vi.fn();
     let apiDone: (v: unknown) => void = () => {};
-    const w = load<any>(['epWrite', 'memStatus', 'epBusy', 'fillDateSelect', 'openEpEditor', 'reopenEpEditor'], [], {
-      document: { getElementById: () => status },
-      _memDay: view,
-      apiWrite: () => new Promise((res) => (apiDone = res)),
-      renderDay,
-      loadDay: async (date: string) => {
-        loaded.push(date);
-        Object.assign(view, days[date]);
+    const w = load<any>(
+      [
+        'epWrite',
+        'memStatus',
+        'epBusy',
+        'fillDateSelect',
+        'openEpEditor',
+        'reopenEpEditor',
+        'repaintDay',
+        'keepEpDraft',
+      ],
+      [],
+      {
+        document: { getElementById: () => status },
+        _memDay: view,
+        apiWrite: () => new Promise((res) => (apiDone = res)),
+        renderDay,
+        loadDay: async (date: string) => {
+          loaded.push(date);
+          Object.assign(view, days[date]);
+        },
       },
-    });
+    );
     const pending = w.epWrite(
       'PUT',
       '/api/memory/episodic/2026-10-20/0',
@@ -1108,20 +1396,33 @@ describe('관찰 기록 (에피소딕)', () => {
     const renderDay = vi.fn();
     const status: any = { textContent: '', setAttribute() {} };
     const long = '긴 기록 '.repeat(100);
-    const w = load<any>(['epWrite', 'memStatus', 'epBusy', 'fillDateSelect', 'openEpEditor', 'reopenEpEditor'], [], {
-      document: { getElementById: () => status },
-      _memDay: {
-        date: '2026-10-20',
-        revision: 'd1',
-        entries: [
-          { time: '01:00', content: 'first' },
-          { time: '02:00', content: 'second' },
-        ],
+    const w = load<any>(
+      [
+        'epWrite',
+        'memStatus',
+        'epBusy',
+        'fillDateSelect',
+        'openEpEditor',
+        'reopenEpEditor',
+        'repaintDay',
+        'keepEpDraft',
+      ],
+      [],
+      {
+        document: { getElementById: () => status },
+        _memDay: {
+          date: '2026-10-20',
+          revision: 'd1',
+          entries: [
+            { time: '01:00', content: 'first' },
+            { time: '02:00', content: 'second' },
+          ],
+        },
+        apiWrite: async () => ({ ok: false, status: 409, error: 'conflict' }),
+        renderDay,
+        loadDay,
       },
-      apiWrite: async () => ({ ok: false, status: 409, error: 'conflict' }),
-      renderDay,
-      loadDay,
-    });
+    );
     expect(
       await w.epWrite('PUT', '/api/memory/episodic/2026-10-20/1', { content: long, revision: 'd1' }, long, 1, 'second'),
     ).toBe(false);
@@ -1329,6 +1630,80 @@ describe('관찰 기록 (에피소딕)', () => {
       expect.objectContaining({ id: 'concepts/b', revision: 'b1', current: 'b user edit' }),
     );
     expect(detail.innerHTML).not.toContain('concepts/a');
+  });
+
+  it('a page delete closes only the editor it was confirmed for; the latest page opened wins (review R9, astra)', async () => {
+    let detailHtml = '';
+    const status: any = { textContent: '', innerHTML: '', setAttribute() {} };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-page-detail'
+          ? {
+              set innerHTML(v: string) {
+                detailHtml = v;
+              },
+              get innerHTML() {
+                return detailHtml;
+              },
+            }
+          : status,
+      querySelectorAll: () => [],
+    };
+    const pageA = { id: 'concepts/a', title: 'A', aliases: [], current: 'a', history: [], updated: '2026-10-23' };
+    const pageB = { id: 'concepts/b', title: 'B', aliases: [], current: 'b', history: [], updated: '2026-10-23' };
+    const pageC = { id: 'concepts/c', title: 'C', aliases: [], current: 'c', history: [], updated: '2026-10-23' };
+    const got: Record<string, (v: unknown) => void> = {};
+    const fetchMock = vi.fn(
+      (url: string) => new Promise((res) => (got[decodeURIComponent(url.split('id=')[1])] = res)),
+    );
+    let confirm: (v: boolean) => void = () => {};
+    const fns = load<any>(
+      [
+        'esc',
+        'escAttr',
+        'deletePage',
+        'openPage',
+        'renderPageEditor',
+        'renderPageConflict',
+        'memStatus',
+        'pageSaveBusy',
+        'setPageFieldsDisabled',
+      ],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      {
+        document: doc,
+        _memPage: { page: pageA, revision: 'a1', raw: '# A\n', representable: true },
+        apiWrite: vi.fn(async () => ({ ok: true, data: { ok: true } })),
+        fetch: fetchMock,
+        confirmDialog: () => new Promise<boolean>((res) => (confirm = res)),
+        refreshPageIndex: async () => {},
+        paintPageList: () => {},
+      },
+    );
+    const opening = fns.openPage('concepts/b'); // B's GET goes out ...
+    const deleting = fns.deletePage(); // ... the dialog for A opens ...
+    got['concepts/b']({
+      ok: true,
+      json: async () => ({ page: pageB, revision: 'b1', raw: '# B\n', representable: true }),
+    });
+    await opening; // ... and B opens behind it
+    confirm(true);
+    await deleting;
+    expect(detailHtml).toContain('concepts/b'); // A's delete leaves B open
+    // two opens in a row: the later one wins even if the earlier answers last
+    const c = fns.openPage('concepts/c');
+    const a = fns.openPage('concepts/a');
+    got['concepts/a']({
+      ok: true,
+      json: async () => ({ page: pageA, revision: 'a2', raw: '# A\n', representable: true }),
+    });
+    await a;
+    got['concepts/c']({
+      ok: true,
+      json: async () => ({ page: pageC, revision: 'c1', raw: '# C\n', representable: true }),
+    });
+    await c;
+    expect(detailHtml).toContain('concepts/a');
   });
 
   it('while a page save is in flight, a second save and a switch to another page wait (review R6)', async () => {
