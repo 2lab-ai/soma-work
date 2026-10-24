@@ -174,6 +174,27 @@ describe('answerPermissionPrompt', () => {
     expect(results.filter((r) => !r.ok && r.reason === 'already_answered')).toHaveLength(1);
   });
 
+  // A failure before the answer is stored must not strand the prompt: the
+  // claim is given back and nothing was changed, so the requester can answer
+  // again before the prompt expires.
+  it('gives the claim back and changes nothing when storing the answer fails', async () => {
+    const id = await seed();
+    const reg = sessions();
+    const store = vi.spyOn(sharedStore, 'storePermissionResponse').mockRejectedValueOnce(new Error('disk full'));
+    await expect(
+      answerPermissionPrompt({ approvalId: id, actor: 'U_REQ', decision: 'approve_disable_rule', sessions: reg }),
+    ).rejects.toThrow('disk full');
+    expect(reg.disableDangerousRules).not.toHaveBeenCalled();
+    store.mockRestore();
+
+    const retry = await answerPermissionPrompt({ approvalId: id, actor: 'U_REQ', decision: 'approve' });
+    expect(retry.ok).toBe(true);
+    expect(await sharedStore.waitForPermissionResponse(id, 1500)).toEqual({
+      behavior: 'allow',
+      message: 'Approved by user',
+    });
+  });
+
   it('an unknown or expired approval is not_found', async () => {
     const result = await answerPermissionPrompt({
       approvalId: 'approval_missing_t22',

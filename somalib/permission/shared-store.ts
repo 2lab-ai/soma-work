@@ -105,6 +105,11 @@ class SharedStore {
    * Get a pending approval request
    */
   async getPendingApproval(approvalId: string): Promise<PendingApproval | null> {
+    return this.readPendingApproval(approvalId, false);
+  }
+
+  /** `quiet`: an unreadable record is skipped without an error log (the dashboard re-reads every second). */
+  private async readPendingApproval(approvalId: string, quiet: boolean): Promise<PendingApproval | null> {
     const filePath = path.join(this.pendingDir, `${approvalId}.json`);
     try {
       if (!fs.existsSync(filePath)) {
@@ -122,7 +127,8 @@ class SharedStore {
 
       return approval;
     } catch (error) {
-      logger.error('Failed to get pending approval:', error);
+      if (quiet) logger.debug('Skipped an unreadable pending approval', { approvalId });
+      else logger.error('Failed to get pending approval:', error);
       return null;
     }
   }
@@ -167,6 +173,11 @@ class SharedStore {
     }
     void this.sweepClaims();
     return true;
+  }
+
+  /** Give a claim back — only when the answer that took it failed before its response was stored. */
+  async releasePermissionClaim(approvalId: string): Promise<void> {
+    await fs.promises.unlink(path.join(this.claimDir, `${approvalId}.json`)).catch(() => {});
   }
 
   private async sweepClaims(): Promise<void> {
@@ -357,7 +368,7 @@ class SharedStore {
   async listPendingApprovals(): Promise<Array<{ approvalId: string; approval: PendingApproval }>> {
     const out: Array<{ approvalId: string; approval: PendingApproval }> = [];
     for (const approvalId of await this.listPendingApprovalIds()) {
-      const approval = await this.getPendingApproval(approvalId);
+      const approval = await this.readPendingApproval(approvalId, true);
       if (approval) out.push({ approvalId, approval });
     }
     return out;

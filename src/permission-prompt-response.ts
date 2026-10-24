@@ -91,34 +91,47 @@ export async function answerPermissionPrompt(args: AnswerPermissionPromptArgs): 
   // claim stays, so nobody else answers it either.
   if (!(await sharedStore.getPendingApproval(approvalId))) return { ok: false, reason: 'not_found' };
 
-  let disabledRuleIds: string[] = [];
-  let response: PermissionResponse;
+  const { response, disabledRuleIds } = responseFor(decision, pending, sessions);
+  try {
+    await sharedStore.storePermissionResponse(approvalId, response);
+  } catch (error) {
+    // Nothing reached the MCP server and nothing was changed: give the claim
+    // back so the prompt can still be answered before it expires.
+    await sharedStore.releasePermissionClaim(approvalId);
+    throw error;
+  }
+  // Only the winner, and only once its answer is stored: silence the rules.
+  if (sessions && disabledRuleIds.length > 0 && pending.channel) {
+    sessions.disableDangerousRules(sessions.getSessionKey(pending.channel, pending.thread_ts), disabledRuleIds);
+  }
+  return { ok: true, pending, disabledRuleIds };
+}
+
+/** The response the decision stores, and the rules it silences (pure). */
+function responseFor(
+  decision: PermissionPromptDecision,
+  pending: PendingApproval,
+  sessions: DangerousRuleSessions | undefined,
+): { response: PermissionResponse; disabledRuleIds: string[] } {
   switch (decision) {
     case 'approve':
-      response = { behavior: 'allow', message: 'Approved by user' };
-      break;
+      return { response: { behavior: 'allow', message: 'Approved by user' }, disabledRuleIds: [] };
     case 'deny':
-      response = { behavior: 'deny', message: 'Denied by user' };
-      break;
+      return { response: { behavior: 'deny', message: 'Denied by user' }, disabledRuleIds: [] };
     case 'explain':
-      response = { behavior: 'deny', message: PERMISSION_EXPLAIN_MESSAGE };
-      break;
+      return { response: { behavior: 'deny', message: PERMISSION_EXPLAIN_MESSAGE }, disabledRuleIds: [] };
     case 'approve_disable_rule': {
       const ruleIds = pending.rule_ids ?? [];
-      if (sessions && ruleIds.length > 0 && pending.channel) {
-        sessions.disableDangerousRules(sessions.getSessionKey(pending.channel, pending.thread_ts), ruleIds);
-        disabledRuleIds = ruleIds;
-        response = {
+      if (!sessions || ruleIds.length === 0 || !pending.channel) {
+        return { response: { behavior: 'allow', message: 'Approved by user' }, disabledRuleIds: [] };
+      }
+      return {
+        response: {
           behavior: 'allow',
           message: `Approved by user; rule(s) disabled for this session: ${ruleIds.join(', ')}`,
-        };
-      } else {
-        response = { behavior: 'allow', message: 'Approved by user' };
-      }
-      break;
+        },
+        disabledRuleIds: ruleIds,
+      };
     }
   }
-
-  await sharedStore.storePermissionResponse(approvalId, response);
-  return { ok: true, pending, disabledRuleIds };
 }

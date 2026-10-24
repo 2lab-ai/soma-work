@@ -199,6 +199,24 @@ describe('Dashboard — permission prompts (SSOT 2026-10-24)', () => {
       expect(card((await board()).board)?.card.pendingPermissions).toBeUndefined();
     });
 
+    it('a prompt rewritten with other matched rules is reported as a change', async () => {
+      const thread = `${channel}:t1`;
+      const id = await seed({ rule_ids: undefined });
+      await dashboard.refreshPendingPermissions();
+      await sharedStore.storePendingApproval(id, {
+        kind: 'tool_permission',
+        tool_name: 'Bash',
+        input: { command: 'ls' },
+        channel,
+        thread_ts: 't1',
+        user: 'U1',
+        created_at: Date.now(),
+        expires_at: Date.now() + 60_000,
+        rule_ids: ['pipe-to-interpreter'],
+      });
+      expect(await dashboard.refreshPendingPermissions()).toContain(thread);
+    });
+
     it('a prompt without matched rules offers no disable-rule action', async () => {
       await seed({ rule_ids: undefined, tool_name: 'Write', input: { file_path: '/etc/x' } });
       await dashboard.refreshPendingPermissions();
@@ -242,6 +260,11 @@ describe('Dashboard — permission prompts (SSOT 2026-10-24)', () => {
       expect((await detail(id, await signIn('U2'))).statusCode).toBe(403);
       expect((await detail(id, AUTH_HEADER)).statusCode).toBe(403);
       expect((await detail(id, { ...(await signIn('U_ADMIN')), 'x-admin-mode': 'on' })).statusCode).toBe(403);
+    });
+
+    it('400 for an id with path characters', async () => {
+      const res = await detail('approval_..%2F..%2Fpending%2Fx', await signIn('U1'));
+      expect(res.statusCode).toBe(400);
     });
 
     it('404 for an unknown prompt, a grant request, or a prompt of another thread', async () => {
@@ -301,6 +324,18 @@ describe('Dashboard — permission prompts (SSOT 2026-10-24)', () => {
       expect(reg.disableDangerousRules).toHaveBeenCalledWith(key, ['pipe-to-interpreter']);
     });
 
+    // A user who mentions the bot in someone else's thread drives that turn
+    // (session.currentInitiatorId), so the prompt is theirs, not the owner's.
+    it('the requester answers even when someone else owns the session; the owner alone cannot', async () => {
+      dashboard.setDashboardPermissionAnswerHandler((a: any) => answerPermissionPrompt(a));
+      const id = await seed({ user: 'U2' });
+      expect((await answer({ approvalId: id, decision: 'approve' }, await signIn('U1'))).statusCode).toBe(403);
+      expect((await detail(id, await signIn('U1'))).statusCode).toBe(403);
+      expect((await detail(id, await signIn('U2'))).statusCode).toBe(200);
+      expect((await answer({ approvalId: id, decision: 'approve' }, await signIn('U2'))).statusCode).toBe(200);
+      expect(await sharedStore.waitForPermissionResponse(id, 1500)).toMatchObject({ behavior: 'allow' });
+    });
+
     it('only the requester may answer: another user, the bearer token and admin mode get 403', async () => {
       dashboard.setDashboardPermissionAnswerHandler((a: any) => answerPermissionPrompt(a));
       const id = await seed();
@@ -326,6 +361,8 @@ describe('Dashboard — permission prompts (SSOT 2026-10-24)', () => {
       [{ approvalId: 'approval_x', decision: 'allow_everything' }],
       [{ approvalId: 5, decision: 'approve' }],
       [{ approvalId: 'a'.repeat(200), decision: 'approve' }],
+      [{ approvalId: 'approval_../../claims/x', decision: 'approve' }],
+      [{ approvalId: 'approval_a/b', decision: 'approve' }],
     ])('400 for %j', async (body) => {
       dashboard.setDashboardPermissionAnswerHandler(vi.fn());
       expect((await answer(body, await signIn('U1'))).statusCode).toBe(400);
