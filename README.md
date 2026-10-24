@@ -89,6 +89,14 @@ Slack-native button/form UX for permission approvals, option selection, and sess
 
 Upload images (JPG/PNG/GIF/WebP), text, or code files directly in Slack. 50MB limit per file.
 
+### 🆕 Start a task from the dashboard
+
+The dashboard's **New task** button (top bar on desktop, `N` shortcut; floating button on phones) opens a composer: model (with a shared-pool quota battery), effort, Slack channel, per-task `autogoal` and `autoz` toggles, the instruction, and attachments — files, pasted screenshots, the phone camera and voice notes. The task starts as your own message on a new thread in the chosen channel, so its progress is visible in Slack. The channel list is the repo-mapped channels you are a member of; it defaults to the channel you last gave a command in. Turning `autoz` on appends `$autoz` to the instruction.
+
+### 🖼️ Dashboard Artifacts
+
+Every file the model sends to Slack (HTML reports, PNG, WAV/voice, video, PDF, text) and every markdown final answer shows up in the web dashboard: as chips on the session card, a thumbnail strip in the opened card, and a pinned strip in the session panel with each answer's own files under it. Hover for a minimap preview, click for a full-size viewer (HTML runs sandboxed; audio plays straight from the card). Uploads made before the feature are backfilled from the session's work log.
+
 ### 🔑 GitHub Integration
 
 GitHub App (recommended) or Personal Access Token authentication with automatic token renewal.
@@ -97,6 +105,7 @@ GitHub App (recommended) or Personal Access Token authentication with automatic 
 
 The dashboard (`/dashboard`, sign in with Slack) shows every session as a card and lets the session owner act on it:
 
+- **Main agent and its subagents, each on its own**: a card is the main agent; the SDK subagents it starts with the `Agent` tool (and the ones they start) are listed inside it as a tree — each with its status, run time, tool calls and its own task list and work log. The side panel switches between agents (`메인 › A2 Explore`), so the main agent's tasks and log never mix with a subagent's. Spec: [`.prd/12-dashboard-agent-tree-spec.md`](./.prd/12-dashboard-agent-tree-spec.md).
 - **Model and effort, one click from the top**: the top bar shows your default model and effort for new sessions. Pick a value and it is saved at once — the same setting as `model set <m>` and `effort <level>`. With a session panel open, "이 세션에도 적용" (on by default) also switches that session.
 - **Per-session model and effort**: the card and the top of the session panel switch one session only, like `%effort <level>`; the change applies from the next turn. When the model caps the level, the card shows the level that really runs.
 - **Settings page** (`/dashboard/settings`, "⚙ 설정" in the top bar): every personal setting a Slack command can change, grouped (model and effort, output, notifications, goals, autoskills, account, permissions). Choices save at once; typed values save with a button. Each row shows its default, a "기본값으로" reset when it differs, and the Slack command that does the same. Risky changes (bypass, sandbox off, network allowlist off) ask first. Admin-only rows show why they are locked.
@@ -202,7 +211,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z bypass [set on\|off]` | Toggle permission bypass |
 | `/z persona [set <name>\|list]` | Switch persona |
 | `/z model [set <name>\|list]` | Switch model (sonnet, opus, haiku) |
-| `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list, questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |
+| `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list (the main agent's — a subagent's own list lives on its dashboard entry), questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |
 | `/z session` · `sessions` | List active sessions (`sessions` naked form still accepted) |
 | `/z new` · `/z renew` | Reset / renew session (naked `new` / `renew` also accepted) |
 | `/z close` | Close current thread session |
@@ -269,6 +278,36 @@ for everyone — admins included:
   page. The legacy CCT view embedded in `auth` also pages slots; its management
   buttons and modal submissions return to the same auth view and page. The
   separate `cct` command keeps its existing behavior.
+
+### Dashboard capacity timeline
+
+The web dashboard shows the same llmux pool as an **LLM 가용량** section between
+the stats strip and the Agent inbox (`GET /api/dashboard/capacity`, llmux read at
+most every 30 s; the page refetches every 60 s and slides the markers toward
+"now" every 30 s). One row per provider group:
+
+- **Remaining rate, not tokens** — the group % is the unweighted mean of each
+  account's binding window (the smaller remaining of `5h` and `7d`); blocked,
+  cooling or auth-failed accounts count 0; stale windows and accounts with no
+  reading are shown as 미확인 and left out. Model-scoped weekly windows are
+  markers, not a binding limit.
+- **Cooldown timeline** — `now → 24h` takes 55% of the width over the stops
+  `0·1·3·6·12·24h`, then days to `7d` past a marked boundary. Each account gets a
+  marker where a window resets (● `5h`, ◆ `7d` / model-scoped) or, when blocked,
+  where it is usable again (■). Every tooltip states the clock time and the time
+  left; overlapping markers stack, and the earliest is never folded into `+N`.
+- **Empty / low** — an empty group leads with `다음 복귀 <account> · 2h 14m 후`
+  and shades now → that moment; a group under 20% names the next supply.
+- **Subscription tier colours** — the higher plan (Claude Max x20 · ChatGPT Pro
+  $500) is orange, the lower (Max x5 · Pro $200) blue, unknown grey, always with
+  the tier text on the marker. llmux does not report plans, so the map is
+  `SOMA_LLMUX_ACCOUNT_TIERS` (`group:name=tier`, e.g. `claude:ai7=x20,claude:ai12=x5`)
+  over built-in defaults (Codex `ai1`·`ai2` = Pro $200, `ai5`·`ai6` = Pro $500).
+  A bare llmux `max` is never guessed into x5/x20.
+- Not routed through llmux (`ccp` mode) → the section is hidden; llmux
+  unreachable → the section says so with a fixed reason.
+
+Spec: [`.prd/12-cron-lane-and-llm-capacity-spec.md`](./.prd/12-cron-lane-and-llm-capacity-spec.md).
 
 Wiring: [`src/slack/z/topics/auth-topic.ts`](./src/slack/z/topics/auth-topic.ts)
 → [`src/auth/llmux-client.ts`](./src/auth/llmux-client.ts) →
@@ -391,7 +430,9 @@ The Codex block in the key DM points `OPENAI_BASE_URL` at the advertised server'
 
 Any free-form text that no command handler claims is treated as a chat / workflow dispatch prompt.
 
-**Deploy-triggered cron lanes**: a cron job created or updated with `onDeploy: [{ repo, target }]` also fires, as its owner and in a new thread of its channel, when the deploy workflow — run from anyone's session — reports that a deploy of that repo into that exact branch succeeded (`deploy_completed` directive). The fired prompt names the deploy (repo, branch, merge SHA, deployer). The deploy thread gets one line: the lanes started, or why a registered lane did not start (unconfirmed deploy, failure, unreadable directive), with the `cron run` to recover. See [docs/current/spec/cron-deploy-lanes.md](docs/current/spec/cron-deploy-lanes.md).
+**Cron runs on the dashboard**: a session a cron fire creates starts under the job's name (not `Direct (skipDispatch)`); that title is provisional, so the first clear title — the turn summary or a linked issue/PR — replaces it, and the card fades the new title in. Its card leads with a **CRON** badge and lives in the dashboard's **CRON lane** above the columns: one tile per job with the schedule in words (cron is UTC), the next run, the last runs as a glyph-coded strip (✓ success · ✗ failed · ● running · ▲ needs you · ◌ no session), and the job's latest run as a live card. **지난 실행** opens a drawer with every kept run (the history keeps the last 20 per job) linked to its session, work log, conversation and Slack thread (`GET /api/dashboard/cron`). A cron fire injected into an existing session does not re-file that session.
+
+**Deploy-triggered cron lanes**: a cron job created or updated with `onDeploy: [{ repo, target }]` also fires, as its owner and in a new thread of its channel, when the deploy workflow — run from anyone's session — reports that a deploy of that repo into that exact branch succeeded (`deploy_completed` directive). The fired prompt names the deploy (repo, branch, merge SHA, deployer) and the deploy thread (channel + thread ts); the lane posts there itself with whatever Slack access its session has (e.g. the Slack Web API with the bot token from its environment); the built-in `send_thread_message` tool posts only to the lane's own thread, and the harness does not post for it. The deploy thread gets one line: the lanes started, or why a registered lane did not start (unconfirmed deploy, failure, unreadable directive), with the `cron run` to recover. A lane that should run only on deploys is instead an entry of `DATA_DIR/deploy-lanes.json` (`name`, `owner`, `channel`, `prompt`, `onDeploy`): no schedule, not a cron job (not in `cron list`). Post-deploy QA from an environment plugin (a host-installed plugin such as `acme-env` that provides a `post-deploy` skill) is not a lane: it runs as step 8 of the deploy workflow, in the deploy session itself, after a confirmed `deploy_completed` (setup: [docs/runbook/add-new-deploy.md](docs/runbook/add-new-deploy.md) §8.5). See [docs/current/spec/cron-deploy-lanes.md](docs/current/spec/cron-deploy-lanes.md).
 
 **Deploy release notes**: after a deploy, the deploy workflow writes the notes with `local:release-notes` and emits one `release_notes` directive per repo. The host posts a short root message — `repo target · version` plus up to three TL;DR lines — and the full notes as replies in its thread (cut losslessly, never truncated). The operator decides the channel with `SOMA_RELEASE_NOTES_CHANNELS` in the host's `.env` (for example `acme/app@deploy/dev2=C0DEV2CHAN1,*=session`): an exact `owner/repo@branch` or `branch` match goes to that channel, `*=session` keeps unmatched deploys in the deploy session's channel, and without `*` an unmatched deploy stays in the deploy thread. Unset means the deploy session's channel, as before. A failed post never moves the notes to another channel's root; they land in the deploy thread with a warning.
 

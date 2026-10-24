@@ -533,9 +533,9 @@ const ON_DEPLOY_SCHEMA = {
   type: 'array',
   description:
     'Also fire this job when a deploy completes: the deploy workflow signals each repo it merged and deployed into a branch, from whichever session ran the deploy, and every job listing that repo + branch fires as its owner, with its own model, always in a NEW thread in the job channel (target/mode are ignored for these fires). ' +
-    'The fired prompt ends with a line "[deploy_completed repo=… target=… before=… after=<merge sha> by=<deployer>]" naming the deploy; the job should verify that deploy itself and be safe to run twice. ' +
+    'The fired prompt ends with a line "[deploy_completed repo=… target=… before=… after=<merge sha> by=<deployer> channel=… thread=…]" naming the deploy and its thread; the job should verify that deploy itself and be safe to run twice. ' +
     'target is the full branch name as merged into (e.g. "deploy/staging", "develop"), matched exactly — an environment nickname does not match. ' +
-    'A job that should run ONLY on deploys can use an expression that never matches, e.g. "0 0 31 2 *".',
+    'onDeploy adds deploy fires to a job that also runs on its schedule. Deploy-only lanes are not cron jobs: they live in deploy-lanes.json in the data dir, edited by the operator — this tool cannot create one.',
   items: {
     type: 'object',
     properties: {

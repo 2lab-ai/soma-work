@@ -99,8 +99,10 @@ export interface AgentUsage {
  */
 export type AgentStreamEvent =
   | { type: 'session_start'; sessionId: string; model?: string; tools?: string[] }
-  | { type: 'assistant_delta'; text: string; messageId?: string; blockId?: string }
-  | { type: 'thought_delta'; text: string; messageId?: string; blockId?: string }
+  // Spec 12: `parentToolUseId` = the tool call that started the subagent this
+  // frame came from (SDK `parent_tool_use_id`); absent on the main agent's.
+  | { type: 'assistant_delta'; text: string; messageId?: string; blockId?: string; parentToolUseId?: string }
+  | { type: 'thought_delta'; text: string; messageId?: string; blockId?: string; parentToolUseId?: string }
   | {
       type: 'tool_call';
       toolCallId: string;
@@ -109,6 +111,7 @@ export type AgentStreamEvent =
       title?: string;
       kind?: AgentToolKind;
       status?: AgentToolStatus;
+      parentToolUseId?: string;
     }
   | {
       type: 'tool_call_update';
@@ -126,8 +129,13 @@ export type AgentStreamEvent =
       content: AgentContent[];
       isError?: boolean;
       rawOutput?: unknown;
+      parentToolUseId?: string;
+      // Spec 12: an `Agent` call's structured outcome (SDK `tool_use_result`):
+      // `async_launched` / `remote_launched` = a background start, `completed`
+      // = the subagent's report, with its run totals.
+      agentOutcome?: { status: string; toolUses?: number; durationMs?: number };
     }
-  | { type: 'usage'; usage: AgentUsage }
+  | { type: 'usage'; usage: AgentUsage; parentToolUseId?: string }
   | {
       type: 'result';
       stopReason: AgentStopReason;
@@ -171,6 +179,12 @@ export type AgentStreamEvent =
       /** SDK-managed output file path (carried through for host-side reconciliation). */
       outputFile?: string;
       summary?: string;
+      // Spec 12: what the agent tree shows for a subagent task.
+      subagentType?: string;
+      description?: string;
+      background?: boolean;
+      usage?: { totalTokens: number; toolUses: number; durationMs: number };
+      lastToolName?: string;
     }
   // Lifecycle of a user message injected into a RUNNING turn (user steering).
   // `uuid` is the host-minted send id: the backend stamps it back on the turn's

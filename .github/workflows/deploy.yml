@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       matrix: ${{ steps.targets.outputs.matrix }}
+      runner_labels: ${{ steps.targets.outputs.runner_labels }}
     steps:
       - name: Validate manual trigger
         if: github.event_name == 'workflow_dispatch'
@@ -55,6 +56,20 @@ jobs:
       # can only SELECT from it, never add to it, and a label that is not
       # configured fails the run instead of being ignored — a typo must not turn
       # into "deployed everywhere" or "deployed nowhere" silently.
+      #
+      # Environment plugins (the private per-host plugin that carries this
+      # host's post-deploy QA) are configured per channel too, but as repo
+      # SECRETS (Settings > Secrets and variables > Actions > Secrets), because a
+      # step's env header prints variable values into the public run log while a
+      # secret prints as ***:
+      #   PREVIEW_ENV_PLUGINS / PRODUCTION_ENV_PLUGINS, one entry per line,
+      #   {runner-label}|{marketplace-name}|{owner/repo}[@{ref}]|{plugin}[,{plugin}...]
+      # Each channel reads only its own secret (no fallback between them), and
+      # every line must name one of this channel's runner labels (the
+      # runner_labels output below, taken before any `targets` narrowing). The
+      # Deploy step checks the lines before stopping the service, then merges
+      # the lines for its runner into the target's config.json
+      # (dist/deploy/apply-env-plugins.js) before the restart.
       - name: Resolve deploy targets
         id: targets
         env:
@@ -75,6 +90,10 @@ jobs:
                    github_env: $ge,
                    deploy_env: $de})
             | {include: .}' <<< "$RAW")
+          # Every runner label of this channel, BEFORE the `targets` narrowing
+          # below: the Deploy step rejects an env-plugin line naming any other
+          # label (a typo there would otherwise install nothing anywhere).
+          runner_labels=$(jq -r '[.include[].runner_label] | unique | join(",")' <<< "$matrix")
           # Normalize once: drop ALL whitespace (spaces, tabs, newlines) so the
           # emptiness check and the split see the same string.
           SELECT_NORM="$(tr -d '[:space:]' <<< "$SELECT")"
@@ -95,6 +114,7 @@ jobs:
           fi
           echo "targets: $count"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "runner_labels=$runner_labels" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: npm ci
@@ -179,6 +199,14 @@ jobs:
         env:
           ENV: ${{ matrix.deploy_env }}
           TARGET: ${{ matrix.target_dir }}
+          # Both channel lists, as secrets (the env header shows ***), selected
+          # by $ENV in the script — never an `a || b` expression, which would
+          # hand a production deploy the preview list whenever the production
+          # secret is unset.
+          ENV_PLUGINS_PREVIEW: ${{ secrets.PREVIEW_ENV_PLUGINS }}
+          ENV_PLUGINS_PRODUCTION: ${{ secrets.PRODUCTION_ENV_PLUGINS }}
+          RUNNER_LABEL: ${{ matrix.runner_label }}
+          CHANNEL_RUNNER_LABELS: ${{ needs.prepare.outputs.runner_labels }}
         run: |
           cd bundle/root
           echo "::add-mask::$TARGET"
@@ -254,12 +282,33 @@ jobs:
             node dist/deploy/main-env-bootstrap.js
           fi
 
+          # Environment plugins: the production environment reads only the
+          # production list, every other environment only the preview list.
+          # Empty = nothing to install (a no-op, not a fallback).
+          if [[ "$ENV" == "main" ]]; then
+            export ENV_PLUGINS="$ENV_PLUGINS_PRODUCTION"
+          else
+            export ENV_PLUGINS="$ENV_PLUGINS_PREVIEW"
+          fi
+          # Validate before anything is stopped: a malformed list or an
+          # unreadable config.json fails the deploy while the old service still
+          # runs. Same computation as the real apply below, nothing written.
+          node dist/deploy/apply-env-plugins.js --check "$TARGET"
+
           # No `|| true`: a stop that leaves the old supervisor alive (failed
           # unload, a second launchd domain, an orphan tree) must fail the
           # deploy here instead of rsyncing a new bundle under a running old
           # process and calling it green.
           bash scripts/service.sh "$ENV" stop
           bash scripts/deploy/sync-bundle.sh "$TARGET" "."
+          # This runner's environment plugins go into the target's config.json
+          # (plugin.marketplace / plugin.plugins) before install-target.sh
+          # restarts the service, so the PluginManager fetches and loads them at
+          # startup. Node built-ins only: the target has no node_modules until
+          # install-target.sh runs. It prints counts, never names.
+          node dist/deploy/apply-env-plugins.js "$TARGET"
+          # The restarted daemon must not inherit the plugin lists.
+          unset ENV_PLUGINS ENV_PLUGINS_PREVIEW ENV_PLUGINS_PRODUCTION RUNNER_LABEL CHANNEL_RUNNER_LABELS
           bash scripts/deploy/install-target.sh "$TARGET" "$ENV" "${{ matrix.name }}"
 
       - name: Verify

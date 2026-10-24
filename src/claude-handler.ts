@@ -12,6 +12,7 @@ import {
   query,
   type SDKMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { liveAgentIds } from './agent-runtime/background-keepalive';
@@ -1409,7 +1410,7 @@ export class ClaudeHandler implements TurnSteeringPort {
               turnStartSeq = frameSeq;
             }
             if (session) {
-              session.sessionId = message.session_id;
+              adoptSdkSessionId(session, message.session_id);
               this.logger.info('Session initialized', {
                 sessionId: message.session_id,
                 model: message.model,
