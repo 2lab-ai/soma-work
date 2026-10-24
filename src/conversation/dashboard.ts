@@ -2814,17 +2814,22 @@ export async function registerDashboardRoutes(
   // ── Permission prompts from dashboard (SSOT 2026-10-24) ──
   //
   // Only the user the prompt was raised for reads its parameters or answers
-  // it — the Slack card's rule. Session write access (owner / bearer / admin
-  // mode) is not enough: the bearer token and admin mode carry no requester
-  // identity, so they are refused. A prompt of another thread is 404 under
-  // this session's key.
+  // it — the Slack card's rule. That is the turn's initiator, who is not
+  // always the session owner (a mention in someone else's thread), so the
+  // owner gate does not apply here: the requester check replaces it. The
+  // bearer token and admin mode carry no requester identity and are refused.
+  // A prompt of another thread is 404 under this session's key.
 
   /** The live session behind the route key and its prompt, or null after replying. */
   async function resolvePermissionTarget(
     request: any,
     reply: any,
     approvalId: string,
-  ): Promise<{ originalKey: string; thread: { channel: string; threadTs?: string } } | null> {
+  ): Promise<{
+    originalKey: string;
+    thread: { channel: string; threadTs?: string };
+    pending: NonNullable<Awaited<ReturnType<typeof loadPermissionPrompt>>>;
+  } | null> {
     const originalKey = resolveSelfActionKey(request.params?.key ?? '', reply);
     if (originalKey === null) return null;
     const session = getAllSessions().get(originalKey);
@@ -2843,10 +2848,12 @@ export async function registerDashboardRoutes(
       reply.status(403).send({ error: 'Only the user this permission request is for can see or answer it' });
       return null;
     }
-    return { originalKey, thread };
+    return { originalKey, thread, pending };
   }
 
-  const isApprovalId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 128;
+  // The id names files in the store: no path characters (`/`, `.`) may reach path.join.
+  const isApprovalId = (v: unknown): v is string =>
+    typeof v === 'string' && v.length <= 128 && /^approval_[A-Za-z0-9_]+$/.test(v);
 
   server.get<{ Params: { key: string; approvalId: string } }>(
     '/api/dashboard/session/:key/permission/:approvalId',
@@ -2860,12 +2867,7 @@ export async function registerDashboardRoutes(
       try {
         const target = await resolvePermissionTarget(request, reply, approvalId);
         if (!target) return;
-        const pending = await loadPermissionPrompt(approvalId);
-        if (!pending) {
-          reply.status(404).send({ error: 'Permission request not found or expired' });
-          return;
-        }
-        reply.header('Cache-Control', 'no-store').send(permissionPromptDetail(approvalId, pending));
+        reply.header('Cache-Control', 'no-store').send(permissionPromptDetail(approvalId, target.pending));
       } catch (error) {
         logger.error('Error reading a permission prompt for the dashboard', error);
         reply.status(500).send({ error: 'Internal Server Error' });
@@ -2884,7 +2886,6 @@ export async function registerDashboardRoutes(
           .send({ error: 'approvalId and decision (approve | deny | explain | approve_disable_rule) are required' });
         return;
       }
-      if (!resolveSelfActionKeyAndOwner(request, reply)) return;
       if (!_permissionAnswerHandlerFn) {
         reply.status(501).send({ error: 'Permission answer handler not configured' });
         return;

@@ -103,7 +103,8 @@ async function readAndDiff(): Promise<string[]> {
   const nextSignatures = new Map<string, string>();
   for (const [key, list] of next) {
     list.sort((a, b) => a.createdAt - b.createdAt || a.approvalId.localeCompare(b.approvalId));
-    nextSignatures.set(key, list.map((p) => p.approvalId).join(','));
+    // Everything the card shows, so a rewritten record (other rules) pushes too.
+    nextSignatures.set(key, JSON.stringify(list));
   }
   const changed: string[] = [];
   for (const key of new Set([...signatures.keys(), ...nextSignatures.keys()])) {
