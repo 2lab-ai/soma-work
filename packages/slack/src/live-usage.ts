@@ -155,6 +155,15 @@ export function foldLiveUsage(
       currentOutputTokens?: number;
       currentCacheReadTokens?: number;
       currentCacheCreateTokens?: number;
+      /** What this fold added — the next resumed result settles it (`settleFoldedLiveUsage`). */
+      foldedLiveUsage?: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheCreateTokens: number;
+        costUsd: number;
+        sdkSessionId?: string;
+      };
     };
   },
   turnId: string | undefined,
@@ -183,7 +192,24 @@ export function foldLiveUsage(
     } catch {
       cost = 0;
     }
-    if (Number.isFinite(cost) && cost > 0) session.usage.totalCostUsd += cost;
+    if (!Number.isFinite(cost) || cost < 0) cost = 0;
+    session.usage.totalCostUsd += cost;
+    // The transcript keeps these calls, so the next resumed result's running
+    // total includes them again: remember what was folded so that result can
+    // settle it instead of adding it twice.
+    const folded = session.usage.foldedLiveUsage ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreateTokens: 0,
+      costUsd: 0,
+    };
+    folded.inputTokens += t.inputTokens;
+    folded.outputTokens += t.outputTokens;
+    folded.cacheReadTokens += t.cacheReadTokens;
+    folded.cacheCreateTokens += t.cacheCreateTokens;
+    folded.costUsd += cost;
+    session.usage.foldedLiveUsage = folded;
     const u = session.usage;
     const current =
       count(u.currentInputTokens) +

@@ -2872,6 +2872,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         resetWorkLog: () => {},
         setWorkLogOpen: () => {},
         renderPanelTasks: () => {},
+        _panelAgent: '',
+        _panelAgentListOpen: false,
         renderTurn: (t: { id: string }) => `<div class="turn assistant" data-turn-id="${t.id}"></div>`,
         attachRawToggleHandlers: () => {},
         // Session artifacts (SSOT 2026-10-23): the panel strip and per-answer chips.
