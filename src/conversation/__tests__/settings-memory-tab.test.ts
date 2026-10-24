@@ -297,6 +297,28 @@ describe('개인 메모리 — a repaint keeps what is typed (review R9)', () =>
     expect(p.els['l1-new-user'].value).toBe('a profile note');
   });
 
+  it('the first memory load is applied even while a note is being added (review R13, fable)', async () => {
+    const p = l1Page();
+    let loadAnswer: (v: unknown) => void = () => {};
+    const fns = load<any>([...L1_FNS, 'loadMemory', 'memHold'], ['L1_LABELS', 'L1_FILES', '_memLoaded'], {
+      document: p.doc,
+      _mem: null,
+      _memUndo: null,
+      apiWrite: vi.fn(),
+      fetch: vi.fn(() => new Promise((res) => (loadAnswer = res))),
+      paintPageList: () => {},
+      paintDates: () => {},
+    });
+    const first = fns.loadMemory();
+    fns.memHold.at = Date.now(); // a note for today is out
+    loadAnswer({
+      ok: true,
+      json: async () => ({ l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') }, pages: [], episodicDates: [] }),
+    });
+    await first;
+    expect(p.els['mem-l1-body'].innerHTML).toContain('e0');
+  });
+
   it('a memory load answered during a write, or older than another, does not repaint (review R12, astra)', async () => {
     const p = l1Page();
     const mem: any = { l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') } };
@@ -2488,6 +2510,115 @@ describe('관찰 기록 (에피소딕)', () => {
     await saving;
     expect(fns.memHold.at).toBe(0);
     expect(fields[0].disabled).toBe(false);
+  });
+
+  it('"내 수정 버림" holds the tab until the latest is loaded; a new page opened before cannot be overwritten (review R13, astra)', async () => {
+    let detailHtml = '';
+    const status: any = { textContent: '', innerHTML: '', setAttribute() {} };
+    const fields = [{ disabled: false }];
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-page-detail'
+          ? {
+              set innerHTML(v: string) {
+                detailHtml = v;
+              },
+              get innerHTML() {
+                return detailHtml;
+              },
+            }
+          : status,
+      querySelectorAll: () => fields,
+    };
+    const pageA = { id: 'agent/a', title: 'A', aliases: [], current: 'a', history: [], updated: '2026-10-23' };
+    let latest: (v: unknown) => void = () => {};
+    const fns = load<any>(
+      [
+        'esc',
+        'escAttr',
+        'discardPageDraft',
+        'openPage',
+        'newPageForm',
+        'renderPageEditor',
+        'renderPageConflict',
+        'memStatus',
+        'pageSaveBusy',
+        'memHold',
+        'setPageFieldsDisabled',
+        'keepPageDraft',
+        'pageUnsavedText',
+        'pageDraft',
+        'pageDraftText',
+        'memRecover',
+        'paintRecover',
+      ],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      {
+        document: doc,
+        _memPage: { page: pageA, revision: 'a1', raw: '# A\n', representable: true },
+        fetch: vi.fn(() => new Promise((res) => (latest = res))),
+        paintPageList: () => {},
+      },
+    );
+    const discarding = fns.discardPageDraft();
+    expect(fields[0].disabled).toBe(true);
+    fns.newPageForm(); // waits
+    expect(status.textContent).toContain('저장 중');
+    latest({
+      ok: true,
+      json: async () => ({ page: { ...pageA, current: 'latest' }, revision: 'a2', raw: '# A2\n', representable: true }),
+    });
+    await discarding;
+    expect(fns.memHold.at).toBe(0);
+    expect(detailHtml).toContain('agent/a');
+  });
+
+  it('opening a new page drops an answer still out for a page opened before (review R13, astra)', async () => {
+    let detailHtml = '';
+    const status: any = { textContent: '', innerHTML: '', setAttribute() {} };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-page-detail'
+          ? {
+              set innerHTML(v: string) {
+                detailHtml = v;
+              },
+              get innerHTML() {
+                return detailHtml;
+              },
+            }
+          : status,
+      querySelectorAll: () => [],
+    };
+    const pageB = { id: 'agent/b', title: 'B', aliases: [], current: 'b', history: [], updated: '2026-10-23' };
+    let got: (v: unknown) => void = () => {};
+    const fns = load<any>(
+      [
+        'esc',
+        'escAttr',
+        'openPage',
+        'newPageForm',
+        'renderPageEditor',
+        'renderPageConflict',
+        'memStatus',
+        'pageSaveBusy',
+        'memHold',
+        'keepPageDraft',
+        'pageUnsavedText',
+        'pageDraft',
+        'pageDraftText',
+        'memRecover',
+        'paintRecover',
+      ],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      { document: doc, _memPage: null, fetch: vi.fn(() => new Promise((res) => (got = res))), paintPageList: () => {} },
+    );
+    const opening = fns.openPage('agent/b');
+    fns.newPageForm();
+    got({ ok: true, json: async () => ({ page: pageB, revision: 'b1', raw: '# B\n', representable: true }) });
+    await opening;
+    expect(detailHtml).toContain('새 페이지');
+    expect(detailHtml).not.toContain('agent/b');
   });
 
   it('a refused page answer for an editor no longer open keeps its draft in the recovery box (review R11, grok)', async () => {

@@ -181,18 +181,21 @@ async function loadMemory(force) {
     var res = await fetch('/api/memory');
     var data = null;
     try { data = await res.json(); } catch (_e) {}
-    if (seq !== loadMemory.seq || (!force && memHold.at)) return;
+    // (the first load is always applied: nothing is on screen to protect yet, review R13)
+    if (seq !== loadMemory.seq || (!force && memHold.at && _memLoaded)) return;
     if (!res.ok) {
       failed((data && data.error) || ('기억을 불러오지 못했습니다 (HTTP ' + res.status + ')'));
-      return;
+      return false;
     }
     _mem = data;
     _memLoaded = true;
     paintL1();
     paintPageList();
     paintDates();
+    return true;
   } catch (_e) {
     if (seq === loadMemory.seq) failed('기억을 불러오지 못했습니다. 다시 시도하세요.');
+    return false;
   }
 }
 
@@ -322,14 +325,15 @@ async function l1Write(method, url, payload, draft, at, orig, unique) {
     // The hold and the locks last until the reload is done: nothing typed meanwhile (review R11),
     // and are released however the reload ends (review R12).
     var back = false;
+    var reloaded = false;
     try {
-      await loadMemory(true);
-      back = restoreL1Draft(target, draft, at, orig, unique);
+      reloaded = (await loadMemory(true)) !== false; // false: the load failed
+      back = reloaded ? restoreL1Draft(target, draft, at, orig, unique) : true;
     } finally {
       memHold.at = 0;
       for (var ul2 = 0; ul2 < locked.length; ul2++) if (locked[ul2]) locked[ul2].disabled = false;
     }
-    memStatus('그사이 다른 곳(에이전트·Slack)에서 바뀌어 최신 내용을 불러왔습니다.' + (draft ? (back ? ' 작성하던 내용은 편집 칸에 그대로 있습니다' : ' 작성하던 내용은 보관했습니다') + ' — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
+    memStatus('그사이 다른 곳(에이전트·Slack)에서 바뀌었습니다' + (reloaded ? ' — 최신 내용을 불러왔습니다.' : ' — 최신 내용은 불러오지 못했습니다.') + (draft ? (back ? ' 작성하던 내용은 편집 칸에 그대로 있습니다' : ' 작성하던 내용은 보관했습니다') + ' — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
     return false;
   }
   memHold.at = 0;
@@ -474,7 +478,7 @@ function keepPageDraft() {
   if (unsaved) memRecover(((_memPage && _memPage.page && _memPage.page.id) || '새 페이지') + ' 수정본', unsaved);
 }
 async function openPage(id, discard) {
-  if (pageSaveBusy()) return;
+  if (!discard && pageSaveBusy()) return;
   // Only the latest page opened is shown: an earlier one answering last is dropped (review R9).
   var seq = (openPage.seq = (openPage.seq || 0) + 1);
   var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
@@ -545,6 +549,7 @@ function addHistoryLine() {
 }
 function newPageForm() {
   if (pageSaveBusy()) return;
+  openPage.seq = (openPage.seq || 0) + 1; // a page still being opened is dropped: the latest action wins (review R13)
   keepPageDraft();
   _memPage = { page: { id: '', title: '', aliases: [], current: '', history: [] }, revision: null };
   renderPageEditor();
@@ -687,10 +692,18 @@ function overwritePage() {
   renderPageConflict();
   return rawDraft ? savePageRaw() : savePage();
 }
-function discardPageDraft() {
+async function discardPageDraft() {
   var id = _memPage && _memPage.page && _memPage.page.id;
+  if (!id || memHold()) return;
   _memPageConflict = null;
-  if (id) openPage(id, true); // the user chose to drop the draft
+  // The user chose to drop this draft — this one only: the tab holds and the fields stay
+  // locked until the latest is shown, so nothing typed or opened meanwhile is replaced (review R13).
+  memHold.at = Date.now();
+  setPageFieldsDisabled(true);
+  try { await openPage(id, true); } finally {
+    memHold.at = 0;
+    setPageFieldsDisabled(false);
+  }
 }
 async function deletePage() {
   if (pageSaveBusy()) return;
@@ -770,10 +783,11 @@ async function loadDay(date, force) {
     if (held) held.value = _memDay.date;
     return;
   }
-  if (!res.ok) { memStatus('기록을 불러오지 못했습니다: ' + ((data && data.error) || res.status), true); return; }
+  if (!res.ok) { memStatus('기록을 불러오지 못했습니다: ' + ((data && data.error) || res.status), true); return false; }
   _memDay = data;
   document.getElementById('mem-ep-date').value = date;
   repaintDay();
+  return true;
 }
 // The open episodic editor: the day, record and revision it was opened on. A save goes
 // there, whatever day the view shows by then (review R6).
@@ -869,7 +883,11 @@ async function epWrite(method, url, payload, draft, at, orig, origTime, unique) 
 }
 // A 409 reloads the day the request was for and puts the draft back where it belongs.
 async function epRecover409(date, draft, orig, origTime, unique) {
-  await loadDay(date, true);
+  if ((await loadDay(date, true)) === false) {
+    // the latest could not be loaded: the editor and its draft stay as they are (review R13)
+    memStatus('그사이 이 날의 기록이 바뀌었는데 최신 내용을 불러오지 못했습니다. 작성하던 내용은 편집 칸에 그대로 있습니다.', true);
+    return false;
+  }
   if (!_memDay || _memDay.date !== date) { memKeepDraft('mem-ep-new', draft, date + ' 기록 수정본'); memStatus('그사이 이 날의 기록이 바뀌었습니다. 작성하던 내용은 보관했습니다.', true); return false; }
   // The whole draft goes back into an edit box (review P1).
   // Back into the editor of the entry it was for — found by its original time
