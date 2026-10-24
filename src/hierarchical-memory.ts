@@ -38,6 +38,25 @@ class HostHierarchicalMemoryStore extends HierarchicalMemoryFileStore {
     if (result.ok) invalidator.fire(user);
     return result;
   }
+
+  // Dashboard memory tab (SSOT 2026-10-23 T3): full page replace / delete.
+  writePage(...args: Parameters<HierarchicalMemoryFileStore['writePage']>) {
+    const result = super.writePage(...args);
+    if (result.ok) invalidator.fire(args[0]);
+    return result;
+  }
+
+  writePageRaw(...args: Parameters<HierarchicalMemoryFileStore['writePageRaw']>) {
+    const result = super.writePageRaw(...args);
+    if (result.ok) invalidator.fire(args[0]);
+    return result;
+  }
+
+  removePageAt(...args: Parameters<HierarchicalMemoryFileStore['removePageAt']>) {
+    const result = super.removePageAt(...args);
+    if (result.ok) invalidator.fire(args[0]);
+    return result;
+  }
 }
 
 export const hierarchicalMemoryStore = new HostHierarchicalMemoryStore(DATA_DIR);

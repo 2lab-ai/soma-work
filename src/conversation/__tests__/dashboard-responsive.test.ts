@@ -420,6 +420,13 @@ describe('views merged from #374 follow the same device contract', () => {
 });
 
 describe('settings page — reached from the dashboard top bar', () => {
+  it('every text field on every tab (the #379 memory tab too) is 16px on touch screens', () => {
+    const settingsTs = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
+    expect(settingsTs).toContain(
+      '  input[type="text"], input[type="search"], input[type="number"], select, textarea { font-size: 16px !important; }',
+    );
+  });
+
   const SETTINGS_TS = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
 
   it('its text inputs and selects are 16px on touch screens (iOS does not zoom into them)', () => {
@@ -473,5 +480,156 @@ describe('merged views — trinity code review R4 follow-ups', () => {
     const settings = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
     const coarse = settings.slice(settings.indexOf('@media (pointer: coarse) {'));
     expect(coarse.slice(0, coarse.indexOf('\n}'))).toContain('.side input[type="search"]');
+  });
+});
+
+describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on small screens', () => {
+  // Measured with both sections populated: the first board card sat at 989–1247px on
+  // every phone and foldable posture and at 864px on a 1440×900 PC (trinity design
+  // consult: a disclosure, collapsed unless the window is at least 840×1000).
+  it('the default is open only on a large window (840 wide and 1000 tall); a saved choice wins', () => {
+    const { secOpen } = load<{ secOpen: (saved: string | null, large: boolean) => boolean }>(['secOpen']);
+    expect(secOpen(null, false)).toBe(false);
+    expect(secOpen(null, true)).toBe(true);
+    expect(secOpen('open', false)).toBe(true);
+    expect(secOpen('closed', true)).toBe(false);
+    expect(TEMPLATE).toContain("var SEC_OPEN_QUERY = '(min-width: 840px) and (min-height: 1000px)';");
+  });
+
+  it('the toggles are static buttons outside the regions that are re-rendered (focus and state survive repaints)', () => {
+    const cap = TEMPLATE.slice(TEMPLATE.indexOf('<section class="capacity" id="capacity"'));
+    const capSection = cap.slice(0, cap.indexOf('</section>'));
+    expect(capSection).toMatch(
+      /<button type="button" class="sec-toggle" id="capacity-toggle" data-sec-toggle="capacity" aria-expanded="false" aria-controls="capacity-view">/,
+    );
+    expect(capSection).toContain('<div class="capacity-view" id="capacity-view"></div>');
+    const lane = TEMPLATE.slice(TEMPLATE.indexOf('<div class="cron-lane" id="cron-lane"'));
+    const laneBar = lane.slice(0, lane.indexOf('<div class="cron-groups"'));
+    expect(laneBar).toContain('<div class="cron-lane-head" id="cron-lane-head"></div>');
+    expect(laneBar).toMatch(
+      /<button type="button" class="sec-toggle" id="cron-toggle" data-sec-toggle="cron" aria-expanded="false" aria-controls="cron-groups">/,
+    );
+    // paintCapacity writes its timeline into the view, never over the toggle.
+    expect(clientFn('paintCapacity')).toContain("getElementById('capacity-view')");
+  });
+
+  it('a collapsed capacity shows one chip per provider: label, %, a state glyph, the next event as its tooltip', () => {
+    const fns = load<{ renderCapacitySummary: (v: unknown, nowMs: number) => string }>([
+      'esc',
+      'escAttr',
+      'pad2',
+      'capCountdown',
+      'capClockLabel',
+      'capEventLine',
+      'capLeadLine',
+      'renderCapacitySummary',
+    ]);
+    const nowS = 1_800_000_000;
+    const html = fns.renderCapacitySummary(
+      {
+        available: true,
+        groups: [
+          {
+            label: 'Claude',
+            state: 'ok',
+            availablePct: 62,
+            nextRefill: { account: 'a', window: '5h', at: nowS + 7200 },
+          },
+          {
+            label: 'Codex',
+            state: 'low',
+            availablePct: 12,
+            nextRefill: { account: 'e', window: '5h', at: nowS + 3600 },
+          },
+          {
+            label: 'Gemini',
+            state: 'empty',
+            availablePct: 0,
+            nextReturn: { account: 'g', window: 'cooldown', at: nowS + 600 },
+          },
+          { label: 'Other', state: 'unknown', availablePct: null },
+        ],
+      },
+      nowS * 1000,
+    );
+    expect(html).toContain('class="cap-summary"');
+    expect(html).not.toContain('aria-live');
+    // The glyph leads (the state shows first even where the row scrolls); the whole
+    // sentence is the chip's accessible name.
+    expect(html).toMatch(/cap-chip is-ok"[^>]*>Claude <b>62%<\/b>/);
+    expect(html).toMatch(/cap-chip is-low"[^>]*>▲ Codex <b>12%<\/b>/);
+    expect(html).toMatch(/cap-chip is-empty"[^>]*>✗ Gemini <b>0%<\/b>/);
+    expect(html).toMatch(/cap-chip is-unknown"[^>]*>◌ Other <b>—<\/b>/);
+    expect(html).toMatch(/cap-chip is-low" title="[^"]*1h 0m 후/);
+    expect(html).toMatch(/aria-label="Codex 잔여 12% · 부족 — [^"]*1h 0m 후/);
+    const off = fns.renderCapacitySummary({ available: false, reason: 'llmux unreachable', groups: [] }, nowS * 1000);
+    expect(off).toContain('가용량 미확인');
+    expect(off).toContain('llmux unreachable');
+  });
+
+  it('collapsed: the timeline, legend and subtitle are hidden; the chips only show while collapsed', () => {
+    expect(TEMPLATE).toContain(
+      '.capacity.is-collapsed .cap-sub, .capacity.is-collapsed .cap-legend, .capacity.is-collapsed .cap-rows, .capacity.is-collapsed .cap-off { display: none; }',
+    );
+    expect(TEMPLATE).toContain('.capacity:not(.is-collapsed) .cap-summary { display: none; }');
+    expect(TEMPLATE).toContain('.cron-group[hidden] { display: none; }');
+    expect(TEMPLATE).toContain('@media (pointer: coarse) { .sec-toggle { min-height: 44px; } }');
+  });
+
+  it('a folded CRON lane drops the cards of every job that does not wait for a reply (out of the DOM, not display:none)', () => {
+    const slots = clientFn('cronLaneSlots');
+    expect(slots).toContain('cronLaneFolded()');
+    expect(slots).toContain('!g.waiting');
+    const sync = clientFn('syncCronLane');
+    expect(sync).toContain('sec.hidden = folded && !g.waiting;');
+  });
+
+  it('the disclosure state is part of the layout mode, so a toggle or a window change moves the board by FLIP', () => {
+    const { layoutModeKey } = load<{ layoutModeKey: (m: Record<string, string>) => string }>(['layoutModeKey']);
+    expect(layoutModeKey({ cols: 'full', panel: 'closed', view: 'board' })).toBe('full|closed|board');
+    expect(layoutModeKey({ cols: 'full', panel: 'closed', view: 'board', sec: 'cR' })).toBe('full|closed|board|cR');
+    expect(clientFn('currentLayoutMode')).toContain('secStateKey()');
+    expect(clientFn('runLayoutCheck')).toContain('applySectionState()');
+    const toggle = clientFn('toggleSection');
+    expect(toggle.indexOf('layoutBeforeChange()')).toBeGreaterThan(-1);
+    expect(toggle.indexOf('layoutBeforeChange()')).toBeLessThan(toggle.indexOf('localStorage.setItem'));
+  });
+
+  it('elements that are not rendered never enter the shift cache (no FLIP from the top-left corner)', () => {
+    expect(clientFn('collectViewMovers')).toContain('getClientRects().length');
+  });
+
+  it('a capacity paint that changes the page height refreshes the shift cache (it sits above the board, outside #inbox)', () => {
+    expect(clientFn('paintCapacity')).toContain('scheduleLayoutRefresh(');
+  });
+
+  it('a deep link into a folded CRON lane opens it for this page load only', () => {
+    expect(clientFn('openDeepLinkedSession')).toContain('_cronLaneRevealed = true;');
+    expect(clientFn('secIsOpen')).toContain('_cronLaneRevealed');
+  });
+});
+
+describe('secondary sections — trinity code review R1 follow-ups (astra)', () => {
+  it('a disclosure render leaves every board move to the coordinator (no FLIP from a half-revealed lane)', () => {
+    expect(clientFn('applyBoardPlan')).toContain('_boardFlipOff');
+    expect(clientFn('renderBoardForLayout')).toContain('_boardFlipOff = true;');
+    expect(clientFn('toggleSection')).toContain('renderBoardForLayout()');
+    expect(clientFn('runLayoutCheck')).toContain('renderBoardForLayout()');
+    expect(clientFn('toggleSection')).not.toContain('renderBoard(_lastBoardData)');
+  });
+
+  it('the 44px touch size comes after the toggle base rule, so it wins', () => {
+    const base = TEMPLATE.indexOf('.sec-toggle {\n  position: relative;\n  display: inline-flex;');
+    const touch = TEMPLATE.indexOf('@media (pointer: coarse) { .sec-toggle { min-height: 44px; } }');
+    expect(base).toBeGreaterThan(-1);
+    expect(touch).toBeGreaterThan(base);
+  });
+
+  it('a toggle works for this page even when storage refuses the write', () => {
+    expect(TEMPLATE).toContain('var _secChoice = {};');
+    expect(clientFn('toggleSection')).toMatch(
+      /_secChoice\[sec\] = open \? 'open' : 'closed';[\s\S]*localStorage\.setItem/,
+    );
+    expect(clientFn('secIsOpen')).toContain('_secChoice[sec]');
   });
 });
