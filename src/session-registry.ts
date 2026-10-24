@@ -13,6 +13,7 @@ import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { normalizeTmpPath } from './path-utils';
 import { loseRunningAgents, sanitizeAgentRegistry } from './session/agent-registry';
+import { sanitizeCronJob } from './session/cron-job';
 import { closeTaskList, sanitizeTaskLedger } from './session/task-ledger';
 import { getArchiveStore } from './session-archive';
 import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from './session-identity';
@@ -29,6 +30,7 @@ import type {
   ActivityState,
   ConversationSession,
   HandoffContext,
+  SessionCronJob,
   SessionGoal,
   SessionIncidentRequest,
   SessionInstruction,
@@ -79,6 +81,9 @@ const ACTIVE_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinks> = 
  * Serialized session for file persistence
  */
 interface SerializedSession {
+  /** SSOT 2026-10-23 — the cron job that created the session, and a placeholder-title mark. */
+  cronJob?: SessionCronJob;
+  titleProvisional?: boolean;
   /**
    * Incident ownership survives restarts: dropping it would silently promote a
    * restricted session back to an ordinary one.
@@ -877,8 +882,11 @@ export class SessionRegistry {
    */
   setSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
     const session = this.getSession(channelId, threadTs);
-    if (session && !session.title) {
+    // A provisional title (a cron job name, SSOT 2026-10-23 T2) is a
+    // placeholder — the first real title replaces it.
+    if (session && (!session.title || session.titleProvisional)) {
       session.title = decodeSlackEntities(title);
+      session.titleProvisional = undefined;
       this.saveSessions();
     }
   }
@@ -891,6 +899,7 @@ export class SessionRegistry {
     const session = this.getSession(channelId, threadTs);
     if (session) {
       session.title = decodeSlackEntities(title);
+      session.titleProvisional = undefined;
       this.saveSessions();
     }
   }
@@ -1407,6 +1416,9 @@ export class SessionRegistry {
     // Clear conversation-related fields
     session.sessionId = undefined;
     session.title = undefined;
+    // The placeholder mark belongs to the cleared title; the cron origin
+    // (`cronJob`) is a fact about the thread and stays.
+    session.titleProvisional = undefined;
     session.lastActivity = new Date();
     // The old task list stays as history; none of it is in progress any more,
     // so the new conversation's work is not attributed to it (dashboard T7/T10).
@@ -1987,6 +1999,8 @@ export class SessionRegistry {
             // Verified Eagle incident request that owns this session, plus the
             // host completion marker that decides whether a retry is admissible
             incidentRequest: session.incidentRequest,
+            cronJob: session.cronJob,
+            titleProvisional: session.titleProvisional || undefined,
             incidentAttemptFinishedId: session.incidentAttemptFinishedId,
             // Session-scoped `/autocompact` token override (persisted verbatim).
             autoCompactTokens: session.autoCompactTokens,
@@ -2042,6 +2056,8 @@ export class SessionRegistry {
         taskLedger: sanitizeTaskLedger(serialized.taskLedger),
         // Spec 12: nothing that ran before this process is watched any more.
         agents: loseRunningAgents(sanitizeAgentRegistry(serialized.agents), Date.now()),
+        // A cron run archived while the process was down stays filed under its job.
+        cronJob: sanitizeCronJob(serialized.cronJob),
         activityState: serialized.activityState || 'idle',
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
@@ -2222,6 +2238,8 @@ export class SessionRegistry {
           // which denies the retry rather than admitting one on bad state.
           incidentAttemptFinishedId:
             typeof serialized.incidentAttemptFinishedId === 'string' ? serialized.incidentAttemptFinishedId : undefined,
+          cronJob: sanitizeCronJob(serialized.cronJob),
+          titleProvisional: serialized.titleProvisional === true ? true : undefined,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
           // User SSOT instructions (restored from disk).

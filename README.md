@@ -277,6 +277,36 @@ for everyone — admins included:
   buttons and modal submissions return to the same auth view and page. The
   separate `cct` command keeps its existing behavior.
 
+### Dashboard capacity timeline
+
+The web dashboard shows the same llmux pool as an **LLM 가용량** section between
+the stats strip and the Agent inbox (`GET /api/dashboard/capacity`, llmux read at
+most every 30 s; the page refetches every 60 s and slides the markers toward
+"now" every 30 s). One row per provider group:
+
+- **Remaining rate, not tokens** — the group % is the unweighted mean of each
+  account's binding window (the smaller remaining of `5h` and `7d`); blocked,
+  cooling or auth-failed accounts count 0; stale windows and accounts with no
+  reading are shown as 미확인 and left out. Model-scoped weekly windows are
+  markers, not a binding limit.
+- **Cooldown timeline** — `now → 24h` takes 55% of the width over the stops
+  `0·1·3·6·12·24h`, then days to `7d` past a marked boundary. Each account gets a
+  marker where a window resets (● `5h`, ◆ `7d` / model-scoped) or, when blocked,
+  where it is usable again (■). Every tooltip states the clock time and the time
+  left; overlapping markers stack, and the earliest is never folded into `+N`.
+- **Empty / low** — an empty group leads with `다음 복귀 <account> · 2h 14m 후`
+  and shades now → that moment; a group under 20% names the next supply.
+- **Subscription tier colours** — the higher plan (Claude Max x20 · ChatGPT Pro
+  $500) is orange, the lower (Max x5 · Pro $200) blue, unknown grey, always with
+  the tier text on the marker. llmux does not report plans, so the map is
+  `SOMA_LLMUX_ACCOUNT_TIERS` (`group:name=tier`, e.g. `claude:ai7=x20,claude:ai12=x5`)
+  over built-in defaults (Codex `ai1`·`ai2` = Pro $200, `ai5`·`ai6` = Pro $500).
+  A bare llmux `max` is never guessed into x5/x20.
+- Not routed through llmux (`ccp` mode) → the section is hidden; llmux
+  unreachable → the section says so with a fixed reason.
+
+Spec: [`.prd/12-cron-lane-and-llm-capacity-spec.md`](./.prd/12-cron-lane-and-llm-capacity-spec.md).
+
 Wiring: [`src/slack/z/topics/auth-topic.ts`](./src/slack/z/topics/auth-topic.ts)
 → [`src/auth/llmux-client.ts`](./src/auth/llmux-client.ts) →
 [`src/slack/auth/capacity.ts`](./src/slack/auth/capacity.ts) →
@@ -397,6 +427,8 @@ Bare (no-prefix) `[cmd] [args]` forms run through the same command handlers as t
 The Codex block in the key DM points `OPENAI_BASE_URL` at the advertised server's `/v1` endpoint and uses your same tenant key. Copy the complete `codex --model … -c …` invocation: its explicit Responses provider reads `OPENAI_API_KEY` even when you already use ChatGPT login or another provider. The exports apply to the current terminal; the invocation does not rewrite Codex config or login credentials. Use that invocation again for later llmux sessions. See [Codex gateway authentication](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway).
 
 Any free-form text that no command handler claims is treated as a chat / workflow dispatch prompt.
+
+**Cron runs on the dashboard**: a session a cron fire creates starts under the job's name (not `Direct (skipDispatch)`); that title is provisional, so the first clear title — the turn summary or a linked issue/PR — replaces it, and the card fades the new title in. Its card leads with a **CRON** badge and lives in the dashboard's **CRON lane** above the columns: one tile per job with the schedule in words (cron is UTC), the next run, the last runs as a glyph-coded strip (✓ success · ✗ failed · ● running · ▲ needs you · ◌ no session), and the job's latest run as a live card. **지난 실행** opens a drawer with every kept run (the history keeps the last 20 per job) linked to its session, work log, conversation and Slack thread (`GET /api/dashboard/cron`). A cron fire injected into an existing session does not re-file that session.
 
 **Deploy-triggered cron lanes**: a cron job created or updated with `onDeploy: [{ repo, target }]` also fires, as its owner and in a new thread of its channel, when the deploy workflow — run from anyone's session — reports that a deploy of that repo into that exact branch succeeded (`deploy_completed` directive). The fired prompt names the deploy (repo, branch, merge SHA, deployer) and the deploy thread (channel + thread ts); the lane posts there itself with whatever Slack access its session has (e.g. the Slack Web API with the bot token from its environment); the built-in `send_thread_message` tool posts only to the lane's own thread, and the harness does not post for it. The deploy thread gets one line: the lanes started, or why a registered lane did not start (unconfirmed deploy, failure, unreadable directive), with the `cron run` to recover. A lane that should run only on deploys is instead an entry of `DATA_DIR/deploy-lanes.json` (`name`, `owner`, `channel`, `prompt`, `onDeploy`): no schedule, not a cron job (not in `cron list`). See [docs/current/spec/cron-deploy-lanes.md](docs/current/spec/cron-deploy-lanes.md).
 
