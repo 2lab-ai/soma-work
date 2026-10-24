@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import { PLACEHOLDER_SESSION_TITLE, SESSION_RESET_TITLE } from '@soma/common/format/display-title';
 import { Logger } from '@soma/common/logger';
 import type { AssistantStatusManager } from '../assistant-status-manager';
 import { EFFORT_LEVELS } from '../command-parser';
@@ -549,7 +550,7 @@ export class SessionInitializer {
           channel,
           threadTs,
           forceWorkflow,
-          forceWorkflow === 'onboarding' ? 'Onboarding' : 'New Session',
+          forceWorkflow === 'onboarding' ? 'Onboarding' : PLACEHOLDER_SESSION_TITLE,
         );
         if (!ok) {
           throw providers.createDispatchAbortError(
@@ -590,7 +591,7 @@ export class SessionInitializer {
                   session.handoffContext,
                 );
               }
-              this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
+              this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', PLACEHOLDER_SESSION_TITLE);
             }
           } finally {
             if (waitTimeoutId) clearTimeout(waitTimeoutId);
@@ -599,7 +600,7 @@ export class SessionInitializer {
           await this.dispatchWorkflow(channel, threadTs, dispatchText, sessionKey);
         } else {
           // No text available - use default workflow
-          this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
+          this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', PLACEHOLDER_SESSION_TITLE);
         }
       }
     } else if (!isNewSession) {
@@ -973,7 +974,7 @@ export class SessionInitializer {
         channel,
         threadTs,
         forceWorkflow,
-        forceWorkflow === 'onboarding' ? 'Onboarding' : 'Session Reset',
+        forceWorkflow === 'onboarding' ? 'Onboarding' : SESSION_RESET_TITLE,
       );
       if (!ok) {
         const currentSession = this.deps.claudeHandler.getSession(channel, threadTs);
@@ -992,7 +993,7 @@ export class SessionInitializer {
       await this.dispatchWorkflow(channel, threadTs, text, sessionKey);
     } else if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       // No text provided - use default workflow
-      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'Session Reset');
+      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', SESSION_RESET_TITLE);
     }
   }
 
