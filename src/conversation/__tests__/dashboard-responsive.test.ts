@@ -430,3 +430,38 @@ describe('settings page — reached from the dashboard top bar', () => {
     );
   });
 });
+
+describe('merged views — trinity code review R4 follow-ups', () => {
+  it('the board scroll compensation applies only to movers inside the kanban (CRON lane cards sit outside it)', () => {
+    const body = clientFn('runLayoutCheck');
+    expect(body).toContain('kb.contains(el) ? sk : 0');
+    expect(body).not.toMatch(/cached\.left - sx - sk,/);
+  });
+
+  it('Escape with a docked panel and the cron drawer open closes the drawer only (the topmost)', () => {
+    expect(TEMPLATE).toContain(
+      "if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closePanel();",
+    );
+  });
+
+  it('the capacity timeline repacks on its own width: a docked panel narrows the page without a window resize', () => {
+    const body = iife('initCapacityResize');
+    expect(body).toContain("getElementById('capacity')");
+    expect(body).toContain('new ResizeObserver(');
+    expect(body).toContain('setTimeout(paintCapacity, 150)');
+  });
+
+  it('the cron drawer close button and history buttons are 44px touch targets on touch screens', () => {
+    const resp = TEMPLATE.slice(TEMPLATE.indexOf('/* ═══ Device-responsive layout (SSOT 2026-10-24)'));
+    const coarse = resp.slice(resp.indexOf('@media (pointer: coarse) {'));
+    const block = coarse.slice(0, coarse.indexOf('\n}'));
+    expect(block).toContain('.cron-drawer-close { min-width: 44px; min-height: 44px; }');
+    expect(block).toContain('.cron-history-btn { min-height: 44px; }');
+  });
+
+  it('the settings search field is 16px on touch screens too', () => {
+    const settings = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
+    const coarse = settings.slice(settings.indexOf('@media (pointer: coarse) {'));
+    expect(coarse.slice(0, coarse.indexOf('\n}'))).toContain('.side input[type="search"]');
+  });
+});

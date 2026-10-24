@@ -124,7 +124,7 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
 }
 @media (pointer: coarse) {
   /* Touch screens (SSOT 2026-10-24): 16px text, so iOS does not zoom into a focused field. */
-  .row input[type="text"], .row input[type="number"], .row select { font-size: 16px; }
+  .side input[type="search"], .row input[type="text"], .row input[type="number"], .row select { font-size: 16px; }
 }
 @media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
 `;

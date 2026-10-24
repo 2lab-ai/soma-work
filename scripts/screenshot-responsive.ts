@@ -82,6 +82,12 @@ async function setupMockSessions() {
   add(3, 'Refactor the drawer', 'working');
   add(4, 'Ship release notes', 'idle');
   add(5, 'Triage open PRs', 'working');
+  // A cron run (#374): it leaves the columns for the CRON lane above them.
+  add(6, 'Nightly usage report', 'idle');
+  (sessions.get('C123:170000006.000001') as Record<string, unknown>).cronJob = {
+    id: 'job-nightly',
+    name: 'nightly-usage',
+  };
   setDashboardSessionAccessor(() => sessions);
   return sessions;
 }
@@ -102,6 +108,8 @@ async function preparePage(page: Page, opts: { savedView?: string; savedWidth?: 
       'Element.prototype.animate = function (kf, opts) {',
       "  try { if (this.matches('#kanban .card, #kanban .kanban-col-header') && JSON.stringify(kf).indexOf('transform') >= 0) window.__shiftAnims++; } catch (_e) {}",
       "  try { if (this.id === 'slide-panel' && JSON.stringify(kf).indexOf('width') >= 0) window.__panelWidthAnims++; } catch (_e) {}",
+      // Where a CRON lane card's layout FLIP starts on screen: its layout spot plus the first translate.
+      "  try { if (this.matches('.cron-lane .card') && kf[0] && kf[0].transform) { var m = /translate\\(([-\\d.]+)px, ([-\\d.]+)px\\)/.exec(kf[0].transform); var r = this.getBoundingClientRect(); if (m) window.__cronFlipStart = { left: r.left + Number(m[1]), top: r.top + Number(m[2]) }; } } catch (_e) {}",
       '  return __animate.call(this, kf, opts);',
       '};',
       opts.savedView ? `localStorage.setItem('soma-board-view', ${JSON.stringify(opts.savedView)});` : '',
@@ -188,7 +196,7 @@ async function checkFab(page: Page): Promise<Check[]> {
 }
 
 /** The cron run drawer (#374), opened directly: it fits the viewport and its close button is reachable. */
-async function checkCronDrawer(page: Page): Promise<Check[]> {
+async function checkCronDrawer(page: Page, touch: boolean): Promise<Check[]> {
   await page.evaluate(() => {
     const d = document.getElementById('cron-drawer') as HTMLElement;
     d.removeAttribute('inert');
@@ -197,7 +205,7 @@ async function checkCronDrawer(page: Page): Promise<Check[]> {
   await page.waitForFunction(
     () => (document.getElementById('cron-drawer') as HTMLElement).getAnimations().length === 0,
   );
-  const checks = await page.evaluate(() => {
+  const checks = await page.evaluate((touchArg) => {
     const out: { ok: boolean; msg: string }[] = [];
     const vw = document.documentElement.clientWidth;
     const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
@@ -208,11 +216,11 @@ async function checkCronDrawer(page: Page): Promise<Check[]> {
     });
     const c = (document.getElementById('cron-drawer-close') as HTMLElement).getBoundingClientRect();
     out.push({
-      ok: c.left >= 0 && c.right <= vw && c.top >= 0 && c.bottom <= vh && c.width >= 36,
-      msg: `cron drawer close button on screen (${c.left},${c.top} ${c.width}px)`,
+      ok: c.left >= 0 && c.right <= vw && c.top >= 0 && c.bottom <= vh && c.width >= (touchArg ? 44 : 36),
+      msg: `cron drawer close button on screen (${c.left},${c.top} ${c.width}px${touchArg ? ', ≥ 44px on touch' : ''})`,
     });
     return out;
-  });
+  }, touch);
   await page.evaluate(() => {
     const d = document.getElementById('cron-drawer') as HTMLElement;
     d.classList.remove('open');
@@ -231,6 +239,9 @@ async function checkSettings(page: Page, baseUrl: string, touch: boolean): Promi
     const sw = document.documentElement.scrollWidth;
     out.push({ ok: sw <= vw + 1, msg: `settings page has no sideways overflow (${sw} ≤ ${vw})` });
     if (touchArg) {
+      const search = document.getElementById('pref-filter') as HTMLElement | null;
+      const fsr = search ? parseFloat(getComputedStyle(search).fontSize) : 0;
+      out.push({ ok: fsr >= 16, msg: `settings search field ${fsr}px ≥ 16px on touch` });
       // The rows load per user; probe the field rules with a detached row.
       const row = document.createElement('div');
       row.className = 'row';
@@ -351,7 +362,7 @@ async function sweepBrowser(name: string, type: BrowserType, baseUrl: string, ou
         record(await checkOpen(page, touch), 'open');
         await page.screenshot({ path: path.join(outDir, `${tag}-open.png`) });
         await page.evaluate(() => (window as unknown as { closePanel(): void }).closePanel());
-        record(await checkCronDrawer(page), 'cron');
+        record(await checkCronDrawer(page, touch), 'cron');
         record(await checkSettings(page, baseUrl, touch), 'settings');
         await page.screenshot({ path: path.join(outDir, `${tag}-settings.png`) });
       } finally {
@@ -420,6 +431,10 @@ async function transitions(
     await openDashboard(page, baseUrl);
     return { ctx, page };
   };
+  // The board-motion checks (1-4d) measure the columns in view: the CRON lane joins at 4e.
+  const CRON_KEY = 'C123:170000006.000001';
+  const cronRun = sessions.get(CRON_KEY);
+  sessions.delete(CRON_KEY);
   try {
     // 1. Unfold with no saved view: List on the cover → Board unfolded, animated; and back.
     {
@@ -605,6 +620,79 @@ async function transitions(
       expect(after.anims === 0, `a handle drag starts no width animation (${after.anims})`);
       expect(Math.abs(after.left - (edge - 240)) <= 2, `the edge follows the pointer (${after.left} vs ${edge - 240})`);
       expect(after.saved !== null, `the dragged width is saved (${after.saved})`);
+      await ctx.close();
+    }
+    if (cronRun) sessions.set(CRON_KEY, cronRun);
+    // 4e. A CRON lane card sits outside the board's sideways scroll: unfolding right after
+    //     a board scroll starts it where it was on screen (trinity code review R4, astra/fable).
+    {
+      const { ctx, page } = await fresh({ savedView: 'board' });
+      await page.setViewportSize({ width: 669, height: 825 });
+      await page.waitForFunction(() => window.innerWidth === 669);
+      await page.waitForTimeout(600);
+      const before = await page.evaluate(async () => {
+        const kb = document.getElementById('kanban') as HTMLElement;
+        const card = document.querySelector('.cron-lane .card') as HTMLElement | null;
+        if (!card) return null;
+        const scrolled = new Promise((r) => kb.addEventListener('scroll', r, { once: true }));
+        kb.scrollTo({ left: 250, behavior: 'instant' });
+        await scrolled;
+        // Unfold inside the 120ms before the cache refresh: hold that refresh.
+        const w = window as unknown as { _layoutRefreshTimer: number; __cronFlipStart: unknown };
+        clearTimeout(w._layoutRefreshTimer);
+        w.__cronFlipStart = null;
+        const r = card.getBoundingClientRect();
+        return { left: r.left, top: r.top, k: kb.scrollLeft };
+      });
+      expect(
+        before !== null && before.k > 0,
+        `the CRON lane has a card and the board scrolled sideways (${before ? before.k : 'no card'})`,
+      );
+      await page.setViewportSize({ width: 951, height: 543 });
+      await page.waitForFunction(() => window.innerWidth === 951);
+      const seen = await page.evaluate(
+        () =>
+          new Promise<{ start: { left: number; top: number } | null; now: { left: number; top: number } }>((resolve) =>
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                const card = document.querySelector('.cron-lane .card') as HTMLElement;
+                const r = card.getBoundingClientRect();
+                const w = window as unknown as { __cronFlipStart: { left: number; top: number } | null };
+                resolve({ start: w.__cronFlipStart, now: { left: r.left, top: r.top } });
+              }),
+            ),
+          ),
+      );
+      if (before) {
+        const from = seen.start || seen.now;
+        expect(
+          Math.abs(from.left - before.left) <= 1 && Math.abs(from.top - before.top) <= 2,
+          `the CRON card starts where it was (${seen.start ? 'FLIP from' : 'unmoved at'} ${from.left},${from.top} vs ${before.left},${before.top})`,
+        );
+      }
+      await ctx.close();
+    }
+    // 4f. Escape over a docked panel with the cron drawer open closes the drawer only.
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      const page = await ctx.newPage();
+      page.on('pageerror', (e) => failures.push(`transition escape: page error ${e.message}`));
+      await preparePage(page);
+      await openDashboard(page, baseUrl);
+      await openFilledPanel(page);
+      await page.click('.cron-history-btn');
+      await page.waitForTimeout(400);
+      const opened = await page.evaluate(() =>
+        (document.getElementById('cron-drawer') as HTMLElement).classList.contains('open'),
+      );
+      expect(opened, 'the CRON history button opens the cron drawer beside the docked panel');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(100);
+      const st = await page.evaluate(() => ({
+        drawer: (document.getElementById('cron-drawer') as HTMLElement).classList.contains('open'),
+        panel: (document.getElementById('slide-panel') as HTMLElement).classList.contains('open'),
+      }));
+      expect(!st.drawer && st.panel, `Escape closes the cron drawer only (drawer ${st.drawer}, panel ${st.panel})`);
       await ctx.close();
     }
     // 4. Reduced motion: no movement, a fade only.
