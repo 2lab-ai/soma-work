@@ -1920,7 +1920,7 @@ describe('관찰 기록 (에피소딕)', () => {
 
     const pageApi = vi.fn(async () => ({ ok: true, data: {} }));
     const memPage: any = { page: { id: 'concepts/a', title: 'A' }, revision: 'pa' };
-    const w = load<any>(['deletePage', 'memStatus', 'pageSaveBusy', 'memHold'], [], {
+    const w = load<any>(['deletePage', 'memStatus', 'pageSaveBusy', 'memHold', 'setPageFieldsDisabled'], [], {
       document: { getElementById: () => ({ textContent: '', setAttribute() {}, innerHTML: '' }) },
       _memPage: memPage,
       apiWrite: pageApi,
@@ -2619,6 +2619,66 @@ describe('관찰 기록 (에피소딕)', () => {
     await opening;
     expect(detailHtml).toContain('새 페이지');
     expect(detailHtml).not.toContain('agent/b');
+  });
+
+  it('a page delete locks the editor until it is answered; a refused delete unlocks it (review R14, astra)', async () => {
+    const detail: any = { innerHTML: '' };
+    const status: any = { textContent: '', innerHTML: '', setAttribute() {} };
+    const fields = [{ disabled: false }];
+    const doc = {
+      getElementById: (id: string) => (id === 'mem-page-detail' ? detail : status),
+      querySelectorAll: () => fields,
+    };
+    const pageA = { id: 'agent/a', title: 'A', aliases: [], current: 'a', history: [], updated: '2026-10-23' };
+    let answer: (v: unknown) => void = () => {};
+    const fns = load<any>(
+      [
+        'esc',
+        'escAttr',
+        'deletePage',
+        'renderPageEditor',
+        'memStatus',
+        'pageSaveBusy',
+        'memHold',
+        'setPageFieldsDisabled',
+      ],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      {
+        document: doc,
+        _memPage: { page: pageA, revision: 'a1', raw: '# A\n', representable: true },
+        apiWrite: vi.fn(() => new Promise((res) => (answer = res))),
+        confirmDialog: async () => true,
+        refreshPageIndex: async () => {},
+        paintPageList: () => {},
+      },
+    );
+    const deleting = fns.deletePage();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fields[0].disabled).toBe(true); // nothing can be typed while the delete is out
+    answer({ ok: false, status: 409, error: 'changed' });
+    await deleting;
+    expect(fields[0].disabled).toBe(false);
+  });
+
+  it('a History line can be removed only when no save is out (review R14, astra)', () => {
+    const status: any = { textContent: '', setAttribute() {} };
+    const row: any = {
+      removed: false,
+      remove() {
+        this.removed = true;
+      },
+    };
+    const fns = load<any>(['removeHistoryLine', 'pageSaveBusy', 'memHold', 'memStatus'], [], {
+      document: { getElementById: () => status },
+      _memPage: { page: { id: 'agent/a' }, saving: Date.now() },
+    });
+    fns.memHold.at = Date.now();
+    fns.removeHistoryLine({ parentNode: row });
+    expect(row.removed).toBe(false);
+    fns.memHold.at = 0;
+    fns.removeHistoryLine({ parentNode: row });
+    expect(row.removed).toBe(false); // the page's own save is still out
   });
 
   it('a refused page answer for an editor no longer open keeps its draft in the recovery box (review R11, grok)', async () => {

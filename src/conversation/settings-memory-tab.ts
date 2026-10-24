@@ -456,6 +456,7 @@ function pageSaveBusy() {
 // The page editor's fields are locked while its save is out: an answer re-renders the
 // editor, so nothing may be typed into it meanwhile (review R7).
 function setPageFieldsDisabled(on) {
+  if (!document.querySelectorAll) return;
   var els = document.querySelectorAll('#mem-page-detail input, #mem-page-detail textarea, #mem-page-detail select');
   for (var i = 0; i < els.length; i++) els[i].disabled = !!on;
 }
@@ -530,12 +531,17 @@ function renderPageEditor() {
   var hist = p.history || [];
   for (var i = 0; i < hist.length; i++) {
     html += '<div class="hist"><input type="text" class="pg-hist" value="' + escAttr(hist[i]) + '" aria-label="History ' + (i + 1) + '">'
-      + '<button type="button" class="btn link" onclick="this.parentNode.remove()">빼기</button></div>';
+      + '<button type="button" class="btn link" onclick="removeHistoryLine(this)">빼기</button></div>';
   }
   html += '</div><button type="button" class="btn link" onclick="addHistoryLine()">History 줄 추가</button></div>'
     + '<div class="line"><button type="button" class="btn primary" onclick="savePage()">' + (isNew ? '만들기' : '저장') + '</button> '
     + (isNew ? '' : '<button type="button" class="btn" onclick="deletePage()">페이지 삭제</button> <button type="button" class="btn link" onclick="pageRawMode(true)">원문(markdown)으로 편집</button>') + '</div>';
   el.innerHTML = html;
+}
+// "빼기" on a History line waits for a save like every other edit (review R14).
+function removeHistoryLine(btn) {
+  if (pageSaveBusy()) return;
+  if (btn && btn.parentNode) btn.parentNode.remove();
 }
 function addHistoryLine() {
   if (pageSaveBusy()) return;
@@ -543,7 +549,7 @@ function addHistoryLine() {
   var row = document.createElement('div');
   row.className = 'hist';
   var today = new Date().toISOString().slice(0, 10);
-  row.innerHTML = '<input type="text" class="pg-hist" value="' + today + ': " aria-label="History 새 줄"><button type="button" class="btn link" onclick="this.parentNode.remove()">빼기</button>';
+  row.innerHTML = '<input type="text" class="pg-hist" value="' + today + ': " aria-label="History 새 줄"><button type="button" class="btn link" onclick="removeHistoryLine(this)">빼기</button>';
   box.insertBefore(row, box.firstChild);
   row.firstChild.focus();
 }
@@ -717,10 +723,13 @@ async function deletePage() {
   if (pageSaveBusy()) return; // a save started while the dialog was open
   sentFrom.saving = Date.now();
   memHold.at = Date.now();
+  // the editor is locked while the delete is out: nothing typed after the confirmation is lost (review R14)
+  setPageFieldsDisabled(true);
   var r;
   try { r = await apiWrite('DELETE', '/api/memory/page', { id: p.id, revision: revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   sentFrom.saving = 0;
   memHold.at = 0;
+  setPageFieldsDisabled(false);
   if (!r.ok) { memStatus((r.status === 409 ? '그사이 바뀌었습니다 — 다시 열어 확인하세요: ' : '지우지 못했습니다: ') + r.error, true); return; }
   // Close the editor only if it still shows the deleted page (review R5).
   if (_memPage === sentFrom) { _memPage = null; renderPageEditor(); }
