@@ -93,7 +93,7 @@ Use only the profile's three primitives: `open(url)`, `eval(js)`, `screenshot(pa
 - Record the version and its provenance (health field, image tag, or the fallback source used).
 - No evidence → no pass (`blocked`/`partial`). Never fabricate evidence.
 - Keep evidence in both places: the JSON file and the tracker comment.
-- **Masking** — the masker is `node "$CLAUDE_PLUGIN_ROOT/skills/qa-report/scripts/mask.mjs" < in > out` (JSON or text, same format out; exit 2 = bad input → do not write). First run the structured result JSON through it as JSON. Build the tracker comment only from that masked JSON, then pipe the formatted comment text through it as well before posting. Never interpolate unmasked values into Markdown and never write an unmasked copy to disk. Masking is the only allowed edit to raw evidence.
+- **Masking** — the masker is `node "$CLAUDE_PLUGIN_ROOT/skills/qa-report/scripts/mask.mjs" < in > out` (JSON or text, same format out; exit 2 = bad input → do not write). (`$CLAUDE_PLUGIN_ROOT` = two directories above this skill's base directory; shells usually do not set it, so write the absolute path.) First run the structured result JSON through it as JSON. Build the tracker comment only from that masked JSON, then pipe the formatted comment text through it as well before posting. Never interpolate unmasked values into Markdown and never write an unmasked copy to disk. Masking is the only allowed edit to raw evidence.
 - **Credentials** — account references only. Never put a credential value in a command line, `eval` source, `steps`, or a file name. Write the shell variable or file the account reference names (e.g. `"$QA_PASSWORD"`, `"$(cat <file>)"`) and let the shell expand it.
 
 ## Results

@@ -4,6 +4,7 @@ FROM node:18-bookworm-slim
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl bash coreutils findutils grep sed openssl ca-certificates gnupg \
+    procps \
     ripgrep \
     python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
