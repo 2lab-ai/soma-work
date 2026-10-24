@@ -71,6 +71,7 @@ import {
   setDashboardModelHandler,
   setDashboardMultiChoiceAnswerHandler,
   setDashboardNewTaskProvider,
+  setDashboardPermissionAnswerHandler,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
@@ -114,6 +115,7 @@ import {
   startUsageRefreshScheduler,
   type UsageRefreshScheduler,
 } from './oauth';
+import { answerPermissionPrompt } from './permission-prompt-response';
 import { acquirePidLock, releasePidLock } from './pid-lock';
 import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
@@ -890,6 +892,12 @@ async function start() {
         throw error; // Re-throw so the API endpoint returns the correct HTTP status
       }
     });
+
+    // Connect dashboard: permission prompt answers (SSOT 2026-10-24) — the same
+    // answer path as the Slack buttons, with the registry for "approve & disable rule".
+    setDashboardPermissionAnswerHandler((args) =>
+      answerPermissionPrompt({ ...args, sessions: claudeHandler.getSessionRegistry() }),
+    );
 
     // Connect dashboard: multi-choice form answer handler
     setDashboardMultiChoiceAnswerHandler(
