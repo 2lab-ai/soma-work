@@ -583,16 +583,7 @@ async function start() {
     const mcpConfig = mcpManager.loadConfiguration();
     timing(`MCP config loaded (${mcpConfig ? Object.keys(mcpConfig.mcpServers).length : 0} servers)`);
 
-    // Initialize Plugin manager
-    const pluginManager = new PluginManager(appConfig.plugin || {}, PLUGINS_DIR, undefined, BUNDLED_PLUGINS);
-    try {
-      await pluginManager.initialize();
-      mcpManager.setPluginManager(pluginManager);
-      timing(`Plugins initialized (${pluginManager.getResolvedPlugins().length} plugins)`);
-    } catch (error) {
-      logger.error('Plugin initialization failed (non-critical, using fallback)', error);
-    }
-
+    // Before plugin init: private marketplace fetches use `gh`, which needs the GITHUB_TOKEN auto-refresh sets.
     // Initialize GitHub App authentication and auto-refresh if configured
     if (isGitHubAppConfigured()) {
       await discoverInstallations();
@@ -609,6 +600,16 @@ async function start() {
           logger.error('Failed to start GitHub App token auto-refresh:', error);
         }
       }
+    }
+
+    // Initialize Plugin manager
+    const pluginManager = new PluginManager(appConfig.plugin || {}, PLUGINS_DIR, undefined, BUNDLED_PLUGINS);
+    try {
+      await pluginManager.initialize();
+      mcpManager.setPluginManager(pluginManager);
+      timing(`Plugins initialized (${pluginManager.getResolvedPlugins().length} plugins)`);
+    } catch (error) {
+      logger.error('Plugin initialization failed (non-critical, using fallback)', error);
     }
 
     // Initialize A2T service (audio-to-text transcription, non-critical)
