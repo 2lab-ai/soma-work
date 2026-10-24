@@ -805,7 +805,11 @@ export class SkillForceHandler implements CommandHandler {
       this.resolveSkill(nestedRef, state, depth + 1, childOwner);
     }
 
-    // Add this skill AFTER its dependencies (depth-first)
-    state.resolved.set(canonicalKey, content);
+    // Add this skill AFTER its dependencies (depth-first). The header mirrors
+    // the line Claude Code's Skill tool prepends: bundled skills resolve
+    // `$CLAUDE_PLUGIN_ROOT/skills/<x>/…` from it, and CLAUDE_PLUGIN_ROOT is not
+    // set in bot-session shells. Nested-ref and `copied_from` parsing above
+    // read the raw `content`, never this header.
+    state.resolved.set(canonicalKey, `Base directory for this skill: ${path.dirname(skillPath)}\n\n${content}`);
   }
 }
