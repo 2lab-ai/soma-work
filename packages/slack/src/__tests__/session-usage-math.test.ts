@@ -18,6 +18,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  adoptSdkSessionId,
   applyPostCompactOccupancy,
   selectCurrentContextTokens,
   settleFoldedLiveUsage,
@@ -346,9 +347,41 @@ describe('settleFoldedLiveUsage', () => {
     expect(rest).toBe(folded);
   });
 
+  it('keeps the fold across a zero result with no breakdown (empty modelUsage)', () => {
+    const { folded: rest } = settleFoldedLiveUsage(turn(0, 0, false), folded);
+    expect(rest).toBe(folded);
+  });
+
   it('per-turn usage (no breakdown) is taken whole and drops the fold', () => {
     const { spend, folded: rest } = settleFoldedLiveUsage(turn(300, 0.3, false), folded);
     expect(spend.inputTokens).toBe(300);
     expect(rest).toBeUndefined();
+  });
+});
+
+describe('adoptSdkSessionId', () => {
+  it('a new SDK session id seeds an empty baseline for it', () => {
+    const session: { sessionId?: string; sdkUsageBaseline?: any } = {
+      sessionId: undefined,
+      sdkUsageBaseline: {
+        sdkSessionId: 'old',
+        models: {
+          opus: { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUsd: 9 },
+        },
+      },
+    };
+    adoptSdkSessionId(session, 'new');
+    expect(session).toEqual({ sessionId: 'new', sdkUsageBaseline: { sdkSessionId: 'new', models: {} } });
+  });
+
+  it('a resumed id leaves the baseline alone — including a missing one (pre-baseline session)', () => {
+    const legacy: { sessionId?: string; sdkUsageBaseline?: any } = { sessionId: 'A' };
+    adoptSdkSessionId(legacy, 'A');
+    expect(legacy.sdkUsageBaseline).toBeUndefined();
+
+    const baseline = { sdkSessionId: 'A', models: {} };
+    const resumed = { sessionId: 'A', sdkUsageBaseline: baseline };
+    adoptSdkSessionId(resumed, 'A');
+    expect(resumed.sdkUsageBaseline).toBe(baseline);
   });
 });
