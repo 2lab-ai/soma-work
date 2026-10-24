@@ -819,6 +819,14 @@ async function transitions(
         await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
         const before = card.getBoundingClientRect().left;
         const col0 = card.getAttribute('data-col');
+        // Where the render's FLIP starts: read in the same task as the render (a
+        // mutation callback runs before the next frame), so it is the spot the card
+        // was drawn at when the render landed — the path's true origin.
+        let start: number | null = null;
+        const mo = new MutationObserver(() => {
+          if (start === null && card.getAttribute('data-col') !== col0) start = card.getBoundingClientRect().left;
+        });
+        mo.observe(card, { attributes: true, attributeFilter: ['data-col'] });
         void w.loadSessions();
         const xs: number[] = [];
         const cols: (string | null)[] = [];
@@ -827,7 +835,8 @@ async function transitions(
           cols.push(card.getAttribute('data-col'));
           await new Promise((res) => requestAnimationFrame(res));
         }
-        return { before, xs, cols, col0 };
+        mo.disconnect();
+        return { before, xs, cols, col0, start };
       });
       moving.activityState = was;
       const end = r.xs[r.xs.length - 1];
@@ -835,12 +844,12 @@ async function transitions(
       // changed), not before the request: the docking shift keeps moving it meanwhile,
       // and a slow response is not a jump (trinity R2 on #409, astra and fable).
       const k = r.cols.findIndex((c) => c !== r.col0);
-      const at = k > 0 ? Math.min(r.xs[k - 1], r.xs[k]) : r.before;
-      const atHi = k > 0 ? Math.max(r.xs[k - 1], r.xs[k]) : r.before;
-      const lo = Math.min(at, end) - 2;
-      const hi = Math.max(atHi, end) + 2;
+      const origin = r.start === null ? r.before : r.start;
+      const lo = Math.min(origin, end) - 2;
+      const hi = Math.max(origin, end) + 2;
+      // Every frame from the landing on — the first one included (trinity R3, astra).
       const out = (k > 0 ? r.xs.slice(k) : r.xs).filter((x) => x < lo || x > hi);
-      expect(k > 0, `the render lands while sampled (frame ${k})`);
+      expect(k > 0 && r.start !== null, `the render lands while sampled (frame ${k}, FLIP from ${r.start})`);
       expect(Math.abs(end - r.before) > 50, `the render moves the card (${r.before} → ${end})`);
       expect(
         out.length === 0,
