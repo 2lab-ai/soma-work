@@ -314,6 +314,62 @@ describe('개인 메모리 — a repaint keeps what is typed (review R9)', () =>
     await saving;
   });
 
+  it('a 409 holds the tab until its reload is done; undo and clear wait for a write (review R11, astra)', async () => {
+    const p = l1Page();
+    p.els['mem-recover'] = { innerHTML: '' };
+    const mem: any = { l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') } };
+    let reload: (v: unknown) => void = () => {};
+    const fns = load<any>([...L1_FNS, 'loadMemory', 'l1Undo', 'l1Clear'], ['L1_LABELS', 'L1_FILES', '_memLoaded'], {
+      document: p.doc,
+      _mem: mem,
+      _memUndo: { target: 'user', text: 'old note' },
+      apiWrite: vi.fn(async () => ({ ok: false, status: 409, error: 'changed' })),
+      fetch: vi.fn(() => new Promise((res) => (reload = res))),
+      paintPageList: () => {},
+      paintDates: () => {},
+      confirmDialog: async () => true,
+    });
+    fns.paintL1();
+    fns.l1EditStart('memory', 0);
+    p.els['l1-edit-memory'].value = 'e0, edited';
+    const saving = fns.l1Save('memory', 0);
+    await Promise.resolve();
+    await Promise.resolve();
+    // the 409 is in, the reload is out: still held
+    expect(p.els['l1-edit-memory'].disabled).toBe(true);
+    await fns.l1Undo();
+    await fns.l1Clear('memory');
+    expect(p.els['mem-l1-body'].innerHTML).toContain("l1Save('memory',0)");
+    reload({
+      ok: true,
+      json: async () => ({
+        l1: { memory: block(['e0', 'agent'], 'r2'), user: block([], 'u1') },
+        pages: [],
+        episodicDates: [],
+      }),
+    });
+    await saving;
+    expect(p.els['l1-edit-memory'].value).toBe('e0, edited');
+  });
+
+  it('switching between two identical entries keeps the first draft (review R11, astra)', () => {
+    const p = l1Page();
+    p.els['mem-recover'] = { innerHTML: '' };
+    const mem: any = { l1: { memory: block(['same', 'same'], 'r1'), user: block([], 'u1') } };
+    const fns = load<any>(L1_FNS, ['L1_LABELS', 'L1_FILES'], {
+      document: p.doc,
+      _mem: mem,
+      _memUndo: null,
+      apiWrite: vi.fn(),
+      loadMemory: async () => {},
+    });
+    fns.paintL1();
+    fns.l1EditStart('memory', 0);
+    p.els['l1-edit-memory'].value = 'first, edited';
+    fns.l1EditStart('memory', 1);
+    expect(p.els['l1-new-memory'].value + p.els['mem-recover'].innerHTML).toContain('first, edited');
+  });
+
   it('the L1 editor and the add box are locked while their write is out (review R9, astra)', async () => {
     const p = l1Page();
     const mem: any = { l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') } };
@@ -743,6 +799,7 @@ describe('in-flight writes hold what they were sent from (review R7)', () => {
         'memKeepDraft',
         'memRecover',
         'paintRecover',
+        'epRecover409',
       ],
       ['_epEditor'],
       {
@@ -864,6 +921,7 @@ describe('episodic answers apply only where they belong (review R8)', () => {
     'memKeepDraft',
     'memRecover',
     'paintRecover',
+    'epRecover409',
   ];
   function page(day: unknown, extra: Record<string, unknown> = {}) {
     const els: Record<string, any> = {
@@ -1194,6 +1252,44 @@ describe('episodic answers apply only where they belong (review R8)', () => {
     expect(p.els['mem-recover'].innerHTML).toContain('x, edited');
   });
 
+  it('switching between two identical episodic records keeps the first draft (review R11, astra)', () => {
+    const twin = { time: '09:00', content: 'same' };
+    const day = { date: '2026-10-23', revision: 't1', entries: [twin, { ...twin }] };
+    const p = page(day);
+    p.els['mem-recover'] = { innerHTML: '' };
+    const fns = load<any>(EP_FNS, ['_epEditor'], { document: p.doc, _memDay: day, apiWrite: vi.fn() });
+    fns.renderDay(0);
+    p.edit().value = 'first twin, edited';
+    fns.renderDay(1);
+    expect(p.els['mem-ep-new'].value + p.els['mem-recover'].innerHTML).toContain('first twin, edited');
+  });
+
+  it('an episodic 409 holds the tab until its reload is done (review R11, astra)', async () => {
+    const day = { date: '2026-10-23', revision: 't1', entries: [{ time: '09:00', content: 'r0' }] };
+    const p = page(day);
+    p.els['mem-recover'] = { innerHTML: '' };
+    let reload: (v: unknown) => void = () => {};
+    const fns = load<any>(EP_FNS, ['_epEditor'], {
+      document: p.doc,
+      _memDay: day,
+      _mem: { episodicDates: ['2026-10-23'] },
+      apiWrite: vi.fn(async () => ({ ok: false, status: 409, error: 'changed' })),
+      fetch: vi.fn(() => new Promise((res) => (reload = res))),
+      refreshPageIndex: async () => {},
+      paintDates: () => {},
+    });
+    fns.renderDay(0);
+    const box = p.edit();
+    box.value = 'r0, edited';
+    const saving = fns.epSave(0);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(box.disabled).toBe(true); // still locked while the day reloads
+    reload({ ok: true, json: async () => ({ ...day, revision: 't2' }) });
+    await saving;
+    expect(p.els['mem-ep-body'].innerHTML).toContain('r0, edited');
+  });
+
   it('switching days with an editor open moves its draft to the note box', async () => {
     const d1 = { date: '2026-10-22', revision: 'a', entries: [{ time: '01:00', content: 'x' }] };
     const d2 = { date: '2026-10-23', revision: 'b', entries: [{ time: '02:00', content: 'y' }] };
@@ -1295,6 +1391,7 @@ describe('관찰 기록 (에피소딕) — the editor is bound to its day (revie
         'memKeepDraft',
         'memRecover',
         'paintRecover',
+        'epRecover409',
       ],
       ['_epEditor'],
       {
@@ -1369,6 +1466,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'memKeepDraft',
         'memRecover',
         'paintRecover',
+        'epRecover409',
       ],
       [],
       {
@@ -1414,6 +1512,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'memKeepDraft',
         'memRecover',
         'paintRecover',
+        'epRecover409',
       ],
       [],
       {
@@ -1465,6 +1564,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'memKeepDraft',
         'memRecover',
         'paintRecover',
+        'epRecover409',
       ],
       [],
       {
@@ -1526,6 +1626,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'memKeepDraft',
         'memRecover',
         'paintRecover',
+        'epRecover409',
       ],
       [],
       {
@@ -1634,6 +1735,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'memKeepDraft',
         'memRecover',
         'paintRecover',
+        'epRecover409',
       ],
       [],
       {
@@ -1687,6 +1789,7 @@ describe('관찰 기록 (에피소딕)', () => {
         'memKeepDraft',
         'memRecover',
         'paintRecover',
+        'epRecover409',
       ],
       [],
       {
@@ -1707,7 +1810,7 @@ describe('관찰 기록 (에피소딕)', () => {
     expect(
       await w.epWrite('PUT', '/api/memory/episodic/2026-10-20/1', { content: long, revision: 'd1' }, long, 1, 'second'),
     ).toBe(false);
-    expect(loadDay).toHaveBeenCalledWith('2026-10-20');
+    expect(loadDay).toHaveBeenCalledWith('2026-10-20', true);
     expect(renderDay).toHaveBeenLastCalledWith(1, long);
     expect(status.textContent).toContain('편집 칸에 그대로');
   });
