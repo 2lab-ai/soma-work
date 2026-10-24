@@ -132,9 +132,12 @@ describe('drawer — a sheet below 840px, docked beside the board from 840px', (
     expect(resize).not.toContain('MutationObserver');
   });
 
-  it('only a layout shift lets the drawer animate its width; ordinary window drags do not lag behind', () => {
-    expect(rule('.is-layout-shift .slide-panel')).toContain('width var(--dur-move) var(--ease-out)');
+  it('only a layout shift animates the drawer width (WAAPI from the coordinator); window drags never lag behind', () => {
+    // A CSS width transition would trail every desktop window drag; a class toggled
+    // in a resize handler lands after the browser has already styled the new size.
     expect(rule('.slide-panel')).not.toContain('width var(');
+    expect(TEMPLATE).not.toContain('.is-layout-shift .slide-panel');
+    expect(clientFn('runLayoutCheck')).toContain("panel.animate([{ width: fromW + 'px' }, { width: toW + 'px' }]");
   });
 });
 
@@ -163,7 +166,9 @@ describe('panel body — pinned Tasks and Artifacts, one main scroll, at least h
   it('the body is a grid whose last row (the scroll area) never gets less than half of it', () => {
     const body = rule('.panel-body');
     expect(body).toContain('display: grid');
-    expect(body).toContain('grid-template-rows: auto auto minmax(50%, 1fr)');
+    // Half the body — unless the two pinned 44px floors leave less, so no row ever
+    // overflows the body (which clips) on the shortest docked screens.
+    expect(body).toContain('grid-template-rows: auto auto minmax(min(50%, calc(100% - 88px)), 1fr)');
     expect(body).toContain('container: pbody / size');
     expect(rule('.panel-scroll')).toContain('grid-row: 3');
   });
@@ -181,7 +186,8 @@ describe('panel body — pinned Tasks and Artifacts, one main scroll, at least h
   });
 
   it('a short body shows artifacts as name chips (no thumbnail), the play button inline; every tile stays reachable sideways', () => {
-    const compact = cssBlock('@container pbody (max-height: 640px) {');
+    // 560px: below it, R/2 cannot hold full thumbnails plus a couple of task rows.
+    const compact = cssBlock('@container pbody (max-height: 560px) {');
     expect(compact).not.toBe('');
     expect(compact).toContain('.art-strip-panel .art-thumb { display: none; }');
     expect(compact).toContain('.art-strip-panel .art-play { position: static;');
@@ -218,7 +224,8 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
   it('below 640px the page clears the FAB, the defaults menu spans the bar, the artifact viewer is full screen', () => {
     const phone = cssBlock(PHONE);
     expect(phone).not.toBe('');
-    expect(phone).toContain('.main { padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }');
+    // Only a board with cards gets the clearance: an empty page must not turn scrollable.
+    expect(phone).toContain('.inbox:has(.card) { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }');
     expect(phone).toContain('.td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }');
     expect(phone).toContain('.art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }');
   });
@@ -326,6 +333,37 @@ describe('layout transition — one coordinator', () => {
   it('the default view at load comes from the same helper (List below 640px)', () => {
     expect(TEMPLATE).toContain('setBoardView(defaultBoardView(window.innerWidth, savedBoardView()));');
     expect(clientFn('defaultBoardView')).toContain('innerWidth < 640');
+  });
+});
+
+describe('layout transition — review fixes (trinity code review R1)', () => {
+  it('a user Board/List switch hands its own FLIP targets to the coordinator, so nothing animates twice', () => {
+    const body = clientFn('setBoardView');
+    // The FLIP path adopts the targets it measured; the no-animation user path adopts the settled layout.
+    expect(body).toContain('adoptLayoutTargets(targets)');
+    expect(body).toContain('adoptLayoutTargets(null)');
+    expect(clientFn('adoptLayoutTargets')).toContain('_layoutModeKey = layoutModeKey(currentLayoutMode())');
+  });
+
+  it('an element whose layout did not move keeps its flight: no cancel, no second FLIP', () => {
+    const { sameSpot } = load<{
+      sameSpot(a: { left: number; top: number }, b: { left: number; top: number }): boolean;
+    }>(['sameSpot']);
+    expect(sameSpot({ left: 10, top: 20 }, { left: 10.4, top: 19.7 })).toBe(true);
+    expect(sameSpot({ left: 10, top: 20 }, { left: 11, top: 20 })).toBe(false);
+    const body = clientFn('runLayoutCheck');
+    expect(body).toContain('sameSpot(target, layout)');
+  });
+
+  it('runs at most once per frame (window resize, ResizeObserver and timers share one frame stamp)', () => {
+    const body = clientFn('runLayoutCheck');
+    expect(body).toContain('document.timeline');
+    expect(body).toContain('_layoutCheckFrame');
+  });
+
+  it('the end of a shift restores the panel anchor only if the reader has not touched the panel since', () => {
+    expect(clientFn('runLayoutCheck')).toContain('gen === _panelScrollGen');
+    expect(iife('initLayoutTransitions')).toContain('_panelScrollGen++');
   });
 });
 
