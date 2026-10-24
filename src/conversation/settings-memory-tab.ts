@@ -144,7 +144,9 @@ function memKeepDraft(boxId, text, label) {
   memRecover(label, text);
 }
 function memRecover(label, text) {
-  memRecover.items = (memRecover.items || []).concat([{ label: label, text: text }]);
+  var items = memRecover.items || [];
+  for (var i = 0; i < items.length; i++) if (items[i].text === text) return; // kept once
+  memRecover.items = items.concat([{ label: label, text: text }]);
   paintRecover();
 }
 function paintRecover() {
@@ -295,6 +297,7 @@ function l1Count(target) {
 // so nothing typed is lost (review P1).
 async function l1Write(method, url, payload, draft, at, orig, unique) {
   var target = url.split('/')[4];
+  var sentOpen = paintL1.open; // the editor a save was sent from
   var held = _mem.l1[target];
   if (held) held.saving = Date.now();
   memHold.at = Date.now();
@@ -318,7 +321,10 @@ async function l1Write(method, url, payload, draft, at, orig, unique) {
   if (r.ok) {
     _mem.l1[target] = r.data.l1;
     // its own editor closes on its save; a new note empties its box (an undo leaves the box alone)
-    paintL1(null, method === 'PUT' ? { close: true } : method === 'POST' && !(payload && payload.restore) ? { clearAdd: target } : {});
+    // its own editor closes on its save — only if it is still the open one (a save answered
+    // after the hold expired leaves another editor alone, review R11); a new note empties its
+    // box (an undo leaves the box alone)
+    paintL1(null, method === 'PUT' && paintL1.open === sentOpen ? { close: true } : method === 'POST' && !(payload && payload.restore) ? { clearAdd: target } : {});
     return true;
   }
   memStatus('저장하지 못했습니다: ' + r.error, true);
@@ -750,6 +756,7 @@ async function epWrite(method, url, payload, draft, at, orig, origTime, unique) 
   var dayMatch = /\/api\/memory\/episodic\/([^/]+)\//.exec(url);
   var date = dayMatch ? decodeURIComponent(dayMatch[1]) : (_memDay && _memDay.date);
   var view = _memDay;
+  var sentEditor = _epEditor; // the editor a save was sent from
   if (view) view.saving = Date.now();
   memHold.at = Date.now();
   // The open editor is locked while its save is out: a success re-renders it (review R8).
@@ -780,7 +787,7 @@ async function epWrite(method, url, payload, draft, at, orig, origTime, unique) 
   if (r.ok) {
     _memDay = r.data.day;
     // its own editor closes on its save; any other open editor is kept (review R8, R9)
-    if (method === 'PUT') renderDay();
+    if (method === 'PUT' && _epEditor === sentEditor) renderDay();
     else repaintDay();
     refreshDatesIfEmptied();
     return true;
