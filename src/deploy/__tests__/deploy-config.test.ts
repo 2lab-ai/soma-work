@@ -49,4 +49,57 @@ describe('deploy config expectations', () => {
     expect(versionBump).toContain('deploy/prod');
     expect(versionBump).not.toMatch(/\borigin\/develop\b/);
   });
+
+  it('deploy step merges the per-runner env plugins into config.json after the sync and before the restart', () => {
+    const workflow = read('.github/workflows/deploy.yml');
+
+    // Secrets, not variables: a step's env header prints `vars.*` values into the
+    // public run log, a secret prints as ***. And each channel reads only its own
+    // list — an `a && X || Y` expression would hand a production deploy the
+    // preview list whenever the production one is unset (empty is falsy).
+    expect(workflow).toContain('ENV_PLUGINS_PREVIEW: ${{ secrets.PREVIEW_ENV_PLUGINS }}');
+    expect(workflow).toContain('ENV_PLUGINS_PRODUCTION: ${{ secrets.PRODUCTION_ENV_PLUGINS }}');
+    expect(workflow).not.toMatch(/vars\.(PREVIEW|PRODUCTION)_ENV_PLUGINS/);
+    expect(workflow).not.toMatch(/PRODUCTION_ENV_PLUGINS\s*\|\|/);
+    expect(workflow).not.toMatch(/\|\|\s*secrets\.PREVIEW_ENV_PLUGINS/);
+    expect(workflow).toContain(
+      [
+        'if [[ "$ENV" == "main" ]]; then',
+        '            export ENV_PLUGINS="$ENV_PLUGINS_PRODUCTION"',
+        '          else',
+        '            export ENV_PLUGINS="$ENV_PLUGINS_PREVIEW"',
+        '          fi',
+      ].join('\n'),
+    );
+    expect(workflow).toContain('RUNNER_LABEL: ${{ matrix.runner_label }}');
+
+    // The channel's whole runner-label set, taken BEFORE the manual `targets`
+    // narrowing, so a line naming a label outside it is a typo the check catches.
+    expect(workflow).toContain('runner_labels: ${{ steps.targets.outputs.runner_labels }}');
+    expect(workflow).toContain('CHANNEL_RUNNER_LABELS: ${{ needs.prepare.outputs.runner_labels }}');
+    const labels = workflow.indexOf('runner_labels=$(jq -r \'[.include[].runner_label] | unique | join(",")\'');
+    const narrow = workflow.indexOf('SELECT_NORM="$(tr -d');
+    expect(labels).toBeGreaterThan(-1);
+    expect(narrow).toBeGreaterThan(labels);
+    expect(workflow).toContain('echo "runner_labels=$runner_labels" >> "$GITHUB_OUTPUT"');
+
+    // Validate while the old service still runs; apply between the sync and the
+    // restart; and the restarted daemon inherits none of it.
+    const select = workflow.indexOf('export ENV_PLUGINS="$ENV_PLUGINS_PRODUCTION"');
+    const check = workflow.indexOf('node dist/deploy/apply-env-plugins.js --check "$TARGET"');
+    const stop = workflow.indexOf('bash scripts/service.sh "$ENV" stop');
+    const sync = workflow.indexOf('bash scripts/deploy/sync-bundle.sh "$TARGET" "."');
+    const apply = workflow.indexOf('node dist/deploy/apply-env-plugins.js "$TARGET"');
+    const unset = workflow.indexOf(
+      'unset ENV_PLUGINS ENV_PLUGINS_PREVIEW ENV_PLUGINS_PRODUCTION RUNNER_LABEL CHANNEL_RUNNER_LABELS',
+    );
+    const install = workflow.indexOf('bash scripts/deploy/install-target.sh "$TARGET"');
+    expect(select).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(select);
+    expect(stop).toBeGreaterThan(check);
+    expect(sync).toBeGreaterThan(stop);
+    expect(apply).toBeGreaterThan(sync);
+    expect(unset).toBeGreaterThan(apply);
+    expect(install).toBeGreaterThan(unset);
+  });
 });
