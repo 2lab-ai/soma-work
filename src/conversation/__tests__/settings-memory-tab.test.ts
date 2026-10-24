@@ -270,6 +270,62 @@ describe('개인 메모리 — a repaint keeps what is typed (review R9)', () =>
     expect(p.els['l1-new-memory'].value).toBe('a new memory note');
   });
 
+  it('a failed reload after a 409 keeps the cards and every draft on screen (review R12, astra)', async () => {
+    const p = l1Page();
+    p.els['mem-recover'] = { innerHTML: '' };
+    const mem: any = { l1: { memory: block(['e0', 'e1'], 'r1'), user: block([], 'u1') } };
+    const fns = load<any>(
+      [...L1_FNS, 'loadMemory', 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold'],
+      ['L1_LABELS', 'L1_FILES'],
+      {
+        document: p.doc,
+        _mem: mem,
+        _memUndo: null,
+        _memLoaded: true,
+        apiWrite: vi.fn(async () => ({ ok: false, status: 409, error: 'changed' })),
+        fetch: vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: 'boom' }) })),
+        paintPageList: () => {},
+        paintDates: () => {},
+      },
+    );
+    fns.paintL1();
+    fns.l1EditStart('memory', 1);
+    p.els['l1-edit-memory'].value = 'e1, edited';
+    p.els['l1-new-user'].value = 'a profile note';
+    await fns.l1Delete('memory', 0);
+    expect(p.els['l1-edit-memory']?.value).toBe('e1, edited');
+    expect(p.els['l1-new-user'].value).toBe('a profile note');
+  });
+
+  it('a memory load answered during a write, or older than another, does not repaint (review R12, astra)', async () => {
+    const p = l1Page();
+    const mem: any = { l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') } };
+    const loads: Array<(v: unknown) => void> = [];
+    let answer: (v: unknown) => void = () => {};
+    const fns = load<any>([...L1_FNS, 'loadMemory', 'memHold'], ['L1_LABELS', 'L1_FILES'], {
+      document: p.doc,
+      _mem: mem,
+      _memUndo: null,
+      _memLoaded: true,
+      apiWrite: vi.fn(() => new Promise((res) => (answer = res))),
+      fetch: vi.fn(() => new Promise((res) => loads.push(res))),
+      paintPageList: () => {},
+      paintDates: () => {},
+    });
+    fns.paintL1();
+    const late = fns.loadMemory(); // a load from an earlier tab switch is still out
+    p.els['l1-new-memory'].value = 'new note';
+    const adding = fns.l1Add('memory');
+    loads[0]({
+      ok: true,
+      json: async () => ({ l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') }, pages: [], episodicDates: [] }),
+    });
+    await late;
+    expect(p.els['l1-new-memory'].disabled).toBe(true); // the late load did not repaint the locked card
+    answer({ ok: true, data: { ok: true, l1: block(['e0', 'new note'], 'r2') } });
+    await adding;
+  });
+
   it('a draft that cannot go back into an empty box is kept in the recovery box, never dropped (review R10)', async () => {
     const p = l1Page();
     p.els['mem-recover'] = { innerHTML: '' };

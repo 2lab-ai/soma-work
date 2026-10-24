@@ -166,14 +166,24 @@ function memRecoverDismiss(i) {
   (memRecover.items || []).splice(i, 1);
   paintRecover();
 }
-async function loadMemory() {
+// force: a 409 recovery that holds the tab itself. Otherwise a load answered while a
+// write is out, or older than a later load, is dropped — it would repaint the cards
+// under the write (review R12). A failed load never replaces cards already on screen:
+// they carry what is being typed (review R12).
+async function loadMemory(force) {
   var body = document.getElementById('mem-l1-body');
+  var seq = (loadMemory.seq = (loadMemory.seq || 0) + 1);
+  function failed(text) {
+    if (_mem) { memStatus(text, true); return; }
+    body.innerHTML = '<div class="notice is-error" role="alert">' + esc(text) + '</div>';
+  }
   try {
     var res = await fetch('/api/memory');
     var data = null;
     try { data = await res.json(); } catch (_e) {}
+    if (seq !== loadMemory.seq || (!force && memHold.at)) return;
     if (!res.ok) {
-      body.innerHTML = '<div class="notice is-error" role="alert">' + esc((data && data.error) || ('기억을 불러오지 못했습니다 (HTTP ' + res.status + ')')) + '</div>';
+      failed((data && data.error) || ('기억을 불러오지 못했습니다 (HTTP ' + res.status + ')'));
       return;
     }
     _mem = data;
@@ -182,7 +192,7 @@ async function loadMemory() {
     paintPageList();
     paintDates();
   } catch (_e) {
-    body.innerHTML = '<div class="notice is-error" role="alert">기억을 불러오지 못했습니다. 다시 시도하세요.</div>';
+    if (seq === loadMemory.seq) failed('기억을 불러오지 못했습니다. 다시 시도하세요.');
   }
 }
 
@@ -313,7 +323,7 @@ async function l1Write(method, url, payload, draft, at, orig, unique) {
     // and are released however the reload ends (review R12).
     var back = false;
     try {
-      await loadMemory();
+      await loadMemory(true);
       back = restoreL1Draft(target, draft, at, orig, unique);
     } finally {
       memHold.at = 0;
