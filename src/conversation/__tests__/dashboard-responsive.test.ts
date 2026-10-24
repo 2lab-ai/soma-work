@@ -398,3 +398,35 @@ describe('drawer follows the visual viewport (keyboard) and sits under the top b
     expect(body).toContain('Math.max(0,');
   });
 });
+
+describe('views merged from #374 follow the same device contract', () => {
+  const RESP_TAIL = TEMPLATE.slice(TEMPLATE.indexOf('/* ═══ Device-responsive layout (SSOT 2026-10-24)'));
+
+  it('the cron run drawer fills the visible viewport (not 100vh behind the Safari toolbar) and keeps clear of the insets', () => {
+    // viewport-fit=cover makes env() insets real: a drawer pinned to the right edge
+    // must pad for the landscape iPhone notch side and the home indicator.
+    const drawer = /^\.cron-drawer \{[^}]*\}/m.exec(RESP_TAIL)?.[0] ?? '';
+    expect(drawer).toContain('height: 100dvh');
+    expect(drawer).toContain('padding-right: env(safe-area-inset-right, 0px)');
+    // 100vw counts a classic scrollbar: a narrow window would push the drawer's left
+    // edge off screen (the device sweep caught -8px in WebKit). A fixed box's 100% is
+    // the viewport without the scrollbar.
+    expect(drawer).toContain('width: min(560px, 100%)');
+    expect(RESP_TAIL).toMatch(/^\.cron-drawer-head \{[^}]*padding-top: max\(16px, env\(safe-area-inset-top, 0px\)\)/m);
+    expect(RESP_TAIL).toMatch(
+      /^\.cron-drawer-body \{[^}]*padding-bottom: calc\(24px \+ env\(safe-area-inset-bottom, 0px\)\)/m,
+    );
+  });
+});
+
+describe('settings page — reached from the dashboard top bar', () => {
+  const SETTINGS_TS = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
+
+  it('its text inputs and selects are 16px on touch screens (iOS does not zoom into them)', () => {
+    const coarse = SETTINGS_TS.slice(SETTINGS_TS.indexOf('@media (pointer: coarse) {'));
+    expect(SETTINGS_TS).toContain('@media (pointer: coarse) {');
+    expect(coarse.slice(0, coarse.indexOf('\n}'))).toMatch(
+      /\.row input\[type="text"\], \.row input\[type="number"\], \.row select \{ font-size: 16px; \}/,
+    );
+  });
+});

@@ -187,6 +187,64 @@ async function checkFab(page: Page): Promise<Check[]> {
   });
 }
 
+/** The cron run drawer (#374), opened directly: it fits the viewport and its close button is reachable. */
+async function checkCronDrawer(page: Page): Promise<Check[]> {
+  await page.evaluate(() => {
+    const d = document.getElementById('cron-drawer') as HTMLElement;
+    d.removeAttribute('inert');
+    d.classList.add('open');
+  });
+  await page.waitForFunction(
+    () => (document.getElementById('cron-drawer') as HTMLElement).getAnimations().length === 0,
+  );
+  const checks = await page.evaluate(() => {
+    const out: { ok: boolean; msg: string }[] = [];
+    const vw = document.documentElement.clientWidth;
+    const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    const d = (document.getElementById('cron-drawer') as HTMLElement).getBoundingClientRect();
+    out.push({
+      ok: d.left >= -1 && d.right <= vw + 1 && d.top >= -1 && d.bottom <= vh + 1,
+      msg: `cron drawer inside the visible viewport (${d.left},${d.top}..${d.right},${d.bottom} / ${vw}×${vh})`,
+    });
+    const c = (document.getElementById('cron-drawer-close') as HTMLElement).getBoundingClientRect();
+    out.push({
+      ok: c.left >= 0 && c.right <= vw && c.top >= 0 && c.bottom <= vh && c.width >= 36,
+      msg: `cron drawer close button on screen (${c.left},${c.top} ${c.width}px)`,
+    });
+    return out;
+  });
+  await page.evaluate(() => {
+    const d = document.getElementById('cron-drawer') as HTMLElement;
+    d.classList.remove('open');
+    d.setAttribute('inert', '');
+  });
+  return checks;
+}
+
+/** The settings page (#374), linked from the dashboard top bar: no sideways overflow, 16px fields on touch. */
+async function checkSettings(page: Page, baseUrl: string, touch: boolean): Promise<Check[]> {
+  await page.goto(`${baseUrl}/dashboard/settings`);
+  await page.waitForTimeout(400);
+  return page.evaluate((touchArg) => {
+    const out: { ok: boolean; msg: string }[] = [];
+    const vw = document.documentElement.clientWidth;
+    const sw = document.documentElement.scrollWidth;
+    out.push({ ok: sw <= vw + 1, msg: `settings page has no sideways overflow (${sw} ≤ ${vw})` });
+    if (touchArg) {
+      // The rows load per user; probe the field rules with a detached row.
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = '<input type="text"><select><option>x</option></select>';
+      document.body.appendChild(row);
+      const fi = parseFloat(getComputedStyle(row.querySelector('input') as HTMLElement).fontSize);
+      const fsel = parseFloat(getComputedStyle(row.querySelector('select') as HTMLElement).fontSize);
+      row.remove();
+      out.push({ ok: fi >= 16 && fsel >= 16, msg: `settings fields ${fi}px / ${fsel}px ≥ 16px on touch` });
+    }
+    return out;
+  }, touch);
+}
+
 async function checkOpen(page: Page, touch: boolean): Promise<Check[]> {
   return page.evaluate((touchArg) => {
     const out: { ok: boolean; msg: string }[] = [];
@@ -292,6 +350,10 @@ async function sweepBrowser(name: string, type: BrowserType, baseUrl: string, ou
         );
         record(await checkOpen(page, touch), 'open');
         await page.screenshot({ path: path.join(outDir, `${tag}-open.png`) });
+        await page.evaluate(() => (window as unknown as { closePanel(): void }).closePanel());
+        record(await checkCronDrawer(page), 'cron');
+        record(await checkSettings(page, baseUrl, touch), 'settings');
+        await page.screenshot({ path: path.join(outDir, `${tag}-settings.png`) });
       } finally {
         await ctx.close();
       }
