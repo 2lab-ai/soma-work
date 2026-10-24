@@ -249,7 +249,7 @@ describe('개인 메모리 — a repaint keeps what is typed (review R9)', () =>
       episodicDates: [],
     };
     const fns = load<any>(
-      [...L1_FNS, 'loadMemory', 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold'],
+      [...L1_FNS, 'loadMemory', 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold', 'esc', 'escAttr'],
       ['L1_LABELS', 'L1_FILES', '_memLoaded'],
       {
         document: p.doc,
@@ -275,7 +275,7 @@ describe('개인 메모리 — a repaint keeps what is typed (review R9)', () =>
     p.els['mem-recover'] = { innerHTML: '' };
     const mem: any = { l1: { memory: block(['e0', 'e1'], 'r1'), user: block([], 'u1') } };
     const fns = load<any>(
-      [...L1_FNS, 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold'],
+      [...L1_FNS, 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold', 'esc', 'escAttr'],
       ['L1_LABELS', 'L1_FILES'],
       {
         document: p.doc,
@@ -947,6 +947,7 @@ describe('episodic answers apply only where they belong (review R8)', () => {
     'memRecover',
     'paintRecover',
     'epRecover409',
+    'epCancel',
   ];
   function page(day: unknown, extra: Record<string, unknown> = {}) {
     const els: Record<string, any> = {
@@ -1222,15 +1223,19 @@ describe('episodic answers apply only where they belong (review R8)', () => {
     const p = page(day);
     p.els['mem-recover'] = { innerHTML: '' };
     const apiWrite = vi.fn(async () => ({ ok: false, status: 409, error: 'changed' }));
-    const fns = load<any>([...EP_FNS, 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold'], ['_epEditor'], {
-      document: p.doc,
-      _memDay: day,
-      _mem: { episodicDates: ['2026-10-23'] },
-      apiWrite,
-      fetch: vi.fn(async () => ({ ok: true, json: async () => latest })),
-      refreshPageIndex: async () => {},
-      paintDates: () => {},
-    });
+    const fns = load<any>(
+      [...EP_FNS, 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold', 'esc', 'escAttr'],
+      ['_epEditor'],
+      {
+        document: p.doc,
+        _memDay: day,
+        _mem: { episodicDates: ['2026-10-23'] },
+        apiWrite,
+        fetch: vi.fn(async () => ({ ok: true, json: async () => latest })),
+        refreshPageIndex: async () => {},
+        paintDates: () => {},
+      },
+    );
     fns.renderDay(0);
     p.edit().value = 'FIRST TWIN DRAFT';
     await fns.epSave(0);
@@ -1243,14 +1248,18 @@ describe('episodic answers apply only where they belong (review R8)', () => {
     const after = { date: '2026-10-23', revision: 't3', entries: [{ time: '11:00', content: 'N' }] };
     const p = page(day);
     p.els['mem-recover'] = { innerHTML: '' };
-    const fns = load<any>([...EP_FNS, 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold'], ['_epEditor'], {
-      document: p.doc,
-      _memDay: day,
-      _mem: { episodicDates: ['2026-10-23'] },
-      apiWrite: vi.fn(async () => ({ ok: true, data: { ok: true, day: after } })),
-      refreshPageIndex: async () => {},
-      paintDates: () => {},
-    });
+    const fns = load<any>(
+      [...EP_FNS, 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold', 'esc', 'escAttr'],
+      ['_epEditor'],
+      {
+        document: p.doc,
+        _memDay: day,
+        _mem: { episodicDates: ['2026-10-23'] },
+        apiWrite: vi.fn(async () => ({ ok: true, data: { ok: true, day: after } })),
+        refreshPageIndex: async () => {},
+        paintDates: () => {},
+      },
+    );
     fns.renderDay(0);
     p.edit().value = 'mine, edited';
     p.els['mem-ep-new'].value = 'N';
@@ -1263,12 +1272,16 @@ describe('episodic answers apply only where they belong (review R8)', () => {
     const d2 = { date: '2026-10-23', revision: 'b', entries: [{ time: '02:00', content: 'y' }] };
     const p = page(d1);
     p.els['mem-recover'] = { innerHTML: '' };
-    const fns = load<any>([...EP_FNS, 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold'], ['_epEditor'], {
-      document: p.doc,
-      _memDay: d1,
-      fetch: vi.fn(async () => ({ ok: true, json: async () => d2 })),
-      apiWrite: vi.fn(),
-    });
+    const fns = load<any>(
+      [...EP_FNS, 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold', 'esc', 'escAttr'],
+      ['_epEditor'],
+      {
+        document: p.doc,
+        _memDay: d1,
+        fetch: vi.fn(async () => ({ ok: true, json: async () => d2 })),
+        apiWrite: vi.fn(),
+      },
+    );
     fns.renderDay(0);
     p.edit().value = 'x, edited';
     p.els['mem-ep-new'].value = 'a note being written';
@@ -1334,6 +1347,54 @@ describe('episodic answers apply only where they belong (review R8)', () => {
     p.edit().value = 'first twin, edited';
     fns.renderDay(1);
     expect(p.els['mem-ep-new'].value + p.els['mem-recover'].innerHTML).toContain('first twin, edited');
+  });
+
+  it('a 409 whose reload fails still releases the hold and keeps the draft (review R12, fable)', async () => {
+    const day = { date: '2026-10-23', revision: 't1', entries: [{ time: '09:00', content: 'r0' }] };
+    const p = page(day);
+    p.els['mem-recover'] = { innerHTML: '' };
+    const fns = load<any>(EP_FNS, ['_epEditor'], {
+      document: p.doc,
+      _memDay: day,
+      _mem: { episodicDates: ['2026-10-23'] },
+      apiWrite: vi.fn(async () => ({ ok: false, status: 409, error: 'changed' })),
+      fetch: vi.fn(async () => {
+        throw new Error('network down');
+      }),
+      refreshPageIndex: async () => {},
+      paintDates: () => {},
+    });
+    fns.renderDay(0);
+    const box = p.edit();
+    box.value = 'r0, edited';
+    await fns.epSave(0).catch(() => {});
+    expect(fns.memHold.at).toBe(0);
+    expect(box.disabled).toBe(false);
+    expect(
+      p.els['mem-ep-body'].innerHTML + p.els['mem-ep-new'].value + p.els['mem-recover'].innerHTML + box.value,
+    ).toContain('r0, edited');
+  });
+
+  it('cancelling an episodic editor waits while its save is out (review R12, fable)', async () => {
+    const day = { date: '2026-10-23', revision: 't1', entries: [{ time: '09:00', content: 'r0' }] };
+    const p = page(day);
+    let answer: (v: unknown) => void = () => {};
+    const fns = load<any>([...EP_FNS, 'epCancel'], ['_epEditor'], {
+      document: p.doc,
+      _memDay: day,
+      _mem: { episodicDates: ['2026-10-23'] },
+      apiWrite: vi.fn(() => new Promise((res) => (answer = res))),
+      refreshPageIndex: async () => {},
+      paintDates: () => {},
+    });
+    fns.renderDay(0);
+    p.edit().value = 'r0, edited';
+    const saving = fns.epSave(0);
+    fns.epCancel();
+    expect(p.els['mem-ep-body'].innerHTML).toContain('id="ep-edit"');
+    answer({ ok: false, status: 400, error: 'no' });
+    await saving;
+    expect(p.edit().value).toBe('r0, edited');
   });
 
   it('an episodic 409 holds the tab until its reload is done (review R11, astra)', async () => {
@@ -1997,6 +2058,10 @@ describe('관찰 기록 (에피소딕)', () => {
         'setPageFieldsDisabled',
         'memHold',
         'pageDraftText',
+        'keepPageDraft',
+        'memRecover',
+        'pageUnsavedText',
+        'paintRecover',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -2057,6 +2122,8 @@ describe('관찰 기록 (에피소딕)', () => {
         'pageDraftText',
         'memRecover',
         'paintRecover',
+        'keepPageDraft',
+        'pageUnsavedText',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -2097,6 +2164,68 @@ describe('관찰 기록 (에피소딕)', () => {
     expect(detail.innerHTML).not.toContain('concepts/a');
   });
 
+  it('replacing a page editor that has unsaved changes keeps them in the recovery box (review R12, fable)', async () => {
+    let detailHtml = '';
+    const recover: any = { innerHTML: '' };
+    const status: any = { textContent: '', innerHTML: '', setAttribute() {} };
+    const values: Record<string, string> = { 'pg-title': 'A', 'pg-aliases': '', 'pg-current': 'A CURRENT, EDITED' };
+    const doc = {
+      getElementById: (id: string) =>
+        id === 'mem-page-detail'
+          ? {
+              set innerHTML(v: string) {
+                detailHtml = v;
+              },
+              get innerHTML() {
+                return detailHtml;
+              },
+            }
+          : id === 'mem-recover'
+            ? recover
+            : id in values && detailHtml.includes('id="' + id + '"')
+              ? { value: values[id] }
+              : id === 'pg-raw' || id in values
+                ? null
+                : status,
+      querySelectorAll: () => [],
+    };
+    const pageA = { id: 'concepts/a', title: 'A', aliases: [], current: 'a', history: [], updated: '2026-10-23' };
+    const pageB = { id: 'concepts/b', title: 'B', aliases: [], current: 'b', history: [], updated: '2026-10-23' };
+    const fns = load<any>(
+      [
+        'esc',
+        'escAttr',
+        'openPage',
+        'newPageForm',
+        'pageRawMode',
+        'renderPageEditor',
+        'renderPageConflict',
+        'memStatus',
+        'pageSaveBusy',
+        'memHold',
+        'pageDraft',
+        'pageDraftText',
+        'pageUnsavedText',
+        'memRecover',
+        'paintRecover',
+        'keepPageDraft',
+      ],
+      ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
+      {
+        document: doc,
+        _memPage: { page: pageA, revision: 'a1', raw: '# A\n', representable: true },
+        fetch: vi.fn(async () => ({
+          ok: true,
+          json: async () => ({ page: pageB, revision: 'b1', raw: '# B\n', representable: true }),
+        })),
+        paintPageList: () => {},
+      },
+    );
+    fns.pageRawMode(false); // renders A's form
+    await fns.openPage('concepts/b');
+    expect(recover.innerHTML).toContain('A CURRENT, EDITED');
+  });
+
   it('a page delete closes only the editor it was confirmed for; the latest page opened wins (review R9, astra)', async () => {
     let detailHtml = '';
     const status: any = { textContent: '', innerHTML: '', setAttribute() {} };
@@ -2134,6 +2263,12 @@ describe('관찰 기록 (에피소딕)', () => {
         'pageSaveBusy',
         'setPageFieldsDisabled',
         'memHold',
+        'keepPageDraft',
+        'memRecover',
+        'pageDraft',
+        'pageDraftText',
+        'pageUnsavedText',
+        'paintRecover',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -2256,6 +2391,10 @@ describe('관찰 기록 (에피소딕)', () => {
         'setPageFieldsDisabled',
         'memHold',
         'pageDraftText',
+        'keepPageDraft',
+        'memRecover',
+        'pageUnsavedText',
+        'paintRecover',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {
@@ -2317,6 +2456,10 @@ describe('관찰 기록 (에피소딕)', () => {
         'setPageFieldsDisabled',
         'memHold',
         'pageDraftText',
+        'keepPageDraft',
+        'memRecover',
+        'pageUnsavedText',
+        'paintRecover',
       ],
       ['_memPageConflict', '_memPageRaw', 'PAGE_GROUPS'],
       {

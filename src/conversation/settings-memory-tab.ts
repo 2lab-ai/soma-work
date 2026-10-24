@@ -309,11 +309,16 @@ async function l1Write(method, url, payload, draft, at, orig, unique) {
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   if (held) held.saving = 0;
   if (r.status === 409) {
-    // The hold and the locks last until the reload is done: nothing typed meanwhile (review R11).
-    await loadMemory();
-    var back = restoreL1Draft(target, draft, at, orig, unique);
-    memHold.at = 0;
-    for (var ul2 = 0; ul2 < locked.length; ul2++) if (locked[ul2]) locked[ul2].disabled = false;
+    // The hold and the locks last until the reload is done: nothing typed meanwhile (review R11),
+    // and are released however the reload ends (review R12).
+    var back = false;
+    try {
+      await loadMemory();
+      back = restoreL1Draft(target, draft, at, orig, unique);
+    } finally {
+      memHold.at = 0;
+      for (var ul2 = 0; ul2 < locked.length; ul2++) if (locked[ul2]) locked[ul2].disabled = false;
+    }
     memStatus('그사이 다른 곳(에이전트·Slack)에서 바뀌어 최신 내용을 불러왔습니다.' + (draft ? (back ? ' 작성하던 내용은 편집 칸에 그대로 있습니다' : ' 작성하던 내용은 보관했습니다') + ' — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
     return false;
   }
@@ -440,7 +445,25 @@ function setPageFieldsDisabled(on) {
   var els = document.querySelectorAll('#mem-page-detail input, #mem-page-detail textarea, #mem-page-detail select');
   for (var i = 0; i < els.length; i++) els[i].disabled = !!on;
 }
-async function openPage(id) {
+// What the page editor holds that is not saved, as text — or null (review R12).
+function pageUnsavedText() {
+  if (!_memPage) return null;
+  var raw = document.getElementById('pg-raw');
+  if (raw && typeof raw.value === 'string') return raw.value !== (_memPage.raw || '') ? raw.value : null;
+  var title = document.getElementById('pg-title');
+  if (!title || typeof title.value !== 'string') return null;
+  var d = pageDraft();
+  var p = _memPage.page || {};
+  var same = d.title === (p.title || '') && d.aliases.join(', ') === (p.aliases || []).join(', ')
+    && d.current === (p.current || '') && d.history.join('\n') === (p.history || []).join('\n');
+  return same ? null : pageDraftText(d);
+}
+// The page editor is about to show something else: its unsaved changes are kept.
+function keepPageDraft() {
+  var unsaved = pageUnsavedText();
+  if (unsaved) memRecover(((_memPage && _memPage.page && _memPage.page.id) || '새 페이지') + ' 수정본', unsaved);
+}
+async function openPage(id, discard) {
   if (pageSaveBusy()) return;
   // Only the latest page opened is shown: an earlier one answering last is dropped (review R9).
   var seq = (openPage.seq = (openPage.seq || 0) + 1);
@@ -449,6 +472,7 @@ async function openPage(id) {
   try { data = await res.json(); } catch (_e) {}
   if (seq !== openPage.seq) return;
   if (!res.ok) { memStatus('페이지를 열지 못했습니다: ' + ((data && data.error) || res.status), true); return; }
+  if (!discard) keepPageDraft();
   _memPage = data;
   _memPageConflict = null;
   _memPageRaw = false;
@@ -457,6 +481,7 @@ async function openPage(id) {
 }
 function pageRawMode(on) {
   if (pageSaveBusy()) return;
+  keepPageDraft(); // the other editor starts from the saved page
   _memPageRaw = !!on;
   renderPageEditor();
 }
@@ -510,6 +535,7 @@ function addHistoryLine() {
 }
 function newPageForm() {
   if (pageSaveBusy()) return;
+  keepPageDraft();
   _memPage = { page: { id: '', title: '', aliases: [], current: '', history: [] }, revision: null };
   renderPageEditor();
   paintPageList();
@@ -644,7 +670,7 @@ function overwritePage() {
 function discardPageDraft() {
   var id = _memPage && _memPage.page && _memPage.page.id;
   _memPageConflict = null;
-  if (id) openPage(id);
+  if (id) openPage(id, true); // the user chose to drop the draft
 }
 async function deletePage() {
   if (pageSaveBusy()) return;
@@ -709,7 +735,12 @@ async function loadDay(date, force) {
   if (!date || (!force && epBusy())) return;
   // Only the latest day request paints the view: an older one answering last is dropped (review R8).
   var seq = (loadDay.seq = (loadDay.seq || 0) + 1);
-  var res = await fetch('/api/memory/episodic/' + encodeURIComponent(date));
+  var res;
+  try { res = await fetch('/api/memory/episodic/' + encodeURIComponent(date)); } catch (e) {
+    if (seq === loadDay.seq) memStatus('기록을 불러오지 못했습니다: ' + String(e && e.message || e), true);
+    if (force) throw e;
+    return;
+  }
   var data = null;
   try { data = await res.json(); } catch (_e) {}
   if (seq !== loadDay.seq) return;
@@ -750,7 +781,7 @@ function renderDay(editIndex, draft) {
     html += '<div class="ep-entry"><div class="when">' + esc(e.time) + ' UTC</div>';
     if (editIndex === i) {
       html += '<textarea id="ep-edit" rows="5" aria-label="' + escAttr(e.time + ' 기록 수정') + '">' + esc(typeof draft === 'string' ? draft : e.content) + '</textarea>'
-        + '<div class="actions"><button type="button" class="btn primary" onclick="epSave(' + i + ')">저장</button> <button type="button" class="btn" onclick="renderDay()">취소</button></div>';
+        + '<div class="actions"><button type="button" class="btn primary" onclick="epSave(' + i + ')">저장</button> <button type="button" class="btn" onclick="epCancel()">취소</button></div>';
     } else {
       html += '<div class="text">' + esc(e.content) + '</div>'
         + '<div class="actions"><button type="button" class="btn link" onclick="renderDay(' + i + ')">수정</button> <button type="button" class="btn link" onclick="epDelete(' + i + ')">삭제</button></div>';
@@ -775,11 +806,18 @@ async function epWrite(method, url, payload, draft, at, orig, origTime, unique) 
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
   if (view) view.saving = 0;
   if (r.status === 409) {
-    // The hold and the lock last until the reload is done: nothing typed meanwhile (review R11).
-    var recovered = await epRecover409(date, draft, orig, origTime, unique);
-    memHold.at = 0;
-    if (lockBox) lockBox.disabled = false;
-    return recovered;
+    // The hold and the lock last until the reload is done: nothing typed meanwhile (review R11),
+    // and are released however the reload ends (review R12).
+    try {
+      return await epRecover409(date, draft, orig, origTime, unique);
+    } catch (_e) {
+      memKeepDraft('mem-ep-new', draft, date + ' 기록 수정본');
+      memStatus('그사이 이 날의 기록이 바뀌었는데 다시 불러오지 못했습니다. 작성하던 내용은 보관했습니다.', true);
+      return false;
+    } finally {
+      memHold.at = 0;
+      if (lockBox) lockBox.disabled = false;
+    }
   }
   memHold.at = 0;
   if (lockBox) lockBox.disabled = false;
@@ -867,6 +905,10 @@ function reopenEpEditor(open) {
   if (open.unique && same === 1) { renderDay(at, open.draft); return; }
   renderDay();
   keepEpDraft(open);
+}
+function epCancel() {
+  if (epBusy()) return; // its save may still be refused: the editor stays until answered (review R12)
+  renderDay();
 }
 async function epSave(i) {
   if (epBusy()) return;
