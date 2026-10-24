@@ -8862,6 +8862,12 @@ function refreshLayoutCache() {
   if (_layoutModeKey && layoutModeKey(currentLayoutMode()) !== _layoutModeKey) { requestLayoutCheck(); return; }
   measureLayout();
 }
+// The board's own sideways scroll (dk) moves only what is inside #kanban — not a
+// CRON lane card above it (#374). Both cache paths use this one rule.
+function boardScrollShift(el, dk) {
+  var kb = document.getElementById('kanban');
+  return kb && kb.contains(el) ? dk : 0;
+}
 // Where an element's layout box is now: its drawn box minus a running FLIP's
 // translate, so a card in flight is cached at its landing spot.
 function layoutSpotOf(el) {
@@ -8876,7 +8882,7 @@ function noteFlipTarget(el) {
   var r = el.getBoundingClientRect();
   var now = layoutScrollNow();
   _layoutRects.set(el, {
-    left: r.left + (now.x - _layoutScroll.x) + (now.k - _layoutScroll.k),
+    left: r.left + (now.x - _layoutScroll.x) + boardScrollShift(el, now.k - _layoutScroll.k),
     top: r.top + (now.y - _layoutScroll.y),
   });
 }
@@ -8946,7 +8952,7 @@ function runLayoutCheck() {
     var cached = _layoutRects.get(el);
     // The last target, where the reader saw it (scroll since the cache taken out;
     // the board's own sideways scroll moves only what is inside it, not the CRON lane).
-    var target = cached ? { left: cached.left - sx - (kb.contains(el) ? sk : 0), top: cached.top - sy } : null;
+    var target = cached ? { left: cached.left - sx - boardScrollShift(el, sk), top: cached.top - sy } : null;
     // getBoundingClientRect includes a running FLIP; its translate gives the layout spot.
     var t = el._flip ? parseTranslate(getComputedStyle(el).transform) : { x: 0, y: 0 };
     var r = el.getBoundingClientRect();
