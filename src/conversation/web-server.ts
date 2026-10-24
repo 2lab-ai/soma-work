@@ -19,6 +19,7 @@ import { Logger } from '../logger';
 import { registerArtifactRoutes } from './artifact-routes';
 import { registerDashboardRoutes, setSelfInstanceEnv } from './dashboard';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
+import { registerMemoryRoutes } from './memory-routes';
 import {
   type AuthContext,
   exceedsAbsoluteSessionLifetime,
@@ -678,6 +679,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   await registerArtifactRoutes(server, authMiddleware);
   // Personal settings (SSOT 2026-10-23 T2) — self only, auth + CSRF on writes.
   registerSettingsRoutes(server, authMiddleware, csrfMiddleware);
+  // Personal memory — the settings page "기억" tab (SSOT 2026-10-23 T3).
+  registerMemoryRoutes(server, authMiddleware, csrfMiddleware);
 
   // Health check
   server.get('/health', async (_request, reply) => {
