@@ -1,4 +1,5 @@
 import type { IncidentRequest } from '../incident-contract';
+import type { SdkUsageBaseline } from '../session-usage-math';
 import type { SayPostSwitches } from '../stream-processor';
 
 export interface ProcessedFile {
@@ -44,6 +45,8 @@ export interface ConversationSession {
   };
   /** SSOT 2026-10-22 T5 — a dashboard model switch waiting for its compact (runtime-only). */
   pendingModelSwitch?: { model: string; nickname: string; requestedAt: number; compactTs?: string; armed?: boolean };
+  /** Last per-model SDK running total for `sessionId` (persisted) — see `toTurnUsage`. */
+  sdkUsageBaseline?: SdkUsageBaseline;
   [key: string]: any;
 }
 

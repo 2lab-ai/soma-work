@@ -1,0 +1,88 @@
+---
+name: deploy-qa
+description: "Use when a deploy has landed and the host's environment plugin (its `post-deploy` skill) hands over the deploy range so that every issue it shipped is QA'd and closed out with a full QA report in the calling thread; also for that run's readiness check or dry run. Called from an environment skill, which names the profile skill. Args — repo=<owner/repo> target=<branch> before=<sha> after=<sha> (before/after not needed with --preflight); env=<profile skill> (default: the calling skill); --preflight = readiness only, replies applies / not-applicable / missing: <fields>; --plan-only = admission table only, no writes; keys=<K,…> = limit the run to these keys."
+argument-hint: "repo=<owner/repo> target=<branch> before=<sha> after=<sha> [env=<skill>] [--preflight] [--plan-only] [keys=<K,…>]"
+---
+
+# deploy-qa — QA every issue a deploy shipped
+
+Generic procedure. It holds no environment values: the profile is the environment skill the caller names (e.g. `acme-env:post-deploy` names `acme-env:staging-qa`) — read every value below from that skill's `## Environment` and `## Policy` sections. This skill decides range, admission, order, lock, carry-over, and posting. It never deploys, merges, reverts, pushes, or moves an issue to done.
+
+Sub-skills: `$local:qa-issue` (one issue) and `$local:qa-report` (HTML + PNG). Through the SDK Skill tool they are `zworkflow:qa-issue` and `zworkflow:qa-report`.
+
+## Args
+- `repo`, `target`: the deployed repo and the branch the deploy merged into, exactly as the deploy reported them.
+- `before`, `after`: the target SHA before the deploy and the deployed merge commit. The range is `before..after` — nothing else (no ledger).
+- `env`: the profile skill (e.g. `acme-env:staging-qa`); absent → the calling skill. The same name is passed to `qa-issue` as `env=`.
+- `--preflight`: readiness check, see below. No writes.
+- `--plan-only`: steps 1–5 without the run directory, post the admission table, stop. No lock, no tracker writes, no QA.
+- `keys=<K,…>`: restrict the target set to these keys; they still go through admission. Used for re-runs.
+
+## Profile (required; preflight checks every entry)
+- `applies[]`: `{repo, target}`.
+- `repos[]`: `owner/repo` + `integrationBranch`. The deployed repo and every related repo.
+- `deploy`, per repo: the CD workflow for the target branch, and `runningSha` — how to read the commit that repo is running (a health URL field, a server-tools command, …).
+- `keyPattern`.
+- `tracker`: site; per project the state IDs `qa` and `done` and the transition IDs `toQa` and `toDone`; `carryLabel`; comment conventions.
+- `admission` (ordered rules) · `doneConditions` · `lockDir` · `checkpointEvery`.
+- `qaEnv`: the adapter commands `open`, `eval`, `screenshot`; `screenshotsDir`; health URL(s); test-account references.
+- `report`: thread publishing (serve command or upload method) and the summary channel.
+
+Any entry absent → reply with exactly one line `missing: <field,…>` and stop. Never guess a value or take one from another host. Account entries are references to where credentials live; never print, comment, or file-name a credential.
+
+## Preflight (`--preflight repo=… target=…`)
+Reply with exactly one line, write nothing:
+1. `applies` absent → `missing: applies`.
+2. `{repo, target}` not in `applies` → `not-applicable`.
+3. Any other profile entry absent, or a tool check fails → `missing: <list>`. Tool checks: `gh repo view <owner/repo>` for every repo; one tracker read per project; `command -v` for each adapter executable (do not open a page); `lockDir` is a writable directory; the bundled files resolve: `test -f` on `$CLAUDE_PLUGIN_ROOT/skills/qa-report/scripts/mask.mjs`, `…/qa-report/scripts/build.mjs`, and `…/html/renderer/render.mjs`.
+4. Otherwise → `applies`.
+
+## Excluded PRs (one rule, used everywhere)
+`excludeHeads` = `main,deploy/,release/` — an entry ending in `/` is a prefix, any other entry an exact name (so `main` does not exclude `maintenance/…`). `excludeBases` = every target in `applies` plus every base branch starting with `deploy/` seen in the step-3 listings (exact names). A PR is excluded when its head matches an `excludeHeads` entry or its base is in `excludeBases`. Excluded PRs never count (no key, no open PR, no mergeSha) and are listed in the report. Pass both lists to `qa-issue` unchanged, so its no-open-PR check applies the identical rule.
+
+## Lock (full runs only; acquire before step 1)
+`L` = `<lockDir>/lock`. Token = `<channel>:<thread_ts>` of the calling thread, no whitespace. `startTime` = acquisition time, UTC `YYYYMMDDTHHMMSSZ`. `L/owner` = `<token> <startTime>`. Use absolute paths; the shell's working directory resets per call.
+- **Mine** = both fields of `L/owner` equal my token and the `startTime` this run recorded when it acquired. A new invocation has no recorded `startTime`, so a live lock is never mine — even one from the same thread.
+- **Acquire:** `mkdir L` → write `L/owner`, `touch L/heartbeat`, then post the run's first line to the calling thread: `deploy-qa started <token> <startTime> <repo> <before7>..<after7>`. A resumed run reads its `startTime` back from that post.
+- **Busy** (exists, not mine): wait in this session, re-checking every 5 min for up to 60 min, touching nothing. Still busy → end `deployed, QA incomplete: lock busy` + re-run args.
+- **Stale** (heartbeat mtime — absent → mtime of `L` — older than 2 h): never remove or move it yourself; a reclaim cannot be made safe against a concurrent acquire. End `deployed, QA incomplete: stale lock` naming `L/owner` and the heartbeat age, with the re-run args, and say that a person removes `L` after confirming that owner's run is gone.
+- **Heartbeat** at every step and after every issue: read `L/owner`; mine → `touch L/heartbeat`. If you no longer hold your `startTime` (e.g. after context compaction), re-read it from your start post or from `R`'s directory name before judging. Not mine or gone → stop all work at once and end `deployed, QA incomplete: lock lost` + re-run args. Never touch another owner's heartbeat.
+- **Release** on every exit path: `rm -rf L` only if mine.
+
+## Outcomes (one per target key)
+- **pass** — qa-issue verdict `pass`, `trackerComment` set, and `statusTransition` has `performed` and `verified` true and `to` = the done state; or **already passed**: a pass comment naming the same mergeShas and the issue in the done state now.
+- **fail** — verdict `deploy_fail` with `trackerComment` set (qa-issue already commented, notified, reverted state).
+- **report-only** — decided by admission, with its reason.
+- **open** — everything else: blocked, partial, deferred, superseded, not-run, a `pass` without a verified done (reported as `blocked`, reason = `statusTransition.reason`), and any result with `trackerComment: null` (`blocked`, reason `reconcile-failed`).
+
+## Steps (record only facts you checked with a command)
+1. **Confirm the deploy** per `deploy` for `repo`: the CD run for `after` on `target` concluded `success` (still running → bounded `gh run watch <id> --exit-status`); `gh api repos/<owner/repo>/compare/<after>...<runningSha> --jq .status` is `ahead` or `identical`; any extra check `deploy` lists. `before` must be an ancestor of `after` (compare status `ahead`), else stop and suggest a re-run from the merge base. Unconfirmed → end `deployed, QA incomplete: deploy not confirmed`, transition nothing. Record the running version as version start. Run directory `R` = `<lockDir>/runs/<startTime>-<owner/repo with / → ->-<after7>/` — one per acquisition: a resume (same `startTime`) reuses it, a re-run gets a new one and re-tests. Create it (and `R/report/`).
+2. **Commits.** `gh api --paginate repos/<owner/repo>/compare/<before>...<after>`; keep commits with one parent. Complete only when the commits read equal `total_commits`; else end `deployed, QA incomplete: range listing incomplete`.
+3. **PRs.** Range PRs: per commit `gh api repos/<owner/repo>/commits/<sha>/pulls`, keep merged PRs whose base is that repo's `integrationBranch`, dedupe by number. Then, once per repo in `repos`, list open PRs (`gh pr list -R <owner/repo> --state open --limit <N> --json number,title,headRefName,baseRefName`) and merged PRs into its integration branch (`--state merged --base <integrationBranch> --limit <N> --json number,title,headRefName,baseRefName,mergeCommit`). A listing is complete only when it returned fewer than N (else raise N and list again). Drop excluded PRs everywhere; keep reverts. Any listing that cannot be shown complete → every key is open (blocked, `PR list incomplete`), no QA.
+4. **Keys.** Match `keyPattern` case-insensitively against each range PR's title and head branch, then uppercase. A key matches only when it equals the key exactly (`PROJ-12` never matches `PROJ-123`). Keys only in a PR body → report "body mention only", never transitioned. Target set = these keys + carry-over keys (issues labelled `carryLabel` that have a PR in the step-3 lists of `repos`), intersected with `keys=` when given.
+5. **Admission.** Per key: tracker state and type; its open PRs (title or head key equals it); its merged PRs and mergeShas = `<owner/repo>:<mergeCommit>` from the step-3 merged lists, so backports and hotfixes never add one; each related-repo mergeSha contained in that repo's `runningSha` (compare `ahead` or `identical`); whether the range PRs touch only docs; whether its last merged PR is a revert; already passed (Outcomes). A pass comment while the issue is still in the qa state → target again. Apply `admission` in order, first match wins: skip / deferred / report-only + reason / target. The done state alone never counts as passed.
+   `--plan-only`: post the table key | PRs | state | outcome | reason to the calling thread and stop.
+6. **Move to QA.** For each target not yet in the qa state, pick from the transitions the issue offers the one whose target state ID is the profile's qa state. Its ID differs from `toQa` → no transition, blocked `transition-mismatch`; none offered → blocked `no-transition`; never chain. Re-read the issue; only a confirmed state counts, else blocked. Keys that already have `R/<KEY>.json` (resume) skip this step and step 7.
+7. **QA, one issue at a time** (the QA environment and accounts are shared; never two at once). Before each key: heartbeat; re-read the state — not in the qa state → blocked `state changed`. Then invoke
+   `$local:qa-issue <KEY> qa=max env=<profile skill> transition=done mergeShas=<owner/repo:sha,…> excludeHeads=<list> excludeBases=<list> runDir=<R>`
+   with a diff summary of the key's PRs in the brief (e.g. `env=acme-env:staging-qa`). qa-issue writes `R/<KEY>.json` and returns its path + one line. No file → re-read the state: done with a pass comment for these mergeShas → already passed; still in the qa state → invoke once more; otherwise blocked `state changed`. Still no file → not-run `no response`.
+   Every `checkpointEvery` issues, post a partial report to the calling thread: counts so far + one line per finished key.
+8. **Carry-over.** Open keys: tracker comment with `range` (`<before7>..<after7>`), `mergeShas`, `verdict`, `version start/end`, reason; add `carryLabel`. Reason unchanged since its last carry comment → no new comment. Pass and fail: remove `carryLabel`. Report-only: leave the label as it is. Re-read the issue after every write; a write still not visible after one retry → `deployed, QA incomplete: tracker write unconfirmed` naming the keys.
+9. **Report.** Read the running version again (version end). Build `issues` with `jq -s` over the target keys' `R/<KEY>.json` files, listed explicitly; write `R/report/report-input.json` in the shape of `qa-report`'s Input — `meta` (repo, target, range, version start/end, status line; notes naming each pass without a verified done as blocked), `issues`, `links` (per key: issue, PRs, merge commits), `nonQa` (every key not QA'd, with status and reason), `bodyMentions`, `excludedPrs`, and `outcomes` = `{KEY: {outcome, reason}}` for every key (pass / fail / blocked / partial / deferred / not-run / report-only, per Outcomes; qa-report uses it for row status and counts) — and invoke `$local:qa-report R/report/report-input.json shots=<qaEnv.screenshotsDir>` (the screenshots directory from the profile; without it every screenshot is rejected). Publish per `report`: the calling thread first (summary + live link if served + HTML + PNG), then the summary channel. Confirm each post by reading it back; a failed thread post gets one retry, then a note in the summary-channel post. Write posts in operator language (screen and feature names, not code identifiers).
+
+## Final report
+- `QA complete` only when every target key is pass, fail, or report-only and every step-8 write was read back. Otherwise `deployed, QA incomplete: <reason>` + the exact re-run args `repo=… target=… before=… after=… env=… keys=<open keys>`. Never call an incomplete run complete.
+- Enumerate every key: pass / fail / blocked / partial / deferred / not-run / report-only, its reason, and links (issue, PRs, merge commits).
+- Note version start/end; if they differ, say so and name the issues whose QA spanned the change.
+
+## Continuation
+Keep working in this session until every key has an outcome. An interruption (restart, tool error) is resumed by the harness's own error retry: the lock is still mine (same token and the `startTime` from this run's start post) → heartbeat, reuse `R`, redo steps 1–5; keys that have `R/<KEY>.json` take their result from it and skip steps 6–7. `R` holds this run's evidence only; carry-over lives in the tracker. Do not create a scheduler, cron job, lane, or follow-up mechanism. If the run still cannot finish, end with the incomplete status above.
+
+## Hard rules
+- Touch only a range whose deploy step 1 confirmed. One key failing is recorded for that key; continue with the rest.
+- Never transition to done — only `qa-issue` does, under `doneConditions`. Claim a transition only after a re-read confirmed it.
+- No evidence → not a pass (`qa-issue` owns the evidence rules).
+- No environment literal in anything this skill writes beyond what the profile supplies; no credentials anywhere.
+
+## Boundaries
+`qa-issue` = QA of one issue, its comments, and the done transition. `qa-report` = the HTML and PNG. The environment plugin = applicability, profile, publishing details. This skill = range, admission, order, lock, carry-over, and posting.

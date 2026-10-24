@@ -4,6 +4,7 @@
  */
 
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
+import { sanitizeSdkUsageBaseline } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
@@ -196,6 +197,8 @@ interface SerializedSession {
    * `src/conversation/instructions-summarizer.ts`.
    */
   instructionsCompletedSummary?: { summary: string; upstreamHash: string };
+  /** Last SDK running total per model — see `ConversationSession.sdkUsageBaseline`. */
+  sdkUsageBaseline?: unknown;
   // Dashboard v2.1 — thread-aggregate snapshot fields (live aggregate derived from memory).
   compactionCount?: number;
   activeLegStartedAtMs?: number;
@@ -1984,6 +1987,8 @@ export class SessionRegistry {
             // doesn't pay a cold summary rebuild). Safe to omit — the block
             // builder falls back to a placeholder and the async regen kicks in.
             instructionsCompletedSummary: session.instructionsCompletedSummary,
+            // Last SDK running total — without it a restart would re-count it into the goal's spend
+            sdkUsageBaseline: session.sdkUsageBaseline,
             // Dashboard v2.1 — derive-first aggregate snapshot (persisted per session)
             compactionCount: session.compactionCount,
             activeLegStartedAtMs: session.activeLegStartedAtMs,
@@ -2267,6 +2272,7 @@ export class SessionRegistry {
               : undefined,
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
+          sdkUsageBaseline: sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline),
           // Dashboard v2.1 — restore aggregate snapshot
           compactionCount: typeof serialized.compactionCount === 'number' ? serialized.compactionCount : 0,
           activeLegStartedAtMs: serialized.activeLegStartedAtMs,
