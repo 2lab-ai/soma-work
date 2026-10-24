@@ -312,7 +312,10 @@ describe('T3 — full-size modal', () => {
 
   it('the dialog exists; Escape in the modal does not also close the slide panel', () => {
     expect(TEMPLATE).toMatch(/<dialog id="art-modal"/);
-    expect(TEMPLATE).toMatch(/if \(e\.key === 'Escape' && panelOpen && !artModalIsOpen\(\)\) closePanel\(\);/);
+    // The cron drawer over a docked panel takes Escape first too (SSOT 2026-10-24, trinity R4).
+    expect(TEMPLATE).toMatch(
+      /if \(e\.key === 'Escape' && panelOpen && !artModalIsOpen\(\) && !_cronDrawerKey\) closePanel\(\);/,
+    );
   });
 });
 
