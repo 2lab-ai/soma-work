@@ -365,6 +365,12 @@ describe('layout transition — review fixes (trinity code review R1)', () => {
     expect(clientFn('layoutSpotOf')).toContain('parseTranslate(getComputedStyle(el).transform)');
   });
 
+  it('the drawer width animates only on a sheet ↔ dock change (or its retarget), never under a handle drag (trinity R2, fable)', () => {
+    const body = clientFn('runLayoutCheck');
+    expect(body).toContain('prevPanel !== mode.panel');
+    expect(body).toContain("panel.classList.contains('resizing')");
+  });
+
   it('runs at most once per frame (window resize, ResizeObserver and timers share one frame stamp)', () => {
     const body = clientFn('runLayoutCheck');
     expect(body).toContain('document.timeline');
