@@ -460,6 +460,31 @@ async function checkSettings(page: Page, baseUrl: string, touch: boolean): Promi
   }, touch);
 }
 
+/** The settings page's 기억 tab (#379, linked from the dashboard top bar): no sideways overflow, 16px fields on touch. */
+async function checkMemoryTab(page: Page, baseUrl: string, touch: boolean): Promise<Check[]> {
+  await page.goto(`${baseUrl}/dashboard/settings#memory`);
+  await page.waitForTimeout(500);
+  return page.evaluate((touchArg) => {
+    const out: { ok: boolean; msg: string }[] = [];
+    const vw = document.documentElement.clientWidth;
+    const sw = document.documentElement.scrollWidth;
+    out.push({ ok: sw <= vw + 1, msg: `memory tab has no sideways overflow (${sw} ≤ ${vw})` });
+    if (touchArg) {
+      // Its editors load per user; probe the tab's own field rules with detached copies.
+      const box = document.createElement('div');
+      box.innerHTML =
+        '<div class="pages-list"><input type="search"></div><div class="pages-detail"><div class="field"><input type="text"></div></div><textarea></textarea><div class="ep-bar"><select><option>x</option></select></div>';
+      document.body.appendChild(box);
+      const sizes = Array.from(box.querySelectorAll('input, textarea, select')).map((el) =>
+        parseFloat(getComputedStyle(el as HTMLElement).fontSize),
+      );
+      box.remove();
+      out.push({ ok: sizes.every((n) => n >= 16), msg: `memory tab fields ${sizes.join(' / ')}px ≥ 16px on touch` });
+    }
+    return out;
+  }, touch);
+}
+
 async function checkOpen(page: Page, touch: boolean): Promise<Check[]> {
   return page.evaluate((touchArg) => {
     const out: { ok: boolean; msg: string }[] = [];
@@ -574,6 +599,7 @@ async function sweepBrowser(name: string, type: BrowserType, baseUrl: string, ou
         await page.evaluate(() => (window as unknown as { closePanel(): void }).closePanel());
         record(await checkCronDrawer(page, touch), 'cron');
         record(await checkSettings(page, baseUrl, touch), 'settings');
+        record(await checkMemoryTab(page, baseUrl, touch), 'memory');
         await page.screenshot({ path: path.join(outDir, `${tag}-settings.png`) });
       } finally {
         await ctx.close();
@@ -792,19 +818,29 @@ async function transitions(
         w.openPanel(first.getAttribute('data-session-key') as string);
         await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
         const before = card.getBoundingClientRect().left;
+        const col0 = card.getAttribute('data-col');
         void w.loadSessions();
         const xs: number[] = [];
-        for (let n = 0; n < 45; n++) {
+        const cols: (string | null)[] = [];
+        for (let n = 0; n < 60; n++) {
           xs.push(card.getBoundingClientRect().left);
+          cols.push(card.getAttribute('data-col'));
           await new Promise((res) => requestAnimationFrame(res));
         }
-        return { before, xs };
+        return { before, xs, cols, col0 };
       });
       moving.activityState = was;
       const end = r.xs[r.xs.length - 1];
-      const lo = Math.min(r.before, end) - 2;
-      const hi = Math.max(r.before, end) + 2;
-      const out = r.xs.filter((x) => x < lo || x > hi);
+      // The path starts where the card was drawn when the render landed (its column
+      // changed), not before the request: the docking shift keeps moving it meanwhile,
+      // and a slow response is not a jump (trinity R2 on #409, astra and fable).
+      const k = r.cols.findIndex((c) => c !== r.col0);
+      const at = k > 0 ? Math.min(r.xs[k - 1], r.xs[k]) : r.before;
+      const atHi = k > 0 ? Math.max(r.xs[k - 1], r.xs[k]) : r.before;
+      const lo = Math.min(at, end) - 2;
+      const hi = Math.max(atHi, end) + 2;
+      const out = (k > 0 ? r.xs.slice(k) : r.xs).filter((x) => x < lo || x > hi);
+      expect(k > 0, `the render lands while sampled (frame ${k})`);
       expect(Math.abs(end - r.before) > 50, `the render moves the card (${r.before} → ${end})`);
       expect(
         out.length === 0,
