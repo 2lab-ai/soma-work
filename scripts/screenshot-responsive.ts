@@ -516,6 +516,35 @@ async function transitions(
       );
       await ctx.close();
     }
+    // 4d. Dragging the docked drawer's edge across the inbox's 840px boundary moves the
+    //     edge with the pointer: no width animation chases it (trinity code review R2, fable).
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      const page = await ctx.newPage();
+      page.on('pageerror', (e) => failures.push(`transition drag: page error ${e.message}`));
+      await preparePage(page);
+      await openDashboard(page, baseUrl);
+      await openFilledPanel(page);
+      await page.evaluate(() => {
+        (window as unknown as { __panelWidthAnims: number }).__panelWidthAnims = 0;
+      });
+      const edge = await page.evaluate(
+        () => (document.getElementById('slide-panel') as HTMLElement).getBoundingClientRect().left,
+      );
+      await page.mouse.move(edge + 3, 450);
+      await page.mouse.down();
+      await page.mouse.move(edge - 240, 450, { steps: 24 });
+      await page.mouse.up();
+      const after = await page.evaluate(() => ({
+        anims: (window as unknown as { __panelWidthAnims: number }).__panelWidthAnims,
+        left: (document.getElementById('slide-panel') as HTMLElement).getBoundingClientRect().left,
+        saved: localStorage.getItem('soma-panel-width'),
+      }));
+      expect(after.anims === 0, `a handle drag starts no width animation (${after.anims})`);
+      expect(Math.abs(after.left - (edge - 240)) <= 2, `the edge follows the pointer (${after.left} vs ${edge - 240})`);
+      expect(after.saved !== null, `the dragged width is saved (${after.saved})`);
+      await ctx.close();
+    }
     // 4. Reduced motion: no movement, a fade only.
     {
       const { ctx, page } = await fresh({ reduced: true });

@@ -8510,10 +8510,15 @@ function runLayoutCheck() {
   var panel = document.getElementById('slide-panel');
   var toW = 0;
   if (panel && panelOpen) {
-    var fromW = panel._wflip ? panel.getBoundingClientRect().width : _layoutPanelW;
+    // Only a sheet ↔ dock change (or retargeting that same animation) — a drag of
+    // the drawer's own edge that happens to cross 840px must follow the pointer.
+    var prevPanel = _layoutModeKey.split('|')[1];
+    var retarget = !!panel._wflip;
+    var fromW = retarget ? panel.getBoundingClientRect().width : _layoutPanelW;
     if (panel._wflip) { panel._wflip.cancel(); panel._wflip = null; }
     toW = panel.getBoundingClientRect().width;
-    if (fromW && animate && !reduce && Math.abs(fromW - toW) > 1) {
+    var reshape = (prevPanel !== mode.panel || retarget) && !panel.classList.contains('resizing');
+    if (reshape && fromW && animate && !reduce && Math.abs(fromW - toW) > 1) {
       panel._wflip = panel.animate([{ width: fromW + 'px' }, { width: toW + 'px' }], { duration: MOTION.move, easing: MOTION.easeOut });
       panel._wflip.onfinish = function() { panel._wflip = null; };
     }
