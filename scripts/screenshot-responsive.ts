@@ -672,6 +672,55 @@ async function transitions(
       }
       await ctx.close();
     }
+    // 4g. The same rule on the cache's write path: a CRON card FLIP that lands right after a
+    //     board scroll records its own spot, not one shifted by the board (trinity R5).
+    {
+      const { ctx, page } = await fresh({ savedView: 'board' });
+      await page.setViewportSize({ width: 669, height: 825 });
+      await page.waitForFunction(() => window.innerWidth === 669);
+      await page.waitForTimeout(600);
+      const before = await page.evaluate(async () => {
+        const kb = document.getElementById('kanban') as HTMLElement;
+        const card = document.querySelector('.cron-lane .card') as HTMLElement | null;
+        if (!card) return null;
+        const scrolled = new Promise((r) => kb.addEventListener('scroll', r, { once: true }));
+        kb.scrollTo({ left: 250, behavior: 'instant' });
+        await scrolled;
+        const w = window as unknown as {
+          _layoutRefreshTimer: number;
+          __cronFlipStart: unknown;
+          playFlip(el: HTMLElement, dx: number, dy: number, raise: boolean): void;
+        };
+        clearTimeout(w._layoutRefreshTimer);
+        // A live render lands the CRON card (a vertical nudge, as a reflow would).
+        w.playFlip(card, 0, 12, false);
+        w.__cronFlipStart = null;
+        return { left: card.getBoundingClientRect().left, k: kb.scrollLeft };
+      });
+      expect(before !== null && before.k > 0, `CRON card FLIP after a board scroll (${before ? before.k : 'no card'})`);
+      await page.setViewportSize({ width: 951, height: 543 });
+      await page.waitForFunction(() => window.innerWidth === 951);
+      const seen = await page.evaluate(
+        () =>
+          new Promise<{ start: { left: number } | null; now: number }>((resolve) =>
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                const card = document.querySelector('.cron-lane .card') as HTMLElement;
+                const w = window as unknown as { __cronFlipStart: { left: number } | null };
+                resolve({ start: w.__cronFlipStart, now: card.getBoundingClientRect().left });
+              }),
+            ),
+          ),
+      );
+      if (before) {
+        const from = seen.start ? seen.start.left : seen.now;
+        expect(
+          Math.abs(from - before.left) <= 1,
+          `a landed CRON card unfolds from its own spot (${seen.start ? 'FLIP from' : 'at'} ${from} vs ${before.left})`,
+        );
+      }
+      await ctx.close();
+    }
     // 4f. Escape over a docked panel with the cron drawer open closes the drawer only.
     {
       const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });

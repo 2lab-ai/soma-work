@@ -433,9 +433,19 @@ describe('settings page — reached from the dashboard top bar', () => {
 
 describe('merged views — trinity code review R4 follow-ups', () => {
   it('the board scroll compensation applies only to movers inside the kanban (CRON lane cards sit outside it)', () => {
-    const body = clientFn('runLayoutCheck');
-    expect(body).toContain('kb.contains(el) ? sk : 0');
-    expect(body).not.toMatch(/cached\.left - sx - sk,/);
+    // One rule for both paths that use the board's scrollLeft: reading the cache
+    // (runLayoutCheck) and writing a FLIP's landing spot into it (noteFlipTarget, R5).
+    const make = new Function('document', `${clientFn('boardScrollShift')}\nreturn boardScrollShift;`);
+    const inside = {};
+    const shift = make({ getElementById: () => ({ contains: (el: unknown) => el === inside }) }) as (
+      el: unknown,
+      dk: number,
+    ) => number;
+    expect(shift(inside, 295)).toBe(295);
+    expect(shift({}, 295)).toBe(0);
+    expect(clientFn('runLayoutCheck')).toContain('cached.left - sx - boardScrollShift(el, sk)');
+    expect(clientFn('noteFlipTarget')).toContain('boardScrollShift(el, now.k - _layoutScroll.k)');
+    expect(clientFn('noteFlipTarget')).not.toContain('+ (now.k - _layoutScroll.k)');
   });
 
   it('Escape with a docked panel and the cron drawer open closes the drawer only (the topmost)', () => {
