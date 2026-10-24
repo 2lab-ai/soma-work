@@ -159,7 +159,7 @@ function renderL1Card(target, block, editing) {
     if (editing && editing.index === i) {
       html += '<li><textarea id="l1-edit-' + target + '" rows="3" aria-label="' + escAttr(L1_LABELS[target] + ' ' + (i + 1) + '번 수정') + '">' + esc(editing.text) + '</textarea>'
         + '<div class="actions"><button type="button" class="btn primary" onclick="l1Save(\'' + target + '\',' + i + ')">저장</button>'
-        + '<button type="button" class="btn" onclick="paintL1()">취소</button></div></li>';
+        + '<button type="button" class="btn" onclick="l1Cancel()">취소</button></div></li>';
     } else {
       html += '<li><div class="text">' + esc(entries[i]) + '</div><div class="actions">'
         + '<button type="button" class="btn link" onclick="l1EditStart(\'' + target + '\',' + i + ')">수정</button>'
@@ -177,15 +177,50 @@ function renderL1Card(target, block, editing) {
     + (entries.length ? '<button type="button" class="btn" onclick="l1Clear(\'' + target + '\')">모두 지우기</button>' : '') + '</span></div></div></div>';
   return html;
 }
-function paintL1(editing) {
+// Repaint both cards. What is typed survives a repaint (review R9): an open editor is
+// re-attached to the entry with the same text (only one such), else its draft goes to
+// that card's add box; the add boxes keep their text. opts.close closes the editor
+// (cancel, its own save); opts.clearAdd empties one add box (its note was added).
+function paintL1(editing, opts) {
   if (!_mem) return;
-  var html = '';
+  opts = opts || {};
   var targets = ['memory', 'user'];
+  var adds = {};
+  for (var a = 0; a < targets.length; a++) {
+    var box = document.getElementById('l1-new-' + targets[a]);
+    if (box && box.value) adds[targets[a]] = box.value;
+  }
+  var open = _mem.editingL1;
+  var openBox = open ? document.getElementById('l1-edit-' + open.target) : null;
+  if (!editing && open && openBox && !opts.close) {
+    var ents = (_mem.l1[open.target] && _mem.l1[open.target].entries) || [];
+    var at = ents.indexOf(open.orig);
+    if (at >= 0 && ents.lastIndexOf(open.orig) === at) editing = { target: open.target, index: at, text: openBox.value };
+    else if (openBox.value !== open.orig && !adds[open.target]) adds[open.target] = openBox.value;
+  }
+  _mem.editingL1 = editing ? { target: editing.target, orig: (_mem.l1[editing.target].entries || [])[editing.index] } : null;
+  var html = '';
   for (var i = 0; i < targets.length; i++) {
     var t = targets[i];
     html += renderL1Card(t, _mem.l1[t], editing && editing.target === t ? editing : null);
   }
   document.getElementById('mem-l1-body').innerHTML = html;
+  for (var k = 0; k < targets.length; k++) {
+    var tk = targets[k];
+    if (!adds[tk] || opts.clearAdd === tk) continue;
+    var nb = document.getElementById('l1-new-' + tk);
+    if (nb) nb.value = adds[tk];
+  }
+}
+function l1Cancel() {
+  paintL1(null, { close: true });
+}
+// An L1 write in flight holds its card: a second click waits (review R9).
+function l1Busy(target) {
+  var b = _mem && _mem.l1 && _mem.l1[target];
+  if (!b || !b.saving || Date.now() - b.saving > 20000) return false;
+  memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
+  return true;
 }
 // Live total after the addition (the store joins entries with a 3-char delimiter).
 function l1Count(target) {
@@ -204,12 +239,20 @@ function l1Count(target) {
 // edit box — the entry it was for when it still exists, else the add box —
 // so nothing typed is lost (review P1).
 async function l1Write(method, url, payload, draft, at, orig) {
+  var target = url.split('/')[4];
+  var held = _mem.l1[target];
+  if (held) held.saving = Date.now();
+  // the card's editor and add box are locked while the write is out: its answer repaints them (review R9)
+  var locked = [document.getElementById('l1-edit-' + target), document.getElementById('l1-new-' + target)];
+  for (var lk = 0; lk < locked.length; lk++) if (locked[lk]) locked[lk].disabled = true;
   var r;
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
-  var target = url.split('/')[4];
+  if (held) held.saving = 0;
+  for (var ul = 0; ul < locked.length; ul++) if (locked[ul]) locked[ul].disabled = false;
   if (r.ok) {
     _mem.l1[target] = r.data.l1;
-    paintL1();
+    // its own editor closes on its save; a new note empties its box (an undo leaves the box alone)
+    paintL1(null, method === 'PUT' ? { close: true } : method === 'POST' && !(payload && payload.restore) ? { clearAdd: target } : {});
     return true;
   }
   if (r.status === 409) {
@@ -234,7 +277,7 @@ function restoreL1Draft(target, draft, at, orig) {
     return;
   }
   var ta = document.getElementById('l1-new-' + target);
-  if (ta) ta.value = draft;
+  if (ta && !ta.value) ta.value = draft;
 }
 function l1EditStart(target, i) {
   paintL1({ target: target, index: i, text: _mem.l1[target].entries[i] });
@@ -242,6 +285,7 @@ function l1EditStart(target, i) {
   if (ta) ta.focus();
 }
 async function l1Save(target, i) {
+  if (l1Busy(target)) return;
   var ta = document.getElementById('l1-edit-' + target);
   var text = ta ? ta.value : '';
   if (!text.trim()) { memStatus('비어 있는 항목은 저장할 수 없습니다 — 지우려면 삭제를 쓰세요', true); return; }
@@ -249,12 +293,14 @@ async function l1Save(target, i) {
   if (await l1Write('PUT', '/api/memory/l1/' + target + '/' + i, { text: text, revision: _mem.l1[target].revision }, text, i, orig)) memStatus('저장했습니다', false);
 }
 async function l1Add(target) {
+  if (l1Busy(target)) return;
   var ta = document.getElementById('l1-new-' + target);
   var text = ta ? ta.value : '';
   if (!text.trim()) return;
   if (await l1Write('POST', '/api/memory/l1/' + target, { text: text, revision: _mem.l1[target].revision }, text)) memStatus('추가했습니다', false);
 }
 async function l1Delete(target, i) {
+  if (l1Busy(target)) return;
   var text = _mem.l1[target].entries[i];
   if (await l1Write('DELETE', '/api/memory/l1/' + target + '/' + i, { revision: _mem.l1[target].revision })) {
     _memUndo = { target: target, text: text };
@@ -324,9 +370,12 @@ function setPageFieldsDisabled(on) {
 }
 async function openPage(id) {
   if (pageSaveBusy()) return;
+  // Only the latest page opened is shown: an earlier one answering last is dropped (review R9).
+  var seq = (openPage.seq = (openPage.seq || 0) + 1);
   var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
   var data = null;
   try { data = await res.json(); } catch (_e) {}
+  if (seq !== openPage.seq) return;
   if (!res.ok) { memStatus('페이지를 열지 못했습니다: ' + ((data && data.error) || res.status), true); return; }
   _memPage = data;
   _memPageConflict = null;
@@ -515,11 +564,13 @@ function discardPageDraft() {
 }
 async function deletePage() {
   if (pageSaveBusy()) return;
+  // The page, revision and editor the dialog is about, fixed before it opens: a page
+  // opened behind the dialog is not the one the delete may close (review R3, R9).
+  var sentFrom = _memPage;
   var p = _memPage.page;
-  var revision = _memPage.revision; // the page the dialog names, as it was shown (review R3)
+  var revision = _memPage.revision;
   var ok = await confirmDialog({ title: p.title + ' 페이지를 지울까요?', body: p.id + ' — Current와 History가 모두 사라집니다.', action: '페이지 삭제' });
   if (!ok) return;
-  var sentFrom = _memPage;
   if (pageSaveBusy()) return; // a save started while the dialog was open
   sentFrom.saving = Date.now();
   var r;
@@ -571,10 +622,16 @@ async function loadDay(date) {
   var data = null;
   try { data = await res.json(); } catch (_e) {}
   if (seq !== loadDay.seq) return;
+  // A write that started meanwhile holds the day on screen: this load is dropped (review R9).
+  if (_memDay && _memDay.saving && Date.now() - _memDay.saving < 20000) {
+    var held = document.getElementById('mem-ep-date');
+    if (held) held.value = _memDay.date;
+    return;
+  }
   if (!res.ok) { memStatus('기록을 불러오지 못했습니다: ' + ((data && data.error) || res.status), true); return; }
   _memDay = data;
   document.getElementById('mem-ep-date').value = date;
-  renderDay();
+  repaintDay();
 }
 // The open episodic editor: the day, record and revision it was opened on. A save goes
 // there, whatever day the view shows by then (review R6).
@@ -585,7 +642,11 @@ function renderDay(editIndex, draft) {
   var el = document.getElementById('mem-ep-body');
   var entries = (_memDay && _memDay.entries) || [];
   var edited = typeof editIndex === 'number' ? entries[editIndex] : undefined;
-  _epEditor = edited ? { date: _memDay.date, revision: _memDay.revision, index: editIndex, time: edited.time, content: edited.content } : null;
+  var twins = 0;
+  for (var q = 0; edited && q < entries.length; q++) if (entries[q].time === edited.time && entries[q].content === edited.content) twins++;
+  // unique: no other record of the day had the same time and text when the editor
+  // opened — only then can a later repaint tell which record it was (review R9).
+  _epEditor = edited ? { date: _memDay.date, revision: _memDay.revision, index: editIndex, time: edited.time, content: edited.content, unique: twins === 1 } : null;
   if (!entries.length) { el.innerHTML = '<p class="lock">이 날의 기록이 없습니다.</p>'; return; }
   var html = '';
   for (var i = 0; i < entries.length; i++) {
@@ -627,18 +688,16 @@ async function epWrite(method, url, payload, draft, at, orig, origTime) {
     return true;
   }
   if (r.ok) {
-    // An editor of another record of this day stays open with its draft, re-attached to
-    // that record by its time and text (never by position) (review R8).
-    var open = method === 'DELETE' ? openEpEditor() : null;
     _memDay = r.data.day;
-    if (open) reopenEpEditor(open);
-    else renderDay();
+    // its own editor closes on its save; any other open editor is kept (review R8, R9)
+    if (method === 'PUT') renderDay();
+    else repaintDay();
     refreshDatesIfEmptied();
     return true;
   }
   if (r.status === 409) {
     await loadDay(date);
-    if (!_memDay || _memDay.date !== date) { var box = document.getElementById('mem-ep-new'); if (draft && box) box.value = draft; memStatus('그사이 이 날의 기록이 바뀌었습니다. 작성하던 내용은 메모 칸에 옮겼습니다.', true); return false; }
+    if (!_memDay || _memDay.date !== date) { var box = document.getElementById('mem-ep-new'); if (draft && box && !box.value) box.value = draft; memStatus('그사이 이 날의 기록이 바뀌었습니다. 작성하던 내용은 메모 칸에 옮겼습니다.', true); return false; }
     // The whole draft goes back into an edit box (review P1).
     // Back into the editor of the entry it was for — found by its original time
     // and text, never by position — else into the note box as a recovery draft
@@ -653,7 +712,7 @@ async function epWrite(method, url, payload, draft, at, orig, origTime) {
       }
     }
     if (draft && idx >= 0 && matches === 1) renderDay(idx, draft);
-    else if (draft) { var ta = document.getElementById('mem-ep-new'); if (ta) ta.value = draft; }
+    else if (draft) { var ta = document.getElementById('mem-ep-new'); if (ta && !ta.value) ta.value = draft; }
     memStatus('그사이 이 날의 기록이 바뀌어 최신 내용을 불러왔습니다.' + (draft ? ' 작성하던 내용은 편집 칸에 그대로 있습니다 — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
     return false;
   }
@@ -669,7 +728,23 @@ async function epWrite(method, url, payload, draft, at, orig, origTime) {
 // The open episodic editor with what is typed in it, or null.
 function openEpEditor() {
   var box = document.getElementById('ep-edit');
-  return _epEditor && box ? { time: _epEditor.time, content: _epEditor.content, draft: box.value } : null;
+  return _epEditor && box ? { date: _epEditor.date, time: _epEditor.time, content: _epEditor.content, unique: _epEditor.unique, draft: box.value } : null;
+}
+// Repaint the shown day. What is typed survives (review R9): an open editor of this day is
+// re-attached to the same record (time and text, only one such); otherwise — or when the
+// view moved to another day — its draft goes to the note box.
+function repaintDay() {
+  var open = openEpEditor();
+  if (open && _memDay && open.date === _memDay.date) { reopenEpEditor(open); return; }
+  renderDay();
+  if (open) keepEpDraft(open);
+}
+function keepEpDraft(open) {
+  var note = document.getElementById('mem-ep-new');
+  if (note && !note.value && open.draft !== open.content) {
+    note.value = open.draft;
+    memStatus('수정하던 ' + open.date + ' ' + open.time + ' 기록의 내용을 메모 칸에 옮겼습니다.', true);
+  }
 }
 // Re-open an editor on the record of the current day with the same time and text, if
 // there is exactly one; otherwise close it and move the draft to the note box.
@@ -683,13 +758,9 @@ function reopenEpEditor(open) {
       same++;
     }
   }
-  if (same === 1) { renderDay(at, open.draft); return; }
+  if (open.unique && same === 1) { renderDay(at, open.draft); return; }
   renderDay();
-  var note = document.getElementById('mem-ep-new');
-  if (note && !note.value && open.draft !== open.content) {
-    note.value = open.draft;
-    memStatus('수정하던 기록을 찾을 수 없어 작성하던 내용을 메모 칸에 옮겼습니다.', true);
-  }
+  keepEpDraft(open);
 }
 async function epSave(i) {
   if (epBusy()) return;
@@ -756,10 +827,16 @@ async function epAdd() {
         same++;
       }
     }
-    if (same === 1) {
+    if (_epEditor.unique && same === 1) {
       var keepDraft = openEdit.value;
       _memDay = r.data.day;
       renderDay(at, keepDraft);
+    } else if (!_epEditor.unique) {
+      // which record it was cannot be told any more: the draft goes to the note box
+      var lost = openEpEditor();
+      _memDay = r.data.day;
+      renderDay();
+      if (lost) keepEpDraft(lost);
     }
     await refreshPageIndex();
     fillDateSelect();
@@ -769,10 +846,11 @@ async function epAdd() {
   // The view and its state move to today together, before anything is awaited (review R6).
   _memDay = r.data.day;
   renderDay();
+  await refreshPageIndex();
+  // the day came back with the answer: list today, show it, no reload (review R9)
+  fillDateSelect();
   var sel = document.getElementById('mem-ep-date');
   if (sel) sel.value = _memDay.date;
-  await refreshPageIndex();
-  paintDates();
   memStatus('오늘 기록에 추가했습니다', false);
 }
 `;
