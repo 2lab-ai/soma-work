@@ -36,12 +36,13 @@
  * A root is trusted only as far as the session cannot change it. Each root is
  * walked from `/` one name at a time, every name replaced by the file system's
  * own spelling, so `/tmp/…` and `/private/tmp/…`, or two spellings of case,
- * come out as one path. A symbolic link on the way is followed only when the
- * directory that holds it lies outside every root (the system's `/tmp` →
- * `/private/tmp`); one inside a root — between `/tmp/{userId}` and a working
- * directory inside it — refuses that root, since the session's own Bash can
- * put it there. A root that is itself a symbolic link is refused too. The roots
- * are compared with each other in that one spelling, walked again until they
+ * come out as one path. A symbolic link on the way is followed only when it
+ * lies outside every root (the system's `/tmp` → `/private/tmp`); one at or
+ * inside a root — a root's own name, or a directory between `/tmp/{userId}` and
+ * a working directory inside it — is one the session's own Bash can put there
+ * (the sandbox lets it write a root's own name as well), so the roots cannot be
+ * trusted and every write is refused until they are restored. The roots are
+ * compared with each other in that one spelling, walked again until they
  * agree. Refused as well, since a write would
  * land outside a root through them: a `..` segment (the OS climbs it from a
  * symbolic link's target), a dangling symbolic link on the way (a write
@@ -243,10 +244,10 @@ const MAX_LINKS = 40;
  * path is walked from `/` one name at a time, the way the OS resolves it, each
  * existing name replaced by the file system's own spelling (`realpath` of a
  * path with no symbolic link left in it changes only case and Unicode form). A
- * symbolic link is followed only when the directory holding it lies outside
- * every root in `known` (their canonical forms); one inside — the session's own
- * Bash could have put it there — refuses the root. So does a root that is
- * itself a symbolic link. A missing rest is appended as named.
+ * symbolic link is followed only when it lies outside every root in `known`
+ * (their canonical forms); one at or inside a root — the session's own Bash
+ * could have put it there — refuses the root. So does a root that is itself a
+ * symbolic link. A missing rest is appended as named.
  */
 function canonicalRoot(root: string, known: readonly string[]): Resolved {
   const self = path.resolve(root);
@@ -274,8 +275,8 @@ function canonicalRoot(root: string, known: readonly string[]): Resolved {
       return { ok: false, reason: `cannot inspect ${next} (${errorCode(error) ?? 'error'})` };
     }
     if (stat.isSymbolicLink()) {
-      if (known.some((r) => isInside(current, r))) {
-        return { ok: false, reason: `${next} is a symbolic link inside a writable directory` };
+      if (known.some((r) => isInside(next, r))) {
+        return { ok: false, reason: `${next} is a symbolic link at or inside a writable directory` };
       }
       if (++links > MAX_LINKS) return { ok: false, reason: `too many symbolic links in ${self}` };
       let target: string;
@@ -297,29 +298,35 @@ function canonicalRoot(root: string, known: readonly string[]): Resolved {
   return { ok: true, path: current };
 }
 
+type Roots = { ok: true; paths: string[] } | { ok: false; reason: string };
+
 /**
  * The roots in one spelling. Whether a link lies inside a root is asked of the
  * roots' canonical forms, which this computes: so each round walks every root
  * against the previous round's forms, until a round changes nothing. A root
- * that fails is not a place to write; the others still are.
+ * that cannot be trusted makes none of them trusted: where it really is, and so
+ * which links inside it the session made, is no longer known.
  */
-function canonicalRoots(roots: readonly string[]): Resolved[] {
+function canonicalRoots(roots: readonly string[]): Roots {
   let known: string[] = [];
-  let resolved: Resolved[] = [];
   for (let round = 0; round <= roots.length + 1; round++) {
-    resolved = roots.map((root) => canonicalRoot(root, known));
-    const next = resolved.flatMap((r) => (r.ok ? [r.path] : []));
-    if (round > 0 && next.length === known.length && next.every((p, i) => p === known[i])) return resolved;
-    known = next;
+    const paths: string[] = [];
+    for (const root of roots) {
+      const resolved = canonicalRoot(root, known);
+      if (!resolved.ok) return resolved;
+      paths.push(resolved.path);
+    }
+    if (round > 0 && paths.every((p, i) => p === known[i])) return { ok: true, paths };
+    known = paths;
   }
-  return roots.map(() => ({ ok: false, reason: 'the writable directories do not settle' }));
+  return { ok: false, reason: 'they do not settle on one place' };
 }
 
 /** Why a write to `raw` would land outside the roots, or null. */
 function checkTarget(
   toolName: string,
   raw: string,
-  roots: readonly Resolved[],
+  roots: readonly string[],
   cwd: string,
   shown: string,
 ): string | null {
@@ -335,7 +342,7 @@ function checkReading(
   toolName: string,
   raw: string,
   joined: string,
-  roots: readonly Resolved[],
+  roots: readonly string[],
   shown: string,
 ): string | null {
   // The OS climbs `..` from a symbolic link's target, `path.resolve` from the
@@ -343,7 +350,7 @@ function checkReading(
   if (joined.split('/').includes('..')) return `${toolName} to ${raw}: a path with \`..\` is not allowed`;
   const target = resolveWriteTarget(path.resolve(joined));
   if (!target.ok) return `${toolName} to ${raw}: ${target.reason}`;
-  const insideRoot = roots.some((root) => root.ok && isInside(target.path, root.path));
+  const insideRoot = roots.some((root) => isInside(target.path, root));
   if (!insideRoot) {
     return `${toolName} to ${raw} lands outside the session's writable directories (${shown})`;
   }
@@ -374,8 +381,11 @@ export function createNativeWriteCheck(roots: readonly string[], cwd: string): N
     if (!targets.ok) return targets.reason;
     if (targets.targets.length === 0) return null;
     const canonical = canonicalRoots(roots);
+    if (!canonical.ok) {
+      return `${toolName}: the session's writable directories (${shown}) cannot be trusted — ${canonical.reason}; no native write is allowed until they are restored`;
+    }
     for (const raw of targets.targets) {
-      const outside = checkTarget(toolName, raw, canonical, cwd, shown);
+      const outside = checkTarget(toolName, raw, canonical.paths, cwd, shown);
       if (outside !== null) return outside;
     }
     return null;
