@@ -827,6 +827,15 @@ async function transitions(
           if (start === null && card.getAttribute('data-col') !== col0) start = card.getBoundingClientRect().left;
         });
         mo.observe(card, { attributes: true, attributeFilter: ['data-col'] });
+        // And where it was drawn just before that render ran (trinity R4, astra): the
+        // FLIP must start there — a render that itself jumped would move "start".
+        let pre: number | null = null;
+        const g = window as unknown as { renderBoard: (b: unknown) => unknown };
+        const realRender = g.renderBoard;
+        g.renderBoard = function (b: unknown) {
+          if (pre === null) pre = card.getBoundingClientRect().left;
+          return realRender.call(this, b);
+        };
         void w.loadSessions();
         const xs: number[] = [];
         const cols: (string | null)[] = [];
@@ -836,7 +845,8 @@ async function transitions(
           await new Promise((res) => requestAnimationFrame(res));
         }
         mo.disconnect();
-        return { before, xs, cols, col0, start };
+        g.renderBoard = realRender;
+        return { before, xs, cols, col0, start, pre };
       });
       moving.activityState = was;
       const end = r.xs[r.xs.length - 1];
@@ -850,6 +860,10 @@ async function transitions(
       // Every frame from the landing on — the first one included (trinity R3, astra).
       const out = (k > 0 ? r.xs.slice(k) : r.xs).filter((x) => x < lo || x > hi);
       expect(k > 0 && r.start !== null, `the render lands while sampled (frame ${k}, FLIP from ${r.start})`);
+      expect(
+        r.pre !== null && r.start !== null && Math.abs(r.start - r.pre) <= 2,
+        `the render's FLIP starts where the card was drawn just before it (${r.start} vs ${r.pre})`,
+      );
       expect(Math.abs(end - r.before) > 50, `the render moves the card (${r.before} → ${end})`);
       expect(
         out.length === 0,
