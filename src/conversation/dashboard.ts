@@ -4011,9 +4011,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   overflow: hidden;
 }
 .slide-panel.open { transform: none; visibility: visible; transition: transform var(--dur-move) var(--ease-out); }
-/* Only a layout shift (fold, unfold, rotation — runLayoutCheck) animates the width;
-   an ordinary window drag must not lag behind the pointer. */
-.is-layout-shift .slide-panel { transition: transform var(--dur-move) var(--ease-out), width var(--dur-move) var(--ease-out); }
 .slide-panel.resizing { transition: none; user-select: none; }
 /* Resize handle — left edge */
 .panel-resize-handle {
@@ -4066,13 +4063,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* Panel body (SSOT 2026-10-24): pinned Tasks · pinned Artifacts · the one main
    scroll area. The scroll row never gets less than half the body (R/2, R = panel
    − header − composer); the pinned blocks share the rest, down to one row each,
-   and scroll inside rather than clip (.prd/10 §3.1-6). */
+   and scroll inside rather than clip (.prd/10 §3.1-6). On the shortest bodies
+   (< 176px, two 44px floors) the scroll row takes what the floors leave, so no row
+   ever overflows the body, which clips. */
 .panel-body {
   flex: 1 1 0;
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto minmax(50%, 1fr);
+  grid-template-rows: auto auto minmax(min(50%, calc(100% - 88px)), 1fr);
   container: pbody / size;
   overflow: hidden;
 }
@@ -5072,10 +5071,11 @@ body.nt-open .new-task-fab { display: none !important; }
   .panel-command input, .mc-custom-input input { font-size: 16px; }
 }
 @media (max-width: 639px) {
-  /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB, the
+  /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB (a board
+     with cards only — an empty page must not turn scrollable), the
      defaults menu spans the bar instead of running off the edge, and the
      artifact viewer takes the whole screen. */
-  .main { padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
+  .inbox:has(.card) { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
   .topbar { position: relative; }
   .topbar .topbar-defaults { position: static; }
   .td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }
@@ -5083,9 +5083,10 @@ body.nt-open .new-task-fab { display: none !important; }
   .art-modal-head { flex-wrap: wrap; row-gap: 6px; }
 }
 /* A short panel body (landscape phones, the unfolded Duo, a docked drawer under a
-   tall top bar): artifacts become name chips with the play button inline, so the
+   tall top bar; below 560px R/2 cannot hold full thumbnails plus a couple of task
+   rows): artifacts become name chips with the play button inline, so the
    pinned strip stays one short row; every tile is still reachable sideways. */
-@container pbody (max-height: 640px) {
+@container pbody (max-height: 560px) {
   .panel-artifacts { display: flex; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
   .panel-arts-head { flex: none; margin-bottom: 0; }
   .panel-arts-hint { display: none; }
@@ -8277,20 +8278,29 @@ function setBoardView(view, ev) {
   var movers = (ev && ev.detail > 0 && canAnimate()) ? collectViewMovers() : null;
   var before = movers ? movers.map(function(m) { return m.getBoundingClientRect(); }) : null;
   kb.setAttribute('data-view', view);
-  if (!movers) return;
-  if (reduceMotion()) {
-    kb.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
+  // A user switch animates itself here; the layout-shift coordinator adopts the
+  // result so it never animates the same change a second time (SSOT 2026-10-24).
+  if (!movers) {
+    if (ev) adoptLayoutTargets(null);
     return;
   }
+  if (reduceMotion()) {
+    kb.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
+    adoptLayoutTargets(null);
+    return;
+  }
+  var targets = new Map();
   for (var j = 0; j < movers.length; j++) {
     var el = movers[j];
     if (el._flip) { el._flip.cancel(); el._flip = null; }
     var b = el.getBoundingClientRect();
+    targets.set(el, { left: b.left, top: b.top });
     var dx = before[j].left - b.left;
     var dy = before[j].top - b.top;
     if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
     playFlip(el, dx, dy, false);
   }
+  adoptLayoutTargets(targets);
 }
 function collectViewMovers() {
   var out = [];
@@ -8335,6 +8345,9 @@ function parseTranslate(t) {
 function flipVisualPos(target, t) {
   return { left: target.left + t.x, top: target.top + t.y };
 }
+function sameSpot(a, b) {
+  return Math.abs(a.left - b.left) < 0.5 && Math.abs(a.top - b.top) < 0.5;
+}
 var _layoutRects = new Map(); // mover → its last layout target { left, top } (viewport, at _layoutScroll)
 var _layoutScroll = { x: 0, y: 0, k: 0 }; // window and board scroll when the cache was taken
 var _lastScroll = { x: 0, y: 0, k: 0 }; // the scroll the reader last saw (scroll events)
@@ -8342,7 +8355,10 @@ var _layoutModeKey = '';
 var _layoutShiftUntil = 0;
 var _layoutCheckQueued = false;
 var _layoutRefreshTimer = null;
+var _layoutCheckFrame = null; // document.timeline time of the frame the last check ran in
 var _panelAnchor = null;
+var _panelScrollGen = 0; // bumped by the reader's own input in the panel
+var _layoutPanelW = 0; // the open drawer's width when the cache was taken
 function currentLayoutMode() {
   var inbox = document.getElementById('inbox');
   var panel = document.getElementById('slide-panel');
@@ -8364,13 +8380,14 @@ function capturePanelAnchor() {
   var scrollEl = document.getElementById('panel-scroll');
   if (!scrollEl || !panelOpen) return null;
   var a = panelScrollAnchor(scrollEl);
-  return a ? { el: a.el, offset: a.top - scrollEl.getBoundingClientRect().top } : null;
+  return a ? { el: a.el, offset: a.top - scrollEl.getBoundingClientRect().top, gen: _panelScrollGen } : null;
 }
 function restorePanelAnchor(a) {
   var scrollEl = document.getElementById('panel-scroll');
   if (!scrollEl || !panelOpen) return;
   if (_panelStickBottom) { scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' }); return; }
-  if (!a || !a.el.isConnected) return;
+  // Never pull the reader back from a place they scrolled to themselves.
+  if (!a || !a.el.isConnected || a.gen !== _panelScrollGen) return;
   var drift = a.el.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - a.offset;
   if (Math.abs(drift) > 0.5) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift, behavior: 'instant' });
 }
@@ -8380,7 +8397,10 @@ function restorePanelAnchor(a) {
 // cache still holds the layout the reader saw.
 function refreshLayoutCache() {
   if (Date.now() < _layoutShiftUntil) return;
-  if (_layoutModeKey && layoutModeKey(currentLayoutMode()) !== _layoutModeKey) { runLayoutCheck(); return; }
+  if (_layoutModeKey && layoutModeKey(currentLayoutMode()) !== _layoutModeKey) { requestLayoutCheck(); return; }
+  measureLayout();
+}
+function measureLayout() {
   var next = new Map();
   var movers = collectViewMovers();
   for (var i = 0; i < movers.length; i++) {
@@ -8392,6 +8412,18 @@ function refreshLayoutCache() {
   _lastScroll = _layoutScroll;
   _layoutModeKey = layoutModeKey(currentLayoutMode());
   _panelAnchor = capturePanelAnchor();
+  _layoutPanelW = panelOpen ? document.getElementById('slide-panel').getBoundingClientRect().width : 0;
+}
+// A user Board/List switch (setBoardView with an event) plays its own FLIP; the
+// coordinator takes its targets as the new layout instead of animating it again.
+function adoptLayoutTargets(targets) {
+  if (!targets) { _layoutShiftUntil = 0; measureLayout(); return; }
+  _layoutRects = targets;
+  _layoutScroll = layoutScrollNow();
+  _lastScroll = _layoutScroll;
+  _layoutModeKey = layoutModeKey(currentLayoutMode());
+  _layoutShiftUntil = Date.now() + MOTION.move;
+  scheduleLayoutRefresh(MOTION.move + 40);
 }
 function scheduleLayoutRefresh(delay) {
   clearTimeout(_layoutRefreshTimer);
@@ -8411,6 +8443,11 @@ function layoutBeforeChange() {
 function runLayoutCheck() {
   var kb = document.getElementById('kanban');
   if (!kb) return;
+  // Once per frame: the window resize (rAF) and the inbox ResizeObserver can both
+  // land in one frame; the frame's own layout was already measured by the first.
+  var frame = document.timeline ? document.timeline.currentTime : null;
+  if (frame !== null && frame === _layoutCheckFrame) return;
+  _layoutCheckFrame = frame;
   // The default view follows the screen until the reader picks one (no event:
   // setBoardView neither saves it nor plays its own FLIP — this runs the only one).
   var autoView = defaultBoardView(window.innerWidth, savedBoardView());
@@ -8418,54 +8455,63 @@ function runLayoutCheck() {
   var mode = currentLayoutMode();
   var changed = layoutModeKey(mode) !== _layoutModeKey;
   var flying = Date.now() < _layoutShiftUntil;
-  if (!changed && !flying) { refreshLayoutCache(); return; }
+  if (!changed && !flying) { measureLayout(); return; }
   var anchor = _panelAnchor;
+  var gen = _panelScrollGen;
   var sx = _lastScroll.x - _layoutScroll.x, sy = _lastScroll.y - _layoutScroll.y, sk = _lastScroll.k - _layoutScroll.k;
-  var movers = collectViewMovers();
-  var from = [];
-  for (var i = 0; i < movers.length; i++) {
-    var el = movers[i];
-    var target = _layoutRects.get(el);
-    if (!target) { from.push(null); continue; }
-    var t = el._flip ? parseTranslate(getComputedStyle(el).transform) : { x: 0, y: 0 };
-    var p = flipVisualPos(target, t);
-    from.push({ left: p.left - sx - sk, top: p.top - sy });
-  }
-  for (var c = 0; c < movers.length; c++) {
-    el = movers[c];
-    if (el._flip) { el._flip.cancel(); el._flip = null; el.classList.remove('is-flying'); }
-  }
   var animate = canAnimate();
   var reduce = reduceMotion();
   var vw = window.innerWidth, vh = window.innerHeight;
+  var movers = collectViewMovers();
   var next = new Map();
-  for (var j = 0; j < movers.length; j++) {
-    el = movers[j];
+  for (var i = 0; i < movers.length; i++) {
+    var el = movers[i];
+    var cached = _layoutRects.get(el);
+    // The last target, where the reader saw it (scroll since the cache taken out).
+    var target = cached ? { left: cached.left - sx - sk, top: cached.top - sy } : null;
+    // getBoundingClientRect includes a running FLIP; its translate gives the layout spot.
+    var t = el._flip ? parseTranslate(getComputedStyle(el).transform) : { x: 0, y: 0 };
     var r = el.getBoundingClientRect();
-    next.set(el, { left: r.left, top: r.top });
-    var f = from[j];
-    if (!f || !animate || reduce) continue;
+    var layout = { left: r.left - t.x, top: r.top - t.y };
+    next.set(el, layout);
+    // Its layout did not move: a running flight still lands right — leave it alone.
+    if (target && sameSpot(target, layout)) continue;
+    if (el._flip) { el._flip.cancel(); el._flip = null; el.classList.remove('is-flying'); }
+    if (!target || !animate || reduce) continue;
+    // Where it is visibly now: the last target plus its current translate.
+    var f = flipVisualPos(target, t);
     var seenBefore = f.left < vw && f.left + r.width > 0 && f.top < vh && f.top + r.height > 0;
-    var seenNow = r.left < vw && r.right > 0 && r.top < vh && r.bottom > 0;
+    var seenNow = layout.left < vw && layout.left + r.width > 0 && layout.top < vh && layout.top + r.height > 0;
     if (!seenBefore && !seenNow) continue;
-    var dx = f.left - r.left, dy = f.top - r.top;
+    var dx = f.left - layout.left, dy = f.top - layout.top;
     if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
     playFlip(el, dx, dy, false);
   }
   if (changed && animate && reduce) kb.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
+  // The open drawer's own width (sheet ↔ dock) animates with the cards: from its
+  // visible width (mid-flight, the running animation's) to the new one. Only here —
+  // a CSS width transition would trail every desktop window drag.
+  var panel = document.getElementById('slide-panel');
+  var toW = 0;
+  if (panel && panelOpen) {
+    var fromW = panel._wflip ? panel.getBoundingClientRect().width : _layoutPanelW;
+    if (panel._wflip) { panel._wflip.cancel(); panel._wflip = null; }
+    toW = panel.getBoundingClientRect().width;
+    if (fromW && animate && !reduce && Math.abs(fromW - toW) > 1) {
+      panel._wflip = panel.animate([{ width: fromW + 'px' }, { width: toW + 'px' }], { duration: MOTION.move, easing: MOTION.easeOut });
+      panel._wflip.onfinish = function() { panel._wflip = null; };
+    }
+  }
+  _layoutPanelW = toW;
   _layoutRects = next;
   _layoutScroll = layoutScrollNow();
   _lastScroll = _layoutScroll;
   _layoutModeKey = layoutModeKey(mode);
   restorePanelAnchor(anchor);
-  if (!changed && !flying) return;
   _layoutShiftUntil = Date.now() + MOTION.move;
-  var root = document.documentElement;
-  root.classList.add('is-layout-shift');
   setTimeout(function() {
     if (Date.now() < _layoutShiftUntil) return;
-    root.classList.remove('is-layout-shift');
-    restorePanelAnchor(anchor);
+    if (gen === _panelScrollGen) restorePanelAnchor(anchor);
     refreshLayoutCache();
   }, MOTION.move + 20);
 }
@@ -12677,6 +12723,13 @@ function syncTopbarBottom() {
   }
   var ps = document.getElementById('panel-scroll');
   if (ps) ps.addEventListener('scroll', function() { scheduleLayoutRefresh(120); }, { passive: true });
+  // The reader's own input in the panel: a shift no longer restores the old place.
+  var panel = document.getElementById('slide-panel');
+  if (panel) {
+    ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(function(type) {
+      panel.addEventListener(type, function() { _panelScrollGen++; }, { passive: true, capture: true });
+    });
+  }
 })();
 
 // ── Init ──

@@ -95,9 +95,12 @@ async function preparePage(page: Page, opts: { savedView?: string; savedWidth?: 
       // Count the script animations that move board items (the layout-shift FLIPs), so a
       // probe that lands after a 320ms animation ended still sees that it ran.
       'window.__shiftAnims = 0;',
+      // And the drawer's own width animation (sheet ↔ dock).
+      'window.__panelWidthAnims = 0;',
       'var __animate = Element.prototype.animate;',
       'Element.prototype.animate = function (kf, opts) {',
       "  try { if (this.matches('#kanban .card, #kanban .kanban-col-header') && JSON.stringify(kf).indexOf('transform') >= 0) window.__shiftAnims++; } catch (_e) {}",
+      "  try { if (this.id === 'slide-panel' && JSON.stringify(kf).indexOf('width') >= 0) window.__panelWidthAnims++; } catch (_e) {}",
       '  return __animate.call(this, kf, opts);',
       '};',
       opts.savedView ? `localStorage.setItem('soma-board-view', ${JSON.stringify(opts.savedView)});` : '',
@@ -213,7 +216,20 @@ async function checkOpen(page: Page, touch: boolean): Promise<Check[]> {
     const body = (document.getElementById('panel-body') as HTMLElement).getBoundingClientRect();
     const scrollEl = document.getElementById('panel-scroll') as HTMLElement;
     const s = scrollEl.getBoundingClientRect();
-    out.push({ ok: s.height >= body.height / 2 - 1, msg: `main scroll ≥ R/2 (${s.height} ≥ ${body.height / 2})` });
+    // R/2, or what the two 44px pinned floors leave on the shortest bodies.
+    const need = Math.min(body.height / 2, body.height - 88);
+    out.push({ ok: s.height >= need - 1, msg: `main scroll ≥ R/2 (${s.height} ≥ ${need})` });
+    // The body clips overflow: every row must also end inside it, or a "tall" scroll
+    // area could be partly hidden under the composer.
+    for (const id of ['panel-tasks', 'panel-artifacts', 'panel-scroll']) {
+      const el = document.getElementById(id) as HTMLElement;
+      if (getComputedStyle(el).display === 'none') continue;
+      const r = el.getBoundingClientRect();
+      out.push({
+        ok: r.top >= body.top - 1 && r.bottom <= body.bottom + 1,
+        msg: `#${id} inside the body, not clipped (${r.top}..${r.bottom} in ${body.top}..${body.bottom})`,
+      });
+    }
     scrollEl.scrollTo({ top: 0, behavior: 'instant' });
     const top = scrollEl.scrollTop;
     scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
@@ -249,10 +265,11 @@ async function sweepBrowser(name: string, type: BrowserType, baseUrl: string, ou
         deviceScaleFactor: 2,
       });
       const page = await ctx.newPage();
+      const tag = `${name}-${pos.device}`;
+      page.on('pageerror', (e) => failures.push(`${tag}: page error ${e.message}`));
       try {
         await preparePage(page);
         await openDashboard(page, baseUrl);
-        const tag = `${name}-${pos.device}`;
         const record = (checks: Check[], state: string) => {
           for (const c of checks) {
             const line = `${tag}-${state}: ${c.msg}`;
@@ -268,6 +285,10 @@ async function sweepBrowser(name: string, type: BrowserType, baseUrl: string, ou
         if (pos.w < 640) record(await checkFab(page), 'closed');
         await page.evaluate(() => window.scrollTo(0, 0));
         await openFilledPanel(page);
+        // Measure the settled drawer, not its slide-in (headless frames can lag).
+        await page.waitForFunction(
+          () => (document.getElementById('slide-panel') as HTMLElement).getAnimations().length === 0,
+        );
         record(await checkOpen(page, touch), 'open');
         await page.screenshot({ path: path.join(outDir, `${tag}-open.png`) });
       } finally {
@@ -289,9 +310,13 @@ async function resizeAndProbe(page: Page, w: number, h: number, settle = true): 
   await page.waitForFunction((width) => window.innerWidth === width, w);
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
   if (settle) {
-    await page.waitForFunction(() => !document.documentElement.classList.contains('is-layout-shift'), undefined, {
-      timeout: 5000,
-    });
+    // Settled: no script animation left (CSS spinners and transitions are not shifts).
+    await page.waitForFunction(
+      () => document.getAnimations().every((a) => a instanceof CSSAnimation || a instanceof CSSTransition),
+      undefined,
+      { timeout: 5000 },
+    );
+    await page.waitForTimeout(80);
   }
   return page.evaluate(() => {
     const panel = document.getElementById('slide-panel') as HTMLElement;
@@ -322,6 +347,7 @@ async function transitions(baseUrl: string, outDir: string, failures: string[]) 
       reducedMotion: opts.reduced ? 'reduce' : 'no-preference',
     });
     const page = await ctx.newPage();
+    page.on('pageerror', (e) => failures.push(`transition: page error ${e.message}`));
     await preparePage(page, opts);
     await openDashboard(page, baseUrl);
     return { ctx, page };
@@ -371,7 +397,12 @@ async function transitions(baseUrl: string, outDir: string, failures: string[]) 
         () => (document.getElementById('slide-panel') as HTMLElement).getBoundingClientRect().width,
       );
       expect(Math.abs(sheet - 382) <= 1, `cover sheet ignores the 700px saved width (${sheet})`);
+      // The drawer's own width animates through the unfold (sheet 382 → dock 475.5).
       const docked = await resizeAndProbe(page, 951, 543);
+      const widthAnims = await page.evaluate(
+        () => (window as unknown as { __panelWidthAnims: number }).__panelWidthAnims,
+      );
+      expect(widthAnims > 0, `unfold animates the drawer width (${widthAnims} width animations)`);
       const dockW = docked.panelW;
       expect(docked.overlay === 'none', 'unfolded: the open drawer docks (no dim)');
       expect(dockW <= 951 / 2 + 1, `unfolded: docked width capped at 50vw (${dockW})`);
@@ -384,6 +415,59 @@ async function transitions(baseUrl: string, outDir: string, failures: string[]) 
       );
       const pref = await page.evaluate(() => localStorage.getItem('soma-panel-width'));
       expect(pref === '700', 'the saved width preference is untouched by the fold');
+      // Closing keeps the slide-out visible (it is not hidden on frame one).
+      const closing = await page.evaluate(async () => {
+        (window as unknown as { closePanel(): void }).closePanel();
+        await new Promise((r) => requestAnimationFrame(r));
+        await new Promise((r) => requestAnimationFrame(r));
+        const panel = document.getElementById('slide-panel') as HTMLElement;
+        return { visibility: getComputedStyle(panel).visibility, left: panel.getBoundingClientRect().left };
+      });
+      expect(
+        closing.visibility === 'visible',
+        `closing: the drawer stays visible while it slides out (${closing.visibility})`,
+      );
+      await ctx.close();
+    }
+    // 4b. A user Board/List switch animates once, from where the cards were: the
+    //     first frame starts at the old spot and no frame overshoots the new one
+    //     (a doubled FLIP translate would jump past it — trinity code review R1).
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      const page = await ctx.newPage();
+      page.on('pageerror', (e) => failures.push(`transition view switch: page error ${e.message}`));
+      await preparePage(page);
+      await openDashboard(page, baseUrl);
+      const before = await page.evaluate(
+        () => (document.querySelectorAll('#kanban .card')[1] as HTMLElement).getBoundingClientRect().left,
+      );
+      // Click and sample in one page task, so the first sample is the first frame
+      // (a round trip after page.click can land after the 320ms move). detail: 1 is
+      // what a real click carries; setBoardView animates only pointer clicks.
+      // Plain async arrow (no named function: tsx would wrap it in __name()).
+      const xs = await page.evaluate(async () => {
+        const card = document.querySelectorAll('#kanban .card')[1] as HTMLElement;
+        const out: number[] = [];
+        (document.querySelector('.seg-btn[data-view="list"]') as HTMLElement).dispatchEvent(
+          new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }),
+        );
+        for (let n = 0; n < 40; n++) {
+          out.push(card.getBoundingClientRect().left);
+          await new Promise((r) => requestAnimationFrame(r));
+        }
+        return out;
+      });
+      const end = xs[xs.length - 1];
+      const span = Math.abs(end - before);
+      expect(span > 50, `the switch moves the card (${before} → ${end})`);
+      expect(
+        Math.abs(xs[0] - before) <= span * 0.25 + 2,
+        `the switch starts at the old spot (first frame ${xs[0]}, was ${before})`,
+      );
+      expect(
+        xs.every((x) => Math.abs(x - end) <= span + 2),
+        `no frame overshoots (max distance ${Math.max(...xs.map((x) => Math.abs(x - end)))} ≤ ${span})`,
+      );
       await ctx.close();
     }
     // 4. Reduced motion: no movement, a fade only.
