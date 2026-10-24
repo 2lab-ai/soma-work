@@ -355,6 +355,16 @@ describe('layout transition — review fixes (trinity code review R1)', () => {
     expect(body).toContain('sameSpot(target, layout)');
   });
 
+  it('every FLIP (board render, view switch, shift) records its landing spot in the shift cache (trinity review R2)', () => {
+    // A card that moves column on a live render flies to a new spot; a shift during
+    // that flight must not add the render's translate to the old spot.
+    expect(clientFn('playFlip')).toContain('noteFlipTarget(el)');
+    expect(clientFn('noteFlipTarget')).toContain('_layoutRects.set(el,');
+    // The cache stores layout spots, never a mid-flight drawn box.
+    expect(clientFn('measureLayout')).toContain('layoutSpotOf(');
+    expect(clientFn('layoutSpotOf')).toContain('parseTranslate(getComputedStyle(el).transform)');
+  });
+
   it('runs at most once per frame (window resize, ResizeObserver and timers share one frame stamp)', () => {
     const body = clientFn('runLayoutCheck');
     expect(body).toContain('document.timeline');
