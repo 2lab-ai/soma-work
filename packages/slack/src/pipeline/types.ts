@@ -77,6 +77,12 @@ export interface MessageEvent {
   /** Model override for cron jobs (e.g. "claude-sonnet-4-20250514"). Applied at session creation. */
   modelOverride?: string;
   /**
+   * The cron job behind a scheduled fire (SSOT 2026-10-23 T1). Read only
+   * together with `skipDispatch` (see `cron-origin.ts`): a session the fire
+   * creates is named after the job and stamped with it.
+   */
+  cron?: { jobId: string; jobName: string };
+  /**
    * Per-task reasoning effort (dashboard "New task", SSOT 2026-10-23 T4).
    * Applied to the session the message lands in, like `modelOverride`; an
    * unknown level is ignored and the user's default stays.
