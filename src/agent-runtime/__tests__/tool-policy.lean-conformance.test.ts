@@ -14,7 +14,10 @@
  * flag and primitive result, for every path through the policy's tool-name tests. The `incident`
  * rows are the only ones with `ctx.incidentReadOnly` set: allowlists, near misses of them and
  * every deny condition, in every mode, for admins and non-admins (`ProofsIncident.lean` proves
- * what the incident tier does).
+ * what the incident tier does). The `native-write` rows are the only ones with
+ * `ctx.checkNativeWrite` set, answering every call with the row's value; the replay fails when
+ * the policy asks it about a tool outside `NATIVE_WRITE_TOOLS` (`ProofsNativeWrite.lean` proves
+ * what the boundary does).
  *
  * The sensitive-path checks are held to their arguments as well: each call carries the check
  * and arguments the model says the policy passes (`sensitiveCall`), and the mocked checks answer
@@ -60,6 +63,7 @@ import {
   type SensitivePathResult,
 } from '../../sensitive-path-filter';
 import type { HandoffContext } from '../../types';
+import { NATIVE_WRITE_TOOLS } from '../policy/native-write-boundary';
 import type { PermissionMode } from '../policy/permission-mode';
 import { evaluateToolPolicy, type IncidentReadOnlyContext, type ToolPolicyContext } from '../policy/tool-policy';
 
@@ -92,7 +96,7 @@ interface MockedCall {
 }
 
 interface MockedRow {
-  kind: 'table' | 'tool-names' | 'boundary' | 'arguments' | 'incident';
+  kind: 'table' | 'tool-names' | 'boundary' | 'arguments' | 'incident' | 'native-write';
   mode: PermissionMode;
   isAdmin: boolean;
   aborted: boolean;
@@ -100,6 +104,11 @@ interface MockedRow {
   prims: Primitives;
   /** Present only on `incident` rows; absent means `ctx.incidentReadOnly` stays undefined. */
   incidentReadOnly?: IncidentReadOnlyContext;
+  /**
+   * Present only on `native-write` rows: what `ctx.checkNativeWrite` returns. Absent means the
+   * property stays undefined.
+   */
+  checkNativeWrite?: string | null;
   calls: MockedCall[];
 }
 
@@ -115,7 +124,7 @@ const vectors = JSON.parse(
   fs.readFileSync(path.join(repoRoot, 'verification/vectors/tool-policy.json'), 'utf8'),
 ) as VectorFile;
 
-const MOCKED_KINDS = ['table', 'tool-names', 'boundary', 'arguments', 'incident'];
+const MOCKED_KINDS = ['table', 'tool-names', 'boundary', 'arguments', 'incident', 'native-write'];
 const rows = vectors.cases.filter((c) => MOCKED_KINDS.includes(c.kind)) as MockedRow[];
 
 /**
@@ -165,6 +174,9 @@ function mockPrimitives(prims: Primitives): void {
   vi.mocked(bypassBashPermissionDecision).mockReturnValue(prims.bash);
 }
 
+/** The tools the policy asked `ctx.checkNativeWrite` about during the current call. */
+let nativeWriteAsks: string[] = [];
+
 function contextOf(row: MockedRow): ToolPolicyContext {
   return {
     user: 'U0VECTOR01',
@@ -175,6 +187,14 @@ function contextOf(row: MockedRow): ToolPolicyContext {
     handoffContext: row.handoff ? HANDOFF : undefined,
     checkMcpToolPermission: () => row.prims.mcpDenied,
     ...(row.incidentReadOnly ? { incidentReadOnly: row.incidentReadOnly } : {}),
+    ...('checkNativeWrite' in row
+      ? {
+          checkNativeWrite: (toolName: string) => {
+            nativeWriteAsks.push(toolName);
+            return row.checkNativeWrite ?? null;
+          },
+        }
+      : {}),
   };
 }
 
@@ -188,12 +208,17 @@ function replay(selected: MockedRow[]): { mismatches: string[]; calls: number } 
     for (const call of row.calls) {
       calls += 1;
       mockSensitiveChecks(call.sensitiveCall, row.prims.sensitive);
+      nativeWriteAsks = [];
       let actual: unknown;
       try {
         // A JSON round trip drops `undefined` properties, which the vector file cannot hold.
         actual = JSON.parse(JSON.stringify(evaluateToolPolicy(call.tool, call.input ?? undefined, ctx)));
       } catch (error) {
         actual = { threw: error instanceof Error ? error.message : String(error) };
+      }
+      const strayAsks = nativeWriteAsks.filter((tool) => !NATIVE_WRITE_TOOLS.includes(tool));
+      if (strayAsks.length > 0) {
+        mismatches.push(`tool=${JSON.stringify(call.tool)}: checkNativeWrite asked about ${JSON.stringify(strayAsks)}`);
       }
       if (!isDeepStrictEqual(actual, call.expect)) {
         const { calls: _calls, ...context } = row;
@@ -239,13 +264,32 @@ describe('tool-policy Lean conformance vectors (mocked primitives)', () => {
     expect(table[0].calls).toHaveLength(9);
   });
 
-  it('set incidentReadOnly on exactly the incident rows, in every mode, for admins and non-admins', () => {
-    expect(rows.filter((row) => (row.incidentReadOnly !== undefined) !== (row.kind === 'incident'))).toEqual([]);
+  it('set incidentReadOnly on every incident row and otherwise only on native-write rows', () => {
+    expect(rows.filter((row) => row.kind === 'incident' && row.incidentReadOnly === undefined)).toEqual([]);
+    expect(
+      rows.filter(
+        (row) => row.incidentReadOnly !== undefined && row.kind !== 'incident' && row.kind !== 'native-write',
+      ),
+    ).toEqual([]);
     const incident = rowsOf('incident');
     expect(new Set(incident.map((row) => `${row.mode}/${row.isAdmin}`)).size).toBe(6);
     // The incident tier only allows or denies, and the rows reach both outcomes.
     const decisions = new Set(incident.flatMap((row) => row.calls.map((call) => call.expect.decision)));
     expect([...decisions].sort()).toEqual(['allow', 'deny']);
+  });
+
+  it('set checkNativeWrite on exactly the native-write rows, in every mode, for admins and non-admins', () => {
+    expect(rows.filter((row) => 'checkNativeWrite' in row !== (row.kind === 'native-write'))).toEqual([]);
+    const nativeWrite = rowsOf('native-write');
+    expect(
+      new Set(nativeWrite.map((row) => `${row.mode}/${row.isAdmin}/${row.incidentReadOnly !== undefined}`)).size,
+    ).toBe(12);
+    expect(new Set(nativeWrite.map((row) => row.checkNativeWrite))).toEqual(new Set([null, 'outside-reason', '']));
+    // The rows reach the boundary's denial and leave other calls to the other steps.
+    const reasons = nativeWrite.flatMap((row) => row.calls.map((call) => String(call.expect.reason)));
+    expect(reasons.some((reason) => reason === 'write-boundary: outside-reason')).toBe(true);
+    expect(reasons.some((reason) => reason === 'write-boundary: ')).toBe(true);
+    expect(reasons.some((reason) => !reason.startsWith('write-boundary: '))).toBe(true);
   });
 
   for (const kind of MOCKED_KINDS as MockedRow['kind'][]) {

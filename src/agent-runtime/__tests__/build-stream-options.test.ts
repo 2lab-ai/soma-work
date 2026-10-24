@@ -149,9 +149,11 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     const preToolUse = options.hooks?.PreToolUse;
     expect(Array.isArray(preToolUse)).toBe(true);
     // P5 collapsed the per-concern hooks into one policy hook fanned out across
-    // three matchers: Bash, the native-bypass tool union, and mcp__.
+    // its matchers: Bash, the native-bypass tool union, mcp__, and the native
+    // write tools outside that union (#389).
     const matchers = (preToolUse ?? []).map((e) => (e as { matcher: string }).matcher);
-    expect(matchers).toHaveLength(3);
+    expect(matchers).toHaveLength(4);
+    expect(matchers).toContain('Artifact|EnterWorktree');
     expect(matchers).toContain('Bash');
     expect(matchers).toContain('mcp__');
     expect(matchers.some((m) => m.includes('Write') && m.includes('Read'))).toBe(true);
