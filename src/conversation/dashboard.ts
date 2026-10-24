@@ -5488,6 +5488,14 @@ body.nt-open .new-task-fab { display: none !important; }
   .art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
   .art-modal-head { flex-wrap: wrap; row-gap: 6px; }
 }
+/* The cron run drawer (#374) on every device: the visible viewport, not 100vh
+   behind the Safari toolbar, and clear of the insets that viewport-fit=cover
+   makes real (the notch side of a landscape iPhone, the home indicator). Its
+   width is a share of the viewport without a classic scrollbar (100%), not
+   100vw, so a narrow window never pushes its left edge off screen. */
+.cron-drawer { width: min(560px, 100%); height: 100vh; height: 100dvh; padding-right: env(safe-area-inset-right, 0px); }
+.cron-drawer-head { padding-top: max(16px, env(safe-area-inset-top, 0px)); }
+.cron-drawer-body { padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
 /* A short panel body (landscape phones, the unfolded Duo, a docked drawer under a
    tall top bar; below 560px R/2 cannot hold full thumbnails plus a couple of task
    rows): artifacts become name chips with the play button inline, so the
