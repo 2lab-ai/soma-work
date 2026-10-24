@@ -7,38 +7,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ClaudeHandler } from './claude-handler';
 import { type ComplexityResult, scoreComplexity } from './complexity-scorer';
-import { PLACEHOLDER_SESSION_TITLE } from './format/display-title';
+import { decodeSlackEntities, PLACEHOLDER_SESSION_TITLE, sanitizeSessionTitle } from './format/display-title';
 import { Logger } from './logger';
 import type { SessionLinks, WorkflowType } from './types';
 
-/**
- * Decode Slack HTML entities in text.
- * Slack API encodes &, <, > as &amp;, &lt;, &gt; in message text.
- * IMPORTANT: &amp; must be decoded LAST to avoid double-decoding
- * (e.g. &amp;gt; should become &gt;, not >).
- */
-export function decodeSlackEntities(text: string): string {
-  return text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-}
-
-/**
- * Clean a session title for display and storage. Titles come from LLMs
- * (dispatch classifier, the main model after reading a voice transcript or an
- * image, issue/PR fetches), so they are untrusted text headed for the Slack
- * thread header and the dashboard.
- *
- * Entities are decoded FIRST so an encoded `&lt;!channel&gt;` cannot survive as
- * a live `<!channel>` mention; then every Slack control sequence is removed.
- * Returns '' when nothing readable is left — callers decide the fallback.
- */
-export function sanitizeSessionTitle(title: string): string {
-  return decodeSlackEntities(title)
-    .replace(/<[!@#][^>]*>/g, '') // <!channel>, <@U123>, <#C123>
-    .replace(/<[^|>]+\|([^>]+)>/g, '$1') // <url|text> → text
-    .replace(/<[^>]+>/g, '') // remaining <url>
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+// Pure title/text helpers live with the title rules in @soma/common; re-exported
+// here for existing importers.
+export { decodeSlackEntities, sanitizeSessionTitle } from './format/display-title';
 
 // Default dispatch model - fast and cheap for classification
 // Can be overridden via DEFAULT_DISPATCH_MODEL env var

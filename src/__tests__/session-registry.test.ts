@@ -493,6 +493,19 @@ describe('SessionRegistry persistence', () => {
       const registry = new SessionRegistry();
       expect(registry.fillPlaceholderSessionTitle('C404', '1.0', 'Title')).toBe(false);
     });
+
+    // A provisional title (cron job name) is a stand-in too: the first real
+    // title replaces it and the provisional flag is cleared.
+    it('replaces a provisional cron-job title and clears the flag', () => {
+      const registry = new SessionRegistry();
+      const session = registry.createSession('U123', 'Tester', 'C123', '171.034');
+      session.title = 'nightly-report';
+      session.titleProvisional = true;
+
+      expect(registry.fillPlaceholderSessionTitle('C123', '171.034', '야간 리포트 실패 원인 분석')).toBe(true);
+      expect(registry.getSession('C123', '171.034')?.title).toBe('야간 리포트 실패 원인 분석');
+      expect(registry.getSession('C123', '171.034')?.titleProvisional).toBeUndefined();
+    });
   });
 
   // Security: sessionWorkingDir with path traversal is dropped on load
