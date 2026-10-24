@@ -41,6 +41,13 @@ import { calculateTokenCost } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
 import { clampEffortToModel } from '../model-catalog';
+import {
+  type AnswerPermissionPromptArgs,
+  isPermissionPromptDecision,
+  loadPermissionPrompt,
+  type PermissionPromptAnswer,
+  promptBelongsToThread,
+} from '../permission-prompt-response';
 import { type AgentRegistry, loseRunningAgents, sanitizeAgentRegistry } from '../session/agent-registry';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
 import { sanitizeCronJob } from '../session/cron-job';
@@ -83,6 +90,14 @@ import {
   parseNewTaskSubmission,
 } from './new-task';
 import type { NewTaskLaunchResult } from './new-task-launcher';
+import {
+  type DashboardPermissionRequest,
+  pendingPermissionsFor,
+  permissionPromptDetail,
+  refreshPendingPermissions,
+  startPermissionPromptWatch,
+  stopPermissionPromptWatch,
+} from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import type { WorkLogEntry } from './work-log';
@@ -235,6 +250,14 @@ export interface KanbanSession {
    * `GET /api/dashboard/session/:conversationId/artifacts`. Absent when none.
    */
   artifacts?: ArtifactSummary;
+  /**
+   * SSOT 2026-10-24 — permission prompts this session is blocked on (oldest
+   * first), the same prompt the Slack card shows. While any is pending the card
+   * reads `activityState: 'waiting'` (NEEDS YOU). No tool input here: the board
+   * goes to every viewer; the requester reads it from
+   * `GET /api/dashboard/session/:key/permission/:approvalId`.
+   */
+  pendingPermissions?: DashboardPermissionRequest[];
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -913,6 +936,32 @@ export function setDashboardMultiChoiceAnswerHandler(fn: MultiChoiceAnswerHandle
   _multiChoiceAnswerHandlerFn = fn;
 }
 
+/**
+ * SSOT 2026-10-24 — answer a permission prompt from the dashboard. Wired in
+ * src/index.ts to `answerPermissionPrompt` with the session registry (the
+ * same path the Slack buttons use). The route passes the signed-in user as
+ * `actor` and the session's thread, and maps a refusal to its status.
+ */
+type PermissionAnswerHandler = (
+  args: Pick<AnswerPermissionPromptArgs, 'approvalId' | 'actor' | 'decision' | 'thread'>,
+) => Promise<PermissionPromptAnswer>;
+let _permissionAnswerHandlerFn: PermissionAnswerHandler | null = null;
+
+export function setDashboardPermissionAnswerHandler(fn: PermissionAnswerHandler | null): void {
+  _permissionAnswerHandlerFn = fn;
+}
+
+export { refreshPendingPermissions };
+
+/** Follow the permission prompt store while the web server listens; push the board on a change. */
+export function startDashboardPermissionWatch(): void {
+  startPermissionPromptWatch(() => broadcastSessionUpdate());
+}
+
+export function stopDashboardPermissionWatch(): void {
+  stopPermissionPromptWatch();
+}
+
 // Hero "Submit All Recommended" handler (group-only). The dashboard does not
 // pass selections — the implementation derives them from session.pendingQuestion
 // recommendations. Returns rejected promise on validation failure for
@@ -1293,6 +1342,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
   const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
   const headline = displayTitle(s);
+  const permissions = pendingPermissionsFor(s.channelId, s.threadTs);
   return {
     // #814 Wire-format key includes the local instance prefix so sibling
     // instances can never collide on the client cache.
@@ -1310,12 +1360,15 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     model: s.model || 'unknown',
     channelId: s.channelId,
     threadTs: s.threadTs,
-    activityState: s.activityState || 'idle',
+    // A turn blocked on a permission prompt waits for its user (projection
+    // only — the session's own activityState is untouched).
+    activityState: permissions.length > 0 ? 'waiting' : s.activityState || 'idle',
     sessionState: s.state || 'MAIN',
     terminated: s.terminated === true,
     trashed: s.trashed === true,
     conversationId: s.conversationId,
     lastActivity: s.lastActivity instanceof Date ? s.lastActivity.toISOString() : String(s.lastActivity),
+    ...(permissions.length > 0 ? { pendingPermissions: permissions } : {}),
     issueUrl: s.links?.issue?.url,
     issueLabel: s.links?.issue?.label,
     issueTitle: s.links?.issue?.title,
@@ -2758,6 +2811,121 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Permission prompts from dashboard (SSOT 2026-10-24) ──
+  //
+  // Only the user the prompt was raised for reads its parameters or answers
+  // it — the Slack card's rule. That is the turn's initiator, who is not
+  // always the session owner (a mention in someone else's thread), so the
+  // owner gate does not apply here: the requester check replaces it. The
+  // bearer token and admin mode carry no requester identity and are refused.
+  // A prompt of another thread is 404 under this session's key.
+
+  /** The live session behind the route key and its prompt, or null after replying. */
+  async function resolvePermissionTarget(
+    request: any,
+    reply: any,
+    approvalId: string,
+  ): Promise<{
+    originalKey: string;
+    thread: { channel: string; threadTs?: string };
+    pending: NonNullable<Awaited<ReturnType<typeof loadPermissionPrompt>>>;
+  } | null> {
+    const originalKey = resolveSelfActionKey(request.params?.key ?? '', reply);
+    if (originalKey === null) return null;
+    const session = getAllSessions().get(originalKey);
+    if (!session || !session.channelId) {
+      reply.status(404).send({ error: 'Session not found' });
+      return null;
+    }
+    const thread = { channel: String(session.channelId), threadTs: session.threadTs || undefined };
+    const pending = await loadPermissionPrompt(approvalId);
+    if (!pending || !promptBelongsToThread(pending, thread)) {
+      reply.status(404).send({ error: 'Permission request not found or expired' });
+      return null;
+    }
+    const actor = request.authContext?.userId;
+    if (!actor || !pending.user || actor !== pending.user) {
+      reply.status(403).send({ error: 'Only the user this permission request is for can see or answer it' });
+      return null;
+    }
+    return { originalKey, thread, pending };
+  }
+
+  // The id names files in the store: no path characters (`/`, `.`) may reach path.join.
+  const isApprovalId = (v: unknown): v is string =>
+    typeof v === 'string' && v.length <= 128 && /^approval_[A-Za-z0-9_]+$/.test(v);
+
+  server.get<{ Params: { key: string; approvalId: string } }>(
+    '/api/dashboard/session/:key/permission/:approvalId',
+    { preHandler: [authMiddleware] },
+    async (request, reply) => {
+      const { approvalId } = request.params;
+      if (!isApprovalId(approvalId)) {
+        reply.status(400).send({ error: 'Invalid approval id' });
+        return;
+      }
+      try {
+        const target = await resolvePermissionTarget(request, reply, approvalId);
+        if (!target) return;
+        reply.header('Cache-Control', 'no-store').send(permissionPromptDetail(approvalId, target.pending));
+      } catch (error) {
+        logger.error('Error reading a permission prompt for the dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  server.post<{ Params: { key: string }; Body: { approvalId?: unknown; decision?: unknown } }>(
+    '/api/dashboard/session/:key/permission',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { approvalId, decision } = request.body || {};
+      if (!isApprovalId(approvalId) || !isPermissionPromptDecision(decision)) {
+        reply
+          .status(400)
+          .send({ error: 'approvalId and decision (approve | deny | explain | approve_disable_rule) are required' });
+        return;
+      }
+      if (!_permissionAnswerHandlerFn) {
+        reply.status(501).send({ error: 'Permission answer handler not configured' });
+        return;
+      }
+      try {
+        const target = await resolvePermissionTarget(request, reply, approvalId);
+        if (!target) return;
+        const result = await _permissionAnswerHandlerFn({
+          approvalId,
+          actor: (request as { authContext?: { userId?: string } }).authContext?.userId,
+          decision,
+          thread: target.thread,
+        });
+        if (result.ok) {
+          logger.info('Permission prompt answered from the dashboard', {
+            approvalId,
+            decision,
+            sessionKey: target.originalKey,
+          });
+          reply.send({ ok: true, decision });
+          return;
+        }
+        switch (result.reason) {
+          case 'already_answered':
+            reply.status(409).send({ error: 'Permission request was already answered' });
+            return;
+          case 'not_requester':
+            reply.status(403).send({ error: 'Only the user this permission request is for can answer it' });
+            return;
+          default:
+            reply.status(404).send({ error: 'Permission request not found or expired' });
+            return;
+        }
+      } catch (error) {
+        logger.error('Error answering a permission prompt from the dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── Submit-all-recommended from dashboard (hero one-click) ──
 
   server.post<{ Params: { key: string } }>(
@@ -3927,6 +4095,62 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .btn-choice-recommended { display: inline-block; width: auto; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
 
 /* ── PANEL PENDING QUESTION ── */
+/* ── PERMISSION PROMPT (SSOT 2026-10-24) — the Slack "🔐 Permission Request" card ── */
+.perm-request {
+  margin-top: 8px;
+  padding: 10px;
+  background: rgba(249,115,22,0.06);
+  border: 1px solid rgba(249,115,22,0.32);
+  border-radius: 8px;
+}
+.perm-request + .perm-request { margin-top: 6px; }
+.perm-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  margin-bottom: 6px;
+  font-size: 0.8em; font-weight: 700; color: var(--ib-text);
+}
+.perm-head code, .perm-rule code {
+  font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
+  font-size: 0.95em; padding: 1px 5px; border-radius: 4px;
+  background: rgba(249,115,22,0.14); color: var(--orange);
+}
+.perm-params {
+  margin: 0 0 6px; padding: 8px;
+  font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
+  font-size: 0.72em; line-height: 1.45;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 320px; overflow: auto;
+  background: var(--ib-col); color: var(--ib-text); border-radius: 6px;
+}
+.perm-params.is-clamped { max-height: 120px; }
+.perm-params-hidden { font-family: inherit; color: var(--text-secondary); }
+.perm-truncated { margin: -2px 0 6px; font-size: 0.72em; color: var(--text-secondary); }
+.perm-rules { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; font-size: 0.74em; color: var(--ib-text); }
+.perm-rules-label { font-weight: 600; color: var(--text-secondary); }
+.perm-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn-perm {
+  min-height: 32px; padding: 5px 10px;
+  font: inherit; font-size: 0.74em; line-height: 1.3;
+  color: var(--ib-text); background: var(--ib-card);
+  border: 1px solid var(--ib-card-border); border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, transform var(--dur-press) var(--ease-out);
+}
+.btn-perm-approve { color: #fff; background: #1f8f4e; border-color: #1f8f4e; }
+.btn-perm-deny { color: #fff; background: #c43c3c; border-color: #c43c3c; }
+.btn-perm:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-perm:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+@media (hover: hover) and (pointer: fine) {
+  .btn-perm:not(:disabled):hover { filter: brightness(1.12); }
+}
+@media (pointer: coarse) {
+  .btn-perm { min-height: 44px; }
+}
+.perm-note { margin-top: 6px; font-size: 0.74em; color: var(--red); overflow-wrap: anywhere; }
+.panel-permission { padding: 12px 16px; border-bottom: 1px solid rgba(249,115,22,0.2); }
+.panel-permission .perm-request { margin-top: 0; }
+.panel-permission .perm-head { font-size: 0.88em; }
+.panel-permission .btn-perm { font-size: 0.82em; }
 .panel-question {
   padding: 12px 16px;
   background: rgba(246,201,14,0.06);
@@ -4773,6 +4997,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .card-expand { transition: none !important; }
   .card-expand-inner { transition: opacity var(--dur-fade) linear !important; }
   .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
+  .btn-perm:active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   .wl-group-head .wl-g-chev, .done-group-head .dg-chev { transition: none; }
@@ -5759,6 +5984,7 @@ body.nt-open .new-task-fab { display: none !important; }
       <div class="panel-tokens" id="panel-tokens"></div>
       <!-- Agent bar (.prd/12 §4.3): path 메인 › A2 …, the tree on demand; it scopes Tasks and the work log. -->
       <div class="panel-agents" id="panel-agents" style="display:none"></div>
+      <div class="panel-permission" id="panel-permission" style="display:none" aria-live="polite"></div>
       <div class="panel-question" id="panel-question" style="display:none"></div>
       <div class="panel-worklog" id="panel-worklog" style="display:none">
         <button type="button" class="panel-worklog-header" id="worklog-toggle" aria-expanded="false" aria-controls="worklog-list" onclick="toggleWorkLogSection()"><span>작업 로그</span><span class="wl-count" id="worklog-count"></span><svg class="wl-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
@@ -6029,6 +6255,164 @@ function renderPanelQuestion(s) {
   } else {
     container.style.display = 'none';
   }
+}
+
+// ── Permission prompts (SSOT 2026-10-24) ──
+// The Slack "🔐 Permission Request" card on the dashboard: the tool, its
+// parameters, the matched dangerous-command rules and the same four answers.
+// The board never carries the parameters (it is one document for every
+// viewer): the requester's page fetches them from the requester-only route.
+var _permDetails = Object.create(null); // approvalId → { input, truncated } | { error }
+var _permLoading = Object.create(null);
+var _permNotes = Object.create(null);   // approvalId → why the last answer failed
+var PERM_DECISIONS = [
+  { id: 'approve', label: '✅ Approve', cls: ' btn-perm-approve' },
+  { id: 'deny', label: '❌ Deny', cls: ' btn-perm-deny' },
+  { id: 'explain', label: '💡 Explain', cls: '' },
+  { id: 'approve_disable_rule', label: '🔓 Approve & disable rule (this session)', cls: '', needsRule: true },
+];
+
+function isPermissionRequester(p) {
+  return !!(p && p.requesterId && currentUserId && p.requesterId === currentUserId);
+}
+
+function permissionSummary(s) {
+  var list = s.pendingPermissions || [];
+  if (!list.length) return '';
+  return '🔐 ' + (list[0].toolName || 'tool') + ' 실행 승인 필요' + (list.length > 1 ? ' 외 ' + (list.length - 1) + '건' : '');
+}
+
+// where: 'card' (clamped parameters) | 'panel'.
+function renderPermissionBlock(s, where) {
+  var list = (s && s.pendingPermissions) || [];
+  if (!list.length) return '';
+  var sibling = isSiblingSession(s);
+  return list.map(function(p) {
+    var mine = isPermissionRequester(p) && !sibling;
+    var detail = _permDetails[p.approvalId];
+    if (mine && !detail) loadPermissionDetail(s.key, p.approvalId);
+    var params;
+    if (!mine) params = '<div class="perm-params perm-params-hidden">' + esc(sibling ? '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요' : '파라미터와 응답은 요청자만 볼 수 있습니다') + '</div>';
+    else if (!detail) params = '<div class="perm-params perm-params-hidden">파라미터 불러오는 중…</div>';
+    else if (detail.error) params = '<div class="perm-params perm-params-hidden">' + esc(detail.error) + '</div>';
+    else params = '<pre class="perm-params' + (where === 'card' ? ' is-clamped' : '') + '">' + esc(detail.input) + '</pre>'
+      + (detail.truncated ? '<div class="perm-truncated">앞부분만 표시합니다 (64KB 초과)</div>' : '');
+    var rules = p.rules || [];
+    var rulesHtml = rules.length
+      ? '<div class="perm-rules"><span class="perm-rules-label">Matched dangerous-command rule' + (rules.length > 1 ? 's' : '') + '</span>'
+        + rules.map(function(r) { return '<span class="perm-rule"><code>' + esc(r.id) + '</code> &mdash; ' + esc(r.label) + ': ' + esc(r.description) + '</span>'; }).join('')
+        + '</div>'
+      : '';
+    var lockTitle = mine ? '' : ' title="' + escAttr(sibling ? '다른 인스턴스의 세션' : '이 요청의 요청자만 응답할 수 있습니다') + '"';
+    var btns = PERM_DECISIONS.filter(function(d) { return !d.needsRule || p.canDisableRule; }).map(function(d) {
+      return '<button type="button" class="btn-perm' + d.cls + '"' + (mine ? '' : ' disabled') + lockTitle
+        + ' data-perm-key="' + escAttr(s.key) + '" data-perm-id="' + escAttr(p.approvalId) + '" data-perm-decision="' + d.id + '">'
+        + esc(d.label) + '</button>';
+    }).join('');
+    var note = _permNotes[p.approvalId] ? '<div class="perm-note" role="alert">' + esc(_permNotes[p.approvalId]) + '</div>' : '';
+    return '<div class="perm-request" data-approval-id="' + escAttr(p.approvalId) + '">'
+      + '<div class="perm-head">&#x1F510; Permission Request &mdash; <code>' + esc(p.toolName) + '</code></div>'
+      + params + rulesHtml
+      + '<div class="perm-actions">' + btns + '</div>'
+      + note
+      + '</div>';
+  }).join('');
+}
+
+// One delegated handler (like the choice buttons): the ids ride in
+// attribute-escaped data-perm-* attributes, never in an inline onclick string.
+document.addEventListener('click', function(e) {
+  var btn = e.target && e.target.closest ? e.target.closest('button[data-perm-decision]') : null;
+  if (!btn || btn.disabled) return;
+  var d = btn.dataset;
+  answerPermission(d.permKey, d.permId, d.permDecision, btn);
+});
+
+function renderPanelPermission(s) {
+  var container = document.getElementById('panel-permission');
+  if (!container) return;
+  var html = s ? renderPermissionBlock(s, 'panel') : '';
+  if (!html) {
+    container.style.display = 'none';
+    container.innerHTML = '';
+    container._html = '';
+    return;
+  }
+  container.style.display = '';
+  if (container._html !== html) {
+    container.innerHTML = html;
+    container._html = html;
+  }
+}
+
+// Re-draw what shows this session's prompt (its card, the open panel).
+function repaintPermission(key) {
+  refreshCard(key);
+  if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelPermission(_sessionCache[key]);
+}
+
+function loadPermissionDetail(key, approvalId) {
+  if (_permLoading[approvalId]) return;
+  _permLoading[approvalId] = true;
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/permission/' + encodeURIComponent(approvalId);
+  fetch(url)
+    .then(function(res) {
+      return res.json().catch(function() { return {}; }).then(function(body) {
+        if (res.ok && typeof body.input === 'string') {
+          _permDetails[approvalId] = { input: body.input, truncated: !!body.truncated };
+        } else if (res.status === 404) {
+          _permDetails[approvalId] = { error: '이미 응답되었거나 만료된 요청입니다' };
+        } else {
+          _permDetails[approvalId] = { error: (body && body.error) || ('파라미터를 불러오지 못했습니다 (' + res.status + ')') };
+        }
+      });
+    })
+    .catch(function() { _permDetails[approvalId] = { error: '파라미터를 불러오지 못했습니다' }; })
+    .then(function() {
+      delete _permLoading[approvalId];
+      repaintPermission(key);
+    });
+}
+
+// One answer per prompt: every button of the prompt is disabled while it is
+// sent. Success leaves them disabled — the permission MCP server takes the
+// answer within a second and the board push removes the prompt. A refusal is
+// shown under the buttons; only a retryable failure re-enables them.
+async function answerPermission(key, approvalId, decision, btnEl) {
+  var box = btnEl.closest('.perm-request');
+  var btns = box ? box.querySelectorAll('.btn-perm') : [];
+  btns.forEach(function(b) { b.disabled = true; });
+  var label = btnEl.textContent;
+  btnEl.textContent = '...';
+  delete _permNotes[approvalId];
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/permission';
+  var body = JSON.stringify({ approvalId: approvalId, decision: decision });
+  var retryable = true;
+  try {
+    var headers = { 'Content-Type': 'application/json' };
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      var retryHeaders = { 'Content-Type': 'application/json' };
+      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(url, { method: 'POST', headers: retryHeaders, body: body });
+    }
+    if (res.ok) {
+      btnEl.textContent = '✓ ' + label;
+      return;
+    }
+    var data = {};
+    try { data = await res.json(); } catch (_) {}
+    _permNotes[approvalId] = data.error || ('Failed (status ' + res.status + ')');
+    retryable = res.status !== 409 && res.status !== 404;
+  } catch (e) {
+    console.error('Permission answer error', e);
+    _permNotes[approvalId] = '네트워크 오류 — 다시 시도하세요';
+  }
+  btnEl.textContent = label;
+  if (retryable) btns.forEach(function(b) { b.disabled = false; });
+  repaintPermission(key);
 }
 
 // Pinned Tasks block (.prd/10 §3.1-6): always rendered — with no tasks yet it
@@ -7319,6 +7703,7 @@ function cardSummary(s, col, headline) {
     if (!current && tasks[i].status === 'in_progress') current = tasks[i];
     if (tasks[i].status === 'completed') lastDone = tasks[i];
   }
+  if (col !== 'closed' && s.pendingPermissions && s.pendingPermissions.length) return permissionSummary(s);
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
   // Waiting out a retry: the error behind it is what this card is "doing".
@@ -8372,6 +8757,9 @@ function renderCardBody(s, col) {
     }
   }
 
+  // Permission prompt the turn is blocked on (SSOT 2026-10-24).
+  const permissionHtml = col === 'closed' ? '' : renderPermissionBlock(s, 'card');
+
   // Action buttons — disabled for non-owners (server RBAC still rejects, but UI
   // shouldn't invite the click in the first place).
   // #814 — sibling cards (env.instanceName !== self) get a "open on sibling"
@@ -8423,6 +8811,7 @@ function renderCardBody(s, col) {
     + renderTimeline(s)
     + ioHtml
     + artsHtml
+    + permissionHtml
     + questionHtml
     + statsHtml
     + actionsHtml
@@ -9933,6 +10322,7 @@ function connectWs() {
         // Refresh panel question if panel is open (session may have transitioned)
         if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
           var panelS = _sessionCache[panelSessionKey];
+          renderPanelPermission(panelS);
           renderPanelQuestion(panelS);
           renderPanelControls(panelS);
           // The board carries the server's one-current-task view; a turn that
@@ -10018,6 +10408,7 @@ function connectWs() {
           patchCard(existingCard, msg.session, existingCard.getAttribute('data-col') || 'idle');
         }
         if (panelOpen && panelSessionKey === updatedKey) {
+          renderPanelPermission(msg.session);
           var pt2 = document.getElementById('panel-title');
           if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || 'Untitled';
           // Spec 12: the agent tree moved (spawn, status, tool count, a subagent's tasks).
@@ -10999,14 +11390,19 @@ function landPanel() {
   var scrollEl = document.getElementById('panel-scroll');
   if (!scrollEl) return;
   if (_panelFocusWorkLog) { scrollPanelToWorkLog(); return; }
+  // What the session waits on: a permission prompt (above the question slot)
+  // or an open question. Either is where the panel lands.
+  var permission = document.getElementById('panel-permission');
   var question = document.getElementById('panel-question');
-  var onQuestion = !!question && question.style.display !== 'none';
+  var target = permission && permission.style.display !== 'none' ? permission
+    : question && question.style.display !== 'none' ? question : null;
+  var onQuestion = !!target;
   if (onQuestion && _panelOnQuestion) return;
   _panelOnQuestion = onQuestion;
   // The question sits under the session info that scrolls with the
   // conversation (SSOT 2026-10-24), so land on its own offset, not on 0.
   var questionTop = onQuestion
-    ? scrollEl.scrollTop + question.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top
+    ? scrollEl.scrollTop + target.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top
     : 0;
   // Instant: under scroll-behavior: smooth the glide down from 0 passed
   // through scrollTop < 100 and set off the load-older-turns handler.
@@ -11104,7 +11500,8 @@ function openPanel(sessionKey, focusWorkLog, agentId) {
     tokensEl.innerHTML = '<span style="font-size:0.78em;color:var(--text-secondary)">No token data</span>';
   }
 
-  // Pending question in panel
+  // Pending permission prompt + question in panel
+  renderPanelPermission(s);
   renderPanelQuestion(s);
 
   // Agent bar (spec 12 §4.3), then the chosen agent's tasks.

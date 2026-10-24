@@ -143,7 +143,8 @@ updates inside its terminal-cleanup boundary, including setup failures.
 
 ### Security (`src/sandbox/`, `somalib/permission/`, `src/dangerous-command-filter.ts`)
 - 도메인 allowlist, 툴 권한 레벨(admin/elevated/user), dangerous command 감지
-- 권한 승인 UI는 Slack 액션으로 처리 (`src/slack/actions/permission-action-handler.ts`)
+- 권한 승인 UI는 Slack 액션(`src/slack/actions/permission-action-handler.ts`)과 웹 대시보드(`POST /api/dashboard/session/:key/permission`) 두 곳. 둘 다 `src/permission-prompt-response.ts`의 `answerPermissionPrompt`로 응답한다 — 요청자 본인만, `kind: 'tool_permission'` 레코드만(같은 pending 디렉터리의 mcp-tool-permission grant 요청 제외), store claim으로 1회만.
+- 대시보드는 `src/conversation/permission-prompts.ts`가 웹 서버 listen 동안 1초마다 shared store의 pending 디렉터리를 다시 읽어 세션 스레드별 인덱스를 만들고, 바뀌면 보드를 푸시한다. 보드 페이로드에는 도구 입력이 없다(요청자 전용 `GET .../permission/:approvalId`).
 
 ### Observability (`src/metrics/`, `src/conversation/`)
 - 이벤트 기반 텔레메트리(토큰·툴콜·레이턴시), 주기 리포트
