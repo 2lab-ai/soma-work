@@ -157,6 +157,24 @@ describe('개인 설정 rows', () => {
   });
 });
 
+describe('filter', () => {
+  it('touches only the 개인 설정 tab — sections of other tabs have no setting rows (review P1)', () => {
+    const selectors: string[] = [];
+    const { applyFilter } = load<{ applyFilter(): void }>(['applyFilter'], {
+      document: {
+        getElementById: () => ({ value: '', checked: false }),
+        querySelectorAll: (sel: string) => {
+          selectors.push(sel);
+          return [];
+        },
+      },
+    });
+    applyFilter();
+    expect(selectors).toHaveLength(2);
+    for (const sel of selectors) expect(sel.startsWith('[data-tab="preferences"] ')).toBe(true);
+  });
+});
+
 describe('saving', () => {
   function env(over: Record<string, unknown> = {}) {
     const snapshot = {

@@ -110,6 +110,7 @@ GitHub App(권장) 또는 Personal Access Token 인증. 자동 토큰 갱신 지
 - **최상단에서 모델·effort 원클릭 변경**: top bar에 새 세션의 기본 모델과 기본 effort가 있다. 값을 고르면 바로 저장된다 — Slack `model set <m>`, `effort <level>`과 같은 설정이다. 세션 패널이 보드 옆에 붙어 있으면 "이 세션에도 적용"(기본 켜짐)으로 그 세션도 함께 바뀐다(폰에서는 패널 시트가 top bar를 덮으므로 패널 자체의 컨트롤을 쓴다).
 - **세션별 모델·effort**: 카드와 세션 패널 맨 위에서 그 세션만 바꾼다(`%effort <level>`과 같은 범위). 다음 턴부터 적용되고, 모델이 effort를 낮춰 실행하면 실제 실행 값을 함께 보여준다.
 - **설정 페이지**(`/dashboard/settings`, top bar의 "⚙ 설정"): Slack 명령으로 바꿀 수 있는 개인 설정 전부를 그룹(모델·effort, 출력, 알림, 목표, 자동 스킬, 계정, 권한)으로 보여준다. 선택형은 바로 저장되고, 직접 입력하는 값은 저장 버튼으로 저장한다. 행마다 기본값, 다를 때 "기본값으로" 되돌리기, 같은 일을 하는 Slack 명령이 보인다. 위험한 변경(bypass, 샌드박스 끄기, 네트워크 허용 목록 끄기)은 먼저 묻고, 관리자 전용 행은 잠긴 이유를 보여준다.
+- **기억 탭**(`/dashboard/settings#memory`, top bar의 "🧠 기억"): 개인 기억 전부를 보고 고친다 — 에이전트 노트(`MEMORY.md`)와 사용자 프로필(`USER.md`)은 항목마다 한 줄, 용량 미터, 추가·수정·삭제(되돌리기)·모두 지우기(개수를 밝힌 확인); 지식 페이지(agent / sites / concepts / projects / cron)는 Current와 History 전체를 편집·생성·삭제; 관찰 기록(에피소딕)은 날짜별로 항목을 고치거나 지우고 오늘 기록에 메모를 더한다. 모든 편집은 탭이 불러온 revision 조건부라, 그사이 에이전트나 Slack이 바꿨으면 그 부분을 다시 불러오고 작성하던 내용은 남긴다. host 프로세스·model-command MCP 서브프로세스·대시보드가 같은 사용자별 메모리 잠금(`somalib/model-commands/memory-lock.ts`)을 써서 편집과 에이전트 기록이 서로를 지우지 않는다. API: `/api/memory/*`, 로그인 본인만, 쓰기는 auth + CSRF.
 - **개인 설정 API**: `GET /api/settings`, `PATCH /api/settings/:key`로 Slack 명령으로 바꿀 수 있는 개인 설정 전부를 로그인한 본인 것만 읽고 바꾼다. 쓰기는 Slack과 같은 검증기·`/z` 카드 핸들러를 거치고, 대시보드에 없는 Slack 설정 명령이 생기면 계약 테스트가 실패한다.
 
 ### 🤖 서브 에이전트 (부분 구현 · 프로비저닝 미지원)
