@@ -566,6 +566,16 @@ async function savePage() {
   memHold.at = Date.now();
   setPageFieldsDisabled(true);
   try { r = await apiWrite('PUT', '/api/memory/page', { id: id, title: d.title, aliases: d.aliases, current: d.current, history: d.history, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
+  if (r.status === 409 && !isNew && _memPage === sentFrom) {
+    // The hold and the locks last until the newer version is loaded, and are released
+    // however that ends (review R12, as for L1 and episodic).
+    try { await pageConflict409(id); } finally {
+      sentFrom.saving = 0;
+      memHold.at = 0;
+      setPageFieldsDisabled(false);
+    }
+    return;
+  }
   sentFrom.saving = 0;
   memHold.at = 0;
   if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, pageDraftText(d));
@@ -579,19 +589,21 @@ async function savePage() {
     await refreshPageIndex();
     return;
   }
-  if (r.status === 409 && !isNew) {
-    // Keep everything typed in the editor (title, aliases, Current, History) and
-    // let the user choose: overwrite with the draft, or load the latest (review P1).
-    var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
-    var latest = null;
-    try { latest = await res.json(); } catch (_e) {}
-    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, pageDraftText(d));
-    _memPageConflict = res.ok && latest ? latest : { page: null, revision: null };
-    renderPageConflict();
-    memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집기에 그대로 있습니다.', true);
-    return;
-  }
   memStatus('저장하지 못했습니다: ' + r.error, true);
+}
+// A page save was refused with 409: keep everything typed in the editor (title, aliases,
+// Current, History — or the raw text) and let the user choose: overwrite with the draft,
+// or load the latest (review P1). Called while the save still holds the tab.
+async function pageConflict409(id) {
+  var latest = null;
+  var res = null;
+  try {
+    res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
+    try { latest = await res.json(); } catch (_e) {}
+  } catch (_e) {}
+  _memPageConflict = res && res.ok && latest ? latest : { page: null, revision: null };
+  renderPageConflict();
+  memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집기에 그대로 있습니다.', true);
 }
 // A page answer that came back after the user opened another page: report it,
 // refresh the list, leave the open editor alone (review R5).
@@ -619,6 +631,15 @@ async function savePageRaw() {
   memHold.at = Date.now();
   setPageFieldsDisabled(true);
   try { r = await apiWrite('PUT', '/api/memory/page/raw', { id: id, raw: raw, revision: _memPage.revision }); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
+  if (r.status === 409 && _memPage === sentFrom) {
+    // as in savePage (review R12)
+    try { await pageConflict409(id); } finally {
+      sentFrom.saving = 0;
+      memHold.at = 0;
+      setPageFieldsDisabled(false);
+    }
+    return;
+  }
   sentFrom.saving = 0;
   memHold.at = 0;
   if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, raw);
@@ -629,17 +650,6 @@ async function savePageRaw() {
     renderPageEditor();
     memStatus('저장했습니다', false);
     await refreshPageIndex();
-    return;
-  }
-  if (r.status === 409) {
-    // The draft stays in the editor; overwrite or load the latest (same as the form).
-    var res = await fetch('/api/memory/page?id=' + encodeURIComponent(id));
-    var latest = null;
-    try { latest = await res.json(); } catch (_e) {}
-    if (_memPage !== sentFrom) return pageAnswerElsewhere(r, id, raw);
-    _memPageConflict = res.ok && latest ? latest : { page: null, revision: null };
-    renderPageConflict();
-    memStatus('그사이 이 페이지가 바뀌었습니다. 작성하던 내용은 편집기에 그대로 있습니다.', true);
     return;
   }
   memStatus('저장하지 못했습니다: ' + r.error, true);
