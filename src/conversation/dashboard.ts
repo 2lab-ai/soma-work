@@ -2675,7 +2675,7 @@ function renderDashboardPage(userId?: string): string {
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>soma-work Dashboard</title>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
@@ -2817,7 +2817,10 @@ html,body {
 :focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 
-.app { display: flex; flex-direction: column; min-height: 100vh; }
+/* viewport-fit=cover (SSOT 2026-10-24): the page reaches under the notch and the
+   Dynamic Island, so it keeps clear of the side insets itself (landscape phones,
+   the iPhone Duo cover). */
+.app { display: flex; flex-direction: column; min-height: 100vh; padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
 
 /* ── TOPBAR — strict horizontal grid ──
    One row from 1024px; below that the nav (user select · Conversations · admin
@@ -3137,7 +3140,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    NEEDS YOU (waiting) · RUNNING (working) · DONE (idle, then closed).
    Card shells persist across renders (keyed reconciler in the client JS), so
    every transition below animates a live node — nothing is rebuilt per poll. */
-.inbox { margin-bottom: 28px; }
+/* The inbox is the size container for the board columns (SSOT 2026-10-24): a docked
+   drawer narrows it, so the column layout follows its width, not the viewport. */
+.inbox { margin-bottom: 28px; container: inbox / inline-size; }
 .inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 16px; min-width: 0; }
 .crumbs { display: flex; align-items: baseline; gap: 10px; font-size: 17px; line-height: 1.3; min-width: 0; white-space: nowrap; overflow: hidden; }
 .crumbs .crumb-root, .crumbs .crumb-sep { color: var(--ib-muted); }
@@ -3983,27 +3988,40 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .bar-labels span { flex: 1; text-align: center; font-size: 10px; color: var(--text-tertiary); font-weight: 600; }
 
 /* ── SLIDE PANEL — flat, structured, resizable ── */
+/* SSOT 2026-10-24 — a full-screen sheet below 840px, docked beside the board from
+   840px (the Drawer media blocks below). Hidden by a transform, so its width is
+   CSS-only: JS stores a width preference (--panel-w-pref) and never writes the
+   width or the right offset. It follows the visual viewport (--pv-h / --pv-t,
+   syncPanelViewport) so the composer stays above the on-screen keyboard. */
 .slide-panel {
   position: fixed;
-  top: 0; right: -440px;
-  width: 440px;
+  top: var(--pv-t, 0px); right: 0;
+  width: var(--panel-w, 440px);
   height: 100vh;
+  height: var(--pv-h, 100dvh);
+  padding-right: env(safe-area-inset-right, 0px);
   background: var(--surface);
   border-left: 1px solid var(--border);
   z-index: 100;
-  transition: right 0.2s var(--ease);
+  transform: translateX(100%);
+  visibility: hidden;
+  transition: transform var(--dur-move) var(--ease-out), visibility 0s linear var(--dur-move);
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
-.slide-panel.open { right: 0; }
+.slide-panel.open { transform: none; visibility: visible; transition: transform var(--dur-move) var(--ease-out); }
+/* Only a layout shift (fold, unfold, rotation — runLayoutCheck) animates the width;
+   an ordinary window drag must not lag behind the pointer. */
+.is-layout-shift .slide-panel { transition: transform var(--dur-move) var(--ease-out), width var(--dur-move) var(--ease-out); }
 .slide-panel.resizing { transition: none; user-select: none; }
 /* Resize handle — left edge */
 .panel-resize-handle {
   position: absolute;
-  top: 0; left: -4px;
+  top: 0; left: 0;
   width: 8px; height: 100%;
   cursor: col-resize;
+  touch-action: none;
   z-index: 101;
   background: transparent;
   transition: background 0.15s ease;
@@ -4045,10 +4063,24 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .wl-agent-link { display: block; margin: 0 0 4px 22px; padding: 2px 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; }
 .wl-agent-link:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; border-radius: 4px; }
 .wl-legacy { margin: 4px 0 6px; padding: 6px 10px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 12px; }
+/* Panel body (SSOT 2026-10-24): pinned Tasks · pinned Artifacts · the one main
+   scroll area. The scroll row never gets less than half the body (R/2, R = panel
+   − header − composer); the pinned blocks share the rest, down to one row each,
+   and scroll inside rather than clip (.prd/10 §3.1-6). */
+.panel-body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(50%, 1fr);
+  container: pbody / size;
+  overflow: hidden;
+}
 .panel-tasks {
-  flex: none;
+  grid-row: 1;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
+  min-height: 44px;
   max-height: min(30vh, 240px);
   overflow-y: auto;
 }
@@ -4293,7 +4325,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* Scroll container: wraps panel-question + panel-worklog + panel-turns so
    large UIAskQ choices scroll together with the chat content. Tasks sit pinned
    above it and .panel-command stays pinned below, both non-scrolling siblings. */
-.panel-scroll { flex: 1; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
+.panel-scroll { grid-row: 3; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
 .panel-turns { padding: 10px 16px; }
 .panel-turns-loading { text-align: center; font-size: 11px; color: var(--text-tertiary); padding: 8px 0; font-style: italic; }
 /* Slack-style turns */
@@ -4429,18 +4461,22 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .card .btn-choice-recommended:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
 }
 
-/* ── BOARD RESPONSIVE (.prd/10 §5) ──
-   ≥1024 three columns · 640–1023 the columns scroll sideways inside the board
-   (page itself never scrolls horizontally) · <640 List by default, 44px taps. */
-@media (max-width: 1023px) {
+/* ── BOARD RESPONSIVE (.prd/10 §5, SSOT 2026-10-24) ──
+   The columns follow the inbox's own width (container query): ≥840 three columns
+   that always fit · <840 the three columns scroll sideways inside the board (the
+   page itself never scrolls horizontally). <640 viewport: List by default, 44px
+   taps. A docked drawer narrows the inbox, so this is not a viewport query. */
+@container inbox (max-width: 839px) {
   .kanban[data-view="board"] {
-    grid-template-columns: repeat(3, minmax(300px, 1fr));
+    grid-template-columns: repeat(3, minmax(min(300px, 84cqi), 1fr));
     overflow-x: auto;
     scroll-snap-type: x mandatory;
     overscroll-behavior-x: contain;
     padding-bottom: 8px;
   }
   .kanban[data-view="board"] > .kanban-col { scroll-snap-align: start; }
+}
+@media (max-width: 1023px) {
   /* Top bar: brand · status · account on the first row, the nav on its own row below, full labels. */
   .topbar { flex-wrap: wrap; padding: 8px 20px; row-gap: 8px; }
   /* Basis 0: the account group never pushes itself onto a row of its own — a
@@ -4495,7 +4531,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
      (320px) Show archives sits above Board | List instead of overflowing. */
   .inbox-tools { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
   .crumbs { font-size: 15px; gap: 7px; }
-  .kanban[data-view="board"] { grid-template-columns: repeat(3, minmax(min(300px, 84vw), 1fr)); }
   /* Selectors carry an extra class so they beat the later @media (pointer: coarse) 40px rules. */
   .seg .seg-btn { min-height: 44px; padding: 6px 14px; }
   .card .btn-action, .col-foot .show-older-btn, .card .btn-choice { min-height: 44px; }
@@ -4516,7 +4551,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .stat-card .value { font-size: 18px; }
   .stat-card .label { font-size: 10px; }
   .chart-row { flex-direction: column; }
-  .slide-panel { width: 100vw; right: -100vw; }
 }
 @media (hover: hover) and (pointer: fine) {
   .ag-row:hover, .ag-toggle:hover { background: var(--ib-pill); }
@@ -4671,7 +4705,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .new-task-fab.is-compact .nt-fab-label { max-width: 0; opacity: 0; }
 .new-task-fab.is-compact .nt-fab-icon { transform: rotate(90deg); }
 .new-task-fab.is-floating { display: inline-flex; }
-.slide-panel.open ~ .new-task-fab,
+/* The open composer hides the FAB everywhere; an open drawer hides it only as a
+   sheet (Drawer blocks) — docked, the board is live and the FAB keeps its own
+   is-floating rule. */
 body.nt-open .new-task-fab { display: none !important; }
 
 .nt-dialog {
@@ -4917,7 +4953,7 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-play .ic-pause, .art-play.is-playing .ic-play { display: none; }
 .art-play.is-playing .ic-pause { display: block; }
 .art-play.is-playing { box-shadow: 0 0 0 4px color-mix(in srgb, var(--purple) 30%, transparent); }
-.panel-artifacts { padding: 10px 16px 4px; border-bottom: 1px solid var(--border); }
+.panel-artifacts { grid-row: 2; padding: 10px 16px 4px; border-bottom: 1px solid var(--border); min-height: 44px; overflow-y: auto; }
 .panel-arts-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--text); }
 .panel-arts-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
 .art-strip-panel .art-tile { width: 152px; }
@@ -4995,6 +5031,71 @@ body.nt-open .new-task-fab { display: none !important; }
 @media (hover: none) {
   .art-chip { height: 32px; }
   .art-play { width: 40px; height: 40px; top: 40px; }
+}
+
+/* ═══ Device-responsive layout (SSOT 2026-10-24) ═══
+   Targets: iPhone Duo (folded 382×580, unfolded 951×543), iPhone 18 Pro Max
+   (440×956 / 956×440), Galaxy Z Fold8 (cover ≈476×751, main ≈933×704).
+   Research: docs/misc/research/2026-10-24-dashboard-device-viewports.md.
+   Two drawer modes only — a sheet below 840px, docked from 840px — so every
+   fold, unfold and rotation of those devices crosses one boundary and
+   runLayoutCheck animates it. */
+@media (max-width: 839px) {
+  /* Drawer — a full-screen sheet: the saved desktop width never applies, there is
+     no resize handle, the top-bar chips stay under it, and its header and
+     composer keep clear of the notch and the home indicator. */
+  .slide-panel { width: 100%; }
+  .slide-panel .panel-header, .slide-panel .panel-body, .slide-panel .panel-command { margin-left: env(safe-area-inset-left, 0px); }
+  .panel-resize-handle { display: none; }
+  .slide-panel .panel-header { padding-top: max(12px, env(safe-area-inset-top, 0px)); }
+  .slide-panel .panel-command { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
+  .topbar .topbar-defaults { z-index: auto; }
+  .slide-panel.open ~ .new-task-fab { display: none !important; }
+}
+@media (min-width: 840px) {
+  /* Drawer — docked beside the board (unfolded Duo / Fold8, tablets, PC): no dim,
+     the board stays live, the drawer sits under the top bar until it scrolls
+     away (--topbar-b, syncTopbarBottom), and the page narrows to what is left
+     with its 1280px column centred there (never margin-right over width:100%). */
+  :root { --panel-w: min(var(--panel-w-pref, 440px), 50vw); }
+  .slide-panel { width: var(--panel-w); top: calc(var(--pv-t, 0px) + var(--topbar-b, 0px)); height: calc(var(--pv-h, 100dvh) - var(--topbar-b, 0px)); }
+  .slide-panel-overlay.open { display: none; }
+  .app:has(> .slide-panel.open) > .main {
+    max-width: min(1280px, calc(100% - var(--panel-w)));
+    margin-left: max(0px, calc((100% - var(--panel-w) - 1280px) / 2));
+    margin-right: auto;
+  }
+  .slide-panel.open ~ .new-task-fab { right: calc(var(--panel-w) + 16px); }
+}
+@media (pointer: coarse) {
+  /* Responsive (SSOT 2026-10-24) — 16px text: iOS does not zoom into a focused input. */
+  .panel-command input, .mc-custom-input input { font-size: 16px; }
+}
+@media (max-width: 639px) {
+  /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB, the
+     defaults menu spans the bar instead of running off the edge, and the
+     artifact viewer takes the whole screen. */
+  .main { padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
+  .topbar { position: relative; }
+  .topbar .topbar-defaults { position: static; }
+  .td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }
+  .art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
+  .art-modal-head { flex-wrap: wrap; row-gap: 6px; }
+}
+/* A short panel body (landscape phones, the unfolded Duo, a docked drawer under a
+   tall top bar): artifacts become name chips with the play button inline, so the
+   pinned strip stays one short row; every tile is still reachable sideways. */
+@container pbody (max-height: 640px) {
+  .panel-artifacts { display: flex; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
+  .panel-arts-head { flex: none; margin-bottom: 0; }
+  .panel-arts-hint { display: none; }
+  .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
+  .art-strip-panel .art-thumb { display: none; }
+  .art-strip-panel .art-tile-meta { display: none; }
+  .art-strip-panel .art-tile-name { padding-bottom: 6px; }
+  .art-strip-panel .art-tile { display: flex; align-items: center; gap: 6px; width: auto; max-width: 200px; }
+  .art-strip-panel .art-open { flex: 1 1 auto; min-width: 0; }
+  .art-strip-panel .art-play { position: static; flex: none; width: 32px; height: 32px; }
 }
 </style>
 </head>
@@ -5130,18 +5231,23 @@ body.nt-open .new-task-fab { display: none !important; }
       </div>
       <button class="panel-close" onclick="closePanel()">&#x2715;</button>
     </div>
-    <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 effort"></div>
-    <div class="panel-meta" id="panel-meta"></div>
-    <div class="panel-links" id="panel-links"></div>
-    <div class="panel-tokens" id="panel-tokens"></div>
-    <!-- Agent bar (.prd/12 §4.3): path 메인 › A2 …, the tree on demand; it scopes Tasks and the work log. -->
-    <div class="panel-agents" id="panel-agents" style="display:none"></div>
+    <!-- Body (SSOT 2026-10-24): pinned Tasks and Artifacts, then the one main scroll
+         area, which keeps at least half of the body (.panel-body grid). -->
+    <div class="panel-body" id="panel-body">
     <!-- Tasks are pinned (.prd/10 §3.1-6): always shown, never scrolled away. -->
     <div class="panel-tasks" id="panel-tasks"></div>
     <!-- Artifacts are pinned too (SSOT 2026-10-23 T6): in view wherever the conversation is scrolled. -->
     <div class="panel-artifacts" id="panel-artifacts" style="display:none"></div>
-    <!-- Scroll area: question + work log (collapsed unless opened from 작업 로그) + turns. -->
+    <!-- Scroll area: the static session info (SSOT 2026-10-24 — it scrolls with the
+         conversation so a short screen still has room to read), then question +
+         work log (collapsed unless opened from 작업 로그) + turns. -->
     <div class="panel-scroll" id="panel-scroll">
+      <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 effort"></div>
+      <div class="panel-meta" id="panel-meta"></div>
+      <div class="panel-links" id="panel-links"></div>
+      <div class="panel-tokens" id="panel-tokens"></div>
+      <!-- Agent bar (.prd/12 §4.3): path 메인 › A2 …, the tree on demand; it scopes Tasks and the work log. -->
+      <div class="panel-agents" id="panel-agents" style="display:none"></div>
       <div class="panel-question" id="panel-question" style="display:none"></div>
       <div class="panel-worklog" id="panel-worklog" style="display:none">
         <button type="button" class="panel-worklog-header" id="worklog-toggle" aria-expanded="false" aria-controls="worklog-list" onclick="toggleWorkLogSection()"><span>작업 로그</span><span class="wl-count" id="worklog-count"></span><svg class="wl-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
@@ -5150,6 +5256,7 @@ body.nt-open .new-task-fab { display: none !important; }
       <div class="panel-turns" id="panel-turns">
         <p style="color:var(--text-secondary);text-align:center;margin-top:40px">Click a session card to view details</p>
       </div>
+    </div>
     </div>
     <!-- Command row is always visible; disabled + hint for terminated sessions. -->
     <div class="panel-command" id="panel-command">
@@ -5310,68 +5417,54 @@ window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', fu
   }
 });
 
-// ── Panel resize — drag left edge to change width ──
+// ── Panel resize — drag the left edge of the docked drawer (SSOT 2026-10-24) ──
+// The drag stores a width preference (--panel-w-pref, localStorage); CSS decides
+// the applied width — the whole screen as a sheet (<840px), min(preference, 50vw)
+// docked. JS never writes the drawer's width or right offset, so a width chosen on
+// a wide screen can never push the drawer past a folded phone.
 (function initPanelResize() {
   var panel = document.getElementById('slide-panel');
   var handle = document.getElementById('panel-resize-handle');
   var STORAGE_KEY = 'soma-panel-width';
-  var MIN_W = 320, MAX_W_PCT = 0.8;
+  var MIN_W = 320, MAX_W = 1600;
+  var root = document.documentElement;
+  function applyPref(w) { root.style.setProperty('--panel-w-pref', w + 'px'); }
 
-  // Restore saved width
-  var saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) {
-    var w = parseInt(saved, 10);
-    if (w >= MIN_W && w <= window.innerWidth * MAX_W_PCT) {
-      panel.style.width = w + 'px';
-      panel.style.right = '-' + w + 'px';
-    }
-  }
+  var saved = NaN;
+  try { saved = parseInt(localStorage.getItem(STORAGE_KEY) || '', 10); } catch (_e) {}
+  if (saved >= MIN_W && saved <= MAX_W) applyPref(saved);
 
   var dragging = false;
-  handle.addEventListener('mousedown', function(e) {
+  var pref = 0;
+  handle.addEventListener('pointerdown', function(e) {
+    if (e.button !== 0) return;
     e.preventDefault();
     dragging = true;
+    pref = 0;
+    try { handle.setPointerCapture(e.pointerId); } catch (_e) {}
     panel.classList.add('resizing');
     handle.classList.add('active');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   });
-  document.addEventListener('mousemove', function(e) {
+  handle.addEventListener('pointermove', function(e) {
     if (!dragging) return;
-    var maxW = window.innerWidth * MAX_W_PCT;
-    var newW = window.innerWidth - e.clientX;
-    if (newW < MIN_W) newW = MIN_W;
-    if (newW > maxW) newW = maxW;
-    panel.style.width = newW + 'px';
-    if (panel.classList.contains('open')) {
-      panel.style.right = '0';
-    } else {
-      panel.style.right = '-' + newW + 'px';
-    }
+    pref = Math.round(Math.min(Math.max(window.innerWidth - e.clientX, MIN_W), window.innerWidth * 0.5));
+    applyPref(pref);
   });
-  document.addEventListener('mouseup', function() {
+  function endDrag() {
     if (!dragging) return;
     dragging = false;
     panel.classList.remove('resizing');
     handle.classList.remove('active');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-    var w = parseInt(panel.style.width, 10);
-    if (w >= MIN_W) localStorage.setItem(STORAGE_KEY, String(w));
-  });
-
-  // Patch openPanel/closePanel to use current width
-  var origRightHidden = panel.style.right;
-  var _origOpen = panel.classList.contains('open');
-  // Override slide-panel right offset on open
-  var observer = new MutationObserver(function() {
-    if (panel.classList.contains('open')) {
-      panel.style.right = '0';
-    } else if (!dragging) {
-      panel.style.right = '-' + (panel.style.width || '440px');
+    if (pref >= MIN_W) {
+      try { localStorage.setItem(STORAGE_KEY, String(pref)); } catch (_e) {}
     }
-  });
-  observer.observe(panel, { attributes: true, attributeFilter: ['class'] });
+  }
+  handle.addEventListener('pointerup', endDrag);
+  handle.addEventListener('pointercancel', endDrag);
 })();
 
 // ── Panel tasks rendering ──
@@ -6340,6 +6433,9 @@ function renderBoard(board) {
   // The #814 tokens tooltip describes this board (user switch, WS push).
   updateTokenBreakdown();
   _boardRenders++;
+  // The board moved: the layout-shift cache measures it again once its own
+  // enter / move animations have settled (SSOT 2026-10-24).
+  scheduleLayoutRefresh(MOTION.move + 40);
   openDeepLinkedSession();
 }
 
@@ -8202,6 +8298,176 @@ function collectViewMovers() {
   for (var i = 0; i < heads.length; i++) out.push(heads[i]);
   for (var k in _cardEls) out.push(_cardEls[k]);
   return out;
+}
+
+// ── Layout shift (SSOT 2026-10-24) — fold, unfold, rotate, dock ──
+// One coordinator. A change of the layout mode {board columns, panel
+// closed|sheet|docked, applied view} animates the board from where it was on
+// screen to where it is now (FLIP). A resize handler can only read the new
+// layout, so the "before" is a cache of the last layout targets, refreshed when
+// the board settles (render, scroll end, transition end, a finished shift). A
+// further resize while the cards still fly retargets them from the spot they are
+// visibly at — the last target plus their current translate — never from the
+// original spot (resize bursts have no measured interval to lean on).
+function defaultBoardView(innerWidth, saved) {
+  if (saved === 'board' || saved === 'list') return saved;
+  return innerWidth < 640 ? 'list' : 'board';
+}
+function savedBoardView() {
+  try { return localStorage.getItem('soma-board-view'); } catch (_e) { return null; }
+}
+function layoutModeOf(innerW, inboxW, panelOpen, view) {
+  return {
+    cols: inboxW >= 840 ? 'full' : 'snap',
+    panel: !panelOpen ? 'closed' : (innerW >= 840 ? 'docked' : 'sheet'),
+    view: view,
+  };
+}
+function layoutModeKey(m) {
+  return m.cols + '|' + m.panel + '|' + m.view;
+}
+function parseTranslate(t) {
+  var m = /^matrix(3d)?\\(([^)]*)\\)$/.exec(t || '');
+  if (!m) return { x: 0, y: 0 };
+  var v = m[2].split(',').map(function(n) { return parseFloat(n) || 0; });
+  return m[1] ? { x: v[12], y: v[13] } : { x: v[4], y: v[5] };
+}
+function flipVisualPos(target, t) {
+  return { left: target.left + t.x, top: target.top + t.y };
+}
+var _layoutRects = new Map(); // mover → its last layout target { left, top } (viewport, at _layoutScroll)
+var _layoutScroll = { x: 0, y: 0, k: 0 }; // window and board scroll when the cache was taken
+var _lastScroll = { x: 0, y: 0, k: 0 }; // the scroll the reader last saw (scroll events)
+var _layoutModeKey = '';
+var _layoutShiftUntil = 0;
+var _layoutCheckQueued = false;
+var _layoutRefreshTimer = null;
+var _panelAnchor = null;
+function currentLayoutMode() {
+  var inbox = document.getElementById('inbox');
+  var panel = document.getElementById('slide-panel');
+  var kb = document.getElementById('kanban');
+  return layoutModeOf(
+    window.innerWidth,
+    inbox ? inbox.getBoundingClientRect().width : 0,
+    !!(panel && panel.classList.contains('open')),
+    kb ? kb.getAttribute('data-view') : ''
+  );
+}
+function layoutScrollNow() {
+  var kb = document.getElementById('kanban');
+  return { x: window.scrollX, y: window.scrollY, k: kb ? kb.scrollLeft : 0 };
+}
+// The first panel row in view and its offset in the scroll area — restored after
+// a shift reflows the drawer, so the reader keeps their place.
+function capturePanelAnchor() {
+  var scrollEl = document.getElementById('panel-scroll');
+  if (!scrollEl || !panelOpen) return null;
+  var a = panelScrollAnchor(scrollEl);
+  return a ? { el: a.el, offset: a.top - scrollEl.getBoundingClientRect().top } : null;
+}
+function restorePanelAnchor(a) {
+  var scrollEl = document.getElementById('panel-scroll');
+  if (!scrollEl || !panelOpen) return;
+  if (_panelStickBottom) { scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' }); return; }
+  if (!a || !a.el.isConnected) return;
+  var drift = a.el.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - a.offset;
+  if (Math.abs(drift) > 0.5) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift, behavior: 'instant' });
+}
+// Measure the settled layout (never mid-shift: flying cards are not at their targets).
+// A refresh that finds a new mode is a shift the coordinator has not seen yet (a
+// timer can run between the resize and its event): hand it over instead, so the
+// cache still holds the layout the reader saw.
+function refreshLayoutCache() {
+  if (Date.now() < _layoutShiftUntil) return;
+  if (_layoutModeKey && layoutModeKey(currentLayoutMode()) !== _layoutModeKey) { runLayoutCheck(); return; }
+  var next = new Map();
+  var movers = collectViewMovers();
+  for (var i = 0; i < movers.length; i++) {
+    var r = movers[i].getBoundingClientRect();
+    next.set(movers[i], { left: r.left, top: r.top });
+  }
+  _layoutRects = next;
+  _layoutScroll = layoutScrollNow();
+  _lastScroll = _layoutScroll;
+  _layoutModeKey = layoutModeKey(currentLayoutMode());
+  _panelAnchor = capturePanelAnchor();
+}
+function scheduleLayoutRefresh(delay) {
+  clearTimeout(_layoutRefreshTimer);
+  _layoutRefreshTimer = setTimeout(refreshLayoutCache, delay);
+}
+function requestLayoutCheck() {
+  if (_layoutCheckQueued) return;
+  _layoutCheckQueued = true;
+  requestAnimationFrame(function() { _layoutCheckQueued = false; runLayoutCheck(); });
+}
+// openPanel / closePanel call this right before they change the layout: what is
+// on screen now is the "before" of the shift.
+function layoutBeforeChange() {
+  refreshLayoutCache();
+  requestLayoutCheck();
+}
+function runLayoutCheck() {
+  var kb = document.getElementById('kanban');
+  if (!kb) return;
+  // The default view follows the screen until the reader picks one (no event:
+  // setBoardView neither saves it nor plays its own FLIP — this runs the only one).
+  var autoView = defaultBoardView(window.innerWidth, savedBoardView());
+  if (kb.getAttribute('data-view') !== autoView) setBoardView(autoView);
+  var mode = currentLayoutMode();
+  var changed = layoutModeKey(mode) !== _layoutModeKey;
+  var flying = Date.now() < _layoutShiftUntil;
+  if (!changed && !flying) { refreshLayoutCache(); return; }
+  var anchor = _panelAnchor;
+  var sx = _lastScroll.x - _layoutScroll.x, sy = _lastScroll.y - _layoutScroll.y, sk = _lastScroll.k - _layoutScroll.k;
+  var movers = collectViewMovers();
+  var from = [];
+  for (var i = 0; i < movers.length; i++) {
+    var el = movers[i];
+    var target = _layoutRects.get(el);
+    if (!target) { from.push(null); continue; }
+    var t = el._flip ? parseTranslate(getComputedStyle(el).transform) : { x: 0, y: 0 };
+    var p = flipVisualPos(target, t);
+    from.push({ left: p.left - sx - sk, top: p.top - sy });
+  }
+  for (var c = 0; c < movers.length; c++) {
+    el = movers[c];
+    if (el._flip) { el._flip.cancel(); el._flip = null; el.classList.remove('is-flying'); }
+  }
+  var animate = canAnimate();
+  var reduce = reduceMotion();
+  var vw = window.innerWidth, vh = window.innerHeight;
+  var next = new Map();
+  for (var j = 0; j < movers.length; j++) {
+    el = movers[j];
+    var r = el.getBoundingClientRect();
+    next.set(el, { left: r.left, top: r.top });
+    var f = from[j];
+    if (!f || !animate || reduce) continue;
+    var seenBefore = f.left < vw && f.left + r.width > 0 && f.top < vh && f.top + r.height > 0;
+    var seenNow = r.left < vw && r.right > 0 && r.top < vh && r.bottom > 0;
+    if (!seenBefore && !seenNow) continue;
+    var dx = f.left - r.left, dy = f.top - r.top;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+    playFlip(el, dx, dy, false);
+  }
+  if (changed && animate && reduce) kb.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
+  _layoutRects = next;
+  _layoutScroll = layoutScrollNow();
+  _lastScroll = _layoutScroll;
+  _layoutModeKey = layoutModeKey(mode);
+  restorePanelAnchor(anchor);
+  if (!changed && !flying) return;
+  _layoutShiftUntil = Date.now() + MOTION.move;
+  var root = document.documentElement;
+  root.classList.add('is-layout-shift');
+  setTimeout(function() {
+    if (Date.now() < _layoutShiftUntil) return;
+    root.classList.remove('is-layout-shift');
+    restorePanelAnchor(anchor);
+    refreshLayoutCache();
+  }, MOTION.move + 20);
 }
 
 // ── Show archives (.prd/10 §3.1-1) — archived (terminated) cards are hidden
@@ -10110,9 +10376,14 @@ function landPanel() {
   var onQuestion = !!question && question.style.display !== 'none';
   if (onQuestion && _panelOnQuestion) return;
   _panelOnQuestion = onQuestion;
+  // The question sits under the session info that scrolls with the
+  // conversation (SSOT 2026-10-24), so land on its own offset, not on 0.
+  var questionTop = onQuestion
+    ? scrollEl.scrollTop + question.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top
+    : 0;
   // Instant: under scroll-behavior: smooth the glide down from 0 passed
   // through scrollTop < 100 and set off the load-older-turns handler.
-  scrollEl.scrollTo({ top: onQuestion ? 0 : scrollEl.scrollHeight, behavior: 'instant' });
+  scrollEl.scrollTo({ top: onQuestion ? questionTop : scrollEl.scrollHeight, behavior: 'instant' });
   _panelStickBottom = !onQuestion;
 }
 
@@ -10291,6 +10562,8 @@ function openPanel(sessionKey, focusWorkLog, agentId) {
     if (cmdHint) { cmdHint.style.display = 'none'; }
   }
 
+  // Docked (≥840px) the open drawer narrows the board: animate that shift too.
+  layoutBeforeChange();
   document.getElementById('slide-panel').classList.add('open');
   document.getElementById('panel-overlay').classList.add('open');
   panelOpen = true;
@@ -10566,6 +10839,7 @@ async function generateTitleSub(convId, regenerate) {
 }
 
 function closePanel() {
+  layoutBeforeChange();
   document.getElementById('slide-panel').classList.remove('open');
   document.getElementById('panel-overlay').classList.remove('open');
   panelOpen = false;
@@ -11449,10 +11723,9 @@ function artHandleKey(e) {
     var key = face.parentNode.getAttribute('data-session-key');
     if (key) toggleCard(key, true);
   });
-  // View: the saved choice, else List on narrow screens (§3.1-2).
-  var saved = null;
-  try { saved = localStorage.getItem('soma-board-view'); } catch (_e) {}
-  setBoardView(saved === 'board' || saved === 'list' ? saved : (window.innerWidth < 640 ? 'list' : 'board'));
+  // View: the saved choice, else List on narrow screens (§3.1-2); runLayoutCheck
+  // re-evaluates the default when a fold or rotation crosses 640px.
+  setBoardView(defaultBoardView(window.innerWidth, savedBoardView()));
 })();
 // Spec 12 §4.3 — the panel's agent bar: path steps and list rows choose the agent, the toggle opens the list.
 (function initPanelAgentInteractions() {
@@ -12347,6 +12620,64 @@ function ntInit() {
   var nkbd = document.querySelector('#new-task-btn .nt-kbd');
   if (nkbd && ntIsTouch()) nkbd.hidden = true;
 }
+
+// ── Drawer geometry (SSOT 2026-10-24) ──
+// The drawer follows the visual viewport, so its composer stays above the
+// on-screen keyboard (the new-task sheet's ntSyncViewport, for the drawer).
+function syncPanelViewport() {
+  var vv = window.visualViewport;
+  var panel = document.getElementById('slide-panel');
+  if (!vv || !panel) return;
+  panel.style.setProperty('--pv-h', Math.round(vv.height) + 'px');
+  panel.style.setProperty('--pv-t', Math.round(vv.offsetTop) + 'px');
+}
+// Docked, the drawer sits under the top bar until the bar scrolls away.
+function syncTopbarBottom() {
+  var bar = document.querySelector('.topbar');
+  if (!bar) return;
+  var b = Math.max(0, Math.round(bar.getBoundingClientRect().bottom));
+  document.documentElement.style.setProperty('--topbar-b', b + 'px');
+}
+(function initPanelViewport() {
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', syncPanelViewport);
+    window.visualViewport.addEventListener('scroll', syncPanelViewport);
+  }
+  syncPanelViewport();
+  var queued = false;
+  function queueTopbar() {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(function() { queued = false; syncTopbarBottom(); });
+  }
+  window.addEventListener('scroll', queueTopbar, { passive: true });
+  window.addEventListener('resize', queueTopbar, { passive: true });
+  var bar = document.querySelector('.topbar');
+  if (bar && 'ResizeObserver' in window) new ResizeObserver(syncTopbarBottom).observe(bar);
+  syncTopbarBottom();
+})();
+// Layout-shift signals: the window (fold, unfold, rotation — the resize event runs
+// before this frame's paint), the inbox's own size (a docked drawer, a drag of its
+// edge; ResizeObserver also runs before paint), and openPanel / closePanel.
+(function initLayoutTransitions() {
+  window.addEventListener('resize', requestLayoutCheck, { passive: true });
+  var inbox = document.getElementById('inbox');
+  if (inbox && 'ResizeObserver' in window) new ResizeObserver(function() { runLayoutCheck(); }).observe(inbox);
+  // What the reader last saw: the scroll at every scroll event, and a fresh cache
+  // once scrolling (page, board, drawer) or a card transition settles.
+  function onScroll() {
+    _lastScroll = layoutScrollNow();
+    scheduleLayoutRefresh(120);
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  var kb = document.getElementById('kanban');
+  if (kb) {
+    kb.addEventListener('scroll', onScroll, { passive: true });
+    kb.addEventListener('transitionend', function() { scheduleLayoutRefresh(60); });
+  }
+  var ps = document.getElementById('panel-scroll');
+  if (ps) ps.addEventListener('scroll', function() { scheduleLayoutRefresh(120); }, { passive: true });
+})();
 
 // ── Init ──
 loadUsers();
