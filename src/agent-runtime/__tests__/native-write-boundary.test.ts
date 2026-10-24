@@ -99,6 +99,60 @@ describe('createNativeWriteCheck — where a native write lands', () => {
     );
   });
 
+  it('compares the roots in one spelling: a relinked directory between /tmp/{userId} and the working directory refuses, whichever alias each root is written in (review R2)', () => {
+    // `/tmp` and `/private/tmp` name one directory; the builder writes the user
+    // root one way and keeps the working directory as given.
+    const real = path.join(SCRATCH, 'alias-real');
+    const alias = path.join(SCRATCH, 'alias-tmp');
+    fs.mkdirSync(real, { recursive: true });
+    fs.symlinkSync(real, alias); // a system link above the roots
+    for (const [i, cwdBase, userBase] of [
+      [1, real, alias],
+      [2, alias, real],
+    ] as const) {
+      fs.mkdirSync(path.join(real, `u${i}`, 'parent', 'session'), { recursive: true });
+      const away = path.join(OUTSIDE, `away-${i}`);
+      fs.mkdirSync(path.join(away, 'session'), { recursive: true });
+      const cwd = path.join(cwdBase, `u${i}`, 'parent', 'session');
+      const roots = [cwd, path.join(userBase, `u${i}`)];
+      const target = { file_path: path.join(away, 'session', 'secret.json') };
+      expect(createNativeWriteCheck(roots, cwd)('Write', target)).toMatch(/lands outside/);
+      fs.renameSync(path.join(real, `u${i}`, 'parent'), path.join(real, `u${i}`, 'parent-old'));
+      fs.symlinkSync(away, path.join(real, `u${i}`, 'parent'));
+      expect(createNativeWriteCheck(roots, cwd)('Write', target)).toMatch(/lands outside/);
+      // the user root itself still counts
+      expect(createNativeWriteCheck(roots, cwd)('Write', { file_path: path.join(real, `u${i}`, 'ok.txt') })).toBeNull();
+    }
+  });
+
+  const caseInsensitive = SCRATCH !== SCRATCH.toUpperCase() && fs.existsSync(SCRATCH.toUpperCase());
+  it.runIf(caseInsensitive)('compares the roots in the file system’s spelling of case as well (review R2)', () => {
+    const user = path.join(SCRATCH, 'CaseUser');
+    fs.mkdirSync(path.join(user, 'parent', 'session'), { recursive: true });
+    const away = path.join(OUTSIDE, 'away-case');
+    fs.mkdirSync(path.join(away, 'session'), { recursive: true });
+    const cwd = path.join(SCRATCH, 'caseuser', 'parent', 'session');
+    const roots = [cwd, user];
+    fs.renameSync(path.join(user, 'parent'), path.join(user, 'parent-old'));
+    fs.symlinkSync(away, path.join(user, 'parent'));
+    expect(createNativeWriteCheck(roots, cwd)('Write', { file_path: path.join(away, 'session', 'x.json') })).toMatch(
+      /lands outside/,
+    );
+  });
+
+  it('reads a path the way the SDK does: surrounding white space trimmed, `~` expanded (review R2)', () => {
+    expect(write(` ${path.join(OUTSIDE, 'secret.json')}`)).toMatch(/lands outside/);
+    expect(write(`${path.join(OUTSIDE, 'secret.json')}\n`)).toMatch(/lands outside/);
+    // (the home directory is outside the roots; refused, whatever it is)
+    expect(write('~/.soma-boundary-test.json')).not.toBeNull();
+    expect(write('~')).not.toBeNull();
+    expect(write('   ')).toMatch(/names no target/);
+    expect(write(`${path.join(ROOT, 'repo')}/x\u0000.txt`)).toMatch(/NUL/);
+    // inside stays inside, however it is spelled
+    expect(write(` ${path.join(ROOT, 'repo', 'a.txt')} `)).toBeNull();
+    expect(write(path.join(ROOT, 'repo', 'cafe\u0301.txt'))).toBeNull();
+  });
+
   it('refuses a dangling symbolic link on the way: the write would create its target', () => {
     fs.symlinkSync(path.join(OUTSIDE, 'not-yet.json'), path.join(ROOT, 'dangling'));
     expect(write(path.join(ROOT, 'dangling'))).toMatch(/symbolic link to a missing target/);
@@ -127,14 +181,18 @@ describe('createNativeWriteCheck — where a native write lands', () => {
     expect(NATIVE_WRITE_TOOLS).toEqual(['Write', 'Edit', 'NotebookEdit', 'Artifact', 'EnterWorktree', 'Agent']);
   });
 
-  it('Artifact read_asset saves into out_dir: held to the roots; the default scratchpad and other actions write nothing local (review R1)', () => {
+  it('Artifact saves into its scratchpad only: any out_dir is refused, whatever the action (review R1, R2)', () => {
+    // read_asset, read_file and read_db save under out_dir names the server picks
+    // (asset id + extension, published path, collection / document id), which a
+    // check before the call cannot see, so out_dir is not offered at all.
     const artifact = (input: Record<string, unknown>) => check('Artifact', input);
-    expect(artifact({ action: 'read_asset', url: 'u', asset_id: 'a', out_dir: OUTSIDE })).toMatch(/lands outside/);
-    expect(artifact({ action: 'read_asset', url: 'u', asset_id: 'a', out_dir: path.join(ROOT, 'assets') })).toBeNull();
+    for (const action of ['read_asset', 'read_file', 'read_db', undefined]) {
+      for (const out_dir of [OUTSIDE, ` ${OUTSIDE}`, '~/assets', path.join(ROOT, 'assets'), 7]) {
+        expect(artifact({ action, url: 'u', asset_id: 'a', path: 'p', out_dir })).toMatch(/out_dir/);
+      }
+    }
     expect(artifact({ action: 'read_asset', url: 'u', asset_id: 'a' })).toBeNull();
-    expect(artifact({ action: 'read_asset', url: 'u', asset_id: 'a', out_dir: 7 })).toMatch(
-      /names no target \(out_dir\)/,
-    );
+    expect(artifact({ action: 'read_file', url: 'u', path: 'index.html' })).toBeNull();
     expect(artifact({ file_path: '/etc/hosts' })).toBeNull(); // publish reads the file
     expect(artifact({ action: 'upload_asset', url: 'u', file_path: '/etc/hosts' })).toBeNull();
   });
@@ -200,7 +258,7 @@ describe('createNativeWriteCheck — where a native write lands', () => {
     const innerLinked = path.join(inner, '.claude', 'worktrees', 'one');
     expect(git(inner, 'worktree', 'add', '-q', '--detach', innerLinked).status).toBe(0);
     expect(createNativeWriteCheck([ROOT], innerLinked)('EnterWorktree', { name: 'two' })).toBeNull();
-  });
+  }, 30_000); // several git processes: slow on a loaded runner
 
   it('with no roots, refuses every write', () => {
     expect(createNativeWriteCheck([], ROOT)('Write', { file_path: path.join(ROOT, 'x') })).toMatch(/\(none\)/);
@@ -235,7 +293,7 @@ describe('evaluateToolPolicy — step 3b, the native write boundary', () => {
         const r = evaluateToolPolicy(tool, input, ctx({ mode }));
         expect(r.decision).toBe('deny');
         expect(r.reason).toMatch(/^write-boundary: /);
-        expect(r.denyMessage).toMatch(/lands outside/);
+        expect(r.denyMessage).toMatch(tool === 'Artifact' ? /cannot save to out_dir/ : /lands outside/);
       }
     }
   });
@@ -338,6 +396,32 @@ describe('buildStreamOptions — a non-admin session with the sandbox on', () =>
     fs.symlinkSync(DATA_DIR, cwd);
     expect((await call('Write', target)).hookSpecificOutput?.permissionDecision).toBe('deny');
   });
+
+  const tmpAliased = fs.realpathSync('/tmp') !== '/tmp';
+  it.runIf(tmpAliased)(
+    'still denies after a relink when the working directory is spelled /private/tmp and the user root /tmp (review R2)',
+    async () => {
+      const realUser = path.join(fs.realpathSync('/tmp'), SESSION_USER);
+      const parent = path.join(realUser, `r2-parent-${process.pid}`);
+      const cwd = path.join(parent, 'session');
+      fs.mkdirSync(cwd, { recursive: true });
+      const away = path.join(OUTSIDE, 'e2e-away');
+      fs.mkdirSync(path.join(away, 'session'), { recursive: true });
+      try {
+        const { call } = await writeHook(cwd);
+        const target = { file_path: path.join(away, 'session', 'secret.json'), content: '{}' };
+        expect((await call('Write', target)).hookSpecificOutput?.permissionDecision).toBe('deny');
+        fs.renameSync(parent, `${parent}-old`);
+        fs.symlinkSync(away, parent);
+        expect((await call('Write', target)).hookSpecificOutput?.permissionDecision).toBe('deny');
+        const inUser = await call('Write', { file_path: path.join(realUser, 'ok.txt'), content: 'x' });
+        expect(inUser.hookSpecificOutput?.permissionDecision).toBe('allow');
+      } finally {
+        fs.rmSync(parent, { force: true });
+        fs.rmSync(`${parent}-old`, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('denies an Artifact read_asset into the data directory, and hooks the write tools outside NATIVE_BYPASS_TOOLS', async () => {
     const { call, options } = await writeHook(path.join(ROOT, 'repo'));

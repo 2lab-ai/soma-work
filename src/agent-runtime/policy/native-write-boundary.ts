@@ -12,7 +12,9 @@
  *
  * "Those tools" are every native tool of SDK 0.3.284 that writes a local path
  * the call chooses (`sdk-tools.d.ts`): `Write` / `Edit` (`file_path`),
- * `NotebookEdit` (`notebook_path`), `Artifact` `read_asset` (`out_dir`), and the
+ * `NotebookEdit` (`notebook_path`), `Artifact` (`out_dir`: refused outright, as
+ * the names saved under it come from the server and a check before the call
+ * cannot see them; without it the SDK saves into its own scratchpad), and the
  * git worktree that `EnterWorktree` (`name`) and `Agent` (`isolation:
  * "worktree"`) create under the repository's `.claude/worktrees/` — a symbolic
  * link there would put the checkout anywhere. Also held to the roots: the
@@ -24,15 +26,23 @@
  * (`ToolPolicyContext.checkNativeWrite`); a session whose sandbox an admin
  * turned off has no boundary, as its Bash has none either.
  *
+ * A path is read the way the SDK reads it (`expandPath`: white space around it
+ * trimmed, `~` and `~/` expanded, then against the working directory), and
+ * also as written and in Unicode NFC: every reading must land inside a root.
+ *
  * The decision is made on the file system, not on the spelling: the target's
  * deepest existing ancestor is resolved with `realpath` (every symbolic link
  * followed), the missing rest appended, and the result must sit inside a root.
- * A root is trusted only as far as the session cannot change it: the part of
- * its path at or below a root — the root itself, a working directory inside
- * `/tmp/{userId}` — must hold no symbolic link (the session's own Bash can
- * replace a directory there with one), while the system's links above the
- * roots (`/tmp` → `/private/tmp`) are followed. `realpath` also settles case
- * and Unicode-form spellings the way the file system does. Refused as well, since a write would
+ * A root is trusted only as far as the session cannot change it. Each root is
+ * walked from `/` one name at a time, every name replaced by the file system's
+ * own spelling, so `/tmp/…` and `/private/tmp/…`, or two spellings of case,
+ * come out as one path. A symbolic link on the way is followed only when the
+ * directory that holds it lies outside every root (the system's `/tmp` →
+ * `/private/tmp`); one inside a root — between `/tmp/{userId}` and a working
+ * directory inside it — refuses that root, since the session's own Bash can
+ * put it there. A root that is itself a symbolic link is refused too. The roots
+ * are compared with each other in that one spelling, walked again until they
+ * agree. Refused as well, since a write would
  * land outside a root through them: a `..` segment (the OS climbs it from a
  * symbolic link's target), a dangling symbolic link on the way (a write
  * creates its target), and an existing file with more than one hard link (a
@@ -46,6 +56,7 @@
 
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 /**
@@ -74,9 +85,35 @@ function errorCode(error: unknown): string | undefined {
 
 function requiredPath(toolName: string, input: Record<string, unknown>, property: string): Targets {
   const raw = input[property];
-  return typeof raw === 'string' && raw !== ''
-    ? { ok: true, targets: [raw] }
-    : { ok: false, reason: `${toolName} names no target (${property})` };
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return { ok: false, reason: `${toolName} names no target (${property})` };
+  }
+  if (raw.includes('\0')) return { ok: false, reason: `${toolName}: ${property} contains a NUL character` };
+  return { ok: true, targets: [raw] };
+}
+
+/**
+ * Every absolute path a write to `raw` may go to. The SDK reads a path with
+ * `expandPath` — trimmed, `~` / `~/` to the home directory, a relative one
+ * against the working directory — and may compose it to Unicode NFC; the
+ * spelling as written is kept as well. A write is allowed only when all land
+ * inside a root, so no reading the SDK might use is left unchecked.
+ */
+function readings(raw: string, cwd: string): string[] {
+  const against = (p: string) => (path.isAbsolute(p) ? p : `${cwd}/${p}`);
+  const trimmed = raw.trim();
+  const expanded =
+    trimmed === '~'
+      ? os.homedir()
+      : trimmed.startsWith('~/')
+        ? path.join(os.homedir(), trimmed.slice(2))
+        : against(trimmed);
+  const out = new Set<string>();
+  for (const p of [against(raw), expanded]) {
+    out.add(p);
+    out.add(p.normalize('NFC'));
+  }
+  return [...out];
 }
 
 /**
@@ -122,12 +159,18 @@ function writeTargets(toolName: string, input: Record<string, unknown>, cwd: str
       return requiredPath(toolName, input, 'file_path');
     case 'NotebookEdit':
       return requiredPath(toolName, input, 'notebook_path');
-    case 'Artifact': {
-      // Only `read_asset` saves locally; without `out_dir` it saves into the SDK's own scratchpad.
-      if (input.action !== 'read_asset' || input.out_dir === undefined) return { ok: true, targets: [] };
-      const dir = requiredPath(toolName, input, 'out_dir');
-      return dir.ok ? { ok: true, targets: [`${dir.targets[0]}/asset`] } : dir;
-    }
+    case 'Artifact':
+      // `read_asset`, `read_file` and `read_db` save under `out_dir` names the server
+      // picks (asset id + extension, published path, collection / document id): a
+      // check before the call cannot see them, so `out_dir` is refused for every
+      // action. Without it the SDK saves into its own scratchpad.
+      return input.out_dir === undefined
+        ? { ok: true, targets: [] }
+        : {
+            ok: false,
+            reason:
+              'Artifact cannot save to out_dir in this session: omit out_dir, the file is saved in the scratchpad, where Read can open it',
+          };
     case 'EnterWorktree':
       // `path` switches into an existing worktree: nothing is created, but the session's
       // working directory moves there, and sandboxed Bash writes its working directory.
@@ -188,61 +231,119 @@ function resolveWriteTarget(target: string): Resolved {
   }
 }
 
-/** The ancestors of `p` (absolute, normalized), nearest first, `/` last. */
-function ancestors(p: string): string[] {
-  const out: string[] = [];
-  for (let cur = path.dirname(p); ; cur = path.dirname(cur)) {
-    out.push(cur);
-    if (cur === path.dirname(cur)) return out;
-  }
-}
-
-/**
- * Where `root` really is, trusting only what the session cannot change: every
- * component of the root's path that lies at or below one of `roots` (spelled as
- * given) must not be a symbolic link — those directories are writable by the
- * session, so a link there could point the root anywhere. The components above
- * are followed through `realpath`.
- */
-function resolveRoot(root: string, roots: readonly string[]): Resolved {
-  const lexicalRoots = roots.map((r) => path.resolve(r));
-  const writable = (p: string) => lexicalRoots.some((r) => p === r || p.startsWith(`${r}${path.sep}`));
-  const self = path.resolve(root);
-  for (const component of [self, ...ancestors(self)]) {
-    if (!writable(component)) continue;
-    try {
-      if (fs.lstatSync(component).isSymbolicLink()) {
-        return { ok: false, reason: `${component} is a symbolic link` };
-      }
-    } catch (error) {
-      if (errorCode(error) !== 'ENOENT') return { ok: false, reason: `cannot inspect ${component}` };
-    }
-  }
-  return resolveWriteTarget(self);
-}
-
 function isInside(candidate: string, root: string): boolean {
   return candidate === root || candidate.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
 }
 
-/** Why a write to `raw` would land outside `roots`, or null. */
+/** Symbolic links followed in one walk before giving up, as the OS does (ELOOP). */
+const MAX_LINKS = 40;
+
+/**
+ * Where `root` really is, trusting only what the session cannot change. The
+ * path is walked from `/` one name at a time, the way the OS resolves it, each
+ * existing name replaced by the file system's own spelling (`realpath` of a
+ * path with no symbolic link left in it changes only case and Unicode form). A
+ * symbolic link is followed only when the directory holding it lies outside
+ * every root in `known` (their canonical forms); one inside — the session's own
+ * Bash could have put it there — refuses the root. So does a root that is
+ * itself a symbolic link. A missing rest is appended as named.
+ */
+function canonicalRoot(root: string, known: readonly string[]): Resolved {
+  const self = path.resolve(root);
+  try {
+    if (fs.lstatSync(self).isSymbolicLink()) return { ok: false, reason: `${self} is a symbolic link` };
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') return { ok: false, reason: `cannot inspect ${self}` };
+  }
+  const pending = self.split(path.sep).filter(Boolean);
+  let current: string = path.sep;
+  let links = 0;
+  while (pending.length > 0) {
+    const name = pending.shift() as string;
+    if (name === '.') continue;
+    if (name === '..') {
+      current = path.dirname(current);
+      continue;
+    }
+    const next = path.join(current, name);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(next);
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT') return { ok: true, path: path.join(next, ...pending) };
+      return { ok: false, reason: `cannot inspect ${next} (${errorCode(error) ?? 'error'})` };
+    }
+    if (stat.isSymbolicLink()) {
+      if (known.some((r) => isInside(current, r))) {
+        return { ok: false, reason: `${next} is a symbolic link inside a writable directory` };
+      }
+      if (++links > MAX_LINKS) return { ok: false, reason: `too many symbolic links in ${self}` };
+      let target: string;
+      try {
+        target = fs.readlinkSync(next);
+      } catch (error) {
+        return { ok: false, reason: `cannot read ${next} (${errorCode(error) ?? 'error'})` };
+      }
+      pending.unshift(...target.split(path.sep).filter(Boolean));
+      if (path.isAbsolute(target)) current = path.sep;
+      continue;
+    }
+    try {
+      current = fs.realpathSync.native(next);
+    } catch (error) {
+      return { ok: false, reason: `cannot resolve ${next} (${errorCode(error) ?? 'error'})` };
+    }
+  }
+  return { ok: true, path: current };
+}
+
+/**
+ * The roots in one spelling. Whether a link lies inside a root is asked of the
+ * roots' canonical forms, which this computes: so each round walks every root
+ * against the previous round's forms, until a round changes nothing. A root
+ * that fails is not a place to write; the others still are.
+ */
+function canonicalRoots(roots: readonly string[]): Resolved[] {
+  let known: string[] = [];
+  let resolved: Resolved[] = [];
+  for (let round = 0; round <= roots.length + 1; round++) {
+    resolved = roots.map((root) => canonicalRoot(root, known));
+    const next = resolved.flatMap((r) => (r.ok ? [r.path] : []));
+    if (round > 0 && next.length === known.length && next.every((p, i) => p === known[i])) return resolved;
+    known = next;
+  }
+  return roots.map(() => ({ ok: false, reason: 'the writable directories do not settle' }));
+}
+
+/** Why a write to `raw` would land outside the roots, or null. */
 function checkTarget(
   toolName: string,
   raw: string,
-  roots: readonly string[],
+  roots: readonly Resolved[],
   cwd: string,
   shown: string,
 ): string | null {
-  const joined = path.isAbsolute(raw) ? raw : `${cwd}/${raw}`;
+  for (const joined of readings(raw, cwd)) {
+    const outside = checkReading(toolName, raw, joined, roots, shown);
+    if (outside !== null) return outside;
+  }
+  return null;
+}
+
+/** Why a write to `joined` (one reading of `raw`, absolute) would land outside the roots, or null. */
+function checkReading(
+  toolName: string,
+  raw: string,
+  joined: string,
+  roots: readonly Resolved[],
+  shown: string,
+): string | null {
   // The OS climbs `..` from a symbolic link's target, `path.resolve` from the
   // link's own name: the two can land in different directories.
   if (joined.split('/').includes('..')) return `${toolName} to ${raw}: a path with \`..\` is not allowed`;
   const target = resolveWriteTarget(path.resolve(joined));
   if (!target.ok) return `${toolName} to ${raw}: ${target.reason}`;
-  const insideRoot = roots.some((root) => {
-    const resolvedRoot = resolveRoot(root, roots);
-    return resolvedRoot.ok && isInside(target.path, resolvedRoot.path);
-  });
+  const insideRoot = roots.some((root) => root.ok && isInside(target.path, root.path));
   if (!insideRoot) {
     return `${toolName} to ${raw} lands outside the session's writable directories (${shown})`;
   }
@@ -271,8 +372,10 @@ export function createNativeWriteCheck(roots: readonly string[], cwd: string): N
   return (toolName, input) => {
     const targets = writeTargets(toolName, input, cwd);
     if (!targets.ok) return targets.reason;
+    if (targets.targets.length === 0) return null;
+    const canonical = canonicalRoots(roots);
     for (const raw of targets.targets) {
-      const outside = checkTarget(toolName, raw, roots, cwd, shown);
+      const outside = checkTarget(toolName, raw, canonical, cwd, shown);
       if (outside !== null) return outside;
     }
     return null;
