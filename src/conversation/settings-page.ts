@@ -22,13 +22,18 @@
  * it, so it reaches the browser byte for byte (tests run it as shipped).
  */
 
+import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from './settings-memory-tab';
+
 export interface SettingsPageTab {
   id: string;
   label: string;
 }
 
 /** Tabs that exist on this build. Later areas append here. */
-export const SETTINGS_TABS: SettingsPageTab[] = [{ id: 'preferences', label: '개인 설정' }];
+export const SETTINGS_TABS: SettingsPageTab[] = [
+  { id: 'preferences', label: '개인 설정' },
+  { id: 'memory', label: '기억' },
+];
 
 export const SETTINGS_PAGE_CSS = String.raw`
 *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -422,13 +427,14 @@ function removeListItem(btn) {
 function applyFilter() {
   var q = ((document.getElementById('pref-filter') || {}).value || '').toLowerCase().trim();
   var onlyMod = !!(document.getElementById('pref-modified') || {}).checked;
-  var rows = document.querySelectorAll('.row[data-key]');
+  // Only the 개인 설정 tab: other tabs have sections without setting rows (review P1).
+  var rows = document.querySelectorAll('[data-tab="preferences"] .row[data-key]');
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
     var hit = (!q || r.getAttribute('data-search').indexOf(q) >= 0) && (!onlyMod || r.getAttribute('data-modified') === '1');
     r.hidden = !hit;
   }
-  var groups = document.querySelectorAll('section.group');
+  var groups = document.querySelectorAll('[data-tab="preferences"] section.group');
   for (var g = 0; g < groups.length; g++) groups[g].hidden = !groups[g].querySelector('.row:not([hidden])');
 }
 
@@ -483,7 +489,14 @@ function preferencesTab(): string {
 </div>`;
 }
 
-export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS, extraTabsHtml = '', extraJs = ''): string {
+// Tab hooks: a tab loads its data the first time it is shown.
+const TAB_HOOKS_JS = String.raw`
+function onTabShown(id) {
+  if (id === 'memory' && !_memLoaded) loadMemory();
+}
+`;
+
+export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): string {
   const tabLinks = tabs.map((t) => `<a href="#${t.id}">${t.label}</a>`).join('');
   return `<!DOCTYPE html>
 <html lang="ko">
@@ -494,7 +507,7 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS, extr
 <script data-fouc>
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
 </script>
-<style>${SETTINGS_PAGE_CSS}</style>
+<style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}</style>
 </head>
 <body>
 <div class="topbar">
@@ -504,7 +517,7 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS, extr
   <div class="account"><span id="who"></span><button type="button" class="theme" onclick="toggleTheme()" aria-label="테마 바꾸기">테마</button></div>
 </div>
 ${preferencesTab()}
-${extraTabsHtml}
+${MEMORY_TAB_HTML}
 <dialog id="confirm" aria-labelledby="confirm-title">
   <form method="dialog">
     <h3 id="confirm-title"></h3>
@@ -515,7 +528,7 @@ ${extraTabsHtml}
     </div>
   </form>
 </dialog>
-<script>${SETTINGS_CLIENT_JS}${extraJs}</script>
+<script>${MEMORY_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
 </body>
 </html>`;
 }
