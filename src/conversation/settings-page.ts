@@ -129,6 +129,10 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
   .side nav { flex-direction: row; overflow-x: auto; }
   .row { grid-template-columns: minmax(0, 1fr); }
 }
+@media (pointer: coarse) {
+  /* Touch screens (SSOT 2026-10-24): 16px text, so iOS does not zoom into a focused field. */
+  .side input[type="search"], .row input[type="text"], .row input[type="number"], .row select { font-size: 16px; }
+}
 @media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
 `;
 

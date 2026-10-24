@@ -78,6 +78,12 @@ export interface LlmuxAccount {
     pending_request_id?: string;
   } | null;
   cooldown_until?: number | null;
+  /**
+   * Exact plan string (Anthropic `rate_limit_tier`, e.g. `default_claude_max_20x`)
+   * when a future llmux reports it. Additive; absent today. Read by the
+   * dashboard tier map (auth/llmux-tiers.ts) after the operator's own map.
+   */
+  rate_limit_tier?: string;
   in_flight?: number;
   totals?: { requests: number; input_tokens: number; output_tokens: number };
 }
