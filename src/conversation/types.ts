@@ -2,6 +2,8 @@
  * Conversation history types for recording and viewing session dialogues.
  */
 
+import type { TurnAttachment } from '@soma/slack/user-media';
+
 /**
  * A single turn in a conversation (user message or assistant response)
  */
@@ -16,6 +18,12 @@ export interface ConversationTurn {
 
   // Content
   rawContent: string; // Full raw content
+  /**
+   * User turn: the files the user attached to this instruction (user media,
+   * SSOT 2026-10-25). The turn is their index; the bytes live in
+   * `src/conversation/user-media.ts`. Absent when none.
+   */
+  attachments?: TurnAttachment[];
 
   // Assistant turn fields (populated for role === 'assistant')
   summaryTitle?: string; // 1-line title from SUMMARY_MODEL

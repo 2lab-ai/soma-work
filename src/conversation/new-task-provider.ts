@@ -26,7 +26,13 @@ import { getTokenManager } from '../token-manager';
 import { EFFORT_LEVELS, userSettingsStore } from '../user-settings-store';
 import type { DashboardNewTaskProvider } from './dashboard';
 import { buildNewTaskContext, isSlackFileUrl, type NewTaskAttachment, type UsageAccountView } from './new-task';
-import { launchNewTask, type NewTaskEvent, type NewTaskSay, type SlackEventFile } from './new-task-launcher';
+import {
+  launchNewTask,
+  type NewTaskEvent,
+  type NewTaskSay,
+  type SlackEventFile,
+  slackEventFileFrom,
+} from './new-task-launcher';
 import { cctSlotsToUsage, createTtlCache, llmuxAccountsToUsage } from './new-task-usage';
 
 const logger = new Logger('DashboardNewTask');
@@ -106,15 +112,7 @@ async function uploadFiles(
     // The pipeline fetches this URL with the bot token: only ever a Slack file host.
     if (!isSlackFileUrl(info.url_private_download))
       throw new Error(`Slack returned a non-Slack download URL for file ${id}`);
-    out.push({
-      id,
-      name: info.name ?? id,
-      mimetype: info.mimetype ?? 'application/octet-stream',
-      filetype: info.filetype ?? '',
-      url_private: info.url_private ?? info.url_private_download,
-      url_private_download: info.url_private_download,
-      size: typeof info.size === 'number' ? info.size : 0,
-    });
+    out.push(slackEventFileFrom(id, info));
   }
   return out;
 }

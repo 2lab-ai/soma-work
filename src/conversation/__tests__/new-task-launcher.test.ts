@@ -218,3 +218,39 @@ describe('launchNewTask', () => {
     expect(result.status).toBe('running');
   });
 });
+
+/**
+ * User media (SSOT 2026-10-25, review gate P2): a composer upload is read back
+ * from Slack (`files.info`) into the shape the pipeline downloads. The bot never
+ * downloads video (or audio it cannot transcribe), so the Slack permalink is the
+ * only way the dashboard can open one — it must survive the mapping.
+ */
+describe('slackEventFileFrom — the composer upload as the pipeline sees it', () => {
+  it('keeps the Slack permalink (https only) with the download fields', async () => {
+    const { slackEventFileFrom } = await import('../new-task-launcher');
+    expect(
+      slackEventFileFrom('F9', {
+        name: 'clip.mov',
+        mimetype: 'video/quicktime',
+        filetype: 'mov',
+        url_private: 'https://files.slack.com/files-pri/T-F9/clip.mov',
+        url_private_download: 'https://files.slack.com/files-pri/T-F9/download/clip.mov',
+        size: 9000,
+        permalink: 'https://x.slack.com/files/U1/F9/clip.mov',
+      }),
+    ).toEqual({
+      id: 'F9',
+      name: 'clip.mov',
+      mimetype: 'video/quicktime',
+      filetype: 'mov',
+      url_private: 'https://files.slack.com/files-pri/T-F9/clip.mov',
+      url_private_download: 'https://files.slack.com/files-pri/T-F9/download/clip.mov',
+      size: 9000,
+      permalink: 'https://x.slack.com/files/U1/F9/clip.mov',
+    });
+    expect(
+      slackEventFileFrom('F8', { url_private_download: 'https://files.slack.com/d', permalink: 'javascript:x' })
+        .permalink,
+    ).toBeUndefined();
+  });
+});
