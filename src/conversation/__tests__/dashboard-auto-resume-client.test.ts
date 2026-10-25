@@ -53,6 +53,7 @@ const card = load<Card>(
     'formatTaskTime',
     'pendingAutoResume',
     'autoResumeLabel',
+    'cardAgo',
     'renderCardStatus',
     'cardSummary',
     'renderCardResume',

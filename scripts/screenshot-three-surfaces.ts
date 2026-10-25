@@ -9,7 +9,9 @@
  * Asserts (exit 1 on any failure), and writes screenshots, for
  * 1280 / 820 / 390 × light / dark, plus 390×520 (a phone with its keyboard up)
  * and 844×390 (a phone held sideways):
- *   - face (triage): the shipped face — task row, subagent pulse, tokens · cost, foot
+ *   - face (triage): task row, subagent pulse, tokens · cost, foot; the §3.7 audit —
+ *       PR badge (number + state, no link), recency on a stopped card, context level,
+ *       a narrow card wraps its metrics instead of cutting the status
  *   - expanded (settle it here), by state:
  *       running  → task window · compact agents · latest exchange · goal line · refs ·
  *                  control strip; never the face's numbers, meta, subtitles or artifacts
@@ -182,6 +184,7 @@ function makeBoard() {
         prShortRef: 'PR #999',
         prLabel: 'PR #999',
         prTitle: 'Split the surfaces',
+        prStatus: 'open',
         artifacts: SUMMARY('conv-run'),
         agents: AGENTS,
         agentsTotal: 3,
@@ -262,7 +265,12 @@ function makeBoard() {
           toolCalls: 3 + i,
         })),
         agentsTotal: 8,
-        tokenUsage: USAGE(2_000_000),
+        tokenUsage: { ...USAGE(2_000_000), contextUsagePercent: 86 },
+        prUrl: 'https://github.com/2lab-ai/soma-work/pull/366',
+        prShortRef: 'PR-366',
+        prLabel: 'PR #366',
+        prTitle: 'Recursive agent tree',
+        prStatus: 'merged',
         artifacts: SUMMARY('conv-done'),
         goal: {
           current: {
@@ -459,8 +467,94 @@ async function scenario(
     face.task && face.agents.includes('서브에이전트') && face.usage.includes('tok') && face.status.length > 0,
     `${tag}: face — task row, subagent pulse, tokens · cost, status (${face.agents.trim()} | ${face.usage.trim()})`,
   );
+  // Spec 13 §3.7 — the face audit's additions: the outcome badge (PR number and
+  // state, not a link), recency on a card that is not moving, the context level.
+  const faces = await page.evaluate(
+    (keys) =>
+      keys.map((k) => {
+        const f = document.querySelector(`[data-session-key="${k}"] .card-face`) as HTMLElement;
+        const foot = f.querySelector('.card-foot') as HTMLElement;
+        const pr = f.querySelector('.card-pr') as HTMLElement | null;
+        const ctx = Array.from(f.querySelectorAll('.card-metrics .metric')).find((m) =>
+          /%$/.test(m.textContent || ''),
+        ) as HTMLElement | undefined;
+        const ago = f.querySelector('.st-ago') as HTMLElement | null;
+        const st = f.querySelector('.card-status') as HTMLElement;
+        return {
+          pr: pr
+            ? {
+                cls: pr.className,
+                // the visible number — the state word is clipped for screen readers only
+                text: Array.from(pr.childNodes)
+                  .filter((n) => !(n instanceof Element && n.classList.contains('cpr-state')))
+                  .map((n) => n.textContent || '')
+                  .join('')
+                  .trim(),
+                srOnly: (() => {
+                  const w = pr.querySelector('.cpr-state') as HTMLElement | null;
+                  return !!w && w.getBoundingClientRect().width <= 1 && w.getBoundingClientRect().height <= 1;
+                })(),
+                sr: pr.textContent || '',
+                color: getComputedStyle(pr).color,
+              }
+            : null,
+          links: f.querySelectorAll('a').length,
+          ago: ago
+            ? {
+                text: ago.innerText.trim(),
+                shown: ago.getBoundingClientRect().right <= st.getBoundingClientRect().right + 1,
+              }
+            : null,
+          ctx: ctx ? { cls: ctx.className, color: getComputedStyle(ctx).color } : null,
+          footWhole: (() => {
+            const t = f.querySelector('.card-status .st-text') as HTMLElement;
+            const m = f.querySelector('.card-metrics') as HTMLElement | null;
+            const fr = foot.getBoundingClientRect();
+            return t.scrollWidth <= t.clientWidth + 1 && (!m || m.getBoundingClientRect().right <= fr.right + 1);
+          })(),
+          footH: Math.round(foot.getBoundingClientRect().height),
+          danger: getComputedStyle(document.documentElement).getPropertyValue('--st-fail').trim(),
+        };
+      }),
+    [K('100'), K('200'), K('300')],
+  );
+  const [fWait, fRun, fIdle] = faces;
+  check(
+    !!fRun.pr &&
+      /card-pr is-open/.test(fRun.pr.cls) &&
+      fRun.pr.text === '#999' &&
+      fRun.pr.sr.includes('열림') &&
+      fRun.links === 0,
+    `${tag}: face — the running card's PR badge: #999, open, its state word for screen readers, no link in the face (${fRun.pr?.text})`,
+  );
+  check(
+    !!fIdle.pr && /is-merged/.test(fIdle.pr.cls) && fIdle.pr.text === '#366' && fIdle.pr.color !== fRun.pr?.color,
+    `${tag}: face — the finished card's PR badge says merged in its own colour (${fIdle.pr?.color} vs ${fRun.pr?.color})`,
+  );
+  check(
+    // NOW is fixed at the start of the run: later scenarios read a minute or two more.
+    !fRun.ago &&
+      /^\d+m ago$/.test(fWait.ago?.text ?? '') &&
+      /^3\dm ago$/.test(fIdle.ago?.text ?? '') &&
+      !!fIdle.ago?.shown,
+    `${tag}: face — recency on the waiting (${fWait.ago?.text}) and finished (${fIdle.ago?.text}) cards, none on the running one`,
+  );
+  check(
+    !!fIdle.ctx &&
+      /ctx-danger/.test(fIdle.ctx.cls) &&
+      !!fRun.ctx &&
+      !/ctx-/.test(fRun.ctx.cls) &&
+      fIdle.ctx.color !== fRun.ctx.color,
+    `${tag}: face — context 86% is a warning (${fIdle.ctx?.color}), 31% the plain number (${fRun.ctx?.color})`,
+  );
+  check(
+    faces.every((f) => f.footWhole),
+    `${tag}: face — nothing in a card foot is cut — a narrow card wraps its metrics under the status (${faces.map((f) => f.footH).join('/')}px)`,
+  );
   check((await overflow(page)) === 0, `${tag}: board — no page overflow`);
   if (full) await shootCard(page, K('200'), `${theme}-${width}-face-running.png`);
+  if (full) await shootCard(page, K('300'), `${theme}-${width}-face-idle.png`);
+  if (full) await shootCard(page, K('100'), `${theme}-${width}-face-waiting.png`);
   if (full) await page.screenshot({ path: path.join(OUT, `${theme}-${width}-board.png`), fullPage: false });
 
   // ── Expanded, running: settle it here ──
@@ -794,7 +888,12 @@ async function scenario(
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
 
-  // A keyboard 전체 task → focuses the Tasks box, opened at its head.
+  // A keyboard 전체 task → focuses the Tasks box, opened at its head. The
+  // pointer still rests where the last click was; it can sit on a face's
+  // artifact chip, whose hover peek would take the first Escape (topmost
+  // first) — a keyboard reader's pointer is parked.
+  await page.mouse.move(1, 1);
+  await page.waitForTimeout(400);
   await page.locator(`[data-session-key="${K('200')}"] .tl-toggle`).focus();
   await page.keyboard.press('Enter');
   await page.waitForSelector('#slide-panel.open', { timeout: 5000 });
@@ -808,6 +907,9 @@ async function scenario(
     `${tag}: keyboard 전체 task → focuses the Tasks box at its head (${JSON.stringify(tasksLand)})`,
   );
   await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.getElementById('slide-panel')?.classList.contains('open'), null, {
+    timeout: 5000,
+  });
   await page.waitForTimeout(300);
 
   // The idle card's tree: 6 of 8 workers, the rest is 전체 8개 → 상세 — the panel on that parent.
