@@ -2833,6 +2833,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     const m = load<Panel>(
       [
         'openPanel',
+        'renderPanelPermission',
+        'renderPermissionBlock',
         'renderPanelQuestion',
         'renderMultiChoicePanel',
         'renderMultiChoiceCard',

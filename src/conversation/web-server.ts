@@ -17,7 +17,12 @@ import { IS_DEV } from '../env-paths';
 import { registerHookRoutes } from '../hooks';
 import { Logger } from '../logger';
 import { registerArtifactRoutes } from './artifact-routes';
-import { registerDashboardRoutes, setSelfInstanceEnv } from './dashboard';
+import {
+  registerDashboardRoutes,
+  setSelfInstanceEnv,
+  startDashboardPermissionWatch,
+  stopDashboardPermissionWatch,
+} from './dashboard';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
 import { registerMemoryRoutes } from './memory-routes';
 import {
@@ -751,6 +756,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       // Confirm the public URL reaches this instance, now and periodically.
       startPublicUrlCheck();
 
+      // Permission prompts waiting in the shared store → cards (SSOT 2026-10-24).
+      startDashboardPermissionWatch();
+
       return;
     } catch (error) {
       listening = false;
@@ -771,6 +779,7 @@ export async function stopWebServer(): Promise<void> {
   // Stop handing out dashboard links before the listener goes away.
   listening = false;
   stopPublicUrlCheck();
+  stopDashboardPermissionWatch();
   if (server) {
     // Flush hook state before closing
     try {
