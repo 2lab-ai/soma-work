@@ -8717,7 +8717,7 @@ function renderAgentFocus(node, s) {
   if (desc.n) bits.push('하위 전체 ' + desc.n);
   var line = node.description || '';
   var act = agentActivity(node);
-  return '<div class="pa-focus is-' + st + '" tabindex="-1" aria-label="' + escAttr(agentNodeAria(node, desc)) + '">'
+  return '<div class="pa-focus is-' + st + '" role="group" tabindex="-1" aria-label="' + escAttr(agentNodeAria(node, desc)) + '">'
     + '<div class="pa-name">' + agentNodeLine(node) + '</div>'
     + '<div class="pa-sum">' + bits.join('<span class="pa-dot" aria-hidden="true">&middot;</span>') + '</div>'
     + (line || act ? '<div class="pa-desc">' + esc(line) + (line && act ? ' — ' : '') + (act ? '<span class="pa-act">' + esc(act) + '</span>' : '') + '</div>' : '')
@@ -11901,6 +11901,8 @@ function openPanel(sessionKey, focusWorkLog, agentId) {
   _panelFocusWorkLog = !!focusWorkLog;
   // Spec 12 §4.3: the agent whose tasks and work log the panel shows ('' = main).
   _panelAgent = agentId ? String(agentId) : '';
+  // A panel opened some other way returns focus nowhere (anActivate sets it after this).
+  _anReturnFocus = null;
 
   // Unconditional UI reset on card switch — an in-flight send from a previous
   // card must never leak "Sending..." / disabled state into this card. The

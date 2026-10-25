@@ -506,6 +506,9 @@ describe('one node type — the main agent is the root of the same recursive tre
     expect(fnBody('anOnKey')).toContain('anActivate(item, true);');
     expect(fnBody('anActivate')).toContain("document.querySelector('#panel-agents .pa-focus')");
     expect(fnBody('closePanel')).toContain('var back = _anReturnFocus;');
+    // Opened another way (a click, another card): no stale return target (review r2 fable).
+    expect(fnBody('openPanel')).toContain('_anReturnFocus = null;');
+    expect(fnBody('renderAgentFocus')).toContain('role="group" tabindex="-1" aria-label="');
   });
 
   it('a poll without the WebSocket repaints the focused node too; the server pushes a main tool count (review r1 astra)', () => {
