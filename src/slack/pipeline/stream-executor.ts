@@ -10,7 +10,7 @@ import {
   shouldShowStatusBlock,
 } from '../../claude-status-fetcher';
 import { config } from '../../config';
-import { createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
+import { captureUserMedia, createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
 import { scheduleLinkDerivedTitleRefresh } from '../../conversation/link-derived-title';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { captureTurnEpisodic } from '../../memory-auto-capture';
@@ -41,6 +41,7 @@ setStreamExecutorProviders({
   createConversation,
   recordAssistantTurn,
   recordUserTurn,
+  captureUserMedia,
   captureMemoryTurn: captureTurnEpisodic,
   scheduleLinkDerivedTitleRefresh,
   isMidThreadMention,

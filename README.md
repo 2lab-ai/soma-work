@@ -97,6 +97,10 @@ The dashboard's **New task** button (top bar on desktop, `N` shortcut; floating 
 
 Every file the model sends to Slack (HTML reports, PNG, WAV/voice, video, PDF, text) and every markdown final answer shows up in the web dashboard: as chips on the session card, a thumbnail strip in the opened card, and a pinned strip in the session panel with each answer's own files under it. Hover for a minimap preview, click for a full-size viewer (HTML runs sandboxed; audio plays straight from the card). Uploads made before the feature are backfilled from the session's work log.
 
+### 📎 Instruction attachments in the dashboard
+
+The files you attach to an instruction — screenshots, PDFs, text, voice notes, video — show up in the web dashboard with that instruction, not mixed into the model's artifacts. In the session panel they sit above your words (80px image tiles, "+N" past four, file cards with kind and size, voice notes play in place). The opened card's 지시 row shows them small, the card face shows a paperclip count, and a pinned 지시 첨부 line (collapsed by default) lists every file of the session. Clicking one opens the same viewer as artifacts, paging through that instruction's files. A message you send while the model is working is recorded with its files once the model reads it. Videos and voice notes are kept too and play in the dashboard. Files the bot could not download (over 50 MB, or a failed download) still appear, with a link to Slack. Uploaded HTML, SVG and text never run in the dashboard.
+
 ### 🔑 GitHub Integration
 
 GitHub App (recommended) or Personal Access Token authentication with automatic token renewal.
