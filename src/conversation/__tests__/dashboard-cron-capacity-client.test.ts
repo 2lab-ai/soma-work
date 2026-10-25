@@ -501,7 +501,7 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     expect(out).not.toContain('늘어날 양 없음');
     // r6 (grok P1): one phrase everywhere — chart key, bar line and chip tooltip.
     const chip = fns.renderCapacitySummary(small, NOW_S * 1000);
-    expect(chip).toContain('5h 안엔 +0.1계정 미만');
+    expect(chip).toContain('5시간 안엔 +0.1계정 미만');
     expect(chip).not.toContain('소폭');
     expect(out).toContain('7일 안 +0.1계정 미만');
   });
@@ -523,7 +523,7 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     const out = fns.renderCapacity(many, NOW_S * 1000, 1200);
     expect(out).toContain('<i class="is-h5">●</i> 5시간 리셋 — 7일 안 +0.1계정</span>');
     expect(out).toContain('7일 안 +0.1계정 회복');
-    expect(fns.renderCapacitySummary(many, NOW_S * 1000)).toContain('5h 안엔 +0.1계정');
+    expect(fns.renderCapacitySummary(many, NOW_S * 1000)).toContain('5시간 안엔 +0.1계정');
   });
 
   it('a reading over a day old is flagged, not buried in the muted line (fable)', () => {

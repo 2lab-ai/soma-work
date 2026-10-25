@@ -541,9 +541,10 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
         'capNextLine',
         'capAdvance',
         'capCount',
+        'capDur',
         'renderCapacitySummary',
       ],
-      ['CAP_CAUSE', 'CAP_5H', 'CAP_7D'],
+      ['CAP_CAUSE', 'CAP_WORD', 'CAP_5H', 'CAP_7D'],
     );
     const nowS = 1_800_000_000;
     const ev = (cause: string, at: number, dNow: number, dWeek: number) => ({
@@ -597,10 +598,11 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
       /cap-chip is-empty"[^>]*>✗ Gemini <span class="cap-m is-now"><i class="cap-chip-k">지금 <\/i><b>0\.0<\/b><i class="cap-chip-of">\/1\.0<\/i> <em>0%<\/em>/,
     );
     expect(html).toMatch(/cap-chip is-unknown"[^>]*>◌ Other <b>—<\/b>/);
-    expect(html).toMatch(/cap-chip is-low" title="[^"]*1h 0m 후/);
+    // r7: the tooltip speaks the card's words — 계정, 시간·분, 일주일 리셋.
+    expect(html).toMatch(/cap-chip is-low" title="[^"]*다음 \+1\.0계정 · 1시간 0분 후 \([^)]*\) · ◆ a 일주일 리셋/);
     // the tooltip carries the counts too, not only the next event
-    expect(html).toMatch(/cap-chip is-low" title="일주일 0\.3\/2\.4 계정 \(13%\)[^"]*1h 0m 후/);
-    expect(html).toMatch(/aria-label="Codex 일주일 0\.3\/2\.4 계정 \(13%\) · 부족 — [^"]*1h 0m 후/);
+    expect(html).toMatch(/cap-chip is-low" title="일주일 0\.3\/2\.4 계정 \(13%\)[^"]*1시간 0분 후/);
+    expect(html).toMatch(/aria-label="Codex 일주일 0\.3\/2\.4 계정 \(13%\) · 부족 — [^"]*1시간 0분 후/);
     const off = fns.renderCapacitySummary({ available: false, reason: 'llmux unreachable', groups: [] }, nowS * 1000);
     expect(off).toContain('가용량 미확인');
     expect(off).toContain('llmux unreachable');
@@ -626,7 +628,7 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
         'capDur',
         'renderCapacitySummary',
       ],
-      ['CAP_CAUSE', 'CAP_5H', 'CAP_7D'],
+      ['CAP_CAUSE', 'CAP_WORD', 'CAP_5H', 'CAP_7D'],
     );
     const nowS = 1_800_000_000;
     const g = (over: Record<string, unknown>) => ({

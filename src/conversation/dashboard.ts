@@ -13111,9 +13111,10 @@ function capCount(v, t) {
 // small sum inside it and the next real gain after it.
 function capNextLine(g, key, span, nowSec, nowMs) {
   var evs = g.events || [];
+  // The chip tooltip speaks the card's words: 계정, 시간·분, 5시간/일주일 리셋 (trinity mockup v5 r7).
   var fmt = function(e) {
     var c = CAP_CAUSE[e.cause] || CAP_CAUSE.release;
-    return '다음 +' + capFmt1(e[key]) + ' · ' + capCountdown(e.at - nowSec) + ' 후 (' + capClockLabel(e.at, nowMs) + ') · ' + c.g + ' ' + e.account + ' ' + c.label;
+    return '다음 +' + capFmt1(e[key]) + '계정 · ' + capDur(e.at - nowSec) + ' 후 (' + capClockLabel(e.at, nowMs) + ') · ' + c.g + ' ' + e.account + ' ' + (CAP_WORD[e.cause] || CAP_WORD.release);
   };
   for (var i = 0; i < evs.length; i++) {
     if (evs[i].at <= nowSec + span && evs[i][key] >= 0.05) return fmt(evs[i]);
@@ -13124,7 +13125,7 @@ function capNextLine(g, key, span, nowSec, nowMs) {
     if (evs[j].at <= nowSec + span) small += evs[j][key];
     if (!later && evs[j][key] >= 0.05) later = evs[j];
   }
-  var head = (span <= CAP_5H ? '5h 안엔 ' : '7일 안엔 ') + (small > 0.0005 ? capGain(small) : '늘어날 양 없음');
+  var head = (span <= CAP_5H ? '5시간 안엔 ' : '7일 안엔 ') + (small > 0.0005 ? capGain(small) : '늘어날 양 없음');
   return head + (later ? ' · ' + fmt(later) : '');
 }
 // Simplified card (2026-10-25, after the user found v2 unreadable; trinity simple r1):
