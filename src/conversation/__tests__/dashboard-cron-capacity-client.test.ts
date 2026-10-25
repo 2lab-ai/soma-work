@@ -424,7 +424,7 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
   });
 
   it('one muted line keeps the denominator honest: counted, blocked, left out and why', () => {
-    expect(claude).toContain('5개 중 3개 반영 · 지금 차단 1 · 제외 2 (보류 1, 티어 미지정 1)');
+    expect(claude).toContain('3/5 반영 · 차단 1 · 제외 2(보류·티어 미지정)');
   });
 
   it('2 — one timeline: a 5h reset is a teal ● (label above), a weekly reset a violet ◆ (label below)', () => {
@@ -432,8 +432,20 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     expect(claude).toMatch(/cap-tl-mk is-h5"><circle[\s\S]*?>\+0\.6<\/text>/);
     for (const g of ['0.6', '1.0', '0.3'])
       expect(claude).toMatch(new RegExp(`cap-tl-mk is-wk"><rect[^]*?>\\+${g.replace('.', '\\.')}<\\/text>`));
-    expect(claude).toContain('<i class="is-h5">●</i> 5시간');
+    expect(claude).toContain('<i class="is-h5">●</i> 5시간</span>');
     expect(claude).toContain('<i class="is-wk">◆</i> 일주일');
+    // Codex has no 5h window: no ● key at all
+    expect(codex).not.toContain('<i class="is-h5">');
+  });
+
+  it('with no 5h gain in 7 days the ● key says so instead of a dead key (trinity simple r2, grok)', () => {
+    const dry = {
+      ...view,
+      groups: [{ ...view.groups[0], events: view.groups[0].events.filter((e: any) => e.cause === '7d') }],
+    };
+    expect(fns.renderCapacity(dry, NOW_S * 1000, 1200)).toContain(
+      '<i class="is-h5">●</i> 5시간 — 늘어날 양 없음</span>',
+    );
   });
 
   it('the v2 clutter is gone: no lanes, unit bar, per-account bars, why line, chips, breakdown or jargon', () => {
