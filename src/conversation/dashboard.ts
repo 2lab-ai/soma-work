@@ -5275,6 +5275,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cap-prov.is-low { box-shadow: inset 0 0 0 1px var(--st-wait); }
 .cap-pname { font-size: 16px; font-weight: 700; }
 .cap-disc { font-size: 12px; color: var(--ib-muted); margin: 2px 0 8px; }
+.cap-disc .cap-stale { color: var(--st-wait); font-weight: 600; }
 /* Simplified card: one bar per window — label | bar | "x / total 계정 %" — and a "다음 …" line. */
 .cap-bar-row { display: grid; grid-template-columns: 92px minmax(0, 1fr) 200px; align-items: center; gap: 4px 12px; margin: 8px 0; }
 .cap-bar-lbl { font-size: 14px; font-weight: 700; line-height: 1.2; }
@@ -13135,7 +13136,11 @@ function capNextShort(g, key, nowSec) {
   for (var i = 0; i < evs.length; i++) {
     var e = evs[i];
     if (e.at > nowSec + CAP_7D) break;
-    if (e[key] >= 0.05) return '다음 +' + capFmt1(e[key]) + '계정 · ' + capDur(e.at - nowSec) + ' 후 · ' + (CAP_WORD[e.cause] || '') + ' (' + e.account + ')';
+    if (e[key] < 0.05) continue;
+    // The 5시간 bar rising at a weekly reset means it is held down by the weekly limit
+    // (trinity simple r2, fable): say so, so it never contradicts the ● key.
+    if (key === 'dNow' && e.cause === '7d') return '일주일 한도에 묶임 — 다음 일주일 리셋 때 +' + capFmt1(e[key]) + '계정 · ' + capDur(e.at - nowSec) + ' 후 (' + e.account + ')';
+    return '다음 +' + capFmt1(e[key]) + '계정 · ' + capDur(e.at - nowSec) + ' 후 · ' + (CAP_WORD[e.cause] || '') + ' (' + e.account + ')';
   }
   var small = evs.filter(function(x) { return x.at <= nowSec + CAP_7D; }).reduce(function(t, x) { return t + x[key]; }, 0);
   return small > 0.0005 ? '7일 안 +0.1계정 미만 회복' : '7일 안에 늘어날 양 없음';
@@ -13168,9 +13173,12 @@ function capDisclosure(g, nowSec) {
   if (exN) parts.push('제외 ' + exN + '(' + why.join('·') + ')');
   if (g.estimated) parts.push('추정 ' + g.estimated);
   if (g.unmeasured5h) parts.push('5시간 측정 없음 ' + g.unmeasured5h);
+  var html = esc(parts.join(' · '));
   var age = g.oldestRefreshAt ? nowSec - g.oldestRefreshAt : 0;
-  if (age > 3600) parts.push('측정 ' + capDur(age).split(' ')[0] + ' 전');
-  return parts.join(' · ');
+  // Over a day old, the reading that the bars rest on is flagged (trinity simple r2, fable).
+  if (age > 86400) html += ' · <b class="cap-stale">⚠ 측정 ' + esc(capDur(age).split(' ')[0]) + ' 전</b>';
+  else if (age > 3600) html += ' · ' + esc('측정 ' + capDur(age).split(' ')[0] + ' 전');
+  return html;
 }
 // now → 24h takes 55% of the width (0·1·3·6·12·24h), then days to 7d.
 function capAx(secs) {
@@ -13281,7 +13289,7 @@ function renderCapacityGroup(g, nowMs, width) {
   var narrow = W < 600;
   var h = '<section class="cap-prov is-' + esc(g.state || 'unknown') + (narrow ? ' is-narrow' : '') + '" data-group="' + escAttr(g.group) + '" aria-label="' + escAttr(g.label + ' 가용량') + '">'
     + '<div class="cap-pname">' + esc(g.label) + '</div>'
-    + '<div class="cap-disc">' + esc(capDisclosure(g, nowSec)) + '</div>';
+    + '<div class="cap-disc">' + capDisclosure(g, nowSec) + '</div>';
   if (!(g.total > 0)) return h + '<div class="cap-bar-next">계산 불가 — 셀 수 있는 계정이 없음</div></section>';
   if (g.has5h) h += capBarRow(g, 'h5', '5시간', '지금 쓸 수 있음', g.now, 'dNow', nowSec);
   h += capBarRow(g, 'wk', '일주일', '이번 주 남음', g.week, 'dWeek', nowSec);
@@ -13290,8 +13298,8 @@ function renderCapacityGroup(g, nowMs, width) {
     // ● raises the 5시간 bar (a 5h reset, or a block lifting), ◆ the 일주일 bar — same colours as the bars.
     // With no 5h gain in 7 days the ● would never appear — say so instead of a dead key.
     var any5 = g.has5h && (g.events || []).some(function(e) { return e.cause !== '7d' && e.at <= nowSec + CAP_7D && e.dNow >= 0.05; });
-    var key5 = g.has5h ? '<span><i class="is-h5">●</i> 5시간' + (any5 ? '' : ' — 늘어날 양 없음') + '</span>' : '';
-    h += '<div class="cap-tl-wrap"><div class="cap-tl-h">' + key5 + '<span><i class="is-wk">◆</i> 일주일</span><span class="cap-tl-h-note">앞으로 7일 동안 돌아오는 양(계정)</span></div>' + tl + '</div>';
+    var key5 = g.has5h ? '<span><i class="is-h5">●</i> 5시간 리셋' + (any5 ? '' : ' — 7일 안에 늘어날 양 없음') + '</span>' : '';
+    h += '<div class="cap-tl-wrap"><div class="cap-tl-h">' + key5 + '<span><i class="is-wk">◆</i> 일주일 리셋</span><span class="cap-tl-h-note">앞으로 7일 동안 돌아오는 양(계정)</span></div>' + tl + '</div>';
   }
   return h + '</section>';
 }
