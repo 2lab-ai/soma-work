@@ -13327,8 +13327,13 @@ function renderCapacityGroup(g, nowMs, width) {
   if (tl) {
     // ● raises the 5시간 bar (a 5h reset, or a block lifting), ◆ the 일주일 bar — same colours as the bars.
     // With no 5h gain in 7 days the ● would never appear — say so instead of a dead key.
-    var any5 = g.has5h && (g.events || []).some(function(e) { return e.cause !== '7d' && e.at <= nowSec + CAP_7D && e.dNow >= 0.05; });
-    var key5 = g.has5h ? '<span><i class="is-h5">●</i> 5시간 리셋' + (any5 ? '' : ' — 7일 안에 늘어날 양 없음') + '</span>' : '';
+    var soon5 = (g.events || []).filter(function(e) { return e.cause !== '7d' && e.at <= nowSec + CAP_7D; });
+    var any5 = soon5.some(function(e) { return e.dNow >= 0.05; });
+    // Gains under the marker threshold are small, not nothing — the same words as the bars'
+    // next line and the chip tooltip (trinity mockup v5 r5, fable P1).
+    var sum5 = soon5.reduce(function(t, e) { return t + e.dNow; }, 0);
+    var note5 = any5 ? '' : sum5 > 0.0005 ? ' — 7일 안 +0.1계정 미만' : ' — 7일 안에 늘어날 양 없음';
+    var key5 = g.has5h ? '<span><i class="is-h5">●</i> 5시간 리셋' + note5 + '</span>' : '';
     h += '<div class="cap-tl-wrap"><div class="cap-tl-h">' + key5 + '<span><i class="is-wk">◆</i> 일주일 리셋</span><span class="cap-tl-h-note">앞으로 7일 동안 돌아오는 양(계정)</span></div>' + tl + '</div>';
   }
   return h + '</section>';

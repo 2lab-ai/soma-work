@@ -319,7 +319,8 @@ not shown) is one simple card:
   (label above), ◆ a gain to the 일주일 bar (label below), in the bars' colours;
   refills whose labels would collide merge into one marker with a span. Gains come
   from replaying each account's resets in time order (blocks lifted first, then
-  5h, then weekly). With no 5h gain in 7 days the ● key says "늘어날 양 없음".
+  5h, then weekly). With no 5h gain in 7 days the ● key says "늘어날 양 없음"; with only small ones
+  (each under 0.05) it says "+0.1계정 미만", the same words as the bars and the chip tooltip.
 - Tiers: llmux does not report plans, so the map is `SOMA_LLMUX_ACCOUNT_TIERS`
   (`group:name=tier`, e.g. `claude:ai7=x20,claude:ai12=x5`) over built-in defaults
   (Codex `ai1`·`ai2` = Pro $200, `ai5`·`ai6` = Pro $500). A bare llmux `max` is
