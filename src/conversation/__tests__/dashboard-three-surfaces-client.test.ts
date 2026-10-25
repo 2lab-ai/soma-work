@@ -1036,6 +1036,60 @@ describe('the composer follows the session live (executed)', () => {
   });
 });
 
+describe('the floating pickers close even from a focused picker (executed)', () => {
+  it('Escape / the toggle with a select focused: the picker is let go, the controls repaint closed', () => {
+    const writes: string[] = [];
+    const select = {
+      tagName: 'SELECT',
+      blurred: false,
+      blur() {
+        this.blurred = true;
+        doc.activeElement = null;
+      },
+    };
+    const controls = {
+      _html: '',
+      classList: { toggle: () => {} },
+      contains: (n: unknown) => n === select,
+    };
+    const doc: Record<string, unknown> = {
+      activeElement: select,
+      getElementById: (id: string) => (id === 'panel-controls' ? controls : null),
+    };
+    const m = load<{ togglePanelControls(): void }>(
+      ['togglePanelControls', 'renderPanelControls'],
+      ['_panelControlsOpen'],
+      {
+        document: doc,
+        panelSessionKey: 'k',
+        _sessionCache: { k: card() },
+        currentUserId: 'U1',
+        isSiblingSession: () => false,
+        esc: (x: string) => x,
+        effortLabel: (e: string) => e,
+        renderModelPicker: () => '[M]',
+        renderEffortPicker: () => '[E]',
+        renderModelNote: () => '',
+        morphInnerHtml: (_el: unknown, h: string) => writes.push(h),
+      },
+    );
+    m.togglePanelControls(); // open
+    m.togglePanelControls(); // close while the select holds focus
+    expect(select.blurred).toBe(true);
+    expect(writes.length).toBe(2);
+    expect(writes[1]).toContain('aria-expanded="false"');
+  });
+
+  it('the same-session re-landing leaves a send in flight alone; a send whose session left the board fails closed', () => {
+    expect(clientFn('openPanel')).toContain('renderPanelComposer(s, !sameSession);');
+    const send = clientFn('sendCommand');
+    expect(send).toContain('btn.disabled = true;');
+    expect(send).toContain("if (cmdHost) cmdHost._mode = '';");
+    const esc = TEMPLATE.slice(TEMPLATE.indexOf("if (e.key === 'Escape' && panelOpen && _panelControlsOpen"));
+    expect(esc.slice(0, 200)).toContain('!artModalIsOpen() && !_cronDrawerKey');
+  });
+});
+
 describe('a live repaint keeps the reader where they were reading (executed)', () => {
   it('a section above the reader grows: the scroll area moves by the same amount; reading a live section: untouched', () => {
     let grow = 0;

@@ -9894,6 +9894,10 @@ function renderPanelControls(s) {
 }
 function togglePanelControls() {
   _panelControlsOpen = !_panelControlsOpen;
+  // A focused picker would keep renderPanelControls from writing: let go of it first.
+  var c = document.getElementById('panel-controls');
+  var a = document.activeElement;
+  if (c && a && a.tagName === 'SELECT' && c.contains(a) && a.blur) a.blur();
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   if (s) renderPanelControls(s);
 }
@@ -12563,7 +12567,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // Command input — always visible; disabled + hint for terminated / sleeping
   // sessions, or when viewer is not the session owner (#708 read-only mode).
   document.getElementById('panel-command').style.display = '';
-  renderPanelComposer(s, true);
+  // A re-landing on the open session leaves a send in flight alone (only a change of state writes).
+  renderPanelComposer(s, !sameSession);
 
   // Docked (≥840px) the open drawer narrows the board: animate that shift too.
   layoutBeforeChange();
@@ -12915,7 +12920,7 @@ document.addEventListener('keydown', function(e) {
   // Escape in the artifact viewer closes the viewer only (the dialog's own cancel).
   // The cron drawer opens over a docked panel: Escape closes only that, the topmost.
   // The floating model · effort pickers (narrow / short screens) close first, back on their toggle.
-  if (e.key === 'Escape' && panelOpen && _panelControlsOpen && window.matchMedia && window.matchMedia('(max-width: 639px), (max-height: 560px)').matches) {
+  if (e.key === 'Escape' && panelOpen && _panelControlsOpen && !artModalIsOpen() && !_cronDrawerKey && window.matchMedia && window.matchMedia('(max-width: 639px), (max-height: 560px)').matches) {
     togglePanelControls();
     var tgl = document.querySelector('#panel-controls .pc-toggle');
     if (tgl) tgl.focus();
@@ -13049,7 +13054,14 @@ async function sendCommand() {
       // The session's own state decides (spec 13): one closed meanwhile — from
       // the panel's Close, Slack or the lifecycle — keeps its composer closed.
       if (_sessionCache[sendingSessionKey]) renderPanelComposer(_sessionCache[sendingSessionKey], true);
-      else { btn.disabled = false; input.disabled = false; }
+      else {
+        // The session left the board meanwhile (archived, a folded day): fail closed. The next
+        // live render that finds it again re-applies its real state (the mode cache is cleared).
+        btn.disabled = true;
+        input.disabled = true;
+        var cmdHost = document.getElementById('panel-command');
+        if (cmdHost) cmdHost._mode = '';
+      }
       if (!input.disabled) input.focus();
     }
   }
