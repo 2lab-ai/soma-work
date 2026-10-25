@@ -44,7 +44,7 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 
 | 필드 | 접힌 카드 | 펼친 카드 | 패널 |
 |---|---|---|---|
-| 상태 | ★ 칸 + 바닥 줄(상태 + 타이머) | — | 머리 칩(세션 · 상태 단어 · 활성 시간) — 폰에서는 패널이 보드를 덮는다 |
+| 상태 | ★ 칸 + 바닥 줄(상태 + 타이머, 멈춘 카드는 `· 12m ago` — §3.7) | — | 머리 칩(세션 · 상태 단어 · 활성 시간) — 폰에서는 패널이 보드를 덮는다 |
 | 질문·권한 요청 | 요약 줄(이유) | ★ 전체 문장 + 답·승인 컨트롤 | 같은 컨트롤 |
 | 자동 재개 | 요약 줄 + 상태 | ★ 재개 줄 | 칩 아래 `HH:MM 자동 재개 · 시도 n/3`(사유는 title과 세션 정보) |
 | 진행 중 task | ★ `#T2 … 3m` | 창 안에서 진한 점 | Tasks 안 |
@@ -53,9 +53,9 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 | 최근 지시 ↔ 응답 | — | ★ (모든 상태) | 대화 전체 |
 | goal | — | 한 줄: 🎯 목표 · 상태 · n/상한 · 대기 n · `관리 →`(편집 가능) / `보기 →`, goal이 없으면 `goal 추가 →` | ★ 편집기 전체(현재 · 대기열 · 추가·삭제 · 완료된 goal T6) |
 | 모델 · effort | — | 컨트롤 줄의 빠른 전환(10-22 T4/T5, 10-23 T1) + 대기 전환 안내 | 입력창 옆 전환 + 대기 전환 안내 |
-| 토큰 · 비용 · 컨텍스트 | 토큰 · 비용(10-22 T1/T2) · ctx % | — | ★ 세션 정보: 입력·출력·캐시 읽기·캐시 쓰기·비용, 컨텍스트 바 + autocompact, Σ 활성·압축·세션, merge — **실시간** |
+| 토큰 · 비용 · 컨텍스트 | 토큰 · 비용(10-22 T1/T2) · ctx %(60% 넘으면 경고, 80% 넘으면 위험 — §3.7) | — | ★ 세션 정보: 입력·출력·캐시 읽기·캐시 쓰기·비용, 컨텍스트 바 + autocompact, Σ 활성·압축·세션, merge — **실시간** |
 | 소유자 · 워크플로 · 환경 · 마지막 활동 | 소유자 배지(All Users) | 환경 배지(인스턴스가 둘 이상일 때 — 액션이 그 인스턴스에 달려 있다) | ★ 세션 정보(실시간) |
-| 링크 | — | 짧은 참조 `PROJ-123 · PR #12`(제목은 tooltip) + Slack | ★ 제목 붙은 이슈·PR, 전체 대화(늘 보임) + 칩 줄 Slack |
+| 링크 | PR 배지 `#12` + 상태(열림·초안·머지됨·닫힘) — 링크 아님(§3.7) | 짧은 참조 `PROJ-123 · PR #12`(제목은 tooltip) + Slack | ★ 제목 붙은 이슈·PR, 전체 대화(늘 보임) + 칩 줄 Slack |
 | 산출물 | 칩 ≤ 4 | 질문 대기·유휴·닫힘에서 최신 ≤ 4 타일 + `전체 N개 →` (답할 근거, 결과) | ★ 고정 갤러리 |
 | 작업 로그 · 대화 · 입력창 | — | — | ★ |
 | Stop / Close / Trash | — | 컨트롤 줄 | 머리 칩 줄의 액션 하나(`세션 중지` / `세션 종료` / `세션 휴지통으로`) |
@@ -125,6 +125,29 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 간다. 닫으면(× · Escape) 포커스는 연 컨트롤로 돌아가고, 그 컨트롤이 사라졌으면 그 세션 카드의 face, 없으면 보드 제목으로 간다(포커스가
 패널 안에 있었을 때만).
 
+### 3.7 접힌 카드 감사 — 레퍼런스의 compact 층과 대조 (`renderCardFace`)
+
+레퍼런스(§2, 조사 원문 §3.2·§4)가 compact 층에 두는 것은 상태, 주의가 필요한 이유, 진행 지표 하나, 최근성, 소유자, 결과 링크,
+오류 상태다. 접힌 카드의 필드를 하나씩 대조했다.
+
+| 필드 | 레퍼런스 | 판정 |
+|---|---|---|
+| 칸 + 바닥 줄 상태 | 상태 그룹(Cursor Needs Attention, Devin Blocked, Jules waiting) | 유지 |
+| 제목 · 이유 줄(`cardSummary`: 권한 요청 → 질문 → `오류:` 재개 사유 → 요약) | 이유를 이름으로("Approve skill"), 오류 상태(Cursor) | 유지 |
+| 진행 중 task `#T2 … 3m` | ★ 현재 task 한 줄 | 유지 |
+| `완료/전체` | 진행 지표 하나(Jira 칸 체류, VS Code 변경 수) | 유지 |
+| 서브에이전트 펄스 | 개수 배지("3 running") | 유지 |
+| 소유자 배지(All Users) | 아바타 | 유지 |
+| 토큰 · 비용 | 목록에 두는 제품 없음 | 유지 — 유저 요청(10-22 T1/T2)이 우선 |
+| 산출물 칩 ≤ 4 | 개수 글리프 | 유지 — 유저 요청(10-25 T5). 이미지는 불러오지 않는다 |
+| ctx % | 임계값에서만 경고(추론) | **개선** — 숫자는 그대로, `ctxLevel`(60% 초과 `ctx-warn` = 아이콘 호박색, 80% 초과 `ctx-danger` = 빨강·굵게 + tooltip `자동 압축이 가까움`). 패널 컨텍스트 바와 같은 표 하나 |
+| 결과 링크 | Copilot 목록의 PR 바로가기, Devin 행의 PR 목록, 권고 "PR 상태 글리프" | **추가** — `renderCardPr`: PR 글리프 + `#12`, 상태는 색(열림 = 실행색, 머지됨 = 완료색, 닫힘 = 실패색, 초안 = 흐림) + 화면 낭독기용 단어(`.cpr-state`) + tooltip(번호 · 상태 · 제목). face는 토글 하나라 링크가 아니다 — 링크는 펼친 카드의 짧은 참조와 세션 정보. 헤더 필드 `links`를 따른다 |
+| 최근성 | Codex `updated_at`, Jira 칸 체류, 권고 `"2m ago"` | **추가** — `cardAgo`: 질문 대기·유휴·닫힘 카드의 바닥 줄에 `· 12m ago`(1 Hz tick이 채운다, 마크업에 시계 없음). 실행 중은 활성 시간, 자동 재개는 그 시각을 이미 보인다 |
+| 호버 메뉴(Close·Trash) | Claude Code·VS Code·Jules | 넣지 않는다 — 펼친 카드의 컨트롤 줄이 Enter 한 번 거리이고, 호버는 키보드·터치에 없다(GOV.UK: 카드 액션은 하나) |
+| goal 제목 | 1–2줄 제목 | 넣지 않는다 — face의 제목 줄이 그 자리다. goal은 펼친 카드 한 줄과 패널 편집기 |
+
+바닥 줄은 좁은 카드(820px 보드의 열, 폰)에서 상태를 자르지 않는다: 메트릭이 다음 줄로 내려간다(`flex-wrap`, `margin-left: auto`).
+
 ## 4. 앞선 SSOT에서 바뀐 것
 
 | 앞선 계약 | 바뀐 것 | 이유 |
@@ -139,12 +162,13 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 | 10 §3.1-3 `ui.dashboardheader`의 `owner`·`workflow`·`status`·`mergestats`가 펼친 카드 메타·통계를 켜고 끔 | 카드에 읽는 곳이 없다 — 값은 패널 세션 정보(게이트를 따르지 않는 완전한 기록)에 있다. 필드는 레지스트리에 그대로 유효하다(`docs/ui-surfaces.md`) | 메타·숫자의 집은 패널 |
 | 10 §3.1-4 펼친 카드의 `대화 기록` 링크, `autocompact` 표시 | 패널 세션 정보의 링크 줄(`전체 대화`)과 컨텍스트 줄(`autocompact …`)로 | 같은 데이터, 집은 패널 |
 | (유지) 10-22 T1/T2 접힌 카드의 토큰·비용 | 그대로 | 유저가 명시적으로 요청 — 레퍼런스(목록에 비용 없음)보다 우선 |
+| 10 §2.1 접힌 카드 바닥 줄 "상태 · task 완료/전체 · 컨텍스트 %" | + 최근성(멈춘 카드), PR 배지, 컨텍스트 단계, 좁으면 메트릭 줄바꿈 | §3.7 감사 — 레퍼런스의 compact 필드 중 빠진 것 |
 
 ## 5. 검증
 
 - 클라이언트 계약: `src/conversation/__tests__/dashboard-three-surfaces-client.test.ts`(밀도·접근 이름·상태별 섹션·컨트롤 줄·goal
   한 줄·task 창·머리 칩·세션 정보·goal 홈·실시간 경로·입력 컨테이너·페이지 구조·착지·포커스 복귀·이전 task·busy·스크롤 앵커).
-  구현 전 35건 모두 실패를 확인했다.
+  구현 전 35건 모두 실패를 확인했다. §3.7 face 감사의 10건(PR 배지·최근성·컨텍스트 단계)도 구현 전 실패를 확인했다.
 - 갱신된 계약 테스트: agent-tree·agent-inbox·goal·live-surfaces·artifacts·effort·auto-resume·responsive·multi-instance·dashboard.
 - 브라우저: `scripts/screenshot-three-surfaces.ts`(1280/820/390 × 라이트/다크 + 390×520 + 844×390),
   `scripts/screenshot-agent-tree.ts`(spec 12 rev 2 + compact/rich).

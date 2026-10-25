@@ -4,7 +4,8 @@
  * cut out of renderDashboardPage()'s template literal, cooked exactly as the
  * browser receives it (the harness of dashboard-agent-tree-client.test.ts).
  *
- *   face      = triage ("does it need me, is it moving") — unchanged here
+ *   face      = triage ("does it need me, is it moving") — audited against the
+ *               compact tier (§3.7): PR badge, recency, context level added
  *   expanded  = settle it here: sections keyed on the card's state, never the
  *               face's data again, the agent tree at compact density
  *   panel     = understand and steer: a status chip with the session's one
@@ -557,7 +558,7 @@ describe('panel header — the session chip and its one action', () => {
 describe('세션 정보 — the complete numbers, live, behind one summary line', () => {
   const info = (s: Record<string, unknown>, open: boolean) =>
     load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
-      ['esc', 'escAttr', 'toNum', 'panelInfoHtml'],
+      ['esc', 'escAttr', 'toNum', 'ctxLevel', 'panelInfoHtml'],
       ['PI_CHEV_SVG'],
       {
         formatTokens: (n: number) => `${n}`,
@@ -1206,5 +1207,161 @@ describe('interaction state survives live renders on both surfaces', () => {
   it('closing the panel and ending the session are different names', () => {
     const header = PAGE.slice(PAGE.indexOf('<div class="panel-header">'), PAGE.indexOf('<div class="panel-body"'));
     expect(header).toMatch(/class="panel-close"[^>]*aria-label="패널 닫기"/);
+  });
+});
+
+// ── The collapsed face, audited against the compact tier of the research ──
+// (spec 13 §3.7). Kept: headline, why-here line, current task, task count,
+// subagent pulse, tokens · cost (the user's T1/T2), artifact chips (T5), owner
+// badge, status foot. Added where the research names a triage field the face
+// lacked: the outcome (PR number + state), recency on a card that is not
+// moving, and the context level as a warning, not just a number.
+const FACE_FNS = [
+  'esc',
+  'escAttr',
+  'escJs',
+  'toNum',
+  'formatTokens',
+  'formatCount',
+  'cardTotalTokens',
+  'cardCurrentTask',
+  'renderCardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'renderCardAgents',
+  'renderCardUsage',
+  'formatTaskTime',
+  'pendingAutoResume',
+  'autoResumeLabel',
+  'cardSummary',
+  'cardAgo',
+  'renderCardStatus',
+  'renderOwnerBadge',
+  'ctxLevel',
+  'renderCardPr',
+  'renderCardFace',
+];
+const FACE_VARS = [
+  'SPARK_SVG',
+  'WAIT_SVG',
+  'TASKS_SVG',
+  'CTX_SVG',
+  'RESUME_SVG',
+  'PR_STATE_LABEL',
+  'PR_SVG',
+  'AGENT_STATUS_LABEL',
+  'AGENT_DOTS_MAX',
+  'AGENTS_SVG',
+];
+const FACE_ENV = {
+  dhShow: () => true,
+  dhMax: (_f: string, d: number) => d,
+  dhTruncate: () => null,
+  currentUserId: 'U1',
+  isSiblingSession: () => false,
+  artFaceChips: () => '',
+  umFaceBadge: () => '',
+};
+const LAST = '2026-10-25T10:00:00.000Z';
+const faceCard = (over: Record<string, unknown> = {}) => ({
+  key: 'inst::C1:t1',
+  displayHeadline: 'Three surfaces',
+  ownerId: 'U1',
+  ownerName: 'Z',
+  activityState: 'idle',
+  activeLegStartedAtMs: 0,
+  activeAccumulatedMs: 120_000,
+  lastActivity: LAST,
+  tokenUsage: { totalInputTokens: 10, totalOutputTokens: 5, totalCostUsd: 0.1, contextUsagePercent: 12 },
+  ...over,
+});
+type Face = { renderCardFace(s: unknown, col: string): string; ctxLevel(p: unknown): string };
+
+describe('collapsed face — the outcome: PR number and state, a badge, not a link', () => {
+  const face = load<Face>(FACE_FNS, FACE_VARS, FACE_ENV);
+  const pr = { prUrl: 'https://github.com/o/r/pull/12', prShortRef: 'PR-12', prTitle: 'feat: surfaces' };
+
+  it('shows the PR number with its state as a class, a word for screen readers and the title as a tooltip', () => {
+    const html = face.renderCardFace(faceCard({ ...pr, prStatus: 'merged' }), 'closed');
+    expect(html).toMatch(/<span class="metric card-pr is-merged" title="PR #12 머지됨 — feat: surfaces">/);
+    expect(html).toContain('#12');
+    expect(html).toContain('<span class="cpr-state">머지됨</span>');
+    // The face is one toggle: no link inside it (the open card and 세션 정보 hold the links).
+    expect(html).not.toContain('<a ');
+  });
+
+  it('each known state has its own class and word', () => {
+    expect(face.renderCardFace(faceCard({ ...pr, prStatus: 'open' }), 'idle')).toContain('card-pr is-open');
+    expect(face.renderCardFace(faceCard({ ...pr, prStatus: 'draft' }), 'idle')).toContain('>초안<');
+    expect(face.renderCardFace(faceCard({ ...pr, prStatus: 'closed' }), 'idle')).toContain('card-pr is-closed');
+  });
+
+  it('an unknown or hostile state renders the bare number', () => {
+    const html = face.renderCardFace(faceCard({ ...pr, prStatus: '"><img src=x onerror=alert(1)>' }), 'idle');
+    expect(html).toContain('<span class="metric card-pr" title="PR #12 — feat: surfaces">');
+    expect(html).not.toMatch(/onerror|<img/);
+    expect(face.renderCardFace(faceCard(pr), 'idle')).not.toContain('cpr-state');
+  });
+
+  it('no PR, or the links field hidden: no badge', () => {
+    expect(face.renderCardFace(faceCard(), 'idle')).not.toContain('card-pr');
+    const noLinks = load<Face>(FACE_FNS, FACE_VARS, { ...FACE_ENV, dhShow: (f: string) => f !== 'links' });
+    expect(noLinks.renderCardFace(faceCard({ ...pr, prStatus: 'open' }), 'idle')).not.toContain('card-pr');
+  });
+
+  it('the face click handler leaves the badge to the toggle (nothing to skip) — it is not interactive', () => {
+    expect(clientFn('renderCardPr')).not.toMatch(/<a |<button|onclick|tabindex/);
+  });
+});
+
+describe('collapsed face — recency on a card that is not moving', () => {
+  const face = load<Face>(FACE_FNS, FACE_VARS, FACE_ENV);
+  const ts = String(Date.parse(LAST));
+
+  it('waiting, idle and closed cards say when they last acted (the 1 Hz tick fills "12m ago")', () => {
+    for (const col of ['waiting', 'idle', 'closed']) {
+      const html = face.renderCardFace(faceCard(), col);
+      expect(html, col).toContain(`<span class="st-ago"><span class="rel-time" data-ts="${ts}"></span></span>`);
+    }
+  });
+
+  it('a running card shows its live timer instead; an armed resume shows its own time', () => {
+    expect(
+      face.renderCardFace(faceCard({ activityState: 'working', activeLegStartedAtMs: 5 }), 'working'),
+    ).not.toContain('rel-time');
+    const resume = faceCard({
+      autoResume: { kind: 'retry', at: Date.parse(LAST) + 60_000, attempt: 1, maxAttempts: 3, reason: 'rate limit' },
+    });
+    expect(face.renderCardFace(resume, 'working')).not.toContain('rel-time');
+  });
+
+  it('no clock in the markup: an unparsable stamp shows nothing, equal data renders equal HTML', () => {
+    expect(face.renderCardFace(faceCard({ lastActivity: 'not a date' }), 'idle')).not.toContain('rel-time');
+    expect(face.renderCardFace(faceCard(), 'idle')).toBe(face.renderCardFace(faceCard(), 'idle'));
+  });
+});
+
+describe('collapsed face — the context level is a warning, the panel bar uses the same levels', () => {
+  const face = load<Face>(FACE_FNS, FACE_VARS, FACE_ENV);
+  const ctx = (pct: number) => faceCard({ tokenUsage: { totalInputTokens: 1, contextUsagePercent: pct } });
+
+  it('over 60% amber, over 80% red with the reason in the tooltip; below, the plain number', () => {
+    expect(face.ctxLevel(12)).toBe('');
+    expect(face.ctxLevel(61)).toBe('ctx-warn');
+    expect(face.ctxLevel(81)).toBe('ctx-danger');
+    expect(face.ctxLevel('x')).toBe('');
+    expect(face.renderCardFace(ctx(12), 'idle')).toContain('<span class="metric" title="Context window used">');
+    expect(face.renderCardFace(ctx(65), 'idle')).toContain(
+      '<span class="metric ctx-warn" title="Context window used">',
+    );
+    expect(face.renderCardFace(ctx(90), 'idle')).toContain(
+      '<span class="metric ctx-danger" title="Context window used — 자동 압축이 가까움">',
+    );
+  });
+
+  it('one threshold table for both surfaces', () => {
+    expect(clientFn('panelInfoHtml')).toContain('var cls = ctxLevel(ctx);');
+    expect(TEMPLATE).toMatch(/\.card-metrics \.metric\.ctx-warn svg \{[^}]*var\(--st-wait\)/);
+    expect(TEMPLATE).toMatch(/\.card-metrics \.metric\.ctx-danger \{[^}]*var\(--st-fail\)/);
   });
 });
