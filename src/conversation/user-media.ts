@@ -203,9 +203,7 @@ export class UserMediaStore {
     opts: CaptureOptions = {},
   ): Promise<TurnAttachment[]> {
     const dir = this.dir(conversationId);
-    if (!dir || !files) return [];
-    sweepStalePending(dir);
-    if (files.length === 0) return [];
+    if (!dir || !files || files.length === 0) return [];
     const deadline = Date.now() + (opts.deadlineMs ?? DEFAULT_CAPTURE_DEADLINE_MS);
     const roots = tempRoots();
     const out: TurnAttachment[] = [];
@@ -218,7 +216,7 @@ export class UserMediaStore {
     // deadline; once it has passed, the remaining files are metadata only.
     for (const file of files) {
       const meta = this.describe(file);
-      if (!file.path || file.unavailable || copies >= MAX_COPIES_PER_TURN) {
+      if (!file.path || file.unavailable || copies >= MAX_COPIES_PER_TURN || Date.now() >= deadline) {
         out.push(meta);
         continue;
       }
@@ -236,6 +234,8 @@ export class UserMediaStore {
         out.push(meta);
       }
     }
+    // Housekeeping after the turn's copies, never ahead of them.
+    sweepStalePending(dir);
     return out;
   }
 
@@ -269,6 +269,7 @@ export class UserMediaStore {
     if (Date.now() >= deadline) return false; // no I/O once the budget is spent
     const copy = (async () => {
       await fs.promises.mkdir(dir, { recursive: true });
+      if (Date.now() >= deadline) return false; // the mkdir alone used up the budget: start nothing
       await this.copy(real, staged);
       return true;
     })().catch(async (err) => {
