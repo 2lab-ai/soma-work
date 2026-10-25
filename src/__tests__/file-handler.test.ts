@@ -289,3 +289,98 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
     expect(result.path).toBe('');
   });
 });
+
+/**
+ * User media (SSOT 2026-10-25) — every file the user attached stays in the
+ * list, so the dashboard can show it with the instruction even when the bot
+ * could not fetch it; the prompt says so instead of handing the model a path.
+ */
+describe('FileHandler — attachments the bot could not fetch are kept as metadata', () => {
+  const handler = new FileHandler();
+
+  it('a file over the download cap is kept, without a path, with the reason and its Slack ids', async () => {
+    const result = await (handler as any).downloadFile({
+      id: 'FBIG',
+      name: 'huge.png',
+      mimetype: 'image/png',
+      size: 60 * 1024 * 1024,
+      permalink: 'https://x.slack.com/files/U/FBIG/huge.png',
+      url_private_download: 'https://example.com/huge',
+    });
+    expect(result).toMatchObject({
+      name: 'huge.png',
+      path: '',
+      isImage: true,
+      size: 60 * 1024 * 1024,
+      unavailable: 'too_large',
+      slackFileId: 'FBIG',
+      permalink: 'https://x.slack.com/files/U/FBIG/huge.png',
+    });
+    expect(result.tempPath).toBeUndefined();
+  });
+
+  it('a failed download is kept as metadata with the reason', async () => {
+    const result = await (handler as any).downloadFile({
+      id: 'FERR',
+      name: 'shot.png',
+      mimetype: 'image/png',
+      size: 10,
+      url_private_download: 'http://127.0.0.1:9/never',
+    });
+    expect(result).toMatchObject({ name: 'shot.png', path: '', unavailable: 'download_failed', slackFileId: 'FERR' });
+  });
+
+  it('the prompt names an unavailable file without a path or a Read instruction', async () => {
+    const out = await handler.formatFilePrompt(
+      [
+        {
+          path: '',
+          name: 'huge.png',
+          mimetype: 'image/png',
+          isImage: true,
+          isText: false,
+          isVideo: false,
+          isAudio: false,
+          size: 60 * 1024 * 1024,
+          unavailable: 'too_large',
+        },
+      ],
+      '봐줘',
+    );
+    expect(out).toContain('huge.png');
+    expect(out).not.toMatch(/Path:/);
+    expect(out).not.toContain('Use the Read tool');
+    expect(out).toMatch(/could not be downloaded/i);
+  });
+
+  it('a Slack file name cannot steer the temp path out of the temp dir', async () => {
+    const fh = handler as any;
+    const original = globalThis.fetch;
+    // node-fetch is the client; serve one PNG from a local server instead.
+    const http = await import('node:http');
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]);
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.end(png);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const port = (server.address() as any).port;
+    try {
+      const result = await fh.downloadFile({
+        id: 'FX',
+        name: '../../escape.png',
+        mimetype: 'image/png',
+        size: png.length,
+        url_private_download: `http://127.0.0.1:${port}/f`,
+      });
+      const os = await import('node:os');
+      const path = await import('node:path');
+      expect(path.dirname(result.path)).toBe(os.tmpdir());
+      expect(path.basename(result.path)).toMatch(/^slack-file-\d+-escape\.png$/);
+      await handler.cleanupTempFiles([result]);
+    } finally {
+      globalThis.fetch = original;
+      server.close();
+    }
+  });
+});

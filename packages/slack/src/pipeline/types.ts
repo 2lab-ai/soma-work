@@ -12,6 +12,11 @@ export interface ProcessedFile {
   isAudio: boolean;
   size: number;
   tempPath?: string;
+  /** Slack file id and permalink — the dashboard keeps them with the user turn (user media). */
+  slackFileId?: string;
+  permalink?: string;
+  /** The bot could not fetch the file: over the download cap, or the download failed. `path` is ''. */
+  unavailable?: 'too_large' | 'download_failed';
 }
 
 export interface ConversationSession {

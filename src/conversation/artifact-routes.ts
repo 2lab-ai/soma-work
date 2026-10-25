@@ -45,16 +45,73 @@ const ACTIVE_CSP = "sandbox allow-scripts; frame-src 'none'; child-src 'none'; f
 /** svg / markdown / text opened as a document: no scripts at all. */
 const INERT_CSP = "sandbox; frame-src 'none'; form-action 'none'; base-uri 'none'";
 
-function contentTypeFor(a: SessionArtifact): string {
+/** What `sendStoredFile` needs to know about a stored file. */
+export interface StoredFileMeta {
+  name: string;
+  mime: string;
+  kind: string;
+}
+
+function contentTypeFor(a: StoredFileMeta): string {
   if (a.mime.startsWith('text/') || a.mime === 'application/json' || a.mime === 'application/xml') {
     return `${a.mime}; charset=utf-8`;
   }
   return a.mime;
 }
 
-function dispositionFor(a: SessionArtifact, download: boolean): string {
+function dispositionFor(a: StoredFileMeta, download: boolean): string {
   const ascii = a.name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
   return `${download ? 'attachment' : 'inline'}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(a.name)}`;
+}
+
+/**
+ * Serve one stored file: Content-Type from the stored MIME, nosniff,
+ * Content-Disposition, Range (206 / 416) for audio and video seeking, and a
+ * sandbox CSP on anything a browser would treat as a document.
+ *
+ * `active` is the caller's explicit decision — never derived here from the
+ * file's kind — that an html file may run scripts (`ACTIVE_CSP`). Only the
+ * model's own artifacts pass it; user uploads never do (`inertCsp`).
+ */
+export async function sendStoredFile(
+  request: FastifyRequest<{ Querystring: { download?: string } }>,
+  reply: FastifyReply,
+  file: string,
+  meta: StoredFileMeta,
+  policy: { active: boolean; inertCsp?: string },
+): Promise<FastifyReply | undefined> {
+  let size: number;
+  try {
+    size = (await fs.promises.stat(file)).size;
+  } catch {
+    reply.status(404).send({ error: 'not_found' });
+    return;
+  }
+  const active = policy.active && meta.kind === 'html';
+  const document =
+    meta.kind === 'html' || meta.kind === 'markdown' || meta.kind === 'text' || meta.mime === 'image/svg+xml';
+  reply.header('Content-Type', contentTypeFor(meta));
+  reply.header('X-Content-Type-Options', 'nosniff');
+  reply.header('Content-Disposition', dispositionFor(meta, request.query?.download === '1'));
+  reply.header('Cache-Control', 'private, max-age=3600');
+  reply.header('Accept-Ranges', 'bytes');
+  if (document) reply.header('Content-Security-Policy', active ? ACTIVE_CSP : (policy.inertCsp ?? INERT_CSP));
+
+  const range = parseRange(request.headers.range, size);
+  if (range === null) {
+    reply.header('Content-Range', `bytes */${size}`);
+    reply.status(416).send();
+    return;
+  }
+  if (range) {
+    const [start, end] = range;
+    reply.status(206);
+    reply.header('Content-Range', `bytes ${start}-${end}/${size}`);
+    reply.header('Content-Length', String(end - start + 1));
+    return reply.send(fs.createReadStream(file, { start, end }));
+  }
+  reply.header('Content-Length', String(size));
+  return reply.send(fs.createReadStream(file));
 }
 
 /** `bytes=a-b` / `bytes=a-` / `bytes=-n` → [start, end] inclusive; null = unsatisfiable; undefined = no/ignored range. */
@@ -115,38 +172,8 @@ export async function registerArtifactRoutes(
           reply.status(404).send({ error: 'not_found' });
           return;
         }
-        let size: number;
-        try {
-          size = (await fs.promises.stat(file)).size;
-        } catch {
-          reply.status(404).send({ error: 'not_found' });
-          return;
-        }
-
-        const active = art.kind === 'html';
-        const document = active || art.kind === 'markdown' || art.kind === 'text' || art.mime === 'image/svg+xml';
-        reply.header('Content-Type', contentTypeFor(art));
-        reply.header('X-Content-Type-Options', 'nosniff');
-        reply.header('Content-Disposition', dispositionFor(art, request.query.download === '1'));
-        reply.header('Cache-Control', 'private, max-age=3600');
-        reply.header('Accept-Ranges', 'bytes');
-        if (document) reply.header('Content-Security-Policy', active ? ACTIVE_CSP : INERT_CSP);
-
-        const range = parseRange(request.headers.range, size);
-        if (range === null) {
-          reply.header('Content-Range', `bytes */${size}`);
-          reply.status(416).send();
-          return;
-        }
-        if (range) {
-          const [start, end] = range;
-          reply.status(206);
-          reply.header('Content-Range', `bytes ${start}-${end}/${size}`);
-          reply.header('Content-Length', String(end - start + 1));
-          return reply.send(fs.createReadStream(file, { start, end }));
-        }
-        reply.header('Content-Length', String(size));
-        return reply.send(fs.createReadStream(file));
+        // The model's own html report may run its scripts (opaque origin only).
+        return sendStoredFile(request, reply, file, art, { active: true });
       } catch (error) {
         logger.error('Error serving artifact', error);
         reply.status(500).send({ error: 'Internal Server Error' });

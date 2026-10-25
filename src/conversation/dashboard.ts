@@ -100,6 +100,7 @@ import {
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
+import { getUserMediaStore } from './user-media';
 import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
@@ -250,6 +251,12 @@ export interface KanbanSession {
    * `GET /api/dashboard/session/:conversationId/artifacts`. Absent when none.
    */
   artifacts?: ArtifactSummary;
+  /**
+   * SSOT 2026-10-25 — how many files the user attached to this session's
+   * instructions (user media). The card face shows a paperclip count only and
+   * never fetches an image; the files are on the user turns. Absent when none.
+   */
+  userMedia?: { count: number };
   /**
    * SSOT 2026-10-24 — permission prompts this session is blocked on (oldest
    * first), the same prompt the Slack card shows. While any is pending the card
@@ -1311,6 +1318,12 @@ function cardArtifacts(conversationId: string | undefined): ArtifactSummary | un
   return store.summary(conversationId);
 }
 
+/** The card's user-media count (SSOT 2026-10-25): one cached directory read per conversation. */
+function cardUserMedia(conversationId: string | undefined): { count: number } | undefined {
+  const count = getUserMediaStore().count(conversationId);
+  return count > 0 ? { count } : undefined;
+}
+
 /**
  * A new artifact: tell every dashboard (the list is readable by any signed-in
  * user — artifact-routes.ts) and re-push the live card so its face row grows.
@@ -1411,6 +1424,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     goal: goalToKanban(s),
     ...(autoResume ? { autoResume } : {}),
     artifacts: cardArtifacts(s.conversationId),
+    userMedia: cardUserMedia(s.conversationId),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -1516,6 +1530,7 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
     ...agentsToKanban(sanitizeAgentRegistry(archived.agents), false),
     goal: goalToKanban(archived),
     artifacts: cardArtifacts(archived.conversationId),
+    userMedia: cardUserMedia(archived.conversationId),
     slackThreadUrl:
       archived.channelId && archived.threadTs
         ? (buildThreadPermalink(archived.channelId, archived.threadTs) ?? undefined)
@@ -2314,6 +2329,8 @@ export async function registerDashboardRoutes(
         summaryBody: t.summaryBody,
         summarized: t.summarized,
         rawContent: t.role === 'user' ? t.rawContent : undefined,
+        // User media (SSOT 2026-10-25): the files this instruction carried, metadata only.
+        attachments: t.role === 'user' ? t.attachments : undefined,
       }));
 
       reply.send({
@@ -5589,6 +5606,57 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-strip-panel .art-tile { width: 152px; }
 .art-strip-panel .art-thumb { height: 94px; }
 .turn-arts-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+/* ── User media (SSOT 2026-10-25): the files a user attached to an instruction ──
+   Above the words, as chat apps show an attachment with its message. Fixed boxes
+   (no layout shift once an image loads), 80px tiles, "+N" on the 4th past four,
+   44px targets on touch, no motion beyond the shared press scale. */
+.um-media { display: grid; gap: 6px; margin: 2px 0 6px; min-width: 0; }
+.um-grid { display: flex; flex-wrap: wrap; gap: 4px; }
+.um-tile { position: relative; flex: 0 0 auto; width: 80px; height: 80px; padding: 0; overflow: hidden; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-col); cursor: zoom-in; transition: border-color var(--speed) var(--ease), transform var(--dur-press) var(--ease-out); }
+.um-tile img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.um-single .um-tile { width: 280px; max-width: 100%; height: 200px; background: var(--bg); }
+.um-single .um-tile img { object-fit: contain; }
+.um-tile:focus-visible, .um-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.um-tile:active:not(:focus-visible), .um-open:active:not(:focus-visible) { transform: scale(0.97); }
+.um-more { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.um-tile.is-broken img { display: none; }
+.um-tile.is-broken::after { content: '미리보기 불가'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 4px; font-size: 10.5px; color: var(--ib-muted); text-align: center; }
+.um-files { display: flex; flex-wrap: wrap; gap: 6px; }
+.um-file { position: relative; display: flex; align-items: center; min-width: 0; width: 240px; max-width: 100%; height: 52px; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--surface); transition: border-color var(--speed) var(--ease); }
+.um-open { display: flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0; height: 100%; padding: 0 10px; border: none; border-radius: 10px; background: none; color: var(--ib-text); font: inherit; text-align: left; cursor: zoom-in; transition: transform var(--dur-press) var(--ease-out); }
+.um-open .art-glyph { width: 26px; height: 26px; color: var(--art-tint, var(--text-secondary)); }
+.um-file-text { display: flex; flex-direction: column; min-width: 0; }
+.um-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+.um-file-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--ib-muted); }
+.um-file.is-remote { border-style: dashed; }
+.um-file.is-remote .art-glyph { opacity: 0.55; }
+.um-file .um-play { position: static; flex: 0 0 auto; margin-right: 10px; }
+.um-compact .um-tile { width: 40px; height: 40px; border-radius: 6px; }
+.um-compact .um-more { font-size: 12px; }
+.um-compact .um-file { width: auto; max-width: 200px; height: 30px; border-radius: 999px; }
+.um-compact .um-open { gap: 6px; padding: 0 10px; }
+.um-compact .um-open .art-glyph { width: 14px; height: 14px; }
+.um-compact .um-file .um-play { width: 24px; height: 24px; margin-right: 4px; }
+.io-row .um-media { margin: 4px 0 6px; }
+.metric.um-face svg { width: 12px; height: 12px; }
+.panel-user-media { margin-bottom: 6px; }
+.panel-um-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; padding: 2px 0; border: none; background: none; color: var(--text); font: inherit; font-size: 12px; font-weight: 600; text-align: left; cursor: pointer; }
+.panel-um-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.panel-um-head .um-chevron { width: 14px; height: 14px; flex-shrink: 0; color: var(--text-tertiary); transition: transform var(--speed) var(--ease); }
+.panel-um-head[aria-expanded="true"] .um-chevron { transform: rotate(180deg); }
+.panel-um-body { padding: 4px 0 2px; }
+.panel-um-body .um-media { margin: 0; }
+@media (hover: hover) and (pointer: fine) {
+  .um-tile:hover, .um-file:hover { border-color: var(--art-tint, var(--accent)); }
+}
+@media (pointer: coarse) {
+  .um-compact .um-tile { width: 44px; height: 44px; }
+  .um-compact .um-file { height: 44px; }
+  .panel-um-head { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .um-tile, .um-open, .panel-um-head .um-chevron { transition: none; }
+}
 .art-peek { position: fixed; z-index: 1000; left: 0; top: 0; width: 360px; max-width: calc(100vw - 16px); overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45); opacity: 0; visibility: hidden; transform: translateY(4px) scale(0.98); transform-origin: top left; pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), visibility 0s linear var(--dur-fade); }
 .art-peek.open { opacity: 1; visibility: visible; transform: none; pointer-events: auto; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out); }
 .art-peek-media { position: relative; display: flex; align-items: center; justify-content: center; height: 225px; overflow: hidden; background: var(--bg); cursor: zoom-in; color: var(--art-tint, var(--text-secondary)); }
@@ -7872,6 +7940,9 @@ function renderCardFace(s, col) {
   if (dhShow('contextwindow') && ctxPct > 0) {
     metrics.push('<span class="metric" title="Context window used">' + CTX_SVG + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '%</span>');
   }
+  // User media (SSOT 2026-10-25): a paperclip count, no image on the board.
+  var umBadge = isSiblingSession(s) ? '' : umFaceBadge(s);
+  if (umBadge) metrics.push(umBadge);
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
   var lead = s.cronJob && s.cronJob.name ? renderCronBadge(s) : '<span class="card-spark">' + SPARK_SVG + '</span>';
   return '<div class="card-head">' + lead + titleHtml + renderOwnerBadge(s) + '</div>'
@@ -8542,9 +8613,12 @@ function renderCardIo(s) {
   }
   var d = c.data;
   var who = d.instruction && d.instruction.who ? '<span class="io-who">' + esc(d.instruction.who) + '</span>' : '';
+  // User media (SSOT 2026-10-25): the instruction's files, small, above its words.
+  var atts = d.instruction && Array.isArray(d.instruction.attachments) ? d.instruction.attachments : [];
+  var mediaHtml = atts.length ? renderUserMedia(s.conversationId, atts, { compact: true }) : '';
   var inHtml = d.instruction && d.instruction.text
     ? '<div class="io-text">' + esc(d.instruction.text) + '</div>'
-    : '<div class="io-text is-muted">기록된 지시 없음</div>';
+    : (atts.length ? '<div class="io-text is-muted">첨부 ' + atts.length + '개</div>' : '<div class="io-text is-muted">기록된 지시 없음</div>');
   var outHtml;
   if (d.response && (d.response.title || d.response.body)) {
     outHtml = '<div class="io-text">'
@@ -8558,7 +8632,7 @@ function renderCardIo(s) {
     outHtml = '<div class="io-text is-muted">응답 없음</div>';
   }
   return '<div class="card-io">'
-    + '<div class="io-row io-in"><div class="io-label">지시' + who + '</div>' + inHtml + '</div>'
+    + '<div class="io-row io-in"><div class="io-label">지시' + who + '</div>' + mediaHtml + inHtml + '</div>'
     + '<div class="io-row io-out"><div class="io-label">응답</div>' + outHtml + '</div>'
     + '</div>';
 }
@@ -8575,8 +8649,10 @@ function fetchCardIo(cid) {
       var reply = null;
       for (var j = turns.length - 1; j > ui; j--) { if (turns[j].role === 'assistant') { reply = turns[j]; break; } }
       var raw = ui >= 0 ? decodeSlackEntities(turns[ui].rawContent || '') : '';
+      var attachments = ui >= 0 && Array.isArray(turns[ui].attachments) ? turns[ui].attachments : [];
+      if (attachments.length) umRegister(cid, attachments, turns[ui]);
       var instruction = ui >= 0
-        ? { text: raw.slice(0, 500) + (raw.length > 500 ? '…' : ''), who: turns[ui].userName || '' }
+        ? { text: raw.slice(0, 500) + (raw.length > 500 ? '…' : ''), who: turns[ui].userName || '', attachments: attachments }
         : null;
       if (reply && !reply.summaryTitle && !reply.summaryBody && reply.id) {
         // Summary not generated yet — fall back to the head of the raw response.
@@ -10352,6 +10428,7 @@ function connectWs() {
       } else if (msg.type === 'conversation_update') {
         // A turn landed — an open card's 지시/응답 pair may be stale now.
         invalidateCardIo(msg.conversationId);
+        umOnTurn(msg.conversationId, msg.turn);
         // If panel is open for this conversation, append or update the turn
         if (panelOpen && panelConvId === msg.conversationId && msg.turn) {
           // Dedupe: skip user turns that match our optimistic send (content + within 10s)
@@ -11446,6 +11523,7 @@ function openPanel(sessionKey, focusWorkLog, agentId) {
   // Artifacts (T6): the summary now, the full list as soon as it arrives.
   renderPanelArtifactsSection();
   if (panelConvId && !isSiblingSession(s)) ensureArtifacts(panelConvId, true);
+  if (panelConvId && !isSiblingSession(s) && s.userMedia && toNum(s.userMedia.count) > 0) ensureUserMedia(panelConvId);
   setWorkLogOpen(false); // every opening starts collapsed (§3.1-6)
   _panelOlderArmed = false; // a landing never loads older turns by itself
   _panelStickBottom = false;
@@ -11695,11 +11773,20 @@ function renderTurn(t, _idx, _arr, convId) {
   const initial = (t.userName || 'U').charAt(0).toUpperCase();
   var turnIdAttr = (t.id ? ' data-turn-id="' + esc(t.id) + '"' : '') + ' data-ts="' + toNum(t.timestamp) + '"';
   if (t.role === 'user') {
+    // User media (SSOT 2026-10-25): the files sit above the words, as chat apps
+    // show an attachment with its message; a files-only turn has no empty text.
+    var umCid = convId || panelConvId;
+    var atts = Array.isArray(t.attachments) ? t.attachments : [];
+    if (atts.length) umRegister(umCid, atts, t);
+    var mediaHtml = atts.length ? renderUserMedia(umCid, atts) : '';
+    var textHtml = t.rawContent
+      ? '<div class="turn-content">' + esc(decodeSlackEntities(t.rawContent.slice(0, 500))) + (t.rawContent.length > 500 ? '...' : '') + '</div>'
+      : '';
     return '<div class="turn user"' + turnIdAttr + '>'
       + '<div class="turn-avatar user-avatar">' + initial + '</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + time + '</span></div>'
-      + '<div class="turn-content">' + esc(decodeSlackEntities((t.rawContent || '').slice(0, 500))) + ((t.rawContent && t.rawContent.length > 500) ? '...' : '') + '</div>'
+      + mediaHtml + textHtml
       + '</div></div>';
   } else {
     const title = t.summaryTitle ? '<div class="turn-summary-title">' + esc(t.summaryTitle) + '</div>' : '';
@@ -12694,7 +12781,173 @@ var _artModal = { cid: null, list: [], idx: 0, opener: null };
 var _artAudio = { el: null, key: null };
 
 function artUrl(cid, id, download) {
+  // A user's attachment (SSOT 2026-10-25) shares the viewer, not the route.
+  if (umGet(cid, id)) return umUrl(cid, id, download);
   return '/api/dashboard/session/' + encodeURIComponent(cid) + '/artifacts/' + encodeURIComponent(id) + '/content' + (download ? '?download=1' : '');
+}
+
+// ── User media (SSOT 2026-10-25): the files a user attached to an instruction ──
+// Shown with the instruction that carried them (panel turn, open card 지시 row),
+// counted on the card face, listed in one collapsed pinned row, and opened in the
+// artifact viewer — but never mixed into 산출물 (the model's output). Ids the
+// page has seen on a user turn are registered here; artUrl sends them to the
+// media route.
+var _userMedia = Object.create(null); // cid → { byId: { id → item } }
+var UM_GRID_MAX = 4; // image tiles shown; past it the 4th tile says "+N"
+var _umList = Object.create(null); // cid → every attachment of the session (pinned row)
+var _umPanelOpen = false; // the pinned row starts collapsed
+
+// Remember a turn's attachments: the viewer, the hover preview and artUrl look them up.
+function umRegister(cid, list, turn) {
+  if (!cid || !list || !list.length) return;
+  var c = _userMedia[cid] || (_userMedia[cid] = { byId: Object.create(null) });
+  var who = turn && turn.userName ? String(turn.userName) : '';
+  list.forEach(function(a) {
+    if (!a || !a.id) return;
+    var prev = c.byId[a.id];
+    c.byId[a.id] = Object.assign({}, a, {
+      source: 'user_upload',
+      turnId: (turn && turn.id) || a.turnId || (prev && prev.turnId) || '',
+      createdAt: toNum(turn && turn.timestamp) || toNum(a.turnTs) || (prev && toNum(prev.createdAt)) || 0,
+      title: who ? '지시 첨부 · ' + who : (prev && prev.title) || '지시 첨부',
+    });
+  });
+}
+
+function umGet(cid, id) {
+  var c = cid ? _userMedia[cid] : null;
+  return c && c.byId[id] ? c.byId[id] : null;
+}
+
+function umUrl(cid, id, download) {
+  return '/api/dashboard/session/' + encodeURIComponent(cid) + '/media/' + encodeURIComponent(id) + '/content' + (download ? '?download=1' : '');
+}
+
+// The viewer's page list: the files of the same instruction, or every file of the session.
+function umSiblings(cid, id, all) {
+  var c = cid ? _userMedia[cid] : null;
+  var a = umGet(cid, id);
+  if (!c || !a) return [];
+  var out = [];
+  for (var k in c.byId) if (all || c.byId[k].turnId === a.turnId) out.push(c.byId[k]);
+  return out;
+}
+
+// "very-long-design-guide-v3.pdf" → "very-long-de…v3.pdf": the extension stays visible.
+function umMiddleName(name, max) {
+  var str = String(name || '');
+  max = max || 28;
+  if (str.length <= max) return str;
+  var dot = str.lastIndexOf('.');
+  var tail = dot > 0 && str.length - dot <= 8 ? str.slice(dot - 3) : str.slice(-6);
+  return str.slice(0, Math.max(1, max - tail.length - 1)) + '…' + tail;
+}
+
+// One attachment: an image tile, or a file card (glyph, name, kind · size).
+// pos / total name the action ("이미지 열기 2/5: login.png"); more > 0 puts "+more" on the tile.
+function umTile(cid, a, pos, total, more, compact) {
+  var attrs = ' data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id) + '"';
+  var label = (a.kind === 'image' ? '이미지' : artKindLabel(a)) + ' 열기 ' + pos + '/' + total + ': ' + a.name + (more > 0 ? ' 외 ' + more + '개' : '');
+  if (a.kind === 'image' && a.stored) {
+    return '<button type="button" class="um-tile um-img"' + attrs + ' aria-label="' + escAttr(label) + '" title="' + escAttr(a.name) + '">'
+      + '<img src="' + escAttr(umUrl(cid, a.id)) + '" alt="" loading="lazy" decoding="async" onerror="this.parentNode.classList.add(\\'is-broken\\')">'
+      + (more > 0 ? '<span class="um-more" aria-hidden="true">+' + more + '</span>' : '')
+      + '</button>';
+  }
+  var meta = [artKindLabel(a)];
+  if (toNum(a.size) > 0) meta.push(artFormatSize(a.size));
+  if (!a.stored) meta.push(a.unavailable === 'too_large' ? '50 MB 초과 · Slack에만 있음' : 'Slack에만 있음');
+  var play = (a.kind === 'audio' && a.stored)
+    ? '<button type="button" class="art-play um-play" data-art-play="1"' + attrs + ' aria-pressed="false" aria-label="' + escAttr(a.name + ' 재생/일시정지') + '" title="재생">'
+      + '<svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7.5-4.5z" fill="currentColor"/></svg>'
+      + '<svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.5h2.5v9H4.5zM9 3.5h2.5v9H9z" fill="currentColor"/></svg></button>'
+    : '';
+  return '<div class="um-file art-k-' + escAttr(a.kind || 'file') + (a.stored ? '' : ' is-remote') + (compact ? ' um-file-compact' : '') + '">'
+    + '<button type="button" class="um-open"' + attrs + ' aria-label="' + escAttr(label) + '" title="' + escAttr(a.name) + '">'
+    + artGlyph(a.kind)
+    + '<span class="um-file-text"><span class="um-file-name">' + esc(umMiddleName(a.name, compact ? 20 : 30)) + '</span>'
+    + (compact ? '' : '<span class="um-file-meta">' + esc(meta.join(' · ')) + '</span>') + '</span>'
+    + '</button>' + play + '</div>';
+}
+
+// The files of one instruction: images first as a grid of tiles (one image on
+// its own in a fixed box), then the other files as cards. opts.compact: the
+// open card's 지시 row and the pinned row — small tiles, name-only chips.
+function renderUserMedia(cid, list, opts) {
+  var items = (list || []).filter(function(a) { return a && a.id; });
+  if (!cid || !items.length) return '';
+  var compact = !!(opts && opts.compact);
+  var total = items.length;
+  var imgs = [];
+  var files = [];
+  items.forEach(function(a, i) { (a.kind === 'image' && a.stored ? imgs : files).push({ a: a, pos: i + 1 }); });
+  var html = '';
+  if (imgs.length) {
+    var shown = imgs.slice(0, UM_GRID_MAX);
+    var more = imgs.length - shown.length;
+    html += '<div class="um-grid' + (imgs.length === 1 && !compact ? ' um-single' : '') + '">'
+      + shown.map(function(x, k) { return umTile(cid, x.a, x.pos, total, k === shown.length - 1 ? more : 0, compact); }).join('')
+      + '</div>';
+  }
+  if (files.length) {
+    html += '<div class="um-files">' + files.map(function(x) { return umTile(cid, x.a, x.pos, total, 0, compact); }).join('') + '</div>';
+  }
+  return '<div class="um-media' + (compact ? ' um-compact' : '') + '">' + html + '</div>';
+}
+
+// Collapsed card face: a paperclip and the count. Never an image — a board of
+// cards must not pull every screenshot.
+function umFaceBadge(s) {
+  var n = toNum(s && s.userMedia && s.userMedia.count);
+  if (!s || !s.conversationId || !(n > 0)) return '';
+  return '<span class="metric um-face" title="지시 첨부 ' + n + '개" aria-label="지시 첨부 ' + n + '개">'
+    + '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 7.5l-5.4 5.4a3.2 3.2 0 0 1-4.5-4.5l5.6-5.6a2.1 2.1 0 0 1 3 3L6.6 11.4a1.1 1.1 0 0 1-1.5-1.5L10.2 4.8"/></svg>'
+    + n + '</span>';
+}
+
+// Pinned row of the panel: "지시 첨부 N", collapsed by default so it costs one
+// line; opened, the session's files in a compact strip. Nothing when none.
+function renderPanelUserMedia(list, cid, open) {
+  if (!cid || !list || !list.length) return '';
+  var head = '<button type="button" class="panel-um-head" aria-expanded="' + (open ? 'true' : 'false') + '" aria-controls="panel-um-body" onclick="togglePanelUserMedia()">'
+    + '<svg class="art-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 7.5l-5.4 5.4a3.2 3.2 0 0 1-4.5-4.5l5.6-5.6a2.1 2.1 0 0 1 3 3L6.6 11.4a1.1 1.1 0 0 1-1.5-1.5L10.2 4.8"/></svg>'
+    + '<span>지시 첨부</span><span class="art-count">' + list.length + '</span>'
+    + '<span class="panel-arts-hint">유저가 지시와 함께 보낸 파일</span>'
+    + '<svg class="um-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>'
+    + '</button>';
+  return head + (open ? '<div class="panel-um-body" id="panel-um-body">' + renderUserMedia(cid, list, { compact: true }) + '</div>' : '');
+}
+
+function togglePanelUserMedia() {
+  _umPanelOpen = !_umPanelOpen;
+  renderPanelArtifactsSection();
+}
+
+// The session's attachments for the pinned row, fetched when the card says it has some.
+function ensureUserMedia(cid) {
+  if (!cid) return;
+  fetch('/api/dashboard/session/' + encodeURIComponent(cid) + '/media')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) {
+      var list = Array.isArray(data && data.media) ? data.media : [];
+      list.forEach(function(a) { umRegister(cid, [a], null); });
+      _umList[cid] = list;
+      if (panelOpen && panelConvId === cid) renderPanelArtifactsSection();
+    })
+    .catch(function() {});
+}
+
+// A user turn landed with files: the pinned row grows with it.
+function umOnTurn(cid, turn) {
+  var atts = turn && turn.role === 'user' && Array.isArray(turn.attachments) ? turn.attachments : [];
+  if (!cid || !atts.length) return;
+  umRegister(cid, atts, turn);
+  var list = _umList[cid] || [];
+  atts.forEach(function(a) {
+    if (!list.some(function(x) { return x.id === a.id; })) list = list.concat([Object.assign({}, a, { turnId: turn.id, turnTs: turn.timestamp })]);
+  });
+  _umList[cid] = list;
+  if (panelOpen && panelConvId === cid) renderPanelArtifactsSection();
 }
 
 function artFormatSize(n) {
@@ -12866,7 +13119,8 @@ function renderArtModalBody(cid, a) {
       + '<p>이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).</p>' + link + '</div>';
   }
   if (a.kind === 'image') return '<div class="art-full-imgwrap"><img class="art-full-img" src="' + url + '" alt="' + title + '" data-art-zoom="1"></div>';
-  if (a.kind === 'html') return '<iframe class="art-full-frame" sandbox="allow-scripts" src="' + url + '" title="' + title + '" referrerpolicy="no-referrer"></iframe>';
+  // A user's own upload never runs (the route serves it inert as well).
+  if (a.kind === 'html') return '<iframe class="art-full-frame" sandbox="' + (a.source === 'user_upload' ? '' : 'allow-scripts') + '" src="' + url + '" title="' + title + '" referrerpolicy="no-referrer"></iframe>';
   if (a.kind === 'pdf') return '<iframe class="art-full-frame" src="' + url + '" title="' + title + '"></iframe>';
   if (a.kind === 'audio') return '<div class="art-full-audio">' + artGlyph('audio') + '<div class="art-full-meta-name">' + esc(a.name) + '</div><audio controls autoplay preload="auto" src="' + url + '"></audio></div>';
   if (a.kind === 'video') return '<video class="art-full-video" controls autoplay playsinline preload="metadata" src="' + url + '"></video>';
@@ -12998,7 +13252,7 @@ function artFind(cid, id) {
       if (hit) return hit;
     }
   }
-  return null;
+  return umGet(cid, id);
 }
 
 // The conversation's full list, fetched once and kept fresh by artifact_update.
@@ -13064,7 +13318,9 @@ function renderPanelArtifactsSection() {
   var c = cid ? _artCache[cid] : null;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var list = c && c.list ? c.list : ((s && s.artifacts && s.artifacts.recent) || []);
-  var html = cid ? renderPanelArtifacts(list, cid) : '';
+  // The user's files (지시 첨부) first, one collapsed line; then the model's 산출물.
+  var umHtml = cid ? renderPanelUserMedia(_umList[cid] || [], cid, _umPanelOpen) : '';
+  var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid) : '';
   el.innerHTML = html;
   el.style.display = html ? '' : 'none';
   decoratePanelTurns();
@@ -13174,7 +13430,11 @@ function openArtifactModal(cid, id, opener) {
   if (!dlg || !cid || !id) return;
   var c = _artCache[cid];
   var list = artSortForDisplay((c && c.list) || []);
-  if (!list.some(function(a) { return a.id === id; })) {
+  if (umGet(cid, id)) {
+    // A user's attachment pages through the files of its own instruction — or,
+    // opened from the pinned 지시 첨부 row, through every file of the session.
+    list = umSiblings(cid, id, !!(opener && opener.closest && opener.closest('#panel-user-media')));
+  } else if (!list.some(function(a) { return a.id === id; })) {
     var one = artFind(cid, id);
     if (!one) return;
     list = artSortForDisplay(list.concat([one]));

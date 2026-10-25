@@ -119,6 +119,51 @@ export function renderConversationViewPage(record: ConversationRecord): string {
 </html>`;
 }
 
+const KIND_LABEL: Record<string, string> = {
+  image: '이미지',
+  audio: '오디오',
+  video: '비디오',
+  html: 'HTML',
+  markdown: 'Markdown',
+  pdf: 'PDF',
+  text: '텍스트',
+  file: '파일',
+};
+
+function formatBytes(n: number): string {
+  if (!(n > 0)) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`;
+  return `${(n / 1048576).toFixed(1)} MB`;
+}
+
+/**
+ * The files a user attached to this turn (user media, SSOT 2026-10-25), above
+ * its text: kept images as thumbnails that open the copy, other kept files as
+ * links to it, a file without a copy as its Slack link (https only) or its name.
+ */
+function renderTurnAttachments(turn: ConversationTurn, conversationId: string): string {
+  const list = Array.isArray(turn.attachments) ? turn.attachments : [];
+  if (list.length === 0) return '';
+  const base = `/api/dashboard/session/${encodeURIComponent(conversationId)}/media/`;
+  const items = list.map((a) => {
+    const url = `${base}${encodeURIComponent(a.id)}/content`;
+    const meta = [KIND_LABEL[a.kind] || '파일', formatBytes(a.size), a.stored ? '' : 'Slack에만 있음']
+      .filter(Boolean)
+      .join(' · ');
+    const name = escapeHtml(a.name);
+    if (a.stored && a.kind === 'image') {
+      return `<a class="att att-img" href="${url}" target="_blank" rel="noopener" title="${name}"><img src="${url}" alt="" loading="lazy" decoding="async" width="96" height="96"></a>`;
+    }
+    const href = a.stored ? url : /^https:\/\//i.test(a.permalink || '') ? (a.permalink as string) : '';
+    const body = `<span class="att-name">📎 ${name}</span><span class="att-meta">${escapeHtml(meta)}</span>`;
+    return href
+      ? `<a class="att att-file" href="${escapeHtml(href)}" target="_blank" rel="noopener">${body}</a>`
+      : `<span class="att att-file">${body}</span>`;
+  });
+  return `<div class="turn-media">${items.join('')}</div>`;
+}
+
 /**
  * Render a single turn
  */
@@ -132,7 +177,9 @@ function renderTurn(turn: ConversationTurn, index: number, conversationId: strin
   let contentHtml: string;
 
   if (isUser) {
-    contentHtml = `<pre class="content">${escapeHtml(turn.rawContent)}</pre>`;
+    contentHtml =
+      renderTurnAttachments(turn, conversationId) +
+      (turn.rawContent ? `<pre class="content">${escapeHtml(turn.rawContent)}</pre>` : '');
   } else {
     // Assistant: show summary with expand button
     let summaryHtml: string;
@@ -245,6 +292,13 @@ function getViewStyles(): string {
     .time { color: #999; margin-left: auto; font-size: 0.8em; }
 
     .turn-content { }
+    .turn-media { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .att { display: inline-flex; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; color: inherit; text-decoration: none; }
+    .att-img img { display: block; width: 96px; height: 96px; object-fit: cover; }
+    .att-file { flex-direction: column; justify-content: center; gap: 2px; padding: 6px 10px; max-width: 260px; font-size: 0.85em; }
+    .att-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .att-meta { color: #888; font-size: 0.9em; }
+    a.att:hover, a.att:focus-visible { border-color: #4d9de0; }
     .content {
       white-space: pre-wrap; word-break: break-word;
       font-family: 'SF Mono', 'Fira Code', monospace;

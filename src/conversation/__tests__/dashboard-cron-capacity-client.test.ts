@@ -56,6 +56,7 @@ const SHOW_ALL = {
   // #375 artifact chips on the face — not what these tests read.
   isSiblingSession: () => false,
   artFaceChips: () => '',
+  umFaceBadge: () => '',
 };
 const FACE_FNS = [
   'esc',

@@ -54,6 +54,7 @@ const SHOW_ALL = {
   // The artifact row has its own suite (dashboard-artifacts-client.test.ts).
   isSiblingSession: () => false,
   artFaceChips: () => '',
+  umFaceBadge: () => '',
 };
 const FACE_FNS = [
   'esc',
