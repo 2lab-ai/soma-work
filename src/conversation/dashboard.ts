@@ -5198,7 +5198,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cap-chip em { font-style: normal; font-weight: 600; font-variant-numeric: tabular-nums; }
 .cap-summary .cap-m.is-now b, .cap-summary .cap-m.is-now em { color: var(--cap-now); }
 .cap-summary .cap-m.is-wk b, .cap-summary .cap-m.is-wk em { color: var(--cap-wk); }
-@media (max-width: 639px) { .cap-chip .cap-chip-k, .cap-chip .cap-chip-of, .cap-chip .cap-m b { display: none; } }
+@media (max-width: 639px) { .cap-chip .cap-chip-of { display: none; } }
 .cap-prov.is-empty { box-shadow: inset 0 0 0 1px var(--st-fail); }
 .cap-prov.is-low { box-shadow: inset 0 0 0 1px var(--st-wait); }
 .cap-pname { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-bottom: 6px; }
@@ -5806,8 +5806,6 @@ body.nt-open .new-task-fab { display: none !important; }
   .sec-toggle { padding: 2px 8px; min-width: 44px; justify-content: center; }
   .sec-toggle .sec-toggle-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .capacity .cap-head { padding-right: 56px; }
-  .cap-chip { padding: 2px 6px; font-size: 11px; }
-  .cap-summary { gap: 4px; }
 }
 .cap-chip {
   flex: none;
@@ -5822,6 +5820,13 @@ body.nt-open .new-task-fab { display: none !important; }
   color: var(--ib-text-2);
   background: var(--ib-card);
   box-shadow: inset 0 0 0 1px var(--ib-card-border);
+}
+@media (max-width: 639px) {
+  /* Phones keep labelled counts and % for both windows (requirement 1a, trinity chip
+     confirm): tighter chips, and the folded summary wraps to a second row rather
+     than cut a chip or drop the counts. After the base .cap-chip rule so it wins. */
+  .cap-chip { padding: 2px 6px; font-size: 11px; }
+  .capacity.is-collapsed .cap-summary { flex: 1 1 auto; flex-wrap: wrap; overflow-x: visible; gap: 4px; }
 }
 .cap-chip b { font-weight: 700; color: var(--ib-text); font-variant-numeric: tabular-nums; }
 .cap-chip.is-low { color: var(--st-wait); box-shadow: inset 0 0 0 1px var(--st-wait); }
@@ -12076,10 +12081,10 @@ function sendRetry(msg) {
 // lane still shows every job whose run waits for a reply (never hidden behind a fold).
 var SEC_OPEN_QUERY = '(min-width: 840px) and (min-height: 1000px)';
 var _secMql = window.matchMedia ? window.matchMedia(SEC_OPEN_QUERY) : null;
-// Capacity v2 is taller (two measures, lanes, per-account bars per provider): it opens
-// on its own only where the board still starts on the first screen below it.
-var SEC_OPEN_QUERY_CAPACITY = '(min-width: 840px) and (min-height: 1400px)';
-var _secMqlCap = window.matchMedia ? window.matchMedia(SEC_OPEN_QUERY_CAPACITY) : null;
+// Capacity v2 unfolded is taller than any common first screen (two measures, lanes and
+// per-account bars per provider; at 1440×1400 it pushed the first board card to 1670px).
+// So it starts folded everywhere — its chips carry both measures as count and % — and
+// the reader's unfold choice persists per device (trinity chip confirm, fable/astra).
 var _secChoice = {};           // this page's choices, even when storage refuses the write
 var _cronLaneRevealed = false; // a deep link into a folded lane opens it for this page load
 var _cronFoldApplied = null;   // the fold the last CRON render used
@@ -12095,8 +12100,7 @@ function secSaved(sec) {
 function secIsOpen(sec) {
   if (sec === 'cron' && _cronLaneRevealed) return true;
   var saved = _secChoice[sec] !== undefined ? _secChoice[sec] : secSaved(sec);
-  var mql = sec === 'capacity' ? _secMqlCap : _secMql;
-  return secOpen(saved, !!(mql && mql.matches));
+  return secOpen(saved, sec === 'capacity' ? false : !!(_secMql && _secMql.matches));
 }
 // A render for a disclosure change: entering and leaving cards animate as usual; the
 // board's moves are the coordinator's, from the spots cached before the change.
@@ -12550,8 +12554,10 @@ function capFmt1(x) {
 function capGain(x) {
   return x <= 0.0000001 ? '+0' : x < 0.05 ? '+0.1 미만' : '+' + capFmt1(x);
 }
+// A count that displays as the total reads 100%, never "2.4/2.4 99%".
 function capPct(v, t) {
-  return t > 0 ? Math.round((v / t) * 100) + '%' : '—';
+  if (!(t > 0)) return '—';
+  return (capFmt1(v) === capFmt1(t) ? 100 : Math.min(99, Math.round((v / t) * 100))) + '%';
 }
 // What raises a measure next: the first gain ≥ 0.05 inside the span, else the
 // small sum inside it and the next real gain after it.
@@ -12824,9 +12830,8 @@ function renderCapacitySummary(v, nowMs) {
     var known = g.total > 0;
     var t = capFmt1(g.total);
     // Both measures as max accounts' worth and % (requirement 1a, also when folded):
-    // "Claude 지금 5.2/16.0 33% · 주 5.7 36%". Phones (< 640px) keep one row with the
-    // % of each window ("Claude 33% · 36%", colour = window); the counts and the full
-    // sentence stay the chip's name and tooltip, and the unfolded section.
+    // "Claude 지금 5.2/16.0 33% · 주 5.7 36%". Phones drop only the total
+    // ("Claude 지금 5.2 33% · 주 5.7 36%") and let the folded row wrap to a second line.
     var meas = function(cls, word, v, withTotal) {
       return '<span class="cap-m ' + cls + '"><i class="cap-chip-k">' + word + ' </i><b>' + capFmt1(v) + '</b>'
         + (withTotal ? '<i class="cap-chip-of">/' + t + '</i>' : '') + ' <em>' + capPct(v, g.total) + '</em></span>';
@@ -12838,7 +12843,7 @@ function renderCapacitySummary(v, nowMs) {
       : (g.has5h ? '지금 ' + capFmt1(g.now) + '/' + t + ' 계정분 (' + capPct(g.now, g.total) + '), ' : '') + '이번 주 ' + capFmt1(g.week) + '/' + t + ' 계정분 (' + capPct(g.week, g.total) + ')';
     var next = known ? capNextLine(g, g.has5h ? 'dNow' : 'dWeek', g.has5h ? CAP_5H : CAP_7D, nowSec, nowMs) : '';
     var lead = said + (WORD[state] || '') + (next ? ' — ' + next : '');
-    return '<span class="cap-chip is-' + state + '" title="' + escAttr(next || said) + '" aria-label="' + escAttr(g.label + ' ' + lead) + '">'
+    return '<span class="cap-chip is-' + state + '" title="' + escAttr(lead) + '" aria-label="' + escAttr(g.label + ' ' + lead) + '">'
       + (GLYPH[state] || '') + esc(g.label) + ' ' + nums + '</span>';
   }).join('') + '</div>';
 }
