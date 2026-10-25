@@ -67,6 +67,7 @@ const CAP_FNS = [
   'capDecomp',
   'capChips',
   'capRefillList',
+  'capAdvance',
   'renderCapacitySummary',
   'renderCapacityGroup',
   'renderCapacity',
@@ -456,8 +457,70 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
   it('a narrow screen trades the lanes for a "next refills" list with now and week apart', () => {
     const narrow = fns.renderCapacity(view, NOW_S * 1000, 360);
     expect(narrow).not.toContain('cap-lane');
+    // one breakpoint: the card that lists refills is the card the CSS stacks
+    expect(narrow).toMatch(/class="cap-prov is-\w+ is-narrow"/);
+    expect(html).not.toContain('is-narrow');
     expect(narrow).toContain('다음 리필');
     expect(narrow).toMatch(/지금 \+0\.6[\s\S]*?주간 \+0\.6/);
+  });
+
+  // PR #417 review gate (fable P1, grok P3): the grid column is the width the charts are drawn at.
+  it('the wide grid sizes its first column from the same number the charts use', () => {
+    expect(claude).toContain('style="grid-template-columns:470px minmax(0, 1fr)"');
+    const mid = fns.renderCapacity(view, NOW_S * 1000, 900);
+    expect(mid).toContain('style="grid-template-columns:399px minmax(0, 1fr)"'); // floor((900 − 32) × 0.46)
+    expect(mid).toContain('class="cap-unitbar" width="395"'); // leftW − 4
+  });
+
+  it('every account gets a per-account cell — a long pool wraps, nothing is dropped', () => {
+    const many = {
+      current: null,
+      accounts: Array.from({ length: 20 }, (_, i) =>
+        a({ name: `claude:ac${i}@c`, group: 'claude', five_hour: w(0.1, H), seven_day: w(0.2, D) }),
+      ),
+    };
+    const t20 = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`claude:ac${i}`, 'claude-max-20x']));
+    const out = fns.renderCapacity(buildCapacityView(many as never, t20 as never, NOW_S * 1000), NOW_S * 1000, 360);
+    const units = out.slice(out.indexOf('class="cap-units"'), out.indexOf('</svg>', out.indexOf('class="cap-units"')));
+    for (let i = 0; i < 20; i++) expect(units).toContain(`>ac${i}</text>`);
+    expect(units).toMatch(/translate\(0 \d+\)/);
+  });
+
+  it('opened lists are keyed so a repaint keeps them open', () => {
+    expect(claude).toContain('data-cap-key="claude:events"');
+    const paint = TEMPLATE.slice(TEMPLATE.indexOf('\nfunction paintCapacity('));
+    expect(paint.slice(0, paint.indexOf('\n}\n'))).toContain('details[data-cap-key][open]');
+  });
+
+  // PR #417 review gate (astra): a repaint between fetches folds what is due into the measures.
+  it('an event whose time has come is part of "now", not a refill to come', () => {
+    const later = fns.renderCapacity(view, (NOW_S + 2 * H + 60) * 1000, 1200);
+    const c2 = later.slice(later.indexOf('data-group="claude"'), later.indexOf('data-group="codex"'));
+    expect(c2).toMatch(/cap-meas is-now[\s\S]*?>1\.1</); // 0.5 + ai1's 5h reset +0.6
+    expect(c2).not.toContain('● ai1 5h 리셋');
+  });
+
+  it('a narrow list with only small gains says so instead of "nothing"', () => {
+    const tiny = {
+      ...view,
+      groups: [{ ...view.groups[0], events: [{ account: 'ai1', cause: '5h', at: NOW_S + H, dNow: 0.02, dWeek: 0 }] }],
+    };
+    const out = fns.renderCapacity(tiny, NOW_S * 1000, 360);
+    expect(out).toContain('7일 안엔 +0.1 미만(소폭)');
+  });
+
+  it('a long account label is cut to fit its lane chip', () => {
+    const long = {
+      ...view,
+      groups: [
+        {
+          ...view.groups[0],
+          events: [{ account: 'averyveryverylongname@corp.example', cause: '7d', at: NOW_S + D, dNow: 1, dWeek: 1 }],
+        },
+      ],
+    };
+    const out = fns.renderCapacity(long, NOW_S * 1000, 1200);
+    expect(out).toContain('averyveryvery…');
   });
 
   it('nothing countable reads "계산 불가", never NaN', () => {

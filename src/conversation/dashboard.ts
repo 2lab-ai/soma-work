@@ -5193,12 +5193,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cap-sw.tier-low { background: #0072b2; }
 .cap-off { font-size: 13px; color: var(--ib-text-2); padding: 8px 0 10px; }
 .cap-prov { background: var(--ib-card); border-radius: 12px; padding: 12px 16px; margin-top: 10px; box-shadow: inset 0 0 0 1px var(--ib-card-border); }
+.cap-rows.is-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; align-items: start; }
+.cap-chip i { font-style: normal; }
+@media (max-width: 639px) { .cap-chip .cap-chip-k, .cap-chip .cap-chip-of { display: none; } }
 .cap-prov.is-empty { box-shadow: inset 0 0 0 1px var(--st-fail); }
 .cap-prov.is-low { box-shadow: inset 0 0 0 1px var(--st-wait); }
 .cap-pname { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-bottom: 6px; }
 .cap-pname b { font-size: 15px; }
 .cap-pname span { color: var(--ib-muted); font-size: 12px; }
-.cap-top { display: grid; grid-template-columns: minmax(0, 470px) minmax(0, 1fr); gap: 24px; }
+.cap-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }
 .cap-meas { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: baseline; margin-bottom: 4px; }
 .cap-meas.is-now .cap-k, .cap-meas.is-now .cap-big, .cap-meas.is-now .cap-pct2 { color: var(--cap-now); }
 .cap-meas.is-wk .cap-k, .cap-meas.is-wk .cap-big, .cap-meas.is-wk .cap-pct2 { color: var(--cap-wk); }
@@ -5234,7 +5237,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cap-evlist.is-short li { grid-template-columns: 56px 14px minmax(0, 1fr) auto; }
 .cap-evlist .is-now, .cap-summary .is-now { color: var(--cap-now); }
 .cap-evlist .is-wk, .cap-summary .is-wk { color: var(--cap-wk); }
-.cap-prov svg { display: block; max-width: 100%; overflow: visible; }
+.cap-prov svg { display: block; max-width: 100%; height: auto; overflow: visible; }
 .cap-prov svg text { font-family: inherit; }
 .cap-t-muted { fill: var(--ib-muted); font-size: 10px; }
 .cap-t-strong { fill: var(--ib-text-2); font-size: 10px; font-weight: 600; }
@@ -5265,12 +5268,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cap-l-mk.is-hollow { fill: var(--ib-card); }
 .cap-l-chip rect { fill: var(--ib-card); stroke: var(--cap-c); stroke-opacity: 0.6; }
 .cap-l-chip text { fill: var(--ib-text); font-size: 9.5px; }
+/* One breakpoint: renderCapacityGroup marks a card is-narrow from its own width
+   (under 600px of content), the same test that swaps the lanes for a list. */
+.cap-prov.is-narrow .cap-top { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+.cap-prov.is-narrow .cap-fc-row { grid-template-columns: minmax(0, 1fr); gap: 0; }
+.cap-prov.is-narrow .cap-fc-label { padding-top: 0; }
+.cap-prov.is-narrow .cap-meas { grid-template-columns: 72px minmax(0, 1fr); }
+.cap-prov.is-narrow .cap-big { font-size: 24px; }
 @media (max-width: 760px) {
-  .cap-top { grid-template-columns: minmax(0, 1fr); gap: 4px; }
-  .cap-fc-row { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .cap-fc-label { padding-top: 0; }
-  .cap-meas { grid-template-columns: 72px minmax(0, 1fr); }
-  .cap-big { font-size: 24px; }
   .cap-legend { margin-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -12067,6 +12072,10 @@ function sendRetry(msg) {
 // lane still shows every job whose run waits for a reply (never hidden behind a fold).
 var SEC_OPEN_QUERY = '(min-width: 840px) and (min-height: 1000px)';
 var _secMql = window.matchMedia ? window.matchMedia(SEC_OPEN_QUERY) : null;
+// Capacity v2 is taller (two measures, lanes, per-account bars per provider): it opens
+// on its own only where the board still starts on the first screen below it.
+var SEC_OPEN_QUERY_CAPACITY = '(min-width: 840px) and (min-height: 1400px)';
+var _secMqlCap = window.matchMedia ? window.matchMedia(SEC_OPEN_QUERY_CAPACITY) : null;
 var _secChoice = {};           // this page's choices, even when storage refuses the write
 var _cronLaneRevealed = false; // a deep link into a folded lane opens it for this page load
 var _cronFoldApplied = null;   // the fold the last CRON render used
@@ -12082,7 +12091,8 @@ function secSaved(sec) {
 function secIsOpen(sec) {
   if (sec === 'cron' && _cronLaneRevealed) return true;
   var saved = _secChoice[sec] !== undefined ? _secChoice[sec] : secSaved(sec);
-  return secOpen(saved, !!(_secMql && _secMql.matches));
+  var mql = sec === 'capacity' ? _secMqlCap : _secMql;
+  return secOpen(saved, !!(mql && mql.matches));
 }
 // A render for a disclosure change: entering and leaving cards animate as usual; the
 // board's moves are the coordinator's, from the spots cached before the change.
@@ -12589,7 +12599,7 @@ function capUnitBar(g, width) {
   var whole = Math.floor(g.total + 0.000000001);
   var main = g.has5h ? g.now : g.week;
   var label = (g.has5h ? '지금 ' + capFmt1(g.now) + ', ' : '') + '이번 주 ' + capFmt1(g.week) + ' / ' + capFmt1(g.total) + ' 계정분';
-  var s = '<svg class="cap-unitbar" width="' + width + '" height="' + (h + 14) + '" role="img" aria-label="' + escAttr(label) + '">';
+  var s = '<svg class="cap-unitbar" width="' + width + '" height="' + (h + 14) + '" viewBox="0 0 ' + width + ' ' + (h + 14) + '" role="img" aria-label="' + escAttr(label) + '">';
   s += '<rect class="cap-u-bg" width="' + width + '" height="' + h + '" rx="5"/>';
   s += '<rect class="cap-u-wk" width="' + (g.week * cw).toFixed(1) + '" height="' + h + '" rx="5"/>';
   s += '<rect class="' + (g.has5h ? 'cap-u-now' : 'cap-u-wk-solid') + '" y="5" width="' + (main * cw).toFixed(1) + '" height="' + (h - 10) + '" rx="3"/>';
@@ -12613,13 +12623,17 @@ function capUnits(g, width, nowSec) {
   var gap = 6;
   var bw = Math.max(14, Math.min(26, (width - gap * (n - 1)) / n));
   var bh = 44;
-  var s = '<svg class="cap-units" width="' + width + '" height="' + (bh + 34) + '" role="img" aria-label="계정별 잔여">';
+  // Every account gets a cell: what does not fit on one row wraps to the next.
+  var cols = Math.max(1, Math.min(n, Math.floor((width + gap) / (bw + gap))));
+  var rowH = bh + 34;
+  var rowsN = Math.ceil(n / cols);
+  var s = '<svg class="cap-units" width="' + width + '" height="' + (rowH * rowsN) + '" viewBox="0 0 ' + width + ' ' + (rowH * rowsN) + '" role="img" aria-label="계정별 잔여 ' + n + '계정">';
   list.forEach(function(u, i) {
-    var X = i * (bw + gap);
-    if (X + bw > width) return;
+    var X = (i % cols) * (bw + gap);
+    var Y0 = Math.floor(i / cols) * rowH;
+    s += '<g transform="translate(0 ' + Y0 + ')">';
     var tier = CAP_TIERS[u.tier];
     var tip = u.name + ' · ' + (tier ? tier.label : '티어 미지정');
-    s += '<g>';
     if (!u.counted) {
       var why = u.excluded === 'held' ? '보류' : u.excluded === 'unknownTier' ? '티어?' : '?';
       tip += ' · ' + (u.excluded === 'held' ? '보류(복귀 시각 모름) · 합계 밖' : u.excluded === 'unknownTier' ? '티어 미지정 · 합계 밖' : '주간 측정 없음 · 합계 밖');
@@ -12658,7 +12672,7 @@ function capLane(g, o, nowSec) {
   var y = function(v) { return axisY - 4 - (v / total) * (axisY - top - 8); };
   var key = o.key;
   var evs = (g.events || []).filter(function(e) { return e.at <= nowSec + o.span; });
-  var s = '<svg class="cap-lane ' + o.cls + '" width="' + width + '" height="' + h + '" role="img" aria-label="' + escAttr(o.aria) + '">';
+  var s = '<svg class="cap-lane ' + o.cls + '" width="' + width + '" height="' + h + '" viewBox="0 0 ' + width + ' ' + h + '" role="img" aria-label="' + escAttr(o.aria) + '">';
   o.ticks.forEach(function(tk) {
     var X = x(nowSec + tk.at);
     s += '<line class="cap-l-grid" x1="' + X.toFixed(1) + '" x2="' + X.toFixed(1) + '" y1="' + top + '" y2="' + axisY + '"/>';
@@ -12699,8 +12713,10 @@ function capLane(g, o, nowSec) {
     if (!filled) return;
     var c = CAP_CAUSE[e.cause] || CAP_CAUSE.release;
     var tier = CAP_TIERS[e.tier];
-    var text = c.g + ' ' + e.account + ' ' + (tier ? tier.short + ' ' : '') + '+' + capFmt1(d);
-    var cw = text.length * 6 + 18;
+    // A long label (a duplicated local name keeps its domain) is cut to fit the lane.
+    var name = e.account.length > 14 ? e.account.slice(0, 13) + '…' : e.account;
+    var text = c.g + ' ' + name + ' ' + (tier ? tier.short + ' ' : '') + '+' + capFmt1(d);
+    var cw = Math.min(width, text.length * 6 + 18);
     var cx = Math.max(0, Math.min(X - 1, width - cw));
     var row = 0;
     while (rows[row] != null && rows[row] > cx - 2) row++;
@@ -12765,7 +12781,10 @@ function capChips(g, nowSec) {
 // Narrow screens: the next six refills as a list — now and week apart.
 function capRefillList(g, nowSec) {
   var top = (g.events || []).filter(function(e) { return e.at <= nowSec + CAP_7D && (e.dNow >= 0.05 || e.dWeek >= 0.05); }).slice(0, 6);
-  if (!top.length) return '<div class="cap-why">7일 안에 늘어날 양 없음</div>';
+  if (!top.length) {
+    var small = (g.events || []).filter(function(e) { return e.at <= nowSec + CAP_7D; }).reduce(function(t, e) { return t + Math.max(e.dNow, e.dWeek); }, 0);
+    return '<div class="cap-why">7일 안엔 ' + (small > 0.0000001 ? capGain(small) + '(소폭)' : '늘어날 양 없음') + '</div>';
+  }
   return '<ul class="cap-evlist is-short">' + top.map(function(e) {
     var c = CAP_CAUSE[e.cause] || CAP_CAUSE.release;
     var d = (g.has5h && e.dNow >= 0.005 ? '<b class="is-now">지금 ' + capGain(e.dNow) + '</b> ' : '') + (e.dWeek >= 0.005 ? '<b class="is-wk">주간 ' + capGain(e.dWeek) + '</b>' : '');
@@ -12774,6 +12793,19 @@ function capRefillList(g, nowSec) {
 }
 // Collapsed (SSOT 2026-10-24): one chip per provider — both measures in max
 // accounts, a state glyph (never colour alone), the full sentence as its name.
+// The view is fetched every 60 s but painted every 30 s: an event whose time has come
+// is folded into the measures it moved, so nothing past reads as "to come".
+function capAdvance(g, nowSec) {
+  var evs = g.events || [];
+  var due = evs.filter(function(e) { return e.at <= nowSec; });
+  if (!due.length) return g;
+  var out = {};
+  for (var k in g) out[k] = g[k];
+  out.now = due.reduce(function(t, e) { return t + e.dNow; }, g.now);
+  out.week = due.reduce(function(t, e) { return t + e.dWeek; }, g.week);
+  out.events = evs.filter(function(e) { return e.at > nowSec; });
+  return out;
+}
 function renderCapacitySummary(v, nowMs) {
   if (!v.available) {
     return '<div class="cap-summary"><span class="cap-chip is-error" title="' + escAttr(v.reason || '') + '">가용량 미확인 · ' + esc(v.reason || '알 수 없는 오류') + '</span></div>';
@@ -12782,12 +12814,15 @@ function renderCapacitySummary(v, nowMs) {
   var GLYPH = { low: '▲ ', empty: '✗ ', unknown: '◌ ' };
   var WORD = { ok: '', low: ' · 부족', empty: ' · 소진', unknown: ' · 계산 불가' };
   var nowSec = nowMs / 1000;
-  return '<div class="cap-summary">' + v.groups.map(function(g) {
+  return '<div class="cap-summary">' + v.groups.map(function(g0) {
+    var g = capAdvance(g0, nowSec);
     var state = g.state || 'unknown';
     var known = g.total > 0;
     var t = capFmt1(g.total);
+    // Phones drop the words and the total (.cap-chip-k / .cap-chip-of): "Claude 6.2 · 6.3",
+    // the colours tell the window; the full sentence stays the chip's name and tooltip.
     var nums = !known ? '<b>—</b>'
-      : (g.has5h ? '지금 <b class="is-now">' + capFmt1(g.now) + '</b> · ' : '') + '주 <b class="is-wk">' + capFmt1(g.week) + '</b> /' + t;
+      : (g.has5h ? '<i class="cap-chip-k">지금 </i><b class="is-now">' + capFmt1(g.now) + '</b> · ' : '') + '<i class="cap-chip-k">주 </i><b class="is-wk">' + capFmt1(g.week) + '</b><i class="cap-chip-of"> /' + t + '</i>';
     var said = !known ? '계산 불가 — 셀 수 있는 계정 없음'
       : (g.has5h ? '지금 ' + capFmt1(g.now) + '/' + t + ' 계정분 (' + capPct(g.now, g.total) + '), ' : '') + '이번 주 ' + capFmt1(g.week) + '/' + t + ' 계정분 (' + capPct(g.week, g.total) + ')';
     var next = known ? capNextLine(g, g.has5h ? 'dNow' : 'dWeek', g.has5h ? CAP_5H : CAP_7D, nowSec, nowMs) : '';
@@ -12810,14 +12845,15 @@ function renderCapacityGroup(g, nowMs, width) {
     tc[k] = (tc[k] || 0) + 1;
   });
   var mix = Object.keys(tc).map(function(k) { return k + ' ' + tc[k]; }).join(' · ');
-  var h = '<section class="cap-prov is-' + esc(g.state || 'unknown') + '" data-group="' + escAttr(g.group) + '" aria-label="' + escAttr(g.label + ' 가용량') + '">'
+  var h = '<section class="cap-prov is-' + esc(g.state || 'unknown') + (narrow ? ' is-narrow' : '') + '" data-group="' + escAttr(g.group) + '" aria-label="' + escAttr(g.label + ' 가용량') + '">'
     + '<div class="cap-pname"><b>' + esc(g.label) + '</b><span>' + g.accountCount + '계정 (' + esc(mix) + ') · 계산 대상 ' + g.countedAccounts + '계정 = ' + capFmt1(g.total) + '계정분</span></div>';
   if (!(g.total > 0)) {
     var ex = g.excluded || {};
     return h + '<div class="cap-why">계산 불가 — 셀 수 있는 계정이 없음 (티어 미지정 ' + (ex.unknownTier || 0) + ' · 보류 ' + (ex.held || 0) + ' · 주간 측정 없음 ' + (ex.noMeasure || 0) + ')</div></section>';
   }
   var t = capFmt1(g.total);
-  h += '<div class="cap-top"><div class="cap-left">';
+  // The grid's first column is the width the left charts are drawn at — one number.
+  h += '<div class="cap-top"' + (narrow ? '' : ' style="grid-template-columns:' + leftW + 'px minmax(0, 1fr)"') + '><div class="cap-left">';
   if (g.has5h) {
     h += '<div class="cap-meas is-now"><div class="cap-k">지금<i>5h·주간 중 작은 쪽</i></div><div><span class="cap-big">' + capFmt1(g.now) + '</span><span class="cap-of">/ ' + t + ' 계정분</span><span class="cap-pct2">' + capPct(g.now, g.total) + '</span>'
       + '<span class="cap-nx" role="timer">' + esc(capNextLine(g, 'dNow', CAP_5H, nowSec, nowMs)) + '</span></div></div>';
@@ -12830,7 +12866,7 @@ function renderCapacityGroup(g, nowMs, width) {
   h += capChips(g, nowSec);
   h += '</div><div class="cap-right">';
   var units = capUnits(g, rightW, nowSec);
-  h += narrow ? '<details class="cap-more2"><summary>계정별 ' + (g.units || []).length + '</summary>' + units + '</details>'
+  h += narrow ? '<details class="cap-more2" data-cap-key="' + escAttr(g.group + ':units') + '"><summary>계정별 ' + (g.units || []).length + '</summary>' + units + '</details>'
     : '<div class="cap-subt"><span>계정별 (지금 많은 순)</span><span class="cap-muted">보라 높이 = 주간 잔여 · 청록 = 지금 · ~ = 추정 · 점 = 티어 · 점선 칸 = 합계 밖</span></div>' + units;
   h += '</div></div><div class="cap-fc">';
   var ex2 = g.excluded || {};
@@ -12857,7 +12893,7 @@ function renderCapacityGroup(g, nowMs, width) {
     + capLane(g, { width: laneW, span: CAP_7D, key: 'dWeek', start: g.week, cls: 'is-7d', zeroCause: '', empty: '7일 안에 주간 리셋 없음', aria: '향후 7일 이번 주 한도 예측', ticks: [0, 1, 2, 3, 4, 5, 6, 7].map(function(i) { return { at: i * 86400, label: i ? i + 'd' : '지금' }; }) }, nowSec)
     + '<div class="cap-decomp">' + capDecomp(g, CAP_7D, 'dWeek', nowSec) + outNote + rel + '</div></div></div>';
   var list7 = (g.events || []).filter(function(e) { return e.at <= nowSec + CAP_7D && (e.dNow >= 0.005 || e.dWeek >= 0.005); });
-  h += '<details class="cap-more2"><summary>이벤트 목록 ' + list7.length + '건</summary><ul class="cap-evlist">' + list7.map(function(e) {
+  h += '<details class="cap-more2" data-cap-key="' + escAttr(g.group + ':events') + '"><summary>이벤트 목록 ' + list7.length + '건</summary><ul class="cap-evlist">' + list7.map(function(e) {
     var c = CAP_CAUSE[e.cause] || CAP_CAUSE.release;
     var tier = CAP_TIERS[e.tier];
     return '<li><span>' + esc(capCountdown(e.at - nowSec) + ' 후 (' + capClockLabel(e.at, nowMs) + ')') + '</span><span>' + c.g + '</span><span>' + esc(e.account) + (tier ? ' ' + tier.short : '') + ' · ' + c.label + '</span><span class="is-now">' + (g.has5h ? '지금 ' + capGain(e.dNow) : '') + '</span><span class="is-wk">주간 ' + capGain(e.dWeek) + '</span></li>';
@@ -12878,7 +12914,11 @@ function renderCapacity(v, nowMs, widthPx) {
   var head = '<div class="cap-head"><h2 class="cap-title"><span class="cap-title-pre">LLM </span>가용량</h2><span class="cap-sub">llmux · 계정분 = 티어 가중 한도 잔여(토큰 수 아닌 정규화 추정)' + esc(fresh) + ' · 시각은 보는 사람 기준</span>' + renderCapacitySummary(v, nowMs) + legend + '</div>';
   if (!v.available) return head + '<div class="cap-off">' + esc('가용량을 불러오지 못했습니다 — ' + (v.reason || '알 수 없는 오류')) + '</div>';
   if (!v.groups || !v.groups.length) return head + '<div class="cap-off">llmux 풀에 계정이 없습니다</div>';
-  return head + '<div class="cap-rows">' + v.groups.map(function(g) { return renderCapacityGroup(g, nowMs, widthPx); }).join('') + '</div>';
+  // Very wide screens put the providers side by side, so the section stays short
+  // enough for the board to start on the first screen.
+  var cols = (Number(widthPx) || 0) >= 1600 && v.groups.length > 1 ? 2 : 1;
+  var cardW = cols === 2 ? Math.floor(((Number(widthPx) || 0) - 12) / 2) : widthPx;
+  return head + '<div class="cap-rows' + (cols === 2 ? ' is-cols' : '') + '">' + v.groups.map(function(g) { return renderCapacityGroup(capAdvance(g, nowMs / 1000), nowMs, cardW); }).join('') + '</div>';
 }
 function paintCapacity() {
   var el = document.getElementById('capacity');
@@ -12895,8 +12935,12 @@ function paintCapacity() {
   var shown = el._shown;
   el._shown = true;
   if (view._html !== html) {
+    // A repaint (fresh age, new snapshot) must not fold what the reader opened.
+    var opened = {};
+    Array.prototype.forEach.call(view.querySelectorAll('details[data-cap-key][open]'), function(d) { opened[d.getAttribute('data-cap-key')] = true; });
     view.innerHTML = html;
     view._html = html;
+    Array.prototype.forEach.call(view.querySelectorAll('details[data-cap-key]'), function(d) { if (opened[d.getAttribute('data-cap-key')]) d.open = true; });
     // The section sits above the board, outside #inbox: no observer sees the board
     // move when it appears or changes height, so the shift cache learns it here.
     scheduleLayoutRefresh(40);
