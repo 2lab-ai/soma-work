@@ -3266,6 +3266,77 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
+     * User media (SSOT 2026-10-25, review gate P1): `already-dequeued` is a
+     * consumption receipt too — the model has the message — and the row is
+     * resolved, so no drain will ever run it. It must be recorded (text + files)
+     * here, before its files are deleted; a late `completed` frame must not
+     * record it a second time.
+     */
+    it('records an already-delivered message with its files before the cleanup, once', async () => {
+      const processed = [{ name: 'shot.png', path: '/tmp/slack-file-1-shot.png', isImage: true }];
+      processFiles.mockResolvedValue({ files: processed, shouldContinue: true });
+      const order: string[] = [];
+      handlerAny.fileHandler = {
+        formatFilePrompt: vi.fn().mockResolvedValue('t'),
+        cleanupTempFiles: vi.fn(async () => {
+          order.push('cleanup');
+        }),
+      };
+      const attachments = [{ id: 'M1', name: 'shot.png', kind: 'image', mime: 'image/png', size: 3, stored: true }];
+      const capture = vi.fn(async () => {
+        order.push('capture');
+        return attachments;
+      });
+      const record = vi.fn(() => {
+        order.push('record');
+      });
+      handlerAny.userMediaRecorder = { capture, record };
+      registrySession.conversationId = 'conv_cancel';
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(
+        message({
+          ts: '1792900000.000100',
+          text: '이것도 같이 봐줘',
+          files: [
+            {
+              id: 'F1',
+              name: 'shot.png',
+              mimetype: 'image/png',
+              filetype: 'png',
+              url_private: 'https://x/1',
+              url_private_download: 'https://x/1d',
+              size: 3,
+            },
+          ],
+        }),
+        say(),
+      );
+      const [item] = items();
+      const uuid = steerTurn.mock.calls[0][1].uuid;
+      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue('already-dequeued');
+
+      const outcome = await handlerAny.cancelSteeredFollowup(SESSION_KEY, item.id, item.epoch, uuid);
+
+      expect(outcome).toBe('already-delivered');
+      expect(record).toHaveBeenCalledWith(
+        'conv_cancel',
+        '이것도 같이 봐줘',
+        expect.any(String),
+        'U_OWNER',
+        attachments,
+        {
+          timestamp: 1792900000000,
+        },
+      );
+      expect(order).toEqual(['capture', 'record', 'cleanup']);
+      await handlerAny.streamExecutor.deps.onSteerLifecycle({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+      expect(record).toHaveBeenCalledTimes(1);
+      await settle();
+    });
+
+    /**
      * The SDK was never asked (no live query for the key, or a runtime without
      * `cancelAsyncMessage`), so delivery is UNKNOWN. Recording consumption would
      * resolve a message nobody delivered; leaving it `steered` would leave a row

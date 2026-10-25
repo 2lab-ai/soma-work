@@ -12895,6 +12895,14 @@ function renderUserMedia(cid, list, opts) {
   return '<div class="um-media' + (compact ? ' um-compact' : '') + '">' + html + '</div>';
 }
 
+// Why a user's file has no copy here, in the viewer.
+function umMissingReason(a) {
+  if (a.unavailable === 'too_large') return '50 MB를 넘어 봇이 받지 못한 파일입니다. Slack에서 열 수 있습니다.';
+  if (a.unavailable === 'download_failed') return '봇이 이 파일을 내려받지 못했습니다. Slack에서 열 수 있습니다.';
+  if (a.kind === 'video' || a.kind === 'audio') return '봇은 영상과 전사하지 않은 음성을 내려받지 않습니다. Slack에서 열 수 있습니다.';
+  return '이 파일은 대시보드에 사본이 없습니다. Slack에서 열 수 있습니다.';
+}
+
 // Collapsed card face: a paperclip and the count. Never an image — a board of
 // cards must not pull every screenshot.
 function umFaceBadge(s) {
@@ -13116,7 +13124,7 @@ function renderArtModalBody(cid, a) {
     var link = /^https:\\/\\//i.test(String(a.permalink || '')) ? '<a class="btn-action btn-primary" href="' + escAttr(a.permalink) + '" target="_blank" rel="noopener">Slack에서 열기</a>' : '';
     return '<div class="art-full-meta">' + artGlyph(a.kind) + '<div class="art-full-meta-name">' + esc(a.name) + '</div>'
       + '<div class="art-full-meta-sub">' + esc(artMeta(a)) + '</div>'
-      + '<p>이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).</p>' + link + '</div>';
+      + '<p>' + (a.source === 'user_upload' ? umMissingReason(a) : '이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).') + '</p>' + link + '</div>';
   }
   if (a.kind === 'image') return '<div class="art-full-imgwrap"><img class="art-full-img" src="' + url + '" alt="' + title + '" data-art-zoom="1"></div>';
   // A user's own upload never runs (the route serves it inert as well).
