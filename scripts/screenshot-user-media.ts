@@ -51,8 +51,33 @@ async function makeImages(browser: Browser): Promise<Record<string, Buffer>> {
       `<style>${base} .b{width:100%;padding:16px;border-radius:10px;background:#fff;border:1px solid #dde}</style><div class="b">1. 앱 실행</div><div class="b">2. 로그인 탭</div><div class="b">3. 버튼 잘림 확인</div>`,
     ),
   };
+  // A real, decodable video: 1.2 s of canvas animation recorded as WebM in this browser.
+  // Plain-JS string (tsx would wrap named functions in __name()).
+  const webm = (await page.evaluate(`(async () => {
+    const c = document.createElement('canvas'); c.width = 320; c.height = 240;
+    const g = c.getContext('2d');
+    const rec = new MediaRecorder(c.captureStream(15), { mimeType: 'video/webm' });
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    const stopped = new Promise((r) => { rec.onstop = r; });
+    rec.start(100);
+    const t0 = performance.now();
+    await new Promise((r) => {
+      const tick = () => {
+        const t = performance.now() - t0;
+        g.fillStyle = '#2563eb'; g.fillRect(0, 0, 320, 240);
+        g.fillStyle = '#fff'; g.fillRect((t / 4) % 300, 100, 20, 40);
+        if (t < 1200) requestAnimationFrame(tick); else r();
+      };
+      tick();
+    });
+    rec.stop(); await stopped;
+    const u = new Uint8Array(await new Blob(chunks, { type: 'video/webm' }).arrayBuffer());
+    let s = ''; for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]);
+    return btoa(s);
+  })()`)) as string;
   await page.close();
-  return images;
+  return { ...images, video: Buffer.from(webm, 'base64') };
 }
 
 const att = (id: string, name: string, kind: string, mime: string, size: number, stored = true, extra = {}) => ({
@@ -74,7 +99,7 @@ const T1_ATTS = [
   att('PDF1', '로그인-디자인-가이드-v3-final.pdf', 'pdf', 'application/pdf', 2_200_000),
   att('VOX1', 'voice-memo.m4a', 'audio', 'audio/mp4', 48_000),
   // Videos are downloaded (≤ 50 MB) and kept, so this one plays in the dashboard.
-  att('MOV1', 'screen-recording.mp4', 'video', 'video/mp4', 38_000_000),
+  att('MOV1', 'screen-recording.webm', 'video', 'video/webm', 38_000_000),
 ];
 const T3_ATTS = [att('IMG6', 'after-fix.png', 'image', 'image/png', 150_000)];
 
@@ -161,6 +186,7 @@ async function preparePage(page: Page, images: Record<string, Buffer>) {
   };
   await page.route(`**/api/dashboard/session/${CID}/media/*/content*`, (r) => {
     const id = r.request().url().split('/media/')[1].split('/')[0];
+    if (id === 'MOV1') return r.fulfill({ body: images.video, contentType: 'video/webm' });
     if (bytes[id]) return r.fulfill({ body: bytes[id], contentType: 'image/png' });
     return r.fulfill({ body: Buffer.from('%PDF-1.4\n'), contentType: 'application/octet-stream' });
   });
@@ -303,13 +329,35 @@ async function run(
   await page.waitForFunction(() => (document.getElementById('art-modal') as HTMLDialogElement)?.open, {
     timeout: 5000,
   });
+  // Real playback, not just the element: the bytes decode (frame size known) and time advances.
+  await page
+    .waitForFunction(
+      () => {
+        const v = document.querySelector('#art-modal-body video') as HTMLVideoElement | null;
+        return !!v && v.readyState >= 2 && v.videoWidth > 0 && v.currentTime > 0.2;
+      },
+      undefined,
+      { timeout: 8000 },
+    )
+    .catch(() => {});
   const player = await page.evaluate(() => {
     const v = document.querySelector('#art-modal-body video') as HTMLVideoElement | null;
-    return { src: v?.getAttribute('src') ?? '', controls: !!v?.controls };
+    return {
+      src: v?.getAttribute('src') ?? '',
+      controls: !!v?.controls,
+      width: v?.videoWidth ?? 0,
+      ready: v?.readyState ?? 0,
+      time: v?.currentTime ?? 0,
+      error: v?.error ? v.error.code : 0,
+    };
   });
   checks.push({
     ok: player.controls && player.src.includes('/media/MOV1/content'),
     msg: `a kept video opens as a player (${player.src})`,
+  });
+  checks.push({
+    ok: player.width === 320 && player.ready >= 2 && player.time > 0.2 && !player.error,
+    msg: `the kept video decodes and plays (${player.width}px, readyState ${player.ready}, t=${player.time.toFixed(2)}s)`,
   });
   await page.screenshot({ path: path.join(OUT, `viewer-video-${tag}.png`) });
   await page.keyboard.press('Escape');
