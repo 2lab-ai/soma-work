@@ -16,6 +16,18 @@ export interface ProcessedFile {
   isAudio: boolean;
   size: number;
   tempPath?: string;
+  /** Slack file id and permalink — the dashboard keeps them with the user turn (user media). */
+  slackFileId?: string;
+  permalink?: string;
+  /** The bot could not fetch the file: over the download cap, or the download failed. `path` is ''. */
+  unavailable?: 'too_large' | 'download_failed';
+}
+
+/** The Slack file's id and permalink, when the event carries them (strings only). */
+function slackRef(file: any): { slackFileId?: string; permalink?: string } {
+  const id = typeof file?.id === 'string' && file.id ? file.id : undefined;
+  const permalink = typeof file?.permalink === 'string' && file.permalink ? file.permalink : undefined;
+  return { ...(id ? { slackFileId: id } : {}), ...(permalink ? { permalink } : {}) };
 }
 
 export class FileHandler {
@@ -38,6 +50,27 @@ export class FileHandler {
     return processedFiles;
   }
 
+  /**
+   * A file the bot could not fetch, kept as metadata (no path) so the turn —
+   * and the dashboard — still shows that the user attached it.
+   */
+  private unavailableFile(file: any, reason: 'too_large' | 'download_failed'): ProcessedFile {
+    const name = String(file?.name || 'file');
+    const mimetype = String(file?.mimetype || 'application/octet-stream');
+    return {
+      path: '',
+      name,
+      mimetype,
+      isImage: this.isImageFile(mimetype, name),
+      isText: this.isTextFile(mimetype),
+      isVideo: this.isVideoFile(mimetype, name),
+      isAudio: this.isAudioFile(mimetype, name),
+      size: Number(file?.size) || 0,
+      unavailable: reason,
+      ...slackRef(file),
+    };
+  }
+
   private async downloadFile(file: any): Promise<ProcessedFile | null> {
     // Video files: metadata only (no transcription support).
     if (this.isVideoFile(file.mimetype, file.name)) {
@@ -54,6 +87,7 @@ export class FileHandler {
         isVideo: true,
         isAudio: false,
         size: file.size || 0,
+        ...slackRef(file),
       };
     }
 
@@ -75,6 +109,7 @@ export class FileHandler {
           isVideo: false,
           isAudio: true,
           size: file.size || 0,
+          ...slackRef(file),
         };
       }
       // A2T ready — fall through to download the audio file
@@ -86,7 +121,7 @@ export class FileHandler {
     // Check file size limit (50MB)
     if (file.size > 50 * 1024 * 1024) {
       this.logger.warn('File too large, skipping', { name: file.name, size: file.size });
-      return null;
+      return this.unavailableFile(file, 'too_large');
     }
 
     try {
@@ -138,7 +173,8 @@ export class FileHandler {
       }
 
       const tempDir = os.tmpdir();
-      const tempPath = path.join(tempDir, `slack-file-${Date.now()}-${file.name}`);
+      // basename: a Slack file name is user input and must not move the path out of the temp dir.
+      const tempPath = path.join(tempDir, `slack-file-${Date.now()}-${path.basename(String(file.name || 'file'))}`);
 
       fs.writeFileSync(tempPath, buffer);
 
@@ -152,6 +188,7 @@ export class FileHandler {
         isAudio: this.isAudioFile(file.mimetype, file.name),
         size: buffer.length,
         tempPath,
+        ...slackRef(file),
       };
 
       this.logger.info('File downloaded successfully', {
@@ -165,7 +202,7 @@ export class FileHandler {
       return processed;
     } catch (error) {
       this.logger.error('Failed to download file', error);
-      return null;
+      return this.unavailableFile(file, 'download_failed');
     }
   }
 
@@ -296,7 +333,12 @@ export class FileHandler {
       prompt += '\n\nUploaded files:\n';
 
       for (const file of files) {
-        if (file.isImage) {
+        if (file.unavailable) {
+          prompt += `\n## File: ${file.name}\n`;
+          prompt += `File type: ${file.mimetype}\n`;
+          prompt += `Size: ${file.size} bytes\n`;
+          prompt += `Note: This file could not be downloaded (${file.unavailable === 'too_large' ? 'over the 50 MB limit' : 'the download failed'}). Acknowledge it by name and ask the user to share it another way if you need its content.\n`;
+        } else if (file.isImage) {
           // Include path so the agent can view the image via Read tool.
           // Claude Code's Read tool supports reading images natively (multimodal).
           prompt += `\n## Image: ${file.name}\n`;

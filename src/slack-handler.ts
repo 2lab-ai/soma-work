@@ -29,6 +29,7 @@ import type { ContinuationHandler, TurnRunnerSurface } from './agent-session';
 import { isAwaitingUserChoice, TurnRunner, V1QueryAdapter } from './agent-session';
 import type { ClaudeHandler } from './claude-handler';
 import { getFollowupQueueCapacity, getReleaseNotesChannels } from './config';
+import { captureUserMedia, recordUserTurn } from './conversation/recorder';
 import { DeployLaneTrigger } from './deploy-lanes';
 import { FileHandler, type ProcessedFile } from './file-handler';
 import { getLastCommandChannelStore } from './last-command-channel-store';
@@ -288,6 +289,14 @@ export class SlackHandler {
    * boundary — so the cleanup hangs off the settlement, not off the enqueue.
    */
   private followupSteerFiles?: Map<string, ProcessedFile[]>;
+  /**
+   * What a steered message said, by the uuid it was pushed under — recorded as
+   * a user turn (text + files, user media) once the SDK confirms the model read
+   * it. Cleared with the files ({@link takeSteerFiles}) on every settlement path.
+   */
+  private followupSteerInstructions?: Map<string, { text: string; user?: string; sentAt?: number }>;
+  /** Seam for the user-turn record of a steered message (tests swap it). */
+  private userMediaRecorder = { capture: captureUserMedia, record: recordUserTurn };
   /**
    * The uuid each item was steered under, keyed by item id — the reverse of
    * {@link followupSteerFiles}, and the only way back to those files from a path
@@ -3942,6 +3951,7 @@ export class SlackHandler {
       }
 
       let text = (event.text ?? '').trim();
+      const rawText = text;
       if (event.files?.length) {
         // D2: attachments steer too. The files are downloaded here rather than
         // at dispatch, and the model reads them from the paths the prompt
@@ -4000,6 +4010,11 @@ export class SlackHandler {
       // the same turn, so deleting them now would break the message we just
       // delivered.
       if (files.length > 0) (this.followupSteerFiles ??= new Map()).set(steered.uuid, files);
+      (this.followupSteerInstructions ??= new Map()).set(steered.uuid, {
+        text: rawText,
+        user: event.user,
+        sentAt: slackTsMs(event.ts),
+      });
       (this.followupSteerUuids ??= new Map()).set(item.id, steered.uuid);
       return 'steered';
     } catch (error) {
@@ -4119,7 +4134,15 @@ export class SlackHandler {
         // is what decides which of the two just happened.
         void this.syncFollowupReactions(queueKey, settled.item.id);
       }
-      await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+      const instruction = this.followupSteerInstructions?.get(uuid);
+      const steerFiles = this.takeSteerFiles(uuid);
+      // Consumed: the message is part of the conversation now — record it (and
+      // copy its files) before the cleanup below deletes them. A message the
+      // queue took back is recorded by the drain's ordinary turn instead.
+      if (phase === 'completed' && settled.ok && instruction) {
+        await this.recordSteeredInstruction(sessionKey, instruction, steerFiles);
+      }
+      await this.cleanupSteerFiles(steerFiles);
       // NOT awaited: the executor awaits this hook inside its stream loop, so a
       // Slack round-trip here delays the answer the user is waiting for. The
       // queue mutation above is the part that must be finished before the turn
@@ -4549,11 +4572,47 @@ export class SlackHandler {
    */
   private static readonly SILENT_SAY = (async () => ({})) as any;
 
-  /** Forget the files a uuid owned, handing them to the caller to delete. */
+  /** Forget the files (and the recorded words) a uuid owned, handing the files to the caller to delete. */
   private takeSteerFiles(uuid: string): ProcessedFile[] {
     const files = this.followupSteerFiles?.get(uuid) ?? [];
     this.followupSteerFiles?.delete(uuid);
+    this.followupSteerInstructions?.delete(uuid);
     return files;
+  }
+
+  /**
+   * A steered message the model read becomes a user turn of the session's
+   * conversation, with its files (user media, SSOT 2026-10-25) — the executor
+   * never saw it, so nothing else records it. Best effort: a bookkeeping
+   * failure must never fail the turn it was steered into.
+   */
+  private async recordSteeredInstruction(
+    sessionKey: string,
+    instruction: { text: string; user?: string; sentAt?: number },
+    files: ProcessedFile[],
+  ): Promise<void> {
+    try {
+      const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
+      const conversationId = session?.conversationId;
+      if (!conversationId || (!instruction.text && files.length === 0)) return;
+      let attachments: Awaited<ReturnType<typeof captureUserMedia>> | undefined;
+      if (files.length > 0) attachments = await this.userMediaRecorder.capture(conversationId, files);
+      const userId = instruction.user ?? session?.ownerId ?? 'unknown';
+      const userName = userSettingsStore.getUserSettings?.(userId)?.slackDisplayName ?? session?.ownerName ?? userId;
+      this.userMediaRecorder.record(
+        conversationId,
+        instruction.text,
+        userName,
+        userId,
+        attachments?.length ? attachments : undefined,
+        { timestamp: instruction.sentAt },
+      );
+    } catch (error) {
+      this.logger.warn('Steered message was not recorded as a user turn', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
   }
 
   /** Best effort: a temp file left behind is a disk problem, never a user-visible one. */
@@ -6683,4 +6742,10 @@ export class SlackHandler {
       });
     });
   }
+}
+
+/** A Slack message ts (`"1792900000.000100"`) in epoch ms; undefined when it is not one. */
+function slackTsMs(ts: string | undefined): number | undefined {
+  const n = Number(ts);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n * 1000) : undefined;
 }

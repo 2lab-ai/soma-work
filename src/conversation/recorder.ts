@@ -4,6 +4,7 @@ import { getMetricsEmitter } from '../metrics/event-emitter';
 import { ConversationStorage } from './storage';
 import { generateSessionSummaryTitle, type SessionSummaryTitleLinks, summarizeResponse } from './summarizer';
 import type { ConversationRecord, ConversationTurn } from './types';
+import { getUserMediaStore, type TurnAttachment, type UserMediaFile } from './user-media';
 
 const logger = new Logger('ConversationRecorder');
 
@@ -195,11 +196,30 @@ export function createConversation(
 }
 
 /**
- * Record a user turn (fire-and-forget, non-blocking)
+ * Copy a turn's downloaded files into the user-media store (SSOT 2026-10-25).
+ * Awaited by the caller BEFORE it records the turn and before the turn's temp
+ * cleanup; bounded inside the store, never throws, never drops a file.
  */
-export function recordUserTurn(conversationId: string, content: string, userName?: string, userId?: string): void {
+export function captureUserMedia(conversationId: string, files: readonly UserMediaFile[]): Promise<TurnAttachment[]> {
+  return getUserMediaStore().capture(conversationId, files);
+}
+
+/**
+ * Record a user turn (fire-and-forget, non-blocking).
+ * `attachments` — the files the user attached (from `captureUserMedia`); their
+ * copies are committed once the turn is saved, before the dashboard is told.
+ * `opts.timestamp` — when the user sent it, if earlier than now (a steered message).
+ */
+export function recordUserTurn(
+  conversationId: string,
+  content: string,
+  userName?: string,
+  userId?: string,
+  attachments?: readonly TurnAttachment[],
+  opts: { timestamp?: number } = {},
+): void {
   // Fire-and-forget
-  _recordUserTurnAsync(conversationId, content, userName, userId).catch((err) => {
+  _recordUserTurnAsync(conversationId, content, userName, userId, attachments, opts.timestamp).catch((err) => {
     logger.error(`Failed to record user turn for ${conversationId}`, err);
   });
   // Metrics: emit turn_used event (fire-and-forget)
@@ -213,26 +233,33 @@ async function _recordUserTurnAsync(
   content: string,
   userName?: string,
   userId?: string,
+  attachments?: readonly TurnAttachment[],
+  timestamp?: number,
 ): Promise<void> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) {
+    // The copies stay pending and are swept (user-media.ts lifecycle).
     logger.warn(`Conversation ${conversationId} not found, skipping user turn recording`);
     return;
   }
 
+  const now = Date.now();
   const turn: ConversationTurn = {
     id: randomUUID(),
     role: 'user',
-    timestamp: Date.now(),
+    timestamp: typeof timestamp === 'number' && timestamp > 0 && timestamp <= now ? timestamp : now,
     userName,
     userId,
     rawContent: content,
+    ...(attachments && attachments.length > 0 ? { attachments: [...attachments] } : {}),
   };
 
   record.turns.push(turn);
-  record.updatedAt = Date.now();
+  record.updatedAt = now;
 
   await serializedSave(conversationId, record);
+  // Saved: the copies the turn lists may now be served — before anyone is told about it.
+  if (turn.attachments) await getUserMediaStore().commit(conversationId, turn.attachments);
   if (_onTurnRecorded) _onTurnRecorded(conversationId, turn);
 }
 
