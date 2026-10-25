@@ -72,52 +72,10 @@ export class FileHandler {
   }
 
   private async downloadFile(file: any): Promise<ProcessedFile | null> {
-    // Video files: metadata only (no transcription support).
-    if (this.isVideoFile(file.mimetype, file.name)) {
-      this.logger.info('Video file detected, skipping download (metadata only)', {
-        name: file.name,
-        mimetype: file.mimetype,
-      });
-      return {
-        path: '',
-        name: file.name,
-        mimetype: file.mimetype,
-        isImage: false,
-        isText: false,
-        isVideo: true,
-        isAudio: false,
-        size: file.size || 0,
-        ...slackRef(file),
-      };
-    }
-
-    // Audio files: download if A2T service is available for transcription.
-    // Falls back to metadata-only when A2T is not ready.
-    if (this.isAudioFile(file.mimetype, file.name)) {
-      const a2t = getA2tService();
-      if (!a2t?.isReady()) {
-        this.logger.info('Audio file detected, A2T not available — metadata only', {
-          name: file.name,
-          a2tStatus: a2t?.getStatusMessage() || 'not initialized',
-        });
-        return {
-          path: '',
-          name: file.name,
-          mimetype: file.mimetype,
-          isImage: false,
-          isText: false,
-          isVideo: false,
-          isAudio: true,
-          size: file.size || 0,
-          ...slackRef(file),
-        };
-      }
-      // A2T ready — fall through to download the audio file
-      this.logger.info('Audio file detected, A2T available — downloading for transcription', {
-        name: file.name,
-      });
-    }
-
+    // Video and audio are downloaded like any other file (same 50 MB cap), so
+    // the dashboard keeps a copy it can play (user media, SSOT 2026-10-25).
+    // The model's prompt still never carries a video's path, nor an audio
+    // file's unless it was transcribed (formatFilePrompt).
     // Check file size limit (50MB)
     if (file.size > 50 * 1024 * 1024) {
       this.logger.warn('File too large, skipping', { name: file.name, size: file.size });

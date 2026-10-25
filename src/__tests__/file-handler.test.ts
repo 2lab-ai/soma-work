@@ -228,18 +228,20 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
 
   it('downloadFile detects media by extension when mimetype is application/octet-stream', async () => {
     const fh = handler as any;
-    const file = {
-      name: 'recording.mp4',
-      mimetype: 'application/octet-stream',
-      size: 5_000_000,
-      url_private_download: 'https://example.com/video',
-    };
-    const result = await fh.downloadFile(file);
-
-    expect(result).not.toBeNull();
-    expect(result.isVideo).toBe(true);
-    expect(result.path).toBe('');
-    expect(result.tempPath).toBeUndefined();
+    const srv = await serveBytes(Buffer.from('mp4-bytes'), 'application/octet-stream');
+    try {
+      const result = await fh.downloadFile({
+        name: 'recording.mp4',
+        mimetype: 'application/octet-stream',
+        size: 9,
+        url_private_download: srv.url,
+      });
+      expect(result.isVideo).toBe(true);
+      expect(result.path).not.toBe('');
+      await handler.cleanupTempFiles([result]);
+    } finally {
+      srv.close();
+    }
   });
 
   // Gemini review: isImageFile extension fallback consistency
@@ -253,8 +255,8 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
     expect(fh.isImageFile('application/octet-stream', 'clip.mp4')).toBe(false);
   });
 
-  // Gemini review P2 fix: media files skip download, return metadata-only ProcessedFile
-  it('downloadFile returns metadata-only ProcessedFile for video without downloading', async () => {
+  // Over the 50 MB cap, a video is metadata only (never fetched), with the reason.
+  it('downloadFile returns metadata-only ProcessedFile for a video over the cap', async () => {
     const fh = handler as any;
     const file = {
       name: 'big-video.mp4',
@@ -270,9 +272,10 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
     expect(result.size).toBe(200_000_000);
     expect(result.path).toBe('');
     expect(result.tempPath).toBeUndefined();
+    expect(result.unavailable).toBe('too_large');
   });
 
-  it('downloadFile returns metadata-only ProcessedFile for audio without downloading', async () => {
+  it('downloadFile returns metadata-only ProcessedFile for audio over the cap', async () => {
     const fh = handler as any;
     const file = {
       name: 'podcast.mp3',
@@ -287,6 +290,70 @@ describe('FileHandler.formatFilePrompt — video/audio media support', () => {
     expect(result.name).toBe('podcast.mp3');
     expect(result.size).toBe(80_000_000);
     expect(result.path).toBe('');
+    expect(result.unavailable).toBe('too_large');
+  });
+});
+
+/** A one-shot local HTTP server returning `body` — downloads in tests never leave the machine. */
+async function serveBytes(body: Buffer, contentType: string): Promise<{ url: string; close(): void }> {
+  const http = await import('node:http');
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': contentType });
+    res.end(body);
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  return { url: `http://127.0.0.1:${(server.address() as any).port}/f`, close: () => server.close() };
+}
+
+/**
+ * User media (SSOT 2026-10-25, goal gap): a video or a voice note the bot does
+ * not transcribe is downloaded too (same 50 MB cap), so the dashboard keeps a
+ * copy it can play. The model's prompt still never carries their path.
+ */
+describe('FileHandler — video and untranscribed audio are downloaded for the dashboard', () => {
+  const handler = new FileHandler();
+
+  it('downloads a video under the cap; the prompt names it without a path', async () => {
+    const srv = await serveBytes(Buffer.from('ftypisom-video'), 'video/mp4');
+    try {
+      const result = await (handler as any).downloadFile({
+        id: 'FV',
+        name: 'repro.mp4',
+        mimetype: 'video/mp4',
+        size: 14,
+        url_private_download: srv.url,
+      });
+      expect(result).toMatchObject({ name: 'repro.mp4', isVideo: true, slackFileId: 'FV' });
+      expect(result.path).not.toBe('');
+      expect(result.tempPath).toBe(result.path);
+      const prompt = await handler.formatFilePrompt([result], '봐줘');
+      expect(prompt).toContain('## Video: repro.mp4');
+      expect(prompt).not.toContain(result.path);
+      await handler.cleanupTempFiles([result]);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it('downloads a voice note even when it cannot be transcribed; the prompt carries no path', async () => {
+    const srv = await serveBytes(Buffer.from('OggS-voice'), 'audio/ogg');
+    try {
+      const result = await (handler as any).downloadFile({
+        id: 'FA',
+        name: 'memo.ogg',
+        mimetype: 'audio/ogg',
+        size: 10,
+        url_private_download: srv.url,
+      });
+      expect(result).toMatchObject({ name: 'memo.ogg', isAudio: true });
+      expect(result.path).not.toBe('');
+      const prompt = await handler.formatFilePrompt([result], '');
+      expect(prompt).toContain('## Audio: memo.ogg');
+      expect(prompt).not.toContain(result.path);
+      await handler.cleanupTempFiles([result]);
+    } finally {
+      srv.close();
+    }
   });
 });
 

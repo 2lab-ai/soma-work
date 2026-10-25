@@ -269,7 +269,35 @@ describe('review gate P3 — the viewer says why a user file has no copy', () =>
     const video = { ...remote, source: 'user_upload' };
     expect(renderArtModalBody('c7', big)).toContain('50 MB');
     expect(renderArtModalBody('c7', big)).not.toContain('100 MB');
-    expect(renderArtModalBody('c7', video)).toContain('봇은 영상');
+    // A video is downloaded like any file now: without a copy it gets the generic reason.
+    expect(renderArtModalBody('c7', video)).toContain('사본이 없습니다');
     expect(renderArtModalBody('c7', video)).toContain('href="https://x.slack.com/files/U/F/demo.mov"');
+  });
+});
+
+describe('goal gap — a user video or voice note with a copy plays in the dashboard', () => {
+  const fns = () =>
+    load<{
+      renderArtModalBody(cid: string, a: unknown): string;
+      umRegister: Api['umRegister'];
+      renderUserMedia: Api['renderUserMedia'];
+    }>([...BASE_FNS, 'renderArtModalBody'], BASE_VARS);
+
+  it('a stored video opens in the viewer as a player on the media route', () => {
+    const api = fns();
+    const clip = { id: 'VD1', name: 'repro.mp4', kind: 'video', mime: 'video/mp4', size: 4_000_000, stored: true };
+    api.umRegister('c8', [clip], turn);
+    expect(api.renderUserMedia('c8', [clip])).toContain('data-art-id="VD1"');
+    const body = api.renderArtModalBody('c8', clip);
+    expect(body).toMatch(
+      /<video class="art-full-video" controls[^>]*src="\/api\/dashboard\/session\/c8\/media\/VD1\/content"/,
+    );
+  });
+
+  it('a stored voice note plays in place on its tile', () => {
+    const api = fns();
+    const memo = { id: 'AU1', name: 'memo.ogg', kind: 'audio', mime: 'audio/ogg', size: 9000, stored: true };
+    api.umRegister('c8', [memo], turn);
+    expect(api.renderUserMedia('c8', [memo])).toMatch(/data-art-play="1" data-art-cid="c8" data-art-id="AU1"/);
   });
 });

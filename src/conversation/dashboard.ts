@@ -12899,7 +12899,6 @@ function renderUserMedia(cid, list, opts) {
 function umMissingReason(a) {
   if (a.unavailable === 'too_large') return '50 MB를 넘어 봇이 받지 못한 파일입니다. Slack에서 열 수 있습니다.';
   if (a.unavailable === 'download_failed') return '봇이 이 파일을 내려받지 못했습니다. Slack에서 열 수 있습니다.';
-  if (a.kind === 'video' || a.kind === 'audio') return '봇은 영상과 전사하지 않은 음성을 내려받지 않습니다. Slack에서 열 수 있습니다.';
   return '이 파일은 대시보드에 사본이 없습니다. Slack에서 열 수 있습니다.';
 }
 
