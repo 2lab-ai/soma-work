@@ -523,6 +523,15 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     expect(out).toContain('averyveryvery…');
   });
 
+  it('a count that displays as the total reads 100%, never "2.4/2.4 99%"', () => {
+    const pct = load<{ capPct: (v: number, t: number) => string }>(['capFmt1', 'capPct'], []);
+    expect(pct.capPct(2.37, 2.4)).toBe('100%');
+    expect(pct.capPct(2.3, 2.4)).toBe('96%');
+    expect(pct.capPct(15.96, 16)).toBe('100%');
+    expect(pct.capPct(15.9, 16)).toBe('99%');
+    expect(pct.capPct(1, 0)).toBe('—');
+  });
+
   it('nothing countable reads "계산 불가", never NaN', () => {
     const none = {
       ...view,

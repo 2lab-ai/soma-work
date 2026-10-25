@@ -502,8 +502,12 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     expect(secOpen('closed', true)).toBe(false);
     expect(TEMPLATE).toContain("var SEC_OPEN_QUERY = '(min-width: 840px) and (min-height: 1000px)';");
     // capacity v2 is taller: it opens on its own only on a 1400px+ tall window (board first)
-    expect(TEMPLATE).toContain("var SEC_OPEN_QUERY_CAPACITY = '(min-width: 840px) and (min-height: 1400px)';");
-    expect(clientFn('secIsOpen')).toContain("sec === 'capacity' ? _secMqlCap : _secMql");
+    // capacity v2 starts folded on every window (its chips carry both measures); the
+    // reader's unfold choice persists
+    expect(clientFn('secIsOpen')).toContain(
+      "secOpen(saved, sec === 'capacity' ? false : !!(_secMql && _secMql.matches))",
+    );
+    expect(TEMPLATE).not.toContain('SEC_OPEN_QUERY_CAPACITY');
   });
 
   it('the toggles are static buttons outside the regions that are re-rendered (focus and state survive repaints)', () => {
@@ -593,18 +597,24 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     );
     expect(html).toMatch(/cap-chip is-unknown"[^>]*>◌ Other <b>—<\/b>/);
     expect(html).toMatch(/cap-chip is-low" title="[^"]*1h 0m 후/);
+    // the tooltip carries the counts too, not only the next event
+    expect(html).toMatch(/cap-chip is-low" title="이번 주 0\.3\/2\.4 계정분 \(13%\)[^"]*1h 0m 후/);
     expect(html).toMatch(/aria-label="Codex 이번 주 0\.3\/2\.4 계정분 \(13%\) · 부족 — [^"]*1h 0m 후/);
     const off = fns.renderCapacitySummary({ available: false, reason: 'llmux unreachable', groups: [] }, nowS * 1000);
     expect(off).toContain('가용량 미확인');
     expect(off).toContain('llmux unreachable');
   });
 
-  it('phones keep the folded chips on one row: the % of each window stays, the counts drop', () => {
-    // < 640px: "Claude 33% · 36%" (the counts stay in the chip's name and the unfolded view)
+  it('phones keep labelled counts and % for both windows; the folded row wraps instead (trinity chip confirm)', () => {
+    expect(TEMPLATE).toContain('@media (max-width: 639px) { .cap-chip .cap-chip-of { display: none; } }');
     expect(TEMPLATE).toContain(
-      '@media (max-width: 639px) { .cap-chip .cap-chip-k, .cap-chip .cap-chip-of, .cap-chip .cap-m b { display: none; } }',
+      '.capacity.is-collapsed .cap-summary { flex: 1 1 auto; flex-wrap: wrap; overflow-x: visible; gap: 4px; }',
     );
-    expect(TEMPLATE).not.toMatch(/\.cap-chip[^{]*em[^{]*\{ display: none/);
+    // the phone chip rule comes after the base .cap-chip rule, so it wins
+    expect(TEMPLATE.indexOf('.cap-chip { padding: 2px 6px; font-size: 11px; }')).toBeGreaterThan(
+      TEMPLATE.indexOf('.cap-chip {\n  flex: none;'),
+    );
+    expect(TEMPLATE).not.toMatch(/\.cap-chip[^{]*(?:\bb|em|cap-chip-k)[^{]*\{ display: none/);
   });
 
   it('collapsed: the timeline, legend and subtitle are hidden; the chips only show while collapsed', () => {
