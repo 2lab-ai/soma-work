@@ -3911,6 +3911,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform 0.3s var(--ease-out); background: var(--st-run); }
 .card .context-bar-fill.ctx-warn { background: var(--st-wait); }
 .card .context-bar-fill.ctx-danger { background: var(--st-fail); }
+/* The same bar in the panel's 세션 정보 (spec 13). */
+.pi-ctx .context-bar { height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
+.pi-ctx .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform 0.3s var(--ease-out); background: var(--st-run); }
+.pi-ctx .context-bar-fill.ctx-warn { background: var(--st-wait); }
+.pi-ctx .context-bar-fill.ctx-danger { background: var(--st-fail); }
 
 /* ── TASK TIMELINE — dot + step + time; only the current step's dot is solid ── */
 .tl-wrap { margin-top: 10px; }
@@ -4804,6 +4809,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* ── GOAL — the editor's home (spec 13) ── */
 .panel-goal { padding: 8px 16px; border-bottom: 1px solid var(--border); outline: none; }
 .panel-goal .card-goal { margin-top: 0; }
+/* The goal's home shows the whole objective (the card's line is the summary). */
+.panel-goal .card-goal .cg-objective { display: block; -webkit-line-clamp: unset; overflow: visible; }
 .panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
 .panel-tasks-earlier { opacity: 0.85; }
 /* Scroll container: wraps panel-question + panel-worklog + panel-turns so
@@ -5105,7 +5112,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-command { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; }
   .panel-command .panel-controls { padding: 0; flex: 0 1 auto; max-width: 42%; }
   .panel-command .panel-controls .pc-toggle { max-width: 100%; }
-  .panel-command .panel-controls.is-open { flex-basis: 100%; max-width: none; padding-bottom: 8px; }
+  /* Unfolded, the pickers float above the composer: they never take the reading area's height. */
+  .panel-command { position: relative; }
+  .panel-command .panel-controls.is-open .pc-pick { display: flex; position: absolute; left: 12px; right: 12px; bottom: calc(100% + 6px); z-index: 5; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18); }
+  .panel-command .panel-controls .cb-model-note { flex-basis: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .panel-command .cmd-hint { flex-basis: 100%; }
   .panel-command .panel-command-row { flex: 1 1 160px; min-width: 0; }
 }
@@ -5121,7 +5131,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-close { width: 44px; height: 44px; }
   #panel-title-sub-regen { min-width: 44px; min-height: 44px; }
   .pi-links a, .pi-head, .panel-tasks-toggle, .turn .btn-action { min-height: 44px; }
-  .ps-actions .btn-action, .ps-slack, .cgl-go, .card-more-link, .cfb-model-toggle, .panel-controls .pc-toggle, .panel-controls .cb-model-select, .card-foot-bar .cb-model-select { min-height: 44px; }
+  .ps-actions .btn-action, .ps-slack, .cgl-go, .card-more-link, .tl-toggle, .cfb-model-toggle, .panel-controls .pc-toggle, .panel-controls .cb-model-select, .card-foot-bar .cb-model-select { min-height: 44px; }
   .panel-worklog-header, .wl-detail-btn { min-height: 44px; }
   .worklog-list .wl-row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
   .wl-tool > .wl-row, .wl-tool_result > .wl-row, .worklog-list .wl-row.wl-line { flex-direction: row; align-items: center; }
@@ -6145,7 +6155,7 @@ body.nt-open .new-task-fab { display: none !important; }
          area, which keeps at least half of the body (.panel-body grid). -->
     <div class="panel-body" id="panel-body">
     <!-- Tasks are pinned (.prd/10 §3.1-6): always shown, never scrolled away. -->
-    <div class="panel-tasks" id="panel-tasks"></div>
+    <div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>
     <!-- Artifacts are pinned too (SSOT 2026-10-23 T6): in view wherever the conversation is scrolled. -->
     <div class="panel-artifacts" id="panel-artifacts" style="display:none"></div>
     <!-- Scroll area: the static session info (SSOT 2026-10-24 — it scrolls with the
@@ -6155,7 +6165,7 @@ body.nt-open .new-task-fab { display: none !important; }
       <!-- 세션 정보 (spec 13): one summary line + the links, the complete numbers on demand — live. -->
       <div class="panel-info" id="panel-info"></div>
       <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. -->
-      <div class="panel-goal" id="panel-goal" tabindex="-1" aria-label="Goal" style="display:none"></div>
+      <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="Goal" style="display:none"></div>
       <div class="panel-permission" id="panel-permission" style="display:none" aria-live="polite"></div>
       <div class="panel-question" id="panel-question" style="display:none"></div>
       <!-- Agent bar (.prd/12 §4.3): path 메인 › A2 …, the focused node, its subtree (rich rows); it scopes Tasks and the work log. -->
@@ -6991,14 +7001,22 @@ async function pickDefault(kind, value) {
   renderDefaultsChips();
   var msg = '기본 ' + (kind === 'model' ? '모델' : 'effort') + ' → ' + optionLabel(r.setting, r.setting.value) + ' (새 세션부터)';
   if (skipSession) msg += ' · 이 모델은 세션 전환 목록에 없어 열린 세션은 그대로';
-  if (session) {
+  if (session && isBusy(session.key, kind)) {
+    // The session is already switching (from its card or panel): one switch at a time.
+    msg += ' · 열린 세션은 전환 중이라 그대로';
+  } else if (session) {
     var sr;
+    setBusy(session.key, kind, true);
+    refreshCard(session.key);
+    repaintPanelControlsFor(session.key);
     try {
       sr = kind === 'model' ? await postModelSwitch(session.key, value) : await postEffortSwitch(session.key, value);
     } catch (e) { sr = { ok: false, error: String(e && e.message || e) }; }
+    setBusy(session.key, kind, false);
     _modelNotes[session.key] = kind === 'model' ? modelSwitchNote(sr) : effortSwitchNote(sr);
     msg += sr.ok ? ' · 열린 세션에도 적용' : ' · 열린 세션은 바꾸지 못함: ' + sr.error;
     refreshCard(session.key);
+    repaintPanelControlsFor(session.key);
     loadSessions();
   }
   setDefaultsStatus(msg, false);
@@ -8999,6 +9017,7 @@ function repaintPanelSession() {
   renderPanelInfo();
   renderPanelGoal();
   renderPanelControls(s);
+  renderPanelComposer(s);
   repaintPanelScope();
   restorePanelLiveAnchor(anchor);
 }
@@ -9035,6 +9054,36 @@ function writePanelPart(el, html) {
   el._html = html;
   updateTimersIn(el);
   return true;
+}
+
+// The composer's state follows the session — also live (spec 13: the panel's
+// own Close can end the session it shows). Non-owner takes precedence over
+// closed so the message is informative; fail closed on a missing ownerId. A
+// live update writes only when the state changes (an in-flight send keeps its button).
+function renderPanelComposer(s, force) {
+  var host = document.getElementById('panel-command');
+  if (!host || !s) return;
+  var isOwnerPanel = !!s.ownerId && s.ownerId === currentUserId;
+  var isClosed = s.terminated || s.sessionState === 'SLEEPING';
+  var mode = !isOwnerPanel ? 'readonly' : (isClosed ? 'closed' : 'open');
+  if (!force && host._mode === mode) return;
+  host._mode = mode;
+  var cmdInput = document.getElementById('cmd-input');
+  var cmdBtn = document.getElementById('cmd-send');
+  var cmdHint = document.getElementById('cmd-hint');
+  if (mode === 'readonly') {
+    if (cmdInput) { cmdInput.disabled = true; cmdInput.placeholder = READ_ONLY_MSG; }
+    if (cmdBtn) { cmdBtn.disabled = true; }
+    if (cmdHint) { cmdHint.style.display = 'none'; }
+  } else if (mode === 'closed') {
+    if (cmdInput) { cmdInput.disabled = true; cmdInput.placeholder = '\uC774 \uC138\uC158\uC740 \uC885\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4'; }
+    if (cmdBtn) { cmdBtn.disabled = true; }
+    if (cmdHint) { cmdHint.style.display = ''; }
+  } else {
+    if (cmdInput) { cmdInput.disabled = false; cmdInput.placeholder = 'Send message to session...'; }
+    if (cmdBtn) { cmdBtn.disabled = false; }
+    if (cmdHint) { cmdHint.style.display = 'none'; }
+  }
 }
 
 // The head chip: the session's status in the root vocabulary (only the icon
@@ -9079,7 +9128,7 @@ function panelInfoHtml(s, open) {
   if (u) sum.push(formatTokens(cardTotalTokens(u)) + ' tok', '$' + toNum(u.totalCostUsd).toFixed(2));
   if (ctx > 0) sum.push('ctx ' + Math.round(ctx) + '%');
   sum.push('<span class="rel-time" data-ts="' + (new Date(s.lastActivity).getTime() || 0) + '"></span>');
-  var html = '<button type="button" class="pi-head" aria-expanded="' + (open ? 'true' : 'false') + '" aria-controls="panel-info-body" onclick="togglePanelInfo()">'
+  var html = '<button type="button" class="pi-head" aria-expanded="' + (open ? 'true' : 'false') + '"' + (open ? ' aria-controls="panel-info-body"' : '') + ' onclick="togglePanelInfo()">'
     + '<span class="pi-title">세션 정보</span><span class="pi-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</span>'
     + PI_CHEV_SVG + '</button>';
   var links = [];
@@ -9141,9 +9190,11 @@ function renderPanelGoal() {
     return;
   }
   el.style.display = '';
+  el._key = panelSessionKey;
   if (el._html === html || isEditingGoal(el)) return;
   var draft = captureGoalDraft(el);
-  el.innerHTML = html;
+  // A morph: a focused goal button (삭제, 완료된 goal) keeps its node and focus.
+  morphInnerHtml(el, html);
   el._html = html;
   restoreGoalDraft(el, draft);
 }
@@ -9457,7 +9508,8 @@ function sessionActionHtml(s, col, where) {
   var running = col === 'working' && !pendingAutoResume(s, col);
   var kind = running ? 'stop' : (col === 'closed' && s.terminated ? 'trash' : 'close');
   var label = kind === 'stop' ? 'Stop' : (kind === 'trash' ? 'Trash' : 'Close');
-  var aria = where === 'panel' ? ' aria-label="' + SESSION_ACTION_ARIA[kind] + '"' : '';
+  // The accessible name keeps the visible label first (WCAG 2.5.3), then says what it does to the session.
+  var aria = where === 'panel' ? ' aria-label="' + label + ' — ' + SESSION_ACTION_ARIA[kind] + '"' : '';
   var env = s.environment;
   if (SELF_INSTANCE_NAME && env && env.instanceName && env.instanceName !== SELF_INSTANCE_NAME) {
     return '<button class="btn-action btn-' + kind + '" disabled' + aria
@@ -9702,11 +9754,22 @@ function modelSwitchNote(r) {
   if (res.status === 'unchanged') return { text: '이미 ' + res.nickname + '입니다', error: false };
   return { text: res.nickname + '(으)로 전환 · autocompact ' + formatTokens(res.autoCompactTokens), error: false };
 }
+// A refused (or refused-to-start) switch puts the picker back on the session's
+// value — the option the surface rendered as selected.
+function resetPicker(select) {
+  if (!select || !select.options) return;
+  for (var i = 0; i < select.options.length; i++) if (select.options[i].defaultSelected) select.selectedIndex = i;
+}
 async function changeModel(key, select) {
   var nickname = select && select.value;
   if (!nickname) return;
+  // One switch at a time per session, whichever surface asks (spec 13 §3.5).
+  if (isBusy(key, 'model')) { resetPicker(select); return; }
   if (select) select.disabled = true;
   setBusy(key, 'model', true);
+  // The other surface's picker shows the switch in flight at once (a focused picker is left alone).
+  refreshCard(key);
+  repaintPanelControlsFor(key);
   var r;
   try { r = await postModelSwitch(key, nickname); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
   setBusy(key, 'model', false);
@@ -9717,9 +9780,7 @@ async function changeModel(key, select) {
     // A refused switch puts the picker back on the session's model (the
     // option the card rendered as selected) — also when the same refusal
     // leaves the card's markup unchanged and the refresh writes nothing.
-    if (!r.ok) {
-      for (var i = 0; i < select.options.length; i++) if (select.options[i].defaultSelected) select.selectedIndex = i;
-    }
+    if (!r.ok) resetPicker(select);
   }
   refreshCard(key);
   repaintPanelControlsFor(key);
@@ -9778,13 +9839,21 @@ function effortSwitchNote(r) {
 async function changeEffort(key, select) {
   var effort = select && select.value;
   if (!effort) return;
+  if (isBusy(key, 'effort')) { resetPicker(select); return; }
   if (select) select.disabled = true;
   setBusy(key, 'effort', true);
+  refreshCard(key);
+  repaintPanelControlsFor(key);
   var r;
   try { r = await postEffortSwitch(key, effort); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
   setBusy(key, 'effort', false);
   _modelNotes[key] = effortSwitchNote(r);
-  if (select) { select.disabled = false; select.blur(); }
+  if (select) {
+    select.disabled = false;
+    select.blur();
+    // Like the model: a refusal shows the level that still runs, also when the markup does not change.
+    if (!r.ok) resetPicker(select);
+  }
   refreshCard(key);
   repaintPanelControlsFor(key);
   loadSessions();
@@ -9862,6 +9931,8 @@ function toggleGoalHistory(key) {
   if (_goalHistoryOpen[key]) delete _goalHistoryOpen[key];
   else _goalHistoryOpen[key] = true;
   refreshCard(key);
+  // The goal editor's home is the panel (spec 13): its 완료된 goal toggle opens there.
+  if (panelOpen && panelSessionKey === key) renderPanelGoal();
 }
 var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
 
@@ -9979,6 +10050,7 @@ function setGoalError(key, message) {
   if (panelOpen && panelSessionKey === key) renderPanelGoal();
 }
 async function goalAction(key, payload, btn) {
+  if (isBusy(key, 'goal')) return; // one goal write at a time per session
   if (btn) btn.disabled = true;
   setBusy(key, 'goal', true);
   var r;
@@ -9993,18 +10065,20 @@ async function goalAction(key, payload, btn) {
 // (and resurrecting the sent text as a fresh, submittable draft).
 var _goalAdding = Object.create(null);
 async function addGoalFromCard(key, form) {
-  if (_goalAdding[key]) return;
+  // One goal write at a time per session: an add never overlaps a delete (spec 13 §3.5).
+  if (_goalAdding[key] || isBusy(key, 'goal')) return;
   var input = form.querySelector('.cg-add-input');
   var objective = input ? input.value.trim() : '';
   if (!objective) return;
   _goalAdding[key] = true;
+  setBusy(key, 'goal', true);
   var btn = form.querySelector('button');
   if (btn) btn.disabled = true;
   var r;
   try { r = await postGoalAction(key, { action: 'add', objective: objective }); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
-  delete _goalAdding[key];
-  // The form on screen may have been re-rendered meanwhile — act on the live one.
-  var host = document.getElementById('panel-goal');
+  // The form on screen may have been re-rendered meanwhile — act on the live one,
+  // and only while the panel still shows this session (another session's draft is never touched).
+  var host = panelSessionKey === key ? document.getElementById('panel-goal') : null;
   var live = (host && host.querySelector('.cg-add-input')) || input;
   var liveBtn = live.form ? live.form.querySelector('button') : btn;
   if (liveBtn) liveBtn.disabled = false;
@@ -10013,6 +10087,10 @@ async function addGoalFromCard(key, form) {
     if (live.value.trim() === objective) live.value = '';
     live.blur();
   }
+  // Released only once the sent text is gone from the form: a live render in
+  // between cannot re-arm a submit that would send the same goal twice.
+  delete _goalAdding[key];
+  setBusy(key, 'goal', false);
   setGoalError(key, r.ok ? '' : r.error);
   loadSessions();
 }
@@ -10628,6 +10706,7 @@ async function loadSessions() {
 
 // ── Action handler (with CSRF retry on 403 after JWT rotation) ──
 async function doAction(key, action) {
+  if (isBusy(key, 'action')) return; // Stop / Close / Trash once, from either surface
   setBusy(key, 'action', true);
   refreshCard(key);
   if (panelOpen && panelSessionKey === key) renderPanelHead();
@@ -11210,7 +11289,7 @@ function connectWs() {
         loadSessions();
         // The panel repaints through the node it shows: the cache now holds the
         // main agent's new list, and a subagent's panel reads its own (spec 12).
-        if (panelOpen && panelSessionKey === msg.sessionKey) repaintPanelScope();
+        if (panelOpen && panelSessionKey === msg.sessionKey) repaintPanelSession();
       } else if (msg.type === 'conversation_update') {
         // A turn landed — an open card's 지시/응답 pair may be stale now.
         invalidateCardIo(msg.conversationId);
@@ -12303,6 +12382,14 @@ function landPanel() {
   var scrollEl = document.getElementById('panel-scroll');
   if (!scrollEl) return;
   if (_panelLand === 'worklog') { scrollPanelToWorkLog(); return; }
+  if (_panelLand === 'tasks' && !_panelLanded) {
+    // The Tasks are pinned outside the scroll area: their own box opens at its
+    // head (the whole ledger unfolded below it); the scroll area takes the
+    // default landing below.
+    var box = document.getElementById('panel-tasks');
+    if (box) box.scrollTop = 0;
+    _panelLanded = true;
+  }
   if (_panelLand === 'goal' || _panelLand === 'agent') {
     if (_panelLanded) return;
     var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : 'panel-agents');
@@ -12397,9 +12484,10 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // scope — go through the same live path as every update (spec 13).
   _panelTasksExpanded = _panelLand === 'tasks';
   _panelTasksEarlier = _panelLand === 'tasks';
-  // Another session's goal form (and its draft) never carries into this one.
+  // Another session's goal form (and its draft) never carries into this one;
+  // reopening the same session keeps an unsent draft.
   var goalEl = document.getElementById('panel-goal');
-  if (goalEl) { goalEl.innerHTML = ''; goalEl._html = ''; }
+  if (goalEl && goalEl._key !== sessionKey) { goalEl.innerHTML = ''; goalEl._html = ''; }
   repaintPanelSession();
 
   // Pending permission prompt + question in panel
@@ -12460,29 +12548,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
 
   // Command input — always visible; disabled + hint for terminated / sleeping
   // sessions, or when viewer is not the session owner (#708 read-only mode).
-  // Non-owner takes precedence over isClosed so the message is informative.
-  const cmdEl = document.getElementById('panel-command');
-  cmdEl.style.display = '';
-  const cmdInput = document.getElementById('cmd-input');
-  const cmdBtn = document.getElementById('cmd-send');
-  const cmdHint = document.getElementById('cmd-hint');
-  const isClosed = s.terminated || s.sessionState === 'SLEEPING';
-  // Fail closed — mirror renderCard so a missing ownerId never unlocks the
-  // panel input for a non-authenticated viewer.
-  const isOwnerPanel = !!s.ownerId && s.ownerId === currentUserId;
-  if (!isOwnerPanel) {
-    if (cmdInput) { cmdInput.disabled = true; cmdInput.placeholder = READ_ONLY_MSG; }
-    if (cmdBtn) { cmdBtn.disabled = true; }
-    if (cmdHint) { cmdHint.style.display = 'none'; }
-  } else if (isClosed) {
-    if (cmdInput) { cmdInput.disabled = true; cmdInput.placeholder = '\uC774 \uC138\uC158\uC740 \uC885\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4'; }
-    if (cmdBtn) { cmdBtn.disabled = true; }
-    if (cmdHint) { cmdHint.style.display = ''; }
-  } else {
-    if (cmdInput) { cmdInput.disabled = false; cmdInput.placeholder = 'Send message to session...'; }
-    if (cmdBtn) { cmdBtn.disabled = false; }
-    if (cmdHint) { cmdHint.style.display = 'none'; }
-  }
+  document.getElementById('panel-command').style.display = '';
+  renderPanelComposer(s, true);
 
   // Docked (≥840px) the open drawer narrows the board: animate that shift too.
   layoutBeforeChange();
@@ -12500,7 +12567,7 @@ function focusPanelLanding() {
   var t = null;
   if (_panelLand === 'goal') t = document.querySelector('#panel-goal .cg-add-input') || document.getElementById('panel-goal');
   else if (_panelLand === 'agent') t = document.querySelector('#panel-agents .pa-focus');
-  else if (_panelLand === 'tasks') t = document.querySelector('#panel-tasks .panel-tasks-toggle') || document.getElementById('panel-tasks');
+  else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
   else if (_panelLand === 'worklog') t = document.getElementById('worklog-toggle');
   if (!t || t.style.display === 'none') {
     var ask = document.querySelector('#panel-permission button:not([disabled]), #panel-question button:not([disabled]), #panel-question textarea');
@@ -12816,11 +12883,18 @@ function closePanel() {
   var a = document.activeElement;
   var wasInPanel = !a || a === document.body || !!(a.closest && a.closest('#slide-panel'));
   if (!wasInPanel) return;
-  if (back && document.body.contains(back) && back.focus) { back.focus(); return; }
+  // An opener inside a card that has since folded (inert) cannot take focus: fall through.
+  if (back && document.body.contains(back) && back.focus) {
+    back.focus({ preventScroll: true });
+    if (document.activeElement === back) return;
+  }
   var face = closingKey && _cardEls[closingKey] ? _cardEls[closingKey]._faceEl : null;
-  if (face && document.body.contains(face)) { face.focus(); return; }
+  if (face && document.body.contains(face)) {
+    face.focus({ preventScroll: true });
+    if (document.activeElement === face) return;
+  }
   var heading = document.querySelector('.board-title, h1, h2');
-  if (heading && heading.focus) { if (!heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1'); heading.focus(); }
+  if (heading && heading.focus) { if (!heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1'); heading.focus({ preventScroll: true }); }
 }
 
 document.addEventListener('keydown', function(e) {
@@ -12950,10 +13024,11 @@ async function sendCommand() {
     // openPanel already resets UI on card switch, so skipping here prevents
     // the late-completing fetch from clobbering the new card's clean state.
     if (panelSessionKey === sendingSessionKey) {
-      btn.disabled = false;
       btn.textContent = 'Send';
-      input.disabled = false;
-      input.focus();
+      // The session's own state decides (spec 13): one closed meanwhile — from
+      // the panel's Close, Slack or the lifecycle — keeps its composer closed.
+      renderPanelComposer(_sessionCache[sendingSessionKey], true);
+      if (!input.disabled) input.focus();
     }
   }
 }

@@ -877,9 +877,9 @@ describe('panel — drill-down over the same node type (path · focused node · 
     const ws = fnBody('connectWs');
     expect(ws).not.toContain('!_panelAgent');
     expect(ws).not.toContain('renderPanelTasks(msg.tasks');
-    // session_update and sessionUpdated repaint the whole panel; task_update its node scope (spec 13).
-    expect(ws.match(/repaintPanelSession\(\);/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
-    expect(ws).toContain('repaintPanelScope();');
+    // session_update, sessionUpdated and task_update repaint the whole panel (spec 13), which runs the node scope.
+    expect(ws.match(/repaintPanelSession\(\);/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+    expect(fnBody('repaintPanelSession')).toContain('repaintPanelScope();');
     const r = fnBody('repaintPanelScope');
     expect(r).toContain('renderPanelAgents();');
     expect(r).toContain('repaintPanelTasks();');
@@ -1193,7 +1193,7 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
     };
     let refreshed = 0;
     const m = load<{ changeModel(k: string, s: unknown): Promise<void> }>(
-      ['isBusy', 'setBusy', 'modelSwitchNote', 'changeModel'],
+      ['isBusy', 'setBusy', 'resetPicker', 'modelSwitchNote', 'changeModel'],
       ['_busy'],
       {
         repaintPanelControlsFor: () => {},
@@ -1211,7 +1211,8 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
     select.selectedIndex = 1;
     await m.changeModel('k', select);
     expect(select.selectedIndex).toBe(0);
-    expect(refreshed).toBe(2);
+    // Each switch repaints the card as it starts (busy, spec 13) and as it settles.
+    expect(refreshed).toBe(4);
   });
   it('a group head is morphed, not replaced, and skipped when its markup is unchanged', () => {
     const body = fnBody('wlRefreshGroupHead');

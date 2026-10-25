@@ -41,9 +41,10 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
-function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
   const names = Object.keys(inject);
-  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
+  const extraNames = extra.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '').filter(Boolean);
+  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${extra.join('\n')}\nreturn { ${[...fns, ...extraNames].join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 /** The page markup as served (the template between <body> and the first <script>). */
@@ -519,11 +520,12 @@ describe('panel header — the session chip and its one action', () => {
     expect(html).toContain('class="card-timer-live" data-leg-started="' + T0 + '" data-accumulated="65000"');
     expect(html).toContain('href="https://slack/x"');
     expect(html).toContain('btn-stop');
-    expect(html).toContain('aria-label="세션 중지"');
+    // The accessible name keeps the visible label first (WCAG 2.5.3).
+    expect(html).toContain('aria-label="Stop — 세션 중지"');
   });
 
   it('idle → Close, archived → Trash, sleeping → Close; the words follow the root vocabulary', () => {
-    expect(head(card({ activityState: 'idle' }), 'idle')).toContain('aria-label="세션 종료"');
+    expect(head(card({ activityState: 'idle' }), 'idle')).toContain('aria-label="Close — 세션 종료"');
     const archived = head(card({ activityState: 'idle', terminated: true }), 'closed');
     expect(archived).toContain('btn-trash');
     expect(archived).toContain('>보관</span>');
@@ -616,6 +618,12 @@ describe('panel goal — the full editor moved here, its draft safe across live 
 
   it('goal writes re-render the panel goal (not only the card) and read the live form from it', () => {
     expect(clientFn('setGoalError')).toContain('renderPanelGoal()');
+    // The 완료된 goal toggle lives in the panel now: it must repaint the panel's goal.
+    expect(clientFn('toggleGoalHistory')).toContain('renderPanelGoal()');
+    // After the await, only this session's form — never another session's draft.
+    expect(clientFn('addGoalFromCard')).toContain(
+      "panelSessionKey === key ? document.getElementById('panel-goal') : null",
+    );
     expect(clientFn('addGoalFromCard')).toContain("document.getElementById('panel-goal')");
     expect(clientFn('goalInputBlur')).toContain('renderPanelGoal()');
   });
@@ -676,23 +684,325 @@ describe('one live path for the whole panel', () => {
   });
 });
 
-describe('landing follows the opening intent', () => {
-  it('openPanel takes an intent (true = worklog, as before) and landPanel honours goal / agent / tasks / answer', () => {
-    const open = clientFn('openPanel');
-    expect(open).toContain("_panelLand = focusWorkLog === true ? 'worklog' : (focusWorkLog || '');");
-    const land = clientFn('landPanel');
-    expect(land).toContain("_panelLand === 'worklog'");
-    expect(land).toContain("_panelLand === 'goal'");
-    expect(land).toContain("_panelLand === 'agent'");
-    const tasks = clientFn('openPanel');
-    expect(tasks).toContain("_panelTasksExpanded = _panelLand === 'tasks';");
-    expect(tasks).toContain("_panelTasksEarlier = _panelLand === 'tasks';");
+describe('landing follows the opening intent (executed)', () => {
+  type Rect = { top: number; bottom: number; height: number };
+  /** A scroll area at y=100, 400px tall, and the sections inside it at fixed content offsets. */
+  function rig(intent: string, opts: { question?: boolean } = {}) {
+    const offsets: Record<string, number> = {
+      'panel-info': 0,
+      'panel-goal': 80,
+      'panel-permission': 300,
+      'panel-question': 300,
+      'panel-agents': 420,
+      'panel-worklog': 700,
+    };
+    const scroll = {
+      scrollTop: 900,
+      scrollHeight: 3000,
+      clientHeight: 400,
+      calls: [] as number[],
+      getBoundingClientRect: (): Rect => ({ top: 100, bottom: 500, height: 400 }),
+      scrollTo(o: { top: number }) {
+        this.scrollTop = o.top;
+        this.calls.push(o.top);
+      },
+    };
+    const section = (id: string, shown = true) => ({
+      id,
+      style: { display: shown ? '' : 'none' },
+      getBoundingClientRect: (): Rect => {
+        const top = 100 + offsets[id] - scroll.scrollTop;
+        return { top, bottom: top + 60, height: 60 };
+      },
+    });
+    const tasks = { scrollTop: 120 };
+    const els: Record<string, unknown> = {
+      'panel-scroll': scroll,
+      'panel-tasks': tasks,
+      'panel-goal': section('panel-goal'),
+      'panel-agents': section('panel-agents'),
+      'panel-worklog': section('panel-worklog'),
+      'worklog-toggle': { getBoundingClientRect: (): Rect => ({ top: 0, bottom: 32, height: 32 }) },
+      'panel-permission': section('panel-permission', false),
+      'panel-question': section('panel-question', !!opts.question),
+    };
+    const m = load<{ landPanel(): void; state(): { landed: boolean; stick: boolean } }>(
+      ['workLogLandingTop', 'scrollPanelToWorkLog', 'landPanel'],
+      ['_panelOnQuestion'],
+      { document: { getElementById: (id: string) => els[id] ?? null } },
+      [
+        `var _panelLand = ${JSON.stringify(intent)}; var _panelLanded = false; var _panelStickBottom = false;`,
+        'function state() { return { landed: _panelLanded, stick: _panelStickBottom }; }',
+      ],
+    );
+    return { m, scroll, tasks };
+  }
+
+  it('관리 → puts the goal section at the top of the scroll area, once — late turns never drag it', () => {
+    const r = rig('goal');
+    r.m.landPanel();
+    expect(r.scroll.scrollTop).toBe(80);
+    expect(r.m.state()).toEqual({ landed: true, stick: false });
+    r.scroll.scrollTop = 40; // the reader scrolls; the turns arrive and land again
+    r.m.landPanel();
+    expect(r.scroll.scrollTop).toBe(40);
   });
 
-  it('closePanel hands focus back to whatever opened it', () => {
-    const open = clientFn('openPanel');
-    expect(open).toContain('_panelReturnFocus = document.activeElement');
-    expect(clientFn('closePanel')).toContain('_panelReturnFocus');
+  it('a tree item / 전체 N개 → 상세 puts the agents section at the top', () => {
+    const r = rig('agent');
+    r.m.landPanel();
+    expect(r.scroll.scrollTop).toBe(420);
+  });
+
+  it('전체 task → opens the pinned Tasks box at its head; the scroll area keeps the default landing', () => {
+    const r = rig('tasks');
+    r.m.landPanel();
+    expect(r.tasks.scrollTop).toBe(0);
+    expect(r.scroll.scrollTop).toBe(3000); // no blocker: the newest turns
+    const ask = rig('tasks', { question: true });
+    ask.m.landPanel();
+    expect(ask.scroll.scrollTop).toBe(300); // a question waits: it heads the scroll area
+  });
+
+  it('true (작업 로그) still lands on the work-log head', () => {
+    const r = rig('worklog');
+    r.m.landPanel();
+    expect(r.scroll.calls.length).toBe(1);
+  });
+});
+
+describe('focus goes back to whatever opened the panel (executed)', () => {
+  it('Escape / × from inside the panel → the opener; gone or inert → the card face; focus elsewhere → untouched', () => {
+    const run = (o: { inPanel: boolean; present: boolean; inert?: boolean }) => {
+      const focused: string[] = [];
+      const panel = { classList: { remove() {} } };
+      const doc: Record<string, unknown> = {
+        getElementById: (id: string) => (id === 'slide-panel' || id === 'panel-overlay' ? panel : null),
+        querySelector: () => null,
+      };
+      // focus() moves document.activeElement, except into an inert (folded) card.
+      const el = (name: string, inert = false) => {
+        const node: Record<string, unknown> = {
+          focus: () => {
+            focused.push(name);
+            if (!inert) doc.activeElement = node;
+          },
+        };
+        return node;
+      };
+      const opener = el('opener', !!o.inert);
+      const face = el('face');
+      doc.body = { contains: (n: unknown) => (n === opener ? o.present : n === face) };
+      doc.activeElement = o.inPanel
+        ? { closest: (sel: string) => (sel === '#slide-panel' ? panel : null) }
+        : { closest: () => null };
+      const m = load<{ closePanel(): void }>(
+        ['closePanel'],
+        [],
+        {
+          document: doc,
+          layoutBeforeChange: () => {},
+          resetWorkLog: () => {},
+          _cardEls: { k: { _faceEl: face } },
+          __ret: opener,
+        },
+        [
+          'var panelOpen = true, panelSessionKey = "k", panelConvId = null, _panelAgent = "", _panelAgentsHtml = "", _rawLoadedCache = {}, _panelGen = 0;',
+          'var _panelTurnsHasMore = false, _panelTurnsLoading = false, _panelTurnsOldestId = null, _panelLand = "", _panelLanded = false;',
+          'var _panelStickBottom = false, _panelOnQuestion = false, _anReturnFocus = null, _panelReturnFocus = __ret;',
+        ],
+      );
+      m.closePanel();
+      return focused;
+    };
+    expect(run({ inPanel: true, present: true })).toEqual(['opener']);
+    expect(run({ inPanel: true, present: false })).toEqual(['face']); // a folded DONE date dropped it
+    expect(run({ inPanel: true, present: true, inert: true })).toEqual(['opener', 'face']); // inside a folded card
+    expect(run({ inPanel: false, present: true })).toEqual([]); // the reader already moved on
+  });
+});
+
+describe('a goal add in flight is busy until its form is settled (executed)', () => {
+  it('busy while sent; the latch releases only after the sent text left the form — no double send', async () => {
+    let release: (v: { ok: boolean; error: string }) => void = () => {};
+    const posts: string[] = [];
+    const input = {
+      value: 'ship it',
+      blurred: false,
+      blur() {
+        this.blurred = true;
+      },
+      form: null as unknown,
+    };
+    const btn = { disabled: false };
+    const form = { querySelector: (sel: string) => (sel === '.cg-add-input' ? input : btn) };
+    input.form = form;
+    const host = { querySelector: () => input };
+    const m = load<{ addGoalFromCard(k: string, f: unknown): Promise<void>; isBusy(k: string, op: string): boolean }>(
+      ['isBusy', 'setBusy', 'addGoalFromCard'],
+      ['_busy', '_goalAdding'],
+      {
+        document: { getElementById: (id: string) => (id === 'panel-goal' ? host : null) },
+        postGoalAction: (_k: string, p: { objective: string }) => {
+          posts.push(p.objective);
+          return new Promise((r) => (release = r));
+        },
+        setGoalError: () => {},
+        loadSessions: () => {},
+        panelSessionKey: 'k',
+      },
+    );
+    const sent = m.addGoalFromCard('k', form);
+    expect(m.isBusy('k', 'goal')).toBe(true);
+    await m.addGoalFromCard('k', form); // a second Enter while the first is in flight
+    expect(posts).toEqual(['ship it']);
+    release({ ok: true, error: '' });
+    await sent;
+    expect(input.value).toBe('');
+    expect(input.blurred).toBe(true);
+    expect(m.isBusy('k', 'goal')).toBe(false);
+  });
+});
+
+describe('one write in flight per session and operation, whichever surface asks (executed, deferred requests)', () => {
+  it('a second model switch while the first is pending is refused; the peer surface shows busy at once; busy clears on settle', async () => {
+    let release: (v: { ok: boolean; error: string }) => void = () => {};
+    const posts: string[] = [];
+    const peerRepaints: boolean[] = [];
+    const m = load<{ changeModel(k: string, s: unknown): Promise<void>; isBusy(k: string, op: string): boolean }>(
+      ['isBusy', 'setBusy', 'resetPicker', 'modelSwitchNote', 'changeModel'],
+      ['_busy'],
+      {
+        postModelSwitch: (_k: string, nick: string) => {
+          posts.push(nick);
+          return new Promise((r) => (release = r));
+        },
+        _modelNotes: {},
+        formatTokens: String,
+        refreshCard: () => {},
+        repaintPanelControlsFor: () => peerRepaints.push(m.isBusy('k', 'model')),
+        loadSessions: () => {},
+      },
+    );
+    const sel = (value: string) => ({
+      value,
+      disabled: false,
+      selectedIndex: 1,
+      options: [{ defaultSelected: true }, { defaultSelected: false }],
+      blur() {},
+    });
+    const card = sel('sonnet');
+    const first = m.changeModel('k', card);
+    expect(peerRepaints).toEqual([true]); // the panel's picker repainted busy before the request settles
+    const panel = sel('fable');
+    await m.changeModel('k', panel); // the docked panel's picker, while the card's switch is pending
+    expect(posts).toEqual(['sonnet']);
+    expect(panel.selectedIndex).toBe(0); // put back on the session's model
+    release({ ok: true, error: '' });
+    await first;
+    expect(m.isBusy('k', 'model')).toBe(false);
+  });
+
+  it('a goal add while a goal delete is pending is refused — add and delete share the goal lock', async () => {
+    let release: (v: { ok: boolean; error: string }) => void = () => {};
+    const posts: string[] = [];
+    const input = { value: 'next goal', blur() {}, form: null as unknown };
+    const form = { querySelector: (sel: string) => (sel === '.cg-add-input' ? input : { disabled: false }) };
+    const m = load<{
+      goalAction(k: string, p: unknown, b: unknown): Promise<void>;
+      addGoalFromCard(k: string, f: unknown): Promise<void>;
+    }>(['isBusy', 'setBusy', 'goalAction', 'addGoalFromCard'], ['_busy', '_goalAdding'], {
+      document: { getElementById: () => null },
+      postGoalAction: (_k: string, p: { action: string }) => {
+        posts.push(p.action);
+        return new Promise((r) => (release = r));
+      },
+      setGoalError: () => {},
+      loadSessions: () => {},
+      panelSessionKey: 'k',
+    });
+    const del = m.goalAction('k', { action: 'delete', goalId: 'g1', expect: 'current' }, null);
+    await m.addGoalFromCard('k', form);
+    expect(posts).toEqual(['delete']);
+    release({ ok: true, error: '' });
+    await del;
+  });
+});
+
+describe('the composer follows the session live (executed)', () => {
+  it('a session closed while the panel shows it disables the composer; an unchanged state writes nothing; a forced pass re-applies', () => {
+    const input = { disabled: false, placeholder: '' };
+    const btn = { disabled: false };
+    const hint = { style: { display: 'none' } };
+    const host: Record<string, unknown> = {};
+    const els: Record<string, unknown> = {
+      'panel-command': host,
+      'cmd-input': input,
+      'cmd-send': btn,
+      'cmd-hint': hint,
+    };
+    const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(['renderPanelComposer'], [], {
+      document: { getElementById: (id: string) => els[id] ?? null },
+      currentUserId: 'U1',
+      READ_ONLY_MSG: 'read only',
+    });
+    m.renderPanelComposer({ ownerId: 'U1' }, true);
+    expect(input.disabled).toBe(false);
+    m.renderPanelComposer({ ownerId: 'U1', terminated: true });
+    expect(input.disabled).toBe(true);
+    expect(btn.disabled).toBe(true);
+    expect(hint.style.display).toBe('');
+    // A late send completion re-enabled it by hand: the forced pass puts the closed state back.
+    input.disabled = false;
+    btn.disabled = false;
+    m.renderPanelComposer({ ownerId: 'U1', terminated: true });
+    expect(input.disabled).toBe(false); // same mode, no write (an in-flight send keeps its button)
+    m.renderPanelComposer({ ownerId: 'U1', terminated: true }, true);
+    expect(input.disabled).toBe(true);
+    expect(clientFn('sendCommand')).toContain('renderPanelComposer(_sessionCache[sendingSessionKey], true);');
+    expect(clientFn('repaintPanelSession')).toContain('renderPanelComposer(s);');
+  });
+});
+
+describe('a live repaint keeps the reader where they were reading (executed)', () => {
+  it('a section above the reader grows: the scroll area moves by the same amount; reading a live section: untouched', () => {
+    let grow = 0;
+    const scroll: any = {
+      scrollTop: 500,
+      calls: [] as number[],
+      getBoundingClientRect: () => ({ top: 100 }),
+      scrollTo(o: { top: number }) {
+        this.scrollTop = o.top;
+        this.calls.push(o.top);
+      },
+    };
+    const kid = (id: string, top: number, h: number) => ({
+      id,
+      getBoundingClientRect: () => {
+        const t = 100 + top + (id === 'panel-info' ? 0 : grow) - scroll.scrollTop;
+        return { top: t, bottom: t + h + (id === 'panel-info' ? grow : 0), height: h };
+      },
+    });
+    const info = kid('panel-info', 0, 200);
+    const turns = kid('panel-turns', 200, 2000);
+    scroll.children = [info, turns];
+    scroll.querySelectorAll = () => [turns];
+    const m = load<{ panelLiveAnchor(): unknown; restorePanelLiveAnchor(a: unknown): void }>(
+      ['panelScrollAnchor', 'panelLiveAnchor', 'restorePanelLiveAnchor'],
+      ['PANEL_LIVE_SECTIONS'],
+      {
+        document: { getElementById: () => scroll, body: { contains: () => true } },
+        _panelStickBottom: false,
+      },
+    );
+    const a = m.panelLiveAnchor();
+    expect(a).not.toBeNull();
+    grow = 120; // 세션 정보 opened above the turns the reader is on
+    m.restorePanelLiveAnchor(a);
+    expect(scroll.scrollTop).toBe(620);
+    // Reading 세션 정보 itself: no anchor, nothing moves.
+    scroll.scrollTop = 50;
+    expect(m.panelLiveAnchor()).toBeNull();
   });
 });
 

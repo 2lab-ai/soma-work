@@ -251,6 +251,17 @@ function makeBoard() {
         conversationId: 'conv-done',
         lastActivity: iso(30 * M),
         activeAccumulatedMs: 41 * M,
+        agents: Array.from({ length: 8 }, (_, i) => ({
+          id: `toolu_w${i}`,
+          n: i + 1,
+          type: 'general-purpose',
+          description: `Worker ${i + 1}`,
+          status: 'completed',
+          startedAt: NOW - 50 * M + i * 1000,
+          endedAt: NOW - 40 * M,
+          toolCalls: 3 + i,
+        })),
+        agentsTotal: 8,
         tokenUsage: USAGE(2_000_000),
         artifacts: SUMMARY('conv-done'),
         goal: {
@@ -449,6 +460,7 @@ async function scenario(
     `${tag}: face — task row, subagent pulse, tokens · cost, status (${face.agents.trim()} | ${face.usage.trim()})`,
   );
   check((await overflow(page)) === 0, `${tag}: board — no page overflow`);
+  if (full) await shootCard(page, K('200'), `${theme}-${width}-face-running.png`);
   if (full) await page.screenshot({ path: path.join(OUT, `${theme}-${width}-board.png`), fullPage: false });
 
   // ── Expanded, running: settle it here ──
@@ -611,8 +623,8 @@ async function scenario(
     `${tag}: head chip — 세션 · 실행 중 (announced alone) · live time (${head.chip} ${head.time})`,
   );
   check(
-    head.action === '세션 중지' && head.close === '패널 닫기' && head.slack,
-    `${tag}: the session's one action is 세션 중지, × is 패널 닫기, Slack in the chip row`,
+    head.action === 'Stop — 세션 중지' && head.close === '패널 닫기' && head.slack,
+    `${tag}: the session's one action is named "Stop — 세션 중지" (label first), × is 패널 닫기, Slack in the chip row`,
   );
   check(head.rowH <= 52, `${tag}: the chip row stays one line (${head.rowH}px)`);
 
@@ -638,6 +650,15 @@ async function scenario(
   await page.locator('#panel-info .pi-head').click();
   await page.waitForTimeout(200);
   const i1 = await info();
+  const bar = await page.evaluate(() => {
+    const b = document.querySelector('#panel-info .pi-ctx .context-bar') as HTMLElement | null;
+    const f = document.querySelector('#panel-info .pi-ctx .context-bar-fill') as HTMLElement | null;
+    return {
+      h: b ? Math.round(b.getBoundingClientRect().height) : 0,
+      w: f ? Math.round(f.getBoundingClientRect().width) : 0,
+    };
+  });
+  check(bar.h >= 3 && bar.w > 0, `${tag}: the context bar is drawn in 세션 정보 (${bar.h}px tall, fill ${bar.w}px)`);
   check(
     ['입력', '출력', '캐시 읽기', '캐시 쓰기', 'autocompact', '압축 2', '세션 3', '+120 / -30'].every((w) =>
       i1.body.includes(w),
@@ -689,6 +710,13 @@ async function scenario(
     folded ? c0.toggle && !c0.selects : c0.selects && !c0.toggle,
     `${tag}: composer switch ${folded ? 'folded' : 'open'} (selects ${c0.selects})`,
   );
+  const budgetOf = () =>
+    page.evaluate(() => {
+      const body = (document.getElementById('panel-body') as HTMLElement).getBoundingClientRect().height;
+      const sc = (document.getElementById('panel-scroll') as HTMLElement).getBoundingClientRect().height;
+      return { body: Math.round(body), scroll: Math.round(sc) };
+    });
+  const folded0 = await budgetOf();
   if (folded) {
     // Folded, the toggle shares the input's line: the reading area keeps its room.
     const sameLine = await page.evaluate(() => {
@@ -700,17 +728,19 @@ async function scenario(
     await page.locator('#panel-controls .pc-toggle').click();
     await page.waitForTimeout(150);
     check((await ctl()).selects, `${tag}: the toggle unfolds model · effort`);
+    const unfolded = await budgetOf();
+    check(
+      unfolded.scroll === folded0.scroll && unfolded.body === folded0.body,
+      `${tag}: unfolded, model · effort float over the composer — the reading area keeps its height (${folded0.scroll} → ${unfolded.scroll})`,
+    );
   }
 
-  // Layout budget: the scroll area keeps at least half of the panel body.
-  const budget = await page.evaluate(() => {
-    const body = (document.getElementById('panel-body') as HTMLElement).getBoundingClientRect().height;
-    const sc = (document.getElementById('panel-scroll') as HTMLElement).getBoundingClientRect().height;
-    return { body: Math.round(body), scroll: Math.round(sc) };
-  });
+  // Layout budget: the panel body stays usable (≥ 176px, spec 10 §3.1-6) and the
+  // scroll area keeps at least half of it — floors that cannot go negative.
+  const budget = await budgetOf();
   check(
-    budget.scroll >= Math.min(budget.body / 2, budget.body - 88) - 1,
-    `${tag}: the scroll area keeps ≥ half the panel body (${budget.scroll}/${budget.body})`,
+    budget.body >= 176 && budget.scroll >= Math.ceil(budget.body / 2) - 1 && budget.scroll >= 88,
+    `${tag}: the panel body ≥ 176px and its scroll area ≥ half of it (${budget.scroll}/${budget.body})`,
   );
   check((await overflow(page)) === 0, `${tag}: panel — no page overflow`);
   if (full || height < 600) await page.screenshot({ path: path.join(OUT, `${theme}-${width}x${height}-panel.png`) });
@@ -730,6 +760,43 @@ async function scenario(
       ledger.text.includes('Audit the surfaces') &&
       ledger.text.includes('이전 task 2개'),
     `${tag}: 전체 task → opens every task and the earlier lists in the panel`,
+  );
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+
+  // A keyboard 전체 task → focuses the Tasks box, opened at its head.
+  await page.locator(`[data-session-key="${K('200')}"] .tl-toggle`).focus();
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#slide-panel.open', { timeout: 5000 });
+  await page.waitForTimeout(400);
+  const tasksLand = await page.evaluate(() => ({
+    focus: document.activeElement?.id ?? '',
+    top: (document.getElementById('panel-tasks') as HTMLElement).scrollTop,
+  }));
+  check(
+    tasksLand.focus === 'panel-tasks' && tasksLand.top === 0,
+    `${tag}: keyboard 전체 task → focuses the Tasks box at its head (${JSON.stringify(tasksLand)})`,
+  );
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+
+  // The idle card's tree: 6 of 8 workers, the rest is 전체 8개 → 상세 — the panel on that parent.
+  const allItem = page.locator(`[data-session-key="${K('300')}"] .an-all`);
+  const allText = (await allItem.textContent()) ?? '';
+  await allItem.click();
+  await page.waitForSelector('#slide-panel.open', { timeout: 5000 });
+  await page.waitForTimeout(600);
+  const agentLand = await page.evaluate(() => {
+    const sc = document.getElementById('panel-scroll') as HTMLElement;
+    const ag = document.getElementById('panel-agents') as HTMLElement;
+    return {
+      offset: Math.round(ag.getBoundingClientRect().top - sc.getBoundingClientRect().top),
+      rows: ag.querySelectorAll('.pa-tree .an[role="treeitem"]').length,
+    };
+  });
+  check(
+    allText.includes('전체 8개') && Math.abs(agentLand.offset) <= 4 && agentLand.rows === 8,
+    `${tag}: 전체 8개 → 상세 opens the panel on that parent — agents at the top, all 8 (${allText} | ${JSON.stringify(agentLand)})`,
   );
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);

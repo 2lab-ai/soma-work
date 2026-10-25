@@ -2889,6 +2889,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         renderPanelControls: () => {},
         // Spec 13: the session parts go through one live path; a keyboard opening focuses its landing.
         repaintPanelSession: () => {},
+        renderPanelComposer: () => {},
         focusPanelLanding: () => {},
         _panelTasksEarlier: false,
         // SSOT 2026-10-24: openPanel marks the layout before the drawer changes it (layout-shift FLIP).

@@ -265,7 +265,9 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
   it('Tasks sit in a pinned block above the scroll area, right under the header (§3.1-6)', () => {
     const panel = TEMPLATE.slice(TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel">'));
     const header = panel.indexOf('<div class="panel-header">');
-    const tasks = panel.indexOf('<div class="panel-tasks" id="panel-tasks"></div>');
+    const tasks = panel.indexOf(
+      '<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>',
+    );
     const scroll = panel.indexOf('<div class="panel-scroll" id="panel-scroll">');
     const command = panel.indexOf('<div class="panel-command" id="panel-command">');
     expect(header).toBeGreaterThan(0);
