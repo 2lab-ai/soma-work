@@ -336,6 +336,10 @@ describe('Dashboard — live surfaces (SSOT 2026-10-22)', () => {
       expect(dashboard.liveWaitingSince(working, [{ createdAt: Number.NaN }])).toBeUndefined();
       expect(dashboard.liveWaitingSince({ activityState: 'waiting' }, [])).toBeUndefined();
       expect(dashboard.liveWaitingSince(working, [])).toBeUndefined();
+      // A question asked at 10 is still open when a prompt comes at 20: waiting since 10.
+      expect(
+        dashboard.liveWaitingSince({ activityState: 'waiting', activityStateChangedAt: 10 }, [{ createdAt: 20 }]),
+      ).toBe(10);
     });
   });
 
