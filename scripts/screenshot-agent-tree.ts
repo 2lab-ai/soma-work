@@ -1,5 +1,6 @@
 /**
- * Agent tree — browser receipts and assertions (.prd/12 §4).
+ * Agent tree — browser receipts and assertions (.prd/12 §4, rev 2: one node
+ * type, rendered recursively — the main agent is the root).
  *
  * The real web server serves the real dashboard page; the browser-side HTTP
  * layer is mocked (board JSON, turns, work log) and the WebSocket is a stub,
@@ -8,15 +9,20 @@
  * Asserts (exit 1 on any failure), and writes screenshots, for
  * 1280 / 820 / 390 × light / dark:
  *   - the collapsed card names its subagents in words (서브에이전트 N · 실행 r · 실패 f)
- *   - the open card shows 메인 then its subagents, nested agents indented,
- *     each with a status word and a waterfall bar
- *   - a subagent row opens the panel on that agent: path 메인 › A1 Explore,
- *     Tasks = that agent's, the work log = its own entries + 지시 / 결과
- *   - the agent list opens vertically; choosing 메인 shows only main entries
- *     and a spawn row's 서브에이전트 열기 → switches back to the subagent
+ *   - the open card is one ARIA tree: the root (메인) and every subagent are the
+ *     same item with the same row slots (status word, time, tools), nested in
+ *     groups by level; a deeper parent starts folded with +N, its chevron
+ *     unfolds it; the tree keys (↓ → ← Enter) move, fold and activate
+ *   - an item opens the panel on that node: path 메인 › A1 Explore, its header,
+ *     its subtree (levels relative to it), Tasks = its own, the work log = its
+ *     own entries + 지시 / 결과; the root's header carries the same slots
+ *   - in a parent's log each spawn row carries the child's live block; ↓ +
+ *     Enter on it, or a click, drills into that child
+ *   - live pushes keep the focused tree item, its spinner and bar, a focused
+ *     task-group head, a focused crumb and a child block (same nodes)
  *   - a card without subagents shows no agents row
- *   - documentElement.scrollWidth === innerWidth everywhere; < 640px agent
- *     rows and the agent bar's buttons are ≥ 44px tall
+ *   - documentElement.scrollWidth === innerWidth everywhere; < 640px tree rows
+ *     and crumbs are ≥ 44px tall and the path shrinks to ‹ parent › here
  *
  * Run from the repo root (keeps state out of the checkout):
  *   SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst npx tsx scripts/screenshot-agent-tree.ts [outDir]
@@ -109,6 +115,17 @@ const AGENTS = [
     lastTool: 'WebFetch',
   },
   {
+    id: 'toolu_deep',
+    n: 5,
+    parentId: 'toolu_nested',
+    type: 'Plan',
+    description: 'Sketch the nested frame fix',
+    status: 'completed',
+    startedAt: NOW - 5 * M + 10_000,
+    endedAt: NOW - 4 * M - 40_000,
+    toolCalls: 2,
+  },
+  {
     id: 'toolu_review',
     n: 4,
     type: 'code-reviewer',
@@ -173,7 +190,8 @@ function makeBoard() {
           { id: 'T3', content: 'Design the tree', status: 'pending', toolCalls: 0 },
         ],
         agents: AGENTS,
-        agentsTotal: 4,
+        agentsTotal: 5,
+        agentRoot: { toolCalls: 16, lastTool: 'Agent' },
       }),
     ],
     idle: [],
@@ -293,6 +311,14 @@ const WORKLOG: Record<string, unknown[]> = {
     }),
     E(18, { kind: 'tool', tool: 'Read', text: 'Read {"file_path":"stream-processor.ts"}', agentId: 'toolu_review' }),
     E(19, { kind: 'narration', text: 'Waiting for the research agents.', taskId: 'T2', taskTitle: 'Fan out research' }),
+    E(20, {
+      kind: 'tool',
+      tool: 'Agent',
+      text: 'Agent {"description":"Sketch the nested frame fix"}',
+      agentId: 'toolu_nested',
+      agentRef: 'toolu_deep',
+    }),
+    E(21, { kind: 'tool', tool: 'Read', text: 'Read {"file_path":"agent-tree.ts"}', agentId: 'toolu_deep' }),
   ],
   'conv-plain': [E(1, { kind: 'instruction', text: 'hello' }), E(2, { kind: 'final', text: 'hi' })],
 };
@@ -416,7 +442,7 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     return card?.querySelector('.card-agents')?.textContent ?? '';
   }, K('200'));
   check(
-    face.includes('서브에이전트 4') && face.includes('실행 2') && face.includes('실패 1'),
+    face.includes('서브에이전트 5') && face.includes('실행 2') && face.includes('실패 1'),
     `${tag}: collapsed card says "${face.trim()}"`,
   );
   const plain = await page.evaluate(
@@ -427,83 +453,185 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   check((await overflow(page)) === 0, `${tag}: board — no page overflow`);
   await shoot(page, `${theme}-${width}-board.png`);
 
-  // §4.2 open card tree.
+  // §4.2 open card: one tree, one item type at every level.
   await page.click(`[data-session-key="${K('200')}"] .card-face`);
   await page.waitForTimeout(500);
-  const tree = await page.evaluate((key) => {
-    const rows = Array.from(document.querySelectorAll(`[data-session-key="${key}"] .ag-row`));
-    return rows.map((r) => ({
-      main: r.classList.contains('is-main'),
-      depth: getComputedStyle(r).getPropertyValue('--ag-depth').trim(),
-      st: r.querySelector('.ag-st')?.textContent ?? '',
-      span: !!r.querySelector('.ag-span i'),
-      h: Math.round(r.getBoundingClientRect().height),
-    }));
-  }, K('200'));
-  check(tree.length === 5 && tree[0].main, `${tag}: open card shows 메인 + 4 subagents (${tree.length} rows)`);
-  check(tree[2]?.depth === '2', `${tag}: the nested agent is indented one level deeper (depth ${tree[2]?.depth})`);
+  const readTree = (key: string) =>
+    page.evaluate((k) => {
+      const items = Array.from(document.querySelectorAll(`[data-session-key="${k}"] .an-tree .an[role="treeitem"]`));
+      return items.map((li) => {
+        const row = li.querySelector(':scope > .an-row') as HTMLElement;
+        return {
+          id: li.getAttribute('data-agent-open'),
+          root: li.classList.contains('is-root'),
+          level: li.getAttribute('aria-level'),
+          expanded: li.getAttribute('aria-expanded'),
+          tab: li.getAttribute('tabindex'),
+          st: row?.querySelector('.ag-st')?.textContent ?? '',
+          tools: row?.querySelector('.ag-tools')?.textContent ?? '',
+          more: row?.querySelector('.an-more')?.textContent ?? '',
+          span: !!row?.querySelector('.ag-span i'),
+          pad: Number.parseFloat(getComputedStyle(row).paddingLeft),
+          h: Math.round(row.getBoundingClientRect().height),
+        };
+      });
+    }, key);
+  const tree = await readTree(K('200'));
+  const ids = tree.map((r) => r.id);
   check(
-    tree.slice(1).every((r) => r.st && r.span),
-    `${tag}: every subagent row has a status word and a waterfall bar (${tree.map((r) => r.st).join(' / ')})`,
+    JSON.stringify(ids) === JSON.stringify(['', 'toolu_explore', 'toolu_nested', 'toolu_lib', 'toolu_review']),
+    `${tag}: open card tree = 메인 → A1 (→ A3) · A2 · A4 (${ids.join(',')})`,
   );
+  check(
+    tree[0]?.root && tree[0].level === '1' && tree[0].expanded === 'true',
+    `${tag}: the root item is 메인 at level 1, open`,
+  );
+  check(
+    tree.every((r) => r.st && /^툴 \d+$/.test(r.tools)),
+    `${tag}: every item — the root included — has a status word and a tool count (${tree.map((r) => `${r.st}/${r.tools}`).join(' · ')})`,
+  );
+  check(tree[0]?.tools === '툴 16', `${tag}: the root's own tool count (${tree[0]?.tools})`);
+  check(
+    tree[2]?.level === '3' && tree[2]?.expanded === 'false' && tree[2]?.more === '+1',
+    `${tag}: A3 (level 3) starts folded with +1 (${JSON.stringify(tree[2])})`,
+  );
+  check(
+    tree[0].pad < tree[1].pad && tree[1].pad < tree[2].pad,
+    `${tag}: indent grows with the level (${tree.map((r) => r.pad).join(',')})`,
+  );
+  check(
+    !tree[0].span && tree.slice(1).every((r) => r.span),
+    `${tag}: subagent rows carry the waterfall bar, the root none`,
+  );
+  check(tree.filter((r) => r.tab === '0').length === 1, `${tag}: the tree has one tab stop`);
   if (width < 640)
     check(
       tree.every((r) => r.h >= 44),
-      `${tag}: agent rows ≥ 44px (${tree.map((r) => r.h).join(',')})`,
+      `${tag}: tree rows ≥ 44px (${tree.map((r) => r.h).join(',')})`,
     );
   check((await overflow(page)) === 0, `${tag}: open card — no page overflow`);
   await shoot(page, `${theme}-${width}-card-tree.png`);
-  // §4.4 live: a running subagent's tool count and the waterfall move; the row
+  // The chevron unfolds A3: A5 appears one level down.
+  await page.click(`[data-session-key="${K('200')}"] [data-an-toggle="toolu_nested"]`);
+  await page.waitForTimeout(200);
+  const unfolded = await readTree(K('200'));
+  const deep = unfolded.find((r) => r.id === 'toolu_deep');
+  check(
+    deep?.level === '4' && unfolded.find((r) => r.id === 'toolu_nested')?.expanded === 'true',
+    `${tag}: the chevron unfolds A3 — A5 at level 4 (${deep?.level})`,
+  );
+  check((await overflow(page)) === 0, `${tag}: unfolded tree — no page overflow`);
+  const cardBox0 = await page.locator(`[data-session-key="${K('200')}"]`).boundingBox();
+  if (cardBox0) await page.screenshot({ path: path.join(OUT, `${theme}-${width}-card-tree-deep.png`), clip: cardBox0 });
+  // Tree keys (WAI-ARIA): ↓ from the root to A1, → into A3, ← folds A3, ← up to A1.
+  const focusedId = () =>
+    page.evaluate(() => {
+      const a = document.activeElement;
+      return a?.getAttribute('role') === 'treeitem' ? a.getAttribute('data-agent-open') : `(${a?.tagName})`;
+    });
+  await page.evaluate((key) => {
+    (document.querySelector(`[data-session-key="${key}"] .an-tree .an.is-root`) as HTMLElement).focus();
+  }, K('200'));
+  await page.keyboard.press('ArrowDown');
+  const k1 = await focusedId();
+  await page.keyboard.press('ArrowRight');
+  const k2 = await focusedId();
+  await page.keyboard.press('ArrowLeft');
+  await page.waitForTimeout(150);
+  const foldedByKey = (await readTree(K('200'))).find((r) => r.id === 'toolu_nested')?.expanded;
+  const k3 = await focusedId();
+  await page.keyboard.press('ArrowLeft');
+  const k4 = await focusedId();
+  check(
+    k1 === 'toolu_explore' &&
+      k2 === 'toolu_nested' &&
+      foldedByKey === 'false' &&
+      k3 === 'toolu_nested' &&
+      k4 === 'toolu_explore',
+    `${tag}: tree keys ↓ → ← ← move and fold (${[k1, k2, foldedByKey, k3, k4].join(' / ')})`,
+  );
+  // §4.4 live: a running subagent's tool count and the waterfall move; the item
   // the reader focused, its spinner and its bar are the same nodes after.
   await page.evaluate((key) => {
     // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
-    const row = document.querySelector(`[data-session-key="${key}"] .ag-row[data-agent-open="toolu_explore"]`) as any;
-    row.focus();
-    row.__mark = 1;
+    const li = document.querySelector(`[data-session-key="${key}"] .an[data-agent-open="toolu_explore"]`) as any;
+    li.focus();
+    li.__mark = 1;
     // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
-    (row.querySelector('.ag-spinner') as any).__mark = 1;
+    (li.querySelector('.ag-spinner') as any).__mark = 1;
     // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
-    (row.querySelector('.ag-span i') as any).__mark = 1;
+    (li.querySelector('.ag-span i') as any).__mark = 1;
   }, K('200'));
   await pushSession(page, K('200'), { agent: 'toolu_explore', tools: 1, shiftMs: 60_000 });
   const liveCard = await page.evaluate((key) => {
     // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
-    const row = document.querySelector(`[data-session-key="${key}"] .ag-row[data-agent-open="toolu_explore"]`) as any;
+    const li = document.querySelector(`[data-session-key="${key}"] .an[data-agent-open="toolu_explore"]`) as any;
+    const row = li?.querySelector(':scope > .an-row');
     return {
-      sameRow: row?.__mark === 1,
-      focused: document.activeElement === row,
+      sameItem: li?.__mark === 1,
+      focused: document.activeElement === li,
       // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
-      spinner: (row?.querySelector('.ag-spinner') as any)?.__mark === 1,
+      spinner: (li?.querySelector('.ag-spinner') as any)?.__mark === 1,
       // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
-      bar: (row?.querySelector('.ag-span i') as any)?.__mark === 1,
+      bar: (li?.querySelector('.ag-span i') as any)?.__mark === 1,
       tools: row?.querySelector('.ag-tools')?.textContent ?? '',
     };
   }, K('200'));
   check(
-    liveCard.sameRow && liveCard.focused && liveCard.spinner && liveCard.bar && liveCard.tools === '툴 19',
-    `${tag}: live card update keeps the focused row, its spinner and bar (${JSON.stringify(liveCard)})`,
+    liveCard.sameItem && liveCard.focused && liveCard.spinner && liveCard.bar && liveCard.tools === '툴 19',
+    `${tag}: live card update keeps the focused item, its spinner and bar (${JSON.stringify(liveCard)})`,
   );
   const cardBox = await page.locator(`[data-session-key="${K('200')}"]`).boundingBox();
   if (cardBox) await page.screenshot({ path: path.join(OUT, `${theme}-${width}-card-tree-crop.png`), clip: cardBox });
 
-  // §4.3 a subagent row opens the panel on that agent.
-  await page.click(`[data-session-key="${K('200')}"] .ag-row.is-sub >> nth=0`);
+  // §4.3 Enter on a tree item opens the panel on that node.
+  await page.keyboard.press('Enter');
   await page.waitForSelector('#slide-panel.open', { timeout: 5000 });
   await page.waitForFunction(() => document.querySelectorAll('#worklog-list .wl-entry').length > 0, null, {
     timeout: 8000,
   });
   await page.click('#worklog-toggle');
   await page.waitForTimeout(350);
-  const bar = await page.evaluate(() => ({
-    path: Array.from(document.querySelectorAll('#panel-agents .pa-crumb')).map((b) => b.textContent),
-    tasks: document.querySelector('#panel-tasks .panel-tasks-header')?.textContent ?? '',
-    count: document.getElementById('worklog-count')?.textContent ?? '',
-    roles: Array.from(document.querySelectorAll('#worklog-list .wl-role')).map((r) => r.textContent),
-    heights: Array.from(document.querySelectorAll('#panel-agents .pa-crumb, #panel-agents .pa-toggle')).map((b) =>
-      Math.round(b.getBoundingClientRect().height),
-    ),
-  }));
+  const readPanel = () =>
+    page.evaluate(() => ({
+      path: Array.from(document.querySelectorAll('#panel-agents .pa-crumb')).map((b) => b.textContent),
+      visiblePath: Array.from(document.querySelectorAll('#panel-agents .pa-crumb'))
+        .filter((b) => (b as HTMLElement).offsetParent !== null)
+        .map((b) => b.textContent),
+      // What the path reads on screen, separators included (a hidden step takes its separator along).
+      pathText:
+        (document.querySelector('#panel-agents .pa-path') as HTMLElement | null)?.innerText
+          .replace(/\s+/g, ' ')
+          .trim() ?? '',
+      upMark: (() => {
+        const up = document.querySelector('#panel-agents .pa-crumb.is-up');
+        return up ? getComputedStyle(up, '::before').content : '';
+      })(),
+      head: document.querySelector('#panel-agents .pa-focus')?.textContent ?? '',
+      sub: Array.from(document.querySelectorAll('#panel-agents .pa-tree .an[role="treeitem"]')).map((li) => ({
+        id: li.getAttribute('data-agent-select'),
+        level: li.getAttribute('aria-level'),
+      })),
+      tasks: document.querySelector('#panel-tasks .panel-tasks-header')?.textContent ?? '',
+      roles: Array.from(document.querySelectorAll('#worklog-list .wl-role')).map((r) => r.textContent),
+      heights: Array.from(document.querySelectorAll('#panel-agents .pa-crumb, #panel-agents .pa-tree .an-row'))
+        .filter((b) => (b as HTMLElement).offsetParent !== null)
+        .map((b) => Math.round(b.getBoundingClientRect().height)),
+    }));
+  const bar = await readPanel();
   check(bar.path.join(' › ') === '메인 › A1 Explore', `${tag}: panel path ${bar.path.join(' › ')}`);
+  check(
+    bar.head.includes('A1') && bar.head.includes('Explore') && bar.head.includes('실행 중') && /툴 \d+/.test(bar.head),
+    `${tag}: the focused node's header (${bar.head.trim().slice(0, 80)})`,
+  );
+  check(
+    JSON.stringify(bar.sub) ===
+      JSON.stringify([
+        { id: 'toolu_nested', level: '1' },
+        { id: 'toolu_deep', level: '2' },
+      ]),
+    `${tag}: its subtree, levels relative to it (${JSON.stringify(bar.sub)})`,
+  );
   check(bar.tasks.includes('A1 Explore'), `${tag}: Tasks are the subagent's (${bar.tasks.trim()})`);
   const subSeqs = await visibleSeqs(page);
   check(
@@ -517,7 +645,7 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   if (width < 640)
     check(
       bar.heights.every((h) => h >= 44),
-      `${tag}: agent bar buttons ≥ 44px (${bar.heights.join(',')})`,
+      `${tag}: crumbs and subtree rows ≥ 44px (${bar.heights.join(',')})`,
     );
   check((await overflow(page)) === 0, `${tag}: panel on a subagent — no page overflow`);
   await shoot(page, `${theme}-${width}-panel-subagent.png`, false);
@@ -555,37 +683,96 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
       const a = document.activeElement as any;
       return {
         focusedCrumb: a?.__mark === 1 && a.getAttribute('data-agent-select') === '',
-        sum: document.querySelector('#panel-agents .pa-sum')?.textContent ?? '',
+        sum: document.querySelector('#panel-agents .pa-focus .pa-sum')?.textContent ?? '',
       };
     });
   })();
   check(
     crumbLive.focusedCrumb && crumbLive.sum.includes('툴 21'),
-    `${tag}: the focused 메인 crumb keeps focus while the summary moves (${JSON.stringify(crumbLive)})`,
+    `${tag}: the focused 메인 crumb keeps focus while the header moves (${JSON.stringify(crumbLive)})`,
   );
+  // Drill one level down through the subtree: the path grows, and on a phone it
+  // shrinks to "‹ parent › here".
+  await page.click('#panel-agents .pa-tree .an[data-agent-select="toolu_nested"] > .an-row');
+  await page.waitForTimeout(250);
+  const drilled = await readPanel();
+  check(
+    drilled.path.join(' › ') === '메인 › A1 Explore › A3 general-purpose' && drilled.head.includes('실패'),
+    `${tag}: drilling into A3 (${drilled.path.join(' › ')})`,
+  );
+  if (width < 640)
+    check(
+      drilled.pathText === 'A1 Explore › A3 general-purpose' && drilled.upMark.includes('‹'),
+      `${tag}: the phone path reads ‹ parent › here (${drilled.upMark} ${drilled.pathText})`,
+    );
+  await shoot(page, `${theme}-${width}-panel-deep.png`, false);
 
-  // The agent list, then back to main.
-  await page.click('#pa-toggle');
-  await page.waitForTimeout(250);
-  const listRows = await page.evaluate(() => document.querySelectorAll('#pa-list .ag-row').length);
-  check(listRows === 5, `${tag}: agent list shows 메인 + 4 (${listRows})`);
-  await shoot(page, `${theme}-${width}-panel-agent-list.png`, false);
-  await page.click('#pa-list .ag-row.is-main');
-  await page.waitForTimeout(250);
+  // Back to the root one level at a time through the parent crumb (the only
+  // one a phone shows besides here): its header carries the same slots as any node's.
+  for (let up = 0; up < 2; up++) {
+    await page.click('#panel-agents .pa-crumb.is-up');
+    await page.waitForTimeout(200);
+  }
+  const atRoot = await readPanel();
+  check(
+    atRoot.head.includes('메인') &&
+      atRoot.head.includes('실행 중') &&
+      atRoot.head.includes('툴 16') &&
+      atRoot.head.includes('세션 Σ'),
+    `${tag}: the root's header — status, tools, session Σ (${atRoot.head.trim().slice(0, 90)})`,
+  );
+  check(
+    JSON.stringify(atRoot.sub.map((n) => n.id)) ===
+      JSON.stringify(['toolu_explore', 'toolu_nested', 'toolu_lib', 'toolu_review']),
+    `${tag}: the root's subtree in the panel (${atRoot.sub.map((n) => n.id).join(',')})`,
+  );
+  await shoot(page, `${theme}-${width}-panel-root.png`, false);
   const mainSeqs = await visibleSeqs(page);
   check(
     JSON.stringify(mainSeqs) === JSON.stringify([1, 2, 3, 4, 5, 6, 14, 15, 17, 19]),
     `${tag}: main log has no subagent entries (${mainSeqs.join(',')})`,
   );
-  const links = await page.evaluate(() => document.querySelectorAll('#worklog-list .wl-agent-link').length);
-  check(links === 3, `${tag}: each spawn row in the main log links to its subagent (${links})`);
-  // Keyboard: ArrowDown from a spawn row lands on its 서브에이전트 열기, Enter opens that agent.
+  const blocks = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('#worklog-list .wl-child')).map((b) => ({
+      id: b.getAttribute('data-agent-block'),
+      st: b.querySelector('.ag-st')?.textContent ?? '',
+      tools: b.querySelector('.ag-tools')?.textContent ?? '',
+    })),
+  );
+  check(
+    blocks.length === 3 && blocks.every((b) => b.st && b.tools),
+    `${tag}: each spawn row in the main log carries its child's block (${blocks.map((b) => `${b.id}:${b.st}/${b.tools}`).join(' · ')})`,
+  );
+  await page.locator('#worklog-list .wl-child').first().scrollIntoViewIfNeeded();
+  await page.waitForTimeout(150);
+  await shoot(page, `${theme}-${width}-panel-root-log.png`, false);
+  check(
+    !(await page.evaluate(() => !!document.querySelector('#panel-agents .pa-path'))),
+    `${tag}: at the root the panel shows no path (nothing above it)`,
+  );
+  // A child block is live: the same node takes the new tool count.
   await page.evaluate(() => {
-    const link = document.querySelectorAll('#worklog-list .wl-agent-link')[0];
-    (link.parentElement?.querySelector('.wl-row') as HTMLElement).focus();
+    // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
+    const b = document.querySelector('#worklog-list .wl-child[data-agent-block="toolu_review"]') as any;
+    b.__mark = 1;
+  });
+  await pushSession(page, K('200'), { agent: 'toolu_review', tools: 1 });
+  const blockLive = await page.evaluate(() => {
+    // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
+    const b = document.querySelector('#worklog-list .wl-child[data-agent-block="toolu_review"]') as any;
+    return { same: b?.__mark === 1, tools: b?.querySelector('.ag-tools')?.textContent ?? '' };
+  });
+  check(
+    blockLive.same && blockLive.tools === '툴 7',
+    `${tag}: a child block updates in place (${JSON.stringify(blockLive)})`,
+  );
+  // Keyboard: ArrowDown from a spawn row lands on its child block, Enter opens that child.
+  await page.evaluate(() => {
+    const block = document.querySelectorAll('#worklog-list .wl-child')[0];
+    (block.parentElement?.querySelector('.wl-row') as HTMLElement).focus();
   });
   await page.keyboard.press('ArrowDown');
-  const onLink = await page.evaluate(() => document.activeElement?.classList.contains('wl-agent-link') ?? false);
+  const onBlock = await page.evaluate(() => document.activeElement?.classList.contains('wl-child') ?? false);
   await page.keyboard.press('Enter');
   await page.waitForTimeout(250);
   const kbPath = await page.evaluate(() =>
@@ -595,25 +782,26 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   );
   const kbFocus = await page.evaluate(() => {
     const a = document.activeElement;
-    return a?.classList.contains('pa-crumb') && a.getAttribute('aria-current') === 'true'
+    return a?.classList.contains('pa-crumb') && a.getAttribute('aria-current') === 'page'
       ? a.textContent
       : (a?.tagName ?? '');
   });
-  check(kbFocus === 'A1 Explore', `${tag}: after the keyboard switch focus is on the shown agent's crumb (${kbFocus})`);
+  check(kbFocus === 'A1 Explore', `${tag}: after the keyboard switch focus is on the shown node's crumb (${kbFocus})`);
   check(
-    onLink && kbPath === '메인 › A1 Explore',
-    `${tag}: keyboard ↓ + Enter on 서브에이전트 열기 opens it (${onLink}, ${kbPath})`,
+    onBlock && kbPath === '메인 › A1 Explore',
+    `${tag}: keyboard ↓ + Enter on a child block opens it (${onBlock}, ${kbPath})`,
   );
   await page.click('#panel-agents .pa-crumb[data-agent-select=""]');
   await page.waitForTimeout(250);
-  await page.click('#worklog-list .wl-agent-link >> nth=1');
+  await page.click('#worklog-list .wl-child >> nth=1');
   await page.waitForTimeout(250);
   const libPath = await page.evaluate(() =>
     Array.from(document.querySelectorAll('#panel-agents .pa-crumb'))
       .map((b) => b.textContent)
       .join(' › '),
   );
-  check(libPath === '메인 › A2 librarian', `${tag}: 서브에이전트 열기 → switches to it (${libPath})`);
+  check(libPath === '메인 › A2 librarian', `${tag}: a child block's click drills into it (${libPath})`);
+  check((await overflow(page)) === 0, `${tag}: panel — no page overflow`);
   await shoot(page, `${theme}-${width}-panel-librarian.png`, false);
   await ctx.close();
 }
