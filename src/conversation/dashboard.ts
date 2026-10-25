@@ -1311,21 +1311,24 @@ function liveDoneAt(s: any): number | undefined {
   return Number.isFinite(last) ? last : undefined;
 }
 
-/** Spec 13 §3.7 — when a live session started waiting on its user; undefined when it does not wait. */
+/**
+ * Spec 13 §3.7 — when a live session started waiting on its user: the oldest
+ * of its open permission prompts and, while its own state is `waiting` (a
+ * question), the switch to that state. A running turn's state stamp is when
+ * it started working, so it never counts. Undefined when it does not wait.
+ */
 export function liveWaitingSince(
   s: { activityState?: string; activityStateChangedAt?: unknown },
   permissions: ReadonlyArray<{ createdAt?: unknown }>,
 ): number | undefined {
-  if (permissions.length > 0) {
-    let oldest: number | undefined;
-    for (const p of permissions) {
-      const t = finiteNumber(p.createdAt);
-      if (t !== undefined && (oldest === undefined || t < oldest)) oldest = t;
-    }
-    return oldest;
-  }
-  if ((s.activityState || 'idle') !== 'waiting') return undefined;
-  return finiteNumber(s.activityStateChangedAt);
+  let oldest: number | undefined;
+  const consider = (v: unknown) => {
+    const t = finiteNumber(v);
+    if (t !== undefined && (oldest === undefined || t < oldest)) oldest = t;
+  };
+  for (const p of permissions) consider(p.createdAt);
+  if ((s.activityState || 'idle') === 'waiting') consider(s.activityStateChangedAt);
+  return oldest;
 }
 
 // ── Artifacts (SSOT 2026-10-23) ──
