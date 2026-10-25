@@ -175,6 +175,12 @@ export interface KanbanSession {
    */
   doneAt?: number;
   /**
+   * Spec 13 §3.7 — when a live session started waiting on its user (epoch ms):
+   * its oldest open permission prompt, else its switch to `waiting`. Absent
+   * otherwise. (`lastActivity` moves on user input only, so it cannot say this.)
+   */
+  waitingSince?: number;
+  /**
    * SSOT 2026-10-22 T4/T5 — tokens the context holds now, the threshold it
    * auto-compacts at (follows the model), and the representative model a
    * switch waits to apply once the running compact seals.
@@ -1305,6 +1311,23 @@ function liveDoneAt(s: any): number | undefined {
   return Number.isFinite(last) ? last : undefined;
 }
 
+/** Spec 13 §3.7 — when a live session started waiting on its user; undefined when it does not wait. */
+export function liveWaitingSince(
+  s: { activityState?: string; activityStateChangedAt?: unknown },
+  permissions: ReadonlyArray<{ createdAt?: unknown }>,
+): number | undefined {
+  if (permissions.length > 0) {
+    let oldest: number | undefined;
+    for (const p of permissions) {
+      const t = finiteNumber(p.createdAt);
+      if (t !== undefined && (oldest === undefined || t < oldest)) oldest = t;
+    }
+    return oldest;
+  }
+  if ((s.activityState || 'idle') !== 'waiting') return undefined;
+  return finiteNumber(s.activityStateChangedAt);
+}
+
 // ── Artifacts (SSOT 2026-10-23) ──
 
 /** One work-log backfill at a time: a board of old cards must not read every log at once. */
@@ -1407,6 +1430,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       : undefined,
     tokenUsage: tokenUsageOf(s),
     doneAt: liveDoneAt(s),
+    waitingSince: liveWaitingSince(s, permissions),
     ...modelFields(s),
     tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume)),
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
@@ -3137,6 +3161,7 @@ function renderDashboardPage(userId?: string): string {
   --st-run: #6b93f2;
   --st-done: #3fb968;
   --st-fail: #f26b6b;
+  --st-fail-text: #f26b6b; /* red as 13px text: ≥ 4.5:1 on the card and the dimmed card */
   /* Owner badges (All Users, .prd/10 §3.1-3) — 8 hues, ordered so neighbouring
      slots are far apart: blue · amber · green · rose · teal · orange · violet · olive.
      Each text colour clears 4.5:1 on its own fill. */
@@ -3186,6 +3211,7 @@ function renderDashboardPage(userId?: string): string {
   --st-run: #2f63e0;
   --st-done: #137a3e;
   --st-fail: #d43a3a;
+  --st-fail-text: #c02f2f; /* #d43a3a is 4.4:1 on the dimmed card (#f8f8f8); this is 5.4:1 */
   --ob-0-bg: #d9e9fc; --ob-0-fg: #0e3562;
   --ob-1-bg: #fcf2d9; --ob-1-fg: #62490e;
   --ob-2-bg: #d9fce5; --ob-2-fg: #0e622a;
@@ -3697,22 +3723,22 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .st-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-color); display: inline-block; }
 .st-dot.is-hollow { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-color); }
 .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ib-pill); border-top-color: var(--st-run); border-right-color: var(--st-run); display: inline-block; animation: spin 0.9s linear infinite; }
-.card-metrics { display: inline-flex; align-items: center; color: var(--ib-muted); flex-shrink: 0; margin-left: auto; font-variant-numeric: tabular-nums; }
+.card-metrics { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; row-gap: 4px; max-width: 100%; color: var(--ib-muted); flex-shrink: 0; margin-left: auto; font-variant-numeric: tabular-nums; }
 .card-metrics .metric { display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; }
 .card-metrics .metric + .metric { border-left: 1px solid var(--ib-card-border); }
 .card-metrics .metric:last-child { padding-right: 0; }
 .card-metrics svg { width: 13px; height: 13px; }
 /* spec 13 §3.7: context level (the icon at a warning — amber text is under
    4.5:1 on the light card — and the whole metric near autocompaction), the PR
-   badge's state colour with its word for screen readers, recency. A narrow
-   card wraps its metrics under the status instead of cutting the status. */
+   badge's state as a word and a colour (never colour alone), recency. A narrow
+   card wraps its metrics under the status instead of cutting the status, and
+   a crowded metrics row wraps inside itself instead of spilling out. */
 .card-metrics .metric.ctx-warn svg { color: var(--st-wait); }
-.card-metrics .metric.ctx-danger { color: var(--st-fail); font-weight: 600; }
-.card-metrics .card-pr { position: relative; }
+.card-metrics .metric.ctx-danger { color: var(--st-fail-text); font-weight: 600; }
 .card-metrics .card-pr.is-open { color: var(--st-run); }
 .card-metrics .card-pr.is-merged { color: var(--st-done); }
-.card-metrics .card-pr.is-closed { color: var(--st-fail); }
-.card-pr .cpr-state { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.card-metrics .card-pr.is-closed { color: var(--st-fail-text); }
+.card-pr .cpr-state { font-size: 12px; white-space: nowrap; }
 .card-status .st-ago { color: var(--ib-muted); }
 .card-status .st-ago::before { content: "·"; margin: 0 6px; }
 /* SSOT 2026-10-22 T3 — the task in progress on the collapsed face. */
@@ -7981,10 +8007,10 @@ function renderCardStatus(s, col) {
     return '<span class="st-icon is-resume">' + RESUME_SVG + '</span><span class="st-text" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</span>';
   }
   if (col === 'waiting') {
-    return '<span class="st-icon">' + WAIT_SVG + '</span><span class="st-text">Waiting for you' + cardAgo(s) + '</span>';
+    return '<span class="st-icon">' + WAIT_SVG + '</span><span class="st-text">Waiting for you' + cardAgo(s, col) + '</span>';
   }
   if (col === 'closed') {
-    return '<span class="st-icon"><span class="st-dot is-hollow"></span></span><span class="st-text">' + (s.terminated ? 'Archived' : 'Sleeping') + cardAgo(s) + '</span>';
+    return '<span class="st-icon"><span class="st-dot is-hollow"></span></span><span class="st-text">' + (s.terminated ? 'Archived' : 'Sleeping') + cardAgo(s, col) + '</span>';
   }
   var acc = Number(s.activeAccumulatedMs) || 0;
   var leg = col === 'working' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
@@ -7992,15 +8018,19 @@ function renderCardStatus(s, col) {
   if (col === 'working') {
     return '<span class="st-icon"><span class="spinner"></span></span><span class="st-text"><span class="st-prefix">Running &middot; </span>' + timer + '</span>';
   }
-  if (!acc) return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text">Idle' + cardAgo(s) + '</span>';
-  return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text"><span class="st-prefix">Done in </span>' + timer + cardAgo(s) + '</span>';
+  if (!acc) return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text">Idle' + cardAgo(s, col) + '</span>';
+  return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text"><span class="st-prefix">Done in </span>' + timer + cardAgo(s, col) + '</span>';
 }
 // Recency (spec 13 §3.7 — the compact tier's "updated_at", Jira's days in
-// column): a card that is not moving says when it last acted. The stamp only;
-// the 1 Hz tick writes "12m ago", so equal data renders equal HTML.
-function cardAgo(s) {
-  var t = Date.parse(s && s.lastActivity);
-  return isFinite(t) && t > 0 ? '<span class="st-ago"><span class="rel-time" data-ts="' + t + '"></span></span>' : '';
+// column): a card that is not moving says how long it has been in its state —
+// a waiting card since it started waiting (waitingSince; without that stamp,
+// nothing), a finished one since its work finished (doneTimeOf, the day
+// groups' clock). Never lastActivity alone: it moves on user input only, so
+// after a long turn it would overstate. The stamp only; the 1 Hz tick writes
+// "12m ago", so equal data renders equal HTML.
+function cardAgo(s, col) {
+  var t = col === 'waiting' ? toNum(s && s.waitingSince) : doneTimeOf(s);
+  return t > 0 ? '<span class="st-ago"><span class="rel-time" data-ts="' + t + '"></span></span>' : '';
 }
 
 // Owner badge (§3.1-3): in the All Users view every card head names its owner,
@@ -8090,7 +8120,8 @@ function renderCardUsage(s) {
 }
 
 // Context level (spec 13 §3.7), one table for the face metric and the panel
-// bar: over 60% a warning, over 80% close to the automatic compaction.
+// bar: bands of the window used — over 60% a warning, over 80% danger. (Not
+// the compaction threshold, which a session may set lower or higher.)
 function ctxLevel(pct) {
   var n = toNum(pct);
   return n > 80 ? 'ctx-danger' : n > 60 ? 'ctx-warn' : '';
@@ -8098,19 +8129,21 @@ function ctxLevel(pct) {
 // The outcome on the face (spec 13 §3.7 — the compact tier's PR link in Copilot
 // and Devin): the PR number and its state as a badge. The face is one toggle,
 // so the badge is not a link; the open card's short ref and the titled link in
-// 세션 정보 are. The state is a class (colour), a word for screen readers and
-// the tooltip.
+// 세션 정보 are. The state is a word on screen ("#12 머지됨" — the face's name
+// is built from its content, the space keeps two words) and a class (colour);
+// an unknown state shows the bare number. The title adds the PR's title.
 var PR_STATE_LABEL = { open: '열림', draft: '초안', merged: '머지됨', closed: '닫힘' };
 var PR_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="3.5" r="1.6"/><circle cx="4" cy="12.5" r="1.6"/><circle cx="12" cy="12.5" r="1.6"/><path d="M4 5.1v5.8M12 10.9V6.5c0-1.1-.9-2-2-2H7.5M9 3L7.5 4.5 9 6"/></svg>';
 function renderCardPr(s) {
   if (!dhShow('links') || !s.prUrl || !s.prShortRef) return '';
   var m = /(\\d+)$/.exec(String(s.prShortRef));
   var num = m ? '#' + m[1] : String(s.prShortRef);
-  var st = Object.prototype.hasOwnProperty.call(PR_STATE_LABEL, s.prStatus) ? s.prStatus : '';
+  var raw = String(s.prStatus || '').toLowerCase(); // a resource may say "MERGED"
+  var st = Object.prototype.hasOwnProperty.call(PR_STATE_LABEL, raw) ? raw : '';
   var word = st ? PR_STATE_LABEL[st] : '';
   var tip = 'PR ' + num + (word ? ' ' + word : '') + (s.prTitle ? ' — ' + s.prTitle : '');
   return '<span class="metric card-pr' + (st ? ' is-' + st : '') + '" title="' + escAttr(tip) + '">' + PR_SVG + esc(num)
-    + (word ? '<span class="cpr-state">' + word + '</span>' : '') + '</span>';
+    + (word ? '<span class="cpr-state"> ' + word + '</span>' : '') + '</span>';
 }
 
 // Collapsed face (§2.1 reference anatomy, audited in spec 13 §3.7): ✦ +
@@ -8136,7 +8169,7 @@ function renderCardFace(s, col) {
   var ctxPct = s.tokenUsage ? (s.tokenUsage.contextUsagePercent || 0) : 0;
   if (dhShow('contextwindow') && ctxPct > 0) {
     var ctxLv = ctxLevel(ctxPct);
-    metrics.push('<span class="metric' + (ctxLv ? ' ' + ctxLv : '') + '" title="Context window used' + (ctxLv === 'ctx-danger' ? ' — 자동 압축이 가까움' : '') + '">'
+    metrics.push('<span class="metric' + (ctxLv ? ' ' + ctxLv : '') + '" title="Context window used' + (ctxLv === 'ctx-danger' ? ' — 80% 넘게 찼다' : '') + '">'
       + CTX_SVG + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '%</span>');
   }
   // User media (SSOT 2026-10-25): a paperclip count, no image on the board.

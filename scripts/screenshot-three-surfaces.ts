@@ -147,7 +147,10 @@ function makeBoard() {
         displayHeadline: 'Ship the three surfaces?',
         activityState: 'waiting',
         conversationId: 'conv-ask',
-        lastActivity: iso(M),
+        // The instruction came 40 minutes ago, the question a minute ago: the face
+        // counts from the question (waitingSince), never from lastActivity.
+        lastActivity: iso(40 * M),
+        waitingSince: NOW - M,
         artifacts: SUMMARY('conv-ask'),
         pendingQuestion: {
           type: 'user_choice',
@@ -252,7 +255,9 @@ function makeBoard() {
         displayHeadline: 'Recursive agent tree — shipped',
         activityState: 'idle',
         conversationId: 'conv-done',
-        lastActivity: iso(30 * M),
+        // The last instruction was 52 minutes ago; the work finished 30 minutes ago.
+        lastActivity: iso(52 * M),
+        doneAt: NOW - 30 * M,
         activeAccumulatedMs: 41 * M,
         agents: Array.from({ length: 8 }, (_, i) => ({
           id: `toolu_w${i}`,
@@ -296,7 +301,30 @@ function makeBoard() {
         ],
       }),
     ],
-    closed: [],
+    // A crowded sleeping card: every metric at its widest on the dimmed card.
+    closed: [
+      base({
+        key: K('400'),
+        title: 'Crowded',
+        displayHeadline: 'Every metric at once',
+        activityState: 'idle',
+        sessionState: 'SLEEPING',
+        conversationId: 'conv-crowd',
+        lastActivity: iso(3 * 60 * M),
+        doneAt: NOW - 2 * 60 * M,
+        activeAccumulatedMs: 125 * M,
+        tokenUsage: { ...USAGE(2_000_000), contextUsagePercent: 100 },
+        prUrl: 'https://github.com/2lab-ai/soma-work/pull/123456',
+        prShortRef: 'PR-123456',
+        prTitle: 'A closed attempt',
+        prStatus: 'closed',
+        tasks: Array.from({ length: 12 }, (_, i) => ({
+          id: `T${i + 1}`,
+          content: `Step ${i + 1}`,
+          status: 'completed',
+        })),
+      }),
+    ],
   };
 }
 
@@ -472,7 +500,8 @@ async function scenario(
   const faces = await page.evaluate(
     (keys) =>
       keys.map((k) => {
-        const f = document.querySelector(`[data-session-key="${k}"] .card-face`) as HTMLElement;
+        const f = document.querySelector(`[data-session-key="${k}"] .card-face`) as HTMLElement | null;
+        if (!f) return null;
         const foot = f.querySelector('.card-foot') as HTMLElement;
         const pr = f.querySelector('.card-pr') as HTMLElement | null;
         const ctx = Array.from(f.querySelectorAll('.card-metrics .metric')).find((m) =>
@@ -484,16 +513,7 @@ async function scenario(
           pr: pr
             ? {
                 cls: pr.className,
-                // the visible number — the state word is clipped for screen readers only
-                text: Array.from(pr.childNodes)
-                  .filter((n) => !(n instanceof Element && n.classList.contains('cpr-state')))
-                  .map((n) => n.textContent || '')
-                  .join('')
-                  .trim(),
-                srOnly: (() => {
-                  const w = pr.querySelector('.cpr-state') as HTMLElement | null;
-                  return !!w && w.getBoundingClientRect().width <= 1 && w.getBoundingClientRect().height <= 1;
-                })(),
+                text: pr.innerText.replace(/\s+/g, ' ').trim(),
                 sr: pr.textContent || '',
                 color: getComputedStyle(pr).color,
               }
@@ -507,36 +527,51 @@ async function scenario(
             : null,
           ctx: ctx ? { cls: ctx.className, color: getComputedStyle(ctx).color } : null,
           footWhole: (() => {
-            const t = f.querySelector('.card-status .st-text') as HTMLElement;
-            const m = f.querySelector('.card-metrics') as HTMLElement | null;
+            const tx = f.querySelector('.card-status .st-text') as HTMLElement;
             const fr = foot.getBoundingClientRect();
-            return t.scrollWidth <= t.clientWidth + 1 && (!m || m.getBoundingClientRect().right <= fr.right + 1);
+            const inside = Array.from(f.querySelectorAll('.card-metrics .metric')).every(
+              (m) => m.getBoundingClientRect().right <= fr.right + 1 && m.getBoundingClientRect().left >= fr.left - 1,
+            );
+            return tx.scrollWidth <= tx.clientWidth + 1 && inside;
           })(),
           footH: Math.round(foot.getBoundingClientRect().height),
           danger: getComputedStyle(document.documentElement).getPropertyValue('--st-fail').trim(),
         };
       }),
-    [K('100'), K('200'), K('300')],
+    [K('100'), K('200'), K('300'), K('400')],
   );
-  const [fWait, fRun, fIdle] = faces;
+  const [fWait, fRun, fIdle, fCrowd] = faces;
+  check(
+    !!fCrowd && /is-closed/.test(fCrowd.pr?.cls ?? '') && fCrowd.footWhole && /ctx-danger/.test(fCrowd.ctx?.cls ?? ''),
+    `${tag}: face — a crowded sleeping card (12/12 · 100% · #123456 closed) keeps every metric inside the card (${fCrowd?.footH}px)`,
+  );
   check(
     !!fRun.pr &&
       /card-pr is-open/.test(fRun.pr.cls) &&
-      fRun.pr.text === '#999' &&
+      fRun.pr.text === '#999 열림' &&
       fRun.pr.sr.includes('열림') &&
       fRun.links === 0,
-    `${tag}: face — the running card's PR badge: #999, open, its state word for screen readers, no link in the face (${fRun.pr?.text})`,
+    `${tag}: face — the running card's PR badge: #999 열림 — the state as a word on screen, no link in the face (${fRun.pr?.text})`,
   );
   check(
-    !!fIdle.pr && /is-merged/.test(fIdle.pr.cls) && fIdle.pr.text === '#366' && fIdle.pr.color !== fRun.pr?.color,
+    !!fIdle.pr &&
+      /is-merged/.test(fIdle.pr.cls) &&
+      fIdle.pr.text === '#366 머지됨' &&
+      fIdle.pr.color !== fRun.pr?.color,
     `${tag}: face — the finished card's PR badge says merged in its own colour (${fIdle.pr?.color} vs ${fRun.pr?.color})`,
   );
   check(
-    // NOW is fixed at the start of the run: later scenarios read a minute or two more.
+    // NOW is fixed at the start of the run: later scenarios read a few minutes more.
     !fRun.ago &&
+      // waiting: the question's minute (+ the run so far), not the instruction's 40;
+      // finished: the 30 minutes since the work ended, not the instruction's 52.
       /^\d+m ago$/.test(fWait.ago?.text ?? '') &&
-      /^3\dm ago$/.test(fIdle.ago?.text ?? '') &&
-      !!fIdle.ago?.shown,
+      Number.parseInt(fWait.ago?.text ?? '99', 10) < 20 &&
+      // 30 + the run so far, below the instruction's 52 — whatever the suite's pace
+      Number.parseInt(fIdle.ago?.text ?? '0', 10) >= 30 &&
+      Number.parseInt(fIdle.ago?.text ?? '99', 10) < 52 &&
+      !!fIdle.ago?.shown &&
+      !!fWait.ago?.shown,
     `${tag}: face — recency on the waiting (${fWait.ago?.text}) and finished (${fIdle.ago?.text}) cards, none on the running one`,
   );
   check(
@@ -548,8 +583,8 @@ async function scenario(
     `${tag}: face — context 86% is a warning (${fIdle.ctx?.color}), 31% the plain number (${fRun.ctx?.color})`,
   );
   check(
-    faces.every((f) => f.footWhole),
-    `${tag}: face — nothing in a card foot is cut — a narrow card wraps its metrics under the status (${faces.map((f) => f.footH).join('/')}px)`,
+    faces.every((f) => !!f && f.footWhole),
+    `${tag}: face — nothing in a card foot is cut — a narrow card wraps its metrics under the status (${faces.map((f) => f?.footH).join('/')}px)`,
   );
   check((await overflow(page)) === 0, `${tag}: board — no page overflow`);
   if (full) await shootCard(page, K('200'), `${theme}-${width}-face-running.png`);
