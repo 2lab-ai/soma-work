@@ -41,8 +41,15 @@ function clientFn(name: string): string {
   const end = TEMPLATE.indexOf('\n}\n', start);
   return cook(TEMPLATE.slice(start + 1, end + 2));
 }
-function load<T>(fns: string[]): T {
-  return new Function(`${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`)() as T;
+function clientVar(name: string): string {
+  const m = TEMPLATE.match(new RegExp(`^(var ${name} = .*?;)(?:\\s*//.*)?$`, 'm'));
+  if (!m) throw new Error(`client var ${name} not found`);
+  return cook(m[1]);
+}
+function load<T>(fns: string[], vars: string[] = []): T {
+  return new Function(
+    `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`,
+  )() as T;
 }
 function cssBlock(opening: string): string {
   const i = TEMPLATE.indexOf(opening);
@@ -494,6 +501,9 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     expect(secOpen('open', false)).toBe(true);
     expect(secOpen('closed', true)).toBe(false);
     expect(TEMPLATE).toContain("var SEC_OPEN_QUERY = '(min-width: 840px) and (min-height: 1000px)';");
+    // capacity v2 is taller: it opens on its own only on a 1400px+ tall window (board first)
+    expect(TEMPLATE).toContain("var SEC_OPEN_QUERY_CAPACITY = '(min-width: 840px) and (min-height: 1400px)';");
+    expect(clientFn('secIsOpen')).toContain("sec === 'capacity' ? _secMqlCap : _secMql");
   });
 
   it('the toggles are static buttons outside the regions that are re-rendered (focus and state survive repaints)', () => {
@@ -513,41 +523,55 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     expect(clientFn('paintCapacity')).toContain("getElementById('capacity-view')");
   });
 
-  it('a collapsed capacity shows one chip per provider: label, %, a state glyph, the next event as its tooltip', () => {
-    const fns = load<{ renderCapacitySummary: (v: unknown, nowMs: number) => string }>([
-      'esc',
-      'escAttr',
-      'pad2',
-      'capCountdown',
-      'capClockLabel',
-      'capEventLine',
-      'capLeadLine',
-      'renderCapacitySummary',
-    ]);
+  it('a collapsed capacity shows one chip per provider: both measures in max accounts, a state glyph, the next event as its tooltip', () => {
+    const fns = load<{ renderCapacitySummary: (v: unknown, nowMs: number) => string }>(
+      [
+        'esc',
+        'escAttr',
+        'pad2',
+        'capCountdown',
+        'capClockLabel',
+        'capFmt1',
+        'capGain',
+        'capPct',
+        'capNextLine',
+        'capAdvance',
+        'renderCapacitySummary',
+      ],
+      ['CAP_CAUSE', 'CAP_5H', 'CAP_7D'],
+    );
     const nowS = 1_800_000_000;
+    const ev = (cause: string, at: number, dNow: number, dWeek: number) => ({
+      account: 'a',
+      cause,
+      at: nowS + at,
+      dNow,
+      dWeek,
+    });
     const html = fns.renderCapacitySummary(
       {
         available: true,
         groups: [
-          {
-            label: 'Claude',
-            state: 'ok',
-            availablePct: 62,
-            nextRefill: { account: 'a', window: '5h', at: nowS + 7200 },
-          },
+          { label: 'Claude', state: 'ok', has5h: true, total: 16, now: 6.2, week: 6.3, events: [ev('7d', 7200, 1, 1)] },
           {
             label: 'Codex',
             state: 'low',
-            availablePct: 12,
-            nextRefill: { account: 'e', window: '5h', at: nowS + 3600 },
+            has5h: false,
+            total: 2.4,
+            now: 0.3,
+            week: 0.3,
+            events: [ev('7d', 3600, 1, 1)],
           },
           {
             label: 'Gemini',
             state: 'empty',
-            availablePct: 0,
-            nextReturn: { account: 'g', window: 'cooldown', at: nowS + 600 },
+            has5h: true,
+            total: 1,
+            now: 0,
+            week: 0.5,
+            events: [ev('release', 600, 0.5, 0)],
           },
-          { label: 'Other', state: 'unknown', availablePct: null },
+          { label: 'Other', state: 'unknown', has5h: true, total: 0, now: 0, week: 0, events: [] },
         ],
       },
       nowS * 1000,
@@ -556,15 +580,27 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     expect(html).not.toContain('aria-live');
     // The glyph leads (the state shows first even where the row scrolls); the whole
     // sentence is the chip's accessible name.
-    expect(html).toMatch(/cap-chip is-ok"[^>]*>Claude <b>62%<\/b>/);
-    expect(html).toMatch(/cap-chip is-low"[^>]*>▲ Codex <b>12%<\/b>/);
-    expect(html).toMatch(/cap-chip is-empty"[^>]*>✗ Gemini <b>0%<\/b>/);
+    expect(html).toMatch(
+      /cap-chip is-ok"[^>]*>Claude <i class="cap-chip-k">지금 <\/i><b class="is-now">6\.2<\/b> · <i class="cap-chip-k">주 <\/i><b class="is-wk">6\.3<\/b><i class="cap-chip-of"> \/16\.0<\/i>/,
+    );
+    expect(html).toMatch(
+      /cap-chip is-low"[^>]*>▲ Codex <i class="cap-chip-k">주 <\/i><b class="is-wk">0\.3<\/b><i class="cap-chip-of"> \/2\.4/,
+    );
+    expect(html).toMatch(
+      /cap-chip is-empty"[^>]*>✗ Gemini <i class="cap-chip-k">지금 <\/i><b class="is-now">0\.0<\/b>/,
+    );
     expect(html).toMatch(/cap-chip is-unknown"[^>]*>◌ Other <b>—<\/b>/);
     expect(html).toMatch(/cap-chip is-low" title="[^"]*1h 0m 후/);
-    expect(html).toMatch(/aria-label="Codex 잔여 12% · 부족 — [^"]*1h 0m 후/);
+    expect(html).toMatch(/aria-label="Codex 이번 주 0\.3\/2\.4 계정분 \(13%\) · 부족 — [^"]*1h 0m 후/);
     const off = fns.renderCapacitySummary({ available: false, reason: 'llmux unreachable', groups: [] }, nowS * 1000);
     expect(off).toContain('가용량 미확인');
     expect(off).toContain('llmux unreachable');
+  });
+
+  it('phones keep the collapsed chips short: the words and the total drop, both numbers stay', () => {
+    expect(TEMPLATE).toContain(
+      '@media (max-width: 639px) { .cap-chip .cap-chip-k, .cap-chip .cap-chip-of { display: none; } }',
+    );
   });
 
   it('collapsed: the timeline, legend and subtitle are hidden; the chips only show while collapsed', () => {

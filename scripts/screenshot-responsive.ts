@@ -53,8 +53,12 @@ const POSTURES: Posture[] = [
   { device: 'pc-wide', w: 1920, h: 1080 },
 ];
 
+// Loaded with the dashboard (after the env is set): the capacity fixture runs the real model.
+let buildCapacityView: typeof import('../src/conversation/capacity-view').buildCapacityView;
+
 async function setupMockSessions() {
   const { setDashboardSessionAccessor } = await import('../src/conversation/dashboard');
+  ({ buildCapacityView } = await import('../src/conversation/capacity-view'));
   const now = Date.now();
   const base = {
     ownerId: 'U001',
@@ -92,55 +96,46 @@ async function setupMockSessions() {
   return sessions;
 }
 
-/** LLM capacity (#374) with two provider groups and a CRON job: the merged views at full size. */
+/**
+ * LLM capacity (#374, v2 2026-10-25) with two provider groups: an llmux snapshot
+ * through the real buildCapacityView. Claude ok; Codex low (▲) and weekly-only.
+ */
 function capacityFixture(nowMs: number) {
   const nowS = Math.floor(nowMs / 1000);
-  const mk = (account: string, tier: string, window: string, hours: number, gain: number, returns = false) => ({
-    account,
-    tier,
-    window,
-    at: nowS + hours * 3600,
-    gainPct: gain,
-    returns,
-    raises: true,
+  const w = (used: number, hours: number) => ({
+    utilization: used,
+    resets_at: nowS + hours * 3600,
+    resets_in_secs: hours * 3600,
   });
-  return {
-    capacity: {
-      available: true,
-      fetchedAtMs: nowMs,
-      groups: [
-        {
-          group: 'claude',
-          label: 'Claude',
-          availablePct: 62,
-          availableAccounts: 3,
-          unknownAccounts: 0,
-          totalAccounts: 4,
-          state: 'ok',
-          nextRefill: { account: 'acct-a', tier: 'claude-max-20x', window: '5h', at: nowS + 2 * 3600 },
-          markers: [
-            mk('acct-a', 'claude-max-20x', '5h', 2, 30),
-            mk('acct-b', 'claude-max-5x', '5h', 3, 20),
-            mk('acct-c', 'claude-max-20x', '7d', 50, 40),
-            mk('acct-d', 'claude-max-5x', 'cooldown', 1, 0, true),
-          ],
-          accounts: [],
-        },
-        {
-          group: 'codex',
-          label: 'Codex',
-          availablePct: 12,
-          availableAccounts: 1,
-          unknownAccounts: 0,
-          totalAccounts: 2,
-          state: 'low',
-          nextRefill: { account: 'acct-e', tier: 'chatgpt-pro-200', window: '5h', at: nowS + 4 * 3600 },
-          markers: [mk('acct-e', 'chatgpt-pro-200', '5h', 4, 50), mk('acct-f', 'chatgpt-pro-500', '7d', 100, 60)],
-          accounts: [],
-        },
-      ],
-    },
+  const acct = (name: string, group: string, over: Record<string, unknown>) => ({
+    name: `${group}:${name}@corp.example`,
+    type: group === 'codex' ? 'codex' : 'oauth',
+    group,
+    status: 'ok',
+    order: 1,
+    blocked: null,
+    ...over,
+  });
+  const status = {
+    current: null,
+    accounts: [
+      acct('acct-a', 'claude', { five_hour: w(0.7, 2), seven_day: w(0.3, 90) }),
+      acct('acct-b', 'claude', { five_hour: w(0.1, 3), seven_day: w(0.6, 30) }),
+      acct('acct-c', 'claude', { five_hour: null, seven_day: w(1, 50), blocked: '7d 100.0% > 99%' }),
+      acct('acct-d', 'claude', { five_hour: w(0, 1), seven_day: w(0.2, 120) }),
+      acct('acct-e', 'codex', { seven_day: w(0.9, 100) }),
+      acct('acct-f', 'codex', { seven_day: w(0.95, 60) }),
+    ],
   };
+  const tiers = {
+    'claude:acct-a': 'claude-max-20x',
+    'claude:acct-b': 'claude-max-5x',
+    'claude:acct-c': 'claude-max-20x',
+    'claude:acct-d': 'claude-max-5x',
+    'codex:acct-e': 'chatgpt-pro-500',
+    'codex:acct-f': 'chatgpt-pro-200',
+  };
+  return { capacity: buildCapacityView(status as never, tiers as never, nowMs) };
 }
 
 async function preparePage(
@@ -286,7 +281,7 @@ async function checkFab(page: Page): Promise<Check[]> {
 /**
  * The merged secondary sections (#374 LLM capacity, CRON lane) leave the board on the
  * first screen: its first card on screens at least 540px tall, its title row on the
- * short landscape phones. An expanded capacity timeline keeps every marker in its track.
+ * short landscape phones. An expanded capacity section keeps every chart inside its card.
  */
 async function checkSecondary(page: Page, touch: boolean): Promise<Check[]> {
   await page.evaluate(() => window.scrollTo(0, 0));
@@ -307,7 +302,7 @@ async function checkSecondary(page: Page, touch: boolean): Promise<Check[]> {
     }
     const lane = document.getElementById('cron-lane') as HTMLElement;
     out.push({ ok: !cap.hidden && !lane.hidden, msg: 'capacity and the CRON lane are shown (seeded)' });
-    // Collapsed (every posture but a 840×1000+ window): one short row each, chips for capacity.
+    // Collapsed (capacity: every posture but an 840×1400+ window; CRON: 840×1000+): chips for capacity.
     if (cap.classList.contains('is-collapsed')) {
       const h = cap.getBoundingClientRect().height;
       out.push({ ok: h <= 64, msg: `collapsed capacity is one row (${Math.round(h)} ≤ 64px)` });
@@ -317,9 +312,10 @@ async function checkSecondary(page: Page, touch: boolean): Promise<Check[]> {
       out.push({
         ok:
           chips.length === 2 &&
-          chips[0].indexOf('62%') >= 0 &&
-          chips[1].indexOf('12%') >= 0 &&
-          chips[1].indexOf('▲') >= 0,
+          chips[0].indexOf('Claude') === 0 &&
+          chips[0].indexOf('·') > 0 &&
+          chips[1].indexOf('▲ Codex') === 0 &&
+          chips[1].indexOf('·') < 0,
         msg: `capacity chips: ${chips.join(' / ')}`,
       });
       // Whole chips: none runs past the row's visible edge (the glyph and % would hide).
@@ -351,17 +347,18 @@ async function checkSecondary(page: Page, touch: boolean): Promise<Check[]> {
         msg: `the board title row starts on the first screen (${Math.round(head.top)} ≤ ${vh - 50})`,
       });
     }
-    const tracks = Array.from(document.querySelectorAll('#capacity .cap-track')) as HTMLElement[];
+    // v2: every chart (unit bar, per-account bars, lanes) stays inside its provider card.
+    const cards = Array.from(document.querySelectorAll('#capacity .cap-prov')) as HTMLElement[];
     let outside = 0;
-    for (const t of tracks) {
-      if (t.getBoundingClientRect().width === 0) continue;
-      const tr = t.getBoundingClientRect();
-      for (const m of Array.from(t.querySelectorAll('.cap-mk')) as HTMLElement[]) {
-        const r = m.getBoundingClientRect();
-        if (r.left < tr.left - 1 || r.right > tr.right + 1) outside++;
+    for (const c of cards) {
+      const cr = c.getBoundingClientRect();
+      if (cr.width === 0) continue;
+      for (const g of Array.from(c.querySelectorAll('svg')) as SVGElement[]) {
+        const r = g.getBoundingClientRect();
+        if (r.width > 0 && (r.left < cr.left - 1 || r.right > cr.right + 1)) outside++;
       }
     }
-    out.push({ ok: outside === 0, msg: `capacity markers stay inside their tracks (${outside} outside)` });
+    out.push({ ok: outside === 0, msg: `capacity charts stay inside their cards (${outside} outside)` });
     return out;
   }, touch);
 }
@@ -376,20 +373,20 @@ async function checkCapacityExpanded(page: Page, state: string): Promise<Check[]
   return page.evaluate((st) => {
     const out: { ok: boolean; msg: string }[] = [];
     const vw = document.documentElement.clientWidth;
-    const tracks = Array.from(document.querySelectorAll('#capacity .cap-track')) as HTMLElement[];
+    const cards = Array.from(document.querySelectorAll('#capacity .cap-prov')) as HTMLElement[];
     out.push({
-      ok: tracks.length === 2 && tracks.every((t) => t.getBoundingClientRect().width > 0),
-      msg: `${st}: the capacity timeline shows both groups`,
+      ok: cards.length === 2 && cards.every((c) => c.getBoundingClientRect().width > 0),
+      msg: `${st}: the capacity section shows both providers`,
     });
     let outside = 0;
-    for (const t of tracks) {
-      const tr = t.getBoundingClientRect();
-      for (const m of Array.from(t.querySelectorAll('.cap-mk')) as HTMLElement[]) {
-        const r = m.getBoundingClientRect();
-        if (r.left < tr.left - 1 || r.right > tr.right + 1) outside++;
+    for (const c of cards) {
+      const cr = c.getBoundingClientRect();
+      for (const g of Array.from(c.querySelectorAll('svg')) as SVGElement[]) {
+        const r = g.getBoundingClientRect();
+        if (r.width > 0 && (r.left < cr.left - 1 || r.right > cr.right + 1)) outside++;
       }
     }
-    out.push({ ok: outside === 0, msg: `${st}: capacity markers stay inside their tracks (${outside} outside)` });
+    out.push({ ok: outside === 0, msg: `${st}: capacity charts stay inside their cards (${outside} outside)` });
     const capR = (document.getElementById('capacity') as HTMLElement).getBoundingClientRect();
     out.push({
       ok: capR.right <= vw + 1,
