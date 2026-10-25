@@ -6,15 +6,16 @@
  *   T3   a cron card carries a CRON badge at the left of its head
  *   T4   cron cards leave the three columns for the CRON lane, grouped by job
  *   T5   a job tile: schedule, next run, last-N run strip; drawer rows per run
- *   T7   the capacity rows between the stats strip and the inbox
- *   T9   piecewise time axis (0–24h dense, then days), markers never lost,
- *        empty/low rows lead with the countdown to the first return
- *   T10  markers coloured by subscription tier, with a text label
+ *   T7   the capacity section between the stats strip and the inbox
+ *   v2   (2026-10-25) two measures — now (5h ∧ weekly) and this week — in max
+ *        accounts' worth + %, and separate 5h / weekly forecast lanes
+ *   T10  the subscription tier as a dot plus its text
  */
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { buildCapacityView } from '../capacity-view';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -47,6 +48,30 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
+
+const CAP_VARS = ['CAP_TIERS', 'CAP_CAUSE', 'CAP_5H', 'CAP_7D'];
+const CAP_FNS = [
+  'esc',
+  'escAttr',
+  'pad2',
+  'capCountdown',
+  'capClockLabel',
+  'capFmt1',
+  'capGain',
+  'capPct',
+  'capNextLine',
+  'capWhyLine',
+  'capUnitBar',
+  'capUnits',
+  'capLane',
+  'capDecomp',
+  'capChips',
+  'capRefillList',
+  'capAdvance',
+  'renderCapacitySummary',
+  'renderCapacityGroup',
+  'renderCapacity',
+];
 
 const SHOW_ALL = {
   dhShow: () => true,
@@ -327,151 +352,197 @@ describe('T5 — a run in progress shows before its history record exists', () =
   });
 });
 
-describe('T9 — capacity axis and markers', () => {
-  const cap = load<{
-    capAxisPct: (secondsAhead: number) => number;
-    capCountdown: (secs: number) => string;
-    capPackMarkers: (markers: any[], nowSec: number) => { placed: any[]; overflow: number };
-  }>(['capAxisPct', 'capCountdown', 'capPackMarkers'], ['CAP_STOPS', 'CAP_LANES']);
-
-  it('first 24h is piecewise over 0·1·3·6·12·24h (55% of the width), then days linear to 7d', () => {
-    expect(cap.capAxisPct(0)).toBe(0);
-    expect(cap.capAxisPct(3600)).toBeCloseTo(11, 5);
-    expect(cap.capAxisPct(2 * 3600)).toBeCloseTo(16.5, 5);
-    expect(cap.capAxisPct(24 * 3600)).toBeCloseTo(55, 5);
-    expect(cap.capAxisPct(4 * 86400)).toBeCloseTo(55 + 45 * (3 / 6), 5);
-    expect(cap.capAxisPct(7 * 86400)).toBeCloseTo(100, 5);
-  });
-
-  it('clamps the past to now and beyond 7d to the right edge', () => {
-    expect(cap.capAxisPct(-50)).toBe(0);
-    expect(cap.capAxisPct(30 * 86400)).toBe(100);
-  });
-
-  it('countdowns never round a 3h59m down to 3h', () => {
-    expect(cap.capCountdown(3 * 3600 + 59 * 60 + 10)).toBe('3h 59m');
-    expect(cap.capCountdown(41 * 60)).toBe('41m');
-    expect(cap.capCountdown(5 * 86400 + 3 * 3600)).toBe('5d 3h');
-    expect(cap.capCountdown(20)).toBe('<1m');
-  });
-
-  it('packs colliding markers into lanes, earliest first, and never drops the earliest', () => {
-    const now = 1_000_000;
-    const ms = [0, 60, 120, 180, 240].map((d, i) => ({ account: `a${i}`, at: now + 3600 + d }));
-    const { placed, overflow } = cap.capPackMarkers(ms, now);
-    expect(placed[0].m.account).toBe('a0');
-    expect(placed[0].lane).toBe(0);
-    expect(new Set(placed.map((p: any) => p.lane)).size).toBeGreaterThan(1);
-    expect(placed.length + overflow).toBe(5);
-  });
-});
-
-describe('T7/T9/T10 — capacity rows', () => {
+// Capacity v2 (2026-10-25; mockup v4 passed trinity r4): the client renders the
+// server's view as-is — built here by the real buildCapacityView, so the two halves
+// cannot drift apart.
+describe('capacity v2 — two measures and a replayed forecast', () => {
   const NOW_S = 1_800_000_000;
-  const view = {
-    available: true,
-    fetchedAtMs: NOW_S * 1000 - 12_000,
-    groups: [
-      {
+  const H = 3600;
+  const D = 86400;
+  const w = (utilization: number, inSecs: number) => ({
+    utilization,
+    resets_at: NOW_S + inSecs,
+    resets_in_secs: inSecs,
+  });
+  const a = (over: Record<string, unknown>) => ({ type: 'oauth', status: 'ok', order: 1, blocked: null, ...over });
+  const status = {
+    current: null,
+    accounts: [
+      // 5h caps it: now .1, week .7; its 5h reset at +2h frees +0.6
+      a({ name: 'claude:ai1@c', group: 'claude', five_hour: w(0.9, 2 * H), seven_day: w(0.3, 3 * D) }),
+      // the week caps it: now .4; the 5h reset at +4h changes nothing (hollow ●)
+      a({ name: 'claude:ai2@c', group: 'claude', five_hour: w(0.1, 4 * H), seven_day: w(0.6, D) }),
+      // weekly ceiling: back at +2d with a full account
+      a({
+        name: 'claude:ai3@c',
         group: 'claude',
-        label: 'Claude',
-        availablePct: 75,
-        availableAccounts: 3,
-        unknownAccounts: 0,
-        totalAccounts: 4,
-        state: 'ok',
-        nextRefill: { account: 'ai7', window: '5h', at: NOW_S + 41 * 60, tier: 'claude-max-20x' },
-        markers: [
-          { account: 'ai7', window: '5h', at: NOW_S + 41 * 60, gainPct: 62, tier: 'claude-max-20x', returns: false },
-          { account: 'ai3', window: '5h', at: NOW_S + 3 * 3600, gainPct: 10, tier: 'claude-max-5x', returns: false },
-          { account: 'ai13', window: '7d', at: NOW_S + 5 * 86400, gainPct: 40, returns: false },
-        ],
-        accounts: [],
-      },
-      {
-        group: 'codex',
-        label: 'Codex',
-        availablePct: 0,
-        availableAccounts: 0,
-        unknownAccounts: 0,
-        totalAccounts: 4,
-        state: 'empty',
-        nextReturn: { account: 'ai5', window: '5h', at: NOW_S + 2 * 3600 + 14 * 60, tier: 'chatgpt-pro-500' },
-        markers: [
-          {
-            account: 'ai5',
-            window: '5h',
-            at: NOW_S + 2 * 3600 + 14 * 60,
-            gainPct: 100,
-            tier: 'chatgpt-pro-500',
-            returns: true,
-          },
-        ],
-        accounts: [],
-      },
+        blocked: '7d 100.0% > 99%',
+        five_hour: w(0, H),
+        seven_day: w(1, 2 * D),
+      }),
+      a({ name: 'claude:ai4@c', group: 'claude', five_hour: w(0, H), seven_day: w(0, D) }),
+      a({ name: 'claude:ai6@c', group: 'claude', blocked: 'paused', five_hour: w(0, H), seven_day: w(0, D) }),
+      a({ name: 'codex:ai5@c', group: 'codex', type: 'codex', seven_day: w(0.5, 3 * D) }),
+      a({ name: 'codex:ai2@c', group: 'codex', type: 'codex', seven_day: w(0.2, 5 * D) }),
     ],
   };
-  const fns = load<{ renderCapacity: (v: any, nowMs: number) => string }>(
-    [
-      'esc',
-      'escAttr',
-      'pad2',
-      'capAxisPct',
-      'capCountdown',
-      'capPackMarkers',
-      'capTierClass',
-      'capTierLabel',
-      'capMarkerGlyph',
-      'capClockLabel',
-      'renderCapacityAxis',
-      'renderCapacityGrid',
-      'capEventLine',
-      'capLeadLine',
-      'renderCapacitySummary',
-      'renderCapacityRow',
-      'renderCapacity',
-    ],
-    ['CAP_STOPS', 'CAP_LANES', 'CAP_TIERS'],
-  );
-  const html = fns.renderCapacity(view, NOW_S * 1000);
+  const tiers = {
+    'claude:ai1': 'claude-max-20x',
+    'claude:ai2': 'claude-max-20x',
+    'claude:ai3': 'claude-max-20x',
+    'claude:ai6': 'claude-max-20x',
+  };
+  const view = {
+    ...buildCapacityView(status as never, tiers as never, NOW_S * 1000),
+    fetchedAtMs: NOW_S * 1000 - 12_000,
+  };
+  const fns = load<{ renderCapacity: (v: any, nowMs: number, widthPx?: number) => string }>(CAP_FNS, CAP_VARS);
+  const html = fns.renderCapacity(view, NOW_S * 1000, 1200);
+  const claude = html.slice(html.indexOf('data-group="claude"'), html.indexOf('data-group="codex"'));
+  const codex = html.slice(html.indexOf('data-group="codex"'));
 
-  it('one row per provider with its available %, never called a token count', () => {
-    expect(html).toContain('Claude');
-    expect(html).toContain('75%');
-    expect(html).toContain('잔여');
+  it('① two measures for Claude — x / total max accounts and %: now (5h ∧ weekly) and this week', () => {
+    expect(claude).toMatch(/cap-meas is-now[\s\S]*?>0\.5<[\s\S]*?\/ 3\.0 계정분[\s\S]*?17%/);
+    expect(claude).toMatch(/cap-meas is-wk[\s\S]*?>1\.1<[\s\S]*?\/ 3\.0 계정분[\s\S]*?37%/);
+    expect(claude).toContain('5h·주간 중 작은 쪽');
+  });
+
+  it('① Codex has no 5h window: the weekly measure only', () => {
+    expect(codex).not.toContain('cap-meas is-now');
+    expect(codex).toMatch(/cap-meas is-wk[\s\S]*?>0\.8<[\s\S]*?\/ 1\.4 계정분/);
+  });
+
+  it('① each measure says what raises it next, through which reset', () => {
+    expect(claude).toContain('다음 +0.6 · 2h 0m 후');
+    expect(claude).toContain('● ai1 5h 리셋');
+    expect(claude).toContain('다음 +0.6 · 1d 0h 후');
+    expect(claude).toContain('◆ ai2 주간 리셋');
+  });
+
+  it('① the why line names the window that caps each usable account', () => {
+    expect(claude).toContain('쓸 수 있는 2계정 중 <b>5h가 상한 1</b> · 주간이 상한 1');
+    expect(claude).toContain('5h 리셋으로 +0.6계정분');
+  });
+
+  it('① a unit bar: one cell per max account, now inside this week', () => {
+    expect(claude).toContain('class="cap-unitbar"');
+    expect(claude).toMatch(/cap-u-now/);
+    expect(codex).not.toMatch(/cap-u-now/);
+  });
+
+  it('① exclusions and blocks are counted apart, never silently folded in', () => {
+    expect(claude).toContain('주간 한도 1');
+    expect(claude).toContain('티어 미지정 1 · 제외');
+    expect(claude).toContain('보류 1 · 제외');
+  });
+
+  it('② the 5h lane and the weekly lane are separate, each with its own glyph and colour', () => {
+    expect(claude).toContain('cap-lane is-5h');
+    expect(claude).toContain('cap-lane is-7d');
+    expect(claude).toMatch(/cap-l-mk is-5h is-hollow/); // ai2's 5h reset frees nothing
+    expect(claude).toMatch(/◆ ai3 x20 \+1\.0/);
+    expect(codex).not.toContain('cap-lane is-5h');
+  });
+
+  it('② each lane breaks its gain down by cause', () => {
+    expect(claude).toContain('<b>+0.6 계정분</b> = ● 5h 리셋 +0.6 (2건, 1건은 변화 없음)');
+    expect(claude).toContain('<b>+1.9 계정분</b> = ◆ 주간 리셋 +1.9 (3건)');
+  });
+
+  it('the tier is a dot plus its text, not a colour of its own', () => {
+    expect(claude).toMatch(/cap-dot tier-high/);
+    expect(claude).toContain('x20');
+  });
+
+  it('a narrow screen trades the lanes for a "next refills" list with now and week apart', () => {
+    const narrow = fns.renderCapacity(view, NOW_S * 1000, 360);
+    expect(narrow).not.toContain('cap-lane');
+    // one breakpoint: the card that lists refills is the card the CSS stacks
+    expect(narrow).toMatch(/class="cap-prov is-\w+ is-narrow"/);
+    expect(html).not.toContain('is-narrow');
+    expect(narrow).toContain('다음 리필');
+    expect(narrow).toMatch(/지금 \+0\.6[\s\S]*?주간 \+0\.6/);
+  });
+
+  // PR #417 review gate (fable P1, grok P3): the grid column is the width the charts are drawn at.
+  it('the wide grid sizes its first column from the same number the charts use', () => {
+    expect(claude).toContain('style="grid-template-columns:470px minmax(0, 1fr)"');
+    const mid = fns.renderCapacity(view, NOW_S * 1000, 900);
+    expect(mid).toContain('style="grid-template-columns:399px minmax(0, 1fr)"'); // floor((900 − 32) × 0.46)
+    expect(mid).toContain('class="cap-unitbar" width="395"'); // leftW − 4
+  });
+
+  it('every account gets a per-account cell — a long pool wraps, nothing is dropped', () => {
+    const many = {
+      current: null,
+      accounts: Array.from({ length: 20 }, (_, i) =>
+        a({ name: `claude:ac${i}@c`, group: 'claude', five_hour: w(0.1, H), seven_day: w(0.2, D) }),
+      ),
+    };
+    const t20 = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`claude:ac${i}`, 'claude-max-20x']));
+    const out = fns.renderCapacity(buildCapacityView(many as never, t20 as never, NOW_S * 1000), NOW_S * 1000, 360);
+    const units = out.slice(out.indexOf('class="cap-units"'), out.indexOf('</svg>', out.indexOf('class="cap-units"')));
+    for (let i = 0; i < 20; i++) expect(units).toContain(`>ac${i}</text>`);
+    expect(units).toMatch(/translate\(0 \d+\)/);
+  });
+
+  it('opened lists are keyed so a repaint keeps them open', () => {
+    expect(claude).toContain('data-cap-key="claude:events"');
+    const paint = TEMPLATE.slice(TEMPLATE.indexOf('\nfunction paintCapacity('));
+    expect(paint.slice(0, paint.indexOf('\n}\n'))).toContain('details[data-cap-key][open]');
+  });
+
+  // PR #417 review gate (astra): a repaint between fetches folds what is due into the measures.
+  it('an event whose time has come is part of "now", not a refill to come', () => {
+    const later = fns.renderCapacity(view, (NOW_S + 2 * H + 60) * 1000, 1200);
+    const c2 = later.slice(later.indexOf('data-group="claude"'), later.indexOf('data-group="codex"'));
+    expect(c2).toMatch(/cap-meas is-now[\s\S]*?>1\.1</); // 0.5 + ai1's 5h reset +0.6
+    expect(c2).not.toContain('● ai1 5h 리셋');
+  });
+
+  it('a narrow list with only small gains says so instead of "nothing"', () => {
+    const tiny = {
+      ...view,
+      groups: [{ ...view.groups[0], events: [{ account: 'ai1', cause: '5h', at: NOW_S + H, dNow: 0.02, dWeek: 0 }] }],
+    };
+    const out = fns.renderCapacity(tiny, NOW_S * 1000, 360);
+    expect(out).toContain('7일 안엔 +0.1 미만(소폭)');
+  });
+
+  it('a long account label is cut to fit its lane chip', () => {
+    const long = {
+      ...view,
+      groups: [
+        {
+          ...view.groups[0],
+          events: [{ account: 'averyveryverylongname@corp.example', cause: '7d', at: NOW_S + D, dNow: 1, dWeek: 1 }],
+        },
+      ],
+    };
+    const out = fns.renderCapacity(long, NOW_S * 1000, 1200);
+    expect(out).toContain('averyveryvery…');
+  });
+
+  it('nothing countable reads "계산 불가", never NaN', () => {
+    const none = {
+      ...view,
+      groups: [
+        { ...view.groups[0], total: 0, now: 0, week: 0, countedAccounts: 0, state: 'unknown', events: [], units: [] },
+      ],
+    };
+    const out = fns.renderCapacity(none, NOW_S * 1000, 1200);
+    expect(out).toContain('계산 불가');
+    expect(out).not.toContain('NaN');
+  });
+
+  it('says how fresh the data is and whose clock the times use; never calls it a token count', () => {
+    expect(html).toContain('12초 전');
+    expect(html).toContain('시각은 보는 사람 기준');
     expect(html).not.toContain('토큰량');
   });
 
-  it('an empty provider leads with the countdown to the first account back', () => {
-    const codex = html.slice(html.indexOf('Codex'));
-    expect(codex).toContain('cap-row is-empty');
-    expect(codex).toContain('2h 14m');
-    expect(codex).toContain('ai5');
-  });
-
-  it('markers are coloured by tier class and labelled with the tier text', () => {
-    expect(html).toMatch(/cap-mk[^"]*tier-high[^>]*>[^<]*ai7/);
-    expect(html).toContain('x20');
-    expect(html).toMatch(/cap-mk[^"]*tier-low/);
-    expect(html).toMatch(/cap-mk[^"]*tier-none/);
-    expect(html).toContain('$500');
-  });
-
-  it('every marker states its real time in the tooltip', () => {
-    expect(html).toMatch(/title="[^"]*41m[^"]*"/);
-  });
-
-  it('labels the axis honestly: hour stops, a marked 24h boundary, then days', () => {
-    for (const t of ['1h', '3h', '6h', '12h', '24h', '2d', '7d']) expect(html).toContain(`>${t}<`);
-    expect(html).toContain('cap-break');
-  });
-
-  it('says how fresh the data is', () => {
-    expect(html).toContain('12초 전');
-  });
-
   it('an unavailable view renders the reason, not a blank', () => {
-    const off = fns.renderCapacity({ available: false, reason: 'llmux unreachable', groups: [] }, NOW_S * 1000);
+    const off = fns.renderCapacity({ available: false, reason: 'llmux unreachable', groups: [] }, NOW_S * 1000, 1200);
     expect(off).toContain('llmux unreachable');
   });
 });
