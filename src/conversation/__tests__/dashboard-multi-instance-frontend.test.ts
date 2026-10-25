@@ -52,7 +52,7 @@ describe('Dashboard multi-instance frontend (#814)', () => {
   });
 
   it('CSS `.env-badge` rule is present in the inline style block', () => {
-    expect(DASHBOARD_TS).toContain('.card .card-meta .env-badge');
+    expect(DASHBOARD_TS).toContain('.card .card-refs .env-badge');
   });
 
   // PR #815 review #1 — sibling cards must not invite action clicks.

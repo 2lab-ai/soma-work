@@ -9,8 +9,8 @@
  *     strip and the inbox, the CRON lane above the columns, no page-level
  *     sideways scroll (cron-capacity-<w>-<theme>.png)
  *   - cron cards are in the lane, not in the columns, and lead with the CRON badge
- *   - capacity v2: Claude shows now and this week in max accounts, Codex the
- *     weekly measure only, one weekly lane each; a narrow screen lists refills
+ *   - capacity (simplified): Claude shows a 5시간 and an 일주일 bar, Codex the
+ *     weekly bar only, one timeline per card, an honest disclosure line
  *   - "지난 실행" opens the run drawer with one row per run; Escape closes it
  *     (cron-drawer-<theme>.png)
  *
@@ -342,13 +342,16 @@ async function layout(browser: Browser) {
           columnCron: document.querySelectorAll('#kanban .card .cron-badge').length,
           laneBadges: document.querySelectorAll('#cron-lane .card .card-head > .cron-badge:first-child').length,
           tiles: document.querySelectorAll('#cron-groups .cron-group').length,
-          claudeNow: document.querySelector('[data-group="claude"] .cap-meas.is-now .cap-big')?.textContent || '',
-          claudeWeek: document.querySelector('[data-group="claude"] .cap-meas.is-wk .cap-big')?.textContent || '',
-          codexNow: document.querySelectorAll('[data-group="codex"] .cap-meas.is-now').length,
-          codexWeek: document.querySelector('[data-group="codex"] .cap-meas.is-wk .cap-big')?.textContent || '',
-          lanes7d: document.querySelectorAll('.cap-lane.is-7d').length,
-          lanes5h: document.querySelectorAll('.cap-lane.is-5h').length,
-          why: document.querySelector('[data-group="claude"] .cap-why')?.textContent || '',
+          claudeNow:
+            document.querySelector('[data-group="claude"] .cap-bar-row.is-h5 .cap-bar-val b')?.textContent || '',
+          claudeWeek:
+            document.querySelector('[data-group="claude"] .cap-bar-row.is-wk .cap-bar-val b')?.textContent || '',
+          codexNow: document.querySelectorAll('[data-group="codex"] .cap-bar-row.is-h5').length,
+          codexWeek:
+            document.querySelector('[data-group="codex"] .cap-bar-row.is-wk .cap-bar-val b')?.textContent || '',
+          timelines: document.querySelectorAll('[data-group="claude"] .cap-tl').length,
+          weeklyMarks: document.querySelectorAll('[data-group="claude"] .cap-tl-mk.is-wk').length,
+          disc: document.querySelector('[data-group="claude"] .cap-disc')?.textContent || '',
         }));
         check(placement.columnCron === 0, 'no cron card left in the three columns');
         check(placement.laneCards === 2, `the lane shows each job's latest run as a card (${placement.laneCards})`);
@@ -365,22 +368,29 @@ async function layout(browser: Browser) {
           placement.codexNow === 0 && placement.codexWeek === '1.3',
           `Codex shows the weekly measure only (${placement.codexWeek})`,
         );
-        check(placement.lanes7d === 2, `one weekly lane per provider (${placement.lanes7d})`);
-        // Nothing within 5h raises "now" (the week caps 9 of 10): the 5h lane folds into a line.
+        // Simplified card: one timeline with ◆ weekly refills; one honest disclosure line.
         check(
-          placement.lanes5h === 0 && /주간이 상한 9/.test(placement.why),
-          `5h lane folds; why line: ${placement.why}`,
+          placement.timelines === 1 && placement.weeklyMarks >= 3,
+          `one timeline, weekly refills marked (${placement.weeklyMarks})`,
+        );
+        check(
+          /16\/17 반영/.test(placement.disc) && /차단 6/.test(placement.disc) && /제외 1\(보류\)/.test(placement.disc),
+          `disclosure line: ${placement.disc}`,
         );
       }
       if (width === 390) {
         const narrow = await page.evaluate(() => ({
-          lanes: document.querySelectorAll('.cap-lane').length,
-          lists: document.querySelectorAll('.cap-evlist.is-short').length,
+          cards: document.querySelectorAll('.cap-prov.is-narrow').length,
+          bars: document.querySelectorAll('.cap-prov.is-narrow .cap-bar-row').length,
+          // Mockup v5: on a phone each bar has its own full-width line (no ~70px stub).
+          minShare: Math.min(
+            ...Array.from(document.querySelectorAll('.cap-prov.is-narrow .cap-bar-row')).map(
+              (r) => (r.querySelector('.cap-bar') as HTMLElement).offsetWidth / (r as HTMLElement).offsetWidth,
+            ),
+          ),
         }));
-        check(
-          narrow.lanes === 0 && narrow.lists >= 1,
-          `${tag}: lanes trade for the "next refills" list (${narrow.lists})`,
-        );
+        check(narrow.cards === 2 && narrow.bars === 3, `${tag}: narrow cards keep their bars (${narrow.bars})`);
+        check(narrow.minShare >= 0.95, `${tag}: each bar spans the card width (${narrow.minShare.toFixed(2)})`);
       }
       await page.screenshot({ path: path.join(OUT, `cron-capacity-${tag}.png`), fullPage: true });
       await page.context().close();

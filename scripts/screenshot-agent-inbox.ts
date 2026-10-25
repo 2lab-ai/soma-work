@@ -1558,12 +1558,14 @@ async function addendumChecks(browser: import('playwright').Browser) {
       (e: Error) => e.message.split('\n')[0],
     );
   await page.waitForTimeout(500);
+  // Spec 13: the numbers live in 세션 정보 — opened, every token kind and merge value is rendered.
+  await page.evaluate(() => (window as unknown as { togglePanelInfo(): void }).togglePanelInfo());
   const panel = await page.evaluate(() => ({
     open: !!document.getElementById('slide-panel')?.classList.contains('open'),
-    injected: document.querySelectorAll('#panel-tokens img, #panel-tokens b, #panel-tokens i, #panel-tokens u').length,
+    injected: document.querySelectorAll('#panel-info img, #panel-info b, #panel-info i, #panel-info u').length,
     pwned: (window as unknown as PageWindow).__pwned ?? null,
     worklog: document.getElementById('worklog-list')?.textContent,
-    tokens: document.getElementById('panel-tokens')?.textContent,
+    tokens: document.getElementById('panel-info')?.textContent,
   }));
   check(
     openError === null &&
