@@ -44,8 +44,8 @@ function jsonResponse(status: number, body: unknown) {
 
 describe('card effort picker (T1)', () => {
   const { renderEffortPicker } = load<{ renderEffortPicker(s: any, canSwitch: boolean): string }>(
-    ['esc', 'escAttr', 'escJs', 'effortLabel', 'renderEffortPicker'],
-    ['EFFORT_LABELS'],
+    ['esc', 'escAttr', 'escJs', 'effortLabel', 'isBusy', 'renderEffortPicker'],
+    ['EFFORT_LABELS', '_busy'],
     { EFFORT_LEVELS: LEVELS },
   );
 
