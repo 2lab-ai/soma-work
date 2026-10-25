@@ -210,10 +210,11 @@ describe('top-bar default chips (T6)', () => {
       refreshCard: vi.fn(),
       loadSessions: vi.fn(),
     };
+    // Spec 13: the session branch takes the per-session busy lock and repaints the panel's picker.
     const { pickDefault } = load<{ pickDefault(kind: string, value: string): Promise<void> }>(
-      ['setDefaultsStatus', 'pickDefault'],
-      [],
-      env,
+      ['isBusy', 'setBusy', 'setDefaultsStatus', 'pickDefault'],
+      ['_busy'],
+      { ...env, repaintPanelControlsFor: vi.fn() },
     );
     await pickDefault('effort', 'low');
     expect(patchSetting).toHaveBeenCalledWith('defaultEffort', 'low');

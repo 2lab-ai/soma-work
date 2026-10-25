@@ -90,8 +90,8 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 ### 3.4 패널
 
 - 머리(고정): 제목 · 부제 · ×(`패널 닫기`). 칩 줄 `#panel-status`: `세션` + 상태 아이콘·단어(`role="status"` — 단어만 낭독, 1초
-  시계는 낭독하지 않는다) + 활성 시간(`card-timer-live`) … 오른쪽에 Slack, 세션 액션 하나(소유자·형제 인스턴스 게이트는 카드와 같다,
-  coarse ≥ 44px). 재개 대기면 그 아래 한 줄 `HH:MM 자동 재개 · 시도 n/3`.
+  시계는 낭독하지 않는다) + 활성 시간(`card-timer-live`) … 오른쪽에 Slack, 세션 액션 하나(접근 이름은 보이는 라벨이 먼저 —
+  `Stop — 세션 중지`, `Close — 세션 종료`, `Trash — 세션 휴지통으로`; 소유자·형제 인스턴스 게이트는 카드와 같다, coarse ≥ 44px). 재개 대기면 그 아래 한 줄 `HH:MM 자동 재개 · 시도 n/3`.
 - 고정: Tasks(+ 이전 목록), 산출물.
 - 스크롤 영역: 세션 정보 `#panel-info` → goal `#panel-goal` → 권한 요청 → 질문 → 에이전트 → 작업 로그 → 대화.
   - 세션 정보: 접기(기본 접힘, 페이지 동안 JS 상태). 버튼이 요약 한 줄이다 — 소유자 · 워크플로 · 토큰 · 비용 · ctx % · 마지막 활동
@@ -101,7 +101,8 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
     `live = 칸 ≠ closed && !terminated`). 입력에 포커스가 있으면 쓰지 않고, 포커스 없는 초안은 새 markup으로 옮긴다. 다른 세션을 열면
     비운다(초안이 섞이지 않는다).
 - 입력창(고정): `#panel-controls`(모델 · effort, 대기 전환 안내)가 입력 위의 자기 컨테이너에 있다 — 입력은 morph 대상이 아니다.
-  640px 미만이거나 높이 560px 이하(폰 가로·키보드)면 토글 하나로 접히고, 접힌 토글은 입력과 같은 줄에 선다.
+  640px 미만이거나 높이 560px 이하(폰 가로·키보드)면 토글 하나로 접히고, 접힌 토글은 입력과 같은 줄에 선다. 펼치면 선택은
+  입력창 위에 떠서 열린다 — 읽기 영역의 높이를 빼앗지 않는다.
 - 실시간: `repaintPanelSession()` 하나가 칩 · 세션 정보 · goal · 모델·effort · 노드 범위(spec 12의 `repaintPanelScope`)를 쓴다.
   `openPanel`, WS `session_update`·`sessionUpdated`, 폴링(`loadSessions`)이 모두 이 경로다. 부분마다 markup이 같으면 쓰지 않는다.
   읽던 자리: 갱신 전에 스크롤 영역에서 읽고 있는 앵커(질문·작업 로그·대화 턴)를 잡고, 위쪽 섹션 높이가 바뀌어도 그 자리로 되돌린다
@@ -111,12 +112,13 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 
 `_busy[key + '|' + op]`(op = model · effort · goal · action) 하나를 카드와 패널이 함께 읽는다. 요청 전에 켜고 끝나면 끈다. 켜져
 있으면 그 컨트롤은 `disabled` + `aria-busy="true"`로 그려진다 — 포커스를 잃은 컨트롤이 실시간 렌더로 다시 켜지지 않는다. 오류는
-세션별(`_modelNotes`, `_goalErrors`)로 두 서피스에 같이 보인다.
+세션별로 둔다 — 모델·effort 안내(`_modelNotes`)는 두 서피스에 같이, goal 오류(`_goalErrors`)는 goal 편집기가 있는 패널에 보인다.
 
 ### 3.6 착지와 포커스
 
 `openPanel(key, intent, agentId, byKey)` — intent: `worklog`(작업 로그 버튼·`?session=`, `true`와 같다), `goal`(`관리 →`),
-`agent`(트리 항목·`전체 N개 → 상세`), `tasks`(`전체 task N개 →` — 완료 펼침 + 이전 목록), 없음(권한 요청·질문이 있으면 그 블록,
+`agent`(트리 항목·`전체 N개 → 상세`), `tasks`(`전체 task N개 →` — 완료 펼침 + 이전 목록, 고정 Tasks 상자는 머리부터 보이고
+대화 영역은 기본 착지), 없음(권한 요청·질문이 있으면 그 블록,
 없으면 최신 대화 — spec 10 §3.1-6). goal·agent 착지는 열 때마다 한 번이고 대화가 늦게 와도 끌려가지 않는다. 키보드로 연 경우
 (`event.detail === 0`, 트리 Enter) 포커스는 착지 대상(goal 입력, 초점 헤더, Tasks 토글, 작업 로그 머리, 없으면 답 버튼·제목)으로
 간다. 닫으면(× · Escape) 포커스는 연 컨트롤로 돌아가고, 그 컨트롤이 사라졌으면 그 세션 카드의 face, 없으면 보드 제목으로 간다(포커스가
@@ -133,6 +135,8 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 | 10-23 T5 펼친 카드 산출물 스트립 전부 | 질문 대기·유휴·닫힘에서 ≤ 4 + `전체 N개 →` | 근거와 결과만 |
 | 10-23 T1 모델·effort를 카드와 패널 맨 위 | 카드 컨트롤 줄 + 패널 입력창 옆 | 두 결정 자리, 같은 렌더러·같은 busy |
 | 12 rev 2 카드 트리 행 = 패널 행, 카드 안 `전체 N개 보기` | 카드 compact, 패널 rich, 카드의 나머지는 패널로 | 같은 노드 타입, 서피스마다 다른 밀도 |
+| 10 §3.1-3 `ui.dashboardheader`의 `owner`·`workflow`·`status`·`mergestats`가 펼친 카드 메타·통계를 켜고 끔 | 카드에 읽는 곳이 없다 — 값은 패널 세션 정보(게이트를 따르지 않는 완전한 기록)에 있다. 필드는 레지스트리에 그대로 유효하다(`docs/ui-surfaces.md`) | 메타·숫자의 집은 패널 |
+| 10 §3.1-4 펼친 카드의 `대화 기록` 링크, `autocompact` 표시 | 패널 세션 정보의 링크 줄(`전체 대화`)과 컨텍스트 줄(`autocompact …`)로 | 같은 데이터, 집은 패널 |
 | (유지) 10-22 T1/T2 접힌 카드의 토큰·비용 | 그대로 | 유저가 명시적으로 요청 — 레퍼런스(목록에 비용 없음)보다 우선 |
 
 ## 5. 검증
