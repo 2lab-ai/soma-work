@@ -335,6 +335,11 @@ function restorePendingRetryDetail(raw: unknown): ConversationSession['pendingRe
   };
 }
 
+/** A saved epoch-ms stamp, or undefined when it is not a finite number. */
+function finiteStamp(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
 export class SessionRegistry {
   private sessions: Map<string, ConversationSession> = new Map();
   private logger = new Logger('SessionRegistry');
@@ -2064,6 +2069,8 @@ export class SessionRegistry {
         // A cron run archived while the process was down stays filed under its job.
         cronJob: sanitizeCronJob(serialized.cronJob),
         activityState: serialized.activityState || 'idle',
+        // When its work finished — the archive keeps it (spec 13 §3.7).
+        activityStateChangedAt: finiteStamp(serialized.activityStateChangedAt),
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
       };
@@ -2266,10 +2273,13 @@ export class SessionRegistry {
           taskLedger: sanitizeTaskLedger(serialized.taskLedger),
           // Spec 12: nothing that ran before this process is watched any more.
           agents: loseRunningAgents(sanitizeAgentRegistry(serialized.agents), Date.now()),
+          // A session put to sleep on load that was not idle has no known finish:
+          // its saved stamp is when it started working or waiting, and the
+          // dashboard reads an idle stamp as the finish (spec 13 §3.7).
           activityStateChangedAt:
-            typeof serialized.activityStateChangedAt === 'number' && Number.isFinite(serialized.activityStateChangedAt)
-              ? serialized.activityStateChangedAt
-              : undefined,
+            sleptOnLoad && (serialized.activityState || 'idle') !== 'idle'
+              ? undefined
+              : finiteStamp(serialized.activityStateChangedAt),
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
           sdkUsageBaseline: sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline),
