@@ -1015,8 +1015,9 @@ async function start() {
           }
         }
         const stamped = stampWorkLogAgent(owner ?? {}, entry, Date.now());
-        // A subagent's tool count grew: push the card (throttled, ≤ 1/s).
-        if (entry.agentId && entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);
+        // A node's tool count grew — a subagent's, or the main agent's (the
+        // registry root): push the card (throttled, ≤ 1/s per session).
+        if (entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);
         // SSOT 2026-10-23 T1/T7: files the model sends to Slack and its markdown
         // answers become dashboard artifacts. Before the store sees it, while
         // `entry` still has the whole final text (the work log caps it).
