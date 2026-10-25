@@ -101,6 +101,7 @@ const FACE_FNS = [
   'pendingAutoResume',
   'autoResumeLabel',
   'cardSummary',
+  'doneTimeOf',
   'cardAgo',
   'renderCardStatus',
   'renderOwnerBadge',

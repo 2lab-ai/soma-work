@@ -1234,6 +1234,7 @@ const FACE_FNS = [
   'pendingAutoResume',
   'autoResumeLabel',
   'cardSummary',
+  'doneTimeOf',
   'cardAgo',
   'renderCardStatus',
   'renderOwnerBadge',
@@ -1281,19 +1282,39 @@ describe('collapsed face — the outcome: PR number and state, a badge, not a li
   const face = load<Face>(FACE_FNS, FACE_VARS, FACE_ENV);
   const pr = { prUrl: 'https://github.com/o/r/pull/12', prShortRef: 'PR-12', prTitle: 'feat: surfaces' };
 
-  it('shows the PR number with its state as a class, a word for screen readers and the title as a tooltip', () => {
+  it('shows the PR number with its state as a word and a class, and the title as a tooltip', () => {
     const html = face.renderCardFace(faceCard({ ...pr, prStatus: 'merged' }), 'closed');
     expect(html).toMatch(/<span class="metric card-pr is-merged" title="PR #12 머지됨 — feat: surfaces">/);
     expect(html).toContain('#12');
-    expect(html).toContain('<span class="cpr-state">머지됨</span>');
+    // The face's name is built from its content: a space keeps "#12 머지됨" two words.
+    expect(html).toContain('<span class="cpr-state"> 머지됨</span>');
     // The face is one toggle: no link inside it (the open card and 세션 정보 hold the links).
     expect(html).not.toContain('<a ');
   });
 
   it('each known state has its own class and word', () => {
     expect(face.renderCardFace(faceCard({ ...pr, prStatus: 'open' }), 'idle')).toContain('card-pr is-open');
-    expect(face.renderCardFace(faceCard({ ...pr, prStatus: 'draft' }), 'idle')).toContain('>초안<');
+    expect(face.renderCardFace(faceCard({ ...pr, prStatus: 'draft' }), 'idle')).toContain('> 초안<');
     expect(face.renderCardFace(faceCard({ ...pr, prStatus: 'closed' }), 'idle')).toContain('card-pr is-closed');
+  });
+
+  it('the state is a word on screen, never colour alone; the colour follows it', () => {
+    // A sighted touch or keyboard reader has no tooltip: the word is not clipped.
+    expect(TEMPLATE).toMatch(/\.card-pr \.cpr-state \{[^}]*\}/);
+    expect(TEMPLATE).not.toMatch(/\.cpr-state \{[^}]*clip:/);
+    expect(TEMPLATE).toMatch(/\.card-metrics \.card-pr\.is-open \{[^}]*var\(--st-run\)/);
+    expect(TEMPLATE).toMatch(/\.card-metrics \.card-pr\.is-merged \{[^}]*var\(--st-done\)/);
+    expect(TEMPLATE).toMatch(/\.card-metrics \.card-pr\.is-closed \{[^}]*var\(--st-fail-text\)/);
+  });
+
+  it('a state in capitals still reads as that state', () => {
+    expect(face.renderCardFace(faceCard({ ...pr, prStatus: 'MERGED' }), 'idle')).toContain('card-pr is-merged');
+  });
+
+  it('a short ref in another shape is printed escaped', () => {
+    const html = face.renderCardFace(faceCard({ ...pr, prShortRef: '<b>x</b>', prStatus: 'open' }), 'idle');
+    expect(html).toContain('&lt;b&gt;x&lt;/b&gt;');
+    expect(html).not.toContain('<b>x</b>');
   });
 
   it('an unknown or hostile state renders the bare number', () => {
@@ -1318,11 +1339,25 @@ describe('collapsed face — recency on a card that is not moving', () => {
   const face = load<Face>(FACE_FNS, FACE_VARS, FACE_ENV);
   const ts = String(Date.parse(LAST));
 
-  it('waiting, idle and closed cards say when they last acted (the 1 Hz tick fills "12m ago")', () => {
-    for (const col of ['waiting', 'idle', 'closed']) {
-      const html = face.renderCardFace(faceCard(), col);
-      expect(html, col).toContain(`<span class="st-ago"><span class="rel-time" data-ts="${ts}"></span></span>`);
+  const stamp = (t: number | string) => `<span class="st-ago"><span class="rel-time" data-ts="${t}"></span></span>`;
+  const DONE = Date.parse(LAST) + 40 * 60_000; // the turn ran 40 minutes after the last instruction
+  const WAIT = Date.parse(LAST) + 30 * 60_000; // the question came 30 minutes in
+
+  it('a finished card counts from when its work finished (doneAt), not from the last instruction', () => {
+    // lastActivity moves on user input only: after a 40-minute turn it would overstate by 40 minutes.
+    for (const col of ['idle', 'closed']) {
+      const html = face.renderCardFace(faceCard({ doneAt: DONE }), col);
+      expect(html, col).toContain(stamp(DONE));
+      expect(html, col).not.toContain(`data-ts="${ts}"`);
     }
+    // No finish time (a legacy record): the day groups' own fallback, the last activity.
+    expect(face.renderCardFace(faceCard(), 'idle')).toContain(stamp(ts));
+  });
+
+  it('a waiting card counts from when it started waiting (waitingSince) — without that stamp, nothing', () => {
+    expect(face.renderCardFace(faceCard({ waitingSince: WAIT, doneAt: DONE }), 'waiting')).toContain(stamp(WAIT));
+    // A wrong number is worse than none on a triage surface: never the last instruction.
+    expect(face.renderCardFace(faceCard(), 'waiting')).not.toContain('rel-time');
   });
 
   it('a running card shows its live timer instead; an armed resume shows its own time', () => {
@@ -1337,6 +1372,7 @@ describe('collapsed face — recency on a card that is not moving', () => {
 
   it('no clock in the markup: an unparsable stamp shows nothing, equal data renders equal HTML', () => {
     expect(face.renderCardFace(faceCard({ lastActivity: 'not a date' }), 'idle')).not.toContain('rel-time');
+    expect(face.renderCardFace(faceCard({ waitingSince: 'x' }), 'waiting')).not.toContain('rel-time');
     expect(face.renderCardFace(faceCard(), 'idle')).toBe(face.renderCardFace(faceCard(), 'idle'));
   });
 });
@@ -1345,7 +1381,7 @@ describe('collapsed face — the context level is a warning, the panel bar uses 
   const face = load<Face>(FACE_FNS, FACE_VARS, FACE_ENV);
   const ctx = (pct: number) => faceCard({ tokenUsage: { totalInputTokens: 1, contextUsagePercent: pct } });
 
-  it('over 60% amber, over 80% red with the reason in the tooltip; below, the plain number', () => {
+  it('over 60% amber, over 80% red with the band in the tooltip; below, the plain number', () => {
     expect(face.ctxLevel(12)).toBe('');
     expect(face.ctxLevel(61)).toBe('ctx-warn');
     expect(face.ctxLevel(81)).toBe('ctx-danger');
@@ -1355,13 +1391,21 @@ describe('collapsed face — the context level is a warning, the panel bar uses 
       '<span class="metric ctx-warn" title="Context window used">',
     );
     expect(face.renderCardFace(ctx(90), 'idle')).toContain(
-      '<span class="metric ctx-danger" title="Context window used — 자동 압축이 가까움">',
+      '<span class="metric ctx-danger" title="Context window used — 80% 넘게 찼다">',
     );
+  });
+
+  it('red text clears 4.5:1 on the dimmed (sleeping / archived) card too; a crowded metrics row wraps inside the card', () => {
+    expect(TEMPLATE).toMatch(/\.card-metrics \.metric\.ctx-danger \{[^}]*var\(--st-fail-text\)/);
+    expect(TEMPLATE).toMatch(/\.card-metrics \.card-pr\.is-closed \{[^}]*var\(--st-fail-text\)/);
+    expect(TEMPLATE.match(/--st-fail-text: #[0-9a-f]{6};/g)?.length).toBe(2); // dark and light
+    expect(TEMPLATE).toMatch(/\.card-metrics \{[^}]*flex-wrap: wrap;[^}]*max-width: 100%;/);
+    expect(TEMPLATE).toMatch(/\.card-foot \{[^}]*flex-wrap: wrap;/);
   });
 
   it('one threshold table for both surfaces', () => {
     expect(clientFn('panelInfoHtml')).toContain('var cls = ctxLevel(ctx);');
     expect(TEMPLATE).toMatch(/\.card-metrics \.metric\.ctx-warn svg \{[^}]*var\(--st-wait\)/);
-    expect(TEMPLATE).toMatch(/\.card-metrics \.metric\.ctx-danger \{[^}]*var\(--st-fail\)/);
+    expect(TEMPLATE).toMatch(/\.card-metrics \.metric\.ctx-danger \{[^}]*var\(--st-fail-text\)/);
   });
 });

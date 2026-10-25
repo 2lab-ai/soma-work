@@ -308,6 +308,37 @@ describe('Dashboard — live surfaces (SSOT 2026-10-22)', () => {
     });
   });
 
+  describe('spec 13 §3.7 — when a waiting card started waiting (waitingSince)', () => {
+    it('a session waiting on its user: the moment it switched to waiting; working and idle cards have none', async () => {
+      const b = await board(
+        new Map([
+          ['C1:t1', liveSession({ activityState: 'waiting', activityStateChangedAt: 1_700_000_100_000 })],
+          ['C2:t2', liveSession({ channelId: 'C2', threadTs: 't2', activityStateChangedAt: 1_700_000_000_000 })],
+          [
+            'C3:t3',
+            liveSession({
+              channelId: 'C3',
+              threadTs: 't3',
+              activityState: 'idle',
+              activityStateChangedAt: 1_700_000_200_000,
+            }),
+          ],
+        ]),
+      );
+      expect(b.waiting[0].waitingSince).toBe(1_700_000_100_000);
+      expect(b.working[0].waitingSince).toBeUndefined();
+      expect(b.idle[0].waitingSince).toBeUndefined();
+    });
+
+    it('a turn blocked on permission prompts waits since the oldest prompt, not since the turn started', () => {
+      const working = { activityState: 'working', activityStateChangedAt: 5 };
+      expect(dashboard.liveWaitingSince(working, [{ createdAt: 30 }, { createdAt: 20 }])).toBe(20);
+      expect(dashboard.liveWaitingSince(working, [{ createdAt: Number.NaN }])).toBeUndefined();
+      expect(dashboard.liveWaitingSince({ activityState: 'waiting' }, [])).toBeUndefined();
+      expect(dashboard.liveWaitingSince(working, [])).toBeUndefined();
+    });
+  });
+
   describe('T4/T5 — model switch route and card fields', () => {
     async function post(payload: any, key = 'C1:t1') {
       return injectWebServer({
