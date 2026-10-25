@@ -945,9 +945,10 @@ describe('Dashboard API', () => {
     // NOT '' (empty string concat) which was the bug before PR #280
     // Check doAction onclick builders have properly escaped quotes
     expect(script).toContain("doAction(\\''");
-    expect(script).toContain("\\',\\'stop\\'");
-    expect(script).toContain("\\',\\'close\\'");
-    expect(script).toContain("\\',\\'trash\\'");
+    // Spec 13: one builder (sessionActionHtml) serves the card and the panel head;
+    // the action name is a closed set (stop · close · trash) joined in escaped quotes.
+    expect(script).toContain("\\',\\'' + kind + '\\')");
+    expect(script).toContain("var kind = running ? 'stop' : (col === 'closed' && s.terminated ? 'trash' : 'close');");
     // Check openPanel onclick builder
     expect(script).toContain("openPanel(\\''");
   });
@@ -1071,8 +1072,11 @@ describe('Dashboard API', () => {
     // and 2 openPanel calls (open card's "작업 로그" button + multi-choice "답변하기" button).
     // A card click no longer opens the panel — it expands the card in place
     // through a delegated listener (.prd/10 §3.1-4), so it has no inline handler.
-    expect(correctDoAction!.length).toBe(4);
-    expect(correctOpenPanel!.length).toBe(2);
+    // Spec 13: exactly 1 doAction builder (sessionActionHtml — stop / close / trash, shared by the
+    // open card and the panel head) and 5 openPanel builders: 작업 로그, 답변하기, 전체 task N개 →,
+    // the goal line's 관리 → / 보기 →, the artifacts' 전체 N개 →.
+    expect(correctDoAction!.length).toBe(1);
+    expect(correctOpenPanel!.length).toBe(5);
   });
 
   it('should have all inline handlers escaped consistently', async () => {
@@ -1091,13 +1095,14 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 4 doAction calls × 1 sep + 1 resummarize = 5 closing patterns.
+    // 1 doAction builder + 1 resummarize + the intent of 전체 task (2), the goal line (2) and the
+    // artifacts link (2) — every argument of every builder closes in escaped quotes = 8.
     // The 4 answerChoice sites (card/panel × recommended/other) and the selectMc
     // site no longer build inline JS strings: their model-written question /
     // label / id travel in attribute-escaped data-choice-* attributes read by
     // one delegated click handler, because escJs() inside a double-quoted
     // onclick could not carry " or newlines safely (.prd/10 round-2 review).
-    expect(actionClosings!.length).toBe(5);
+    expect(actionClosings!.length).toBe(8);
     expect(script).not.toMatch(/answerChoice\(\\'/);
     expect(script).not.toMatch(/selectMc\(\\'/);
   });

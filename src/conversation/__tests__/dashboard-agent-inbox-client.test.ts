@@ -1233,7 +1233,7 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
       'autoResumeLabel',
       'renderCardStatus',
     ],
-    ['WAIT_SVG', 'RESUME_SVG', '_tasksOpen'],
+    ['WAIT_SVG', 'RESUME_SVG'],
     {
       dhShow: () => true,
       dhMax: (_f: string, d: number) => d,
@@ -2852,7 +2852,9 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       ],
       [
         '_mcState',
-        '_panelFocusWorkLog',
+        '_panelLand',
+        '_panelLanded',
+        '_panelReturnFocus',
         '_panelTurnsHasMore',
         '_panelTurnsLoading',
         '_panelTurnsOldestId',
@@ -2885,6 +2887,10 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         isSiblingSession: () => false,
         // main's own openPanel deps since this harness was written (#372 panel controls, spec 12 agent views).
         renderPanelControls: () => {},
+        // Spec 13: the session parts go through one live path; a keyboard opening focuses its landing.
+        repaintPanelSession: () => {},
+        focusPanelLanding: () => {},
+        _panelTasksEarlier: false,
         // SSOT 2026-10-24: openPanel marks the layout before the drawer changes it (layout-shift FLIP).
         layoutBeforeChange: () => {},
         renderPanelAgents: () => {},
