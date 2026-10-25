@@ -170,6 +170,7 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
         stripRecommendedMarker: (l: string) => l,
         choiceDataAttrs: () => '',
         renderMultiChoiceCard: () => '',
+        renderPermissionBlock: () => '',
         renderCardGoal: () => '',
         renderTimeline: () => '',
         renderModelNote: () => '',
