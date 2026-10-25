@@ -289,42 +289,35 @@ for everyone — admins included:
 
 The web dashboard shows the same llmux pool as an **LLM 가용량** section between
 the stats strip and the Agent inbox (`GET /api/dashboard/capacity`, llmux read at
-most every 30 s; the page refetches every 60 s). One card per subscription
-provider (Claude, Codex; API-key pools have no plan unit and are not shown)
-answers two questions (v2, 2026-10-25):
+most every 30 s; the page refetches every 60 s). It starts folded on every window
+(your unfold choice is kept per device); folded, one chip per subscription provider
+gives both windows as max accounts' worth and %:
+`Claude 지금 5.2/16.0 33% · 주 5.7 36%` (phones drop the total and may wrap).
 
-- **How much is left, in max accounts' worth (계정분)** — each account counts by
-  its tier weight (Max x20 = 1, Max x5 = ¼, Pro $500 = 1, Pro $200 = 0.4) times
-  its remaining ratio. That is a normalised estimate, not a token count. Two
-  measures, each `x / total 계정분 · %`:
-  - **지금** (usable now) = the smaller of the 5h and weekly remaining, 0 while a
-    block is active. Claude always has it; another provider only when llmux
-    reports a 5h window (Codex today is weekly-only).
-  - **이번 주** = the weekly remaining.
-  A why line names the window that caps the usable accounts ("쓸 수 있는 10계정
-  중 5h가 상한 1 · 주간이 상한 9") and what the next 5h frees; a unit bar draws
-  one cell per max account (violet = week, teal = now inside it); per-account
-  bars show both.
-- **What comes back** — each account's events are replayed in time order (at
-  one instant: block lifts, then the 5h reset, then the weekly reset; nothing
-  merged), each with its own gain. A **5h lane** (0–5h, ● teal) and a **weekly
-  lane** (0–7d, ◆ violet) draw the projected measure as a step line, with a
-  per-cause breakdown under each; ■ = a block lifts (raises "now" only). When
-  nothing in 5h raises "now", the 5h lane folds into one sentence. Below 600px
-  the lanes become a "다음 리필" list with now and week gains apart.
-- **Honest numbers** — blocks are tracked on their own (weekly ceiling, 5h
-  ceiling, cooldown over 120 s, model-scoped ceiling); a block whose lift time is
-  unknown (paused, auth failure, a cooldown with no end) is 보류 and left out of
-  the totals with no promised return. A reset that has passed counts as full and
-  is flagged 추정; an unblocked account with no 5h reading adds nothing to
-  지금; unknown tier and no weekly reading are counted apart. The oldest llmux
-  measurement is shown.
-- **Tiers** — a dot (orange = higher plan, blue = lower) plus its text. Colour is
-  reserved for the window. llmux does not report plans, so the map is
-  `SOMA_LLMUX_ACCOUNT_TIERS` (`group:name=tier`, e.g. `claude:ai7=x20,claude:ai12=x5`)
-  over built-in defaults (Codex `ai1`·`ai2` = Pro $200, `ai5`·`ai6` = Pro $500).
-  A bare llmux `max` is never guessed into x5/x20; an unmapped account is left
-  out of the totals and named.
+Unfolded, each provider (Claude, Codex; API-key pools have no plan unit and are
+not shown) is one simple card:
+
+- **Two bars** — `5시간 · 지금 쓸 수 있음` (the smaller of the 5h and weekly
+  remaining; 0 while blocked) and `일주일 · 이번 주 남음`, each
+  `x / total 계정 · %`, with one line for what raises it next
+  (`다음 +1.0계정 · 1시간 23분 후 · 일주일 리셋 (ai8)`). Codex (no 5h data) has the
+  weekly bar only. "계정" = max accounts' worth: tier weight (Max x20 = 1, x5 = ¼,
+  Pro $500 = 1, $200 = 0.4) × remaining — a normalised estimate, not tokens. The %
+  is from the raw ratio (100% only when full); a count that rounds to the total
+  keeps two decimals (`2.37 / 2.4 · 99%`).
+- **One muted disclosure line**, only what is non-zero:
+  `16/17 반영 · 차단 6 · 제외 1(보류) · 측정 4시간 전` — accounts counted, blocked
+  right now, left out (paused / auth failure / no known lift = 보류, unknown tier,
+  no weekly reading) and the oldest llmux reading when over an hour old.
+- **One timeline**, now → 24h (55% of the width) → 7d: ● is a gain to the 5시간 bar
+  (label above), ◆ a gain to the 일주일 bar (label below), in the bars' colours;
+  refills whose labels would collide merge into one marker with a span. Gains come
+  from replaying each account's resets in time order (blocks lifted first, then
+  5h, then weekly). With no 5h gain in 7 days the ● key says "늘어날 양 없음".
+- Tiers: llmux does not report plans, so the map is `SOMA_LLMUX_ACCOUNT_TIERS`
+  (`group:name=tier`, e.g. `claude:ai7=x20,claude:ai12=x5`) over built-in defaults
+  (Codex `ai1`·`ai2` = Pro $200, `ai5`·`ai6` = Pro $500). A bare llmux `max` is
+  never guessed into x5/x20; an unmapped account is left out and counted.
 - Not routed through llmux (`ccp` mode) → the section is hidden; llmux
   unreachable → the section says so with a fixed reason.
 
