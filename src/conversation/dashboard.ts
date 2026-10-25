@@ -5286,89 +5286,56 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cap-sw.tier-high { background: #e69f00; }
 .cap-sw.tier-low { background: #0072b2; }
 .cap-off { font-size: 13px; color: var(--ib-text-2); padding: 8px 0 10px; }
-.cap-prov { background: var(--ib-card); border-radius: 12px; padding: 12px 16px; margin-top: 10px; box-shadow: inset 0 0 0 1px var(--ib-card-border); }
-.cap-rows.is-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; align-items: start; }
+.cap-prov { background: var(--ib-card); border-radius: 12px; padding: 14px 18px 12px; margin-top: 10px; box-shadow: inset 0 0 0 1px var(--ib-card-border); }
 .cap-chip i { font-style: normal; }
-@media (max-width: 639px) { .cap-chip .cap-chip-k, .cap-chip .cap-chip-of { display: none; } }
+.cap-chip em { font-style: normal; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cap-summary .cap-m.is-now b, .cap-summary .cap-m.is-now em { color: var(--cap-now); }
+.cap-summary .cap-m.is-wk b, .cap-summary .cap-m.is-wk em { color: var(--cap-wk); }
 .cap-prov.is-empty { box-shadow: inset 0 0 0 1px var(--st-fail); }
 .cap-prov.is-low { box-shadow: inset 0 0 0 1px var(--st-wait); }
-.cap-pname { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-bottom: 6px; }
-.cap-pname b { font-size: 15px; }
-.cap-pname span { color: var(--ib-muted); font-size: 12px; }
-.cap-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }
-.cap-meas { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: baseline; margin-bottom: 4px; }
-.cap-meas.is-now .cap-k, .cap-meas.is-now .cap-big, .cap-meas.is-now .cap-pct2 { color: var(--cap-now); }
-.cap-meas.is-wk .cap-k, .cap-meas.is-wk .cap-big, .cap-meas.is-wk .cap-pct2 { color: var(--cap-wk); }
-.cap-k { font-size: 13px; font-weight: 700; }
-.cap-k i { display: block; font-style: normal; font-weight: 400; font-size: 11px; color: var(--ib-muted); }
-.cap-big { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
-.cap-of { font-size: 13px; color: var(--ib-text-2); margin-left: 4px; }
-.cap-pct2 { font-size: 15px; font-weight: 700; margin-left: 8px; font-variant-numeric: tabular-nums; }
-.cap-extra { font-size: 12px; color: var(--st-wait); margin-left: 8px; }
-.cap-nx { display: block; font-size: 12px; color: var(--ib-text-2); font-variant-numeric: tabular-nums; }
-.cap-prov.is-empty .cap-meas.is-now .cap-nx { color: var(--st-fail); font-weight: 600; }
-.cap-why { font-size: 12px; color: var(--ib-text-2); background: var(--ib-pill); border-radius: 8px; padding: 6px 10px; margin: 6px 0 2px; }
-.cap-why b { color: var(--ib-text); }
-.cap-subt { font-size: 12px; color: var(--ib-text-2); margin: 10px 0 4px; display: flex; gap: 10px; flex-wrap: wrap; }
-.cap-muted { color: var(--ib-muted); }
-.cap-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.cap-chip2 { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--ib-pill); color: var(--ib-text-2); }
-.cap-chip2.is-block { color: var(--st-fail); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-fail) 45%, transparent); }
-.cap-chip2.is-warn { color: var(--st-wait); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-wait) 45%, transparent); }
-.cap-fc { margin-top: 10px; border-top: 1px solid var(--ib-card-border); padding-top: 6px; }
-.cap-fc-row { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 12px; margin-top: 6px; }
-.cap-fc-label { font-size: 13px; font-weight: 700; padding-top: 52px; }
-.cap-fc-label.is-flat { padding-top: 6px; }
-.cap-fc-label.is-now { color: var(--cap-now); }
-.cap-fc-label.is-wk { color: var(--cap-wk); }
-.cap-fc-label i { display: block; font-style: normal; font-weight: 400; font-size: 11px; color: var(--ib-muted); }
-.cap-decomp { font-size: 12px; color: var(--ib-text-2); margin: 2px 0 0; }
-.cap-decomp b { color: var(--ib-text); }
-.cap-more2 { margin-top: 6px; }
-.cap-more2 summary { cursor: pointer; font-size: 12px; color: var(--ib-text-2); min-height: 24px; }
-.cap-evlist { font-size: 12px; color: var(--ib-text-2); margin: 6px 0 0; padding: 0; list-style: none; font-variant-numeric: tabular-nums; }
-.cap-evlist li { display: grid; grid-template-columns: 120px 18px minmax(0, 1fr) auto auto; gap: 8px; padding: 3px 0; border-top: 1px solid var(--ib-card-border); }
-.cap-evlist.is-short li { grid-template-columns: 56px 14px minmax(0, 1fr) auto; }
-.cap-evlist .is-now, .cap-summary .is-now { color: var(--cap-now); }
-.cap-evlist .is-wk, .cap-summary .is-wk { color: var(--cap-wk); }
+.cap-pname { font-size: 16px; font-weight: 700; }
+.cap-disc { font-size: 12px; color: var(--ib-muted); margin: 2px 0 8px; }
+.cap-disc .cap-stale { color: var(--st-wait); font-weight: 600; }
+/* Simplified card: one bar per window — label | bar | "x / total 계정 %" — and a "다음 …" line. */
+.cap-bar-row { display: grid; grid-template-columns: 92px minmax(0, 1fr) 200px; align-items: center; gap: 4px 12px; margin: 8px 0; }
+.cap-bar-lbl { font-size: 14px; font-weight: 700; line-height: 1.2; }
+.cap-bar-lbl i { display: block; font-style: normal; font-weight: 400; font-size: 11px; color: var(--ib-muted); }
+.cap-bar-row.is-h5 .cap-bar-lbl { color: var(--cap-now); }
+.cap-bar-row.is-wk .cap-bar-lbl { color: var(--cap-wk); }
+.cap-bar { height: 26px; border-radius: 7px; background: var(--ib-pill); overflow: hidden; }
+.cap-bar > span { display: block; height: 100%; border-radius: 7px; }
+.cap-bar-row.is-h5 .cap-bar > span { background: var(--cap-now); }
+.cap-bar-row.is-wk .cap-bar > span { background: var(--cap-wk); }
+.cap-bar-val { font-size: 14px; color: var(--ib-text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cap-bar-val b { font-size: 19px; color: var(--ib-text); }
+.cap-bar-val em { font-style: normal; font-weight: 600; margin-left: 4px; }
+.cap-bar-next { grid-column: 2 / 4; font-size: 12px; color: var(--ib-text-2); }
+.cap-prov.is-empty .cap-bar-row.is-h5 .cap-bar-next { color: var(--st-fail); font-weight: 600; }
+.cap-tl-wrap { margin-top: 10px; border-top: 1px solid var(--ib-card-border); padding-top: 8px; }
+.cap-tl-h { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ib-text-2); }
+.cap-tl-h i { font-style: normal; }
+.cap-tl-h .is-h5 { color: var(--cap-now); }
+.cap-tl-h .is-wk { color: var(--cap-wk); }
 .cap-prov svg { display: block; max-width: 100%; height: auto; overflow: visible; }
 .cap-prov svg text { font-family: inherit; }
-.cap-t-muted { fill: var(--ib-muted); font-size: 10px; }
-.cap-t-strong { fill: var(--ib-text-2); font-size: 10px; font-weight: 600; }
-.cap-t-name { fill: var(--ib-text-2); font-size: 9px; }
-.cap-u-bg, .cap-b-bg { fill: var(--ib-pill); }
-.cap-u-wk, .cap-b-wk { fill: var(--cap-wk-soft); }
-.cap-u-now, .cap-b-now { fill: var(--cap-now); }
-.cap-u-wk-solid, .cap-b-wk-solid { fill: var(--cap-wk); }
-.cap-u-sep { stroke: var(--ib-card); stroke-width: 2; }
-.cap-b-out { fill: none; stroke: var(--ib-muted); stroke-dasharray: 1 2; }
-.cap-b-tag { fill: var(--st-fail); font-size: 9px; font-weight: 700; }
-.cap-b-est { fill: var(--ib-card); font-size: 10px; font-weight: 700; }
-.cap-dot.tier-high { fill: #e69f00; }
-.cap-dot.tier-low { fill: #0072b2; }
-.cap-dot.tier-none { fill: var(--ib-muted); }
-.cap-l-grid { stroke: var(--ib-card-border); }
-.cap-l-axis { stroke: var(--ib-muted); stroke-opacity: 0.5; }
-.cap-lane.is-5h { --cap-c: var(--cap-now); --cap-s: var(--cap-now-soft); }
-.cap-lane.is-7d { --cap-c: var(--cap-wk); --cap-s: var(--cap-wk-soft); }
-.cap-l-area { fill: var(--cap-s); }
-.cap-l-line { fill: none; stroke: var(--cap-c); stroke-width: 2; }
-.cap-l-val { fill: var(--cap-c); font-size: 11px; font-weight: 700; }
-.cap-l-lead { stroke: var(--cap-c); stroke-opacity: 0.4; stroke-dasharray: 2 2; }
-.cap-l-mk { stroke-width: 1.6; }
-.cap-l-mk.is-5h { fill: var(--cap-now); stroke: var(--cap-now); }
-.cap-l-mk.is-7d { fill: var(--cap-wk); stroke: var(--cap-wk); }
-.cap-l-mk.is-rel { fill: var(--ib-text-2); stroke: var(--ib-text-2); }
-.cap-l-mk.is-hollow { fill: var(--ib-card); }
-.cap-l-chip rect { fill: var(--ib-card); stroke: var(--cap-c); stroke-opacity: 0.6; }
-.cap-l-chip text { fill: var(--ib-text); font-size: 9.5px; }
-/* One breakpoint: renderCapacityGroup marks a card is-narrow from its own width
-   (under 600px of content), the same test that swaps the lanes for a list. */
-.cap-prov.is-narrow .cap-top { grid-template-columns: minmax(0, 1fr); gap: 4px; }
-.cap-prov.is-narrow .cap-fc-row { grid-template-columns: minmax(0, 1fr); gap: 0; }
-.cap-prov.is-narrow .cap-fc-label { padding-top: 0; }
-.cap-prov.is-narrow .cap-meas { grid-template-columns: 72px minmax(0, 1fr); }
-.cap-prov.is-narrow .cap-big { font-size: 24px; }
+.cap-tl-axis { stroke: var(--ib-muted); stroke-opacity: 0.5; stroke-width: 2; }
+.cap-tl-tick { stroke: var(--ib-card-border); }
+.cap-tl-ax { fill: var(--ib-muted); font-size: 11px; }
+.cap-tl-mk.is-h5 { fill: var(--cap-now); stroke: var(--cap-now); }
+.cap-tl-mk.is-wk { fill: var(--cap-wk); stroke: var(--cap-wk); }
+.cap-tl-mk circle, .cap-tl-mk rect { stroke: var(--ib-card); stroke-width: 1.5; }
+.cap-tl-span { stroke-width: 5; stroke-linecap: round; }
+.cap-tl-mk text { stroke: none; font-size: 12.5px; font-weight: 700; }
+/* Phones (mockup v5): label and value share the first line, the bar takes the card's
+   full width on its own line, the "다음 …" line sits under it. */
+.cap-prov.is-narrow .cap-bar-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; margin: 10px 0; }
+.cap-prov.is-narrow .cap-bar-lbl { grid-row: 1; grid-column: 1; align-self: baseline; }
+.cap-prov.is-narrow .cap-bar-lbl i { display: inline; margin-left: 6px; }
+.cap-prov.is-narrow .cap-bar-val { grid-row: 1; grid-column: 2; align-self: baseline; }
+.cap-prov.is-narrow .cap-bar { grid-row: 2; grid-column: 1 / -1; height: 20px; }
+.cap-prov.is-narrow .cap-bar-next { grid-row: 3; grid-column: 1 / -1; }
+.cap-prov.is-narrow .cap-bar-val b { font-size: 16px; }
+.cap-prov.is-narrow .cap-tl-h-note { display: none; }
 @media (max-width: 760px) {
   .cap-legend { margin-left: 0; }
 }
@@ -5948,7 +5915,6 @@ body.nt-open .new-task-fab { display: none !important; }
   .sec-toggle { padding: 2px 8px; min-width: 44px; justify-content: center; }
   .sec-toggle .sec-toggle-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .capacity .cap-head { padding-right: 56px; }
-  .cap-chip { padding: 2px 7px; }
 }
 .cap-chip {
   flex: none;
@@ -5964,7 +5930,18 @@ body.nt-open .new-task-fab { display: none !important; }
   background: var(--ib-card);
   box-shadow: inset 0 0 0 1px var(--ib-card-border);
 }
+@media (max-width: 839px) {
+  /* Below 840px every chip keeps labelled counts, totals and % for both windows
+     (requirement 1a, trinity mockup v5): the folded summary wraps to another row, and a
+     chip wider than the row breaks between its measures, never inside one. After the
+     base .cap-chip rule so it wins. */
+  .cap-chip { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; white-space: normal; column-gap: 4px; }
+  .cap-chip .cap-m, .cap-chip .cap-chip-flag { white-space: nowrap; }
+  .capacity.is-collapsed .cap-summary { flex: 1 1 auto; flex-wrap: wrap; overflow-x: visible; gap: 4px; }
+}
+@media (max-width: 639px) { .cap-chip { padding: 2px 6px; font-size: 11px; } }
 .cap-chip b { font-weight: 700; color: var(--ib-text); font-variant-numeric: tabular-nums; }
+.cap-chip .cap-chip-flag { color: var(--st-wait); font-weight: 600; }
 .cap-chip.is-low { color: var(--st-wait); box-shadow: inset 0 0 0 1px var(--st-wait); }
 .cap-chip.is-empty, .cap-chip.is-error { color: var(--st-fail); box-shadow: inset 0 0 0 1px var(--st-fail); }
 .cron-lane-bar { display: flex; align-items: center; gap: 8px; padding-right: 8px; }
@@ -13080,10 +13057,10 @@ function sendRetry(msg) {
 // lane still shows every job whose run waits for a reply (never hidden behind a fold).
 var SEC_OPEN_QUERY = '(min-width: 840px) and (min-height: 1000px)';
 var _secMql = window.matchMedia ? window.matchMedia(SEC_OPEN_QUERY) : null;
-// Capacity v2 is taller (two measures, lanes, per-account bars per provider): it opens
-// on its own only where the board still starts on the first screen below it.
-var SEC_OPEN_QUERY_CAPACITY = '(min-width: 840px) and (min-height: 1400px)';
-var _secMqlCap = window.matchMedia ? window.matchMedia(SEC_OPEN_QUERY_CAPACITY) : null;
+// Capacity v2 unfolded is taller than any common first screen (two measures, lanes and
+// per-account bars per provider; at 1440×1400 it pushed the first board card to 1670px).
+// So it starts folded everywhere — its chips carry both measures as count and % — and
+// the reader's unfold choice persists per device (trinity chip confirm, fable/astra).
 var _secChoice = {};           // this page's choices, even when storage refuses the write
 var _cronLaneRevealed = false; // a deep link into a folded lane opens it for this page load
 var _cronFoldApplied = null;   // the fold the last CRON render used
@@ -13099,8 +13076,7 @@ function secSaved(sec) {
 function secIsOpen(sec) {
   if (sec === 'cron' && _cronLaneRevealed) return true;
   var saved = _secChoice[sec] !== undefined ? _secChoice[sec] : secSaved(sec);
-  var mql = sec === 'capacity' ? _secMqlCap : _secMql;
-  return secOpen(saved, !!(mql && mql.matches));
+  return secOpen(saved, sec === 'capacity' ? false : !!(_secMql && _secMql.matches));
 }
 // A render for a disclosure change: entering and leaving cards animate as usual; the
 // board's moves are the coordinator's, from the spots cached before the change.
@@ -13513,17 +13489,11 @@ async function loadCronJobs() {
   } catch (e) { console.error('Failed to load cron jobs', e); }
 }
 
-// ── LLM capacity v2 — two measures + a replayed forecast (2026-10-25) ──
-// The server (capacity-view.ts) counts each provider in 계정분 — max accounts'
-// worth, tier-weighted — and replays every account's resets in time order. Per
-// provider, top to bottom, the section answers:
-//   ① how much is left: 지금 (usable now: the smaller of the 5h and weekly
-//      remaining) and 이번 주 (weekly), each x / total 계정분 + %; a group with
-//      no 5h data (Codex) has the weekly measure only;
-//   ② what comes back: a 5h lane (0–5h, ● teal) and a weekly lane (0–7d,
-//      ◆ violet), each a step line of the projected measure; ■ = a block lifts.
-// Colour is the window (teal = now · 5h, violet = week · 7d); the tier is a dot
-// plus its text (x20 · $500). Times are the viewer's local clock.
+// ── LLM capacity v2 (2026-10-25) — the server (capacity-view.ts) counts each provider in
+// max accounts' worth (tier-weighted) and replays every account's resets in time order.
+// The section starts folded: one chip per provider with both windows as count and %.
+// Unfolded, each provider is a simplified card (renderCapacityGroup): a 5시간 bar and
+// an 일주일 bar, a muted disclosure line, and one timeline (● 5h reset, ◆ weekly reset).
 var CAP_TIERS = { 'claude-max-5x': { rank: 'low', short: 'x5', label: 'Max x5' }, 'claude-max-20x': { rank: 'high', short: 'x20', label: 'Max x20' }, 'chatgpt-pro-200': { rank: 'low', short: '$200', label: 'Pro ($200)' }, 'chatgpt-pro-500': { rank: 'high', short: '$500', label: 'Pro ($500)' } };
 var CAP_CAUSE = { '5h': { g: '●', label: '5h 리셋' }, '7d': { g: '◆', label: '주간 리셋' }, release: { g: '■', label: '차단 해제' } };
 var CAP_5H = 5 * 3600;
@@ -13550,20 +13520,30 @@ function capClockLabel(atSec, nowMs) {
 function capFmt1(x) {
   return (Math.round((Number(x) || 0) * 10) / 10).toFixed(1);
 }
-// Small gains are summed, never dropped — only their label shrinks.
+// Small gains are summed, never dropped — only their label shrinks. One phrase for the
+// chart key, the bars' next line and the chip tooltip (trinity mockup v5 r6, grok P1).
 function capGain(x) {
-  return x <= 0.0000001 ? '+0' : x < 0.05 ? '+0.1 미만' : '+' + capFmt1(x);
+  return x <= 0.0000001 ? '+0' : x < 0.05 ? '+0.1계정 미만' : '+' + capFmt1(x) + '계정';
 }
+// % from the raw ratio: 100% only when full (trinity simple r1, astra) — a count that
+// rounds to the total but is not full keeps two decimals instead (capCount).
 function capPct(v, t) {
-  return t > 0 ? Math.round((v / t) * 100) + '%' : '—';
+  if (!(t > 0)) return '—';
+  var p = (v / t) * 100;
+  return (p >= 99.95 ? 100 : Math.min(99, Math.round(p))) + '%';
+}
+// "2.37 / 2.4", never "2.4 / 2.4 99%".
+function capCount(v, t) {
+  return capFmt1(v) === capFmt1(t) && v < t - 0.005 ? (Math.round(v * 100) / 100).toFixed(2) : capFmt1(v);
 }
 // What raises a measure next: the first gain ≥ 0.05 inside the span, else the
 // small sum inside it and the next real gain after it.
 function capNextLine(g, key, span, nowSec, nowMs) {
   var evs = g.events || [];
+  // The chip tooltip speaks the card's words: 계정, 시간·분, 5시간/일주일 리셋 (trinity mockup v5 r7).
   var fmt = function(e) {
     var c = CAP_CAUSE[e.cause] || CAP_CAUSE.release;
-    return '다음 +' + capFmt1(e[key]) + ' · ' + capCountdown(e.at - nowSec) + ' 후 (' + capClockLabel(e.at, nowMs) + ') · ' + c.g + ' ' + e.account + ' ' + c.label;
+    return '다음 +' + capFmt1(e[key]) + '계정 · ' + capDur(e.at - nowSec) + ' 후 (' + capClockLabel(e.at, nowMs) + ') · ' + c.g + ' ' + e.account + ' ' + (CAP_WORD[e.cause] || CAP_WORD.release);
   };
   for (var i = 0; i < evs.length; i++) {
     if (evs[i].at <= nowSec + span && evs[i][key] >= 0.05) return fmt(evs[i]);
@@ -13574,233 +13554,143 @@ function capNextLine(g, key, span, nowSec, nowMs) {
     if (evs[j].at <= nowSec + span) small += evs[j][key];
     if (!later && evs[j][key] >= 0.05) later = evs[j];
   }
-  var head = (span <= CAP_5H ? '5h 안엔 ' : '7일 안엔 ') + (small > 0.0000001 ? capGain(small) + '(소폭)' : '늘어날 양 없음');
+  var head = (span <= CAP_5H ? '5시간 안엔 ' : '7일 안엔 ') + (small > 0.0005 ? capGain(small) : '늘어날 양 없음');
   return head + (later ? ' · ' + fmt(later) : '');
 }
-// Which window caps the usable accounts, and what the next 5h frees — from the
-// replay's per-cause gains, not week − now.
-function capWhyLine(g, nowSec) {
-  if (!g.has5h || !(g.total > 0)) return '';
-  var b = g.binding || { fiveHour: 0, weekly: 0 };
-  var live = b.fiveHour + b.weekly;
-  var by5h = 0;
-  var byRel = 0;
-  (g.events || []).forEach(function(e) {
-    if (e.at > nowSec + CAP_5H) return;
-    if (e.cause === '5h') by5h += e.dNow;
-    else if (e.cause === 'release') byRel += e.dNow;
-  });
-  var who = live === 0 ? '지금 쓸 수 있는 계정 없음'
-    : b.fiveHour === 0 ? '쓸 수 있는 ' + live + '계정 모두 <b>주간 한도가 상한</b>(5h 창은 여유)'
-    : b.weekly === 0 ? '쓸 수 있는 ' + live + '계정 모두 <b>5h 창이 상한</b>'
-    : '쓸 수 있는 ' + live + '계정 중 <b>5h가 상한 ' + b.fiveHour + '</b> · 주간이 상한 ' + b.weekly;
-  var free = '5시간 안에 5h 리셋으로 ' + (by5h >= 0.05 ? '+' + capFmt1(by5h) + '계정분 풀림' : capGain(by5h));
-  var rel = byRel >= 0.05 ? ' · 차단 해제로 +' + capFmt1(byRel) : '';
-  var unm = g.unmeasured5h ? ' · 5h 미측정 ' + g.unmeasured5h + '계정은 "지금"에서 제외' : '';
-  return '<div class="cap-why">' + who + ' — ' + free + rel + unm + '</div>';
+// Simplified card (2026-10-25, after the user found v2 unreadable; trinity simple r1):
+// per provider two bars — 5시간 (지금 쓸 수 있음) and 일주일 (이번 주 남음), each
+// "x / total 계정 · %" with one "다음 …" line — one muted disclosure line, and one
+// v1-style timeline where a 5h reset is a teal ● (label above) and a weekly reset a
+// violet ◆ (label below).
+var CAP_WORD = { '5h': '5시간 리셋', '7d': '일주일 리셋', release: '차단 해제' };
+function capDur(secs) {
+  var s = Math.max(0, Math.floor(Number(secs) || 0));
+  var m = Math.floor(s / 60);
+  var h = Math.floor(m / 60);
+  if (h >= 24) return Math.floor(h / 24) + '일 ' + (h % 24) + '시간';
+  if (h) return h + '시간 ' + (m % 60) + '분';
+  return Math.max(1, m) + '분';
 }
-// ③ One cell per max account: violet = this week, teal inside = now.
-function capUnitBar(g, width) {
-  var h = 22;
-  var total = Math.max(g.total, 0.000000001);
-  var cw = width / total;
-  var whole = Math.floor(g.total + 0.000000001);
-  var main = g.has5h ? g.now : g.week;
-  var label = (g.has5h ? '지금 ' + capFmt1(g.now) + ', ' : '') + '이번 주 ' + capFmt1(g.week) + ' / ' + capFmt1(g.total) + ' 계정분';
-  var s = '<svg class="cap-unitbar" width="' + width + '" height="' + (h + 14) + '" viewBox="0 0 ' + width + ' ' + (h + 14) + '" role="img" aria-label="' + escAttr(label) + '">';
-  s += '<rect class="cap-u-bg" width="' + width + '" height="' + h + '" rx="5"/>';
-  s += '<rect class="cap-u-wk" width="' + (g.week * cw).toFixed(1) + '" height="' + h + '" rx="5"/>';
-  s += '<rect class="' + (g.has5h ? 'cap-u-now' : 'cap-u-wk-solid') + '" y="5" width="' + (main * cw).toFixed(1) + '" height="' + (h - 10) + '" rx="3"/>';
-  for (var i = 1; i <= whole && i * cw < width - 1; i++) {
-    s += '<line class="cap-u-sep" x1="' + (i * cw).toFixed(1) + '" x2="' + (i * cw).toFixed(1) + '" y2="' + h + '"/>';
+// The first gain >= 0.05 within 7 days that raises this bar (key: dNow / dWeek), or null.
+function capNextEvent(g, key, nowSec) {
+  var evs = g.events || [];
+  for (var i = 0; i < evs.length; i++) {
+    if (evs[i].at > nowSec + CAP_7D) break;
+    if (evs[i][key] >= 0.05) return evs[i];
   }
-  var step = whole > 10 ? 5 : 1;
-  for (var j = 0; j <= whole; j += step) {
-    if (j * cw < width - 34) s += '<text class="cap-t-muted" x="' + Math.max(4, j * cw).toFixed(1) + '" y="' + (h + 12) + '" text-anchor="middle">' + j + '</text>';
+  return null;
+}
+// Two tokens a reader needs, how much and when: "다음 +1.0계정 · 1시간 23분 후" (trinity
+// mockup v5, grok P1). The bar's own reset is implied by the bar; any other cause is named.
+function capNextShort(g, key, nowSec) {
+  var e = capNextEvent(g, key, nowSec);
+  if (!e) {
+    var small = (g.events || []).filter(function(x) { return x.at <= nowSec + CAP_7D; }).reduce(function(t, x) { return t + x[key]; }, 0);
+    return small > 0.0005 ? '7일 안 ' + capGain(small) + ' 회복' : '7일 안에 늘어날 양 없음';
   }
-  s += '<text class="cap-t-strong" x="' + (width - 2) + '" y="' + (h + 12) + '" text-anchor="end">' + capFmt1(g.total) + '</text>';
-  return s + '</svg>';
+  var gain = '다음 +' + capFmt1(e[key]) + '계정 · ' + capDur(e.at - nowSec) + ' 후';
+  // The 5시간 bar rising at a weekly reset is held down by the weekly limit (trinity
+  // simple r2, fable): say so, so it never contradicts the ● key.
+  if (key === 'dNow' && e.cause === '7d') return '일주일 한도에 묶임 · ' + gain;
+  var own = key === 'dNow' ? e.cause === '5h' : e.cause === '7d';
+  return own ? gain : gain + ' · ' + (CAP_WORD[e.cause] || '');
 }
-// Per account: violet height = this week, teal = now, a tag for the block,
-// "~" for an estimate; an excluded account is an outlined, labelled cell.
-function capUnits(g, width, nowSec) {
-  var list = (g.units || []).slice().sort(function(a, b) {
-    return (b.counted - a.counted) || (b.now - a.now) || (b.week - a.week);
-  });
-  var n = Math.max(1, list.length);
-  var gap = 6;
-  var bw = Math.max(14, Math.min(26, (width - gap * (n - 1)) / n));
-  var bh = 44;
-  // Every account gets a cell: what does not fit on one row wraps to the next.
-  var cols = Math.max(1, Math.min(n, Math.floor((width + gap) / (bw + gap))));
-  var rowH = bh + 34;
-  var rowsN = Math.ceil(n / cols);
-  var s = '<svg class="cap-units" width="' + width + '" height="' + (rowH * rowsN) + '" viewBox="0 0 ' + width + ' ' + (rowH * rowsN) + '" role="img" aria-label="계정별 잔여 ' + n + '계정">';
-  list.forEach(function(u, i) {
-    var X = (i % cols) * (bw + gap);
-    var Y0 = Math.floor(i / cols) * rowH;
-    s += '<g transform="translate(0 ' + Y0 + ')">';
-    var tier = CAP_TIERS[u.tier];
-    var tip = u.name + ' · ' + (tier ? tier.label : '티어 미지정');
-    if (!u.counted) {
-      var why = u.excluded === 'held' ? '보류' : u.excluded === 'unknownTier' ? '티어?' : '?';
-      tip += ' · ' + (u.excluded === 'held' ? '보류(복귀 시각 모름) · 합계 밖' : u.excluded === 'unknownTier' ? '티어 미지정 · 합계 밖' : '주간 측정 없음 · 합계 밖');
-      s += '<rect class="cap-b-out" x="' + (X + 0.5).toFixed(1) + '" y="2.5" width="' + (bw - 1).toFixed(1) + '" height="' + (bh - 1) + '" rx="3"/>';
-      s += '<text class="cap-t-muted" x="' + (X + bw / 2).toFixed(1) + '" y="' + (bh / 2 + 6) + '" text-anchor="middle">' + why + '</text>';
-    } else {
-      var v = g.has5h ? u.now : u.week;
-      tip += (g.has5h ? ' · 지금 ' + Math.round(u.now * 100) + '%' : '') + ' · 이번 주 ' + Math.round(u.week * 100) + '%';
-      if (u.returnAt) tip += ' · 복귀 ' + capCountdown(u.returnAt - nowSec) + ' 후';
-      if (u.estimated) tip += ' · 추정(리셋 후 미측정)';
-      s += '<rect class="cap-b-bg" x="' + X.toFixed(1) + '" y="2" width="' + bw.toFixed(1) + '" height="' + bh + '" rx="3"/>';
-      s += '<rect class="cap-b-wk" x="' + X.toFixed(1) + '" y="' + (2 + bh * (1 - u.week)).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + (bh * u.week).toFixed(1) + '" rx="3"/>';
-      s += '<rect class="' + (g.has5h ? 'cap-b-now' : 'cap-b-wk-solid') + '" x="' + (X + 4).toFixed(1) + '" y="' + (2 + bh * (1 - v)).toFixed(1) + '" width="' + Math.max(2, bw - 8).toFixed(1) + '" height="' + (bh * v).toFixed(1) + '" rx="2"/>';
-      var b = u.blocks || {};
-      var tag = b.weekly ? '주간' : b.fiveHour ? '5h' : b.cooldownUntil ? '쿨' : b.scopedUntil ? '모델' : '';
-      if (tag) s += '<text class="cap-b-tag" x="' + (X + bw / 2).toFixed(1) + '" y="' + (bh / 2 + 6) + '" text-anchor="middle">' + tag + '</text>';
-      if (u.estimated) s += '<text class="cap-b-est" x="' + (X + bw / 2).toFixed(1) + '" y="12" text-anchor="middle">~</text>';
-    }
-    s += '<circle class="cap-dot ' + (tier ? 'tier-' + tier.rank : 'tier-none') + '" cx="' + (X + bw / 2).toFixed(1) + '" cy="' + (bh + 9) + '" r="2.6"/>';
-    s += '<text class="cap-t-name" x="' + (X + bw / 2).toFixed(1) + '" y="' + (bh + 22) + '" text-anchor="middle">' + esc(u.name) + '</text>';
-    s += '<title>' + esc(tip) + '</title></g>';
-  });
-  return s + '</svg>';
+function capBarRow(g, cls, label, sub, v, key, nowSec) {
+  var p = g.total > 0 ? Math.max(0, Math.min(1, v / g.total)) : 0;
+  var said = label + ' ' + capCount(v, g.total) + ' / ' + capFmt1(g.total) + ' 계정, ' + capPct(v, g.total);
+  var e = capNextEvent(g, key, nowSec);
+  var who = e ? ' title="' + escAttr((CAP_WORD[e.cause] || '') + ' · ' + e.account) + '"' : '';
+  return '<div class="cap-bar-row is-' + cls + '">'
+    + '<div class="cap-bar-lbl">' + label + '<i>' + sub + '</i></div>'
+    + '<div class="cap-bar" role="img" aria-label="' + escAttr(said) + '"><span style="width:' + (p * 100).toFixed(1) + '%"></span></div>'
+    + '<div class="cap-bar-val"><b>' + capCount(v, g.total) + '</b> / ' + capFmt1(g.total) + ' 계정 <em>' + capPct(v, g.total) + '</em></div>'
+    + '<div class="cap-bar-next"' + who + '>' + esc(capNextShort(g, key, nowSec)) + '</div>'
+    + '</div>';
 }
-// ②/④⑤ A forecast lane: a step line of the projected measure from now, one
-// glyph per event (● 5h · ◆ weekly · ■ block lifts; hollow = frees nothing),
-// labelled chips for the gains in up to three rows, the rest summed.
-function capLane(g, o, nowSec) {
-  var width = o.width;
-  var band = 3 * 15 + 4;
-  var h = band + 72;
-  var top = band + 6;
-  var axisY = h - 18;
-  var total = Math.max(g.total, 0.000000001);
-  var x = function(t) { return Math.max(0, Math.min(width, ((t - nowSec) / o.span) * width)); };
-  var y = function(v) { return axisY - 4 - (v / total) * (axisY - top - 8); };
-  var key = o.key;
-  var evs = (g.events || []).filter(function(e) { return e.at <= nowSec + o.span; });
-  var s = '<svg class="cap-lane ' + o.cls + '" width="' + width + '" height="' + h + '" viewBox="0 0 ' + width + ' ' + h + '" role="img" aria-label="' + escAttr(o.aria) + '">';
-  o.ticks.forEach(function(tk) {
-    var X = x(nowSec + tk.at);
-    s += '<line class="cap-l-grid" x1="' + X.toFixed(1) + '" x2="' + X.toFixed(1) + '" y1="' + top + '" y2="' + axisY + '"/>';
-    s += '<text class="cap-t-muted" x="' + Math.max(10, Math.min(width - 10, X)).toFixed(1) + '" y="' + (h - 4) + '" text-anchor="middle">' + tk.label + '</text>';
-  });
-  s += '<line class="cap-l-axis" x2="' + width + '" y1="' + axisY + '" y2="' + axisY + '"/>';
-  var v = o.start;
-  var pts = [[0, y(v)]];
-  evs.forEach(function(e) {
-    var d = e[key];
-    if (Math.abs(d) < 0.000000001) return;
-    var X = x(e.at);
-    pts.push([X, y(v)]);
-    v += d;
-    pts.push([X, y(v)]);
-  });
-  pts.push([width, y(v)]);
-  var path = pts.map(function(p) { return p[0].toFixed(1) + ',' + p[1].toFixed(1); });
-  s += '<path class="cap-l-area" d="M0,' + axisY + ' L' + path.join(' L') + ' L' + width + ',' + axisY + ' Z"/>';
-  s += '<path class="cap-l-line" d="M' + path.join(' L') + '"/>';
-  s += '<text class="cap-l-val" x="4" y="' + (y(o.start) - 5).toFixed(1) + '">' + capFmt1(o.start) + '</text>';
-  s += '<text class="cap-l-val" x="' + (width - 4) + '" y="' + Math.min(axisY - 4, y(v) + 14).toFixed(1) + '" text-anchor="end">→ ' + capFmt1(v) + ' 계정분</text>';
-  var rows = [];
-  var hidden = 0;
-  var hiddenGain = 0;
-  var vv = o.start;
-  evs.forEach(function(e) {
-    var d = e[key];
-    vv += d;
-    var filled = Math.abs(d) >= 0.005;
-    if (!filled && e.cause !== o.zeroCause) return;
-    var X = x(e.at);
-    var Y = y(vv);
-    var cls = 'cap-l-mk is-' + (e.cause === 'release' ? 'rel' : e.cause) + (filled ? '' : ' is-hollow');
-    if (e.cause === '5h') s += '<circle class="' + cls + '" cx="' + X.toFixed(1) + '" cy="' + Y.toFixed(1) + '" r="4.5"/>';
-    else if (e.cause === '7d') s += '<rect class="' + cls + '" x="' + (X - 4.3).toFixed(1) + '" y="' + (Y - 4.3).toFixed(1) + '" width="8.6" height="8.6" transform="rotate(45 ' + X.toFixed(1) + ' ' + Y.toFixed(1) + ')"/>';
-    else s += '<rect class="' + cls + '" x="' + (X - 4).toFixed(1) + '" y="' + (Y - 4).toFixed(1) + '" width="8" height="8"/>';
-    if (!filled) return;
-    var c = CAP_CAUSE[e.cause] || CAP_CAUSE.release;
-    var tier = CAP_TIERS[e.tier];
-    // A long label (a duplicated local name keeps its domain) is cut to fit the lane.
-    var name = e.account.length > 14 ? e.account.slice(0, 13) + '…' : e.account;
-    var text = c.g + ' ' + name + ' ' + (tier ? tier.short + ' ' : '') + '+' + capFmt1(d);
-    var cw = Math.min(width, text.length * 6 + 18);
-    var cx = Math.max(0, Math.min(X - 1, width - cw));
-    var row = 0;
-    while (rows[row] != null && rows[row] > cx - 2) row++;
-    if (row > 2) {
-      hidden++;
-      hiddenGain += d;
-      return;
-    }
-    rows[row] = cx + cw;
-    var cy = 2 + row * 15;
-    s += '<line class="cap-l-lead" x1="' + X.toFixed(1) + '" x2="' + X.toFixed(1) + '" y1="' + (cy + 13) + '" y2="' + (Y - 5).toFixed(1) + '"/>';
-    s += '<g class="cap-l-chip"><rect x="' + cx.toFixed(1) + '" y="' + cy + '" width="' + cw + '" height="13" rx="6.5"/>';
-    s += '<circle class="cap-dot ' + (tier ? 'tier-' + tier.rank : 'tier-none') + '" cx="' + (cx + 7).toFixed(1) + '" cy="' + (cy + 6.5) + '" r="2.6"/>';
-    s += '<text x="' + (cx + 13).toFixed(1) + '" y="' + (cy + 10) + '">' + esc(text) + '</text>';
-    s += '<title>' + esc(e.account + ' · ' + c.label + ' · ' + capCountdown(e.at - nowSec) + ' 후') + '</title></g>';
-  });
-  if (hidden) s += '<text class="cap-t-muted" x="' + (width - 2) + '" y="' + (band + 2) + '" text-anchor="end">외 ' + hidden + '건 +' + capFmt1(hiddenGain) + '</text>';
-  if (!evs.some(function(e) { return Math.abs(e[key]) >= 0.005; })) s += '<text class="cap-t-muted" x="' + (width / 2) + '" y="' + (top + 4) + '" text-anchor="middle">' + o.empty + '</text>';
-  return s + '</svg>';
-}
-// The lane's gain, by cause: "+1.9 계정분 = ◆ 주간 리셋 +1.9 (3건)".
-function capDecomp(g, span, key, nowSec) {
-  var by = { '5h': [0, 0, 0], '7d': [0, 0, 0], release: [0, 0, 0] };
-  (g.events || []).forEach(function(e) {
-    if (e.at > nowSec + span || !by[e.cause]) return;
-    if (key === 'dWeek' && e.cause !== '7d') return;
-    var b = by[e.cause];
-    b[0] += e[key];
-    b[1]++;
-    if (e[key] < 0.005) b[2]++;
-  });
-  var total = by['5h'][0] + by['7d'][0] + by.release[0];
-  var parts = [];
-  ['5h', '7d', 'release'].forEach(function(c) {
-    var b = by[c];
-    if (!b[1]) return;
-    parts.push(CAP_CAUSE[c].g + ' ' + CAP_CAUSE[c].label + ' ' + capGain(b[0]) + ' (' + b[1] + '건' + (b[2] ? ', ' + b[2] + '건은 변화 없음' : '') + ')');
-  });
-  return '<b>' + capGain(total) + ' 계정분</b> = ' + (parts.join(' · ') || '예정된 리셋 없음');
-}
-// Blocks, exclusions, estimates and freshness — each counted, never folded in.
-function capChips(g, nowSec) {
-  var units = g.units || [];
-  var n = function(f) { return units.filter(function(u) { return u.counted && f(u.blocks || {}); }).length; };
-  var out = [];
-  var wk = n(function(b) { return b.weekly; });
-  var cool = n(function(b) { return b.cooldownUntil; });
-  var h5 = n(function(b) { return b.fiveHour; });
-  var sc = n(function(b) { return b.scopedUntil; });
+// One muted line, only what is non-zero: how many accounts the bars count, how many are
+// blocked right now, which are left out and why, estimates, and how old the oldest
+// llmux reading is (the fetch time sits in the section head).
+function capDisclosure(g, nowSec) {
+  var u = g.units || [];
+  var blocked = u.filter(function(x) { return x.counted && x.blocked; }).length;
   var ex = g.excluded || {};
-  if (wk) out.push('<span class="cap-chip2 is-block">주간 한도 ' + wk + '</span>');
-  if (h5) out.push('<span class="cap-chip2 is-block">5h 한도 ' + h5 + '</span>');
-  if (cool) out.push('<span class="cap-chip2 is-block">쿨다운 ' + cool + '</span>');
-  if (sc) out.push('<span class="cap-chip2 is-block">모델 한도 ' + sc + '</span>');
-  if (ex.held) out.push('<span class="cap-chip2" title="일시정지 · 인증 실패 · 복귀 시각을 모르는 차단">보류 ' + ex.held + ' · 제외</span>');
-  if (ex.unknownTier) out.push('<span class="cap-chip2 is-warn" title="SOMA_LLMUX_ACCOUNT_TIERS에 티어를 지정하면 합계에 들어갑니다">티어 미지정 ' + ex.unknownTier + ' · 제외</span>');
-  if (ex.noMeasure) out.push('<span class="cap-chip2 is-warn">주간 측정 없음 ' + ex.noMeasure + ' · 제외</span>');
-  if (g.estimated) out.push('<span class="cap-chip2 is-warn" title="리셋이 지났는데 아직 다시 측정되지 않아 가득으로 계산">추정 ' + g.estimated + ' (리셋 후 미측정)</span>');
-  if (g.oldestRefreshAt) out.push('<span class="cap-chip2">가장 오래된 측정 ' + esc(capCountdown(nowSec - g.oldestRefreshAt)) + ' 전</span>');
-  return out.length ? '<div class="cap-chips">' + out.join('') + '</div>' : '';
+  var why = [];
+  if (ex.held) why.push('보류');
+  if (ex.unknownTier) why.push('티어 미지정');
+  if (ex.noMeasure) why.push('측정 없음');
+  var exN = (ex.held || 0) + (ex.unknownTier || 0) + (ex.noMeasure || 0);
+  // Short enough for a phone: "16/17 반영(차단 6 포함) · 제외 1(보류) · 측정 4시간 전".
+  // "(차단 6 포함)": the blocked accounts are inside the counted ones (trinity mockup v5, fable P2).
+  var parts = [g.countedAccounts + '/' + (g.accountCount || u.length) + ' 반영' + (blocked ? '(차단 ' + blocked + ' 포함)' : '')];
+  if (exN) parts.push('제외 ' + exN + '(' + why.join('·') + ')');
+  if (g.estimated) parts.push('추정 ' + g.estimated);
+  if (g.unmeasured5h) parts.push('5시간 측정 없음 ' + g.unmeasured5h);
+  var html = esc(parts.join(' · '));
+  var age = g.oldestRefreshAt ? nowSec - g.oldestRefreshAt : 0;
+  // Over a day old, the reading that the bars rest on is flagged (trinity simple r2, fable).
+  if (age > 86400) html += ' · <b class="cap-stale">⚠ 측정 ' + esc(capDur(age).split(' ')[0]) + ' 전</b>';
+  else if (age > 3600) html += ' · ' + esc('측정 ' + capDur(age).split(' ')[0] + ' 전');
+  return html;
 }
-// Narrow screens: the next six refills as a list — now and week apart.
-function capRefillList(g, nowSec) {
-  var top = (g.events || []).filter(function(e) { return e.at <= nowSec + CAP_7D && (e.dNow >= 0.05 || e.dWeek >= 0.05); }).slice(0, 6);
-  if (!top.length) {
-    var small = (g.events || []).filter(function(e) { return e.at <= nowSec + CAP_7D; }).reduce(function(t, e) { return t + Math.max(e.dNow, e.dWeek); }, 0);
-    return '<div class="cap-why">7일 안엔 ' + (small > 0.0000001 ? capGain(small) + '(소폭)' : '늘어날 양 없음') + '</div>';
+// now → 24h takes 55% of the width (0·1·3·6·12·24h), then days to 7d.
+function capAx(secs) {
+  var s = Number(secs) || 0;
+  if (s <= 0) return 0;
+  if (s >= CAP_7D) return 1;
+  if (s <= 86400) {
+    var st = [0, 3600, 10800, 21600, 43200, 86400];
+    for (var i = 1; i < st.length; i++) {
+      if (s <= st[i]) return ((i - 1) + (s - st[i - 1]) / (st[i] - st[i - 1])) * 0.11;
+    }
   }
-  return '<ul class="cap-evlist is-short">' + top.map(function(e) {
-    var c = CAP_CAUSE[e.cause] || CAP_CAUSE.release;
-    var d = (g.has5h && e.dNow >= 0.005 ? '<b class="is-now">지금 ' + capGain(e.dNow) + '</b> ' : '') + (e.dWeek >= 0.005 ? '<b class="is-wk">주간 ' + capGain(e.dWeek) + '</b>' : '');
-    return '<li><span>' + esc(capCountdown(e.at - nowSec)) + '</span><span>' + c.g + '</span><span>' + esc(e.account) + ' · ' + c.label + '</span><span>' + d + '</span></li>';
-  }).join('') + '</ul>';
+  return 0.55 + ((s - 86400) / (6 * 86400)) * 0.45;
 }
-// Collapsed (SSOT 2026-10-24): one chip per provider — both measures in max
-// accounts, a state glyph (never colour alone), the full sentence as its name.
+// One timeline: refills that raise a measure (5h by "now", weekly by "this week");
+// same-type refills closer than a label merge into one marker with a short span bar.
+function capTimeline(g, W, nowSec) {
+  var pad = 16;
+  var up = (g.events || []).some(function(e) { return e.cause !== '7d' && e.at <= nowSec + CAP_7D && e.dNow >= 0.05; });
+  // Room above the axis only when a 5h refill label needs it.
+  var y0 = up ? 46 : 20;
+  var h = y0 + 54;
+  var X = function(at) { return pad + capAx(at - nowSec) * (W - 2 * pad); };
+  var pts = [];
+  (g.events || []).forEach(function(e) {
+    if (e.at > nowSec + CAP_7D) return;
+    var d = e.cause === '7d' ? e.dWeek : e.dNow;
+    if (d < 0.05) return;
+    pts.push({ x: X(e.at), d: d, c: e.cause === '7d' ? 'wk' : 'h5', a: e.account, at: e.at });
+  });
+  if (!pts.length) return '';
+  var LW = W < 420 ? 46 : 64; // a label is at most "+10.3" (~40px): merge centres closer than that
+  var buckets = [];
+  pts.forEach(function(p) {
+    var same = buckets.filter(function(q) { return q.c === p.c; });
+    var b = same[same.length - 1];
+    if (b && p.x - (b.x0 + b.x1) / 2 < LW) { b.d += p.d; b.n++; b.x1 = p.x; b.names.push(p.a); }
+    else buckets.push({ x0: p.x, x1: p.x, d: p.d, c: p.c, n: 1, names: [p.a], at: p.at });
+  });
+  var s = '<svg class="cap-tl" width="' + W + '" height="' + h + '" viewBox="0 0 ' + W + ' ' + h + '" role="img" aria-label="앞으로 7일 동안 돌아오는 계정">';
+  [[0, '지금'], [3600, '1h'], [21600, '6h'], [86400, '24h'], [3 * 86400, '3d'], [5 * 86400, '5d'], [7 * 86400, '7d']].forEach(function(t) {
+    var x = pad + capAx(t[0]) * (W - 2 * pad);
+    s += '<line class="cap-tl-tick" x1="' + x.toFixed(1) + '" x2="' + x.toFixed(1) + '" y1="' + (y0 - 6) + '" y2="' + (y0 + 6) + '"/>';
+    s += '<text class="cap-tl-ax" x="' + x.toFixed(1) + '" y="' + (h - 4) + '" text-anchor="middle">' + t[1] + '</text>';
+  });
+  s += '<line class="cap-tl-axis" x1="' + pad + '" x2="' + (W - pad) + '" y1="' + y0 + '" y2="' + y0 + '"/>';
+  buckets.forEach(function(b) {
+    var x = (b.x0 + b.x1) / 2;
+    var cls = 'is-' + b.c;
+    s += '<g class="cap-tl-mk ' + cls + '">';
+    if (b.x1 - b.x0 > 2) s += '<line class="cap-tl-span" x1="' + b.x0.toFixed(1) + '" x2="' + b.x1.toFixed(1) + '" y1="' + y0 + '" y2="' + y0 + '"/>';
+    if (b.c === 'h5') s += '<circle cx="' + x.toFixed(1) + '" cy="' + y0 + '" r="6.5"/>';
+    else s += '<rect x="' + (x - 6).toFixed(1) + '" y="' + (y0 - 6) + '" width="12" height="12" transform="rotate(45 ' + x.toFixed(1) + ' ' + y0 + ')"/>';
+    var tx = Math.max(pad + 14, Math.min(W - pad - 14, x));
+    s += '<text x="' + tx.toFixed(1) + '" y="' + (b.c === 'h5' ? y0 - 14 : y0 + 24) + '" text-anchor="middle">+' + capFmt1(b.d) + '</text>';
+    s += '<title>' + esc((b.c === 'h5' ? '5시간' : '일주일') + ' +' + capFmt1(b.d) + '계정 · ' + capDur(b.at - nowSec) + ' 후부터 · ' + b.names.join(', ')) + '</title></g>';
+  });
+  return s + '</svg>';
+}
+
 // The view is fetched every 60 s but painted every 30 s: an event whose time has come
 // is folded into the measures it moved, so nothing past reads as "to come".
 function capAdvance(g, nowSec) {
@@ -13827,106 +13717,67 @@ function renderCapacitySummary(v, nowMs) {
     var state = g.state || 'unknown';
     var known = g.total > 0;
     var t = capFmt1(g.total);
-    // Phones drop the words and the total (.cap-chip-k / .cap-chip-of): "Claude 6.2 · 6.3",
-    // the colours tell the window; the full sentence stays the chip's name and tooltip.
+    // Both measures as max accounts' worth of the total and % (requirement 1a, also when
+    // folded, also on phones — trinity mockup v5, grok P1):
+    // "Claude 지금 5.2/16.0 33% · 주 5.6/16.0 35%". The folded row wraps rather than cut.
+    var meas = function(cls, word, v, withTotal) {
+      return '<span class="cap-m ' + cls + '"><i class="cap-chip-k">' + word + ' </i><b>' + capCount(v, g.total) + '</b>'
+        + (withTotal ? '<i class="cap-chip-of">/' + t + '</i>' : '') + ' <em>' + capPct(v, g.total) + '</em></span>';
+    };
     var nums = !known ? '<b>—</b>'
-      : (g.has5h ? '<i class="cap-chip-k">지금 </i><b class="is-now">' + capFmt1(g.now) + '</b> · ' : '') + '<i class="cap-chip-k">주 </i><b class="is-wk">' + capFmt1(g.week) + '</b><i class="cap-chip-of"> /' + t + '</i>';
+      : g.has5h ? meas('is-now', '지금', g.now, true) + ' · ' + meas('is-wk', '주', g.week, true)
+      : meas('is-wk', '주', g.week, true);
+    // The folded chip is the default view, so it carries what the card's disclosure line
+    // flags (trinity mockup v5, astra P1): a reading over a day old, and a pool where a
+    // fifth or more of the accounts is left out of the total.
+    var age = g.oldestRefreshAt ? nowSec - g.oldestRefreshAt : 0;
+    var stale = age > 86400 ? capDur(age).split(' ')[0] + ' 전' : '';
+    var part = g.accountCount && g.countedAccounts < g.accountCount * 0.8 ? g.countedAccounts + '/' + g.accountCount + ' 반영' : '';
+    var flagText = [stale ? '⚠ ' + stale : '', part].filter(Boolean).join(' · ');
+    var flag = flagText ? ' <i class="cap-chip-flag">' + esc(flagText) + '</i>' : '';
     var said = !known ? '계산 불가 — 셀 수 있는 계정 없음'
-      : (g.has5h ? '지금 ' + capFmt1(g.now) + '/' + t + ' 계정분 (' + capPct(g.now, g.total) + '), ' : '') + '이번 주 ' + capFmt1(g.week) + '/' + t + ' 계정분 (' + capPct(g.week, g.total) + ')';
+      : (g.has5h ? '5시간(지금) ' + capCount(g.now, g.total) + '/' + t + ' 계정 (' + capPct(g.now, g.total) + '), ' : '') + '일주일 ' + capCount(g.week, g.total) + '/' + t + ' 계정 (' + capPct(g.week, g.total) + ')';
+    said += [stale ? '측정 ' + stale : '', part].filter(Boolean).map(function(x) { return ' · ' + x; }).join('');
     var next = known ? capNextLine(g, g.has5h ? 'dNow' : 'dWeek', g.has5h ? CAP_5H : CAP_7D, nowSec, nowMs) : '';
     var lead = said + (WORD[state] || '') + (next ? ' — ' + next : '');
-    return '<span class="cap-chip is-' + state + '" title="' + escAttr(next || said) + '" aria-label="' + escAttr(g.label + ' ' + lead) + '">'
-      + (GLYPH[state] || '') + esc(g.label) + ' ' + nums + '</span>';
+    return '<span class="cap-chip is-' + state + '" title="' + escAttr(lead) + '" aria-label="' + escAttr(g.label + ' ' + lead) + '">'
+      + (GLYPH[state] || '') + esc(g.label) + ' ' + nums + flag + '</span>';
   }).join('') + '</div>';
 }
 function renderCapacityGroup(g, nowMs, width) {
   var nowSec = nowMs / 1000;
-  var W = Math.max(280, (Number(width) || 900) - 32);
+  var W = Math.max(260, (Number(width) || 900) - 36);
   var narrow = W < 600;
-  var leftW = narrow ? W : Math.min(470, Math.floor(W * 0.46));
-  var rightW = narrow ? W : W - leftW - 24;
-  var laneW = narrow ? W : W - 140;
-  var tc = {};
-  (g.units || []).forEach(function(u) {
-    var t = CAP_TIERS[u.tier];
-    var k = t ? t.short : '미지정';
-    tc[k] = (tc[k] || 0) + 1;
-  });
-  var mix = Object.keys(tc).map(function(k) { return k + ' ' + tc[k]; }).join(' · ');
   var h = '<section class="cap-prov is-' + esc(g.state || 'unknown') + (narrow ? ' is-narrow' : '') + '" data-group="' + escAttr(g.group) + '" aria-label="' + escAttr(g.label + ' 가용량') + '">'
-    + '<div class="cap-pname"><b>' + esc(g.label) + '</b><span>' + g.accountCount + '계정 (' + esc(mix) + ') · 계산 대상 ' + g.countedAccounts + '계정 = ' + capFmt1(g.total) + '계정분</span></div>';
-  if (!(g.total > 0)) {
-    var ex = g.excluded || {};
-    return h + '<div class="cap-why">계산 불가 — 셀 수 있는 계정이 없음 (티어 미지정 ' + (ex.unknownTier || 0) + ' · 보류 ' + (ex.held || 0) + ' · 주간 측정 없음 ' + (ex.noMeasure || 0) + ')</div></section>';
+    + '<div class="cap-pname">' + esc(g.label) + '</div>'
+    + '<div class="cap-disc">' + capDisclosure(g, nowSec) + '</div>';
+  if (!(g.total > 0)) return h + '<div class="cap-bar-next">계산 불가 — 셀 수 있는 계정이 없음</div></section>';
+  if (g.has5h) h += capBarRow(g, 'h5', '5시간', '지금 쓸 수 있음', g.now, 'dNow', nowSec);
+  h += capBarRow(g, 'wk', '일주일', '이번 주 남음', g.week, 'dWeek', nowSec);
+  var tl = capTimeline(g, W, nowSec);
+  if (tl) {
+    // ● raises the 5시간 bar (a 5h reset, or a block lifting), ◆ the 일주일 bar — same colours as the bars.
+    // With no 5h gain in 7 days the ● would never appear — say so instead of a dead key.
+    var soon5 = (g.events || []).filter(function(e) { return e.cause !== '7d' && e.at <= nowSec + CAP_7D; });
+    var any5 = soon5.some(function(e) { return e.dNow >= 0.05; });
+    // Gains under the marker threshold are small, not nothing — the same words as the bars'
+    // next line and the chip tooltip (trinity mockup v5 r5, fable P1).
+    var sum5 = soon5.reduce(function(t, e) { return t + e.dNow; }, 0);
+    var note5 = any5 ? '' : sum5 > 0.0005 ? ' — 7일 안 ' + capGain(sum5) : ' — 7일 안에 늘어날 양 없음';
+    var key5 = g.has5h ? '<span><i class="is-h5">●</i> 5시간 리셋' + note5 + '</span>' : '';
+    h += '<div class="cap-tl-wrap"><div class="cap-tl-h">' + key5 + '<span><i class="is-wk">◆</i> 일주일 리셋</span><span class="cap-tl-h-note">앞으로 7일 동안 돌아오는 양(계정)</span></div>' + tl + '</div>';
   }
-  var t = capFmt1(g.total);
-  // The grid's first column is the width the left charts are drawn at — one number.
-  h += '<div class="cap-top"' + (narrow ? '' : ' style="grid-template-columns:' + leftW + 'px minmax(0, 1fr)"') + '><div class="cap-left">';
-  if (g.has5h) {
-    h += '<div class="cap-meas is-now"><div class="cap-k">지금<i>5h·주간 중 작은 쪽</i></div><div><span class="cap-big">' + capFmt1(g.now) + '</span><span class="cap-of">/ ' + t + ' 계정분</span><span class="cap-pct2">' + capPct(g.now, g.total) + '</span>'
-      + '<span class="cap-nx" role="timer">' + esc(capNextLine(g, 'dNow', CAP_5H, nowSec, nowMs)) + '</span></div></div>';
-  }
-  var extra = g.excluded && g.excluded.unknownTier ? '<span class="cap-extra">+ 티어 미지정 ' + g.excluded.unknownTier + '계정 (가중 불명, 합계 밖)</span>' : '';
-  h += '<div class="cap-meas is-wk"><div class="cap-k">이번 주<i>7d 창</i></div><div><span class="cap-big">' + capFmt1(g.week) + '</span><span class="cap-of">/ ' + t + ' 계정분</span><span class="cap-pct2">' + capPct(g.week, g.total) + '</span>' + extra
-    + '<span class="cap-nx">' + esc(capNextLine(g, 'dWeek', CAP_7D, nowSec, nowMs)) + '</span></div></div>';
-  h += capWhyLine(g, nowSec);
-  h += '<div class="cap-subt"><span>한 칸 = 최대 계정 1개</span><span class="cap-muted">' + (g.has5h ? '청록 = 지금 · 보라 = 이번 주' : '보라 = 이번 주') + '</span></div>' + capUnitBar(g, leftW - 4);
-  h += capChips(g, nowSec);
-  h += '</div><div class="cap-right">';
-  var units = capUnits(g, rightW, nowSec);
-  h += narrow ? '<details class="cap-more2" data-cap-key="' + escAttr(g.group + ':units') + '"><summary>계정별 ' + (g.units || []).length + '</summary>' + units + '</details>'
-    : '<div class="cap-subt"><span>계정별 (지금 많은 순)</span><span class="cap-muted">보라 높이 = 주간 잔여 · 청록 = 지금 · ~ = 추정 · 점 = 티어 · 점선 칸 = 합계 밖</span></div>' + units;
-  h += '</div></div><div class="cap-fc">';
-  var ex2 = g.excluded || {};
-  var outNote = ex2.held || ex2.unknownTier || ex2.noMeasure ? ' · 합계 밖 ' + ((ex2.held || 0) + (ex2.unknownTier || 0) + (ex2.noMeasure || 0)) + '계정은 계산하지 않음' : '';
-  if (narrow) {
-    h += '<div class="cap-subt"><span>다음 리필 (상위 6)</span></div>' + capRefillList(g, nowSec)
-      + '<div class="cap-decomp">7일 ' + capDecomp(g, CAP_7D, 'dWeek', nowSec) + outNote + '</div>';
-    return h + '</div></section>';
-  }
-  if (g.has5h) {
-    var in5 = (g.events || []).filter(function(e) { return e.at <= nowSec + CAP_5H; });
-    if (!in5.some(function(e) { return e.dNow >= 0.05; })) {
-      var n5 = in5.filter(function(e) { return e.cause === '5h'; }).length;
-      var small = in5.reduce(function(s2, e) { return s2 + e.dNow; }, 0);
-      h += '<div class="cap-fc-row"><div class="cap-fc-label is-now is-flat">향후 5시간<i>지금 쓸 수 있는 양</i></div><div class="cap-why">지금 양 ' + capGain(small) + (small > 0.0000001 ? ' (소폭)' : '') + ' — 5h 리셋 ' + n5 + '건이 있지만 해당 계정은 <b>주간 한도가 상한</b>. 아래 7일 레인이 답.</div></div>';
-    } else {
-      h += '<div class="cap-fc-row"><div class="cap-fc-label is-now">향후 5시간<i>지금 쓸 수 있는 양</i></div><div>'
-        + capLane(g, { width: laneW, span: CAP_5H, key: 'dNow', start: g.now, cls: 'is-5h', zeroCause: '5h', empty: '지금 양을 늘릴 이벤트 없음', aria: '향후 5시간 지금 쓸 수 있는 양 예측', ticks: [0, 1, 2, 3, 4, 5].map(function(i) { return { at: i * 3600, label: i ? i + 'h' : '지금' }; }) }, nowSec)
-        + '<div class="cap-decomp">' + capDecomp(g, CAP_5H, 'dNow', nowSec) + '</div></div></div>';
-    }
-  }
-  var rel = (g.events || []).some(function(e) { return e.cause === 'release'; }) ? ' · ■ 차단 해제는 주간 한도를 바꾸지 않고 "지금"만 올림' : '';
-  h += '<div class="cap-fc-row"><div class="cap-fc-label is-wk">향후 7일<i>이번 주 한도</i></div><div>'
-    + capLane(g, { width: laneW, span: CAP_7D, key: 'dWeek', start: g.week, cls: 'is-7d', zeroCause: '', empty: '7일 안에 주간 리셋 없음', aria: '향후 7일 이번 주 한도 예측', ticks: [0, 1, 2, 3, 4, 5, 6, 7].map(function(i) { return { at: i * 86400, label: i ? i + 'd' : '지금' }; }) }, nowSec)
-    + '<div class="cap-decomp">' + capDecomp(g, CAP_7D, 'dWeek', nowSec) + outNote + rel + '</div></div></div>';
-  var list7 = (g.events || []).filter(function(e) { return e.at <= nowSec + CAP_7D && (e.dNow >= 0.005 || e.dWeek >= 0.005); });
-  h += '<details class="cap-more2" data-cap-key="' + escAttr(g.group + ':events') + '"><summary>이벤트 목록 ' + list7.length + '건</summary><ul class="cap-evlist">' + list7.map(function(e) {
-    var c = CAP_CAUSE[e.cause] || CAP_CAUSE.release;
-    var tier = CAP_TIERS[e.tier];
-    return '<li><span>' + esc(capCountdown(e.at - nowSec) + ' 후 (' + capClockLabel(e.at, nowMs) + ')') + '</span><span>' + c.g + '</span><span>' + esc(e.account) + (tier ? ' ' + tier.short : '') + ' · ' + c.label + '</span><span class="is-now">' + (g.has5h ? '지금 ' + capGain(e.dNow) : '') + '</span><span class="is-wk">주간 ' + capGain(e.dWeek) + '</span></li>';
-  }).join('') + '</ul></details>';
-  return h + '</div></section>';
+  return h + '</section>';
 }
 function renderCapacity(v, nowMs, widthPx) {
   if (!v) return '';
   var age = v.fetchedAtMs ? Math.max(0, Math.round((nowMs - v.fetchedAtMs) / 1000)) : null;
   var fresh = age === null ? '' : ' · ' + (age < 60 ? age + '초 전' : Math.floor(age / 60) + '분 전') + ' 갱신';
-  var legend = '<div class="cap-legend" aria-label="범례">'
-    + '<span><i class="cap-sw is-now"></i>지금 · 5h</span>'
-    + '<span><i class="cap-sw is-wk"></i>이번 주 · 7d</span>'
-    + '<span>● 5h 리셋 · ◆ 주간 리셋 · ■ 차단 해제</span>'
-    + '<span><i class="cap-sw is-dot tier-high"></i>상위 티어 (x20 · $500)</span>'
-    + '<span><i class="cap-sw is-dot tier-low"></i>하위 티어 (x5 · $200)</span>'
-    + '</div>';
-  var head = '<div class="cap-head"><h2 class="cap-title"><span class="cap-title-pre">LLM </span>가용량</h2><span class="cap-sub">llmux · 계정분 = 티어 가중 한도 잔여(토큰 수 아닌 정규화 추정)' + esc(fresh) + ' · 시각은 보는 사람 기준</span>' + renderCapacitySummary(v, nowMs) + legend + '</div>';
+  var legend = '';
+  var head = '<div class="cap-head"><h2 class="cap-title"><span class="cap-title-pre">LLM </span>가용량</h2><span class="cap-sub">계정 = 최대 플랜 계정 1개 분량 · llmux' + esc(fresh) + '</span>' + renderCapacitySummary(v, nowMs) + legend + '</div>';
   if (!v.available) return head + '<div class="cap-off">' + esc('가용량을 불러오지 못했습니다 — ' + (v.reason || '알 수 없는 오류')) + '</div>';
   if (!v.groups || !v.groups.length) return head + '<div class="cap-off">llmux 풀에 계정이 없습니다</div>';
-  // Very wide screens put the providers side by side, so the section stays short
-  // enough for the board to start on the first screen.
-  var cols = (Number(widthPx) || 0) >= 1600 && v.groups.length > 1 ? 2 : 1;
-  var cardW = cols === 2 ? Math.floor(((Number(widthPx) || 0) - 12) / 2) : widthPx;
-  return head + '<div class="cap-rows' + (cols === 2 ? ' is-cols' : '') + '">' + v.groups.map(function(g) { return renderCapacityGroup(capAdvance(g, nowMs / 1000), nowMs, cardW); }).join('') + '</div>';
+  return head + '<div class="cap-rows">' + v.groups.map(function(g) { return renderCapacityGroup(capAdvance(g, nowMs / 1000), nowMs, widthPx); }).join('') + '</div>';
 }
 function paintCapacity() {
   var el = document.getElementById('capacity');

@@ -49,7 +49,7 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
-const CAP_VARS = ['CAP_TIERS', 'CAP_CAUSE', 'CAP_5H', 'CAP_7D'];
+const CAP_VARS = ['CAP_TIERS', 'CAP_CAUSE', 'CAP_WORD', 'CAP_5H', 'CAP_7D'];
 const CAP_FNS = [
   'esc',
   'escAttr',
@@ -59,14 +59,15 @@ const CAP_FNS = [
   'capFmt1',
   'capGain',
   'capPct',
+  'capCount',
   'capNextLine',
-  'capWhyLine',
-  'capUnitBar',
-  'capUnits',
-  'capLane',
-  'capDecomp',
-  'capChips',
-  'capRefillList',
+  'capDur',
+  'capNextEvent',
+  'capNextShort',
+  'capBarRow',
+  'capDisclosure',
+  'capAx',
+  'capTimeline',
   'capAdvance',
   'renderCapacitySummary',
   'renderCapacityGroup',
@@ -397,131 +398,210 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     ...buildCapacityView(status as never, tiers as never, NOW_S * 1000),
     fetchedAtMs: NOW_S * 1000 - 12_000,
   };
-  const fns = load<{ renderCapacity: (v: any, nowMs: number, widthPx?: number) => string }>(CAP_FNS, CAP_VARS);
+  const fns = load<{
+    renderCapacity: (v: any, nowMs: number, widthPx?: number) => string;
+    renderCapacitySummary: (v: any, nowMs: number) => string;
+  }>(CAP_FNS, CAP_VARS);
   const html = fns.renderCapacity(view, NOW_S * 1000, 1200);
   const claude = html.slice(html.indexOf('data-group="claude"'), html.indexOf('data-group="codex"'));
   const codex = html.slice(html.indexOf('data-group="codex"'));
 
-  it('① two measures for Claude — x / total max accounts and %: now (5h ∧ weekly) and this week', () => {
-    expect(claude).toMatch(/cap-meas is-now[\s\S]*?>0\.5<[\s\S]*?\/ 3\.0 계정분[\s\S]*?17%/);
-    expect(claude).toMatch(/cap-meas is-wk[\s\S]*?>1\.1<[\s\S]*?\/ 3\.0 계정분[\s\S]*?37%/);
-    expect(claude).toContain('5h·주간 중 작은 쪽');
+  // Simplified card (user: v2 was unreadable; trinity simple r1): two bars + one timeline.
+  it('1 — two bars per provider: 5시간 (지금 쓸 수 있음) and 일주일 (이번 주 남음), each count / total + %', () => {
+    expect(claude).toMatch(
+      /cap-bar-row is-h5[\s\S]*?5시간<i>지금 쓸 수 있음<\/i>[\s\S]*?<b>0\.5<\/b> \/ 3\.0 계정 <em>17%<\/em>/,
+    );
+    expect(claude).toMatch(
+      /cap-bar-row is-wk[\s\S]*?일주일<i>이번 주 남음<\/i>[\s\S]*?<b>1\.1<\/b> \/ 3\.0 계정 <em>37%<\/em>/,
+    );
+    expect(claude.indexOf('is-h5')).toBeLessThan(claude.indexOf('cap-bar-row is-wk'));
   });
 
-  it('① Codex has no 5h window: the weekly measure only', () => {
-    expect(codex).not.toContain('cap-meas is-now');
-    expect(codex).toMatch(/cap-meas is-wk[\s\S]*?>0\.8<[\s\S]*?\/ 1\.4 계정분/);
+  it('1 — Codex (no 5h data) has the weekly bar only', () => {
+    expect(codex).not.toContain('cap-bar-row is-h5');
+    expect(codex).toMatch(/cap-bar-row is-wk[\s\S]*?<b>0\.8<\/b> \/ 1\.4 계정 <em>59%<\/em>/);
   });
 
-  it('① each measure says what raises it next, through which reset', () => {
-    expect(claude).toContain('다음 +0.6 · 2h 0m 후');
-    expect(claude).toContain('● ai1 5h 리셋');
-    expect(claude).toContain('다음 +0.6 · 1d 0h 후');
-    expect(claude).toContain('◆ ai2 주간 리셋');
+  // Trinity mockup v5 (grok P1): two tokens a reader needs — how much, when. The bar's own
+  // reset is implied by the bar; the account and the reset name move to the tooltip.
+  it('each bar says what raises it next in two tokens; which reset and which account sit in its tooltip', () => {
+    expect(claude).toContain('<div class="cap-bar-next" title="5시간 리셋 · ai1">다음 +0.6계정 · 2시간 0분 후</div>');
+    expect(claude).toContain('<div class="cap-bar-next" title="일주일 리셋 · ai2">다음 +0.6계정 · 1일 0시간 후</div>');
+    expect(claude).not.toMatch(/cap-bar-next"[^>]*>[^<]*\(ai\d+\)/);
   });
 
-  it('① the why line names the window that caps each usable account', () => {
-    expect(claude).toContain('쓸 수 있는 2계정 중 <b>5h가 상한 1</b> · 주간이 상한 1');
-    expect(claude).toContain('5h 리셋으로 +0.6계정분');
-  });
-
-  it('① a unit bar: one cell per max account, now inside this week', () => {
-    expect(claude).toContain('class="cap-unitbar"');
-    expect(claude).toMatch(/cap-u-now/);
-    expect(codex).not.toMatch(/cap-u-now/);
-  });
-
-  it('① exclusions and blocks are counted apart, never silently folded in', () => {
-    expect(claude).toContain('주간 한도 1');
-    expect(claude).toContain('티어 미지정 1 · 제외');
-    expect(claude).toContain('보류 1 · 제외');
-  });
-
-  it('② the 5h lane and the weekly lane are separate, each with its own glyph and colour', () => {
-    expect(claude).toContain('cap-lane is-5h');
-    expect(claude).toContain('cap-lane is-7d');
-    expect(claude).toMatch(/cap-l-mk is-5h is-hollow/); // ai2's 5h reset frees nothing
-    expect(claude).toMatch(/◆ ai3 x20 \+1\.0/);
-    expect(codex).not.toContain('cap-lane is-5h');
-  });
-
-  it('② each lane breaks its gain down by cause', () => {
-    expect(claude).toContain('<b>+0.6 계정분</b> = ● 5h 리셋 +0.6 (2건, 1건은 변화 없음)');
-    expect(claude).toContain('<b>+1.9 계정분</b> = ◆ 주간 리셋 +1.9 (3건)');
-  });
-
-  it('the tier is a dot plus its text, not a colour of its own', () => {
-    expect(claude).toMatch(/cap-dot tier-high/);
-    expect(claude).toContain('x20');
-  });
-
-  it('a narrow screen trades the lanes for a "next refills" list with now and week apart', () => {
-    const narrow = fns.renderCapacity(view, NOW_S * 1000, 360);
-    expect(narrow).not.toContain('cap-lane');
-    // one breakpoint: the card that lists refills is the card the CSS stacks
-    expect(narrow).toMatch(/class="cap-prov is-\w+ is-narrow"/);
-    expect(html).not.toContain('is-narrow');
-    expect(narrow).toContain('다음 리필');
-    expect(narrow).toMatch(/지금 \+0\.6[\s\S]*?주간 \+0\.6/);
-  });
-
-  // PR #417 review gate (fable P1, grok P3): the grid column is the width the charts are drawn at.
-  it('the wide grid sizes its first column from the same number the charts use', () => {
-    expect(claude).toContain('style="grid-template-columns:470px minmax(0, 1fr)"');
-    const mid = fns.renderCapacity(view, NOW_S * 1000, 900);
-    expect(mid).toContain('style="grid-template-columns:399px minmax(0, 1fr)"'); // floor((900 − 32) × 0.46)
-    expect(mid).toContain('class="cap-unitbar" width="395"'); // leftW − 4
-  });
-
-  it('every account gets a per-account cell — a long pool wraps, nothing is dropped', () => {
-    const many = {
-      current: null,
-      accounts: Array.from({ length: 20 }, (_, i) =>
-        a({ name: `claude:ac${i}@c`, group: 'claude', five_hour: w(0.1, H), seven_day: w(0.2, D) }),
-      ),
-    };
-    const t20 = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`claude:ac${i}`, 'claude-max-20x']));
-    const out = fns.renderCapacity(buildCapacityView(many as never, t20 as never, NOW_S * 1000), NOW_S * 1000, 360);
-    const units = out.slice(out.indexOf('class="cap-units"'), out.indexOf('</svg>', out.indexOf('class="cap-units"')));
-    for (let i = 0; i < 20; i++) expect(units).toContain(`>ac${i}</text>`);
-    expect(units).toMatch(/translate\(0 \d+\)/);
-  });
-
-  it('opened lists are keyed so a repaint keeps them open', () => {
-    expect(claude).toContain('data-cap-key="claude:events"');
-    const paint = TEMPLATE.slice(TEMPLATE.indexOf('\nfunction paintCapacity('));
-    expect(paint.slice(0, paint.indexOf('\n}\n'))).toContain('details[data-cap-key][open]');
-  });
-
-  // PR #417 review gate (astra): a repaint between fetches folds what is due into the measures.
-  it('an event whose time has come is part of "now", not a refill to come', () => {
-    const later = fns.renderCapacity(view, (NOW_S + 2 * H + 60) * 1000, 1200);
-    const c2 = later.slice(later.indexOf('data-group="claude"'), later.indexOf('data-group="codex"'));
-    expect(c2).toMatch(/cap-meas is-now[\s\S]*?>1\.1</); // 0.5 + ai1's 5h reset +0.6
-    expect(c2).not.toContain('● ai1 5h 리셋');
-  });
-
-  it('a narrow list with only small gains says so instead of "nothing"', () => {
-    const tiny = {
+  it("a refill that is not the bar's own reset names its cause (a block lifting)", () => {
+    const lift = {
       ...view,
-      groups: [{ ...view.groups[0], events: [{ account: 'ai1', cause: '5h', at: NOW_S + H, dNow: 0.02, dWeek: 0 }] }],
+      groups: [
+        { ...view.groups[0], events: [{ account: 'ai9', cause: 'release', at: NOW_S + H, dNow: 0.5, dWeek: 0 }] },
+      ],
     };
-    const out = fns.renderCapacity(tiny, NOW_S * 1000, 360);
-    expect(out).toContain('7일 안엔 +0.1 미만(소폭)');
+    expect(fns.renderCapacity(lift, NOW_S * 1000, 1200)).toContain(
+      '<div class="cap-bar-next" title="차단 해제 · ai9">다음 +0.5계정 · 1시간 0분 후 · 차단 해제</div>',
+    );
   });
 
-  it('a long account label is cut to fit its lane chip', () => {
-    const long = {
+  it('one muted line keeps the denominator honest: counted, blocked, left out and why', () => {
+    // "(차단 1 포함)": the blocked accounts are inside the counted ones (trinity mockup v5, fable P2)
+    expect(claude).toContain('3/5 반영(차단 1 포함) · 제외 2(보류·티어 미지정)');
+  });
+
+  it('2 — one timeline: a 5h reset is a teal ● (label above), a weekly reset a violet ◆ (label below)', () => {
+    expect(claude.match(/class="cap-tl"/g)?.length).toBe(1);
+    expect(claude).toMatch(/cap-tl-mk is-h5"><circle[\s\S]*?>\+0\.6<\/text>/);
+    for (const g of ['0.6', '1.0', '0.3'])
+      expect(claude).toMatch(new RegExp(`cap-tl-mk is-wk"><rect[^]*?>\\+${g.replace('.', '\\.')}<\\/text>`));
+    expect(claude).toContain('<i class="is-h5">●</i> 5시간 리셋</span>');
+    expect(claude).toContain('<i class="is-wk">◆</i> 일주일 리셋');
+    // Codex has no 5h window: no ● key at all
+    expect(codex).not.toContain('<i class="is-h5">');
+  });
+
+  it('with no 5h gain in 7 days the ● key says so instead of a dead key (trinity simple r2, grok)', () => {
+    const dry = {
+      ...view,
+      groups: [{ ...view.groups[0], events: view.groups[0].events.filter((e: any) => e.cause === '7d') }],
+    };
+    expect(fns.renderCapacity(dry, NOW_S * 1000, 1200)).toContain(
+      '<i class="is-h5">●</i> 5시간 리셋 — 7일 안에 늘어날 양 없음</span>',
+    );
+  });
+
+  it('a 5시간 bar held down by the weekly limit says so, never contradicting the ● key (fable)', () => {
+    const bound = {
+      ...view,
+      groups: [{ ...view.groups[0], events: [{ account: 'ai8', cause: '7d', at: NOW_S + 8 * H, dNow: 1, dWeek: 1 }] }],
+    };
+    const out = fns.renderCapacity(bound, NOW_S * 1000, 1200);
+    expect(out).toContain(
+      '<div class="cap-bar-next" title="일주일 리셋 · ai8">일주일 한도에 묶임 · 다음 +1.0계정 · 8시간 0분 후</div>',
+    );
+    expect(out).toContain('5시간 리셋 — 7일 안에 늘어날 양 없음');
+  });
+
+  // Trinity mockup v5 r5 (fable P1): a pool whose 5h resets add only a little (each under the
+  // 0.05 marker threshold) is not "nothing" — the key, the bars' next line and the chip
+  // tooltip must all say "small", or a screen reader and the chart disagree.
+  it('small 5h gains read "+0.1계정 미만" in the ● key, never "늘어날 양 없음"', () => {
+    const small = {
       ...view,
       groups: [
         {
           ...view.groups[0],
-          events: [{ account: 'averyveryverylongname@corp.example', cause: '7d', at: NOW_S + D, dNow: 1, dWeek: 1 }],
+          events: [
+            { account: 'ai1', cause: '5h', at: NOW_S + 4 * H, dNow: 0.01, dWeek: 0 },
+            { account: 'ai8', cause: '7d', at: NOW_S + 8 * H, dNow: 1, dWeek: 1 },
+          ],
         },
       ],
     };
-    const out = fns.renderCapacity(long, NOW_S * 1000, 1200);
-    expect(out).toContain('averyveryvery…');
+    const out = fns.renderCapacity(small, NOW_S * 1000, 1200);
+    expect(out).toContain('<i class="is-h5">●</i> 5시간 리셋 — 7일 안 +0.1계정 미만</span>');
+    expect(out).not.toContain('늘어날 양 없음');
+    // r6 (grok P1): one phrase everywhere — chart key, bar line and chip tooltip.
+    const chip = fns.renderCapacitySummary(small, NOW_S * 1000);
+    expect(chip).toContain('5시간 안엔 +0.1계정 미만');
+    expect(chip).not.toContain('소폭');
+    expect(out).toContain('7일 안 +0.1계정 미만');
+  });
+
+  it('many small 5h gains that add up past 0.05 are named by their sum, the same way everywhere', () => {
+    const many = {
+      ...view,
+      groups: [
+        {
+          ...view.groups[0],
+          // a weekly refill draws the timeline (and its key); the 5h gains are all small
+          events: [
+            ...[1, 2, 3].map((h) => ({ account: `ai${h}`, cause: '5h', at: NOW_S + h * H, dNow: 0.03, dWeek: 0 })),
+            { account: 'ai8', cause: '7d', at: NOW_S + 8 * H, dNow: 0, dWeek: 1 },
+          ],
+        },
+      ],
+    };
+    const out = fns.renderCapacity(many, NOW_S * 1000, 1200);
+    expect(out).toContain('<i class="is-h5">●</i> 5시간 리셋 — 7일 안 +0.1계정</span>');
+    expect(out).toContain('7일 안 +0.1계정 회복');
+    expect(fns.renderCapacitySummary(many, NOW_S * 1000)).toContain('5시간 안엔 +0.1계정');
+  });
+
+  it('a reading over a day old is flagged, not buried in the muted line (fable)', () => {
+    const stale = { ...view, groups: [{ ...view.groups[1], oldestRefreshAt: NOW_S - 4 * D }] };
+    expect(fns.renderCapacity(stale, NOW_S * 1000, 1200)).toContain('<b class="cap-stale">⚠ 측정 4일 전</b>');
+    const hour = { ...view, groups: [{ ...view.groups[1], oldestRefreshAt: NOW_S - 3 * H }] };
+    const out = fns.renderCapacity(hour, NOW_S * 1000, 1200);
+    expect(out).toContain('측정 3시간 전');
+    expect(out).not.toContain('cap-stale');
+  });
+
+  it('the v2 clutter is gone: no lanes, unit bar, per-account bars, why line, chips, breakdown or jargon', () => {
+    for (const gone of [
+      'cap-lane',
+      'cap-unitbar',
+      'cap-units',
+      'cap-why',
+      'cap-chip2',
+      'cap-decomp',
+      'cap-meas',
+      '계정분',
+      '상한',
+      '합계 밖',
+    ])
+      expect(html).not.toContain(gone);
+  });
+
+  it('a narrow card keeps the bars and the timeline', () => {
+    const narrow = fns.renderCapacity(view, NOW_S * 1000, 360);
+    expect(narrow).toMatch(/class="cap-prov is-\w+ is-narrow"/);
+    expect(narrow).toContain('cap-bar-row is-h5');
+    expect(narrow).toContain('class="cap-tl"');
+    expect(html).not.toContain('is-narrow');
+  });
+
+  // Mockup v5: on a phone the label and the value share the first line and the bar takes
+  // the card's full width on its own line — never a ~70px stub between them.
+  it('a narrow card gives each bar its own full-width line', () => {
+    const rule = (sel: string) => {
+      const m = DASHBOARD_TS.match(new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`));
+      return m ? m[1] : '';
+    };
+    expect(rule('.cap-prov.is-narrow .cap-bar-row')).toMatch(/grid-template-columns: minmax\(0, 1fr\) auto;/);
+    expect(rule('.cap-prov.is-narrow .cap-bar-lbl')).toMatch(/grid-row: 1; grid-column: 1;/);
+    expect(rule('.cap-prov.is-narrow .cap-bar-val')).toMatch(/grid-row: 1; grid-column: 2;/);
+    expect(rule('.cap-prov.is-narrow .cap-bar')).toMatch(/grid-row: 2; grid-column: 1 \/ -1;/);
+    expect(rule('.cap-prov.is-narrow .cap-bar-next')).toMatch(/grid-row: 3; grid-column: 1 \/ -1;/);
+    expect(rule('.cap-prov.is-narrow .cap-bar-lbl i')).toMatch(/display: inline;/);
+  });
+
+  it('an event whose time has come is part of the bar, not a refill to come', () => {
+    const later = fns.renderCapacity(view, (NOW_S + 2 * H + 60) * 1000, 1200);
+    const c2 = later.slice(later.indexOf('data-group="claude"'), later.indexOf('data-group="codex"'));
+    expect(c2).toMatch(/cap-bar-row is-h5[\s\S]*?<b>1\.1<\/b>/); // 0.5 + ai1's 5h reset +0.6
+    expect(c2).not.toContain('title="5시간 리셋 · ai1"');
+  });
+
+  it('small gains read "+0.1계정 미만", never "nothing"', () => {
+    const tiny = {
+      ...view,
+      groups: [
+        { ...view.groups[1], events: [{ account: 'ai5', cause: '7d', at: NOW_S + D, dNow: 0.03, dWeek: 0.03 }] },
+      ],
+    };
+    expect(fns.renderCapacity(tiny, NOW_S * 1000, 1200)).toContain('7일 안 +0.1계정 미만 회복');
+  });
+
+  it('a count that rounds to the total but is not full keeps two decimals; 100% only when full', () => {
+    const f = load<{ capPct: (v: number, t: number) => string; capCount: (v: number, t: number) => string }>(
+      ['capFmt1', 'capPct', 'capCount'],
+      [],
+    );
+    expect(f.capCount(2.37, 2.4)).toBe('2.37');
+    expect(f.capPct(2.37, 2.4)).toBe('99%');
+    expect(f.capCount(2.4, 2.4)).toBe('2.4');
+    expect(f.capPct(2.4, 2.4)).toBe('100%');
+    expect(f.capCount(5.23, 16)).toBe('5.2');
+    expect(f.capPct(1, 0)).toBe('—');
   });
 
   it('nothing countable reads "계산 불가", never NaN', () => {
@@ -536,9 +616,8 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     expect(out).not.toContain('NaN');
   });
 
-  it('says how fresh the data is and whose clock the times use; never calls it a token count', () => {
+  it('says how fresh the data is; never calls it a token count', () => {
     expect(html).toContain('12초 전');
-    expect(html).toContain('시각은 보는 사람 기준');
     expect(html).not.toContain('토큰량');
   });
 
