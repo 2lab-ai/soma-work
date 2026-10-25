@@ -110,7 +110,7 @@ GitHub App (recommended) or Personal Access Token authentication with automatic 
 The dashboard (`/dashboard`, sign in with Slack) shows every session as a card and lets the session owner act on it:
 
 - **Main agent and its subagents — one recursive tree**: a card is the main agent, the root of the session's agent tree; the SDK subagents it starts with the `Agent` tool (and the ones they start) are nodes of the same type under it — each with its status, time, tool calls and its own task list and work log, drawn by the same renderer at every depth (an ARIA tree with the arrow keys). The side panel drills into any node — main included: its path (`메인 › A1 Explore › A3 …`), its header and its subtree — and in a parent's work log each spawned child is a live block. The main agent's tasks and log never mix with a subagent's. Spec: [`.prd/12-dashboard-agent-tree-spec.md`](./.prd/12-dashboard-agent-tree-spec.md).
-- **Phones, foldables and PCs**: the layout follows the screen, not the device model. Below 840px the session panel is a full-screen sheet; from 840px (an unfolded iPhone Duo or Galaxy Z Fold8, tablets, PCs) it docks beside the board, which stays live, so you can open the next card with the panel still open. The board shows all three columns when it is at least 840px wide and scrolls them sideways below that. Folding, unfolding or rotating moves the cards to their new places (a fade only with reduced motion). In the panel, Tasks and Artifacts stay pinned and the conversation always keeps at least half of it; the composer stays above the on-screen keyboard. Below an 840×1000 window the CRON lane starts collapsed (its head plus any job waiting for a reply), and LLM capacity always starts collapsed (one chip per provider with both measures as max accounts' worth and %, `Claude 지금 5.2/16.0 33% · 주 5.7 36%`; phones drop the total and may wrap to a second row), so the board is on the first screen; your expand or collapse choice is kept on that device. Device sizes and sources: [`docs/misc/research/2026-10-24-dashboard-device-viewports.md`](./docs/misc/research/2026-10-24-dashboard-device-viewports.md).
+- **Phones, foldables and PCs**: the layout follows the screen, not the device model. Below 840px the session panel is a full-screen sheet; from 840px (an unfolded iPhone Duo or Galaxy Z Fold8, tablets, PCs) it docks beside the board, which stays live, so you can open the next card with the panel still open. The board shows all three columns when it is at least 840px wide and scrolls them sideways below that. Folding, unfolding or rotating moves the cards to their new places (a fade only with reduced motion). In the panel, Tasks and Artifacts stay pinned and the conversation always keeps at least half of it; the composer stays above the on-screen keyboard. Below an 840×1000 window the CRON lane starts collapsed (its head plus any job waiting for a reply), and LLM capacity always starts collapsed (one chip per provider with both measures as max accounts' worth of the total and %, `Claude 지금 5.2/16.0 33% · 주 5.6/16.0 35%`; below 840px the chips wrap to a second row), so the board is on the first screen; your expand or collapse choice is kept on that device. Device sizes and sources: [`docs/misc/research/2026-10-24-dashboard-device-viewports.md`](./docs/misc/research/2026-10-24-dashboard-device-viewports.md).
 - **Model and effort, one click from the top**: the top bar shows your default model and effort for new sessions. Pick a value and it is saved at once — the same setting as `model set <m>` and `effort <level>`. With a session panel docked beside the board, "이 세션에도 적용" (on by default) also switches that session (on a phone the panel sheet covers the top bar — use the panel's own controls).
 - **Per-session model and effort**: the card and the top of the session panel switch one session only, like `%effort <level>`; the change applies from the next turn. When the model caps the level, the card shows the level that really runs.
 - **Permission prompts**: when a turn stops on a permission prompt (the Slack "🔐 Permission Request" card — for example a Bash command that matched a dangerous-command rule), its card moves to NEEDS YOU and the card and the session panel show the same prompt: the tool, its parameters, the matched rules and **Approve / Deny / Explain / Approve & disable rule (this session)**. Only the user the prompt was raised for sees the parameters and can answer — the same rule as the Slack buttons. Slack and the dashboard answer through one path (`src/permission-prompt-response.ts`), so whichever answers first wins and the other is told it was already answered. API: `GET /api/dashboard/session/:key/permission/:approvalId`, `POST /api/dashboard/session/:key/permission` (auth + CSRF).
@@ -291,23 +291,29 @@ The web dashboard shows the same llmux pool as an **LLM 가용량** section betw
 the stats strip and the Agent inbox (`GET /api/dashboard/capacity`, llmux read at
 most every 30 s; the page refetches every 60 s). It starts folded on every window
 (your unfold choice is kept per device); folded, one chip per subscription provider
-gives both windows as max accounts' worth and %:
-`Claude 지금 5.2/16.0 33% · 주 5.7 36%` (phones drop the total and may wrap).
+gives both windows as max accounts' worth of the total and %:
+`Claude 지금 5.2/16.0 33% · 주 5.6/16.0 35%`. Below 840px the chips wrap, breaking
+only between the two measures. A chip whose oldest reading is over a day old, or
+whose pool counts fewer than 80% of its accounts, carries a warning:
+`Codex 주 2.37/2.4 99% ⚠ 5일 전 · 3/5 반영`. Why two bars, 5h on top: see
+[`docs/misc/research/2026-10-25-capacity-dual-window.md`](./docs/misc/research/2026-10-25-capacity-dual-window.md).
 
 Unfolded, each provider (Claude, Codex; API-key pools have no plan unit and are
 not shown) is one simple card:
 
 - **Two bars** — `5시간 · 지금 쓸 수 있음` (the smaller of the 5h and weekly
   remaining; 0 while blocked) and `일주일 · 이번 주 남음`, each
-  `x / total 계정 · %`, with one line for what raises it next
-  (`다음 +1.0계정 · 1시간 23분 후 · 일주일 리셋 (ai8)`). Codex (no 5h data) has the
+  `x / total 계정 · %`, with one line for what raises it next — how much and when,
+  `다음 +1.0계정 · 1시간 23분 후` (the cause is named only when it is not the bar's
+  own reset, e.g. `· 차단 해제`; the account is in the tooltip; a 5시간 bar held by
+  the weekly limit reads `일주일 한도에 묶임 · 다음 …`). Codex (no 5h data) has the
   weekly bar only. "계정" = max accounts' worth: tier weight (Max x20 = 1, x5 = ¼,
   Pro $500 = 1, $200 = 0.4) × remaining — a normalised estimate, not tokens. The %
   is from the raw ratio (100% only when full); a count that rounds to the total
   keeps two decimals (`2.37 / 2.4 · 99%`).
 - **One muted disclosure line**, only what is non-zero:
-  `16/17 반영 · 차단 6 · 제외 1(보류) · 측정 4시간 전` — accounts counted, blocked
-  right now, left out (paused / auth failure / no known lift = 보류, unknown tier,
+  `16/17 반영(차단 6 포함) · 제외 1(보류) · 측정 4시간 전` — accounts counted (and how
+  many of them are blocked right now), left out (paused / auth failure / no known lift = 보류, unknown tier,
   no weekly reading) and the oldest llmux reading when over an hour old.
 - **One timeline**, now → 24h (55% of the width) → 7d: ● is a gain to the 5시간 bar
   (label above), ◆ a gain to the 일주일 bar (label below), in the bars' colours;

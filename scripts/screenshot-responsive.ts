@@ -307,9 +307,12 @@ async function checkSecondary(page: Page, touch: boolean): Promise<Check[]> {
     // Collapsed (capacity: every posture; CRON: below 840×1000): chips for capacity.
     if (cap.classList.contains('is-collapsed')) {
       const h = cap.getBoundingClientRect().height;
-      // Phones may wrap the chips to a second row (labelled counts + % for both windows).
-      const limit = window.innerWidth < 640 ? 96 : 64;
-      out.push({ ok: h <= limit, msg: `collapsed capacity is one row, two on phones (${Math.round(h)} ≤ ${limit}px)` });
+      // Below 840px the chips may wrap to a second row (labelled counts, totals and % for both windows).
+      const limit = window.innerWidth < 840 ? 96 : 64;
+      out.push({
+        ok: h <= limit,
+        msg: `collapsed capacity is one row, two below 840px (${Math.round(h)} ≤ ${limit}px)`,
+      });
       const chips = Array.from(cap.querySelectorAll('.cap-chip')).map((c) =>
         (c as HTMLElement).innerText.replace(/\s+/g, ' '),
       );

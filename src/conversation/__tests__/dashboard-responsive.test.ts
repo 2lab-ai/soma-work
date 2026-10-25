@@ -587,7 +587,7 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     // sentence is the chip's accessible name.
     // Requirement 1a while folded: each measure as max accounts' worth AND % of the total.
     expect(html).toMatch(
-      /cap-chip is-ok"[^>]*>Claude <span class="cap-m is-now"><i class="cap-chip-k">지금 <\/i><b>6\.2<\/b><i class="cap-chip-of">\/16\.0<\/i> <em>39%<\/em><\/span> · <span class="cap-m is-wk"><i class="cap-chip-k">주 <\/i><b>6\.3<\/b> <em>39%<\/em><\/span>/,
+      /cap-chip is-ok"[^>]*>Claude <span class="cap-m is-now"><i class="cap-chip-k">지금 <\/i><b>6\.2<\/b><i class="cap-chip-of">\/16\.0<\/i> <em>39%<\/em><\/span> · <span class="cap-m is-wk"><i class="cap-chip-k">주 <\/i><b>6\.3<\/b><i class="cap-chip-of">\/16\.0<\/i> <em>39%<\/em><\/span>/,
     );
     // weekly-only: the total rides on the one measure
     expect(html).toMatch(
@@ -606,15 +606,81 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     expect(off).toContain('llmux unreachable');
   });
 
-  it('phones keep labelled counts and % for both windows; the folded row wraps instead (trinity chip confirm)', () => {
-    expect(TEMPLATE).toContain('@media (max-width: 639px) { .cap-chip .cap-chip-of { display: none; } }');
+  // Trinity mockup v5 (astra P1): the folded chip is the default view, so it carries what
+  // the card's disclosure line flags — a reading over a day old, and a pool where a fifth
+  // or more of the accounts is left out of the total. A fresh, (almost) full pool shows none.
+  it('a folded chip flags a day-old reading and a partly counted pool', () => {
+    const fns = load<{ renderCapacitySummary: (v: unknown, nowMs: number) => string }>(
+      [
+        'esc',
+        'escAttr',
+        'pad2',
+        'capCountdown',
+        'capClockLabel',
+        'capFmt1',
+        'capGain',
+        'capPct',
+        'capNextLine',
+        'capAdvance',
+        'capCount',
+        'capDur',
+        'renderCapacitySummary',
+      ],
+      ['CAP_CAUSE', 'CAP_5H', 'CAP_7D'],
+    );
+    const nowS = 1_800_000_000;
+    const g = (over: Record<string, unknown>) => ({
+      label: 'X',
+      state: 'ok',
+      has5h: false,
+      total: 2.4,
+      now: 2.37,
+      week: 2.37,
+      events: [],
+      accountCount: 5,
+      countedAccounts: 5,
+      oldestRefreshAt: nowS - 600,
+      ...over,
+    });
+    const html = fns.renderCapacitySummary(
+      {
+        available: true,
+        groups: [
+          g({ label: 'Codex', countedAccounts: 3, oldestRefreshAt: nowS - 5 * 86400 - 3600 }),
+          g({ label: 'Claude', has5h: true, total: 16, now: 5.2, week: 5.6, accountCount: 17, countedAccounts: 16 }),
+          g({ label: 'Gemini', oldestRefreshAt: nowS - 2 * 3600 }),
+        ],
+      },
+      nowS * 1000,
+    );
+    const chip = (name: string) =>
+      html.slice(html.indexOf(`>${name} `) - 200, html.indexOf('</span></span>', html.indexOf(`>${name} `)) + 200);
+    expect(html).toMatch(
+      />Codex [\s\S]*?<em>99%<\/em><\/span> <i class="cap-chip-flag">⚠ 5일 전 · 3\/5 반영<\/i><\/span>/,
+    );
+    expect(html).toMatch(/aria-label="Codex 일주일 2\.37\/2\.4 계정 \(99%\) · 측정 5일 전 · 3\/5 반영/);
+    // one held account out of 17 and a two-hour-old reading are the card's business, not the chip's
+    expect(chip('Claude')).not.toContain('cap-chip-flag');
+    expect(chip('Gemini')).not.toContain('cap-chip-flag');
+    expect(TEMPLATE).toContain('.cap-chip .cap-chip-flag { color: var(--st-wait); font-weight: 600; }');
+  });
+
+  // Trinity mockup v5 (grok P1): every measure reads "count / total %" — the week too, and
+  // on phones too; the folded row wraps rather than drop a denominator.
+  it('phones keep labelled counts, totals and % for both windows; the folded row wraps instead', () => {
+    expect(TEMPLATE).not.toMatch(/\.cap-chip-of \{ display: none/);
     expect(TEMPLATE).toContain(
       '.capacity.is-collapsed .cap-summary { flex: 1 1 auto; flex-wrap: wrap; overflow-x: visible; gap: 4px; }',
     );
-    // the phone chip rule comes after the base .cap-chip rule, so it wins
-    expect(TEMPLATE.indexOf('.cap-chip { padding: 2px 6px; font-size: 11px; }')).toBeGreaterThan(
-      TEMPLATE.indexOf('.cap-chip {\n  flex: none;'),
-    );
+    // Below 840px (Duo cover ~300px, Duo inner 669px) a chip wider than the row breaks
+    // between its two measures, never inside one; both rules come after the base .cap-chip.
+    const wrap = '.cap-chip { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; white-space: normal; column-gap: 4px; }';
+    expect(TEMPLATE).toContain(`@media (max-width: 839px) {`);
+    expect(TEMPLATE).toContain(wrap);
+    expect(TEMPLATE).toContain('.cap-chip .cap-m, .cap-chip .cap-chip-flag { white-space: nowrap; }');
+    expect(TEMPLATE).toContain('@media (max-width: 639px) { .cap-chip { padding: 2px 6px; font-size: 11px; } }');
+    for (const rule of [wrap, '.cap-chip { padding: 2px 6px; font-size: 11px; }'])
+      expect(TEMPLATE.indexOf(rule)).toBeGreaterThan(TEMPLATE.indexOf('.cap-chip {\n  flex: none;'));
     expect(TEMPLATE).not.toMatch(/\.cap-chip[^{]*(?:\bb|em|cap-chip-k)[^{]*\{ display: none/);
   });
 
