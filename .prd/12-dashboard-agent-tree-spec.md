@@ -148,6 +148,8 @@ tasks, toolCalls(agentRoot), lastTool, activeMs, legStartedAt, children }`. 서�
 
 ### 4.2 펼친 카드 — 하나의 트리
 
+> 2026-10-25 [spec 13](13-dashboard-three-surfaces-spec.md) §3.3: 카드의 행은 compact 밀도(상태 단어 · 시간 · 살아 있거나 실패한 노드의 한 줄), 패널의 행은 rich 밀도다. 카드의 `전체 N개 보기`는 `전체 N개 → 상세`(그 부모에 초점을 둔 패널)로 바뀌었다.
+
 task 타임라인 앞 `에이전트` 섹션 = `<ul role="tree">` 하나, 루트(메인)부터. 모든 노드가 같은 렌더러 `renderAgentNode`를 지난다:
 `<li role="treeitem" aria-level aria-setsize aria-posinset [aria-expanded] aria-label>` 안에 행 하나 + 열려 있으면 자식 그룹
 `<ul role="group">`. 행 슬롯은 루트와 서브가 같다 — 셰브론 · 상태 아이콘 · 이름(루트: `메인` + 모델 / 서브: `A<n>` + 타입) · 상태
