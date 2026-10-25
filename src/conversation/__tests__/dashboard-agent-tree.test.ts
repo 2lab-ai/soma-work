@@ -138,6 +138,20 @@ describe('Dashboard — agent tree payload (spec 12 §3)', () => {
     expect(card.agents[0].tasks.map((t: any) => t.status)).toEqual(['pending', 'pending']);
   });
 
+  it("a card carries the main agent's own tool count as agentRoot — with or without subagents", async () => {
+    const reg = registry();
+    reg.root = { toolCalls: 7, lastTool: 'Edit' };
+    const withSubs = (await board(new Map([['C1:t1', liveSession({ agents: reg })]]))).working[0];
+    expect(withSubs.agentRoot).toEqual({ toolCalls: 7, lastTool: 'Edit' });
+    const mainOnly = (
+      await board(new Map([['C1:t1', liveSession({ agents: { nextN: 1, agents: [], root: { toolCalls: 2 } } })]]))
+    ).working[0];
+    expect(mainOnly.agentRoot).toEqual({ toolCalls: 2 });
+    expect('agents' in mainOnly).toBe(false);
+    const none = (await board(new Map([['C1:t1', liveSession()]]))).working[0];
+    expect('agentRoot' in none).toBe(false);
+  });
+
   it('a card without subagents carries no agents key', async () => {
     const card = (await board(new Map([['C1:t1', liveSession()]]))).working[0];
     expect('agents' in card).toBe(false);

@@ -47,6 +47,7 @@ import {
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
 import { registerSettingsRoutes } from './settings-routes';
 import type { ConversationTurn } from './types';
+import { registerUserMediaRoutes } from './user-media-routes';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
 import { registerWorkLogRoutes } from './work-log-routes';
 
@@ -601,6 +602,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
           summarized: t.summarized,
           // Include rawContent only for user turns (they're short)
           rawContent: t.role === 'user' ? t.rawContent : undefined,
+          // A user turn's attached files (user media) — metadata only, the bytes have their own route.
+          attachments: t.role === 'user' ? t.attachments : undefined,
         }));
 
         reply.send({
@@ -682,6 +685,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
   await registerWorkLogRoutes(server, authMiddleware);
   await registerArtifactRoutes(server, authMiddleware);
+  await registerUserMediaRoutes(server, authMiddleware);
   // Personal settings (SSOT 2026-10-23 T2) — self only, auth + CSRF on writes.
   registerSettingsRoutes(server, authMiddleware, csrfMiddleware);
   // Personal memory — the settings page "기억" tab (SSOT 2026-10-23 T3).

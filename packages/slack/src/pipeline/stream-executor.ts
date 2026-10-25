@@ -86,6 +86,7 @@ import {
 } from '../turn-notifier';
 import type { UserChoice, UserChoices } from '../user-choice-extractor';
 import { UserChoiceHandler } from '../user-choice-handler';
+import type { TurnAttachment } from '../user-media';
 import type { WorkLogInput } from '../work-log';
 import { decideBackgroundWaitContinuation, getBackgroundWaitCap } from './background-wait';
 import { shouldForwardAsLocalSlashCommand } from './local-slash-command';
@@ -174,7 +175,20 @@ export interface StreamExecutorProviders {
   shouldShowStatusBlock?: (status: any) => boolean;
   createConversation?: (channel: string, threadTs: string, user: string, userName: string) => string;
   recordAssistantTurn?: (conversationId: string, text: string) => void;
-  recordUserTurn?: (conversationId: string, text: string, userName: string, user: string) => void;
+  recordUserTurn?: (
+    conversationId: string,
+    text: string,
+    userName: string,
+    user: string,
+    attachments?: readonly TurnAttachment[],
+  ) => void;
+  /**
+   * User media (SSOT 2026-10-25) — copy the turn's downloaded files for the
+   * dashboard. Awaited BEFORE the user turn is recorded and long before the
+   * end-of-turn temp cleanup; the host bounds it and never drops a file.
+   * Default: nothing kept.
+   */
+  captureUserMedia?: (conversationId: string, files: readonly ProcessedFile[]) => Promise<TurnAttachment[]>;
   /**
    * Spec 10 §3.3 — append one work-log entry to the conversation's log
    * (instruction, narration, tool, tool_result, final, notice, error), at
@@ -251,6 +265,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   createConversation: () => '',
   recordAssistantTurn: () => {},
   recordUserTurn: () => {},
+  captureUserMedia: async () => [],
   appendWorkLog: () => {},
   recordAgentEvent: () => {},
   captureMemoryTurn: () => {},
@@ -316,8 +331,15 @@ const createConversation = (channel: string, threadTs: string, user: string, use
   streamExecutorProviders.createConversation(channel, threadTs, user, userName);
 const recordAssistantTurn = (conversationId: string, text: string) =>
   streamExecutorProviders.recordAssistantTurn(conversationId, text);
-const recordUserTurn = (conversationId: string, text: string, userName: string, user: string) =>
-  streamExecutorProviders.recordUserTurn(conversationId, text, userName, user);
+const recordUserTurn = (
+  conversationId: string,
+  text: string,
+  userName: string,
+  user: string,
+  attachments: readonly TurnAttachment[] | undefined,
+) => streamExecutorProviders.recordUserTurn(conversationId, text, userName, user, attachments);
+const captureUserMedia = (conversationId: string, files: readonly ProcessedFile[]) =>
+  streamExecutorProviders.captureUserMedia(conversationId, files);
 const workLogLogger = new Logger('WorkLog');
 
 /**
@@ -1477,9 +1499,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         session.pendingInstructionRejection = undefined;
       }
 
-      // Record user turn (fire-and-forget, non-blocking)
+      // Record user turn (fire-and-forget, non-blocking). A files-only message
+      // is a user turn too: its instruction IS the files (user media).
+      const hasInput = !!text || processedFiles.length > 0;
       // Auto-create conversation if session lost its conversationId (e.g., after restart backfill miss)
-      if (!session.conversationId && text && channel) {
+      if (!session.conversationId && hasInput && channel) {
         try {
           session.conversationId = createConversation(channel, session.threadTs || '', user, userName);
           this.logger.info('Auto-created conversation for session missing conversationId', {
@@ -1490,9 +1514,29 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.logger.error('Failed to auto-create conversation', err);
         }
       }
-      if (session.conversationId && text) {
-        recordUserTurn(session.conversationId, text, userName, user);
-        emitWorkLog({ kind: 'instruction', text });
+      if (session.conversationId && hasInput) {
+        // Copy the files now — before the model can touch them and before the
+        // end-of-turn cleanup deletes them. A failed capture never costs the turn.
+        let attachments: TurnAttachment[] | undefined;
+        if (processedFiles.length > 0) {
+          try {
+            attachments = await captureUserMedia(session.conversationId, processedFiles);
+          } catch (error) {
+            this.logger.warn('User media capture failed — turn recorded without attachments', {
+              sessionKey,
+              error: (error as Error)?.message ?? String(error),
+            });
+          }
+        }
+        recordUserTurn(
+          session.conversationId,
+          text || '',
+          userName,
+          user,
+          attachments?.length ? attachments : undefined,
+        );
+        const names = processedFiles.map((f) => f.name).join(' · ');
+        emitWorkLog({ kind: 'instruction', text: names ? `${text || ''}${text ? '\n' : ''}📎 ${names}` : text || '' });
       }
 
       // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)

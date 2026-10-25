@@ -286,6 +286,9 @@ describe('work item goal list — the goal being typed survives a live re-render
         morphInnerHtml: (b: { innerHTML: string }, html: string) => {
           b.innerHTML = html;
         },
+        // Spec 12 (recursive): the agent tree's focus is kept across the morph.
+        anFocusCapture: () => null,
+        anFocusRestore: () => {},
       },
     );
 
@@ -309,6 +312,9 @@ describe('work item goal list — the goal being typed survives a live re-render
         morphInnerHtml: (b: { innerHTML: string }, html: string) => {
           b.innerHTML = html;
         },
+        // Spec 12 (recursive): the agent tree's focus is kept across the morph.
+        anFocusCapture: () => null,
+        anFocusRestore: () => {},
       },
     );
     // innerHTML assignment builds a fresh, empty input.

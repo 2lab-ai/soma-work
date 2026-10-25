@@ -252,6 +252,39 @@ describe('agent registry — tasks and work log', () => {
   });
 });
 
+describe('agent registry — the main agent is the root node (recursive UI)', () => {
+  it("counts the main agent's own tool calls on the registry root, by the same rule as a subagent's", () => {
+    const h = holder();
+    stampWorkLogAgent(h, { kind: 'tool', tool: 'Bash', text: 'Bash ls' }, T0);
+    stampWorkLogAgent(h, { kind: 'tool', tool: 'Read', text: 'Read a' }, T0 + 1);
+    // Narration, results and a subagent's tools are not the main agent's tool calls.
+    stampWorkLogAgent(h, { kind: 'narration', text: 'thinking' }, T0 + 2);
+    stampWorkLogAgent(h, { kind: 'tool_result', tool: 'Read', text: 'ok' }, T0 + 3);
+    stampWorkLogAgent(h, { kind: 'tool', tool: 'Grep', text: 'Grep x', agentId: 'toolu_a' }, T0 + 4);
+    expect(h.agents?.root).toEqual({ toolCalls: 2, lastTool: 'Read' });
+    expect(agentById(h.agents, 'toolu_a')).toMatchObject({ toolCalls: 1, lastTool: 'Grep' });
+  });
+
+  it('a session whose main agent never called a tool has no root stats', () => {
+    const h = holder();
+    stampWorkLogAgent(h, { kind: 'narration', text: 'hi' }, T0);
+    expect(h.agents?.root).toBeUndefined();
+  });
+
+  it('root stats survive persistence and a restart', () => {
+    const h = holder();
+    stampWorkLogAgent(h, { kind: 'tool', tool: 'Bash', text: 'Bash ls' }, T0);
+    applyAgentEvent(h, { kind: 'spawn', agentId: 'toolu_a', ts: T0 });
+    const restored = sanitizeAgentRegistry(JSON.parse(JSON.stringify(h.agents)));
+    expect(restored?.root).toEqual({ toolCalls: 1, lastTool: 'Bash' });
+    expect(loseRunningAgents(restored, T0 + 5)?.root).toEqual({ toolCalls: 1, lastTool: 'Bash' });
+    // Junk root data is dropped, never trusted.
+    expect(sanitizeAgentRegistry({ nextN: 1, agents: [], root: { toolCalls: 'x' } })?.root).toBeUndefined();
+    // A registry that only has root stats is still a registry.
+    expect(sanitizeAgentRegistry({ nextN: 1, agents: [], root: { toolCalls: 3 } })?.root).toEqual({ toolCalls: 3 });
+  });
+});
+
 describe('agent registry — bounds and restore', () => {
   it('over the bound, the oldest finished agents go first; running agents and their ancestors stay', () => {
     const h = holder();
