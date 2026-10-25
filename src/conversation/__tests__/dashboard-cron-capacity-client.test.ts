@@ -432,8 +432,8 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     expect(claude).toMatch(/cap-tl-mk is-h5"><circle[\s\S]*?>\+0\.6<\/text>/);
     for (const g of ['0.6', '1.0', '0.3'])
       expect(claude).toMatch(new RegExp(`cap-tl-mk is-wk"><rect[^]*?>\\+${g.replace('.', '\\.')}<\\/text>`));
-    expect(claude).toContain('<i class="is-h5">●</i> 5시간</span>');
-    expect(claude).toContain('<i class="is-wk">◆</i> 일주일');
+    expect(claude).toContain('<i class="is-h5">●</i> 5시간 리셋</span>');
+    expect(claude).toContain('<i class="is-wk">◆</i> 일주일 리셋');
     // Codex has no 5h window: no ● key at all
     expect(codex).not.toContain('<i class="is-h5">');
   });
@@ -444,8 +444,27 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
       groups: [{ ...view.groups[0], events: view.groups[0].events.filter((e: any) => e.cause === '7d') }],
     };
     expect(fns.renderCapacity(dry, NOW_S * 1000, 1200)).toContain(
-      '<i class="is-h5">●</i> 5시간 — 늘어날 양 없음</span>',
+      '<i class="is-h5">●</i> 5시간 리셋 — 7일 안에 늘어날 양 없음</span>',
     );
+  });
+
+  it('a 5시간 bar held down by the weekly limit says so, never contradicting the ● key (fable)', () => {
+    const bound = {
+      ...view,
+      groups: [{ ...view.groups[0], events: [{ account: 'ai8', cause: '7d', at: NOW_S + 8 * H, dNow: 1, dWeek: 1 }] }],
+    };
+    const out = fns.renderCapacity(bound, NOW_S * 1000, 1200);
+    expect(out).toContain('일주일 한도에 묶임 — 다음 일주일 리셋 때 +1.0계정 · 8시간 0분 후 (ai8)');
+    expect(out).toContain('5시간 리셋 — 7일 안에 늘어날 양 없음');
+  });
+
+  it('a reading over a day old is flagged, not buried in the muted line (fable)', () => {
+    const stale = { ...view, groups: [{ ...view.groups[1], oldestRefreshAt: NOW_S - 4 * D }] };
+    expect(fns.renderCapacity(stale, NOW_S * 1000, 1200)).toContain('<b class="cap-stale">⚠ 측정 4일 전</b>');
+    const hour = { ...view, groups: [{ ...view.groups[1], oldestRefreshAt: NOW_S - 3 * H }] };
+    const out = fns.renderCapacity(hour, NOW_S * 1000, 1200);
+    expect(out).toContain('측정 3시간 전');
+    expect(out).not.toContain('cap-stale');
   });
 
   it('the v2 clutter is gone: no lanes, unit bar, per-account bars, why line, chips, breakdown or jargon', () => {
