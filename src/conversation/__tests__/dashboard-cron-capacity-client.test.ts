@@ -398,7 +398,10 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     ...buildCapacityView(status as never, tiers as never, NOW_S * 1000),
     fetchedAtMs: NOW_S * 1000 - 12_000,
   };
-  const fns = load<{ renderCapacity: (v: any, nowMs: number, widthPx?: number) => string }>(CAP_FNS, CAP_VARS);
+  const fns = load<{
+    renderCapacity: (v: any, nowMs: number, widthPx?: number) => string;
+    renderCapacitySummary: (v: any, nowMs: number) => string;
+  }>(CAP_FNS, CAP_VARS);
   const html = fns.renderCapacity(view, NOW_S * 1000, 1200);
   const claude = html.slice(html.indexOf('data-group="claude"'), html.indexOf('data-group="codex"'));
   const codex = html.slice(html.indexOf('data-group="codex"'));
@@ -475,6 +478,28 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
       '<div class="cap-bar-next" title="일주일 리셋 · ai8">일주일 한도에 묶임 · 다음 +1.0계정 · 8시간 0분 후</div>',
     );
     expect(out).toContain('5시간 리셋 — 7일 안에 늘어날 양 없음');
+  });
+
+  // Trinity mockup v5 r5 (fable P1): a pool whose 5h resets add only a little (each under the
+  // 0.05 marker threshold) is not "nothing" — the key, the bars' next line and the chip
+  // tooltip must all say "small", or a screen reader and the chart disagree.
+  it('small 5h gains read "+0.1계정 미만" in the ● key, never "늘어날 양 없음"', () => {
+    const small = {
+      ...view,
+      groups: [
+        {
+          ...view.groups[0],
+          events: [
+            { account: 'ai1', cause: '5h', at: NOW_S + 4 * H, dNow: 0.01, dWeek: 0 },
+            { account: 'ai8', cause: '7d', at: NOW_S + 8 * H, dNow: 1, dWeek: 1 },
+          ],
+        },
+      ],
+    };
+    const out = fns.renderCapacity(small, NOW_S * 1000, 1200);
+    expect(out).toContain('<i class="is-h5">●</i> 5시간 리셋 — 7일 안 +0.1계정 미만</span>');
+    expect(out).not.toContain('늘어날 양 없음');
+    expect(fns.renderCapacitySummary(small, NOW_S * 1000)).toContain('5h 안엔 +0.1 미만(소폭)');
   });
 
   it('a reading over a day old is flagged, not buried in the muted line (fable)', () => {
