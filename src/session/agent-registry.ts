@@ -73,11 +73,22 @@ export interface AgentRecord {
   ledger?: TaskLedger;
 }
 
+/**
+ * The main agent's own counts — the root node of the session's agent tree.
+ * Same rule as a subagent's logged tools: one per `tool` work-log entry it made.
+ */
+export interface AgentRootStats {
+  toolCalls: number;
+  lastTool?: string;
+}
+
 export interface AgentRegistry {
   /** The number the next new agent gets. */
   nextN: number;
   /** Oldest first. */
   agents: AgentRecord[];
+  /** The main agent (absent until it calls a tool). */
+  root?: AgentRootStats;
 }
 
 export const AGENT_REGISTRY_MAX = 100;
@@ -277,7 +288,16 @@ export function stampWorkLogAgent<E extends { kind: string; tool?: string; agent
   entry: E,
   now: number,
 ): E & { taskId?: string; taskTitle?: string } {
-  if (!entry.agentId) return stampWorkLogTask(h.taskLedger, entry);
+  if (!entry.agentId) {
+    if (entry.kind === 'tool') {
+      const reg = ensureRegistry(h);
+      const root: AgentRootStats = reg.root ?? { toolCalls: 0 };
+      root.toolCalls += 1;
+      if (entry.tool) root.lastTool = clip(String(entry.tool), TYPE_MAX);
+      reg.root = root;
+    }
+    return stampWorkLogTask(h.taskLedger, entry);
+  }
   const { agent, created } = ensureAgent(h, entry.agentId, now);
   if (entry.kind === 'tool') {
     setTools(agent, (agent.loggedTools ?? 0) + 1, undefined);
@@ -294,6 +314,7 @@ export function loseRunningAgents(reg: AgentRegistry | undefined, now: number): 
     nextN: reg.nextN,
     agents: reg.agents.map((a) => (a.status === 'running' ? { ...a, status: 'unknown', endedAt: now } : a)),
   };
+  if (reg.root) out.root = { ...reg.root };
   // Nothing runs now: an excess the running agents held is released.
   enforceBounds(out);
   return out;
@@ -383,7 +404,19 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
   }
   // Never hand out a spawn number that is already taken.
   const highest = agents.reduce((m, a) => Math.max(m, a.n), 0);
-  const reg = { nextN: Math.max(Math.floor(nextN), highest + 1), agents };
+  const reg: AgentRegistry = { nextN: Math.max(Math.floor(nextN), highest + 1), agents };
+  const root = sanitizeRootStats(r.root);
+  if (root) reg.root = root;
   enforceBounds(reg);
   return reg;
+}
+
+function sanitizeRootStats(raw: unknown): AgentRootStats | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const toolCalls = finitePositive(r.toolCalls);
+  if (!toolCalls) return undefined;
+  const out: AgentRootStats = { toolCalls: Math.floor(toolCalls) };
+  if (typeof r.lastTool === 'string' && r.lastTool) out.lastTool = clip(r.lastTool, TYPE_MAX);
+  return out;
 }

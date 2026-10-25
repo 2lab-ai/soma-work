@@ -1,6 +1,7 @@
 # 12 — 대시보드 에이전트 트리: 메인 에이전트 → 서브에이전트, 에이전트별 작업 로그·태스크
 
-Status: PR-A(귀속·저장·payload, #362) · PR-B(대시보드 UI) 구현 · Date: 2026-10-23 · 기준 main `3c9576a` · 이슈 #361
+Status: PR-A(귀속·저장·payload, #362) · PR-B(대시보드 UI, #366) 구현 · rev 2(재귀 UI — 메인과 서브는 같은 노드 타입) 구현 ·
+Date: 2026-10-23, rev 2 2026-10-25 · 기준 main `3c9576a` · 이슈 #361
 SSOT: [`agent-tree/ssot.md`](agent-tree/ssot.md) · 앞선 계약: [`10-agent-inbox-board-spec.md`](10-agent-inbox-board-spec.md),
 [`11-dashboard-live-surfaces-spec.md`](11-dashboard-live-surfaces-spec.md)
 
@@ -8,6 +9,9 @@ SSOT: [`agent-tree/ssot.md`](agent-tree/ssot.md) · 앞선 계약: [`10-agent-in
 
 인박스 카드 하나 = 메인 에이전트 하나와 그가 띄운 서브에이전트들이다. 서브에이전트마다 자기 태스크 목록과 자기 작업 로그를
 갖고, 메인의 태스크·로그·컨텍스트 점유율에는 서브의 것이 섞이지 않는다.
+
+rev 2: 메인과 서브는 동형이다 — 메인은 세션 에이전트 트리의 루트 노드이고, 카드·패널·작업 로그가 루트와 서브를 같은 노드
+타입, 같은 렌더러로 재귀적으로 그린다(§4).
 
 읽는 순서: §1(무엇이 섞였나) → §2(귀속 계약, PR-A) → §3(카드 payload, PR-A) → §4(UI, PR-B) → §5(검증).
 
@@ -88,6 +92,9 @@ interface AgentRegistry { nextN; agents: AgentRecord[] /* 오래된 순 */ }
   (그때는 상한을 넘을 수 있다). 정리는 레코드가 완성된 뒤(부모가 채워진 뒤)와 모든 종료 전이·복원 뒤에 돈다 — 실행 중 에이전트 때문에
   넘었던 초과분은 그들이 끝나면 해소된다. task ledger는 끝난 에이전트 중 최신 `AGENT_LEDGER_KEEP` = 40개만 유지.
 - 영속: `sessions.json`(`sanitizeAgentRegistry`), 아카이브(`ArchivedSession.agents`).
+- 루트 통계(rev 2): `AgentRegistry.root?: { toolCalls, lastTool? }` — 메인 에이전트 자신의 툴 호출 수와 마지막 도구. 서브의
+  logged tools와 같은 규칙(메인이 만든 `tool` 작업 로그 항목 하나에 1). `stampWorkLogAgent`가 세고, 메인이 툴을 한 번도 안 불렀으면
+  없다. `sanitizeAgentRegistry`가 복원하고(잘못된 값은 버림), `loseRunningAgents`가 그대로 둔다. 루트 통계만 있는 레지스트리도 유효하다.
 
 ### 2.4 작업 로그 (`packages/slack/src/work-log.ts` ≡ `src/conversation/work-log.ts`)
 
@@ -112,53 +119,94 @@ interface AgentRegistry { nextN; agents: AgentRecord[] /* 오래된 순 */ }
   durationMs?, summary?, tasks?, earlierTasks? }`. `tasks`는 `normalizeTaskProgress` — 그 에이전트가 running일 때만 현재 task
   최대 1개, 아니면 0개. 지시 전문·결과 전문은 싣지 않는다 — 작업 로그의 `agentRef` 항목 raw로 지연 로드한다.
 - 아카이브 카드도 `agents`를 싣고, 아카이브가 running으로 기억한 에이전트는 `unknown`이다.
+- `KanbanSession.agentRoot?: { toolCalls, lastTool? }`(rev 2) — 레지스트리 루트 통계. 서브가 없어도 실린다(`agents` 키는 없음).
+  루트의 나머지 필드는 세션 자신의 것: 상태(활동 상태·열·자동 재개), 활성 시간(`activeLegStartedAtMs`/`activeAccumulatedMs`),
+  모델, task(`tasks`).
 - 실시간: 레지스트리가 바뀌면(`applyAgentEvent`가 true) 그리고 서브의 `tool` 항목마다 `scheduleLiveSessionUpdate` → WS
   `sessionUpdated`(세션당 1초 1회).
 
-## 4. UI [PR-B]
+## 4. UI [PR-B, rev 2 — 재귀]
 
-설계 근거: 선행 사례 조사(Claude Code agent view·VS Code agent map, LangSmith/Langfuse trace tree·waterfall, Devin Agents 탭,
-Linear agent activity)와 설계 자문(trinity-fallback astra-zhuge, fable 의견 병기).
+설계 근거: 선행 사례 조사(LangSmith run tree·Langfuse·OpenAI traces·Braintrust·Weave — 루트와 자식이 같은 span/run 행; Claude Code
+서브에이전트 패널(`(+N)`, main으로 가는 경로)·Copilot(부모 로그 안의 접힌 자식 블록 + 실시간 한 줄)·Cursor·Codex; Temporal·Airflow;
+WAI-ARIA tree·Primer TreeView·NN/g 드릴다운; Discourse·Tildes 모바일 스레드)와 trinity 설계 리뷰 2라운드.
+
+### 4.0 노드 모델
+
+`agentTreeOf(session, column, extras)`(순수) = 루트 노드 하나. 루트 = 메인 에이전트: `{ id: '', root, label: '메인', status, model,
+tasks, toolCalls(agentRoot), lastTool, activeMs, legStartedAt, children }`. 서브 노드 = 레코드 필드 + `status`(정규화)·`toolCalls`·
+`children`. 서브는 `parentId`의 노드 밑에 스폰 순으로 붙는다(상태로 재정렬하지 않음). 부모가 카드에 없거나 자기 자신이거나 순환이면
+루트 밑. 작업 로그에만 보이는 에이전트(카드 상한 밖)는 루트 밑 `확인 불가` 노드(`logOnly`).
+
+루트 상태 = 생명주기 근거(닫힌 카드를 "중단"이라 하지 않는다): 닫힘+terminated → 보관, 닫힘 → 휴면, RUNNING 열에서 자동 재개
+대기(활동 working 아님) → 재개 대기, 활동 working → 실행 중, waiting → 입력 대기, 그 외 → 대기. 상태는 언제나 아이콘 + 단어.
 
 ### 4.1 접힌 카드
 
 서브가 있을 때만 한 줄 `.card-agents`: 상태 점(최대 6개 + `+N`, 점은 보조) + 텍스트 `서브에이전트 N · 실행 r · 실패 f`
 (0인 항목은 생략, 실패는 0보다 크면 항상). 색만으로 상태를 전하지 않는다.
 
-### 4.2 펼친 카드 — 에이전트 트리
+### 4.2 펼친 카드 — 하나의 트리
 
-task 타임라인 앞에 `에이전트` 섹션. 첫 행 `메인` (모델 · task 완료/전체), 그 아래 스폰 순으로 서브 행, 깊이마다 16px 들여쓰기와
-CSS 테두리 트리 선(글리프 아님). 행 = 상태 아이콘+단어 · `A<n>` · 타입 · 설명(말줄임) · 경과/소요 · 툴 수 · `배경` 배지, 둘째 줄 =
-그 서브의 현재 task 또는 마지막 도구. 행 아래 얇은 워터폴 막대: 시간축 = 서브 집합의 첫 시작 ~ 마지막 종료(또는 지금) — 겹침이
-병렬로 읽힌다. 각 행은 버튼: 패널을 그 에이전트로 연다. 처음엔 8행까지, 나머지는 `전체 N개 보기`.
+task 타임라인 앞 `에이전트` 섹션 = `<ul role="tree">` 하나, 루트(메인)부터. 모든 노드가 같은 렌더러 `renderAgentNode`를 지난다:
+`<li role="treeitem" aria-level aria-setsize aria-posinset [aria-expanded] aria-label>` 안에 행 하나 + 열려 있으면 자식 그룹
+`<ul role="group">`. 행 슬롯은 루트와 서브가 같다 — 셰브론 · 상태 아이콘 · 이름(루트: `메인` + 모델 / 서브: `A<n>` + 타입) · 상태
+단어 · 시간(루트: 활성 시간 / 서브: 경과·소요) · 툴 수 · (루트: task 완료/전체) · `배경` · 접힌 노드의 `+N`(하위 수, 하위에 실행
+중/실패가 있으면 그 색) · 설명 · 현재 활동(진행 중 task → SDK 요약 → 마지막 도구) · 워터폴 막대(서브만, 축 = 서브 집합). 이름과
+상태 단어는 줄바꿈되는 한 줄 — 좁은 카드에서 상태 단어가 이름 아래로 내려가고 이름을 지우지 않는다.
 
-### 4.3 패널 — 에이전트 범위
+- 레벨·들여쓰기·기본 펼침은 렌더된 트리의 기준점(카드: 루트) 기준: 루트(aria-level 1)는 언제나 열림(셰브론 없음), 그 자식도 기본
+  열림, 그보다 깊은 부모는 접힌 채 시작(`+N`). 유저의 접기/펼치기는 (트리, 노드)별로 기억되고 기본값보다 앞선다. 라이브 갱신이
+  유저가 연 것을 닫지 않는다.
+- 상한: 부모마다 자식 6개(`AGENT_TREE_ROWS`), 나머지는 그 부모의 `전체 N개 보기` 항목(트리 항목, 다시 누르면 `접기`). 모든 레벨 같다.
+- 들여쓰기 = 행 자신의 레벨(누적 패딩 아님), ≥640px 레벨당 16px·4단 상한, <640px 12px·3단 상한. 트리 선 = CSS 테두리(그룹마다 부모
+  셰브론 위치의 세로선 + 자식마다 꺾임), 상한보다 깊으면 점선.
+- 클릭: 셰브론은 접기만, `전체 N개 보기`는 목록만, 행은 그 노드를 패널에서 연다 — 자식 영역(그룹 여백)은 아무것도 열지 않는다.
+  셰브론은 탭 순서 밖(`tabindex=-1`, 화살표가 키를 맡음), 터치에서 44px 히트 영역.
+- 키보드(WAI-ARIA tree): 트리마다 탭 정지 하나(roving). ↓/↑ 이동, Home/End, → 열기 또는 첫 자식, ← 닫기 또는 부모, Enter/Space
+  = 그 노드를 패널에서 열기. 탭 정지는 상태(`_anActive[트리]`)라 morph가 지우지 않고, 렌더마다 "보이는" 트리에 맞춘다 — 마지막으로
+  있던 노드, 안 보이면 가장 가까운 보이는 조상, 그도 없으면 첫 항목. 라이브 갱신이 포커스된 항목을 없애면(이탈·재부모화) 같은 노드나
+  가장 가까운 남은 조상으로 포커스를 옮긴다(트리에 포커스가 있었을 때만).
+- 서브가 없는 카드는 트리를 그리지 않는다(카드 자체가 메인). 카드 목록 밖 에이전트 수는 `이전 에이전트 N개는 카드 목록 밖`.
 
-- 토큰 배지와 Tasks 사이에 고정 한 줄 `에이전트 바`: 경로(`메인 › A2 Explore`, 각 조각이 버튼) + `에이전트 N ▾` 펼침 버튼.
-  펼치면 세로 트리 목록(높이 상한·자체 스크롤, 모바일도 세로), 항목은 네이티브 버튼 + `aria-current`.
-- 선택한 에이전트가 Tasks 블록과 작업 로그를 정한다(기본 메인). 서브 선택 시 바 아래 요약 한 줄(상태·경과·툴·토큰·배경·SDK 요약).
-- 작업 로그는 선택 범위만: 메인 = `agentId` 없는 항목, 서브 = `agentId`가 그 서브인 항목 + `agentRef`가 그 서브인 항목(맨 앞
-  `지시` = 스폰 호출 raw, 맨 끝 `결과` = 반환 raw — 배경 ack면 `배경 실행 시작`; 스폰 결과가 오류면 `결과`). 메인 로그의 스폰 행에는 `서브에이전트 열기 →` — 방향키 탐색의 한
-  정거장이고 Enter/Space로 연다.
-  task 그룹·원본 열람·키보드 계약(§10 3.1-6, §11 T10)은 선택 범위 안에서 그대로, 그룹 열림 상태는 (에이전트, task) 단위.
-- `attributed` 없는 항목이 `Agent`/`Task` 호출을 포함하면 메인 범위에서 그 구간 앞에 `이전 통합 로그 — 메인/서브 귀속 미확인`.
-- 목록 밖(상한)으로 밀린 에이전트의 항목도 작업 로그에 있으면 목록 끝 `기타 에이전트`로 도달 가능.
-- 서브 선택 중 토큰 배지·대화 내역은 세션 전체 값이라 `세션 전체` 표시.
+### 4.3 패널 — 같은 트리 위의 드릴다운
+
+패널의 에이전트 섹션 = 경로 + 포커스 노드 헤더 + 그 노드의 하위 트리. 별도의 평면 목록은 없다.
+
+- 경로: 포커스 노드의 체인(루트 → 노드)에서 만든다 — 루트 조각도 노드 이름이지 하드코딩 버튼이 아니다. 루트에 포커스면(위에 아무것도
+  없음) 경로를 그리지 않는다. <640px에서는 `‹ 부모 › 여기`만 보인다.
+- 헤더: 어떤 노드든(루트 포함, 서브가 없는 세션도) 같은 슬롯 — 이름 · 상태 단어 · 시간(루트는 `활성`) · 툴 수 · 토큰 · `배경 실행` ·
+  `하위 N` · 설명 — 현재 활동. 토큰: 루트 = `세션 Σ`(서브 호출 포함, 세션 집계 그대로), 서브 = SDK가 보고한 자기 span(자식 포함 — 하위가
+  있으면 `하위 포함`). 클라이언트는 아무것도 합산하지 않는다(이중 계산 금지).
+- 하위 트리: 포커스 노드의 직계 자식 전부(상한 없음)와 그 아래(같은 6 상한·같은 접기), `role="tree"`, 같은 `renderAgentNode`. 레벨은
+  포커스 노드 기준(직계 자식 aria-level 1) — 루트에서 접혀 있던 손주는 그 부모로 드릴하면 열린 채 보인다. 유저가 패널에서 접은
+  노드는 드릴을 오가도 접혀 있다(세션별 패널 트리 상태).
+- 포커스 노드가 Tasks 블록과 작업 로그를 정한다. 작업 로그 범위: 루트 = `agentId` 없는 항목, 서브 = `agentId`가 그 서브인 항목 +
+  `agentRef`가 그 서브인 항목(맨 앞 `지시` = 스폰 호출 raw, 맨 끝 `결과` = 반환 raw — 배경 ack면 `배경 실행 시작`; 스폰 결과가 오류면
+  `결과`). task 그룹·원본 열람·키보드 계약(§10 3.1-6, §11 T10)은 범위 안에서 그대로, 그룹 열림 상태는 (노드, task) 단위.
+- 자식 블록: 부모 범위의 스폰 행 옆(행 버튼 안이 아니라 형제)에 그 자식 노드의 블록 — 상태 아이콘·이름·상태 단어·시간·툴 수·현재 활동·
+  `열기 →`. 화살표 탐색의 정거장이고 Enter/Space·클릭이 그 노드로 드릴한다. 아직 카드에 없는 자식은 `확인 불가`로 그렸다가 도착하면
+  morph로 바뀐다.
+- `attributed` 없는 항목이 `Agent`/`Task` 호출을 포함하면 루트 범위에서 그 구간 앞에 `이전 통합 로그 — 메인/서브 귀속 미확인`.
+- 라이브: `task_update`(캐시 갱신 뒤)·`sessionUpdated`·보드 푸시 모두 같은 `repaintPanelScope()` — 에이전트 섹션, 포커스 노드의 Tasks,
+  task 그룹 머리, 화면의 자식 블록을 다시 그린다. 루트 전용·서브 전용 게이트는 없다(각 부분은 같은 마크업이면 쓰지 않는다).
 
 ### 4.4 반응형·모션
 
-≥1024 / 640–1023 / <640 보드 계약(§10 5) 그대로. 카드 트리는 <640에서 메타가 둘째 줄로 내려가고 워터폴 막대는 전체 폭.
-패널 바·목록 행 ≥44px(<640·coarse). 상태 스피너는 reduced motion에서 정지, 펼침은 §10 4의 토큰만 쓴다.
-라이브 갱신(보드 푸시·`sessionUpdated`)은 바뀐 노드만 맞춘다(morph): 같은 데이터면 DOM 쓰기 0, 바뀌면 카드 트리·패널 바·task
-그룹 머리의 노드를 유지한 채 속성·텍스트만 고친다 — 포커스, 목록 스크롤, 실행 중 스피너·워터폴 애니메이션이 갱신에 끊기지 않는다.
+≥1024 / 640–1023 / <640 보드 계약(§10 5) 그대로. 트리 행·`전체 N개 보기`·경로 조각은 <640·coarse에서 ≥44px. 상태 스피너와 워터폴
+스윕은 reduced motion에서 정지, 셰브론 회전은 §10 4의 토큰만 쓴다. 라이브 갱신(보드 푸시·`sessionUpdated`)은 바뀐 노드만 맞춘다
+(morph — 트리 항목은 노드 id로, 같은 그룹 안에서 짝지음): 같은 데이터면 DOM 쓰기 0, 바뀌면 항목·스피너·막대·자식 블록 노드를 유지한
+채 속성·텍스트만 고친다 — 포커스, 트리 스크롤, 실행 중 애니메이션이 갱신에 끊기지 않는다.
 
 ## 5. 검증
 
 - 단위(PR-A): `src/agent-runtime/__tests__/sdk-message-to-event.subagent.test.ts`, `packages/slack/src/__tests__/stream-processor.subagent.test.ts`,
   `src/session/__tests__/agent-registry.test.ts`, `src/conversation/__tests__/work-log.test.ts`(agentId/agentRef/attributed),
   `packages/slack/src/__tests__/live-usage.test.ts`(sidechain), `src/conversation/__tests__/dashboard-agent-tree.test.ts`(payload).
-- PR-B: `src/conversation/__tests__/dashboard-agent-tree-client.test.ts`(트리 순서·접힌 줄·펼친 트리·워터폴 축·패널 범위·지시/결과 행·
-  귀속 이전 로그 표시·배선) + 브라우저 실측 `scripts/screenshot-agent-tree.ts`(1280/820/390 × 라이트/다크: 가로 넘침 0, <640px 44px,
-  서브 선택 시 경로·Tasks·작업 로그 범위, `서브에이전트 열기 →` 전환 — 100개 검사).
+- PR-B / rev 2: `src/conversation/__tests__/dashboard-agent-tree-client.test.ts`(한 렌더러 — 메인 전용·서브 전용 행 함수 없음,
+  노드 모델·루트 상태·같은 슬롯·aria 레벨/위치·기본 펼침·유저 접기·부모별 상한·탭 정지 하나·트리 키·클릭 경계, 패널 경로·헤더·
+  하위 트리·드릴·토큰 라벨·같은 데이터 무쓰기·게이트 없음, 자식 블록, morph) + `src/session/__tests__/agent-registry.test.ts`·
+  `dashboard-agent-tree.test.ts`(루트 통계·`agentRoot`) + 브라우저 실측 `scripts/screenshot-agent-tree.ts`(1280/820/390 × 라이트/다크:
+  가로 넘침 0, <640px 44px, 트리 항목·레벨·들여쓰기, 셰브론, 트리 키, 패널 드릴·루트 헤더·모바일 경로, 자식 블록 라이브, 포커스 유지).
 - 실행: `env -i PATH="$PATH" HOME="$HOME" SOMA_CONFIG_DIR=$TMP/cfg SOMA_INSTANCE_DIR=$TMP/inst CONVERSATION_VIEWER_PORT=33918 npx tsx scripts/screenshot-agent-tree.ts [outDir]`
   — 봇이 띄운 셸에서는 `env -i`로 배포 환경 변수(뷰어 포트·URL·토큰)를 끊는다.
