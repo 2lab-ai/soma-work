@@ -382,8 +382,15 @@ async function layout(browser: Browser) {
         const narrow = await page.evaluate(() => ({
           cards: document.querySelectorAll('.cap-prov.is-narrow').length,
           bars: document.querySelectorAll('.cap-prov.is-narrow .cap-bar-row').length,
+          // Mockup v5: on a phone each bar has its own full-width line (no ~70px stub).
+          minShare: Math.min(
+            ...Array.from(document.querySelectorAll('.cap-prov.is-narrow .cap-bar-row')).map(
+              (r) => (r.querySelector('.cap-bar') as HTMLElement).offsetWidth / (r as HTMLElement).offsetWidth,
+            ),
+          ),
         }));
         check(narrow.cards === 2 && narrow.bars === 3, `${tag}: narrow cards keep their bars (${narrow.bars})`);
+        check(narrow.minShare >= 0.95, `${tag}: each bar spans the card width (${narrow.minShare.toFixed(2)})`);
       }
       await page.screenshot({ path: path.join(OUT, `cron-capacity-${tag}.png`), fullPage: true });
       await page.context().close();
