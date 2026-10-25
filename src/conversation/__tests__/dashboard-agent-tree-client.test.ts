@@ -77,6 +77,8 @@ const NODE_FNS = [
   'agentNodeName',
   'agentNodeLine',
   'agentNodeAria',
+  'anIdPart',
+  'anTimeId',
   'anIsOpen',
   'agentNodeRow',
   'renderAgentNode',
@@ -265,6 +267,10 @@ describe('one node type — the main agent is the root of the same recursive tre
     expect(st({ activityState: 'idle', terminated: true }, 'closed')).toBe('archived');
     // A RUNNING card waiting out an armed retry is not running a turn.
     expect(st({ activityState: 'idle', autoResume: { kind: 'turn-retry', at: T0 } }, 'working')).toBe('resuming');
+    // The same order as the card's status line: a waiting card reads waiting even while its activity says working;
+    // an archived session off the board is archived whatever column it falls back to (review r1 fable).
+    expect(st({ activityState: 'working' }, 'waiting')).toBe('waiting');
+    expect(st({ activityState: 'idle', terminated: true }, 'idle')).toBe('archived');
   });
 
   it('root and subagents render through renderAgentNode: same item, same slots, nested groups', () => {
@@ -321,16 +327,20 @@ describe('one node type — the main agent is the root of the same recursive tre
 
   it('each item has one composed accessible name; activation and expansion use data attributes, never inline JS', () => {
     const html = ui.renderAgentTree(card(), 'working');
+    // Everything the row shows but the ticking time, which the item names as its description (review r1 astra).
     expect(liOf(html, 'toolu_explore')).toContain(
-      'aria-label="A1 Explore — Trace subagent frames, 실행 중, 툴 18, 하위 1"',
+      'aria-label="A1 Explore — Trace subagent frames, 실행 중, 툴 18, 배경, 하위 1, #T1 Reading the mapper"',
     );
-    expect(liOf(html, '')).toContain('aria-label="메인, 실행 중, 툴 7, 하위 3"');
+    expect(liOf(html, '')).toContain('aria-label="메인 opus-5-5[1m], 실행 중, 툴 7, task 1/2, 하위 3, #T2 Build"');
+    const describedBy = /aria-describedby="([^"]+)"/.exec(liOf(html, 'toolu_explore'))?.[1] ?? '';
+    expect(describedBy).toMatch(/^an-c-inst--C1-t1-toolu-explore-t$/);
+    expect(html).toContain(`<span class="ag-time" id="${describedBy}">`);
     expect(html).not.toContain('onclick=');
     // The root is always open: no chevron. A parent below it has one, out of the tab order.
     expect(html).not.toContain('data-an-toggle=""');
-    expect(html).toContain(
-      '<button type="button" class="an-chev" tabindex="-1" aria-hidden="true" data-an-toggle="toolu_explore">',
-    );
+    // The chevron is a mouse target only — not focusable, so a click never strands focus on it (review r1 fable).
+    expect(html).toContain('<span class="an-chev is-toggle" aria-hidden="true" data-an-toggle="toolu_explore">');
+    expect(html).not.toContain('<button type="button" class="an-chev"');
   });
 
   it('default expansion is relative to the tree: the root and its children are open, deeper parents start folded with +N', () => {
@@ -434,6 +444,17 @@ describe('one node type — the main agent is the root of the same recursive tre
     expect(TEMPLATE).toContain('e.target.closest(\'.an-tree [role="treeitem"]\')');
   });
 
+  it("focus kept across a morph finds a parent's 전체 N개 보기 again by its parent, never as the root (review r1 grok)", () => {
+    const k = load<{ anItemKey(item: unknown): string }>(['anItemId', 'anItemKey'], []);
+    const item = (attrs: Record<string, string>) => ({ getAttribute: (n: string) => (n in attrs ? attrs[n] : null) });
+    expect(k.anItemKey(item({ 'data-an-all': 'k0' }))).toBe('a:k0');
+    expect(k.anItemKey(item({ 'data-an-all': '' }))).toBe('a:');
+    expect(k.anItemKey(item({ 'data-agent-open': '' }))).toBe('n:');
+    expect(k.anItemKey(item({ 'data-agent-select': 'toolu_x' }))).toBe('n:toolu_x');
+    expect(fnBody('anFocusCapture')).toContain('chain.push(anItemKey(cur));');
+    expect(fnBody('anFocusRestore')).toContain('anItemKey(items[i]) === cap.chain[c]');
+  });
+
   it('clicks: the chevron only folds, a row opens that node, the area of its children opens nothing', () => {
     const body = fnBody('anClick');
     const row = body.indexOf("e.target.closest('.an-row')");
@@ -443,6 +464,54 @@ describe('one node type — the main agent is the root of the same recursive tre
     // The card board and the panel share it.
     expect(TEMPLATE).toContain('if (anClick(e, root)) return;');
     expect(TEMPLATE).toContain('if (anClick(e, bar)) return;');
+  });
+
+  it('a parent cycle of any length is broken — every agent reachable, the descendant count finite (review r1 astra)', () => {
+    const ring = Array.from({ length: 65 }, (_, i) => ({
+      id: `r${i}`,
+      n: i + 1,
+      parentId: `r${(i + 1) % 65}`,
+      status: 'completed',
+      startedAt: T0 + i,
+    }));
+    const root = ui.agentTreeOf(card({ agents: ring }), 'working');
+    const reached = new Set<string>();
+    const walk = (n: Node) => {
+      for (const c of n.children) {
+        reached.add(c.id);
+        walk(c);
+      }
+    };
+    walk(root);
+    expect(reached.size).toBe(65);
+    const d = load<{ anDesc(n: unknown): { n: number } }>(['anDesc'], []);
+    expect(d.anDesc(root).n).toBe(65);
+  });
+
+  it("the root's open leg keeps counting while the turn waits on a permission (review r1 astra)", () => {
+    const html = ui.renderAgentTree(card({ activityState: 'waiting' }), 'waiting');
+    const rootRow = html.slice(html.indexOf('<div class="an-row">'), html.indexOf('<ul class="an-kids"'));
+    expect(rootRow).toContain('<span class="ag-st">입력 대기</span>');
+    expect(rootRow).toContain('data-leg-started="' + T0 + '"');
+  });
+
+  it('stop, focus and state move together; keyboard activation hands focus to the panel and back (review r1 astra)', () => {
+    const stop = fnBody('anSetStop');
+    expect(stop).toContain(`tree.querySelectorAll('[role="treeitem"][tabindex="0"]')`);
+    expect(stop).toContain("_anActive[ns] = all !== null ? 'a:' + all : anItemId(to);");
+    expect(fnBody('anMoveStop')).toContain('anSetStop(tree, ns, to);');
+    expect(fnBody('anFocusRestore')).toContain("anSetStop(tree, tree.getAttribute('data-an-ns') || '', to);");
+    expect(fnBody('renderAgentNodes')).toContain("tabindex=\"' + (ctx.stop === allKey ? '0' : '-1') + '\"");
+    expect(fnBody('anTreeHtml')).toContain("String(want).indexOf('a:') === 0");
+    expect(fnBody('anOnKey')).toContain('anActivate(item, true);');
+    expect(fnBody('anActivate')).toContain("document.querySelector('#panel-agents .pa-focus')");
+    expect(fnBody('closePanel')).toContain('var back = _anReturnFocus;');
+  });
+
+  it('a poll without the WebSocket repaints the focused node too; the server pushes a main tool count (review r1 astra)', () => {
+    expect(fnBody('loadSessions')).toContain('repaintPanelScope();');
+    const index = readFileSync(join(__dirname, '..', '..', 'index.ts'), 'utf-8');
+    expect(index).toContain("if (entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);");
   });
 
   it('the same card renders the same markup (the reconciler leaves it alone)', () => {
@@ -743,6 +812,16 @@ describe('panel — drill-down over the same node type (path · focused node · 
     const { m, out } = panel('toolu_explore', card({ agents }));
     m.renderPanelAgents();
     expect(out.html).toContain('238000 tok · 하위 포함');
+  });
+
+  it('the current crumb is styled by the attribute it carries; a lost focus falls back to the tree stop (review r1 fable)', () => {
+    expect(TEMPLATE).toContain('.pa-crumb[aria-current="page"] {');
+    expect(TEMPLATE).toContain('.pa-crumb:not([aria-current="page"]):hover');
+    expect(TEMPLATE).not.toContain('.pa-crumb[aria-current="true"]');
+    expect(fnBody('anFocusRestore')).toContain(`el.querySelector('.an-tree [role="treeitem"][tabindex="0"]')`);
+    // The header counts every node below; the subtree head counts direct children — different words.
+    expect(fnBody('renderAgentFocus')).toContain("'하위 전체 ' + desc.n");
+    expect(fnBody('renderPanelAgents')).toContain('하위 에이전트 <b>');
   });
 
   it('an unchanged panel writes nothing — focus, scroll and spinners survive a live update', () => {

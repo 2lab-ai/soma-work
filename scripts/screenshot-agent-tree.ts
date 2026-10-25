@@ -189,7 +189,8 @@ function makeBoard() {
           },
           { id: 'T3', content: 'Design the tree', status: 'pending', toolCalls: 0 },
         ],
-        agents: AGENTS,
+        // A copy per board: live pushes edit the board, never the fixture.
+        agents: structuredClone(AGENTS),
         agentsTotal: 5,
         agentRoot: { toolCalls: 16, lastTool: 'Agent' },
       }),
@@ -338,7 +339,9 @@ async function installMocks(page: Page) {
   await page.route('**/api/dashboard/users', (r) => r.fulfill({ json: { users: [{ id: 'U001', name: 'Zhuge' }] } }));
   await page.route('**/api/dashboard/stats**', (r) => r.fulfill({ json: { stats: [], byDay: [] } }));
   await page.route('**/api/dashboard/usage**', (r) => r.fulfill({ json: { totals: {}, byUser: {}, byDay: [] } }));
-  await page.route('**/api/dashboard/sessions**', (r) => r.fulfill({ json: { board: makeBoard() } }));
+  // The board the server would serve now — live pushes edit it too, so a board
+  // reload in the middle of a scenario never rolls a pushed tool count back.
+  await page.route('**/api/dashboard/sessions**', (r) => r.fulfill({ json: { board: BOARD } }));
   await page.route(/\/api\/dashboard\/session\/[^/?]+\/worklog/, (r) => {
     const conv = decodeURIComponent(new URL(r.request().url()).pathname.split('/')[4] || '');
     const log = WORKLOG[conv];
@@ -403,21 +406,21 @@ interface SessionEdit {
   tools?: number;
   shiftMs?: number;
 }
-// The page's own session cache (a top-level `let` of the dashboard script).
-declare const _sessionCache: Record<
-  string,
-  { agents?: Array<{ id: string; toolCalls: number }>; lastActivity: string }
->;
+// The server-side board of the running scenario (reset per scenario).
+let BOARD = makeBoard();
 async function pushSession(page: Page, key: string, edit: SessionEdit = {}) {
+  type Live = { key: string; lastActivity: string; agents?: Array<{ id: string; toolCalls: number }> };
+  const all = Object.values(BOARD).flat() as Live[];
+  const s = all.find((x) => x.key === key);
+  if (!s) throw new Error(`no session ${key}`);
+  for (const a of s.agents ?? []) if (a.id === edit.agent) a.toolCalls += edit.tools ?? 0;
+  if (edit.shiftMs) s.lastActivity = new Date(Date.parse(s.lastActivity) + edit.shiftMs).toISOString();
   await page.evaluate(
-    ({ k, e }) => {
-      const s = JSON.parse(JSON.stringify(_sessionCache[k]));
-      for (const a of s.agents ?? []) if (a.id === e.agent) a.toolCalls += e.tools ?? 0;
-      if (e.shiftMs) s.lastActivity = new Date(Date.parse(s.lastActivity) + e.shiftMs).toISOString();
+    (payload) => {
       // biome-ignore lint/suspicious/noExplicitAny: the stub socket the page opened
-      (window as any).__ws.onmessage({ data: JSON.stringify({ type: 'sessionUpdated', session: s }) });
+      (window as any).__ws.onmessage({ data: payload });
     },
-    { k: key, e: edit },
+    JSON.stringify({ type: 'sessionUpdated', session: s }),
   );
   await page.waitForTimeout(120);
 }
@@ -430,6 +433,7 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     isMobile: width < 640,
   });
   const page = await ctx.newPage();
+  BOARD = makeBoard();
   await installMocks(page);
   await page.goto(`${BASE_URL}/dashboard/U001`);
   await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 2, null, { timeout: 15000 });
@@ -521,6 +525,19 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     `${tag}: the chevron unfolds A3 — A5 at level 4 (${deep?.level})`,
   );
   check((await overflow(page)) === 0, `${tag}: unfolded tree — no page overflow`);
+  // After a chevron click focus sits on the item, not on the chevron: the arrows still work.
+  const afterChev = await page.evaluate(() => {
+    const a = document.activeElement;
+    return a?.getAttribute('role') === 'treeitem'
+      ? a.getAttribute('data-agent-open')
+      : `(${a?.tagName}.${a?.className})`;
+  });
+  await page.keyboard.press('ArrowDown');
+  const afterChevDown = await page.evaluate(() => document.activeElement?.getAttribute('data-agent-open') ?? '');
+  check(
+    afterChev === 'toolu_nested' && afterChevDown === 'toolu_deep',
+    `${tag}: a chevron click leaves focus on its item, ↓ moves on (${afterChev} → ${afterChevDown})`,
+  );
   const cardBox0 = await page.locator(`[data-session-key="${K('200')}"]`).boundingBox();
   if (cardBox0) await page.screenshot({ path: path.join(OUT, `${theme}-${width}-card-tree-deep.png`), clip: cardBox0 });
   // Tree keys (WAI-ARIA): ↓ from the root to A1, → into A3, ← folds A3, ← up to A1.

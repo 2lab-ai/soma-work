@@ -3732,9 +3732,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .an.is-root > .an-row { border-top: 0; }
 .an:focus-visible > .an-row, .an-all:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .an-chev { grid-column: 1; grid-row: 1; position: relative; width: 16px; height: 16px; display: grid; place-items: center; margin: 1px 0 0; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--ib-muted); font: inherit; }
-button.an-chev { cursor: pointer; }
-button.an-chev::before { content: ''; position: absolute; inset: -8px; }
-button.an-chev svg { width: 12px; height: 12px; transition: transform var(--dur-expand) var(--ease-out); }
+.an-chev.is-toggle { cursor: pointer; }
+.an-chev.is-toggle::before { content: ''; position: absolute; inset: -8px; }
+.an-chev svg { width: 12px; height: 12px; transition: transform var(--dur-expand) var(--ease-out); }
 .an[aria-expanded="true"] > .an-row > .an-chev svg { transform: rotate(90deg); }
 .an-kids > .an::before, .an-kids > .an-all::before { content: ''; position: absolute; left: calc(8px + (min(var(--an-lvl, 1), 4) - 1) * 16px + 7px); top: 0; bottom: 0; width: 1px; background: var(--ib-card-border); pointer-events: none; }
 .an-kids > .is-last::before { bottom: auto; height: 17px; }
@@ -3753,7 +3753,7 @@ button.an-chev svg { width: 12px; height: 12px; transition: transform var(--dur-
 .an-all { position: relative; display: block; padding: 8px 12px 8px calc(8px + min(var(--an-lvl, 0), 4) * 16px + 22px); border-top: 1px solid var(--ib-card-border); color: var(--ib-text-2); font-size: 12.5px; cursor: pointer; outline: none; }
 @media (pointer: coarse) {
   /* The chevron is the only fold control on touch: a 44px hit zone around its 16px glyph. */
-  button.an-chev::before { inset: -14px; }
+  .an-chev.is-toggle::before { inset: -14px; }
   .an-row, .an-all { min-height: 44px; }
 }
 .ag-icon { grid-column: 2; grid-row: 1; width: 16px; height: 16px; display: grid; place-items: center; color: var(--ag-c); }
@@ -4503,10 +4503,11 @@ button.an-chev svg { width: 12px; height: 12px; transition: transform var(--dur-
 .pa-path { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 13px; }
 .pa-crumb { min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 6px; border: 0; border-radius: 6px; background: none; color: var(--text-secondary); font: inherit; cursor: pointer; }
 .pa-crumb:first-child { flex-shrink: 0; }
-.pa-crumb[aria-current="true"] { color: var(--text); font-weight: 600; cursor: default; }
+.pa-crumb[aria-current="page"] { color: var(--text); font-weight: 600; cursor: default; }
 .pa-crumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .pa-sep { flex-shrink: 0; color: var(--text-tertiary); }
-.pa-focus { --ag-c: var(--text-tertiary); margin-top: 2px; }
+.pa-focus { --ag-c: var(--text-tertiary); margin-top: 2px; border-radius: 6px; outline: none; }
+.pa-focus:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
 .pa-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 14px; line-height: 1.35; }
 .pa-name .ag-type { font-weight: 650; }
 .pa-name .ag-id { font-size: 12px; }
@@ -5038,9 +5039,9 @@ button.an-chev svg { width: 12px; height: 12px; transition: transform var(--dur-
 }
 @media (hover: hover) and (pointer: fine) {
   .an-row:hover, .an-all:hover { background: var(--ib-pill); }
-  button.an-chev:hover { color: var(--ib-text); }
+  .an-chev.is-toggle:hover { color: var(--ib-text); }
   .wl-child:hover { border-color: var(--border-focus); }
-  .pa-crumb:not([aria-current="true"]):hover { background: var(--surface-raised); color: var(--text); }
+  .pa-crumb:not([aria-current="page"]):hover { background: var(--surface-raised); color: var(--text); }
   .wl-agent-link:not(.wl-child):hover { text-decoration: underline; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -8075,7 +8076,8 @@ function agentIconHtml(st) {
 function agentTimeHtml(a) {
   if (a && a.root) {
     var acc = toNum(a.activeMs);
-    var leg = a.status === 'running' ? (Number(a.legStartedAt) || 0) : 0;
+    // An open leg runs on while the turn waits for a permission (the card reads waiting).
+    var leg = a.status === 'running' || a.status === 'waiting' ? (Number(a.legStartedAt) || 0) : 0;
     if (!acc && !leg) return '';
     return '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '" title="활성 시간"></span>';
   }
@@ -8127,12 +8129,15 @@ function agentSpanStyle(a, axis) {
 // its fields: active time instead of a run time, the model, the session's tasks.
 
 // The root's status from lifecycle evidence — never "stopped" for a closed card.
+// Same order as the card's status line (renderCardStatus): a waiting card
+// reads waiting even while its activity says working.
 function rootStatusOf(s, col) {
-  if (col === 'closed') return s && s.terminated ? 'archived' : 'sleeping';
+  if (s && s.terminated) return 'archived';
+  if (col === 'closed') return 'sleeping';
+  if (col === 'waiting' || (s && s.activityState === 'waiting')) return 'waiting';
   if (pendingAutoResume(s || {}, col)) return 'resuming';
   var act = s ? s.activityState : '';
   if (act === 'working') return 'running';
-  if (act === 'waiting' || col === 'waiting') return 'waiting';
   if (act === 'sleeping') return 'sleeping';
   return 'idle';
 }
@@ -8182,8 +8187,12 @@ function agentTreeOf(s, col, extras) {
     var node = nodes[j];
     var p = node.parentId && byId[node.parentId] && node.parentId !== node.id ? String(node.parentId) : '';
     // A walk up that comes back to this node is a cycle: hang it from the root.
-    for (var up = p, guard = 0; up && guard < 64; guard++) {
+    // (A loop above it that does not pass through it is broken by its own members.)
+    var walked = Object.create(null);
+    for (var up = p; up; ) {
       if (up === node.id) { p = ''; break; }
+      if (walked[up]) break;
+      walked[up] = true;
       var pn = byId[up];
       up = pn && pn.parentId && byId[pn.parentId] ? String(pn.parentId) : '';
     }
@@ -8206,8 +8215,11 @@ function agentTreeOf(s, col, extras) {
 function anDesc(node) {
   var out = { n: 0, running: false, failed: false };
   var stack = node.children.slice();
+  var met = Object.create(null);
   while (stack.length) {
     var c = stack.pop();
+    if (met[c.id]) continue;
+    met[c.id] = true;
     out.n++;
     if (c.status === 'running') out.running = true;
     if (c.status === 'failed') out.failed = true;
@@ -8227,10 +8239,31 @@ function agentNodeLine(node) {
   return '<span class="ag-id">A' + toNum(node.n) + '</span><span class="ag-type">' + esc(node.type || 'agent') + '</span>';
 }
 // One accessible name per tree item (its visual columns are not read one by one).
+// The live time is not in it (it changes every second): the item points at it
+// with aria-describedby instead.
 function agentNodeAria(node, desc) {
-  var parts = [agentNodeName(node) + (node.description ? ' — ' + node.description : ''), AGENT_STATUS_LABEL[node.status] || '', '툴 ' + toNum(node.toolCalls)];
+  var parts = [agentNodeName(node) + (node.root && node.model ? ' ' + node.model : '') + (node.description ? ' — ' + node.description : ''), AGENT_STATUS_LABEL[node.status] || '', '툴 ' + toNum(node.toolCalls)];
+  if (node.root) {
+    var tasks = node.tasks || [];
+    var done = 0;
+    for (var i = 0; i < tasks.length; i++) if (tasks[i] && tasks[i].status === 'completed') done++;
+    if (tasks.length) parts.push('task ' + done + '/' + tasks.length);
+  }
+  if (node.background) parts.push('배경');
   if (desc && desc.n) parts.push('하위 ' + desc.n);
+  var act = agentActivity(node);
+  if (act) parts.push(act);
   return parts.join(', ');
+}
+// A DOM id part from any text (tree namespace, node id): letters and digits kept, the rest '-'.
+function anIdPart(v) {
+  var out = '';
+  var str = String(v);
+  for (var i = 0; i < str.length; i++) {
+    var c = str.charAt(i);
+    out += (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ? c : '-';
+  }
+  return out;
 }
 // Open or folded: the user's choice for this node in this tree, else the
 // default — the anchor and its children open (d ≤ 1), deeper parents folded.
@@ -8245,11 +8278,11 @@ function anIsOpen(ns, node, d) {
 function agentNodeRow(node, ctx, desc, open) {
   var st = node.status;
   var chev = node.children.length && !node.root
-    ? '<button type="button" class="an-chev" tabindex="-1" aria-hidden="true" data-an-toggle="' + escAttr(node.id) + '">' + AN_CHEV_SVG + '</button>'
+    ? '<span class="an-chev is-toggle" aria-hidden="true" data-an-toggle="' + escAttr(node.id) + '">' + AN_CHEV_SVG + '</span>'
     : '<span class="an-chev"></span>';
   var meta = '<span class="ag-st">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span>';
   var time = agentTimeHtml(node);
-  if (time) meta += '<span class="ag-time">' + time + '</span>';
+  if (time) meta += '<span class="ag-time" id="' + anTimeId(ctx, node) + '">' + time + '</span>';
   meta += '<span class="ag-tools" title="툴 호출 수">툴 ' + toNum(node.toolCalls) + '</span>';
   if (node.root) {
     var tasks = node.tasks || [];
@@ -8273,6 +8306,9 @@ function agentNodeRow(node, ctx, desc, open) {
     + (ctx.axis && !node.root && !node.logOnly ? '<span class="ag-span" aria-hidden="true"><i style="' + agentSpanStyle(node, ctx.axis) + '"></i></span>' : '')
     + '</span></div>';
 }
+function anTimeId(ctx, node) {
+  return 'an-' + anIdPart(ctx.ns) + '-' + anIdPart(node.id || 'root') + '-t';
+}
 // One tree item, recursively: the node's row, then — while it is open — its
 // children in a group. d = depth from the tree's anchor; aria-level and the
 // indent follow it (ctx.levelBase: 1 when the anchor is drawn, 0 when it is the
@@ -8288,6 +8324,7 @@ function renderAgentNode(node, d, pos, size, ctx, last) {
     + (hasKids ? ' aria-expanded="' + (open ? 'true' : 'false') + '"' : '')
     + ' tabindex="' + (node.id === ctx.stop ? '0' : '-1') + '"'
     + ' aria-label="' + escAttr(agentNodeAria(node, desc)) + '"'
+    + (agentTimeHtml(node) ? ' aria-describedby="' + anTimeId(ctx, node) + '"' : '')
     + ' ' + ctx.act + '="' + escAttr(node.id) + '"'
     + ' style="--an-lvl:' + Math.max(0, lvl - 1) + '">'
     + agentNodeRow(node, ctx, desc, open);
@@ -8305,7 +8342,10 @@ function renderAgentNodes(parent, d, ctx) {
   for (var i = 0; i < shown; i++) html += renderAgentNode(kids[i], d, i + 1, kids.length, ctx, i === shown - 1 && !capped);
   if (capped) {
     var lvl = d + ctx.levelBase;
-    html += '<li class="an-all is-last" role="treeitem" aria-level="' + lvl + '" tabindex="-1" data-an-all="' + escAttr(parent.id) + '"'
+    var allKey = 'a:' + parent.id;
+    ctx.seen[allKey] = true;
+    html += '<li class="an-all is-last" role="treeitem" aria-level="' + lvl + '" tabindex="' + (ctx.stop === allKey ? '0' : '-1') + '" data-an-all="' + escAttr(parent.id) + '"'
+      + ' aria-label="' + escAttr(all ? '접기 — 전체 ' + kids.length + '개 표시 중' : '전체 ' + kids.length + '개 보기 — ' + AGENT_TREE_ROWS + '개 표시 중') + '"'
       + ' style="--an-lvl:' + Math.max(0, lvl - 1) + '"><span class="an-all-text">' + (all ? '접기' : '전체 ' + kids.length + '개 보기') + '</span></li>';
   }
   return html;
@@ -8324,10 +8364,12 @@ function anTreeHtml(root, anchor, ctx) {
   ctx.stop = want;
   var html = draw();
   if (ctx.seen[want]) return html;
-  var next = '';
-  for (var cur = root.byId[want], guard = 0; cur && !cur.root && guard < 64; guard++) {
+  // A parent's 전체 N개 보기 that is gone (the list shrank) hands the stop to that parent.
+  var start = String(want).indexOf('a:') === 0 ? root.byId[String(want).slice(2)] : root.byId[want];
+  var next = start && ctx.seen[start.id] && start.id !== want ? start.id : '';
+  for (var cur = start, guard = 0; !next && cur && !cur.root && guard < 64; guard++) {
     cur = root.byId[cur.parentId];
-    if (cur && ctx.seen[cur.id]) { next = cur.id; break; }
+    if (cur && ctx.seen[cur.id]) next = cur.id;
   }
   ctx.stop = next || first;
   return draw();
@@ -8451,13 +8493,28 @@ function anItemId(item) {
   if (v === null) v = item.getAttribute('data-agent-select');
   return v || '';
 }
-// Activate a tree item: open the panel on that node (card) or drill into it (panel).
-function anActivate(item) {
+// What an item is, for finding it again after a morph: a node ('n:' + id) or
+// a parent's 전체 N개 보기 ('a:' + the parent's id) — never confused with the root.
+function anItemKey(item) {
+  var all = item.getAttribute('data-an-all');
+  return all !== null ? 'a:' + all : 'n:' + anItemId(item);
+}
+// Activate a tree item: open the panel on that node (card) or drill into it
+// (panel). From the keyboard, opening the panel moves focus onto the shown
+// node's header in it; closing the panel brings focus back to the item.
+var _anReturnFocus = null;
+function anActivate(item, byKey) {
   var openId = item.getAttribute('data-agent-open');
   if (openId !== null) {
     var cardEl = item.closest('.card');
     var key = cardEl && cardEl.getAttribute('data-session-key');
-    if (key) openPanelAgent(key, openId);
+    if (!key) return;
+    openPanelAgent(key, openId);
+    if (byKey) {
+      _anReturnFocus = item;
+      var head = document.querySelector('#panel-agents .pa-focus');
+      if (head && head.focus) head.focus();
+    }
     return;
   }
   var sel = item.getAttribute('data-agent-select');
@@ -8502,11 +8559,20 @@ function anKeyAction(key, info) {
   }
   return '';
 }
+// The item that takes the tree's tab stop: exactly one tabindex="0" in the
+// tree, and the state the next render reads (a node id, or 'a:' + the parent's
+// id for a 전체 N개 보기) — DOM, focus and state never disagree.
+function anSetStop(tree, ns, to) {
+  var olds = tree.querySelectorAll('[role="treeitem"][tabindex="0"]');
+  for (var i = 0; i < olds.length; i++) if (olds[i] !== to) olds[i].setAttribute('tabindex', '-1');
+  to.setAttribute('tabindex', '0');
+  var all = to.getAttribute('data-an-all');
+  _anActive[ns] = all !== null ? 'a:' + all : anItemId(to);
+}
 function anMoveStop(ns, from, to) {
   if (!to || to === from) return;
-  from.setAttribute('tabindex', '-1');
-  to.setAttribute('tabindex', '0');
-  if (!to.classList.contains('an-all')) _anActive[ns] = anItemId(to);
+  var tree = to.closest('.an-tree');
+  if (tree) anSetStop(tree, ns, to);
   to.focus();
 }
 function anOnKey(e, item) {
@@ -8519,8 +8585,11 @@ function anOnKey(e, item) {
   if (!act) return;
   e.preventDefault();
   if (act === 'activate') {
-    if (isAll) showAllAgentChildren(ns, item.getAttribute('data-an-all') || '');
-    else anActivate(item);
+    if (isAll) {
+      // The 전체 N개 보기 item keeps the stop (it now reads 접기).
+      _anActive[ns] = 'a:' + (item.getAttribute('data-an-all') || '');
+      showAllAgentChildren(ns, item.getAttribute('data-an-all') || '');
+    } else anActivate(item, true);
     return;
   }
   if (act === 'expand' || act === 'collapse') {
@@ -8555,7 +8624,7 @@ function anFocusCapture(el) {
   if (!item) return null;
   var chain = [];
   for (var cur = item; cur && el.contains(cur); cur = cur.parentNode && cur.parentNode.closest ? cur.parentNode.closest('[role="treeitem"]') : null) {
-    chain.push(anItemId(cur));
+    chain.push(anItemKey(cur));
   }
   return { node: a, chain: chain };
 }
@@ -8563,14 +8632,18 @@ function anFocusRestore(el, cap) {
   if (!cap) return;
   if (document.activeElement === cap.node && el.contains(cap.node)) return;
   var items = el.querySelectorAll('.an-tree [role="treeitem"]');
-  for (var c = 0; c < cap.chain.length; c++) {
+  var to = null;
+  for (var c = 0; c < cap.chain.length && !to; c++) {
     for (var i = 0; i < items.length; i++) {
-      if (!items[i].classList.contains('an-all') && anItemId(items[i]) === cap.chain[c]) {
-        items[i].focus();
-        return;
-      }
+      if (anItemKey(items[i]) === cap.chain[c]) { to = items[i]; break; }
     }
   }
+  // Nothing of the chain survived (the panel draws no root): the tree's own stop.
+  if (!to) to = el.querySelector('.an-tree [role="treeitem"][tabindex="0"]');
+  if (!to) return;
+  var tree = to.closest('.an-tree');
+  if (tree) anSetStop(tree, tree.getAttribute('data-an-ns') || '', to);
+  to.focus();
 }
 
 // ── Panel scope: which node's tasks and work log the panel shows (§4.3) ──
@@ -8612,6 +8685,9 @@ function panelLogOnlyAgents(s) {
 }
 // The board column a session sits in (the panel's root status reads it).
 function sessionColOf(key) {
+  var el = typeof _cardEls !== 'undefined' ? _cardEls[key] : null;
+  var onCard = el && el.getAttribute ? el.getAttribute('data-col') : '';
+  if (onCard) return onCard;
   var s = _sessionCache[key];
   var cols = ['working', 'waiting', 'idle', 'closed'];
   for (var c = 0; c < cols.length; c++) {
@@ -8638,10 +8714,10 @@ function renderAgentFocus(node, s) {
     bits.push(formatTokens(node.tokens) + ' tok' + (node.children.length ? ' · 하위 포함' : ''));
   }
   if (node.background) bits.push('배경 실행');
-  if (desc.n) bits.push('하위 ' + desc.n);
+  if (desc.n) bits.push('하위 전체 ' + desc.n);
   var line = node.description || '';
   var act = agentActivity(node);
-  return '<div class="pa-focus is-' + st + '">'
+  return '<div class="pa-focus is-' + st + '" tabindex="-1" aria-label="' + escAttr(agentNodeAria(node, desc)) + '">'
     + '<div class="pa-name">' + agentNodeLine(node) + '</div>'
     + '<div class="pa-sum">' + bits.join('<span class="pa-dot" aria-hidden="true">&middot;</span>') + '</div>'
     + (line || act ? '<div class="pa-desc">' + esc(line) + (line && act ? ' — ' : '') + (act ? '<span class="pa-act">' + esc(act) + '</span>' : '') + '</div>' : '')
@@ -10127,7 +10203,12 @@ async function loadSessions() {
     _lastPolledBoard = data.board;
     if (data.lifecycle) _lifecycle = data.lifecycle;
     renderBoard(data.board);
-    if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) renderPanelControls(_sessionCache[panelSessionKey]);
+    if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
+      renderPanelControls(_sessionCache[panelSessionKey]);
+      // Without the WebSocket (or for a sibling instance) the poll is the only
+      // update: the focused node, its tasks and child blocks follow it too.
+      repaintPanelScope();
+    }
   } catch (e) { console.error('Failed to load sessions', e); }
 }
 
@@ -12281,6 +12362,10 @@ function closePanel() {
   _panelFocusWorkLog = false;
   _panelStickBottom = false;
   _panelOnQuestion = false;
+  // A panel opened from an agent tree by the keyboard hands focus back to that item.
+  var back = _anReturnFocus;
+  _anReturnFocus = null;
+  if (back && document.body.contains(back) && back.focus) back.focus();
 }
 
 document.addEventListener('keydown', function(e) {
