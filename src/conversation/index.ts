@@ -4,5 +4,6 @@ export * from './recorder';
 export * from './storage';
 export * from './summarizer';
 export * from './types';
+export type { TurnAttachment, UserMediaFile } from './user-media';
 export * from './viewer';
 export * from './web-server';
