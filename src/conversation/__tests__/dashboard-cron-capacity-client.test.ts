@@ -62,6 +62,7 @@ const CAP_FNS = [
   'capCount',
   'capNextLine',
   'capDur',
+  'capNextEvent',
   'capNextShort',
   'capBarRow',
   'capDisclosure',
@@ -418,13 +419,29 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     expect(codex).toMatch(/cap-bar-row is-wk[\s\S]*?<b>0\.8<\/b> \/ 1\.4 계정 <em>59%<\/em>/);
   });
 
-  it('each bar says what raises it next, through which reset', () => {
-    expect(claude).toContain('다음 +0.6계정 · 2시간 0분 후 · 5시간 리셋 (ai1)');
-    expect(claude).toContain('다음 +0.6계정 · 1일 0시간 후 · 일주일 리셋 (ai2)');
+  // Trinity mockup v5 (grok P1): two tokens a reader needs — how much, when. The bar's own
+  // reset is implied by the bar; the account and the reset name move to the tooltip.
+  it('each bar says what raises it next in two tokens; which reset and which account sit in its tooltip', () => {
+    expect(claude).toContain('<div class="cap-bar-next" title="5시간 리셋 · ai1">다음 +0.6계정 · 2시간 0분 후</div>');
+    expect(claude).toContain('<div class="cap-bar-next" title="일주일 리셋 · ai2">다음 +0.6계정 · 1일 0시간 후</div>');
+    expect(claude).not.toMatch(/cap-bar-next"[^>]*>[^<]*\(ai\d+\)/);
+  });
+
+  it("a refill that is not the bar's own reset names its cause (a block lifting)", () => {
+    const lift = {
+      ...view,
+      groups: [
+        { ...view.groups[0], events: [{ account: 'ai9', cause: 'release', at: NOW_S + H, dNow: 0.5, dWeek: 0 }] },
+      ],
+    };
+    expect(fns.renderCapacity(lift, NOW_S * 1000, 1200)).toContain(
+      '<div class="cap-bar-next" title="차단 해제 · ai9">다음 +0.5계정 · 1시간 0분 후 · 차단 해제</div>',
+    );
   });
 
   it('one muted line keeps the denominator honest: counted, blocked, left out and why', () => {
-    expect(claude).toContain('3/5 반영 · 차단 1 · 제외 2(보류·티어 미지정)');
+    // "(차단 1 포함)": the blocked accounts are inside the counted ones (trinity mockup v5, fable P2)
+    expect(claude).toContain('3/5 반영(차단 1 포함) · 제외 2(보류·티어 미지정)');
   });
 
   it('2 — one timeline: a 5h reset is a teal ● (label above), a weekly reset a violet ◆ (label below)', () => {
@@ -454,7 +471,9 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
       groups: [{ ...view.groups[0], events: [{ account: 'ai8', cause: '7d', at: NOW_S + 8 * H, dNow: 1, dWeek: 1 }] }],
     };
     const out = fns.renderCapacity(bound, NOW_S * 1000, 1200);
-    expect(out).toContain('일주일 한도에 묶임 — 다음 일주일 리셋 때 +1.0계정 · 8시간 0분 후 (ai8)');
+    expect(out).toContain(
+      '<div class="cap-bar-next" title="일주일 리셋 · ai8">일주일 한도에 묶임 · 다음 +1.0계정 · 8시간 0분 후</div>',
+    );
     expect(out).toContain('5시간 리셋 — 7일 안에 늘어날 양 없음');
   });
 
@@ -510,7 +529,7 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     const later = fns.renderCapacity(view, (NOW_S + 2 * H + 60) * 1000, 1200);
     const c2 = later.slice(later.indexOf('data-group="claude"'), later.indexOf('data-group="codex"'));
     expect(c2).toMatch(/cap-bar-row is-h5[\s\S]*?<b>1\.1<\/b>/); // 0.5 + ai1's 5h reset +0.6
-    expect(c2).not.toContain('5시간 리셋 (ai1)');
+    expect(c2).not.toContain('title="5시간 리셋 · ai1"');
   });
 
   it('small gains read "+0.1계정 미만", never "nothing"', () => {

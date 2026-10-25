@@ -5270,7 +5270,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cap-chip em { font-style: normal; font-weight: 600; font-variant-numeric: tabular-nums; }
 .cap-summary .cap-m.is-now b, .cap-summary .cap-m.is-now em { color: var(--cap-now); }
 .cap-summary .cap-m.is-wk b, .cap-summary .cap-m.is-wk em { color: var(--cap-wk); }
-@media (max-width: 639px) { .cap-chip .cap-chip-of { display: none; } }
 .cap-prov.is-empty { box-shadow: inset 0 0 0 1px var(--st-fail); }
 .cap-prov.is-low { box-shadow: inset 0 0 0 1px var(--st-wait); }
 .cap-pname { font-size: 16px; font-weight: 700; }
@@ -5910,14 +5909,18 @@ body.nt-open .new-task-fab { display: none !important; }
   background: var(--ib-card);
   box-shadow: inset 0 0 0 1px var(--ib-card-border);
 }
-@media (max-width: 639px) {
-  /* Phones keep labelled counts and % for both windows (requirement 1a, trinity chip
-     confirm): tighter chips, and the folded summary wraps to a second row rather
-     than cut a chip or drop the counts. After the base .cap-chip rule so it wins. */
-  .cap-chip { padding: 2px 6px; font-size: 11px; }
+@media (max-width: 839px) {
+  /* Below 840px every chip keeps labelled counts, totals and % for both windows
+     (requirement 1a, trinity mockup v5): the folded summary wraps to another row, and a
+     chip wider than the row breaks between its measures, never inside one. After the
+     base .cap-chip rule so it wins. */
+  .cap-chip { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; white-space: normal; column-gap: 4px; }
+  .cap-chip .cap-m, .cap-chip .cap-chip-flag { white-space: nowrap; }
   .capacity.is-collapsed .cap-summary { flex: 1 1 auto; flex-wrap: wrap; overflow-x: visible; gap: 4px; }
 }
+@media (max-width: 639px) { .cap-chip { padding: 2px 6px; font-size: 11px; } }
 .cap-chip b { font-weight: 700; color: var(--ib-text); font-variant-numeric: tabular-nums; }
+.cap-chip .cap-chip-flag { color: var(--st-wait); font-weight: 600; }
 .cap-chip.is-low { color: var(--st-wait); box-shadow: inset 0 0 0 1px var(--st-wait); }
 .cap-chip.is-empty, .cap-chip.is-error { color: var(--st-fail); box-shadow: inset 0 0 0 1px var(--st-fail); }
 .cron-lane-bar { display: flex; align-items: center; gap: 8px; padding-right: 8px; }
@@ -13137,29 +13140,40 @@ function capDur(secs) {
   if (h) return h + '시간 ' + (m % 60) + '분';
   return Math.max(1, m) + '분';
 }
-// "다음 +1.0계정 · 1시간 23분 후 · 일주일 리셋 (ai8)" — the first gain ≥ 0.05 within 7 days.
-function capNextShort(g, key, nowSec) {
+// The first gain >= 0.05 within 7 days that raises this bar (key: dNow / dWeek), or null.
+function capNextEvent(g, key, nowSec) {
   var evs = g.events || [];
   for (var i = 0; i < evs.length; i++) {
-    var e = evs[i];
-    if (e.at > nowSec + CAP_7D) break;
-    if (e[key] < 0.05) continue;
-    // The 5시간 bar rising at a weekly reset means it is held down by the weekly limit
-    // (trinity simple r2, fable): say so, so it never contradicts the ● key.
-    if (key === 'dNow' && e.cause === '7d') return '일주일 한도에 묶임 — 다음 일주일 리셋 때 +' + capFmt1(e[key]) + '계정 · ' + capDur(e.at - nowSec) + ' 후 (' + e.account + ')';
-    return '다음 +' + capFmt1(e[key]) + '계정 · ' + capDur(e.at - nowSec) + ' 후 · ' + (CAP_WORD[e.cause] || '') + ' (' + e.account + ')';
+    if (evs[i].at > nowSec + CAP_7D) break;
+    if (evs[i][key] >= 0.05) return evs[i];
   }
-  var small = evs.filter(function(x) { return x.at <= nowSec + CAP_7D; }).reduce(function(t, x) { return t + x[key]; }, 0);
-  return small > 0.0005 ? '7일 안 +0.1계정 미만 회복' : '7일 안에 늘어날 양 없음';
+  return null;
+}
+// Two tokens a reader needs, how much and when: "다음 +1.0계정 · 1시간 23분 후" (trinity
+// mockup v5, grok P1). The bar's own reset is implied by the bar; any other cause is named.
+function capNextShort(g, key, nowSec) {
+  var e = capNextEvent(g, key, nowSec);
+  if (!e) {
+    var small = (g.events || []).filter(function(x) { return x.at <= nowSec + CAP_7D; }).reduce(function(t, x) { return t + x[key]; }, 0);
+    return small > 0.0005 ? '7일 안 +0.1계정 미만 회복' : '7일 안에 늘어날 양 없음';
+  }
+  var gain = '다음 +' + capFmt1(e[key]) + '계정 · ' + capDur(e.at - nowSec) + ' 후';
+  // The 5시간 bar rising at a weekly reset is held down by the weekly limit (trinity
+  // simple r2, fable): say so, so it never contradicts the ● key.
+  if (key === 'dNow' && e.cause === '7d') return '일주일 한도에 묶임 · ' + gain;
+  var own = key === 'dNow' ? e.cause === '5h' : e.cause === '7d';
+  return own ? gain : gain + ' · ' + (CAP_WORD[e.cause] || '');
 }
 function capBarRow(g, cls, label, sub, v, key, nowSec) {
   var p = g.total > 0 ? Math.max(0, Math.min(1, v / g.total)) : 0;
   var said = label + ' ' + capCount(v, g.total) + ' / ' + capFmt1(g.total) + ' 계정, ' + capPct(v, g.total);
+  var e = capNextEvent(g, key, nowSec);
+  var who = e ? ' title="' + escAttr((CAP_WORD[e.cause] || '') + ' · ' + e.account) + '"' : '';
   return '<div class="cap-bar-row is-' + cls + '">'
     + '<div class="cap-bar-lbl">' + label + '<i>' + sub + '</i></div>'
     + '<div class="cap-bar" role="img" aria-label="' + escAttr(said) + '"><span style="width:' + (p * 100).toFixed(1) + '%"></span></div>'
     + '<div class="cap-bar-val"><b>' + capCount(v, g.total) + '</b> / ' + capFmt1(g.total) + ' 계정 <em>' + capPct(v, g.total) + '</em></div>'
-    + '<div class="cap-bar-next">' + esc(capNextShort(g, key, nowSec)) + '</div>'
+    + '<div class="cap-bar-next"' + who + '>' + esc(capNextShort(g, key, nowSec)) + '</div>'
     + '</div>';
 }
 // One muted line, only what is non-zero: how many accounts the bars count, how many are
@@ -13174,9 +13188,9 @@ function capDisclosure(g, nowSec) {
   if (ex.unknownTier) why.push('티어 미지정');
   if (ex.noMeasure) why.push('측정 없음');
   var exN = (ex.held || 0) + (ex.unknownTier || 0) + (ex.noMeasure || 0);
-  // Short enough for one phone line: "16/17 반영 · 차단 6 · 제외 1(보류) · 측정 4시간 전".
-  var parts = [g.countedAccounts + '/' + (g.accountCount || u.length) + ' 반영'];
-  if (blocked) parts.push('차단 ' + blocked);
+  // Short enough for a phone: "16/17 반영(차단 6 포함) · 제외 1(보류) · 측정 4시간 전".
+  // "(차단 6 포함)": the blocked accounts are inside the counted ones (trinity mockup v5, fable P2).
+  var parts = [g.countedAccounts + '/' + (g.accountCount || u.length) + ' 반영' + (blocked ? '(차단 ' + blocked + ' 포함)' : '')];
   if (exN) parts.push('제외 ' + exN + '(' + why.join('·') + ')');
   if (g.estimated) parts.push('추정 ' + g.estimated);
   if (g.unmeasured5h) parts.push('5시간 측정 없음 ' + g.unmeasured5h);
@@ -13272,22 +13286,31 @@ function renderCapacitySummary(v, nowMs) {
     var state = g.state || 'unknown';
     var known = g.total > 0;
     var t = capFmt1(g.total);
-    // Both measures as max accounts' worth and % (requirement 1a, also when folded):
-    // "Claude 지금 5.2/16.0 33% · 주 5.7 36%". Phones drop only the total
-    // ("Claude 지금 5.2 33% · 주 5.7 36%") and let the folded row wrap to a second line.
+    // Both measures as max accounts' worth of the total and % (requirement 1a, also when
+    // folded, also on phones — trinity mockup v5, grok P1):
+    // "Claude 지금 5.2/16.0 33% · 주 5.6/16.0 35%". The folded row wraps rather than cut.
     var meas = function(cls, word, v, withTotal) {
       return '<span class="cap-m ' + cls + '"><i class="cap-chip-k">' + word + ' </i><b>' + capCount(v, g.total) + '</b>'
         + (withTotal ? '<i class="cap-chip-of">/' + t + '</i>' : '') + ' <em>' + capPct(v, g.total) + '</em></span>';
     };
     var nums = !known ? '<b>—</b>'
-      : g.has5h ? meas('is-now', '지금', g.now, true) + ' · ' + meas('is-wk', '주', g.week, false)
+      : g.has5h ? meas('is-now', '지금', g.now, true) + ' · ' + meas('is-wk', '주', g.week, true)
       : meas('is-wk', '주', g.week, true);
+    // The folded chip is the default view, so it carries what the card's disclosure line
+    // flags (trinity mockup v5, astra P1): a reading over a day old, and a pool where a
+    // fifth or more of the accounts is left out of the total.
+    var age = g.oldestRefreshAt ? nowSec - g.oldestRefreshAt : 0;
+    var stale = age > 86400 ? capDur(age).split(' ')[0] + ' 전' : '';
+    var part = g.accountCount && g.countedAccounts < g.accountCount * 0.8 ? g.countedAccounts + '/' + g.accountCount + ' 반영' : '';
+    var flagText = [stale ? '⚠ ' + stale : '', part].filter(Boolean).join(' · ');
+    var flag = flagText ? ' <i class="cap-chip-flag">' + esc(flagText) + '</i>' : '';
     var said = !known ? '계산 불가 — 셀 수 있는 계정 없음'
       : (g.has5h ? '5시간(지금) ' + capCount(g.now, g.total) + '/' + t + ' 계정 (' + capPct(g.now, g.total) + '), ' : '') + '일주일 ' + capCount(g.week, g.total) + '/' + t + ' 계정 (' + capPct(g.week, g.total) + ')';
+    said += [stale ? '측정 ' + stale : '', part].filter(Boolean).map(function(x) { return ' · ' + x; }).join('');
     var next = known ? capNextLine(g, g.has5h ? 'dNow' : 'dWeek', g.has5h ? CAP_5H : CAP_7D, nowSec, nowMs) : '';
     var lead = said + (WORD[state] || '') + (next ? ' — ' + next : '');
     return '<span class="cap-chip is-' + state + '" title="' + escAttr(lead) + '" aria-label="' + escAttr(g.label + ' ' + lead) + '">'
-      + (GLYPH[state] || '') + esc(g.label) + ' ' + nums + '</span>';
+      + (GLYPH[state] || '') + esc(g.label) + ' ' + nums + flag + '</span>';
   }).join('') + '</div>';
 }
 function renderCapacityGroup(g, nowMs, width) {
