@@ -74,8 +74,12 @@ const FACE_FNS = [
   'pendingAutoResume',
   'autoResumeLabel',
   'cardSummary',
+  'doneTimeOf',
+  'cardAgo',
   'renderCardStatus',
   'renderOwnerBadge',
+  'ctxLevel',
+  'renderCardPr',
   'renderCardFace',
 ];
 const FACE_VARS = [
@@ -83,6 +87,8 @@ const FACE_VARS = [
   'WAIT_SVG',
   'TASKS_SVG',
   'CTX_SVG',
+  'PR_STATE_LABEL',
+  'PR_SVG',
   'RESUME_SVG',
   'AGENT_STATUS_LABEL',
   'AGENT_DOTS_MAX',

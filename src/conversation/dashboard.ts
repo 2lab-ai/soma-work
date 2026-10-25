@@ -169,11 +169,27 @@ export interface KanbanSession {
     contextUsagePercent: number;
   };
   /**
-   * SSOT 2026-10-22 T11 — when the work finished (epoch ms): an idle / sleeping
-   * card when it last went idle (else its last activity), an archived card at
-   * its last activity. Absent while the session works or waits.
+   * SSOT 2026-10-22 T11 — when the work finished (epoch ms), for the DONE day
+   * groups: an idle / sleeping card when it last went idle (else its last
+   * activity), an archived card at its archive's kept finish time (else its
+   * last activity). Absent while the session works or waits. The face's age
+   * reads `finishedAt`, which has no fallback.
    */
   doneAt?: number;
+  /**
+   * Spec 13 §3.7 — when a live session started waiting on its user (epoch ms):
+   * the oldest of its open permission prompts and, while its own state is
+   * `waiting`, its switch to that state. Absent otherwise. (`lastActivity`
+   * moves on user input only, so it cannot say this.)
+   */
+  waitingSince?: number;
+  /**
+   * Spec 13 §3.7 — the exact moment its work finished (epoch ms), the clock the
+   * face's "· 12m ago" reads: a live idle card's switch to idle, an archived
+   * card's kept finish time. Absent when only inferred — `doneAt` then falls
+   * back to the last activity for the day groups, the face shows no age.
+   */
+  finishedAt?: number;
   /**
    * SSOT 2026-10-22 T4/T5 — tokens the context holds now, the threshold it
    * auto-compacts at (follows the model), and the representative model a
@@ -1305,6 +1321,31 @@ function liveDoneAt(s: any): number | undefined {
   return Number.isFinite(last) ? last : undefined;
 }
 
+/** Spec 13 §3.7 — a live session's exact finish time; undefined unless idle with a state stamp. */
+function liveFinishedAt(s: any): number | undefined {
+  return (s.activityState || 'idle') === 'idle' ? finiteNumber(s.activityStateChangedAt) : undefined;
+}
+
+/**
+ * Spec 13 §3.7 — when a live session started waiting on its user: the oldest
+ * of its open permission prompts and, while its own state is `waiting` (a
+ * question), the switch to that state. A running turn's state stamp is when
+ * it started working, so it never counts. Undefined when it does not wait.
+ */
+export function liveWaitingSince(
+  s: { activityState?: string; activityStateChangedAt?: unknown },
+  permissions: ReadonlyArray<{ createdAt?: unknown }>,
+): number | undefined {
+  let oldest: number | undefined;
+  const consider = (v: unknown) => {
+    const t = finiteNumber(v);
+    if (t !== undefined && (oldest === undefined || t < oldest)) oldest = t;
+  };
+  for (const p of permissions) consider(p.createdAt);
+  if ((s.activityState || 'idle') === 'waiting') consider(s.activityStateChangedAt);
+  return oldest;
+}
+
 // ── Artifacts (SSOT 2026-10-23) ──
 
 /** One work-log backfill at a time: a board of old cards must not read every log at once. */
@@ -1407,6 +1448,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
       : undefined,
     tokenUsage: tokenUsageOf(s),
     doneAt: liveDoneAt(s),
+    waitingSince: liveWaitingSince(s, permissions),
+    finishedAt: liveFinishedAt(s),
     ...modelFields(s),
     tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume)),
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
@@ -1535,7 +1578,12 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
           contextUsagePercent: 0, // No active context for archived sessions
         }
       : undefined,
-    doneAt: Number.isFinite(Date.parse(archived.lastActivity)) ? Date.parse(archived.lastActivity) : undefined,
+    // The archive's kept finish time (spec 13 §3.7); an older archive falls
+    // back to its last activity for the day groups only.
+    finishedAt: finiteNumber(archived.doneAt),
+    doneAt:
+      finiteNumber(archived.doneAt) ??
+      (Number.isFinite(Date.parse(archived.lastActivity)) ? Date.parse(archived.lastActivity) : undefined),
     ...archivedTasks(archived),
     ...agentsToKanban(sanitizeAgentRegistry(archived.agents), false),
     goal: goalToKanban(archived),
@@ -3137,6 +3185,7 @@ function renderDashboardPage(userId?: string): string {
   --st-run: #6b93f2;
   --st-done: #3fb968;
   --st-fail: #f26b6b;
+  --st-fail-text: #f26b6b; /* red as 13px text: ≥ 4.5:1 on the card and the dimmed card */
   /* Owner badges (All Users, .prd/10 §3.1-3) — 8 hues, ordered so neighbouring
      slots are far apart: blue · amber · green · rose · teal · orange · violet · olive.
      Each text colour clears 4.5:1 on its own fill. */
@@ -3186,6 +3235,7 @@ function renderDashboardPage(userId?: string): string {
   --st-run: #2f63e0;
   --st-done: #137a3e;
   --st-fail: #d43a3a;
+  --st-fail-text: #c02f2f; /* #d43a3a is 4.4:1 on the dimmed card (#f8f8f8); this is 5.4:1 */
   --ob-0-bg: #d9e9fc; --ob-0-fg: #0e3562;
   --ob-1-bg: #fcf2d9; --ob-1-fg: #62490e;
   --ob-2-bg: #d9fce5; --ob-2-fg: #0e622a;
@@ -3688,7 +3738,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   overflow: hidden;
   overflow-wrap: anywhere;
 }
-.card-foot { margin-top: 10px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ib-text-2); min-width: 0; }
+.card-foot { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 13px; color: var(--ib-text-2); min-width: 0; }
 .card-status { display: inline-flex; align-items: center; gap: 7px; min-width: 0; flex: 1 1 auto; white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
 .card-status .st-text { overflow: hidden; text-overflow: ellipsis; }
 .card-status .st-icon { flex-shrink: 0; display: inline-flex; align-items: center; color: var(--st-color); }
@@ -3697,11 +3747,24 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .st-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-color); display: inline-block; }
 .st-dot.is-hollow { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-color); }
 .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ib-pill); border-top-color: var(--st-run); border-right-color: var(--st-run); display: inline-block; animation: spin 0.9s linear infinite; }
-.card-metrics { display: inline-flex; align-items: center; color: var(--ib-muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.card-metrics { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; row-gap: 4px; max-width: 100%; color: var(--ib-muted); flex-shrink: 0; margin-left: auto; font-variant-numeric: tabular-nums; }
 .card-metrics .metric { display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; }
 .card-metrics .metric + .metric { border-left: 1px solid var(--ib-card-border); }
 .card-metrics .metric:last-child { padding-right: 0; }
 .card-metrics svg { width: 13px; height: 13px; }
+/* spec 13 §3.7: context level (the icon at a warning — amber text is under
+   4.5:1 on the light card — and the whole metric near autocompaction), the PR
+   badge's state as a word and a colour (never colour alone), recency. A narrow
+   card wraps its metrics under the status instead of cutting the status, and
+   a crowded metrics row wraps inside itself instead of spilling out. */
+.card-metrics .metric.ctx-warn svg { color: var(--st-wait); }
+.card-metrics .metric.ctx-danger { color: var(--st-fail-text); font-weight: 600; }
+.card-metrics .card-pr.is-open { color: var(--st-run); }
+.card-metrics .card-pr.is-merged { color: var(--st-done); }
+.card-metrics .card-pr.is-closed { color: var(--st-fail-text); }
+.card-pr .cpr-state { font-size: 12px; white-space: nowrap; }
+.card-status .st-ago { color: var(--ib-muted); }
+.card-status .st-ago::before { content: "·"; margin: 0 6px; }
 /* SSOT 2026-10-22 T3 — the task in progress on the collapsed face. */
 .card-task { margin-top: 8px; display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; color: var(--ib-text); background: var(--ib-pill); border-radius: 8px; padding: 5px 9px; }
 .card-task .ct-id { flex-shrink: 0; color: var(--ib-muted); font-variant-numeric: tabular-nums; font-size: 12px; }
@@ -7945,10 +8008,10 @@ function renderCardStatus(s, col) {
     return '<span class="st-icon is-resume">' + RESUME_SVG + '</span><span class="st-text" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</span>';
   }
   if (col === 'waiting') {
-    return '<span class="st-icon">' + WAIT_SVG + '</span><span class="st-text">Waiting for you</span>';
+    return '<span class="st-icon">' + WAIT_SVG + '</span><span class="st-text">Waiting for you' + cardAgo(s, col) + '</span>';
   }
   if (col === 'closed') {
-    return '<span class="st-icon"><span class="st-dot is-hollow"></span></span><span class="st-text">' + (s.terminated ? 'Archived' : 'Sleeping') + '</span>';
+    return '<span class="st-icon"><span class="st-dot is-hollow"></span></span><span class="st-text">' + (s.terminated ? 'Archived' : 'Sleeping') + cardAgo(s, col) + '</span>';
   }
   var acc = Number(s.activeAccumulatedMs) || 0;
   var leg = col === 'working' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
@@ -7956,8 +8019,19 @@ function renderCardStatus(s, col) {
   if (col === 'working') {
     return '<span class="st-icon"><span class="spinner"></span></span><span class="st-text"><span class="st-prefix">Running &middot; </span>' + timer + '</span>';
   }
-  if (!acc) return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text">Idle</span>';
-  return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text"><span class="st-prefix">Done in </span>' + timer + '</span>';
+  if (!acc) return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text">Idle' + cardAgo(s, col) + '</span>';
+  return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text"><span class="st-prefix">Done in </span>' + timer + cardAgo(s, col) + '</span>';
+}
+// Recency (spec 13 §3.7 — the compact tier's "updated_at", Jira's days in
+// column): a card that is not moving says how long it has been in its state —
+// a waiting card since it started waiting (waitingSince), a finished one since
+// its work finished (finishedAt). Only exact stamps: without one, no age —
+// never lastActivity, which moves on user input only and after a long turn
+// would overstate. The stamp only; the 1 Hz tick writes "12m ago", so equal
+// data renders equal HTML.
+function cardAgo(s, col) {
+  var t = toNum(s && (col === 'waiting' ? s.waitingSince : s.finishedAt));
+  return t > 0 ? '<span class="st-ago"><span class="rel-time" data-ts="' + t + '"></span></span>' : '';
 }
 
 // Owner badge (§3.1-3): in the All Users view every card head names its owner,
@@ -8046,8 +8120,37 @@ function renderCardUsage(s) {
   return parts.length ? '<div class="card-usage">' + parts.join('<span class="cu-sep" aria-hidden="true">&middot;</span>') + '</div>' : '';
 }
 
-// Collapsed face (§2.1 reference anatomy): ✦ + headline [+ owner badge] /
-// 2-line summary / status · tasks done/total · context %.
+// Context level (spec 13 §3.7), one table for the face metric and the panel
+// bar: bands of the window used — over 60% a warning, over 80% danger. (Not
+// the compaction threshold, which a session may set lower or higher.)
+function ctxLevel(pct) {
+  var n = toNum(pct);
+  return n > 80 ? 'ctx-danger' : n > 60 ? 'ctx-warn' : '';
+}
+// The outcome on the face (spec 13 §3.7 — the compact tier's PR link in Copilot
+// and Devin): the PR number and its state as a badge. The face is one toggle,
+// so the badge is not a link; the open card's short ref and the titled link in
+// 세션 정보 are. The state is a word on screen ("#12 머지됨" — the face's name
+// is built from its content, the space keeps two words) and a class (colour);
+// an unknown state shows the bare number. The title adds the PR's title.
+var PR_STATE_LABEL = { open: '열림', draft: '초안', merged: '머지됨', closed: '닫힘' };
+var PR_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="3.5" r="1.6"/><circle cx="4" cy="12.5" r="1.6"/><circle cx="12" cy="12.5" r="1.6"/><path d="M4 5.1v5.8M12 10.9V6.5c0-1.1-.9-2-2-2H7.5M9 3L7.5 4.5 9 6"/></svg>';
+function renderCardPr(s) {
+  if (!dhShow('links') || !s.prUrl || !s.prShortRef) return '';
+  var m = /(\\d+)$/.exec(String(s.prShortRef));
+  var num = m ? '#' + m[1] : String(s.prShortRef);
+  var raw = String(s.prStatus || '').toLowerCase(); // a resource may say "MERGED"
+  var st = Object.prototype.hasOwnProperty.call(PR_STATE_LABEL, raw) ? raw : '';
+  var word = st ? PR_STATE_LABEL[st] : '';
+  var tip = 'PR ' + num + (word ? ' ' + word : '') + (s.prTitle ? ' — ' + s.prTitle : '');
+  return '<span class="metric card-pr' + (st ? ' is-' + st : '') + '" title="' + escAttr(tip) + '">' + PR_SVG + esc(num)
+    + (word ? '<span class="cpr-state"> ' + word + '</span>' : '') + '</span>';
+}
+
+// Collapsed face (§2.1 reference anatomy, audited in spec 13 §3.7): ✦ +
+// headline [+ owner badge] / why-here line / current task / subagent pulse /
+// tokens · cost / artifact chips / status · recency, tasks done/total ·
+// context % (levelled) · media · PR.
 function renderCardFace(s, col) {
   // Server-resolved headline (#762) — displayHeadline reflects the full
   // priority chain (summaryTitle then issueTitle then prTitle then title then
@@ -8066,11 +8169,15 @@ function renderCardFace(s, col) {
   }
   var ctxPct = s.tokenUsage ? (s.tokenUsage.contextUsagePercent || 0) : 0;
   if (dhShow('contextwindow') && ctxPct > 0) {
-    metrics.push('<span class="metric" title="Context window used">' + CTX_SVG + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '%</span>');
+    var ctxLv = ctxLevel(ctxPct);
+    metrics.push('<span class="metric' + (ctxLv ? ' ' + ctxLv : '') + '" title="Context window used' + (ctxLv === 'ctx-danger' ? ' — 80% 넘게 찼다' : '') + '">'
+      + CTX_SVG + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '%</span>');
   }
   // User media (SSOT 2026-10-25): a paperclip count, no image on the board.
   var umBadge = isSiblingSession(s) ? '' : umFaceBadge(s);
   if (umBadge) metrics.push(umBadge);
+  var prBadge = renderCardPr(s);
+  if (prBadge) metrics.push(prBadge);
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
   var lead = s.cronJob && s.cronJob.name ? renderCronBadge(s) : '<span class="card-spark">' + SPARK_SVG + '</span>';
   return '<div class="card-head">' + lead + titleHtml + renderOwnerBadge(s) + '</div>'
@@ -9132,7 +9239,7 @@ function panelInfoHtml(s, open) {
   }
   var body = '<dl class="pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
   if (u) {
-    var cls = ctx > 80 ? 'ctx-danger' : ctx > 60 ? 'ctx-warn' : '';
+    var cls = ctxLevel(ctx);
     body += '<div class="pi-ctx"><div class="context-bar" title="Context ' + Math.round(ctx) + '%"><div class="context-bar-fill ' + cls + '" style="transform:scaleX(' + (Math.min(ctx, 100) / 100).toFixed(2) + ')"></div></div>'
       + '<span>컨텍스트 ' + Math.round(ctx) + '%' + (toNum(s.autoCompactTokens) > 0 ? ' &middot; autocompact ' + formatTokens(s.autoCompactTokens) : '') + '</span></div>';
   }

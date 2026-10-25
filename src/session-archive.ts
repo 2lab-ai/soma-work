@@ -78,6 +78,13 @@ export interface ArchivedSession {
   // State at time of archive
   finalState?: SessionState;
   finalActivityState?: ActivityState;
+  /**
+   * Spec 13 §3.7 — when its work last finished (Unix ms): the switch to idle
+   * or waiting, or the archive itself when it was archived mid-turn. Absent
+   * when unknown (no state stamp, or an archive written before this field).
+   * `lastActivity` moves on user input only, so it cannot say this.
+   */
+  doneAt?: number;
 
   // Dashboard v2.1 — snapshot so closed sessions still contribute to
   // thread-level totals once the live session is gone from memory.
@@ -107,13 +114,20 @@ function sanitizeKey(sessionKey: string): string {
 /**
  * Convert a ConversationSession to an ArchivedSession snapshot.
  */
+function archiveDoneAt(session: ConversationSession, now: number): number | undefined {
+  if ((session.activityState || 'idle') === 'working') return now;
+  const changed = session.activityStateChangedAt;
+  return typeof changed === 'number' && Number.isFinite(changed) ? changed : undefined;
+}
+
 function sessionToArchive(
   session: ConversationSession,
   sessionKey: string,
   reason: 'terminated' | 'sleep_expired',
 ): ArchivedSession {
+  const now = Date.now();
   return {
-    archivedAt: Date.now(),
+    archivedAt: now,
     archiveReason: reason,
 
     sessionKey,
@@ -140,6 +154,7 @@ function sessionToArchive(
 
     finalState: session.state,
     finalActivityState: session.activityState,
+    doneAt: archiveDoneAt(session, now),
 
     // Dashboard v2.1 — snapshot busy time + compactionCount so thread
     // aggregate keeps rendering historic totals after the live session

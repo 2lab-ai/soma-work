@@ -9,7 +9,9 @@
  * Asserts (exit 1 on any failure), and writes screenshots, for
  * 1280 / 820 / 390 × light / dark, plus 390×520 (a phone with its keyboard up)
  * and 844×390 (a phone held sideways):
- *   - face (triage): the shipped face — task row, subagent pulse, tokens · cost, foot
+ *   - face (triage): task row, subagent pulse, tokens · cost, foot; the §3.7 audit —
+ *       PR badge (number + state, no link), recency on a stopped card, context level,
+ *       a narrow card wraps its metrics instead of cutting the status
  *   - expanded (settle it here), by state:
  *       running  → task window · compact agents · latest exchange · goal line · refs ·
  *                  control strip; never the face's numbers, meta, subtitles or artifacts
@@ -145,7 +147,10 @@ function makeBoard() {
         displayHeadline: 'Ship the three surfaces?',
         activityState: 'waiting',
         conversationId: 'conv-ask',
-        lastActivity: iso(M),
+        // The instruction came 40 minutes ago, the question a minute ago: the face
+        // counts from the question (waitingSince), never from lastActivity.
+        lastActivity: iso(40 * M),
+        waitingSince: NOW - M,
         artifacts: SUMMARY('conv-ask'),
         pendingQuestion: {
           type: 'user_choice',
@@ -182,6 +187,7 @@ function makeBoard() {
         prShortRef: 'PR #999',
         prLabel: 'PR #999',
         prTitle: 'Split the surfaces',
+        prStatus: 'open',
         artifacts: SUMMARY('conv-run'),
         agents: AGENTS,
         agentsTotal: 3,
@@ -249,7 +255,10 @@ function makeBoard() {
         displayHeadline: 'Recursive agent tree — shipped',
         activityState: 'idle',
         conversationId: 'conv-done',
-        lastActivity: iso(30 * M),
+        // The last instruction was 52 minutes ago; the work finished 30 minutes ago.
+        lastActivity: iso(52 * M),
+        doneAt: NOW - 30 * M,
+        finishedAt: NOW - 30 * M,
         activeAccumulatedMs: 41 * M,
         agents: Array.from({ length: 8 }, (_, i) => ({
           id: `toolu_w${i}`,
@@ -262,7 +271,12 @@ function makeBoard() {
           toolCalls: 3 + i,
         })),
         agentsTotal: 8,
-        tokenUsage: USAGE(2_000_000),
+        tokenUsage: { ...USAGE(2_000_000), contextUsagePercent: 86 },
+        prUrl: 'https://github.com/2lab-ai/soma-work/pull/366',
+        prShortRef: 'PR-366',
+        prLabel: 'PR #366',
+        prTitle: 'Recursive agent tree',
+        prStatus: 'merged',
         artifacts: SUMMARY('conv-done'),
         goal: {
           current: {
@@ -288,7 +302,31 @@ function makeBoard() {
         ],
       }),
     ],
-    closed: [],
+    // A crowded sleeping card: every metric at its widest on the dimmed card.
+    closed: [
+      base({
+        key: K('400'),
+        title: 'Crowded',
+        displayHeadline: 'Every metric at once',
+        activityState: 'idle',
+        sessionState: 'SLEEPING',
+        conversationId: 'conv-crowd',
+        lastActivity: iso(3 * 60 * M),
+        doneAt: NOW - 2 * 60 * M,
+        finishedAt: NOW - 2 * 60 * M,
+        activeAccumulatedMs: 125 * M,
+        tokenUsage: { ...USAGE(2_000_000), contextUsagePercent: 100 },
+        prUrl: 'https://github.com/2lab-ai/soma-work/pull/123456',
+        prShortRef: 'PR-123456',
+        prTitle: 'A closed attempt',
+        prStatus: 'closed',
+        tasks: Array.from({ length: 12 }, (_, i) => ({
+          id: `T${i + 1}`,
+          content: `Step ${i + 1}`,
+          status: 'completed',
+        })),
+      }),
+    ],
   };
 }
 
@@ -381,6 +419,12 @@ function check(ok: boolean, what: string) {
   log(`${ok ? '[ok]  ' : '[FAIL]'} ${what}`);
   if (!ok) failures.push(what);
 }
+/** "12m ago" within a minute of `fromNow` minutes plus the run's elapsed time. */
+function ageNear(text: string | undefined, fromNow: number) {
+  const m = /^(\d+)m ago$/.exec(text ?? '');
+  const want = fromNow + Math.floor((Date.now() - NOW) / M);
+  return !!m && Math.abs(Number(m[1]) - want) <= 1;
+}
 async function overflow(page: Page) {
   return page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
 }
@@ -459,8 +503,99 @@ async function scenario(
     face.task && face.agents.includes('서브에이전트') && face.usage.includes('tok') && face.status.length > 0,
     `${tag}: face — task row, subagent pulse, tokens · cost, status (${face.agents.trim()} | ${face.usage.trim()})`,
   );
+  // Spec 13 §3.7 — the face audit's additions: the outcome badge (PR number and
+  // state, not a link), recency on a card that is not moving, the context level.
+  const faces = await page.evaluate(
+    (keys) =>
+      keys.map((k) => {
+        const f = document.querySelector(`[data-session-key="${k}"] .card-face`) as HTMLElement | null;
+        if (!f) return null;
+        const foot = f.querySelector('.card-foot') as HTMLElement;
+        const pr = f.querySelector('.card-pr') as HTMLElement | null;
+        const ctx = Array.from(f.querySelectorAll('.card-metrics .metric')).find((m) =>
+          /%$/.test(m.textContent || ''),
+        ) as HTMLElement | undefined;
+        const ago = f.querySelector('.st-ago') as HTMLElement | null;
+        const st = f.querySelector('.card-status') as HTMLElement;
+        return {
+          pr: pr
+            ? {
+                cls: pr.className,
+                text: pr.innerText.replace(/\s+/g, ' ').trim(),
+                sr: pr.textContent || '',
+                color: getComputedStyle(pr).color,
+              }
+            : null,
+          links: f.querySelectorAll('a').length,
+          ago: ago
+            ? {
+                text: ago.innerText.trim(),
+                shown: ago.getBoundingClientRect().right <= st.getBoundingClientRect().right + 1,
+              }
+            : null,
+          ctx: ctx ? { cls: ctx.className, color: getComputedStyle(ctx).color } : null,
+          footWhole: (() => {
+            const tx = f.querySelector('.card-status .st-text') as HTMLElement;
+            const fr = foot.getBoundingClientRect();
+            const inside = Array.from(f.querySelectorAll('.card-metrics .metric')).every(
+              (m) => m.getBoundingClientRect().right <= fr.right + 1 && m.getBoundingClientRect().left >= fr.left - 1,
+            );
+            return tx.scrollWidth <= tx.clientWidth + 1 && inside;
+          })(),
+          footH: Math.round(foot.getBoundingClientRect().height),
+          danger: getComputedStyle(document.documentElement).getPropertyValue('--st-fail').trim(),
+        };
+      }),
+    [K('100'), K('200'), K('300'), K('400')],
+  );
+  const [fWait, fRun, fIdle, fCrowd] = faces;
+  check(
+    !!fCrowd && /is-closed/.test(fCrowd.pr?.cls ?? '') && fCrowd.footWhole && /ctx-danger/.test(fCrowd.ctx?.cls ?? ''),
+    `${tag}: face — a crowded sleeping card (12/12 · 100% · #123456 closed) keeps every metric inside the card (${fCrowd?.footH}px)`,
+  );
+  check(
+    !!fRun.pr &&
+      /card-pr is-open/.test(fRun.pr.cls) &&
+      fRun.pr.text === '#999 열림' &&
+      fRun.pr.sr.includes('열림') &&
+      fRun.links === 0,
+    `${tag}: face — the running card's PR badge: #999 열림 — the state as a word on screen, no link in the face (${fRun.pr?.text})`,
+  );
+  check(
+    !!fIdle.pr &&
+      /is-merged/.test(fIdle.pr.cls) &&
+      fIdle.pr.text === '#366 머지됨' &&
+      fIdle.pr.color !== fRun.pr?.color,
+    `${tag}: face — the finished card's PR badge says merged in its own colour (${fIdle.pr?.color} vs ${fRun.pr?.color})`,
+  );
+  check(
+    // The fixtures' stamps are relative to NOW, fixed at the start of the run:
+    // expect the age from the time that has passed since (±1 minute), so the
+    // check holds at any suite pace. waiting: the question's minute, not the
+    // instruction's 40; finished: the 30 since the work ended, not the 52.
+    !fRun.ago &&
+      ageNear(fWait.ago?.text, 1) &&
+      ageNear(fIdle.ago?.text, 30) &&
+      !!fIdle.ago?.shown &&
+      !!fWait.ago?.shown,
+    `${tag}: face — recency on the waiting (${fWait.ago?.text}) and finished (${fIdle.ago?.text}) cards, none on the running one`,
+  );
+  check(
+    !!fIdle.ctx &&
+      /ctx-danger/.test(fIdle.ctx.cls) &&
+      !!fRun.ctx &&
+      !/ctx-/.test(fRun.ctx.cls) &&
+      fIdle.ctx.color !== fRun.ctx.color,
+    `${tag}: face — context 86% is a warning (${fIdle.ctx?.color}), 31% the plain number (${fRun.ctx?.color})`,
+  );
+  check(
+    faces.every((f) => !!f && f.footWhole),
+    `${tag}: face — nothing in a card foot is cut — a narrow card wraps its metrics under the status (${faces.map((f) => f?.footH).join('/')}px)`,
+  );
   check((await overflow(page)) === 0, `${tag}: board — no page overflow`);
   if (full) await shootCard(page, K('200'), `${theme}-${width}-face-running.png`);
+  if (full) await shootCard(page, K('300'), `${theme}-${width}-face-idle.png`);
+  if (full) await shootCard(page, K('100'), `${theme}-${width}-face-waiting.png`);
   if (full) await page.screenshot({ path: path.join(OUT, `${theme}-${width}-board.png`), fullPage: false });
 
   // ── Expanded, running: settle it here ──
@@ -794,7 +929,12 @@ async function scenario(
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
 
-  // A keyboard 전체 task → focuses the Tasks box, opened at its head.
+  // A keyboard 전체 task → focuses the Tasks box, opened at its head. The
+  // pointer still rests where the last click was; it can sit on a face's
+  // artifact chip, whose hover peek would take the first Escape (topmost
+  // first) — a keyboard reader's pointer is parked.
+  await page.mouse.move(1, 1);
+  await page.waitForTimeout(400);
   await page.locator(`[data-session-key="${K('200')}"] .tl-toggle`).focus();
   await page.keyboard.press('Enter');
   await page.waitForSelector('#slide-panel.open', { timeout: 5000 });
@@ -808,6 +948,9 @@ async function scenario(
     `${tag}: keyboard 전체 task → focuses the Tasks box at its head (${JSON.stringify(tasksLand)})`,
   );
   await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.getElementById('slide-panel')?.classList.contains('open'), null, {
+    timeout: 5000,
+  });
   await page.waitForTimeout(300);
 
   // The idle card's tree: 6 of 8 workers, the rest is 전체 8개 → 상세 — the panel on that parent.
