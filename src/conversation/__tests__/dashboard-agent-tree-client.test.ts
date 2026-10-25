@@ -333,7 +333,7 @@ describe('one node type — the main agent is the root of the same recursive tre
     );
     expect(liOf(html, '')).toContain('aria-label="메인 opus-5-5[1m], 실행 중, 툴 7, task 1/2, 하위 3, #T2 Build"');
     const describedBy = /aria-describedby="([^"]+)"/.exec(liOf(html, 'toolu_explore'))?.[1] ?? '';
-    expect(describedBy).toMatch(/^an-c-inst--C1-t1-toolu-explore-t$/);
+    expect(describedBy).toBe('an-c_7c_inst_3a__3a_C1_3a_t1-ntoolu_5f_explore-t');
     expect(html).toContain(`<span class="ag-time" id="${describedBy}">`);
     expect(html).not.toContain('onclick=');
     // The root is always open: no chevron. A parent below it has one, out of the tab order.
@@ -493,6 +493,24 @@ describe('one node type — the main agent is the root of the same recursive tre
     const rootRow = html.slice(html.indexOf('<div class="an-row">'), html.indexOf('<ul class="an-kids"'));
     expect(rootRow).toContain('<span class="ag-st">입력 대기</span>');
     expect(rootRow).toContain('data-leg-started="' + T0 + '"');
+  });
+
+  it('description ids never collide across sessions or nodes — the encoding is reversible (review r2 astra)', () => {
+    const k = load<{ anIdPart(v: string): string }>(['anIdPart'], []);
+    expect(k.anIdPart('c|dev-a::C1:t')).not.toBe(k.anIdPart('c|dev_a::C1:t'));
+    expect(k.anIdPart('a-b')).not.toBe(k.anIdPart('a_b'));
+    expect(k.anIdPart('a-b')).not.toContain('-');
+  });
+
+  it('a mouse click on 전체 N개 보기 or any focus in a tree takes the tab stop; a chosen drill lands on the header (review r2 astra)', () => {
+    expect(fnBody('anClick')).toContain("_anActive[ns] = 'a:' + (more.getAttribute('data-an-all') || '');");
+    expect(TEMPLATE).toContain("document.addEventListener('focusin', function(e) {");
+    expect(fnBody('renderPanelAgents')).toContain('var cap = _anScopeChange ? null : anFocusCapture(el);');
+    const sel = fnBody('selectPanelAgent');
+    expect(sel).toContain('try { renderPanelAgents(); } finally { _anScopeChange = false; }');
+    expect(sel.indexOf("document.querySelector('#panel-agents .pa-focus')")).toBeLessThan(
+      sel.indexOf(`document.querySelector('#panel-agents .pa-crumb[aria-current="page"]')`),
+    );
   });
 
   it('stop, focus and state move together; keyboard activation hands focus to the panel and back (review r1 astra)', () => {
@@ -712,6 +730,7 @@ describe('panel — drill-down over the same node type (path · focused node · 
         updateTimersIn: () => {},
         anFocusCapture: () => null,
         anFocusRestore: () => {},
+        _anScopeChange: false,
         morphInnerHtml: (_el: unknown, h: string) => {
           out.writes++;
           out.html = h;

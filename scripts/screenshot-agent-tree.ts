@@ -801,11 +801,27 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   );
   const kbFocus = await page.evaluate(() => {
     const a = document.activeElement;
-    return a?.classList.contains('pa-crumb') && a.getAttribute('aria-current') === 'page'
-      ? a.textContent
-      : (a?.tagName ?? '');
+    return a?.classList.contains('pa-focus') ? (a.querySelector('.pa-name')?.textContent ?? '') : (a?.tagName ?? '');
   });
-  check(kbFocus === 'A1 Explore', `${tag}: after the keyboard switch focus is on the shown node's crumb (${kbFocus})`);
+  check(kbFocus === 'A1Explore', `${tag}: after the keyboard switch focus is on the shown node's header (${kbFocus})`);
+  // Keyboard drill in the panel's subtree: Enter on A3 lands on A3's header, not on its child.
+  await page.evaluate(() => {
+    (document.querySelector('#panel-agents .pa-tree .an[data-agent-select="toolu_nested"]') as HTMLElement).focus();
+  });
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(250);
+  const drillFocus = await page.evaluate(() => {
+    const a = document.activeElement;
+    return a?.classList.contains('pa-focus')
+      ? (a.querySelector('.pa-name')?.textContent ?? '')
+      : (a?.getAttribute('data-agent-select') ?? a?.tagName ?? '');
+  });
+  check(
+    drillFocus === 'A3general-purpose',
+    `${tag}: Enter on a subtree item lands on that node's header (${drillFocus})`,
+  );
+  await page.click('#panel-agents .pa-crumb.is-up');
+  await page.waitForTimeout(200);
   check(
     onBlock && kbPath === '메인 › A1 Explore',
     `${tag}: keyboard ↓ + Enter on a child block opens it (${onBlock}, ${kbPath})`,
