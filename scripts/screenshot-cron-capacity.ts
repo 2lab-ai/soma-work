@@ -374,9 +374,7 @@ async function layout(browser: Browser) {
           `one timeline, weekly refills marked (${placement.weeklyMarks})`,
         );
         check(
-          /16\/17 반영/.test(placement.disc) &&
-            /차단 6/.test(placement.disc) &&
-            /제외 1\(보류\)/.test(placement.disc),
+          /16\/17 반영/.test(placement.disc) && /차단 6/.test(placement.disc) && /제외 1\(보류\)/.test(placement.disc),
           `disclosure line: ${placement.disc}`,
         );
       }
