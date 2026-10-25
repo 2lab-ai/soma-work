@@ -8255,13 +8255,15 @@ function agentNodeAria(node, desc) {
   if (act) parts.push(act);
   return parts.join(', ');
 }
-// A DOM id part from any text (tree namespace, node id): letters and digits kept, the rest '-'.
+// A DOM id part from any text (tree namespace, node id), collision-free:
+// letters and digits kept, every other character as _<hex>_ — so '-' never
+// appears inside a part and can join parts unambiguously.
 function anIdPart(v) {
   var out = '';
   var str = String(v);
   for (var i = 0; i < str.length; i++) {
     var c = str.charAt(i);
-    out += (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ? c : '-';
+    out += (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ? c : '_' + str.charCodeAt(i).toString(16) + '_';
   }
   return out;
 }
@@ -8307,7 +8309,7 @@ function agentNodeRow(node, ctx, desc, open) {
     + '</span></div>';
 }
 function anTimeId(ctx, node) {
-  return 'an-' + anIdPart(ctx.ns) + '-' + anIdPart(node.id || 'root') + '-t';
+  return 'an-' + anIdPart(ctx.ns) + '-' + (node.root ? 'root' : 'n' + anIdPart(node.id)) + '-t';
 }
 // One tree item, recursively: the node's row, then — while it is open — its
 // children in a group. d = depth from the tree's anchor; aria-level and the
@@ -8503,6 +8505,7 @@ function anItemKey(item) {
 // (panel). From the keyboard, opening the panel moves focus onto the shown
 // node's header in it; closing the panel brings focus back to the item.
 var _anReturnFocus = null;
+var _anScopeChange = false; // selectPanelAgent is repainting for a node the reader chose
 function anActivate(item, byKey) {
   var openId = item.getAttribute('data-agent-open');
   if (openId !== null) {
@@ -8535,6 +8538,7 @@ function anClick(e, scope) {
   }
   var more = e.target.closest('[data-an-all]');
   if (more) {
+    _anActive[ns] = 'a:' + (more.getAttribute('data-an-all') || '');
     showAllAgentChildren(ns, more.getAttribute('data-an-all') || '');
     return true;
   }
@@ -8771,7 +8775,8 @@ function renderPanelAgents() {
   // scroll and a running spinner stay.
   if (html === _panelAgentsHtml && el.style.display === '') return;
   el.style.display = '';
-  var cap = anFocusCapture(el);
+  // A live update keeps focus in the tree; a chosen scope change (selectPanelAgent) places it itself.
+  var cap = _anScopeChange ? null : anFocusCapture(el);
   morphInnerHtml(el, html);
   anFocusRestore(el, cap);
   _panelAgentsHtml = html;
@@ -8799,15 +8804,17 @@ function selectPanelAgent(agentId) {
   }
   _panelAgent = next;
   _panelTasksExpanded = false;
-  renderPanelAgents();
+  _anScopeChange = true;
+  try { renderPanelAgents(); } finally { _anScopeChange = false; }
   renderPanelTasks(panelAgentTasks(), panelAgentLabel());
   repaintWorkLogScope();
   // A keyboard choice (a list row, 서브에이전트 열기) went with the list it was
   // in: focus lands on the agent now shown, not on <body>.
   var after = document.activeElement;
   if (focusInPanel && (!after || after === document.body || !document.body.contains(after))) {
-    var here = document.querySelector('#panel-agents .pa-crumb[aria-current="page"]')
-      || document.querySelector('#panel-agents .an-tree [role="treeitem"][tabindex="0"]');
+    // The chosen node's header — the same landing as Enter on a card item.
+    var here = document.querySelector('#panel-agents .pa-focus')
+      || document.querySelector('#panel-agents .pa-crumb[aria-current="page"]');
     if (here && here.focus) here.focus();
   }
 }
@@ -13894,12 +13901,20 @@ function artHandleKey(e) {
     }
   });
 })();
-// One keydown path for every agent tree (card and panel): the WAI-ARIA tree keys.
+// One keydown path for every agent tree (card and panel): the WAI-ARIA tree
+// keys. Focus arriving on an item by any route (a click, a restore) takes the
+// tree's tab stop with it, so Tab / Shift+Tab always leave the tree.
 (function initAgentTreeKeys() {
   document.addEventListener('keydown', function(e) {
     if (e.altKey || e.ctrlKey || e.metaKey || !e.target || !e.target.closest) return;
     var item = e.target.closest('.an-tree [role="treeitem"]');
     if (item && item === e.target) anOnKey(e, item);
+  });
+  document.addEventListener('focusin', function(e) {
+    var item = e.target && e.target.closest ? e.target.closest('.an-tree [role="treeitem"]') : null;
+    if (!item || item !== e.target || item.getAttribute('tabindex') === '0') return;
+    var tree = item.closest('.an-tree');
+    if (tree) anSetStop(tree, tree.getAttribute('data-an-ns') || '', item);
   });
 })();
 
