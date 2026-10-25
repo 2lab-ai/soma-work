@@ -604,6 +604,8 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   // §4.3 Enter on a tree item opens the panel on that node.
   await page.keyboard.press('Enter');
   await page.waitForSelector('#slide-panel.open', { timeout: 5000 });
+  const onHeader = await page.evaluate(() => document.activeElement?.classList.contains('pa-focus') ?? false);
+  check(onHeader, `${tag}: Enter on a card item moves focus onto the node's header in the panel`);
   await page.waitForFunction(() => document.querySelectorAll('#worklog-list .wl-entry').length > 0, null, {
     timeout: 8000,
   });
@@ -818,6 +820,20 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
       .join(' › '),
   );
   check(libPath === '메인 › A2 librarian', `${tag}: a child block's click drills into it (${libPath})`);
+  // Keyboard round trip: Enter on a card item opens the panel, Escape closes it, focus is back on the item.
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(250);
+  await page.evaluate((key) => {
+    (document.querySelector(`[data-session-key="${key}"] .an[data-agent-open="toolu_lib"]`) as HTMLElement).focus();
+  }, K('200'));
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#slide-panel.open', { timeout: 5000 });
+  await page.waitForTimeout(250);
+  const opened = await page.evaluate(() => document.activeElement?.classList.contains('pa-focus') ?? false);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(250);
+  const back = await page.evaluate(() => document.activeElement?.getAttribute('data-agent-open') ?? '');
+  check(opened && back === 'toolu_lib', `${tag}: Enter → panel header, Escape → back on the item (${opened}, ${back})`);
   check((await overflow(page)) === 0, `${tag}: panel — no page overflow`);
   await shoot(page, `${theme}-${width}-panel-librarian.png`, false);
   await ctx.close();
