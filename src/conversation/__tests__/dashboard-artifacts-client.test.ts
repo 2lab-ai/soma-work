@@ -53,6 +53,8 @@ const BASE_FNS = [
   'escAttr',
   'escJs',
   'toNum',
+  'umGet',
+  'umUrl',
   'artUrl',
   'artFormatSize',
   'artKindLabel',
@@ -60,7 +62,7 @@ const BASE_FNS = [
   'artMeta',
   'artChip',
 ];
-const BASE_VARS = ['ART_KIND_LABEL', 'ART_GLYPH'];
+const BASE_VARS = ['ART_KIND_LABEL', 'ART_GLYPH', '_userMedia'];
 
 type Art = Record<string, unknown>;
 const html: Art = {

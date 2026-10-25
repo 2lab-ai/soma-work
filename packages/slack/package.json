@@ -81,6 +81,7 @@
     "./user-choice-handler": "./dist/user-choice-handler.js",
     "./user-choice-extractor": "./dist/user-choice-extractor.js",
     "./user-skill-file-roundtrip": "./dist/user-skill-file-roundtrip.js",
+    "./user-media": "./dist/user-media.js",
     "./work-log": "./dist/work-log.js",
     "./z/capability": "./dist/z/capability.js",
     "./z/normalize": "./dist/z/normalize.js",
