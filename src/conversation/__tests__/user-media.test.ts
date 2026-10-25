@@ -86,8 +86,7 @@ describe('UserMediaStore', () => {
     expect(pending).toHaveLength(1);
     const old = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
     fs.utimesSync(path.join(dir, pending[0]), old, old);
-    await store.capture('conv-s', []); // any later use of the directory sweeps
-    await store.capture('conv-s', [file(download('b.txt', 'x'), 'b.txt')]);
+    await store.capture('conv-s', [file(download('b.txt', 'x'), 'b.txt')]); // the next capture sweeps
     expect(fs.readdirSync(dir).some((n) => n === `.pending-${a.id}`)).toBe(false);
   });
 
@@ -170,6 +169,18 @@ describe('UserMediaStore', () => {
     const out = await bounded.capture('conv-b0', [file(download('a.png', 'A'), 'a.png')], { deadlineMs: -1 });
     expect(out.map((a) => a.stored)).toEqual([false]);
     expect(copy).not.toHaveBeenCalled();
+  });
+
+  it('M6 — a spent budget does not even check the remaining files on disk', async () => {
+    const files = [file(download('a.png', 'A'), 'a.png'), file(download('b.png', 'B'), 'b.png')];
+    const lstat = vi.spyOn(fs.promises, 'lstat');
+    try {
+      const out = await store.capture('conv-b3', files, { deadlineMs: -1 });
+      expect(out.map((a) => a.stored)).toEqual([false, false]);
+      expect(lstat).not.toHaveBeenCalled();
+    } finally {
+      lstat.mockRestore();
+    }
   });
 
   it('M6 — slow copies cannot stack up past the deadline', async () => {

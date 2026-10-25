@@ -16,7 +16,7 @@ vi.mock('../../env-paths', async () => {
   return { IS_DEV: true, DATA_DIR: nodeFs.mkdtempSync('/tmp/recorder-um-data-') };
 });
 
-import { createConversation, getConversation, recordUserTurn, setOnTurnRecordedCallback } from '../recorder';
+import { createConversation, recordUserTurn, setOnTurnRecordedCallback } from '../recorder';
 import { setUserMediaStoreForTests, UserMediaStore } from '../user-media';
 
 const TMP = fs.realpathSync(os.tmpdir());
@@ -41,12 +41,15 @@ describe('recordUserTurn with attachments', () => {
     const [att] = await store.capture(cid, [{ path: src, name: 'shot.png', mimetype: 'image/png', size: 3 }]);
     expect(store.contentPath(cid, att.id)).toBeNull(); // not before the turn is saved
 
+    const { DATA_DIR } = await import('../../env-paths');
     const seen = new Promise<{ committed: boolean; saved: boolean; turn: any }>((resolve) => {
-      setOnTurnRecordedCallback(async (id, turn) => {
-        const record = await getConversation(id);
+      setOnTurnRecordedCallback((id, turn) => {
+        // Read the record from DISK, not the recorder's cache: "saved" means written.
+        const file = path.join(DATA_DIR, 'conversations', `${id}.json`);
+        const onDisk = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf-8')) : null;
         resolve({
           committed: store.contentPath(id, att.id) !== null,
-          saved: !!record?.turns.some((t) => t.id === turn.id),
+          saved: !!onDisk?.turns?.some((t: { id: string }) => t.id === turn.id),
           turn,
         });
       });
