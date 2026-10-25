@@ -1343,15 +1343,16 @@ describe('collapsed face — recency on a card that is not moving', () => {
   const DONE = Date.parse(LAST) + 40 * 60_000; // the turn ran 40 minutes after the last instruction
   const WAIT = Date.parse(LAST) + 30 * 60_000; // the question came 30 minutes in
 
-  it('a finished card counts from when its work finished (doneAt), not from the last instruction', () => {
+  it('a finished card counts from when its work finished (finishedAt), not from the last instruction', () => {
     // lastActivity moves on user input only: after a 40-minute turn it would overstate by 40 minutes.
     for (const col of ['idle', 'closed']) {
-      const html = face.renderCardFace(faceCard({ doneAt: DONE }), col);
+      const html = face.renderCardFace(faceCard({ finishedAt: DONE, doneAt: DONE }), col);
       expect(html, col).toContain(stamp(DONE));
       expect(html, col).not.toContain(`data-ts="${ts}"`);
     }
-    // No finish time (a legacy record): the day groups' own fallback, the last activity.
-    expect(face.renderCardFace(faceCard(), 'idle')).toContain(stamp(ts));
+    // Only an inferred finish (doneAt from lastActivity, a legacy record): no stamp — never a wrong age.
+    expect(face.renderCardFace(faceCard({ doneAt: Date.parse(LAST) }), 'idle')).not.toContain('rel-time');
+    expect(face.renderCardFace(faceCard(), 'closed')).not.toContain('rel-time');
   });
 
   it('a waiting card counts from when it started waiting (waitingSince) — without that stamp, nothing', () => {
@@ -1371,9 +1372,10 @@ describe('collapsed face — recency on a card that is not moving', () => {
   });
 
   it('no clock in the markup: an unparsable stamp shows nothing, equal data renders equal HTML', () => {
-    expect(face.renderCardFace(faceCard({ lastActivity: 'not a date' }), 'idle')).not.toContain('rel-time');
+    expect(face.renderCardFace(faceCard({ finishedAt: 'not a number' }), 'idle')).not.toContain('rel-time');
     expect(face.renderCardFace(faceCard({ waitingSince: 'x' }), 'waiting')).not.toContain('rel-time');
-    expect(face.renderCardFace(faceCard(), 'idle')).toBe(face.renderCardFace(faceCard(), 'idle'));
+    const done = faceCard({ finishedAt: Date.parse(LAST) });
+    expect(face.renderCardFace(done, 'idle')).toBe(face.renderCardFace(done, 'idle'));
   });
 });
 

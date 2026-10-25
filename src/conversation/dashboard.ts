@@ -181,6 +181,13 @@ export interface KanbanSession {
    */
   waitingSince?: number;
   /**
+   * Spec 13 §3.7 — the exact moment its work finished (epoch ms), the clock the
+   * face's "· 12m ago" reads: a live idle card's switch to idle, an archived
+   * card's kept finish time. Absent when only inferred — `doneAt` then falls
+   * back to the last activity for the day groups, the face shows no age.
+   */
+  finishedAt?: number;
+  /**
    * SSOT 2026-10-22 T4/T5 — tokens the context holds now, the threshold it
    * auto-compacts at (follows the model), and the representative model a
    * switch waits to apply once the running compact seals.
@@ -1311,6 +1318,11 @@ function liveDoneAt(s: any): number | undefined {
   return Number.isFinite(last) ? last : undefined;
 }
 
+/** Spec 13 §3.7 — a live session's exact finish time; undefined unless idle with a state stamp. */
+function liveFinishedAt(s: any): number | undefined {
+  return (s.activityState || 'idle') === 'idle' ? finiteNumber(s.activityStateChangedAt) : undefined;
+}
+
 /**
  * Spec 13 §3.7 — when a live session started waiting on its user: the oldest
  * of its open permission prompts and, while its own state is `waiting` (a
@@ -1434,6 +1446,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     tokenUsage: tokenUsageOf(s),
     doneAt: liveDoneAt(s),
     waitingSince: liveWaitingSince(s, permissions),
+    finishedAt: liveFinishedAt(s),
     ...modelFields(s),
     tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume)),
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
@@ -1562,7 +1575,12 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
           contextUsagePercent: 0, // No active context for archived sessions
         }
       : undefined,
-    doneAt: Number.isFinite(Date.parse(archived.lastActivity)) ? Date.parse(archived.lastActivity) : undefined,
+    // The archive's kept finish time (spec 13 §3.7); an older archive falls
+    // back to its last activity for the day groups only.
+    finishedAt: finiteNumber(archived.doneAt),
+    doneAt:
+      finiteNumber(archived.doneAt) ??
+      (Number.isFinite(Date.parse(archived.lastActivity)) ? Date.parse(archived.lastActivity) : undefined),
     ...archivedTasks(archived),
     ...agentsToKanban(sanitizeAgentRegistry(archived.agents), false),
     goal: goalToKanban(archived),
@@ -8026,13 +8044,13 @@ function renderCardStatus(s, col) {
 }
 // Recency (spec 13 §3.7 — the compact tier's "updated_at", Jira's days in
 // column): a card that is not moving says how long it has been in its state —
-// a waiting card since it started waiting (waitingSince; without that stamp,
-// nothing), a finished one since its work finished (doneTimeOf, the day
-// groups' clock). Never lastActivity alone: it moves on user input only, so
-// after a long turn it would overstate. The stamp only; the 1 Hz tick writes
-// "12m ago", so equal data renders equal HTML.
+// a waiting card since it started waiting (waitingSince), a finished one since
+// its work finished (finishedAt). Only exact stamps: without one, no age —
+// never lastActivity, which moves on user input only and after a long turn
+// would overstate. The stamp only; the 1 Hz tick writes "12m ago", so equal
+// data renders equal HTML.
 function cardAgo(s, col) {
-  var t = col === 'waiting' ? toNum(s && s.waitingSince) : doneTimeOf(s);
+  var t = toNum(s && (col === 'waiting' ? s.waitingSince : s.finishedAt));
   return t > 0 ? '<span class="st-ago"><span class="rel-time" data-ts="' + t + '"></span></span>' : '';
 }
 

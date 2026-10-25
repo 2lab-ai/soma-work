@@ -258,6 +258,7 @@ function makeBoard() {
         // The last instruction was 52 minutes ago; the work finished 30 minutes ago.
         lastActivity: iso(52 * M),
         doneAt: NOW - 30 * M,
+        finishedAt: NOW - 30 * M,
         activeAccumulatedMs: 41 * M,
         agents: Array.from({ length: 8 }, (_, i) => ({
           id: `toolu_w${i}`,
@@ -312,6 +313,7 @@ function makeBoard() {
         conversationId: 'conv-crowd',
         lastActivity: iso(3 * 60 * M),
         doneAt: NOW - 2 * 60 * M,
+        finishedAt: NOW - 2 * 60 * M,
         activeAccumulatedMs: 125 * M,
         tokenUsage: { ...USAGE(2_000_000), contextUsagePercent: 100 },
         prUrl: 'https://github.com/2lab-ai/soma-work/pull/123456',
@@ -416,6 +418,12 @@ function log(line: string) {
 function check(ok: boolean, what: string) {
   log(`${ok ? '[ok]  ' : '[FAIL]'} ${what}`);
   if (!ok) failures.push(what);
+}
+/** "12m ago" within a minute of `fromNow` minutes plus the run's elapsed time. */
+function ageNear(text: string | undefined, fromNow: number) {
+  const m = /^(\d+)m ago$/.exec(text ?? '');
+  const want = fromNow + Math.floor((Date.now() - NOW) / M);
+  return !!m && Math.abs(Number(m[1]) - want) <= 1;
 }
 async function overflow(page: Page) {
   return page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
@@ -561,15 +569,13 @@ async function scenario(
     `${tag}: face — the finished card's PR badge says merged in its own colour (${fIdle.pr?.color} vs ${fRun.pr?.color})`,
   );
   check(
-    // NOW is fixed at the start of the run: later scenarios read a few minutes more.
+    // The fixtures' stamps are relative to NOW, fixed at the start of the run:
+    // expect the age from the time that has passed since (±1 minute), so the
+    // check holds at any suite pace. waiting: the question's minute, not the
+    // instruction's 40; finished: the 30 since the work ended, not the 52.
     !fRun.ago &&
-      // waiting: the question's minute (+ the run so far), not the instruction's 40;
-      // finished: the 30 minutes since the work ended, not the instruction's 52.
-      /^\d+m ago$/.test(fWait.ago?.text ?? '') &&
-      Number.parseInt(fWait.ago?.text ?? '99', 10) < 20 &&
-      // 30 + the run so far, below the instruction's 52 — whatever the suite's pace
-      Number.parseInt(fIdle.ago?.text ?? '0', 10) >= 30 &&
-      Number.parseInt(fIdle.ago?.text ?? '99', 10) < 52 &&
+      ageNear(fWait.ago?.text, 1) &&
+      ageNear(fIdle.ago?.text, 30) &&
       !!fIdle.ago?.shown &&
       !!fWait.ago?.shown,
     `${tag}: face — recency on the waiting (${fWait.ago?.text}) and finished (${fIdle.ago?.text}) cards, none on the running one`,
