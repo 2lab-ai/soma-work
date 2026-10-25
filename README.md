@@ -109,8 +109,9 @@ GitHub App (recommended) or Personal Access Token authentication with automatic 
 
 The dashboard (`/dashboard`, sign in with Slack) shows every session as a card and lets the session owner act on it:
 
+- **Three surfaces, three jobs**: one session shows up three ways, and each answers a different question. The **card** is triage — does it need me, is it moving (headline, why it is here, the current task, the subagent pulse, tokens · cost, status). The **opened card** settles it in place, with sections that follow its state: a question or permission prompt first; while running, the task window, the agents (compact rows) and the latest instruction ↔ reply; when done, the reply, the artifacts and the goal — then the goal line, short refs and one control strip (model · effort, Stop / Close / Trash, Slack, 작업 로그). It never repeats the card's numbers. The **session panel** is for understanding and steering: a head chip with the session's status, live time and its one action; 세션 정보 (one summary line, the links, and on demand every token kind, cost, context with the autocompact line, Σ · compactions · sessions, merge — all live); the goal editor; the agent tree at full detail; model · effort beside the message box; the work log and the conversation. Every field has one home where it is shown in full; elsewhere it is a count, a badge or a link to that home. Spec: [`.prd/13-dashboard-three-surfaces-spec.md`](./.prd/13-dashboard-three-surfaces-spec.md).
 - **Main agent and its subagents — one recursive tree**: a card is the main agent, the root of the session's agent tree; the SDK subagents it starts with the `Agent` tool (and the ones they start) are nodes of the same type under it — each with its status, time, tool calls and its own task list and work log, drawn by the same renderer at every depth (an ARIA tree with the arrow keys). The side panel drills into any node — main included: its path (`메인 › A1 Explore › A3 …`), its header and its subtree — and in a parent's work log each spawned child is a live block. The main agent's tasks and log never mix with a subagent's. Spec: [`.prd/12-dashboard-agent-tree-spec.md`](./.prd/12-dashboard-agent-tree-spec.md).
-- **Phones, foldables and PCs**: the layout follows the screen, not the device model. Below 840px the session panel is a full-screen sheet; from 840px (an unfolded iPhone Duo or Galaxy Z Fold8, tablets, PCs) it docks beside the board, which stays live, so you can open the next card with the panel still open. The board shows all three columns when it is at least 840px wide and scrolls them sideways below that. Folding, unfolding or rotating moves the cards to their new places (a fade only with reduced motion). In the panel, Tasks and Artifacts stay pinned and the conversation always keeps at least half of it; the composer stays above the on-screen keyboard. Below an 840×1000 window the CRON lane starts collapsed (its head plus any job waiting for a reply), and below 840×1400 so does LLM capacity (one chip per provider with both measures, `Claude 지금 6.2 · 주 6.3 /16.0`; phones show `Claude 6.2 · 6.3`), so the board is on the first screen; your expand or collapse choice is kept on that device. Device sizes and sources: [`docs/misc/research/2026-10-24-dashboard-device-viewports.md`](./docs/misc/research/2026-10-24-dashboard-device-viewports.md).
+- **Phones, foldables and PCs**: the layout follows the screen, not the device model. Below 840px the session panel is a full-screen sheet; from 840px (an unfolded iPhone Duo or Galaxy Z Fold8, tablets, PCs) it docks beside the board, which stays live, so you can open the next card with the panel still open. The board shows all three columns when it is at least 840px wide and scrolls them sideways below that. Folding, unfolding or rotating moves the cards to their new places (a fade only with reduced motion). In the panel, Tasks and Artifacts stay pinned and the conversation always keeps at least half of it; the composer stays above the on-screen keyboard. Below an 840×1000 window the CRON lane starts collapsed (its head plus any job waiting for a reply), and LLM capacity always starts collapsed (one chip per provider with both measures as max accounts' worth of the total and %, `Claude 지금 5.2/16.0 33% · 주 5.6/16.0 35%`; below 840px the chips wrap to a second row), so the board is on the first screen; your expand or collapse choice is kept on that device. Device sizes and sources: [`docs/misc/research/2026-10-24-dashboard-device-viewports.md`](./docs/misc/research/2026-10-24-dashboard-device-viewports.md).
 - **Model and effort, one click from the top**: the top bar shows your default model and effort for new sessions. Pick a value and it is saved at once — the same setting as `model set <m>` and `effort <level>`. With a session panel docked beside the board, "이 세션에도 적용" (on by default) also switches that session (on a phone the panel sheet covers the top bar — use the panel's own controls).
 - **Per-session model and effort**: the card and the top of the session panel switch one session only, like `%effort <level>`; the change applies from the next turn. When the model caps the level, the card shows the level that really runs.
 - **Permission prompts**: when a turn stops on a permission prompt (the Slack "🔐 Permission Request" card — for example a Bash command that matched a dangerous-command rule), its card moves to NEEDS YOU and the card and the session panel show the same prompt: the tool, its parameters, the matched rules and **Approve / Deny / Explain / Approve & disable rule (this session)**. Only the user the prompt was raised for sees the parameters and can answer — the same rule as the Slack buttons. Slack and the dashboard answer through one path (`src/permission-prompt-response.ts`), so whichever answers first wins and the other is told it was already answered. API: `GET /api/dashboard/session/:key/permission/:approvalId`, `POST /api/dashboard/session/:key/permission` (auth + CSRF).
@@ -289,42 +290,43 @@ for everyone — admins included:
 
 The web dashboard shows the same llmux pool as an **LLM 가용량** section between
 the stats strip and the Agent inbox (`GET /api/dashboard/capacity`, llmux read at
-most every 30 s; the page refetches every 60 s). One card per subscription
-provider (Claude, Codex; API-key pools have no plan unit and are not shown)
-answers two questions (v2, 2026-10-25):
+most every 30 s; the page refetches every 60 s). It starts folded on every window
+(your unfold choice is kept per device); folded, one chip per subscription provider
+gives both windows as max accounts' worth of the total and %:
+`Claude 지금 5.2/16.0 33% · 주 5.6/16.0 35%`. Below 840px the chips wrap, breaking
+only between the two measures. A chip whose oldest reading is over a day old, or
+whose pool counts fewer than 80% of its accounts, carries a warning:
+`Codex 주 2.37/2.4 99% ⚠ 5일 전 · 3/5 반영`. Why two bars, 5h on top: see
+[`docs/misc/research/2026-10-25-capacity-dual-window.md`](./docs/misc/research/2026-10-25-capacity-dual-window.md).
 
-- **How much is left, in max accounts' worth (계정분)** — each account counts by
-  its tier weight (Max x20 = 1, Max x5 = ¼, Pro $500 = 1, Pro $200 = 0.4) times
-  its remaining ratio. That is a normalised estimate, not a token count. Two
-  measures, each `x / total 계정분 · %`:
-  - **지금** (usable now) = the smaller of the 5h and weekly remaining, 0 while a
-    block is active. Claude always has it; another provider only when llmux
-    reports a 5h window (Codex today is weekly-only).
-  - **이번 주** = the weekly remaining.
-  A why line names the window that caps the usable accounts ("쓸 수 있는 10계정
-  중 5h가 상한 1 · 주간이 상한 9") and what the next 5h frees; a unit bar draws
-  one cell per max account (violet = week, teal = now inside it); per-account
-  bars show both.
-- **What comes back** — each account's events are replayed in time order (at
-  one instant: block lifts, then the 5h reset, then the weekly reset; nothing
-  merged), each with its own gain. A **5h lane** (0–5h, ● teal) and a **weekly
-  lane** (0–7d, ◆ violet) draw the projected measure as a step line, with a
-  per-cause breakdown under each; ■ = a block lifts (raises "now" only). When
-  nothing in 5h raises "now", the 5h lane folds into one sentence. Below 600px
-  the lanes become a "다음 리필" list with now and week gains apart.
-- **Honest numbers** — blocks are tracked on their own (weekly ceiling, 5h
-  ceiling, cooldown over 120 s, model-scoped ceiling); a block whose lift time is
-  unknown (paused, auth failure, a cooldown with no end) is 보류 and left out of
-  the totals with no promised return. A reset that has passed counts as full and
-  is flagged 추정; an unblocked account with no 5h reading adds nothing to
-  지금; unknown tier and no weekly reading are counted apart. The oldest llmux
-  measurement is shown.
-- **Tiers** — a dot (orange = higher plan, blue = lower) plus its text. Colour is
-  reserved for the window. llmux does not report plans, so the map is
-  `SOMA_LLMUX_ACCOUNT_TIERS` (`group:name=tier`, e.g. `claude:ai7=x20,claude:ai12=x5`)
-  over built-in defaults (Codex `ai1`·`ai2` = Pro $200, `ai5`·`ai6` = Pro $500).
-  A bare llmux `max` is never guessed into x5/x20; an unmapped account is left
-  out of the totals and named.
+Unfolded, each provider (Claude, Codex; API-key pools have no plan unit and are
+not shown) is one simple card:
+
+- **Two bars** — `5시간 · 지금 쓸 수 있음` (the smaller of the 5h and weekly
+  remaining; 0 while blocked) and `일주일 · 이번 주 남음`, each
+  `x / total 계정 · %`, with one line for what raises it next — how much and when,
+  `다음 +1.0계정 · 1시간 23분 후` (the cause is named only when it is not the bar's
+  own reset, e.g. `· 차단 해제`; the account is in the tooltip; a 5시간 bar held by
+  the weekly limit reads `일주일 한도에 묶임 · 다음 …`). Codex (no 5h data) has the
+  weekly bar only. "계정" = max accounts' worth: tier weight (Max x20 = 1, x5 = ¼,
+  Pro $500 = 1, $200 = 0.4) × remaining — a normalised estimate, not tokens. The %
+  is from the raw ratio (100% only when full); a count that rounds to the total
+  keeps two decimals (`2.37 / 2.4 · 99%`).
+- **One muted disclosure line**, only what is non-zero:
+  `16/17 반영(차단 6 포함) · 제외 1(보류) · 측정 4시간 전` — accounts counted (and how
+  many of them are blocked right now), left out (paused / auth failure / no known lift = 보류, unknown tier,
+  no weekly reading) and the oldest llmux reading when over an hour old.
+- **One timeline**, now → 24h (55% of the width) → 7d: ● is a gain to the 5시간 bar
+  (label above), ◆ a gain to the 일주일 bar (label below), in the bars' colours;
+  refills whose labels would collide merge into one marker with a span. Gains come
+  from replaying each account's resets in time order (blocks lifted first, then
+  5h, then weekly). With no 5h gain in 7 days the ● key says "늘어날 양 없음"; with only small ones
+  (each under 0.05) it gives their sum, `+0.1계정 미만` or e.g. `+0.1계정`, in the same words
+  as the bars' next line and the chip tooltip.
+- Tiers: llmux does not report plans, so the map is `SOMA_LLMUX_ACCOUNT_TIERS`
+  (`group:name=tier`, e.g. `claude:ai7=x20,claude:ai12=x5`) over built-in defaults
+  (Codex `ai1`·`ai2` = Pro $200, `ai5`·`ai6` = Pro $500). A bare llmux `max` is
+  never guessed into x5/x20; an unmapped account is left out and counted.
 - Not routed through llmux (`ccp` mode) → the section is hidden; llmux
   unreachable → the section says so with a fixed reason.
 

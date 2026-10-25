@@ -51,8 +51,52 @@ async function makeImages(browser: Browser): Promise<Record<string, Buffer>> {
       `<style>${base} .b{width:100%;padding:16px;border-radius:10px;background:#fff;border:1px solid #dde}</style><div class="b">1. 앱 실행</div><div class="b">2. 로그인 탭</div><div class="b">3. 버튼 잘림 확인</div>`,
     ),
   };
+  // A real, decodable video: 2 s of canvas animation recorded as WebM in this browser.
+  // Plain-JS string (tsx would wrap named functions in __name()).
+  const webm = (await page.evaluate(`(async () => {
+    const c = document.createElement('canvas'); c.width = 320; c.height = 240;
+    const g = c.getContext('2d');
+    const rec = new MediaRecorder(c.captureStream(15), { mimeType: 'video/webm' });
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    const stopped = new Promise((r) => { rec.onstop = r; });
+    rec.start(100);
+    const t0 = performance.now();
+    // A timer, not requestAnimationFrame: rAF is throttled when this page is not in front,
+    // which left a recording of a few frames (0.14 s) under load.
+    await new Promise((r) => {
+      const id = setInterval(() => {
+        const t = performance.now() - t0;
+        g.fillStyle = '#2563eb'; g.fillRect(0, 0, 320, 240);
+        g.fillStyle = '#fff'; g.fillRect((t / 4) % 300, 100, 20, 40);
+        if (t >= 2000) { clearInterval(id); r(); }
+      }, 50);
+    });
+    rec.stop(); await stopped;
+    const u = new Uint8Array(await new Blob(chunks, { type: 'video/webm' }).arrayBuffer());
+    let s = ''; for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]);
+    return btoa(s);
+  })()`)) as string;
+  // A real, decodable voice memo: 3 s of a 440 Hz tone recorded as Opus in WebM. Long enough
+  // that it is still playing when the check presses ▶ again (a memo that has ended replays).
+  const voice = (await page.evaluate(`(async () => {
+    const ctx = new AudioContext();
+    await ctx.resume();
+    const osc = ctx.createOscillator(); osc.frequency.value = 440;
+    const dest = ctx.createMediaStreamDestination(); osc.connect(dest);
+    const rec = new MediaRecorder(dest.stream, { mimeType: 'audio/webm' });
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    const stopped = new Promise((r) => { rec.onstop = r; });
+    osc.start(); rec.start(100);
+    await new Promise((r) => setTimeout(r, 3000));
+    rec.stop(); osc.stop(); await stopped; await ctx.close();
+    const u = new Uint8Array(await new Blob(chunks, { type: 'audio/webm' }).arrayBuffer());
+    let s = ''; for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]);
+    return btoa(s);
+  })()`)) as string;
   await page.close();
-  return images;
+  return { ...images, video: Buffer.from(webm, 'base64'), voice: Buffer.from(voice, 'base64') };
 }
 
 const att = (id: string, name: string, kind: string, mime: string, size: number, stored = true, extra = {}) => ({
@@ -72,9 +116,9 @@ const T1_ATTS = [
   att('IMG4', 'iphone-se.png', 'image', 'image/png', 120_000),
   att('IMG5', 'galaxy-fold.png', 'image', 'image/png', 131_000),
   att('PDF1', '로그인-디자인-가이드-v3-final.pdf', 'pdf', 'application/pdf', 2_200_000),
-  att('VOX1', 'voice-memo.m4a', 'audio', 'audio/mp4', 48_000),
+  att('VOX1', 'voice-memo.webm', 'audio', 'audio/webm', 48_000),
   // Videos are downloaded (≤ 50 MB) and kept, so this one plays in the dashboard.
-  att('MOV1', 'screen-recording.mp4', 'video', 'video/mp4', 38_000_000),
+  att('MOV1', 'screen-recording.webm', 'video', 'video/webm', 38_000_000),
 ];
 const T3_ATTS = [att('IMG6', 'after-fix.png', 'image', 'image/png', 150_000)];
 
@@ -161,12 +205,17 @@ async function preparePage(page: Page, images: Record<string, Buffer>) {
   };
   await page.route(`**/api/dashboard/session/${CID}/media/*/content*`, (r) => {
     const id = r.request().url().split('/media/')[1].split('/')[0];
+    if (id === 'MOV1') return r.fulfill({ body: images.video, contentType: 'video/webm' });
+    if (id === 'VOX1') return r.fulfill({ body: images.voice, contentType: 'audio/webm' });
     if (bytes[id]) return r.fulfill({ body: bytes[id], contentType: 'image/png' });
     return r.fulfill({ body: Buffer.from('%PDF-1.4\n'), contentType: 'application/octet-stream' });
   });
 }
 
 type Check = { ok: boolean; msg: string };
+
+/** A media duration for a receipt line. MediaRecorder WebM often has no duration in its header. */
+const secs = (d: number) => (Number.isFinite(d) ? `${d.toFixed(2)}s` : 'unknown length');
 
 async function run(
   browser: Browser,
@@ -303,16 +352,101 @@ async function run(
   await page.waitForFunction(() => (document.getElementById('art-modal') as HTMLDialogElement)?.open, {
     timeout: 5000,
   });
+  // Real playback, not just the element: the bytes decode (frame size known) and time advances.
+  await page
+    .waitForFunction(
+      () => {
+        const v = document.querySelector('#art-modal-body video') as HTMLVideoElement | null;
+        return !!v && v.readyState >= 2 && v.videoWidth > 0 && v.currentTime > 0.2;
+      },
+      undefined,
+      { timeout: 8000 },
+    )
+    .catch(() => {});
   const player = await page.evaluate(() => {
     const v = document.querySelector('#art-modal-body video') as HTMLVideoElement | null;
-    return { src: v?.getAttribute('src') ?? '', controls: !!v?.controls };
+    return {
+      src: v?.getAttribute('src') ?? '',
+      controls: !!v?.controls,
+      width: v?.videoWidth ?? 0,
+      ready: v?.readyState ?? 0,
+      time: v?.currentTime ?? 0,
+      duration: v?.duration ?? 0,
+      error: v?.error ? v.error.code : 0,
+    };
   });
   checks.push({
     ok: player.controls && player.src.includes('/media/MOV1/content'),
     msg: `a kept video opens as a player (${player.src})`,
   });
+  checks.push({
+    ok: player.width === 320 && player.ready >= 2 && player.time > 0.2 && !player.error,
+    msg: `the kept video decodes and plays (${player.width}px, readyState ${player.ready}, t=${player.time.toFixed(2)}s of ${secs(player.duration)})`,
+  });
   await page.screenshot({ path: path.join(OUT, `viewer-video-${tag}.png`) });
   await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+
+  // The kept voice memo plays in place: ▶ on its card, no viewer. Real decoding, time advances.
+  const playBtn = page
+    .locator('#panel-turns .turn.user')
+    .first()
+    .locator('[data-art-play][data-art-id="VOX1"]')
+    .first();
+  await playBtn.click();
+  await page
+    .waitForFunction(
+      () => {
+        const a = (window as unknown as { _artAudio?: { el: HTMLAudioElement | null } })._artAudio?.el;
+        return !!a && a.readyState >= 2 && !a.paused && a.currentTime > 0.2;
+      },
+      undefined,
+      { timeout: 8000 },
+    )
+    .catch(() => {});
+  const voice = await page.evaluate(() => {
+    const a = (window as unknown as { _artAudio?: { el: HTMLAudioElement | null } })._artAudio?.el;
+    const b = document.querySelector('#panel-turns .turn.user [data-art-play][data-art-id="VOX1"]');
+    return {
+      src: a?.getAttribute('src') ?? '',
+      ready: a?.readyState ?? 0,
+      time: a?.currentTime ?? 0,
+      duration: a?.duration ?? 0,
+      paused: a ? a.paused : true,
+      error: a?.error ? a.error.code : 0,
+      pressed: b?.getAttribute('aria-pressed') ?? '',
+      modal: !!(document.getElementById('art-modal') as HTMLDialogElement | null)?.open,
+    };
+  });
+  checks.push({
+    ok: voice.src.includes('/media/VOX1/content') && !voice.modal && voice.pressed === 'true',
+    msg: `▶ plays the kept voice memo in place (${voice.src}, aria-pressed ${voice.pressed})`,
+  });
+  checks.push({
+    ok: voice.ready >= 2 && !voice.paused && voice.time > 0.2 && !voice.error,
+    msg: `the kept voice memo decodes and plays (readyState ${voice.ready}, t=${voice.time.toFixed(2)}s of ${secs(voice.duration)})`,
+  });
+  await playBtn.click();
+  await page.waitForTimeout(150);
+  // Only a memo that was playing can be paused: a failed or finished memo is also "paused".
+  const wasPlaying = voice.ready >= 2 && !voice.paused && voice.time > 0.2 && !voice.error;
+  const stopped = await page.evaluate(() => {
+    const a = (window as unknown as { _artAudio?: { el: HTMLAudioElement | null } })._artAudio?.el;
+    return {
+      paused: !!a?.paused,
+      ended: !!a?.ended,
+      time: a?.currentTime ?? 0,
+      error: a?.error ? a.error.code : 0,
+      pressed:
+        document
+          .querySelector('#panel-turns .turn.user [data-art-play][data-art-id="VOX1"]')
+          ?.getAttribute('aria-pressed') ?? '',
+    };
+  });
+  checks.push({
+    ok: wasPlaying && stopped.paused && !stopped.ended && !stopped.error && stopped.pressed === 'false',
+    msg: `▶ again pauses it mid-memo (was playing ${wasPlaying}, paused ${stopped.paused} at t=${stopped.time.toFixed(2)}s, ended ${stopped.ended}, aria-pressed ${stopped.pressed})`,
+  });
 
   await page.close();
   return checks.map((c) => ({ ...c, msg: `[${tag}] ${c.msg}` }));
