@@ -9,7 +9,8 @@
  *     strip and the inbox, the CRON lane above the columns, no page-level
  *     sideways scroll (cron-capacity-<w>-<theme>.png)
  *   - cron cards are in the lane, not in the columns, and lead with the CRON badge
- *   - an empty provider leads with the countdown to its first account back
+ *   - capacity v2: Claude shows now and this week in max accounts, Codex the
+ *     weekly measure only, one weekly lane each; a narrow screen lists refills
  *   - "지난 실행" opens the run drawer with one row per run; Escape closes it
  *     (cron-drawer-<theme>.png)
  *
@@ -25,13 +26,17 @@ const OUT = process.argv[2] || path.join(__dirname, '..', 'screenshots', 'cron-c
 fs.mkdirSync(OUT, { recursive: true });
 const PORT = process.env.CONVERSATION_VIEWER_PORT || '33918';
 process.env.CONVERSATION_VIEWER_PORT = PORT;
+// Hermetic: a shell that carries the deployment's viewer auth (token, OAuth,
+// JWT secret) would send every page to /login. This receipt runs auth-less.
+for (const k of ['CONVERSATION_VIEWER_TOKEN', 'DASHBOARD_JWT_SECRET', 'GOOGLE_CLIENT_ID', 'MICROSOFT_CLIENT_ID']) {
+  process.env[k] = '';
+}
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 const NOW = Date.now();
 const NOW_S = Math.floor(NOW / 1000);
 const M = 60_000;
 const H = 3600;
-const D = 86400;
 const iso = (agoMs: number) => new Date(NOW - agoMs).toISOString();
 const report: string[] = [];
 const failures: string[] = [];
@@ -204,65 +209,66 @@ const cronJobs = [
   },
 ];
 
-const mk = (
-  account: string,
-  tier: string | undefined,
-  window: string,
-  inS: number,
-  gainPct: number,
-  returns = false,
-) => ({
-  account,
-  tier,
-  window,
-  at: NOW_S + inS,
-  gainPct,
-  returns,
+// LLM capacity v2: an llmux snapshot shaped like the live pool of 2026-10-25
+// (names neutral) through the real buildCapacityView. Per row: [name, 5h used,
+// 5h reset in h (null = no 5h window), 7d used, 7d reset in h, status, reason,
+// measured h ago]. Claude: 1 account 5h-capped, 9 weekly-capped, 3 at the
+// weekly ceiling, 3 in a cooldown that ends 1 s before their weekly reset, 1 paused.
+type Row = [string, number | null, number | null, number, number, string, string | null, number];
+const CLAUDE: Row[] = [
+  ['ai15', 0.23, 0.2, 0.29, 137.2, 'active', null, 4.2],
+  ['ai1', 0.01, 4.8, 0.0, 157.2, 'active', null, 3.9],
+  ['ai30', 0.0, -3.3, 0.09, 149.2, 'ok', null, 1.2],
+  ['ai40', 0.0, -14, 0.24, 138.2, 'ok', null, 1.5],
+  ['ai9', 0.0, -12.8, 0.25, 139.2, 'ok', null, 4.4],
+  ['ai41', 0.0, -16.3, 0.36, 131.2, 'ok', null, 1.9],
+  ['ai44', 0.0, -5.8, 0.36, 134.2, 'ok', null, 0.9],
+  ['ai5', 0.0, -16.8, 0.61, 109.2, 'ok', null, 1.7],
+  ['ai2', 0.05, 4.2, 0.76, 104.2, 'ok', null, 1.0],
+  ['ai6', 0.19, 0.2, 0.78, 114.2, 'ok', null, 3.0],
+  ['ai8', null, null, 1.0, 8.2, 'ok', '7d 100.0% > 99%', 2.5],
+  ['ai3', null, null, 1.0, 33.2, 'ok', '7d 100.0% > 99%', 2.2],
+  ['ai7', 0.0, -37, 1.0, 43.2, 'cooldown', 'cooldown 1d19h', 0.2],
+  ['ai43', 0.0, -38.7, 1.0, 55.2, 'cooldown', 'cooldown 2d7h', 3.2],
+  ['ai10', null, null, 1.0, 28.2, 'ok', '7d 100.0% > 99%', 0.5],
+  ['ai4', 0.0, -38.7, 1.0, 90.2, 'cooldown', 'cooldown 3d18h', 3.7],
+  ['ai11', 0.0, -0.8, 0.02, 150.2, 'ok', 'paused', 3.5],
+];
+// Codex reports no 5h window: the weekly measure only. ai12 · ai13 have no tier.
+const CODEX: Row[] = [
+  ['ai12', null, null, 0.2, 135.4, 'active', null, 114.9],
+  ['ai13', null, null, 0.01, 138.2, 'ok', null, 204.1],
+  ['ai2', null, null, 0.23, 135.5, 'ok', null, 115.4],
+  ['ai5', null, null, 0.0, 167.8, 'ok', null, 60.2],
+  ['ai6', null, null, 1.0, 135.2, 'ok', '7d 100.0% > 99%', 60.1],
+];
+const win = (used: number, inH: number) => ({
+  utilization: used,
+  resets_at: Math.round(NOW_S + inH * H),
+  resets_in_secs: Math.round(inH * H),
 });
-const capacity = {
-  available: true,
-  fetchedAtMs: NOW - 12_000,
-  groups: [
-    {
-      group: 'claude',
-      label: 'Claude',
-      availablePct: 61.5,
-      availableAccounts: 3,
-      unknownAccounts: 1,
-      totalAccounts: 5,
-      state: 'ok',
-      nextRefill: { account: 'ai7', tier: 'claude-max-20x', window: '5h', at: NOW_S + 41 * 60 },
-      nextReturn: { account: 'ai12', tier: 'claude-max-20x', window: '7d', at: NOW_S + 5 * D },
-      markers: [
-        mk('ai7', 'claude-max-20x', '5h', 41 * 60, 62),
-        mk('ai3', 'claude-max-5x', '5h', 3 * H, 10),
-        mk('ai8', undefined, '5h', 3 * H + 20 * 60, 44),
-        mk('ai3', 'claude-max-5x', '7d', 4 * D, 20),
-        mk('ai7', 'claude-max-20x', '7d', 5 * D - 3 * H, 31),
-        mk('ai12', 'claude-max-20x', '7d', 5 * D, 100, true),
-        mk('ai13', 'claude-max-20x', '7d-fable', 5 * D + 6 * H, 70),
-      ],
-      accounts: [],
-    },
-    {
-      group: 'codex',
-      label: 'Codex',
-      availablePct: 0,
-      availableAccounts: 0,
-      unknownAccounts: 0,
-      totalAccounts: 4,
-      state: 'empty',
-      nextReturn: { account: 'ai5', tier: 'chatgpt-pro-500', window: '5h', at: NOW_S + 2 * H + 14 * 60 },
-      markers: [
-        mk('ai5', 'chatgpt-pro-500', '5h', 2 * H + 14 * 60, 100, true),
-        mk('ai1', 'chatgpt-pro-200', 'cooldown', 4 * H, 0, true),
-        mk('ai6', 'chatgpt-pro-500', '7d', 2 * D + 4 * H, 100, true),
-        mk('ai2', 'chatgpt-pro-200', '7d', 3 * D + 12 * H, 100, true),
-      ],
-      accounts: [],
-    },
-  ],
+const toAccount = (group: string) => (r: Row) => {
+  const [name, u5, r5, u7, r7, status, blocked, agoH] = r;
+  return {
+    name: `${group}:${name}@corp.example`,
+    type: group === 'codex' ? 'codex' : 'oauth',
+    group,
+    status,
+    order: 1,
+    blocked,
+    five_hour: u5 === null || r5 === null ? null : win(u5, r5),
+    seven_day: win(u7, r7),
+    // live llmux: a long cooldown ends one second before the weekly reset
+    cooldown_until: status === 'cooldown' ? Math.round(NOW_S + r7 * H) - 1 : null,
+    last_refresh_ms: Math.round(NOW - agoH * H * 1000),
+  };
 };
+const TIERS: Record<string, string> = Object.fromEntries(CLAUDE.map((r) => [`claude:${r[0]}`, 'claude-max-20x']));
+let capacity: unknown = null;
+function buildCapacity(build: (status: unknown, tiers: unknown, nowMs: number) => unknown) {
+  const status = { current: null, accounts: [...CLAUDE.map(toAccount('claude')), ...CODEX.map(toAccount('codex'))] };
+  capacity = { ...(build(status, TIERS, NOW) as object), fetchedAtMs: NOW - 12_000 };
+}
 
 const PAGE_HELPERS = [
   'window.WebSocket = function StubWebSocket(url) { this.url = url; window.__ws = this; };',
@@ -272,6 +278,14 @@ const PAGE_HELPERS = [
 async function openPage(browser: Browser, width: number, theme: 'light' | 'dark'): Promise<Page> {
   const ctx = await browser.newContext({ viewport: { width, height: 1100 }, colorScheme: theme });
   const page = await ctx.newPage();
+  // A client script error must fail the receipt with its message, not a selector timeout.
+  page.on('pageerror', (err) => check(false, `page error: ${err.message}`));
+  page.on('console', (m) => {
+    if (m.type() === 'error') console.log(`[console] ${m.text()}`);
+  });
+  page.on('response', (r) => {
+    if (r.status() >= 400) console.log(`[http ${r.status()}] ${r.url()}`);
+  });
   await page.addInitScript({
     content: `${PAGE_HELPERS}\nlocalStorage.setItem("soma-theme", "${theme}");localStorage.setItem("soma-board-view", "board");`,
   });
@@ -290,8 +304,15 @@ async function openPage(browser: Browser, width: number, theme: 'light' | 'dark'
   await page.route('**/api/dashboard/capacity', (r) => r.fulfill({ json: { capacity } }));
   await page.route(/\/api\/dashboard\/session\/[^/?]+(\?.*)?$/, (r) => r.fulfill({ json: { turns: [] } }));
   await page.goto(`${BASE_URL}/dashboard/U001`);
-  await page.waitForSelector('#cron-lane:not([hidden]) .cron-group');
-  await page.waitForSelector('#capacity:not([hidden]) .cap-row');
+  // Below 840×1000 both sections start folded (#409): wait for them to render,
+  // then unfold capacity so the receipt shows the full view.
+  await page.waitForSelector('#cron-lane:not([hidden]) .cron-group', { state: 'attached' });
+  await page.waitForSelector('#capacity:not([hidden]) .cap-prov', { state: 'attached' });
+  if ((await page.getAttribute('#capacity-toggle', 'aria-expanded')) === 'false') {
+    await page.screenshot({ path: path.join(OUT, `cron-capacity-${width}-${theme}-folded.png`) });
+    await page.click('#capacity-toggle');
+  }
+  await page.waitForSelector('#capacity .cap-prov', { state: 'visible' });
   await page.waitForTimeout(500);
   return page;
 }
@@ -321,19 +342,45 @@ async function layout(browser: Browser) {
           columnCron: document.querySelectorAll('#kanban .card .cron-badge').length,
           laneBadges: document.querySelectorAll('#cron-lane .card .card-head > .cron-badge:first-child').length,
           tiles: document.querySelectorAll('#cron-groups .cron-group').length,
-          codexLead: document.querySelector('.cap-row.is-empty .cap-next')?.textContent || '',
-          markers: document.querySelectorAll('.cap-mk').length,
+          claudeNow: document.querySelector('[data-group="claude"] .cap-meas.is-now .cap-big')?.textContent || '',
+          claudeWeek: document.querySelector('[data-group="claude"] .cap-meas.is-wk .cap-big')?.textContent || '',
+          codexNow: document.querySelectorAll('[data-group="codex"] .cap-meas.is-now').length,
+          codexWeek: document.querySelector('[data-group="codex"] .cap-meas.is-wk .cap-big')?.textContent || '',
+          lanes7d: document.querySelectorAll('.cap-lane.is-7d').length,
+          lanes5h: document.querySelectorAll('.cap-lane.is-5h').length,
+          why: document.querySelector('[data-group="claude"] .cap-why')?.textContent || '',
         }));
         check(placement.columnCron === 0, 'no cron card left in the three columns');
         check(placement.laneCards === 2, `the lane shows each job's latest run as a card (${placement.laneCards})`);
         check(placement.laneBadges === 2, 'every lane card leads its head with the CRON badge');
         check(placement.tiles === 3, 'one tile per job, including a job with no card on the board');
-        // The countdown runs from the fixture's NOW: a slow page load shaves minutes.
+        // The live-shaped pool: now ≈ week ≈ 6.3 of 16.0 Claude max accounts; Codex weekly only.
+        const g0 = (capacity as { groups: { now: number; week: number }[] }).groups[0];
+        const f1 = (x: number) => (Math.round(x * 10) / 10).toFixed(1);
         check(
-          /다음 복귀 ai5 · 2h \d+m/.test(placement.codexLead),
-          `empty Codex leads with its first return (${placement.codexLead})`,
+          placement.claudeNow === f1(g0.now) && placement.claudeWeek === '6.3',
+          `Claude now/week ${placement.claudeNow}/${placement.claudeWeek} (server ${g0.now}/${g0.week})`,
         );
-        check(placement.markers >= 8, `timeline markers rendered (${placement.markers})`);
+        check(
+          placement.codexNow === 0 && placement.codexWeek === '1.3',
+          `Codex shows the weekly measure only (${placement.codexWeek})`,
+        );
+        check(placement.lanes7d === 2, `one weekly lane per provider (${placement.lanes7d})`);
+        // Nothing within 5h raises "now" (the week caps 9 of 10): the 5h lane folds into a line.
+        check(
+          placement.lanes5h === 0 && /주간이 상한 9/.test(placement.why),
+          `5h lane folds; why line: ${placement.why}`,
+        );
+      }
+      if (width === 390) {
+        const narrow = await page.evaluate(() => ({
+          lanes: document.querySelectorAll('.cap-lane').length,
+          lists: document.querySelectorAll('.cap-evlist.is-short').length,
+        }));
+        check(
+          narrow.lanes === 0 && narrow.lists >= 1,
+          `${tag}: lanes trade for the "next refills" list (${narrow.lists})`,
+        );
       }
       await page.screenshot({ path: path.join(OUT, `cron-capacity-${tag}.png`), fullPage: true });
       await page.context().close();
@@ -366,6 +413,8 @@ async function drawer(browser: Browser) {
 }
 
 async function main() {
+  const { buildCapacityView } = await import('../src/conversation/capacity-view');
+  buildCapacity(buildCapacityView as never);
   const dashboard = await import('../src/conversation/dashboard');
   dashboard.setDashboardSessionAccessor(() => new Map());
   const ws = await import('../src/conversation/web-server');
