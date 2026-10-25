@@ -84,6 +84,8 @@ export interface LlmuxAccount {
    * dashboard tier map (auth/llmux-tiers.ts) after the operator's own map.
    */
   rate_limit_tier?: string;
+  /** When llmux last measured this account's usage windows (epoch ms). */
+  last_refresh_ms?: number;
   in_flight?: number;
   totals?: { requests: number; input_tokens: number; output_tokens: number };
 }
