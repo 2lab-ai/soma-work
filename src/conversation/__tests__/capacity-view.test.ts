@@ -410,6 +410,57 @@ describe('capacity v2 — trinity r4 (astra): no capacity without evidence', () 
     expect(g.has5h).toBe(true);
     expect(g.now).toBe(0);
     expect(g.unmeasured5h).toBe(1);
+    // PR #417 review (fable P3): unmeasured reads "unknown", never "empty" (소진)
+    expect(g.state).toBe('unknown');
+  });
+});
+
+describe('capacity v2 — PR #417 review gate (astra) edge cases', () => {
+  it('cooldown_until 0 is no end time: a cooldown with it is held, not expired', () => {
+    const g = group([
+      acct({
+        name: 'claude:ai1@c',
+        group: 'claude',
+        status: 'cooldown',
+        cooldown_until: 0,
+        five_hour: w(0, H),
+        seven_day: w(0, D),
+      }),
+      acct({ name: 'claude:ai2@c', group: 'claude', five_hour: w(0, H), seven_day: w(0, D) }),
+    ]);
+    expect(g.excluded.held).toBe(1);
+  });
+
+  it('a passed 5h reset that lifts "now" from the stale reading to the weekly is an estimate', () => {
+    // stale 5h said 0.1 left, weekly 0.5 left: the guess moves now 0.1 → 0.5
+    const g = group([
+      acct({ name: 'claude:ai1@c', group: 'claude', five_hour: w(0.9, -60), seven_day: w(0.5, 3 * D) }),
+    ]);
+    expect(r1(g.now)).toBe(0.5);
+    expect(g.estimated).toBe(1);
+  });
+
+  it('an exhausted, unblocked account is not counted as usable', () => {
+    const g = group([
+      acct({ name: 'claude:ai1@c', group: 'claude', five_hour: w(0, H), seven_day: w(1, 2 * D) }),
+      acct({ name: 'claude:ai2@c', group: 'claude', five_hour: w(0.5, H), seven_day: w(0, D) }),
+    ]);
+    expect(g.binding).toEqual({ fiveHour: 1, weekly: 0 });
+  });
+
+  it('no return is promised when the account lifts into an exhausted window with no known reset', () => {
+    const g = group([
+      acct({
+        name: 'claude:ai1@c',
+        group: 'claude',
+        status: 'cooldown',
+        blocked: 'cooldown 2h',
+        cooldown_until: NOW_S + 2 * H,
+        five_hour: w(0, H),
+        seven_day: { utilization: 1, resets_at: 0, resets_in_secs: 0 },
+      }),
+    ]);
+    expect(g.units[0].returnAt).toBeUndefined();
   });
 });
 

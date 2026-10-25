@@ -501,6 +501,9 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     expect(secOpen('open', false)).toBe(true);
     expect(secOpen('closed', true)).toBe(false);
     expect(TEMPLATE).toContain("var SEC_OPEN_QUERY = '(min-width: 840px) and (min-height: 1000px)';");
+    // capacity v2 is taller: it opens on its own only on a 1400px+ tall window (board first)
+    expect(TEMPLATE).toContain("var SEC_OPEN_QUERY_CAPACITY = '(min-width: 840px) and (min-height: 1400px)';");
+    expect(clientFn('secIsOpen')).toContain("sec === 'capacity' ? _secMqlCap : _secMql");
   });
 
   it('the toggles are static buttons outside the regions that are re-rendered (focus and state survive repaints)', () => {
@@ -532,6 +535,7 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
         'capGain',
         'capPct',
         'capNextLine',
+        'capAdvance',
         'renderCapacitySummary',
       ],
       ['CAP_CAUSE', 'CAP_5H', 'CAP_7D'],
@@ -577,16 +581,26 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     // The glyph leads (the state shows first even where the row scrolls); the whole
     // sentence is the chip's accessible name.
     expect(html).toMatch(
-      /cap-chip is-ok"[^>]*>Claude 지금 <b class="is-now">6\.2<\/b> · 주 <b class="is-wk">6\.3<\/b> \/16\.0/,
+      /cap-chip is-ok"[^>]*>Claude <i class="cap-chip-k">지금 <\/i><b class="is-now">6\.2<\/b> · <i class="cap-chip-k">주 <\/i><b class="is-wk">6\.3<\/b><i class="cap-chip-of"> \/16\.0<\/i>/,
     );
-    expect(html).toMatch(/cap-chip is-low"[^>]*>▲ Codex 주 <b class="is-wk">0\.3<\/b> \/2\.4/);
-    expect(html).toMatch(/cap-chip is-empty"[^>]*>✗ Gemini 지금 <b class="is-now">0\.0<\/b>/);
+    expect(html).toMatch(
+      /cap-chip is-low"[^>]*>▲ Codex <i class="cap-chip-k">주 <\/i><b class="is-wk">0\.3<\/b><i class="cap-chip-of"> \/2\.4/,
+    );
+    expect(html).toMatch(
+      /cap-chip is-empty"[^>]*>✗ Gemini <i class="cap-chip-k">지금 <\/i><b class="is-now">0\.0<\/b>/,
+    );
     expect(html).toMatch(/cap-chip is-unknown"[^>]*>◌ Other <b>—<\/b>/);
     expect(html).toMatch(/cap-chip is-low" title="[^"]*1h 0m 후/);
     expect(html).toMatch(/aria-label="Codex 이번 주 0\.3\/2\.4 계정분 \(13%\) · 부족 — [^"]*1h 0m 후/);
     const off = fns.renderCapacitySummary({ available: false, reason: 'llmux unreachable', groups: [] }, nowS * 1000);
     expect(off).toContain('가용량 미확인');
     expect(off).toContain('llmux unreachable');
+  });
+
+  it('phones keep the collapsed chips short: the words and the total drop, both numbers stay', () => {
+    expect(TEMPLATE).toContain(
+      '@media (max-width: 639px) { .cap-chip .cap-chip-k, .cap-chip .cap-chip-of { display: none; } }',
+    );
   });
 
   it('collapsed: the timeline, legend and subtitle are hidden; the chips only show while collapsed', () => {

@@ -170,12 +170,18 @@ interface WindowRead {
   at?: number;
   /** The reset already passed: the window is full by estimate. */
   passed: boolean;
+  /** What the stale reading said before that passed reset (when it was valid). */
+  before?: number;
 }
 
 function readWindow(window: LlmuxWindow | null | undefined, nowMs: number): WindowRead | undefined {
   if (!window) return undefined;
   const at = resetAt(window, nowMs);
-  if (at !== undefined && at <= nowMs / 1000) return { rem: 1, at, passed: true };
+  if (at !== undefined && at <= nowMs / 1000) {
+    const u = window.utilization;
+    const before = Number.isFinite(u) && u >= 0 && u <= 1 ? 1 - u : undefined;
+    return { rem: 1, at, passed: true, ...(before !== undefined ? { before } : {}) };
+  }
   return { rem: remaining(window, nowMs), at, passed: false };
 }
 
@@ -244,7 +250,11 @@ function initAccount(
     if (at === undefined) hold('other');
     else if (at > nowS) blocks.scopedUntil = at;
   }
-  const cd = Number.isFinite(account.cooldown_until) ? (account.cooldown_until as number) : undefined;
+  // 0 / negative = no end time reported (a "cooldown" with it is held), not an expired one.
+  const cd =
+    Number.isFinite(account.cooldown_until) && (account.cooldown_until as number) > 0
+      ? (account.cooldown_until as number)
+      : undefined;
   if (cd !== undefined) {
     // A throttle (≤ 120 s) or a cooldown already over never blocks.
     if (cd - nowS > TRANSIENT_COOLDOWN_SECS) blocks.cooldownUntil = cd;
@@ -297,10 +307,12 @@ function initAccount(
     idle5: false,
   };
   let est5 = false;
+  let before5: number | undefined;
   if (has5h) {
     if (five?.rem !== undefined) {
       state.rem5 = five.rem;
       est5 = five.passed;
+      before5 = five.before;
     } else if (isBlocked(state)) {
       // Decided when it lifts: full only after a whole idle 5h window.
       state.rem5 = 1;
@@ -318,8 +330,12 @@ function initAccount(
   unit.unmeasured5h = state.unmeasured5;
   // An estimate counts only where it decides a number: any weekly guess, or a
   // 5h guess on the minimum of a usable account.
-  unit.estimated = seven.passed || (est5 && !blocked && !state.unmeasured5 && (state.rem5 ?? 1) <= state.rem7 + EPS);
-  if (!blocked && !state.unmeasured5) {
+  // A 5h guess decides "now" when the stale reading would have been the minimum
+  // (trinity PR review, astra): it lifts min from that reading to the weekly or to full.
+  const est5Moves = before5 !== undefined ? before5 < state.rem7 - EPS : (state.rem5 ?? 1) <= state.rem7 + EPS;
+  unit.estimated = seven.passed || (est5 && !blocked && !state.unmeasured5 && est5Moves);
+  // A usable account has something left: an exhausted window is not "usable".
+  if (!blocked && !state.unmeasured5 && usable(state) > EPS) {
     unit.binding = has5h && (state.rem5 ?? 1) < state.rem7 - EPS ? '5h' : '7d';
   }
   return { unit, state, refreshedAt };
@@ -414,7 +430,8 @@ function buildGroup(
     const w0 = e.s.rem7;
     if (!apply(e)) continue;
     if (wasBlocked && !isBlocked(e.s)) {
-      if (e.s.unit.returnAt === undefined) e.s.unit.returnAt = e.at;
+      // A return is promised only when the account has something to use then.
+      if (e.s.unit.returnAt === undefined && usable(e.s) > EPS) e.s.unit.returnAt = e.at;
       if (e.s.idle5) {
         // Idle a whole 5h window by now → full (estimate); a shorter block → unknown.
         e.s.idle5 = false;
@@ -432,8 +449,16 @@ function buildGroup(
   }
 
   const primary = has5h ? now : week;
+  // Nothing usable only because no usable account has a 5h reading is "unknown", not "empty".
+  const unmeasuredOnly = has5h && primary <= EPS && live.length === 0 && units.some((u) => u.unmeasured5h);
   const state: CapacityGroupView['state'] =
-    total <= EPS ? 'unknown' : primary <= EPS ? 'empty' : (primary / total) * 100 < CAPACITY_LOW_PCT ? 'low' : 'ok';
+    total <= EPS || unmeasuredOnly
+      ? 'unknown'
+      : primary <= EPS
+        ? 'empty'
+        : (primary / total) * 100 < CAPACITY_LOW_PCT
+          ? 'low'
+          : 'ok';
   return {
     group,
     label: providerName(group),
