@@ -385,8 +385,8 @@ async function overflow(page: Page) {
   return page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
 }
 async function shootCard(page: Page, key: string, name: string) {
-  const box = await page.locator(`[data-session-key="${key}"]`).boundingBox();
-  if (box) await page.screenshot({ path: path.join(OUT, name), clip: box, fullPage: true });
+  // The element shot scrolls the card into view itself (a viewport box is not a page box).
+  await page.locator(`[data-session-key="${key}"]`).screenshot({ path: path.join(OUT, name) });
 }
 async function pushSession(page: Page, key: string, edit: (s: Record<string, unknown>) => void) {
   const all = Object.values(BOARD).flat() as Array<Record<string, unknown>>;
@@ -717,6 +717,20 @@ async function scenario(
       return { body: Math.round(body), scroll: Math.round(sc) };
     });
   const folded0 = await budgetOf();
+  // Send stays inside the panel (the input shrinks, Send does not) — clipping
+  // inside the panel is invisible to the page-overflow check.
+  const sendInside = () =>
+    page.evaluate(() => {
+      const p = (document.getElementById('slide-panel') as HTMLElement).getBoundingClientRect();
+      const b = (document.getElementById('cmd-send') as HTMLElement).getBoundingClientRect();
+      return {
+        inside: b.left >= p.left - 0.5 && b.right <= p.right + 0.5 && b.width > 0,
+        right: Math.round(b.right),
+        panel: Math.round(p.right),
+      };
+    });
+  const send0 = await sendInside();
+  check(send0.inside, `${tag}: Send sits inside the panel (${send0.right} ≤ ${send0.panel})`);
   if (folded) {
     // Folded, the toggle shares the input's line: the reading area keeps its room.
     const sameLine = await page.evaluate(() => {
@@ -728,6 +742,8 @@ async function scenario(
     await page.locator('#panel-controls .pc-toggle').click();
     await page.waitForTimeout(150);
     check((await ctl()).selects, `${tag}: the toggle unfolds model · effort`);
+    const send1 = await sendInside();
+    check(send1.inside, `${tag}: unfolded, Send still sits inside the panel (${send1.right} ≤ ${send1.panel})`);
     const unfolded = await budgetOf();
     check(
       unfolded.scroll === folded0.scroll && unfolded.body === folded0.body,
@@ -744,6 +760,20 @@ async function scenario(
   );
   check((await overflow(page)) === 0, `${tag}: panel — no page overflow`);
   if (full || height < 600) await page.screenshot({ path: path.join(OUT, `${theme}-${width}x${height}-panel.png`) });
+  if (folded) {
+    // Escape closes the floating pickers first, back on their toggle; the panel stays.
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+    const afterEsc = await page.evaluate(() => ({
+      open: document.getElementById('slide-panel')?.classList.contains('open') ?? false,
+      picks: (document.querySelector('#panel-controls .cb-model-select') as HTMLElement | null)?.offsetParent !== null,
+      focus: document.activeElement?.className ?? '',
+    }));
+    check(
+      afterEsc.open && !afterEsc.picks && afterEsc.focus.includes('pc-toggle'),
+      `${tag}: Escape closes the floating pickers first — the panel stays, focus on the toggle (${JSON.stringify(afterEsc)})`,
+    );
+  }
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
 

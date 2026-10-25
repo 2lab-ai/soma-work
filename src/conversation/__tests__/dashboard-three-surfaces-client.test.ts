@@ -929,6 +929,78 @@ describe('one write in flight per session and operation, whichever surface asks 
   });
 });
 
+describe('a live goal update never rebinds a focused control to another goal (executed)', () => {
+  it('each goal row carries its goal id as the morph key; rows of different goals never pair', () => {
+    const m = load<{ domKeyOf(n: unknown): string }>(['domKeyOf'], []);
+    const el = (attrs: Record<string, string>) => ({
+      nodeType: 1,
+      tagName: 'LI',
+      id: '',
+      getAttribute: (a: string) => (a in attrs ? attrs[a] : null),
+    });
+    expect(m.domKeyOf(el({ 'data-mk': 'queued:q1' }))).not.toBe(m.domKeyOf(el({ 'data-mk': 'queued:q2' })));
+    expect(m.domKeyOf(el({ 'data-mk': 'queued:q1' }))).toBe(m.domKeyOf(el({ 'data-mk': 'queued:q1' })));
+    const goal = load<{ renderCardGoal(s: unknown, col: string, canEdit: boolean): string }>(
+      [
+        'esc',
+        'escAttr',
+        'escJs',
+        'toNum',
+        'formatTokens',
+        'formatDuration',
+        'formatGoalTime',
+        'renderGoalHistory',
+        'isBusy',
+        'renderCardGoal',
+      ],
+      ['GOAL_STATUS_LABELS', 'GOAL_VIA_LABELS', '_goalHistoryOpen', '_goalErrors', '_busy'],
+    );
+    const html = goal.renderCardGoal(card(), 'working', true);
+    expect(html).toContain('data-mk="goal:g1"');
+    expect(html).toContain('<li data-mk="queued:g2">');
+  });
+});
+
+describe('focus inside the goal section after its goal left (executed)', () => {
+  it("a focused control whose goal left lands focus on the section — never on another goal's control", () => {
+    const btn = { id: 'del-q1' };
+    let inside = new Set<unknown>([btn]);
+    const doc: Record<string, unknown> = { activeElement: btn, body: {} };
+    const el = {
+      style: { display: '' },
+      _html: 'old',
+      _key: 'k',
+      contains: (n: unknown) => inside.has(n),
+      focus: () => {
+        doc.activeElement = el;
+      },
+      querySelector: () => null,
+    };
+    (doc as { getElementById: (id: string) => unknown }).getElementById = (id: string) =>
+      id === 'panel-goal' ? el : null;
+    const m = load<{ renderPanelGoal(): void }>(
+      ['isEditingGoal', 'captureGoalDraft', 'restoreGoalDraft', 'renderPanelGoal'],
+      [],
+      {
+        document: doc,
+        panelSessionKey: 'k',
+        _sessionCache: { k: card() },
+        sessionColOf: () => 'working',
+        currentUserId: 'U1',
+        isSiblingSession: () => false,
+        renderCardGoal: () => 'new',
+        morphInnerHtml: () => {
+          inside = new Set(); // Q1's row (and its focused Delete) is gone
+          doc.activeElement = doc.body;
+        },
+      },
+    );
+    m.renderPanelGoal();
+    expect(doc.activeElement).toBe(el);
+    expect(clientFn('openPanel')).toContain('if (!sameSession) (function resetCmdUi()');
+  });
+});
+
 describe('the composer follows the session live (executed)', () => {
   it('a session closed while the panel shows it disables the composer; an unchanged state writes nothing; a forced pass re-applies', () => {
     const input = { disabled: false, placeholder: '' };

@@ -4869,6 +4869,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .panel-command input {
   flex: 1;
+  min-width: 0; /* shrinks before Send is pushed out of the panel (folded toggle on the same line) */
   background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -4883,6 +4884,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .panel-command input::placeholder { color: var(--text-tertiary); }
 .panel-command input:disabled { opacity: 0.6; cursor: not-allowed; }
 .btn-send {
+  flex-shrink: 0;
   background: var(--accent);
   border: none;
   border-radius: var(--radius);
@@ -8574,6 +8576,9 @@ function domKeyOf(n) {
   if (n.nodeType !== 1) return '#' + n.nodeType;
   var k = n.getAttribute('data-agent-open');
   if (k === null) k = n.getAttribute('data-agent-select');
+  // data-mk: any row that stands for one record (a goal) pairs only with that record's row,
+  // so a focused control is never rebound to the record that took its place.
+  if (k === null) k = n.getAttribute('data-mk');
   if (k !== null) return n.tagName + '|@' + k;
   // Unkeyed: tag + id + the base class (the first token — state classes come
   // after it), so a section inserted before others does not shift them onto
@@ -9193,10 +9198,16 @@ function renderPanelGoal() {
   el._key = panelSessionKey;
   if (el._html === html || isEditingGoal(el)) return;
   var draft = captureGoalDraft(el);
-  // A morph: a focused goal button (삭제, 완료된 goal) keeps its node and focus.
+  var a = document.activeElement;
+  var hadFocus = !!(a && a !== el && el.contains(a));
+  // A morph keyed by goal id (data-mk): a focused goal button keeps its node
+  // and focus while its goal is there, and is never rebound to another goal.
   morphInnerHtml(el, html);
   el._html = html;
   restoreGoalDraft(el, draft);
+  // Its goal left (deleted, started, finished): focus lands on the section, never on another goal's control.
+  var now = document.activeElement;
+  if (hadFocus && (!now || now === document.body || !el.contains(now)) && el.focus) el.focus({ preventScroll: true });
 }
 
 // Switch the panel's scope: its Tasks and work log follow the chosen agent.
@@ -9965,7 +9976,7 @@ function renderCardGoal(s, col, canEdit) {
   html += '</div>';
   if (cur) {
     var dropLabel = queue.length ? '현재 goal 삭제 · 다음 시작' : '현재 goal 삭제';
-    html += '<div class="cg-row"><div class="cg-objective" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
+    html += '<div class="cg-row" data-mk="' + escAttr('goal:' + cur.goalId) + '"><div class="cg-objective" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
       + '<button type="button" class="cg-btn cg-danger"' + dis
       + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(cur.goalId) + '\\',expect:\\'current\\'},this)">'
       + dropLabel + '</button></div>';
@@ -9979,7 +9990,7 @@ function renderCardGoal(s, col, canEdit) {
     html += '<div class="cg-queue-title">대기 중인 goal ' + queue.length + '개</div><ol class="cg-queue">';
     for (var i = 0; i < queue.length; i++) {
       var q = queue[i];
-      html += '<li><div class="cg-row"><span class="cg-q-text">' + esc(q.objective) + '</span>'
+      html += '<li data-mk="' + escAttr('queued:' + q.goalId) + '"><div class="cg-row"><span class="cg-q-text">' + esc(q.objective) + '</span>'
         + '<button type="button" class="cg-btn cg-danger" title="대기 goal 삭제" aria-label="대기 goal 삭제"' + dis
         + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(q.goalId) + '\\',expect:\\'queued\\'},this)">삭제</button></div></li>';
     }
@@ -12441,7 +12452,10 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // Unconditional UI reset on card switch — an in-flight send from a previous
   // card must never leak "Sending..." / disabled state into this card. The
   // in-flight request still completes in the background; only the UI is reset.
-  (function resetCmdUi() {
+  // Re-landing on the session already open (관리 →, 전체 task →, a tree item)
+  // keeps the message being typed and a send in flight (spec 13).
+  var sameSession = panelOpen && panelSessionKey === sessionKey;
+  if (!sameSession) (function resetCmdUi() {
     var cmdInputEl = document.getElementById('cmd-input');
     var cmdBtnEl = document.getElementById('cmd-send');
     if (cmdInputEl) { cmdInputEl.value = ''; cmdInputEl.disabled = false; }
@@ -12900,6 +12914,13 @@ function closePanel() {
 document.addEventListener('keydown', function(e) {
   // Escape in the artifact viewer closes the viewer only (the dialog's own cancel).
   // The cron drawer opens over a docked panel: Escape closes only that, the topmost.
+  // The floating model · effort pickers (narrow / short screens) close first, back on their toggle.
+  if (e.key === 'Escape' && panelOpen && _panelControlsOpen && window.matchMedia && window.matchMedia('(max-width: 639px), (max-height: 560px)').matches) {
+    togglePanelControls();
+    var tgl = document.querySelector('#panel-controls .pc-toggle');
+    if (tgl) tgl.focus();
+    return;
+  }
   if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closePanel();
 });
 
@@ -13027,7 +13048,8 @@ async function sendCommand() {
       btn.textContent = 'Send';
       // The session's own state decides (spec 13): one closed meanwhile — from
       // the panel's Close, Slack or the lifecycle — keeps its composer closed.
-      renderPanelComposer(_sessionCache[sendingSessionKey], true);
+      if (_sessionCache[sendingSessionKey]) renderPanelComposer(_sessionCache[sendingSessionKey], true);
+      else { btn.disabled = false; input.disabled = false; }
       if (!input.disabled) input.focus();
     }
   }

@@ -102,7 +102,8 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
     비운다(초안이 섞이지 않는다).
 - 입력창(고정): `#panel-controls`(모델 · effort, 대기 전환 안내)가 입력 위의 자기 컨테이너에 있다 — 입력은 morph 대상이 아니다.
   640px 미만이거나 높이 560px 이하(폰 가로·키보드)면 토글 하나로 접히고, 접힌 토글은 입력과 같은 줄에 선다. 펼치면 선택은
-  입력창 위에 떠서 열린다 — 읽기 영역의 높이를 빼앗지 않는다.
+  입력창 위에 떠서 열린다 — 읽기 영역의 높이를 빼앗지 않고, Escape는 패널보다 먼저 그 선택을 닫는다. 입력은 줄어들어도 Send는
+  줄지 않는다(패널 밖으로 잘리지 않는다).
 - 실시간: `repaintPanelSession()` 하나가 칩 · 세션 정보 · goal · 모델·effort · 노드 범위(spec 12의 `repaintPanelScope`)를 쓴다.
   `openPanel`, WS `session_update`·`sessionUpdated`, 폴링(`loadSessions`)이 모두 이 경로다. 부분마다 markup이 같으면 쓰지 않는다.
   읽던 자리: 갱신 전에 스크롤 영역에서 읽고 있는 앵커(질문·작업 로그·대화 턴)를 잡고, 위쪽 섹션 높이가 바뀌어도 그 자리로 되돌린다
@@ -120,7 +121,7 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 `agent`(트리 항목·`전체 N개 → 상세`), `tasks`(`전체 task N개 →` — 완료 펼침 + 이전 목록, 고정 Tasks 상자는 머리부터 보이고
 대화 영역은 기본 착지), 없음(권한 요청·질문이 있으면 그 블록,
 없으면 최신 대화 — spec 10 §3.1-6). goal·agent 착지는 열 때마다 한 번이고 대화가 늦게 와도 끌려가지 않는다. 키보드로 연 경우
-(`event.detail === 0`, 트리 Enter) 포커스는 착지 대상(goal 입력, 초점 헤더, Tasks 토글, 작업 로그 머리, 없으면 답 버튼·제목)으로
+(`event.detail === 0`, 트리 Enter) 포커스는 착지 대상(goal 입력, 초점 헤더, Tasks 영역, 작업 로그 머리, 없으면 답 버튼·제목)으로
 간다. 닫으면(× · Escape) 포커스는 연 컨트롤로 돌아가고, 그 컨트롤이 사라졌으면 그 세션 카드의 face, 없으면 보드 제목으로 간다(포커스가
 패널 안에 있었을 때만).
 
