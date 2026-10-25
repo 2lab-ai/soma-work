@@ -73,9 +73,8 @@ const T1_ATTS = [
   att('IMG5', 'galaxy-fold.png', 'image', 'image/png', 131_000),
   att('PDF1', '로그인-디자인-가이드-v3-final.pdf', 'pdf', 'application/pdf', 2_200_000),
   att('VOX1', 'voice-memo.m4a', 'audio', 'audio/mp4', 48_000),
-  att('MOV1', 'screen-recording.mov', 'video', 'video/quicktime', 38_000_000, false, {
-    permalink: 'https://example.slack.com/files/U1/F9/screen-recording.mov',
-  }),
+  // Videos are downloaded (≤ 50 MB) and kept, so this one plays in the dashboard.
+  att('MOV1', 'screen-recording.mp4', 'video', 'video/mp4', 38_000_000),
 ];
 const T3_ATTS = [att('IMG6', 'after-fix.png', 'image', 'image/png', 150_000)];
 
@@ -298,6 +297,22 @@ async function run(
     ok: focus.closed && focus.id === 'IMG1',
     msg: `Escape closes and focus returns to the tile (${focus.id})`,
   });
+
+  // The kept video opens as a player on the media route.
+  await page.locator('#panel-turns .turn.user').first().locator('[data-art-id="MOV1"]').first().click();
+  await page.waitForFunction(() => (document.getElementById('art-modal') as HTMLDialogElement)?.open, {
+    timeout: 5000,
+  });
+  const player = await page.evaluate(() => {
+    const v = document.querySelector('#art-modal-body video') as HTMLVideoElement | null;
+    return { src: v?.getAttribute('src') ?? '', controls: !!v?.controls };
+  });
+  checks.push({
+    ok: player.controls && player.src.includes('/media/MOV1/content'),
+    msg: `a kept video opens as a player (${player.src})`,
+  });
+  await page.screenshot({ path: path.join(OUT, `viewer-video-${tag}.png`) });
+  await page.keyboard.press('Escape');
 
   await page.close();
   return checks.map((c) => ({ ...c, msg: `[${tag}] ${c.msg}` }));
