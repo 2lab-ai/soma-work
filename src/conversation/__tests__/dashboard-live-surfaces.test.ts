@@ -308,6 +308,46 @@ describe('Dashboard — live surfaces (SSOT 2026-10-22)', () => {
     });
   });
 
+  describe('spec 13 §3.7 — the exact finish time the face counts from (finishedAt)', () => {
+    it('a live idle card: its switch to idle; without that stamp, none (doneAt still falls back for the day groups)', async () => {
+      const b = await board(
+        new Map([
+          ['C1:t1', liveSession({ activityState: 'idle', activityStateChangedAt: 1_700_000_000_000 })],
+          ['C2:t2', liveSession({ channelId: 'C2', threadTs: 't2', activityState: 'idle' })],
+          ['C3:t3', liveSession({ channelId: 'C3', threadTs: 't3', activityStateChangedAt: 1_700_000_000_000 })],
+        ]),
+      );
+      const byKey = Object.fromEntries(b.idle.map((c: any) => [c.key, [c.finishedAt, c.doneAt]]));
+      expect(byKey['C1:t1']).toEqual([1_700_000_000_000, 1_700_000_000_000]);
+      expect(byKey['C2:t2']).toEqual([undefined, Date.parse('2026-10-21T00:00:00Z')]);
+      expect(b.working[0].finishedAt).toBeUndefined();
+    });
+
+    it('an archived card: the finish time its archive kept; an older archive without it, none', async () => {
+      const base = {
+        archiveReason: 'terminated',
+        ownerId: 'U1',
+        lastActivity: '2026-10-25T10:00:00.000Z',
+        archivedAt: Date.parse('2026-10-25T10:41:00Z'),
+      };
+      archives.push(
+        {
+          ...base,
+          sessionKey: 'C8:t8',
+          sessionId: 's8',
+          channelId: 'C8',
+          threadTs: 't8',
+          doneAt: Date.parse('2026-10-25T10:40:00Z'),
+        },
+        { ...base, sessionKey: 'C9:t9', sessionId: 's9', channelId: 'C9', threadTs: 't9' },
+      );
+      const b = await board(new Map());
+      const byKey = Object.fromEntries(b.closed.map((c: any) => [c.channelId, [c.finishedAt, c.doneAt]]));
+      expect(byKey.C8).toEqual([Date.parse('2026-10-25T10:40:00Z'), Date.parse('2026-10-25T10:40:00Z')]);
+      expect(byKey.C9).toEqual([undefined, Date.parse('2026-10-25T10:00:00Z')]);
+    });
+  });
+
   describe('spec 13 §3.7 — when a waiting card started waiting (waitingSince)', () => {
     it('a session waiting on its user: the moment it switched to waiting; working and idle cards have none', async () => {
       const b = await board(
