@@ -13158,17 +13158,18 @@ function capDisclosure(g, nowSec) {
   var blocked = u.filter(function(x) { return x.counted && x.blocked; }).length;
   var ex = g.excluded || {};
   var why = [];
-  if (ex.held) why.push('보류 ' + ex.held);
-  if (ex.unknownTier) why.push('티어 미지정 ' + ex.unknownTier);
-  if (ex.noMeasure) why.push('측정 없음 ' + ex.noMeasure);
+  if (ex.held) why.push('보류');
+  if (ex.unknownTier) why.push('티어 미지정');
+  if (ex.noMeasure) why.push('측정 없음');
   var exN = (ex.held || 0) + (ex.unknownTier || 0) + (ex.noMeasure || 0);
-  var parts = [(g.accountCount || u.length) + '개 중 ' + g.countedAccounts + '개 반영'];
-  if (blocked) parts.push('지금 차단 ' + blocked);
-  if (exN) parts.push('제외 ' + exN + ' (' + why.join(', ') + ')');
+  // Short enough for one phone line: "16/17 반영 · 차단 6 · 제외 1(보류) · 측정 4시간 전".
+  var parts = [g.countedAccounts + '/' + (g.accountCount || u.length) + ' 반영'];
+  if (blocked) parts.push('차단 ' + blocked);
+  if (exN) parts.push('제외 ' + exN + '(' + why.join('·') + ')');
   if (g.estimated) parts.push('추정 ' + g.estimated);
   if (g.unmeasured5h) parts.push('5시간 측정 없음 ' + g.unmeasured5h);
   var age = g.oldestRefreshAt ? nowSec - g.oldestRefreshAt : 0;
-  if (age > 3600) parts.push('가장 오래된 측정 ' + capDur(age) + ' 전');
+  if (age > 3600) parts.push('측정 ' + capDur(age).split(' ')[0] + ' 전');
   return parts.join(' · ');
 }
 // now → 24h takes 55% of the width (0·1·3·6·12·24h), then days to 7d.
@@ -13287,7 +13288,10 @@ function renderCapacityGroup(g, nowMs, width) {
   var tl = capTimeline(g, W, nowSec);
   if (tl) {
     // ● raises the 5시간 bar (a 5h reset, or a block lifting), ◆ the 일주일 bar — same colours as the bars.
-    h += '<div class="cap-tl-wrap"><div class="cap-tl-h"><span><i class="is-h5">●</i> 5시간</span><span><i class="is-wk">◆</i> 일주일</span><span class="cap-tl-h-note">앞으로 7일 동안 돌아오는 양(계정)</span></div>' + tl + '</div>';
+    // With no 5h gain in 7 days the ● would never appear — say so instead of a dead key.
+    var any5 = g.has5h && (g.events || []).some(function(e) { return e.cause !== '7d' && e.at <= nowSec + CAP_7D && e.dNow >= 0.05; });
+    var key5 = g.has5h ? '<span><i class="is-h5">●</i> 5시간' + (any5 ? '' : ' — 늘어날 양 없음') + '</span>' : '';
+    h += '<div class="cap-tl-wrap"><div class="cap-tl-h">' + key5 + '<span><i class="is-wk">◆</i> 일주일</span><span class="cap-tl-h-note">앞으로 7일 동안 돌아오는 양(계정)</span></div>' + tl + '</div>';
   }
   return h + '</section>';
 }
