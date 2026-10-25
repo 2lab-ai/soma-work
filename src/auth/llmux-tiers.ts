@@ -8,8 +8,11 @@
  *   explicit config (SOMA_LLMUX_ACCOUNT_TIERS) → a validated tier string llmux
  *   reports itself → built-in defaults → unknown.
  *
- * The tier is display data (colour + label on the dashboard cooldown timeline).
- * It never weighs the capacity percentage: a plan price is not a token ratio.
+ * The tier weighs each account on the capacity view (capacity v2, 2026-10-25):
+ * remaining is counted in "max accounts' worth" (계정분), the provider's top
+ * plan = 1. Max x5 is a quarter of x20 (Anthropic's plan multiples 5/20).
+ * Pro $200 is 0.4 of $500 — a price ratio, an estimate: OpenAI publishes no
+ * usage multiple. An unknown tier has no weight and stays out of the totals.
  */
 
 export type LlmuxTierId = 'claude-max-5x' | 'claude-max-20x' | 'chatgpt-pro-200' | 'chatgpt-pro-500';
@@ -23,13 +26,36 @@ export interface LlmuxTierInfo {
   short: string;
   /** Higher or lower plan of its provider — the colour key. */
   rank: 'high' | 'low';
+  /** Share of the provider's top plan (top = 1): the unit of "계정분". */
+  weight: number;
 }
 
 export const LLMUX_TIERS: Record<LlmuxTierId, LlmuxTierInfo> = {
-  'claude-max-5x': { id: 'claude-max-5x', provider: 'claude', label: 'Max x5', short: 'x5', rank: 'low' },
-  'claude-max-20x': { id: 'claude-max-20x', provider: 'claude', label: 'Max x20', short: 'x20', rank: 'high' },
-  'chatgpt-pro-200': { id: 'chatgpt-pro-200', provider: 'codex', label: 'Pro ($200)', short: '$200', rank: 'low' },
-  'chatgpt-pro-500': { id: 'chatgpt-pro-500', provider: 'codex', label: 'Pro ($500)', short: '$500', rank: 'high' },
+  'claude-max-5x': { id: 'claude-max-5x', provider: 'claude', label: 'Max x5', short: 'x5', rank: 'low', weight: 0.25 },
+  'claude-max-20x': {
+    id: 'claude-max-20x',
+    provider: 'claude',
+    label: 'Max x20',
+    short: 'x20',
+    rank: 'high',
+    weight: 1,
+  },
+  'chatgpt-pro-200': {
+    id: 'chatgpt-pro-200',
+    provider: 'codex',
+    label: 'Pro ($200)',
+    short: '$200',
+    rank: 'low',
+    weight: 0.4,
+  },
+  'chatgpt-pro-500': {
+    id: 'chatgpt-pro-500',
+    provider: 'codex',
+    label: 'Pro ($500)',
+    short: '$500',
+    rank: 'high',
+    weight: 1,
+  },
 };
 
 /**

@@ -463,7 +463,9 @@ describe('Dashboard — cron lane + capacity (SSOT 2026-10-23)', () => {
       const first = await get('/api/dashboard/capacity');
       expect(first.capacity.available).toBe(true);
       expect(first.capacity.groups[0]).toMatchObject({ group: 'claude', label: 'Claude' });
-      expect(first.capacity.groups[0].markers[0]).toMatchObject({ account: 'ai7', tier: 'claude-max-20x' });
+      // v2: max-account measures and a replayed forecast (ai7: now .5, week .9 of 1 x20)
+      expect(first.capacity.groups[0]).toMatchObject({ has5h: true, total: 1, now: 0.5, week: 0.9 });
+      expect(first.capacity.groups[0].events[0]).toMatchObject({ account: 'ai7', tier: 'claude-max-20x', cause: '5h' });
       await get('/api/dashboard/capacity');
       expect(fetchStatus).toHaveBeenCalledTimes(1);
     });
