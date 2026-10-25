@@ -33,11 +33,17 @@ const logger = new Logger('TitleSub');
 const inFlight = new Map<string, Promise<string | null>>();
 const lastFailedFillAt = new Map<string, number>();
 
+/** A files-only instruction, as text: its file names (user media). */
+function attachmentLine(t: ConversationRecord['turns'][number]): string {
+  const names = (t.attachments ?? []).map((a) => a.name).filter(Boolean);
+  return names.length ? `📎 ${names.join(' · ')}` : '';
+}
+
 /** The first turns, as the title prompt sees them. Empty when no turn has text. */
 export function titleSourceText(record: ConversationRecord): string {
   return record.turns
     .slice(0, 6)
-    .map((t) => ({ role: t.role, text: t.rawContent?.substring(0, 500) || t.summaryTitle || '' }))
+    .map((t) => ({ role: t.role, text: t.rawContent?.substring(0, 500) || attachmentLine(t) || t.summaryTitle || '' }))
     .filter((t) => t.text.trim())
     .map((t) => `[${t.role}]: ${t.text}`)
     .join('\n\n');

@@ -19,7 +19,8 @@
  *            metadata (`stored: false`) — it is never dropped.
  *   commit   the recorder promotes the copies once the user turn is saved.
  *   sweep    a `.pending-` copy older than PENDING_TTL_MS lost its turn (crash,
- *            record failure, a copy that outran its deadline) and is deleted.
+ *            record failure) and is deleted. A copy that outran its deadline
+ *            deletes itself as soon as it lands.
  *
  * Reads only this process's downloads: a regular file (never a symlink) named
  * `slack-file-*` whose real path is under the OS temp dir or /tmp. The stored
@@ -167,13 +168,22 @@ function within<T>(work: Promise<T>, ms: number): Promise<T | false> {
   return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
 }
 
+/** The byte copy (a seam so tests can drive a slow disk). */
+export type CopyFn = (src: string, dest: string) => Promise<void>;
+
+/** Copy-on-write clone where the file system can (APFS), a plain copy otherwise. */
+const defaultCopy: CopyFn = (src, dest) =>
+  fs.promises.copyFile(src, dest, fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE);
+
 export class UserMediaStore {
   private readonly baseDir: string;
+  private readonly copy: CopyFn;
   /** Committed attachments per conversation, read from the directory once. */
   private readonly counts = new Map<string, number>();
 
-  constructor(baseDir?: string) {
+  constructor(baseDir?: string, deps: { copy?: CopyFn } = {}) {
     this.baseDir = baseDir ?? path.join(DATA_DIR, 'user-media');
+    this.copy = deps.copy ?? defaultCopy;
   }
 
   private dir(conversationId: string): string | null {
@@ -199,16 +209,28 @@ export class UserMediaStore {
     const deadline = Date.now() + (opts.deadlineMs ?? DEFAULT_CAPTURE_DEADLINE_MS);
     const roots = tempRoots();
     const out: TurnAttachment[] = [];
+    // Reserved when a copy STARTS, whether or not it lands in time: the caps
+    // bound the I/O this turn launches, not just the copies it keeps.
     let copies = 0;
     let bytes = 0;
     // One at a time: the caps are per turn, and a turn's files share one disk.
+    // Every step that touches the disk — the checks too — runs inside the
+    // deadline; once it has passed, the remaining files are metadata only.
     for (const file of files) {
       const meta = this.describe(file);
-      const src = file.path && !file.unavailable ? await readableDownload(file.path, roots) : null;
-      const fits = !!src && copies < MAX_COPIES_PER_TURN && bytes + src.size <= MAX_COPY_BYTES_PER_TURN;
-      if (src && fits && (await this.copyPending(conversationId, dir, src.real, meta.id, deadline))) {
-        copies += 1;
-        bytes += src.size;
+      if (!file.path || file.unavailable || copies >= MAX_COPIES_PER_TURN) {
+        out.push(meta);
+        continue;
+      }
+      const checked = await within(readableDownload(file.path, roots), deadline - Date.now());
+      const src = checked || null;
+      if (!src || bytes + src.size > MAX_COPY_BYTES_PER_TURN || Date.now() >= deadline) {
+        out.push(meta);
+        continue;
+      }
+      copies += 1;
+      bytes += src.size;
+      if (await this.copyPending(conversationId, dir, src.real, meta.id, deadline)) {
         out.push({ ...meta, size: src.size, stored: true });
       } else {
         out.push(meta);
@@ -235,7 +257,7 @@ export class UserMediaStore {
     };
   }
 
-  /** Copy to `.pending-<id>` within the deadline. A copy that outruns it is left for the sweep. */
+  /** Copy to `.pending-<id>` within the deadline. A copy that outruns it deletes itself when it lands. */
   private async copyPending(
     conversationId: string,
     dir: string,
@@ -244,10 +266,10 @@ export class UserMediaStore {
     deadline: number,
   ): Promise<boolean> {
     const staged = path.join(dir, PENDING_PREFIX + id);
+    if (Date.now() >= deadline) return false; // no I/O once the budget is spent
     const copy = (async () => {
       await fs.promises.mkdir(dir, { recursive: true });
-      // Copy-on-write clone where the file system can (APFS), a plain copy otherwise.
-      await fs.promises.copyFile(real, staged, fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE);
+      await this.copy(real, staged);
       return true;
     })().catch(async (err) => {
       logger.warn(`Could not keep a user attachment for ${conversationId}`, err);
@@ -255,7 +277,11 @@ export class UserMediaStore {
       return false;
     });
     const done = await within(copy, deadline - Date.now());
-    if (done === false) logger.warn(`User attachment copy for ${conversationId} missed its deadline; kept as metadata`);
+    if (done === false) {
+      logger.warn(`User attachment copy for ${conversationId} missed its deadline; kept as metadata`);
+      // The turn lists it as not kept: a copy that still lands is on no turn — drop it.
+      void copy.then((landed) => (landed ? fs.promises.unlink(staged).catch(() => {}) : undefined));
+    }
     return done === true;
   }
 

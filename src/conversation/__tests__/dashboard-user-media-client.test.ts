@@ -67,6 +67,7 @@ const BASE_FNS = [
   'umMiddleName',
   'umTile',
   'renderUserMedia',
+  'umMissingReason',
 ];
 const BASE_VARS = ['ART_KIND_LABEL', 'ART_GLYPH', '_userMedia', 'UM_GRID_MAX'];
 
@@ -255,5 +256,20 @@ describe('pinned 지시 첨부 row', () => {
     const opened = renderPanelUserMedia(list, 'c6', true);
     expect(opened).toContain('aria-expanded="true"');
     expect(opened).toContain('um-tile');
+  });
+});
+
+describe('review gate P3 — the viewer says why a user file has no copy', () => {
+  it('names the user-media reason, not the artifact one', () => {
+    const { renderArtModalBody } = load<{ renderArtModalBody(cid: string, a: unknown): string }>(
+      [...BASE_FNS, 'renderArtModalBody'],
+      BASE_VARS,
+    );
+    const big = { ...img('B1'), stored: false, unavailable: 'too_large', source: 'user_upload' };
+    const video = { ...remote, source: 'user_upload' };
+    expect(renderArtModalBody('c7', big)).toContain('50 MB');
+    expect(renderArtModalBody('c7', big)).not.toContain('100 MB');
+    expect(renderArtModalBody('c7', video)).toContain('봇은 영상');
+    expect(renderArtModalBody('c7', video)).toContain('href="https://x.slack.com/files/U/F/demo.mov"');
   });
 });

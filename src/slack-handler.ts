@@ -4134,15 +4134,11 @@ export class SlackHandler {
         // is what decides which of the two just happened.
         void this.syncFollowupReactions(queueKey, settled.item.id);
       }
-      const instruction = this.followupSteerInstructions?.get(uuid);
-      const steerFiles = this.takeSteerFiles(uuid);
       // Consumed: the message is part of the conversation now — record it (and
-      // copy its files) before the cleanup below deletes them. A message the
-      // queue took back is recorded by the drain's ordinary turn instead.
-      if (phase === 'completed' && settled.ok && instruction) {
-        await this.recordSteeredInstruction(sessionKey, instruction, steerFiles);
-      }
-      await this.cleanupSteerFiles(steerFiles);
+      // copy its files) before they are deleted. A message the queue took back
+      // is recorded by the drain's ordinary turn instead.
+      if (phase === 'completed' && settled.ok) await this.finishConsumedSteer(sessionKey, uuid);
+      else await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
       // NOT awaited: the executor awaits this hook inside its stream loop, so a
       // Slack round-trip here delays the answer the user is waiting for. The
       // queue mutation above is the part that must be finished before the turn
@@ -4236,7 +4232,9 @@ export class SlackHandler {
           return 'failed';
         }
         this.forgetSteerBookkeeping(itemId);
-        await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+        // A consumption receipt like `completed`: the resolved row never runs
+        // again, so this is the one chance to record it with its files.
+        await this.finishConsumedSteer(sessionKey, uuid);
         return 'already-delivered';
       }
       if (verdict === 'unreachable') {
@@ -4578,6 +4576,18 @@ export class SlackHandler {
     this.followupSteerFiles?.delete(uuid);
     this.followupSteerInstructions?.delete(uuid);
     return files;
+  }
+
+  /**
+   * The SDK confirmed the model read a steered message (`completed`, or a cancel
+   * answered `already-dequeued`): record it with its files, then delete them.
+   * Takes the uuid's bookkeeping, so a second receipt records nothing.
+   */
+  private async finishConsumedSteer(sessionKey: string, uuid: string): Promise<void> {
+    const instruction = this.followupSteerInstructions?.get(uuid);
+    const files = this.takeSteerFiles(uuid);
+    if (instruction) await this.recordSteeredInstruction(sessionKey, instruction, files);
+    await this.cleanupSteerFiles(files);
   }
 
   /**

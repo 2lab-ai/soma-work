@@ -154,10 +154,55 @@ describe('UserMediaStore', () => {
   it('M6 — bounded: past the deadline or the per-turn caps a file keeps its metadata, uncopied', async () => {
     const late = await store.capture('conv-6', [file(download('a.png', 'A'), 'a.png')], { deadlineMs: -1 });
     expect(late).toEqual([expect.objectContaining({ name: 'a.png', stored: false })]);
+    // A copy that lands after its deadline removes itself — it is on no turn.
+    await new Promise((r) => setTimeout(r, 200));
+    const dir6 = path.join(root, 'store', 'conv-6');
+    expect(fs.existsSync(dir6) ? fs.readdirSync(dir6).filter((n) => n.startsWith('.pending-')) : []).toEqual([]);
     const many = Array.from({ length: 22 }, (_, i) => file(download(`f${i}.txt`, 'x'), `f${i}.txt`));
     const out = await store.capture('conv-6b', many);
     expect(out).toHaveLength(22); // never dropped
     expect(out.filter((a) => a.stored)).toHaveLength(20);
+  });
+
+  it('M6 — a spent budget launches no I/O at all', async () => {
+    const copy = vi.fn(async () => {});
+    const bounded = new UserMediaStore(path.join(root, 'bounded'), { copy });
+    const out = await bounded.capture('conv-b0', [file(download('a.png', 'A'), 'a.png')], { deadlineMs: -1 });
+    expect(out.map((a) => a.stored)).toEqual([false]);
+    expect(copy).not.toHaveBeenCalled();
+  });
+
+  it('M6 — slow copies cannot stack up past the deadline', async () => {
+    const copy = vi.fn(
+      (_src: string, dest: string) =>
+        new Promise<void>((r) =>
+          setTimeout(() => {
+            // The test may have cleaned its directory by now: a late write must not throw.
+            fs.promises.writeFile(dest, 'x').catch(() => {});
+            r();
+          }, 1000),
+        ),
+    );
+    const bounded = new UserMediaStore(path.join(root, 'bounded'), { copy });
+    const many = Array.from({ length: 10 }, (_, i) => file(download(`s${i}.png`, 'x'), `s${i}.png`));
+    const out = await bounded.capture('conv-b1', many, { deadlineMs: 200 });
+    expect(out.every((a) => !a.stored)).toBe(true);
+    // One copy may start inside the budget; none may start after it (load-proof: at most one).
+    expect(copy.mock.calls.length).toBeLessThanOrEqual(1);
+  });
+
+  it('M6 — the byte cap counts every copy it launches, landed or not', async () => {
+    const copy = vi.fn(async () => {
+      throw new Error('disk full');
+    });
+    const bounded = new UserMediaStore(path.join(root, 'bounded'), { copy });
+    const big = Array.from({ length: 5 }, (_, i) => {
+      const p = download(`big${i}.bin`, '');
+      fs.truncateSync(p, 50 * 1024 * 1024); // sparse: 50 MiB without writing it
+      return file(p, `big${i}.bin`);
+    });
+    await bounded.capture('conv-b2', big, { deadlineMs: 10_000 });
+    expect(copy).toHaveBeenCalledTimes(4); // 4 × 50 MiB = the 200 MiB turn cap
   });
 
   it('M2 — a download the pipeline gave up on (too large, failed) is kept with its reason', async () => {
