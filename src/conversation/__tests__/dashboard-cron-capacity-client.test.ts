@@ -491,6 +491,21 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     expect(html).not.toContain('is-narrow');
   });
 
+  // Mockup v5: on a phone the label and the value share the first line and the bar takes
+  // the card's full width on its own line — never a ~70px stub between them.
+  it('a narrow card gives each bar its own full-width line', () => {
+    const rule = (sel: string) => {
+      const m = DASHBOARD_TS.match(new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`));
+      return m ? m[1] : '';
+    };
+    expect(rule('.cap-prov.is-narrow .cap-bar-row')).toMatch(/grid-template-columns: minmax\(0, 1fr\) auto;/);
+    expect(rule('.cap-prov.is-narrow .cap-bar-lbl')).toMatch(/grid-row: 1; grid-column: 1;/);
+    expect(rule('.cap-prov.is-narrow .cap-bar-val')).toMatch(/grid-row: 1; grid-column: 2;/);
+    expect(rule('.cap-prov.is-narrow .cap-bar')).toMatch(/grid-row: 2; grid-column: 1 \/ -1;/);
+    expect(rule('.cap-prov.is-narrow .cap-bar-next')).toMatch(/grid-row: 3; grid-column: 1 \/ -1;/);
+    expect(rule('.cap-prov.is-narrow .cap-bar-lbl i')).toMatch(/display: inline;/);
+  });
+
   it('an event whose time has come is part of the bar, not a refill to come', () => {
     const later = fns.renderCapacity(view, (NOW_S + 2 * H + 60) * 1000, 1200);
     const c2 = later.slice(later.indexOf('data-group="claude"'), later.indexOf('data-group="codex"'));

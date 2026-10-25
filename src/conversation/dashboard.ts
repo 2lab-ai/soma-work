@@ -5306,7 +5306,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cap-tl-mk circle, .cap-tl-mk rect { stroke: var(--ib-card); stroke-width: 1.5; }
 .cap-tl-span { stroke-width: 5; stroke-linecap: round; }
 .cap-tl-mk text { stroke: none; font-size: 12.5px; font-weight: 700; }
-.cap-prov.is-narrow .cap-bar-row { grid-template-columns: 70px minmax(0, 1fr) auto; gap: 4px 8px; }
+/* Phones (mockup v5): label and value share the first line, the bar takes the card's
+   full width on its own line, the "다음 …" line sits under it. */
+.cap-prov.is-narrow .cap-bar-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; margin: 10px 0; }
+.cap-prov.is-narrow .cap-bar-lbl { grid-row: 1; grid-column: 1; align-self: baseline; }
+.cap-prov.is-narrow .cap-bar-lbl i { display: inline; margin-left: 6px; }
+.cap-prov.is-narrow .cap-bar-val { grid-row: 1; grid-column: 2; align-self: baseline; }
+.cap-prov.is-narrow .cap-bar { grid-row: 2; grid-column: 1 / -1; height: 20px; }
+.cap-prov.is-narrow .cap-bar-next { grid-row: 3; grid-column: 1 / -1; }
 .cap-prov.is-narrow .cap-bar-val b { font-size: 16px; }
 .cap-prov.is-narrow .cap-tl-h-note { display: none; }
 @media (max-width: 760px) {
