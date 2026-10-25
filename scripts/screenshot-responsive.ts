@@ -51,6 +51,8 @@ const POSTURES: Posture[] = [
   { device: 'fold8-main-portrait', w: 704, h: 933 },
   { device: 'pc', w: 1440, h: 900 },
   { device: 'pc-wide', w: 1920, h: 1080 },
+  // a tall PC window: capacity still starts folded, so the board starts on the first screen
+  { device: 'pc-tall', w: 1440, h: 1400 },
 ];
 
 // Loaded with the dashboard (after the env is set): the capacity fixture runs the real model.
@@ -302,10 +304,15 @@ async function checkSecondary(page: Page, touch: boolean): Promise<Check[]> {
     }
     const lane = document.getElementById('cron-lane') as HTMLElement;
     out.push({ ok: !cap.hidden && !lane.hidden, msg: 'capacity and the CRON lane are shown (seeded)' });
-    // Collapsed (capacity: every posture but an 840×1400+ window; CRON: 840×1000+): chips for capacity.
+    // Collapsed (capacity: every posture; CRON: below 840×1000): chips for capacity.
     if (cap.classList.contains('is-collapsed')) {
       const h = cap.getBoundingClientRect().height;
-      out.push({ ok: h <= 64, msg: `collapsed capacity is one row (${Math.round(h)} ≤ 64px)` });
+      // Below 840px the chips may wrap to a second row (labelled counts, totals and % for both windows).
+      const limit = window.innerWidth < 840 ? 96 : 64;
+      out.push({
+        ok: h <= limit,
+        msg: `collapsed capacity is one row, two below 840px (${Math.round(h)} ≤ ${limit}px)`,
+      });
       const chips = Array.from(cap.querySelectorAll('.cap-chip')).map((c) =>
         (c as HTMLElement).innerText.replace(/\s+/g, ' '),
       );
@@ -314,8 +321,12 @@ async function checkSecondary(page: Page, touch: boolean): Promise<Check[]> {
           chips.length === 2 &&
           chips[0].indexOf('Claude') === 0 &&
           chips[0].indexOf('·') > 0 &&
+          (chips[0].match(/\d+%/g) || []).length === 2 &&
+          chips[0].indexOf('지금') > 0 &&
+          (chips[0].match(/\d\.\d/g) || []).length >= 2 &&
           chips[1].indexOf('▲ Codex') === 0 &&
-          chips[1].indexOf('·') < 0,
+          chips[1].indexOf('·') < 0 &&
+          (chips[1].match(/\d+%/g) || []).length === 1,
         msg: `capacity chips: ${chips.join(' / ')}`,
       });
       // Whole chips: none runs past the row's visible edge (the glyph and % would hide).
