@@ -13091,9 +13091,10 @@ function capClockLabel(atSec, nowMs) {
 function capFmt1(x) {
   return (Math.round((Number(x) || 0) * 10) / 10).toFixed(1);
 }
-// Small gains are summed, never dropped — only their label shrinks.
+// Small gains are summed, never dropped — only their label shrinks. One phrase for the
+// chart key, the bars' next line and the chip tooltip (trinity mockup v5 r6, grok P1).
 function capGain(x) {
-  return x <= 0.0000001 ? '+0' : x < 0.05 ? '+0.1 미만' : '+' + capFmt1(x);
+  return x <= 0.0000001 ? '+0' : x < 0.05 ? '+0.1계정 미만' : '+' + capFmt1(x) + '계정';
 }
 // % from the raw ratio: 100% only when full (trinity simple r1, astra) — a count that
 // rounds to the total but is not full keeps two decimals instead (capCount).
@@ -13123,7 +13124,7 @@ function capNextLine(g, key, span, nowSec, nowMs) {
     if (evs[j].at <= nowSec + span) small += evs[j][key];
     if (!later && evs[j][key] >= 0.05) later = evs[j];
   }
-  var head = (span <= CAP_5H ? '5h 안엔 ' : '7일 안엔 ') + (small > 0.0000001 ? capGain(small) + '(소폭)' : '늘어날 양 없음');
+  var head = (span <= CAP_5H ? '5h 안엔 ' : '7일 안엔 ') + (small > 0.0005 ? capGain(small) : '늘어날 양 없음');
   return head + (later ? ' · ' + fmt(later) : '');
 }
 // Simplified card (2026-10-25, after the user found v2 unreadable; trinity simple r1):
@@ -13155,7 +13156,7 @@ function capNextShort(g, key, nowSec) {
   var e = capNextEvent(g, key, nowSec);
   if (!e) {
     var small = (g.events || []).filter(function(x) { return x.at <= nowSec + CAP_7D; }).reduce(function(t, x) { return t + x[key]; }, 0);
-    return small > 0.0005 ? '7일 안 +0.1계정 미만 회복' : '7일 안에 늘어날 양 없음';
+    return small > 0.0005 ? '7일 안 ' + capGain(small) + ' 회복' : '7일 안에 늘어날 양 없음';
   }
   var gain = '다음 +' + capFmt1(e[key]) + '계정 · ' + capDur(e.at - nowSec) + ' 후';
   // The 5시간 bar rising at a weekly reset is held down by the weekly limit (trinity
@@ -13332,7 +13333,7 @@ function renderCapacityGroup(g, nowMs, width) {
     // Gains under the marker threshold are small, not nothing — the same words as the bars'
     // next line and the chip tooltip (trinity mockup v5 r5, fable P1).
     var sum5 = soon5.reduce(function(t, e) { return t + e.dNow; }, 0);
-    var note5 = any5 ? '' : sum5 > 0.0005 ? ' — 7일 안 +0.1계정 미만' : ' — 7일 안에 늘어날 양 없음';
+    var note5 = any5 ? '' : sum5 > 0.0005 ? ' — 7일 안 ' + capGain(sum5) : ' — 7일 안에 늘어날 양 없음';
     var key5 = g.has5h ? '<span><i class="is-h5">●</i> 5시간 리셋' + note5 + '</span>' : '';
     h += '<div class="cap-tl-wrap"><div class="cap-tl-h">' + key5 + '<span><i class="is-wk">◆</i> 일주일 리셋</span><span class="cap-tl-h-note">앞으로 7일 동안 돌아오는 양(계정)</span></div>' + tl + '</div>';
   }

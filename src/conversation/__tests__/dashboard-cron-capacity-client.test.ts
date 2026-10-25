@@ -499,7 +499,31 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     const out = fns.renderCapacity(small, NOW_S * 1000, 1200);
     expect(out).toContain('<i class="is-h5">●</i> 5시간 리셋 — 7일 안 +0.1계정 미만</span>');
     expect(out).not.toContain('늘어날 양 없음');
-    expect(fns.renderCapacitySummary(small, NOW_S * 1000)).toContain('5h 안엔 +0.1 미만(소폭)');
+    // r6 (grok P1): one phrase everywhere — chart key, bar line and chip tooltip.
+    const chip = fns.renderCapacitySummary(small, NOW_S * 1000);
+    expect(chip).toContain('5h 안엔 +0.1계정 미만');
+    expect(chip).not.toContain('소폭');
+    expect(out).toContain('7일 안 +0.1계정 미만');
+  });
+
+  it('many small 5h gains that add up past 0.05 are named by their sum, the same way everywhere', () => {
+    const many = {
+      ...view,
+      groups: [
+        {
+          ...view.groups[0],
+          // a weekly refill draws the timeline (and its key); the 5h gains are all small
+          events: [
+            ...[1, 2, 3].map((h) => ({ account: `ai${h}`, cause: '5h', at: NOW_S + h * H, dNow: 0.03, dWeek: 0 })),
+            { account: 'ai8', cause: '7d', at: NOW_S + 8 * H, dNow: 0, dWeek: 1 },
+          ],
+        },
+      ],
+    };
+    const out = fns.renderCapacity(many, NOW_S * 1000, 1200);
+    expect(out).toContain('<i class="is-h5">●</i> 5시간 리셋 — 7일 안 +0.1계정</span>');
+    expect(out).toContain('7일 안 +0.1계정 회복');
+    expect(fns.renderCapacitySummary(many, NOW_S * 1000)).toContain('5h 안엔 +0.1계정');
   });
 
   it('a reading over a day old is flagged, not buried in the muted line (fable)', () => {
