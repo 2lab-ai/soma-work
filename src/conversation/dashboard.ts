@@ -169,15 +169,18 @@ export interface KanbanSession {
     contextUsagePercent: number;
   };
   /**
-   * SSOT 2026-10-22 T11 — when the work finished (epoch ms): an idle / sleeping
-   * card when it last went idle (else its last activity), an archived card at
-   * its last activity. Absent while the session works or waits.
+   * SSOT 2026-10-22 T11 — when the work finished (epoch ms), for the DONE day
+   * groups: an idle / sleeping card when it last went idle (else its last
+   * activity), an archived card at its archive's kept finish time (else its
+   * last activity). Absent while the session works or waits. The face's age
+   * reads `finishedAt`, which has no fallback.
    */
   doneAt?: number;
   /**
    * Spec 13 §3.7 — when a live session started waiting on its user (epoch ms):
-   * its oldest open permission prompt, else its switch to `waiting`. Absent
-   * otherwise. (`lastActivity` moves on user input only, so it cannot say this.)
+   * the oldest of its open permission prompts and, while its own state is
+   * `waiting`, its switch to that state. Absent otherwise. (`lastActivity`
+   * moves on user input only, so it cannot say this.)
    */
   waitingSince?: number;
   /**
