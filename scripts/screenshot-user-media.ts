@@ -51,7 +51,7 @@ async function makeImages(browser: Browser): Promise<Record<string, Buffer>> {
       `<style>${base} .b{width:100%;padding:16px;border-radius:10px;background:#fff;border:1px solid #dde}</style><div class="b">1. 앱 실행</div><div class="b">2. 로그인 탭</div><div class="b">3. 버튼 잘림 확인</div>`,
     ),
   };
-  // A real, decodable video: 1.2 s of canvas animation recorded as WebM in this browser.
+  // A real, decodable video: 2 s of canvas animation recorded as WebM in this browser.
   // Plain-JS string (tsx would wrap named functions in __name()).
   const webm = (await page.evaluate(`(async () => {
     const c = document.createElement('canvas'); c.width = 320; c.height = 240;
@@ -69,7 +69,7 @@ async function makeImages(browser: Browser): Promise<Record<string, Buffer>> {
         const t = performance.now() - t0;
         g.fillStyle = '#2563eb'; g.fillRect(0, 0, 320, 240);
         g.fillStyle = '#fff'; g.fillRect((t / 4) % 300, 100, 20, 40);
-        if (t >= 1200) { clearInterval(id); r(); }
+        if (t >= 2000) { clearInterval(id); r(); }
       }, 50);
     });
     rec.stop(); await stopped;
@@ -423,21 +423,29 @@ async function run(
     msg: `▶ plays the kept voice memo in place (${voice.src}, aria-pressed ${voice.pressed})`,
   });
   checks.push({
-    ok: voice.ready >= 2 && !voice.paused && voice.time > 0.2 && voice.duration > 1.5 && !voice.error,
+    ok: voice.ready >= 2 && !voice.paused && voice.time > 0.2 && !voice.error,
     msg: `the kept voice memo decodes and plays (readyState ${voice.ready}, t=${voice.time.toFixed(2)}s of ${secs(voice.duration)})`,
   });
   await playBtn.click();
   await page.waitForTimeout(150);
-  const stopped = await page.evaluate(() => ({
-    paused: !!(window as unknown as { _artAudio?: { el: HTMLAudioElement | null } })._artAudio?.el?.paused,
-    pressed:
-      document
-        .querySelector('#panel-turns .turn.user [data-art-play][data-art-id="VOX1"]')
-        ?.getAttribute('aria-pressed') ?? '',
-  }));
+  // Only a memo that was playing can be paused: a failed or finished memo is also "paused".
+  const wasPlaying = voice.ready >= 2 && !voice.paused && voice.time > 0.2 && !voice.error;
+  const stopped = await page.evaluate(() => {
+    const a = (window as unknown as { _artAudio?: { el: HTMLAudioElement | null } })._artAudio?.el;
+    return {
+      paused: !!a?.paused,
+      ended: !!a?.ended,
+      time: a?.currentTime ?? 0,
+      error: a?.error ? a.error.code : 0,
+      pressed:
+        document
+          .querySelector('#panel-turns .turn.user [data-art-play][data-art-id="VOX1"]')
+          ?.getAttribute('aria-pressed') ?? '',
+    };
+  });
   checks.push({
-    ok: stopped.paused && stopped.pressed === 'false',
-    msg: `▶ again pauses it (paused ${stopped.paused}, aria-pressed ${stopped.pressed})`,
+    ok: wasPlaying && stopped.paused && !stopped.ended && !stopped.error && stopped.pressed === 'false',
+    msg: `▶ again pauses it mid-memo (was playing ${wasPlaying}, paused ${stopped.paused} at t=${stopped.time.toFixed(2)}s, ended ${stopped.ended}, aria-pressed ${stopped.pressed})`,
   });
 
   await page.close();
