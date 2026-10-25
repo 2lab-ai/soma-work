@@ -540,6 +540,7 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
         'capPct',
         'capNextLine',
         'capAdvance',
+        'capCount',
         'renderCapacitySummary',
       ],
       ['CAP_CAUSE', 'CAP_5H', 'CAP_7D'],
@@ -598,8 +599,8 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     expect(html).toMatch(/cap-chip is-unknown"[^>]*>◌ Other <b>—<\/b>/);
     expect(html).toMatch(/cap-chip is-low" title="[^"]*1h 0m 후/);
     // the tooltip carries the counts too, not only the next event
-    expect(html).toMatch(/cap-chip is-low" title="이번 주 0\.3\/2\.4 계정분 \(13%\)[^"]*1h 0m 후/);
-    expect(html).toMatch(/aria-label="Codex 이번 주 0\.3\/2\.4 계정분 \(13%\) · 부족 — [^"]*1h 0m 후/);
+    expect(html).toMatch(/cap-chip is-low" title="일주일 0\.3\/2\.4 계정 \(13%\)[^"]*1h 0m 후/);
+    expect(html).toMatch(/aria-label="Codex 일주일 0\.3\/2\.4 계정 \(13%\) · 부족 — [^"]*1h 0m 후/);
     const off = fns.renderCapacitySummary({ available: false, reason: 'llmux unreachable', groups: [] }, nowS * 1000);
     expect(off).toContain('가용량 미확인');
     expect(off).toContain('llmux unreachable');

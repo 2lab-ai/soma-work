@@ -49,7 +49,7 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
-const CAP_VARS = ['CAP_TIERS', 'CAP_CAUSE', 'CAP_5H', 'CAP_7D'];
+const CAP_VARS = ['CAP_TIERS', 'CAP_CAUSE', 'CAP_WORD', 'CAP_5H', 'CAP_7D'];
 const CAP_FNS = [
   'esc',
   'escAttr',
@@ -59,14 +59,14 @@ const CAP_FNS = [
   'capFmt1',
   'capGain',
   'capPct',
+  'capCount',
   'capNextLine',
-  'capWhyLine',
-  'capUnitBar',
-  'capUnits',
-  'capLane',
-  'capDecomp',
-  'capChips',
-  'capRefillList',
+  'capDur',
+  'capNextShort',
+  'capBarRow',
+  'capDisclosure',
+  'capAx',
+  'capTimeline',
   'capAdvance',
   'renderCapacitySummary',
   'renderCapacityGroup',
@@ -402,135 +402,92 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
   const claude = html.slice(html.indexOf('data-group="claude"'), html.indexOf('data-group="codex"'));
   const codex = html.slice(html.indexOf('data-group="codex"'));
 
-  it('① two measures for Claude — x / total max accounts and %: now (5h ∧ weekly) and this week', () => {
-    expect(claude).toMatch(/cap-meas is-now[\s\S]*?>0\.5<[\s\S]*?\/ 3\.0 계정분[\s\S]*?17%/);
-    expect(claude).toMatch(/cap-meas is-wk[\s\S]*?>1\.1<[\s\S]*?\/ 3\.0 계정분[\s\S]*?37%/);
-    expect(claude).toContain('5h·주간 중 작은 쪽');
+  // Simplified card (user: v2 was unreadable; trinity simple r1): two bars + one timeline.
+  it('1 — two bars per provider: 5시간 (지금 쓸 수 있음) and 일주일 (이번 주 남음), each count / total + %', () => {
+    expect(claude).toMatch(
+      /cap-bar-row is-h5[\s\S]*?5시간<i>지금 쓸 수 있음<\/i>[\s\S]*?<b>0\.5<\/b> \/ 3\.0 계정 <em>17%<\/em>/,
+    );
+    expect(claude).toMatch(
+      /cap-bar-row is-wk[\s\S]*?일주일<i>이번 주 남음<\/i>[\s\S]*?<b>1\.1<\/b> \/ 3\.0 계정 <em>37%<\/em>/,
+    );
+    expect(claude.indexOf('is-h5')).toBeLessThan(claude.indexOf('cap-bar-row is-wk'));
   });
 
-  it('① Codex has no 5h window: the weekly measure only', () => {
-    expect(codex).not.toContain('cap-meas is-now');
-    expect(codex).toMatch(/cap-meas is-wk[\s\S]*?>0\.8<[\s\S]*?\/ 1\.4 계정분/);
+  it('1 — Codex (no 5h data) has the weekly bar only', () => {
+    expect(codex).not.toContain('cap-bar-row is-h5');
+    expect(codex).toMatch(/cap-bar-row is-wk[\s\S]*?<b>0\.8<\/b> \/ 1\.4 계정 <em>59%<\/em>/);
   });
 
-  it('① each measure says what raises it next, through which reset', () => {
-    expect(claude).toContain('다음 +0.6 · 2h 0m 후');
-    expect(claude).toContain('● ai1 5h 리셋');
-    expect(claude).toContain('다음 +0.6 · 1d 0h 후');
-    expect(claude).toContain('◆ ai2 주간 리셋');
+  it('each bar says what raises it next, through which reset', () => {
+    expect(claude).toContain('다음 +0.6계정 · 2시간 0분 후 · 5시간 리셋 (ai1)');
+    expect(claude).toContain('다음 +0.6계정 · 1일 0시간 후 · 일주일 리셋 (ai2)');
   });
 
-  it('① the why line names the window that caps each usable account', () => {
-    expect(claude).toContain('쓸 수 있는 2계정 중 <b>5h가 상한 1</b> · 주간이 상한 1');
-    expect(claude).toContain('5h 리셋으로 +0.6계정분');
+  it('one muted line keeps the denominator honest: counted, blocked, left out and why', () => {
+    expect(claude).toContain('5개 중 3개 반영 · 지금 차단 1 · 제외 2 (보류 1, 티어 미지정 1)');
   });
 
-  it('① a unit bar: one cell per max account, now inside this week', () => {
-    expect(claude).toContain('class="cap-unitbar"');
-    expect(claude).toMatch(/cap-u-now/);
-    expect(codex).not.toMatch(/cap-u-now/);
+  it('2 — one timeline: a 5h reset is a teal ● (label above), a weekly reset a violet ◆ (label below)', () => {
+    expect(claude.match(/class="cap-tl"/g)?.length).toBe(1);
+    expect(claude).toMatch(/cap-tl-mk is-h5"><circle[\s\S]*?>\+0\.6<\/text>/);
+    for (const g of ['0.6', '1.0', '0.3'])
+      expect(claude).toMatch(new RegExp(`cap-tl-mk is-wk"><rect[^]*?>\\+${g.replace('.', '\\.')}<\\/text>`));
+    expect(claude).toContain('<i class="is-h5">●</i> 5시간');
+    expect(claude).toContain('<i class="is-wk">◆</i> 일주일');
   });
 
-  it('① exclusions and blocks are counted apart, never silently folded in', () => {
-    expect(claude).toContain('주간 한도 1');
-    expect(claude).toContain('티어 미지정 1 · 제외');
-    expect(claude).toContain('보류 1 · 제외');
+  it('the v2 clutter is gone: no lanes, unit bar, per-account bars, why line, chips, breakdown or jargon', () => {
+    for (const gone of [
+      'cap-lane',
+      'cap-unitbar',
+      'cap-units',
+      'cap-why',
+      'cap-chip2',
+      'cap-decomp',
+      'cap-meas',
+      '계정분',
+      '상한',
+      '합계 밖',
+    ])
+      expect(html).not.toContain(gone);
   });
 
-  it('② the 5h lane and the weekly lane are separate, each with its own glyph and colour', () => {
-    expect(claude).toContain('cap-lane is-5h');
-    expect(claude).toContain('cap-lane is-7d');
-    expect(claude).toMatch(/cap-l-mk is-5h is-hollow/); // ai2's 5h reset frees nothing
-    expect(claude).toMatch(/◆ ai3 x20 \+1\.0/);
-    expect(codex).not.toContain('cap-lane is-5h');
-  });
-
-  it('② each lane breaks its gain down by cause', () => {
-    expect(claude).toContain('<b>+0.6 계정분</b> = ● 5h 리셋 +0.6 (2건, 1건은 변화 없음)');
-    expect(claude).toContain('<b>+1.9 계정분</b> = ◆ 주간 리셋 +1.9 (3건)');
-  });
-
-  it('the tier is a dot plus its text, not a colour of its own', () => {
-    expect(claude).toMatch(/cap-dot tier-high/);
-    expect(claude).toContain('x20');
-  });
-
-  it('a narrow screen trades the lanes for a "next refills" list with now and week apart', () => {
+  it('a narrow card keeps the bars and the timeline', () => {
     const narrow = fns.renderCapacity(view, NOW_S * 1000, 360);
-    expect(narrow).not.toContain('cap-lane');
-    // one breakpoint: the card that lists refills is the card the CSS stacks
     expect(narrow).toMatch(/class="cap-prov is-\w+ is-narrow"/);
+    expect(narrow).toContain('cap-bar-row is-h5');
+    expect(narrow).toContain('class="cap-tl"');
     expect(html).not.toContain('is-narrow');
-    expect(narrow).toContain('다음 리필');
-    expect(narrow).toMatch(/지금 \+0\.6[\s\S]*?주간 \+0\.6/);
   });
 
-  // PR #417 review gate (fable P1, grok P3): the grid column is the width the charts are drawn at.
-  it('the wide grid sizes its first column from the same number the charts use', () => {
-    expect(claude).toContain('style="grid-template-columns:470px minmax(0, 1fr)"');
-    const mid = fns.renderCapacity(view, NOW_S * 1000, 900);
-    expect(mid).toContain('style="grid-template-columns:399px minmax(0, 1fr)"'); // floor((900 − 32) × 0.46)
-    expect(mid).toContain('class="cap-unitbar" width="395"'); // leftW − 4
-  });
-
-  it('every account gets a per-account cell — a long pool wraps, nothing is dropped', () => {
-    const many = {
-      current: null,
-      accounts: Array.from({ length: 20 }, (_, i) =>
-        a({ name: `claude:ac${i}@c`, group: 'claude', five_hour: w(0.1, H), seven_day: w(0.2, D) }),
-      ),
-    };
-    const t20 = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`claude:ac${i}`, 'claude-max-20x']));
-    const out = fns.renderCapacity(buildCapacityView(many as never, t20 as never, NOW_S * 1000), NOW_S * 1000, 360);
-    const units = out.slice(out.indexOf('class="cap-units"'), out.indexOf('</svg>', out.indexOf('class="cap-units"')));
-    for (let i = 0; i < 20; i++) expect(units).toContain(`>ac${i}</text>`);
-    expect(units).toMatch(/translate\(0 \d+\)/);
-  });
-
-  it('opened lists are keyed so a repaint keeps them open', () => {
-    expect(claude).toContain('data-cap-key="claude:events"');
-    const paint = TEMPLATE.slice(TEMPLATE.indexOf('\nfunction paintCapacity('));
-    expect(paint.slice(0, paint.indexOf('\n}\n'))).toContain('details[data-cap-key][open]');
-  });
-
-  // PR #417 review gate (astra): a repaint between fetches folds what is due into the measures.
-  it('an event whose time has come is part of "now", not a refill to come', () => {
+  it('an event whose time has come is part of the bar, not a refill to come', () => {
     const later = fns.renderCapacity(view, (NOW_S + 2 * H + 60) * 1000, 1200);
     const c2 = later.slice(later.indexOf('data-group="claude"'), later.indexOf('data-group="codex"'));
-    expect(c2).toMatch(/cap-meas is-now[\s\S]*?>1\.1</); // 0.5 + ai1's 5h reset +0.6
-    expect(c2).not.toContain('● ai1 5h 리셋');
+    expect(c2).toMatch(/cap-bar-row is-h5[\s\S]*?<b>1\.1<\/b>/); // 0.5 + ai1's 5h reset +0.6
+    expect(c2).not.toContain('5시간 리셋 (ai1)');
   });
 
-  it('a narrow list with only small gains says so instead of "nothing"', () => {
+  it('small gains read "+0.1계정 미만", never "nothing"', () => {
     const tiny = {
       ...view,
-      groups: [{ ...view.groups[0], events: [{ account: 'ai1', cause: '5h', at: NOW_S + H, dNow: 0.02, dWeek: 0 }] }],
-    };
-    const out = fns.renderCapacity(tiny, NOW_S * 1000, 360);
-    expect(out).toContain('7일 안엔 +0.1 미만(소폭)');
-  });
-
-  it('a long account label is cut to fit its lane chip', () => {
-    const long = {
-      ...view,
       groups: [
-        {
-          ...view.groups[0],
-          events: [{ account: 'averyveryverylongname@corp.example', cause: '7d', at: NOW_S + D, dNow: 1, dWeek: 1 }],
-        },
+        { ...view.groups[1], events: [{ account: 'ai5', cause: '7d', at: NOW_S + D, dNow: 0.03, dWeek: 0.03 }] },
       ],
     };
-    const out = fns.renderCapacity(long, NOW_S * 1000, 1200);
-    expect(out).toContain('averyveryvery…');
+    expect(fns.renderCapacity(tiny, NOW_S * 1000, 1200)).toContain('7일 안 +0.1계정 미만 회복');
   });
 
-  it('a count that displays as the total reads 100%, never "2.4/2.4 99%"', () => {
-    const pct = load<{ capPct: (v: number, t: number) => string }>(['capFmt1', 'capPct'], []);
-    expect(pct.capPct(2.37, 2.4)).toBe('100%');
-    expect(pct.capPct(2.3, 2.4)).toBe('96%');
-    expect(pct.capPct(15.96, 16)).toBe('100%');
-    expect(pct.capPct(15.9, 16)).toBe('99%');
-    expect(pct.capPct(1, 0)).toBe('—');
+  it('a count that rounds to the total but is not full keeps two decimals; 100% only when full', () => {
+    const f = load<{ capPct: (v: number, t: number) => string; capCount: (v: number, t: number) => string }>(
+      ['capFmt1', 'capPct', 'capCount'],
+      [],
+    );
+    expect(f.capCount(2.37, 2.4)).toBe('2.37');
+    expect(f.capPct(2.37, 2.4)).toBe('99%');
+    expect(f.capCount(2.4, 2.4)).toBe('2.4');
+    expect(f.capPct(2.4, 2.4)).toBe('100%');
+    expect(f.capCount(5.23, 16)).toBe('5.2');
+    expect(f.capPct(1, 0)).toBe('—');
   });
 
   it('nothing countable reads "계산 불가", never NaN', () => {
@@ -545,9 +502,8 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     expect(out).not.toContain('NaN');
   });
 
-  it('says how fresh the data is and whose clock the times use; never calls it a token count', () => {
+  it('says how fresh the data is; never calls it a token count', () => {
     expect(html).toContain('12초 전');
-    expect(html).toContain('시각은 보는 사람 기준');
     expect(html).not.toContain('토큰량');
   });
 
