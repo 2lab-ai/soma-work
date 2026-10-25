@@ -580,14 +580,16 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     expect(html).not.toContain('aria-live');
     // The glyph leads (the state shows first even where the row scrolls); the whole
     // sentence is the chip's accessible name.
+    // Requirement 1a while folded: each measure as max accounts' worth AND % of the total.
     expect(html).toMatch(
-      /cap-chip is-ok"[^>]*>Claude <i class="cap-chip-k">지금 <\/i><b class="is-now">6\.2<\/b> · <i class="cap-chip-k">주 <\/i><b class="is-wk">6\.3<\/b><i class="cap-chip-of"> \/16\.0<\/i>/,
+      /cap-chip is-ok"[^>]*>Claude <span class="cap-m is-now"><i class="cap-chip-k">지금 <\/i><b>6\.2<\/b><i class="cap-chip-of">\/16\.0<\/i> <em>39%<\/em><\/span> · <span class="cap-m is-wk"><i class="cap-chip-k">주 <\/i><b>6\.3<\/b> <em>39%<\/em><\/span>/,
+    );
+    // weekly-only: the total rides on the one measure
+    expect(html).toMatch(
+      /cap-chip is-low"[^>]*>▲ Codex <span class="cap-m is-wk"><i class="cap-chip-k">주 <\/i><b>0\.3<\/b><i class="cap-chip-of">\/2\.4<\/i> <em>13%<\/em><\/span>/,
     );
     expect(html).toMatch(
-      /cap-chip is-low"[^>]*>▲ Codex <i class="cap-chip-k">주 <\/i><b class="is-wk">0\.3<\/b><i class="cap-chip-of"> \/2\.4/,
-    );
-    expect(html).toMatch(
-      /cap-chip is-empty"[^>]*>✗ Gemini <i class="cap-chip-k">지금 <\/i><b class="is-now">0\.0<\/b>/,
+      /cap-chip is-empty"[^>]*>✗ Gemini <span class="cap-m is-now"><i class="cap-chip-k">지금 <\/i><b>0\.0<\/b><i class="cap-chip-of">\/1\.0<\/i> <em>0%<\/em>/,
     );
     expect(html).toMatch(/cap-chip is-unknown"[^>]*>◌ Other <b>—<\/b>/);
     expect(html).toMatch(/cap-chip is-low" title="[^"]*1h 0m 후/);
@@ -597,10 +599,12 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     expect(off).toContain('llmux unreachable');
   });
 
-  it('phones keep the collapsed chips short: the words and the total drop, both numbers stay', () => {
+  it('phones keep the folded chips on one row: the % of each window stays, the counts drop', () => {
+    // < 640px: "Claude 33% · 36%" (the counts stay in the chip's name and the unfolded view)
     expect(TEMPLATE).toContain(
-      '@media (max-width: 639px) { .cap-chip .cap-chip-k, .cap-chip .cap-chip-of { display: none; } }',
+      '@media (max-width: 639px) { .cap-chip .cap-chip-k, .cap-chip .cap-chip-of, .cap-chip .cap-m b { display: none; } }',
     );
+    expect(TEMPLATE).not.toMatch(/\.cap-chip[^{]*em[^{]*\{ display: none/);
   });
 
   it('collapsed: the timeline, legend and subtitle are hidden; the chips only show while collapsed', () => {

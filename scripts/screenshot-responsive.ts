@@ -314,8 +314,10 @@ async function checkSecondary(page: Page, touch: boolean): Promise<Check[]> {
           chips.length === 2 &&
           chips[0].indexOf('Claude') === 0 &&
           chips[0].indexOf('·') > 0 &&
+          (chips[0].match(/\d+%/g) || []).length === 2 &&
           chips[1].indexOf('▲ Codex') === 0 &&
-          chips[1].indexOf('·') < 0,
+          chips[1].indexOf('·') < 0 &&
+          (chips[1].match(/\d+%/g) || []).length === 1,
         msg: `capacity chips: ${chips.join(' / ')}`,
       });
       // Whole chips: none runs past the row's visible edge (the glyph and % would hide).

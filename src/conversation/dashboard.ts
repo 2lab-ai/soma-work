@@ -5195,7 +5195,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cap-prov { background: var(--ib-card); border-radius: 12px; padding: 12px 16px; margin-top: 10px; box-shadow: inset 0 0 0 1px var(--ib-card-border); }
 .cap-rows.is-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; align-items: start; }
 .cap-chip i { font-style: normal; }
-@media (max-width: 639px) { .cap-chip .cap-chip-k, .cap-chip .cap-chip-of { display: none; } }
+.cap-chip em { font-style: normal; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cap-summary .cap-m.is-now b, .cap-summary .cap-m.is-now em { color: var(--cap-now); }
+.cap-summary .cap-m.is-wk b, .cap-summary .cap-m.is-wk em { color: var(--cap-wk); }
+@media (max-width: 639px) { .cap-chip .cap-chip-k, .cap-chip .cap-chip-of, .cap-chip .cap-m b { display: none; } }
 .cap-prov.is-empty { box-shadow: inset 0 0 0 1px var(--st-fail); }
 .cap-prov.is-low { box-shadow: inset 0 0 0 1px var(--st-wait); }
 .cap-pname { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-bottom: 6px; }
@@ -5803,7 +5806,8 @@ body.nt-open .new-task-fab { display: none !important; }
   .sec-toggle { padding: 2px 8px; min-width: 44px; justify-content: center; }
   .sec-toggle .sec-toggle-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .capacity .cap-head { padding-right: 56px; }
-  .cap-chip { padding: 2px 7px; }
+  .cap-chip { padding: 2px 6px; font-size: 11px; }
+  .cap-summary { gap: 4px; }
 }
 .cap-chip {
   flex: none;
@@ -12819,10 +12823,17 @@ function renderCapacitySummary(v, nowMs) {
     var state = g.state || 'unknown';
     var known = g.total > 0;
     var t = capFmt1(g.total);
-    // Phones drop the words and the total (.cap-chip-k / .cap-chip-of): "Claude 6.2 · 6.3",
-    // the colours tell the window; the full sentence stays the chip's name and tooltip.
+    // Both measures as max accounts' worth and % (requirement 1a, also when folded):
+    // "Claude 지금 5.2/16.0 33% · 주 5.7 36%". Phones (< 640px) keep one row with the
+    // % of each window ("Claude 33% · 36%", colour = window); the counts and the full
+    // sentence stay the chip's name and tooltip, and the unfolded section.
+    var meas = function(cls, word, v, withTotal) {
+      return '<span class="cap-m ' + cls + '"><i class="cap-chip-k">' + word + ' </i><b>' + capFmt1(v) + '</b>'
+        + (withTotal ? '<i class="cap-chip-of">/' + t + '</i>' : '') + ' <em>' + capPct(v, g.total) + '</em></span>';
+    };
     var nums = !known ? '<b>—</b>'
-      : (g.has5h ? '<i class="cap-chip-k">지금 </i><b class="is-now">' + capFmt1(g.now) + '</b> · ' : '') + '<i class="cap-chip-k">주 </i><b class="is-wk">' + capFmt1(g.week) + '</b><i class="cap-chip-of"> /' + t + '</i>';
+      : g.has5h ? meas('is-now', '지금', g.now, true) + ' · ' + meas('is-wk', '주', g.week, false)
+      : meas('is-wk', '주', g.week, true);
     var said = !known ? '계산 불가 — 셀 수 있는 계정 없음'
       : (g.has5h ? '지금 ' + capFmt1(g.now) + '/' + t + ' 계정분 (' + capPct(g.now, g.total) + '), ' : '') + '이번 주 ' + capFmt1(g.week) + '/' + t + ' 계정분 (' + capPct(g.week, g.total) + ')';
     var next = known ? capNextLine(g, g.has5h ? 'dNow' : 'dWeek', g.has5h ? CAP_5H : CAP_7D, nowSec, nowMs) : '';
