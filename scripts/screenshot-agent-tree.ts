@@ -16,6 +16,7 @@
  *   - an item opens the panel on that node: path 메인 › A1 Explore, its header,
  *     its subtree (levels relative to it), Tasks = its own, the work log = its
  *     own entries + 지시 / 결과; the root's header carries the same slots
+ *     (its status and time in the panel's head chip — spec 13)
  *   - in a parent's log each spawn row carries the child's live block; ↓ +
  *     Enter on it, or a click, drills into that child
  *   - live pushes keep the focused tree item, its spinner and bar, a focused
@@ -475,6 +476,7 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
           tools: row?.querySelector('.ag-tools')?.textContent ?? '',
           more: row?.querySelector('.an-more')?.textContent ?? '',
           span: !!row?.querySelector('.ag-span i'),
+          compact: row?.classList.contains('is-compact') ?? false,
           pad: Number.parseFloat(getComputedStyle(row).paddingLeft),
           h: Math.round(row.getBoundingClientRect().height),
         };
@@ -490,11 +492,11 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     tree[0]?.root && tree[0].level === '1' && tree[0].expanded === 'true',
     `${tag}: the root item is 메인 at level 1, open`,
   );
+  // Spec 13: the card's rows are compact — status word and time; tool counts are the panel's.
   check(
-    tree.every((r) => r.st && /^툴 \d+$/.test(r.tools)),
-    `${tag}: every item — the root included — has a status word and a tool count (${tree.map((r) => `${r.st}/${r.tools}`).join(' · ')})`,
+    tree.every((r) => r.st && r.compact && r.tools === ''),
+    `${tag}: every item — the root included — is a compact row with a status word, no tool count (${tree.map((r) => `${r.st}/${r.tools || '-'}`).join(' · ')})`,
   );
-  check(tree[0]?.tools === '툴 16', `${tag}: the root's own tool count (${tree[0]?.tools})`);
   check(
     tree[2]?.level === '3' && tree[2]?.expanded === 'false' && tree[2]?.more === '+1',
     `${tag}: A3 (level 3) starts folded with +1 (${JSON.stringify(tree[2])})`,
@@ -504,8 +506,8 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     `${tag}: indent grows with the level (${tree.map((r) => r.pad).join(',')})`,
   );
   check(
-    !tree[0].span && tree.slice(1).every((r) => r.span),
-    `${tag}: subagent rows carry the waterfall bar, the root none`,
+    tree.every((r) => !r.span),
+    `${tag}: no waterfall bar on the card — the panel's rich rows carry it (spec 13)`,
   );
   check(tree.filter((r) => r.tab === '0').length === 1, `${tag}: the tree has one tab stop`);
   if (width < 640)
@@ -576,8 +578,6 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     li.__mark = 1;
     // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
     (li.querySelector('.ag-spinner') as any).__mark = 1;
-    // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
-    (li.querySelector('.ag-span i') as any).__mark = 1;
   }, K('200'));
   await pushSession(page, K('200'), { agent: 'toolu_explore', tools: 1, shiftMs: 60_000 });
   const liveCard = await page.evaluate((key) => {
@@ -589,14 +589,15 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
       focused: document.activeElement === li,
       // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
       spinner: (li?.querySelector('.ag-spinner') as any)?.__mark === 1,
-      // biome-ignore lint/suspicious/noExplicitAny: marks on live nodes
-      bar: (li?.querySelector('.ag-span i') as any)?.__mark === 1,
-      tools: row?.querySelector('.ag-tools')?.textContent ?? '',
+      line: row?.querySelector('.ag-sub')?.textContent ?? '',
     };
   }, K('200'));
   check(
-    liveCard.sameItem && liveCard.focused && liveCard.spinner && liveCard.bar && liveCard.tools === '툴 19',
-    `${tag}: live card update keeps the focused item, its spinner and bar (${JSON.stringify(liveCard)})`,
+    liveCard.sameItem &&
+      liveCard.focused &&
+      liveCard.spinner &&
+      liveCard.line.indexOf('Reading the stream processor') >= 0,
+    `${tag}: live card update keeps the focused item, its spinner and its activity line (${JSON.stringify(liveCard)})`,
   );
   const cardBox = await page.locator(`[data-session-key="${K('200')}"]`).boundingBox();
   if (cardBox) await page.screenshot({ path: path.join(OUT, `${theme}-${width}-card-tree-crop.png`), clip: cardBox });
@@ -733,12 +734,15 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     await page.waitForTimeout(200);
   }
   const atRoot = await readPanel();
+  // Spec 13: the root's status and active time are the session's — the head chip shows them.
+  const chip = await page.evaluate(() => document.querySelector('#panel-status .ps-chip')?.textContent ?? '');
   check(
     atRoot.head.includes('메인') &&
-      atRoot.head.includes('실행 중') &&
+      !atRoot.head.includes('실행 중') &&
+      chip.includes('실행 중') &&
       atRoot.head.includes('툴 16') &&
       atRoot.head.includes('세션 Σ'),
-    `${tag}: the root's header — status, tools, session Σ (${atRoot.head.trim().slice(0, 90)})`,
+    `${tag}: the root's header — tools, session Σ; its status in the head chip (${atRoot.head.trim().slice(0, 90)} | ${chip})`,
   );
   check(
     JSON.stringify(atRoot.sub.map((n) => n.id)) ===

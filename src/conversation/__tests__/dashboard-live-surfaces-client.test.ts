@@ -291,11 +291,10 @@ describe('count-up animation of the usage numbers (T1/T2)', () => {
 });
 
 describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
-  const tasksOpen: Record<string, boolean> = {};
   const tl = load<{ renderTimeline(s: unknown): string }>(
     ['esc', 'escJs', 'toNum', 'formatDuration', 'renderTaskMeta', 'renderTimelineItem', 'renderTimeline'],
     [],
-    { ...SHOW_ALL, _tasksOpen: tasksOpen },
+    { ...SHOW_ALL },
   );
 
   it('each task shows its id; a completed task its elapsed time and tool calls', () => {
@@ -309,7 +308,9 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
     expect(html).toMatch(/#T3<\/span><span class="tl-text">Ship it<\/span><\/li>/);
   });
 
-  it('completed tasks beyond the budget and earlier tasks open on demand', () => {
+  // Spec 13: the open card is a window; every task of the list and the earlier
+  // lists are the panel's Tasks — 전체 task N개 → opens them there (T7 reachability kept).
+  it('completed tasks beyond the budget and earlier tasks are one click away, in the panel', () => {
     const many = workingCard({
       tasks: Array.from({ length: 8 }, (_, i) => ({
         id: `T${i + 1}`,
@@ -323,24 +324,17 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
         { id: 'T0', content: 'old plan', status: 'completed', startedAt: 1, completedAt: 2, toolCalls: 4 },
       ],
     });
-    const closed = tl.renderTimeline(many);
-    expect(closed).not.toContain('old plan');
-    expect(closed).toContain('aria-expanded="false"');
-    expect(closed).toContain('전체 task 보기 (4)');
-    tasksOpen[many.key] = true;
-    const open = tl.renderTimeline(many);
-    for (let i = 1; i <= 8; i++) expect(open).toContain(`#T${i}<`);
-    expect(open).toContain('이전 task 1개');
-    expect(open).toContain('old plan');
-    expect(open).toContain('aria-expanded="true"');
-    delete tasksOpen[many.key];
+    const html = tl.renderTimeline(many);
+    expect(html).not.toContain('old plan');
+    expect(html).toContain('전체 task 9개 &rarr;');
+    expect(html).toContain("openPanel('" + many.key + "','tasks',");
   });
 
   it('a session with only earlier tasks still offers them', () => {
     const html = tl.renderTimeline(
       workingCard({ tasks: [], earlierTasks: [{ id: 'T9', content: 'x', status: 'completed', toolCalls: 1 }] }),
     );
-    expect(html).toContain('전체 task 보기 (1)');
+    expect(html).toContain('전체 task 1개 &rarr;');
   });
 });
 
@@ -375,9 +369,10 @@ describe('goals: completed goals open with their details (T6)', () => {
       'formatDuration',
       'formatGoalTime',
       'renderGoalHistory',
+      'isBusy',
       'renderCardGoal',
     ],
-    ['GOAL_STATUS_LABELS', '_goalErrors', 'GOAL_VIA_LABELS'],
+    ['GOAL_STATUS_LABELS', '_goalErrors', 'GOAL_VIA_LABELS', '_busy'],
     { _goalHistoryOpen: open },
   );
   const card = (history: unknown[], over: Record<string, unknown> = {}) => ({
@@ -733,8 +728,18 @@ describe('model switch on the open card (T4/T5)', () => {
     renderModelNote(s: unknown): string;
     modelSwitchNote(r: unknown): { text: string; error: boolean };
   }>(
-    ['esc', 'escAttr', 'escJs', 'toNum', 'formatTokens', 'renderModelPicker', 'renderModelNote', 'modelSwitchNote'],
-    [],
+    [
+      'esc',
+      'escAttr',
+      'escJs',
+      'toNum',
+      'formatTokens',
+      'isBusy',
+      'renderModelPicker',
+      'renderModelNote',
+      'modelSwitchNote',
+    ],
+    ['_busy'],
     {
       REPRESENTATIVE_MODELS: MODELS,
       _modelNotes: notes,

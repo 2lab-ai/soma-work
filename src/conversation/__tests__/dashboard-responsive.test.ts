@@ -155,19 +155,25 @@ describe('panel body — pinned Tasks and Artifacts, one main scroll, at least h
   it('header → body (tasks, artifacts, scroll) → composer', () => {
     expect(at('<div class="panel-header">')).toBeGreaterThan(0);
     expect(at('<div class="panel-body" id="panel-body">')).toBeGreaterThan(at('<div class="panel-header">'));
-    expect(at('<div class="panel-tasks" id="panel-tasks"></div>')).toBeGreaterThan(at('id="panel-body"'));
+    expect(
+      at('<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>'),
+    ).toBeGreaterThan(at('id="panel-body"'));
     expect(at('id="panel-artifacts"')).toBeGreaterThan(at('id="panel-tasks"'));
     expect(at('<div class="panel-scroll" id="panel-scroll">')).toBeGreaterThan(at('id="panel-artifacts"'));
     expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-scroll"'));
   });
 
-  it('the static session info (controls, meta, links, tokens, agents) scrolls with the conversation, above it', () => {
+  it('the static session info (세션 정보, goal) scrolls with the conversation, above it; agents follow the question (spec 13)', () => {
     const scroll = at('<div class="panel-scroll" id="panel-scroll">');
     const question = at('id="panel-question"');
-    for (const id of ['panel-controls', 'panel-meta', 'panel-links', 'panel-tokens', 'panel-agents']) {
+    for (const id of ['panel-info', 'panel-goal']) {
       expect(at(`id="${id}"`), id).toBeGreaterThan(scroll);
       expect(at(`id="${id}"`), id).toBeLessThan(question);
     }
+    expect(at('id="panel-agents"')).toBeGreaterThan(question);
+    expect(at('id="panel-agents"')).toBeLessThan(at('id="panel-worklog"'));
+    // Model · effort sit beside the composer, outside the scroll area.
+    expect(at('id="panel-controls"')).toBeGreaterThan(at('<div class="panel-command" id="panel-command">'));
   });
 
   it('the body is a grid whose last row (the scroll area) never gets less than half of it', () => {

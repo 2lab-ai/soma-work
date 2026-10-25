@@ -242,7 +242,8 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
   });
 
   it('the 작업 로그 button opens the panel at the work log', () => {
-    expect(DASHBOARD_TS).toContain("openPanel(\\\\'' + escJs(s.key) + '\\\\',true)");
+    // A keyboard click (event.detail === 0) lands focus too (spec 13).
+    expect(DASHBOARD_TS).toContain("openPanel(\\\\'' + escJs(s.key) + '\\\\',true,");
     expect(TEMPLATE).toContain('작업 로그');
   });
 });
@@ -264,7 +265,9 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
   it('Tasks sit in a pinned block above the scroll area, right under the header (§3.1-6)', () => {
     const panel = TEMPLATE.slice(TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel">'));
     const header = panel.indexOf('<div class="panel-header">');
-    const tasks = panel.indexOf('<div class="panel-tasks" id="panel-tasks"></div>');
+    const tasks = panel.indexOf(
+      '<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>',
+    );
     const scroll = panel.indexOf('<div class="panel-scroll" id="panel-scroll">');
     const command = panel.indexOf('<div class="panel-command" id="panel-command">');
     expect(header).toBeGreaterThan(0);
@@ -456,7 +459,8 @@ describe('agent inbox board — motion contract (§4)', () => {
     expect(TEMPLATE).toMatch(
       /\.card \.context-bar-fill \{[^}]*transform-origin: left center;[^}]*transition: transform/,
     );
-    expect(fnBody('renderCardBody')).toContain('style="transform:scaleX(');
+    // The bar lives in the panel's 세션 정보 now (spec 13 — the open card does not repeat the face's ctx %).
+    expect(fnBody('panelInfoHtml')).toContain('style="transform:scaleX(');
   });
 
   it('board cards drop the star on the recommended choice (the solid primary marks it)', () => {

@@ -48,7 +48,9 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
-function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+function load<T>(fns: string[], vars: string[], given: Record<string, unknown> = {}): T {
+  // The card header config and the token formatter the tree reads (spec 13), unless a test sets its own.
+  const inject: Record<string, unknown> = { dhShow: () => true, formatTokens: (n: number) => String(n), ...given };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -77,6 +79,7 @@ const NODE_FNS = [
   'agentNodeName',
   'agentNodeLine',
   'agentNodeAria',
+  'anCompactLine',
   'anIdPart',
   'anTimeId',
   'anIsOpen',
@@ -85,8 +88,16 @@ const NODE_FNS = [
   'renderAgentNodes',
   'anTreeHtml',
 ];
-const AGENT_FNS = [...NODE_FNS, 'agentCounts', 'renderCardAgents', 'renderAgentTree'];
+const AGENT_FNS = [
+  ...NODE_FNS,
+  'agentCounts',
+  'renderCardAgents',
+  'cardCurrentTask',
+  'renderCardTaskRow',
+  'renderAgentTree',
+];
 const AGENT_VARS = [
+  'AN_LIVE_LINE',
   'AGENT_STATUS_LABEL',
   'AGENT_TREE_ROWS',
   'AGENT_DOTS_MAX',
@@ -293,45 +304,47 @@ describe('one node type — the main agent is the root of the same recursive tre
     expect(group).toBeGreaterThan(0);
     expect(html.indexOf('data-agent-open="toolu_nested"')).toBeGreaterThan(group);
     expect(liOf(html, 'toolu_nested')).toContain('aria-level="3" aria-setsize="1" aria-posinset="1"');
-    // Every item carries the same row slots — the root included.
-    expect(html.match(/<div class="an-row">/g)).toHaveLength(4);
+    // Every item carries the same row slots — the root included — at the card's compact density (spec 13).
+    expect(html.match(/<div class="an-row is-compact">/g)).toHaveLength(4);
     expect(html.match(/<span class="ag-meta"><span class="ag-st">/g)).toHaveLength(4);
   });
 
-  it('the root row carries what a subagent row carries: status in words, time, tools, current task', () => {
+  // Spec 13: on the card every row — the root included — has the same compact
+  // slots (status in words, time, and one line when live or failed); the detail
+  // (tools, tokens, background, description, the waterfall) is the panel's.
+  it('the root row carries what a subagent row carries: status in words, time — compact on the card', () => {
     const html = ui.renderAgentTree(card(), 'working');
-    const rootRow = html.slice(html.indexOf('<div class="an-row">'), html.indexOf('<ul class="an-kids"'));
+    const rootRow = html.slice(html.indexOf('<div class="an-row is-compact">'), html.indexOf('<ul class="an-kids"'));
     expect(rootRow).toContain('<span class="ag-type">메인</span>');
-    expect(rootRow).toContain('opus-5-5[1m]');
+    // The card's control strip names the model: the compact root does not say it again.
+    expect(rootRow).not.toContain('opus-5-5[1m]');
     expect(rootRow).toContain('<span class="ag-st">실행 중</span>');
     expect(rootRow).toContain('class="card-timer-live" data-leg-started="' + T0 + '"');
-    expect(rootRow).toContain('툴 7');
-    expect(rootRow).toContain('task 1/2');
-    expect(rootRow).toContain('#T2 Build');
-    // The waterfall belongs to the subagents' time axis: none on the root.
-    expect(rootRow).not.toContain('ag-span');
-    // Subagent rows keep theirs, hidden from assistive tech.
-    expect(html.match(/<span class="ag-span" aria-hidden="true">/g)).toHaveLength(3);
-    // A subagent row: id + type, status word, time, tools, background, description, task.
+    // The face's task row already names #T2: the root does not say it again.
+    expect(rootRow).not.toContain('#T2 Build');
+    expect(rootRow).not.toContain('툴 7');
+    // No waterfall, tools, background or description on the card at all.
+    expect(html).not.toContain('ag-span');
+    expect(html).not.toContain('class="ag-tools"');
+    expect(html).not.toContain('<span class="ag-bg">');
+    expect(html).not.toContain('<span class="ag-desc">');
+    // A subagent row: id + type, status word, time; a live one says what it does, a failed one why.
     expect(html).toContain('<span class="ag-id">A1</span><span class="ag-type">Explore</span>');
-    expect(html).toContain('<span class="ag-st">실행 중</span>');
     expect(html).toContain('data-since="' + T0 + '"');
-    expect(html).toContain('툴 18');
-    expect(html).toContain('<span class="ag-bg">배경</span>');
-    expect(html).toContain('<span class="ag-desc">Trace subagent frames</span>');
-    expect(html).toContain('#T1 Reading the mapper');
+    expect(html).toContain('<span class="ag-sub">#T1 Reading the mapper</span>');
     expect(html).toContain('<span class="ag-st">실패</span>');
+    expect(html).toContain('<span class="ag-sub">Nested look</span>');
+    // A finished one is just its status and run time.
     expect(html).toContain('4m 2s');
-    expect(html).toContain('마지막 도구 WebFetch');
+    expect(html).not.toContain('마지막 도구 WebFetch');
   });
 
   it('each item has one composed accessible name; activation and expansion use data attributes, never inline JS', () => {
     const html = ui.renderAgentTree(card(), 'working');
     // Everything the row shows but the ticking time, which the item names as its description (review r1 astra).
-    expect(liOf(html, 'toolu_explore')).toContain(
-      'aria-label="A1 Explore — Trace subagent frames, 실행 중, 툴 18, 배경, 하위 1, #T1 Reading the mapper"',
-    );
-    expect(liOf(html, '')).toContain('aria-label="메인 opus-5-5[1m], 실행 중, 툴 7, task 1/2, 하위 3, #T2 Build"');
+    // Compact density: the name lists the slots the row shows (spec 13).
+    expect(liOf(html, 'toolu_explore')).toContain('aria-label="A1 Explore, 실행 중, #T1 Reading the mapper, 하위 1"');
+    expect(liOf(html, '')).toContain('aria-label="메인, 실행 중, 하위 3"');
     const describedBy = /aria-describedby="([^"]+)"/.exec(liOf(html, 'toolu_explore'))?.[1] ?? '';
     expect(describedBy).toBe('an-c_7c_inst_3a__3a_C1_3a_t1-ntoolu_5f_explore-t');
     expect(html).toContain(`<span class="ag-time" id="${describedBy}">`);
@@ -395,13 +408,14 @@ describe('one node type — the main agent is the root of the same recursive tre
     expect(html.match(/data-agent-open="k\d"/g)).toHaveLength(6);
     expect(html.match(/data-agent-open="g\d"/g)).toHaveLength(6);
     expect(html).toContain('data-an-all=""');
-    expect(html).toContain('전체 9개 보기');
+    expect(html).toContain('전체 9개 &rarr; 상세');
     expect(html).toContain('data-an-all="k0"');
-    expect(html).toContain('전체 8개 보기');
+    expect(html).toContain('전체 8개 &rarr; 상세');
+    // Spec 13: the card is a preview — the rest opens in the panel on that parent, never in place.
     anAll[NS + '|'] = true;
     const all = m.renderAgentTree(card({ agents: [...kids, ...grand], agentsTotal: 17 }), 'working');
-    expect(all.match(/data-agent-open="k\d"/g)).toHaveLength(9);
-    expect(all).toContain('접기');
+    expect(all.match(/data-agent-open="k\d"/g)).toHaveLength(6);
+    expect(all).not.toContain('접기');
   });
 
   it('one roving tab stop per tree — on the active node when visible, else its nearest visible ancestor', () => {
@@ -490,7 +504,7 @@ describe('one node type — the main agent is the root of the same recursive tre
 
   it("the root's open leg keeps counting while the turn waits on a permission (review r1 astra)", () => {
     const html = ui.renderAgentTree(card({ activityState: 'waiting' }), 'waiting');
-    const rootRow = html.slice(html.indexOf('<div class="an-row">'), html.indexOf('<ul class="an-kids"'));
+    const rootRow = html.slice(html.indexOf('<div class="an-row is-compact">'), html.indexOf('<ul class="an-kids"'));
     expect(rootRow).toContain('<span class="ag-st">입력 대기</span>');
     expect(rootRow).toContain('data-leg-started="' + T0 + '"');
   });
@@ -503,7 +517,9 @@ describe('one node type — the main agent is the root of the same recursive tre
   });
 
   it('a mouse click on 전체 N개 보기 or any focus in a tree takes the tab stop; a chosen drill lands on the header (review r2 astra)', () => {
-    expect(fnBody('anClick')).toContain("_anActive[ns] = 'a:' + (more.getAttribute('data-an-all') || '');");
+    // A click on 전체 N개 goes through anActivate, which takes the stop first (spec 13: card → panel, panel → in place).
+    expect(fnBody('anClick')).toContain('anActivate(more);');
+    expect(fnBody('anActivate')).toContain("_anActive[ns] = 'a:' + allId;");
     expect(TEMPLATE).toContain("document.addEventListener('focusin', function(e) {");
     expect(fnBody('renderPanelAgents')).toContain('var cap = _anScopeChange ? null : anFocusCapture(el);');
     const sel = fnBody('selectPanelAgent');
@@ -523,14 +539,16 @@ describe('one node type — the main agent is the root of the same recursive tre
     expect(fnBody('anTreeHtml')).toContain("String(want).indexOf('a:') === 0");
     expect(fnBody('anOnKey')).toContain('anActivate(item, true);');
     expect(fnBody('anActivate')).toContain("document.querySelector('#panel-agents .pa-focus')");
-    expect(fnBody('closePanel')).toContain('var back = _anReturnFocus;');
+    expect(fnBody('closePanel')).toContain('var back = _anReturnFocus || _panelReturnFocus;');
     // Opened another way (a click, another card): no stale return target (review r2 fable).
     expect(fnBody('openPanel')).toContain('_anReturnFocus = null;');
     expect(fnBody('renderAgentFocus')).toContain('role="group" tabindex="-1" aria-label="');
   });
 
   it('a poll without the WebSocket repaints the focused node too; the server pushes a main tool count (review r1 astra)', () => {
-    expect(fnBody('loadSessions')).toContain('repaintPanelScope();');
+    // Spec 13: the poll repaints the whole panel (repaintPanelSession → repaintPanelScope).
+    expect(fnBody('loadSessions')).toContain('repaintPanelSession();');
+    expect(fnBody('repaintPanelSession')).toContain('repaintPanelScope();');
     const index = readFileSync(join(__dirname, '..', '..', 'index.ts'), 'utf-8');
     expect(index).toContain("if (entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);");
   });
@@ -689,15 +707,17 @@ describe('panel scope (§4.3)', () => {
 
   it('wiring: openPanel takes the agent, the scope switch repaints Tasks and the log', () => {
     expect(fnBody('openPanel')).toContain("_panelAgent = agentId ? String(agentId) : '';");
-    expect(fnBody('openPanel')).toContain('renderPanelAgents();');
-    expect(fnBody('openPanel')).toContain('renderPanelTasks(panelAgentTasks(), panelAgentLabel());');
-    expect(fnBody('selectPanelAgent')).toContain('renderPanelTasks(panelAgentTasks(), panelAgentLabel());');
+    // Spec 13: openPanel goes through the one live path (repaintPanelSession → repaintPanelScope).
+    expect(fnBody('openPanel')).toContain('repaintPanelSession();');
+    expect(fnBody('repaintPanelScope')).toContain('renderPanelAgents();');
+    expect(fnBody('repaintPanelScope')).toContain('repaintPanelTasks();');
+    expect(fnBody('selectPanelAgent')).toContain('repaintPanelTasks();');
     expect(fnBody('selectPanelAgent')).toContain('repaintWorkLogScope();');
     expect(fnBody('wlRenderList')).toContain('wlBuildRows(wlScopeEntries(state.entries))');
     expect(fnBody('paintWorkLog')).toContain('var scopedCount = wlScopeEntries(state.entries).length;');
     expect(fnBody('paintWorkLog')).toContain("if (!scopedCount) showWorkLogEmpty('이 에이전트의 작업 로그 없음');");
     expect(fnBody('renderCardFace')).toContain('+ renderCardAgents(s)');
-    expect(fnBody('renderCardBody')).toContain('+ renderAgentTree(s, col)');
+    expect(fnBody('renderCardBody')).toContain('const agentsHtml = renderAgentTree(s, col);');
     expect(TEMPLATE).toContain('<div class="panel-agents" id="panel-agents" style="display:none"></div>');
   });
 });
@@ -857,10 +877,12 @@ describe('panel — drill-down over the same node type (path · focused node · 
     const ws = fnBody('connectWs');
     expect(ws).not.toContain('!_panelAgent');
     expect(ws).not.toContain('renderPanelTasks(msg.tasks');
-    expect(ws.match(/repaintPanelScope\(\);/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    // session_update, sessionUpdated and task_update repaint the whole panel (spec 13), which runs the node scope.
+    expect(ws.match(/repaintPanelSession\(\);/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+    expect(fnBody('repaintPanelSession')).toContain('repaintPanelScope();');
     const r = fnBody('repaintPanelScope');
     expect(r).toContain('renderPanelAgents();');
-    expect(r).toContain('renderPanelTasks(panelAgentTasks(), panelAgentLabel());');
+    expect(r).toContain('repaintPanelTasks();');
     expect(r).toContain('wlRefreshGroupHeads();');
     expect(r).toContain('wlRefreshChildBlocks();');
   });
@@ -1170,21 +1192,27 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
       blur() {},
     };
     let refreshed = 0;
-    const m = load<{ changeModel(k: string, s: unknown): Promise<void> }>(['modelSwitchNote', 'changeModel'], [], {
-      postModelSwitch: async () => ({ ok: false, error: 'rejected' }),
-      _modelNotes: {},
-      formatTokens: String,
-      refreshCard: () => {
-        refreshed++; // same markup on the second refusal: the card writes nothing
+    const m = load<{ changeModel(k: string, s: unknown): Promise<void> }>(
+      ['isBusy', 'setBusy', 'resetPicker', 'modelSwitchNote', 'changeModel'],
+      ['_busy'],
+      {
+        repaintPanelControlsFor: () => {},
+        postModelSwitch: async () => ({ ok: false, error: 'rejected' }),
+        _modelNotes: {},
+        formatTokens: String,
+        refreshCard: () => {
+          refreshed++; // same markup on the second refusal: the card writes nothing
+        },
+        loadSessions: () => {},
       },
-      loadSessions: () => {},
-    });
+    );
     await m.changeModel('k', select);
     expect(select.selectedIndex).toBe(0);
     select.selectedIndex = 1;
     await m.changeModel('k', select);
     expect(select.selectedIndex).toBe(0);
-    expect(refreshed).toBe(2);
+    // Each switch repaints the card as it starts (busy, spec 13) and as it settles.
+    expect(refreshed).toBe(4);
   });
   it('a group head is morphed, not replaced, and skipped when its markup is unchanged', () => {
     const body = fnBody('wlRefreshGroupHead');
