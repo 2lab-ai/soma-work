@@ -209,8 +209,21 @@ const COUNTER_FIELDS = [
   'costUsd',
 ] as const satisfies readonly (keyof ModelUsageCounters)[];
 
-/** Float slack for cost comparisons: an unchanged running total must never read as a drop. */
-const COST_EPSILON = 1e-9;
+/**
+ * What a restarted running total is read from: a token count that went down.
+ * Cost is left out — tokens only grow in one running total, while a model's
+ * cost can be repriced mid-session (an llmux model moved from the SDK's
+ * default rate to the host table, `metrics/host-pricing.ts`); a lower cost
+ * with every token count grown is a repricing, and counting the model in full
+ * again would double its tokens (review #472 r2). With fixed prices a cost
+ * drop implies a token drop, so nothing a cost check caught is lost.
+ */
+const TOKEN_FIELDS = [
+  'inputTokens',
+  'outputTokens',
+  'cacheReadInputTokens',
+  'cacheCreationInputTokens',
+] as const satisfies readonly (keyof ModelUsageCounters)[];
 
 /** The slice of a turn's usage `toTurnUsage` rewrites. */
 export interface TurnUsageInput {
@@ -237,8 +250,9 @@ export interface TurnUsageInput {
  * - All-zero breakdown (crash/startup-error result): nothing spent, baseline
  *   kept — the next resumed result continues from the saved total.
  * - Different SDK session id: a new running total — counts from zero.
- * - A model's total went down: that model's total restarted — it counts in
- *   full. When EVERY model seen before went down (mid-session `/clear`), the
+ * - A model's token counts went down: that model's total restarted — it
+ *   counts in full. (A cost that went down alone is a repricing: its cost
+ *   delta is 0 that turn.) When EVERY model seen before went down (mid-session `/clear`), the
  *   whole running total restarted and this result becomes the baseline.
  *
  * Models that did not grow are left out of the turn's breakdown. Everything
@@ -258,11 +272,7 @@ export function toTurnUsage<U extends TurnUsageInput>(
   const previous = baseline && baseline.sdkSessionId === id ? baseline.models : {};
   const seen = entries.filter(([model]) => previous[model]);
   const dropped = new Set(
-    seen
-      .filter(([model, c]) =>
-        COUNTER_FIELDS.some((f) => previous[model][f] - c[f] > (f === 'costUsd' ? COST_EPSILON : 0)),
-      )
-      .map(([model]) => model),
+    seen.filter(([model, c]) => TOKEN_FIELDS.some((f) => previous[model][f] - c[f] > 0)).map(([model]) => model),
   );
   const cleared = seen.length > 0 && dropped.size === seen.length;
   const base = cleared ? {} : previous;
