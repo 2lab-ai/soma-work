@@ -49,7 +49,8 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
-const CAP_VARS = ['CAP_TIERS', 'CAP_CAUSE', 'CAP_WORD', 'CAP_5H', 'CAP_7D'];
+// #444 (Agent Queue): the cards now carry a head pill, account marks and a 20% line.
+const CAP_VARS = ['CAP_TIERS', 'CAP_CAUSE', 'CAP_WORD', 'CAP_5H', 'CAP_7D', 'CAP_LOW_PCT', '_aqOpen', '_aqFocusKey'];
 const CAP_FNS = [
   'esc',
   'escAttr',
@@ -70,6 +71,24 @@ const CAP_FNS = [
   'capAx',
   'capTimeline',
   'capAdvance',
+  'aqLeft',
+  'aqLeftSfx',
+  'aqTime',
+  'aqPill',
+  'capUnitState',
+  'capReason',
+  'capTierLabel',
+  'capMs',
+  'capPaused',
+  'capFirstReturn',
+  'capEmptyAt',
+  'capProvPill',
+  'capProvHead',
+  'capUnitKey',
+  'capMark',
+  'capAccountCard',
+  'capWorkers',
+  'capChipLim',
   'renderCapacitySummary',
   'renderCapacityGroup',
   'renderCapacity',
@@ -109,6 +128,7 @@ const FACE_FNS = [
   'renderOwnerBadge',
   'renderCronBadge',
   'ctxLevel',
+  'ctxPercent',
   'renderCardPr',
   'renderCardFace',
 ];
