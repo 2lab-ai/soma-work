@@ -4248,19 +4248,22 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .btn-choice-recommended::before { content: none; }
 .card .choice-row-recommended .btn-choice-recommended,
 .card .btn-choice-recommended { display: inline-block; width: auto; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
-/* D10: one primary per open card — the decision this viewer can make. The owner's
-   multi-question 답변하기 and, in the card only, an Approve this viewer can press are
-   ink; Deny and a disabled Approve are secondaries (the panel's prompt keeps its own
-   styling). Doubled classes beat the shared card / hover rules later in the sheet. */
+.card .btn-choice.btn-choice-recommended.is-quiet { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); font-weight: 500; }
+/* D10: one primary per open card — the decision this viewer can make here. The
+   owner's 답변하기 / recommended answer on this instance and, in the card only, the
+   lead Approve (renderPermissionBlock marks the first one this viewer can press
+   .is-lead) are ink; Deny, every other Approve and a quiet recommended answer
+   (.is-quiet: not answerable here) are secondaries. The panel's prompt keeps its own
+   styling. Doubled classes beat the shared card / hover rules later in the sheet. */
 .card .btn-choice.btn-choice-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
-.card .btn-perm.btn-perm-approve:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
-.card .btn-perm.btn-perm-approve:disabled { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }
+.card .btn-perm.btn-perm-approve { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }
+.card .btn-perm.btn-perm-approve.is-lead { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
 .card .btn-perm.btn-perm-deny { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--st-fail-text); }
-/* A card that also holds a permission prompt this viewer can answer (its Approve is
-   enabled — the requester, this instance) keeps Approve as the one ink button: the
+/* A card that also holds a permission prompt this viewer can answer (a lead Approve —
+   the requester, this instance) keeps that Approve as the one ink button: the
    question's answers step back to secondaries, resting and hovered (:has() outranks
    the card's recommended-choice rules). */
-.card .card-body:has(.btn-perm-approve:not(:disabled)) .btn-choice.btn-choice-recommended, .card .card-body:has(.btn-perm-approve:not(:disabled)) .btn-choice.btn-choice-primary { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }
+.card .card-body:has(.btn-perm-approve.is-lead) .btn-choice.btn-choice-recommended, .card .card-body:has(.btn-perm-approve.is-lead) .btn-choice.btn-choice-primary { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }
 @media (hover: hover) and (pointer: fine) {
   .card .btn-choice.btn-choice-primary:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
 }
@@ -5264,10 +5267,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .card-status .spinner { border-color: currentColor; }
 }
 /* D10 hover, after the shared prompt's hover rule (brightness filter): in the card,
-   Approve stays the ink primary and Deny a secondary when pointed at. */
+   the lead Approve stays the ink primary and every other Approve, Deny and a quiet
+   recommended answer stay secondaries when pointed at. */
 @media (hover: hover) and (pointer: fine) {
-  .card .btn-perm.btn-perm-approve:not(:disabled):hover { filter: none; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
+  .card .btn-perm.btn-perm-approve:not(:disabled):hover { filter: none; background: var(--ib-card); border-color: var(--ib-muted); color: var(--ib-text); }
+  .card .btn-perm.btn-perm-approve.is-lead:not(:disabled):hover { filter: none; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
   .card .btn-perm.btn-perm-deny:not(:disabled):hover { filter: none; background: var(--ib-card); border-color: var(--st-fail-text); color: var(--st-fail-text); }
+  .card .btn-choice.btn-choice-recommended.is-quiet:hover:not(:disabled) { background: var(--ib-card); border-color: var(--ib-muted); color: var(--ib-text); opacity: 1; }
 }
 /* ── CRON badge · lane · drawer (SSOT 2026-10-23 T3/T4/T5) ── */
 .cron-badge {
@@ -6582,6 +6588,9 @@ function renderPermissionBlock(s, where) {
   var list = (s && s.pendingPermissions) || [];
   if (!list.length) return '';
   var sibling = isSiblingSession(s);
+  // On the card, the first Approve this viewer can press is the card's one ink
+  // primary (.is-lead, re-agent-inbox D10); the panel has no lead.
+  var leadTaken = where !== 'card';
   return list.map(function(p) {
     var mine = isPermissionRequester(p) && !sibling;
     var detail = _permDetails[p.approvalId];
@@ -6600,7 +6609,9 @@ function renderPermissionBlock(s, where) {
       : '';
     var lockTitle = mine ? '' : ' title="' + escAttr(sibling ? '다른 인스턴스의 세션' : '이 요청의 요청자만 응답할 수 있습니다') + '"';
     var btns = PERM_DECISIONS.filter(function(d) { return !d.needsRule || p.canDisableRule; }).map(function(d) {
-      return '<button type="button" class="btn-perm' + d.cls + '"' + (mine ? '' : ' disabled') + lockTitle
+      var lead = mine && !leadTaken && d.id === 'approve';
+      if (lead) leadTaken = true;
+      return '<button type="button" class="btn-perm' + d.cls + (lead ? ' is-lead' : '') + '"' + (mine ? '' : ' disabled') + lockTitle
         + ' data-perm-key="' + escAttr(s.key) + '" data-perm-id="' + escAttr(p.approvalId) + '" data-perm-decision="' + d.id + '">'
         + esc(d.label) + '</button>';
     }).join('');
@@ -7791,6 +7802,10 @@ function applyLaneHolds(slots, counts) {
     }
   }
   var r = holdLanes(want, drawn, _laneHolds, Date.now(), canAnimate() && !reduceMotion());
+  // Take every held item out of its new column first, then put them back into
+  // the slot that holds their node, in the container's order (ascending index),
+  // so cards leaving one column together keep their order there.
+  var moves = [];
   for (var a = 0; a < slots.length; a++) {
     var slot = slots[a];
     if (!isLane(slot.colId)) continue;
@@ -7806,11 +7821,15 @@ function applyLaneHolds(slots, counts) {
       }
       if (!home) { delete r.holds[k]; continue; }
       slot.items.splice(b, 1);
-      var at = Array.prototype.indexOf.call(home.container.children, el);
-      home.items.splice(Math.max(0, Math.min(at, home.items.length)), 0, item);
+      moves.push({ item: item, home: home, at: Array.prototype.indexOf.call(home.container.children, el) });
       counts[lane] = (counts[lane] || 0) + 1;
       counts[slot.colId] = Math.max(0, (counts[slot.colId] || 0) - 1);
     }
+  }
+  moves.sort(function(x, y) { return x.at - y.at; });
+  for (var m = 0; m < moves.length; m++) {
+    var mv = moves[m];
+    mv.home.items.splice(Math.max(0, Math.min(mv.at, mv.home.items.length)), 0, mv.item);
   }
   _laneHolds = r.holds;
   if (_laneHoldTimer) { clearTimeout(_laneHoldTimer); _laneHoldTimer = 0; }
@@ -9865,6 +9884,9 @@ function renderCardBody(s, col) {
   // needs a descriptive tooltip (e.g. pending-question choices).
   const readOnlyAttrs = isOwner ? '' : ' disabled';
   const isSibling = !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
+  // re-agent-inbox D10: what this viewer can settle here — the owner's question on
+  // this instance, a permission prompt they asked for. One gate for the ink.
+  const canAnswerQuestion = !isSibling && isOwner && col === 'waiting' && !!s.pendingQuestion;
 
   // The open card's quick switch (T4/T5, 10-23 T1): model · effort, among the
   // representative models; below 640px it folds behind one toggle.
@@ -9920,7 +9942,7 @@ function renderCardBody(s, col) {
         var recLabel = stripRecommendedMarker(recOpt.label);
         var recTitle = isOwner ? (recOpt.description || recLabel) : READ_ONLY_MSG;
         recHtml = '<div class="choice-row-recommended">'
-          + '<button class="btn-choice btn-choice-recommended"' + readOnlyAttrs + choiceDataAttrs(s.key, recOpt.id, recLabel, pq.question) + ' title="' + escAttr(recTitle) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
+          + '<button class="btn-choice btn-choice-recommended' + (canAnswerQuestion ? '' : ' is-quiet') + '"' + readOnlyAttrs + choiceDataAttrs(s.key, recOpt.id, recLabel, pq.question) + ' title="' + escAttr(recTitle) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
           + '</div>'
           + (otherOpts.length > 0 ? '<hr class="choice-divider">' : '');
       }
@@ -9956,8 +9978,8 @@ function renderCardBody(s, col) {
   // One primary per open card (re-agent-inbox D10): when this viewer can settle
   // something here — the owner's pending question, a permission prompt they
   // asked for — that decision is the primary and 작업 로그 steps back.
-  const canDecideHere = !isSibling && ((col === 'waiting' && !!s.pendingQuestion && isOwner)
-    || (col !== 'closed' && (s.pendingPermissions || []).some(function(p) { return !!(p && p.requesterId && currentUserId && p.requesterId === currentUserId); })));
+  const canDecideHere = canAnswerQuestion
+    || (!isSibling && col !== 'closed' && (s.pendingPermissions || []).some(function(p) { return !!(p && p.requesterId && currentUserId && p.requesterId === currentUserId); }));
   const worklogBtn = '<button type="button" class="btn-action' + (canDecideHere ? '' : ' btn-primary') + '" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',true,\\'\\',event.detail===0)">작업 로그</button>';
   const slackBtn = (dhShow('links') && s.slackThreadUrl)
     ? '<a class="btn-action" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
@@ -11131,7 +11153,7 @@ function renderMultiChoiceCard(s, faceSummary) {
   return '<div class="card-question">'
     + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">\\uD83D\\uDCCB ' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
     + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
-    + '<div style="margin-top:6px"><button class="btn-choice' + (s.ownerId && s.ownerId === currentUserId ? ' btn-choice-primary' : '') + '" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
+    + '<div style="margin-top:6px"><button class="btn-choice' + (s.ownerId && s.ownerId === currentUserId && !isSiblingSession(s) ? ' btn-choice-primary' : '') + '" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
     + '</div>';
 }
 
