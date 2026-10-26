@@ -2912,7 +2912,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     /** Click the card's 답변하기 button: run its shipped onclick against the shipped openPanel. */
     const clickAnswer = () => {
       const html = m.renderMultiChoiceCard(cache[KEY], '');
-      const btn = /<button class="btn-choice" onclick="([^"]+)"[^>]*>답변하기<\/button>/.exec(html);
+      // re-agent-inbox D10: the button is the card's primary (btn-choice btn-choice-primary).
+      const btn = /<button class="btn-choice[^"]*" onclick="([^"]+)"[^>]*>답변하기<\/button>/.exec(html);
       if (!btn) throw new Error('no 답변하기 button on the card');
       new Function('event', 'openPanel', btn[1])({ stopPropagation() {} }, m.openPanel);
     };
