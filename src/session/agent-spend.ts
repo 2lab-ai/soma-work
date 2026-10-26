@@ -28,7 +28,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { findTranscriptPath, resolveClaudeConfigDir } from '@soma/slack/pipeline/transcript-sanitizer';
-import type { AgentRecord, AgentRegistry, AgentSpend } from './agent-registry';
+import { type AgentRecord, type AgentRegistry, type AgentSpend, SPEND_CALC_VERSION } from './agent-registry';
 
 /** Tokens of a set of calls, before pricing. */
 export interface TokenCounts {
@@ -146,13 +146,22 @@ function fillZeroUsage(calls: CallUsage[]): { calls: CallUsage[]; estimated: num
   const known = calls.filter((_, i) => reported[i]);
   if (known.length === 0 || known.length === calls.length) return { calls, estimated: 0 };
   const meanOut = known.reduce((a, c) => a + c.outputTokens, 0) / known.length;
+  // The nearest reported call before and after each index, in two linear passes.
+  const prev = new Array<number>(calls.length);
+  const next = new Array<number>(calls.length);
+  for (let k = 0, last = -1; k < calls.length; k++) {
+    prev[k] = last;
+    if (reported[k]) last = k;
+  }
+  for (let k = calls.length - 1, last = calls.length; k >= 0; k--) {
+    next[k] = last;
+    if (reported[k]) last = k;
+  }
   let estimated = 0;
   const out = calls.map((c, k) => {
     if (reported[k]) return c;
-    let i = k - 1;
-    while (i >= 0 && !reported[i]) i--;
-    let j = k + 1;
-    while (j < calls.length && !reported[j]) j++;
+    const i = prev[k];
+    const j = next[k];
     const a = i >= 0 ? calls[i] : undefined;
     const b = j < calls.length ? calls[j] : undefined;
     const at = (f: 'inputTokens' | 'cacheReadTokens' | 'cacheCreateTokens') => {
@@ -192,6 +201,7 @@ function priceCalls(calls: Map<string, CallUsage>, opts: AgentSpendReaderOptions
     calls: calls.size,
   };
   if (filled.estimated) spend.estimatedCalls = filled.estimated;
+  spend.version = SPEND_CALC_VERSION;
   const unpriced: string[] = [];
   for (const [model, t] of byModel) {
     spend.inputTokens += t.inputTokens;
@@ -221,6 +231,7 @@ function sameSpend(a: AgentSpend | undefined, b: AgentSpend): boolean {
     a.costUsd === b.costUsd &&
     a.calls === b.calls &&
     a.estimatedCalls === b.estimatedCalls &&
+    a.version === b.version &&
     (a.unpricedModels ?? []).join('\n') === (b.unpricedModels ?? []).join('\n')
   );
 }

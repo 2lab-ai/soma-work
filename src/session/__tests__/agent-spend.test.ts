@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type AgentRegistry,
   applyAgentEvent,
+  SPEND_CALC_VERSION,
   sanitizeAgentRegistry,
   stampWorkLogAgent,
   subagentSpendOf,
@@ -350,6 +351,33 @@ describe('agent spend — calls the transcript recorded with no usage (llmux mod
     expect(s.estimatedCalls).toBeUndefined();
   });
 
+  it('review #472 — a spend sealed by an older calculation is unsealed on restore, so the new one re-reads it', () => {
+    const h = holder();
+    const a = h.agents!.agents[0];
+    a.spend = { inputTokens: 1, outputTokens: 1, cacheReadTokens: 1, cacheCreateTokens: 0, costUsd: 0.1, calls: 2 };
+    a.spendFinal = true; // sealed before spend carried a calculation version
+    const old = sanitizeAgentRegistry(JSON.parse(JSON.stringify(h.agents)))!;
+    expect(old.agents[0].spendFinal).toBeUndefined();
+    expect(old.agents[0].spend).toBeDefined();
+    a.spend.version = SPEND_CALC_VERSION;
+    const current = sanitizeAgentRegistry(JSON.parse(JSON.stringify(h.agents)))!;
+    expect(current.agents[0].spendFinal).toBe(true);
+  });
+
+  it('review #472 — every read stamps the current calculation version, and a long zero run stays linear', async () => {
+    const lines = [assistant('m0', 'gpt-6-astra', [10, 1, 90, 0])];
+    for (let i = 1; i <= 20_000; i++) lines.push(assistant(`m${i}`, 'gpt-6-astra', [0, 0, 0, 0]));
+    writeAgent('aaaa1111', lines);
+    const h = holder();
+    const t0 = Date.now();
+    await createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h);
+    const s = h.agents!.agents[0].spend!;
+    expect(s.version).toBe(SPEND_CALC_VERSION);
+    expect(s.estimatedCalls).toBe(20_000);
+    expect(s.inputTokens).toBe(10 * 20_001);
+    expect(Date.now() - t0).toBeLessThan(5_000);
+  });
+
   it('estimates are kept across a restart and flag the subagent sum', () => {
     const h = holder();
     h.agents!.agents[0].spend = {
@@ -380,7 +408,7 @@ describe('agent spend — registry: persisted, and the subagent sum survives the
   it('round-trips spend, the SDK session and the seal through sanitizeAgentRegistry', () => {
     const h = holder();
     const a = h.agents!.agents[0];
-    a.spend = { ...spend(7), unpricedModels: ['grok-4.7-build'] };
+    a.spend = { ...spend(7), unpricedModels: ['grok-4.7-build'], version: SPEND_CALC_VERSION };
     a.sdkSessionId = SID;
     a.spendFinal = true;
     const { calls: _calls, ...pruned } = spend(3);
