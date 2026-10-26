@@ -333,7 +333,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'cardGoalLine',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'SESSION_ACTION_ARIA', '_busy', '_cardModelOpen'],
+      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'SESSION_ACTION_ARIA', '_busy'],
       { ...STUBS, ...inject },
     ).renderCardBody(s, col);
 
@@ -418,7 +418,11 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     const html = body(card(), 'working');
     const foot = html.slice(html.indexOf('class="card-foot-bar"'));
     expect(foot).toContain('[MODEL]');
-    expect(foot).toContain('[EFFORT]');
+    // The owner's one trigger carries the level and opens the model · effort menu
+    // (.prd/affectui/re-model-picker.md D1); a reader gets the level as text.
+    expect(foot).not.toContain('[EFFORT]');
+    const read = body(card(), 'working', { currentUserId: 'U2' });
+    expect(read.slice(read.indexOf('class="card-foot-bar"'))).toContain('[MODEL][EFFORT]');
     expect(foot).toContain('btn-stop');
     expect(foot).toContain('href="https://slack/x"');
     expect(foot).toContain('>작업 로그</button>');
@@ -513,12 +517,14 @@ describe('panel header — the session chip and its one action', () => {
       },
     ).panelHeadHtml(s, col);
 
-  it('a running session: 세션 · 실행 중 (announced), the live active timer, Slack, and Stop', () => {
+  it('a running session: 세션 · 실행 중 (announced), 시작 HH:MM · this turn’s live time, Slack, and Stop', () => {
     const html = head(card(), 'working');
     expect(html).toContain('class="ps-chip is-running"');
     expect(html).toContain('<span class="ps-label">세션</span>');
     expect(html).toContain('<span class="ps-word" role="status">실행 중</span>');
-    expect(html).toContain('class="card-timer-live" data-leg-started="' + T0 + '" data-accumulated="65000"');
+    // re-agent-run D18: the head times this turn from its start; the session's Σ active time is in 세부 (D19).
+    expect(html).toContain('시작 ');
+    expect(html).toContain('class="card-timer-live" data-leg-started="' + T0 + '" data-accumulated="0"');
     expect(html).toContain('href="https://slack/x"');
     expect(html).toContain('btn-stop');
     // The accessible name keeps the visible label first (WCAG 2.5.3).
@@ -558,7 +564,20 @@ describe('panel header — the session chip and its one action', () => {
 describe('세션 정보 — the complete numbers, live, behind one summary line', () => {
   const info = (s: Record<string, unknown>, open: boolean) =>
     load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
-      ['esc', 'escAttr', 'toNum', 'ctxLevel', 'panelInfoHtml'],
+      // contextBlockHtml: the context block at the top of the open body (re-context-window D5) — empty without contextParts.
+      // panelDetailsHtml: 세부 right after it (re-agent-run D19).
+      [
+        'esc',
+        'escAttr',
+        'toNum',
+        'ctxLevel',
+        'ctxPercent',
+        'contextBlockHtml',
+        'pendingAutoResume',
+        'rootStatusOf',
+        'panelDetailsHtml',
+        'panelInfoHtml',
+      ],
       ['PI_CHEV_SVG'],
       {
         formatTokens: (n: number) => `${n}`,
@@ -580,7 +599,9 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
     expect(html).not.toContain('class="pi-body"');
   });
 
-  it('open: every token kind, cost, the context bar with the autocompact line, Σ · compactions · sessions, merge', () => {
+  // re-context-window D5/D17/D18: the 4px bar and its "autocompact" line gave way to the context block
+  // (dashboard-affectui-context-window-client.test.ts); the token rows say they are session totals.
+  it('open: every token kind (cumulative), cost, Σ · compactions · sessions, merge — no old context bar', () => {
     const html = info(card(), true);
     expect(html).toContain('aria-expanded="true"');
     const b = html.slice(html.indexOf('class="pi-body"'));
@@ -594,8 +615,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
       '캐시 쓰기',
       '300000',
       '$12.40',
-      'autocompact 750000',
-      'class="context-bar"',
+      '누적 입력',
       '720000ms',
       '압축 2',
       '세션 3',
@@ -603,6 +623,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
     ]) {
       expect(b, want).toContain(want);
     }
+    expect(b).not.toContain('context-bar');
   });
 });
 
@@ -867,11 +888,12 @@ describe('a goal add in flight is busy until its form is settled (executed)', ()
 
 describe('one write in flight per session and operation, whichever surface asks (executed, deferred requests)', () => {
   it('a second model switch while the first is pending is refused; the peer surface shows busy at once; busy clears on settle', async () => {
+    // The menu picks by value (re-model-picker D11): nothing to put back on a refusal, the surfaces re-render.
     let release: (v: { ok: boolean; error: string }) => void = () => {};
     const posts: string[] = [];
     const peerRepaints: boolean[] = [];
-    const m = load<{ changeModel(k: string, s: unknown): Promise<void>; isBusy(k: string, op: string): boolean }>(
-      ['isBusy', 'setBusy', 'resetPicker', 'modelSwitchNote', 'changeModel'],
+    const m = load<{ changeModel(k: string, n: string): Promise<void>; isBusy(k: string, op: string): boolean }>(
+      ['isBusy', 'setBusy', 'modelSwitchNote', 'changeModel'],
       ['_busy'],
       {
         postModelSwitch: (_k: string, nick: string) => {
@@ -885,20 +907,10 @@ describe('one write in flight per session and operation, whichever surface asks 
         loadSessions: () => {},
       },
     );
-    const sel = (value: string) => ({
-      value,
-      disabled: false,
-      selectedIndex: 1,
-      options: [{ defaultSelected: true }, { defaultSelected: false }],
-      blur() {},
-    });
-    const card = sel('sonnet');
-    const first = m.changeModel('k', card);
+    const first = m.changeModel('k', 'sonnet');
     expect(peerRepaints).toEqual([true]); // the panel's picker repainted busy before the request settles
-    const panel = sel('fable');
-    await m.changeModel('k', panel); // the docked panel's picker, while the card's switch is pending
+    await m.changeModel('k', 'fable'); // the docked panel's menu, while the card's switch is pending
     expect(posts).toEqual(['sonnet']);
-    expect(panel.selectedIndex).toBe(0); // put back on the session's model
     release({ ok: true, error: '' });
     await first;
     expect(m.isBusy('k', 'model')).toBe(false);
@@ -1037,48 +1049,52 @@ describe('the composer follows the session live (executed)', () => {
   });
 });
 
-describe('the floating pickers close even from a focused picker (executed)', () => {
-  it('Escape / the toggle with a select focused: the picker is let go, the controls repaint closed', () => {
-    const writes: string[] = [];
-    const select = {
-      tagName: 'SELECT',
-      blurred: false,
-      blur() {
-        this.blurred = true;
-        doc.activeElement = null;
+describe('the model menu closes on Escape before the panel does (executed)', () => {
+  it('Escape in the open menu closes the menu, back on its trigger, and stops there: the panel stays open', () => {
+    // The fold toggle is gone (re-model-picker D16): the composer's one trigger opens the menu above it.
+    const trigger = {
+      attrs: { 'data-mp-key': 'k', 'data-mp-surface': 'panel', 'aria-expanded': 'true' } as Record<string, string>,
+      getAttribute(n: string) {
+        return this.attrs[n];
+      },
+      setAttribute(n: string, v: string) {
+        this.attrs[n] = v;
+      },
+      focused: false,
+      focus() {
+        this.focused = true;
       },
     };
-    const controls = {
-      _html: '',
-      classList: { toggle: () => {} },
-      contains: (n: unknown) => n === select,
-    };
-    const doc: Record<string, unknown> = {
-      activeElement: select,
-      getElementById: (id: string) => (id === 'panel-controls' ? controls : null),
-    };
-    const m = load<{ togglePanelControls(): void }>(
-      ['togglePanelControls', 'renderPanelControls'],
-      ['_panelControlsOpen'],
+    const menu = { classList: { remove: () => {} }, setAttribute: () => {} };
+    const repainted: string[] = [];
+    const m = load<{ mpMenuKey(e: unknown): void }>(
+      ['mpAnchor', 'mpClose', 'mpMenuKey'],
+      ['_mp'],
       {
-        document: doc,
-        panelSessionKey: 'k',
-        _sessionCache: { k: card() },
-        currentUserId: 'U1',
-        isSiblingSession: () => false,
-        esc: (x: string) => x,
-        effortLabel: (e: string) => e,
-        renderModelPicker: () => '[M]',
-        renderEffortPicker: () => '[E]',
-        renderModelNote: () => '',
-        morphInnerHtml: (_el: unknown, h: string) => writes.push(h),
+        document: {
+          getElementById: (id: string) => (id === 'mp-menu' ? menu : null),
+          querySelectorAll: () => [trigger],
+        },
+        refreshCard: () => {},
+        repaintPanelControlsFor: (k: string) => repainted.push(k),
+        clearInterval: () => {},
       },
-    );
-    m.togglePanelControls(); // open
-    m.togglePanelControls(); // close while the select holds focus
-    expect(select.blurred).toBe(true);
-    expect(writes.length).toBe(2);
-    expect(writes[1]).toContain('aria-expanded="false"');
+      ['function mpSet(k, w) { _mp.key = k; _mp.surface = w; }'],
+    ) as { mpMenuKey(e: unknown): void; mpSet(k: string, w: string): void };
+    m.mpSet('k', 'panel');
+    let stopped = false;
+    m.mpMenuKey({
+      key: 'Escape',
+      target: { classList: { contains: () => true } },
+      preventDefault() {},
+      stopPropagation() {
+        stopped = true;
+      },
+    });
+    expect(stopped).toBe(true); // the document's panel Escape never sees it
+    expect(trigger.attrs['aria-expanded']).toBe('false');
+    expect(trigger.focused).toBe(true);
+    expect(repainted).toEqual(['k']); // the controls catch up on what they held while the menu was open
   });
 
   it('the same-session re-landing leaves a send in flight alone; a send whose session left the board fails closed', () => {
@@ -1086,7 +1102,7 @@ describe('the floating pickers close even from a focused picker (executed)', () 
     const send = clientFn('sendCommand');
     expect(send).toContain('btn.disabled = true;');
     expect(send).toContain("if (cmdHost) cmdHost._mode = '';");
-    const esc = TEMPLATE.slice(TEMPLATE.indexOf("if (e.key === 'Escape' && panelOpen && _panelControlsOpen"));
+    const esc = TEMPLATE.slice(TEMPLATE.indexOf("if (e.key === 'Escape' && panelOpen && !artModalIsOpen()"));
     expect(esc.slice(0, 200)).toContain('!artModalIsOpen() && !_cronDrawerKey');
   });
 });
@@ -1137,8 +1153,19 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
   it('the main scope lists the earlier task lists under the current one', () => {
     const el = { style: {} as Record<string, string>, _html: '', innerHTML: '' };
     const m = load<{ renderPanelTasks(tasks: unknown[], label: string, earlier: unknown[]): void }>(
-      ['esc', 'escAttr', 'toNum', 'formatDuration', 'renderPanelTaskItem', 'renderPanelTasks'],
-      [],
+      // re-agent-run D1–D7: plan rows (markers, times) and the footer.
+      [
+        'esc',
+        'escAttr',
+        'toNum',
+        'formatDuration',
+        'formatTaskTime',
+        'agentIconHtml',
+        'renderPanelTaskItem',
+        'planFootHtml',
+        'renderPanelTasks',
+      ],
+      ['AGENT_STATUS_LABEL'],
       {
         document: { getElementById: () => el },
         _panelTasksExpanded: true,
@@ -1146,6 +1173,7 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
         morphInnerHtml: (e: { innerHTML: string }, h: string) => {
           e.innerHTML = h;
         },
+        updateTimersIn: () => {},
       },
     );
     m.renderPanelTasks([{ id: 'T5', content: 'now', status: 'in_progress' }], '', [
@@ -1182,7 +1210,7 @@ describe('interaction state survives live renders on both surfaces', () => {
     expect(clientFn('goalAction')).toContain("setBusy(key, 'goal', true)");
     expect(clientFn('doAction')).toContain("setBusy(key, 'action', true)");
     expect(clientFn('renderModelPicker')).toContain("isBusy(s.key, 'model')");
-    expect(clientFn('renderEffortPicker')).toContain("isBusy(s.key, 'effort')");
+    expect(clientFn('renderEffortControl')).toContain("isBusy(s.key, 'effort')");
     expect(clientFn('renderCardGoal')).toContain("isBusy(s.key, 'goal')");
     expect(clientFn('sessionActionHtml')).toContain("isBusy(s.key, 'action')");
   });
@@ -1239,6 +1267,7 @@ const FACE_FNS = [
   'renderCardStatus',
   'renderOwnerBadge',
   'ctxLevel',
+  'ctxPercent',
   'renderCardPr',
   'renderCardFace',
 ];
@@ -1406,7 +1435,14 @@ describe('collapsed face — the context level is a warning, the panel bar uses 
   });
 
   it('one threshold table for both surfaces', () => {
-    expect(clientFn('panelInfoHtml')).toContain('var cls = ctxLevel(ctx);');
+    // re-context-window D9/D16: the same ctxLevel, given the auto-compact point, on the face, the summary and the block.
+    expect(clientFn('panelInfoHtml')).toContain(
+      'ctxLevel(ctx, s.contextTokens, s.autoCompactTokens, s.compactPending)',
+    );
+    expect(clientFn('contextBlockHtml')).toContain('ctxLevel(pct, used, auto, s.compactPending)');
+    expect(clientFn('renderCardFace')).toContain(
+      'ctxLevel(ctxPct, s.contextTokens, s.autoCompactTokens, s.compactPending)',
+    );
     expect(TEMPLATE).toMatch(/\.card-metrics \.metric\.ctx-warn svg \{[^}]*var\(--st-wait\)/);
     expect(TEMPLATE).toMatch(/\.card-metrics \.metric\.ctx-danger \{[^}]*var\(--st-fail-text\)/);
   });
