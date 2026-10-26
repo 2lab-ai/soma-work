@@ -14,10 +14,15 @@ Phase 2 simplified `tool-policy.ts` three ways, each justified by a theorem:
   (`Original.mcp_or_crossUser_silent`), so the first guard that fires, and with it the whole
   result, is unchanged (`Original.evaluateWith_newOrder`).
 
-`evaluate_toOriginal` is the combined equality: on every input the simplified result is the
-phase-1 result, decision, reason, deny message and rule ids alike. `Result.toOriginal` only renames
-the four decision constructors and is injective. `transfer` then carries every invariant proved
-for the phase-1 model over to this one.
+Phase 3 added a step the phase-1 code did not have: the devops-secret check (step 1b), which
+reads one more primitive value, `Primitives.devopsSecret`. With that check clear
+(`Input.clearDevops`) the current `evaluate` is the phase-2 function, so the equalities here are
+about it: `evaluate_clearDevops_toOriginal` is the combined equality, on every input the result with
+the check clear is the phase-1 result, decision, reason, deny message and rule ids alike, and
+`evaluate_toOriginal` the same for every input on which the step returns nothing.
+`Result.toOriginal` only renames the four decision constructors and is injective. `transfer` then
+carries every invariant proved for the phase-1 model over to the phase-2 function.
+`ProofsDevops.lean` proves the invariants for `evaluate` itself, the devops-secret step included.
 -/
 
 namespace SomaVerify.ToolPolicy
@@ -57,6 +62,44 @@ theorem Result.toOriginal_injective : Function.Injective Result.toOriginal := by
   simp only [Result.toOriginal, Original.Result.mk.injEq] at h
   obtain ⟨hd, hr, hm, hi⟩ := h
   rw [Decision.toOriginal_injective hd, hr, hm, hi]
+
+/-! ## The devops-secret step, cleared -/
+
+/-- The input with the devops-secret check coming back clear (`null`). -/
+def Input.clearDevops (i : Input) : Input :=
+  { i with prims := { i.prims with devopsSecret := none } }
+
+/-- With no value, the dispatch returns none for every tool. -/
+theorem checkDevopsSecretForTool_none (t : String) : checkDevopsSecretForTool t none = none := by
+  unfold checkDevopsSecretForTool
+  simp
+
+/-- With the check clear, step 1b stays silent. -/
+theorem devopsGuard_clearDevops (i : Input) : devopsGuard i.clearDevops = none := by
+  simp [devopsGuard, Input.clearDevops, checkDevopsSecretForTool_none]
+
+/-- `evaluate` is the abort guard, then step 1b, then `evaluate` with the check clear: no step
+after 1b reads `devopsSecret`. -/
+theorem evaluate_eq_devops (i : Input) :
+    evaluate i =
+      match abortGuard i with
+      | some r => r
+      | none =>
+        match devopsGuard i with
+        | some r => r
+        | none => evaluate i.clearDevops := by
+  have h1 : abortGuard i.clearDevops = abortGuard i := rfl
+  have h2 : adminExemptGuards none i.clearDevops = adminExemptGuards none i := rfl
+  have h3 : crossUserGuard i.clearDevops = crossUserGuard i := rfl
+  have h4 : prIssueGuard i.clearDevops = prIssueGuard i := rfl
+  have h5 : modeTier i.clearDevops = modeTier i := rfl
+  unfold evaluate evaluateToolPolicy
+  rw [h1, devopsGuard_clearDevops, h2, h3, h4, h5]
+  cases abortGuard i <;> cases devopsGuard i <;> rfl
+
+/-- The phase-1 model does not read `devopsSecret`. -/
+theorem Original.evaluate_clearDevops (i : Input) : Original.evaluate i.clearDevops = Original.evaluate i :=
+  rfl
 
 /-! ## Each step against its phase-1 counterpart -/
 
@@ -176,11 +219,13 @@ end Original
 
 /-! ## The whole function -/
 
-/-- The simplified code is the phase-1 guards in the new order, then the mode tier: the non-admin
-block is the ssh, sensitive-path and MCP guards, each silent for admins. -/
-theorem evaluate_toOriginal_newOrder (i : Input) :
+/-- The simplified code on an input where step 1b stays silent is the phase-1 guards in the new
+order, then the mode tier: the non-admin block is the ssh, sensitive-path and MCP guards, each
+silent for admins. -/
+theorem evaluate_toOriginal_newOrder (i : Input) (hd : devopsGuard i = none) :
     (evaluate i).toOriginal = Original.evaluateWith Original.newOrder i := by
   unfold Original.evaluateWith Original.newOrder evaluate evaluateToolPolicy adminExemptGuards
+  rw [hd]
   simp only [List.findSome?]
   rw [abortGuard_toOriginal, crossUserGuard_toOriginal, prIssueGuard_toOriginal,
     modeTier_toOriginal]
@@ -191,24 +236,35 @@ theorem evaluate_toOriginal_newOrder (i : Input) :
   · rw [sshGuard_of_admin ha, sensitiveGuard_of_admin ha, mcpGuard_of_admin ha]
     cases abortGuard i <;> cases crossUserGuard i <;> cases prIssueGuard i <;> rfl
 
-/-- The simplified `evaluateToolPolicy` returns the phase-1 result on every input: the same
-decision, reason, deny message and rule ids (C1, C3 and C4 together). -/
-theorem evaluate_toOriginal (i : Input) : (evaluate i).toOriginal = Original.evaluate i := by
-  rw [evaluate_toOriginal_newOrder, Original.evaluateWith_newOrder]
+/-- The simplified `evaluateToolPolicy` returns the phase-1 result on every input on which step 1b
+stays silent: the same decision, reason, deny message and rule ids (C1, C3 and C4 together). -/
+theorem evaluate_toOriginal (i : Input) (hd : devopsGuard i = none) :
+    (evaluate i).toOriginal = Original.evaluate i := by
+  rw [evaluate_toOriginal_newOrder i hd, Original.evaluateWith_newOrder]
 
-/-- The two models are the same function. -/
-theorem evaluate_toOriginal_funext : (fun i => (evaluate i).toOriginal) = Original.evaluate :=
-  funext evaluate_toOriginal
+/-- With the devops-secret check clear, the simplified `evaluateToolPolicy` returns the phase-1
+result on every input. -/
+theorem evaluate_clearDevops_toOriginal (i : Input) :
+    (evaluate i.clearDevops).toOriginal = Original.evaluate i := by
+  rw [evaluate_toOriginal i.clearDevops (devopsGuard_clearDevops i), Original.evaluate_clearDevops]
 
-/-- Whatever holds of the phase-1 evaluation function holds of the simplified one. -/
+/-- With the devops-secret check clear, the two models are the same function. -/
+theorem evaluate_toOriginal_funext :
+    (fun i => (evaluate i.clearDevops).toOriginal) = Original.evaluate :=
+  funext evaluate_clearDevops_toOriginal
+
+/-- Whatever holds of the phase-1 evaluation function holds of the simplified one with the
+devops-secret check clear. -/
 theorem transfer {P : (Input → Original.Result) → Prop} (h : P Original.evaluate) :
-    P (fun i => (evaluate i).toOriginal) := by
+    P (fun i => (evaluate i.clearDevops).toOriginal) := by
   rw [evaluate_toOriginal_funext]
   exact h
 
-/-! ## Every phase-1 invariant, for the simplified model
+/-! ## Every phase-1 invariant, for the simplified model with the devops-secret check clear
 
-Each statement is the `Spec.lean` statement of the same name, for the simplified model. -/
+Each statement is the `Spec.lean` statement of the same name, for the phase-2 function: the
+simplified model with the devops-secret check clear. `ProofsDevops.lean` states and proves each one
+for `evaluate` itself. -/
 
 /-- The simplified deny steps fire exactly under the documented conditions. The three checks of
 the non-admin block fire under theirs together with the block's own test, `isAdmin = false`. -/
@@ -238,117 +294,117 @@ theorem guard_conditions (i : Input) :
     exact ⟨g1, g2, g3, g5, g4, g6⟩
 
 /-- (a) A Bash call after abort is denied with the abort reason. -/
-theorem abort_denies : Original.AbortDenies (fun i => (evaluate i).toOriginal) :=
+theorem abort_denies : Original.AbortDenies (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.abort_denies
 
 /-- (b) A cross-user Bash call is denied in every mode, for admins and non-admins alike. -/
-theorem cross_user_isolation : Original.CrossUserIsolation (fun i => (evaluate i).toOriginal) :=
+theorem cross_user_isolation : Original.CrossUserIsolation (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.cross_user_isolation
 
 /-- (c) A met deny condition gives `deny`. -/
-theorem deny_dominance : Original.DenyDominance (fun i => (evaluate i).toOriginal) :=
+theorem deny_dominance : Original.DenyDominance (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.deny_dominance
 
 /-- (c) Under a met deny condition the whole result ignores the mode. -/
 theorem deny_tier_mode_independent :
-    Original.DenyTierModeIndependent (fun i => (evaluate i).toOriginal) :=
+    Original.DenyTierModeIndependent (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.deny_tier_mode_independent
 
 /-- (c) A call is denied exactly when a deny condition holds. -/
-theorem deny_exactly : Original.DenyExactly (fun i => (evaluate i).toOriginal) :=
+theorem deny_exactly : Original.DenyExactly (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.deny_exactly
 
 /-- The phase-1 deny tier in phase-1 source order still computes the simplified function. -/
 theorem evaluateWith_source_order :
-    Original.EvaluateWithSourceOrder (fun i => (evaluate i).toOriginal) :=
+    Original.EvaluateWithSourceOrder (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.evaluateWith_source_order
 
 /-- (d) Any reordering of the deny tier gives the simplified decision. -/
 theorem decision_order_invariant :
-    Original.DecisionOrderInvariant (fun i => (evaluate i).toOriginal) :=
+    Original.DecisionOrderInvariant (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.decision_order_invariant
 
 /-- (d) Some reordering of the deny tier changes the simplified reason. -/
 theorem reason_order_dependent :
-    Original.ReasonOrderDependent (fun i => (evaluate i).toOriginal) :=
+    Original.ReasonOrderDependent (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.reason_order_dependent
 
 /-- (d) Some reordering of the deny tier changes the simplified deny message. -/
 theorem denyMessage_order_dependent :
-    Original.DenyMessageOrderDependent (fun i => (evaluate i).toOriginal) :=
+    Original.DenyMessageOrderDependent (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.denyMessage_order_dependent
 
 /-- (e) Legacy mode never allows, classifies or asks. -/
-theorem legacy_never_allows : Original.LegacyNeverAllows (fun i => (evaluate i).toOriginal) :=
+theorem legacy_never_allows : Original.LegacyNeverAllows (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.legacy_never_allows
 
 /-- (e) Legacy mode passes every call it does not deny. -/
-theorem legacy_passes : Original.LegacyPasses (fun i => (evaluate i).toOriginal) :=
+theorem legacy_passes : Original.LegacyPasses (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.legacy_passes
 
 /-- (f) `classify` exactly for an auto-mode Bash call that nothing denies and the dangerous-rule
 check flags. -/
-theorem classify_iff : Original.ClassifyIff (fun i => (evaluate i).toOriginal) :=
+theorem classify_iff : Original.ClassifyIff (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.classify_iff
 
 /-- (f) Rule ids exactly on `classify`. -/
 theorem matched_rule_ids_only_classify :
-    Original.MatchedRuleIdsOnlyClassify (fun i => (evaluate i).toOriginal) :=
+    Original.MatchedRuleIdsOnlyClassify (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.matched_rule_ids_only_classify
 
 /-- (f) A `classify` result carries the matched rule ids and lists them in its reason. -/
 theorem classify_carries_rule_ids :
-    Original.ClassifyCarriesRuleIds (fun i => (evaluate i).toOriginal) :=
+    Original.ClassifyCarriesRuleIds (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.classify_carries_rule_ids
 
 /-- (g) Being an admin has exactly the effect of clear ssh, sensitive-path and MCP checks. -/
 theorem admin_skips_exactly_ssh_sensitive_mcp :
-    Original.AdminSkipsExactlySshSensitiveMcp (fun i => (evaluate i).toOriginal) :=
+    Original.AdminSkipsExactlySshSensitiveMcp (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.admin_skips_exactly_ssh_sensitive_mcp
 
 /-- (g) Admins are still denied by the abort, cross-user and PR-issue guards. -/
 theorem admin_keeps_abort_cross_user_pr_issue :
-    Original.AdminKeepsAbortCrossUserPrIssue (fun i => (evaluate i).toOriginal) :=
+    Original.AdminKeepsAbortCrossUserPrIssue (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.admin_keeps_abort_cross_user_pr_issue
 
 /-- (h) `pass` exactly when nothing denies and the mode is legacy or the tool is neither Bash nor
 native. -/
-theorem pass_iff : Original.PassIff (fun i => (evaluate i).toOriginal) :=
+theorem pass_iff : Original.PassIff (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.pass_iff
 
 /-- (i) No result is `ask`. -/
-theorem never_ask : Original.NeverAsk (fun i => (evaluate i).toOriginal) :=
+theorem never_ask : Original.NeverAsk (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.never_ask
 
 /-- Bypass mode allows every Bash and native-tool call that nothing denies. -/
 theorem bypass_allows_governed :
-    Original.BypassAllowsGoverned (fun i => (evaluate i).toOriginal) :=
+    Original.BypassAllowsGoverned (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.bypass_allows_governed
 
 /-- Auto mode allows every native-tool call and every unflagged Bash call that nothing denies. -/
 theorem auto_allows_non_dangerous :
-    Original.AutoAllowsNonDangerous (fun i => (evaluate i).toOriginal) :=
+    Original.AutoAllowsNonDangerous (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.auto_allows_non_dangerous
 
 /-- A deny message comes only from the PR-issue guard. -/
 theorem deny_message_only_pr_issue :
-    Original.DenyMessageOnlyPrIssue (fun i => (evaluate i).toOriginal) :=
+    Original.DenyMessageOnlyPrIssue (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.deny_message_only_pr_issue
 
 /-- Every non-null MCP deny reason, the empty string included, denies a non-admin `mcp__` call. -/
 theorem mcp_deny_reason_denies :
-    Original.McpDenyReasonDenies (fun i => (evaluate i).toOriginal) :=
+    Original.McpDenyReasonDenies (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.mcp_deny_reason_denies
 
 /-- The policy has an opinion only on Bash, native-tool and `mcp__` calls. -/
 theorem opinion_only_on_matched_tools :
-    Original.OpinionOnlyOnMatchedTools (fun i => (evaluate i).toOriginal) :=
+    Original.OpinionOnlyOnMatchedTools (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.opinion_only_on_matched_tools
 
 /-- The simplified decision reads `command`, `file_path` and `pattern` only through the primitive
 values in `prims`. -/
 theorem decision_ignores_call_arguments :
-    Original.DecisionIgnoresCallArguments (fun i => (evaluate i).toOriginal) :=
+    Original.DecisionIgnoresCallArguments (fun i => (evaluate i.clearDevops).toOriginal) :=
   transfer Original.decision_ignores_call_arguments
 
 end SomaVerify.ToolPolicy

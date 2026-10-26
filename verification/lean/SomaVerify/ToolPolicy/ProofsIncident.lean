@@ -1,4 +1,4 @@
-import SomaVerify.ToolPolicy.Simplification
+import SomaVerify.ToolPolicy.ProofsDevops
 
 /-!
 # Proofs of the incident READ-ONLY tier
@@ -10,13 +10,15 @@ and every combination of primitive values.
 The route: with an incident context no step reads the mode or the admin flag, since the non-admin
 block runs for everyone and the incident tier replaces the mode tier
 (`evaluateToolPolicy_some_mode_admin`). So an incident call is decided as the same call made by a
-non-admin, and for a non-admin the deny steps are those of `evaluate`, all silent exactly when no
-deny condition holds (`denyStepsSilent_iff`). When one returns, the result is `evaluate`'s, a
-denial (`Simplification.deny_exactly`); when none does, it is the incident tier's
-(`incident_cases`). Each statement is then a case analysis of `evaluateIncidentReadOnly`.
+non-admin, and for a non-admin the deny steps are those of `evaluate`, the devops-secret step
+included, all silent exactly when none of the seven deny conditions holds
+(`denyStepsSilent_iff`). When one returns, the result is `evaluate`'s, a denial
+(`Phase3.deny_exactly3`); when none does, it is the incident tier's (`incident_cases`). Each
+statement is then a case analysis of `evaluateIncidentReadOnly`.
 
-`evaluate` is `evaluateToolPolicy none`, so (e) holds by definition, and `evaluate_toOriginal`
-(`Simplification.lean`) still proves that function equal to the phase-1 model on every input.
+`evaluate` is `evaluateToolPolicy none`, so (e) holds by definition, and
+`Phase3.toOriginal_evaluate_eq_original` proves that function equal to the phase-1 model wherever
+the devops-secret step does not return.
 -/
 
 namespace SomaVerify.ToolPolicy
@@ -48,6 +50,7 @@ theorem evaluateToolPolicy_some_mode_admin (inc : IncidentReadOnly) (i : Input) 
     evaluateToolPolicy (some inc) { i with mode := mode, isAdmin := isAdmin } =
       evaluateToolPolicy (some inc) i := by
   have h1 : abortGuard { i with mode := mode, isAdmin := isAdmin } = abortGuard i := rfl
+  have hd : devopsGuard { i with mode := mode, isAdmin := isAdmin } = devopsGuard i := rfl
   have hs : sshCheck { i with mode := mode, isAdmin := isAdmin } = sshCheck i := rfl
   have hp : sensitiveCheck { i with mode := mode, isAdmin := isAdmin } = sensitiveCheck i := rfl
   have hm : mcpCheck { i with mode := mode, isAdmin := isAdmin } = mcpCheck i := rfl
@@ -57,14 +60,14 @@ theorem evaluateToolPolicy_some_mode_admin (inc : IncidentReadOnly) (i : Input) 
   have h3 : crossUserGuard { i with mode := mode, isAdmin := isAdmin } = crossUserGuard i := rfl
   have h4 : prIssueGuard { i with mode := mode, isAdmin := isAdmin } = prIssueGuard i := rfl
   unfold evaluateToolPolicy
-  rw [h1, h2, h3, h4]
+  rw [h1, hd, h2, h3, h4]
 
 /-! ## The deny steps of a non-admin call, silent or not -/
 
 /-- No deny step of `evaluate` returns. -/
 def DenyStepsSilent (i : Input) : Prop :=
-  abortGuard i = none ∧ adminExemptGuards none i = none ∧ crossUserGuard i = none ∧
-    prIssueGuard i = none
+  abortGuard i = none ∧ devopsGuard i = none ∧ adminExemptGuards none i = none ∧
+    crossUserGuard i = none ∧ prIssueGuard i = none
 
 /-- For a non-admin, the non-admin block runs with or without an incident context. -/
 theorem adminExemptGuards_some_of_nonadmin (inc : IncidentReadOnly) {i : Input}
@@ -76,15 +79,15 @@ incident tier. -/
 theorem evaluateToolPolicy_some_of_silent {i : Input} (ha : i.isAdmin = false)
     (h : DenyStepsSilent i) (inc : IncidentReadOnly) :
     evaluateToolPolicy (some inc) i = evaluateIncidentReadOnly i.toolName inc := by
-  obtain ⟨h1, h2, h3, h4⟩ := h
+  obtain ⟨h1, hd, h2, h3, h4⟩ := h
   unfold evaluateToolPolicy
-  rw [adminExemptGuards_some_of_nonadmin inc ha, h1, h2, h3, h4]
+  rw [adminExemptGuards_some_of_nonadmin inc ha, h1, hd, h2, h3, h4]
 
 /-- When no deny step returns and no incident context is set, the mode tier decides. -/
 theorem evaluate_of_silent {i : Input} (h : DenyStepsSilent i) : evaluate i = modeTier i := by
-  obtain ⟨h1, h2, h3, h4⟩ := h
+  obtain ⟨h1, hd, h2, h3, h4⟩ := h
   unfold evaluate evaluateToolPolicy
-  rw [h1, h2, h3, h4]
+  rw [h1, hd, h2, h3, h4]
 
 /-- For a non-admin call on which a deny step returns, the incident context changes nothing: the
 result is `evaluate`'s. -/
@@ -94,7 +97,7 @@ theorem evaluateToolPolicy_some_of_not_silent {i : Input} (ha : i.isAdmin = fals
   unfold DenyStepsSilent at h
   unfold evaluate evaluateToolPolicy
   rw [adminExemptGuards_some_of_nonadmin inc ha]
-  cases h1 : abortGuard i <;> cases h2 : adminExemptGuards none i <;>
+  cases h1 : abortGuard i <;> cases hd : devopsGuard i <;> cases h2 : adminExemptGuards none i <;>
     cases h3 : crossUserGuard i <;> cases h4 : prIssueGuard i <;> simp_all
 
 /-- The mode tier never denies. -/
@@ -108,14 +111,15 @@ theorem Result.toOriginal_deny_iff (r : Result) :
   cases r with
   | mk d _ _ _ => cases d <;> simp [Result.toOriginal, Decision.toOriginal]
 
-/-- `evaluate` denies exactly under a deny condition (`Simplification.deny_exactly`, without the
-phase-1 image). -/
-theorem evaluate_deny_iff (i : Input) : (evaluate i).decision = .deny ↔ Original.DenyCond i := by
+/-- `evaluate` denies exactly under one of the seven deny conditions (`Phase3.deny_exactly3`,
+without the phase-1 image). -/
+theorem evaluate_deny_iff (i : Input) : (evaluate i).decision = .deny ↔ Original.DenyCond3 i := by
   rw [← Result.toOriginal_deny_iff]
-  exact deny_exactly i
+  exact Phase3.deny_exactly3 i
 
-/-- The deny steps of `evaluate` are all silent exactly when no deny condition holds. -/
-theorem denyStepsSilent_iff (i : Input) : DenyStepsSilent i ↔ ¬Original.DenyCond i := by
+/-- The deny steps of `evaluate` are all silent exactly when none of the seven deny conditions
+holds. -/
+theorem denyStepsSilent_iff (i : Input) : DenyStepsSilent i ↔ ¬Original.DenyCond3 i := by
   constructor
   · intro hs hc
     have hd := (evaluate_deny_iff i).mpr hc
@@ -123,9 +127,11 @@ theorem denyStepsSilent_iff (i : Input) : DenyStepsSilent i ↔ ¬Original.DenyC
     exact modeTier_decision_ne_deny i hd
   · intro hc
     obtain ⟨g1, g2, g3, g4, g5, g6⟩ := guard_conditions i
-    simp only [Original.DenyCond, not_or] at hc
-    obtain ⟨cA, cS, cP, cX, cM, cR⟩ := hc
+    simp only [Original.DenyCond3, Original.DenyCond, not_or] at hc
+    obtain ⟨cD, cA, cS, cP, cX, cM, cR⟩ := hc
     have e1 : abortGuard i = none := Classical.byContradiction fun h => cA (g1.mp h)
+    have ed : devopsGuard i = none :=
+      Classical.byContradiction fun h => cD ((Phase3.devops_guard_conditions i).mp h)
     have e3 : crossUserGuard i = none := Classical.byContradiction fun h => cX (g5.mp h)
     have e4 : prIssueGuard i = none := Classical.byContradiction fun h => cR (g6.mp h)
     have e2 : adminExemptGuards none i = none := by
@@ -135,12 +141,15 @@ theorem denyStepsSilent_iff (i : Input) : DenyStepsSilent i ↔ ¬Original.DenyC
         have hm : mcpCheck i = none := Classical.byContradiction fun h => cM (g4.mp ⟨ha, h⟩)
         simp [adminExemptGuards, ha, hs, hp, hm]
       · simp [adminExemptGuards, ha]
-    exact ⟨e1, e2, e3, e4⟩
+    exact ⟨e1, ed, e2, e3, e4⟩
 
 /-- Whatever a session without an incident context hard-denies, for an admin or not, an incident
 session hard-denies too: dropping the admin flag only adds deny conditions. -/
-theorem denyCond_incidentDenyCond (i : Input) : Original.DenyCond i → IncidentDenyCond i := by
+theorem denyCond_incidentDenyCond (i : Input) : Original.DenyCond3 i → IncidentDenyCond i := by
   intro h
+  rcases h with h | h
+  · exact .inl h
+  apply Or.inr
   rcases h with h | h | h | h | h | h
   · exact .inl h
   · exact .inr (.inl ⟨h.1, rfl, h.2.2⟩)
@@ -235,9 +244,11 @@ theorem incident_absent_unchanged : IncidentAbsentUnchanged evaluateToolPolicy :
   fun _ => rfl
 
 /-- (e) Without an incident context the result is the phase-1 model's, decision, reason, deny
-message and rule ids alike, so every invariant `Simplification.lean` transfers holds of it. -/
-theorem incident_absent_toOriginal (i : Input) :
+message and rule ids alike, wherever the devops-secret step does not return (its condition fails,
+or the abort guard returns first); `ProofsDevops.lean` proves every invariant of it. -/
+theorem incident_absent_toOriginal (i : Input)
+    (h : ¬(Original.DevopsCond i ∧ ¬Original.AbortCond i)) :
     (evaluateToolPolicy none i).toOriginal = Original.evaluate i :=
-  evaluate_toOriginal i
+  Phase3.toOriginal_evaluate_eq_original h
 
 end SomaVerify.ToolPolicy

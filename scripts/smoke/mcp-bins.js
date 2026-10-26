@@ -6,6 +6,7 @@ const path = require('node:path');
 const bins = [
   ['agent', '@soma/mcp-server-agent/bin', 'agent-mcp-server.js'],
   ['cron', '@soma/mcp-server-cron/bin', 'cron-mcp-server.js'],
+  ['devops-tools', '@soma/mcp-server-devops-tools/bin', 'devops-tools-mcp-server.js'],
   ['mcp-tool-permission', '@soma/mcp-server-mcp-tool-permission/bin', 'mcp-tool-permission-mcp-server.js'],
   ['model-command', '@soma/mcp-server-model-command/bin', 'model-command-mcp-server.js'],
   ['permission', '@soma/mcp-server-permission/bin', 'permission-mcp-server.js'],
