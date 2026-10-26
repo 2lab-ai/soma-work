@@ -1,6 +1,6 @@
 # loop — 대시보드 × affectUI 레퍼런스 7종
 
-Status: 머지 대기(CI) · 에픽 #437 · PR #450–#456(스택) · 후속 #447 · #457 · 스펙 = [`../14-dashboard-affectui-spec.md`](../14-dashboard-affectui-spec.md) · SSOT = [`ssot.md`](ssot.md)
+Status: 출고(main `9de150c`) · dev 배포 #459 · 에픽 #437 · PR #450–#456(스택) · 후속 #447 · #457 · 스펙 = [`../14-dashboard-affectui-spec.md`](../14-dashboard-affectui-spec.md) · SSOT = [`ssot.md`](ssot.md)
 
 ## 게이트 (build facts)
 - 워크트리마다: `npx vitest run src/conversation/__tests__/` → `npx tsc --noEmit` → `npx biome check src/conversation/`.
@@ -13,13 +13,13 @@ Status: 머지 대기(CI) · 에픽 #437 · PR #450–#456(스택) · 후속 #44
 
 | ssot-task | 서브이슈 | 레퍼런스 | 브랜치 | 문서 | PR | 상태 |
 |---|---|---|---|---|---|---|
-| T3.1 | #438 | Agent Inbox | `feat/dashboard-affectui-agent-inbox` | [`re-agent-inbox.md`](re-agent-inbox.md) | #450 | PR 리뷰 R3 만장일치 (b39ef87) |
-| T3.2 | #439 | Agent Run | `feat/dashboard-affectui-agent-run` | [`re-agent-run.md`](re-agent-run.md) | #452 | PR 리뷰 R3 만장일치 |
-| T3.3 | #440 | AI Answer | `feat/dashboard-affectui-ai-answer` | [`re-ai-answer.md`](re-ai-answer.md) | #454 | PR 리뷰 R2 만장일치 |
-| T3.4 | #441 | Context Window | `feat/dashboard-affectui-context-window` | [`re-context-window.md`](re-context-window.md) | #451 | PR 리뷰 R2 만장일치 |
-| T3.5 | #442 | Model Picker | `feat/dashboard-affectui-model-picker` | [`re-model-picker.md`](re-model-picker.md) | #453 | PR 리뷰 R2 만장일치 |
-| T3.6 | #443 | Memory Panel | `feat/dashboard-affectui-memory-panel` | [`re-memory-panel.md`](re-memory-panel.md) | #456 | PR 리뷰 R2 만장일치 |
-| T3.7 | #444 | Agent Queue | `feat/dashboard-affectui-agent-queue` | [`re-agent-queue.md`](re-agent-queue.md) | #455 | PR 리뷰 R4 (cfd0c44) |
+| T3.1 | #438 | Agent Inbox | `feat/dashboard-affectui-agent-inbox` | [`re-agent-inbox.md`](re-agent-inbox.md) | #450 | 머지 · R3 만장일치 |
+| T3.2 | #439 | Agent Run | `feat/dashboard-affectui-agent-run` | [`re-agent-run.md`](re-agent-run.md) | #452 | 머지 · R3 만장일치 |
+| T3.3 | #440 | AI Answer | `feat/dashboard-affectui-ai-answer` | [`re-ai-answer.md`](re-ai-answer.md) | #454 | 머지 · R2 만장일치 |
+| T3.4 | #441 | Context Window | `feat/dashboard-affectui-context-window` | [`re-context-window.md`](re-context-window.md) | #451 | 머지 · R2 만장일치 |
+| T3.5 | #442 | Model Picker | `feat/dashboard-affectui-model-picker` | [`re-model-picker.md`](re-model-picker.md) | #453 | 머지 · R2 만장일치 |
+| T3.6 | #443 | Memory Panel | `feat/dashboard-affectui-memory-panel` | [`re-memory-panel.md`](re-memory-panel.md) | #456 | 머지 · R2 만장일치 |
+| T3.7 | #444 | Agent Queue | `feat/dashboard-affectui-agent-queue` | [`re-agent-queue.md`](re-agent-queue.md) | #455 | 머지 · R5 만장일치 |
 
 ## 병합 순서
 7개 브랜치가 같은 파일(`src/conversation/dashboard.ts`)의 서로 다른 구역을 고친다. 각 작업자는 자기 구역 옆에만 CSS·함수를
@@ -57,7 +57,7 @@ Memory Panel은 `settings-memory-tab.ts`만 고친다 — 열린 PR #380과 같�
 | #452 세션 패널 | grok REJECT · astra REJECT · fable APPROVE | 펼침 순서, 포커스된 Approve 재바인딩(오승인) → 5b34149 | R2 astra REJECT(질문 뜻 바뀌어도 버튼 재사용) → be279ec → R3 만장일치 |
 | #453 모델 선택기 | 3 REJECT | Tab 이탈, fixed 조상 스크롤, 인덱스 선택 → d7aff1c·5ed00e5 | R2 만장일치 |
 | #454 답변 카드 | grok·astra REJECT · fable APPROVE | 진행 중 fetch 경쟁, 코드 span 라벨 링크, 전송 실패 표시 → c2c0824 | R2 만장일치 |
-| #455 가용량·크론 | grok REJECT · fable APPROVE | 성공 기록 진행 중 판정 → afa69fc | R2 fable REJECT(그 수정이 서버 실제 동작과 어긋남) → 8e4dd6c(스트립 규칙 복귀) → R3 grok·fable APPROVE · astra REJECT(익명 계정 이름 충돌로 다른 계정 카드가 열림) → cfd0c44 → R4 |
+| #455 가용량·크론 | grok REJECT · fable APPROVE | 성공 기록 진행 중 판정 → afa69fc | R2 fable REJECT(그 수정이 서버 실제 동작과 어긋남) → 8e4dd6c(스트립 규칙 복귀) → R3 grok·fable APPROVE · astra REJECT(익명 계정 이름 충돌로 다른 계정 카드가 열림) → cfd0c44 → R4 grok·fable APPROVE · astra REJECT(자리 키가 갱신을 건너 살아남음) → ed55ea5 → R5 만장일치 |
 | #456 기억 탭 | grok REJECT · fable·astra APPROVE | 공백만 바꾼 편집 미저장, 길게 누른 Enter 연속 삭제 → 7b2ddf7·ef67f50 | R2 만장일치 |
 
 비차단(P2/P3)은 #457에 모았다.
@@ -79,3 +79,5 @@ Memory Panel은 `settings-memory-tab.ts`만 고친다 — 열린 PR #380과 같�
 - 2026-10-26 20:05 KST — 설계 리뷰 R1(grok·fable REJECT, 차단 5건) → 작업자에게 전달. 후속 이슈 #447(후속 지시 대기열 읽기 경로).
 - 2026-10-26 21:00–23:30 KST — PR 코드 리뷰 R1–R3, 차단 항목 수정. 스택 통합 게이트(7층 꼭대기) 72 files · 1968/1968, tsc 0, biome 0.
 - 2026-10-26 23:40 KST — 스택 푸시, PR #450–#456 열림(CI 대기열). 비차단 후속 #457.
+- 2026-10-27 00:28 KST — #456 CI(상위 집합 head 8cbbe0d) scan · lean-verify 14m43s · quality-gates 12m21s 통과. icedac 승인 후 #456 머지 → main `9de150c`. 스택 아래 #450–#455 함께 MERGED, 서브이슈 #438–#444 자동 닫힘. 아래 층 PR의 중복 CI(24건)는 상위 집합 CI로 대체하고 취소했다.
+- 2026-10-27 00:33 KST — dev 배포 PR #459(main → deploy/dev) 머지, Deploy run 40350480733. SSOT 성공 증명 = 에픽 #437 코멘트.
