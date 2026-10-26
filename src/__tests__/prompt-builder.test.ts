@@ -165,7 +165,7 @@ describe('PromptBuilder', () => {
       expect(execution).toContain('x509: OSStatus -26276');
       expect(execution).toContain('`gh auth token`');
       expect(execution).toContain(
-        'curl -fsSL -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"',
+        'curl -fsSL --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"',
       );
       expect(execution).toMatch(/PR create and merge, CI checks, CD runs, the merge commit/);
       // git over https still works; it is not rewritten.
@@ -187,10 +187,22 @@ describe('PromptBuilder', () => {
       expect(ci).toContain('repos/<owner/repo>/commits/<head_sha>/check-runs');
       expect(ci).toContain('repos/<owner/repo>/actions/runs?head_sha=<head_sha>');
       expect(ci).toMatch(/for i in \$\(seq 1 40\)/);
+      // Both lists are paged to the end and must add up to total_count; anything else is unknown, never green.
+      expect(ci).toContain('&per_page=100&page=$p');
+      expect(ci).toContain('[ "$seen" = "$(jq -r .total_count <<<"$body")" ] && echo "$left" || echo unknown');
+      expect(ci).toContain('`unknown` is never green');
+      // Every curl in the workflow is bounded.
+      const curls = prompt.split('\n').filter((l) => l.includes('curl -'));
+      expect(curls.length).toBeGreaterThan(0);
+      for (const l of curls) expect(l).toContain('--connect-timeout 10 --max-time 30');
       expect(ci).toContain('NOT `run_in_background`');
       // CD wait finds the run for the merge commit and polls it.
       const step7 = prompt.slice(prompt.indexOf('### 7) Post-Deploy QA'));
-      expect(step7).toContain('repos/<owner/repo>/actions/runs?head_sha=<after_sha>');
+      expect(step7).toContain('repos/<owner/repo>/actions/runs?head_sha=<after_sha>&branch=<target>&event=push');
+      // The CD run is the deploy workflow's run; no such run = no CD signal; ambiguity = unconfirmed, said out loud.
+      expect(step7).toContain('No such run means there is no CD signal');
+      expect(step7).toContain('treat the deployment as unconfirmed and say so in the thread');
+      expect(step7).toContain('every 30 s for at most 30 min');
       expect(step7).toContain('repos/<owner/repo>/actions/runs/<run-id>');
       expect(step7).toContain('`merge_commit_sha`');
     });
@@ -220,6 +232,9 @@ describe('PromptBuilder', () => {
       expect(section).toContain('`<plugin>:post-deploy`');
       expect(section).toContain('--preflight repo=<owner/repo> target=<branch>');
       expect(section).toContain('the same strings the QA step will use');
+      expect(section).toContain(
+        'It only reads, apart from creating the QA lock and screenshot directories and one probe file it removes',
+      );
       for (const answer of ['`applies`', '`partial: <checks>`', '`not-applicable`', '`missing: <fields>`']) {
         expect(section).toContain(answer);
       }

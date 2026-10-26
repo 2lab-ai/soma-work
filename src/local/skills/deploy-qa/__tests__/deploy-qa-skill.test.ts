@@ -20,7 +20,7 @@ const SKILLS_DIR = resolve(__dirname, '..', '..');
 const read = (skill: string) => readFileSync(resolve(SKILLS_DIR, skill, 'SKILL.md'), 'utf8');
 
 const GITHUB_CALL =
-  'curl -fsSL -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"';
+  'curl -fsSL --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"';
 
 describe('post-deploy QA skills read GitHub without gh network calls', () => {
   for (const skill of ['deploy-qa', 'qa-issue', 'qa-report']) {
@@ -45,6 +45,12 @@ describe('post-deploy QA skills read GitHub without gh network calls', () => {
       expect(md).toContain(GITHUB_CALL);
       expect(md).toContain('shell state does not carry over');
       expect(md).toContain('per_page=100&page=N');
+      // An HTTP error or paging that did not reach the end is incomplete, never empty.
+      expect(md).toContain('never read it as empty or complete');
+      // Every curl is bounded.
+      for (const l of md.split('\n').filter((x) => x.includes('curl -'))) {
+        expect(l).toContain('--connect-timeout 10 --max-time 30');
+      }
     });
   }
 
@@ -68,6 +74,21 @@ describe('deploy-qa preflight and reduced mode', () => {
     );
     expect(md).toMatch(/screenshots directory \(`qaEnv\.screenshotsDir`\) is writable the same way/);
     expect(md).toMatch(/Any GitHub, tracker, or bundled-file check fails → `missing: <checks>`/);
+  });
+
+  it('confirms a deploy the same two ways deploy.prompt does, within a fixed budget', () => {
+    const step1 = md.slice(md.indexOf('1. **Confirm the deploy**'), md.indexOf('2. **Commits.**'));
+    expect(step1).toContain('When `deploy` names a CD workflow for `repo` and `target`');
+    expect(step1).toContain('When `deploy` declares no CD workflow');
+    expect(step1).toContain('every 30 s for at most 30 min');
+    expect(step1).toContain('`deployed, QA incomplete: deploy not confirmed in time`');
+  });
+
+  it('gives the no-lock run a report input qa-report accepts', () => {
+    const section = md.slice(md.indexOf('## Reduced mode'), md.indexOf('## Excluded PRs'));
+    expect(section).toContain('`issues: []`');
+    expect(section).toMatch(/`nonQa`[^\n]*`\{key, status: "not-run", reason: "QA lock unavailable"\}`/);
+    expect(section).toContain('no `jq -s` over `R/<KEY>.json`');
   });
 
   it('defines what a reduced run does', () => {

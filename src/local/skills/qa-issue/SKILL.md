@@ -24,10 +24,10 @@ $local:qa-issue <KEY> qa=<default|medium|high|max> env=<profile> [transition=don
 Read GitHub through its REST API with curl; this works inside a sandboxed session, where the `gh` CLI's own network calls can fail (TLS verification), so do not use them. `gh auth token` only reads the stored token and works there. A **GitHub call** is:
 
 ```bash
-curl -fsSL -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"
+curl -fsSL --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"
 ```
 
-Write the whole form in every shell call (shell state does not carry over) and read fields with `jq`. A non-zero exit is a failed call. Paging: add `per_page=100&page=N` and request N = 1, 2, … until a page holds fewer than 100 items (or follow the `rel="next"` URL of the `Link` response header, dumped with `-D <file>`, until there is none).
+Write the whole form in every shell call, both timeouts included (shell state does not carry over), and read fields with `jq`. A non-zero exit is a failed call. Paging: add `per_page=100&page=N` and request N = 1, 2, … until a page holds fewer than 100 items (or follow the `rel="next"` URL of the `Link` response header, dumped with `-D <file>`, until there is none). A call that failed or timed out, or paging that stopped early, leaves the list incomplete — never read it as empty or complete.
 
 ## Profile fields
 
