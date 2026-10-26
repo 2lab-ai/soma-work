@@ -10,6 +10,7 @@ description: "유저의 구현 요청을 받으면 decision-gate로 규모를 �
 - `using-ssot` — SSOT-TASK-TREE 정의. **`z` phase0이 이미 만들어 둔 트리가 이 스킬의 1차 입력**. 새로 만들지 않는다.
 - `decision-gate` — 규모(switching cost) 판정
 - `using-ha-thinking` — 각 산출물 본문의 언어 규율
+- **넘겨받은 기존 에픽** — 이미 있는 에픽·서브이슈·진행 정본을 넘겨받으면 `z` phase0 tier 재판정과 에픽·서브이슈 생성을 반복하지 않고 `reference/epic-drive.md` §0 진입으로 바로 들어간다. 새 요청은 아래 2-hop 그대로.
 
 ## SSOT-TASK-TREE → Case 매핑
 
@@ -77,7 +78,7 @@ tier가 `tiny (~5 lines)` 또는 `small (~20 lines)`이면 **이슈 생성 생�
 
 ## Case B 드라이브 — 에픽을 실측까지 모는 루프
 
-**When**: Case B 에픽이 여러 세션·여러 PR에 걸쳐 실환경 실측까지 가야 할 때. 상세 = `reference/epic-drive.md`.
+**When**: Case B 에픽(새로 계획한 것 또는 넘겨받은 기존 에픽)이 여러 세션·여러 PR에 걸쳐 실환경 실측까지 가야 할 때. 상세 = `reference/epic-drive.md`.
 
 1. **목표·계기판 고정** — 목표 원문과 완료 조건(실환경 실측)을 SSOT로 고정한다. 오너가 보는 페이지 하나를 주기·사건마다 갱신한다. 오너에게 묻기 전에 페이지에 먼저 쓴다.
 2. **스펙 먼저** — 현재 흐름(근거 위치)·설계(결정 번호)·시험 목록을 코드 전에 쓴다. 분해·순서는 `trinity`로 정한다. 설계 문서는 두 엔진이 모두 통과할 때까지 고친다.
@@ -104,7 +105,7 @@ tier가 `tiny (~5 lines)` 또는 `small (~20 lines)`이면 **이슈 생성 생�
 
 ## 규율
 
-1. **decision-gate 먼저.** tier 판정 없이 이슈·에픽 생성 금지. 단, **tier는 진입 스킬(`z` phase0)이 이미 호출한 결과**를 받아 쓴다 — using-epic-tasks가 decision-gate를 **재호출하지 않는다** (중복 방지).
+1. **decision-gate 먼저.** tier 판정 없이 이슈·에픽 생성 금지. 단, **tier는 진입 스킬(`z` phase0)이 이미 호출한 결과**를 받아 쓴다 — using-epic-tasks가 decision-gate를 **재호출하지 않는다** (중복 방지). (넘겨받은 기존 에픽은 생성하지 않으므로 예외 — §전제)
 2. **케이스 승격 금지.** Case A를 에픽으로 부풀리지 않는다. 오버헤드만 는다.
 3. **케이스 하향 금지.** tier가 xlarge면 단일 PR로 처리하지 않는다. PR 하나가 500 lines를 넘으면 리뷰 품질이 무너진다.
 4. **Case C는 반드시 중지.** 억지 진행 금지. 유저 승인 없이 첫 에픽 생성 금지.
@@ -130,7 +131,7 @@ tier가 `tiny (~5 lines)` 또는 `small (~20 lines)`이면 **이슈 생성 생�
 
 ## Integration
 
-- **진입점 2-hop**: 모든 구현 요청은 `z` 스킬을 통과 → `z` phase0에서 `decision-gate` 호출 → tier 확정 → `using-epic-tasks` 호출 (tier 전달) → Case A/B/C 분기.
+- **진입점 2-hop**: 모든 구현 요청은 `z` 스킬을 통과 → `z` phase0에서 `decision-gate` 호출 → tier 확정 → `using-epic-tasks` 호출 (tier 전달) → Case A/B/C 분기. 단, 넘겨받은 기존 에픽은 2-hop을 다시 타지 않고 Case B 드라이브 §0 진입으로 들어간다.
 - **중복 호출 금지**: using-epic-tasks는 phase0이 전달한 tier를 신뢰. 자체적으로 decision-gate 재호출하지 않음.
 - **본문** — 각 산출물은 `using-ha-thinking` 규율 적용.
 - **플랫폼 문법** — `reference/github.md`, `reference/jira.md`.
