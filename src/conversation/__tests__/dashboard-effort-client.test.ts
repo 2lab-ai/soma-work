@@ -43,26 +43,22 @@ function jsonResponse(status: number, body: unknown) {
 }
 
 describe('card effort picker (T1)', () => {
+  // The owner's <select> became the model menu's radiogroup (.prd/affectui/re-model-picker.md D7).
   const { renderEffortPicker } = load<{ renderEffortPicker(s: any, canSwitch: boolean): string }>(
-    ['esc', 'escAttr', 'escJs', 'effortLabel', 'isBusy', 'renderEffortPicker'],
-    ['EFFORT_LABELS', '_busy'],
+    ['esc', 'escAttr', 'escJs', 'effortLabel', 'isBusy', 'mpEffortLevels', 'renderEffortControl', 'renderEffortPicker'],
+    ['EFFORT_LABELS', 'MP_EFFORT_SHORT', '_busy'],
     { EFFORT_LEVELS: LEVELS },
   );
 
-  it('the owner gets a five-level select bound to changeEffort, the current level selected', () => {
+  it('the owner gets the five levels as one radiogroup, the current level checked; a pick goes through the menu', () => {
     const html = renderEffortPicker({ key: "self::C1:t'1", effort: 'high' }, true);
-    expect(html).toContain('class="cb-model-select cb-effort-select"');
-    expect(html.match(/<option /g)).toHaveLength(5);
-    expect(html).toContain('<option value="high" selected>Effort · High</option>');
-    expect(html).toContain('Effort · Extra high');
-    const onchange = /onchange="([^"]*)"/
-      .exec(html)![1]
-      .replace(/&#39;/g, "'")
-      .replace(/\bthis\b/g, 'el');
-    const changeEffort = vi.fn();
-    const el = { value: 'max' };
-    new Function('changeEffort', 'el', onchange)(changeEffort, el);
-    expect(changeEffort).toHaveBeenCalledWith("self::C1:t'1", el);
+    expect(html).toContain('role="radiogroup"');
+    expect(html.match(/role="radio" /g)).toHaveLength(5);
+    expect(html).toContain('data-mp-effort="high" aria-checked="true" tabindex="0" aria-label="High">High</button>');
+    expect(html).toContain('aria-label="Extra high">XHigh</button>');
+    // No inline handler carries the session key: the menu's delegated click and keys pick (changeEffort(key, level)).
+    expect(html).not.toContain('onchange');
+    expect(html).not.toContain('self::C1');
   });
 
   it('a non-owner sees the level as text, with the level the model really runs', () => {
