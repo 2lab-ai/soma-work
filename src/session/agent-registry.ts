@@ -52,11 +52,13 @@ export interface SpendTotals {
  * version is unsealed on restore, so the current calculation re-reads it.
  * Bump it whenever the calculation or the prices change.
  */
-export const SPEND_CALC_VERSION = 2;
+export const SPEND_CALC_VERSION = 3;
 
 /**
  * What one subagent spent: its own API calls, read from its transcript
- * (`agent-spend.ts`) — a nested subagent's calls are its own record's.
+ * (`agent-spend.ts`). A nested subagent with a record of its own keeps its
+ * calls there; one with no record (started in the foreground by a subagent —
+ * the host never sees it) is counted here, on the nearest agent above it.
  */
 export interface AgentSpend extends SpendTotals {
   /** API calls counted (one per message id). */
@@ -67,6 +69,8 @@ export interface AgentSpend extends SpendTotals {
   estimatedCalls?: number;
   /** {@link SPEND_CALC_VERSION} the spend was calculated with. */
   version?: number;
+  /** Subagents without a record of their own whose calls are counted here (`agent-spend.ts`). */
+  nestedAgents?: number;
 }
 
 /** The subagents' spend added up (records still kept plus those the cap dropped). */
@@ -525,6 +529,8 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
       if (est) rec.spend.estimatedCalls = Math.min(Math.floor(est), rec.spend.calls);
       const version = finitePositive((a.spend as Record<string, unknown>).version);
       if (version) rec.spend.version = Math.floor(version);
+      const nested = finitePositive((a.spend as Record<string, unknown>).nestedAgents);
+      if (nested) rec.spend.nestedAgents = Math.min(Math.floor(nested), 10_000);
       const unpriced = (a.spend as Record<string, unknown>).unpricedModels;
       if (Array.isArray(unpriced)) {
         const names = unpriced.filter((m): m is string => typeof m === 'string' && m.length > 0).slice(0, 10);

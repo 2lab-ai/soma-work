@@ -899,6 +899,16 @@ describe('panel — drill-down over the same node type (path · focused node · 
     expect(row).toContain('usage가 기록되지 않은 호출 3회는 앞뒤 호출로 추정');
   });
 
+  it('a subagent that started foreground subagents of its own says their calls are in its number', () => {
+    const lead = { ...AGENTS[2], spend: { ...SPEND, calls: 9, nestedAgents: 2 } };
+    const { m, out } = panel('', card({ agents: [AGENTS[0], AGENTS[1], lead] }));
+    m.renderPanelAgents();
+    const at = out.html.indexOf('data-agent-select="toolu_lib"');
+    const row = out.html.slice(out.html.lastIndexOf('<li ', at), out.html.indexOf('</li>', at));
+    expect(row).toContain('트리에 따로 없는 하위 에이전트 2개 포함');
+    expect(row).not.toContain('하위 에이전트 제외');
+  });
+
   it('the root marks the subagents’ share ≈ when any of it is estimated', () => {
     const s = card({
       tokenUsage: {
