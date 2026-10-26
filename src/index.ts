@@ -122,7 +122,7 @@ import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
 import { applyAgentEvent, stampWorkLogAgent } from './session/agent-registry';
-import { createAgentSpendReader } from './session/agent-spend';
+import { backfillAgentSpend, createAgentSpendReader } from './session/agent-spend';
 import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { switchSessionEffort } from './session/effort-switch';
 import { productionModelCatalogDeps } from './session/model-catalog-deps';
@@ -1053,6 +1053,10 @@ async function start() {
       },
     };
     setStreamExecutorProviders(workLogProviders);
+    // SSOT 2026-10-26 T2 — subagents that ended before this process started
+    // fire no more events: read the loaded sessions' spend once, in the
+    // background, so every card shows its subagents' spend after a restart.
+    void backfillAgentSpend(claudeHandler.getAllSessions().entries(), agentSpendReader, scheduleLiveSessionUpdate);
 
     // Dashboard v2.1 — wire session title bridge so the recorder can
     // regenerate session summaryTitle without importing session-registry
