@@ -15821,14 +15821,18 @@ function renderCronLaneHead(plan) {
     + (plan.waitingCount ? aqPill('wait', '▲ 응답 필요 ' + plan.waitingCount) : '');
 }
 // ── The lane as a queue (affectUI Agent Queue, #444 D16/D17/D19) ──
-// The last 24 hours of the lane, from the run RECORDS only (review R1): a record's own status
-// decides — success is a success, failed a failure, and only a status that is not finished
-// counts as in progress (none is recorded today). session.live means "still in the registry",
-// not "this job runs now": an injected run shares a human session that may be working (PR
-// review R1). A queue entry is an event, not a run. A board card with no record yet is not
+// The last 24 hours of the lane, from the run RECORDS only (review R1). A record's status says
+// whether the fire went out — 'success' is stamped AT FIRE TIME (cron-scheduler.ts
+// recordExecution), not when the work ends. Whether the work still runs is the linked
+// session's: the server keeps live + working/waiting only on the newest run of a thread THIS
+// job created; an injected run (someone else's session) and earlier / queued runs come back
+// idle (cron-view.ts buildCronJobsView). So, the strip's rule (cronRunGlyph, trinity R2):
+// failed → 실패; success with its session live and working/waiting → 진행 중; else → 성공 (fired
+// and done). A queue entry is an event, not a run. A board card with no record yet is not
 // counted: it is either running (the 실행 중 tile shows it — the card IS the cron session) or
-// of unknown result, and its time may be its last activity. A job whose kept history (FIFO historyCap) starts inside the window makes
-// every count there a lower bound — say which, and from when.
+// of unknown result, and its time may be its last activity. A job whose kept history (FIFO
+// historyCap) starts inside the window makes every count there a lower bound — say which, and
+// from when.
 function cronDayRuns(plan, nowMs) {
   var from = nowMs - 86400000;
   var runs = [];
@@ -15845,7 +15849,7 @@ function cronDayRuns(plan, nowMs) {
         else unknown++;
         return;
       }
-      runs.push({ at: r.executedAt, kind: r.status === 'failed' ? 'fail' : r.status === 'success' ? 'ok' : 'run' });
+      runs.push({ at: r.executedAt, kind: r.status === 'failed' ? 'fail' : live ? 'run' : 'ok' });
     });
     var kept = g.job && Array.isArray(g.job.runs) ? g.job.runs : [];
     var cap = (g.job && g.job.historyCap) || 20;
@@ -15879,7 +15883,7 @@ function cronStats(plan, nowMs) {
       : stat('다음 실행', '—', '8일 안에 없음'))
     + stat('실행 중', running + '<span class="aq-of is-n">/' + groups.length + '</span>', '레인의 잡 그룹 ' + groups.length + '개(다른 인스턴스 그룹 포함) 중 실행 중 카드가 있는 그룹 ' + running + '개 — 다음 실행 열은 이 인스턴스의 스케줄만 센다')
     + stat('24시간 실행 기록', lb + d.n + (d.unknown ? '<span class="aq-of">+미확인 ' + d.unknown + '</span>' : ''),
-      '지난 24시간 실행 기록 ' + d.n + '건(대기열 항목 제외): 성공 ' + d.ok + ' · 실패 ' + d.f + (d.run ? ' · 진행 중 ' + d.run : '')
+      '지난 24시간 발화 기록 ' + d.n + '건(대기열 항목 제외): 성공(발화 후 끝남) ' + d.ok + ' · 실패(발화 실패) ' + d.f + ' · 진행 중(발화 후 세션이 아직 실행 중) ' + d.run
       + (d.pending || d.unknown ? ' · 기록 전 카드 ' + (d.pending + d.unknown) + '개(실행 중 ' + d.pending + ' · 결과 미확인 ' + d.unknown + ')는 세지 않음' : '')
       + (cutNote ? ' · ' + cutNote : ''))
     + stat('실패 · 24시간', lb + d.f, '지난 24시간 실패 기록' + (cutNote ? ' · ' + cutNote : ''), d.f > 0 ? 'failed' : '')
@@ -15904,9 +15908,10 @@ function cronQueue(plan, nowMs, focusKey) {
 }
 var AQ_NICE = [4, 6, 8, 10, 12, 16, 20, 24, 30, 40, 50, 60, 80, 100, 120, 160, 200, 300, 400, 500, 600, 800, 1000];
 // 24 hours of run records (D19): one column per rolling hour ending now (so each is labelled
-// by its start, HH:MM부터 — PR review R1), success and failure stacked (in progress only for an
-// unfinished recorded status); cards with no record are not drawn; the stretch a truncated
-// history cannot speak for is hatched; an image with a sentence for screen readers.
+// by its start, HH:MM부터 — PR review R1), 성공 (fired, done) · 진행 중 (fired, its session
+// still runs — the strip's ●) · 실패 stacked, by cronDayRuns' rule; cards with no record are
+// not drawn; the stretch a truncated history cannot speak for is hatched; an image with a
+// sentence for screen readers.
 function cronRunChart(plan, nowMs) {
   var d = cronDayRuns(plan, nowMs);
   var hr = 3600000;
@@ -15927,7 +15932,7 @@ function cronRunChart(plan, nowMs) {
   var hm = function(ms) { var t = new Date(ms); return pad2(t.getHours()) + ':' + pad2(t.getMinutes()); };
   var pct = function(v) { return ((v / max) * 100).toFixed(1) + '%'; };
   var cut = d.cutFrom > start;
-  var said = '지난 24시간 크론 실행 기록 ' + d.n + '건, 실패 ' + d.f + '건' + (d.run ? ', 진행 중 ' + d.run + '건' : '')
+  var said = '지난 24시간 크론 발화 기록 ' + d.n + '건: 끝남 ' + d.ok + '건, 실패 ' + d.f + '건, 진행 중 ' + d.run + '건'
     + (peak ? ', 가장 많은 1시간 ' + hm(peakAt) + '부터 ' + peak + '건' : '') + '.'
     + (cut ? ' ' + capClockLabel(d.cutFrom / 1000, nowMs) + ' 이전은 일부 잡 기록이 잘림.' : '')
     + (d.pending || d.unknown ? ' 기록 전 카드 ' + (d.pending + d.unknown) + '개는 세지 않음.' : '');
@@ -15935,10 +15940,10 @@ function cronRunChart(plan, nowMs) {
     ? '<div class="aq-ch-cut" style="left:0;width:' + (((d.cutFrom - start) / (24 * hr)) * 100).toFixed(1) + '%" title="' + escAttr('이 구간은 ' + d.cut.map(function(c) { return c.name; }).join(', ') + ' 기록이 보관 한도로 잘려 실제보다 적을 수 있음') + '"></div>'
     : '';
   var cols = bins.map(function(b) {
-    return '<i class="aq-ch-col" title="' + hm(b.at) + '부터 1시간 · 성공 ' + b.ok + ' · 실패 ' + b.fail + (b.run ? ' · 진행 중 ' + b.run : '') + '"><i class="aq-ch-ok" style="height:' + pct(b.ok) + '"></i><i class="aq-ch-run" style="height:' + pct(b.run) + '"></i><i class="aq-ch-fail" style="height:' + pct(b.fail) + '"></i></i>';
+    return '<i class="aq-ch-col" title="' + hm(b.at) + '부터 1시간 · 성공 ' + b.ok + ' · 실패 ' + b.fail + ' · 진행 중 ' + b.run + '"><i class="aq-ch-ok" style="height:' + pct(b.ok) + '"></i><i class="aq-ch-run" style="height:' + pct(b.run) + '"></i><i class="aq-ch-fail" style="height:' + pct(b.fail) + '"></i></i>';
   }).join('');
   return '<div class="aq-chart-head"><span class="aq-chart-title">실행 기록 · 24시간</span>'
-    + '<span class="aq-ch-key"><i class="is-ok" aria-hidden="true"></i>성공</span>' + (d.run ? '<span class="aq-ch-key"><i class="is-run" aria-hidden="true"></i>진행 중</span>' : '') + '<span class="aq-ch-key"><i class="is-fail" aria-hidden="true"></i>실패</span></div>'
+    + '<span class="aq-ch-key" title="발화 성공, 세션 끝남"><i class="is-ok" aria-hidden="true"></i>성공</span><span class="aq-ch-key" title="발화 성공, 세션 아직 실행 중"><i class="is-run" aria-hidden="true"></i>진행 중</span><span class="aq-ch-key" title="발화 실패"><i class="is-fail" aria-hidden="true"></i>실패</span></div>'
     + '<div class="aq-plot" role="img" aria-label="' + escAttr(said) + '">' + hatch
     + '<div class="aq-ch-grid" aria-hidden="true"><span>' + max + '</span></div><div class="aq-ch-grid is-zero" aria-hidden="true"><span>0</span></div>'
     + cols + '</div>'

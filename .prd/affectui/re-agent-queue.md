@@ -252,9 +252,14 @@ Status: 구현 [SHIPPED] · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (
 ### 4.4 CRON 레인 = 대기열
 - **D15 레인 머리 [SHIPPED].** `CRON n` 뒤의 `● 실행 중 n` · `▲ 응답 필요 n`은 문구 그대로 `aqPill('run'|'wait', …)`이 된다.
 - **D16 숫자 4칸 [SHIPPED].** 머리 바로 아래 `#cron-lane-top`의 `.aq-stats`이고, 펼친 레인에서만 보인다. 각 `dd`의 `title`이 출처를 말한다.
-  - 세는 것은 실행 기록만이다 (R1). 24시간 창의 각 기록(`KanbanCronJob.runs[]`, `queued` 제외)은 자기 `status`로 정해진다: `success`는 성공,
-    `failed`는 실패, 끝나지 않은 상태만 진행 중이다(오늘 기록되는 상태에는 없다). `session.live`는 "레지스트리에 있음"이지 "이 잡이 지금 돈다"가
-    아니다 — 사람 세션에 주입된 실행은 그 사람이 일하는 동안 `live: true`·working으로 보인다(cron-view.ts). 그래서 성공 기록은 늘 성공이다 (PR R1).
+  - 세는 것은 실행 기록만이다 (R1). 기록의 `status`는 **발화** 결과다: `success`는 발화 성공이고, 일이 끝날 때가 아니라 발화할 때 찍힌다
+    (`src/cron-scheduler.ts` `recordExecution` — `:467–474` 주입, `:589` 새 스레드). 일이 아직 도는지는 연결된 세션이 말한다.
+    서버(`src/conversation/cron-view.ts:130–152`)는 이 잡이 만든 스레드의 가장 새 실행에만 `live` + working·waiting을 남긴다. 남의 세션에 주입된
+    실행(`!createdByJob`)은 `activityState: 'idle'`, 같은 스레드의 이전 실행과 대기열 항목은 `live: false, idle`로 돌려준다.
+  - 그래서 24시간 창의 각 기록(`KanbanCronJob.runs[]`, `queued` 제외)은 스트립(`cronRunGlyph`)과 같은 규칙으로 나뉜다 (trinity R2):
+    `failed` → **실패**(발화 실패). 세션이 `live`이고 working·waiting인 `success` → **진행 중**(발화 후 세션이 아직 실행 중, 스트립의 ●·▲).
+    그 밖의 `success` → **성공**(발화 후 끝남, 스트립의 ✓). PR 리뷰 R1에서 "성공은 늘 성공"으로 바꿨던 것은 잘못된 전제였고 되돌렸다 —
+    그 사이 새 스레드 실행마다 스트립은 `● 실행 중`, 칸·차트는 `성공`으로 서로 어긋났다.
   - 기록 없는 보드 카드(`cronCardAsRun`의 `unrecorded`)는 세지 않는다. 시각이 마지막 활동일 수 있고 결과를 모르기 때문이다.
     살아 있으면 실행 중 칸이 보여 주고, 아니면 `결과 미확인`이다.
 
@@ -262,7 +267,7 @@ Status: 구현 [SHIPPED] · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (
   |---|---|---|
   | 다음 실행 | `{D3} 후` + `.aq-of` 잡 이름, 없으면 `—`(title `8일 안에 없음`) | `min(KanbanCronJob.nextRunAt)` |
   | 실행 중 | `r<span class="aq-of is-n">/N</span>` | r = `plan.runningCount`, N = `plan.groups.length`. title이 "다른 인스턴스 그룹 포함, 다음 실행 열은 이 인스턴스만"을 밝힌다 |
-  | 24시간 실행 기록 | `n`(잘리면 `≥n`) + 결과 미확인 카드가 있으면 `+미확인 u` | 기록 수 = 성공 + 실패(+ 끝나지 않은 기록이 있으면 진행 중). title에 그 수, 세지 않은 기록 전 카드(실행 중 · 결과 미확인), 잘림 |
+  | 24시간 실행 기록 | `n`(잘리면 `≥n`) + 결과 미확인 카드가 있으면 `+미확인 u` | 발화 기록 수 = 성공 + 실패 + 진행 중. title `지난 24시간 발화 기록 n건(대기열 항목 제외): 성공(발화 후 끝남) a · 실패(발화 실패) b · 진행 중(발화 후 세션이 아직 실행 중) c` + 세지 않은 기록 전 카드(실행 중 · 결과 미확인) + 잘림 |
   | 실패 · 24시간 | `f`(잘리면 `≥f`), f > 0이면 `data-kind=failed`(`--st-fail-text`) | 같은 창의 `status === 'failed'` 기록 |
 
   - 잘림: `runs.length ≥ historyCap`이고 가장 오래된 `executedAt`이 24시간 안이면 그 잡의 기록은 잘린 것이다. 값에 `≥`를 붙이고 title에
@@ -277,12 +282,13 @@ Status: 구현 [SHIPPED] · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (
   문구는 `14h 12m` → `14시간 12분`(D3로 통일)이다.
 - **D19 실행 기록 차트 [SHIPPED].** `#cron-lane-chart`(그룹 아래), 제목 `실행 기록 · 24시간` + 범례(성공 · 진행 중 · 실패).
   - 지금으로 끝나는 1시간 24칸이다. 칸은 시계의 정시가 아니라 굴러가는 1시간이라, 시작 시각으로 부른다(`14:37부터 1시간` — PR R1).
-  - D16과 같은 기록 집합으로 성공 `--st-done`, 실패 `--st-fail`을 쌓는다. 진행 중(`--st-run`)과 그 범례는 끝나지 않은 기록이 있을 때만 나온다.
+  - D16과 같은 기록 집합·같은 규칙으로 성공 `--st-done`, 진행 중 `--st-run`, 실패 `--st-fail`을 쌓는다. 범례 세 개는 뜻을 title로 말한다:
+    `성공` = 발화 성공, 세션 끝남 · `진행 중` = 발화 성공, 세션 아직 실행 중 · `실패` = 발화 실패.
     기록 없는 카드는 그리지 않는다 (R1).
   - y 최대는 max(최고, 4)를 nice 목록으로 올린 값이고, 격자는 0·최대다. 축은 `24시간 전 · 12시간 전 · 지금`이다.
-  - 칸마다 `title="HH:MM부터 1시간 · 성공 a · 실패 b"`(진행 중이 있으면 `· 진행 중 c`). 기록 없는 카드는 어느 칸에서도 "성공"이 되지 않는다.
+  - 칸마다 `title="HH:MM부터 1시간 · 성공 a · 실패 b · 진행 중 c"`. 기록 없는 카드는 어느 칸에서도 "성공"이 되지 않는다.
   - 잘린 잡이 있으면 [24시간 전, 가장 늦은 잘림 시작)에 빗금 `.aq-ch-cut` + title을 둔다(레퍼런스 리밋 음영 자리).
-  - `role="img"`, 접근 이름 `지난 24시간 크론 실행 기록 41건, 실패 2건, 가장 많은 1시간 18:37부터 6건. 15:04 이전은 일부 잡 기록이 잘림. 기록 전 카드 1개는 세지 않음.`
+  - `role="img"`, 접근 이름 `지난 24시간 크론 발화 기록 41건: 끝남 38건, 실패 2건, 진행 중 1건, 가장 많은 1시간 18:37부터 6건. 15:04 이전은 일부 잡 기록이 잘림. 기록 전 카드 1개는 세지 않음.`
   - 높이 112(D7 조건 88).
 - **D20 고정 카드 = 기존 서랍 [SHIPPED].** role=dialog·Esc·바깥 클릭·포커스 복귀 그대로다.
   - 레퍼런스의 Position은 서랍 메타 `다음 실행`(이제 살아 있는 카운트다운)이 맡는다. Attempt·Priority는 없다(크론에 필드가 없다).
@@ -322,10 +328,10 @@ Status: 구현 [SHIPPED] · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (
 | D13 | `D13 — the all-blocked stretch on the timeline` |
 | D14 | `D14 — the folded chip says how many are paused` + 기존 `dashboard-responsive` 칩 시험 2건 |
 | D15 | `D15 — the lane head keeps its words as pills` |
-| D16 | `D16 — four numbers, each from a named field`(기록만 셈, 잘림 `≥`, 다른 인스턴스 title, 기록 없는 idle 카드 반례 (R1), live·working 세션의 성공 기록은 성공 · 끝나지 않은 상태만 진행 중 (PR R1)) |
+| D16 | `D16 — four numbers, each from a named field`(기록만 셈, 잘림 `≥`, 다른 인스턴스 title, 기록 없는 idle 카드 반례 (R1), 서버가 내보내는 기록 모양마다 칸·차트·스트립이 같은 말 — 주입(live·idle)과 이전 실행은 성공, 이 잡의 세션이 working·waiting이면 진행 중 (trinity R2)) |
 | D17 | `D17 — the next-fire queue` |
 | D18 | `D18 — the tile counts down live` |
-| D19 | `D19 — 24 hours of runs`(24칸 합 = D16, 첫 칸 = 24시간 전 `HH:MM부터` (PR R1), 빗금, 문장) |
+| D19 | `D19 — 24 hours of runs`(24칸 합 = D16, 첫 칸 = 24시간 전 `HH:MM부터` (PR R1), 진행 중 쌓기와 범례의 뜻, 빗금, 문장) |
 | D20 | `D20 — the drawer stays the pinned card` + 기존 서랍 시험 |
 | 4.0 | `R1 — names, errors and labels are text, never markup`(`<script>`·`<img>`·따옴표 주입: 칸·대기열·차트·타일·마크·카드·머리. 오류 한 줄화. `#aq-live`는 textContent) |
 
@@ -345,19 +351,20 @@ Status: 구현 [SHIPPED] · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (
 
 ## 7. 검증
 
-- RED → GREEN: 새 파일 48건 모두 RED(구현 전) → GREEN. 교차 리뷰 R1과 PR 리뷰 R1을 반영한 뒤 56건이다.
+- RED → GREEN: 새 파일 48건 모두 RED(구현 전) → GREEN. 교차 리뷰 R1, PR 리뷰 R1, trinity R2를 반영한 뒤 56건이다.
 - 기준: `affectui-base`(origin/main `299a601` 위, PR #445의 플랜별 가중 `capacity-view.ts` 포함)로 rebase한 뒤 다시 돌렸다.
   - cron/capacity 묶음(`-affectui-agent-queue-client`·`-cron-capacity-client`·`-cron-capacity`·`capacity-view`·`-responsive`): 203/203.
 - 게이트:
-  - `npx vitest run src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000`: 63/63 파일, 1705/1705.
-    기계 부하(load average 95–110, 18코어)로 기본 5초 한도에서는 무관한 서버 시험 훅이 시간 초과했고, 단독 실행으로 부하 탓임을 확인했다.
+  - `npx vitest run src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000`: PR 리뷰 R1 뒤 63/63 파일, 1705/1705.
+    trinity R2 뒤 1694/1705 — 남은 11건은 모두 서버 라우트 시험의 60초 훅·시험 시간 초과(load average 92)였고, 그 11개 파일만 다시 돌려
+    258/258 통과했다. 기계 부하(load average 90–110, 18코어)로 기본 5초 한도에서는 무관한 서버 시험 훅이 시간 초과한다.
   - `npx tsc --noEmit` 통과.
   - `npx biome check src/conversation/` 오류 0(경고는 기존 패턴 — 새 파일은 `noExplicitAny`).
 - 화면(`harness/shots-agent-queue/after-*`): 합성 데이터, 라이트·다크 × 1440·390 × 접힘·펼침 + 서랍 + 계정 카드.
   - 키보드: 마크 포커스 → Enter로 카드 열림(포커스 마크 유지) → Esc로 닫힘·포커스 마크. 네 조합 모두 같았다.
   - 가로 스크롤 0px(네 조합).
-  - 실제 페이지 확인(PR R1): 레인 접기 버튼의 `aria-controls`가 네 id, 첫 칸 `21:41부터 1시간`, 접근 이름 `가장 많은 1시간 16:41부터 5건`,
-    진행 중 범례 없음(성공 기록은 세션이 살아 있어도 성공).
+  - 실제 페이지 확인(PR R1·trinity R2): 레인 접기 버튼의 `aria-controls`가 네 id, 첫 칸 `22:13부터 1시간`, 범례 세 개(성공·진행 중·실패)와
+    그 뜻(title). 스트립이 `▲ 응답 필요`·`● 실행 중`인 두 잡의 최신 기록을 칸·차트도 `진행 중 2`로 센다(마지막 1시간 칸) — 서로 같은 말.
   - 캡처 포트는 34127이다. 34117 서버는 `timeout`이 `tsx` 래퍼만 끝내 node 자식이 고아로 남았다(kill 불가). 34127은
     `timeout … node --require tsx/preflight --import tsx/loader`로 서버 자신이 끝난다.
 - 관찰: 미리보기에서 같은 호스트의 다른 미리보기 서버(34107, 34117)가 형제 인스턴스로 합쳐져 그 크론 카드가 보드에 들어온다. 그 카드들은
