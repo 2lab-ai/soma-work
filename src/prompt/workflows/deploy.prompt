@@ -64,10 +64,10 @@ For multiple repos, execute **sequentially** (no concurrent execution).
 **GitHub access.** Inside a sandboxed session the `gh` CLI's network calls fail TLS verification (`tls: failed to verify certificate: x509: OSStatus -26276`), while `gh auth token` (it only reads the stored token) and curl to `api.github.com` work — so every GitHub read and write in this workflow (PR create and merge, CI checks, CD runs, the merge commit) goes through the REST API with this call:
 
 ```bash
-curl -fsSL -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"
+curl -fsSL --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"
 ```
 
-Write the whole form in every shell call (shell state does not carry over) and read fields with `jq`. A write adds `-X POST`, `-X PUT`, or `-X PATCH` and a JSON body with `-d '<json>'`, and uses `--fail-with-body` instead of `-f` so a refusal shows its reason. `git` over https (clone, fetch, push) is not affected — keep using it.
+Write the whole form in every shell call (shell state does not carry over), keep both timeouts on every call, and read fields with `jq`. A listing is paged with `per_page=100&page=N` until a page holds fewer than 100 items; an HTTP error or paging that did not reach the end is not an answer. A write adds `-X POST`, `-X PUT`, or `-X PATCH` and a JSON body with `-d '<json>'`, and uses `--fail-with-body` instead of `-f` so a refusal shows its reason. `git` over https (clone, fetch, push) is not affected — keep using it.
 
 ### 1) Pre-Validation
 
@@ -82,7 +82,7 @@ If validation fails, stop immediately and clearly report the cause.
 
 What to check after a deploy depends on the environment, so it is not written in this workflow. A host that runs QA after its deploys has an environment plugin installed that provides a skill named `post-deploy` (`<plugin>:post-deploy` in your skill list).
 
-- **The skill exists**: for each repo, invoke it with `--preflight repo=<owner/repo> target=<branch>`, using the normalized `owner/repo` and the target branch you just verified (the same strings the QA step will use). It only reads, and answers with exactly one of:
+- **The skill exists**: for each repo, invoke it with `--preflight repo=<owner/repo> target=<branch>`, using the normalized `owner/repo` and the target branch you just verified (the same strings the QA step will use). It only reads, apart from creating the QA lock and screenshot directories and one probe file it removes, and answers with exactly one of:
   - `applies` → step 7 runs for this repo after the deploy.
   - `partial: <checks>` → post one ⚠️ line in the thread naming the checks that failed, and continue. Step 7 still runs for this repo, in the reduced mode the skill defines, and its report says what was not run and why.
   - `not-applicable` → continue; step 7 does not run for this repo.
@@ -142,20 +142,32 @@ If CI is still running, you **must wait for it in-turn** and then merge. The mer
 1. Read the PR's head SHA (`head.sha` of `repos/<owner/repo>/pulls/<pr-number>`). Then poll its checks in the foreground (NOT `run_in_background`), bounded so it cannot hang forever (40 rounds of 30 s):
 
    ```bash
+   pending() {  # pending <path with ?query> <list field> → not-completed runs over every page, or "unknown"
+     local p=1 seen=0 left=0 body n k
+     while :; do
+       body=$(curl -fsSL --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/$1&per_page=100&page=$p") || { echo unknown; return; }
+       n=$(jq -e ".$2 | arrays | length" <<<"$body") || { echo unknown; return; }
+       k=$(jq "[.$2[] | select(.status != \"completed\")] | length" <<<"$body") || { echo unknown; return; }
+       seen=$((seen + n)); left=$((left + k))
+       [ "$n" -lt 100 ] && break
+       p=$((p + 1))
+     done
+     [ "$seen" = "$(jq -r .total_count <<<"$body")" ] && echo "$left" || echo unknown
+   }
    for i in $(seq 1 40); do
-     runs=$(curl -fsSL -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/<owner/repo>/actions/runs?head_sha=<head_sha>&per_page=100" | jq '[.workflow_runs[] | select(.status != "completed")] | length')
-     checks=$(curl -fsSL -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/<owner/repo>/commits/<head_sha>/check-runs?per_page=100" | jq '[.check_runs[] | select(.status != "completed")] | length')
+     runs=$(pending "repos/<owner/repo>/actions/runs?head_sha=<head_sha>" workflow_runs)
+     checks=$(pending "repos/<owner/repo>/commits/<head_sha>/check-runs?filter=latest" check_runs)
      echo "round $i: workflow runs pending=$runs, check runs pending=$checks"
      [ "$runs" = 0 ] && [ "$checks" = 0 ] && break
      sleep 30
    done
    ```
 
-   The loop blocks until nothing is pending. This keeps your turn alive — you are still working, not waiting to be woken up. Right after a push, CI may not have registered yet: if both lists are empty, poll a few more rounds before concluding the repo has no CI.
+   The loop blocks until nothing is pending. This keeps your turn alive — you are still working, not waiting to be woken up. Each list is read page by page to the end, and the items read must add up to its `total_count`; an HTTP error, a timeout, or pages that do not add up print `unknown`. `unknown` is never green: it counts as still pending, so keep waiting. Right after a push, CI may not have registered yet: if both lists are empty, poll a few more rounds before concluding the repo has no CI.
 
 2. If the loop ends with anything still pending, run the same loop again. Keep looping **in-turn** until checks resolve. Never convert this into a wakeup or a backgrounded watcher.
 
-3. When checks resolve, read the conclusions with the same two calls (`conclusion` of each workflow run and check run), plus commit statuses (`repos/<owner/repo>/commits/<head_sha>/status`: `failure` or `error` is a failure; `pending` with `total_count` above 0 is still running — keep waiting):
+3. When checks resolve, read the conclusions from every page of the same two lists (`conclusion` of each workflow run and check run), plus commit statuses (`repos/<owner/repo>/commits/<head_sha>/status`, paged the same way: `failure` or `error` is a failure; `pending` with `total_count` above 0 is still running — keep waiting). A list you could not read to the end is not green:
    - **All green** (`success`, `skipped`, or `neutral`) → re-confirm the PR is mergeable (`mergeable` is `true` in `repos/<owner/repo>/pulls/<pr-number>`; `null` means GitHub is still computing it — read again), then merge it (`PUT repos/<owner/repo>/pulls/<pr-number>/merge`) **immediately, in this same turn**.
    - **Any failure** → do NOT merge. Report the failing check (name + log summary) in the thread and request a user decision via `local:UIAskUserQuestion`. Halt the merge until a response is received.
 
@@ -267,10 +279,10 @@ Start this step once every repo of this deploy has reached a terminal deploy out
 
 The deployment of the merge commit is **confirmed** when one of these holds:
 
-- If CD runs for the target branch, the run for the merge commit concluded `success`. Wait for it **in-turn**, the same way you wait for CI: find the run with `repos/<owner/repo>/actions/runs?head_sha=<after_sha>&per_page=100`, then poll `repos/<owner/repo>/actions/runs/<run-id>` every 30 s in the foreground, bounded (40 rounds), until its `status` is `completed`, and read its `conclusion`.
+- If CD runs for the target branch, the deploy workflow's run for the merge commit concluded `success`. Find it among the runs the push of the merge commit to the target started: `repos/<owner/repo>/actions/runs?head_sha=<after_sha>&branch=<target>&event=push`, paged to the end. The CD run is the one whose workflow deploys — its `name` or `path` (e.g. `.github/workflows/deploy.yml`) says so, or its jobs deploy to the target environment; a CI-only workflow is not it. No such run means there is no CD signal (use the healthcheck below). If several runs could be the deploy run, or you cannot tell which one deploys, treat the deployment as unconfirmed and say so in the thread, naming the runs. Wait for it **in-turn**, the same way you wait for CI: poll `repos/<owner/repo>/actions/runs/<run-id>` in the foreground every 30 s for at most 30 min, until its `status` is `completed`, and read its `conclusion`. A failed or timed-out call is not a result; poll again within the budget.
 - If there is no CD signal, step 5's healthcheck passed.
 
-With neither a CD run nor a healthcheck to confirm it, the deployment is unconfirmed. A CD run still in progress when the bounded wait ends (the poll ran out and you are not waiting longer) also counts as unconfirmed, not as success. A CD run for the merge commit that failed is a failed deploy, not an unconfirmed one.
+With neither a CD run nor a healthcheck to confirm it, the deployment is unconfirmed. A CD run still in progress when the bounded wait ends (the 30-minute budget ran out) also counts as unconfirmed, not as success. A CD run for the merge commit that failed is a failed deploy, not an unconfirmed one.
 
 For each repo that qualifies:
 
