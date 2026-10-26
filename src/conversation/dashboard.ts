@@ -14731,7 +14731,10 @@ function attachRawToggleHandlers() {
     if (details._rawBound) return;
     details._rawBound = true;
     details.addEventListener('toggle', function() {
-      if (this.open) ansLoad(this);
+      if (this.open) { ansLoad(this); return; }
+      // Closed content re-renders on open and would replay the entry animation.
+      var card = this.querySelector('.ans-card');
+      if (card) card.classList.remove('is-in');
     });
   });
 }
@@ -14755,15 +14758,19 @@ function ansKey(href) {
 function ansDecode(s) {
   try { return decodeURIComponent(s); } catch (_e) { return s; }
 }
-// D3 — one stretch of prose (no code): markdown links stay; <url>, <url|label>
+// mdInline's link target stops at the first ")" — parens inside a URL travel
+// percent-encoded, and renderAnswer reads them back (review R1).
+function ansParens(u) {
+  return String(u).replace(/\\(/g, '%28').replace(/\\)/g, '%29');
+}
+// D3 — one stretch of prose (no code span, no markdown link): <url>, <url|label>
 // and bare http(s) URLs become [label](url). A bare URL leaves its trailing
 // punctuation and an unmatched ")" outside the link.
 function ansLinkifyText(s) {
-  return String(s).replace(/(!?\\[[^\\]]+\\]\\([^)\\s]+\\))|<(https?:\\/\\/[^\\s<>|]+)(?:\\|([^<>]*))?>|https?:\\/\\/[^\\s<>\\[\\]"'\\x60]+/gi, function(m, md, url, label) {
-    if (md) return m;
+  return String(s).replace(/<(https?:\\/\\/[^\\s<>|]+)(?:\\|([^<>]*))?>|https?:\\/\\/[^\\s<>\\[\\]"'\\x60]+/gi, function(m, url, label) {
     if (url) {
       var l = String(label || '').replace(/[\\[\\]]/g, '').trim();
-      return '[' + (l || url) + '](' + url + ')';
+      return '[' + (l || url) + '](' + ansParens(url) + ')';
     }
     var u = m;
     var tail = '';
@@ -14773,21 +14780,32 @@ function ansLinkifyText(s) {
       if (u.charAt(u.length - 1) === ')' && u.split('(').length < u.split(')').length) { tail = ')' + tail; u = u.slice(0, -1); continue; }
       break;
     }
-    return '[' + u + '](' + u + ')' + tail;
+    return '[' + u + '](' + ansParens(u) + ')' + tail;
   });
 }
-// D3 — the whole answer: fenced blocks and code spans stay as written (the same
-// fence rule as renderMarkdownDoc, the same code-span rule as mdInline).
+// D3 — the whole answer. Fenced blocks (also inside a > quote) and code spans stay
+// as written (renderMarkdownDoc's fence rule, mdInline's code-span rule). A
+// markdown link stays a link: its label may hold a code span, its target
+// balanced parens (encoded for mdInline).
 function ansLinkify(raw) {
   var fence = '';
+  var fenceQuoted = false;
   return String(raw == null ? '' : raw).replace(/\\r\\n?/g, '\\n').split('\\n').map(function(line) {
+    var quoted = /^\\s{0,3}>/.test(line);
+    var body = line.replace(/^(\\s{0,3}>\\s?)+/, '');
+    if (fence && fenceQuoted && !quoted) fence = '';
     if (fence) {
-      if (line.trim().indexOf(fence) === 0) fence = '';
+      if (body.trim().indexOf(fence) === 0) fence = '';
       return line;
     }
-    var f = line.match(/^\\s{0,3}(\\x60{3,}|~{3,})/);
-    if (f) { fence = f[1]; return line; }
-    return line.split(/(\\x60[^\\x60]+\\x60)/).map(function(part, i) { return i % 2 ? part : ansLinkifyText(part); }).join('');
+    var f = body.match(/^\\s{0,3}(\\x60{3,}|~{3,})/);
+    if (f) { fence = f[1]; fenceQuoted = quoted; return line; }
+    return line.split(/(!?\\[[^\\]]+\\]\\((?:[^()\\s]|\\([^()\\s]*\\))+\\)|\\x60[^\\x60]+\\x60)/).map(function(part, i) {
+      if (!(i % 2)) return ansLinkifyText(part);
+      if (part.charAt(0) === '\\x60') return part;
+      var at = part.indexOf('](');
+      return part.slice(0, at + 2) + ansParens(part.slice(at + 2, -1)) + ')';
+    }).join('');
   }).join('\\n');
 }
 // D5 — what a link card is called. Title: the session's own PR / issue title, else
@@ -14841,8 +14859,9 @@ function renderAnswer(raw, s) {
   var byKey = Object.create(null);
   var found = [];
   var textOf = function(l) { return ansUnesc(String(l).replace(/<[^>]*>/g, '')); };
+  var hrefOf = function(h) { return ansUnesc(h).replace(/%28/gi, '(').replace(/%29/gi, ')'); };
   html.replace(re, function(m, h, l) {
-    var href = ansUnesc(h);
+    var href = hrefOf(h);
     var text = textOf(l);
     var key = ansKey(href);
     var label = text && text !== href ? text : '';
@@ -14860,7 +14879,7 @@ function renderAnswer(raw, s) {
     return src;
   });
   html = html.replace(re, function(_m, h, l) {
-    var href = ansUnesc(h);
+    var href = hrefOf(h);
     return (textOf(l) === href ? '' : l) + ansCiteHtml(sources[byKey[ansKey(href)].n - 1]);
   });
   return { html: html, sources: sources };
@@ -14907,7 +14926,7 @@ function ansPaint(details, state, detail, animate) {
     else card.removeAttribute('aria-busy');
     return;
   }
-  card.innerHTML = renderAnswerCard(_rawLoadedCache[details.dataset.turn], ansSession(details.dataset.conv));
+  card.innerHTML = renderAnswerCard(_rawLoadedCache[ansCacheKey(details.dataset.conv, details.dataset.turn)], ansSession(details.dataset.conv));
   card.removeAttribute('aria-busy');
   card.classList.remove('is-in');
   if (animate && !reduceMotion()) {
@@ -14915,10 +14934,20 @@ function ansPaint(details, state, detail, animate) {
     card.classList.add('is-in');
   }
 }
-// D1 · D13 — first open fetches (once at a time); later opens use the cache.
+// Turn ids are unique per conversation only: the raw cache is keyed by both.
+function ansCacheKey(convId, turnId) {
+  return String(convId || '') + ':' + String(turnId || '');
+}
+// The request in flight per cache key and panel opening — a disclosure re-rendered
+// mid-fetch (D14) joins it instead of asking again.
+var _ansInflight = Object.create(null);
+// D1 · D13 — first open fetches; later opens use the cache. A response lands only
+// while it is current (review R1): it fills the cache only for this panel opening
+// (_panelGen) and if no newer request replaced it, and paints only a disclosure
+// that is still in the turns list.
 function ansLoad(details) {
-  var turnId = details.dataset.turn;
-  if (typeof _rawLoadedCache[turnId] === 'string') {
+  var key = ansCacheKey(details.dataset.conv, details.dataset.turn);
+  if (typeof _rawLoadedCache[key] === 'string') {
     if (!details._ansPainted) ansPaint(details, 'ok', '', false);
     details._ansPainted = true;
     return;
@@ -14926,18 +14955,36 @@ function ansLoad(details) {
   if (details._ansLoading) return;
   details._ansLoading = true;
   ansPaint(details, 'loading');
-  fetch('/api/conversations/' + encodeURIComponent(details.dataset.conv) + '/turns/' + encodeURIComponent(turnId) + '/raw')
-    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-    .then(function(data) {
-      _rawLoadedCache[turnId] = data && typeof data.raw === 'string' ? data.raw : '';
-      details._ansLoading = false;
-      details._ansPainted = true;
-      ansPaint(details, 'ok', '', true);
-    })
-    .catch(function(err) {
-      details._ansLoading = false;
-      ansPaint(details, 'error', err && err.message ? err.message : '');
-    });
+  var gen = _panelGen;
+  var req = _ansInflight[key];
+  if (!req || req.gen !== gen) {
+    req = { gen: gen };
+    req.promise = fetch('/api/conversations/' + encodeURIComponent(details.dataset.conv) + '/turns/' + encodeURIComponent(details.dataset.turn) + '/raw')
+      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(data) {
+        var newest = _ansInflight[key] === req;
+        if (newest) delete _ansInflight[key];
+        if (newest && req.gen === _panelGen) _rawLoadedCache[key] = data && typeof data.raw === 'string' ? data.raw : '';
+      }, function(err) {
+        if (_ansInflight[key] === req) delete _ansInflight[key];
+        throw err;
+      });
+    _ansInflight[key] = req;
+  }
+  var shown = function() {
+    var turnsEl = document.getElementById('panel-turns');
+    return gen === _panelGen && !!turnsEl && turnsEl.contains(details);
+  };
+  req.promise.then(function() {
+    details._ansLoading = false;
+    if (typeof _rawLoadedCache[key] !== 'string' || !shown()) return;
+    details._ansPainted = true;
+    ansPaint(details, 'ok', '', true);
+  }, function(err) {
+    details._ansLoading = false;
+    if (!shown()) return;
+    ansPaint(details, 'error', err && err.message ? err.message : '');
+  });
 }
 // D8 — light number n in this card (its link card and every chip of it);
 // on=false clears the card. A lit card outside the row slides the ROW
@@ -14987,7 +15034,7 @@ function copyAnswer(btn) {
   var details = btn.closest('.turn-raw-details');
   var card = btn.closest('.ans-card');
   if (!details || !card) return;
-  var raw = _rawLoadedCache[details.dataset.turn];
+  var raw = _rawLoadedCache[ansCacheKey(details.dataset.conv, details.dataset.turn)];
   if (typeof raw !== 'string') return;
   var srcs = renderAnswer(raw, ansSession(details.dataset.conv)).sources;
   var status = card.querySelector('.ans-status');
@@ -15011,12 +15058,35 @@ function copyAnswer(btn) {
     } catch (_e) {}
     say('복사', '선택했습니다 — ⌘C / Ctrl+C로 복사');
   }
+  var text = ansCopyText(raw, srcs);
+  function done() {
+    say('복사됨', srcs.length ? '답변과 링크 ' + srcs.length + '개를 복사했습니다' : '답변을 복사했습니다');
+  }
+  // Without the Clipboard API (plain http): copy the RAW text from a temporary
+  // textarea — the rendered body shows chips (#999) where the URLs were.
+  function viaTextarea() {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand('copy');
+      ta.remove();
+      if (btn.focus) btn.focus();
+      return !!ok;
+    } catch (_e) { return false; }
+  }
+  function fallback() {
+    if (viaTextarea()) done();
+    else selectIt();
+  }
   try {
-    if (!navigator.clipboard || !navigator.clipboard.writeText) { selectIt(); return; }
-    navigator.clipboard.writeText(ansCopyText(raw, srcs)).then(function() {
-      say('복사됨', srcs.length ? '답변과 링크 ' + srcs.length + '개를 복사했습니다' : '답변을 복사했습니다');
-    }, selectIt);
-  } catch (_e) { selectIt(); }
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { fallback(); return; }
+    navigator.clipboard.writeText(text).then(done, fallback);
+  } catch (_e) { fallback(); }
 }
 // D11 — "응답 4분 12초": from the instruction to the recorded answer (queue and
 // tools included — the answer is recorded when its turn ends).
@@ -15045,7 +15115,9 @@ function decorateAnswerTurns() {
     var prev = i > 0 ? nodes[i - 1] : null;
     var prevTs = prev ? toNum(prev.getAttribute('data-ts')) : 0;
     var ts = toNum(nodes[i].getAttribute('data-ts'));
-    var label = prev ? ansTookFor(prev.classList.contains('user') ? 'user' : 'assistant', prevTs, ts) : '';
+    // An optimistic instruction carries this browser's clock, not the server's: no time.
+    var optimistic = prev && /^optimistic-/.test(prev.getAttribute('data-turn-id') || '');
+    var label = prev && !optimistic ? ansTookFor(prev.classList.contains('user') ? 'user' : 'assistant', prevTs, ts) : '';
     if (took.textContent !== label) took.textContent = label;
     if (label) took.setAttribute('title', '지시 ' + formatTaskTime(prevTs) + ' → 응답 ' + formatTaskTime(ts));
     else took.removeAttribute('title');
@@ -15312,9 +15384,11 @@ async function sendCommand() {
     }
     if (!res.ok) {
       // Only mark the optimistic turn as failed if the user is still on the same
-      // card; otherwise the "last user turn" in the DOM belongs to a different session.
+      // card; otherwise the turns in the DOM belong to a different session. Found by
+      // its own id, not by being the list's last child: the 응답 작성 중 row may follow
+      // it (re-ai-answer D12).
       if (panelSessionKey === sendingSessionKey) {
-        var lastTurn = document.querySelector('.turn.user:last-child');
+        var lastTurn = document.querySelector('.turn.user[data-turn-id="' + optimisticTurn.id + '"]');
         if (lastTurn) {
           lastTurn.style.borderColor = '#e74c3c';
           lastTurn.style.opacity = '0.7';

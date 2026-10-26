@@ -46,9 +46,11 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** `__set(name, value)` reassigns an injected binding (e.g. `_panelGen`) after load, as the page would. */
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
   const names = Object.keys(inject);
-  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
+  const setter = '__set: function(n, v) { eval(n + " = v"); }';
+  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${[...fns, setter].join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 /** The <style> block as served. */
@@ -109,6 +111,8 @@ const ANS_FNS = [
   'ansUnesc',
   'ansKey',
   'ansDecode',
+  'ansCacheKey',
+  'ansParens',
   'ansLinkifyText',
   'ansLinkify',
   'ansSourceOf',
@@ -160,7 +164,8 @@ describe('D3 — links the answer holds become markdown links (code stays as wri
     );
     expect(a.ansLinkify('(see https://a.com/b).')).toBe('(see [https://a.com/b](https://a.com/b)).');
     expect(a.ansLinkify('wiki https://en.wikipedia.org/wiki/Foo_(bar), ok')).toBe(
-      'wiki [https://en.wikipedia.org/wiki/Foo_(bar)](https://en.wikipedia.org/wiki/Foo_(bar)), ok',
+      // mdInline's link target stops at the first ")": parens travel encoded (review R1 ②).
+      'wiki [https://en.wikipedia.org/wiki/Foo_(bar)](https://en.wikipedia.org/wiki/Foo_%28bar%29), ok',
     );
     expect(a.ansLinkify('<https://a.com/x|the doc> and <https://b.com>')).toBe(
       '[the doc](https://a.com/x) and [https://b.com](https://b.com)',
@@ -179,6 +184,49 @@ describe('D3 — links the answer holds become markdown links (code stays as wri
     }
     expect(a.renderAnswer('javascript:alert(1)', null).html).not.toContain('href="javascript');
     expect(a.renderAnswer('```\nhttps://a.com/in-fence\n```', null).sources).toEqual([]);
+  });
+});
+
+describe('D3 · review R1 — links the plain renderer kept stay links', () => {
+  it('① a markdown link whose label is a code span keeps its URL (no stray ")")', () => {
+    const a = ans();
+    const raw = 'See [`src/foo.ts`](https://github.com/o/r/blob/main/src/foo.ts).';
+    expect(a.ansLinkify(raw)).toBe(raw);
+    const { html, sources } = a.renderAnswer(raw, null);
+    expect(sources.map((x) => x.href)).toEqual(['https://github.com/o/r/blob/main/src/foo.ts']);
+    expect(html).toContain(
+      'See <code>src/foo.ts</code><a class="ans-cite" data-ans-src="1" href="https://github.com/o/r/blob/main/src/foo.ts"',
+    );
+    expect(html).toMatch(/<\/a>\.<\/p>$/);
+    // A code span that merely contains link syntax is still code.
+    expect(a.renderAnswer('run `[x](https://a.com)` now', null).sources).toEqual([]);
+  });
+
+  it('② balanced parentheses survive — bare and in a markdown link target', () => {
+    const a = ans();
+    const bare = a.renderAnswer('wiki https://en.wikipedia.org/wiki/Foo_(bar), ok', null);
+    expect(bare.sources.map((x) => x.href)).toEqual(['https://en.wikipedia.org/wiki/Foo_(bar)']);
+    expect(bare.html).toContain(
+      'wiki <a class="ans-cite" data-ans-src="1" href="https://en.wikipedia.org/wiki/Foo_(bar)"',
+    );
+    expect(bare.html).toMatch(/<\/a>, ok<\/p>$/);
+    const md = a.renderAnswer('[Foo](https://en.wikipedia.org/wiki/Foo_(bar))', null);
+    expect(md.sources.map((x) => x.href)).toEqual(['https://en.wikipedia.org/wiki/Foo_(bar)']);
+    expect(md.html).toMatch(/^<p>Foo<a class="ans-cite"[^>]*>en\.wikipedia\.org<\/a><\/p>$/);
+    expect(md.sources[0].title).toBe('Foo');
+  });
+
+  it('③ a fenced block inside a quote stays code; the fence ends with the quote', () => {
+    const a = ans();
+    const raw = '> ```sh\n> curl https://example.com\n> ```';
+    expect(a.ansLinkify(raw)).toBe(raw);
+    const r = a.renderAnswer(raw, null);
+    expect(r.sources).toEqual([]);
+    expect(r.html).toContain(
+      '<blockquote><pre class="md-code"><code data-lang="sh">curl https://example.com</code></pre></blockquote>',
+    );
+    // An unclosed fence inside a quote ends where the quote ends.
+    expect(a.ansLinkify('> ```\n> x\nsee https://a.com')).toBe('> ```\n> x\nsee [https://a.com](https://a.com)');
   });
 });
 
@@ -383,7 +431,7 @@ describe('D10 — copy: the answer plus its numbered links', () => {
     expect(a.ansCopyText('Body', [])).toBe('Body');
   });
 
-  const harness = (clipboard: unknown) => {
+  const harness = (clipboard: unknown, doc: Record<string, unknown> = {}) => {
     const status = { textContent: '' };
     const body = {};
     const btn: Record<string, unknown> = { textContent: '복사' };
@@ -393,11 +441,11 @@ describe('D10 — copy: the answer plus its numbered links', () => {
     const addRange = vi.fn();
     const timers: number[] = [];
     const api = load<{ copyAnswer(b: unknown): void }>([...ANS_FNS, 'ansSession', 'copyAnswer'], [], {
-      _rawLoadedCache: { t2: FIXTURE },
+      _rawLoadedCache: { 'conv-run:t2': FIXTURE },
       panelSessionKey: 'k',
       _sessionCache: { k: SESSION },
       navigator: { clipboard },
-      document: { createRange: () => ({ selectNodeContents: vi.fn() }) },
+      document: { createRange: () => ({ selectNodeContents: vi.fn() }), ...doc },
       window: { getSelection: () => ({ removeAllRanges: vi.fn(), addRange }) },
       setTimeout: (_f: unknown, ms: number) => {
         timers.push(ms);
@@ -430,6 +478,20 @@ describe('D10 — copy: the answer plus its numbered links', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(r.addRange).toHaveBeenCalled();
+  });
+
+  it('review R1 (P3): without the Clipboard API the RAW text is copied from a temporary textarea', () => {
+    const ta: Record<string, unknown> = { style: {}, setAttribute: vi.fn(), select: vi.fn(), remove: vi.fn() };
+    const appendChild = vi.fn();
+    const execCommand = vi.fn(() => true);
+    const h = harness(undefined, { createElement: () => ta, body: { appendChild }, execCommand });
+    h.api.copyAnswer(h.btn);
+    expect(execCommand).toHaveBeenCalledWith('copy');
+    expect(String(ta.value)).toContain(`and ${PR} for the diff.\n\n링크:\n[1] feat(dashboard): model picker – ${PR}`);
+    expect(ta.remove).toHaveBeenCalled();
+    expect(h.addRange).not.toHaveBeenCalled();
+    expect(h.btn.textContent).toBe('복사됨');
+    expect(h.status.textContent).toBe('답변과 링크 1개를 복사했습니다');
   });
 });
 
@@ -498,6 +560,33 @@ describe('D11 — response time = this answer − the instruction before it', ()
     expect(nodes[2].took.attrs.title).toBeUndefined();
     expect(sync).toHaveBeenCalled();
     expect(clientFn('decoratePanelTurns')).toContain('decorateAnswerTurns();');
+  });
+
+  it("review R1 (P3): no time against an optimistic instruction (this browser's clock)", () => {
+    const took = { textContent: 'x', setAttribute: vi.fn(), removeAttribute: vi.fn() };
+    const nodes = [
+      {
+        classList: { contains: (c: string) => c === 'user' },
+        getAttribute: (n: string) => (n === 'data-ts' ? String(T0) : 'optimistic-1700000000000'),
+        querySelector: () => null,
+      },
+      {
+        classList: { contains: (c: string) => c === 'assistant' },
+        getAttribute: (n: string) => (n === 'data-ts' ? String(T0 + 60_000) : 't9'),
+        querySelector: () => took,
+      },
+    ];
+    const api = load<{ decorateAnswerTurns(): void }>(
+      ['toNum', 'formatTaskTime', 'ansTookLabel', 'ansTookFor', 'decorateAnswerTurns'],
+      [],
+      {
+        document: { getElementById: () => ({ querySelectorAll: () => nodes }) },
+        syncAnsPending: () => {},
+      },
+    );
+    api.decorateAnswerTurns();
+    expect(took.textContent).toBe('');
+    expect(took.removeAttribute).toHaveBeenCalledWith('title');
   });
 });
 
@@ -688,6 +777,41 @@ describe('D12 — the writing row through the real insert paths (cross-spec revi
   });
 });
 
+describe('D12 · review R1 (P1) — a failed send is marked although the writing row is last', () => {
+  it('the optimistic turn is found by its id, not ":last-child"', async () => {
+    const optimistic = { style: {} as Record<string, string>, insertAdjacentHTML: vi.fn() };
+    let optimisticId = '';
+    const el: Record<string, Record<string, unknown>> = {
+      'cmd-input': { value: 'a follow-up while it works', disabled: false, focus: () => {} },
+      'cmd-send': { disabled: false, textContent: 'Send' },
+    };
+    const api = load<{ sendCommand(): Promise<void> }>(['esc', 'escJs', 'sendCommand'], [], {
+      document: {
+        getElementById: (id: string) => el[id] ?? null,
+        // The 응답 작성 중 row is the last child: ':last-child' finds no user turn.
+        querySelector: (sel: string) =>
+          optimisticId && sel === `.turn.user[data-turn-id="${optimisticId}"]` ? optimistic : null,
+      },
+      appendTurnToPanel: (t: { id: string }) => {
+        optimisticId = t.id;
+      },
+      fetch: () => Promise.resolve({ ok: false, status: 400 }),
+      refreshCsrfToken: () => Promise.resolve(),
+      panelSessionKey: 'k',
+      _sessionCache: { k: { activityState: 'working' } },
+      renderPanelComposer: () => {},
+      _csrfToken: '',
+      _lastSentContent: '',
+      _lastSentTime: 0,
+    });
+    await api.sendCommand();
+    expect(optimisticId).toMatch(/^optimistic-\d+$/);
+    expect(optimistic.insertAdjacentHTML).toHaveBeenCalledWith('beforeend', expect.stringContaining('Failed to send.'));
+    expect(optimistic.style.opacity).toBe('0.7');
+    expect(clientFn('sendCommand')).not.toContain(':last-child');
+  });
+});
+
 describe('D13 — loading, error, empty', () => {
   it('state markup', () => {
     const a = ans();
@@ -719,17 +843,20 @@ describe('D13 — loading, error, empty', () => {
     };
     const api = load<{ ansLoad(d: unknown): void }>([...ANS_FNS, 'ansSession', 'ansPaint', 'ansLoad'], [], {
       _rawLoadedCache: cache,
+      _ansInflight: {},
+      _panelGen: 0,
       panelSessionKey: 'k',
       _sessionCache: { k: SESSION },
       fetch: fetchImpl,
       reduceMotion: () => true,
+      document: { getElementById: () => ({ contains: () => true }) },
     });
     return { api, card: cardApi, details };
   };
 
   it('a cached answer paints at once without a request', () => {
     const fetch = vi.fn();
-    const h = paintHarness({ t2: '**hi**' }, fetch);
+    const h = paintHarness({ 'conv-run:t2': '**hi**' }, fetch);
     h.api.ansLoad(h.details);
     expect(fetch).not.toHaveBeenCalled();
     expect(h.card.innerHTML).toContain('<strong>hi</strong>');
@@ -754,9 +881,167 @@ describe('D13 — loading, error, empty', () => {
     ok.api.ansLoad(ok.details);
     await new Promise((r) => setTimeout(r, 0));
     expect(fetch).toHaveBeenCalledWith('/api/conversations/conv-run/turns/t2/raw');
-    expect(cache.t2).toBe(FIXTURE);
+    expect(cache['conv-run:t2']).toBe(FIXTURE);
     expect(ok.card.innerHTML).toContain('ans-cite');
     expect(ok.card.attrs['aria-busy']).toBeUndefined();
+  });
+});
+
+describe('D13 · review R1 — a raw response lands only where it is still current', () => {
+  type Card = { innerHTML: string; attrs: Record<string, string> };
+  type Details = { dataset: { conv: string; turn: string }; card: Card; querySelector(): unknown };
+  const race = (cache: Record<string, string>) => {
+    const pending: Array<{ url: string; ok(raw: string): void; fail(status: number): void }> = [];
+    const fetch = vi.fn(
+      (url: string) =>
+        new Promise((resolve) =>
+          pending.push({
+            url,
+            ok: (raw) => resolve({ ok: true, json: () => Promise.resolve({ raw }) }),
+            fail: (status) => resolve({ ok: false, status }),
+          }),
+        ),
+    );
+    const attached = new Set<unknown>();
+    const mk = (conv: string, turn: string): Details => {
+      const card: Card = { innerHTML: '', attrs: {} };
+      const api = {
+        ...card,
+        setAttribute: (k: string, v: string) => {
+          d.card.attrs[k] = v;
+        },
+        removeAttribute: (k: string) => {
+          delete d.card.attrs[k];
+        },
+        classList: { add: () => {}, remove: () => {} },
+      };
+      const d: Details = { dataset: { conv, turn }, card: api, querySelector: () => api };
+      attached.add(d);
+      return d;
+    };
+    const api = load<{ ansLoad(d: unknown): void; __set(n: string, v: unknown): void }>(
+      [...ANS_FNS, 'ansSession', 'ansPaint', 'ansLoad'],
+      [],
+      {
+        _rawLoadedCache: cache,
+        _ansInflight: {},
+        _panelGen: 0,
+        panelSessionKey: null,
+        _sessionCache: {},
+        fetch,
+        reduceMotion: () => true,
+        document: { getElementById: () => ({ contains: (x: unknown) => attached.has(x) }) },
+      },
+    );
+    return { api, pending, attached, mk, fetch };
+  };
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it('(1) the panel switched mid-flight: the late answer neither paints nor fills the cache', async () => {
+    const cache: Record<string, string> = {};
+    const h = race(cache);
+    const d = h.mk('convA', 't2');
+    h.api.ansLoad(d);
+    h.api.__set('_panelGen', 1); // closePanel / openPanel
+    h.pending[0].ok('**late A**');
+    await flush();
+    expect(d.card.innerHTML).toContain('불러오는 중…');
+    expect(cache).toEqual({});
+
+    // A late failure does not paint either.
+    const e = race({});
+    const d2 = e.mk('convA', 't3');
+    e.api.ansLoad(d2);
+    e.api.__set('_panelGen', 1);
+    e.pending[0].fail(500);
+    await flush();
+    expect(d2.card.innerHTML).not.toContain('불러오지 못했습니다');
+  });
+
+  it('(1b) a disclosure that left the list (re-rendered) is not painted', async () => {
+    const cache: Record<string, string> = {};
+    const h = race(cache);
+    const d = h.mk('convA', 't2');
+    h.api.ansLoad(d);
+    h.attached.delete(d);
+    h.pending[0].ok('answer A');
+    await flush();
+    expect(d.card.innerHTML).toContain('불러오는 중…');
+    expect(cache['convA:t2']).toBe('answer A'); // still this answer's text, under its own key
+  });
+
+  it('(2) two conversations with the same turn id never share an answer', async () => {
+    const cache: Record<string, string> = { 'convA:t2': 'answer A' };
+    const h = race(cache);
+    const dB = h.mk('convB', 't2');
+    h.api.ansLoad(dB);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    expect(h.pending[0].url).toBe('/api/conversations/convB/turns/t2/raw');
+    expect(dB.card.innerHTML).not.toContain('answer A');
+    h.pending[0].ok('answer B');
+    await flush();
+    expect(dB.card.innerHTML).toContain('answer B');
+    expect(cache).toEqual({ 'convA:t2': 'answer A', 'convB:t2': 'answer B' });
+  });
+
+  it('(3) a disclosure re-rendered mid-fetch (D14) joins the request in flight: one fetch, only the listed one paints', async () => {
+    const cache: Record<string, string> = {};
+    const h = race(cache);
+    const d1 = h.mk('c', 't2');
+    h.api.ansLoad(d1);
+    h.attached.delete(d1); // the summary landed: the turn was re-rendered
+    const d2 = h.mk('c', 't2');
+    h.api.ansLoad(d2);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    h.pending[0].ok('the answer');
+    await flush();
+    expect(cache['c:t2']).toBe('the answer');
+    expect(d2.card.innerHTML).toContain('the answer');
+    expect(d1.card.innerHTML).not.toContain('the answer');
+  });
+
+  it('(3b) an older response arriving after a newer one does not overwrite it', async () => {
+    const cache: Record<string, string> = {};
+    const h = race(cache);
+    const d1 = h.mk('c', 't2');
+    h.api.ansLoad(d1); // request 1 (this panel opening)
+    h.api.__set('_panelGen', 1); // closed and reopened while it was in flight
+    const d2 = h.mk('c', 't2');
+    h.api.ansLoad(d2); // request 2
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    h.pending[1].ok('new answer');
+    await flush();
+    h.pending[0].ok('old answer');
+    await flush();
+    expect(cache['c:t2']).toBe('new answer');
+    expect(d2.card.innerHTML).toContain('new answer');
+    expect(d1.card.innerHTML).not.toContain('old answer');
+  });
+});
+
+describe('D15 · review R1 (fable P3) — the entry animation plays on load only', () => {
+  it('closing the disclosure drops is-in, so reopening does not replay it', () => {
+    let onToggle: ((this: unknown) => void) | undefined;
+    const remove = vi.fn();
+    const details: Record<string, unknown> = {
+      open: false,
+      addEventListener: (_t: string, fn: (this: unknown) => void) => {
+        onToggle = fn;
+      },
+      querySelector: () => ({ classList: { remove } }),
+    };
+    const ansLoad = vi.fn();
+    const api = load<{ attachRawToggleHandlers(): void }>(['attachRawToggleHandlers'], [], {
+      document: { querySelectorAll: () => [details] },
+      ansLoad,
+    });
+    api.attachRawToggleHandlers();
+    onToggle?.call(details);
+    expect(remove).toHaveBeenCalledWith('is-in');
+    expect(ansLoad).not.toHaveBeenCalled();
+    details.open = true;
+    onToggle?.call(details);
+    expect(ansLoad).toHaveBeenCalledWith(details);
   });
 });
 
@@ -845,6 +1130,7 @@ describe('client hygiene', () => {
       'ansSession',
       'ansPaint',
       'ansLoad',
+      '_ansInflight',
       'ansLight',
       'ansBind',
       'copyAnswer',
