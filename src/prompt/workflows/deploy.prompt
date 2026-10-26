@@ -61,6 +61,14 @@ If `Modify target` or `Cancel` is selected, never proceed with the deployment.
 
 For multiple repos, execute **sequentially** (no concurrent execution).
 
+**GitHub access.** Inside a sandboxed session the `gh` CLI's network calls fail TLS verification (`tls: failed to verify certificate: x509: OSStatus -26276`), while `gh auth token` (it only reads the stored token) and curl to `api.github.com` work — so every GitHub read and write in this workflow (PR create and merge, CI checks, CD runs, the merge commit) goes through the REST API with this call:
+
+```bash
+curl -fsSL -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"
+```
+
+Write the whole form in every shell call (shell state does not carry over) and read fields with `jq`. A write adds `-X POST`, `-X PUT`, or `-X PATCH` and a JSON body with `-d '<json>'`, and uses `--fail-with-body` instead of `-f` so a refusal shows its reason. `git` over https (clone, fetch, push) is not affected — keep using it.
+
 ### 1) Pre-Validation
 
 - Verify access to each repo
@@ -74,12 +82,15 @@ If validation fails, stop immediately and clearly report the cause.
 
 What to check after a deploy depends on the environment, so it is not written in this workflow. A host that runs QA after its deploys has an environment plugin installed that provides a skill named `post-deploy` (`<plugin>:post-deploy` in your skill list).
 
-- **The skill exists**: for each repo, invoke it with `--preflight repo=<owner/repo> target=<branch>`, using the normalized `owner/repo` and the target branch you just verified (the same strings step 7 will use). It only reads, and answers with exactly one of:
-  - `applies` → step 8 runs for this repo after the deploy.
-  - `not-applicable` → continue; step 8 does not run for this repo.
-  - `missing: <fields>` → post one ⚠️ line in the thread naming the missing fields, then wait for the requester. Proceed deploy-only for this run only if they say so; step 8 then does not run, and never report QA as done for this run.
-  - Any other answer, or an error from the skill, is handled like `missing: <fields>`: post one ⚠️ line saying the preflight did not answer, then wait for the requester.
-- **No such skill**: post one line, `ℹ️ no post-deploy QA on this host`, and continue. Step 8 does not run.
+- **The skill exists**: for each repo, invoke it with `--preflight repo=<owner/repo> target=<branch>`, using the normalized `owner/repo` and the target branch you just verified (the same strings the QA step will use). It only reads, and answers with exactly one of:
+  - `applies` → step 7 runs for this repo after the deploy.
+  - `partial: <checks>` → post one ⚠️ line in the thread naming the checks that failed, and continue. Step 7 still runs for this repo, in the reduced mode the skill defines, and its report says what was not run and why.
+  - `not-applicable` → continue; step 7 does not run for this repo.
+  - `missing: <fields>` (the environment profile itself is incomplete, or a check that QA cannot run without failed) → post one ⚠️ line in the thread naming them, and continue the deploy. Step 7 does not run for this repo, and its final status is `deployed, QA not run: <reason>` — never "done".
+  - Any other answer, or an error from the skill, is handled like `missing: <fields>`: post one ⚠️ line saying the preflight did not answer, continue the deploy, and report that repo as `deployed, QA not run: <reason>`.
+- **No such skill**: post one line, `ℹ️ no post-deploy QA on this host`, and continue. Step 7 does not run.
+
+A preflight answer never stops the deploy. Nothing the requester said before the preflight (for example "don't ask", "just merge", "묻지 말고") is consent to skip or reduce QA. Never wait for the requester because of a preflight answer: a sandbox or profile problem is not something they can fix by replying. Never tell the requester to re-run QA elsewhere, and never hand them a re-run command as their next step.
 
 ### 2) Prepare Working Branch
 
@@ -95,7 +106,7 @@ Proceed with the following flow for each repo:
 
 1. Merge `source` into the working branch
 2. If no conflicts, push
-3. Create a PR with `base=target`, `head=deploy branch`
+3. Create a PR with `base=target`, `head=deploy branch` (`POST repos/<owner/repo>/pulls` with `title`, `head`, `base`, `body`)
 4. Include purpose/scope/verification items in the PR body
 
 Leave a session link immediately after PR creation.
@@ -128,18 +139,24 @@ If CI is still running, you **must wait for it in-turn** and then merge. The mer
 
 **REQUIRED** — block synchronously, in the foreground, within this same turn:
 
-1. Run a blocking watch in the foreground (NOT `run_in_background`), bounded by a timeout so it cannot hang forever:
+1. Read the PR's head SHA (`head.sha` of `repos/<owner/repo>/pulls/<pr-number>`). Then poll its checks in the foreground (NOT `run_in_background`), bounded so it cannot hang forever (40 rounds of 30 s):
 
    ```bash
-   timeout 1200 gh pr checks <pr-number> --watch --interval 30
+   for i in $(seq 1 40); do
+     runs=$(curl -fsSL -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/<owner/repo>/actions/runs?head_sha=<head_sha>&per_page=100" | jq '[.workflow_runs[] | select(.status != "completed")] | length')
+     checks=$(curl -fsSL -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/<owner/repo>/commits/<head_sha>/check-runs?per_page=100" | jq '[.check_runs[] | select(.status != "completed")] | length')
+     echo "round $i: workflow runs pending=$runs, check runs pending=$checks"
+     [ "$runs" = 0 ] && [ "$checks" = 0 ] && break
+     sleep 30
+   done
    ```
 
-   `gh pr checks --watch` blocks until every check resolves, then exits non-zero if any check failed. This keeps your turn alive — you are still working, not waiting to be woken up.
+   The loop blocks until nothing is pending. This keeps your turn alive — you are still working, not waiting to be woken up. Right after a push, CI may not have registered yet: if both lists are empty, poll a few more rounds before concluding the repo has no CI.
 
-2. If `timeout` fires (exit code 124) and checks are still pending, run the same `timeout ... gh pr checks --watch` command again. Keep looping **in-turn** until checks resolve. Never convert this into a wakeup or a backgrounded watcher.
+2. If the loop ends with anything still pending, run the same loop again. Keep looping **in-turn** until checks resolve. Never convert this into a wakeup or a backgrounded watcher.
 
-3. When checks resolve:
-   - **All green** → re-confirm `MERGEABLE`, then proceed to the PR merge **immediately, in this same turn**.
+3. When checks resolve, read the conclusions with the same two calls (`conclusion` of each workflow run and check run), plus commit statuses (`repos/<owner/repo>/commits/<head_sha>/status`: `failure` or `error` is a failure; `pending` with `total_count` above 0 is still running — keep waiting):
+   - **All green** (`success`, `skipped`, or `neutral`) → re-confirm the PR is mergeable (`mergeable` is `true` in `repos/<owner/repo>/pulls/<pr-number>`; `null` means GitHub is still computing it — read again), then merge it (`PUT repos/<owner/repo>/pulls/<pr-number>/merge`) **immediately, in this same turn**.
    - **Any failure** → do NOT merge. Report the failing check (name + log summary) in the thread and request a user decision via `local:UIAskUserQuestion`. Halt the merge until a response is received.
 
 Only after the merge actually succeeds may you produce the deployment result / release-notes / completion output.
@@ -190,6 +207,7 @@ Summarize the results for each repo in the following format:
 - PR URL
 - Merge result (success/fail)
 - Cause of failure / next action (if failed)
+- Post-deploy QA: the status step 7 gives this repo (`QA complete`, `deployed, QA incomplete: <reason>`, `deployed, QA not run: <reason>`, or not applicable)
 
 For multiple repos, present results as a table or list for readability.
 
@@ -199,7 +217,7 @@ For multiple repos, present results as a table or list for readability.
 
 After the deployment merge is complete, follow the steps below.
 
-For multi-repo deployments, repeat steps 5)–7) for each repo.
+For multi-repo deployments, repeat steps 5) and 6) for each repo. Step 7) starts once every repo has reached a terminal deploy outcome.
 
 ### 5) Server Healthcheck (only when a server-tools target exists)
 
@@ -237,54 +255,26 @@ If no matching server exists in server-tools, skip this step.
 }
 ```
 
-Use the same `repo` and `target` strings you put in the step 7 `deploy_completed` directive: the normalized `owner/repo`, and the PR's base branch exactly as merged into (`gh pr view <pr-number> --json baseRefName`). The operator's channel mapping matches that branch name exactly.
+`repo` is the normalized `owner/repo`, and `target` is the PR's base branch exactly as merged into (`base.ref` of the GitHub call `repos/<owner/repo>/pulls/<pr-number>`) — never the user's shorthand (`staging`) and never a `refs/heads/` form. The operator's channel mapping matches that branch name exactly.
 
 5. The harness posts the header (repo, target, version, TL;DR) as a channel-root message and the full `text` as replies in its thread. Where is the operator's choice, not yours: the host's `SOMA_RELEASE_NOTES_CHANNELS` maps `repo@target` to a channel, and its `*` entry decides for a deploy no mapping matches (this channel, a fixed channel, or this thread only). With nothing configured, the notes go to this channel. When the notes land elsewhere, the harness replies in this thread with a link — do not post your own "release notes posted" line, and do not pick a channel.
 
 **Prohibited**: Do not generate or post release notes by any other means — no `channel_message` directive, no Slack tool. Each repo gets exactly one `release_notes` directive per deploy. Never emit twice — not in a summary, a retry, or a later turn.
 
-### 7) Post-Deploy Lane Signal (Required)
+### 7) Post-Deploy QA (when the preflight said `applies` or `partial: …`)
 
-Other work (for example a QA pass over the deployed PRs) can be registered to start when a deploy lands. Signal it with exactly one `deploy_completed` directive per repo, once the merge succeeded (step 4). What you put in it depends on whether the deployment of the merge commit is confirmed:
+Start this step once every repo of this deploy has reached a terminal deploy outcome: deployed and confirmed, merged but unconfirmed, failed, held for a user decision, or cancelled. Then run post-deploy QA one repo at a time, for each repo whose step 1 preflight answered `applies` or `partial: …` and whose deployment is confirmed (below), so QA sees every repo of this deploy that landed. Post one line in the thread for every other repo saying QA did not run for it and why (unconfirmed, failed, held, cancelled, not applicable, or the preflight's `deployed, QA not run: <reason>`). A merged repo that needed QA and did not get it is `deployed, QA not run: <reason>`, never done. A failed or held repo is stated; it never silently skips QA for the other repos. If a held repo is deployed later in this session, run this step for it then.
 
-- **Confirmed**: emit it as shown below (no `confirmed` field). Confirmed means one of:
-  - If CD runs for the target branch, the run for the merge commit concluded `success`. Wait for it **in-turn**, the same way you wait for CI (e.g. `timeout 1200 gh run watch <run-id> --exit-status`, finding the run with `gh run list --commit <after_sha>`).
-  - If there is no CD signal, step 5's healthcheck passed.
-- **Merged but not confirmed**: there is neither a CD run nor a healthcheck to confirm it. A CD run that is still in progress when the wait ends (the bounded watch timed out and you are not waiting longer) also counts as unconfirmed, not as success. Emit the directive with `"confirmed": false`. The harness then starts nothing and tells the lane owners that the deploy is unconfirmed.
+The deployment of the merge commit is **confirmed** when one of these holds:
 
-Fields:
+- If CD runs for the target branch, the run for the merge commit concluded `success`. Wait for it **in-turn**, the same way you wait for CI: find the run with `repos/<owner/repo>/actions/runs?head_sha=<after_sha>&per_page=100`, then poll `repos/<owner/repo>/actions/runs/<run-id>` every 30 s in the foreground, bounded (40 rounds), until its `status` is `completed`, and read its `conclusion`.
+- If there is no CD signal, step 5's healthcheck passed.
 
-- `repo`: the normalized `owner/repo`.
-- `target`: the PR's base branch exactly as merged into — read it with `gh pr view <pr-number> --json baseRefName` (e.g. `deploy/staging`, `develop`). Never the user's shorthand (`staging`) and never a `refs/heads/` form: lanes match the branch name exactly, so a shorthand silently starts nothing.
-- `before`: the target SHA before the merge (the same `before_sha` as step 6).
-- `after`: the merge commit SHA (`gh pr view <pr-number> --json mergeCommit`).
-- `confirmed`: only when the deploy is unconfirmed, as `false`.
-
-```json
-{
-  "type": "deploy_completed",
-  "repo": "acme/app",
-  "target": "deploy/staging",
-  "before": "<target sha before merge>",
-  "after": "<merge commit sha>"
-}
-```
-
-Write it exactly in this shape: `"type"` is the first key, and the SHAs are plain hex. A directive the harness cannot read starts nothing, and the harness says so in this thread. When you mention the signal in prose, write `deploy_completed` in backticks, never the quoted JSON value.
-
-The harness starts every lane registered for that repo and target and replies with one line in this thread naming the lanes it started. Each lane runs in a thread of its own; it is told this thread, so it can post its result back here. Do not wait for a lane, do not check on it, and do not run its work yourself. Step 8 is not a lane: it is this workflow's own work, done in this session after this signal.
-
-**Never emit** on a held, failed, cancelled, or unmerged deploy. A CD run for the merge commit that failed is a failed deploy, not an unconfirmed one. **Never emit twice** for the same merge — not in a summary, a retry, or a later turn.
-
-### 8) Post-Deploy QA (only when the preflight said `applies`)
-
-Start this step once every repo of this deploy has reached a terminal deploy outcome: deployed and confirmed, merged but unconfirmed, failed, held for a user decision, or cancelled. Then run post-deploy QA one repo at a time, for each repo whose step 1 preflight answered `applies` and whose step 7 emitted a confirmed `deploy_completed` (no `confirmed` field), so QA sees every repo of this deploy that landed. Post one line in the thread for every other repo saying QA did not run for it and why (unconfirmed, failed, held, cancelled, not applicable, or deploy-only by the requester's choice). A failed or held repo is stated; it never silently skips QA for the other repos. If a held repo is deployed later in this session, run this step for it then.
+With neither a CD run nor a healthcheck to confirm it, the deployment is unconfirmed. A CD run still in progress when the bounded wait ends (the poll ran out and you are not waiting longer) also counts as unconfirmed, not as success. A CD run for the merge commit that failed is a failed deploy, not an unconfirmed one.
 
 For each repo that qualifies:
 
-1. Invoke `<plugin>:post-deploy repo=<owner/repo> target=<branch> before=<before_sha> after=<after_sha>` in this session, with the same `repo`, `target`, `before`, and `after` as the step 7 directive.
+1. Invoke `<plugin>:post-deploy repo=<owner/repo> target=<branch> before=<before_sha> after=<after_sha>` in this session: `repo` and `target` are the same strings as in step 6, `before` the target SHA before the merge (the same `before_sha` as step 6), and `after` the merge commit SHA (`merge_commit_sha` of `repos/<owner/repo>/pulls/<pr-number>`, read after the merge).
 2. Keep working until its final report is posted in this thread. A partial report along the way is progress, not the end. Wait the way you wait for CI: in-turn, never with `ScheduleWakeup` or a background watcher whose result nothing consumes. Write this run's deployment summary only after that report.
-3. If it ends as "deployed, QA incomplete", that is this run's status: report it with the re-run arguments it gives, never as done.
-4. If the skill errors, or ends without posting its final report, report `deployed, QA incomplete` for that repo yourself, with the re-run arguments: the same `<plugin>:post-deploy` invocation as in item 1. Never report it as done.
-
-This step is this workflow's own work, not a lane. It does not change step 7: the `deploy_completed` signal is emitted exactly as step 7 says, whether or not this step runs, and a lane the harness started still runs on its own.
+3. If it ends as `deployed, QA incomplete: <reason>`, that is this repo's status: report it with what was and was not done, never as done. Put the re-run arguments it gives on one reference line for maintainers, not as a step for the requester.
+4. If the skill errors, or ends without posting its final report, report `deployed, QA incomplete: <reason>` for that repo yourself, with what was and was not done, never as done. Its reference line for maintainers is the same `<plugin>:post-deploy` invocation as in item 1.
