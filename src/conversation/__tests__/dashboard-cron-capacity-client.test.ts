@@ -84,6 +84,7 @@ const CAP_FNS = [
   'capEmptyAt',
   'capProvPill',
   'capProvHead',
+  'capUnitKey',
   'capMark',
   'capAccountCard',
   'capWorkers',

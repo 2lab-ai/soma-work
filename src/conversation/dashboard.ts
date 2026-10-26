@@ -15821,14 +15821,16 @@ function renderCronLaneHead(plan) {
     + (plan.waitingCount ? aqPill('wait', '▲ 응답 필요 ' + plan.waitingCount) : '');
 }
 // ── The lane as a queue (affectUI Agent Queue, #444 D16/D17/D19) ──
-// The last 24 hours of the lane, from the run RECORDS only (review R1). A record's status says
-// whether the fire went out — 'success' is stamped AT FIRE TIME (cron-scheduler.ts
-// recordExecution), not when the work ends. Whether the work still runs is the linked
-// session's: the server keeps live + working/waiting only on the newest run of a thread THIS
-// job created; an injected run (someone else's session) and earlier / queued runs come back
-// idle (cron-view.ts buildCronJobsView). So, the strip's rule (cronRunGlyph, trinity R2):
-// failed → 실패; success with its session live and working/waiting → 진행 중; else → 성공 (fired
-// and done). A queue entry is an event, not a run. A board card with no record yet is not
+// The last 24 hours of the lane, from the run RECORDS only (review R1). When a record is
+// written depends on its path (cron-scheduler.ts): new_thread and idle_inject await the
+// injected turn until it settles, then write success / failed; dm and thread_reply write
+// after the message is sent; busy_queue writes 'queued' when it queues (the drain writes
+// nothing). So a run in progress has no record yet — its card is the 실행 중 tile. Whether
+// the session is busy NOW is the linked session's: the server keeps live + working/waiting
+// only on the newest run of a thread THIS job created; an injected run (someone else's
+// session) and earlier / queued runs come back idle (cron-view.ts buildCronJobsView). Same
+// rule as the strip (cronRunGlyph, trinity R2): failed → 실패; success whose session is live
+// and working/waiting again (a reply to wait for, a follow-up turn) → 진행 중; else → 성공. A queue entry is an event, not a run. A board card with no record yet is not
 // counted: it is either running (the 실행 중 tile shows it — the card IS the cron session) or
 // of unknown result, and its time may be its last activity. A job whose kept history (FIFO
 // historyCap) starts inside the window makes every count there a lower bound — say which, and
@@ -15883,7 +15885,7 @@ function cronStats(plan, nowMs) {
       : stat('다음 실행', '—', '8일 안에 없음'))
     + stat('실행 중', running + '<span class="aq-of is-n">/' + groups.length + '</span>', '레인의 잡 그룹 ' + groups.length + '개(다른 인스턴스 그룹 포함) 중 실행 중 카드가 있는 그룹 ' + running + '개 — 다음 실행 열은 이 인스턴스의 스케줄만 센다')
     + stat('24시간 실행 기록', lb + d.n + (d.unknown ? '<span class="aq-of">+미확인 ' + d.unknown + '</span>' : ''),
-      '지난 24시간 발화 기록 ' + d.n + '건(대기열 항목 제외): 성공(발화 후 끝남) ' + d.ok + ' · 실패(발화 실패) ' + d.f + ' · 진행 중(발화 후 세션이 아직 실행 중) ' + d.run
+      '지난 24시간 실행 기록 ' + d.n + '건(대기열 항목 제외): 성공(세션 쉼) ' + d.ok + ' · 실패 ' + d.f + ' · 진행 중(성공 기록, 세션이 지금 실행 중·응답 대기) ' + d.run
       + (d.pending || d.unknown ? ' · 기록 전 카드 ' + (d.pending + d.unknown) + '개(실행 중 ' + d.pending + ' · 결과 미확인 ' + d.unknown + ')는 세지 않음' : '')
       + (cutNote ? ' · ' + cutNote : ''))
     + stat('실패 · 24시간', lb + d.f, '지난 24시간 실패 기록' + (cutNote ? ' · ' + cutNote : ''), d.f > 0 ? 'failed' : '')
@@ -15908,8 +15910,8 @@ function cronQueue(plan, nowMs, focusKey) {
 }
 var AQ_NICE = [4, 6, 8, 10, 12, 16, 20, 24, 30, 40, 50, 60, 80, 100, 120, 160, 200, 300, 400, 500, 600, 800, 1000];
 // 24 hours of run records (D19): one column per rolling hour ending now (so each is labelled
-// by its start, HH:MM부터 — PR review R1), 성공 (fired, done) · 진행 중 (fired, its session
-// still runs — the strip's ●) · 실패 stacked, by cronDayRuns' rule; cards with no record are
+// by its start, HH:MM부터 — PR review R1), 성공 · 진행 중 (a success record whose session is
+// busy again — the strip's ● / ▲) · 실패 stacked, by cronDayRuns' rule; cards with no record are
 // not drawn; the stretch a truncated history cannot speak for is hatched; an image with a
 // sentence for screen readers.
 function cronRunChart(plan, nowMs) {
@@ -15932,7 +15934,7 @@ function cronRunChart(plan, nowMs) {
   var hm = function(ms) { var t = new Date(ms); return pad2(t.getHours()) + ':' + pad2(t.getMinutes()); };
   var pct = function(v) { return ((v / max) * 100).toFixed(1) + '%'; };
   var cut = d.cutFrom > start;
-  var said = '지난 24시간 크론 발화 기록 ' + d.n + '건: 끝남 ' + d.ok + '건, 실패 ' + d.f + '건, 진행 중 ' + d.run + '건'
+  var said = '지난 24시간 크론 실행 기록 ' + d.n + '건: 성공 ' + d.ok + '건, 실패 ' + d.f + '건, 진행 중 ' + d.run + '건'
     + (peak ? ', 가장 많은 1시간 ' + hm(peakAt) + '부터 ' + peak + '건' : '') + '.'
     + (cut ? ' ' + capClockLabel(d.cutFrom / 1000, nowMs) + ' 이전은 일부 잡 기록이 잘림.' : '')
     + (d.pending || d.unknown ? ' 기록 전 카드 ' + (d.pending + d.unknown) + '개는 세지 않음.' : '');
@@ -15943,7 +15945,7 @@ function cronRunChart(plan, nowMs) {
     return '<i class="aq-ch-col" title="' + hm(b.at) + '부터 1시간 · 성공 ' + b.ok + ' · 실패 ' + b.fail + ' · 진행 중 ' + b.run + '"><i class="aq-ch-ok" style="height:' + pct(b.ok) + '"></i><i class="aq-ch-run" style="height:' + pct(b.run) + '"></i><i class="aq-ch-fail" style="height:' + pct(b.fail) + '"></i></i>';
   }).join('');
   return '<div class="aq-chart-head"><span class="aq-chart-title">실행 기록 · 24시간</span>'
-    + '<span class="aq-ch-key" title="발화 성공, 세션 끝남"><i class="is-ok" aria-hidden="true"></i>성공</span><span class="aq-ch-key" title="발화 성공, 세션 아직 실행 중"><i class="is-run" aria-hidden="true"></i>진행 중</span><span class="aq-ch-key" title="발화 실패"><i class="is-fail" aria-hidden="true"></i>실패</span></div>'
+    + '<span class="aq-ch-key" title="성공 기록, 세션 쉼"><i class="is-ok" aria-hidden="true"></i>성공</span><span class="aq-ch-key" title="성공 기록, 세션이 지금 실행 중·응답 대기"><i class="is-run" aria-hidden="true"></i>진행 중</span><span class="aq-ch-key" title="실패 기록"><i class="is-fail" aria-hidden="true"></i>실패</span></div>'
     + '<div class="aq-plot" role="img" aria-label="' + escAttr(said) + '">' + hatch
     + '<div class="aq-ch-grid" aria-hidden="true"><span>' + max + '</span></div><div class="aq-ch-grid is-zero" aria-hidden="true"><span>0</span></div>'
     + cols + '</div>'
@@ -16496,7 +16498,9 @@ function capTimeline(g, W, nowSec) {
     if (d < 0.05) return;
     pts.push({ x: X(e.at), d: d, c: e.cause === '7d' ? 'wk' : 'h5', a: e.account, at: e.at });
   });
-  if (!pts.length) return '';
+  // An all-blocked pool with nothing coming back in 7 days still gets its axis and its shaded
+  // stretch (final review) — the blank is the point.
+  if (!pts.length && g.state !== 'empty') return '';
   var LW = W < 420 ? 46 : 64; // a label is at most "+10.3" (~40px): merge centres closer than that
   var buckets = [];
   pts.forEach(function(p) {
@@ -16624,8 +16628,15 @@ function capProvHead(g, nowMs) {
   var n = (g.units || []).length || g.accountCount || 0;
   return '<div class="aq-head"><span class="cap-pname">' + esc(g.label) + '</span><span class="aq-name">llmux · 계정 ' + n + '</span>' + capProvPill(g, nowMs) + '</div>';
 }
-function capMark(g, u, nowMs, open, stop) {
-  var key = g.group + '|' + u.name;
+// A mark's identity (final review): the unit's place in the server's order (llmux order,
+// capacity-view.ts) plus its display name — never the name alone. Anonymous llmux masks
+// ai1@x and ai2@x both to "a***", so names collide; the raw email never reaches the client.
+// The key drives the mark, the card lookup, the roving tab stop and focus restore; if the
+// order shifts, an open card closes instead of showing another account.
+function capUnitKey(g, i, u) {
+  return g.group + '|' + i + '|' + u.name;
+}
+function capMark(g, u, key, nowMs, open, stop) {
   var st = capUnitState(u);
   var why = capReason(u);
   var said = [u.name, capTierLabel(u), why];
@@ -16654,7 +16665,7 @@ function capAccountCard(g, key, nowMs) {
       + '<dl class="aq-pop-stats">' + ok.map(function(x) { return row(x.name, '지금 ' + pct(x.now) + ' · 이번 주 ' + pct(x.week)); }).join('') + '</dl></div>';
   }
   var u = null;
-  units.forEach(function(x) { if (g.group + '|' + x.name === key) u = x; });
+  units.forEach(function(x, i) { if (capUnitKey(g, i, x) === key) u = x; });
   if (!u) return '';
   var st = capUnitState(u);
   var rows = [row('지금 쓸 수 있음', u.counted ? pct(u.now) : '—'), row('이번 주 남음', u.counted ? pct(u.week) : '—')];
@@ -16677,17 +16688,17 @@ function capWorkers(g, nowMs, narrow, open, focusKey) {
   var okKey = g.group + '|*ok';
   var keys = [];
   var list = [];
-  units.forEach(function(u) {
+  units.forEach(function(u, i) {
     if (narrow && capUnitState(u) === 'ok') {
       if (keys.indexOf(okKey) < 0) { keys.push(okKey); list.push(null); }
       return;
     }
-    keys.push(g.group + '|' + u.name);
-    list.push(u);
+    keys.push(capUnitKey(g, i, u));
+    list.push({ u: u, key: keys[keys.length - 1] });
   });
   var stop = keys.indexOf(focusKey) >= 0 ? focusKey : keys[0];
-  var marks = list.map(function(u) {
-    if (u) return capMark(g, u, nowMs, open, stop);
+  var marks = list.map(function(m) {
+    if (m) return capMark(g, m.u, m.key, nowMs, open, stop);
     return '<button type="button" class="aq-mark is-ok" data-aq-key="' + escAttr(okKey) + '" tabindex="' + (okKey === stop ? '0' : '-1') + '" aria-haspopup="dialog" aria-expanded="' + (okKey === open ? 'true' : 'false') + '" aria-label="' + escAttr('사용 가능 계정 ' + okN + '개 — 목록 보기') + '">● 사용 가능 ' + okN + '</button>';
   }).join('');
   var card = open && keys.indexOf(open) >= 0 ? capAccountCard(g, open, nowMs) : '';

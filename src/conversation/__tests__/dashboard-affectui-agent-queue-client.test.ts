@@ -162,6 +162,7 @@ const AQ_FNS = [
   'capEmptyAt',
   'capProvPill',
   'capProvHead',
+  'capUnitKey',
   'capMark',
   'capAccountCard',
   'capWorkers',
@@ -434,11 +435,14 @@ describe('D9 — the 20% line on each bar', () => {
   });
 });
 
+/** A mark's key in the CLAUDE fixture: its place in the server's order + its display name. */
+const K = (name: string) => `claude|${['ai1', 'ai2', 'ai3', 'ai4', 'ai6'].indexOf(name)}|${name}`;
+
 describe('D10 — account marks (workers)', () => {
   const workers = once(() => cap.capWorkers(CLAUDE, NOW, false, null, null));
   const mark = (name: string) => {
     const html = workers();
-    const i = html.indexOf(`data-aq-key="claude|${name}"`);
+    const i = html.indexOf(`data-aq-key="${K(name)}"`);
     return html.slice(html.lastIndexOf('<button', i), html.indexOf('</button>', i) + 9);
   };
   it('a group named by its count, one mark per account in llmux order', () => {
@@ -446,7 +450,7 @@ describe('D10 — account marks (workers)', () => {
       '<div class="aq-workers" role="group" aria-label="Claude 계정 2/5 사용 가능" data-aq-rove="cap:claude">',
     );
     expect(workers()).toContain('<div class="aq-col-head"><span>계정</span> <b>2/5</b></div>');
-    const order = ['ai1', 'ai2', 'ai3', 'ai4', 'ai6'].map((n) => workers().indexOf(`data-aq-key="claude|${n}"`));
+    const order = ['ai1', 'ai2', 'ai3', 'ai4', 'ai6'].map((n) => workers().indexOf(`data-aq-key="${K(n)}"`));
     expect(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1]))).toBe(true);
   });
   it('usable marks show the window that caps them; paused marks the reason and the return', () => {
@@ -464,12 +468,12 @@ describe('D10 — account marks (workers)', () => {
   it('spent, unmeasured and left-out accounts each say so', () => {
     const odd = cap.capWorkers(ODD, NOW, false, null, null);
     expect(odd).toMatch(
-      /class="aq-mark is-unmeasured"[^>]*data-aq-key="claude\|ai9"[\s\S]*?<b>ai9<\/b> · 5시간 미측정/,
+      /class="aq-mark is-unmeasured"[^>]*data-aq-key="claude\|\d+\|ai9"[\s\S]*?<b>ai9<\/b> · 5시간 미측정/,
     );
-    expect(odd).toMatch(/class="aq-mark is-spent"[^>]*data-aq-key="claude\|aa"[\s\S]*?<b>aa<\/b> · 소진/);
-    expect(odd).toMatch(/class="aq-mark is-out"[^>]*data-aq-key="claude\|ab"[\s\S]*?<b>ab<\/b> · 측정 없음/);
+    expect(odd).toMatch(/class="aq-mark is-spent"[^>]*data-aq-key="claude\|\d+\|aa"[\s\S]*?<b>aa<\/b> · 소진/);
+    expect(odd).toMatch(/class="aq-mark is-out"[^>]*data-aq-key="claude\|\d+\|ab"[\s\S]*?<b>ab<\/b> · 측정 없음/);
     expect(cap.capWorkers(CODEX, NOW, false, null, null)).toMatch(
-      /is-out"[^>]*data-aq-key="codex\|ai9"[\s\S]*?티어 미지정/,
+      /is-out"[^>]*data-aq-key="codex\|\d+\|ai9"[\s\S]*?티어 미지정/,
     );
     expect(
       cap.capReason({ blocked: true, counted: true, blocks: { weekly: true, fiveHour: true, cooldownUntil: 1 } }),
@@ -495,16 +499,16 @@ describe('D10 — account marks (workers)', () => {
   it('one tab stop: the first mark, or the last one focused', () => {
     expect(mark('ai1')).toContain('tabindex="0"');
     expect(mark('ai3')).toContain('tabindex="-1"');
-    const again = cap.capWorkers(CLAUDE, NOW, false, null, 'claude|ai3');
-    expect(again).toMatch(/data-aq-key="claude\|ai3" tabindex="0"/);
-    expect(again).toMatch(/data-aq-key="claude\|ai1" tabindex="-1"/);
+    const again = cap.capWorkers(CLAUDE, NOW, false, null, K('ai3'));
+    expect(again).toContain(`data-aq-key="${K('ai3')}" tabindex="0"`);
+    expect(again).toContain(`data-aq-key="${K('ai1')}" tabindex="-1"`);
   });
   it('narrow: the usable accounts fold into one mark; the exceptions stay', () => {
     const n = cap.capWorkers(CLAUDE, NOW, true, null, null);
     expect(n).toContain('data-aq-key="claude|*ok"');
     expect(n).toContain('● 사용 가능 2');
-    expect(n).not.toContain('data-aq-key="claude|ai1"');
-    expect(n).toContain('data-aq-key="claude|ai3"');
+    expect(n).not.toContain(`data-aq-key="${K('ai1')}"`);
+    expect(n).toContain(`data-aq-key="${K('ai3')}"`);
   });
   it('the card shows them between its bars and its timeline', () => {
     const card = cap.renderCapacityGroup(CLAUDE, NOW, 1200);
@@ -514,10 +518,11 @@ describe('D10 — account marks (workers)', () => {
 });
 
 describe('D11 — the account card', () => {
-  const opened = once(() => cap.capWorkers(CLAUDE, NOW, false, 'claude|ai3', null));
+  const opened = once(() => cap.capWorkers(CLAUDE, NOW, false, K('ai3'), null));
   it('a dialog with a close button, opened from its mark', () => {
-    expect(opened()).toMatch(/data-aq-key="claude\|ai3"[^>]*aria-expanded="true"/);
-    expect(opened()).toContain('<div class="aq-pop" role="dialog" aria-label="ai3 세부" data-aq-for="claude|ai3">');
+    expect(opened()).toMatch(/data-aq-key="claude\|2\|ai3"[^>]*aria-expanded="true"/);
+    expect(opened().match(/aria-expanded="true"/g)?.length).toBe(1);
+    expect(opened()).toContain('<div class="aq-pop" role="dialog" aria-label="ai3 세부" data-aq-for="claude|2|ai3">');
     expect(opened()).toContain('<button type="button" class="aq-pop-close" aria-label="닫기">×</button>');
     expect(opened().match(/class="aq-pop"/g)?.length).toBe(1);
   });
@@ -529,12 +534,10 @@ describe('D11 — the account card', () => {
     expect(opened()).toMatch(
       /<div class="is-wide"><dt>복귀<\/dt><dd>\d\d:\d\d · <time class="aq-left"[^>]*>1시간 20분<\/time><\/dd>/,
     );
-    const ok = cap.capWorkers(CLAUDE, NOW, false, 'claude|ai1', null);
+    const ok = cap.capWorkers(CLAUDE, NOW, false, K('ai1'), null);
     expect(ok).toContain('<dt>먼저 닿는 창</dt><dd>일주일</dd>');
     expect(ok).toContain('<dt>지금 쓸 수 있음</dt><dd>58%</dd>');
-    expect(cap.capWorkers(CLAUDE, NOW, false, 'claude|ai4', null)).toContain(
-      '<span class="aq-pop-kind">x20 가정</span>',
-    );
+    expect(cap.capWorkers(CLAUDE, NOW, false, K('ai4'), null)).toContain('<span class="aq-pop-kind">x20 가정</span>');
     for (const gone of ['계정분', '상한']) expect(opened()).not.toContain(gone);
   });
   it('the folded usable mark opens a list of its accounts', () => {
@@ -552,8 +555,61 @@ describe('D11 — the account card', () => {
   });
 });
 
+describe('D10–D12 — identity is the place in the server order, never the (masked) name (final review)', () => {
+  // email_anonymous: llmux masks ai1@corp.example and ai2@corp.example both to "a***".
+  const masked = buildCapacityView(
+    {
+      current: null,
+      email_anonymous: true,
+      accounts: [
+        a({
+          name: 'claude:ai1@corp.example',
+          group: 'claude',
+          blocked: '5h 100.0% > 99%',
+          five_hour: w(1, 40 * 60),
+          seven_day: w(0.5, 3 * D),
+        }),
+        a({ name: 'claude:ai2@corp.example', group: 'claude', five_hour: w(0.2, H), seven_day: w(0.1, 3 * D) }),
+      ],
+    } as never,
+    {} as never,
+    NOW,
+  ).groups[0] as any;
+  it('the server gives both the same display name and no raw email', () => {
+    expect(masked.units.map((u: any) => u.name)).toEqual(['a***', 'a***']);
+    expect(JSON.stringify(masked)).not.toContain('corp.example');
+  });
+  it('each mark has its own key; selecting the blocked first one opens ITS card', () => {
+    const html = cap.capWorkers(masked, NOW, false, 'claude|0|a***', null);
+    expect(html).toContain('data-aq-key="claude|0|a***" tabindex="0"');
+    expect(html).toContain('data-aq-key="claude|1|a***" tabindex="-1"');
+    expect(html.match(/tabindex="0"/g)?.length).toBe(1);
+    expect(html.match(/aria-expanded="true"/g)?.length).toBe(1);
+    expect(html).toMatch(/data-aq-key="claude\|0\|a\*\*\*"[^>]*aria-expanded="true"/);
+    const card = html.slice(html.indexOf('<div class="aq-pop"'));
+    expect(card).toContain('data-aq-for="claude|0|a***"');
+    expect(card).toContain('<dt>상태</dt><dd>5시간 한도</dd>');
+    expect(card).not.toContain('사용 가능');
+    // and the second one opens its own
+    const second = cap.capWorkers(masked, NOW, false, 'claude|1|a***', 'claude|1|a***');
+    const card2 = second.slice(second.indexOf('<div class="aq-pop"'));
+    expect(card2).toContain('<dt>상태</dt><dd>사용 가능</dd>');
+    expect(second).toContain('data-aq-key="claude|1|a***" tabindex="0"');
+    expect(second.match(/tabindex="0"/g)?.length).toBe(1);
+    expect(html + second).not.toContain('corp.example');
+  });
+  it('a key whose place now holds another account opens nothing (the order shifted)', () => {
+    expect(cap.capWorkers(masked, NOW, false, 'claude|0|ai9', null)).not.toContain('class="aq-pop"');
+  });
+  it('the same key drives the card lookup, the roving stop and focus restore', () => {
+    expect(clientFn('capAccountCard')).toContain('capUnitKey(g, i, x) === key');
+    expect(clientFn('capWorkers')).toContain('keys.push(capUnitKey(g, i, u));');
+    expect(clientFn('paintCapacity')).toContain('aqRestoreFocus(view, focusKey);');
+  });
+});
+
 describe('D12 — roving focus', () => {
-  const items = ['claude|ai1', 'claude|ai2', 'claude|ai3'].map((k) => {
+  const items = ['claude|0|ai1', 'claude|1|ai2', 'claude|2|ai3'].map((k) => {
     const attrs: Record<string, string> = { 'data-aq-key': k, tabindex: '-1' };
     const item: any = {
       focus: vi.fn(),
@@ -607,6 +663,19 @@ describe('D13 — the all-blocked stretch on the timeline', () => {
     expect(Number(m?.[1])).toBeCloseTo(x1 - 16, 0);
     expect(tl).toMatch(/<title>모두 막힘 — \d\d:\d\d까지<\/title>/);
     expect(cap.capTimeline(CLAUDE, W, NOW_S)).not.toContain('cap-tl-lim');
+  });
+  it('all blocked with nothing coming back in 7 days: the axis and a stretch to its end (final review)', () => {
+    const W = 800;
+    const none = { ...EMPTY, events: [] };
+    const tl = cap.capTimeline(none, W, NOW_S);
+    expect(tl).toContain('<svg class="cap-tl"');
+    expect(tl).toContain('class="cap-tl-axis"');
+    expect(tl).toMatch(new RegExp(`<rect class="cap-tl-lim" x="16" y="0" width="${(W - 32).toFixed(1)}"`));
+    expect(tl).toContain('<title>모두 막힘 — 7일 안에 복귀 없음</title>');
+    // and the card draws it
+    expect(cap.renderCapacityGroup(none, NOW, W + 36)).toContain('cap-tl-lim');
+    // a pool that is not empty and has nothing coming still draws no timeline
+    expect(cap.capTimeline({ ...LOW, events: [] }, W, NOW_S)).toBe('');
     expect(cap.capTimeline(LOW, W, NOW_S)).not.toContain('cap-tl-lim');
   });
 });
@@ -743,9 +812,10 @@ describe('D16 — four numbers, each from a named field', () => {
     expect(stats()).toMatch(
       /<dt>실행 중<\/dt><dd title="[^"]*다른 인스턴스 그룹 포함[^"]*">1<span class="aq-of is-n">\/5<\/span><\/dd>/,
     );
-    // success = the fire went out (stamped at fire time); 진행 중 = its own session still runs
+    // new_thread / idle_inject write success once the fired turn settles (dm / thread_reply once
+    // sent); 진행 중 = a success record whose own session is busy again (strip's ● / ▲)
     expect(stats()).toMatch(
-      /<dt>24시간 실행 기록<\/dt><dd title="지난 24시간 발화 기록 5건\(대기열 항목 제외\): 성공\(발화 후 끝남\) 3 · 실패\(발화 실패\) 1 · 진행 중\(발화 후 세션이 아직 실행 중\) 1[^"]*">≥5<\/dd>/,
+      /<dt>24시간 실행 기록<\/dt><dd title="지난 24시간 실행 기록 5건\(대기열 항목 제외\): 성공\(세션 쉼\) 3 · 실패 1 · 진행 중\(성공 기록, 세션이 지금 실행 중·응답 대기\) 1[^"]*">≥5<\/dd>/,
     );
     expect(stats()).toMatch(
       /<div class="aq-stat" data-kind="failed"><dt>실패 · 24시간<\/dt><dd title="[^"]*">≥1<\/dd>/,
@@ -755,8 +825,8 @@ describe('D16 — four numbers, each from a named field', () => {
     expect(stats()).toMatch(/title="[^"]*dependency-audit 기록은 보관 한도 3회라 \d\d:\d\d부터[^"]*">≥5</);
     const d = cron.cronDayRuns(plan(), NOW);
     // records only: qa 1h ok + 2h failed · deps 15m + 45m ok (the queue entry is not a run) ·
-    // digest 22m in progress — fired, and the session it created still waits (the strip's rule,
-    // trinity R2). The running qa card has no record yet.
+    // digest 22m in progress — its turn settled (success recorded) and the session it created now
+    // waits for a reply (the strip's rule, trinity R2). The running qa card has no record yet.
     expect([d.n, d.ok, d.f, d.run, d.pending, d.unknown]).toEqual([5, 3, 1, 1, 1, 0]);
     expect(stats()).toMatch(/기록 전 카드 1개\(실행 중 1 · 결과 미확인 0\)는 세지 않음/);
     expect(d.cutFrom).toBe(NOW - 45 * M);
@@ -803,7 +873,7 @@ describe('D16 — four numbers, each from a named field', () => {
     }
     const running = cron.planCronLane(empty, shape({ live: true, activityState: 'working' }), null);
     expect(cron.cronRunChart(running, NOW)).toMatch(/<i class="aq-ch-run" style="height:[1-9][\d.]*%"><\/i>/);
-    expect(cron.cronStats(running, NOW)).toContain('진행 중(발화 후 세션이 아직 실행 중) 1');
+    expect(cron.cronStats(running, NOW)).toContain('진행 중(성공 기록, 세션이 지금 실행 중·응답 대기) 1');
   });
 });
 
@@ -865,12 +935,12 @@ describe('D19 — 24 hours of runs', () => {
     expect(sums.reduce((t, m) => t + Number(m[4]), 0)).toBe(1);
     expect(chart()).toMatch(/<i class="aq-ch-fail" style="height:[1-9][\d.]*%"><\/i>/);
     expect(chart()).toMatch(/<i class="aq-ch-run" style="height:[1-9][\d.]*%"><\/i>/);
-    // the legend defines its words: success = fired and done
+    // the legend defines its words: 성공 = a success record whose session rests
     expect(chart()).toContain(
-      '<span class="aq-ch-key" title="발화 성공, 세션 끝남"><i class="is-ok" aria-hidden="true"></i>성공</span>',
+      '<span class="aq-ch-key" title="성공 기록, 세션 쉼"><i class="is-ok" aria-hidden="true"></i>성공</span>',
     );
     expect(chart()).toContain(
-      '<span class="aq-ch-key" title="발화 성공, 세션 아직 실행 중"><i class="is-run" aria-hidden="true"></i>진행 중</span>',
+      '<span class="aq-ch-key" title="성공 기록, 세션이 지금 실행 중·응답 대기"><i class="is-run" aria-hidden="true"></i>진행 중</span>',
     );
   });
   it('hatches the stretch a truncated history cannot speak for', () => {
@@ -881,7 +951,7 @@ describe('D19 — 24 hours of runs', () => {
   it('is an image with a sentence', () => {
     expect(chart()).toContain('<span class="aq-chart-title">실행 기록 · 24시간</span>');
     expect(chart()).toMatch(
-      /<div class="aq-plot" role="img" aria-label="지난 24시간 크론 발화 기록 5건: 끝남 3건, 실패 1건, 진행 중 1건, 가장 많은 1시간 \d\d:\d\d부터 4건\. \d\d:\d\d 이전은 일부 잡 기록이 잘림\. 기록 전 카드 1개는 세지 않음\.">/,
+      /<div class="aq-plot" role="img" aria-label="지난 24시간 크론 실행 기록 5건: 성공 3건, 실패 1건, 진행 중 1건, 가장 많은 1시간 \d\d:\d\d부터 4건\. \d\d:\d\d 이전은 일부 잡 기록이 잘림\. 기록 전 카드 1개는 세지 않음\.">/,
     );
     expect(chart()).toContain(
       '<div class="aq-ch-axis"><span>24시간 전</span><span>12시간 전</span><span>지금</span></div>',
@@ -978,7 +1048,7 @@ describe('R1 — names, errors and labels are text, never markup', () => {
         { name, counted: true, blocked: true, blocks: { fiveHour: true }, returnAt: NOW_S + 600, now: 0, week: 0.5 },
       ],
     };
-    const out = cap.capProvHead(g, NOW) + cap.capWorkers(g, NOW, false, `claude|${name}`, null);
+    const out = cap.capProvHead(g, NOW) + cap.capWorkers(g, NOW, false, `claude|0|${name}`, null);
     expect(out).not.toMatch(/<img|Claude<b>/);
     expect(out).toContain('&lt;img src=x onerror=alert(1)&gt;');
     expect(out).toContain('aria-label="&lt;img src=x onerror=alert(1)&gt;&quot; 세부"');
