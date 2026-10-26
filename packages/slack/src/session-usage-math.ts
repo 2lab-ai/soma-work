@@ -363,7 +363,11 @@ export interface SessionSpend {
  * The transcript keeps every completed API call, so the next resumed result's
  * running total already includes the calls of a turn that ended without its
  * result — the ones `foldLiveUsage` put into the session totals. Those totals
- * take the turn's spend minus what was folded (never below zero); the goal,
+ * take the turn's spend minus what was folded. The difference is SIGNED: the
+ * fold was an estimate (priced at the session model, while a subagent may run
+ * a cheaper one), the result is the authority, so an over-estimate comes back
+ * as a negative spend — callers keep their totals at zero or above
+ * (`addSessionSpend`). The goal,
  * the per-model buckets and `token_usage` were never folded and take the full
  * turn spend. Settles on the first result that spent anything; a zero spend
  * (crash result, empty `modelUsage`) keeps the fold for the next one. Usage
@@ -386,14 +390,20 @@ export function settleFoldedLiveUsage(
   if (!turn.modelBreakdown) return { spend, folded: undefined };
   return {
     spend: {
-      inputTokens: Math.max(0, spend.inputTokens - folded.inputTokens),
-      outputTokens: Math.max(0, spend.outputTokens - folded.outputTokens),
-      cacheReadInputTokens: Math.max(0, spend.cacheReadInputTokens - folded.cacheReadTokens),
-      cacheCreationInputTokens: Math.max(0, spend.cacheCreationInputTokens - folded.cacheCreateTokens),
-      totalCostUsd: Math.max(0, spend.totalCostUsd - folded.costUsd),
+      inputTokens: spend.inputTokens - folded.inputTokens,
+      outputTokens: spend.outputTokens - folded.outputTokens,
+      cacheReadInputTokens: spend.cacheReadInputTokens - folded.cacheReadTokens,
+      cacheCreationInputTokens: spend.cacheCreationInputTokens - folded.cacheCreateTokens,
+      totalCostUsd: spend.totalCostUsd - folded.costUsd,
     },
     folded: undefined,
   };
+}
+
+/** A total plus a (possibly negative, see `settleFoldedLiveUsage`) spend, never below zero. */
+export function addSessionSpend(total: number, spend: number): number {
+  const v = (Number.isFinite(total) ? total : 0) + (Number.isFinite(spend) ? spend : 0);
+  return v > 0 ? v : 0;
 }
 
 /**
@@ -444,28 +454,16 @@ export function creditTaskSpend(
 ): TaskUsage {
   const task = holder.taskUsage ?? emptyTaskUsage();
   const pending = task.pendingFold;
-  const own = pending && pending.sdkSessionId === holder.sessionId ? pending : undefined;
-  const { spend, folded } = settleFoldedLiveUsage(turn, own);
-  if (own && !folded && turn.modelBreakdown) {
-    // Settled: the result's growth is authoritative for the folded calls too.
-    // The fold was an estimate (priced at the session model, while a subagent
-    // may run a cheaper one), so the total takes the signed difference — an
-    // over-estimate is taken back, never kept.
-    const growth = {
-      inputTokens: spendCount(turn.inputTokens),
-      outputTokens: spendCount(turn.outputTokens),
-      cacheReadTokens: spendCount(turn.cacheReadInputTokens),
-      cacheCreateTokens: spendCount(turn.cacheCreationInputTokens),
-      costUsd: spendCount(turn.totalCostUsd),
-    };
-    for (const f of TASK_FIELDS) task[f] = Math.max(0, task[f] + growth[f] - spendCount(own[f]));
-  } else {
-    task.inputTokens += spendCount(spend.inputTokens);
-    task.outputTokens += spendCount(spend.outputTokens);
-    task.cacheReadTokens += spendCount(spend.cacheReadInputTokens);
-    task.cacheCreateTokens += spendCount(spend.cacheCreationInputTokens);
-    task.costUsd += spendCount(spend.totalCostUsd);
-  }
+  const { spend, folded } = settleFoldedLiveUsage(
+    turn,
+    pending && pending.sdkSessionId === holder.sessionId ? pending : undefined,
+  );
+  // Signed when it settles a fold: an over-estimate is taken back, never kept.
+  task.inputTokens = addSessionSpend(task.inputTokens, spend.inputTokens);
+  task.outputTokens = addSessionSpend(task.outputTokens, spend.outputTokens);
+  task.cacheReadTokens = addSessionSpend(task.cacheReadTokens, spend.cacheReadInputTokens);
+  task.cacheCreateTokens = addSessionSpend(task.cacheCreateTokens, spend.cacheCreationInputTokens);
+  task.costUsd = addSessionSpend(task.costUsd, spend.totalCostUsd);
   if (folded) task.pendingFold = folded;
   else delete task.pendingFold;
   holder.taskUsage = task;

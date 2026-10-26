@@ -19,7 +19,7 @@ import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runAgentStreamFromSdk } from '../../../agent-runtime/claude-code/stream-runner';
 import { buildWorkSessionKey } from '../../../session-identity';
-import { StreamExecutor } from '../stream-executor';
+import { StreamExecutor, setStreamExecutorProviders } from '../stream-executor';
 
 const emitted = vi.hoisted(() => ({ tokenUsage: [] as Array<{ userId: string; metadata: any }> }));
 
@@ -578,6 +578,43 @@ describe('StreamExecutor — the task total (taskUsage) outlives restarts and re
     );
     expect(session.taskUsage.inputTokens).toBe(1300);
     expect(session.taskUsage.outputTokens).toBe(130);
+  });
+
+  it('review r3 — a fold priced above the result is taken back from the session total and the task total alike', async () => {
+    // The fold is an estimate: its calls are priced at the session model.
+    setStreamExecutorProviders({ priceLiveUsage: () => 0.4 } as any);
+    try {
+      const session = newSession();
+      await runTurn(
+        session,
+        resultFrame({ [OPUS]: { input: 1000, output: 0, cacheRead: 0, cacheCreate: 0, cost: 1 } }),
+      );
+      await runTurn(session, {
+        type: 'assistant',
+        message: {
+          id: 'msg-est',
+          model: OPUS,
+          role: 'assistant',
+          content: [{ type: 'text', text: 'working' }],
+          usage: { input_tokens: 200, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        },
+      });
+      expect(session.usage.totalCostUsd).toBeCloseTo(1.4);
+      // The result says those calls (a cheaper subagent model) cost 0.1.
+      await runTurn(
+        session,
+        resultFrame({
+          [OPUS]: { input: 1000, output: 0, cacheRead: 0, cacheCreate: 0, cost: 1 },
+          'claude-haiku-4-5': { input: 200, output: 0, cacheRead: 0, cacheCreate: 0, cost: 0.1 },
+        }),
+      );
+      expect(session.usage.totalCostUsd).toBeCloseTo(1.1);
+      expect(session.taskUsage.costUsd).toBeCloseTo(1.1);
+      expect(session.usage.totalInputTokens).toBe(1200);
+      expect(session.taskUsage.inputTokens).toBe(1200);
+    } finally {
+      setStreamExecutorProviders({ priceLiveUsage: () => 0 } as any);
+    }
   });
 
   it('review r2 — a fold is saved at once (a crash before the next save cannot lose it)', async () => {

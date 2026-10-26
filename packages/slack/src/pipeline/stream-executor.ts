@@ -54,6 +54,7 @@ import {
 } from '../session-goal';
 import {
   accumulateModelTotals,
+  addSessionSpend,
   applyPostCompactOccupancy,
   creditTaskSpend,
   selectCurrentContextTokens,
@@ -3312,7 +3313,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           // The task total (persisted) just grew outside a result: save it now —
           // the idle save already ran, and a crash before the next one would
           // lose the fold (SSOT 2026-10-26 T3, review r2).
-          this.deps.claudeHandler.getSessionRegistry?.().persistAndBroadcast?.(sessionKey);
+          this.deps.claudeHandler.getSessionRegistry().persistAndBroadcast?.(sessionKey);
         }
         clearLiveUsage(session, turnId);
         this.deps.claudeHandler.getSessionRegistry().endTurn(session);
@@ -5309,11 +5310,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       pendingFold && pendingFold.sdkSessionId === session.sessionId ? pendingFold : undefined,
     );
     session.usage.foldedLiveUsage = folded;
-    session.usage.totalInputTokens += spend.inputTokens;
-    session.usage.totalOutputTokens += spend.outputTokens;
-    session.usage.totalCacheReadTokens += spend.cacheReadInputTokens;
-    session.usage.totalCacheCreateTokens += spend.cacheCreationInputTokens;
-    session.usage.totalCostUsd += spend.totalCostUsd;
+    // Signed when it settles a fold (the fold was an estimate): never below zero.
+    const u = session.usage;
+    u.totalInputTokens = addSessionSpend(u.totalInputTokens, spend.inputTokens);
+    u.totalOutputTokens = addSessionSpend(u.totalOutputTokens, spend.outputTokens);
+    u.totalCacheReadTokens = addSessionSpend(u.totalCacheReadTokens, spend.cacheReadInputTokens);
+    u.totalCacheCreateTokens = addSessionSpend(u.totalCacheCreateTokens, spend.cacheCreationInputTokens);
+    u.totalCostUsd = addSessionSpend(u.totalCostUsd, spend.totalCostUsd);
     session.usage.lastUpdated = Date.now();
     // SSOT 2026-10-26 T3 — the task total takes the same turn spend, settled
     // against its own (persisted) fold so a restart in between cannot count a
