@@ -6965,12 +6965,6 @@ function apSafeFocus(container, fid) {
   var to = head && !head.hidden ? head : document.getElementById('panel-title');
   if (to && to.focus) to.focus({ preventScroll: true });
 }
-// One stable short key for a question (its text and choice ids).
-function apHash(str) {
-  var h = 0;
-  for (var i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
-  return (h >>> 0).toString(36);
-}
 // After a failed or stale single-choice answer the button's label was written
 // back as plain text (answerChoice): draw the panel's card again from the
 // session — description, 추천 tag, key hint and all.
@@ -7096,13 +7090,16 @@ function apQuestionCardHtml(s, q) {
   var rec = recId ? q.choices.find(function(c) { return c.id === recId; }) : null;
   var others = q.choices.filter(function(c) { return !rec || c.id !== rec.id; });
   var ordered = rec ? [rec].concat(others) : others;
-  // One key per question (and per choice in it): a new question never inherits a focused choice of the last one.
-  var qk = 'q|' + apHash(q.question + '|' + q.choices.map(function(c) { return c.id; }).join(','));
+  // The card's key is the question's whole meaning — its text and every choice's id, label and description,
+  // serialized (JSON: no two meanings share a key). A question rewritten in place (same text, same ids, another
+  // label) is another card: the old one and its focused choice leave the page (apSafeFocus), never rebound.
+  // Inside one card a choice pairs by its id.
+  var qk = 'q|' + JSON.stringify([q.question, q.choices.map(function(c) { return [c.id, c.label, c.description || '']; })]);
   var btns = ordered.map(function(c) {
     var lbl = stripRecommendedMarker(c.label);
     var isRec = !!rec && c.id === rec.id;
     return '<button type="button" class="btn-choice ap-choice' + (isRec ? ' ap-rec' : '') + '"' + choiceDataAttrs(s.key, c.id, lbl, q.question)
-      + (isRec ? ' data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter"' : '') + ' data-mk="' + escAttr(qk + '|' + c.id) + '">'
+      + (isRec ? ' data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter"' : '') + ' data-mk="' + escAttr('c|' + c.id) + '">'
       + '<span class="ap-choice-label">' + esc(c.id) + '. ' + esc(lbl) + (isRec ? '<span class="ap-choice-tag">추천</span>' : '') + '</span>'
       + (c.description ? '<span class="ap-choice-desc">' + esc(c.description) + '</span>' : '')
       + '</button>';
