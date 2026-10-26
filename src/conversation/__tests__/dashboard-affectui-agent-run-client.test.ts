@@ -1134,13 +1134,25 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
 
   it('panelInfoHtml: the open body is context block → 세부 → token grid → thread; the grid keeps only token kinds', () => {
     const info = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
-      ['esc', 'escAttr', 'toNum', 'ctxLevel', 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml', 'panelInfoHtml'],
+      [
+        'esc',
+        'escAttr',
+        'toNum',
+        'ctxLevel',
+        'ctxPercent',
+        'pendingAutoResume',
+        'rootStatusOf',
+        'panelDetailsHtml',
+        'panelInfoHtml',
+      ],
       ['PI_CHEV_SVG'],
       {
         formatTokens: (n: number) => `${n}`,
         formatNmSSs: (n: number) => `${n}ms`,
         cardTotalTokens: () => 1,
         safeHref: (u: string) => u,
+        // #441's context block is pinned by its own suite; here it only has to sit first in the body.
+        contextBlockHtml: () => '<section class="cw" aria-label="컨텍스트"></section>',
       },
     ).panelInfoHtml;
     const open = info(CARD(), true);

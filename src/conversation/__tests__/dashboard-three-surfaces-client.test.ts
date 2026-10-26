@@ -562,7 +562,18 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
     load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
       // contextBlockHtml: the context block at the top of the open body (re-context-window D5) — empty without contextParts.
       // panelDetailsHtml: 세부 right after it (re-agent-run D19).
-      ['esc', 'escAttr', 'toNum', 'ctxLevel', 'ctxPercent', 'contextBlockHtml', 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml', 'panelInfoHtml'],
+      [
+        'esc',
+        'escAttr',
+        'toNum',
+        'ctxLevel',
+        'ctxPercent',
+        'contextBlockHtml',
+        'pendingAutoResume',
+        'rootStatusOf',
+        'panelDetailsHtml',
+        'panelInfoHtml',
+      ],
       ['PI_CHEV_SVG'],
       {
         formatTokens: (n: number) => `${n}`,

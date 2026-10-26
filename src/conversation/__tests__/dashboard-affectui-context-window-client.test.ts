@@ -466,7 +466,7 @@ describe('D11/D20 — hover links a row and its cells; re-applied after every wr
   it('mouse only; re-applied after every write; the panel session change resets it', () => {
     expect(clientFn('cwBind')).toContain("e.pointerType !== 'mouse'");
     expect(clientFn('renderPanelInfo')).toContain(
-      "if (writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen) : '')) cwApply(el);",
+      "if (writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen, sessionColOf(panelSessionKey)) : '')) cwApply(el);",
     );
     expect(clientFn('renderPanelInfo')).toContain('cwObserve(s, Date.now());');
     const c = load<{ cwObserve(s: unknown, now: number): void; cwTestState(): Record<string, unknown> }>(
@@ -944,7 +944,7 @@ describe('D16 — the face ctx metric and the summary line use the same level an
       expect(clientFn(fn), fn).toContain('ctxPercent(');
     expect(ctx(104.6, 1_046_000, { autoCompactTokens: 0 })).toContain('100%</span>');
     const info = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
-      [...CW_FNS, 'panelInfoHtml'],
+      [...CW_FNS, 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml', 'panelInfoHtml'],
       [...CW_VARS, 'PI_CHEV_SVG'],
       { ...ENV, formatNmSSs: (n: number) => `${n}ms`, cardTotalTokens: () => 1, safeHref: (u: string) => u },
     ).panelInfoHtml;
@@ -955,7 +955,7 @@ describe('D16 — the face ctx metric and the summary line use the same level an
 
   it('세션 정보 summary: ctx N% carries the same class; the open grid says the totals are cumulative (D17)', () => {
     const info = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
-      [...CW_FNS, 'panelInfoHtml'],
+      [...CW_FNS, 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml', 'panelInfoHtml'],
       [...CW_VARS, 'PI_CHEV_SVG'],
       { ...ENV, formatNmSSs: (n: number) => `${n}ms`, cardTotalTokens: () => 1, safeHref: (u: string) => u },
     ).panelInfoHtml;
