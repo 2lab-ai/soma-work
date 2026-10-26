@@ -83,7 +83,7 @@ If validation fails, stop immediately and clearly report the cause.
 What to check after a deploy depends on the environment, so it is not written in this workflow. A host that runs QA after its deploys has an environment plugin installed that provides a skill named `post-deploy` (`<plugin>:post-deploy` in your skill list).
 
 - **The skill exists**: for each repo, invoke it with `--preflight repo=<owner/repo> target=<branch>`, using the normalized `owner/repo` and the target branch you just verified (the same strings the QA step will use). It only reads, apart from creating the QA lock and screenshot directories and one probe file it removes, and answers with exactly one of:
-  - `applies` → step 7 runs for this repo after the deploy.
+  - `applies` → step 7 confirms this repo's deploy through the skill, then runs QA for it.
   - `partial: <checks>` → post one ⚠️ line in the thread naming the checks that failed, and continue. Step 7 still runs for this repo, in the reduced mode the skill defines, and its report says what was not run and why.
   - `not-applicable` → continue; step 7 runs no QA for this repo (it only confirms the deployment).
   - `missing: <fields>` (the environment profile itself is incomplete, or a check that QA cannot run without failed) → post one ⚠️ line in the thread naming them, and continue the deploy. Step 7 runs no QA for this repo, and its final status is `deployed, QA not run: <reason>` — never "done".
@@ -220,7 +220,7 @@ Summarize the results for each repo in the following format:
 - Merge result (success/fail)
 - Cause of failure / next action (if failed)
 - Deployment: confirmed, unconfirmed, or failed (for a repo with QA, as its post-deploy skill's first step found it)
-- Post-deploy QA: the status step 7 gives this repo (`QA complete`, `deployed, QA incomplete: <reason>`, `deployed, QA not run: <reason>`, or not applicable)
+- Post-deploy QA: the status step 7 gives this repo (`QA complete`, `deployed, QA incomplete: <reason>`, `deployed, QA not run: <reason>`, `deploy failed, QA not run: <run> concluded <conclusion>`, or not applicable)
 
 For multiple repos, present results as a table or list for readability.
 
@@ -230,7 +230,7 @@ For multiple repos, present results as a table or list for readability.
 
 After the deployment merge is complete, follow the steps below.
 
-For multi-repo deployments, repeat steps 5) and 6) for each repo. Step 7) starts once every repo has reached a terminal deploy outcome.
+For multi-repo deployments, repeat steps 5) and 6) for each repo. Step 7) starts once every repo has reached a terminal merge outcome (merged, failed, held, or cancelled); it confirms every merged repo's deployment before it QAs any repo.
 
 ### 5) Server Healthcheck (only when a server-tools target exists)
 
@@ -276,11 +276,20 @@ If no matching server exists in server-tools, skip this step.
 
 ### 7) Post-Deploy QA and Deploy Confirmation
 
-Start this step once every repo of this deploy has reached a terminal merge outcome: merged, failed, held for a user decision, or cancelled. Then go through the repos one at a time, so QA sees every repo of this deploy that landed:
+Start this step once every repo of this deploy has reached a terminal merge outcome: merged, failed, held for a user decision, or cancelled. It runs in two phases, and every confirmation comes before any QA, so the QA of one repo never reads another repo's old running commit: if repo A and repo B both merge and B's CD finishes later, phase 1 waits for B's confirmation before the QA of A starts.
 
-- **A merged repo whose step 1 preflight answered `applies` or `partial: …`**: do not confirm its deployment yourself — invoke `<plugin>:post-deploy` for it right away (below). One owner decides: the skill's first step confirms the deploy from the environment profile, and its result is this repo's deploy confirmation line too. A run that ends "deploy not confirmed" (in time or otherwise) is this repo's unconfirmed deploy; one that ends "deploy failed" is its failed deploy.
-- **A merged repo without QA** (preflight `not-applicable`, `missing: …`, no answer, or no post-deploy skill on this host): confirm its deployment yourself (below), and post one line saying QA did not run for it and why. If it needed QA and did not get it, it is `deployed, QA not run: <reason>`, never done.
-- **A failed, held, or cancelled repo**: post one line saying QA did not run for it and why. A failed or held repo is stated; it never silently skips QA for the other repos. If a held repo is deployed later in this session, run this step for it then.
+**Phase 1 — confirm every merged repo, before any QA.** One repo after another:
+
+- **A merged repo whose step 1 preflight answered `applies` or `partial: …`**: do not confirm its deployment yourself. Invoke `<plugin>:post-deploy --confirm repo=<owner/repo> target=<branch> after=<after_sha>` (the same strings as the QA run below). The skill alone decides, from the environment profile, within its own budget, and answers one line: `confirmed`, `unconfirmed: <reason>`, or `failed: <run> concluded <conclusion>`. That answer is this repo's deploy confirmation line. Any other answer, or an error, counts as unconfirmed, with what it said as the reason.
+- **A merged repo without QA** (preflight `not-applicable`, `missing: …`, no answer, or no post-deploy skill on this host): confirm its deployment yourself (below).
+
+Phase 1 ends only when every merged repo has a result — confirmed, unconfirmed, or failed — within the budgets. Wait for each in-turn, the way you wait for CI.
+
+**Phase 2 — QA, one repo at a time**, for each repo with QA whose phase-1 answer is `confirmed` (Running post-deploy QA, below). Post one line for every other repo saying QA did not run for it and why:
+
+- a repo with QA whose phase-1 answer was `unconfirmed: <reason>` → `deployed, QA not run: deploy unconfirmed: <reason>`; `failed: …` → `deploy failed, QA not run: <run> concluded <conclusion>`;
+- a merged repo without QA → why (not applicable, or the preflight's reason). If it needed QA and did not get it, it is `deployed, QA not run: <reason>`, never done;
+- a failed, held, or cancelled repo. A failed or held repo is stated; it never silently skips QA for the other repos. If a held repo is merged later in this session, run both phases for it then.
 
 **Confirming a deployment yourself** (only for a merged repo without QA). The deployment of the merge commit is **confirmed** when one of these holds:
 
@@ -289,9 +298,9 @@ Start this step once every repo of this deploy has reached a terminal merge outc
 
 With neither a CD run nor a healthcheck to confirm it, the deployment is unconfirmed. A CD run still in progress when the bounded wait ends (the 30-minute budget ran out) also counts as unconfirmed, not as success. A CD run for the merge commit that failed is a failed deploy, not an unconfirmed one.
 
-**Running post-deploy QA** (each merged repo with QA):
+**Running post-deploy QA** (phase 2, each repo with QA whose deploy phase 1 confirmed):
 
-1. Invoke `<plugin>:post-deploy repo=<owner/repo> target=<branch> before=<before_sha> after=<after_sha>` in this session, without confirming the deploy first: `repo` and `target` are the same strings as in step 6, `before` the target SHA before the merge (the same `before_sha` as step 6), and `after` the merge commit SHA (`merge_commit_sha` of `repos/<owner/repo>/pulls/<pr-number>`, read after the merge).
+1. Invoke `<plugin>:post-deploy repo=<owner/repo> target=<branch> before=<before_sha> after=<after_sha>` in this session. Its first step re-checks the deploy; one that phase 1 confirmed passes at once. `repo` and `target` are the same strings as in step 6, `before` the target SHA before the merge (the same `before_sha` as step 6), and `after` the merge commit SHA (`merge_commit_sha` of `repos/<owner/repo>/pulls/<pr-number>`, read after the merge).
 2. Keep working until its final report is posted in this thread. A partial report along the way is progress, not the end. Wait the way you wait for CI: in-turn, never with `ScheduleWakeup` or a background watcher whose result nothing consumes. Write this run's deployment summary only after that report.
 3. If it ends as `deployed, QA incomplete: <reason>`, that is this repo's status: report it with what was and was not done, never as done. Put the re-run arguments it gives on one reference line for maintainers, not as a step for the requester.
 4. If the skill errors, or ends without posting its final report, report `deployed, QA incomplete: <reason>` for that repo yourself, with what was and was not done, never as done. Its reference line for maintainers is the same `<plugin>:post-deploy` invocation as in item 1.

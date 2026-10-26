@@ -226,8 +226,10 @@ describe('PromptBuilder', () => {
       // Steps end at 7; nothing points at a step 8 any more.
       expect(prompt).not.toContain('### 8)');
       expect(prompt).not.toMatch(/step 8/i);
-      // Steps 5 and 6 repeat per repo; step 7 waits for every repo.
+      // Steps 5 and 6 repeat per repo; step 7 waits for every repo's merge outcome — one ordering story.
       expect(prompt).toMatch(/repeat steps 5\) and 6\) for each repo/);
+      expect(prompt).not.toContain('terminal deploy outcome');
+      expect(prompt).toContain('Step 7) starts once every repo has reached a terminal merge outcome');
     });
 
     it('deploy workflow preflights post-deploy QA in step 1 through the environment plugin', () => {
@@ -271,11 +273,12 @@ describe('PromptBuilder', () => {
       const step7 = prompt.slice(prompt.indexOf('### 7) Post-Deploy QA'));
 
       expect(prompt.indexOf('### 7) Post-Deploy QA')).toBeGreaterThan(prompt.indexOf('### 6) Release Notes'));
-      // A QA repo: the workflow does not confirm the deploy itself; the skill's step 1 does, and its result is the line.
+      // A QA repo: the workflow does not confirm the deploy itself; the skill's --confirm answer is the line.
       expect(step7).toContain('`applies` or `partial: …`');
       expect(step7).toContain('do not confirm its deployment yourself');
-      expect(step7).toContain("the skill's first step confirms the deploy from the environment profile");
-      expect(step7).toContain("its result is this repo's deploy confirmation line");
+      expect(step7).toContain('`<plugin>:post-deploy --confirm repo=<owner/repo> target=<branch> after=<after_sha>`');
+      expect(step7).toContain('`confirmed`, `unconfirmed: <reason>`, or `failed: <run> concluded <conclusion>`');
+      expect(step7).toContain("That answer is this repo's deploy confirmation line");
       // Only a repo without QA is confirmed by the workflow.
       expect(step7).toContain('**Confirming a deployment yourself** (only for a merged repo without QA)');
       expect(step7).toMatch(/run for the merge commit concluded `success`[^\n]*\*\*in-turn\*\*/);
@@ -300,18 +303,20 @@ describe('PromptBuilder', () => {
       const prompt = builder.loadWorkflowPrompt('deploy')!;
       const step7 = prompt.slice(prompt.indexOf('### 7) Post-Deploy QA'));
 
-      // Multi-repo: start only after every repo reached a terminal merge outcome, then go one repo at a time.
+      // Multi-repo: after every merge outcome, phase 1 confirms every merged repo before phase 2 QAs any.
       expect(step7).toContain('once every repo of this deploy has reached a terminal merge outcome');
-      expect(step7).toContain('Then go through the repos one at a time');
-      expect(step7).toMatch(
-        /A merged repo whose step 1 preflight answered `applies` or `partial: …`[^\n]*invoke `<plugin>:post-deploy` for it right away/,
+      const phase1 = step7.indexOf('**Phase 1 — confirm every merged repo, before any QA.**');
+      const phase2 = step7.indexOf('**Phase 2 — QA, one repo at a time**');
+      expect(phase1).toBeGreaterThan(-1);
+      expect(phase2).toBeGreaterThan(phase1);
+      expect(step7).toContain(
+        "if repo A and repo B both merge and B's CD finishes later, phase 1 waits for B's confirmation before the QA of A starts",
       );
-      // ... and say why every other repo got no QA; a failed or held repo never hides the rest.
-      // Every repo without QA, and every failed/held/cancelled repo, gets one line saying why.
-      expect(step7).toMatch(/\*\*A merged repo without QA\*\*[^\n]*post one line saying QA did not run for it and why/);
-      expect(step7).toMatch(
-        /\*\*A failed, held, or cancelled repo\*\*: post one line saying QA did not run for it and why/,
-      );
+      expect(step7).toContain('Phase 1 ends only when every merged repo has a result');
+      expect(step7.slice(phase2)).toMatch(/for each repo with QA whose phase-1 answer is `confirmed`/);
+      // Every other repo gets one line saying why QA did not run; a failed or held repo never hides the rest.
+      expect(step7.slice(phase2)).toContain('Post one line for every other repo saying QA did not run for it and why');
+      expect(step7).toContain('`deploy failed, QA not run: <run> concluded <conclusion>`');
       expect(step7).toContain('A failed or held repo is stated; it never silently skips QA for the other repos.');
       // The skill erroring or never reporting is not a silent end: the workflow reports it itself.
       expect(step7).toMatch(
