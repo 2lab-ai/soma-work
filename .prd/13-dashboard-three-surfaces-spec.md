@@ -5,6 +5,8 @@ Status: 구현 · Date: 2026-10-25 · 기준 main `0c36c1ad` · 이슈 #424
 [`11-dashboard-live-surfaces-spec.md`](11-dashboard-live-surfaces-spec.md),
 [`12-dashboard-agent-tree-spec.md`](12-dashboard-agent-tree-spec.md) §4
 
+> 갱신(2026-10-26, #441): 세션 정보의 컨텍스트 막대 + "autocompact" 줄(§3.1·§3.4)과 ctx 단계 "창 사용률의 구간이지 자동 압축 임계값이 아니다"(§3.7)는 [`affectui/re-context-window.md`](affectui/re-context-window.md) D5/D9/D16이 대체한다 — 컨텍스트 블록, 단계는 자동 압축 지점의 0.8/0.95(지점을 모르면 이 문서의 창 60/80 그대로).
+
 ## 0. 한 줄 정의
 
 에이전틱 태스크(세션) 하나는 세 서피스에 나온다. **접힌 카드**는 분류("나를 기다리나, 움직이나"), **펼친 카드**는 여기서 처리
@@ -44,7 +46,7 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 
 | 필드 | 접힌 카드 | 펼친 카드 | 패널 |
 |---|---|---|---|
-| 상태 | ★ 칸 + 바닥 줄(상태 + 타이머, 멈춘 카드는 그 상태에 든 지 `· 12m ago` — §3.7) | — | 머리 칩(세션 · 상태 단어 · 활성 시간) — 폰에서는 패널이 보드를 덮는다 |
+| 상태 | ★ 칸 + 바닥 줄(상태 + 타이머, 멈춘 카드는 그 상태에 든 지 `· 12m ago` — §3.7) | — | 머리 칩(세션 · 상태 단어 · 실행·대기 중이면 `시작 HH:MM · 이번 턴 경과`, 아니면 `활성` Σ — [re-agent-run](affectui/re-agent-run.md) D18; Σ 활성 시간은 세션 정보 세부 D19) — 폰에서는 패널이 보드를 덮는다 |
 | 질문·권한 요청 | 요약 줄(이유) | ★ 전체 문장 + 답·승인 컨트롤 | 같은 컨트롤 |
 | 자동 재개 | 요약 줄 + 상태 | ★ 재개 줄 | 칩 아래 `HH:MM 자동 재개 · 시도 n/3`(사유는 title과 세션 정보) |
 | 진행 중 task | ★ `#T2 … 3m` | 창 안에서 진한 점 | Tasks 안 |
@@ -70,7 +72,8 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 - 질문 대기(`waiting`): 최근 지시 ↔ 응답 → 산출물 → task 창 → 에이전트.
 - 유휴·닫힘(`idle`·`closed`): 최근 지시 ↔ 응답 → 산출물 → 에이전트.
 - 공통 끝: goal 한 줄 → 짧은 참조(+ 환경 배지) → 컨트롤 줄(모델·effort 전환 · 상태 액션 · Slack · 작업 로그) → 대기 전환 안내.
-- 640px 미만에서는 컨트롤 줄의 모델·effort가 토글 하나(`opus-5-5[1m] · high ▾`)로 접힌다(열림 상태는 카드별 JS 상태).
+- 컨트롤 줄의 모델·effort는 owner에게 트리거 하나(`Opus 5.5 (1M) · High`)이고, 누르면 모델·effort 메뉴가 열린다 — 접힘 토글은
+  없어졌다([`affectui/re-model-picker.md`](affectui/re-model-picker.md) D1/D16). 읽는 사람에게는 모델 · 단계 텍스트.
 - 펼친 영역에 없는 것: 토큰·비용·컨텍스트 바·Σ·압축·세션·merge, owner·workflow·마지막 활동, 이슈·PR 부제, 대화 링크, task 전체와
   이전 목록, 카드 안 에이전트 `전체 보기`, goal 편집기.
 
@@ -90,20 +93,21 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 ### 3.4 패널
 
 - 머리(고정): 제목 · 부제 · ×(`패널 닫기`). 칩 줄 `#panel-status`: `세션` + 상태 아이콘·단어(`role="status"` — 단어만 낭독, 1초
-  시계는 낭독하지 않는다) + 활성 시간(`card-timer-live`) … 오른쪽에 Slack, 세션 액션 하나(접근 이름은 보이는 라벨이 먼저 —
+  시계는 낭독하지 않는다) + 시간(`card-timer-live` — 실행·대기 중이면 `시작 HH:MM · 이번 턴 경과`, 아니면 `활성` Σ; re-agent-run D18, 2026-10-26) … 오른쪽에 Slack, 세션 액션 하나(접근 이름은 보이는 라벨이 먼저 —
   `Stop — 세션 중지`, `Close — 세션 종료`, `Trash — 세션 휴지통으로`; 소유자·형제 인스턴스 게이트는 카드와 같다, coarse ≥ 44px). 재개 대기면 그 아래 한 줄 `HH:MM 자동 재개 · 시도 n/3`.
 - 고정: Tasks(+ 이전 목록), 산출물.
 - 스크롤 영역: 세션 정보 `#panel-info` → goal `#panel-goal` → 권한 요청 → 질문 → 에이전트 → 작업 로그 → 대화.
   - 세션 정보: 접기(기본 접힘, 페이지 동안 JS 상태). 버튼이 요약 한 줄이다 — 소유자 · 워크플로 · 토큰 · 비용 · ctx % · 마지막 활동
-    (실시간). 링크 줄은 접혀도 보인다. 펼치면 소유자·워크플로·환경·입력·출력·캐시 읽기·캐시 쓰기·비용, 컨텍스트 바 + autocompact,
+    (실시간). 링크 줄은 접혀도 보인다. 펼치면 컨텍스트 바 + autocompact → 세부(에이전트·시작한 사람·도구 호출·비용·활성 시간·워크플로·환경 —
+    소유자·워크플로·환경·비용은 여기로 옮겼다, [re-agent-run](affectui/re-agent-run.md) D19, 2026-10-26) → 누적 토큰(입력·출력·캐시 읽기·캐시 쓰기) →
     Σ 활성·압축·세션·merge, 재개 사유. 패널은 완전한 기록이라 카드 머리 설정(`dhShow`)을 따르지 않는다.
   - goal: 카드에 있던 goal 컴포넌트(`renderCardGoal`) 전체가 이리 왔다. 게이트는 카드와 같다(`canEdit = 소유자 && !형제 인스턴스`,
     `live = 칸 ≠ closed && !terminated`). 입력에 포커스가 있으면 쓰지 않고, 포커스 없는 초안은 새 markup으로 옮긴다. 다른 세션을 열면
     비운다(초안이 섞이지 않는다).
 - 입력창(고정): `#panel-controls`(모델 · effort, 대기 전환 안내)가 입력 위의 자기 컨테이너에 있다 — 입력은 morph 대상이 아니다.
-  640px 미만이거나 높이 560px 이하(폰 가로·키보드)면 토글 하나로 접히고, 접힌 토글은 입력과 같은 줄에 선다. 펼치면 선택은
-  입력창 위에 떠서 열린다 — 읽기 영역의 높이를 빼앗지 않고, Escape는 패널보다 먼저 그 선택을 닫는다. 입력은 줄어들어도 Send는
-  줄지 않는다(패널 밖으로 잘리지 않는다).
+  owner에게는 트리거 하나가 모델·effort 메뉴를 입력창 위로 연다 — 읽기 영역의 높이를 빼앗지 않고, Escape는 패널보다 먼저 그 메뉴를
+  닫는다([`affectui/re-model-picker.md`](affectui/re-model-picker.md) D1/D9). 640px 미만이거나 높이 560px 이하(폰 가로·키보드)면
+  트리거는 입력과 같은 줄에 선다(너비 42%까지, 말줄임). 입력은 줄어들어도 Send는 줄지 않는다(패널 밖으로 잘리지 않는다).
 - 실시간: `repaintPanelSession()` 하나가 칩 · 세션 정보 · goal · 모델·effort · 노드 범위(spec 12의 `repaintPanelScope`)를 쓴다.
   `openPanel`, WS `session_update`·`sessionUpdated`, 폴링(`loadSessions`)이 모두 이 경로다. 부분마다 markup이 같으면 쓰지 않는다.
   읽던 자리: 갱신 전에 스크롤 영역에서 읽고 있는 앵커(질문·작업 로그·대화 턴)를 잡고, 위쪽 섹션 높이가 바뀌어도 그 자리로 되돌린다

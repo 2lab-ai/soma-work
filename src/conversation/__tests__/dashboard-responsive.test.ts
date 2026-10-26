@@ -527,7 +527,8 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     const laneBar = lane.slice(0, lane.indexOf('<div class="cron-groups"'));
     expect(laneBar).toContain('<div class="cron-lane-head" id="cron-lane-head"></div>');
     expect(laneBar).toMatch(
-      /<button type="button" class="sec-toggle" id="cron-toggle" data-sec-toggle="cron" aria-expanded="false" aria-controls="cron-groups">/,
+      // #444 (PR review R1): the fold hides the tiles, the queue and the chart too, so it controls them all.
+      /<button type="button" class="sec-toggle" id="cron-toggle" data-sec-toggle="cron" aria-expanded="false" aria-controls="cron-lane-top cron-queue cron-groups cron-lane-chart">/,
     );
     // paintCapacity writes its timeline into the view, never over the toggle.
     expect(clientFn('paintCapacity')).toContain("getElementById('capacity-view')");
