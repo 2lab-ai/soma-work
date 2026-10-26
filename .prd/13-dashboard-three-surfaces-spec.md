@@ -5,6 +5,8 @@ Status: 구현 · Date: 2026-10-25 · 기준 main `0c36c1ad` · 이슈 #424
 [`11-dashboard-live-surfaces-spec.md`](11-dashboard-live-surfaces-spec.md),
 [`12-dashboard-agent-tree-spec.md`](12-dashboard-agent-tree-spec.md) §4
 
+> 갱신(2026-10-26, #441): 세션 정보의 컨텍스트 막대 + "autocompact" 줄(§3.1·§3.4)과 ctx 단계 "창 사용률의 구간이지 자동 압축 임계값이 아니다"(§3.7)는 [`affectui/re-context-window.md`](affectui/re-context-window.md) D5/D9/D16이 대체한다 — 컨텍스트 블록, 단계는 자동 압축 지점의 0.8/0.95(지점을 모르면 이 문서의 창 60/80 그대로).
+
 ## 0. 한 줄 정의
 
 에이전틱 태스크(세션) 하나는 세 서피스에 나온다. **접힌 카드**는 분류("나를 기다리나, 움직이나"), **펼친 카드**는 여기서 처리

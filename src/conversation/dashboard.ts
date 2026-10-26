@@ -1364,7 +1364,10 @@ function contextFields(s: any): ContextFields {
   if (s.autoCompactPending === true) out.compactPending = true;
   const pre = finiteNumber(s.compactPreTokens);
   const post = finiteNumber(s.compactPostTokens);
-  if (pre !== undefined && post !== undefined) {
+  // /new · /renew zero compactionCount on the same session object but keep the
+  // last cycle's counts (cleared only when the next compaction starts): no
+  // compaction in this logical session, no lastCompact.
+  if (pre !== undefined && post !== undefined && (s.compactionCount || 0) > 0) {
     out.lastCompact = { preTokens: pre, postTokens: post };
     if (s.compactTrigger === 'manual' || s.compactTrigger === 'auto') out.lastCompact.trigger = s.compactTrigger;
   }
@@ -8471,6 +8474,11 @@ function ctxLevel(pct, used, auto, pending) {
   var n = toNum(pct);
   return n > 80 ? 'ctx-danger' : n > 60 ? 'ctx-warn' : '';
 }
+// The context % as every surface writes it — face metric, 세션 정보 summary,
+// the block's pill: rounded, never over 100.
+function ctxPercent(pct) {
+  return Math.round(Math.min(toNum(pct), 100));
+}
 // The outcome on the face (spec 13 §3.7 — the compact tier's PR link in Copilot
 // and Devin): the PR number and its state as a badge. The face is one toggle,
 // so the badge is not a link; the open card's short ref and the titled link in
@@ -8516,14 +8524,14 @@ function renderCardFace(s, col) {
     // re-context-window D16: the level against the auto-compact point when known, the tooltip says how far.
     var ctxLv = ctxLevel(ctxPct, s.contextTokens, s.autoCompactTokens, s.compactPending);
     var ctxAuto = toNum(s.autoCompactTokens), ctxUsed = toNum(s.contextTokens);
-    var ctxTip = 'Context window used' + (ctxLv === 'ctx-danger' ? ' — 80% 넘게 찼다' : '');
+    var ctxTip = 'Context window used' + (toNum(ctxPct) > 80 ? ' — 80% 넘게 찼다' : '');
     if (ctxAuto > 0 && ctxUsed > 0) {
-      ctxTip = '컨텍스트 ' + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '% · ' + (s.compactPending ? '다음 입력 때 자동 압축'
+      ctxTip = '컨텍스트 ' + ctxPercent(ctxPct) + '% · ' + (s.compactPending ? '다음 입력 때 자동 압축'
         : ctxUsed >= ctxAuto ? '자동 압축 지점을 넘음'
         : '자동 압축 ' + formatTokens(ctxAuto).replace(/\\.0(?=[KMBT]$)/, '') + '까지 ' + formatTokens(ctxAuto - ctxUsed).replace(/\\.0(?=[KMBT]$)/, ''));
     }
     metrics.push('<span class="metric' + (ctxLv ? ' ' + ctxLv : '') + '" title="' + escAttr(ctxTip) + '">'
-      + CTX_SVG + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '%</span>');
+      + CTX_SVG + ctxPercent(ctxPct) + '%</span>');
   }
   // User media (SSOT 2026-10-25): a paperclip count, no image on the board.
   var umBadge = isSiblingSession(s) ? '' : umFaceBadge(s);
@@ -9571,7 +9579,7 @@ function panelInfoHtml(s, open) {
   if (u) sum.push(formatTokens(cardTotalTokens(u)) + ' tok', '$' + toNum(u.totalCostUsd).toFixed(2));
   if (ctx > 0) {
     var ctxCls = ctxLevel(ctx, s.contextTokens, s.autoCompactTokens, s.compactPending);
-    sum.push('<span class="pi-cs' + (ctxCls ? ' ' + ctxCls : '') + '">ctx ' + Math.round(ctx) + '%</span>');
+    sum.push('<span class="pi-cs' + (ctxCls ? ' ' + ctxCls : '') + '">ctx ' + ctxPercent(ctx) + '%</span>');
   }
   sum.push('<span class="rel-time" data-ts="' + (new Date(s.lastActivity).getTime() || 0) + '"></span>');
   var html = '<button type="button" class="pi-head" aria-expanded="' + (open ? 'true' : 'false') + '"' + (open ? ' aria-controls="panel-info-body"' : '') + ' onclick="togglePanelInfo()">'
@@ -9635,7 +9643,8 @@ var CW_ANNOUNCE = { sending: 1, sent: 1, queued: 1, armed: 1, fail: 1, timeout: 
 var CW_COMPACT_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3l4 3.5L12 3M4 13l4-3.5 4 3.5"/></svg>';
 var CW_CHECK_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>';
 var _cwHot = '';
-var _cw = { key: '', count: 0, armedAt: 0, busySince: 0, sentAt: 0, queued: false, doneAt: 0, observedAt: 0, savedWait: 0, usedAtRise: 0, lcSeen: '', lcAtRise: '', savedAt: 0, failAt: 0, timedOutAt: 0 };
+var _cw = { key: '', count: 0, armedAt: 0, reqId: 0, req: '', reqAt: 0, obsInReq: false, queued: false, doneAt: 0, observedAt: 0, savedWait: 0, usedAtRise: 0, lcSeen: '', lcAtRise: '', savedAt: 0, failAt: 0, timedOutAt: 0 };
+var _cwSeq = 0; // request ids: an answer only ever updates the request it belongs to
 var _cwRoll = { el: null, key: '', shown: -1, raf: 0 };
 // A token count without a trailing .0 (750.0K → 750K): the tray and the marker.
 function cwShort(n) {
@@ -9681,13 +9690,14 @@ function cwMarkIndex(auto, limit, cells) {
 }
 // Where the action is (D12): armed for 4s after the first press; sending, then
 // sent (the request was taken) until a compaction is observed — the count rises
-// — then done 1.5s and leaving 0.4s. A count rise is "a compaction happened",
+// — then done 1.5s and leaving 0.4s. The request's own outcome (req: sending ·
+// sent · failed) is kept apart from what the card shows happened (observed). A count rise is "a compaction happened",
 // never "yours": a running turn queues the request and another compaction (auto,
 // Slack) can land first; the card carries no correlation to tell them apart.
 function cwPhase(s, now) {
   var c = _cw.key === s.key ? _cw : null;
   if (!c) return 'idle';
-  if (c.busySince) return c.sentAt ? 'sent' : 'sending';
+  if (c.req === 'sending' || c.req === 'sent') return c.req;
   if (c.doneAt && now - c.doneAt < CW_DONE_MS) return 'done';
   if (c.doneAt && now - c.doneAt < CW_DONE_MS + CW_LEAVE_MS) return 'leaving';
   if (c.armedAt && now - c.armedAt < CW_ARM_MS) return 'armed';
@@ -9721,8 +9731,9 @@ function cwSay(s, used, auto, win, lv, phase, now) {
 // Why this viewer cannot compact this session now ('' = can). The server's
 // requireSessionOwner is the guard; this is UX and fails closed on a missing
 // owner. A switch waiting on a compact, or one already scheduled, compacts anyway.
+// Closed is the composer's rule: terminated or sleeping (a press would wake it).
 function cwCanCompact(s) {
-  if (!s || s.terminated) return '종료된 세션';
+  if (!s || s.terminated || s.sessionState === 'SLEEPING') return '종료된 세션';
   var env = s.environment;
   if (isSiblingSession(s)) return 'Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session';
   if (!s.ownerId || s.ownerId !== currentUserId) return READ_ONLY_MSG;
@@ -9734,7 +9745,7 @@ function cwCanCompact(s) {
 // → ✓ 압축 관측됨, which leaves; hidden while nothing was added since the last
 // compaction (or its counts are still on the way). Keyed spans swap in.
 function cwCompactHtml(s, phase, used) {
-  if (s.terminated || !(used > 0)) return '';
+  if (s.terminated || s.sessionState === 'SLEEPING' || !(used > 0)) return '';
   var waiting = _cw.key === s.key && _cw.savedWait;
   var lc = s.lastCompact;
   if (phase === 'idle' && (waiting || (lc && used <= toNum(lc.postTokens)))) return '';
@@ -9781,7 +9792,7 @@ function contextBlockHtml(s, now) {
   }
   if (mark >= 0) rows += '<li class="cw-mark"><i class="cw-sw is-mark"></i><span class="cw-label">자동 압축 지점</span><span class="cw-val">' + cwShort(auto) + '</span></li>';
   var model = String(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
-  var pctTxt = Math.round(Math.min(pct, 100)) + '%';
+  var pctTxt = ctxPercent(pct) + '%';
   var ofTotal = '/ ' + cwShort(win) + ' 토큰';
   var say = cwSay(s, used, auto, win, lv, phase, now);
   return '<section class="cw" role="group" aria-labelledby="cw-title" data-level="' + (lv === 'ctx-danger' ? 'full' : lv === 'ctx-warn' ? 'warn' : 'ok') + '">'
@@ -9797,7 +9808,7 @@ function contextBlockHtml(s, now) {
     + cwCompactHtml(s, phase, used) + '</div></section>';
 }
 // What the session did since the last render (D12/D20): a new panel session
-// resets the block; a rise of its compaction count is a compaction observed —
+// or a count that went down (the thread's session started over) resets the block; a rise of its compaction count is a compaction observed —
 // it ends a sent request (done) and waits for THAT compaction's SDK counts
 // (lastCompact differs from what the card held before the rise; they are stored
 // just after the boundary's broadcast) or the next context sample; a request
@@ -9806,8 +9817,10 @@ function cwObserve(s, now) {
   var n = toNum(s.compactionCount);
   var lc = s.lastCompact;
   var sig = lc ? toNum(lc.preTokens) + '/' + toNum(lc.postTokens) : '';
-  if (_cw.key !== s.key) {
-    _cw = { key: s.key, count: n, armedAt: 0, busySince: 0, sentAt: 0, queued: false, doneAt: 0, observedAt: 0, savedWait: 0, usedAtRise: 0, lcSeen: sig, lcAtRise: '', savedAt: 0, failAt: 0, timedOutAt: 0 };
+  if (_cw.key !== s.key || n < _cw.count) {
+    // Another session, or this thread's session started over (/new · /renew
+    // zero its count): nothing carries over, an answer in flight is stale.
+    _cw = { key: s.key, count: n, armedAt: 0, reqId: 0, req: '', reqAt: 0, obsInReq: false, queued: false, doneAt: 0, observedAt: 0, savedWait: 0, usedAtRise: 0, lcSeen: sig, lcAtRise: '', savedAt: 0, failAt: 0, timedOutAt: 0 };
     _cwHot = '';
     return;
   }
@@ -9819,12 +9832,14 @@ function cwObserve(s, now) {
     // Counts already on the card before this rise belong to an earlier compaction.
     _cw.lcAtRise = _cw.lcSeen;
     cwLater(CW_SAVED_MS);
-    if (_cw.busySince) {
-      _cw.busySince = 0;
-      _cw.sentAt = 0;
+    if (_cw.req === 'sent') {
+      _cw.req = '';
       _cw.doneAt = now;
       cwLater(CW_DONE_MS);
       cwLater(CW_DONE_MS + CW_LEAVE_MS);
+    } else if (_cw.req === 'sending') {
+      // Seen before the request was even answered: its answer decides (cwCompact).
+      _cw.obsInReq = true;
     }
   }
   if (_cw.savedWait) {
@@ -9838,9 +9853,8 @@ function cwObserve(s, now) {
     }
   }
   _cw.lcSeen = sig;
-  if (_cw.busySince && now - _cw.busySince >= CW_CEIL_MS) {
-    _cw.busySince = 0;
-    _cw.sentAt = 0;
+  if ((_cw.req === 'sending' || _cw.req === 'sent') && now - _cw.reqAt >= CW_CEIL_MS) {
+    _cw.req = '';
     _cw.timedOutAt = now;
     cwLater(CW_FAIL_MS);
   }
@@ -9951,17 +9965,20 @@ async function cwCompact() {
   if (!s || cwCanCompact(s)) return;
   var now = Date.now();
   cwObserve(s, now);
-  if (_cw.busySince) return;
+  if (_cw.req === 'sending' || _cw.req === 'sent') return;
   if (!_cw.armedAt || now - _cw.armedAt >= CW_ARM_MS) {
     _cw.armedAt = now;
     cwLater(CW_ARM_MS);
     renderPanelInfo();
     return;
   }
+  var id = ++_cwSeq;
   _cw.armedAt = 0;
-  _cw.busySince = now;
-  _cw.sentAt = 0;
-  _cw.queued = s.activityState === 'working';
+  _cw.reqId = id;
+  _cw.req = 'sending';
+  _cw.reqAt = now;
+  _cw.obsInReq = false;
+  _cw.queued = s.activityState === 'working' || s.activityState === 'waiting'; // a turn holds the slot: the command waits behind it
   _cw.failAt = 0;
   _cw.timedOutAt = 0;
   cwLater(CW_CEIL_MS);
@@ -9983,11 +10000,21 @@ async function cwCompact() {
   } catch (e) {
     ok = false;
   }
-  if (_cw.key === key && _cw.busySince && ok) _cw.sentAt = Date.now();
-  if (!ok && _cw.key === key && _cw.busySince) {
-    _cw.busySince = 0;
-    _cw.failAt = Date.now();
-    cwLater(CW_FAIL_MS);
+  // Only this request's own state: a stale answer (another panel session, a
+  // session that started over, a newer request) touches nothing.
+  if (_cw.key === key && _cw.reqId === id && _cw.req === 'sending') {
+    if (!ok) {
+      _cw.req = 'failed';
+      _cw.failAt = Date.now();
+      cwLater(CW_FAIL_MS);
+    } else if (_cw.obsInReq) {
+      _cw.req = '';
+      _cw.doneAt = Date.now();
+      cwLater(CW_DONE_MS);
+      cwLater(CW_DONE_MS + CW_LEAVE_MS);
+    } else {
+      _cw.req = 'sent';
+    }
   }
   if (panelSessionKey === key) renderPanelInfo();
 }
