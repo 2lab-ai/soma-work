@@ -70,6 +70,8 @@ export interface AgentSpendReader {
 const TASK_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const SYNTHETIC_MODEL = '<synthetic>';
 const DEFAULT_MIN_INTERVAL_MS = 10_000;
+/** A missing SDK session dir is searched again after this long. */
+const MISSING_RETRY_MS = 60_000;
 /** One read chunk — a big transcript is read in pieces, never held whole in memory. */
 const DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024;
 
@@ -198,6 +200,8 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
   const chunkBytes = Math.max(1, opts.chunkBytes ?? DEFAULT_CHUNK_BYTES);
   /** sdkSessionId → its subagents directory (scanning the projects dir is not free). */
   const dirs = new Map<string, string>();
+  /** sdkSessionId → when its missing transcript dir may be searched again. */
+  const missing = new Map<string, number>();
   const files = new Map<string, FileState>();
   /** agent id → when its transcript was last read. */
   const readAt = new Map<string, number>();
@@ -206,11 +210,18 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
   async function subagentsDir(sid: string): Promise<string | null> {
     const cached = dirs.get(sid);
     if (cached && (await isRealDir(cached))) return cached;
+    // The lookup scans every project dir synchronously: an SDK session that is
+    // not there (reset, cleaned config) is not searched again for a minute.
+    const retryAt = missing.get(sid);
+    if (retryAt !== undefined && now() < retryAt) return null;
     const main = findTranscriptPath(sid, opts.configDir ?? resolveClaudeConfigDir());
-    if (!main) return null;
-    const sessionDir = path.join(path.dirname(main), sid);
-    const dir = path.join(sessionDir, 'subagents');
-    if (!(await isRealDir(sessionDir)) || !(await isRealDir(dir))) return null;
+    const sessionDir = main ? path.join(path.dirname(main), sid) : '';
+    const dir = sessionDir ? path.join(sessionDir, 'subagents') : '';
+    if (!main || !(await isRealDir(sessionDir)) || !(await isRealDir(dir))) {
+      missing.set(sid, now() + MISSING_RETRY_MS);
+      return null;
+    }
+    missing.delete(sid);
     dirs.set(sid, dir);
     return dir;
   }
