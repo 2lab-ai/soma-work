@@ -2,7 +2,10 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+
+// Every test here spawns python3 or a browser; the 5 s default is too tight on a loaded runner.
+vi.setConfig({ testTimeout: 60_000 });
 
 const SKILL_ROOT = resolve(__dirname, '..');
 const UIUX_ROOT = resolve(SKILL_ROOT, '..', 'ui-ux');
@@ -135,10 +138,10 @@ body{background:var(--color-bg);color:var(--color-text);font-family:var(--font-s
       },
     );
     expect(b.status, b.stderr).toBe(0);
-    const r = spawnSync('node', [BATCH_QA, out, '--concurrency', '2'], { encoding: 'utf8', timeout: 120000 });
+    const r = spawnSync('node', [BATCH_QA, out, '--concurrency', '2'], { encoding: 'utf8', timeout: 240000 });
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(r.stdout).toMatch(/checked 2, passed 2, failed 0/);
-  }, 150_000);
+  }, 300_000);
 
   it('regenerating a batch drops the old QA record, so the list never shows a stale pass', () => {
     const out = join(scratch, 'clean');
@@ -169,10 +172,10 @@ body{background:var(--color-bg);color:var(--color-text);font-family:var(--font-s
       const p = join(out, f);
       writeFileSync(p, readFileSync(p, 'utf8').replace('본문', '잘림'));
     }
-    const r = spawnSync('node', [BATCH_QA, out, '--concurrency', '2'], { encoding: 'utf8', timeout: 120000 });
+    const r = spawnSync('node', [BATCH_QA, out, '--concurrency', '2'], { encoding: 'utf8', timeout: 240000 });
     expect(r.status).not.toBe(0);
     expect(r.stdout).toMatch(/main text differs from the authored page/);
-  }, 150_000);
+  }, 300_000);
 
   it('batch-qa exits non-zero when the output set differs from the expected set', () => {
     const out = join(scratch, 'out');

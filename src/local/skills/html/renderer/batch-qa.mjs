@@ -16,6 +16,8 @@
  *   - the face that drew the Korean text is a Hangul-capable face (CDP getPlatformFontsForNode);
  *   - every in-page #anchor points at an existing id.
  * Writes <out>/qa.json with each page's sha256 (batch.py ignores QA records for other bytes).
+ * A browser that dies mid-run (load, OOM) is relaunched and the page is checked again, up to 3 times;
+ * a page that never gets a clean browser fails — it is never skipped or passed.
  * Exit 0 only when every page passes; 1 when any page fails.
  */
 import { createHash } from 'node:crypto';
@@ -83,17 +85,39 @@ const base = `http://127.0.0.1:${server.address().port}`;
 const HANGUL_FACE =
   /Pretendard|Noto (Sans|Serif) (KR|CJK)|Apple SD Gothic|AppleMyungjo|Nanum|Spoqa|SUIT|IBM Plex Sans KR|Malgun|Source Han|Gmarket|Wanted Sans|Gothic A1|Black Han|Do Hyeon|Jua|Gowun|Hahmlet/i;
 
-async function checkPage(browser, file) {
+// One shared browser; when it dies every worker waits on the same relaunch.
+let browser = null;
+let launching = null;
+async function liveBrowser() {
+  if (browser?.isConnected()) return browser;
+  if (!launching) {
+    launching = chromium
+      .launch({ headless: true })
+      .then((b) => {
+        browser = b;
+        return b;
+      })
+      .finally(() => {
+        launching = null;
+      });
+  }
+  return launching;
+}
+const BROWSER_GONE = /Target crashed|Target page, context or browser has been closed|Browser has been closed|Failed to find context/;
+
+async function checkPage(file) {
+  const b = await liveBrowser();
   const problems = [];
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-  const page = await ctx.newPage();
-  page.on('console', (m) => {
-    if (m.type() === 'error') problems.push(`console: ${m.text().slice(0, 80)}`);
-  });
-  page.on('requestfailed', (r) => problems.push(`request failed: ${r.url().slice(0, 80)}`));
   let mainText = '';
   let fontsUsed = [];
+  let ctx;
   try {
+    ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await ctx.newPage();
+    page.on('console', (m) => {
+      if (m.type() === 'error') problems.push(`console: ${m.text().slice(0, 80)}`);
+    });
+    page.on('requestfailed', (r) => problems.push(`request failed: ${r.url().slice(0, 80)}`));
     await page.goto(`${base}/${file}`, { waitUntil: 'networkidle', timeout: 60000 });
     await page.evaluate(() => document.fonts.ready);
     const info = await page.evaluate(() => {
@@ -167,22 +191,48 @@ async function checkPage(browser, file) {
     const ov = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     if (ov > 1) problems.push(`overflow ${ov}px @390`);
   } catch (e) {
-    problems.push(`load: ${String(e.message).slice(0, 100)}`);
+    const msg = String(e.message).slice(0, 100);
+    // The browser, not the page, failed: report it so the caller relaunches and checks again.
+    if (!b.isConnected() || BROWSER_GONE.test(msg)) return { crashed: msg };
+    problems.push(`load: ${msg}`);
   } finally {
-    await ctx.close();
+    if (ctx && b.isConnected()) {
+      await ctx.close().catch((e) => {
+        if (b.isConnected()) problems.push(`context close: ${String(e.message).slice(0, 80)}`);
+      });
+    }
   }
   const pageSha = createHash('sha256').update(readFileSync(join(out, file))).digest('hex');
   return { name: file.replace(/\.html$/, ''), file, page_sha256: pageSha, ok: problems.length === 0, problems, fontsUsed, mainText };
 }
 
-const browser = await chromium.launch({ headless: true });
 const pages = [];
 let next = 0;
 await Promise.all(
   Array.from({ length: conc }, async () => {
     while (next < expected.length) {
       const file = expected[next++];
-      pages.push(await checkPage(browser, file));
+      for (let attempt = 1; ; attempt++) {
+        const r = await checkPage(file);
+        if (!r.crashed) {
+          pages.push(r);
+          break;
+        }
+        console.log(`browser lost on ${file} (attempt ${attempt}/3): ${r.crashed}`);
+        if (attempt === 3) {
+          const pageSha = createHash('sha256').update(readFileSync(join(out, file))).digest('hex');
+          pages.push({
+            name: file.replace(/\.html$/, ''),
+            file,
+            page_sha256: pageSha,
+            ok: false,
+            problems: [`browser lost 3 times while checking: ${r.crashed}`],
+            fontsUsed: [],
+            mainText: '',
+          });
+          break;
+        }
+      }
       if (pages.length % 50 === 0) console.log(`${pages.length}/${expected.length}`);
     }
   }),
@@ -192,7 +242,7 @@ await Promise.all(
 // template itself (not from the pages under test).
 let canonical = '';
 if (results.page && existsSync(results.page)) {
-  const ctx = await browser.newContext();
+  const ctx = await (await liveBrowser()).newContext();
   const tp = await ctx.newPage();
   await tp.goto(`${base}/__template__.html`, { waitUntil: 'domcontentloaded', timeout: 60000 });
   canonical = (await tp.evaluate(() => document.querySelector('main')?.innerText ?? '')).replace(/\s+/g, ' ').trim();
@@ -210,7 +260,7 @@ for (const p of pages) {
 }
 const order = new Map(expected.map((f, i) => [f, i]));
 pages.sort((a, b) => order.get(a.file) - order.get(b.file));
-await browser.close();
+await browser?.close();
 server.close();
 const failed = pages.filter((p) => !p.ok);
 writeFileSync(
